@@ -149,13 +149,23 @@ frontmatter 在 Gateway 侧解析，解析结果进 `publicSkill`，**不改 `bo
 才按 3.6 字符算。拿 `chars / 3` 去估一份中文索引，会把它低估到三分之一——分档线当场失效，
 第 0 档能塞进去三倍于预算的东西。这个函数就在同一个文件里，不用另写一个。
 
-| 档 | 条件 | 提示词里放什么 | 注册哪几把工具 |
+| 档 | 条件 | 提示词里放什么 | 工具表里给哪几把 |
 |---|---|---|---|
-| **0** | `L ≤ SATUWORK_SKILL_INDEX_MAX_TOKENS` | 完整索引，一条一行 | `skill_view`（+ `skill_manage`） |
+| **空** | 一条 Skill 都没有 | 什么都不加 | 只有 `skill_manage` |
+| **0** | `L ≤ SATUWORK_SKILL_INDEX_MAX_TOKENS` | 完整索引，一条一行 | `skill_view` + `skill_manage` |
 | **1** | 超了 | 一行摘要：「这台席位有 N 条 Skill，用 `skills_list` 找」 | 再加 `skills_list` |
 
-**`skills_list` 只在第 1 档注册。** 索引已经在提示词里的时候还摆一把「列出 Skill」的
+**`skills_list` 只在第 1 档给。** 索引已经在提示词里的时候还摆一把「列出 Skill」的
 工具，是在邀请模型多打一轮它不需要的往返。
+
+**一条 Skill 都没有时连 `skill_view` 也不给。** 那时它唯一可能的结果是「这台席位上一条
+Skill 都没有」——摆一把只会失败的工具，是在教模型走一条走不到的路，和三段硬编码提示词
+的条件加载是同一条口径（[context-assembly.md](./context-assembly.md) §2）。`skill_manage`
+这一档照给：不然这台席位永远迈不出第一步，而记下第一条之后 `skill_view` 下一轮自己就
+回来了（判据在 `skillTools`，纯函数，和 `skillSplit` 一样由探针直接打）。
+
+三档都只是**遮掩**，不是强制：模型硬报一个不在表里的名字照样调得到，真正的判定在
+Gateway 那侧的写接口和 policy 上。
 
 索引一条一行，名字在前——模型要拿它去 `skill_view`：
 
@@ -571,7 +581,8 @@ model token 那条线上（多的那一两轮往返），账本里看得见。
   标注，不写进程起不来（§9）
 - `session/types.ts`：新增 `skill/saved` 事件（§13 第 5 条）
 - `registry/index.ts`：`BotRecord.selfSkills`（模版上那个开关，缺字段按开算）
-- 工具表：`skills_list` 只在第 1 档注册（§5）；`skill_manage` 标 `mode: 'root-only'`（§9）
+- 工具表：三把各有各的进表条件，判据收在 `skillTools`（纯函数，§5 那张表）；
+  `skill_manage` 标 `mode: 'root-only'`（§9）
 
 **文档**
 
@@ -609,6 +620,8 @@ model token 那条线上（多的那一两轮往返），账本里看得见。
     不说这一句，模型会把一次成功的写入描述成失败
 13. **同名不许静默新建第二条。** `create` 撞了名字就拒绝并附上现有正文，不自动加序号
 14. **`skill_manage` 不给子代理**（`root-only`）。子代理读得到 Skill，写不了（§9）
+15. **一条 Skill 都没有时不摆 `skill_view`，但 `skill_manage` 要在。** 前者那时只会失败，
+    后者是这台席位记下第一条的唯一入口（§5）
 
 ---
 

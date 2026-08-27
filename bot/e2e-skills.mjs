@@ -23,7 +23,7 @@ process.on('exit', () => {
 })
 
 const { Context } = await import('@deepseek-ai/cordis')
-const { skillSplit } = await import('./src/agent/index.ts')
+const { skillSplit, skillTools } = await import('./src/agent/index.ts')
 const { cachedSkills } = await import('./src/catalog/index.ts')
 const { StorageService } = await import('./src/storage/index.ts')
 const { ToolService } = await import('./src/tools/index.ts')
@@ -80,6 +80,23 @@ out.allResident = (() => {
   const split = skillSplit([skill('口径', { mode: '常驻' })])
   return { index: split.index, listTool: split.listTool }
 })()
+
+/**
+ * 哪几把进工具表。
+ *
+ * 最要紧的是**一条 Skill 都没有**那一档：`skill_view` 那时唯一可能的结果是「这台席位上
+ * 一条都没有」，摆着只会让模型去走一条走不到的路；而 `skill_manage` 必须还在，不然这台
+ * 席位永远迈不出第一步。
+ */
+const names = (arr, opts) => [...skillTools(skillSplit(arr), { selfSkills: true, off: false, ...opts })].sort()
+out.tools = {
+  empty: names([]),
+  residentOnly: names([skill('口径', { mode: '常驻' })]),
+  fits: names([skill('退款审核')]),
+  tooMany: names(Array.from({ length: 120 }, (_, i) => skill(`第${i}号流程`, { id: `t-${i}`, description: `这条讲的是第${i}号流程在什么情况下走，以及每一步交给谁` }))),
+  selfSkillsOff: names([skill('退款审核')], { selfSkills: false }),
+  toolsOff: names([skill('退款审核')], { off: true }),
+}
 
 // ── 2. 三把工具：话术、越权、包文件 ───────────────────────────────────
 

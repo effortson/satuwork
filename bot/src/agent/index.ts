@@ -301,6 +301,35 @@ export function memoryBlockOf(
   ].join('\n')
 }
 
+/** 这套工具集里的三把。工具表过滤和探针都认这一份，别在别处再写一遍名字。 */
+export const SKILL_TOOLS = ['skill_view', 'skills_list', 'skill_manage'] as const
+
+/**
+ * 这一轮的工具表里该有哪几把 skill 工具。
+ *
+ *  - `skill_view`：**手上一条 Skill 都没有时不给**。那时它唯一可能的结果是「这台席位上
+ *    一条 Skill 都没有」——摆一把只会失败的工具，是在教模型走一条走不到的路（同
+ *    `webContentBlock` 那几段的条件加载口径）。记下第一条之后它下一轮自己就回来了
+ *  - `skills_list`：只在索引装不下那一档给（见 skillSplit）。索引已经在提示词里的时候
+ *    还摆一把「列出 Skill」，是在邀请模型多打一轮它不需要的往返
+ *  - `skill_manage`：看模版上那个开关。**一条 Skill 都没有时它照样在**——不然这台席位
+ *    永远迈不出第一步
+ *
+ * 这一层**只是遮掩**：模型硬报一个不在表里的名字照样调得到，真正的判定在 Gateway
+ * 那侧（私有档的写接口）和 policy 上。
+ */
+export function skillTools(
+  split: SkillSplit,
+  opts: { selfSkills: boolean; off: boolean },
+): Set<string> {
+  if (opts.off) return new Set()
+  const out = new Set<string>()
+  if (split.resident.length || split.onDemand.length) out.add('skill_view')
+  if (split.listTool) out.add('skills_list')
+  if (opts.selfSkills) out.add('skill_manage')
+  return out
+}
+
 const DEFAULT_MAX_STEPS = 120
 
 /**
@@ -2081,22 +2110,16 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 索引已经在提示词里的时候还摆一把「列出 Skill」的工具，是在邀请模型多打一轮它
      * 不需要的往返——而它很乐意接受这个邀请。
      */
-    const skills = this.skillsOf(bot as { skills?: string[] } | undefined)
-    const skillsOff = (process.env.SATUWORK_SKILL_TOOLS || 'auto').trim() === 'off'
     /**
-     * `skill_manage` 还要看模版上那个开关（`selfSkills`，缺字段按开算）。
-     *
-     * 这一层同样**只是遮掩**：模型硬报一个不在表里的名字照样调得到，真正的拒绝在
-     * Gateway 那侧（私有档的写接口）。两层都要有——少了这一层，一个关掉了这项能力的
-     * Bot 会看见一把它每次都被拒的工具，然后一遍遍去试。
+     * 三把 skill 工具各有各的进表条件，判据在 `skillTools` 那一份里（纯函数，探针直接
+     * 打它）。`skill_manage` 那条还要看模版上的开关，缺字段按开算。
      */
-    const selfSkills = (bot as BotRecord | undefined)?.selfSkills !== false
-    const skillTool = (name: string) => {
-      if (!name.startsWith('skill_') && name !== 'skills_list') return true
-      if (skillsOff) return false
-      if (name === 'skill_manage') return selfSkills
-      return name === 'skills_list' ? skills.listTool : true
-    }
+    const allowedSkillTools = skillTools(this.skillsOf(bot as { skills?: string[] } | undefined), {
+      selfSkills: (bot as BotRecord | undefined)?.selfSkills !== false,
+      off: (process.env.SATUWORK_SKILL_TOOLS || 'auto').trim() === 'off',
+    })
+    const skillTool = (name: string) =>
+      !(SKILL_TOOLS as readonly string[]).includes(name) || allowedSkillTools.has(name)
     /**
      * 记忆关掉时，两把工具一起从表里下来。
      *

@@ -43,6 +43,24 @@ export async function runSkillsBot({ root, test, assert, log }) {
     assert(r.allResident.index === '' && r.allResident.listTool === false, '一条按需的都没有就不该有索引')
   })
 
+  await test('哪几把进工具表：一条 Skill 都没有时只留 skill_manage', () => {
+    const j = (x) => JSON.stringify(x)
+    /**
+     * `skill_view` 在没有任何 Skill 时唯一可能的结果是「这台席位上一条都没有」——摆着
+     * 就是教模型走一条走不到的路。而 `skill_manage` 必须还在：不然这台席位永远迈不出
+     * 第一步，记下第一条之后 skill_view 下一轮自己就回来了。
+     */
+    assert(j(r.tools.empty) === j(['skill_manage']), `一条都没有时该只剩 skill_manage：${j(r.tools.empty)}`)
+    assert(j(r.tools.residentOnly) === j(['skill_manage', 'skill_view']), `有常驻的就该给 skill_view：${j(r.tools.residentOnly)}`)
+    // 索引装得下就不摆「列出 Skill」那把——它已经在提示词里了，再摆是邀请模型空跑一轮。
+    assert(j(r.tools.fits) === j(['skill_manage', 'skill_view']), `装得下时不该有 skills_list：${j(r.tools.fits)}`)
+    assert(j(r.tools.tooMany) === j(['skill_manage', 'skill_view', 'skills_list']), `装不下才该有 skills_list：${j(r.tools.tooMany)}`)
+    // 模版上关掉「让它自己记 Skill」，读的那两把不受影响。
+    assert(j(r.tools.selfSkillsOff) === j(['skill_view']), `关掉之后不该还有 skill_manage：${j(r.tools.selfSkillsOff)}`)
+    // off 是退路：三把都不进表，也就是这套东西上线之前的样子。
+    assert(j(r.tools.toolsOff) === j([]), `off 那一档该一把都没有：${j(r.tools.toolsOff)}`)
+  })
+
   await test('三把工具的标注：risk 与委派待遇', () => {
     assert(JSON.stringify(r.registered) === JSON.stringify(['skill_view', 'skills_list', 'skill_manage']), `注册的不对：${JSON.stringify(r.registered)}`)
     assert(JSON.stringify(r.risk.view) === JSON.stringify(['read']), `skill_view 该只读：${JSON.stringify(r.risk.view)}`)
