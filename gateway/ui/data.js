@@ -38,13 +38,50 @@ async function api(method, path, body) {
 }
 
 /**
+ * 提示条自己走人的时限。
+ *
+ * 它说的都是**刚刚那一下的回执**：已下发停止、已压缩、已开始新对话、这条没发出去。
+ * 看过就没用了，而没人会专门去点掉一条已经读完的话——不设时限的话，对话页顶上那条
+ * 「已压缩」能一直挂到下次刷新，挡着的是消息流本身。10 秒是「一眼看完还够再看一遍」
+ * 与「别赖着不走」之间的位置。
+ */
+const FLASH_TTL = 10000
+let flashTimer = 0
+
+/**
  * 提示条。翻译在这里做一次，而不是散在上百个调用点上——
  * 消息既有界面自己的文案，也有服务端原样带回来的中文，两者查的是同一张表。
+ *
+ * `ttl` 传 0 就一直挂着，留给那种「不读完不能走」的话。今天没有这样的调用方，
+ * 但这个口子比让某一处自己另画一条提示条便宜。
  */
-function flash(kind, msg) {
+function flash(kind, msg, ttl = FLASH_TTL) {
   const text = errText(msg)
   state.error = kind === 'err' ? text : ''
   state.notice = kind === 'ok' ? text : ''
+  clearTimeout(flashTimer)
+  flashTimer = 0
+  // 空消息不算一条提示（`flash('ok', '')` 等于把两格都清空），别为它排一次定时。
+  if (!ttl || !(state.error || state.notice)) return
+  flashTimer = setTimeout(dismissFlash, ttl)
+}
+
+/**
+ * 撤掉当前这条提示：右上角那颗 × 和上面那个定时器走的是同一条路。
+ *
+ * **就地把节点摘掉，不整页重绘。** 对话页上人多半正在输入框里打字，而 render() 会把
+ * 整个 #app 换一遍——焦点、光标位置、还没同步进 state 的那半句一起没。页面上找不到
+ * 提示条的节点（还没画、或在别处画的）才退回 render()。
+ */
+function dismissFlash() {
+  clearTimeout(flashTimer)
+  flashTimer = 0
+  if (!state.error && !state.notice) return
+  state.error = ''
+  state.notice = ''
+  const rows = document.querySelectorAll('[data-flash]')
+  if (!rows.length) return render()
+  for (const row of rows) row.remove()
 }
 
 /** 删除先回 202 跑终审；兼容完成态回执仍展示拆席位留下的墓碑。 */

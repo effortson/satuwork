@@ -600,6 +600,11 @@ document.getElementById('app').addEventListener('click', async (e) => {
     if (thread) thread.scrollTo({ top: thread.scrollHeight, behavior: 'smooth' })
     return
   }
+  // 提示条右上角那颗 ×。撤法和 10 秒到点那一次是同一条（见 data.js 的 dismissFlash）。
+  if (act === 'flash-close') {
+    dismissFlash()
+    return
+  }
   if (act === 'aside-toggle') {
     asidePref.open = !asidePref.open
     saveAside()

@@ -7,6 +7,27 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 .gw-flash { margin: 0; padding: 10px var(--space-3); border-radius: var(--radius-sm); font-size: 13px; line-height: 1.6; }
 .gw-flash-err { color: var(--color-accent-800); background: var(--color-accent-100); }
 .gw-flash-ok { color: var(--color-accent-2-800); background: var(--color-accent-2-100); }
+/* 带 × 的那种（flashRow 画的）才排成一行。选择器问的是「有没有那颗按钮」，因为
+   同一个 .gw-flash 还被几处当纯说明块用（下面那条 note、机器失联那条），它们没有
+   按钮，也就不该被改成 flex——那会把里面并排的字和小按钮重新排一遍。 */
+.gw-flash:has(.gw-flash-x) { display: flex; align-items: flex-start; gap: var(--space-2); }
+.gw-flash-text { flex: 1; min-width: 0; }
+/* × 只借提示条自己的颜色：这条本来就是一块有色的面，再给按钮描边填底就是两层。
+   平时压半透明，指上去才实——它是「读完了可以撤掉」，不是这条提示的主角。 */
+.gw-flash-x {
+  flex: none;
+  margin: 1px -4px 0 0;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+}
+.gw-flash-x:hover { opacity: 1; }
 /* 既不是错也不是成功，是一句说明。搜索模式那条用它——用红的会被读成「出事了」。 */
 .gw-flash-note { color: var(--foreground); background: var(--color-neutral-200); }
 

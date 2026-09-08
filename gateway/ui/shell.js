@@ -294,9 +294,22 @@ function paintRoster() {
   repaintAskPanel()
 }
 
+/**
+ * 一条提示条。红的、蓝的，还有对话页上「已压缩」「已开始新对话」那两句，走的都是
+ * 这一个壳——它们是同一种东西（刚刚那一下的回执），就该长同一个样、同一处消失。
+ *
+ * `data-flash` 是给 dismissFlash 认的：撤的时候就地摘节点，不重绘整页。
+ */
+function flashRow(kind, text) {
+  return `<div class="gw-flash gw-flash-${kind}" data-flash>
+    <span class="gw-flash-text">${esc(text)}</span>
+    <button type="button" class="gw-flash-x" data-act="flash-close" aria-label="${esc(t('关闭'))}">${svg(['M18 6 6 18', 'M6 6l12 12'], 14)}</button>
+  </div>`
+}
+
 function flashes() {
-  return `${state.error ? `<div class="gw-flash gw-flash-err">${esc(state.error)}</div>` : ''}
-    ${state.notice ? `<div class="gw-flash gw-flash-ok">${esc(state.notice)}</div>` : ''}`
+  return `${state.error ? flashRow('err', state.error) : ''}
+    ${state.notice ? flashRow('ok', state.notice) : ''}`
 }
 
 /**
