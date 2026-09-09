@@ -850,19 +850,50 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
     })
 
     await test('界面：取不到 logo 时的兜底缩写不会漏成正文', async () => {
-      // onerror 里那段 JS 写在 HTML 属性里，只 JSON.stringify 一次是不够的：反斜杠对
-      // HTML 解析器没有意义，`\"` 里的引号会把属性收掉，后面半截 `GI"))">` 直接显示在
-      // 名字后面。市场里每张带 logo 的卡片都挂着一串乱码，就是这一处。
+      // 这里原来挂的是一段**写在 HTML 属性里的 JS**（`onerror="…createContextualFragment(…)"`），
+      // 只 JSON.stringify 一次不够：反斜杠对 HTML 解析器没有意义，`\"` 里的引号会把属性
+      // 收掉，后面半截 `GI"))">` 直接显示在名字后面——市场里每张带 logo 的卡片都挂一串乱码。
+      //
+      // 现在名字原样放在 data-mark 上，替换由 shell.js 的 mediaFallback 用 textContent 做，
+      // 只剩属性这一层要转义，那个坑没有了。所以这条断言的是新形状：**属性里不许再有 JS**。
       const { loadApp } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
       ui.state.path = '/connectors'
-      ui.state.market = [{ id: 'c1', toolkit: 'github', name: 'GitHub', description: '代码托管', logo: 'https://x/gh.png', blocked: false }]
+      ui.state.market = [{ id: 'c1', toolkit: 'github', name: 'GitHub "Inc"', description: '代码托管', logo: 'https://x/gh.png', blocked: false }]
       ui.render()
       const html = ui.html()
-      assert(html.includes('onerror='), 'logo 的兜底没画出来')
-      assert(!html.includes('\\"'), `属性里漏出了反斜杠转义：${html.slice(html.indexOf('onerror='), html.indexOf('onerror=') + 160)}`)
-      assert(html.includes('&quot;'), '兜底那段没按 HTML 属性转义')
+      assert(html.includes('data-onerror="mark"'), 'logo 的兜底没画出来')
+      assert(html.includes('data-mark="GitHub &quot;Inc&quot;"'), `名字没按 HTML 属性转义：${html.slice(html.indexOf('data-mark'), html.indexOf('data-mark') + 120)}`)
+      assert(!html.includes('\\"'), '属性里漏出了反斜杠转义')
+      assert(!/(^|[\s"])onerror=/.test(html), '又出现了内联 onerror——CSP 的 script-src 不带 unsafe-inline，它跑不起来')
+    })
+
+    /**
+     * 整套界面里**一行内联脚本都不能有**。
+     *
+     * CSP 的 script-src 不带 `'unsafe-inline'`（gateway/src/http.ts 的 CSP），所以任何
+     * 一个 `onclick=` / `onerror=` 或者 index.html 里的一段 `<script>…</script>` 都会
+     * 被浏览器直接拒执行——而拒的方式是静默的：那颗按钮点了没反应、那张图挂了不换兜底。
+     * 这类错在 DOM 垫片里跑不出来（垫片不管 CSP），所以按源码扫一遍。
+     */
+    await test('界面：没有内联脚本，也没有内联事件处理器（CSP 的前提）', async () => {
+      const { readFileSync, readdirSync } = await import('node:fs')
+      const uiDir = join(root, 'gateway/ui')
+      const bad = []
+      for (const name of readdirSync(uiDir)) {
+        if (!/\.(js|html)$/.test(name)) continue
+        const text = readFileSync(join(uiDir, name), 'utf8')
+        for (const m of text.matchAll(/(^|[\s"'`])on[a-z]+\s*=\s*["'][^"']*["']/g)) {
+          // data-onload / data-onerror 是我们自己那套委派标记，不是内联处理器。
+          if (/(^|[\s"'`])data-on/.test(m[0])) continue
+          bad.push(`${name}: ${m[0].trim().slice(0, 60)}`)
+        }
+        if (name.endsWith('.html') && /<script(?![^>]*\ssrc=)[^>]*>[\s\S]*?\S[\s\S]*?<\/script>/.test(text)) {
+          bad.push(`${name}: 内联 <script> 块`)
+        }
+      }
+      assert(bad.length === 0, `这些地方 CSP 会挡掉：\n  ${bad.join('\n  ')}`)
     })
 
     await test('界面：插件弹窗——按钮在名单底下，点 Add 就装上，装完不跳页', async () => {

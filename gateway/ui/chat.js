@@ -441,13 +441,13 @@ function messageText(msg) {
  * 图标只有候选清单里有（`/mentions` 的 `logo`）。消息里存的是 `{kind,id,label}`，所以
  * 历史那条要按 id 回候选里查（候选在 loadChatPage 里就拉了）。
  *
- * 图标 404 的那一下也要接住：`replaceWith('@')` 把它原地换成 `@`，不是删掉——删掉的话
- * 那颗药丸既没图标也没 `@`。这里能直接写字符串是因为它不含引号，不像 connectorLogo
- * 那段要把一整段 HTML 塞进属性（见 pages-connectors.js 里那个转义两次的坑）。
+ * 图标 404 的那一下也要接住：换成 `@`，不是删掉——删掉的话那颗药丸既没图标也没 `@`。
+ * 动作走 `data-onerror`，由 shell.js 那个 document 上的捕获监听器执行（内联 onerror
+ * 会逼着 CSP 放开 script-src 的 'unsafe-inline'，见 mediaFallback）。
  */
 function mentionPill(m) {
   const logo = m.logo || (state.mentionOptions || []).find((x) => x.id === m.id)?.logo || ''
-  const head = logo ? `<img src="${esc(logo)}" alt="" onerror="this.replaceWith('@')">` : '@'
+  const head = logo ? `<img src="${esc(logo)}" alt="" data-onerror="at">` : '@'
   return `<span class="sw-mention">${head}<span>${esc(m.label)}</span>`
 }
 
@@ -6277,10 +6277,14 @@ function previewTabs(p) {
  * 取字节那一段有 p.loading 管，但**字节到手不等于看得见**：iframe 里的 PDF 阅读器、
  * 大图的解码，都还要一会儿，而那段时间框里是纯白的——和「坏了」长得一模一样。
  *
- * 清除用内联 onload：它随 HTML 字符串走，每次整页重绘都自动带上。挂 JS 监听的话，
- * 任何一次无关的 render() 都会把节点换掉、监听丢掉，圈就永远转下去。
+ * 清除动作写在 `data-onload` / `data-onerror` 上：它随 HTML 字符串走，每次整页重绘
+ * 都自动带上。真正执行它的是 shell.js 挂在 document 上的那个捕获监听器——挂在节点
+ * 自己身上的话，任何一次无关的 render() 都会把节点换掉、监听丢掉，圈就永远转下去。
+ *
+ * （这里原来是一个内联的 onload 属性。同样随字符串走、同样不怕重绘，但内联事件处理器
+ * 要求 CSP 的 script-src 带 `'unsafe-inline'`，见 mediaFallback 上那段。）
  */
-const DONE_JS = "this.parentNode.removeAttribute('data-busy')"
+const DONE = 'data-onload="busy-done"'
 
 function busyBox(inner) {
   return `<div class="sw-preview-load" data-busy="1"><span class="sw-preview-spin" aria-hidden="true"></span>${inner}</div>`
@@ -6301,7 +6305,7 @@ function previewBody(p) {
   if (p.kind === 'image') {
     return busyBox(
       `<img class="sw-preview-img" src="${esc(p.url)}" alt="${esc(p.name)}" ` +
-        `onload="${DONE_JS}" onerror="${DONE_JS}">`,
+        `${DONE} data-onerror="busy-done">`,
     )
   }
   if (p.kind === 'pdf') {
@@ -6316,7 +6320,7 @@ function previewBody(p) {
      * 了 `application/pdf` 的 blob，浏览器只会把它交给 PDF 阅读器，没有任何路径能让它
      * 被当成 HTML 解释——而 sandbox 在这里防的正是「HTML 跑起脚本」。
      */
-    return busyBox(`<iframe class="sw-preview-frame" src="${esc(p.url)}" title="${esc(p.name)}" onload="${DONE_JS}"></iframe>`)
+    return busyBox(`<iframe class="sw-preview-frame" src="${esc(p.url)}" title="${esc(p.name)}" ${DONE}></iframe>`)
   }
   if (p.kind === 'html' && p.mode === 'view') {
     /**
@@ -6328,7 +6332,7 @@ function previewBody(p) {
      * 页面跑，锁死反而只剩一片白。
      */
     return busyBox(
-      `<iframe class="sw-preview-frame" src="${esc(p.url)}" sandbox title="${esc(p.name)}" onload="${DONE_JS}"></iframe>`,
+      `<iframe class="sw-preview-frame" src="${esc(p.url)}" sandbox title="${esc(p.name)}" ${DONE}></iframe>`,
     )
   }
   if (p.kind === 'markdown' && p.mode === 'view') {
@@ -6841,7 +6845,7 @@ function paintMentionPick() {
         .map(
           (m, i) => `<button type="button" class="sw-pick${i === (pick.index || 0) ? ' is-on' : ''}"
         data-act="chat-mention-pick" data-id="${esc(m.id)}">
-        ${m.logo ? `<img class="sw-pick-logo" src="${esc(m.logo)}" alt="" onerror="this.remove()">` : ''}
+        ${m.logo ? `<img class="sw-pick-logo" src="${esc(m.logo)}" alt="" data-onerror="drop">` : ''}
         <span>${esc(m.label)}</span>
         ${m.mentionOnly ? `<small>${esc(t('仅 @ 时可用'))}</small>` : ''}
       </button>`,

@@ -1,9 +1,71 @@
 /** 外壳：登录页、初始化页、侧栏导航、Bot 名单。进得了门之前只有这些。 */
+const MARK_STYLE_ALT = 'background: var(--color-accent-2-100); color: var(--color-accent-2-800);'
+const MARK_STYLE_BASE = 'background: var(--color-accent-100); color: var(--color-accent-800);'
+
+/** 名字取头两个字母当占位图标。 */
+function markText(text) {
+  return String(text || '?').slice(0, 2).toUpperCase()
+}
+
 function mark(text, alt) {
-  const style = alt
-    ? 'background: var(--color-accent-2-100); color: var(--color-accent-2-800);'
-    : 'background: var(--color-accent-100); color: var(--color-accent-800);'
-  return `<span class="satu-providermark" style="${style}">${esc(String(text || '?').slice(0, 2).toUpperCase())}</span>`
+  return `<span class="satu-providermark" style="${alt ? MARK_STYLE_ALT : MARK_STYLE_BASE}">${esc(markText(text))}</span>`
+}
+
+/**
+ * 同一个东西的 DOM 版。图标 404 时把那个 `<img>` 原地换成它（见下面 mediaFallback）。
+ *
+ * 单开一个而不是把 `mark()` 的字符串塞进 `createContextualFragment`：那条路要把一段
+ * HTML 写进 `onerror` 属性里，于是得转义两次（JSON.stringify 管 JS 那层、esc 管属性
+ * 那层），少一层就是一串漏进正文的乱码——那个坑真踩过。这里 textContent 一句话，
+ * 没有任何一层需要转义。
+ */
+function markNode(text, alt) {
+  const el = document.createElement('span')
+  el.className = 'satu-providermark'
+  el.setAttribute('style', alt ? MARK_STYLE_ALT : MARK_STYLE_BASE)
+  el.textContent = markText(text)
+  return el
+}
+
+/**
+ * 图片 / iframe 加载完或加载失败之后做什么。**内联 `onload=` / `onerror=` 的替代。**
+ *
+ * 原来那几处写成内联属性，理由写在 chat.js 的 DONE 上，而且那个理由是对的：整页是
+ * innerHTML 换掉的，挂在节点上的监听器每次重绘都会连同节点一起没，圈就永远转下去。
+ *
+ * 但内联事件处理器要求 CSP 的 `script-src` 带上 `'unsafe-inline'`，而那等于把整条 CSP
+ * 让掉——这套界面渲染的是模型输出和工具结果。
+ *
+ * 换成**在 document 上捕获一次**：`load` / `error` 不冒泡，但捕获阶段照样从 document
+ * 往下走，所以这一个监听器接得住页面里任何一个 `<img>` / `<iframe>` 的加载结果；它挂
+ * 在 document 上，底下的节点换多少次都不受影响。原来那条理由在这个写法下不成立了。
+ *
+ * 动作写在元素的 `data-onload` / `data-onerror` 上，词表就这四个：
+ *
+ *   busy-done  父节点上的转圈标记撤掉（内容真的看得见了）
+ *   at         换成一个 `@`（点名药丸的图标挂了，剩个空壳比换个字号难看）
+ *   drop       整个删掉（候选列表里的小图标，没有就没有）
+ *   mark       换成 markNode()（连接器卡片的方形占位图标）
+ */
+function mediaFallback(el, verb) {
+  if (verb === 'busy-done') el.parentNode?.removeAttribute?.('data-busy')
+  else if (verb === 'at') el.replaceWith('@')
+  else if (verb === 'drop') el.remove()
+  else if (verb === 'mark') el.replaceWith(markNode(el.getAttribute('data-mark') || '', el.hasAttribute('data-mark-alt')))
+}
+
+for (const type of ['load', 'error']) {
+  document.addEventListener(
+    type,
+    (e) => {
+      const el = e.target
+      if (!el || typeof el.getAttribute !== 'function') return
+      const verb = el.getAttribute(type === 'load' ? 'data-onload' : 'data-onerror')
+      if (verb) mediaFallback(el, verb)
+    },
+    // 捕获阶段。load / error 不冒泡，不加这个 true 就一个都收不到。
+    true,
+  )
 }
 
 /**
