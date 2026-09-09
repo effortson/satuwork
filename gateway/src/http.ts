@@ -21,9 +21,23 @@ export type Req = IncomingMessage & {
 
 export type Handler = (req: Req, res: ServerResponse) => Promise<void> | void
 
+/**
+ * 每一条响应都带的那几个头。
+ *
+ * `nosniff` 是这里面唯一一个对 JSON 也要紧的：没有它，一条 `content-type` 被中间层
+ * 抹掉或者被老浏览器猜错的响应，会拿正文当 HTML 解释——而这套接口的正文里装着模型
+ * 输出和工具结果。`no-referrer` 是因为桌面那条路把票放在 URL 路径里（见 desktop.ts
+ * 的文件头），不关掉 Referer 的话，页面里任何一个外链都会把它捎给对面。
+ */
+const BASE_HEADERS: Record<string, string> = {
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+}
+
 export function json(res: ServerResponse, status: number, body: unknown) {
   const data = JSON.stringify(body)
   res.writeHead(status, {
+    ...BASE_HEADERS,
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
   })
@@ -68,14 +82,33 @@ interface Route {
   raw: boolean
 }
 
+/**
+ * 百分号解码，坏了就当没这条路由。
+ *
+ * `decodeURIComponent('%zz')` 抛的是 URIError。原来它裸着写在 match 里，于是
+ * `GET /orgs/%zz` 会一路穿到 handle 的 catch，变成一句 500 `internal error`
+ * 外加一条完整的栈打进 stderr——一条谁都发得出的请求，既刷日志又把真正的 500
+ * 淹在噪声里。解不开的段不可能等于任何一个真实 id，返回 null 让它落到 404。
+ */
+function decodeSegment(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return null
+  }
+}
+
 function match(parts: string[], path: string): Record<string, string> | null {
   const segs = path.split('/').filter(Boolean)
   if (parts.length !== segs.length) return null
   const params: Record<string, string> = {}
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]
-    if (p.startsWith(':')) params[p.slice(1)] = decodeURIComponent(segs[i])
-    else if (p !== segs[i]) return null
+    if (p.startsWith(':')) {
+      const value = decodeSegment(segs[i])
+      if (value == null) return null
+      params[p.slice(1)] = value
+    } else if (p !== segs[i]) return null
   }
   return params
 }
@@ -100,12 +133,67 @@ const SPA_PATHS = new Set(['/', '/index.html', '/ui', '/ui/', '/models', '/provi
 const UI_PARTS = ['prefs.js', 'state.js', 'data.js', 'shell.js', 'pages-admin.js', 'pages-audit.js', 'pages-machines.js', 'pages-account.js', 'pages-bots.js', 'pages-tools.js', 'pages-connectors.js', 'pages-routines.js', 'pages-handoffs.js', 'pages-channels.js', 'chat.js', 'render.js', 'app.js']
 const ROOT_FILES = new Set(['theme.css', 'shell.css', 'app.css', 'chat.css', ...UI_PARTS, 'i18n.js', 'markdown.js', 'channel-preview.js', 'index.html', 'unzip.js'])
 
+/**
+ * 按需加载的那三个库（KaTeX / highlight.js / Mermaid）从哪儿来。
+ *
+ * **要和 `gateway/ui/markdown.js` 的 `window.SATU_CDN` 指同一处**：那边换了镜像而这里
+ * 没换，CSP 会把脚本挡掉，表现是公式和图静默不渲染——而那正是它「拉不到就退回纯文本」
+ * 的降级路径，看上去像 CDN 慢，不像配错了。所以两边共用这一个环境变量。
+ */
+const UI_CDN = (process.env.GATEWAY_UI_CDN || 'https://cdn.jsdelivr.net').trim().replace(/\/+$/, '')
+
+/**
+ * 界面字体（`gateway/ui/theme.css` 顶上那句 `@import`）。样式表从 googleapis 来，
+ * 字体文件本身从 gstatic 来——**两个源都要**，少一个的表现是字体静默退回系统默认。
+ */
+const FONT_CSS = 'https://fonts.googleapis.com'
+const FONT_FILES = 'https://fonts.gstatic.com'
+
+/**
+ * 管理界面这一页的 CSP。
+ *
+ * 这套界面渲染的是**模型输出和工具结果**——等同于外部输入。markdown.js 那一层已经
+ * 转义、白名单协议、mermaid 走 `securityLevel: 'strict'`，但它是唯一一道防线；漏一处
+ * 就直接换来登录 JWT（存在 sessionStorage / localStorage 里）。这条头是第二道。
+ *
+ * 几处刻意的松：
+ *
+ * - `style-src 'unsafe-inline'`：界面里有几十处 `style="…"` 属性，收紧要动的是排版，
+ *   而内联样式换不出脚本执行。
+ * - `img-src https: http:`：模型写得出任意图片地址，markdown 的 safeUrl 明确放行了
+ *   `https?://`。收紧等于把「贴一张图」这件事废掉。
+ * - `frame-src blob:`：文件预览把字节做成 blob 再喂给 iframe（chat.js 的 previewBody）。
+ *
+ * 一处刻意的紧：**`script-src` 不带 `'unsafe-inline'`**。为此 index.html 里那段内联
+ * module 搬进了 `ui/unzip.js` 的末尾，四处 `onload=` / `onerror=` 内联处理器换成了
+ * `data-onload` / `data-onerror` 加一个委派监听（`ui/shell.js` 的 mediaFallback）。
+ * 加回 `'unsafe-inline'` 的话这条头对 XSS 就只剩装饰作用了——真要加，先想清楚它还
+ * 挡得住什么。e2e 的 connectors 那一组有一条按源码扫内联脚本的用例守着这件事。
+ */
+const CSP = [
+  "default-src 'self'",
+  "base-uri 'none'",
+  "object-src 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'self'",
+  `script-src 'self' ${UI_CDN}`,
+  `style-src 'self' 'unsafe-inline' ${UI_CDN} ${FONT_CSS}`,
+  `font-src 'self' data: ${UI_CDN} ${FONT_FILES}`,
+  "img-src 'self' data: blob: https: http:",
+  "media-src 'self' data: blob:",
+  "connect-src 'self'",
+  "frame-src 'self' blob:",
+  "worker-src 'self' blob:",
+].join('; ')
+
 /** GET / 与各管理屏、GET /ui/*、/theme.css、/assets/* 从 gateway/ui 出。路径不得逃出该目录。 */
 function serveUi(pathname: string, res: ServerResponse): boolean {
-  let rel = ''
+  let rel: string | null = ''
   if (SPA_PATHS.has(pathname) || pathname.startsWith('/join/') || pathname.startsWith('/bots/') || pathname.startsWith('/connectors/') || pathname.startsWith('/companies/') || pathname.startsWith('/users/') || pathname.startsWith('/machines/') || pathname.startsWith('/audit') || pathname.startsWith('/a/')) rel = 'index.html'
-  else if (pathname.startsWith('/ui/')) rel = decodeURIComponent(pathname.slice('/ui/'.length))
-  else if (pathname.startsWith('/assets/')) rel = decodeURIComponent(pathname.slice(1))
+  // 解不开的百分号不是路径，是坏请求：返回 null 让它落到 404，别抛进 handle 的 catch
+  // 变成一句 500（同 match 里那道 decodeSegment）。
+  else if (pathname.startsWith('/ui/')) rel = decodeSegment(pathname.slice('/ui/'.length))
+  else if (pathname.startsWith('/assets/')) rel = decodeSegment(pathname.slice(1))
   else if (pathname.startsWith('/') && ROOT_FILES.has(pathname.slice(1))) rel = pathname.slice(1)
   else return false
   if (!rel || rel.includes('\0')) return false
@@ -117,8 +205,15 @@ function serveUi(pathname: string, res: ServerResponse): boolean {
   } catch {
     return false
   }
-  const type = MIME[extname(file).toLowerCase()] ?? 'application/octet-stream'
-  res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' })
+  const ext = extname(file).toLowerCase()
+  const type = MIME[ext] ?? 'application/octet-stream'
+  res.writeHead(200, {
+    ...BASE_HEADERS,
+    'content-type': type,
+    'cache-control': 'no-store',
+    // CSP 只挂在网页本身上：脚本和样式是被这一页加载的，约束它们的是这一页的策略。
+    ...(ext === '.html' ? { 'content-security-policy': CSP } : {}),
+  })
   createReadStream(file).pipe(res)
   return true
 }
@@ -182,9 +277,24 @@ export class Router {
   }
 
   async handle(raw: IncomingMessage, res: ServerResponse) {
-    const host = raw.headers.host ?? '127.0.0.1'
-    const url = new URL(raw.url ?? '/', `http://${host}`)
     const method = (raw.method ?? 'GET').toUpperCase()
+    /**
+     * **解析地址这一步必须在 try 里面。**
+     *
+     * `new URL()` 对畸形的 Host（`Host: [`）或畸形的请求行会抛 TypeError，而这两行
+     * 原来在 try 之外。handle 是 async、调用方是 `void router.handle(...)`，于是那个
+     * 异常变成一条没人接的 unhandled rejection——Node 的默认行为是**当场结束进程**。
+     * 也就是说一条不需要登录的 TCP 请求就能把 Gateway 打停，而且能一直打。
+     *
+     * 地址读不出来就是一条坏请求，回 400；listen 那头另有一道进程级兜底。
+     */
+    let url: URL
+    try {
+      url = new URL(raw.url ?? '/', `http://${raw.headers.host ?? '127.0.0.1'}`)
+    } catch {
+      json(res, 400, { error: 'bad request' })
+      return
+    }
     try {
       for (const fn of this.intercepts) {
         if (await fn(raw, res, url)) return

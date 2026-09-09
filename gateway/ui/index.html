@@ -13,10 +13,9 @@
 </head>
 <body>
 <div id="app"></div>
-<script type="module">
-import { unzip, stripTopDir, toPayload } from '/unzip.js';
-window.satuUnzip = { unzip, stripTopDir, toPayload };
-</script>
+<!-- 这一页里**没有内联脚本**，因为 CSP 的 script-src 不带 'unsafe-inline'（见
+     gateway/src/http.ts 的 CSP）。挂 window.satuUnzip 这件事搬进了 unzip.js 自己的末尾。 -->
+<script type="module" src="/unzip.js"></script>
 <!-- 译表必须在下面那串之前：prefs.js 里的 t() 直接查它。 -->
 <script src="/i18n.js"></script>
 <!-- markdown.js 也要在下面那串之前：chat.js 的 paintChat 直接调 window.satuMd。 -->

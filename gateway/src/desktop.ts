@@ -59,6 +59,21 @@ function guardHead(head: Record<string, string | string[]>): void {
   head['cache-control'] = 'no-store'
 }
 
+/**
+ * 路径段解码，坏了返回 null。
+ *
+ * `decodeURIComponent('%')` 抛的是 URIError。裸着写的话，普通请求那条会被 Router 的
+ * catch 兜成一句 500，升级那条更糟——它在一个 async IIFE 里，直接把进程带走。
+ * 解不开的段不可能等于任何一个真实 seatId，当坏请求处理就对了。
+ */
+function decodeSeg(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return null
+  }
+}
+
 /** 认路径里那张票认不认。认不过的一律当没认，不区分原因。 */
 function seatOfTicketPath(keys: JwtKeys, seatId: string, ticket: string): boolean {
   if (!ticket) return false
@@ -265,7 +280,11 @@ export function desktopIntercept(db: Db, keys: JwtKeys) {
     const withTicket = TICKET_PREFIX.exec(url.pathname)
     if (withTicket) {
       // 带票的路径：落地页和 noVNC 自己发的静态资源都从这儿过，每一条都验票。
-      const seatId = decodeURIComponent(withTicket[1])
+      const seatId = decodeSeg(withTicket[1])
+      if (seatId == null) {
+        json(res, 400, { error: '地址不合法' })
+        return true
+      }
       const rest = withTicket[3] || '/'
       if (!seatOfTicketPath(keys, seatId, withTicket[2])) {
         json(res, 401, { error: '这块屏的凭据过期了（Gateway 验的）。回对话页重新打开它' })
@@ -287,7 +306,11 @@ export function desktopIntercept(db: Db, keys: JwtKeys) {
     }
     const hit = DESKTOP_PREFIX.exec(url.pathname)
     if (!hit) return false
-    const seatId = decodeURIComponent(hit[1])
+    const seatId = decodeSeg(hit[1])
+    if (seatId == null) {
+      json(res, 400, { error: '地址不合法' })
+      return true
+    }
     const ticket = url.searchParams.get('ticket')
     if (!ticket) {
       json(res, 401, { error: '这块屏的凭据过期了（Gateway 验的）。回对话页重新打开它' })
@@ -344,13 +367,22 @@ export function attachDesktopUpgrade(server: Server, db: Db, keys: JwtKeys) {
       socket.destroy()
     }
     void (async () => {
-      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
+      // 地址解析失败（畸形的 Host、畸形的请求行）就是一条坏请求。不包起来的话它会变成
+      // 一条没人接的 rejection——下面那个 IIFE 原来连 .catch 都没有，于是整个进程跟着走。
+      let url: URL
+      try {
+        url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
+      } catch {
+        return bail('400 Bad Request')
+      }
       // 本地 Bot 的反向通道由 local-runtime.ts 接管。同一个 server 上的 upgrade 监听器
       // 会全部收到事件；这里若继续回 404，会把已经交给 ws 的 socket 当场掐掉。
       if (url.pathname === '/runtime/local-tunnel') return
       const hit = TICKET_PREFIX.exec(url.pathname)
       if (!hit) return bail('404 Not Found')
-      const seatId = decodeURIComponent(hit[1])
+      // 票和 seatId 都从路径里来，`%` 落单时 decodeURIComponent 会抛。
+      const seatId = decodeSeg(hit[1])
+      if (seatId == null) return bail('400 Bad Request')
       // 票在路径里，和普通请求同一套验法（见文件头）。
       if (!seatOfTicketPath(keys, seatId, hit[2])) return bail('401 Unauthorized')
       const target = await upstreamOf(db, seatId)
@@ -404,6 +436,9 @@ export function attachDesktopUpgrade(server: Server, db: Db, keys: JwtKeys) {
       upstream.on('error', () => bail('502 Bad Gateway'))
       if (head?.length) upstream.write(head)
       upstream.end()
-    })()
+      // **不能少这一句。** 上面每一步都可能抛（查库、解析地址、拼上游 URL），而这是个
+      // `void` 掉的 async IIFE——没有 catch 的话那些异常就是没人接的 rejection，Node
+      // 的默认行为是结束进程。manager/src/proxy.ts 里同形的那个一直有，这里漏了。
+    })().catch(() => bail('500 Internal Server Error'))
   })
 }

@@ -323,7 +323,14 @@ export function attachUpgrade(server: Server, deps: ProxyDeps) {
       socket.destroy()
     }
     void (async () => {
-      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
+      // 畸形的 Host 会让它抛。下面那个 .catch 接得住（不会像 gateway 那边一样掀掉进程），
+      // 但回一句 500 是误导——这是条坏请求，不是我们出错。
+      let url: URL
+      try {
+        url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
+      } catch {
+        return bail('400 Bad Request')
+      }
       const vnc = VNC_PREFIX.exec(url.pathname)
       if (!vnc) return bail('404 Not Found')
       const seatId = vnc[1]

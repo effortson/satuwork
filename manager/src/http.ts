@@ -67,14 +67,26 @@ interface Route {
   handler: Handler
 }
 
+/** 同 gateway：`%zz` 解不开时不抛，让这条路由不匹配，落到 404 而不是 500。 */
+function decodeSegment(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return null
+  }
+}
+
 function match(parts: string[], path: string): Record<string, string> | null {
   const segs = path.split('/').filter(Boolean)
   if (parts.length !== segs.length) return null
   const params: Record<string, string> = {}
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]
-    if (p.startsWith(':')) params[p.slice(1)] = decodeURIComponent(segs[i])
-    else if (p !== segs[i]) return null
+    if (p.startsWith(':')) {
+      const value = decodeSegment(segs[i])
+      if (value == null) return null
+      params[p.slice(1)] = value
+    } else if (p !== segs[i]) return null
   }
   return params
 }
@@ -105,8 +117,21 @@ export class Router {
   }
 
   async handle(raw: IncomingMessage, res: ServerResponse) {
-    const url = new URL(raw.url ?? '/', `http://${raw.headers.host ?? '127.0.0.1'}`)
     const method = (raw.method ?? 'GET').toUpperCase()
+    /**
+     * **解析地址这一步要在 try 里面**（同 gateway/src/http.ts 那一处）。
+     *
+     * 畸形的 Host（`Host: [`）会让 `new URL` 抛 TypeError，而 handle 是 async、调用方
+     * 是 `void router.handle(...)`——异常变成没人接的 rejection，Node 默认直接结束进程。
+     * 管家是那台机器上所有席位的控制面，被一条 TCP 请求打停的代价比 Gateway 还高。
+     */
+    let url: URL
+    try {
+      url = new URL(raw.url ?? '/', `http://${raw.headers.host ?? '127.0.0.1'}`)
+    } catch {
+      json(res, 400, { error: 'bad request' })
+      return
+    }
     try {
       for (const fn of this.intercepts) {
         if (await fn(raw, res, url)) return

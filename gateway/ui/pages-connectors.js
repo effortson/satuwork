@@ -26,13 +26,19 @@ function connectorGroups(list) {
 
 function connectorLogo(c) {
   if (c.logo) {
-    // onerror 里那一段是**写在 HTML 属性里的 JS**，要转义两次：JSON.stringify 管的是
-    // JS 那一层（引号变 \"），可反斜杠对 HTML 解析器毫无意义——它看到 \" 里的那个引号
-    // 就把属性收了，后面半截 `GI"))">` 漏成正文，于是每张卡片名字后面挂一串乱码。
-    // 外面再 esc 一次，交给属性解析器还原成 JS 源码。
-    const fallback = esc(JSON.stringify(mark(c.name)))
+    /**
+     * 图标 404 时换成方形占位（`mark`）。
+     *
+     * 这里原来是一段**写在 HTML 属性里的 JS**，要转义两次：JSON.stringify 管 JS 那一层
+     * （引号变 \"），可反斜杠对 HTML 解析器毫无意义——它看到 \" 里的那个引号就把属性
+     * 收了，后面半截 `GI"))">` 漏成正文，于是每张卡片名字后面挂一串乱码。
+     *
+     * 现在名字原样放在 `data-mark` 上，替换由 shell.js 的 mediaFallback 用 textContent
+     * 做完：只剩属性这一层要转义，那个坑连同内联脚本一起没了（CSP 也不用为它放开
+     * script-src 的 'unsafe-inline'）。
+     */
     return `<img src="${esc(c.logo)}" alt="" style="width: 34px; height: 34px; border-radius: 8px; object-fit: cover; flex: none;"
-      onerror="this.replaceWith(document.createRange().createContextualFragment(${fallback}))">`
+      data-onerror="mark" data-mark="${esc(c.name)}">`
   }
   return mark(c.name)
 }

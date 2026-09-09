@@ -4,7 +4,7 @@
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { LOGIN_DUMMY_HASH, bodyOf, strField } from '../lib/validate.ts'
-import { MIN_PASSWORD, hashPassword, jwks, verifyPassword } from '../crypto.ts'
+import { MIN_PASSWORD, hashPassword, jwks, needsRehash, verifyPassword } from '../crypto.ts'
 import { emailOf, orgSummary, publicAccount, publicCompany, publicPlan, publicSettings } from '../lib/org.ts'
 import { headerOf, inviteeOf, issue, noteLogin, requireSeatOrUser, requireUser } from '../lib/guards.ts'
 import { type Account } from '../db.ts'
@@ -79,12 +79,28 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
     const body = bodyOf(req)
     const email = emailOf(strField(body, 'email'))
     const password = strField(body, 'password')
-    const account = await db.accountByEmail(email)
+    let account = await db.accountByEmail(email)
     // 找不到也走同一条失败路径，不靠耗时差泄露「这个邮箱在不在」。
     const ok = account ? await verifyPassword(password, account.passwordHash) : await verifyPassword(password, await LOGIN_DUMMY_HASH)
     if (!account || !ok) throw new HttpError(401, '邮箱或口令不对')
     if (account.status === 'disabled') throw new HttpError(403, '这个账号已被停用，请联系管理员')
     if (account.status === 'invited') throw new HttpError(403, '请先用邀请链接设置口令')
+    /**
+     * 口令哈希跟着当前参数走，**趁这一刻升级**。
+     *
+     * 校验现在按每一行自己存的 `N$r$p` 算（见 crypto.verifyPassword），所以调高成本
+     * 不会再把存量账号锁在门外；但不补这一句的话，老行会用老参数一直用下去，那个开关
+     * 等于只对新注册的人生效。这是唯一一处手上有明文的地方。
+     *
+     * 升级失败不能挡住登录：口令是对的，重算只是顺手做的事。
+     */
+    if (needsRehash(account.passwordHash)) {
+      try {
+        account = await db.updateAccount(account.id, { passwordHash: await hashPassword(password) })
+      } catch (e) {
+        console.error(`satuwork-gateway: 口令哈希升级失败 ${account.id}：${(e as Error).message}`)
+      }
+    }
     const logged = await noteLogin(db, account)
     if (logged.role === 'owner') {
       await db.audit({ companyId: 'platform', accountId: logged.id, action: 'auth.login' })

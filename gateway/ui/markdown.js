@@ -14,8 +14,12 @@
  *    一律转义不透传，链接和图片只放行白名单协议。
  *
  * 重的东西（KaTeX / Mermaid / highlight.js）不打进这个文件，用到时才从 CDN 拉，拉不到
- * 就退回纯文本——公式显示 TeX 原文、图显示源码、代码不高亮，但页面不会坏。CDN 地址可
- * 以用 window.SATU_CDN 覆盖（内网部署时指到自己的镜像）。
+ * 就退回纯文本——公式显示 TeX 原文、图显示源码、代码不高亮，但页面不会坏。三者都带
+ * SRI 摘要，内容对不上一律当拉不到（见 LIBS）。
+ *
+ * CDN 地址可以用 window.SATU_CDN 覆盖（内网部署时指到自己的镜像）。**换了这个就要同时
+ * 设 Gateway 的 `GATEWAY_UI_CDN`**：CSP 的 script-src 是按后者写的，只换一边的话脚本会
+ * 被浏览器挡掉，而表现和「CDN 拉不到」一模一样（见 gateway/src/http.ts 的 CSP）。
  */
 ;(function () {
   'use strict'
@@ -704,12 +708,50 @@
   const CDN = window.SATU_CDN || 'https://cdn.jsdelivr.net/npm'
   const loaded = {}
 
-  function loadScript(src) {
+  /**
+   * 这三个库的路径和摘要。**摘要不是可选的。**
+   *
+   * 这几段脚本是拿这一页的源加载并执行的：CDN 哪天被投毒、或者 DNS 被劫持，进来的
+   * 就是能读 sessionStorage / localStorage 的同源脚本，而那里躺着登录 JWT。SRI 让
+   * 浏览器在执行之前先核一次内容——对不上就当加载失败，走这个文件开头写的那条降级路
+   * （公式显示 TeX 原文、图显示源码、代码不高亮，页面不坏）。
+   *
+   * **改版本号就要同时换摘要**，两者是一对。取法：
+   *
+   *   curl -sSL <url> | openssl dgst -sha384 -binary | openssl base64 -A
+   *
+   * `window.SATU_CDN` 指到内网镜像时这几个摘要照样成立——它算的是内容，不是地址。
+   * 镜像里放的要是另一个版本，这里会当场拒载，那也是对的。
+   */
+  const LIBS = {
+    katexCss: {
+      path: '/katex@0.16.11/dist/katex.min.css',
+      sri: 'sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+',
+    },
+    katexJs: {
+      path: '/katex@0.16.11/dist/katex.min.js',
+      sri: 'sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg',
+    },
+    hljs: {
+      path: '/@highlightjs/cdn-assets@11.10.0/highlight.min.js',
+      sri: 'sha384-GdEWAbCjn+ghjX0gLx7/N1hyTVmPAjdC2OvoAA0RyNcAOhqwtT8qnbCxWle2+uJX',
+    },
+    mermaid: {
+      path: '/mermaid@11.4.1/dist/mermaid.esm.min.mjs',
+      sri: 'sha384-HteIAsnwkbgGVEAzdIZs19SFw7jEi5VYjjlP+WhnGhrjlHPiQxu8glOSahByV8DA',
+    },
+  }
+
+  /** `crossorigin` 是 SRI 的前提：跨源的响应不按 CORS 取，浏览器读不到正文也就核不了。 */
+  function loadScript(lib) {
+    const src = CDN + lib.path
     if (!loaded[src]) {
       loaded[src] = new Promise((ok, no) => {
         const el = document.createElement('script')
         el.src = src
         el.async = true
+        el.integrity = lib.sri
+        el.crossOrigin = 'anonymous'
         el.onload = () => ok(true)
         el.onerror = () => no(new Error('load ' + src))
         document.head.appendChild(el)
@@ -718,34 +760,52 @@
     return loaded[src]
   }
 
-  function loadStyle(href) {
+  function loadStyle(lib) {
+    const href = CDN + lib.path
     if (loaded[href]) return
     const el = document.createElement('link')
     el.rel = 'stylesheet'
     el.href = href
+    el.integrity = lib.sri
+    el.crossOrigin = 'anonymous'
     document.head.appendChild(el)
     loaded[href] = true
   }
 
   function katexLib() {
     if (!loaded.__katex) {
-      loadStyle(CDN + '/katex@0.16.11/dist/katex.min.css')
-      loaded.__katex = loadScript(CDN + '/katex@0.16.11/dist/katex.min.js').then(() => window.katex)
+      loadStyle(LIBS.katexCss)
+      loaded.__katex = loadScript(LIBS.katexJs).then(() => window.katex)
     }
     return loaded.__katex
   }
 
   function hljsLib() {
     if (!loaded.__hljs) {
-      loaded.__hljs = loadScript(CDN + '/@highlightjs/cdn-assets@11.10.0/highlight.min.js').then(() => window.hljs)
+      loaded.__hljs = loadScript(LIBS.hljs).then(() => window.hljs)
     }
     return loaded.__hljs
   }
 
   function mermaidLib() {
     if (!loaded.__mermaid) {
+      const src = CDN + LIBS.mermaid.path
+      /**
+       * **动态 `import()` 挂不上 integrity**——语法里没有这一格。
+       *
+       * 所以先下一条 `modulepreload`：它带 integrity，浏览器按它取回并核验，随后那句
+       * `import()` 命中的是同一条已经核过的记录。认这个属性的浏览器（Chrome / Edge /
+       * Safari 17+ / Firefox 115+）拿到的是有校验的模块；不认的退回今天的行为——没有
+       * 校验，但图照画，不会因为这一条而坏掉。
+       */
+      const pre = document.createElement('link')
+      pre.rel = 'modulepreload'
+      pre.href = src
+      pre.integrity = LIBS.mermaid.sri
+      pre.crossOrigin = 'anonymous'
+      document.head.appendChild(pre)
       // v11 只发 ESM。经典脚本里用动态 import 拿得到。
-      loaded.__mermaid = import(CDN + '/mermaid@11.4.1/dist/mermaid.esm.min.mjs').then((mod) => {
+      loaded.__mermaid = import(src).then((mod) => {
         const m = mod.default || mod
         m.initialize(mermaidConfig())
         return m

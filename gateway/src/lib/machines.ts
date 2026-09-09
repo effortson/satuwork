@@ -124,12 +124,24 @@ export const PAIRING_TTL = 30 * 60 * 1000
  *
  * 剩 28 个字符取 8 位 ≈ 38 bit，配上 30 分钟窗口和一次性认领足够——它换到的是一台
  * 机器的控制权，不是长期凭据。
+ *
+ * **取字符用拒绝采样，不是 `% 28`。** 256 不是 28 的倍数（256 = 9×28 + 4），直接取模
+ * 的话前 4 个字母（A/C/D/E）各多出 1/256 的概率，每一位少掉约 0.02 bit。这一点点在
+ * 38 bit 上无关痛痒，但「随机码里带偏置」是那种会被原样抄进下一个用途的写法——下一处
+ * 未必还有 30 分钟窗口兜着。多这三行，把它挡在源头。
  */
 export function randomPairingCode(): string {
   const alphabet = 'ACDEFGHJKMNPQRTUVWXY23456789'
-  const buf = randomBytes(8)
+  // 256 里能整除 28 的最大段。落在这一段之外的字节直接丢掉重取。
+  const limit = Math.floor(256 / alphabet.length) * alphabet.length
   let out = ''
-  for (let i = 0; i < 8; i++) out += alphabet[buf[i]! % alphabet.length]
+  while (out.length < 8) {
+    for (const byte of randomBytes(8)) {
+      if (byte >= limit) continue
+      out += alphabet[byte % alphabet.length]
+      if (out.length === 8) break
+    }
+  }
   return `SW-${out.slice(0, 4)}-${out.slice(4)}`
 }
 

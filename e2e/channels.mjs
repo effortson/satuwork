@@ -532,8 +532,18 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
         },
       })
       await waitFor(() => seat.seen.handoffActions.some((row) => row.action === 'claim'), '席位收到接手动作')
-      assert(telegram.seen.callbackAnswers.some((a) => a.callback_query_id === 'handoff-claim' && String(a.text).includes('已由你接手')),
-        '接手回调没有得到明确应答')
+      /**
+       * **这一句要等，不能直接断言。**
+       *
+       * 回调的应答是在**打完席位之后**才发出去的，而上面那个 waitFor 等的是「席位收到了」
+       * ——两件事之间隔着一次 HTTP 往返。直接断言就是在赌那一跳已经回来了，机器一忙
+       * （全量跑的时候常有）就赌输，报出来的是「接手回调没有得到明确应答」，而实际上
+       * 它一百毫秒之后就到了。这条用例因此在全量里偶发地红，跟被测的东西没有关系。
+       */
+      await waitFor(
+        () => telegram.seen.callbackAnswers.some((a) => a.callback_query_id === 'handoff-claim' && String(a.text).includes('已由你接手')),
+        '接手回调得到明确应答',
+      )
 
       telegram.seen.updates.push({
         update_id: 9011,
