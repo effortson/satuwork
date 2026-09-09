@@ -564,10 +564,22 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       assert(returned.body.disposition === 'done' && returned.body.text === '已经确认测试结果正常，可以继续。',
         `交还内容不对：${JSON.stringify(returned)}`)
       assert(seat.seen.messages.length === ordinaryMessagesBefore, '人工结论又作为普通消息触发了第二轮')
-      assert(telegram.seen.editedMarkups.some((m) => Number(m.message_id) === cardMessageId
-        && m.reply_markup?.inline_keyboard?.length === 0), '交还后没有移除原转人工按钮')
-      assert(telegram.seen.sent.some((m) => String(m.rich_message?.markdown || m.text).includes('已把处理结论交还给 Bot')),
-        '交还成功后没有在 Telegram 明确提示')
+      /**
+       * 这两样都要**等**，不能在 return 落到席位的那一刻直接断言。
+       *
+       * 上面那个 waitFor 等的是「结论交还给席位」，而移除按钮和回一句确认是之后才发生的
+       * 两件事——本机跑得快，两者几乎同时到，在 CI 上就成了随机红。这条用例在 CI 上正是
+       * 挂在最后那句提示上，而前面几条全绿：交还确实成功了，只是话还没说出口。
+       */
+      await waitFor(
+        () => telegram.seen.editedMarkups.find((m) => Number(m.message_id) === cardMessageId
+          && m.reply_markup?.inline_keyboard?.length === 0),
+        '交还后移除原转人工按钮',
+      )
+      await waitFor(
+        () => telegram.seen.sent.find((m) => String(m.rich_message?.markdown || m.text).includes('已把处理结论交还给 Bot')),
+        '交还成功后在 Telegram 明确提示',
+      )
     })
 
     await test('过期审批回调不能毒死长轮询，后续私聊继续入队', async () => {
