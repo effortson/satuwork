@@ -148,7 +148,20 @@ export async function localRuntimeFetch(url: string, init?: RequestInit): Promis
 export function attachLocalRuntimeUpgrade(server: Server, db: Db) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 })
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`)
+    /**
+     * **这一句必须包起来。** 这是个同步监听器，`new URL` 对畸形的 Host（`Host: [`）
+     * 会抛 TypeError，而从同步监听器里抛出去的异常没人接——它是 uncaughtException，
+     * 进程当场就没了。一条不需要登录的升级请求就能做到。
+     *
+     * 解不出地址就当这条不归我们管：直接 return，让同一个 server 上别的 upgrade
+     * 监听器（desktop.ts）去处置，它那边也有自己的兜底。
+     */
+    let url: URL
+    try {
+      url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`)
+    } catch {
+      return
+    }
     if (url.pathname !== '/runtime/local-tunnel') return
     wss.handleUpgrade(req, socket, head, (ws) => {
       const timer = setTimeout(() => ws.close(4401, 'auth timeout'), 10_000)

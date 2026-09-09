@@ -213,6 +213,23 @@ function specOf(rawSeatId: string, body: unknown): SeatSpec {
   }
 }
 
+/**
+ * 最后一道兜底：**一条请求处理不了，不该把管家带走。**
+ *
+ * 同 gateway/src/index.ts 那段。这里更要紧一点：管家是这台机器上所有席位的控制面，
+ * 它一退出，部署、日志、桌面、心跳全断，而席位自己还跑着——从 Gateway 看过去就是
+ * 「整台机器失联」，最难查的那种。
+ *
+ * 只记不退。真正坏掉的状态会在各自的路径上暴露，不靠进程自杀来通知人。
+ */
+process.on('unhandledRejection', (reason) => {
+  const e = reason as Error
+  console.error(`satuwork-manager: 未处理的 rejection ${e?.stack ?? String(reason)}`)
+})
+process.on('uncaughtException', (e) => {
+  console.error(`satuwork-manager: 未捕获异常 ${e.stack ?? e.message}`)
+})
+
 const router = new Router()
 router.intercept(proxyIntercept({ machineToken: token, gatewayUrl }))
 

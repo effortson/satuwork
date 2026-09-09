@@ -31,12 +31,29 @@ export function randomInviteToken(): string {
 /** scrypt 参数。N 越大越慢越安全；16384 在本机登录约 50–80ms，够用且不刺痛。 */
 const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 64 }
 
-function scrypt(password: string, salt: Buffer): Promise<Buffer> {
+/**
+ * Node 的 scrypt 有一道内存闸：`N * r * 128` 超过 `maxmem`（默认 32 MiB）就直接报错。
+ * 校验时参数是**从库里读出来的**，所以得给它一个跟着参数走的上限，否则哪天把 N 调大，
+ * 存量口令反而校验不动了——那正是这次要修的那种「静默锁死」的另一种形状。
+ */
+function maxmemFor(N: number, r: number): number {
+  return Math.max(32 * 1024 * 1024, N * r * 256)
+}
+
+type ScryptParams = { N: number; r: number; p: number }
+
+function scrypt(password: string, salt: Buffer, params: ScryptParams = SCRYPT): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    scryptCb(password, salt, SCRYPT.keylen, { N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p }, (err, derived) => {
-      if (err) reject(err)
-      else resolve(derived as Buffer)
-    })
+    scryptCb(
+      password,
+      salt,
+      SCRYPT.keylen,
+      { N: params.N, r: params.r, p: params.p, maxmem: maxmemFor(params.N, params.r) },
+      (err, derived) => {
+        if (err) reject(err)
+        else resolve(derived as Buffer)
+      },
+    )
   })
 }
 
@@ -47,12 +64,52 @@ export async function hashPassword(password: string): Promise<string> {
   return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString('hex')}$${key.toString('hex')}`
 }
 
+/**
+ * 校验时**用这一行自己存着的那组参数**，不用当前的常量。
+ *
+ * 格式里一直带着 `N$r$p`，但校验那句以前是 `const [scheme, , , , salt, hash]`——三个
+ * 参数全跳过，一律拿模块常量重算。也就是说那三格是装饰。
+ *
+ * 代价要说清楚：哪天为了提高成本把 `SCRYPT.N` 从 16384 调到 32768（注释里写着「N 越大
+ * 越安全」，这是迟早的事），**所有存量账号会在同一刻全部登录失败**，而且失败路径和
+ * 「口令输错了」一字不差——verifyPassword 返回 false，`/auth/login` 回「邮箱或口令
+ * 不对」。没有任何一处说得出这是参数变更。更坏的是格式里存着参数这件事本身，会让下
+ * 一个人以为迁移已经被考虑过了。
+ *
+ * 读出来用，这条路就通了：老行按老参数校验，新写的按新参数，两代共存。
+ */
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
-  const [scheme, , , , salt, hash] = stored.split('$')
+  const [scheme, rawN, rawR, rawP, salt, hash] = String(stored || '').split('$')
   if (scheme !== 'scrypt' || !salt || !hash) return false
-  const key = await scrypt(password, Buffer.from(salt, 'hex'))
+  const params = { N: Number(rawN), r: Number(rawR), p: Number(rawP) }
+  // 参数得是正整数，而且 N 必须是 2 的幂——不是的话 Node 直接抛，那会变成一个 500
+  // 而不是一次失败的登录。坏行按「校验不过」处理。
+  if (![params.N, params.r, params.p].every((n) => Number.isInteger(n) && n > 0)) return false
+  if ((params.N & (params.N - 1)) !== 0) return false
+  let key: Buffer
+  try {
+    key = await scrypt(password, Buffer.from(salt, 'hex'), params)
+  } catch {
+    return false
+  }
   const expected = Buffer.from(hash, 'hex')
   return key.length === expected.length && timingSafeEqual(key, expected)
+}
+
+/**
+ * 这一行是不是该趁人登录时顺手升级成当前参数。
+ *
+ * 调用方拿到 true 就用**刚验过的那个明文**重算一次写回去（见 routes/auth.ts 的登录）。
+ * 只往上升：手工把 N 调低时不该把已经强的行削弱回去。
+ */
+export function needsRehash(stored: string): boolean {
+  const [scheme, rawN, rawR, rawP] = String(stored || '').split('$')
+  if (scheme !== 'scrypt') return true
+  const n = Number(rawN)
+  const r = Number(rawR)
+  const p = Number(rawP)
+  if (!Number.isInteger(n) || !Number.isInteger(r) || !Number.isInteger(p)) return true
+  return n < SCRYPT.N || r < SCRYPT.r || p < SCRYPT.p
 }
 
 export interface JwtKeys {

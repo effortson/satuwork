@@ -700,8 +700,128 @@ export function handoffOf(r: Row): Handoff {
   }
 }
 
-/** `?` 占位符换成 PG 的 `$1..$n`。SQL 照原样写，省得每条都数一遍位置。 */
+/**
+ * `?` 占位符换成 PG 的 `$1..$n`。SQL 照原样写，省得每条都数一遍位置。
+ *
+ * **不是无条件替换。** 原来是一句 `text.replace(/\?/g, …)`，只要 SQL 里出现一个问号
+ * 就当占位符——而问号在 PG 里有两种完全正当的非占位符用法：
+ *
+ *   - 字符串字面量里的：`where note like '%?%'`、`set label = '要不要？'`
+ *   - jsonb 的存在性操作符：`config ? 'key'`、`?|`、`?&`
+ *
+ * 这两种今天一条都没有，所以这不是在修一个现有的错；它是在拆一个绊索。踩上去的表现
+ * 是「参数个数对不上」——PG 报 `bind message supplies N parameters, but prepared
+ * statement requires M`，而报错的位置离那个问号十万八千里，人只会去数 args 数组。
+ *
+ * 所以这里认三样东西并跳过：单引号字符串（`''` 是转义）、双引号标识符（`""` 是转义）、
+ * `$tag$…$tag$` 美元引用，外加 `--` 行注释和 `/* *\/` 块注释。真要写一个 jsonb 的 `?`
+ * 操作符，写成 `??`——和别的 `?` 方言一个约定。
+ */
 export function toPg(text: string): string {
-  let i = 0
-  return text.replace(/\?/g, () => `$${++i}`)
+  return toPgCounted(text).sql
 }
+
+/**
+ * 换算结果缓存。
+ *
+ * 这一步现在要逐字扫（认引号、美元引用和注释），而它在**每一条查询的热路径上**。
+ * SQL 绝大多数是模块里的字面量，同一个字符串会被翻译几万次——存一份就够了。
+ *
+ * 有上限：少数几条 where 是拼出来的（`llmUsageByCompanyModel` 那类），形状有限但不
+ * 是常量，没有上限的话这张表会跟着跑量慢慢长。满了整张丢掉重来，比逐条淘汰便宜，
+ * 而且这里丢掉的代价只是下一次重算一遍。
+ */
+const TO_PG_CACHE = new Map<string, { sql: string; count: number }>()
+const TO_PG_CACHE_MAX = 2000
+
+/** 同 toPg，另外告诉调用方换出了几个占位符（Db.query 拿它对参数个数）。 */
+export function toPgCounted(text: string): { sql: string; count: number } {
+  const hit = TO_PG_CACHE.get(text)
+  if (hit) return hit
+  const result = convertToPg(text)
+  if (TO_PG_CACHE.size >= TO_PG_CACHE_MAX) TO_PG_CACHE.clear()
+  TO_PG_CACHE.set(text, result)
+  return result
+}
+
+function convertToPg(text: string): { sql: string; count: number } {
+  let out = ''
+  let i = 0
+  let n = 0
+  while (i < text.length) {
+    const c = text[i]
+    // ── 跳过：单引号字符串 ──
+    if (c === "'") {
+      const end = closingQuote(text, i, "'")
+      out += text.slice(i, end)
+      i = end
+      continue
+    }
+    // ── 跳过：双引号标识符（这套代码里驼峰列名全靠它） ──
+    if (c === '"') {
+      const end = closingQuote(text, i, '"')
+      out += text.slice(i, end)
+      i = end
+      continue
+    }
+    // ── 跳过：$tag$ … $tag$ ──
+    if (c === '$') {
+      const tag = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(text.slice(i))?.[0]
+      if (tag) {
+        const close = text.indexOf(tag, i + tag.length)
+        const end = close < 0 ? text.length : close + tag.length
+        out += text.slice(i, end)
+        i = end
+        continue
+      }
+    }
+    // ── 跳过：注释 ──
+    if (c === '-' && text[i + 1] === '-') {
+      const nl = text.indexOf('\n', i)
+      const end = nl < 0 ? text.length : nl
+      out += text.slice(i, end)
+      i = end
+      continue
+    }
+    if (c === '/' && text[i + 1] === '*') {
+      const close = text.indexOf('*/', i + 2)
+      const end = close < 0 ? text.length : close + 2
+      out += text.slice(i, end)
+      i = end
+      continue
+    }
+    // ── 占位符 ──
+    if (c === '?') {
+      // `??` = 一个字面量问号（留给 jsonb 的 ? 操作符），不占参数位。
+      if (text[i + 1] === '?') {
+        out += '?'
+        i += 2
+        continue
+      }
+      out += `$${++n}`
+      i += 1
+      continue
+    }
+    out += c
+    i += 1
+  }
+  return { sql: out, count: n }
+}
+
+/** 从 `start` 处那个引号找到配对的收口（含收口本身）。`''` / `""` 是转义，不算收口。 */
+function closingQuote(text: string, start: number, quote: string): number {
+  let i = start + 1
+  while (i < text.length) {
+    if (text[i] === quote) {
+      if (text[i + 1] === quote) {
+        i += 2
+        continue
+      }
+      return i + 1
+    }
+    i += 1
+  }
+  // 引号没收口的 SQL 本来就跑不起来，原样带过去让 PG 去报它自己的语法错。
+  return text.length
+}
+

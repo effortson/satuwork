@@ -68,14 +68,33 @@ interface Route {
   raw: boolean
 }
 
+/**
+ * 百分号解码，坏了就当没这条路由。
+ *
+ * `decodeURIComponent('%zz')` 抛的是 URIError。原来它裸着写在 match 里，于是
+ * `GET /orgs/%zz` 会一路穿到 handle 的 catch，变成一句 500 `internal error`
+ * 外加一条完整的栈打进 stderr——一条谁都发得出的请求，既刷日志又把真正的 500
+ * 淹在噪声里。解不开的段不可能等于任何一个真实 id，返回 null 让它落到 404。
+ */
+function decodeSegment(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return null
+  }
+}
+
 function match(parts: string[], path: string): Record<string, string> | null {
   const segs = path.split('/').filter(Boolean)
   if (parts.length !== segs.length) return null
   const params: Record<string, string> = {}
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]
-    if (p.startsWith(':')) params[p.slice(1)] = decodeURIComponent(segs[i])
-    else if (p !== segs[i]) return null
+    if (p.startsWith(':')) {
+      const value = decodeSegment(segs[i])
+      if (value == null) return null
+      params[p.slice(1)] = value
+    } else if (p !== segs[i]) return null
   }
   return params
 }
@@ -102,10 +121,12 @@ const ROOT_FILES = new Set(['theme.css', 'shell.css', 'app.css', 'chat.css', ...
 
 /** GET / 与各管理屏、GET /ui/*、/theme.css、/assets/* 从 gateway/ui 出。路径不得逃出该目录。 */
 function serveUi(pathname: string, res: ServerResponse): boolean {
-  let rel = ''
+  let rel: string | null = ''
   if (SPA_PATHS.has(pathname) || pathname.startsWith('/join/') || pathname.startsWith('/bots/') || pathname.startsWith('/connectors/') || pathname.startsWith('/companies/') || pathname.startsWith('/users/') || pathname.startsWith('/machines/') || pathname.startsWith('/audit') || pathname.startsWith('/a/')) rel = 'index.html'
-  else if (pathname.startsWith('/ui/')) rel = decodeURIComponent(pathname.slice('/ui/'.length))
-  else if (pathname.startsWith('/assets/')) rel = decodeURIComponent(pathname.slice(1))
+  // 解不开的百分号不是路径，是坏请求：返回 null 让它落到 404，别抛进 handle 的 catch
+  // 变成一句 500（同 match 里那道 decodeSegment）。
+  else if (pathname.startsWith('/ui/')) rel = decodeSegment(pathname.slice('/ui/'.length))
+  else if (pathname.startsWith('/assets/')) rel = decodeSegment(pathname.slice(1))
   else if (pathname.startsWith('/') && ROOT_FILES.has(pathname.slice(1))) rel = pathname.slice(1)
   else return false
   if (!rel || rel.includes('\0')) return false
@@ -182,9 +203,24 @@ export class Router {
   }
 
   async handle(raw: IncomingMessage, res: ServerResponse) {
-    const host = raw.headers.host ?? '127.0.0.1'
-    const url = new URL(raw.url ?? '/', `http://${host}`)
     const method = (raw.method ?? 'GET').toUpperCase()
+    /**
+     * **解析地址这一步必须在 try 里面。**
+     *
+     * `new URL()` 对畸形的 Host（`Host: [`）或畸形的请求行会抛 TypeError，而这两行
+     * 原来在 try 之外。handle 是 async、调用方是 `void router.handle(...)`，于是那个
+     * 异常变成一条没人接的 unhandled rejection——Node 的默认行为是**当场结束进程**。
+     * 也就是说一条不需要登录的 TCP 请求就能把 Gateway 打停，而且能一直打。
+     *
+     * 地址读不出来就是一条坏请求，回 400；listen 那头另有一道进程级兜底。
+     */
+    let url: URL
+    try {
+      url = new URL(raw.url ?? '/', `http://${raw.headers.host ?? '127.0.0.1'}`)
+    } catch {
+      json(res, 400, { error: 'bad request' })
+      return
+    }
     try {
       for (const fn of this.intercepts) {
         if (await fn(raw, res, url)) return

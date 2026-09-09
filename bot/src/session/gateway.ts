@@ -28,6 +28,56 @@ const OUTBOX = 'gateway-outbox'
 const READY_CAP_MS = 30_000
 
 /**
+ * 队列里一条最多重发多少次，以及两次之间等多久。
+ *
+ * 以前一条都不丢：catch 里只把 attempts 加一然后原样放回去，**不看返回码、没有上限、
+ * 也没有退避**。于是一条**永久失败**的项目——比如 Gateway 的 GUARD_IDS 漏了一个新加
+ * 的 guard id，那边一律回 400（routes/internal.ts 顶上那段注释说的就是这件事）——会
+ * 每 5 秒重发一次，发到席位关机为止，队列只增不减，而审计里一条记录都没有。
+ *
+ * 现在两道闸：
+ *
+ *  - **4xx 直接丢**（除了 401/403/408/429）。请求本身不合法，重发一万次还是不合法。
+ *  - 剩下的按指数退避重发，到 `MAX_ATTEMPTS` 为止。5 秒起步、封顶 5 分钟，40 次
+ *    大约覆盖三个多小时——远超「Gateway 正在换版」那几十秒，也远超一次网络抖动。
+ *    三小时都送不出去的东西，要的是有人去看一眼，不是让席位接着敲。
+ *
+ * 丢弃一律打 error 并把内容摘要带上：这条队列存在的理由就是「别静静地丢东西」，
+ * 那么真要丢的时候更得说出来。
+ */
+const MAX_ATTEMPTS = 40
+const RETRY_BASE_MS = 5_000
+const RETRY_CAP_MS = 5 * 60_000
+
+function retryDelay(attempts: number): number {
+  return Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1))
+}
+
+/** 带上返回码的上游失败。没有它就分不出「请求写错了」和「对面暂时不在」。 */
+class UpstreamError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'UpstreamError'
+  }
+}
+
+/**
+ * 这个失败还有没有必要再试。
+ *
+ * 401 / 403 留在重试那一侧：席位票在进程活着的时候不会变，但 Gateway 完全可能正在
+ * 迁移、或者刚重启还没把账号读出来——那几秒里它回的就是 401。真是票废了，上面那道
+ * 次数闸会收掉它。
+ */
+function permanent(e: unknown): boolean {
+  if (!(e instanceof UpstreamError)) return false
+  if (e.status === 401 || e.status === 403 || e.status === 408 || e.status === 429) return false
+  return e.status >= 400 && e.status < 500
+}
+
+/**
  * 只剩 index 一种了。
  *
  * 以前还有 `kind: 'usage'`——每轮结束把这轮的 token 报去 `/internal/usage`。那是
@@ -39,8 +89,22 @@ const READY_CAP_MS = 30_000
  *
  * 老队列里可能还压着 usage 项，flushOutbox 会把它们直接丢掉，不再往外发。
  */
+/**
+ * 每一条待发项都有的那几格。
+ *
+ * `nextTryAt` 是退避到期时间：没到就跳过这一轮（见 flushOutbox）。老队列里的项目没有
+ * 这一格，`undefined` 表示「随时可发」，正好是升级前的行为，不用迁移。
+ */
+interface OutboxBase {
+  sessionId: string
+  createdAt: number
+  attempts: number
+  lastError?: string
+  nextTryAt?: number
+}
+
 type OutboxItem =
-  | { kind: 'index'; sessionId: string; createdAt: number; attempts: number; lastError?: string }
+  | ({ kind: 'index' } & OutboxBase)
   /**
    * 一次行为边界的表态（policy/decision）。
    *
@@ -51,14 +115,7 @@ type OutboxItem =
    * 走这条队列而不是当场 fetch：拦截发生在工具执行的关键路径上，一次网络超时就是一次
    * 卡住的对话。落队列、失败重试，Gateway 挂了也只是记录晚到。
    */
-  | {
-      kind: 'guard'
-      sessionId: string
-      createdAt: number
-      attempts: number
-      lastError?: string
-      decision: GuardDecision
-    }
+  | ({ kind: 'guard'; decision: GuardDecision } & OutboxBase)
   /**
    * 一张交接单的状态（见 docs/handoff.md）。
    *
@@ -66,14 +123,7 @@ type OutboxItem =
    * 就是不存在——人不会去翻会话日志找活干。而报单最常见的失败时刻恰恰是 Gateway 正在
    * 升级换版，那几十秒里开出来的单子不能就这么丢了。
    */
-  | {
-      kind: 'handoff'
-      sessionId: string
-      createdAt: number
-      attempts: number
-      lastError?: string
-      handoff: Handoff
-    }
+  | ({ kind: 'handoff'; handoff: Handoff } & OutboxBase)
 
 /** 与 bot/src/policy/index.ts 的 PolicyDecision 同形。这里只搬运，不解释。 */
 interface GuardDecision {
@@ -180,7 +230,8 @@ export function apply(ctx: Context) {
     })
     if (!r.ok) {
       const text = await r.text().catch(() => '')
-      throw new Error(`HTTP ${r.status}${text ? ` ${text.slice(0, 120)}` : ''}`)
+      // 返回码要带出去：flushOutbox 靠它分「这条请求本身就不合法」和「对面暂时不在」。
+      throw new UpstreamError(r.status, `HTTP ${r.status}${text ? ` ${text.slice(0, 120)}` : ''}`)
     }
   }
 
@@ -203,10 +254,18 @@ export function apply(ctx: Context) {
     void flushOutbox()
   }
 
+  /** 丢掉一条时日志里要认得出丢的是什么。不打正文——那里面有对话内容。 */
+  function outboxLabel(item: OutboxItem): string {
+    if (item.kind === 'guard') return `guard ${item.decision.guard}/${item.decision.outcome} tool=${item.decision.tool} call=${item.decision.callId}`
+    if (item.kind === 'handoff') return `handoff ${item.handoff.id} state=${item.handoff.state}`
+    return `index ${item.sessionId}`
+  }
+
   async function flushOutbox() {
     if (flushing || !configured()) return
     flushing = true
     try {
+      const now = Date.now()
       for (const row of outbox.list()) {
         // 升级前压在队列里的 usage 项：丢掉，别发。留着只会重复计费，
         // 而且 Gateway 那条 /internal/usage 已经拆掉了，发出去只会 404。
@@ -214,19 +273,40 @@ export function apply(ctx: Context) {
           outbox.delete(row.id)
           continue
         }
+        // 退避期还没到就跳过。整轮 flush 是串行的（每条 8 秒超时），不跳过的话一条
+        // 连不上的项目会把后面所有项目一起拖住。
+        if (row.value.nextTryAt != null && row.value.nextTryAt > now) continue
         try {
           if (row.value.kind === 'guard') await sendGuard(row.value.decision)
           else if (row.value.kind === 'handoff') await sendHandoff(row.value.handoff)
           else await sendIndex(row.value.sessionId)
           outbox.delete(row.id)
         } catch (e) {
+          const attempts = row.value.attempts + 1
+          const message = (e as Error).message
+          /**
+           * 两种丢弃，说法不一样：
+           *
+           * - 4xx：这条请求本身不合法，再发一万次也一样。最常见的一种是两边的枚举表
+           *   漂开了（席位新加了一个 guard id，Gateway 的 GUARD_IDS 还没跟上）。
+           * - 次数到顶：对面确实一直够不着。
+           */
+          if (permanent(e) || attempts >= MAX_ATTEMPTS) {
+            outbox.delete(row.id)
+            ctx.logger?.error?.(
+              `gateway outbox: 丢弃 ${outboxLabel(row.value)}——` +
+                (permanent(e) ? `Gateway 拒收且不可重试（${message}）` : `重试 ${attempts} 次仍失败（${message}）`),
+            )
+            continue
+          }
           outbox.put(row.id, {
             ...row.value,
-            attempts: row.value.attempts + 1,
-            lastError: (e as Error).message,
+            attempts,
+            lastError: message,
+            nextTryAt: now + retryDelay(attempts),
           })
-          if (row.value.attempts + 1 === 1 || (row.value.attempts + 1) % 8 === 0) {
-            ctx.logger?.warn?.(`gateway outbox: ${row.value.kind} 重试失败 ${(e as Error).message}`)
+          if (attempts === 1 || attempts % 8 === 0) {
+            ctx.logger?.warn?.(`gateway outbox: ${row.value.kind} 第 ${attempts} 次重试失败 ${message}`)
           }
         }
       }

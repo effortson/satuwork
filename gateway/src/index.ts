@@ -93,6 +93,28 @@ await liftCompanyData()
 const resynced = await db.syncAllPlansFromOrders()
 if (resynced) console.log(`satuwork-gateway: 已按订单重算 ${resynced} 家公司的订阅`)
 
+/**
+ * 最后一道兜底：**一条请求处理不了，不该把整台服务带走。**
+ *
+ * Node 从 15 起，没人接的 Promise rejection 默认等同于未捕获异常——进程直接退出。
+ * 这台服务上到处是 `void doSomething()`（反代、升级、上报、定时器），任何一条路上漏
+ * 掉一个 `.catch` 都会变成「一条请求打停一个进程」。真出过：`Host: [` 这种畸形头让
+ * Router 里的 `new URL` 抛在 try 外面，一条不需要登录的 TCP 请求就能反复把它打停。
+ * 那处已经修好，但下一处不会自己不出现。
+ *
+ * 所以这里**只记不退**：打一条带栈的日志，让服务继续。真正坏掉的状态（库连不上、
+ * 端口没了）会在各自的路径上以别的方式暴露出来，而不是靠进程自杀来告诉运维。
+ *
+ * 挂在最前面：它要覆盖到下面每一行的启动过程。
+ */
+process.on('unhandledRejection', (reason) => {
+  const e = reason as Error
+  console.error(`satuwork-gateway: 未处理的 rejection ${e?.stack ?? String(reason)}`)
+})
+process.on('uncaughtException', (e) => {
+  console.error(`satuwork-gateway: 未捕获异常 ${e.stack ?? e.message}`)
+})
+
 const keys = loadKeys(home)
 const channelKey = loadChannelKey(home)
 const router = new Router()
