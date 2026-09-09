@@ -233,6 +233,7 @@ document.getElementById('app').addEventListener('submit', (e) => {
   const kb = form.getAttribute('data-act')
   if (form.getAttribute('data-form') === 'org-profile') return saveOrgProfile(e)
   if (form.getAttribute('data-form') === 'machine') return saveMachine(e)
+  if (form.getAttribute('data-form') === 'machine-direct') return saveMachineDirectUrl(e)
   if (form.getAttribute('data-form') === 'manager-version') return saveManagerVersion(e)
   if (form.getAttribute('data-form') === 'add-release') return addRelease(e)
   if (form.getAttribute('data-form') === 'machine-capacity') return saveCapacity(e)

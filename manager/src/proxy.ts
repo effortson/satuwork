@@ -93,6 +93,106 @@ function pipeUpstream(
   req.pipe(upstream)
 }
 
+/**
+ * 落地页上补的一段样式：**关掉 noVNC 自己的控制条**。
+ *
+ * 和 gateway/src/desktop.ts 里那段一字不差，因为要解决的是同一件事：这块屏嵌在对话页
+ * 右栏里，外面已经有自己的标题栏和「重连 / 收起」，noVNC 那条竖条于是变成两套控件
+ * 叠在一起，还压着桌面右边一条。
+ *
+ * **为什么这里也要有一份。** 走 Gateway 反代时是 Gateway 边转发边插；而机器配了
+ * `directUrl` 之后浏览器直接连管家，那一跳根本没有 Gateway，没人插这段——表现是同一
+ * 块预览在两台机器上长得不一样，而配置里看不出任何区别。
+ *
+ * 只在**浏览器直连**那条路上插。Gateway 反代过来的请求不插：那一侧自己会插，两边都
+ * 插就是两份重复的 style。判据是这次请求拿的是票/cookie 还是机器票，见下面调用点。
+ */
+const LANDING_CSS =
+  '<style>#noVNC_control_bar_anchor{display:none!important}' +
+  '#noVNC_status.noVNC_status_normal{display:none!important}</style>'
+
+/**
+ * 这块屏只准被 Gateway 的页面框进去。
+ *
+ * 直连之后这个源直接暴露在公网上，鉴权只剩那张五分钟的票——别人拿到票的那几分钟里，
+ * 至少不该能把它嵌进自己的页面里做点什么。`frame-ancestors` 认的是源，`gatewayUrl`
+ * 带着路径也不要紧，这里只取 origin。
+ *
+ * 取不到（还没配对、地址是空的）就退回 `'self'`：宁可把自己也框不进去，也不要发一个
+ * 放开所有人的 CSP。
+ */
+function frameAncestorsOf(gatewayUrl: string): string {
+  try {
+    return `frame-ancestors ${new URL(gatewayUrl).origin}`
+  } catch {
+    return "frame-ancestors 'self'"
+  }
+}
+
+/**
+ * 落地页要改内容，所以不能像别的资源那样直接对接两个流：先收完，插一段样式，再按
+ * 新长度发出去。它只有几十 KB，且一次会话只取一次。
+ *
+ * 请求上游时把 `accept-encoding` 摘掉：浏览器会要 gzip/br，而收进内存改字符串之前
+ * 得先解压。这一页小，让上游发明文最省事。
+ */
+function pipeLanding(
+  req: IncomingMessage,
+  res: ServerResponse,
+  port: number,
+  path: string,
+  headers: Record<string, string | string[]>,
+  csp: string,
+) {
+  delete headers['accept-encoding']
+  const upstream = httpRequest({ host: '127.0.0.1', port, method: req.method, path, headers }, (up) => {
+    const chunks: Buffer[] = []
+    up.on('data', (c: Buffer) => chunks.push(c))
+    up.on('end', () => {
+      const head = { ...(up.headers as Record<string, string | string[]>) }
+      // CSP 每条都钉：框不框得住这块屏和它返的是 200 还是 404 没关系。
+      head['content-security-policy'] = csp
+      /**
+       * **只改 200 的正文**，其余原样把上游的头和字节送出去。
+       *
+       * 和 gateway/src/desktop.ts 那份对齐（它是 `up.statusCode !== 200` 就直接对流）。
+       * 少了这道闸，一个 3xx / 404 / 500 也会被收进内存、盖上 no-store、并用重算过的
+       * content-length 覆盖上游的头——对错误页和重定向而言那些头没有意义，而且同一块
+       * 屏在 Gateway 反代和直连两条路上会回出不同的响应头，排查时看到的现场对不上。
+       */
+      if ((up.statusCode ?? 0) !== 200) {
+        res.writeHead(up.statusCode ?? 502, head)
+        res.end(Buffer.concat(chunks))
+        return
+      }
+      head['cache-control'] = 'no-store'
+      const type = String(head['content-type'] ?? '')
+      let body = Buffer.concat(chunks)
+      if (type.includes('text/html')) {
+        const html = body.toString('utf8')
+        const at = html.lastIndexOf('</head>')
+        // 选择器对不上、或者压根没有 </head> 时什么都不做，页面照旧——不能因为
+        // noVNC 换了个版本就白屏。
+        if (at >= 0) body = Buffer.from(html.slice(0, at) + LANDING_CSS + html.slice(at), 'utf8')
+      }
+      // 改了内容就要重算长度，否则浏览器按旧长度截断。
+      head['content-length'] = String(body.length)
+      delete head['transfer-encoding']
+      res.writeHead(up.statusCode ?? 502, head)
+      res.end(body)
+    })
+    up.on('close', () => {
+      if (!res.writableEnded) res.destroy()
+    })
+  })
+  upstream.on('error', (e) => {
+    if (!res.headersSent) json(res, 502, { error: '席位没有响应: ' + (e as Error).message })
+    else res.end()
+  })
+  res.on('close', () => upstream.destroy())
+  req.pipe(upstream)
+}
+
 function forwardHeaders(req: IncomingMessage, port: number): Record<string, string | string[]> {
   const headers: Record<string, string | string[]> = {}
   for (const [k, v] of Object.entries(req.headers)) {
@@ -189,6 +289,18 @@ export function proxyIntercept(deps: ProxyDeps) {
     const okCookie = fromCookie ? await verifyTicket(fromCookie, deps.gatewayUrl()) : undefined
     if (!okCookie || okCookie.seatId !== seatId) {
       json(res, 401, { error: '桌面票无效或已过期' })
+      return true
+    }
+    /**
+     * 到这儿说明是**浏览器直连**（认的是票换来的 cookie，不是机器票）。落地页要插那段
+     * 关控制条的样式——这一跳没有 Gateway，没人替我们插。
+     *
+     * 只认落地页那一条路径：别的资源（app/ui.js、locale JSON、那条 WebSocket）一律
+     * 原样对流，改写它们既没意义又要把整个文件收进内存。
+     */
+    const csp = frameAncestorsOf(deps.gatewayUrl())
+    if (rest === '/vnc.html' || rest === '/' || rest === '/index.html') {
+      pipeLanding(req, res, row.novncPort, rest + url.search, forwardHeaders(req, row.novncPort), csp)
       return true
     }
     pipeUpstream(req, res, row.novncPort, rest + url.search, forwardHeaders(req, row.novncPort))

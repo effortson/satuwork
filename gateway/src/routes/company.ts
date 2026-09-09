@@ -529,7 +529,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
       },
     })
     if (!out.ok) throw new HttpError(out.status, out.error)
-    json(res, 200, publicSeatRuntime(out.result.runtime, out.result.machine.host, {
+    json(res, 200, publicSeatRuntime(out.result.runtime, out.result.machine, {
       includePassword: actor.role === 'owner' || actor.id === row.id,
       ticket: desktopTicketFor(keys, out.result.machine, out.result.runtime),
     }))

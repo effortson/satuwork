@@ -15,6 +15,20 @@ export const MIN_MANAGER_PROTOCOL = 1
 export const MIN_DESKTOP_PROTOCOL = 2
 
 /**
+ * 直连桌面要求的管家协议号。
+ *
+ * 4 号管家才会在浏览器直连那条路上给落地页插「关掉 noVNC 控制条」的样式、并钉
+ * `frame-ancestors`。走 Gateway 反代时这两件事是 Gateway 做的（见 desktop.ts），
+ * 直连那一跳没有 Gateway，只能管家自己做。
+ *
+ * **所以填了 directUrl 还不够，管家也得够新**：不够就照旧走反代。这样升级顺序怎么颠
+ * 倒都不会出岔子——先填地址后升管家，桌面在升上来那一刻自动切过去；反过来也一样。
+ * 少了这道闸，表现是同一块预览在有的机器上多出一条控件压着画面，而配置里看不出
+ * 任何区别。
+ */
+export const MIN_DIRECT_DESKTOP_PROTOCOL = 4
+
+/**
  * 会报安装进度（`/seats/:id/progress`）的管家协议。**只用来省一次白问**：低于它的
  * 管家上没有这条路，问了也只是一个 404，而问的时机恰恰是每两秒一次。
  *
@@ -112,9 +126,33 @@ export function portsOf(slot: number): SeatPorts {
  * `managerHost` 留着不是摆设：它为空表示这块屏还没落到任何一台机器上，那就没有地址
  * 可给。没有票时只返回入口路径，给 owner 在后台看一眼用，点不进去。
  */
-export function novncUrlOf(managerHost: string | null, seatId: string, ticket?: string): string {
-  if (!(managerHost || '').trim() || !seatId) return ''
-  const url = `/desktop/${encodeURIComponent(seatId)}/`
+export function novncUrlOf(
+  machine: Pick<Machine, 'host' | 'directUrl' | 'protocol'> | null,
+  seatId: string,
+  ticket?: string,
+): string {
+  if (!(machine?.host || '').trim() || !seatId) return ''
+  /**
+   * 这台机器填了公网直连地址就走直连：浏览器直接连它的管家取桌面，像素不再经过
+   * Gateway。实测桌面是整条链上最贵的一股流量（1280×800 下 Bot 一滚页面就是 4 MB/s），
+   * 而 Gateway 是单实例、还同时扛着聊天 SSE 和模型代理。
+   *
+   * **不是搬运，是消掉一次转发**：席位机器今天就在发这些字节（发给 Gateway），
+   * 直连之后发给浏览器，出网量一个字节都没多。省掉的是 Gateway 的收发两份。
+   *
+   * 打的是管家现成的那条浏览器入口（见 manager/src/proxy.ts 的路由表）：
+   * `?ticket=` 进去，管家验完签换一张 path 限定的 cookie，再 302 到 vnc.html。
+   * 那条路一直留着没拆，管理员从后台点进桌面走的就是它。
+   *
+   * 没填就照旧从 Gateway 反代。**这条退路必须留着**：管家在内网、或者还没铺证书的
+   * 机器，直连根本走不通（见 gateway/src/desktop.ts 文件头「浏览器不再需要能连到
+   * 管家」那一段）。
+   */
+  const direct =
+    (machine?.protocol ?? 0) >= MIN_DIRECT_DESKTOP_PROTOCOL ? (machine?.directUrl || '').trim().replace(/\/$/, '') : ''
+  const url = direct
+    ? `${direct}/seats/${encodeURIComponent(seatId)}/vnc/`
+    : `/desktop/${encodeURIComponent(seatId)}/`
   return ticket ? `${url}?ticket=${encodeURIComponent(ticket)}` : url
 }
 
@@ -130,6 +168,55 @@ export function botBaseOf(managerHost: string | null, seatId: string): string {
   const base = (managerHost || '').trim().replace(/\/$/, '')
   if (!base || !seatId) return ''
   return `${base}/seats/${encodeURIComponent(seatId)}/bot`
+}
+
+/**
+ * 机器地址改了之后，把这台机器上所有席位的 `instances.host` 重铺一遍。
+ *
+ * **不做这件事，改地址会把聊天打断，而桌面看着一切正常。**
+ *
+ * 两条路读的不是同一个地方：桌面和诊断走 `managerTargetFor`，每次现从
+ * `machines.host` 拼；聊天走 `instanceHostFor`，读的是 `instances.host`——而那一行
+ * 只在部署时由 `upsertInstance` 写下，之后没有任何人碰它。于是把机器换到新地址
+ * （典型场景：前面加一层 nginx 终结 TLS，管家跟着收回 127.0.0.1）之后，存量席位的
+ * 聊天还在往那个已经不听的老地址打，右栏的桌面却是好的。
+ *
+ * 表现是「这颗 bot 挂了」，不是「地址改错了」——最难查的那一类，而且改地址的人当场
+ * 看不出来：他改完点一下桌面，一切正常。
+ *
+ * **只改本来就指着管家的那些。** `instances.host` 不止一种形状：
+ *
+ *   - `botBaseOf(machine.host, seatId)` —— 管家反代，也就是这里要跟着改的那种
+ *   - `http://127.0.0.1:<botPort>` —— 只有 `SATUWORK_DEPLOY_STUB=1` 那条路会写
+ *   - `satu-local://…` —— 桌面端的本地 Bot（见 local-runtime.ts）
+ *
+ * 后两种和机器地址没有关系，无差别盖成管家形状等于把它们打断。所以逐行比对形状，
+ * 对不上就跳过——宁可少改一行让人再点一次，也不能把一条本来好的路改坏。
+ *
+ * `upsertInstance` 会顺带把 `lastReadyAt` 刷成现在。那一列全库只写不读（没有任何
+ * 查询或界面用它），所以这里不为它单开一个方法。
+ *
+ * 返回真正改了几行，好让调用方写进审计、也回给界面。
+ */
+export async function rehostSeatInstances(db: Db, machineId: string, host: string): Promise<number> {
+  const seats = await db.seatRuntimesOfMachine(machineId)
+  let changed = 0
+  for (const seat of seats) {
+    const next = botBaseOf(host, seat.seatId)
+    if (!next) continue
+    const cur = await db.instance(seat.accountId, seat.botId)
+    // 尾巴是 `/seats/<seatId>/bot` 才算「本来就指着管家」——前面那截正是要换掉的老地址。
+    if (!cur?.host.endsWith(`/seats/${encodeURIComponent(seat.seatId)}/bot`)) continue
+    if (cur.host === next) continue
+    await db.upsertInstance({
+      accountId: seat.accountId,
+      botId: seat.botId,
+      companyId: seat.companyId,
+      host: next,
+    })
+    changed++
+  }
+  return changed
 }
 
 export function randomVncPassword(): string {
@@ -250,6 +337,22 @@ export function ownerMachine(m: Machine) {
   const now = Date.now()
   return {
     ...publicMachine(m),
+    /**
+     * 公网直连地址。**只在 owner 这一侧给。**
+     *
+     * 它不是员工要用的东西——员工拿到的桌面地址已经由 novncUrlOf 拼好了，直连不直连
+     * 对他们是透明的。而这一列是运维配置：填错了整块屏打不开，值得和 host 一样放在
+     * 平台侧管。
+     */
+    directUrl: m.directUrl,
+    /**
+     * 地址填了、但管家还不够新，桌面**还在走反代**。
+     *
+     * 这一格必须有：没有它，人填完地址看不出任何变化——画面照常出来，控制条也没多，
+     * 因为它压根没切过去。而「填了没生效」和「填了生效了」在界面上长得一模一样，
+     * 只有去数管家版本才分得出来。
+     */
+    directPending: Boolean(m.directUrl) && m.protocol < MIN_DIRECT_DESKTOP_PROTOCOL,
     arch: m.arch,
     telemetry: m.telemetry,
     telemetryAt: m.telemetryAt,
@@ -275,7 +378,12 @@ export function ownerMachine(m: Machine) {
 
 export function publicSeatRuntime(
   row: SeatRuntime,
-  managerHost: string | null,
+  /**
+   * **收整台机器，不是只收一个 host。** 桌面地址现在要同时看 host（有没有落到机器上）
+   * 和 directUrl（走不走直连），两处各查各的迟早会漂——这个文件里 machineTokenFor
+   * 那段注释记过同一类事故：host 按席位解析、票按公司默认机器取，多机公司必然错配。
+   */
+  machine: Pick<Machine, 'host' | 'directUrl' | 'protocol'> | null,
   opts: { includePassword: boolean; ticket?: string },
   now = Date.now(),
 ) {
@@ -291,7 +399,7 @@ export function publicSeatRuntime(
     display: row.display,
     vncPort: row.vncPort,
     novncPort: row.novncPort,
-    novncUrl: novncUrlOf(managerHost, row.seatId, opts.ticket),
+    novncUrl: novncUrlOf(machine, row.seatId, opts.ticket),
     status: row.status,
     lastError: row.lastError,
     deployedAt: row.deployedAt,
@@ -330,7 +438,7 @@ export function listSeatRuntime(row: SeatRuntime, machine: Machine | null, now =
     linuxUser: row.linuxUser,
     seatId: row.seatId,
     // 列表里不签票：这是给管理员看的引用，点进去要走 /runtime/desktop 现签一张。
-    novncUrl: novncUrlOf(machine?.host ?? null, row.seatId) || null,
+    novncUrl: novncUrlOf(machine, row.seatId) || null,
     botVersion: row.botVersion ?? null,
     tplVersion: row.tplVersion ?? null,
     tplSyncedAt: row.tplSyncedAt ?? null,
@@ -1230,6 +1338,32 @@ export async function managerHealth(
     })
     if (!res.ok) return { ok: false, error: `管家返回 ${res.status}` }
     return { ok: true, body: (await res.json()) as Record<string, unknown> }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/**
+ * 探一下这个**公网直连地址**后面是不是一台管家。
+ *
+ * **绝不带机器票。** 这是它和 managerHealth 唯一也是最要紧的区别：`directUrl` 是
+ * 管理员手输的公网域名，敲错一个字母就落到别人的服务器上——而 managerHealth 会把
+ * `Authorization: Bearer smt_…` 和 Gateway 的公网地址一起送过去，等于把这台机器完整
+ * 可用、可吊销的机器票交给那个域名的持有者。host 那条路上填的是内网地址，写错通常
+ * 解析不到；这一条按定义就是公网域名，笔误落到真实第三方手里的概率高得多。
+ *
+ * 不带票反而**判得更准**：管家的 `/health` 没有票就是 401（见 manager/src/index.ts），
+ * 所以「401」恰恰是「对面真是一台管家」的证据，而 200 / 404 / 连不上都说明这个地址
+ * 指错了地方。比带着票去换一个 200 更能抓住笔误，还不用付出任何凭据。
+ *
+ * 只是给人看的提示，不作为任何判定的依据——浏览器连不连得上仍然只有真开一次桌面
+ * 才知道。
+ */
+export async function probeDirectUrl(url: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${url.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(8000) })
+    if (res.status === 401) return { ok: true }
+    return { ok: false, error: `这个地址回的是 ${res.status}，不像是席位机器上的管家` }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }

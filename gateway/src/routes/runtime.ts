@@ -1026,7 +1026,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * 用的也是 `out.result.machine`。
      */
     const machine = await db.machine(runtime.machineId)
-    json(res, 200, publicSeatRuntime(runtime, machine?.host ?? null, {
+    json(res, 200, publicSeatRuntime(runtime, machine ?? null, {
       includePassword: true,
       ticket: desktopTicketFor(keys, machine, runtime),
     }))
@@ -1142,7 +1142,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
         status: out.result.runtime.status,
       },
     })
-    json(res, 200, publicSeatRuntime(out.result.runtime, out.result.machine.host, {
+    json(res, 200, publicSeatRuntime(out.result.runtime, out.result.machine, {
       includePassword: true,
       ticket: desktopTicketFor(keys, out.result.machine, out.result.runtime),
     }))

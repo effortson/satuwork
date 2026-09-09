@@ -3,8 +3,8 @@
  */
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
-import { INSTANCE_DOWN, MIN_MANAGER_NODE, PAIRING_TTL, desiredManagerRelease, gatewayBaseFor, installCommandFor, machineBase, machineCard, machineOfOrg, machineResolver, managerHostOf, normalizePairingCode, randomPairingCode, registerFromBody, sendReleaseFile } from '../lib/machines.ts'
-import { MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, deploySeat, gatewayPublicUrl, gatewayPublicUrlExplicit, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, publicSeatRuntime, releaseSeats } from '../deploy.ts'
+import { INSTANCE_DOWN, MIN_MANAGER_NODE, PAIRING_TTL, desiredManagerRelease, directUrlOf, gatewayBaseFor, installCommandFor, machineBase, machineCard, machineOfOrg, machineResolver, managerHostOf, normalizePairingCode, randomPairingCode, registerFromBody, sendReleaseFile } from '../lib/machines.ts'
+import { MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, deploySeat, gatewayPublicUrl, gatewayPublicUrlExplicit, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, rehostSeatInstances, releaseSeats } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { installScript } from '../install.ts'
@@ -131,6 +131,31 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
   })
 
   /**
+   * 设这台机器的桌面直连地址（公司侧入口）。平台侧那条是
+   * `PUT /platform/machines/:id/direct-url`，两条同义——机器的配置在公司详情页和
+   * 平台机器页都改得了，容量和时区也是这么成对的。
+   */
+  router.put('/platform/orgs/:id/machines/:machineId/direct-url', async (req, res) => {
+    const account = await requireOwnerUser(req, db, keys)
+    const machine = await machineOfOrg(db, req.params.id, req.params.machineId)
+    const directUrl = directUrlOf(strField(bodyOf(req), 'directUrl', false) || '')
+    const next = await db.updateMachine(machine.id, { directUrl })
+    await db.audit({
+      companyId: req.params.id,
+      accountId: account.id,
+      action: 'machine.direct-url',
+      detail: { machineId: machine.id, directUrl },
+    })
+    // **探活不带机器票**，理由见 probeDirectUrl：这个地址是手输的公网域名。
+    const probe = directUrl ? await probeDirectUrl(directUrl) : null
+    json(res, 200, {
+      machine: ownerMachine(next),
+      reachedManager: probe ? probe.ok : null,
+      error: probe && !probe.ok ? probe.error : null,
+    })
+  })
+
+  /**
    * 设这台机器的时区。
    *
    * **只是把期望值钉在这里**，真正 `timedatectl set-timezone` 的是机器上的管家——
@@ -210,6 +235,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     if (!cur) throw new HttpError(409, '这家公司还没有配对过机器，请先生成配对码')
     if (!raw) throw new HttpError(400, 'host 不能为空')
     const host = managerHostOf(raw)
+    let rehosted = 0
     const machine = await db.tx(async () => {
       const row = await db.updateMachine(cur.id, { host, lastError: null })
       if (company.machineId !== row.id) {
@@ -218,11 +244,14 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
           accessUrl: company.accessUrl ?? accessUrlFor(company.slug),
         })
       }
-      await db.audit({ companyId: company.id, accountId: account.id, action: 'machine.update', detail: { host } })
+      // 聊天读的是 instances.host，不会跟着 machines.host 走——见 rehostSeatInstances。
+      // 和改地址在同一个事务里：不能出现「地址改了、席位还指着老地址」这个中间态。
+      rehosted = await rehostSeatInstances(db, row.id, host)
+      await db.audit({ companyId: company.id, accountId: account.id, action: 'machine.update', detail: { host, rehosted } })
       return row
     })
     const probe = await managerHealth(host, { token: machine.token })
-    json(res, 200, { machine: ownerMachine(machine), reachable: probe.ok, error: probe.error ?? null })
+    json(res, 200, { machine: ownerMachine(machine), reachable: probe.ok, error: probe.error ?? null, rehosted })
   })
 
   /**
@@ -434,11 +463,48 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     const raw = strField(bodyOf(req), 'host', false)
     if (!raw) throw new HttpError(400, 'host 不能为空')
     const host = managerHostOf(raw)
-    const next = await db.updateMachine(machine.id, { host, lastError: null })
-    await auditMachine(next, account.id, 'machine.update', { machineId: next.id, host })
+    let rehosted = 0
+    const next = await db.tx(async () => {
+      const row = await db.updateMachine(machine.id, { host, lastError: null })
+      // 聊天读的是 instances.host，不会跟着 machines.host 走——见 rehostSeatInstances。
+      rehosted = await rehostSeatInstances(db, row.id, host)
+      return row
+    })
+    await auditMachine(next, account.id, 'machine.update', { machineId: next.id, host, rehosted })
     // 存下来还不够：地址写错了要当场知道，不能等到第一次部署。
     const probe = await managerHealth(host, { token: next.token })
-    json(res, 200, { machine: ownerMachine(next), reachable: probe.ok, error: probe.error ?? null })
+    json(res, 200, { machine: ownerMachine(next), reachable: probe.ok, error: probe.error ?? null, rehosted })
+  })
+
+  /**
+   * 设这台机器的公网直连地址，桌面从此不经过 Gateway（见迁移 0038、deploy.ts 的
+   * novncUrlOf）。传空串就是撤回，桌面回到从 Gateway 反代。
+   *
+   * **和 host 分成两条路，不合并。** 两者要求完全不同（一个是 Gateway 打机器、可以
+   * 是内网 http；一个是浏览器打机器、必须公网 https），而且撤回直连是一个独立的、
+   * 出事时要能单独按下去的动作——桌面打不开的时候，运维要做的是把这一列清掉让它
+   * 退回反代，而不是被迫连 host 一起动。
+   *
+   * 探活**不带机器票**（见 probeDirectUrl）：这个地址是手输的公网域名，敲错一个字母
+   * 就把票送给了别人。不带票判得反而更准——管家的 /health 没票就是 401，所以 401 才是
+   * 「对面真是一台管家」的证据。
+   *
+   * 回包那个字段只说明**Gateway 摸到的是一台管家**，不说明员工的浏览器连得上（证书、
+   * 解析、防火墙都可能只对其中一边成立）。别在界面上写成「已验证」。
+   */
+  router.put('/platform/machines/:id/direct-url', async (req, res) => {
+    const account = await requireOwnerUser(req, db, keys)
+    const machine = await machineOr404(req.params.id)
+    const directUrl = directUrlOf(strField(bodyOf(req), 'directUrl', false) || '')
+    const next = await db.updateMachine(machine.id, { directUrl })
+    await auditMachine(next, account.id, 'machine.direct-url', { machineId: next.id, directUrl })
+    // **探活不带机器票**，理由见 probeDirectUrl：这个地址是手输的公网域名。
+    const probe = directUrl ? await probeDirectUrl(directUrl) : null
+    json(res, 200, {
+      machine: ownerMachine(next),
+      reachedManager: probe ? probe.ok : null,
+      error: probe && !probe.ok ? probe.error : null,
+    })
   })
 
   /** 改账号容量。调小到低于当前占用不拦——已经在上面的账号不会被赶走。 */
@@ -1169,12 +1235,12 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     if (botId) {
       const runtime = await db.seatRuntime(row.id, botId)
       if (!runtime) throw new HttpError(404, '还没有部署')
-      json(res, 200, { runtimes: [publicSeatRuntime(runtime, (await machineOf(runtime))?.host ?? null, { includePassword: true })] })
+      json(res, 200, { runtimes: [publicSeatRuntime(runtime, (await machineOf(runtime)) ?? null, { includePassword: true })] })
       return
     }
     const runtimes = await Promise.all(
       (await db.seatRuntimesOfAccount(row.id)).map(async (rt) =>
-        publicSeatRuntime(rt, (await machineOf(rt))?.host ?? null, { includePassword: true }),
+        publicSeatRuntime(rt, (await machineOf(rt)) ?? null, { includePassword: true }),
       ),
     )
     json(res, 200, { runtimes })

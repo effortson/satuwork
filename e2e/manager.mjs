@@ -64,6 +64,20 @@ function fakeBot() {
       }, 60)
       return
     }
+    // 像 noVNC 落地页那样有个 </head>：管家要往那儿插「关掉控制条」的样式（4 号协议），
+    // 返 JSON 的话那段改写压根不会触发，用例就成了空跑。
+    if (req.url.startsWith('/vnc.html') || req.url === '/' || req.url.startsWith('/index.html')) {
+      // boom=1：让落地页这条路返一个非 200，用来验管家「只改 200 的正文」那道闸。
+      // 正文照样带 </head>——闸没了的话样式就会被插进这个错误页里。
+      const boom = req.url.includes('boom=1')
+      res.writeHead(boom ? 500 : 200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end(
+        boom
+          ? '<html><head><title>boom</title></head><body>UPSTREAM-500</body></html>'
+          : '<html><head><title>noVNC</title></head><body>VNC-PAGE</body></html>',
+      )
+      return
+    }
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ ok: true, path: req.url }))
   })
@@ -642,6 +656,53 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       assert(ws.includes('HELLO-WS'), '升级后字节没通')
       const noAuth = await wsHandshake(MGR_PORT, '/' + novncPath, '')
       assert(noAuth.includes('401'), `无 cookie 的升级应 401: ${noAuth.slice(0, 80)}`)
+    })
+
+    /**
+     * 浏览器直连那条路上，**落地页得由管家自己改**：把 noVNC 的控制条关掉、并钉
+     * frame-ancestors。走 Gateway 反代时这两件事是 Gateway 做的，直连那一跳没有它。
+     *
+     * 不做的表现很温和、也因此很难查：画面照常出来，只是多一条控件压着桌面右边，
+     * 而两台机器的配置看不出任何区别。
+     */
+    await test('直连的落地页：管家自己插样式、钉 frame-ancestors，别的资源不碰', async () => {
+      const page = await fetch(`${mgrBase}/seats/seat-1/vnc/vnc.html`, { headers: { cookie: deskCookie } })
+      assert(page.status === 200, `落地页 ${page.status}`)
+      const body = await page.text()
+      assert(body.includes('VNC-PAGE'), '字节没带回来')
+      assert(body.includes('#noVNC_control_bar_anchor'), '控制条那段样式没插进去')
+      // 「Connected to …」只关 normal 那一档：控制条已经藏了，报错是页面上唯一还会
+      // 说「连不上」的地方。
+      assert(body.includes('#noVNC_status.noVNC_status_normal'), '连接成功那条提示没关掉')
+      assert(!body.includes('noVNC_status_error'), '不该把报错那一档也关掉')
+      assert(body.indexOf('#noVNC_control_bar_anchor') < body.indexOf('</head>'), '样式要在 </head> 之前')
+      // 改了内容不重算长度，浏览器会按旧长度截断。
+      assert(
+        page.headers.get('content-length') === String(new TextEncoder().encode(body).length),
+        '改了内容没重算长度',
+      )
+      // 这块屏只准 Gateway 的页面框进去——直连之后这个源是暴露在公网上的。
+      const csp = String(page.headers.get('content-security-policy') || '')
+      assert(csp.startsWith('frame-ancestors '), `没钉 frame-ancestors：${csp}`)
+      assert(csp.includes(new URL(gwBase).origin), `frame-ancestors 该指向 Gateway 的源：${csp}`)
+
+      // 别的资源不许被碰：只有落地页走改写那条路。
+      const asset = await fetch(`${mgrBase}/seats/seat-1/vnc/app/ui.js`, { headers: { cookie: deskCookie } })
+      assert(!(await asset.text()).includes('noVNC_control_bar_anchor'), '普通资源不该被改写')
+
+      /**
+       * **只改 200 的正文。** 上游回 500 时把它原样送出去：错误页插一段藏控制条的
+       * 样式没有任何意义，而 no-store 和重算过的 content-length 会盖掉上游自己的头，
+       * 让同一块屏在直连和 Gateway 反代两条路上回出不同的现场。
+       */
+      const boom = await fetch(`${mgrBase}/seats/seat-1/vnc/vnc.html?boom=1`, { headers: { cookie: deskCookie } })
+      assert(boom.status === 500, `状态码要原样透出：${boom.status}`)
+      const boomBody = await boom.text()
+      assert(boomBody.includes('UPSTREAM-500'), '正文要原样透出')
+      assert(!boomBody.includes('noVNC_control_bar_anchor'), '非 200 不该被插样式')
+      assert(boom.headers.get('cache-control') !== 'no-store', '非 200 不该被盖上 no-store')
+      // CSP 每条都钉：框不框得住这块屏和它返 200 还是 500 没关系。
+      assert(String(boom.headers.get('content-security-policy') || '').startsWith('frame-ancestors '), '非 200 也要钉 CSP')
     })
 
     await test('口令随票带过来时，落地页直接免密进桌面', async () => {

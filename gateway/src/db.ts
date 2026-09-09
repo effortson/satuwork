@@ -2022,6 +2022,9 @@ export class Db {
     const base = {
       id: input.id ?? randomUUID(),
       host: input.host ?? null,
+      // 直连地址由管理员在铺好证书之后单独填（见迁移 0038）。配对这一刻填不了：
+      // 那时机器上还没有 nginx，也还没有域名。
+      directUrl: null as string | null,
       companyId: input.companyId ?? null,
       lastHeartbeatAt: null as number | null,
       createdAt: Date.now(),
@@ -2207,6 +2210,7 @@ export class Db {
       Pick<
         Machine,
         | 'host'
+        | 'directUrl'
         | 'companyId'
         | 'lastHeartbeatAt'
         | 'pairedAt'
@@ -2229,6 +2233,7 @@ export class Db {
     const next: Machine = {
       ...cur,
       host: patch.host === undefined ? cur.host : patch.host,
+      directUrl: patch.directUrl === undefined ? cur.directUrl : patch.directUrl,
       companyId: patch.companyId === undefined ? cur.companyId : patch.companyId,
       lastHeartbeatAt: patch.lastHeartbeatAt === undefined ? cur.lastHeartbeatAt : patch.lastHeartbeatAt,
       pairedAt: patch.pairedAt === undefined ? cur.pairedAt : patch.pairedAt,
@@ -2246,9 +2251,10 @@ export class Db {
       logCapMb: patch.logCapMb === undefined ? cur.logCapMb : patch.logCapMb,
     }
     await this.run(
-      'update machines set host=?, "companyId"=?, "lastHeartbeatAt"=?, "pairedAt"=?, "managerVersion"=?, protocol=?, "lastError"=?, arch=?, "desiredManagerVersion"=?, "maxAccounts"=?, timezone=?, "currentTimezone"=?, telemetry=?, "telemetryAt"=?, "logCapMb"=? where id=?',
+      'update machines set host=?, "directUrl"=?, "companyId"=?, "lastHeartbeatAt"=?, "pairedAt"=?, "managerVersion"=?, protocol=?, "lastError"=?, arch=?, "desiredManagerVersion"=?, "maxAccounts"=?, timezone=?, "currentTimezone"=?, telemetry=?, "telemetryAt"=?, "logCapMb"=? where id=?',
       [
         next.host,
+        next.directUrl,
         next.companyId,
         next.lastHeartbeatAt,
         next.pairedAt,

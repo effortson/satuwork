@@ -209,6 +209,18 @@ export interface Machine {
   id: string
   /** 机器管家的基址 `http://<ip>:8443`。**Gateway 打这台机器的唯一入口。** */
   host: string | null
+  /**
+   * **浏览器**打这台机器的地址，`https://m001.example.com`。为空 = 不走直连。
+   *
+   * 只用在一个地方：桌面。填上之后 novncUrlOf 给出的是这台机器的绝对地址，像素
+   * 直接从席位机器流到浏览器，不再经过 Gateway（实测那是整条链上最贵的一股）。
+   *
+   * 和 host 的要求完全不同，所以是两列（见迁移 0038）：这一列必须公网可达、必须
+   * https（Gateway 的页面是 https，混合内容会被浏览器静默拦掉），而且最好和 Gateway
+   * 同一个可注册域——SameSite 判的是 site 不是 origin，同站时管家那张 Lax cookie
+   * 在 iframe 子框里才带得上。
+   */
+  directUrl: string | null
   companyId: string | null
   lastHeartbeatAt: number | null
   createdAt: number

@@ -78,6 +78,40 @@ export function managerHostOf(raw: string): string {
   return machineBase(normalized)
 }
 
+/**
+ * 席位机器的**公网直连地址**（见迁移 0038）。空串 = 清掉，回到从 Gateway 反代。
+ *
+ * 比 `machineHostOf` 严一档，因为这一列是给**浏览器**用的，而浏览器的规矩不一样：
+ *
+ * · **必须 https。** Gateway 的页面走 https，页面里嵌一个 http 的 iframe 会被当成
+ *   混合内容直接拦掉，而且是**静默**的——界面上就是一块永远打不开的空白，控制台
+ *   之外没有任何线索。所以宁可在这里就把话说死，也不要让人去查一块白屏。
+ * · **不能带路径。** 这个值后面要拼 `/seats/<seatId>/vnc/`，带了路径拼出来的地址
+ *   落不到管家的那条路由上，同样是一块打不开的屏。
+ *
+ * 不校验的事也说清楚：**这里探不到「浏览器连不连得上」**。Gateway 能连到不等于
+ * 员工的浏览器能连到（机器可能只对 Gateway 开了口），证书对不对、域名解析到哪儿，
+ * 都只有真正在浏览器里打开才知道。所以这条只挡形状，不给「已验证」的错觉。
+ */
+export function directUrlOf(raw: string): string | null {
+  const text = (raw || '').trim().replace(/\/$/, '')
+  if (!text) return null
+  let u: URL
+  try {
+    u = new URL(text)
+  } catch {
+    throw new HttpError(400, '直连地址要写成完整的 https URL，例如 https://m001.example.com')
+  }
+  if (u.protocol !== 'https:') {
+    throw new HttpError(400, '直连地址必须是 https：Gateway 的页面是 https，http 的桌面会被浏览器当成混合内容静默拦掉')
+  }
+  if (u.username || u.password) throw new HttpError(400, '直连地址不能带用户名或口令')
+  if ((u.pathname && u.pathname !== '/') || u.search || u.hash) {
+    throw new HttpError(400, '直连地址不能带路径或参数：后面要拼 /seats/<席位>/vnc/')
+  }
+  return `${u.protocol}//${u.host}`
+}
+
 /** 配对码 30 分钟过期。够贴一次命令，不够别人捡去慢慢试。 */
 export const PAIRING_TTL = 30 * 60 * 1000
 
