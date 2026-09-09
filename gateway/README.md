@@ -57,7 +57,7 @@ src/db/rows.ts      裸行 → 类型
 src/db/migrate.ts   编号迁移的执行器（advisory lock、一条一个事务、校验和）
 src/db/migrations/  一条迁移一个文件，index.ts 是那张有序表
 src/deploy.ts       席位：槽位、端口、下发给管家、拆席位
-src/desktop.ts      桌面反代（票换 cookie、WebSocket 升级）
+src/desktop.ts      桌面反代（票进路径、WebSocket 升级）。机器配了 directUrl 时走直连，不经过这里
 src/v1.ts           /v1/* 模型代理
 src/llm.ts          pi-ai 目录与上游调用
 ```
@@ -104,6 +104,15 @@ satuwork-gateway: 数据库已是最新（0002-seat-labels）
 ```bash
 pnpm typecheck        # tsc，无输出即通过
 node ../e2e/run.mjs   # 全量 e2e（要先起 postgres）
+E2E_ONLY=machine-deploy node ../e2e/run.mjs   # 只跑一套
+```
+
+对话页右栏那块桌面预览「没人看就断开」的那套逻辑，e2e 覆盖不到（要真浏览器加一个
+ready 的席位）。`deploy/desk-suspend-check.mjs` 起一套自带假管家和 stub 席位的环境，
+打开浏览器登进去就能验：
+
+```bash
+node deploy/desk-suspend-check.mjs
 ```
 
 Passwords are scrypt. Credential secrets never appear in list/get or JWT.

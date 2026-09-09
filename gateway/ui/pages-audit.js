@@ -850,6 +850,14 @@ function machineCard(orgId, card) {
       </div>
       <button type="submit" class="btn" ${state.busy ? 'disabled' : ''}>${t('保存')}</button>
     </form>
+    <form data-form="machine-direct" data-id="${esc(orgId)}" data-machine="${esc(m.id)}" style="display: flex; gap: var(--space-2); align-items: flex-end;">
+      <div class="field" style="margin: 0; flex: 1;">
+        <label>${t('桌面直连地址')}</label>
+        <input class="input" name="directUrl" value="${esc(m.directUrl || '')}" placeholder="https://m001.example.com" autocomplete="off">
+      </div>
+      <button type="submit" class="btn" ${state.busy ? 'disabled' : ''}>${t('保存')}</button>
+    </form>
+    <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('填上之后桌面画面由浏览器直连这台机器，不再经过 Gateway。必须公网可达且是 https。留空 = 照旧从 Gateway 反代。')}${m.directPending ? `<br><b>${t('地址填了，但这台机器的管家版本还不够新，桌面仍在走 Gateway 反代——等它自升级上来会自动切过去。')}</b>` : ''}</p>
   </div>`
 }
 

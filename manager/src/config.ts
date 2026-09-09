@@ -25,8 +25,14 @@ import { fileURLToPath } from 'node:url'
  * 3：`/seats/:id/progress` 报「这次部署走到第几步了」。号数在这里只用来**省一次
  * 白问**：老管家没有这条路，Gateway 照它决定要不要发那个请求，界面上退回到只有
  * 「已经装了几分钟」的粗进度（见 gateway 的 MIN_PROGRESS_PROTOCOL）。
+ *
+ * 4：浏览器直连那条路上，落地页自己插「关掉 noVNC 控制条」的样式，并钉
+ * `frame-ancestors` 到 Gateway 的源。Gateway 拿这个号数决定**要不要真的把桌面交给
+ * 直连**（见 gateway 的 MIN_DIRECT_DESKTOP_PROTOCOL）：机器配了 directUrl 但管家还是
+ * 3 号，桌面照旧从 Gateway 反代——那一侧会插样式。少了这个号数，升级顺序一颠倒，
+ * 同一块预览就会在有的机器上多出一条控件压着画面，而配置里看不出任何区别。
  */
-export const PROTOCOL = 3
+export const PROTOCOL = 4
 
 export interface ManagerState {
   machineId: string

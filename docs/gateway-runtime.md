@@ -493,9 +493,14 @@ v1 约束：一家公司一台机器；机器先按 **pair 进程** 隔离，不
 
 - 每家公司**一个** `accessUrl`，由 Gateway 在派机器时发出，写在公司记录里。这是机器/DNS 登记，不是聊天入口
 - 浏览器：管理页和聊天都打 Gateway。SSE / 发消息由 Gateway 反代到该 pair 的 Bot HTTP（`3200+N`）
-- 桌面：**Gateway 同域**的 `/desktop/{seatId}/?ticket=…`。票由 Gateway 用 JWT 私钥签、五分钟有效；Gateway 验完换成 path 限定的 HttpOnly cookie，再把请求（含 WebSocket 升级）反代到管家的 `/seats/{seatId}/vnc/*`，用机器票（`smt_`）认。x11vnc、websockify、CDP 全部只听 `127.0.0.1`
-  - **为什么不再让浏览器直连管家**：桌面现在内嵌在对话页右栏的 iframe 里。管家发的 cookie 是 `SameSite=Lax`——顶层跳转（原来那种新标签页）放行，跨站 iframe 里浏览器连存都不给存，于是画面永远出不来，而且不报错。同域之后 cookie 是第一方的；顺带浏览器也不再需要能连到管家，只要 Gateway 连得到就行。代价是桌面的像素全部经过 Gateway
-  - 管家侧 `/seats/:id/vnc/*` 同时认两种：机器票（Gateway 反代过来的）和票/cookie（管理员从后台直连的）
+- 桌面：**两条路，按机器有没有配 `directUrl` 选**（`novncUrlOf`）。票都是同一张：Gateway 用 JWT 私钥签、五分钟有效、只对一块屏
+  - **默认：Gateway 同域反代** `/desktop/{seatId}/?ticket=…`。Gateway 验完票换成路径段里的票，再把请求（含 WebSocket 升级）反代到管家的 `/seats/{seatId}/vnc/*`，用机器票（`smt_`）认。x11vnc、websockify、CDP 全部只听 `127.0.0.1`
+  - **配了 `directUrl` 就直连** `https://m001…/seats/{seatId}/vnc/?ticket=…`。浏览器直接打席位机器上的管家，Gateway 不再中转像素——实测那是整条链上最贵的一股流量（1280×800 下 Bot 一滚页面就是 4 MB/s，静止时是 0）。**不是把开销挪给席位机器**：那些字节它今天就在发（发给 Gateway），直连只是消掉一次转发
+- **直连还要管家够新（协议 ≥ 4）**：落地页那段「关掉 noVNC 控制条」的样式和 `frame-ancestors`，走反代是 Gateway 插的，直连那一跳只能管家自己插。填了 `directUrl` 但管家还是 3 号 → 照旧走反代，机器卡上报 `directPending`。这样升级顺序怎么颠倒都不出岔子；少了这道闸，表现是同一块预览在有的机器上多一条控件压着画面，而配置里看不出区别
+- 直连的三个前提，缺一条就别配：**公网可达**、**必须 https**（Gateway 是 https，http 的 iframe 会被当混合内容静默拦掉，界面上只是一块永远打不开的空白）、**最好和 Gateway 同一个可注册域**（SameSite 判的是 site 不是 origin，同站时管家那张 `SameSite=Lax` cookie 在 iframe 子框里才带得上）
+  - 前端的 `sandbox` 跟着地址走：反代那条路同源，**绝不能**给 `allow-same-origin`（框里那页能读父页 sessionStorage 里的登录 JWT）；直连那条本来就跨源，加回来既安全又必要——不加的话框是 opaque 源，管家那张 cookie 带不上。判据是这个 URL 跨不跨源，不是「配没配直连」
+  - **退路一直留着**：清空 `directUrl` 就回到反代。管家在内网、还没铺证书的机器，直连根本走不通；桌面打不开时先清这一格
+- 管家侧 `/seats/:id/vnc/*` 同时认两种：机器票（Gateway 反代过来的）和票/cookie（浏览器直连的）。**后者一直没拆**，直连走的就是它
 
 ### 7.1 上线必须挂 TLS 反代（为了 h2）
 

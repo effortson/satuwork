@@ -939,6 +939,39 @@ async function saveMachine(e) {
  * 有席位时后端会 409 顶回来——席位是按公司建的账号和目录，改归属并不会把它们搬走。
  * 界面上那颗按钮本来就是禁的，这里不重复判断：真到了两边不一致的时候，以后端为准。
  */
+/**
+ * 存桌面直连地址。**和「保存并探活」分成两个表单，不合并。**
+ *
+ * 撤回直连是一个要能单独按下去的动作：桌面打不开的时候，运维要做的是把这一格清空
+ * 让它退回 Gateway 反代，而不是被迫连管家地址一起动。
+ *
+ * 回包里那个字段叫 reachedManager 而不是 reachable——它说的是「Gateway 摸过去，对面
+ * 确实是一台管家」（管家的 /health 不带票就回 401，那正是判据）。而这个地址是给
+ * **浏览器**用的：证书、解析、防火墙都可能只对其中一边成立，所以这里的提示不能写成
+ * 「已验证」。
+ */
+async function saveMachineDirectUrl(e) {
+  e.preventDefault()
+  const form = e.target
+  // 前缀和「改完刷新谁」只有 machineTarget 一份，别在这儿自己拼——见它上面那段注释。
+  const s = machineScope(form)
+  const directUrl = String(new FormData(form).get('directUrl') || '').trim()
+  state.busy = true
+  render()
+  try {
+    const data = await api('PUT', `${s.base}/direct-url`, { directUrl })
+    await s.reload()
+    if (!directUrl) flash('ok', '已清空，桌面回到从 Gateway 反代')
+    else if (data.reachedManager) flash('ok', '已保存。这个地址后面确实是一台席位机器的管家；员工的浏览器能不能连上，要在对话页上真开一次桌面才算数')
+    else flash('err', `已保存，但这个地址看着不像席位机器：${data.error || '无响应'}`)
+  } catch (err) {
+    flash('err', err.message)
+  } finally {
+    state.busy = false
+    render()
+  }
+}
+
 async function saveMachineCompany(e) {
   e.preventDefault()
   const form = e.target

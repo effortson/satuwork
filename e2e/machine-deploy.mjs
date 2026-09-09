@@ -754,6 +754,84 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       }
     })
 
+    /**
+     * 改机器地址要**连着把席位的 instances.host 一起重铺**。
+     *
+     * 不重铺的话，改完之后桌面是好的（走 machines.host 现拼），聊天却还在往老地址
+     * 打（走 instances.host，那一行只在部署时写过一次）。表现是「这颗 bot 挂了」，
+     * 而改地址的人当场点一下桌面看不出任何问题——所以这条必须有测试兜着。
+     */
+    await test('改机器地址会把席位的 instances.host 一起重铺，且不碰非管家形状的', async () => {
+      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
+      const pg = require('pg')
+      const client = new pg.Client({ connectionString: PG_URL })
+      await client.connect()
+      try {
+        await client.query(`set search_path to ${SCHEMA}`)
+        const machineId = (await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })).json
+          .machine.id
+        const oldHost = (await req(gwBase, 'GET', `/platform/machines/${machineId}`, { token: ownerTok })).json.machine
+          .host
+        const hostOf = async (accountId, botId) =>
+          (await client.query('select host from instances where "accountId" = $1 and "botId" = $2', [accountId, botId]))
+            .rows[0]?.host
+
+        /**
+         * 先把现场摆成**生产的样子**。
+         *
+         * 这套 e2e 走的是 `SATUWORK_DEPLOY_STUB=1`，那条路写进 instances.host 的是
+         * bot 口的回环地址（`http://127.0.0.1:<botPort>`），而生产写的是管家反代入口。
+         * 要测的正是后者，所以这里显式摆一行成管家形状；member2 那行留着 stub 的原样，
+         * 顺便验「不该动的没被动」。
+         */
+        const seatA = seatIdOf(memberId, botA)
+        const stubB = await hostOf(member2Id, botB)
+        await client.query('update instances set host = $3 where "accountId" = $1 and "botId" = $2', [
+          memberId,
+          botA,
+          `${oldHost.replace(/\/$/, '')}/seats/${seatA}/bot`,
+        ])
+
+        // 换成一个语法合法但连不上的地址：这条路会去探活，探不通返回 reachable:false，
+        // 但**地址和重铺照样要落库**——线上换地址时新地址常常要过几秒才通。
+        const moved = await req(gwBase, 'PUT', `/platform/machines/${machineId}/host`, {
+          token: ownerTok,
+          body: { host: 'https://m001.satuwork.test' },
+        })
+        assert(moved.status === 200, `改地址 ${moved.status} ${moved.text}`)
+        assert(moved.json.rehosted === 1, `该只重铺那一行管家形状的，实际 ${moved.json.rehosted}`)
+
+        const movedA = await hostOf(memberId, botA)
+        assert(
+          movedA === `https://m001.satuwork.test/seats/${seatA}/bot`,
+          `instances.host 没跟着改，或形状不对（聊天反代要的是 .../seats/<seatId>/bot）：${movedA}`,
+        )
+        assert(
+          (await hostOf(member2Id, botB)) === stubB,
+          `不是管家形状的那一行被改了：${await hostOf(member2Id, botB)} ≠ ${stubB}`,
+        )
+
+        // 换回去，后面的用例还要用这台假管家。
+        const back = await req(gwBase, 'PUT', `/platform/machines/${machineId}/host`, {
+          token: ownerTok,
+          body: { host: oldHost },
+        })
+        assert(back.status === 200, `改回去 ${back.status} ${back.text}`)
+        assert(
+          (await hostOf(memberId, botA)) === `${oldHost.replace(/\/$/, '')}/seats/${seatA}/bot`,
+          `改回去没跟着回：${await hostOf(memberId, botA)}`,
+        )
+        // stub 那行是这套 e2e 后续用例真正要用的，必须原样躺着。
+        await client.query('update instances set host = $3 where "accountId" = $1 and "botId" = $2', [
+          memberId,
+          botA,
+          `http://127.0.0.1:${(await client.query('select "botPort" from seat_runtimes where "accountId" = $1 and "botId" = $2', [memberId, botA])).rows[0].botPort}`,
+        ])
+      } finally {
+        await client.end().catch(() => {})
+      }
+    })
+
     await test('owner POST /platform/orgs/:id/runtime/update 返回结果', async () => {
       const r = await req(gwBase, 'POST', `/platform/orgs/${orgId}/runtime/update`, {
         token: ownerTok,
@@ -1079,6 +1157,99 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
         // 断开——套件就停在这儿不动了。
         await closeServer(fake, '假管家')
       }
+    })
+
+    /**
+     * 配了直连地址之后，桌面地址就该指向席位机器，不再是 Gateway 上那条反代路径。
+     *
+     * 这一条盯的是「省下来的字节到底走没走」：地址还是 `/desktop/…` 的话，像素照旧
+     * 穿过 Gateway，整件事白做——而界面上一切正常，看不出任何区别。
+     */
+    await test('配了直连地址：桌面地址指向席位机器，清空后退回 Gateway 反代', async () => {
+      const machineId = (await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })).json.machine
+        .id
+      const seatId = seatIdOf(memberId, botA)
+      const deskUrl = async () =>
+        (await req(gwBase, 'GET', `/runtime/desktop?botId=${encodeURIComponent(botA)}`, { token: memberTok })).json
+          .novncUrl
+
+      assert(
+        (await deskUrl()).startsWith(`/desktop/${seatId}/`),
+        `没配之前该走 Gateway 反代：${await deskUrl()}`,
+      )
+
+      // http 要当场被拒：Gateway 的页面是 https，http 的桌面会被浏览器当混合内容
+      // **静默**拦掉——放它过去，人看到的就是一块永远打不开的空白。
+      const insecure = await req(gwBase, 'PUT', `/platform/machines/${machineId}/direct-url`, {
+        token: ownerTok,
+        body: { directUrl: 'http://m001.satuwork.test' },
+      })
+      assert(insecure.status === 400, `http 直连地址该被拒：${insecure.status} ${insecure.text}`)
+      const withPath = await req(gwBase, 'PUT', `/platform/machines/${machineId}/direct-url`, {
+        token: ownerTok,
+        body: { directUrl: 'https://m001.satuwork.test/seats' },
+      })
+      assert(withPath.status === 400, `带路径的直连地址该被拒：${withPath.status} ${withPath.text}`)
+
+      const set = await req(gwBase, 'PUT', `/platform/machines/${machineId}/direct-url`, {
+        token: ownerTok,
+        body: { directUrl: 'https://m001.satuwork.test' },
+      })
+      assert(set.status === 200, `设直连 ${set.status} ${set.text}`)
+      assert(set.json.machine.directUrl === 'https://m001.satuwork.test', `回包 ${set.text.slice(0, 200)}`)
+
+      /**
+       * **管家不够新时不许切过去。** 落地页那段「关掉 noVNC 控制条」的样式，走反代
+       * 是 Gateway 插的，直连只能管家自己插——4 号管家才会。所以填了地址还不够。
+       *
+       * 这一段同时盯着那个状态位：没有它，人填完地址看不出任何变化（画面照常出来，
+       * 因为压根没切过去），只有去数管家版本才分得出「没生效」和「生效了」。
+       */
+      assert(
+        (await deskUrl()).startsWith(`/desktop/${seatId}/`),
+        `管家还是 3 号，不该切到直连：${await deskUrl()}`,
+      )
+      const pendingCard = await req(gwBase, 'GET', `/platform/machines/${machineId}`, { token: ownerTok })
+      assert(pendingCard.json.machine.directPending === true, `该报「填了还没生效」：${pendingCard.text.slice(0, 200)}`)
+
+      // 管家升上来（心跳自报 protocol 4）之后，同一条路就该切过去。
+      const hb4 = await req(gwBase, 'POST', `/internal/machines/${machineId}/heartbeat`, {
+        token: machineTok,
+        body: { managerVersion: 'e2e', protocol: 4, arch: 'arm64', seats: [] },
+      })
+      assert(hb4.status === 200, `heartbeat4 ${hb4.status} ${hb4.text}`)
+      const settled = await req(gwBase, 'GET', `/platform/machines/${machineId}`, { token: ownerTok })
+      assert(settled.json.machine.directPending === false, `升上来之后不该再报 pending：${settled.text.slice(0, 200)}`)
+
+      const direct = await deskUrl()
+      assert(
+        direct.startsWith(`https://m001.satuwork.test/seats/${seatId}/vnc/?ticket=`),
+        `该指向席位机器上管家的浏览器入口：${direct}`,
+      )
+
+      // 公司侧那条同义路由也要通：机器配置在公司详情页和平台机器页都改得了，
+      // 容量和时区一直是这么成对的，这一条不能只做一半。
+      const viaOrg = await req(gwBase, 'PUT', `/platform/orgs/${orgId}/machines/${machineId}/direct-url`, {
+        token: ownerTok,
+        body: { directUrl: 'https://m002.satuwork.test' },
+      })
+      assert(viaOrg.status === 200, `公司侧设直连 ${viaOrg.status} ${viaOrg.text}`)
+      assert(
+        (await deskUrl()).startsWith(`https://m002.satuwork.test/seats/${seatId}/vnc/?ticket=`),
+        `公司侧那条没生效：${await deskUrl()}`,
+      )
+
+      const cleared = await req(gwBase, 'PUT', `/platform/machines/${machineId}/direct-url`, {
+        token: ownerTok,
+        body: { directUrl: '' },
+      })
+      assert(cleared.status === 200, `清空 ${cleared.status} ${cleared.text}`)
+      assert(cleared.json.machine.directUrl === null, `清空后该是 null：${cleared.text.slice(0, 200)}`)
+      // 退路必须真的退得回去：桌面打不开时，运维要靠清掉这一格把它救回来。
+      assert(
+        (await deskUrl()).startsWith(`/desktop/${seatId}/`),
+        `清空后该退回 Gateway 反代：${await deskUrl()}`,
+      )
     })
 
     /**

@@ -312,6 +312,7 @@ export function machineOf(r: Row): Machine {
   return {
     id: str(r.id),
     host: strOrNull(r.host),
+    directUrl: strOrNull(r.directUrl),
     companyId: strOrNull(r.companyId),
     lastHeartbeatAt: numOrNull(r.lastHeartbeatAt),
     createdAt: num(r.createdAt),

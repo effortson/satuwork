@@ -5459,12 +5459,36 @@ function wsRows(key, depth) {
 
 /** 票只有五分钟。挂之前超过这个岁数就先换一张，不然 iframe 一开就是 401。 */
 const DESK_TICKET_FRESH_MS = 180_000
+/**
+ * 看不见多久之后把这块屏拆掉。
+ *
+ * **为什么要拆，而不是只把它藏起来。** 这个层原来在两种「看不见」下都只改样式：
+ * 切到后台标签页只记一个时刻，右栏把它滚出可视区只设 `visibility:hidden`。可两种
+ * 情况下 iframe 和它那条 WebSocket 都原封不动，浏览器也不会替我们暂停 WebSocket，
+ * 于是像素照收——而这条流是整个系统里最贵的一条：实测 1280×800 下，Bot 一滚页面就是
+ * 4 MB/s，静止时才是 0。没人看的时候连着，等于把那 4 MB/s 白扔了。
+ *
+ * **为什么要等五秒。** 重挂要付一个整屏首帧（q6 下 242 KB）加大约一秒黑屏。滚过去
+ * 又滚回来是很常见的动作，立刻拆会让人看见一串黑屏。五秒足够把「路过」和「不看了」
+ * 分开；而只要那五秒里屏幕在动，省下的字节已经远超首帧那一次。
+ */
+const DESK_IDLE_MS = 5000
 /** 当前挂着的是哪个席位、用的哪个地址。**地址变了也要重挂**——见 syncDesktop。 */
 let deskMounted = null
 let deskMounting = false
 let deskSlotSeen = null
 let deskObserver = null
 let deskPlacePending = false
+/**
+ * 因为没人看而主动拆掉时记在这儿：`null` = 没挂起，`{ full }` = 挂起了，且记着拆之前
+ * 是不是全屏态。
+ *
+ * **必须自己记 full。** `unmountDesktop()` 会把 `state.deskFull` 清成 false（收起桌面
+ * 本来就该退出全屏），而这里的拆是「人不在看」而不是「人收起了」——回来时得还原成
+ * 他离开时的样子。mountDesktop 读的是 `state.deskFull`，所以解挂起要先把它写回去。
+ */
+let deskSuspended = null
+let deskSuspendTimer = null
 /** 页面被切到后台的时刻。回来得太晚就重挂，因为票早过期了，noVNC 自己连不回来。 */
 let deskHiddenAt = 0
 
@@ -5484,6 +5508,24 @@ function deskCaption() {
 function deskEmbeddable(url) {
   if (!url) return false
   return !(location.protocol === 'https:' && /^http:/i.test(url))
+}
+
+/**
+ * 这个桌面地址和当前页跨不跨源。
+ *
+ * 只有一个用处：决定 iframe 的 sandbox 里加不加 `allow-same-origin`（见 mountDesktop
+ * 里那段长注释——这一条判错就是把父页的登录 JWT 交出去）。
+ *
+ * 相对地址（`/desktop/…`，走 Gateway 反代）解析出来就是同源，返回 false；席位机器的
+ * 绝对地址（`https://m001…`，直连）返回 true。**解析不出来一律当同源**：那是更严的
+ * 那一边，宁可让一个本该直连的框连不上，也不能给一个同源的框开 allow-same-origin。
+ */
+function deskCrossOrigin(url) {
+  try {
+    return new URL(url, location.href).origin !== location.origin
+  } catch {
+    return false
+  }
 }
 
 /** 内嵌用的地址：按预览尺寸缩放，别把桌面裁成左上角一小块。 */
@@ -5530,16 +5572,28 @@ function mountDesktop(url, seatId) {
    * 把整个 Gateway 界面换掉——原来那颗「打开桌面」是新标签页加 `rel=noopener`，没这
    * 条路；一内嵌就有了。
    *
-   * **没有 `allow-same-origin`，而且不能加回来。** 桌面从 Gateway 同域反代出来之后
-   * （`/desktop/:seatId/…`），这个框和父页是**同源**的——再给 allow-same-origin 就等于
-   * 没有沙箱：框里那页（席位自己供的 noVNC）能直接读父页的 sessionStorage，登录 JWT
-   * 就躺在里面。去掉之后框的源是 opaque，浏览器不给它发 cookie，所以桌面票改成放在
-   * 路径里（见 gateway/src/desktop.ts 文件头），静态资源和 WebSocket 按相对路径天然
-   * 带票。`allow-forms` 是留给「票里没带口令」时那个登录框的。
+   * **`allow-same-origin` 按地址跨不跨源来给，这一条判错就是一个漏洞。**
+   *
+   * · 走 Gateway 反代时（`/desktop/:seatId/…`，相对地址），框和父页**同源**。这时
+   *   加 allow-same-origin 等于没有沙箱：框里那页（席位自己供的 noVNC）能直接读父页
+   *   的 sessionStorage，登录 JWT 就躺在里面。所以这条路上绝不能加。去掉之后框的源
+   *   是 opaque，浏览器不给它发 cookie，于是桌面票放在路径里（见
+   *   gateway/src/desktop.ts 文件头），静态资源和 WebSocket 按相对路径天然带票。
+   * · 走席位机器直连时（`https://m001…/seats/<席位>/vnc/`，绝对地址），框和父页
+   *   **本来就不同源**，加了也读不到父页的任何东西——而不加的话框是 opaque 源，
+   *   管家那张 path 限定的 cookie 带不上，noVNC 的静态资源和 WebSocket 一律 401。
+   *   同一个可注册域下 SameSite=Lax 在子框里是放行的（SameSite 判的是 site 不是
+   *   origin），所以这条路上加回来既安全又必要。
+   *
+   * 判据只能是**这个 url 到底跨不跨源**，不能是「有没有配直连」之类的旁证：配置和
+   * 实际用的地址一旦不同步，错的方向恰好是把 allow-same-origin 加到同源的框上。
+   *
+   * `allow-forms` 是留给「票里没带口令」时那个登录框的。
    */
+  const sandbox = 'allow-scripts allow-forms' + (deskCrossOrigin(url) ? ' allow-same-origin' : '')
   layer.innerHTML = `
     <iframe class="sw-deskl-frame" title="${esc(t('桌面'))}" tabindex="-1"
-      sandbox="allow-scripts allow-forms" allow="clipboard-read; clipboard-write"></iframe>
+      sandbox="${sandbox}" allow="clipboard-read; clipboard-write"></iframe>
     <button type="button" class="sw-deskl-shield" data-desk="open">
       <span class="sw-deskl-open">${svg(DESK_EXPAND, 15)}${esc(t('打开'))}</span>
     </button>
@@ -5585,6 +5639,56 @@ function setDeskFull(on) {
 }
 
 /**
+ * 这块预览此刻**有没有人在看**。
+ *
+ * 三种「看不见」：标签页在后台、槽位不在（人已经不在对话页上了）、右栏把它滚出了
+ * 可视区。全屏态盖在整个视口上，右栏那一刀裁不到它，所以单独放行。
+ *
+ * 判右栏那一刀用的是和 placeDesktop 里同一套算法——那边算出来是设 `visibility`，
+ * 这边算出来是决定拆不拆。两处必须一致，否则会出现「看着是空的，但连接还在」。
+ */
+function deskVisibleNow() {
+  if (document.hidden) return false
+  const slot = document.getElementById('sw-desk-slot')
+  if (!slot) return false
+  if (deskSuspended ? deskSuspended.full : state.deskFull) return true
+  const r = slot.getBoundingClientRect()
+  if (!r.height) return false
+  const body = slot.closest('.gw-aside-body')
+  if (!body) return true
+  const b = body.getBoundingClientRect()
+  const top = Math.max(0, b.top - r.top)
+  const bottom = Math.max(0, r.bottom - b.bottom)
+  return top + bottom < r.height
+}
+
+/**
+ * 看不见就起一个倒计时，到点把屏拆掉；重新看得见就取消倒计时、并把它接回来。
+ *
+ * 挂在滚动/尺寸变化和 visibilitychange 上。**解挂起走的是 syncDesktop**，不在这里
+ * 直接 mount：换票、地址比对、观察器换绑那一串都在它那儿，这里再写一遍迟早会漂。
+ */
+function scheduleDeskSuspend() {
+  if (deskVisibleNow()) {
+    if (deskSuspendTimer) {
+      clearTimeout(deskSuspendTimer)
+      deskSuspendTimer = null
+    }
+    if (deskSuspended) syncDesktop()
+    return
+  }
+  if (deskSuspended || deskSuspendTimer || !deskMounted) return
+  deskSuspendTimer = setTimeout(() => {
+    deskSuspendTimer = null
+    // 这五秒里人可能又滚回来了，也可能整块屏已经因为别的原因没了。
+    if (deskVisibleNow() || !deskMounted) return
+    const full = !!state.deskFull
+    unmountDesktop()
+    deskSuspended = { full }
+  }, DESK_IDLE_MS)
+}
+
+/**
  * 把常驻层对齐到右栏那个空槽上，顺带管挂载与卸载。render() 之后、以及右栏尺寸或
  * 滚动变化时都要调一次。
  */
@@ -5594,7 +5698,25 @@ function syncDesktop() {
   const seatId = (state.desktopRuntime && state.desktopRuntime.seatId) || ''
   if (!slot || !url) {
     if (deskMounted) unmountDesktop()
+    // 离开对话页 / 这块屏没了：挂起状态跟着作废。留着的话，下次回到这一页会被
+    // 下面那条 `if (deskSuspended)` 挡住，而那时候未必有滚动事件来把它叫醒。
+    deskSuspended = null
+    if (deskSuspendTimer) {
+      clearTimeout(deskSuspendTimer)
+      deskSuspendTimer = null
+    }
     return
+  }
+  /**
+   * 挂起期间不重挂——但**每次都重新判一遍**，不能无条件 return。
+   *
+   * 回到对话页是 render() 调这里，不是滚动事件；那一刻 scheduleDeskSuspend 不一定
+   * 会被调到，无条件 return 的话这块屏就再也回不来了。
+   */
+  if (deskSuspended) {
+    if (!deskVisibleNow()) return
+    state.deskFull = deskSuspended.full
+    deskSuspended = null
   }
   // **地址也要比，不只是席位。** 重新部署之后席位 id 一个字都没变，变的是票；只比
   // 席位的话，那张新票永远用不上，屏上留着的是重装前那条已经死掉的连接。
@@ -5646,6 +5768,16 @@ async function remountDesktop(force = false) {
     deskMounting = false
   }
   syncDesktop()
+  /**
+   * **刚挂上就得判一次「有没有人在看」。**
+   *
+   * 挂起那套原本只挂在滚动/尺寸变化和 visibilitychange 上，而那三样都是**变化**。
+   * 「挂上的那一刻就已经不可见」不产生任何变化，于是一条谁也没在看的流会一直开着：
+   * 人把对话页留在后台标签页里、席位这时才部署完，SSE 触发 render() 就会走到这儿把
+   * 屏挂上——后台标签页不再有 visibilitychange 转换，也不产生 scroll/resize，那条流
+   * 一直开到人回来为止。右栏早就滚过预览位置、席位之后才 ready 是同一回事。
+   */
+  scheduleDeskSuspend()
 }
 
 function placeDesktop() {
@@ -5710,12 +5842,16 @@ function placeDesktop() {
 function placeSoon() {
   if (deskPlacePending) return
   if (typeof requestAnimationFrame !== 'function') {
+    scheduleDeskSuspend()
     placeDesktop()
     return
   }
   deskPlacePending = true
   requestAnimationFrame(() => {
     deskPlacePending = false
+    // **先判挂起，再摆位置。** 挂起期间层已经不在了，placeDesktop 第一行就 return，
+    // 光靠它把不回来——接回来这件事只能由 scheduleDeskSuspend 发起。
+    scheduleDeskSuspend()
     placeDesktop()
   })
 }
@@ -5733,10 +5869,15 @@ window.addEventListener('scroll', placeSoon, true)
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     deskHiddenAt = Date.now()
+    // 切到后台就开始倒计时拆屏。浏览器不会替我们暂停那条 WebSocket，不拆就是在
+    // 一个没人看的标签页里继续收像素。
+    scheduleDeskSuspend()
     return
   }
   const away = deskHiddenAt ? Date.now() - deskHiddenAt : 0
   deskHiddenAt = 0
+  // 回到前台：挂起了就在这儿接回来（syncDesktop 会按票的岁数决定要不要先换票）。
+  scheduleDeskSuspend()
   if (deskMounted && away > DESK_TICKET_FRESH_MS) void remountDesktop(true)
   /**
    * 那条聊天流也要认一遍。
