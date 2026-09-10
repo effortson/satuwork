@@ -18,7 +18,7 @@
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Req, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
-import { requireMachine } from '../lib/guards.ts'
+import { requireMachine, requireSeatOnly } from '../lib/guards.ts'
 import { claimDue, RUN_TIMEOUT_MS, settleRun, turnFailure } from '../routines.ts'
 import type { ChannelEvent, Routine, RoutineRun } from '../db.ts'
 import { randomUUID } from 'node:crypto'
@@ -55,114 +55,166 @@ function jobOf(routine: Routine, run: RoutineRun, seatId: string) {
   }
 }
 
+/**
+ * 领活、started、renew、finish 四步的**身体**，和「谁在领」无关。两套门各自套一层：
+ *
+ *   /worker/routines/*          机器凭 smt_，machineId = 机器 id，只看本机席位上的任务
+ *   /runtime/local-routines/*   桌面端里的本地 Bot 凭 sat_，machineId = `desktop:<accountId>`，
+ *                               只看这个账号本地 Bot 的任务
+ *
+ * 流水上的 machineId 就是这一次归谁的判据：续租、回报都按它认，别人的一律 404。
+ */
+interface RoutineOwner {
+  machineId: string
+  due(now: number, limit: number): Promise<Routine[]>
+  retries(now: number, limit: number): Promise<Routine[]>
+  /** 这条任务的席位 id；本地 Bot 没有席位，给个固定值让工人知道是本机。 */
+  seatIdOf(routine: Routine): Promise<string | null>
+}
+
+async function leaseDue(db: RouteCtx['db'], owner: RoutineOwner) {
+  const now = Date.now()
+  const jobs: ReturnType<typeof jobOf>[] = []
+  await claimDue(
+    db,
+    now,
+    { due: owner.due, retries: owner.retries },
+    async (routine, trigger) => {
+      const seatId = await owner.seatIdOf(routine)
+      if (!seatId) return
+      const run = await db.insertRoutineRun({
+        routineId: routine.id,
+        botId: routine.botId,
+        accountId: routine.accountId,
+        companyId: routine.companyId,
+        trigger,
+        machineId: owner.machineId,
+        leaseUntil: now + ROUTINE_LEASE_MS,
+      })
+      jobs.push(jobOf(routine, run, seatId))
+    },
+  )
+  return { jobs, leaseMs: ROUTINE_LEASE_MS }
+}
+
+/** 找到这位领走、还在跑的那一条；不是就 404，不区分「别人的」和「没了」。 */
+async function claimedRun(db: RouteCtx['db'], runId: string, machineId: string): Promise<RoutineRun> {
+  const run = await db.routineRunOfMachine(runId, machineId)
+  if (!run) throw new HttpError(404, '这一次不归你，或者已经收场了')
+  return run
+}
+
+/**
+ * 工人拿到了会话 id，问一句「能跑吗」。这条会话上有一张**挡着路**的交接单还没闭合就不跑
+ * （理由见 runRoutine 那段），判据取自 Gateway 这张表——工人没有库，只能问。挡住的话这里
+ * 直接把流水收成 error，工人收到 `blocked` 就停手，不用再回一次 finish。
+ */
+async function routineStarted(db: RouteCtx['db'], run: RoutineRun, machineId: string, sessionId: string) {
+  const blocking = (await db.handoffsOfSession(sessionId)).find((h) => h.blocking && (h.state === 'open' || h.state === 'claimed'))
+  if (blocking) {
+    await settleRun(db, run.routineId, run.id, run.trigger, {
+      status: 'error',
+      error: `这一次没跑：还有一件转人工的事等着人处理（${blocking.ask.slice(0, 60) || '没写要做什么'}）`,
+      sessionId,
+    })
+    return { blocked: blocking.ask.slice(0, 60) || '没写要做什么' }
+  }
+  await db.finishRoutineRun(run.id, { status: 'running', sessionId })
+  await db.renewRoutineRun(run.id, machineId, Date.now() + ROUTINE_LEASE_MS)
+  return { blocked: null }
+}
+
+/**
+ * 收场。`kind` 是这一轮怎么结束的，和 Gateway 自己等 turn/end 拿到的是同一套词：
+ *
+ *   completed        跑成了
+ *   aborted          人按了停止 —— 不补
+ *   timeout          等结果超时，结果不明 —— 不补（那一轮可能还在跑，再发一条就是做两遍）
+ *   failed           压根没跑起来（够不着席位、席位那一跳报错），`error` 里是原话 —— 补
+ *   其余（error…）   这一轮以别的原因收场 —— 补
+ *
+ * 解释权在这里，不在工人：两边各解释一遍迟早分叉。
+ */
+async function routineFinish(db: RouteCtx['db'], run: RoutineRun, body: Record<string, unknown>) {
+  const kind = strField(body, 'kind', true)
+  const error = body.error == null ? '' : strField(body, 'error', false)
+  const sessionId = body.sessionId == null ? undefined : strField(body, 'sessionId', false) || null
+  if (kind === 'completed') {
+    await settleRun(db, run.routineId, run.id, run.trigger, { status: 'ok', error: null, sessionId })
+  } else if (kind === 'timeout') {
+    await settleRun(db, run.routineId, run.id, run.trigger, { status: 'error', error: '等结果超时，这一次的结果不明', sessionId })
+  } else if (kind === 'failed') {
+    await settleRun(db, run.routineId, run.id, run.trigger, { status: 'error', error: (error || '没跑起来').slice(0, 300), sessionId }, true)
+  } else {
+    await settleRun(db, run.routineId, run.id, run.trigger, { status: 'error', error: turnFailure(kind), sessionId }, kind !== 'aborted')
+  }
+}
+
 export function attachWorker(router: Router, { db, keys, channelKey }: RouteCtx) {
   attachChannelWorker(router, db, keys, channelKey)
 
+  // ── 席位机器上的工人（smt_）──
+  const machineOwner = (machineId: string): RoutineOwner => ({
+    machineId,
+    due: (n, limit) => db.dueRoutinesForMachine(machineId, n, limit),
+    retries: (n, limit) => db.dueRoutineRetriesForMachine(machineId, n, limit),
+    seatIdOf: async (routine) => (await db.seatRuntime(routine.accountId, routine.botId))?.seatId ?? null,
+  })
   router.get('/worker/routines/due', async (req, res) => {
     const machine = await requireMachine(req, db)
-    const now = Date.now()
-    const jobs: ReturnType<typeof jobOf>[] = []
-    await claimDue(
-      db,
-      now,
-      {
-        due: (n, limit) => db.dueRoutinesForMachine(machine.id, n, limit),
-        retries: (n, limit) => db.dueRoutineRetriesForMachine(machine.id, n, limit),
-      },
-      async (routine, trigger) => {
-        const rt = await db.seatRuntime(routine.accountId, routine.botId)
-        if (!rt) return
-        const run = await db.insertRoutineRun({
-          routineId: routine.id,
-          botId: routine.botId,
-          accountId: routine.accountId,
-          companyId: routine.companyId,
-          trigger,
-          machineId: machine.id,
-          leaseUntil: now + ROUTINE_LEASE_MS,
-        })
-        jobs.push(jobOf(routine, run, rt.seatId))
-      },
-    )
-    json(res, 200, { jobs, leaseMs: ROUTINE_LEASE_MS })
+    json(res, 200, await leaseDue(db, machineOwner(machine.id)))
   })
-
-  /** 找到本机领走、还在跑的那一条；不是就 404，不区分「别人的」和「没了」。 */
-  async function runOf(req: Req, machineId: string): Promise<RoutineRun> {
-    const run = await db.routineRunOfMachine(req.params.runId, machineId)
-    if (!run) throw new HttpError(404, '这一次不归这台机器，或者已经收场了')
-    return run
-  }
-
-  /**
-   * 工人拿到了会话 id，问一句「能跑吗」。
-   *
-   * 这条会话上有一张**挡着路**的交接单还没闭合就不跑（理由见 runRoutine 那段），判据取自
-   * Gateway 这张表——工人没有库，只能问。挡住的话这里直接把流水收成 error，工人收到
-   * `blocked` 就停手，不用再回一次 finish。
-   */
   router.post('/worker/routines/:runId/started', async (req, res) => {
     const machine = await requireMachine(req, db)
-    const run = await runOf(req, machine.id)
-    const sessionId = strField(bodyOf(req), 'sessionId', true)
-    const blocking = (await db.handoffsOfSession(sessionId)).find(
-      (h) => h.blocking && (h.state === 'open' || h.state === 'claimed'),
-    )
-    if (blocking) {
-      await settleRun(db, run.routineId, run.id, run.trigger, {
-        status: 'error',
-        error: `这一次没跑：还有一件转人工的事等着人处理（${blocking.ask.slice(0, 60) || '没写要做什么'}）`,
-        sessionId,
-      })
-      json(res, 200, { blocked: blocking.ask.slice(0, 60) || '没写要做什么' })
-      return
-    }
-    await db.finishRoutineRun(run.id, { status: 'running', sessionId })
-    await db.renewRoutineRun(run.id, machine.id, Date.now() + ROUTINE_LEASE_MS)
-    json(res, 200, { blocked: null })
+    const run = await claimedRun(db, req.params.runId, machine.id)
+    json(res, 200, await routineStarted(db, run, machine.id, strField(bodyOf(req), 'sessionId', true)))
   })
-
   router.post('/worker/routines/:runId/renew', async (req, res) => {
     const machine = await requireMachine(req, db)
-    const ok = await db.renewRoutineRun(req.params.runId, machine.id, Date.now() + ROUTINE_LEASE_MS)
-    if (!ok) throw new HttpError(404, '这一次不归这台机器，或者已经收场了')
+    if (!(await db.renewRoutineRun(req.params.runId, machine.id, Date.now() + ROUTINE_LEASE_MS))) {
+      throw new HttpError(404, '这一次不归这台机器，或者已经收场了')
+    }
     json(res, 200, { leaseMs: ROUTINE_LEASE_MS })
   })
-
-  /**
-   * 收场。`kind` 是这一轮怎么结束的，和 Gateway 自己等 turn/end 拿到的是同一套词：
-   *
-   *   completed        跑成了
-   *   aborted          人按了停止 —— 不补
-   *   timeout          等结果超时，结果不明 —— 不补（那一轮可能还在跑，再发一条就是做两遍）
-   *   failed           压根没跑起来（够不着席位、席位那一跳报错），`error` 里是原话 —— 补
-   *   其余（error…）   这一轮以别的原因收场 —— 补
-   *
-   * 解释权在这里，不在工人：两边各解释一遍迟早分叉。
-   */
   router.post('/worker/routines/:runId/finish', async (req, res) => {
     const machine = await requireMachine(req, db)
-    const run = await runOf(req, machine.id)
-    const body = bodyOf(req)
-    const kind = strField(body, 'kind', true)
-    const error = body.error == null ? '' : strField(body, 'error', false)
-    const sessionId = body.sessionId == null ? undefined : strField(body, 'sessionId', false) || null
-    if (kind === 'completed') {
-      await settleRun(db, run.routineId, run.id, run.trigger, { status: 'ok', error: null, sessionId })
-    } else if (kind === 'timeout') {
-      await settleRun(db, run.routineId, run.id, run.trigger, { status: 'error', error: '等结果超时，这一次的结果不明', sessionId })
-    } else if (kind === 'failed') {
-      await settleRun(db, run.routineId, run.id, run.trigger, { status: 'error', error: (error || '没跑起来').slice(0, 300), sessionId }, true)
-    } else {
-      await settleRun(
-        db,
-        run.routineId,
-        run.id,
-        run.trigger,
-        { status: 'error', error: turnFailure(kind), sessionId },
-        kind !== 'aborted',
-      )
+    const run = await claimedRun(db, req.params.runId, machine.id)
+    await routineFinish(db, run, bodyOf(req))
+    json(res, 200, { ok: true })
+  })
+
+  // ── 桌面端里的本地 Bot（sat_）──
+  //
+  // 本地 Bot 跑在员工电脑上，Gateway 连不到它，dueRoutines 把它的任务排除在外；由它自己的进程
+  // 来领（bot/src/local-routines）。同一个账号所有本地 Bot 共用一个「机器」名：desktop:<accountId>。
+  // 席位票只能领**自己账号**的任务：due 源按 accountId 过滤，续租和回报按 machineId 认。
+  const localOwner = (accountId: string): RoutineOwner => ({
+    machineId: `desktop:${accountId}`,
+    due: (n, limit) => db.dueRoutinesForLocalAccount(accountId, n, limit),
+    retries: (n, limit) => db.dueRoutineRetriesForLocalAccount(accountId, n, limit),
+    seatIdOf: async () => 'desktop',
+  })
+  router.get('/runtime/local-routines/due', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    json(res, 200, await leaseDue(db, localOwner(account.id)))
+  })
+  router.post('/runtime/local-routines/:runId/started', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    const owner = localOwner(account.id)
+    const run = await claimedRun(db, req.params.runId, owner.machineId)
+    json(res, 200, await routineStarted(db, run, owner.machineId, strField(bodyOf(req), 'sessionId', true)))
+  })
+  router.post('/runtime/local-routines/:runId/renew', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    if (!(await db.renewRoutineRun(req.params.runId, `desktop:${account.id}`, Date.now() + ROUTINE_LEASE_MS))) {
+      throw new HttpError(404, '这一次不归你，或者已经收场了')
     }
+    json(res, 200, { leaseMs: ROUTINE_LEASE_MS })
+  })
+  router.post('/runtime/local-routines/:runId/finish', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    const run = await claimedRun(db, req.params.runId, `desktop:${account.id}`)
+    await routineFinish(db, run, bodyOf(req))
     json(res, 200, { ok: true })
   })
 }

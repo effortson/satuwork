@@ -4349,6 +4349,32 @@ export class Db {
     return rows.map(routineOf)
   }
 
+  /**
+   * 这个账号的**本地 Bot**（桌面端）到点的任务。dueRoutines 把本地 Bot 排除在外（Gateway 连不到
+   * 员工的电脑），它们由桌面端里的 Bot 进程自己来领（routes/worker.ts 的 /runtime/local-routines）。
+   */
+  async dueRoutinesForLocalAccount(accountId: string, nowMs: number, limit = 20): Promise<Routine[]> {
+    const rows = await this.many(
+      `select r.* from routines r join catalog_items c on c.id = r."botId"
+        where r."accountId" = ? and c.definition->>'runtimeKind' = 'local'
+          and r.active and r."nextRunAt" is not null and r."nextRunAt" <= ?
+        order by r."nextRunAt" limit ?`,
+      [accountId, nowMs, Math.max(1, Math.trunc(limit))],
+    )
+    return rows.map(routineOf)
+  }
+
+  async dueRoutineRetriesForLocalAccount(accountId: string, nowMs: number, limit = 20): Promise<Routine[]> {
+    const rows = await this.many(
+      `select r.* from routines r join catalog_items c on c.id = r."botId"
+        where r."accountId" = ? and c.definition->>'runtimeKind' = 'local'
+          and r.active and r."retryAt" is not null and r."retryAt" <= ?
+        order by r."retryAt" limit ?`,
+      [accountId, nowMs, Math.max(1, Math.trunc(limit))],
+    )
+    return rows.map(routineOf)
+  }
+
   /** 这台机器领走、还在跑的那一条。别的机器的、已经收场的一律 undefined——工人拿不到别人的活。 */
   async routineRunOfMachine(runId: string, machineId: string): Promise<RoutineRun | undefined> {
     const r = await this.one('select * from routine_runs where id = ? and "machineId" = ? and status = \'running\'', [runId, machineId])

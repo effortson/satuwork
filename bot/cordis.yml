@@ -88,6 +88,9 @@
 # Bot 用自己的席位票查看、新增、修改或立即试跑，不在席位本地另起一套定时器。
 - name: './src/tools/routine.ts'
 
+# 本地 Bot（桌面端）自己领、自己跑日常任务。没设 SATUWORK_RUNTIME_KIND=local 时完全不启用。
+- name: './src/local-routines/index.ts'
+
 # 转人工的交接单：状态、落盘、交还（见 docs/handoff.md）。
 # 单独一个插件而不是塞进 policy：policy 跑在工具执行的关键路径上，而交接单要活过重启、
 # 要被 web 路由直接读写，两件事的生命周期不一样。

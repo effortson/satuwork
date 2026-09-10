@@ -282,6 +282,11 @@ Gateway 不再去敲，改看租约：工人领走的流水带 `leaseUntil`，�
 流水上因此多两格 `machineId` / `leaseUntil`（迁移 0039）。Gateway 自己跑的两格都空着。
 试跑（`trigger = manual`）今天仍由 Gateway 自己发，不经过工人。
 
+**本地 Bot（桌面端）**没有机器也没有工人：Gateway 连不到员工的电脑，`dueRoutines` 把它的任务排除在外。
+由它自己的 Bot 进程来领（bot/src/local-routines，凭席位票打 `/runtime/local-routines/*`，只看得到自己账号
+本地 Bot 的任务，流水上的 machineId 是 `desktop:<accountId>`），往自己的会话里发、等自己那一轮跑完、回报。
+电脑关着、应用没开就没人领，Gateway 只是排着，不记「错过」。
+
 **机器那一半**是 `satuwork-worker.service`（manager/src/worker/index.ts，见 manager/README.md
 「席位工人」）：非 root、不持有任何凭据，经管家在回环地址上的中继口领活、跟本机 bot 说话。
 一次跑的顺序和 Gateway 自己跑时一字不差：问会话 id → started → 读游标 → 先挂流再发消息 →
