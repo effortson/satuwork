@@ -1019,6 +1019,8 @@ async function loadRuntimeBots() {
     const before = state.runtimeBots || []
     const data = await api('GET', '/runtime/bots')
     state.runtimeBots = data.bots || []
+    // 本地 Bot 在不在跑、听哪个口，Gateway 不知道（隧道拆了），只有壳子知道。
+    await overlayLocalRuntime(state.runtimeBots)
     // 名单流的直连地址（机器够新、配了公网地址、这个人没有本地 Bot 时才有）。
     state.rosterStreamUrl = data.rosterStreamUrl || ''
     if (window.__SATUWORK_LOCAL_BOT__?.stop) {
@@ -1036,6 +1038,39 @@ async function loadRuntimeBots() {
 
 const localBotStarts = new Map()
 
+/**
+ * 给本地 Bot 补上运行状态。Gateway 那份 `runtime` 对本地 Bot 只是个占位（它再也连不到
+ * 本机了），真相在壳子手里：在不在跑、听哪个口。顺手把直连要用的口和票登记进 localBots——
+ * 页面刷新之后进程还在，票却只在内存里，得再向 Gateway 要一次。
+ */
+async function overlayLocalRuntime(bots) {
+  const bridge = window.__SATUWORK_LOCAL_BOT__
+  for (const bot of bots || []) {
+    if (bot.runtimeKind !== 'local') continue
+    if (!bridge || typeof bridge.status !== 'function') {
+      bot.runtime = { kind: 'local', status: 'none', machineLink: 'offline', workspace: 'desktop' }
+      continue
+    }
+    try {
+      const s = await bridge.status(bot.id)
+      const running = Boolean(s && s.running && s.port)
+      bot.runtime = {
+        kind: 'local',
+        status: running ? 'ready' : 'none',
+        machineLink: running ? 'online' : 'offline',
+        workspace: (s && s.workspace) || 'desktop',
+        port: running ? s.port : null,
+      }
+      if (running && !localBotOf(bot.id)) {
+        const b = await api('POST', `/runtime/bots/${encodeURIComponent(bot.id)}/local-bootstrap`, {})
+        registerLocalBot(bot.id, s.port, b.accessToken)
+      } else if (running) registerLocalBot(bot.id, s.port)
+    } catch {
+      bot.runtime = { kind: 'local', status: 'none', machineLink: 'offline', workspace: 'desktop' }
+    }
+  }
+}
+
 async function startDesktopLocalBot(botId) {
   const bridge = window.__SATUWORK_LOCAL_BOT__
   if (!window.__SATUWORK_DESKTOP__ || !bridge || typeof bridge.start !== 'function') {
@@ -1043,6 +1078,7 @@ async function startDesktopLocalBot(botId) {
   }
   const bootstrap = await api('POST', `/runtime/bots/${encodeURIComponent(botId)}/local-bootstrap`, {})
   const status = await bridge.start(bootstrap)
+  if (status && status.port) registerLocalBot(botId, status.port, bootstrap.accessToken)
   if (status && status.runtimeUpdateError) {
     state.deployHint = t(
       `本地 Bot 已用旧版本启动；自动升级失败：${status.runtimeUpdateError}`,
@@ -1459,6 +1495,8 @@ async function ensureChatSession(botId, attempt = 0) {
     const data = await api('GET', '/runtime/bots/' + encodeURIComponent(botId) + '/session')
     const sessionId = data.sessionId
     if (!sessionId) throw new Error('没有会话')
+    // 本地 Bot 的会话记下来，这条会话上之后的每一条请求都改道到本机（见 data.js 的 localRoute）。
+    if (localBotOf(botId)) localSessions.set(sessionId, botId)
     // 期间人又切走了：这次的结果已经不作数，认领了就会把新会话顶掉。
     if (state.chatBotId !== botId) return
     const row = botStreamOf(botId)
@@ -1841,7 +1879,7 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
   }
   let res
   try {
-    res = await fetch(streamUrl, {
+    res = await swFetch(streamUrl, {
       headers: {
         accept: 'text/event-stream',
         ...(t ? { authorization: 'Bearer ' + t } : {}),
@@ -2701,7 +2739,7 @@ async function fillShots(host) {
     }
     try {
       const url = '/runtime/sessions/' + encodeURIComponent(sessionId) + '/files?path=' + encodeURIComponent(path)
-      const res = await fetch(url, { headers: authHeaders() })
+      const res = await swFetch(url, { headers: authHeaders() })
       // 不读的响应体要显式收掉，否则连接和缓冲会一直挂着——一屏十张大图就是十条，
       // 正好是下面那道大小闸想省下的开销。
       if (!res.ok) {
@@ -4342,7 +4380,7 @@ function paintChat() {
 function liveLamp(busy) {
   const bot = chatBotOf()
   const link = seatLink()
-  // 本地 Bot 没有远程桌面（state.desktopRuntime），它是否在线由反向隧道投影到
+  // 本地 Bot 没有远程桌面（state.desktopRuntime），它是否在线由壳子的 status 盖到
   // runtime.status + machineLink。拿远程桌面判断它，会出现一边正常对话、一边写着
   // 「离线」的自相矛盾状态。
   if (bot && bot.runtimeKind === 'local') {
@@ -6186,7 +6224,7 @@ async function openPreview(path, name, options = {}) {
   const ac = new AbortController()
   state.preview.abort = ac
   try {
-    const res = await fetch(url, { headers: authHeaders(), signal: ac.signal })
+    const res = await swFetch(url, { headers: authHeaders(), signal: ac.signal })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       let json = null
@@ -6275,7 +6313,7 @@ async function fetchDocText(path, name) {
   const url =
     '/runtime/sessions/' + encodeURIComponent(state.chatSessionId) + '/files?path=' + encodeURIComponent(path) + '&as=text'
   try {
-    const res = await fetch(url, { headers: authHeaders({ accept: 'application/json' }) })
+    const res = await swFetch(url, { headers: authHeaders({ accept: 'application/json' }) })
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const data = await res.json()
     if (!state.preview || state.preview.path !== path) return
@@ -6312,7 +6350,7 @@ async function downloadWorkspaceFile(path, name) {
   const url =
     '/runtime/sessions/' + encodeURIComponent(state.chatSessionId) + '/files?path=' + encodeURIComponent(path) + '&download=1'
   try {
-    const res = await fetch(url, { headers: authHeaders() })
+    const res = await swFetch(url, { headers: authHeaders() })
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const blob = await res.blob()
     const href = URL.createObjectURL(blob)
@@ -6981,7 +7019,7 @@ function authHeaders(extra) {
  * 席位那边解回来。
  */
 async function uploadChatFile(sessionId, file) {
-  const res = await fetch('/runtime/sessions/' + encodeURIComponent(sessionId) + '/files', {
+  const res = await swFetch('/runtime/sessions/' + encodeURIComponent(sessionId) + '/files', {
     method: 'POST',
     headers: authHeaders({
       accept: 'application/json',

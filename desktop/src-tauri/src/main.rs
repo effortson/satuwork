@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -58,8 +58,20 @@ static EXTRA: AtomicUsize = AtomicUsize::new(0);
 #[derive(Default)]
 struct Startup(Mutex<String>);
 
+/// 一颗跑着的本地 Bot：进程，和它听的那个口。口要记下来——页面直连本机就靠它
+/// （隧道拆了，见 gateway/ui/data.js 的 localRoute），而端口是这里随机分的，别处没有。
+struct LocalBotProc {
+    child: Child,
+    port: u16,
+}
+
 #[derive(Default)]
-struct LocalBots(Mutex<HashMap<String, Child>>);
+struct LocalBots(Mutex<HashMap<String, LocalBotProc>>);
+
+/// 最近一次成功启动用的 Gateway 地址和席位票，给每小时一次的运行时自查用。
+#[derive(Default)]
+struct UpdateSource(Mutex<Option<(Url, String)>>);
+static UPDATER_STARTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +86,8 @@ struct LocalBotConfig {
 #[serde(rename_all = "camelCase")]
 struct LocalBotStatus {
     running: bool,
+    /// 在跑时本机监听的端口；页面拿它把这颗 Bot 的会话请求直接打到 127.0.0.1。
+    port: Option<u16>,
     workspace: String,
     runtime_version: Option<String>,
     pending_runtime_version: Option<String>,
@@ -762,10 +776,11 @@ fn node_program(app: &AppHandle) -> PathBuf {
     PathBuf::from("node")
 }
 
-fn runtime_status(app: &AppHandle, running: bool, workspace: &Path) -> LocalBotStatus {
+fn runtime_status(app: &AppHandle, running: bool, port: Option<u16>, workspace: &Path) -> LocalBotStatus {
     let home = runtime_home(app).ok();
     LocalBotStatus {
         running,
+        port: if running { port } else { None },
         workspace: workspace.display().to_string(),
         runtime_version: home
             .as_deref()
@@ -898,9 +913,10 @@ fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotSta
     let (data, work) = bot_paths(&app, &bot_id)?;
     let state = app.state::<LocalBots>();
     let mut bots = state.0.lock().map_err(|_| "本地 Bot 状态锁损坏")?;
-    if let Some(child) = bots.get_mut(&bot_id) {
-        if child.try_wait().map_err(|e| e.to_string())?.is_none() {
-            return Ok(runtime_status(&app, true, &work));
+    if let Some(proc_) = bots.get_mut(&bot_id) {
+        if proc_.child.try_wait().map_err(|e| e.to_string())?.is_none() {
+            let port = proc_.port;
+            return Ok(runtime_status(&app, true, Some(port), &work));
         }
         bots.remove(&bot_id);
     }
@@ -988,8 +1004,38 @@ fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotSta
         }
         Err(error) => return Err(error),
     };
-    bots.insert(bot_id, child);
-    Ok(runtime_status(&app, true, &work))
+    bots.insert(bot_id, LocalBotProc { child, port });
+    // 记下这次的地址和票，运行时自查（每小时一次）拿它去问 Gateway 有没有新版。
+    if let Ok(mut src) = app.state::<UpdateSource>().0.lock() {
+        *src = Some((gateway.clone(), config.access_token.clone()));
+    }
+    start_runtime_updater(&app);
+    Ok(runtime_status(&app, true, Some(port), &work))
+}
+
+/**
+ * 每小时自己去问一次有没有新运行时。**只下载、只写 PENDING，不动正在跑的进程**——切换
+ * 仍留给下一次「没有本地 Bot 在跑」的启动时刻（见 start_local_bot），现有的回滚逻辑一行不改。
+ * 以前只在冷启动前查一次，一台常开的桌面端可能几天不换版。
+ */
+fn start_runtime_updater(app: &AppHandle) {
+    if UPDATER_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(3600));
+        let src = app
+            .state::<UpdateSource>()
+            .0
+            .lock()
+            .ok()
+            .and_then(|s| s.clone());
+        let Some((gateway, token)) = src else { continue };
+        if let Err(error) = stage_runtime_update(&app, &gateway, &token) {
+            runtime_update_error(&app, Some(&error));
+        }
+    });
 }
 
 fn terminate_local_bot(child: &mut Child) -> Result<(), String> {
@@ -1019,7 +1065,7 @@ fn stop_local_bot(app: AppHandle, bot_id: String) -> Result<(), String> {
         .map_err(|_| "本地 Bot 状态锁损坏")?
         .remove(&id)
     {
-        terminate_local_bot(&mut child).map_err(|e| format!("停止本地 Bot 失败：{e}"))?;
+        terminate_local_bot(&mut child.child).map_err(|e| format!("停止本地 Bot 失败：{e}"))?;
     }
     Ok(())
 }
@@ -1030,14 +1076,14 @@ fn local_bot_status(app: AppHandle, bot_id: String) -> Result<LocalBotStatus, St
     let (_, work) = bot_paths(&app, &id)?;
     let state = app.state::<LocalBots>();
     let mut bots = state.0.lock().map_err(|_| "本地 Bot 状态锁损坏")?;
-    let running = match bots.get_mut(&id) {
-        Some(child) => child.try_wait().map_err(|e| e.to_string())?.is_none(),
-        None => false,
+    let (running, port) = match bots.get_mut(&id) {
+        Some(proc_) => (proc_.child.try_wait().map_err(|e| e.to_string())?.is_none(), Some(proc_.port)),
+        None => (false, None),
     };
     if !running {
         bots.remove(&id);
     }
-    Ok(runtime_status(&app, running, &work))
+    Ok(runtime_status(&app, running, port, &work))
 }
 
 #[tauri::command]
@@ -1050,7 +1096,7 @@ async fn approve_local_directory(
         let state = app.state::<LocalBots>();
         let mut bots = state.0.lock().map_err(|_| "本地 Bot 状态锁损坏")?;
         match bots.get_mut(&id) {
-            Some(child) => child.try_wait().map_err(|e| e.to_string())?.is_none(),
+            Some(proc_) => proc_.child.try_wait().map_err(|e| e.to_string())?.is_none(),
             None => false,
         }
     };
@@ -1195,6 +1241,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Startup::default())
         .manage(LocalBots::default())
+        .manage(UpdateSource::default())
         .invoke_handler(tauri::generate_handler![
             current_server,
             startup_error,
@@ -1226,8 +1273,8 @@ fn main() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 if let Ok(mut bots) = app.state::<LocalBots>().0.lock() {
-                    for (_, mut child) in bots.drain() {
-                        let _ = terminate_local_bot(&mut child);
+                    for (_, mut proc_) in bots.drain() {
+                        let _ = terminate_local_bot(&mut proc_.child);
                     }
                 }
             }

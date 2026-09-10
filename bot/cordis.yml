@@ -101,9 +101,6 @@
 # 会话索引上报 + 给 Gateway 按 sessionId 拉全文（机器凭证）+ 实例 ready。
 - name: './src/session/gateway.ts'
 
-# Desktop 本地 Bot 的反向通道。没设 SATUWORK_RUNTIME_KIND=local 时完全不启用。
-- name: './src/local-tunnel/index.ts'
-
 # turn/step 循环，把上面三者串起来。
 - name: './src/agent/index.ts'
   config:

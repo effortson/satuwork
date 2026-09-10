@@ -14,10 +14,9 @@ import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } 
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
 import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
-import { machineHeader, managerTargetFor, pairRuntime, proxyDownload, proxyJson, proxySse, proxyUpload, requireSeat, runtimeFetch, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
+import { machineHeader, managerTargetFor, pairRuntime, proxyDownload, proxyJson, proxySse, proxyUpload, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
 import { rosterStream } from '../lib/roster-stream.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
-import { localRuntimeOnline } from '../local-runtime.ts'
 import { localBotReleaseTarget } from '../releases.ts'
 
 /**
@@ -56,13 +55,13 @@ async function rosterStreamUrlFor(db: RouteCtx['db'], account: Account, bots: { 
 
 async function botRuntime(db: RouteCtx['db'], account: Account, item: CatalogItem) {
   if (runtimeKindOf(item) === 'remote') return pairRuntime(db, account, item.id)
-  const online = localRuntimeOnline(account.id, item.id)
-  return {
-    kind: 'local' as const,
-    status: online ? 'ready' : 'none',
-    machineLink: online ? 'online' : 'offline',
-    workspace: 'desktop',
-  }
+  /**
+   * 本地 Bot 跑在员工的电脑上，Gateway **不知道它在不在跑**——以前靠一条反向隧道投影，
+   * 隧道拆了（docs/adr-gateway-vercel-neon.md §4）。这里只是个占位，前端在桌面端里用壳子
+   * 的 status 盖掉它（ui/chat.js 的 overlayLocalRuntime）；在普通浏览器里它就是「本机未运行」，
+   * 也是真话。
+   */
+  return { kind: 'local' as const, status: 'none' as const, machineLink: 'offline' as const, workspace: 'desktop' }
 }
 /**
  * 「数这个人有几个 Bot、再插一个」那一段的 advisory lock 键。两条建 Bot 的路（这里的
@@ -1413,7 +1412,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const bearerTok = await seatBearer(db, account.id)
     let r: Response
     try {
-      r = await runtimeFetch(url, {
+      r = await fetch(url, {
         headers: {
           authorization: bearerTok ? `Bearer ${bearerTok}` : '',
           accept: 'application/json',
@@ -1487,7 +1486,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     requireSeat(account)
     // 名单就是侧栏那一份（和 `/runtime/bots` 同一个来源），不是「这个账号的所有席位」
     // ——后者会把已经删掉的 Bot 留下的残行也算进来。
-    const bots = await db.botsFor(account.companyId, account.id)
+    // 本地 Bot 不在名单流里：Gateway 连不到员工的电脑。它那一行的状态由桌面端自己画。
+    const bots = (await db.botsFor(account.companyId, account.id)).filter((b) => runtimeKindOf(b) !== 'local')
     await rosterStream(req, res, db, account, bots.map((b) => b.id))
   })
 

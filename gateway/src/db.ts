@@ -4152,9 +4152,17 @@ export class Db {
   }
 
   /** 到点该跑的那几条。调度器每一轮问一次。 */
+  /**
+   * 本地 Bot（桌面端）的任务**不在这里**：Gateway 连不到员工的电脑，抢到也跑不了，只会每次
+   * 记一条「实例还没上线」再补跑三次。它们等桌面端自己的调度器（ADR §4），在那之前静静排着。
+   * 排除放在 SQL 里而不是抢到再跳过：跳过的那些每一拍都会把 limit 占满，远程的排不进来。
+   */
   async dueRoutines(nowMs: number, limit = 20): Promise<Routine[]> {
     const rows = await this.many(
-      'select * from routines where active and "nextRunAt" is not null and "nextRunAt" <= ? order by "nextRunAt" limit ?',
+      `select r.* from routines r
+        where r.active and r."nextRunAt" is not null and r."nextRunAt" <= ?
+          and not exists (select 1 from catalog_items c where c.id = r."botId" and c.definition->>'runtimeKind' = 'local')
+        order by r."nextRunAt" limit ?`,
       [nowMs, Math.max(1, Math.trunc(limit))],
     )
     return rows.map(routineOf)
@@ -4181,7 +4189,10 @@ export class Db {
   /** 欠着重试、而且到点了的那几条。和 dueRoutines 分开问：两条路的处置完全不同。 */
   async dueRoutineRetries(nowMs: number, limit = 20): Promise<Routine[]> {
     const rows = await this.many(
-      'select * from routines where active and "retryAt" is not null and "retryAt" <= ? order by "retryAt" limit ?',
+      `select r.* from routines r
+        where r.active and r."retryAt" is not null and r."retryAt" <= ?
+          and not exists (select 1 from catalog_items c where c.id = r."botId" and c.definition->>'runtimeKind' = 'local')
+        order by r."retryAt" limit ?`,
       [nowMs, Math.max(1, Math.trunc(limit))],
     )
     return rows.map(routineOf)

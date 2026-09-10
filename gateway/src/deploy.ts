@@ -248,7 +248,7 @@ export function botBaseOf(managerHost: string | null, seatId: string): string {
  *
  *   - `botBaseOf(machine.host, seatId)` —— 管家反代，也就是这里要跟着改的那种
  *   - `http://127.0.0.1:<botPort>` —— 只有 `SATUWORK_DEPLOY_STUB=1` 那条路会写
- *   - `satu-local://…` —— 桌面端的本地 Bot（见 local-runtime.ts）
+ *   - 本地 Bot（桌面端）**没有这一行**：Gateway 连不到员工的电脑，对话由桌面端直连本机（见 ui/data.js 的 localRoute）
  *
  * 后两种和机器地址没有关系，无差别盖成管家形状等于把它们打断。所以逐行比对形状，
  * 对不上就跳过——宁可少改一行让人再点一次，也不能把一条本来好的路改坏。

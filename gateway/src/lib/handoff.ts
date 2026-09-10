@@ -8,7 +8,7 @@
  */
 import type { Account, Db, Handoff } from '../db.ts'
 import { botTemplateOf } from './catalog.ts'
-import { machineHeader, runtimeFetch } from './runtime.ts'
+import { machineHeader } from './runtime.ts'
 
 /**
  * 这张单该谁处理。
@@ -73,9 +73,7 @@ export async function callSeat(
   if (!seat.host) return { status: 503, json: { error: '实例还没上线' } }
   const url = `${seat.host}/api/sessions/${encodeURIComponent(h.sessionId)}/handoffs/${encodeURIComponent(h.id)}/${path}`
   try {
-    // 本地 Bot 的 host 是 satu-local://，要经 Desktop 反向通道；远程席位仍由
-    // runtimeFetch 回落到普通 HTTP。这里漏掉会让两类 Bot 共用的卡片在本地模式必失败。
-    const r = await runtimeFetch(url, {
+    const r = await fetch(url, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${seat.bearer}`,
@@ -112,7 +110,7 @@ export async function seatHandoffs(db: Db, h: Handoff, timeoutMs = 10_000): Prom
   if (!seat.host) return []
   const url = `${seat.host}/api/sessions/${encodeURIComponent(h.sessionId)}/handoffs`
   try {
-    const r = await runtimeFetch(url, {
+    const r = await fetch(url, {
       headers: { authorization: `Bearer ${seat.bearer}`, ...machineHeader(seat.machineToken) },
       signal: AbortSignal.timeout(timeoutMs),
     })

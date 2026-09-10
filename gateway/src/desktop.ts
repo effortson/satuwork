@@ -375,9 +375,6 @@ export function attachDesktopUpgrade(server: Server, db: Db, keys: JwtKeys) {
       } catch {
         return bail('400 Bad Request')
       }
-      // 本地 Bot 的反向通道由 local-runtime.ts 接管。同一个 server 上的 upgrade 监听器
-      // 会全部收到事件；这里若继续回 404，会把已经交给 ws 的 socket 当场掐掉。
-      if (url.pathname === '/runtime/local-tunnel') return
       const hit = TICKET_PREFIX.exec(url.pathname)
       if (!hit) return bail('404 Not Found')
       // 票和 seatId 都从路径里来，`%` 落单时 decodeURIComponent 会抛。
