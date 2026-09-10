@@ -22,9 +22,46 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGunzip } from 'node:zlib'
+import { del, put } from '@vercel/blob'
 import type { BotRelease, Db, ReleaseKind } from './db.ts'
 import { gatewayHome } from './home.ts'
 import { HttpError } from './http.ts'
+
+/**
+ * 对象存储（Vercel Blob）。**配了 `BLOB_READ_WRITE_TOKEN` 就走它，不再落盘**——函数环境没有可写
+ * 磁盘，Debian 上也可以配，好让两边的包在同一个地方。私有库：包里是我们的代码和依赖，不该
+ * 挂在一个公开地址上；拉的时候带 token（Blob 的私有地址就是 GET + Bearer）。
+ *
+ * `VERCEL_BLOB_API_URL` 是 SDK 自己认的覆盖项，e2e 用它把上传指到一个假的 Blob。
+ */
+function blobToken(): string {
+  return (process.env.BLOB_READ_WRITE_TOKEN || '').trim()
+}
+
+function blobApiUrl(): string {
+  return (process.env.VERCEL_BLOB_API_URL || '').trim().replace(/\/$/, '')
+}
+
+/** 这个地址是不是我们自己 Blob 库里的包：拉它要带 token。别的地址（GitHub Release）什么都不带。 */
+function isBlobUrl(url: string): boolean {
+  try {
+    const u = new URL(url)
+    if (u.hostname.endsWith('.blob.vercel-storage.com')) return true
+    const api = blobApiUrl()
+    return Boolean(api && url.startsWith(api))
+  } catch {
+    return false
+  }
+}
+
+/** 取一个远端包。私有 Blob 带 Bearer，其余裸取。verifyRemote 和 openRelease 共用，别各写一遍。 */
+function fetchRelease(url: string): Promise<Response> {
+  const token = blobToken()
+  return fetch(url, {
+    ...(token && isBlobUrl(url) ? { headers: { authorization: `Bearer ${token}` } } : {}),
+    signal: AbortSignal.timeout(300_000),
+  })
+}
 
 const VERSION_RE = /^[A-Za-z0-9._+-]+$/
 const SHA256_RE = /^[0-9a-f]{64}$/
@@ -194,14 +231,14 @@ export async function storeUploadedRelease(
     .toLowerCase()
   if (expected && !SHA256_RE.test(expected)) throw new HttpError(400, 'sha256 须为 64 位十六进制')
   if (await db.botRelease(version, kind)) throw new HttpError(409, '这个版本已经发布过')
+  if (blobToken()) return storeToBlob(db, { kind, version, note, body: input.body, expected })
   /**
    * 函数环境（Vercel）只有 /tmp，不跨实例、不跨部署：包写进去等于随手丢，而登记已经进了库，
-   * 管家来拉时 404，比一句「不能上传」难查一百倍。发布包挪到对象存储是 ADR §3 的待办；在
-   * 那之前 Vercel 上只能走「登记远端包」那条路（POST /platform/bot-releases，包放在 GitHub
-   * Release 之类能直接下载的地方）。
+   * 管家来拉时 404，比一句「不能上传」难查一百倍。Vercel 上要么配 BLOB_READ_WRITE_TOKEN
+   * 走对象存储，要么走「登记远端包」（带 url 的 POST）。
    */
   if (process.env.VERCEL && !process.env.SATUWORK_GATEWAY_HOME) {
-    throw new HttpError(501, '函数环境没有可写磁盘，发布包请用「登记远端包」（带 url 的 POST），不要直接上传')
+    throw new HttpError(501, '函数环境没有可写磁盘：配 BLOB_READ_WRITE_TOKEN 走对象存储，或用「登记远端包」（带 url 的 POST）')
   }
 
   mkdirSync(botReleaseDir(), { recursive: true })
@@ -247,6 +284,72 @@ export async function storeUploadedRelease(
     return row
   } catch (e) {
     discard(dest)
+    throw e
+  }
+}
+
+/**
+ * 收下 CI 传来的包，**边收边算、边收边传**到对象存储，不落盘。
+ *
+ * 校验和落盘那条一样多：大小上限、非空、sha256 对得上、入口文件在（后者靠 verifyRemote 再拉一遍
+ * 头部——包在 Blob 上，本地没有文件可扫）。哪一步不过都把刚传上去的那个 blob 删掉，不留孤儿。
+ * 地址带随机后缀（addRandomSuffix）：私有库本来就要 token 才拉得到，随机后缀是第二道，防同名覆盖。
+ */
+async function storeToBlob(
+  db: Db,
+  input: { kind: ReleaseKind; version: string; note: string; body: Readable; expected: string },
+): Promise<BotRelease> {
+  const { kind, version, note, expected } = input
+  const limit = uploadLimit()
+  const hash = createHash('sha256')
+  let size = 0
+  const ac = new AbortController()
+  let tooBig: HttpError | null = null
+  const counted = Readable.from(
+    (async function* () {
+      for await (const chunk of input.body as AsyncIterable<Buffer>) {
+        size += chunk.length
+        if (size > limit) {
+          tooBig = new HttpError(413, `发布包超过 ${limit} 字节上限`)
+          ac.abort()
+          throw tooBig
+        }
+        hash.update(chunk)
+        yield chunk
+      }
+    })(),
+  )
+  let uploaded: { url: string }
+  try {
+    uploaded = await put(`releases/${kind}-${version}.tgz`, Readable.toWeb(counted) as unknown as ReadableStream, {
+      access: 'private',
+      token: blobToken(),
+      addRandomSuffix: true,
+      contentType: 'application/gzip',
+      abortSignal: ac.signal,
+    })
+  } catch (e) {
+    if (tooBig) throw tooBig
+    throw e instanceof HttpError ? e : new HttpError(502, '传到对象存储失败：' + oneLine(e))
+  }
+  const drop = () => del(uploaded.url, { token: blobToken() }).catch(() => undefined)
+  try {
+    if (size === 0) throw new HttpError(400, '发布包是空的')
+    const sha256 = hash.digest('hex')
+    if (expected && expected !== sha256) throw new HttpError(400, 'sha256 对不上，包在路上坏了')
+    const probe = await verifyRemote(uploaded.url, kind, limit)
+    if (probe.sha256 !== sha256 || probe.size !== size) throw new HttpError(502, '对象存储里的包和收到的不一样')
+    const row: BotRelease = { kind, version, sha256, size, createdAt: Date.now(), note, url: uploaded.url }
+    try {
+      await db.insertBotRelease(row)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (/UNIQUE|constraint/i.test(msg)) throw new HttpError(409, '这个版本已经发布过')
+      throw e
+    }
+    return row
+  } catch (e) {
+    await drop()
     throw e
   }
 }
@@ -311,7 +414,7 @@ async function verifyRemote(
 ): Promise<{ size: number; sha256: string }> {
   let res: Response
   try {
-    res = await fetch(url, { signal: AbortSignal.timeout(300_000) })
+    res = await fetchRelease(url)
   } catch (e) {
     throw new HttpError(502, '取不到这个地址：' + oneLine(e))
   }
@@ -365,7 +468,7 @@ export async function openRelease(row: BotRelease): Promise<Readable> {
   }
   let res: Response
   try {
-    res = await fetch(row.url, { signal: AbortSignal.timeout(300_000) })
+    res = await fetchRelease(row.url)
   } catch (e) {
     throw new HttpError(502, '取不到发布包：' + oneLine(e))
   }
