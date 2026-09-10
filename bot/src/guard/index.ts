@@ -5,6 +5,7 @@ import { gatewayUrl } from '../llm/gateway.ts'
 
 /** 桌面端的本地 Bot。只有它需要 CORS：远程席位前面有管家反代，浏览器不直接打 bot。 */
 const LOCAL_MODE = (process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local'
+const DESKTOP_ORIGINS = new Set(['satu://localhost', 'http://satu.localhost', 'tauri://localhost', 'http://tauri.localhost'])
 
 function gatewayOrigin(): string {
   try {
@@ -96,7 +97,8 @@ export function apply(ctx: Context) {
      */
     if (LOCAL_MODE) {
       const origin = req.headers.get('origin') || ''
-      if (origin && origin === gatewayOrigin()) {
+      // 桌面端里页面的源是壳子自己的（界面打进了包里）；Gateway 的源也认——浏览器里开着的那份。
+      if (origin && (origin === gatewayOrigin() || DESKTOP_ORIGINS.has(origin))) {
         const set = (k: string, v: string) => {
           res.headers.set(k, v)
           res._res?.setHeader(k, v)

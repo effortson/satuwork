@@ -5,8 +5,9 @@
   "scripts": {
     "dev": "tauri dev",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "prepare:ui": "node scripts/prepare-ui.mjs",
     "pack:runtime-release": "node scripts/pack-runtime-release.mjs",
-    "build": "pnpm prepare:runtime && tauri build",
+    "build": "pnpm prepare:runtime && pnpm prepare:ui && tauri build",
     "icon": "tauri icon"
   },
   "devDependencies": {

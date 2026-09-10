@@ -29,6 +29,9 @@ desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/src-tauri/runtime/*
 !desktop/src-tauri/runtime/README.txt
+# prepare-ui.mjs 从 gateway/ui 拷过来打包用；README.txt 留着让 tauri-build 的 resources 通配能命中
+desktop/src-tauri/ui/*
+!desktop/src-tauri/ui/README.txt
 
 # gateway/scripts/build-vercel.mjs 打出来的函数包（vercel.json 的 buildCommand 现场生成）
 api/

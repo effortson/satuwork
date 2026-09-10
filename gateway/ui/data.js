@@ -20,6 +20,22 @@
    后面。这张表漂了，表现是本地 Bot 上某个按钮 404 而远程 Bot 好好的。
    ══════════════════════════════════════════════════════════════════ */
 
+/**
+ * Gateway 在哪。浏览器里页面就是 Gateway 发的，相对路径即可，这里是空串；桌面端里界面是包里
+ * 自带的（源是 satu://localhost），壳子注入 `__SATUWORK_GATEWAY__`，所有打 Gateway 的相对路径都
+ * 要接上它。**只在这一层接**：api()、swFetch、以及几处拿 Gateway 相对地址当 href/src 的地方
+ * （gatewayAbs），别处不许再拼。
+ */
+function gatewayBase() {
+  const raw = typeof window !== 'undefined' && window.__SATUWORK_GATEWAY__ ? String(window.__SATUWORK_GATEWAY__) : ''
+  return raw.replace(/\/$/, '')
+}
+
+/** Gateway 的相对地址 → 可用的地址。已经是绝对地址的原样返回。 */
+function gatewayAbs(url) {
+  return typeof url === 'string' && url.startsWith('/') ? gatewayBase() + url : url
+}
+
 /** botId → { base, token }。壳子起了哪些本地 Bot、听在哪个口、用哪把票。 */
 const localBots = new Map()
 /** sessionId → botId。只登记本地 Bot 的会话；查不到的一律走 Gateway。 */
@@ -65,7 +81,7 @@ function localRoute(path, method) {
  */
 function swFetch(path, init) {
   const route = localRoute(path, init && init.method)
-  if (!route) return fetch(path, init)
+  if (!route) return fetch(gatewayAbs(path), init)
   const headers = { ...((init && init.headers) || {}) }
   for (const k of Object.keys(headers)) if (k.toLowerCase() === 'authorization') delete headers[k]
   headers.authorization = 'Bearer ' + route.token

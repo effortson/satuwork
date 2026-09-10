@@ -1,15 +1,19 @@
 # satuwork-desktop
 
-桌面壳。**包里没有前端**——界面还是 gateway/ui 那一份，由 Gateway 自己发；这个壳只
-记住「连哪台 Gateway」，然后开一个没有地址栏的窗口装它。
+桌面壳。**界面打在包里**——`gateway/ui` 那批分片原样拷进包（`pnpm prepare:ui`），由壳子用自己的
+`satu://` 协议发出来（main.rs 的 `serve_ui`，找不到的路径回 index.html，单页路由刷新也不丢）。
+壳子记住「连哪台 Gateway」，注入 `window.__SATUWORK_GATEWAY__`，页面里所有打 Gateway 的请求在
+`ui/data.js` 的 `swFetch` 那一层接上这个前缀。
 
-为什么不把 ui 打进包里：那样每条 fetch 都成了跨源请求，Gateway 得加 CORS，而会当场
-坏掉的是对话页右栏那块桌面——它那张 `satu_desk_*` 是 SameSite=Lax 的 cookie，跨源
-之后浏览器连存都不存（[gateway/src/desktop.ts](../gateway/src/desktop.ts) 开头那段
-说的就是这件事）。同源是那条路唯一的前提。
+以前包里没有前端，窗口直接装 Gateway 发的页面，理由是「前端永远不会和服务端漂开」。改成内置
+是 docs/adr-gateway-vercel-neon.md §4 的决定：桌面端要是一个自己 hold 自己逻辑的系统，本地 Bot 的
+会话不经过 Gateway、日常任务自己领。代价照实写：**界面版本跟着桌面端发版走**，Gateway 升级了
+界面不会自己变，要发一版桌面端；两边的接口契约靠 e2e 钉着。
 
-代价：没网就是一片空白。这不亏——这个界面没有一屏是离线能用的。换来的是前端永远不会
-和服务端漂开：Gateway 升级了，桌面端下次打开就是新的，壳子不用重发。
+跨源随之而来：页面源是 `satu://localhost`（Windows 上 Tauri 映射成 `http://satu.localhost`），
+Gateway（`GATEWAY_CORS_ORIGINS` 之外内置了这几个源）、席位机器的管家（对话流、名单流直连）、本地
+Bot 的守卫三处都对它开 CORS；管家那张桌面 cookie 在 https 下改成 `SameSite=None; Secure`，否则
+跨站的 iframe 里浏览器不发它。
 
 ## 跑
 

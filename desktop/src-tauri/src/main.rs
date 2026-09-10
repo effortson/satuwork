@@ -1,12 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -50,9 +51,13 @@ const SWITCH_ITEM: &str = "switch-server";
  * 永远走不到 Gateway：导航回调在同源判断**之前**就把它截下来了。
  */
 const OPEN_PATH: &str = "/__satuwork_open";
+/// 界面自己的源。gateway/ui 打进了包里，由下面那个自定义协议发出去；页面里所有打 Gateway 的
+/// 请求都是跨源的，Gateway 那头按这个源开 CORS（gateway/src/http.ts 的 CORS_ORIGINS）。
+/// Windows 上 Tauri 会把它映射成 http://satu.localhost，那个源也在名单里。
+const UI_SCHEME: &str = "satu";
+const UI_ORIGIN: &str = "satu://localhost/";
 
 /** 新开的窗口编号。同一个 label 开第二次会失败，所以每开一扇加一。 */
-static EXTRA: AtomicUsize = AtomicUsize::new(0);
 
 /** 启动时那句「为什么没直接进去」。设置屏起来之后自己来取。 */
 #[derive(Default)]
@@ -226,9 +231,10 @@ fn same_origin(a: &Url, b: &Url) -> bool {
  */
 const LINK_SCRIPT: &str = r#"
 (function () {
-  // 远端页面本身和浏览器里打开的是同一份。给它一个只由桌面壳注入的标记，让登录票
-  // 可以落到持久存储；普通浏览器仍保持「关标签页即退出」的 sessionStorage 语义。
+  // 界面是包里自带的那份，和 Gateway 发的是同一批文件。给它一个只由桌面壳注入的标记，让登录票
+  // 可以落到持久存储；再告诉它 Gateway 在哪——页面源是 satu://localhost，相对路径打不到 Gateway。
   window.__SATUWORK_DESKTOP__ = true
+  window.__SATUWORK_GATEWAY__ = '__GATEWAY_URL__'
   window.__SATUWORK_LOCAL_BOT__ = {
     start: function (config) { return window.__TAURI_INTERNALS__.invoke('start_local_bot', { config: config }) },
     stop: function (botId) { return window.__TAURI_INTERNALS__.invoke('stop_local_bot', { botId: botId }) },
@@ -277,17 +283,17 @@ const LINK_SCRIPT: &str = r#"
  * 它是「窗口跑没跑掉」的边界，仅此而已。
  */
 fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
+    // 链接脚本递过来的暗号：在界面自己的源上，路径是 OPEN_PATH。先认它，再看 scheme。
+    if url.path() == OPEN_PATH {
+        route_open(app, base, url);
+        return false;
+    }
     match url.scheme() {
         "http" | "https" => {}
         _ => return true,
     }
-    if same_origin(url, base) {
-        if url.path() == OPEN_PATH {
-            route_open(app, base, url);
-            return false;
-        }
-        return true;
-    }
+    // 界面在自己的源上，任何 http(s) 导航都是往外走（OAuth 跳转、外链）：交给系统浏览器，
+    // 窗口留在原地。以前界面在 Gateway 的源上时同源导航是页面自己的路由，现在没有这一类了。
     let _ = app.opener().open_url(url.as_str(), None::<&str>);
     false
 }
@@ -308,31 +314,105 @@ fn route_open(app: &AppHandle, base: &Url, url: &Url) {
         // 和用户）。只有 http/https 往下走，别的一律当没发生。
         _ => return,
     }
-    if same_origin(&parsed, base) {
-        let label = format!("extra-{}", EXTRA.fetch_add(1, Ordering::Relaxed));
-        let _ = build_window(app, &label, parsed, base.clone(), "Satuwork");
-    } else {
-        let _ = app.opener().open_url(parsed.as_str(), None::<&str>);
-    }
+    // 界面不再在 Gateway 的源上，「另开一扇应用窗口装 Gateway 页面」这条路没有了：
+    // 同源与否都交给系统浏览器。`base` 留着是给将来「同源另开窗」用的判据。
+    let _ = same_origin(&parsed, base);
+    let _ = app.opener().open_url(parsed.as_str(), None::<&str>);
 }
 
 /** 装远端页面的窗口都从这儿出：同一套导航守卫，同一段链接脚本。 */
 fn build_window(
     app: &AppHandle,
     label: &str,
-    url: Url,
-    base: Url,
+    gateway: Url,
     title: &str,
 ) -> tauri::Result<()> {
     let handle = app.clone();
-    WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
+    let base = gateway.clone();
+    // 装的是包里那份界面（satu://localhost/），不是 Gateway 的页面；Gateway 地址注入给它。
+    let ui = Url::parse(UI_ORIGIN).expect("UI_ORIGIN 是常量");
+    let script = LINK_SCRIPT
+        .replace("__OPEN_PATH__", OPEN_PATH)
+        .replace("__GATEWAY_URL__", gateway.as_str().trim_end_matches('/'));
+    WebviewWindowBuilder::new(app, label, WebviewUrl::CustomProtocol(ui))
         .title(title)
         .inner_size(1280.0, 860.0)
         .min_inner_size(960.0, 600.0)
-        .initialization_script(&LINK_SCRIPT.replace("__OPEN_PATH__", OPEN_PATH))
+        .initialization_script(&script)
         .on_navigation(move |url| allow_navigation(&handle, &base, url))
         .build()?;
     Ok(())
+}
+
+/// 包里那份界面在哪：发布包里是资源目录下的 ui/（prepare-ui.mjs 拷进去的），开发时直接读仓库里的 gateway/ui。
+fn ui_dir(app: &AppHandle) -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../gateway/ui");
+        if source.join("index.html").is_file() {
+            return Some(source);
+        }
+    }
+    app.path().resource_dir().ok().map(|dir| dir.join("ui")).filter(|dir| dir.join("index.html").is_file())
+}
+
+fn mime_of(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" | "map" => "application/json; charset=utf-8",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "txt" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+/**
+ * `satu://localhost/…`：从包里发界面。
+ *
+ * 和 Gateway 的 serveUi 同一套规矩：路径不得逃出目录；找不到的路径**回 index.html**——这是个
+ * 单页应用，`/a/bot-1` 这种地址刷新一下也得回到同一页。Tauri 自带的 asset 协议没有这条兜底，
+ * 所以自己发。
+ */
+fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Cow<'static, [u8]>> {
+    let not_found = || {
+        tauri::http::Response::builder()
+            .status(tauri::http::StatusCode::NOT_FOUND)
+            .header("content-type", "text/plain; charset=utf-8")
+            .body(Cow::Borrowed("包里没有界面文件（gateway/ui）".as_bytes()))
+            .unwrap()
+    };
+    let Some(dir) = ui_dir(app) else { return not_found() };
+    let raw = request.uri().path().trim_start_matches('/');
+    let rel = raw.split('?').next().unwrap_or("");
+    let mut file = dir.clone();
+    for seg in rel.split('/').filter(|s| !s.is_empty()) {
+        if seg == ".." || seg == "." || seg.contains('\\') {
+            return not_found();
+        }
+        file.push(seg);
+    }
+    // Gateway 那边 /ui/x.js 也认；这里同样去掉 ui/ 前缀，两处发的是同一批文件。
+    if !file.is_file() {
+        let stripped = rel.strip_prefix("ui/").unwrap_or(rel);
+        let mut alt = dir.clone();
+        for seg in stripped.split('/').filter(|s| !s.is_empty()) {
+            alt.push(seg);
+        }
+        file = if alt.is_file() && !stripped.is_empty() { alt } else { dir.join("index.html") };
+    }
+    let Ok(bytes) = fs::read(&file) else { return not_found() };
+    tauri::http::Response::builder()
+        .status(tauri::http::StatusCode::OK)
+        .header("content-type", mime_of(&file))
+        .header("cache-control", "no-store")
+        .body(Cow::Owned(bytes))
+        .unwrap()
 }
 
 fn open_main(app: &AppHandle, url: Url) -> tauri::Result<()> {
@@ -340,7 +420,7 @@ fn open_main(app: &AppHandle, url: Url) -> tauri::Result<()> {
         win.set_focus()?;
         return Ok(());
     }
-    build_window(app, MAIN, url.clone(), url, "Satuwork")
+    build_window(app, MAIN, url, "Satuwork")
 }
 
 fn open_setup(app: &AppHandle) -> tauri::Result<()> {
@@ -1239,6 +1319,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .register_uri_scheme_protocol(UI_SCHEME, |ctx, request| serve_ui(&ctx.app_handle().clone(), &request))
         .manage(Startup::default())
         .manage(LocalBots::default())
         .manage(UpdateSource::default())
