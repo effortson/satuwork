@@ -1,6 +1,7 @@
 # 把 Gateway 部署到 Vercel + Neon
 
-[adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) 第 7 节第 6 步的操作手册。**前提是前面几步已经
+[adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) 第 7 节第 6 步的操作手册；对着打勾的清单在
+[vercel-golive-checklist.md](vercel-golive-checklist.md)。**前提是前面几步已经
 铺到位**：每台席位机器的管家 ≥ 8 号协议（工人接日常任务和渠道那一轮）、配了 `directUrl`
 （对话流、名单流、桌面直连），桌面端已升到直连本机的版本（没有隧道）。少一条，那一块功能在
 Vercel 上就是「实例还没上线」——不是坏，是没人接。
