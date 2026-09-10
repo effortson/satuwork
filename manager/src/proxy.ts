@@ -1,8 +1,10 @@
 import { request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
+import { createHash } from 'node:crypto'
 import { json } from './http.ts'
 import { seat } from './seats.ts'
 import { cookieName, cookieOf, verifyTicket } from './ticket.ts'
+import { verifyLogin } from './viewer.ts'
 
 /**
  * 反代。席位的 bot 口和 noVNC 口都只听 127.0.0.1，对外只有管家这一个端口。
@@ -21,6 +23,50 @@ import { cookieName, cookieOf, verifyTicket } from './ticket.ts'
 
 const BOT_PREFIX = /^\/seats\/([^/]+)\/bot(\/.*)?$/
 const VNC_PREFIX = /^\/seats\/([^/]+)\/vnc(\/.*)?$/
+/**
+ * 浏览器直连的对话流：`/seats/:id/stream/sessions/...` → bot 的 `/api/sessions/...`。
+ *
+ * 和 `/bot` 那条的差别只在**谁来、拿什么票**：`/bot` 是 Gateway 来的，出示 `smt_`，
+ * `authorization` 原样透传；这条是浏览器来的，出示登录 JWT，管家验完换成这个席位的
+ * `sat_` 再往下递（见 viewer.ts 文件头）。只放 GET、只放 `/sessions/` 底下：今天要从
+ * Gateway 挪出来的只有那条小时级的 SSE 和翻历史，发消息、审批、上传仍走 Gateway——
+ * 那几条在 Gateway 上带着校验（@ 点名、连接器可见性），不是纯反代。
+ */
+const STREAM_PREFIX = /^\/seats\/([^/]+)\/stream(\/.*)?$/
+const STREAM_ALLOWED = /^\/sessions\/[^/]+(\/|$)/
+
+/**
+ * `sw-` + sha256(accountId) 前 12 位。**和 gateway/src/deploy.ts 的 linuxUserOf 一字不差**
+ * ——名册里存的 linuxUser 就是 Gateway 按这个式子算出来的。直连时用它回答「这个席位是不是
+ * 这个人的」：登录票里只有 accountId，名册里只有 linuxUser，两头靠这个式子对上。
+ * 管家没有 Gateway 的库，也不该为了这一句去问。
+ */
+function linuxUserOf(accountId: string): string {
+  return 'sw-' + createHash('sha256').update(accountId).digest('hex').slice(0, 12)
+}
+
+/**
+ * 跨源的头。页面的源是 Gateway，请求打的是这台机器：浏览器要先问一句 OPTIONS，正式
+ * 请求的响应上也要有 allow-origin。**只认 Gateway 那一个源**，别的源一律不给头——
+ * 浏览器那头就会拦住。凭证走 `Authorization` 头而不是 cookie，所以不开 allow-credentials。
+ */
+function corsFor(req: IncomingMessage, gatewayUrl: string): Record<string, string> | null {
+  let allowed: string
+  try {
+    allowed = new URL(gatewayUrl).origin
+  } catch {
+    return null
+  }
+  const origin = String(req.headers.origin || '')
+  if (!origin || origin !== allowed) return null
+  return {
+    'access-control-allow-origin': allowed,
+    'access-control-allow-methods': 'GET, OPTIONS',
+    'access-control-allow-headers': 'authorization, accept, last-event-id',
+    'access-control-max-age': '600',
+    vary: 'origin',
+  }
+}
 
 /**
  * 入口 URL 上允许原样带到 noVNC 落地页的显示参数。
@@ -65,11 +111,13 @@ function pipeUpstream(
   port: number,
   path: string,
   headers: Record<string, string | string[]>,
+  /** 盖在上游响应头上的几个（CORS 那几条）。上游没理由知道浏览器是从哪个源来的。 */
+  extra: Record<string, string> = {},
 ) {
   const upstream = httpRequest(
     { host: '127.0.0.1', port, method: req.method, path, headers },
     (up) => {
-      res.writeHead(up.statusCode ?? 502, up.headers as Record<string, string | string[]>)
+      res.writeHead(up.statusCode ?? 502, { ...(up.headers as Record<string, string | string[]>), ...extra })
       up.pipe(res)
       /**
        * 席位半路死掉时要把下游一起拆掉。**pipe 只在干净的 end 上收尾 res**：换版就是
@@ -205,9 +253,63 @@ function forwardHeaders(req: IncomingMessage, port: number): Record<string, stri
   return headers
 }
 
+function withCors(res: ServerResponse, status: number, body: unknown, cors: Record<string, string> | null) {
+  res.writeHead(status, { ...(cors ?? {}), 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(JSON.stringify(body))
+}
+
+/**
+ * 浏览器直连的那条流（STREAM_PREFIX 的注释说了它是什么）。这里是顺序：
+ *
+ *   1. 预检（OPTIONS）只看源，不看票——浏览器发预检时还没带 Authorization。
+ *   2. 只放 GET、只放 `/sessions/` 底下。
+ *   3. 席位在不在、票对不对、**席位是不是这个人的**（linuxUserOf）。三样都对了才换票。
+ *   4. 名册里没有 `sat_`（5 号协议之前部署的席位）：409，明说「重新部署后可用」。
+ *      前端把任何非 2xx 当「直连不通」退回 Gateway，所以这一句主要是给 curl 的人看的。
+ *
+ * 状态码的分配是给前端看的：它对直连**不区分**原因，任何失败都退回 Gateway 反代五分钟
+ * （见 gateway/ui/chat.js 的 directStreamBase）。所以这里不必像 Gateway 那样把 401/403/404
+ * 当「答案不会变」——真的不会变的话，Gateway 那条路上会再说一次。
+ */
+async function streamProxy(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  seatId: string,
+  rest: string,
+  deps: ProxyDeps,
+): Promise<void> {
+  const cors = corsFor(req, deps.gatewayUrl())
+  if (req.method === 'OPTIONS') {
+    if (!cors) return withCors(res, 403, { error: '不认这个源' }, null)
+    res.writeHead(204, cors)
+    res.end()
+    return
+  }
+  if (req.method !== 'GET') return withCors(res, 405, { error: '这条路只放 GET' }, cors)
+  if (!STREAM_ALLOWED.test(rest)) return withCors(res, 404, { error: '这条路只放会话' }, cors)
+  const row = seat(seatId)
+  if (!row) return withCors(res, 404, { error: '没有这个席位' }, cors)
+  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()
+  if (!token) return withCors(res, 401, { error: '需要登录' }, cors)
+  const viewer = await verifyLogin(token, deps.gatewayUrl())
+  if (!viewer) return withCors(res, 401, { error: '登录已失效，请重新登录' }, cors)
+  if (linuxUserOf(viewer.accountId) !== row.linuxUser) return withCors(res, 403, { error: '这个席位不是你的' }, cors)
+  if (!row.gatewayToken) return withCors(res, 409, { error: '席位还没登记席位票，重新部署后可用' }, cors)
+  const headers = forwardHeaders(req, row.botPort)
+  headers.authorization = `Bearer ${row.gatewayToken}`
+  pipeUpstream(req, res, row.botPort, '/api' + rest + url.search, headers, { ...(cors ?? {}), 'cache-control': 'no-store' })
+}
+
 /** 注册到 Router.intercept。返回 true 表示这个请求已经被反代接管。 */
 export function proxyIntercept(deps: ProxyDeps) {
   return async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> => {
+    const stream = STREAM_PREFIX.exec(url.pathname)
+    if (stream) {
+      await streamProxy(req, res, url, stream[1], stream[2] || '/', deps)
+      return true
+    }
+
     const bot = BOT_PREFIX.exec(url.pathname)
     if (bot) {
       const row = seat(bot[1])

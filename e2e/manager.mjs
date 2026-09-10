@@ -609,6 +609,105 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       assert(text.includes('"seq":1') && text.includes('"seq":2'), `帧不全: ${text}`)
     })
 
+    // ── 浏览器直连的对话流（5 号协议）────────────────────────────────────
+    //
+    // 路径 /seats/:id/stream/*：带登录 JWT 来，管家验完换成席位票转给 bot，对 Gateway
+    // 的源开 CORS。这是 Gateway 从对话热路径上退下来的第一步（docs/adr-gateway-vercel-neon.md）。
+
+    await test('直连流：预检只认 Gateway 的源', async () => {
+      const ok = await fetch(`${mgrBase}/seats/seat-1/stream/sessions/s1/events`, {
+        method: 'OPTIONS',
+        headers: { origin: gwBase, 'access-control-request-method': 'GET' },
+      })
+      assert(ok.status === 204, `预检 ${ok.status}`)
+      assert(ok.headers.get('access-control-allow-origin') === gwBase, `allow-origin=${ok.headers.get('access-control-allow-origin')}`)
+      assert(String(ok.headers.get('access-control-allow-headers')).includes('authorization'), 'allow-headers 要放 authorization')
+      const bad = await fetch(`${mgrBase}/seats/seat-1/stream/sessions/s1/events`, {
+        method: 'OPTIONS',
+        headers: { origin: 'https://evil.example', 'access-control-request-method': 'GET' },
+      })
+      assert(bad.status === 403, `别的源 ${bad.status}`)
+      assert(!bad.headers.get('access-control-allow-origin'), '别的源不该拿到 allow-origin')
+    })
+
+    await test('直连流：无票 401，桌面票 401，别人的席位 403', async () => {
+      const url = `${mgrBase}/seats/seat-1/stream/sessions/s1/events`
+      const anon = await fetch(url, { headers: { origin: gwBase } })
+      assert(anon.status === 401, `无票 ${anon.status}`)
+      // 错误响应上也要有 CORS 头，否则浏览器里看到的是一句 network error，前端分不清。
+      assert(anon.headers.get('access-control-allow-origin') === gwBase, '401 也要带 allow-origin')
+      // 桌面票是 Gateway 签的、签名是真的，但它只对一块屏有效，不代表一个人。
+      const ticket = await mintTicket(gwBase, ownerTok)
+      const desk = await fetch(url, { headers: { authorization: 'Bearer ' + ticket, origin: gwBase } })
+      assert(desk.status === 401, `桌面票 ${desk.status}`)
+      // seat-1 的 linuxUser 是 sw-test，不是 owner 算出来的那个。
+      const other = await fetch(url, { headers: { authorization: 'Bearer ' + ownerTok, origin: gwBase } })
+      assert(other.status === 403, `别人的席位 ${other.status} ${await other.text()}`)
+    })
+
+    await test('直连流：自己的席位换成 sat_ 到达 bot，只放 GET 和 /sessions', async () => {
+      const me = await req(gwBase, 'GET', '/me', { token: ownerTok })
+      assert(me.status === 200, `/me ${me.status}`)
+      const ownerId = me.json.account.id
+      // 和 gateway/src/deploy.ts 的 linuxUserOf 同一个式子——名册里就是这么存的。
+      const linuxUser = 'sw-' + createHash('sha256').update(ownerId).digest('hex').slice(0, 12)
+      const put = await req(mgrBase, 'PUT', '/seats/seat-3', {
+        token: machineTok,
+        body: {
+          linuxUser,
+          homeDir: `/home/${linuxUser}`,
+          workDir: `/home/${linuxUser}/work`,
+          seatDir: `/home/${linuxUser}/.satuwork/seat-3`,
+          botId: 'bot-3',
+          botVersion: '0.0.0-e2e',
+          vncPassword: 'x'.repeat(16),
+          gatewayUrl: gwBase,
+          gatewayToken: 'sat_owner_3',
+          gatewayApiKey: 'sk_sw_owner_3',
+          ports: { display: 12, vncPort: 5912, novncPort: NOVNC_PORT, botPort: BOT_PORT, cdpPort: 9224 },
+        },
+      })
+      assert(put.status === 200, `部署 seat-3 ${put.status} ${put.text}`)
+      // 席位票不出管家：名册接口上不该看到它。
+      const listed = await req(mgrBase, 'GET', '/seats', { token: machineTok })
+      assert(listed.status === 200, `seats ${listed.status}`)
+      const row3 = (listed.json.seats || []).find((x) => x.seatId === 'seat-3')
+      assert(row3 && !('gatewayToken' in row3), '名册接口漏出了 gatewayToken')
+
+      // 断言砸了也要把 seat-3 拆掉，否则后面「名册应当拆空」那几条会跟着莫名其妙地坏。
+      try {
+      const before = bot.seen.length
+      const r = await fetch(`${mgrBase}/seats/seat-3/stream/sessions/s1/events?after=7`, {
+        headers: { authorization: 'Bearer ' + ownerTok, origin: gwBase, accept: 'text/event-stream' },
+      })
+      // 正文只读一次：模板串里的 `await r.text()` 在断言成立时也会执行，再 .json() 就读不到了。
+      const text = await r.text()
+      assert(r.status === 200, `直连 ${r.status} ${text}`)
+      assert(r.headers.get('access-control-allow-origin') === gwBase, '响应上要有 allow-origin')
+      assert(r.headers.get('cache-control') === 'no-store', 'no-store')
+      const body = JSON.parse(text)
+      assert(body.path === '/api/sessions/s1/events?after=7', `路径重写 ${body.path}`)
+      assert(bot.seen.length === before + 1, '应当正好打到 bot 一次')
+      const last = bot.seen[bot.seen.length - 1]
+      assert(last.headers.authorization === 'Bearer sat_owner_3', `到 bot 的票是 ${last.headers.authorization}`)
+
+      const post = await fetch(`${mgrBase}/seats/seat-3/stream/sessions/s1/messages`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + ownerTok, origin: gwBase, 'content-type': 'application/json' },
+        body: '{}',
+      })
+      assert(post.status === 405, `POST ${post.status}`)
+      const outside = await fetch(`${mgrBase}/seats/seat-3/stream/health`, {
+        headers: { authorization: 'Bearer ' + ownerTok, origin: gwBase },
+      })
+      assert(outside.status === 404, `会话之外 ${outside.status}`)
+      assert(bot.seen.length === before + 1, '405 / 404 都不该打到 bot')
+      } finally {
+        const gone = await req(mgrBase, 'DELETE', '/seats/seat-3', { token: machineTok })
+        assert(gone.status === 200, `清掉 seat-3 ${gone.status}`)
+      }
+    })
+
     await test('未知席位 404，不暴露端口', async () => {
       const r = await fetch(`${mgrBase}/seats/no-such/bot/api/x`, {
         headers: { 'x-satuwork-machine': machineTok },

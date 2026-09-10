@@ -163,6 +163,13 @@ const FONT_FILES = 'https://fonts.gstatic.com'
  * - `img-src https: http:`：模型写得出任意图片地址，markdown 的 safeUrl 明确放行了
  *   `https?://`。收紧等于把「贴一张图」这件事废掉。
  * - `frame-src blob:`：文件预览把字节做成 blob 再喂给 iframe（chat.js 的 previewBody）。
+ * - `connect-src https:` 与 `frame-src https:`：席位机器配了 `directUrl` 之后，对话那条 SSE
+ *   （chat.js 的 directStreamBase）和桌面那块 iframe（novncUrlOf）都直接打机器的域名，
+ *   不再经 Gateway。机器地址按公司各不相同、随时会加，写不进一条静态的头；而直连的
+ *   前提本来就是 https（见 docs/gateway-runtime.md §7），所以放的是整个 https:，不放
+ *   http:。这两条放开不等于放开外泄：能发请求的脚本仍然只有 `script-src 'self'` 放进来的
+ *   那几份。**只写 `'self'` 的话，直连在浏览器里是一句 CSP 拒绝，前端会当「直连不通」
+ *   退回 Gateway——功能不坏，但直连也就永远不会生效，日志里还一个字都没有。**
  *
  * 一处刻意的紧：**`script-src` 不带 `'unsafe-inline'`**。为此 index.html 里那段内联
  * module 搬进了 `ui/unzip.js` 的末尾，四处 `onload=` / `onerror=` 内联处理器换成了
@@ -181,8 +188,8 @@ const CSP = [
   `font-src 'self' data: ${UI_CDN} ${FONT_FILES}`,
   "img-src 'self' data: blob: https: http:",
   "media-src 'self' data: blob:",
-  "connect-src 'self'",
-  "frame-src 'self' blob:",
+  "connect-src 'self' https:",
+  "frame-src 'self' blob: https:",
   "worker-src 'self' blob:",
 ].join('; ')
 

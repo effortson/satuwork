@@ -31,8 +31,14 @@ import { fileURLToPath } from 'node:url'
  * 直连**（见 gateway 的 MIN_DIRECT_DESKTOP_PROTOCOL）：机器配了 directUrl 但管家还是
  * 3 号，桌面照旧从 Gateway 反代——那一侧会插样式。少了这个号数，升级顺序一颠倒，
  * 同一块预览就会在有的机器上多出一条控件压着画面，而配置里看不出任何区别。
+ *
+ * 5：`/seats/:id/stream/*` 认**浏览器的登录 JWT**，验完换成这个席位的 `sat_` 转给 bot，
+ * 对 Gateway 的源开 CORS。对话那条 SSE 于是能从浏览器直连这台机器，不再经 Gateway
+ * 反代（见 docs/adr-gateway-vercel-neon.md §2.3、gateway 的 MIN_DIRECT_STREAM_PROTOCOL）。
+ * 号数决定 Gateway **要不要把直连地址交给前端**：机器配了 directUrl 但管家还是 4 号，
+ * 前端拿到的是 null，照旧走 Gateway——4 号管家上这条路是 404，前端会白试一轮再退回。
  */
-export const PROTOCOL = 4
+export const PROTOCOL = 5
 
 export interface ManagerState {
   machineId: string

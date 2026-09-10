@@ -70,8 +70,14 @@ async function jwksOf(gatewayUrl: string, kid: string): Promise<Record<string, u
   }
 }
 
-/** 验不过一律返回 undefined，不区分原因——区分了就是在告诉攻击者哪一步错了。 */
-export async function verifyTicket(token: string, gatewayUrl: string): Promise<Ticket | undefined> {
+/**
+ * Gateway 签的任何一张 JWT：验签、验 exp，把 payload 交出来。**不看 typ**——那是调用方
+ * 的事：桌面票要 `satu-desktop`，登录票没有 typ（见 verifyLogin）。两种票同一把钥匙、
+ * 同一份 JWKS、同一套 kid 轮换，验签这一段没理由写两遍。
+ *
+ * 验不过一律返回 undefined，不区分原因——区分了就是在告诉攻击者哪一步错了。
+ */
+export async function verifyGatewaySigned(token: string, gatewayUrl: string): Promise<Record<string, unknown> | undefined> {
   const parts = (token || '').split('.')
   if (parts.length !== 3) return
   const [h, p, s] = parts
@@ -92,16 +98,26 @@ export async function verifyTicket(token: string, gatewayUrl: string): Promise<T
     return
   }
   if (!ok) return
-  let payload: Ticket
+  let payload: Record<string, unknown>
   try {
-    payload = b64urlJson(p) as Ticket
+    const raw = b64urlJson(p)
+    if (!raw || typeof raw !== 'object') return
+    payload = raw as Record<string, unknown>
   } catch {
     return
   }
-  if (payload.typ !== 'satu-desktop') return
-  if (!payload.seatId) return
-  if (!(typeof payload.exp === 'number') || payload.exp < Math.floor(Date.now() / 1000)) return
+  const exp = payload.exp
+  if (!(typeof exp === 'number') || !Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return
   return payload
+}
+
+/** 桌面票。验不过一律返回 undefined。 */
+export async function verifyTicket(token: string, gatewayUrl: string): Promise<Ticket | undefined> {
+  const payload = await verifyGatewaySigned(token, gatewayUrl)
+  if (!payload) return
+  if (payload.typ !== 'satu-desktop') return
+  if (!payload.seatId || typeof payload.seatId !== 'string') return
+  return payload as unknown as Ticket
 }
 
 export const cookieName = (seatId: string) => `satu_desk_${seatId.replace(/[^A-Za-z0-9_-]/g, '')}`

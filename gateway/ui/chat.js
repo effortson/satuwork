@@ -1730,6 +1730,34 @@ const CHAT_RETRY_MAX = 40
 /** 连接活够这么久，就算「真的连上过」，退避档位归零。 */
 const CHAT_ALIVE_MS = 10_000
 
+/**
+ * 直连席位机器开那条流。
+ *
+ * 机器配了公网地址、管家够新（≥5 号）时，Gateway 在 `bot.runtime.streamUrl` 里给一个
+ * 前缀，这条 SSE 就直接打那台机器，不再经 Gateway 反代——它是整套界面里唯一一条
+ * 小时级的连接，Gateway 要变成无状态的，头一个就得把它挪走
+ * （docs/adr-gateway-vercel-neon.md §7 第 2 步）。带的还是登录票，管家那头验完换成席位票。
+ *
+ * **任何一种失败都退回 Gateway，五分钟内不再试直连。** 直连这一跳多出来的故障形状
+ * 有好几种——机器的证书不对、CORS 头没到、管家还是老版本、席位还没重新部署（409）、
+ * 管家问不到 Gateway。对人来说它们都是同一件事：「直连不通」。Gateway 那条路一直在，
+ * 走它就行，别在这一跳上区分 401 和 502。真的不会变的那几种（票过期、Bot 不是你的），
+ * Gateway 那条路上会再说一次，而且说得更准。
+ */
+const DIRECT_RETRY_MS = 5 * 60_000
+/** sessionId → 直连上一次失败的时刻。 */
+const directStreamDown = new Map()
+
+function directStreamBase(owner, sessionId) {
+  if (!owner) return ''
+  const bot = (state.runtimeBots || []).find((b) => b.id === owner)
+  const base = bot && bot.runtime && bot.runtime.streamUrl
+  if (!base) return ''
+  const failedAt = directStreamDown.get(sessionId)
+  if (failedAt && Date.now() - failedAt < DIRECT_RETRY_MS) return ''
+  return base
+}
+
 async function startChatStream(sessionId, attempt = 0, botId = '') {
   const owner = botId || botIdOfSession(sessionId)
   const isActive = () => state.chatSessionId === sessionId
@@ -1775,9 +1803,17 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
   // 头一次连（手上还没有事件）才要 tail，而且**只垫一轮**——打开对话要看的那二十轮
   // 走 HTTP（hydrateChat）。续传时 after 说了算，要的是「补上错过的」。
   const q = after != null ? '?after=' + encodeURIComponent(after) : '?tail=' + STREAM_TAIL_TURNS
+  const direct = directStreamBase(owner, sessionId)
+  const streamUrl = (direct ? direct + '/sessions/' : '/runtime/sessions/') + encodeURIComponent(sessionId) + '/events' + q
+  /** 直连砸了：记下来，这一次就按老路重来（attempt 不加档，别为直连的错多等一秒）。 */
+  const fallBack = () => {
+    directStreamDown.set(sessionId, Date.now())
+    endReplay()
+    return retryChatStream(sessionId, ac, attempt)
+  }
   let res
   try {
-    res = await fetch('/runtime/sessions/' + encodeURIComponent(sessionId) + '/events' + q, {
+    res = await fetch(streamUrl, {
       headers: {
         accept: 'text/event-stream',
         ...(t ? { authorization: 'Bearer ' + t } : {}),
@@ -1785,15 +1821,18 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
       signal: ac.signal,
     })
   } catch (err) {
-    endReplay()
     if (ac.signal.aborted) {
+      endReplay()
       releaseChatStream(ac, owner)
       return
     }
+    if (direct) return fallBack()
+    endReplay()
     // **连不上要接着退避重试，不能就此认输。** 见下面 503 那条的说明。
     noteStreamWarming(sessionId)
     return retryChatStream(sessionId, ac, attempt + 1)
   }
+  if (direct && (!res.ok || !res.body)) return fallBack()
   /**
    * 503 = 席位此刻不在（Gateway 对席位的 fetch 抛了或没回 2xx，见 runtime.ts 的
    * proxySse）。**这是「正在重启」，不是「坏了」**：每一次重新部署、每一次管家换版，

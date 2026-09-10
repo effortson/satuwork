@@ -29,6 +29,18 @@ export const MIN_DESKTOP_PROTOCOL = 2
 export const MIN_DIRECT_DESKTOP_PROTOCOL = 4
 
 /**
+ * 对话流直连要求的管家协议号。
+ *
+ * 5 号管家才有 `/seats/:id/stream/*`：认浏览器的登录 JWT、换成席位票、对 Gateway 的源开
+ * CORS。低于它的机器上这条路是 404，所以**不给前端直连地址**（`streamUrl` 为 null），
+ * 照旧从 Gateway 反代。和桌面直连一样：升级顺序怎么颠倒都不出岔子——先填地址后升管家，
+ * 流在升上来那一刻自动切过去；反过来也一样。
+ *
+ * 这是 Gateway 从对话热路径上退下来的第一步（见 docs/adr-gateway-vercel-neon.md §7）。
+ */
+export const MIN_DIRECT_STREAM_PROTOCOL = 5
+
+/**
  * 会报安装进度（`/seats/:id/progress`）的管家协议。**只用来省一次白问**：低于它的
  * 管家上没有这条路，问了也只是一个 404，而问的时机恰恰是每两秒一次。
  *
@@ -154,6 +166,20 @@ export function novncUrlOf(
     ? `${direct}/seats/${encodeURIComponent(seatId)}/vnc/`
     : `/desktop/${encodeURIComponent(seatId)}/`
   return ticket ? `${url}?ticket=${encodeURIComponent(ticket)}` : url
+}
+
+/**
+ * 对话流的直连前缀：`{directUrl}/seats/{seatId}/stream`。前端在后面接 `/sessions/:id/events`。
+ *
+ * 三个前提缺一条就是空串，前端照旧走 Gateway：机器填了 `directUrl`、管家 ≥5 号、席位
+ * 已经在这台机器上。**不能像 novncUrlOf 那样退回 Gateway 的相对路径**——这里的调用方
+ * 要的是「能不能直连」这个判断本身，退路由它自己拼。
+ */
+export function streamUrlOf(machine: Pick<Machine, 'host' | 'directUrl' | 'protocol'> | null, seatId: string): string {
+  if (!(machine?.host || '').trim() || !seatId) return ''
+  const direct =
+    (machine?.protocol ?? 0) >= MIN_DIRECT_STREAM_PROTOCOL ? (machine?.directUrl || '').trim().replace(/\/$/, '') : ''
+  return direct ? `${direct}/seats/${encodeURIComponent(seatId)}/stream` : ''
 }
 
 /**
@@ -439,6 +465,11 @@ export function listSeatRuntime(row: SeatRuntime, machine: Machine | null, now =
     seatId: row.seatId,
     // 列表里不签票：这是给管理员看的引用，点进去要走 /runtime/desktop 现签一张。
     novncUrl: novncUrlOf(machine, row.seatId) || null,
+    /**
+     * 对话流直连地址；null = 走 Gateway。前端拿它开那条 SSE，带的是登录 JWT（管家那头
+     * 验完换成席位票）。直连失败前端会自己退回 Gateway，所以这里不必再判机器通不通。
+     */
+    streamUrl: streamUrlOf(machine, row.seatId) || null,
     botVersion: row.botVersion ?? null,
     tplVersion: row.tplVersion ?? null,
     tplSyncedAt: row.tplSyncedAt ?? null,
