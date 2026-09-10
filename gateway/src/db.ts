@@ -4212,6 +4212,9 @@ export class Db {
     companyId: string
     trigger: RoutineRunTrigger
     sessionId?: string | null
+    /** 工人领走的：哪台机器、租约到几点。Gateway 自己跑的两格都空着。 */
+    machineId?: string | null
+    leaseUntil?: number | null
   }): Promise<RoutineRun> {
     const row: RoutineRun = {
       id: randomUUID(),
@@ -4225,11 +4228,13 @@ export class Db {
       error: null,
       startedAt: Date.now(),
       endedAt: null,
+      machineId: input.machineId ?? null,
+      leaseUntil: input.leaseUntil ?? null,
     }
     try {
       await this.run(
-        'insert into routine_runs (id, "routineId", "botId", "accountId", "companyId", trigger, status, "sessionId", error, "startedAt", "endedAt") values (?,?,?,?,?,?,?,?,?,?,?)',
-        [row.id, row.routineId, row.botId, row.accountId, row.companyId, row.trigger, row.status, row.sessionId, row.error, row.startedAt, row.endedAt],
+        'insert into routine_runs (id, "routineId", "botId", "accountId", "companyId", trigger, status, "sessionId", error, "startedAt", "endedAt", "machineId", "leaseUntil") values (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [row.id, row.routineId, row.botId, row.accountId, row.companyId, row.trigger, row.status, row.sessionId, row.error, row.startedAt, row.endedAt, row.machineId, row.leaseUntil],
       )
     } catch (e) {
       // 0035 的部分唯一索引：同一条任务已有 running 流水。调用方先查 `routineRunning` 只是
@@ -4285,10 +4290,69 @@ export class Db {
    * `running` 意味着**任何**进程里的 watcher 都已经放弃了，收它不会踩到活人。
    */
   async failStaleRoutineRuns(startedBefore: number): Promise<number> {
+    // 只收 Gateway 自己跑的（没有租约的）。工人领走的按租约收，见 failExpiredRoutineLeases。
     return this.run(
-      "update routine_runs set status = 'error', error = ?, \"endedAt\" = ? where status = 'running' and \"startedAt\" < ?",
+      "update routine_runs set status = 'error', error = ?, \"endedAt\" = ? where status = 'running' and \"leaseUntil\" is null and \"startedAt\" < ?",
       ['没等到结果就断了（Gateway 重启，或者超过了最长等待时间）', Date.now(), startedBefore],
     )
+  }
+
+  // ── 席位工人领任务（见迁移 0039、routes/worker.ts）────────────────────
+
+  /**
+   * 这台机器上到点的任务。**按席位表连出来**：任务归 (accountId, botId)，席位表记着这一对
+   * 落在哪台机器上。没部署过的 Bot 连不出来——它也没有会话可发，本来就不该跑。
+   */
+  async dueRoutinesForMachine(machineId: string, nowMs: number, limit = 20): Promise<Routine[]> {
+    const rows = await this.many(
+      `select r.* from routines r
+         join seat_runtimes s on s."accountId" = r."accountId" and s."botId" = r."botId"
+        where s."machineId" = ? and r.active and r."nextRunAt" is not null and r."nextRunAt" <= ?
+        order by r."nextRunAt" limit ?`,
+      [machineId, nowMs, Math.max(1, Math.trunc(limit))],
+    )
+    return rows.map(routineOf)
+  }
+
+  async dueRoutineRetriesForMachine(machineId: string, nowMs: number, limit = 20): Promise<Routine[]> {
+    const rows = await this.many(
+      `select r.* from routines r
+         join seat_runtimes s on s."accountId" = r."accountId" and s."botId" = r."botId"
+        where s."machineId" = ? and r.active and r."retryAt" is not null and r."retryAt" <= ?
+        order by r."retryAt" limit ?`,
+      [machineId, nowMs, Math.max(1, Math.trunc(limit))],
+    )
+    return rows.map(routineOf)
+  }
+
+  /** 这台机器领走、还在跑的那一条。别的机器的、已经收场的一律 undefined——工人拿不到别人的活。 */
+  async routineRunOfMachine(runId: string, machineId: string): Promise<RoutineRun | undefined> {
+    const r = await this.one('select * from routine_runs where id = ? and "machineId" = ? and status = \'running\'', [runId, machineId])
+    return r ? routineRunOf(r) : undefined
+  }
+
+  /** 续租。回 false = 这条已经不归你了（租约到期被收掉、或早已收场），工人该停手。 */
+  async renewRoutineRun(runId: string, machineId: string, leaseUntil: number): Promise<boolean> {
+    const n = await this.run(
+      'update routine_runs set "leaseUntil" = ? where id = ? and "machineId" = ? and status = \'running\'',
+      [leaseUntil, runId, machineId],
+    )
+    return n > 0
+  }
+
+  /**
+   * 租约到期没续的那些：记成「机器没回报」，把行交回去让调度器排补跑。
+   *
+   * 走 `returning`：调用方要按 routineId 排重试，光一个计数不够。
+   */
+  async failExpiredRoutineLeases(nowMs: number): Promise<RoutineRun[]> {
+    const rows = await this.many(
+      `update routine_runs set status = 'error', error = ?, "endedAt" = ?
+        where status = 'running' and "leaseUntil" is not null and "leaseUntil" < ?
+        returning *`,
+      ['机器没回报（工人的租约到期了：机器离线、工人没起来、或者中途被杀）', Date.now(), nowMs],
+    )
+    return rows.map(routineRunOf)
   }
 
   // ── 转人工的交接单（见 docs/handoff.md）────────────────────────────────

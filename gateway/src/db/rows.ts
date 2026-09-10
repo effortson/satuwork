@@ -673,6 +673,8 @@ export function routineRunOf(r: Row): RoutineRun {
     error: strOrNull(r.error),
     startedAt: num(r.startedAt),
     endedAt: numOrNull(r.endedAt),
+    machineId: strOrNull(r.machineId),
+    leaseUntil: numOrNull(r.leaseUntil),
   }
 }
 
