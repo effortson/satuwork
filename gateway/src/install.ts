@@ -132,6 +132,37 @@ TimeoutStopSec=1260
 WantedBy=multi-user.target
 EOF_UNIT
 
+# The seat worker: pulls this machine's routines from the Gateway and runs them against
+# the local bots (manager/src/worker/index.ts). Non-root on purpose - it holds no
+# credentials of its own; it reaches the Gateway and the bots through the manager's
+# loopback relay, authenticated by a per-boot token the manager writes to worker.env.
+if ! id -u satuwork-worker >/dev/null 2>&1; then
+  useradd --system --no-create-home --shell /usr/sbin/nologin satuwork-worker
+fi
+cat > /etc/systemd/system/satuwork-worker.service << 'EOF_WORKER'
+[Unit]
+Description=Satuwork seat worker
+After=satuwork-manager.service
+Wants=satuwork-manager.service
+
+[Service]
+Type=simple
+User=satuwork-worker
+WorkingDirectory=/opt/satuwork/manager/current
+# Written by the manager at boot; optional so the unit keeps retrying until it exists.
+EnvironmentFile=-/etc/satuwork/worker.env
+ExecStart=/usr/bin/node --import tsx /opt/satuwork/manager/current/bin/satuwork-worker.mjs
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF_WORKER
+
 # Rollback safety net for self-upgrade. The selftest only proves the new build
 # starts; it cannot prove it can still reach the Gateway. That failure means an
 # unreachable machine, and this architecture has no SSH left to rescue it.
@@ -179,6 +210,8 @@ systemctl daemon-reload
 systemctl enable --now satuwork-manager-confirm.timer >/dev/null
 systemctl enable satuwork-manager.service >/dev/null
 systemctl restart satuwork-manager.service
+systemctl enable satuwork-worker.service >/dev/null
+systemctl restart satuwork-worker.service
 
 echo "==> Waiting for pairing"
 PAIRED=0

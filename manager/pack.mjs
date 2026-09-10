@@ -99,6 +99,9 @@ try {
   })
   if (dep.status !== 0) die('pnpm deploy 失败')
   if (!existsSync(join(stage, 'bin', 'satuwork-manager.mjs'))) die('staging 里没有 bin/satuwork-manager.mjs')
+  // 工人和管家同一个包（satuwork-worker.service 的 ExecStart 指它）。少了它机器上工人起不来，
+  // 而管家照旧报 7 号协议，Gateway 会以为任务归工人——没人领，只剩「机器没回报」。
+  if (!existsSync(join(stage, 'bin', 'satuwork-worker.mjs'))) die('staging 里没有 bin/satuwork-worker.mjs')
   if (!existsSync(join(stage, 'node_modules', 'tsx'))) die('staging 里没有 tsx，包跑不起来')
   if (!process.argv.includes('--allow-foreign-platform')) assertLinuxPack(stage)
   // 席位脚本必须跟着走：管家靠它们建账号、起屏、起 bot。

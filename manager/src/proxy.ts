@@ -111,7 +111,7 @@ function machineTokenOk(req: IncomingMessage, expected: string): boolean {
   return diff === 0
 }
 
-function pipeUpstream(
+export function pipeUpstream(
   req: IncomingMessage,
   res: ServerResponse,
   port: number,
@@ -247,7 +247,7 @@ function pipeLanding(
   req.pipe(upstream)
 }
 
-function forwardHeaders(req: IncomingMessage, port: number): Record<string, string | string[]> {
+export function forwardHeaders(req: IncomingMessage, port: number): Record<string, string | string[]> {
   const headers: Record<string, string | string[]> = {}
   for (const [k, v] of Object.entries(req.headers)) {
     if (v === undefined) continue

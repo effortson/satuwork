@@ -282,6 +282,11 @@ Gateway 不再去敲，改看租约：工人领走的流水带 `leaseUntil`，�
 流水上因此多两格 `machineId` / `leaseUntil`（迁移 0039）。Gateway 自己跑的两格都空着。
 试跑（`trigger = manual`）今天仍由 Gateway 自己发，不经过工人。
 
+**机器那一半**是 `satuwork-worker.service`（manager/src/worker/index.ts，见 manager/README.md
+「席位工人」）：非 root、不持有任何凭据，经管家在回环地址上的中继口领活、跟本机 bot 说话。
+一次跑的顺序和 Gateway 自己跑时一字不差：问会话 id → started → 读游标 → 先挂流再发消息 →
+只认自己那一轮的 turn/end → finish；期间按租约的三分之一续命，续不上（404）就停手。
+
 ## 9. Agent 内置工具
 
 当前 Bot 有两把主代理专用工具：

@@ -53,17 +53,44 @@ GET    /metrics            机器负载 + 日志占用       smt_
 POST   /logs/vacuum        立刻清一次 journal        smt_
 ANY    /seats/:id/bot/*    反代到 127.0.0.1:3200+N  smt_
 GET+WS /seats/:id/vnc/*    反代到 127.0.0.1:6081+N  Gateway 签的桌面票
+GET    /seats/:id/stream/*  反代到 bot，换成 sat_    浏览器的登录 JWT（协议 5）
+GET    /roster/stream       本机这个人的名单流        浏览器的登录 JWT（协议 6）
+ANY    /w-local/*           本机工人的中继口          回环地址 + worker.env 里的令牌（协议 7）
 ```
 
 bot 那条**原样透传 `authorization`**——bot 自己要验席位票（`sat_`），管家不掺和，
 所以用一个自己的头 `x-satuwork-machine`，两层互不干扰。
+
+## 席位工人
+
+`satuwork-worker.service`，和管家同一个包、同一份 `current` 软链，**另一个用户**
+（`satuwork-worker`，非 root）。它替 Gateway 接下「到点了去敲席位、等这一轮跑完」这段活
+（`src/worker/index.ts`；为什么要下沉见 docs/adr-gateway-vercel-neon.md）。
+
+它手上**没有任何凭据**：没有 `smt_`，没有任何席位的 `sat_`。只有一把管家开机时随机出来、
+写在 `worker.env` 里的本机令牌，凭它打管家在回环地址上的中继口（`src/relay.ts`）：
+
+```
+/w-local/gateway/worker/*      管家带 smt_ 转给 Gateway 的 /worker/*。只有这个前缀，别的不转
+/w-local/seats/:id/bot/*       管家换成那个席位的 sat_ 转给本机 bot
+```
+
+所以工人被攻破的影响面 = 领本机的日常任务 + 跟本机的 bot 说话；管家的控制面（部署、拆席位、
+拉日志）和 Gateway 的别的接口一条都碰不到。
+
+自升级时和管家一起重启（`upgrade.ts` 那句 `systemctl restart` 带两个单元）。老机器上没有这个
+单元：装脚本重跑一遍会把用户、单元、令牌一起补上；补上之前那台机器的管家仍报 7 号协议——
+**这是要小心的一处**：号数是包里写死的，工人单元没起来的机器上，Gateway 会以为任务归工人，
+而没人来领，到点只会在流水上留一条「机器没回报」并排补跑。升级到带工人的版本之后要看一眼
+每台机器的 `systemctl status satuwork-worker`。
 
 ## 落盘
 
 ```
 /etc/satuwork/manager.env    安装脚本写的启动参数（配对成功后会抹掉配对码）
 /etc/satuwork/manager.json   配对结果：machineId、smt_、Gateway 地址与公钥。0600
-/etc/satuwork/seats.json     席位名册。反代靠它把 seatId 翻成端口
+/etc/satuwork/seats.json     席位名册。反代靠它把 seatId 翻成端口；5 号协议起也存每个席位的 sat_（不外报）
+/etc/satuwork/worker.env     管家开机写的工人令牌与本机地址。0640 root:satuwork-worker
 /opt/satuwork/manager/
   releases/<version>/        解开的管家包
   current -> releases/X      systemd ExecStart 指这里

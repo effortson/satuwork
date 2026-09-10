@@ -41,8 +41,13 @@ import { fileURLToPath } from 'node:url'
  * 6：`/roster/stream` 认登录 JWT，把这个人在本机的所有席位合成一条名单流（roster.ts）。
  * Gateway 拿这个号数决定要不要给前端 `rosterStreamUrl`（见 gateway 的
  * MIN_DIRECT_ROSTER_PROTOCOL）。
+ *
+ * 7：机器上有工人（satuwork-worker.service，src/worker/index.ts）在领日常任务。Gateway 拿这个
+ * 号数决定**这台机器的任务归谁跑**（见 gateway 的 MIN_WORKER_PROTOCOL）：≥7 它一下都不碰，
+ * 全由工人来领；否则照旧自己发消息、等结果。号数错了的后果是两边各跑一遍或谁都不跑，
+ * 所以工人单元没起来的机器不该报 7——安装脚本把用户、单元、令牌一起装好才会有这个号。
  */
-export const PROTOCOL = 6
+export const PROTOCOL = 7
 
 export interface ManagerState {
   machineId: string

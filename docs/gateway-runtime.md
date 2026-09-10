@@ -830,6 +830,10 @@ GitHub Actions 的接线在 `.github/workflows/bot-release.yml`：推 `bot-v*` t
 
 ## 13. 实例进程
 
+机器上除了每个席位的两个单元（`satuwork-bot@` / `slim-desktop@`）和管家，7 号协议起还有一个
+`satuwork-worker.service`：非 root，替 Gateway 接下日常任务的「到点去敲、等跑完」那段（见
+[routines.md](routines.md) §8b、manager/README.md「席位工人」）。
+
 每个员工一个 Linux 账号，账号下每个 pair 一个席位：
 
 ```
