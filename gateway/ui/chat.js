@@ -1019,6 +1019,8 @@ async function loadRuntimeBots() {
     const before = state.runtimeBots || []
     const data = await api('GET', '/runtime/bots')
     state.runtimeBots = data.bots || []
+    // 名单流的直连地址（机器够新、配了公网地址、这个人没有本地 Bot 时才有）。
+    state.rosterStreamUrl = data.rosterStreamUrl || ''
     if (window.__SATUWORK_LOCAL_BOT__?.stop) {
       const ids = new Set(state.runtimeBots.map((bot) => bot.id))
       for (const bot of before) {
@@ -1580,6 +1582,19 @@ async function loadChatPage() {
 const ROSTER_BACKOFF = [500, 1000, 2000, 4000, 8000, 15_000, 30_000]
 let rosterAbort = null
 let rosterTimer = null
+/**
+ * 名单流也能直连席位机器（`state.rosterStreamUrl`，理由和对话那条一样，见 directStreamBase）。
+ * 直连砸了就退回 Gateway 五分钟，**任何失败都算**，包括 401/403/404——那几个在 Gateway
+ * 那条路上是「答案不会变」，在直连这一跳上多半只是管家太老或问不到 Gateway。
+ */
+let rosterDirectDownAt = 0
+
+function directRosterUrl() {
+  const base = state.rosterStreamUrl || ''
+  if (!base) return ''
+  if (rosterDirectDownAt && Date.now() - rosterDirectDownAt < DIRECT_RETRY_MS) return ''
+  return base
+}
 
 async function startRosterStream(attempt = 0) {
   // 已经有一条在跑就别再开。整页重绘、切页、切 Bot 都会走到这儿。
@@ -1588,15 +1603,28 @@ async function startRosterStream(attempt = 0) {
   const ac = new AbortController()
   rosterAbort = ac
   const t = token()
+  const direct = directRosterUrl()
+  /** 直连砸了：记下来，这一次立刻按老路重来（不加档）。 */
+  const fallBack = () => {
+    rosterDirectDownAt = Date.now()
+    if (rosterAbort === ac) rosterAbort = null
+    return startRosterStream(attempt)
+  }
   let res
   try {
-    res = await fetch('/runtime/roster/stream', {
+    res = await fetch(direct || '/runtime/roster/stream', {
       headers: { accept: 'text/event-stream', ...(t ? { authorization: 'Bearer ' + t } : {}) },
       signal: ac.signal,
     })
   } catch {
+    if (ac.signal.aborted) {
+      if (rosterAbort === ac) rosterAbort = null
+      return
+    }
+    if (direct) return fallBack()
     return retryRosterStream(ac, attempt + 1)
   }
+  if (direct && (!res.ok || !res.body)) return fallBack()
   /**
    * 401 / 403 当场认输：票没了、或者这个账号根本没有席位（owner）。重试只会白敲。
    * 404 也在内（老 Gateway 没有这条路由）——但那种情况下前端和 Gateway 是一起发的，

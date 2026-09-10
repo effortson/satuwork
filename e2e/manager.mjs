@@ -33,6 +33,8 @@ function fakeBot() {
   const health = { ok: true, busy: false, running: 0, queued: 0, quiesced: false }
   /** 收到过的静默指令，按先后记账：`{ ttlMs, auth }`。 */
   const quiesce = []
+  /** 名单流挂着的那些事件流响应，收摊时一起关掉，别让进程退不出去。 */
+  const rosterOpen = []
   const server = createServer((req, res) => {
     seen.push({ path: req.url, headers: { ...req.headers } })
     if (req.url.startsWith('/api/health')) {
@@ -53,6 +55,21 @@ function fakeBot() {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, quiesced: health.quiesced, ...health }))
       })
+      return
+    }
+    // 名单流要先问会话 id，再开事件流（manager/src/roster.ts 的 pump）。
+    if (/^\/api\/bots\/[^/]+\/session/.test(req.url)) {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ sessionId: 's-roster' }))
+      return
+    }
+    if (req.url.startsWith('/api/sessions/s-roster/events')) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      // 一条该转的、一条该滤掉的、一条权威的 live；然后挂着不结束（名单流本来就是长连接）。
+      res.write('data: {"type":"user/message","seq":1,"time":1,"data":{"text":"hi"}}\n\n')
+      res.write('data: {"type":"tool/result","seq":2,"time":2}\n\n')
+      res.write('data: {"type":"replay/done","live":false}\n\n')
+      rosterOpen.push(res)
       return
     }
     if (req.url.startsWith('/api/sse')) {
@@ -86,7 +103,7 @@ function fakeBot() {
     socket.write('HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\r\n')
     socket.write('HELLO-WS')
   })
-  return { server, seen, health, quiesce }
+  return { server, seen, health, quiesce, rosterOpen }
 }
 
 function listenOn(server, port) {
@@ -705,6 +722,83 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       } finally {
         const gone = await req(mgrBase, 'DELETE', '/seats/seat-3', { token: machineTok })
         assert(gone.status === 200, `清掉 seat-3 ${gone.status}`)
+      }
+    })
+
+    await test('直连名单流：合成这个人在本机的席位，帧过滤过，CORS 头随响应', async () => {
+      const me = await req(gwBase, 'GET', '/me', { token: ownerTok })
+      const linuxUser = 'sw-' + createHash('sha256').update(me.json.account.id).digest('hex').slice(0, 12)
+      const put = await req(mgrBase, 'PUT', '/seats/seat-4', {
+        token: machineTok,
+        body: {
+          linuxUser,
+          homeDir: `/home/${linuxUser}`,
+          workDir: `/home/${linuxUser}/work`,
+          seatDir: `/home/${linuxUser}/.satuwork/seat-4`,
+          botId: 'bot-4',
+          botVersion: '0.0.0-e2e',
+          vncPassword: 'x'.repeat(16),
+          gatewayUrl: gwBase,
+          gatewayToken: 'sat_owner_4',
+          gatewayApiKey: 'sk_sw_owner_4',
+          ports: { display: 13, vncPort: 5913, novncPort: NOVNC_PORT, botPort: BOT_PORT, cdpPort: 9225 },
+        },
+      })
+      assert(put.status === 200, `部署 seat-4 ${put.status} ${put.text}`)
+      try {
+        const pre = await fetch(`${mgrBase}/roster/stream`, {
+          method: 'OPTIONS',
+          headers: { origin: gwBase, 'access-control-request-method': 'GET' },
+        })
+        assert(pre.status === 204, `预检 ${pre.status}`)
+        const anon = await fetch(`${mgrBase}/roster/stream`, { headers: { origin: gwBase } })
+        assert(anon.status === 401, `无票 ${anon.status}`)
+
+        const ac = new AbortController()
+        const r = await fetch(`${mgrBase}/roster/stream`, {
+          headers: { authorization: 'Bearer ' + ownerTok, origin: gwBase, accept: 'text/event-stream' },
+          signal: ac.signal,
+        })
+        assert(r.status === 200, `名单流 ${r.status} ${r.status !== 200 ? await r.text() : ''}`)
+        assert(r.headers.get('access-control-allow-origin') === gwBase, '响应上要有 allow-origin')
+        assert(String(r.headers.get('content-type')).includes('text/event-stream'), 'content-type')
+        // 读到 roster/live 为止：它排在最后，到了就说明前面的都到了。最多等 5 秒。
+        const frames = []
+        const reader = r.body.getReader()
+        const deadline = setTimeout(() => ac.abort(), 5000)
+        let buf = ''
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buf += Buffer.from(value).toString('utf8')
+            let i
+            while ((i = buf.indexOf('\n\n')) >= 0) {
+              const chunk = buf.slice(0, i)
+              buf = buf.slice(i + 2)
+              for (const line of chunk.split('\n')) if (line.startsWith('data: ')) frames.push(JSON.parse(line.slice(6)))
+            }
+            if (frames.some((f) => f.type === 'roster/live')) break
+          }
+        } catch {}
+        clearTimeout(deadline)
+        ac.abort()
+        const types = frames.map((f) => `${f.type}:${f.ev ? f.ev.type : f.live}`)
+        assert(frames.every((f) => f.botId === 'bot-4'), `帧要归到 bot-4：${types.join(',')}`)
+        assert(types.includes('roster/ev:user/message'), `该转的没转：${types.join(',')}`)
+        assert(!types.some((t) => t.includes('tool/result')), `该滤的转了：${types.join(',')}`)
+        assert(types.includes('roster/live:false'), `没有 live：${types.join(',')}`)
+        // 上游拿的是名册里那把票，不是浏览器的登录票。
+        const up = bot.seen.filter((x) => x.path.startsWith('/api/sessions/s-roster/events'))
+        assert(up.length >= 1 && up[up.length - 1].headers.authorization === 'Bearer sat_owner_4', '到 bot 的票要是 sat_owner_4')
+      } finally {
+        for (const open of bot.rosterOpen.splice(0)) {
+          try {
+            open.end()
+          } catch {}
+        }
+        const gone = await req(mgrBase, 'DELETE', '/seats/seat-4', { token: machineTok })
+        assert(gone.status === 200, `清掉 seat-4 ${gone.status}`)
       }
     })
 

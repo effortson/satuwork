@@ -41,6 +41,12 @@ export const MIN_DIRECT_DESKTOP_PROTOCOL = 4
 export const MIN_DIRECT_STREAM_PROTOCOL = 5
 
 /**
+ * 名单流直连要求的管家协议号。6 号管家才有 `/roster/stream`（manager/src/roster.ts）。
+ * 低于它的机器 `rosterStreamUrl` 为 null，名单照旧从 Gateway 扇入。
+ */
+export const MIN_DIRECT_ROSTER_PROTOCOL = 6
+
+/**
  * 会报安装进度（`/seats/:id/progress`）的管家协议。**只用来省一次白问**：低于它的
  * 管家上没有这条路，问了也只是一个 404，而问的时机恰恰是每两秒一次。
  *
@@ -180,6 +186,17 @@ export function streamUrlOf(machine: Pick<Machine, 'host' | 'directUrl' | 'proto
   const direct =
     (machine?.protocol ?? 0) >= MIN_DIRECT_STREAM_PROTOCOL ? (machine?.directUrl || '').trim().replace(/\/$/, '') : ''
   return direct ? `${direct}/seats/${encodeURIComponent(seatId)}/stream` : ''
+}
+
+/**
+ * 名单流的直连地址：`{directUrl}/roster/stream`。按**机器**给，不按席位——一个人的所有
+ * 席位 Bot 都在同一台机器上（§3.0），一条流就答全了。三个前提同 streamUrlOf。
+ */
+export function rosterUrlOf(machine: Pick<Machine, 'host' | 'directUrl' | 'protocol'> | null): string {
+  if (!(machine?.host || '').trim()) return ''
+  const direct =
+    (machine?.protocol ?? 0) >= MIN_DIRECT_ROSTER_PROTOCOL ? (machine?.directUrl || '').trim().replace(/\/$/, '') : ''
+  return direct ? `${direct}/roster/stream` : ''
 }
 
 /**
