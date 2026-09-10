@@ -7,7 +7,7 @@ import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { INSTANCE_DOWN, desktopTicketFor } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
 import type { Account, CatalogItem, Memory, MemoryKind } from '../db.ts'
-import { deployInFlight, deploySeat, publicSeatRuntime, seatStepOf, startSeatDeploy } from '../deploy.ts'
+import { deployInFlight, deploySeat, publicSeatRuntime, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, defaultBotModel, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeServer, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
@@ -31,6 +31,27 @@ export const MAX_USER_BOTS = Math.max(1, Math.trunc(Number(process.env.GATEWAY_M
 function runtimeKindOf(item: CatalogItem): 'local' | 'remote' {
   const def = item.definition as Record<string, unknown> | undefined
   return item.scope === 'user' && def?.runtimeKind === 'local' ? 'local' : 'remote'
+}
+
+/**
+ * 名单流的直连地址；空串 = 走 Gateway。
+ *
+ * 两个前提缺一条就不给：
+ *   · 这个人**没有本地 Bot**。本地 Bot 跑在员工电脑上，不在任何机器的名册里，管家那条流
+ *     里没有它；给了直连地址，名单上它那一行就永远空着。有本地 Bot 的账号整条名单照旧
+ *     从 Gateway 扇入（那里穿隧道能拿到它）。
+ *   · 至少一个席位 Bot 已经落在某台机器上，且那台机器够新、配了 directUrl（rosterUrlOf）。
+ *     账号粘机器（§3.0），随便哪一个席位的机器都是同一台。
+ */
+async function rosterStreamUrlFor(db: RouteCtx['db'], account: Account, bots: { id: string; runtimeKind?: string }[]): Promise<string> {
+  if (bots.some((b) => b.runtimeKind === 'local')) return ''
+  for (const b of bots) {
+    const rt = await db.seatRuntime(account.id, b.id)
+    if (!rt?.machineId) continue
+    const machine = await db.machine(rt.machineId)
+    return rosterUrlOf(machine ?? null)
+  }
+  return ''
 }
 
 async function botRuntime(db: RouteCtx['db'], account: Account, item: CatalogItem) {
@@ -1165,7 +1186,11 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
         runtime: await botRuntime(db, account, item),
       })),
     )
-    json(res, 200, { bots, quota: { used: await db.countUserBots(account.id), max: MAX_USER_BOTS } })
+    json(res, 200, {
+      bots,
+      quota: { used: await db.countUserBots(account.id), max: MAX_USER_BOTS },
+      rosterStreamUrl: (await rosterStreamUrlFor(db, account, bots)) || null,
+    })
   })
 
   /**

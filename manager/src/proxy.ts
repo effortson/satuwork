@@ -5,6 +5,7 @@ import { json } from './http.ts'
 import { seat } from './seats.ts'
 import { cookieName, cookieOf, verifyTicket } from './ticket.ts'
 import { verifyLogin } from './viewer.ts'
+import { rosterStream } from './roster.ts'
 
 /**
  * 反代。席位的 bot 口和 noVNC 口都只听 127.0.0.1，对外只有管家这一个端口。
@@ -33,6 +34,11 @@ const VNC_PREFIX = /^\/seats\/([^/]+)\/vnc(\/.*)?$/
  * 那几条在 Gateway 上带着校验（@ 点名、连接器可见性），不是纯反代。
  */
 const STREAM_PREFIX = /^\/seats\/([^/]+)\/stream(\/.*)?$/
+/**
+ * 名单那一条通道（roster.ts）。也是浏览器带登录 JWT 直连，但它不按席位走——一个人在
+ * 这台机器上的所有 Bot 合成一条流，哪些 Bot 归他由名册的 linuxUser 说了算。
+ */
+const ROSTER_PATH = '/roster/stream'
 const STREAM_ALLOWED = /^\/sessions\/[^/]+(\/|$)/
 
 /**
@@ -301,12 +307,38 @@ async function streamProxy(
   pipeUpstream(req, res, row.botPort, '/api' + rest + url.search, headers, { ...(cors ?? {}), 'cache-control': 'no-store' })
 }
 
+/**
+ * 名单流的门。前三道闸和 streamProxy 一样（预检、只放 GET、验登录票），过了就把这个人
+ * 在本机的所有席位合成一条 SSE 交给 roster.ts。**名册里一个席位都没有也照样开流**：
+ * 空流合法（刚删完最后一个 Bot 的那一刻就是），前端只是收不到帧；回 404 的话前端会当
+ * 「直连不通」退回 Gateway 五分钟，白绕一圈。
+ */
+async function rosterProxy(req: IncomingMessage, res: ServerResponse, deps: ProxyDeps): Promise<void> {
+  const cors = corsFor(req, deps.gatewayUrl())
+  if (req.method === 'OPTIONS') {
+    if (!cors) return withCors(res, 403, { error: '不认这个源' }, null)
+    res.writeHead(204, cors)
+    res.end()
+    return
+  }
+  if (req.method !== 'GET') return withCors(res, 405, { error: '这条路只放 GET' }, cors)
+  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()
+  if (!token) return withCors(res, 401, { error: '需要登录' }, cors)
+  const viewer = await verifyLogin(token, deps.gatewayUrl())
+  if (!viewer) return withCors(res, 401, { error: '登录已失效，请重新登录' }, cors)
+  await rosterStream(req, res, linuxUserOf(viewer.accountId), cors ?? {})
+}
+
 /** 注册到 Router.intercept。返回 true 表示这个请求已经被反代接管。 */
 export function proxyIntercept(deps: ProxyDeps) {
   return async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> => {
     const stream = STREAM_PREFIX.exec(url.pathname)
     if (stream) {
       await streamProxy(req, res, url, stream[1], stream[2] || '/', deps)
+      return true
+    }
+    if (url.pathname === ROSTER_PATH) {
+      await rosterProxy(req, res, deps)
       return true
     }
 

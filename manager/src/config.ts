@@ -37,8 +37,12 @@ import { fileURLToPath } from 'node:url'
  * 反代（见 docs/adr-gateway-vercel-neon.md §2.3、gateway 的 MIN_DIRECT_STREAM_PROTOCOL）。
  * 号数决定 Gateway **要不要把直连地址交给前端**：机器配了 directUrl 但管家还是 4 号，
  * 前端拿到的是 null，照旧走 Gateway——4 号管家上这条路是 404，前端会白试一轮再退回。
+ *
+ * 6：`/roster/stream` 认登录 JWT，把这个人在本机的所有席位合成一条名单流（roster.ts）。
+ * Gateway 拿这个号数决定要不要给前端 `rosterStreamUrl`（见 gateway 的
+ * MIN_DIRECT_ROSTER_PROTOCOL）。
  */
-export const PROTOCOL = 5
+export const PROTOCOL = 6
 
 export interface ManagerState {
   machineId: string

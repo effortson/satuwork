@@ -6,12 +6,21 @@
  * 都不会报错——该转的没转，侧栏就停在上一个状态（人以为 Bot 还在跑）；不该转的转了，
  * 洪流原样回来（而那正是这条通道要省掉的东西）。所以一条条钉住。
  */
+import { readFileSync } from 'node:fs'
 import { catchUpFrames, newCatchUp, remember, rosterFrame } from '../gateway/src/lib/roster-filter.ts'
 
 const up = () => ({ botId: 'bot-a', sessionId: 's-a', after: 0, lastTick: 0, attempt: 0 })
 
 export async function runRosterStream({ test, assert, log }) {
   log('\n# roster-stream')
+
+  await test('管家那份 roster-filter 是 gateway 这份的逐字副本', async () => {
+    // 规则在两边都要跑（名单流下沉到席位机器，见 manager/src/roster.ts），而管家 import 不到
+    // gateway 的源，只能抄。抄的东西会漂，这里按字节钉住：改了 gateway 那份就整个覆盖过去。
+    const gw = readFileSync(new URL('../gateway/src/lib/roster-filter.ts', import.meta.url), 'utf8')
+    const mgr = readFileSync(new URL('../manager/src/roster-filter.ts', import.meta.url), 'utf8')
+    assert(mgr.endsWith(gw), 'manager/src/roster-filter.ts 和 gateway 那份不一样了——把 gateway 那份整个覆盖过去（保留文件头那段说明）')
+  })
 
   await test('名单要的那几种事件原样转出去', async () => {
     for (const type of ['turn/start', 'turn/end', 'human/handoff', 'tool/approval', 'user/message', 'assistant/message']) {
