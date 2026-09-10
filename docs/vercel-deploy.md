@@ -29,6 +29,7 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
 | `CRON_SECRET` | 随机串 | Vercel 触发 Cron 时带在 Authorization 上；没配 `/cron/tick` 整条关着 |
 | `GATEWAY_PUBLIC_URL` | `https://…` | 对外地址。**必须 https**：Telegram 收信靠它自动切到 webhook（channels/inbound.ts），管家学地址也靠它 |
 | `GATEWAY_TRUST_FORWARDED` | `1` | 信平台反代写的 `x-forwarded-for` 最右一跳（配对时记「机器在哪」用） |
+| `BLOB_READ_WRITE_TOKEN` | Vercel Blob 库的读写 token | 发布包不落盘、边收边传到 Blob（私有），下发时带 token 取。Debian 上也可以配，两边的包就在同一个地方。见 gateway/src/releases.ts |
 | `GATEWAY_ACCESS_HOST`、`GATEWAY_PLATFORM_TOKEN`、各家模型 key | 同 Debian | 见 docker-compose.yml |
 
 生成钥匙：
@@ -44,9 +45,9 @@ openssl rand -base64 32   # GATEWAY_CHANNEL_KEY
 
 ## 还没搬过去的
 
-- **发布包上传**（`PUT /platform/bot-releases/:version` 那几条）：函数只有 /tmp，写进去等于丢，
-  这条路在 Vercel 上回 501。用「登记远端包」（带 `url` 的 POST，包放 GitHub Release）。挪到
-  对象存储是 ADR §3 的待办。
+- **发布包超过 100 MB**：函数的请求体上限。Blob 那条路是边收边传，但字节得先进函数；更大的包
+  用「登记远端包」（带 `url` 的 POST，包放能直接下载的地方）。没配 `BLOB_READ_WRITE_TOKEN`
+  时直接上传回 501。
 - **桌面反代退路**（没配 `directUrl` 的机器）：WebSocket 在函数里能开，但被钉在一个实例上、
   受 300 秒上限。全铺 `directUrl` 就用不到它。
 - **老协议机器上的日常任务与渠道**：Gateway 不再自己跑那一轮（那要等席位 20 分钟），< 8 号的

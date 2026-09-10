@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.84.4",
+    "@vercel/blob": "2.8.0",
     "pg": "^8.23.0",
     "ws": "^8.21.3"
   },
