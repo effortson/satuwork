@@ -98,7 +98,8 @@ export class Db {
     // 就可能先发业务查询，是条竞态。
     this.pool = new Pool({
       connectionString: o.url,
-      max: 10,
+      // 函数环境里实例多、每个都开 10 条会把 Neon 的连接数打满；那儿走池化串、每实例 2 条够用。
+      max: Math.max(1, Math.trunc(Number(process.env.GATEWAY_PG_POOL_MAX) || 10)),
       options: `-c search_path=${this.schema}`,
       // 库那侧看得见是谁连的。撞车时报错要指名道姓，靠的就是它（见 claimSchema）。
       application_name: `satuwork-gateway[${this.schema}]`,

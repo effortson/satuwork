@@ -113,7 +113,8 @@ function match(parts: string[], path: string): Record<string, string> | null {
   return params
 }
 
-const UI_DIR = resolve(fileURLToPath(new URL('../ui', import.meta.url)))
+// 打成一个文件部署到函数环境时 import.meta.url 指的是那个包，`../ui` 就不对了；由环境变量指过去。
+const UI_DIR = process.env.GATEWAY_UI_DIR ? resolve(process.env.GATEWAY_UI_DIR) : resolve(fileURLToPath(new URL('../ui', import.meta.url)))
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

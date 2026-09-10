@@ -122,7 +122,26 @@ export interface JwtKeys {
  * 渠道 token 的包裹密钥。和 JWT 私钥一样第一次启动落盘、之后固定复用；0600 防止
  * 同机的普通用户读走。数据库泄露时 Telegram token 仍然不是明文。
  */
+/**
+ * 密钥的来源有两个：环境变量，或者磁盘。
+ *
+ * **环境变量优先**——Vercel 那样的函数环境没有一块跨请求、跨实例都在的磁盘，密钥只能从
+ * 环境来（docs/adr-gateway-vercel-neon.md §5.1）。Debian 上照旧落盘：第一次起来自己生成，
+ * 重启不变——重启一变，已经发出去的每张 JWT 就全失效了，这是当年把它放磁盘而不放库的理由。
+ *
+ * PEM 放进环境变量时换行常被压成字面的 `\n`，两种都认。
+ */
+function envPem(name: string): string {
+  return (process.env[name] || '').trim().replace(/\\n/g, '\n')
+}
+
 export function loadChannelKey(home: string): Buffer {
+  const fromEnv = (process.env.GATEWAY_CHANNEL_KEY || '').trim()
+  if (fromEnv) {
+    const key = Buffer.from(fromEnv, 'base64')
+    if (key.length !== 32) throw new Error('GATEWAY_CHANNEL_KEY 须是 32 字节的 base64')
+    return key
+  }
   const dir = join(home, 'keys')
   const path = join(dir, 'channel-secret.key')
   mkdirSync(dir, { recursive: true })
@@ -155,6 +174,14 @@ export function decryptChannelSecret<T>(key: Buffer, stored: string): T {
  * 重启不会让已发出的票全部失效。
  */
 export function loadKeys(home: string): JwtKeys {
+  const envPriv = envPem('GATEWAY_JWT_PRIVATE_KEY')
+  const envPub = envPem('GATEWAY_JWT_PUBLIC_KEY')
+  if (envPriv || envPub) {
+    if (!envPriv || !envPub) throw new Error('GATEWAY_JWT_PRIVATE_KEY 与 GATEWAY_JWT_PUBLIC_KEY 要一起给')
+    // 先验一遍能不能当钥匙用：环境变量里少一行 PEM 尾巴，第一次签票时才炸，比这里炸难查得多。
+    createPublicKey(envPub)
+    return { kid: createHash('sha256').update(envPub).digest('hex').slice(0, 16), privatePem: envPriv, publicPem: envPub }
+  }
   const dir = join(home, 'keys')
   const privPath = join(dir, 'jwt-private.pem')
   const pubPath = join(dir, 'jwt-public.pem')

@@ -194,6 +194,15 @@ export async function storeUploadedRelease(
     .toLowerCase()
   if (expected && !SHA256_RE.test(expected)) throw new HttpError(400, 'sha256 须为 64 位十六进制')
   if (await db.botRelease(version, kind)) throw new HttpError(409, '这个版本已经发布过')
+  /**
+   * 函数环境（Vercel）只有 /tmp，不跨实例、不跨部署：包写进去等于随手丢，而登记已经进了库，
+   * 管家来拉时 404，比一句「不能上传」难查一百倍。发布包挪到对象存储是 ADR §3 的待办；在
+   * 那之前 Vercel 上只能走「登记远端包」那条路（POST /platform/bot-releases，包放在 GitHub
+   * Release 之类能直接下载的地方）。
+   */
+  if (process.env.VERCEL && !process.env.SATUWORK_GATEWAY_HOME) {
+    throw new HttpError(501, '函数环境没有可写磁盘，发布包请用「登记远端包」（带 url 的 POST），不要直接上传')
+  }
 
   mkdirSync(botReleaseDir(), { recursive: true })
   const dest = botReleaseFile(version, kind)

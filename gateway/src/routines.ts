@@ -614,6 +614,41 @@ function sweepLeases(db: Db): Promise<void> {
 }
 
 /**
+ * 一拍要做的全部事。Debian 上由 startRoutineScheduler 每 30 秒调一次；Vercel 上由 Cron 打
+ * `/cron/tick`（routes/cron.ts）每分钟调一次。**两边同一份**，节拍不同而已。
+ *
+ * 顺序里的每一项都是可重入、无状态的扫描（各有自己的 claim / lease），叠着跑不会做两遍。
+ */
+export async function maintenanceTick(db: Db): Promise<void> {
+  await Promise.resolve()
+    .then(() => tickRoutines(db))
+    // 收尾跟着每一轮跑，不只在启动时跑一次：按年龄划线之后，启动那一次收不到
+    // 「刚起来时还不够老、后来也没人管」的那些（比如另一个进程半路被 kill）。
+    .then(() => sweepStaleRuns(db))
+    .then(() => sweepLeases(db))
+    /**
+     * 转人工的催办跟着同一个节拍走（见 handoff-sweep.ts）。
+     *
+     * **不新起一个定时器**：两件事的周期一样（半分钟量级的粗节拍），而多一个
+     * 定时器就多一处要在关停时记得清的东西——忘了清的表现是进程不退出。
+     */
+    .then(() => sweepHandoffs(db))
+    // 自动对话审计与删除终审复用同一个粗节拍。批次和删除请求都在库里，tick 只负责推进。
+    .then(() => tickConversationAudits(db))
+    .then(() => tickBotDeletions(db))
+    /**
+     * 模型目录的自动发现（见 model-discovery.ts）。**同样不新起定时器**——理由和
+     * 上面两处一样。它自己按 GATEWAY_MODEL_DISCOVERY_MS 节流（默认 6 小时），
+     * 所以挂在这个半分钟的粗节拍上不会真的每半分钟去拉一次。
+     */
+    .then(() => refreshDiscovered(db).then((r) => {
+      if (r.error) console.error(`satuwork-gateway: 模型目录刷新失败：${r.error}`)
+      else if (r.ran) console.log(`satuwork-gateway: 模型目录已刷新，models.dev 收录 ${r.added} 个可用模型`)
+    }))
+    .catch((e: Error) => console.error(`satuwork-gateway: 日常任务扫描失败：${e.message}`))
+}
+
+/**
  * 起调度器。返回停它的那个函数。
  *
  * 起来的第一件事是把上一代留下的「正在跑」收干净：等结果的 watcher 活在内存里，
@@ -632,35 +667,9 @@ export function startRoutineScheduler(db: Db): () => void {
     // 上一轮还没扫完就跳过这一轮：扫的过程里有网络，慢起来会叠。
     if (running) return
     running = true
-    void Promise.resolve()
-      .then(() => tickRoutines(db))
-      // 收尾跟着每一轮跑，不只在启动时跑一次：按年龄划线之后，启动那一次收不到
-      // 「刚起来时还不够老、后来也没人管」的那些（比如另一个进程半路被 kill）。
-      .then(() => sweepStaleRuns(db))
-      .then(() => sweepLeases(db))
-      /**
-       * 转人工的催办跟着同一个节拍走（见 handoff-sweep.ts）。
-       *
-       * **不新起一个定时器**：两件事的周期一样（半分钟量级的粗节拍），而多一个
-       * 定时器就多一处要在关停时记得清的东西——忘了清的表现是进程不退出。
-       */
-      .then(() => sweepHandoffs(db))
-      // 自动对话审计与删除终审复用同一个粗节拍。批次和删除请求都在库里，tick 只负责推进。
-      .then(() => tickConversationAudits(db))
-      .then(() => tickBotDeletions(db))
-      /**
-       * 模型目录的自动发现（见 model-discovery.ts）。**同样不新起定时器**——理由和
-       * 上面两处一样。它自己按 GATEWAY_MODEL_DISCOVERY_MS 节流（默认 6 小时），
-       * 所以挂在这个半分钟的粗节拍上不会真的每半分钟去拉一次。
-       */
-      .then(() => refreshDiscovered(db).then((r) => {
-        if (r.error) console.error(`satuwork-gateway: 模型目录刷新失败：${r.error}`)
-        else if (r.ran) console.log(`satuwork-gateway: 模型目录已刷新，models.dev 收录 ${r.added} 个可用模型`)
-      }))
-      .catch((e: Error) => console.error(`satuwork-gateway: 日常任务扫描失败：${e.message}`))
-      .finally(() => {
-        running = false
-      })
+    void maintenanceTick(db).finally(() => {
+      running = false
+    })
   }, TICK_MS)
   // 只有它一个定时器的话，进程会因为它一直不退出。
   timer.unref?.()
