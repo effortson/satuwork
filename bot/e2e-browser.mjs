@@ -116,14 +116,21 @@ const chrome = spawn(
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-gpu',
+    // CI 容器里 /dev/shm 常常只有 64 MB，Chrome 会在那儿撞墙。GitHub 的 runner 够用，但加上没有副作用。
+    '--disable-dev-shm-usage',
     `--user-data-dir=${profile}`,
     `--remote-debugging-port=${cdpPort}`,
     '--remote-debugging-address=127.0.0.1',
     `--host-resolver-rules=MAP ${HOST} 127.0.0.1:${httpPort},MAP ${OFFSITE} 127.0.0.1:${httpPort}`,
     'about:blank',
   ],
-  { stdio: ['ignore', 'ignore', 'ignore'] },
+  // stderr 留着：起不来的时候它是唯一的线索。以前是 ignore，于是 CI 上只有一句「没起来」。
+  { stdio: ['ignore', 'ignore', 'pipe'] },
 )
+let chromeErr = ''
+chrome.stderr.on('data', (d) => {
+  chromeErr = (chromeErr + d).slice(-3000)
+})
 
 /** 截图落进这里。在 done 之前声明：Ctrl-C 可能发生在它建出来之前。 */
 let workRoot = ''
@@ -143,16 +150,28 @@ process.on('SIGTERM', () => done(143))
 // **起不来是失败，不是跳过。** 上面已经确认这台机器有 Chrome；到这里还起不来，是端口
 // 被占、Chrome 崩了之类的真问题。以前打 `__SKIP__` 的写法把这些全变成了绿——有浏览器
 // 的机器上整套用例一次都没跑，而没有人会去看 skip 清单。
+//
+// **预算 40 秒，不是 10 秒。** 10 秒在本机绰绰有余，在 GitHub 两核的 runner 上、排在几十个
+// 套件之后跑，headless Chrome 用一个全新 profile 冷启动常常压不进去——2026-09-10 那天十四次
+// CI 有五次红，全是这一句、全是 exitCode=null（活着，只是慢）。探针总额度 90 秒，后面的
+// 用例十几秒就完，放得起。
+const CDP_WAIT_MS = 40_000
+const startedAt = Date.now()
 let up = false
-for (let i = 0; i < 40; i++) {
+while (Date.now() - startedAt < CDP_WAIT_MS) {
   await new Promise((r) => setTimeout(r, 250))
+  if (chrome.exitCode !== null) break
   try {
     const res = await fetch(`http://127.0.0.1:${cdpPort}/json/version`, { signal: AbortSignal.timeout(500) })
     if (res.ok) { up = true; break }
   } catch { /* 还没起来 */ }
 }
 if (!up) {
-  console.error(`Chrome（${bin}）的调试端口 ${cdpPort} 10 秒没起来：exitCode=${chrome.exitCode}`)
+  const waited = Math.round((Date.now() - startedAt) / 1000)
+  console.error(
+    `Chrome（${bin}）的调试端口 ${cdpPort} ${waited} 秒没起来：exitCode=${chrome.exitCode}` +
+      (chromeErr.trim() ? `\nChrome stderr 尾部：\n${chromeErr.trim()}` : '\n（Chrome 没往 stderr 写任何东西）'),
+  )
   done(1)
 }
 
