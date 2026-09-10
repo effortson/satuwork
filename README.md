@@ -36,9 +36,10 @@ Gateway 有一个函数形态（`gateway/src/serverless.ts`）：没有监听、
 
 ## 桌面端
 
-`desktop/` 是个 Tauri 壳，**包里没有前端**——它只记住「连哪台 Gateway」，然后开一个
-没有地址栏的窗口装 Gateway 自己发的那份界面。为什么是这个形状、以及换系统时该先跑
-哪个自检，见 [desktop/README.md](desktop/README.md)。
+`desktop/` 是个 Tauri 壳，**界面打在包里**（`gateway/ui` 那批分片原样拷进去，由壳子自己的
+`satu://` 协议发出来），壳子记住「连哪台 Gateway」并注入给页面。本地 Bot 的会话不经过 Gateway，
+日常任务由 Bot 进程自己领。为什么是这个形状、以及换系统时该先跑哪个自检，见
+[desktop/README.md](desktop/README.md)。
 
 ## 出包
 

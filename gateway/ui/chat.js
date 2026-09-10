@@ -1650,7 +1650,7 @@ async function startRosterStream(attempt = 0) {
   }
   let res
   try {
-    res = await fetch(direct || '/runtime/roster/stream', {
+    res = await swFetch(direct || '/runtime/roster/stream', {
       headers: { accept: 'text/event-stream', ...(t ? { authorization: 'Bearer ' + t } : {}) },
       signal: ac.signal,
     })
@@ -5117,6 +5117,8 @@ function chatMachinePanel() {
   }
 
   if (mine && mine.status === 'ready') {
+    // 走 Gateway 反代那条路的桌面地址是相对的；桌面端里界面不在 Gateway 的源上，要接上它。
+    if (mine.novncUrl) mine.novncUrl = gatewayAbs(mine.novncUrl)
     if (mine.novncUrl && deskEmbeddable(mine.novncUrl)) {
       // 只放一个空槽。真正的 iframe 挂在 #app 外面的常驻层里（见 syncDesktop），
       // 整页重绘换不掉它——换掉一次就是断一次 VNC。
@@ -5637,7 +5639,8 @@ function deskCrossOrigin(url) {
 function deskUrl() {
   const rt = state.desktopRuntime
   if (!rt || rt.status !== 'ready' || !rt.novncUrl || !deskEmbeddable(rt.novncUrl)) return ''
-  return rt.novncUrl + (rt.novncUrl.includes('?') ? '&' : '?') + 'resize=scale&reconnect=1&bell=false'
+  const abs = gatewayAbs(rt.novncUrl)
+  return abs + (abs.includes('?') ? '&' : '?') + 'resize=scale&reconnect=1&bell=false'
 }
 
 const DESK_EXPAND = ['M15 3h6v6', 'M9 21H3v-6', 'M21 3l-7 7', 'M3 21l7-7']
@@ -6037,7 +6040,7 @@ async function startLogStream(url) {
   paintLogs()
   let res
   try {
-    res = await fetch(url, {
+    res = await swFetch(url, {
       headers: { accept: 'text/event-stream', ...(token() ? { authorization: 'Bearer ' + token() } : {}) },
       signal: ac.signal,
     })

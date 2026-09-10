@@ -56,6 +56,9 @@ function linuxUserOf(accountId: string): string {
  * 请求的响应上也要有 allow-origin。**只认 Gateway 那一个源**，别的源一律不给头——
  * 浏览器那头就会拦住。凭证走 `Authorization` 头而不是 cookie，所以不开 allow-credentials。
  */
+/** 桌面端把界面打进了包里，页面的源是它自己的（satu://localhost）；和 Gateway 的源一样要认。 */
+const DESKTOP_ORIGINS = new Set(['satu://localhost', 'http://satu.localhost', 'tauri://localhost', 'http://tauri.localhost'])
+
 function corsFor(req: IncomingMessage, gatewayUrl: string): Record<string, string> | null {
   let allowed: string
   try {
@@ -64,9 +67,9 @@ function corsFor(req: IncomingMessage, gatewayUrl: string): Record<string, strin
     return null
   }
   const origin = String(req.headers.origin || '')
-  if (!origin || origin !== allowed) return null
+  if (!origin || (origin !== allowed && !DESKTOP_ORIGINS.has(origin))) return null
   return {
-    'access-control-allow-origin': allowed,
+    'access-control-allow-origin': origin,
     'access-control-allow-methods': 'GET, OPTIONS',
     'access-control-allow-headers': 'authorization, accept, last-event-id',
     'access-control-max-age': '600',
@@ -411,8 +414,17 @@ export function proxyIntercept(deps: ProxyDeps) {
         `path=${encodeURIComponent(wsPath)}&autoconnect=1` +
         (ok.vnc ? `&password=${encodeURIComponent(ok.vnc)}` : '') +
         viewParams(url)
+      /**
+       * 桌面端把界面打进了包里之后，这块屏的 iframe 对页面来说是**跨站**的（页面源是
+       * satu://localhost），SameSite=Lax 的 cookie 在跨站子框里浏览器不发——表现是落地页打开、
+       * 之后每条资源和那条 WebSocket 全 401。跨站要 `SameSite=None; Secure`，而 Secure 要求
+       * https：直连本来就要求 https（gateway-runtime.md §7），按前面终结 TLS 的反代报的协议判。
+       * 没过 https 的（本地 e2e、内网 http）照旧 Lax。
+       */
+      const https = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https'
+      const sameSite = https ? 'SameSite=None; Secure' : 'SameSite=Lax'
       res.writeHead(302, {
-        'set-cookie': `${cookieName(seatId)}=${encodeURIComponent(ticket)}; Path=${base}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax`,
+        'set-cookie': `${cookieName(seatId)}=${encodeURIComponent(ticket)}; Path=${base}; Max-Age=${maxAge}; HttpOnly; ${sameSite}`,
         location: `${base}/vnc.html?${query}`,
         'cache-control': 'no-store',
       })

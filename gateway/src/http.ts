@@ -195,6 +195,30 @@ const CSP = [
   "worker-src 'self' blob:",
 ].join('; ')
 
+/**
+ * 跨源来的界面：桌面端把 gateway/ui 打进了包里，页面的源是 satu://localhost（Windows 上是
+ * http://satu.localhost），所有 API 请求都是跨源的。只对这几个源开，外加 GATEWAY_CORS_ORIGINS
+ * 里逗号分隔的（预览环境、别的壳）。凭据走 Authorization 头不走 cookie，不开 allow-credentials。
+ * 别的源一律不给头，浏览器那头就会拦住——放开 `*` 的话，任何网页里的脚本拿着偷来的票都能打。
+ */
+const CORS_ORIGINS = new Set(
+  ['satu://localhost', 'http://satu.localhost', 'tauri://localhost', 'http://tauri.localhost']
+    .concat((process.env.GATEWAY_CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean)),
+)
+
+function corsHeaders(req: IncomingMessage): Record<string, string> | null {
+  const origin = String(req.headers.origin || '')
+  if (!origin || !CORS_ORIGINS.has(origin)) return null
+  return {
+    'access-control-allow-origin': origin,
+    'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    'access-control-allow-headers': 'authorization, content-type, accept, x-filename, x-api-key, last-event-id',
+    'access-control-expose-headers': 'content-type, content-disposition',
+    'access-control-max-age': '600',
+    vary: 'origin',
+  }
+}
+
 /** GET / 与各管理屏、GET /ui/*、/theme.css、/assets/* 从 gateway/ui 出。路径不得逃出该目录。 */
 function serveUi(pathname: string, res: ServerResponse): boolean {
   let rel: string | null = ''
@@ -305,6 +329,16 @@ export class Router {
       return
     }
     try {
+      // 跨源的界面（桌面端）：头先挂上，预检直接答。routes 里的 writeHead 会保留这里 setHeader 的。
+      const cors = corsHeaders(raw)
+      if (cors) {
+        for (const [k, v] of Object.entries(cors)) res.setHeader(k, v)
+        if (method === 'OPTIONS') {
+          res.writeHead(204)
+          res.end()
+          return
+        }
+      }
       for (const fn of this.intercepts) {
         if (await fn(raw, res, url)) return
       }
