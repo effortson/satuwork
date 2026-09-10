@@ -28,6 +28,11 @@ Gateway 的业务数据在 PostgreSQL；宿主机端口用 **5434**（5432 一�
 Gateway 要全面进入 Vercel + Neon：进程里会动的和握长连接的东西按机器下沉到席位工人、按人
 下沉到桌面端，Gateway 只剩无状态接口、静态界面和 `/v1`。决定、去向、上线顺序见
 [docs/adr-gateway-vercel-neon.md](docs/adr-gateway-vercel-neon.md)。
+## 部署到 Vercel + Neon
+
+Gateway 有一个函数形态（`gateway/src/serverless.ts`）：没有监听、定时器、迁移，钥匙来自环境变量，
+分钟级扫描由 Cron 打 `/cron/tick`。仓库根目录的 `vercel.json` 就是给它的。环境变量、前提和还没
+搬过去的东西见 [docs/vercel-deploy.md](docs/vercel-deploy.md)。Debian 上照旧 `pnpm dev` / compose。
 
 ## 桌面端
 

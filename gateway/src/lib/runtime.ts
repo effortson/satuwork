@@ -62,8 +62,21 @@ function isTrustedProxy(ip: string): boolean {
  * 自己能写的，只有名单外的第一跳是反代亲眼看见的真实来源。整条链都在名单里（反代和
  * 管家同一台机）就取最左那个。头里有看不懂的东西就当没有这个头，退回 socket 地址。
  */
+/**
+ * 平台自己的反代（Vercel）不在任何名单上，socket 那头永远是平台内网地址，而 `x-forwarded-for`
+ * 由平台写、客户端改不了最右那一跳。`GATEWAY_TRUST_FORWARDED=1` 就是「信最右那一跳」。
+ * 只在平台上开：自己挂的 nginx/Caddy 仍走 GATEWAY_TRUSTED_PROXIES 那套名单。
+ */
+const TRUST_FORWARDED = process.env.GATEWAY_TRUST_FORWARDED === '1'
+
 export function sourceIpOf(req: Req): string {
   const socketIp = plainIp(req.socket.remoteAddress || '')
+  if (TRUST_FORWARDED) {
+    const header = req.headers['x-forwarded-for']
+    const chain = (Array.isArray(header) ? header.join(',') : header || '').split(',').map((s) => plainIp(s)).filter(Boolean)
+    const last = chain[chain.length - 1]
+    return last && isIP(last) ? last : socketIp
+  }
   if (!socketIp || !isTrustedProxy(socketIp)) return socketIp
   const header = req.headers['x-forwarded-for']
   const chain = (Array.isArray(header) ? header.join(',') : header || '')
