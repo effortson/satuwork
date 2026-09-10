@@ -44,7 +44,7 @@ SATUWORK_SERVER=http://127.0.0.1:3080 pnpm --filter satuwork-desktop dev
 Gateway 从此不知道本地 Bot 在不在跑，所以
 
 - 名单上本地 Bot 那一行的状态由壳子报，只在桌面端里成立；在普通浏览器里它永远是「本机未运行」。
-- 本地 Bot 的日常任务 Gateway 不再调度（它连不到本机），等桌面端自己的调度器；在那之前静静排着。
+- 本地 Bot 的日常任务 Gateway 不再调度（它连不到本机）；Bot 进程自己每半分钟去领（bot/src/local-routines），电脑关着、应用没开就没人领，Gateway 只是排着。
 - 转人工、审计拉全文这类 Gateway 主动找 Bot 的事，对本地 Bot 都是「实例还没上线」。
 
 跨源：页面的源是 Gateway，请求打 127.0.0.1，Bot 的守卫只对 Gateway 那一个源开 CORS
