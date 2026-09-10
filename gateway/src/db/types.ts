@@ -1422,6 +1422,10 @@ export interface RoutineRun {
   error: string | null
   startedAt: number
   endedAt: number | null
+  /** 哪台机器的工人领走了这一次。null = Gateway 自己跑的（老机器、试跑）。见迁移 0039。 */
+  machineId: string | null
+  /** 工人的租约到期时刻。null = 不是工人跑的。到点没续就记成「机器没回报」。 */
+  leaseUntil: number | null
 }
 
 /** 一条 routine 最多挂几个触发器。多到这个数就不是「什么时候跑」，是另一个功能了。 */

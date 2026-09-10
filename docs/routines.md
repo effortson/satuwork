@@ -259,6 +259,29 @@ watcher 都已经放弃了。
 没触发**，补上去只会在开机那一刻涌出一堆没人要的东西；后者是这一次**触发了、也确实去
 做了、砸在了半路**，而人是奔着结果设的它。
 
+## 8b. 由席位机器上的工人来跑
+
+Gateway 要变成无状态的（[adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md)），「到点了去敲席位、
+挂着流等 20 分钟」这件事就不能再在它进程里发生。机器协议 ≥ 7 时，那台机器上的任务改由机器
+自己来领：
+
+| 一步 | 谁 | 接口 |
+| --- | --- | --- |
+| 领活 | 工人凭 `smt_` | `GET /worker/routines/due` —— Gateway 在这里抢（同 §3 的规矩：空指令不跑、迟太久记「错过」、上一轮没完就跳过），登记一条 `running` 流水，带租约交出去 |
+| 问能不能跑 | 工人拿到会话 id 之后 | `POST /worker/routines/:runId/started {sessionId}` —— Gateway 查这条会话有没有转人工挡着（§8 那条规矩不变），挡着就当场收成 error |
+| 续租 | 工人每隔租约的三分之一 | `POST /worker/routines/:runId/renew` |
+| 回报 | 工人等到自己那一轮的 `turn/end` | `POST /worker/routines/:runId/finish {kind}` —— `completed` / `aborted` / `timeout` / `failed` / 其余，怎么解释、补不补，规矩在 Gateway（`settleRun`），和它自己跑时一字不差 |
+
+**Gateway 的调度器不碰归工人的任务**（`tickRoutines` 按席位所在机器的协议号分流），
+机器不够新时照旧自己跑。所以升级顺序怎么颠倒都不会两边各跑一遍。
+
+**机器离线怎么记。** 以前是 Gateway 敲不到席位、记一条「实例还没上线」再排补跑。下沉之后
+Gateway 不再去敲，改看租约：工人领走的流水带 `leaseUntil`，进程死了没人续，到点 Gateway 的
+清扫（`sweepLeases`）记成「机器没回报」并排补跑——和「够不着席位」是同一种失败，补三次。
+
+流水上因此多两格 `machineId` / `leaseUntil`（迁移 0039）。Gateway 自己跑的两格都空着。
+试跑（`trigger = manual`）今天仍由 Gateway 自己发，不经过工人。
+
 ## 9. Agent 内置工具
 
 当前 Bot 有两把主代理专用工具：

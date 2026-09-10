@@ -56,6 +56,8 @@ function publicRun(run: RoutineRun) {
     error: run.error,
     startedAt: run.startedAt,
     endedAt: run.endedAt,
+    /** 哪台机器的工人跑的；null = Gateway 自己跑的。界面上用来解释「机器没回报」是哪台。 */
+    machineId: run.machineId,
   }
 }
 

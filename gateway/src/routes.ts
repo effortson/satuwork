@@ -22,6 +22,7 @@ import { attachSessions } from './routes/sessions.ts'
 import { attachCharges } from './routes/charges.ts'
 import { attachInternal } from './routes/internal.ts'
 import { attachChannels } from './routes/channels.ts'
+import { attachWorker } from './routes/worker.ts'
 
 /**
  * 把控制面的路由挂上去。
@@ -54,6 +55,7 @@ export function attach(router: Router, db: Db, keys: JwtKeys, channelKey: Buffer
   attachRuntime(router, ctx)
   attachHandoffs(router, ctx)
   attachRoutines(router, ctx)
+  attachWorker(router, ctx)
   attachChannels(router, ctx)
   attachCatalog(router, ctx)
   attachConnectors(router, ctx)
