@@ -74,6 +74,20 @@ export function telegramDeleteWebhook(token: string, dropPending = false): Promi
   return call(token, 'deleteWebhook', { drop_pending_updates: dropPending })
 }
 
+/**
+ * 让 Telegram 主动把 update 推到我们的地址上，不再长轮询。`secret` 会原样出现在每条推送的
+ * `X-Telegram-Bot-Api-Secret-Token` 头里，收的那一头拿它认「真是 Telegram 发的」。
+ * `allowed_updates` 和 getUpdates 那边保持一致——少一种就少收一类事件，而且不报错。
+ */
+export function telegramSetWebhook(token: string, url: string, secret: string): Promise<boolean> {
+  return call(token, 'setWebhook', {
+    url,
+    secret_token: secret,
+    allowed_updates: ['message', 'callback_query', 'my_chat_member'],
+    drop_pending_updates: false,
+  })
+}
+
 /** 让 Telegram 客户端在 `/` 菜单里直接展示渠道支持的控制命令。 */
 export function telegramSetMyCommands(token: string): Promise<boolean> {
   return call(token, 'setMyCommands', {

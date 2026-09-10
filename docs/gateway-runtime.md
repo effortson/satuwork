@@ -939,6 +939,7 @@ Bot 的 ready、索引等上报使用 `sat_`，部署绝不把 `smt_` 写入 `bo
 | POST | `/internal/machines/:id/heartbeat` | 该机器的 `smt_`；票必须对应 `:id`。**也是自升级、时区和日志上限的下发通道**：body 带 `managerVersion`/`protocol`/`arch`/`timezone`（实际时区）/`metrics`/`logs`/`seats`，响应带 `desiredManagerVersion`/`url`/`sha256`/`timezone`（期望时区）/`logCapMb`/`minNode`/`minProtocol` |
 | POST | `/internal/instances/:accountId/ready` | Bot 通常带自己的 `sat_`，只能报该账号；兼容管家带 `smt_` 替本机席位上报。body `{ host, botId }`，`botId` 必填；pair 必须已部署 |
 | POST | `/internal/sessions/index` | Bot 通常带自己的 `sat_`，只能报该账号；兼容管家带 `smt_` 替本机席位上报。`machineId` 由服务端按席位实际所在机器计算，不采信 body |
+| POST | `/channels/telegram/hook/:publicId` | Telegram 推送的 update（webhook 模式，`GATEWAY_TELEGRAM_WEBHOOK_BASE` 或 https 的 `GATEWAY_PUBLIC_URL`）。认 publicId + `X-Telegram-Bot-Api-Secret-Token`，错一样 404；处理同长轮询那条。没有 https 公网地址时仍长轮询，两种模式双向自愈，见 gateway/src/channels/inbound.ts |
 | GET | `/worker/routines/due` | 席位工人凭 `smt_` 领**本机**到点的日常任务（含补跑）。领取即租约，见 [routines.md](routines.md) §8b |
 | POST | `/worker/routines/:runId/started` | `{ sessionId }`。Gateway 查转人工挡不挡；挡着回 `{ blocked }` 并收场 |
 | POST | `/worker/routines/:runId/renew` | 续租。404 = 这一次已不归你（租约被收、或已收场），停手 |

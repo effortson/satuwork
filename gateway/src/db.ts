@@ -3072,9 +3072,15 @@ export class Db {
     await this.one('select id from channel_bindings where id = ? for update', [id])
   }
 
-  async dueChannelPolls(now: number, limit = 10): Promise<ChannelBinding[]> {
+  /**
+   * 该去长轮询的绑定。`webhookOnly = false`（webhook 模式）时挂着 webhook 的不选——它们的
+   * 消息由 Telegram 推过来；模式关着时全选，好让轮询循环把残留的 webhook 删掉
+   * （见 channels.ts 的 pollOne 与 channels/inbound.ts）。
+   */
+  async dueChannelPolls(now: number, limit = 10, includeWebhook = true): Promise<ChannelBinding[]> {
     const rows = await this.many(
       `select * from channel_bindings where kind='telegram' and status='active'
+       ${includeWebhook ? '' : `and "webhookSecretHash" = ''`}
        and coalesce("pollLeaseUntil",0) <= ? order by coalesce("lastPolledAt",0), "createdAt" limit ?`,
       [now, Math.min(50, Math.max(1, limit))],
     )
@@ -3152,16 +3158,22 @@ export class Db {
   }): Promise<{ event: ChannelEvent; created: boolean }> {
     const now = Date.now()
     const id = randomUUID()
-    try {
-      await this.run(
-        `insert into channel_events
-         (id,"bindingId","externalEventId","externalConversationId","remoteUserId","remoteDisplayName",title,text,status,attempts,"nextTryAt","leaseUntil","leaseToken","sessionId",reply,files,handoffs,"lastError","createdAt","updatedAt","deliveredAt")
-         values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        [id, input.bindingId, input.externalEventId, input.externalConversationId, input.remoteUserId || '',
-          input.remoteDisplayName || '', input.title || '', input.text, 'pending', 0, now, null, '', null, '', '[]', '[]', null, now, now, null],
-      )
-    } catch (e) {
-      if (!isUniqueViolation(e)) throw e
+    /**
+     * 同一条 update 来两次（Telegram 在拿到 2xx 之前会一直重送；webhook 模式下这是常态）
+     * 只能入一条。**用 `on conflict do nothing`，不能靠 catch 唯一冲突再查**：调用方在事务里
+     * （processTelegramUpdate 的 db.tx），一条失败的 insert 会让 PG 把整个事务标成 aborted，
+     * 之后那句 select 拿到的是「current transaction is aborted」。长轮询模式下 offset 挡住了
+     * 重放，这个坑一直没露出来。
+     */
+    const inserted = await this.run(
+      `insert into channel_events
+       (id,"bindingId","externalEventId","externalConversationId","remoteUserId","remoteDisplayName",title,text,status,attempts,"nextTryAt","leaseUntil","leaseToken","sessionId",reply,files,handoffs,"lastError","createdAt","updatedAt","deliveredAt")
+       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       on conflict ("bindingId", "externalEventId") do nothing`,
+      [id, input.bindingId, input.externalEventId, input.externalConversationId, input.remoteUserId || '',
+        input.remoteDisplayName || '', input.title || '', input.text, 'pending', 0, now, null, '', null, '', '[]', '[]', null, now, now, null],
+    )
+    if (inserted === 0) {
       const old = await this.one('select * from channel_events where "bindingId" = ? and "externalEventId" = ?', [input.bindingId, input.externalEventId])
       return { event: channelEventOf(old!), created: false }
     }

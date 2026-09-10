@@ -5,6 +5,7 @@ import { machineTokenFor, seatBearer } from './lib/runtime.ts'
 import { gatewayPublicUrl } from './deploy.ts'
 import { pairingCodeHash } from './channels/pairing.ts'
 import { createDraftPump } from './channels/draft-pump.ts'
+import { ensureTelegramInbound, telegramWebhookMode } from './channels/inbound.ts'
 import { callSeat, canActOn } from './lib/handoff.ts'
 import {
   TelegramError, normalizeTelegramCallback, normalizeTelegramUpdate, telegramAnswerCallbackQuery,
@@ -641,7 +642,7 @@ async function processTelegramApprovalCallback(
   return true
 }
 
-async function processTelegramUpdate(db: Db, key: Buffer, binding: NonNullable<Awaited<ReturnType<Db['channelBinding']>>>, raw: unknown): Promise<void> {
+export async function processTelegramUpdate(db: Db, key: Buffer, binding: NonNullable<Awaited<ReturnType<Db['channelBinding']>>>, raw: unknown): Promise<void> {
   const live = await db.channelBinding(binding.id)
   if (!live || live.status !== 'active') return
   if (await processTelegramHandoffCallback(db, key, live, raw)) return
@@ -725,6 +726,21 @@ async function pollOne(db: Db, key: Buffer, candidate: Awaited<ReturnType<Db['ch
   let nextOffset = binding.pollOffset
   try {
     const secret = decryptChannelSecret<StoredSecret>(key, binding.credentialCiphertext)
+    /**
+     * 收信方式和当前模式对不上就先对齐（见 channels/inbound.ts）。
+     *
+     * · 该走 webhook 而这条还在轮询：设上 webhook，**这一轮不再 getUpdates**（两者互斥，
+     *   Telegram 会 409）。dueChannelPolls 从此不再选它——判据就是散列非空。
+     * · 该走轮询而这条还挂着 webhook（模式关掉了）：删掉 webhook、清散列，接着照常轮询。
+     */
+    if (telegramWebhookMode() !== Boolean(binding.webhookSecretHash)) {
+      const aligned = await ensureTelegramInbound(db, binding, secret.token)
+      if (aligned.webhookSecretHash) {
+        console.log(`satuwork-gateway: Telegram 渠道 ${binding.id} 已切到 webhook，不再长轮询`)
+        await db.finishChannelPoll(binding.id, { pollLastError: null, nextPollAt: null })
+        return
+      }
+    }
     if (!commandsConfigured.has(binding.id)) {
       try {
         await telegramSetMyCommands(secret.token)
@@ -798,7 +814,8 @@ export function startChannelDispatcher(db: Db, key: Buffer, keys: JwtKeys): () =
   const poll = () => {
     if (polling || stopped) return
     polling = true
-    void db.dueChannelPolls(Date.now(), 10)
+    // webhook 模式下已经切过去的绑定不再轮询；模式关着时全都看一遍，把残留的 webhook 删掉。
+    void db.dueChannelPolls(Date.now(), 10, !telegramWebhookMode())
       .then((bindings) => Promise.all(bindings.map((binding) => pollOne(db, key, binding))))
       .catch((e: Error) => console.error(`satuwork-gateway: Telegram 长轮询失败：${e.message}`))
       .finally(() => { polling = false })

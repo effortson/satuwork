@@ -51,6 +51,7 @@ import { runHandoff } from './handoff.mjs'
 import { runRoutineRetry } from './routine-retry.mjs'
 import { runRoutineWorker } from './routine-worker.mjs'
 import { runWorker } from './worker.mjs'
+import { runChannelWebhook } from './channel-webhook.mjs'
 import { runBrowser } from './browser.mjs'
 import { runMounted } from './mounted.mjs'
 import { runSetup } from './setup.mjs'
@@ -3360,6 +3361,7 @@ async function main() {
     await suite('manager', () => runManager({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('manager-confirm', () => runManagerConfirm({ root, test, assert, log }))
     await suite('channels', () => runChannels({ gwRoot, test, req, start, waitHttp, assert, log }))
+    await suite('channel-webhook', () => runChannelWebhook({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('telegram-rich', () => runTelegramRich({ root, test, assert, log }))
     await suite('telegram-channel', () => runTelegramChannel({ root, test, assert, log }))
     await suite('ui-smoke', () => runUiSmoke({ root, gwRoot, test, req, start, waitHttp, assert, log }))
