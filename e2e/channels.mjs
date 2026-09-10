@@ -11,7 +11,7 @@ import { createCompany } from './org.mjs'
 import { closeServer } from './probe.mjs'
 import { runProbe } from './probe.mjs'
 
-const TOKEN = '123456789:telegram-e2e-token-never-store-plain'
+export const TOKEN = '123456789:telegram-e2e-token-never-store-plain'
 const APPROVAL_KEY = 'AbCdEfGhIjKlMnOpQrStUv'
 const HANDOFF_ID = '12345678-1234-4234-8234-123456789abc'
 const APPROVAL_EMAIL_BODY = [
@@ -129,8 +129,9 @@ async function mockSeat() {
   return { server, seen, url: `http://127.0.0.1:${server.address().port}` }
 }
 
-async function mockTelegram() {
+export async function mockTelegram() {
   const seen = {
+    webhook: null,
     deleteWebhook: 0, commands: [], leaveChats: [], sent: [], chatActions: [], polls: [], updates: [],
     callbackAnswers: [], callbackAnswerAttempts: [], editedMarkups: [],
   }
@@ -149,6 +150,11 @@ async function mockTelegram() {
       if (method === 'getMe') return send({ id: 88776655, is_bot: true, first_name: 'E2E', username: 'satuwork_e2e_bot' })
       if (method === 'deleteWebhook') {
         seen.deleteWebhook += 1
+        seen.webhook = null
+        return send(true)
+      }
+      if (method === 'setWebhook') {
+        seen.webhook = { url: String(body.url || ''), secret: String(body.secret_token || ''), allowed: body.allowed_updates || [] }
         return send(true)
       }
       if (method === 'setMyCommands') {
@@ -190,6 +196,12 @@ async function mockTelegram() {
         return send(true)
       }
       if (method === 'getUpdates') {
+        // 真 Telegram 在 webhook 挂着时会把 getUpdates 顶回来：模式没对齐的 bug 在这儿露出来。
+        if (seen.webhook) {
+          res.writeHead(409, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error_code: 409, description: "Conflict: can't use getUpdates method while webhook is active" }))
+          return
+        }
         const offset = Number(body.offset || 0)
         seen.polls.push(body)
         return send(seen.updates.filter((u) => Number(u.update_id) >= offset))

@@ -9,7 +9,9 @@ import { encryptChannelSecret, decryptChannelSecret, verifyArtifactTicket } from
 import { startSeatDeploy } from '../deploy.ts'
 import { botContext, publicBot } from '../lib/catalog.ts'
 import { newPairingCode, pairingCodeHash } from '../channels/pairing.ts'
-import { telegramDeleteWebhook, telegramGetMe, telegramSetMyCommands } from '../channels/telegram.ts'
+import { TelegramError, telegramGetMe, telegramSetMyCommands } from '../channels/telegram.ts'
+import { ensureTelegramInbound, telegramWebhookSecretOk } from '../channels/inbound.ts'
+import { processTelegramUpdate } from '../channels.ts'
 import { USER_BOT_QUOTA_LOCK } from './runtime.ts'
 
 const MAX_USER_BOTS = Math.max(1, Math.trunc(Number(process.env.GATEWAY_MAX_USER_BOTS) || 10))
@@ -142,6 +144,40 @@ export function attachChannels(router: Router, ctx: RouteCtx) {
     res.end(page)
   })
 
+  /**
+   * Telegram 推过来的 update（webhook 模式，见 channels/inbound.ts）。
+   *
+   * 不鉴权用户：来的是 Telegram。认它靠两样——路径里的 publicId（随机 18 字节，绑定时生成）
+   * 和头上的 secret_token（设 webhook 时随机一把，只存散列）。任何一样对不上一律 404，不区分
+   * 原因。处理逻辑和长轮询那条一字不差：同一个 processTelegramUpdate。
+   *
+   * 回什么状态码决定 Telegram 会不会重送：
+   *   · 处理成功 → 200
+   *   · 不可重试的 Telegram 4xx（过期的 callback_query 之类）→ **也回 200**：重送只会再撞一次，
+   *     而 Telegram 在拿到 2xx 之前会一直重送这一条、堵住后面的（长轮询那边同一个道理，见
+   *     pollOne 的「毒消息」注释）
+   *   · 其余错误（库抖了、席位够不着）→ 500，让 Telegram 稍后重送。insertChannelEvent 按
+   *     externalEventId 去重，重送不会入两条
+   */
+  router.post('/channels/telegram/hook/:publicId', async (req, res) => {
+    const binding = await db.channelBindingByPublicId(req.params.publicId)
+    const secret = String(req.headers['x-telegram-bot-api-secret-token'] || '')
+    if (!binding || binding.status !== 'active' || !telegramWebhookSecretOk(binding, secret)) {
+      throw new HttpError(404, '没有这个入口')
+    }
+    const raw = req.body
+    if (!raw || typeof raw !== 'object') throw new HttpError(400, '不是 Telegram update')
+    try {
+      await processTelegramUpdate(db, channelKey, binding, raw)
+    } catch (e) {
+      const tg = e instanceof TelegramError ? e : null
+      if (!tg || tg.retryable) throw e
+      console.warn(`satuwork-gateway: Telegram 推送的 update 引发不可重试的 ${tg.method || 'API 调用'}，跳过：${tg.message}`)
+    }
+    await db.updateChannelBinding(binding.id, { lastReceivedAt: Date.now() })
+    json(res, 200, { ok: true })
+  })
+
   router.get('/channels', async (req, res) => {
     const account = await requireUser(req, db, keys)
     requireSeat(account)
@@ -187,9 +223,10 @@ export function attachChannels(router: Router, ctx: RouteCtx) {
 
     let status: 'active' | 'error' = 'active'
     let lastError: string | null = null
-    // getUpdates 和 Webhook 互斥；绑定时显式清掉旧 Webhook，后续完全由长轮询接收。
+    // 收信方式按当前模式来：有 https 公网地址就设 webhook，没有就清掉旧 webhook 走长轮询
+    // （见 channels/inbound.ts）。两者互斥，哪一种都得显式对齐一次。
     try {
-      await telegramDeleteWebhook(token, true)
+      await ensureTelegramInbound(db, created.binding, token)
       await telegramSetMyCommands(token)
     } catch (e) {
       status = 'error'
@@ -215,7 +252,7 @@ export function attachChannels(router: Router, ctx: RouteCtx) {
     if (!binding || binding.accountId !== account.id) throw new HttpError(404, '渠道不存在')
     const secret = decryptChannelSecret<StoredSecret>(channelKey, binding.credentialCiphertext)
     await telegramGetMe(secret.token).catch((e: Error) => { throw new HttpError(502, e.message) })
-    await telegramDeleteWebhook(secret.token).catch((e: Error) => { throw new HttpError(502, e.message) })
+    await ensureTelegramInbound(db, binding, secret.token).catch((e: Error) => { throw new HttpError(502, e.message) })
     await telegramSetMyCommands(secret.token).catch((e: Error) => { throw new HttpError(502, e.message) })
     const next = await db.updateChannelBinding(binding.id, { status: 'active', lastError: null, pollLastError: null, pollLeaseUntil: null })
     json(res, 200, { channel: await fullBinding(ctx, next) })
