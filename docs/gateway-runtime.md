@@ -492,7 +492,8 @@ v1 约束：一家公司一台机器；机器先按 **pair 进程** 隔离，不
 ## 7. 访问地址
 
 - 每家公司**一个** `accessUrl`，由 Gateway 在派机器时发出，写在公司记录里。这是机器/DNS 登记，不是聊天入口
-- 浏览器：管理页和聊天都打 Gateway。SSE / 发消息由 Gateway 反代到该 pair 的 Bot HTTP（`3200+N`）
+- 浏览器：管理页和聊天都打 Gateway。发消息、审批、上传由 Gateway 反代到该 pair 的 Bot HTTP（`3200+N`）
+- **对话那条 SSE 直连席位机器**（机器配了 `directUrl` 且管家协议 ≥ 5，`streamUrlOf`）：浏览器带登录 JWT 打 `{directUrl}/seats/{seatId}/stream/sessions/{id}/events`，管家验签、问一次 Gateway `/me`（按票缓存 60 秒，吊销靠这一问）、换成该席位的 `sat_` 转给 Bot，对 Gateway 的源开 CORS。**任何失败前端都退回 Gateway 反代五分钟**，所以老管家、没重新部署的席位（管家名册里没有 `sat_`，回 409）、证书不对，表现都只是「走了老路」。这是 Gateway 从对话热路径上退下来的第一步，见 [adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) §7
 - 桌面：**两条路，按机器有没有配 `directUrl` 选**（`novncUrlOf`）。票都是同一张：Gateway 用 JWT 私钥签、五分钟有效、只对一块屏
   - **默认：Gateway 同域反代** `/desktop/{seatId}/?ticket=…`。Gateway 验完票换成路径段里的票，再把请求（含 WebSocket 升级）反代到管家的 `/seats/{seatId}/vnc/*`，用机器票（`smt_`）认。x11vnc、websockify、CDP 全部只听 `127.0.0.1`
   - **配了 `directUrl` 就直连** `https://m001…/seats/{seatId}/vnc/?ticket=…`。浏览器直接打席位机器上的管家，Gateway 不再中转像素——实测那是整条链上最贵的一股流量（1280×800 下 Bot 一滚页面就是 4 MB/s，静止时是 0）。**不是把开销挪给席位机器**：那些字节它今天就在发（发给 Gateway），直连只是消掉一次转发

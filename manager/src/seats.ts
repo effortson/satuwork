@@ -55,6 +55,17 @@ export interface SeatRecord {
   deployedAt: number
   status: 'ready' | 'error'
   lastError: string | null
+  /**
+   * 这个席位的席位票（`sat_`），也就是写进 bot.env 的那一把。
+   *
+   * 留一份在名册里，是给 `/seats/:id/stream/*` 用的：浏览器直连过来带的是登录 JWT，
+   * bot 只认 `sat_`，管家得替它换。名册文件本来就是 0600、root 的，和 bot.env 同一个
+   * 信任面。**不往外报**：`seatsWithLiveness` 出去之前摘掉。
+   *
+   * 可选，因为 5 号协议之前部署的席位没有它——那些席位在重新部署之前直连回 409，
+   * 前端会退回 Gateway 反代。
+   */
+  gatewayToken?: string
 }
 
 type Registry = Record<string, SeatRecord>
@@ -458,6 +469,7 @@ async function doDeploy(spec: SeatSpec, token: string): Promise<SeatRecord> {
     deployedAt: Date.now(),
     status: 'ready',
     lastError: null,
+    gatewayToken: spec.gatewayToken,
   }
 
   if (bootConfig().dryRun) return commit(spec.seatId, base)
@@ -584,9 +596,10 @@ export async function unitActive(seatId: string): Promise<boolean> {
   return r.code === 0
 }
 
-export async function seatsWithLiveness(): Promise<(SeatRecord & { active: boolean })[]> {
+export async function seatsWithLiveness(): Promise<(Omit<SeatRecord, 'gatewayToken'> & { active: boolean })[]> {
   const rows = seats()
-  return Promise.all(rows.map(async (r) => ({ ...r, active: await unitActive(r.seatId) })))
+  // 席位票不出这个进程：它只为 stream 那条路换票用（见 SeatRecord.gatewayToken）。
+  return Promise.all(rows.map(async ({ gatewayToken: _token, ...r }) => ({ ...r, active: await unitActive(r.seatId) })))
 }
 
 export function assetsReady(): boolean {
