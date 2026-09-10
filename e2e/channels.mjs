@@ -132,6 +132,7 @@ async function mockSeat() {
 export async function mockTelegram() {
   const seen = {
     webhook: null,
+    drafts: [],
     deleteWebhook: 0, commands: [], leaveChats: [], sent: [], chatActions: [], polls: [], updates: [],
     callbackAnswers: [], callbackAnswerAttempts: [], editedMarkups: [],
   }
@@ -168,6 +169,10 @@ export async function mockTelegram() {
       if (method === 'sendRichMessage') {
         seen.sent.push({ method, ...body })
         return send({ message_id: seen.sent.length })
+      }
+      if (method === 'sendMessageDraft') {
+        seen.drafts.push(body)
+        return send(true)
       }
       if (method === 'sendChatAction') {
         seen.chatActions.push(body)

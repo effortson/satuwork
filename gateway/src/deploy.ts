@@ -57,6 +57,13 @@ export const MIN_DIRECT_ROSTER_PROTOCOL = 6
 export const MIN_WORKER_PROTOCOL = 7
 
 /**
+ * 席位工人接管**渠道那一轮**要求的管家协议号。和日常任务分开一个号：8 号工人才有渠道循环
+ * （manager/src/worker/channels.ts），7 号机器上渠道消息仍由 Gateway 自己跑一轮。
+ * 分流规则同 MIN_WORKER_PROTOCOL，见 channels.ts 的 workerOwnedBinding。
+ */
+export const MIN_CHANNEL_WORKER_PROTOCOL = 8
+
+/**
  * 会报安装进度（`/seats/:id/progress`）的管家协议。**只用来省一次白问**：低于它的
  * 管家上没有这条路，问了也只是一个 404，而问的时机恰恰是每两秒一次。
  *

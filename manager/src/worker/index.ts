@@ -30,10 +30,13 @@
  * 消息各自带走一轮、steered 不比轮号、reason 有两种形状。
  */
 
-const LOCAL = (process.env.SATUWORK_MANAGER_LOCAL || '').trim().replace(/\/$/, '')
-const TOKEN = (process.env.SATUWORK_WORKER_TOKEN || '').trim()
+import { LOCAL, TOKEN, headers, gw, seatJson, LostError, seatEventsUrl } from './relay-client.ts'
+import { type ChannelJob, runChannelJob } from './channels.ts'
+
 /** 多久去领一次。和 Gateway 调度器原来的节拍一样，粗一点没关系——任务是分钟级的。 */
 const TICK_MS = Math.max(1000, Math.trunc(Number(process.env.SATUWORK_WORKER_TICK_MS ?? 30_000)))
+/** 渠道消息要快得多：人在 Telegram 那头等着。 */
+const CHANNEL_TICK_MS = Math.max(250, Math.trunc(Number(process.env.SATUWORK_WORKER_CHANNEL_TICK_MS ?? 2000)))
 
 if (!LOCAL || !TOKEN) {
   // 管家开机会写 worker.env；单元是 Restart=always，这里退出就等下一次。
@@ -55,50 +58,8 @@ interface Job {
   timeoutMs: number
 }
 
-function headers(extra: Record<string, string> = {}): Record<string, string> {
-  return { 'x-satuwork-worker': TOKEN, ...extra }
-}
-
-async function relayJson(path: string, init?: { method?: string; body?: unknown; signal?: AbortSignal }): Promise<{ status: number; json: unknown }> {
-  const r = await fetch(`${LOCAL}${path}`, {
-    method: init?.method ?? 'GET',
-    headers: headers({
-      accept: 'application/json',
-      ...(init?.body !== undefined ? { 'content-type': 'application/json' } : {}),
-    }),
-    body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
-    signal: init?.signal ?? AbortSignal.timeout(20_000),
-  })
-  const text = await r.text()
-  let json: unknown = null
-  try {
-    json = text ? JSON.parse(text) : null
-  } catch {
-    json = null
-  }
-  return { status: r.status, json }
-}
-
-/** 打 Gateway 的 /worker/*（经管家中继）。非 2xx 抛错，404 单独认——那是「这一次不归你了」。 */
-class LostError extends Error {}
-async function gw(path: string, body?: unknown): Promise<unknown> {
-  const { status, json } = await relayJson(`/w-local/gateway/worker${path}`, body === undefined ? undefined : { method: 'POST', body })
-  if (status === 404) throw new LostError('这一次已不归本机')
-  if (status < 200 || status >= 300) throw new Error(`Gateway ${status}：${(json as { error?: string } | null)?.error ?? ''}`)
-  return json
-}
-
-/** 跟本机的一个 bot 说话（经管家中继，管家换成席位票）。 */
-async function seatJson(seatId: string, path: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
-  const { status, json } = await relayJson(`/w-local/seats/${encodeURIComponent(seatId)}/bot${path}`, init)
-  if (status < 200 || status >= 300) {
-    throw new Error((json as { error?: string } | null)?.error || `HTTP ${status}`)
-  }
-  return json
-}
-
 async function openEvents(seatId: string, sessionId: string, afterSeq: number, ac: AbortController) {
-  const r = await fetch(`${LOCAL}/w-local/seats/${encodeURIComponent(seatId)}/bot/api/sessions/${encodeURIComponent(sessionId)}/events?after=${afterSeq}`, {
+  const r = await fetch(seatEventsUrl(seatId, sessionId, afterSeq), {
     headers: headers({ accept: 'text/event-stream' }),
     signal: ac.signal,
   })
@@ -243,11 +204,32 @@ async function tick(): Promise<void> {
   }
 }
 
-console.log(`satuwork-worker: 起了，每 ${TICK_MS / 1000}s 向 ${LOCAL} 领一次活`)
+const channelRunning = new Set<string>()
+
+async function channelTick(): Promise<void> {
+  let got: { jobs?: ChannelJob[] }
+  try {
+    got = (await gw('/channels/events/due')) as { jobs?: ChannelJob[] }
+  } catch (e) {
+    // 老 Gateway 没这条路（404 → LostError）：安静地过，日常任务那条照跑。
+    if (!(e instanceof LostError)) console.error(`satuwork-worker: 领不到渠道消息：${(e as Error).message}`)
+    return
+  }
+  for (const job of got?.jobs ?? []) {
+    if (channelRunning.has(job.eventId)) continue
+    channelRunning.add(job.eventId)
+    void runChannelJob(job).finally(() => channelRunning.delete(job.eventId))
+  }
+}
+
+console.log(`satuwork-worker: 起了，每 ${TICK_MS / 1000}s 向 ${LOCAL} 领一次日常任务、每 ${CHANNEL_TICK_MS / 1000}s 领一次渠道消息`)
 void tick()
+void channelTick()
 const timer = setInterval(() => void tick(), TICK_MS)
+const channelTimer = setInterval(() => void channelTick(), CHANNEL_TICK_MS)
 const shutdown = () => {
   clearInterval(timer)
+  clearInterval(channelTimer)
   // 手上的活不等：租约会到期，Gateway 记成「机器没回报」并排补跑，比让 systemd 等 20 分钟强。
   process.exit(0)
 }

@@ -944,6 +944,9 @@ Bot 的 ready、索引等上报使用 `sat_`，部署绝不把 `smt_` 写入 `bo
 | POST | `/worker/routines/:runId/started` | `{ sessionId }`。Gateway 查转人工挡不挡；挡着回 `{ blocked }` 并收场 |
 | POST | `/worker/routines/:runId/renew` | 续租。404 = 这一次已不归你（租约被收、或已收场），停手 |
 | POST | `/worker/routines/:runId/finish` | `{ kind, error?, sessionId? }`。解释权在 Gateway；别的机器的活一律 404 |
+| GET | `/worker/channels/events/due` | 席位工人凭 `smt_` 领本机**还没跑出回复**的渠道事件（协议 ≥ 8）。领取即租约，租约就是事件的 `leaseToken`，随活交给工人 |
+| POST | `/worker/channels/events/:eventId/progress` | `{ lease, kind: renew\|typing\|draft\|approval, text?, approval? }`。续租，并替工人跟 Telegram 说一句；草稿的 429 / 不可重试 4xx 原样回给工人的草稿泵 |
+| POST | `/worker/channels/events/:eventId/finish` | `{ lease, sessionId, reply, files, handoffs }` 或 `{ lease, error }`。投递与收场只有 Gateway 这一份（`deliverClaimedEvent` / `failClaimedEvent`） |
 
 ### 实例（`sat_`；Gateway 经持有 `smt_` 的管家反代，浏览器不直连）
 

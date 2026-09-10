@@ -6,6 +6,7 @@ import { gatewayPublicUrl } from './deploy.ts'
 import { pairingCodeHash } from './channels/pairing.ts'
 import { createDraftPump } from './channels/draft-pump.ts'
 import { ensureTelegramInbound, telegramWebhookMode } from './channels/inbound.ts'
+import { MIN_CHANNEL_WORKER_PROTOCOL } from './deploy.ts'
 import { callSeat, canActOn } from './lib/handoff.ts'
 import {
   TelegramError, normalizeTelegramCallback, normalizeTelegramUpdate, telegramAnswerCallbackQuery,
@@ -14,7 +15,7 @@ import {
   startTelegramTyping, telegramLeaveChat, telegramSendArtifactPreviews, telegramSendDraft, telegramSendText, telegramSetMyCommands,
 } from './channels/telegram.ts'
 
-interface StoredSecret { token: string; pairingCode: string }
+export interface StoredSecret { token: string; pairingCode: string }
 
 interface ChannelApprovalField {
   key?: string
@@ -51,6 +52,13 @@ const DRAFT_MAX_WAIT_MS = Math.max(DRAFT_MIN_MS, Math.trunc(Number(process.env.G
 const DRAFT_INITIAL_WAIT_MS = Math.max(0, Math.trunc(Number(process.env.GATEWAY_TELEGRAM_DRAFT_INITIAL_WAIT_MS ?? 250)))
 /** live draft 约 30 秒失效。工具长时间没产出文字时，在失效前续一帧。 */
 const DRAFT_KEEPALIVE_MS = Math.max(5000, Math.min(25_000, Math.trunc(Number(process.env.GATEWAY_TELEGRAM_DRAFT_KEEPALIVE_MS ?? 20_000))))
+/** 交给工人的那一份节拍：它在席位旁边跑草稿泵和轮询，数值要和 Gateway 自己跑时一样。 */
+export const CHANNEL_WORKER_TUNING = {
+  leaseMs: EVENT_LEASE_MS,
+  timeoutMs: TURN_TIMEOUT_MS,
+  pollMs: TURN_POLL_MS,
+  draft: { minMs: DRAFT_MIN_MS, batchChars: DRAFT_BATCH_CHARS, maxWaitMs: DRAFT_MAX_WAIT_MS, initialWaitMs: DRAFT_INITIAL_WAIT_MS, keepaliveMs: DRAFT_KEEPALIVE_MS },
+}
 let wakeCurrent: (() => void) | null = null
 /** 本进程已经给哪些存量绑定补过私聊命令菜单。失败不记，下一轮继续试。 */
 const commandsConfigured = new Set<string>()
@@ -61,7 +69,7 @@ function retryDelay(attempts: number): number {
   return Math.min(5 * 60_000, 5000 * Math.pow(2, Math.min(6, Math.max(0, attempts - 1))))
 }
 
-interface ChannelApprovalSnapshot {
+export interface ChannelApprovalSnapshot {
   key: string
   callId: string
   name: string
@@ -81,7 +89,7 @@ interface SeatAccess {
 
 interface ChannelFile { path: string; name: string }
 
-function channelFiles(raw: unknown): ChannelFile[] {
+export function channelFiles(raw: unknown): ChannelFile[] {
   if (!Array.isArray(raw)) return []
   const out = new Map<string, ChannelFile>()
   for (const item of raw) {
@@ -95,7 +103,7 @@ function channelFiles(raw: unknown): ChannelFile[] {
   return [...out.values()]
 }
 
-function channelHandoffs(raw: unknown): ChannelHandoffPrompt[] {
+export function channelHandoffs(raw: unknown): ChannelHandoffPrompt[] {
   if (!Array.isArray(raw)) return []
   const out = new Map<string, ChannelHandoffPrompt>()
   for (const item of raw) {
@@ -233,7 +241,7 @@ function quotedMarkdown(value: unknown): string {
 }
 
 /** 同一个渠道事件在重试/接管后仍使用同一个非零草稿 id。 */
-function telegramDraftId(value: string): number {
+export function telegramDraftId(value: string): number {
   let hash = 0x811c9dc5
   for (const char of value) {
     hash ^= char.codePointAt(0) || 0
@@ -409,57 +417,107 @@ async function processOne(db: Db, key: Buffer, keys: JwtKeys, event: ChannelEven
         sessionId = ran.sessionId
         files = ran.files
         handoffs = ran.handoffs
-        // AI 已经跑完，先把结果落盘，但继续持有租约。进程若在发送前崩溃，接管者只会
-        // 重发这份 reply，绝不会再烧一轮模型。
-        const saved = await db.updateClaimedChannelEvent(current.id, leaseToken, {
-          status: 'processing', attempts: current.attempts, nextTryAt: Date.now(),
-          sessionId, reply, files, handoffs, lastError: null,
-        })
-        if (!saved) return
       }
-      // 出站最多 20 秒；发送前把 30 秒窗口重新撑满，正常情况下不会被另一进程并发重发。
-      if (!await db.renewChannelEventLease(current.id, leaseToken, Date.now() + EVENT_LEASE_MS)) return
-      // 渠道只接受私聊，conversationId 就是唯一配对用户的 chat id。
-      await telegramSendText(secret.token, current.externalConversationId, reply)
-      if (sessionId && files.length) {
-        await telegramSendArtifactPreviews(
-          secret.token,
-          current.externalConversationId,
-          artifactPreviews(keys, binding.accountId, sessionId, files),
-        )
-      }
-      for (const handoff of handoffs) {
-        await telegramSendHandoff(
-          secret.token, current.externalConversationId, handoffMarkdown(handoff), handoff.id,
-        )
-      }
-      const delivered = await db.updateClaimedChannelEvent(current.id, leaseToken, {
-        status: 'delivered', attempts: current.attempts, nextTryAt: null, leaseUntil: null,
-        sessionId, reply, files, handoffs, lastError: null, deliveredAt: Date.now(),
-      })
-      if (delivered) await db.updateChannelBinding(binding.id, { lastError: null })
+      await deliverClaimedEvent(db, key, keys, current, binding, leaseToken, { sessionId, reply, files, handoffs })
     } catch (e) {
-      const attempts = current.attempts + 1
-      const tg = e instanceof TelegramError ? e : null
-      // sendMessage 上的 403 / 404 / 400（被拉黑、chat 没了、消息不合法）原样重发不会变好，
-      // 这条事件直接 dead；但那不是 token 失效，binding 不动（见 TelegramError.permanent）。
-      const dead = attempts >= MAX_ATTEMPTS || Boolean(tg && !tg.retryable)
-      const message = (e as Error).message.slice(0, 300)
-      const updated = await db.updateClaimedChannelEvent(current.id, leaseToken, {
-        status: dead ? 'dead' : 'retry', attempts,
-        nextTryAt: dead ? null : Date.now() + (tg?.retryAfterMs || retryDelay(attempts)),
-        leaseUntil: null, sessionId, reply, lastError: message,
-      })
-      if (updated) {
-        await db.updateChannelBinding(binding.id, {
-          ...(tg?.permanent ? { status: 'error' as const } : {}),
-          lastError: message,
-        })
-      }
+      await failClaimedEvent(db, current, binding, leaseToken, e, { sessionId, reply })
     }
   } finally {
     clearInterval(renewTimer)
   }
+}
+
+type Binding = NonNullable<Awaited<ReturnType<Db['channelBinding']>>>
+
+/**
+ * 一轮已经跑完，把结果送到 Telegram 并把事件收成 delivered。**Gateway 自己跑完的和工人回报
+ * 的都走这一条**（routes/worker.ts 的 finish），投递、去重、收口只有一份。
+ *
+ * 先把结果落盘、继续持有租约，再发：进程若在发送前崩溃，接管者只会重发这份 reply，绝不会
+ * 再烧一轮模型。结果里 reply 已有（接管重发）时不再落一次。抛出的错由 failClaimedEvent 接。
+ */
+export async function deliverClaimedEvent(
+  db: Db,
+  key: Buffer,
+  keys: JwtKeys,
+  current: ChannelEvent,
+  binding: Binding,
+  leaseToken: string,
+  result: { sessionId: string | null; reply: string; files: ChannelFile[]; handoffs: ChannelHandoffPrompt[] },
+): Promise<void> {
+  const secret = decryptChannelSecret<StoredSecret>(key, binding.credentialCiphertext)
+  const { sessionId, files, handoffs } = result
+  const reply = String(result.reply || '').trim() || '已处理，但没有可发送的文本回复。'
+  if (!current.reply) {
+    const saved = await db.updateClaimedChannelEvent(current.id, leaseToken, {
+      status: 'processing', attempts: current.attempts, nextTryAt: Date.now(),
+      sessionId, reply, files, handoffs, lastError: null,
+    })
+    if (!saved) return
+  }
+  // 出站最多 20 秒；发送前把 30 秒窗口重新撑满，正常情况下不会被另一进程并发重发。
+  if (!await db.renewChannelEventLease(current.id, leaseToken, Date.now() + EVENT_LEASE_MS)) return
+  // 渠道只接受私聊，conversationId 就是唯一配对用户的 chat id。
+  await telegramSendText(secret.token, current.externalConversationId, reply)
+  if (sessionId && files.length) {
+    await telegramSendArtifactPreviews(
+      secret.token,
+      current.externalConversationId,
+      artifactPreviews(keys, binding.accountId, sessionId, files),
+    )
+  }
+  for (const handoff of handoffs) {
+    await telegramSendHandoff(secret.token, current.externalConversationId, handoffMarkdown(handoff), handoff.id)
+  }
+  const delivered = await db.updateClaimedChannelEvent(current.id, leaseToken, {
+    status: 'delivered', attempts: current.attempts, nextTryAt: null, leaseUntil: null,
+    sessionId, reply, files, handoffs, lastError: null, deliveredAt: Date.now(),
+  })
+  if (delivered) await db.updateChannelBinding(binding.id, { lastError: null })
+}
+
+/** 这一轮砸了：排重试或记 dead，把原因写到事件和绑定上。同样只有这一份。 */
+export async function failClaimedEvent(
+  db: Db,
+  current: ChannelEvent,
+  binding: Binding,
+  leaseToken: string,
+  e: unknown,
+  partial: { sessionId: string | null; reply: string },
+): Promise<void> {
+  const attempts = current.attempts + 1
+  const tg = e instanceof TelegramError ? e : null
+  // sendMessage 上的 403 / 404 / 400（被拉黑、chat 没了、消息不合法）原样重发不会变好，
+  // 这条事件直接 dead；但那不是 token 失效，binding 不动（见 TelegramError.permanent）。
+  const dead = attempts >= MAX_ATTEMPTS || Boolean(tg && !tg.retryable)
+  const message = String((e as Error)?.message || e).slice(0, 300)
+  const updated = await db.updateClaimedChannelEvent(current.id, leaseToken, {
+    status: dead ? 'dead' : 'retry', attempts,
+    nextTryAt: dead ? null : Date.now() + (tg?.retryAfterMs || retryDelay(attempts)),
+    leaseUntil: null, sessionId: partial.sessionId, reply: partial.reply, lastError: message,
+  })
+  if (updated) {
+    await db.updateChannelBinding(binding.id, {
+      ...(tg?.permanent ? { status: 'error' as const } : {}),
+      lastError: message,
+    })
+  }
+}
+
+/**
+ * 这条绑定的 Bot 所在机器够不够新到自己跑渠道那一轮（协议 ≥ MIN_CHANNEL_WORKER_PROTOCOL）。
+ * 够新就归工人：Gateway 的扫描不碰它**还没有回复**的事件（跑一轮是工人的活）；已经有回复、
+ * 只差投递的照旧 Gateway 发（投递是几次短请求）。一次 tick 里同一台机器只问一遍。
+ */
+export async function workerOwnedBinding(db: Db, binding: Binding, cache: Map<string, boolean>): Promise<boolean> {
+  const rt = await db.seatRuntime(binding.accountId, binding.botId)
+  if (!rt?.machineId) return false
+  const hit = cache.get(rt.machineId)
+  if (hit !== undefined) return hit
+  const machine = await db.machine(rt.machineId)
+  const owned = (machine?.protocol ?? 0) >= MIN_CHANNEL_WORKER_PROTOCOL
+  cache.set(rt.machineId, owned)
+  return owned
 }
 
 function rawUpdateId(raw: unknown): number | null {
@@ -792,10 +850,16 @@ export function startChannelDispatcher(db: Db, key: Buffer, keys: JwtKeys): () =
   const tick = () => {
     if (scanning || stopped) return
     scanning = true
+    const owned = new Map<string, boolean>()
     void db.dueChannelEvents(Date.now(), 10)
-      .then((events) => {
+      .then(async (events) => {
         for (const event of events) {
           if (activeEvents.has(event.id)) continue
+          // 归工人的机器上、还没跑出回复的事件不碰：工人会来领（routes/worker.ts）。
+          if (!event.reply) {
+            const binding = await db.channelBinding(event.bindingId)
+            if (binding && (await workerOwnedBinding(db, binding, owned))) continue
+          }
           activeEvents.add(event.id)
           // 扫描只负责派活，不等最长二十分钟的模型轮次。一个慢会话不能挡住其它渠道
           // 或其它会话的新消息；同一远端会话的顺序仍由 dueChannelEvents 的前驱条件保证。

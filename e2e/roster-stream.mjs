@@ -20,6 +20,10 @@ export async function runRosterStream({ test, assert, log }) {
     const gw = readFileSync(new URL('../gateway/src/lib/roster-filter.ts', import.meta.url), 'utf8')
     const mgr = readFileSync(new URL('../manager/src/roster-filter.ts', import.meta.url), 'utf8')
     assert(mgr.endsWith(gw), 'manager/src/roster-filter.ts 和 gateway 那份不一样了——把 gateway 那份整个覆盖过去（保留文件头那段说明）')
+    // 同一条规矩管着草稿泵：渠道那一轮下沉到工人之后，Telegram 草稿的节流在工人那头跑。
+    const gwPump = readFileSync(new URL('../gateway/src/channels/draft-pump.ts', import.meta.url), 'utf8')
+    const mgrPump = readFileSync(new URL('../manager/src/draft-pump.ts', import.meta.url), 'utf8')
+    assert(mgrPump.endsWith(gwPump), 'manager/src/draft-pump.ts 和 gateway 那份不一样了——把 gateway 那份整个覆盖过去（保留文件头那段说明）')
   })
 
   await test('名单要的那几种事件原样转出去', async () => {

@@ -46,8 +46,12 @@ import { fileURLToPath } from 'node:url'
  * 号数决定**这台机器的任务归谁跑**（见 gateway 的 MIN_WORKER_PROTOCOL）：≥7 它一下都不碰，
  * 全由工人来领；否则照旧自己发消息、等结果。号数错了的后果是两边各跑一遍或谁都不跑，
  * 所以工人单元没起来的机器不该报 7——安装脚本把用户、单元、令牌一起装好才会有这个号。
+ *
+ * 8：工人也接渠道那一轮（src/worker/channels.ts）：Telegram 消息进来之后「每 100ms 问席位、
+ * 最长 20 分钟」那段在本机跑，草稿、审批卡、最终回复由 Gateway 代发。Gateway 拿这个号数决定
+ * 这台机器上还没跑出回复的渠道事件归谁（gateway 的 MIN_CHANNEL_WORKER_PROTOCOL）。
  */
-export const PROTOCOL = 7
+export const PROTOCOL = 8
 
 export interface ManagerState {
   machineId: string
