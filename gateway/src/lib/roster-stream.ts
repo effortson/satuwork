@@ -39,7 +39,7 @@
 import type { ServerResponse } from 'node:http'
 import type { Account, Db } from '../db.ts'
 import type { Req } from '../http.ts'
-import { machineHeader, runtimeFetch, seatBearer, seatTargetFor, sseEvents } from './runtime.ts'
+import { machineHeader, seatBearer, seatTargetFor, sseEvents } from './runtime.ts'
 import { type CatchUp, type Frame, type Upstream, catchUpFrames, newCatchUp, remember, rosterFrame } from './roster-filter.ts'
 
 /** 流上垫几轮历史。名单只要「最近说了什么」，一轮就够。 */
@@ -165,7 +165,7 @@ async function pump(hub: Hub, botId: string) {
         ...machineHeader(target.machineToken),
       }
       if (!up.sessionId) {
-        const r = await runtimeFetch(`${target.host}/api/bots/${encodeURIComponent(botId)}/session`, {
+        const r = await fetch(`${target.host}/api/bots/${encodeURIComponent(botId)}/session`, {
           headers,
           signal: ac.signal,
         })
@@ -175,7 +175,7 @@ async function pump(hub: Hub, botId: string) {
         up.sessionId = got.sessionId
       }
       const q = up.after > 0 ? `?after=${up.after}` : `?tail=${TAIL_TURNS}`
-      const r = await runtimeFetch(`${target.host}/api/sessions/${encodeURIComponent(up.sessionId)}/events${q}`, {
+      const r = await fetch(`${target.host}/api/sessions/${encodeURIComponent(up.sessionId)}/events${q}`, {
         headers: { ...headers, accept: 'text/event-stream' },
         signal: ac.signal,
       })

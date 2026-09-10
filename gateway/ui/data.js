@@ -3,13 +3,82 @@
  *
  * 视图一律不自己 fetch：要什么数据在这里说清楚，画的时候只读 state。
  */
+/* ══ 本地 Bot 直连 ═══════════════════════════════════════════════════
+   桌面端里的本地 Bot 跑在这台电脑上（Tauri 壳起的进程，听 127.0.0.1 的一个端口）。
+   以前它的对话流、历史、发消息都先到 Gateway、再穿一条反向隧道绕回本机——为的是让
+   Gateway 能「主动打进」本地 Bot。隧道拆了（docs/adr-gateway-vercel-neon.md §4）：
+   本地 Bot 的请求在这一层**直接改道**到 127.0.0.1，带的票换成这颗 Bot 的席位票
+   （sat_，从 /runtime/bots/:id/local-bootstrap 拿的那把，bot 只认它）。
+
+   改道只发生在两类路径上：`/runtime/bots/:id/session`（取会话）和
+   `/runtime/sessions/:sid/*`（那条会话上的一切）。别的照旧打 Gateway——公司模版、
+   记忆、Skill、账号，本地 Bot 也要从 Gateway 拿。
+
+   路径对照表照着 gateway/src/routes/runtime.ts 里那几条反代抄：Gateway 把
+   `/runtime/sessions/:sid/files?path=` 翻成 bot 的 `/api/workspace/file?path=`、
+   `/workspace?path=` 翻成 `/api/workspace/list?path=`、其余原样接在 `/api/sessions/:sid`
+   后面。这张表漂了，表现是本地 Bot 上某个按钮 404 而远程 Bot 好好的。
+   ══════════════════════════════════════════════════════════════════ */
+
+/** botId → { base, token }。壳子起了哪些本地 Bot、听在哪个口、用哪把票。 */
+const localBots = new Map()
+/** sessionId → botId。只登记本地 Bot 的会话；查不到的一律走 Gateway。 */
+const localSessions = new Map()
+
+function registerLocalBot(botId, port, tok) {
+  if (!botId || !port) return
+  const prev = localBots.get(botId) || {}
+  localBots.set(botId, { base: 'http://127.0.0.1:' + port, token: tok || prev.token || '' })
+}
+
+function localBotOf(botId) {
+  const lb = botId ? localBots.get(botId) : null
+  return lb && lb.token ? lb : null
+}
+
+/** 这条 Gateway 路径要不要改道到本地 Bot。返回 { url, token } 或 null。 */
+function localRoute(path, method) {
+  if (typeof path !== 'string' || !path.startsWith('/runtime/')) return null
+  let m = /^\/runtime\/bots\/([^/?]+)\/session(\?.*)?$/.exec(path)
+  if (m) {
+    const lb = localBotOf(decodeURIComponent(m[1]))
+    return lb ? { url: lb.base + '/api/bots/' + m[1] + '/session' + (m[2] || ''), token: lb.token } : null
+  }
+  m = /^\/runtime\/sessions\/([^/?]+)(\/[^?]*)?(\?.*)?$/.exec(path)
+  if (!m) return null
+  const botId = localSessions.get(decodeURIComponent(m[1]))
+  const lb = localBotOf(botId)
+  if (!lb) return null
+  const rest = m[2] || ''
+  const q = m[3] || ''
+  const verb = String(method || 'GET').toUpperCase()
+  let target
+  if (rest === '/files' && q && verb === 'GET') target = '/api/workspace/file' + q
+  else if (rest === '/workspace') target = (verb === 'DELETE' ? '/api/workspace/file' : '/api/workspace/list') + q
+  else target = '/api/sessions/' + m[1] + rest + q
+  return { url: lb.base + target, token: lb.token }
+}
+
+/**
+ * 所有打 Gateway 的 fetch 都从这儿过：本地 Bot 的那几条改道到 127.0.0.1，票换成席位票；
+ * 其余原样。init.headers 里的 authorization 会被覆盖——那是登录票，bot 不认。
+ */
+function swFetch(path, init) {
+  const route = localRoute(path, init && init.method)
+  if (!route) return fetch(path, init)
+  const headers = { ...((init && init.headers) || {}) }
+  for (const k of Object.keys(headers)) if (k.toLowerCase() === 'authorization') delete headers[k]
+  headers.authorization = 'Bearer ' + route.token
+  return fetch(route.url, { ...(init || {}), headers })
+}
+
 async function api(method, path, body) {
   const headers = { accept: 'application/json' }
   // 别叫 t——下面 401 那支要用上面那个文案函数。
   const tok = token()
   if (tok) headers.authorization = 'Bearer ' + tok
   if (body !== undefined) headers['content-type'] = 'application/json'
-  const res = await fetch(path, {
+  const res = await swFetch(path, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,

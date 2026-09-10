@@ -1,6 +1,18 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { timingSafeEqual } from 'node:crypto'
 import { adoptGatewayUrl } from '../gateway-url.ts'
+import { gatewayUrl } from '../llm/gateway.ts'
+
+/** 桌面端的本地 Bot。只有它需要 CORS：远程席位前面有管家反代，浏览器不直接打 bot。 */
+const LOCAL_MODE = (process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local'
+
+function gatewayOrigin(): string {
+  try {
+    return new URL(gatewayUrl()).origin
+  } catch {
+    return ''
+  }
+}
 
 /**
  * 入站闸门。**这个进程认的唯一一把凭据是席位票（`sat_`）。**
@@ -76,6 +88,31 @@ export function apply(ctx: Context) {
     const path = guardPath(req.path)
     if (path.startsWith(INTERNAL_SESSIONS)) return next()
     if (!path.startsWith('/api/') || PUBLIC.has(path)) return next()
+    /**
+     * 本地模式（桌面端）：页面的源是 Gateway，请求打的是 127.0.0.1 上的这个进程，是跨源的。
+     * 只对 Gateway 那一个源开 CORS——别的源一律不给头，浏览器那头就会拦住。凭据走
+     * Authorization 头不走 cookie，所以不开 allow-credentials。预检（OPTIONS）没有票，
+     * 要排在验票之前；正式请求照旧验票，头只是顺手加上。
+     */
+    if (LOCAL_MODE) {
+      const origin = req.headers.get('origin') || ''
+      if (origin && origin === gatewayOrigin()) {
+        const set = (k: string, v: string) => {
+          res.headers.set(k, v)
+          res._res?.setHeader(k, v)
+        }
+        set('access-control-allow-origin', origin)
+        set('vary', 'origin')
+        set('access-control-expose-headers', 'content-type, content-disposition')
+        if (req.method === 'OPTIONS') {
+          set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
+          set('access-control-allow-headers', 'authorization, content-type, accept, x-filename, last-event-id')
+          set('access-control-max-age', '600')
+          res.status = 204
+          return
+        }
+      }
+    }
     if (bearerMatches(req.headers.get('authorization'), seatToken())) {
       /**
        * 票验过了，顺路认一下「Gateway 现在在哪」（见 ../gateway-url.ts 的长注释）。

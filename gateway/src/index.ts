@@ -7,7 +7,6 @@ import { attach } from './routes.ts'
 import { attachDesktopUpgrade } from './desktop.ts'
 import { startRoutineScheduler } from './routines.ts'
 import { startChannelDispatcher } from './channels.ts'
-import { attachLocalRuntimeUpgrade } from './local-runtime.ts'
 
 /**
  * Satuwork Gateway。控制面：公司、账号、套餐、席位、目录、JWT。
@@ -120,7 +119,6 @@ const channelKey = loadChannelKey(home)
 const router = new Router()
 attach(router, db, keys, channelKey)
 const server = listen(router)
-attachLocalRuntimeUpgrade(server, db)
 // 桌面的画面走 WebSocket，而升级请求不进 Router——它是 server 上的一个事件。
 attachDesktopUpgrade(server, db, keys)
 /**

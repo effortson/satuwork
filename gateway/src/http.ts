@@ -188,7 +188,8 @@ const CSP = [
   `font-src 'self' data: ${UI_CDN} ${FONT_FILES}`,
   "img-src 'self' data: blob: https: http:",
   "media-src 'self' data: blob:",
-  "connect-src 'self' https:",
+  // http://127.0.0.1:* 是桌面端里的本地 Bot（ui/data.js 的 localRoute）。只放回环地址，不放整个 http:。
+  "connect-src 'self' https: http://127.0.0.1:*",
   "frame-src 'self' blob: https:",
   "worker-src 'self' blob:",
 ].join('; ')

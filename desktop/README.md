@@ -31,6 +31,28 @@ pnpm --filter satuwork-desktop dev
 SATUWORK_SERVER=http://127.0.0.1:3080 pnpm --filter satuwork-desktop dev
 ```
 
+## 本地 Bot 直连本机
+
+本地 Bot（建 Bot 时选「本地」的那种）由壳子在这台电脑上起一个 Bot 进程，听 127.0.0.1 的一个
+随机端口。**它的对话不经过 Gateway。** 页面拿到壳子报的端口（`__SATUWORK_LOCAL_BOT__.status`
+里的 `port`）和 Gateway 发的席位票（`/runtime/bots/:id/local-bootstrap`），把这颗 Bot 的会话
+请求（取会话、事件流、历史、发消息、文件、工作区）直接改道到本机，见 gateway/ui/data.js 的
+`localRoute`。别的请求——公司模版、记忆、Skill、账号——照旧打 Gateway。
+
+以前这条路是「页面 → Gateway → 一条 Bot 主动连到 Gateway 的 WebSocket 反向隧道 → 本机」，
+为的是让 Gateway 能主动打进员工的电脑。隧道拆掉了（docs/adr-gateway-vercel-neon.md §4）：
+Gateway 从此不知道本地 Bot 在不在跑，所以
+
+- 名单上本地 Bot 那一行的状态由壳子报，只在桌面端里成立；在普通浏览器里它永远是「本机未运行」。
+- 本地 Bot 的日常任务 Gateway 不再调度（它连不到本机），等桌面端自己的调度器；在那之前静静排着。
+- 转人工、审计拉全文这类 Gateway 主动找 Bot 的事，对本地 Bot 都是「实例还没上线」。
+
+跨源：页面的源是 Gateway，请求打 127.0.0.1，Bot 的守卫只对 Gateway 那一个源开 CORS
+（bot/src/guard/index.ts），Gateway 的 CSP 放了 `connect-src http://127.0.0.1:*`。
+
+运行时更新：壳子在第一颗本地 Bot 启动前查一次，之后**每小时**再查一次；查到只下载、只写
+PENDING，切换仍留给下一次「没有本地 Bot 在跑」的启动。
+
 ## 链接与「连不上」
 
 两件在浏览器里天经地义、在壳子里得自己接的事：
