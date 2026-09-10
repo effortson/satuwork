@@ -20,7 +20,14 @@ import { HttpError, json, type Req, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import { requireMachine } from '../lib/guards.ts'
 import { claimDue, RUN_TIMEOUT_MS, settleRun, turnFailure } from '../routines.ts'
-import type { Routine, RoutineRun } from '../db.ts'
+import type { ChannelEvent, Routine, RoutineRun } from '../db.ts'
+import { randomUUID } from 'node:crypto'
+import {
+  CHANNEL_WORKER_TUNING, approvalMarkdown, channelFiles, channelHandoffs, deliverClaimedEvent, failClaimedEvent,
+  telegramDraftId, workerOwnedBinding, type ChannelApprovalSnapshot, type StoredSecret,
+} from '../channels.ts'
+import { decryptChannelSecret } from '../crypto.ts'
+import { TelegramError, telegramSendApproval, telegramSendDraft, telegramSendTyping } from '../channels/telegram.ts'
 
 /**
  * 租约多长。工人每隔它的三分之一续一次；Gateway 那头到期不续就收。
@@ -48,7 +55,9 @@ function jobOf(routine: Routine, run: RoutineRun, seatId: string) {
   }
 }
 
-export function attachWorker(router: Router, { db }: RouteCtx) {
+export function attachWorker(router: Router, { db, keys, channelKey }: RouteCtx) {
+  attachChannelWorker(router, db, keys, channelKey)
+
   router.get('/worker/routines/due', async (req, res) => {
     const machine = await requireMachine(req, db)
     const now = Date.now()
@@ -153,6 +162,131 @@ export function attachWorker(router: Router, { db }: RouteCtx) {
         { status: 'error', error: turnFailure(kind), sessionId },
         kind !== 'aborted',
       )
+    }
+    json(res, 200, { ok: true })
+  })
+}
+
+// ── 渠道那一轮（见 manager/src/worker/channels.ts 文件头：跟席位说话在工人，跟 Telegram 说话在这儿）──
+
+/**
+ * 三条接口，一条领、一条报进度、一条收场。租约用的是 channel_events 现成的 leaseToken：领的
+ * 时候 Gateway 生成、随活交给工人，之后每次回报都带着，`updateClaimedChannelEvent` 那套
+ * fencing 原样生效——工人死过、租约被别人接走之后，旧工人的回报一律 404。
+ */
+function attachChannelWorker(router: Router, db: RouteCtx['db'], keys: RouteCtx['keys'], channelKey: Buffer) {
+  /** 本机领走、还在处理、且租约对得上的那条事件。三样缺一样 404，不区分。 */
+  async function claimed(req: Req, machineId: string): Promise<{ event: ChannelEvent; binding: NonNullable<Awaited<ReturnType<typeof db.channelBinding>>> }> {
+    const lease = strField(bodyOf(req), 'lease', true)
+    const event = await db.channelEvent(req.params.eventId)
+    if (!event || event.status !== 'processing' || event.leaseToken !== lease) throw new HttpError(404, '这条事件不归这台机器，或者已经收场了')
+    const binding = await db.channelBinding(event.bindingId)
+    if (!binding) throw new HttpError(404, '这条事件不归这台机器，或者已经收场了')
+    const rt = await db.seatRuntime(binding.accountId, binding.botId)
+    if (rt?.machineId !== machineId) throw new HttpError(404, '这条事件不归这台机器，或者已经收场了')
+    return { event, binding }
+  }
+
+  router.get('/worker/channels/events/due', async (req, res) => {
+    const machine = await requireMachine(req, db)
+    const now = Date.now()
+    const owned = new Map<string, boolean>()
+    const jobs: unknown[] = []
+    for (const event of await db.dueChannelEvents(now, 20)) {
+      // 已经有回复、只差投递的归 Gateway 自己（几次短请求），工人只接「还要跑一轮」的。
+      if (event.reply) continue
+      const binding = await db.channelBinding(event.bindingId)
+      if (!binding || binding.status !== 'active') continue
+      const rt = await db.seatRuntime(binding.accountId, binding.botId)
+      if (rt?.machineId !== machine.id) continue
+      if (!(await workerOwnedBinding(db, binding, owned))) continue
+      const lease = randomUUID()
+      if (!(await db.claimChannelEvent(event.id, now, now + CHANNEL_WORKER_TUNING.leaseMs, lease))) continue
+      jobs.push({
+        eventId: event.id,
+        bindingId: binding.id,
+        botId: binding.botId,
+        seatId: rt.seatId,
+        lease,
+        externalEventId: event.externalEventId,
+        conversationId: event.externalConversationId,
+        title: event.title,
+        text: event.text,
+        ...CHANNEL_WORKER_TUNING,
+      })
+    }
+    json(res, 200, { jobs })
+  })
+
+  /**
+   * 进度：续租，顺带替工人跟 Telegram 说一句。
+   *   renew     只续租
+   *   typing    sendChatAction typing（失败不算错，只是没有那个小动画）
+   *   draft     一帧临时草稿。Telegram 的 429 / retry_after 和不可重试的 4xx 原样回给工人的草稿泵
+   *   approval  一张审批卡。按 approvalKey 去重（工人重启、接管都可能再报一次）
+   */
+  router.post('/worker/channels/events/:eventId/progress', async (req, res) => {
+    const machine = await requireMachine(req, db)
+    const { event, binding } = await claimed(req, machine.id)
+    if (!(await db.renewChannelEventLease(event.id, event.leaseToken, Date.now() + CHANNEL_WORKER_TUNING.leaseMs))) {
+      throw new HttpError(404, '这条事件不归这台机器，或者已经收场了')
+    }
+    const body = bodyOf(req)
+    const kind = strField(body, 'kind', true)
+    const secret = decryptChannelSecret<StoredSecret>(channelKey, binding.credentialCiphertext)
+    if (kind === 'typing') {
+      await telegramSendTyping(secret.token, event.externalConversationId).catch(() => undefined)
+    } else if (kind === 'draft') {
+      const text = strField(body, 'text', true)
+      try {
+        await telegramSendDraft(secret.token, event.externalConversationId, telegramDraftId(event.externalEventId), text)
+      } catch (e) {
+        const tg = e instanceof TelegramError ? e : null
+        json(res, 200, { retryAfterMs: tg?.retryAfterMs || 0, stop: Boolean(tg && tg.status >= 400 && tg.status < 500 && tg.status !== 429) })
+        return
+      }
+    } else if (kind === 'approval') {
+      const approval = (body.approval ?? null) as ChannelApprovalSnapshot | null
+      if (!approval || typeof approval.key !== 'string' || !approval.key) throw new HttpError(400, 'approval 缺 key')
+      const latest = await db.channelEvent(event.id)
+      if (!(latest?.approvalKey === approval.key && latest.approvalMessageId != null)) {
+        const messageId = await telegramSendApproval(secret.token, event.externalConversationId, approvalMarkdown(approval), approval.key)
+        if (!(await db.recordChannelApprovalPrompt(event.id, event.leaseToken, approval.key, messageId))) {
+          throw new HttpError(404, '渠道事件租约已经转交')
+        }
+      }
+    } else if (kind !== 'renew') {
+      throw new HttpError(400, '不认识的进度')
+    }
+    json(res, 200, { ok: true })
+  })
+
+  /**
+   * 收场。带 reply 就是跑完了：Gateway 投递（回复、产出文件预览、转人工卡）并收成 delivered；
+   * 带 error 就是砸了：按老规矩排重试或记 dead。投递失败也走同一条 fail 路。
+   */
+  router.post('/worker/channels/events/:eventId/finish', async (req, res) => {
+    const machine = await requireMachine(req, db)
+    const { event, binding } = await claimed(req, machine.id)
+    const body = bodyOf(req)
+    if (body.error != null) {
+      await failClaimedEvent(db, event, binding, event.leaseToken, new Error(strField(body, 'error', false) || '工人没说原因'), {
+        sessionId: event.sessionId,
+        reply: event.reply,
+      })
+      json(res, 200, { ok: true })
+      return
+    }
+    const result = {
+      sessionId: strField(body, 'sessionId', true),
+      reply: body.reply == null ? '' : strField(body, 'reply', false),
+      files: channelFiles(body.files),
+      handoffs: channelHandoffs(body.handoffs),
+    }
+    try {
+      await deliverClaimedEvent(db, channelKey, keys, event, binding, event.leaseToken, result)
+    } catch (e) {
+      await failClaimedEvent(db, event, binding, event.leaseToken, e, { sessionId: result.sessionId, reply: result.reply })
     }
     json(res, 200, { ok: true })
   })

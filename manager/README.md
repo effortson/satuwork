@@ -78,6 +78,11 @@ bot 那条**原样透传 `authorization`**——bot 自己要验席位票（`sat
 所以工人被攻破的影响面 = 领本机的日常任务 + 跟本机的 bot 说话；管家的控制面（部署、拆席位、
 拉日志）和 Gateway 的别的接口一条都碰不到。
 
+8 号协议起它也接**渠道那一轮**（`src/worker/channels.ts`）：Telegram 消息进来之后「每 100ms 问
+席位跑到哪儿了、最长二十分钟」那段在本机跑；草稿的节流（`src/draft-pump.ts`，gateway 那份的
+逐字副本）也在这头。它不碰 Telegram 的 token——typing、草稿、审批卡、最终回复都报给 Gateway
+（`POST /worker/channels/events/:id/progress` / `finish`）由 Gateway 代发。
+
 自升级时和管家一起重启（`upgrade.ts` 那句 `systemctl restart` 带两个单元）。老机器上没有这个
 单元：装脚本重跑一遍会把用户、单元、令牌一起补上；补上之前那台机器的管家仍报 7 号协议——
 **这是要小心的一处**：号数是包里写死的，工人单元没起来的机器上，Gateway 会以为任务归工人，

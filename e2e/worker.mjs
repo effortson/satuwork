@@ -14,6 +14,7 @@ import { createCompany } from './org.mjs'
 import { publishRelease } from './release.mjs'
 import { freePorts } from './ports.mjs'
 import { closeServer } from './probe.mjs'
+import { TOKEN as TG_TOKEN, mockTelegram } from './channels.mjs'
 
 const SCHEMA = schemaOf('e2e_worker')
 
@@ -28,6 +29,7 @@ function sleep(ms) {
 function liveBot() {
   const seen = []
   const streams = []
+  const channelHits = []
   const server = createServer((req, res) => {
     seen.push({ path: req.url, auth: req.headers.authorization || '', machine: req.headers['x-satuwork-machine'] || '' })
     if (/^\/api\/bots\/[^/]+\/session/.test(req.url)) {
@@ -44,6 +46,26 @@ function liveBot() {
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       res.write(': hi\n\n')
       streams.push(res)
+      return
+    }
+    // 渠道那一轮：第一下 202「还在跑」带一帧草稿，第二下 200 给出最终回复。
+    if (/^\/api\/channels\/[^/]+\/messages/.test(req.url)) {
+      let raw = ''
+      req.on('data', (c) => (raw += c))
+      req.on('end', () => {
+        seen[seen.length - 1].body = JSON.parse(raw || '{}')
+        channelHits.push(seen[seen.length - 1])
+        // 头 1.2 秒一直说「还在跑」：草稿泵要等过 initialWaitMs 才会刷第一帧，收口太快就一帧都不发
+        // （和 Gateway 自己跑时一样）。
+        channelHits.firstAt ??= Date.now()
+        if (Date.now() - channelHits.firstAt < 1200) {
+          res.writeHead(202, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ status: 'running', draft: '我先看看' }))
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ sessionId: 's-channel', reply: '好的，办妥了', files: [], handoffs: [] }))
+      })
       return
     }
     if (req.url.startsWith('/api/sessions/s-live/messages')) {
@@ -67,7 +89,7 @@ function liveBot() {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ ok: true, path: req.url }))
   })
-  return { server, seen, streams }
+  return { server, seen, streams, channelHits }
 }
 
 function listen(server, port) {
@@ -91,6 +113,7 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
 
   const bot = liveBot()
   await listen(bot.server, BOT_PORT)
+  const telegram = await mockTelegram()
 
   const gw = start('worker-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
     cwd: gwRoot,
@@ -108,6 +131,10 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
       SATUWORK_DEPLOY_STUB: '1',
       GATEWAY_ROUTINE_TICK_MS: '1000',
       GATEWAY_ROUTINE_LEASE_MS: '3000',
+      TELEGRAM_API_BASE: telegram.url,
+      // 渠道扫描调快：归工人的事件 Gateway 不碰，但要它快点把「已跑完只差投递」的和别的收掉。
+      GATEWAY_CHANNEL_TICK_MS: '500',
+      GATEWAY_CHANNEL_POLL_SCAN_MS: '600000',
     },
   })
   let mgr = null
@@ -255,7 +282,66 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
       assert(msg && msg.body.text === '把今天的事说一遍' && msg.body.routine && msg.body.routine.name === '每日简报', `消息内容不对：${JSON.stringify(msg && msg.body)}`)
       assert(msg.body.modelRole === 'utility', `默认该按 utility 跑：${JSON.stringify(msg.body)}`)
     })
+
+    await test('渠道那一轮由工人跑：进度经 Gateway 代发到 Telegram，最终回复投递、事件收成 delivered', async () => {
+      const m = await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })
+      assert(m.json.machine.protocol >= 8, `协议 ${m.json.machine.protocol}`)
+      const bound = await req(gwBase, 'POST', '/channels/telegram', { token: adminTok, body: { token: TG_TOKEN } })
+      assert(bound.status === 201, `绑定 ${bound.status} ${bound.text}`)
+      const bindingId = bound.json.channel.id
+      const chBotId = bound.json.channel.botId || (await withPg((c) => c.query('select "botId" from channel_bindings where id = $1', [bindingId]))).rows[0].botId
+      // 绑渠道顺手部署了那颗 Bot（stub）；把管家名册里对应的席位指到假 bot。
+      const list = await req(gwBase, 'GET', '/runtime/bots', { token: adminTok })
+      const chSeat = list.json.bots.find((b) => b.id === chBotId).runtime.seatId
+      assert(chSeat, `渠道 Bot 没有 seatId：${list.text}`)
+      const lu = chSeat.split('-').slice(0, 2).join('-')
+      const put = await req(mgrBase, 'PUT', `/seats/${chSeat}`, {
+        token: machineTok,
+        body: {
+          linuxUser: lu, homeDir: `/home/${lu}`, workDir: `/home/${lu}/work`, seatDir: `/home/${lu}/.satuwork/${chSeat}`,
+          botId: chBotId, botVersion: '0.1.0', vncPassword: 'x'.repeat(16), gatewayUrl: gwBase,
+          gatewayToken: 'sat_e2e_channel', gatewayApiKey: 'sk_sw_e2e_channel',
+          ports: { display: 11, vncPort: 5911, novncPort: BOT_PORT, botPort: BOT_PORT, cdpPort: 9223 },
+        },
+      })
+      assert(put.status === 200, `登记渠道席位 ${put.status} ${put.text}`)
+      // 直接造一个已配对身份和一条待处理事件，省掉 Telegram 那几步往返（那些在 channels 套件里钉）。
+      const now = Date.now()
+      await withPg((c) =>
+        c.query(
+          `insert into channel_identities (id,"bindingId","externalUserId","externalUsername","externalDisplayName","pairedEventId","pairedAt","lastSeenAt")
+           values ('id-1',$1,'456','alice','Alice','tg:0',$2,$2)`,
+          [bindingId, now],
+        ),
+      )
+      await withPg((c) =>
+        c.query(
+          `insert into channel_events (id,"bindingId","externalEventId","externalConversationId","remoteUserId","remoteDisplayName",title,text,status,attempts,"nextTryAt","leaseUntil","leaseToken","sessionId",reply,files,handoffs,"lastError","createdAt","updatedAt","deliveredAt")
+           values ('ev-1',$1,'tg:100','456','456','Alice','', '帮我办件事','pending',0,$2,null,'',null,'','[]','[]',null,$2,$2,null)`,
+          [bindingId, now],
+        ),
+      )
+      let row = null
+      const deadline = Date.now() + 20000
+      while (Date.now() < deadline) {
+        row = (await withPg((c) => c.query('select status, reply, "sessionId", "lastError" from channel_events where id = $1', ['ev-1']))).rows[0]
+        if (row && (row.status === 'delivered' || row.status === 'dead')) break
+        await sleep(250)
+      }
+      assert(row && row.status === 'delivered', `事件该 delivered：${JSON.stringify(row)}`)
+      assert(row.reply === '好的，办妥了' && row.sessionId === 's-channel', `结果没记对：${JSON.stringify(row)}`)
+      // 席位那一跳是工人打的：带名册里那把票，问了两次（202 → 200）。
+      assert(bot.channelHits.length >= 2, `席位该被问不止一次，实际 ${bot.channelHits.length}`)
+      for (const h of bot.channelHits) assert(h.auth === 'Bearer sat_e2e_channel', `到席位的票不对：${h.auth}`)
+      assert(bot.channelHits[0].body.eventId === 'tg:100' && bot.channelHits[0].body.text === '帮我办件事', `发给席位的内容不对：${JSON.stringify(bot.channelHits[0].body)}`)
+      // Telegram 那一跳是 Gateway 打的：typing、草稿、最终回复都到了。
+      assert(telegram.seen.chatActions.some((a) => String(a.chat_id) === '456'), '没发 typing')
+      assert(telegram.seen.drafts.some((d) => String(d.chat_id) === '456' && String(d.text || '').includes('我先看看')), `没发草稿：${JSON.stringify(telegram.seen.drafts)}`)
+      const final = telegram.seen.sent.find((s) => String(s.chat_id) === '456')
+      assert(final && String(final.text || (final.rich_message && final.rich_message.markdown) || '').includes('好的，办妥了'), `最终回复没到：${JSON.stringify(telegram.seen.sent)}`)
+    })
   } finally {
+    await closeServer(telegram.server).catch(() => {})
     for (const s of bot.streams) {
       try {
         s.end()
