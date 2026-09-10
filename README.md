@@ -23,6 +23,12 @@ compose 里还有一个**可选**的自托管 SearXNG，默认不起，要它才
 Gateway 的业务数据在 PostgreSQL；宿主机端口用 **5434**（5432 一般已被别的实例占着）。
 `SATUWORK_GATEWAY_HOME` 只放 JWT 密钥对和 Bot 发布包。
 
+## 路线
+
+Gateway 要全面进入 Vercel + Neon：进程里会动的和握长连接的东西按机器下沉到席位工人、按人
+下沉到桌面端，Gateway 只剩无状态接口、静态界面和 `/v1`。决定、去向、上线顺序见
+[docs/adr-gateway-vercel-neon.md](docs/adr-gateway-vercel-neon.md)。
+
 ## 桌面端
 
 `desktop/` 是个 Tauri 壳，**包里没有前端**——它只记住「连哪台 Gateway」，然后开一个
