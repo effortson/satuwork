@@ -293,12 +293,15 @@ export async function maybeUpgrade(offer: UpgradeOffer, token: string): Promise<
 
     // 重启必须由**分离的**单元发起：管家的子进程去 systemctl restart 会连自己一起
     // 被杀（同一个 cgroup），命令根本发不出去。瞬态单元跳出去。
+    // 工人和管家同一个包、同一份 current 软链，一起重启。老机器上没有工人单元：systemctl
+    // 对不存在的单元只是报一句、别的照常，管家自己的重启不受影响。
     await run('systemd-run', [
       '--on-active=2s',
       '--unit=satuwork-manager-restart',
       'systemctl',
       'restart',
       'satuwork-manager.service',
+      'satuwork-worker.service',
     ], { timeout: 15_000 })
     lastError = ''
     console.log(`satuwork-manager: swapped to ${want}, restarting in 2s`)

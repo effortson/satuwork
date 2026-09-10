@@ -11,6 +11,7 @@ import { SeatBusy, busy, deploySeat, removeSeat, seat, seatProgress, seatsWithLi
 import { confirmVersion, maybeUpgrade, refreshConfirmScript, upgradeDeferred, upgradeError } from './upgrade.ts'
 import { currentTimezone, maybeSetTimezone, timezoneError } from './timezone.ts'
 import { standDown } from './standdown.ts'
+import { ensureWorkerEnv, relayIntercept } from './relay.ts'
 
 /**
  * 机器管家。一台席位机器一个，root systemd 服务。
@@ -231,7 +232,11 @@ process.on('uncaughtException', (e) => {
 })
 
 const router = new Router()
+// 本机工人的中继口排在最前面：它只认回环地址加令牌，认不出来就 401，不会落到别的分支。
+router.intercept(relayIntercept({ machineToken: token, gatewayUrl }))
 router.intercept(proxyIntercept({ machineToken: token, gatewayUrl }))
+// 工人的令牌每次开机都写一遍（读回旧的就不换）：工人单元靠 worker.env 起来。
+ensureWorkerEnv(boot.port, boot.dryRun)
 
 router.get('/health', async (req, res) => {
   // 配对回拨走 challenge，不走 smt_：那一刻票还在 Gateway 手里，管家还没收到响应。
