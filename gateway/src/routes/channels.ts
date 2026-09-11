@@ -20,6 +20,14 @@ const CHANNEL_BIND_LOCK = USER_BOT_QUOTA_LOCK
 
 interface StoredSecret { token: string; pairingCode: string }
 
+/**
+ * 删 Bot 时渠道会被停掉（见 DELETE /runtime/bots/:id）。重连和换配对码都会把渠道写回
+ * active，等于把停掉的又拉起来，消息继续落到正在拆的席位上——绑定的 Bot 在删就拒掉。
+ */
+async function requireBotNotDeleting(db: RouteCtx['db'], botId: string): Promise<void> {
+  if (await db.liveBotDeletion(botId)) throw new HttpError(409, '绑定的 Bot 正在删除')
+}
+
 function htmlAttr(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -250,6 +258,7 @@ export function attachChannels(router: Router, ctx: RouteCtx) {
     requireSeat(account)
     const binding = await db.channelBinding(req.params.id)
     if (!binding || binding.accountId !== account.id) throw new HttpError(404, '渠道不存在')
+    await requireBotNotDeleting(db, binding.botId)
     const secret = decryptChannelSecret<StoredSecret>(channelKey, binding.credentialCiphertext)
     await telegramGetMe(secret.token).catch((e: Error) => { throw new HttpError(502, e.message) })
     await ensureTelegramInbound(db, binding, secret.token).catch((e: Error) => { throw new HttpError(502, e.message) })
@@ -264,6 +273,7 @@ export function attachChannels(router: Router, ctx: RouteCtx) {
     requireSeat(account)
     const binding = await db.channelBinding(req.params.id)
     if (!binding || binding.accountId !== account.id) throw new HttpError(404, '渠道不存在')
+    await requireBotNotDeleting(db, binding.botId)
     const old = decryptChannelSecret<StoredSecret>(channelKey, binding.credentialCiphertext)
     const pairingCode = newPairingCode()
     await db.tx(async () => {

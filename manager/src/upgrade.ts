@@ -283,26 +283,55 @@ export async function maybeUpgrade(offer: UpgradeOffer, token: string): Promise<
     // patchState 现读现写：这里离函数开头那次 readState 已经隔了好几分钟，整份写回会把
     // 期间落盘的别的字段（confirmedVersion、gatewayUrl）抹掉。重试计数只在「同一个版本
     // 被回滚后再试」时加一，换了目标版本就归零。
-    patchState((s) => ({
-      lastUpgradeTo: want,
-      lastUpgradeAt: Date.now(),
-      upgradeRetries: retrying && s.lastUpgradeTo === want ? s.upgradeRetries + 1 : 0,
-    }))
-    // 上一次回滚的记号跟这次无关了，清掉；留着会让下一次熔断报出错的原因。
-    rmSync(rolledBackPath(), { force: true })
+    // 记下改之前的两个值：下面发不出重启的话要原样放回去。
+    let wasTo = ''
+    let wasRetries = 0
+    patchState((s) => {
+      wasTo = s.lastUpgradeTo
+      wasRetries = s.upgradeRetries
+      return {
+        lastUpgradeTo: want,
+        lastUpgradeAt: Date.now(),
+        upgradeRetries: retrying && s.lastUpgradeTo === want ? s.upgradeRetries + 1 : 0,
+      }
+    })
 
     // 重启必须由**分离的**单元发起：管家的子进程去 systemctl restart 会连自己一起
     // 被杀（同一个 cgroup），命令根本发不出去。瞬态单元跳出去。
     // 工人和管家同一个包、同一份 current 软链，一起重启。老机器上没有工人单元：systemctl
     // 对不存在的单元只是报一句、别的照常，管家自己的重启不受影响。
-    await run('systemd-run', [
+    //
+    // `--collect`：瞬态单元要是失败了，systemd 默认把它留在 failed 态，同名的下一次
+    // systemd-run 会以「单元已存在」被拒——从此每一轮换版都发不出重启。收掉它。
+    // 前面再 reset-failed 一次是给老机器兜底（没带 --collect 的旧版本留下的残骸）；
+    // 单元不存在时它只是报一句，不算错。
+    await run('systemctl', ['reset-failed', 'satuwork-manager-restart.service'], { timeout: 10_000 }).catch(() => {})
+    const r = await run('systemd-run', [
       '--on-active=2s',
+      '--collect',
       '--unit=satuwork-manager-restart',
       'systemctl',
       'restart',
       'satuwork-manager.service',
       'satuwork-worker.service',
     ], { timeout: 15_000 })
+    if (r.code !== 0) {
+      /**
+       * 重启没发出去，进程还是旧版本在跑。**把机器放回换之前的样子**：current 指回
+       * 旧目录，lastUpgradeTo / upgradeRetries 放回原值，回滚记号也没动（它在下面才清）。
+       *
+       * 不能只报错不回退：state 里记着「已换到 want」而进程自报旧版本，下一次心跳走到
+       * 上面那道熔断就成了「VERSION 不一致，不再重试」——把一个只是 systemd-run 抽了
+       * 一下的版本永久拉黑。放回去之后，下一次心跳会把这轮从头再来一遍（包重拉一次），
+       * 收敛得掉。
+       */
+      if (prev) relink('current', prev)
+      patchState(() => ({ lastUpgradeTo: wasTo, upgradeRetries: wasRetries }))
+      throw new Error(`systemd-run for the restart failed (${r.code}): ${(r.stderr || r.stdout).trim().slice(-200)}`)
+    }
+    // 上一次回滚的记号跟这次无关了，清掉；留着会让下一次熔断报出错的原因。
+    // 排在重启真的发出去之后：发不出去的那条路要靠它才认得出「这是回滚后的重试」。
+    rmSync(rolledBackPath(), { force: true })
     lastError = ''
     console.log(`satuwork-manager: swapped to ${want}, restarting in 2s`)
   } catch (e) {

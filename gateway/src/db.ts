@@ -73,6 +73,9 @@ export function databaseUrl(): string {
  */
 const LEDGER_BY_REF = '(select "refId", sum("amountMicros") as micros from usage_charges group by "refId")'
 
+/** Bot 删除请求失败后自动重试的上限。每次隔一分钟，试满就停在 failed 上，等管理员处理。 */
+export const MAX_BOT_DELETION_ATTEMPTS = 20
+
 /** 同一条日常任务已有一条 running 流水（见迁移 0035）。路由把它翻成 409。 */
 export class RoutineBusyError extends Error {
   constructor(readonly routineId: string) {
@@ -1889,6 +1892,10 @@ export class Db {
    * 未付款的订单只是一张待收的账单，不写订阅。
    * 席位不缩到已有账号数以下——订单少给了席位也不能把人挤掉，先按现有人数保住。
    *
+   * 「清掉」也包括席位：订单给的席位跟订单一起走，到期后只按现有人数保住，不能让一份
+   * 过期订阅把席位永远留在那里。但平台管理员可以不经订单直接给席位（skuId 本来就是空），
+   * 那不是订单算出来的，这里不动。
+   *
    * 下单/改单之后调它；起进程时也对一遍全量，把「订单到期了没人碰」和历史规则留下的
    * 脏值收干净——plans 里那几列是订单算出来的结果，不是另一份可以自己漂的真相。
    */
@@ -1898,7 +1905,8 @@ export class Db {
     const cur = await this.plan(companyId)
     if (!active) {
       if (cur?.skuId == null && cur?.expiresAt == null && cur) return
-      await this.upsertPlan(companyId, cur?.seats ?? Math.max(used, 1), { skuId: null, expiresAt: null })
+      const seats = cur?.skuId != null ? Math.max(used, 1) : (cur?.seats ?? Math.max(used, 1))
+      await this.upsertPlan(companyId, seats, { skuId: null, expiresAt: null })
       return
     }
     await this.upsertPlan(companyId, Math.max(active.seats, used), { skuId: active.planId, expiresAt: active.endAt })
@@ -2206,14 +2214,20 @@ export class Db {
    * instances 要一起删，而且**得在 seat_runtimes 之前**：那张表没有 machineId，只能
    * 顺着席位行去找；先删席位就没法定位了。它存的是 bot 的反代前缀，留着同样是一个
    * 指向已移除机器的旧地址。
+   *
+   * 会话索引同理：正文在那台机器的席位目录里，机器没了索引就成了永远打不开的入口
+   * （跟 deleteSeatRuntimeOf 一个道理）。session_index 自己带 machineId，直接按它删。
    */
   async deleteSeatRuntimesOfMachine(machineId: string): Promise<number> {
     if (!machineId) return 0
-    await this.run(
-      'delete from instances i using seat_runtimes s where s."machineId" = ? and i."accountId" = s."accountId" and i."botId" = s."botId"',
-      [machineId],
-    )
-    return this.run('delete from seat_runtimes where "machineId" = ?', [machineId])
+    return this.tx(async () => {
+      await this.run(
+        'delete from instances i using seat_runtimes s where s."machineId" = ? and i."accountId" = s."accountId" and i."botId" = s."botId"',
+        [machineId],
+      )
+      await this.run('delete from session_index where "machineId" = ?', [machineId])
+      return this.run('delete from seat_runtimes where "machineId" = ?', [machineId])
+    })
   }
 
   async updateMachine(
@@ -3755,11 +3769,12 @@ export class Db {
     return botDeletionRequestOf(r!)
   }
 
+  /** 失败的删除请求不无限重试：试满这么多次就停在 failed 上，等人来看。 */
   async dueBotDeletions(now = Date.now(), limit = 20): Promise<BotDeletionRequest[]> {
     const rows = await this.many(
       `select * from bot_deletion_requests where status in ('freezing','auditing','ready_to_purge','purging','failed')
-       and ("nextTryAt" is null or "nextTryAt" <= ?) order by "requestedAt" asc limit ?`,
-      [now, limit],
+       and attempts < ? and ("nextTryAt" is null or "nextTryAt" <= ?) order by "requestedAt" asc limit ?`,
+      [MAX_BOT_DELETION_ATTEMPTS, now, limit],
     )
     return rows.map(botDeletionRequestOf)
   }

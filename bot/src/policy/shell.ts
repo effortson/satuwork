@@ -213,7 +213,9 @@ export function networkCommand(rawArguments: string): string | null {
   }
   // URL 直接出现在命令里也算：`echo x > /dev/tcp/…`、`. <(…https://…)` 这类写法
   // 头一个词是无辜的，而意图写在参数里。
-  if (/\bhttps?:\/\/\S+/i.test(command) && /\b(dev\/tcp|\/dev\/udp)\b/.test(command)) return '/dev/tcp'
+  // `/dev/tcp/`、`/dev/udp/` 单独出现就够了——bash 用它连主机端口，命令里未必有 URL；
+  // 两者用「且」连起来，写 `cat < /dev/tcp/1.2.3.4/80` 的就从缝里溜走了。
+  if (/\/dev\/(tcp|udp)\//.test(command)) return '/dev/tcp'
   return null
 }
 

@@ -727,7 +727,8 @@ async function completeChatCompletions(
     message = await llm.models.completeSimple(piModel as any, context as any, {
       apiKey: secret,
       temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
-      maxTokens: typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
+      // 同流式那一岔：新版 OpenAI SDK 发的是 max_completion_tokens，只认 max_tokens 会把上限静静丢掉。
+      maxTokens: typeof body.max_tokens === 'number' ? body.max_tokens : typeof body.max_completion_tokens === 'number' ? body.max_completion_tokens : undefined,
       reasoning: reasoningOf(body),
     })
   } catch (e) {
@@ -925,6 +926,8 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
     const modelRaw = str(body.model)
     if (!modelRaw) throw new HttpError(400, 'model 不能为空')
     const found = await resolveOr404(llm, account.companyId, modelRaw, str(body.provider) || 'openai')
+    // `provider` 是给 Gateway 选路用的，不是上游的字段：原样转过去，上游会当成认不出的参数拒掉。
+    delete body.provider
     requireProvider(found.provider, 'openai', '/v1/responses')
     const secret = await secretOr402(llm, account.companyId, found.provider)
     await gateOr402(meter, account, found)
@@ -952,6 +955,8 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
     const modelRaw = str(body.model)
     if (!modelRaw) throw new HttpError(400, 'model 不能为空')
     const found = await resolveOr404(llm, account.companyId, modelRaw, str(body.provider) || 'anthropic')
+    // 同 /v1/responses：`provider` 只是选路提示，不能转给上游。
+    delete body.provider
     requireProvider(found.provider, 'anthropic', '/v1/messages')
     const secret = await secretOr402(llm, account.companyId, found.provider)
     await gateOr402(meter, account, found)

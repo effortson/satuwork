@@ -109,6 +109,15 @@ export async function notify(db: Db, h: Handoff, kind: NudgeKind): Promise<boole
 }
 
 /**
+ * 席位的回话是不是「这张单已经不在了」那一类——再敲也是同一句，不该退回重来。
+ * 5xx、网络（callSeat 折成 503）和静默期的 409 都不算，那些是「等会儿再来」。
+ */
+function terminalRefusal(r: { status: number; json: Record<string, unknown> }): boolean {
+  if (r.status === 409) return r.json.quiesced !== true
+  return r.status === 400 || r.status === 404 || r.status === 410
+}
+
+/**
  * 扫一轮：该催的催，该收的收。
  *
  * **两档都用带旧值的 CAS 记账**（`bumpHandoffNotify`）：升级换版那几十秒里新旧两代
@@ -141,9 +150,25 @@ export async function sweepHandoffs(db: Db, now = Date.now()): Promise<{ nudged:
       await db.upsertHandoff({ ...h, state: 'expired', updatedAt: Date.now() })
       expired++
       await notify(db, h, 'expired')
+    } else if (terminalRefusal(r)) {
+      /**
+       * 席位**明确说了这张单不在了**：409 是它的 expire 回的「已经不在了」（bot 的
+       * /handoffs/:hid/expire），404 是老版本席位没有这条路或会话没了，400 / 410 同理。
+       * 这几种下一轮再敲还是同一句话——以前和「席位不在线」混在一起退回重来，于是
+       * 这张单每一拍都去撞一次，永远收不掉，blocking 的那些就一直拦着这颗 Bot 的日常任务。
+       *
+       * Gateway 这边直接收成 `expired`：那句话没法带给模型了（席位那边的单子已经没了，
+       * 也就没有会话在等它），但这一行的终态必须落下（不变量 2）。
+       *
+       * **静默期那种 409 不算**：席位换版时会用 409 + `quiesced: true` 顶回来（refuseQuiet），
+       * 那是「等会儿再来」，不是「没有这张单」。
+       */
+      await db.upsertHandoff({ ...h, state: 'expired', updatedAt: Date.now() })
+      expired++
+      console.warn(`handoff: ${h.id} 席位那边已经不在了（HTTP ${r.status}），Gateway 这边直接收成 expired`)
     } else {
       /**
-       * 席位不在线（机器关着的整夜正是没人接手的一半原因）。
+       * 席位不在线（机器关着的整夜正是没人接手的一半原因），或者正在换版（静默期）。
        *
        * **退回原来那一档重来**，不是就此放过：这张单的最终态必须落下（不变量 2），
        * 而唯一能把那句话说给模型听的地方就是那台席位。下一轮再试。

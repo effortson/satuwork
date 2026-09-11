@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { bootConfig, seatAssets, seatsPath } from './config.ts'
 import { reclaimSeatPorts } from './reclaim.ts'
@@ -426,6 +426,9 @@ export interface SeatProgress {
 
 const progress = new Map<string, SeatProgress>()
 
+/** deploy-seat.sh 里「启动桌面与 Bot」是第几步。从这一步起两个单元已经按新端口在跑了。 */
+const RESTART_STEP = 6
+
 /** `@@step 3/7 安装浏览器` → 结构化的一步。不是这个形状的一律回 null。 */
 export function stepOf(line: string): Omit<SeatProgress, 'at'> | null {
   const m = /^@@step (\d+)\/(\d+) (.+)$/.exec(line.trim())
@@ -475,16 +478,25 @@ async function doDeploy(spec: SeatSpec, token: string): Promise<SeatRecord> {
   if (bootConfig().dryRun) return commit(spec.seatId, base)
 
   /**
-   * 失败时端口**保留名册上原来那一对**，不写 spec 里的新端口。走到 fail 的时候机器上
-   * 还在服务的（如果有）是上一轮部署的那套进程，它们听的是旧端口；名册要是换成新端口，
-   * 反代和 busySeats 就会去敲一个没人听的口——席位明明还活着，界面上却成了「失联」。
+   * 失败时名册上写哪一对端口，看脚本**跑到了第几步**。
+   *
+   * 第 6 步之前失败：机器上还在服务的（如果有）是上一轮部署的那套进程，它们听的是
+   * 旧端口，名册**保留原来那一对**；换成 spec 里的新端口的话，反代和 busySeats 就会去
+   * 敲一个没人听的口——席位明明还活着，界面上却成了「失联」。
+   *
+   * 第 6 步（启动桌面与 Bot）已经把两个单元按**新**端口 restart 过了，之后再失败
+   * （第 7 步自证不过、exit 43）机器上听的就是新端口，这时反而要写 spec 里的那对，
+   * 不然名册指着一对已经没人听的旧口。步数由脚本的 `@@step` 行报上来（见 stepOf）。
+   *
    * 现读：这一行之前隔着排空和拉包两段等待，开头那份 current 可能已经旧了。
    */
+  let stepReached = 0
   const fail = (message: string): SeatRecord => {
     const was = load()[spec.seatId]
+    const keepOld = was && stepReached < RESTART_STEP
     return commit(spec.seatId, {
       ...base,
-      ...(was ? { botPort: was.botPort, novncPort: was.novncPort } : {}),
+      ...(keepOld ? { botPort: was.botPort, novncPort: was.novncPort } : {}),
       status: 'error',
       lastError: message.slice(0, 500),
     })
@@ -523,7 +535,9 @@ async function doDeploy(spec: SeatSpec, token: string): Promise<SeatRecord> {
     timeout: 900_000,
     onLine: (line) => {
       const hit = stepOf(line)
-      if (hit) progress.set(spec.seatId, { ...hit, at: Date.now() })
+      if (!hit) return
+      stepReached = hit.step
+      progress.set(spec.seatId, { ...hit, at: Date.now() })
     },
     env: {
       LINUX_USER: spec.linuxUser,
@@ -600,8 +614,4 @@ export async function seatsWithLiveness(): Promise<(Omit<SeatRecord, 'gatewayTok
   const rows = seats()
   // 席位票不出这个进程：它只为 stream 那条路换票用（见 SeatRecord.gatewayToken）。
   return Promise.all(rows.map(async ({ gatewayToken: _token, ...r }) => ({ ...r, active: await unitActive(r.seatId) })))
-}
-
-export function assetsReady(): boolean {
-  return existsSync(join(seatAssets(), 'deploy-seat.sh'))
 }

@@ -1,5 +1,5 @@
 /** 自动对话审计的窗口调度、席位派发与 Bot 删除状态机。 */
-import type { Db, ConversationAuditBatch, ConversationAuditSettings } from './db.ts'
+import { MAX_BOT_DELETION_ATTEMPTS, type BotDeletionRequest, type BotDeletionStatus, type Db, type ConversationAuditBatch, type ConversationAuditSettings } from './db.ts'
 import { createHash } from 'node:crypto'
 import { fromZoned, partsIn } from './lib/schedule.ts'
 import { machineHeader, seatBearer } from './lib/runtime.ts'
@@ -107,8 +107,8 @@ async function createScheduledBatches(db: Db, now = Date.now()): Promise<number>
         ? windows.filter((w) => w.end > coverage.windowEnd)
         : [latest]
       // 同一 pair 串行推进水位；后一个窗口不能拿着前一个尚未确认的 fromSeq 抢跑。
+      // 一轮只推一个窗口，fromSeq 就是上面刚取的那份水位，中间没有写过，不必再查一遍。
       for (const window of eligible.slice(0, 1)) {
-        const before = await db.conversationAuditCoverage(target.accountId, target.botId || '')
         // session_index 会在用户消息和 turn/end 时更新。若它在整段窗口里都没有动过，
         // 这个窗口不可能有新对话；messageCount=0 则连首次启用也可以直接判空。
         // 仍落一个 empty 水位，避免 Gateway 重启后反复检查同一窗口，但不派发 Bot、
@@ -137,7 +137,7 @@ async function createScheduledBatches(db: Db, now = Date.now()): Promise<number>
           windowStart: window.start,
           windowEnd: window.end,
           timezone: settings.timezone,
-          fromSeq: before.toSeq,
+          fromSeq: coverage.toSeq,
           modelRole: selected.role,
           provider: selected.provider,
           model: selected.model,
@@ -146,14 +146,14 @@ async function createScheduledBatches(db: Db, now = Date.now()): Promise<number>
         })
         if (batch.createdAt >= now - 1000) created++
         if (skipEmpty && batch.status === 'queued' && batch.attempts === 0) {
-          const hashes = emptyResult(before.toSeq)
+          const hashes = emptyResult(coverage.toSeq)
           const account = await db.account(target.accountId)
           const bot = await db.catalog(target.botId || '')
           await db.completeConversationAuditBatch({
             id: batch.id,
             status: 'empty',
-            fromSeq: before.toSeq,
-            toSeq: before.toSeq,
+            fromSeq: coverage.toSeq,
+            toSeq: coverage.toSeq,
             eventCount: 0,
             turnCount: 0,
             sourceHash: hashes.sourceHash,
@@ -348,18 +348,35 @@ async function createDeletionBatches(db: Db, request: Awaited<ReturnType<Db['bot
   return count
 }
 
-async function advanceDeletion(db: Db, request: NonNullable<Awaited<ReturnType<Db['botDeletion']>>>): Promise<void> {
+/**
+ * 'failed' 只记了「出过错」，没记在哪一步出的错。终审早就过了、拆席位时失败的请求，
+ * 不能再送回去建一批终审批次——那会用 cutoffAt 之后的水位再建一份 [cutoffAt, cutoffAt]
+ * 的空批次。表里没有「失败前的阶段」这一列，就从已有的痕迹推：auditCompletedAt 已落，
+ * 或者这个请求名下的终审批次都已跑完，就直接回到拆席位那一步。
+ */
+async function resumeStatusOf(db: Db, request: BotDeletionRequest): Promise<BotDeletionStatus> {
+  if (request.status !== 'failed') return request.status
+  if (request.auditCompletedAt != null) return 'ready_to_purge'
+  const batches = await db.conversationAuditBatchesOfDeletion(request.id)
+  if (batches.length && batches.every((b) => b.status === 'succeeded' || b.status === 'empty')) return 'ready_to_purge'
+  return 'freezing'
+}
+
+async function advanceDeletion(db: Db, request: BotDeletionRequest): Promise<void> {
   try {
-    if (request.status === 'freezing' || request.status === 'failed') {
+    const status = await resumeStatusOf(db, request)
+    if (status === 'freezing') {
       const count = await createDeletionBatches(db, request)
       if (!count) {
-        await db.updateBotDeletion(request.id, { status: 'ready_to_purge', targetCount: 0, auditedCount: 0, nextTryAt: Date.now() })
+        await db.updateBotDeletion(request.id, {
+          status: 'ready_to_purge', targetCount: 0, auditedCount: 0, auditCompletedAt: Date.now(), nextTryAt: Date.now(),
+        })
       } else {
         await db.updateBotDeletion(request.id, { status: 'auditing', targetCount: count, lastError: null, nextTryAt: Date.now() + 5000 })
       }
       return
     }
-    if (request.status === 'auditing') {
+    if (status === 'auditing') {
       const batches = await db.conversationAuditBatchesOfDeletion(request.id)
       const done = batches.filter((b) => b.status === 'succeeded' || b.status === 'empty').length
       if (done < batches.length) {
@@ -371,7 +388,7 @@ async function advanceDeletion(db: Db, request: NonNullable<Awaited<ReturnType<D
       })
       return
     }
-    if (request.status === 'ready_to_purge' || request.status === 'purging') {
+    if (status === 'ready_to_purge' || status === 'purging') {
       await db.updateBotDeletion(request.id, { status: 'purging', attempts: request.attempts + 1, nextTryAt: Date.now() + 60_000 })
       const { released, failed } = await purgeBot(db, request.botId)
       const orphans = failed.map((f) => ({ seatId: f.seat.seatId, error: f.error }))
@@ -386,9 +403,13 @@ async function advanceDeletion(db: Db, request: NonNullable<Awaited<ReturnType<D
       })
     }
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
+    const attempts = request.attempts + 1
+    let message = (e instanceof Error ? e.message : String(e)).slice(0, 500)
+    // 到了上限就不再自动重试（dueBotDeletions 按 attempts 过滤），状态仍是 failed，
+    // 错误里说清楚是停了而不是还在转，留给管理员处理。
+    if (attempts >= MAX_BOT_DELETION_ATTEMPTS) message += `（已重试 ${attempts} 次，不再自动重试）`
     await db.updateBotDeletion(request.id, {
-      status: 'failed', attempts: request.attempts + 1, lastError: message.slice(0, 500), nextTryAt: Date.now() + 60_000,
+      status: 'failed', attempts, lastError: message, nextTryAt: Date.now() + 60_000,
     })
   }
 }

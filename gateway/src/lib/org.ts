@@ -167,19 +167,23 @@ export async function patchAccount(
   row: Account,
   body: { name?: unknown; role?: unknown; status?: unknown },
 ): Promise<{ account: Account; patch: { name?: string; role?: Role; status?: AccountStatus } }> {
-  if (row.id === actor.id && (body.role || body.status)) throw new HttpError(400, '不能改自己的角色或状态')
+  // `null` 和没传一样看待：roleOf 会把 null 折成 member，靠真值判断的话 `role: null`
+  // 就绕过了这道闸，把自己从 admin 悄悄降成 member。
+  if (row.id === actor.id && ((body.role != null && body.role !== '') || (body.status != null && body.status !== ''))) {
+    throw new HttpError(400, '不能改自己的角色或状态')
+  }
   const patch: { name?: string; role?: Role; status?: AccountStatus; tokenRevokedAt?: number | null } = {}
   if (body.name != null) {
     const name = strField(body as Record<string, unknown>, 'name')
     if (!name) throw new HttpError(400, 'name 不能为空')
     patch.name = name
   }
-  if (body.role !== undefined && body.role !== '') patch.role = roleOf(body.role)
+  if (body.role != null && body.role !== '') patch.role = roleOf(body.role)
   // owner 这一行只能停用，**不能改成 admin / member**：roleOf 已经不收 `owner`，所以任何
   // 送来的角色都是降级；降完的 owner 属于哪家公司说不清（它没有 companyId），而且平台
   // 那一层的写入口全都 requireOwner，降掉最后一个之后再没人能改回来。
   if (row.role === 'owner' && patch.role && patch.role !== 'owner') throw new HttpError(400, '系统管理员的角色不能改')
-  if (body.status !== undefined && body.status !== '') patch.status = statusOf(body.status)
+  if (body.status != null && body.status !== '') patch.status = statusOf(body.status)
   const nextRole = patch.role ?? row.role
   const nextStatus = patch.status ?? row.status
   if (patch.status === 'invited' && row.status !== 'invited') {

@@ -6,7 +6,7 @@ import { humanSize, looksBinary } from '../workspace/index.ts'
 import { docKindOf, extractDocument } from '../workspace/extract.ts'
 import { clip, fail, registerTool, SKIPPED_DIRS, walkFiles, type ToolOut } from './common.ts'
 import { fuzzyReplace } from './fuzzy.ts'
-import type { WorkspaceFile } from './index.ts'
+import type { ToolCall, WorkspaceFile } from './index.ts'
 
 /**
  * file 工具集：`read_file` / `write_file` / `patch` / `search_files`。
@@ -30,6 +30,15 @@ export const inject = ['tools', 'workspace']
 /** 输出上限。喂回模型的东西必须有界，否则一次 `search_files .` 就能把上下文冲掉。 */
 const MAX_READ_LINES = 2000
 const MAX_LINE_CHARS = 2000
+/**
+ * 内容搜索时一行最多拿多少字符去跑正则。
+ *
+ * 用户写的正则是任意的，碰上压缩产物那种几十万字符的单行，回溯能把进程卡死几秒——
+ * 那段时间 SSE 心跳、停止按钮全都没响应。超过这个长度的部分不测，命中在后面的就漏了。
+ */
+const MAX_REGEX_LINE_CHARS = 10_000
+/** 内容搜索每扫多少个文件让一次事件循环，好让心跳和中止信号有机会跑。 */
+const YIELD_EVERY_FILES = 200
 /** 一次读回来最多多少字符。到顶就在行边界停下，带 `next_offset` 让模型接着读。 */
 const READ_BUDGET = 100_000
 const MAX_TEXT_CHARS = 120_000
@@ -377,7 +386,7 @@ export function apply(ctx: Context) {
       ignore_case?: boolean
       limit?: number
       offset?: number
-    }): Promise<ToolOut | string> => {
+    }, call: ToolCall): Promise<ToolOut | string> => {
       if (!pattern) fail('缺少 pattern 参数')
       const mode = target === 'files' ? 'files' : 'content'
       const base = resolveIn(path)
@@ -429,8 +438,12 @@ export function apply(ctx: Context) {
       let total = 0
       let stopped = false
 
+      let scanned = 0
       outer: for await (const file of filesUnder(base, wantsHidden(fileGlob), (path) => ctx.workspace.isApprovedLink(path))) {
-        if (match && !match(relative(base, file).split(sep).join('/'))) continue
+        if (call.signal?.aborted) break
+        if (++scanned % YIELD_EVERY_FILES === 0) await new Promise((r) => setImmediate(r))
+        // 起点本身就是个文件时，「相对起点」的路径是空串，什么模式都配不上——那就拿文件名去配。
+        if (match && !match(file === base ? basename(file) : relative(base, file).split(sep).join('/'))) continue
         const s = await stat(file).catch(() => undefined)
         if (!s || s.size > MAX_GREP_FILE_BYTES) continue
         const buf = await readFile(file).catch(() => undefined)
@@ -442,7 +455,7 @@ export function apply(ctx: Context) {
         /** 这个文件真的往结果里摆了几段。**和 hits 不是一回事**——见下面收尾那一步。 */
         let shown = 0
         for (let i = 0; i < lines.length; i++) {
-          if (!re.test(lines[i])) continue
+          if (!re.test(lines[i].length > MAX_REGEX_LINE_CHARS ? lines[i].slice(0, MAX_REGEX_LINE_CHARS) : lines[i])) continue
           hits++
           if (shape === 'content') {
             total++

@@ -6,7 +6,7 @@ import { HttpError, json, type Router } from '../http.ts'
 import { PULL_ERROR, pullSessionEvents } from '../lib/machines.ts'
 import { companyMachineOf } from '../deploy.ts'
 import { bodyOf, intField } from '../lib/validate.ts'
-import { modelProviderCreds, publicPlatformCred, publicSessionIndex, sessionCursorOf } from '../lib/org.ts'
+import { isModelProvider, modelProviderCreds, publicPlatformCred, publicSessionIndex, sessionCursorOf } from '../lib/org.ts'
 import { rangeQuery, requireOrgUser, requireUser } from '../lib/guards.ts'
 import { seatBearer, seatMachineOf } from '../lib/runtime.ts'
 import { sessionPageLimit } from '../db.ts'
@@ -32,7 +32,9 @@ export function attachSessions(router: Router, ctx: RouteCtx) {
     await requireOrgUser(req, db, keys, req.params.id)
     const provider = req.params.credId.startsWith('platform:') ? req.params.credId.slice('platform:'.length) : req.params.credId
     const row = await db.platformCredential(provider)
-    if (!row) throw new HttpError(404, '密钥不存在')
+    // 跟列表同一个口径：不是模型供应商的密钥（连接器、搜索后端）对公司管理员就不存在，
+    // 列表里看不到的，按名字也不能捞出来。
+    if (!row || !isModelProvider(row.provider)) throw new HttpError(404, '密钥不存在')
     json(res, 200, { credential: publicPlatformCred(row) })
   })
 

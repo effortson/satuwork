@@ -250,6 +250,14 @@ function start(name, args, { cwd, env }) {
   child.on('exit', (code, sig) => {
     child._exited = { code, sig }
   })
+  // spawn 异步失败（找不到可执行文件、EAGAIN）走的是 'error' 事件，不是 'exit'。没人听
+  // 它就是一个 uncaughtException，进程当场死、killAll 跑不到，探针和 Gateway 全成孤儿。
+  // 记下来、标成已退出：等 waitHttp 那一层去报「起不来」，比在这里炸掉好查得多。
+  child.on('error', (e) => {
+    child._error = e
+    child._exited = { code: null, sig: null }
+    log(`[${name}] 子进程起不来：${e.message}`)
+  })
   children.push(child)
   return child
 }
@@ -3294,6 +3302,15 @@ async function main() {
     killAll()
     process.exit(143)
   })
+  // 任何没接住的崩溃也得先收子进程再退：不然 Gateway / 管家 / detached 的 Chrome 探针
+  // 会留在机器上，下一次跑 e2e 端口就被它们占着。
+  const crash = (what) => (e) => {
+    console.error(`[e2e] ${what}：${e?.stack ?? e}`)
+    killAll()
+    process.exit(1)
+  }
+  process.on('uncaughtException', crash('未捕获异常'))
+  process.on('unhandledRejection', crash('未处理的 rejection'))
   try {
     await requirePg()
     await suite('gateway', () => runGateway())

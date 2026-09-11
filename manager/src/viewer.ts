@@ -74,8 +74,3 @@ export async function verifyLogin(token: string, gatewayUrl: string): Promise<Vi
   cache.set(key, { at: now, viewer })
   return viewer ?? undefined
 }
-
-/** 只给测试用：让下一次验证重新问 Gateway。 */
-export function forgetViewers(): void {
-  cache.clear()
-}

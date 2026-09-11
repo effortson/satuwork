@@ -377,9 +377,11 @@ export function apply(ctx: Context) {
         return { text: `等了 ${seconds} 秒。` }
       }
       while (Date.now() < deadline) {
-        const has = await browser.hasText(wantText || goneText, call.signal)
-        if (wantText && has) return { text: `已经出现「${wantText}」。` }
-        if (goneText && !has) return { text: `「${goneText}」已经不在页面上了。` }
+        // 两段文字各查各的：合成一次查询会让 text 和 textGone 同时给出时只等其中一段。
+        const has = wantText ? await browser.hasText(wantText, call.signal) : false
+        const gone = goneText ? !(await browser.hasText(goneText, call.signal)) : false
+        if (has) return { text: `已经出现「${wantText}」。` }
+        if (gone) return { text: `「${goneText}」已经不在页面上了。` }
         await new Promise((r) => setTimeout(r, 400))
       }
       // 等不到是**业务**结果，不是故障：模型要看到它并自己决定下一步。
