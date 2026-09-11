@@ -298,6 +298,7 @@ window.SATU_I18N = {
     'The workspace is empty. Upload a file, or ask the bot to write something.',
   拖动调整宽度: 'Drag to resize',
   打开桌面: 'Open desktop',
+  '这台机器没有配直连地址，桌面打不开': 'This machine has no direct URL configured, so its desktop cannot be opened',
   桌面: 'Desktop',
   '公司的运行机器还没配好': 'The company machine is not set up yet',
   '正在部署…': 'Deploying…',
@@ -405,6 +406,8 @@ window.SATU_I18N = {
   日常任务模型: 'Daily model',
   设置登录口令: 'Set your password',
   实例还没上线: 'Instance not online yet',
+  '这台机器没有配直连地址（或管家太旧），对话流开不了；找管理员在「机器」页填上 directUrl':
+    'This machine has no direct URL configured (or its manager is too old), so the chat stream cannot open; ask an admin to set directUrl on the Machines page',
   始终使用浅色: 'Always light',
   始终使用深色: 'Always dark',
   '说明（可选）': 'Description (optional)',

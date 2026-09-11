@@ -16,7 +16,7 @@ import { createCompany } from './org.mjs'
 import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { el, fakeSse } from './ui-dom.mjs'
-import { catchUpFrames, newCatchUp, remember } from '../gateway/src/lib/roster-filter.ts'
+import { catchUpFrames, newCatchUp, remember } from '../manager/src/roster-filter.ts'
 import { readFileSync } from 'node:fs'
 import { freePort } from './ports.mjs'
 
@@ -3157,6 +3157,36 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       ui.stopChatStream()
     })
 
+    await test('远程 Bot 没给 streamUrl：一个 fetch 都不发，直接说「没配直连地址」', async () => {
+      /**
+       * Gateway 不再反代对话流，`/runtime/sessions/:id/events` 已经不存在。名单上那颗
+       * Bot 明确带着 runtime 却没有 streamUrl（机器没填 directUrl、或管家太旧），前端要
+       * **当场**把原因画出来，而不是去打一条早没了的路、等它 404 再退避重连——那样人
+       * 看到的是转圈，永远等不到一句解释。
+       */
+      let hits = 0
+      const ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: adminToken,
+        fetchImpl: async (path, init) => {
+          if (path.includes('/events')) hits++
+          return fetch(gwBase + path, init)
+        },
+      })
+      await ui.boot()
+      ui.state.runtimeBots = [{ id: 'bot-far', name: 'FAR', runtime: { status: 'ready', streamUrl: null } }]
+      ui.state.chatSessionId = 's-far'
+      try {
+        await ui.startChatStream('s-far', 0, 'bot-far')
+        await new Promise((r) => setTimeout(r, 50))
+        assert(hits === 0, `没有直连地址还去连了 ${hits} 次——Gateway 上早没这条路了`)
+        assert(String(ui.state.runtimeError).includes('没有配直连地址'), `没把原因画出来：${ui.state.runtimeError}`)
+      } finally {
+        ui.stopChatStream()
+      }
+    })
+
     await test('拉历史途中会话被重建：这一份作废，不串台', async () => {
       const sse = fakeSse()
       const ui = await twoPathUi(sse)
@@ -3806,7 +3836,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
     await test('追平集重建出来的名单状态，和一路听下来的一模一样', async () => {
       /**
        * 一套上游按账号共享之后，**每一次刷新都是「中途接上」**：新页面连上来时，之前
-       * 那些帧早就发过了。Gateway 为此留了一份追平集（roster-filter.ts 的 CatchUp），
+       * 那些帧早就发过了。管家为此留了一份追平集（manager/src/roster-filter.ts 的 CatchUp），
        * 先补发再转直播。
        *
        * 这个测把两条路摆在一起跑：一路把全部帧喂给客户端（相当于一直连着的那个页面），
@@ -3860,9 +3890,11 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
        *   一次十几秒才见到消息，而且每次不一样（谁抢到槽是随机的）。
        * · token 洪流——那几条流拿的是全量事件，包括每个 token 一条的 chunk。
        *
-       * 现在 Gateway 扇入，浏览器只连一条（过滤规则另有 e2e/roster-stream.mjs 钉着）。
-       * 这个测钉住浏览器这一头的两件事：**只开一条**，以及**那一条真的把每个 Bot 的
-       * 状态喂进了名单**——十几个 Bot 都要看得见状态变化，靠的就是它。
+       * 现在由席位机器上的管家扇入，浏览器只连一条（过滤规则另有 e2e/roster-stream.mjs
+       * 钉着），地址是 `/runtime/bots` 给的 `rosterStreamUrl`——Gateway 上没有这条路了，
+       * 所以没给地址时前端根本不该开流。这个测钉住浏览器这一头的两件事：**只开一条**，
+       * 以及**那一条真的把每个 Bot 的状态喂进了名单**——十几个 Bot 都要看得见状态变化，
+       * 靠的就是它。
        */
       const streams = []
       const ui = loadApp({
@@ -3882,8 +3914,16 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const ids = Array.from({ length: 15 }, (_, i) => 'bot-' + i)
       ui.state.runtimeBots = ids.map((id) => ({ id, name: id.toUpperCase() }))
       try {
+        // 这套 e2e 里的机器没配直连地址，名册不会带 rosterStreamUrl；先钉住「没地址就不开」，
+        // 再喂一条像样的直连地址进去看它只开一条。
         ui.stopRosterStream()
         streams.length = 0
+        ui.state.rosterStreamUrl = ''
+        void ui.startRosterStream()
+        await new Promise((r) => setTimeout(r, 50))
+        assert(streams.length === 0, `没有直连地址还去连了 ${streams.length} 条——Gateway 上早没这条路了`)
+
+        ui.state.rosterStreamUrl = 'https://m001.satuwork.test/roster/stream'
         void ui.startRosterStream()
         for (let i = 0; i < 100 && !streams.length; i++) await new Promise((r) => setTimeout(r, 5))
         assert(streams.length === 1, `15 个 Bot 开了 ${streams.length} 条连接——回到一个 Bot 一条那套了`)

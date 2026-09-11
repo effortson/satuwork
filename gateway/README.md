@@ -57,7 +57,6 @@ src/db/rows.ts      裸行 → 类型
 src/db/migrate.ts   编号迁移的执行器（advisory lock、一条一个事务、校验和）
 src/db/migrations/  一条迁移一个文件，index.ts 是那张有序表
 src/deploy.ts       席位：槽位、端口、下发给管家、拆席位
-src/desktop.ts      桌面反代（票进路径、WebSocket 升级）。机器配了 directUrl 时走直连，不经过这里
 src/v1.ts           /v1/* 模型代理
 src/llm.ts          pi-ai 目录与上游调用
 ```

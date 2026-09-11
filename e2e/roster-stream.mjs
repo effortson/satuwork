@@ -1,5 +1,8 @@
 /**
- * 名单通道的过滤规则（gateway/src/lib/roster-stream.ts 的 rosterFrame）。
+ * 名单通道的过滤规则（manager/src/roster-filter.ts 的 rosterFrame）。
+ *
+ * 这条通道已经整个下沉到席位机器：Gateway 不再扇入名单流（它那份 roster-stream.ts /
+ * roster-filter.ts 拆掉了），浏览器直连管家的 `/roster/stream`。规则只剩管家这一份。
  *
  * 这条通道存在的全部理由就是**别把 token 洪流发给侧栏**：一轮回答几百上千条
  * `assistant/chunk`，而名单拿它只是把一个 HH:MM 的钟往前推。规则错一条，两种坏法
@@ -7,20 +10,16 @@
  * 洪流原样回来（而那正是这条通道要省掉的东西）。所以一条条钉住。
  */
 import { readFileSync } from 'node:fs'
-import { catchUpFrames, newCatchUp, remember, rosterFrame } from '../gateway/src/lib/roster-filter.ts'
+import { catchUpFrames, newCatchUp, remember, rosterFrame } from '../manager/src/roster-filter.ts'
 
 const up = () => ({ botId: 'bot-a', sessionId: 's-a', after: 0, lastTick: 0, attempt: 0 })
 
 export async function runRosterStream({ test, assert, log }) {
   log('\n# roster-stream')
 
-  await test('管家那份 roster-filter 是 gateway 这份的逐字副本', async () => {
-    // 规则在两边都要跑（名单流下沉到席位机器，见 manager/src/roster.ts），而管家 import 不到
+  await test('管家那份 draft-pump 是 gateway 这份的逐字副本', async () => {
+    // 渠道那一轮下沉到工人之后，Telegram 草稿的节流在工人那头跑，而管家 import 不到
     // gateway 的源，只能抄。抄的东西会漂，这里按字节钉住：改了 gateway 那份就整个覆盖过去。
-    const gw = readFileSync(new URL('../gateway/src/lib/roster-filter.ts', import.meta.url), 'utf8')
-    const mgr = readFileSync(new URL('../manager/src/roster-filter.ts', import.meta.url), 'utf8')
-    assert(mgr.endsWith(gw), 'manager/src/roster-filter.ts 和 gateway 那份不一样了——把 gateway 那份整个覆盖过去（保留文件头那段说明）')
-    // 同一条规矩管着草稿泵：渠道那一轮下沉到工人之后，Telegram 草稿的节流在工人那头跑。
     const gwPump = readFileSync(new URL('../gateway/src/channels/draft-pump.ts', import.meta.url), 'utf8')
     const mgrPump = readFileSync(new URL('../manager/src/draft-pump.ts', import.meta.url), 'utf8')
     assert(mgrPump.endsWith(gwPump), 'manager/src/draft-pump.ts 和 gateway 那份不一样了——把 gateway 那份整个覆盖过去（保留文件头那段说明）')

@@ -4,7 +4,6 @@ import { hashPassword, loadChannelKey, loadKeys } from './crypto.ts'
 import { Router, listen } from './http.ts'
 import { gatewayHome } from './home.ts'
 import { attach } from './routes.ts'
-import { attachDesktopUpgrade } from './desktop.ts'
 import { startRoutineScheduler } from './routines.ts'
 import { startChannelDispatcher } from './channels.ts'
 
@@ -119,8 +118,6 @@ const channelKey = loadChannelKey(home)
 const router = new Router()
 attach(router, db, keys, channelKey)
 const server = listen(router)
-// 桌面的画面走 WebSocket，而升级请求不进 Router——它是 server 上的一个事件。
-attachDesktopUpgrade(server, db, keys)
 /**
  * 日常任务的调度器。**这是这个进程里唯一一个自己会动的定时器**，所以它挂在这儿而
  * 不是藏在某组路由里：停机时要有人明确地把它和它等着的那几条流一起掐掉。

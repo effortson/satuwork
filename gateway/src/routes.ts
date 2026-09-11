@@ -1,4 +1,3 @@
-import { desktopIntercept } from './desktop.ts'
 import { createLlm } from './llm.ts'
 import { createMeter } from './lib/meter.ts'
 import type { Db } from './db.ts'
@@ -40,10 +39,6 @@ import { attachCron } from './routes/cron.ts'
  * 那类相邻关系都在各自的模块里，跨模块之间段数不同、互不相抢。
  */
 export function attach(router: Router, db: Db, keys: JwtKeys, channelKey: Buffer) {
-  // 桌面反代。`/desktop/:seatId/*` → 管家的 noVNC。注册成拦截器而不是路由：它要拿
-  // 原始 req 当流用，不能让路由器先把 body 读掉，路径也是通配的。
-  router.intercept(desktopIntercept(db, keys))
-
   const llm = createLlm(db)
   const ctx: RouteCtx = { db, keys, channelKey, llm, meter: createMeter(db) }
   attachV1(router, db, keys, llm, ctx.meter)

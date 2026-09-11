@@ -4,7 +4,6 @@ import { loadChannelKey, loadKeys } from './crypto.ts'
 import { Router } from './http.ts'
 import { gatewayHome } from './home.ts'
 import { attach } from './routes.ts'
-import { attachDesktopUpgrade } from './desktop.ts'
 
 /**
  * Gateway 的**函数形态**：只有路由，没有监听、没有定时器、没有迁移。
@@ -34,8 +33,8 @@ export function createGatewayServer() {
   const server = createServer((req, res) => {
     void router.handle(req, res)
   })
-  // 桌面反代退路（协议 <4 或没配 directUrl 的机器）还在，它的 WebSocket 升级挂在 server 上。
-  attachDesktopUpgrade(server, db, keys)
+  // server 上不挂任何 upgrade 监听：Gateway 已经没有一条长连接（桌面 WebSocket、对话 SSE、
+  // 名单流都直连席位机器的管家）。函数里 WebSocket 会被钉在一个实例上、还受 300 秒上限。
   // 一条请求处理不了不能把实例带走（同 index.ts 那两句）。
   process.on('unhandledRejection', (reason) => {
     const e = reason as Error

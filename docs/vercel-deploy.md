@@ -49,8 +49,9 @@ openssl rand -base64 32   # GATEWAY_CHANNEL_KEY
 - **发布包超过 100 MB**：函数的请求体上限。Blob 那条路是边收边传，但字节得先进函数；更大的包
   用「登记远端包」（带 `url` 的 POST，包放能直接下载的地方）。没配 `BLOB_READ_WRITE_TOKEN`
   时直接上传回 501。
-- **桌面反代退路**（没配 `directUrl` 的机器）：WebSocket 在函数里能开，但被钉在一个实例上、
-  受 300 秒上限。全铺 `directUrl` 就用不到它。
+- **Gateway 上已经没有长连接**：桌面反代（`desktop.ts`）、对话 SSE 反代
+  （`/runtime/sessions/:id/events`）、名单流扇入（`/runtime/roster/stream`）三条都删了，
+  没有退路。桌面、对话流、名单流要能用，每台机器必须配 `directUrl` 且管家 ≥ 6 号。
 - **老协议机器上的日常任务与渠道**：Gateway 不再自己跑那一轮（那要等席位 20 分钟），< 8 号的
   机器上这两样不动。先升管家。
 

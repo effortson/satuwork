@@ -135,7 +135,7 @@ SATUWORK_SERVER=http://127.0.0.1:4321 pnpm --filter satuwork-desktop dev
 |---|---|---|
 | `fetch` 流式读取 | 聊天（chat.js 的 SSE） | 过，5 次增量读到，首字节 ~155ms |
 | WebSocket | 桌面画面 | 过 |
-| 302 + SameSite=Lax cookie | 桌面入口（desktop.ts） | 过 |
+| 302 + SameSite=Lax cookie | 桌面入口（管家的 `/seats/:id/vnc/`，浏览器直连） | 过 |
 | `blob:` 预览 iframe | 附件预览 | 过 |
 | `<a download>` | 附件下载 | 过，静默落到 ~/Downloads，不弹框 |
 | `target="_blank"`（同源） | 「打开桌面」按钮 | 过（另开一扇应用窗口） |

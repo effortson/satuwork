@@ -26,8 +26,8 @@ export type Handler = (req: Req, res: ServerResponse) => Promise<void> | void
  *
  * `nosniff` 是这里面唯一一个对 JSON 也要紧的：没有它，一条 `content-type` 被中间层
  * 抹掉或者被老浏览器猜错的响应，会拿正文当 HTML 解释——而这套接口的正文里装着模型
- * 输出和工具结果。`no-referrer` 是因为桌面那条路把票放在 URL 路径里（见 desktop.ts
- * 的文件头），不关掉 Referer 的话，页面里任何一个外链都会把它捎给对面。
+ * 输出和工具结果。`no-referrer` 是因为桌面直连那条路把票放在 URL 里（novncUrlOf 拼的
+ * `?ticket=`），不关掉 Referer 的话，页面里任何一个外链都会把它捎给对面。
  */
 const BASE_HEADERS: Record<string, string> = {
   'x-content-type-options': 'nosniff',
@@ -169,8 +169,8 @@ const FONT_FILES = 'https://fonts.gstatic.com'
  *   不再经 Gateway。机器地址按公司各不相同、随时会加，写不进一条静态的头；而直连的
  *   前提本来就是 https（见 docs/gateway-runtime.md §7），所以放的是整个 https:，不放
  *   http:。这两条放开不等于放开外泄：能发请求的脚本仍然只有 `script-src 'self'` 放进来的
- *   那几份。**只写 `'self'` 的话，直连在浏览器里是一句 CSP 拒绝，前端会当「直连不通」
- *   退回 Gateway——功能不坏，但直连也就永远不会生效，日志里还一个字都没有。**
+ *   那几份。**只写 `'self'` 的话，直连在浏览器里是一句 CSP 拒绝——而 Gateway 已经没有
+ *   反代退路，对话流和桌面就此全黑，日志里还一个字都没有。**
  *
  * 一处刻意的紧：**`script-src` 不带 `'unsafe-inline'`**。为此 index.html 里那段内联
  * module 搬进了 `ui/unzip.js` 的末尾，四处 `onload=` / `onerror=` 内联处理器换成了

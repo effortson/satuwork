@@ -210,10 +210,11 @@ export interface Machine {
   /** 机器管家的基址 `http://<ip>:8443`。**Gateway 打这台机器的唯一入口。** */
   host: string | null
   /**
-   * **浏览器**打这台机器的地址，`https://m001.example.com`。为空 = 不走直连。
+   * **浏览器**打这台机器的地址，`https://m001.example.com`。为空 = 浏览器连不到它。
    *
-   * 只用在一个地方：桌面。填上之后 novncUrlOf 给出的是这台机器的绝对地址，像素
-   * 直接从席位机器流到浏览器，不再经过 Gateway（实测那是整条链上最贵的一股）。
+   * 桌面（novncUrlOf）、对话流（streamUrlOf）、名单流（rosterUrlOf）都从这里拼：像素和
+   * 事件直接从席位机器流到浏览器，Gateway 不再中转任何长连接。**没填的机器这三样都
+   * 没有**——Gateway 侧的反代退路已经删了。
    *
    * 和 host 的要求完全不同，所以是两列（见迁移 0038）：这一列必须公网可达、必须
    * https（Gateway 的页面是 https，混合内容会被浏览器静默拦掉），而且最好和 Gateway
