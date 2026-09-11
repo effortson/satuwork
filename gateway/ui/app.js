@@ -855,7 +855,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     const id = btn.getAttribute('data-bot') || ''
     const bot = (state.runtimeBots || []).find((b) => b.id === id)
     openLogs(`${(bot && bot.name) || id} · ${t('席位上的 bot 服务，跟着滚')}`, [
-      { key: 'bot', label: t('Bot 运行时'), url: '/runtime/logs?follow=1&lines=300&botId=' + encodeURIComponent(id) },
+      { key: 'bot', label: t('Bot 运行时'), direct: '/runtime/logs/direct?botId=' + encodeURIComponent(id) },
     ])
     return
   }
@@ -890,17 +890,19 @@ document.getElementById('app').addEventListener('click', async (e) => {
       s.scope === 'platform'
         ? state.machineDetail
         : (state.machines || []).find((m) => m.machine && m.machine.id === s.machineId)
-    const base = `${s.base}/logs`
+    // 这里拿的不是日志本身，是「去哪儿领票」：面板先问 Gateway 要一张 5 分钟的票和
+    // 机器地址，再直接打那台机器（见 chat.js 的 startLogStream）。
+    const base = `${s.base}/logs/direct`
     // 拆过的席位（status=none）机器上已经没有那个单元了，日志只会是空的，别列进来。
     const seatList = ((card && card.seatList) || []).filter((x) => x.status !== 'none')
     // 席位行上那颗「日志」是奔着这一个席位去的，别让它开出一张要再挑一次的清单。
     const rows = seatOnly ? seatList.filter((x) => x.seatId === seatOnly) : seatList
-    const sources = seatOnly ? [] : [{ key: 'manager', label: t('机器管家'), url: `${base}?follow=1&lines=300` }]
+    const sources = seatOnly ? [] : [{ key: 'manager', label: t('机器管家'), direct: base }]
     for (const seat of rows) {
       sources.push({
         key: seat.seatId,
         label: `${t('席位')} ${seat.who} · ${seat.seatId}`,
-        url: `${base}?follow=1&lines=300&seatId=${encodeURIComponent(seat.seatId)}`,
+        direct: `${base}?seatId=${encodeURIComponent(seat.seatId)}`,
       })
     }
     openLogs(`${(card && card.machine && card.machine.host) || s.machineId}`, sources)

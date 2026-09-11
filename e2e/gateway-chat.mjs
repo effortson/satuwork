@@ -326,15 +326,16 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(r.json.queued !== true, '点名全被剔掉了还排队，那用户就白等一轮')
     })
 
-    // ── 附件反代。这一跳是 proxyUpload / proxyDownload：字节从浏览器流到席位，
-    //    再流回来。前面几组都是直连 bot，只有这里能验「Gateway 中间那段没把它弄坏」。
+    // ── 附件。上传不再经 Gateway（浏览器直连席位机器的管家，见 e2e/manager.mjs 的
+    //    「直连上传」），这里直打 bot 落一份文件；下载 / 预览 / 列目录仍是 Gateway 的
+    //    proxyDownload——字节从席位流回浏览器，只有这里能验「Gateway 中间那段没把它弄坏」。
     let gwPath
 
-    await test('经 Gateway 上传附件：落到席位的工作区', async () => {
+    await test('上传附件落到席位的工作区；Gateway 上那条上传路已经没了', async () => {
       // 挑一段跨 chunk 边界也要拼对的内容，顺带把中文名一路带过去。
       const bytes = Buffer.from('报表内容\n第二行\n', 'utf8')
-      const r = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/files`, {
-        token: adminTok,
+      const r = await req(botBase, 'POST', `/api/sessions/${sessionId}/files`, {
+        token: seatAccess,
         raw: bytes,
         headers: { 'content-type': 'application/octet-stream', 'x-filename': encodeURIComponent('季度报表.txt') },
       })
@@ -343,8 +344,18 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(r.json.name === '季度报表.txt', `文件名在路上坏了：${r.json.name}`)
       assert(r.json.size === bytes.length, `大小对不上：${r.json.size} ≠ ${bytes.length}`)
       gwPath = r.json.path
-      // 正文只在席位磁盘上——Gateway 不该留副本，这条和「Gateway home 不含对话正文」是同一条纪律。
       assert(existsSync(join(BOT_HOME, 'work', gwPath)), '席位磁盘上没有这个文件')
+
+      // Gateway 上的 POST /runtime/sessions/:id/files 要**真的没了**（路由删掉，不是 405 /
+      // 410）：上传动辄几十 MB，边收边转在 Vercel 函数里既占时又占请求体上限。留一条能通的
+      // 老路，前端哪天退回去走它，线上就是一片「传到一半断了」。
+      const gone = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/files`, {
+        token: adminTok,
+        raw: Buffer.from('x'),
+        headers: { 'content-type': 'application/octet-stream', 'x-filename': 'a.txt' },
+      })
+      assert(gone.status === 404, `Gateway 上的上传路该 404，实际 ${gone.status} ${gone.text}`)
+      // 正文只在席位磁盘上——Gateway 不该留副本，这条和「Gateway home 不含对话正文」是同一条纪律。
       assert(!treeHas(GW_HOME, '报表内容'), 'Gateway 落了一份附件正文')
     })
 
@@ -387,14 +398,19 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
         token: memberTok,
       })
       assert(r.status >= 400, `成员读到了管理员的附件：${r.status} ${r.text}`)
-      const up = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/files`, {
-        token: memberTok,
-        raw: Buffer.from('x'),
-        headers: { 'content-type': 'application/octet-stream', 'x-filename': 'a.txt' },
-      })
-      assert(up.status >= 400, `成员往管理员的会话里传了文件：${up.status} ${up.text}`)
       const anon = await req(gwBase, 'GET', `/runtime/sessions/${sessionId}/files?path=${encodeURIComponent(gwPath)}`)
       assert(anon.status === 401, `未登录预览 ${anon.status}`)
+    })
+
+    await test('日志跟随不再经 Gateway：follow=1 → 410，直连入口没配地址 → 409', async () => {
+      // 跟着滚是一条小时级的 SSE，Gateway 上最后一条这样的连接——删了。老前端还传 follow=1
+      // 的话回 410，**不静默降级**成最近 N 行：那样人以为在跟，其实屏幕早停了。
+      const follow = await req(gwBase, 'GET', `/runtime/logs?follow=1&botId=${encodeURIComponent(botId)}`, { token: adminTok })
+      assert(follow.status === 410, `follow=1 该 410，实际 ${follow.status} ${follow.text}`)
+      // 直连入口：这一套的机器没配 directUrl，签票也没用，409 明说「这台机器跟不了」。
+      const direct = await req(gwBase, 'GET', `/runtime/logs/direct?botId=${encodeURIComponent(botId)}`, { token: adminTok })
+      assert(direct.status === 409, `没配 directUrl 该 409，实际 ${direct.status} ${direct.text}`)
+      assert((await req(gwBase, 'GET', `/runtime/logs/direct?botId=${encodeURIComponent(botId)}`)).status === 401, '无票该 401')
     })
 
     await test('Gateway 上那条会话流已经没了：/runtime/sessions/:id/events → 404', async () => {

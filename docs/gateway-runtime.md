@@ -492,8 +492,10 @@ v1 约束：一家公司一台机器；机器先按 **pair 进程** 隔离，不
 ## 7. 访问地址
 
 - 每家公司**一个** `accessUrl`，由 Gateway 在派机器时发出，写在公司记录里。这是机器/DNS 登记，不是聊天入口
-- 浏览器：管理页和聊天都打 Gateway。发消息、审批、上传由 Gateway 反代到该 pair 的 Bot HTTP（`3200+N`）
-- **对话那条 SSE 只直连席位机器**（机器配了 `directUrl` 且管家协议 ≥ 5，`streamUrlOf`）：浏览器带登录 JWT 打 `{directUrl}/seats/{seatId}/stream/sessions/{id}/events`，管家验签、问一次 Gateway `/me`（按票缓存 60 秒，吊销靠这一问）、换成该席位的 `sat_` 转给 Bot，对 Gateway 的源开 CORS。**Gateway 侧的 `/runtime/sessions/:id/events` 反代已删，没有退路**：`streamUrl` 为 null 的席位（没配 `directUrl`、管家太旧）没有对话流；管家名册里没有 `sat_`（回 409）、证书不对，表现就是流开不起来。其余 `/runtime/sessions/*`（历史、发消息、文件）仍是短请求，照旧经 Gateway。见 [adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) §7
+- 浏览器：管理页和聊天都打 Gateway。发消息、审批由 Gateway 反代到该 pair 的 Bot HTTP（`3200+N`）
+- **上传附件只直连席位机器**（管家协议 ≥ 9，`uploadUrlOf`）：`/runtime/bots` 每条 `runtime` 多给一格 `uploadUrl`（`{directUrl}/seats/{seatId}/stream`），浏览器带登录 JWT `POST {uploadUrl}/sessions/{id}/files`（正文是字节、文件名走 `x-filename` 头），管家换成 `sat_` 把正文管给 Bot。和 `streamUrl` 是同一个前缀却分开给：5～8 号管家在那条前缀上只放 SSE、拒 POST。Gateway 的 `POST /runtime/sessions/:id/files` **已删**，`uploadUrl` 为 null 的席位传不了文件
+- **日志跟随只直连席位机器**（管家协议 ≥ 9，`logsUrlOf`）：`GET /runtime/logs/direct?botId=`（员工看自己席位）、`GET /platform/machines/:id/logs/direct?seatId=` 与 `GET /platform/orgs/:id/machines/:machineId/logs/direct?seatId=`（owner；不带 seatId 是管家自己的 journal）回 `{ url, ticket }`，浏览器把这张**日志票**（`typ: satu-logs`，五分钟，`unit` 是 `seat` 或 `manager`）放进 `Authorization: Bearer` 打 `{url}?lines=&follow=1`。它和桌面票是两种 `typ`：桌面票带 VNC 口令、只开一块屏，日志里是对话正文和 bash 命令，谁也不能冒充谁。机器没配 `directUrl` 或管家太旧 → 409；老前端还往 `/runtime/logs` 或 `.../logs` 传 `follow=1` → 410。不跟随的「最近 N 行」照旧经 Gateway 一次 JSON 往返，不受协议号限制；owner 那两条照旧留审计（`machine.logs`，直连签票的那次 detail 带 `follow: true, direct: true`）
+- **对话那条 SSE 只直连席位机器**（机器配了 `directUrl` 且管家协议 ≥ 5，`streamUrlOf`）：浏览器带登录 JWT 打 `{directUrl}/seats/{seatId}/stream/sessions/{id}/events`，管家验签、问一次 Gateway `/me`（按票缓存 60 秒，吊销靠这一问）、换成该席位的 `sat_` 转给 Bot，对 Gateway 的源开 CORS。**Gateway 侧的 `/runtime/sessions/:id/events` 反代已删，没有退路**：`streamUrl` 为 null 的席位（没配 `directUrl`、管家太旧）没有对话流；管家名册里没有 `sat_`（回 409）、证书不对，表现就是流开不起来。其余 `/runtime/sessions/*`（历史、发消息、文件树与下载）仍是短请求，照旧经 Gateway；上传见上一条。见 [adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) §7
 - **本地 Bot（桌面端）不经过 Gateway**：会话请求由页面直接改道到 127.0.0.1（ui/data.js 的 `localRoute`），Gateway 不再有反向隧道，也不知道它在不在跑；名单流、日常任务调度都不含本地 Bot。见 desktop/README.md「本地 Bot 直连本机」
 - **名单流同样只直连**（管家协议 ≥ 6，`rosterUrlOf`）：`/runtime/bots` 多给一格 `rosterStreamUrl`，浏览器带登录 JWT 打 `{directUrl}/roster/stream`，管家把这个人在本机的所有席位合成一条（manager/src/roster.ts，过滤规则见同目录 roster-filter.ts，e2e 按字节钉着）。Gateway 的 `/runtime/roster/stream` 和 `lib/roster-stream.ts` 已删，`rosterStreamUrl` 为 null 就没有实时名单。本地 Bot 不在任何机器的名册里，它那一行由桌面端自己盖上去，不影响给不给直连地址
 - 桌面：**只有直连一条路**（`novncUrlOf`）：`https://m001…/seats/{seatId}/vnc/?ticket=…`，浏览器直接打席位机器上的管家。票由 Gateway 用 JWT 私钥签（`/runtime/desktop`、`/platform/desktop-ticket`）、五分钟有效、只对一块屏，管家拿 Gateway 公钥验。x11vnc、websockify、CDP 全部只听 `127.0.0.1`
@@ -550,7 +552,7 @@ HTTP/1.1 那 6 条只是紧一点——真正受限的是「切过几个 Bot 之
 | 登录 JWT | Gateway 签发 | 浏览器 / 控制台 | dashboard 与 Gateway UI。带 `accountId` `role`（`owner` \| `admin` \| `member`）；公司账号再带 `companyId`。暴露 JWKS |
 | API Key | `sk_sw_…` | Bot 调 `/v1/*`；也可登录 JWT 调 `/v1` | 开 admin/member 时签发，用量记在这个用户上。owner 账号详情 `/users/:id`（`GET /platform/accounts/:id`）可见。列表 API 永不带出。`owner` 账号没有 |
 | Access token | `sat_…` | Gateway ↔ Bot 双向，该席位用户 | Bot 环境 `GATEWAY_TOKEN`。同一用户的多个 Bot 实例共用一把。不能调 `/v1` |
-| Machine token | `smt_…` | 一台机器一把；Gateway ↔ 机器管家 | 管家心跳、拉发布包、部署/删除/诊断/日志，以及 Gateway 经管家反代 Bot/桌面。写在 `machines.token` 与管家的 `manager.json`，**永不进入 `bot.env`** |
+| Machine token | `smt_…` | 一台机器一把；Gateway ↔ 机器管家 | 管家心跳、拉发布包、部署/删除/诊断/日志（最近 N 行；跟随那条浏览器拿日志票直连），以及 Gateway 经管家反代 Bot。写在 `machines.token` 与管家的 `manager.json`，**永不进入 `bot.env`** |
 | Bootstrap machine token | Gateway 环境变量 `GATEWAY_MACHINE_TOKEN`（引导值） | 无 UI 登记机器的兼容/测试路径 | 只用于 `POST /internal/machines`。正常装机使用一次性配对码；登记后换成该机器自己的 `smt_` |
 
 - 密码、注册、重置只在 Gateway
@@ -895,6 +897,8 @@ GitHub Actions 的接线在 `.github/workflows/bot-release.yml`：推 `bot-v*` t
 | GET | `/runtime/bots` | Gateway 目录名册，200 即使实例未上线；每条 `runtime` 或 null。`runtime` 里除了部署状态（`status`），还带**席位那台机器的通联状态** `machineLink`（`online` / `stale` / `offline` / `unpaired`，判据与平台机器页那盏灯同一份）与 `machineHeartbeatAge`：`status` 落库之后就不动了，答不了「那台机器现在还在不在」，而对话页抬头那盏灯问的正是后者。界面每 30 秒重拉一次这份名册 |
 | GET | `/runtime/bots/:id/session` 等 | 反代到**该 pair**；未部署 503 `实例还没上线` |
 | GET | `/runtime/desktop?botId=` | 该 pair 的桌面（noVNC / 密码 / linuxUser / botVersion）。`botId` 必填 |
+| GET | `/runtime/logs?botId=&lines=` | 自己席位 bot 最近 N 行日志（经管家，JSON）。`follow=1` 回 410——跟随改直连 |
+| GET | `/runtime/logs/direct?botId=` | 日志跟随的直连入口：`{ url, ticket }`，`url` = `{directUrl}/seats/{seatId}/logs`，`ticket` 是五分钟的日志票，放 `Authorization: Bearer` 打 `{url}?lines=&follow=1`。机器没配 `directUrl` 或管家 < 9 → 409 |
 | POST | `/runtime/deploy` | `{ botId }` 必填。给当前席位部署该 Bot。**同步**：等到机器上装完才回（最长 15 分钟）。建 Bot 那条自动部署走的是同一段代码，只是把「装」丢进后台 |
 | GET | `/runtime/deploy/progress?botId=` | 装到哪一步了：`status` / `phase`（`queued` / `installing`）/ `elapsedMs`（**已经装了多久，不是起始时刻**——同 heartbeatAge，界面拿绝对时刻自己减本地时钟会在钟不准的电脑上写出「已经装了 10 分钟」），外加机器上那份细进度 `step`（第几步、这一步在干什么，来自管家 `/seats/:id/progress`，协议 ≥ 3；问不到就是 null）。没有席位行不是 404，回 `status: 'none'`——调用方是个每两秒转一圈的轮询，它要分得清「还没登记」和「问错了」 |
 | POST | `/orgs/:id/accounts/:accountId/deploy` | admin：给该账号部署 `{ botId }` |

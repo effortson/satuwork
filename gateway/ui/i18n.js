@@ -996,6 +996,7 @@ window.SATU_I18N = {
   '还没有日志': 'No log lines yet',
   '连不上机器管家': 'Cannot reach the machine manager',
   '拿不到日志': 'Could not fetch logs',
+  '这台机器没有配直连地址（或管家太旧），上传不了': 'This machine has no direct URL configured (or its manager is too old), so files cannot be uploaded',
   '凭据已在机器那侧盖掉。日志里会有对话正文和执行过的命令。': 'Credentials are redacted on the machine. Logs contain conversation text and executed commands.',
   '发起人': 'Started by',
   '条消息': 'messages',

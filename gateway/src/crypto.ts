@@ -281,6 +281,36 @@ export function signDesktopTicket(keys: JwtKeys, seatId: string, vnc = '', ttlSe
   return `${h}.${p}.${sign('sha256', Buffer.from(`${h}.${p}`), keys.privatePem).toString('base64url')}`
 }
 
+export type LogsTicket =
+  | { typ: 'satu-logs'; unit: 'seat'; seatId: string; iat: number; exp: number }
+  | { typ: 'satu-logs'; unit: 'manager'; iat: number; exp: number }
+
+/**
+ * 日志票。浏览器拿它直连机器管家跟日志（`/seats/:id/logs?follow=1`、`/logs?follow=1`），
+ * 放在 `Authorization: Bearer`。管家（协议 ≥ 9）拿 Gateway 公钥验签、再对一次 `typ`。
+ *
+ * **为什么不复用桌面票，而是另起一种 `typ`。** 两张票同一把钥匙签、同样五分钟、同样
+ * 指着一个席位，看起来能合并——但它们开的门不一样：桌面票里带着 VNC 口令、只开一块
+ * 屏；日志里是对话正文和 bash 跑过的命令。拿桌面票能看日志，等于给了看屏幕的人一份
+ * 可复制的文字记录；拿日志票能开桌面，等于让只该看日志的人操作机器。`typ` 显式、管家
+ * 验完签必须再对一次，两种票谁也冒充不了谁。
+ *
+ * `unit: 'manager'` 是管家自己的 journal（部署失败、升级卡住写在这里），只有平台侧的
+ * owner 路由会签；员工那条 `/runtime/logs/direct` 永远只签自己席位的。
+ *
+ * 五分钟：够把流开起来（流一开就不再看票），不够被人捡去慢慢用。
+ */
+export function signLogsTicket(keys: JwtKeys, target: { seatId: string } | { manager: true }, ttlSec = 300): string {
+  const now = Math.floor(Date.now() / 1000)
+  const payload: LogsTicket =
+    'seatId' in target
+      ? { typ: 'satu-logs', unit: 'seat', seatId: target.seatId, iat: now, exp: now + ttlSec }
+      : { typ: 'satu-logs', unit: 'manager', iat: now, exp: now + ttlSec }
+  const h = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: keys.kid }))
+  const p = b64url(JSON.stringify(payload))
+  return `${h}.${p}.${sign('sha256', Buffer.from(`${h}.${p}`), keys.privatePem).toString('base64url')}`
+}
+
 export interface ArtifactTicket {
   typ: 'satu-artifact'
   accountId: string

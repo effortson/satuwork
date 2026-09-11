@@ -50,8 +50,13 @@ import { fileURLToPath } from 'node:url'
  * 8：工人也接渠道那一轮（src/worker/channels.ts）：Telegram 消息进来之后「每 100ms 问席位、
  * 最长 20 分钟」那段在本机跑，草稿、审批卡、最终回复由 Gateway 代发。Gateway 拿这个号数决定
  * 这台机器上还没跑出回复的渠道事件归谁（gateway 的 MIN_CHANNEL_WORKER_PROTOCOL）。
+ *
+ * 9：`/logs` 与 `/seats/:id/logs` 认 Gateway 签的日志票（浏览器直连跟日志）；`/seats/:id/stream`
+ * 放行 `POST /sessions/:id/files`（浏览器直连上传）。Gateway 拿这个号数决定给不给前端 logs /
+ * upload 的直连地址（MIN_DIRECT_LOGS_PROTOCOL / MIN_DIRECT_UPLOAD_PROTOCOL）：8 号管家上前一条
+ * 只认机器票，后一条是 405，前端不再退回 Gateway，所以号数不对就是一句报错。
  */
-export const PROTOCOL = 8
+export const PROTOCOL = 9
 
 export interface ManagerState {
   machineId: string

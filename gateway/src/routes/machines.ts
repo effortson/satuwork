@@ -4,16 +4,20 @@
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { INSTANCE_DOWN, MIN_MANAGER_NODE, PAIRING_TTL, desiredManagerRelease, directUrlOf, gatewayBaseFor, installCommandFor, machineBase, machineCard, machineOfOrg, machineResolver, managerHostOf, normalizePairingCode, randomPairingCode, registerFromBody, sendReleaseFile } from '../lib/machines.ts'
-import { MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, deploySeat, gatewayPublicUrl, gatewayPublicUrlExplicit, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, rehostSeatInstances, releaseSeats } from '../deploy.ts'
+import { MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, deploySeat, gatewayPublicUrl, gatewayPublicUrlExplicit, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, rehostSeatInstances, releaseSeats, logsUrlOf } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { installScript } from '../install.ts'
-import { proxyJson, proxySse } from '../lib/runtime.ts'
+import { proxyJson } from '../lib/runtime.ts'
 import { localBotReleaseTarget, parseBotVersion, publicBotRelease, storeUploadedRelease } from '../releases.ts'
 import { requireOrgUser, requireOwnerUser, requireReleaseAuthor } from '../lib/guards.ts'
 import { MANAGER_VACUUM_TIMEOUT_MS, MAX_LOG_CAP_MB, METRIC_RETENTION_MS, MINUTE_MS } from '../lib/telemetry.ts'
-import { signDesktopTicket } from '../crypto.ts'
+import { signDesktopTicket, signLogsTicket } from '../crypto.ts'
 import { type Account, type CatalogItem, type Machine, type SeatRuntime } from '../db.ts'
+
+/** 跟随那条 SSE 已经不经 Gateway 了：老界面还传 `follow=1` 就用这一句拒掉，别静默降级。 */
+const LOGS_FOLLOW_GONE = '日志跟随改为直连机器：先取 …/logs/direct'
+const LOGS_NO_DIRECT = '这台机器没有配直连地址（或管家太旧），日志跟随打不开'
 
 export function attachMachines(router: Router, ctx: RouteCtx) {
   const { db, keys } = ctx
@@ -57,31 +61,52 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    * 屏幕」是同一类动作，那条已经在审计里了，这条没有理由例外。
    *
    * seatId 必须是**这台机器上**的：它会进 systemd 单元名，不能拿别处的值来拼。
+   *
+   * **`follow=1` 不在这里了**：跟着滚改成浏览器直连管家（下面那条 `/logs/direct` 签票），
+   * Gateway 不再扛这条小时级的 SSE。老界面还传的话回 410，不静默降级成最近 N 行。
    */
   router.get('/platform/orgs/:id/machines/:machineId/logs', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
+    if (req.query.get('follow') === '1') throw new HttpError(410, LOGS_FOLLOW_GONE)
     const company = await db.company(req.params.id)
     if (!company) throw new HttpError(404, '公司不存在')
     const machine = await machineOfOrg(db, company.id, req.params.machineId)
     if (!machine?.host) throw new HttpError(503, INSTANCE_DOWN)
-    const seatId = (req.query.get('seatId') || '').trim()
-    if (seatId) {
-      const rows = await db.seatRuntimesOfMachine(machine.id)
-      if (!rows.some((r) => r.seatId === seatId)) throw new HttpError(404, '这台机器上没有这个席位')
-    }
+    const seatId = await seatOnMachine(machine, req.query.get('seatId'))
     const lines = Math.min(2000, Math.max(1, Math.trunc(Number(req.query.get('lines')) || 200)))
-    const follow = req.query.get('follow') === '1'
     const base = machineBase(machine.host)
     const path = seatId ? `/seats/${encodeURIComponent(seatId)}/logs` : '/logs'
     await db.audit({
       companyId: company.id,
       accountId: account.id,
       action: 'machine.logs',
-      detail: { machineId: machine.id, seatId: seatId || null, follow },
+      detail: { machineId: machine.id, seatId: seatId || null, follow: false },
     })
-    const url = `${base}${path}?lines=${lines}${follow ? '&follow=1' : ''}`
-    if (follow) await proxySse(req, res, url, undefined, machine.token || undefined)
-    else await proxyJson(res, 'GET', url, undefined, undefined, machine.token || undefined)
+    const url = `${base}${path}?lines=${lines}`
+    await proxyJson(res, 'GET', url, undefined, undefined, machine.token || undefined)
+  })
+
+  /**
+   * 日志跟随的直连入口（公司侧）：鉴权、席位归属检查、审计和上面那条逐字一样，只是不
+   * 转字节，而是回 `{ url, ticket }` 让浏览器自己去打管家。带 seatId 签席位票，不带签
+   * **管家自己**的票（`unit: 'manager'`）——这一种只有 owner 拿得到。
+   */
+  router.get('/platform/orgs/:id/machines/:machineId/logs/direct', async (req, res) => {
+    const account = await requireOwnerUser(req, db, keys)
+    const company = await db.company(req.params.id)
+    if (!company) throw new HttpError(404, '公司不存在')
+    const machine = await machineOfOrg(db, company.id, req.params.machineId)
+    if (!machine?.host) throw new HttpError(503, INSTANCE_DOWN)
+    const seatId = await seatOnMachine(machine, req.query.get('seatId'))
+    const url = logsUrlOf(machine, seatId || null)
+    if (!url) throw new HttpError(409, LOGS_NO_DIRECT)
+    await db.audit({
+      companyId: company.id,
+      accountId: account.id,
+      action: 'machine.logs',
+      detail: { machineId: machine.id, seatId: seatId || null, follow: true, direct: true },
+    })
+    json(res, 200, { url, ticket: signLogsTicket(keys, seatId ? { seatId } : { manager: true }) })
   })
 
   /**
@@ -339,6 +364,18 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
   async function auditMachine(machine: Machine, accountId: string, action: string, detail: unknown) {
     if (!machine.companyId) return
     await db.audit({ companyId: machine.companyId, accountId, action, detail })
+  }
+
+  /**
+   * 日志路由共用的一句：seatId 必须是**这台机器上**的席位，它会进 systemd 单元名，不能拿
+   * 别处的值来拼。空串就是「看管家自己的」。
+   */
+  async function seatOnMachine(machine: Machine, raw: string | null): Promise<string> {
+    const seatId = (raw || '').trim()
+    if (!seatId) return ''
+    const rows = await db.seatRuntimesOfMachine(machine.id)
+    if (!rows.some((r) => r.seatId === seatId)) throw new HttpError(404, '这台机器上没有这个席位')
+    return seatId
   }
 
   /**
@@ -859,20 +896,27 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    */
   router.get('/platform/machines/:id/logs', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
+    if (req.query.get('follow') === '1') throw new HttpError(410, LOGS_FOLLOW_GONE)
     const machine = await machineOr404(req.params.id)
     if (!machine.host) throw new HttpError(503, INSTANCE_DOWN)
-    const seatId = (req.query.get('seatId') || '').trim()
-    if (seatId) {
-      const rows = await db.seatRuntimesOfMachine(machine.id)
-      if (!rows.some((r) => r.seatId === seatId)) throw new HttpError(404, '这台机器上没有这个席位')
-    }
+    const seatId = await seatOnMachine(machine, req.query.get('seatId'))
     const lines = Math.min(2000, Math.max(1, Math.trunc(Number(req.query.get('lines')) || 200)))
-    const follow = req.query.get('follow') === '1'
     const path = seatId ? `/seats/${encodeURIComponent(seatId)}/logs` : '/logs'
-    await auditMachine(machine, account.id, 'machine.logs', { machineId: machine.id, seatId: seatId || null, follow })
-    const url = `${machineBase(machine.host)}${path}?lines=${lines}${follow ? '&follow=1' : ''}`
-    if (follow) await proxySse(req, res, url, undefined, machine.token || undefined)
-    else await proxyJson(res, 'GET', url, undefined, undefined, machine.token || undefined)
+    await auditMachine(machine, account.id, 'machine.logs', { machineId: machine.id, seatId: seatId || null, follow: false })
+    const url = `${machineBase(machine.host)}${path}?lines=${lines}`
+    await proxyJson(res, 'GET', url, undefined, undefined, machine.token || undefined)
+  })
+
+  /** 日志跟随的直连入口（平台侧）。同上面公司侧那条，只是机器按 id 找、审计按机器所属公司记。 */
+  router.get('/platform/machines/:id/logs/direct', async (req, res) => {
+    const account = await requireOwnerUser(req, db, keys)
+    const machine = await machineOr404(req.params.id)
+    if (!machine.host) throw new HttpError(503, INSTANCE_DOWN)
+    const seatId = await seatOnMachine(machine, req.query.get('seatId'))
+    const url = logsUrlOf(machine, seatId || null)
+    if (!url) throw new HttpError(409, LOGS_NO_DIRECT)
+    await auditMachine(machine, account.id, 'machine.logs', { machineId: machine.id, seatId: seatId || null, follow: true, direct: true })
+    json(res, 200, { url, ticket: signLogsTicket(keys, seatId ? { seatId } : { manager: true }) })
   })
 
   /**

@@ -53,13 +53,21 @@ GET    /metrics            机器负载 + 日志占用       smt_
 POST   /logs/vacuum        立刻清一次 journal        smt_
 ANY    /seats/:id/bot/*    反代到 127.0.0.1:3200+N  smt_
 GET+WS /seats/:id/vnc/*    反代到 127.0.0.1:6081+N  Gateway 签的桌面票
+GET    /seats/:id/logs      席位 bot 的 journal      smt_；或 Gateway 签的日志票（协议 9）
+GET    /logs                管家自己的 journal       smt_；或 Gateway 签的日志票（协议 9）
 GET    /seats/:id/stream/*  反代到 bot，换成 sat_    浏览器的登录 JWT（协议 5）
+POST   /seats/:id/stream/sessions/:sid/files  上传，同上   浏览器的登录 JWT（协议 9）
 GET    /roster/stream       本机这个人的名单流        浏览器的登录 JWT（协议 6）
 ANY    /w-local/*           本机工人的中继口          回环地址 + worker.env 里的令牌（协议 7）
 ```
 
 bot 那条**原样透传 `authorization`**——bot 自己要验席位票（`sat_`），管家不掺和，
 所以用一个自己的头 `x-satuwork-machine`，两层互不干扰。
+
+日志那两条**两种票都收**：Gateway 和 curl 拿 `smt_`（`x-satuwork-machine` 或 `authorization`
+都行）；浏览器直连跟日志拿的是 Gateway 签的日志票（`typ: satu-logs`，五分钟，写死了看哪个单元、
+哪个席位），`?follow=1` 是 SSE。9 号协议起 Gateway 才把 logs 和上传的直连地址交给前端；在那之前
+前一条只认 `smt_`、后一条的 POST 是 405，而前端不再退回 Gateway——号数对不上就是一句报错。
 
 ## 席位工人
 

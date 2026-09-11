@@ -64,9 +64,16 @@ export function recentLogs(unit: string, lines: number): Promise<string[]> {
  * 返回的 Promise 在流真正结束时才 resolve——路由器靠 `res.writableEnded` 判断要不要
  * 补一个 204，处理函数提前返回的话，那个 204 会直接盖到 SSE 上。
  */
-export function followLogs(unit: string, lines: number, res: ServerResponse): Promise<void> {
+export function followLogs(
+  unit: string,
+  lines: number,
+  res: ServerResponse,
+  /** 盖在 SSE 头上的几条（浏览器直连时是 CORS 那几条；Gateway 拿机器票来的不需要）。 */
+  extra: Record<string, string> = {},
+): Promise<void> {
   return new Promise((resolve) => {
     res.writeHead(200, {
+      ...extra,
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       connection: 'keep-alive',
@@ -78,7 +85,7 @@ export function followLogs(unit: string, lines: number, res: ServerResponse): Pr
     )
     let buf = ''
     let done = false
-    // 心跳。中间那几跳（Gateway 反代、可能还有别的）都会掐掉长时间没字节的连接，
+    // 心跳。中间那几跳（终结 TLS 的反代、可能还有别的）都会掐掉长时间没字节的连接，
     // 而一个安静的 bot 可以几分钟不写一行日志——那正是最需要盯着它的时候。
     const beat = setInterval(() => res.write(': ping\n\n'), 15000)
     const finish = () => {

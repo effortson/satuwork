@@ -1,10 +1,13 @@
 /**
- * 席位定位与四个反代（JSON / 上传 / 下载 / SSE）。
+ * 席位定位与两个反代（JSON / 下载）。
  *
  * 从 routes.ts 拆出来的——那个文件曾经是 5700 行，前 1900 行全是这类帮手。
  *
- * SSE 那条（proxySse）现在只给**日志 follow** 用（席位日志、机器日志）：对话流和名单流
- * 都直连席位机器的管家，Gateway 不再替浏览器扛小时级的连接。
+ * 这里原来有四个反代。SSE 那条（proxySse，最后只剩日志 follow 在用）和上传那条
+ * （proxyUpload）都删了：对话流、名单流、日志跟随、附件上传全部由浏览器直连席位机器的
+ * 管家（deploy.ts 的 streamUrlOf / rosterUrlOf / logsUrlOf / uploadUrlOf），Gateway 上不再有
+ * 小时级的连接、也不再替几十 MB 的附件过一遍手。留下的两条都是**一次请求就结束**的：
+ * JSON 往返一个超时之内；下载受文件大小约束。
  */
 import type { ServerResponse } from 'node:http'
 import { HttpError, type Req, json } from '../http.ts'
@@ -196,14 +199,15 @@ export async function managerTargetFor(
   db: Db,
   account: Account,
   botId: string,
-): Promise<{ base: string; seatId: string; machineToken: string | undefined }> {
+): Promise<{ base: string; seatId: string; machineToken: string | undefined; machine: Machine }> {
   requireSeat(account)
   if (!botId) throw new HttpError(400, 'botId 不能为空')
   const runtime = await db.seatRuntime(account.id, botId)
   if (!runtime) throw new HttpError(404, '还没有部署')
   const machine = await db.machine(runtime.machineId)
   if (!machine?.host) throw new HttpError(503, INSTANCE_DOWN)
-  return { base: machineBase(machine.host), seatId: runtime.seatId, machineToken: machine.token || undefined }
+  // `machine` 整行一起给：日志跟随那条直连要看它的 directUrl / protocol（logsUrlOf）。
+  return { base: machineBase(machine.host), seatId: runtime.seatId, machineToken: machine.token || undefined, machine }
 }
 
 export async function seatTargetForSession(db: Db, account: Account, sessionId: string): Promise<SeatTarget> {
@@ -294,56 +298,11 @@ export async function proxyJson(
 }
 
 /**
- * 把浏览器传上来的字节**边收边转**给席位，不在 Gateway 落地。
- *
- * 附件动辄几十 MB，`readBody` 那条路会先攒进内存再解析成 JSON——对文件来说两件事
- * 都是错的。所以路由用 `postRaw`，这里直接把 `req` 接到 fetch 的 body 上。
- *
- * `duplex: 'half'` 是流式 body 的硬性要求，不带这个参数 undici 直接拒绝发出。
- */
-export async function proxyUpload(
-  req: Req,
-  res: ServerResponse,
-  url: string,
-  headers: Record<string, string>,
-  token?: string,
-  machineToken?: string,
-) {
-  let r: Response
-  try {
-    r = await fetch(url, {
-      method: 'POST',
-      headers: {
-        authorization: token ? `Bearer ${token}` : '',
-        accept: 'application/json',
-        'content-type': 'application/octet-stream',
-        ...headers,
-        ...machineHeader(machineToken),
-      },
-      body: Readable.toWeb(req) as ReadableStream<Uint8Array>,
-      duplex: 'half',
-      // 传大文件比一次 JSON 往返慢得多，15 秒那个超时会在半路砍断它。
-      signal: AbortSignal.timeout(10 * 60 * 1000),
-    } as RequestInit & { duplex: 'half' })
-  } catch {
-    throw new HttpError(503, INSTANCE_DOWN)
-  }
-  const text = await r.text()
-  let parsed: unknown
-  try {
-    parsed = text ? JSON.parse(text) : null
-  } catch {
-    parsed = { error: text.slice(0, 200) || INSTANCE_DOWN }
-  }
-  json(res, r.status, parsed)
-}
-
-/**
  * 上游把这次调用拒了：把它那份正文原样转出去。
  *
- * `passthrough` 是「这个状态码该原样交给浏览器」的白名单，其余一律 503。分开列是因为
- * 两条代理的口径本来就不同：下载那条把 400/404 当业务答案，SSE 那条还要把 401/403
- * 交出去（席位票过期了，前端要据此重取一张，收到 503 它只会当作实例挂了一直重连）。
+ * `passthrough` 是「这个状态码该原样交给浏览器」的白名单，其余一律 503。下载那条把
+ * 400/404 当业务答案（路径越界、文件没了）。参数留成列表是因为以前 SSE 反代还要把
+ * 401/403 交出去；那条删了，口径由调用方说仍然比写死在这里清楚。
  *
  * 上游正文认不出 JSON 时兜一句 INSTANCE_DOWN——**不能把原文透传**：那多半是一页
  * HTML 错误页，前端 `res.json()` 会当场抛，人看到的是一次没有任何线索的失败。
@@ -420,80 +379,3 @@ export async function proxyDownload(req: Req, res: ServerResponse, url: string, 
   }
 }
 
-export async function proxySse(req: Req, res: ServerResponse, url: string, token?: string, machineToken?: string) {
-  // authorization 上只能是席位票。bot 不认机器票了，回落到 smt_ 只会换回 401，
-  // 而且会让人以为「票带了但没生效」，比空着更难查。
-  const bearerTok = token || ''
-  const ac = new AbortController()
-  const onClose = () => ac.abort()
-  req.on('close', onClose)
-  let r: Response
-  try {
-    r = await fetch(url, {
-      headers: {
-        authorization: bearerTok ? `Bearer ${bearerTok}` : '',
-        accept: 'text/event-stream',
-        ...machineHeader(machineToken),
-      },
-      signal: ac.signal,
-    })
-  } catch {
-    req.off('close', onClose)
-    if (ac.signal.aborted) return
-    throw new HttpError(503, INSTANCE_DOWN)
-  }
-  if (!r.ok || !r.body) {
-    req.off('close', onClose)
-    await relayUpstreamError(res, r, [401, 403, 404])
-    return
-  }
-  res.writeHead(r.status, {
-    'content-type': 'text/event-stream; charset=utf-8',
-    'cache-control': 'no-cache, no-transform',
-    connection: 'keep-alive',
-  })
-  const reader = r.body.getReader()
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      // 对面已经走了就别再写：写进一个毁掉的流只会换回一次 error 事件。
-      if (res.writableEnded || res.destroyed) break
-      if (!res.write(Buffer.from(value))) await drained(res)
-    }
-  } catch {
-    /* 客户端断开或上游中断 */
-  } finally {
-    req.off('close', onClose)
-    try {
-      res.end()
-    } catch {}
-  }
-}
-
-/**
- * 背压：等对面把缓冲吃掉。**close 和 error 也要收，不能只等 drain。**
- *
- * 这里原来是 `new Promise((resolve) => res.once('drain', resolve))`。客户端在背压里
- * 关掉标签页（慢网上看 SSE，socket 缓冲满了，人这时候关掉页面）时，那个 socket 已经
- * 毁了——毁掉的可写流只发 `close` / `error`，**`drain` 永远不会来**。于是这个 promise
- * 永远不落地：上面那个 while 再也不往下走，`finally` 不跑，`req` 上那个监听摘不掉，
- * ReadableStream 的读锁也不放。每断一次就在这个所有公司共用的进程里留一帧永远挂着的
- * 栈，而外面看不出任何异常。
- *
- * 三个事件哪个先到都算「不必再等了」，然后由调用方自己判断还该不该写。
- */
-function drained(res: ServerResponse): Promise<void> {
-  if (res.writableEnded || res.destroyed) return Promise.resolve()
-  return new Promise<void>((resolve) => {
-    const done = () => {
-      res.off('drain', done)
-      res.off('close', done)
-      res.off('error', done)
-      resolve()
-    }
-    res.once('drain', done)
-    res.once('close', done)
-    res.once('error', done)
-  })
-}
