@@ -102,9 +102,9 @@ worker 复用同一套，不另写。
 
 | 今天在 Gateway 里 | 去哪 | 怎么做 | 备注 |
 | --- | --- | --- | --- |
-| 桌面反代 `desktop.ts` | **删** | 全铺二级域名后每台机器填 `directUrl`；协议 ≥4 已支持直连 | 退路先留一个版本再删 |
+| 桌面反代 `desktop.ts` | **已删** | 全铺二级域名后每台机器填 `directUrl`；协议 ≥4 直连 | 没配 `directUrl` 的机器没有桌面 |
 | 对话 SSE / JSON / 上传 / 下载反代（`lib/runtime.ts`） | 席位工人 | 浏览器直连 `https://<机器>/w/seats/:id/bot/*`，工人验 JWT 换 `sat_` | 决定二 |
-| 名单流 `roster-stream.ts` | 席位工人 | 账号粘机器（§3.0），一个人所有席位 Bot 都在一台机上，整段逻辑可搬 | 本地 Bot 那一行由桌面端推的索引补 |
+| 名单流 `roster-stream.ts` | 管家（**已删** Gateway 那份） | 账号粘机器（§3.0），一个人所有席位 Bot 都在一台机上，整段逻辑搬进 manager/src/roster.ts | 本地 Bot 那一行由桌面端推的索引补 |
 | 日常任务调度 `routines.ts` | 席位工人 | 工人每 30 秒 `GET /worker/routines/due`，领到就在本机跑，`turn/end` 后回报 | 定义、流水、补跑仍在 Gateway 的表里 |
 | 渠道分发 `channels.ts` | 席位工人 | 长轮询换 **webhook**：`https://<机器>/w/channels/telegram/<secret>`；事件账本、配对、租约仍走 Gateway 接口 | 决定一；机器要能出网到 Telegram |
 | 交接催办 `handoff-sweep.ts` | Gateway Cron | 每分钟一跑，无状态 | 「告诉 Bot 没人接」这一步改成写一条待办，由工人下一拍拉走 |
@@ -221,7 +221,7 @@ POST /worker/todo/:id                回报
 | --- | --- | --- |
 | 0 | 库换 Neon 直连串。其余不动 | 改回连接串 |
 | 1 | 全铺 `directUrl`，桌面走直连 | 清空 `directUrl` |
-| 2 | 管家协议 5：worker 单元、CORS、验 JWT 换 `sat_`。**先只上对话流和名单流直连**，Gateway 反代保留 | 前端切回 Gateway 前缀 |
+| 2 | 管家协议 5：worker 单元、CORS、验 JWT 换 `sat_`。对话流和名单流直连；**Gateway 那两条反代随后已删**（连同桌面反代），directUrl + 管家 ≥ 6 成了硬前提 | 已无 Gateway 前缀可切回；回退是回滚 Gateway 版本 |
 | 3 | 桌面端独立：内置分片、直连本机、删隧道 | 桌面端回旧版；Gateway 隧道代码晚一个版本再删 |
 | 4 | 日常任务改成工人拉取；Gateway 调度器改成只做租约回收 | 环境变量切回 Gateway 自己跑 |
 | 5 | 渠道换 webhook 下沉；Gateway 分发器下线 | 同上 |

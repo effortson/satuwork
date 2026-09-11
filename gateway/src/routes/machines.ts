@@ -477,13 +477,13 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
   })
 
   /**
-   * 设这台机器的公网直连地址，桌面从此不经过 Gateway（见迁移 0038、deploy.ts 的
-   * novncUrlOf）。传空串就是撤回，桌面回到从 Gateway 反代。
+   * 设这台机器的公网直连地址：桌面、对话流、名单流都从这里拼（见迁移 0038、deploy.ts 的
+   * novncUrlOf / streamUrlOf / rosterUrlOf）。传空串就是撤回——这台机器上的席位从此
+   * 没有桌面和实时流，Gateway 不再有反代退路。
    *
    * **和 host 分成两条路，不合并。** 两者要求完全不同（一个是 Gateway 打机器、可以
-   * 是内网 http；一个是浏览器打机器、必须公网 https），而且撤回直连是一个独立的、
-   * 出事时要能单独按下去的动作——桌面打不开的时候，运维要做的是把这一列清掉让它
-   * 退回反代，而不是被迫连 host 一起动。
+   * 是内网 http；一个是浏览器打机器、必须公网 https），而且撤回是一个独立的、出事时
+   * 要能单独按下去的动作，不该被迫连 host 一起动。
    *
    * 探活**不带机器票**（见 probeDirectUrl）：这个地址是手输的公网域名，敲错一个字母
    * 就把票送给了别人。不带票判得反而更准——管家的 /health 没票就是 401，所以 401 才是

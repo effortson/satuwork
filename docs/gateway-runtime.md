@@ -493,17 +493,16 @@ v1 约束：一家公司一台机器；机器先按 **pair 进程** 隔离，不
 
 - 每家公司**一个** `accessUrl`，由 Gateway 在派机器时发出，写在公司记录里。这是机器/DNS 登记，不是聊天入口
 - 浏览器：管理页和聊天都打 Gateway。发消息、审批、上传由 Gateway 反代到该 pair 的 Bot HTTP（`3200+N`）
-- **对话那条 SSE 直连席位机器**（机器配了 `directUrl` 且管家协议 ≥ 5，`streamUrlOf`）：浏览器带登录 JWT 打 `{directUrl}/seats/{seatId}/stream/sessions/{id}/events`，管家验签、问一次 Gateway `/me`（按票缓存 60 秒，吊销靠这一问）、换成该席位的 `sat_` 转给 Bot，对 Gateway 的源开 CORS。**任何失败前端都退回 Gateway 反代五分钟**，所以老管家、没重新部署的席位（管家名册里没有 `sat_`，回 409）、证书不对，表现都只是「走了老路」。这是 Gateway 从对话热路径上退下来的第一步，见 [adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) §7
+- **对话那条 SSE 只直连席位机器**（机器配了 `directUrl` 且管家协议 ≥ 5，`streamUrlOf`）：浏览器带登录 JWT 打 `{directUrl}/seats/{seatId}/stream/sessions/{id}/events`，管家验签、问一次 Gateway `/me`（按票缓存 60 秒，吊销靠这一问）、换成该席位的 `sat_` 转给 Bot，对 Gateway 的源开 CORS。**Gateway 侧的 `/runtime/sessions/:id/events` 反代已删，没有退路**：`streamUrl` 为 null 的席位（没配 `directUrl`、管家太旧）没有对话流；管家名册里没有 `sat_`（回 409）、证书不对，表现就是流开不起来。其余 `/runtime/sessions/*`（历史、发消息、文件）仍是短请求，照旧经 Gateway。见 [adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) §7
 - **本地 Bot（桌面端）不经过 Gateway**：会话请求由页面直接改道到 127.0.0.1（ui/data.js 的 `localRoute`），Gateway 不再有反向隧道，也不知道它在不在跑；名单流、日常任务调度都不含本地 Bot。见 desktop/README.md「本地 Bot 直连本机」
-- **名单流同样直连**（管家协议 ≥ 6，`rosterUrlOf`）：`/runtime/bots` 多给一格 `rosterStreamUrl`，浏览器带登录 JWT 打 `{directUrl}/roster/stream`，管家把这个人在本机的所有席位合成一条（manager/src/roster.ts，过滤规则是 gateway 那份 roster-filter 的逐字副本，e2e 按字节钉着）。**这个人有本地 Bot 时不给直连地址**：本地 Bot 不在任何机器的名册里，整条名单照旧从 Gateway 扇入。失败退路同上
-- 桌面：**两条路，按机器有没有配 `directUrl` 选**（`novncUrlOf`）。票都是同一张：Gateway 用 JWT 私钥签、五分钟有效、只对一块屏
-  - **默认：Gateway 同域反代** `/desktop/{seatId}/?ticket=…`。Gateway 验完票换成路径段里的票，再把请求（含 WebSocket 升级）反代到管家的 `/seats/{seatId}/vnc/*`，用机器票（`smt_`）认。x11vnc、websockify、CDP 全部只听 `127.0.0.1`
-  - **配了 `directUrl` 就直连** `https://m001…/seats/{seatId}/vnc/?ticket=…`。浏览器直接打席位机器上的管家，Gateway 不再中转像素——实测那是整条链上最贵的一股流量（1280×800 下 Bot 一滚页面就是 4 MB/s，静止时是 0）。**不是把开销挪给席位机器**：那些字节它今天就在发（发给 Gateway），直连只是消掉一次转发
-- **直连还要管家够新（协议 ≥ 4）**：落地页那段「关掉 noVNC 控制条」的样式和 `frame-ancestors`，走反代是 Gateway 插的，直连那一跳只能管家自己插。填了 `directUrl` 但管家还是 3 号 → 照旧走反代，机器卡上报 `directPending`。这样升级顺序怎么颠倒都不出岔子；少了这道闸，表现是同一块预览在有的机器上多一条控件压着画面，而配置里看不出区别
+- **名单流同样只直连**（管家协议 ≥ 6，`rosterUrlOf`）：`/runtime/bots` 多给一格 `rosterStreamUrl`，浏览器带登录 JWT 打 `{directUrl}/roster/stream`，管家把这个人在本机的所有席位合成一条（manager/src/roster.ts，过滤规则见同目录 roster-filter.ts，e2e 按字节钉着）。Gateway 的 `/runtime/roster/stream` 和 `lib/roster-stream.ts` 已删，`rosterStreamUrl` 为 null 就没有实时名单。本地 Bot 不在任何机器的名册里，它那一行由桌面端自己盖上去，不影响给不给直连地址
+- 桌面：**只有直连一条路**（`novncUrlOf`）：`https://m001…/seats/{seatId}/vnc/?ticket=…`，浏览器直接打席位机器上的管家。票由 Gateway 用 JWT 私钥签（`/runtime/desktop`、`/platform/desktop-ticket`）、五分钟有效、只对一块屏，管家拿 Gateway 公钥验。x11vnc、websockify、CDP 全部只听 `127.0.0.1`
+  - Gateway 同域反代 `/desktop/{seatId}/`（`desktop.ts`）**已删**：桌面是一条 WebSocket，Vercel 函数里它被钉在一个实例上、受 300 秒上限；而且像素是整条链上最贵的一股流量（1280×800 下 Bot 一滚页面就是 4 MB/s）。**没配 `directUrl` 的机器没有桌面**（`novncUrl` 为 null）
+- **直连还要管家够新（协议 ≥ 4）**：落地页那段「关掉 noVNC 控制条」的样式和 `frame-ancestors` 只有管家能插。填了 `directUrl` 但管家还是 3 号 → 同样没有桌面，机器卡上报 `directPending`。少了这道闸，表现是同一块预览在有的机器上多一条控件压着画面，而配置里看不出区别
 - 直连的三个前提，缺一条就别配：**公网可达**、**必须 https**（Gateway 是 https，http 的 iframe 会被当混合内容静默拦掉，界面上只是一块永远打不开的空白）、**最好和 Gateway 同一个可注册域**（SameSite 判的是 site 不是 origin，同站时管家那张 `SameSite=Lax` cookie 在 iframe 子框里才带得上）
-  - 前端的 `sandbox` 跟着地址走：反代那条路同源，**绝不能**给 `allow-same-origin`（框里那页能读父页 sessionStorage 里的登录 JWT）；直连那条本来就跨源，加回来既安全又必要——不加的话框是 opaque 源，管家那张 cookie 带不上。判据是这个 URL 跨不跨源，不是「配没配直连」
-  - **退路一直留着**：清空 `directUrl` 就回到反代。管家在内网、还没铺证书的机器，直连根本走不通；桌面打不开时先清这一格
-- 管家侧 `/seats/:id/vnc/*` 同时认两种：机器票（Gateway 反代过来的）和票/cookie（浏览器直连的）。**后者一直没拆**，直连走的就是它
+  - 前端那块 iframe 的 `sandbox` 带 `allow-same-origin`：桌面地址现在永远跨源（机器的域名，不是 Gateway 的），不加的话框是 opaque 源，管家那张 cookie 带不上。以前同域反代那条路上绝不能加（框里那页能读父页 sessionStorage 里的登录 JWT），那条路已经没了
+  - **没有退路**：管家在内网、还没铺证书的机器，浏览器连不到它的管家，就没有桌面。桌面打不开先查 `directUrl` 和证书
+- 管家侧 `/seats/:id/vnc/*` 认票/cookie（浏览器直连的）；机器票那一种是给以前的 Gateway 反代用的
 
 ### 7.1 上线必须挂 TLS 反代（为了 h2）
 
@@ -670,7 +669,7 @@ messageCount?
 | | 走法 | 拿什么 |
 | --- | --- | --- |
 | 历史 | `GET /runtime/sessions/:id/history?turns=20` | 最近 20 轮。往上翻是同一个接口加 `before=<seq>` |
-| 实时 | `GET /runtime/sessions/:id/events?tail=1` | 垫最近 1 轮兜底，随后是实时事件 |
+| 实时 | `{directUrl}/seats/{seatId}/stream/sessions/:id/events?tail=1`（直连管家，见 §7） | 垫最近 1 轮兜底，随后是实时事件 |
 
 拆开的理由是「历史放完了没有」这件事**不该猜**。挤在一条流里时，历史和实时是同样的
 `data:` 帧，客户端只能靠 `replay/done` 这个标记加三个定时器兜着；而那条标记会连同尾巴
@@ -729,30 +728,30 @@ messageCount?
   十个 Bot 同时干活就是十路 token 流在主线程上 `JSON.parse`，画的是侧栏十行灰字——而
   名单对 chunk 做的**只有一件事**：把「最近活动」那个 HH:MM 的钟往前推。
 
-现在收成一条：`GET /runtime/roster/stream`，**一个人一条，Gateway 扇入**
-（`gateway/src/lib/roster-stream.ts`）。加上正在看的那条对话，稳定态一共两条连接，跟
-Bot 数无关。
+现在收成一条：`{directUrl}/roster/stream`，**一个人一条，由席位机器的管家合成**
+（manager/src/roster.ts；Gateway 那份 `lib/roster-stream.ts` 已删，见 §7）。加上正在看的
+那条对话，稳定态一共两条连接，跟 Bot 数无关，而且**两条都不经过 Gateway**。
 
 | | 走法 | 拿什么 |
 | --- | --- | --- |
-| 名单 | `GET /runtime/roster/stream` | 所有 Bot 的状态变化，一条通道 |
-| 正文 | `GET /runtime/sessions/:id/events` | 人点进的那一个，全量事件 |
+| 名单 | `{directUrl}/roster/stream` | 所有席位 Bot 的状态变化，一条通道 |
+| 正文 | `{directUrl}/seats/{seatId}/stream/sessions/:id/events` | 人点进的那一个，全量事件 |
 
 四条规矩：
 
 - **只转名单消费的那六种**：`turn/start` `turn/end` `human/handoff` `tool/approval`
   `user/message` `assistant/message`（照着前端 `noteBotEvent` 数出来的）。`chunk` 在
-  Gateway 这一层折成一个**节流过的时间戳**（20 秒一次），形状仍是 `assistant/chunk`，
+  管家这一层折成一个**节流过的时间戳**（20 秒一次），形状仍是 `assistant/chunk`，
   所以前端那段逻辑一行都不用改。认不出来的类型**一律不转**——默认放行的话，将来加一种
   高频事件就是又一次洪流。规则由 `e2e/roster-stream.mjs` 一条条钉着。
 - **它喂的是摘要，不是正文。** 帧里的事件是过滤过的，凑不成一条会话，所以前端只拿它更新
   `sum`，**绝不进事件桶**——进了的话点进那个 Bot 会看到一段缺了正文的历史。
-- **席位那边一行都没改。** Gateway 订的是席位现成的 `/api/sessions/:id/events`，过滤和
-  折叠都在 Gateway 做。十几台席位不用跟着发版。
+- **Bot 那边一行都没改。** 管家订的是 Bot 现成的 `/api/sessions/:id/events`，过滤和
+  折叠都在管家做（这段逻辑最初写在 Gateway，原样搬过去的）。
 - **路径叫 `stream` 不叫 `events`**：前后好几处（含测试的 fetch 桩）拿
   `path.includes('/events')` 认会话流，撞上同一个子串会把名单这条当成某条会话的流。
 
-断了不认输：Gateway 侧每个 Bot 各自退避重连（封顶 30 秒一次），浏览器侧整条通道也退避
+断了不认输：管家侧每个 Bot 各自退避重连（封顶 30 秒一次），浏览器侧整条通道也退避
 重连。认输的代价在这条通道上特别隐蔽——名单那颗点会停在断掉那一刻，「正在执行」一直转
 下去，而那台 Bot 可能十分钟前就干完了，人看到的是「在跑」而不是「断了」，不会想到去刷新。
 

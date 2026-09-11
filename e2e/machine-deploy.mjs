@@ -5,7 +5,6 @@ import { createHash } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
-import { connect } from 'node:net'
 import { join } from 'node:path'
 import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
@@ -15,7 +14,7 @@ const SCHEMA = schemaOf('e2e_machine')
 import { createCompany } from './org.mjs'
 import { publishRelease, sha256Of, tarGz } from './release.mjs'
 import { freePort } from './ports.mjs'
-import { closeServer, withDeadline } from './probe.mjs'
+import { closeServer } from './probe.mjs'
 
 /** 一个员工一个 Linux 账号——名下所有 bot 共用它。和 gateway/src/deploy.ts 保持一致。 */
 function linuxUserOf(accountId) {
@@ -31,45 +30,14 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-/**
- * 手写一次 WebSocket 升级。不引 ws：要验的是**反代把这一跳接没接对**，不是握手协议
- * 本身；裸 socket 反而看得见回来的原始状态行。
- */
-function wsUpgrade(port, path, cookie) {
-  return new Promise((ok, bad) => {
-    const sock = connect(port, '127.0.0.1', () => {
-      sock.write(
-        `GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
-          `Sec-WebSocket-Key: ${Buffer.from('satuwork-e2e-key').toString('base64')}\r\nSec-WebSocket-Version: 13\r\n` +
-          (cookie ? `Cookie: ${cookie}\r\n` : '') +
-          '\r\n',
-      )
-    })
-    let out = ''
-    sock.on('data', (b) => {
-      out += b.toString('utf8')
-      if (out.includes('HELLO-WS') || out.length > 512) {
-        sock.destroy()
-        ok(out)
-      }
-    })
-    sock.on('error', bad)
-    sock.on('close', () => ok(out))
-    setTimeout(() => {
-      sock.destroy()
-      ok(out)
-    }, 3000)
-  })
-}
-
 export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, assert, log }) {
   const GW_HOME = tmpOf('satuwork-e2e-machine-gw')
   const GW_PORT = await freePort()
   /**
    * 假管家们听的口也向内核要。8443 / 8544-8546 这几个写死的数以前在两个 worktree
    * 同时跑时必撞，而撞上的现象是「配对回拨到了别人的假管家」——断言报的东西和端口
-   * 毫无关系。MGR_PORT 是配对时记下的那台「主机器」，桌面反代那条用例要在它上面起
-   * 假管家；另外三条各自要一个，端口跟着传进 managerPort。
+   * 毫无关系。MGR_PORT 是配对时记下的那台「主机器」的口；另外三条假管家各自要一个，
+   * 端口跟着传进 managerPort。
    */
   const MGR_PORT = await freePort()
   const MACHINE_TOK = 'e2e-machine-deploy'
@@ -276,13 +244,11 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       assert(r.json.status === 'ready', `status ${r.json.status}`)
       assert(r.json.botVersion === '0.1.0', `botVersion ${r.json.botVersion}`)
       assert(typeof r.json.vncPassword === 'string' && r.json.vncPassword.length === 16, 'vncPassword 16')
-      // 桌面地址是 **Gateway 同域**的一条路径，不是管家的地址：那块屏内嵌在 iframe 里，
-      // 跨站的话 SameSite=Lax 的 cookie 连存都不给存（见 gateway/src/desktop.ts）。
-      assert(
-        String(r.json.novncUrl).startsWith(`/desktop/${r.json.seatId}/?ticket=`),
-        `novncUrl ${r.json.novncUrl}`,
-      )
-      assert(!String(r.json.novncUrl).includes(`127.0.0.1:${MGR_PORT}`), `桌面地址不该指向管家：${r.json.novncUrl}`)
+      // 桌面只走直连（机器的公网 directUrl），Gateway 上不再有反代路径。这台机器还没配
+      // 直连地址，所以这里必须是 null——拼一条 Gateway 上不存在的路径，界面会画出一块
+      // 永远打不开的空白。也绝不能退成管家的内网地址：浏览器连不到它，还会漏出机器票。
+      assert(r.json.novncUrl === null, `没配直连时 novncUrl 该是 null：${r.json.novncUrl}`)
+      assert(!JSON.stringify(r.json).includes(`127.0.0.1:${MGR_PORT}`), `桌面地址不该指向管家：${r.text}`)
       assert(r.json.display === 10, `display ${r.json.display}`)
       assert(r.json.vncPort === 5910, `vncPort ${r.json.vncPort}`)
       assert(r.json.novncPort === 6081, `novncPort ${r.json.novncPort}`)
@@ -448,7 +414,8 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       assert(r.json.seatId === seatIdOf(memberId, botA), 'seatId')
       assert(r.json.botId === botA, 'botId')
       assert(r.json.vncPassword && r.json.vncPassword.length === 16, 'vncPassword')
-      assert(String(r.json.novncUrl).startsWith(`/desktop/${r.json.seatId}/?ticket=`), 'novncUrl 要带票')
+      // 没配直连就没有桌面地址（见下面「桌面地址只走直连」那条）。
+      assert(r.json.novncUrl === null, `没配直连时 novncUrl 该是 null：${r.json.novncUrl}`)
       const miss = await req(gwBase, 'GET', '/runtime/desktop', { token: memberTok })
       assert(miss.status === 400, `desktop no botId ${miss.status}`)
       const ownerRt = await req(gwBase, 'GET', `/platform/orgs/${orgId}/accounts/${memberId}/runtime`, { token: ownerTok })
@@ -489,8 +456,8 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       assert(a.linuxUser === linuxUserOf(memberId), 'list linuxUser')
       assert(a.seatId === seatIdOf(memberId, botA), 'list seatId')
       assert(a.botVersion === '0.1.0', `list botVersion ${a.botVersion}`)
-      // 列表里不签票：那是给管理员看的引用，点进去要走 /runtime/desktop 现签一张。
-      assert(a.novncUrl === `/desktop/${a.seatId}/`, `list novncUrl ${a.novncUrl}`)
+      // 列表里不签票，也没有 Gateway 反代可给：机器没配直连时就是 null。
+      assert(a.novncUrl === null, `list novncUrl ${a.novncUrl}`)
       assert(!JSON.stringify(row).includes('vncPassword'), '列表含 vncPassword')
       const dumped = JSON.stringify(r.json)
       assert(!dumped.includes('smt_'), 'accounts 泄漏机器票')
@@ -1020,152 +987,16 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
     })
 
     /**
-     * 桌面反代：`/desktop/:seatId/*` → 管家的 noVNC。
+     * 桌面地址：**只有直连一条路**。Gateway 上那条 `/desktop/:seatId/*` 反代拆掉了——它和
+     * 会话流、名单流一样是挂着不放的长连接，而 Gateway 现在跑在有时限的函数里。没配
+     * 直连地址、或者管家不够新（< 4 号，落地页那段「关掉 noVNC 控制条」的样式只有它
+     * 自己会插）时，桌面就是**打不开**，回包里 `novncUrl` 得老老实实给 null，界面按
+     * 「先把机器的公网地址填上」提示——绝不能再拼一条 Gateway 上根本不存在的路径。
      *
-     * 这条路是为「把桌面内嵌进右栏」开的。浏览器直连管家那条路仍然在（管家侧另有
-     * 一组用例钉它），但 iframe 里用不了：管家发的 cookie 是 SameSite=Lax，跨站的
-     * iframe 里浏览器连存都不给存，画面永远出不来而且不报错。
-     *
-     * 这里起一个假管家听在配对时记下的那个地址上（127.0.0.1:MGR_PORT），然后整条走一遍：
-     * 票换 cookie → 静态资源 → WebSocket 升级，以及三种不该放行的情况。
+     * 这一条盯的是切换本身：填了地址但管家没跟上，要报 directPending；管家升上来就该
+     * 给出席位机器上管家的浏览器入口（带票）；清空后回到 null。
      */
-    await test('桌面从 Gateway 同域反代出去：票换 cookie、资源与 WebSocket 都通', async () => {
-      // 像 noVNC 落地页那样有个 </head>，好验证控制条那段样式插进去了。
-      const FAKE_PAGE = '<html><head><title>noVNC</title></head><body>VNC-PAGE</body></html>'
-      const seen = { headers: [], paths: [] }
-      const fake = createServer((req, res) => {
-        seen.headers.push(req.headers)
-        seen.paths.push(req.url)
-        if (req.headers['x-satuwork-machine'] !== machineTok) {
-          res.writeHead(401).end('no machine token')
-          return
-        }
-        res.writeHead(200, { 'content-type': 'text/html' }).end(FAKE_PAGE)
-      })
-      fake.on('upgrade', (req, socket) => {
-        if (req.headers['x-satuwork-machine'] !== machineTok) {
-          socket.write('HTTP/1.1 401 Unauthorized\r\nconnection: close\r\n\r\n')
-          socket.destroy()
-          return
-        }
-        socket.write('HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\r\n')
-        socket.write('HELLO-WS')
-      })
-      await withDeadline(
-        new Promise((ok, bad) => {
-          fake.once('error', bad)
-          fake.listen(MGR_PORT, '127.0.0.1', ok)
-        }),
-        `fake listen ${MGR_PORT}`,
-        15_000,
-      )
-      try {
-        const rt = await req(gwBase, 'GET', '/runtime/desktop?botId=' + encodeURIComponent(botA), { token: memberTok })
-        assert(rt.status === 200, `desktop ${rt.status} ${rt.text}`)
-        const seatId = rt.json.seatId
-        const entry = rt.json.novncUrl
-        assert(entry.startsWith(`/desktop/${seatId}/?ticket=`), `entry ${entry}`)
-
-        const ticket = entry.split('ticket=')[1]
-        const hop = await fetch(gwBase + entry, { redirect: 'manual' })
-        assert(hop.status === 302, `入口 ${hop.status}`)
-        // 票不再换 cookie，而是进路径段（`/desktop/:seatId/t/:ticket/*`）：iframe 去掉了
-        // allow-same-origin，框里的源是 opaque，cookie 根本带不上；路径里的票让 noVNC
-        // 自己发的静态资源和 WebSocket 升级按相对路径解析时天然都带着票。
-        assert(!hop.headers.get('set-cookie'), `不该再发 cookie：${hop.headers.get('set-cookie')}`)
-        const base = `/desktop/${seatId}/t/${encodeURIComponent(ticket)}`
-
-        const loc = String(hop.headers.get('location'))
-        const q = new URLSearchParams(loc.split('?')[1] || '')
-        assert(loc.startsWith(`${base}/vnc.html`), `location ${loc}`)
-        // noVNC 拼 WebSocket 地址的写法是 `'/' + path`，从根开始。不告诉它就会去连
-        // /websockify——那个路径不属于任何席位，反代认不出来。
-        assert(q.get('path') === `${base.slice(1)}/websockify`, `path ${q.get('path')}`)
-        assert(q.get('autoconnect') === '1', `autoconnect ${loc}`)
-        assert(q.get('password') === rt.json.vncPassword, '口令没随票转过去')
-
-        /**
-         * 管家还是 1 号协议时，这条路要**明确说「去升级管家」**，不能把管家那句
-         * 「桌面票无效或已过期」原样递出去——那句话和票真的过期一字不差，人会去反复
-         * 重开桌面，而那永远不会好。上面的心跳把这台机器报成了 protocol 1。
-         */
-        const old = await fetch(`${gwBase}${base}/vnc.html`)
-        assert(old.status === 409, `旧管家应 409：${old.status}`)
-        assert(String((await old.json()).error).includes('升级管家'), '没说清楚要升级管家')
-
-        // 管家升上来（心跳自报 protocol 2）之后，同一条路就该通了。
-        const machineId = (await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })).json
-          .machine.id
-        const hb2 = await req(gwBase, 'POST', `/internal/machines/${machineId}/heartbeat`, {
-          token: machineTok,
-          body: { managerVersion: 'e2e', protocol: 2, arch: 'arm64', seats: [] },
-        })
-        assert(hb2.status === 200, `heartbeat2 ${hb2.status} ${hb2.text}`)
-
-        const page = await fetch(`${gwBase}${base}/vnc.html`)
-        assert(page.status === 200, `静态 ${page.status}`)
-        const body = await page.text()
-        assert(body.includes('VNC-PAGE'), '字节没带回来')
-        /**
-         * 落地页要**改一处**：把 noVNC 自己的控制条关掉。那条竖条在右栏这种嵌法里
-         * 和我们自己的标题栏叠在一起，还压着桌面右边一条。
-         */
-        assert(body.includes('#noVNC_control_bar_anchor'), '控制条那段样式没插进去')
-        // 「Connected to …」那条提示也关掉，但**只关 normal 那一档**：控制条已经藏了，
-        // 报错和警告是页面上唯一还会说「连不上」的地方。
-        assert(body.includes('#noVNC_status.noVNC_status_normal'), '连接成功那条提示没关掉')
-        assert(!body.includes('noVNC_status_error'), '不该把报错那一档也关掉')
-        assert(body.indexOf('#noVNC_control_bar_anchor') < body.indexOf('</head>'), '样式要在 </head> 之前')
-        // opaque 源里碰 localStorage 会抛，noVNC 初始化第一步就读设置——垫片要在 module 之前。
-        assert(body.includes('localStorage'), '落地页没垫 localStorage 的替身')
-        assert(page.headers.get('content-length') === String(new TextEncoder().encode(body).length), '改了内容没重算长度')
-        // 反代出来的每条响应都要钉上 frame-ancestors，并放开 CORS（opaque 源取 module 要它）。
-        assert(String(page.headers.get('content-security-policy')).includes("frame-ancestors 'self'"), 'CSP 没加')
-        assert(page.headers.get('access-control-allow-origin') === '*', 'opaque 源取 module 需要 CORS')
-        assert(seen.paths.some((p) => p.startsWith(`/seats/${seatId}/vnc/vnc.html`)), `上游路径 ${seen.paths}`)
-        // 机器票只该活在 Gateway 与管家之间；浏览器那侧的 cookie 也不该漏下去。
-        const last = seen.headers[seen.headers.length - 1]
-        assert(last['x-satuwork-machine'] === machineTok, '没带机器票')
-        assert(!last.cookie, `Gateway 的 cookie 漏给了管家：${last.cookie}`)
-
-        // 别的资源不许被碰：只有落地页走改写那条路。
-        const asset = await fetch(`${gwBase}${base}/app/ui.js`)
-        assert(!(await asset.text()).includes('noVNC_control_bar_anchor'), '普通资源不该被改写')
-
-        const anon = await fetch(`${gwBase}/desktop/${seatId}/vnc.html`)
-        assert(anon.status === 401, `无票应 401：${anon.status}`)
-        const stolen = await fetch(`${gwBase}/desktop/${seatId}/t/not-a-jwt/vnc.html`)
-        assert(stolen.status === 401, `伪造票应 401：${stolen.status}`)
-        // 别人那块屏的票，进不了这块屏：入口和带票路径两条路都要挡。
-        const other = seatIdOf(member2Id, botA)
-        const crossed = await fetch(`${gwBase}/desktop/${other}/?ticket=${encodeURIComponent(ticket)}`, {
-          redirect: 'manual',
-        })
-        assert(crossed.status === 401, `串屏应 401：${crossed.status}`)
-        const crossedPath = await fetch(`${gwBase}/desktop/${other}/t/${encodeURIComponent(ticket)}/vnc.html`)
-        assert(crossedPath.status === 401, `带票路径串屏应 401：${crossedPath.status}`)
-
-        const ws = await wsUpgrade(GW_PORT, `${base}/websockify`, '')
-        assert(ws.includes('101'), `升级失败: ${ws.slice(0, 120)}`)
-        assert(ws.includes('HELLO-WS'), '升级后字节没通')
-        const wsAnon = await wsUpgrade(GW_PORT, `/desktop/${seatId}/websockify`, '')
-        assert(wsAnon.includes('404') || wsAnon.includes('401'), `无票的升级应被拒: ${wsAnon.slice(0, 80)}`)
-        const wsStolen = await wsUpgrade(GW_PORT, `/desktop/${seatId}/t/not-a-jwt/websockify`, '')
-        assert(wsStolen.includes('401'), `伪造票的升级应 401: ${wsStolen.slice(0, 80)}`)
-      } finally {
-        // 走 closeServer：Gateway 那侧的反代是 keep-alive，光 close 会一直等着它自己
-        // 断开——套件就停在这儿不动了。
-        await closeServer(fake, '假管家')
-      }
-    })
-
-    /**
-     * 配了直连地址之后，桌面地址就该指向席位机器，不再是 Gateway 上那条反代路径。
-     *
-     * 这一条盯的是「省下来的字节到底走没走」：地址还是 `/desktop/…` 的话，像素照旧
-     * 穿过 Gateway，整件事白做——而界面上一切正常，看不出任何区别。
-     */
-    await test('配了直连地址：桌面地址指向席位机器，清空后退回 Gateway 反代', async () => {
+    await test('桌面地址只走直连：没配或管家太老是 null，配了就指向席位机器', async () => {
       const machineId = (await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })).json.machine
         .id
       const seatId = seatIdOf(memberId, botA)
@@ -1173,10 +1004,7 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
         (await req(gwBase, 'GET', `/runtime/desktop?botId=${encodeURIComponent(botA)}`, { token: memberTok })).json
           .novncUrl
 
-      assert(
-        (await deskUrl()).startsWith(`/desktop/${seatId}/`),
-        `没配之前该走 Gateway 反代：${await deskUrl()}`,
-      )
+      assert((await deskUrl()) === null, `没配直连之前该是 null：${await deskUrl()}`)
 
       // http 要当场被拒：Gateway 的页面是 https，http 的桌面会被浏览器当混合内容
       // **静默**拦掉——放它过去，人看到的就是一块永远打不开的空白。
@@ -1199,16 +1027,13 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       assert(set.json.machine.directUrl === 'https://m001.satuwork.test', `回包 ${set.text.slice(0, 200)}`)
 
       /**
-       * **管家不够新时不许切过去。** 落地页那段「关掉 noVNC 控制条」的样式，走反代
-       * 是 Gateway 插的，直连只能管家自己插——4 号管家才会。所以填了地址还不够。
+       * **管家不够新时不许切过去。** 落地页那段「关掉 noVNC 控制条」的样式只有 4 号
+       * 管家自己会插，所以填了地址还不够——这时桌面照样是 null。
        *
-       * 这一段同时盯着那个状态位：没有它，人填完地址看不出任何变化（画面照常出来，
-       * 因为压根没切过去），只有去数管家版本才分得出「没生效」和「生效了」。
+       * 这一段同时盯着那个状态位：没有它，人填完地址看不出任何变化，只有去数管家版本
+       * 才分得出「没生效」和「生效了」。上面的心跳把这台机器报成了 protocol 1。
        */
-      assert(
-        (await deskUrl()).startsWith(`/desktop/${seatId}/`),
-        `管家还是 3 号，不该切到直连：${await deskUrl()}`,
-      )
+      assert((await deskUrl()) === null, `管家还没到 4 号，不该给直连地址：${await deskUrl()}`)
       const pendingCard = await req(gwBase, 'GET', `/platform/machines/${machineId}`, { token: ownerTok })
       assert(pendingCard.json.machine.directPending === true, `该报「填了还没生效」：${pendingCard.text.slice(0, 200)}`)
 
@@ -1223,9 +1048,18 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
 
       const direct = await deskUrl()
       assert(
-        direct.startsWith(`https://m001.satuwork.test/seats/${seatId}/vnc/?ticket=`),
+        String(direct).startsWith(`https://m001.satuwork.test/seats/${seatId}/vnc/?ticket=`),
         `该指向席位机器上管家的浏览器入口：${direct}`,
       )
+      // 票是 Gateway 签的，管家验签换 cookie；这里只钉「真的带了一张」。
+      assert(String(direct).split('ticket=')[1].length > 20, `票太短，不像签过的：${direct}`)
+
+      // owner 那份席位列表也走同一个公式，只是不签票：给后台看一眼用，点进去要去
+      // /runtime/desktop 现签一张。
+      const listed = await req(gwBase, 'GET', `/orgs/${orgId}/accounts`, { token: ownerTok })
+      const row = (listed.json.members || []).find((m) => m.id === memberId)
+      const a = row && row.runtimes.find((x) => x.botId === botA)
+      assert(a && a.novncUrl === `https://m001.satuwork.test/seats/${seatId}/vnc/`, `列表里的直连地址不对：${a && a.novncUrl}`)
 
       // 公司侧那条同义路由也要通：机器配置在公司详情页和平台机器页都改得了，
       // 容量和时区一直是这么成对的，这一条不能只做一半。
@@ -1235,7 +1069,7 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       })
       assert(viaOrg.status === 200, `公司侧设直连 ${viaOrg.status} ${viaOrg.text}`)
       assert(
-        (await deskUrl()).startsWith(`https://m002.satuwork.test/seats/${seatId}/vnc/?ticket=`),
+        String(await deskUrl()).startsWith(`https://m002.satuwork.test/seats/${seatId}/vnc/?ticket=`),
         `公司侧那条没生效：${await deskUrl()}`,
       )
 
@@ -1245,11 +1079,12 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       })
       assert(cleared.status === 200, `清空 ${cleared.status} ${cleared.text}`)
       assert(cleared.json.machine.directUrl === null, `清空后该是 null：${cleared.text.slice(0, 200)}`)
-      // 退路必须真的退得回去：桌面打不开时，运维要靠清掉这一格把它救回来。
-      assert(
-        (await deskUrl()).startsWith(`/desktop/${seatId}/`),
-        `清空后该退回 Gateway 反代：${await deskUrl()}`,
-      )
+      // 清空就是撤回：没有 Gateway 反代可退了，桌面地址回到 null，界面按「没配」提示。
+      assert((await deskUrl()) === null, `清空后该是 null：${await deskUrl()}`)
+      const relisted = await req(gwBase, 'GET', `/orgs/${orgId}/accounts`, { token: ownerTok })
+      const row2 = (relisted.json.members || []).find((m) => m.id === memberId)
+      const a2 = row2 && row2.runtimes.find((x) => x.botId === botA)
+      assert(a2 && a2.novncUrl === null, `清空后列表里也该是 null：${a2 && a2.novncUrl}`)
     })
 
     /**

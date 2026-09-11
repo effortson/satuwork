@@ -1021,8 +1021,12 @@ async function loadRuntimeBots() {
     state.runtimeBots = data.bots || []
     // 本地 Bot 在不在跑、听哪个口，Gateway 不知道（隧道拆了），只有壳子知道。
     await overlayLocalRuntime(state.runtimeBots)
-    // 名单流的直连地址（机器够新、配了公网地址、这个人没有本地 Bot 时才有）。
+    // 名单流的直连地址（机器够新、配了公网地址、这个人没有本地 Bot 时才有），没有就是 null。
+    // Gateway 不再反代这条流，所以地址一到就得起、一换就得重开——这一次刷新可能正是
+    // 管理员刚在「机器」页填完 directUrl 之后的那一次。
     state.rosterStreamUrl = data.rosterStreamUrl || ''
+    syncRosterStream()
+    reviveDirectChatStream()
     if (window.__SATUWORK_LOCAL_BOT__?.stop) {
       const ids = new Set(state.runtimeBots.map((bot) => bot.id))
       for (const bot of before) {
@@ -1621,36 +1625,36 @@ const ROSTER_BACKOFF = [500, 1000, 2000, 4000, 8000, 15_000, 30_000]
 let rosterAbort = null
 let rosterTimer = null
 /**
- * 名单流也能直连席位机器（`state.rosterStreamUrl`，理由和对话那条一样，见 directStreamBase）。
- * 直连砸了就退回 Gateway 五分钟，**任何失败都算**，包括 401/403/404——那几个在 Gateway
- * 那条路上是「答案不会变」，在直连这一跳上多半只是管家太老或问不到 Gateway。
+ * 名单流**只直连席位机器**（`state.rosterStreamUrl`，理由和对话那条一样，见 directStreamBase）。
+ *
+ * Gateway 上已经没有 `/runtime/roster/stream` 这条反代了——它是小时级的连接，Gateway 要
+ * 变成无状态的就留不得它。所以地址是空的（机器没配 directUrl、或者管家太旧）就**不连**，
+ * 也不排重试：地址不会自己长出来，它随下一次 /runtime/bots 到（见 syncRosterStream）。
+ * 直连上的失败一律在同一个地址上退避重来——没有别的路可退了。
  */
-let rosterDirectDownAt = 0
-
 function directRosterUrl() {
-  const base = state.rosterStreamUrl || ''
-  if (!base) return ''
-  if (rosterDirectDownAt && Date.now() - rosterDirectDownAt < DIRECT_RETRY_MS) return ''
-  return base
+  return state.rosterStreamUrl || ''
 }
+/** 正在跑的那条流用的地址。/runtime/bots 换了地址时靠它判断要不要重开（见 syncRosterStream）。 */
+let rosterLiveUrl = ''
 
 async function startRosterStream(attempt = 0) {
   // 已经有一条在跑就别再开。整页重绘、切页、切 Bot 都会走到这儿。
   if (attempt === 0 && rosterAbort) return
   clearTimeout(rosterTimer)
+  const url = directRosterUrl()
+  if (!url) {
+    rosterAbort = null
+    rosterLiveUrl = ''
+    return
+  }
   const ac = new AbortController()
   rosterAbort = ac
+  rosterLiveUrl = url
   const t = token()
-  const direct = directRosterUrl()
-  /** 直连砸了：记下来，这一次立刻按老路重来（不加档）。 */
-  const fallBack = () => {
-    rosterDirectDownAt = Date.now()
-    if (rosterAbort === ac) rosterAbort = null
-    return startRosterStream(attempt)
-  }
   let res
   try {
-    res = await swFetch(direct || '/runtime/roster/stream', {
+    res = await swFetch(url, {
       headers: { accept: 'text/event-stream', ...(t ? { authorization: 'Bearer ' + t } : {}) },
       signal: ac.signal,
     })
@@ -1659,14 +1663,12 @@ async function startRosterStream(attempt = 0) {
       if (rosterAbort === ac) rosterAbort = null
       return
     }
-    if (direct) return fallBack()
     return retryRosterStream(ac, attempt + 1)
   }
-  if (direct && (!res.ok || !res.body)) return fallBack()
   /**
    * 401 / 403 当场认输：票没了、或者这个账号根本没有席位（owner）。重试只会白敲。
-   * 404 也在内（老 Gateway 没有这条路由）——但那种情况下前端和 Gateway 是一起发的，
-   * 真出现了说明部署错了，重试同样没有意义。
+   * 404 也在内（管家太旧，还没有这条路由）——Gateway 只在管家够新时才给这个地址，
+   * 真出现了说明两头对不上号，重试同样没有意义；下一次 /runtime/bots 会重新判一遍。
    */
   if (res.status === 401 || res.status === 403 || res.status === 404) {
     if (rosterAbort === ac) rosterAbort = null
@@ -1717,8 +1719,19 @@ function retryRosterStream(ac, attempt) {
   rosterTimer = setTimeout(() => void startRosterStream(attempt), wait)
 }
 
+/**
+ * /runtime/bots 刚把名单流地址带回来：空 → 有值就起流，换了地址就在新地址上重开。
+ * 地址没变什么都不动——正在退避的那条留着，别把它的档位打乱。
+ */
+function syncRosterStream() {
+  const url = directRosterUrl()
+  if (rosterAbort && rosterLiveUrl !== url) stopRosterStream()
+  if (url) void startRosterStream()
+}
+
 function stopRosterStream() {
   clearTimeout(rosterTimer)
+  rosterLiveUrl = ''
   const ac = rosterAbort
   rosterAbort = null
   if (ac) {
@@ -1797,31 +1810,64 @@ const CHAT_RETRY_MAX = 40
 const CHAT_ALIVE_MS = 10_000
 
 /**
- * 直连席位机器开那条流。
+ * 对话流**只直连席位机器**。
  *
  * 机器配了公网地址、管家够新（≥5 号）时，Gateway 在 `bot.runtime.streamUrl` 里给一个
- * 前缀，这条 SSE 就直接打那台机器，不再经 Gateway 反代——它是整套界面里唯一一条
- * 小时级的连接，Gateway 要变成无状态的，头一个就得把它挪走
- * （docs/adr-gateway-vercel-neon.md §7 第 2 步）。带的还是登录票，管家那头验完换成席位票。
+ * 前缀，这条 SSE 就直接打那台机器，带的还是登录票，管家那头验完换成席位票。它是整套
+ * 界面里唯一一条小时级的连接，Gateway 要变成无状态的，头一个就得把它挪走
+ * （docs/adr-gateway-vercel-neon.md §7 第 2 步）——所以 Gateway 上
+ * `/runtime/sessions/:id/events` 那条反代已经**没有了**，直连不是「优先走」，是唯一一条路。
  *
- * **任何一种失败都退回 Gateway，五分钟内不再试直连。** 直连这一跳多出来的故障形状
- * 有好几种——机器的证书不对、CORS 头没到、管家还是老版本、席位还没重新部署（409）、
- * 管家问不到 Gateway。对人来说它们都是同一件事：「直连不通」。Gateway 那条路一直在，
- * 走它就行，别在这一跳上区分 401 和 502。真的不会变的那几种（票过期、Bot 不是你的），
- * Gateway 那条路上会再说一次，而且说得更准。
+ * 三种 Bot 三种走法：
+ *
+ * · **本地 Bot**（壳子里跑在这台 Mac 上的）照旧拼 `/runtime/sessions/<id>/events` 这个
+ *   形状——data.js 的 localRoute 认这个形状，改道到 127.0.0.1，压根不碰 Gateway。
+ * · **远程 Bot、有 streamUrl**：直接打那台机器。这一跳上的失败按老规矩分两类处置
+ *   （见下面 503 和 401/403/404 两段），退避也在同一个地址上——没有别的路可退了。
+ * · **远程 Bot、streamUrl 是 null**（机器没配 directUrl、或者管家太旧）：**一个请求都不
+ *   发**，当场把原因摆到横幅上。这不是故障，是配置缺一项，重试只会白敲；等哪次
+ *   /runtime/bots 把地址带回来，reviveDirectChatStream 会补开这条流。
+ *
+ * 名单上查不到这颗 Bot、或者名单没带 runtime（低层直接调用、测试）时按本地那个形状走：
+ * 不是本地 Bot 的话 Gateway 会回 404，落到「答案不会变」那一支，界面上照样有话。
  */
-const DIRECT_RETRY_MS = 5 * 60_000
-/** sessionId → 直连上一次失败的时刻。 */
-const directStreamDown = new Map()
+const NO_DIRECT_STREAM_MSG = '这台机器没有配直连地址（或管家太旧），对话流开不了；找管理员在「机器」页填上 directUrl'
 
-function directStreamBase(owner, sessionId) {
-  if (!owner) return ''
-  const bot = (state.runtimeBots || []).find((b) => b.id === owner)
-  const base = bot && bot.runtime && bot.runtime.streamUrl
-  if (!base) return ''
-  const failedAt = directStreamDown.get(sessionId)
-  if (failedAt && Date.now() - failedAt < DIRECT_RETRY_MS) return ''
-  return base
+function runtimeBotOf(owner) {
+  return owner ? (state.runtimeBots || []).find((b) => b.id === owner) || null : null
+}
+
+/** 这颗 Bot 是不是本地 Bot。两个字段都认：名单行上的 runtimeKind，和 overlayLocalRuntime 写的 runtime.kind。 */
+function isLocalRuntimeBot(bot) {
+  return Boolean(bot && (bot.runtimeKind === 'local' || (bot.runtime && bot.runtime.kind === 'local')))
+}
+
+/** 远程 Bot 的直连前缀；本地 Bot、没配地址、名单上没有这颗 Bot 都返回空串。 */
+function directStreamBase(owner) {
+  const bot = runtimeBotOf(owner)
+  if (!bot || isLocalRuntimeBot(bot)) return ''
+  return (bot.runtime && bot.runtime.streamUrl) || ''
+}
+
+/**
+ * /runtime/bots 刷新过后：人正看着的那条会话没有流在跑、而这颗 Bot 现在有直连地址了
+ * ——多半是上一次开流时地址还是 null（见 startChatStream 里 NO_DIRECT_STREAM_MSG 那一支），
+ * 现在补开。正在退避的流手上还攥着 ac，chatStreamAlive 认它活着，这里不会插队。
+ */
+function reviveDirectChatStream() {
+  const botId = state.chatBotId
+  const sessionId = state.chatSessionId
+  if (!botId || !sessionId || chatStreamAlive(sessionId, botId)) return
+  const row = botStreams.get(botId)
+  if (!row || row.sessionId !== sessionId) return
+  if (!directStreamBase(botId)) {
+    // 还是没有地址：把那句话写回去。loadRuntimeBots 开头把 runtimeError 清了，不写回的话
+    // 下一次重绘横幅就没了，而这条流其实一直没开过。
+    const bot = runtimeBotOf(botId)
+    if (bot && bot.runtime && !isLocalRuntimeBot(bot)) state.runtimeError = NO_DIRECT_STREAM_MSG
+    return
+  }
+  void startChatStream(sessionId, 0, botId)
 }
 
 async function startChatStream(sessionId, attempt = 0, botId = '') {
@@ -1869,14 +1915,17 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
   // 头一次连（手上还没有事件）才要 tail，而且**只垫一轮**——打开对话要看的那二十轮
   // 走 HTTP（hydrateChat）。续传时 after 说了算，要的是「补上错过的」。
   const q = after != null ? '?after=' + encodeURIComponent(after) : '?tail=' + STREAM_TAIL_TURNS
-  const direct = directStreamBase(owner, sessionId)
-  const streamUrl = (direct ? direct + '/sessions/' : '/runtime/sessions/') + encodeURIComponent(sessionId) + '/events' + q
-  /** 直连砸了：记下来，这一次就按老路重来（attempt 不加档，别为直连的错多等一秒）。 */
-  const fallBack = () => {
-    directStreamDown.set(sessionId, Date.now())
+  const bot = runtimeBotOf(owner)
+  const direct = directStreamBase(owner)
+  if (bot && bot.runtime && !isLocalRuntimeBot(bot) && !direct) {
+    // 远程 Bot 没有直连地址：一个请求都不发（理由见 directStreamBase 上面那段）。收摊的
+    // 顺序和 401/403/404 那一支一样——ac 要让出去，否则 chatStreamAlive 会一直当它活着。
+    releaseChatStream(ac, owner)
     endReplay()
-    return retryChatStream(sessionId, ac, attempt)
+    noteStreamDown(sessionId, NO_DIRECT_STREAM_MSG)
+    return
   }
+  const streamUrl = (direct ? direct + '/sessions/' : '/runtime/sessions/') + encodeURIComponent(sessionId) + '/events' + q
   let res
   try {
     res = await swFetch(streamUrl, {
@@ -1892,17 +1941,17 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
       releaseChatStream(ac, owner)
       return
     }
-    if (direct) return fallBack()
     endReplay()
-    // **连不上要接着退避重试，不能就此认输。** 见下面 503 那条的说明。
+    // **连不上要接着退避重试，不能就此认输。** 见下面 503 那条的说明。直连这一跳上
+    // 「连不上」还多几种形状——机器的证书不对、CORS 头没到、管家正在换版——对人来说
+    // 都是同一件事「还没接上」，处置也一样：退避重来。
     noteStreamWarming(sessionId)
     return retryChatStream(sessionId, ac, attempt + 1)
   }
-  if (direct && (!res.ok || !res.body)) return fallBack()
   /**
-   * 503 = 席位此刻不在（Gateway 对席位的 fetch 抛了或没回 2xx，见 runtime.ts 的
-   * proxySse）。**这是「正在重启」，不是「坏了」**：每一次重新部署、每一次管家换版，
-   * 都必然有几秒钟落在这个窗口里。
+   * 503 = 席位此刻不在（管家对席位的 fetch 抛了或没回 2xx，见 manager/src/proxy.ts）。
+   * **这是「正在重启」，不是「坏了」**：每一次重新部署、每一次管家换版，都必然有几秒钟
+   * 落在这个窗口里。
    *
    * 以前这里直接 return，于是撞上这几秒的那次重连就是最后一次——流断了、也不再重来。
    * 席位一分钟后好端端地回来了，页面却再也接不回去：消息 POST 走的是另一条请求，
@@ -5117,9 +5166,13 @@ function chatMachinePanel() {
   }
 
   if (mine && mine.status === 'ready') {
-    // 走 Gateway 反代那条路的桌面地址是相对的；桌面端里界面不在 Gateway 的源上，要接上它。
-    if (mine.novncUrl) mine.novncUrl = gatewayAbs(mine.novncUrl)
-    if (mine.novncUrl && deskEmbeddable(mine.novncUrl)) {
+    if (!mine.novncUrl) {
+      // 桌面地址只剩直连一种（Gateway 不再反代 `/desktop/…`）：机器没配 directUrl 或管家
+      // 太旧时它是 null。不说这一句的话这一栏就是空的，人会以为桌面这一路坏了。
+      rows.push(
+        `<p style="margin: 0; font-size: 12px; color: var(--muted-foreground); line-height: 1.6;">${esc(t('这台机器没有配直连地址，桌面打不开'))}</p>`,
+      )
+    } else if (deskEmbeddable(mine.novncUrl)) {
       // 只放一个空槽。真正的 iframe 挂在 #app 外面的常驻层里（见 syncDesktop），
       // 整页重绘换不掉它——换掉一次就是断一次 VNC。
       rows.push(
@@ -5607,10 +5660,10 @@ function deskCaption() {
 /**
  * 这个地址能不能内嵌。
  *
- * 桌面地址现在是 Gateway 同域的一条相对路径（`/desktop/:seatId/`），所以这条基本不
- * 会再触发。留着是因为它挡的那个失败**没有声音**：页面是 https、地址是 http 的时候，
- * iframe 被浏览器按混合内容拦掉，什么都不显示，控制台以外看不出所以然。真有哪天地址
- * 又变回绝对的，这里退回按钮，比留一块黑屏强。
+ * 桌面地址现在只有席位机器的绝对地址一种（`https://m001…/seats/<席位>/vnc/`，Gateway
+ * 不再反代）。它挡的那个失败**没有声音**：页面是 https、机器只配了 http 地址的时候，
+ * iframe 被浏览器按混合内容拦掉，什么都不显示，控制台以外看不出所以然。这里退回
+ * 「打开桌面」那颗按钮（新标签页是顶层导航，不受混合内容限制），比留一块黑屏强。
  */
 function deskEmbeddable(url) {
   if (!url) return false
@@ -5623,9 +5676,11 @@ function deskEmbeddable(url) {
  * 只有一个用处：决定 iframe 的 sandbox 里加不加 `allow-same-origin`（见 mountDesktop
  * 里那段长注释——这一条判错就是把父页的登录 JWT 交出去）。
  *
- * 相对地址（`/desktop/…`，走 Gateway 反代）解析出来就是同源，返回 false；席位机器的
- * 绝对地址（`https://m001…`，直连）返回 true。**解析不出来一律当同源**：那是更严的
- * 那一边，宁可让一个本该直连的框连不上，也不能给一个同源的框开 allow-same-origin。
+ * 现在的地址一律是席位机器的绝对地址（`https://m001…`，直连），正常都返回 true；
+ * Gateway 同域反代那条路（`/desktop/…`）已经没有了。**但判据仍然只能是地址本身**，
+ * 不能写死 true：万一哪天又有同源的桌面地址（本地壳子、开发环境），写死就是把
+ * allow-same-origin 加到同源的框上。**解析不出来一律当同源**：那是更严的那一边，
+ * 宁可让一个本该直连的框连不上，也不能给一个同源的框开 allow-same-origin。
  */
 function deskCrossOrigin(url) {
   try {
@@ -5638,8 +5693,9 @@ function deskCrossOrigin(url) {
 /** 内嵌用的地址：按预览尺寸缩放，别把桌面裁成左上角一小块。 */
 function deskUrl() {
   const rt = state.desktopRuntime
+  // novncUrl 是 null 就是「这台机器没有桌面可开」（没配直连地址），右栏另有一句话说明。
   if (!rt || rt.status !== 'ready' || !rt.novncUrl || !deskEmbeddable(rt.novncUrl)) return ''
-  const abs = gatewayAbs(rt.novncUrl)
+  const abs = rt.novncUrl
   return abs + (abs.includes('?') ? '&' : '?') + 'resize=scale&reconnect=1&bell=false'
 }
 
@@ -5682,19 +5738,17 @@ function mountDesktop(url, seatId) {
    *
    * **`allow-same-origin` 按地址跨不跨源来给，这一条判错就是一个漏洞。**
    *
-   * · 走 Gateway 反代时（`/desktop/:seatId/…`，相对地址），框和父页**同源**。这时
-   *   加 allow-same-origin 等于没有沙箱：框里那页（席位自己供的 noVNC）能直接读父页
-   *   的 sessionStorage，登录 JWT 就躺在里面。所以这条路上绝不能加。去掉之后框的源
-   *   是 opaque，浏览器不给它发 cookie，于是桌面票放在路径里（见
-   *   gateway/src/desktop.ts 文件头），静态资源和 WebSocket 按相对路径天然带票。
-   * · 走席位机器直连时（`https://m001…/seats/<席位>/vnc/`，绝对地址），框和父页
-   *   **本来就不同源**，加了也读不到父页的任何东西——而不加的话框是 opaque 源，
-   *   管家那张 path 限定的 cookie 带不上，noVNC 的静态资源和 WebSocket 一律 401。
+   * · 现在的桌面地址一律是席位机器直连（`https://m001…/seats/<席位>/vnc/`，绝对地址），
+   *   框和父页**本来就不同源**，加了也读不到父页的任何东西——而不加的话框是 opaque
+   *   源，管家那张 path 限定的 cookie 带不上，noVNC 的静态资源和 WebSocket 一律 401。
    *   同一个可注册域下 SameSite=Lax 在子框里是放行的（SameSite 判的是 site 不是
    *   origin），所以这条路上加回来既安全又必要。
+   * · Gateway 同域反代那条路（`/desktop/:seatId/…`，相对地址）**已经没有了**，但它当年
+   *   立下的规矩还在：同源的框绝不能加 allow-same-origin——那等于没有沙箱，框里那页
+   *   （席位自己供的 noVNC）能直接读父页的 sessionStorage，登录 JWT 就躺在里面。
    *
-   * 判据只能是**这个 url 到底跨不跨源**，不能是「有没有配直连」之类的旁证：配置和
-   * 实际用的地址一旦不同步，错的方向恰好是把 allow-same-origin 加到同源的框上。
+   * 判据只能是**这个 url 到底跨不跨源**，不能是「桌面只剩直连了」之类的旁证：万一
+   * 哪天又出现一条同源的桌面地址，错的方向恰好是把 allow-same-origin 加到同源的框上。
    *
    * `allow-forms` 是留给「票里没带口令」时那个登录框的。
    */

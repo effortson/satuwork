@@ -1,5 +1,7 @@
 /**
- * Gateway 对话反代：Bot 无头运行时登记 host，Gateway 反代 SSE / 发消息。
+ * Gateway 对话反代：Bot 无头运行时登记 host，Gateway 反代发消息 / 附件 / 历史。
+ * 对话流不再经 Gateway（浏览器直连席位机器的管家），这里读流一律直打 bot 自己的
+ * `/api/sessions/:id/events`，拿席位票进门——验的是 bot 那头吐的帧，不是中间那一跳。
  * 独立 home / 端口，不碰 live 3080，不碰 run.mjs 那套 /tmp/satuwork-e2e-gw。
  */
 import { existsSync, readFileSync, rmSync } from 'node:fs'
@@ -395,9 +397,20 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(anon.status === 401, `未登录预览 ${anon.status}`)
     })
 
-    await test('SSE 含 user/message ping（或 request/header）', async () => {
-      const sse = await readSse(`${gwBase}/runtime/sessions/${encodeURIComponent(sessionId)}/events`, {
+    await test('Gateway 上那条会话流已经没了：/runtime/sessions/:id/events → 404', async () => {
+      // 三条长连接反代（会话流、名单流、桌面）一起从 Gateway 撤掉了：它跑在 Vercel 那种
+      // 有时限的函数里，挂一条永不结束的响应就是在赌超时。路由要**真的没了**——留着
+      // 一条能通的老路，前端哪天退回去走它，线上就是一片「过一会儿就断」。
+      const r = await readSse(`${gwBase}/runtime/sessions/${encodeURIComponent(sessionId)}/events`, {
         token: adminTok,
+        timeout: 3000,
+      })
+      assert(r.status === 404, `Gateway 上的会话流该 404，实际 ${r.status} ${r.text.slice(0, 200)}`)
+    })
+
+    await test('SSE 含 user/message ping（或 request/header）', async () => {
+      const sse = await readSse(`${botBase}/api/sessions/${encodeURIComponent(sessionId)}/events`, {
+        token: seatAccess,
         timeout: 8000,
         until: (events) =>
           events.some((e) => e.type === 'user/message' || e.type === 'request/header'),
@@ -417,9 +430,9 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       // 界面判断「正在处理」原来只能扫事件：从头扫，遇 turn/start 算在跑、遇 turn/end
       // 算跑完。这个猜法要求历史完整，而它经常不完整（流断在重放中途、或者进程半路
       // 没了、那条 turn/end 根本没写成），于是界面一直挂着「正在处理」。所以让知道的
-      // 人说：bot 在 replay/done 上带 live。这里要验的是它真的一路走到了 Gateway 出口。
-      const sse = await readSse(`${gwBase}/runtime/sessions/${encodeURIComponent(sessionId)}/events`, {
-        token: adminTok,
+      // 人说：bot 在 replay/done 上带 live。这里要验的是它真的从 bot 的流出口吐出来了。
+      const sse = await readSse(`${botBase}/api/sessions/${encodeURIComponent(sessionId)}/events`, {
+        token: seatAccess,
         timeout: 8000,
         until: (events) => events.some((e) => e.type === 'replay/done'),
       })
@@ -471,8 +484,8 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       // 挂上 logger 服务之前，cordis.yml 里没有任何 logger 插件，ctx.logger 是
       // undefined，代码里那 16 处可选链一条都没输出过。席位的 journal 里除了 systemd
       // 和启动那两行什么都没有，查问题只能靠猜。**这条测的就是「日志真的出来了」。**
-      const sse = await readSse(`${gwBase}/runtime/sessions/${encodeURIComponent(sessionId)}/events`, {
-        token: adminTok,
+      const sse = await readSse(`${botBase}/api/sessions/${encodeURIComponent(sessionId)}/events`, {
+        token: seatAccess,
         timeout: 8000,
         until: (events) => events.some((e) => e.type === 'replay/done'),
       })

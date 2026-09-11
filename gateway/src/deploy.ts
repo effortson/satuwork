@@ -18,11 +18,10 @@ export const MIN_DESKTOP_PROTOCOL = 2
  * 直连桌面要求的管家协议号。
  *
  * 4 号管家才会在浏览器直连那条路上给落地页插「关掉 noVNC 控制条」的样式、并钉
- * `frame-ancestors`。走 Gateway 反代时这两件事是 Gateway 做的（见 desktop.ts），
- * 直连那一跳没有 Gateway，只能管家自己做。
+ * `frame-ancestors`。以前走 Gateway 反代时这两件事是 Gateway 做的，反代删了之后只有
+ * 管家自己能做。
  *
- * **所以填了 directUrl 还不够，管家也得够新**：不够就照旧走反代。这样升级顺序怎么颠
- * 倒都不会出岔子——先填地址后升管家，桌面在升上来那一刻自动切过去；反过来也一样。
+ * **所以填了 directUrl 还不够，管家也得够新**：不够就没有桌面（novncUrlOf 给空）。
  * 少了这道闸，表现是同一块预览在有的机器上多出一条控件压着画面，而配置里看不出
  * 任何区别。
  */
@@ -32,17 +31,16 @@ export const MIN_DIRECT_DESKTOP_PROTOCOL = 4
  * 对话流直连要求的管家协议号。
  *
  * 5 号管家才有 `/seats/:id/stream/*`：认浏览器的登录 JWT、换成席位票、对 Gateway 的源开
- * CORS。低于它的机器上这条路是 404，所以**不给前端直连地址**（`streamUrl` 为 null），
- * 照旧从 Gateway 反代。和桌面直连一样：升级顺序怎么颠倒都不出岔子——先填地址后升管家，
- * 流在升上来那一刻自动切过去；反过来也一样。
+ * CORS。低于它的机器上这条路是 404，所以**不给前端直连地址**（`streamUrl` 为 null）——
+ * 而 Gateway 那条 `/runtime/sessions/:id/events` 反代已经删了，没有直连地址就没有对话流。
  *
- * 这是 Gateway 从对话热路径上退下来的第一步（见 docs/adr-gateway-vercel-neon.md §7）。
+ * 这是 Gateway 从对话热路径上退下来的那一步（见 docs/adr-gateway-vercel-neon.md §7）。
  */
 export const MIN_DIRECT_STREAM_PROTOCOL = 5
 
 /**
  * 名单流直连要求的管家协议号。6 号管家才有 `/roster/stream`（manager/src/roster.ts）。
- * 低于它的机器 `rosterStreamUrl` 为 null，名单照旧从 Gateway 扇入。
+ * 低于它的机器 `rosterStreamUrl` 为 null，名单就没有实时通道——Gateway 不再扇入。
  */
 export const MIN_DIRECT_ROSTER_PROTOCOL = 6
 
@@ -147,19 +145,25 @@ export function portsOf(slot: number): SeatPorts {
 }
 
 /**
- * 桌面地址。**Gateway 同域的一条路径，不再是管家的地址。**
+ * 桌面地址。**机器的直连地址，`{directUrl}/seats/:id/vnc/`；没有直连就没有桌面（空串）。**
  *
  * 一路走过来：先是 `http://<sshHost>:<6081+N>/vnc.html`（每个席位一个对外端口，明
  * 文），然后收成 `{machine.host}/seats/:id/vnc/`（noVNC 回到 127.0.0.1，浏览器只打
- * 管家一个口），现在再收一层到 `/desktop/:seatId/`，由 Gateway 反代过去。
+ * 管家一个口），中间有一阵收到 Gateway 同域的 `/desktop/:seatId/` 由 Gateway 反代，现在
+ * 那层反代删了，回到直接打管家。
  *
- * **为什么还要再收一层。** 桌面现在内嵌在右栏的 iframe 里。管家发的那张 cookie 是
- * `SameSite=Lax`：顶层跳转（原来那种新标签页）放行，跨站 iframe 里连存都不给存，于
- * 是画面永远出不来，而且不报错。同域之后 cookie 是第一方的，问题从根上没了；顺带
- * 浏览器也不再需要能连到管家——只要 Gateway 连得到就行。
+ * **为什么删掉同域反代。** Gateway 要跑在 Vercel 上：桌面是一条 WebSocket，函数里它被钉
+ * 在一个实例上、受 300 秒上限；而且像素是整条链上最贵的一股流量（1280×800 下 Bot 一滚
+ * 页面就是 4 MB/s），全从 Gateway 过一遍既贵又慢。直连之后席位机器发给浏览器的字节和以前
+ * 发给 Gateway 的一样多，省掉的是 Gateway 的收发两份。
  *
- * `managerHost` 留着不是摆设：它为空表示这块屏还没落到任何一台机器上，那就没有地址
- * 可给。没有票时只返回入口路径，给 owner 在后台看一眼用，点不进去。
+ * 代价是 **没配 `directUrl`、或管家低于 MIN_DIRECT_DESKTOP_PROTOCOL 的机器没有桌面**：
+ * 内网、还没铺证书的机器，浏览器连不到它的管家，这里也不再有退路可退。同域反代当初解决的
+ * 那个 cookie 问题（管家的 `SameSite=Lax` cookie 在跨站 iframe 里存不下）由「directUrl 和
+ * Gateway 同一个可注册域」这条前提解决（见 db/types.ts 的 Machine.directUrl）。
+ *
+ * `machine.host` 为空表示这块屏还没落到任何一台机器上，同样没有地址可给。没有票时只返回
+ * 入口地址，给 owner 在后台看一眼用，点不进去。
  */
 export function novncUrlOf(
   machine: Pick<Machine, 'host' | 'directUrl' | 'protocol'> | null,
@@ -168,35 +172,22 @@ export function novncUrlOf(
 ): string {
   if (!(machine?.host || '').trim() || !seatId) return ''
   /**
-   * 这台机器填了公网直连地址就走直连：浏览器直接连它的管家取桌面，像素不再经过
-   * Gateway。实测桌面是整条链上最贵的一股流量（1280×800 下 Bot 一滚页面就是 4 MB/s），
-   * 而 Gateway 是单实例、还同时扛着聊天 SSE 和模型代理。
-   *
-   * **不是搬运，是消掉一次转发**：席位机器今天就在发这些字节（发给 Gateway），
-   * 直连之后发给浏览器，出网量一个字节都没多。省掉的是 Gateway 的收发两份。
-   *
-   * 打的是管家现成的那条浏览器入口（见 manager/src/proxy.ts 的路由表）：
-   * `?ticket=` 进去，管家验完签换一张 path 限定的 cookie，再 302 到 vnc.html。
-   * 那条路一直留着没拆，管理员从后台点进桌面走的就是它。
-   *
-   * 没填就照旧从 Gateway 反代。**这条退路必须留着**：管家在内网、或者还没铺证书的
-   * 机器，直连根本走不通（见 gateway/src/desktop.ts 文件头「浏览器不再需要能连到
-   * 管家」那一段）。
+   * 打的是管家那条浏览器入口（见 manager/src/proxy.ts 的路由表）：`?ticket=` 进去，
+   * 管家验完签换一张 path 限定的 cookie，再 302 到 vnc.html。票仍由 Gateway 签
+   * （desktopTicketFor），管家拿 Gateway 的公钥验。
    */
   const direct =
     (machine?.protocol ?? 0) >= MIN_DIRECT_DESKTOP_PROTOCOL ? (machine?.directUrl || '').trim().replace(/\/$/, '') : ''
-  const url = direct
-    ? `${direct}/seats/${encodeURIComponent(seatId)}/vnc/`
-    : `/desktop/${encodeURIComponent(seatId)}/`
+  if (!direct) return ''
+  const url = `${direct}/seats/${encodeURIComponent(seatId)}/vnc/`
   return ticket ? `${url}?ticket=${encodeURIComponent(ticket)}` : url
 }
 
 /**
  * 对话流的直连前缀：`{directUrl}/seats/{seatId}/stream`。前端在后面接 `/sessions/:id/events`。
  *
- * 三个前提缺一条就是空串，前端照旧走 Gateway：机器填了 `directUrl`、管家 ≥5 号、席位
- * 已经在这台机器上。**不能像 novncUrlOf 那样退回 Gateway 的相对路径**——这里的调用方
- * 要的是「能不能直连」这个判断本身，退路由它自己拼。
+ * 三个前提缺一条就是空串，前端就没有对话流可开：机器填了 `directUrl`、管家 ≥5 号、席位
+ * 已经在这台机器上。Gateway 不再反代这条 SSE。
  */
 export function streamUrlOf(machine: Pick<Machine, 'host' | 'directUrl' | 'protocol'> | null, seatId: string): string {
   if (!(machine?.host || '').trim() || !seatId) return ''
@@ -400,17 +391,15 @@ export function ownerMachine(m: Machine) {
     /**
      * 公网直连地址。**只在 owner 这一侧给。**
      *
-     * 它不是员工要用的东西——员工拿到的桌面地址已经由 novncUrlOf 拼好了，直连不直连
-     * 对他们是透明的。而这一列是运维配置：填错了整块屏打不开，值得和 host 一样放在
-     * 平台侧管。
+     * 它不是员工要用的东西——员工拿到的桌面地址已经由 novncUrlOf 拼好了。而这一列是
+     * 运维配置：没填或填错了整块屏就没有，值得和 host 一样放在平台侧管。
      */
     directUrl: m.directUrl,
     /**
-     * 地址填了、但管家还不够新，桌面**还在走反代**。
+     * 地址填了、但管家还不够新，桌面**还开不了**（novncUrlOf 给空）。
      *
-     * 这一格必须有：没有它，人填完地址看不出任何变化——画面照常出来，控制条也没多，
-     * 因为它压根没切过去。而「填了没生效」和「填了生效了」在界面上长得一模一样，
-     * 只有去数管家版本才分得出来。
+     * 这一格必须有：没有它，人填完地址只看到桌面打不开，而「填了没生效」和「地址填错」
+     * 在界面上长得一模一样，只有去数管家版本才分得出来。
      */
     directPending: Boolean(m.directUrl) && m.protocol < MIN_DIRECT_DESKTOP_PROTOCOL,
     arch: m.arch,
@@ -459,7 +448,8 @@ export function publicSeatRuntime(
     display: row.display,
     vncPort: row.vncPort,
     novncPort: row.novncPort,
-    novncUrl: novncUrlOf(machine, row.seatId, opts.ticket),
+    // 没有直连就没有桌面：和 listSeatRuntime 一样给 null，前端一处判断。
+    novncUrl: novncUrlOf(machine, row.seatId, opts.ticket) || null,
     status: row.status,
     lastError: row.lastError,
     deployedAt: row.deployedAt,
@@ -500,8 +490,9 @@ export function listSeatRuntime(row: SeatRuntime, machine: Machine | null, now =
     // 列表里不签票：这是给管理员看的引用，点进去要走 /runtime/desktop 现签一张。
     novncUrl: novncUrlOf(machine, row.seatId) || null,
     /**
-     * 对话流直连地址；null = 走 Gateway。前端拿它开那条 SSE，带的是登录 JWT（管家那头
-     * 验完换成席位票）。直连失败前端会自己退回 Gateway，所以这里不必再判机器通不通。
+     * 对话流直连地址；null = 这个席位没有对话流（机器没配 directUrl 或管家太旧）。前端拿它
+     * 开那条 SSE，带的是登录 JWT（管家那头验完换成席位票）。Gateway 不再反代这条流，所以
+     * 这里也不判机器通不通——通不通由那条 SSE 自己答。
      */
     streamUrl: streamUrlOf(machine, row.seatId) || null,
     botVersion: row.botVersion ?? null,

@@ -15,7 +15,6 @@ import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKind
 import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
 import { machineHeader, managerTargetFor, proxyDownload, proxyJson, proxySse, proxyUpload, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
-import { rosterStream } from '../lib/roster-stream.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
 import { localBotReleaseTarget } from '../releases.ts'
 
@@ -28,21 +27,21 @@ import { localBotReleaseTarget } from '../releases.ts'
 export const MAX_USER_BOTS = Math.max(1, Math.trunc(Number(process.env.GATEWAY_MAX_USER_BOTS) || 10))
 
 /**
- * 名单流的直连地址；空串 = 走 Gateway。
+ * 名单流的直连地址；空串 = 没有名单流。
  *
- * 两个前提缺一条就不给：
- *   · 这个人**没有本地 Bot**。本地 Bot 跑在员工电脑上，不在任何机器的名册里，管家那条流
- *     里没有它；给了直连地址，名单上它那一行就永远空着。有本地 Bot 的账号整条名单照旧
- *     从 Gateway 扇入（那里穿隧道能拿到它）。
- *   · 至少一个席位 Bot 已经落在某台机器上，且那台机器够新、配了 directUrl（rosterUrlOf）。
- *     账号粘机器（§3.0），随便哪一个席位的机器都是同一台。
+ * Gateway 不再扇入名单（那条 `/runtime/roster/stream` 连同 lib/roster-stream.ts 一起删了：
+ * 一个人一条小时级的 SSE，在 Vercel 上开不起）。所以只有一个前提：至少一个席位 Bot 已经
+ * 落在某台机器上，且那台机器够新、配了 directUrl（rosterUrlOf）。账号粘机器（§3.0），随便
+ * 哪一个席位的机器都是同一台。
+ *
+ * 本地 Bot 不是障碍：它跑在员工电脑上，不在任何机器的名册里，管家那条流里自然没有它——
+ * 它那一行由桌面端自己盖上去（见下面 botRuntime 里的说明），名单流只管席位 Bot。
  */
 async function rosterStreamUrlFor(
   seats: Map<string, SeatRuntime>,
   machineOf: ReturnType<typeof machineResolver>,
   bots: { id: string; runtimeKind?: string }[],
 ): Promise<string> {
-  if (bots.some((b) => b.runtimeKind === 'local')) return ''
   for (const b of bots) {
     const rt = seats.get(b.id)
     if (!rt?.machineId) continue
@@ -1491,48 +1490,6 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const bot = await visibleBotOf(db, account, req.params.id)
     const { pinned, tpl } = await botContext(db, account.companyId)
     json(res, 200, { bot: { ...publicBot(bot, pinned, tpl), runtime: await oneBotRuntime(db, account, bot) } })
-  })
-
-  /**
-   * 名单那一条实时通道：**一个人一条，不是一个 Bot 一条**。
-   *
-   * 只转发名单真正要的那几种事件，`assistant/chunk` 在 Gateway 这一层就折成一个节流过
-   * 的时间戳——理由、边界和取舍全写在 lib/roster-stream.ts 开头。
-   *
-   * **它喂的是摘要，不是正文。** 客户端拿它更新侧栏那一行，绝不能倒进事件桶；正文照旧
-   * 走下面那条 per-session 的流，人点进哪个 Bot 才开哪一条。
-   *
-   * **路径叫 `stream` 不叫 `events`，是故意的。** 会话那条是 `…/sessions/:id/events`，
-   * 而这一层前后有好几处（含测试的 fetch 桩）拿 `path.includes('/events')` 认流——两条
-   * 路径撞上同一个子串的话，名单这条会被当成某条会话的流数进去、掐掉、或者接管。
-   */
-  router.get('/runtime/roster/stream', async (req, res) => {
-    const account = await requireUser(req, db, keys)
-    requireSeat(account)
-    // 名单就是侧栏那一份（和 `/runtime/bots` 同一个来源），不是「这个账号的所有席位」
-    // ——后者会把已经删掉的 Bot 留下的残行也算进来。
-    // 本地 Bot 不在名单流里：Gateway 连不到员工的电脑。它那一行的状态由桌面端自己画。
-    const bots = (await db.botsFor(account.companyId, account.id)).filter((b) => runtimeKindOf(b) !== 'local')
-    await rosterStream(req, res, db, account, bots.map((b) => b.id))
-  })
-
-  router.get('/runtime/sessions/:id/events', async (req, res) => {
-    const account = await requireUser(req, db, keys)
-    const target = await seatTargetForSession(db, account, req.params.id)
-    const after = req.query.get('after')
-    // tail：头一次连上只要最近几轮，别把整段历史推一遍（见 bot 的 replay.ts）。
-    const tail = Math.min(50, Math.max(0, Math.trunc(Number(req.query.get('tail')) || 0)))
-    const parts: string[] = []
-    if (after != null && after !== '') parts.push(`after=${encodeURIComponent(after)}`)
-    if (tail > 0) parts.push(`tail=${tail}`)
-    const q = parts.length ? `?${parts.join('&')}` : ''
-    await proxySse(
-      req,
-      res,
-      `${target.host}/api/sessions/${encodeURIComponent(req.params.id)}/events${q}`,
-      await seatBearer(db, account.id),
-      target.machineToken,
-    )
   })
 
   /**

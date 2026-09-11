@@ -2,6 +2,9 @@
  * 席位定位与四个反代（JSON / 上传 / 下载 / SSE）。
  *
  * 从 routes.ts 拆出来的——那个文件曾经是 5700 行，前 1900 行全是这类帮手。
+ *
+ * SSE 那条（proxySse）现在只给**日志 follow** 用（席位日志、机器日志）：对话流和名单流
+ * 都直连席位机器的管家，Gateway 不再替浏览器扛小时级的连接。
  */
 import type { ServerResponse } from 'node:http'
 import { HttpError, type Req, json } from '../http.ts'
@@ -354,43 +357,6 @@ async function relayUpstreamError(res: ServerResponse, r: Response, passthrough:
     parsed = { error: INSTANCE_DOWN }
   }
   json(res, passthrough.includes(r.status) ? r.status : 503, parsed)
-}
-
-/**
- * 一条上游 SSE 拆成一个个事件。
- *
- * 分帧规则收在这一处：CRLF 归一化、`\n\n` 分帧、一帧里可能有多行 `data:`、认不出
- * JSON 的那一行跳过。两处消费者（例行任务等这一轮的结局、名册流往下转发）本来各写
- * 一遍——而这几条每一条都是「写错了不报错、只是偶尔悄悄丢一帧」的那种规则。
- *
- * `stop` 在每次 read 之前问一次，位置和原来那两个 while 条件一致。
- */
-export async function* sseEvents<T>(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  stop: () => boolean = () => false,
-): AsyncGenerator<T> {
-  const decoder = new TextDecoder()
-  let buf = ''
-  while (!stop()) {
-    const { done, value } = await reader.read()
-    if (done) return
-    buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
-    let idx: number
-    while ((idx = buf.indexOf('\n\n')) >= 0) {
-      const frame = buf.slice(0, idx)
-      buf = buf.slice(idx + 2)
-      for (const line of frame.split('\n')) {
-        if (!line.startsWith('data: ')) continue
-        let ev: T
-        try {
-          ev = JSON.parse(line.slice(6)) as T
-        } catch {
-          continue
-        }
-        yield ev
-      }
-    }
-  }
 }
 
 /**

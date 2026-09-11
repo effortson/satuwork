@@ -281,37 +281,6 @@ export function signDesktopTicket(keys: JwtKeys, seatId: string, vnc = '', ttlSe
   return `${h}.${p}.${sign('sha256', Buffer.from(`${h}.${p}`), keys.privatePem).toString('base64url')}`
 }
 
-/**
- * 验一张桌面票。
- *
- * Gateway 自己签、自己也要验：桌面现在从 Gateway 同域反代出去（见 desktop.ts），
- * 入口那一跳要把票换成一张同源的 cookie。验不过一律 undefined，不区分原因。
- *
- * `typ` 必须对上。同一把私钥还签着登录票，不显式区分的话，一张登录 JWT 就能当桌面
- * 票用——那张票上带着 accountId 和 role。
- */
-export function verifyDesktopTicket(keys: JwtKeys, token: string): DesktopTicket | undefined {
-  const parts = (token || '').split('.')
-  if (parts.length !== 3) return
-  const [h, p, s] = parts
-  let ok = false
-  try {
-    ok = verify('sha256', Buffer.from(`${h}.${p}`), keys.publicPem, Buffer.from(s, 'base64url'))
-  } catch {
-    return
-  }
-  if (!ok) return
-  let payload: DesktopTicket
-  try {
-    payload = JSON.parse(Buffer.from(p, 'base64url').toString('utf8')) as DesktopTicket
-  } catch {
-    return
-  }
-  if (payload.typ !== 'satu-desktop' || !payload.seatId) return
-  if (typeof payload.exp !== 'number' || payload.exp < Math.floor(Date.now() / 1000)) return
-  return payload
-}
-
 export interface ArtifactTicket {
   typ: 'satu-artifact'
   accountId: string
