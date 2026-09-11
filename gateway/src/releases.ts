@@ -172,7 +172,9 @@ function tarEntrySize(header: Buffer): number {
 async function tarHasEntry(path: string, wanted: string): Promise<boolean> {
   const src = createReadStream(path)
   const gunzip = createGunzip()
-  src.pipe(gunzip)
+  // 不能用 src.pipe(gunzip)：pipe 不把源的错误传下去，读文件一出错，下面的 for await
+  // 就永远等不到结束。跟下面收包那条一样走 pipeline，源坏了 gunzip 跟着 destroy，循环抛出来。
+  const piped = pipeline(src, gunzip).catch(() => {})
   let pending: Buffer = Buffer.alloc(0)
   let skip = 0
   let found = false
@@ -199,6 +201,7 @@ async function tarHasEntry(path: string, wanted: string): Promise<boolean> {
   } finally {
     src.destroy()
     gunzip.destroy()
+    await piped
   }
   return found
 }

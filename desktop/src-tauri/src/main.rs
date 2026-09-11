@@ -234,7 +234,7 @@ const LINK_SCRIPT: &str = r#"
   // 界面是包里自带的那份，和 Gateway 发的是同一批文件。给它一个只由桌面壳注入的标记，让登录票
   // 可以落到持久存储；再告诉它 Gateway 在哪——页面源是 satu://localhost，相对路径打不到 Gateway。
   window.__SATUWORK_DESKTOP__ = true
-  window.__SATUWORK_GATEWAY__ = '__GATEWAY_URL__'
+  window.__SATUWORK_GATEWAY__ = __GATEWAY_URL__
   window.__SATUWORK_LOCAL_BOT__ = {
     start: function (config) { return window.__TAURI_INTERNALS__.invoke('start_local_bot', { config: config }) },
     stop: function (botId) { return window.__TAURI_INTERNALS__.invoke('stop_local_bot', { botId: botId }) },
@@ -246,7 +246,7 @@ const LINK_SCRIPT: &str = r#"
   function hand(raw) {
     try {
       var abs = new URL(raw, location.href).href
-      location.href = location.origin + '__OPEN_PATH__?u=' + encodeURIComponent(abs)
+      location.href = location.origin + __OPEN_PATH__ + '?u=' + encodeURIComponent(abs)
     } catch (e) {}
   }
   var open0 = window.open
@@ -331,9 +331,18 @@ fn build_window(
     let base = gateway.clone();
     // 装的是包里那份界面（satu://localhost/），不是 Gateway 的页面；Gateway 地址注入给它。
     let ui = Url::parse(UI_ORIGIN).expect("UI_ORIGIN 是常量");
+    // 两个占位符都替换成 JSON 字符串字面量（带引号），而不是裸拼进单引号里：地址里一个
+    // 引号或反斜杠就能从字面量里逃出来，往注入脚本里塞任意 JS。
     let script = LINK_SCRIPT
-        .replace("__OPEN_PATH__", OPEN_PATH)
-        .replace("__GATEWAY_URL__", gateway.as_str().trim_end_matches('/'));
+        .replace(
+            "__OPEN_PATH__",
+            &serde_json::to_string(OPEN_PATH).expect("常量字符串总能编成 JSON"),
+        )
+        .replace(
+            "__GATEWAY_URL__",
+            &serde_json::to_string(gateway.as_str().trim_end_matches('/'))
+                .expect("字符串总能编成 JSON"),
+        );
     WebviewWindowBuilder::new(app, label, WebviewUrl::CustomProtocol(ui))
         .title(title)
         .inner_size(1280.0, 860.0)
@@ -547,6 +556,11 @@ fn write_runtime_pointer(home: &Path, name: &str, version: &str) -> Result<(), S
     Ok(())
 }
 
+/**
+ * 只在 STAGING 锁里调（见 stage_runtime_update）：它会把已经存在的 destination 整个删掉
+ * 重解，两路并发跑到这里，一路刚解好的目录会被另一路当「损坏」删掉。有锁之后开头这一次
+ * `is_file` 检查就够了——前一路解好的，后一路进来看到文件直接返回。
+ */
 fn unpack_runtime(archive: &Path, destination: &Path) -> Result<(), String> {
     if destination.join("bot/bin/satuwork.mjs").is_file() {
         return Ok(());
@@ -704,7 +718,14 @@ fn runtime_update_error(app: &AppHandle, message: Option<&str>) {
     }
 }
 
-/** 下载并暂存适合本机的最新版。任何失败都只记状态，不阻止旧 Bot 启动。 */
+/**
+ * 下载并暂存适合本机的最新版。任何失败都只记状态，不阻止旧 Bot 启动。
+ *
+ * 一次只允许一路跑：每小时的更新线程（不持任何锁）和 start_local_bot（持 LocalBots）
+ * 都会调它，而 unpack_runtime 对已存在的目标目录是先 remove_dir_all 再解。两路交错的话，
+ * 一路刚解好、正要写 PENDING 的目录会被另一路当作损坏删掉。锁是这个函数自己的，
+ * 不跟 LocalBots 扯上关系，不会构成锁序问题。
+ */
 fn stage_runtime_update(
     app: &AppHandle,
     gateway: &Url,
@@ -713,6 +734,9 @@ fn stage_runtime_update(
     if cfg!(debug_assertions) || std::env::var_os("SATUWORK_BOT_ROOT").is_some() {
         return Ok(None);
     }
+    static STAGING: Mutex<()> = Mutex::new(());
+    // 上一路带着锁 panic 了也照常往下走：锁保护的是文件系统，不是内存里的什么。
+    let _staging = STAGING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _ = ensure_bundled_runtime(app)?;
     let home = runtime_home(app)?;
     let current = read_runtime_pointer(&home, "CURRENT").unwrap_or_default();

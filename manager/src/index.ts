@@ -235,8 +235,6 @@ const router = new Router()
 // 本机工人的中继口排在最前面：它只认回环地址加令牌，认不出来就 401，不会落到别的分支。
 router.intercept(relayIntercept({ machineToken: token, gatewayUrl }))
 router.intercept(proxyIntercept({ machineToken: token, gatewayUrl }))
-// 工人的令牌每次开机都写一遍（读回旧的就不换）：工人单元靠 worker.env 起来。
-ensureWorkerEnv(boot.port, boot.dryRun)
 
 router.get('/health', async (req, res) => {
   // 配对回拨走 challenge，不走 smt_：那一刻票还在 Gateway 手里，管家还没收到响应。
@@ -399,6 +397,10 @@ if (process.argv.includes('--selftest')) {
   process.exit(0)
 }
 
+// 工人的令牌每次开机都写一遍（读回旧的就不换）：工人单元靠 worker.env 起来。
+// **排在自检之后**：自检是旧管家以 SATUWORK_MANAGER_PORT=0 起的新版本（见 upgrade.ts），
+// 写在前面的话每换一次版就把 worker.env 里的中继地址改成 :0，工人从此敲不到管家。
+ensureWorkerEnv(boot.port, boot.dryRun)
 const server = listen(router, boot.host, boot.port)
 attachUpgrade(server, { machineToken: token, gatewayUrl })
 

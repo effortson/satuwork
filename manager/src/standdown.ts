@@ -61,7 +61,8 @@ export async function standDown(state: ManagerState, dryRun: boolean): Promise<v
   }
   await run(
     'systemd-run',
-    ['--on-active=2s', '--unit=satuwork-manager-standdown', 'systemctl', 'disable', '--now', 'satuwork-manager.service'],
+    // `--collect`：瞬态单元失败了别留在 failed 态，不然下一次同名的 systemd-run 会被拒。
+    ['--on-active=2s', '--collect', '--unit=satuwork-manager-standdown', 'systemctl', 'disable', '--now', 'satuwork-manager.service'],
     { timeout: 15_000 },
   )
   console.log('satuwork-manager: 2 秒后停止并取消开机自启')

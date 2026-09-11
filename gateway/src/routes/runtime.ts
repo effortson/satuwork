@@ -4,17 +4,17 @@
 import type { ServerResponse } from 'node:http'
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
-import { INSTANCE_DOWN, desktopTicketFor } from '../lib/machines.ts'
+import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
-import type { Account, CatalogItem, Memory, MemoryKind } from '../db.ts'
-import { deployInFlight, deploySeat, publicSeatRuntime, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
+import type { Account, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
+import { deployInFlight, deploySeat, listSeatRuntime, publicSeatRuntime, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, defaultBotModel, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeServer, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
 import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
-import { machineHeader, managerTargetFor, pairRuntime, proxyDownload, proxyJson, proxySse, proxyUpload, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
+import { machineHeader, managerTargetFor, proxyDownload, proxyJson, proxySse, proxyUpload, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
 import { rosterStream } from '../lib/roster-stream.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
 import { localBotReleaseTarget } from '../releases.ts'
@@ -42,19 +42,37 @@ function runtimeKindOf(item: CatalogItem): 'local' | 'remote' {
  *   · 至少一个席位 Bot 已经落在某台机器上，且那台机器够新、配了 directUrl（rosterUrlOf）。
  *     账号粘机器（§3.0），随便哪一个席位的机器都是同一台。
  */
-async function rosterStreamUrlFor(db: RouteCtx['db'], account: Account, bots: { id: string; runtimeKind?: string }[]): Promise<string> {
+async function rosterStreamUrlFor(
+  seats: Map<string, SeatRuntime>,
+  machineOf: ReturnType<typeof machineResolver>,
+  bots: { id: string; runtimeKind?: string }[],
+): Promise<string> {
   if (bots.some((b) => b.runtimeKind === 'local')) return ''
   for (const b of bots) {
-    const rt = await db.seatRuntime(account.id, b.id)
+    const rt = seats.get(b.id)
     if (!rt?.machineId) continue
-    const machine = await db.machine(rt.machineId)
-    return rosterUrlOf(machine ?? null)
+    return rosterUrlOf(await machineOf(rt))
   }
   return ''
 }
 
-async function botRuntime(db: RouteCtx['db'], account: Account, item: CatalogItem) {
-  if (runtimeKindOf(item) === 'remote') return pairRuntime(db, account, item.id)
+/**
+ * 名册一页里每颗 Bot 的运行态。
+ *
+ * 席位行和机器行都由调用方**一次取齐**再传进来（`seatRuntimesOfAccount` + `machineResolver`）：
+ * 以前每颗 Bot 各查一遍席位、再各查一遍机器，N 颗就是 2N 次往返，而账号粘机器（§3.0），
+ * 那 N 次机器查询查的几乎永远是同一行。Vercel 上每次冷启这些都是真的 Neon 往返。
+ */
+async function botRuntime(
+  seatOf: (botId: string) => Promise<SeatRuntime | null | undefined>,
+  machineOf: ReturnType<typeof machineResolver>,
+  item: CatalogItem,
+) {
+  if (runtimeKindOf(item) === 'remote') {
+    const rt = await seatOf(item.id)
+    if (!rt) return null
+    return listSeatRuntime(rt, await machineOf(rt))
+  }
   /**
    * 本地 Bot 跑在员工的电脑上，Gateway **不知道它在不在跑**——以前靠一条反向隧道投影，
    * 隧道拆了（docs/adr-gateway-vercel-neon.md §4）。这里只是个占位，前端在桌面端里用壳子
@@ -62,6 +80,11 @@ async function botRuntime(db: RouteCtx['db'], account: Account, item: CatalogIte
    * 也是真话。
    */
   return { kind: 'local' as const, status: 'none' as const, machineLink: 'offline' as const, workspace: 'desktop' }
+}
+
+/** 单颗 Bot 的运行态（建 / 改 / 看详情那几条路）——只查这一颗的席位行。 */
+function oneBotRuntime(db: RouteCtx['db'], account: Account, item: CatalogItem) {
+  return botRuntime((botId) => db.seatRuntime(account.id, botId), machineResolver(db), item)
 }
 /**
  * 「数这个人有几个 Bot、再插一个」那一段的 advisory lock 键。两条建 Bot 的路（这里的
@@ -1177,18 +1200,25 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const { pinned, tpl } = await botContext(db, account.companyId)
     // 渠道归属与 Bot 定义分表保存。给名册带稳定标记，前端才能只给渠道 Bot 画来源标签，
     // 不能拿固定名称 `telegram bot` 猜：名称能改，也可能有普通 Bot 恰好同名。
-    const channelByBot = new Map((await db.channelBindings(account.id)).map((row) => [row.botId, row.kind]))
+    const [bindings, seatRows, items] = await Promise.all([
+      db.channelBindings(account.id),
+      db.seatRuntimesOfAccount(account.id),
+      db.botsFor(account.companyId, account.id),
+    ])
+    const channelByBot = new Map(bindings.map((row) => [row.botId, row.kind]))
+    const seats = new Map(seatRows.map((rt) => [rt.botId, rt]))
+    const machineOf = machineResolver(db)
     const bots = await Promise.all(
-      (await db.botsFor(account.companyId, account.id)).map(async (item) => ({
+      items.map(async (item) => ({
         ...publicBot(item, pinned, tpl),
         channel: channelByBot.get(item.id) ?? null,
-        runtime: await botRuntime(db, account, item),
+        runtime: await botRuntime(async (id) => seats.get(id), machineOf, item),
       })),
     )
     json(res, 200, {
       bots,
       quota: { used: await db.countUserBots(account.id), max: MAX_USER_BOTS },
-      rosterStreamUrl: (await rosterStreamUrlFor(db, account, bots)) || null,
+      rosterStreamUrl: (await rosterStreamUrlFor(seats, machineOf, bots)) || null,
     })
   })
 
@@ -1289,7 +1319,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const { pinned, tpl } = await botContext(db, account.companyId)
     // 席位那一份同理：读不出来就当没有（界面照旧从轮询那条路要），不能因此把 201 变成
     // 500——这一整段之后没有任何一件事值得让「建 Bot」失败。
-    const runtime = await botRuntime(db, account, item).catch(() => null)
+    const runtime = await oneBotRuntime(db, account, item).catch(() => null)
     json(res, 201, {
       bot: { ...publicBot(item, pinned, tpl), runtime },
       deploy: runtimeKindOf(item) === 'local'
@@ -1325,7 +1355,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       detail: { id: item.id, name: next.name },
     })
     const { pinned, tpl } = await botContext(db, account.companyId)
-    json(res, 200, { bot: { ...publicBot(next, pinned, tpl), runtime: await botRuntime(db, account, next) } })
+    json(res, 200, { bot: { ...publicBot(next, pinned, tpl), runtime: await oneBotRuntime(db, account, next) } })
   })
 
   /** Desktop 启动本地进程所需的短路径。只给本人自己的 local Bot。 */
@@ -1465,7 +1495,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const account = await requireUser(req, db, keys)
     const bot = await visibleBotOf(db, account, req.params.id)
     const { pinned, tpl } = await botContext(db, account.companyId)
-    json(res, 200, { bot: { ...publicBot(bot, pinned, tpl), runtime: await botRuntime(db, account, bot) } })
+    json(res, 200, { bot: { ...publicBot(bot, pinned, tpl), runtime: await oneBotRuntime(db, account, bot) } })
   })
 
   /**

@@ -34,6 +34,16 @@ interface Job {
 
 class LostError extends Error {}
 
+/** 和 Gateway 那边的缺省一致（gateway/src/routines.ts）：一轮最多等 20 分钟，租约 60 秒。 */
+const DEFAULT_TIMEOUT_MS = 20 * 60_000
+const DEFAULT_LEASE_MS = 60_000
+
+/** 网上来的数字不可信：不是有限正数就用缺省，否则 NaN 会变成 1 毫秒的定时器。 */
+function num(v: unknown, fallback: number): number {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
 async function gw(path: string, body?: unknown): Promise<unknown> {
   const r = await fetch(`${gatewayUrl()}/runtime/local-routines${path}`, {
     method: body === undefined ? 'GET' : 'POST',
@@ -147,7 +157,7 @@ export function apply(ctx: Context) {
 
   async function runJob(job: Job): Promise<void> {
     const ac = new AbortController()
-    const timeout = setTimeout(() => ac.abort(), Math.max(60_000, job.timeoutMs))
+    const timeout = setTimeout(() => ac.abort(), Math.max(60_000, num(job.timeoutMs, DEFAULT_TIMEOUT_MS)))
     let lost = false
     const renew = setInterval(() => {
       void gw(`/${encodeURIComponent(job.runId)}/renew`, {}).catch((e) => {
@@ -156,7 +166,7 @@ export function apply(ctx: Context) {
           ac.abort()
         }
       })
-    }, Math.max(1000, Math.trunc(job.leaseMs / 3)))
+    }, Math.max(1000, Math.trunc(num(job.leaseMs, DEFAULT_LEASE_MS) / 3)))
     let sessionId = ''
     const finish = (kind: string, error?: string) =>
       gw(`/${encodeURIComponent(job.runId)}/finish`, { kind, ...(error ? { error } : {}), ...(sessionId ? { sessionId } : {}) }).catch((e) => {

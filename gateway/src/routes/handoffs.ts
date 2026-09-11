@@ -14,7 +14,7 @@ import { HttpError, json, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import { requireUser } from '../lib/guards.ts'
 import { canActOn, callSeat, decorate, seatHandoffs } from '../lib/handoff.ts'
-import type { Account, Db, Handoff } from '../db.ts'
+import { HANDOFF_STATES, type Account, type Db, type Handoff, type HandoffState } from '../db.ts'
 
 /** 席位回给我们的那张单。`claimedBy` 在那边是个带名字的对象，这边只存 accountId。 */
 interface SeatHandoff {
@@ -34,10 +34,24 @@ interface SeatHandoff {
  */
 async function syncFromSeat(db: Db, h: Handoff, seat: SeatHandoff | undefined): Promise<Handoff> {
   if (!seat || typeof seat.state !== 'string') return h
-  const claimedBy = typeof seat.claimedBy?.accountId === 'string' ? seat.claimedBy.accountId : h.claimedBy
+  /**
+   * 席位是状态的权威，但它回的东西**照样要验**：席位跑在客户的机器上，一台被拿下的席位
+   * 回什么都行。认不出的 state 不写（写进去会让 handoffOf 之后的每一处 switch 都漏掉这行）；
+   * `claimedBy` 得是**本公司**的账号——不然席位可以把单子记成别家公司的人接的。
+   */
+  if (!HANDOFF_STATES.includes(seat.state as HandoffState)) {
+    console.warn(`handoff: 席位回了认不出的 state「${seat.state.slice(0, 40)}」（${h.id}），这一行没同步`)
+    return h
+  }
+  let claimedBy = h.claimedBy
+  if (typeof seat.claimedBy?.accountId === 'string') {
+    const who = await db.account(seat.claimedBy.accountId)
+    if (who && who.companyId === h.companyId) claimedBy = who.id
+    else console.warn(`handoff: 席位回的 claimedBy 不是本公司的账号（${h.id}），保留原值`)
+  }
   return await db.upsertHandoff({
     ...h,
-    state: seat.state as Handoff['state'],
+    state: seat.state as HandoffState,
     claimedBy: claimedBy || null,
     repeats: typeof seat.repeats === 'number' ? seat.repeats : h.repeats,
     updatedAt: typeof seat.updatedAt === 'number' ? seat.updatedAt : Date.now(),

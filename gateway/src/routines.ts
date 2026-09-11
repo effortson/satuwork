@@ -81,6 +81,32 @@ export const ROUTINE_RETRY_MAX = RETRY_DELAYS_MS.length
 const watching = new Set<AbortController>()
 
 /**
+ * 同一批 watcher 的 promise 本身。**Vercel 上一拍结束前要把它们等完**（见 drainWatchers）：
+ * 那边没有常驻进程，`/cron/tick` 一回响应函数就冻住，后台挂着的 watcher 跟着死——库里
+ * 那条 `running` 从此没人改，直到 sweepStaleRuns 二十分钟后把它收成 error，而补跑
+ * （armRetry）一次都不会排上。Debian 上不等，watcher 活在常驻进程里，跑过这一拍没关系。
+ */
+const inflight = new Set<Promise<void>>()
+
+/**
+ * Vercel 上一次最多等多久。
+ *
+ * 函数的上限是 vercel.json 里的 maxDuration（300 秒），而 RUN_TIMEOUT_MS 默认二十分钟，
+ * 远超过它——照那个数等，等不到超时函数就先被掐了，结局和不等一样。所以那边压到 240 秒：
+ * 留 60 秒给同一拍里的扫库、收尾和写结果。到了这个数还没结果，记 error、**不排补跑**：
+ * 席位那头多半还在跑，五分钟后再发一遍就是同一件事做两遍。这条路本来就是给协议 < 7
+ * 的老机器兜底的（docs/vercel-golive-checklist.md），错误文案直接指向升级管家。
+ */
+const ON_VERCEL = !!process.env.VERCEL
+const VERCEL_WATCH_MS = 240_000
+const WATCH_BUDGET_MS = ON_VERCEL ? Math.min(RUN_TIMEOUT_MS, VERCEL_WATCH_MS) : RUN_TIMEOUT_MS
+
+/** 等这一拍里起的 watcher 全部收场。每条自己 catch 过了，这里不会抛。 */
+async function drainWatchers(): Promise<void> {
+  while (inflight.size) await Promise.allSettled([...inflight])
+}
+
+/**
  * 收掉没人再管的 `running`。
  *
  * 划线在「比最长等待还老一分钟」：那之前的每一条，**任何**进程里的 watcher 都已经
@@ -344,9 +370,16 @@ export async function runRoutine(db: Db, routine: Routine, trigger: RoutineRunTr
    * 到点那条链子上欠着的补跑抹掉。
    */
   const settle = (patch: SettlePatch, retryable = false) => settleRun(db, routine.id, run.id, trigger, patch, retryable)
-  void (async () => {
+  /**
+   * 这一次等的是哪个数。`capped` = 等的是 Vercel 那个压过的预算而不是 RUN_TIMEOUT_MS：
+   * 到点了只是**这一拍等不起了**，席位那头多半还在跑。和二十分钟那一岔一样，结果不明
+   * 就不补跑——补跑等于把同一条指令再塞进同一个会话。区别只在文案：这里要告诉人
+   * 该升级管家让机器自己跑，而不是「结果不明」四个字。
+   */
+  const capped = WATCH_BUDGET_MS < RUN_TIMEOUT_MS
+  const watcher = (async () => {
     const ac = new AbortController()
-    const timer = setTimeout(() => ac.abort(), RUN_TIMEOUT_MS)
+    const timer = setTimeout(() => ac.abort(), WATCH_BUDGET_MS)
     watching.add(ac)
     try {
       const link = await seatLinkOf(db, routine.accountId, routine.botId)
@@ -413,10 +446,15 @@ export async function runRoutine(db: Db, routine: Routine, trigger: RoutineRunTr
       await settle(
         {
           status: 'error',
-          error: aborted ? '等结果超时，这一次的结果不明' : (e as Error).message.slice(0, 300),
+          error: aborted
+            ? capped
+              ? `Gateway 在 Vercel 上一次最多等 ${Math.round(WATCH_BUDGET_MS / 1000)} 秒，没等到这一轮的结果；把这台机器的管家升到协议 7 以上，日常任务就由机器自己跑`
+              : '等结果超时，这一次的结果不明'
+            : (e as Error).message.slice(0, 300),
         },
         // 抛到这儿的多半是「够不着席位」：机器还没开、正在换版、网断了一下——**正是
-        // 重试最该管的那一类**。超时那一岔除外（结果不明，见 settle）。
+        // 重试最该管的那一类**。超时那两岔（二十分钟、Vercel 预算）除外：结果不明，
+        // 补跑就是做两遍（见 capped）。
         !aborted,
       ).catch(() => {})
     } finally {
@@ -427,6 +465,8 @@ export async function runRoutine(db: Db, routine: Routine, trigger: RoutineRunTr
       watching.delete(ac)
     }
   })()
+  inflight.add(watcher)
+  void watcher.finally(() => inflight.delete(watcher))
   return run
 }
 
@@ -646,6 +686,13 @@ export async function maintenanceTick(db: Db): Promise<void> {
       else if (r.ran) console.log(`satuwork-gateway: 模型目录已刷新，models.dev 收录 ${r.added} 个可用模型`)
     }))
     .catch((e: Error) => console.error(`satuwork-gateway: 日常任务扫描失败：${e.message}`))
+  /**
+   * **Vercel 上这一拍要等 watcher 收场再回**（见 inflight）：回了响应函数就冻住。排在
+   * 所有扫描之后，那几项秒级的事不用陪着等；等的上限是 WATCH_BUDGET_MS，落在 maxDuration
+   * 里。Debian 上不等——常驻进程里 watcher 自己会收场，而 startRoutineScheduler 那把
+   * `running` 锁要是被一次二十分钟的等待占着，整个调度器都跟着停。
+   */
+  if (ON_VERCEL) await drainWatchers()
 }
 
 /**

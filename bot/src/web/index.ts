@@ -1361,6 +1361,12 @@ function sse(
           const safe = publicSessionEvents([event])[0]
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(safe)}\n\n`))
         }
+        /** 直播（含快照后补发的队列）走这条：发过的不再发，见下面 lastSeq。 */
+        const sendLive = (event: SessionEvent) => {
+          if (event.seq <= lastSeq) return
+          lastSeq = event.seq
+          send(event)
+        }
 
         /**
          * **第一帧：我是谁、从什么时候开始的。**
@@ -1379,7 +1385,7 @@ function sse(
         const off = ctx.on('session/event', (id: string, event: SessionEvent) => {
           if (id !== sessionId) return
           if (queue) queue.push(event)
-          else send(event)
+          else sendLive(event)
         })
         /**
          * 排队的消息有变。
@@ -1400,6 +1406,14 @@ function sse(
         let replayed = 0
         let firstSeq: number | null = null
         let hasMore = false
+        /**
+         * 已经发出去的最大 seq。
+         *
+         * 监听器挂在快照之前，而 SessionService.append 是先把事件推进内存、落盘之后
+         * 才广播——落盘那一瞬间连上来的流会把这条事件既从快照里重放一遍，又从队列里
+         * 再收一遍。所以排队的和后来直播的都拿它把关：小于等于它的就是已经发过的。
+         */
+        let lastSeq = after
         try {
           if (after > 0) {
             // 断线续传：从游标之后原样发，不切也不筛——那是「补上错过的」，
@@ -1407,6 +1421,7 @@ function sse(
             for (const event of publicSessionEvents(await ctx.sessions.events(sessionId, after))) {
               send(event)
               replayed++
+              if (event.seq > lastSeq) lastSeq = event.seq
             }
           } else {
             // 头一次连上：只发最近 tail 轮，并且丢掉已经作废的流式 chunk（见 replay.ts）。
@@ -1414,6 +1429,7 @@ function sse(
             for (const event of slice.events) {
               send(event)
               replayed++
+              if (event.seq > lastSeq) lastSeq = event.seq
             }
             firstSeq = slice.firstSeq
             hasMore = slice.hasMore
@@ -1482,7 +1498,7 @@ function sse(
 
         const pending = queue
         queue = null
-        for (const event of pending) if (event.seq > after) send(event)
+        for (const event of pending) sendLive(event)
 
         /**
          * 心跳。
