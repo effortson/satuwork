@@ -50,9 +50,9 @@ export const MIN_DIRECT_ROSTER_PROTOCOL = 6
  * 席位工人接管日常任务要求的管家协议号。
  *
  * ≥7 号的机器上有工人在领任务（`GET /worker/routines/due`），Gateway 的调度器**不再碰**
- * 这些机器上的任务——碰了就是两边各跑一遍。低于它的机器照旧由 Gateway 自己发消息、等
- * 结果。按机器分流，升级顺序怎么颠倒都不出岔子：机器升上来那一拍任务就归它，降回去
- * 那一拍又归 Gateway。见 docs/adr-gateway-vercel-neon.md §7 第 4 步。
+ * 这些机器上的任务——碰了就是两边各跑一遍。低于它的机器 Gateway **也不自己跑**：到点记一条
+ * 「管家太旧」的 error、试跑直接 409（routines.ts 的 ownerOf）。以前低于它的由 Gateway 自己
+ * 发消息、等结果，那条路在 Vercel 上走不通，收掉了。见 docs/adr-gateway-vercel-neon.md §7 第 4 步。
  */
 export const MIN_WORKER_PROTOCOL = 7
 

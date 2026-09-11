@@ -1145,6 +1145,7 @@ window.SATU_I18N = {
   运行记录: 'Run history',
   还没跑过: 'No runs yet',
   '正在跑…': 'Running…',
+  '等机器来领…': 'Waiting for the machine to pick it up…',
   每小时: 'Hourly',
   每天: 'Daily',
   每周: 'Weekly',

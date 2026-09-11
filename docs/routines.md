@@ -49,14 +49,15 @@ Slack 消息、Git 事件、Webhook 这些**还没有**。触发器在库里是�
 
 ## 3. 一次跑，四步
 
-调度器在 Gateway 进程里，每 30 秒扫一次（`GATEWAY_ROUTINE_TICK_MS`，设 0 就不起）。
-抢到一条之后：
+调度器在 Gateway 进程里，每 30 秒扫一次（`GATEWAY_ROUTINE_TICK_MS`，设 0 就不起；Vercel 上由
+Cron 每分钟打 `/cron/tick`）。**Gateway 自己不跑**——它只抢、只记；发消息、等结果那一段在席位
+旁边，由机器上的工人（§8b）或桌面端里的本地 Bot 来做。到点抢到一条之后，领走它的那一方：
 
-1. 找到席位（`instances.host` + 席位票 + 机器票），拿这颗 Bot 的会话 id
+1. 问席位这颗 Bot 的会话 id，报给 Gateway（`started`：Gateway 查有没有转人工挡着）
 2. 读一下会话最后一条事件的 `seq`，作为等待的游标
 3. **先挂上事件流，再发消息**——反过来的话，跑得快的那一轮会在流挂上之前就结束，
    然后这里等到超时，界面上是一个永远转着的圈，而事情其实早就做完了
-4. 等到 `turn/end`：`completed` 记 `ok`，别的 kind 记 `error` 并写明是什么 kind
+4. 等到 `turn/end`，回报 Gateway（`finish`）：`completed` 记 `ok`，别的 kind 记 `error` 并写明是什么 kind
 
 发出去的就是一条普通用户消息，走的是界面发消息那条路（`/api/sessions/:id/messages`）。
 所以模型花的钱照常落在账本上（docs/billing.md），审批、`@`、工具全都和人自己发的一样。
@@ -140,18 +141,15 @@ Gateway 发过去，等于给 `/api/sessions/:id/messages` 开一个「这一轮
 
 ## 5. 进程重启
 
-等结果的那个 watcher 活在内存里。进程一停，库里那条 `running` 就再也没人来改——不收
-的话，那条任务从此再也跑不起来（并发判据永远认为它还在跑），界面上是一个永远转着的
-圈。所以 Gateway 起来时、以及此后每一轮扫描，都会把没人再管的 `running` 收成 `error`。
+跑着的那一轮不在 Gateway 进程里，Gateway 重启不影响它：领走的那一方按租约续命，Gateway
+回来接着看租约。真正会留下孤儿的是两种「没人管的 `running`」：
 
-**收的判据是「有多久了」，不是「有没有在跑」。** 一把收掉所有 `running` 会踩到活人：
-升级换版那几十秒里新旧两代同时在跑，新进程一起来就会把旧进程**正在等结果**的那一条判成
-失败，而且那段窗口里并发判据也跟着失效，人这时点「试跑」不再被 409 挡住。划线的位置是
-「比最长等待（`GATEWAY_ROUTINE_TIMEOUT_MS`）还老一分钟」——那之前的每一条，任何进程里的
-watcher 都已经放弃了。
+- **工人领走了、进程死了没人续**：租约到期，每一轮扫描（`sweepLeases`）记成「机器没回报」并排补跑。
+- **试跑登记了、一直没人来领**（机器关着、工人没起来、桌面端没开）：隔 `GATEWAY_ROUTINE_PICKUP_MS`
+  （默认 3 分钟）没人领，`sweepUnclaimed` 记成 error 把话说明。不收的话那个圈永远转着，并发判据
+  也一直认为它还在跑，这条任务从此再也跑不起来。
 
-「结果不明」不是「失败」：消息很可能已经发出去、也跑完了。要确认的话点进那条会话，
-正文在席位那边一条都没少。
+两条各看各的格：一条看 `leaseUntil` 到期，一条看 `leaseUntil` 为空且登记太久。
 
 ## 6. 审计
 
@@ -272,15 +270,20 @@ Gateway 要变成无状态的（[adr-gateway-vercel-neon.md](adr-gateway-vercel-
 | 续租 | 工人每隔租约的三分之一 | `POST /worker/routines/:runId/renew` |
 | 回报 | 工人等到自己那一轮的 `turn/end` | `POST /worker/routines/:runId/finish {kind}` —— `completed` / `aborted` / `timeout` / `failed` / 其余，怎么解释、补不补，规矩在 Gateway（`settleRun`），和它自己跑时一字不差 |
 
-**Gateway 的调度器不碰归工人的任务**（`tickRoutines` 按席位所在机器的协议号分流），
-机器不够新时照旧自己跑。所以升级顺序怎么颠倒都不会两边各跑一遍。
+**Gateway 的调度器不碰归工人的任务**（`tickRoutines` 按席位所在机器的协议号分流）。
+机器不够新（协议 < 7，还没有工人单元）时 Gateway **也不自己跑**：抢过来、在流水上记一条
+「管家太旧，先升级」的 error，不补。以前那条「Gateway 自己打进席位等二十分钟」的路收掉了——
+它在 Vercel 上走不通（函数一回响应就冻住），留着只会在流水上留一行没下文的 running。
 
 **机器离线怎么记。** 以前是 Gateway 敲不到席位、记一条「实例还没上线」再排补跑。下沉之后
 Gateway 不再去敲，改看租约：工人领走的流水带 `leaseUntil`，进程死了没人续，到点 Gateway 的
 清扫（`sweepLeases`）记成「机器没回报」并排补跑——和「够不着席位」是同一种失败，补三次。
 
-流水上因此多两格 `machineId` / `leaseUntil`（迁移 0039）。Gateway 自己跑的两格都空着。
-试跑（`trigger = manual`）今天仍由 Gateway 自己发，不经过工人。
+流水上因此多两格 `machineId` / `leaseUntil`（迁移 0039）。
+
+**试跑**（`trigger = manual`）走同一条路：Gateway 只**登记**一条流水（`requestManualRun`）——
+`machineId` 指向该来领的那一方、`leaseUntil` 空着——界面立刻拿到它转圈，工人下一趟 `due`
+时连同到点的一起领走，那一刻租约才开始计。机器不在线、管家太旧、Bot 没部署，登记那一步就 409。
 
 **本地 Bot（桌面端）**没有机器也没有工人：Gateway 连不到员工的电脑，`dueRoutines` 把它的任务排除在外。
 由它自己的 Bot 进程来领（bot/src/local-routines，凭席位票打 `/runtime/local-routines/*`，只看得到自己账号
@@ -289,8 +292,8 @@ Gateway 不再去敲，改看租约：工人领走的流水带 `leaseUntil`，�
 
 **机器那一半**是 `satuwork-worker.service`（manager/src/worker/index.ts，见 manager/README.md
 「席位工人」）：非 root、不持有任何凭据，经管家在回环地址上的中继口领活、跟本机 bot 说话。
-一次跑的顺序和 Gateway 自己跑时一字不差：问会话 id → started → 读游标 → 先挂流再发消息 →
-只认自己那一轮的 turn/end → finish；期间按租约的三分之一续命，续不上（404）就停手。
+一次跑的顺序：问会话 id → started → 读游标 → 先挂流再发消息 → 只认自己那一轮的 turn/end →
+finish；期间按租约的三分之一续命，续不上（404）就停手。
 
 ## 9. Agent 内置工具
 
@@ -302,7 +305,7 @@ Gateway 不再去敲，改看租约：工人领走的流水带 `leaseUntil`，�
 | `routine_manage` | `create` 新增、`update` 修改、`run` 立即试跑 |
 
 工具只是 Gateway 现有六条接口的席位客户端，不在 Bot 本地复制定义、下一次运行时间或调度器。
-因此右栏和 Agent 看到的是同一批记录，立即试跑也复用 `runRoutine(..., 'manual')`，不会出现
+因此右栏和 Agent 看到的是同一批记录，立即试跑也复用 `requestManualRun`，不会出现
 “Agent 试跑走一套、页面试跑走另一套”的分叉。
 
 ### 9.1 权限

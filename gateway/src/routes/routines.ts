@@ -19,7 +19,7 @@ import { visibleBotOf } from '../lib/runtime.ts'
 import { companyMachineOf } from '../deploy.ts'
 import { canonicalTimezone, parseRoutineTriggers, ROUTINE_MAX_TRIGGERS, RoutineBusyError, type Account, type Db, type Routine, type RoutineModelRole, type RoutineRun } from '../db.ts'
 import { nextRunAtOf } from '../lib/schedule.ts'
-import { ROUTINE_RETRY_MAX, runRoutine } from '../routines.ts'
+import { ROUTINE_RETRY_MAX, RoutineUnrunnableError, requestManualRun } from '../routines.ts'
 
 /** 名字和指令的长度。**指令不是提示词工程的画布**：真要长文，写进 Skill 里。 */
 const MAX_NAME = 80
@@ -286,8 +286,11 @@ export function attachRoutines(router: Router, ctx: RouteCtx) {
   })
 
   /**
-   * 试跑。和到点跑走的是同一条路（同一个会话、同一段指令），区别只有流水上的
+   * 试跑。和到点跑走的是同一条路（同一个工人、同一个会话、同一段指令），区别只有流水上的
    * `trigger` 一个字——**否则「试跑成功、到点不灵」就查无可查**。
+   *
+   * 这里只**登记**（requestManualRun）：流水立刻回给界面转圈，工人下一趟来领活时把它带走。
+   * 跑不了（Bot 没部署、机器不在线、管家太旧）当场 409，话照实说。
    *
    * 停用的也能试跑：那正是人调这段指令时的状态。
    */
@@ -299,9 +302,10 @@ export function attachRoutines(router: Router, ctx: RouteCtx) {
     // 先查只是少一次报错；并发点两下真正靠库里的部分唯一索引挡（迁移 0035）。
     let run: RoutineRun
     try {
-      run = await runRoutine(db, routine, 'manual')
+      run = await requestManualRun(db, routine)
     } catch (e) {
       if (e instanceof RoutineBusyError) throw new HttpError(409, '上一次还在跑')
+      if (e instanceof RoutineUnrunnableError) throw new HttpError(409, e.message)
       throw e
     }
     json(res, 200, { run: publicRun(run) })

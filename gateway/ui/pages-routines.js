@@ -272,7 +272,9 @@ function routineRetryLine(routine) {
 
 function routineRunRow(run, routine) {
   const tz = rtTzOf(routine)
-  const label = run.status === 'running' ? t('正在跑…') : rtRunTime(run.startedAt, tz)
+  // 还在跑的分两种：登记了、机器还没来领（试跑刚点下去的那半分钟），和真的在跑。
+  // 前者没有会话 id——工人领走、问到会话之后才有。
+  const label = run.status === 'running' ? (run.sessionId ? t('正在跑…') : t('等机器来领…')) : rtRunTime(run.startedAt, tz)
   /**
    * 「试跑」和「重试」各挂各的牌子。
    *
