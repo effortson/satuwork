@@ -4,8 +4,9 @@
  * 机器协议 ≥ 7 之后，Gateway 的调度器**不再碰**那台机器上的任务，改由机器凭 `smt_` 来领、
  * 跑完回报。这里没有真的工人，用几条 fetch 扮演它——要钉住的是 Gateway 这一半的规矩：
  *
- *   · 归工人的任务 Gateway 一下都不动；机器不够新时还是 Gateway 自己跑
- *   · 领取即租约；started 那一步查转人工；finish 按 kind 解释，补跑规矩和 Gateway 自己跑时一致
+ *   · 归工人的任务 Gateway 一下都不动；机器不够新时 Gateway **也不自己跑**，记一条「管家太旧」
+ *   · 试跑只登记，工人下一趟 due 连同到点的一起领走；没人来领的到点收掉
+ *   · 领取即租约；started 那一步查转人工；finish 按 kind 解释
  *   · 租约到期没续 → 记成「机器没回报」并排补跑
  *   · 别的机器的活 404
  *
@@ -25,6 +26,8 @@ import { closeServer } from './probe.mjs'
 const SCHEMA = schemaOf('e2e_routine_worker')
 const LEASE_MS = 1500
 const RETRY_MS = [400, 500, 600]
+/** 试跑登记之后多久没人来领就收掉。线上是三分钟；这里压到工人一两趟的量级。 */
+const PICKUP_MS = 1500
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
@@ -75,6 +78,7 @@ export async function runRoutineWorker({ gwRoot, test, req, start, waitHttp, ass
       GATEWAY_ROUTINE_TICK_MS: '1000',
       GATEWAY_ROUTINE_LEASE_MS: String(LEASE_MS),
       GATEWAY_ROUTINE_RETRY_MS: RETRY_MS.join(','),
+      GATEWAY_ROUTINE_PICKUP_MS: String(PICKUP_MS),
     },
   })
 
@@ -159,18 +163,23 @@ export async function runRoutineWorker({ gwRoot, test, req, start, waitHttp, ass
       assert(false, `${what}：一直有一轮在跑`)
     }
 
-    await test('机器不够新：任务还是 Gateway 自己跑，工人来领拿到空表', async () => {
+    await test('机器不够新：Gateway 不自己跑，记一条「管家太旧」，不补；工人来领拿到空表', async () => {
       const hb = await heartbeat(6)
       assert(hb.status === 200, `心跳 ${hb.status} ${hb.text}`)
       const empty = await due()
       assert(empty.status === 200 && empty.json.jobs.length === 0, `6 号机器不该领到活：${empty.text}`)
       await makeDue()
       await sleep(2500)
-      const d = await settled('Gateway 自己跑')
-      // 假席位 500，所以是一条 error；要紧的是**Gateway 去敲了**——这条任务归它。
-      assert((d.runs || []).length >= 1, '没跑')
-      assert(seat.hits.length > 0, 'Gateway 没去敲席位')
-      assert((d.runs || [])[0].machineId === null, `Gateway 自己跑的不该带 machineId：${JSON.stringify(d.runs[0])}`)
+      const d = await settled('管家太旧')
+      const run = (d.runs || [])[0]
+      assert(run && run.status === 'error', `该记一条 error：${JSON.stringify(d.runs)}`)
+      assert(String(run.error).includes('管家太旧'), `原因该写明是管家太旧：${run.error}`)
+      assert(run.machineId === null, `没人领走的不该带 machineId：${JSON.stringify(run)}`)
+      assert(d.routine.retryAt === null, '跑不了的不该补：五分钟后管家还是那个版本')
+      // **Gateway 自己一下都没去敲席位**：以前机器不够新它会自己打进去等二十分钟，那条路收掉了。
+      assert(seat.hits.length === 0, `Gateway 敲了席位 ${seat.hits.length} 下：${seat.hits.join(' ')}`)
+      const manual = await req(gwBase, 'POST', `/runtime/routines/${routineId}/run`, { token: adminTok, body: {} })
+      assert(manual.status === 409 && String(manual.json.error).includes('管家太旧'), `不够新的机器试跑该 409 并说明原因：${manual.status} ${manual.text}`)
     })
 
     await test('机器升到 7 号：Gateway 一下都不动，工人领到带租约的活', async () => {
@@ -270,6 +279,44 @@ export async function runRoutineWorker({ gwRoot, test, req, start, waitHttp, ass
       const run = (d.runs || []).find((x) => x.id === job.runId)
       assert(run.status === 'error' && String(run.error).includes('转人工'), `流水该写明是转人工挡的：${JSON.stringify(run)}`)
       assert(d.routine.retryAt === null, '转人工挡着的不该补')
+    })
+
+    await test('试跑只登记：界面立刻拿到转圈的流水，工人下一趟 due 连同到点的一起领走', async () => {
+      // 再报一次心跳：登记那一步先看机器在不在线，上一次心跳离现在要是超过三轮就成「离线」了。
+      assert((await heartbeat(7)).status === 200, '心跳')
+      const r = await req(gwBase, 'POST', `/runtime/routines/${routineId}/run`, { token: adminTok, body: {} })
+      assert(r.status === 200, `试跑 ${r.status} ${r.text}`)
+      const run0 = r.json.run
+      assert(run0.status === 'running' && run0.trigger === 'manual' && run0.sessionId === null, `登记的流水不对：${r.text}`)
+      assert(run0.machineId === machine.machineId, `该登记给这台机器：${run0.machineId}`)
+      const twice = await req(gwBase, 'POST', `/runtime/routines/${routineId}/run`, { token: adminTok, body: {} })
+      assert(twice.status === 409, `没人领走之前再点一下该 409：${twice.status}`)
+      const before = seat.hits.length
+      const got = await due()
+      assert(got.json.jobs.length === 1, `工人该领到那条试跑：${got.text}`)
+      const job = got.json.jobs[0]
+      assert(job.runId === run0.id && job.trigger === 'manual' && job.instruction === '把今天的事说一遍', `活的内容不对：${JSON.stringify(job)}`)
+      assert((await due()).json.jobs.length === 0, '同一条试跑不该领两次')
+      const started = await post(job.runId, 'started', { sessionId: 's-manual' })
+      assert(started.status === 200 && started.json.blocked === null, `started ${started.status} ${started.text}`)
+      const fin = await post(job.runId, 'finish', { kind: 'failed', error: '席位挂了' })
+      assert(fin.status === 200, `finish ${fin.status}`)
+      const d = await detail()
+      const done = (d.runs || []).find((x) => x.id === job.runId)
+      assert(done.status === 'error' && done.error === '席位挂了' && done.sessionId === 's-manual', `该照实记：${JSON.stringify(done)}`)
+      assert(d.routine.retryAt === null, '试跑砸了不补')
+      assert(seat.hits.length === before, 'Gateway 不该自己去敲席位')
+    })
+
+    await test('登记了一直没人来领的试跑：到点收成 error，话说明是没人领', async () => {
+      const r = await req(gwBase, 'POST', `/runtime/routines/${routineId}/run`, { token: adminTok, body: {} })
+      assert(r.status === 200, `试跑 ${r.status} ${r.text}`)
+      // 不领。等过 PICKUP_MS 再加一个 tick。
+      await sleep(PICKUP_MS + 1500)
+      const d = await detail()
+      const run = (d.runs || []).find((x) => x.id === r.json.run.id)
+      assert(run && run.status === 'error' && String(run.error).includes('没有机器来领'), `该被收成「没人来领」：${JSON.stringify(run)}`)
+      assert((await due()).json.jobs.length === 0, '收掉的试跑不该再交出去')
     })
 
     await test('别的机器领不到、也回报不了这台机器的活', async () => {

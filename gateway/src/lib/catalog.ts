@@ -6,6 +6,15 @@
 import { HttpError } from '../http.ts'
 import { type CatalogItem, type Db, type Scope } from '../db.ts'
 
+/**
+ * 这颗 Bot 跑在哪：`local` = 桌面端里跑在员工电脑上（Gateway 连不到它），其余都是机器上的席位。
+ * 只有用户自己的 Bot 能是本地的；公司模版、平台钉的那些一律远程。
+ */
+export function runtimeKindOf(item: CatalogItem): 'local' | 'remote' {
+  const def = item.definition as Record<string, unknown> | undefined
+  return item.scope === 'user' && def?.runtimeKind === 'local' ? 'local' : 'remote'
+}
+
 export function publicCatalog(item: { id: string; kind: string; scope: string; companyId: string | null; name: string; definition: unknown; createdAt: number; updatedAt: number }) {
   let definition = item.definition
   // 管理目录不能带 MCP token。实例走 /runtime/catalog。

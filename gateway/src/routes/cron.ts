@@ -11,9 +11,8 @@ import { timingSafeToken } from '../crypto.ts'
  * 整条路关着——一条不鉴权的「现在扫一遍」接口，谁都能拿来让 Gateway 白忙。
  *
  * 一拍里最慢的是模型目录刷新（外呼 models.dev，6 小时一次）和渠道投递的尾巴，都在秒级。
- * 归工人（routes/worker.ts）的任务这里不等；Gateway 自己跑的那几条（老协议的机器）会在
- * 这一拍里等到结果或等到预算用完再回——回了响应函数就冻住，后台等着的 watcher 会跟着死，
- * 见 routines.ts 的 drainWatchers。预算压在 maxDuration（300 秒）以内。
+ * 日常任务这里只抢、只记（routines.ts）：跑在机器上的工人那边，Gateway 不等任何一轮的结果，
+ * 所以一拍不会撞上 maxDuration。
  */
 export function attachCron(router: Router, { db }: RouteCtx) {
   router.get('/cron/tick', async (req, res) => {

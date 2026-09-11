@@ -1422,9 +1422,15 @@ export interface RoutineRun {
   error: string | null
   startedAt: number
   endedAt: number | null
-  /** 哪台机器的工人领走了这一次。null = Gateway 自己跑的（老机器、试跑）。见迁移 0039。 */
+  /**
+   * 该由谁跑这一次：机器 id，或本地 Bot 的 `desktop:<accountId>`。null = 谁都跑不了、Gateway
+   * 直接记成 error 的那种（管家太旧、Bot 没部署，routines.ts 的 noteUnrunnable）。见迁移 0039。
+   */
   machineId: string | null
-  /** 工人的租约到期时刻。null = 不是工人跑的。到点没续就记成「机器没回报」。 */
+  /**
+   * 租约到期时刻。null 且 status = running = 试跑登记了、还没人来领（requestManualRun）；
+   * 领走那一刻填上，此后到点没续就记成「机器没回报」。
+   */
   leaseUntil: number | null
 }
 

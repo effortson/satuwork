@@ -9,8 +9,8 @@
  *   2. **领取即租约。** 领到手的那一刻流水已经是 `running`、带着 leaseUntil；工人按节拍续，
  *      进程死了没人续，到点 Gateway 的清扫记成「机器没回报」并排补跑（routines.ts 的 sweepLeases）。
  *   3. **规矩只有一份。** 抢法（claimDue）、错过怎么记（noteMissed）、砸了补不补（settleRun）
- *      全是 Gateway 自己跑时的那几个函数——工人只是把「发消息、等 turn/end」那一段搬到了
- *      席位旁边，怎么解释结果仍由这里说了算。
+ *      全在 routines.ts——工人只负责「发消息、等 turn/end」那一段，怎么解释结果仍由这里说了算。
+ *      试跑也走这条路：Gateway 登记一条等人领的流水（requestManualRun），工人下一趟 due 时带走。
  *
  * 工人那一侧的循环：GET due → 对每条：问席位会话 id → POST started（Gateway 查有没有转人工
  * 挡着）→ 挂流、发消息、等自己那一轮的 turn/end，期间 POST renew → POST finish。
@@ -94,6 +94,19 @@ async function leaseDue(db: RouteCtx['db'], owner: RoutineOwner) {
       jobs.push(jobOf(routine, run, seatId))
     },
   )
+  /**
+   * 登记给这一方、还没人领的试跑（routines.ts 的 requestManualRun）：流水已经在了，租约空着。
+   * 填上租约就算领走，和到点的一起交出去。任务在登记之后被删了的话流水没人要，直接收场。
+   */
+  for (const run of await db.pickUpRoutineRuns(owner.machineId, now + ROUTINE_LEASE_MS)) {
+    const routine = await db.routine(run.routineId)
+    const seatId = routine ? await owner.seatIdOf(routine) : null
+    if (!routine || !seatId) {
+      await settleRun(db, run.routineId, run.id, run.trigger, { status: 'error', error: routine ? '这颗 Bot 已经不在这台机器上了' : '这条任务已经删了' })
+      continue
+    }
+    jobs.push(jobOf(routine, run, seatId))
+  }
   return { jobs, leaseMs: ROUTINE_LEASE_MS }
 }
 

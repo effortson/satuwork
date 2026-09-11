@@ -4251,7 +4251,7 @@ export class Db {
     companyId: string
     trigger: RoutineRunTrigger
     sessionId?: string | null
-    /** 工人领走的：哪台机器、租约到几点。Gateway 自己跑的两格都空着。 */
+    /** 该由谁跑、租约到几点。试跑登记时只填 machineId、租约空着（等人来领）；跑不了的两格都空。 */
     machineId?: string | null
     leaseUntil?: number | null
   }): Promise<RoutineRun> {
@@ -4314,25 +4314,19 @@ export class Db {
   }
 
   /**
-   * 把没人再管的「正在跑」收干净。
+   * 收掉登记之后一直没人来领的试跑。
    *
-   * 等结果的那个 watcher 是内存里的东西，进程一停就没了；库里那条 `running` 再也不会
-   * 有人来改。不收的话，那条任务从此再也跑不起来（并发判据永远认为它还在跑），而界面上
-   * 是一个永远转着的圈。
+   * 没有租约（`leaseUntil` 为空）的 `running` 只有一种：试跑登记了、等工人或本地 Bot 来领
+   * （routines.ts 的 requestManualRun）。领走的那一刻租约才开始计；隔了这么久还没人领，就是
+   * 机器关着、工人没起来、或者桌面端没开——记成 error 把话说明，别让那个圈永远转着，
+   * 也别让并发判据一直认为它还在跑。
    *
-   * **必须按 `startedAt` 划线，不能把所有 `running` 一把收掉。** 这张表不属于某一个
-   * 进程：升级换版那几十秒里新旧两代同时在跑，无差别地收，就是新进程把旧进程**正在
-   * 等结果**的那一条判成失败——界面当场变红（虽然旧进程跑完会改回来），而且那段窗口里
-   * 并发判据也跟着失效，人这时点「试跑」不再被 409 挡住，两条消息进同一个会话。
-   *
-   * 划线的位置由调用方给：一次运行最多等 `GATEWAY_ROUTINE_TIMEOUT_MS`，比这更老的
-   * `running` 意味着**任何**进程里的 watcher 都已经放弃了，收它不会踩到活人。
+   * 划线按 `startedAt`（登记时刻），位置由调用方给（PICKUP_MS）。
    */
-  async failStaleRoutineRuns(startedBefore: number): Promise<number> {
-    // 只收 Gateway 自己跑的（没有租约的）。工人领走的按租约收，见 failExpiredRoutineLeases。
+  async failUnclaimedRoutineRuns(startedBefore: number): Promise<number> {
     return this.run(
       "update routine_runs set status = 'error', error = ?, \"endedAt\" = ? where status = 'running' and \"leaseUntil\" is null and \"startedAt\" < ?",
-      ['没等到结果就断了（Gateway 重启，或者超过了最长等待时间）', Date.now(), startedBefore],
+      ['没有机器来领这一次（管家离线、工人没起来，或者桌面端没开）', Date.now(), startedBefore],
     )
   }
 
@@ -4394,6 +4388,24 @@ export class Db {
   async routineRunOfMachine(runId: string, machineId: string): Promise<RoutineRun | undefined> {
     const r = await this.one('select * from routine_runs where id = ? and "machineId" = ? and status = \'running\'', [runId, machineId])
     return r ? routineRunOf(r) : undefined
+  }
+
+  /**
+   * 领走登记给这一方、还没人领的试跑（requestManualRun 登记的那些：machineId 指向它、租约空着）。
+   * 把租约填上就是领走了；`returning` 交回行，调用方拼成活。
+   */
+  async pickUpRoutineRuns(machineId: string, leaseUntil: number, limit = 20): Promise<RoutineRun[]> {
+    const rows = await this.many(
+      `update routine_runs set "leaseUntil" = ?
+        where id in (
+          select id from routine_runs
+           where "machineId" = ? and status = 'running' and "leaseUntil" is null
+           order by "startedAt" limit ?
+        )
+        returning *`,
+      [leaseUntil, machineId, Math.max(1, Math.trunc(limit))],
+    )
+    return rows.map(routineRunOf)
   }
 
   /** 续租。回 false = 这条已经不归你了（租约到期被收掉、或早已收场），工人该停手。 */

@@ -670,40 +670,81 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(back.status === 200 && back.json.routine.modelRole === 'utility', `拨回来 ${back.status} ${back.text}`)
     })
 
-    await test('试跑：消息真的进了席位的会话，那一轮的结局照实记下来', async () => {
+    /**
+     * 试跑走的是工人那条路（docs/routines.md §8b）：Gateway 只登记一条流水，机器上的工人来领、
+     * 发进席位、等这一轮收口、回报。这里没有真的工人，测试自己扮一个——要钉的是**整条链**：
+     * 登记 → 领走 → 消息真的进了这颗 Bot 的会话 → 那一轮的结局照实回到流水上。
+     */
+    const asWorker = {
+      due: () => req(gwBase, 'GET', '/worker/routines/due', { token: machineTok }),
+      post: (runId, act, body = {}) => req(gwBase, 'POST', `/worker/routines/${runId}/${act}`, { token: machineTok, body }),
+      lastSeq: async () => {
+        const r = await req(gwBase, 'GET', `/runtime/sessions/${encodeURIComponent(sessionId)}/history?turns=1`, { token: adminTok })
+        return Math.max(0, ...((r.json && r.json.events) || []).map((e) => Number(e.seq) || 0))
+      },
+      /** 等自己那一轮的 turn/end（seq 在发消息之前的游标之后），回它的 reason。 */
+      turnEnd: async (afterSeq) => {
+        const deadline = Date.now() + 30000
+        while (Date.now() < deadline) {
+          const r = await req(gwBase, 'GET', `/runtime/sessions/${encodeURIComponent(sessionId)}/history?turns=3`, { token: adminTok })
+          const hit = ((r.json && r.json.events) || []).find((e) => e.seq > afterSeq && e.type === 'turn/end')
+          if (hit) return String((typeof hit.data?.reason === 'string' ? hit.data.reason : hit.data?.reason?.kind) || 'completed')
+          await sleep(300)
+        }
+        assert(false, '那一轮一直没收口')
+      },
+    }
+
+    await test('试跑：登记给工人，消息真的进了席位的会话，那一轮的结局照实记下来', async () => {
+      // 机器够新、在线：试跑登记那一步先看这两样（routines.ts 的 requestManualRun）。
+      const hb = await req(gwBase, 'POST', `/internal/machines/${paired.machineId}/heartbeat`, { token: machineTok, body: { protocol: 8, managerVersion: 'e2e' } })
+      assert(hb.status === 200, `心跳 ${hb.status} ${hb.text}`)
       const started = await req(gwBase, 'POST', `/runtime/routines/${routineId}/run?botId=${encodeURIComponent(botId)}`, { token: seatAccess, body: {} })
       assert(started.status === 200, `run ${started.status} ${started.text}`)
-      assert(started.json.run.status === 'running' && started.json.run.trigger === 'manual', `run ${JSON.stringify(started.json.run)}`)
-      const deadline = Date.now() + 30000
-      let last
-      while (Date.now() < deadline) {
-        const r = await req(gwBase, 'GET', `/runtime/routines/${routineId}`, { token: adminTok })
-        last = r
-        const run = (r.json.runs || [])[0]
-        if (run && run.status !== 'running') {
-          // **这里就该是 error。** 桩模型（E2E_STUB_LLM）不假装成功，那一轮的
-          // `turn/end` 带的是 `reason: 'error'`，流水必须照实记——这条断言守的正是
-          // 那个映射：曾经它只认 `reason.kind`，于是失败的轮次一律记成了绿勾。
-          assert(run.status === 'error', `run 结束成 ${run.status}：${run.error}`)
-          assert(String(run.error || '').includes('这一轮'), `error 文案 ${run.error}`)
-          assert(run.sessionId === sessionId, `run.sessionId ${run.sessionId} != ${sessionId}`)
-          return
-        }
-        await sleep(300)
-      }
-      assert(false, `试跑一直没跑完 ${last && last.text}`)
+      const run0 = started.json.run
+      assert(run0.status === 'running' && run0.trigger === 'manual' && run0.machineId === paired.machineId, `run ${JSON.stringify(run0)}`)
+
+      const got = await asWorker.due()
+      assert(got.status === 200 && got.json.jobs.length === 1 && got.json.jobs[0].runId === run0.id, `工人该领到那条试跑：${got.text}`)
+      const job = got.json.jobs[0]
+      assert(job.instruction === 'ping' && job.routineId === routineId, `活的内容不对：${JSON.stringify(job)}`)
+      const ok = await asWorker.post(job.runId, 'started', { sessionId })
+      assert(ok.status === 200 && ok.json.blocked === null, `started ${ok.status} ${ok.text}`)
+      const afterSeq = await asWorker.lastSeq()
+      const sent = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/messages`, {
+        token: adminTok,
+        body: { text: job.instruction, routine: { id: job.routineId, name: job.name } },
+      })
+      assert(sent.status === 200, `发消息 ${sent.status} ${sent.text}`)
+      // **这里就该是 error。** 桩模型（E2E_STUB_LLM）不假装成功，那一轮的 `turn/end` 带的是
+      // `reason: 'error'`；工人如实回报，流水必须照实记——曾经它只认 `reason.kind`，于是失败的
+      // 轮次一律记成了绿勾。
+      const kind = await asWorker.turnEnd(afterSeq)
+      assert(kind === 'error', `桩模型那一轮该以 error 收口：${kind}`)
+      const fin = await asWorker.post(job.runId, 'finish', { kind, sessionId })
+      assert(fin.status === 200, `finish ${fin.status} ${fin.text}`)
+      const r = await req(gwBase, 'GET', `/runtime/routines/${routineId}`, { token: adminTok })
+      const run = (r.json.runs || []).find((x) => x.id === run0.id)
+      assert(run && run.status === 'error', `run 结束成 ${run && run.status}：${run && run.error}`)
+      assert(String(run.error || '').includes('这一轮'), `error 文案 ${run.error}`)
+      assert(run.sessionId === sessionId, `run.sessionId ${run.sessionId} != ${sessionId}`)
+      assert(r.json.routine.retryAt === null, '试跑砸了不补')
     })
 
     await test('一条任务不会同时跑两轮', async () => {
       const first = await req(gwBase, 'POST', `/runtime/routines/${routineId}/run`, { token: adminTok, body: {} })
       assert(first.status === 200, `first ${first.status} ${first.text}`)
+      // 登记了、还没人领走，第二下必须被挡住（库里那条部分唯一索引，迁移 0035）。
       const second = await req(gwBase, 'POST', `/runtime/routines/${routineId}/run`, { token: adminTok, body: {} })
-      // 挡住是常态。**但不能断言它一定 409**：桩模型跑得极快，第一条可能就在这两次
-      // 请求之间结束了，那时第二条能开跑才是对的。真正要守住的不变量是下面那句。
-      assert(second.status === 409 || second.status === 200, `second ${second.status} ${second.text}`)
+      assert(second.status === 409, `second ${second.status} ${second.text}`)
       const detail = await req(gwBase, 'GET', `/runtime/routines/${routineId}`, { token: adminTok })
       const running = (detail.json.runs || []).filter((r) => r.status === 'running')
-      assert(running.length <= 1, `同时有 ${running.length} 轮在跑`)
+      assert(running.length === 1, `同时有 ${running.length} 轮在跑`)
+      // 收掉这一条，别让它挡着后面的用例：工人领走、说没跑起来。
+      const got = await asWorker.due()
+      assert(got.json.jobs.length === 1, `该领到那一条：${got.text}`)
+      const fin = await asWorker.post(got.json.jobs[0].runId, 'finish', { kind: 'aborted' })
+      assert(fin.status === 200, `finish ${fin.status}`)
     })
 
     await test('别人的日常任务看不见也删不掉 → 404', async () => {

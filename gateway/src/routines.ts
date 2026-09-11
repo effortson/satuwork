@@ -1,37 +1,36 @@
 /**
- * 日常任务的**跑**：到点了把那段指令发进席位的会话，然后等这一轮跑完，把结果记进流水。
+ * 日常任务的**调度**：到点了把它抢过来交给该跑的那一方，跑完了把结局记进流水，砸了
+ * 排补跑。
  *
- * 定义、排期在 db 与 lib/schedule.ts；这里只回答两个问题——「现在该跑哪几条」和
- * 「刚才那一条跑成没跑成」。
+ * 定义、排期在 db 与 lib/schedule.ts；这里只回答两个问题——「现在该跑哪几条、归谁」和
+ * 「刚才那一条跑成没跑成、还补不补」。
  *
- * ## 为什么跑在 Gateway，而不是席位上
+ * ## Gateway 自己不跑
  *
- * 席位那边更「近」：它自己就知道一轮什么时候结束，机器关了就该不跑。但席位是**按需
- * 部署、随时会被重装**的一个进程，把日程放在它里面，等于把「每天九点」交给一个人人
- * 都有权重铺的目录。Gateway 这边有库、有事务、有唯一的一份时间，重启也不丢——代价是
- * 它得自己去问「跑完了没有」，也就是下面那条 SSE。
+ * 以前到点了 Gateway 自己打进席位：发消息、挂着事件流等这一轮的 `turn/end`，最长二十
+ * 分钟。Gateway 搬到 Vercel 之后（docs/adr-gateway-vercel-neon.md §7 第 4 步）那条路
+ * 走不通了——函数一回响应就冻住，没有进程能挂二十分钟的流。所以「发消息、等结果」
+ * 整段下沉到席位旁边：
  *
- * ## 一次跑，四步
+ *   · 远程席位：机器上的工人（manager/src/worker）凭 `smt_` 来领（routes/worker.ts）
+ *   · 本地 Bot：桌面端里的 Bot 进程自己来领（bot/src/local-routines）
  *
- * 1. 找到席位（地址 + 两张票），拿到这颗 Bot 的会话 id
- * 2. 读一下当前最后一条事件的 seq，作为等待的游标
- * 3. **先挂上流，再发消息**——反过来的话，跑得快的那一轮会在流挂上之前就结束，
- *    然后这里等到超时，界面上是一条永远转着的圈，而事情其实早就做完了
- * 4. 等到**自己那一轮**的 `turn/end`，记 ok；超时或者出错，记 error 并把原因写进流水
- *    （「自己那一轮」这几个字是要紧的，见下面 readTurnEnd）
+ * Gateway 留下的是**规矩**：谁抢到（claimDue）、错过怎么记（noteMissed）、砸了补不补
+ * （settleRun）、跑不了怎么写（noteUnrunnable）、试跑登记给谁（requestManualRun）。
+ * 机器够不够新（协议 ≥ MIN_WORKER_PROTOCOL）不再决定「谁跑」，只决定「跑得了跑不了」。
  *
  * ## 砸了会自己再来三次
  *
  * 记下 error 之后还有一句：够得着补救的那几类失败，隔 5 分钟、15 分钟、30 分钟各补跑
- * 一次，三次都不成就停（`RETRY_DELAYS_MS`、`armRetry`、`tickRetries`）。欠着的那次补跑
- * 存在 `routines.retryAt`，和排期的 `nextRunAt` 各占一格——人设的「每天 21:00」不会
- * 因为一次失败就被挪走。哪些失败不补（人按了停止、等结果超时、有交接单挡着），见
- * 下面 `settle` 那一段。
+ * 一次，三次都不成就停（`RETRY_DELAYS_MS`、`armRetry`）。欠着的那次补跑存在
+ * `routines.retryAt`，和排期的 `nextRunAt` 各占一格——人设的「每天 21:00」不会因为
+ * 一次失败就被挪走。哪些失败不补（人按了停止、等结果超时、有交接单挡着、试跑），见
+ * `settleRun` 与 routes/worker.ts 的 routineFinish。
  */
-import { RoutineBusyError, type Db, type Routine, type RoutineRun, type RoutineRunTrigger } from './db.ts'
+import { RoutineBusyError, type Db, type Machine, type Routine, type RoutineRun, type RoutineRunTrigger } from './db.ts'
 import { nextRunAtOf } from './lib/schedule.ts'
-import { MIN_WORKER_PROTOCOL } from './deploy.ts'
-import { machineTokenFor, seatBearer, sseEvents } from './lib/runtime.ts'
+import { MIN_WORKER_PROTOCOL, machineLink } from './deploy.ts'
+import { runtimeKindOf } from './lib/catalog.ts'
 import { sweepHandoffs } from './handoff-sweep.ts'
 import { refreshDiscovered } from './model-discovery.ts'
 import { tickBotDeletions, tickConversationAudits } from './conversation-audit.ts'
@@ -39,7 +38,7 @@ import { tickBotDeletions, tickConversationAudits } from './conversation-audit.t
 /** 调度器多久看一眼。设成 0 就不起调度器（e2e 里有几条不需要它自己跑）。 */
 const TICK_MS = Math.max(0, Math.trunc(Number(process.env.GATEWAY_ROUTINE_TICK_MS ?? 30_000)))
 /**
- * 一次最多等多久。
+ * 一轮最多等多久。随活交给工人 / 本地 Bot（routes/worker.ts 的 jobOf），它们按这个数等。
  *
  * 这个数不是「一轮对话该有多长」，是「等到什么时候就认定它不会回来了」。定时任务里
  * 长的那种（翻一天的新闻、跑一份报表）十几分钟很正常，所以给得比人等得起的久得多；
@@ -76,220 +75,26 @@ function parseRetryDelays(raw: string | undefined): number[] {
 
 /** 最多补跑几次。界面上那句「第 N 次，共 M 次」里的 M。 */
 export const ROUTINE_RETRY_MAX = RETRY_DELAYS_MS.length
-
-/** 正在等结果的那几条。进程要停时全部掐掉，不然 fetch 吊着事件循环不退出。 */
-const watching = new Set<AbortController>()
-
 /**
- * 同一批 watcher 的 promise 本身。**Vercel 上一拍结束前要把它们等完**（见 drainWatchers）：
- * 那边没有常驻进程，`/cron/tick` 一回响应函数就冻住，后台挂着的 watcher 跟着死——库里
- * 那条 `running` 从此没人改，直到 sweepStaleRuns 二十分钟后把它收成 error，而补跑
- * （armRetry）一次都不会排上。Debian 上不等，watcher 活在常驻进程里，跑过这一拍没关系。
+ * 登记之后多久没人来领就算没人了。
+ *
+ * 只有试跑会处在「登记了、还没人领」的状态（requestManualRun）：工人和本地 Bot 都是
+ * 半分钟来一次，三分钟够它们来好几趟；过了还没领，就是机器关着、工人没起来、或者桌面端
+ * 没开——记成 error 把原因写明，别让那个圈永远转着（并发判据也一直认为它还在跑）。
  */
-const inflight = new Set<Promise<void>>()
+const PICKUP_MS = Math.max(1_000, Math.trunc(Number(process.env.GATEWAY_ROUTINE_PICKUP_MS ?? 3 * 60_000)))
 
-/**
- * Vercel 上一次最多等多久。
- *
- * 函数的上限是 vercel.json 里的 maxDuration（300 秒），而 RUN_TIMEOUT_MS 默认二十分钟，
- * 远超过它——照那个数等，等不到超时函数就先被掐了，结局和不等一样。所以那边压到 240 秒：
- * 留 60 秒给同一拍里的扫库、收尾和写结果。到了这个数还没结果，记 error、**不排补跑**：
- * 席位那头多半还在跑，五分钟后再发一遍就是同一件事做两遍。这条路本来就是给协议 < 7
- * 的老机器兜底的（docs/vercel-golive-checklist.md），错误文案直接指向升级管家。
- */
-const ON_VERCEL = !!process.env.VERCEL
-const VERCEL_WATCH_MS = 240_000
-const WATCH_BUDGET_MS = ON_VERCEL ? Math.min(RUN_TIMEOUT_MS, VERCEL_WATCH_MS) : RUN_TIMEOUT_MS
-
-/** 等这一拍里起的 watcher 全部收场。每条自己 catch 过了，这里不会抛。 */
-async function drainWatchers(): Promise<void> {
-  while (inflight.size) await Promise.allSettled([...inflight])
-}
-
-/**
- * 收掉没人再管的 `running`。
- *
- * 划线在「比最长等待还老一分钟」：那之前的每一条，**任何**进程里的 watcher 都已经
- * 放弃了（超时那一刻它自己会写结果），所以收它踩不到活人。多留的一分钟是给写结果
- * 那一跳的余量。
- */
-function sweepStaleRuns(db: Db): Promise<number> {
-  return db.failStaleRoutineRuns(Date.now() - RUN_TIMEOUT_MS - 60_000).catch((e: Error) => {
-    console.error(`satuwork-gateway: 收尾日常任务流水失败：${e.message}`)
-    return 0
-  })
-}
-
-function headersFor(bearer: string, machineToken: string | undefined, accept: string): Record<string, string> {
-  return {
-    accept,
-    ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
-    ...(machineToken ? { 'x-satuwork-machine': machineToken } : {}),
-  }
-}
-
-interface SeatLink {
-  host: string
-  bearer: string
-  machineToken: string | undefined
-}
-
-/**
- * 席位在哪、拿什么敲。**不复用路由层那几个 helper 的原因是它们要一个 `Account`**，
- * 而调度器手上只有一个 accountId——为此去查一遍账号再拼一个假的 Account，比直接
- * 查 instances 更绕。
- */
-async function seatLinkOf(db: Db, accountId: string, botId: string): Promise<SeatLink> {
-  const row = await db.instance(accountId, botId)
-  const host = (row?.host || '').trim().replace(/\/$/, '')
-  if (!host) throw new Error('实例还没上线')
-  const account = await db.account(accountId)
-  if (!account) throw new Error('账号不在了')
-  return { host, bearer: await seatBearer(db, accountId), machineToken: await machineTokenFor(db, account, botId) }
-}
-
-async function seatJson(link: SeatLink, path: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
-  const r = await fetch(`${link.host}${path}`, {
-    method: init?.method ?? 'GET',
-    headers: {
-      ...headersFor(link.bearer, link.machineToken, 'application/json'),
-      ...(init?.body !== undefined ? { 'content-type': 'application/json' } : {}),
-    },
-    body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
-    signal: AbortSignal.timeout(20_000),
-  })
-  const text = await r.text()
-  let parsed: unknown = null
-  try {
-    parsed = text ? JSON.parse(text) : null
-  } catch {
-    parsed = null
-  }
-  if (!r.ok) {
-    const err = (parsed as { error?: string } | null)?.error || text.slice(0, 200) || `HTTP ${r.status}`
-    throw new Error(err)
-  }
-  return parsed
-}
-
-/** 这颗 Bot 当前的会话。席位那边没有就现建一个，和界面走的是同一条路。 */
-async function sessionIdOf(link: SeatLink, botId: string): Promise<string> {
-  const got = (await seatJson(link, `/api/bots/${encodeURIComponent(botId)}/session`)) as { sessionId?: string } | null
-  const id = got?.sessionId
-  if (!id) throw new Error('席位没给出会话 id')
-  return id
-}
-
-/** 会话里最后一条事件的 seq。等待游标从它起算，早于它的旧事件就不会被当成本次的结果。 */
-async function lastSeqOf(link: SeatLink, sessionId: string): Promise<number> {
-  const got = (await seatJson(link, `/api/sessions/${encodeURIComponent(sessionId)}/history?turns=1`)) as
-    | { events?: { seq?: number }[] }
-    | null
-  let max = 0
-  for (const ev of got?.events ?? []) max = Math.max(max, Number(ev?.seq) || 0)
-  return max
-}
-
-/**
- * 挂上事件流。**返回的是一个已经拿到响应头的读取器**——也就是说这条流在席位那边
- * 已经建立、事件监听已经挂上了。发消息必须在这之后，否则跑得快的那一轮会在流建立
- * 之前就结束。
- *
- * 游标 `after` 还兜着第二层：即便流慢了半拍，席位也会把 seq 之后的事件从日志里补发
- * 一遍，`turn/end` 丢不了。
- */
-async function openEvents(link: SeatLink, sessionId: string, afterSeq: number, ac: AbortController) {
-  const url = `${link.host}/api/sessions/${encodeURIComponent(sessionId)}/events?after=${afterSeq}`
-  const r = await fetch(url, { headers: headersFor(link.bearer, link.machineToken, 'text/event-stream'), signal: ac.signal })
-  if (!r.ok || !r.body) throw new Error(`事件流打不开：HTTP ${r.status}`)
-  return r.body.getReader()
-}
-
-/**
- * 读到**自己那一轮**结束为止，返回结束的原因。
- *
- * 只认 `turn/end`。`completed` 以外的原因照样算「结束了」，但要把原因带出去——
- * 「跑完了」「人按了停止」「模型那一跳失败了」在界面上必须分得开，全记成成功的话，
- * 一条每天都在失败的任务在清单上是一整列绿勾。
- *
- * **不能见到第一条 `turn/end` 就认。** 游标是发消息之前取的，中间隔着两跳 HTTP；
- * 人正好在这时候和这个 Bot 说着话的话，他那一轮的收口会先到，于是这一次运行按**别人
- * 那一轮**的结局记了下来，而任务自己那条消息才刚开始跑，结果再也不会反映到流水里。
- *
- * 所以分两种走法，按发消息那一跳的回话决定（见 bot 的 POST /messages 三岔）：
- *
- * - `steered`：我们的话被插进了**正在跑的那一轮**，那么下一条 `turn/end` 就是我们的
- * - 其余（`accepted` / 排队）：我们的话会**另起一轮**，所以先等一条 `turn/start`，
- *   记下它的轮号，只认这个轮号的收口；在那之前出现的 `turn/end` 都是别人的
- *
- * **`reason` 有两种形状。** 席位现在写的是一个字符串（见 bot 的 agent/index.ts 那句
- * `append('turn/end', { turn, reason })`），而 docs/session-event-field-map.md 里
- * 记的 dsh 原始日志写的是 `{ kind }`。两种都认——只认后者的话，失败的那一轮会
- * 静静地记成成功，这个 bug 真出现过一次。
- */
-function textOfUserMessage(data: unknown): string {
-  const content = (data as { message?: { content?: unknown } } | undefined)?.message?.content
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
-  return content
-    .map((b) => (b && typeof b === 'object' && 'text' in b ? String((b as { text?: unknown }).text ?? '') : ''))
-    .join('')
-}
-
-async function readTurnEnd(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  ownTurn: boolean,
-  instruction: string,
-): Promise<string> {
-  // 我们那一轮的轮号。null = 还没开始（`steered` 的时候当场就算「已经在跑了」）。
-  let turn: number | null = ownTurn ? null : -1
-  /**
-   * **别人的消息各自带走一轮。**
-   *
-   * 游标是发消息之前取的，而流是之后挂的——中间那段里人正好也跟这个 Bot 说了话的话，
-   * 他那条 `user/message` 和随后的 `turn/start` 会一起被回放进来。上面那句「发完消息
-   * 之后开的第一轮就是我们这一轮」在这时候是错的：认下的是人那一轮，于是这次运行按
-   * 他的结局记完了流水，而任务自己那条消息才刚要跑。
-   *
-   * 所以先认自己那条消息：正文和 instruction 对得上就不再计数；在那之前每来一条别人的
-   * 用户消息就记一笔，随后的第一个 `turn/start`（steered 那一岔是 `turn/end`）归它，
-   * 跳过。对不上（正文被改写过之类）时 foreign 一直是 0，行为和以前完全一样——宁可退回
-   * 旧行为，也不在这儿干等到超时。
-   */
-  let mine = false
-  let foreign = 0
-  type TurnEvent = { type?: string; data?: { turn?: number; reason?: string | { kind?: string } } }
-  for await (const ev of sseEvents<TurnEvent>(reader)) {
-    if (ev.type === 'user/message') {
-      if (!mine) {
-        if (textOfUserMessage(ev.data).trim() === instruction.trim()) mine = true
-        else foreign++
-      }
-      continue
-    }
-    if (ev.type === 'turn/start') {
-      // 席位一条会话同时只跑一轮，所以发完消息之后开的第一轮就是我们这一轮——
-      // 前提是中间没有别人插进来（foreign 记着有几个人排在我们前面）。
-      if (turn === null) {
-        if (foreign > 0) foreign--
-        else turn = Number(ev.data?.turn ?? -1)
-      }
-      continue
-    }
-    if (ev.type !== 'turn/end') continue
-    if (turn === null) continue
-    // steered 那一岔不比轮号，所以「别人的那一轮」也得在这儿让开。
-    if (turn === -1 && foreign > 0) {
-      foreign--
-      continue
-    }
-    // 轮号对不上就不是我们那一条（-1 = 插进别人正在跑的那一轮，不比轮号）。
-    if (turn !== -1 && Number(ev.data?.turn ?? -1) !== turn) continue
-    const reason = ev.data?.reason
-    return String((typeof reason === 'string' ? reason : reason?.kind) || 'completed')
-  }
-  // 走到这儿 = 上游把流关了，而我们那一轮的收口一直没来。
-  throw new Error('事件流断了')
+function sweepUnclaimed(db: Db): Promise<number> {
+  return db
+    .failUnclaimedRoutineRuns(Date.now() - PICKUP_MS)
+    .then((n) => {
+      if (n) console.log(`satuwork-gateway: 收掉了 ${n} 条没人来领的试跑`)
+      return n
+    })
+    .catch((e: Error) => {
+      console.error(`satuwork-gateway: 收尾没人领的试跑失败：${e.message}`)
+      return 0
+    })
 }
 
 /** 一轮没跑成，那句给人看的话。正文在对话里，这里只说是哪一类。 */
@@ -322,8 +127,21 @@ async function armRetry(db: Db, routineId: string): Promise<void> {
 export type SettlePatch = { status: 'ok' | 'error'; error?: string | null; sessionId?: string | null }
 
 /**
- * 记下一次运行的结局，**顺手决定还补不补**。Gateway 自己跑的和工人回报的都走这一条，
- * 补跑的规矩才只有一份。`retryable` 的含义见 runRoutine 里那段注释。
+ * 记下一次运行的结局，**顺手决定还补不补**。工人、本地 Bot、跑不了那一岔（noteUnrunnable）
+ * 都走这一条，补跑的规矩才只有一份。
+ *
+ * `retryable` 是「这件事再试一次有希望吗」，不是「它失败了吗」——够不着席位、席位那一跳
+ * 报错、模型那一轮出错，都算；下面几种明写着不补：
+ *
+ * - **人按了停止**（`aborted`）：他要的就是别跑，五分钟后自己跑起来是最糟的回应
+ * - **等结果超时**：那不是失败，是**结果不明**（见 RUN_TIMEOUT_MS）——那一轮很可能
+ *   还在席位上跑着，这时候再发一条进同一条会话，就是同一件事做两遍
+ * - **有一件转人工的事挡着**：五分钟后它照样挡着，而每补一次就多一张单、多一次通知
+ * - **跑不了**（管家太旧、Bot 没部署）：五分钟后还是那样
+ *
+ * 手动那条路（试跑）**一次都不补**：人就坐在屏幕前，他要的是看这一下成没成，不是
+ * 接下来五十分钟里再自己跑三遍。跑成了也不动重试那两格——他手点的这一下，不该把
+ * 到点那条链子上欠着的补跑抹掉。
  */
 export async function settleRun(
   db: Db,
@@ -340,134 +158,44 @@ export async function settleRun(
   })
 }
 
+/** 试跑发不出去（Bot 没部署、机器不在线、管家太旧）。路由把它翻成 409。 */
+export class RoutineUnrunnableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RoutineUnrunnableError'
+  }
+}
+
 /**
- * 真正跑一次。**先把流水记成 `running` 再发消息**：发出去之后进程被杀，库里留着一条
- * 「不知道结果」也比什么都没有强——后者会让人以为那天晚上根本没触发。
+ * 试跑：**登记一条等人来领的流水**，不自己发。
  *
- * 返回刚记下的那条流水；等结果是后台的事，调用方不必等（「试跑」那颗按钮要立刻有反应）。
+ * 和到点跑走的是同一条路——同一个工人、同一段指令、同一个会话，区别只有流水上的
+ * `trigger`。以前试跑由 Gateway 自己发进席位、挂着流等结果；那条路收掉了（见 ownerOf），
+ * 试跑也不能例外，不然「试跑成功、到点不灵」又查无可查。
+ *
+ * 登记的样子：`status = running`、`machineId` 指向该来领的那一方、**`leaseUntil` 空着**。
+ * 空着的租约就是「还没人领」：工人下一次来 `due` 时把它连同到点的一起领走（那一刻租约
+ * 才开始计）；隔了 PICKUP_MS 还没人领，sweepUnclaimed 把它收成 error。
+ *
+ * **先看那台机器在不在线**：不在线的话立刻回 409，比让人对着一个转三分钟的圈强。
+ * 本地 Bot 看不出在不在（桌面端不报心跳），只能登记了等。
  */
-export async function runRoutine(db: Db, routine: Routine, trigger: RoutineRunTrigger): Promise<RoutineRun> {
-  const run = await db.insertRoutineRun({
+export async function requestManualRun(db: Db, routine: Routine): Promise<RoutineRun> {
+  const owner = await ownerOf(db, routine)
+  if (owner.kind === 'none') throw new RoutineUnrunnableError(owner.reason)
+  if (owner.kind === 'machine') {
+    const machine = await db.machine(owner.machineId)
+    if (!machine || machineLink(machine) === 'offline') throw new RoutineUnrunnableError('席位所在的机器不在线')
+  }
+  return db.insertRoutineRun({
     routineId: routine.id,
     botId: routine.botId,
     accountId: routine.accountId,
     companyId: routine.companyId,
-    trigger,
+    trigger: 'manual',
+    machineId: owner.machineId,
+    leaseUntil: null,
   })
-  /**
-   * 记下这一次的结局，**顺手决定还补不补**。
-   *
-   * `retryable` 是「这件事再试一次有希望吗」，不是「它失败了吗」——够不着席位、席位
-   * 那一跳报错、模型那一轮出错，都算；下面三种明写着不补：
-   *
-   * - **人按了停止**（`aborted`）：他要的就是别跑，五分钟后自己跑起来是最糟的回应
-   * - **等结果超时**：那不是失败，是**结果不明**（见 RUN_TIMEOUT_MS）——那一轮很可能
-   *   还在席位上跑着，这时候再发一条进同一条会话，就是同一件事做两遍
-   * - **有一件转人工的事挡着**：五分钟后它照样挡着，而每补一次就多一张单、多一次通知
-   *
-   * 手动那条路（试跑）**一次都不补**：人就坐在屏幕前，他要的是看这一下成没成，不是
-   * 接下来五十分钟里再自己跑三遍。跑成了也不动重试那两格——他手点的这一下，不该把
-   * 到点那条链子上欠着的补跑抹掉。
-   */
-  const settle = (patch: SettlePatch, retryable = false) => settleRun(db, routine.id, run.id, trigger, patch, retryable)
-  /**
-   * 这一次等的是哪个数。`capped` = 等的是 Vercel 那个压过的预算而不是 RUN_TIMEOUT_MS：
-   * 到点了只是**这一拍等不起了**，席位那头多半还在跑。和二十分钟那一岔一样，结果不明
-   * 就不补跑——补跑等于把同一条指令再塞进同一个会话。区别只在文案：这里要告诉人
-   * 该升级管家让机器自己跑，而不是「结果不明」四个字。
-   */
-  const capped = WATCH_BUDGET_MS < RUN_TIMEOUT_MS
-  const watcher = (async () => {
-    const ac = new AbortController()
-    const timer = setTimeout(() => ac.abort(), WATCH_BUDGET_MS)
-    watching.add(ac)
-    try {
-      const link = await seatLinkOf(db, routine.accountId, routine.botId)
-      const sessionId = await sessionIdOf(link, routine.botId)
-      /**
-       * 这条会话上有一张**挡着路**的交接单还没闭合：这一次不跑。
-       *
-       * 不拦的话，一件卡住的事会每小时重跑一遍、每小时开一张新单、每小时推一次通知
-       * ——而人还没来得及处理第一张（见 docs/handoff.md §8）。流水上要如实写明是为什么
-       * 跳过的：静静地不跑，和「跑了但什么都没做」在界面上长得一模一样。
-       *
-       * **判据取自 Gateway 这张表，不去问席位**：这一跳发生在 tick 里，机器可能正关着，
-       * 而"关着"本身就是没人接手的一半原因。
-       */
-      const blocking = (await db.handoffsOfSession(sessionId)).find(
-        (h) => h.blocking && (h.state === 'open' || h.state === 'claimed'),
-      )
-      if (blocking) {
-        await settle({
-          status: 'error',
-          error: `这一次没跑：还有一件转人工的事等着人处理（${blocking.ask.slice(0, 60) || '没写要做什么'}）`,
-          sessionId,
-        })
-        return
-      }
-      await db.finishRoutineRun(run.id, { status: 'running', sessionId })
-      const afterSeq = await lastSeqOf(link, sessionId)
-      // 流先挂上，消息后发。顺序反了就会漏掉跑得快的那一轮，见文件头。
-      const reader = await openEvents(link, sessionId, afterSeq, ac)
-      const posted = (await seatJson(link, `/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
-        method: 'POST',
-        /**
-         * **发的是角色名，不是 provider + model。**
-         *
-         * 席位手上已经有平台钉的那两个角色（目录里下发的 `models.{daily,utility}`），
-         * 让它自己去查一次就够了。反过来把具体那一对从这里发过去，等于给 `/messages`
-         * 开了一个「这一轮用哪个模型」的入口——那条路浏览器也走得通，于是任何人都能
-         * 绕开管理员放开的白名单点一个模型。角色名只有两种值，绕不出什么去。
-         *
-         * `daily` 这一档故意**不发**任何东西：它的意思是「跟这个 Bot 平时一样」，
-         * 而那正是席位不带覆盖时的行为。
-         */
-        body: {
-          text: routine.instruction,
-          ...(routine.modelRole === 'utility' ? { modelRole: 'utility' } : {}),
-          // **带身份**：席位会把这一条标成「日常任务」画在对话里（见 bot 的 /messages），
-          // 人分得出哪句是自己说的、哪句是到点自己来跑的。
-          routine: { id: routine.id, name: routine.name },
-        },
-      })) as { steered?: boolean } | null
-      // `steered` = 插进了正在跑的那一轮，等的就是那一轮的收口；否则我们会另起一轮。
-      const kind = await readTurnEnd(reader, !posted?.steered, routine.instruction)
-      await settle(
-        {
-          status: kind === 'completed' ? 'ok' : 'error',
-          error: kind === 'completed' ? null : turnFailure(kind),
-          sessionId,
-        },
-        // 人按了停止的那一轮不补，别的收场都补（认不出来的 kind 也补：它是一次失败）。
-        kind !== 'completed' && kind !== 'aborted',
-      )
-    } catch (e) {
-      const aborted = ac.signal.aborted
-      await settle(
-        {
-          status: 'error',
-          error: aborted
-            ? capped
-              ? `Gateway 在 Vercel 上一次最多等 ${Math.round(WATCH_BUDGET_MS / 1000)} 秒，没等到这一轮的结果；把这台机器的管家升到协议 7 以上，日常任务就由机器自己跑`
-              : '等结果超时，这一次的结果不明'
-            : (e as Error).message.slice(0, 300),
-        },
-        // 抛到这儿的多半是「够不着席位」：机器还没开、正在换版、网断了一下——**正是
-        // 重试最该管的那一类**。超时那两岔（二十分钟、Vercel 预算）除外：结果不明，
-        // 补跑就是做两遍（见 capped）。
-        !aborted,
-      ).catch(() => {})
-    } finally {
-      clearTimeout(timer)
-      // **等到了也要掐。** 那条 SSE 是席位主动保活的，读到 turn/end 之后它不会自己
-      // 结束——不掐的话，每跑一次就在两边各留一条永不关闭的连接。
-      ac.abort()
-      watching.delete(ac)
-    }
-  })()
-  inflight.add(watcher)
-  void watcher.finally(() => inflight.delete(watcher))
-  return run
 }
 
 /**
@@ -513,12 +241,12 @@ export async function noteMissed(db: Db, routine: Routine, dueAt: number): Promi
  * - **指令空了就把这串清掉**：人把内容删干净了，等于这条任务现在什么都不做。
  */
 /**
- * 「到点的从哪儿来、抢到了交给谁」。Gateway 自己跑和席位工人来领，走的是同一套抢法
+ * 「到点的从哪儿来、抢到了交给谁」。Gateway 的 tick 和工人来领，走的是同一套抢法
  * （claimDue），只是来源和去处不同：
  *
- *   · Gateway 自己：全表扫，**跳过归工人的那些**（机器协议 ≥ MIN_WORKER_PROTOCOL），
- *     抢到就 runRoutine。
- *   · 工人（routes/worker.ts）：只扫自己那台机器的，抢到就登记一条带租约的流水交出去。
+ *   · Gateway 的 tick（tickRoutines）：全表扫，**只抢谁都领不走的那些**（Bot 没部署、
+ *     管家太旧），抢到就记一条「没跑」的原因。
+ *   · 工人 / 本地 Bot（routes/worker.ts）：只扫自己那一份，抢到就登记一条带租约的流水交出去。
  */
 export interface DueSource {
   due(now: number, limit: number): Promise<Routine[]>
@@ -585,56 +313,94 @@ export async function claimDue(
 }
 
 /**
- * 这条任务的席位所在机器是不是够新到自己领任务。一次 tick 里同一台机器只问一遍。
- * 没部署过的（没有席位行）归 Gateway：它会照旧去敲、照旧记「实例还没上线」。
+ * 这一次该归谁跑。
+ *
+ *   · `machine` —— 席位所在机器的工人来领（routes/worker.ts 的 /worker/routines/*）
+ *   · `local`   —— 桌面端里的本地 Bot 自己来领（/runtime/local-routines/*）
+ *   · `none`    —— 谁都跑不了，`reason` 是给人看的那句话：Bot 还没部署、机器不在了、
+ *                  管家太旧（协议 < MIN_WORKER_PROTOCOL，工人单元还没有）
+ *
+ * **Gateway 自己不跑。** 以前机器不够新时 Gateway 会自己去敲席位、挂着流等二十分钟；
+ * 那条路在 Vercel 上根本走不通（函数一回响应就冻住），在 Debian 上也只是给还没升级的
+ * 老机器兜底。收掉之后规矩只有一份：到点的活由机器来领，Gateway 只负责抢、记、补。
+ *
+ * `cache` 让一次 tick 里同一台机器只查一遍。
  */
-async function workerOwned(db: Db, routine: Routine, cache: Map<string, boolean>): Promise<boolean> {
+type RunOwner = { kind: 'machine' | 'local'; machineId: string } | { kind: 'none'; reason: string }
+
+async function ownerOf(db: Db, routine: Routine, cache = new Map<string, Machine | null>()): Promise<RunOwner> {
+  const item = await db.catalog(routine.botId)
+  if (item && runtimeKindOf(item) === 'local') return { kind: 'local', machineId: `desktop:${routine.accountId}` }
   const rt = await db.seatRuntime(routine.accountId, routine.botId)
-  if (!rt?.machineId) return false
-  const hit = cache.get(rt.machineId)
-  if (hit !== undefined) return hit
-  const machine = await db.machine(rt.machineId)
-  const owned = (machine?.protocol ?? 0) >= MIN_WORKER_PROTOCOL
-  cache.set(rt.machineId, owned)
-  return owned
+  if (!rt?.machineId) return { kind: 'none', reason: '这颗 Bot 还没部署到机器上，没有会话可以发' }
+  let machine = cache.get(rt.machineId)
+  if (machine === undefined) {
+    machine = (await db.machine(rt.machineId)) ?? null
+    cache.set(rt.machineId, machine)
+  }
+  if (!machine) return { kind: 'none', reason: '席位所在的机器已经不在了' }
+  if ((machine.protocol ?? 0) < MIN_WORKER_PROTOCOL) {
+    return {
+      kind: 'none',
+      reason: `这台机器的管家太旧（协议 ${machine.protocol ?? 0}，日常任务要 ≥ ${MIN_WORKER_PROTOCOL}），先升级管家`,
+    }
+  }
+  return { kind: 'machine', machineId: machine.id }
 }
 
 /**
- * 扫一轮：到点的抢过来，抢到的就跑；**上一次砸了、欠着补跑的，也在这一轮里补**。
+ * 到点了却没人能跑：流水上记一条 error 把原因写明，**不补**。
  *
- * **抢是一条带旧值的 update**（见 db.claimRoutine）：两个 Gateway 进程同时扫到同一条
- * 时，只有一个人的 rowCount 是 1。升级换版那几十秒里新旧两代会同时在跑，没有这一句，
- * 那一刻到点的任务会发两遍。
- *
- * 补跑不做，而且**错过太久的连这一次都不跑**（见 LATE_MS）——但会在流水上留一条，
- * 静静地跳过等于让人以为它跑过了。下一次的时间一律从**现在**往后算。
- *
- * 「不补跑」和「失败了重试」不矛盾，两句话说的是不同的事：前者是**这一次压根没触发**
- * （机器那会儿关着），补上去只会在开机那一刻涌出一堆没人要的东西；后者是这一次**触发
- * 了、也确实去做了、砸在了半路**，而人是奔着结果设的它。
+ * 静静地跳过不行——界面上和「从来没到点」长得一样，人会以为时间设错了。补也没用：
+ * 五分钟后管家还是那个版本。等人把机器升级了，下一次到点自然归工人。
+ */
+async function noteUnrunnable(db: Db, routine: Routine, trigger: 'schedule' | 'retry', reason: string): Promise<void> {
+  let run: RoutineRun
+  try {
+    run = await db.insertRoutineRun({
+      routineId: routine.id,
+      botId: routine.botId,
+      accountId: routine.accountId,
+      companyId: routine.companyId,
+      trigger,
+    })
+  } catch (e) {
+    if (e instanceof RoutineBusyError) return
+    throw e
+  }
+  await settleRun(db, routine.id, run.id, trigger, { status: 'error', error: `这一次没跑：${reason}` })
+}
+
+/**
+ * Gateway 这一拍只碰**谁都领不走**的那些：归工人的一下不动（那台机器自己会来领，
+ * routes/worker.ts），本地 Bot 的连 dueRoutines 都不会给出来。剩下的抢过来、记一条
+ * 「没跑」的原因，让人看得见。
  */
 export async function tickRoutines(db: Db, now = Date.now()): Promise<number> {
-  const owned = new Map<string, boolean>()
+  const machines = new Map<string, Machine | null>()
+  const reasons = new Map<string, string>()
   return claimDue(
     db,
     now,
     {
       due: (n, limit) => db.dueRoutines(n, limit),
       retries: (n, limit) => db.dueRoutineRetries(n, limit),
-      // 归工人的不碰：那台机器自己会来领（routes/worker.ts）。
-      owns: async (routine) => !(await workerOwned(db, routine, owned)),
+      owns: async (routine) => {
+        const owner = await ownerOf(db, routine, machines)
+        if (owner.kind !== 'none') return false
+        reasons.set(routine.id, owner.reason)
+        return true
+      },
     },
-    async (routine, trigger) => {
-      await runRoutine(db, routine, trigger)
-    },
+    (routine, trigger) => noteUnrunnable(db, routine, trigger, reasons.get(routine.id) ?? '没有机器能跑它'),
   )
 }
 
 /**
  * 工人租约到期没续的那些：流水已经记成「机器没回报」，这里把补跑排上。
  *
- * 和 Gateway 自己跑砸了是同一种失败——够不着席位——所以同样补三次；试跑不补（那条路
- * 今天不经过工人，这里只是照规矩写全）。
+ * 和「没跑起来」是同一种失败——够不着席位——所以同样补三次；试跑不补（settleRun 那条
+ * 规矩，人就坐在屏幕前）。
  */
 function sweepLeases(db: Db): Promise<void> {
   return db
@@ -662,9 +428,8 @@ function sweepLeases(db: Db): Promise<void> {
 export async function maintenanceTick(db: Db): Promise<void> {
   await Promise.resolve()
     .then(() => tickRoutines(db))
-    // 收尾跟着每一轮跑，不只在启动时跑一次：按年龄划线之后，启动那一次收不到
-    // 「刚起来时还不够老、后来也没人管」的那些（比如另一个进程半路被 kill）。
-    .then(() => sweepStaleRuns(db))
+    // 没人来领的试跑跟着每一轮收（见 sweepUnclaimed）。
+    .then(() => sweepUnclaimed(db))
     .then(() => sweepLeases(db))
     /**
      * 转人工的催办跟着同一个节拍走（见 handoff-sweep.ts）。
@@ -686,13 +451,6 @@ export async function maintenanceTick(db: Db): Promise<void> {
       else if (r.ran) console.log(`satuwork-gateway: 模型目录已刷新，models.dev 收录 ${r.added} 个可用模型`)
     }))
     .catch((e: Error) => console.error(`satuwork-gateway: 日常任务扫描失败：${e.message}`))
-  /**
-   * **Vercel 上这一拍要等 watcher 收场再回**（见 inflight）：回了响应函数就冻住。排在
-   * 所有扫描之后，那几项秒级的事不用陪着等；等的上限是 WATCH_BUDGET_MS，落在 maxDuration
-   * 里。Debian 上不等——常驻进程里 watcher 自己会收场，而 startRoutineScheduler 那把
-   * `running` 锁要是被一次二十分钟的等待占着，整个调度器都跟着停。
-   */
-  if (ON_VERCEL) await drainWatchers()
 }
 
 /**
@@ -706,9 +464,7 @@ export function startRoutineScheduler(db: Db): () => void {
     console.log('satuwork-gateway: 日常任务调度器没起（GATEWAY_ROUTINE_TICK_MS=0）')
     return () => {}
   }
-  void sweepStaleRuns(db).then((n) => {
-    if (n) console.log(`satuwork-gateway: 收掉了 ${n} 条没等到结果的日常任务`)
-  })
+  void sweepUnclaimed(db)
   let running = false
   const timer = setInterval(() => {
     // 上一轮还没扫完就跳过这一轮：扫的过程里有网络，慢起来会叠。
@@ -720,9 +476,5 @@ export function startRoutineScheduler(db: Db): () => void {
   }, TICK_MS)
   // 只有它一个定时器的话，进程会因为它一直不退出。
   timer.unref?.()
-  return () => {
-    clearInterval(timer)
-    for (const ac of watching) ac.abort()
-    watching.clear()
-  }
+  return () => clearInterval(timer)
 }
