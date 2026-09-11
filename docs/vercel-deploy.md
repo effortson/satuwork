@@ -55,9 +55,11 @@ openssl rand -base64 32   # GATEWAY_CHANNEL_KEY
   之后又删了最后两条会挂着不放的：日志跟随（`/runtime/logs?follow=1` 和平台侧两条 `.../logs?follow=1`，
   现在回 410，浏览器改从 `.../logs/direct` 拿 `{ url, ticket }` 直连管家）和附件上传
   （`POST /runtime/sessions/:id/files`，浏览器改打 `runtime.uploadUrl`），这两样要管家 ≥ 9 号。
-  **Vercel 上剩下唯一一条流式响应是 `/v1`**（模型回答的 SSE）——它是请求级的，模型答完就结束，
-  不是小时级；函数的 `maxDuration` 建议给到 800 秒，让一轮长回答（连同工具调用）不被半路砍断。
-  这里不动 `vercel.json`，上线前按需要改。
+  **Vercel 上剩下唯一一条流式响应是 `/v1`**（模型回答的 SSE），而且**只剩本地 Bot 在用它**：
+  席位上的模型调用已经改成管家中继（管家问 Gateway 要授权、自己打上游、完了回来结算，见
+  gateway-runtime.md「模型调用」），Gateway 不再在那条流的路径上。`/v1` 是请求级的，模型答完
+  就结束，不是小时级；函数的 `maxDuration` 建议给到 800 秒，让桌面端一轮长回答（连同工具调用）
+  不被半路砍断。这里不动 `vercel.json`，上线前按需要改。
 - **老协议机器上的日常任务与渠道**：Gateway 不再自己跑那一轮（那要等席位 20 分钟），< 8 号的
   机器上这两样不动。先升管家。
 

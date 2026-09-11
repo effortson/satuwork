@@ -370,6 +370,8 @@ const ADMIN_NAV = [
   { href: '/billing', label: '账单', icon: 'billing' },
   { href: '/usage', label: '用量统计', icon: 'usage' },
   { href: '/bots', label: 'Bot 模版', icon: 'bots' },
+  // 公司自己的模型密钥：配了就优先于平台共用那把，没配的供应商用平台的。
+  { href: '/providers', label: '供应商', icon: 'providers' },
   { href: '/skills', label: 'Skill 与 MCP', icon: 'skills' },
   { href: '/connectors', label: '连接器', icon: 'providers' },
 ]

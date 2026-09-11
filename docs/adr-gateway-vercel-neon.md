@@ -115,7 +115,7 @@ worker 复用同一套，不另写。
 | JWT 密钥对、渠道密钥 `crypto.ts` | 环境变量 | 启动时从 env 读；轮换靠改 env 重新部署 | JWKS 照旧从 `/.well-known` 发 |
 | 迁移 `db/migrate.ts` | build 步骤 | `vercel build` 前跑 `node --import tsx src/db/migrate.ts`，用 Neon 直连串 | 迁移锁是会话级 advisory lock，直连串上正常 |
 | 清库时的 schema 占用锁 `db.ts claimSchema` | 只留给 e2e | 生产从来走不到（只在 `GATEWAY_PG_RESET` 下拿），保持不动 | |
-| `/v1` 模型代理 | Gateway 原地 | 流式但单次有界，300 秒够 | 可选：加 `maxDuration` 到 800 |
+| `/v1` 模型代理 | **管家中继 + Gateway 授权/结算** | 管家每次调模型先 `POST /worker/llm/grant` 拿上游地址和鉴权头（含供应商密钥，只在那一次调用期间留在内存），自己打上游、把流给 bot，完了 `POST /worker/llm/:callId/settle` 报用量；认 Key、解析模型、密钥归谁、余额闸、落账全留在 Gateway（lib/llm-billing.ts）。`/v1` 原地保留给桌面端的本地 Bot 和还没换新管家的席位 | 公司密钥优先于平台密钥；没结算的授权半小时后由 Cron 收成 failed |
 | 连接器、网页搜索代理 | Gateway 原地 | 出站请求响应 | |
 | 控制台全部 JSON 路由 | Gateway 原地 | Router 包一层 `(req, res)` 适配即可 | |
 | `ui/` 静态文件 | Vercel 静态 | 分片直接当静态资源发；`GATEWAY_UI_CDN` 那条逻辑退休 | |

@@ -920,6 +920,27 @@ GitHub Actions 的接线在 `.github/workflows/bot-release.yml`：推 `bot-v*` t
 
 选模型不在可见目录 → 404。该 provider 没有密钥 → 402（或上游不可达 503）。JSON 错误，无 stack。用量记在持有该 API Key / JWT 的用户上。
 
+#### 模型调用：席位走管家中继，`/v1` 留给本地 Bot
+
+席位上的 Bot 不再把模型请求发到 Gateway 的 `/v1`，而是发给本机的管家；管家每次调用：
+
+1. `POST /worker/llm/grant`（`smt_`）带 `{ apiKey, route: chat|messages|responses, model, provider?, anthropicVersion?, openaiBeta? }`。
+   Gateway 认 `sk_sw_`、查这个账号的席位是不是在这台机器上（不是 → 403）、解析模型（404）、
+   取密钥（402）、过余额闸（402）、登记 `llm_calls`，回 `{ callId, provider, model, url, headers }`——
+   `headers` 里带着供应商密钥，管家只在这一次调用期间留在内存，不落盘不落日志。
+2. 管家拿 `url` + `headers` 打上游，把流原样给 Bot，逐帧累计用量（manager/src/llm-usage.ts，是
+   gateway/src/lib/llm-usage.ts 的逐字副本）。
+3. `POST /worker/llm/:callId/settle` 带 `{ usage?, status? }`，Gateway 按 /v1 同一份规矩落账
+   （lib/llm-billing.ts 的 settle）。幂等：已经有账的回 `{ settled: false, reason: 'already' }`。
+   拿了授权半小时没结算的，Cron 收成 `failed`（金额 0、unpriced）。
+
+错误的状态码和文案和 `/v1` 一样，管家原样回给 Bot。密钥的取法是**公司密钥 > 平台密钥 >
+环境变量**：公司管理员在 `/orgs/:id/credentials` 配自己那几把（列表里平台兜底的标
+`scope: 'platform'`，只能看），没配的供应商走平台那把。
+
+`/v1/*` 原地保留：桌面端的本地 Bot（Gateway 是它唯一够得着的出口）和还没换到新管家的席位
+继续走它。
+
 Bot 配置：`GATEWAY_URL`（例如 `http://127.0.0.1:3080`）+ `GATEWAY_TOKEN`（`sat_`）+ `GATEWAY_API_KEY`（`sk_sw_`）+ `SATUWORK_BOT_ID`。进程里没有 `GATEWAY_MACHINE_TOKEN`，也没有 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`。
 
 ### Gateway（机器服务凭证）

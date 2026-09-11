@@ -4,6 +4,21 @@ export function gatewayUrl(): string {
   return (process.env.GATEWAY_URL || '').replace(/\/$/, '')
 }
 
+/**
+ * 模型调用（所有 `/v1/*`：目录、补全）打哪里。
+ *
+ * 管家部署出来的席位会多拿一个 `GATEWAY_LLM_URL`（形如 `http://127.0.0.1:8443/llm`）：
+ * 模型调用由**同机的管家转发**，provider 密钥只在管家进程里，从不进 bot 进程；而
+ * Gateway 搬上 Vercel 之后也不再替席位流式转发模型输出——函数有时长上限，一条
+ * 几分钟的流撑不住。所以 `/v1/*` 走这里，其余（会话上传、/internal、日常任务）
+ * 照旧走 `GATEWAY_URL`。鉴权头不变，还是 `Bearer GATEWAY_API_KEY`，管家原样带过去。
+ *
+ * 没设就退回 `GATEWAY_URL`：本地桌面 bot 和老席位一个字都不用改。
+ */
+export function llmBaseUrl(): string {
+  return (process.env.GATEWAY_LLM_URL || process.env.GATEWAY_URL || '').replace(/\/$/, '')
+}
+
 export function gatewayToken(): string {
   return (process.env.GATEWAY_TOKEN || '').trim()
 }
@@ -510,9 +525,9 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
   kick()
   const signal = options?.signal ? AbortSignal.any([options.signal, idle.signal]) : idle.signal
   const run = async () => {
-    const base = gatewayUrl()
+    const base = llmBaseUrl()
     if (!base) {
-      fail(stream, model, '未配置 GATEWAY_URL')
+      fail(stream, model, '未配置 GATEWAY_LLM_URL / GATEWAY_URL')
       return
     }
     const apiKey = gatewayApiKey()

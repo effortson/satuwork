@@ -158,7 +158,8 @@ function wsHandshake(port, path, cookie) {
 export async function runManager({ root, gwRoot, test, req, start, waitHttp, assert, log }) {
   const GW_HOME = tmpOf('satuwork-e2e-manager-gw')
   const MGR_HOME = tmpOf('satuwork-e2e-manager-etc')
-  const [GW_PORT, MGR_PORT, BOT_PORT, NOVNC_PORT] = await freePorts(4)
+  // UP_PORT：模型中继那一组用的假上游。
+  const [GW_PORT, MGR_PORT, BOT_PORT, NOVNC_PORT, UP_PORT] = await freePorts(5)
   const gwBase = `http://127.0.0.1:${GW_PORT}`
   const mgrBase = `http://127.0.0.1:${MGR_PORT}`
   const managerRoot = join(root, 'manager')
@@ -271,9 +272,10 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       assert(anon.status === 401, `无票 ${anon.status}`)
       const ok = await req(mgrBase, 'GET', '/health', { token: machineTok })
       assert(ok.status === 200, `有票 ${ok.status} ${ok.text}`)
-      // 9 号起 /logs 认日志票、/stream 放上传的 POST（manager/src/config.ts）。Gateway 按这个
-      // 号决定给不给前端直连地址，报低了就是界面上一句「这台机器跟不了」。
-      assert(ok.json.protocol >= 9, `protocol 该 ≥ 9，实际 ${ok.json.protocol}`)
+      // 9 号起 /logs 认日志票、/stream 放上传的 POST；10 号起 /llm 替席位 Bot 中继模型调用
+      // （manager/src/config.ts）。Gateway 按这个号决定给不给前端直连地址、要不要把
+      // GATEWAY_LLM_URL 写进席位，报低了就是界面上一句「这台机器跟不了」。
+      assert(ok.json.protocol >= 10, `protocol 该 ≥ 10，实际 ${ok.json.protocol}`)
       assert(ok.json.dryRun === true, 'dryRun')
     })
 
@@ -2319,6 +2321,307 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       const again = await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })
       assert(again.json.machine && again.json.machine.id === machineId, '派回之后该重新成为这家公司的默认机器')
     })
+
+    // ── 模型中继（10 号协议）────────────────────────────────────────────
+    //
+    // 席位 Bot 调模型不再直打 Gateway 的 /v1，改打管家回环上的 /llm/v1/*：管家拿 Bot 的
+    // sk_sw_ 去 Gateway 领授权（/worker/llm/grant），拿到密钥直接打供应商，流原样回给 Bot，
+    // 收完再把 usage 报回去结算。这一组用一个假的 OpenAI 兼容上游盯住整条链：授权、密钥
+    // 取序（公司 → 平台）、字节不变、记账落库、各种拒绝各归各的错。
+    log('\n## 模型中继')
+    {
+      const PROVIDER = 'relay-llm'
+      const MODEL = 'relay-model'
+      /** 假上游收到的每一次请求：{ auth, path, body }。 */
+      const upSeen = []
+      const upstream = createServer((r, res) => {
+        let buf = ''
+        r.on('data', (d) => (buf += d))
+        r.on('end', () => {
+          let body = null
+          try {
+            body = JSON.parse(buf)
+          } catch {}
+          upSeen.push({ auth: r.headers.authorization, path: r.url, body })
+          // openai-completions 是流式的，必须发 SSE，不能发整包 JSON。
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+          const chunk = (choices, usage) =>
+            `data: ${JSON.stringify({ id: 'c', object: 'chat.completion.chunk', created: 1, model: 'm', choices, ...(usage ? { usage } : {}) })}\n\n`
+          res.write(chunk([{ index: 0, delta: { role: 'assistant' }, finish_reason: null }]))
+          res.write(chunk([{ index: 0, delta: { content: 'ok' }, finish_reason: null }]))
+          res.write(chunk([{ index: 0, delta: {}, finish_reason: 'stop' }], { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 }))
+          res.write('data: [DONE]\n\n')
+          res.end()
+        })
+      })
+      await listenOn(upstream, UP_PORT)
+      const upLast = () => upSeen[upSeen.length - 1]
+
+      const { createRequire } = await import('node:module')
+      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
+      const pgMod = require('pg')
+      /** 开一条连到本套件 schema 的连接跑一段，跑完关掉。 */
+      const withPg = async (fn) => {
+        const client = new pgMod.Client({ connectionString: PG_URL })
+        await client.connect()
+        try {
+          await client.query(`set search_path to ${SCHEMA}`)
+          return await fn(client)
+        } finally {
+          await client.end().catch(() => {})
+        }
+      }
+      const statOf = (usage, label) => Number(usage.json.stats.find((s) => s.label === label)?.value ?? NaN)
+      /** 这一组开始前公司已有的用量；下面的断言都按增量算，别把前面用例的账算进来。 */
+      let usage0 = { prompt: 0, completion: 0 }
+      const rawUsage = async (token) => {
+        const u = await req(gwBase, 'GET', `/orgs/${orgId}/usage`, { token })
+        assert(u.status === 200, `usage ${u.status} ${u.text}`)
+        return { prompt: statOf(u, '输入 Tokens'), completion: statOf(u, '输出 Tokens') }
+      }
+      const readUsage = async () => {
+        // 结算在响应写完之后才报回 Gateway，给它两拍。
+        await new Promise((r) => setTimeout(r, 400))
+        const u = await rawUsage(adminTok)
+        return { prompt: u.prompt - usage0.prompt, completion: u.completion - usage0.completion }
+      }
+      const chatBody = { model: `${PROVIDER}/${MODEL}`, messages: [{ role: 'user', content: 'hi' }], stream: true }
+
+      const machineId = await machineIdOf(req, gwBase, ownerTok, orgId)
+      let adminTok = ''
+      let adminId = ''
+      let apiKey = ''
+      /** 另一家公司管理员的钥匙：席位不在这台机器上，用来验 403。 */
+      let strangerKey = ''
+
+      try {
+        await test('模型中继：登记假上游供应商，平台密钥和公司密钥各配一把', async () => {
+          const model = {
+            id: MODEL, name: 'Relay Model', contextWindow: 65536, maxTokens: 4096,
+            reasoning: false, input: ['text'], cost: { input: 1.5, output: 3, cacheRead: 0, cacheWrite: 0 },
+          }
+          const made = await req(gwBase, 'POST', '/platform/providers', {
+            token: ownerTok,
+            body: { id: PROVIDER, name: 'Relay LLM', baseUrl: `http://127.0.0.1:${UP_PORT}/v1`, api: 'openai-completions', models: [model] },
+          })
+          assert(made.status === 201, `建供应商 ${made.status} ${made.text}`)
+          const plat = await req(gwBase, 'POST', '/platform/credentials', { token: ownerTok, body: { provider: PROVIDER, secret: 'platform-key' } })
+          assert(plat.status === 201, `平台密钥 ${plat.status} ${plat.text}`)
+
+          const login = await req(gwBase, 'POST', '/auth/login', { body: { email: 'admin@mgrtest.local', password: 'manager-admin-1234' } })
+          assert(login.status === 200, `admin login ${login.status} ${login.text}`)
+          adminTok = login.json.token
+          const me = await req(gwBase, 'GET', '/me', { token: adminTok })
+          assert(me.status === 200, `/me ${me.status}`)
+          adminId = me.json.account.id
+          usage0 = await rawUsage(adminTok)
+          // 这家公司是套件开头裸建的，一分钱都没充；平台默认开着余额闸，不充就是 402
+          // （「额度用完了」）。402 那条路下面单独验，这里先让它有钱。
+          const paid = await req(gwBase, 'POST', '/platform/orders', {
+            token: ownerTok,
+            body: { companyId: orgId, kind: 'topup', amount: 100, payStatus: 'paid', note: 'e2e 模型中继' },
+          })
+          assert(paid.status === 201, `充值 ${paid.status} ${paid.text}`)
+
+          const comp = await req(gwBase, 'POST', `/orgs/${orgId}/credentials`, { token: adminTok, body: { provider: PROVIDER, secret: 'company-key' } })
+          assert(comp.status === 201, `公司密钥 ${comp.status} ${comp.text}`)
+          assert(!comp.text.includes('company-key'), '配公司密钥的响应把密钥回显了')
+          const list = await req(gwBase, 'GET', `/orgs/${orgId}/credentials`, { token: adminTok })
+          assert(list.status === 200, `列公司密钥 ${list.status} ${list.text}`)
+          const row = (list.json.credentials || []).find((c) => c.provider === PROVIDER)
+          assert(row && row.configured === true && row.scope === 'company', `公司密钥没标成 company：${JSON.stringify(row)}`)
+          assert(!list.text.includes('company-key') && !list.text.includes('platform-key'), '密钥列表回显了密钥')
+
+          // Bot 手里那把 sk_sw_：owner 从平台那条能读到（部署时就是这么拿的）。
+          const secrets = await req(gwBase, 'GET', `/platform/accounts/${adminId}`, { token: ownerTok })
+          assert(secrets.status === 200, `读账号密钥 ${secrets.status} ${secrets.text}`)
+          apiKey = secrets.json.apiKey
+          assert(typeof apiKey === 'string' && apiKey.startsWith('sk_sw_'), `apiKey 不像 sk_sw_：${apiKey}`)
+
+          // 授权只发给**这台机器上有席位**的账号：给管理员在真管家这台机器上补一行席位。
+          // 真管家的名册里没有这个席位也无妨——中继不问名册，问的是 Gateway。
+          await withPg((client) =>
+            client.query(
+              `insert into seat_runtimes ("accountId","botId","companyId","linuxUser","seatId","machineId",slot,display,"vncPort","novncPort","botPort","vncPassword",status,"deployedAt","updatedAt","botVersion")
+               values ($1,'bot-llm',$2,'sw-llm','seat-llm',$3,8,18,5918,6089,3208,'pw','ready',$4,$4,'0.0.0-e2e')`,
+              [adminId, orgId, machineId, Date.now()],
+            ),
+          )
+          // 前面有用例拿假心跳把这台报成过 9；这里明说一次 10，别让后面的断言靠时机。
+          const hb = await req(gwBase, 'POST', `/internal/machines/${machineId}/heartbeat`, {
+            token: machineTok,
+            body: { managerVersion: 'e2e-10', protocol: 10, node: process.versions.node, seats: [] },
+          })
+          assert(hb.status === 200, `heartbeat ${hb.status} ${hb.text}`)
+        })
+
+        await test('模型中继：Bot 打管家回环 /llm/v1/chat/completions，流原样回来，上游拿的是公司密钥', async () => {
+          upSeen.length = 0
+          const r = await req(mgrBase, 'POST', '/llm/v1/chat/completions', { token: apiKey, body: chatBody })
+          assert(r.status === 200, `chat ${r.status} ${r.text.slice(0, 300)}`)
+          assert(String(r.headers.get('content-type')).startsWith('text/event-stream'), `content-type ${r.headers.get('content-type')}`)
+          assert(r.text.includes('"content":"ok"'), `流里没有上游那段 ok：${r.text.slice(0, 300)}`)
+          assert(r.text.includes('data: [DONE]'), `流尾没有 [DONE]：${r.text.slice(-100)}`)
+          assert(!r.text.includes('company-key') && !r.text.includes('platform-key'), '密钥漏进了给 Bot 的响应')
+
+          const up = upLast()
+          assert(upSeen.length === 1 && up, `上游该收到 1 次请求，实际 ${upSeen.length}`)
+          assert(up.auth === 'Bearer company-key', `公司配了密钥，上游收到的却是 ${up.auth}`)
+          assert(up.path === '/v1/chat/completions', `上游路径 ${up.path}`)
+          assert(up.body && up.body.model === MODEL, `上游收到的 model 是 ${JSON.stringify(up.body?.model)}——不能把 provider 那段捎上去`)
+          assert(!('provider' in up.body), '上游收到的正文里多了 provider 字段')
+          assert(up.body.stream === true, '上游收到的 stream 丢了')
+        })
+
+        await test('模型中继：usage 结算回 Gateway，llm_calls 和账本各一行', async () => {
+          const u = await readUsage()
+          assert(u.prompt === 5, `输入 tokens ${u.prompt}，应为 5`)
+          assert(u.completion === 1, `输出 tokens ${u.completion}，应为 1`)
+          await withPg(async (client) => {
+            const calls = await client.query(
+              'select id, "promptTokens", "completionTokens", provider, model from llm_calls where "companyId" = $1 and "accountId" = $2 order by "createdAt" desc',
+              [orgId, adminId],
+            )
+            assert(calls.rowCount === 1, `这家公司该有 1 条 llm_calls，实际 ${calls.rowCount}`)
+            const c = calls.rows[0]
+            assert(Number(c.promptTokens) === 5 && Number(c.completionTokens) === 1, `llm_calls 记的是 ${c.promptTokens}/${c.completionTokens}`)
+            assert(c.provider === PROVIDER && c.model === MODEL, `llm_calls 记的模型是 ${c.provider}/${c.model}`)
+            const charges = await client.query(
+              `select count(*)::int as n from usage_charges where kind = 'llm' and "refId" in (select id from llm_calls where "companyId" = $1)`,
+              [orgId],
+            )
+            assert(charges.rows[0].n === 1, `账本该按 refId 挂 1 行，实际 ${charges.rows[0].n}`)
+          })
+        })
+
+        await test('模型中继：删掉公司密钥就落回平台密钥', async () => {
+          const del = await req(gwBase, 'DELETE', `/orgs/${orgId}/credentials/${PROVIDER}`, { token: adminTok })
+          assert(del.status === 200, `删公司密钥 ${del.status} ${del.text}`)
+          const again = await req(gwBase, 'DELETE', `/orgs/${orgId}/credentials/${PROVIDER}`, { token: adminTok })
+          assert(again.status === 404, `重复删该 404，实际 ${again.status} ${again.text}`)
+          upSeen.length = 0
+          const r = await req(mgrBase, 'POST', '/llm/v1/chat/completions', { token: apiKey, body: chatBody })
+          assert(r.status === 200, `chat ${r.status} ${r.text.slice(0, 300)}`)
+          assert(upLast()?.auth === 'Bearer platform-key', `删掉公司密钥后上游收到的是 ${upLast()?.auth}`)
+          const u = await readUsage()
+          assert(u.prompt === 10 && u.completion === 2, `第二次调用没记上：${u.prompt}/${u.completion}`)
+        })
+
+        await test('模型中继：GET /llm/v1/models 转 Gateway 的目录，带着自定义模型', async () => {
+          const r = await req(mgrBase, 'GET', '/llm/v1/models', { token: apiKey })
+          assert(r.status === 200, `models ${r.status} ${r.text.slice(0, 300)}`)
+          const m = (r.json.data || []).find((x) => x.id === `${PROVIDER}/${MODEL}`)
+          assert(m, `目录里没有 ${PROVIDER}/${MODEL}：${r.text.slice(0, 300)}`)
+          const anon = await req(mgrBase, 'GET', '/llm/v1/models')
+          assert(anon.status === 401, `无钥匙的 models 该 401，实际 ${anon.status}`)
+        })
+
+        await test('模型中继：各种拒绝各归各的错——无钥匙 401、坏钥匙 401、别家席位 403、未知模型 404', async () => {
+          upSeen.length = 0
+          const anon = await req(mgrBase, 'POST', '/llm/v1/chat/completions', { body: chatBody })
+          assert(anon.status === 401, `无钥匙该 401，实际 ${anon.status} ${anon.text.slice(0, 200)}`)
+          const bad = await req(mgrBase, 'POST', '/llm/v1/chat/completions', { token: 'sk_sw_not-a-real-key', body: chatBody })
+          assert(bad.status === 401, `坏钥匙该 401（grant 转回来的），实际 ${bad.status} ${bad.text.slice(0, 200)}`)
+
+          // 另一家公司的管理员：钥匙是真的，但席位不在这台机器上。管家不该替别人家的 Bot 调。
+          const other = await req(gwBase, 'POST', '/platform/orgs', {
+            token: ownerTok,
+            body: {
+              name: '别家公司', slug: 'mgrtest-other',
+              contactName: '联系人', contactPhone: '+86 13800000001', contactEmail: 'admin@other.local',
+              adminEmail: 'admin@other.local', adminPassword: 'manager-admin-1234',
+            },
+          })
+          assert(other.status === 201, `建别家公司 ${other.status} ${other.text}`)
+          const oLogin = await req(gwBase, 'POST', '/auth/login', { body: { email: 'admin@other.local', password: 'manager-admin-1234' } })
+          assert(oLogin.status === 200, `别家 admin login ${oLogin.status}`)
+          const oMe = await req(gwBase, 'GET', '/me', { token: oLogin.json.token })
+          const oSecrets = await req(gwBase, 'GET', `/platform/accounts/${oMe.json.account.id}`, { token: ownerTok })
+          strangerKey = oSecrets.json.apiKey
+          assert(typeof strangerKey === 'string' && strangerKey.startsWith('sk_sw_'), `别家 apiKey 不像 sk_sw_：${strangerKey}`)
+          const stranger = await req(mgrBase, 'POST', '/llm/v1/chat/completions', { token: strangerKey, body: chatBody })
+          assert(stranger.status === 403, `席位不在这台机器上该 403，实际 ${stranger.status} ${stranger.text.slice(0, 200)}`)
+
+          const unknown = await req(mgrBase, 'POST', '/llm/v1/chat/completions', {
+            token: apiKey,
+            body: { ...chatBody, model: `${PROVIDER}/no-such-model` },
+          })
+          assert(unknown.status === 404, `未知模型该 404（grant 转回来的），实际 ${unknown.status} ${unknown.text.slice(0, 200)}`)
+          assert(upSeen.length === 0, `被拒的调用不该打到上游，实际打了 ${upSeen.length} 次`)
+
+          // 被拒的调用不记 token。
+          const u = await readUsage()
+          assert(u.prompt === 10 && u.completion === 2, `被拒的调用记了用量：${u.prompt}/${u.completion}`)
+        })
+
+        await test('模型中继：/llm 只收回环地址；不是回环 404，不暴露有这条路', async () => {
+          // 管家只监听 127.0.0.1，从别的地址进不来；能验的是「路由自己按来源判」——
+          // 拿 x-forwarded-for 骗不到它（它看的是 socket），这里钉住的是无钥匙时的形状。
+          const r = await fetch(`${mgrBase}/llm/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.0.0.9' },
+            body: JSON.stringify(chatBody),
+          })
+          assert(r.status === 401, `回环上无钥匙该 401（不看 x-forwarded-for），实际 ${r.status}`)
+          await r.text()
+        })
+
+        await test('模型中继：Gateway 那半边——机器票直接领授权，结算只认第一次', async () => {
+          const grant = await req(gwBase, 'POST', '/worker/llm/grant', {
+            token: machineTok,
+            body: { apiKey, route: 'chat', model: `${PROVIDER}/${MODEL}` },
+          })
+          assert(grant.status === 200, `grant ${grant.status} ${grant.text}`)
+          const g = grant.json
+          assert(typeof g.callId === 'string' && g.callId, `grant 没回 callId：${grant.text}`)
+          assert(g.provider === PROVIDER && g.model === MODEL, `grant 回的模型是 ${g.provider}/${g.model}`)
+          assert(g.url === `http://127.0.0.1:${UP_PORT}/v1/chat/completions`, `grant 回的 url 是 ${g.url}`)
+          assert(g.headers && g.headers.authorization === 'Bearer platform-key', `grant 回的 headers 是 ${JSON.stringify(g.headers)}`)
+
+          const settle = await req(gwBase, 'POST', `/worker/llm/${g.callId}/settle`, {
+            token: machineTok,
+            // usage 按 TokenUsage 的四项报（manager/src/llm-usage.ts 折好的那份形状）。
+            body: { usage: { prompt_tokens: 7, completion_tokens: 3, cached_tokens: 0, cache_write_tokens: 0 }, status: 'ok' },
+          })
+          assert(settle.status === 200 && settle.json.settled === true, `settle ${settle.status} ${settle.text}`)
+          const twice = await req(gwBase, 'POST', `/worker/llm/${g.callId}/settle`, {
+            token: machineTok,
+            body: { usage: { prompt_tokens: 700, completion_tokens: 300, cached_tokens: 0, cache_write_tokens: 0 }, status: 'ok' },
+          })
+          assert(twice.status === 200 && twice.json.settled === false && twice.json.reason === 'already', `第二次 settle 该 settled:false/already，实际 ${twice.status} ${twice.text}`)
+          const u = await readUsage()
+          assert(u.prompt === 17 && u.completion === 5, `第二次结算改了账：${u.prompt}/${u.completion}`)
+
+          // 机器票那道闸：无票 401；别家席位的钥匙 403；坏钥匙 401；未知模型 404；没密钥的供应商 402。
+          const noTok = await req(gwBase, 'POST', '/worker/llm/grant', { body: { apiKey, route: 'chat', model: `${PROVIDER}/${MODEL}` } })
+          assert(noTok.status === 401, `无机器票该 401，实际 ${noTok.status}`)
+          const badKey = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey: 'sk_sw_nope', route: 'chat', model: `${PROVIDER}/${MODEL}` } })
+          assert(badKey.status === 401, `坏钥匙该 401，实际 ${badKey.status} ${badKey.text}`)
+          const foreign = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey: strangerKey, route: 'chat', model: `${PROVIDER}/${MODEL}` } })
+          assert(foreign.status === 403, `别家席位该 403，实际 ${foreign.status} ${foreign.text}`)
+          const noModel = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, route: 'chat', model: `${PROVIDER}/nope` } })
+          assert(noModel.status === 404, `未知模型该 404，实际 ${noModel.status} ${noModel.text}`)
+          await req(gwBase, 'DELETE', `/platform/credentials/${PROVIDER}`, { token: ownerTok })
+          const noSecret = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, route: 'chat', model: `${PROVIDER}/${MODEL}` } })
+          assert(noSecret.status === 402, `没密钥该 402，实际 ${noSecret.status} ${noSecret.text}`)
+          const relayNoSecret = await req(mgrBase, 'POST', '/llm/v1/chat/completions', { token: apiKey, body: chatBody })
+          assert(relayNoSecret.status === 402, `管家那头没密钥也该 402 转回来，实际 ${relayNoSecret.status} ${relayNoSecret.text.slice(0, 200)}`)
+        })
+
+        await test('模型中继：席位的 bot.env 会多一行 GATEWAY_LLM_URL 指向管家回环', async () => {
+          // dryRun 不跑 deploy-seat.sh，bot.env 不会真的写出来；能钉的是「脚本写这一行」和
+          // 「管家把回环地址按自己的口传给脚本」这两半，真机上合起来就是那一行。
+          const script = readFileSync(join(managerRoot, 'src', 'seat', 'deploy-seat.sh'), 'utf8')
+          assert(/^GATEWAY_LLM_URL=\$MANAGER_LLM_URL$/m.test(script), 'deploy-seat.sh 没把 GATEWAY_LLM_URL 写进 bot.env')
+          const seats = readFileSync(join(managerRoot, 'src', 'seats.ts'), 'utf8')
+          assert(seats.includes('MANAGER_LLM_URL: `http://127.0.0.1:${bootConfig().port}/llm`'), 'seats.ts 没把 http://127.0.0.1:<port>/llm 传给部署脚本')
+        })
+      } finally {
+        await closeServer(upstream, '模型中继假上游')
+        // 补的那行席位删掉：后面「注销」那条要看真管家自己拆的是它名册里的席位。
+        await withPg((client) => client.query('delete from seat_runtimes where "machineId" = $1 and "seatId" = $2', [machineId, 'seat-llm'])).catch(() => {})
+      }
+    }
 
     await test('配对码一次性：同一个码换不了第二把票', async () => {
       const r = await req(gwBase, 'POST', '/machines/pair', {

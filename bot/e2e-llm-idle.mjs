@@ -16,10 +16,21 @@ import { stubModel } from './src/llm/stream.ts'
 
 const IDLE = Number(process.env.SATUWORK_LLM_IDLE_MS)
 let mode = 'silent'
+/** 服务端收到的路径，给 relay 那条看请求打到了哪个 base。 */
+const paths = []
 
 const server = createServer((req, res) => {
+  paths.push(req.url)
   req.resume()
   req.on('end', () => {
+    if (mode === 'relay') {
+      // 转发口：立刻答一句就收。这条测的是「打到哪」，不是空闲判据。
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: '经管家' } }] })}\n\n`)
+      res.write('data: [DONE]\n\n')
+      res.end()
+      return
+    }
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     // 连响应头都不给。abort 会落在 fetch 那一侧。
     if (mode === 'headless') return
@@ -61,5 +72,13 @@ mode = 'silent'
 out.silent = await drain()
 mode = 'alive'
 out.alive = await drain()
+// 席位上管家转发模型调用：设了 GATEWAY_LLM_URL，/v1/* 必须打它，GATEWAY_URL 指向哪都不该碰。
+// GATEWAY_URL 故意指到没人听的端口——要是补全还走它，这条就收到「Gateway 不可达」。
+mode = 'relay'
+process.env.GATEWAY_LLM_URL = `http://127.0.0.1:${server.address().port}/llm/`
+process.env.GATEWAY_URL = 'http://127.0.0.1:9'
+paths.length = 0
+out.relay = { ...(await drain()), paths: [...paths] }
+delete process.env.GATEWAY_LLM_URL
 server.close()
 console.log('__RESULT__' + JSON.stringify(out))

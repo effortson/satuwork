@@ -1,6 +1,6 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
-import { gatewayApiKey, gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../llm/gateway.ts'
 import type { SessionEvent } from '../session/types.ts'
 
 export const name = 'satu-conversation-audit'
@@ -250,7 +250,8 @@ export class ConversationAuditService extends Service {
   }
 
   private async complete(job: AuditJob, user: string): Promise<string> {
-    const base = gatewayUrl()
+    // 模型调用走 llmBaseUrl()（席位上是管家转发口）；下面 report() 回报结果仍打 Gateway。
+    const base = llmBaseUrl()
     const key = gatewayApiKey()
     if (!base || !key) throw new Error('没有配置 Gateway 模型入口')
     const r = await fetch(`${base}/v1/chat/completions`, {

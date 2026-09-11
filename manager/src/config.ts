@@ -55,8 +55,13 @@ import { fileURLToPath } from 'node:url'
  * 放行 `POST /sessions/:id/files`（浏览器直连上传）。Gateway 拿这个号数决定给不给前端 logs /
  * upload 的直连地址（MIN_DIRECT_LOGS_PROTOCOL / MIN_DIRECT_UPLOAD_PROTOCOL）：8 号管家上前一条
  * 只认机器票，后一条是 405，前端不再退回 Gateway，所以号数不对就是一句报错。
+ *
+ * 10：管家替本机 Bot 调模型（`/llm/v1/*`，只认回环地址；授权和结算在 Gateway 的
+ * `/worker/llm/*`，见 src/llm-relay.ts），席位的 bot.env 多一行 `GATEWAY_LLM_URL`。Gateway
+ * 拿这个号数决定这台机器上的模型调用该从哪条路上看见（目前不按它分流：`/v1` 仍留给本地
+ * Bot 和没重铺的席位——9 号管家铺的席位 bot.env 里没有那一行，Bot 照旧直打 Gateway）。
  */
-export const PROTOCOL = 9
+export const PROTOCOL = 10
 
 export interface ManagerState {
   machineId: string

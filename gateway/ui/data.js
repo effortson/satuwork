@@ -331,7 +331,10 @@ async function loadCreds() {
   const id = orgId()
   if (!id) return
   const data = await api('GET', `/orgs/${encodeURIComponent(id)}/credentials`)
-  state.creds = data.credentials || []
+  // 公司这一份每行带 scope：'company' 是本公司自己贴的密钥，'platform' 是平台共用、
+  // 公司没覆盖的那把。页面据此决定贴哪个标、能不能删——删只能删本公司的。
+  // 老后端不带 scope 时一律当平台的：那时公司本来就改不了。
+  state.creds = (data.credentials || []).map((c) => ({ ...c, scope: c.scope === 'company' ? 'company' : 'platform' }))
 }
 
 /**

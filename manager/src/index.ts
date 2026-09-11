@@ -12,6 +12,7 @@ import { confirmVersion, maybeUpgrade, refreshConfirmScript, upgradeDeferred, up
 import { currentTimezone, maybeSetTimezone, timezoneError } from './timezone.ts'
 import { standDown } from './standdown.ts'
 import { ensureWorkerEnv, relayIntercept } from './relay.ts'
+import { llmRelayIntercept } from './llm-relay.ts'
 
 /**
  * 机器管家。一台席位机器一个，root systemd 服务。
@@ -234,6 +235,8 @@ process.on('uncaughtException', (e) => {
 const router = new Router()
 // 本机工人的中继口排在最前面：它只认回环地址加令牌，认不出来就 401，不会落到别的分支。
 router.intercept(relayIntercept({ machineToken: token, gatewayUrl }))
+// 本机 Bot 调模型的口（/llm/v1/*）：同样只认回环地址，外面来的一律 404。
+router.intercept(llmRelayIntercept({ machineToken: token, gatewayUrl }))
 router.intercept(proxyIntercept({ machineToken: token, gatewayUrl }))
 
 router.get('/health', async (req, res) => {

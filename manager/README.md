@@ -59,6 +59,7 @@ GET    /seats/:id/stream/*  反代到 bot，换成 sat_    浏览器的登录 JW
 POST   /seats/:id/stream/sessions/:sid/files  上传，同上   浏览器的登录 JWT（协议 9）
 GET    /roster/stream       本机这个人的名单流        浏览器的登录 JWT（协议 6）
 ANY    /w-local/*           本机工人的中继口          回环地址 + worker.env 里的令牌（协议 7）
+ANY    /llm/v1/*            替本机 Bot 调模型         回环地址 + Bot 的 sk_sw_（协议 10；不是回环一律 404）
 ```
 
 bot 那条**原样透传 `authorization`**——bot 自己要验席位票（`sat_`），管家不掺和，
@@ -96,6 +97,31 @@ bot 那条**原样透传 `authorization`**——bot 自己要验席位票（`sat
 **这是要小心的一处**：号数是包里写死的，工人单元没起来的机器上，Gateway 会以为任务归工人，
 而没人来领，到点只会在流水上留一条「机器没回报」并排补跑。升级到带工人的版本之后要看一眼
 每台机器的 `systemctl status satuwork-worker`。
+
+## 模型中继
+
+10 号协议起，席位上的 Bot 调模型不再直打 Gateway 的 `/v1/*`，而是打管家在回环地址上的
+`/llm/v1/*`（`src/llm-relay.ts`；bot.env 里多一行 `GATEWAY_LLM_URL=http://127.0.0.1:<管家端口>/llm`，
+Bot 拿它当 `/v1` 的基址）。Gateway 搬到 Vercel 之后那种几分钟的生成流留不住，所以调上游这一跳
+下沉到席位机器上，Gateway 只留下**授权**和**结算**两件短活：
+
+```
+GET  /llm/v1/models             原样转 Gateway 的 /v1/models（带 Bot 的钥匙）
+POST /llm/v1/chat/completions   route=chat
+POST /llm/v1/messages           route=messages（Bot 的 anthropic-version 头，授权没钉版本时才转）
+POST /llm/v1/responses          route=responses
+```
+
+一次调用：读 JSON 体（>32 MB 回 413，没 `model` 回 400）→ `POST {gateway}/worker/llm/grant`（smt_，
+把 Bot 的 `sk_sw_` 原样交上去验；Gateway 回 4xx 就**原样**转给 Bot，够不着回 503）→ 拿授权里的
+上游地址和头（含供应商密钥，只活在这一次调用的内存里）打供应商，字节原样流回 Bot，顺手从
+`data:` 帧或整块 JSON 里数 usage（`src/llm-usage.ts`，gateway 那份的逐字副本，账才对得上）→
+`POST {gateway}/worker/llm/:callId/settle`，带 usage 和结局（`ok` / `failed`：Bot 先走了或上游非 2xx /
+`error` / `timeout`：120 秒没等到响应头）。结算不挡 Bot 的响应，网络层失败隔两秒补一次，再不行只留
+一行日志——Gateway 会定期扫没结算的调用。
+
+管家不验 `sk_sw_`（那是 Gateway 的事），也不把授权头的值写进日志或回显：上游错误正文里的密钥
+先抹成 `[redacted]` 再给 Bot。每次调用留一行 info 日志：路由、供应商/模型、结局、四项 token、耗时。
 
 ## 落盘
 

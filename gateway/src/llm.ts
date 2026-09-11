@@ -35,6 +35,27 @@ export interface ProbeResult {
 /** 连通性测试的上限。上游卡住时页面上那颗按钮不能一直转。 */
 const PROBE_TIMEOUT_MS = 20_000
 
+/** 调用方没带 `anthropic-version` 时补的那一个。/v1/messages 和管家授权共用。 */
+export const ANTHROPIC_VERSION = '2023-06-01'
+
+/** 管家中继要打的上游。`headers` 里带着供应商密钥，只能进内存，不能落日志。 */
+export interface UpstreamTarget {
+  url: string
+  headers: Record<string, string>
+  model: string
+}
+
+/**
+ * 内置 openai / anthropic 的上游主机覆盖。给 e2e 指到 stub、或者走企业代理用。
+ * 值是**主机**（不含 `/v1`），/v1 的透传路由和 upstreamTargetOf 各自往后拼路径。
+ */
+export function openaiBase(): string {
+  return (process.env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/$/, '')
+}
+export function anthropicBase(): string {
+  return (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '')
+}
+
 export function openaiModelId(m: { provider: string; id: string }): string {
   return `${m.provider}/${m.id}`
 }
@@ -75,7 +96,7 @@ export function parseModelRef(raw: string, hint?: string): ModelRef {
  *
  * 可见集 = pi-ai 内置全局目录 ∪ 该公司 catalog 里的 model。
  * 若平台 enabledModels 非空，再按 openai id（provider/id）过滤。
- * 密钥：平台表 > 进程环境变量 > 公司（过渡期回落）。永远不回显。
+ * 密钥：公司表 > 平台表 > 进程环境变量（见 secret）。永远不回显。
  */
 export class Llm {
   readonly models = builtinModels()
@@ -298,19 +319,98 @@ export class Llm {
   }
 
   /**
-   * 平台表优先，否则环境变量，否则公司密钥（过渡期回落）。
-   * 调用方拿去调上游，响应里不得出现这个字符串。
+   * 密钥的取法：**公司密钥 > 平台密钥 > 进程环境变量。**
+   *
+   * 公司密钥是主机制：每家公司拿自己的 key 调上游，账单在供应商那边就是分开的，
+   * 一把 key 泄了也只是这一家的事。平台密钥是共享的兜底——没自己配的公司走平台
+   * 采购的那把，平台按 usage_charges 转售。环境变量是最后一档，留给没人配过任何
+   * 表、只靠 `.env` 起来的部署。
+   *
+   * 这个顺序和以前相反（以前平台表压过公司表）。反过来的理由是**影响面**：平台
+   * 密钥优先时，公司配了自己的 key 也不生效，所有公司的流量都从平台那把出去——一旦
+   * 它被限流或吊销，所有公司同时哑掉；而公司的 key 优先时，平台那把只承担没自己
+   * 配的那些，哪一家出问题都只影响哪一家。
+   *
+   * 调用方拿去调上游（Gateway 自己的 /v1，或者发给管家中继的授权），响应里不得
+   * 出现这个字符串。
    */
   async secret(companyId: string | null, provider: string): Promise<string | undefined> {
-    const platform = await this.db.platformCredential(provider)
-    if (platform?.secret) return platform.secret
-    const env = envSecret(provider)
-    if (env) return env
     if (companyId) {
       const company = await this.db.credentialByProvider(companyId, provider)
       if (company?.secret) return company.secret
     }
-    return undefined
+    const platform = await this.db.platformCredential(provider)
+    if (platform?.secret) return platform.secret
+    return envSecret(provider)
+  }
+
+  /**
+   * 管家中继要打的上游：地址、鉴权头、上游认的模型名。
+   *
+   * 这是 /v1 三条路由「往哪打、带什么头」的那一份规矩，抽出来给授权接口用——管家
+   * 只拿结果，不需要知道 pi-ai。地址从 pi-ai 的 Model.baseUrl 推（自定义供应商是
+   * providers.ts 的 buildProvider 灌进去的 def.baseUrl），各家 baseUrl 的形状不一样，
+   * 拼法按 `api` 分：
+   *
+   *   openai-completions / openai-responses   baseUrl 已含 `/v1`（内置 openai 是
+   *       `https://api.openai.com/v1`）：chat → `${baseUrl}/chat/completions`，
+   *       responses → `${baseUrl}/responses`。两种 api 的上游都同时开着这两条，所以
+   *       chat 路由不挑。
+   *   google-generative-ai   baseUrl 是 `https://generativelanguage.googleapis.com/v1beta`，
+   *       Google 的 OpenAI 兼容口在 `/v1beta/openai/chat/completions`，即 `${baseUrl}/openai/...`。
+   *   anthropic-messages     baseUrl 是 `https://api.anthropic.com`（**不含** `/v1`，
+   *       Anthropic SDK 自己补 `/v1/messages`）：`${baseUrl}/v1/messages`。自定义供应商
+   *       填了带 `/v1` 的 baseUrl 也认，不再叠一层。
+   *
+   * 头：OpenAI 系是 `authorization: Bearer`，Anthropic 是 `x-api-key` + `anthropic-version`；
+   * 自定义供应商定义里的 headers 原样带上（它们本来就是给 pi-ai 每次请求附上的）。
+   * 内置 openai / anthropic 的 OPENAI_BASE_URL / ANTHROPIC_BASE_URL 覆盖和 /v1 同一份。
+   */
+  upstreamTargetOf(
+    found: CatalogModel,
+    route: 'chat' | 'messages' | 'responses',
+    secret: string,
+    reqHeaders: { anthropicVersion?: string; openaiBeta?: string } = {},
+  ): UpstreamTarget | { error: string } {
+    const piModel = this.piModel(found.provider, found.id) as { api?: string; baseUrl?: string; headers?: Record<string, string> } | undefined
+    if (!piModel) return { error: '模型不在可见目录里' }
+    const api = String(piModel.api ?? found.api ?? '')
+    const provider = this.models.getProviders().find((p) => p.id === found.provider) as { headers?: Record<string, string> } | undefined
+    const baseUrl = this.baseUrlOf(found.provider, String(piModel.baseUrl ?? '')).replace(/\/$/, '')
+    if (!baseUrl) return { error: `${found.provider} 没有上游地址` }
+    const extra = { ...(provider?.headers ?? {}), ...(piModel.headers ?? {}) }
+    const bearer = { ...extra, authorization: `Bearer ${secret}` }
+    const openaiLike = api === 'openai-completions' || api === 'openai-responses'
+
+    if (route === 'chat') {
+      if (openaiLike) return { url: `${baseUrl}/chat/completions`, headers: bearer, model: found.id }
+      if (api === 'google-generative-ai') return { url: `${baseUrl}/openai/chat/completions`, headers: bearer, model: found.id }
+      if (api === 'anthropic-messages') return { error: '这个供应商要走 /v1/messages' }
+      return { error: `${found.provider} 的接口（${api || '未知'}）没有 OpenAI 兼容口` }
+    }
+    if (route === 'responses') {
+      if (!openaiLike) return { error: `/v1/responses 只接受 OpenAI 系的模型，收到的是 ${found.provider}` }
+      const headers = { ...bearer }
+      if (reqHeaders.openaiBeta) headers['openai-beta'] = reqHeaders.openaiBeta
+      return { url: `${baseUrl}/responses`, headers, model: found.id }
+    }
+    if (api !== 'anthropic-messages') return { error: `/v1/messages 只接受 Anthropic 协议的模型，收到的是 ${found.provider}` }
+    return {
+      url: `${baseUrl.replace(/\/v1$/, '')}/v1/messages`,
+      headers: {
+        ...extra,
+        'x-api-key': secret,
+        'anthropic-version': reqHeaders.anthropicVersion || ANTHROPIC_VERSION,
+      },
+      model: found.id,
+    }
+  }
+
+  /** 内置 openai / anthropic 认环境变量覆盖，其余照 pi-ai 的 Model.baseUrl。 */
+  private baseUrlOf(provider: string, fromModel: string): string {
+    if (provider === 'openai' && process.env.OPENAI_BASE_URL) return `${openaiBase()}/v1`
+    if (provider === 'anthropic' && process.env.ANTHROPIC_BASE_URL) return anthropicBase()
+    return fromModel
   }
 
   piModel(provider: string, id: string) {

@@ -106,6 +106,14 @@ export function publicPlatformCred(c: { provider: string; createdAt: number; upd
 }
 
 /**
+ * 公司那一屏看到的一把密钥。`scope` 说这把是谁的：`company` 是这家自己配的（能改能删），
+ * `platform` 是平台兜底的那把（只能看，改要去找平台管理员）。密钥本身永不回显。
+ */
+export function publicCredential(c: { provider: string; updatedAt: number }, scope: 'company' | 'platform') {
+  return { provider: c.provider, configured: true as const, scope, updatedAt: c.updatedAt }
+}
+
+/**
  * `platform_credentials` 是一张**按名字存密钥的通用表**，三类东西都住在里面：
  * 模型供应商（openai、anthropic、自定义端点）、连接器供应商（composio）、网页搜索
  * 与提取后端（tavily 那几个）。表可以合，**清单不能合**。

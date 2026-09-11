@@ -25,6 +25,15 @@ export async function runRosterStream({ test, assert, log }) {
     assert(mgrPump.endsWith(gwPump), 'manager/src/draft-pump.ts 和 gateway 那份不一样了——把 gateway 那份整个覆盖过去（保留文件头那段说明）')
   })
 
+  await test('管家那份 llm-usage 是 gateway 这份的逐字副本', async () => {
+    // 模型中继落到管家之后，替 Bot 调上游的是管家，记账的用量却由 Gateway 结算——两头
+    // 折算 usage 的规矩要一模一样，缓存那几项差一条，席位机器上的账就比 Gateway 直连
+    // 的矮一截。管家 import 不到 gateway 的源，只能抄；抄的东西按字节钉住。
+    const gwUsage = readFileSync(new URL('../gateway/src/lib/llm-usage.ts', import.meta.url), 'utf8')
+    const mgrUsage = readFileSync(new URL('../manager/src/llm-usage.ts', import.meta.url), 'utf8')
+    assert(mgrUsage.endsWith(gwUsage), 'manager/src/llm-usage.ts 和 gateway/src/lib/llm-usage.ts 不一样了——把 gateway 那份整个覆盖过去（保留文件头那段说明）')
+  })
+
   await test('名单要的那几种事件原样转出去', async () => {
     for (const type of ['turn/start', 'turn/end', 'human/handoff', 'tool/approval', 'user/message', 'assistant/message']) {
       const f = rosterFrame({ type, seq: 1, time: 1 }, up())

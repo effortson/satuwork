@@ -4,10 +4,10 @@ import type { Account, ChargeStatus, Db } from './db.ts'
 import type { JwtKeys } from './crypto.ts'
 import { verifyJwt } from './crypto.ts'
 import { HttpError, bearer, json, type Req, type Router } from './http.ts'
-import { EMPTY_USAGE, openaiModelId, redact, type CatalogModel, type Llm } from './llm.ts'
-import type { Billable, Meter } from './lib/meter.ts'
-
-const ANTHROPIC_VERSION = '2023-06-01'
+import { ANTHROPIC_VERSION, EMPTY_USAGE, anthropicBase, openaiBase, openaiModelId, redact, type CatalogModel, type Llm } from './llm.ts'
+import type { Meter } from './lib/meter.ts'
+import { mergeUsage, openaiUsage, tokensOf, usageFromPayload, type TokenUsage } from './lib/llm-usage.ts'
+import { accountByApiKey, assertUsable, gateOr402, recordLlmCall, withSettle, type RunOutcome } from './lib/llm-billing.ts'
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v)
@@ -32,162 +32,21 @@ async function requireUser(req: Req, db: Db, keys: JwtKeys): Promise<Account> {
   if (!token) throw new HttpError(401, '需要登录')
   // access token 是席位运行时票，不能拿来调 /v1。
   if (token.startsWith('sat_')) throw new HttpError(401, '需要登录')
-  let account: Account | undefined
-  if (token.startsWith('sk_sw_')) {
-    account = await db.accountByApiKey(token)
-    if (!account) throw new HttpError(401, '需要登录')
-  } else {
-    let payload
-    try {
-      payload = verifyJwt(keys, token)
-    } catch (e) {
-      throw new HttpError(401, (e as Error).message)
-    }
-    account = await db.account(payload.accountId)
-    if (!account) throw new HttpError(401, '账号不存在')
-    // iat 只有秒精度：同一秒内新签发的票不能被刚写下的 tokenRevokedAt 误杀。
-    if (account.tokenRevokedAt && payload.iat < Math.floor(account.tokenRevokedAt / 1000)) {
-      throw new HttpError(401, '登录已失效，请重新登录')
-    }
-  }
-  if (account.status === 'disabled') throw new HttpError(401, '这个账号已被停用，请联系管理员')
-  if (account.status === 'invited') throw new HttpError(401, '请先用邀请链接设置口令')
-  // 公司停用了，这家的密钥一律不认——控制台那边是同一条规矩。
-  if (account.companyId) {
-    const company = await db.company(account.companyId)
-    if (company && company.status === 'disabled') throw new HttpError(403, '这家公司已被停用，请联系平台管理员')
-  }
-  return account
-}
-
-async function recordLlmCall(
-  db: Db,
-  account: Account,
-  found: { provider: string; id: string },
-): Promise<string> {
-  const row = await db.insertLlmCall({
-    accountId: account.id,
-    companyId: account.companyId,
-    provider: found.provider,
-    model: found.id,
-  })
-  return row.id
-}
-
-/**
- * 余额闸。**402，不是 403**：这是「要付钱」，不是「不许你来」。
- *
- * Bot 那边（`bot/src/llm/gateway.ts`）会把非 2xx 的 `error` 原样变成一条失败消息给
- * 用户看，所以这句话要能直接读。
- */
-async function gateOr402(meter: Meter, account: Account, found: CatalogModel): Promise<void> {
-  const gate = await meter.gate(account, {
-    kind: 'llm',
-    provider: found.provider,
-    model: found.id,
-    cost: found.cost,
-  })
-  if (gate.ok) return
-  // 被拒的也落一行（金额 0）。「为什么我的 Bot 停了」这个问题得有一个地方答得了，
-  // 而它和「谁调了」应当在同一张表上——分两个地方查的东西，最后总有一个没人看。
-  await meter.charge({
-    kind: 'llm',
-    account,
-    status: 'denied',
-    provider: found.provider,
-    model: found.id,
-    tokens: { promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheWriteTokens: 0 },
-    cost: found.cost,
-  }, { amountMicros: 0, unitPrice: {}, multiplier: 1, unpriced: false })
-  throw new HttpError(402, gate.reason)
-}
-
-/**
- * 收尾：把用量写回 `llm_calls`，再落一行账。
- *
- * 四条路由都在这里收口，是因为「什么时候算花了钱」这件事三条路各有各的坑，只有这里
- * 是共同的终点：
- *
- * - **上游没报 usage 也要落账。** 静默不落的话，账本上查不到这次调用，而 `llm_calls`
- *   里躺着一行 token 全 0 的记录——对账时说不清它是没花钱还是没记上。这种行金额记 0
- *   且标 `unpriced`：那个 0 是「算不出来」，不是「免费」。
- * - **断流照落账。** `proxyUpstream` 已经保证中途断开时保留已累计的 usage；pi 那条流
- *   （`streamChatCompletions`）从每一帧的 `partial.usage` 里累计，上游报错、客户端
- *   中途走了都带着已知的输入 token 落账，状态记 `error` / `failed`。**真拿不到**
- *   （第一帧都没到）时金额 0 且标 `unpriced`——那个 0 是「算不出来」，不是「免费」。
- * - **客户端提前走了也照落账。** 已经问上游要过的 token 是花掉了的，不记等于白送。
- */
-async function settle(
-  db: Db,
-  meter: Meter,
-  account: Account,
-  found: CatalogModel,
-  callId: string,
-  usage: TokenUsage | undefined,
-  status?: ChargeStatus,
-): Promise<void> {
-  if (usage) await db.updateLlmCallTokens(callId, usage)
-  const billable: Billable = {
-    kind: 'llm',
-    account,
-    // 没拿到用量不等于调用没发生：上游回了，只是没报数。记成 failed 而不是 ok，
-    // 是为了让「这次到底花没花钱」在明细里一眼看得出来。断流 / 上游报错的那条路
-    // 会自己指定 status（见 streamChatCompletions）。
-    status: status ?? (usage ? 'ok' : 'failed'),
-    provider: found.provider,
-    model: found.id,
-    tokens: {
-      promptTokens: usage?.prompt_tokens ?? 0,
-      completionTokens: usage?.completion_tokens ?? 0,
-      cachedTokens: usage?.cached_tokens ?? 0,
-      cacheWriteTokens: usage?.cache_write_tokens ?? 0,
-    },
-    cost: found.cost,
-    refId: callId,
-  }
-  const quote = await meter.quote(billable)
-  // 没拿到用量就没有金额可言。硬按 0 收会让这一行看着像一次免费调用。
-  await meter.charge(billable, usage ? quote : { ...quote, amountMicros: 0, unpriced: true })
-}
-
-/**
- * 跑一次上游调用，**无论成败都收口**。
- *
- * `recordLlmCall` 是在打上游之前写下的，而失败路径（503、404、上游连不通）都是直接
- * 抛出去的——settle 于是永远没跑，库里留下一行 token 全 0、账本上没有对应行的
- * llm_calls。settle 自己的注释写着这种「查不到账的调用」正是要避免的东西（它甚至为
- * 「上游没报 usage」专门留了 unpriced 这条路），只是抛异常那几条路绕开了它。
- *
- * settle 自己再出错时，以原始错误为准：那一个才是调用方需要看到的。
- */
-async function withSettle(
-  db: Db,
-  meter: Meter,
-  account: Account,
-  found: CatalogModel,
-  callId: string,
-  run: () => Promise<RunOutcome>,
-): Promise<void> {
-  let usage: TokenUsage | undefined
-  let status: ChargeStatus | undefined
-  let failed: unknown
+  // API Key 那条路和管家中继的授权接口是同一份（lib/llm-billing.ts）。
+  if (token.startsWith('sk_sw_')) return accountByApiKey(db, token)
+  let payload
   try {
-    const out = await run()
-    if (out && 'status' in out) {
-      usage = out.usage
-      status = out.status
-    } else {
-      usage = out
-    }
+    payload = verifyJwt(keys, token)
   } catch (e) {
-    failed = e
+    throw new HttpError(401, (e as Error).message)
   }
-  try {
-    await settle(db, meter, account, found, callId, usage, status)
-  } catch (e) {
-    if (!failed) throw e
+  const account = await db.account(payload.accountId)
+  if (!account) throw new HttpError(401, '账号不存在')
+  // iat 只有秒精度：同一秒内新签发的票不能被刚写下的 tokenRevokedAt 误杀。
+  if (account.tokenRevokedAt && payload.iat < Math.floor(account.tokenRevokedAt / 1000)) {
+    throw new HttpError(401, '登录已失效，请重新登录')
   }
-  if (failed) throw failed
+  return assertUsable(db, account)
 }
 
 function bodyOf(req: Req): Record<string, unknown> {
@@ -243,13 +102,6 @@ function requireProvider(provider: string, want: string, route: string): void {
   if (provider !== want) {
     throw new HttpError(400, `${route} 只接受 ${want} 的模型，收到的是 ${provider || '未知'}`)
   }
-}
-
-function openaiBase(): string {
-  return (process.env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/$/, '')
-}
-function anthropicBase(): string {
-  return (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '')
 }
 
 function contentText(content: unknown): string {
@@ -395,193 +247,6 @@ function chunk(id: string, model: string, delta: Record<string, unknown>, extra:
 
 function writeSse(res: ServerResponse, payload: unknown) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`)
-}
-
-const nonNegInt = (v: unknown): number => {
-  const n = Number(v)
-  return Number.isFinite(n) && n > 0 ? n : 0
-}
-
-/**
- * pi 的 usage → OpenAI 线上格式。
- *
- * **`prompt_tokens` 报整个提示词，命中缓存的那部分也算在内。** pi 的 `input` 是
- * 未命中的那一截，上游一开前缀缓存它就只剩零头——实测一次约 2600 token 的提示词
- * 记成了 308，而 llm_calls 记的就是这个数，用量和账单跟着一起矮下去。
- *
- * 细分放 `prompt_tokens_details.cached_tokens`，跟 OpenAI 的约定一致。缓存读单价
- * 更低，但**不在这里折价**：目录里有单价，折算是计价那一层的事。
- */
-function openaiUsage(u: any) {
-  if (!u) return undefined
-  // pi 的形状（有 input/output）和已经是 OpenAI 形状的载荷（有 prompt_tokens）
-  // 对「含不含缓存」的约定相反，必须分开处理，否则要么漏掉、要么加两遍。
-  const isPi = u.input != null || u.output != null
-  const cached_tokens = nonNegInt(isPi ? u.cacheRead : u.prompt_tokens_details?.cached_tokens)
-  // 写进缓存的那一截也是**这次真发出去的提示词**，和缓存读一样要加回总量。
-  // 只加缓存读的话，`fresh = prompt − cached − written` 会把一部分未命中的输入
-  // 当成缓存写来计价——而缓存写比输入还贵。OpenAI 那一侧没有这个概念，也不需要加。
-  const cache_write = isPi ? nonNegInt(u.cacheWrite) : 0
-  const prompt = isPi ? u.input : u.prompt_tokens
-  const completion = isPi ? u.output : u.completion_tokens
-  if (prompt == null && completion == null) return undefined
-  const prompt_tokens = nonNegInt(prompt) + (isPi ? cached_tokens + cache_write : 0)
-  const completion_tokens = nonNegInt(completion)
-  return {
-    prompt_tokens,
-    completion_tokens,
-    total_tokens: prompt_tokens + completion_tokens,
-    ...(cached_tokens ? { prompt_tokens_details: { cached_tokens } } : {}),
-  }
-}
-
-type TokenUsage = {
-  prompt_tokens: number
-  completion_tokens: number
-  cached_tokens: number
-  /**
-   * prompt_tokens 里**这次写进缓存**的那一截。
-   *
-   * 不上线（`openaiUsage` 不返回它）：OpenAI 的 usage 里没有这个字段，往响应里塞一个
-   * 自造的键，下游按 OpenAI 口径解析的东西会看到一个它不认识的数。它只走内部——
-   * 落库、计价。缓存写比普通输入还贵（Anthropic 1.25 倍），漏掉它就是每次都少收。
-   */
-  cache_write_tokens: number
-}
-
-/**
- * 一次上游调用收口时交给 settle 的东西。多数路只回 usage；流式那条在断流 / 报错时
- * 还要说明「这次没正常收口」——账本的 status 由它定，usage 是到断开为止已知的那部分。
- */
-type RunOutcome = TokenUsage | { usage: TokenUsage | undefined; status: ChargeStatus } | undefined
-
-/** 一帧只报了一半是常事，所以缺的字段是 undefined，不是 0——0 会把上一帧盖掉。 */
-type PartialUsage = {
-  prompt_tokens?: number
-  completion_tokens?: number
-  cached_tokens?: number
-  cache_write_tokens?: number
-}
-
-/**
- * pi / Anthropic 的 usage 里那一截「写进缓存」的 token。
- *
- * 单独一个函数，是因为它**不能**跟着 `openaiUsage` 上线（见 TokenUsage 的注释），
- * 所以取原始 usage 再捞一次。OpenAI 没有这个概念，取不到就是 0。
- */
-function cacheWriteOf(u: any): number {
-  if (!u) return 0
-  return nonNegInt(u.cacheWrite ?? u.cache_creation_input_tokens)
-}
-
-function tokensOf(u: ReturnType<typeof openaiUsage>, raw?: unknown): TokenUsage | undefined {
-  if (!u) return undefined
-  return {
-    prompt_tokens: u.prompt_tokens,
-    completion_tokens: u.completion_tokens,
-    cached_tokens: u.prompt_tokens_details?.cached_tokens ?? 0,
-    cache_write_tokens: cacheWriteOf(raw),
-  }
-}
-
-function objectAt(o: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
-  const v = o[key]
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined
-}
-
-/**
- * usage 可能在顶层，也可能裹一层：OpenAI Responses 是 `response.usage`，
- * Anthropic 的 message_start 是 `message.usage`。只看顶层就会把输入 token 丢光。
- */
-function usageCandidates(obj: unknown): Record<string, unknown>[] {
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return []
-  const o = obj as Record<string, unknown>
-  const out: Record<string, unknown>[] = []
-  const push = (v: Record<string, unknown> | undefined) => {
-    if (v) out.push(v)
-  }
-  push(objectAt(o, 'usage'))
-  for (const key of ['response', 'message']) {
-    const inner = objectAt(o, key)
-    if (inner) push(objectAt(inner, 'usage'))
-  }
-  out.push(o)
-  return out
-}
-
-/**
- * 从原样透传的上游响应里捞 usage。
- *
- * **缓存那几项要单独加回去。** Anthropic 的 `input_tokens` 不含
- * `cache_read_input_tokens` / `cache_creation_input_tokens`，只读前者就等于把命中缓存
- * 的提示词当成没发生过。OpenAI 的 `prompt_tokens` 相反，本来就是含缓存的总数，
- * 细分在 `prompt_tokens_details.cached_tokens` 里——所以两边不能用同一套加法。
- */
-function usageFromPayload(obj: unknown): PartialUsage | undefined {
-  for (const raw of usageCandidates(obj)) {
-    const openaiPrompt = raw.prompt_tokens
-    const anthropicPrompt = raw.input_tokens ?? raw.input
-    const prompt = openaiPrompt ?? anthropicPrompt
-    const completion = raw.completion_tokens ?? raw.output_tokens ?? raw.output
-    if (prompt == null && completion == null) continue
-    /**
-     * 三种形状，两套口径：
-     *
-     * - Chat Completions：`prompt_tokens` + `prompt_tokens_details.cached_tokens`；
-     * - Responses API：`input_tokens` + `input_tokens_details.cached_tokens`——字段名和
-     *   Anthropic 撞了，但口径跟 Chat 一样，`input_tokens` **已含**缓存命中；
-     * - Anthropic：`input_tokens` + `cache_read_input_tokens` / `cache_creation_input_tokens`，
-     *   `input_tokens` **不含**缓存，要加回去。
-     *
-     * 以前只按「有没有 prompt_tokens」二分，Responses 走进了 Anthropic 分支：读的是
-     * 不存在的 `cache_read_input_tokens`，命中缓存的那截就按全价记了。
-     * 判据是 `input_tokens_details` 这个对象在不在——Anthropic 的 usage 里没有它。
-     */
-    const chatDetails = objectAt(raw, 'prompt_tokens_details')
-    const responsesDetails = objectAt(raw, 'input_tokens_details')
-    const openaiShape = openaiPrompt != null || responsesDetails != null
-    const readRaw = openaiPrompt != null ? chatDetails?.cached_tokens : responsesDetails != null ? responsesDetails.cached_tokens : raw.cache_read_input_tokens
-    const writeRaw = openaiShape ? undefined : raw.cache_creation_input_tokens
-    const cacheRead = nonNegInt(readRaw)
-    // 写缓存的那部分也是这次真发出去的提示词，算进总量；但它不是「读到的缓存」，
-    // 不进 cached_tokens——两者单价不同，而且缓存写**比普通输入还贵**。
-    const cacheWrite = nonNegInt(writeRaw)
-    const out: PartialUsage = {}
-    const pt = Number(prompt)
-    const ct = Number(completion)
-    if (prompt != null && Number.isFinite(pt)) {
-      out.prompt_tokens = openaiShape ? pt : pt + cacheRead + cacheWrite
-      // **这一帧没带缓存字段就别写这个键。** 写成 0 的话，mergeUsage 取 next 优先，
-      // 会把前面帧里记下的缓存 token 抹掉：Anthropic 的 message_start 报了
-      // input 900 + cache_read 400，后面某个 message_delta 只回传累计 input_tokens
-      // 而不重复缓存字段，最终就落库成 900/0——正是这次要修的那个漏记又回来了。
-      if (readRaw != null) out.cached_tokens = cacheRead
-      // 同上：这一帧没带就别写这个键，写成 0 会在 mergeUsage 里把前面帧记下的抹掉。
-      if (writeRaw != null) out.cache_write_tokens = cacheWrite
-    }
-    if (completion != null && Number.isFinite(ct)) out.completion_tokens = ct
-    if (out.prompt_tokens != null || out.completion_tokens != null) return out
-  }
-  return undefined
-}
-
-/**
- * 逐帧累积，不整块替换。Anthropic 把输入 token 放在 message_start、输出 token 放在
- * message_delta——整块替换的话最后一帧会把输入抹成 0。
- *
- * **取较大值，不是后来居上。** 一次请求的提示词大小是定值，各帧只是报得完整程度不同：
- * message_start 给 input 900 + cache_read 400（合成 1300），而某些版本的 message_delta
- * 会再回传一次累计 input_tokens 却不重复缓存字段（算出 900）。后来居上就会把 1300
- * 覆盖成 900，缓存那截又漏掉了。输出 token 在流式里是累计上报的，取大同样成立。
- */
-function mergeUsage(cur: TokenUsage | undefined, next: PartialUsage): TokenUsage {
-  const pick = (a: number | undefined, b: number | undefined) => Math.max(a ?? 0, b ?? 0)
-  return {
-    prompt_tokens: pick(next.prompt_tokens, cur?.prompt_tokens),
-    completion_tokens: pick(next.completion_tokens, cur?.completion_tokens),
-    cached_tokens: pick(next.cached_tokens, cur?.cached_tokens),
-    cache_write_tokens: pick(next.cache_write_tokens, cur?.cache_write_tokens),
-  }
 }
 
 async function streamChatCompletions(

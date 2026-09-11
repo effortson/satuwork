@@ -366,8 +366,12 @@ function modelPriceModal() {
 
 function addProviderModal() {
   if (!state.addOpen) return ''
-  const configured = configuredSet()
-  const available = state.catalog.filter((p) => !configured.has(p.provider))
+  // 平台侧：配过的不再列。公司侧：只有**本公司**配过的不再列——平台共用的那把
+  // 正是公司要覆盖的对象，得留在下拉里。
+  const taken = isOwner()
+    ? configuredSet()
+    : new Set((state.creds || []).filter((c) => c.configured && c.scope === 'company').map((c) => c.provider))
+  const available = state.catalog.filter((p) => !taken.has(p.provider))
   const options = available.length
     ? available.map((p) => `<option value="${esc(p.provider)}">${esc(p.name || p.provider)}</option>`).join('')
     : `<option value="">${t('没有可添加的供应商')}</option>`
@@ -376,7 +380,11 @@ function addProviderModal() {
       <div class="gw-modal" data-act="add-dialog" role="dialog" aria-modal="true" aria-labelledby="add-prov-title">
         <div>
           <h2 id="add-prov-title" style="font-size: 20px; margin: 0 0 4px;">${t('添加供应商')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('从目录选择尚未配置的供应商，粘贴 API 密钥。密钥只存在 Gateway，保存后不会回显。')}</p>
+          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${
+            isOwner()
+              ? t('从目录选择尚未配置的供应商，粘贴 API 密钥。密钥只存在 Gateway，保存后不会回显。')
+              : t('从目录选择供应商，粘贴本公司的 API 密钥。已有平台共用密钥的供应商也能配——本公司的密钥优先。密钥只存在 Gateway，保存后不会回显。')
+          }</p>
         </div>
         <form data-form="add-cred" style="display: flex; flex-direction: column; gap: var(--space-4);">
           <div class="field">
@@ -844,8 +852,28 @@ function statsPage() {
     </div>`
 }
 
+/**
+ * 供应商页谁改得动。owner 改平台那份，公司管理员改本公司那份；员工只能看——
+ * 看到的是「哪些供应商配了、用的是谁的密钥」，输入框和按钮一概不画。
+ */
+function canEditCreds() {
+  return isOwner() || isAdmin()
+}
+
+/**
+ * 公司侧每行的归属标。平台页没有这一维（那儿全是平台的），公司页才贴：
+ * 「本公司密钥」= 这家公司自己贴的，改得了删得了；「平台共用」= 没覆盖、回落到平台那把。
+ */
+function credScopeTag(cred) {
+  if (isOwner() || !cred) return ''
+  return cred.scope === 'company'
+    ? `<span class="tag tag-accent-2" data-cred-scope="company">${t('本公司密钥')}</span>`
+    : `<span class="tag" data-cred-scope="platform">${t('平台共用')}</span>`
+}
+
 function providersPage() {
   const list = providerRows()
+  const editable = canEditCreds()
 
   const rows = list
     .map((p, i) => {
@@ -855,6 +883,26 @@ function providersPage() {
         : p.cred
           ? `<span class="tag tag-accent">${t('已配置')}</span>`
           : `<span class="tag">${t('缺密钥')}</span>`
+      // 公司侧只有本公司那把能删；平台共用那把是回落项，按钮留着但灰掉，鼠标停上去说明为什么。
+      const platformFallback = !isOwner() && p.cred?.scope !== 'company'
+      const delBtn = platformFallback
+        ? `<button type="button" class="satu-linkbtn" data-act="prov-delete" data-provider="${esc(p.provider)}" disabled title="${esc(t('平台共用密钥是回落项，这里删不掉；配一把本公司的密钥就能覆盖它'))}">${t('删除')}</button>`
+        : `<button type="button" class="satu-linkbtn" data-act="prov-delete" data-provider="${esc(p.provider)}" data-custom="${p.custom ? '1' : ''}">${t('删除')}</button>`
+      if (!editable) {
+        return `<div class="satu-provrow">
+        <div style="min-width: 0; display: flex; align-items: center; gap: var(--space-3);">
+          ${mark(p.name, i % 2 === 1)}
+          <div style="min-width: 0;">
+            <div style="font-size: 14px; font-weight: 600;">${esc(p.name)}</div>
+            <div style="font-size: 12px; color: var(--muted-foreground);">${esc(p.provider)}</div>
+          </div>
+        </div>
+        <span style="font-size: 13px; color: var(--muted-foreground);">${t(`${p.models.length} 个`, `${p.models.length} models`)}</span>
+        <span style="display: flex; gap: var(--space-2); flex-wrap: wrap;">${status}${credScopeTag(p.cred)}</span>
+        <span style="font-size: 12px; color: var(--muted-foreground);">${t('只读')}</span>
+        <span></span>
+      </div>`
+      }
       return `<div class="satu-provrow">
         <div style="min-width: 0; display: flex; align-items: center; gap: var(--space-3);">
           ${mark(p.name, i % 2 === 1)}
@@ -864,17 +912,17 @@ function providersPage() {
           </div>
         </div>
         <span style="font-size: 13px; color: var(--muted-foreground);">${t(`${p.models.length} 个`, `${p.models.length} models`)}</span>
-        ${status}
+        <span style="display: flex; gap: var(--space-2); flex-wrap: wrap;">${status}${credScopeTag(p.cred)}</span>
         <form class="gw-secret" data-form="cred" data-provider="${esc(p.provider)}" data-id="${esc(p.cred?.id || '')}">
-          <input class="input" name="secret" type="password" autocomplete="off" placeholder="${esc(p.cred ? t('输入新密钥以更新') : t('粘贴 API 密钥'))}" required>
+          <input class="input" name="secret" type="password" autocomplete="off" placeholder="${esc(p.cred?.scope === 'platform' ? t('粘贴本公司密钥以覆盖平台的') : p.cred ? t('输入新密钥以更新') : t('粘贴 API 密钥'))}" required>
         </form>
         <div class="gw-provactions">
           ${testMark('provider', p.provider) ? `<div class="gw-testline">${testMark('provider', p.provider)}</div>` : ''}
           ${p.custom ? `<button type="button" class="btn btn-ghost" data-act="prov-edit" data-provider="${esc(p.provider)}">${t('编辑')}</button>` : ''}
           ${p.custom ? `<button type="button" class="btn btn-ghost" data-act="prov-models" data-provider="${esc(p.provider)}">${t(`模型 ${p.custom.models?.length ?? 0}`, `Models ${p.custom.models?.length ?? 0}`)}</button>` : ''}
           <button type="button" class="btn btn-ghost" data-act="test-provider" data-provider="${esc(p.provider)}" ${busy ? 'disabled' : ''}>${t('测试')}</button>
-          <button type="button" class="btn btn-primary" data-act="save-cred" data-provider="${esc(p.provider)}" data-id="${esc(p.cred?.id || '')}">${t('更新')}</button>
-          <button type="button" class="satu-linkbtn" data-act="prov-delete" data-provider="${esc(p.provider)}" data-custom="${p.custom ? '1' : ''}">${t('删除')}</button>
+          <button type="button" class="btn btn-primary" data-act="save-cred" data-provider="${esc(p.provider)}" data-id="${esc(p.cred?.id || '')}">${p.cred?.scope === 'platform' ? t('覆盖') : t('更新')}</button>
+          ${delBtn}
         </div>
       </div>`
     })
@@ -886,10 +934,17 @@ function providersPage() {
         <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
           <div>
             <h1 style="font-size: 24px; margin: 0 0 4px;">${t('供应商')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t(
-              '这一页只配模型供应商：内置的配好密钥才列出来，自定义的建出来就一直在。密钥只存在 Gateway，保存后不会回显。',
-              'Model providers only. Built-in ones appear once a key is saved; custom ones stay once created. Keys live only on the Gateway and are never echoed back.',
-            )}</p>
+            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${
+              isOwner()
+                ? t(
+                    '这一页只配模型供应商：内置的配好密钥才列出来，自定义的建出来就一直在。密钥只存在 Gateway，保存后不会回显。',
+                    'Model providers only. Built-in ones appear once a key is saved; custom ones stay once created. Keys live only on the Gateway and are never echoed back.',
+                  )
+                : t(
+                    '本公司配的密钥优先于平台共用密钥；没配的供应商用平台的。密钥只存在 Gateway，保存后不会回显。',
+                    "Keys configured by this company take precedence over the platform's shared keys; providers without one fall back to the platform's. Keys live only on the Gateway and are never echoed back.",
+                  )
+            }</p>
             ${/* 连接器和搜索后端的密钥跟模型供应商同住一张表，但它们不是供应商——
                   一行里「几个模型、测一下、哪个角色在用」这些列对它们全都答不上来。
                   清单已经在接口那头滤掉了（见 modelProviderCreds），这里把去处说明白，
@@ -901,7 +956,7 @@ function providersPage() {
           </div>
           <div style="display: flex; gap: var(--space-2); flex: none;">
             ${isOwner() ? `<button type="button" class="btn btn-secondary" data-act="prov-new">${t('添加自定义供应商')}</button>` : ''}
-            <button type="button" class="btn btn-primary" data-act="add-open">${t('添加供应商')}</button>
+            ${editable ? `<button type="button" class="btn btn-primary" data-act="add-open">${t('添加供应商')}</button>` : ''}
           </div>
         </div>
         ${flashes()}
@@ -909,7 +964,13 @@ function providersPage() {
           <div class="satu-provhead">
             <span>${t('供应商')}</span><span>${t('模型')}</span><span>${t('状态')}</span><span>${t('密钥')}</span><span></span>
           </div>
-          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有配置供应商。点击「添加供应商」从目录里选一家并粘贴密钥，或者「添加自定义供应商」接一个自建端点。')}</div>`}
+          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${
+            isOwner()
+              ? t('还没有配置供应商。点击「添加供应商」从目录里选一家并粘贴密钥，或者「添加自定义供应商」接一个自建端点。')
+              : editable
+                ? t('还没有配置供应商，平台也没有共用密钥。点击「添加供应商」从目录里选一家并粘贴本公司的密钥。')
+                : t('还没有配置供应商。')
+          }</div>`}
         </div>
       </div>
       ${addProviderModal()}

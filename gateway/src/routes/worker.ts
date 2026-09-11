@@ -20,7 +20,9 @@ import { HttpError, json, type Req, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import { requireMachine, requireSeatOnly } from '../lib/guards.ts'
 import { claimDue, RUN_TIMEOUT_MS, settleRun, turnFailure } from '../routines.ts'
-import type { ChannelEvent, Routine, RoutineRun } from '../db.ts'
+import type { ChannelEvent, ChargeStatus, Machine, Routine, RoutineRun } from '../db.ts'
+import { accountByApiKey, gateOr402, recordLlmCall, settle } from '../lib/llm-billing.ts'
+import type { TokenUsage } from '../lib/llm-usage.ts'
 import { randomUUID } from 'node:crypto'
 import {
   CHANNEL_WORKER_TUNING, approvalMarkdown, channelFiles, channelHandoffs, deliverClaimedEvent, failClaimedEvent,
@@ -163,8 +165,10 @@ async function routineFinish(db: RouteCtx['db'], run: RoutineRun, body: Record<s
   }
 }
 
-export function attachWorker(router: Router, { db, keys, channelKey }: RouteCtx) {
+export function attachWorker(router: Router, ctx: RouteCtx) {
+  const { db, keys, channelKey } = ctx
   attachChannelWorker(router, db, keys, channelKey)
+  attachLlmRelay(router, ctx)
 
   // ── 席位机器上的工人（smt_）──
   const machineOwner = (machineId: string): RoutineOwner => ({
@@ -355,4 +359,96 @@ function attachChannelWorker(router: Router, db: RouteCtx['db'], keys: RouteCtx[
     }
     json(res, 200, { ok: true })
   })
+}
+
+// ── 模型调用的中继（管家在席位机器上直接打上游；Gateway 只授权和结算）──
+
+const GRANT_ROUTES = new Set(['chat', 'messages', 'responses'])
+const SETTLE_STATUSES = new Set<ChargeStatus>(['ok', 'failed', 'error', 'timeout'])
+
+/** 这台机器上有没有这个账号的席位。授权和结算都按它认：别的机器的账号一律 403。 */
+async function seatOnMachine(db: RouteCtx['db'], machine: Machine, accountId: string): Promise<boolean> {
+  return (await db.seatRuntimesOfMachine(machine.id)).some((r) => r.accountId === accountId)
+}
+
+/**
+ * 两条接口，一条**授权**、一条**结算**。管家每次调模型都先来要授权，拿到上游地址和
+ * 鉴权头（含供应商密钥，只在那一次调用期间留在内存里），自己打上游、把流给 bot，完了
+ * 报用量。Gateway 留下的是规矩本身：API Key 认谁、模型怎么解析、密钥归谁、余额够不够、
+ * 这一次记在哪一行、收多少钱——全和 /v1 同一份代码（lib/llm-billing.ts）。
+ *
+ * **错误的状态码和文案要和 /v1 一样。** 管家把这里的非 2xx 原样回给 bot，bot 再原样变成
+ * 一条失败消息给用户看；两边不一致的话，同一个账号在旧席位（走 /v1）和新席位上看到的
+ * 是两种说法。
+ *
+ * 结算是幂等的：管家重试、或者清扫（routines.ts 的 sweepUnsettledLlmCalls）先一步收了口，
+ * 第二笔回 `settled: false`，不再挂一行账。
+ */
+function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
+  router.post('/worker/llm/grant', async (req, res) => {
+    const machine = await requireMachine(req, db)
+    const body = bodyOf(req)
+    const route = strField(body, 'route')
+    if (!GRANT_ROUTES.has(route)) throw new HttpError(400, 'route 只能是 chat / messages / responses')
+    const account = await accountByApiKey(db, strField(body, 'apiKey'))
+    // 只能替本机席位上的账号要授权。smt_ 泄一把，能拿到的密钥也只是这台机器上那几家的。
+    if (!(await seatOnMachine(db, machine, account.id))) throw new HttpError(403, '这个账号的席位不在这台机器上')
+    const modelRaw = strField(body, 'model')
+    const provider = body.provider == null ? '' : strField(body, 'provider', false)
+    // 和 /v1 的两条透传路由一样：没给 provider 时按路由的原生厂商猜。
+    const hint = provider || (route === 'messages' ? 'anthropic' : route === 'responses' ? 'openai' : undefined)
+    const found = await llm.find(account.companyId, modelRaw, hint)
+    if (!found) throw new HttpError(404, '模型不在可见目录里', { model: modelRaw })
+    const secret = await llm.secret(account.companyId, found.provider)
+    if (!secret) throw new HttpError(402, `没有 ${found.provider} 的密钥`, { provider: found.provider })
+    await gateOr402(meter, account, found)
+    const target = llm.upstreamTargetOf(found, route as 'chat' | 'messages' | 'responses', secret, {
+      anthropicVersion: body.anthropicVersion == null ? undefined : strField(body, 'anthropicVersion', false) || undefined,
+      openaiBeta: body.openaiBeta == null ? undefined : strField(body, 'openaiBeta', false) || undefined,
+    })
+    // 目标算不出来（比如把 Anthropic 的模型打到 chat 路由）不登记调用：没打上游，没有账可记。
+    if ('error' in target) throw new HttpError(400, target.error)
+    const callId = await recordLlmCall(db, account, found)
+    json(res, 200, { callId, provider: found.provider, model: target.model, url: target.url, headers: target.headers })
+  })
+
+  router.post('/worker/llm/:callId/settle', async (req, res) => {
+    const machine = await requireMachine(req, db)
+    const call = await db.llmCall(req.params.callId)
+    if (!call) throw new HttpError(404, '没有这一次调用')
+    if (!(await seatOnMachine(db, machine, call.accountId))) throw new HttpError(403, '这个账号的席位不在这台机器上')
+    const body = bodyOf(req)
+    const status = body.status == null ? undefined : strField(body, 'status', false)
+    if (status !== undefined && !SETTLE_STATUSES.has(status as ChargeStatus)) throw new HttpError(400, 'status 只能是 ok / failed / error / timeout')
+    const usage = usageOf(body.usage)
+    if (await db.chargeExistsForRef(call.id)) {
+      json(res, 200, { settled: false, reason: 'already' })
+      return
+    }
+    const account = await db.account(call.accountId)
+    if (!account) throw new HttpError(404, '账号不存在')
+    // 目录可能已经没有这个模型了（平台下架、公司条目删了）：账照记，只是没有单价，
+    // settle 会把它记成 unpriced。
+    const found = (await llm.find(call.companyId, `${call.provider}/${call.model}`)) ?? { provider: call.provider, id: call.model, cost: undefined }
+    await settle(db, meter, account, found, call.id, usage, status as ChargeStatus | undefined)
+    json(res, 200, { settled: true })
+  })
+}
+
+/**
+ * 结算报上来的 usage：管家那头已经按 TokenUsage 的四项折好了（manager/src/llm-usage.ts 是
+ * Gateway 这份的逐字副本，逐帧累计的规矩一样）。形状不对、四项都没有就当没报，settle
+ * 记 unpriced；负数和小数不认。
+ */
+function usageOf(raw: unknown): TokenUsage | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const o = raw as Record<string, unknown>
+  if (typeof o.prompt_tokens !== 'number' && typeof o.completion_tokens !== 'number') return undefined
+  const n = (k: string) => (typeof o[k] === 'number' && Number.isFinite(o[k]) ? Math.max(0, Math.trunc(o[k] as number)) : 0)
+  return {
+    prompt_tokens: n('prompt_tokens'),
+    completion_tokens: n('completion_tokens'),
+    cached_tokens: n('cached_tokens'),
+    cache_write_tokens: n('cache_write_tokens'),
+  }
 }
