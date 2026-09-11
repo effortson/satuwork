@@ -1189,15 +1189,19 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         assert(ok.headers.get('access-control-allow-origin') === gwBase, '响应上要有 allow-origin')
         const okBody = JSON.parse(okText)
         assert(Array.isArray(okBody.lines) && okBody.seatId === 'seat-1', `结构不对：${okText.slice(0, 200)}`)
-        // 跟着滚：同一张票开 SSE。开发机上没有 journalctl，流会带一条 error 帧就结束——这里
-        // 只钉「开得起来、是事件流、带 CORS」。
+        // 跟着滚：同一张票开 SSE。只钉「响应头当场到、是事件流、带 CORS」，**不读正文**：
+        // 真机上 journalctl -f 对一个安静的单元几十秒不吐字节，流不会自己结束；开发机上
+        // 没有 journalctl，流当场带一条 error 帧就结束——两种环境下都不能等它读完。
+        // 断言消息里也不能 `await sse.text()`：模板字符串是先求值的，条件成立照样会等。
+        const sseAbort = new AbortController()
         const sse = await fetch(`${seatUrl}?lines=5&follow=1`, {
           headers: { authorization: 'Bearer ' + seatTicket, origin: gwBase, accept: 'text/event-stream' },
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.any([sseAbort.signal, AbortSignal.timeout(8000)]),
         })
-        assert(sse.status === 200, `follow ${sse.status} ${await sse.text()}`)
+        assert(sse.status === 200, `follow ${sse.status}`)
         assert(String(sse.headers.get('content-type')).includes('text/event-stream'), `follow content-type ${sse.headers.get('content-type')}`)
         assert(sse.headers.get('access-control-allow-origin') === gwBase, 'SSE 响应上要有 allow-origin')
+        sseAbort.abort()
         await sse.text().catch(() => '')
 
         // 无票 / 假票：401，错误响应上也要有 CORS 头，否则浏览器里只剩一句 network error。

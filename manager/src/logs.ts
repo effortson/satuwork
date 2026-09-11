@@ -78,6 +78,13 @@ export function followLogs(
       'cache-control': 'no-cache, no-transform',
       connection: 'keep-alive',
     })
+    /**
+     * **头要当场发出去。** writeHead 只是登记，Node 要等第一次 write 才把响应头真的写到
+     * socket 上；而一个安静的单元（刚部署、还没写过一行）journalctl -f 可能几十秒不吐
+     * 一个字节，浏览器那头连 200 都收不到，fetch 就在等响应头上超时。开发机上没有
+     * journalctl，子进程当场报错、当场写了一帧，所以这个坑只在真机上出现。
+     */
+    res.flushHeaders()
     const child = spawn(
       'journalctl',
       ['-u', unit, '-n', String(lines), '--no-pager', '-f', '-o', 'short-iso'],
