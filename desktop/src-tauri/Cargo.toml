@@ -9,6 +9,11 @@ publish = false
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Dependabot 会报 glib 0.18 的一条中危通告（GHSA-wrw7-89jp-8q8g：VariantStrIter 的迭代器实现
+# 不健全，0.20 修）。这里修不了：tauri 2.11 钉着 gtk ^0.18，gtk 0.18 钉着 glib ^0.18，
+# `cargo update -p glib --precise 0.20.0` 会被这条链顶回来，只能等 tauri 升 gtk。
+# 影响面也小——glib 只进 Linux 目标（gtk/webkit2gtk 那一串），壳子自己一行 glib 都没碰。
+# tauri 升上去之后把这段删掉；在那之前，那条告警请按「没有修法」处理。
 tauri = { version = "2", features = [] }
 # 站外链接交给系统浏览器——壳子里没有地址栏，跳出去就回不来了。
 tauri-plugin-opener = "2"
