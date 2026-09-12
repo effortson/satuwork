@@ -7,15 +7,16 @@ import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
 import type { Account, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
-import { deployInFlight, deploySeat, listSeatRuntime, publicSeatRuntime, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
+import { deployInFlight, deploySeat, listSeatRuntime, logsUrlOf, publicSeatRuntime, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, defaultBotModel, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
 import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
-import { machineHeader, managerTargetFor, proxyDownload, proxyJson, proxySse, proxyUpload, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
+import { machineHeader, managerTargetFor, proxyDownload, proxyJson, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
+import { signLogsTicket } from '../crypto.ts'
 import { localBotReleaseTarget } from '../releases.ts'
 
 /**
@@ -1085,7 +1086,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   })
 
   /**
-   * 席位 bot 的运行日志。`follow=1` 跟着滚（SSE），否则给最近 N 行。
+   * 席位 bot 的运行日志：最近 N 行，一次 JSON 往返。
    *
    * 和 diag 是一对：那条回答「它活着吗」，这条回答「它卡在哪一步」。这一层最贵的
    * 故障恰恰都不报错——单元 active、端口有人听，只是那一轮永远不结束——不看日志
@@ -1094,15 +1095,37 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
    * 只看**自己席位**的：seatRuntime 按 (account.id, botId) 查，管理员也调不出别人的。
    * 日志里有对话正文和 bash 跑过的命令，这条线不该松。机器票留在 Gateway，浏览器
    * 只拿自己的席位票——它是管家的 root 控制面凭据，一步都不能往下放。
+   *
+   * **`follow=1` 不在这里了。** 跟着滚是一条小时级的 SSE，Gateway 上最后一条这样的连接，
+   * Vercel 函数扛不住（见 docs/vercel-deploy.md）。改成浏览器直连管家，票由下面那条
+   * `/runtime/logs/direct` 签。老前端还传 `follow=1` 的话回 410，别静默降级成「最近 200
+   * 行」——那样人以为在跟，其实屏幕早停了。
    */
   router.get('/runtime/logs', async (req, res) => {
     const account = await requireUser(req, db, keys)
+    if (req.query.get('follow') === '1') throw new HttpError(410, '日志跟随改为直连机器：先取 /runtime/logs/direct')
     const t = await managerTargetFor(db, account, (req.query.get('botId') || '').trim())
     const lines = Math.min(2000, Math.max(1, Math.trunc(Number(req.query.get('lines')) || 200)))
-    const follow = req.query.get('follow') === '1'
-    const url = `${t.base}/seats/${encodeURIComponent(t.seatId)}/logs?lines=${lines}${follow ? '&follow=1' : ''}`
-    if (follow) await proxySse(req, res, url, undefined, t.machineToken)
-    else await proxyJson(res, 'GET', url, undefined, undefined, t.machineToken)
+    const url = `${t.base}/seats/${encodeURIComponent(t.seatId)}/logs?lines=${lines}`
+    await proxyJson(res, 'GET', url, undefined, undefined, t.machineToken)
+  })
+
+  /**
+   * 日志跟随的直连入口：给地址、签一张日志票，浏览器自己去打管家。
+   *
+   * 鉴权和上面那条逐字一样（`managerTargetFor`：只解析调用者自己那颗 Bot 的席位和机器），
+   * 所以票上只会是自己的席位。票是 `satu-logs` 而不是桌面票——理由见 crypto.ts 的
+   * signLogsTicket。五分钟：够把流开起来，流开了就不再看票。
+   *
+   * 机器没配 `directUrl`、或管家 < 9 号（`/logs` 还不认日志票）→ 409，界面上就说清楚
+   * 「这台机器跟不了」，不要让人对着一条永远不动的流等。
+   */
+  router.get('/runtime/logs/direct', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    const t = await managerTargetFor(db, account, (req.query.get('botId') || '').trim())
+    const url = logsUrlOf(t.machine, t.seatId)
+    if (!url) throw new HttpError(409, '这台机器没有配直连地址（或管家太旧），日志跟随打不开')
+    json(res, 200, { url, ticket: signLogsTicket(keys, { seatId: t.seatId }) })
   })
 
   /**
@@ -1751,24 +1774,12 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   }
 
   /**
-   * 上传附件到这条会话的工作区。字节边收边转，Gateway 不落地。
-   *
-   * 文件名走 header 而不是查询串：查询串会进访问日志，而文件名常常就是内容本身
-   * （「二季度裁员名单.xlsx」）。
+   * 上传附件**不再经 Gateway**。原来这里有一条 `postRaw('/runtime/sessions/:id/files')` 把字节
+   * 边收边转给席位；上传动辄几十 MB，在 Vercel 函数里既撞请求体上限又占着一个实例十分钟。
+   * 现在浏览器拿 `/runtime/bots` 里的 `uploadUrl`（`{directUrl}/seats/:id/stream`，管家 ≥ 9）
+   * 直接 `POST {uploadUrl}/sessions/:id/files`，带登录 JWT，管家换成 `sat_` 把正文管给 Bot。
+   * 文件名照旧走 `x-filename` 头，不进查询串（查询串会进访问日志，而文件名常常就是内容本身）。
    */
-  router.postRaw('/runtime/sessions/:id/files', async (req, res) => {
-    const account = await requireUser(req, db, keys)
-    const target = await seatTargetForSession(db, account, req.params.id)
-    const filename = req.headers['x-filename']
-    await proxyUpload(
-      req,
-      res,
-      `${target.host}/api/sessions/${encodeURIComponent(req.params.id)}/files`,
-      typeof filename === 'string' ? { 'x-filename': filename } : {},
-      await seatBearer(db, account.id),
-      target.machineToken,
-    )
-  })
 
   /**
    * 列这条会话所在席位的工作区里的一层目录（界面右栏那棵文件树）。

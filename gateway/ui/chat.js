@@ -6085,17 +6085,48 @@ function stopLogStream() {
   logAbort = null
 }
 
-async function startLogStream(url) {
+/**
+ * 开一条日志流。`source` 是面板清单里的那一项：`{ key, label, direct }`，direct 是
+ * Gateway 上**领票**的地址（/runtime/logs/direct?botId=… 或 /platform/…/logs/direct）。
+ *
+ * 两步走：先 api('GET', direct) 拿 `{ url, ticket }`——url 是机器管家上的 /logs 或
+ * /seats/<id>/logs，ticket 是一张 5 分钟的票；再拿这张票**直接打那台机器**。Gateway
+ * 不再替浏览器转这条 SSE（老的 ?follow=1 那条路已经 410）：它是跟对话流一样的长连接，
+ * Gateway 要做成无状态的，长连接一条都不能留在它身上。
+ *
+ * 用的是裸 fetch 而不是 swFetch：地址是绝对的、票也不是登录票，本地改道那套逻辑
+ * 一条都不适用。机器没配 directUrl、或管家太旧，领票那一步就会 409 带中文原因，
+ * 原样摆进面板——和以前「连不上」摆在同一个位置。
+ */
+async function startLogStream(source) {
   stopLogStream()
   const ac = new AbortController()
   logAbort = ac
   state.logLines = []
   state.logError = ''
   paintLogs()
+  const direct = source && typeof source === 'object' ? source.direct : source
+  let ticket
+  try {
+    ticket = await api('GET', direct)
+  } catch (err) {
+    if (!ac.signal.aborted) {
+      state.logError = (err && err.message) || t('拿不到日志')
+      paintLogs()
+    }
+    return
+  }
+  // 领票那一趟是 await 的，人可能在这期间已经关了面板或换了来源。
+  if (ac.signal.aborted) return
+  if (!ticket || !ticket.url || !ticket.ticket) {
+    state.logError = t('拿不到日志')
+    paintLogs()
+    return
+  }
   let res
   try {
-    res = await swFetch(url, {
-      headers: { accept: 'text/event-stream', ...(token() ? { authorization: 'Bearer ' + token() } : {}) },
+    res = await fetch(ticket.url + '?lines=300&follow=1', {
+      headers: { accept: 'text/event-stream', authorization: 'Bearer ' + ticket.ticket },
       signal: ac.signal,
     })
   } catch {
@@ -6162,7 +6193,8 @@ function paintLogs() {
  *   · 员工侧的运行环境——只有自己这个 Bot 一个来源；
  *   · 平台侧公司详情的运行机器——管家自己，加上这台机器上的每个席位。
  *
- * state.logsOpen = { title, active, sources: [{ key, label, url }] }
+ * state.logsOpen = { title, active, sources: [{ key, label, direct }] }
+ * direct 是领票的 Gateway 地址，不是日志地址——见 startLogStream。
  */
 /** 开面板并接上第一个来源。两处入口都走它，别各写一份。 */
 function openLogs(title, sources) {
@@ -6171,7 +6203,7 @@ function openLogs(title, sources) {
   state.logError = ''
   render()
   // 先 render 再开流：paintLogs 往 #log-body 里填，那个节点得先存在。
-  if (sources[0]) void startLogStream(sources[0].url)
+  if (sources[0]) void startLogStream(sources[0])
 }
 
 function switchLogSource(key) {
@@ -6184,7 +6216,8 @@ function switchLogSource(key) {
   state.logLines = []
   state.logError = ''
   render()
-  void startLogStream(hit.url)
+  // 每换一个来源都重新领票：票是按 seat 签的，换来源就是换票。
+  void startLogStream(hit)
 }
 
 /**
@@ -7075,8 +7108,33 @@ function authHeaders(extra) {
  * （「二季度裁员名单.xlsx」）。header 只认 ASCII，所以先 encodeURIComponent，
  * 席位那边解回来。
  */
+/**
+ * 上传**只直连席位机器**，和对话流同一个道理（见 directStreamBase 上面那段）：
+ * Gateway 上 `POST /runtime/sessions/:id/files` 已经没有了，文件正文不该再经它中转。
+ *
+ * · 本地 Bot：照旧拼 `/runtime/sessions/<id>/files`——data.js 的 localRoute 认这个形状，
+ *   改道到 127.0.0.1 那颗 bot 的 /api/sessions/<id>/files，票换成席位票。
+ * · 远程 Bot：打 `bot.runtime.uploadUrl`（https://<机器>/seats/<seatId>/stream）下的
+ *   /sessions/<id>/files，带登录票，管家那头验完换成席位票。地址是 null 就一个字节
+ *   都不发——那是配置缺一项，不是故障。
+ */
+const NO_UPLOAD_URL_MSG = '这台机器没有配直连地址（或管家太旧），上传不了'
+
+function uploadTargetOf(sessionId) {
+  const owner = state.chatBotId || botIdOfSession(sessionId)
+  const bot = runtimeBotOf(owner)
+  const path = '/sessions/' + encodeURIComponent(sessionId) + '/files'
+  // 名单上没有这颗 Bot、或者名单没带 runtime（低层直接调用、测试）：按本地那个形状走。
+  if (!bot || !bot.runtime || isLocalRuntimeBot(bot)) return { url: '/runtime' + path, local: true }
+  const base = bot.runtime.uploadUrl
+  if (!base) return null
+  return { url: base + path, local: false }
+}
+
 async function uploadChatFile(sessionId, file) {
-  const res = await swFetch('/runtime/sessions/' + encodeURIComponent(sessionId) + '/files', {
+  const target = uploadTargetOf(sessionId)
+  if (!target) throw new Error(t(NO_UPLOAD_URL_MSG))
+  const init = {
     method: 'POST',
     headers: authHeaders({
       accept: 'application/json',
@@ -7084,7 +7142,9 @@ async function uploadChatFile(sessionId, file) {
       'x-filename': encodeURIComponent(file.name),
     }),
     body: file,
-  })
+  }
+  // 本地那条走 swFetch（要它改道）；直连那条地址是绝对的，裸 fetch。
+  const res = target.local ? await swFetch(target.url, init) : await fetch(target.url, init)
   const text = await res.text()
   let json = null
   try {

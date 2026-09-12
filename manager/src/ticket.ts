@@ -111,6 +111,18 @@ export async function verifyGatewaySigned(token: string, gatewayUrl: string): Pr
   return payload
 }
 
+/**
+ * 日志票。Gateway 签给浏览器直连跟日志用的：`unit` 说看哪个单元，`seat` 必带 seatId，
+ * `manager` 不带。和桌面票同一把钥匙、同一份 JWKS，只差 typ——**桌面票在这里过不了**，
+ * 反过来也一样：一张票只开一扇门。
+ */
+export interface LogsTicket {
+  typ: 'satu-logs'
+  unit: 'seat' | 'manager'
+  seatId?: string
+  exp: number
+}
+
 /** 桌面票。验不过一律返回 undefined。 */
 export async function verifyTicket(token: string, gatewayUrl: string): Promise<Ticket | undefined> {
   const payload = await verifyGatewaySigned(token, gatewayUrl)
@@ -118,6 +130,17 @@ export async function verifyTicket(token: string, gatewayUrl: string): Promise<T
   if (payload.typ !== 'satu-desktop') return
   if (!payload.seatId || typeof payload.seatId !== 'string') return
   return payload as unknown as Ticket
+}
+
+/** 日志票。验不过一律返回 undefined；`unit === 'seat'` 而没有 seatId 也算验不过。 */
+export async function verifyLogsTicket(token: string, gatewayUrl: string): Promise<LogsTicket | undefined> {
+  const payload = await verifyGatewaySigned(token, gatewayUrl)
+  if (!payload) return
+  if (payload.typ !== 'satu-logs') return
+  if (payload.unit === 'seat') {
+    if (!payload.seatId || typeof payload.seatId !== 'string') return
+  } else if (payload.unit !== 'manager') return
+  return payload as unknown as LogsTicket
 }
 
 export const cookieName = (seatId: string) => `satu_desk_${seatId.replace(/[^A-Za-z0-9_-]/g, '')}`

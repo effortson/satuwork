@@ -3,9 +3,10 @@ import type { Duplex } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { json } from './http.ts'
 import { seat } from './seats.ts'
-import { cookieName, cookieOf, verifyTicket } from './ticket.ts'
+import { cookieName, cookieOf, verifyLogsTicket, verifyTicket } from './ticket.ts'
 import { verifyLogin } from './viewer.ts'
 import { rosterStream } from './roster.ts'
+import { botUnit, clampLines, followLogs, MANAGER_UNIT, recentLogs } from './logs.ts'
 
 /**
  * 反代。席位的 bot 口和 noVNC 口都只听 127.0.0.1，对外只有管家这一个端口。
@@ -29,11 +30,21 @@ const VNC_PREFIX = /^\/seats\/([^/]+)\/vnc(\/.*)?$/
  *
  * 和 `/bot` 那条的差别只在**谁来、拿什么票**：`/bot` 是 Gateway 来的，出示 `smt_`，
  * `authorization` 原样透传；这条是浏览器来的，出示登录 JWT，管家验完换成这个席位的
- * `sat_` 再往下递（见 viewer.ts 文件头）。只放 GET、只放 `/sessions/` 底下：今天要从
- * Gateway 挪出来的只有那条小时级的 SSE 和翻历史，发消息、审批、上传仍走 Gateway——
- * 那几条在 Gateway 上带着校验（@ 点名、连接器可见性），不是纯反代。
+ * `sat_` 再往下递（见 viewer.ts 文件头）。只放 `/sessions/` 底下，方法只放 GET 加上
+ * **一条 POST**：`/sessions/:id/files`（上传，9 号协议）。从 Gateway 挪出来的是那条
+ * 小时级的 SSE、翻历史、和上传——上传挪出来是因为文件字节没理由经 Gateway 过一手。
+ * 发消息、审批仍走 Gateway：那几条在 Gateway 上带着校验（@ 点名、连接器可见性），
+ * 不是纯反代。
  */
 const STREAM_PREFIX = /^\/seats\/([^/]+)\/stream(\/.*)?$/
+/** 上面说的那唯一一条 POST。恰好一段会话 id，后面不许再带别的。 */
+const STREAM_POST_ALLOWED = /^\/sessions\/[^/]+\/files$/
+/**
+ * 日志那两条（index.ts 上的路由）。Gateway 拿机器票来的仍走路由，这里只接**浏览器拿日志票
+ * 直连**的那种（9 号协议）——见 logsProxy。
+ */
+const SEAT_LOGS_PATH = /^\/seats\/([^/]+)\/logs$/
+const MANAGER_LOGS_PATH = '/logs'
 /**
  * 名单那一条通道（roster.ts）。也是浏览器带登录 JWT 直连，但它不按席位走——一个人在
  * 这台机器上的所有 Bot 合成一条流，哪些 Bot 归他由名册的 linuxUser 说了算。
@@ -70,8 +81,8 @@ function corsFor(req: IncomingMessage, gatewayUrl: string): Record<string, strin
   if (!origin || (origin !== allowed && !DESKTOP_ORIGINS.has(origin))) return null
   return {
     'access-control-allow-origin': origin,
-    'access-control-allow-methods': 'GET, OPTIONS',
-    'access-control-allow-headers': 'authorization, accept, last-event-id',
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'authorization, accept, content-type, x-filename, last-event-id',
     'access-control-max-age': '600',
     vary: 'origin',
   }
@@ -106,12 +117,28 @@ export interface ProxyDeps {
   gatewayUrl: () => string
 }
 
-function machineTokenOk(req: IncomingMessage, expected: string): boolean {
-  const given = String(req.headers['x-satuwork-machine'] || '')
+function sameToken(given: string, expected: string): boolean {
   if (!expected || !given || given.length !== expected.length) return false
   let diff = 0
   for (let i = 0; i < expected.length; i++) diff |= given.charCodeAt(i) ^ expected.charCodeAt(i)
   return diff === 0
+}
+
+function machineTokenOk(req: IncomingMessage, expected: string): boolean {
+  return sameToken(String(req.headers['x-satuwork-machine'] || ''), expected)
+}
+
+function bearerOf(req: IncomingMessage): string {
+  return String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()
+}
+
+/**
+ * 「这次是拿机器票来的吗」——**两个头都看**，和 index.ts 的 requireMachine 一致：Gateway 用
+ * `x-satuwork-machine`，手工 curl 习惯 `authorization: Bearer smt_`。日志那两条要靠它分流，
+ * 只看一个头的话，curl 的那张 `smt_` 会被当成 JWT 去验签，回一句「日志票无效」把人带偏。
+ */
+function machineTokenEither(req: IncomingMessage, expected: string): boolean {
+  return machineTokenOk(req, expected) || sameToken(bearerOf(req), expected)
 }
 
 export function pipeUpstream(
@@ -271,14 +298,16 @@ function withCors(res: ServerResponse, status: number, body: unknown, cors: Reco
  * 浏览器直连的那条流（STREAM_PREFIX 的注释说了它是什么）。这里是顺序：
  *
  *   1. 预检（OPTIONS）只看源，不看票——浏览器发预检时还没带 Authorization。
- *   2. 只放 GET、只放 `/sessions/` 底下。
+ *   2. 只放 `/sessions/` 底下；方法只放 GET，外加 `POST /sessions/:id/files` 这一条。
  *   3. 席位在不在、票对不对、**席位是不是这个人的**（linuxUserOf）。三样都对了才换票。
  *   4. 名册里没有 `sat_`（5 号协议之前部署的席位）：409，明说「重新部署后可用」。
- *      前端把任何非 2xx 当「直连不通」退回 Gateway，所以这一句主要是给 curl 的人看的。
  *
- * 状态码的分配是给前端看的：它对直连**不区分**原因，任何失败都退回 Gateway 反代五分钟
- * （见 gateway/ui/chat.js 的 directStreamBase）。所以这里不必像 Gateway 那样把 401/403/404
- * 当「答案不会变」——真的不会变的话，Gateway 那条路上会再说一次。
+ * 前端拿到直连地址之后**不再退回 Gateway**（Gateway 按协议号决定给不给地址，给了就是
+ * 这条路一定通）。所以状态码得说清原因：401 重新登录、403 不是你的、404 没这个席位、
+ * 405 方法不对、409 重新部署——前端把这句原样摆出来，不会再有第二条路替它解释。
+ *
+ * POST 的正文原样对流：pipeUpstream 是 `req.pipe(upstream)`，`content-type`、`content-length`、
+ * `transfer-encoding`、`x-filename` 都由 forwardHeaders 原样带下去，管家不收进内存。
  */
 async function streamProxy(
   req: IncomingMessage,
@@ -295,11 +324,13 @@ async function streamProxy(
     res.end()
     return
   }
-  if (req.method !== 'GET') return withCors(res, 405, { error: '这条路只放 GET' }, cors)
+  if (req.method === 'POST') {
+    if (!STREAM_POST_ALLOWED.test(rest)) return withCors(res, 405, { error: '这条路的 POST 只放上传' }, cors)
+  } else if (req.method !== 'GET') return withCors(res, 405, { error: '这条路只放 GET 和上传的 POST' }, cors)
   if (!STREAM_ALLOWED.test(rest)) return withCors(res, 404, { error: '这条路只放会话' }, cors)
   const row = seat(seatId)
   if (!row) return withCors(res, 404, { error: '没有这个席位' }, cors)
-  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()
+  const token = bearerOf(req)
   if (!token) return withCors(res, 401, { error: '需要登录' }, cors)
   const viewer = await verifyLogin(token, deps.gatewayUrl())
   if (!viewer) return withCors(res, 401, { error: '登录已失效，请重新登录' }, cors)
@@ -325,16 +356,73 @@ async function rosterProxy(req: IncomingMessage, res: ServerResponse, deps: Prox
     return
   }
   if (req.method !== 'GET') return withCors(res, 405, { error: '这条路只放 GET' }, cors)
-  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()
+  const token = bearerOf(req)
   if (!token) return withCors(res, 401, { error: '需要登录' }, cors)
   const viewer = await verifyLogin(token, deps.gatewayUrl())
   if (!viewer) return withCors(res, 401, { error: '登录已失效，请重新登录' }, cors)
   await rosterStream(req, res, linuxUserOf(viewer.accountId), cors ?? {})
 }
 
+/**
+ * 浏览器直连跟日志（9 号协议）。`/logs` 看管家自己，`/seats/:id/logs` 看那个席位；
+ * `?follow=1` 是 SSE，否则一次给最近 N 行——和 index.ts 上那两条路由**同一份 followLogs /
+ * recentLogs**，只是门票不同。
+ *
+ * 为什么不是登录 JWT（stream / roster 那两条用的）：日志不按「席位是不是这个人的」分，
+ * 管家日志更是没有席位可归。看日志的资格（管理员、这个组织的）是 Gateway 判的，判完签一张
+ * 五分钟的日志票——票上写死了单元和席位，管家只核「票和路径说的是同一个单元」。
+ *
+ * 和 streamProxy 一样的三道门（预检只看源、只放 GET、票）；票对了但对不上路径：403，不是
+ * 401——票本身是好的，只是拿错了门。
+ */
+async function logsProxy(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  seatId: string | undefined,
+  deps: ProxyDeps,
+): Promise<void> {
+  const cors = corsFor(req, deps.gatewayUrl())
+  if (req.method === 'OPTIONS') {
+    if (!cors) return withCors(res, 403, { error: '不认这个源' }, null)
+    res.writeHead(204, cors)
+    res.end()
+    return
+  }
+  if (req.method !== 'GET') return withCors(res, 405, { error: '这条路只放 GET' }, cors)
+  const token = bearerOf(req)
+  if (!token) return withCors(res, 401, { error: '需要日志票' }, cors)
+  const ticket = await verifyLogsTicket(token, deps.gatewayUrl())
+  if (!ticket) return withCors(res, 401, { error: '日志票无效或已过期' }, cors)
+  let unit: string
+  if (seatId !== undefined) {
+    if (ticket.unit !== 'seat' || ticket.seatId !== seatId) return withCors(res, 403, { error: '这张票不是看这个席位的' }, cors)
+    if (!seat(seatId)) return withCors(res, 404, { error: '没有这个席位' }, cors)
+    unit = botUnit(seatId)
+  } else {
+    if (ticket.unit !== 'manager') return withCors(res, 403, { error: '这张票不是看管家的' }, cors)
+    unit = MANAGER_UNIT
+  }
+  const lines = clampLines(url.searchParams.get('lines'))
+  if (url.searchParams.get('follow') === '1') return followLogs(unit, lines, res, cors ?? {})
+  const body = seatId !== undefined ? { seatId, lines: await recentLogs(unit, lines) } : { unit, lines: await recentLogs(unit, lines) }
+  withCors(res, 200, body, cors)
+}
+
 /** 注册到 Router.intercept。返回 true 表示这个请求已经被反代接管。 */
 export function proxyIntercept(deps: ProxyDeps) {
   return async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> => {
+    /**
+     * 日志那两条：拿机器票来的（Gateway、curl）**放过去**给 index.ts 的路由，行为一个字
+     * 不变；其余的（预检、日志票、什么都没带）都归这里。这样 OPTIONS 和跨源响应的头只在
+     * 一处处理，路由那边不用知道 CORS 是什么。
+     */
+    const seatLogs = SEAT_LOGS_PATH.exec(url.pathname)
+    if (seatLogs || url.pathname === MANAGER_LOGS_PATH) {
+      if (machineTokenEither(req, deps.machineToken())) return false
+      await logsProxy(req, res, url, seatLogs ? seatLogs[1] : undefined, deps)
+      return true
+    }
     const stream = STREAM_PREFIX.exec(url.pathname)
     if (stream) {
       await streamProxy(req, res, url, stream[1], stream[2] || '/', deps)

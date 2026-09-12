@@ -36,7 +36,10 @@ function fakeBot() {
   /** 名单流挂着的那些事件流响应，收摊时一起关掉，别让进程退不出去。 */
   const rosterOpen = []
   const server = createServer((req, res) => {
-    seen.push({ path: req.url, headers: { ...req.headers } })
+    // 同一个对象先入账再补正文：上传那条要等 body 读完才知道字节对不对，但「打到 bot
+    // 几次」的计数要在请求到达那一刻就准。
+    const entry = { path: req.url, method: req.method, headers: { ...req.headers } }
+    seen.push(entry)
     if (req.url.startsWith('/api/health')) {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify(health))
@@ -54,6 +57,18 @@ function fakeBot() {
         health.quiesced = ttlMs > 0
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, quiesced: health.quiesced, ...health }))
+      })
+      return
+    }
+    // 直连上传（9 号协议）：管家把正文原样管过来，这里把字节收齐记下，供断言「路上没坏」。
+    if (req.method === 'POST' && /^\/api\/sessions\/[^/]+\/files$/.test(req.url)) {
+      const chunks = []
+      req.on('data', (c) => chunks.push(c))
+      req.on('end', () => {
+        entry.body = Buffer.concat(chunks)
+        const name = decodeURIComponent(String(req.headers['x-filename'] || ''))
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ path: 'uploads/' + name, name, size: entry.body.length }))
       })
       return
     }
@@ -256,7 +271,9 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       assert(anon.status === 401, `无票 ${anon.status}`)
       const ok = await req(mgrBase, 'GET', '/health', { token: machineTok })
       assert(ok.status === 200, `有票 ${ok.status} ${ok.text}`)
-      assert(ok.json.protocol >= 1, 'protocol')
+      // 9 号起 /logs 认日志票、/stream 放上传的 POST（manager/src/config.ts）。Gateway 按这个
+      // 号决定给不给前端直连地址，报低了就是界面上一句「这台机器跟不了」。
+      assert(ok.json.protocol >= 9, `protocol 该 ≥ 9，实际 ${ok.json.protocol}`)
       assert(ok.json.dryRun === true, 'dryRun')
     })
 
@@ -725,6 +742,104 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       }
     })
 
+    /**
+     * 浏览器直连上传（9 号协议）。
+     *
+     * 文件字节没理由经 Gateway 过一手（Vercel 函数既有时限又有请求体上限），所以 Gateway 上
+     * 那条 `POST /runtime/sessions/:id/files` 删了，改从 `/seats/:id/stream` 这条前缀放行**唯一
+     * 一条 POST**。钉三样：正文和 x-filename 原样到 bot、票换成了席位的 sat_、别的 POST 仍 405。
+     */
+    await test('直连上传：POST /sessions/:id/files 换成 sat_ 原样到达 bot，别的 POST 仍 405', async () => {
+      const me = await req(gwBase, 'GET', '/me', { token: ownerTok })
+      const linuxUser = 'sw-' + createHash('sha256').update(me.json.account.id).digest('hex').slice(0, 12)
+      const put = await req(mgrBase, 'PUT', '/seats/seat-5', {
+        token: machineTok,
+        body: {
+          linuxUser,
+          homeDir: `/home/${linuxUser}`,
+          workDir: `/home/${linuxUser}/work`,
+          seatDir: `/home/${linuxUser}/.satuwork/seat-5`,
+          botId: 'bot-5',
+          botVersion: '0.0.0-e2e',
+          vncPassword: 'x'.repeat(16),
+          gatewayUrl: gwBase,
+          gatewayToken: 'sat_owner_5',
+          gatewayApiKey: 'sk_sw_owner_5',
+          ports: { display: 14, vncPort: 5914, novncPort: NOVNC_PORT, botPort: BOT_PORT, cdpPort: 9226 },
+        },
+      })
+      assert(put.status === 200, `部署 seat-5 ${put.status} ${put.text}`)
+      try {
+        const url = `${mgrBase}/seats/seat-5/stream/sessions/s1/files`
+        // 预检：浏览器发 POST 前先问一句，allow-methods 里没有 POST 的话，正文压根不会发出去。
+        const pre = await fetch(url, {
+          method: 'OPTIONS',
+          headers: {
+            origin: gwBase,
+            'access-control-request-method': 'POST',
+            'access-control-request-headers': 'authorization, content-type, x-filename',
+          },
+        })
+        assert(pre.status === 204, `预检 ${pre.status}`)
+        assert(pre.headers.get('access-control-allow-origin') === gwBase, `allow-origin=${pre.headers.get('access-control-allow-origin')}`)
+        assert(/\bPOST\b/.test(String(pre.headers.get('access-control-allow-methods'))), `allow-methods 要放 POST：${pre.headers.get('access-control-allow-methods')}`)
+        const allowHeaders = String(pre.headers.get('access-control-allow-headers')).toLowerCase()
+        assert(allowHeaders.includes('x-filename') && allowHeaders.includes('content-type'), `allow-headers 要放 x-filename 和 content-type：${allowHeaders}`)
+
+        // 挑一段跨 chunk 边界也要拼对的内容，中文名走 x-filename 一路带过去。
+        const bytes = Buffer.from('报表内容\n第二行\n', 'utf8')
+        const filename = encodeURIComponent('季度报表.txt')
+        const before = bot.seen.length
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer ' + ownerTok,
+            origin: gwBase,
+            'content-type': 'application/octet-stream',
+            'x-filename': filename,
+          },
+          body: bytes,
+        })
+        const text = await r.text()
+        assert(r.status === 200, `上传 ${r.status} ${text}`)
+        assert(r.headers.get('access-control-allow-origin') === gwBase, '响应上要有 allow-origin')
+        const body = JSON.parse(text)
+        assert(body.size === bytes.length && body.name === '季度报表.txt', `bot 的回包没原样回来：${text}`)
+        assert(bot.seen.length === before + 1, `应当正好打到 bot 一次，实际 ${bot.seen.length - before}`)
+        const hit = bot.seen[before]
+        assert(hit.method === 'POST' && hit.path === '/api/sessions/s1/files', `到 bot 的是 ${hit.method} ${hit.path}`)
+        assert(hit.headers.authorization === 'Bearer sat_owner_5', `到 bot 的票是 ${hit.headers.authorization}`)
+        assert(hit.headers['x-filename'] === filename, `x-filename 在路上坏了：${hit.headers['x-filename']}`)
+        assert(hit.body && Buffer.compare(hit.body, bytes) === 0, `正文在路上坏了：${hit.body && hit.body.toString('utf8')}`)
+
+        // 无票：401，而不是把匿名的字节塞给 bot。
+        const anon = await fetch(url, {
+          method: 'POST',
+          headers: { origin: gwBase, 'content-type': 'application/octet-stream', 'x-filename': 'a.txt' },
+          body: 'x',
+        })
+        assert(anon.status === 401, `无票上传 ${anon.status}`)
+        // 发消息仍走 Gateway（那条带 @ 点名校验）：这条前缀上别的 POST 一律 405。
+        const msg = await fetch(`${mgrBase}/seats/seat-5/stream/sessions/s1/messages`, {
+          method: 'POST',
+          headers: { authorization: 'Bearer ' + ownerTok, origin: gwBase, 'content-type': 'application/json' },
+          body: '{}',
+        })
+        assert(msg.status === 405, `POST messages ${msg.status}`)
+        // 多带一段路径也不行：只认恰好 /sessions/:id/files。
+        const deeper = await fetch(`${mgrBase}/seats/seat-5/stream/sessions/s1/files/extra`, {
+          method: 'POST',
+          headers: { authorization: 'Bearer ' + ownerTok, origin: gwBase },
+          body: 'x',
+        })
+        assert(deeper.status === 405, `POST files/extra ${deeper.status}`)
+        assert(bot.seen.length === before + 1, '401 / 405 都不该打到 bot')
+      } finally {
+        const gone = await req(mgrBase, 'DELETE', '/seats/seat-5', { token: machineTok })
+        assert(gone.status === 200, `清掉 seat-5 ${gone.status}`)
+      }
+    })
+
     await test('直连名单流：合成这个人在本机的席位，帧过滤过，CORS 头随响应', async () => {
       const me = await req(gwBase, 'GET', '/me', { token: ownerTok })
       const linuxUser = 'sw-' + createHash('sha256').update(me.json.account.id).digest('hex').slice(0, 12)
@@ -976,6 +1091,166 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       // 开发机上没有 journalctl，取不到就是空数组——但字段必须在，不能整条塌掉。
       assert(Array.isArray(r.json.lines), `lines 该是数组：${r.text.slice(0, 200)}`)
       assert(r.json.seatId === 'seat-1', `seatId=${r.json.seatId}`)
+    })
+
+    /**
+     * 浏览器直连跟日志（9 号协议）。
+     *
+     * 机器票是管家的 root 控制面凭据，一步都不能往浏览器放；而 Gateway 上那条 `follow=1`
+     * 的 SSE 反代是最后一条会在 Gateway 上挂小时级的连接，删了。剩下的路：Gateway 判完资格
+     * 签一张五分钟的**日志票**（只写单元和席位），浏览器拿它直打管家。这一组钉的是两头
+     * 接得上——Gateway 签的票管家认、认得对（桌面票不行、别的席位不行、没票不行），CORS
+     * 头随响应；拿机器票来的那条老路一个字不变。
+     */
+    await test('直连日志：Gateway 签的日志票管家认，桌面票 / 别的席位 / 无票各归各的错', async () => {
+      const machineId = await machineIdOf(req, gwBase, ownerTok, orgId)
+      const me = await req(gwBase, 'GET', '/me', { token: ownerTok })
+      assert(me.status === 200, `/me ${me.status}`)
+      const auditCount = async () => {
+        const a = await req(gwBase, 'GET', `/orgs/${orgId}/audit`, { token: ownerTok })
+        return (a.json.events || a.json.rows || []).filter((e) => e.action === 'machine.logs').length
+      }
+
+      // follow=1 那条老路要**真的没了**（410，不是静默降级成最近 N 行）：老界面还传的话，
+      // 人以为在跟，其实屏幕早停了。
+      const follow = await req(gwBase, 'GET', `/platform/machines/${machineId}/logs?follow=1`, { token: ownerTok })
+      assert(follow.status === 410, `follow=1 该 410，实际 ${follow.status} ${follow.text}`)
+      // 一次 JSON 往返的「最近 N 行」照旧经 Gateway，不受协议号和直连地址限制。
+      const plain = await req(gwBase, 'GET', `/platform/machines/${machineId}/logs?lines=5`, { token: ownerTok })
+      assert(plain.status === 200 && Array.isArray(plain.json.lines), `不跟随的日志照旧：${plain.status} ${plain.text.slice(0, 200)}`)
+
+      // 没配直连地址：409 明说，而不是签一张打不出去的票。
+      const none = await req(gwBase, 'GET', `/platform/machines/${machineId}/logs/direct`, { token: ownerTok })
+      assert(none.status === 409, `没配 directUrl 该 409，实际 ${none.status} ${none.text}`)
+
+      // 直连地址必须是 https，真管家在本机是 http——所以填一个假域名让 Gateway 肯签票，
+      // 请求由这里直接打到 mgrBase。验的是票，不是那个域名通不通。
+      const DIRECT = 'https://mgr-e2e.satuwork.test'
+      const set = await req(gwBase, 'PUT', `/platform/machines/${machineId}/direct-url`, { token: ownerTok, body: { directUrl: DIRECT } })
+      assert(set.status === 200, `设直连 ${set.status} ${set.text}`)
+      // 协议号由心跳自报。真管家报的就是 9（/health 那条盯着），但前面有用例拿假心跳把这台
+      // 报成过 1，真管家下一轮心跳要 30 秒后才来——这里明说一次，别让用例靠时机。
+      const hb = await req(gwBase, 'POST', `/internal/machines/${machineId}/heartbeat`, {
+        token: machineTok,
+        body: { managerVersion: 'e2e-9', protocol: 9, node: process.versions.node, seats: [] },
+      })
+      assert(hb.status === 200, `heartbeat ${hb.status} ${hb.text}`)
+
+      // seat-1 是管家侧登记的假席位；Gateway 只给**这台机器上**的席位签票（seatId 会进单元名），
+      // 所以在 Gateway 库里补一行，结束时删掉——后面「Gateway 下发部署」那条要靠这台机器空着。
+      const { createRequire } = await import('node:module')
+      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
+      const pg = require('pg')
+      const client = new pg.Client({ connectionString: PG_URL })
+      await client.connect()
+      try {
+        await client.query(`set search_path to ${SCHEMA}`)
+        await client.query(
+          `insert into seat_runtimes ("accountId","botId","companyId","linuxUser","seatId","machineId",slot,display,"vncPort","novncPort","botPort","vncPassword",status,"deployedAt","updatedAt","botVersion")
+           values ($1,'bot-1',$2,'sw-test','seat-1',$3,9,19,5919,6090,3209,'pw','ready',$4,$4,'0.0.0-e2e')`,
+          [me.json.account.id, orgId, machineId, Date.now()],
+        )
+
+        const audits0 = await auditCount()
+        const direct = await req(gwBase, 'GET', `/platform/machines/${machineId}/logs/direct?seatId=seat-1`, { token: ownerTok })
+        assert(direct.status === 200, `签席位日志票 ${direct.status} ${direct.text}`)
+        assert(direct.json.url === `${DIRECT}/seats/seat-1/logs`, `席位日志的直连地址不对：${direct.json.url}`)
+        const seatTicket = direct.json.ticket
+        assert(typeof seatTicket === 'string' && seatTicket.split('.').length === 3, `票不像 JWT：${seatTicket}`)
+        // 签票就是「看别人的日志」，和经 Gateway 看一样要留痕。
+        assert((await auditCount()) === audits0 + 1, '签日志票没留审计')
+        // 外来 seatId 照旧挡：票上会写死席位，签给一个不在这台机器上的席位就是给单元名开口子。
+        const badSeat = await req(gwBase, 'GET', `/platform/machines/${machineId}/logs/direct?seatId=seat-not-here`, { token: ownerTok })
+        assert(badSeat.status === 404, `外来 seatId 该 404，实际 ${badSeat.status} ${badSeat.text}`)
+        // 公司侧那条同义路由也要通（机器页和公司详情页都有「跟日志」）。
+        const viaOrg = await req(gwBase, 'GET', `/platform/orgs/${orgId}/machines/${machineId}/logs/direct?seatId=seat-1`, { token: ownerTok })
+        assert(viaOrg.status === 200 && viaOrg.json.url === direct.json.url, `公司侧签票 ${viaOrg.status} ${viaOrg.text}`)
+        assert((await req(gwBase, 'GET', `/platform/machines/${machineId}/logs/direct?seatId=seat-1`)).status === 401, '无 owner 票该 401')
+
+        const seatUrl = `${mgrBase}/seats/seat-1/logs`
+        // 预检只看源，不看票——浏览器发预检时还没带 Authorization。
+        const pre = await fetch(seatUrl, {
+          method: 'OPTIONS',
+          headers: { origin: gwBase, 'access-control-request-method': 'GET', 'access-control-request-headers': 'authorization' },
+        })
+        assert(pre.status === 204, `预检 ${pre.status}`)
+        assert(pre.headers.get('access-control-allow-origin') === gwBase, `allow-origin=${pre.headers.get('access-control-allow-origin')}`)
+        assert(String(pre.headers.get('access-control-allow-headers')).toLowerCase().includes('authorization'), 'allow-headers 要放 authorization')
+        const badOrigin = await fetch(seatUrl, {
+          method: 'OPTIONS',
+          headers: { origin: 'https://evil.example', 'access-control-request-method': 'GET' },
+        })
+        assert(badOrigin.status === 403, `别的源预检 ${badOrigin.status}`)
+
+        // 票对、席位对：200，CORS 头随响应，结构和拿机器票问到的一样。
+        const ok = await fetch(`${seatUrl}?lines=5`, { headers: { authorization: 'Bearer ' + seatTicket, origin: gwBase } })
+        const okText = await ok.text()
+        assert(ok.status === 200, `日志票看席位日志 ${ok.status} ${okText}`)
+        assert(ok.headers.get('access-control-allow-origin') === gwBase, '响应上要有 allow-origin')
+        const okBody = JSON.parse(okText)
+        assert(Array.isArray(okBody.lines) && okBody.seatId === 'seat-1', `结构不对：${okText.slice(0, 200)}`)
+        // 跟着滚：同一张票开 SSE。只钉「响应头当场到、是事件流、带 CORS」，**不读正文**：
+        // 真机上 journalctl -f 对一个安静的单元几十秒不吐字节，流不会自己结束；开发机上
+        // 没有 journalctl，流当场带一条 error 帧就结束——两种环境下都不能等它读完。
+        // 断言消息里也不能 `await sse.text()`：模板字符串是先求值的，条件成立照样会等。
+        const sseAbort = new AbortController()
+        const sse = await fetch(`${seatUrl}?lines=5&follow=1`, {
+          headers: { authorization: 'Bearer ' + seatTicket, origin: gwBase, accept: 'text/event-stream' },
+          signal: AbortSignal.any([sseAbort.signal, AbortSignal.timeout(8000)]),
+        })
+        assert(sse.status === 200, `follow ${sse.status}`)
+        assert(String(sse.headers.get('content-type')).includes('text/event-stream'), `follow content-type ${sse.headers.get('content-type')}`)
+        assert(sse.headers.get('access-control-allow-origin') === gwBase, 'SSE 响应上要有 allow-origin')
+        sseAbort.abort()
+        await sse.text().catch(() => '')
+
+        // 无票 / 假票：401，错误响应上也要有 CORS 头，否则浏览器里只剩一句 network error。
+        const anon = await fetch(`${seatUrl}?lines=5`, { headers: { origin: gwBase } })
+        assert(anon.status === 401, `无票 ${anon.status}`)
+        assert(anon.headers.get('access-control-allow-origin') === gwBase, '401 也要带 allow-origin')
+        const junk = await fetch(`${seatUrl}?lines=5`, { headers: { authorization: 'Bearer not.a.jwt', origin: gwBase } })
+        assert(junk.status === 401, `假票 ${junk.status}`)
+        // 桌面票是 Gateway 签的、签名是真的，但一张票只开一扇门。
+        const desk = await mintTicket(gwBase, ownerTok)
+        const viaDesk = await fetch(`${seatUrl}?lines=5`, { headers: { authorization: 'Bearer ' + desk, origin: gwBase } })
+        assert(viaDesk.status === 401, `桌面票看日志 ${viaDesk.status}`)
+        // 登录 JWT 也不行：日志的资格由 Gateway 判，管家只认它签的日志票。
+        const viaLogin = await fetch(`${seatUrl}?lines=5`, { headers: { authorization: 'Bearer ' + ownerTok, origin: gwBase } })
+        assert(viaLogin.status === 401, `登录票看日志 ${viaLogin.status}`)
+        // 票是好的，只是拿错了门：403，不是 401。
+        const other = await fetch(`${mgrBase}/seats/seat-2/logs?lines=5`, { headers: { authorization: 'Bearer ' + seatTicket, origin: gwBase } })
+        assert(other.status === 403, `别的席位 ${other.status} ${await other.text()}`)
+        const seatOnMgr = await fetch(`${mgrBase}/logs?lines=5`, { headers: { authorization: 'Bearer ' + seatTicket, origin: gwBase } })
+        assert(seatOnMgr.status === 403, `席位票看管家日志 ${seatOnMgr.status}`)
+
+        // 管家自己的日志：不带 seatId 签出来的是 unit=manager 的票。
+        const mgrDirect = await req(gwBase, 'GET', `/platform/machines/${machineId}/logs/direct`, { token: ownerTok })
+        assert(mgrDirect.status === 200, `签管家日志票 ${mgrDirect.status} ${mgrDirect.text}`)
+        assert(mgrDirect.json.url === `${DIRECT}/logs`, `管家日志的直连地址不对：${mgrDirect.json.url}`)
+        const mgrTicket = mgrDirect.json.ticket
+        const mgrOk = await fetch(`${mgrBase}/logs?lines=5`, { headers: { authorization: 'Bearer ' + mgrTicket, origin: gwBase } })
+        const mgrText = await mgrOk.text()
+        assert(mgrOk.status === 200, `日志票看管家日志 ${mgrOk.status} ${mgrText}`)
+        assert(mgrOk.headers.get('access-control-allow-origin') === gwBase, '响应上要有 allow-origin')
+        const mgrBody = JSON.parse(mgrText)
+        assert(Array.isArray(mgrBody.lines) && /satuwork-manager/.test(mgrBody.unit || ''), `结构不对：${mgrText.slice(0, 200)}`)
+        const mgrOnSeat = await fetch(`${seatUrl}?lines=5`, { headers: { authorization: 'Bearer ' + mgrTicket, origin: gwBase } })
+        assert(mgrOnSeat.status === 403, `管家票看席位日志 ${mgrOnSeat.status}`)
+        const mgrPre = await fetch(`${mgrBase}/logs`, { method: 'OPTIONS', headers: { origin: gwBase, 'access-control-request-method': 'GET' } })
+        assert(mgrPre.status === 204, `管家日志预检 ${mgrPre.status}`)
+
+        // 拿机器票来的老路一个字不变：两个头都认，不带 CORS 也照答。
+        const viaMachine = await req(mgrBase, 'GET', '/seats/seat-1/logs?lines=5', { token: machineTok })
+        assert(viaMachine.status === 200 && viaMachine.json.seatId === 'seat-1', `机器票 ${viaMachine.status} ${viaMachine.text}`)
+        const viaHeader = await fetch(`${mgrBase}/logs?lines=5`, { headers: { 'x-satuwork-machine': machineTok } })
+        assert(viaHeader.status === 200, `x-satuwork-machine ${viaHeader.status}`)
+      } finally {
+        await client.query('delete from seat_runtimes where "machineId" = $1 and "seatId" = $2', [machineId, 'seat-1']).catch(() => {})
+        await client.end().catch(() => {})
+        // 直连地址清掉：后面桌面 / 名单那些用例按「没配」的路子写的。
+        const cleared = await req(gwBase, 'PUT', `/platform/machines/${machineId}/direct-url`, { token: ownerTok, body: { directUrl: '' } })
+        assert(cleared.status === 200, `清直连 ${cleared.status} ${cleared.text}`)
+      }
     })
 
     await test('席位诊断：不认识的席位给结论，不是 500', async () => {

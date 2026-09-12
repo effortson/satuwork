@@ -52,6 +52,12 @@ openssl rand -base64 32   # GATEWAY_CHANNEL_KEY
 - **Gateway 上已经没有长连接**：桌面反代（`desktop.ts`）、对话 SSE 反代
   （`/runtime/sessions/:id/events`）、名单流扇入（`/runtime/roster/stream`）三条都删了，
   没有退路。桌面、对话流、名单流要能用，每台机器必须配 `directUrl` 且管家 ≥ 6 号。
+  之后又删了最后两条会挂着不放的：日志跟随（`/runtime/logs?follow=1` 和平台侧两条 `.../logs?follow=1`，
+  现在回 410，浏览器改从 `.../logs/direct` 拿 `{ url, ticket }` 直连管家）和附件上传
+  （`POST /runtime/sessions/:id/files`，浏览器改打 `runtime.uploadUrl`），这两样要管家 ≥ 9 号。
+  **Vercel 上剩下唯一一条流式响应是 `/v1`**（模型回答的 SSE）——它是请求级的，模型答完就结束，
+  不是小时级；函数的 `maxDuration` 建议给到 800 秒，让一轮长回答（连同工具调用）不被半路砍断。
+  这里不动 `vercel.json`，上线前按需要改。
 - **老协议机器上的日常任务与渠道**：Gateway 不再自己跑那一轮（那要等席位 20 分钟），< 8 号的
   机器上这两样不动。先升管家。
 

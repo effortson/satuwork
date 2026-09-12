@@ -103,7 +103,7 @@ worker 复用同一套，不另写。
 | 今天在 Gateway 里 | 去哪 | 怎么做 | 备注 |
 | --- | --- | --- | --- |
 | 桌面反代 `desktop.ts` | **已删** | 全铺二级域名后每台机器填 `directUrl`；协议 ≥4 直连 | 没配 `directUrl` 的机器没有桌面 |
-| 对话 SSE / JSON / 上传 / 下载反代（`lib/runtime.ts`） | 席位工人 | 浏览器直连 `https://<机器>/w/seats/:id/bot/*`，工人验 JWT 换 `sat_` | 决定二 |
+| 对话 SSE / JSON / 上传 / 下载反代（`lib/runtime.ts`） | 席位工人 | 浏览器直连 `https://<机器>/w/seats/:id/bot/*`，工人验 JWT 换 `sat_`。**SSE 与上传已删**：对话流走 `streamUrl`，上传走 `uploadUrl`（`POST {directUrl}/seats/:id/stream/sessions/:id/files`，管家 ≥ 9）；日志跟随同期改成日志票直连（`.../logs/direct`）。JSON 与下载**留在 Gateway**——都是一次请求就结束的（有超时、受文件大小约束），函数扛得住 | 决定二 |
 | 名单流 `roster-stream.ts` | 管家（**已删** Gateway 那份） | 账号粘机器（§3.0），一个人所有席位 Bot 都在一台机上，整段逻辑搬进 manager/src/roster.ts | 本地 Bot 那一行由桌面端推的索引补 |
 | 日常任务调度 `routines.ts` | 席位工人 | 工人每 30 秒 `GET /worker/routines/due`，领到就在本机跑，`turn/end` 后回报 | 定义、流水、补跑仍在 Gateway 的表里 |
 | 渠道分发 `channels.ts` | 席位工人 | 长轮询换 **webhook**：`https://<机器>/w/channels/telegram/<secret>`；事件账本、配对、租约仍走 Gateway 接口 | 决定一；机器要能出网到 Telegram |

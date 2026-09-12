@@ -62,6 +62,27 @@ export const MIN_WORKER_PROTOCOL = 7
 export const MIN_CHANNEL_WORKER_PROTOCOL = 8
 
 /**
+ * 日志跟随直连要求的管家协议号。
+ *
+ * 9 号管家的 `/logs` 和 `/seats/:id/logs` 才认 `Authorization: Bearer` 里那张 Gateway 签的
+ * **日志票**（crypto.ts 的 signLogsTicket）；老管家只认机器票，而机器票是管家的 root 控制面
+ * 凭据，一步都不能往浏览器放。Gateway 那条 `follow=1` 的 SSE 反代已删（它是最后一条会在
+ * Gateway 上挂小时级的连接），低于它的机器 `/runtime/logs/direct` 直接 409——不跟随的
+ * 「最近 N 行」照旧经 Gateway，一次 JSON 往返，不受这个号限制。
+ */
+export const MIN_DIRECT_LOGS_PROTOCOL = 9
+
+/**
+ * 附件上传直连要求的管家协议号。
+ *
+ * 9 号管家的 `/seats/:id/stream/*` 才放行 `POST .../sessions/:id/files`（登录 JWT 换 `sat_`，
+ * 正文原样管过去）；5～8 号在那条前缀上只开了 SSE，POST 是 405。上传动辄几十 MB，边收边转
+ * 在 Vercel 函数里既占时又占请求体上限，所以 Gateway 的 `POST /runtime/sessions/:id/files` 删了，
+ * 低于它的机器 `uploadUrl` 为 null，界面上就没有上传。
+ */
+export const MIN_DIRECT_UPLOAD_PROTOCOL = 9
+
+/**
  * 会报安装进度（`/seats/:id/progress`）的管家协议。**只用来省一次白问**：低于它的
  * 管家上没有这条路，问了也只是一个 404，而问的时机恰恰是每两秒一次。
  *
@@ -145,6 +166,16 @@ export function portsOf(slot: number): SeatPorts {
 }
 
 /**
+ * 这台机器给浏览器直连用的地址前缀（去掉尾斜杠），管家不够新就是空串。
+ *
+ * 每条直连路各有自己的最低协议号（上面那串 MIN_DIRECT_*），判法却是同一句：填了
+ * `directUrl` **且** 管家 ≥ 那个号。以前四处各抄一遍，改一处漏三处，收成一个。
+ */
+export function directBaseOf(machine: Pick<Machine, 'directUrl' | 'protocol'> | null, minProtocol: number): string {
+  return (machine?.protocol ?? 0) >= minProtocol ? (machine?.directUrl || '').trim().replace(/\/$/, '') : ''
+}
+
+/**
  * 桌面地址。**机器的直连地址，`{directUrl}/seats/:id/vnc/`；没有直连就没有桌面（空串）。**
  *
  * 一路走过来：先是 `http://<sshHost>:<6081+N>/vnc.html`（每个席位一个对外端口，明
@@ -176,8 +207,7 @@ export function novncUrlOf(
    * 管家验完签换一张 path 限定的 cookie，再 302 到 vnc.html。票仍由 Gateway 签
    * （desktopTicketFor），管家拿 Gateway 的公钥验。
    */
-  const direct =
-    (machine?.protocol ?? 0) >= MIN_DIRECT_DESKTOP_PROTOCOL ? (machine?.directUrl || '').trim().replace(/\/$/, '') : ''
+  const direct = directBaseOf(machine, MIN_DIRECT_DESKTOP_PROTOCOL)
   if (!direct) return ''
   const url = `${direct}/seats/${encodeURIComponent(seatId)}/vnc/`
   return ticket ? `${url}?ticket=${encodeURIComponent(ticket)}` : url
@@ -191,8 +221,7 @@ export function novncUrlOf(
  */
 export function streamUrlOf(machine: Pick<Machine, 'host' | 'directUrl' | 'protocol'> | null, seatId: string): string {
   if (!(machine?.host || '').trim() || !seatId) return ''
-  const direct =
-    (machine?.protocol ?? 0) >= MIN_DIRECT_STREAM_PROTOCOL ? (machine?.directUrl || '').trim().replace(/\/$/, '') : ''
+  const direct = directBaseOf(machine, MIN_DIRECT_STREAM_PROTOCOL)
   return direct ? `${direct}/seats/${encodeURIComponent(seatId)}/stream` : ''
 }
 
@@ -202,9 +231,33 @@ export function streamUrlOf(machine: Pick<Machine, 'host' | 'directUrl' | 'proto
  */
 export function rosterUrlOf(machine: Pick<Machine, 'host' | 'directUrl' | 'protocol'> | null): string {
   if (!(machine?.host || '').trim()) return ''
-  const direct =
-    (machine?.protocol ?? 0) >= MIN_DIRECT_ROSTER_PROTOCOL ? (machine?.directUrl || '').trim().replace(/\/$/, '') : ''
+  const direct = directBaseOf(machine, MIN_DIRECT_ROSTER_PROTOCOL)
   return direct ? `${direct}/roster/stream` : ''
+}
+
+/**
+ * 日志跟随的直连地址：席位的是 `{directUrl}/seats/{seatId}/logs`，管家自己的是
+ * `{directUrl}/logs`（`seatId` 传 null）。浏览器在后面接 `?lines=&follow=1`，头上带日志票。
+ *
+ * 不判 `machine.host`：这条路不经 Gateway，管家在不在线由那条流自己答。
+ */
+export function logsUrlOf(machine: Pick<Machine, 'directUrl' | 'protocol'> | null, seatId: string | null): string {
+  const direct = directBaseOf(machine, MIN_DIRECT_LOGS_PROTOCOL)
+  if (!direct) return ''
+  return seatId ? `${direct}/seats/${encodeURIComponent(seatId)}/logs` : `${direct}/logs`
+}
+
+/**
+ * 附件上传的直连前缀：`{directUrl}/seats/{seatId}/stream`，前端在后面接 `/sessions/:id/files`。
+ *
+ * 和 `streamUrlOf` 是同一个前缀，却**单独给一格**：5～8 号管家在这条前缀上只放 SSE，
+ * POST 回 405。前端要是拿 `streamUrl` 拼上传地址，在老机器上就是「对话流好好的、传文件
+ * 却失败」，而配置里看不出区别。两格各自按自己的号判，null 就是「这个席位没有这条路」。
+ */
+export function uploadUrlOf(machine: Pick<Machine, 'host' | 'directUrl' | 'protocol'> | null, seatId: string): string {
+  if (!(machine?.host || '').trim() || !seatId) return ''
+  const direct = directBaseOf(machine, MIN_DIRECT_UPLOAD_PROTOCOL)
+  return direct ? `${direct}/seats/${encodeURIComponent(seatId)}/stream` : ''
 }
 
 /**
@@ -495,6 +548,12 @@ export function listSeatRuntime(row: SeatRuntime, machine: Machine | null, now =
      * 这里也不判机器通不通——通不通由那条 SSE 自己答。
      */
     streamUrl: streamUrlOf(machine, row.seatId) || null,
+    /**
+     * 附件上传的直连前缀；null = 这个席位传不了文件（管家 < 9 号或没配 directUrl）。和
+     * `streamUrl` 分开给：老管家那条前缀只开 SSE、拒 POST，见 uploadUrlOf。Gateway 的
+     * `POST /runtime/sessions/:id/files` 已删。
+     */
+    uploadUrl: uploadUrlOf(machine, row.seatId) || null,
     botVersion: row.botVersion ?? null,
     tplVersion: row.tplVersion ?? null,
     tplSyncedAt: row.tplSyncedAt ?? null,
