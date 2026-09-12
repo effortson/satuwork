@@ -3,8 +3,9 @@
  * 环境变量。Vercel 上就是这个形态（docs/adr-gateway-vercel-neon.md §5）。
  *
  * 钉三件事：迁移 CLI 单独能跑；函数形态起来能答请求、JWKS 的 kid 就是环境变量里那把钥匙；
- * /cron/tick 认 CRON_SECRET。esbuild 打出来的那个包（api/gateway.mjs）也起一遍——线上跑的是它，
- * 不是 tsx 转的源码。
+ * /cron/tick 认 CRON_SECRET。esbuild 打出来的那个函数包（.vercel/output 里那个）也起一遍——线上跑
+ * 的是它，不是 tsx 转的源码；不给 GATEWAY_UI_DIR，顺带钉住包里 src/ 与 ui/ 的相对关系还
+ * 成立（http.ts 里界面目录的默认值靠它）。
  */
 import { generateKeyPairSync, randomBytes, createHash } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
@@ -55,6 +56,21 @@ export async function runServerless({ root, gwRoot, test, req, start, waitHttp, 
     assert(again.status === 0 && again.stdout.includes('已是最新'), `第二次该说已是最新：${again.stdout} ${again.stderr}`)
   })
 
+  await test('Neon 的 DATABASE_URL_UNPOOLED 只在 Vercel 上回落，别的地方照旧报错', async () => {
+    // Neon 的 Vercel 集成注入的是它自己那套名字，一个都不叫 GATEWAY_*。
+    const { GATEWAY_DATABASE_URL: _gw, ...noGateway } = env
+    const run = (extra) => spawnSync(
+      process.execPath,
+      ['--import', 'tsx', join(gwRoot, 'scripts/migrate.ts')],
+      { cwd: gwRoot, env: { ...process.env, GATEWAY_DATABASE_URL: '', GATEWAY_MIGRATE_DATABASE_URL: '', ...noGateway, ...extra }, encoding: 'utf8', timeout: 120000 },
+    )
+    const onVercel = run({ VERCEL: '1', DATABASE_URL_UNPOOLED: PG_URL })
+    assert(onVercel.status === 0 && onVercel.stdout.includes('已是最新'), `Vercel 上该认 DATABASE_URL_UNPOOLED：${onVercel.stdout} ${onVercel.stderr.slice(-400)}`)
+    // 开发机上 DATABASE_URL 十有八九指着别的项目的库，回落等于静默往那儿写 schema。
+    const offVercel = run({ VERCEL: '', DATABASE_URL_UNPOOLED: PG_URL, DATABASE_URL: PG_URL })
+    assert(offVercel.status !== 0 && offVercel.stderr.includes('未配置 GATEWAY_DATABASE_URL'), `不在 Vercel 上不该回落：${offVercel.status} ${offVercel.stdout} ${offVercel.stderr.slice(-400)}`)
+  })
+
   const [PORT_SRC, PORT_BUNDLE] = await freePorts(2)
   const probe = async (base, label) => {
     const health = await req(base, 'GET', '/health')
@@ -98,11 +114,11 @@ export async function runServerless({ root, gwRoot, test, req, start, waitHttp, 
     await test('esbuild 打出来的那个包也起得来，行为一样', async () => {
       const b = spawnSync(process.execPath, [join(gwRoot, 'scripts/build-vercel.mjs')], { cwd: gwRoot, encoding: 'utf8', timeout: 180000 })
       assert(b.status === 0, `打包失败：${b.stderr.slice(-800)}`)
-      const out = join(root, 'api/gateway.mjs')
-      assert(existsSync(out), '没有 api/gateway.mjs')
+      const out = join(root, '.vercel/output/functions/gateway.func/src/index.mjs')
+      assert(existsSync(out), '没有 .vercel/output/functions/gateway.func/src/index.mjs')
       bundle = start('serverless-bundle', [join(gwRoot, 'scripts/serve-serverless.mjs')], {
         cwd: root,
-        env: { ...env, SATUWORK_SERVERLESS_ENTRY: out, GATEWAY_UI_DIR: join(gwRoot, 'ui'), GATEWAY_HOST: '127.0.0.1', GATEWAY_PORT: String(PORT_BUNDLE) },
+        env: { ...env, SATUWORK_SERVERLESS_ENTRY: out, GATEWAY_HOST: '127.0.0.1', GATEWAY_PORT: String(PORT_BUNDLE) },
       })
       await waitHttp(`http://127.0.0.1:${PORT_BUNDLE}/health`, { child: bundle, what: 'serverless gateway (bundle)' })
       await probe(`http://127.0.0.1:${PORT_BUNDLE}`, 'bundle')

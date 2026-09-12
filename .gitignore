@@ -5,6 +5,11 @@ node_modules/
 # 备份也要挡住。`.env` 这一条只挡住原名——而备份的名字（.env.bak-<时间戳>）是
 # 手滑最容易留下的那一种，它带着平台 token 和数据库连接串，一个 `git add -A` 就上去了。
 .env.bak-*
+# `vercel link` / `vercel env pull` 落下的本地环境（VERCEL_OIDC_TOKEN 等）。
+.env*.local
+# 生成 JWT 钥匙的 openssl 命令默认写在当前目录（docs/vercel-deploy.md 那几行）；私钥落在
+# 仓库根目录时 `git add -A` 一下就上去了。钥匙该在 ~/.satuwork-gateway/keys 或环境变量里。
+*.pem
 
 # 运行时数据，不进版本库
 .satuwork/
@@ -33,5 +38,5 @@ desktop/src-tauri/runtime/*
 desktop/src-tauri/ui/*
 !desktop/src-tauri/ui/README.txt
 
-# gateway/scripts/build-vercel.mjs 打出来的函数包（vercel.json 的 buildCommand 现场生成）
-api/
+# gateway/scripts/build-vercel.mjs 打出来的 Build Output（vercel.json 的 buildCommand 现场生成）
+.vercel/

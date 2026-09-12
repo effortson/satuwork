@@ -47,14 +47,39 @@ export interface DbOptions {
   schema?: string
 }
 
+/**
+ * 函数环境（Vercel）里才认的回落名。
+ *
+ * Neon 的 Vercel 集成往项目里注入的是它自己那套名字（DATABASE_URL 池化、
+ * DATABASE_URL_UNPOOLED 直连），一个都不叫 GATEWAY_*。不认它们的话，每加一个环境就要
+ * 手抄一遍连接串，而 Neon 轮换密码之后抄的那份就成了过期的死串。
+ *
+ * **只在 Vercel 上回落**（process.env.VERCEL）。`DATABASE_URL` 是个太常见的名字，开发机上
+ * 十有八九指着别的项目的库；无条件回落等于把「忘了配 GATEWAY_DATABASE_URL」从一条说得很
+ * 清楚的报错，变成静默连上另一个库——而 scripts/migrate.ts 是会往里写 schema 的。
+ */
+function neonFallback(...names: string[]): string {
+  if (!process.env.VERCEL) return ''
+  for (const name of names) {
+    const v = (process.env[name] || '').trim()
+    if (v) return v
+  }
+  return ''
+}
+
 export function databaseUrl(): string {
-  const url = (process.env.GATEWAY_DATABASE_URL || '').trim()
+  const url = (process.env.GATEWAY_DATABASE_URL || '').trim() || neonFallback('DATABASE_URL')
   if (!url) {
     throw new Error(
       '未配置 GATEWAY_DATABASE_URL。示例：postgres://satuwork:satuwork@127.0.0.1:5434/satuwork（docker compose up -d postgres）',
     )
   }
   return url
+}
+
+/** 迁移要**直连**串：迁移锁是会话级 advisory lock，过 PgBouncer 的事务池会漂（ADR §5.2）。 */
+export function migrateDatabaseUrl(): string {
+  return (process.env.GATEWAY_MIGRATE_DATABASE_URL || '').trim() || neonFallback('DATABASE_URL_UNPOOLED') || databaseUrl()
 }
 
 /**
