@@ -3187,6 +3187,53 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       }
     })
 
+    await test('上传认这条会话的主人，不认界面当下选中的那颗 Bot', async () => {
+      /**
+       * 上传是一个文件一个文件发的，`sessionId` 在循环外就钉死了，而上传地址每一轮都
+       * 重算一次。以前那一行是 `state.chatBotId || botIdOfSession(sessionId)`——人在传的
+       * 中途切了个席位，第 N 个文件就带着第一条会话的 id 打到**另一个**席位的 uploadUrl
+       * 上；那边查得出这条会话不存在，回 404，界面上只剩一句「附件没传上去」加一个看
+       * 不懂的状态码。所以次序要反过来：会话的主人优先，界面选中的只是兜底。
+       */
+      const ui = loadApp({ appPath, base: gwBase, token: adminToken })
+      await ui.boot()
+      ui.botStreamOf('bot-up-a').sessionId = 's-up-a'
+      ui.botStreamOf('bot-up-b').sessionId = 's-up-b'
+      ui.state.runtimeBots = [
+        { id: 'bot-up-a', name: 'A', runtime: { status: 'ready', uploadUrl: 'https://m-a.example/seats/seat-a/stream' } },
+        { id: 'bot-up-b', name: 'B', runtime: { status: 'ready', uploadUrl: 'https://m-b.example/seats/seat-b/stream' } },
+      ]
+      // 界面上选中的是 B，但这条会话是 A 的。
+      ui.state.chatBotId = 'bot-up-b'
+      const target = ui.uploadTargetOf('s-up-a')
+      assert(target && target.local === false, `远程 Bot 不该走本地那条：${JSON.stringify(target)}`)
+      assert(
+        target.url === 'https://m-a.example/seats/seat-a/stream/sessions/s-up-a/files',
+        `上传打到了别的席位上：${target.url}`,
+      )
+
+      // 会话查不到主人时才落到界面选中的那颗——兜底还得在。
+      const fallback = ui.uploadTargetOf('s-nobody')
+      assert(
+        fallback && fallback.url === 'https://m-b.example/seats/seat-b/stream/sessions/s-nobody/files',
+        `兜底没落到界面选中的那颗：${JSON.stringify(fallback)}`,
+      )
+
+      /**
+       * 远程 Bot 没配 uploadUrl：一个字节都不发，给一句说得清的话。以前这种也退回
+       * `/runtime/...`，可 Gateway 上那条路已经删干净了，走过去只换来一个生的 404。
+       */
+      ui.state.runtimeBots = [{ id: 'bot-up-a', name: 'A', runtime: { status: 'ready', uploadUrl: null } }]
+      assert(ui.uploadTargetOf('s-up-a') === null, '没配 uploadUrl 时该给 null，不该拼一个 /runtime/ 出来')
+      let msg = ''
+      try {
+        await ui.uploadChatFile('s-up-a', { name: 'x.txt', size: 1 })
+      } catch (e) {
+        msg = String(e.message || e)
+      }
+      assert(msg.includes('没有配直连地址'), `该抛那句「没配直连地址」，实际 ${JSON.stringify(msg)}`)
+    })
+
     await test('拉历史途中会话被重建：这一份作废，不串台', async () => {
       const sse = fakeSse()
       const ui = await twoPathUi(sse)

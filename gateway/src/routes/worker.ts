@@ -21,7 +21,7 @@ import { bodyOf, strField } from '../lib/validate.ts'
 import { requireMachine, requireSeatOnly } from '../lib/guards.ts'
 import { claimDue, RUN_TIMEOUT_MS, settleRun, turnFailure } from '../routines.ts'
 import type { ChannelEvent, ChargeStatus, Machine, Routine, RoutineRun } from '../db.ts'
-import { accountByApiKey, gateOr402, recordLlmCall, settle } from '../lib/llm-billing.ts'
+import { accountByApiKey, gateOr402, recordLlmCall, recordUsageOnly, settle } from '../lib/llm-billing.ts'
 import type { TokenUsage } from '../lib/llm-usage.ts'
 import { randomUUID } from 'node:crypto'
 import {
@@ -383,6 +383,34 @@ async function seatOnMachine(db: RouteCtx['db'], machine: Machine, accountId: st
  *
  * 结算是幂等的：管家重试、或者清扫（routines.ts 的 sweepUnsettledLlmCalls）先一步收了口，
  * 第二笔回 `settled: false`，不再挂一行账。
+ *
+ * ── 授权的收发形状（管家和 e2e 都钉着它，改之前先改那两边）──
+ *
+ *   请求  { apiKey, route: 'chat'|'messages'|'responses', model,
+ *           provider?, anthropicVersion?, openaiBeta?,
+ *           stream?: boolean,          // 请求体里的 `stream`
+ *           reasoningEffort?: string } // 请求体里的 `reasoning_effort`
+ *   200   { callId, provider, model, url, headers,
+ *           body: { set: Record<string, unknown>, unset: string[] } }
+ *         `body` **一定在**，且 `set.model` / `unset` 里的 `provider` 一定在。管家照
+ *         「先删 unset、再 Object.assign(body, set)」的顺序改自己手里那份请求体，不再
+ *         自己动手改 model / provider。`headers` 整份都当密文：里面有供应商密钥，也可能
+ *         有运营在自定义供应商定义里写的私货，一个字都不该落日志。这份 headers **保证
+ *         不含 content-type / content-length / transfer-encoding / host**（见 llm.ts 的
+ *         BODY_FRAMING_HEADERS），管家可以放心地 `{ ...headers, 'content-type': … }`——
+ *         少了这条保证，运营写一句大写的 `Content-Type` 就能让 fetch 把两份折成一个逗号
+ *         连起来的值，上游当场 400。
+ *   409   { error, relayable: false }
+ *         **不是错，是「这条中继走不了，退回 /v1」**：模型走的不是 OpenAI 兼容协议
+ *         （一批 `api: 'anthropic-messages'` 但 provider 不叫 anthropic 的：minimax、
+ *         kimi-coding、fireworks、github-copilot、vercel-ai-gateway、opencode、
+ *         cloudflare-ai-gateway…），或者没有 HTTP 上游地址（bedrock / vertex）。这些在
+ *         /v1 上一直是好的（底下的 pi-ai 按 `api` 分发），所以管家看见 `relayable: false`
+ *         就把整通调用改打 Gateway 的 /v1（chat → /v1/chat/completions、messages →
+ *         /v1/messages、responses → /v1/responses），带 Bot 自己的 sk_sw_，**不结算**
+ *         ——那条路 Gateway 自己记账。这里也因此**不登记 llm_calls**。
+ *         没有别的接口用 409，管家可以只认状态码，但 `relayable: false` 这一格是权威。
+ *   4xx   其余照旧（401/402/403/404/400），文案和 /v1 一样，管家原样转给 bot。
  */
 function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
   router.post('/worker/llm/grant', async (req, res) => {
@@ -405,11 +433,21 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
     const target = llm.upstreamTargetOf(found, route as 'chat' | 'messages' | 'responses', secret, {
       anthropicVersion: body.anthropicVersion == null ? undefined : strField(body, 'anthropicVersion', false) || undefined,
       openaiBeta: body.openaiBeta == null ? undefined : strField(body, 'openaiBeta', false) || undefined,
+      stream: body.stream === true,
+      reasoningEffort: body.reasoningEffort == null ? undefined : strField(body, 'reasoningEffort', false) || undefined,
     })
-    // 目标算不出来（比如把 Anthropic 的模型打到 chat 路由）不登记调用：没打上游，没有账可记。
-    if ('error' in target) throw new HttpError(400, target.error)
-    const callId = await recordLlmCall(db, account, found)
-    json(res, 200, { callId, provider: found.provider, model: target.model, url: target.url, headers: target.headers })
+    // 目标算不出来就不登记调用：没打上游，没有账可记。两种拒法分开，见文件头那段——
+    // `relayable: false` 是「退回 /v1」的暗号，回 400 的话管家会把它当错转给 bot。
+    if ('error' in target) throw new HttpError(target.relayable ? 400 : 409, target.error, target.relayable ? {} : { relayable: false })
+    const callId = await recordLlmCall(db, account, found, machine.id)
+    json(res, 200, {
+      callId,
+      provider: found.provider,
+      model: target.model,
+      url: target.url,
+      headers: target.headers,
+      body: target.body,
+    })
   })
 
   router.post('/worker/llm/:callId/settle', async (req, res) => {
@@ -422,6 +460,14 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
     if (status !== undefined && !SETTLE_STATUSES.has(status as ChargeStatus)) throw new HttpError(400, 'status 只能是 ok / failed / error / timeout')
     const usage = usageOf(body.usage)
     if (await db.chargeExistsForRef(call.id)) {
+      /**
+       * 已经有账了——多半是清扫先把它收成 failed / 0 元（一次跑过 LLM_SETTLE_GRACE_MS 的长
+       * 回答就会这样），管家随后才带着真实用量回来。**钱不重记**：一次调用只该有一个金额，
+       * 重算等于给同一行挂两个数。但 token 要补上：不补的话 llm_calls 永远停在 0/0，
+       * 那一行的意思就成了「这次调用什么都没发生」，而它明明发生过、还很贵。
+       * 补完之后这一行读作「有用量、金额 0 且 unpriced」——unpriced 本来就是「算不出来」。
+       */
+      if (usage) await recordUsageOnly(db, call.id, usage)
       json(res, 200, { settled: false, reason: 'already' })
       return
     }

@@ -1,4 +1,4 @@
-import { getSupportedThinkingLevels, type Provider } from '@earendil-works/pi-ai'
+import { clampThinkingLevel, getSupportedThinkingLevels, type ModelThinkingLevel, type Provider } from '@earendil-works/pi-ai'
 import { builtinModels } from '@earendil-works/pi-ai/providers/all'
 import type { Db } from './db.ts'
 import { overlayProvider, resolveOverlay, type DiscoverySnapshot } from './model-discovery.ts'
@@ -43,16 +43,138 @@ export interface UpstreamTarget {
   url: string
   headers: Record<string, string>
   model: string
+  body: UpstreamBodyPatch
+}
+
+/**
+ * 请求体上要改的那几处。**顺序定死**：先按 `unset` 逐个 delete，再 `Object.assign(body, set)`
+ * ——反过来的话 `set` 里刚写进去的键会被 `unset` 抹掉。applyBodyPatch 就是这两行，
+ * 管家（manager/src/llm-relay.ts）照着做一遍。
+ *
+ * 这一格存在的理由是**规矩只有一份**。管家是个搬字节的，不认识 pi-ai；以前挂在 /v1 上
+ * 由 pi-ai 顺手做掉的那些请求体规整（补 `stream_options.include_usage`、把 `xhigh`/`max`
+ * 这种 pi-ai 自己的推理档夹回上游认的那几档），换成中继之后没人做了，于是流式调用一律
+ * 报不出用量（记成 unpriced），`reasoning_effort: 'xhigh'` 原样打到 OpenAI 直接 400。
+ * 把它算在 Gateway、随授权一起下发，管家仍旧不用认识任何一家供应商。
+ */
+export interface UpstreamBodyPatch {
+  set: Record<string, unknown>
+  unset: string[]
+}
+
+/**
+ * 授权算不出目标。`relayable` 是给管家看的那一位**机器可读**的判据：
+ *
+ *   relayable: false  这一次调用**中继做不了，但 /v1 做得了**：模型走的不是 OpenAI 兼容
+ *                     协议（Anthropic 协议的请求体形状完全不同，Gateway 没法把一份
+ *                     OpenAI body 改写成 Anthropic body），或者压根没有 HTTP 上游地址
+ *                     （bedrock / vertex 那种由 SDK 自己拼地址的）。/v1 底下是 pi-ai，
+ *                     它按 `api` 分发，这些全都认。管家看见这一位就把整通调用退回去打
+ *                     Gateway 的 /v1（chat → /v1/chat/completions、messages → /v1/messages、
+ *                     responses → /v1/responses），带 Bot 自己的 sk_sw_，**不结算**——那条
+ *                     路上 Gateway 自己会记账。于是这些供应商和换中继之前一模一样。
+ *   relayable: true   这一次调用本身就错了（模型不在可见目录里、路由和协议对不上）。退回
+ *                     /v1 也是同一个错，照旧当 400 报。
+ *
+ * worker.ts 的 grant 把前者回成 **409 + `{ relayable: false }`**，后者回 400。管家依赖这个
+ * 形状，改之前先改那边。
+ */
+export interface UpstreamRefusal {
+  error: string
+  relayable: boolean
+}
+
+/** 按 UpstreamBodyPatch 说的顺序改一份请求体。/v1 的两条透传路由和管家用的是同一套。 */
+export function applyBodyPatch(body: Record<string, unknown>, patch: UpstreamBodyPatch): void {
+  for (const key of patch.unset) delete body[key]
+  Object.assign(body, patch.set)
+}
+
+/**
+ * 从自定义供应商的 headers 里摘掉和我们要设的那几个**同名**的（不分大小写）。
+ *
+ * `{ ...extra, authorization: … }` 只能顶掉**恰好同样拼写**的那个键，于是运营在供应商定义
+ * 里写的 `{"Authorization": "Basic …"}`、`{"X-Api-Key": …}` 会和我们这份并排活下来；
+ * fetch 的 Headers 把重名的折成一个逗号连起来的值（`Bearer sk-…, Basic …`），上游一律
+ * 401——而配置里看不出任何异常。所以先按小写名删干净，再合我们的。
+ */
+function withoutHeaders(extra: Record<string, string>, names: string[]): Record<string, string> {
+  const drop = new Set([...names, ...BODY_FRAMING_HEADERS].map((n) => n.toLowerCase()))
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(extra)) {
+    if (!drop.has(k.toLowerCase())) out[k] = v
+  }
+  return out
+}
+
+/**
+ * 这几个**永远**不从供应商定义里带出去，哪一条路都是。
+ *
+ * 它们描述的是「这一次请求的躯壳」，归真正发请求的那一方——/v1 是 proxyUpstream，中继是
+ * 管家，两边都会自己补 `content-type: application/json`。而它们补的方式都是
+ * `{ ...headers, 'content-type': … }`，只顶得掉恰好小写的那个键：运营在自定义供应商里写
+ * 一句 `{"Content-Type": "application/json"}`，就会和补上去的那份并排活着，fetch 再把两个
+ * 折成 `application/json, application/json`，上游当场 400——和 Authorization 那个坑是同一个，
+ * 只是换了个头。所以连同鉴权头一起，在 withoutHeaders 里一律先删干净。
+ *
+ * 顺带一说，这也不是在改 pi-ai 的行为：pi-ai 把这些 headers 当 `defaultHeaders` 交给厂商
+ * SDK，SDK 自己设 content-type，运营写的那一份本来就没生效过。
+ */
+const BODY_FRAMING_HEADERS = ['content-type', 'content-length', 'transfer-encoding', 'host']
+
+/** pi-ai 的 Model 上我们真正读的那几格。整个类型太大，而且各 api 的形状不一样。 */
+type PiModelShape = {
+  api?: string
+  baseUrl?: string
+  headers?: Record<string, string>
+  reasoning?: boolean
+  thinkingLevelMap?: Record<string, string | null>
+  compat?: { supportsUsageInStreaming?: boolean }
+}
+
+/**
+ * chat 路由上那两件 pi-ai 以前顺手做、中继之后没人做的事。
+ *
+ * **一、流式要 usage。** OpenAI 兼容的流不带 `stream_options.include_usage` 就一个
+ * usage 字段都不回，于是每一次流式调用都记成 unpriced、收 0 元。pi-ai 在
+ * buildParams 里补的是同一句（api/openai-completions.js：`if (compat.supportsUsageInStreaming
+ * !== false) params.stream_options = { include_usage: true }`），这里逐字照搬**连同它的
+ * 例外**：有的上游认不出这个字段会直接把整个请求拒掉，pi-ai 留的口子是模型定义里的
+ * `compat.supportsUsageInStreaming: false`（内置目录里没有一条设它，只有自定义供应商
+ * 的模型定义会写），显式写了 false 的就不补——pi-ai 跳过谁，我们跳过谁。
+ *
+ * **二、推理档要夹回这颗模型认的那几档。** `xhigh` / `max` 是 pi-ai 自己的抽象档，
+ * 上游多数不认，原样打过去就是 400。夹法用仓库里现成的那一份（catalog() 里算
+ * `reasoningLevels` 用的也是 pi-ai 的 getSupportedThinkingLevels），不另起一套。
+ * 夹到 `off`、或者这颗模型压根不会推理，就把 `reasoning_effort` 整个删掉——留一个
+ * `off` 上去同样有上游不认。
+ */
+function chatBodyPatch(patch: UpstreamBodyPatch, piModel: PiModelShape, req: { stream?: boolean; reasoningEffort?: string }): void {
+  if (req.stream === true && piModel.compat?.supportsUsageInStreaming !== false) {
+    patch.set.stream_options = { include_usage: true }
+  }
+  const wanted = (req.reasoningEffort || '').trim()
+  if (!wanted) return
+  if (!piModel.reasoning) {
+    patch.unset.push('reasoning_effort')
+    return
+  }
+  // PiModelShape 只是 pi-ai 的 Model 上我们读的那几格，夹档只看 reasoning 和
+  // thinkingLevelMap，形状对得上；类型上补一刀就行。
+  const clamped = clampThinkingLevel(piModel as Parameters<typeof clampThinkingLevel>[0], wanted as ModelThinkingLevel)
+  if (clamped === 'off') patch.unset.push('reasoning_effort')
+  else if (clamped !== wanted) patch.set.reasoning_effort = clamped
 }
 
 /**
  * 内置 openai / anthropic 的上游主机覆盖。给 e2e 指到 stub、或者走企业代理用。
- * 值是**主机**（不含 `/v1`），/v1 的透传路由和 upstreamTargetOf 各自往后拼路径。
+ * 值是**主机**（不含 `/v1`），往后拼路径的只有 baseUrlOf → upstreamTargetOf 这一条路
+ * ——/v1 的两条透传路由以前自己拼一份，那份已经并进来了。
  */
-export function openaiBase(): string {
+function openaiBase(): string {
   return (process.env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/$/, '')
 }
-export function anthropicBase(): string {
+function anthropicBase(): string {
   return (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '')
 }
 
@@ -363,46 +485,92 @@ export class Llm {
    *       填了带 `/v1` 的 baseUrl 也认，不再叠一层。
    *
    * 头：OpenAI 系是 `authorization: Bearer`，Anthropic 是 `x-api-key` + `anthropic-version`；
-   * 自定义供应商定义里的 headers 原样带上（它们本来就是给 pi-ai 每次请求附上的）。
+   * 自定义供应商定义里的 headers 原样带上（它们本来就是给 pi-ai 每次请求附上的），只是
+   * 和我们要设的那几个同名的先摘掉，见 withoutHeaders。
    * 内置 openai / anthropic 的 OPENAI_BASE_URL / ANTHROPIC_BASE_URL 覆盖和 /v1 同一份。
+   *
+   * **请求体上要改什么也归这里**（`body`，见 UpstreamBodyPatch）。「往哪打、带什么头、
+   * 改哪几处 body」是同一条规矩的三面，拆成两个函数就会各自漂——/v1 的两条透传路由
+   * 以前正是这么手搓出一份和这里不一样的实现的。
    */
   upstreamTargetOf(
     found: CatalogModel,
     route: 'chat' | 'messages' | 'responses',
     secret: string,
-    reqHeaders: { anthropicVersion?: string; openaiBeta?: string } = {},
-  ): UpstreamTarget | { error: string } {
-    const piModel = this.piModel(found.provider, found.id) as { api?: string; baseUrl?: string; headers?: Record<string, string> } | undefined
-    if (!piModel) return { error: '模型不在可见目录里' }
+    req: { anthropicVersion?: string; openaiBeta?: string; stream?: boolean; reasoningEffort?: string } = {},
+  ): UpstreamTarget | UpstreamRefusal {
+    const piModel = this.piModel(found.provider, found.id) as PiModelShape | undefined
+    if (!piModel) return { error: '模型不在可见目录里', relayable: true }
     const api = String(piModel.api ?? found.api ?? '')
     const provider = this.models.getProviders().find((p) => p.id === found.provider) as { headers?: Record<string, string> } | undefined
     const baseUrl = this.baseUrlOf(found.provider, String(piModel.baseUrl ?? '')).replace(/\/$/, '')
-    if (!baseUrl) return { error: `${found.provider} 没有上游地址` }
+    // 没有 HTTP 上游地址就没法中继（bedrock / vertex 那几家的地址是 SDK 按区域和账号
+    // 现拼的）。但 /v1 底下的 pi-ai 打得到，所以是 relayable: false 不是错。
+    if (!baseUrl) return { error: `${found.provider} 没有上游地址`, relayable: false }
     const extra = { ...(provider?.headers ?? {}), ...(piModel.headers ?? {}) }
-    const bearer = { ...extra, authorization: `Bearer ${secret}` }
+    const bearer = { ...withoutHeaders(extra, ['authorization']), authorization: `Bearer ${secret}` }
     const openaiLike = api === 'openai-completions' || api === 'openai-responses'
+    const patch: UpstreamBodyPatch = {
+      // 目录里的正名换上去；`provider` 只是给 Gateway 选路的字段，上游会当成认不出的参数
+      // 拒掉。这两件事以前是管家自己动手做的，现在归授权，管家那边只剩「照着改」。
+      set: { model: found.id },
+      unset: ['provider'],
+    }
 
     if (route === 'chat') {
-      if (openaiLike) return { url: `${baseUrl}/chat/completions`, headers: bearer, model: found.id }
-      if (api === 'google-generative-ai') return { url: `${baseUrl}/openai/chat/completions`, headers: bearer, model: found.id }
-      if (api === 'anthropic-messages') return { error: '这个供应商要走 /v1/messages' }
-      return { error: `${found.provider} 的接口（${api || '未知'}）没有 OpenAI 兼容口` }
+      if (!openaiLike && api !== 'google-generative-ai') {
+        /**
+         * 到不了 OpenAI 兼容口。**这不是错，是「这条路我走不了」**——换中继之前这些模型
+         * 走 /v1/chat/completions 都是好的（pi-ai 按 `api` 分发，Anthropic 协议、mistral、
+         * bedrock 一律认），bot 那边按 provider **名字**选路，于是一大批 `api:
+         * 'anthropic-messages'` 但 id 不叫 anthropic 的（minimax、kimi-coding、fireworks、
+         * github-copilot、vercel-ai-gateway、opencode、cloudflare-ai-gateway…）全落到这条
+         * 路上。Gateway 没法把一份 OpenAI body 改写成 Anthropic body，但可以老老实实说
+         * 「退回 /v1」——见 UpstreamRefusal。
+         */
+        return {
+          error:
+            api === 'anthropic-messages'
+              ? `${found.provider} 走的是 Anthropic 协议，管家中继改不了请求体的形状`
+              : `${found.provider} 的接口（${api || '未知'}）没有 OpenAI 兼容口`,
+          relayable: false,
+        }
+      }
+      chatBodyPatch(patch, piModel, req)
+      return {
+        // Google 的 OpenAI 兼容口在 baseUrl 后面多一段 `/openai`。
+        url: openaiLike ? `${baseUrl}/chat/completions` : `${baseUrl}/openai/chat/completions`,
+        headers: bearer,
+        model: found.id,
+        body: patch,
+      }
     }
     if (route === 'responses') {
-      if (!openaiLike) return { error: `/v1/responses 只接受 OpenAI 系的模型，收到的是 ${found.provider}` }
-      const headers = { ...bearer }
-      if (reqHeaders.openaiBeta) headers['openai-beta'] = reqHeaders.openaiBeta
-      return { url: `${baseUrl}/responses`, headers, model: found.id }
+      // 路由和协议对不上是调用方自己选错了路，退回 /v1/responses 会被 requireProvider
+      // 用同一句话挡掉。照旧当错报。
+      if (!openaiLike) return { error: `/v1/responses 只接受 OpenAI 系的模型，收到的是 ${found.provider}`, relayable: true }
+      const headers = req.openaiBeta
+        ? { ...withoutHeaders(bearer, ['openai-beta']), 'openai-beta': req.openaiBeta }
+        : bearer
+      return { url: `${baseUrl}/responses`, headers, model: found.id, body: patch }
     }
-    if (api !== 'anthropic-messages') return { error: `/v1/messages 只接受 Anthropic 协议的模型，收到的是 ${found.provider}` }
+    if (api !== 'anthropic-messages') return { error: `/v1/messages 只接受 Anthropic 协议的模型，收到的是 ${found.provider}`, relayable: true }
     return {
       url: `${baseUrl.replace(/\/v1$/, '')}/v1/messages`,
       headers: {
-        ...extra,
+        ...withoutHeaders(extra, ['x-api-key', 'anthropic-version']),
         'x-api-key': secret,
-        'anthropic-version': reqHeaders.anthropicVersion || ANTHROPIC_VERSION,
+        'anthropic-version': req.anthropicVersion || ANTHROPIC_VERSION,
       },
       model: found.id,
+      /**
+       * **messages 路由的请求体只改 model / provider**，推理档这里不碰：Anthropic 那套没有
+       * `reasoning_effort`，它是 `thinking: { type: 'enabled', budget_tokens: N }`——一个 token
+       * 预算，不是档位名。bot 的 toAnthropic（bot/src/llm/gateway.ts）已经按这颗模型的
+       * `maxTokens` 把预算夹过一次（至少给正文留 1024），Gateway 手上没有比它更多的信息，
+       * 再按档位翻一次预算只会和那边的算法打架。
+       */
+      body: patch,
     }
   }
 

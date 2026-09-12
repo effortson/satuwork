@@ -1,7 +1,7 @@
 import { request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { createHash } from 'node:crypto'
-import { json } from './http.ts'
+import { bearer, json, sameToken } from './http.ts'
 import { seat } from './seats.ts'
 import { cookieName, cookieOf, verifyLogsTicket, verifyTicket } from './ticket.ts'
 import { verifyLogin } from './viewer.ts'
@@ -117,19 +117,8 @@ export interface ProxyDeps {
   gatewayUrl: () => string
 }
 
-function sameToken(given: string, expected: string): boolean {
-  if (!expected || !given || given.length !== expected.length) return false
-  let diff = 0
-  for (let i = 0; i < expected.length; i++) diff |= given.charCodeAt(i) ^ expected.charCodeAt(i)
-  return diff === 0
-}
-
 function machineTokenOk(req: IncomingMessage, expected: string): boolean {
   return sameToken(String(req.headers['x-satuwork-machine'] || ''), expected)
-}
-
-function bearerOf(req: IncomingMessage): string {
-  return String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()
 }
 
 /**
@@ -138,7 +127,7 @@ function bearerOf(req: IncomingMessage): string {
  * 只看一个头的话，curl 的那张 `smt_` 会被当成 JWT 去验签，回一句「日志票无效」把人带偏。
  */
 function machineTokenEither(req: IncomingMessage, expected: string): boolean {
-  return machineTokenOk(req, expected) || sameToken(bearerOf(req), expected)
+  return machineTokenOk(req, expected) || sameToken(bearer(req), expected)
 }
 
 export function pipeUpstream(
@@ -295,6 +284,43 @@ function withCors(res: ServerResponse, status: number, body: unknown, cors: Reco
 }
 
 /**
+ * 浏览器直连那三条门（stream / roster / logs）开头的同一段：认源、答预检、卡方法。
+ *
+ * 抽出来是因为**三份各自维护就等于迟早有一份漏**，而漏了 CORS 的表现最不像 CORS：
+ * 浏览器只说一句「请求失败」，服务端这边日志干干净净，照着状态码根本查不到是哪条路
+ * 少盖了头。预检那一步尤其不能各写各的——OPTIONS 上浏览器还没带 Authorization，
+ * 顺手加一道验票就会把整条路堵死（见 streamProxy 的注释）。
+ *
+ * `allow` 回 null 表示这个方法可以，回一句话就是 405 的说法（同一条路上不同方法的
+ * 说法不一样，所以由调用方给）。
+ *
+ * 回 null 表示**已经答完了**，调用方直接 return；否则回这次响应要盖的 CORS 头，
+ * 里面的 `cors` 仍可能是 null（非浏览器来的，不用盖）。
+ */
+function corsGate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ProxyDeps,
+  allow: (method: string) => string | null,
+): { cors: Record<string, string> | null } | null {
+  const cors = corsFor(req, deps.gatewayUrl())
+  if (req.method === 'OPTIONS') {
+    if (!cors) withCors(res, 403, { error: '不认这个源' }, null)
+    else {
+      res.writeHead(204, cors)
+      res.end()
+    }
+    return null
+  }
+  const no = allow(req.method || 'GET')
+  if (no) {
+    withCors(res, 405, { error: no }, cors)
+    return null
+  }
+  return { cors }
+}
+
+/**
  * 浏览器直连的那条流（STREAM_PREFIX 的注释说了它是什么）。这里是顺序：
  *
  *   1. 预检（OPTIONS）只看源，不看票——浏览器发预检时还没带 Authorization。
@@ -317,20 +343,15 @@ async function streamProxy(
   rest: string,
   deps: ProxyDeps,
 ): Promise<void> {
-  const cors = corsFor(req, deps.gatewayUrl())
-  if (req.method === 'OPTIONS') {
-    if (!cors) return withCors(res, 403, { error: '不认这个源' }, null)
-    res.writeHead(204, cors)
-    res.end()
-    return
-  }
-  if (req.method === 'POST') {
-    if (!STREAM_POST_ALLOWED.test(rest)) return withCors(res, 405, { error: '这条路的 POST 只放上传' }, cors)
-  } else if (req.method !== 'GET') return withCors(res, 405, { error: '这条路只放 GET 和上传的 POST' }, cors)
+  const gate = corsGate(req, res, deps, (m) =>
+    m === 'GET' ? null : m === 'POST' ? (STREAM_POST_ALLOWED.test(rest) ? null : '这条路的 POST 只放上传') : '这条路只放 GET 和上传的 POST',
+  )
+  if (!gate) return
+  const { cors } = gate
   if (!STREAM_ALLOWED.test(rest)) return withCors(res, 404, { error: '这条路只放会话' }, cors)
   const row = seat(seatId)
   if (!row) return withCors(res, 404, { error: '没有这个席位' }, cors)
-  const token = bearerOf(req)
+  const token = bearer(req)
   if (!token) return withCors(res, 401, { error: '需要登录' }, cors)
   const viewer = await verifyLogin(token, deps.gatewayUrl())
   if (!viewer) return withCors(res, 401, { error: '登录已失效，请重新登录' }, cors)
@@ -348,15 +369,10 @@ async function streamProxy(
  * 「直连不通」退回 Gateway 五分钟，白绕一圈。
  */
 async function rosterProxy(req: IncomingMessage, res: ServerResponse, deps: ProxyDeps): Promise<void> {
-  const cors = corsFor(req, deps.gatewayUrl())
-  if (req.method === 'OPTIONS') {
-    if (!cors) return withCors(res, 403, { error: '不认这个源' }, null)
-    res.writeHead(204, cors)
-    res.end()
-    return
-  }
-  if (req.method !== 'GET') return withCors(res, 405, { error: '这条路只放 GET' }, cors)
-  const token = bearerOf(req)
+  const gate = corsGate(req, res, deps, (m) => (m === 'GET' ? null : '这条路只放 GET'))
+  if (!gate) return
+  const { cors } = gate
+  const token = bearer(req)
   if (!token) return withCors(res, 401, { error: '需要登录' }, cors)
   const viewer = await verifyLogin(token, deps.gatewayUrl())
   if (!viewer) return withCors(res, 401, { error: '登录已失效，请重新登录' }, cors)
@@ -382,15 +398,10 @@ async function logsProxy(
   seatId: string | undefined,
   deps: ProxyDeps,
 ): Promise<void> {
-  const cors = corsFor(req, deps.gatewayUrl())
-  if (req.method === 'OPTIONS') {
-    if (!cors) return withCors(res, 403, { error: '不认这个源' }, null)
-    res.writeHead(204, cors)
-    res.end()
-    return
-  }
-  if (req.method !== 'GET') return withCors(res, 405, { error: '这条路只放 GET' }, cors)
-  const token = bearerOf(req)
+  const gate = corsGate(req, res, deps, (m) => (m === 'GET' ? null : '这条路只放 GET'))
+  if (!gate) return
+  const { cors } = gate
+  const token = bearer(req)
   if (!token) return withCors(res, 401, { error: '需要日志票' }, cors)
   const ticket = await verifyLogsTicket(token, deps.gatewayUrl())
   if (!ticket) return withCors(res, 401, { error: '日志票无效或已过期' }, cors)

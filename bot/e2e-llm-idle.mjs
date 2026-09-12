@@ -26,7 +26,38 @@ const server = createServer((req, res) => {
     if (mode === 'relay') {
       // 转发口：立刻答一句就收。这条测的是「打到哪」，不是空闲判据。
       res.writeHead(200, { 'content-type': 'text/event-stream' })
+      // 选路按模型的 api 走，两条路收流的解析器不是同一个：Messages 协议那条要发
+      // Anthropic 的事件帧，发 OpenAI 那种 chunk 的话它一个字都读不出来。
+      if (req.url.endsWith('/messages')) {
+        const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
+        ev('message_start', {
+          message: { id: 'm', type: 'message', role: 'assistant', model: 'probe', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } },
+        })
+        ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })
+        ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: '经管家' } })
+        ev('content_block_stop', { index: 0 })
+        ev('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } })
+        ev('message_stop', {})
+        res.end()
+        return
+      }
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: '经管家' } }] })}\n\n`)
+      res.write('data: [DONE]\n\n')
+      res.end()
+      return
+    }
+    if (mode === 'relayUsage') {
+      /**
+       * 带 `stream_options.include_usage` 时上游长什么样：**用量帧排在收口之后**，
+       * 而且 `choices` 是空的。整条流的 token 数只在这一帧里，收口那一帧一个数都不带。
+       */
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: '经管家' } }] })}\n\n`)
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`)
+      // prompt_tokens 是**整个提示词**，命中缓存的那截在 cached_tokens 里单列。
+      res.write(
+        `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6, prompt_tokens_details: { cached_tokens: 2 } } })}\n\n`,
+      )
       res.write('data: [DONE]\n\n')
       res.end()
       return
@@ -56,13 +87,18 @@ process.env.GATEWAY_URL = `http://127.0.0.1:${server.address().port}`
 process.env.GATEWAY_API_KEY = 'probe'
 
 /** 跑一条流，把「收了什么事件、花了多久、有没有真的结束」带回来。 */
-async function drain() {
+async function drain(model = stubModel('deepseek', 'probe')) {
   const at = Date.now()
   const events = []
-  const stream = await streamViaGateway(stubModel('deepseek', 'probe'), { messages: [], systemPrompt: '' })
+  // 这一轮最后报出来的用量。只有 done 那一条带得出整条流的账，别的事件上都是半截。
+  let usage = null
+  const stream = await streamViaGateway(model, { messages: [], systemPrompt: '' })
   // 这个 for await 能不能出来，就是整件事的全部——出不来就是 agent.prompt() 挂住。
-  for await (const ev of stream) events.push({ type: ev.type, error: ev.error?.errorMessage || '' })
-  return { ms: Date.now() - at, events }
+  for await (const ev of stream) {
+    events.push({ type: ev.type, error: ev.error?.errorMessage || '' })
+    if (ev.type === 'done') usage = ev.message?.usage ?? null
+  }
+  return { ms: Date.now() - at, events, usage }
 }
 
 const out = {}
@@ -79,6 +115,28 @@ process.env.GATEWAY_LLM_URL = `http://127.0.0.1:${server.address().port}/llm/`
 process.env.GATEWAY_URL = 'http://127.0.0.1:9'
 paths.length = 0
 out.relay = { ...(await drain()), paths: [...paths] }
+/**
+ * 选路按**模型的 api**，不按供应商叫什么名字。
+ *
+ * 内置目录里有九家走 Anthropic 的 Messages 协议、名字却不是 anthropic（minimax、
+ * kimi-coding、fireworks、vercel-ai-gateway…），其中四家只开这一条口。按名字认的话
+ * 它们全被送到 chat 路由上，而中继的授权是按 api 判路的——那边直接回「这家走
+ * /v1/messages」，到 Bot 这里就是一个 400，这九家一句话都说不出来。
+ */
+paths.length = 0
+out.relayAnthropic = {
+  ...(await drain({ ...stubModel('minimax', 'probe'), api: 'anthropic-messages' })),
+  paths: [...paths],
+}
+paths.length = 0
+out.relayOpenai = {
+  ...(await drain({ ...stubModel('minimax', 'probe'), api: 'openai-completions' })),
+  paths: [...paths],
+}
+// 收口之后才来的那一帧用量：Gateway 的授权补丁把 include_usage 加进请求体，账才算得出来，
+// 而这一头要接得住——接不住的话钱收对了，界面上这一轮还是 0。
+mode = 'relayUsage'
+out.relayUsage = await drain()
 delete process.env.GATEWAY_LLM_URL
 server.close()
 console.log('__RESULT__' + JSON.stringify(out))

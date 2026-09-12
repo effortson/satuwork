@@ -924,19 +924,46 @@ GitHub Actions 的接线在 `.github/workflows/bot-release.yml`：推 `bot-v*` t
 
 席位上的 Bot 不再把模型请求发到 Gateway 的 `/v1`，而是发给本机的管家；管家每次调用：
 
-1. `POST /worker/llm/grant`（`smt_`）带 `{ apiKey, route: chat|messages|responses, model, provider?, anthropicVersion?, openaiBeta? }`。
+1. `POST /worker/llm/grant`（`smt_`）带
+   `{ apiKey, route: chat|messages|responses, model, provider?, anthropicVersion?, openaiBeta?, stream?, reasoningEffort? }`
+   ——后两个取自请求体里的 `stream` 和 `reasoning_effort`。
    Gateway 认 `sk_sw_`、查这个账号的席位是不是在这台机器上（不是 → 403）、解析模型（404）、
-   取密钥（402）、过余额闸（402）、登记 `llm_calls`，回 `{ callId, provider, model, url, headers }`——
-   `headers` 里带着供应商密钥，管家只在这一次调用期间留在内存，不落盘不落日志。
-2. 管家拿 `url` + `headers` 打上游，把流原样给 Bot，逐帧累计用量（manager/src/llm-usage.ts，是
+   取密钥（402）、过余额闸（402）、登记 `llm_calls`（带上 `machineId`），回
+   `{ callId, provider, model, url, headers, body: { set, unset } }`——
+   `headers` 里带着供应商密钥（也可能有运营在自定义供应商定义里写的私货），**整份都当密文**，
+   管家只在这一次调用期间留在内存，不落盘不落日志。它保证不含 `content-type` / `content-length` /
+   `transfer-encoding` / `host`——这几个归真正发请求的那一方，混进来会被 fetch 折成一个逗号连起来的值。
+2. 管家按 `body` 改自己手里那份请求体：**先把 `unset` 里的键逐个删掉，再 `Object.assign(body, set)`**，
+   然后拿 `url` + `headers` 打上游，把流原样给 Bot，逐帧累计用量（manager/src/llm-usage.ts，是
    gateway/src/lib/llm-usage.ts 的逐字副本）。
 3. `POST /worker/llm/:callId/settle` 带 `{ usage?, status? }`，Gateway 按 /v1 同一份规矩落账
    （lib/llm-billing.ts 的 settle）。幂等：已经有账的回 `{ settled: false, reason: 'already' }`。
    拿了授权半小时没结算的，Cron 收成 `failed`（金额 0、unpriced）。
 
-错误的状态码和文案和 `/v1` 一样，管家原样回给 Bot。密钥的取法是**公司密钥 > 平台密钥 >
-环境变量**：公司管理员在 `/orgs/:id/credentials` 配自己那几把（列表里平台兜底的标
-`scope: 'platform'`，只能看），没配的供应商走平台那把。
+**请求体的规整归 Gateway，管家只搬字节。** 这是 `body` 那一格存在的全部理由：以前挂在 `/v1`
+上由 pi-ai 顺手做掉的那几件事，换成中继之后没人做了，而且都是**静默**坏掉的——
+
+| `body` 改的这一处 | 不改会怎样 |
+|---|---|
+| `set.model`（目录里的正名）、`unset: ['provider']` | `provider` 是给 Gateway 选路的字段，上游当成认不出的参数拒掉 |
+| chat 路由 + `stream: true` + OpenAI 兼容口 → `set.stream_options = { include_usage: true }` | 流里一个 usage 字段都不回，每一次流式调用都记成 unpriced、收 0 元。例外跟着 pi-ai 走：模型定义里显式写了 `compat.supportsUsageInStreaming: false` 的不补（有的上游认不出这个字段会把整个请求拒掉） |
+| chat 路由的 `reasoning_effort` 夹回这颗模型认的那几档（`getSupportedThinkingLevels` / `clampThinkingLevel`）；夹到 `off` 或模型不会推理就进 `unset` | `xhigh` / `max` 是 pi-ai 自己的抽象档，原样打到 OpenAI 直接 400 |
+
+messages 路由的请求体只改 model / provider：Anthropic 那套没有 `reasoning_effort`，推理是
+`thinking.budget_tokens`（一个 token 预算），bot 的 `toAnthropic` 已经按模型的 `maxTokens` 夹过。
+
+**`409 { relayable: false }` = 「这条中继走不了，退回 `/v1`」，不是错。** 模型走的不是 OpenAI
+兼容协议（一批 `api: 'anthropic-messages'` 但 provider 不叫 anthropic 的：minimax、kimi-coding、
+fireworks、github-copilot、vercel-ai-gateway、opencode、cloudflare-ai-gateway…），或者压根没有
+HTTP 上游地址（bedrock / vertex 那种地址由 SDK 现拼的），Gateway 就没法把一份 OpenAI body 改写
+成别的形状。但这些在 `/v1` 上一直是好的（底下的 pi-ai 按 `api` 分发，什么协议都认），所以管家
+看见这一位就把整通调用改打 Gateway 的 `/v1`（chat → `/v1/chat/completions`、messages →
+`/v1/messages`、responses → `/v1/responses`），带 Bot 自己的 `sk_sw_`，**不结算**——那条路
+Gateway 自己记账。授权这一侧也因此不登记 `llm_calls`。
+
+其余错误（400/401/402/403/404）的状态码和文案和 `/v1` 一样，管家原样回给 Bot。密钥的取法是
+**公司密钥 > 平台密钥 > 环境变量**：公司管理员在 `/orgs/:id/credentials` 配自己那几把（列表里
+平台兜底的标 `scope: 'platform'`，只能看），没配的供应商走平台那把。
 
 `/v1/*` 原地保留：桌面端的本地 Bot（Gateway 是它唯一够得着的出口）和还没换到新管家的席位
 继续走它。

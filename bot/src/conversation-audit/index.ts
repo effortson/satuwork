@@ -1,6 +1,6 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
-import { gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../llm/gateway.ts'
+import { completeOnce, gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../llm/gateway.ts'
 import type { SessionEvent } from '../session/types.ts'
 
 export const name = 'satu-conversation-audit'
@@ -251,28 +251,24 @@ export class ConversationAuditService extends Service {
 
   private async complete(job: AuditJob, user: string): Promise<string> {
     // 模型调用走 llmBaseUrl()（席位上是管家转发口）；下面 report() 回报结果仍打 Gateway。
-    const base = llmBaseUrl()
-    const key = gatewayApiKey()
-    if (!base || !key) throw new Error('没有配置 Gateway 模型入口')
-    const r = await fetch(`${base}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', 'x-satuwork-purpose': 'conversation_audit' },
-      body: JSON.stringify({
-        model: `${job.provider}/${job.model}`,
-        provider: job.provider,
-        stream: false,
-        temperature: 0,
-        ...(job.reasoningEffort !== 'off' ? { reasoning_effort: job.reasoningEffort } : {}),
-        messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: user }],
-      }),
-      signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
+    if (!llmBaseUrl() || !gatewayApiKey()) throw new Error('没有配置 Gateway 模型入口')
+    // 路由由 completeOnce 按模型的 api 挑：审计用的是平台指派的模型，可能是 Messages 协议的
+    // 那一批，写死 chat 会被管家的授权接口 400 挡掉。
+    const r = await completeOnce({
+      provider: job.provider,
+      model: job.model,
+      system: SYSTEM,
+      user,
+      reasoningEffort: job.reasoningEffort,
+      temperature: 0,
+      // Messages 协议 max_tokens 必填。审计回的是一份逐条的 JSON，给宽一点。
+      maxTokens: 8192,
+      headers: { 'x-satuwork-purpose': 'conversation_audit' },
+      timeoutMs: MODEL_TIMEOUT_MS,
     })
     if (!r.ok) throw new Error(`审计模型返回 HTTP ${r.status}`)
-    const data = await r.json() as { choices?: { message?: { content?: unknown } }[] }
-    const content = data.choices?.[0]?.message?.content
-    const out = textOf(content) || String(content ?? '')
-    if (!out.trim()) throw new Error('审计模型没有返回内容')
-    return out
+    if (!r.text.trim()) throw new Error('审计模型没有返回内容')
+    return r.text
   }
 
   private async report(jobId: string, result: AuditResult): Promise<void> {

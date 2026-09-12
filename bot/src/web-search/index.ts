@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { Service, type Context } from '@deepseek-ai/cordis'
-import { gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../llm/gateway.ts'
+import { completeOnce, gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../llm/gateway.ts'
 import { docKindOf, extractDocument } from '../workspace/extract.ts'
 
 /**
@@ -187,31 +187,26 @@ export class WebSearchService extends Service {
    */
   private async complete(system: string, user: string): Promise<string> {
     // 模型调用走 llmBaseUrl()：席位上是管家转发口，不是 Gateway 本身。
-    const base = llmBaseUrl()
-    const key = gatewayApiKey()
     const picked = this.summaryModel()
-    if (!base || !key || !picked) throw new Error('没有可用的摘要模型')
-    const r = await fetch(`${base}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: `${picked.provider}/${picked.model}`,
-        provider: picked.provider,
-        stream: false,
-        ...(picked.reasoningEffort !== 'off' ? { reasoning_effort: picked.reasoningEffort } : {}),
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      }),
-      signal: AbortSignal.timeout(SUMMARY_TIMEOUT_MS),
+    if (!llmBaseUrl() || !gatewayApiKey() || !picked) throw new Error('没有可用的摘要模型')
+    /**
+     * 路由由 completeOnce 按模型的 api 挑，**不写死 chat**：utility 角色指到 claude 或
+     * minimax 这类 Messages 协议的模型是常事，写死的话管家的授权接口会拿 400 顶回来，
+     * 摘要每次都静悄悄退化成「截原文开头」。
+     */
+    const r = await completeOnce({
+      provider: picked.provider,
+      model: picked.model,
+      system,
+      user,
+      reasoningEffort: picked.reasoningEffort,
+      // Messages 协议 max_tokens 必填；摘要本来就砍到 SUMMARY_MAX 个字符，按这个量给足。
+      maxTokens: SUMMARY_MAX,
+      timeoutMs: SUMMARY_TIMEOUT_MS,
     })
     if (!r.ok) throw new Error(`摘要模型返回 HTTP ${r.status}`)
-    const data = (await r.json()) as any
-    const text = data?.choices?.[0]?.message?.content
-    const out = typeof text === 'string' ? text : Array.isArray(text) ? text.map((c: any) => c?.text ?? '').join('') : ''
-    if (!out.trim()) throw new Error('摘要模型没有返回内容')
-    return out.trim()
+    if (!r.text.trim()) throw new Error('摘要模型没有返回内容')
+    return r.text.trim()
   }
 
   /**

@@ -108,20 +108,57 @@ Bot 拿它当 `/v1` 的基址）。Gateway 搬到 Vercel 之后那种几分钟�
 ```
 GET  /llm/v1/models             原样转 Gateway 的 /v1/models（带 Bot 的钥匙）
 POST /llm/v1/chat/completions   route=chat
-POST /llm/v1/messages           route=messages（Bot 的 anthropic-version 头，授权没钉版本时才转）
+POST /llm/v1/messages           route=messages（Bot 的 anthropic-version 头随授权请求一起上报）
 POST /llm/v1/responses          route=responses
 ```
 
 一次调用：读 JSON 体（>32 MB 回 413，没 `model` 回 400）→ `POST {gateway}/worker/llm/grant`（smt_，
-把 Bot 的 `sk_sw_` 原样交上去验；Gateway 回 4xx 就**原样**转给 Bot，够不着回 503）→ 拿授权里的
-上游地址和头（含供应商密钥，只活在这一次调用的内存里）打供应商，字节原样流回 Bot，顺手从
-`data:` 帧或整块 JSON 里数 usage（`src/llm-usage.ts`，gateway 那份的逐字副本，账才对得上）→
-`POST {gateway}/worker/llm/:callId/settle`，带 usage 和结局（`ok` / `failed`：Bot 先走了或上游非 2xx /
-`error` / `timeout`：120 秒没等到响应头）。结算不挡 Bot 的响应，网络层失败隔两秒补一次，再不行只留
-一行日志——Gateway 会定期扫没结算的调用。
+把 Bot 的 `sk_sw_` 原样交上去验；Gateway 回 4xx 就**原样**转给 Bot，够不着回 503）→ 按授权里的
+**请求体补丁**改 body → 拿授权里的上游地址和头（含供应商密钥，只活在这一次调用的内存里）打供应商，
+字节原样流回 Bot，顺手从 `data:` 帧或整块 JSON 里数 usage（`src/llm-usage.ts`，gateway 那份的逐字副本，
+账才对得上）→ `POST {gateway}/worker/llm/:callId/settle`，带 usage 和结局（`ok` / `failed`：Bot 先走了
+或上游非 2xx / `error` / `timeout`：120 秒没等到响应头）。结算不挡 Bot 的响应，网络层失败隔两秒补一次，
+再不行只留一行日志——Gateway 会定期扫没结算的调用。
 
-管家不验 `sk_sw_`（那是 Gateway 的事），也不把授权头的值写进日志或回显：上游错误正文里的密钥
-先抹成 `[redacted]` 再给 Bot。每次调用留一行 info 日志：路由、供应商/模型、结局、四项 token、耗时。
+### 请求体归 Gateway 规范化
+
+授权请求上报 `{apiKey, route, model, provider?, anthropicVersion?, openaiBeta?, stream?, reasoningEffort?}`，
+授权答复里除了 `{callId, provider, model, url, headers}` 还有一份补丁：
+
+```
+body: { set: Record<string, unknown>, unset: string[] }
+```
+
+管家**照单执行**，先 `unset` 后 `set`，自己不再动请求体（以前是管家自己把 `model` 换成正名、把
+`provider` 删掉，现在这两件事都在补丁里）。这么摆是因为「哪个模型要补 `stream_options.include_usage`
+才会回用量」「哪家的 `reasoning_effort` 要钳到什么档」只有目录那头知道，而且会随目录变——规矩留在
+Gateway 一处，机器上几十个管家不各自带一份会过期的判断。补丁是**必给的**（`set.model` 一定是目录里的
+正名，`unset` 一定含 `provider`），没有就当答复不成形回 502——给它兜一个空补丁的话，请求体一个字不改
+就打了上游，`provider` 原样漏过去、用量收不齐，而表面上一切正常。
+
+### 中继不了的供应商退回 `/v1`
+
+有些家这条中继走不通：Anthropic 协议的模型被打到 chat 路由、压根没有 OpenAI 兼容端点的 API。
+Gateway 用 **`409` + 正文里的 `relayable: false`** 说这件事。管家**不把这个 409 转给 Bot**——Bot 没做
+错什么，也没有第二条路可换——而是把整通调用原样交回 Gateway 自己的 `/v1`：同一个路径后缀
+（`/v1/chat/completions` 等）、Bot 的 `sk_sw_`、**原封不动的请求体**，响应照样流回去。中继出现之前
+这些模型走的就是这条路，于是它们继续照旧。这条路**不结算**：没有 grant、没有我们开的那行
+`llm_calls`，账是 Gateway 在 `/v1` 里自己记的。journal 里会留一行说明这次退回了以及为什么。
+
+管家不验 `sk_sw_`（那是 Gateway 的事），也不把授权头的名字或值写进日志：**上游报错时**正文里的密钥
+先抹成 `[redacted]` 再给 Bot（上游的 4xx 常把请求头回显在正文里）。**成功的答复一个字不动。**
+
+抹哪些值的规矩是**反着列的**：授权里除了 `content-type` / `accept` / `accept-encoding` / `content-length` /
+`host` / `user-agent` / `anthropic-version` / `openai-beta` 之外，每个头的值都当密钥看（含去掉 `Bearer `
+的裸值），再加一条 8 个字符的下限防自伤。摆成「除了这几个都算秘密」而不是列一张授权头白名单，是因为
+自定义供应商的头名字是运营填的——`x-goog-api-key`、`api-key`、干脆叫 `token` 的都有，白名单一定漏，
+而漏一个就是密钥顺着错误正文进了 Bot 的日志。
+
+（上一版是「值长到 16 个字符就抹」，且压在成功响应上。`application/json` 正好 16 个字符，于是模型答复里
+凡是提到 `Content-Type: application/json` 的地方——教人写 curl 的回答天天有——都变成
+`Content-Type: [redacted]`。抹的是模型正文，不是密钥。）
+
+每次调用留一行 info 日志：路由、供应商/模型、结局、四项 token、耗时。
 
 ## 落盘
 

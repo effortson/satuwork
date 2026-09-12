@@ -7121,12 +7121,27 @@ function authHeaders(extra) {
 const NO_UPLOAD_URL_MSG = '这台机器没有配直连地址（或管家太旧），上传不了'
 
 function uploadTargetOf(sessionId) {
-  const owner = state.chatBotId || botIdOfSession(sessionId)
+  /**
+   * 认**这条会话的主人**，界面当下选中的那颗 Bot 只是兜底。
+   *
+   * 反过来写会错：上传是一个文件一个文件发的，`sessionId` 在循环外就钉死了，而这里每一轮
+   * 都重算一次。人在传的中途切了个席位，第 N 个文件就带着第一条会话的 id 打到**另一个**
+   * 席位的 uploadUrl 上；那边查得出这条会话不存在，回 404，界面上只剩一句「附件没传上去」
+   * 加一个看不懂的状态码。
+   */
+  const owner = botIdOfSession(sessionId) || state.chatBotId
   const bot = runtimeBotOf(owner)
   const path = '/sessions/' + encodeURIComponent(sessionId) + '/files'
-  // 名单上没有这颗 Bot、或者名单没带 runtime（低层直接调用、测试）：按本地那个形状走。
-  if (!bot || !bot.runtime || isLocalRuntimeBot(bot)) return { url: '/runtime' + path, local: true }
-  const base = bot.runtime.uploadUrl
+  // 本地 Bot 照旧拼 `/runtime/...`：data.js 的 localRoute 认这个形状，改道到 127.0.0.1。
+  if (isLocalRuntimeBot(bot)) return { url: '/runtime' + path, local: true }
+  /**
+   * 名单上没有这颗 Bot、名单行没带 runtime、或者远程 Bot 没配 uploadUrl：一个字节都不发。
+   *
+   * 以前这几种也退回 `/runtime/...`，可 Gateway 上的 `POST /runtime/sessions/:id/files`
+   * 这一版已经删干净了（见 e2e/gateway-chat.mjs 那条「要真的没了」），走过去只换来一个生的
+   * 404。给 null，让 uploadChatFile 抛 NO_UPLOAD_URL_MSG——缺的是配置，那句话说得清。
+   */
+  const base = bot && bot.runtime && bot.runtime.uploadUrl
   if (!base) return null
   return { url: base + path, local: false }
 }
