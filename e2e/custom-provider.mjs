@@ -28,13 +28,30 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
     r.on('data', (d) => (buf += d))
     r.on('end', () => {
       seen.body = buf
+      let parsed = null
+      try {
+        parsed = JSON.parse(buf)
+      } catch {}
+      /**
+       * **用量帧只在请求里写了 `stream_options.include_usage` 时才发。**
+       *
+       * 真上游就是这么干的：OpenAI 兼容的流不带这一格就一个 usage 字段都不回。假上游
+       * 无条件发的话，「谁来补这一格」这件事就再也测不出来了——补丢了照样绿。
+       * 同一条规矩在 e2e/manager.mjs 的中继假上游里也钉着一份。
+       */
+      const wantUsage = parsed?.stream_options?.include_usage === true
       // openai-completions 是流式的，必须发 SSE，不能发整包 JSON。
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
       const chunk = (choices, usage) =>
         `data: ${JSON.stringify({ id: 'c', object: 'chat.completion.chunk', created: 1, model: 'm', choices, ...(usage ? { usage } : {}) })}\n\n`
       res.write(chunk([{ index: 0, delta: { role: 'assistant' }, finish_reason: null }]))
       res.write(chunk([{ index: 0, delta: { content: 'ok' }, finish_reason: null }]))
-      res.write(chunk([{ index: 0, delta: {}, finish_reason: 'stop' }], { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 }))
+      res.write(
+        chunk(
+          [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          wantUsage ? { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 } : undefined,
+        ),
+      )
       res.write('data: [DONE]\n\n')
       res.end()
     })
@@ -42,19 +59,36 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
   await new Promise((r) => upstream.listen(UP_PORT, '127.0.0.1', r))
   const baseUrl = `http://127.0.0.1:${UP_PORT}/v1`
 
-  const gw = start('custom-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
-    env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_custom'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
-      GATEWAY_ACCESS_HOST: 'satuwork.com',
-      GATEWAY_SEED_OWNER: '0',
-    },
-  })
+  const SCHEMA = schemaOf('e2e_custom')
+  /**
+   * 起一个 Gateway。`reset` 只有第一次给——重启那条用例要的就是「库里原样还在」，
+   * 再清一次就什么都验不到了。
+   */
+  const boot = (name, { reset = false, env = {} } = {}) =>
+    start(name, ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
+      cwd: gwRoot,
+      env: {
+        SATUWORK_GATEWAY_HOME: GW_HOME,
+        GATEWAY_DATABASE_URL: PG_URL,
+        GATEWAY_PG_SCHEMA: SCHEMA,
+        ...(reset ? { GATEWAY_PG_RESET: '1' } : {}),
+        GATEWAY_HOST: '127.0.0.1',
+        GATEWAY_PORT: String(GW_PORT),
+        GATEWAY_ACCESS_HOST: 'satuwork.com',
+        GATEWAY_SEED_OWNER: '0',
+        ...env,
+      },
+    })
+  /** 等一个子进程真的退干净。端口只有一个，上一个不死下一个就绑不上。 */
+  const stop = async (child) => {
+    if (!child || child._exited) return
+    try {
+      child.kill('SIGTERM')
+    } catch {}
+    for (let i = 0; i < 100 && !child._exited; i++) await new Promise((r) => setTimeout(r, 100))
+  }
+
+  let gw = boot('custom-gw', { reset: true })
   await waitHttp(`${base}/health`, { child: gw, what: 'custom gateway' })
 
   const model = {
@@ -64,6 +98,9 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
 
   try {
     let token = ''
+    /** 「公司密钥压过平台密钥」那条里建的那家公司。重启那条还要拿它的 id 和管理员票。 */
+    let kOrgId = ''
+    let kAdminTok = ''
     await test('建自定义供应商：形状就是 pi-ai createProvider 的入参', async () => {
       const setup = await req(base, 'POST', '/auth/setup', {
         body: { email: 'o@custom.test', name: 'o', password: 'correct-horse-1' },
@@ -202,6 +239,7 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       })
       assert(org.status === 201, `org ${org.status} ${org.text}`)
       const orgId = org.json.company.id
+      kOrgId = orgId
       // 裸建的公司没钱，余额闸会先一步 402；这条验的是密钥取序，先给它充上。
       const paid = await req(base, 'POST', '/platform/orders', {
         token,
@@ -211,6 +249,7 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       const login = await req(base, 'POST', '/auth/login', { body: { email: 'k@custom.test', password: 'correct-horse-1' } })
       assert(login.status === 200, `admin login ${login.status} ${login.text}`)
       const at = login.json.token
+      kAdminTok = at
 
       // 只有平台密钥时公司也能调，上游收到的是平台那把（前面那条配的 sk-custom-123）。
       seen = { auth: null, path: null, body: null }
@@ -258,6 +297,77 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       })
       assert(back.status === 200, `删掉公司密钥后 chat ${back.status} ${back.text}`)
       assert(seen.auth === 'Bearer sk-custom-123', `删掉公司密钥后上游收到的是 ${seen.auth}`)
+    })
+
+    await test('重启不会把公司密钥升成平台密钥——跨租户漏密钥，开机自动发生', async () => {
+      /**
+       * 开机时那段「一次性提升」原先还捎带一句 `select provider, secret from credentials`
+       * ——整张表、不带公司过滤——upsert 进 platform_credentials。单租户时代那是搬家，
+       * 现在 credentials 是每家公司自己配密钥的地方（POST /orgs/:id/credentials），于是
+       * **任意一个公司管理员填进去的 key，下一次进程重启就成了全平台的兜底密钥**，而
+       * llm.ts 的取序是「公司 > 平台 > 环境变量」，别家没配密钥时就落到这把上。
+       *
+       * 整件事只在**重启之后**才看得见，所以这条用例必须真的把 Gateway 停掉再起一遍，
+       * 而且不能带 GATEWAY_PG_RESET——要的就是库里原样还在。
+       */
+      // 平台那把先删掉：留着的话「平台有没有多出一把」这个问题就分不清是谁留下的。
+      await req(base, 'DELETE', '/platform/credentials/my-llm', { token })
+      const before = await req(base, 'GET', '/platform/credentials', { token })
+      assert(!(before.json.credentials || []).some((c) => c.provider === 'my-llm'), '平台密钥没删干净，这条就验不到东西了')
+
+      const set = await req(base, 'POST', `/orgs/${kOrgId}/credentials`, { token: kAdminTok, body: { provider: 'my-llm', secret: 'only-company-a-key' } })
+      assert(set.status === 201, `配公司密钥 ${set.status} ${set.text}`)
+
+      await stop(gw)
+      // 环境变量那把是给「别家公司」兜底的：重启后别家该落到它上面，而不是落到 A 家的 key 上。
+      gw = boot('custom-gw-restart', { env: { SATUWORK_MY_LLM_API_KEY: 'env-fallback-key' } })
+      await waitHttp(`${base}/health`, { child: gw, what: 'custom gateway restart' })
+
+      const creds = await req(base, 'GET', '/platform/credentials', { token })
+      assert(creds.status === 200, `平台密钥列表 ${creds.status} ${creds.text}`)
+      const lifted = (creds.json.credentials || []).find((c) => c.provider === 'my-llm')
+      assert(!lifted, `公司密钥被升成了平台密钥：${JSON.stringify(lifted)}`)
+
+      // A 家自己照旧用自己的那把——提升被删掉不等于把公司密钥也弄丢了。
+      seen = { auth: null, path: null, body: null }
+      const asA = await req(base, 'POST', '/v1/chat/completions', {
+        token: kAdminTok,
+        body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
+      })
+      assert(asA.status === 200, `A 家 chat ${asA.status} ${asA.text}`)
+      assert(seen.auth === 'Bearer only-company-a-key', `A 家上游收到的是 ${seen.auth}`)
+
+      // B 家没配过任何密钥：该落到环境变量那把，**不能**是 A 家的。
+      const orgB = await req(base, 'POST', '/platform/orgs', {
+        token,
+        body: {
+          name: 'B', slug: 'b-custom',
+          contactName: '王五', contactPhone: '+86 138 0000 0002', contactEmail: 'b@custom.test',
+          adminEmail: 'b@custom.test', adminPassword: 'correct-horse-1',
+        },
+      })
+      assert(orgB.status === 201, `orgB ${orgB.status} ${orgB.text}`)
+      const paidB = await req(base, 'POST', '/platform/orders', {
+        token,
+        body: { companyId: orgB.json.company.id, kind: 'topup', amount: 100, payStatus: 'paid', note: 'e2e' },
+      })
+      assert(paidB.status === 201, `B 家充值 ${paidB.status} ${paidB.text}`)
+      const loginB = await req(base, 'POST', '/auth/login', { body: { email: 'b@custom.test', password: 'correct-horse-1' } })
+      assert(loginB.status === 200, `B 家 login ${loginB.status} ${loginB.text}`)
+
+      seen = { auth: null, path: null, body: null }
+      const asB = await req(base, 'POST', '/v1/chat/completions', {
+        token: loginB.json.token,
+        body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
+      })
+      assert(asB.status === 200, `B 家 chat ${asB.status} ${asB.text}`)
+      assert(seen.auth !== 'Bearer only-company-a-key', 'B 家拿着 A 家的公司密钥去打上游了——跨租户漏密钥')
+      assert(seen.auth === 'Bearer env-fallback-key', `B 家上游收到的是 ${seen.auth}`)
+
+      // 收拾干净：后面几条用例还指着平台那把 sk-custom-123。
+      await req(base, 'DELETE', `/orgs/${kOrgId}/credentials/my-llm`, { token: kAdminTok })
+      const back = await req(base, 'POST', '/platform/credentials', { token, body: { provider: 'my-llm', secret: 'sk-custom-123' } })
+      assert(back.status === 201, `补回平台密钥 ${back.status} ${back.text}`)
     })
 
     await test('在用时删要 409；force 之后密钥和角色一起清掉', async () => {

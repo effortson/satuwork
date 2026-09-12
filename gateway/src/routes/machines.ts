@@ -4,7 +4,7 @@
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { INSTANCE_DOWN, MIN_MANAGER_NODE, PAIRING_TTL, desiredManagerRelease, directUrlOf, gatewayBaseFor, installCommandFor, machineBase, machineCard, machineOfOrg, machineResolver, managerHostOf, normalizePairingCode, randomPairingCode, registerFromBody, sendReleaseFile } from '../lib/machines.ts'
-import { MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, deploySeat, gatewayPublicUrl, gatewayPublicUrlExplicit, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, rehostSeatInstances, releaseSeats, logsUrlOf } from '../deploy.ts'
+import { LOGS_FOLLOW_GONE, MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, deploySeat, gatewayPublicUrl, gatewayPublicUrlExplicit, logsDirectPayload, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, rehostSeatInstances, releaseSeats } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { installScript } from '../install.ts'
@@ -12,12 +12,8 @@ import { proxyJson } from '../lib/runtime.ts'
 import { localBotReleaseTarget, parseBotVersion, publicBotRelease, storeUploadedRelease } from '../releases.ts'
 import { requireOrgUser, requireOwnerUser, requireReleaseAuthor } from '../lib/guards.ts'
 import { MANAGER_VACUUM_TIMEOUT_MS, MAX_LOG_CAP_MB, METRIC_RETENTION_MS, MINUTE_MS } from '../lib/telemetry.ts'
-import { signDesktopTicket, signLogsTicket } from '../crypto.ts'
+import { signDesktopTicket } from '../crypto.ts'
 import { type Account, type CatalogItem, type Machine, type SeatRuntime } from '../db.ts'
-
-/** 跟随那条 SSE 已经不经 Gateway 了：老界面还传 `follow=1` 就用这一句拒掉，别静默降级。 */
-const LOGS_FOLLOW_GONE = '日志跟随改为直连机器：先取 …/logs/direct'
-const LOGS_NO_DIRECT = '这台机器没有配直连地址（或管家太旧），日志跟随打不开'
 
 export function attachMachines(router: Router, ctx: RouteCtx) {
   const { db, keys } = ctx
@@ -98,15 +94,13 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     const machine = await machineOfOrg(db, company.id, req.params.machineId)
     if (!machine?.host) throw new HttpError(503, INSTANCE_DOWN)
     const seatId = await seatOnMachine(machine, req.query.get('seatId'))
-    const url = logsUrlOf(machine, seatId || null)
-    if (!url) throw new HttpError(409, LOGS_NO_DIRECT)
     await db.audit({
       companyId: company.id,
       accountId: account.id,
       action: 'machine.logs',
       detail: { machineId: machine.id, seatId: seatId || null, follow: true, direct: true },
     })
-    json(res, 200, { url, ticket: signLogsTicket(keys, seatId ? { seatId } : { manager: true }) })
+    json(res, 200, logsDirectPayload(keys, machine, seatId || null))
   })
 
   /**
@@ -913,10 +907,8 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     const machine = await machineOr404(req.params.id)
     if (!machine.host) throw new HttpError(503, INSTANCE_DOWN)
     const seatId = await seatOnMachine(machine, req.query.get('seatId'))
-    const url = logsUrlOf(machine, seatId || null)
-    if (!url) throw new HttpError(409, LOGS_NO_DIRECT)
     await auditMachine(machine, account.id, 'machine.logs', { machineId: machine.id, seatId: seatId || null, follow: true, direct: true })
-    json(res, 200, { url, ticket: signLogsTicket(keys, seatId ? { seatId } : { manager: true }) })
+    json(res, 200, logsDirectPayload(keys, machine, seatId || null))
   })
 
   /**

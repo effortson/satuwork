@@ -20,6 +20,43 @@ export async function runLlmIdle({ root, test, assert, log }) {
     assert(r && r.silent && r.alive && r.headless && r.relay, `探针结果不完整：${JSON.stringify(r)}`)
   })
 
+  await test('收口之后才来的那一帧用量要收进来，缓存那截不重复算', async () => {
+    /**
+     * 请求体带了 `stream_options.include_usage`（这一版由 Gateway 的授权补丁统一补上，
+     * 见 gateway/src/llm.ts 的 chatBodyPatch）时，上游会在 finish_reason 那一帧**之后**
+     * 再补一帧 `choices: []`，整条流的 token 数只在这一帧里。收流那头「收口了就什么都
+     * 不看」的话，这一帧连同整轮用量一起被丢掉——账在 Gateway 那边收对了，界面上这一轮
+     * 却永远是 0，两边对不上还查不出是谁的错。
+     *
+     * 顺带钉住 `input` 的算法：上游的 prompt_tokens 是**整个提示词**，命中缓存的那截在
+     * prompt_tokens_details.cached_tokens 里单列，而 pi 的 input 按约定不含缓存。不减的话
+     * 「上下文占了多少」会把缓存那部分算两遍。
+     */
+    const u = r.relayUsage.usage
+    assert(u, `done 那一条没带出用量：${JSON.stringify(r.relayUsage.events)}`)
+    assert(u.input === 3, `input 该是 prompt_tokens(5) 减掉 cached_tokens(2)，实际 ${u.input}`)
+    assert(u.output === 1, `output ${u.output}`)
+    assert(u.cacheRead === 2, `cacheRead ${u.cacheRead}`)
+    assert(u.totalTokens === 6, `totalTokens ${u.totalTokens}`)
+  })
+
+  await test('选路按模型的 api，不按供应商名字：anthropic-messages 走 /v1/messages', async () => {
+    // 走 Anthropic 协议但不叫 anthropic 的供应商有九家，其中四家只开这一条口。按名字
+    // 认的话它们全被送到 chat 路由上，而中继的授权按 api 判路——那边只会说「这家走
+    // /v1/messages」，到 Bot 这里就是一个 400。
+    assert(
+      JSON.stringify(r.relayAnthropic.paths) === JSON.stringify(['/llm/v1/messages']),
+      `anthropic-messages 的模型打到了 ${JSON.stringify(r.relayAnthropic.paths)}`,
+    )
+    const texts = r.relayAnthropic.events.filter((e) => e.type === 'text_delta')
+    assert(texts.length > 0, `Messages 那条没收到正文：${JSON.stringify(r.relayAnthropic.events)}`)
+    // 同一个供应商名字、api 换成 openai-completions，就得走另一条——判的确实是 api。
+    assert(
+      JSON.stringify(r.relayOpenai.paths) === JSON.stringify(['/llm/v1/chat/completions']),
+      `openai-completions 的模型打到了 ${JSON.stringify(r.relayOpenai.paths)}`,
+    )
+  })
+
   await test('设了 GATEWAY_LLM_URL：补全打管家的转发口，不碰 GATEWAY_URL', async () => {
     // 席位上 provider 密钥只在管家进程里，/v1/* 必须走转发口；末尾斜杠也得收掉。
     assert(JSON.stringify(r.relay.paths) === JSON.stringify(['/llm/v1/chat/completions']), `请求打错了地方：${JSON.stringify(r.relay.paths)}`)

@@ -7,7 +7,7 @@ import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
 import type { Account, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
-import { deployInFlight, deploySeat, listSeatRuntime, logsUrlOf, publicSeatRuntime, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
+import { LOGS_FOLLOW_GONE, deployInFlight, deploySeat, listSeatRuntime, logsDirectPayload, publicSeatRuntime, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, defaultBotModel, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
@@ -16,7 +16,6 @@ import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
 import { machineHeader, managerTargetFor, proxyDownload, proxyJson, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
-import { signLogsTicket } from '../crypto.ts'
 import { localBotReleaseTarget } from '../releases.ts'
 
 /**
@@ -1103,7 +1102,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
    */
   router.get('/runtime/logs', async (req, res) => {
     const account = await requireUser(req, db, keys)
-    if (req.query.get('follow') === '1') throw new HttpError(410, '日志跟随改为直连机器：先取 /runtime/logs/direct')
+    if (req.query.get('follow') === '1') throw new HttpError(410, LOGS_FOLLOW_GONE)
     const t = await managerTargetFor(db, account, (req.query.get('botId') || '').trim())
     const lines = Math.min(2000, Math.max(1, Math.trunc(Number(req.query.get('lines')) || 200)))
     const url = `${t.base}/seats/${encodeURIComponent(t.seatId)}/logs?lines=${lines}`
@@ -1118,14 +1117,14 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
    * signLogsTicket。五分钟：够把流开起来，流开了就不再看票。
    *
    * 机器没配 `directUrl`、或管家 < 9 号（`/logs` 还不认日志票）→ 409，界面上就说清楚
-   * 「这台机器跟不了」，不要让人对着一条永远不动的流等。
+   * 「这台机器跟不了」，不要让人对着一条永远不动的流等。这个尾巴（算地址、409、签票）
+   * 三条 `/logs/direct` 共用 deploy.ts 的 logsDirectPayload；鉴权和审计不在里面，各路
+   * 自己守自己的。
    */
   router.get('/runtime/logs/direct', async (req, res) => {
     const account = await requireUser(req, db, keys)
     const t = await managerTargetFor(db, account, (req.query.get('botId') || '').trim())
-    const url = logsUrlOf(t.machine, t.seatId)
-    if (!url) throw new HttpError(409, '这台机器没有配直连地址（或管家太旧），日志跟随打不开')
-    json(res, 200, { url, ticket: signLogsTicket(keys, { seatId: t.seatId }) })
+    json(res, 200, logsDirectPayload(keys, t.machine, t.seatId))
   })
 
   /**

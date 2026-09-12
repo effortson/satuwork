@@ -63,7 +63,7 @@ export function attachSessions(router: Router, ctx: RouteCtx) {
 
   router.get('/orgs/:id/credentials/:provider', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id)
-    const provider = req.params.provider.startsWith('platform:') ? req.params.provider.slice('platform:'.length) : req.params.provider
+    const provider = req.params.provider
     if (!isModelProvider(provider)) throw new HttpError(404, '密钥不存在')
     const own = await db.credentialByProvider(req.params.id, provider)
     if (own) {
@@ -89,6 +89,19 @@ export function attachSessions(router: Router, ctx: RouteCtx) {
   router.delete('/orgs/:id/credentials/:provider', async (req, res) => {
     const account = await requireOrgUser(req, db, keys, req.params.id, true)
     const provider = req.params.provider
+    /**
+     * 和列表 / 详情同一个口径：不是模型供应商的密钥（连接器、搜索后端）对公司管理员
+     * 就不存在。少了这道闸，这一屏看不见、按名字也捞不出来的行，却能按名字**删掉**——
+     * 一条 `DELETE …/credentials/composio` 会把连接器那把静默删了，而删它的人在这一屏
+     * 上从没见过它。
+     *
+     * 用 GET 那道 404 而不是 POST / PUT 的 400：删这条路的「没有」本来就是 404，两种
+     * 「没有」共用一句话，调用方也就分不出「不是模型供应商」和「这家没配」——这正是
+     * 想要的，否则等于拿 404 的文案去探连接器密钥存不存在。另一头，`modelProviderOr400`
+     * 还要求 provider 此刻在注册表里，那对删除是反的：平台下掉一个自定义供应商之后，
+     * 各家留下的那把陈旧密钥就再也删不掉了。
+     */
+    if (!isModelProvider(provider)) throw new HttpError(404, '这家公司没有配这个供应商的密钥')
     // 只删公司自己的行。平台兜底的那把不归这家管，删了会让别的公司一起没密钥。
     if (!(await db.deleteCredentialByProvider(req.params.id, provider))) throw new HttpError(404, '这家公司没有配这个供应商的密钥')
     await db.audit({ companyId: req.params.id, accountId: account.id, action: 'credential.delete', detail: { provider } })

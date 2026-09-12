@@ -18,6 +18,8 @@ import { schemaOf, tmpOf } from './isolate.mjs'
 
 /** 这一套自己的 schema。写死名字会被别的 worktree 的 e2e 清掉（见 pg.mjs 的 schemaOf）。 */
 const SCHEMA = schemaOf('e2e_manager')
+/** `/cron/tick` 的凭证。没配这一项那条路整个关着（routes/cron.ts）。 */
+const CRON_SECRET = 'manager-e2e-cron-secret'
 import { freePorts } from './ports.mjs'
 import { publishRelease } from './release.mjs'
 import { closeServer } from './probe.mjs'
@@ -186,6 +188,9 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       GATEWAY_PUBLIC_URL: gwBase,
       GATEWAY_OWNER_EMAIL: 'owner@manager.test',
       GATEWAY_OWNER_PASSWORD: 'manager-owner-1234',
+      // 「跑一拍维护」这条路（routes/cron.ts）只有配了 CRON_SECRET 才开。模型中继那一组
+      // 要按自己的节奏驱动 maintenanceTick（未结算清扫就在那一拍里），不能等 30 秒调度器。
+      CRON_SECRET,
       SATUWORK_DEPLOY_STUB: '',
     },
   })
@@ -2332,8 +2337,23 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
     {
       const PROVIDER = 'relay-llm'
       const MODEL = 'relay-model'
+      /** 会推理的那颗：验「推理档被夹回这颗模型认的那几档」。 */
+      const THINK_MODEL = 'relay-thinker'
+      /** 走 Anthropic 协议的那家：中继改不了它的请求体形状，该退回 Gateway 的 /v1。 */
+      const ANTHRO_PROVIDER = 'anthro-llm'
+      const ANTHRO_MODEL = 'anthro-model'
       /** 假上游收到的每一次请求：{ auth, path, body }。 */
       const upSeen = []
+      /**
+       * 假上游这一次怎么答：
+       *
+       *   'stream'   照旧发 SSE（openai-completions 的常态）
+       *   'json'     发一整包**成功**的 JSON，正文里故意含 `application/json` 这几个字
+       *   'error'    发 4xx，并把收到的 Authorization 原样回显进正文（真上游就这么干）
+       *
+       * 后两种是给「抹密钥别把 application/json 一起抹了」那条用的，见下面那条用例。
+       */
+      let upMode = 'stream'
       const upstream = createServer((r, res) => {
         let buf = ''
         r.on('data', (d) => (buf += d))
@@ -2343,13 +2363,55 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
             body = JSON.parse(buf)
           } catch {}
           upSeen.push({ auth: r.headers.authorization, path: r.url, body })
+          // 走 Anthropic 协议那家：这条路是 Gateway 自己的 /v1 底下 pi-ai 打过来的
+          // （中继退回去了），所以要发 Messages 协议的事件流，不是 OpenAI 那种 chunk。
+          if (r.url.startsWith('/anthropic/')) {
+            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+            const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
+            ev('message_start', {
+              message: { id: 'msg_e2e', type: 'message', role: 'assistant', model: ANTHRO_MODEL, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } },
+            })
+            ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })
+            ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'ok' } })
+            ev('content_block_stop', { index: 0 })
+            ev('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } })
+            ev('message_stop', {})
+            res.end()
+            return
+          }
+          if (upMode === 'json' || upMode === 'error') {
+            const ok = upMode === 'json'
+            res.writeHead(ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' })
+            res.end(
+              JSON.stringify(
+                ok
+                  ? { id: 'c', object: 'chat.completion', created: 1, model: 'm', choices: [{ index: 0, message: { role: 'assistant', content: '记得把 Content-Type 设成 application/json' }, finish_reason: 'stop' }] }
+                  : { error: { message: `拒了。你发来的 authorization=${r.headers.authorization}，content-type=application/json`, type: 'invalid_request_error' } },
+              ),
+            )
+            return
+          }
+          /**
+           * **用量帧只在请求里写了 `stream_options.include_usage` 时才发。**
+           *
+           * 真上游就是这么干的：OpenAI 兼容的流不带这一格就一个 usage 字段都不回，于是
+           * 每一次流式调用都记成 unpriced、收 0 元。假上游无条件发的话，这整条「谁来补
+           * 这一格」就再也测不出来——补丢了照样绿。同一条规矩在 e2e/custom-provider.mjs
+           * 的假上游里也钉着一份。
+           */
+          const wantUsage = body?.stream_options?.include_usage === true
           // openai-completions 是流式的，必须发 SSE，不能发整包 JSON。
           res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
           const chunk = (choices, usage) =>
             `data: ${JSON.stringify({ id: 'c', object: 'chat.completion.chunk', created: 1, model: 'm', choices, ...(usage ? { usage } : {}) })}\n\n`
           res.write(chunk([{ index: 0, delta: { role: 'assistant' }, finish_reason: null }]))
           res.write(chunk([{ index: 0, delta: { content: 'ok' }, finish_reason: null }]))
-          res.write(chunk([{ index: 0, delta: {}, finish_reason: 'stop' }], { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 }))
+          res.write(
+            chunk(
+              [{ index: 0, delta: {}, finish_reason: 'stop' }],
+              wantUsage ? { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 } : undefined,
+            ),
+          )
           res.write('data: [DONE]\n\n')
           res.end()
         })
@@ -2400,13 +2462,27 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
             id: MODEL, name: 'Relay Model', contextWindow: 65536, maxTokens: 4096,
             reasoning: false, input: ['text'], cost: { input: 1.5, output: 3, cacheRead: 0, cacheWrite: 0 },
           }
+          // 会推理的那颗：没写 thinkingLevelMap，于是 pi-ai 认的档只到 high，`xhigh` 必须被夹下来。
+          const thinker = { ...model, id: THINK_MODEL, name: 'Relay Thinker', reasoning: true }
           const made = await req(gwBase, 'POST', '/platform/providers', {
             token: ownerTok,
-            body: { id: PROVIDER, name: 'Relay LLM', baseUrl: `http://127.0.0.1:${UP_PORT}/v1`, api: 'openai-completions', models: [model] },
+            body: { id: PROVIDER, name: 'Relay LLM', baseUrl: `http://127.0.0.1:${UP_PORT}/v1`, api: 'openai-completions', models: [model, thinker] },
           })
           assert(made.status === 201, `建供应商 ${made.status} ${made.text}`)
           const plat = await req(gwBase, 'POST', '/platform/credentials', { token: ownerTok, body: { provider: PROVIDER, secret: 'platform-key' } })
           assert(plat.status === 201, `平台密钥 ${plat.status} ${plat.text}`)
+
+          // 走 Anthropic 协议的那家，单独一个供应商（一个供应商只有一个 api）。
+          const anthro = await req(gwBase, 'POST', '/platform/providers', {
+            token: ownerTok,
+            body: {
+              id: ANTHRO_PROVIDER, name: 'Anthro LLM', baseUrl: `http://127.0.0.1:${UP_PORT}/anthropic`, api: 'anthropic-messages',
+              models: [{ ...model, id: ANTHRO_MODEL, name: 'Anthro Model' }],
+            },
+          })
+          assert(anthro.status === 201, `建 Anthropic 协议供应商 ${anthro.status} ${anthro.text}`)
+          const anthroKey = await req(gwBase, 'POST', '/platform/credentials', { token: ownerTok, body: { provider: ANTHRO_PROVIDER, secret: 'anthro-platform-key' } })
+          assert(anthroKey.status === 201, `Anthropic 家平台密钥 ${anthroKey.status} ${anthroKey.text}`)
 
           const login = await req(gwBase, 'POST', '/auth/login', { body: { email: 'admin@mgrtest.local', password: 'manager-admin-1234' } })
           assert(login.status === 200, `admin login ${login.status} ${login.text}`)
@@ -2471,6 +2547,17 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(up.body && up.body.model === MODEL, `上游收到的 model 是 ${JSON.stringify(up.body?.model)}——不能把 provider 那段捎上去`)
           assert(!('provider' in up.body), '上游收到的正文里多了 provider 字段')
           assert(up.body.stream === true, '上游收到的 stream 丢了')
+          /**
+           * **流式调用必须带 `stream_options.include_usage`。** 这一格由授权下发的 body
+           * 补丁补上（gateway/src/llm.ts 的 chatBodyPatch）。以前挂在 /v1 上时是 pi-ai
+           * 顺手补的，换成中继之后没人做了——上游一个 usage 字段都不回，于是每一次流式
+           * 调用都记成 unpriced、收 0 元。假上游也只在看见这一格时才发用量帧，所以下面
+           * 那条「usage 结算回 Gateway 记 5/1」是这一格的第二重保险。
+           */
+          assert(
+            up.body.stream_options && up.body.stream_options.include_usage === true,
+            `上游没收到 stream_options.include_usage：${JSON.stringify(up.body.stream_options)}`,
+          )
         })
 
         await test('模型中继：usage 结算回 Gateway，llm_calls 和账本各一行', async () => {
@@ -2566,7 +2653,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           await r.text()
         })
 
-        await test('模型中继：Gateway 那半边——机器票直接领授权，结算只认第一次', async () => {
+        await test('模型中继：Gateway 那半边——机器票直接领授权，钱只收一次但 token 会补正', async () => {
           const grant = await req(gwBase, 'POST', '/worker/llm/grant', {
             token: machineTok,
             body: { apiKey, route: 'chat', model: `${PROVIDER}/${MODEL}` },
@@ -2581,17 +2668,209 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           const settle = await req(gwBase, 'POST', `/worker/llm/${g.callId}/settle`, {
             token: machineTok,
             // usage 按 TokenUsage 的四项报（manager/src/llm-usage.ts 折好的那份形状）。
-            body: { usage: { prompt_tokens: 7, completion_tokens: 3, cached_tokens: 0, cache_write_tokens: 0 }, status: 'ok' },
+            body: { usage: { prompt_tokens: 5, completion_tokens: 1, cached_tokens: 0, cache_write_tokens: 0 }, status: 'ok' },
           })
           assert(settle.status === 200 && settle.json.settled === true, `settle ${settle.status} ${settle.text}`)
+          /**
+           * 第二次结算走的是幂等那一支。**钱不能再收一笔，但 token 要按新报的补正。**
+           *
+           * 真实的场景是：一轮长回答跑过了 30 分钟宽限期，清扫（sweepUnsettledLlmCalls）
+           * 先把它收成 failed / 0 元 / unpriced；管家随后才带着真实用量回来。幂等分支
+           * 只回一句 `already` 的话，llm_calls 那一行就永远停在 0/0——读起来是「这次调用
+           * 什么都没发生」，而它明明发生过、还很贵。所以那一支里先走 recordUsageOnly。
+           */
           const twice = await req(gwBase, 'POST', `/worker/llm/${g.callId}/settle`, {
             token: machineTok,
-            body: { usage: { prompt_tokens: 700, completion_tokens: 300, cached_tokens: 0, cache_write_tokens: 0 }, status: 'ok' },
+            body: { usage: { prompt_tokens: 7, completion_tokens: 3, cached_tokens: 0, cache_write_tokens: 0 }, status: 'ok' },
           })
           assert(twice.status === 200 && twice.json.settled === false && twice.json.reason === 'already', `第二次 settle 该 settled:false/already，实际 ${twice.status} ${twice.text}`)
+          await withPg(async (client) => {
+            const row = await client.query('select "promptTokens", "completionTokens" from llm_calls where id = $1', [g.callId])
+            assert(row.rowCount === 1, `llm_calls 少了这一行：${row.rowCount}`)
+            assert(
+              Number(row.rows[0].promptTokens) === 7 && Number(row.rows[0].completionTokens) === 3,
+              `幂等那一支没补正 token：${row.rows[0].promptTokens}/${row.rows[0].completionTokens}`,
+            )
+            const charges = await client.query('select count(*)::int as n from usage_charges where "refId" = $1', [g.callId])
+            assert(charges.rows[0].n === 1, `同一次调用挂了 ${charges.rows[0].n} 笔账——钱被重收了`)
+          })
           const u = await readUsage()
-          assert(u.prompt === 17 && u.completion === 5, `第二次结算改了账：${u.prompt}/${u.completion}`)
+          assert(u.prompt === 17 && u.completion === 5, `补正后的用量不对：${u.prompt}/${u.completion}`)
+        })
 
+        await test('模型中继：推理档由 Gateway 夹好，`xhigh` 不会原样打到上游', async () => {
+          /**
+           * `xhigh` / `max` 是 pi-ai 自己的抽象档，上游多数不认，原样打过去就是 400。
+           * 以前挂在 /v1 上时这一夹是 pi-ai 顺手做的，下沉到中继之后归授权
+           * （gateway/src/llm.ts 的 chatBodyPatch），管家只照着改。两种落法都要钉：
+           * 这颗模型压根不会推理 → 整个字段删掉；会推理但认的档不到 xhigh → 夹到 high。
+           */
+          upSeen.length = 0
+          const dumb = await req(mgrBase, 'POST', '/llm/v1/chat/completions', {
+            token: apiKey,
+            body: { ...chatBody, reasoning_effort: 'xhigh' },
+          })
+          assert(dumb.status === 200, `不会推理的模型 ${dumb.status} ${dumb.text.slice(0, 300)}`)
+          const dumbBody = upLast()?.body || {}
+          assert(!('reasoning_effort' in dumbBody), `模型不会推理，reasoning_effort 该整个删掉，实际 ${JSON.stringify(dumbBody.reasoning_effort)}`)
+
+          upSeen.length = 0
+          const smart = await req(mgrBase, 'POST', '/llm/v1/chat/completions', {
+            token: apiKey,
+            body: { ...chatBody, model: `${PROVIDER}/${THINK_MODEL}`, reasoning_effort: 'xhigh' },
+          })
+          assert(smart.status === 200, `会推理的模型 ${smart.status} ${smart.text.slice(0, 300)}`)
+          const smartBody = upLast()?.body || {}
+          assert(smartBody.reasoning_effort !== 'xhigh', 'xhigh 原样打到上游了——真上游会当场 400')
+          assert(smartBody.reasoning_effort === 'high', `该夹到 high，实际 ${JSON.stringify(smartBody.reasoning_effort)}`)
+        })
+
+        await test('模型中继：抹密钥别把 application/json 一起抹了', async () => {
+          /**
+           * 抹密钥那条规矩曾经是「授权头里的值长到 16 个字符就抹」，而
+           * `content-type: application/json` 里的 `application/json` 正好 16 个字符——
+           * 于是模型答复里凡是提到它的地方（教人写 curl 的回答天天有）都成了
+           * `[redacted]`，而且那是压在**成功**响应上、抹的是模型正文。
+           *
+           * 现在的规矩：成功的答复一个字不动；只有出错时才抹，抹的是这一次授权头里的
+           * 那几个值（PUBLIC_HEADERS 里的除外）。两头都要钉。
+           */
+          upMode = 'json'
+          try {
+            upSeen.length = 0
+            const ok = await req(mgrBase, 'POST', '/llm/v1/chat/completions', {
+              token: apiKey,
+              body: { model: `${PROVIDER}/${MODEL}`, messages: [{ role: 'user', content: 'hi' }] },
+            })
+            assert(ok.status === 200, `非流式成功 ${ok.status} ${ok.text.slice(0, 300)}`)
+            assert(ok.text.includes('application/json'), `成功的正文被抹了：${ok.text.slice(0, 300)}`)
+            assert(!ok.text.includes('[redacted]'), `成功的正文不该出现 [redacted]：${ok.text.slice(0, 300)}`)
+
+            upMode = 'error'
+            const bad = await req(mgrBase, 'POST', '/llm/v1/chat/completions', {
+              token: apiKey,
+              body: { model: `${PROVIDER}/${MODEL}`, messages: [{ role: 'user', content: 'hi' }] },
+            })
+            assert(bad.status === 400, `上游 4xx 该原样转 400，实际 ${bad.status} ${bad.text.slice(0, 300)}`)
+            assert(!bad.text.includes('platform-key'), `上游回显的密钥漏给 Bot 了：${bad.text.slice(0, 300)}`)
+            assert(bad.text.includes('[redacted]'), `密钥没被抹掉：${bad.text.slice(0, 300)}`)
+            assert(bad.text.includes('application/json'), `同一段错误文本里的 application/json 被连累抹掉了：${bad.text.slice(0, 300)}`)
+          } finally {
+            upMode = 'stream'
+          }
+        })
+
+        await test('模型中继：中继不了的那几家退回 Gateway 的 /v1，调用照样通', async () => {
+          /**
+           * 走 Anthropic 协议的模型被打到 chat 路由：Gateway 没法把一份 OpenAI body 改写成
+           * Anthropic body，所以授权回 `409 {relayable:false}`——**这不是错，是「这条路我走
+           * 不了」**。管家不把这个 409 摆给 Bot 看，而是把整通调用原样交回 Gateway 的 /v1，
+           * 那正是中继出现之前它们走的路（底下 pi-ai 按 api 分发，这些全都认）。
+           *
+           * 内置目录里有九家 `api: 'anthropic-messages'` 但名字不叫 anthropic（minimax、
+           * kimi-coding、fireworks、github-copilot…），其中四家**只**开这一条口。这条断言
+           * 一旦松掉，它们一句话都说不出来。
+           */
+          // 先确认 Gateway 那头确实是按 409 + relayable:false 说这件事的。
+          const grant = await req(gwBase, 'POST', '/worker/llm/grant', {
+            token: machineTok,
+            body: { apiKey, route: 'chat', model: `${ANTHRO_PROVIDER}/${ANTHRO_MODEL}` },
+          })
+          assert(grant.status === 409, `Anthropic 协议走 chat 路由该 409，实际 ${grant.status} ${grant.text}`)
+          assert(grant.json && grant.json.relayable === false, `409 的正文该写 relayable:false：${grant.text}`)
+
+          upSeen.length = 0
+          const r = await req(mgrBase, 'POST', '/llm/v1/chat/completions', {
+            token: apiKey,
+            body: { model: `${ANTHRO_PROVIDER}/${ANTHRO_MODEL}`, messages: [{ role: 'user', content: 'hi' }], stream: true },
+          })
+          assert(r.status === 200, `退回 /v1 之后该照样通，实际 ${r.status} ${r.text.slice(0, 300)}`)
+          assert(r.text.includes('"content":"ok"'), `没把上游那段 ok 带回来：${r.text.slice(0, 300)}`)
+          assert(r.text.includes('data: [DONE]'), `流尾没有 [DONE]：${r.text.slice(-120)}`)
+          assert(!r.text.includes('anthro-platform-key'), '密钥漏进了给 Bot 的响应')
+          // 真的走到假上游了，而且打的是 Messages 协议那条路径。
+          const up = upSeen.find((x) => String(x.path).includes('/anthropic/'))
+          assert(up, `没打到 Anthropic 家的假上游：${JSON.stringify(upSeen.map((x) => x.path))}`)
+          assert(String(up.path).endsWith('/v1/messages'), `打的路径是 ${up.path}`)
+        })
+
+        await test('/v1 的原生协议口按模型的 api 判路，不按供应商名字', async () => {
+          /**
+           * `/v1/responses` 和 `/v1/messages` 原先按 `found.provider` 的**名字**夹死成内置的
+           * openai / anthropic。那道闸撤了（gateway/src/v1.ts）：地址和鉴权头现在都由
+           * upstreamTargetOf 从**同一个** found 算出来，「拿 A 家的 key 打 B 家写死的地址」
+           * 那条错配路不存在了；而按名字夹会把走 Anthropic 协议却不叫 anthropic 的那九家
+           * （minimax、kimi-coding、fireworks、vercel-ai-gateway…）一律 400，中继那条路
+           * （同一个 upstreamTargetOf）却放行——两条路对同一颗模型给两种答案。
+           *
+           * 留下的判据是**协议**。这条钉的就是它：两家都配了平台密钥，所以真的走得到那道
+           * 闸（没密钥的话先撞上 402，协议这句话根本轮不到），措辞也一并钉住。
+           * e2e/run.mjs 那条「无密钥 provider → 402」钉的是取密钥那一步，两条各管一段。
+           */
+          const wrongMessages = await req(gwBase, 'POST', '/v1/messages', {
+            token: ownerTok,
+            body: { model: `${PROVIDER}/${MODEL}`, max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] },
+          })
+          assert(wrongMessages.status === 400, `OpenAI 系的模型打 /v1/messages 该 400，实际 ${wrongMessages.status} ${wrongMessages.text}`)
+          assert(
+            String(wrongMessages.json.error || '').includes('Anthropic'),
+            `话没说清是协议对不上：${wrongMessages.text}`,
+          )
+
+          const wrongResponses = await req(gwBase, 'POST', '/v1/responses', {
+            token: ownerTok,
+            body: { model: `${ANTHRO_PROVIDER}/${ANTHRO_MODEL}`, input: 'hi' },
+          })
+          assert(wrongResponses.status === 400, `Anthropic 协议的模型打 /v1/responses 该 400，实际 ${wrongResponses.status} ${wrongResponses.text}`)
+          assert(
+            String(wrongResponses.json.error || '').includes('OpenAI'),
+            `话没说清是协议对不上：${wrongResponses.text}`,
+          )
+
+          // 反过来：协议对得上就不该被名字挡住。`anthro-llm` 不叫 anthropic，但它走的就是
+          // Messages 协议——这正是按名字夹会误伤的那九家。
+          upSeen.length = 0
+          const right = await req(gwBase, 'POST', '/v1/messages', {
+            token: ownerTok,
+            body: { model: `${ANTHRO_PROVIDER}/${ANTHRO_MODEL}`, max_tokens: 16, messages: [{ role: 'user', content: 'hi' }], stream: true },
+          })
+          assert(right.status === 200, `名字不叫 anthropic 但协议对得上，该放行，实际 ${right.status} ${right.text.slice(0, 300)}`)
+          const up = upSeen.find((x) => String(x.path).includes('/anthropic/'))
+          assert(up && String(up.path).endsWith('/v1/messages'), `没打到 Messages 那条路：${JSON.stringify(upSeen.map((x) => x.path))}`)
+        })
+
+        await test('模型中继：未结算清扫只收中继授权过的那一撮', async () => {
+          /**
+           * 清扫的判据里 `relayMachineId is not null` 这一条不能少（迁移 0040）。少了它，
+           * 判据就只剩「够老 + 账本上没对应行」——而账本是 0007 才有的，0007 之前的历史
+           * 调用条条命中，这条清扫会掉头去回填历史，每拍 200 行假账。docs/billing.md §11
+           * 写死了「历史模型调用一行都不回填」。
+           */
+          const old = Date.now() - 6 * 3600_000
+          await withPg(async (client) => {
+            for (const [id, relay] of [['e2e-sweep-plain', null], ['e2e-sweep-relay', machineId]]) {
+              await client.query(
+                `insert into llm_calls (id,"accountId","companyId",provider,model,"promptTokens","completionTokens","cachedTokens","cacheWriteTokens","createdAt","relayMachineId")
+                 values ($1,$2,$3,$4,$5,0,0,0,0,$6,$7)`,
+                [id, adminId, orgId, PROVIDER, MODEL, old, relay],
+              )
+            }
+          })
+          const tick = await req(gwBase, 'GET', '/cron/tick', { token: CRON_SECRET })
+          assert(tick.status === 200, `跑一拍 ${tick.status} ${tick.text}`)
+
+          await withPg(async (client) => {
+            const plain = await client.query('select id, status from usage_charges where "refId" = $1', ['e2e-sweep-plain'])
+            assert(plain.rowCount === 0, `没经中继授权的老调用被回填了 ${plain.rowCount} 笔账——这就是「掉头刷历史」`)
+            const relayed = await client.query('select status, "amountMicros", unpriced from usage_charges where "refId" = $1', ['e2e-sweep-relay'])
+            assert(relayed.rowCount === 1, `中继授权过的那条该被收口成 1 行，实际 ${relayed.rowCount}`)
+            const row = relayed.rows[0]
+            assert(row.status === 'failed', `收口的账该记 failed，实际 ${row.status}`)
+            assert(Number(row.amountMicros) === 0, `用量不知道就不该编钱，实际 ${row.amountMicros}`)
+          })
+        })
+
+        await test('模型中继：机器票那道闸——无票 401、别家 403、坏钥匙 401、未知模型 404、没密钥 402', async () => {
           // 机器票那道闸：无票 401；别家席位的钥匙 403；坏钥匙 401；未知模型 404；没密钥的供应商 402。
           const noTok = await req(gwBase, 'POST', '/worker/llm/grant', { body: { apiKey, route: 'chat', model: `${PROVIDER}/${MODEL}` } })
           assert(noTok.status === 401, `无机器票该 401，实际 ${noTok.status}`)

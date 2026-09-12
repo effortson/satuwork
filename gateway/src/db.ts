@@ -742,6 +742,14 @@ export class Db {
     return r ? this.account(str(r.accountId)) : undefined
   }
 
+  /**
+   * 登记一次模型调用。
+   *
+   * `relayMachineId`（迁移 0040）是**清扫的判据，不是业务字段**，所以它只进库、不进
+   * 返回的 LlmCall：非空表示「这一行是中继授权出去的」，未结算清扫只认这一撮
+   * （见 unsettledLlmCalls）。/v1 自己代理的那几条不传——它们有 withSettle 兜着收口，
+   * 本来就不该被事后扫。
+   */
   async insertLlmCall(input: {
     accountId: string
     companyId?: string | null
@@ -751,6 +759,7 @@ export class Db {
     completionTokens?: number
     cachedTokens?: number
     cacheWriteTokens?: number
+    relayMachineId?: string | null
   }): Promise<LlmCall> {
     const row: LlmCall = {
       id: randomUUID(),
@@ -765,7 +774,7 @@ export class Db {
       createdAt: Date.now(),
     }
     await this.run(
-      'insert into llm_calls (id, "accountId", "companyId", provider, model, "promptTokens", "completionTokens", "cachedTokens", "cacheWriteTokens", "createdAt") values (?,?,?,?,?,?,?,?,?,?)',
+      'insert into llm_calls (id, "accountId", "companyId", provider, model, "promptTokens", "completionTokens", "cachedTokens", "cacheWriteTokens", "createdAt", "relayMachineId") values (?,?,?,?,?,?,?,?,?,?,?)',
       [
         row.id,
         row.accountId,
@@ -777,6 +786,7 @@ export class Db {
         row.cachedTokens,
         row.cacheWriteTokens,
         row.createdAt,
+        input.relayMachineId ?? null,
       ],
     )
     return row
@@ -807,17 +817,25 @@ export class Db {
   }
 
   /**
-   * `before` 之前登记、账本上却没有对应行的调用——管家拿了授权（grant）之后死在半路，
-   * 没来得及结算的那些。清扫拿它们按 failed 收口（routines.ts 的 sweepUnsettledLlmCalls）。
-   * 老行（0007 之前，本来就没有账本）也会被扫到一次，收成 0 元 unpriced 的 failed，
-   * 之后就不再出现。
+   * `before` 之前登记、账本上却没有对应行、**而且确实是中继授权出去的**调用——管家拿了
+   * 授权（grant）之后死在半路，没来得及结算的那些。清扫拿它们按 failed 收口
+   * （routines.ts 的 sweepUnsettledLlmCalls）。
+   *
+   * **`relayMachineId is not null` 这一条不能少。** 少了它，判据就只剩「够老 + 账本上没
+   * 对应行」，而 `llm_calls` 从 0001 就有、账本（`usage_charges.refId`）0007 才加——
+   * 于是 0007 之前的每一行都命中，`order by createdAt asc` 又是从最老的开始捞，清扫会
+   * 每拍给 200 条历史调用补一笔 failed / 0 元的假账。这有三处后果：docs/billing.md §11
+   * 说死了「历史模型调用一行都不回填」；`llmUsageByCompanyModel` 的 `unledgeredCalls`
+   * （管理台那条「这一段账是空的」横幅靠它）会被抹成 0；`insertUsageCharge` 盖的是当下
+   * 的时间戳，几年前的调用会集体涌进本月账单页。历史行这一格全是 null，扫不到。
    */
   async unsettledLlmCalls(before: number, limit: number): Promise<LlmCall[]> {
     // not exists 走 usage_ref 那条索引；按 refId 把整张账本先聚合一遍（LEDGER_BY_REF）在
-    // 这里太重——这条每半分钟跑一次。
+    // 这里太重——这条每半分钟跑一次。非空那一撮另有部分索引 llm_calls_unsettled（0040）。
     const rows = await this.many(
       `select l.* from llm_calls l
-       where l."createdAt" < ? and not exists (select 1 from usage_charges u where u."refId" = l.id)
+       where l."createdAt" < ? and l."relayMachineId" is not null
+         and not exists (select 1 from usage_charges u where u."refId" = l.id)
        order by l."createdAt" asc limit ?`,
       [before, limit],
     )
@@ -3901,11 +3919,24 @@ export class Db {
   }
 
   /**
-   * 一次性：公司日常/utility 升到平台设置（平台还空时）；
-   * 公司密钥升到 platform_credentials（该 provider 还没有平台密钥时）。
+   * 一次性：公司日常/utility 升到平台设置（平台还空时）。开机时跑一遍（index.ts）。
+   *
+   * **这里曾经还把公司密钥升成平台密钥，已经删掉，不要再加回来。**
+   *
+   * 那半段是 `select provider, secret from credentials` —— 整张表、**不带公司过滤**，
+   * 挑到谁算谁，upsert 进 platform_credentials。当初写它时 `credentials` 没有任何写入
+   * 口，整张表就是单租户时代留下的那几行，「升成平台的」和「搬个家」是一回事。
+   *
+   * 现在不是了：这张表成了每家公司自己配密钥的地方（routes/sessions.ts 的
+   * POST / PUT `/orgs/:id/credentials` → upsertCredential）。留着那半段的后果是——
+   * 任意一个公司管理员把自己的 key 填进去，下一次进程重启它就成了全平台的兜底密钥，
+   * 而 llm.ts 的 secret 是「公司 > 平台 > 环境变量」的顺序，于是**别家公司**没配密钥时
+   * 就落到这把上，拿着 A 家的 key 去打上游、记在 A 家的账上。跨租户漏密钥，开机自动发生。
+   *
+   * 平台密钥只能由平台管理员在平台那一屏显式配置。
    */
-  async liftCompanyDataToPlatform(): Promise<{ settings: boolean; providers: string[] }> {
-    const lifted = { settings: false, providers: [] as string[] }
+  async liftCompanySettingsToPlatform(): Promise<{ settings: boolean }> {
+    const lifted = { settings: false }
     const cur = await this.platformSettings()
     const empty = !cur.daily.provider && !cur.daily.model && !cur.utility.provider && !cur.utility.model
     if (empty) {
@@ -3926,15 +3957,6 @@ export class Db {
           break
         }
       }
-    }
-    const have = new Set((await this.platformCredentials()).map((c) => c.provider))
-    const creds = await this.many('select provider, secret from credentials')
-    for (const row of creds) {
-      const provider = str(row.provider)
-      if (!provider || have.has(provider)) continue
-      await this.upsertPlatformCredential(provider, str(row.secret))
-      have.add(provider)
-      lifted.providers.push(provider)
     }
     return lifted
   }

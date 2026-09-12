@@ -27,9 +27,42 @@ export function gatewayApiKey(): string {
   return (process.env.GATEWAY_API_KEY || '').trim()
 }
 
-function apiFor(provider: string) {
-  if (provider === 'anthropic') return '/v1/messages'
-  return '/v1/chat/completions'
+/** Messages 协议的版本头。/v1/messages 这条路上每一次请求都要带。 */
+const ANTHROPIC_VERSION = '2023-06-01'
+
+/**
+ * 这一次调用打哪条路由：**按模型的 `api` 挑，不看供应商叫什么名字。**
+ *
+ * 内置供应商里有 9 家走的是 Anthropic 的 Messages 协议，名字却不是 anthropic（minimax、
+ * minimax-cn、kimi-coding、vercel-ai-gateway、fireworks、github-copilot、opencode、
+ * opencode-go、cloudflare-ai-gateway），其中 4 家**只**开这一条口。原来请求打的是 Gateway
+ * 的 /v1，那一层由 pi-ai 按 api 分发，名字对不上也走得通；模型调用下沉到管家中继之后，
+ * 授权接口是按 api 判路的（gateway/src/llm.ts 的 upstreamTargetOf）：chat 路由碰上
+ * anthropic-messages 直接回「这个供应商要走 /v1/messages」，到 Bot 这边就是一个 400，
+ * 这 9 家一句话都说不出来。
+ *
+ * `api` 由目录带下来（/v1/models 每个模型都给，LlmService.modelOf 贴在模型对象上），正常
+ * 情况下总在。拿不到时才退回原来那条按名字认的规矩——那说明目录还没拉到，这时候猜错也
+ * 只是回到改动前的样子，不会更差。
+ */
+function apiFor(model: { provider?: string; api?: string } | null | undefined): '/v1/messages' | '/v1/chat/completions' {
+  const api = String(model?.api || '').trim()
+  if (api) return api === 'anthropic-messages' ? '/v1/messages' : '/v1/chat/completions'
+  return model?.provider === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'
+}
+
+/**
+ * 「这个模型走哪种协议」的查法，由 LlmService 在装载时装上（见 llm/index.ts）。
+ *
+ * 下面 completeOnce 那条非流式补全也得按 api 选路，可它的两个调用方（web-search 的摘要、
+ * conversation-audit 的审计）手上只有 provider + 模型名，没有目录里那个模型对象。给那两个
+ * 插件 inject 一个 `llm` 会把只装了几个假服务的探针卡在等服务上，所以反过来：目录那一侧
+ * 把查法留在这里。没装上、或者查不到，就是 undefined，选路照样退回按供应商名字认。
+ */
+let apiLookup: (provider: string, id: string) => string | undefined = () => undefined
+
+export function setApiLookup(fn: (provider: string, id: string) => string | undefined) {
+  apiLookup = fn
 }
 
 type ReasoningLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -117,7 +150,7 @@ export function toOpenAI(context: any, model: { provider: string; id: string }, 
   }
 }
 
-export function toAnthropic(context: any, model: { id: string; maxTokens?: number }, options?: GatewayStreamOptions) {
+export function toAnthropic(context: any, model: { id: string; provider?: string; maxTokens?: number }, options?: GatewayStreamOptions) {
   const messages: any[] = []
   for (const m of context.messages ?? []) {
     if (m.role === 'user') {
@@ -163,6 +196,14 @@ export function toAnthropic(context: any, model: { id: string; maxTokens?: numbe
   const budget = level ? Math.min(wanted, Math.max(0, ceiling - 1024)) : 0
   return {
     model: model.id,
+    /**
+     * 选路提示，管家中继和 Gateway 都会在转给上游之前把它删掉。
+     *
+     * 走这条路的不再只有 anthropic：minimax / minimax-cn 这些也是 Messages 协议，而它们的
+     * 模型 id **重名**（两家都有 MiniMax-M2）。不带 provider 的话，目录那边按裸 id 找会
+     * 撞出两条、谁都不敢认（gateway/src/llm.ts 的 find），直接 404。
+     */
+    ...(model.provider ? { provider: model.provider } : {}),
     system: context.systemPrompt || undefined,
     messages,
     max_tokens: ceiling,
@@ -170,6 +211,79 @@ export function toAnthropic(context: any, model: { id: string; maxTokens?: numbe
     ...(tools.length ? { tools } : {}),
     ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
   }
+}
+
+/** 非流式补全的回包。正文判空、错误话术都留给调用方，各处措辞不一样。 */
+export interface CompletionResult {
+  ok: boolean
+  status: number
+  text: string
+}
+
+/**
+ * 一次非流式补全（一段 system + 一条 user）。工具内部用，不进会话事件，也不走流。
+ *
+ * 抽出来是为了**选路**：web-search 的摘要和 conversation-audit 的审计以前把
+ * `/v1/chat/completions` 写死在各自的 fetch 里，模型一换成 Messages 协议的那一批就被管家的
+ * 授权接口 400 挡掉——而 utility 角色指到 claude、minimax 是再正常不过的配法。选路、请求体、
+ * 从回包里取正文这三件事必须一起按 api 变，写在两处迟早会各改一半。
+ */
+export async function completeOnce(spec: {
+  provider: string
+  model: string
+  system: string
+  user: string
+  reasoningEffort?: string
+  temperature?: number
+  maxTokens?: number
+  headers?: Record<string, string>
+  timeoutMs: number
+}): Promise<CompletionResult> {
+  const base = llmBaseUrl()
+  const path = apiFor({ provider: spec.provider, api: apiLookup(spec.provider, spec.model) })
+  const anthropic = path === '/v1/messages'
+  const body: Record<string, unknown> = anthropic
+    ? {
+        model: spec.model,
+        // 同 toAnthropic：重名的模型 id 要靠它才认得出是哪一家，转给上游之前会被删掉。
+        provider: spec.provider,
+        system: spec.system,
+        messages: [{ role: 'user', content: spec.user }],
+        // Messages 协议里 max_tokens 是必填项，没有默认值。
+        max_tokens: Math.max(1, Number(spec.maxTokens) || 4096),
+        stream: false,
+        ...(spec.temperature === undefined ? {} : { temperature: spec.temperature }),
+        // 推理档位这一路**不转**：reasoning_effort 是 OpenAI 协议的字段，Messages 这边对应的是
+        // thinking.budget_tokens，而它要从 max_tokens 里切走一块。摘要和审计都不需要思考，
+        // 为它们开一份预算只会把正文的额度挤掉。
+      }
+    : {
+        model: `${spec.provider}/${spec.model}`,
+        provider: spec.provider,
+        stream: false,
+        ...(spec.temperature === undefined ? {} : { temperature: spec.temperature }),
+        ...(spec.reasoningEffort && spec.reasoningEffort !== 'off' ? { reasoning_effort: spec.reasoningEffort } : {}),
+        messages: [
+          { role: 'system', content: spec.system },
+          { role: 'user', content: spec.user },
+        ],
+      }
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${gatewayApiKey()}`,
+    'content-type': 'application/json',
+    ...(spec.headers ?? {}),
+    ...(anthropic ? { 'anthropic-version': ANTHROPIC_VERSION } : {}),
+  }
+  const r = await fetch(base + path, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(spec.timeoutMs),
+  })
+  if (!r.ok) return { ok: false, status: r.status, text: '' }
+  const data = (await r.json()) as any
+  // 正文在哪两家不一样：chat 在 choices[0].message.content，messages 在顶层 content[]。
+  return { ok: true, status: r.status, text: contentText(anthropic ? data?.content : data?.choices?.[0]?.message?.content) }
 }
 
 async function* readSse(
@@ -207,6 +321,26 @@ async function* readSse(
 function fail(stream: AssistantMessageEventStream, model: any, message: string) {
   const error = emptyAssistant(model, message)
   stream.push({ type: 'error', reason: 'error', error })
+}
+
+/**
+ * OpenAI 系的 usage → pi 的四项。
+ *
+ * 上游报的 prompt_tokens 是**整个提示词**，命中缓存的那截在
+ * prompt_tokens_details.cached_tokens 里单列。pi 的 input 按约定不含缓存，所以要减掉——
+ * 不减的话「上下文占了多少」那条会把缓存部分算两遍。
+ */
+function openAiUsage(u: any) {
+  const cacheRead = Math.max(0, Number(u.prompt_tokens_details?.cached_tokens ?? 0) || 0)
+  const prompt = Math.max(0, Number(u.prompt_tokens ?? 0) || 0)
+  return {
+    input: Math.max(0, prompt - cacheRead),
+    output: u.completion_tokens ?? 0,
+    cacheRead,
+    cacheWrite: 0,
+    totalTokens: u.total_tokens ?? 0,
+    cost: { ...EMPTY_USAGE.cost },
+  }
 }
 
 async function consumeOpenAI(
@@ -260,7 +394,16 @@ async function consumeOpenAI(
       fail(stream, model, chunk.error.message || JSON.stringify(chunk.error))
       return
     }
-    // 收口之后只等错误帧，别的一概不看。
+    /**
+     * 用量帧可能**排在收口之后**。
+     *
+     * 请求体里带了 `stream_options.include_usage`（这一版由 Gateway 的授权补丁统一加，管家
+     * 转发时打进请求体）时，上游会在 finish_reason 那一帧之后再补一帧：`choices: []`，整条
+     * 流的 token 数只在这一帧里。原来这儿是「收口了就什么都不看」，那一帧连同整轮用量一起
+     * 被丢掉——请求体加没加 include_usage 都一样，界面上这一轮永远是 0。
+     */
+    if (chunk.usage) partial.usage = openAiUsage(chunk.usage)
+    // 收口之后只等错误帧和上面那一帧，别的一概不看。
     if (finished) continue
     const choice = chunk.choices?.[0] ?? {}
     const delta = choice.delta ?? {}
@@ -315,22 +458,8 @@ async function consumeOpenAI(
         }
       }
       const reason = choice.finish_reason === 'tool_calls' ? 'toolUse' : choice.finish_reason === 'length' ? 'length' : 'stop'
-      const u = chunk.usage
-      if (u) {
-        // Gateway 报的 prompt_tokens 是**整个提示词**，命中缓存的那截在
-        // prompt_tokens_details.cached_tokens 里单列。pi 的 input 按约定不含缓存，
-        // 所以要减掉——不减的话「上下文占了多少」那条会把缓存部分算两遍。
-        const cacheRead = Math.max(0, Number(u.prompt_tokens_details?.cached_tokens ?? 0) || 0)
-        const prompt = Math.max(0, Number(u.prompt_tokens ?? 0) || 0)
-        partial.usage = {
-          input: Math.max(0, prompt - cacheRead),
-          output: u.completion_tokens ?? 0,
-          cacheRead,
-          cacheWrite: 0,
-          totalTokens: u.total_tokens ?? 0,
-          cost: { ...EMPTY_USAGE.cost },
-        }
-      }
+      // 这一帧自己带的 usage 上面已经收过了；finished.message 和 partial 是同一个对象，
+      // 之后那一帧补进 partial.usage 的，done 事件里一并带得出去。
       partial.stopReason = reason
       finished = { reason, message: partial }
       continue
@@ -535,14 +664,14 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
       fail(stream, model, '未配置 GATEWAY_API_KEY')
       return
     }
-    const provider = model.provider || 'deepseek'
-    const path = apiFor(provider)
+    // 选路、请求体、版本头、收流的解析器，四处必须是同一个判断，改一处就得跟着改四处。
+    const path = apiFor(model)
     const body = path === '/v1/messages' ? toAnthropic(context, model, options) : toOpenAI(context, model, options)
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       authorization: `Bearer ${apiKey}`,
     }
-    if (path === '/v1/messages') headers['anthropic-version'] = '2023-06-01'
+    if (path === '/v1/messages') headers['anthropic-version'] = ANTHROPIC_VERSION
     let res: Response
     try {
       res = await fetch(base + path, {
