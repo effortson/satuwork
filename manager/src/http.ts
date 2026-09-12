@@ -35,24 +35,73 @@ export function json(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body))
 }
 
+/**
+ * `Authorization: Bearer xxx` 里的那个 xxx。没有这个前缀就当没带票。
+ *
+ * **大小写不敏感**：写头的不只有我们自己的代码——OpenAI/Anthropic 的各家 SDK、curl 的
+ * 抄写、桌面端，都可能发 `bearer`。RFC 7235 说这个 scheme 本来就是不区分大小写的，
+ * 按字面只认 `Bearer ` 的话，那种请求会变成一句「需要登录」，没人能从消息里看出差在哪。
+ */
 export function bearer(req: IncomingMessage): string {
-  const h = req.headers.authorization
-  if (!h?.startsWith('Bearer ')) return ''
-  return h.slice(7).trim()
+  const h = String(req.headers.authorization || '')
+  if (!/^Bearer\s+/i.test(h)) return ''
+  return h.replace(/^Bearer\s+/i, '').trim()
+}
+
+/** 只收本机的连接。反代（proxy.ts）、工人中继（relay.ts）、模型中继（llm-relay.ts）共用一份。 */
+export function isLoopback(req: IncomingMessage): boolean {
+  const a = req.socket.remoteAddress || ''
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1'
+}
+
+/**
+ * 定长比较两张票。**不早退**：`a === b` 会在第一个不同的字节上返回，比较耗时随对上的
+ * 前缀长度变化，拿它去猜密钥是成熟手法。长度不同直接算不对（长度本来就藏不住）。
+ */
+export function sameToken(given: string, expected: string): boolean {
+  if (!expected || !given || given.length !== expected.length) return false
+  let diff = 0
+  for (let i = 0; i < expected.length; i++) diff |= given.charCodeAt(i) ^ expected.charCodeAt(i)
+  return diff === 0
+}
+
+/**
+ * 读整个请求体，**上限之外的字节不进内存**：超了就地放手，回 undefined，由调用方决定
+ * 是 413 还是别的说法。
+ *
+ * 一份供三条路用（路由器、工人中继、模型中继），因为它们各自抄过一遍、三个上限、三种
+ * 溢出行为，其中一份干脆没有上限——一条超大 body 就能把管家撑爆，而管家是这台机器上
+ * 所有席位的控制面。
+ */
+export function readRaw(req: IncomingMessage, limit: number): Promise<Buffer | undefined> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let n = 0
+    let tooBig = false
+    req.on('data', (c: Buffer) => {
+      if (tooBig) return
+      n += c.length
+      if (n > limit) {
+        tooBig = true
+        chunks.length = 0
+        resolve(undefined)
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => {
+      if (!tooBig) resolve(Buffer.concat(chunks))
+    })
+    req.on('error', reject)
+  })
 }
 
 const BODY_LIMIT = 4_000_000
 
 async function readBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = []
-  let n = 0
-  for await (const chunk of req) {
-    n += (chunk as Buffer).length
-    if (n > BODY_LIMIT) throw new HttpError(413, 'request body too large')
-    chunks.push(chunk as Buffer)
-  }
-  if (!chunks.length) return undefined
-  const raw = Buffer.concat(chunks).toString('utf8').trim()
+  const buf = await readRaw(req, BODY_LIMIT)
+  if (!buf) throw new HttpError(413, 'request body too large')
+  const raw = buf.toString('utf8').trim()
   if (!raw) return undefined
   try {
     return JSON.parse(raw)

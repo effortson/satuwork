@@ -3,7 +3,7 @@ import { Readable } from 'node:stream'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { managerHome } from './config.ts'
-import { json } from './http.ts'
+import { isLoopback, json, readRaw, sameToken } from './http.ts'
 import { seat } from './seats.ts'
 import { forwardHeaders, pipeUpstream } from './proxy.ts'
 import { run } from './run.ts'
@@ -46,27 +46,16 @@ export function workerTokenForTest(): string {
   return workerToken
 }
 
-function isLoopback(req: IncomingMessage): boolean {
-  const a = req.socket.remoteAddress || ''
-  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1'
-}
-
 function tokenOk(req: IncomingMessage): boolean {
-  const given = String(req.headers['x-satuwork-worker'] || '')
-  if (!workerToken || !given || given.length !== workerToken.length) return false
-  let diff = 0
-  for (let i = 0; i < workerToken.length; i++) diff |= given.charCodeAt(i) ^ workerToken.charCodeAt(i)
-  return diff === 0
+  return sameToken(String(req.headers['x-satuwork-worker'] || ''), workerToken)
 }
 
-function readBody(req: IncomingMessage): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    req.on('data', (c: Buffer) => chunks.push(c))
-    req.on('end', () => resolve(Buffer.concat(chunks)))
-    req.on('error', reject)
-  })
-}
+/**
+ * 工人往 Gateway 递的都是小 JSON（领活、续租、回报一句话加几个 id），4 MB 和路由器
+ * 那档一样绰绰有余。**之前这里一个上限都没有**：工人是本机进程不假，但它也会把
+ * 跑砸了的报错原样往回捎，一条失控的 stack 就能让管家把它整个收进内存。
+ */
+const RELAY_BODY_LIMIT = 4_000_000
 
 export interface RelayDeps {
   machineToken: () => string
@@ -83,7 +72,11 @@ export function relayIntercept(deps: RelayDeps) {
     }
     if (m[1].startsWith('gateway/')) {
       // 到 Gateway 的都是小 JSON（领活、续租、回报），收完再发；SSE 不走这条。
-      const body = await readBody(req)
+      const body = await readRaw(req, RELAY_BODY_LIMIT)
+      if (!body) {
+        json(res, 413, { error: `请求体超过 ${RELAY_BODY_LIMIT / 1_000_000} MB` })
+        return true
+      }
       const target = `${deps.gatewayUrl()}/worker${m[2] || ''}${url.search}`
       try {
         const r = await fetch(target, {

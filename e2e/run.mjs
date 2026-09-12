@@ -1347,21 +1347,35 @@ async function runGateway() {
     })
     assert(chat.status === 402, `chat 402 ${chat.status} ${chat.text}`)
     assert(!String(chat.json.error || '').includes('stack'), 'chat stack')
-    // /v1/responses 和 /v1/messages 是**厂商原生协议**的透传口，上游地址是写死的。
-    // 拿别家 provider 的模型调它们，必须在选密钥之前就 400 掉——否则 Gateway 会把这个
-    // provider 的 key 发到写死的那家上游去（ANTHROPIC_API_KEY 发给 api.openai.com）。
+    /**
+     * `/v1/responses` 和 `/v1/messages` 是**厂商原生协议**的透传口。
+     *
+     * 这里原先钉的是「按 provider 名字夹死成 openai / anthropic，而且要在选密钥之前就
+     * 400 掉」——理由是那会儿上游地址写死，不夹的话 Gateway 会把这个 provider 的 key
+     * 发到写死的那家去（ANTHROPIC_API_KEY 发给 api.openai.com）。
+     *
+     * **那条理由已经不成立了**：地址和鉴权头现在都由 upstreamTargetOf 从**同一个**
+     * `found` 算出来（gateway/src/v1.ts），错配那条路不存在；而按名字夹会把走 Anthropic
+     * 协议却不叫 anthropic 的那九家（minimax、kimi-coding、fireworks…）一律 400。所以
+     * 那道闸撤了，判据换成模型的**协议**。
+     *
+     * 于是这颗没密钥的 `e2e-fake` 在三条路上都停在取密钥那一步：402。这条钉的就是
+     * 「取密钥那一步拦得住，一个字节都不打上游」。**协议那道闸单独在 e2e/manager.mjs
+     * 的「/v1 的原生协议口按模型的 api 判路」里钉**——那边两家供应商都配了平台密钥，
+     * 才走得到协议这一句；没密钥的话它根本轮不到。
+     */
     const resp = await req(base, 'POST', '/v1/responses', {
       token,
       body: { model: 'e2e-fake/missing-key', input: 'hi' },
     })
-    assert(resp.status === 400, `responses 跨 provider 应 400，得到 ${resp.status} ${resp.text}`)
-    assert(String(resp.json.error || '').includes('openai'), `responses 文案 ${resp.text}`)
+    assert(resp.status === 402, `responses 无密钥应 402，得到 ${resp.status} ${resp.text}`)
+    assert(String(resp.json.error || '').includes('e2e-fake'), `responses 文案没说清是哪家没密钥：${resp.text}`)
     const msg = await req(base, 'POST', '/v1/messages', {
       token,
       body: { model: 'e2e-fake/missing-key', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] },
     })
-    assert(msg.status === 400, `messages 跨 provider 应 400，得到 ${msg.status} ${msg.text}`)
-    assert(String(msg.json.error || '').includes('anthropic'), `messages 文案 ${msg.text}`)
+    assert(msg.status === 402, `messages 无密钥应 402，得到 ${msg.status} ${msg.text}`)
+    assert(String(msg.json.error || '').includes('e2e-fake'), `messages 文案没说清是哪家没密钥：${msg.text}`)
   })
 
   await test('POST /orgs/:id/llm/test：无票 401；成员 403；未设角色 400；无密钥 402；不泄漏 secret', async () => {

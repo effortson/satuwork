@@ -1,6 +1,6 @@
 import { hostname } from 'node:os'
 import { bootConfig, managerVersion, PROTOCOL, patchState, readState, watchState, type ManagerState } from './config.ts'
-import { HttpError, json, listen, Router, type Req } from './http.ts'
+import { HttpError, json, listen, Router, sameToken, type Req } from './http.ts'
 import { attachUpgrade, proxyIntercept } from './proxy.ts'
 import { bootChallenge, pairIfNeeded } from './pair.ts'
 import { diagnose } from './diag.ts'
@@ -42,11 +42,7 @@ function requireMachine(req: Req): void {
   const given =
     String(req.headers['x-satuwork-machine'] || '') ||
     String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
-  const want = token()
-  if (!want || given.length !== want.length) throw new HttpError(401, 'invalid machine credential')
-  let diff = 0
-  for (let i = 0; i < want.length; i++) diff |= given.charCodeAt(i) ^ want.charCodeAt(i)
-  if (diff !== 0) throw new HttpError(401, 'invalid machine credential')
+  if (!sameToken(given, token())) throw new HttpError(401, 'invalid machine credential')
   // 票对了才听它说地址。顺序不能反——见 adoptGatewayUrl。
   adoptGatewayUrl(req)
 }

@@ -10,24 +10,22 @@ import type { Account, ChargeStatus, Db } from '../db.ts'
 import { HttpError } from '../http.ts'
 import type { CatalogModel } from '../llm.ts'
 import type { Billable, Meter } from './meter.ts'
+import { gateAccount, gateCompany } from './guards.ts'
 import type { TokenUsage } from './llm-usage.ts'
 
 /** settle 只用得着这三样。管家结算时目录里可能已经没有这个模型了，那时只有这三样。 */
-export type Billed = Pick<CatalogModel, 'provider' | 'id' | 'cost'>
+type Billed = Pick<CatalogModel, 'provider' | 'id' | 'cost'>
 
 /**
  * 账号本身能不能用：停用 / 还没接受邀请 / 公司被停用。API Key 和登录 JWT 两条路共用，
  * 文案要能直接给调用方看——bot 会把它原样变成一条失败消息。
+ *
+ * **就是控制台那两道闸**（guards.ts 的 gateAccount + gateCompany），所以直接叫它们，不
+ * 再抄一份：这里原先是逐字重写的同一套状态码和同一句中文，而「/v1 的规矩」和「控制台的
+ * 规矩」一旦分成两份，下次改其中一句的人不会知道还有另一份。
  */
-export async function assertUsable(db: Db, account: Account): Promise<Account> {
-  if (account.status === 'disabled') throw new HttpError(401, '这个账号已被停用，请联系管理员')
-  if (account.status === 'invited') throw new HttpError(401, '请先用邀请链接设置口令')
-  // 公司停用了，这家的密钥一律不认——控制台那边是同一条规矩。
-  if (account.companyId) {
-    const company = await db.company(account.companyId)
-    if (company && company.status === 'disabled') throw new HttpError(403, '这家公司已被停用，请联系平台管理员')
-  }
-  return account
+export async function assertUsable(db: Db, account: Account | undefined): Promise<Account> {
+  return await gateCompany(db, gateAccount(account))
 }
 
 /**
@@ -41,18 +39,46 @@ export async function accountByApiKey(db: Db, token: string): Promise<Account> {
   return assertUsable(db, account)
 }
 
+/**
+ * 打上游之前先登记这一次调用，返回 callId（结算时的 refId）。
+ *
+ * `machineId` 只有**中继**那条路要传（worker.ts 的 grant：授权给哪台机器）。它落在
+ * `llm_calls.relayMachineId` 上，是未结算清扫唯一的判据——Gateway 不在中继调用的路径
+ * 上，兜不住半路死掉的那些，只能事后扫；而 /v1 自己代理的那几条有 withSettle 收口，
+ * 不传（默认 null），也就永远不会被扫到。判据从「账本上没有对应行」收紧成这一格的
+ * 缘由见 db.ts 的 unsettledLlmCalls。
+ */
 export async function recordLlmCall(
   db: Db,
   account: Account,
   found: { provider: string; id: string },
+  machineId: string | null = null,
 ): Promise<string> {
   const row = await db.insertLlmCall({
     accountId: account.id,
     companyId: account.companyId,
     provider: found.provider,
     model: found.id,
+    relayMachineId: machineId,
   })
   return row.id
+}
+
+/**
+ * **只补用量，不动账本。**
+ *
+ * 结算是按 refId 幂等的（chargeExistsForRef），而「已经记过账了」这件事在中继这条路上
+ * 有一种正常的到法：一次长流跑过了 LLM_SETTLE_GRACE_MS，清扫先把它按 failed / 0 元收了，
+ * 管家随后带着真实 usage 回来结算。幂等挡住的是**第二笔钱**，可 settle 里写 token 的那
+ * 一句在它后面，于是连 token 一起被挡掉——`llm_calls` 上那一行永远停在 0/0，明细里这次
+ * 调用看着像没发生过。
+ *
+ * 所以把「写用量」单拎出来：账本原样不动（不补收、不改状态——那笔钱当时按什么口径记的
+ * 就还是什么口径，事后追记会让同一次调用在账上出现两个数），只把 token 改成真的。对账
+ * 时这一行的表现是「有用量、金额 0 且 unpriced」，而 unpriced 本来就读作「算不出来」。
+ */
+export async function recordUsageOnly(db: Db, callId: string, usage: TokenUsage): Promise<void> {
+  await db.updateLlmCallTokens(callId, usage)
 }
 
 /**

@@ -75,12 +75,11 @@ async function seedOwner() {
   console.log(`satuwork-gateway: 已写入系统管理员 ${email}`)
 }
 
+// 只提升设置。**密钥那半段已经删了**——公司密钥现在是每家自己配的，再往平台升就是把
+// 一家的 key 变成全平台兜底，别家会落到它上面（见 db.ts 的 liftCompanySettingsToPlatform）。
 async function liftCompanyData() {
-  const lifted = await db.liftCompanyDataToPlatform()
+  const lifted = await db.liftCompanySettingsToPlatform()
   if (lifted.settings) console.log('satuwork-gateway: 已把公司日常/utility 提升为平台设置')
-  for (const provider of lifted.providers) {
-    console.log(`satuwork-gateway: 已把供应商 ${provider} 提升为平台密钥`)
-  }
 }
 
 await seedOwner()

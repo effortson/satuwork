@@ -4,7 +4,7 @@ import type { Account, ChargeStatus, Db } from './db.ts'
 import type { JwtKeys } from './crypto.ts'
 import { verifyJwt } from './crypto.ts'
 import { HttpError, bearer, json, type Req, type Router } from './http.ts'
-import { ANTHROPIC_VERSION, EMPTY_USAGE, anthropicBase, openaiBase, openaiModelId, redact, type CatalogModel, type Llm } from './llm.ts'
+import { EMPTY_USAGE, applyBodyPatch, openaiModelId, redact, type CatalogModel, type Llm, type UpstreamTarget } from './llm.ts'
 import type { Meter } from './lib/meter.ts'
 import { mergeUsage, openaiUsage, tokensOf, usageFromPayload, type TokenUsage } from './lib/llm-usage.ts'
 import { accountByApiKey, assertUsable, gateOr402, recordLlmCall, withSettle, type RunOutcome } from './lib/llm-billing.ts'
@@ -89,19 +89,35 @@ async function secretOr402(llm: Llm, companyId: string | null, provider: string)
 }
 
 /**
- * 这两条路由是**厂商原生协议**的透传口，上游地址写死：`/v1/responses` 是 OpenAI 的
- * Responses API，`/v1/messages` 是 Anthropic 的 Messages API。而凭据是按解析出来的
- * `found.provider` 取的——两者不对齐就会错配：`{"model":"anthropic/claude-…"}` 打到
- * `/v1/responses`，Gateway 就把 ANTHROPIC_API_KEY 以 `Authorization: Bearer` 发给
- * api.openai.com。密钥不回显给调用方（proxyUpstream 有 redact），但已经落进了另一家
- * 厂商的请求日志，只能轮换。
+ * 这两条路由是**厂商原生协议**的透传口。它们原先按 `found.provider` 的**名字**夹死成内置
+ * 的 openai / anthropic，理由是上游地址当时是写死的：地址和密钥两边各算各的，
+ * `{"model":"anthropic/claude-…"}` 打到 `/v1/responses` 就会把 ANTHROPIC_API_KEY 发给
+ * api.openai.com，落进另一家厂商的请求日志，只能轮换。
  *
- * `/v1/chat/completions` 没这个问题：它走 `llm.piModel(...)`，凭据和目的地必然同源。
+ * 现在地址、头、请求体全由 `upstreamTargetOf` 从**同一个** `found` 算出来，错配那条路
+ * 不存在了；而它判的是模型的**协议**（`api`），不是供应商叫什么名字。所以按名字夹的那道闸
+ * 撤掉——留着反而是个 bug：走 Anthropic 协议但不叫 anthropic 的供应商有九家（minimax、
+ * kimi-coding、fireworks、vercel-ai-gateway…），Bot 按协议选路把它们送到这条路上，
+ * 按名字夹会把它们一律 400，而中继那条路（同一个 upstreamTargetOf）放行。
+ * 协议对不上仍然是 400，由 upstreamOr400 给出，措辞在 upstreamTargetOf 里。
  */
-function requireProvider(provider: string, want: string, route: string): void {
-  if (provider !== want) {
-    throw new HttpError(400, `${route} 只接受 ${want} 的模型，收到的是 ${provider || '未知'}`)
-  }
+
+/**
+ * upstreamTargetOf 的 /v1 版：算不出目标就是 400。
+ *
+ * 那边的 `relayable` 是**给管家中继看的**——「这条中继走不了，退回 /v1 打」。这里就是
+ * /v1，没有再往下退的地方了，所以两种拒法在这条路上都只是一个 400。
+ */
+function upstreamOr400(
+  llm: Llm,
+  found: CatalogModel,
+  route: 'chat' | 'messages' | 'responses',
+  secret: string,
+  req: { anthropicVersion?: string; openaiBeta?: string },
+): UpstreamTarget {
+  const target = llm.upstreamTargetOf(found, route, secret, req)
+  if ('error' in target) throw new HttpError(400, target.error)
+  return target
 }
 
 function contentText(content: unknown): string {
@@ -591,23 +607,27 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
     const modelRaw = str(body.model)
     if (!modelRaw) throw new HttpError(400, 'model 不能为空')
     const found = await resolveOr404(llm, account.companyId, modelRaw, str(body.provider) || 'openai')
-    // `provider` 是给 Gateway 选路用的，不是上游的字段：原样转过去，上游会当成认不出的参数拒掉。
-    delete body.provider
-    requireProvider(found.provider, 'openai', '/v1/responses')
     const secret = await secretOr402(llm, account.companyId, found.provider)
+    const beta = req.headers['openai-beta']
+    // 地址、头、请求体上改哪几处，全从 upstreamTargetOf 来——和管家中继同一份。这里
+    // 以前是手搓的另一份（写死的主机 + 现拼的头），两份已经漂了：那一份不认 pi-ai 的
+    // Model.baseUrl，也不带自定义供应商的 headers。走不走得通由它按**协议**判（见上面
+    // 那段：按供应商名字夹的那道闸已经撤了）。
+    //
+    // **算目标排在 recordLlmCall 之前**：协议对不上是 400，压根没打上游，也就没有账
+    // 可记。反过来的话每一次打错路由都在 llm_calls 里留一行 0 token、账本上没有对应行
+    // 的孤儿——那正是 unledgeredCalls 那条横幅要数的东西，会被一个走错路的客户端刷高。
+    // 授权那条路（routes/worker.ts 的 grant）本来就是这个顺序。
+    const target = upstreamOr400(llm, found, 'responses', secret, {
+      openaiBeta: typeof beta === 'string' && beta ? beta : undefined,
+    })
     await gateOr402(meter, account, found)
     const callId = await recordLlmCall(db, account, found)
-    body.model = found.id
-    const headers: Record<string, string> = {
-      authorization: `Bearer ${secret}`,
-      'content-type': 'application/json',
-    }
-    const beta = req.headers['openai-beta']
-    if (typeof beta === 'string' && beta) headers['openai-beta'] = beta
+    applyBodyPatch(body, target.body)
     await withSettle(db, meter, account, found, callId, () =>
       proxyUpstream(req, res, {
-        url: `${openaiBase()}/v1/responses`,
-        headers,
+        url: target.url,
+        headers: { ...target.headers, 'content-type': 'application/json' },
         body,
         secret,
       }),
@@ -620,23 +640,21 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
     const modelRaw = str(body.model)
     if (!modelRaw) throw new HttpError(400, 'model 不能为空')
     const found = await resolveOr404(llm, account.companyId, modelRaw, str(body.provider) || 'anthropic')
-    // 同 /v1/responses：`provider` 只是选路提示，不能转给上游。
-    delete body.provider
-    requireProvider(found.provider, 'anthropic', '/v1/messages')
     const secret = await secretOr402(llm, account.companyId, found.provider)
+    const versionHeader = req.headers['anthropic-version']
+    // 同 /v1/responses：地址和头一律走 upstreamTargetOf，不再在这里手搓一份；缺省的
+    // `anthropic-version` 也归它（ANTHROPIC_VERSION 就在那边）。算目标同样排在
+    // recordLlmCall 之前，理由见那条路由。
+    const target = upstreamOr400(llm, found, 'messages', secret, {
+      anthropicVersion: typeof versionHeader === 'string' && versionHeader ? versionHeader : undefined,
+    })
     await gateOr402(meter, account, found)
     const callId = await recordLlmCall(db, account, found)
-    body.model = found.id
-    const versionHeader = req.headers['anthropic-version']
-    const version = typeof versionHeader === 'string' && versionHeader ? versionHeader : ANTHROPIC_VERSION
+    applyBodyPatch(body, target.body)
     await withSettle(db, meter, account, found, callId, () =>
       proxyUpstream(req, res, {
-        url: `${anthropicBase()}/v1/messages`,
-        headers: {
-          'x-api-key': secret,
-          'anthropic-version': version,
-          'content-type': 'application/json',
-        },
+        url: target.url,
+        headers: { ...target.headers, 'content-type': 'application/json' },
         body,
         secret,
       }),

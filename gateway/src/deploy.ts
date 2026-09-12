@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { canonicalTimezone, isUniqueViolation, releaseArch, type Account, type BotRelease, type Db, type Machine, type SeatRuntime } from './db.ts'
-import { type JwtKeys } from './crypto.ts'
+import { signLogsTicket, type JwtKeys } from './crypto.ts'
+import { HttpError } from './http.ts'
 import { botReleaseFile } from './releases.ts'
 
 /** 管家握手协议。低于这个数的机器不给下发部署——字段对不上会失败得很难看。 */
@@ -245,6 +246,32 @@ export function logsUrlOf(machine: Pick<Machine, 'directUrl' | 'protocol'> | nul
   const direct = directBaseOf(machine, MIN_DIRECT_LOGS_PROTOCOL)
   if (!direct) return ''
   return seatId ? `${direct}/seats/${encodeURIComponent(seatId)}/logs` : `${direct}/logs`
+}
+
+/** 跟随那条 SSE 已经不经 Gateway 了：老界面还传 `follow=1` 就用这一句拒掉，别静默降级成「最近 N 行」。 */
+export const LOGS_FOLLOW_GONE = '日志跟随改为直连机器：先取 …/logs/direct'
+/** 机器没配 `directUrl`、或管家 < 9 号（`/logs` 还不认日志票）。界面上就说清楚「这台机器跟不了」。 */
+export const LOGS_NO_DIRECT = '这台机器没有配直连地址（或管家太旧），日志跟随打不开'
+
+/**
+ * 三条 `/logs/direct` 的**同一个尾巴**：算地址、算不出就 409、算得出就连一张日志票一起给。
+ *
+ * 抽出来是因为公司侧、平台侧、席位侧各抄了一遍，而三份已经开始漂——runtime.ts 那份把
+ * 两句文案写成了字面量，其中 410 那句还和 machines.ts 的常量不一样（`/runtime/logs/direct`
+ * 对 `…/logs/direct`）。**鉴权和审计不进来**：三条路谁能调、记不记账各不相同，那一段
+ * 必须留在各自的路由里，进来了就会有人以为「调了这个就算查过权限」。
+ *
+ * 票的种类跟着 seatId 走：带席位签席位票，不带签**管家自己**的票（`manager: true`）——
+ * 后者是管家的 root 控制面凭据，只有 owner 那两条路会传 null。
+ */
+export function logsDirectPayload(
+  keys: JwtKeys,
+  machine: Pick<Machine, 'directUrl' | 'protocol'> | null,
+  seatId: string | null,
+): { url: string; ticket: string } {
+  const url = logsUrlOf(machine, seatId)
+  if (!url) throw new HttpError(409, LOGS_NO_DIRECT)
+  return { url, ticket: signLogsTicket(keys, seatId ? { seatId } : { manager: true }) }
 }
 
 /**

@@ -1,5 +1,5 @@
 import { Service, type Context as Ctx } from '@deepseek-ai/cordis'
-import { gatewayApiKey, llmBaseUrl, streamViaGateway, stubModel } from './gateway.ts'
+import { gatewayApiKey, llmBaseUrl, setApiLookup, streamViaGateway, stubModel } from './gateway.ts'
 import { AssistantMessageEventStream, emptyAssistant } from './stream.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -45,6 +45,15 @@ export class LlmService extends Service {
 
   constructor(ctx: Ctx) {
     super(ctx, 'llm')
+    /**
+     * 把「这个模型走哪种协议」的查法交给 gateway.ts。
+     *
+     * web-search 的摘要、conversation-audit 的审计也是模型调用，也得按 api 选路，可它们手上
+     * 只有 provider + 模型名。查的是这份目录，不另存一份表：目录会刷新，抄一份就会过期。
+     * 查不到给 undefined（不能借 modelOf——它查不到时会用 stubModel 按名字猜一个 api 出来，
+     * 那正是这次要改掉的猜法）。
+     */
+    setApiLookup((provider, id) => this.cached.find((p) => p.provider === provider)?.models.find((m) => m.id === id)?.api)
   }
 
   /** 模型调用的入口，界面上 /api/models 的 gateway 字段就是它——席位上会是管家的转发口。 */
