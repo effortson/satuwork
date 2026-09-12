@@ -56,6 +56,21 @@ export async function runServerless({ root, gwRoot, test, req, start, waitHttp, 
     assert(again.status === 0 && again.stdout.includes('已是最新'), `第二次该说已是最新：${again.stdout} ${again.stderr}`)
   })
 
+  await test('Neon 的 DATABASE_URL_UNPOOLED 只在 Vercel 上回落，别的地方照旧报错', async () => {
+    // Neon 的 Vercel 集成注入的是它自己那套名字，一个都不叫 GATEWAY_*。
+    const { GATEWAY_DATABASE_URL: _gw, ...noGateway } = env
+    const run = (extra) => spawnSync(
+      process.execPath,
+      ['--import', 'tsx', join(gwRoot, 'scripts/migrate.ts')],
+      { cwd: gwRoot, env: { ...process.env, GATEWAY_DATABASE_URL: '', GATEWAY_MIGRATE_DATABASE_URL: '', ...noGateway, ...extra }, encoding: 'utf8', timeout: 120000 },
+    )
+    const onVercel = run({ VERCEL: '1', DATABASE_URL_UNPOOLED: PG_URL })
+    assert(onVercel.status === 0 && onVercel.stdout.includes('已是最新'), `Vercel 上该认 DATABASE_URL_UNPOOLED：${onVercel.stdout} ${onVercel.stderr.slice(-400)}`)
+    // 开发机上 DATABASE_URL 十有八九指着别的项目的库，回落等于静默往那儿写 schema。
+    const offVercel = run({ VERCEL: '', DATABASE_URL_UNPOOLED: PG_URL, DATABASE_URL: PG_URL })
+    assert(offVercel.status !== 0 && offVercel.stderr.includes('未配置 GATEWAY_DATABASE_URL'), `不在 Vercel 上不该回落：${offVercel.status} ${offVercel.stdout} ${offVercel.stderr.slice(-400)}`)
+  })
+
   const [PORT_SRC, PORT_BUNDLE] = await freePorts(2)
   const probe = async (base, label) => {
     const health = await req(base, 'GET', '/health')

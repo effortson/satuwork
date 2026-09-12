@@ -41,8 +41,8 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
 
 | 变量 | 值 | 说明 |
 | --- | --- | --- |
-| `GATEWAY_DATABASE_URL` | Neon **池化**串（`-pooler`） | 请求路径用。事务里没有会话态，PgBouncer 事务模式没问题 |
-| `GATEWAY_MIGRATE_DATABASE_URL` | Neon **直连**串 | 迁移用。迁移锁是会话级 advisory lock，过池化串会漂 |
+| `GATEWAY_DATABASE_URL` | Neon **池化**串（`-pooler`） | 请求路径用。事务里没有会话态，PgBouncer 事务模式没问题。**用 Neon 的 Vercel 集成时可以不配**，见下 |
+| `GATEWAY_MIGRATE_DATABASE_URL` | Neon **直连**串 | 迁移用。迁移锁是会话级 advisory lock，过池化串会漂。同上，可以不配 |
 | `GATEWAY_PG_POOL_MAX` | `2` | 每实例几条连接。函数实例多，别按 Debian 的 10 |
 | `GATEWAY_JWT_PRIVATE_KEY` / `GATEWAY_JWT_PUBLIC_KEY` | PEM | 签票的钥匙。**必须来自环境**：函数没有跨实例的磁盘，落盘生成的钥匙每个实例都不一样 |
 | `GATEWAY_CHANNEL_KEY` | 32 字节 base64 | 渠道 token 的加密钥匙。换了就解不开已有绑定 |
@@ -51,6 +51,22 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
 | `GATEWAY_TRUST_FORWARDED` | `1` | 信平台反代写的 `x-forwarded-for` 最右一跳（配对时记「机器在哪」用） |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob 库的读写 token | 发布包不落盘、边收边传到 Blob（私有），下发时带 token 取。Debian 上也可以配，两边的包就在同一个地方。见 gateway/src/releases.ts |
 | `GATEWAY_ACCESS_HOST`、`GATEWAY_PLATFORM_TOKEN`、各家模型 key | 同 Debian | 见 docker-compose.yml |
+
+### 用 Neon 的 Vercel 集成时那两条串可以不配
+
+集成往项目里注入的是 Neon 自己那套名字（`DATABASE_URL` 池化、`DATABASE_URL_UNPOOLED` 直连），
+一个都不叫 `GATEWAY_*`。`src/db.ts` 认这两个名字作回落，所以只装集成、不抄串也能跑，而且 Neon
+轮换密码之后自动跟上——手抄的那份会变成过期的死串。
+
+**回落只在 Vercel 上生效**（判据是 `process.env.VERCEL`）。`DATABASE_URL` 是个太常见的名字，
+开发机上十有八九指着别的项目的库；无条件回落等于把「忘了配 `GATEWAY_DATABASE_URL`」从一条
+说得很清楚的报错，变成静默连上另一个库——而 `scripts/migrate.ts` 是会往里写 schema 的。
+显式配了 `GATEWAY_*` 就一律以它为准，回落不参与。
+
+一个副作用要留意：Neon 集成默认只给 **Production** 注入变量。preview 构建拿不到库，
+`buildCommand` 第一步的 `migrate` 会挂——PR 上那条 Vercel check 就是红的。要让 preview 也绿，
+得给 Preview 环境单独配；但那样**每条 PR 一开、它的 preview 构建就会往那个库上应用迁移**，
+包括还没合并的分支。真要开，给 Preview 配一条 Neon 分支库的串，别指生产。
 
 生成钥匙：
 
