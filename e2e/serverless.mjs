@@ -3,8 +3,9 @@
  * 环境变量。Vercel 上就是这个形态（docs/adr-gateway-vercel-neon.md §5）。
  *
  * 钉三件事：迁移 CLI 单独能跑；函数形态起来能答请求、JWKS 的 kid 就是环境变量里那把钥匙；
- * /cron/tick 认 CRON_SECRET。esbuild 打出来的那个包（api/gateway.mjs）也起一遍——线上跑的是它，
- * 不是 tsx 转的源码。
+ * /cron/tick 认 CRON_SECRET。esbuild 打出来的那个函数包（.vercel/output 里那个）也起一遍——线上跑
+ * 的是它，不是 tsx 转的源码；不给 GATEWAY_UI_DIR，顺带钉住包里 src/ 与 ui/ 的相对关系还
+ * 成立（http.ts 里界面目录的默认值靠它）。
  */
 import { generateKeyPairSync, randomBytes, createHash } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
@@ -98,11 +99,11 @@ export async function runServerless({ root, gwRoot, test, req, start, waitHttp, 
     await test('esbuild 打出来的那个包也起得来，行为一样', async () => {
       const b = spawnSync(process.execPath, [join(gwRoot, 'scripts/build-vercel.mjs')], { cwd: gwRoot, encoding: 'utf8', timeout: 180000 })
       assert(b.status === 0, `打包失败：${b.stderr.slice(-800)}`)
-      const out = join(root, 'api/gateway.mjs')
-      assert(existsSync(out), '没有 api/gateway.mjs')
+      const out = join(root, '.vercel/output/functions/gateway.func/src/index.mjs')
+      assert(existsSync(out), '没有 .vercel/output/functions/gateway.func/src/index.mjs')
       bundle = start('serverless-bundle', [join(gwRoot, 'scripts/serve-serverless.mjs')], {
         cwd: root,
-        env: { ...env, SATUWORK_SERVERLESS_ENTRY: out, GATEWAY_UI_DIR: join(gwRoot, 'ui'), GATEWAY_HOST: '127.0.0.1', GATEWAY_PORT: String(PORT_BUNDLE) },
+        env: { ...env, SATUWORK_SERVERLESS_ENTRY: out, GATEWAY_HOST: '127.0.0.1', GATEWAY_PORT: String(PORT_BUNDLE) },
       })
       await waitHttp(`http://127.0.0.1:${PORT_BUNDLE}/health`, { child: bundle, what: 'serverless gateway (bundle)' })
       await probe(`http://127.0.0.1:${PORT_BUNDLE}`, 'bundle')

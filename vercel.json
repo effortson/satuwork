@@ -2,13 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "pnpm install --frozen-lockfile",
   "buildCommand": "pnpm --filter satuwork-gateway migrate && pnpm --filter satuwork-gateway build:vercel",
-  "outputDirectory": ".",
-  "functions": {
-    "api/gateway.mjs": {
-      "maxDuration": 300,
-      "includeFiles": "gateway/ui/**"
-    }
-  },
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/gateway" }],
   "crons": [{ "path": "/cron/tick", "schedule": "* * * * *" }]
 }

@@ -33,5 +33,5 @@ desktop/src-tauri/runtime/*
 desktop/src-tauri/ui/*
 !desktop/src-tauri/ui/README.txt
 
-# gateway/scripts/build-vercel.mjs 打出来的函数包（vercel.json 的 buildCommand 现场生成）
-api/
+# gateway/scripts/build-vercel.mjs 打出来的 Build Output（vercel.json 的 buildCommand 现场生成）
+.vercel/

@@ -8,14 +8,33 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
 
 ## 形态
 
-- `gateway/src/serverless.ts`：只有路由，没有监听、定时器、迁移。导出一个 `http.Server`，Vercel
-  的 Node 函数直接接它。
-- `gateway/scripts/build-vercel.mjs`：esbuild 把它打成一个文件 `api/gateway.mjs`（源码到处是
-  `import './x.ts'`，平台的 TS 编译不认，esbuild 认）。界面静态文件不进包，函数里按
-  `GATEWAY_UI_DIR` 从磁盘读，`vercel.json` 的 `includeFiles` 带上 `gateway/ui/**`。
-- `vercel.json`：所有路径 rewrite 到那一个函数；`maxDuration` 300；Cron 每分钟打 `/cron/tick`
-  （跑的是 Debian 上调度器每 30 秒跑的那份 `maintenanceTick`）。**Cron 每分钟一次要 Pro**，
-  Hobby 只能每天一次——那样交接催办、审计派发、租约回收都成了一天一拍，不能用。
+- `gateway/src/serverless.ts`：只有路由，没有监听、定时器、迁移。默认导出一个 `(req, res)`
+  监听器——Vercel 的 Node 启动器按导出形态分派，函数导出是它认得最实的一种（导出一个没
+  listen 过的 `http.Server` 它抓不到：它靠猴补 `Server.prototype.listen` 捕获实例）。本地要
+  监听用 `createGatewayServer()`。
+- `gateway/scripts/build-vercel.mjs`：esbuild 打包（源码到处是 `import './x.ts'`，平台的 TS
+  编译不认，esbuild 认），产出的是 **Build Output API** 目录 `.vercel/output/`：
+
+  ```
+  .vercel/output/config.json                                路由表：所有路径打到那一个函数
+  .vercel/output/functions/gateway.func/.vc-config.json     nodejs22.x、maxDuration 300、开流式
+  .vercel/output/functions/gateway.func/src/index.mjs       打好的包
+  .vercel/output/functions/gateway.func/ui/**               界面静态文件（函数里从磁盘读）
+  ```
+
+  界面按 `src/` 挨着 `ui/` 摆，跟仓库里 `gateway/` 同形，`http.ts` 里
+  `new URL('../ui', import.meta.url)` 那个默认值就还成立，线上不必配 `GATEWAY_UI_DIR`。
+- **别改回 `vercel.json` 的 `functions` + `api/gateway.mjs`**：那条路走不通。Vercel 先扫仓库
+  里已有的文件、拿这份清单跑 detectBuilders 校验 `functions` 的 glob，**然后**才轮到
+  installCommand / buildCommand；构建期才生成的文件那时还不存在，只会得到「The pattern
+  "api/gateway.mjs" ... doesn't match any Serverless Functions inside the `api` directory」。
+  顺带，那套要配的 `outputDirectory: "."` 会让 static-build 把整个仓库当静态资源传上去
+  （静态文件的匹配在 rewrites 之前，`/gateway/src/db.ts` 这类路径就把源码发出去了）。产出
+  `.vercel/output` 之后 static-build 直接透传这个目录，不再看 `outputDirectory`。
+- `vercel.json` 只剩三件事：`installCommand`、`buildCommand`、`crons`（CLI 会把 crons 并进最终
+  的 `config.json`）。Cron 每分钟打 `/cron/tick`（跑的是 Debian 上调度器每 30 秒跑的那份
+  `maintenanceTick`）。**Cron 每分钟一次要 Pro**，Hobby 只能每天一次——那样交接催办、审计派发、
+  租约回收都成了一天一拍，不能用。
 - 迁移在 build 里跑（`buildCommand` 先 `migrate` 再 `build:vercel`），用直连串。
 
 ## 环境变量
@@ -59,7 +78,7 @@ openssl rand -base64 32   # GATEWAY_CHANNEL_KEY
   席位上的模型调用已经改成管家中继（管家问 Gateway 要授权、自己打上游、完了回来结算，见
   gateway-runtime.md「模型调用」），Gateway 不再在那条流的路径上。`/v1` 是请求级的，模型答完
   就结束，不是小时级；函数的 `maxDuration` 建议给到 800 秒，让桌面端一轮长回答（连同工具调用）
-  不被半路砍断。这里不动 `vercel.json`，上线前按需要改。
+  不被半路砍断。这里不动，上线前按需要改 `build-vercel.mjs` 里写 `.vc-config.json` 那段。
 - **老协议机器上的日常任务与渠道**：Gateway 不再自己跑那一轮（那要等席位 20 分钟），< 8 号的
   机器上这两样不动。先升管家。
 
