@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { Service, type Context } from '@deepseek-ai/cordis'
-import { gatewayApiKey, gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../llm/gateway.ts'
 import { docKindOf, extractDocument } from '../workspace/extract.ts'
 
 /**
@@ -186,7 +186,8 @@ export class WebSearchService extends Service {
    * 事件里——它是工具内部的一次调用，不是这个 Bot 说的话。
    */
   private async complete(system: string, user: string): Promise<string> {
-    const base = gatewayUrl()
+    // 模型调用走 llmBaseUrl()：席位上是管家转发口，不是 Gateway 本身。
+    const base = llmBaseUrl()
     const key = gatewayApiKey()
     const picked = this.summaryModel()
     if (!base || !key || !picked) throw new Error('没有可用的摘要模型')

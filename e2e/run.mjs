@@ -571,7 +571,7 @@ async function runGateway() {
     assert(delS.status === 200 && delS.json.deleted === true, 'delete skill')
   })
 
-  await test('owner platform credentials；公司管理员不能写供应商', async () => {
+  await test('owner platform credentials；公司管理员配得了自家密钥，普通成员不行', async () => {
     const ownerLogin = await req(base, 'POST', '/auth/login', {
       body: { email: 'owner@satuwork.test', password: 'test-owner-3080' },
     })
@@ -617,12 +617,34 @@ async function runGateway() {
     assert(!dumpHas(list.json, secret), 'list 泄漏')
     assert(!dumpHas(list.json, 'sk-e2e-rotated-never-leak'), 'list 泄漏新 secret')
 
+    // 公司密钥：管理员配得了（压过平台那把，见 custom-provider / manager 两套的取序用例），
+    // 普通成员只能看列表、不能写。密钥同样不回显。
     const deny = await req(base, 'POST', `/orgs/${orgId}/credentials`, {
+      token: memberTok,
+      body: { provider: 'openai', secret },
+    })
+    assert(deny.status === 403, `member cred 该 403，实际 ${deny.status} ${deny.text}`)
+    const mine = await req(base, 'POST', `/orgs/${orgId}/credentials`, {
       token,
       body: { provider: 'openai', secret },
     })
-    assert(deny.status === 403, `admin cred ${deny.status} ${deny.text}`)
-    assert(String(deny.json.error).includes('供应商由系统管理员配置'), '403 文案')
+    assert(mine.status === 201, `admin cred 该 201，实际 ${mine.status} ${mine.text}`)
+    assert(mine.json.credential.provider === 'openai' && mine.json.credential.configured === true, `admin cred 形状 ${mine.text}`)
+    assert(mine.json.credential.scope === 'company', `公司密钥该标 scope=company，实际 ${mine.json.credential.scope}`)
+    assert(!dumpHas(mine.json, secret), 'admin cred 泄漏 secret')
+    const scoped = await req(base, 'GET', `/orgs/${orgId}/credentials`, { token })
+    const openaiRow = scoped.json.credentials.find((c) => c.provider === 'openai')
+    const dsRow = scoped.json.credentials.find((c) => c.provider === 'deepseek')
+    assert(openaiRow?.scope === 'company', `列表里公司密钥该标 company：${JSON.stringify(openaiRow)}`)
+    assert(dsRow?.scope === 'platform', `列表里平台密钥该标 platform：${JSON.stringify(dsRow)}`)
+    const memberList = await req(base, 'GET', `/orgs/${orgId}/credentials`, { token: memberTok })
+    assert(memberList.status === 200, `member 看列表该 200，实际 ${memberList.status}`)
+    assert(!dumpHas(memberList.json, secret), 'member 列表泄漏 secret')
+    // 删掉，别让后面拿 openai 的用例撞上这把假密钥。删第二次是 404。
+    const gone = await req(base, 'DELETE', `/orgs/${orgId}/credentials/openai`, { token })
+    assert(gone.status === 200, `删公司密钥 ${gone.status} ${gone.text}`)
+    const gone2 = await req(base, 'DELETE', `/orgs/${orgId}/credentials/openai`, { token })
+    assert(gone2.status === 404, `重复删该 404，实际 ${gone2.status} ${gone2.text}`)
   })
 
   await test('缺 GATEWAY_MACHINE_TOKEN 的 /internal/* → 401', async () => {

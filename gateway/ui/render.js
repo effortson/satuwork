@@ -767,8 +767,15 @@ async function saveCred(provider, secret, credId) {
       const exists = (state.creds || []).some((c) => c.provider === provider) || !!credId
       if (exists) await api('PUT', `/platform/credentials/${encodeURIComponent(provider)}`, { secret })
       else await api('POST', '/platform/credentials', { provider, secret })
+    } else if (isAdmin() && orgId()) {
+      // 公司管理员贴的是本公司那把。已有**本公司**的行才是改（PUT）；只有平台共用那把
+      // 时是新建（POST）——平台的行不是这家公司的，拿它当 exists 会 PUT 到一条不存在的记录上。
+      const base = `/orgs/${encodeURIComponent(orgId())}/credentials`
+      const exists = (state.creds || []).some((c) => c.provider === provider && c.scope === 'company')
+      if (exists) await api('PUT', `${base}/${encodeURIComponent(provider)}`, { secret })
+      else await api('POST', base, { provider, secret })
     } else {
-      throw new Error('供应商由系统管理员配置')
+      throw new Error('供应商密钥由公司管理员配置')
     }
     await loadCreds()
     // 换了密钥，之前那次测试测的是旧密钥。

@@ -34,6 +34,8 @@ import { runtimeKindOf } from './lib/catalog.ts'
 import { sweepHandoffs } from './handoff-sweep.ts'
 import { refreshDiscovered } from './model-discovery.ts'
 import { tickBotDeletions, tickConversationAudits } from './conversation-audit.ts'
+import { createMeter, type Meter } from './lib/meter.ts'
+import { settle } from './lib/llm-billing.ts'
 
 /** 调度器多久看一眼。设成 0 就不起调度器（e2e 里有几条不需要它自己跑）。 */
 const TICK_MS = Math.max(0, Math.trunc(Number(process.env.GATEWAY_ROUTINE_TICK_MS ?? 30_000)))
@@ -431,6 +433,8 @@ export async function maintenanceTick(db: Db): Promise<void> {
     // 没人来领的试跑跟着每一轮收（见 sweepUnclaimed）。
     .then(() => sweepUnclaimed(db))
     .then(() => sweepLeases(db))
+    // 管家拿了模型调用的授权却没回来结算的，同一个节拍收（见 sweepUnsettledLlmCalls）。
+    .then(() => sweepUnsettledLlmCalls(db))
     /**
      * 转人工的催办跟着同一个节拍走（见 handoff-sweep.ts）。
      *
@@ -451,6 +455,45 @@ export async function maintenanceTick(db: Db): Promise<void> {
       else if (r.ran) console.log(`satuwork-gateway: 模型目录已刷新，models.dev 收录 ${r.added} 个可用模型`)
     }))
     .catch((e: Error) => console.error(`satuwork-gateway: 日常任务扫描失败：${e.message}`))
+}
+
+/**
+ * 管家拿了授权（`POST /worker/llm/grant`）之后多久没结算就算它死了。
+ *
+ * 一次调用最长是多长没有硬上限（长回答带工具调用能跑几分钟），所以这个数只能取
+ * 「远长于任何一次正常调用」：半小时。取短了会把还在流的那一次先收成 failed，管家随后
+ * 来结算时撞上幂等，真实用量就丢了。
+ */
+const LLM_SETTLE_GRACE_MS = 30 * 60_000
+
+/**
+ * 收「授权了、没结算」的模型调用。
+ *
+ * 管家死在半路（进程被杀、机器断网）时，llm_calls 里留下一行 token 全 0、账本上没有对应
+ * 行的记录——正是 settle 的注释里说要避免的「查不到账的调用」。/v1 那边有 withSettle 兜
+ * 着，中继这边 Gateway 不在调用的路径上，兜不住，只能事后扫。收成 `failed`、金额 0 且标
+ * unpriced：用量不知道，不编数；管家真回来结算时 chargeExistsForRef 会挡住第二笔。
+ *
+ * `meter` 不从 RouteCtx 拿：这里跑在调度器 / Cron 里，没有路由上下文。单独起一个也无妨——
+ * 这条路记的全是 0 元行，Meter 那份「每家公司的余额记忆」根本不会被它扣到。
+ */
+export async function sweepUnsettledLlmCalls(db: Db, meter: Meter = createMeter(db), now = Date.now()): Promise<number> {
+  let n = 0
+  for (const call of await db.unsettledLlmCalls(now - LLM_SETTLE_GRACE_MS, 200)) {
+    const account = await db.account(call.accountId)
+    if (!account) continue
+    // 幂等：查和记之间管家可能刚结算完。settle 之前再看一眼，能省掉大多数重复行；剩下的
+    // 竞态窗口（两边同时 insert）账本按 refId 汇总时会合成一行，不至于翻倍。
+    if (await db.chargeExistsForRef(call.id)) continue
+    try {
+      await settle(db, meter, account, { provider: call.provider, id: call.model, cost: undefined }, call.id, undefined, 'failed')
+      n++
+    } catch (e) {
+      console.error(`satuwork-gateway: 收未结算的模型调用 ${call.id} 失败：${(e as Error).message}`)
+    }
+  }
+  if (n) console.log(`satuwork-gateway: 收了 ${n} 次管家没回来结算的模型调用`)
+  return n
 }
 
 /**

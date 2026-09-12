@@ -5,47 +5,94 @@ import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { PULL_ERROR, pullSessionEvents } from '../lib/machines.ts'
 import { companyMachineOf } from '../deploy.ts'
-import { bodyOf, intField } from '../lib/validate.ts'
-import { isModelProvider, modelProviderCreds, publicPlatformCred, publicSessionIndex, sessionCursorOf } from '../lib/org.ts'
-import { rangeQuery, requireOrgUser, requireUser } from '../lib/guards.ts'
+import { bodyOf, intField, strField } from '../lib/validate.ts'
+import { isModelProvider, modelProviderCreds, publicCredential, publicSessionIndex, sessionCursorOf } from '../lib/org.ts'
+import { isVendor } from '../connectors/index.ts'
+import { rangeQuery, requireOrgUser } from '../lib/guards.ts'
 import { seatBearer, seatMachineOf } from '../lib/runtime.ts'
 import { sessionPageLimit } from '../db.ts'
 
 export function attachSessions(router: Router, ctx: RouteCtx) {
-  const { db, keys } = ctx
+  const { db, keys, llm } = ctx
 
   // ── 公司密钥。列表/详情只回 configured: true ────────────────────────
+  //
+  // 公司密钥是主机制（llm.ts 的 secret：公司 > 平台 > 环境变量），这一屏就是公司管理员
+  // 配自己那几把的地方。清单里平台兜底的那几把也列出来（标 scope: 'platform'），让他
+  // 知道没配的供应商是不是照样能用；但平台那把在这里只能看，改和删都只认公司自己的行。
+
+  /**
+   * 这一条路只收模型供应商的密钥，而且 provider 得是注册表里真有的。密钥是按 provider 名
+   * 去索引的（envSecret 拼 `<PROVIDER>_API_KEY`），一条 `{"provider":"stripe"}` 存进去
+   * 没人用得上，只会在清单里挂一个假供应商；连接器供应商（composio）另有自己的页面。
+   */
+  async function modelProviderOr400(provider: string): Promise<string> {
+    const p = provider.trim()
+    if (!p) throw new HttpError(400, 'provider 不能为空')
+    if (isVendor(p) || !isModelProvider(p)) throw new HttpError(400, `${p} 不是模型供应商`)
+    await llm.syncCustomProviders()
+    if (!llm.models.getProviders().some((x) => x.id === p)) throw new HttpError(400, `平台没有 ${p} 这个供应商`)
+    return p
+  }
 
   router.get('/orgs/:id/credentials', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id)
-    // 和平台那条同一个口径：只报模型供应商。公司管理员这一屏就叫「供应商」，
-    // 连接器和搜索后端漏进来同样是假供应商，而他连改都改不了。
-    json(res, 200, { credentials: modelProviderCreds(await db.platformCredentials()).map(publicPlatformCred) })
+    const own = modelProviderCreds(await db.credentialsOf(req.params.id))
+    const overridden = new Set(own.map((c) => c.provider))
+    // 和平台那条同一个口径：只报模型供应商。连接器和搜索后端漏进来同样是假供应商。
+    // 公司已经配了自己那把的供应商，平台那把对它不生效，就不再列一遍。
+    const shared = modelProviderCreds(await db.platformCredentials()).filter((c) => !overridden.has(c.provider))
+    json(res, 200, {
+      credentials: [
+        ...own.map((c) => publicCredential(c, 'company')),
+        ...shared.map((c) => publicCredential(c, 'platform')),
+      ],
+    })
   })
 
   router.post('/orgs/:id/credentials', async (req, res) => {
-    await requireUser(req, db, keys)
-    throw new HttpError(403, '供应商由系统管理员配置')
+    const account = await requireOrgUser(req, db, keys, req.params.id, true)
+    const body = bodyOf(req)
+    const provider = await modelProviderOr400(strField(body, 'provider'))
+    const secret = strField(body, 'secret')
+    const existed = !!(await db.credentialByProvider(req.params.id, provider))
+    const row = await db.upsertCredential(req.params.id, provider, secret)
+    await db.audit({ companyId: req.params.id, accountId: account.id, action: 'credential.set', detail: { provider } })
+    json(res, existed ? 200 : 201, { credential: publicCredential(row, 'company') })
   })
 
-  router.get('/orgs/:id/credentials/:credId', async (req, res) => {
+  router.get('/orgs/:id/credentials/:provider', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id)
-    const provider = req.params.credId.startsWith('platform:') ? req.params.credId.slice('platform:'.length) : req.params.credId
-    const row = await db.platformCredential(provider)
+    const provider = req.params.provider.startsWith('platform:') ? req.params.provider.slice('platform:'.length) : req.params.provider
+    if (!isModelProvider(provider)) throw new HttpError(404, '密钥不存在')
+    const own = await db.credentialByProvider(req.params.id, provider)
+    if (own) {
+      json(res, 200, { credential: publicCredential(own, 'company') })
+      return
+    }
     // 跟列表同一个口径：不是模型供应商的密钥（连接器、搜索后端）对公司管理员就不存在，
     // 列表里看不到的，按名字也不能捞出来。
-    if (!row || !isModelProvider(row.provider)) throw new HttpError(404, '密钥不存在')
-    json(res, 200, { credential: publicPlatformCred(row) })
+    const shared = await db.platformCredential(provider)
+    if (!shared) throw new HttpError(404, '密钥不存在')
+    json(res, 200, { credential: publicCredential(shared, 'platform') })
   })
 
-  router.put('/orgs/:id/credentials/:credId', async (req, res) => {
-    await requireUser(req, db, keys)
-    throw new HttpError(403, '供应商由系统管理员配置')
+  router.put('/orgs/:id/credentials/:provider', async (req, res) => {
+    const account = await requireOrgUser(req, db, keys, req.params.id, true)
+    const provider = await modelProviderOr400(req.params.provider)
+    const secret = strField(bodyOf(req), 'secret')
+    const row = await db.upsertCredential(req.params.id, provider, secret)
+    await db.audit({ companyId: req.params.id, accountId: account.id, action: 'credential.set', detail: { provider } })
+    json(res, 200, { credential: publicCredential(row, 'company') })
   })
 
-  router.delete('/orgs/:id/credentials/:credId', async (req, res) => {
-    await requireUser(req, db, keys)
-    throw new HttpError(403, '供应商由系统管理员配置')
+  router.delete('/orgs/:id/credentials/:provider', async (req, res) => {
+    const account = await requireOrgUser(req, db, keys, req.params.id, true)
+    const provider = req.params.provider
+    // 只删公司自己的行。平台兜底的那把不归这家管，删了会让别的公司一起没密钥。
+    if (!(await db.deleteCredentialByProvider(req.params.id, provider))) throw new HttpError(404, '这家公司没有配这个供应商的密钥')
+    await db.audit({ companyId: req.params.id, accountId: account.id, action: 'credential.delete', detail: { provider } })
+    json(res, 200, { deleted: true, provider })
   })
 
   // ── 会话索引 / 按需拉全文。Gateway 只存指针，正文留在机器上。────────

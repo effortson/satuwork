@@ -1,5 +1,5 @@
 import { Service, type Context as Ctx } from '@deepseek-ai/cordis'
-import { gatewayApiKey, gatewayUrl, streamViaGateway, stubModel } from './gateway.ts'
+import { gatewayApiKey, llmBaseUrl, streamViaGateway, stubModel } from './gateway.ts'
 import { AssistantMessageEventStream, emptyAssistant } from './stream.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -36,7 +36,8 @@ const REFRESH_TIMEOUT_MS = 10_000
 /**
  * 模型接缝：Gateway 的薄客户端。
  *
- * 目录与补全都打 GATEWAY_URL 的 /v1/*。本进程不持有 provider 密钥，也不依赖 pi-ai。
+ * 目录与补全都打 llmBaseUrl() 的 /v1/*（席位上是管家的转发口 GATEWAY_LLM_URL，本地
+ * 就是 GATEWAY_URL）。本进程不持有 provider 密钥，也不依赖 pi-ai。
  * 流式结果映射成 pi-agent-core 的 streamFn，会话投影不用改。
  */
 export class LlmService extends Service {
@@ -46,8 +47,9 @@ export class LlmService extends Service {
     super(ctx, 'llm')
   }
 
+  /** 模型调用的入口，界面上 /api/models 的 gateway 字段就是它——席位上会是管家的转发口。 */
   get url() {
-    return gatewayUrl()
+    return llmBaseUrl()
   }
 
   /** 发给 pi-agent-core 的 streamFn。失败编码进流，不抛。 */
@@ -84,7 +86,7 @@ export class LlmService extends Service {
   }
 
   async refresh(): Promise<CatalogProvider[]> {
-    const base = gatewayUrl()
+    const base = llmBaseUrl()
     const apiKey = gatewayApiKey()
     if (!base || !apiKey) {
       this.cached = []

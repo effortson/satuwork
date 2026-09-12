@@ -557,6 +557,12 @@ async function doDeploy(spec: SeatSpec, token: string): Promise<SeatRecord> {
       GATEWAY_URL: spec.gatewayUrl,
       GATEWAY_TOKEN: spec.gatewayToken,
       GATEWAY_API_KEY: spec.gatewayApiKey,
+      // 协议 10：Bot 调模型不再直打 Gateway 的 /v1，而是打管家在回环地址上的 /llm/v1/*
+      // （src/llm-relay.ts）。管家默认听 0.0.0.0，回环这一面总在。**SATUWORK_MANAGER_HOST
+      // 钉成某一张网卡的地址就断了这条路**（Node 只绑那一个地址，127.0.0.1 不答）——
+      // 真要钉网卡就得连管家一起改成多监听，目前没有这样的机器。端口用启动参数那一个：
+      // selftest 那种临时起在 :0 的进程不会走到部署这里。
+      MANAGER_LLM_URL: `http://127.0.0.1:${bootConfig().port}/llm`,
       // **机器票不进席位环境。** 它是管家自己的控制面凭据（PUT /seats/:id 认的就是
       // 它），而 bot.env 属于席位那个普通 Linux 用户。bot 上报 /internal/* 用席位票
       // （GATEWAY_TOKEN）就够了。`token` 在这个函数里只用于向 Gateway 拉发布包。

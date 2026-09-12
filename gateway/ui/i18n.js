@@ -1379,4 +1379,16 @@ window.SATU_I18N = {
   待人工处理: 'Waiting for a person',
   空闲: 'Idle',
   连接器详情: 'Connector details',
+  本公司密钥: 'Company key',
+  平台共用: 'Platform shared',
+  只读: 'Read-only',
+  覆盖: 'Override',
+  供应商密钥由公司管理员配置: 'Provider keys are configured by the company admin',
+  '粘贴本公司密钥以覆盖平台的': "Paste this company's key to override the platform's",
+  '平台共用密钥是回落项，这里删不掉；配一把本公司的密钥就能覆盖它': "The platform's shared key is the fallback and cannot be removed here; save a company key to override it",
+  '从目录选择供应商，粘贴本公司的 API 密钥。已有平台共用密钥的供应商也能配——本公司的密钥优先。密钥只存在 Gateway，保存后不会回显。':
+    "Pick a provider from the catalog and paste this company's API key. Providers that already have a platform key can be configured too — the company key wins. Keys live only on the Gateway and are never echoed back.",
+  '还没有配置供应商，平台也没有共用密钥。点击「添加供应商」从目录里选一家并粘贴本公司的密钥。':
+    'No providers configured and the platform has no shared key either. Click "Add provider", pick one from the catalog and paste this company\'s key.',
+  '还没有配置供应商。': 'No providers configured.',
 }

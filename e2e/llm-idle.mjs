@@ -17,7 +17,14 @@ export async function runLlmIdle({ root, test, assert, log }) {
   let r
   await test('探针跑得完（流自己收口了，没挂住）', async () => {
     r = await runProbe(root)
-    assert(r && r.silent && r.alive && r.headless, `探针结果不完整：${JSON.stringify(r)}`)
+    assert(r && r.silent && r.alive && r.headless && r.relay, `探针结果不完整：${JSON.stringify(r)}`)
+  })
+
+  await test('设了 GATEWAY_LLM_URL：补全打管家的转发口，不碰 GATEWAY_URL', async () => {
+    // 席位上 provider 密钥只在管家进程里，/v1/* 必须走转发口；末尾斜杠也得收掉。
+    assert(JSON.stringify(r.relay.paths) === JSON.stringify(['/llm/v1/chat/completions']), `请求打错了地方：${JSON.stringify(r.relay.paths)}`)
+    const texts = r.relay.events.filter((e) => e.type === 'text_delta')
+    assert(texts.length > 0, `转发口没收到正文：${JSON.stringify(r.relay.events)}`)
   })
 
   await test('上游静默不动：判定断开并收口，不再无限等下去', async () => {

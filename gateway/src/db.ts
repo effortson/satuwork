@@ -6,7 +6,7 @@ import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind } from './db/types.ts'
 import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseModelPricing, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
-import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
+import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
  * 类型、常量和行解析都在 `db/` 底下；这里原样再导出，调用点仍然
@@ -792,6 +792,38 @@ export class Db {
     )
   }
 
+  async llmCall(id: string): Promise<LlmCall | undefined> {
+    const r = await this.one('select * from llm_calls where id = ?', [id])
+    return r ? llmCallOf(r) : undefined
+  }
+
+  /**
+   * 这一次调用落过账没有。管家中继的结算接口靠它做幂等：管家重试、或者清扫和结算
+   * 撞在一起时，第二笔只能是「已经记过了」，不能再挂一行。
+   */
+  async chargeExistsForRef(refId: string): Promise<boolean> {
+    const r = await this.one('select 1 as n from usage_charges where "refId" = ? limit 1', [refId])
+    return !!r
+  }
+
+  /**
+   * `before` 之前登记、账本上却没有对应行的调用——管家拿了授权（grant）之后死在半路，
+   * 没来得及结算的那些。清扫拿它们按 failed 收口（routines.ts 的 sweepUnsettledLlmCalls）。
+   * 老行（0007 之前，本来就没有账本）也会被扫到一次，收成 0 元 unpriced 的 failed，
+   * 之后就不再出现。
+   */
+  async unsettledLlmCalls(before: number, limit: number): Promise<LlmCall[]> {
+    // not exists 走 usage_ref 那条索引；按 refId 把整张账本先聚合一遍（LEDGER_BY_REF）在
+    // 这里太重——这条每半分钟跑一次。
+    const rows = await this.many(
+      `select l.* from llm_calls l
+       where l."createdAt" < ? and not exists (select 1 from usage_charges u where u."refId" = l.id)
+       order by l."createdAt" asc limit ?`,
+      [before, limit],
+    )
+    return rows.map(llmCallOf)
+  }
+
   async insertWebCall(input: {
     accountId: string
     companyId?: string | null
@@ -878,18 +910,7 @@ export class Db {
 
   async llmCallsOfCompany(companyId: string): Promise<LlmCall[]> {
     const rows = await this.many('select * from llm_calls where "companyId" = ? order by "createdAt" desc', [companyId])
-    return rows.map((r) => ({
-      id: str(r.id),
-      accountId: str(r.accountId),
-      companyId: strOrNull(r.companyId),
-      provider: str(r.provider),
-      model: str(r.model),
-      promptTokens: num(r.promptTokens),
-      completionTokens: num(r.completionTokens),
-      cachedTokens: num(r.cachedTokens),
-      cacheWriteTokens: num(r.cacheWriteTokens),
-      createdAt: num(r.createdAt),
-    }))
+    return rows.map(llmCallOf)
   }
 
   private llmRangeSql(range?: { from?: number; to?: number }): { sql: string; args: number[] } {
@@ -2957,6 +2978,21 @@ export class Db {
 
   async deleteCredential(id: string): Promise<void> {
     await this.run('delete from credentials where id = ?', [id])
+  }
+
+  /** 按 (companyId, provider) 落一把公司密钥；表上有这对唯一约束，所以是 upsert。 */
+  async upsertCredential(companyId: string, provider: string, secret: string): Promise<Credential> {
+    const now = Date.now()
+    await this.run(
+      `insert into credentials (id, "companyId", provider, secret, "createdAt", "updatedAt") values (?,?,?,?,?,?)
+       on conflict ("companyId", provider) do update set secret=excluded.secret, "updatedAt"=excluded."updatedAt"`,
+      [randomUUID(), companyId, provider, secret, now, now],
+    )
+    return (await this.credentialByProvider(companyId, provider))!
+  }
+
+  async deleteCredentialByProvider(companyId: string, provider: string): Promise<boolean> {
+    return (await this.run('delete from credentials where "companyId" = ? and provider = ?', [companyId, provider])) > 0
   }
 
   // ── 审计 ──────────────────────────────────────────────────────────────

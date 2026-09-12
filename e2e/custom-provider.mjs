@@ -189,6 +189,77 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       assert(dup.status === 400, `重复 id ${dup.status} ${dup.text}`)
     })
 
+    await test('公司密钥压过平台密钥：Gateway 直连 /v1 也按「公司 → 平台」取密钥', async () => {
+      // 中继落到管家之后，Gateway 自己的 /v1 仍给本地 Bot 用。取密钥的次序两边必须同一份：
+      // 公司配了自己的 key 就用公司的，没配才落到平台的——否则同一家公司走两条路记两家账。
+      const org = await req(base, 'POST', '/platform/orgs', {
+        token,
+        body: {
+          name: 'K', slug: 'k-custom',
+          contactName: '李四', contactPhone: '+86 138 0000 0001', contactEmail: 'k@custom.test',
+          adminEmail: 'k@custom.test', adminPassword: 'correct-horse-1',
+        },
+      })
+      assert(org.status === 201, `org ${org.status} ${org.text}`)
+      const orgId = org.json.company.id
+      // 裸建的公司没钱，余额闸会先一步 402；这条验的是密钥取序，先给它充上。
+      const paid = await req(base, 'POST', '/platform/orders', {
+        token,
+        body: { companyId: orgId, kind: 'topup', amount: 100, payStatus: 'paid', note: 'e2e' },
+      })
+      assert(paid.status === 201, `充值 ${paid.status} ${paid.text}`)
+      const login = await req(base, 'POST', '/auth/login', { body: { email: 'k@custom.test', password: 'correct-horse-1' } })
+      assert(login.status === 200, `admin login ${login.status} ${login.text}`)
+      const at = login.json.token
+
+      // 只有平台密钥时公司也能调，上游收到的是平台那把（前面那条配的 sk-custom-123）。
+      seen = { auth: null, path: null, body: null }
+      const viaPlatform = await req(base, 'POST', '/v1/chat/completions', {
+        token: at,
+        body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
+      })
+      assert(viaPlatform.status === 200, `没公司密钥时 chat ${viaPlatform.status} ${viaPlatform.text}`)
+      assert(seen.auth === 'Bearer sk-custom-123', `没公司密钥时上游收到的是 ${seen.auth}`)
+
+      const set = await req(base, 'POST', `/orgs/${orgId}/credentials`, { token: at, body: { provider: 'my-llm', secret: 'company-key' } })
+      assert(set.status === 201, `配公司密钥 ${set.status} ${set.text}`)
+      assert(!set.text.includes('company-key'), '配公司密钥的响应把密钥回显了')
+      const list = await req(base, 'GET', `/orgs/${orgId}/credentials`, { token: at })
+      assert(list.status === 200, `列公司密钥 ${list.status} ${list.text}`)
+      const row = (list.json.credentials || []).find((c) => c.provider === 'my-llm')
+      assert(row && row.configured === true && row.scope === 'company', `公司密钥没标成 company：${JSON.stringify(row)}`)
+
+      seen = { auth: null, path: null, body: null }
+      const viaCompany = await req(base, 'POST', '/v1/chat/completions', {
+        token: at,
+        body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
+      })
+      assert(viaCompany.status === 200, `有公司密钥时 chat ${viaCompany.status} ${viaCompany.text}`)
+      assert(seen.auth === 'Bearer company-key', `公司配了密钥，上游收到的却是 ${seen.auth}`)
+
+      // 公司密钥不影响别家：owner（不属于任何公司）仍走平台那把。
+      seen = { auth: null, path: null, body: null }
+      const asOwner = await req(base, 'POST', '/v1/chat/completions', {
+        token,
+        body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
+      })
+      assert(asOwner.status === 200, `owner chat ${asOwner.status} ${asOwner.text}`)
+      assert(seen.auth === 'Bearer sk-custom-123', `owner 调用上游收到的是 ${seen.auth}`)
+
+      // 删掉公司密钥就落回平台的；再删一次是 404，不是 200 假装删了。
+      const del = await req(base, 'DELETE', `/orgs/${orgId}/credentials/my-llm`, { token: at })
+      assert(del.status === 200, `删公司密钥 ${del.status} ${del.text}`)
+      const again = await req(base, 'DELETE', `/orgs/${orgId}/credentials/my-llm`, { token: at })
+      assert(again.status === 404, `重复删该 404，实际 ${again.status} ${again.text}`)
+      seen = { auth: null, path: null, body: null }
+      const back = await req(base, 'POST', '/v1/chat/completions', {
+        token: at,
+        body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
+      })
+      assert(back.status === 200, `删掉公司密钥后 chat ${back.status} ${back.text}`)
+      assert(seen.auth === 'Bearer sk-custom-123', `删掉公司密钥后上游收到的是 ${seen.auth}`)
+    })
+
     await test('在用时删要 409；force 之后密钥和角色一起清掉', async () => {
       await req(base, 'PUT', '/platform/settings', { token, body: { daily: { provider: 'my-llm', model: 'my-model' } } })
       const blocked = await req(base, 'DELETE', '/platform/providers/my-llm', { token })

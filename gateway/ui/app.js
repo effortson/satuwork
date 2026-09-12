@@ -172,7 +172,10 @@ async function runConfirm() {
       render()
       return
     } else if (c.kind === 'delete-credential') {
-      await api('DELETE', `/platform/credentials/${encodeURIComponent(c.id)}`)
+      // 公司侧删的是本公司那把（平台共用的那把在这儿删不掉，按钮就是灰的）；删完
+      // 若平台配了同一家，列表里它会以「平台共用」的身份回来——那正是回落的意思。
+      const path = isOwner() ? '/platform/credentials' : `/orgs/${encodeURIComponent(orgId())}/credentials`
+      await api('DELETE', `${path}/${encodeURIComponent(c.id)}`)
       delete state.tests[`provider:${c.id}`]
       await Promise.all([loadCreds(), loadCatalog()])
       flash('ok', '已移除密钥')
@@ -1659,16 +1662,27 @@ document.getElementById('app').addEventListener('click', async (e) => {
           kind: 'delete-custom-provider',
           id: provider,
         }
-      : {
-          title: t(`移除「${provider}」的密钥？`, `Remove the key for "${provider}"?`),
-          body: t(
-            `密钥删掉之后这家供应商不再出现在列表里，它的模型也调不通了。重新贴一把密钥就能恢复。`,
-            `Without a key this provider leaves the list and its models stop working. Paste a key again to restore it.`,
-          ),
-          label: '移除密钥',
-          kind: 'delete-credential',
-          id: provider,
-        }
+      : isOwner()
+        ? {
+            title: t(`移除「${provider}」的密钥？`, `Remove the key for "${provider}"?`),
+            body: t(
+              `密钥删掉之后这家供应商不再出现在列表里，它的模型也调不通了。重新贴一把密钥就能恢复。`,
+              `Without a key this provider leaves the list and its models stop working. Paste a key again to restore it.`,
+            ),
+            label: '移除密钥',
+            kind: 'delete-credential',
+            id: provider,
+          }
+        : {
+            title: t(`移除本公司「${provider}」的密钥？`, `Remove this company's key for "${provider}"?`),
+            body: t(
+              `删掉之后这家供应商回落到平台共用密钥；平台也没配的话，它的模型就调不通了。重新贴一把就能恢复。`,
+              `After removal this provider falls back to the platform's shared key; if the platform has none either, its models stop working. Paste a key again to restore it.`,
+            ),
+            label: '移除密钥',
+            kind: 'delete-credential',
+            id: provider,
+          }
     render()
     return
   }

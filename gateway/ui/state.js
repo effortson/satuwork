@@ -593,6 +593,9 @@ function allowedHrefs() {
   // 转人工待办的入口在**顶栏**那颗按钮上，不在侧栏菜单里（员工那份菜单是空的，
   // 见 MEMBER_NAV）。所以这里单独放行，否则点那颗按钮会被 pathAllowed 踢回首页。
   if (!isOwner()) set.add('/handoffs')
+  // 供应商页员工也进得去，但只能看：哪些供应商配了、用的是本公司还是平台的密钥。
+  // 菜单里不放（员工那份是空的），直接输地址可达。
+  if (!isOwner()) set.add('/providers')
   if (!isOwner()) set.add('/channels')
   return set
 }
