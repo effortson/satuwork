@@ -151,6 +151,32 @@ const FONT_CSS = 'https://fonts.googleapis.com'
 const FONT_FILES = 'https://fonts.gstatic.com'
 
 /**
+ * Gateway 自己的页面是不是 http。**只认明确配过的 GATEWAY_PUBLIC_URL**——没配时那个值
+ * 是按请求的 Host 猜的（见 lib/machines.ts 的 gatewayBaseFor），拿一个转发头决定安不安全
+ * 不划算。
+ *
+ * 两处共用同一个判据：这里放宽 CSP，`lib/machines.ts` 的 `directUrlOf` 放宽直连地址的
+ * https 强制。**分开写迟早分叉**，而分叉的表现最难查——地址存得进去，浏览器里却是一句
+ * CSP 拒绝。
+ */
+export function gatewayPageIsHttp(): boolean {
+  const explicit = (process.env.GATEWAY_PUBLIC_URL || '').trim()
+  if (!explicit) return false
+  try {
+    return new URL(explicit).protocol === 'http:'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 直连（对话流、桌面 iframe）允许打到哪些源。生产上是整个 `https:`；Gateway 自己跑在
+ * http 上时（本地开发）再加 `http:`，否则 directUrlOf 收下的 http 直连地址会在浏览器里
+ * 被这条头拒掉，而 Gateway 已经没有反代退路。
+ */
+const DIRECT_SRC = gatewayPageIsHttp() ? 'https: http:' : 'https:'
+
+/**
  * 管理界面这一页的 CSP。
  *
  * 这套界面渲染的是**模型输出和工具结果**——等同于外部输入。markdown.js 那一层已经
@@ -167,8 +193,9 @@ const FONT_FILES = 'https://fonts.gstatic.com'
  * - `connect-src https:` 与 `frame-src https:`：席位机器配了 `directUrl` 之后，对话那条 SSE
  *   （chat.js 的 directStreamBase）和桌面那块 iframe（novncUrlOf）都直接打机器的域名，
  *   不再经 Gateway。机器地址按公司各不相同、随时会加，写不进一条静态的头；而直连的
- *   前提本来就是 https（见 docs/gateway-runtime.md §7），所以放的是整个 https:，不放
- *   http:。这两条放开不等于放开外泄：能发请求的脚本仍然只有 `script-src 'self'` 放进来的
+ *   前提本来就是 https（见 docs/gateway-runtime.md §7），所以放的是整个 https:。**只有
+ *   Gateway 自己跑在 http 上时才另外加 http:**（见 DIRECT_SRC）：那时页面本身就是 http，
+ *   混合内容无从谈起，而管家只监听明文 http，不放的话本地怎么配都连不上直连那条流。这两条放开不等于放开外泄：能发请求的脚本仍然只有 `script-src 'self'` 放进来的
  *   那几份。**只写 `'self'` 的话，直连在浏览器里是一句 CSP 拒绝——而 Gateway 已经没有
  *   反代退路，对话流和桌面就此全黑，日志里还一个字都没有。**
  *
@@ -189,9 +216,10 @@ const CSP = [
   `font-src 'self' data: ${UI_CDN} ${FONT_FILES}`,
   "img-src 'self' data: blob: https: http:",
   "media-src 'self' data: blob:",
-  // http://127.0.0.1:* 是桌面端里的本地 Bot（ui/data.js 的 localRoute）。只放回环地址，不放整个 http:。
-  "connect-src 'self' https: http://127.0.0.1:*",
-  "frame-src 'self' blob: https:",
+  // http://127.0.0.1:* 是桌面端里的本地 Bot（ui/data.js 的 localRoute）：那一条和 directUrl
+  // 无关，生产上也要有，所以单列着——DIRECT_SRC 只在本地开发时才带 http:。
+  `connect-src 'self' ${DIRECT_SRC} http://127.0.0.1:*`,
+  `frame-src 'self' blob: ${DIRECT_SRC}`,
   "worker-src 'self' blob:",
 ].join('; ')
 

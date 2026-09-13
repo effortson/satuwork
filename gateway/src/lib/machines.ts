@@ -4,7 +4,7 @@
  * 从 routes.ts 拆出来的——那个文件曾经是 5700 行，前 1900 行全是这类帮手。
  */
 import type { ServerResponse } from 'node:http'
-import { HttpError, type Req } from '../http.ts'
+import { gatewayPageIsHttp, HttpError, type Req } from '../http.ts'
 import { bodyOf, strField } from './validate.ts'
 import { openRelease, parseBotVersion, registerRemoteRelease } from '../releases.ts'
 import { pipeline } from 'node:stream/promises'
@@ -83,9 +83,15 @@ export function managerHostOf(raw: string): string {
  *
  * 比 `machineHostOf` 严一档，因为这一列是给**浏览器**用的，而浏览器的规矩不一样：
  *
- * · **必须 https。** Gateway 的页面走 https，页面里嵌一个 http 的 iframe 会被当成
- *   混合内容直接拦掉，而且是**静默**的——界面上就是一块永远打不开的空白，控制台
- *   之外没有任何线索。所以宁可在这里就把话说死，也不要让人去查一块白屏。
+ * · **必须 https——除非 Gateway 自己就是 http。** Gateway 的页面走 https 时，页面里
+ *   嵌一个 http 的 iframe 会被当成混合内容直接拦掉，而且是**静默**的——界面上就是
+ *   一块永远打不开的空白，控制台之外没有任何线索。所以宁可在这里就把话说死，也不要
+ *   让人去查一块白屏。但这条理由的前提是「页面是 https」：本地开发时 Gateway 自己就
+ *   跑在 http 上，混合内容根本无从谈起，而管家只监听明文 http（node:http，自己不做
+ *   TLS），硬要 https 等于在本地永远配不出直连——桌面、对话流、名单流、日志跟随全
+ *   都没有退路可退。所以**只在 GATEWAY_PUBLIC_URL 明确配成 http 时**放行 http。
+ *   没配过就照旧强制 https：没配时这个值是按 Host 猜的（见 gatewayBaseFor），拿一个
+ *   猜出来的协议去放宽一道安全校验，不划算。
  * · **不能带路径。** 这个值后面要拼 `/seats/<seatId>/vnc/`，带了路径拼出来的地址
  *   落不到管家的那条路由上，同样是一块打不开的屏。
  *
@@ -102,7 +108,7 @@ export function directUrlOf(raw: string): string | null {
   } catch {
     throw new HttpError(400, '直连地址要写成完整的 https URL，例如 https://m001.example.com')
   }
-  if (u.protocol !== 'https:') {
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && gatewayPageIsHttp())) {
     throw new HttpError(400, '直连地址必须是 https：Gateway 的页面是 https，http 的桌面会被浏览器当成混合内容静默拦掉')
   }
   if (u.username || u.password) throw new HttpError(400, '直连地址不能带用户名或口令')
