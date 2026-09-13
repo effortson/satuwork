@@ -501,9 +501,12 @@ v1 约束：一家公司一台机器；机器先按 **pair 进程** 隔离，不
 - 桌面：**只有直连一条路**（`novncUrlOf`）：`https://m001…/seats/{seatId}/vnc/?ticket=…`，浏览器直接打席位机器上的管家。票由 Gateway 用 JWT 私钥签（`/runtime/desktop`、`/platform/desktop-ticket`）、五分钟有效、只对一块屏，管家拿 Gateway 公钥验。x11vnc、websockify、CDP 全部只听 `127.0.0.1`
   - Gateway 同域反代 `/desktop/{seatId}/`（`desktop.ts`）**已删**：桌面是一条 WebSocket，Vercel 函数里它被钉在一个实例上、受 300 秒上限；而且像素是整条链上最贵的一股流量（1280×800 下 Bot 一滚页面就是 4 MB/s）。**没配 `directUrl` 的机器没有桌面**（`novncUrl` 为 null）
 - **直连还要管家够新（协议 ≥ 4）**：落地页那段「关掉 noVNC 控制条」的样式和 `frame-ancestors` 只有管家能插。填了 `directUrl` 但管家还是 3 号 → 同样没有桌面，机器卡上报 `directPending`。少了这道闸，表现是同一块预览在有的机器上多一条控件压着画面，而配置里看不出区别
-- 直连的三个前提，缺一条就别配：**公网可达**、**必须 https**（Gateway 是 https，http 的 iframe 会被当混合内容静默拦掉，界面上只是一块永远打不开的空白）、**最好和 Gateway 同一个可注册域**（SameSite 判的是 site 不是 origin，同站时管家那张 `SameSite=Lax` cookie 在 iframe 子框里才带得上）
+- 直连的两个前提，缺一条就别配：**公网可达**、**必须 https**（Gateway 是 https，http 的 iframe 会被当混合内容静默拦掉，界面上只是一块永远打不开的空白）。**「和 Gateway 同一个可注册域」这一条已经不是前提了**（管家 0.1.24 起）：那时桌面靠入口换来的 `SameSite=Lax` cookie 认证，跨站就带不上；现在票写在路径里（`/seats/:id/vnc/t/<票>/…`，见 `manager/src/proxy.ts` 的 `VNC_TICKET_PATH`），noVNC 的相对资源和那条 WebSocket 自然都带着凭据，跟 cookie 策略无关。**非改不可的理由是 Safari**：WKWebView 拦掉一切第三方 cookie，`SameSite=None; Secure` 也没用，于是桌面端（页面源 `satu://localhost`，那块屏永远是跨站 iframe）在旧方案下必然黑屏。代价是票进了 URL——同一条 URL 上本来就有 noVNC 的 `password=`，而票五分钟就废
   - 前端那块 iframe 的 `sandbox` 带 `allow-same-origin`：桌面地址现在永远跨源（机器的域名，不是 Gateway 的），不加的话框是 opaque 源，管家那张 cookie 带不上。以前同域反代那条路上绝不能加（框里那页能读父页 sessionStorage 里的登录 JWT），那条路已经没了
   - **没有退路**：管家在内网、还没铺证书的机器，浏览器连不到它的管家，就没有桌面。桌面打不开先查 `directUrl` 和证书
+  - **本地开发怎么测桌面**：`GATEWAY_PUBLIC_URL` 明确配成 http 时，`directUrl` 也收 http（`directUrlOf`），CSP 的 `connect-src` / `frame-src` 跟着放开 http（`gateway/src/http.ts` 的 `DIRECT_SRC`）。票进路径之后**这就够了**——`directUrl` 直接填管家的地址（`http://<机器 IP>:8443`），浏览器版和桌面壳都能看
+  - 想在本地跑**生产那条路径**（https 直连）：`gateway/.env` 里配 `SATUWORK_DESK_PROXY=<管家主机>:<管家端口>` 再加一对 mkcert 证书（`SATUWORK_DESK_PROXY_CERT` / `_KEY`），`pnpm dev` 会顺带起一个 TLS 终结的转发（`gateway/scripts/desk-proxy.mjs`），`directUrl` 填 `https://<本机 IP>:<转发端口>`。都不配时 `pnpm dev` 和以前一模一样
+  - 管家的 `frame-ancestors` 要认桌面壳那几个源（`manager/src/proxy.ts` 的 `frameAncestorsOf`，管家 0.1.23 起；没有加协议号——Gateway 侧不依赖它做任何判断，老管家上的表现是桌面端框不进那块屏）
 - 管家侧 `/seats/:id/vnc/*` 认票/cookie（浏览器直连的）；机器票那一种是给以前的 Gateway 反代用的
 
 ### 7.1 上线必须挂 TLS 反代（为了 h2）

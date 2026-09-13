@@ -17,7 +17,7 @@ import { botUnit, clampLines, followLogs, MANAGER_UNIT, recentLogs } from './log
  * 两条路径两套鉴权，因为调用方不同：
  *
  *   /seats/:id/bot/*   Gateway 调    x-satuwork-machine: smt_
- *   /seats/:id/vnc/*   浏览器直连     Gateway 签的短期 ticket → path 限定 cookie
+ *   /seats/:id/vnc/*   浏览器直连     Gateway 签的短期 ticket → 票写进路径（cookie 兜底）
  *
  * bot 那条**原样透传 authorization**：bot 自己要验席位票（`sat_`），管家不掺和，
  * 所以用一个自己的头，两层互不干扰。
@@ -25,6 +25,31 @@ import { botUnit, clampLines, followLogs, MANAGER_UNIT, recentLogs } from './log
 
 const BOT_PREFIX = /^\/seats\/([^/]+)\/bot(\/.*)?$/
 const VNC_PREFIX = /^\/seats\/([^/]+)\/vnc(\/.*)?$/
+/**
+ * 票写在路径里：`/seats/:id/vnc/t/<票>/…`。
+ *
+ * **为什么不能只靠 cookie。** 原来的做法是入口那一跳把票换成一张 path 限定的 cookie，
+ * 之后 noVNC 自己发的请求靠它。但这块屏在**桌面端是跨站 iframe**（页面源
+ * `satu://localhost`），而 WKWebView 就是 Safari 的引擎——Safari 默认拦掉一切第三方
+ * cookie，`SameSite=None; Secure` 也救不了：那张 cookie 存不下，也发不出去。表现是落地页
+ * 打开、`vnc.html` 和之后每条资源全 401，一块黑屏。Chrome 目前还放行，所以同一套代码在
+ * 浏览器版好使、在桌面端不行。
+ *
+ * 票进路径之后，noVNC 的相对资源和那条 WebSocket 自然都落在这个前缀下，每个请求自带
+ * 凭据，不依赖任何 cookie 策略。**代价是票进了 URL**——它会进地址栏、进历史。原来那条
+ * 注释说的正是反过来的取舍，现在把它翻过来：这条 URL 上本来就有 noVNC 的 `password=`
+ * （见下面那段），票在同一条 URL 上不算新增暴露面，而五分钟的票换来的是「桌面在所有
+ * 浏览器里都能看」。
+ *
+ * cookie 那条路留着兜底：老落地页、管理员手里存着的旧链接，以及 e2e 里那几条。
+ *
+ * **字符集限死成 JWT 用得到的那些**，不是 `[^/]+`：票段的内容完全由请求方给，而下面
+ * 要对它做 `decodeURIComponent`——`/t/%/` 这种畸形百分号会让它抛 URIError，于是一条
+ * 坏票在 HTTP 那条路上变成 500 加一条 stack 进 journal（cookie 那条路上同样的坏票只是
+ * 401），谁都能拿它刷这台机器的日志，而 journal 占用本来就有看守和上限在管。限死之后
+ * 不匹配的直接落到 cookie 那一支，照旧 401。
+ */
+const VNC_TICKET_PATH = /^\/t\/([A-Za-z0-9._-]+)(\/.*)?$/
 /**
  * 浏览器直连的对话流：`/seats/:id/stream/sessions/...` → bot 的 `/api/sessions/...`。
  *
@@ -185,18 +210,23 @@ const LANDING_CSS =
   '#noVNC_status.noVNC_status_normal{display:none!important}</style>'
 
 /**
- * 这块屏只准被 Gateway 的页面框进去。
+ * 这块屏只准被 Gateway 的页面、或者桌面壳框进去。
  *
  * 直连之后这个源直接暴露在公网上，鉴权只剩那张五分钟的票——别人拿到票的那几分钟里，
  * 至少不该能把它嵌进自己的页面里做点什么。`frame-ancestors` 认的是源，`gatewayUrl`
  * 带着路径也不要紧，这里只取 origin。
+ *
+ * **桌面壳那几个源要一起放**（DESKTOP_ORIGINS）：它把界面打进了包里，页面源是
+ * `satu://localhost`，不是 Gateway 的源。少了这一条，桌面端右栏那块屏是一句
+ * 「Refused to display … frame-ancestors」——而 CORS 那边（corsFor）早就认这几个源了，
+ * 两处对桌面端的态度必须一致，否则表现是「别的直连都通，唯独那块屏是黑的」。
  *
  * 取不到（还没配对、地址是空的）就退回 `'self'`：宁可把自己也框不进去，也不要发一个
  * 放开所有人的 CSP。
  */
 function frameAncestorsOf(gatewayUrl: string): string {
   try {
-    return `frame-ancestors ${new URL(gatewayUrl).origin}`
+    return `frame-ancestors ${new URL(gatewayUrl).origin} ${[...DESKTOP_ORIGINS].join(' ')}`
   } catch {
     return "frame-ancestors 'self'"
   }
@@ -503,7 +533,10 @@ export function proxyIntercept(deps: ProxyDeps) {
       //
       // autoconnect：这个入口是从 Gateway 上点「打开桌面」进来的，意图就是看桌面，
       // 不是打开一个还要再按一次 Connect 的页面。VNC 口令仍然要人自己输。
-      const wsPath = `${base.slice(1)}/websockify`
+      // 票写进路径：noVNC 的相对资源和那条 WebSocket 都会落在这个前缀下面（见
+      // VNC_TICKET_PATH）。cookie 仍然种着，但只是兜底——Safari 里它根本存不下。
+      const tBase = `${base}/t/${encodeURIComponent(ticket)}`
+      const wsPath = `${tBase.slice(1)}/websockify`
       // 口令由 Gateway 签在票里带过来（票已经验过签了），这里转成 noVNC 认的
       // `password=` 参数——它只从 URL 或输入框读凭据，没有别的入口。
       //
@@ -524,15 +557,26 @@ export function proxyIntercept(deps: ProxyDeps) {
       const sameSite = https ? 'SameSite=None; Secure' : 'SameSite=Lax'
       res.writeHead(302, {
         'set-cookie': `${cookieName(seatId)}=${encodeURIComponent(ticket)}; Path=${base}; Max-Age=${maxAge}; HttpOnly; ${sameSite}`,
-        location: `${base}/vnc.html?${query}`,
+        location: `${tBase}/vnc.html?${query}`,
         'cache-control': 'no-store',
       })
       res.end()
       return true
     }
-    const fromCookie = cookieOf(req, cookieName(seatId))
-    const okCookie = fromCookie ? await verifyTicket(fromCookie, deps.gatewayUrl()) : undefined
-    if (!okCookie || okCookie.seatId !== seatId) {
+    /**
+     * 票在路径里（现在的主路）或 cookie 里（兜底）。**路径优先**：桌面端那条路上根本
+     * 不会有 cookie，而两者都验不过才是 401。
+     */
+    const inPath = VNC_TICKET_PATH.exec(rest)
+    // 上游 websockify 不认识票那一段，转发时要摘掉。
+    const upstreamRest = inPath ? inPath[2] || '/' : rest
+    const okTicket = inPath
+      ? await verifyTicket(decodeURIComponent(inPath[1]), deps.gatewayUrl())
+      : await (async () => {
+          const fromCookie = cookieOf(req, cookieName(seatId))
+          return fromCookie ? await verifyTicket(fromCookie, deps.gatewayUrl()) : undefined
+        })()
+    if (!okTicket || okTicket.seatId !== seatId) {
       json(res, 401, { error: '桌面票无效或已过期' })
       return true
     }
@@ -544,11 +588,11 @@ export function proxyIntercept(deps: ProxyDeps) {
      * 原样对流，改写它们既没意义又要把整个文件收进内存。
      */
     const csp = frameAncestorsOf(deps.gatewayUrl())
-    if (rest === '/vnc.html' || rest === '/' || rest === '/index.html') {
-      pipeLanding(req, res, row.novncPort, rest + url.search, forwardHeaders(req, row.novncPort), csp)
+    if (upstreamRest === '/vnc.html' || upstreamRest === '/' || upstreamRest === '/index.html') {
+      pipeLanding(req, res, row.novncPort, upstreamRest + url.search, forwardHeaders(req, row.novncPort), csp)
       return true
     }
-    pipeUpstream(req, res, row.novncPort, rest + url.search, forwardHeaders(req, row.novncPort))
+    pipeUpstream(req, res, row.novncPort, upstreamRest + url.search, forwardHeaders(req, row.novncPort))
     return true
   }
 }
@@ -582,9 +626,16 @@ export function attachUpgrade(server: Server, deps: ProxyDeps) {
       const row = seat(seatId)
       if (!row) return bail('404 Not Found')
       // 同上：Gateway 反代过来的升级请求带的是机器票，没有 cookie。
+      // 浏览器直连那条路上票在**路径**里（VNC_TICKET_PATH），cookie 只是兜底——
+      // 桌面端（WKWebView）那边跨站 cookie 一律带不上，全靠路径这一份。
+      const inPath = VNC_TICKET_PATH.exec(vnc[2] || '/')
       if (!machineTokenOk(req, deps.machineToken())) {
-        const token = cookieOf(req, cookieName(seatId))
-        const ok = token ? await verifyTicket(token, deps.gatewayUrl()) : undefined
+        const ok = inPath
+          ? await verifyTicket(decodeURIComponent(inPath[1]), deps.gatewayUrl())
+          : await (async () => {
+              const token = cookieOf(req, cookieName(seatId))
+              return token ? await verifyTicket(token, deps.gatewayUrl()) : undefined
+            })()
         if (!ok || ok.seatId !== seatId) return bail('401 Unauthorized')
       }
 
@@ -598,7 +649,8 @@ export function attachUpgrade(server: Server, deps: ProxyDeps) {
         host: '127.0.0.1',
         port: row.novncPort,
         method: req.method,
-        path: (vnc[2] || '/') + url.search,
+        // 票那一段不转给上游：websockify 不认识它。
+        path: (inPath ? inPath[2] || '/' : vnc[2] || '/') + url.search,
         headers,
       })
       upstream.on('upgrade', (upRes, upSocket, upHead) => {
