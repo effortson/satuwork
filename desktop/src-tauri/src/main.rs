@@ -292,10 +292,42 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
         "http" | "https" => {}
         _ => return true,
     }
+    // 内嵌桌面那块 iframe 也是一次 http(s) 导航，不能跟着往系统浏览器送。
+    if is_seat_desktop(url) {
+        return true;
+    }
     // 界面在自己的源上，任何 http(s) 导航都是往外走（OAuth 跳转、外链）：交给系统浏览器，
     // 窗口留在原地。以前界面在 Gateway 的源上时同源导航是页面自己的路由，现在没有这一类了。
     let _ = app.opener().open_url(url.as_str(), None::<&str>);
     false
+}
+
+/**
+ * 这次导航是不是内嵌桌面那块 iframe 在加载席位机器的 noVNC。
+ *
+ * **为什么需要这一条。** 上面那条回调想挡的是「唯一的窗口跑到站外」，可它分不出主框架
+ * 和子框架——wry 的 navigation_policy 把 WKNavigationAction 里的 URL 取出来就交给上层，
+ * `targetFrame.isMainFrame` 从头到尾没碰过。于是右栏那块屏（`{directUrl}/seats/<席位>/vnc/`，
+ * 见 gateway/ui/chat.js 的 mountDesktop）一挂上去就被判成「往外走」：地址送进系统浏览器，
+ * iframe 这边 Cancel。表现是桌面从窗口里跳到浏览器里打开，而配置上看不出任何毛病。
+ *
+ * **判据只认路径，不认源。** 机器的直连地址按公司各不相同、随时会加，壳子这头无从枚举
+ * （它只知道 Gateway 在哪）。代价照实写：有人要是能诱导主窗口导航到
+ * `http://evil.com/seats/x/vnc/`，窗口就跑出去了——但能往界面里塞进链接或脚本的人，本来
+ * 就有比这省事的办法（见上面那段注释：这条回调不是页面的边界）。
+ *
+ * 管家那一跳（`/seats/<席位>/vnc/` → `/seats/<席位>/vnc/vnc.html?…`，见 manager/src/proxy.ts）
+ * 也是一次导航，所以判的是前缀而不是整条路径。
+ */
+fn is_seat_desktop(url: &Url) -> bool {
+    let mut seg = match url.path_segments() {
+        Some(it) => it,
+        None => return false,
+    };
+    // /seats/<席位>/vnc[/…]
+    seg.next() == Some("seats")
+        && seg.next().is_some_and(|s| !s.is_empty())
+        && seg.next() == Some("vnc")
 }
 
 /** 暗号里带的那个地址：同源的另开一扇应用窗口，站外的交给系统浏览器。 */
@@ -1320,7 +1352,8 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{desktop_version_supports, safe_runtime_version};
+    use super::{desktop_version_supports, is_seat_desktop, safe_runtime_version};
+    use tauri::Url;
 
     #[test]
     fn runtime_version_cannot_escape_release_directory() {
@@ -1336,6 +1369,35 @@ mod tests {
         assert!(desktop_version_supports("1.0.0", "1.0.0"));
         assert!(!desktop_version_supports("0.1.9", "0.2.0"));
         assert!(!desktop_version_supports("broken", "0.2.0"));
+    }
+
+    /// 内嵌桌面那块 iframe 不能被导航守卫送去系统浏览器（见 is_seat_desktop）。
+    #[test]
+    fn seat_desktop_navigation_stays_in_the_window() {
+        let yes = [
+            "https://m001.example.com/seats/sw-abc-def/vnc/",
+            "https://m001.example.com/seats/sw-abc-def/vnc/?ticket=x",
+            // 管家那一跳
+            "https://m001.example.com/seats/sw-abc-def/vnc/vnc.html?path=x&autoconnect=1",
+            // 本地开发的 http 直连
+            "http://192.168.64.1:8443/seats/sw-abc-def/vnc/",
+        ];
+        for u in yes {
+            assert!(is_seat_desktop(&Url::parse(u).unwrap()), "该放行：{u}");
+        }
+        let no = [
+            "https://example.com/",
+            "https://example.com/seats/",
+            "https://example.com/seats/sw-abc-def",
+            // 对话流和名单流是 fetch，不走导航；真走到这儿也不该当桌面放行
+            "https://m001.example.com/seats/sw-abc-def/stream/sessions/s-1/events",
+            "https://m001.example.com/roster/stream",
+            // 空席位段
+            "https://m001.example.com/seats//vnc/",
+        ];
+        for u in no {
+            assert!(!is_seat_desktop(&Url::parse(u).unwrap()), "不该放行：{u}");
+        }
     }
 }
 

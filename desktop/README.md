@@ -66,6 +66,12 @@ PENDING，切换仍留给下一次「没有本地 Bot 在跑」的启动。
   接的话，对话里每个链接和那个「打开桌面」按钮全是死的。现在：同源的另开一扇应用
   窗口，站外的交给系统浏览器。普通的站外链接也一样——不接的话它会把唯一的窗口整个
   带走，而这里没有地址栏也没有后退。
+  - **内嵌桌面是这条守卫的例外**（`is_seat_desktop`）。右栏那块屏是一个指向席位机器的
+    iframe（`{directUrl}/seats/<席位>/vnc/`），而它的加载在守卫眼里也是一次 http(s)
+    导航——wry 的 `navigation_policy` 不区分主框架和子框架，`targetFrame.isMainFrame`
+    压根没传上来。所以路径形如 `/seats/<席位>/vnc` 的放行，否则表现是**桌面从窗口里
+    跳到系统浏览器里打开**，而配置上看不出任何毛病。判据只认路径不认源：机器的直连
+    地址按公司各不相同，壳子这头无从枚举。
 - **连不上**。WKWebView 没有内建错误页，装不上东西时窗口里一个字都没有。所以进主窗口
   之前先敲一下 TCP：敲不开就停在设置屏并说明原因，也**不把这个地址写进 server.txt**
   ——写了的话下次启动会直奔那个地址，又是一片空白。代价：敲的只是 TCP，端口通着但
@@ -135,7 +141,8 @@ SATUWORK_SERVER=http://127.0.0.1:4321 pnpm --filter satuwork-desktop dev
 |---|---|---|
 | `fetch` 流式读取 | 聊天（chat.js 的 SSE） | 过，5 次增量读到，首字节 ~155ms |
 | WebSocket | 桌面画面 | 过 |
-| 302 + SameSite=Lax cookie | 桌面入口（管家的 `/seats/:id/vnc/`，浏览器直连） | 过 |
+| 302 + SameSite=Lax cookie（**同源**） | 旧架构里 Gateway 同域反代的桌面入口 | 过 |
+| 302 + SameSite=Lax cookie（**跨站**） | 曾经的桌面入口 | **不过，而且不可能过**：WKWebView 拦掉一切第三方 cookie，`SameSite=None; Secure` 也没用。桌面因此改成**票写进路径**（`/seats/:id/vnc/t/<票>/…`，管家 0.1.24 起），不再依赖 cookie |
 | `blob:` 预览 iframe | 附件预览 | 过 |
 | `<a download>` | 附件下载 | 过，静默落到 ~/Downloads，不弹框 |
 | `target="_blank"`（同源） | 「打开桌面」按钮 | 过（另开一扇应用窗口） |

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --env-file-if-exists=.env --import tsx --watch src/index.ts",
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json",
     "migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",

@@ -233,7 +233,7 @@ function machineInfoPanel(card) {
       </div>
       <button type="submit" class="btn" ${state.busy ? 'disabled' : ''}>${t('保存')}</button>
     </form>
-    <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('填上之后，桌面的画面由浏览器直接连这台机器取，不再经过 Gateway——那是整条链上最贵的一股流量。要求：公网可达、必须 https（Gateway 是 https，http 会被浏览器当混合内容静默拦掉），最好和 Gateway 同一个主域。留空 = 照旧从 Gateway 反代；桌面打不开时先清掉这一格让它退回去。')}${m.directPending ? `<br><b>${t('地址填了，但这台机器的管家版本还不够新，桌面仍在走 Gateway 反代——等它自升级上来会自动切过去。')}</b>` : ''}</p>
+    <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('填上之后，桌面的画面由浏览器直接连这台机器取，不再经过 Gateway——那是整条链上最贵的一股流量。要求：公网可达、必须 https（http 会被浏览器当混合内容静默拦掉；只有 Gateway 自己跑在 http 上时才收 http 地址），最好和 Gateway 同一个主域。留空 = 照旧从 Gateway 反代；桌面打不开时先清掉这一格让它退回去。')}${m.directPending ? `<br><b>${t('地址填了，但这台机器的管家版本还不够新，桌面仍在走 Gateway 反代——等它自升级上来会自动切过去。')}</b>` : ''}</p>
     <form data-form="machine-company" data-machine="${esc(m.id)}" style="display: flex; gap: var(--space-2); align-items: flex-end; flex-wrap: wrap;">
       <div class="field" style="margin: 0; flex: 1; min-width: 220px;">
         <label for="md-company">${t('归属公司')}</label>

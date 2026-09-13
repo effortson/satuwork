@@ -76,7 +76,24 @@ echo "==> Downloading the manager"
 apt-get install -y curl tar >/dev/null 2>&1 || true
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-curl -fsSL "$GATEWAY_URL/manager/release?code=$CODE" -o "$TMP/manager.tgz"
+# Re-running this script on an already-paired machine is the documented repair path
+# (manager/README.md): it restores a missing satuwork-worker unit, an interrupted
+# self-upgrade, or a changed address. Such a machine has no pairing code any more, so
+# fetch the package with the machine token that pairing wrote to manager.json. Without
+# this branch the re-run dies on a 401 right here and "just run it again" is a promise
+# the script cannot keep.
+if [ -n "$CODE" ]; then
+  curl -fsSL "$GATEWAY_URL/manager/release?code=$CODE" -o "$TMP/manager.tgz"
+else
+  MT="$(node -p 'JSON.parse(require("fs").readFileSync("/etc/satuwork/manager.json","utf8")).token' 2>/dev/null || true)"
+  if [ -z "$MT" ]; then
+    echo "no --code, and /etc/satuwork/manager.json has no machine token to fall back on" >&2
+    exit 2
+  fi
+  # The Gateway reads the machine token from Authorization (lib/guards.ts requireMachine);
+  # x-satuwork-machine is the manager's own convention and does not apply here.
+  curl -fsSL -H "authorization: Bearer $MT" "$GATEWAY_URL/manager/release" -o "$TMP/manager.tgz"
+fi
 STAGED=/opt/satuwork/manager/releases/staged.$$
 mkdir -p "$STAGED"
 tar -xzf "$TMP/manager.tgz" -C "$STAGED"

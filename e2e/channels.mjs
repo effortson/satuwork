@@ -649,6 +649,61 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       } finally { await client.end() }
     })
 
+    /**
+     * 协议 ≥8 的机器上，渠道那一轮归席位工人跑，Gateway 判定归工人之后就不再兜底。
+     * 工人要是没起来（真实发生过：老脚本装的机器压根没有 satuwork-worker 单元），消息
+     * 会**静默**堆在 pending 里——attempts 永远 0、事件的 lastError 永远空、Telegram 那头
+     * 只是「机器人不理人」。这条钉住那句报出来的话。
+     */
+    await test('归工人却没人来领：绑定上要报出来，渠道页才看得见', async () => {
+      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
+      const pg = require('pg')
+      const client = new pg.Client({ connectionString: PG_URL })
+      await client.connect()
+      try {
+        const own = await client.query(`select "accountId","companyId" from "${schema}".channel_bindings where id = $1`, [bindingId])
+        const { accountId, companyId } = own.rows[0]
+        const machineId = 'm-unclaimed'
+        // 协议 10 = 渠道那一轮归工人（MIN_CHANNEL_WORKER_PROTOCOL）。
+        await client.query(
+          `insert into "${schema}".machines (id,host,"companyId","createdAt",token,"pairedAt",protocol)
+           values ($1,$2,$3,$4,$5,$4,10) on conflict (id) do update set protocol=10`,
+          [machineId, 'http://127.0.0.1:1', companyId, Date.now(), 'smt_unclaimed'],
+        )
+        await client.query(
+          `insert into "${schema}".seat_runtimes
+             ("accountId","botId","companyId","linuxUser",slot,display,"vncPort","novncPort","botPort","vncPassword",status,"updatedAt","seatId","machineId")
+           values ($1,$2,$3,'sw-unclaimed',0,10,5910,6081,3200,'pw','ready',$4,'sw-unclaimed-seat',$5)
+           on conflict ("accountId","botId") do update set "machineId"=excluded."machineId", status='ready'`,
+          [accountId, botId, companyId, Date.now(), machineId],
+        )
+        // 一条「很久以前就该有人领」的消息：会话 id 和别的用例岔开，免得被前驱条件挡住。
+        const old = Date.now() - 10 * 60_000
+        await client.query(
+          `insert into "${schema}".channel_events
+             (id,"bindingId","externalEventId","externalConversationId","remoteUserId","remoteDisplayName",title,text,status,attempts,"nextTryAt","createdAt","updatedAt")
+           values ($1,$2,'ev-unclaimed','777','456','Alice','','在吗','pending',0,$3,$3,$3)`,
+          [`ce-unclaimed`, bindingId, old],
+        )
+        await client.query(`update "${schema}".channel_bindings set "lastError" = null where id = $1`, [bindingId])
+
+        // 扫描只在新消息入队时被踢一次（kickChannelDispatcher），这个套件的 TICK 是十分钟。
+        telegram.seen.updates.push({
+          update_id: 9031,
+          message: { message_id: 31, chat: { id: 456, type: 'private' }, from: { id: 456, is_bot: false, first_name: 'Alice', username: 'alice' }, text: '再问一句' },
+        })
+        await waitFor(async () => {
+          const row = await client.query(`select "lastError" from "${schema}".channel_bindings where id = $1`, [bindingId])
+          return String(row.rows[0].lastError || '').includes('satuwork-worker')
+        }, '没人来领的消息要在绑定上报出来')
+
+        // 报归报，**消息不能被丢掉**：工人回来照样能领。
+        const still = await client.query(`select status, attempts from "${schema}".channel_events where id = 'ce-unclaimed'`)
+        assert(still.rows[0].status === 'pending', `不该改状态：${still.rows[0].status}`)
+        assert(Number(still.rows[0].attempts) === 0, '不该消耗重试次数')
+      } finally { await client.end() }
+    })
+
     await test('重新生成配对码会撤销旧身份', async () => {
       const reset = await req(base, 'POST', `/channels/${bindingId}/pairing-code`, { token, body: {} })
       assert(reset.status === 200, `reset pairing ${reset.status} ${reset.text}`)

@@ -42,6 +42,13 @@ const POLL_TIMEOUT_SECONDS = Math.min(50, Math.max(1, Math.trunc(Number(process.
 const POLL_LEASE_MS = (POLL_TIMEOUT_SECONDS + 20) * 1000
 /** 长轮询/API 暂时失败后不要每秒轰 Telegram；429 给的 retry_after 优先。 */
 const POLL_RETRY_MS = Math.max(1000, Math.trunc(Number(process.env.GATEWAY_CHANNEL_POLL_RETRY_MS ?? 5000)))
+/**
+ * 「归工人却没人来领」等多久就报出来。
+ *
+ * 工人两秒一轮（manager 的 CHANNEL_TICK_MS），两分钟等于漏了六十轮，不可能是抖动；
+ * 而换版重启（systemd-run --on-active=2s 加进程起来）只断几十秒，够它跨过去。
+ */
+const WORKER_UNCLAIMED_MS = Math.max(30_000, Math.trunc(Number(process.env.GATEWAY_CHANNEL_UNCLAIMED_MS ?? 120_000)))
 /** 席位接口自己最多等 250ms；短间隔继续取最新快照，不让 HTTP 轮询成为逐字瓶颈。 */
 const TURN_POLL_MS = Math.max(50, Math.trunc(Number(process.env.GATEWAY_CHANNEL_TURN_POLL_MS ?? 100)))
 /** 草稿与 typing 共用 Telegram 的 live-action 限额；一秒一帧留足突发余量。 */
@@ -520,6 +527,35 @@ export async function workerOwnedBinding(db: Db, binding: Binding, cache: Map<st
   return owned
 }
 
+/**
+ * 「这条归工人，可工人一直没来领」——把它说出来。
+ *
+ * **不说的话，这种故障没有任何外在迹象**：事件停在 `pending`、`attempts` 永远 0、
+ * 事件自己的 `lastError` 永远空，而 Gateway 判定归工人之后就不再兜底，于是 Telegram
+ * 那头的表现只是「机器人不理人」。实际发生过一次：机器是老脚本装的，压根没有
+ * `satuwork-worker` 单元，协议升上去之后消息静默堆了将近一天，靠人报故障才发现。
+ * 日常任务那条路反倒有交代（`routine_runs` 会写「管家太旧」「机器没回报」），渠道这条
+ * 什么都没有。
+ *
+ * 写在**绑定**的 `lastError` 上，不是事件的：渠道页显示的就是它（ui/pages-channels.js），
+ * 而事件的 lastError 没有任何界面。投递成功时那句会被清掉（见 deliver 那一支），所以
+ * 工人一恢复，红字自己就消失了，不需要谁去清。
+ *
+ * 三个不碰的情况：等得还不够久；领过了（`attempts` 或租约有值）——那是「跑失败」，
+ * 另一回事，别抢它的位置；话已经写在那儿了——否则每一轮扫描都写一次库。
+ */
+async function flagUnclaimed(db: Db, binding: Binding, event: ChannelEvent): Promise<void> {
+  if (Date.now() - event.createdAt < WORKER_UNCLAIMED_MS) return
+  if (event.attempts > 0 || event.leaseUntil) return
+  const msg =
+    '收到的消息没人处理：这台机器的席位工人（satuwork-worker）没在领活。' +
+    '到机器上看一眼 `systemctl status satuwork-worker`；单元不在就重跑一次装机脚本补上。'
+  if (binding.lastError === msg) return
+  await db.updateChannelBinding(binding.id, { lastError: msg })
+  // 只在第一次写库时说一句：上面那个比较天然把日志也节流了。
+  console.warn(`satuwork-gateway: 渠道 ${binding.id} 的消息没人来领，席位工人多半没在跑`)
+}
+
 function rawUpdateId(raw: unknown): number | null {
   const n = Number(raw && typeof raw === 'object' ? (raw as { update_id?: unknown }).update_id : NaN)
   return Number.isSafeInteger(n) && n >= 0 ? n : null
@@ -858,7 +894,10 @@ export function startChannelDispatcher(db: Db, key: Buffer, keys: JwtKeys): () =
           // 归工人的机器上、还没跑出回复的事件不碰：工人会来领（routes/worker.ts）。
           if (!event.reply) {
             const binding = await db.channelBinding(event.bindingId)
-            if (binding && (await workerOwnedBinding(db, binding, owned))) continue
+            if (binding && (await workerOwnedBinding(db, binding, owned))) {
+              await flagUnclaimed(db, binding, event)
+              continue
+            }
           }
           activeEvents.add(event.id)
           // 扫描只负责派活，不等最长二十分钟的模型轮次。一个慢会话不能挡住其它渠道

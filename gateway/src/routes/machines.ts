@@ -10,7 +10,7 @@ import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { installScript } from '../install.ts'
 import { proxyJson } from '../lib/runtime.ts'
 import { localBotReleaseTarget, parseBotVersion, publicBotRelease, storeUploadedRelease } from '../releases.ts'
-import { requireOrgUser, requireOwnerUser, requireReleaseAuthor } from '../lib/guards.ts'
+import { requireMachine, requireOrgUser, requireOwnerUser, requireReleaseAuthor } from '../lib/guards.ts'
 import { MANAGER_VACUUM_TIMEOUT_MS, MAX_LOG_CAP_MB, METRIC_RETENTION_MS, MINUTE_MS } from '../lib/telemetry.ts'
 import { signDesktopTicket } from '../crypto.ts'
 import { type Account, type CatalogItem, type Machine, type SeatRuntime } from '../db.ts'
@@ -1180,16 +1180,37 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
   })
 
   /**
-   * 装机脚本下载管家包。**凭配对码**——它还没有 `smt_`，那要配对之后才有。
+   * 装机脚本下载管家包。**两种凭据，按机器有没有配过对分**：
    *
-   * 码在这里只用来看「是不是一张有效的票」，不消费它：真正的认领在 /machines/pair。
-   * 下错了包可以重来，认领错了要重新生成码。
+   * · 头一回装：**配对码**——那时还没有 `smt_`，它要配对之后才有。码在这里只用来看
+   *   「是不是一张有效的票」，不消费它：真正的认领在 /machines/pair。下错了包可以重来，
+   *   认领错了要重新生成码。
+   * · **已经配过对的机器：机器票**。重跑装机脚本是这套东西的修复手段（补一个缺掉的
+   *   `satuwork-worker` 单元、救一次卡住的自升级、换地址之后重铺一遍，见 manager/README.md），
+   *   而那时手上早就没有配对码了。只认码的话，重跑会死在这条 401 上——README 承诺的
+   *   「重跑一次就是修复手段」就成了一句脚本兑现不了的话。
    */
   router.get('/manager/release', async (req, res) => {
     const code = normalizePairingCode(req.query.get('code') || '')
-    const pairing = await db.machinePairing(code)
-    if (!pairing || pairing.usedAt || pairing.expiresAt <= Date.now()) throw new HttpError(401, '配对码无效或已过期')
-    const desired = await desiredManagerRelease(db)
+    /**
+     * **认出是哪台机器就要把它带上**：`desiredManagerRelease` 靠 machine 认两件事——
+     * 这台机器钉的版本（`desiredManagerVersion`），以及**架构**。少了它，取的是
+     * `latestBotRelease('manager', null)`，而 CI 是 arm64 先、x64 后串行上传的，「最新」
+     * 通常是 x64 包——一台 arm 机器重跑装机脚本就会装上一个起不起来的架构，而重跑
+     * 正是这条分支存在的理由。钉了版本的机器同样会被绕过去：装成最新之后，下一次
+     * 心跳 Gateway 又按 pin 把它换回来，白重启一轮管家和工人。
+     *
+     * 配对码那条路没有机器可带（记录还不存在、也不知道 arch），只能按平台默认给。
+     */
+    let machine: Machine | undefined
+    if (code) {
+      const pairing = await db.machinePairing(code)
+      if (!pairing || pairing.usedAt || pairing.expiresAt <= Date.now()) throw new HttpError(401, '配对码无效或已过期')
+    } else {
+      // 没给码就必须拿得出机器票。两样都没有仍然是 401，和以前一样。
+      machine = await requireMachine(req, db)
+    }
+    const desired = await desiredManagerRelease(db, machine)
     if (!desired) throw new HttpError(409, '还没有发布机器管家版本')
     await sendReleaseFile(res, 'manager', desired.version, db)
   })

@@ -14,7 +14,9 @@ import { fileURLToPath } from 'node:url'
  *   - `res.body.getReader()` 增量读流——聊天的每一个字都从这条来（chat.js 的 SSE）
  *   - WebSocket——右栏那块桌面的像素全走它
  *   - `<a download>` 与 blob: 预览——附件下载和文件预览
- *   - 302 带回来的 SameSite=Lax cookie——桌面反代的入口（desktop.ts）
+ *   - 302 带回来的 SameSite=Lax cookie——**同源**那一种。桌面早就不走 Gateway 反代了
+ *     （desktop.ts 已删），现在是直连席位机器的跨站 iframe，那一种这里测不了：靶子和
+ *     页面同源，而跨站要 `SameSite=None; Secure`，得有 https 才谈得上
  *
  * 这个靶子把这四样单拎出来，在一个不需要数据库、不需要 Bot、不需要登录的页面里跑一遍。
  * 换一个目标系统就重跑一次，结论落在 result.json 里，不用靠人盯着屏幕看。
@@ -118,8 +120,10 @@ const server = createServer((req, res) => {
     return
   }
 
-  // 桌面反代的入口形状：一个 302，顺手种一张 path 限定的 HttpOnly + SameSite=Lax
-  // cookie；下一跳能不能读到它，决定了那块屏是画面还是 401。
+  // 桌面入口的形状：一个 302，顺手种一张 path 限定的 HttpOnly + SameSite=Lax cookie；
+  // 下一跳能不能读到它，决定了那块屏是画面还是 401。**这里验的是同源那一种**——现在
+  // 的桌面是跨站 iframe（页面在 satu://localhost，屏在席位机器上），跨站的 Lax 一定
+  // 带不上，靶子换不出那个场景。
   if (path === '/cookie/set') {
     res.writeHead(302, {
       'set-cookie': 'satu_probe=ok; Path=/cookie; Max-Age=300; HttpOnly; SameSite=Lax',

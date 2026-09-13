@@ -935,7 +935,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
     /** 落地页地址。下一条要从它的 query 里取 path——那正是 noVNC 建连的唯一依据。 */
     let deskLanding = ''
 
-    await test('桌面票：无票 401，有效票换 cookie 并跳转', async () => {
+    await test('桌面票：无票 401，有效票写进路径并跳转', async () => {
       const anon = await fetch(`${mgrBase}/seats/seat-1/vnc/`, { redirect: 'manual' })
       assert(anon.status === 401, `无票 ${anon.status}`)
       const bad = await fetch(`${mgrBase}/seats/seat-1/vnc/?ticket=not-a-jwt`, { redirect: 'manual' })
@@ -947,7 +947,13 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       })
       assert(r.status === 302, `换 cookie ${r.status}`)
       deskLanding = String(r.headers.get('location'))
-      assert(deskLanding.startsWith('/seats/seat-1/vnc/vnc.html'), `location=${deskLanding}`)
+      // **票落在路径里**，不是只靠 cookie：桌面端那块屏是跨站 iframe，而 WKWebView
+      // （Safari 引擎）拦掉一切第三方 cookie，`SameSite=None; Secure` 也没用。少了这一条，
+      // 桌面端的表现是落地页打开、之后每条资源全 401。
+      assert(
+        deskLanding.startsWith(`/seats/seat-1/vnc/t/${encodeURIComponent(ticket)}/vnc.html`),
+        `票该写进路径：location=${deskLanding}`,
+      )
       // 票里没带口令时不许凭空造一个 password 参数出来——那会让 noVNC 拿空口令去认证，
       // 直接失败，而不是老老实实弹输入框。
       assert(!deskLanding.includes('password='), `票里没口令却带了 password：${deskLanding}`)
@@ -969,8 +975,14 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       const ws = await wsHandshake(MGR_PORT, '/' + novncPath, deskCookie)
       assert(ws.includes('101'), `升级失败: ${ws.slice(0, 120)}`)
       assert(ws.includes('HELLO-WS'), '升级后字节没通')
-      const noAuth = await wsHandshake(MGR_PORT, '/' + novncPath, '')
-      assert(noAuth.includes('401'), `无 cookie 的升级应 401: ${noAuth.slice(0, 80)}`)
+      // **一个 cookie 都不给也要能升级**：桌面端就是这个处境（跨站 cookie 带不上），
+      // 票在路径里就够。这条是那块屏在 Safari / WKWebView 里到底看不看得见的分界。
+      const byPath = await wsHandshake(MGR_PORT, '/' + novncPath, '')
+      assert(byPath.includes('101'), `路径里有票就该升级: ${byPath.slice(0, 120)}`)
+      // 票那一段被换掉就不行——否则等于谁都能连。
+      const forged = String(novncPath).replace(/\/t\/[^/]+\//, '/t/not-a-jwt/')
+      const noAuth = await wsHandshake(MGR_PORT, '/' + forged, '')
+      assert(noAuth.includes('401'), `坏票的升级应 401: ${noAuth.slice(0, 80)}`)
     })
 
     /**
@@ -996,10 +1008,14 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         page.headers.get('content-length') === String(new TextEncoder().encode(body).length),
         '改了内容没重算长度',
       )
-      // 这块屏只准 Gateway 的页面框进去——直连之后这个源是暴露在公网上的。
+      // 这块屏只准 Gateway 的页面、或者桌面壳框进去——直连之后这个源是暴露在公网上的。
       const csp = String(page.headers.get('content-security-policy') || '')
       assert(csp.startsWith('frame-ancestors '), `没钉 frame-ancestors：${csp}`)
       assert(csp.includes(new URL(gwBase).origin), `frame-ancestors 该指向 Gateway 的源：${csp}`)
+      // 桌面壳把界面打进了包里，页面源是 satu://localhost。少了它，桌面端右栏那块屏是
+      // 一句「Refused to display … frame-ancestors」，而别的直连（对话流、名单流）都通
+      // ——CORS 那边早就认这几个源了，两处必须一致。
+      assert(csp.includes('satu://localhost'), `frame-ancestors 该放桌面壳的源：${csp}`)
 
       // 别的资源不许被碰：只有落地页走改写那条路。
       const asset = await fetch(`${mgrBase}/seats/seat-1/vnc/app/ui.js`, { headers: { cookie: deskCookie } })
@@ -1052,7 +1068,11 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       const q = new URLSearchParams(String(r.headers.get('location')).split('?')[1] || '')
       assert(q.get('resize') === 'scale', `resize 没透传：${q}`)
       assert(q.get('bell') === 'false', `bell 没透传：${q}`)
-      assert(q.get('path') === 'seats/seat-1/vnc/websockify', `path 被覆盖了：${q.get('path')}`)
+      // path 由管家自己拼（票在里面，见 VNC_TICKET_PATH），外面传什么都不作数。
+      assert(
+        q.get('path') === `seats/seat-1/vnc/t/${encodeURIComponent(ticket)}/websockify`,
+        `path 被覆盖了：${q.get('path')}`,
+      )
       assert(q.get('password') === 'PW-secret-9', `password 被覆盖了：${q.get('password')}`)
       assert(q.get('onload') === null, `白名单外的参数漏过去了：${q}`)
     })

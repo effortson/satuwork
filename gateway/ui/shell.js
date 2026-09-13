@@ -81,18 +81,18 @@ function authAside(
   return `
     <div class="satu-authside">
       <div style="position: absolute; top: -60px; right: -60px; width: 220px; height: 220px; border-radius: 50%; background: var(--color-accent-2-200); opacity: 0.6;"></div>
-      <div style="position: relative; display: flex; align-items: center; gap: var(--space-2);">
+      <div style="position: relative; width: 100%; max-width: 440px; display: flex; align-items: center; gap: var(--space-2);">
         <img src="/assets/satuwork-logo.png" alt="Satuwork" style="width: 34px; height: 34px; border-radius: 999px;">
         <span style="font-family: var(--font-heading); font-size: 20px;">Satuwork</span>
       </div>
-      <div style="position: relative; display: flex; flex-direction: column; gap: var(--space-4); max-width: 440px;">
+      <div style="position: relative; width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: var(--space-4);">
         <div style="width: 100%; aspect-ratio: 4/3; border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-lg);">
           <img src="/assets/login-hero.png" alt="" style="width: 100%; height: 100%; object-fit: cover;">
         </div>
         <p style="font-family: var(--font-heading); font-size: 26px; line-height: 1.2; margin: 0;">${title}</p>
         <p style="margin: 0; color: color-mix(in srgb, var(--color-text) 65%, transparent); font-size: 14px; line-height: 1.6;">${sub}</p>
       </div>
-      <div style="position: relative; display: flex; gap: var(--space-4); font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent);">
+      <div style="position: relative; width: 100%; max-width: 440px; display: flex; gap: var(--space-4); font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent);">
         <span>© 2026 Satuwork</span>
       </div>
     </div>`

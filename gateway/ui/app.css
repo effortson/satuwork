@@ -2,7 +2,7 @@ html, body { height: 100%; }
 body { margin: 0; background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); }
 #app { min-height: 100%; }
 
-.satu-authside { position: relative; padding: var(--space-8); display: flex; flex-direction: column; justify-content: space-between; background: var(--color-surface); overflow: hidden; }
+.satu-authside { position: relative; padding: var(--space-8); display: flex; flex-direction: column; align-items: center; justify-content: space-between; background: var(--color-surface); overflow: hidden; }
 .gw-login { min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; background: var(--color-bg); font-family: var(--font-body); color: var(--color-text); }
 .gw-flash { margin: 0; padding: 10px var(--space-3); border-radius: var(--radius-sm); font-size: 13px; line-height: 1.6; }
 .gw-flash-err { color: var(--color-accent-800); background: var(--color-accent-100); }
