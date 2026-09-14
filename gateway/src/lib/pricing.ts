@@ -19,7 +19,7 @@ export interface LlmTokens {
 
 
 /**
- * 目录里的 `cost` + 平台覆盖 → 实际生效的四项单价。
+ * 目录里的 `cost` + 平台覆盖 + 平台兜底 → 实际生效的四项单价。
  *
  * **覆盖是按字段盖的，不是整份顶掉。** 曾经是「覆盖里有任意一项非零就整份用它」，
  * 那条规则有个安静的坑：改价弹层的四个输入框默认留空（故意不预填目录价，否则一按
@@ -32,24 +32,33 @@ export interface LlmTokens {
  * 没收录价格的模型四项也是 0），要真按 0 收就得引入「填了 0」和「没填」的区分，
  * 而那个区分在一个数字输入框上表达不出来。
  *
- * 三层回落，从近到远：**覆盖 → 目录 → `input`**。最后一层只兜缓存那两项：
- * Anthropic 的缓存读是输入价的十分之一，按输入价收是高估十倍；但反过来（缺了按 0 收）
- * 是把最容易命中的那部分白送，而缓存命中率越高白送越多。两害相权取高估。
+ * 四层回落，从近到远：**覆盖 → 目录 → 平台兜底 → `input`**。
+ *
+ * **兜底（`platformSettings.defaultModelRate`）压在目录价下面**，不是盖在上面：配了它
+ * 之后已经有价的模型照旧按自己的价收，只有目录和覆盖都查不到的那些才落到它头上。
+ * 它存在的理由是**「不知道」不该被收成「免费」**——没有它时这类调用记的是金额 0 +
+ * `unpriced`，而 $0 在账单上和免费长得一模一样，月底真扣的钱就少了那一截。按一个
+ * 说得清来路的估价收，比收零更接近真相（docs/billing.md §7）。
+ *
+ * 最后一层只兜缓存那两项：Anthropic 的缓存读是输入价的十分之一，按输入价收是高估
+ * 十倍；但反过来（缺了按 0 收）是把最容易命中的那部分白送，而缓存命中率越高白送
+ * 越多。两害相权取高估。
  *
  * **不给 cacheWrite 造 1.25 的系数。** 那是 Anthropic 一家的定价习惯，写进通用回落
  * 等于把某一家的价目表编死在代码里。
  *
- * 合出来 `input` 和 `output` 都还是 0 → 返回 undefined，意思是「不知道」，不是
- * 「免费」。调用方据此记 `unpriced`，界面上要喊出来。
+ * 合出来 `input` 和 `output` 都还是 0（连兜底都没设）→ 返回 undefined，意思是
+ * 「不知道」，不是「免费」。调用方据此记 `unpriced`，界面上要喊出来。
  */
-export function rateOf(cost: unknown, override?: ModelRate): ModelRate | undefined {
+export function rateOf(cost: unknown, override?: ModelRate, fallback?: ModelRate): ModelRate | undefined {
   const base = parseModelRate(cost)
   const o = override ?? emptyModelRate()
+  const f = fallback ?? emptyModelRate()
   const merged: ModelRate = {
-    input: o.input || base.input,
-    output: o.output || base.output,
-    cacheRead: o.cacheRead || base.cacheRead,
-    cacheWrite: o.cacheWrite || base.cacheWrite,
+    input: o.input || base.input || f.input,
+    output: o.output || base.output || f.output,
+    cacheRead: o.cacheRead || base.cacheRead || f.cacheRead,
+    cacheWrite: o.cacheWrite || base.cacheWrite || f.cacheWrite,
   }
   if (!merged.input && !merged.output) return undefined
   return fillRate(merged)

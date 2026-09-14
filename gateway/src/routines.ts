@@ -35,6 +35,7 @@ import { sweepHandoffs } from './handoff-sweep.ts'
 import { refreshDiscovered } from './model-discovery.ts'
 import { tickBotDeletions, tickConversationAudits } from './conversation-audit.ts'
 import { createMeter, type Meter } from './lib/meter.ts'
+import { createLlm, type Llm } from './llm.ts'
 import { settle } from './lib/llm-billing.ts'
 
 /** 调度器多久看一眼。设成 0 就不起调度器（e2e 里有几条不需要它自己跑）。 */
@@ -480,22 +481,44 @@ const LLM_SETTLE_GRACE_MS = 30 * 60_000
  * 「历史模型调用一行都不回填」，理由在那里，别绕过它。详见 db.ts 的 unsettledLlmCalls。
  *
  * 管家带着真实用量回来结算时撞上幂等的那种情况（长流超过下面这个宽限期，这里先收了），
- * 钱不再收第二笔，但 token 要补上——那一步在 worker.ts 的已结算分支里走 recordUsageOnly，
- * 否则这一行的用量就永远停在 0/0。
+ * **这一行会被补成真的成交**——它从来没成交过，钉着它不放就是把一通真金白银发生过的调用
+ * 永久记成 0，而且事后补不回来。那一步在 worker.ts 的已结算分支里走 fillSweptCharge，
+ * 判据和边界见 docs/billing.md §2.1。补不上（上一次已经真结过了）才退回 recordUsageOnly，
+ * 只把 token 改对，否则这一行的用量就永远停在 0/0。
  *
- * `meter` 不从 RouteCtx 拿：这里跑在调度器 / Cron 里，没有路由上下文。单独起一个也无妨——
- * 这条路记的全是 0 元行，Meter 那份「每家公司的余额记忆」根本不会被它扣到。
+ * `meter` / `llm` 不从 RouteCtx 拿：这里跑在调度器 / Cron 里，没有路由上下文。单独起一个也
+ * 无妨——这条路记的全是 0 元行，Meter 那份「每家公司的余额记忆」根本不会被它扣到。
+ *
+ * **单价要照样查。** 这条路收的行金额一定是 0（用量不知道），所以单价查不查都不影响收多少；
+ * 影响的是账本上那一行**为什么**是 0。`unpriced` 只有一格，两种「算不出来」都写它：目录里
+ * 没这个模型的价，和有价但没拿到用量。事后把这两种分开，靠的是行上那份单价快照空不空
+ * （见 routes/platform.ts 的 unpricedModels / unmeteredModels）。这里图省事传 cost: undefined
+ * 的话，有价的模型也会留下一份空快照，统计屏就会把它报成「目录里没有单价」，让人跑去配置
+ * 页找一个不存在的问题。
  */
-export async function sweepUnsettledLlmCalls(db: Db, meter: Meter = createMeter(db), now = Date.now()): Promise<number> {
+export async function sweepUnsettledLlmCalls(
+  db: Db,
+  meter: Meter = createMeter(db),
+  now = Date.now(),
+  llm?: Llm,
+): Promise<number> {
+  const due = await db.unsettledLlmCalls(now - LLM_SETTLE_GRACE_MS, 200)
+  // 绝大多数拍是空的。Llm 建一个要把内置目录整份铺开，没行要收就别建。
+  if (!due.length) return 0
+  const catalog = llm ?? createLlm(db)
   let n = 0
-  for (const call of await db.unsettledLlmCalls(now - LLM_SETTLE_GRACE_MS, 200)) {
+  for (const call of due) {
     const account = await db.account(call.accountId)
     if (!account) continue
     // 幂等：查和记之间管家可能刚结算完。settle 之前再看一眼，能省掉大多数重复行；剩下的
     // 竞态窗口（两边同时 insert）账本按 refId 汇总时会合成一行，不至于翻倍。
     if (await db.chargeExistsForRef(call.id)) continue
     try {
-      await settle(db, meter, account, { provider: call.provider, id: call.model, cost: undefined }, call.id, undefined, 'failed')
+      // 目录里可能已经没有这个模型了（平台下架、公司条目删了），和 worker.ts 的结算分支
+      // 同一个兜底：查不到就按「没有价」记。
+      const found = (await catalog.find(call.companyId, `${call.provider}/${call.model}`)) ??
+        { provider: call.provider, id: call.model, cost: undefined }
+      await settle(db, meter, account, found, call.id, undefined, 'failed')
       n++
     } catch (e) {
       console.error(`satuwork-gateway: 收未结算的模型调用 ${call.id} 失败：${(e as Error).message}`)

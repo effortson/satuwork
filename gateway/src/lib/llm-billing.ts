@@ -65,17 +65,72 @@ export async function recordLlmCall(
 }
 
 /**
- * **只补用量，不动账本。**
+ * 一次调用真正花掉的 token。四项全 0 = 上游什么都没报，补录没有意义。
+ */
+function anyTokens(u: TokenUsage): boolean {
+  return u.prompt_tokens > 0 || u.completion_tokens > 0 || u.cached_tokens > 0 || u.cache_write_tokens > 0
+}
+
+/**
+ * **把清扫按 0 元收下的那一行补成真的成交。**
  *
- * 结算是按 refId 幂等的（chargeExistsForRef），而「已经记过账了」这件事在中继这条路上
- * 有一种正常的到法：一次长流跑过了 LLM_SETTLE_GRACE_MS，清扫先把它按 failed / 0 元收了，
- * 管家随后带着真实 usage 回来结算。幂等挡住的是**第二笔钱**，可 settle 里写 token 的那
- * 一句在它后面，于是连 token 一起被挡掉——`llm_calls` 上那一行永远停在 0/0，明细里这次
- * 调用看着像没发生过。
+ * 这是 docs/billing.md §2「金额写死不重算」唯一的例外。开它的理由：一次长回答跑过了
+ * `LLM_SETTLE_GRACE_MS`，清扫先把它按 `failed` / 0 元 / unpriced 收了口，管家随后带着真实
+ * 用量回来——幂等本该挡住「同一次调用收两笔钱」，可它连带着把**第一笔也钉死成 0**。
+ * 于是这通调用真金白银发生过，账上永远是 0，而且事后补不回来：用量只在管家这一次回调
+ * 里，错过就没了。这不是「改一笔成交价」，是**把一行从来没成交过的占位补成成交**。
  *
- * 所以把「写用量」单拎出来：账本原样不动（不补收、不改状态——那笔钱当时按什么口径记的
- * 就还是什么口径，事后追记会让同一次调用在账上出现两个数），只把 token 改成真的。对账
- * 时这一行的表现是「有用量、金额 0 且 unpriced」，而 unpriced 本来就读作「算不出来」。
+ * 边界全在 `db.fillPlaceholderCharge` 的 where 上（只认清扫写出来的那个形状），这里再加
+ * 一道：**上游一个 token 都没报就不补**——那样补出来的还是一行 0 元 unpriced，白折腾一次
+ * 写，还多一次把判据擦边的机会。
+ *
+ * 回 true 表示补上了；回 false 表示没有那行占位（多半是管家自己重试，上一次已经真结过），
+ * 调用方照旧只补 token。
+ */
+export async function fillSweptCharge(
+  db: Db,
+  meter: Meter,
+  account: Account,
+  found: Billed,
+  callId: string,
+  usage: TokenUsage,
+  status?: ChargeStatus,
+): Promise<boolean> {
+  if (!anyTokens(usage)) return false
+  const billable: Billable = {
+    kind: 'llm',
+    account,
+    status: status ?? 'ok',
+    provider: found.provider,
+    model: found.id,
+    tokens: {
+      promptTokens: usage.prompt_tokens,
+      completionTokens: usage.completion_tokens,
+      cachedTokens: usage.cached_tokens,
+      cacheWriteTokens: usage.cache_write_tokens,
+    },
+    cost: found.cost,
+    refId: callId,
+  }
+  const row = await meter.fillPlaceholder(billable)
+  if (!row) return false
+  // token 是**补录之后**才写的：补不上的时候由调用方走 recordUsageOnly，两条路只写一次。
+  await db.updateLlmCallTokens(callId, usage)
+  console.log(`satuwork-gateway: 补录了清扫按 0 元收下的调用 ${callId}，${row.amountMicros} 微元`)
+  return true
+}
+
+/**
+ * **只补用量，不动账本。** 走到这儿的是「上一次已经真结过了」——管家自己重试，或者两边
+ * 撞在一起；清扫那行占位归 `fillSweptCharge` 补，不归这里。
+ *
+ * 结算是按 refId 幂等的（chargeExistsForRef）。幂等挡住的是**第二笔钱**，可 settle 里写
+ * token 的那一句在它后面，于是连 token 一起被挡掉——`llm_calls` 上那一行永远停在 0/0，
+ * 明细里这次调用看着像没发生过。所以把「写用量」单拎出来。
+ *
+ * 账本原样不动：不补收、不改状态。那笔钱当时按什么口径记的就还是什么口径，事后追记会让
+ * 同一次调用在账上出现两个数。**这条和 `fillSweptCharge` 不矛盾**——那边补的是一行从来
+ * 没成交过的占位，这边面对的是一笔已经成交的钱。
  */
 export async function recordUsageOnly(db: Db, callId: string, usage: TokenUsage): Promise<void> {
   await db.updateLlmCallTokens(callId, usage)

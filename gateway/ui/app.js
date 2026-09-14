@@ -2472,6 +2472,11 @@ document.getElementById('app').addEventListener('change', async (e) => {
     await savePriceMultiplier(el.value)
     return
   }
+  // 兜底单价那四个框同理。
+  if (el instanceof HTMLInputElement && el.getAttribute('data-act') === 'default-rate') {
+    await saveDefaultRate(el.getAttribute('data-field'), el.value)
+    return
+  }
   // 月份选择器和公司下拉都在「只收 select」那道关卡的两边，各自处理。
   if (el.getAttribute?.('data-act') === 'stats-month') {
     state.statsMonth = el.value || thisMonth()

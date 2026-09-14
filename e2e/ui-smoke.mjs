@@ -1244,6 +1244,61 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!html.includes('$0.000'), '没有价的模型画成了 $0.000')
     })
 
+    await test('兜底单价：存得下、按它给没有价的模型报价、画成估数的样子', async () => {
+      /**
+       * 没有兜底时，目录里查不到价的模型收的是 $0——账单上的 $0 和「免费」长得一模一样，
+       * 那一截钱月底就少了。兜底把这批模型接住（docs/billing.md §3.3 的第 3 层）。
+       *
+       * 两件事一起钉：**兜底压在目录价下面**（有价的模型一分钱不变），以及**兜底价要画得
+       * 出是估数**——看不出是估数的话，一个离谱的价会一直收下去，没人会去查。
+       */
+      const ui = await boot(ownerToken)
+      ui.state.path = '/models'
+      ui.state.selectedProvider = 'e2e-prov'
+      ui.state.catalog = [
+        {
+          provider: 'e2e-prov',
+          name: 'E2E',
+          models: [
+            { id: 'priced', name: 'Priced', cost: { input: 2, output: 8 } },
+            { id: 'unpriced', name: 'Unpriced', cost: { input: 0, output: 0 } },
+          ],
+        },
+      ]
+      await ui.fire('change', el('input', { 'data-act': 'price-multiplier' }, '2'))
+      ui.render()
+      assert(ui.html().includes('兜底单价 / 1M tok'), '「单价倍率」那一块里没有兜底单价')
+
+      // 走真的 change 派发：这个分支和倍率一样得排在「只收 select」那道关卡前面。
+      const setDefault = (field, v) => ui.fire('change', el('input', { 'data-act': 'default-rate', 'data-field': field }, v))
+      await setDefault('input', '5')
+      await setDefault('output', '9')
+      assert(ui.state.settings.defaultModelRate?.input === 5, `没存下：${JSON.stringify(ui.state.settings.defaultModelRate)}`)
+      // 存完要真的回到库里，不是只留在内存。
+      const back = await ui.api('GET', '/platform/settings')
+      assert(back.defaultModelRate?.input === 5 && back.defaultModelRate?.output === 9, `库里是 ${JSON.stringify(back.defaultModelRate)}`)
+
+      ui.render()
+      let html = ui.html()
+      // 没有价的那个模型现在报的是兜底价（原价 $5/$9，×2 之后 $10/$18），不再是「—」。
+      assert(html.includes('$5.00 / $9.00'), `没按兜底价报原价：${html.includes('$5.00')}`)
+      assert(html.includes('$10.00 / $18.00'), '兜底价没跟着倍率走')
+      // 兜底压在目录价下面：有价的那个模型一分钱都不该变。
+      assert(html.includes('$2.00 / $8.00') && html.includes('$4.00 / $16.00'), '有目录价的模型被兜底改了价')
+      // 兜底价要看得出是估数，不然一个离谱的价会一直收下去。
+      assert(html.includes('按「单价倍率」里的兜底价收'), '兜底价没画成估数的样子')
+      assert(!html.includes('$0.000'), '还有模型画成了 $0.000')
+
+      // 四项清空 = 撤掉兜底，回到「—」。这个开关得撤得掉。
+      await setDefault('input', '')
+      await setDefault('output', '')
+      assert(!ui.state.settings.defaultModelRate?.input && !ui.state.settings.defaultModelRate?.output, `没撤掉：${JSON.stringify(ui.state.settings.defaultModelRate)}`)
+      ui.render()
+      html = ui.html()
+      assert(!html.includes('$5.00 / $9.00'), '撤掉兜底之后还按它报价')
+      assert(!html.includes('$0.000'), '撤掉兜底之后画成了 $0.000')
+    })
+
     await test('工具配置页：后端、密钥框、单价都画得出来，改动走真的派发', async () => {
       const ui = await boot(ownerToken)
       ui.state.path = '/tools'

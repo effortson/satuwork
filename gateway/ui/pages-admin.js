@@ -99,21 +99,48 @@ function priceOverride(provider, id) {
   return table[`${provider}/${id}`] || null
 }
 
+/** 平台兜底单价。覆盖和目录都查不到时按它收，四项全 0 = 没设。 */
+function defaultRate() {
+  const r = state.settings?.defaultModelRate
+  return r && typeof r === 'object' ? r : {}
+}
+
+/** 兜底设了没有。只看 input / output——和服务端 rateOf 最后那一刀同一个判据。 */
+function hasDefaultRate() {
+  return hasRates(defaultRate())
+}
+
 /**
  * 实际生效的四项单价。**按字段合并，不是整份顶掉**——和服务端 `rateOf` 必须是同一
  * 套规则，否则这一屏画的价和真收的价对不上，而对不上的时候没人会先怀疑界面。
- * 0 读作「这一项没填」，用目录价。
+ * 0 读作「这一项没填」，往下一层要。
+ *
+ * 三层，和服务端一字不差：**覆盖 → 目录 → 平台兜底**。
  */
 function effectiveCost(provider, id, cost) {
   const base = cost && typeof cost === 'object' ? cost : {}
   const o = priceOverride(provider, id) || {}
-  const pick = (k) => Number(o[k]) || Number(base[k]) || 0
+  const f = defaultRate()
+  const pick = (k) => Number(o[k]) || Number(base[k]) || Number(f[k]) || 0
   return { input: pick('input'), output: pick('output'), cacheRead: pick('cacheRead'), cacheWrite: pick('cacheWrite') }
 }
 
-function ratePair(cost, factor) {
+/**
+ * 这个模型的价是不是**兜底兜出来的**：撇开兜底这一层还剩不剩 input / output。
+ * 表里要把这种画成另一个样子——兜底是运营拍的一个估数，看不出是估数的话，一个离谱的
+ * 价会一直收下去，没人会去查（和缓存回落那两格同一个办法）。
+ */
+function onDefaultRate(provider, id, cost) {
+  const base = cost && typeof cost === 'object' ? cost : {}
+  const o = priceOverride(provider, id) || {}
+  return !(Number(o.input) || Number(base.input) || Number(o.output) || Number(base.output))
+}
+
+function ratePair(cost, factor, fallback = false) {
   if (!hasRates(cost)) return `<span title="${esc(t('目录里没有这个模型的价格', 'The catalog has no price for this model'))}">—</span>`
-  return `${esc(money(Number(cost.input || 0) * factor))} / ${esc(money(Number(cost.output || 0) * factor))}`
+  const pair = `${esc(money(Number(cost.input || 0) * factor))} / ${esc(money(Number(cost.output || 0) * factor))}`
+  if (!fallback) return pair
+  return `<span style="opacity: 0.55; border-bottom: 1px dotted currentColor;" title="${esc(t('目录和覆盖里都没有这个模型的单价，按「单价倍率」里的兜底价收', 'Neither the catalog nor the overrides price this model; it is charged at the default rate from Pricing'))}">${pair}</span>`
 }
 
 /**
@@ -135,9 +162,36 @@ function cacheRatePair(cost, factor) {
   return `<div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 2px;">${t('缓存', 'cache')} ${cell(read, t('缓存读', 'cache read'))} / ${cell(write, t('缓存写', 'cache write'))}</div>`
 }
 
-/** 倍率输入。改完即存，和上面两个角色面板一样不设「保存」按钮。 */
+/** 兜底单价那四个框。改完即存，和倍率一样。 */
+const DEFAULT_RATE_FIELDS = [
+  ['input', '输入', 'Input'],
+  ['output', '输出', 'Output'],
+  ['cacheRead', '缓存读', 'Cache read'],
+  ['cacheWrite', '缓存写', 'Cache write'],
+]
+
+/**
+ * 倍率和兜底单价。改完即存，和上面两个角色面板一样不设「保存」按钮。
+ *
+ * 两件事放同一块，是因为它们回答的是同一个问题——「这一次调用收多少钱」。倍率管加成，
+ * 兜底管**查不到价的时候收什么**：没有兜底时这类调用记的是金额 0 + `unpriced`，而账单上
+ * 的 $0 和「免费」长得一模一样，月底真扣的钱就少了那一截，还没有一屏对得出来。
+ *
+ * 兜底**压在目录价下面**，不是盖在上面：已经有价的模型照旧按自己的价收。这句话要写在
+ * 界面上——不然一个四位数的兜底看着像是要把整个目录顶掉，没人敢填。
+ */
 function pricePanel() {
   const mult = priceMultiplier()
+  const def = defaultRate()
+  const on = hasDefaultRate()
+  const busy = state.savingDefaultRate ? 'disabled' : ''
+  const cell = ([key, zh, en]) => `
+    <label style="display: flex; flex-direction: column; gap: 4px; min-width: 0;">
+      <span style="font-size: 12px; color: var(--muted-foreground);">${t(zh, en)}</span>
+      <input class="input" type="number" inputmode="decimal" min="0" step="0.01"
+        placeholder="0" value="${esc(Number(def[key]) ? String(def[key]) : '')}"
+        data-act="default-rate" data-field="${esc(key)}" ${busy}>
+    </label>`
   return `
     <div class="satu-panel">
       <span class="satu-panel-title">${t('单价倍率')}</span>
@@ -150,6 +204,20 @@ function pricePanel() {
       </div>
       <div class="satu-toggleRow">
         <div style="min-width: 0; font-size: 12px; color: var(--muted-foreground);">${t(`当前 ${mult} 倍，表里「倍率单价」按它算。`, `Currently ${mult}×; the "marked-up" column uses it.`)}</div>
+      </div>
+      <div style="border-top: 1px solid var(--border); margin-top: var(--space-2); padding-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2);">
+        <div style="font-size: 13.5px; font-weight: 600;">${t('兜底单价 / 1M tok', 'Default price / 1M tok')}</div>
+        <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('目录和覆盖里都查不到单价的模型，按这里的价收，不按 $0 收——账单上的 $0 会被读成免费，那一截钱月底就少了。兜底压在目录价下面：已经有价的模型照旧按自己的价收。', 'Models with no price in the catalog or the overrides are charged at these rates instead of $0 — a $0 on the invoice reads as free, and that money is simply gone at month end. The default sits below the catalog: models that already have a price keep it.')}</p>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: var(--space-2);">
+          ${DEFAULT_RATE_FIELDS.map(cell).join('')}
+        </div>
+        <div style="font-size: 12px; color: var(--muted-foreground);">
+          ${
+            on
+              ? t('缓存那两项留空就按输入价算（和改价弹层同一条规矩）。倍率照样乘在上面。', 'Leave the two cache fields blank to charge them at the input rate (same rule as the price dialog). The multiplier still applies on top.')
+              : t('四项留空 = 不兜底。查不到单价的调用照旧记 $0 并在统计屏上标「没单价」。', 'All four blank = no default. Calls with no price keep recording $0 and are flagged "no price" on the statistics screen.')
+          }
+        </div>
       </div>
     </div>`
 }
@@ -225,6 +293,8 @@ function modelsPage() {
       const isDaily = daily.provider === shown.provider && daily.model === m.id
       const isUtil = utility.provider === shown.provider && utility.model === m.id
       const cost = effectiveCost(shown.provider, m.id, m.cost)
+      // 这一行的价是兜底兜出来的：两列单价都画成虚线的浅色，一眼看得出是估数。
+      const fellBack = hasDefaultRate() && onDefaultRate(shown.provider, m.id, m.cost)
       const overridden = !!priceOverride(shown.provider, m.id)
       const actions = `
         <div class="satu-rowactions">
@@ -240,8 +310,8 @@ function modelsPage() {
         <span style="font-size: 13px;">${esc(shown.name || shown.provider)}</span>
         <div class="gw-caps">${capTags(m)}</div>
         <span style="font-size: 13px; color: var(--muted-foreground);">${esc(tokens(m.contextWindow))}${m.maxTokens ? t(` · 出 ${esc(tokens(m.maxTokens))}`, ` · out ${esc(tokens(m.maxTokens))}`) : ''}</span>
-        <span style="font-size: 13px; color: var(--muted-foreground);">${ratePair(cost, 1)}${cacheRatePair(cost, 1)}</span>
-        <span style="font-size: 13px; color: var(--foreground);">${ratePair(cost, mult)}${cacheRatePair(cost, mult)}</span>
+        <span style="font-size: 13px; color: var(--muted-foreground);">${ratePair(cost, 1, fellBack)}${cacheRatePair(cost, 1)}</span>
+        <span style="font-size: 13px; color: var(--foreground);">${ratePair(cost, mult, fellBack)}${cacheRatePair(cost, mult)}</span>
         ${actions}
       </div>`
     })
@@ -330,6 +400,14 @@ function discoveryPanel() {
 function modelPriceModal() {
   const d = state.priceDraft
   if (!d) return ''
+  /**
+   * 占位符 = **留空的话真正会收的价**，所以目录价没有时要往下落到兜底价。
+   * 目录里四项全 0 的模型（pi-ai 没收录价格的那批）正是兜底要接的那一批，占位符
+   * 仍旧写 0 的话，这一屏会告诉人「留空就是免费」——而它现在按兜底收。
+   */
+  const dflt = defaultRate()
+  const onDefault = hasDefaultRate() && !hasRates(d.catalog)
+  const ph = (key) => String(Number(d.catalog[key]) || Number(dflt[key]) || 0)
   const field = (label, key, hint) => `
     <div class="field">
       <label>${esc(label)}</label>
@@ -344,13 +422,17 @@ function modelPriceModal() {
         </div>
         ${state.priceError ? `<div class="gw-flash gw-flash-err">${esc(state.priceError)}</div>` : ''}
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
-          ${field(t('输入单价 / 1M'), 'input', String(d.catalog.input ?? 0))}
-          ${field(t('输出单价 / 1M'), 'output', String(d.catalog.output ?? 0))}
-          ${field(t('缓存读单价 / 1M'), 'cacheRead', String(d.catalog.cacheRead || d.catalog.input || 0))}
-          ${field(t('缓存写单价 / 1M'), 'cacheWrite', String(d.catalog.cacheWrite || d.catalog.input || 0))}
+          ${field(t('输入单价 / 1M'), 'input', ph('input'))}
+          ${field(t('输出单价 / 1M'), 'output', ph('output'))}
+          ${field(t('缓存读单价 / 1M'), 'cacheRead', String(Number(d.catalog.cacheRead) || Number(d.catalog.input) || Number(dflt.cacheRead) || Number(dflt.input) || 0))}
+          ${field(t('缓存写单价 / 1M'), 'cacheWrite', String(Number(d.catalog.cacheWrite) || Number(d.catalog.input) || Number(dflt.cacheWrite) || Number(dflt.input) || 0))}
         </div>
         <div style="font-size: 12px; color: var(--muted-foreground);">
-          ${t('占位符是目录里的价。0 读作「没填」，不是「这一项免费」——要真免费，去掉这个模型的授权，别把单价填成 0。', 'Placeholders are the catalog prices. A 0 reads as "not set", not "free" — to actually stop offering a model, remove it, do not price it at 0.')}
+          ${
+            onDefault
+              ? t('目录里没有这个模型的价，占位符是「单价倍率」里那份兜底价——留空就按它收，不是免费。填上之后这个模型就用自己的价，不再吃兜底。', 'The catalog has no price for this model, so the placeholders are the default rate from Pricing — leaving them blank charges at that rate, not at zero. Fill them in and this model uses its own price instead of the default.')
+              : t('占位符是目录里的价。0 读作「没填」，不是「这一项免费」——要真免费，去掉这个模型的授权，别把单价填成 0。', 'Placeholders are the catalog prices. A 0 reads as "not set", not "free" — to actually stop offering a model, remove it, do not price it at 0.')
+          }
         </div>
         <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('目录里也没有的缓存单价按输入价算。改价只影响之后的调用——已经落账的金额不会跟着变。', 'Cache prices missing from the catalog too fall back to the input rate. A price change only affects later calls; amounts already booked never move.')}</p>
         <div style="display: flex; justify-content: space-between; gap: var(--space-2);">
@@ -608,8 +690,16 @@ function trimNum(n) {
  * 不另起一列：另起一列的话，两个数会被读成可以相加。
  */
 /**
- * 金额下面那个角标。**「没单价」和「账本上没有行」要分开标**——前者去配置页能修，
- * 后者是历史，补不回来。都不标的话，两种 $0 和真的 $0 长得一模一样。
+ * 金额下面那个角标。**三种「这个 $0 不是真的 $0」要各标各的**，因为它们要人办的事
+ * 完全不同：
+ *
+ *   · 没单价   —— 目录里查不到这个模型的价，去模型配置页补上就好了
+ *   · 没用量   —— 单价是有的，缺的是那几次调用的用量（上游流里一个 usage 字段都没回、
+ *                 或者管家拿了授权之后再也没回来）。**别去改配置，那里没毛病**
+ *   · 无账本   —— 那段历史压根没记过账（多半在计费账本上线之前），补不回来
+ *
+ * 从前「没单价」和「没用量」共用一个「不全」，于是单价明明配着，界面却一口咬定
+ * 「目录里没有单价」，人会跑去配置页找一个不存在的问题。
  *
  * 画在数字**下面一行**而不是后面：这一列是右对齐的数字列，角标跟在数字后面会把
  * 数字往左顶，顶多少取决于角标有多长——于是同一列里 `$4.02`、`$0`、`$0.0034`
@@ -618,7 +708,10 @@ function trimNum(n) {
 function amountNote(row) {
   const bits = []
   if (row.unpricedCalls) {
-    bits.push(`<span title="${esc(t('有调用用的是没有单价的模型，金额没算进去'))}">${t('不全')}</span>`)
+    bits.push(`<span title="${esc(t('有调用用的是没有单价的模型，金额没算进去'))}">${t('没单价', 'no price')}</span>`)
+  }
+  if (row.unmeteredCalls) {
+    bits.push(`<span title="${esc(t(`${row.unmeteredCalls} 次调用结算时没拿到用量，单价是有的，金额算不出来`, `${row.unmeteredCalls} call(s) reported no usage at settle time; the price is there, the amount is not computable`))}">${t('没用量', 'no usage')}</span>`)
   }
   if (row.unledgeredCalls) {
     bits.push(`<span title="${esc(t(`${row.unledgeredCalls} 次调用在账本上没有记录，金额补不回来`, `${row.unledgeredCalls} call(s) have no ledger row; the amount cannot be reconstructed`))}">${t('无账本', 'no ledger')}</span>`)
@@ -642,7 +735,7 @@ function statsPage() {
   const pill = (key, label) =>
     `<button type="button" class="btn ${state.statsRange === key ? 'btn-primary' : 'btn-ghost'}" data-act="stats-range" data-range="${key}">${label}</button>`
 
-  const totals = d?.totals || { calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, costMicros: 0, amountMicros: 0, unpricedCalls: 0, unledgeredCalls: 0 }
+  const totals = d?.totals || { calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, costMicros: 0, amountMicros: 0, unpricedCalls: 0, unmeteredCalls: 0, unledgeredCalls: 0 }
   const hitRate = totals.promptTokens > 0 ? Math.round((totals.cachedTokens / totals.promptTokens) * 100) : 0
   /**
    * 网页工具按**条**收、连接器按**次**收，跟 token 不是一个量纲，所以下面各有各的表；
@@ -731,6 +824,7 @@ function statsPage() {
     .join('')
 
   const unpriced = d?.unpricedModels || []
+  const unmetered = d?.unmeteredModels || []
   const unledgered = d?.unledgeredModels || []
 
   /**
@@ -785,8 +879,21 @@ function statsPage() {
             : ''
         }
         ${
-          // 和「没单价」分开说：那个是配置漏了、现在就能补；这个是那段历史压根没记过
-          // 账（多半在计费账本上线之前），补不回来。混成一句话会让人去配置页白找。
+          /**
+           * 和「没单价」分开说：那个是配置漏了、现在就能补；这个是**单价好好的**，只是
+           * 那几次调用结算时没拿到用量（上游的流一个 usage 字段都没回、或者管家没回来
+           * 结算被清扫按 0 元收了口）。去配置页补价补不出这笔钱。
+           *
+           * 从前这两种共用一句「目录里没有单价」，于是配着价的模型也被这么说，人只能
+           * 跑去配置页反复确认一个并不存在的问题。
+           */
+          unmetered.length
+            ? `<div class="gw-flash">${esc(t(`这个时间段里有 ${totals.unmeteredCalls} 次调用在结算时没拿到用量（${unmetered.slice(0, 3).join('、')}${unmetered.length > 3 ? ' …' : ''}），金额算不出来，没计入。这几个模型的单价是有的，不用去改配置。`, `${totals.unmeteredCalls} call(s) in this range reported no usage at settle time (${unmetered.slice(0, 3).join(', ')}${unmetered.length > 3 ? ' …' : ''}); their amounts could not be computed and are excluded. These models do have a price — nothing to change in the settings.`))}</div>`
+            : ''
+        }
+        ${
+          // 和上面两条又不一样：那段历史压根没记过账（多半在计费账本上线之前），补不回来。
+          // 混成一句话会让人去配置页白找。
           unledgered.length
             ? `<div class="gw-flash">${esc(t(`这个时间段里有 ${totals.unledgeredCalls} 次调用在计费账本上没有记录（${unledgered.slice(0, 3).join('、')}${unledgered.length > 3 ? ' …' : ''}），多半发生在账本上线之前。它们的 token 算数，金额补不回来——这里的 $0 不代表免费。`, `${totals.unledgeredCalls} call(s) in this range have no row in the billing ledger (${unledgered.slice(0, 3).join(', ')}${unledgered.length > 3 ? ' …' : ''}), most likely from before the ledger shipped. Their tokens count; the amounts cannot be reconstructed — the $0 here does not mean free.`))}</div>`
             : ''

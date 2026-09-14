@@ -6,7 +6,7 @@
 import { EMAIL_RE, PHONE_RE, SLUG_RE, strField } from './validate.ts'
 import { losingAdmin, statusOf } from './guards.ts'
 import { HttpError } from '../http.ts'
-import { type Account, type AccountStatus, type CatalogItem, type Company, type CompanySettings, type CompanyStatus, type Db, type Group, type ModelRate, type ModelRole, type BillingSettings, PRICE_MULTIPLIER_MAX, PRICE_MULTIPLIER_MIN, REASONING_EFFORTS, type Plan, type PlatformSettings, type Role, type SessionIndex, parseBilling, parseConnectorPricing, parseModelPricing, parsePriceMultiplier, parseReasoningEffort } from '../db.ts'
+import { type Account, type AccountStatus, type CatalogItem, type Company, type CompanySettings, type CompanyStatus, type Db, type Group, type ModelRate, type ModelRole, type BillingSettings, PRICE_MULTIPLIER_MAX, PRICE_MULTIPLIER_MIN, REASONING_EFFORTS, type Plan, type PlatformSettings, type Role, type SessionIndex, parseBilling, parseConnectorPricing, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort } from '../db.ts'
 import { WEB_BACKENDS, WEB_DOCUMENT } from '../db/types.ts'
 import { VENDORS } from '../connectors/index.ts'
 
@@ -130,6 +130,7 @@ export function publicSettings(s: CompanySettings | PlatformSettings): PlatformS
     connectorPricing: parseConnectorPricing((s as PlatformSettings).connectorPricing),
     managerVersion: (s as PlatformSettings).managerVersion ?? '',
     modelPricing: parseModelPricing((s as PlatformSettings).modelPricing),
+    defaultModelRate: parseModelRate((s as PlatformSettings).defaultModelRate),
     billing: parseBilling((s as PlatformSettings).billing),
   }
 }
@@ -313,6 +314,25 @@ export function modelPricingOf(v: unknown, fallback: Record<string, ModelRate>):
     }
   }
   return parseModelPricing(v)
+}
+
+/**
+ * 兜底单价。四项都是「每 100 万 token 多少美元」，和覆盖表同一个口径。
+ *
+ * 不传就不动（整份覆盖上去的写法容易把它顺手抹掉）。**四项全 0 是合法的**，意思是
+ * 「撤掉兜底」，回到「查不到价就记 unpriced」——所以这里不能跟着 parseModelPricing
+ * 学「全 0 就丢掉」，那是给一张表里的条目用的规矩。
+ */
+export function defaultModelRateOf(v: unknown, fallback: ModelRate): ModelRate {
+  if (v == null) return fallback
+  if (typeof v !== 'object' || Array.isArray(v)) throw new HttpError(400, 'defaultModelRate 必须是对象')
+  for (const field of ['input', 'output', 'cacheRead', 'cacheWrite']) {
+    const n = (v as Record<string, unknown>)[field]
+    if (n == null || n === '') continue
+    const x = Number(n)
+    if (!Number.isFinite(x) || x < 0) throw new HttpError(400, `兜底单价的 ${field} 必须是不小于 0 的数字`)
+  }
+  return parseModelRate(v)
 }
 
 /** 熔断开关。`enforce` 不传就不动——整份覆盖上去的写法容易把它顺手抹掉。 */

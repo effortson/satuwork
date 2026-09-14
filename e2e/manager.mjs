@@ -2880,11 +2880,81 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           await withPg(async (client) => {
             const plain = await client.query('select id, status from usage_charges where "refId" = $1', ['e2e-sweep-plain'])
             assert(plain.rowCount === 0, `没经中继授权的老调用被回填了 ${plain.rowCount} 笔账——这就是「掉头刷历史」`)
-            const relayed = await client.query('select status, "amountMicros", unpriced from usage_charges where "refId" = $1', ['e2e-sweep-relay'])
+            const relayed = await client.query('select status, "amountMicros", unpriced, "unitPrice" from usage_charges where "refId" = $1', ['e2e-sweep-relay'])
             assert(relayed.rowCount === 1, `中继授权过的那条该被收口成 1 行，实际 ${relayed.rowCount}`)
             const row = relayed.rows[0]
             assert(row.status === 'failed', `收口的账该记 failed，实际 ${row.status}`)
             assert(Number(row.amountMicros) === 0, `用量不知道就不该编钱，实际 ${row.amountMicros}`)
+            /**
+             * 金额是 0、`unpriced` 是 true，但**单价快照必须是齐的**。
+             *
+             * `unpriced` 只有一格，两种「算不出来」都写它：目录里没这个模型的价，和有价
+             * 但没拿到用量。统计屏把它们分开报，靠的就是这份快照空不空
+             * （routes/platform.ts 的 unpricedModels / unmeteredModels）。清扫图省事传
+             * `cost: undefined` 的话，配着价的模型也会留下一份空快照，界面就会一口咬定
+             * 「目录里没有单价」——人跑去配置页找一个并不存在的问题。
+             */
+            assert(row.unpriced === true, `用量不知道的那一行该标 unpriced，实际 ${row.unpriced}`)
+            assert(
+              Number(row.unitPrice?.input) === 1.5 && Number(row.unitPrice?.output) === 3,
+              `清扫没把目录里的单价查出来，快照是 ${JSON.stringify(row.unitPrice)}`,
+            )
+          })
+        })
+
+        await test('模型中继：清扫按 0 元收下的那一行，管家回来时补成真的成交', async () => {
+          /**
+           * docs/billing.md §2.1 唯一的那条例外。**改的不是一笔成交价，是一行从来没成交过
+           * 的占位**：一次跑过 30 分钟宽限期的长回答先被清扫按 0 元收了口，管家随后才带着
+           * 真实用量回来。幂等一挡到底的话，这通真金白银发生过的调用账上永远是 0，而且事后
+           * 补不回来——用量只存在于管家这一次回调里，错过就没了。
+           *
+           * 四件事一起钉：补得上（回 `filled`）、**不多挂一行账**、`createdAt` 不动（挪了
+           * 这笔钱就换了账期）、以及补完之后**不许再被当成占位补第二遍**。
+           */
+          const before = await withPg(async (client) => {
+            const r = await client.query('select "amountMicros", unpriced, "createdAt" from usage_charges where "refId" = $1', ['e2e-sweep-relay'])
+            assert(r.rowCount === 1, `上一条用例应当留下一行占位，实际 ${r.rowCount}`)
+            return r.rows[0]
+          })
+          assert(Number(before.amountMicros) === 0 && before.unpriced === true, `这不是一行占位：${JSON.stringify(before)}`)
+
+          const filled = await req(gwBase, 'POST', '/worker/llm/e2e-sweep-relay/settle', {
+            token: machineTok,
+            body: { usage: { prompt_tokens: 1000, completion_tokens: 500, cached_tokens: 0, cache_write_tokens: 0 }, status: 'ok' },
+          })
+          assert(filled.status === 200, `补录 ${filled.status} ${filled.text}`)
+          assert(filled.json.settled === true && filled.json.reason === 'filled', `该回 filled，实际 ${filled.text}`)
+
+          await withPg(async (client) => {
+            const r = await client.query(
+              'select status, "amountMicros", "bonusMicros", unpriced, quantity, "createdAt" from usage_charges where "refId" = $1',
+              ['e2e-sweep-relay'],
+            )
+            assert(r.rowCount === 1, `补录不许多挂一行账，实际 ${r.rowCount} 行`)
+            const row = r.rows[0]
+            assert(row.status === 'ok', `补完该是 ok，实际 ${row.status}`)
+            assert(row.unpriced === false, '补完还标着 unpriced')
+            // 目录价 $1.5 入 / $3 出，倍率 1：1000 × 1.5 + 500 × 3 = 3000 微元。
+            assert(Number(row.amountMicros) === 3000, `金额 ${row.amountMicros} 微元，应当是 3000`)
+            assert(Number(row.quantity?.promptTokens) === 1000 && Number(row.quantity?.completionTokens) === 500, `用量没补上：${JSON.stringify(row.quantity)}`)
+            assert(Number(row.createdAt) === Number(before.createdAt), '补录把 createdAt 挪了——这笔钱会换一个账期')
+            const call = await client.query('select "promptTokens", "completionTokens" from llm_calls where id = $1', ['e2e-sweep-relay'])
+            assert(
+              Number(call.rows[0].promptTokens) === 1000 && Number(call.rows[0].completionTokens) === 500,
+              `llm_calls 那边没跟着补：${JSON.stringify(call.rows[0])}`,
+            )
+          })
+
+          // 补完就是一笔真账了。**再来一次不许再补**——那才叫「一次调用只有一个金额」。
+          const twice = await req(gwBase, 'POST', '/worker/llm/e2e-sweep-relay/settle', {
+            token: machineTok,
+            body: { usage: { prompt_tokens: 9, completion_tokens: 9, cached_tokens: 0, cache_write_tokens: 0 }, status: 'ok' },
+          })
+          assert(twice.status === 200 && twice.json.settled === false && twice.json.reason === 'already', `第二次该是 already，实际 ${twice.text}`)
+          await withPg(async (client) => {
+            const r = await client.query('select "amountMicros" from usage_charges where "refId" = $1', ['e2e-sweep-relay'])
+            assert(r.rowCount === 1 && Number(r.rows[0].amountMicros) === 3000, `真账被第二次结算动过了：${JSON.stringify(r.rows)}`)
           })
         })
 

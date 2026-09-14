@@ -1188,7 +1188,6 @@ window.SATU_I18N = {
   '输入单价 / 1M': 'Input price / 1M',
   '输出单价 / 1M': 'Output price / 1M',
   '有调用用的是没有单价的模型，金额没算进去': 'Some calls used models without a price; those amounts are not included',
-  不全: 'Incomplete',
   调用次数: 'Calls',
   无调用: 'No calls',
   目录里没有这个模型的单价: 'The catalog has no price for this model',

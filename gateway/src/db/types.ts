@@ -991,6 +991,20 @@ export interface PlatformSettings {
    * 得有地方补；上游调价的那天不该等 pi-ai 发版才能跟上。
    */
   modelPricing?: ModelPricing
+  /**
+   * **兜底单价。** 覆盖和目录里都查不到价的模型按它算。
+   *
+   * 没有它的时候，这类调用记的是金额 0 + `unpriced`——那个 0 的本意是「算不出来」，
+   * 可账单上它和「免费」长得一模一样，月底真扣的钱就少了那一截，而少掉的那截没有
+   * 任何一屏能对得出来。**宁可按一个说得清来路的估价收，也不要收零。**
+   *
+   * 和覆盖一样**按字段兜**（`lib/pricing.ts` 的 `rateOf`），0 读作「这一项没填」。
+   * 四项全 0 = 没设兜底，行为回到从前：金额 0 且 `unpriced`。
+   *
+   * 它是回落链的**最后一层**，压在目录价下面——配了兜底之后目录价照旧优先，
+   * 不会把已经有价的模型一起按兜底收。
+   */
+  defaultModelRate?: ModelRate
   /** 熔断与透支。见 docs/billing.md §6。 */
   billing?: BillingSettings
 }
@@ -1196,6 +1210,7 @@ export function emptyPlatformSettings(): PlatformSettings {
     managerVersion: '',
     webTools: emptyWebTools(),
     modelPricing: {},
+    defaultModelRate: emptyModelRate(),
     billing: emptyBilling(),
   }
 }

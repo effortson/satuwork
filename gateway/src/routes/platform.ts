@@ -5,11 +5,11 @@ import type { RouteCtx } from './ctx.ts'
 import { CUSTOM_APIS, type CustomProviderDef, DefError, parseProviderDef } from '../providers.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
-import { billingOf, enabledModelsOf, modelPricingOf, modelProviderCreds, modelRoleOf, priceMultiplierOf, publicPlatformCred, publicSettings } from '../lib/org.ts'
+import { billingOf, defaultModelRateOf, enabledModelsOf, modelPricingOf, modelProviderCreds, modelRoleOf, priceMultiplierOf, publicPlatformCred, publicSettings } from '../lib/org.ts'
 import { refreshDiscovered, REFRESH_MS } from '../model-discovery.ts'
 import { isVendor } from '../connectors/index.ts'
 import { rangeQuery, requireOwnerUser } from '../lib/guards.ts'
-import { WEB_BACKENDS, WEB_DOCUMENT, type PlatformSettings, emptyWebTools, parseBilling, parseConnectorPricing, parseModelPricing, parsePriceMultiplier, parseWebTools } from '../db.ts'
+import { WEB_BACKENDS, WEB_DOCUMENT, type PlatformSettings, emptyWebTools, parseBilling, parseConnectorPricing, parseModelPricing, parseModelRate, parsePriceMultiplier, parseWebTools } from '../db.ts'
 import { WebToolError, canExtract, canSearch, needsSecret } from '../web-tools.ts'
 import { testBackend } from '../web-service.ts'
 
@@ -40,6 +40,10 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       // 就把工具配置抹了。
       webTools: cur.webTools ?? emptyWebTools(),
       modelPricing: 'modelPricing' in body ? modelPricingOf(body.modelPricing, parseModelPricing(cur.modelPricing)) : parseModelPricing(cur.modelPricing),
+      // 兜底单价：查不到价的模型按它收，而不是按 0 收（docs/billing.md §7）。
+      defaultModelRate: 'defaultModelRate' in body
+        ? defaultModelRateOf(body.defaultModelRate, parseModelRate(cur.defaultModelRate))
+        : parseModelRate(cur.defaultModelRate),
       billing: 'billing' in body ? billingOf(body.billing, parseBilling(cur.billing)) : parseBilling(cur.billing),
     }
     const saved = await db.putPlatformSettings(next)
@@ -271,7 +275,7 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     const multiplier = parsePriceMultiplier((await db.platformSettings()).priceMultiplier)
 
     /** 账本里模型那一类的钱，按 (公司, 模型) 摊开。key 和下面 token 那份对齐。 */
-    const charged = new Map<string, { amountMicros: number; costMicros: number; unpricedCalls: number }>()
+    const charged = new Map<string, { amountMicros: number; costMicros: number; unpricedCalls: number; unmeteredCalls: number }>()
     /**
      * 三条路各自的钱。**上面那两张卡（原价 / 已扣）要的是三条路的和**——月底从余额里
      * 扣掉的是这个数，只报模型那一份的话，卡上的钱比账单少，而少掉的那截在这一屏上
@@ -290,10 +294,11 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
 
       if (c.kind !== 'llm') continue
       const key = `${c.companyId ?? ''}|${c.subject}`
-      const cur = charged.get(key) ?? { amountMicros: 0, costMicros: 0, unpricedCalls: 0 }
+      const cur = charged.get(key) ?? { amountMicros: 0, costMicros: 0, unpricedCalls: 0, unmeteredCalls: 0 }
       cur.amountMicros += c.amountMicros
       cur.costMicros += c.costMicros
       cur.unpricedCalls += c.unpricedCalls
+      cur.unmeteredCalls += c.unmeteredCalls
       charged.set(key, cur)
     }
 
@@ -312,6 +317,8 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       amountMicros: number
       costMicros: number
       unpricedCalls: number
+      /** 有单价、但结算时没拿到用量的调用数。金额也是 0，可原因和上一格不是一回事。 */
+      unmeteredCalls: number
       /** 账本上根本没有对应行的调用数。金额是 0，但那个 0 是「没记过账」。 */
       unledgeredCalls: number
       lastAt: number | null
@@ -328,10 +335,20 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       amountMicros: number
       costMicros: number
       priced: boolean
+      unmeteredCalls: number
       unledgeredCalls: number
     }>()
     /** 目录里没价的模型（pi-ai 没收录，或自定义时留了 0）。金额算不出来，得说清楚。 */
     const unpricedModels = new Set<string>()
+    /**
+     * **有单价、但那几次调用没拿到用量**的模型。和「没单价」分开报，因为它不是配置问题：
+     * 上游的流里一个 usage 字段都没回，或者管家拿了授权之后**再也没回来**（被清扫按 0 元
+     * 收了口，routines.ts 的 sweepUnsettledLlmCalls）。去配置页补价补不出这笔钱——那一次
+     * 的用量已经没了。合在一起报的表现是：单价明明配着，界面却说「目录里没有单价」。
+     *
+     * 管家只是**晚**回来的那种不在这里：那行占位会被补成真的成交（docs/billing.md §2.1）。
+     */
+    const unmeteredModels = new Set<string>()
     /**
      * 账本上没有行的模型。**和「没单价」是两回事，所以分开报**：一个是配置漏了、
      * 现在就得去补，另一个是那段历史本来就没记过账、补不回来。混成一句话的话，
@@ -342,8 +359,9 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     for (const row of rows) {
       const key = `${row.provider}/${row.model}`
       const cid = row.companyId
-      const money = charged.get(`${cid ?? ''}|${key}`) ?? { amountMicros: 0, costMicros: 0, unpricedCalls: 0 }
+      const money = charged.get(`${cid ?? ''}|${key}`) ?? { amountMicros: 0, costMicros: 0, unpricedCalls: 0, unmeteredCalls: 0 }
       if (money.unpricedCalls > 0) unpricedModels.add(key)
+      if (money.unmeteredCalls > 0) unmeteredModels.add(key)
       if (row.unledgeredCalls > 0) unledgeredModels.add(key)
       // cachedTokens / cacheWriteTokens 理论上都是 promptTokens 的子集。真出现脏数据
       // （上游改了口径、旧行没有这一列）也不能让界面上算出负的未命中量。
@@ -357,7 +375,7 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
           companyId: cid,
           name: cid ? companies.get(cid)?.name ?? cid : '平台（系统管理员）',
           calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheWriteTokens: 0,
-          amountMicros: 0, costMicros: 0, unpricedCalls: 0, unledgeredCalls: 0, lastAt: null,
+          amountMicros: 0, costMicros: 0, unpricedCalls: 0, unmeteredCalls: 0, unledgeredCalls: 0, lastAt: null,
         }
         byCompany.set(bk, bucket)
       }
@@ -369,12 +387,13 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       bucket.amountMicros += money.amountMicros
       bucket.costMicros += money.costMicros
       bucket.unpricedCalls += money.unpricedCalls
+      bucket.unmeteredCalls += money.unmeteredCalls
       bucket.unledgeredCalls += row.unledgeredCalls
       if (row.lastAt != null && (bucket.lastAt == null || row.lastAt > bucket.lastAt)) bucket.lastAt = row.lastAt
 
       let mb = byModel.get(key)
       if (!mb) {
-        mb = { provider: row.provider, model: row.model, calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, amountMicros: 0, costMicros: 0, priced: true, unledgeredCalls: 0 }
+        mb = { provider: row.provider, model: row.model, calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, amountMicros: 0, costMicros: 0, priced: true, unmeteredCalls: 0, unledgeredCalls: 0 }
         byModel.set(key, mb)
       }
       mb.calls += row.calls
@@ -384,7 +403,10 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       mb.cacheWriteTokens += written
       mb.amountMicros += money.amountMicros
       mb.costMicros += money.costMicros
+      // `priced` 只说目录里有没有价——它管的是那一列画不画得出「原价」。没拿到用量
+      // 不影响单价存不存在，所以这里只看 unpricedCalls。
       if (money.unpricedCalls > 0) mb.priced = false
+      mb.unmeteredCalls += money.unmeteredCalls
       mb.unledgeredCalls += row.unledgeredCalls
     }
 
@@ -399,9 +421,10 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
         amountMicros: acc.amountMicros + x.amountMicros,
         costMicros: acc.costMicros + x.costMicros,
         unpricedCalls: acc.unpricedCalls + x.unpricedCalls,
+        unmeteredCalls: acc.unmeteredCalls + x.unmeteredCalls,
         unledgeredCalls: acc.unledgeredCalls + x.unledgeredCalls,
       }),
-      { calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, amountMicros: 0, costMicros: 0, unpricedCalls: 0, unledgeredCalls: 0 },
+      { calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, amountMicros: 0, costMicros: 0, unpricedCalls: 0, unmeteredCalls: 0, unledgeredCalls: 0 },
     )
 
     /**
@@ -441,6 +464,9 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       totals,
       // 前端要据此提示「有模型没单价，金额不完整」，不能让 $0.00 被读成免费。
       unpricedModels: [...unpricedModels],
+      // 同样是「金额不完整」，但这些模型**单价是有的**，缺的是那几次调用的用量。
+      // 和上面那条分开说，否则 owner 会跑去配置页找一个不存在的问题。
+      unmeteredModels: [...unmeteredModels],
       // 同上，但原因不同：这些调用在账本上根本没有行（多半是升级前那段），
       // 金额补不回来。两句话分开说，否则 owner 会去配置页找一个不存在的问题。
       unledgeredModels: [...unledgeredModels],
