@@ -198,7 +198,9 @@ export class Meter {
       const override: ModelRate | undefined = parseModelPricing(s.modelPricing)[`${b.provider}/${b.model}`]
       const rate = rateOf(b.cost, override, parseModelRate(s.defaultModelRate))
       /**
-       * 覆盖、目录、兜底三层都没有价：金额 0 且标 unpriced。**这里仍然不编一个数**——
+       * 覆盖、目录、兜底三层合完还缺 input 或 output 任意一侧：金额 0 且标 unpriced。
+       * **缺一侧也算「不知道」**——只按有的那一侧收，收的是四分之一而 unpriced 还是
+       * false，一句提示都不响（lib/pricing.ts 的 `rateOf`）。**这里仍然不编一个数**——
        * 代码编出来的数没有来路，会被当成成交价。
        *
        * 兜底价不一样：它是运营在模型配置页上自己填的一个数，来路说得清、随时改得动，
@@ -330,8 +332,8 @@ export class Meter {
 function chargeable(s: PlatformSettings, subject: GateSubject): boolean {
   if (subject.kind === 'llm') {
     const override: ModelRate | undefined = parseModelPricing(s.modelPricing)[`${subject.provider}/${subject.model}`]
-    // 连兜底都查不到单价的模型才放行：那时候收的是 0（记 unpriced），拦它等于按
-    // 「不知道」收费。设了兜底之后这类模型是**要钱的**，闸就得照常判。
+    // 连兜底都凑不齐 input / output 的模型才放行：那时候收的是 0（记 unpriced），拦它
+    // 等于按「不知道」收费。兜底把缺的那一侧补上之后这类模型是**要钱的**，闸就得照常判。
     return !!rateOf(subject.cost, override, parseModelRate(s.defaultModelRate))
   }
   if (subject.kind === 'connector') return connectorMicros(s.connectorPricing, subject.toolkit) > 0

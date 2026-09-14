@@ -47,8 +47,18 @@ export interface LlmTokens {
  * **不给 cacheWrite 造 1.25 的系数。** 那是 Anthropic 一家的定价习惯，写进通用回落
  * 等于把某一家的价目表编死在代码里。
  *
- * 合出来 `input` 和 `output` 都还是 0（连兜底都没设）→ 返回 undefined，意思是
- * 「不知道」，不是「免费」。调用方据此记 `unpriced`，界面上要喊出来。
+ * **四层合完之后 `input` 和 `output` 缺任意一侧 → 返回 undefined**，意思是「不知道」，
+ * 不是「免费」。调用方据此记 `unpriced`，界面上要喊出来。
+ *
+ * 缺一侧为什么不算有价：一颗「目录里有 input、没 output」的模型（自定义供应商那张表单
+ * 四个价格框只填了第一个，就是这个形状），从前是算「有价」的——`llmMicros` 照着那个 0
+ * 把输出 token 乘成 $0，而输出通常是输入的 3–5 倍，等于只收了四分之一。更要命的是
+ * `unpriced` 那时是 false：统计屏不喊、模型表不标、余额闸照判，整条链上没有一处
+ * 看得出少收了钱。**不喊出来的低估比喊出来的零更难查**，所以宁可整颗算「不知道」。
+ *
+ * 缺的那侧也不回落到另一侧：按 input 收输出仍旧是低估，而且 `unpriced` 会继续是 false，
+ * 一句提示都不响——换汤不换药。要接住这批模型的是上面第三层（运营填的兜底价），它逐
+ * 字段回落，配了就自动把缺的那一侧补上。
  */
 export function rateOf(cost: unknown, override?: ModelRate, fallback?: ModelRate): ModelRate | undefined {
   const base = parseModelRate(cost)
@@ -60,7 +70,7 @@ export function rateOf(cost: unknown, override?: ModelRate, fallback?: ModelRate
     cacheRead: o.cacheRead || base.cacheRead || f.cacheRead,
     cacheWrite: o.cacheWrite || base.cacheWrite || f.cacheWrite,
   }
-  if (!merged.input && !merged.output) return undefined
+  if (!merged.input || !merged.output) return undefined
   return fillRate(merged)
 }
 
