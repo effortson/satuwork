@@ -86,10 +86,14 @@ function priceMultiplier() {
 
 /**
  * 目录里「没有价」和「免费」长得一样：pi-ai 对没收录价格的模型（zai 这些）
- * 一律填 0。两个方向都是 0 时按「不知道」画成 —— 写成 $0.000 会被读成免费。
+ * 一律填 0。有价 = **input 和 output 两项都得有**，缺一侧就按「不知道」画成 ——
+ * 写成 $0.000 会被读成免费。
+ *
+ * **两项都要**这一条是服务端 `rateOf` 的收口条件，界面照抄：一颗只填了 input 的模型
+ * 那边收的是 0 + `unpriced`，这边要是还画着半边价，这一屏说的和真收的就对不上了。
  */
 function hasRates(cost) {
-  return Number(cost?.input) > 0 || Number(cost?.output) > 0
+  return Number(cost?.input) > 0 && Number(cost?.output) > 0
 }
 
 /** 平台覆盖表里有没有这一条。有就以它为准，目录里的价只是默认值。 */
@@ -105,7 +109,12 @@ function defaultRate() {
   return r && typeof r === 'object' ? r : {}
 }
 
-/** 兜底设了没有。只看 input / output——和服务端 rateOf 最后那一刀同一个判据。 */
+/**
+ * 兜底设了没有。**input / output 两项齐了才算设上**——和服务端 `rateOf` 最后那一刀
+ * 同一个判据：只填了一侧的兜底接不住「完全查不到价」的那批模型，它们另一侧仍旧是空的，
+ * 照旧记 0 + `unpriced`。（给「只缺一侧」的模型补上那一侧是逐字段回落的事，不归这一格
+ * 管，所以 `fellBackRates` 是逐项判的。）
+ */
 function hasDefaultRate() {
   return hasRates(defaultRate())
 }
@@ -147,7 +156,7 @@ function fallbackCell(text) {
 }
 
 function ratePair(cost, factor, fell = {}) {
-  if (!hasRates(cost)) return `<span title="${esc(t('目录里没有这个模型的价格', 'The catalog has no price for this model'))}">—</span>`
+  if (!hasRates(cost)) return `<span title="${esc(t('目录里没有这个模型的完整单价——输入和输出缺任意一项就按「没有价」算，这一次收 $0 并标「没单价」', 'The catalog has no complete price for this model — a missing input or output price counts as no price at all; such calls are charged $0 and flagged "no price"'))}">—</span>`
   const cell = (k) => {
     const shown = esc(money(Number(cost[k] || 0) * factor))
     return fell[k] ? fallbackCell(shown) : shown

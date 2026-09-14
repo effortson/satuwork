@@ -1310,8 +1310,9 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // input 是目录价（不标），output 是兜底给的（要标）。整行判的话这一段里一个都没有。
       assert(html.slice(at, at + 400).includes('按「单价倍率」里的兜底价收'), '逐项回落的 output 没画成估数')
 
-      // 换回上面那两颗再验撤销：`half` 的 output 是 0，撤掉兜底之后它会画成 $0.000，
-      // 那是「目录里 output 填了 0」这个由来已久的画法，和这条用例要验的东西没关系。
+      // 把有价的那两颗加回来一起验撤销，`half` 留在表里：撤掉兜底之后它的 output 又没了，
+      // 而**缺一侧就不算有价**（和服务端 `rateOf` 同一条收口），所以它跟着画成「—」，
+      // input 那半边也不再单独画出来——半边价正是从前只收四分之一还不告警的入口。
       ui.state.catalog = [
         {
           provider: 'e2e-prov',
@@ -1319,6 +1320,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
           models: [
             { id: 'priced', name: 'Priced', cost: { input: 2, output: 8 } },
             { id: 'unpriced', name: 'Unpriced', cost: { input: 0, output: 0 } },
+            { id: 'half', name: 'Half', cost: { input: 3, output: 0 } },
           ],
         },
       ]
@@ -1332,6 +1334,32 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!html.includes('$5.00') && !html.includes('$9.00'), '撤掉兜底之后还按它报价')
       assert(!html.includes('按「单价倍率」里的兜底价收'), '撤掉兜底之后还挂着兜底的悬浮说明')
       assert(!html.includes('$0.000'), '撤掉兜底之后画成了 $0.000')
+      assert(!html.includes('$3.00') && !html.includes('$6.00'), '撤掉兜底之后半价模型还画着 input 那半边')
+    })
+
+    await test('只填了输入价的模型画「—」，不画半边价、也不画 $0.000', async () => {
+      /**
+       * 半边价（目录里有 input、没 output）是一条安静漏钱的路：服务端从前把它算成
+       * 「有价」，输出 token 照着那个 0 乘成 $0——输出通常是输入的 3–5 倍，等于只收了
+       * 四分之一，而 `unpriced` 还是 false，一句告警都不响。
+       *
+       * 收口改成「缺一侧就不算有价」之后，这一屏必须跟着走：`hasRates` 和服务端
+       * `rateOf` 是同一条规则，对不上的时候没人会先怀疑界面（docs/billing.md §3.3）。
+       * 画成 $0.000 也不行——按这份文件一贯的约定，0 读作「没填」，不是「免费」。
+       */
+      const ui = await boot(ownerToken)
+      ui.state.path = '/models'
+      ui.state.selectedProvider = 'e2e-prov'
+      ui.state.catalog = [
+        { provider: 'e2e-prov', name: 'E2E', models: [{ id: 'half', name: 'Half', cost: { input: 3, output: 0 } }] },
+      ]
+      ui.render()
+      const html = ui.html()
+      // 倍率这时是上一条留下的 2，所以原价列和倍率列分别是 $3.00 和 $6.00——一个都不该有。
+      assert(!html.includes('$3.00') && !html.includes('$6.00'), '半边价还画着 input 那一侧')
+      assert(!html.includes('$0.000'), 'output 画成了 $0.000，那会被读成免费')
+      assert(html.includes('—'), '半价模型没画成「—」')
+      assert(html.includes('缺任意一项就按「没有价」算'), '「—」上没挂说清楚的悬浮说明')
     })
 
     await test('工具配置页：后端、密钥框、单价都画得出来，改动走真的派发', async () => {
