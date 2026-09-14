@@ -48,6 +48,7 @@ function joinView() {
             ${state.busy ? t('加入中…') : t('加入 Satuwork')}
             ${state.busy ? '' : svg(['M5 12h14', 'm12 5 7 7-7 7'], 14)}
           </button>
+          ${authConsent(t('加入 Satuwork'), 'Join Satuwork')}
         </form>
         <p style="text-align: center; margin: 0; font-size: 14px; color: color-mix(in srgb, var(--color-text) 60%, transparent);">
           ${t('已经有账号？')}

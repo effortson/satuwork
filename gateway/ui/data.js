@@ -108,6 +108,13 @@ async function api(method, path, body) {
     clearToken()
     state.me = null
     state.loginError = t('登录已过期，请重新登录')
+    // 明确挪到 `/login`。票过期时人多半正停在 `/`（对话页就是那儿），而没登录的 `/`
+    // 现在画的是首页（见 render.js 的 anonView）——不挪的话，上面那句话没有地方说，
+    // 人只会看见自己的对话变成了一屏产品介绍。
+    if (state.path !== '/login') {
+      history.replaceState({}, '', '/login')
+      state.path = '/login'
+    }
     render()
     throw new Error((json && json.error) || t('需要登录'))
   }
@@ -955,6 +962,10 @@ async function loadUsage() {
 
 async function loadPage() {
   if (state.path.startsWith('/join/')) return
+  // 隐私政策和服务条款（pages-legal.js）没有要取的数据，而且**有票的人也进得去**——
+  // 它们不在侧栏里，pathAllowed 一律说不行，落到下面那段会被弹回 `/`，表现是页脚上
+  // 那两个链接在登录之后点了没反应。
+  if (state.path === '/privacy' || state.path === '/terms') return
   if (!state.me) return
   if (!pathAllowed(state.path)) {
     state.path = '/'
