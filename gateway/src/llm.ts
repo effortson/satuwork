@@ -441,26 +441,31 @@ export class Llm {
   }
 
   /**
-   * 密钥的取法：**公司密钥 > 平台密钥 > 进程环境变量。**
+   * 密钥的取法：**平台密钥 > 进程环境变量。**
    *
-   * 公司密钥是主机制：每家公司拿自己的 key 调上游，账单在供应商那边就是分开的，
-   * 一把 key 泄了也只是这一家的事。平台密钥是共享的兜底——没自己配的公司走平台
-   * 采购的那把，平台按 usage_charges 转售。环境变量是最后一档，留给没人配过任何
-   * 表、只靠 `.env` 起来的部署。
+   * 供应商只由平台配：owner 在 `/platform/credentials` 贴那几把，所有公司共用，平台
+   * 按 usage_charges 转售。环境变量是最后一档，留给没人配过任何表、只靠 `.env` 起来
+   * 的部署。
    *
-   * 这个顺序和以前相反（以前平台表压过公司表）。反过来的理由是**影响面**：平台
-   * 密钥优先时，公司配了自己的 key 也不生效，所有公司的流量都从平台那把出去——一旦
-   * 它被限流或吊销，所有公司同时哑掉；而公司的 key 优先时，平台那把只承担没自己
-   * 配的那些，哪一家出问题都只影响哪一家。
+   * **公司那一档撤了。** 这儿曾经是「公司密钥 > 平台密钥 > 环境变量」，公司管理员在
+   * 自己那一屏贴 key 压过平台那把。撤掉它是产品决定（规范第 3 节本来就写着「公司不
+   * 再各自贴 key」，是后来管家中继那一节把这一层加了回来）。连带撤掉的是
+   * `/orgs/:id/credentials` 那五条路由、`POST /orgs/:id/llm/test`、界面上的「供应商」
+   * 菜单和整页。
+   *
+   * 当年反过来（公司优先）的理由是影响面——平台那把被限流或吊销时所有公司同时哑。
+   * **那个风险还在，而且现在没有任何一家能自救**，只能靠 owner 换平台那把。这是
+   * 这次改动明知道要付的代价，不是漏掉的。
+   *
+   * `companyId` 留在签名里没有用上：三个调用方（v1.ts、worker.ts、probe）都是按公司
+   * 解析出来的上下文，它们那一侧「这通调用属于谁」仍然要记账（usage_charges 按公司
+   * 落行）。删掉这个参数只会让那三处改成传一个哪儿也不去的值，反而看不出「密钥曾经
+   * 是按公司分的」这件事什么时候变的。
    *
    * 调用方拿去调上游（Gateway 自己的 /v1，或者发给管家中继的授权），响应里不得
    * 出现这个字符串。
    */
-  async secret(companyId: string | null, provider: string): Promise<string | undefined> {
-    if (companyId) {
-      const company = await this.db.credentialByProvider(companyId, provider)
-      if (company?.secret) return company.secret
-    }
+  async secret(_companyId: string | null, provider: string): Promise<string | undefined> {
     const platform = await this.db.platformCredential(provider)
     if (platform?.secret) return platform.secret
     return envSecret(provider)

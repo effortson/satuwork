@@ -578,8 +578,9 @@ async function testLlm(kind, payload) {
   state.tests[key] = { status: 'busy', text: '测试中…' }
   render()
   try {
-    const path = isOwner() ? '/platform/llm/test' : `/orgs/${encodeURIComponent(orgId())}/llm/test`
-    const data = await api('POST', path, payload)
+    // 公司那条 `/orgs/:id/llm/test` 撤了：它探的是「这家公司用这个供应商打得通吗」，
+    // 而密钥归平台之后，答案对所有公司都一样。
+    const data = await api('POST', '/platform/llm/test', payload)
     if (data.ok) {
       const text = t(`通了 ${data.latencyMs}ms · ${data.provider}/${data.model}`, `OK ${data.latencyMs}ms · ${data.provider}/${data.model}`)
       state.tests[key] = { status: 'ok', text }
@@ -794,20 +795,12 @@ async function saveCred(provider, secret, credId) {
   state.busy = true
   render()
   try {
-    if (isOwner()) {
-      const exists = (state.creds || []).some((c) => c.provider === provider) || !!credId
-      if (exists) await api('PUT', `/platform/credentials/${encodeURIComponent(provider)}`, { secret })
-      else await api('POST', '/platform/credentials', { provider, secret })
-    } else if (isAdmin() && orgId()) {
-      // 公司管理员贴的是本公司那把。已有**本公司**的行才是改（PUT）；只有平台共用那把
-      // 时是新建（POST）——平台的行不是这家公司的，拿它当 exists 会 PUT 到一条不存在的记录上。
-      const base = `/orgs/${encodeURIComponent(orgId())}/credentials`
-      const exists = (state.creds || []).some((c) => c.provider === provider && c.scope === 'company')
-      if (exists) await api('PUT', `${base}/${encodeURIComponent(provider)}`, { secret })
-      else await api('POST', base, { provider, secret })
-    } else {
-      throw new Error('供应商密钥由公司管理员配置')
-    }
+    // 只有平台这一条路了：公司那一档（`/orgs/:id/credentials`）连同整页一起撤了，
+    // 密钥全平台共用。走到这儿的只可能是 owner——别的角色进不了这一页。
+    if (!isOwner()) throw new Error('供应商密钥由系统管理员配置')
+    const exists = (state.creds || []).some((c) => c.provider === provider) || !!credId
+    if (exists) await api('PUT', `/platform/credentials/${encodeURIComponent(provider)}`, { secret })
+    else await api('POST', '/platform/credentials', { provider, secret })
     await loadCreds()
     // 换了密钥，之前那次测试测的是旧密钥。
     delete state.tests[`provider:${provider}`]
