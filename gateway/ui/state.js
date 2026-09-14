@@ -76,6 +76,7 @@ const state = {
   webTools: null,
   toolsTab: 'web',
   savingMultiplier: false,
+  savingDefaultRate: false,
   /** 统计页：窗口口径、选中的公司、选中的月份，以及接口回来的那份数据。 */
   statsRange: 'today',
   statsMonth: '',

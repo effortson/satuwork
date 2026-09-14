@@ -146,6 +146,37 @@ export async function runStats({ gwRoot, test, req, start, waitHttp, assert, log
       assert(r.json.totals.amountMicros === 6_000_000, '没单价的模型把金额算进去了')
     })
 
+    await test('有单价、只是没拿到用量的调用另报一格，不能说成「目录里没有单价」', async () => {
+      /**
+       * 来路是真的：上游的流一个 usage 字段都没回，或者管家没回来结算、被清扫按 0 元
+       * 收了口（routines.ts 的 sweepUnsettledLlmCalls）。账本上的表现是 unpriced = true、
+       * 金额 0，**但单价快照是齐的**——两种「金额算不出来」就靠这一格分开。
+       *
+       * 混成一格的表现：单价明明配着，统计屏却一口咬定「目录里没有单价」，人会跑去
+       * 配置页找一个并不存在的问题。
+       */
+      const at = now - 65 * DAY
+      await client.query(
+        'insert into llm_calls (id, "accountId", "companyId", provider, model, "promptTokens", "completionTokens", "createdAt") values ($1,$2,$3,$4,$5,$6,$7,$8)',
+        ['s-nousage', accountId, orgId, 'openai', 'gpt-4.1', 0, 0, at],
+      )
+      await client.query(
+        'insert into usage_charges (id, "companyId", "accountId", kind, subject, status, quantity, "unitPrice", multiplier, "amountMicros", "bonusMicros", unpriced, "refId", "createdAt")' +
+          " values ($1,$2,$3,'llm','openai/gpt-4.1','failed','{}',$4,1,0,0,true,'s-nousage',$5)",
+        ['c-s-nousage', orgId, accountId, JSON.stringify({ input: 2, output: 8, cacheRead: 2, cacheWrite: 2 }), at],
+      )
+      // 自己的窗口，和上面几条互不打扰。
+      const r = await req(base, 'GET', q(now - 70 * DAY, now - 60 * DAY), { token })
+      assert(r.status === 200, `${r.status} ${r.text}`)
+      assert(r.json.unmeteredModels.includes('openai/gpt-4.1'), `没进「没拿到用量」那一格：${JSON.stringify(r.json.unmeteredModels)}`)
+      assert(!r.json.unpricedModels.includes('openai/gpt-4.1'), `配着单价的模型被报成了「目录里没有单价」：${JSON.stringify(r.json.unpricedModels)}`)
+      assert(r.json.totals.unmeteredCalls === 1, `没拿到用量的调用数 ${r.json.totals.unmeteredCalls}`)
+      assert(r.json.totals.unpricedCalls === 0, `不该有「没单价」的调用：${r.json.totals.unpricedCalls}`)
+      // 单价是有的，所以「原价」那一列照样画得出来。
+      const m = r.json.byModel.find((x) => x.model === 'gpt-4.1')
+      assert(m && m.priced === true, '有单价的模型被标成了 priced=false')
+    })
+
     await test('缓存那两截要汇总出来，它们是提示词的子集不是加项', async () => {
       // 缓存读的单价比输入低一个数量级，缓存写反而更高。统计屏上要能看见这两截，
       // 否则「token 涨了金额没怎么涨」这件事在界面上没有任何解释。

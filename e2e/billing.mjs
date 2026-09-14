@@ -291,10 +291,82 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
       await req(base, 'PUT', '/platform/settings', { token: owner, body: { modelPricing: { [MODEL]: RATE } } })
     })
 
+    await test('查不到单价的模型按兜底价收，不按 $0 收', async () => {
+      /**
+       * 这条盯的是一条**安静漏钱**的路：目录里没收录价格的模型（pi-ai 对 zai 那批一律
+       * 填 0），单价查不到，于是金额记 0 + `unpriced`。那个 0 的本意是「算不出来」，
+       * 可它在账单上和「免费」长得一模一样——月底真扣的钱就少了那一截，而少掉的那截
+       * 没有任何一屏对得出来。兜底价（platformSettings.defaultModelRate）就是来接这一批的。
+       *
+       * 三件事一起钉：没设兜底时照旧记 unpriced（不能凭空开始收钱）；设上之后这批模型
+       * 按兜底价收、`unpriced` 转 false；**已经有价的模型一分钱都不受影响**——兜底是压在
+       * 目录价下面的第三层，不是盖在上面（docs/billing.md §3.3）。
+       */
+      const created = await req(base, 'POST', '/platform/providers', {
+        token: owner,
+        body: {
+          id: 'noprice-llm', name: 'No Price LLM', baseUrl: upstream.url, api: 'anthropic-messages',
+          // **不给 cost**：这就是「目录里查不到单价」的那一批。
+          models: [{ id: 'noprice-model', name: 'No Price Model', contextWindow: 65536, maxTokens: 4096, reasoning: false, input: ['text'] }],
+        },
+      })
+      assert(created.status === 201, `建供应商 ${created.status} ${created.text}`)
+      const cred = await req(base, 'POST', '/platform/credentials', { token: owner, body: { provider: 'noprice-llm', secret: 'noprice-key' } })
+      assert(cred.status === 201, `配密钥 ${cred.status} ${cred.text}`)
+
+      const askNoPrice = async () => {
+        const before = (await charges(orgA)).length
+        const r = await req(base, 'POST', '/v1/messages', {
+          token: tokenA,
+          body: { model: 'noprice-llm/noprice-model', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }] },
+        })
+        assert(r.status === 200, `messages ${r.status} ${r.text.slice(0, 200)}`)
+        await settled(orgA, before + 1)
+        return (await charges(orgA))[0]
+      }
+
+      // 一、没设兜底：照旧记 0 + unpriced。这一格不能因为加了兜底就自己变了。
+      const zero = await askNoPrice()
+      assert(zero.amount === 0 && zero.unpriced === true, `没设兜底时该记 unpriced：${JSON.stringify(zero)}`)
+
+      // 二、设上兜底：同一个模型、同一份用量，收的钱和拿 RATE 当单价一模一样。
+      const put = await req(base, 'PUT', '/platform/settings', { token: owner, body: { defaultModelRate: RATE } })
+      assert(put.status === 200, `settings ${put.status} ${put.text}`)
+      assert(put.json.defaultModelRate?.input === RATE.input, `兜底没存住：${put.text}`)
+      const paid = await askNoPrice()
+      assert(paid.unpriced === false, `按兜底收了就不该再标 unpriced：${JSON.stringify(paid)}`)
+      assert(paid.amount === EXPECTED_MICROS, `兜底价算出来是 ${paid.amount} 微元，应当是 ${EXPECTED_MICROS}`)
+      assert(paid.unitPrice.input === RATE.input && paid.unitPrice.cacheWrite === RATE.cacheWrite, `快照里不是兜底价：${JSON.stringify(paid.unitPrice)}`)
+
+      // 三、**已经有价的模型不受影响**：兜底压在目录价下面，不是盖在上面。
+      const priced = (await (async () => {
+        const r = await ask(tokenA, orgA)
+        assert(r.status === 200, `messages ${r.status} ${r.text.slice(0, 200)}`)
+        return (await charges(orgA))[0]
+      })())
+      assert(priced.subject === MODEL, `拿错行了：${JSON.stringify(priced)}`)
+      assert(priced.amount === EXPECTED_MICROS, `有覆盖价的模型被兜底改了价：${priced.amount}`)
+
+      // 四、撤掉兜底（四项全 0），行为退回第一步——「不兜底」得是个撤得掉的开关。
+      const off = await req(base, 'PUT', '/platform/settings', {
+        token: owner,
+        body: { defaultModelRate: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+      })
+      assert(off.status === 200, `撤兜底 ${off.status} ${off.text}`)
+      const again = await askNoPrice()
+      assert(again.amount === 0 && again.unpriced === true, `撤掉兜底之后该退回 unpriced：${JSON.stringify(again)}`)
+    })
+
     await test('改倍率不追溯改动已经落账的金额', async () => {
       // 快照**所有**已经落账的行，不是只看最新那一条：改价不追溯是对整段历史的承诺。
-      const before = new Map((await charges(orgA)).map((r) => [`${r.subject}|${r.amount}|${r.multiplier}`, r]))
-      const beforeCount = before.size
+      const rows = await charges(orgA)
+      const before = new Map(rows.map((r) => [`${r.subject}|${r.amount}|${r.multiplier}`, r]))
+      /**
+       * 行数拿的是**数组长度**，不是那张 Map 的 size：两行「同一个模型、同样的金额、
+       * 同样的倍率」是完全正常的（同一个模型连调两次就是），它们在 Map 里只占一格。
+       * 拿 size 当行数的话，凡是出现过重复的那一刻这条用例就红，而红的原因和改价无关。
+       */
+      const beforeCount = rows.length
       const put = await req(base, 'PUT', '/platform/settings', { token: owner, body: { priceMultiplier: 2 } })
       assert(put.status === 200, `settings ${put.status} ${put.text}`)
       const after = await charges(orgA)

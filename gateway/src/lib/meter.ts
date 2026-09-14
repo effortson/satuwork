@@ -21,7 +21,7 @@
  * 见 docs/billing.md。
  */
 import type { Account, ChargeStatus, Db, ModelRate, PlatformSettings, UsageCharge, WebCallKind } from '../db.ts'
-import { emptyWebTools, parseBilling, parseModelPricing, parsePriceMultiplier } from '../db.ts'
+import { emptyWebTools, parseBilling, parseModelPricing, parseModelRate, parsePriceMultiplier } from '../db.ts'
 import { balanceOf } from './billing.ts'
 import { type LlmTokens, connectorMicros, llmMicros, rateOf, rateSnapshot, webMicros } from './pricing.ts'
 
@@ -196,8 +196,15 @@ export class Meter {
     const multiplier = parsePriceMultiplier(s.priceMultiplier)
     if (b.kind === 'llm') {
       const override: ModelRate | undefined = parseModelPricing(s.modelPricing)[`${b.provider}/${b.model}`]
-      const rate = rateOf(b.cost, override)
-      // 查不到单价：金额 0 且标 unpriced。**不编一个数**——编出来的数会被当成成交价。
+      const rate = rateOf(b.cost, override, parseModelRate(s.defaultModelRate))
+      /**
+       * 覆盖、目录、兜底三层都没有价：金额 0 且标 unpriced。**这里仍然不编一个数**——
+       * 代码编出来的数没有来路，会被当成成交价。
+       *
+       * 兜底价不一样：它是运营在模型配置页上自己填的一个数，来路说得清、随时改得动，
+       * 而且改了之后立刻就在那一屏上看得见。所以「不要按 0 收」这件事由它办
+       * （`rateOf` 的最后一层），不由这里办。没设兜底时行为和从前一模一样。
+       */
       if (!rate) return { amountMicros: 0, unitPrice: {}, multiplier, unpriced: true }
       return {
         amountMicros: llmMicros(rate, b.tokens, multiplier),
@@ -274,14 +281,58 @@ export class Meter {
     budget.left = budget.bonusLeft + budget.topupLeft
     return row
   }
+
+  /**
+   * 把清扫写下的占位行补成真的成交。判据、原子性和那条例外的边界都在
+   * `db.fillPlaceholderCharge` 上，这里只负责**把钱算对**——报价、赠送桶的上限、余额
+   * 记忆的就地扣减，和 `charge` 一字不差地走同一套。
+   *
+   * 补不上（没有那行占位，或者它已经被别人补过了）就回 undefined，一行都不动。
+   */
+  async fillPlaceholder(b: Billable, q?: Quote): Promise<UsageCharge | undefined> {
+    const quote = q ?? (await this.quote(b))
+    const companyId = b.account.companyId
+    const input = {
+      refId: b.refId ?? '',
+      companyId,
+      status: b.status,
+      quantity: quantityOf(b),
+      unitPrice: quote.unitPrice,
+      multiplier: quote.multiplier,
+      amountMicros: quote.amountMicros,
+      unpriced: quote.unpriced,
+    }
+    if (!input.refId) return undefined
+    // 没公司、或者补完还是 0 元：没有赠送桶要算，也就不必排队。
+    if (!companyId || quote.amountMicros <= 0) return this.db.fillPlaceholderCharge(input)
+    const entry = await this.budgetEntry(companyId)
+    const row = await this.db.tx(async () => {
+      await this.db.lockCompanyLedger(companyId)
+      return this.db.fillPlaceholderCharge({
+        ...input,
+        bonusCap: entry.bonusSince == null ? { grantMicros: 0, since: 0 } : { grantMicros: entry.grantMicros, since: entry.bonusSince },
+      })
+    })
+    if (!row) return undefined
+    // 和 charge 一样就地扣减，别等 TTL 到。占位行原来一分钱没扣，所以这里扣的是全额。
+    const budget = entry.value
+    const bonusMicros = row.bonusMicros
+    budget.bonusLeft = Math.max(0, budget.bonusLeft - bonusMicros)
+    budget.topupLeft = Math.max(0, budget.topupLeft - (row.amountMicros - bonusMicros))
+    budget.bonusSpent += bonusMicros
+    budget.topupSpent += row.amountMicros - bonusMicros
+    budget.left = budget.bonusLeft + budget.topupLeft
+    return row
+  }
 }
 
 /** 这一类调用当前的单价是不是 0。0 = 现在不收钱，闸放行。 */
 function chargeable(s: PlatformSettings, subject: GateSubject): boolean {
   if (subject.kind === 'llm') {
     const override: ModelRate | undefined = parseModelPricing(s.modelPricing)[`${subject.provider}/${subject.model}`]
-    // 查不到单价的模型也放行：那时候收的是 0（记 unpriced），拦它等于按「不知道」收费。
-    return !!rateOf(subject.cost, override)
+    // 连兜底都查不到单价的模型才放行：那时候收的是 0（记 unpriced），拦它等于按
+    // 「不知道」收费。设了兜底之后这类模型是**要钱的**，闸就得照常判。
+    return !!rateOf(subject.cost, override, parseModelRate(s.defaultModelRate))
   }
   if (subject.kind === 'connector') return connectorMicros(s.connectorPricing, subject.toolkit) > 0
   const web = s.webTools ?? emptyWebTools()

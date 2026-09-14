@@ -21,7 +21,7 @@ import { bodyOf, strField } from '../lib/validate.ts'
 import { requireMachine, requireSeatOnly } from '../lib/guards.ts'
 import { claimDue, RUN_TIMEOUT_MS, settleRun, turnFailure } from '../routines.ts'
 import type { ChannelEvent, ChargeStatus, Machine, Routine, RoutineRun } from '../db.ts'
-import { accountByApiKey, gateOr402, recordLlmCall, recordUsageOnly, settle } from '../lib/llm-billing.ts'
+import { accountByApiKey, fillSweptCharge, gateOr402, recordLlmCall, recordUsageOnly, settle } from '../lib/llm-billing.ts'
 import type { TokenUsage } from '../lib/llm-usage.ts'
 import { randomUUID } from 'node:crypto'
 import {
@@ -381,8 +381,15 @@ async function seatOnMachine(db: RouteCtx['db'], machine: Machine, accountId: st
  * 一条失败消息给用户看；两边不一致的话，同一个账号在旧席位（走 /v1）和新席位上看到的
  * 是两种说法。
  *
- * 结算是幂等的：管家重试、或者清扫（routines.ts 的 sweepUnsettledLlmCalls）先一步收了口，
- * 第二笔回 `settled: false`，不再挂一行账。
+ * 结算是幂等的，**但幂等只管「不收第二笔钱」，不等于「第二次什么都不做」**——回的是三种：
+ *
+ *   { settled: true }                     头一次结算，落一行账
+ *   { settled: true, reason: 'filled' }   清扫先按 0 元收了口，这一次把那行占位补成真的
+ *                                         （docs/billing.md §2 唯一的例外）
+ *   { settled: false, reason: 'already' } 上一次已经真结过了，只把 token 补正，账本不动
+ *
+ * 管家不看这三种的区别（结不结得成都照常继续），但 e2e 钉着它们：少了中间那一种，
+ * 跑过 LLM_SETTLE_GRACE_MS 的长回答就会永远记成 0 元，而且事后补不回来。
  *
  * ── 授权的收发形状（管家和 e2e 都钉着它，改之前先改那两边）──
  *
@@ -459,24 +466,54 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
     const status = body.status == null ? undefined : strField(body, 'status', false)
     if (status !== undefined && !SETTLE_STATUSES.has(status as ChargeStatus)) throw new HttpError(400, 'status 只能是 ok / failed / error / timeout')
     const usage = usageOf(body.usage)
+    /**
+     * 这一次按什么价收。**只从目录里取 `cost`，provider / model 用这次调用自己的那一份**
+     * ——理由和清扫那边一字不差，见 routines.ts 的 sweepUnsettledLlmCalls：`llm.find` 的
+     * 裸 id 回落可能命中另一家供应商的同名模型，拿它的名字落账会让账本 subject 和
+     * `llm_calls` 分家，统计屏那个 join 就取不到钱了。目录里已经没有这个模型了（平台
+     * 下架、公司条目删了）也走这条：账照记，只是没有单价，settle 记成 unpriced。
+     */
+    const pricedOf = async () => ({
+      provider: call.provider,
+      id: call.model,
+      cost: (await llm.find(call.companyId, `${call.provider}/${call.model}`))?.cost,
+    })
     if (await db.chargeExistsForRef(call.id)) {
       /**
-       * 已经有账了——多半是清扫先把它收成 failed / 0 元（一次跑过 LLM_SETTLE_GRACE_MS 的长
-       * 回答就会这样），管家随后才带着真实用量回来。**钱不重记**：一次调用只该有一个金额，
-       * 重算等于给同一行挂两个数。但 token 要补上：不补的话 llm_calls 永远停在 0/0，
-       * 那一行的意思就成了「这次调用什么都没发生」，而它明明发生过、还很贵。
-       * 补完之后这一行读作「有用量、金额 0 且 unpriced」——unpriced 本来就是「算不出来」。
+       * 已经有账了。**钱仍然不重记**——一次调用只该有一个金额，重算等于给同一行挂两个数。
+       * 但「已经有账」在中继这条路上有两种来路，结局不该一样：
+       *
+       * 一、**清扫写的占位行。** 一次跑过 LLM_SETTLE_GRACE_MS 的长回答会先被收成
+       *     `failed` / 0 元 / unpriced，管家随后才带着真实用量回来。那一行**从来没有
+       *     成交过**，钉着它不放的结果是：这通调用真金白银发生过，账上永远是 0，而且
+       *     补不回来（用量只在管家这一次回调里）。所以把它补成真的——docs/billing.md §2
+       *     唯一的例外，判据严到只认清扫写出来的那个形状，见 db.fillPlaceholderCharge。
+       *
+       * 二、**上一次已经真结过了**（管家自己重试、或者两边撞在一起）。这种一行都不动，
+       *     只把 token 补正：不补的话 llm_calls 永远停在 0/0，那一行读起来像「这次调用
+       *     什么都没发生」，而它明明发生过、还很贵。
        */
-      if (usage) await recordUsageOnly(db, call.id, usage)
+      if (usage) {
+        /**
+         * 账号和目录只在**真要补录**的时候才查。放到分支外面去查过一版，代价是：账号被
+         * 硬删掉之后（删公司 / 删员工都会 `delete from accounts`，而 `llm_calls` 上没有
+         * 外键、调用行不跟着走），管家重试上报会从 `200 already` 变成 `404 账号不存在`
+         * ——一个本来幂等成功的空操作变成了错误。补不了就补不了，账本原样不动，这条路
+         * 仍旧回 already。
+         */
+        const account = await db.account(call.accountId)
+        if (account && (await fillSweptCharge(db, meter, account, await pricedOf(), call.id, usage, status as ChargeStatus | undefined))) {
+          json(res, 200, { settled: true, reason: 'filled' })
+          return
+        }
+        await recordUsageOnly(db, call.id, usage)
+      }
       json(res, 200, { settled: false, reason: 'already' })
       return
     }
     const account = await db.account(call.accountId)
     if (!account) throw new HttpError(404, '账号不存在')
-    // 目录可能已经没有这个模型了（平台下架、公司条目删了）：账照记，只是没有单价，
-    // settle 会把它记成 unpriced。
-    const found = (await llm.find(call.companyId, `${call.provider}/${call.model}`)) ?? { provider: call.provider, id: call.model, cost: undefined }
-    await settle(db, meter, account, found, call.id, usage, status as ChargeStatus | undefined)
+    await settle(db, meter, account, await pricedOf(), call.id, usage, status as ChargeStatus | undefined)
     json(res, 200, { settled: true })
   })
 }

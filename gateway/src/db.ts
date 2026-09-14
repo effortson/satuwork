@@ -5,7 +5,7 @@ import { randomAccessToken, randomApiKey, randomMachineToken } from './crypto.ts
 import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind } from './db/types.ts'
-import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseModelPricing, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
+import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
 import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
@@ -1529,6 +1529,105 @@ export class Db {
   }
 
   /**
+   * 把清扫写下的**占位行**填成真的。**这是 docs/billing.md §2「金额写死不重算」唯一的
+   * 例外**，开这个口子的理由和它的边界都在那里，动之前先读那一节。
+   *
+   * 场景只有一个：一次长回答跑过了 LLM_SETTLE_GRACE_MS，清扫（routines.ts 的
+   * sweepUnsettledLlmCalls）先把它按 `failed` / 0 元 / unpriced 收了口；管家随后带着真实
+   * 用量回来。幂等挡住的本该是「同一次调用收两笔钱」，可它连带着把**第一笔也钉成了 0**
+   * ——这次调用真金白银发生过，账上却永远是 0，而且补不回来。
+   *
+   * 所以这里不是「改一笔已经成交的钱」，是**把一行从来没成交过的占位补成成交**。判据
+   * 严到只认清扫写出来的那个形状，一格都不能松：
+   *
+   *   refId 指着这一次调用 · kind = llm · status = failed · unpriced · 金额 0 · 赠送 0 ·
+   *   四项 token 全 0
+   *
+   * 少一格就可能把一笔真收过的钱盖掉：`denied`（闸拒的，是事实）、金额非 0 的（已经成交）、
+   * 带用量的（已经结过）各自都会因为某一格对不上而落空。对不上就一行都不动、回 undefined，
+   * 调用方退回原来的「只补 token」。
+   *
+   * **是 update 不是 delete + insert**：账本只增不改是这张表的性格，破一次口子也要破得最
+   * 小——行还是那一行、id 还是那个 id，只是不再说假话。
+   *
+   * **只改一行，靠子查询挑 id，不靠 `refId` 直接筛。** `usage_charges."refId"` 上只有普通
+   * 索引不是唯一约束，同一次调用挂两行账是这套代码明说过会发生的事（见 LEDGER_BY_REF
+   * 那段注释，以及 routines.ts 里清扫那个「两边同时 insert」的竞态窗口）。以前无所谓：
+   * 两行占位都是 0 元，`sum` 起来还是 0。可一旦补录按 `refId` 筛，两行会**各自**被填成
+   * 全额——这次调用就收了两遍，而 `this.one()` 只看得见其中一行，余额记忆也只减一份。
+   *
+   * 外面那串判据（0 元、0 赠送、unpriced、failed）在挑中 id 之后**再查一遍**：两个并发的
+   * 补录抢同一行时，第二个等到行锁之后重查会发现它已经不是 0 元了，回 0 行，退回 already。
+   * 剩下那行没被选中的占位仍旧是 0 元，按 refId 汇总时和从前一样合成一行。
+   *
+   * `createdAt` 不动：那是清扫写下的时刻，比「管家什么时候想起来回来」更接近调用真实发生
+   * 的时间，改它会把这笔钱挪到另一个账期去。
+   *
+   * 四项 token 那几刀转的是 `numeric` 不是 `bigint`：`kind = 'llm'` 和这几个转换之间没有
+   * 求值顺序的保证，真扫到一行小数用量（上游报了 `1000.5`）时 `::bigint` 会当场报错，
+   * 而 `::numeric` 认。
+   */
+  async fillPlaceholderCharge(input: {
+    refId: string
+    companyId: string | null
+    status: ChargeStatus
+    quantity?: Record<string, number>
+    unitPrice?: Record<string, number>
+    multiplier?: number
+    amountMicros?: number
+    unpriced?: boolean
+    /** 同 insertUsageCharge。给了它，赠送那一份由库在同一条 SQL 里现算。 */
+    bonusCap?: { grantMicros: number; since: number }
+  }): Promise<UsageCharge | undefined> {
+    const amount = Math.max(0, Math.trunc(input.amountMicros ?? 0))
+    const cap = input.bonusCap && input.companyId ? input.bonusCap : undefined
+    /**
+     * 赠送那一份和 insertUsageCharge 同一条公式（sum 里数上自己这一行无所谓——占位行的
+     * bonusMicros 一定是 0），外面多套一层 `case when u."createdAt" >= ?`。
+     *
+     * **那一刀是必须的。** 占位行是清扫写的，它的时间戳可能落在**上一个账期**里，而赠送
+     * 桶的上限只数当期（`createdAt >= since`）。给一行上一账期的行记了 bonus，这笔 bonus
+     * 不会进后续的 sum，赠送桶就被扣穿了。跨期的那种一律走充值桶。
+     */
+    const bonusSql = cap
+      ? 'case when u."createdAt" >= ? then least(?, greatest(0, ? - coalesce((select sum(c."bonusMicros") from usage_charges c where c."companyId" = ? and c."createdAt" >= ?), 0))) else 0 end'
+      : '?'
+    const bonusArgs = cap
+      ? [cap.since, amount, Math.max(0, Math.trunc(cap.grantMicros)), input.companyId, cap.since]
+      : [0]
+    const r = await this.one(
+      `update usage_charges u set
+         status = ?, quantity = ?, "unitPrice" = ?, multiplier = ?,
+         "amountMicros" = ?, "bonusMicros" = ${bonusSql}, unpriced = ?
+       where u.id = (
+               select c2.id from usage_charges c2
+                where c2."refId" = ? and c2.kind = 'llm' and c2.status = 'failed' and c2.unpriced = true
+                  and c2."amountMicros" = 0 and c2."bonusMicros" = 0
+                  and coalesce((c2.quantity->>'promptTokens')::numeric, 0) = 0
+                  and coalesce((c2.quantity->>'completionTokens')::numeric, 0) = 0
+                  and coalesce((c2.quantity->>'cachedTokens')::numeric, 0) = 0
+                  and coalesce((c2.quantity->>'cacheWriteTokens')::numeric, 0) = 0
+                order by c2."createdAt", c2.id
+                limit 1
+             )
+         and u.kind = 'llm' and u.status = 'failed' and u.unpriced = true
+         and u."amountMicros" = 0 and u."bonusMicros" = 0
+       returning *`,
+      [
+        input.status,
+        JSON.stringify(input.quantity ?? {}),
+        JSON.stringify(input.unitPrice ?? {}),
+        input.multiplier ?? 1,
+        amount,
+        ...bonusArgs,
+        input.unpriced === true,
+        input.refId,
+      ],
+    )
+    return r ? usageChargeOf(r) : undefined
+  }
+
+  /**
    * 一家公司的账本锁。insertUsageCharge 的 `bonusCap` 是「读 sum 再写」——两次并发
    * 落账各自读到同一个 sum 仍会把赠送桶扣穿，所以落账那一条 insert 要排队。
    * **必须在 db.tx 里调**（同 lockExclusive）。按公司散列，不同公司互不等。
@@ -1640,12 +1739,17 @@ export class Db {
    * 账本汇总：按公司 × 类型。统计屏用它。
    *
    * **只 sum，不按当前单价重算**——金额在写行那一刻就定死了（docs/billing.md §2）。
+   *
+   * 「金额算不出来」的那些行分两格报，**不要再合回一格**：`unpricedCalls` 是目录里没有
+   * 单价，owner 去配置页补上就好了；`unmeteredCalls` 是有单价但结算时没拿到用量（上游
+   * 流里一个 usage 字段都没回、管家没回来结算被清扫收了口），那一次的用量已经没了，
+   * 补不回来。合成一格的表现是统计屏只能挑一句话说，而这两句话要人办的事正好相反。
    */
   async chargeUsageBy(
     columns: ('companyId' | 'accountId' | 'botId' | 'kind' | 'subject')[],
     range?: { from?: number; to?: number },
     filter?: { companyId?: string; accountId?: string },
-  ): Promise<{ companyId: string | null; accountId: string; botId: string | null; kind: string; subject: string; calls: number; amountMicros: number; bonusMicros: number; costMicros: number; unpricedCalls: number; lastAt: number | null }[]> {
+  ): Promise<{ companyId: string | null; accountId: string; botId: string | null; kind: string; subject: string; calls: number; amountMicros: number; bonusMicros: number; costMicros: number; unpricedCalls: number; unmeteredCalls: number; lastAt: number | null }[]> {
     const cols = columns.map((c) => `"${c}"`).join(', ')
     const r = this.llmRangeSql(range)
     let where = `where 1=1${r.sql}`
@@ -1665,7 +1769,12 @@ export class Db {
               -- 原价是**倒推**的：成交额 ÷ 当时的倍率。账本存倍率而不是原价，因为
               -- 倍率只有一个数、原价有四项；除法在这里做，历史行各按各的倍率还原。
               coalesce(sum("amountMicros" / greatest(multiplier, 0.0001)), 0) as "costMicros",
-              coalesce(sum(case when unpriced then 1 else 0 end), 0) as "unpricedCalls",
+              -- unpriced 是「金额算不出来」，两种原因共用这一格，事后要分开报，因为
+              -- 一种现在就能修、另一种修不了（见上面那段注释）。分界是行上那份单价
+              -- 快照空不空：查不到单价时 quote 存的是空对象，查得到但没拿到用量时存
+              -- 的是四项齐全的快照（lib/meter.ts 的 quote、lib/llm-billing.ts 的 settle）。
+              coalesce(sum(case when unpriced and "unitPrice" = '{}'::jsonb then 1 else 0 end), 0) as "unpricedCalls",
+              coalesce(sum(case when unpriced and "unitPrice" <> '{}'::jsonb then 1 else 0 end), 0) as "unmeteredCalls",
               max("createdAt") as "lastAt"
        from usage_charges ${where}
        group by ${cols}`,
@@ -1684,6 +1793,7 @@ export class Db {
       bonusMicros: num(row.bonusMicros),
       costMicros: Math.round(num(row.costMicros)),
       unpricedCalls: num(row.unpricedCalls),
+      unmeteredCalls: num(row.unmeteredCalls),
       lastAt: numOrNull(row.lastAt),
     }))
   }
@@ -3878,6 +3988,9 @@ export class Db {
       // 同上第三次。这两项漏了的后果更重：单价覆盖存不进去，缺价的模型就永远缺价；
       // 熔断开关存不进去，`enforce` 就成了一个改不动的常量。
       modelPricing: parseModelPricing(next.modelPricing),
+      // 同上第四次。漏了它的表现是：兜底单价能填、PUT 回 200、读出来永远是全 0，
+      // 于是缺价的模型继续按 0 收——正是加这一项要堵的那个洞。
+      defaultModelRate: parseModelRate(next.defaultModelRate),
       billing: parseBilling(next.billing),
     })
     await this.run(

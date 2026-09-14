@@ -544,6 +544,46 @@ async function saveModelPrice(clear = false) {
 }
 
 /**
+ * 存兜底单价。四个框各存各的，改哪个存哪个——和倍率一样不设「保存」按钮。
+ *
+ * **空 = 这一项没填**，存成 0；四项全 0 就是「不兜底」，服务端据此回到「查不到价就记
+ * unpriced」。所以这里不能把空值当成「不要改」跳过去，否则那四个框只填得进、清不掉。
+ */
+async function saveDefaultRate(field, raw) {
+  const prev = state.settings?.defaultModelRate || {}
+  const text = String(raw ?? '').trim()
+  const n = text === '' ? 0 : Number(text)
+  if (!Number.isFinite(n) || n < 0) {
+    flash('err', '兜底单价只能是不小于 0 的数字')
+    render()
+    return
+  }
+  if (n === (Number(prev[field]) || 0)) return
+  const next = {
+    input: Number(prev.input) || 0,
+    output: Number(prev.output) || 0,
+    cacheRead: Number(prev.cacheRead) || 0,
+    cacheWrite: Number(prev.cacheWrite) || 0,
+    [field]: n,
+  }
+  state.savingDefaultRate = true
+  state.settings = { ...state.settings, defaultModelRate: next }
+  render()
+  try {
+    const saved = await api('PUT', '/platform/settings', { ...state.settings, defaultModelRate: next })
+    state.settings = saved
+    if (state.me) state.me.settings = saved
+    flash('ok', Number(saved.defaultModelRate?.input) || Number(saved.defaultModelRate?.output) ? '已保存兜底单价' : '已撤掉兜底单价')
+  } catch (err) {
+    state.settings = { ...state.settings, defaultModelRate: prev }
+    flash('err', err.message)
+  } finally {
+    state.savingDefaultRate = false
+    render()
+  }
+}
+
+/**
  * 存倍率。服务端也校验区间——这里先挡一道，是为了让输入框里那个手滑的值
  * 当场退回上一个有效值，而不是先画出来再被一条错误提示纠正。
  */
