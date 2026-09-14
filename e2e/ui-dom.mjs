@@ -149,7 +149,7 @@ export function uiSource(uiDir) {
  * 见 uiSource。末尾那句 boot() 去掉，由调用方决定什么时候起，否则一 import 就开始打
  * 网络，断言没法安排在它前面。
  */
-export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, persistentStorage, localBotBridge }) {
+export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, persistentStorage, localBotBridge, path = '/' }) {
   const raw = uiSource(dirname(appPath))
   const src = raw.replace(/\nboot\(\)\s*$/, '\n')
   const { document, app, page, listeners, stubs } = makeDom(stubIds)
@@ -159,7 +159,9 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
   const localStorage = persistentStorage || makeStorage()
   if (token) sessionStorage.setItem(tokenKey(appPath), token)
 
-  const location = { pathname: '/', search: '', hash: '', href: base + '/' }
+  // 进来时地址栏上是什么。`/` 和 `/login` 在没登录时画的是两屏（见 render.js 的
+  // anonView），所以这一条得能由测试指定。
+  const location = { pathname: path, search: '', hash: '', href: base + path }
   const history = {
     replaceState: (_s, _t, url) => {
       if (url) location.pathname = String(url).split('?')[0]

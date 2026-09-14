@@ -14,6 +14,13 @@ cd gateway && pnpm dev
 
 开 <http://127.0.0.1:3080>。第一次进去是「创建系统管理员」那一屏，建完就是登录态。
 
+之后 `/` 是**首页**（给还没开通的人看的那一屏，`gateway/ui/pages-landing.js`），登录在 `/login`；
+有票的话 `/` 照旧直接是对话 / 概览。桌面壳里没有首页这一步——`/` 就是登录。
+
+`/privacy` 和 `/terms` 是隐私政策与服务条款（`gateway/ui/pages-legal.js`），**不看登录状态**，
+首页和登录页的页脚都指过去。里面的落款主体、管辖地和联系邮箱现在是占位的，上线前要换掉
+（见那个文件顶上的 `LEGAL_DRAFT`）。
+
 整套跑在容器里：`docker compose up -d`（Gateway + PostgreSQL）。
 Bot 不在 compose 里——它由席位机器上的机器管家按 (账号, botId) 部署，不是容器编排出来的。
 

@@ -268,6 +268,24 @@ function appView() {
   </div>`
 }
 
+/**
+ * 没登录的人这一帧看到什么：首页，还是登录表单。
+ *
+ * `/` 给首页（见 pages-landing.js）——这台 Gateway 的地址会被发给还没开通的人，
+ * 他们打开只看见两个输入框的话，连「这是什么」都问不出口。登录在 `/login`。
+ *
+ * 两个例外都回到登录表单：
+ *
+ * - **桌面壳**。它是应用不是网站，开机第一件事就是连回自己那台 Gateway；中间插一屏
+ *   讲产品是什么，等于让已经装了这个东西的人再被推销一次。
+ * - **`/` 以外的任何地址**。直接输 `/machines`、或者票过期之后刷新，人是奔着某一页
+ *   去的——那时该问的是「你是谁」，不是「要不要了解一下」。
+ */
+function anonView() {
+  if (state.path === '/' && !desktopShell()) return landingView()
+  return loginView()
+}
+
 /** 上一帧画的是哪个页面。换页要回到顶部，原地重绘不能动——见 render()。 */
 let paintedPath = null
 
@@ -287,12 +305,25 @@ function render() {
     syncDesktop()
     return
   }
+  /**
+   * 隐私政策和服务条款（pages-legal.js）。**放在登录判断之前**：有票没票、桌面壳里
+   * 还是浏览器里，打开都是同一份文本。法律文本背后不该有一道登录墙——真要看它的人，
+   * 多半正是还没有账号的那个（注册页底下那句「继续即表示同意」指的就是这里）。
+   *
+   * 也在「还没有系统管理员」那一屏之前：一台刚装好、一个账号都没有的 Gateway，同样
+   * 该给得出这两页。
+   */
+  if (state.path === '/privacy' || state.path === '/terms') {
+    root.innerHTML = legalView(state.path === '/terms' ? 'terms' : 'privacy')
+    syncDesktop()
+    return
+  }
   if (!state.me && state.needsSetup) {
     root.innerHTML = setupView()
     syncDesktop()
     return
   }
-  root.innerHTML = state.me ? appView() : loginView()
+  root.innerHTML = state.me ? appView() : anonView()
   // 对话页的正文不在 appView 里——chatPage 只搭空壳，消息由 paintChat 增量填。
   // 整页重绘会把那个壳换掉，所以每次 render 之后要补一次。
   if (document.getElementById('chat-thread')) {

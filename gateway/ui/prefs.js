@@ -113,6 +113,13 @@ applyPrefs()
 
 const PATHS = {
   '/': { title: '概览' },
+  // 登录页。放进表里只为让 pathOf() 认得这个地址（不认就一律折回 `/`）——它画的是
+  // loginView，从来走不到 appView 的标题栏，登录之后 pathAllowed 会把人送回 `/`。
+  '/login': { title: '登录' },
+  // 隐私政策和服务条款（pages-legal.js）。同样只为让 pathOf() 认得这两个地址——它们
+  // 画的是 legalView，和登录状态无关，从来走不到 appView 的标题栏。
+  '/privacy': { title: '隐私政策' },
+  '/terms': { title: '服务条款' },
   '/models': { title: '模型配置' },
   '/tools': { title: '工具配置' },
   '/providers': { title: '供应商' },

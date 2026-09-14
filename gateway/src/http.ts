@@ -128,10 +128,10 @@ const MIME: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
 }
 
-const SPA_PATHS = new Set(['/', '/index.html', '/ui', '/ui/', '/models', '/providers', '/company', '/accounts', '/audit', '/companies', '/users', '/plans', '/orders', '/stats', '/tools', '/costs', '/billing', '/usage', '/catalog', '/profile', '/bots', '/skills', '/chat', '/releases', '/machines', '/connectors', '/handoffs', '/channels'])
+const SPA_PATHS = new Set(['/', '/login', '/privacy', '/terms', '/index.html', '/ui', '/ui/', '/models', '/providers', '/company', '/accounts', '/audit', '/companies', '/users', '/plans', '/orders', '/stats', '/tools', '/costs', '/billing', '/usage', '/catalog', '/profile', '/bots', '/skills', '/chat', '/releases', '/machines', '/connectors', '/handoffs', '/channels'])
 // 前端脚本拆成了一串（见 gateway/ui/index.html 里那组 data-app-part），
 // 加一个新的分片就要在这里也加一行，否则线上直接 404，而本地跑 index.html 是好的。
-const UI_PARTS = ['prefs.js', 'state.js', 'data.js', 'shell.js', 'pages-admin.js', 'pages-audit.js', 'pages-machines.js', 'pages-account.js', 'pages-bots.js', 'pages-tools.js', 'pages-connectors.js', 'pages-routines.js', 'pages-handoffs.js', 'pages-channels.js', 'chat.js', 'render.js', 'app.js']
+const UI_PARTS = ['prefs.js', 'state.js', 'data.js', 'shell.js', 'pages-landing.js', 'pages-legal.js', 'pages-admin.js', 'pages-audit.js', 'pages-machines.js', 'pages-account.js', 'pages-bots.js', 'pages-tools.js', 'pages-connectors.js', 'pages-routines.js', 'pages-handoffs.js', 'pages-channels.js', 'chat.js', 'render.js', 'app.js']
 const ROOT_FILES = new Set(['theme.css', 'shell.css', 'app.css', 'chat.css', ...UI_PARTS, 'i18n.js', 'markdown.js', 'channel-preview.js', 'index.html', 'unzip.js'])
 
 /**

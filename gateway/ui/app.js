@@ -300,6 +300,39 @@ document.getElementById('app').addEventListener('click', async (e) => {
     go(btn.getAttribute('data-href'))
     return
   }
+  // ── 首页（pages-landing.js）上的两颗 ──────────────────────────────
+  if (act === 'landing-locale') {
+    const key = btn.getAttribute('data-locale')
+    if (key !== 'zh' && key !== 'en') return
+    // 只落本地。profile-locale 那条还会 PATCH /me——这一屏上还没有人，那一跳只会 401。
+    setLocale(key)
+    render()
+    return
+  }
+  if (act === 'landing-demo') {
+    // 只换右半边（见 pages-landing.js 的 paintLpDemo）。走 render() 的话整页 innerHTML
+    // 会换掉，文档滚动位置跟着抖一下——而人的手正停在名册上。
+    state.lpDemo = Number(btn.getAttribute('data-i')) || 0
+    paintLpDemo()
+    return
+  }
+  if (act === 'landing-sales') {
+    state.salesOpen = true
+    render()
+    return
+  }
+  if (act === 'landing-sales-close') {
+    // 点背景关。点到弹窗本身不算——上面那道 gw-modal-backdrop 的判断（e.target !== btn）
+    // 管的是同一件事，这里只认真的「点了外面」和那颗 ×。
+    state.salesOpen = false
+    render()
+    return
+  }
+  if (act === 'landing-sales-dialog') return
+  if (act === 'landing-more') {
+    document.getElementById('satu-lp-features')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    return
+  }
   if (act === 'sessions-more') {
     if (state.sessionsLoadingMore || !state.sessionsHasMore) return
     state.sessionsLoadingMore = true
@@ -2024,8 +2057,10 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'join-login') {
-    history.replaceState({}, '', '/')
-    state.path = '/'
+    // `/login` 而不是 `/`：`/` 现在是首页（见 render.js 的 anonView），而这两颗按钮
+    // 上写的是「返回登录」「直接登录」——送到一屏讲产品是什么的页面就是答非所问。
+    history.replaceState({}, '', '/login')
+    state.path = '/login'
     state.joinError = ''
     render()
     return
@@ -2619,6 +2654,15 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || !state.chatCtxOpen) return
   state.chatCtxOpen = false
   paintChatCtx()
+})
+
+/* Esc 关「联系销售」那个弹窗。它是首页上唯一一个盖住内容的东西，而按 Esc 关弹窗
+   是对话框该有的样子——只靠点背景和那颗 × 的话，键盘走到这儿的人就出不来了。 */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !state.salesOpen) return
+  e.preventDefault()
+  state.salesOpen = false
+  render()
 })
 
 /* Esc 关预览。排在上一条后面：两者不会同时开着，而预览是盖住整屏的那个，

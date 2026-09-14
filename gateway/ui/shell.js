@@ -92,10 +92,44 @@ function authAside(
         <p style="font-family: var(--font-heading); font-size: 26px; line-height: 1.2; margin: 0;">${title}</p>
         <p style="margin: 0; color: color-mix(in srgb, var(--color-text) 65%, transparent); font-size: 14px; line-height: 1.6;">${sub}</p>
       </div>
-      <div style="position: relative; width: 100%; max-width: 440px; display: flex; gap: var(--space-4); font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent);">
+      ${/* 登录、创建管理员、接受邀请这三屏底下都要有这两条（pages-legal.js）：注册和
+             接受邀请是「继续即表示同意」的那一刻，条款得当场点得开，而不是要人先登进去
+             再回头找。桌面壳里也照给——那两页不看登录状态（见 render.js 的 render()）。
+
+             **这三屏上它们是真链接、开新标签页**，不走 data-act 的站内跳转：这三屏
+             中间都杵着一个填了一半的表单，站内跳过去整页重绘，回来时口令那两格是空的
+             ——而人多半就是在按下提交之前才去点这两条的。首页页脚没有这个问题，那边
+             仍然是站内跳转。 */ ''}
+      <div style="position: relative; width: 100%; max-width: 440px; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent);">
         <span>© 2026 Satuwork</span>
+        <span class="satu-lg-links">
+          <a href="/privacy" target="_blank" rel="noopener noreferrer">${t('隐私政策', 'Privacy Policy')}</a>
+          <a href="/terms" target="_blank" rel="noopener noreferrer">${t('服务条款', 'Terms of Service')}</a>
+        </span>
       </div>
     </div>`
+}
+
+/**
+ * 「点了这颗按钮就等于同意」那句。**注册和接受邀请这两屏各一份**（登录不给：那是已经
+ * 有账号的人，同意发生在他当初注册的那一刻）。
+ *
+ * 这句话必须挨着那颗按钮，而不是缩在页脚：它要说的是「你按下去这一下意味着什么」，
+ * 隔着半屏的一行小字承担不了这件事，法务问卷问的也正是它离提交按钮有多远。
+ *
+ * 所以它把按钮上的字原样嵌进来（「点击『加入 Satuwork』即表示…」）——改了按钮文案
+ * 就要跟着改这里传进来的那两个词，否则这句话指的是一颗页面上不存在的按钮。
+ *
+ * 两条同样是开新标签页的真链接，理由见 authAside 里那段：底下那个表单填了一半，站内
+ * 跳过去再回来，口令那两格是空的。
+ */
+function authConsent(zhAct, enAct) {
+  const link = (href, label) =>
+    `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`
+  return `<p class="satu-authconsent">${t(`点击「${zhAct}」即表示你同意 `, `By clicking “${enAct}” you agree to our `)}${link(
+    '/terms',
+    t('服务条款', 'Terms of Service'),
+  )}${t(' 和 ', ' and ')}${link('/privacy', t('隐私政策', 'Privacy Policy'))}${t('。', '.')}</p>`
 }
 
 /**
@@ -136,6 +170,7 @@ function setupView() {
             ${state.busy ? t('创建中…') : t('创建并进入')}
             ${state.busy ? '' : svg(['M5 12h14', 'm12 5 7 7-7 7'], 14)}
           </button>
+          ${authConsent(t('创建并进入'), 'Create and continue')}
         </form>
         <p style="text-align: center; margin: 0; font-size: 14px; color: color-mix(in srgb, var(--color-text) 60%, transparent);">${t('系统管理员不属于任何公司，负责分配席位、配置模型和供应商密钥。')}</p>
       </div>
@@ -149,6 +184,13 @@ function loginView() {
     ${authAside()}
     <div style="position: relative; display: flex; align-items: center; justify-content: center; padding: var(--space-8);">
       <div style="width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: var(--space-6);">
+        ${/* 回首页。**只在网页上有**——桌面壳里 `/` 就是这一屏（见 render.js 的
+             anonView），那颗按钮会把人送回原地，是一颗点了没反应的按钮。 */ ''}
+        ${
+          desktopShell()
+            ? ''
+            : `<button type="button" class="btn btn-ghost" style="align-self: flex-start; padding: 4px 10px; margin: 0 0 calc(var(--space-4) * -1); font-size: 13px;" data-act="go" data-href="/">${svg(BACK_ARROW, 14)}${t('返回首页', 'Back to home')}</button>`
+        }
         <div>
           <h1 style="font-size: 30px; margin: 0 0 var(--space-2);">${t('登录 Satuwork')}</h1>
           <p style="margin: 0; color: color-mix(in srgb, var(--color-text) 60%, transparent); font-size: 14px;">${t('进入控制台，管理你的 AI 员工')}</p>

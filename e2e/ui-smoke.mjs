@@ -47,8 +47,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
   await waitHttp(`${gwBase}/health`, { child: gw, what: 'ui gateway' })
 
   const { loadApp } = await import('./ui-dom.mjs')
-  const boot = async (token) => {
-    const ui = loadApp({ appPath, base: gwBase, token })
+  const boot = async (token, opts) => {
+    const ui = loadApp({ appPath, base: gwBase, token, ...opts })
     await ui.boot()
     return ui
   }
@@ -979,11 +979,186 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(html.includes('owner@ui.test'), '侧栏没有当前账号')
     })
 
-    await test('有管理员 + 没有票 → 画登录页', async () => {
+    await test('有管理员 + 没有票 + / → 画首页，不是登录页', async () => {
+      // `/` 是给还没开通的人看的那一屏（见 gateway/ui/pages-landing.js）；登录挪去了
+      // `/login`。这条守的是「首页别退回成登录表单」——那正是这次改动之前的样子。
       const ui = await boot()
       const html = ui.html()
-      assert(html.includes('登录 Satuwork'), '没画登录页')
+      assert(html.includes('satu-lp-hero'), '没画首页')
+      assert(!html.includes('id="login-form"'), '首页上画出了登录表单')
       assert(!html.includes('创建系统管理员'), '不该再出初始化页')
+      // 顶栏那颗 GitHub。它是**真链接**而不是 data-act 按钮（中键、右键复制地址要能用），
+      // 所以点击处理器那套测试一条都盖不到它——在这儿钉一下地址和开新标签页的规矩。
+      const gh = html.match(/<a[^>]*satu-lp-ghlink[^>]*>/)
+      assert(gh, '顶栏上没有 GitHub 那颗')
+      assert(gh[0].includes('href="https://github.com/effortson/satuwork"'), 'GitHub 指错了地方：' + gh[0])
+      assert(gh[0].includes('rel="noopener noreferrer"'), '开新标签页没带 noopener：' + gh[0])
+    })
+
+    await test('有管理员 + 没有票 + /login → 画登录页', async () => {
+      const ui = await boot(undefined, { path: '/login' })
+      const html = ui.html()
+      assert(html.includes('登录 Satuwork'), '没画登录页')
+      assert(html.includes('id="login-form"'), '登录表单不在')
+      assert(!html.includes('satu-lp-hero'), '登录页上混进了首页')
+    })
+
+    await test('桌面壳里 / 直接是登录页', async () => {
+      // 壳子是应用不是网站：开机第一件事是连回自己那台 Gateway，中间不插产品介绍。
+      const ui = await boot(undefined, { path: '/', desktop: true })
+      const html = ui.html()
+      assert(html.includes('id="login-form"'), '桌面壳里没画登录页')
+      assert(!html.includes('satu-lp-hero'), '桌面壳里画了首页')
+    })
+
+    await test('首页那块演示是真能点的：换个 AI 员工，右边整条对话跟着换', async () => {
+      // 首屏右边不是一张图，是一块小演示（gateway/ui/pages-landing.js 的 lpShot）。
+      // 它退化成图的方式很安静：名册还画得出来、点下去却没反应——那时页面看着一切正常。
+      // 换人只重画 #satu-lp-demo 那一格（不走 render），所以这里把它桩起来看。
+      const ui = await boot(undefined, { stubIds: ['satu-lp-demo'] })
+      assert(ui.html().includes('data-act="landing-demo"'), '名册那几行不是按钮')
+      await ui.fire('click', el('button', { 'data-act': 'landing-demo', 'data-i': '2' }))
+      const pane = ui.stubs.get('satu-lp-demo')
+      assert(pane.innerHTML.includes('已转人工'), '换人之后右边没跟着换：' + pane.innerHTML.slice(0, 120))
+      assert(!pane.innerHTML.includes('退款单'), '上一个人的对话还留在右边')
+      // 对话下沿那个输入框**是一颗去登录的按钮**，不是个能打字的框（见 lpComposer）。
+      // 哪天它退化成一个死框，页面看着照样完整——所以这里钉住那条 href。
+      const box = pane.innerHTML.match(/<button[^>]*satu-lp-composer[^>]*>/)
+      assert(box, '对话底下那个输入框不见了')
+      assert(box[0].includes('data-href="/login"'), '输入框点下去不去登录：' + box[0])
+    })
+
+    await test('首页顶栏的「联系销售」：二维码那张图真的取得到，链接和图对的是同一个号', async () => {
+      const ui = await boot()
+      assert(ui.html().includes('data-act="landing-sales"'), '顶栏没有「联系销售」')
+      assert(!ui.html().includes('landing-sales-close'), '还没点就把弹窗画出来了')
+
+      await ui.fire('click', el('button', { 'data-act': 'landing-sales' }))
+      const html = ui.html()
+      const img = html.match(/<img[^>]*sales-whatsapp\.svg[^>]*>/)
+      assert(img, '弹窗里没有二维码')
+      const link = html.match(/href="(https:\/\/wa\.me\/[0-9]+)"/)
+      assert(link, '弹窗里没有 wa.me 链接')
+
+      /**
+       * **图是静态的，链接是常量拼的——两者会各改各的。** 改了号码却忘了重新生成
+       * 二维码，页面上写着新号、扫出来还是旧的，而没人会去扫自己页面上的二维码。
+       * 这里没法读出码里编的是什么（那要一个解码器），但能钉住另外两件事：
+       *
+       *   1. 那张图真的取得到（换号时新文件名写错、或者忘了提交，表现就是一个空白框）
+       *   2. 弹窗上印的号码和链接里的是同一个
+       */
+      const asset = await req(gwBase, 'GET', '/assets/sales-whatsapp.svg')
+      assert(asset.status === 200, `二维码取不到：${asset.status}`)
+      assert(String(asset.headers.get('content-type')).startsWith('image/svg+xml'), `二维码的 content-type 是 ${asset.headers.get('content-type')}`)
+      const digits = link[1].slice('https://wa.me/'.length)
+      const shown = (html.match(/>([+0-9 ]{8,})</g) || []).map((x) => x.replace(/[^0-9]/g, ''))
+      assert(shown.includes(digits), `弹窗上印的号码和 wa.me 链接对不上：链接 ${digits}，页面上是 ${JSON.stringify(shown)}`)
+
+      await ui.fire('click', el('button', { 'data-act': 'landing-sales-close' }))
+      assert(!ui.html().includes('landing-sales-close'), '关不掉')
+    })
+
+    await test('隐私政策和服务条款：没票、有票、桌面壳里都是同一份文本', async () => {
+      /**
+       * 这两页（gateway/ui/pages-legal.js）**不看登录状态**，理由见 render.js 里那段：
+       * 真要看它们的人多半还没有账号。退化的方式很安静——路由挪一下，它们就落进
+       * anonView，没票的人看到的是登录表单，而链接照样点得开、地址栏也是对的。
+       */
+      for (const opts of [{}, { desktop: true }]) {
+        for (const path of ['/privacy', '/terms']) {
+          const ui = await boot(undefined, { ...opts, path })
+          const html = ui.html()
+          const want = path === '/terms' ? '服务条款' : '隐私政策'
+          assert(html.includes(`<h1>${want}</h1>`), `${path}${opts.desktop ? '（桌面壳）' : ''} 没画出${want}：` + html.slice(0, 160))
+          assert(!html.includes('id="login-form"'), `${path} 被登录表单挡住了`)
+          assert(!html.includes('satu-lp-hero'), `${path} 画成了首页`)
+        }
+      }
+      // 有票的人也进得去。这一条钉的是 loadPage 里那道放行：不放的话 pathAllowed
+      // 一律说不行，人会被弹回 `/`——表现是登录之后页脚上那两个链接点了没反应。
+      const signed = await boot(ownerToken, { path: '/privacy' })
+      assert(signed.html().includes('<h1>隐私政策</h1>'), '有票的人打不开隐私政策')
+      assert(signed.state.path === '/privacy', '有票时被弹去了 ' + signed.state.path)
+    })
+
+    await test('隐私政策切成英文：正文跟着换，不是只换了标题', async () => {
+      const ui = await boot(undefined, { path: '/privacy' })
+      await ui.fire('click', el('button', { 'data-act': 'landing-locale', 'data-locale': 'en' }))
+      const html = ui.html()
+      assert(html.includes('Privacy Policy'), '标题没换成英文')
+      assert(html.includes('What this policy covers'), '正文还是中文：' + html.slice(0, 200))
+      assert(!html.includes('这份政策管什么'), '中英混在了一起')
+    })
+
+    await test('首页和登录页底下都找得到这两页', async () => {
+      // 页脚是外面找它们的地方：法务、合规问卷、应用商店的上架表单都是先翻到最底下。
+      const home = (await boot()).html()
+      for (const href of ['/privacy', '/terms']) {
+        assert(home.includes(`data-href="${href}"`), `首页页脚上没有 ${href}`)
+      }
+      // 登录那三屏上它们是**真链接、开新标签页**（见 shell.js 的 authAside）：底下那个
+      // 表单填了一半，站内跳过去再回来，口令那两格是空的。
+      const login = (await boot(undefined, { path: '/login' })).html()
+      for (const href of ['/privacy', '/terms']) {
+        const a = login.match(new RegExp(`<a[^>]*href="${href}"[^>]*>`))
+        assert(a, `登录页上没有 ${href}`)
+        assert(a[0].includes('target="_blank"'), `${href} 不是开新标签页，会把填了一半的表单冲掉：` + a[0])
+        assert(a[0].includes('rel="noopener noreferrer"'), `${href} 开新标签页没带 noopener：` + a[0])
+      }
+    })
+
+    await test('注册和接受邀请：提交按钮底下有「点了就等于同意」那句，两条都点得开', async () => {
+      /**
+       * 这句话的位置就是它的全部意义——挨着那颗按钮才说得清「你按下去这一下意味着
+       * 什么」。它退化的方式很安静：页脚上那两条链接还在，于是页面看着「有条款」，
+       * 而同意这件事从来没在按下去之前说出口。
+       */
+      const consent = (html, act) => {
+        assert(html.includes('satu-authconsent'), `${act} 那屏没有这句话`)
+        const line = html.slice(html.indexOf('satu-authconsent'))
+        assert(line.includes(`点击「${act}」`), `这句话没指着那颗按钮：` + line.slice(0, 120))
+        for (const href of ['/terms', '/privacy']) {
+          const a = line.match(new RegExp(`<a[^>]*href="${href}"[^>]*>`))
+          assert(a, `${act} 那句话里没有 ${href}`)
+          assert(a[0].includes('target="_blank"'), `${act} 那句话里的 ${href} 会把填了一半的表单冲掉：` + a[0])
+        }
+        // 按钮在前、这句话在后：它说的是「点击上面那颗」。
+        assert(html.indexOf('btn-primary btn-block') < html.indexOf('satu-authconsent'), `${act}：这句话跑到按钮上面去了`)
+      }
+
+      const setup = await boot()
+      setup.state.me = null
+      setup.state.needsSetup = true
+      setup.render()
+      consent(setup.html(), '创建并进入')
+
+      const join = await boot()
+      join.state.path = '/join/tok'
+      join.state.joinInvite = { loading: false, valid: true, email: 'new@ui.test', name: '小新', expiresAt: 0, error: '' }
+      join.state.joinForm = { name: '小新', password: '', confirm: '' }
+      join.render()
+      consent(join.html(), '加入 Satuwork')
+    })
+
+    await test('这两页刷新和它那个分片都由 Gateway 交得出来', async () => {
+      // 分片漏进 http.ts 的 UI_PARTS 是条安静的路：本地开 index.html 一切正常，
+      // 线上那个文件 404，两页连同整串脚本一起死在浏览器里。
+      for (const path of ['/privacy', '/terms']) {
+        const page = await req(gwBase, 'GET', path, { headers: { accept: 'text/html' } })
+        assert(page.status === 200, `刷新 ${path} → ${page.status}`)
+        assert(page.text.includes('data-app-part'), `刷新 ${path} 拿到的不是 index.html`)
+      }
+      const part = await req(gwBase, 'GET', '/pages-legal.js')
+      assert(part.status === 200, `/pages-legal.js → ${part.status}`)
+      assert(String(part.headers.get('content-type')).includes('javascript'), `/pages-legal.js 的 content-type 是 ${part.headers.get('content-type')}`)
+    })
+
+    await test('首页上点「登录」进得了登录页', async () => {
+      const ui = await boot()
+      await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/login' }))
+      assert(ui.location.pathname === '/login', '地址没变成 /login：' + ui.location.pathname)
+      assert(ui.html().includes('id="login-form"'), '没画成登录页')
     })
 
     await test('审计正文渲染：消息要出来，不能是「（空）」', async () => {
