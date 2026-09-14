@@ -579,6 +579,10 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
        * 单价 + 倍率 = 我们的成本价和加价率。只在界面上不画的话，翻开 devtools 就都在，
        * 所以这一刀切在**响应里**：非 owner 拿到的行上根本没有这两个键。
        * 计量和金额照给——那是客户自己的消耗和真扣掉的钱。
+       *
+       * **这一条只管账本行**（`/orgs/:id/charges`、`/me/charges`）。定价还有第二条出口：
+       * `publicSettings()` 拼的那份 settings，走 `GET /me` 和 `GET /orgs/:id/settings`。
+       * 那条由下一条用例盯着——两条路各切一刀，少哪一刀都等于没切。
        */
       const mine = await req(base, 'GET', `/orgs/${orgA}/charges?limit=5`, { token: tokenA })
       assert(mine.status === 200, `charges ${mine.status} ${mine.text}`)
@@ -602,6 +606,61 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
       const asOwner = await req(base, 'GET', `/orgs/${orgA}/charges?limit=5`, { token: owner })
       const o0 = asOwner.json.charges[0]
       assert(o0 && o0.unitPrice && typeof o0.multiplier === 'number', `owner 看公司详情时丢了定价：${JSON.stringify(o0)}`)
+    })
+
+    await test('定价不下发给公司侧：/me 和 /orgs/:id/settings 里也没有', async () => {
+      /**
+       * 上面那条切的是**账本行**。定价还有第二条出口：`publicSettings()` 拼出来的那份
+       * settings——`GET /me` 对任何账号都带着它，`GET /orgs/:id/settings` 是 requireOrgUser。
+       * 界面上不画它没有用，翻开 devtools 就是平台的覆盖价、倍率、连接器单价。
+       * 所以这一刀也切在响应里：公司侧那份只有模型角色（画角色面板要用），定价一项不给。
+       */
+      const SECRET_KEYS = ['priceMultiplier', 'modelPricing', 'connectorPricing', 'billing', 'managerVersion']
+      const clean = (text, who) => {
+        for (const k of SECRET_KEYS) assert(!text.includes(`"${k}"`), `${who} 拿到了 ${k}：${text}`)
+      }
+
+      const me = await req(base, 'GET', '/me', { token: tokenA })
+      assert(me.status === 200, `me ${me.status} ${me.text}`)
+      assert(me.json.settings, '/me 该带 settings')
+      clean(JSON.stringify(me.json.settings), '公司管理员的 /me')
+      // 模型角色照给：前端拿 settings 主要就是为了画这几样。
+      assert(me.json.settings.daily && me.json.settings.utility, '模型角色不该跟着一起藏掉')
+      assert(Array.isArray(me.json.settings.enabledModels), 'enabledModels 不该跟着一起藏掉')
+
+      // 席位票也走 /me。它比管理员更不该看到定价。
+      const seat = await req(base, 'GET', '/me', { token: seatA })
+      if (seat.status === 200) clean(JSON.stringify(seat.json.settings || {}), '席位的 /me')
+
+      const org = await req(base, 'GET', `/orgs/${orgA}/settings`, { token: tokenA })
+      assert(org.status === 200, `org settings ${org.status} ${org.text}`)
+      clean(org.text, '公司管理员的 /orgs/:id/settings')
+      assert(org.json.daily && org.json.utility, '模型角色不该跟着一起藏掉')
+
+      /**
+       * owner 两条路上都照给：平台那几屏（单价、倍率、连接器计费、期望管家版本）就靠它画。
+       *
+       * 这里只验**键在不在**，不验具体数字——上面几条用例改过又撤过覆盖表和倍率，
+       * 钉一个值在这儿等于把这条用例绑在前面的执行顺序上。
+       */
+      const hasAll = (obj, who) => {
+        for (const k of SECRET_KEYS) assert(obj[k] !== undefined, `${who} 丢了 ${k}：${JSON.stringify(obj)}`)
+      }
+      const ownerMe = await req(base, 'GET', '/me', { token: owner })
+      assert(ownerMe.status === 200, `owner me ${ownerMe.status} ${ownerMe.text}`)
+      hasAll(ownerMe.json.settings, 'owner 的 /me')
+      // owner 在公司详情页上看的是同一条 /orgs/:id/settings，他那份要带着。
+      const ownerOrg = await req(base, 'GET', `/orgs/${orgA}/settings`, { token: owner })
+      assert(ownerOrg.status === 200, `owner org settings ${ownerOrg.status} ${ownerOrg.text}`)
+      hasAll(ownerOrg.json, 'owner 看公司详情时')
+
+      // 顺手验一遍这一刀切的是**下发**，不是存储：覆盖价写进去，owner 读回来还看得见。
+      await req(base, 'PUT', '/platform/settings', { token: owner, body: { modelPricing: { [MODEL]: RATE } } })
+      const after = await req(base, 'GET', '/me', { token: owner })
+      assert(after.json.settings.modelPricing[MODEL].cacheWrite === 12.5, `owner 的 /me 丢了覆盖价：${after.text}`)
+      const stillHidden = await req(base, 'GET', '/me', { token: tokenA })
+      clean(JSON.stringify(stillHidden.json.settings), '写了覆盖价之后公司管理员的 /me')
+      await req(base, 'PUT', '/platform/settings', { token: owner, body: { modelPricing: {} } })
     })
 
     await test('平台明细看得见所有公司，无票 401，公司管理员 403', async () => {

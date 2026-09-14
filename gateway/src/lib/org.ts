@@ -88,11 +88,44 @@ export function modelRoleOf(v: unknown, label: string): ModelRole {
   return { provider, model, reasoningEffort: parseReasoningEffort(o.reasoningEffort) }
 }
 
-export function publicSettings(s: CompanySettings | PlatformSettings): PlatformSettings {
+/**
+ * 公司侧看到的那份 settings。**只有模型角色和上架清单**。
+ *
+ * 前端拿 settings 是为了画「日常 / utility 用的是哪个模型」那几个面板，要的就是这三样。
+ * 剩下的键——倍率、单价覆盖、连接器单价、熔断、期望管家版本——是平台自己的成本价、
+ * 加价率和机队策略，**公司侧一个都不该有**：`GET /me` 对任何账号都下发 settings，
+ * `GET /orgs/:id/settings` 只拦到「是这家公司的人」，所以界面上不画它没有意义，
+ * 翻开 devtools 就全在那儿。
+ *
+ * 这和 `publicCharge` 那边藏 `unitPrice` / `multiplier` 是同一刀，只是切在另一条路上。
+ * 见 e2e/billing.mjs 里「单价和倍率只下发给平台」和「定价不下发给公司侧」两条。
+ *
+ * **白名单，不是黑名单。** 往 PlatformSettings 上加字段的那天，新字段默认留在平台侧；
+ * 黑名单的写法反过来——默认漏出去，而漏出去这件事不会有人发现。
+ */
+export function orgSettings(s: CompanySettings | PlatformSettings): OrgSettings {
   return {
     daily: { provider: s.daily.provider, model: s.daily.model, reasoningEffort: parseReasoningEffort(s.daily.reasoningEffort) },
     utility: { provider: s.utility.provider, model: s.utility.model, reasoningEffort: parseReasoningEffort(s.utility.reasoningEffort) },
-    enabledModels: Array.isArray((s as PlatformSettings).enabledModels) ? (s as PlatformSettings).enabledModels : [],
+    enabledModels: Array.isArray((s as PlatformSettings).enabledModels) ? (s as PlatformSettings).enabledModels! : [],
+  }
+}
+
+export interface OrgSettings {
+  daily: ModelRole
+  utility: ModelRole
+  enabledModels: string[]
+}
+
+/**
+ * 平台侧（owner）看到的那份：上面那三样，加上定价与机队策略。
+ *
+ * **只给 owner。** 两条会下发 settings 的路（`/me`、`/orgs/:id/settings`）都要按角色
+ * 分叉——owner 走这个，别人走 `orgSettings`。
+ */
+export function publicSettings(s: CompanySettings | PlatformSettings): PlatformSettings {
+  return {
+    ...orgSettings(s),
     priceMultiplier: parsePriceMultiplier((s as PlatformSettings).priceMultiplier),
     connectorPricing: parseConnectorPricing((s as PlatformSettings).connectorPricing),
     managerVersion: (s as PlatformSettings).managerVersion ?? '',

@@ -5,7 +5,7 @@ import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { LOGIN_DUMMY_HASH, bodyOf, strField } from '../lib/validate.ts'
 import { MIN_PASSWORD, hashPassword, jwks, needsRehash, verifyPassword } from '../crypto.ts'
-import { emailOf, orgSummary, publicAccount, publicCompany, publicPlan, publicSettings } from '../lib/org.ts'
+import { emailOf, orgSettings, orgSummary, publicAccount, publicCompany, publicPlan, publicSettings } from '../lib/org.ts'
 import { headerOf, inviteeOf, issue, noteLogin, requireSeatOrUser, requireUser } from '../lib/guards.ts'
 import { type Account } from '../db.ts'
 
@@ -154,13 +154,14 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
 
   router.get('/me', async (req, res) => {
     const account = await requireSeatOrUser(req, db, keys)
-    const settings = publicSettings(await db.platformSettings())
+    const stored = await db.platformSettings()
     if (account.role === 'owner') {
       json(res, 200, {
         account: publicAccount(account),
         company: null,
         plan: null,
-        settings,
+        // 平台那几屏（单价、倍率、连接器计费、期望管家版本）就靠这一份画。
+        settings: publicSettings(stored),
         orgs: await Promise.all((await db.companies()).map((c) => orgSummary(db, c))),
       })
       return
@@ -172,7 +173,8 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
       account: publicAccount(account),
       company: publicCompany(company),
       plan: await publicPlan(db, plan, await db.accountCount(company.id)),
-      settings,
+      // 公司管理员、员工、席位都走这一支：**定价不下发**。见 orgSettings 的注释。
+      settings: orgSettings(stored),
     })
   })
 

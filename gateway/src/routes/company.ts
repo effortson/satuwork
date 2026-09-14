@@ -11,7 +11,7 @@ import { parseBilling } from '../db.ts'
 import { isUniqueViolation } from '../db/rows.ts'
 import { bodyOf, deployOptsOf, strField, usd, usdMicros } from '../lib/validate.ts'
 import { companyMachineOf, deploySeat, listSeatRuntime, publicMachine, publicSeatRuntime, releaseSeats } from '../deploy.ts'
-import { companyStatusOf, emailOf, groupRoleOf, membersInCompany, patchAccount, phoneOf, publicAccount, publicCompany, publicGroup, publicPlan, publicSettings, roleOf, slugOf, stringIds, websiteOf } from '../lib/org.ts'
+import { companyStatusOf, emailOf, groupRoleOf, membersInCompany, orgSettings, patchAccount, phoneOf, publicAccount, publicCompany, publicGroup, publicPlan, publicSettings, roleOf, slugOf, stringIds, websiteOf } from '../lib/org.ts'
 import { desktopTicketFor, machineHostOf, machineResolver } from '../lib/machines.ts'
 import { inviteLinkOf, issueInvite, rangeQuery, requireOrgUser, requireOwner, requireUser, usagePayload } from '../lib/guards.ts'
 import { randomUUID } from 'node:crypto'
@@ -238,9 +238,12 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
   // ── 公司模型角色（日常 / utility）。不存密钥。──────────────────────
 
   router.get('/orgs/:id/settings', async (req, res) => {
-    await requireOrgUser(req, db, keys, req.params.id)
+    const account = await requireOrgUser(req, db, keys, req.params.id)
     if (!await db.company(req.params.id)) throw new HttpError(404, '公司不存在')
-    json(res, 200, publicSettings(await db.platformSettings()))
+    // requireOrgUser 放 owner 也放这家公司的任何人，所以这里要再按角色分一次：
+    // owner 拿整份（他在公司详情页上要看定价），公司侧只拿模型角色那三样。
+    const stored = await db.platformSettings()
+    json(res, 200, account.role === 'owner' ? publicSettings(stored) : orgSettings(stored))
   })
 
   router.put('/orgs/:id/settings', async (req, res) => {
