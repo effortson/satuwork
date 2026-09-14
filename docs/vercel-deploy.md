@@ -35,7 +35,7 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
   的 `config.json`）。Cron 每分钟打 `/cron/tick`（跑的是 Debian 上调度器每 30 秒跑的那份
   `maintenanceTick`）。**Cron 每分钟一次要 Pro**，Hobby 只能每天一次——那样交接催办、审计派发、
   租约回收都成了一天一拍，不能用。
-- 迁移在 build 里跑（`buildCommand` 先 `migrate` 再 `build:vercel`），用直连串。
+- **迁移不在 build 里跑**，`buildCommand` 只打包。见下面「迁移怎么跑」。
 
 ## 环境变量
 
@@ -63,10 +63,37 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
 说得很清楚的报错，变成静默连上另一个库——而 `scripts/migrate.ts` 是会往里写 schema 的。
 显式配了 `GATEWAY_*` 就一律以它为准，回落不参与。
 
-一个副作用要留意：Neon 集成默认只给 **Production** 注入变量。preview 构建拿不到库，
-`buildCommand` 第一步的 `migrate` 会挂——PR 上那条 Vercel check 就是红的。要让 preview 也绿，
-得给 Preview 环境单独配；但那样**每条 PR 一开、它的 preview 构建就会往那个库上应用迁移**，
-包括还没合并的分支。真要开，给 Preview 配一条 Neon 分支库的串，别指生产。
+Neon 集成默认只给 **Production** 注入变量，preview 构建拿不到库。现在这不再是问题——build
+不碰数据库了（见下面「迁移怎么跑」）。preview 部署起来之后**请求路径**仍然没有库可连，那是
+预期的：它验的是能不能构建出函数，不是能不能查数据。
+
+## 迁移怎么跑
+
+**部署前手动跑一次，用直连串**：
+
+```bash
+GATEWAY_MIGRATE_DATABASE_URL='postgres://…neon.tech/…' pnpm --filter satuwork-gateway migrate
+```
+
+脚本是幂等的：没有待应用的迁移时它只打一行「数据库已是最新」。取哪条串见 `src/db.ts` 的
+`migrateDatabaseUrl`（`GATEWAY_MIGRATE_DATABASE_URL` → 在 Vercel 上退到 Neon 的
+`DATABASE_URL_UNPOOLED` → 再退到请求路径那条）。**要直连串**：迁移锁是会话级 advisory lock，
+过 PgBouncer 的事务池会漂。
+
+曾经它挂在 `buildCommand` 的第一步。摘掉的理由有两条：
+
+1. **preview 构建也会跑它。** Neon 集成只给 Production 注入变量，所以 preview 那一步直接挂在
+   「未配置 GATEWAY_DATABASE_URL」上，每条 PR 都顶着一条红色的 Vercel check——一条永远红的
+   检查等于没有检查。而给 Preview 配上库又更坏：**每条 PR 一开，它的 preview 构建就会往那个
+   库上应用迁移**，包括还没合并、还会被推翻的分支。
+2. **schema 变更不该由「谁按了部署」决定。** 破坏性的那几条（改类型、删列）要挑时间、要能
+   在出事时立刻停手，而 build 是自动触发的。
+
+代价说在明处：**没有任何东西会提醒你忘了跑。** `/health` 只回 `{ok:true}`，不查 schema 版本；
+库停在旧版而代码是新的，表现是运行时的 SQL 报错（缺列、缺表），不是一条说得清的启动错误。
+所以带迁移的那次部署，顺序是**先跑迁移，再部署**——而不是反过来。
+
+Debian 上不受影响：常驻进程 `index.ts` 起来时自己跑迁移。
 
 生成钥匙：
 

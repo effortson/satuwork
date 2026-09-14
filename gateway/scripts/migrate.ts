@@ -1,7 +1,9 @@
 import { Db, migrateDatabaseUrl } from '../src/db.ts'
 
 /**
- * 只跑迁移，然后退出。给 build 步骤用（Vercel 上 `pnpm --filter satuwork-gateway migrate`），
+ * 只跑迁移，然后退出。**部署 Vercel 之前手动跑一次**
+ * （`GATEWAY_MIGRATE_DATABASE_URL=… pnpm --filter satuwork-gateway migrate`），不再挂在
+ * `buildCommand` 上——理由和代价见 docs/vercel-deploy.md 的「迁移怎么跑」。
  * Debian 上不需要——index.ts 起来时自己跑。
  *
  * 用**直连**串：迁移锁是会话级 advisory lock，过 PgBouncer 的事务池会漂（ADR §5.2）。
