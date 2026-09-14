@@ -329,19 +329,20 @@ function customProvider(id) {
   return (state.customProviders || []).find((p) => p.id === id)
 }
 
+/**
+ * 密钥清单。**只有平台这一份了。**
+ *
+ * 曾经公司侧还打 `/orgs/:id/credentials`，每行带一个 `scope`（company / platform）给
+ * 供应商页贴归属标。那条路整条撤了——供应商只由平台配（见 gateway/src/llm.ts 的
+ * secret）。非 owner 走到这儿就是个 bug：他没有任何一页要用这份清单。
+ */
 async function loadCreds() {
-  if (isOwner()) {
-    const data = await api('GET', '/platform/credentials')
-    state.creds = data.credentials || []
+  if (!isOwner()) {
+    state.creds = []
     return
   }
-  const id = orgId()
-  if (!id) return
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/credentials`)
-  // 公司这一份每行带 scope：'company' 是本公司自己贴的密钥，'platform' 是平台共用、
-  // 公司没覆盖的那把。页面据此决定贴哪个标、能不能删——删只能删本公司的。
-  // 老后端不带 scope 时一律当平台的：那时公司本来就改不了。
-  state.creds = (data.credentials || []).map((c) => ({ ...c, scope: c.scope === 'company' ? 'company' : 'platform' }))
+  const data = await api('GET', '/platform/credentials')
+  state.creds = data.credentials || []
 }
 
 /**

@@ -377,8 +377,8 @@ const ADMIN_NAV = [
   { href: '/billing', label: '账单', icon: 'billing' },
   { href: '/usage', label: '用量统计', icon: 'usage' },
   { href: '/bots', label: 'Bot 模版', icon: 'bots' },
-  // 公司自己的模型密钥：配了就优先于平台共用那把，没配的供应商用平台的。
-  { href: '/providers', label: '供应商', icon: 'providers' },
+  // 「供应商」撤了：模型密钥只由系统管理员在平台那一屏配，全平台共用，公司这一侧
+  // 既配不了也看不了（见 state.js 的 allowedHrefs、gateway/src/llm.ts 的 secret）。
   { href: '/skills', label: 'Skill 与 MCP', icon: 'skills' },
   { href: '/connectors', label: '连接器', icon: 'providers' },
 ]

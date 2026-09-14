@@ -226,9 +226,10 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       assert(dup.status === 400, `重复 id ${dup.status} ${dup.text}`)
     })
 
-    await test('公司密钥压过平台密钥：Gateway 直连 /v1 也按「公司 → 平台」取密钥', async () => {
-      // 中继落到管家之后，Gateway 自己的 /v1 仍给本地 Bot 用。取密钥的次序两边必须同一份：
-      // 公司配了自己的 key 就用公司的，没配才落到平台的——否则同一家公司走两条路记两家账。
+    await test('公司配不了密钥：那四条路整条撤了，所有公司共用平台那把', async () => {
+      // 供应商只由平台配。这条盯的是**两件事同时成立**：`/orgs/:id/credentials` 一条
+      // 都不在了（404，不是 403——403 会让「只撤了写、GET 还开着」看起来是对的），
+      // 而公司照样调得通，用的是平台那把。
       const org = await req(base, 'POST', '/platform/orgs', {
         token,
         body: {
@@ -251,32 +252,22 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       const at = login.json.token
       kAdminTok = at
 
-      // 只有平台密钥时公司也能调，上游收到的是平台那把（前面那条配的 sk-custom-123）。
+      // 公司调得通，上游收到的是平台那把（前面那条配的 sk-custom-123）。
       seen = { auth: null, path: null, body: null }
       const viaPlatform = await req(base, 'POST', '/v1/chat/completions', {
         token: at,
         body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
       })
-      assert(viaPlatform.status === 200, `没公司密钥时 chat ${viaPlatform.status} ${viaPlatform.text}`)
-      assert(seen.auth === 'Bearer sk-custom-123', `没公司密钥时上游收到的是 ${seen.auth}`)
+      assert(viaPlatform.status === 200, `chat ${viaPlatform.status} ${viaPlatform.text}`)
+      assert(seen.auth === 'Bearer sk-custom-123', `上游收到的是 ${seen.auth}`)
 
+      // 想贴一把自己的？没有这条路了。
       const set = await req(base, 'POST', `/orgs/${orgId}/credentials`, { token: at, body: { provider: 'my-llm', secret: 'company-key' } })
-      assert(set.status === 201, `配公司密钥 ${set.status} ${set.text}`)
-      assert(!set.text.includes('company-key'), '配公司密钥的响应把密钥回显了')
+      assert(set.status === 404, `配公司密钥该 404，实际 ${set.status} ${set.text}`)
       const list = await req(base, 'GET', `/orgs/${orgId}/credentials`, { token: at })
-      assert(list.status === 200, `列公司密钥 ${list.status} ${list.text}`)
-      const row = (list.json.credentials || []).find((c) => c.provider === 'my-llm')
-      assert(row && row.configured === true && row.scope === 'company', `公司密钥没标成 company：${JSON.stringify(row)}`)
+      assert(list.status === 404, `列公司密钥该 404，实际 ${list.status}`)
 
-      seen = { auth: null, path: null, body: null }
-      const viaCompany = await req(base, 'POST', '/v1/chat/completions', {
-        token: at,
-        body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
-      })
-      assert(viaCompany.status === 200, `有公司密钥时 chat ${viaCompany.status} ${viaCompany.text}`)
-      assert(seen.auth === 'Bearer company-key', `公司配了密钥，上游收到的却是 ${seen.auth}`)
-
-      // 公司密钥不影响别家：owner（不属于任何公司）仍走平台那把。
+      // owner（不属于任何公司）走的也是同一把。
       seen = { auth: null, path: null, body: null }
       const asOwner = await req(base, 'POST', '/v1/chat/completions', {
         token,
@@ -284,88 +275,62 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       })
       assert(asOwner.status === 200, `owner chat ${asOwner.status} ${asOwner.text}`)
       assert(seen.auth === 'Bearer sk-custom-123', `owner 调用上游收到的是 ${seen.auth}`)
-
-      // 删掉公司密钥就落回平台的；再删一次是 404，不是 200 假装删了。
-      const del = await req(base, 'DELETE', `/orgs/${orgId}/credentials/my-llm`, { token: at })
-      assert(del.status === 200, `删公司密钥 ${del.status} ${del.text}`)
-      const again = await req(base, 'DELETE', `/orgs/${orgId}/credentials/my-llm`, { token: at })
-      assert(again.status === 404, `重复删该 404，实际 ${again.status} ${again.text}`)
-      seen = { auth: null, path: null, body: null }
-      const back = await req(base, 'POST', '/v1/chat/completions', {
-        token: at,
-        body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
-      })
-      assert(back.status === 200, `删掉公司密钥后 chat ${back.status} ${back.text}`)
-      assert(seen.auth === 'Bearer sk-custom-123', `删掉公司密钥后上游收到的是 ${seen.auth}`)
     })
 
-    await test('重启不会把公司密钥升成平台密钥——跨租户漏密钥，开机自动发生', async () => {
+    await test('库里遗留的公司密钥行：重启不许把它升成平台密钥，也不许有人用上它', async () => {
       /**
        * 开机时那段「一次性提升」原先还捎带一句 `select provider, secret from credentials`
-       * ——整张表、不带公司过滤——upsert 进 platform_credentials。单租户时代那是搬家，
-       * 现在 credentials 是每家公司自己配密钥的地方（POST /orgs/:id/credentials），于是
-       * **任意一个公司管理员填进去的 key，下一次进程重启就成了全平台的兜底密钥**，而
-       * llm.ts 的取序是「公司 > 平台 > 环境变量」，别家没配密钥时就落到这把上。
+       * ——整张表、不带公司过滤——upsert 进 platform_credentials。
        *
-       * 整件事只在**重启之后**才看得见，所以这条用例必须真的把 Gateway 停掉再起一遍，
-       * 而且不能带 GATEWAY_PG_RESET——要的就是库里原样还在。
+       * **公司那条写入路径撤掉之后，这个风险不但没消失，反而更难发现**：`credentials`
+       * 表里还躺着各家当初存进去的行，可现在没有任何接口读它或写它，于是那批数据是
+       * 死的——谁也看不见、谁也改不了，直到某次重启把其中一把升成全平台的兜底密钥。
+       *
+       * 所以这条用例**直接往表里插一行**（那正是遗留数据在真实库里的样子，接口已经
+       * 造不出它了），然后真的把 Gateway 停掉再起一遍——不带 GATEWAY_PG_RESET，要的
+       * 就是库里原样还在。
        */
       // 平台那把先删掉：留着的话「平台有没有多出一把」这个问题就分不清是谁留下的。
       await req(base, 'DELETE', '/platform/credentials/my-llm', { token })
       const before = await req(base, 'GET', '/platform/credentials', { token })
       assert(!(before.json.credentials || []).some((c) => c.provider === 'my-llm'), '平台密钥没删干净，这条就验不到东西了')
 
-      const set = await req(base, 'POST', `/orgs/${kOrgId}/credentials`, { token: kAdminTok, body: { provider: 'my-llm', secret: 'only-company-a-key' } })
-      assert(set.status === 201, `配公司密钥 ${set.status} ${set.text}`)
+      const { createRequire } = await import('node:module')
+      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
+      const pg = require('pg')
+      const client = new pg.Client({ connectionString: PG_URL })
+      await client.connect()
+      try {
+        await client.query(`set search_path to "${SCHEMA}"`)
+        await client.query(
+          'insert into credentials (id, "companyId", provider, secret, "createdAt", "updatedAt") values ($1,$2,$3,$4,$5,$5)',
+          [`legacy-${Date.now()}`, kOrgId, 'my-llm', 'only-company-a-key', Date.now()],
+        )
+      } finally {
+        await client.end()
+      }
 
       await stop(gw)
-      // 环境变量那把是给「别家公司」兜底的：重启后别家该落到它上面，而不是落到 A 家的 key 上。
+      // 环境变量那把是给所有公司兜底的：重启后该落到它上面，而不是落到遗留的那把上。
       gw = boot('custom-gw-restart', { env: { SATUWORK_MY_LLM_API_KEY: 'env-fallback-key' } })
       await waitHttp(`${base}/health`, { child: gw, what: 'custom gateway restart' })
 
       const creds = await req(base, 'GET', '/platform/credentials', { token })
       assert(creds.status === 200, `平台密钥列表 ${creds.status} ${creds.text}`)
       const lifted = (creds.json.credentials || []).find((c) => c.provider === 'my-llm')
-      assert(!lifted, `公司密钥被升成了平台密钥：${JSON.stringify(lifted)}`)
+      assert(!lifted, `遗留的公司密钥被升成了平台密钥：${JSON.stringify(lifted)}`)
 
-      // A 家自己照旧用自己的那把——提升被删掉不等于把公司密钥也弄丢了。
+      // 那一行所属的公司自己也不许用上它——公司那一档已经从取密钥的链路里撤了。
       seen = { auth: null, path: null, body: null }
       const asA = await req(base, 'POST', '/v1/chat/completions', {
         token: kAdminTok,
         body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
       })
-      assert(asA.status === 200, `A 家 chat ${asA.status} ${asA.text}`)
-      assert(seen.auth === 'Bearer only-company-a-key', `A 家上游收到的是 ${seen.auth}`)
-
-      // B 家没配过任何密钥：该落到环境变量那把，**不能**是 A 家的。
-      const orgB = await req(base, 'POST', '/platform/orgs', {
-        token,
-        body: {
-          name: 'B', slug: 'b-custom',
-          contactName: '王五', contactPhone: '+86 138 0000 0002', contactEmail: 'b@custom.test',
-          adminEmail: 'b@custom.test', adminPassword: 'correct-horse-1',
-        },
-      })
-      assert(orgB.status === 201, `orgB ${orgB.status} ${orgB.text}`)
-      const paidB = await req(base, 'POST', '/platform/orders', {
-        token,
-        body: { companyId: orgB.json.company.id, kind: 'topup', amount: 100, payStatus: 'paid', note: 'e2e' },
-      })
-      assert(paidB.status === 201, `B 家充值 ${paidB.status} ${paidB.text}`)
-      const loginB = await req(base, 'POST', '/auth/login', { body: { email: 'b@custom.test', password: 'correct-horse-1' } })
-      assert(loginB.status === 200, `B 家 login ${loginB.status} ${loginB.text}`)
-
-      seen = { auth: null, path: null, body: null }
-      const asB = await req(base, 'POST', '/v1/chat/completions', {
-        token: loginB.json.token,
-        body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
-      })
-      assert(asB.status === 200, `B 家 chat ${asB.status} ${asB.text}`)
-      assert(seen.auth !== 'Bearer only-company-a-key', 'B 家拿着 A 家的公司密钥去打上游了——跨租户漏密钥')
-      assert(seen.auth === 'Bearer env-fallback-key', `B 家上游收到的是 ${seen.auth}`)
+      assert(asA.status === 200, `chat ${asA.status} ${asA.text}`)
+      assert(seen.auth !== 'Bearer only-company-a-key', '遗留的公司密钥还在被使用——公司那一档没撤干净')
+      assert(seen.auth === 'Bearer env-fallback-key', `上游收到的是 ${seen.auth}`)
 
       // 收拾干净：后面几条用例还指着平台那把 sk-custom-123。
-      await req(base, 'DELETE', `/orgs/${kOrgId}/credentials/my-llm`, { token: kAdminTok })
       const back = await req(base, 'POST', '/platform/credentials', { token, body: { provider: 'my-llm', secret: 'sk-custom-123' } })
       assert(back.status === 201, `补回平台密钥 ${back.status} ${back.text}`)
     })

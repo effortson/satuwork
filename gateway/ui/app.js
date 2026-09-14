@@ -172,10 +172,8 @@ async function runConfirm() {
       render()
       return
     } else if (c.kind === 'delete-credential') {
-      // 公司侧删的是本公司那把（平台共用的那把在这儿删不掉，按钮就是灰的）；删完
-      // 若平台配了同一家，列表里它会以「平台共用」的身份回来——那正是回落的意思。
-      const path = isOwner() ? '/platform/credentials' : `/orgs/${encodeURIComponent(orgId())}/credentials`
-      await api('DELETE', `${path}/${encodeURIComponent(c.id)}`)
+      // 只有平台那一份密钥了（公司那条路连同整页一起撤了）。
+      await api('DELETE', `/platform/credentials/${encodeURIComponent(c.id)}`)
       delete state.tests[`provider:${c.id}`]
       await Promise.all([loadCreds(), loadCatalog()])
       flash('ok', '已移除密钥')
@@ -1695,27 +1693,18 @@ document.getElementById('app').addEventListener('click', async (e) => {
           kind: 'delete-custom-provider',
           id: provider,
         }
-      : isOwner()
-        ? {
-            title: t(`移除「${provider}」的密钥？`, `Remove the key for "${provider}"?`),
-            body: t(
-              `密钥删掉之后这家供应商不再出现在列表里，它的模型也调不通了。重新贴一把密钥就能恢复。`,
-              `Without a key this provider leaves the list and its models stop working. Paste a key again to restore it.`,
-            ),
-            label: '移除密钥',
-            kind: 'delete-credential',
-            id: provider,
-          }
-        : {
-            title: t(`移除本公司「${provider}」的密钥？`, `Remove this company's key for "${provider}"?`),
-            body: t(
-              `删掉之后这家供应商回落到平台共用密钥；平台也没配的话，它的模型就调不通了。重新贴一把就能恢复。`,
-              `After removal this provider falls back to the platform's shared key; if the platform has none either, its models stop working. Paste a key again to restore it.`,
-            ),
-            label: '移除密钥',
-            kind: 'delete-credential',
-            id: provider,
-          }
+      : {
+          // 这一把是**全平台共用**的（公司那一层撤了）：删掉之后所有公司的这家供应商
+          // 一起没密钥。确认框上得把这句说出来，不然看着像只影响眼前这一屏。
+          title: t(`移除「${provider}」的密钥？`, `Remove the key for "${provider}"?`),
+          body: t(
+            `这把密钥全平台共用。删掉之后这家供应商不再出现在列表里，所有公司的这几个模型都调不通了。重新贴一把密钥就能恢复。`,
+            `This key is shared platform-wide. Removing it drops the provider from the list and its models stop working for every company. Paste a key again to restore it.`,
+          ),
+          label: '移除密钥',
+          kind: 'delete-credential',
+          id: provider,
+        }
     render()
     return
   }

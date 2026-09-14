@@ -571,7 +571,7 @@ async function runGateway() {
     assert(delS.status === 200 && delS.json.deleted === true, 'delete skill')
   })
 
-  await test('owner platform credentials；公司管理员配得了自家密钥，普通成员不行', async () => {
+  await test('owner platform credentials；公司那条 /orgs/:id/credentials 已经整条撤了', async () => {
     const ownerLogin = await req(base, 'POST', '/auth/login', {
       body: { email: 'owner@satuwork.test', password: 'test-owner-3080' },
     })
@@ -611,40 +611,33 @@ async function runGateway() {
     assert(!dumpHas(plat.json, secret), 'plat list 泄漏')
     assert(!dumpHas(plat.json, 'sk-e2e-rotated-never-leak'), 'plat list 泄漏新 secret')
 
-    const list = await req(base, 'GET', `/orgs/${orgId}/credentials`, { token })
-    assert(list.status === 200, `list ${list.status}`)
-    assert(list.json.credentials.some((c) => c.provider === 'deepseek' && c.configured === true), 'list configured')
-    assert(!dumpHas(list.json, secret), 'list 泄漏')
-    assert(!dumpHas(list.json, 'sk-e2e-rotated-never-leak'), 'list 泄漏新 secret')
+    /**
+     * **公司那一层撤了。** 这里曾经验的是「公司管理员配得了自家密钥、压过平台那把，
+     * 普通成员只能看」。现在供应商只由平台配：`/orgs/:id/credentials` 这四条路由
+     * （列表、详情、POST/PUT、DELETE）一条都不在了。
+     *
+     * 断言的是 **404 而不是 403**：403 的意思是「这条路在，只是你不配走」，那会让
+     * 半条路（比如只撤了写、GET 还开着）看起来是对的。整条撤干净只有 404 能证明。
+     *
+     * 管理员和普通成员都验一遍：这不是权限收紧，是接口没了，谁来都一样。
+     */
+    for (const [who, tok] of [['admin', token], ['member', memberTok]]) {
+      const ls = await req(base, 'GET', `/orgs/${orgId}/credentials`, { token: tok })
+      assert(ls.status === 404, `${who} GET 公司密钥该 404，实际 ${ls.status} ${ls.text}`)
+      const one = await req(base, 'GET', `/orgs/${orgId}/credentials/deepseek`, { token: tok })
+      assert(one.status === 404, `${who} GET 单条该 404，实际 ${one.status}`)
+      const post = await req(base, 'POST', `/orgs/${orgId}/credentials`, { token: tok, body: { provider: 'openai', secret } })
+      assert(post.status === 404, `${who} POST 该 404，实际 ${post.status} ${post.text}`)
+      const put = await req(base, 'PUT', `/orgs/${orgId}/credentials/openai`, { token: tok, body: { secret } })
+      assert(put.status === 404, `${who} PUT 该 404，实际 ${put.status}`)
+      const del = await req(base, 'DELETE', `/orgs/${orgId}/credentials/openai`, { token: tok })
+      assert(del.status === 404, `${who} DELETE 该 404，实际 ${del.status}`)
+    }
 
-    // 公司密钥：管理员配得了（压过平台那把，见 custom-provider / manager 两套的取序用例），
-    // 普通成员只能看列表、不能写。密钥同样不回显。
-    const deny = await req(base, 'POST', `/orgs/${orgId}/credentials`, {
-      token: memberTok,
-      body: { provider: 'openai', secret },
-    })
-    assert(deny.status === 403, `member cred 该 403，实际 ${deny.status} ${deny.text}`)
-    const mine = await req(base, 'POST', `/orgs/${orgId}/credentials`, {
-      token,
-      body: { provider: 'openai', secret },
-    })
-    assert(mine.status === 201, `admin cred 该 201，实际 ${mine.status} ${mine.text}`)
-    assert(mine.json.credential.provider === 'openai' && mine.json.credential.configured === true, `admin cred 形状 ${mine.text}`)
-    assert(mine.json.credential.scope === 'company', `公司密钥该标 scope=company，实际 ${mine.json.credential.scope}`)
-    assert(!dumpHas(mine.json, secret), 'admin cred 泄漏 secret')
-    const scoped = await req(base, 'GET', `/orgs/${orgId}/credentials`, { token })
-    const openaiRow = scoped.json.credentials.find((c) => c.provider === 'openai')
-    const dsRow = scoped.json.credentials.find((c) => c.provider === 'deepseek')
-    assert(openaiRow?.scope === 'company', `列表里公司密钥该标 company：${JSON.stringify(openaiRow)}`)
-    assert(dsRow?.scope === 'platform', `列表里平台密钥该标 platform：${JSON.stringify(dsRow)}`)
-    const memberList = await req(base, 'GET', `/orgs/${orgId}/credentials`, { token: memberTok })
-    assert(memberList.status === 200, `member 看列表该 200，实际 ${memberList.status}`)
-    assert(!dumpHas(memberList.json, secret), 'member 列表泄漏 secret')
-    // 删掉，别让后面拿 openai 的用例撞上这把假密钥。删第二次是 404。
-    const gone = await req(base, 'DELETE', `/orgs/${orgId}/credentials/openai`, { token })
-    assert(gone.status === 200, `删公司密钥 ${gone.status} ${gone.text}`)
-    const gone2 = await req(base, 'DELETE', `/orgs/${orgId}/credentials/openai`, { token })
-    assert(gone2.status === 404, `重复删该 404，实际 ${gone2.status} ${gone2.text}`)
+    // 连通性探测的公司那条同样撤了——它探的是「这家公司打得通吗」，而密钥归平台之后
+    // 答案对所有公司都一样，该在 POST /platform/llm/test 问。
+    const probe = await req(base, 'POST', `/orgs/${orgId}/llm/test`, { token, body: { provider: 'deepseek' } })
+    assert(probe.status === 404, `公司侧 llm/test 该 404，实际 ${probe.status} ${probe.text}`)
   })
 
   await test('缺 GATEWAY_MACHINE_TOKEN 的 /internal/* → 401', async () => {
@@ -1378,14 +1371,21 @@ async function runGateway() {
     assert(String(msg.json.error || '').includes('e2e-fake'), `messages 文案没说清是哪家没密钥：${msg.text}`)
   })
 
-  await test('POST /orgs/:id/llm/test：无票 401；成员 403；未设角色 400；无密钥 402；不泄漏 secret', async () => {
-    const unauth = await req(base, 'POST', `/orgs/${orgId}/llm/test`, { body: { role: 'daily' } })
+  await test('POST /platform/llm/test：无票 401；公司管理员和成员 403；未设角色 400；无密钥 402；不泄漏 secret', async () => {
+    /**
+     * 这条原先打的是 `POST /orgs/:id/llm/test`。公司那条撤了——它探的是「这家公司用
+     * 这个供应商打得通吗」，而密钥归平台之后答案对所有公司都一样。同一组边界搬到
+     * 平台那条上继续验，**并且多验一格**：公司管理员在这儿也是 403，不是只有成员。
+     */
+    const unauth = await req(base, 'POST', '/platform/llm/test', { body: { role: 'daily' } })
     assert(unauth.status === 401, `unauth ${unauth.status}`)
-    const deny = await req(base, 'POST', `/orgs/${orgId}/llm/test`, { token: memberTok, body: { role: 'daily' } })
-    assert(deny.status === 403, `member ${deny.status}`)
-    const unset = await req(base, 'POST', `/orgs/${orgId}/llm/test`, { token, body: { role: 'daily' } })
+    for (const [who, tok] of [['admin', token], ['member', memberTok]]) {
+      const deny = await req(base, 'POST', '/platform/llm/test', { token: tok, body: { role: 'daily' } })
+      assert(deny.status === 403, `${who} 该 403，实际 ${deny.status}`)
+    }
+    const unset = await req(base, 'POST', '/platform/llm/test', { token: ownerTok, body: { role: 'daily' } })
     assert(unset.status === 400, `unset ${unset.status} ${unset.text}`)
-    const fake = await req(base, 'POST', `/orgs/${orgId}/llm/test`, { token, body: { provider: 'e2e-fake' } })
+    const fake = await req(base, 'POST', '/platform/llm/test', { token: ownerTok, body: { provider: 'e2e-fake' } })
     assert(fake.status === 402, `fake ${fake.status} ${fake.text}`)
     assert(!dumpHas(fake.json, secret), 'test 泄漏 secret')
     assert(!dumpHas(fake.json, 'sk-e2e-rotated-never-leak'), 'test 泄漏 rotated')

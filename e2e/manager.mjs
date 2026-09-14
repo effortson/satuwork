@@ -2477,7 +2477,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       let strangerKey = ''
 
       try {
-        await test('模型中继：登记假上游供应商，平台密钥和公司密钥各配一把', async () => {
+        await test('模型中继：登记假上游供应商，平台配一把密钥（公司那条已经没有了）', async () => {
           const model = {
             id: MODEL, name: 'Relay Model', contextWindow: 65536, maxTokens: 4096,
             reasoning: false, input: ['text'], cost: { input: 1.5, output: 3, cacheRead: 0, cacheWrite: 0 },
@@ -2519,14 +2519,13 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           })
           assert(paid.status === 201, `充值 ${paid.status} ${paid.text}`)
 
+          // 公司那条路撤了：中继取密钥和 /v1 取密钥用的是同一个 llm.secret，两边一起
+          // 只剩「平台密钥 > 环境变量」。这里钉一下接口真的不在了，别让中继那几条
+          // 在一个「其实还能配、只是没人配」的假前提上验取序。
           const comp = await req(gwBase, 'POST', `/orgs/${orgId}/credentials`, { token: adminTok, body: { provider: PROVIDER, secret: 'company-key' } })
-          assert(comp.status === 201, `公司密钥 ${comp.status} ${comp.text}`)
-          assert(!comp.text.includes('company-key'), '配公司密钥的响应把密钥回显了')
+          assert(comp.status === 404, `配公司密钥该 404，实际 ${comp.status} ${comp.text}`)
           const list = await req(gwBase, 'GET', `/orgs/${orgId}/credentials`, { token: adminTok })
-          assert(list.status === 200, `列公司密钥 ${list.status} ${list.text}`)
-          const row = (list.json.credentials || []).find((c) => c.provider === PROVIDER)
-          assert(row && row.configured === true && row.scope === 'company', `公司密钥没标成 company：${JSON.stringify(row)}`)
-          assert(!list.text.includes('company-key') && !list.text.includes('platform-key'), '密钥列表回显了密钥')
+          assert(list.status === 404, `列公司密钥该 404，实际 ${list.status} ${list.text}`)
 
           // Bot 手里那把 sk_sw_：owner 从平台那条能读到（部署时就是这么拿的）。
           const secrets = await req(gwBase, 'GET', `/platform/accounts/${adminId}`, { token: ownerTok })
@@ -2551,18 +2550,18 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(hb.status === 200, `heartbeat ${hb.status} ${hb.text}`)
         })
 
-        await test('模型中继：Bot 打管家回环 /llm/v1/chat/completions，流原样回来，上游拿的是公司密钥', async () => {
+        await test('模型中继：Bot 打管家回环 /llm/v1/chat/completions，流原样回来，上游拿的是平台密钥', async () => {
           upSeen.length = 0
           const r = await req(mgrBase, 'POST', '/llm/v1/chat/completions', { token: apiKey, body: chatBody })
           assert(r.status === 200, `chat ${r.status} ${r.text.slice(0, 300)}`)
           assert(String(r.headers.get('content-type')).startsWith('text/event-stream'), `content-type ${r.headers.get('content-type')}`)
           assert(r.text.includes('"content":"ok"'), `流里没有上游那段 ok：${r.text.slice(0, 300)}`)
           assert(r.text.includes('data: [DONE]'), `流尾没有 [DONE]：${r.text.slice(-100)}`)
-          assert(!r.text.includes('company-key') && !r.text.includes('platform-key'), '密钥漏进了给 Bot 的响应')
+          assert(!r.text.includes('platform-key'), '密钥漏进了给 Bot 的响应')
 
           const up = upLast()
           assert(upSeen.length === 1 && up, `上游该收到 1 次请求，实际 ${upSeen.length}`)
-          assert(up.auth === 'Bearer company-key', `公司配了密钥，上游收到的却是 ${up.auth}`)
+          assert(up.auth === 'Bearer platform-key', `上游收到的是 ${up.auth}`)
           assert(up.path === '/v1/chat/completions', `上游路径 ${up.path}`)
           assert(up.body && up.body.model === MODEL, `上游收到的 model 是 ${JSON.stringify(up.body?.model)}——不能把 provider 那段捎上去`)
           assert(!('provider' in up.body), '上游收到的正文里多了 provider 字段')
@@ -2601,15 +2600,14 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           })
         })
 
-        await test('模型中继：删掉公司密钥就落回平台密钥', async () => {
-          const del = await req(gwBase, 'DELETE', `/orgs/${orgId}/credentials/${PROVIDER}`, { token: adminTok })
-          assert(del.status === 200, `删公司密钥 ${del.status} ${del.text}`)
-          const again = await req(gwBase, 'DELETE', `/orgs/${orgId}/credentials/${PROVIDER}`, { token: adminTok })
-          assert(again.status === 404, `重复删该 404，实际 ${again.status} ${again.text}`)
+        await test('模型中继：第二次调用照样记账，上游还是平台那把', async () => {
+          // 这条原先验的是「删掉公司密钥就落回平台密钥」。公司那一档撤掉之后取序只剩
+          // 「平台密钥 > 环境变量」，没有可删的东西了；留下来的那一半仍然值得验——
+          // 同一条中继连打两次，第二次的用量要单独记上，不能被第一次的账盖住。
           upSeen.length = 0
           const r = await req(mgrBase, 'POST', '/llm/v1/chat/completions', { token: apiKey, body: chatBody })
           assert(r.status === 200, `chat ${r.status} ${r.text.slice(0, 300)}`)
-          assert(upLast()?.auth === 'Bearer platform-key', `删掉公司密钥后上游收到的是 ${upLast()?.auth}`)
+          assert(upLast()?.auth === 'Bearer platform-key', `上游收到的是 ${upLast()?.auth}`)
           const u = await readUsage()
           assert(u.prompt === 10 && u.completion === 2, `第二次调用没记上：${u.prompt}/${u.completion}`)
         })

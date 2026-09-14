@@ -251,39 +251,14 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     throw new HttpError(403, '日常和 utility 由系统管理员配置')
   })
 
-  // ── 连通性探测。用公司密钥打一枪上游，永不回显 secret。────────────
-  router.post('/orgs/:id/llm/test', async (req, res) => {
-    await requireOrgUser(req, db, keys, req.params.id, true)
-    if (!await db.company(req.params.id)) throw new HttpError(404, '公司不存在')
-    const body = bodyOf(req)
-    let provider = ''
-    let model = ''
-    const role = body.role
-    if (role === 'daily' || role === 'utility') {
-      const cur = (await db.platformSettings())[role]
-      if (!cur.provider || !cur.model) throw new HttpError(400, `${role === 'daily' ? '日常' : 'utility'} 模型还没设置`)
-      provider = cur.provider
-      model = cur.model
-    } else {
-      provider = strField(body, 'provider')
-      model = strField(body, 'model', false)
-      if (!model) {
-        const cur = await db.platformSettings()
-        if (cur.daily.provider === provider && cur.daily.model) model = cur.daily.model
-        else if (cur.utility.provider === provider && cur.utility.model) model = cur.utility.model
-        else model = await llm.firstModel(req.params.id, provider)
-      }
-      if (!model) throw new HttpError(400, '这个供应商没有可测的模型')
-    }
-    const result = await llm.probe(req.params.id, provider, model)
-    if (!result.ok && result.error === '模型不在可见目录里') {
-      throw new HttpError(404, result.error, { model: `${result.provider}/${result.model}` })
-    }
-    if (!result.ok && result.error?.startsWith('没有 ') && result.error.endsWith(' 的密钥')) {
-      throw new HttpError(402, result.error, { provider: result.provider })
-    }
-    json(res, 200, result)
-  })
+  /**
+   * ── 连通性探测：**公司这一侧撤了。** ──────────────────────────────
+   *
+   * 它探的是「这家公司用这个供应商打得通吗」，而那件事只有在公司自己贴 key 的年代
+   * 才是一个问题——密钥归平台之后，答案对所有公司都一样，该在平台那一屏问
+   * （`POST /platform/llm/test`，routes/platform.ts）。留着它的话，公司管理员在一个
+   * 自己既配不了也看不见的东西上按「测试」，通不通都不归他管。
+   */
 
   // ── 席位 / 账号 ─────────────────────────────────────────────────────
 

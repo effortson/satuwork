@@ -2958,20 +2958,15 @@ export class Db {
     return row
   }
 
-  async credential(id: string): Promise<Credential | undefined> {
-    const r = await this.one('select * from credentials where id = ?', [id])
-    return r ? credOf(r) : undefined
-  }
-
-  async credentialsOf(companyId: string): Promise<Credential[]> {
-    const rows = await this.many('select * from credentials where "companyId" = ? order by provider', [companyId])
-    return rows.map(credOf)
-  }
-
-  async credentialByProvider(companyId: string, provider: string): Promise<Credential | undefined> {
-    const r = await this.one('select * from credentials where "companyId" = ? and provider = ?', [companyId, provider])
-    return r ? credOf(r) : undefined
-  }
+  /**
+   * 公司密钥那一组方法**全撤了**：按公司查的（credentialsOf / credentialByProvider）、
+   * 写的（upsertCredential）、删的（deleteCredentialByProvider），和按 id 走的那三个
+   * （credential / updateCredential / deleteCredential）。供应商只由平台配，没有任何
+   * 一条路再读写 `credentials` 这张表。
+   *
+   * 表和历史数据留着（见 liftCompanySettingsToPlatform 下面那段），但别为了「顺手」
+   * 把这几个方法加回来——它们一回来，下一步就是路由。
+   */
 
   async platformCredential(provider: string): Promise<Credential | undefined> {
     const r = await this.one('select * from platform_credentials where provider = ?', [provider])
@@ -3009,33 +3004,6 @@ export class Db {
 
   async deletePlatformCredential(provider: string): Promise<void> {
     await this.run('delete from platform_credentials where provider = ?', [provider])
-  }
-
-  async updateCredential(id: string, secret: string): Promise<Credential> {
-    const cur = await this.credential(id)
-    if (!cur) throw new Error('密钥不存在')
-    const next = { ...cur, secret, updatedAt: Date.now() }
-    await this.run('update credentials set secret=?, "updatedAt"=? where id=?', [next.secret, next.updatedAt, id])
-    return next
-  }
-
-  async deleteCredential(id: string): Promise<void> {
-    await this.run('delete from credentials where id = ?', [id])
-  }
-
-  /** 按 (companyId, provider) 落一把公司密钥；表上有这对唯一约束，所以是 upsert。 */
-  async upsertCredential(companyId: string, provider: string, secret: string): Promise<Credential> {
-    const now = Date.now()
-    await this.run(
-      `insert into credentials (id, "companyId", provider, secret, "createdAt", "updatedAt") values (?,?,?,?,?,?)
-       on conflict ("companyId", provider) do update set secret=excluded.secret, "updatedAt"=excluded."updatedAt"`,
-      [randomUUID(), companyId, provider, secret, now, now],
-    )
-    return (await this.credentialByProvider(companyId, provider))!
-  }
-
-  async deleteCredentialByProvider(companyId: string, provider: string): Promise<boolean> {
-    return (await this.run('delete from credentials where "companyId" = ? and provider = ?', [companyId, provider])) > 0
   }
 
   // ── 审计 ──────────────────────────────────────────────────────────────
@@ -3952,11 +3920,13 @@ export class Db {
    * 挑到谁算谁，upsert 进 platform_credentials。当初写它时 `credentials` 没有任何写入
    * 口，整张表就是单租户时代留下的那几行，「升成平台的」和「搬个家」是一回事。
    *
-   * 现在不是了：这张表成了每家公司自己配密钥的地方（routes/sessions.ts 的
-   * POST / PUT `/orgs/:id/credentials` → upsertCredential）。留着那半段的后果是——
-   * 任意一个公司管理员把自己的 key 填进去，下一次进程重启它就成了全平台的兜底密钥，
-   * 而 llm.ts 的 secret 是「公司 > 平台 > 环境变量」的顺序，于是**别家公司**没配密钥时
-   * 就落到这把上，拿着 A 家的 key 去打上游、记在 A 家的账上。跨租户漏密钥，开机自动发生。
+   * 后来那张表成了每家公司自己配密钥的地方，那半段就变成了一个跨租户漏密钥的开机
+   * 自动化：任意一个公司管理员填进去的 key，重启之后成了全平台的兜底密钥。
+   *
+   * **现在公司那条路又撤了**（供应商只由平台配，见上面 platformCredential 前面那段），
+   * 可这张表里**还躺着各家当初存进去的行**——正因为没有写入口了，那批数据反而是死的，
+   * 谁也管不着、谁也改不了。把它们升成平台密钥，等于拿一家公司几个月前的 key 去给
+   * 全平台供货。这道禁令因此比以前更该留着。
    *
    * 平台密钥只能由平台管理员在平台那一屏显式配置。
    */

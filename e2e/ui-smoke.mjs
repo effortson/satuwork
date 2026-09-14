@@ -1932,6 +1932,23 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(html.includes('data-href="/company"'), '重新展开后公司菜单入口没有恢复')
     })
 
+    await test('公司侧没有「供应商」：菜单里没有，直接输地址也进不去', async () => {
+      /**
+       * 供应商只由平台配（gateway/src/llm.ts 的 secret：平台密钥 > 环境变量）。公司
+       * 这一侧曾经有一整页——管理员贴本公司的 key、员工只读——现在整页撤了。
+       *
+       * **两头都要验**：只撤菜单不撤放行的话，页面还在，直接输 `/providers` 就能进
+       * 到一个「有输入框、保存必定 404」的屏；只撤放行不撤菜单则是一条点了就被踢回
+       * 首页的菜单项。
+       */
+      const ui = await boot(adminToken)
+      assert(!ui.html().includes('data-href="/providers"'), '公司菜单里还有「供应商」')
+      assert(!ui.pathAllowed('/providers'), '公司侧 /providers 仍然放行')
+      // 平台那一侧不受影响：owner 还得在那一页配密钥。
+      const own = await boot(ownerToken)
+      assert(own.pathAllowed('/providers'), 'owner 的 /providers 被一起撤掉了')
+    })
+
     await test('侧栏已移除任务看板，渠道页只提供 Telegram 绑定', async () => {
       const ui = await boot(adminToken)
       let html = ui.html()
