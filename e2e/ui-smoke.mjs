@@ -1280,14 +1280,48 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
 
       ui.render()
       let html = ui.html()
-      // 没有价的那个模型现在报的是兜底价（原价 $5/$9，×2 之后 $10/$18），不再是「—」。
-      assert(html.includes('$5.00 / $9.00'), `没按兜底价报原价：${html.includes('$5.00')}`)
-      assert(html.includes('$10.00 / $18.00'), '兜底价没跟着倍率走')
+      /**
+       * 没有价的那个模型现在报的是兜底价（原价 $5/$9，×2 之后 $10/$18），不再是「—」。
+       * **两个数各自包在自己的 span 里**——兜底是逐项回落的，哪一项兜的就标哪一项，
+       * 所以这里不能按 `$5.00 / $9.00` 那样连写去找。
+       */
+      for (const n of ['$5.00', '$9.00', '$10.00', '$18.00']) {
+        assert(html.includes(n), `兜底价没报出 ${n}`)
+      }
       // 兜底压在目录价下面：有价的那个模型一分钱都不该变。
       assert(html.includes('$2.00 / $8.00') && html.includes('$4.00 / $16.00'), '有目录价的模型被兜底改了价')
       // 兜底价要看得出是估数，不然一个离谱的价会一直收下去。
       assert(html.includes('按「单价倍率」里的兜底价收'), '兜底价没画成估数的样子')
       assert(!html.includes('$0.000'), '还有模型画成了 $0.000')
+
+      /**
+       * **逐项回落也要标出来。** 只填了 input 的模型，output 是兜底给的——整行判
+       * （「两项都没有才算兜底」）的话这一行会画成普通实线，于是一个纯属拍脑袋的 output
+       * 单价看上去和目录价一模一样，而唯一能挡住它的是有人看见。
+       */
+      ui.state.catalog = [
+        { provider: 'e2e-prov', name: 'E2E', models: [{ id: 'half', name: 'Half', cost: { input: 3, output: 0 } }] },
+      ]
+      ui.render()
+      html = ui.html()
+      const at = html.indexOf('$6.00')
+      assert(at > 0, '只填了 input 的那颗没按 ×2 报出 $6.00')
+      assert(html.includes('$18.00'), 'output 没落到兜底价上')
+      // input 是目录价（不标），output 是兜底给的（要标）。整行判的话这一段里一个都没有。
+      assert(html.slice(at, at + 400).includes('按「单价倍率」里的兜底价收'), '逐项回落的 output 没画成估数')
+
+      // 换回上面那两颗再验撤销：`half` 的 output 是 0，撤掉兜底之后它会画成 $0.000，
+      // 那是「目录里 output 填了 0」这个由来已久的画法，和这条用例要验的东西没关系。
+      ui.state.catalog = [
+        {
+          provider: 'e2e-prov',
+          name: 'E2E',
+          models: [
+            { id: 'priced', name: 'Priced', cost: { input: 2, output: 8 } },
+            { id: 'unpriced', name: 'Unpriced', cost: { input: 0, output: 0 } },
+          ],
+        },
+      ]
 
       // 四项清空 = 撤掉兜底，回到「—」。这个开关得撤得掉。
       await setDefault('input', '')
@@ -1295,7 +1329,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!ui.state.settings.defaultModelRate?.input && !ui.state.settings.defaultModelRate?.output, `没撤掉：${JSON.stringify(ui.state.settings.defaultModelRate)}`)
       ui.render()
       html = ui.html()
-      assert(!html.includes('$5.00 / $9.00'), '撤掉兜底之后还按它报价')
+      assert(!html.includes('$5.00') && !html.includes('$9.00'), '撤掉兜底之后还按它报价')
+      assert(!html.includes('按「单价倍率」里的兜底价收'), '撤掉兜底之后还挂着兜底的悬浮说明')
       assert(!html.includes('$0.000'), '撤掉兜底之后画成了 $0.000')
     })
 

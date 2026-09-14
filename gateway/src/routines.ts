@@ -514,11 +514,18 @@ export async function sweepUnsettledLlmCalls(
     // 竞态窗口（两边同时 insert）账本按 refId 汇总时会合成一行，不至于翻倍。
     if (await db.chargeExistsForRef(call.id)) continue
     try {
-      // 目录里可能已经没有这个模型了（平台下架、公司条目删了），和 worker.ts 的结算分支
-      // 同一个兜底：查不到就按「没有价」记。
-      const found = (await catalog.find(call.companyId, `${call.provider}/${call.model}`)) ??
-        { provider: call.provider, id: call.model, cost: undefined }
-      await settle(db, meter, account, found, call.id, undefined, 'failed')
+      /**
+       * 只从目录里取 `cost`，**provider / model 仍旧用这次调用自己的那一份**。
+       *
+       * `llm.find` 里有一段裸 id 的回落（模型 id 自己带斜杠时切错了要再找一遍），它可能
+       * 命中**另一家供应商**的同名模型。拿它的 provider / id 去落账，`subjectOf` 写出来的
+       * 就是别人家的名字，而统计屏是按 `llm_calls` 的 provider/model 去账本里取钱的
+       * （routes/platform.ts）——取不到，这笔钱在按公司 / 按模型两张表上凭空消失。
+       *
+       * 目录里已经没有这个模型了（平台下架、公司条目删了）也一样：账照记，只是没有单价。
+       */
+      const found = await catalog.find(call.companyId, `${call.provider}/${call.model}`)
+      await settle(db, meter, account, { provider: call.provider, id: call.model, cost: found?.cost }, call.id, undefined, 'failed')
       n++
     } catch (e) {
       console.error(`satuwork-gateway: 收未结算的模型调用 ${call.id} 失败：${(e as Error).message}`)

@@ -126,21 +126,33 @@ function effectiveCost(provider, id, cost) {
 }
 
 /**
- * 这个模型的价是不是**兜底兜出来的**：撇开兜底这一层还剩不剩 input / output。
- * 表里要把这种画成另一个样子——兜底是运营拍的一个估数，看不出是估数的话，一个离谱的
- * 价会一直收下去，没人会去查（和缓存回落那两格同一个办法）。
+ * 哪几项是**兜底兜出来的**。表里要把这些画成另一个样子——兜底是运营拍的一个估数，看不出
+ * 是估数的话，一个离谱的价会一直收下去，没人会去查（和缓存回落那两格同一个办法）。
+ *
+ * **逐项判，不是整行判。** 服务端 `rateOf` 是按字段回落的：一颗只填了 input 的模型，
+ * output 完全可能是兜底给的。整行判（「两项都没有才算」）会让这种行画成普通实线，于是
+ * 一个纯属拍脑袋的 output 单价看上去和目录价一模一样。
  */
-function onDefaultRate(provider, id, cost) {
+function fellBackRates(provider, id, cost) {
   const base = cost && typeof cost === 'object' ? cost : {}
   const o = priceOverride(provider, id) || {}
-  return !(Number(o.input) || Number(base.input) || Number(o.output) || Number(base.output))
+  const f = defaultRate()
+  const fell = (k) => !(Number(o[k]) || Number(base[k])) && !!Number(f[k])
+  return { input: fell('input'), output: fell('output') }
 }
 
-function ratePair(cost, factor, fallback = false) {
+/** 兜底那一项的画法：浅一档 + 虚下划线 + 悬浮说明。和缓存回落那两格同一套。 */
+function fallbackCell(text) {
+  return `<span style="opacity: 0.55; border-bottom: 1px dotted currentColor;" title="${esc(t('目录和覆盖里都没有这一项的单价，按「单价倍率」里的兜底价收', 'Neither the catalog nor the overrides price this field; it is charged at the default rate from Pricing'))}">${text}</span>`
+}
+
+function ratePair(cost, factor, fell = {}) {
   if (!hasRates(cost)) return `<span title="${esc(t('目录里没有这个模型的价格', 'The catalog has no price for this model'))}">—</span>`
-  const pair = `${esc(money(Number(cost.input || 0) * factor))} / ${esc(money(Number(cost.output || 0) * factor))}`
-  if (!fallback) return pair
-  return `<span style="opacity: 0.55; border-bottom: 1px dotted currentColor;" title="${esc(t('目录和覆盖里都没有这个模型的单价，按「单价倍率」里的兜底价收', 'Neither the catalog nor the overrides price this model; it is charged at the default rate from Pricing'))}">${pair}</span>`
+  const cell = (k) => {
+    const shown = esc(money(Number(cost[k] || 0) * factor))
+    return fell[k] ? fallbackCell(shown) : shown
+  }
+  return `${cell('input')} / ${cell('output')}`
 }
 
 /**
@@ -293,8 +305,8 @@ function modelsPage() {
       const isDaily = daily.provider === shown.provider && daily.model === m.id
       const isUtil = utility.provider === shown.provider && utility.model === m.id
       const cost = effectiveCost(shown.provider, m.id, m.cost)
-      // 这一行的价是兜底兜出来的：两列单价都画成虚线的浅色，一眼看得出是估数。
-      const fellBack = hasDefaultRate() && onDefaultRate(shown.provider, m.id, m.cost)
+      // 这一行里哪几项是兜底兜出来的：那几个数画成虚线的浅色，一眼看得出是估数。
+      const fellBack = fellBackRates(shown.provider, m.id, m.cost)
       const overridden = !!priceOverride(shown.provider, m.id)
       const actions = `
         <div class="satu-rowactions">
@@ -406,7 +418,8 @@ function modelPriceModal() {
    * 仍旧写 0 的话，这一屏会告诉人「留空就是免费」——而它现在按兜底收。
    */
   const dflt = defaultRate()
-  const onDefault = hasDefaultRate() && !hasRates(d.catalog)
+  // 留空的话这几个框会按什么价收：只要有一项的占位符来自兜底，这句提示就该换成兜底那一版。
+  const onDefault = hasDefaultRate() && ['input', 'output'].some((k) => !Number(d.catalog[k]) && Number(dflt[k]))
   const ph = (key) => String(Number(d.catalog[key]) || Number(dflt[key]) || 0)
   const field = (label, key, hint) => `
     <div class="field">

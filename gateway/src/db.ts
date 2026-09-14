@@ -1548,8 +1548,17 @@ export class Db {
    * 调用方退回原来的「只补 token」。
    *
    * **是 update 不是 delete + insert**：账本只增不改是这张表的性格，破一次口子也要破得最
-   * 小——行还是那一行、id 还是那个 id，只是不再说假话。原子性由 where 里那串判据保证：
-   * 两个并发的补录，第二个的 where 已经对不上了，回 0 行。
+   * 小——行还是那一行、id 还是那个 id，只是不再说假话。
+   *
+   * **只改一行，靠子查询挑 id，不靠 `refId` 直接筛。** `usage_charges."refId"` 上只有普通
+   * 索引不是唯一约束，同一次调用挂两行账是这套代码明说过会发生的事（见 LEDGER_BY_REF
+   * 那段注释，以及 routines.ts 里清扫那个「两边同时 insert」的竞态窗口）。以前无所谓：
+   * 两行占位都是 0 元，`sum` 起来还是 0。可一旦补录按 `refId` 筛，两行会**各自**被填成
+   * 全额——这次调用就收了两遍，而 `this.one()` 只看得见其中一行，余额记忆也只减一份。
+   *
+   * 外面那串判据（0 元、0 赠送、unpriced、failed）在挑中 id 之后**再查一遍**：两个并发的
+   * 补录抢同一行时，第二个等到行锁之后重查会发现它已经不是 0 元了，回 0 行，退回 already。
+   * 剩下那行没被选中的占位仍旧是 0 元，按 refId 汇总时和从前一样合成一行。
    *
    * `createdAt` 不动：那是清扫写下的时刻，比「管家什么时候想起来回来」更接近调用真实发生
    * 的时间，改它会把这笔钱挪到另一个账期去。
@@ -1590,12 +1599,19 @@ export class Db {
       `update usage_charges u set
          status = ?, quantity = ?, "unitPrice" = ?, multiplier = ?,
          "amountMicros" = ?, "bonusMicros" = ${bonusSql}, unpriced = ?
-       where u."refId" = ? and u.kind = 'llm' and u.status = 'failed' and u.unpriced = true
+       where u.id = (
+               select c2.id from usage_charges c2
+                where c2."refId" = ? and c2.kind = 'llm' and c2.status = 'failed' and c2.unpriced = true
+                  and c2."amountMicros" = 0 and c2."bonusMicros" = 0
+                  and coalesce((c2.quantity->>'promptTokens')::numeric, 0) = 0
+                  and coalesce((c2.quantity->>'completionTokens')::numeric, 0) = 0
+                  and coalesce((c2.quantity->>'cachedTokens')::numeric, 0) = 0
+                  and coalesce((c2.quantity->>'cacheWriteTokens')::numeric, 0) = 0
+                order by c2."createdAt", c2.id
+                limit 1
+             )
+         and u.kind = 'llm' and u.status = 'failed' and u.unpriced = true
          and u."amountMicros" = 0 and u."bonusMicros" = 0
-         and coalesce((u.quantity->>'promptTokens')::numeric, 0) = 0
-         and coalesce((u.quantity->>'completionTokens')::numeric, 0) = 0
-         and coalesce((u.quantity->>'cachedTokens')::numeric, 0) = 0
-         and coalesce((u.quantity->>'cacheWriteTokens')::numeric, 0) = 0
        returning *`,
       [
         input.status,

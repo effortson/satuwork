@@ -112,10 +112,22 @@ export async function fillSweptCharge(
     cost: found.cost,
     refId: callId,
   }
-  const row = await meter.fillPlaceholder(billable)
+  /**
+   * **补账和补 token 同进同出。** 两句分开跑过一版，中间断一下（连接掉了、进程被杀）就
+   * 留下「账本有钱、`llm_calls` 还是 0/0」——统计屏上是一行有金额、零 token 的模型，
+   * 而那是对不出账的。`meter.fillPlaceholder` 自己也开 db.tx（要拿账本锁），db.tx 碰上
+   * 已经在事务里就直接跑，不开嵌套事务，所以这里套一层是安全的。
+   *
+   * 代价：回滚时 `fillPlaceholder` 已经就地扣过的余额记忆不会跟着退回去，那一份会比库里
+   * 偏保守，等 TTL 过了自己就对了。偏保守的方向不会让人白花钱。
+   */
+  const row = await db.tx(async () => {
+    const filled = await meter.fillPlaceholder(billable)
+    if (!filled) return undefined
+    await db.updateLlmCallTokens(callId, usage)
+    return filled
+  })
   if (!row) return false
-  // token 是**补录之后**才写的：补不上的时候由调用方走 recordUsageOnly，两条路只写一次。
-  await db.updateLlmCallTokens(callId, usage)
   console.log(`satuwork-gateway: 补录了清扫按 0 元收下的调用 ${callId}，${row.amountMicros} 微元`)
   return true
 }

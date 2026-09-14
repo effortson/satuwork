@@ -466,11 +466,18 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
     const status = body.status == null ? undefined : strField(body, 'status', false)
     if (status !== undefined && !SETTLE_STATUSES.has(status as ChargeStatus)) throw new HttpError(400, 'status 只能是 ok / failed / error / timeout')
     const usage = usageOf(body.usage)
-    const account = await db.account(call.accountId)
-    if (!account) throw new HttpError(404, '账号不存在')
-    // 目录可能已经没有这个模型了（平台下架、公司条目删了）：账照记，只是没有单价，
-    // settle 会把它记成 unpriced。
-    const found = (await llm.find(call.companyId, `${call.provider}/${call.model}`)) ?? { provider: call.provider, id: call.model, cost: undefined }
+    /**
+     * 这一次按什么价收。**只从目录里取 `cost`，provider / model 用这次调用自己的那一份**
+     * ——理由和清扫那边一字不差，见 routines.ts 的 sweepUnsettledLlmCalls：`llm.find` 的
+     * 裸 id 回落可能命中另一家供应商的同名模型，拿它的名字落账会让账本 subject 和
+     * `llm_calls` 分家，统计屏那个 join 就取不到钱了。目录里已经没有这个模型了（平台
+     * 下架、公司条目删了）也走这条：账照记，只是没有单价，settle 记成 unpriced。
+     */
+    const pricedOf = async () => ({
+      provider: call.provider,
+      id: call.model,
+      cost: (await llm.find(call.companyId, `${call.provider}/${call.model}`))?.cost,
+    })
     if (await db.chargeExistsForRef(call.id)) {
       /**
        * 已经有账了。**钱仍然不重记**——一次调用只该有一个金额，重算等于给同一行挂两个数。
@@ -486,15 +493,27 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
        *     只把 token 补正：不补的话 llm_calls 永远停在 0/0，那一行读起来像「这次调用
        *     什么都没发生」，而它明明发生过、还很贵。
        */
-      if (usage && (await fillSweptCharge(db, meter, account, found, call.id, usage, status as ChargeStatus | undefined))) {
-        json(res, 200, { settled: true, reason: 'filled' })
-        return
+      if (usage) {
+        /**
+         * 账号和目录只在**真要补录**的时候才查。放到分支外面去查过一版，代价是：账号被
+         * 硬删掉之后（删公司 / 删员工都会 `delete from accounts`，而 `llm_calls` 上没有
+         * 外键、调用行不跟着走），管家重试上报会从 `200 already` 变成 `404 账号不存在`
+         * ——一个本来幂等成功的空操作变成了错误。补不了就补不了，账本原样不动，这条路
+         * 仍旧回 already。
+         */
+        const account = await db.account(call.accountId)
+        if (account && (await fillSweptCharge(db, meter, account, await pricedOf(), call.id, usage, status as ChargeStatus | undefined))) {
+          json(res, 200, { settled: true, reason: 'filled' })
+          return
+        }
+        await recordUsageOnly(db, call.id, usage)
       }
-      if (usage) await recordUsageOnly(db, call.id, usage)
       json(res, 200, { settled: false, reason: 'already' })
       return
     }
-    await settle(db, meter, account, found, call.id, usage, status as ChargeStatus | undefined)
+    const account = await db.account(call.accountId)
+    if (!account) throw new HttpError(404, '账号不存在')
+    await settle(db, meter, account, await pricedOf(), call.id, usage, status as ChargeStatus | undefined)
     json(res, 200, { settled: true })
   })
 }
