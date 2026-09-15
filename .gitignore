@@ -7,6 +7,10 @@ node_modules/
 .env.bak-*
 # `vercel link` / `vercel env pull` 落下的本地环境（VERCEL_OIDC_TOKEN 等）。
 .env*.local
+# `vercel env pull .env.production` 这种带环境名的落点：上面三条一条都挡不住它，而它里面
+# 是 Neon 的生产连接串（带口令）。所以按前缀全挡，只放行示例文件。
+.env.*
+!.env.example
 # 生成 JWT 钥匙的 openssl 命令默认写在当前目录（docs/vercel-deploy.md 那几行）；私钥落在
 # 仓库根目录时 `git add -A` 一下就上去了。钥匙该在 ~/.satuwork-gateway/keys 或环境变量里。
 *.pem

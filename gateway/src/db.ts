@@ -124,11 +124,17 @@ export class Db {
     this.url = o.url
     // search_path 走连接启动参数，不走 connect 事件里补一条 `set`——后者不等它跑完
     // 就可能先发业务查询，是条竞态。
+    //
+    // **但池化连接收不了 `options`**：Neon 的 pooler（pgbouncer）见到启动包里有
+    // `-c search_path=…` 就拒掉整条连接（unsupported startup parameter），函数形态下
+    // 每条走库的请求都成 500。而 public 本来就在默认 search_path 里，这一条压根不用发；
+    // 只有换了 schema（e2e 的隔离库）才需要，那时用的是直连串，带得动。
+    const startup = this.schema === 'public' ? {} : { options: `-c search_path=${this.schema}` }
     this.pool = new Pool({
       connectionString: o.url,
       // 函数环境里实例多、每个都开 10 条会把 Neon 的连接数打满；那儿走池化串、每实例 2 条够用。
       max: Math.max(1, Math.trunc(Number(process.env.GATEWAY_PG_POOL_MAX) || 10)),
-      options: `-c search_path=${this.schema}`,
+      ...startup,
       // 库那侧看得见是谁连的。撞车时报错要指名道姓，靠的就是它（见 claimSchema）。
       application_name: `satuwork-gateway[${this.schema}]`,
     })
