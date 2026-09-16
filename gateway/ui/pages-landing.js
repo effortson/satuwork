@@ -78,6 +78,9 @@ const LP_ICONS = {
  */
 function lpCard(shot, title, line) {
   return `<div class="satu-lp-card">
+    ${/* 角上那颗十字是图纸上的定位记号，纯装饰——四张卡因此看着是「同一张图上的
+          四格」，而不是四个各自为政的方块。 */ ''}
+    <span class="satu-lp-tick" aria-hidden="true"></span>
     <div class="satu-lp-cardshot" aria-hidden="true">${shot}</div>
     <h3>${esc(title)}</h3>
     <p>${esc(line)}</p>
@@ -87,20 +90,30 @@ function lpCard(shot, title, line) {
 /**
  * 底下那条能力带：一个图标一个词，**没有说明**。
  *
- * 这几样单开一张卡不值当（说一句就完），可整个不提又缺一块。排成一条窄带，人扫过去
- * 知道「还有这些」就够了。
+ * 这几样单开一张卡不值当（说一句就完），可整个不提又缺一块。排成一条被竖线切成四格
+ * 的窄带，人扫过去知道「还有这些」就够了。
+ *
+ * 类名是 `satu-lp-specitem` 而**不是** `satu-lp-chip`：后者是气泡里那几颗工具痕迹
+ * （lpDemoMsg）。两边原来同名，app.css 里后写的那条把气泡里那几颗一起撑成了描边
+ * 药丸——气泡里于是浮着两个和「这条带」一模一样的东西。
  */
 function lpChip(icon, label) {
-  return `<div class="satu-lp-chip">
+  return `<div class="satu-lp-specitem">
     <span class="satu-lp-chipicon">${svg(LP_ICONS[icon], 17)}</span>
     <span>${esc(label)}</span>
   </div>`
 }
 
-/** 「怎么开始」里的一步。序号是排版的一部分，所以留在这儿而不是交给 <ol>。 */
+/**
+ * 「怎么开始」里的一步。序号是排版的一部分，所以留在这儿而不是交给 <ol>。
+ *
+ * 补成两位（01/02/03）：这一格里序号是最大的那个字，一位数的「1」在 38px 上瘦成
+ * 一根竖线，三格排过去像三条杠；补一位之后它才是一个**数**。
+ */
 function lpStep(n, title) {
   return `<li class="satu-lp-step">
-    <span class="satu-lp-stepnum">${n}</span>
+    <span class="satu-lp-tick" aria-hidden="true"></span>
+    <span class="satu-lp-stepnum">${String(n).padStart(2, '0')}</span>
     <h3>${esc(title)}</h3>
   </li>`
 }
@@ -113,7 +126,7 @@ function lpWinBar(title) {
 /** 工作区：文件留在机器上，命令在机器上跑。 */
 function lpMockWork() {
   const files = [
-    [t('refunds-2026-09.csv', 'refunds-2026-09.csv'), '47 行'],
+    [t('refunds-2026-09.csv', 'refunds-2026-09.csv'), t('47 行', '47 rows')],
     [t('对账结果.md', 'reconciliation.md'), t('刚写完', 'just now')],
     [t('check-refunds.mjs', 'check-refunds.mjs'), '2.1 KB'],
   ]
@@ -417,7 +430,7 @@ function lpSalesModal() {
         <div class="satu-lp-salesnum">
           <span>${esc(LP_SALES_SHOW)}</span>
           ${/* 手机上扫不了自己的屏幕，这条链接就是给他的。target/rel 和顶栏那颗 GitHub 同一套规矩。 */ ''}
-          <a class="btn btn-primary" href="${esc(href)}" target="_blank" rel="noopener noreferrer">
+          <a class="satu-lp-btn" data-kind="primary" href="${esc(href)}" target="_blank" rel="noopener noreferrer">
             ${svg(LP_ICONS.sales, 15)}${t('在 WhatsApp 上打开', 'Open in WhatsApp')}
           </a>
         </div>
@@ -433,22 +446,36 @@ function lpSalesModal() {
     </div>`
 }
 
+
+/** 主 CTA 上那支箭。这一屏的按钮全是方的、字是大写的，箭头是它唯一的装饰。 */
+const LP_ARROW = ['M5 12h14', 'm12 5 7 7-7 7']
+
 /**
  * 首页本体。
+ *
+ * 版式是**一张图纸**（见 app.css 里 `.satu-lp` 那一段）：一条 1px 的栏线从顶栏画到
+ * 页脚，每一块内容落在这条线圈出的格子里，格与格之间也只用一条线隔开。所以这里几乎
+ * 每一段都带着 `satu-lp-rail`——那对左右边框接起来就是那两条竖线，少写一段，线就断
+ * 在那儿。
+ *
+ * 唯一不带栏线的是 `.satu-lp-band` 那条深色带：它**通栏**，正因为它要打断那两条线，
+ * 页面读到那儿才会停一下。
  *
  * 不套 `.gw-page`——那套是登录之后工作台里的内容区，外面有侧栏和顶栏兜着，滚动锁在
  * 它自己那一格里。这一屏没有外壳，滚的是文档本身（见 app.css 的 `.satu-lp`）。
  */
 function landingView() {
-  const cta = `<button type="button" class="btn btn-primary" data-act="go" data-href="/login">
-    ${t('登录 Satuwork', 'Sign in to Satuwork')}${svg(['M5 12h14', 'm12 5 7 7-7 7'], 14)}
+  const cta = `<button type="button" class="satu-lp-btn" data-kind="primary" data-act="go" data-href="/login">
+    ${t('登录 Satuwork', 'Sign in to Satuwork')}${svg(LP_ARROW, 14)}
   </button>`
   return `
   <div class="satu-lp">
     <header class="satu-lp-top">
+      ${/* 这一条**不收在栏线里**：横梁要横过整个屏幕，末端那格实心的「登录」才顶
+            得到右沿（见 app.css 的 .satu-lp-topin）。 */ ''}
       <div class="satu-lp-wrap satu-lp-topin">
         <button type="button" class="satu-lp-brand" data-act="go" data-href="/">
-          <img src="/assets/satuwork-logo.png" alt="Satuwork" width="30" height="30">
+          <img src="/assets/satuwork-logo.png" alt="Satuwork" width="28" height="28">
           <span>Satuwork</span>
         </button>
         <div class="satu-lp-topact">
@@ -465,22 +492,22 @@ function landingView() {
             <button type="button" data-act="landing-locale" data-locale="en" aria-pressed="${localeMode === 'en'}">EN</button>
           </div>
           ${/* 联系销售。**不是链接是按钮**：它开的是一个弹窗（里面有二维码和号码），
-                而不是跳去某处。手机上收成一颗只有图标的圆钮（见 app.css 的 560 那段）
-                ——顶栏那一行在 375 宽上已经排着四样东西了。 */ ''}
+                而不是跳去某处。手机上收成一格只有图标的（见 app.css 的 560 那段）
+                ——顶栏那一条在 375 宽上已经排着四样东西了。 */ ''}
           ${/* 名字写在 aria-label 上：窄屏上那四个字是 display:none 的，光靠可见文字的话
                 手机上这就是一颗没有名字的按钮（名册那三行踩过同一个坑）。 */ ''}
-          <button type="button" class="btn btn-secondary satu-lp-sales" data-act="landing-sales"
+          <button type="button" class="satu-lp-sales" data-act="landing-sales"
             aria-label="${esc(t('联系销售', 'Contact sales'))}" title="${esc(t('联系销售', 'Contact sales'))}">
             ${svg(LP_ICONS.sales, 15)}<span>${t('联系销售', 'Contact sales')}</span>
           </button>
-          <button type="button" class="btn btn-primary satu-lp-topsign" data-act="go" data-href="/login">${t('登录', 'Sign in')}</button>
+          <button type="button" class="satu-lp-topsign" data-act="go" data-href="/login">${t('登录', 'Sign in')}</button>
         </div>
       </div>
     </header>
 
-    <section class="satu-lp-wrap satu-lp-hero">
+    <section class="satu-lp-wrap satu-lp-rail satu-lp-hero">
       <div class="satu-lp-heroleft">
-        <span class="satu-lp-eyebrow">${t('给公司用的 AI 员工', 'AI coworkers, for companies')}</span>
+        <span class="satu-lp-kicker satu-lp-eyebrow">${t('给公司用的 AI 员工', 'AI coworkers for companies')}</span>
         <h1>${t('把活交出去，像交给一个同事。', 'Hand off the work the way you would to a colleague.')}</h1>
         ${/* 一句就够。首屏右边那块小样比三行字说得清楚，两个一起上只会互相抢。 */ ''}
         <p class="satu-lp-lead">${t(
@@ -489,16 +516,30 @@ function landingView() {
         )}</p>
         <div class="satu-lp-ctas">
           ${cta}
-          <button type="button" class="btn btn-secondary" data-act="landing-more">${t('先看看它能做什么', 'See what it does')}</button>
+          <button type="button" class="satu-lp-btn" data-kind="ghost" data-act="landing-more">${t('先看看它能做什么', 'See what it does')}</button>
         </div>
         <p class="satu-lp-fine">${t('账号由公司管理员开通。', 'Accounts are created by your company admin.')}</p>
       </div>
-      ${lpShot()}
+      <div class="satu-lp-heroright">${lpShot()}</div>
     </section>
 
-    <section class="satu-lp-wrap satu-lp-sec" id="satu-lp-features">
+    ${/* 能力带。四样单开一张卡不值当，排成一条被竖线切成四格的窄带就够了。它紧贴
+          首屏底下，是那两条栏线上的第一道横隔——图纸从这儿开始有「行」。 */ ''}
+    <section class="satu-lp-wrap satu-lp-rail satu-lp-spec" aria-label="${esc(t('还有这些', 'Also included'))}">
+      ${lpChip('skills', t('Skill 与 MCP 分两层', 'Skills and MCP, two layers'))}
+      ${lpChip('plug', t('连接器走 OAuth', 'Connectors over OAuth'))}
+      ${lpChip('channels', t('Telegram 渠道直连', 'Telegram channels'))}
+      ${lpChip('handoff', t('转人工待办', 'Human handoff queue'))}
+    </section>
+
+    <section class="satu-lp-wrap satu-lp-rail satu-lp-sec" id="satu-lp-features">
       <div class="satu-lp-sechead">
+        <span class="satu-lp-kicker">${t('它能做什么', 'What it does')}</span>
         <h2>${t('它不是一个聊天框', 'It isn’t just a chat box')}</h2>
+        <p>${t(
+          '四件事分别是一台机器、一次拍板、一张排期表和一本账——都是交给同事之后你本来就会关心的那几件。',
+          'A machine, a decision, a schedule and a ledger — the four things you’d ask about after handing work to anyone.',
+        )}</p>
       </div>
       <div class="satu-lp-cards">
         ${lpCard(lpMockWork(), t('他真的有一台机器', 'It really has a machine'), t('自己的工作区、终端和浏览器', 'Its own workspace, terminal and browser'))}
@@ -506,27 +547,26 @@ function landingView() {
         ${lpCard(lpMockCron(), t('日常任务自己跑', 'Routines run themselves'), t('到点开工，半夜也在干活', 'On schedule, through the night'))}
         ${lpCard(lpMockLedger(), t('钱花在哪儿一眼看得见', 'See where the money went'), t('模型、连接器、搜索按次落账', 'Models, connectors, search — per call'))}
       </div>
-      <div class="satu-lp-chips">
-        ${lpChip('skills', t('Skill 与 MCP 分两层', 'Skills and MCP, two layers'))}
-        ${lpChip('plug', t('连接器走 OAuth', 'Connectors over OAuth'))}
-        ${lpChip('channels', t('Telegram 渠道直连', 'Telegram channels'))}
-        ${lpChip('handoff', t('转人工待办', 'Human handoff queue'))}
-      </div>
     </section>
 
-    <section class="satu-lp-wrap satu-lp-sec">
-      <div class="satu-lp-sechead">
-        <h2>${t('怎么开始', 'Getting started')}</h2>
-        <p>${t('通常是一个下午的事。', 'Usually one afternoon.')}</p>
-      </div>
-      <ol class="satu-lp-steps">
-        ${lpStep(1, t('管理员开通公司和席位', 'An admin provisions company and seats'))}
-        ${lpStep(2, t('在公司模版上建你的 Bot', 'You build your bot on the template'))}
-        ${lpStep(3, t('像跟同事说话一样交代', 'You talk to it like a colleague'))}
-      </ol>
-      <div class="satu-lp-tail">
-        ${cta}
-        <span>${t('还没有账号？找管理员开通。', 'No account? Ask your admin.')}</span>
+    ${/* 「怎么开始」那条深色带。**整页唯一一块深色，也是唯一一块通栏**：前面一路
+          都是奶油底，读到这儿忽然暗一档，人自然会停一下——而要他停的正是这一段。
+          所以它在 `.satu-lp-wrap` 外面，不带 satu-lp-rail。 */ ''}
+    <section class="satu-lp-band">
+      <div class="satu-lp-wrap satu-lp-bandin">
+        <div class="satu-lp-sechead">
+          <span class="satu-lp-kicker">${t('怎么开始', 'Getting started')}</span>
+          <h2>${t('通常是一个下午的事。', 'Usually one afternoon.')}</h2>
+        </div>
+        <ol class="satu-lp-steps">
+          ${lpStep(1, t('管理员开通公司和席位', 'An admin provisions company and seats'))}
+          ${lpStep(2, t('在公司模版上建你的 Bot', 'You build your bot on the template'))}
+          ${lpStep(3, t('像跟同事说话一样交代', 'You talk to it like a colleague'))}
+        </ol>
+        <div class="satu-lp-tail">
+          ${cta}
+          <span>${t('还没有账号？找管理员开通。', 'No account? Ask your admin.')}</span>
+        </div>
       </div>
     </section>
 
@@ -535,7 +575,7 @@ function landingView() {
     <footer class="satu-lp-foot">
       <div class="satu-lp-wrap satu-lp-footin">
         <span class="satu-lp-brand" data-static>
-          <img src="/assets/satuwork-logo.png" alt="" width="22" height="22">
+          <img src="/assets/satuwork-logo.png" alt="" width="20" height="20">
           <span>Satuwork</span>
         </span>
         ${/* 隐私政策和服务条款（pages-legal.js）。页脚是找它们的地方——法务、合规问卷

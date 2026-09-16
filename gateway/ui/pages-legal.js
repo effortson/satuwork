@@ -404,7 +404,7 @@ function legalTop() {
   return `<header class="satu-lp-top">
     <div class="satu-lp-wrap satu-lp-topin">
       <button type="button" class="satu-lp-brand" data-act="go" data-href="/">
-        <img src="/assets/satuwork-logo.png" alt="Satuwork" width="30" height="30">
+        <img src="/assets/satuwork-logo.png" alt="Satuwork" width="28" height="28">
         <span>Satuwork</span>
       </button>
       <div class="satu-lp-topact">
@@ -412,7 +412,10 @@ function legalTop() {
           <button type="button" data-act="landing-locale" data-locale="zh" aria-pressed="${localeMode !== 'en'}">中文</button>
           <button type="button" data-act="landing-locale" data-locale="en" aria-pressed="${localeMode === 'en'}">EN</button>
         </div>
-        <button type="button" class="btn btn-primary satu-lp-topsign" data-act="go" data-href="/login">${t('登录', 'Sign in')}</button>
+        ${/* 顶栏末端那格。**不再挂 `btn btn-primary`**：首页那条横梁上每一样都是
+              一格（见 app.css 的 .satu-lp-topact），药丸按钮摆进去会在格子里再浮
+              出一颗圆头的钮。样式全由 .satu-lp-topsign 自己给。 */ ''}
+        <button type="button" class="satu-lp-topsign" data-act="go" data-href="/login">${t('登录', 'Sign in')}</button>
       </div>
     </div>
   </header>`
@@ -432,7 +435,7 @@ function legalFoot(kind) {
   return `<footer class="satu-lp-foot">
     <div class="satu-lp-wrap satu-lp-footin">
       <span class="satu-lp-brand" data-static>
-        <img src="/assets/satuwork-logo.png" alt="" width="22" height="22">
+        <img src="/assets/satuwork-logo.png" alt="" width="20" height="20">
         <span>Satuwork</span>
       </span>
       <span class="satu-lg-links">
