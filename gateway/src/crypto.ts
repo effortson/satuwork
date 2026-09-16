@@ -2,6 +2,7 @@ import {
   createHash,
   createCipheriv,
   createDecipheriv,
+  createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
   randomBytes,
@@ -179,7 +180,13 @@ export function loadKeys(home: string): JwtKeys {
   if (envPriv || envPub) {
     if (!envPriv || !envPub) throw new Error('GATEWAY_JWT_PRIVATE_KEY 与 GATEWAY_JWT_PUBLIC_KEY 要一起给')
     // 先验一遍能不能当钥匙用：环境变量里少一行 PEM 尾巴，第一次签票时才炸，比这里炸难查得多。
+    //
+    // **两把都要验。** 只验公钥的那一版在生产上现了原形：公钥好好的、私钥是坏的，于是
+    // 起进程、`/jwks`、`/auth/state` 全都正常，一直到有人登录才在 `sign` 里炸
+    // `DECODER routines::unsupported`，外面只看得见 500 internal error——而「创建系统
+    // 管理员」那一步是先插库再签票，账号已经建出来了，人却拿不到票，看着像没建成。
     createPublicKey(envPub)
+    createPrivateKey(envPriv)
     return { kid: createHash('sha256').update(envPub).digest('hex').slice(0, 16), privatePem: envPriv, publicPem: envPub }
   }
   const dir = join(home, 'keys')
