@@ -1,6 +1,6 @@
 /* Satuwork theme — tokens from the provided design tokens, plus the component
    layer the pages use (aliased so existing var(--color-*) usage keeps working). */
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600;700&display=swap");
 
 :root {
   --background: #faf9f5;
