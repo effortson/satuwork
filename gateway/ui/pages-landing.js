@@ -190,7 +190,7 @@ function lpMockLedger() {
     <div class="satu-lp-winbody satu-lp-ledger">
       <div class="satu-lp-bars">${bars.map((h) => `<i style="height: ${h}%"></i>`).join('')}</div>
       <div class="satu-lp-ledgerfoot">
-        <b>¥ 1,284</b>
+        <b>$1,284</b>
         <span>${esc(t('模型 · 连接器 · 搜索', 'Models · connectors · search'))}</span>
       </div>
     </div>
