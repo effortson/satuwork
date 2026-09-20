@@ -164,6 +164,23 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 .satu-newbot:hover { color: var(--color-text); border-color: var(--color-text); }
 .satu-rail .satu-newbot { justify-content: center; }
 .satu-rail .satu-newbot span { display: none; }
+/* 「新建 Bot」和它右边那颗「更多」并排一行。
+   **position: relative 是给弹出菜单当锚的**（.satu-menu 是 absolute）：少了它，菜单
+   会跑去贴最近的定位祖先，在这一列里就是整个视口。 */
+.satu-newbotrow { position: relative; flex: none; display: flex; align-items: stretch; gap: 4px; }
+.satu-newbotrow .satu-newbot { flex: 1; min-width: 0; }
+/* 「更多」那颗。**选择器要带上 .satu-newbotrow**：上面那条给行内每颗按钮写了
+   `flex: 1`，权重比单独一个类名高，光写 .satu-newbot-more 的话 `flex: none` 压不过
+   它——两颗于是平分一行，「新建 Bot」被挤成半行。 */
+.satu-newbotrow .satu-newbot-more { flex: none; width: 34px; justify-content: center; padding: 8px 0; }
+/* 导轨那一档不用菜单，摊成两行（见 render.js 里那段）。所以这两颗平时藏着。 */
+.satu-newbot-rail { display: none; }
+.satu-rail .satu-newbotrow { flex-direction: column; gap: 0; }
+.satu-rail .satu-newbotrow .satu-newbot-more { display: none; }
+.satu-rail .satu-newbot-rail { display: flex; width: 100%; }
+/* 菜单项带图标的那种：和它收起来之前那两颗按钮长得一样，人才认得出是同两条。 */
+.satu-menuitem-icon { display: flex; align-items: center; gap: var(--space-2); }
+.satu-menuitem-icon svg { flex: none; opacity: 0.75; }
 /* 页面入口沉在底部，不跟着名单滚。 */
 .satu-navfoot { flex: none; display: flex; flex-direction: column; gap: 2px; padding-top: 2px; }
 /* 没有 Bot 名单的那一侧（平台管理员）——菜单就是这一列的全部内容。十几条再加上分组

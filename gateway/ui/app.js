@@ -295,6 +295,10 @@ document.getElementById('app').addEventListener('click', async (e) => {
   // 右栏的日常任务同理，都在 pages-routines.js 里。
   if (await routineAct(act, btn)) return
   if (act === 'go') {
+    // 上下文菜单里也有走 `go` 的条目（侧栏那颗「更多」里的渠道、对话顶栏里的 Bot
+    // 设置）。跳走之后菜单该是收起来的——顶上那条「点外面就收」管不到这里：点的是
+    // 菜单**里面**，closest('.satu-menu') 命中，它直接放行了。
+    state.menu = null
     go(btn.getAttribute('data-href'))
     return
   }
