@@ -2005,21 +2005,29 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(html.includes('satu-botdot'), '状态点没画')
     })
 
-    await test('公司管理员可以折叠并重新展开公司分类菜单', async () => {
+    await test('公司分类默认折叠，点一下展开，再点一下收回', async () => {
+      /**
+       * **默认是折叠的**（state.js 的 navGroupOpen）：那八条是偶尔才去一趟的后台，
+       * 而它们上面就是每天要点的 Bot 名单——默认摊开八行，名单会被挤得只剩两三个。
+       *
+       * 头两条钉的就是这个默认值：折叠按钮在（没有它就再也展不开了），可那些入口
+       * 一个都没画。**两条都要**——只验 aria-expanded 的话，哪天 render 改成「折叠
+       * 时照画、只用 CSS 藏」，这条用例照样绿，而侧栏上仍然堆着八行。
+       */
       const ui = await boot(adminToken)
       let html = ui.html()
-      assert(/data-act="nav-group-toggle"[^>]*aria-expanded="true"/.test(html), '公司分类没有展开态的折叠按钮')
-      assert(html.includes('data-href="/company"'), '展开时没有画公司菜单入口')
+      assert(/data-act="nav-group-toggle"[^>]*aria-expanded="false"/.test(html), '公司分类默认不是折叠态')
+      assert(!html.includes('data-href="/company"'), '默认折叠，却把公司菜单入口画出来了')
 
       await ui.fire('click', el('button', { 'data-act': 'nav-group-toggle', 'data-group': 'company' }))
       html = ui.html()
-      assert(/data-act="nav-group-toggle"[^>]*aria-expanded="false"/.test(html), '点击后没有进入折叠态')
-      assert(!html.includes('data-href="/company"'), '折叠后公司菜单入口仍然可见')
+      assert(/data-act="nav-group-toggle"[^>]*aria-expanded="true"/.test(html), '点击后没有展开')
+      assert(html.includes('data-href="/company"'), '展开后没有画公司菜单入口')
 
       await ui.fire('click', el('button', { 'data-act': 'nav-group-toggle', 'data-group': 'company' }))
       html = ui.html()
-      assert(/data-act="nav-group-toggle"[^>]*aria-expanded="true"/.test(html), '第二次点击没有重新展开')
-      assert(html.includes('data-href="/company"'), '重新展开后公司菜单入口没有恢复')
+      assert(/data-act="nav-group-toggle"[^>]*aria-expanded="false"/.test(html), '第二次点击没有收回')
+      assert(!html.includes('data-href="/company"'), '收回后公司菜单入口仍然可见')
     })
 
     await test('公司侧没有「供应商」：菜单里没有，直接输地址也进不去', async () => {
@@ -2032,11 +2040,49 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
        * 首页的菜单项。
        */
       const ui = await boot(adminToken)
-      assert(!ui.html().includes('data-href="/providers"'), '公司菜单里还有「供应商」')
+      // **先把「公司」那组展开**。它默认是折叠的（state.js 的 navGroupOpen），折叠时
+      // 那八条一条都不画——不展开的话，下面那条「菜单里没有供应商」是**永远成立**的：
+      // 哪天有人把 /providers 加回 ADMIN_NAV，这条用例照样绿。
+      await ui.fire('click', el('button', { 'data-act': 'nav-group-toggle', 'data-group': 'company' }))
+      const menu = ui.html()
+      assert(menu.includes('data-href="/billing"'), '公司那组没展开，下面那条断言就没意义了')
+      assert(!menu.includes('data-href="/providers"'), '公司菜单里还有「供应商」')
       assert(!ui.pathAllowed('/providers'), '公司侧 /providers 仍然放行')
       // 平台那一侧不受影响：owner 还得在那一页配密钥。
       const own = await boot(ownerToken)
       assert(own.pathAllowed('/providers'), 'owner 的 /providers 被一起撤掉了')
+    })
+
+    await test('侧栏把「插件」和「渠道」收进了「新建 Bot」旁边那颗「更多」', async () => {
+      /**
+       * 三条一样宽的虚线框叠在 Bot 名单底下，占三行高，而名单才是这一屏的主体。
+       * 「插件」「渠道」一天也点不了一次，却和每天都要点的「新建 Bot」长得一模一样。
+       *
+       * 这条钉三件事，少一件这个改动就白做了：**平时看不见**（不是换了个地方还摆着）、
+       * **点得开**、**点完就收**（不收的话跳到渠道页之后它还浮在侧栏上）。
+       */
+      const ui = await boot(adminToken)
+      let html = ui.html()
+      assert(html.includes('data-id="botmore"'), '「新建 Bot」旁边没有那颗「更多」')
+      assert(!html.includes('class="satu-menu"'), '还没点就把菜单画出来了')
+      // 那两条平时只以**导轨兜底**的形态留在 DOM 里（62px 宽的侧栏装不下 168px 的
+      // 浮层，所以那一档摊成两行，靠 CSS 分辨，见 app.css 的 .satu-newbot-rail）。
+      // 少了这个类名，它们就又是名单底下两行一样宽的虚线框——正是这次要去掉的东西。
+      const railBtns = html.match(/<button[^>]*satu-newbot-rail[^>]*>/g) || []
+      assert(railBtns.some((b) => b.includes('data-act="plugins-open"')), '「插件」没收进「更多」，仍然单独占一行')
+      assert(railBtns.some((b) => b.includes('data-href="/channels"')), '「渠道」没收进「更多」，仍然单独占一行')
+
+      await ui.fire('click', el('button', { 'data-act': 'menu-toggle', 'data-id': 'botmore' }))
+      html = ui.html()
+      const menuAt = html.indexOf('class="satu-menu"')
+      assert(menuAt >= 0, '点了「更多」菜单没出来')
+      const menu = html.slice(menuAt, html.indexOf('</div>', menuAt))
+      assert(menu.includes('data-act="plugins-open"'), '菜单里没有「插件」')
+      assert(menu.includes('data-href="/channels"'), '菜单里没有「渠道」')
+
+      await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/channels' }))
+      assert(ui.state.path === '/channels', `点「渠道」没跳过去，实际 ${ui.state.path}`)
+      assert(ui.state.menu == null, '跳走之后菜单还开着')
     })
 
     await test('侧栏已移除任务看板，渠道页只提供 Telegram 绑定', async () => {
@@ -2224,6 +2270,54 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(html.includes('data-act="user-status" data-id="u-off" data-next="active"'), '停用的那行没有「启用」')
       assert(!html.includes('data-id="u-inv"'), '待接受的那行不该给状态按钮')
       assert(!html.includes(`data-act="user-status" data-id="${meId}"`), '自己那行不该给状态按钮')
+    })
+
+    await test('内网 http 页面上复制邀请链接：走 execCommand 兜底，不再一点就报失败', async () => {
+      /**
+       * 复制原来只有 navigator.clipboard 一条路。那个对象在规范里标了 [SecureContext]：
+       * http://192.168.x.x:3080 这种内网地址上它**整个不存在**，writeText 不是被拒，是
+       * 直接抛。于是邀请弹窗里点几次都只有「复制失败，请手动选中上面的链接复制。」——
+       * 而内网 http 恰恰是 Gateway 最常见的部署形态，等于这颗按钮在真实现场一直是坏的。
+       *
+       * 所以这里把垫片调成非安全上下文（navigator 上没有 clipboard），再点那颗
+       * 「再复制一次」，验兜底那条路真的把链接送出去了，而且没在 body 里留下垃圾。
+       */
+      const ui = await boot(ownerToken, { secureContext: false })
+      const link = 'http://192.168.64.1:3080/join/yTfTxGXYTuTs4aUPkCyINoOn4J'
+      ui.state.path = '/accounts'
+      ui.state.inviteOpen = true
+      ui.state.inviteLink = link
+      ui.state.inviteCopied = false
+      ui.state.inviteError = '复制失败，请手动选中上面的链接复制。'
+      ui.render()
+
+      // 那颗按钮是 form 的 submit，不是 data-act——走 app.js 真的那条分流。
+      const form = el('form')
+      form.id = 'invite-form'
+      await ui.fire('submit', form)
+
+      assert(ui.copied.includes(link), `兜底没把链接复制出去：${JSON.stringify(ui.copied)}`)
+      assert(ui.state.inviteCopied === true, '复制成了，按钮却没切成「已复制」')
+      assert(!ui.state.inviteError, `复制成了还留着失败提示：${ui.state.inviteError}`)
+      assert(ui.body.children.length === 0, '兜底用完没把那个隐形 textarea 撤掉')
+    })
+
+    await test('内网 http 页面上复制机器编号：复制得出来，且一定有话说', async () => {
+      /**
+       * 这一处原来写的是 `navigator.clipboard?.writeText(id).then(成功, 失败)`。
+       * `?.` 短路掉的是**整条链**，不只是那一步：内网 http 上 clipboard 不存在，于是
+       * `.then` 的两个回调一个都不跑——既没复制成，也一个字不说。而它旁边那行注释写的
+       * 正是「失败必须说话，静默复制失败之后人会照着屏幕上那 8 位去用，那不是完整 id」。
+       *
+       * 所以这条验两件事：兜底真的把整串 id 复制出去了；以及万一还是失败，提示条上有话。
+       */
+      const ui = await boot(ownerToken, { secureContext: false })
+      const id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+      await ui.fire('click', el('button', { 'data-act': 'copy-machine-id', 'data-machine': id }))
+
+      assert(ui.copied.includes(id), `机器编号没复制出去：${JSON.stringify(ui.copied)}`)
+      assert(ui.state.notice === '已复制机器编号', `复制成了却没说话：notice=${JSON.stringify(ui.state.notice)} error=${JSON.stringify(ui.state.error)}`)
+      assert(ui.body.children.length === 0, '兜底用完没把那个隐形 textarea 撤掉')
     })
 
     await test('公司详情页：机器报了负载也画得出来，不是整页白屏', async () => {

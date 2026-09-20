@@ -1716,12 +1716,51 @@ function memberById(id) {
   return (state.accounts || []).find((m) => m.id === id)
 }
 
+// 复制分两段走，因为线上和内网是两种环境。
+//
+// navigator.clipboard 在规范里标了 [SecureContext]：https 和 localhost 之外整个对象
+// 都不存在，writeText 不是被拒，是直接抛 TypeError。而 Gateway 常常就跑在
+// http://192.168.x.x:3080 这种内网地址上——「复制失败」绝大多数时候是这个原因，不是
+// 用户没给权限。所以后面接上 execCommand 那条老路兜底，它不挑安全上下文（聊天里复制
+// 代码块一直走的就是它，见 markdown.js）。
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text)
     return true
+  } catch {}
+  return copyTextFallback(text)
+}
+
+/**
+ * 老路：把文字塞进一个隐形 textarea、选中、复制、撤掉。
+ *
+ * 它要的是 transient user activation（点一下之后的那几秒）。按钮上那几处是直接点出来
+ * 的，稳；而「生成邀请链接顺手复制」得先等一次 POST 回来，网络慢过那个窗口就会静静地
+ * 失败——所以那处的自动复制只能算搭头，链接本身必须留在界面上给人手动选。
+ *
+ * 整段包在 try 里：这是尽力而为的兜底，兜底自己炸出来没有意义，返回 false 让调用方按
+ * 「没复制成」去提示就行。
+ */
+function copyTextFallback(text) {
+  let ta = null
+  try {
+    const active = document.activeElement
+    ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    // 不能拿 display:none / visibility:hidden 藏——那样选不中，复制过去是空的。
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none'
+    document.body.appendChild(ta)
+    ta.select()
+    ta.setSelectionRange(0, String(text).length)
+    const ok = document.execCommand('copy')
+    // 焦点还回去，不然弹窗里点完「再复制一次」焦点就掉到 body 上了。
+    if (active && active.focus) active.focus()
+    return !!ok
   } catch {
     return false
+  } finally {
+    if (ta && ta.remove) ta.remove()
   }
 }
 
@@ -1770,6 +1809,9 @@ async function submitInvite(e) {
     state.inviteLink = data.invite?.url || ''
     state.inviteEmail = data.user?.email || state.inviteForm.email
     state.inviteExpiresAt = data.invite?.expiresAt || 0
+    // 生成完顺手复制一次。这一下是搭头不是保证：走到兜底那条路时 execCommand 要的
+    // 用户手势可能已经被上面这次 POST 耗过期了（见 copyTextFallback）。失败就照实说，
+    // 链接已经在上面的输入框里，按钮也会变回「再复制一次」——那一下是直接点的，稳。
     const ok = state.inviteLink ? await copyText(state.inviteLink) : false
     state.inviteCopied = ok
     if (!ok && state.inviteLink) state.inviteError = '复制失败，请手动选中上面的链接复制。'
