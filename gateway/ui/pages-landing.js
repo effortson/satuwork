@@ -430,7 +430,7 @@ function lpSalesModal() {
         <div class="satu-lp-salesnum">
           <span>${esc(LP_SALES_SHOW)}</span>
           ${/* 手机上扫不了自己的屏幕，这条链接就是给他的。target/rel 和顶栏那颗 GitHub 同一套规矩。 */ ''}
-          <a class="satu-lp-btn" data-kind="primary" href="${esc(href)}" target="_blank" rel="noopener noreferrer">
+          <a class="btn btn-primary" href="${esc(href)}" target="_blank" rel="noopener noreferrer">
             ${svg(LP_ICONS.sales, 15)}${t('在 WhatsApp 上打开', 'Open in WhatsApp')}
           </a>
         </div>
@@ -465,7 +465,9 @@ const LP_ARROW = ['M5 12h14', 'm12 5 7 7-7 7']
  * 它自己那一格里。这一屏没有外壳，滚的是文档本身（见 app.css 的 `.satu-lp`）。
  */
 function landingView() {
-  const cta = `<button type="button" class="satu-lp-btn" data-kind="primary" data-act="go" data-href="/login">
+  // 走 theme.css 那套药丸（.btn / .btn-primary），不另起一套方按钮：这颗点下去就是
+  // /login，而那一屏上每一颗按钮都是圆头的。见 app.css 里 .satu-lp-ctas 那段。
+  const cta = `<button type="button" class="btn btn-primary" data-act="go" data-href="/login">
     ${t('登录 Satuwork', 'Sign in to Satuwork')}${svg(LP_ARROW, 14)}
   </button>`
   return `
@@ -492,15 +494,15 @@ function landingView() {
             <button type="button" data-act="landing-locale" data-locale="en" aria-pressed="${localeMode === 'en'}">EN</button>
           </div>
           ${/* 联系销售。**不是链接是按钮**：它开的是一个弹窗（里面有二维码和号码），
-                而不是跳去某处。手机上收成一格只有图标的（见 app.css 的 560 那段）
-                ——顶栏那一条在 375 宽上已经排着四样东西了。 */ ''}
+                而不是跳去某处。手机上收成一颗只有图标的圆钮（见 app.css 的 560 那段）
+                ——顶栏那一行在 375 宽上已经排着四样东西了。 */ ''}
           ${/* 名字写在 aria-label 上：窄屏上那四个字是 display:none 的，光靠可见文字的话
                 手机上这就是一颗没有名字的按钮（名册那三行踩过同一个坑）。 */ ''}
-          <button type="button" class="satu-lp-sales" data-act="landing-sales"
+          <button type="button" class="btn btn-secondary satu-lp-sales" data-act="landing-sales"
             aria-label="${esc(t('联系销售', 'Contact sales'))}" title="${esc(t('联系销售', 'Contact sales'))}">
             ${svg(LP_ICONS.sales, 15)}<span>${t('联系销售', 'Contact sales')}</span>
           </button>
-          <button type="button" class="satu-lp-topsign" data-act="go" data-href="/login">${t('登录', 'Sign in')}</button>
+          <button type="button" class="btn btn-primary satu-lp-topsign" data-act="go" data-href="/login">${t('登录', 'Sign in')}</button>
         </div>
       </div>
     </header>
@@ -516,7 +518,7 @@ function landingView() {
         )}</p>
         <div class="satu-lp-ctas">
           ${cta}
-          <button type="button" class="satu-lp-btn" data-kind="ghost" data-act="landing-more">${t('先看看它能做什么', 'See what it does')}</button>
+          <button type="button" class="btn btn-secondary" data-act="landing-more">${t('先看看它能做什么', 'See what it does')}</button>
         </div>
         <p class="satu-lp-fine">${t('账号由公司管理员开通。', 'Accounts are created by your company admin.')}</p>
       </div>

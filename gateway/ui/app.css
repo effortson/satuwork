@@ -521,17 +521,16 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
      ——底色和边框各管各的，所以这条不受下面那个 max-width 影响。 */
   border-bottom: 1px solid var(--lp-line);
 }
-/* 横梁**和内容同宽**：左右两端正好落在那两条栏线上，于是页面从最顶上就是一张
-   连着的图纸。内边距归零（不走 .satu-lp-wrap 那份），否则末端那格实心的「登录」
-   会停在离栏线几十像素的地方，横梁就成了浮在格子里的一条。
-   自己也带一对栏线：那两条竖线因此从页面第一个像素起，而不是从首屏才开始。 */
+/* 横梁**和内容同宽**：自己带一对栏线，左右两端正好落在那两条竖线上，于是页面从
+   最顶上就是一张连着的图纸。
+   内边距**走 .satu-lp-wrap 那一份**（不再归零）：顶栏里那几颗现在是圆钮而不是
+   拉满高的格子，贴着栏线摆会像被线切了一刀。这一份内边距也让 logo 和页脚那枚
+   logo、和别处所有走 wrap 的正文左沿对在同一条竖线上。 */
 .satu-lp-topin {
-  padding-left: 0;
-  padding-right: 0;
   border-left: 1px solid var(--lp-line);
   border-right: 1px solid var(--lp-line);
   display: flex;
-  align-items: stretch;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
   height: 64px;
@@ -539,10 +538,6 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 /* 法务两页借的是同一条顶栏，可它们底下**没有栏线**（正文是一份文档，不是图纸）。
    那对边框在那儿就成了吊在顶栏两头的两截短竖线，下面接不上任何东西——收掉。 */
 .satu-lg .satu-lp-topin { border-left: 0; border-right: 0; }
-/* logo 离栏线的距离 = .satu-lp-wrap 的内边距，所以它和页脚那枚 logo、和别处所有
-   走 wrap 的正文左边缘对在同一条竖线上。顶栏自己的内边距已经归零，这一份是补回来
-   的——只补给 logo，右边那几格各有各的格宽。 */
-.satu-lp-topin .satu-lp-brand { padding-left: clamp(18px, 3.4vw, 40px); }
 .satu-lp-brand {
   display: inline-flex;
   align-items: center;
@@ -558,80 +553,46 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   cursor: pointer;
 }
 .satu-lp-brand[data-static] { cursor: default; font-size: 16px; }
-.satu-lp-brand img { border-radius: 2px; object-fit: contain; }
-/* 每一样占一格：左边一条竖线把它和前一格分开，自己拉满顶栏的高。 */
-.satu-lp-topact { display: flex; align-items: stretch; }
-.satu-lp-topact > * {
+.satu-lp-brand img { border-radius: var(--radius-sm); object-fit: contain; }
+/* 顶栏右边是**一排圆钮**，不是被竖线切开的几格。格子那版和登录页对不上：人从这儿
+   点「登录」过去，落地那一屏上所有的按钮和输入框都是圆头的药丸。 */
+.satu-lp-topact { display: flex; align-items: center; gap: var(--space-3); }
+/* 源码那颗。不描边不填底——它和右边那组语言开关、登录按钮是三级不同的东西，
+   给它也画个框的话，顶栏右边就成了三个抢同样注意力的方块。 */
+.satu-lp-ghlink {
   display: inline-flex;
   align-items: center;
-  flex: none;
-  border-left: 1px solid var(--lp-line);
-  padding: 0 clamp(12px, 1.4vw, 20px);
-}
-/* 源码那颗。格子里只有一只猫，所以窄一点。 */
-.satu-lp-ghlink {
   justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 999px;
   color: var(--color-text);
   opacity: 0.55;
   transition: opacity 120ms ease, background 120ms ease;
 }
 .satu-lp-ghlink:hover { opacity: 1; background: var(--secondary); color: var(--color-text); }
-.satu-lp-ghlink:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
-/* 「联系销售」。**不再是一颗描边按钮**——在这条横梁上它就是一格，和别的格一样
-   靠那条竖线分开。实心只留给最后那格「登录」：一个是「先问问」，一个是「我有账号」。 */
-.satu-lp-sales {
-  gap: 8px;
-  border-top: 0;
-  border-right: 0;
-  border-bottom: 0;
-  background: transparent;
-  color: var(--color-text);
-  font-family: var(--font-body);
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.satu-lp-sales:hover { background: var(--secondary); }
-.satu-lp-sales:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.satu-lp-ghlink:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+/* 「联系销售」。btn-secondary 的描边款：它和右边那颗实心的「登录」是两件事——
+   一个是「先问问」，一个是「我有账号」，实心只该有一颗。 */
+.satu-lp-sales { flex: none; gap: 6px; }
 .satu-lp-sales svg { flex: none; }
-/* 末端那格。整格实心，一直顶到右沿。 */
-.satu-lp-topsign {
+.satu-lp-topsign { flex: none; }
+/* 语言开关：两颗贴在一起的小按钮，选中的那颗压一层底色。做成一段而不是下拉，
+   因为只有两个值——点一下就到，不该先展开再选。 */
+.satu-lp-lang { display: inline-flex; flex: none; padding: 2px; border: 1px solid var(--border); border-radius: 999px; background: var(--popover); }
+.satu-lp-lang button {
+  padding: 4px 11px;
   border: 0;
-  border-left: 1px solid var(--lp-line);
-  border-radius: 0;
-  background: var(--primary);
-  color: var(--primary-foreground);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
   font-family: var(--font-body);
   font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  cursor: pointer;
-  box-shadow: none;
-  padding: 0 clamp(16px, 2.2vw, 30px);
-}
-.satu-lp-topsign:hover { background: var(--color-accent-600); }
-.satu-lp-topsign:focus-visible { outline: 2px solid var(--ring); outline-offset: -3px; }
-/* 语言开关：两颗贴在一起的小字，选中的那颗压一层底色。做成一段而不是下拉，
-   因为只有两个值——点一下就到，不该先展开再选。 */
-.satu-lp-lang { gap: 2px; }
-.satu-lp-lang button {
-  padding: 5px 9px;
-  border: 0;
-  border-radius: 2px;
-  background: transparent;
-  color: var(--lp-dim);
-  font-family: var(--font-body);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
+  font-weight: 600;
   cursor: pointer;
 }
-.satu-lp-lang button[aria-pressed="true"] { background: var(--secondary); color: var(--color-text); }
+.satu-lp-lang button[aria-pressed="true"] { background: var(--secondary); color: var(--secondary-foreground); }
 
 /* ── 通用零件 ──────────────────────────────────────────────────────────── */
 /* 小字标签。这一屏所有的「眉题」「格子标题」「按钮字」都是这一款：小、大写、
@@ -671,39 +632,22 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
     linear-gradient(currentColor, currentColor) center / 1px 100% no-repeat;
 }
 
-/* 按钮。直角、大写、拉字距——和 theme.css 那套圆头药丸是两件事：那套是工作台里
-   的控件，这一屏是一张印刷品。 */
-.satu-lp-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  height: 48px;
-  padding: 0 22px;
-  box-sizing: border-box;
-  border: 1px solid var(--color-text);
-  border-radius: 2px;
+/* 按钮。**这一屏不另起一套**，就用 theme.css 里那套圆头药丸（.btn / .btn-primary /
+   .btn-secondary）——登录页、工作台里的每一颗按钮都是它，首页自己造一套方的，人从
+   「登录 Satuwork」点过去，落地那一屏的按钮忽然换了个形状。
+
+   原先这儿有一套 .satu-lp-btn：直角、大写、拉字距。那套照着 orderful 来，摆在首页上
+   自成一体，可它和它自己引向的那一屏对不上——**一个按钮的形状是跨页的承诺**，不是
+   单页的排版选择。所以这儿只剩一件事：把药丸放大一档，首屏那颗主 CTA 该有的分量。 */
+.satu-lp-ctas .btn { padding: 12px 22px; font-size: 15px; }
+/* 深色带里那颗。btn-primary 自己带的底色在深底上照样立得住（赭红两边都够亮），
+   所以只有描边款需要翻——目前带里只有主 CTA 一颗，这条是留给以后加的。 */
+.satu-lp-band .btn-secondary {
   background: transparent;
-  color: var(--color-text);
-  font-family: var(--font-body);
-  font-size: 12.5px;
-  font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  line-height: 1;
-  text-decoration: none;
-  cursor: pointer;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  border-color: color-mix(in srgb, var(--lp-dark-ink) 45%, transparent);
+  color: var(--lp-dark-ink);
 }
-.satu-lp-btn svg { flex: none; }
-.satu-lp-btn[data-kind="primary"] { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); }
-.satu-lp-btn[data-kind="primary"]:hover { border-color: var(--color-accent-600); background: var(--color-accent-600); }
-.satu-lp-btn[data-kind="ghost"]:hover { background: var(--secondary); }
-.satu-lp-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-/* 深色带里那两颗：底色是深的，描边和字得跟着翻。 */
-.satu-lp-band .satu-lp-btn { border-color: color-mix(in srgb, var(--lp-dark-ink) 45%, transparent); color: var(--lp-dark-ink); }
-.satu-lp-band .satu-lp-btn[data-kind="primary"] { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); }
-.satu-lp-band .satu-lp-btn[data-kind="ghost"]:hover { background: color-mix(in srgb, var(--lp-dark-ink) 12%, transparent); }
+.satu-lp-band .btn-secondary:hover { background: color-mix(in srgb, var(--lp-dark-ink) 12%, transparent); }
 
 /* ── 首屏 ──────────────────────────────────────────────────────────────
    左文右图，中间一条竖线。**gap 是 0**：两边贴着那条线，格子才是格子；留空隙的话
@@ -748,15 +692,16 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-fine { margin: 0; font-size: 12px; letter-spacing: 0.02em; line-height: 1.6; color: var(--muted-foreground); }
 
 /* ── 首屏右边那块演示 ────────────────────────────────────────────────────
-   一块产品形状的面。名册在左，对话在右，和登录之后是同一个布局。**直角、不投影**
-   ——它现在是图纸上的一格，不是浮在纸面上的一张截图。 */
+   一块产品形状的面。名册在左，对话在右，和登录之后是同一个布局。收圆角、带投影
+   ——它画的就是登录之后那一屏，而那一屏上每一块面都是圆的。 */
 .satu-lp-shot {
   display: grid;
   grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
   gap: 1px;
   background: var(--lp-line);
-  border: 1px solid var(--lp-line);
-  border-radius: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
 .satu-lp-shotside { display: flex; flex-direction: column; gap: 2px; padding: var(--space-3) 0; background: var(--color-surface); }
@@ -769,10 +714,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   width: 100%;
   padding: 9px 12px;
   border: 0;
-  /* 选中态靠**左边那道赭红**，不靠圆角色块：这一屏上所有的「当前在哪儿」都是一条
-     线（顶栏的格、名册的行），色块会把它打回成一颗按钮。 */
-  border-left: 2px solid transparent;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: inherit;
   font-family: var(--font-body);
@@ -781,7 +723,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   min-width: 0;
 }
 .satu-lp-shotrow:hover { background: color-mix(in srgb, var(--color-text) 5%, transparent); }
-.satu-lp-shotrow[data-on="true"], .satu-lp-shotrow[data-on="true"]:hover { border-left-color: var(--color-accent-500); background: var(--lp-tint); }
+.satu-lp-shotrow[data-on="true"], .satu-lp-shotrow[data-on="true"]:hover { background: var(--color-accent-100); }
 /* 键盘走到这儿要看得见。用 outline 而不是换底色——选中态已经占了底色那一格。 */
 .satu-lp-shotrow:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 /* 「点一个试试」。没有它的话，这三行长得跟一张截图上的三行一模一样，没人知道能点。
@@ -792,7 +734,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   width: 30px;
   height: 30px;
   flex: none;
-  border-radius: 2px;
+  border-radius: 999px;
   background: var(--color-accent-2-200);
   color: var(--color-accent-2-800);
   display: flex;
@@ -822,7 +764,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-convoid b { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .satu-lp-convoid span { font-size: 11px; letter-spacing: 0.04em; color: var(--muted-foreground); }
 /* 在线灯的三档和真界面同义：空闲绿、正在执行赭红、待人工琥珀（chat.css 的 .sw-convo-live）。 */
-.satu-lp-live { display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 4px 10px; border-radius: 2px; font-size: 10.5px; font-weight: 500; letter-spacing: 0.06em; background: var(--color-ok-100); color: var(--color-ok-800); }
+.satu-lp-live { display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 4px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 500; letter-spacing: 0.06em; background: var(--color-ok-100); color: var(--color-ok-800); }
 .satu-lp-live i { width: 6px; height: 6px; border-radius: 999px; background: var(--color-ok-500); }
 .satu-lp-live[data-state="busy"] { background: var(--color-accent-100); color: var(--color-accent-800); }
 .satu-lp-live[data-state="busy"] i { background: var(--color-accent-500); }
@@ -847,7 +789,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   background: var(--secondary);
   color: var(--secondary-foreground);
   font-family: var(--font-heading);
@@ -879,7 +821,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 /* 药丸一颗一行字，装不下就省略号——**不许换行**。窄屏上「读了 refunds-2026-09.csv」
    会折成两行，一颗药丸顶两行高，两颗就把气泡撑高一倍。 */
-.satu-lp-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 2px 8px; border-radius: 3px; background: var(--secondary); color: var(--secondary-foreground); font-size: 10.5px; line-height: 1.7; white-space: nowrap; overflow: hidden; }
+.satu-lp-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 2px 9px; border-radius: 999px; background: var(--secondary); color: var(--secondary-foreground); font-size: 10.5px; line-height: 1.7; white-space: nowrap; overflow: hidden; }
 .satu-lp-chip span { overflow: hidden; text-overflow: ellipsis; }
 .satu-lp-chip svg { flex: none; opacity: 0.7; }
 
@@ -891,14 +833,14 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   align-items: center;
   gap: var(--space-2);
   width: auto;
-  height: 46px;
+  height: 48px;
   box-sizing: border-box;
   /* 左右都留出边距：外面这一层是**它离面的边有多远**（和上面消息那一栏的
      padding 同一个数，两者左右才对得齐），里面那一层是**内容离框的边有多远**。 */
   margin: 0 var(--space-4);
-  padding: 0 8px;
+  padding: 0 7px;
   border: 1px solid var(--input-border);
-  border-radius: 3px;
+  border-radius: 999px;
   background: var(--lp-panel);
   font-family: var(--font-body);
   text-align: left;
@@ -916,12 +858,12 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
    用 muted，和真的 placeholder 同一档灰；写成正文色就像里面已经打了字。 */
 .satu-lp-composer-ph { flex: 1; min-width: 0; font-size: 13.5px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .satu-lp-composer-hint { flex: none; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted-foreground); }
-.satu-lp-iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex: none; border-radius: 3px; color: var(--secondary-foreground); opacity: 0.7; }
-.satu-lp-send { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: none; border-radius: 3px; background: var(--primary); color: var(--primary-foreground); }
+.satu-lp-iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: none; border-radius: 999px; color: var(--secondary-foreground); opacity: 0.7; }
+.satu-lp-send { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; flex: none; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); box-shadow: var(--shadow-2xs); }
 .satu-lp-composer:hover .satu-lp-send { background: var(--color-accent-600); }
 
 /* 转人工那条：只有「小雨 · 研究」那一路有。琥珀，和真界面里那张待办同一个颜色。 */
-.satu-lp-handoff { display: flex; align-items: center; gap: 7px; align-self: flex-start; margin-left: 36px; padding: 7px 11px; border-radius: 3px; background: var(--color-warn-100); color: var(--color-warn-800); font-size: 12px; font-weight: 500; }
+.satu-lp-handoff { display: flex; align-items: center; gap: 7px; align-self: flex-start; margin-left: 36px; padding: 7px 11px; border-radius: var(--radius-sm); background: var(--color-warn-100); color: var(--color-warn-800); font-size: 12px; font-weight: 500; }
 .satu-lp-handoff svg { flex: none; }
 
 /* ── 能力带 ────────────────────────────────────────────────────────────
@@ -981,8 +923,8 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   justify-content: center;
   padding: var(--space-4);
   box-sizing: border-box;
-  border: 1px solid var(--lp-line);
-  border-radius: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   /* 小样底下垫一层比页面略深的暖面：小样自己是白的，直接贴在白底上会糊成一片。 */
   background: var(--lp-tint);
   overflow: hidden;
@@ -992,7 +934,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-card p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--muted-foreground); }
 
 /* 小样里的窗口壳：三颗灯 + 标题。工作区、日常任务、账本三块共用。 */
-.satu-lp-win { border: 1px solid var(--border); border-radius: 2px; background: var(--lp-panel); overflow: hidden; }
+.satu-lp-win { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--lp-panel); box-shadow: var(--shadow-sm); overflow: hidden; }
 .satu-lp-winbar { display: flex; align-items: center; gap: 5px; padding: 7px 9px; border-bottom: 1px solid var(--lp-line); background: var(--color-surface); }
 .satu-lp-winbar i { width: 6px; height: 6px; border-radius: 999px; background: var(--color-neutral-400); }
 .satu-lp-winbar i:first-child { background: var(--color-accent-400); }
@@ -1004,25 +946,25 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-file span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .satu-lp-file em { flex: none; font-style: normal; font-size: 10px; color: var(--muted-foreground); }
 /* 终端那一行：整块小样里唯一的等宽字，它一出现「这是一台机器」就不用再解释了。 */
-.satu-lp-term { margin-top: 3px; padding: 7px 8px; border-radius: 2px; background: var(--lp-dark); color: #e7e3da; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; white-space: nowrap; overflow: hidden; }
+.satu-lp-term { margin-top: 3px; padding: 7px 8px; border-radius: var(--radius-sm); background: var(--lp-dark); color: #e7e3da; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; white-space: nowrap; overflow: hidden; }
 .satu-lp-term b { color: var(--color-accent-400); font-weight: 400; }
 .satu-lp-caret { display: inline-block; width: 5px; height: 10px; margin-left: 3px; vertical-align: -1px; background: var(--color-accent-400); }
 
-.satu-lp-appr { padding: var(--space-3); border: 1px solid var(--border); border-radius: 2px; background: var(--lp-panel); }
-.satu-lp-apprtag { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 2px; background: var(--color-warn-100); color: var(--color-warn-800); font-size: 10.5px; font-weight: 500; letter-spacing: 0.04em; }
+.satu-lp-appr { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--lp-panel); box-shadow: var(--shadow-sm); }
+.satu-lp-apprtag { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; background: var(--color-warn-100); color: var(--color-warn-800); font-size: 10.5px; font-weight: 500; letter-spacing: 0.04em; }
 .satu-lp-appr p { margin: var(--space-2) 0 var(--space-3); font-size: 12.5px; line-height: 1.5; }
 .satu-lp-apprbtns { display: flex; gap: 7px; }
-.satu-lp-apprbtns span { padding: 5px 13px; border: 1px solid var(--border); border-radius: 2px; background: var(--lp-panel); font-size: 11px; font-weight: 500; color: var(--secondary-foreground); }
+.satu-lp-apprbtns span { padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: var(--lp-panel); font-size: 11px; font-weight: 500; color: var(--secondary-foreground); }
 .satu-lp-apprbtns span[data-yes] { border-color: transparent; background: var(--color-accent-500); color: var(--primary-foreground); }
 
 .satu-lp-cron { display: flex; align-items: center; gap: 8px; font-size: 11px; }
-.satu-lp-cronwhen { flex: none; padding: 2px 6px; border-radius: 2px; background: var(--color-accent-2-100); color: var(--color-accent-2-800); font-weight: 500; }
+.satu-lp-cronwhen { flex: none; padding: 2px 7px; border-radius: var(--radius-sm); background: var(--color-accent-2-100); color: var(--color-accent-2-800); font-weight: 500; }
 .satu-lp-cronwhat { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted-foreground); }
 
 .satu-lp-ledger { gap: 9px; }
 /* 柱子的高度是排版，不是数据（见 lpMockLedger）——所以不标刻度，也不写坐标轴。 */
 .satu-lp-bars { display: flex; align-items: flex-end; gap: 5px; height: 58px; }
-.satu-lp-bars i { flex: 1; background: var(--color-accent-300); }
+.satu-lp-bars i { flex: 1; border-radius: 3px 3px 0 0; background: var(--color-accent-300); }
 .satu-lp-bars i:nth-child(6) { background: var(--color-accent-500); }
 .satu-lp-ledgerfoot { display: flex; align-items: baseline; gap: 8px; }
 .satu-lp-ledgerfoot b { font-family: var(--font-heading); font-size: 19px; font-weight: 400; }
@@ -1045,7 +987,10 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   padding: 0;
   list-style: none;
   border: 1px solid var(--lp-dark-line);
-  border-radius: 2px;
+  border-radius: var(--radius-lg);
+  /* 圆角要真的切得到最外那一圈：三格的底色和分隔线都压在这个圆角里，不裁的话
+     左右两格的直角会从圆角底下探出来。 */
+  overflow: hidden;
 }
 .satu-lp-step {
   position: relative;
@@ -1069,23 +1014,23 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-footin { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); padding-top: var(--space-6); padding-bottom: var(--space-6); font-size: 11.5px; letter-spacing: 0.04em; color: var(--muted-foreground); }
 
 /* 弹窗：二维码那张卡。 */
-.satu-lp-salesbox { display: flex; flex-direction: column; gap: var(--space-4); max-width: 380px; border-radius: 3px; }
+.satu-lp-salesbox { display: flex; flex-direction: column; gap: var(--space-4); max-width: 380px; }
 /* 二维码**底色写死白的**，暗色主题下也不反——反色的码有相当一部分扫码器读不出来。
    所以给它一层白底框，在深色页面上看着是一张卡片，而不是一块没适配的白斑。 */
 .satu-lp-qr {
   align-self: center;
   padding: var(--space-3);
-  border-radius: 3px;
+  border-radius: var(--radius-md);
   background: #ffffff;
-  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
   line-height: 0;
 }
 .satu-lp-qr img { display: block; width: 180px; height: 180px; }
 .satu-lp-salesnum { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .satu-lp-salesnum > span { font-family: var(--font-heading); font-size: 16px; font-variant-numeric: tabular-nums; }
-.satu-lp-salesnum .satu-lp-btn { height: 40px; padding: 0 16px; font-size: 11.5px; }
+.satu-lp-salesnum .btn { gap: 6px; text-decoration: none; }
 /* 「示例二维码」那句。琥珀不是灰：它不是一句补充说明，是一件还没做完的事。 */
-.satu-lp-salesnote { margin: 0; padding: 9px 12px; border-radius: 2px; background: var(--color-warn-100); color: var(--color-warn-800); font-size: 12px; line-height: 1.6; }
+.satu-lp-salesnote { margin: 0; padding: 9px 12px; border-radius: var(--radius-sm); background: var(--color-warn-100); color: var(--color-warn-800); font-size: 12px; line-height: 1.6; }
 
 @media (max-width: 1040px) {
   /* 四张卡排一行到这个宽度每张只剩 200 出头，小样里的文件名开始一个个省略号。
@@ -1103,8 +1048,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   /* 窄屏上题图收在文案下面就够了，别再让它挤成两栏——那时名册那一栏只剩一条边。 */
   .satu-lp-shot { grid-template-columns: 1fr; }
   .satu-lp-shotside { flex-direction: row; overflow: hidden; padding: var(--space-2) var(--space-2); }
-  .satu-lp-shotside .satu-lp-shotrow { flex: 1; min-width: 0; border-left: 0; border-bottom: 2px solid transparent; }
-  .satu-lp-shotrow[data-on="true"], .satu-lp-shotrow[data-on="true"]:hover { border-bottom-color: var(--color-accent-500); }
+  .satu-lp-shotside .satu-lp-shotrow { flex: 1; min-width: 0; }
   .satu-lp-shotsnip { display: none; }
   /* 能力带收成 2×2：四格排一行到这儿每格只剩五六个字宽。 */
   .satu-lp-spec { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1122,14 +1066,15 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   .satu-lp-cards { grid-template-columns: 1fr; }
   .satu-lp-card + .satu-lp-card { border-left: 0; border-top: 1px solid var(--lp-line); }
   .satu-lp-ctas { width: 100%; }
-  .satu-lp-ctas .satu-lp-btn { flex: 1; min-width: 180px; }
+  .satu-lp-ctas .btn { flex: 1; min-width: 180px; }
 }
 
 @media (max-width: 560px) {
-  /* 「联系销售」收成一格只有图标的：顶栏那一条在这个宽度上已经排着 logo、GitHub、
-     语言开关三样了，再加四个字就换行。**不能跟着「登录」一起藏**（那条在 900 那段
-     里）——藏了的话页面上再没有第二处能联系到人。
+  /* 「联系销售」收成一颗只有图标的圆钮：顶栏那一行在这个宽度上已经排着 logo、
+     GitHub、语言开关三样了，再加四个字就换行。**不能跟着「登录」一起藏**（那条在
+     900 那段里）——藏了的话页面上再没有第二处能联系到人。
      900 到 560 之间不收：那一档「登录」已经让出了位置，四个字放得下。 */
+  .satu-lp-sales { padding: 8px; border-radius: 999px; }
   .satu-lp-sales span { display: none; }
   /* 手机上名册收成一条横着的选择器：头像 + 状态点，名字和摘要都撤掉（一行三个名字
      只会各剩两个字）。**不能整个藏掉**——那三行现在是这块演示唯一的开关，藏了它
