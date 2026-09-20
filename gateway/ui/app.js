@@ -295,6 +295,10 @@ document.getElementById('app').addEventListener('click', async (e) => {
   // 右栏的日常任务同理，都在 pages-routines.js 里。
   if (await routineAct(act, btn)) return
   if (act === 'go') {
+    // 上下文菜单里也有走 `go` 的条目（侧栏那颗「更多」里的渠道、对话顶栏里的 Bot
+    // 设置）。跳走之后菜单该是收起来的——顶上那条「点外面就收」管不到这里：点的是
+    // 菜单**里面**，closest('.satu-menu') 命中，它直接放行了。
+    state.menu = null
     go(btn.getAttribute('data-href'))
     return
   }
@@ -603,12 +607,10 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-copy-all') {
-    try {
-      await navigator.clipboard.writeText(chatExportText())
-      flash('ok', '已复制全文')
-    } catch {
-      flash('err', '复制失败，浏览器不允许')
-    }
+    // 走 copyText 而不是直接 navigator.clipboard：内网 http 页面上那个对象整个不存在，
+    // 裸调必失败。copyText 会退到 execCommand 那条路（见 render.js）。
+    const ok = await copyText(chatExportText())
+    flash(ok ? 'ok' : 'err', ok ? '已复制全文' : '复制失败，浏览器不允许')
     state.menu = null
     render()
     return
@@ -848,23 +850,27 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'copy-machine-id') {
     const id = btn.getAttribute('data-machine')
     if (id) {
-      // 和 copy-install 同一个理由：剪贴板 API 在非 https 的内网页面上会被拒，
-      // 失败必须说话——静默复制失败之后人会照着屏幕上那 8 位去用，那不是完整 id。
-      navigator.clipboard?.writeText(id).then(
-        () => flash('ok', '已复制机器编号'),
-        () => flash('err', '复制失败，请手动选中'),
-      )
+      // 和 copy-install 同一个理由：失败必须说话——静默复制失败之后人会照着屏幕上那
+      // 8 位去用，那不是完整 id。
+      //
+      // 原来这里是 `navigator.clipboard?.writeText(id).then(成功, 失败)`，而 `?.` 会把
+      // **整条链**一起短路掉：内网 http 上 clipboard 不存在，于是两个回调一个都不跑，
+      // 正好跑成了这段注释要防的那种静默。现在交给 copyText，它还带 execCommand 兜底。
+      const ok = await copyText(id)
+      flash(ok ? 'ok' : 'err', ok ? '已复制机器编号' : '复制失败，请手动选中')
+      // flash 只写 state，不重绘（见 data.js）——这条处理器到此就 return 了，
+      // 不自己画一次的话这句话要等下一次重绘才出现。
+      render()
     }
     return
   }
   if (act === 'copy-install') {
     const cmd = state.pairingCode && state.pairingCode.installCommand
     if (cmd) {
-      // 剪贴板 API 在非 https 的内网页面上会被拒，所以失败要说话，不能静默。
-      navigator.clipboard?.writeText(cmd).then(
-        () => flash('ok', '已复制安装命令'),
-        () => flash('err', '复制失败，请手动选中命令'),
-      )
+      // 同 copy-machine-id：`?.` 短路掉整条链的那个坑，外加内网 http 上的兜底。
+      const ok = await copyText(cmd)
+      flash(ok ? 'ok' : 'err', ok ? '已复制安装命令' : '复制失败，请手动选中命令')
+      render()
     }
     return
   }

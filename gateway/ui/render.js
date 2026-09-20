@@ -219,14 +219,43 @@ function appView() {
       <div style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
         ${isOwner() ? '' : `<div class="satu-botlist">${roster}</div>`}
         ${/* 「新建 Bot」跟着名单走：Bot 是自己建的，入口就该在自己那份名单底下，而不是
-              藏在某个设置页里。owner 没有席位也没有名册，那一侧不出现。 */ ''}
-        ${isOwner() ? '' : `<button type="button" class="satu-newbot" data-act="new-bot">${svg(['M12 5v14', 'M5 12h14'], 15)} <span>${t('新建 Bot', 'New bot')}</span></button>`}
-        ${/* 「插件」紧跟在「新建 Bot」下面，理由是同一个：这两件事都是**为了继续聊天**
-              才做的，属于名单，不属于设置页。点开是弹窗（pluginsModal），不跳页——跳走
-              一整页，回来时草稿和滚动位置都没了。owner 没有席位，装了也没人用。 */ ''}
-        ${isOwner() ? '' : `<button type="button" class="satu-newbot" data-act="plugins-open">${svg(ICONS.plugins, 15)} <span>${t('插件', 'Plugins')}</span></button>`}
-        ${/* 渠道是对话的外部入口，和插件一样紧跟在 Bot 名单下面。 */ ''}
-        ${isOwner() ? '' : `<button type="button" class="satu-newbot" data-act="go" data-href="/channels" aria-current="${state.path === '/channels'}">${svg(['M4 12a8 8 0 0 1 16 0', 'M12 4v4', 'M8 12h8', 'M6 18h12'], 15)} <span>${t('渠道', 'Channels')}</span></button>`}
+              藏在某个设置页里。owner 没有席位也没有名册，那一侧不出现。
+
+              **「插件」和「渠道」收进了它右边那颗「更多」里。** 三条一样宽的虚线框叠在
+              名单下面，占掉三行高，而名单才是这一屏的主体——那两条一天也点不了一次，
+              却和每天都要点的「新建 Bot」长得一模一样，谁也不比谁显眼。收进菜单之后
+              这里只剩一行，名单多出两行。
+
+              两条都还在原来的动作上：插件开弹窗（pluginsModal，不跳页——跳走一整页，
+              回来时草稿和滚动位置都没了），渠道跳 /channels。 */ ''}
+        ${
+          isOwner()
+            ? ''
+            : `<div class="satu-newbotrow">
+          <button type="button" class="satu-newbot" data-act="new-bot">${svg(['M12 5v14', 'M5 12h14'], 15)} <span>${t('新建 Bot', 'New bot')}</span></button>
+          ${/* 走全局那套菜单（app.js 的 menu-toggle / state.menu，和成员表、对话顶栏
+                同一套）：点外面自动收、翻不下去时自动向上弹，都是现成的。 */ ''}
+          <button type="button" class="satu-newbot satu-newbot-more" data-menu-toggle data-act="menu-toggle" data-id="botmore"
+            aria-haspopup="true" aria-expanded="${String(state.menu === 'botmore')}"
+            aria-label="${esc(t('更多', 'More'))}" title="${esc(t('更多', 'More'))}">${svg(['M12 6h.01', 'M12 12h.01', 'M12 18h.01'], 15)}</button>
+          ${
+            state.menu === 'botmore'
+              ? `<div class="satu-menu" data-flip="${String(Boolean(state.menuFlip))}">
+              <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="plugins-open">${svg(ICONS.plugins, 15)}<span>${t('插件', 'Plugins')}</span></button>
+              <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="go" data-href="/channels" aria-current="${state.path === '/channels'}">${svg(['M4 12a8 8 0 0 1 16 0', 'M12 4v4', 'M8 12h8', 'M6 18h12'], 15)}<span>${t('渠道', 'Channels')}</span></button>
+            </div>`
+              : ''
+          }
+          ${/* 收窄成导轨时**不走这颗菜单**：浮层最窄 168px，而那一档侧栏只有 62px 宽，
+                aside 又是 overflow:hidden，弹出来会被整块裁掉。所以那一档照旧把两条
+                摊成两行，只剩图标——反正那一档整条侧栏本来就只有图标。 */ ''}
+          <button type="button" class="satu-newbot satu-newbot-rail" data-act="plugins-open"
+            aria-label="${esc(t('插件', 'Plugins'))}" title="${esc(t('插件', 'Plugins'))}">${svg(ICONS.plugins, 15)}</button>
+          <button type="button" class="satu-newbot satu-newbot-rail" data-act="go" data-href="/channels"
+            aria-current="${state.path === '/channels'}"
+            aria-label="${esc(t('渠道', 'Channels'))}" title="${esc(t('渠道', 'Channels'))}">${svg(['M4 12a8 8 0 0 1 16 0', 'M12 4v4', 'M8 12h8', 'M6 18h12'], 15)}</button>
+        </div>`
+        }
         ${
           navHtml
             ? `<div class="satu-navfoot">
@@ -1687,12 +1716,51 @@ function memberById(id) {
   return (state.accounts || []).find((m) => m.id === id)
 }
 
+// 复制分两段走，因为线上和内网是两种环境。
+//
+// navigator.clipboard 在规范里标了 [SecureContext]：https 和 localhost 之外整个对象
+// 都不存在，writeText 不是被拒，是直接抛 TypeError。而 Gateway 常常就跑在
+// http://192.168.x.x:3080 这种内网地址上——「复制失败」绝大多数时候是这个原因，不是
+// 用户没给权限。所以后面接上 execCommand 那条老路兜底，它不挑安全上下文（聊天里复制
+// 代码块一直走的就是它，见 markdown.js）。
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text)
     return true
+  } catch {}
+  return copyTextFallback(text)
+}
+
+/**
+ * 老路：把文字塞进一个隐形 textarea、选中、复制、撤掉。
+ *
+ * 它要的是 transient user activation（点一下之后的那几秒）。按钮上那几处是直接点出来
+ * 的，稳；而「生成邀请链接顺手复制」得先等一次 POST 回来，网络慢过那个窗口就会静静地
+ * 失败——所以那处的自动复制只能算搭头，链接本身必须留在界面上给人手动选。
+ *
+ * 整段包在 try 里：这是尽力而为的兜底，兜底自己炸出来没有意义，返回 false 让调用方按
+ * 「没复制成」去提示就行。
+ */
+function copyTextFallback(text) {
+  let ta = null
+  try {
+    const active = document.activeElement
+    ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    // 不能拿 display:none / visibility:hidden 藏——那样选不中，复制过去是空的。
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none'
+    document.body.appendChild(ta)
+    ta.select()
+    ta.setSelectionRange(0, String(text).length)
+    const ok = document.execCommand('copy')
+    // 焦点还回去，不然弹窗里点完「再复制一次」焦点就掉到 body 上了。
+    if (active && active.focus) active.focus()
+    return !!ok
   } catch {
     return false
+  } finally {
+    if (ta && ta.remove) ta.remove()
   }
 }
 
@@ -1741,6 +1809,9 @@ async function submitInvite(e) {
     state.inviteLink = data.invite?.url || ''
     state.inviteEmail = data.user?.email || state.inviteForm.email
     state.inviteExpiresAt = data.invite?.expiresAt || 0
+    // 生成完顺手复制一次。这一下是搭头不是保证：走到兜底那条路时 execCommand 要的
+    // 用户手势可能已经被上面这次 POST 耗过期了（见 copyTextFallback）。失败就照实说，
+    // 链接已经在上面的输入框里，按钮也会变回「再复制一次」——那一下是直接点的，稳。
     const ok = state.inviteLink ? await copyText(state.inviteLink) : false
     state.inviteCopied = ok
     if (!ok && state.inviteLink) state.inviteError = '复制失败，请手动选中上面的链接复制。'

@@ -412,10 +412,7 @@ function legalTop() {
           <button type="button" data-act="landing-locale" data-locale="zh" aria-pressed="${localeMode !== 'en'}">中文</button>
           <button type="button" data-act="landing-locale" data-locale="en" aria-pressed="${localeMode === 'en'}">EN</button>
         </div>
-        ${/* 顶栏末端那格。**不再挂 `btn btn-primary`**：首页那条横梁上每一样都是
-              一格（见 app.css 的 .satu-lp-topact），药丸按钮摆进去会在格子里再浮
-              出一颗圆头的钮。样式全由 .satu-lp-topsign 自己给。 */ ''}
-        <button type="button" class="satu-lp-topsign" data-act="go" data-href="/login">${t('登录', 'Sign in')}</button>
+        <button type="button" class="btn btn-primary satu-lp-topsign" data-act="go" data-href="/login">${t('登录', 'Sign in')}</button>
       </div>
     </div>
   </header>`

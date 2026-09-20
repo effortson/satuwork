@@ -40,6 +40,17 @@ class Element {
   setAttribute(k, v) {
     this._attrs[k] = String(v)
   }
+  /**
+   * 量尺寸。**全零**：测里造的元素没有布局，也不该假装有。
+   *
+   * 读它的地方判的都是「这颗按钮离屏幕底还有多远，菜单要不要往上弹」（app.js 的
+   * menu-toggle）——全零的意思就是「在最上面」，于是一律往下弹。菜单**弹哪个方向**
+   * 本来也不是这一层验得了的（这里没有 CSS、没有布局），这个方法只是让那条处理器
+   * 跑得下去，好验它真正在做的事：开关状态和菜单里那几条。
+   */
+  getBoundingClientRect() {
+    return { top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0, x: 0, y: 0 }
+  }
   /** 测里造的元素都是光杆一个，没有祖先——自己带 data-act 就算命中。 */
   closest(sel) {
     if (sel === '[data-act]') return this.getAttribute('data-act') == null ? null : this
@@ -91,7 +102,7 @@ function countingStub() {
  * `stubIds` 里的 id 会拿到一个持久的 countingStub。默认为空——`getElementById`
  * 返回 null 是现有测试依赖的行为（`if (thread)` 那类分支会被跳过），不能默认改掉。
  */
-function makeDom(stubIds = []) {
+function makeDom(stubIds = [], copied = []) {
   // app.js 给 'input' 挂了不止一个处理器，Map 存单个会把先挂的那个吞掉。
   const listeners = new Map()
   // 内容区那个滚动容器。app.js 重绘时会读它、再把位置贴回去。
@@ -116,16 +127,45 @@ function makeDom(stubIds = []) {
   }
   const stub = { innerHTML: '', value: '', textContent: '', classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, getAttribute: () => null, focus() {}, style: {} }
   const stubs = new Map(stubIds.map((id) => [id, countingStub()]))
+  // execCommand('copy') 复制的是「当前选中的那个东西」，所以垫片得真的记住 select()
+  // 选中了谁。没有这一点，render.js 里那条兜底复制（非安全上下文下唯一能用的一条，
+  // 而内网 http 部署就是那个常态）在测里根本跑不起来，只能假装它还在。
+  let selected = null
+  const body = {
+    ...stub,
+    children: [],
+    appendChild(node) {
+      this.children.push(node)
+      return node
+    },
+  }
+  const createElement = () => {
+    const node = { ...stub }
+    node.select = () => {
+      selected = node
+    }
+    node.setSelectionRange = () => {}
+    node.remove = () => {
+      body.children = body.children.filter((c) => c !== node)
+    }
+    return node
+  }
   const document = {
     getElementById: (id) => (id === 'app' ? app : (stubs.get(id) ?? null)),
     querySelector: (sel) => (sel === '.gw-page' ? page : null),
     querySelectorAll: () => [],
     documentElement: { setAttribute() {}, classList: { add() {}, remove() {}, toggle() {} }, style: {} },
-    createElement: () => ({ ...stub }),
-    body: { ...stub },
+    createElement,
+    body,
+    activeElement: null,
+    execCommand: (cmd) => {
+      if (cmd !== 'copy' || !selected || !body.children.includes(selected)) return false
+      copied.push(String(selected.value ?? ''))
+      return true
+    },
     addEventListener() {},
   }
-  return { document, app, page, listeners, stubs }
+  return { document, app, page, listeners, stubs, body }
 }
 
 /**
@@ -149,10 +189,12 @@ export function uiSource(uiDir) {
  * 见 uiSource。末尾那句 boot() 去掉，由调用方决定什么时候起，否则一 import 就开始打
  * 网络，断言没法安排在它前面。
  */
-export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, persistentStorage, localBotBridge, path = '/' }) {
+export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, persistentStorage, localBotBridge, path = '/', secureContext = true }) {
   const raw = uiSource(dirname(appPath))
   const src = raw.replace(/\nboot\(\)\s*$/, '\n')
-  const { document, app, page, listeners, stubs } = makeDom(stubIds)
+  // 复制过的东西都落这儿，两条路（navigator.clipboard 和 execCommand）都记。
+  const copied = []
+  const { document, app, page, listeners, stubs, body } = makeDom(stubIds, copied)
   const sessionStorage = makeStorage()
   // desktop 重开窗口时 sessionStorage 是一份新的，localStorage 仍是同一份。测试把上一
   // 次的 persistentStorage 递回来，才能真的覆盖「关掉再打开」而不只是同页 reload。
@@ -182,6 +224,10 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
     'sessionStorage',
     'localStorage',
     'matchMedia',
+    // app.js 里有几处直接读裸的 innerHeight（判浮层往上还是往下弹）。node 里没有
+    // 这个全局，不补的话那几条处理器一跑就是 ReferenceError——而且是**跑到才炸**，
+    // 平时一声不响。
+    'innerHeight',
     'navigator',
     'fetch',
     'CSS',
@@ -229,7 +275,11 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
     sessionStorage,
     localStorage,
     () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
-    { userAgent: 'satuwork-ui-smoke', clipboard: { writeText: async () => {} } },
+    900,
+    // secureContext: false = 内网 http 那种页面。navigator.clipboard 在规范里标了
+    // [SecureContext]，那种页面上整个对象都不存在——不是 writeText 被拒，是它压根没挂
+    // 出来。这是「复制失败」最常见的成因，所以垫片得能演出来。
+    { userAgent: 'satuwork-ui-smoke', ...(secureContext ? { clipboard: { writeText: async (v) => void copied.push(String(v)) } } : {}) },
     shimFetch,
     { escape: (s) => String(s) },
     Element,
@@ -246,7 +296,7 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
     }
   }
 
-  return { ...api, app, page, listeners, stubs, fire, sessionStorage, localStorage, location, windowOpens, html: () => app.innerHTML }
+  return { ...api, app, page, listeners, stubs, fire, sessionStorage, localStorage, location, windowOpens, copied, body, html: () => app.innerHTML }
 }
 
 /**
