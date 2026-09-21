@@ -17,7 +17,7 @@ const cfg = parseDeskProxy(raw)
 if (raw && !cfg) {
   console.warn(`desk-proxy: SATUWORK_DESK_PROXY=${raw} 看不懂，要的是 [监听端口:]<管家主机>:<管家端口>`)
 }
-// 给了证书就 TLS 终结（桌面壳那条路只有它走得通），否则纯 TCP 转发。
+// 给了证书就 TLS 终结（跑的是和生产一样的 https 那条路），否则纯 TCP 转发——两种桌面壳都能看。
 const tls = { cert: process.env.SATUWORK_DESK_PROXY_CERT || '', key: process.env.SATUWORK_DESK_PROXY_KEY || '' }
 if (cfg && ((tls.cert && !tls.key) || (!tls.cert && tls.key))) {
   console.warn('desk-proxy: SATUWORK_DESK_PROXY_CERT 与 SATUWORK_DESK_PROXY_KEY 要一起给，这次按纯 TCP 起')

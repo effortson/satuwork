@@ -1,23 +1,29 @@
 /**
  * 本地开发用的桌面转发：把本机的一个端口转给席位机器的管家。
  *
- * **为什么需要它。** 桌面是内嵌 iframe，管家给的那张 cookie 在非 https 下只能是
- * `SameSite=Lax`（见 manager/src/proxy.ts 的 sameSite），而浏览器不会把 Lax cookie 带进
- * **跨站**子框——于是 noVNC 的静态资源和那条 WebSocket 全部 401，界面上是一块黑屏，
- * 控制台之外没有任何线索。生产上这件事由「directUrl 和 Gateway 同一个可注册域」解决
- * （docs/gateway-runtime.md §7 的第三个前提），本地开发没有域名，Gateway 在
- * `192.168.64.1:3080`、管家在 `192.168.64.6:8443`，两个裸 IP 之间没有共同的注册域，
- * 怎么配都是跨站。
+ * **为什么需要它。** 两件事，都只在本地开发里成立：
+ *
+ * · **够不着。** 席位机器常常是本机上的一台虚机（`192.168.64.6`），那张网只有宿主机
+ *   在上面。而 `directUrl` 是个绝对地址，对话流、名单流、桌面那块 iframe 全照着它
+ *   直连——局域网里另一台机器（Windows 上的桌面壳、手机）没有到那张网的路由，三条
+ *   一起连不上。转发把管家借到宿主机的地址上，`directUrl` 填它，谁都够得着。
+ * · **想跑生产那条路径**（https 直连）。管家只监听明文 http（node:http，自己不做
+ *   TLS），本地没有反代就永远试不到那条路。
  *
  * 两种模式，按有没有给证书分：
  *
- * · **纯 TCP（默认）**：把管家借到 Gateway 同一个 IP 上。**端口不算 site 的一部分**，
- *   所以父页和 iframe 同站，Lax 放行。`directUrl` 填 `http://<Gateway 那个 IP>:<监听端口>`。
- *   够浏览器版用，**桌面壳（satu://localhost）用不上**——那个源和任何 IP 都跨站。
+ * · **纯 TCP（默认）**：原样转字节。`directUrl` 填 `http://<本机 IP>:<监听端口>`——收 http
+ *   的前提是 `GATEWAY_PUBLIC_URL` 明确配成 http（见 lib/machines.ts 的 directUrlOf）。
+ *   **浏览器版和桌面壳都够用。** 以前这里写的是「桌面壳用不上」，理由是那张 cookie 在
+ *   非 https 下只能是 `SameSite=Lax`、进不了跨站子框；票改写进路径之后（管家 0.1.24 起，
+ *   manager/src/proxy.ts 的 `VNC_TICKET_PATH`）那条限制没了，noVNC 的相对资源和那条
+ *   WebSocket 自己就带着凭据，cookie 只是兜底。
  * · **TLS 终结（给了证书）**：自己收 https，解密后把明文转给管家，并补上
- *   `x-forwarded-proto: https`——管家就是看这个头决定发不发 `SameSite=None; Secure` 的。
- *   跨站也带得上 cookie，所以桌面壳那条路只有这一种走得通，而且跑的是和生产一样的路径。
- *   `directUrl` 填 `https://<监听地址>:<监听端口>`，证书得是浏览器信得过的（mkcert）。
+ *   `x-forwarded-proto: https`（管家按它决定兜底那张 cookie 发不发 `SameSite=None; Secure`）。
+ *   跑的是和生产一样的那条路径，`directUrl` 填 `https://<监听地址>:<监听端口>`。
+ *   **代价是证书要伺候两头**：SAN 得覆盖你真正填进 `directUrl` 的那个 IP，每台客户机
+ *   还都要装上 mkcert 的根证书。少一样的表现是对话流和桌面一起**静默**连不上——界面上
+ *   一个字都没有。局域网里拿别的机器试的时候，纯 TCP 那一档省掉这两件事。
  *
  * 单独跑：`node scripts/desk-proxy.mjs 192.168.64.6:8443`
  * 跟着 dev 一起跑：`.env` 里写 `SATUWORK_DESK_PROXY=192.168.64.6:8443`，要 TLS 再加
@@ -102,9 +108,10 @@ export function startDeskProxy(cfg, log = console) {
 /**
  * TLS 终结版：自己收 https，把明文转给管家。
  *
- * **只为一个头存在**：`x-forwarded-proto: https`。管家按它决定桌面那张 cookie 是
- * `SameSite=None; Secure` 还是 `Lax`（manager/src/proxy.ts），而只有前者才进得了跨站
- * 子框——桌面壳的页面源是 `satu://localhost`，和席位机器永远跨站，同站那招救不了它。
+ * **存在的理由是「跑一遍生产那条路径」**：生产上直连是 https，而管家只说明文 http。
+ * 顺带补上的 `x-forwarded-proto: https` 决定管家那张兜底 cookie 发不发
+ * `SameSite=None; Secure`（manager/src/proxy.ts）；票本身写在路径里，不靠这张 cookie，
+ * 所以纯 TCP 那一档同样能看到桌面（见文件头）。
  *
  * 这一版必须解析 HTTP（要改头），所以 WebSocket 得自己接 `upgrade` 再手工搭桥：
  * 桌面的像素全走那条，漏了它就是「落地页打得开、屏幕不动」。
