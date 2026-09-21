@@ -53,9 +53,17 @@ const SWITCH_ITEM: &str = "switch-server";
 const OPEN_PATH: &str = "/__satuwork_open";
 /// 界面自己的源。gateway/ui 打进了包里，由下面那个自定义协议发出去；页面里所有打 Gateway 的
 /// 请求都是跨源的，Gateway 那头按这个源开 CORS（gateway/src/http.ts 的 CORS_ORIGINS）。
-/// Windows 上 Tauri 会把它映射成 http://satu.localhost，那个源也在名单里。
 const UI_SCHEME: &str = "satu";
+const UI_HOST: &str = "satu.localhost";
 const UI_ORIGIN: &str = "satu://localhost/";
+
+fn is_ui_origin(url: &Url) -> bool {
+    (url.scheme() == UI_SCHEME && url.host_str() == Some("localhost"))
+        || (matches!(url.scheme(), "http" | "https")
+            && url
+                .host_str()
+                .is_some_and(|h| h.eq_ignore_ascii_case(UI_HOST)))
+}
 
 /** 新开的窗口编号。同一个 label 开第二次会失败，所以每开一扇加一。 */
 
@@ -287,6 +295,10 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
     if url.path() == OPEN_PATH {
         route_open(app, base, url);
         return false;
+    }
+    // 界面自身（包含 Windows 上的 http://satu.localhost）必须放行留在窗口内。
+    if is_ui_origin(url) {
+        return true;
     }
     match url.scheme() {
         "http" | "https" => {}
@@ -1352,8 +1364,33 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{desktop_version_supports, is_seat_desktop, safe_runtime_version};
+    use super::{desktop_version_supports, is_seat_desktop, is_ui_origin, safe_runtime_version};
     use tauri::Url;
+
+    #[test]
+    fn ui_origin_stays_in_the_window() {
+        let yes = [
+            "satu://localhost/",
+            "satu://localhost/index.html",
+            "satu://localhost/a/bot-1",
+            "http://satu.localhost/",
+            "http://satu.localhost/index.html",
+            "http://satu.localhost/a/bot-1",
+            "https://satu.localhost/",
+        ];
+        for u in yes {
+            assert!(is_ui_origin(&Url::parse(u).unwrap()), "该放行：{u}");
+        }
+        let no = [
+            "http://localhost/",
+            "http://example.com/",
+            "http://satu.com/",
+            "http://evil.localhost/",
+        ];
+        for u in no {
+            assert!(!is_ui_origin(&Url::parse(u).unwrap()), "不该当界面源：{u}");
+        }
+    }
 
     #[test]
     fn runtime_version_cannot_escape_release_directory() {
