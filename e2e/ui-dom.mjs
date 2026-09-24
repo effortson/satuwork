@@ -189,7 +189,7 @@ export function uiSource(uiDir) {
  * 见 uiSource。末尾那句 boot() 去掉，由调用方决定什么时候起，否则一 import 就开始打
  * 网络，断言没法安排在它前面。
  */
-export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, persistentStorage, localBotBridge, path = '/', secureContext = true }) {
+export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, persistentStorage, localBotBridge, path = '/', secureContext = true, userAgent = 'satuwork-ui-smoke' }) {
   const raw = uiSource(dirname(appPath))
   const src = raw.replace(/\nboot\(\)\s*$/, '\n')
   // 复制过的东西都落这儿，两条路（navigator.clipboard 和 execCommand）都记。
@@ -279,7 +279,9 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
     // secureContext: false = 内网 http 那种页面。navigator.clipboard 在规范里标了
     // [SecureContext]，那种页面上整个对象都不存在——不是 writeText 被拒，是它压根没挂
     // 出来。这是「复制失败」最常见的成因，所以垫片得能演出来。
-    { userAgent: 'satuwork-ui-smoke', ...(secureContext ? { clipboard: { writeText: async (v) => void copied.push(String(v)) } } : {}) },
+    // userAgent 由测试指定：下载页靠它认操作系统（见 gateway/ui/pages-download.js 的
+    // dlDetect），认错的表现是 Mac 上摆着 Windows 的包——页面看着完整，下下来装不上。
+    { userAgent, ...(secureContext ? { clipboard: { writeText: async (v) => void copied.push(String(v)) } } : {}) },
     shimFetch,
     { escape: (s) => String(s) },
     Element,

@@ -120,6 +120,9 @@ const PATHS = {
   // 画的是 legalView，和登录状态无关，从来走不到 appView 的标题栏。
   '/privacy': { title: '隐私政策' },
   '/terms': { title: '服务条款' },
+  // 下载页（pages-download.js）。同样只为让 pathOf() 认得它——它画的是 downloadView，
+  // 和登录状态无关，从来走不到 appView 的标题栏。
+  '/download': { title: '下载桌面端' },
   '/models': { title: '模型配置' },
   '/tools': { title: '工具配置' },
   '/providers': { title: '供应商' },

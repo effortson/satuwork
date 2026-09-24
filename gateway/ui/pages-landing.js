@@ -520,7 +520,11 @@ function landingView() {
           ${cta}
           <button type="button" class="btn btn-secondary" data-act="landing-more">${t('先看看它能做什么', 'See what it does')}</button>
         </div>
-        <p class="satu-lp-fine">${t('账号由公司管理员开通。', 'Accounts are created by your company admin.')}</p>
+        ${/* 这一行以前只有前半句。桌面端整个产品里只在页脚有一条小链接，而页脚是
+              「翻得到」不是「看得见」——首屏上一个字都不提的话，没人知道有这东西。
+              所以补在这儿：一句话说清它多出来什么（本地那种 AI 员工），外加一条路。 */ ''}
+        <p class="satu-lp-fine">${t('账号由公司管理员开通。', 'Accounts are created by your company admin.')}
+          ${t('想让 AI 员工直接在自己电脑上干活，', 'Want a coworker running on your own machine? ')}<button type="button" class="satu-lp-finelink" data-act="go" data-href="/download">${t('下载桌面端', 'Get the desktop app')}</button>${t('。', '.')}</p>
       </div>
       <div class="satu-lp-heroright">${lpShot()}</div>
     </section>
@@ -567,6 +571,9 @@ function landingView() {
         </ol>
         <div class="satu-lp-tail">
           ${cta}
+          ${/* 桌面端。**摆在主 CTA 旁边而不是那句小字里**：读到这儿的人已经决定要用了，
+                而「本地那种 AI 员工」只有装了客户端才有——这是三步之后的第四件事。 */ ''}
+          <button type="button" class="btn btn-secondary satu-lp-tailget" data-act="go" data-href="/download">${t('下载桌面端', 'Get the desktop app')}</button>
           <span>${t('还没有账号？找管理员开通。', 'No account? Ask your admin.')}</span>
         </div>
       </div>
@@ -584,6 +591,10 @@ function landingView() {
               和应用商店的上架表单都是先翻到页面最底下。两条都是站内跳转，所以和这一页
               别处一样走 data-act="go"，不是 `<a>`（那会整页重载）。 */ ''}
         <span class="satu-lg-links">
+          ${/* 下载页（pages-download.js）。放在页脚而不是顶栏：顶栏那一行在 375 宽上已经
+                排着四样东西了，而要装客户端的人多半是拿着一条别人发来的 /download 直接
+                进去的——这条是给「先看完首页、才想起来要装个客户端」的那个人补的。 */ ''}
+          <button type="button" data-act="go" data-href="/download">${t('下载桌面端', 'Desktop app')}</button>
           <button type="button" data-act="go" data-href="/privacy">${t('隐私政策', 'Privacy Policy')}</button>
           <button type="button" data-act="go" data-href="/terms">${t('服务条款', 'Terms of Service')}</button>
           <span>© 2026 Satuwork</span>

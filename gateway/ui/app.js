@@ -331,6 +331,15 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'landing-sales-dialog') return
+  // ── 下载页（pages-download.js）上那排平台切换 ──────────────────────
+  if (act === 'download-os') {
+    const os = btn.getAttribute('data-os')
+    if (os !== 'windows' && os !== 'mac') return
+    // 人点过就听他的，这一帧之后 dlOs() 不再去认系统（见 pages-download.js 的 dlOs）。
+    state.dlOs = os
+    render()
+    return
+  }
   if (act === 'landing-more') {
     document.getElementById('satu-lp-features')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     return

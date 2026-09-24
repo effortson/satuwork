@@ -1001,7 +1001,6 @@ window.SATU_I18N = {
   '发起人': 'Started by',
   '条消息': 'messages',
   '开始于': 'started',
-  '导出记录': 'Export',
   '复制全文': 'Copy transcript',
   '导出 Markdown': 'Export as Markdown',
   '回到底部': 'Jump to latest',

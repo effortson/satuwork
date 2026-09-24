@@ -347,6 +347,19 @@ function render() {
     syncDesktop()
     return
   }
+  /**
+   * 下载页（pages-download.js）。**同样在登录判断之前**，理由和上面那两页一样，而且
+   * 更硬：拿到这条地址的人手上还只有一条管理员发来的链接，他要的就是那个文件——把
+   * 一个登录表单摆在安装包前面，等于让他先去要一个他正要装的东西才能用的账号。
+   *
+   * 桌面壳里也照画。壳子里当然不必再下一次，但这一页从别处（页脚、别人发的链接）
+   * 点得到，画不出来的表现是壳子里一片空白，比多此一举糟。
+   */
+  if (state.path === '/download') {
+    root.innerHTML = downloadView()
+    syncDesktop()
+    return
+  }
   if (!state.me && state.needsSetup) {
     root.innerHTML = setupView()
     syncDesktop()

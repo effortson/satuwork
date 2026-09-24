@@ -2866,7 +2866,7 @@ function fileChipHtml(f) {
  *
  * **不再挂 title**：原生 tooltip 要等一秒才出、只能显示一行纯文本，而且会和下面那个
  * 悬浮窗同时冒出来。详情改由 sw-toolpop 给——参数和结果都在里面，那两样才是「它刚才
- * 到底干了什么」的答案，尤其是失败的那几颗，以前只能去导出记录里翻。
+ * 到底干了什么」的答案，尤其是失败的那几颗，以前只能去导出的记录里翻。
  *
  * 详情**不塞进 data-***：一次 bash 的参数加输出动辄几 KB，进属性要转义、要整份重复
  * 写进 DOM，而 chips 每次状态变化都重画一遍。改成 updateRow 把工具对象直接挂在节点上。
@@ -6649,7 +6649,6 @@ function chatHeadInline() {
       <p class="sw-convo-meta" id="chat-meta"></p>
     </div>
     <div class="sw-convo-actions">
-      <button type="button" class="btn btn-secondary" data-act="chat-export">${t('导出记录')}</button>
       <button type="button" class="btn btn-ghost btn-icon" data-menu-toggle data-act="chat-menu"
         aria-label="${esc(t('更多操作'))}">${svg(['M12 6h.01', 'M12 12h.01', 'M12 18h.01'], 16)}</button>
       ${menu}
@@ -8215,7 +8214,7 @@ async function cancelQueued(id) {
 /* ── 工具痕迹的悬浮窗 ────────────────────────────────────────────────────
  *
  * 药丸上只有「工具名 · 状态」，而人真正想知道的是**它拿什么参数跑的、跑出了什么**。
- * 失败的那几颗尤其——以前想知道为什么失败，只能去「导出记录」里翻整段 JSON。
+ * 失败的那几颗尤其——以前想知道为什么失败，只能去「导出 Markdown」里翻整段 JSON。
  *
  * 浮层挂在 body 上，不放进气泡里：气泡有自己的圆角和 overflow，浮层长在里面会被裁掉
  * 一角；而且最后一条消息贴着输入框时，往上弹还是往下弹得按视口算，气泡内的坐标系
@@ -8258,7 +8257,7 @@ function prettyArgs(raw) {
 function clip(text) {
   const s = String(text == null ? '' : text)
   if (s.length <= TOOLPOP_MAX_CHARS) return s
-  return s.slice(0, TOOLPOP_MAX_CHARS) + '\n\n…（还有 ' + (s.length - TOOLPOP_MAX_CHARS) + ' 个字符，完整内容见「导出记录」）'
+  return s.slice(0, TOOLPOP_MAX_CHARS) + '\n\n…（还有 ' + (s.length - TOOLPOP_MAX_CHARS) + ' 个字符，完整内容见「导出 Markdown」）'
 }
 
 function toolPopBody(x) {
