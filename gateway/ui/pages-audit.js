@@ -469,7 +469,7 @@ function releasesPage() {
         <div>
           <h1 style="font-size: 24px; margin: 0 0 4px;">${t('机器配置')}</h1>
           <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('Gateway 只登记和分发发布包，自己不构建。包必须在 Linux 上打，架构要和席位机器一致。')}</p>
-          <p style="margin: 4px 0 0; font-size: 13px; color: var(--muted-foreground);">${t('下载地址就是那台 Debian 拉包用的 URL，凭机器令牌访问（curl -H "Authorization: Bearer smt_…"）。管家自己会带上，这里给出来是为了能人工核对。')}</p>
+          <p style="margin: 4px 0 0; font-size: 13px; color: var(--muted-foreground);">${t('下载地址就是那台 Debian 拉包用的 URL。登记在 GitHub Release 上的包机器直接去取、不带凭据，按 sha256 核对；Gateway 转发地址要机器令牌（curl -H "Authorization: Bearer smt_…"），管家自己会带上。')}</p>
         </div>
         ${flashes()}
         <div style="display: flex; gap: var(--space-2);">
@@ -483,8 +483,13 @@ function releasesPage() {
 function releaseRow(r, latest) {
   // 下载地址永远给出来，**包括字节就在 Gateway 磁盘上的时候**：那台 Debian 上没有
   // 别的地方能看到它，这一栏写「本机存储」等于没给。字节在哪儿降级成一行小字。
-  const dl = r.downloadUrl || r.url || ''
-  const from = r.url ? `${t('外部来源')} ${esc(r.url)}` : t('本机存储')
+  //
+  // 能直连的（GitHub Release 那种，见 gateway/src/releases.ts 的 directReleaseUrl）主行
+  // 就是那个外部地址——机器真去的是那儿；Gateway 转发地址降成小字，只剩老管家拉 bot 包用。
+  const dl = r.directUrl || r.downloadUrl || r.url || ''
+  const from = r.directUrl
+    ? `${t('老管家经 Gateway 转发')} ${esc(r.downloadUrl || '')}`
+    : r.url ? `${t('外部来源')} ${esc(r.url)}` : t('本机存储')
   const where = `<span style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
       <span style="font-family: var(--font-mono, ui-monospace, monospace); word-break: break-all;">${esc(dl)}</span>
       <span style="color: var(--muted-foreground); word-break: break-all;">${from}${dl ? ` · <button type="button" class="satu-linkbtn" data-act="copy-release-url" data-url="${esc(dl)}">${t('复制')}</button>` : ''}</span>

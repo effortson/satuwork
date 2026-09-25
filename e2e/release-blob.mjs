@@ -118,6 +118,8 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
       assert(p.auth === `Bearer ${TOKEN}` && p.access === 'private' && p.suffix === '1', `PUT 的头不对：${JSON.stringify(p)}`)
       assert(p.size === published.tgz.length, `传上去的字节数 ${p.size} != ${published.tgz.length}`)
       assert(String(published.release.url || '').startsWith(`${blobBase}/blobs/`), `登记的地址不是 Blob：${published.release.url}`)
+      // 私有 Blob 取的时候要带 BLOB_READ_WRITE_TOKEN，那把钥匙不能给机器：只能经 Gateway 转发。
+      assert(published.release.directUrl === null, `私有 Blob 的包不该让机器直连：${published.release.directUrl}`)
       assert(published.release.sha256 === published.sha256 && published.release.size === published.tgz.length, `登记的大小/摘要不对：${JSON.stringify(published.release)}`)
       const dir = join(GW_HOME, 'releases')
       assert(!existsSync(dir) || readdirSync(dir).length === 0, `磁盘上不该有包：${existsSync(dir) ? readdirSync(dir).join(',') : ''}`)

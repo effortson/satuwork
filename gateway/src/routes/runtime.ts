@@ -16,7 +16,7 @@ import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
 import { machineHeader, managerTargetFor, proxyDownload, proxyJson, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
-import { localBotReleaseTarget } from '../releases.ts'
+import { directReleaseUrl, localBotReleaseTarget } from '../releases.ts'
 
 /**
  * 一个人最多建几个 Bot。
@@ -1420,6 +1420,10 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       sha256: latest.sha256,
       size: latest.size,
       url: `${originOf(req)}/internal/local-bot-releases/${encodeURIComponent(latest.version)}`,
+      // 外部地址（GitHub Release）。现有的 Desktop 只认上面那个同源的 `url`，这个字段是给
+      // 以后的壳用的：有它就裸取、按 sha256 / size 比对，不经 Gateway 转发（原因见
+      // releases.ts 的 directReleaseUrl）。null = 只能走 `url`。
+      directUrl: directReleaseUrl(latest),
       minDesktopVersion: '0.1.0',
       mandatory: false,
       note: latest.note,

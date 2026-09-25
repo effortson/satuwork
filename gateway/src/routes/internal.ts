@@ -3,7 +3,7 @@
  */
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
-import { MIN_MANAGER_NODE, desiredManagerRelease, gatewayBaseFor, machineHostOf, managerHostOf, normalizePairingCode, sendReleaseFile } from '../lib/machines.ts'
+import { MIN_MANAGER_NODE, desiredManagerRelease, gatewayBaseFor, machineHostOf, managerHostOf, managerPackageUrl, normalizePairingCode, sendReleaseFile } from '../lib/machines.ts'
 import { MIN_MANAGER_PROTOCOL, botBaseOf, managerHealth, normalizeTimezone, publicMachine } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
@@ -267,7 +267,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     json(res, 200, {
       machine: { id: next.id, lastHeartbeatAt: next.lastHeartbeatAt },
       desiredManagerVersion: desired?.version ?? null,
-      url: desired ? `${gatewayBaseFor(req)}/internal/manager-releases/${encodeURIComponent(desired.version)}` : null,
+      url: desired ? managerPackageUrl(desired, next.protocol, gatewayBaseFor(req)) : null,
       sha256: desired?.sha256 ?? null,
       // 期望时区。空 = 没人指定过，管家什么都不做——**不是**「改成 UTC」。
       timezone: next.timezone,

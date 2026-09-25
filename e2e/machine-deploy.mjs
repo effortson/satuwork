@@ -664,13 +664,24 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       )
     })
 
-    await test('按架构选包：显式指定错架构的版本 → 409', async () => {
+    await test('按架构选包：显式指定错架构的版本 → 换成同版本的兄弟包；没有兄弟才 409', async () => {
+      // 钉版本的人只写得了一个字符串（平台那一档尤其如此）。照着发下去，另一种架构的机器
+      // 就全部署不了——所以和管家钉版本一样，先换成同一次发布的另一份包。
       const r = await req(gwBase, 'POST', '/runtime/deploy', {
         token: memberTok,
         body: { botId: botA, version: '0.3.0-x64', update: true },
       })
-      assert(r.status === 409, `错架构该被挡下，实际 ${r.status} ${r.text}`)
-      assert(String(r.text).includes('arm64'), `报错该点明机器架构：${r.text}`)
+      assert(r.status === 200, `该换成 arm64 的兄弟包，实际 ${r.status} ${r.text}`)
+      assert(r.json.botVersion === '0.3.0-arm64', `arm64 机器该装 0.3.0-arm64，实际 ${r.json.botVersion}`)
+
+      // 这一版只发了 x64：没有兄弟可换，照旧挡下，并且说清楚是哪种架构。
+      await publishRelease({ req, gwBase, token: ownerTok, version: '0.3.1-x64' })
+      const lone = await req(gwBase, 'POST', '/runtime/deploy', {
+        token: memberTok,
+        body: { botId: botA, version: '0.3.1-x64', update: true },
+      })
+      assert(lone.status === 409, `没有 arm64 包该被挡下，实际 ${lone.status} ${lone.text}`)
+      assert(String(lone.text).includes('arm64'), `报错该点明机器架构：${lone.text}`)
       // 认不出架构的老版本号照旧放行。
       const legacy = await req(gwBase, 'POST', '/runtime/deploy', {
         token: memberTok,

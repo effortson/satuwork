@@ -6,12 +6,12 @@
 import type { ServerResponse } from 'node:http'
 import { gatewayPageIsHttp, HttpError, type Req } from '../http.ts'
 import { bodyOf, strField } from './validate.ts'
-import { openRelease, parseBotVersion, registerRemoteRelease } from '../releases.ts'
+import { directReleaseUrl, openRelease, parseBotVersion, registerRemoteRelease } from '../releases.ts'
 import { pipeline } from 'node:stream/promises'
 import { randomBytes } from 'node:crypto'
-import { type Db, type Machine, type ReleaseKind, releaseArch } from '../db.ts'
+import { type BotRelease, type Db, type Machine, type ReleaseKind, releaseArch } from '../db.ts'
 import { type JwtKeys, signDesktopTicket } from '../crypto.ts'
-import { type MachineLoad, machinePaired, ownerMachine } from '../deploy.ts'
+import { MIN_DIRECT_MANAGER_DOWNLOAD_PROTOCOL, type MachineLoad, machinePaired, ownerMachine } from '../deploy.ts'
 
 export function machineBase(host: string): string {
   const h = host.trim().replace(/\/$/, '')
@@ -247,6 +247,19 @@ export async function desiredManagerRelease(db: Db, machine?: Machine) {
     if (row) return row
   }
   return db.latestBotRelease('manager', arch)
+}
+
+/**
+ * 心跳里给管家的升级包地址。
+ *
+ * 能直连就给外部地址（GitHub Release），管家裸取、用心跳里的 sha256 比对；够不上
+ * MIN_DIRECT_MANAGER_DOWNLOAD_PROTOCOL 的老管家、或者包只在本机 / 私有 Blob 里，给 Gateway
+ * 转发地址。
+ */
+export function managerPackageUrl(release: BotRelease, protocol: number | null | undefined, base: string): string {
+  const direct = directReleaseUrl(release)
+  if (direct && (protocol ?? 0) >= MIN_DIRECT_MANAGER_DOWNLOAD_PROTOCOL) return direct
+  return `${base.replace(/\/$/, '')}/internal/manager-releases/${encodeURIComponent(release.version)}`
 }
 
 /**
