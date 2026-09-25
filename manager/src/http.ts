@@ -48,8 +48,19 @@ export function bearer(req: IncomingMessage): string {
   return h.replace(/^Bearer\s+/i, '').trim()
 }
 
-/** 只收本机的连接。反代（proxy.ts）、工人中继（relay.ts）、模型中继（llm-relay.ts）共用一份。 */
+/**
+ * 只收本机的连接。工人中继（relay.ts）、模型中继（llm-relay.ts）共用一份。
+ *
+ * **带转发头的一律不算本机**：机器前面常挂一层反代（Caddy 把 `https://<域名>` 反到
+ * `127.0.0.1:8443`，好给管家地址和桌面直连地址配 https），代理转进来的外部请求在 socket
+ * 上的源地址也是 127.0.0.1，光看 remoteAddress 会把整个公网当成本机。本机的 Bot 和
+ * 席位工人都是直连 `127.0.0.1:端口`，从来不带 `x-forwarded-for` / `forwarded` /
+ * `x-real-ip`；反代则几乎都会加其中一个（Caddy、nginx 的常见配法、各家负载均衡）。
+ * 这两处本来还要验票，这里是纵深防御——别让「反代配置漏挡一条路」直接变成「只剩一张票」。
+ */
 export function isLoopback(req: IncomingMessage): boolean {
+  const h = req.headers
+  if (h['x-forwarded-for'] !== undefined || h.forwarded !== undefined || h['x-real-ip'] !== undefined) return false
   const a = req.socket.remoteAddress || ''
   return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1'
 }

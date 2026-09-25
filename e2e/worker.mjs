@@ -209,6 +209,9 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
       assert(ok.status === 200, `中继领活 ${ok.status} ${okText}`)
       const body = JSON.parse(okText)
       assert(Array.isArray(body.jobs), `中继回来的不是领活的形状：${JSON.stringify(body)}`)
+      // 令牌对、但带着反代加的转发头：是被代理从外面转进来的，不算本机工人。
+      const proxied = await fetch(`${mgrBase}/w-local/gateway/worker/routines/due`, { headers: { 'x-satuwork-worker': tok, 'x-forwarded-for': '203.0.113.9' } })
+      assert(proxied.status === 401, `带 x-forwarded-for 的该 401，实际 ${proxied.status} ${await proxied.text()}`)
       const elsewhere = await fetch(`${mgrBase}/w-local/gateway/internal/machines`, { headers: { 'x-satuwork-worker': tok } })
       assert(elsewhere.status === 404, `/worker 之外的路径不该被转：${elsewhere.status}`)
     })
