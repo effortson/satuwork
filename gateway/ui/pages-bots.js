@@ -1630,11 +1630,15 @@ function usagePage() {
         `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(range === r)}" data-act="usage-range" data-range="${esc(r)}">${esc(r)}</button>`,
     )
     .join('')
+  // 两张 token 卡片服务端给的是精确整数，几千万一长串没法一眼读，按 M 画、悬停看精确值。
+  const tokenStats = new Set(['输入 Tokens', '输出 Tokens'])
   const statCards = stats
     .map(
       (s) => `<div class="satu-stat">
         <span style="font-size: 12px; color: var(--muted-foreground);">${esc(t(s.label))}</span>
-        <span style="font-family: var(--font-heading); font-size: 26px; line-height: 1;">${esc(s.value)}</span>
+        ${tokenStats.has(s.label)
+          ? `<span title="${esc(exactTokens(s.value))}" style="font-family: var(--font-heading); font-size: 26px; line-height: 1;">${esc(megaTokens(s.value))}</span>`
+          : `<span style="font-family: var(--font-heading); font-size: 26px; line-height: 1;">${esc(s.value)}</span>`}
         <span style="font-size: 11.5px; color: var(--color-accent-2-800);">${esc(s.delta || '—')}</span>
       </div>`,
     )
@@ -1686,7 +1690,7 @@ function usagePage() {
           <span style="min-width: 0; font-size: 13.5px;">${esc(label)}</span>
         </div>
         <span style="font-size: 13px;">${esc(m.tasks)}</span>
-        <span style="font-size: 13px; color: var(--muted-foreground);">${esc(m.tokens)}</span>
+        <span title="${esc(exactTokens(m.tokens))}" style="font-size: 13px; color: var(--muted-foreground);">${esc(megaTokens(m.tokens))}</span>
         <span style="font-size: 13px;">${esc(m.amount || '—')}</span>
         <span style="font-size: 13px; color: var(--muted-foreground);">${esc(m.last)}</span>
       </div>`

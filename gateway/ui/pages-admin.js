@@ -546,6 +546,30 @@ function exactTokens(n) {
 }
 
 /**
+ * 用量屏上的汇总 token 数，一律按 M 画。几千万的数字一长串，读的人得数位数；
+ * 统一成 M 之后几张卡片、成员表那一列能直接横着比。精确值挂在 title 上。
+ */
+function megaTokens(n) {
+  const x = Number(n) || 0
+  if (!x) return '0'
+  const m = x / 1_000_000
+  return m < 0.01 ? '<0.01M' : `${m.toFixed(2)}M`
+}
+
+/**
+ * 计费明细的单行 token 数：一次调用从几十到几十万都有，所以按量级挑单位——
+ * 不到 1K 原样，到 K 没到 M 用 K，到 M 用 M。最多两位小数，末尾的 0 去掉。
+ */
+function scaledTokens(n) {
+  const x = Number(n) || 0
+  const fmt = (v, unit) => `${String(Number(v.toFixed(2)))}${unit}`
+  // 999,999 按 K 四舍五入会成「1000K」，那一档直接进 M。
+  if (x >= 1_000_000 || Number((x / 1000).toFixed(2)) >= 1000) return fmt(x / 1_000_000, 'M')
+  if (x >= 1000) return fmt(x / 1000, 'K')
+  return exactTokens(x)
+}
+
+/**
  * 计费明细：一次调用一行。
  *
  * 这张表回答的是三个 `*-stats` 回答不了的那个问题——「这个月为什么是这个数」。
@@ -658,7 +682,7 @@ function chargeQuantity(c, withPrice) {
   const p = c.unitPrice || {}
   const lines = []
   if (c.kind === 'llm') {
-    const line = (label, tok, rate) => (tok ? `${label} ${exactTokens(tok)}${withPrice ? ` × ${money(rate)}` : ''}` : '')
+    const line = (label, tok, rate) => (tok ? `${label} ${scaledTokens(tok)}${withPrice ? ` × ${money(rate)}` : ''}` : '')
     const cached = Number(q.cachedTokens || 0)
     const written = Number(q.cacheWriteTokens || 0)
     const fresh = Math.max(0, Number(q.promptTokens || 0) - cached - written)
