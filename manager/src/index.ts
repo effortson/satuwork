@@ -152,6 +152,38 @@ function shaped(value: string, re: RegExp, key: string): string {
   return value
 }
 
+const SHA256_RE = /^[0-9a-f]{64}$/
+
+/**
+ * 部署规格里的 bot 包直连地址（`botUrl` + `botSha256`，协议 11）。
+ *
+ * **成对出现或都不出现**：只有地址没有校验值，等于让这台机器以 root 解开一个没人核对过的
+ * 包；只有校验值没有地址则是 Gateway 那边写错了。两种都 400，不猜。都没有 = 老 Gateway 或者
+ * 包只在 Gateway 本机，照旧从 `/internal/bot-releases/*` 拉。
+ *
+ * 地址只收 http/https、不许带用户名口令：它会被原样 fetch。机器票带不带由 releases.ts
+ * 按同源判断，这里不管。
+ */
+function directPackageOf(b: Record<string, unknown>): Pick<SeatSpec, 'botUrl' | 'botSha256'> {
+  const hasUrl = b.botUrl != null && b.botUrl !== ''
+  const hasSha = b.botSha256 != null && b.botSha256 !== ''
+  if (!hasUrl && !hasSha) return {}
+  if (!hasUrl || !hasSha) throw new HttpError(400, 'botUrl and botSha256 go together')
+  const url = line(b, 'botUrl', 2048)
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new HttpError(400, 'botUrl is invalid')
+  }
+  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.username || parsed.password) {
+    throw new HttpError(400, 'botUrl is invalid')
+  }
+  const sha = line(b, 'botSha256', 64).toLowerCase()
+  if (!SHA256_RE.test(sha)) throw new HttpError(400, 'botSha256 is invalid')
+  return { botUrl: url, botSha256: sha }
+}
+
 /**
  * 请求体 → 席位规格。
  *
@@ -192,6 +224,7 @@ function specOf(rawSeatId: string, body: unknown): SeatSpec {
     seatDir,
     botId: shaped(line(b, 'botId', 64), BOT_ID_RE, 'botId'),
     botVersion: shaped(line(b, 'botVersion', 64), VERSION_RE, 'botVersion'),
+    ...directPackageOf(b),
     vncPassword: line(b, 'vncPassword', 256),
     gatewayUrl: line(b, 'gatewayUrl'),
     gatewayToken: line(b, 'gatewayToken'),

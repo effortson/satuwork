@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { installRoot, managerVersion, patchState, readState, seatAssets } from './config.ts'
+import { sameOrigin } from './releases.ts'
 import { run } from './run.ts'
 import { busy, busySeats } from './seats.ts'
 
@@ -369,11 +370,3 @@ export function confirmVersion(): void {
 }
 
 /** 包地址和配对的 Gateway 是不是同一个 origin。任一边解析不了都算不是。 */
-function sameOrigin(url: string, gatewayUrl: string | undefined): boolean {
-  if (!gatewayUrl) return false
-  try {
-    return new URL(url).origin === new URL(gatewayUrl).origin
-  } catch {
-    return false
-  }
-}

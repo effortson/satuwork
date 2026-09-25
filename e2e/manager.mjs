@@ -609,6 +609,13 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         ['botVersion 想跳出目录', { ...good, botVersion: '../../etc/passwd' }],
         ['botId 带换行', { ...good, botId: 'bot-1\nGATEWAY_URL=http://evil' }],
         ['端口越界', { ...good, ports: { ...good.ports, botPort: 99999 } }],
+        // 直连字段（协议 11）：成对出现，地址只收 http/https 且不带凭据，校验值是 64 位十六进制。
+        ['有 botUrl 没 botSha256', { ...good, botUrl: 'https://github.com/x/y.tgz' }],
+        ['有 botSha256 没 botUrl', { ...good, botSha256: 'a'.repeat(64) }],
+        ['botUrl 不是 http', { ...good, botUrl: 'file:///etc/passwd', botSha256: 'a'.repeat(64) }],
+        ['botUrl 带口令', { ...good, botUrl: 'https://u:p@github.com/x.tgz', botSha256: 'a'.repeat(64) }],
+        ['botSha256 形状不对', { ...good, botUrl: 'https://github.com/x.tgz', botSha256: 'zz' }],
+        ['botUrl 带换行', { ...good, botUrl: 'https://github.com/x.tgz\nGATEWAY_URL=http://evil', botSha256: 'a'.repeat(64) }],
       ]
       for (const [why, body] of bad) {
         const r = await req(mgrBase, 'PUT', '/seats/seat-2', { token: machineTok, body })

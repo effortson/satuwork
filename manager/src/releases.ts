@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { releaseRoot } from './config.ts'
+import { managerVersion, releaseRoot } from './config.ts'
 import { run } from './run.ts'
 
 /**
@@ -48,9 +48,24 @@ function safeVersion(version: string): string {
  */
 const inflight = new Map<string, Promise<string>>()
 
+/**
+ * 去哪儿拉包。
+ *
+ * `url` + `sha256` 是 Gateway 在部署规格里给的**直连地址**（GitHub Release 那种，见
+ * gateway/src/releases.ts 的 directReleaseUrl）：有它就直接去取，校验值用规格里那一份。
+ * 没有（包只在 Gateway 本机或私有 Blob 里）就走老路 `/internal/bot-releases/*`，校验值在
+ * 响应头里。
+ */
+export interface ReleaseSource {
+  gatewayUrl: string
+  token: string
+  url?: string
+  sha256?: string
+}
+
 export async function ensureRelease(
   version: string,
-  opts: { gatewayUrl: string; token: string },
+  opts: ReleaseSource,
 ): Promise<string> {
   safeVersion(version)
   const running = inflight.get(version)
@@ -62,23 +77,30 @@ export async function ensureRelease(
 
 async function fetchRelease(
   version: string,
-  opts: { gatewayUrl: string; token: string },
+  opts: ReleaseSource,
 ): Promise<string> {
   const dir = releaseDir(version)
   if (haveRelease(version)) return dir
 
-  const url = `${opts.gatewayUrl}/internal/bot-releases/${encodeURIComponent(version)}`
+  const direct = opts.url && opts.sha256 ? opts.url : ''
+  const url = direct || `${opts.gatewayUrl}/internal/bot-releases/${encodeURIComponent(version)}`
+  // 机器票只交给 Gateway 自己：直连地址和配对的 Gateway 不同源就裸取（同 upgrade.ts）。
+  // 票是这台机器的 root 控制面凭据，不能因为规格里一行地址就寄到 GitHub 去。
   const res = await fetch(url, {
-    headers: { authorization: 'Bearer ' + opts.token },
+    headers: {
+      ...(!direct || sameOrigin(direct, opts.gatewayUrl) ? { authorization: 'Bearer ' + opts.token } : {}),
+      'user-agent': `satuwork-manager/${managerVersion()}`,
+    },
     signal: AbortSignal.timeout(300_000),
   })
   if (!res.ok) throw new Error(`downloading release ${version} failed: ${res.status} ${(await res.text()).slice(0, 200)}`)
   const bytes = Buffer.from(await res.arrayBuffer())
 
-  // Gateway 在响应头里给 sha256。对不上就是传输坏了——解开只会得到更难查的症状。
-  // **头缺了也不装**：那一行是入库时服务端自己算的，一次正常的下发不可能没有它
-  // （见 gateway/src/lib/machines.ts 那句「不用 302 打发到远端地址」的注释）。
-  const want = String(res.headers.get('x-bot-sha256') || '').trim()
+  // 对不上就是传输坏了、或者那个地址上换了东西——解开只会得到更难查的症状。
+  // 直连时校验值是部署规格里的那一份（登记时 Gateway 自己拉一遍算的，经带机器票的通道
+  // 发下来），**不看**外部主机回的任何头。走 Gateway 时在响应头里；**头缺了也不装**：那一行
+  // 是入库时服务端自己算的，一次正常的下发不可能没有它。
+  const want = direct ? String(opts.sha256) : String(res.headers.get('x-bot-sha256') || '').trim()
   if (!want) throw new Error(`release ${version} came without a checksum, refusing to unpack`)
   const got = createHash('sha256').update(bytes).digest('hex')
   if (got !== want) throw new Error(`release ${version} checksum mismatch: ${got.slice(0, 12)} != ${want.slice(0, 12)}`)
@@ -101,4 +123,14 @@ async function fetchRelease(
     rmSync(tgz, { force: true })
   }
   return dir
+}
+
+/** 两个地址同不同源。解析不了的一律当不同源——宁可不带票。 */
+export function sameOrigin(url: string, gatewayUrl: string | undefined): boolean {
+  if (!gatewayUrl) return false
+  try {
+    return new URL(url).origin === new URL(gatewayUrl).origin
+  } catch {
+    return false
+  }
 }

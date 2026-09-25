@@ -60,8 +60,12 @@ import { fileURLToPath } from 'node:url'
  * `/worker/llm/*`，见 src/llm-relay.ts），席位的 bot.env 多一行 `GATEWAY_LLM_URL`。Gateway
  * 拿这个号数决定这台机器上的模型调用该从哪条路上看见（目前不按它分流：`/v1` 仍留给本地
  * Bot 和没重铺的席位——9 号管家铺的席位 bot.env 里没有那一行，Bot 照旧直打 Gateway）。
+ *
+ * 11：部署规格认 `botUrl` + `botSha256`：bot 包直接去外部地址（GitHub Release）取，不带机器票，
+ * 按规格里的 sha256 核对（src/releases.ts）；没有这两个字段仍从 Gateway 转发拉。Gateway 不按
+ * 这个号分流——字段是可选的，老管家不认就原样忽略，照旧走转发。
  */
-export const PROTOCOL = 10
+export const PROTOCOL = 11
 
 export interface ManagerState {
   machineId: string
