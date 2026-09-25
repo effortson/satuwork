@@ -157,30 +157,32 @@ jobs:
           fi
           [ -n "$target_tag" ] || { echo "没有目标 tag，跳过 Release" >&2; exit 0; }
 
-          # 如果 Release 已存在（例如已有 macOS dmg，现在补充 Windows exe），则追加/覆盖资产；
+          if [ -n "${NOTE:-}" ]; then
+            printf '%s\n' "$NOTE" > notes.md
+          else
+            {
+              echo 'Satuwork 桌面端（macOS、Windows）。'
+              echo
+              echo '- **macOS**：Apple 芯片选 aarch64，Intel 选 x64。'
+              echo '- **Windows**：64 位选 x64-setup.exe。'
+              echo
+              echo '**安装包还没有签名**：'
+              echo '- macOS：下载后系统提示「已损坏，无法打开」。拖进「应用程序」后在终端执行一次：'
+              echo '  ```'
+              echo '  xattr -dr com.apple.quarantine /Applications/Satuwork.app'
+              echo '  ```'
+              echo '- Windows：SmartScreen 会提示拦截，在提示框中点击「更多信息」→「仍要运行」。'
+            } > notes.md
+          fi
+
+          # 如果 Release 已存在（例如已有 macOS dmg，现在补充 Windows exe），则追加/覆盖资产并更新说明；
           # 如果不存在，则新建 Release。
           if gh release view "$target_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $target_tag 已存在，上传/更新资产..."
             gh release upload "$target_tag" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$target_tag" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
           else
             echo "Release $target_tag 不存在，新建 Release..."
-            if [ -n "${NOTE:-}" ]; then
-              printf '%s\n' "$NOTE" > notes.md
-            else
-              {
-                echo 'Satuwork 桌面端（macOS、Windows）。'
-                echo
-                echo '- **macOS**：Apple 芯片选 aarch64，Intel 选 x64。'
-                echo '- **Windows**：64 位选 x64-setup.exe。'
-                echo
-                echo '**安装包还没有签名**：'
-                echo '- macOS：下载后系统提示「已损坏，无法打开」。拖进「应用程序」后在终端执行一次：'
-                echo '  ```'
-                echo '  xattr -dr com.apple.quarantine /Applications/Satuwork.app'
-                echo '  ```'
-                echo '- Windows：SmartScreen 会提示拦截，在提示框中点击「更多信息」→「仍要运行」。'
-              } > notes.md
-            fi
             gh release create "$target_tag" dist/* \
               --repo "$GITHUB_REPOSITORY" \
               --title "$target_tag" \
