@@ -95,9 +95,15 @@ jobs:
         with:
           workspaces: './desktop/src-tauri -> target'
 
+      - name: 准备本地 Bot 运行时
+        run: pnpm --filter satuwork-desktop prepare:runtime
+
+      - name: 准备 UI
+        run: pnpm --filter satuwork-desktop prepare:ui
+
       # macOS 用 dmg，Windows 用 nsis。
       - name: 打包
-        run: pnpm --filter satuwork-desktop build --bundles ${{ matrix.bundle }}
+        run: pnpm --filter satuwork-desktop exec tauri build --bundles ${{ matrix.bundle }}
 
       - name: 核对产物
         id: artifact
