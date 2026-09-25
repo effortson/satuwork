@@ -33,8 +33,9 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
   `.vercel/output` 之后 static-build 直接透传这个目录，不再看 `outputDirectory`。
 - `vercel.json` 只剩三件事：`installCommand`、`buildCommand`、`crons`（CLI 会把 crons 并进最终
   的 `config.json`）。Cron 每分钟打 `/cron/tick`（跑的是 Debian 上调度器每 30 秒跑的那份
-  `maintenanceTick`）。**Cron 每分钟一次要 Pro**，Hobby 只能每天一次——那样交接催办、审计派发、
-  租约回收都成了一天一拍，不能用。
+  `maintenanceTick`，外加 Debian 上渠道分发器做的那一半：投递「已经有回复、只差发出去」的
+  渠道事件和它们的重试，报出「归工人却没人领」的绑定）。**Cron 每分钟一次要 Pro**，Hobby
+  只能每天一次——那样交接催办、审计派发、租约回收、渠道重试都成了一天一拍，不能用。
 - **迁移不在 build 里跑**，`buildCommand` 只打包。见下面「迁移怎么跑」。
 
 ## 环境变量

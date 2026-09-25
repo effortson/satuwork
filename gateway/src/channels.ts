@@ -512,19 +512,54 @@ export async function failClaimedEvent(
 }
 
 /**
- * 这条绑定的 Bot 所在机器够不够新到自己跑渠道那一轮（协议 ≥ MIN_CHANNEL_WORKER_PROTOCOL）。
- * 够新就归工人：Gateway 的扫描不碰它**还没有回复**的事件（跑一轮是工人的活）；已经有回复、
- * 只差投递的照旧 Gateway 发（投递是几次短请求）。一次 tick 里同一台机器只问一遍。
+ * 归工人、却一直没人来领的那几条：报到各自的绑定上（见 flagUnclaimed）。一条绑定一轮只看一次。
+ *
+ * 「归工人」是 Bot 所在机器的协议 ≥ MIN_CHANNEL_WORKER_PROTOCOL：那时 Gateway 的扫描不碰
+ * 它**还没有回复**的事件（跑一轮是工人的活）；已经有回复、只差投递的照旧 Gateway 发（投递
+ * 是几次短请求）。这条判据写在 SQL 里（db.dueChannelEvents 的 scope），各方只取归自己的
+ * 那几条——取完再筛的话，被筛掉的行会一直占着队头（见那边的注释）。
  */
-export async function workerOwnedBinding(db: Db, binding: Binding, cache: Map<string, boolean>): Promise<boolean> {
-  const rt = await db.seatRuntime(binding.accountId, binding.botId)
-  if (!rt?.machineId) return false
-  const hit = cache.get(rt.machineId)
-  if (hit !== undefined) return hit
-  const machine = await db.machine(rt.machineId)
-  const owned = (machine?.protocol ?? 0) >= MIN_CHANNEL_WORKER_PROTOCOL
-  cache.set(rt.machineId, owned)
-  return owned
+async function flagUnclaimedAll(db: Db, now: number): Promise<void> {
+  const stale = await db.dueChannelEvents(now, 20, {
+    owner: 'unclaimed',
+    minProtocol: MIN_CHANNEL_WORKER_PROTOCOL,
+    createdBefore: now - WORKER_UNCLAIMED_MS,
+  })
+  const seen = new Set<string>()
+  for (const event of stale) {
+    if (seen.has(event.bindingId)) continue
+    seen.add(event.bindingId)
+    const binding = await db.channelBinding(event.bindingId)
+    if (binding) await flagUnclaimed(db, binding, event)
+  }
+}
+
+/**
+ * 函数形态的那一拍（`/cron/tick`，见 routes/cron.ts）：把 Gateway 自己的投递收掉，归工人却
+ * 没人领的报出来。
+ *
+ * 常驻进程上这两件事由 startChannelDispatcher 的定时器做；函数形态没有定时器，以前也就
+ * 没人做——已经有回复、只差投递的事件一旦投递失败（Telegram 429、网络抖一下）就排进
+ * retry，而工人那头不碰带回复的（那是 Gateway 的活），于是它永远停在那儿；更糟的是它挡在
+ * 这个会话的最前面（见 dueChannelEvents 的前驱条件），那个人之后发的每一条都跟着卡死。
+ *
+ * **只投递、不跑一轮**：跑一轮要等席位最长二十分钟，函数扛不住；Bot 还在老管家上的那些
+ * 本来就不动（docs/vercel-deploy.md）。**要等处理完再返回**：函数一回响应就冻住，没等完的
+ * 投递会停在半路，只能等租约过期再来一遍。
+ */
+export async function tickChannelDeliveries(db: Db, key: Buffer, keys: JwtKeys): Promise<number> {
+  const now = Date.now()
+  const events = await db.dueChannelEvents(now, 10, {
+    owner: 'gateway',
+    minProtocol: MIN_CHANNEL_WORKER_PROTOCOL,
+    deliveriesOnly: true,
+  })
+  await Promise.all(events.map((event) =>
+    processOne(db, key, keys, event)
+      .catch((e: Error) => console.error(`satuwork-gateway: 渠道事件 ${event.id} 投递失败：${e.message}`)),
+  ))
+  await flagUnclaimedAll(db, now)
+  return events.length
 }
 
 /**
@@ -886,19 +921,13 @@ export function startChannelDispatcher(db: Db, key: Buffer, keys: JwtKeys): () =
   const tick = () => {
     if (scanning || stopped) return
     scanning = true
-    const owned = new Map<string, boolean>()
-    void db.dueChannelEvents(Date.now(), 10)
+    const now = Date.now()
+    // 只取 Gateway 自己的：归工人的机器上、还没跑出回复的事件不碰，工人会来领
+    // （routes/worker.ts）。筛在 SQL 里，它们就挤不掉这里的名额。
+    void db.dueChannelEvents(now, 10, { owner: 'gateway', minProtocol: MIN_CHANNEL_WORKER_PROTOCOL })
       .then(async (events) => {
         for (const event of events) {
           if (activeEvents.has(event.id)) continue
-          // 归工人的机器上、还没跑出回复的事件不碰：工人会来领（routes/worker.ts）。
-          if (!event.reply) {
-            const binding = await db.channelBinding(event.bindingId)
-            if (binding && (await workerOwnedBinding(db, binding, owned))) {
-              await flagUnclaimed(db, binding, event)
-              continue
-            }
-          }
           activeEvents.add(event.id)
           // 扫描只负责派活，不等最长二十分钟的模型轮次。一个慢会话不能挡住其它渠道
           // 或其它会话的新消息；同一远端会话的顺序仍由 dueChannelEvents 的前驱条件保证。
@@ -906,6 +935,8 @@ export function startChannelDispatcher(db: Db, key: Buffer, keys: JwtKeys): () =
             .catch((e: Error) => console.error(`satuwork-gateway: 渠道事件 ${event.id} 处理失败：${e.message}`))
             .finally(() => activeEvents.delete(event.id))
         }
+        // 归工人却一直没人来领的，另取另报——它们不在上面那份名单里。
+        await flagUnclaimedAll(db, now)
       })
       .catch((e: Error) => console.error(`satuwork-gateway: 渠道投递扫描失败：${e.message}`))
       .finally(() => { scanning = false })

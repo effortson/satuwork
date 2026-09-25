@@ -7,8 +7,8 @@
    桌面端里的本地 Bot 跑在这台电脑上（Tauri 壳起的进程，听 127.0.0.1 的一个端口）。
    以前它的对话流、历史、发消息都先到 Gateway、再穿一条反向隧道绕回本机——为的是让
    Gateway 能「主动打进」本地 Bot。隧道拆了（docs/adr-gateway-vercel-neon.md §4）：
-   本地 Bot 的请求在这一层**直接改道**到 127.0.0.1，带的票换成这颗 Bot 的席位票
-   （sat_，从 /runtime/bots/:id/local-bootstrap 拿的那把，bot 只认它）。
+   本地 Bot 的请求在这一层**直接改道**到 127.0.0.1，带的票换成这颗 Bot 的票
+   （sat_，从 /runtime/bots/:id/local-bootstrap 拿的桌面端那一套，bot 只认它）。
 
    改道只发生在两类路径上：`/runtime/bots/:id/session`（取会话）和
    `/runtime/sessions/:sid/*`（那条会话上的一切）。别的照旧打 Gateway——公司模版、
@@ -36,7 +36,14 @@ function gatewayAbs(url) {
   return typeof url === 'string' && url.startsWith('/') ? gatewayBase() + url : url
 }
 
-/** botId → { base, token }。壳子起了哪些本地 Bot、听在哪个口、用哪把票。 */
+/**
+ * botId → { base, token, login }。壳子起了哪些本地 Bot、听在哪个口、用哪把票，以及那把票
+ * 是拿哪张登录票要来的（`login`）。
+ *
+ * 本地 Bot 的票跟登录票同生共死（Gateway 迁移 0041）：改口令、被管理员重置之后它一起作废。
+ * 而那之后页面手上一定换了一张登录票（重新登录，或改口令时回来的新票）——所以「登录票变了」
+ * 就是「该重新要一次本地 Bot 的票」的信号，见 chat.js 的 overlayLocalRuntime。
+ */
 const localBots = new Map()
 /** sessionId → botId。只登记本地 Bot 的会话；查不到的一律走 Gateway。 */
 const localSessions = new Map()
@@ -44,7 +51,11 @@ const localSessions = new Map()
 function registerLocalBot(botId, port, tok) {
   if (!botId || !port) return
   const prev = localBots.get(botId) || {}
-  localBots.set(botId, { base: 'http://127.0.0.1:' + port, token: tok || prev.token || '' })
+  localBots.set(botId, {
+    base: 'http://127.0.0.1:' + port,
+    token: tok || prev.token || '',
+    login: tok ? token() : prev.login,
+  })
 }
 
 function localBotOf(botId) {

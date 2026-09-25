@@ -1,8 +1,0 @@
-{
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "remote-main",
-  "description": "Gateway 页面只能调用应用自有的窄命令；命令本身再次核对 Gateway origin 与 Bot id。",
-  "windows": ["main"],
-  "remote": { "urls": ["http://*:*", "https://*:*"] },
-  "permissions": ["core:default", "local-bot-commands"]
-}

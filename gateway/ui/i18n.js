@@ -738,7 +738,8 @@ window.SATU_I18N = {
   '价目表：一条套餐 = 一个金额 + 一个席位数。': 'Price list: one plan = one amount + one seat count.',
   '接入之后，它提供的工具即可被 Agent 调用。': 'Once connected, the tools it exposes become callable by agents.',
   '立即断开其全部登录，且无法再登录。历史记录保留。': 'Ends every session immediately and blocks sign-in. History is kept.',
-  '生成后自行发给成员，1 小时内有效且仅能使用一次': 'Send it yourself; valid for one hour and usable once',
+  '生成后自行发给成员，1 小时内有效且仅能使用一次。生成的同时，TA 的旧口令就不能再用了':
+    'Send it yourself; valid for one hour and usable once. Their old password stops working as soon as you generate it',
   '修改角色与状态，或给 TA 发一条口令重置链接。': 'Change role and status, or send them a password reset link.',
   '点右上角接入一台：填地址与权限，先把配置登记下来。': 'Connect one from the top right: enter its URL and permissions to register the config.',
   '发消息用这一对。密钥在 Gateway，不在本机。': 'Use this pair to send messages. Keys live on the Gateway, not locally.',
@@ -811,10 +812,10 @@ window.SATU_I18N = {
     'The Gateway uses JWTs and keeps no session table, so other devices can be neither listed nor signed out. Changing your password invalidates every issued ticket; this session gets a fresh one.',
   '名字、简介、提示词、模型、上线状态、Skill 与 MCP 会写回公司目录。开场问候、守卫、记忆、分组与知识库还没有落点。':
     'Name, description, prompt, model, live status, skills and MCP are written back to the company catalog. Greeting, guardrails, memory, groups and knowledge base have nowhere to land yet.',
-  '生成的同时，TA 当前的登录已全部失效。链接只显示这一次。Gateway 没有会话表，签发早于作废时间的 JWT 会被拒，未过期的票在此之前仍可能可用。':
-    'Generating this immediately invalidates all of their sessions. The link is shown once. The Gateway keeps no session table: JWTs issued before the revocation time are rejected, though unexpired tickets may still work until then.',
-  '成员这一半是真的：停用会当场作废对方已签发的 JWT（签发早于作废时间的票会被拒），重置口令同样作废旧登录。角色与权限的判断在服务端，界面上的禁用只是提前告诉你结果。Gateway 没有会话表，未过期且签发于作废之后的 JWT 仍可用，直到过期；停用账号登录会被拒绝。':
-    'The member half is real: disabling immediately invalidates their issued JWTs (tickets issued before the revocation time are rejected), and a password reset does the same. Role and permission checks run server-side; the disabled controls here just tell you the outcome early. The Gateway keeps no session table, so an unexpired JWT issued after the revocation still works until it expires; disabled accounts are refused at sign-in.',
+  '生成的同时，TA 当前的登录和旧口令都已失效，只能用这条链接重新设口令。链接只显示这一次。':
+    'Generating this signed them out everywhere and retired their old password; they can only set a new one through this link. The link is shown once.',
+  '成员这一半是真的：停用会当场作废对方已签发的 JWT（签发早于作废时间的票会被拒），重置口令同样作废旧登录，旧口令也一并失效。角色与权限的判断在服务端，界面上的禁用只是提前告诉你结果。Gateway 没有会话表，未过期且签发于作废之后的 JWT 仍可用，直到过期；停用账号登录会被拒绝。':
+    'The member half is real: disabling immediately invalidates their issued JWTs (tickets issued before the revocation time are rejected), and a password reset does the same and also retires the old password. Role and permission checks run server-side; the disabled controls here just tell you the outcome early. The Gateway keeps no session table, so an unexpired JWT issued after the revocation still works until it expires; disabled accounts are refused at sign-in.',
 
   '最小到厘（小数点后 3 位）。': 'Down to a tenth of a cent (3 decimal places).',
   'amount 最多到厘（小数点后 3 位）': 'amount supports at most 3 decimal places',

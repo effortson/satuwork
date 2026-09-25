@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { Account, ChargeStatus, Db } from './db.ts'
 import type { JwtKeys } from './crypto.ts'
 import { verifyJwt } from './crypto.ts'
-import { HttpError, bearer, json, type Req, type Router } from './http.ts'
+import { HttpError, bearer, json, watchClient, type Req, type Router } from './http.ts'
 import { EMPTY_USAGE, applyBodyPatch, openaiModelId, redact, type CatalogModel, type Llm, type UpstreamTarget } from './llm.ts'
 import type { Meter } from './lib/meter.ts'
 import { mergeUsage, openaiUsage, tokensOf, usageFromPayload, type TokenUsage } from './lib/llm-usage.ts'
@@ -266,7 +266,6 @@ function writeSse(res: ServerResponse, payload: unknown) {
 }
 
 async function streamChatCompletions(
-  req: Req,
   res: ServerResponse,
   llm: Llm,
   found: { provider: string; id: string },
@@ -285,11 +284,21 @@ async function streamChatCompletions(
     connection: 'keep-alive',
   })
   const context = toPiContext(body, found.provider, found.id)
+  /**
+   * 客户端一走就得停下来。以前没有这一条：浏览器关了标签页，Gateway 还在把上游的
+   * token 一个个拉完——写进一个没人读的 socket，钱照付。后来补过一条 `req.on('close')`，
+   * 可它挂在请求体读完之后，一次都没响过（见 http.ts 的 watchClient）。
+   *
+   * 信号直接交给 pi-ai：它当场中止底层请求，不必等下一帧到了才 break——扩展思考那种
+   * 半天不来一帧的流，「等下一帧」就等于白付那一段。
+   */
+  const watch = watchClient(res)
   const stream = llm.models.streamSimple(piModel as any, context as any, {
     apiKey: secret,
     temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
     maxTokens: typeof body.max_tokens === 'number' ? body.max_tokens : typeof body.max_completion_tokens === 'number' ? body.max_completion_tokens : undefined,
     reasoning: reasoningOf(body),
+    signal: watch.signal,
   })
   let usage: TokenUsage | undefined
   /**
@@ -303,18 +312,14 @@ async function streamChatCompletions(
     const u = tokensOf(openaiUsage(raw), raw)
     if (u && (u.prompt_tokens || u.completion_tokens)) usage = mergeUsage(usage, u)
   }
-  // 客户端一走就得停下来。以前没有这一条：浏览器关了标签页，Gateway 还在把上游的
-  // token 一个个拉完——写进一个没人读的 socket，钱照付。break 会调 for-await 的
-  // .return()，取消一路传到底层流。
-  let gone = false
-  const onClose = () => {
-    gone = true
-  }
-  req.on('close', onClose)
   try {
     for await (const event of stream) {
-      if (gone) break
+      // 先记用量，再看人走没走：中止收尾的那一帧（`error`，reason 是 aborted）带着的正是
+      // 到此为止已经问上游要过的那些 token。
       if ('partial' in event) noteUsage(event.partial?.usage)
+      else if (event.type === 'error') noteUsage(event.error?.usage)
+      // break 会调 for-await 的 .return()；底层请求已经由上面那个信号中止了。
+      if (watch.gone()) break
       switch (event.type) {
         case 'start':
           writeSse(res, chunk(id, modelId, { role: 'assistant' }))
@@ -358,8 +363,7 @@ async function streamChatCompletions(
           break
         }
         case 'error': {
-          // 报错那一帧带的是到此为止的 AssistantMessage，usage 里有已经算过的输入。
-          noteUsage(event.error?.usage)
+          // 报错那一帧带的是到此为止的 AssistantMessage，usage 在循环开头已经记过了。
           outcome = 'error'
           const msg = redact(event.error?.errorMessage || 'model error', secret)
           // **错误帧在前，finish 块在后。** 反过来写的话，任何一个「读到 finish_reason
@@ -373,18 +377,19 @@ async function streamChatCompletions(
       }
     }
   } catch (e) {
-    outcome = 'error'
+    // 中止也可能以抛出的形式收场：那是客户端走了，不是上游报错。
+    outcome = watch.gone() ? 'failed' : 'error'
     const msg = redact((e as Error).message || 'upstream error', secret)
-    if (!gone) writeSse(res, { error: { message: msg, type: 'upstream_error' } })
+    if (!watch.gone()) writeSse(res, { error: { message: msg, type: 'upstream_error' } })
   } finally {
-    req.off('close', onClose)
+    watch.release()
   }
   // 客户端已经走了就别再往 socket 里写；但 usage 要照常返回——已经问上游要过的
   // token 是花掉了的，不记账等于白送。
-  if (!gone) {
-    res.write('data: [DONE]\n\n')
-    res.end()
-  }
+  const gone = watch.gone()
+  if (!gone) res.write('data: [DONE]\n\n')
+  // 走了也 end 一下：对已经断开的响应是空操作，但路由器就不会再往上补一个 204。
+  res.end()
   // 客户端中途走了记 failed，上游报错记 error。账本的 status 只有 ok / failed / timeout /
   // denied / error（迁移 0007 的 check），没有 aborted——要加得开一条新迁移，这里先用
   // 现有的两档；已知的 usage 照常计价，一点都没拿到时 settle 会标 unpriced。
@@ -398,11 +403,13 @@ async function completeChatCompletions(
   found: { provider: string; id: string },
   secret: string,
   body: Record<string, unknown>,
-): Promise<TokenUsage | undefined> {
+): Promise<RunOutcome> {
   const modelId = openaiModelId(found)
   const piModel = llm.piModel(found.provider, found.id)
   if (!piModel) throw new HttpError(404, '模型不在可见目录里', { model: modelId })
   const context = toPiContext(body, found.provider, found.id)
+  // 同流式那一岔：人走了就中止上游，不等它把一整段回答生成完再白付钱。
+  const watch = watchClient(res)
   let message: any
   try {
     message = await llm.models.completeSimple(piModel as any, context as any, {
@@ -411,9 +418,17 @@ async function completeChatCompletions(
       // 同流式那一岔：新版 OpenAI SDK 发的是 max_completion_tokens，只认 max_tokens 会把上限静静丢掉。
       maxTokens: typeof body.max_tokens === 'number' ? body.max_tokens : typeof body.max_completion_tokens === 'number' ? body.max_completion_tokens : undefined,
       reasoning: reasoningOf(body),
+      signal: watch.signal,
     })
   } catch (e) {
-    throw new HttpError(503, redact((e as Error).message || 'upstream error', secret))
+    if (!watch.gone()) throw new HttpError(503, redact((e as Error).message || 'upstream error', secret))
+  } finally {
+    watch.release()
+  }
+  // 客户端中途走了：没人收这份回答，按已知的用量记 failed（同流式那一岔）。
+  if (watch.gone()) {
+    res.end()
+    return { usage: tokensOf(openaiUsage(message?.usage), message?.usage), status: 'failed' }
   }
   if (message?.stopReason === 'error' || message?.errorMessage) {
     throw new HttpError(503, redact(String(message.errorMessage || 'model error'), secret))
@@ -452,15 +467,19 @@ async function completeChatCompletions(
 }
 
 async function proxyUpstream(
-  req: Req,
   res: ServerResponse,
   opts: { url: string; headers: Record<string, string>; body: unknown; secret: string },
-): Promise<TokenUsage | undefined> {
+): Promise<RunOutcome> {
   // 客户端断了就别再拉上游：那边是按 token 计费的，没人读的字节一样要付钱。
-  // 和 120s 超时合成一个信号——两个条件里先到的那个生效。
+  // 和 120s 超时合成一个信号——两个条件里先到的那个生效。「断了」看的是 res，
+  // 不是 req（见 http.ts 的 watchClient）。
   const ac = new AbortController()
-  const onClose = () => ac.abort()
-  req.on('close', onClose)
+  const watch = watchClient(res, () => ac.abort())
+  /** 人已经走了：没有人收这份响应，账按已知的那部分记 failed（同 streamChatCompletions）。 */
+  const abandoned = (usage: TokenUsage | undefined): RunOutcome => {
+    if (!res.writableEnded) res.end()
+    return { usage, status: 'failed' }
+  }
   /**
    * **这 120 秒只管到响应头为止。**
    *
@@ -493,12 +512,21 @@ async function proxyUpstream(
     })
   } catch (e) {
     clearHeaderTimer()
-    req.off('close', onClose)
+    watch.release()
+    // 响应头还没到人就走了：没东西可转，也没有用量可记。
+    if (watch.gone()) return abandoned(undefined)
     throw new HttpError(503, redact((e as Error).message || 'upstream unreachable', opts.secret))
   }
   clearHeaderTimer()
   const ctype = upstream.headers.get('content-type') || 'application/json; charset=utf-8'
-  const streaming = ctype.includes('text/event-stream') || ctype.includes('text/plain')
+  /**
+   * **只有 2xx 才边收边转。**
+   *
+   * 非 2xx 是一页错误，不是回答：它得整页收下、过一遍 redact 再转出去——上游（或者它前面
+   * 那层代理）的错误页常常把请求原样回显，而 `text/plain` 恰恰是这类错误页最常见的形状。
+   * 以前只按类型判，这种错误页会走流式那一支，一个字节都不抹，密钥就原样交给了调用方。
+   */
+  const streaming = upstream.ok && (ctype.includes('text/event-stream') || ctype.includes('text/plain'))
   if (streaming) {
     res.writeHead(upstream.status, {
       'content-type': ctype,
@@ -550,15 +578,20 @@ async function proxyUpstream(
         /* 中途断了：保留已经累计的 usage，下面照常收尾。 */
       }
     }
-    req.off('close', onClose)
+    watch.release()
+    // 客户端中途走了：读流是被上面那个信号中止的，已经累计到的 usage 照记，状态记 failed。
+    if (watch.gone()) return abandoned(usage)
     if (!res.writableEnded) res.end()
     return usage
   }
   let text: string
   try {
     text = redact(await upstream.text(), opts.secret)
+  } catch (e) {
+    if (watch.gone()) return abandoned(undefined)
+    throw new HttpError(503, redact((e as Error).message || 'upstream error', opts.secret))
   } finally {
-    req.off('close', onClose)
+    watch.release()
   }
   res.writeHead(upstream.status, {
     'content-type': ctype.includes('json') ? 'application/json; charset=utf-8' : ctype,
@@ -595,7 +628,7 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
     const callId = await recordLlmCall(db, account, found)
     const stream = body.stream === true
     if (stream) {
-      await withSettle(db, meter, account, found, callId, () => streamChatCompletions(req, res, llm, found, secret, body))
+      await withSettle(db, meter, account, found, callId, () => streamChatCompletions(res, llm, found, secret, body))
       return
     }
     await withSettle(db, meter, account, found, callId, () => completeChatCompletions(res, llm, found, secret, body))
@@ -625,7 +658,7 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
     const callId = await recordLlmCall(db, account, found)
     applyBodyPatch(body, target.body)
     await withSettle(db, meter, account, found, callId, () =>
-      proxyUpstream(req, res, {
+      proxyUpstream(res, {
         url: target.url,
         headers: { ...target.headers, 'content-type': 'application/json' },
         body,
@@ -652,7 +685,7 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
     const callId = await recordLlmCall(db, account, found)
     applyBodyPatch(body, target.body)
     await withSettle(db, meter, account, found, callId, () =>
-      proxyUpstream(req, res, {
+      proxyUpstream(res, {
         url: target.url,
         headers: { ...target.headers, 'content-type': 'application/json' },
         body,

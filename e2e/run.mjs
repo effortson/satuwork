@@ -80,6 +80,8 @@ import { runManagerConfirm } from './manager-confirm.mjs'
 import { runChannels } from './channels.mjs'
 import { runTelegramRich } from './telegram-rich.mjs'
 import { runTelegramChannel } from './telegram-channel.mjs'
+import { runChannelQueue } from './channel-queue.mjs'
+import { runLocalBootstrap } from './local-bootstrap.mjs'
 import { PG_URL, requirePg } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
@@ -2020,6 +2022,33 @@ async function runGateway() {
     invitedTok = login.json.token
   })
 
+  await test('管理员重置口令：旧登录、旧口令当场作废；接受链接回来的票当场能用', async () => {
+    // 作废按秒比（iat < tokenRevokedAt 的那一秒）。刚登录拿的票和重置落在同一秒的话，
+    // 它会按规矩被放过——先跨过这一秒，下面「旧票作废」那句才是确定的。
+    await new Promise((r) => setTimeout(r, 1100))
+    const reset = await req(base, 'POST', `/orgs/${inviteOrg}/accounts/${invitedId}/reset`, { token: inviteAdminTok })
+    assert(reset.status === 200, `reset ${reset.status} ${reset.text}`)
+    const resetToken = String(reset.json.invite?.url || '').split('/join/')[1]
+    assert(resetToken, `重置没给出链接：${reset.text}`)
+
+    const stale = await req(base, 'GET', '/me', { token: invitedTok })
+    assert(stale.status === 401, `重置之后旧票该 401，实际 ${stale.status}`)
+    // 只作废票不作废口令等于没重置：知道旧口令的人（泄露正是要重置的原因）能立刻再登一次，
+    // 拿到一张签发在作废之后、活满七天的新票。
+    const oldPw = await req(base, 'POST', '/auth/login', { body: { email: invitedEmail, password: 'joiner-pass-10' } })
+    assert(oldPw.status === 401, `重置之后旧口令还能登录：${oldPw.status} ${oldPw.text}`)
+
+    // 接受那一步会再作废一次；它自己签出来的那张票得当场能用，不能把自己也作废了。
+    // 口令设回原来那个：后面几条用例还拿它登录。
+    const acc = await req(base, 'POST', `/invites/${resetToken}/accept`, { body: { password: 'joiner-pass-10' } })
+    assert(acc.status === 200, `accept ${acc.status} ${acc.text}`)
+    const fresh = await req(base, 'GET', '/me', { token: acc.json.token })
+    assert(fresh.status === 200, `接受链接回来的票不能用：${fresh.status} ${fresh.text}`)
+    const relogin = await req(base, 'POST', '/auth/login', { body: { email: invitedEmail, password: 'joiner-pass-10' } })
+    assert(relogin.status === 200, `设好新口令之后登不进：${relogin.status} ${relogin.text}`)
+    invitedTok = relogin.json.token
+  })
+
   await test('公司账单：SPA + 真席位 + 空发票/充值，不编假钱', async () => {
     const spa = await req(base, 'GET', '/billing')
     assert(spa.status === 200, `spa /billing ${spa.status}`)
@@ -3418,6 +3447,7 @@ async function main() {
     await suite('manager-confirm', () => runManagerConfirm({ root, test, assert, log }))
     await suite('channels', () => runChannels({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('channel-webhook', () => runChannelWebhook({ gwRoot, test, req, start, waitHttp, assert, log }))
+    await suite('channel-queue', () => runChannelQueue({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('telegram-rich', () => runTelegramRich({ root, test, assert, log }))
     await suite('telegram-channel', () => runTelegramChannel({ root, test, assert, log }))
     await suite('ui-smoke', () => runUiSmoke({ root, gwRoot, test, req, start, waitHttp, assert, log }))
@@ -3452,6 +3482,7 @@ async function main() {
     await suite('worker', () => runWorker({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('serverless', () => runServerless({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('local-routines', () => runLocalRoutines({ root, test, assert, log }))
+    await suite('local-bootstrap', () => runLocalBootstrap({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('release-blob', () => runReleaseBlob({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('browser', () => runBrowser({ root, test, assert, log }))
     await suite('mounted', () => runMounted({ root, test, assert, log }))

@@ -26,9 +26,10 @@ import type { TokenUsage } from '../lib/llm-usage.ts'
 import { randomUUID } from 'node:crypto'
 import {
   CHANNEL_WORKER_TUNING, approvalMarkdown, channelFiles, channelHandoffs, deliverClaimedEvent, failClaimedEvent,
-  telegramDraftId, workerOwnedBinding, type ChannelApprovalSnapshot, type StoredSecret,
+  telegramDraftId, type ChannelApprovalSnapshot, type StoredSecret,
 } from '../channels.ts'
 import { decryptChannelSecret } from '../crypto.ts'
+import { MIN_CHANNEL_WORKER_PROTOCOL } from '../deploy.ts'
 import { TelegramError, telegramSendApproval, telegramSendDraft, telegramSendTyping } from '../channels/telegram.ts'
 
 /**
@@ -259,16 +260,17 @@ function attachChannelWorker(router: Router, db: RouteCtx['db'], keys: RouteCtx[
   router.get('/worker/channels/events/due', async (req, res) => {
     const machine = await requireMachine(req, db)
     const now = Date.now()
-    const owned = new Map<string, boolean>()
     const jobs: unknown[] = []
-    for (const event of await db.dueChannelEvents(now, 20)) {
-      // 已经有回复、只差投递的归 Gateway 自己（几次短请求），工人只接「还要跑一轮」的。
-      if (event.reply) continue
+    /**
+     * 只取**这台机器上、还要跑一轮**的（已经有回复、只差投递的归 Gateway 自己，几次短请求）。
+     * 筛在 SQL 里：以前取的是全平台最老的 20 条再按机器挑，别的机器堆着的活会一直占着那
+     * 20 个名额，这台机器就再也领不到自己的（见 db.dueChannelEvents）。
+     */
+    for (const event of await db.dueChannelEvents(now, 20, { owner: 'worker', machineId: machine.id, minProtocol: MIN_CHANNEL_WORKER_PROTOCOL })) {
       const binding = await db.channelBinding(event.bindingId)
       if (!binding || binding.status !== 'active') continue
       const rt = await db.seatRuntime(binding.accountId, binding.botId)
       if (rt?.machineId !== machine.id) continue
-      if (!(await workerOwnedBinding(db, binding, owned))) continue
       const lease = randomUUID()
       if (!(await db.claimChannelEvent(event.id, now, now + CHANNEL_WORKER_TUNING.leaseMs, lease))) continue
       jobs.push({

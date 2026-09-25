@@ -17,7 +17,7 @@ import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { el, fakeSse } from './ui-dom.mjs'
 import { catchUpFrames, newCatchUp, remember } from '../manager/src/roster-filter.ts'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { freePort } from './ports.mjs'
 
 const APP = 'gateway/ui/app.js'
@@ -90,15 +90,21 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(/\nboot\(\)\s*$/.test(last), `最后一个分片 ${parts[parts.length - 1]} 末尾没有 boot()`)
     })
 
-    await test('Desktop 本地命令权限覆盖带端口的开发 Gateway', async () => {
-      // URLPattern 里省略端口不是「任意端口」，而是只认协议默认端口。开发环境固定会
-      // 带 localhost:3080；这里不钉住的话 capability 看着有 http://*，invoke 仍会被拒。
-      const cap = JSON.parse(readFileSync(join(root, 'desktop/src-tauri/capabilities/remote.json'), 'utf8'))
-      const urls = cap.remote?.urls || []
-      const allowed = (url) => urls.some((pattern) => new URLPattern(pattern).test(url))
-      assert(allowed('http://localhost:3080/'), `Desktop 权限不匹配开发地址：${JSON.stringify(urls)}`)
-      assert(allowed('https://gateway.example:8443/'), `Desktop 权限不匹配 HTTPS 自定义端口：${JSON.stringify(urls)}`)
-      assert(!allowed('file:///tmp/x'), '本地 Bot 命令权限不该放给 file: 页面')
+    await test('Desktop 本地命令只放给包里那份界面（本地源），不放给任何远端页面', async () => {
+      // 界面打在包里、由壳子自注册的 satu:// 协议发出来（Windows 上是 http://satu.localhost），
+      // Tauri 把自注册的协议判为本地源，capability 不需要 remote 就够得着。这里以前带着
+      // `remote.urls: http://*:* / https://*:*`——那是窗口直接装 Gateway 页面时代留下的，如今等于
+      // 把 start_local_bot 放给主窗口里导航到的任何一个 http(s) 页面（导航守卫对
+      // `/seats/<x>/vnc/` 这种路径是不看源的）。
+      const dir = join(root, 'desktop/src-tauri/capabilities')
+      const main = JSON.parse(readFileSync(join(dir, 'main.json'), 'utf8'))
+      assert(main.windows?.includes('main'), `主窗口没有挂上这份 capability：${JSON.stringify(main.windows)}`)
+      assert(main.permissions?.includes('local-bot-commands'), '主窗口调不了本地 Bot 那组命令了')
+      assert(main.local !== false, '包里那份界面是本地源，local 不能关')
+      for (const f of readdirSync(dir).filter((n) => n.endsWith('.json'))) {
+        const cap = JSON.parse(readFileSync(join(dir, f), 'utf8'))
+        assert(!cap.remote, `${f} 给远端页面开了 IPC：${JSON.stringify(cap.remote)}`)
+      }
     })
 
     await test('桌面端关窗后恢复登录，浏览器仍只保留当前标签页', async () => {
@@ -1161,6 +1167,37 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!macHtml.includes('-setup.exe'), 'Mac 上摆出了 .exe')
     })
 
+    await test('下载页：iPhone、iPad 不认成 Mac——那上面没有桌面端可装', async () => {
+      // iPhone / iPad 的 UA 里都写着「like Mac OS X」；只看字样的话它们全被认成 Mac，页面还说
+      // 「看起来你正用的就是这个系统」，把一个装不上的 .dmg 摆到人面前。
+      const phones = [
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+        'Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+        'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Mobile Safari/537.36',
+      ]
+      for (const userAgent of phones) {
+        const html = (await boot(undefined, { path: '/download', userAgent })).html()
+        assert(!html.includes('看起来你正用的就是这个系统'), `移动设备被认成了桌面系统：${userAgent}`)
+        assert(html.includes('没认出你的系统'), `移动设备上该照实说没认出来：${userAgent}`)
+      }
+      // iPadOS 默认的桌面版网页模式：UA 和 Mac 一字不差，只有触点数露馅（Mac 没有触摸屏）。
+      const desktopMode = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15'
+      const ipad = (await boot(undefined, { path: '/download', userAgent: desktopMode, maxTouchPoints: 5 })).html()
+      assert(!ipad.includes('看起来你正用的就是这个系统'), '桌面版网页模式的 iPad 被认成了 Mac')
+      const mac = (await boot(undefined, { path: '/download', userAgent: desktopMode })).html()
+      assert(mac.includes('看起来你正用的就是这个系统'), '真 Mac（没有触点）反而不认了')
+    })
+
+    await test('下载页那条「还没发布」的横条是说给来下载的人听的，不教人改源码', async () => {
+      // 这条地址是要发给员工的。以前横条上写着「核对 pages-download.js 里的 DL_VERSION，并把
+      // DL_PENDING 关掉」——员工读不懂也改不了，只会以为这个产品没做完。
+      const html = (await boot(undefined, { path: '/download' })).html()
+      for (const dev of ['DL_PENDING', 'DL_VERSION', 'pages-download.js', 'desktop/README.md', '发版 CI']) {
+        assert(!html.includes(dev), `页面上露出了给开发者看的字：${dev}`)
+      }
+      assert(html.includes('satu-lg-note'), '还没发布时横条本身该在：那是这件没做完的事在页面上唯一的痕迹')
+    })
+
     await test('下载页：认不出系统也要有东西可下，而且能自己切', async () => {
       // 垫片默认那个 UA（satuwork-ui-smoke）两边都不像，走的正是「没认出来」那条路。
       const ui = await boot(undefined, { path: '/download' })
@@ -2077,6 +2114,54 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       await ui.fire('click', el('button', { 'data-act': 'local-bot-start', 'data-bot': 'local-1' }))
       assert(ui.state.deployHint.includes('启动后立即退出'), `启动原因没有留下：${ui.state.deployHint}`)
       assert(ui.chatDeployPrompt('local-1').includes('启动后立即退出'), '启动原因没有画在等待卡片上')
+    })
+
+    await test('本地 Bot 在跑：登录票没换就不再要票；换过（重新登录、改了口令）就重新要、交给壳子换票', async () => {
+      // 本地 Bot 的票跟登录票同生共死（Gateway 迁移 0041）：改口令、被重置之后，进程手上那把
+      // 已经作废。页面这时一定换了一张登录票——拿它当信号重新要一次，交给壳子的 start
+      // （同一把不动，换了一把就用新票重起），页面直连也改用新的那把。
+      let issued = 0
+      const starts = []
+      const ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: 'jwt-before',
+        desktop: true,
+        localBotBridge: {
+          status: async () => ({ running: true, port: 41001, workspace: '/w' }),
+          start: async (cfg) => {
+            starts.push(cfg.accessToken)
+            return { running: true, port: 41002 }
+          },
+        },
+        fetchImpl: async (path) => {
+          if (path === '/runtime/bots/local-1/local-bootstrap') {
+            issued += 1
+            return new Response(JSON.stringify({
+              botId: 'local-1', gatewayUrl: gwBase, accessToken: `sat_v${issued}`, apiKey: `sk_sw_v${issued}`,
+            }), { status: 200, headers: { 'content-type': 'application/json' } })
+          }
+          return new Response(JSON.stringify({ error: `unexpected ${path}` }), {
+            status: 404, headers: { 'content-type': 'application/json' },
+          })
+        },
+      })
+      const bots = () => [{ id: 'local-1', name: 'Mac 助手', runtimeKind: 'local' }]
+      const direct = () => ui.localRoute('/runtime/bots/local-1/session', 'GET')
+
+      const first = bots()
+      await ui.overlayLocalRuntime(first)
+      assert(issued === 1 && starts.join() === 'sat_v1', `页面刚打开该要一次票并交给壳子：issued=${issued} starts=${starts}`)
+      assert(first[0].runtime.port === 41002, `壳子回的口没用上：${first[0].runtime.port}`)
+      assert(direct()?.token === 'sat_v1', `直连该用刚要来的票：${JSON.stringify(direct())}`)
+
+      await ui.overlayLocalRuntime(bots())
+      assert(issued === 1 && starts.length === 1, `登录票没换，不该再要票：issued=${issued} starts=${starts}`)
+
+      ui.setToken('jwt-after')
+      await ui.overlayLocalRuntime(bots())
+      assert(issued === 2 && starts.join() === 'sat_v1,sat_v2', `登录票换了该重新要票、交给壳子：issued=${issued} starts=${starts}`)
+      assert(direct()?.token === 'sat_v2', `直连该换成新票：${JSON.stringify(direct())}`)
     })
 
     await test('Bot 名单在非对话页也要在——它是顶层导航，不是对话页的附属', async () => {

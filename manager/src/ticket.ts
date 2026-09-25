@@ -151,7 +151,16 @@ export function cookieOf(req: IncomingMessage, name: string): string {
   for (const part of raw.split(';')) {
     const i = part.indexOf('=')
     if (i < 0) continue
-    if (part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim())
+    if (part.slice(0, i).trim() !== name) continue
+    // 解不开的百分号就当没带这张 cookie。cookie 由请求方随便写，`%` 这种畸形编码会让
+    // decodeURIComponent 抛 URIError——那会一路抛到路由器的兜底，变成一句 500 加一整段栈
+    // 进 journal，谁都能不带票地拿它刷这台机器的日志（同 proxy.ts 里 VNC_TICKET_PATH 那道
+    // 字符集闸要挡的事）。
+    try {
+      return decodeURIComponent(part.slice(i + 1).trim())
+    } catch {
+      return ''
+    }
   }
   return ''
 }

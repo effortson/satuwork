@@ -731,6 +731,20 @@ export interface ChannelEvent {
   deliveredAt: number | null
 }
 
+/**
+ * 取到期渠道事件时，是谁来领（见 db.dueChannelEvents）。`minProtocol` 就是
+ * MIN_CHANNEL_WORKER_PROTOCOL：Bot 所在机器协议够到它，那一轮就归机器上的工人。
+ *
+ *   worker     这台机器上、还要跑一轮的（没有回复）
+ *   gateway    Gateway 自己的：已经有回复只差投递的，加上归不了工人的；
+ *              `deliveriesOnly` 只要前一种（函数形态跑不了一整轮）
+ *   unclaimed  归工人、从没被领过、又已经等过 `createdBefore` 的（拿去报「没人来领」）
+ */
+export type DueChannelScope =
+  | { owner: 'worker'; machineId: string; minProtocol: number }
+  | { owner: 'gateway'; minProtocol: number; deliveriesOnly?: boolean }
+  | { owner: 'unclaimed'; minProtocol: number; createdBefore: number }
+
 export interface Instance {
   accountId: string
   botId: string

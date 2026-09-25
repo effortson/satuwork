@@ -4,7 +4,7 @@ import pg from 'pg'
 import { randomAccessToken, randomApiKey, randomMachineToken } from './crypto.ts'
 import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
-import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind } from './db/types.ts'
+import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
 import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
 import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
@@ -761,15 +761,62 @@ export class Db {
     return this.issueAccountSecrets(accountId)
   }
 
+  /**
+   * 桌面端本地 Bot 的那一套凭证（迁移 0041）。还有效就原样给，**早于 `notBefore`（账号的
+   * tokenRevokedAt）的就换一套新的**——改口令、被重置之后，旧的那一套和旧登录票一起作废。
+   *
+   * 换新是一条带条件的 upsert：几颗本地 Bot 同时启动会并发来要，只看「查到的那份过期了」
+   * 就各插一套的话，先回去的那颗拿到的票转眼就被后一套顶掉。条件落空（别人刚换过）就读回
+   * 别人换好的那一份，大家拿到的是同一套。
+   */
+  async desktopSecrets(accountId: string, notBefore: number): Promise<AccountSecrets> {
+    const read = async () => {
+      const r = await this.one('select * from desktop_secrets where "accountId" = ?', [accountId])
+      return r
+        ? { accountId: str(r.accountId), apiKey: str(r.apiKey), accessToken: str(r.accessToken), createdAt: num(r.createdAt) }
+        : undefined
+    }
+    const cur = await read()
+    if (cur && cur.createdAt >= notBefore) return cur
+    const r = await this.one(
+      `insert into desktop_secrets ("accountId", "apiKey", "accessToken", "createdAt") values (?,?,?,?)
+       on conflict ("accountId") do update
+         set "apiKey" = excluded."apiKey", "accessToken" = excluded."accessToken", "createdAt" = excluded."createdAt"
+         where desktop_secrets."createdAt" < ?
+       returning *`,
+      [accountId, randomApiKey(), randomAccessToken(), Math.max(Date.now(), notBefore), notBefore],
+    )
+    if (r) return { accountId: str(r.accountId), apiKey: str(r.apiKey), accessToken: str(r.accessToken), createdAt: num(r.createdAt) }
+    const raced = await read()
+    if (!raced) throw new Error('桌面端凭证写不进去')
+    return raced
+  }
+
+  /**
+   * 席位那一套只要对得上就认；桌面端那一套还得**不早于账号的 tokenRevokedAt**——它是拿登录票
+   * 换来的，登录票作废了它也跟着作废（见迁移 0041）。
+   */
   async accountByApiKey(key: string): Promise<Account | undefined> {
     if (!key) return undefined
-    const r = await this.one('select "accountId" from account_secrets where "apiKey" = ?', [key])
+    const r =
+      (await this.one('select "accountId" from account_secrets where "apiKey" = ?', [key])) ??
+      (await this.one(
+        `select d."accountId" from desktop_secrets d join accounts a on a.id = d."accountId"
+          where d."apiKey" = ? and d."createdAt" >= coalesce(a."tokenRevokedAt", 0)`,
+        [key],
+      ))
     return r ? this.account(str(r.accountId)) : undefined
   }
 
   async accountByAccessToken(token: string): Promise<Account | undefined> {
     if (!token) return undefined
-    const r = await this.one('select "accountId" from account_secrets where "accessToken" = ?', [token])
+    const r =
+      (await this.one('select "accountId" from account_secrets where "accessToken" = ?', [token])) ??
+      (await this.one(
+        `select d."accountId" from desktop_secrets d join accounts a on a.id = d."accountId"
+          where d."accessToken" = ? and d."createdAt" >= coalesce(a."tokenRevokedAt", 0)`,
+        [token],
+      ))
     return r ? this.account(str(r.accountId)) : undefined
   }
 
@@ -3364,10 +3411,41 @@ export class Db {
   }
 
   /**
+   * 到期、而且是自己会话里排头的那几条。
+   *
    * 每个远端会话一次只放一条。前一条还没送完时，后面的消息留在 pending，避免上下文
    * 次序和 Telegram 里看到的次序分叉。
+   *
+   * **归谁领要在 SQL 里筛，不能取完再筛。** 这里曾经不分谁来领、一律取全平台最老的 N 条，
+   * 工人那条路再按机器挑、Gateway 的扫描再跳过归工人的——被跳过的行照旧到期，下一轮还
+   * 排在最前面。于是一台机器的工人一挂（它那几个会话的消息一条条堆着没人领），只要堆出
+   * N 个会话，别的机器的工人就再也领不到活，Gateway 自己的投递和重试也一起停摆：一家公司
+   * 的故障变成全平台的渠道都不理人。现在每一方只取归自己的，谁堆多少都挤不到别人。
+   *
+   * 「归工人」的判据和 channels.ts 那一侧同一条：Bot 所在机器的协议 ≥ `minProtocol`
+   * （MIN_CHANNEL_WORKER_PROTOCOL）。常量由调用方传进来，是因为它在 deploy.ts，而 deploy.ts
+   * 本身依赖这个文件。
    */
-  async dueChannelEvents(now: number, limit = 10): Promise<ChannelEvent[]> {
+  async dueChannelEvents(now: number, limit: number, scope: DueChannelScope): Promise<ChannelEvent[]> {
+    // 这颗 Bot 在不在一台够新、归工人跑渠道的机器上。`b` 是外层的绑定。
+    const onWorker = (machineFilter: string) => `exists (
+      select 1 from seat_runtimes s join machines m on m.id = s."machineId"
+       where s."accountId" = b."accountId" and s."botId" = b."botId" and m.protocol >= ?${machineFilter})`
+    let owned: string
+    let args: unknown[]
+    if (scope.owner === 'worker') {
+      // 这台机器上、还要跑一轮的。已经有回复只差投递的是 Gateway 的活。
+      owned = `e.reply = '' and ${onWorker(' and s."machineId" = ?')}`
+      args = [scope.minProtocol, scope.machineId]
+    } else if (scope.owner === 'gateway') {
+      // 已经有回复只差投递的，加上 Bot 所在机器还不够新、归不了工人的。
+      owned = scope.deliveriesOnly ? `e.reply <> ''` : `(e.reply <> '' or not ${onWorker('')})`
+      args = scope.deliveriesOnly ? [] : [scope.minProtocol]
+    } else {
+      // 归工人、从没被领过、又已经等了好一阵的。
+      owned = `e.reply = '' and e.attempts = 0 and coalesce(e."leaseUntil",0) = 0 and e."createdAt" <= ? and ${onWorker('')}`
+      args = [scope.createdBefore, scope.minProtocol]
+    }
     const rows = await this.many(
       `select e.* from channel_events e join channel_bindings b on b.id=e."bindingId"
        where b.status='active'
@@ -3379,8 +3457,9 @@ export class Db {
               and (p."createdAt" < e."createdAt" or (p."createdAt"=e."createdAt" and p.id < e.id))
               and p.status not in ('delivered','dead')
          )
+         and ${owned}
        order by e."createdAt", e.id limit ?`,
-      [now, now, Math.min(50, Math.max(1, limit))],
+      [now, now, ...args, Math.min(50, Math.max(1, limit))],
     )
     return rows.map(channelEventOf)
   }

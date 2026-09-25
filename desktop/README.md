@@ -39,9 +39,13 @@ SATUWORK_SERVER=http://127.0.0.1:3080 pnpm --filter satuwork-desktop dev
 
 本地 Bot（建 Bot 时选「本地」的那种）由壳子在这台电脑上起一个 Bot 进程，听 127.0.0.1 的一个
 随机端口。**它的对话不经过 Gateway。** 页面拿到壳子报的端口（`__SATUWORK_LOCAL_BOT__.status`
-里的 `port`）和 Gateway 发的席位票（`/runtime/bots/:id/local-bootstrap`），把这颗 Bot 的会话
+里的 `port`）和 Gateway 发的票（`/runtime/bots/:id/local-bootstrap`），把这颗 Bot 的会话
 请求（取会话、事件流、历史、发消息、文件、工作区）直接改道到本机，见 gateway/ui/data.js 的
 `localRoute`。别的请求——公司模版、记忆、Skill、账号——照旧打 Gateway。
+
+那把票是**桌面端专用的一套**（Gateway 迁移 0041），不是远程席位那一套，而且跟登录票同生共死：
+改口令、被管理员重置之后它一起作废。页面重新登录（或改口令拿到新登录票）后会再要一次，交给
+壳子的 `start`——同一把什么都不动，换了一把就用新票把跑着的本地 Bot 重起一遍（`start_local_bot`）。
 
 以前这条路是「页面 → Gateway → 一条 Bot 主动连到 Gateway 的 WebSocket 反向隧道 → 本机」，
 为的是让 Gateway 能主动打进员工的电脑。隧道拆掉了（docs/adr-gateway-vercel-neon.md §4）：

@@ -438,6 +438,9 @@ async function submitPassword(e) {
     state.pwForm = { current: '', next: '', confirm: '' }
     state.profileSaved = true
     await loadMe()
+    // 本地 Bot 的票跟旧登录票一起作废了（Gateway 迁移 0041）。趁这一刻拿新登录票重新要一次、
+    // 让壳子换票重起（chat.js 的 overlayLocalRuntime），别等人下次刷新名单才发现 Bot 不回话。
+    if (window.__SATUWORK_DESKTOP__) await loadRuntimeBots().catch(() => {})
   } catch (err) {
     state.pwError = err.message
   } finally {
