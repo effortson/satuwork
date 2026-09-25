@@ -9,7 +9,7 @@ import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { installScript } from '../install.ts'
 import { proxyJson } from '../lib/runtime.ts'
-import { localBotReleaseTarget, parseBotVersion, publicBotRelease, storeUploadedRelease } from '../releases.ts'
+import { directReleaseUrl, localBotReleaseTarget, parseBotVersion, publicBotRelease, storeUploadedRelease } from '../releases.ts'
 import { requireMachine, requireOrgUser, requireOwnerUser, requireReleaseAuthor } from '../lib/guards.ts'
 import { MANAGER_VACUUM_TIMEOUT_MS, MAX_LOG_CAP_MB, METRIC_RETENTION_MS, MINUTE_MS } from '../lib/telemetry.ts'
 import { signDesktopTicket } from '../crypto.ts'
@@ -1212,6 +1212,21 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     }
     const desired = await desiredManagerRelease(db, machine)
     if (!desired) throw new HttpError(409, '还没有发布机器管家版本')
+    /**
+     * 能直连的（GitHub Release，见 releases.ts 的 directReleaseUrl）**302 过去**，不经函数
+     * 回源：Gateway 在 Vercel 上，响应体有 4.5 MB 上限，管家包 ~10 MB。
+     *
+     * 校验值挂在这个 302 自己身上（`x-bot-sha256`）：装机脚本 `curl -D` 把每一跳的头都记下来，
+     * 取 Gateway 那一跳的值去比对下到的字节——lib/machines.ts 里「不用 302、校验头要跟着
+     * 响应走」说的是管家那条路，这里头就在跳转之前，丢不了。curl 跟跳转时不会把自定义的
+     * `authorization` 带到别的主机上（7.58 起），机器票留在 Gateway 这一跳。
+     */
+    const direct = directReleaseUrl(desired)
+    if (direct) {
+      res.writeHead(302, { location: direct, 'x-bot-sha256': desired.sha256, 'cache-control': 'no-store' })
+      res.end()
+      return
+    }
     await sendReleaseFile(res, 'manager', desired.version, db)
   })
 
