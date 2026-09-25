@@ -23,20 +23,20 @@ use tauri_plugin_opener::OpenerExt;
 /**
  * Satuwork 桌面壳。
  *
- * **它不装前端。** 界面还是 Gateway 那一份（gateway/ui），由 Gateway 自己发；这个壳
- * 做的事只有一件：把一个没有地址栏的窗口指到那台 Gateway 上。
+ * **界面打在包里。** gateway/ui 那批分片原样拷进包（desktop/scripts/prepare-ui.mjs），由这个
+ * 壳子自注册的 `satu://` 协议发出来（serve_ui；Windows 上 Tauri 把它映射成
+ * http://satu.localhost）。壳子记住「连哪台 Gateway」，把地址注入给页面（LINK_SCRIPT 里的
+ * `__SATUWORK_GATEWAY__`），所以页面打 Gateway 的每一条请求都是跨源的：Gateway 按这几个源开
+ * CORS（gateway/src/http.ts 的 CORS_ORIGINS），凭据走 Authorization 头、不走 cookie。
  *
- * 为什么不把 ui 打进包里——那样每一条 fetch 都成了跨源请求，Gateway 要加 CORS，而
- * 真正会当场坏掉的是对话页右栏那块桌面：它那张 `satu_desk_*` 是 SameSite=Lax 的
- * cookie，跨源之后浏览器连存都不存（见 gateway/src/desktop.ts 开头那段）。同源是
- * 那条路唯一的前提，而「直接装远端页面」是保住同源最便宜的办法。
+ * 以前包里没有前端、窗口直接装 Gateway 发的页面，为的是保住同源。改成内置是
+ * docs/adr-gateway-vercel-neon.md §4 的决定（本地 Bot 的会话不经过 Gateway）。代价照实写：
+ * 界面版本跟着桌面端发版走，Gateway 升级了界面不会自己变，两边的接口契约靠 e2e 钉着。
  *
- * 代价说清楚：没网就是一片空白，打开必须连得到 Gateway。这不亏——这个界面本来就
- * 没有一屏是离线能用的。换来的是前端**永远不会**和服务端版本漂开。
- *
- * 包里唯一的页面是 shell/index.html——「连哪台 Gateway」那一屏。它是本地资源，所以
- * 能调设置命令；主窗口装的是远端页面，只拿得到本地 Bot 那组窄命令。两组命令分别由
- * capability 放行，不能借远端页面去改 Gateway 地址。
+ * 包里两份页面：shell/index.html 是「连哪台 Gateway」那一屏，能调设置命令；主窗口装的是包里
+ * 那份界面，只拿得到本地 Bot 那组窄命令。两组命令各由一份 capability 放行（capabilities/），
+ * **都只认本地源**（自注册的协议在 Tauri 眼里是本地源）——主窗口哪天被导航到站外，那一页
+ * 一个命令都调不了，更改不了 Gateway 地址。
  */
 
 const SETUP: &str = "setup";
@@ -76,6 +76,9 @@ struct Startup(Mutex<String>);
 struct LocalBotProc {
     child: Child,
     port: u16,
+    /// 起这个进程时交给它的席位票。Gateway 换了票（口令改过、被重置，旧票跟着作废），
+    /// 再来 start 时拿得出不一样的一把——那时要用新票重起，见 start_local_bot。
+    access_token: String,
 }
 
 #[derive(Default)]
@@ -225,7 +228,7 @@ fn same_origin(a: &Url, b: &Url) -> bool {
 }
 
 /**
- * 装在远端页面里的一小段：**把「开新窗口」翻译成一次导航**。
+ * 注入主窗口页面的一小段：**把「开新窗口」翻译成一次导航**。
  *
  * 起因是实测出来的一件事：`target="_blank"` 的链接和 `window.open()` 在这个 webview
  * 里都是**空操作**——不报错、不开窗、连请求都不发。而 gateway/ui 的外链一律带
@@ -326,7 +329,8 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
  * **判据只认路径，不认源。** 机器的直连地址按公司各不相同、随时会加，壳子这头无从枚举
  * （它只知道 Gateway 在哪）。代价照实写：有人要是能诱导主窗口导航到
  * `http://evil.com/seats/x/vnc/`，窗口就跑出去了——但能往界面里塞进链接或脚本的人，本来
- * 就有比这省事的办法（见上面那段注释：这条回调不是页面的边界）。
+ * 就有比这省事的办法（见上面那段注释：这条回调不是页面的边界）。跑出去的那一页也拿不到
+ * IPC：本地 Bot 那组命令只放给本地源（capabilities/main.json），不放给任何远端页面。
  *
  * 管家那一跳（`/seats/<席位>/vnc/` → `/seats/<席位>/vnc/vnc.html?…`，见 manager/src/proxy.ts）
  * 也是一次导航，所以判的是前缀而不是整条路径。
@@ -364,7 +368,7 @@ fn route_open(app: &AppHandle, base: &Url, url: &Url) {
     let _ = app.opener().open_url(parsed.as_str(), None::<&str>);
 }
 
-/** 装远端页面的窗口都从这儿出：同一套导航守卫，同一段链接脚本。 */
+/** 装界面的窗口都从这儿出：同一套导航守卫，同一段链接脚本（连同注入的 Gateway 地址）。 */
 fn build_window(
     app: &AppHandle,
     label: &str,
@@ -1063,8 +1067,14 @@ fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotSta
     let mut bots = state.0.lock().map_err(|_| "本地 Bot 状态锁损坏")?;
     if let Some(proc_) = bots.get_mut(&bot_id) {
         if proc_.child.try_wait().map_err(|e| e.to_string())?.is_none() {
-            let port = proc_.port;
-            return Ok(runtime_status(&app, true, Some(port), &work));
+            if proc_.access_token == config.access_token {
+                let port = proc_.port;
+                return Ok(runtime_status(&app, true, Some(port), &work));
+            }
+            // 票换了：Gateway 已经把这个进程手上那把作废了（改口令、被管理员重置之后，本地 Bot
+            // 的票跟登录票一起作废），它从此每一次回 Gateway 都是 401、页面也敲不开它。手上的
+            // 活反正已经做不下去，用新票重起一遍。
+            terminate_local_bot(&mut proc_.child).map_err(|e| format!("换票时停止本地 Bot 失败：{e}"))?;
         }
         bots.remove(&bot_id);
     }
@@ -1152,7 +1162,7 @@ fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotSta
         }
         Err(error) => return Err(error),
     };
-    bots.insert(bot_id, LocalBotProc { child, port });
+    bots.insert(bot_id, LocalBotProc { child, port, access_token: config.access_token.clone() });
     // 记下这次的地址和票，运行时自查（每小时一次）拿它去问 Gateway 有没有新版。
     if let Ok(mut src) = app.state::<UpdateSource>().0.lock() {
         *src = Some((gateway.clone(), config.access_token.clone()));
@@ -1350,7 +1360,7 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
         if event.id() != SWITCH_ITEM {
             return;
         }
-        // 装着远端页面的窗口全关掉——包括「打开桌面」那种另开的。留着的话它们还指着
+        // 装着界面的窗口全关掉——包括「打开桌面」那种另开的。留着的话它们注入的还是
         // 老地址，而人正要换一台。
         for (label, win) in app.webview_windows() {
             if label != SETUP {

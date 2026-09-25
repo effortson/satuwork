@@ -1046,6 +1046,10 @@ const localBotStarts = new Map()
  * 给本地 Bot 补上运行状态。Gateway 那份 `runtime` 对本地 Bot 只是个占位（它再也连不到
  * 本机了），真相在壳子手里：在不在跑、听哪个口。顺手把直连要用的口和票登记进 localBots——
  * 页面刷新之后进程还在，票却只在内存里，得再向 Gateway 要一次。
+ *
+ * **登录票换过也要再要一次**（见 data.js 的 localBots）：改口令、被管理员重置之后，进程手上
+ * 那把票已经作废。要回来的交给壳子的 start——同一把什么都不动，换了一把就用新票把进程
+ * 重起一遍（desktop 的 start_local_bot），口也可能跟着换。
  */
 async function overlayLocalRuntime(bots) {
   const bridge = window.__SATUWORK_LOCAL_BOT__
@@ -1065,9 +1069,10 @@ async function overlayLocalRuntime(bots) {
         workspace: (s && s.workspace) || 'desktop',
         port: running ? s.port : null,
       }
-      if (running && !localBotOf(bot.id)) {
-        const b = await api('POST', `/runtime/bots/${encodeURIComponent(bot.id)}/local-bootstrap`, {})
-        registerLocalBot(bot.id, s.port, b.accessToken)
+      const known = localBots.get(bot.id)
+      if (running && (!known || !known.token || known.login !== token())) {
+        const started = await startDesktopLocalBot(bot.id)
+        if (started && started.port) bot.runtime.port = started.port
       } else if (running) registerLocalBot(bot.id, s.port)
     } catch {
       bot.runtime = { kind: 'local', status: 'none', machineLink: 'offline', workspace: 'desktop' }

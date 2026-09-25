@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "主窗口里包内那份界面（satu:// 自注册协议，Windows 上是 http://satu.localhost，Tauri 判为本地源）只能调本地 Bot 那组窄命令；命令本身再核对 Gateway 地址与 Bot id。不开放给任何远端页面：主窗口哪天被导航到站外，那一页拿不到 IPC。",
+  "windows": ["main"],
+  "permissions": ["core:default", "local-bot-commands"]
+}

@@ -940,6 +940,10 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       assert(anon.status === 401, `无票 ${anon.status}`)
       const bad = await fetch(`${mgrBase}/seats/seat-1/vnc/?ticket=not-a-jwt`, { redirect: 'manual' })
       assert(bad.status === 401, `坏票 ${bad.status}`)
+      // 畸形 cookie（解不开的百分号）也只是 401，不是 500：它原来在 decodeURIComponent 里抛，
+      // 一路抛到路由器兜底，再往 journal 打一整段栈——谁都能不带票地拿它刷这台机器的日志。
+      const junk = await fetch(`${mgrBase}/seats/seat-1/vnc/vnc.html`, { headers: { cookie: 'satu_desk_seat-1=%' } })
+      assert(junk.status === 401, `畸形 cookie ${junk.status}`)
 
       const ticket = await mintTicket(gwBase, ownerTok)
       const r = await fetch(`${mgrBase}/seats/seat-1/vnc/?ticket=${encodeURIComponent(ticket)}`, {

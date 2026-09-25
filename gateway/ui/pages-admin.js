@@ -1552,7 +1552,7 @@ function editModal() {
         <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3);">
           <div style="min-width: 0;">
             <div style="font-size: 13.5px; font-weight: 600;">${t('口令重置链接')}</div>
-            <div style="font-size: 12px; color: var(--muted-foreground);">${t('生成后自行发给成员，1 小时内有效且仅能使用一次')}</div>
+            <div style="font-size: 12px; color: var(--muted-foreground);">${t('生成后自行发给成员，1 小时内有效且仅能使用一次。生成的同时，TA 的旧口令就不能再用了')}</div>
           </div>
           <button type="button" class="btn btn-secondary" style="flex: none;" data-act="edit-reset">${state.editLink ? t('重新生成') : t('生成链接')}</button>
         </div>
@@ -1562,7 +1562,7 @@ function editModal() {
             <code class="satu-code" style="flex: 1; min-width: 0; padding: 8px var(--space-3); font-size: 12px; overflow-x: auto; white-space: nowrap;">${esc(state.editLink)}</code>
             <button type="button" class="btn btn-secondary" style="flex: none;" data-act="edit-copy">${iconCopy()} ${state.editCopied ? t('已复制') : t('复制')}</button>
           </div>
-          <span style="font-size: 12px; color: var(--muted-foreground);">${t('生成的同时，TA 当前的登录已全部失效。链接只显示这一次。Gateway 没有会话表，签发早于作废时间的 JWT 会被拒，未过期的票在此之前仍可能可用。')}</span>`
+          <span style="font-size: 12px; color: var(--muted-foreground);">${t('生成的同时，TA 当前的登录和旧口令都已失效，只能用这条链接重新设口令。链接只显示这一次。')}</span>`
             : ''
         }
       </div>
@@ -1723,7 +1723,7 @@ function accountsPage() {
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         ${flashes()}
         ${tab === 'members' ? membersBody : groupsBody}
-        <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('成员这一半是真的：停用会当场作废对方已签发的 JWT（签发早于作废时间的票会被拒），重置口令同样作废旧登录。角色与权限的判断在服务端，界面上的禁用只是提前告诉你结果。Gateway 没有会话表，未过期且签发于作废之后的 JWT 仍可用，直到过期；停用账号登录会被拒绝。')}</p>
+        <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('成员这一半是真的：停用会当场作废对方已签发的 JWT（签发早于作废时间的票会被拒），重置口令同样作废旧登录，旧口令也一并失效。角色与权限的判断在服务端，界面上的禁用只是提前告诉你结果。Gateway 没有会话表，未过期且签发于作废之后的 JWT 仍可用，直到过期；停用账号登录会被拒绝。')}</p>
       </div>
     </div>
     ${inviteModal()}

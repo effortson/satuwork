@@ -1195,16 +1195,6 @@ export function apply(ctx: Context, _config: Config = {}) {
       res.json({ error: e instanceof WorkspaceError ? e.message : err?.code === 'ENOENT' ? '文件不存在' : '读不出来' })
       return
     }
-    /**
-     * `?as=text`：把 Word / Excel / PPT / PDF 提取成文本回给界面预览。
-     *
-     * 浏览器打不开这几种格式，而「下载下来看吧」对一份刚生成的报表是很差的答复。
-     * 走的是 `read` 工具用的**同一套提取**（workspace/extract.ts），所以界面上看到
-     * 的和模型读到的是同一份东西——内容对不上时能一眼看出是提取的问题还是模型的
-     * 问题，这比另写一份渲染有用得多。
-     *
-     * 只对认识的文档格式生效；其余照旧回字节，让前端自己按扩展名处理。
-     */
     const inline = file.inline && req.query.get('download') !== '1'
     return new Response(file.stream, {
       status: 200,

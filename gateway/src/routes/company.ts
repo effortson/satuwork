@@ -469,12 +469,17 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
   /**
    * 重发邀请 / 重置口令，都落成一条新链接。旧邀请删掉，tokenRevokedAt 立刻作废旧 JWT。
    * Gateway 没有会话表：未过期的 JWT 若签发于 tokenRevokedAt 之后仍可用；登录会因 disabled 被拒。
+   *
+   * **旧口令也当场作废**，换成一串谁都不知道的（同邀请新成员那一条）。只作废票不作废口令的话，
+   * 重置等于没重置：知道旧口令的人——口令泄露正是要重置的常见原因——在链接被接受之前随时能
+   * 再登一次，拿到一张签发于作废之后、活满七天的新票。现在这条链接就是这个账号唯一的入口；
+   * 接受那一步还会再作废一次（auth.ts 的 accept），两步之间签出的票也活不下来。
    */
   router.post('/orgs/:id/accounts/:accountId/reset', async (req, res) => {
     const actor = await requireOrgUser(req, db, keys, req.params.id, true)
     const row = await db.account(req.params.accountId)
     if (!row || row.companyId !== req.params.id) throw new HttpError(404, '没有这个成员')
-    await db.updateAccount(row.id, { tokenRevokedAt: Date.now() })
+    await db.updateAccount(row.id, { tokenRevokedAt: Date.now(), passwordHash: await hashPassword(randomUUID()) })
     const ttl = row.status === 'invited' ? INVITE_TTL : RESET_LINK_TTL
     const invite = await issueInvite(db, row, actor.id, ttl)
     await db.audit({

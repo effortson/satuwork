@@ -58,7 +58,7 @@ export const MIN_WORKER_PROTOCOL = 7
 /**
  * 席位工人接管**渠道那一轮**要求的管家协议号。和日常任务分开一个号：8 号工人才有渠道循环
  * （manager/src/worker/channels.ts），7 号机器上渠道消息仍由 Gateway 自己跑一轮。
- * 分流规则同 MIN_WORKER_PROTOCOL，见 channels.ts 的 workerOwnedBinding。
+ * 分流规则同 MIN_WORKER_PROTOCOL，判据写在 db.dueChannelEvents 的 scope 里（各方只取归自己的）。
  */
 export const MIN_CHANNEL_WORKER_PROTOCOL = 8
 

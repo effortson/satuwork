@@ -38,6 +38,10 @@ const DL_UPDATED = '2026-09-22'
  * 和首页那句「示例二维码」、法律页那条「还没过法务」是同一种东西：一件没做完的事在
  * 页面上留下的唯一痕迹。**按钮照样是活的**——CI 一跑通、Release 一建出来，它们当场
  * 就对了，那时把这个常量关掉，横条跟着消失。
+ *
+ * **横条上的话是说给来下载的人听的**：这条地址是要发给员工的，他既不认识 desktop/README.md，
+ * 也改不了这个常量。给发版的人的那几件事留在这儿：第一版打出来之后，核对 DL_VERSION、
+ * DL_UPDATED 和 dlBuilds 里的文件名与 Release 上的资产一致，再把它关掉。
  */
 const DL_PENDING = true
 
@@ -119,11 +123,18 @@ const DL_OS = {
  * `userAgentData.platform` 是新浏览器上唯一没被冻结的那个（Chrome 里 `navigator.platform`
  * 早就不动了），所以排在最前面；三样拼成一条一起匹配，少一样也还认得出来。iPhone、
  * iPad 上没有桌面端可装，落回空串，页面会照实说一句。
+ *
+ * **手机和平板要排在认 Mac 之前挑出去**：iPhone、iPad 的 UA 里都写着「like Mac OS X」，
+ * iPadOS 默认还用桌面版网页模式、自称 Macintosh——只看字样的话它们全被认成 Mac，页面还会
+ * 说「看起来你正用的就是这个系统」，把一个装不上的 .dmg 摆到人面前。桌面版网页模式下
+ * 连 UA 都和 Mac 一模一样，只有触点数露馅：Mac 没有触摸屏。
  */
 function dlDetect() {
   const nav = typeof navigator === 'object' && navigator ? navigator : {}
   const hint = nav.userAgentData && typeof nav.userAgentData.platform === 'string' ? nav.userAgentData.platform : ''
   const raw = `${hint} ${nav.platform || ''} ${nav.userAgent || ''}`
+  if (/iphone|ipad|ipod|android|windows phone/i.test(raw)) return ''
+  if (/macintosh|macintel/i.test(raw) && Number(nav.maxTouchPoints) > 1) return ''
   if (/mac ?os|macintosh|darwin/i.test(raw)) return 'mac'
   if (/windows|win32|win64|wow64/i.test(raw)) return 'windows'
   return ''
@@ -260,8 +271,8 @@ function downloadView() {
         DL_PENDING
           ? `<p class="satu-lg-note">${esc(
               t(
-                '安装包还没发布：桌面端的发版 CI 还没做（见 desktop/README.md），下面几条地址现在是 404。第一版打出来之后核对 pages-download.js 里的 DL_VERSION，并把 DL_PENDING 关掉。',
-                'The installers are not published yet — the desktop release CI does not exist (see desktop/README.md), so the links below still 404. Once the first build ships, check DL_VERSION in pages-download.js and turn off DL_PENDING.',
+                '安装包还在准备，还没有发布，下面的下载链接暂时打不开。在那之前可以直接用网页版登录，除了本地 AI 员工之外都一样。',
+                'The installers are still being prepared and are not published yet, so the download links below don’t work for now. Until then you can sign in to the web version — everything except local coworkers works the same.',
               ),
             )}</p>`
           : ''

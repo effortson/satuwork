@@ -38,6 +38,7 @@ import { SQL as m0037 } from './0037-channel-event-handoffs.ts'
 import { SQL as m0038 } from './0038-machine-direct-url.ts'
 import { SQL as m0039 } from './0039-routine-run-lease.ts'
 import { SQL as m0040 } from './0040-llm-call-relay-machine.ts'
+import { SQL as m0041 } from './0041-desktop-secrets.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -122,6 +123,7 @@ export const MIGRATIONS: Migration[] = [
   { id: '0038-machine-direct-url', name: '席位机器的公网直连地址，桌面像素不再经过 Gateway', sql: m0038 },
   { id: '0039-routine-run-lease', name: '日常任务流水记下哪台机器领走的和租约到期时刻，供席位工人下沉', sql: m0039 },
   { id: '0040-llm-call-relay-machine', name: '模型调用记下是哪台机器中继授权的，未结算清扫只扫这一撮', sql: m0040 },
+  { id: '0041-desktop-secrets', name: '桌面端本地 Bot 的凭证单独存，跟登录票一起作废', sql: m0041 },
 ]
 
 /**

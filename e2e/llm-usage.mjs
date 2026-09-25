@@ -29,15 +29,53 @@ const ANTHROPIC_TEXT = '你好，世界。这是一段中文回复。'
 const OPENAI_TEXT = '中文增量内容测试'
 
 function startFakeUpstream() {
+  /**
+   * 慢流那一条的现场：上游这一侧看到的连接什么时候断、有没有自己写完。
+   *
+   * 「客户端走了，Gateway 就掐掉上游」只能从这一侧验——客户端断开之后它什么都收不到，
+   * 而 Gateway 那头继续拉流也不会报任何错，只是钱照付。
+   */
+  const slow = { closedAt: 0, finished: false }
   const server = createServer(async (req, res) => {
     let raw = ''
     for await (const c of req) raw += c
     // 请求体里带 e2e_die 就写一帧然后把连接掐了，模拟「上游中途断流」。
     // Gateway 转发时会把 body 原样带过来，所以这个标记到得了这儿。
     let die = false
+    let slowMode = false
+    let echo = false
     try {
-      die = Boolean(JSON.parse(raw || '{}').e2e_die)
+      const parsed = JSON.parse(raw || '{}')
+      die = Boolean(parsed.e2e_die)
+      slowMode = Boolean(parsed.e2e_slow)
+      echo = Boolean(parsed.e2e_echo)
     } catch {}
+    if (echo) {
+      // 一页纯文本的 401，把收到的密钥原样回显——上游（或它前面那层代理）真会这么干。
+      res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end(`invalid api key: ${req.headers['x-api-key'] || req.headers.authorization || ''}`)
+      return
+    }
+    if (slowMode) {
+      // 二十秒的慢流，一帧 50ms。Gateway 要是不掐，它会一直写到最后一帧。
+      slow.closedAt = 0
+      slow.finished = false
+      res.on('close', () => {
+        if (!slow.finished) slow.closedAt = Date.now()
+      })
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(`data: ${JSON.stringify({ type: 'message_start', message: { id: 'mslow', usage: { input_tokens: 900, output_tokens: 1 } } })}\n\n`)
+      for (let i = 0; i < 400 && !res.destroyed; i++) {
+        await new Promise((r) => setTimeout(r, 50))
+        if (res.destroyed) break
+        res.write(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '慢' } })}\n\n`)
+      }
+      if (!res.destroyed) {
+        slow.finished = true
+        res.end()
+      }
+      return
+    }
     if (die) {
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       // 只给 message_start——输入 token 在这一帧里。之后直接断，后面的
@@ -86,7 +124,7 @@ function startFakeUpstream() {
     res.end()
   })
   return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}` }))
+    server.listen(0, '127.0.0.1', () => resolve({ server, slow, url: `http://127.0.0.1:${server.address().port}` }))
   })
 }
 
@@ -228,6 +266,64 @@ export async function runLlmUsage({ gwRoot, test, req, start, waitHttp, assert, 
         after.completion === before.completion + 1,
         `输出 token 应记到断流那一刻的 1，实际增量 ${after.completion - before.completion}`,
       )
+    })
+
+    await test('上游回一页 text/plain 的错误页、里面回显了密钥：转出去之前要抹掉', async () => {
+      // 以前只按类型判流：`text/plain` 算流式，于是这种错误页走边收边转那一支，一个字节
+      // 都不过 redact，平台的供应商密钥就原样交给了调用方。
+      const r = await req(gwBase, 'POST', '/v1/messages', {
+        token,
+        body: {
+          model: anthropicModel.id,
+          stream: true,
+          max_tokens: 64,
+          messages: [{ role: 'user', content: '你好' }],
+          e2e_echo: true,
+        },
+      })
+      assert(r.status === 401, `上游的 401 应原样透出，实际 ${r.status} ${r.text.slice(0, 200)}`)
+      assert(r.text.includes('invalid api key'), `错误页正文没转出来：${r.text.slice(0, 200)}`)
+      assert(!r.text.includes('fake-anthropic-key'), `错误页里的供应商密钥没抹：${r.text.slice(0, 200)}`)
+    })
+
+    await test('客户端中途走了：Gateway 当场掐掉上游，已经花掉的输入 token 照记、状态记 failed', async () => {
+      // 断开检测以前挂在 `req.on('close')` 上，而路由器早把请求体读完了——那个 close 在
+      // 请求体读完那一刻就发过了，之后客户端怎么断都不会再响。于是上游被一直拉到最后
+      // 一帧，写进一个没人读的 socket，钱照付。
+      const before = await readUsage()
+      const ac = new AbortController()
+      const r = await fetch(`${gwBase}/v1/messages`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: anthropicModel.id,
+          stream: true,
+          max_tokens: 64,
+          messages: [{ role: 'user', content: '慢慢说' }],
+          e2e_slow: true,
+        }),
+        signal: ac.signal,
+      })
+      assert(r.status === 200, `messages ${r.status}`)
+      // 等到第一帧：上游确实在流了，再走。
+      await r.body.getReader().read()
+      ac.abort()
+
+      const deadline = Date.now() + 5000
+      while (!upstream.slow.closedAt && !upstream.slow.finished && Date.now() < deadline) {
+        await new Promise((x) => setTimeout(x, 50))
+      }
+      assert(!upstream.slow.finished, '上游被一直拉到了最后一帧：客户端走了 Gateway 没停')
+      assert(upstream.slow.closedAt > 0, '客户端走了五秒，Gateway 到上游的连接还开着')
+
+      // 账：message_start 里那 900 个输入 token 是真发出去的，照记。落账在收尾之后，轮询等它。
+      let after = before
+      for (let i = 0; i < 30 && after.prompt === before.prompt; i++) after = await readUsage()
+      assert(after.prompt === before.prompt + 900, `输入 tokens 应增加 900，实际增加 ${after.prompt - before.prompt}`)
+      const charges = await req(gwBase, 'GET', `/orgs/${orgId}/charges?kind=llm&limit=1`, { token })
+      assert(charges.status === 200, `charges ${charges.status} ${charges.text}`)
+      const last = charges.json.charges[0]
+      assert(last?.status === 'failed', `客户端中途走了应记 failed，实际 ${last?.status}`)
     })
 
     await test('删掉的员工留下的用量，要有「已离职员工」一行兜住', async () => {

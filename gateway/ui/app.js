@@ -52,6 +52,10 @@ async function runConfirm() {
     } else if (c.kind === 'user-status') {
       await setUserStatus(c.id, c.next)
       return
+    } else if (c.kind === 'member-reset') {
+      // 自己会 render、自己报错，拿到链接就弹出来。
+      await resetMember(c.id, false)
+      return
     } else if (c.kind === 'memory-lift') {
       /**
        * 升层要确认，和删除那颗按钮正好相反：删错了只影响这一个人，推错了是往本公司
@@ -1969,7 +1973,26 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'member-reset') {
-    await resetMember(btn.getAttribute('data-id'), false)
+    const m = memberById(btn.getAttribute('data-id'))
+    if (!m) return
+    // 重发邀请没有副作用，直接发；已激活的账号要先确认——旧口令和当前登录会当场失效，
+    // 在他用新链接设好口令之前谁都登不进这个账号（routes/company.ts 的 reset）。
+    if (m.status === 'invited') {
+      await resetMember(m.id, false)
+      return
+    }
+    state.confirm = {
+      title: t('重置这名成员的口令？', 'Reset this member’s password?'),
+      body: t(
+        `「${m.name}」当前的登录和旧口令会立即失效，要用你接下来拿到的链接重新设口令。`,
+        `"${m.name}" is signed out at once and their old password stops working; they set a new one through the link you get next.`,
+      ),
+      label: '重置口令',
+      kind: 'member-reset',
+      id: m.id,
+    }
+    state.menu = null
+    render()
     return
   }
   if (act === 'member-disable') {

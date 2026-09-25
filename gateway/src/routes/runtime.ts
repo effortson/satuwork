@@ -1374,13 +1374,19 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     json(res, 200, { bot: { ...publicBot(next, pinned, tpl), runtime: await oneBotRuntime(db, account, next) } })
   })
 
-  /** Desktop 启动本地进程所需的短路径。只给本人自己的 local Bot。 */
+  /**
+   * Desktop 启动本地进程所需的短路径。只给本人自己的 local Bot。
+   *
+   * **给的是桌面端那一套凭证，不是席位那一套**（迁移 0041）。席位那一套从来不换，以前这里
+   * 把它交给任何一张登录票，一张被偷的票就能换成一对永久有效的 `sat_` / `sk_sw_`。桌面那一套
+   * 跟登录票同生共死：改口令、被管理员重置（tokenRevokedAt）之后它一起作废，桌面端重新登录、
+   * 再来要一次，拿到的就是新的；壳子发现票换了，会用新票把跑着的本地 Bot 重起一遍。
+   */
   router.post('/runtime/bots/:id/local-bootstrap', async (req, res) => {
     const account = await requireUser(req, db, keys)
     const item = await ownBotOf(db, account, req.params.id)
     if (runtimeKindOf(item) !== 'local') throw new HttpError(409, '这不是本地 Bot')
-    const secrets = await db.ensureAccountSecrets(account.id)
-    if (!secrets) throw new HttpError(409, '账号没有运行时凭证')
+    const secrets = await db.desktopSecrets(account.id, account.tokenRevokedAt ?? 0)
     json(res, 200, {
       botId: item.id,
       gatewayUrl: originOf(req),

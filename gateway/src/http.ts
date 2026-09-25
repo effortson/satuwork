@@ -51,6 +51,50 @@ export function bearer(req: IncomingMessage): string | undefined {
   return token || undefined
 }
 
+/**
+ * 「客户端还在不在」。**看 res 的 close，不看 req 的。**
+ *
+ * 路由器交给处理器之前已经把请求体读完了（readBody），而 Node 16 起请求体一读完，req
+ * 自己就发过 close 了——之后再挂的 `req.on('close')` 在客户端断开时**一次都不会响**
+ * （Node 24 上实测）。`/v1` 的两条流以前就挂在它上面，于是「客户端一走就停」从来没生效
+ * 过：人关了标签页，上游照样整段生成完，钱照付。
+ *
+ * 分得清「对面走了」的是 res：它的 close 来的时候我们自己还没 end 过，那就是对面先断的。
+ * 同一件事管家那边修过一次（manager/src/llm-relay.ts 的 watchClient）。
+ *
+ * 挂之前就已经断了的也要认（`res.destroyed`）：处理器在打上游之前还要查库、过闸、登记。
+ * GET 这类没读请求体的路由不受那个坑影响，但用这一份也一样对。
+ */
+export interface ClientWatch {
+  /** 客户端走了就 abort。可以直接交给 fetch / pi-ai。 */
+  readonly signal: AbortSignal
+  gone(): boolean
+  /** 每条出口都要调，否则就是在 res 上攒监听器。 */
+  release(): void
+}
+
+export function watchClient(res: ServerResponse, onGone?: () => void): ClientWatch {
+  const ac = new AbortController()
+  const mark = () => {
+    if (ac.signal.aborted) return
+    ac.abort(new Error('client closed'))
+    onGone?.()
+  }
+  // 我们自己 end 之后也会来一次 close，那一次不算「对面走了」。
+  const onClose = () => {
+    if (!res.writableEnded) mark()
+  }
+  res.on('close', onClose)
+  if (res.destroyed && !res.writableEnded) mark()
+  return {
+    signal: ac.signal,
+    gone: () => ac.signal.aborted,
+    release: () => {
+      res.off('close', onClose)
+    },
+  }
+}
+
 const BODY_LIMIT = 8_000_000
 
 async function readBody(req: IncomingMessage): Promise<unknown> {

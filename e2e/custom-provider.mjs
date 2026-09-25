@@ -21,6 +21,12 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
   log('\n# custom-provider')
 
   let seen = { auth: null, path: null, body: null }
+  /**
+   * 慢流那一条的现场（同 llm-usage.mjs 那份）：上游这一侧看到连接什么时候断、有没有写完。
+   * 这一份走的是 pi-ai 那条路（`/v1/chat/completions` 的流式），和 `/v1/messages` 的直转
+   * 不是同一段代码，所以两边各钉一条。
+   */
+  const slow = { closedAt: 0, finished: false }
   const upstream = createServer((r, res) => {
     seen.auth = r.headers.authorization
     seen.path = r.url
@@ -32,6 +38,30 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       try {
         parsed = JSON.parse(buf)
       } catch {}
+      if (buf.includes('e2e_slow')) {
+        // 二十秒的慢流，一帧 50ms。Gateway 要是不掐，它会一直写到最后一帧。
+        slow.closedAt = 0
+        slow.finished = false
+        res.on('close', () => {
+          if (!slow.finished) slow.closedAt = Date.now()
+        })
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+        const piece = (delta) =>
+          `data: ${JSON.stringify({ id: 'c', object: 'chat.completion.chunk', created: 1, model: 'm', choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`
+        res.write(piece({ role: 'assistant' }))
+        void (async () => {
+          for (let i = 0; i < 400 && !res.destroyed; i++) {
+            await new Promise((x) => setTimeout(x, 50))
+            if (res.destroyed) break
+            res.write(piece({ content: '慢' }))
+          }
+          if (res.destroyed) return
+          slow.finished = true
+          res.write('data: [DONE]\n\n')
+          res.end()
+        })()
+        return
+      }
       /**
        * **用量帧只在请求里写了 `stream_options.include_usage` 时才发。**
        *
@@ -153,6 +183,37 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
         body: { model: 'my-llm/my-model', messages: [{ role: 'user', content: 'hi' }] },
       })
       assert(r.status === 200, `chat ${r.status} ${r.text}`)
+    })
+
+    await test('/v1/chat/completions 流式：客户端中途走了，Gateway 当场中止上游、记 failed', async () => {
+      // 这条流由 pi-ai 发起。断开检测以前挂在 `req.on('close')` 上，请求体读完之后它就
+      // 不会再响了，于是 pi-ai 那一路被一直拉到最后一帧。
+      const ac = new AbortController()
+      const r = await fetch(`${base}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'my-llm/my-model', stream: true, messages: [{ role: 'user', content: 'e2e_slow' }] }),
+        signal: ac.signal,
+      })
+      assert(r.status === 200, `chat ${r.status}`)
+      await r.body.getReader().read()
+      ac.abort()
+
+      const deadline = Date.now() + 5000
+      while (!slow.closedAt && !slow.finished && Date.now() < deadline) await new Promise((x) => setTimeout(x, 50))
+      assert(!slow.finished, '上游被一直拉到了最后一帧：客户端走了 Gateway 没停')
+      assert(slow.closedAt > 0, '客户端走了五秒，Gateway 到上游的连接还开着')
+
+      // 落账在收尾之后。系统管理员的调用不归任何公司，从平台那张表上看。
+      let last
+      for (let i = 0; i < 30; i++) {
+        const charges = await req(base, 'GET', '/platform/charges?kind=llm&limit=1', { token })
+        assert(charges.status === 200, `charges ${charges.status} ${charges.text}`)
+        last = charges.json.charges[0]
+        if (last?.status === 'failed') break
+        await new Promise((x) => setTimeout(x, 100))
+      }
+      assert(last?.status === 'failed', `客户端中途走了应记 failed，实际 ${last?.status}`)
     })
 
     await test('模型 id 带斜杠：openrouter 那种 vendor/model 能录、能测、能调', async () => {

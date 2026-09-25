@@ -41,8 +41,8 @@
 ## 四、Vercel 项目
 
 - [ ] **Pro 计划。** Cron 每分钟一次要 Pro；Hobby 每天一次，催办、审计派发、租约回收都成了一天一拍。
-- [ ] Root Directory 留空（`vercel.json` 在仓库根）。Build 用 `vercel.json` 里那条，只打包
-      （`build:vercel`）——**迁移不在里面**，第一次部署之前先手动跑一遍，见
+- [ ] Root Directory 留空（`vercel.json` 在仓库根）。Build 用 `vercel.json` 里那条
+      （`vercel-build`）：生产构建先跑迁移再打包，preview 只打包，见
       [vercel-deploy.md](vercel-deploy.md#迁移怎么跑)。
 - [ ] 环境变量按 [vercel-deploy.md](vercel-deploy.md) 那张表配齐。**钥匙从 Debian 原样搬**：
       `~/.satuwork-gateway/keys/` 下两把 PEM → `GATEWAY_JWT_PRIVATE_KEY` / `GATEWAY_JWT_PUBLIC_KEY`，
