@@ -1,4 +1,4 @@
-import { createReadStream, statSync } from 'node:fs'
+import { createReadStream, readFileSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -176,7 +176,19 @@ const SPA_PATHS = new Set(['/', '/login', '/privacy', '/terms', '/download', '/i
 // 前端脚本拆成了一串（见 gateway/ui/index.html 里那组 data-app-part），
 // 加一个新的分片就要在这里也加一行，否则线上直接 404，而本地跑 index.html 是好的。
 const UI_PARTS = ['prefs.js', 'state.js', 'data.js', 'shell.js', 'pages-landing.js', 'pages-legal.js', 'pages-download.js', 'pages-admin.js', 'pages-audit.js', 'pages-machines.js', 'pages-account.js', 'pages-bots.js', 'pages-tools.js', 'pages-connectors.js', 'pages-routines.js', 'pages-handoffs.js', 'pages-channels.js', 'chat.js', 'render.js', 'app.js']
-const ROOT_FILES = new Set(['theme.css', 'shell.css', 'app.css', 'chat.css', ...UI_PARTS, 'i18n.js', 'markdown.js', 'channel-preview.js', 'index.html', 'unzip.js'])
+const ROOT_FILES = new Set(['theme.css', 'shell.css', 'app.css', 'chat.css', ...UI_PARTS, 'i18n.js', 'markdown.js', 'channel-preview.js', 'index.html', 'unzip.js', 'analytics.js'])
+
+/**
+ * Vercel Web Analytics 与 Speed Insights：**只在 Vercel 上开**（平台注入 `VERCEL=1`）。
+ * `/_vercel/insights/*`、`/_vercel/speed-insights/*` 由平台出，自托管和桌面端没有这两个
+ * 端点，把标签写死在 index.html 里会在那两处留 404。全是同源脚本、同源上报，
+ * `script-src 'self'` 和 `connect-src 'self'` 已经放行，不用动 CSP。
+ * analytics.js 必须在前：它给两边排好 beforeSend（洗掉邀请令牌、id、查询串），两个
+ * script.js 加载时接走。
+ */
+const VERCEL_ANALYTICS = process.env.VERCEL === '1'
+  ? '<script src="/analytics.js"></script>\n<script defer src="/_vercel/insights/script.js"></script>\n<script defer src="/_vercel/speed-insights/script.js"></script>\n'
+  : ''
 
 /**
  * 按需加载的那三个库（KaTeX / highlight.js / Mermaid）从哪儿来。
@@ -319,6 +331,10 @@ function serveUi(pathname: string, res: ServerResponse): boolean {
     // CSP 只挂在网页本身上：脚本和样式是被这一页加载的，约束它们的是这一页的策略。
     ...(ext === '.html' ? { 'content-security-policy': CSP } : {}),
   })
+  if (VERCEL_ANALYTICS && rel === 'index.html') {
+    res.end(readFileSync(file, 'utf8').replace('</body>', VERCEL_ANALYTICS + '</body>'))
+    return true
+  }
   createReadStream(file).pipe(res)
   return true
 }
