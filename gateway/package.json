@@ -8,7 +8,8 @@
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json",
     "migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
-    "build:vercel": "node scripts/build-vercel.mjs"
+    "build:vercel": "node scripts/build-vercel.mjs",
+    "vercel-build": "node scripts/vercel-build.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.84.4",

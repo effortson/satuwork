@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "pnpm install --frozen-lockfile",
-  "buildCommand": "pnpm --filter satuwork-gateway build:vercel",
+  "buildCommand": "pnpm --filter satuwork-gateway vercel-build",
   "crons": [{ "path": "/cron/tick", "schedule": "* * * * *" }]
 }
