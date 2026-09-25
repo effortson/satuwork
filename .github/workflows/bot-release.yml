@@ -1,10 +1,11 @@
-# 构建 Bot 发布包：建 GitHub Release + 传给 Gateway。
+# 构建 Bot 发布包：建 GitHub Release + 登记到 Gateway。
 #
-# Gateway 不构建 Bot，只收包：这里打，PUT 上去，席位那边再从它部署。
+# Gateway 不构建 Bot，只登记包：这里打、挂到 Release 上，Gateway 按下载地址登记
+# （register-release.yml），席位那边再从它部署。
 # 需要两个 secret：GATEWAY_URL（如 https://gw.example.com）、GATEWAY_PLATFORM_TOKEN。
 #
 # 打 `bot-v1.2.3` 这样的 tag 触发，版本号是 `1.2.3+<短 sha>-<架构>`；手动触发时
-# 版本号取 bot/package.json 的 version 加短 sha 加架构，并且**不建** Release。
+# 版本号取 bot/package.json 的 version 加短 sha 加架构，**不建** Release、也不登记。
 #
 # **两个架构分别出包。** 包里带 esbuild 的原生二进制，架构不对就起不来，而且
 # `pack.mjs` 只校验「是不是 linux-」，不校验是哪个 linux。所以版本号必须带架构后缀，
@@ -100,33 +101,14 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes "${NOTE:-Bot 发布包（x64 / arm64）。装到席位机器上时**架构必须对上**。}"
 
-      # **顺序是有意的：arm64 先、x64 后。**
-      # Gateway 的 latestBotRelease 只按 createdAt 取，不认架构。矩阵并发上传的话
-      # 「最新」是随机的；这里串行上传，让 x64 稳定地成为最新——和多架构之前的行为
-      # 一致。arm 机器在 Gateway 支持按架构选包之前，必须显式钉版本。
-      - name: 传给 Gateway
-        env:
-          TOK: ${{ secrets.GATEWAY_PLATFORM_TOKEN }}
-          GW: ${{ secrets.GATEWAY_URL }}
-          NOTE: ${{ inputs.note }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          for arch in arm64 x64; do
-            # 直接用 glob，不解析 ls 的输出；顺带断言「正好一个」——多出来的陈旧
-            # artifact 会让上传传错文件，而那是查不出来的。
-            files=(dist/bot-*-"$arch".tgz)
-            [ ${#files[@]} -eq 1 ] || { echo "期望正好一个 $arch 包，实际 ${#files[@]}" >&2; exit 1; }
-            f="${files[0]}"
-            v=$(basename "$f" .tgz); v=${v#bot-}
-            sha=$(sha256sum "$f" | cut -d' ' -f1)
-            echo "PUT $arch $v"
-            code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X PUT \
-              "${GW%/}/platform/bot-releases/$(jq -rn --arg v "$v" '$v|@uri')?note=$(jq -rn --arg n "${NOTE:-}" '$n|@uri')" \
-              -H "authorization: Bearer $TOK" \
-              -H 'content-type: application/gzip' \
-              -H "x-bot-sha256: $sha" \
-              --data-binary "@$f")
-            echo "  -> $code $(head -c 300 /tmp/resp.json)"
-            [ "$code" = "200" ] || [ "$code" = "201" ] || exit 1
-          done
+  # 登记到 Gateway：按 Release 的下载地址登记，不 PUT 整包（Vercel 上请求体上限 4.5 MB，
+  # PUT 一律 413）。顺序、校验、重跑的约定都在 register-release.yml 里。
+  # 手动触发没有 Release、也就没有可登记的地址：那种只出 artifact。
+  register:
+    needs: release
+    if: github.ref_type == 'tag'
+    uses: ./.github/workflows/register-release.yml
+    with:
+      tag: ${{ github.ref_name }}
+      note: ${{ inputs.note || '' }}
+    secrets: inherit

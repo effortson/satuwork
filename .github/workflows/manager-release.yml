@@ -1,6 +1,6 @@
-# 构建机器管家发布包：建 GitHub Release + 传给 Gateway。
+# 构建机器管家发布包：建 GitHub Release + 登记到 Gateway。
 #
-# 和 bot-release 是同一套流程，区别只在包和上传路径（/platform/manager-releases）。
+# 和 bot-release 是同一套流程，区别只在包和登记路径（/platform/manager-releases）。
 # 但影响面不一样：**机器上的管家会自己升到这个版本**——心跳时 Gateway 下发期望
 # 版本，各台机器自行换版。所以推 tag 之前先想清楚要不要立刻全量。
 #
@@ -102,31 +102,14 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes "${NOTE:-管家发布包（x64 / arm64）。没 pin 期望版本的机器会在下一轮心跳自动升到最新。}"
 
-      # 顺序有意：arm64 先、x64 后，让 x64 稳定地成为「最新」。理由见 bot-release.yml。
-      # 管家这条尤其要紧——没 pin 的机器会自动跟最新走，随机的「最新」等于随机换架构。
-      - name: 传给 Gateway
-        env:
-          TOK: ${{ secrets.GATEWAY_PLATFORM_TOKEN }}
-          GW: ${{ secrets.GATEWAY_URL }}
-          NOTE: ${{ inputs.note }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          for arch in arm64 x64; do
-            # 直接用 glob，不解析 ls 的输出；顺带断言「正好一个」——多出来的陈旧
-            # artifact 会让上传传错文件，而那是查不出来的。
-            files=(dist/manager-*-"$arch".tgz)
-            [ ${#files[@]} -eq 1 ] || { echo "期望正好一个 $arch 包，实际 ${#files[@]}" >&2; exit 1; }
-            f="${files[0]}"
-            v=$(basename "$f" .tgz); v=${v#manager-}
-            sha=$(sha256sum "$f" | cut -d' ' -f1)
-            echo "PUT $arch $v"
-            code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X PUT \
-              "${GW%/}/platform/manager-releases/$(jq -rn --arg v "$v" '$v|@uri')?note=$(jq -rn --arg n "${NOTE:-}" '$n|@uri')" \
-              -H "authorization: Bearer $TOK" \
-              -H 'content-type: application/gzip' \
-              -H "x-bot-sha256: $sha" \
-              --data-binary "@$f")
-            echo "  -> $code $(head -c 300 /tmp/resp.json)"
-            [ "$code" = "200" ] || [ "$code" = "201" ] || exit 1
-          done
+  # 登记到 Gateway：按 Release 的下载地址登记，不 PUT 整包（Vercel 上请求体上限 4.5 MB，
+  # PUT 一律 413）。顺序、校验、重跑的约定都在 register-release.yml 里。
+  # 手动触发没有 Release、也就没有可登记的地址：那种只出 artifact。
+  register:
+    needs: release
+    if: github.ref_type == 'tag'
+    uses: ./.github/workflows/register-release.yml
+    with:
+      tag: ${{ github.ref_name }}
+      note: ${{ inputs.note || '' }}
+    secrets: inherit

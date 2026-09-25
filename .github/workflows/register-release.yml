@@ -1,0 +1,105 @@
+# 把一个 GitHub Release 里的发布包**登记**到 Gateway（按地址，不传字节）。
+#
+# 为什么不 PUT 整包：Gateway 跑在 Vercel 上，函数请求体上限 4.5 MB，管家包 9 MB、bot 包
+# 近 30 MB，PUT 一律 413。`POST /platform/{kind}-releases` 只收 {version,url,size,sha256}，
+# Gateway 自己把包从 url 整个拉一遍、比对大小和 sha256、确认入口文件在，验不过不入库；
+# 下发给机器时也是从这个 url 流式转过去（带着 x-bot-sha256）。仓库是公开的，Release 的
+# 下载地址不用凭据。
+#
+# 两种用法：
+# - bot / manager / local-bot 三条发版流水线建完 Release 后 `uses:` 这里（workflow_call）。
+# - 手动触发，给一个已有的 tag：补登当时没登上的包，或者换个 Gateway 再登一遍。
+#
+# 已经登记过的版本 Gateway 回 409，这里当成功跳过——版本号里带着 commit sha，同名即同源，
+# 所以整条重跑是安全的。
+#
+# **登记即生效**：没钉期望版本的管家会在下一轮心跳升到最新的管家包（见 manager-release.yml）。
+#
+# 需要两个 secret：GATEWAY_URL、GATEWAY_PLATFORM_TOKEN（调用方要 `secrets: inherit`）。
+name: register-release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      note:
+        type: string
+        required: false
+        default: ''
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已有的 Release tag，如 bot-v0.1.13 / manager-v0.1.25 / local-bot-v0.1.13
+        required: true
+      note:
+        description: 这次发布的说明
+        required: false
+        default: ''
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: 登记到 Gateway
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          NOTE: ${{ inputs.note }}
+          TOK: ${{ secrets.GATEWAY_PLATFORM_TOKEN }}
+          GW: ${{ secrets.GATEWAY_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "$GW" ] && [ -n "$TOK" ] || { echo "没配 GATEWAY_URL / GATEWAY_PLATFORM_TOKEN" >&2; exit 1; }
+
+          # tag 前缀定包的种类和登记顺序。
+          # 顺序是有意的：Gateway 的「最新」只按登记时间取、不认架构，x64 排最后才稳定地
+          # 成为最新（理由见 bot-release.yml）。local-bot 按平台+架构各自选包，顺序无所谓，
+          # 照它原来的上传顺序。
+          case "$TAG" in
+            local-bot-v*) kind=local-bot; targets="darwin-x64 darwin-arm64 windows-x64 windows-arm64 linux-x64 linux-arm64" ;;
+            manager-v*)   kind=manager;   targets="arm64 x64" ;;
+            bot-v*)       kind=bot;       targets="arm64 x64" ;;
+            *) echo "认不出 $TAG 是哪种包（要 bot-v / manager-v / local-bot-v 开头）" >&2; exit 1 ;;
+          esac
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq '.assets[] | [.name, .browser_download_url] | @tsv' > assets.tsv
+          cat assets.tsv
+
+          for target in $targets; do
+            # 断言「正好一个」：多一个就说不清登记的是哪份。
+            rows=$(awk -F'\t' -v k="$kind" -v t="$target" \
+              'index($1, k "-") == 1 && $1 ~ ("-" t "\\.tgz$")' assets.tsv)
+            n=$(printf '%s' "$rows" | grep -c . || true)
+            [ "$n" -eq 1 ] || { echo "期望 $TAG 里正好一个 $target 包，实际 $n" >&2; exit 1; }
+            name=$(printf '%s' "$rows" | cut -f1)
+            url=$(printf '%s' "$rows" | cut -f2)
+            v=${name%.tgz}; v=${v#"$kind"-}
+
+            # 大小和 sha256 自己从下载地址算，不信 API 上的元数据：Gateway 拉的就是这个地址，
+            # 两边算的是同一份字节。
+            curl -fsSL -o pkg.tgz "$url"
+            size=$(stat -c %s pkg.tgz)
+            sha=$(sha256sum pkg.tgz | cut -d' ' -f1)
+            rm -f pkg.tgz
+
+            body=$(jq -n --arg version "$v" --arg url "$url" --argjson size "$size" \
+              --arg sha256 "$sha" --arg note "$NOTE" \
+              '{version: $version, url: $url, size: $size, sha256: $sha256, note: $note}')
+            echo "POST $kind $v ($size 字节)"
+            code=$(curl -sS -o resp.json -w '%{http_code}' -X POST \
+              "${GW%/}/platform/$kind-releases" \
+              -H "authorization: Bearer $TOK" \
+              -H 'content-type: application/json' \
+              --data "$body")
+            echo "  -> $code $(head -c 300 resp.json)"
+            case "$code" in
+              200|201) ;;
+              409) echo "  已经登记过，跳过" ;;
+              *) exit 1 ;;
+            esac
+          done
