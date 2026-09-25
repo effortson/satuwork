@@ -676,27 +676,27 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(ok.json.routine.triggers[0].weekday === 1 && ok.json.routine.triggers[0].day === 1, '默认值没给上')
     })
 
-    await test('用哪个模型跑：默认 utility，拨得回去，乱写的值顶回来', async () => {
-      // **默认那一档是省钱的那个**（见 docs/routines.md §4）。这条断言看着琐碎，
-      // 但默认值一旦被谁顺手改成 daily，账单上多出来的那笔没有任何人会察觉。
+    await test('用哪个模型跑：默认 daily，拨得过去也拨得回来，乱写的值顶回来', async () => {
+      // **默认是日常模型**（见 docs/routines.md §4）：和人自己问它时同一个。这条断言看着
+      // 琐碎，但默认值一旦被谁顺手改回 utility，定时任务的质量会悄悄掉一截，没人会察觉。
       const fresh = await req(gwBase, 'POST', `/runtime/bots/${botId}/routines`, { token: adminTok, body: { name: '默认那一档' } })
       assert(fresh.status === 201, `create ${fresh.status} ${fresh.text}`)
-      assert(fresh.json.routine.modelRole === 'utility', `默认不是 utility：${fresh.json.routine.modelRole}`)
+      assert(fresh.json.routine.modelRole === 'daily', `默认不是 daily：${fresh.json.routine.modelRole}`)
       await req(gwBase, 'DELETE', `/runtime/routines/${fresh.json.routine.id}`, { token: adminTok })
 
       const now = await req(gwBase, 'GET', `/runtime/routines/${routineId}`, { token: adminTok })
-      assert(now.json.routine.modelRole === 'utility', `旧的那条不是 utility：${now.json.routine.modelRole}`)
-      const to = await req(gwBase, 'PATCH', `/runtime/routines/${routineId}`, { token: adminTok, body: { modelRole: 'daily' } })
-      assert(to.status === 200 && to.json.routine.modelRole === 'daily', `拨到 daily ${to.status} ${to.text}`)
+      assert(now.json.routine.modelRole === 'daily', `旧的那条不是 daily：${now.json.routine.modelRole}`)
+      const to = await req(gwBase, 'PATCH', `/runtime/routines/${routineId}`, { token: adminTok, body: { modelRole: 'utility' } })
+      assert(to.status === 200 && to.json.routine.modelRole === 'utility', `拨到 utility ${to.status} ${to.text}`)
       // 改模型不动别的：这一路和改名字、改触发器是三次独立的保存。
       assert(to.json.routine.instruction === 'ping', `instruction 被带没了 ${to.json.routine.instruction}`)
       assert((to.json.routine.triggers || []).length === 1, `triggers 被带没了 ${JSON.stringify(to.json.routine.triggers)}`)
-      // 拼错的值**不能静静地存成 utility**：接口回 200、界面写着「日常模型」，跑起来
+      // 拼错的值**不能静静地存成默认那一档**：接口回 200、界面写着「Utility」，跑起来
       // 却是另一个，人只会以为自己记错了。
-      const bad = await req(gwBase, 'PATCH', `/runtime/routines/${routineId}`, { token: adminTok, body: { modelRole: 'Daily' } })
+      const bad = await req(gwBase, 'PATCH', `/runtime/routines/${routineId}`, { token: adminTok, body: { modelRole: 'Utility' } })
       assert(bad.status === 400, `乱写的值 ${bad.status} ${bad.text}`)
-      const back = await req(gwBase, 'PATCH', `/runtime/routines/${routineId}`, { token: adminTok, body: { modelRole: 'utility' } })
-      assert(back.status === 200 && back.json.routine.modelRole === 'utility', `拨回来 ${back.status} ${back.text}`)
+      const back = await req(gwBase, 'PATCH', `/runtime/routines/${routineId}`, { token: adminTok, body: { modelRole: 'daily' } })
+      assert(back.status === 200 && back.json.routine.modelRole === 'daily', `拨回来 ${back.status} ${back.text}`)
     })
 
     /**

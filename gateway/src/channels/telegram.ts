@@ -95,6 +95,7 @@ export function telegramSetMyCommands(token: string): Promise<boolean> {
       { command: 'new', description: '开始新对话（保留记录，不带旧上下文）' },
       { command: 'tasks', description: '查看当前任务列表' },
       { command: 'mentions', description: '查看可用的 @ 连接' },
+      { command: 'model', description: '查看或切换日常模型' },
     ],
     scope: { type: 'all_private_chats' },
   })

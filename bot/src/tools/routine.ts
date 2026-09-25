@@ -226,8 +226,8 @@ export function apply(ctx: Context) {
           },
           model_role: {
             type: 'string',
-            enum: ['utility', 'daily'],
-            description: 'utility=平台省钱档（默认）；daily=跟这颗 Bot 平时聊天一样。',
+            enum: ['daily', 'utility'],
+            description: 'daily=跟这颗 Bot 平时聊天一样（默认）；utility=平台省钱档，适合每天跑的简单活。',
           },
         },
         required: ['action'],

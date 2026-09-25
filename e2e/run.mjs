@@ -39,6 +39,7 @@ import { runVision } from './vision.mjs'
 import { runTurnImages } from './turn-images.mjs'
 import { runMentions } from './mentions.mjs'
 import { runRoutineModel } from './routine-model.mjs'
+import { runModelChoice } from './model-choice.mjs'
 import { runRoutineTools } from './routine-tools.mjs'
 import { runHistoryTime } from './history-time.mjs'
 import { runCompact } from './compact.mjs'
@@ -3470,6 +3471,7 @@ async function main() {
     await suite('turn-images', () => runTurnImages({ root, test, assert, log }))
     await suite('mentions', () => runMentions({ root, test, assert, log }))
     await suite('routine-model', () => runRoutineModel({ root, test, assert, log }))
+    await suite('model-choice', () => runModelChoice({ root, test, assert, log }))
     await suite('routine-tools', () => runRoutineTools({ root, test, assert, log }))
     await suite('history-time', () => runHistoryTime({ root, test, assert, log }))
     await suite('compact', () => runCompact({ root, test, assert, log }))

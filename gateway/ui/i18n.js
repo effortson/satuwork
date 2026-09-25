@@ -1072,6 +1072,21 @@ window.SATU_I18N = {
   压缩上下文: 'Compact context',
   '把更早的对话换成摘要，会调用一次模型': 'Replace earlier turns with a summary. Runs the model once.',
   开始新对话: 'Start a new conversation',
+  切换模型: 'Switch model',
+  '换这条对话用的日常模型，下一轮起生效': 'Change the daily model for this conversation; applies from the next turn',
+  默认: 'Default',
+  '这台席位的版本还不支持切换模型，升级后可用': 'This seat is too old to switch models; available after it upgrades',
+  '还没取到可选的模型，过几秒再试': 'Model options have not loaded yet; try again in a few seconds',
+  '平台目前只配了一个日常模型，没有可换的': 'Only one daily model is configured; there is nothing to switch to',
+  // ── 模型配置页：日常模型备选 ──
+  日常模型备选: 'Daily model alternatives',
+  '还没有备选。': 'No alternatives yet.',
+  上移: 'Move up',
+  设为默认: 'Make default',
+  添加备选模型: 'Add an alternative',
+  没有可添加的模型: 'No models to add',
+  备选: 'Alternative',
+  加入备选: 'Add as alternative',
   '从这里起不再带上前面的内容，记录不删': 'Stop carrying earlier turns into context. Nothing is deleted.',
   等这一轮跑完: 'Wait for this turn to finish',
   '没有这条命令：': 'No such command: ',
@@ -1142,8 +1157,8 @@ window.SATU_I18N = {
   '日常模型（和聊天时一样）': 'Daily model (same as chat)',
   '它自己跑的时候没人在等，用便宜的那一档。要它做难一点的活，换成日常模型。':
     'Nobody is waiting when it runs itself, so it uses the cheaper model. Switch to the daily model for harder work.',
-  '和你自己问它时用的是同一个模型。每天都跑的活，utility 那一档省得多。':
-    'Same model you get when you ask it yourself. For something that runs every day, the utility model costs far less.',
+  '和你自己问它时用的是同一个模型。每天都跑的简单活，换成 utility 能省不少。':
+    'Same model you get when you ask it yourself. For simple jobs that run every day, switching to the utility model saves a lot.',
   下一次: 'Next run',
   重试: 'Retry',
   '上一次没跑成，%s 再试一次（第 %n 次，共 %m 次）': 'Last run failed — retrying at %s (attempt %n of %m)',

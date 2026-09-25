@@ -33,6 +33,7 @@ import { MIN_WORKER_PROTOCOL, machineLink } from './deploy.ts'
 import { runtimeKindOf } from './lib/catalog.ts'
 import { sweepHandoffs } from './handoff-sweep.ts'
 import { refreshDiscovered } from './model-discovery.ts'
+import { pruneDailyAlternates } from './lib/alternates.ts'
 import { tickBotDeletions, tickConversationAudits } from './conversation-audit.ts'
 import { createMeter, type Meter } from './lib/meter.ts'
 import { createLlm, type Llm } from './llm.ts'
@@ -451,9 +452,15 @@ export async function maintenanceTick(db: Db): Promise<void> {
      * 上面两处一样。它自己按 GATEWAY_MODEL_DISCOVERY_MS 节流（默认 6 小时），
      * 所以挂在这个半分钟的粗节拍上不会真的每半分钟去拉一次。
      */
-    .then(() => refreshDiscovered(db).then((r) => {
+    .then(() => refreshDiscovered(db).then(async (r) => {
       if (r.error) console.error(`satuwork-gateway: 模型目录刷新失败：${r.error}`)
-      else if (r.ran) console.log(`satuwork-gateway: 模型目录已刷新，models.dev 收录 ${r.added} 个可用模型`)
+      else if (r.ran) {
+        console.log(`satuwork-gateway: 模型目录已刷新，models.dev 收录 ${r.added} 个可用模型`)
+        // 上游不再收录的模型掉出了目录，备选里指着它的一起拿掉（见 lib/alternates.ts）。
+        // 只在真刷新过的那一拍做：Llm 建一个要把内置目录整份铺开，不值得每半分钟来一次。
+        const dropped = await pruneDailyAlternates(db, createLlm(db))
+        if (dropped.length) console.log(`satuwork-gateway: 日常模型备选里 ${dropped.join('、')} 已不在目录里，已移除`)
+      }
     }))
     .catch((e: Error) => console.error(`satuwork-gateway: 日常任务扫描失败：${e.message}`))
 }

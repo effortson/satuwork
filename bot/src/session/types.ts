@@ -132,6 +132,32 @@ export interface SessionEventMap {
   'session/title': { title: string }
 
   /**
+   * 这条会话从这里起用哪个日常模型（对话框里的选择器、输入框和渠道里的 `/model`）。
+   *
+   * **落在会话上，不落在 Bot 上。** 一个 Bot 在一个席位上只有一条会话（registry 的
+   * ensureSession），席位是人的——所以这就是「这个人 × 这颗 Bot」的选择；Web 和
+   * Telegram 写的是同一条会话，两个入口看到的也就是同一个选择。`/new` 不清它：那是
+   * 上下文边界，不是「把设置恢复默认」。
+   *
+   * `key` 是 `provider/model`，必须在平台的日常模型名单里（默认 + 备选），写的那一刻
+   * 由 agents.setSessionModel 校验；null = 跟默认走。名单后来变了、选的那个被下架，
+   * 下一轮开跑前由席位补一条 `key: null, reason: 'removed'`，界面照着画一句「已下架」。
+   *
+   * 加一种事件不是破坏性变更（老版本读到不认识的 type 会跳过），退化方向是「像没选过
+   * 一样用默认」，所以不动 SESSION_FORMAT_VERSION。
+   */
+  'session/model': {
+    key: string | null
+    /** 写下这条时那个模型的显示名，界面画分割线用；名单后来变了也还读得懂。 */
+    label?: string
+    /** `removed` = 选的那个不在名单里了，席位自己退回默认。人手切的没有这个字段。 */
+    reason?: 'removed'
+    /** 被退掉的那个（只在 removed 时有）。 */
+    from?: string
+    by?: 'user' | 'system'
+  }
+
+  /**
    * 上下文压缩点。
    *
    * 一个 Bot 一条长会话，会话只增不减，而每一轮都把全量历史重建成 messages 发出去——

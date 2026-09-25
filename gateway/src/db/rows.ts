@@ -1,4 +1,4 @@
-import { Account, AuditEvent, BotDeletionRequest, BotRelease, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorCall, ConnectorCallStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, parseBilling, parseConversationAuditSettings, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
+import { Account, AuditEvent, BotDeletionRequest, BotRelease, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorCall, ConnectorCallStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseConversationAuditSettings, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
 
 /**
  * `select *` 回来的裸行 → 上面那些类型。
@@ -182,13 +182,39 @@ export function parseModelRole(raw: Partial<ModelRole> | undefined): ModelRole {
   }
 }
 
+/**
+ * 日常模型的备选，读写两头共用这一份收口：空的、重复的、和默认那个相同的都丢掉，
+ * 超出上限的截掉。**顺序保留**——那是管理员排的，对话框里照这个顺序画。
+ *
+ * 和默认相同的那条要在这里丢，而不是只在路由里挡：把某个备选「设为日常」是另一条路
+ * （只改 daily），那一下之后它会同时出现在两处，对话框里就是两行一模一样的。
+ */
+export function parseDailyAlternates(raw: unknown, daily: { provider: string; model: string }): ModelRole[] {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>(daily.provider && daily.model ? [modelKey(daily)] : [])
+  const out: ModelRole[] = []
+  for (const x of raw) {
+    const r = parseModelRole(x && typeof x === 'object' ? (x as Partial<ModelRole>) : undefined)
+    if (!r.provider || !r.model) continue
+    const key = modelKey(r)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(r)
+    if (out.length >= DAILY_ALTERNATES_MAX) break
+  }
+  return out
+}
+
 export function parsePlatformPayload(raw: unknown): PlatformSettings {
   const o = (jsonOf(raw) ?? {}) as Partial<PlatformSettings>
   if (!o || typeof o !== 'object') return emptyPlatformSettings()
   const enabled = Array.isArray(o.enabledModels) ? o.enabledModels.map((x) => String(x)).filter(Boolean) : []
+  const daily = parseModelRole(o.daily)
   return {
-    daily: parseModelRole(o.daily),
+    daily,
     utility: parseModelRole(o.utility),
+    // 老库里没有这个字段，读出来是空 = 只有默认那一个，对话框里不画选择器。
+    dailyAlternates: parseDailyAlternates(o.dailyAlternates, daily),
     enabledModels: enabled,
     // 老库里没有这个字段，回落成 1——按原价，等于没开倍率。
     priceMultiplier: parsePriceMultiplier(o.priceMultiplier),

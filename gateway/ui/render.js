@@ -525,22 +525,34 @@ async function saveSettings(patch) {
     priceMultiplier: priceMultiplier(),
     ...patch,
   }
-  if (patch.daily) next.daily = patch.daily
-  if (patch.utility) next.utility = patch.utility
+  /**
+   * 备选**只在这一次真改了它时才发**。服务端对收到的每个备选都要重新过一遍上架规矩，
+   * 每次存角色都捎上的话，名单里只要有一个后来下架了的，改日常 / utility / 推理强度
+   * 就全都 400——而那个人根本没碰备选。没发就是沿用，服务端那头是这么收的。
+   * 乐观更新那一份照旧带上当前名单，不然备选列表会闪一下空。
+   */
+  const body = { ...next }
+  if (isOwner()) next.dailyAlternates = patch.dailyAlternates || dailyAlternates()
+  if (!patch.dailyAlternates) delete body.dailyAlternates
+  if (patch.daily) next.daily = body.daily = patch.daily
+  if (patch.utility) next.utility = body.utility = patch.utility
   // 换了模型，上一次的连通性结论就不作数了——留着那个绿字比没有还糟。
   for (const role of ['daily', 'utility']) {
     if (!patch[role]) continue
     const cur = state.settings?.[role] || {}
     if (cur.provider !== next[role].provider || cur.model !== next[role].model) delete state.tests[`role:${role}`]
   }
+  const prev = state.settings
   state.settings = next
   render()
   try {
     const path = isOwner() ? '/platform/settings' : `/orgs/${encodeURIComponent(orgId())}/settings`
-    state.settings = await api('PUT', path, next)
+    state.settings = await api('PUT', path, body)
     if (state.me) state.me.settings = state.settings
     flash('ok', '已保存模型角色')
   } catch (err) {
+    // 被挡回来就退回存之前那份：乐观更新里那个没存进去的备选 / 角色不能留在屏上装作存好了。
+    state.settings = prev
     flash('err', err.message)
   }
   render()
@@ -658,8 +670,20 @@ async function savePriceMultiplier(raw) {
   }
 }
 
+/**
+ * 存日常模型的备选。整份 PUT 回去：顺序就是对话框里的顺序，由这一份说了算。
+ * 不在启用名单里、和默认重复这些由服务端挡，挡回来的那句原话照样 flash 出来。
+ */
+async function saveAlternates(list) {
+  await saveSettings({ dailyAlternates: list.map((r) => ({ provider: r.provider, model: r.model, reasoningEffort: r.reasoningEffort || 'off' })) })
+}
+
 async function testLlm(kind, payload) {
-  const key = kind === 'role' ? `role:${payload.role}` : `provider:${payload.provider}`
+  const key = kind === 'role'
+    ? `role:${payload.role}`
+    : kind === 'alt'
+      ? `alt:${payload.provider}/${payload.model}`
+      : `provider:${payload.provider}`
   state.tests[key] = { status: 'busy', text: '测试中…' }
   render()
   try {

@@ -751,6 +751,49 @@
 .sw-ctxpct { text-align: right; }
 .sw-ctxnote { margin: var(--space-3) 0 0; padding-top: var(--space-2); border-top: 1px solid var(--border); font-size: 11px; line-height: 1.5; color: var(--muted-foreground); }
 
+/* ── 日常模型选择器。长在输入框那一行、附件按钮右边，浮层同样往上开 ─────────── */
+.sw-model { position: relative; flex: none; display: inline-flex; min-width: 0; }
+.sw-model[hidden] { display: none; }
+.sw-model-chip {
+  max-width: 220px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sw-model-chip:hover, .sw-model-chip[aria-expanded="true"] { background: var(--secondary); color: var(--color-text); }
+.sw-modelpop {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 15;
+  width: 300px;
+  max-height: 320px;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+.sw-modelpop .sw-pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
+.sw-modelpop small { flex: none; }
+.sw-modelnote { margin: var(--space-1) 0 0; padding: var(--space-2) var(--space-2) 0; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.5; color: var(--muted-foreground); }
+.sw-ctxdiv[data-mark='model']::before,
+.sw-ctxdiv[data-mark='model']::after { background: var(--color-accent-600); opacity: 0.35; }
+
 .sw-composer-tip kbd {
   font-family: inherit;
   font-size: 11px;
@@ -768,6 +811,8 @@
   .sw-composer-tip > span:first-child { display: none; }
   /* 浮层比窄屏还宽的话右边会被切掉，而被切掉的正好是百分比那一列。 */
   .sw-ctxpop { width: min(272px, calc(100vw - var(--space-8))); }
+  .sw-modelpop { width: min(300px, calc(100vw - var(--space-8))); }
+  .sw-model-chip { max-width: 140px; }
 }
 
 /* ══════════════════════════════════════════════════════════════════════

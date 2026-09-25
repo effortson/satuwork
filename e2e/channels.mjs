@@ -307,7 +307,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       pairingCode = bound.json.pairingCode
 
       assert(telegram.seen.deleteWebhook === 1, '绑定时没有清掉旧 Webhook')
-      assert(telegram.seen.commands.map((c) => c.command).join(',') === 'new,tasks,mentions', 'Telegram 私聊命令菜单没有注册完整')
+      assert(telegram.seen.commands.map((c) => c.command).join(',') === 'new,tasks,mentions,model', 'Telegram 私聊命令菜单没有注册完整')
       await waitFor(() => telegram.seen.polls.length > 0, 'Gateway 发起 getUpdates')
       assert(telegram.seen.polls.every((p) => Array.isArray(p.allowed_updates)
         && p.allowed_updates.join(',') === 'message,callback_query,my_chat_member'), '长轮询没有订阅消息、审批回调和 Bot 成员状态')

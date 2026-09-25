@@ -595,6 +595,7 @@ function fold(events, live, channelBot = false) {
   // 同一条主会话可以同时收 Web 和 Telegram；助手回复继承本轮用户消息的来源。
   let turnVia = ''
   let status = ''
+  let modelSeq = 0
   /**
    * 正在跑的这一轮是**什么时候开始的**（turn/start 那条事件的时间）。
    *
@@ -895,6 +896,23 @@ function fold(events, live, channelBot = false) {
         time: at,
         seq: ev.seq,
       })
+    } else if (type === 'session/model') {
+      /**
+       * 换日常模型（对话框里的选择器、`/model`、或者选的那个被下架了席位自己退回默认）。
+       * 同上面那条边界一样画成分割线，不打断正在拼的那一块：换模型也可能落在一轮中间
+       * （跑着的时候照样收，下一轮起生效），理由和压缩那条一字不差。
+       */
+      modelSeq = Number(ev.seq) || modelSeq
+      blocks.push({
+        kind: 'mark',
+        mark: 'model',
+        key: data.key || null,
+        label: String(data.label || data.key || ''),
+        reason: data.reason || '',
+        from: String(data.from || ''),
+        time: at,
+        seq: ev.seq,
+      })
     } else if (type === 'todo/list') {
       /**
        * 待办清单的一张全量快照。**不画进消息流**——它是一份状态，不是一句话；每改一次
@@ -935,7 +953,9 @@ function fold(events, live, channelBot = false) {
     const tail = blocks[blocks.length - 1]
     statusAt = (tail && (tail.endTime || tail.time)) || 0
   }
-  return { blocks, status, statusAt, todos, channelVia: showChannelVia }
+  // modelSeq：最后一条 session/model 的 seq。选择器拿它判「快照旧了没有」，fold 本来就
+  // 逐条走一遍，顺手记下，省得每一帧再从头扫一遍事件。
+  return { blocks, status, statusAt, todos, channelVia: showChannelVia, modelSeq }
 }
 
 /** 只有绑定了 Telegram 渠道的 Bot 才显示 Web / Telegram 来源角标。 */
@@ -1552,6 +1572,7 @@ async function ensureChatSession(botId, attempt = 0) {
 
 async function loadChatPage() {
   state.chatCtxOpen = false
+  state.chatModelOpen = false
   // 换了会话，上一条还没发出去的 `@` 不该跟过来——它指的是「这一条消息带谁」。
   state.chatMentions = []
   state.mentionPick = null
@@ -4186,6 +4207,15 @@ function paintLoadMore() {
  * 自动压缩和手动压缩画同一条线，只是措辞不同：一个是「它自己压的」，一个是人点的。
  */
 function ctxDivText(b) {
+  if (b.mark === 'model') {
+    // 被下架退回的那一条要说清楚原因：人回来看到模型变了，第一个问题就是「谁换的」。
+    if (b.reason === 'removed') {
+      return t(`${b.from || '之前选的模型'} 已不在可选名单里，改用默认模型 ${b.label}`, `${b.from || 'The chosen model'} is no longer offered; switched to the default ${b.label}`)
+    }
+    return b.key
+      ? t(`从这里起用 ${b.label}`, `Using ${b.label} from here`)
+      : t(`从这里起换回默认模型 ${b.label}`, `Back to the default model ${b.label} from here`)
+  }
   const head =
     b.mark === 'reset'
       ? t('新对话从这里开始')
@@ -4588,6 +4618,7 @@ function paintChatChrome(folded) {
   const thread = document.getElementById('chat-thread')
   if (jump && thread) jump.hidden = nearBottom(thread)
   paintChatCtx()
+  paintChatModel(folded)
 }
 
 function chatMetaText(folded) {
@@ -4831,6 +4862,162 @@ function paintChatCtx() {
   chip.title = t('上下文用量')
   pop.hidden = !state.chatCtxOpen
   if (state.chatCtxOpen) pop.innerHTML = chatCtxPop(stat)
+}
+
+/* ── 日常模型选择器（docs/model-choice.md）──────────────────────────────
+ *
+ * 平台给一个默认的日常模型和几个备选；人给自己和这颗 Bot 的这条会话挑一个。挑选落在
+ * 席位的会话上（`session/model` 事件），Telegram 里的 `/model` 写的是同一条，所以这边
+ * 的状态**以席位为准**：先 GET 一份快照，之后看到新的 `session/model` 事件就再取一次
+ * ——事件里只有 key 和名字，名单和「现在生效的是哪个」还是得席位说。
+ *
+ * 快照按会话存：`{ data, upto }`，取不到时是 `{ failedAt, retryMs }`。404 多半是席位
+ * 还不认这条路（老版本），但席位随时可能在人开着页面时升级，所以也只是隔久一点再问，
+ * 不是永远不问。paintChat 一秒能跑好几次，重试一律按时间节流。
+ */
+const chatModelSnap = new Map()
+const chatModelSyncing = new Set()
+const CHAT_MODEL_RETRY_MS = 30_000
+/** 404 之后多久再问一次：够盖过一次换版，又不至于让升级之后的选择器迟迟不出来。 */
+const CHAT_MODEL_UNSUPPORTED_RETRY_MS = 5 * 60_000
+
+/** 这份事件里最后一条 `session/model` 的 seq。只在发请求时算一次；每一帧用 fold 记下的那个。 */
+function lastModelSeq(events) {
+  for (let i = (events || []).length - 1; i >= 0; i--) {
+    if (events[i].type === 'session/model') return Number(events[i].seq) || 0
+  }
+  return 0
+}
+
+function chatModelDue(snap) {
+  return Boolean(snap && snap.failedAt && Date.now() - snap.failedAt > snap.retryMs)
+}
+
+async function syncChatModel(sessionId, force) {
+  if (!sessionId || chatModelSyncing.has(sessionId)) return
+  const snap = chatModelSnap.get(sessionId)
+  if (snap && !force && !chatModelDue(snap)) return
+  chatModelSyncing.add(sessionId)
+  // 水位取在发请求之前：请求在路上时又来一条换模型的事件，它的 seq 会比水位新，下一帧重取。
+  const upto = state.chatSessionId === sessionId ? lastModelSeq(state.chatEvents) : 0
+  try {
+    const data = await api('GET', `/runtime/sessions/${encodeURIComponent(sessionId)}/model`)
+    chatModelSnap.set(
+      sessionId,
+      data && Array.isArray(data.options)
+        ? { data, upto }
+        : { failedAt: Date.now(), retryMs: CHAT_MODEL_UNSUPPORTED_RETRY_MS, upto },
+    )
+  } catch (err) {
+    const retryMs = err.status === 404 ? CHAT_MODEL_UNSUPPORTED_RETRY_MS : CHAT_MODEL_RETRY_MS
+    // 手上那份好的别扔：一次拉失败不该让已经画出来的选择器消失。
+    const prev = snap && snap.data ? snap : null
+    chatModelSnap.set(sessionId, { ...(prev || {}), failedAt: Date.now(), retryMs, upto: prev ? prev.upto : upto })
+  } finally {
+    chatModelSyncing.delete(sessionId)
+    if (state.chatSessionId === sessionId) paintChatModel()
+  }
+}
+
+/**
+ * 画选择器。`folded` 是 paintChat 这一帧的结果——只有带着它的那一路才判「要不要重取」，
+ * 点开 / 关上浮层这类只换显示的调用不带，也就不会顺手发请求。
+ */
+function paintChatModel(folded) {
+  const box = document.getElementById('chat-model')
+  if (!box) return
+  const sid = state.chatSessionId
+  const snap = sid ? chatModelSnap.get(sid) : null
+  if (sid && folded) {
+    if (!snap || chatModelDue(snap)) void syncChatModel(sid, false)
+    else if (snap.data && !snap.failedAt && (folded.modelSeq || 0) > snap.upto) void syncChatModel(sid, true)
+  }
+  const data = snap && snap.data
+  // 只有一个可选、也没挑过：没得换，不占输入框那一行的位置。挑过的即使名单缩成一个也要画，
+  // 否则人看不出这条对话此刻用的是哪个。
+  if (!data || (data.options.length < 2 && !data.picked)) {
+    box.hidden = true
+    state.chatModelOpen = false
+    return
+  }
+  box.hidden = false
+  const chip = document.getElementById('chat-model-chip')
+  const pop = document.getElementById('chat-model-pop')
+  if (!chip || !pop) return
+  chip.textContent = data.effective.label + ' ▾'
+  chip.title = t('日常模型：', 'Daily model: ') + data.effective.key
+  chip.setAttribute('aria-expanded', String(Boolean(state.chatModelOpen)))
+  pop.hidden = !state.chatModelOpen
+  if (state.chatModelOpen) pop.innerHTML = chatModelPop(data)
+}
+
+function chatModelPop(data) {
+  const rows = data.options
+    .map((c) => {
+      const on = c.key === data.effective.key
+      const bits = []
+      if (c.isDefault) bits.push(t('默认'))
+      if (c.reasoning) bits.push(t('推理'))
+      if (c.contextWindow) bits.push(tokens(c.contextWindow))
+      return `<button type="button" class="sw-pick${on ? ' is-on' : ''}" role="option" aria-selected="${on}"
+        data-act="chat-model-pick" data-key="${esc(c.key)}" title="${esc(c.key)}">
+        <span class="sw-pick-name">${on ? '✓ ' : ''}${esc(c.label)}</span>
+        <small>${esc(bits.join(' · '))}</small>
+      </button>`
+    })
+    .join('')
+  // 跑着的时候照样能挑，但得说清楚这一轮不会变——不然人会以为下一句回答就是新模型写的。
+  const note = state.chatStatus
+    ? t('这一轮跑完后生效', 'Takes effect after this turn')
+    : t('从下一条消息起生效，也可以输入 /model 切换', 'Applies from your next message; /model works too')
+  return `${rows}<p class="sw-modelnote">${esc(note)}</p>`
+}
+
+/**
+ * 换模型。`body` 是 `{ key }`（点选的那一项，null = 回默认）或 `{ arg }`（`/model` 后面
+ * 打的那截，由席位按和 Telegram 同一份规则去认）。返回给人看的那句提示；失败照原话抛。
+ */
+async function setChatModel(sessionId, body) {
+  const r = await api('PUT', `/runtime/sessions/${encodeURIComponent(sessionId)}/model`, body)
+  chatModelSnap.set(sessionId, { data: r, upto: lastModelSeq(state.chatEvents) })
+  if (state.chatSessionId === sessionId) paintChatModel()
+  const label = (r && r.effective && r.effective.label) || body.key || ''
+  if (!r || !r.changed) return t(`已经在用 ${label}`, `Already using ${label}`)
+  return r.nextTurn
+    ? t(`这一轮跑完后换成 ${label}`, `Switching to ${label} after this turn`)
+    : t(`已切换到 ${label}`, `Switched to ${label}`)
+}
+
+async function pickChatModel(key) {
+  const sid = state.chatSessionId
+  state.chatModelOpen = false
+  paintChatModel()
+  if (!sid) return
+  try {
+    flash('ok', await setChatModel(sid, { key }))
+  } catch (err) {
+    flash('err', err.status === 404 ? t('这台席位的版本还不支持切换模型，升级后可用') : err.message)
+  }
+  render()
+}
+
+/**
+ * `/model`：不带参数打开选择器；带参数（序号、`default`、key、模型 id、显示名）原样交给
+ * 席位去认——认的规则只有席位那一份（和 Telegram 共用），认不出来的那句错也是它给的。
+ */
+async function modelCommand(sessionId, arg) {
+  if (String(arg || '').trim()) return { modelSwitched: await setChatModel(sessionId, { arg: String(arg).trim() }) }
+  const snap = chatModelSnap.get(sessionId)
+  const data = snap && snap.data
+  if (!data) {
+    throw new Error(snap && snap.retryMs === CHAT_MODEL_UNSUPPORTED_RETRY_MS
+      ? t('这台席位的版本还不支持切换模型，升级后可用')
+      : t('还没取到可选的模型，过几秒再试'))
+  }
+  if (data.options.length < 2) throw new Error(t('平台目前只配了一个日常模型，没有可换的'))
+  state.chatModelOpen = true
+  paintChatModel()
+  return null
 }
 
 /** 导出成 Markdown。工具痕迹一起带上——只留回答的话，出问题时对不上做过什么。 */
@@ -6722,6 +6909,13 @@ function chatPage() {
               <button type="button" class="sw-iconbtn" data-act="chat-attach"
                 aria-label="${esc(t('添加附件'))}" title="${esc(t('添加附件'))}">${ICON_CLIP}</button>
               <input type="file" id="chat-file" multiple hidden>
+              ${/* 日常模型选择器。平台只配了一个日常模型、或者席位太旧不认这条路时整块
+                    隐藏；内容由 paintChatModel 就地填，和上下文占比那颗药丸一个做法。 */ ''}
+              <span class="sw-model" id="chat-model" hidden>
+                <button type="button" class="sw-model-chip" id="chat-model-chip" data-act="chat-model"
+                  aria-haspopup="listbox" aria-expanded="false"></button>
+                <div class="sw-modelpop" id="chat-model-pop" role="listbox" hidden></div>
+              </span>
               <span class="sw-spacer"></span>
               ${/* 发送和停止是同一个按钮的两副面孔——它们指的是同一件事（这一轮对话的
                     开与关），而且永远只有一个有意义。摆两个按钮的话，其中一个总是灰的，
@@ -7286,7 +7480,7 @@ async function sendChat() {
       render()
       return
     }
-    if (cmd.extra) {
+    if (cmd.extra && !cmd.cmd.args) {
       flash('err', '/' + cmd.cmd.name + ' ' + t('不带参数，单独发这一条就行'))
       closeCmdPick()
       render()
@@ -7298,7 +7492,7 @@ async function sendChat() {
       render()
       return
     }
-    await runChatCommand(cmd.cmd)
+    await runChatCommand(cmd.cmd, cmd.arg || '')
     return
   }
   /**
@@ -8040,6 +8234,16 @@ const CHAT_COMMANDS = [
     idleOnly: true,
     run: (sessionId) => api('POST', '/runtime/sessions/' + encodeURIComponent(sessionId) + '/reset'),
   },
+  {
+    name: 'model',
+    title: '切换模型',
+    // 跑着的时候也能换：那一轮的模型换不了，从下一轮起生效（席位那头就是这么收的）。
+    hint: '换这条对话用的日常模型，下一轮起生效',
+    idleOnly: false,
+    /** 唯一一条收参数的：`/model 2`、`/model default`、`/model 模型名`。不带就打开选择器。 */
+    args: true,
+    run: (sessionId, arg) => modelCommand(sessionId, arg),
+  },
 ]
 
 /**
@@ -8133,9 +8337,9 @@ function parseCommand(text) {
   if (!/^\/[a-zA-Z-]+$/.test(first)) return null
   const hit = CHAT_COMMANDS.find((c) => c.name === first.slice(1).toLowerCase())
   if (!hit) return { unknown: first }
-  // 认得这条，但后面还跟着别的字。第一批两条都不收参数——**不猜意图**，
+  // 认得这条，但后面还跟着别的字。只有 `/model` 收参数，别的一律不收——**不猜意图**，
   // 也不把多出来的那半句悄悄丢掉。
-  if (raw !== first) return { cmd: hit, extra: true }
+  if (raw !== first) return { cmd: hit, extra: true, arg: raw.slice(first.length).trim() }
   return { cmd: hit }
 }
 
@@ -8146,7 +8350,7 @@ function parseCommand(text) {
  * 命令还要接着发那条消息）。结果由 SSE 推回来的那条事件画成分割线，这里只负责把
  * 「点了没反应」变成一句话。
  */
-async function runChatCommand(cmd) {
+async function runChatCommand(cmd, arg = '') {
   const sessionId = state.chatSessionId
   if (!sessionId) {
     flash('err', t('还没接上席位，等接上再试'))
@@ -8172,8 +8376,10 @@ async function runChatCommand(cmd) {
   state.chatCmdBusy = cmd.name
   paintChat()
   try {
-    const r = await cmd.run(sessionId)
-    if (r && r.compacted) {
+    const r = await cmd.run(sessionId, arg)
+    if (r && r.modelSwitched) {
+      flash('ok', r.modelSwitched)
+    } else if (r && r.compacted) {
       flash('ok', t('已压缩') + '：' + ctxNum(r.tokensBefore) + ' → ' + ctxNum(r.tokensAfter))
     } else if (r && r.reset) {
       flash('ok', t('已开始新对话，上面的内容不再进上下文'))

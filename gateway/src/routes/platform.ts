@@ -5,11 +5,12 @@ import type { RouteCtx } from './ctx.ts'
 import { CUSTOM_APIS, type CustomProviderDef, DefError, parseProviderDef } from '../providers.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
-import { billingOf, defaultModelRateOf, enabledModelsOf, modelPricingOf, modelProviderCreds, modelRoleOf, priceMultiplierOf, publicPlatformCred, publicSettings } from '../lib/org.ts'
+import { billingOf, dailyAlternatesOf, defaultModelRateOf, enabledModelsOf, modelPricingOf, modelProviderCreds, modelRoleOf, priceMultiplierOf, publicPlatformCred, publicSettings } from '../lib/org.ts'
 import { refreshDiscovered, REFRESH_MS } from '../model-discovery.ts'
 import { isVendor } from '../connectors/index.ts'
+import { pruneDailyAlternates } from '../lib/alternates.ts'
 import { rangeQuery, requireOwnerUser } from '../lib/guards.ts'
-import { WEB_BACKENDS, WEB_DOCUMENT, type PlatformSettings, emptyWebTools, parseBilling, parseConnectorPricing, parseModelPricing, parseModelRate, parsePriceMultiplier, parseWebTools } from '../db.ts'
+import { DAILY_ALTERNATES_MAX, WEB_BACKENDS, WEB_DOCUMENT, type PlatformSettings, modelKey, emptyWebTools, parseBilling, parseConnectorPricing, parseModelPricing, parseModelRate, parsePriceMultiplier, parseWebTools } from '../db.ts'
 import { WebToolError, canExtract, canSearch, needsSecret } from '../web-tools.ts'
 import { testBackend } from '../web-service.ts'
 
@@ -27,10 +28,15 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     const account = await requireOwnerUser(req, db, keys)
     const body = bodyOf(req)
     const cur = await db.platformSettings()
+    const enabledModels = 'enabledModels' in body ? enabledModelsOf(body.enabledModels) : cur.enabledModels ?? []
     const next: PlatformSettings = {
       daily: 'daily' in body ? modelRoleOf(body.daily, 'daily') : cur.daily,
       utility: 'utility' in body ? modelRoleOf(body.utility, 'utility') : cur.utility,
-      enabledModels: 'enabledModels' in body ? enabledModelsOf(body.enabledModels) : cur.enabledModels ?? [],
+      // 没带就沿用；和默认相同的那条由 putPlatformSettings 里的收口剔掉（「设为日常」那一下）。
+      dailyAlternates: 'dailyAlternates' in body
+        ? await alternatesOr400(body.dailyAlternates, enabledModels, cur.daily)
+        : keptAlternates(cur.dailyAlternates ?? [], enabledModels),
+      enabledModels,
       priceMultiplier: priceMultiplierOf(body.priceMultiplier, parsePriceMultiplier(cur.priceMultiplier)),
       // 写端和 parsePlatformPayload 必须成对：少一边这个开关就是死的。
       connectorPricing: 'connectorPricing' in body ? parseConnectorPricing(body.connectorPricing) : cur.connectorPricing,
@@ -52,6 +58,40 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     await db.audit({ companyId: 'platform', accountId: account.id, action: 'platform.settings.update', detail: publicSettings(saved) })
     json(res, 200, publicSettings(saved))
   })
+
+  /**
+   * 备选**逐个过一遍上架规矩**（和公司自己往目录里加模型是同一道：供应商在注册表里、
+   * 模型在 enabledModels 里）。这份名单是人在对话框里能换到的全部——放一个不在白名单
+   * 里的进来，等于借「备选」把白名单绕过去。
+   */
+  /**
+   * 只收窄了上架名单、没动备选：已经不在名单里的备选当场拿掉。留着的话，下架一个模型
+   * 之后人照样能在对话框里把它挑回来——上架名单管得住目录，管不住备选。
+   */
+  function keptAlternates(list: NonNullable<PlatformSettings['dailyAlternates']>, enabled: string[]) {
+    return enabled.length ? list.filter((r) => enabled.includes(modelKey(r))) : list
+  }
+
+  /**
+   * `curDaily` 是存下这次改动之前的默认模型。它**不过上架规矩**：界面上「设为默认」是把某个
+   * 备选和默认对调，原来的默认就顶到备选里来——它当默认的时候从没被要求在 enabledModels
+   * 里，降成备选就被挡掉的话，这一下对调永远做不成。它本来就是人一直在用的那个。
+   */
+  async function alternatesOr400(raw: unknown, enabled: string[], curDaily: { provider: string; model: string }) {
+    const list = dailyAlternatesOf(raw)
+    if (new Set(list.map(modelKey)).size > DAILY_ALTERNATES_MAX) {
+      throw new HttpError(400, `备选最多 ${DAILY_ALTERNATES_MAX} 个`)
+    }
+    await llm.syncCustomProviders()
+    await llm.syncDiscovered()
+    const trusted = curDaily.provider && curDaily.model ? modelKey(curDaily) : ''
+    for (const r of list) {
+      if (modelKey(r) === trusted) continue
+      const verdict = await llm.companyModelAllowed(r.provider, r.model, enabled)
+      if (!verdict.ok) throw new HttpError(400, `备选 ${modelKey(r)}：${verdict.reason}`)
+    }
+    return list
+  }
 
   /**
    * 平台密钥清单。**只报模型供应商**——连接器和网页后端的密钥虽然同住一张表，
@@ -493,6 +533,8 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     const hit: string[] = []
     if (s.daily.provider === provider) hit.push('日常')
     if (s.utility.provider === provider) hit.push('utility')
+    // 备选同样要确认一次：有人正用着它聊天，删掉之后他们的对话会被退回默认模型。
+    if ((s.dailyAlternates ?? []).some((r) => r.provider === provider)) hit.push('日常备选')
     return hit
   }
 
@@ -550,8 +592,10 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     // id 不给改：模型角色、密钥、用量记录都是按它存的，改了会成孤儿。
     const def = parseOr400(() => parseProviderDef({ ...(bodyOf(req) as object), id: req.params.provider }))
     const next = await db.updateCatalog(item.id, { name: def.id, definition: def })
-    await db.audit({ companyId: 'platform', accountId: account.id, action: 'platform.provider.update', detail: { provider: def.id } })
-    json(res, 200, { provider: { itemId: next.id, ...def } })
+    // 模型清单改短了的话，备选里可能还指着被删掉的那个。
+    const droppedAlternates = await pruneDailyAlternates(db, llm)
+    await db.audit({ companyId: 'platform', accountId: account.id, action: 'platform.provider.update', detail: { provider: def.id, droppedAlternates } })
+    json(res, 200, { provider: { itemId: next.id, ...def }, droppedAlternates })
   })
 
   router.delete('/platform/providers/:provider', async (req, res) => {
@@ -567,13 +611,16 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     // 密钥跟着走，别在库里留一把指向不存在的供应商的密钥。
     if (await db.platformCredential(provider)) await db.deletePlatformCredential(provider)
     for (const role of used) {
+      if (role !== '日常' && role !== 'utility') continue
       await db.putPlatformSettings({
         ...(await db.platformSettings()),
         [role === '日常' ? 'daily' : 'utility']: { provider: '', model: '', reasoningEffort: 'off' },
       })
     }
-    await db.audit({ companyId: 'platform', accountId: account.id, action: 'platform.provider.delete', detail: { provider, clearedRoles: used } })
-    json(res, 200, { deleted: true, provider, clearedRoles: used })
+    // 备选里指着它的那几条由这一步拿掉：供应商已经不在注册表里，它们上不了架了。
+    const droppedAlternates = await pruneDailyAlternates(db, llm)
+    await db.audit({ companyId: 'platform', accountId: account.id, action: 'platform.provider.delete', detail: { provider, clearedRoles: used, droppedAlternates } })
+    json(res, 200, { deleted: true, provider, clearedRoles: used, droppedAlternates })
   })
 
   router.post('/platform/llm/test', async (req, res) => {
@@ -636,7 +683,10 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     const result = await refreshDiscovered(db, { force: true })
     if (result.error) throw new HttpError(502, `models.dev 拉取失败：${result.error}`)
     const snap = await db.discoveredModels()
-    json(res, 200, { fetchedAt: snap.fetchedAt, upstream: snap.entries.length, added: await llm.syncDiscovered() })
+    const added = await llm.syncDiscovered()
+    // 上游不再收录的模型会从目录里掉出去，备选里的同样拿掉。
+    const droppedAlternates = await pruneDailyAlternates(db, llm)
+    json(res, 200, { fetchedAt: snap.fetchedAt, upstream: snap.entries.length, added, droppedAlternates })
   })
 
   /**
@@ -665,6 +715,9 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       action: 'platform.models.discovery.deny',
       detail: { model: key, denied: on },
     })
-    json(res, 200, { model: key, denied: on, added: await llm.syncDiscovered() })
+    const added = await llm.syncDiscovered()
+    // 按下去的那个要是某个备选，就一起从备选里拿掉（留痕在上面那条审计里：model 就是它）。
+    const droppedAlternates = await pruneDailyAlternates(db, llm)
+    json(res, 200, { model: key, denied: on, added, droppedAlternates })
   })
 }

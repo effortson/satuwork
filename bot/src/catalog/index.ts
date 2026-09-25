@@ -301,7 +301,7 @@ export class CatalogService extends Service {
    * cordis.yml 也能改，等于给了一条绕过平台配置的暗路。
    * 网页提取的摘要走 utility——廉价、大批量、不面对用户，正是它的定义。
    */
-  models: { daily: ModelRole; utility: ModelRole } = { daily: EMPTY_ROLE, utility: EMPTY_ROLE }
+  models: { daily: ModelRole; utility: ModelRole; dailyAlternates: ModelRole[] } = { daily: EMPTY_ROLE, utility: EMPTY_ROLE, dailyAlternates: [] }
 
   /** 上一次拉到的公司模版版本号。给 /api/runtime/status 看，也用来打日志。 */
   templateVersion = 0
@@ -436,7 +436,7 @@ export class CatalogService extends Service {
       bots?: RemoteBot[]
       skills?: RemoteSkill[]
       servers?: RemoteServer[]
-      models?: { daily?: ModelRole; utility?: ModelRole }
+      models?: { daily?: ModelRole; utility?: ModelRole; dailyAlternates?: ModelRole[] }
       memories?: Partial<CachedMemory>[]
     }
     // **发车时刻要在 fetch 之前取**：豁免的判据就是「这份响应比那次写入更旧」。
@@ -469,6 +469,10 @@ export class CatalogService extends Service {
     this.models = {
       daily: roleOf(body.models?.daily),
       utility: roleOf(body.models?.utility),
+      // 会话在对话框里能换到的那几个（见 agents 的 dailyChoices）。老 Gateway 不带 = 空 = 没得换。
+      dailyAlternates: (Array.isArray(body.models?.dailyAlternates) ? body.models.dailyAlternates : [])
+        .map(roleOf)
+        .filter((r) => r.provider && r.model),
     }
     this.syncSkills(Array.isArray(body.skills) ? body.skills : [], { since: startedAt })
     /** 没有 id 的那些当场丢掉：缓存是按 id 认的，一条没有 id 的记录进去就再也删不掉。 */
