@@ -225,7 +225,9 @@ mgr.example.com {
 	respond @local_only 404
 
 	reverse_proxy 127.0.0.1:8443 {
-		# 对话流、名单流、日志 follow 都是 SSE，别攒——理由见
+		# 保险，不是必需：对话流、名单流、日志 follow 都是 SSE，而 Caddy 对
+		# text/event-stream（以及长度未知的响应）本来就逐次立即冲出去，不看这一项。
+		# 写上是防哪天某条流的 content-type 没带对——攒住的后果见
 		# ../gateway/deploy/Caddyfile.example 里同一行的注释。
 		flush_interval -1
 
