@@ -1,20 +1,17 @@
-# 构建 Desktop 安装包（macOS）：建 GitHub Release，下载页直接从这里取。
+# 构建 Desktop 安装包（macOS、Windows）：建 GitHub Release，下载页直接从这里取。
 #
 # 打 `desktop-v0.1.0` 这样的 tag 触发。**tag 里的版本必须等于 tauri.conf.json 的 version**：
-# 资产名是 Tauri 按那个 version 起的（`Satuwork_<版本>_<架构>.dmg`），下载页
-# （gateway/ui/pages-download.js 的 DL_VERSION + dlBuilds）按 tag 拼地址——三处对不上，
+# 资产名是 Tauri 按那个 version 起的（`Satuwork_<版本>_<架构>.dmg`、`Satuwork_<版本>_x64-setup.exe`），
+# 下载页（gateway/ui/pages-download.js 的 DL_VERSION + dlBuilds）按 tag 拼地址——三处对不上，
 # 页面上的按钮就是 404，而 CI 照样是绿的。所以在这儿先断言。
 #
-# 手动触发只出 artifact、**不建** Release：没有可挂的 tag。
+# 手动触发支持填 tag 发布到指定 Release；留空则只出 artifact、不建/更新 Release。
 #
 # 不传 Gateway：Desktop 壳没有自动更新（见 desktop/README.md「还没做的事」），装的人
 # 是从下载页拿包。本地 Bot 运行时是另一条线（local-bot-release.yml）。
 #
-# **没有签名和公证**：下载来的 .app 会被 Gatekeeper 拦（「已损坏」）。要发给外人之前
-# 得先有 Developer ID 证书，届时在打包那步加 APPLE_* 环境变量。
-#
-# 先只出 macOS 两档。Windows 那档（下载页上的 .exe）要 windows runner，加进矩阵即可，
-# 资产名是 `Satuwork_<版本>_x64-setup.exe`。
+# **没有签名和公证**：下载来的 .app 会被 Gatekeeper 拦（「已损坏」），Windows 会弹 SmartScreen。
+# 要发给外人之前得先有证书。
 name: desktop-release
 
 on:
@@ -22,8 +19,12 @@ on:
     tags: ['desktop-v*']
   workflow_dispatch:
     inputs:
+      tag:
+        description: 发布到的 tag（例如 desktop-v0.1.0；留空则在 tag 推送时使用当前 tag，手动触发留空时只产出 artifact）
+        required: false
+        default: ''
       note:
-        description: 这次发布的说明
+        description: 这次发布的说明（新建 Release 时使用）
         required: false
         default: ''
 
@@ -34,14 +35,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: arm64
+          - os: macos
+            arch: arm64
             tauri_arch: aarch64
+            bundle: dmg
             runner: macos-14
-          - arch: x64
+          - os: macos
+            arch: x64
             tauri_arch: x64
+            bundle: dmg
             runner: macos-15-intel
+          - os: windows
+            arch: x64
+            tauri_arch: x64
+            bundle: nsis
+            runner: windows-latest
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -63,12 +76,18 @@ jobs:
             echo "runner 是 $got，矩阵却说 ${{ matrix.arch }}" >&2; exit 1; }
 
       - name: 校验 tag 与 tauri.conf.json 版本一致
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || inputs.tag != ''
         run: |
-          want="${GITHUB_REF_NAME#desktop-v}"
-          got=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
-          [ "$got" = "$want" ] || {
-            echo "tag 是 $want，tauri.conf.json 却是 $got：资产名会按后者起，下载页按前者找" >&2; exit 1; }
+          target_tag="${{ inputs.tag }}"
+          if [ -z "$target_tag" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            target_tag="${GITHUB_REF_NAME}"
+          fi
+          if [ -n "$target_tag" ]; then
+            want="${target_tag#desktop-v}"
+            got=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+            [ "$got" = "$want" ] || {
+              echo "tag 是 $want，tauri.conf.json 却是 $got：资产名会按后者起，下载页按前者找" >&2; exit 1; }
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -76,61 +95,88 @@ jobs:
         with:
           workspaces: './desktop/src-tauri -> target'
 
-      # --bundles dmg：targets 是 "all"，在 mac 上还会出一份 .app 目录，不用它。
+      # macOS 用 dmg，Windows 用 nsis。
       - name: 打包
-        run: pnpm --filter satuwork-desktop build --bundles dmg
+        run: pnpm --filter satuwork-desktop build --bundles ${{ matrix.bundle }}
 
       - name: 核对产物
-        id: dmg
+        id: artifact
         run: |
           set -euo pipefail
           shopt -s nullglob
           v=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
-          f="desktop/src-tauri/target/release/bundle/dmg/Satuwork_${v}_${{ matrix.tauri_arch }}.dmg"
-          [ -f "$f" ] || { echo "没有 $f，实际：" >&2; ls -l desktop/src-tauri/target/release/bundle/dmg >&2 || true; exit 1; }
+          if [ "${{ matrix.os }}" = "macos" ]; then
+            f="desktop/src-tauri/target/release/bundle/dmg/Satuwork_${v}_${{ matrix.tauri_arch }}.dmg"
+          else
+            f="desktop/src-tauri/target/release/bundle/nsis/Satuwork_${v}_${{ matrix.tauri_arch }}-setup.exe"
+          fi
+          [ -f "$f" ] || {
+            echo "没有 $f，实际目录内容：" >&2
+            ls -la "desktop/src-tauri/target/release/bundle/${{ matrix.bundle }}" >&2 || true
+            exit 1
+          }
           ls -l "$f"
           echo "path=$f" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-mac-${{ matrix.arch }}
-          path: ${{ steps.dmg.outputs.path }}
+          name: desktop-${{ matrix.os }}-${{ matrix.arch }}
+          path: ${{ steps.artifact.outputs.path }}
           retention-days: 14
 
   release:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 建 Release 要写仓库内容
+      contents: write # 建 Release / 上传资产要写仓库内容
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: desktop-mac-*
+          pattern: desktop-*
           path: dist
           merge-multiple: true
 
-      - run: ls -l dist
+      - run: ls -la dist
 
-      - name: 建 GitHub Release
-        if: github.ref_type == 'tag'
+      - name: 发布到 GitHub Release
+        if: github.ref_type == 'tag' || inputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           NOTE: ${{ inputs.note }}
+          TAG_INPUT: ${{ inputs.tag }}
         run: |
-          if [ -n "${NOTE:-}" ]; then
-            printf '%s\n' "$NOTE" > notes.md
-          else
-            {
-              echo 'Satuwork 桌面端（macOS）。Apple 芯片选 aarch64，Intel 选 x64。'
-              echo
-              echo '**安装包还没有签名**：下载后 macOS 会提示「已损坏，无法打开」。拖进「应用程序」后在终端执行一次：'
-              echo
-              echo '```'
-              echo 'xattr -dr com.apple.quarantine /Applications/Satuwork.app'
-              echo '```'
-            } > notes.md
+          target_tag="$TAG_INPUT"
+          if [ -z "$target_tag" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            target_tag="$GITHUB_REF_NAME"
           fi
-          gh release create "$GITHUB_REF_NAME" dist/*.dmg \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file notes.md
+          [ -n "$target_tag" ] || { echo "没有目标 tag，跳过 Release" >&2; exit 0; }
+
+          # 如果 Release 已存在（例如已有 macOS dmg，现在补充 Windows exe），则追加/覆盖资产；
+          # 如果不存在，则新建 Release。
+          if gh release view "$target_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $target_tag 已存在，上传/更新资产..."
+            gh release upload "$target_tag" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            echo "Release $target_tag 不存在，新建 Release..."
+            if [ -n "${NOTE:-}" ]; then
+              printf '%s\n' "$NOTE" > notes.md
+            else
+              {
+                echo 'Satuwork 桌面端（macOS、Windows）。'
+                echo
+                echo '- **macOS**：Apple 芯片选 aarch64，Intel 选 x64。'
+                echo '- **Windows**：64 位选 x64-setup.exe。'
+                echo
+                echo '**安装包还没有签名**：'
+                echo '- macOS：下载后系统提示「已损坏，无法打开」。拖进「应用程序」后在终端执行一次：'
+                echo '  ```'
+                echo '  xattr -dr com.apple.quarantine /Applications/Satuwork.app'
+                echo '  ```'
+                echo '- Windows：SmartScreen 会提示拦截，在提示框中点击「更多信息」→「仍要运行」。'
+              } > notes.md
+            fi
+            gh release create "$target_tag" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$target_tag" \
+              --notes-file notes.md
+          fi

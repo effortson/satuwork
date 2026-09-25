@@ -170,12 +170,10 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
   相对浏览器唯一说得出口的增量。通知要接的是聊天那条流。
 - **登录态**。token 现在在 `sessionStorage`（[gateway/ui/state.js](../gateway/ui/state.js)），
   关窗即失效。浏览器里合理，桌面端会被当成 bug——这是产品决定，不是技术问题。
-- **发版 CI**。`check.yml` 现在有一档 `cargo check`（顺带是 Linux 那边唯一的编译信号），
-  但**打包**还没有：三个系统的 matrix + `desktop-v*` tag，形状照抄
-  [.github/workflows/manager-release.yml](../.github/workflows/manager-release.yml)。
-  下载页（[gateway/ui/pages-download.js](../gateway/ui/pages-download.js)）已经指着那个 tag 下面的
-  资产名了，**两边是一对**：Release 里必须正好是这三个文件，CI 改了命名就要回去改那张表，
-  否则页面上每颗按钮都是 404。
+- **发版 CI**。已接入 `.github/workflows/desktop-release.yml`：`desktop-v*` tag 触发
+  或手动触发，出 macOS（Apple 芯片 / Intel）与 Windows 三档包。
+  下载页（[gateway/ui/pages-download.js](../gateway/ui/pages-download.js)）指着那个 tag 下面的
+  资产名，**两边是一对**：Release 里必须正好是这三个文件：
 
   ```
   Satuwork_<版本>_x64-setup.exe   Windows
@@ -183,5 +181,5 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
   Satuwork_<版本>_x64.dmg         macOS / Intel
   ```
 
-  第一版发出去之后，把那个文件里的 `DL_VERSION` 对上，并关掉 `DL_PENDING`。
+  第一版发出去之后，核对那个文件里的 `DL_VERSION` 对上，并关掉 `DL_PENDING`。Linux 暂未开包。
 - **图标**。现在这套是拿 64×64 的 logo 放大到 1024 生成的，糊。要一份真正的大图。
