@@ -114,11 +114,29 @@ export function botReleaseFile(version: string, kind: ReleaseKind = 'bot'): stri
  * 那台 Debian 上没有别的地方能看到它，界面上只写一句「本机存储」等于没给。
  * `url` 仍然只表示「登记的外部来源」，可以为空。
  */
+/**
+ * 机器能不能**绕开 Gateway 直接去取**这个包：能就返回那个地址，不能返回 null。
+ *
+ * 只有登记时记下的**公开外部地址**（GitHub Release 那种）才行：
+ * - 字节在 Gateway 本机磁盘上的（url 为空），外面没有地址可给；
+ * - 私有 Blob 里的，取的时候要带 BLOB_READ_WRITE_TOKEN，那把钥匙不能发给机器。
+ *
+ * 为什么要直连：Gateway 在 Vercel 上，函数响应体有 4.5 MB 上限，管家包 ~10 MB、bot 包
+ * ~30 MB，回源转发这条路靠不住；而且每台机器每次换版都把几十 MB 过一遍函数也是白花钱。
+ * 完整性不靠这条路：sha256 是登记时 Gateway 自己拉一遍算的，经心跳 / 部署规格这种带
+ * 机器票的通道发下去，机器取完自己比对（管家侧见 manager/src/releases.ts、upgrade.ts）。
+ */
+export function directReleaseUrl(row: BotRelease): string | null {
+  return row.url && !isBlobUrl(row.url) ? row.url : null
+}
+
 export function publicBotRelease(row: BotRelease, base = '') {
   return {
     kind: row.kind,
     url: row.url,
-    /** 机器拉包的地址。远端登记的包也走这条——Gateway 会替它回源。 */
+    /** 机器直接取包的地址（见 directReleaseUrl）。null = 只能经 Gateway 转发。 */
+    directUrl: directReleaseUrl(row),
+    /** Gateway 转发的地址：本机 / 私有 Blob 里的包只能走它，老管家拉 bot 包也还走它。 */
     downloadUrl: `${base.replace(/\/$/, '')}/internal/${row.kind}-releases/${encodeURIComponent(row.version)}`,
     /** 字节在哪儿：本机磁盘，还是只登记了一个外部地址。界面上要分得清。 */
     storage: row.url ? ('remote' as const) : ('local' as const),

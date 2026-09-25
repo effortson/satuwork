@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { canonicalTimezone, isUniqueViolation, releaseArch, type Account, type BotRelease, type Db, type Machine, type SeatRuntime } from './db.ts'
 import { signLogsTicket, type JwtKeys } from './crypto.ts'
 import { HttpError } from './http.ts'
-import { botReleaseFile } from './releases.ts'
+import { botReleaseFile, directReleaseUrl } from './releases.ts'
 
 /** 管家握手协议。低于这个数的机器不给下发部署——字段对不上会失败得很难看。 */
 export const MIN_MANAGER_PROTOCOL = 1
@@ -82,6 +82,16 @@ export const MIN_DIRECT_LOGS_PROTOCOL = 9
  * 低于它的机器 `uploadUrl` 为 null，界面上就没有上传。
  */
 export const MIN_DIRECT_UPLOAD_PROTOCOL = 9
+
+/**
+ * 管家自升级**直接去外部地址取包**要求的协议号。
+ *
+ * 3 号起（管家 0.1.22），upgrade.ts 只在包地址和配对的 Gateway 同源时才带机器票，
+ * 别处的地址裸取；校验值一直是心跳里的 `sha256`、不看响应头。更老的管家对心跳给的任何
+ * 地址都带着 `smt_` 去拉——给它 GitHub 地址等于把机器票寄给 GitHub，所以低于它的机器
+ * 心跳里仍是 Gateway 转发地址。判据是 releases.ts 的 directReleaseUrl。
+ */
+export const MIN_DIRECT_MANAGER_DOWNLOAD_PROTOCOL = 3
 
 /**
  * 会报安装进度（`/seats/:id/progress`）的管家协议。**只用来省一次白问**：低于它的
@@ -1026,20 +1036,29 @@ async function reserveSeat(db: Db, account: Account, opts: DeployOpts): Promise<
   const requested = (opts.version || '').trim()
   let release: BotRelease
   if (requested) {
-    const rel = await db.botRelease(requested)
+    let rel = await db.botRelease(requested)
     if (!rel) return { ok: false, status: 404, error: '没有这个 Bot 版本', runtime: await db.seatRuntime(account.id, botId) }
     // 显式指定也要挡：包里带 esbuild 的原生二进制，装错架构的后果是席位「部署成功」
     // 但 bot 起不来，表现是聊天 503——从部署结果上完全看不出来。两边架构都认得出来
     // 且不一样才拦，认不出来的（老版本号没后缀）放行。
+    //
+    // 拦之前先找**同一次发布的另一份包**（`…-x64` ↔ `…-arm64`），和管家钉版本同一套
+    // （lib/machines.ts 的 managerReleaseFor）：钉版本的人只写得了一个字符串，照着发下去，
+    // 另一种架构的机器就全部署不了。兄弟包也没有才 409。
     const want = machine.arch?.trim()
     const got = releaseArch(rel.version)
     if (want && got && got !== want) {
-      return {
-        ok: false,
-        status: 409,
-        error: `这台机器是 ${want}，而 ${rel.version} 是 ${got} 的包`,
-        runtime: await db.seatRuntime(account.id, botId),
+      const sibling = rel.version.replace(/-(x64|arm64)$/, '') + '-' + want
+      const alt = await db.botRelease(sibling)
+      if (!alt) {
+        return {
+          ok: false,
+          status: 409,
+          error: `这台机器是 ${want}，而 ${rel.version} 是 ${got} 的包，也没有同版本的 ${want} 包`,
+          runtime: await db.seatRuntime(account.id, botId),
+        }
       }
+      rel = alt
     }
     release = rel
   } else {
@@ -1173,6 +1192,9 @@ async function installSeat(db: Db, plan: DeployPlan): Promise<DeployOutcome> {
     seatDir: seatDirOf(row.linuxUser, row.seatId),
     botId,
     botVersion: version,
+    // 能直连就把外部地址和校验值一起给：11 号起的管家直接去取、不带机器票、按 botSha256
+    // 比对（manager/src/releases.ts）。老管家不认这两个字段，照旧从 Gateway 转发拉。
+    ...directBotPackage(release),
     vncPassword,
     gatewayUrl: gatewayPublicUrl(),
     gatewayToken: secrets.accessToken,
@@ -1267,6 +1289,12 @@ async function failSeat(db: Db, plan: DeployPlan, status: number, message: strin
 }
 
 /** Gateway 下发给管家的席位规格。字段和 manager/src/seats.ts 的 SeatSpec 一一对应。 */
+/** 部署规格里那两个直连字段（见 SeatSpec.botUrl）。不能直连就什么都不加。 */
+function directBotPackage(release: BotRelease): Pick<SeatSpec, 'botUrl' | 'botSha256'> {
+  const url = directReleaseUrl(release)
+  return url ? { botUrl: url, botSha256: release.sha256 } : {}
+}
+
 export interface SeatSpec {
   seatId: string
   linuxUser: string
@@ -1275,6 +1303,12 @@ export interface SeatSpec {
   seatDir: string
   botId: string
   botVersion: string
+  /**
+   * bot 包的外部地址（GitHub Release）和它的 sha256。**成对出现或都不出现**：包只在
+   * Gateway 本机或私有 Blob 里时没有这两个字段，管家回落到 `/internal/bot-releases/*`。
+   */
+  botUrl?: string
+  botSha256?: string
   vncPassword: string
   gatewayUrl: string
   gatewayToken: string

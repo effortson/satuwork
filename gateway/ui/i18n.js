@@ -459,8 +459,9 @@ window.SATU_I18N = {
   '没有指定，跟机器现状': 'Unset; left as the machine has it',
   本机存储: 'Stored here',
   外部来源: 'From',
-  '下载地址就是那台 Debian 拉包用的 URL，凭机器令牌访问（curl -H "Authorization: Bearer smt_…"）。管家自己会带上，这里给出来是为了能人工核对。':
-    'The download URL is what that Debian box fetches the package from; it takes a machine token (curl -H "Authorization: Bearer smt_…"). The manager sends one itself — it is shown here so you can check it by hand.',
+  '老管家经 Gateway 转发': 'Older managers via Gateway',
+  '下载地址就是那台 Debian 拉包用的 URL。登记在 GitHub Release 上的包机器直接去取、不带凭据，按 sha256 核对；Gateway 转发地址要机器令牌（curl -H "Authorization: Bearer smt_…"），管家自己会带上。':
+    'The download URL is where that Debian box fetches the package. Packages registered from a GitHub Release are fetched directly, without credentials, and checked against the sha256; the Gateway relay URL takes a machine token (curl -H "Authorization: Bearer smt_…"), which the manager sends itself.',
   新增版本: 'Add a version',
   版本号: 'Version',
   字节: 'bytes',

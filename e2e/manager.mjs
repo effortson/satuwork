@@ -1419,6 +1419,89 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       }
     })
 
+    /**
+     * 部署规格里的直连字段：远端登记的 bot 包带 botUrl / botSha256，本机存储的不带。
+     *
+     * 这套测试里的管家是 DRYRUN（seats.ts 在拉包之前就返回），看不到它真去哪儿取包，所以
+     * 这里把机器地址临时指到一个**记下请求体的假管家**上，直接看 Gateway 发出去的规格。
+     * 管家那一侧怎么用这两个字段，在 manager-download 那组里验。
+     */
+    await test('部署规格：远端登记的包带直连地址和校验值，本机存储的不带', async () => {
+      const { tarGz, sha256Of } = await import('./release.mjs')
+      const pkg = tarGz([
+        { name: './bin/satuwork.mjs', data: '#!/usr/bin/env node\n' },
+        { name: './VERSION', data: '0.1.9-remote\n' },
+      ])
+      const hits = []
+      const host = createServer((hreq, res) => {
+        hits.push(String(hreq.headers.authorization || ''))
+        res.writeHead(200, { 'content-type': 'application/gzip' })
+        res.end(pkg)
+      })
+      const hostPort = await listenOn(host, 0)
+      const url = `http://127.0.0.1:${hostPort}/bot-0.1.9-remote.tgz`
+
+      const specs = []
+      const fakeMgr = createServer((mreq, res) => {
+        let body = ''
+        mreq.on('data', (c) => (body += c))
+        mreq.on('end', () => {
+          if (mreq.method === 'PUT' && mreq.url.startsWith('/seats/')) specs.push(JSON.parse(body))
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end('{}')
+        })
+      })
+      const fakePort = await listenOn(fakeMgr, 0)
+      const adminLogin = await req(gwBase, 'POST', '/auth/login', {
+        body: { email: 'admin@mgrtest.local', password: 'manager-admin-1234' },
+      })
+      assert(adminLogin.status === 200, `admin login ${adminLogin.status} ${adminLogin.text}`)
+      const adminTok = adminLogin.json.token
+      const made = await req(gwBase, 'POST', '/platform/bots', { token: ownerTok, body: { name: '直连规格验证 Bot' } })
+      assert(made.status === 201, `建 Bot ${made.status} ${made.text}`)
+      const botId = made.json.bot.id
+      const point = (h) => req(gwBase, 'PUT', `/platform/orgs/${orgId}/machine`, { token: ownerTok, body: { host: h } })
+      try {
+        const reg = await req(gwBase, 'POST', '/platform/bot-releases', {
+          token: ownerTok,
+          body: { version: '0.1.9-remote', url, size: pkg.length, sha256: sha256Of(pkg) },
+        })
+        assert(reg.status === 201, `登记 ${reg.status} ${reg.text}`)
+        assert(reg.json.release.directUrl === url, `该能直连：${JSON.stringify(reg.json.release)}`)
+        await publishRelease({ req, gwBase, token: ownerTok, version: '0.1.9-local' })
+
+        const moved = await point(`http://127.0.0.1:${fakePort}`)
+        assert(moved.status === 200, `改管家地址 ${moved.status} ${moved.text}`)
+
+        const d = await req(gwBase, 'POST', '/runtime/deploy', { token: adminTok, body: { botId, version: '0.1.9-remote' } })
+        assert(d.status === 200, `部署 ${d.status} ${d.text}`)
+        const remote = specs.at(-1)
+        assert(remote?.botVersion === '0.1.9-remote', `规格里的版本 ${remote?.botVersion}`)
+        assert(remote.botUrl === url, `规格该带外部地址：${remote.botUrl}`)
+        assert(remote.botSha256 === sha256Of(pkg), `规格该带校验值：${remote.botSha256}`)
+
+        const l = await req(gwBase, 'POST', '/runtime/deploy', { token: adminTok, body: { botId, version: '0.1.9-local', update: true } })
+        assert(l.status === 200, `部署本机包 ${l.status} ${l.text}`)
+        const local = specs.at(-1)
+        assert(local?.botVersion === '0.1.9-local', `规格里的版本 ${local?.botVersion}`)
+        assert(!('botUrl' in local) && !('botSha256' in local), `本机存储的包不该给直连字段：${JSON.stringify(local)}`)
+
+        assert(hits.every((h) => !h), `外部主机收到了凭据：${JSON.stringify(hits)}`)
+      } finally {
+        const back = await point(mgrBase)
+        assert(back.status === 200, `管家地址没改回去，后面的用例全会坏：${back.status} ${back.text}`)
+        const cleaned = await req(gwBase, 'DELETE', `/platform/bots/${encodeURIComponent(botId)}`, { token: ownerTok })
+        assert(cleaned.status === 200, `没收拾干净：删 Bot ${cleaned.status} ${cleaned.text}`)
+        const left = await req(mgrBase, 'GET', '/seats', { token: machineTok })
+        assert(
+          (left.json.seats || []).length === 0,
+          `席位没从名册里拆掉，后面的用例会莫名其妙地坏：${JSON.stringify(left.json.seats)}`,
+        )
+        await closeServer(fakeMgr, '假管家')
+        await closeServer(host, 'release host')
+      }
+    })
+
     await test('心跳带回期望版本；没发过管家包时为 null', async () => {
       const r = await req(gwBase, 'POST', `/internal/machines/${(await machineIdOf(req, gwBase, ownerTok, orgId))}/heartbeat`, {
         token: machineTok,
@@ -2158,6 +2241,36 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           body: { version: 'remote-late-1', url: `http://127.0.0.1:${port}/late.tgz`, size: late.length, sha256: sha256Of(late) },
         })
         assert(lateOk.status === 201, `入口在后面的包登记 ${lateOk.status} ${lateOk.text}`)
+
+        // 心跳里的升级包地址按管家协议分流：3 号起的管家裸取外部地址、用心跳里的 sha256
+        // 比对；更老的对任何地址都带机器票，只能给 Gateway 转发地址。字节只在本机的包，
+        // 再新的管家也只能走转发。
+        const mid = await machineIdOf(req, gwBase, ownerTok, orgId)
+        const hbAt = async (protocol) => {
+          const r = await req(gwBase, 'POST', `/internal/machines/${mid}/heartbeat`, {
+            token: machineTok,
+            body: { managerVersion: 'e2e-1', protocol, node: process.versions.node, seats: [] },
+          })
+          assert(r.status === 200, `heartbeat ${r.status} ${r.text}`)
+          return r.json
+        }
+        const settingsBefore = (await req(gwBase, 'GET', '/platform/settings', { token: ownerTok })).json
+        try {
+          await req(gwBase, 'PUT', '/platform/settings', { token: ownerTok, body: { managerVersion: 'remote-1' } })
+          const old = await hbAt(2)
+          assert(old.desiredManagerVersion === 'remote-1', `期望版本 ${old.desiredManagerVersion}`)
+          assert(String(old.url).endsWith('/internal/manager-releases/remote-1'), `老管家该走转发：${old.url}`)
+          const fresh = await hbAt(3)
+          assert(fresh.url === url, `3 号管家该直连外部地址：${fresh.url}`)
+          assert(fresh.sha256 === sha256Of(pkg), '直连也要带校验值')
+
+          await publishRelease({ req, gwBase, token: ownerTok, version: 'local-mgr-1', kind: 'manager' })
+          await req(gwBase, 'PUT', '/platform/settings', { token: ownerTok, body: { managerVersion: 'local-mgr-1' } })
+          const local = await hbAt(10)
+          assert(String(local.url).endsWith('/internal/manager-releases/local-mgr-1'), `本机的包只能走转发：${local.url}`)
+        } finally {
+          await req(gwBase, 'PUT', '/platform/settings', { token: ownerTok, body: settingsBefore })
+        }
       } finally {
         // closeServer 先掐 keep-alive 连接再关：裸 close() 会等 Gateway 那条拉包连接自己断。
         await closeServer(host, 'release host')
