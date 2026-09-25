@@ -29,6 +29,7 @@ import { runSessionStore } from './session-store.mjs'
 import { runLlmIdle } from './llm-idle.mjs'
 import { runReplaySlice } from './replay-slice.mjs'
 import { runRosterStream } from './roster-stream.mjs'
+import { runManagerDownload } from './manager-download.mjs'
 import { runWorkspaceFiles } from './workspace-files.mjs'
 import { runPatch } from './patch.mjs'
 import { runProcess } from './process.mjs'
@@ -3459,6 +3460,7 @@ async function main() {
     await suite('llm-idle', () => runLlmIdle({ root, test, assert, log }))
     await suite('replay-slice', () => runReplaySlice({ root, test, assert, log }))
     await suite('roster-stream', () => runRosterStream({ test, assert, log }))
+    await suite('manager-download', () => runManagerDownload({ test, assert, log }))
     await suite('workspace-files', () => runWorkspaceFiles({ root, test, assert, log }))
     await suite('patch', () => runPatch({ root, test, assert, log }))
     await suite('process', () => runProcess({ root, test, assert, log }))

@@ -14,6 +14,12 @@ export interface SeatSpec {
   seatDir: string
   botId: string
   botVersion: string
+  /**
+   * bot 包的直连地址和它的 sha256（协议 11）。成对出现或都不出现；没有就从 Gateway 拉。
+   * 见 releases.ts 的 ReleaseSource。
+   */
+  botUrl?: string
+  botSha256?: string
   vncPassword: string
   gatewayUrl: string
   gatewayToken: string
@@ -503,7 +509,7 @@ async function doDeploy(spec: SeatSpec, token: string): Promise<SeatRecord> {
   }
 
   try {
-    await ensureRelease(spec.botVersion, { gatewayUrl: spec.gatewayUrl, token })
+    await ensureRelease(spec.botVersion, { gatewayUrl: spec.gatewayUrl, token, url: spec.botUrl, sha256: spec.botSha256 })
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e))
   }
