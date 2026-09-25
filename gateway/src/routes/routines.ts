@@ -122,9 +122,9 @@ function triggersOf(raw: unknown, tz: string) {
 /**
  * 用哪个模型跑。**只认 `daily` 和 `utility`，别的一律 400。**
  *
- * 库里那份 `parseRoutineModelRole` 认不出来就当 utility——读库那一路没人接得住异常，
+ * 库里那份 `parseRoutineModelRole` 认不出来就当 daily——读库那一路没人接得住异常，
  * 一条脏数据不该让整个列表打不开。而人刚在界面上选的那一下不能这么办：把一个拼错的
- * 值静静地存成 utility，接口回 200、界面上写着「日常模型」，跑起来却是另一个。
+ * 值静静地存成 daily，接口回 200、界面上写着「Utility」，跑起来却是另一个。
  */
 function modelRoleOf(raw: unknown): RoutineModelRole | undefined {
   if (raw === undefined) return undefined

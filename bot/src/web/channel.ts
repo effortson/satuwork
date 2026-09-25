@@ -14,6 +14,56 @@ export function channelCommand(text: string): ChannelCommand | null {
   return hit ? hit[1].toLowerCase() as ChannelCommand : null
 }
 
+/**
+ * `/model`：不带参数是列出能选的，带参数是换。参数可以是序号、`default`/`默认`、
+ * `provider/model`、模型 id 或显示名——Telegram 里没有选单，人会照着上一条列表里看到的
+ * 随手打一个。参数原样交给 pickModelArg 去名单里认。
+ */
+export function channelModelCommand(text: string): { arg: string } | null {
+  const hit = /^\/model(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i.exec(String(text || '').trim())
+  return hit ? { arg: (hit[1] || '').trim() } : null
+}
+
+/** 渠道命令只要这几样，不直接依赖 agents 的类型——这个文件是纯函数，探针直接 import。 */
+interface ChannelModelChoice {
+  key: string
+  model: string
+  label: string
+  isDefault: boolean
+}
+
+/**
+ * 把 `/model` 后面那截认成名单里的一项。认不出来返回 null，**不猜最接近的那个**——
+ * 换错模型的代价是接下来每一轮都用错，比让人再打一次贵得多。
+ *
+ * **Web 和渠道共用这一份**：网页输入框里的 `/model 2` 也是原样交给席位（PUT 的 `arg`），
+ * 由这里认。两边各写一份的话，迟早一边认得「默认」、另一边不认。
+ */
+export function pickModelArg<T extends ChannelModelChoice>(arg: string, options: T[]): T | null {
+  const q = arg.trim().toLocaleLowerCase()
+  if (!q) return null
+  if (q === 'default' || q === '默认') return options.find((c) => c.isDefault) ?? null
+  if (/^\d+$/.test(q)) return options[Number(q) - 1] ?? null
+  const exact = options.find((c) => c.key.toLocaleLowerCase() === q)
+  if (exact) return exact
+  const byId = options.filter((c) => c.model.toLocaleLowerCase() === q)
+  if (byId.length === 1) return byId[0]
+  const byLabel = options.filter((c) => c.label.toLocaleLowerCase() === q)
+  return byLabel.length === 1 ? byLabel[0] : null
+}
+
+export function channelModelHelp(state: { effective: ChannelModelChoice; options: ChannelModelChoice[] }): string {
+  const lines = state.options.map((c, i) => {
+    const on = c.key === state.effective.key ? ' ← 当前' : ''
+    const def = c.isDefault ? '（默认）' : ''
+    return `${i + 1}. ${markdownInline(c.label)}${def} \`${c.key}\`${on}`
+  })
+  const tail = state.options.length > 1
+    ? '发送 `/model 序号` 切换，例如 `/model 2`；`/model default` 回到默认。从下一轮起生效。'
+    : '平台目前只配了这一个日常模型，没有可换的。'
+  return ['## 日常模型', '', ...lines, '', tail].join('\n')
+}
+
 function markdownInline(text: string): string {
   return String(text || '').replace(/([\\`*_[\]<>~])/g, '\\$1')
 }

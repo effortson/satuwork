@@ -244,21 +244,32 @@ const REASONING_LABELS = {
   max: ['最高', 'Max'],
 }
 
-function rolePanel(role, title, hint) {
-  const cur = state.settings?.[role] || { provider: '', model: '', reasoningEffort: 'off' }
-  const picked = state.catalog
-    .find((p) => p.provider === cur.provider)
-    ?.models.find((m) => m.id === cur.model)
+/** 目录里的这一个模型。找不到就是 undefined（供应商没配、或者模型已经下架）。 */
+function catalogModel(provider, model) {
+  return state.catalog.find((p) => p.provider === provider)?.models.find((m) => m.id === model)
+}
+
+/**
+ * 推理强度那一格的选项。角色面板和备选列表共用：这个模型支持哪几档、当前那一档还在
+ * 不在里面（换了模型之后多半不在了，那就落回「关闭」）。
+ */
+function reasoningOptions(picked, current) {
   const levels = picked?.reasoning
     ? (Array.isArray(picked.reasoningLevels) ? picked.reasoningLevels : ['off', 'minimal', 'low', 'medium', 'high'])
     : ['off']
-  const effort = levels.includes(cur.reasoningEffort) ? cur.reasoningEffort : 'off'
-  const effortOptions = levels
+  const effort = levels.includes(current) ? current : 'off'
+  return levels
     .map((level) => {
       const label = REASONING_LABELS[level] || [level, level]
       return `<option value="${esc(level)}" ${effort === level ? 'selected' : ''}>${esc(t(label[0], label[1]))}</option>`
     })
     .join('')
+}
+
+function rolePanel(role, title, hint) {
+  const cur = state.settings?.[role] || { provider: '', model: '', reasoningEffort: 'off' }
+  const picked = catalogModel(cur.provider, cur.model)
+  const effortOptions = reasoningOptions(picked, cur.reasoningEffort)
   return `
     <div class="satu-panel">
       <span class="satu-panel-title">${esc(title)}</span>
@@ -293,6 +304,86 @@ function rolePanel(role, title, hint) {
     </div>`
 }
 
+/** 备选上限。和 Gateway 的 DAILY_ALTERNATES_MAX 同一个数，写端那头会再挡一次。 */
+const DAILY_ALTERNATES_MAX = 8
+
+function dailyAlternates() {
+  return Array.isArray(state.settings?.dailyAlternates) ? state.settings.dailyAlternates : []
+}
+
+function isAlternate(provider, model) {
+  return dailyAlternates().some((r) => r.provider === provider && r.model === model)
+}
+
+/**
+ * 还能加进备选的模型：供应商配好了密钥、上架了（enabledModels 空 = 全部）、
+ * 不是默认那个、也不已经在备选里。按供应商分组，一个下拉框就能挑完。
+ */
+function alternateCandidates() {
+  const daily = state.settings?.daily || {}
+  const enabled = Array.isArray(state.settings?.enabledModels) ? state.settings.enabledModels : []
+  return configuredProviders()
+    .map((p) => ({
+      ...p,
+      models: p.models.filter((m) =>
+        (!enabled.length || enabled.includes(`${p.provider}/${m.id}`)) &&
+        !(daily.provider === p.provider && daily.model === m.id) &&
+        !isAlternate(p.provider, m.id)),
+    }))
+    .filter((p) => p.models.length)
+}
+
+/**
+ * 日常模型的备选。人在对话框里能把自己和某颗 Bot 的对话换成这里的任意一个；
+ * 一个都不配，对话框里就不画选择器（只有默认那一个，没得选）。
+ *
+ * 不塞进上面那两块 sticky 的角色面板里：那一栏是吸顶的，列表一长就把下面的模型表盖住。
+ */
+function alternatesPanel() {
+  const list = dailyAlternates()
+  const rows = list
+    .map((r, i) => {
+      const picked = catalogModel(r.provider, r.model)
+      const effortOptions = reasoningOptions(picked, r.reasoningEffort)
+      const key = `${r.provider}/${r.model}`
+      const test = state.tests['alt:' + key]
+      return `<div class="satu-toggleRow">
+        <div style="min-width: 0;">
+          <div style="font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere;">${esc(picked?.name || r.model)}</div>
+          <div style="font-size: 12px; color: var(--muted-foreground); overflow-wrap: anywhere;">${esc(key)}${test ? ` · <span style="color: ${test.status === 'err' ? 'var(--destructive)' : 'inherit'};">${esc(test.text)}</span>` : ''}</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: var(--space-2); flex: none; flex-wrap: wrap; justify-content: flex-end;">
+          <select class="input" style="width: 120px; flex: none;" title="${esc(t('推理强度', 'Reasoning effort'))}" data-act="alt-reasoning" data-index="${i}" ${picked?.reasoning ? '' : 'disabled'}>${effortOptions}</select>
+          <button type="button" class="satu-linkbtn" data-act="alt-test" data-provider="${esc(r.provider)}" data-model="${esc(r.model)}" ${test?.status === 'busy' ? 'disabled' : ''}>${t('测试')}</button>
+          <button type="button" class="satu-linkbtn" data-act="alt-up" data-index="${i}" ${i === 0 ? 'disabled' : ''} aria-label="${esc(t('上移'))}">↑</button>
+          <button type="button" class="satu-linkbtn" data-act="alt-default" data-index="${i}">${t('设为默认')}</button>
+          <button type="button" class="satu-linkbtn" data-act="alt-remove" data-index="${i}">${t('移除')}</button>
+        </div>
+      </div>`
+    })
+    .join('')
+  const groups = alternateCandidates()
+  const full = list.length >= DAILY_ALTERNATES_MAX
+  const add = full
+    ? `<span style="font-size: 12px; color: var(--muted-foreground);">${t(`最多 ${DAILY_ALTERNATES_MAX} 个`, `Up to ${DAILY_ALTERNATES_MAX}`)}</span>`
+    : `<select class="input" style="width: 250px; flex: none;" data-act="alt-add" ${groups.length ? '' : 'disabled'}>
+        <option value="">${groups.length ? t('添加备选模型') : t('没有可添加的模型')}</option>
+        ${groups
+          .map((p) => `<optgroup label="${esc(p.name)}">${p.models.map((m) => `<option value="${esc(`${p.provider}/${m.id}`)}">${esc(m.name || m.id)}</option>`).join('')}</optgroup>`)
+          .join('')}
+      </select>`
+  return `
+    <div class="satu-panel">
+      <span class="satu-panel-title">${t('日常模型备选')}</span>
+      <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('成员可以在对话框里把自己和某个 Bot 的对话换成这些模型，也可以在渠道里发 /model 切换。一个都不配时只用默认的日常模型。', 'Members can switch their conversation with a bot to any of these, from the chat box or with /model in a channel. With none configured, the default daily model is used.')}</p>
+      ${rows || `<div class="satu-toggleRow"><span style="font-size: 13px; color: var(--muted-foreground);">${t('还没有备选。')}</span></div>`}
+      <div class="satu-toggleRow">
+        <div style="min-width: 0; font-size: 12px; color: var(--muted-foreground);">${t('只列出已启用、且不是默认的模型。', 'Only enabled models other than the default are listed.')}</div>
+        ${add}
+      </div>
+    </div>`
+}
+
 function modelsPage() {
   const shown = state.catalog.find((p) => p.provider === state.selectedProvider)
   const selected = shown?.provider || state.selectedProvider || ''
@@ -311,6 +402,7 @@ function modelsPage() {
       const actions = `
         <div class="satu-rowactions">
           ${isDaily ? `<span class="tag tag-accent">${t('日常')}</span>` : `<button type="button" class="satu-linkbtn" data-act="set-role" data-role="daily" data-provider="${esc(shown.provider)}" data-model="${esc(m.id)}">${t('设为日常')}</button>`}
+          ${isDaily ? '' : isAlternate(shown.provider, m.id) ? `<span class="tag">${t('备选')}</span>` : `<button type="button" class="satu-linkbtn" data-act="alt-add-row" data-provider="${esc(shown.provider)}" data-model="${esc(m.id)}" ${dailyAlternates().length >= DAILY_ALTERNATES_MAX ? 'disabled' : ''}>${t('加入备选')}</button>`}
           ${isUtil ? '<span class="tag tag-accent-2">utility</span>' : `<button type="button" class="satu-linkbtn" data-act="set-role" data-role="utility" data-provider="${esc(shown.provider)}" data-model="${esc(m.id)}">${t('设为 utility')}</button>`}
           ${isOwner() ? `<button type="button" class="satu-linkbtn" data-act="model-price" data-provider="${esc(shown.provider)}" data-model="${esc(m.id)}">${overridden ? t('已改价') : t('改价')}</button>` : ''}
         </div>`
@@ -341,6 +433,7 @@ function modelsPage() {
           ${rolePanel('daily', t('日常任务模型'), t('用于日常工作。'))}
           ${rolePanel('utility', t('Utility 模型'), t('用于轻量、快速的任务。'))}
         </div>
+        ${isOwner() ? alternatesPanel() : ''}
         ${isOwner() ? pricePanel() : ''}
         ${discoveryPanel()}
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">
@@ -546,6 +639,30 @@ function exactTokens(n) {
 }
 
 /**
+ * 用量屏上的汇总 token 数，一律按 M 画。几千万的数字一长串，读的人得数位数；
+ * 统一成 M 之后几张卡片、成员表那一列能直接横着比。精确值挂在 title 上。
+ */
+function megaTokens(n) {
+  const x = Number(n) || 0
+  if (!x) return '0'
+  const m = x / 1_000_000
+  return m < 0.01 ? '<0.01M' : `${m.toFixed(2)}M`
+}
+
+/**
+ * 计费明细的单行 token 数：一次调用从几十到几十万都有，所以按量级挑单位——
+ * 不到 1K 原样，到 K 没到 M 用 K，到 M 用 M。最多两位小数，末尾的 0 去掉。
+ */
+function scaledTokens(n) {
+  const x = Number(n) || 0
+  const fmt = (v, unit) => `${String(Number(v.toFixed(2)))}${unit}`
+  // 999,999 按 K 四舍五入会成「1000K」，那一档直接进 M。
+  if (x >= 1_000_000 || Number((x / 1000).toFixed(2)) >= 1000) return fmt(x / 1_000_000, 'M')
+  if (x >= 1000) return fmt(x / 1000, 'K')
+  return exactTokens(x)
+}
+
+/**
  * 计费明细：一次调用一行。
  *
  * 这张表回答的是三个 `*-stats` 回答不了的那个问题——「这个月为什么是这个数」。
@@ -658,7 +775,7 @@ function chargeQuantity(c, withPrice) {
   const p = c.unitPrice || {}
   const lines = []
   if (c.kind === 'llm') {
-    const line = (label, tok, rate) => (tok ? `${label} ${exactTokens(tok)}${withPrice ? ` × ${money(rate)}` : ''}` : '')
+    const line = (label, tok, rate) => (tok ? `${label} ${scaledTokens(tok)}${withPrice ? ` × ${money(rate)}` : ''}` : '')
     const cached = Number(q.cachedTokens || 0)
     const written = Number(q.cacheWriteTokens || 0)
     const fresh = Math.max(0, Number(q.promptTokens || 0) - cached - written)

@@ -141,9 +141,18 @@ function catalogStamp(
   return `${version}:${bot?.updatedAt ?? 0}:${toolsAt}:${tools.length}:${conn.updatedAt}:${conn.count}:${models}:${memories}`
 }
 
-/** 两个模型角色压成一小段，进指纹用。 */
-function modelStamp(s: { daily: { provider: string; model: string; reasoningEffort?: string }; utility: { provider: string; model: string; reasoningEffort?: string } }): string {
-  return `${s.daily.provider}/${s.daily.model}:${s.daily.reasoningEffort || 'off'}|${s.utility.provider}/${s.utility.model}:${s.utility.reasoningEffort || 'off'}`
+type StampRole = { provider: string; model: string; reasoningEffort?: string }
+
+/**
+ * 两个模型角色和日常备选压成一小段，进指纹用。
+ *
+ * 备选**不能省**，理由同 catalogStamp 那条 models：管理员下架一个备选，席位不重拉目录
+ * 的话，已经选了它的会话会一直打那个模型——而名单这头明明已经没有它了。
+ */
+function modelStamp(s: { daily: StampRole; utility: StampRole; dailyAlternates?: StampRole[] }): string {
+  const one = (r: StampRole) => `${r.provider}/${r.model}:${r.reasoningEffort || 'off'}`
+  const alts = (s.dailyAlternates ?? []).map(one).join(',')
+  return `${one(s.daily)}|${one(s.utility)}${alts ? `|${alts}` : ''}`
 }
 
 /** 这个账号的连接器状态指纹：安装和连接一起算，删一条也要能看出来。 */
@@ -288,7 +297,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     json(res, 200, {
       // 实例照着这个数字判断「底座换了没有」。和下面那条探针给的是同一个值。
       templateVersion: tpl.version,
-      models: { daily: settings.daily, utility: settings.utility },
+      // 备选只在这里下发给席位：会话选哪一个由席位按这份名单认（见 bot 的 session/model）。
+      models: { daily: settings.daily, utility: settings.utility, dailyAlternates: settings.dailyAlternates ?? [] },
       /**
        * **这一份内容的指纹，和探针给的算法完全一样。**
        *
@@ -1781,6 +1791,44 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       )
     })
   }
+
+  /**
+   * 这条会话用哪个日常模型（对话框里的选择器、输入框里的 `/model`）。
+   *
+   * **同样不做业务判断。** 能选哪几个、选的那个还在不在名单里，只有席位按它手上那份
+   * 目录说得准；Gateway 这里判一遍只会多一份会跟席位对不上的名单。body 里只转 `key` 和
+   * `arg`：这条路收的是「选名单里的哪一个」，别的字段一个都不该穿过去。
+   */
+  router.get('/runtime/sessions/:id/model', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    const target = await seatTargetForSession(db, account, req.params.id)
+    await proxyJson(
+      res,
+      'GET',
+      `${target.host}/api/sessions/${encodeURIComponent(req.params.id)}/model`,
+      undefined,
+      await seatBearer(db, account.id),
+      target.machineToken,
+    )
+  })
+
+  router.put('/runtime/sessions/:id/model', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    const target = await seatTargetForSession(db, account, req.params.id)
+    const body = bodyOf(req)
+    // 形状不对要当场说，不能折成 null——那等于把一次写错的请求静静地变成「换回默认」。
+    if (body.key != null && typeof body.key !== 'string') throw new HttpError(400, 'key 必须是 provider/model 字符串，或 null（回到默认）')
+    if (body.arg != null && typeof body.arg !== 'string') throw new HttpError(400, 'arg 必须是字符串')
+    await proxyJson(
+      res,
+      'PUT',
+      `${target.host}/api/sessions/${encodeURIComponent(req.params.id)}/model`,
+      // `arg` 是输入框里 `/model` 后面那截，由席位按名单去认（和 Telegram 同一份规则）。
+      { key: body.key ?? null, ...(typeof body.arg === 'string' ? { arg: body.arg } : {}) },
+      await seatBearer(db, account.id),
+      target.machineToken,
+    )
+  })
 
   /**
    * 上传附件**不再经 Gateway**。原来这里有一条 `postRaw('/runtime/sessions/:id/files')` 把字节

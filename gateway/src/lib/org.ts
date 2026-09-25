@@ -104,9 +104,14 @@ export function modelRoleOf(v: unknown, label: string): ModelRole {
  * 黑名单的写法反过来——默认漏出去，而漏出去这件事不会有人发现。
  */
 export function orgSettings(s: CompanySettings | PlatformSettings): OrgSettings {
+  const alternates = (s as PlatformSettings).dailyAlternates
   return {
     daily: { provider: s.daily.provider, model: s.daily.model, reasoningEffort: parseReasoningEffort(s.daily.reasoningEffort) },
     utility: { provider: s.utility.provider, model: s.utility.model, reasoningEffort: parseReasoningEffort(s.utility.reasoningEffort) },
+    // 公司侧要画「这颗 Bot 能换哪几个」，和日常模型本身同一级，不是定价。
+    dailyAlternates: Array.isArray(alternates)
+      ? alternates.map((r) => ({ provider: r.provider, model: r.model, reasoningEffort: parseReasoningEffort(r.reasoningEffort) }))
+      : [],
     enabledModels: Array.isArray((s as PlatformSettings).enabledModels) ? (s as PlatformSettings).enabledModels! : [],
   }
 }
@@ -114,7 +119,23 @@ export function orgSettings(s: CompanySettings | PlatformSettings): OrgSettings 
 export interface OrgSettings {
   daily: ModelRole
   utility: ModelRole
+  dailyAlternates: ModelRole[]
   enabledModels: string[]
+}
+
+/**
+ * `PUT /platform/settings` 里的 `dailyAlternates`。形状错了回 400，不静静丢——
+ * 管理员填了三个、存下来两个，比一句「第 2 个缺 model」难查得多。去重、剔掉默认、
+ * 截上限交给 parseDailyAlternates（读写两头同一份），这里只挡形状。
+ */
+export function dailyAlternatesOf(v: unknown): ModelRole[] {
+  if (v == null) return []
+  if (!Array.isArray(v)) throw new HttpError(400, 'dailyAlternates 必须是数组')
+  return v.map((x, i) => {
+    const r = modelRoleOf(x, `dailyAlternates[${i}]`)
+    if (!r.provider || !r.model) throw new HttpError(400, `dailyAlternates[${i}] 需要 provider 和 model`)
+    return r
+  })
 }
 
 /**

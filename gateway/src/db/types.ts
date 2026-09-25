@@ -958,6 +958,16 @@ export interface ModelRole {
 export const REASONING_EFFORTS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type ReasoningEffort = typeof REASONING_EFFORTS[number]
 
+/**
+ * 备选的上限。对话框里是一个下拉浮层，八个已经要滚动了；再多也不是「备选」，是目录。
+ */
+export const DAILY_ALTERNATES_MAX = 8
+
+/** `provider/model`，备选和会话选择都按这个串认。 */
+export function modelKey(r: { provider: string; model: string }): string {
+  return `${r.provider}/${r.model}`
+}
+
 export function parseReasoningEffort(v: unknown): ReasoningEffort {
   return typeof v === 'string' && (REASONING_EFFORTS as readonly string[]).includes(v)
     ? v as ReasoningEffort
@@ -973,6 +983,15 @@ export interface CompanySettings {
 export interface PlatformSettings {
   daily: ModelRole
   utility: ModelRole
+  /**
+   * 日常模型的备选。`daily` 是默认那一个；人在对话框里可以给自己和某颗 Bot 的那条会话
+   * 换成这里的任意一个（席位按会话记，见 bot 的 `session/model`）。
+   *
+   * **名单在平台，选择在会话。** 席位只认这份名单里的——浏览器传过去的是「选哪一个」，
+   * 不是一对任意的 provider/model，否则这条路就成了绕过 `enabledModels` 的后门。
+   * 不含 `daily` 自己、不重复、最多 `DAILY_ALTERNATES_MAX` 个（写端收口，见 routes/platform.ts）。
+   */
+  dailyAlternates?: ModelRole[]
   enabledModels?: string[]
   /** 对外报价相对模型原价的倍率。1 就是按原价，1.2 就是加两成。 */
   priceMultiplier?: number
@@ -1218,6 +1237,7 @@ export function emptyPlatformSettings(): PlatformSettings {
   return {
     daily: { provider: '', model: '', reasoningEffort: 'off' },
     utility: { provider: '', model: '', reasoningEffort: 'off' },
+    dailyAlternates: [],
     enabledModels: [],
     priceMultiplier: 1,
     connectorPricing: emptyConnectorPricing(),
@@ -1285,19 +1305,19 @@ export type RoutineTrigger = RoutineSchedule
 /**
  * 这一条到点了用哪个模型跑。
  *
- * - `utility` —— 平台钉的 utility 模型。**默认就是它**：定时任务是「一天一次、没人
- *   在等着看」的活，而它每天都跑；把它压在便宜的那一档上，省下来的是每个人、每条
- *   任务、每一天的一份 token。
- * - `daily` —— **不覆盖**，跟这个 Bot 平时聊天用的那个模型走（那个模型本身没指定时
- *   才回落到平台的日常模型，见 lib/catalog.ts 的 defaultBotModel）。写「跟平时一样」
- *   而不是「钉到平台日常模型」，是因为管理员给某颗 Bot 单独挑过模型的话，那句挑选
- *   同样该在定时任务里作数——人选这一档要的就是「和我自己问它时一模一样」。
+ * - `daily` —— **默认就是它**。**不覆盖**，跟这个 Bot 平时聊天用的那个模型走（人在
+ *   对话框里给这条会话换过日常模型的话，跟的是换过之后的那个；都没指定才回落到平台
+ *   的日常模型，见 lib/catalog.ts 的 defaultBotModel）。默认是它，是因为人交代一件
+ *   到点去做的事，期待的是「和我自己问它时一样的水平」；定时任务跑出来的东西比聊天
+ *   更少有人当场复核，拿便宜那一档去跑、再让人事后发现质量差一截，这笔账不划算。
+ * - `utility` —— 平台钉的 utility 模型。每天都跑、活又简单的那种，人可以自己拨过去
+ *   省 token。
  */
 export type RoutineModelRole = 'daily' | 'utility'
 
-/** 认不出来的一律当 utility——这个字段只有两种值，而默认那一档是省钱的那个。 */
+/** 认不出来的一律当 daily——和新建时的默认是同一档。 */
 export function parseRoutineModelRole(v: unknown): RoutineModelRole {
-  return String(v ?? '') === 'daily' ? 'daily' : 'utility'
+  return String(v ?? '') === 'utility' ? 'utility' : 'daily'
 }
 
 export interface Routine {

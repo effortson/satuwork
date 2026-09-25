@@ -288,6 +288,11 @@ document.getElementById('app').addEventListener('click', async (e) => {
     state.chatCtxOpen = false
     paintChatCtx()
   }
+  // 模型选择器同理。
+  if (state.chatModelOpen && el && !el.closest('.sw-model')) {
+    state.chatModelOpen = false
+    paintChatModel()
+  }
   const btn = el && el.closest('[data-act]')
   if (!btn) return
   if (btn.classList.contains('gw-modal-backdrop') && e.target !== btn) return
@@ -641,6 +646,15 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'chat-ctx') {
     state.chatCtxOpen = !state.chatCtxOpen
     paintChatCtx()
+    return
+  }
+  if (act === 'chat-model') {
+    state.chatModelOpen = !state.chatModelOpen
+    paintChatModel()
+    return
+  }
+  if (act === 'chat-model-pick') {
+    await pickChatModel(btn.getAttribute('data-key'))
     return
   }
   if (act === 'chat-jump') {
@@ -1551,6 +1565,35 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'test-role') {
     await testLlm('role', { role: btn.getAttribute('data-role') })
+    return
+  }
+  // ── 日常模型备选（模型配置页）。每一下都整份存回去，见 saveAlternates。
+  if (act === 'alt-test') {
+    await testLlm('alt', { provider: btn.getAttribute('data-provider'), model: btn.getAttribute('data-model') })
+    return
+  }
+  if (act === 'alt-add-row') {
+    const provider = btn.getAttribute('data-provider')
+    const model = btn.getAttribute('data-model')
+    if (!isAlternate(provider, model)) await saveAlternates([...dailyAlternates(), { provider, model, reasoningEffort: 'off' }])
+    return
+  }
+  if (act === 'alt-remove' || act === 'alt-up' || act === 'alt-default') {
+    const i = Number(btn.getAttribute('data-index'))
+    const list = dailyAlternates().slice()
+    const one = list[i]
+    if (!one) return
+    if (act === 'alt-remove') list.splice(i, 1)
+    else if (act === 'alt-up' && i > 0) [list[i - 1], list[i]] = [list[i], list[i - 1]]
+    else if (act === 'alt-default') {
+      // 对调，不是只改默认：原来的默认顶到这一格上，备选名单里的人照样还能选回它。
+      const cur = state.settings?.daily || {}
+      if (cur.provider && cur.model) list[i] = { provider: cur.provider, model: cur.model, reasoningEffort: cur.reasoningEffort || 'off' }
+      else list.splice(i, 1)
+      await saveSettings({ daily: { provider: one.provider, model: one.model, reasoningEffort: one.reasoningEffort || 'off' }, dailyAlternates: list })
+      return
+    }
+    await saveAlternates(list)
     return
   }
   if (act === 'test-provider') {
@@ -2562,6 +2605,21 @@ document.getElementById('app').addEventListener('change', async (e) => {
     await saveSettings({ [role]: { provider: cur.provider, model: el.value, reasoningEffort: 'off' } })
     return
   }
+  if (act === 'alt-add') {
+    const key = el.value
+    const cut = key.indexOf('/')
+    if (cut <= 0) return
+    const provider = key.slice(0, cut)
+    const model = key.slice(cut + 1)
+    if (!isAlternate(provider, model)) await saveAlternates([...dailyAlternates(), { provider, model, reasoningEffort: 'off' }])
+    return
+  }
+  if (act === 'alt-reasoning') {
+    const i = Number(el.getAttribute('data-index'))
+    const list = dailyAlternates().map((r, n) => (n === i ? { ...r, reasoningEffort: el.value } : r))
+    await saveAlternates(list)
+    return
+  }
   if (act === 'role-reasoning') {
     const role = el.getAttribute('data-role')
     const cur = state.settings[role] || {}
@@ -2683,9 +2741,15 @@ document.getElementById('app').addEventListener('keydown', (e) => {
 /* Esc 收起上下文浮层。挂在 document 上而不是 #app：浮层开着时焦点多半还在输入框里，
    而输入框自己的 keydown 只管回车。 */
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || !state.chatCtxOpen) return
-  state.chatCtxOpen = false
-  paintChatCtx()
+  if (e.key !== 'Escape') return
+  if (state.chatCtxOpen) {
+    state.chatCtxOpen = false
+    paintChatCtx()
+  }
+  if (state.chatModelOpen) {
+    state.chatModelOpen = false
+    paintChatModel()
+  }
 })
 
 /* Esc 关「联系销售」那个弹窗。它是首页上唯一一个盖住内容的东西，而按 Esc 关弹窗

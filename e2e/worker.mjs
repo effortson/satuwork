@@ -283,7 +283,8 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
       }
       const msg = bot.seen.find((x) => x.path.startsWith('/api/sessions/s-live/messages'))
       assert(msg && msg.body.text === '把今天的事说一遍' && msg.body.routine && msg.body.routine.name === '每日简报', `消息内容不对：${JSON.stringify(msg && msg.body)}`)
-      assert(msg.body.modelRole === 'utility', `默认该按 utility 跑：${JSON.stringify(msg.body)}`)
+      // 默认是 daily = 不覆盖，所以这一条什么都不带（见 docs/routines.md §4）。
+      assert(msg.body.modelRole === undefined, `默认该按 daily 跑、不带 modelRole：${JSON.stringify(msg.body)}`)
     })
 
     await test('渠道那一轮由工人跑：进度经 Gateway 代发到 Telegram，最终回复投递、事件收成 delivered', async () => {

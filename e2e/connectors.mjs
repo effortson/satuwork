@@ -466,6 +466,31 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       })
     })
 
+    await test('日常模型备选：跟着目录下发给席位，改了指纹要变', async () => {
+      // 席位按这份名单认会话的挑选（docs/model-choice.md）。不进指纹的话，管理员下架一个
+      // 备选，跑着的席位永远不重拉目录，选了它的会话会一直打那个已经不给用的模型。
+      const models = await req(base, 'GET', '/v1/models', { token: owner })
+      const ids = (models.json.data || []).map((m) => String(m.id)).filter((id) => id.indexOf('/') > 0)
+      assert(ids.length >= 1, `目录里没有模型可挑：${models.text.slice(0, 200)}`)
+      const [provider, ...rest] = ids[0].split('/')
+      const one = { provider, model: rest.join('/'), reasoningEffort: 'off' }
+      const before = (await req(base, 'GET', '/runtime/catalog/version', { token: seatTok })).json.stamp
+      const put = await req(base, 'PUT', '/platform/settings', { token: owner, body: { dailyAlternates: [one] } })
+      assert(put.status === 200, `存备选 ${put.status} ${put.text}`)
+      const after = (await req(base, 'GET', '/runtime/catalog/version', { token: seatTok })).json.stamp
+      assert(before !== after, `加了备选指纹没变，席位看不到这次改动：${before}`)
+      const cat = await req(base, 'GET', '/runtime/catalog', { token: seatTok })
+      const got = (cat.json.models && cat.json.models.dailyAlternates) || []
+      assert(got.length === 1 && got[0].provider === one.provider && got[0].model === one.model, `席位没拿到备选：${JSON.stringify(cat.json.models)}`)
+      // 公司侧（员工）读 /me 也看得到名单：对话框要画它。
+      const me = await req(base, 'GET', '/me', { token: memberTok })
+      assert((me.json.settings?.dailyAlternates || []).length === 1, `员工读不到备选：${JSON.stringify(me.json.settings)}`)
+
+      await req(base, 'PUT', '/platform/settings', { token: owner, body: { dailyAlternates: [] } })
+      const cleared = (await req(base, 'GET', '/runtime/catalog/version', { token: seatTok })).json.stamp
+      assert(cleared === before, `清空之后指纹该回到原样（没有备选时和老格式一致）：${before} → ${cleared}`)
+    })
+
     await test('席位打 MCP 端点：握手、列工具、调一次', async () => {
       const cat = await req(base, 'GET', '/runtime/catalog', { token: seatTok })
       const server = cat.json.servers.find((x) => x.connector === 'gmail')

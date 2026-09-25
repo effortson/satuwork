@@ -190,27 +190,25 @@ function routineDetailPanel() {
 }
 
 /**
- * 用哪个模型跑。
+ * 用哪个模型跑。**默认是日常模型**，和人自己问它时同一个——人交代一件到点去做的事，
+ * 期待的是和当面问一样的水平；定时任务跑出来的东西又比聊天更少有人当场复核。
  *
- * **默认是 utility，而且这一行就明说它省 token**：定时任务一天跑一次、跑的时候没人
- * 在看，却按聊天那一档的价钱算——这个选择器存在的全部理由就是那笔钱。不写清楚的话，
- * 人只会看见两个模型名字，然后按「哪个听起来厉害」来选。
- *
- * 另一档写的是「和聊天一样」而不是模型名：它的意思正是**不覆盖**——管理员给这颗 Bot
- * 单独挑过模型的话，那一份挑选在这里照样作数（见 Gateway 的 RoutineModelRole）。
+ * 这一档写的是「和聊天一样」而不是模型名：它的意思正是**不覆盖**——人在对话框里给这颗
+ * Bot 换过日常模型的话，定时任务跟着换过之后的那个（见 Gateway 的 RoutineModelRole）。
+ * utility 那一档要把「省 token」写明：每天都跑的简单活，拨过去能省下一大笔。
  */
 function routineModelField(routine) {
-  const role = routine.modelRole === 'daily' ? 'daily' : 'utility'
+  const role = routine.modelRole === 'utility' ? 'utility' : 'daily'
   const opt = (v, label) => `<option value="${v}" ${role === v ? 'selected' : ''}>${esc(label)}</option>`
   return `<div class="field">
     <label for="routine-model">${t('用哪个模型')}</label>
     <select class="input" id="routine-model" data-routine-field="modelRole">
-      ${opt('utility', t('Utility 模型（省 token）'))}${opt('daily', t('日常模型（和聊天时一样）'))}
+      ${opt('daily', t('日常模型（和聊天时一样）'))}${opt('utility', t('Utility 模型（省 token）'))}
     </select>
     <p class="sw-rt-none">${
       role === 'utility'
         ? t('它自己跑的时候没人在等，用便宜的那一档。要它做难一点的活，换成日常模型。')
-        : t('和你自己问它时用的是同一个模型。每天都跑的活，utility 那一档省得多。')
+        : t('和你自己问它时用的是同一个模型。每天都跑的简单活，换成 utility 能省不少。')
     }</p>
   </div>`
 }

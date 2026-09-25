@@ -154,6 +154,30 @@ export class CommandError extends Error {
   }
 }
 
+/** 这条会话能换到的一个日常模型。第一项永远是默认那一个。 */
+export interface DailyChoice {
+  /** `provider/model`，选择按它认。 */
+  key: string
+  provider: string
+  model: string
+  /** 目录里的显示名；目录还没拉到就是 model id。 */
+  label: string
+  isDefault: boolean
+  contextWindow?: number
+  reasoning?: boolean
+}
+
+/** 会话当前的模型选择，给界面、`/model` 和渠道命令共用。 */
+export interface SessionModelState {
+  /** 人选的那个；null = 跟默认。已经下架的选择也照实给出来，`removed` 会是 true。 */
+  picked: string | null
+  /** 下一轮真正会用的那个。 */
+  effective: DailyChoice
+  options: DailyChoice[]
+  /** 选的那个已经不在名单里——下一轮开跑前会被退回默认。 */
+  removed: boolean
+}
+
 /**
  * 一轮的默认步数硬顶。见 `Config.maxSteps`。
  *
@@ -643,8 +667,10 @@ export class AgentService extends Service {
     this.tasks.set(child, { taskId, goal: spec.goal, leases: spec.leases })
 
     const pinned = this.roleModel(spec.modelRole)
-    const provider = pinned?.provider ?? bot?.provider?.trim() ?? this.provider
-    const modelId = pinned?.model ?? bot?.model?.trim() ?? this.model
+    // daily = 跟主代理这一轮同一个模型，也就是这条会话挑的那个（见 homeModelOf）。
+    const home = await this.homeModelOf(parentSessionId, history)
+    const provider = pinned?.provider ?? home.provider
+    const modelId = pinned?.model ?? home.model
     const model = llm.modelOf(provider, modelId)
     const reasoningEffort = this.roleReasoningEffort(provider, modelId, spec.modelRole)
     const usedModel = {
@@ -1126,9 +1152,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     if (this.quiesced()) throw new CommandError(QUIET_MESSAGE, 409)
 
     const events = await this.ctx.sessions.events(sessionId)
-    const bot = this.botOf(events)
-    const provider = bot?.provider?.trim() || this.provider
-    const modelId = bot?.model?.trim() || this.model
+    // 按这条会话挑的那个模型压：窗口和写摘要的都是它，和轮末自动压缩同一个口径。
+    const { provider, model: modelId } = await this.homeModelOf(sessionId, events)
     const out = await this.maybeCompact(sessionId, provider, modelId, true, { keepBudget: 0, by: 'user' })
     if (out.compacted) return out
     // **压不动要说人话**，不能静默返回——人点了一下，界面上必须有个交代。
@@ -1332,8 +1357,10 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     try {
       const bot = this.botOf(history)
       system = this.composeSystem(bot)
-      provider = bot?.provider?.trim() || this.provider
-      modelId = bot?.model?.trim() || this.model
+      // 人在对话框里给这条会话换过日常模型的话，「Bot 自己那一对」就是换过之后的那个。
+      const home = await this.homeModelOf(sessionId, history, true)
+      provider = home.provider
+      modelId = home.model
       homeProvider = provider
       homeModel = modelId
       // 这一轮被钉到某个平台角色上（日常任务选了 utility）就换掉上面那一对。
@@ -2026,6 +2053,156 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     return skillSplit(picked)
   }
 
+  /* ── 会话级的日常模型选择（docs/model-choice.md）───────────────────────
+   *
+   * 平台给一个默认的日常模型和几个备选；人在对话框里（或者打 `/model`）给自己和这颗
+   * Bot 的那条会话挑一个。挑选落成一条 `session/model` 事件，这里负责三件事：
+   * 列出能挑哪几个、校验并写下一次挑选、每一轮开跑前算出「这条会话现在用哪个」。
+   *
+   * **名单只认平台下发的那份。** 浏览器给的是 key，这里拿它去名单里找；找不到就拒。
+   * 这和 /messages 只收角色名不收 provider+model 是同一个理由——这条路浏览器也走得通。
+   */
+
+  /**
+   * 这条会话能挑的日常模型。第一项是默认：Bot 自己那一对（Gateway 下发时已经钉成平台
+   * 的日常模型，见 lib/catalog.ts 的 defaultBotModel），后面是平台的备选，重复的去掉。
+   */
+  dailyChoices(bot: { provider?: string; model?: string } | undefined): DailyChoice[] {
+    const found = (provider: string, model: string) =>
+      this.ctx.llm.catalog().find((p) => p.provider === provider)?.models.find((m) => m.id === model)
+    const one = (provider: string, model: string, isDefault: boolean): DailyChoice => {
+      const m = found(provider, model)
+      return {
+        key: `${provider}/${model}`,
+        provider,
+        model,
+        label: m?.name || model,
+        isDefault,
+        ...(typeof m?.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {}),
+        ...(m?.reasoning ? { reasoning: true } : {}),
+      }
+    }
+    const provider = bot?.provider?.trim() || this.provider
+    const model = bot?.model?.trim() || this.model
+    const out = [one(provider, model, true)]
+    for (const r of this.ctx.catalog?.models?.dailyAlternates ?? []) {
+      if (!r.provider || !r.model || out.some((c) => c.provider === r.provider && c.model === r.model)) continue
+      out.push(one(r.provider, r.model, false))
+    }
+    return out
+  }
+
+  /** 这条会话最后一次挑的是哪个。没挑过、或者挑回了默认，都是 null。 */
+  private sessionPickOf(history: Awaited<ReturnType<Context['sessions']['events']>>): string | null {
+    for (let i = history.length - 1; i >= 0; i--) {
+      const e = history[i]
+      if (e.type !== 'session/model') continue
+      const key = (e.data as { key?: unknown }).key
+      return typeof key === 'string' && key ? key : null
+    }
+    return null
+  }
+
+  /**
+   * 这条会话现在的模型状态。
+   *
+   * **目录还没拉到时不判下架。** 那时备选名单是空的，照名单判的话，席位每次重启后的
+   * 头一轮都会把人选好的模型「退回默认」、还留一条分割线——而那个模型明明还在。
+   * 挑选在写下的那一刻已经校验过，拉到目录之前先信它。
+   */
+  sessionModelState(history: Awaited<ReturnType<Context['sessions']['events']>>): SessionModelState {
+    const bot = this.botOf(history)
+    const options = this.dailyChoices(bot)
+    const picked = this.sessionPickOf(history)
+    const def = options[0]
+    if (!picked) return { picked, effective: def, options, removed: false }
+    const hit = options.find((c) => c.key === picked)
+    if (hit) return { picked, effective: hit, options, removed: false }
+    if (this.ctx.catalog?.pulledAt == null) {
+      const cut = picked.indexOf('/')
+      const provider = picked.slice(0, cut)
+      const model = picked.slice(cut + 1)
+      if (cut > 0 && model) {
+        return { picked, effective: { key: picked, provider, model, label: model, isDefault: false }, options, removed: false }
+      }
+    }
+    return { picked, effective: def, options, removed: true }
+  }
+
+  /**
+   * 这条会话的全部事件；没有这条会话就是 404。
+   *
+   * sessions.events 对未知 id 是**抛**（读不到那个 jsonl），不是返回空数组——不接住的话
+   * 路由层拿到的是一个普通 Error，回 500，界面会当它是暂时故障、每半分钟再问一遍。
+   */
+  async sessionHistoryOr404(sessionId: string): Promise<Awaited<ReturnType<Context['sessions']['events']>>> {
+    let history: Awaited<ReturnType<Context['sessions']['events']>>
+    try {
+      history = await this.ctx.sessions.events(sessionId)
+    } catch {
+      throw new CommandError('没有这条会话', 404)
+    }
+    if (!history.some((e) => e.type === 'session')) throw new CommandError('没有这条会话', 404)
+    return history
+  }
+
+  /**
+   * 换这条会话的日常模型。`key` 为 null 或等于默认 = 回到默认。
+   *
+   * **跑着的时候也收**：那一轮的模型早定了，换不了，这次挑选从下一轮起生效——返回值
+   * 里的 `nextTurn` 告诉界面该怎么说。排队里的那几条开跑时读的是最新的挑选。
+   */
+  async setSessionModel(
+    sessionId: string,
+    key: string | null,
+    by: 'user' | 'system' = 'user',
+  ): Promise<SessionModelState & { changed: boolean; nextTurn: boolean }> {
+    const history = await this.sessionHistoryOr404(sessionId)
+    const before = this.sessionModelState(history)
+    const want = key ? before.options.find((c) => c.key === key) : before.options[0]
+    if (!want) {
+      const names = before.options.map((c) => c.label).join('、')
+      throw new CommandError(`不能换成 ${key}：它不在平台给的日常模型名单里。能选的是：${names}`, 400)
+    }
+    const next = want.isDefault ? null : want.key
+    if (next === before.picked) return { ...before, changed: false, nextTurn: false }
+    await this.ctx.sessions.append(sessionId, 'session/model', { key: next, label: want.label, by })
+    return {
+      picked: next,
+      effective: want,
+      options: before.options,
+      removed: false,
+      changed: true,
+      nextTurn: this.isRunning(sessionId),
+    }
+  }
+
+  /**
+   * 这条会话「人和它聊天时用的那个模型」：会话挑过的（还在名单里）→ Bot 自己那一对。
+   *
+   * 挑的那个被下架了：当场补一条 `session/model`（key: null、reason: removed）退回默认，
+   * 人回来翻记录时知道从哪一轮起换了模型、为什么换。只在真正开跑一轮时才补（`settle`），
+   * 读状态的那几条路不写日志。
+   */
+  private async homeModelOf(
+    sessionId: string,
+    history: Awaited<ReturnType<Context['sessions']['events']>>,
+    settle = false,
+  ): Promise<{ provider: string; model: string }> {
+    const state = this.sessionModelState(history)
+    if (state.removed && settle) {
+      this.ctx.logger?.warn?.(`agents: ${sessionId} 选的 ${state.picked} 已不在日常模型名单里，退回默认 ${state.effective.key}`)
+      await this.ctx.sessions.append(sessionId, 'session/model', {
+        key: null,
+        label: state.effective.label,
+        reason: 'removed',
+        from: state.picked ?? undefined,
+        by: 'system',
+      })
+    }
+    return { provider: state.effective.provider, model: state.effective.model }
+  }
+
   /**
    * 这一轮钉的那个角色对应的模型。**取不到就返回 null，照旧用 Bot 自己的那一对。**
    *
@@ -2057,7 +2234,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       const effort = match(roles?.utility)
       if (effort) return effort
     }
-    return match(roles?.daily) ?? 'off'
+    // 会话换成了某个备选：备选各带各的档位，管理员在备选那一行上配的。
+    return match(roles?.daily) ?? roles?.dailyAlternates?.map(match).find(Boolean) ?? 'off'
   }
 
   /** 模型的上下文窗口，来自 Gateway 目录。拉不到就没有——界面那条占比会自己让位。 */

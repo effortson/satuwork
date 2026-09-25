@@ -396,6 +396,103 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       assert(back.status === 201, `补回平台密钥 ${back.status} ${back.text}`)
     })
 
+    await test('日常模型备选：白名单外的 400，和默认重复的剔掉，形状不对的 400', async () => {
+      // 备选就是人在对话框里能换到的全部（docs/model-choice.md），写端必须过和上架同一道闸。
+      const two = await req(base, 'PUT', '/platform/providers/my-llm', {
+        token,
+        body: {
+          name: 'My LLM', baseUrl, api: 'openai-completions',
+          models: [model, { id: 'second', name: 'Second', contextWindow: 8192, maxTokens: 1024, cost: { input: 9, output: 9 } }],
+        },
+      })
+      assert(two.status === 200, `加第二个模型 ${two.status} ${two.text}`)
+      const put = await req(base, 'PUT', '/platform/settings', {
+        token,
+        body: {
+          daily: { provider: 'my-llm', model: 'my-model' },
+          dailyAlternates: [
+            { provider: 'my-llm', model: 'second', reasoningEffort: 'off' },
+            // 和默认同一个：不该在对话框里出现第二行。
+            { provider: 'my-llm', model: 'my-model' },
+            { provider: 'my-llm', model: 'second' },
+          ],
+        },
+      })
+      assert(put.status === 200, `存备选 ${put.status} ${put.text}`)
+      const alts = put.json.dailyAlternates || []
+      assert(alts.length === 1 && alts[0].provider === 'my-llm' && alts[0].model === 'second', `备选没收口：${JSON.stringify(alts)}`)
+      const st = await req(base, 'GET', '/platform/settings', { token })
+      assert((st.json.dailyAlternates || []).length === 1, `读回来不对：${JSON.stringify(st.json.dailyAlternates)}`)
+
+      // 目录里没有的：拦下，原来那份一个字不动。
+      const ghost = await req(base, 'PUT', '/platform/settings', { token, body: { dailyAlternates: [{ provider: 'my-llm', model: 'nope' }] } })
+      assert(ghost.status === 400, `目录里没有的也收了：${ghost.status} ${ghost.text}`)
+      // 上架名单开着、却不在名单里的：同样拦下——否则「备选」就是绕过白名单的后门。
+      const fenced = await req(base, 'PUT', '/platform/settings', {
+        token,
+        body: { enabledModels: ['my-llm/my-model'], dailyAlternates: [{ provider: 'my-llm', model: 'second' }] },
+      })
+      assert(fenced.status === 400, `白名单外的备选也收了：${fenced.status} ${fenced.text}`)
+      const shape = await req(base, 'PUT', '/platform/settings', { token, body: { dailyAlternates: [{ provider: 'my-llm' }] } })
+      assert(shape.status === 400, `缺 model 的也收了：${shape.status} ${shape.text}`)
+      const after = await req(base, 'GET', '/platform/settings', { token })
+      assert(
+        (after.json.dailyAlternates || []).length === 1 && (after.json.enabledModels || []).length === 0,
+        `被拦下的那几次改动了设置：${JSON.stringify(after.json)}`,
+      )
+
+      // 只改别的字段时，备选原样留着（整份重写那一步漏了它的话，这里就是空的）。
+      await req(base, 'PUT', '/platform/settings', { token, body: { priceMultiplier: 1 } })
+      const kept = await req(base, 'GET', '/platform/settings', { token })
+      assert((kept.json.dailyAlternates || []).length === 1, `改倍率把备选抹了：${JSON.stringify(kept.json.dailyAlternates)}`)
+
+      // 只收窄上架名单：已经下架的备选跟着拿掉，不然人还能在对话框里把它挑回来。
+      const narrow = await req(base, 'PUT', '/platform/settings', { token, body: { enabledModels: ['my-llm/my-model'] } })
+      assert(narrow.status === 200 && (narrow.json.dailyAlternates || []).length === 0, `下架的备选还留着：${JSON.stringify(narrow.json.dailyAlternates)}`)
+      await req(base, 'PUT', '/platform/settings', { token, body: { enabledModels: [] } })
+
+      // 「设为默认」是对调：原来的默认降成备选。它当默认时从没被要求在上架名单里，
+      // 降下来也不该因此被挡——否则名单一收窄，这一下对调就永远做不成。
+      await req(base, 'PUT', '/platform/settings', { token, body: { dailyAlternates: [{ provider: 'my-llm', model: 'second' }], enabledModels: ['my-llm/second'] } })
+      const swap = await req(base, 'PUT', '/platform/settings', {
+        token,
+        body: { daily: { provider: 'my-llm', model: 'second' }, dailyAlternates: [{ provider: 'my-llm', model: 'my-model' }] },
+      })
+      assert(swap.status === 200, `对调被挡了：${swap.status} ${swap.text}`)
+      assert(swap.json.daily.model === 'second' && swap.json.dailyAlternates?.[0]?.model === 'my-model', `对调结果不对：${swap.text}`)
+      await req(base, 'PUT', '/platform/settings', {
+        token,
+        body: { enabledModels: [], daily: { provider: 'my-llm', model: 'my-model' }, dailyAlternates: [{ provider: 'my-llm', model: 'second' }] },
+      })
+
+      // 供应商的模型清单改短了：指着被删那个的备选当场拿掉，不留一行选了就报错的。
+      const shrink = await req(base, 'PUT', '/platform/providers/my-llm', {
+        token,
+        body: { name: 'My LLM', baseUrl, api: 'openai-completions', models: [model] },
+      })
+      assert(shrink.status === 200 && (shrink.json.droppedAlternates || []).includes('my-llm/second'), `改清单没报剔掉的备选：${shrink.text}`)
+      const pruned = await req(base, 'GET', '/platform/settings', { token })
+      assert((pruned.json.dailyAlternates || []).length === 0, `被删的模型还留在备选里：${JSON.stringify(pruned.json.dailyAlternates)}`)
+
+      // 还原：下一条要验「删供应商时备选跟着清」，得先有一个指着它的备选。
+      await req(base, 'PUT', '/platform/providers/my-llm', {
+        token,
+        body: {
+          name: 'My LLM', baseUrl, api: 'openai-completions',
+          models: [model, { id: 'second', name: 'Second', contextWindow: 8192, maxTokens: 1024, cost: { input: 9, output: 9 } }],
+        },
+      })
+      const again = await req(base, 'PUT', '/platform/settings', { token, body: { dailyAlternates: [{ provider: 'my-llm', model: 'second' }] } })
+      assert((again.json.dailyAlternates || []).length === 1, `还原备选 ${again.status} ${again.text}`)
+    })
+
+    await test('只有备选用着的供应商：删也要 409 确认，force 之后备选清掉并留痕', async () => {
+      // 有人正用着这个备选聊天：删掉之后他们会被退回默认，和删掉日常模型一样值得确认一次。
+      await req(base, 'PUT', '/platform/settings', { token, body: { daily: { provider: '', model: '' } } })
+      const blocked = await req(base, 'DELETE', '/platform/providers/my-llm', { token })
+      assert(blocked.status === 409 && /日常备选/.test(blocked.text), `只被备选用着也该 409：${blocked.status} ${blocked.text}`)
+    })
+
     await test('在用时删要 409；force 之后密钥和角色一起清掉', async () => {
       await req(base, 'PUT', '/platform/settings', { token, body: { daily: { provider: 'my-llm', model: 'my-model' } } })
       const blocked = await req(base, 'DELETE', '/platform/providers/my-llm', { token })
@@ -410,6 +507,10 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       assert(!(creds.json.credentials || []).some((c) => c.provider === 'my-llm'), '密钥没跟着删')
       const st = await req(base, 'GET', '/platform/settings', { token })
       assert(st.json.daily.provider === '', `日常角色没清空：${JSON.stringify(st.json.daily)}`)
+      // 上一条留下的那个备选也指着它：供应商没了，留着就是对话框里一行选了就报错的。
+      assert(!(st.json.dailyAlternates || []).some((r) => r.provider === 'my-llm'), `备选没跟着清：${JSON.stringify(st.json.dailyAlternates)}`)
+      assert((forced.json.droppedAlternates || []).includes('my-llm/second'), `响应没说清掉了哪些备选：${forced.text}`)
+      assert((forced.json.clearedRoles || []).includes('日常备选'), `clearedRoles 没记备选：${forced.text}`)
     })
 
     await test('非 owner 碰不到自定义供应商', async () => {

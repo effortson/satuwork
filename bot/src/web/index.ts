@@ -9,7 +9,7 @@ import { CommandError, QUIET_MESSAGE, type ImageRef, type Mention, type MessageS
 import { expiredMessage, returnMessage, type Disposition, type HandoffActor } from '../policy/handoff.ts'
 import { clearSettledTodos, readTodos } from '../tools/todo.ts'
 import {
-  channelCommand, channelMentionHelp, parseChannelMentions, withChannelTodos,
+  channelCommand, channelMentionHelp, channelModelCommand, channelModelHelp, parseChannelMentions, pickModelArg, withChannelTodos,
   type ChannelMentionCandidate,
 } from './channel.ts'
 
@@ -316,6 +316,33 @@ export function apply(ctx: Context, _config: Config = {}) {
       channelSessions.put(mapKey, mapped)
     }
     onSession?.(mapped.sessionId)
+    /**
+     * `/model` 和 Web 选择器写的是同一条会话上的同一个事件：Telegram 里换了，Web 那边
+     * 选择器当场跟着变，反过来也一样。不开新的一轮、不进 user/message，模型看不见它。
+     */
+    const modelCmd = channelModelCommand(input.text)
+    if (modelCmd) {
+      let reply = ''
+      try {
+        const history = await ctx.sessions.events(mapped.sessionId)
+        const state = ctx.agents.sessionModelState(history)
+        if (!modelCmd.arg) reply = channelModelHelp(state)
+        else {
+          const want = pickModelArg(modelCmd.arg, state.options)
+          if (!want) reply = `没有「${modelCmd.arg}」这个日常模型。\n\n${channelModelHelp(state)}`
+          else {
+            const r = await ctx.agents.setSessionModel(mapped.sessionId, want.key)
+            reply = !r.changed
+              ? `已经在用 ${want.label}。`
+              : `已切换到 ${want.label}${r.nextTurn ? '，这一轮跑完后生效' : ''}。`
+          }
+        }
+      } catch (e) {
+        // 同下面那几条命令：拒绝是给人看的结果，不能抛给 Dispatcher 让它无限重试。
+        reply = e instanceof CommandError ? e.message : `无法切换模型：${(e as Error).message}`
+      }
+      return saveChannelResult(resultKey, { sessionId: mapped.sessionId, reply })
+    }
     const command = channelCommand(input.text)
     if (command) {
       let reply = ''
@@ -1077,6 +1104,54 @@ export function apply(ctx: Context, _config: Config = {}) {
       }
       const r = await ctx.agents.resetContext(req.params.id)
       res.json({ reset: true, throughSeq: r.throughSeq, droppedMessages: r.droppedMessages })
+    } catch (e) {
+      res.status = e instanceof CommandError ? e.status : 500
+      res.json({ error: (e as Error).message })
+    }
+  })
+
+  /**
+   * 这条会话用哪个日常模型（docs/model-choice.md）。
+   *
+   * GET 给界面画选择器：能挑哪几个、现在是哪个。PUT 只收 `key`（`provider/model`，
+   * null = 回默认）——**不收 provider + model 两个字段**，理由同 /messages 的 modelRole：
+   * 这条路浏览器也走得通，收一对任意的值就是给白名单开了个后门。名单外的 key 回 400，
+   * 那句原话列出能选的是哪几个。
+   */
+  ctx.server.get('/api/sessions/:id/model', async (req, res) => {
+    try {
+      res.json(ctx.agents.sessionModelState(await ctx.agents.sessionHistoryOr404(req.params.id)))
+    } catch (e) {
+      res.status = e instanceof CommandError ? e.status : 500
+      res.json({ error: (e as Error).message })
+    }
+  })
+
+  /**
+   * `key` 是界面上点选的那一项；`arg` 是输入框里 `/model` 后面打的那截（序号、default、
+   * 模型 id、显示名），由席位按和 Telegram 同一份规则认（pickModelArg）。两个都只能落到
+   * 名单里的某一项上，认不出来回 400、原话列出能选的。
+   */
+  ctx.server.put('/api/sessions/:id/model', async (req, res) => {
+    const body = (await req.json().catch(() => ({}))) as { key?: unknown; arg?: unknown }
+    const bad = (v: unknown) => v !== null && v !== undefined && typeof v !== 'string'
+    if (bad(body.key) || bad(body.arg)) {
+      res.status = 400
+      res.json({ error: 'key 必须是 provider/model 字符串或 null（回到默认），arg 必须是字符串' })
+      return
+    }
+    try {
+      let key = (body.key as string | null | undefined) || null
+      if (typeof body.arg === 'string' && body.arg.trim()) {
+        const state = ctx.agents.sessionModelState(await ctx.agents.sessionHistoryOr404(req.params.id))
+        const hit = pickModelArg(body.arg, state.options)
+        if (!hit) {
+          const names = state.options.map((c, i) => `${i + 1}. ${c.label}`).join('  ')
+          throw new CommandError(`没有「${body.arg.trim()}」这个模型。能选的是：${names}`, 400)
+        }
+        key = hit.isDefault ? null : hit.key
+      }
+      res.json(await ctx.agents.setSessionModel(req.params.id, key))
     } catch (e) {
       res.status = e instanceof CommandError ? e.status : 500
       res.json({ error: (e as Error).message })
