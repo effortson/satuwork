@@ -67,6 +67,18 @@ function neonFallback(...names: string[]): string {
   return ''
 }
 
+/**
+ * 把连接串里的 `sslmode=prefer|require|verify-ca` 钉成 `verify-full`。
+ *
+ * pg 8 本来就把这三个当 verify-full 用，但每次解析都往 stderr 打一条 SECURITY WARNING
+ * （pg 9 要改回 libpq 语义）。Vercel 按 stderr 把它记成 error，每次冷启动日志里就多一条假报错。
+ * Neon 注入的串带的是 `sslmode=require`，环境变量又归集成管、会被它重新同步，所以在这儿改，
+ * 不去改变量本身。写死 verify-full 就是现在的行为，pg 升到 9 也不会悄悄降成「不验证书」。
+ */
+function pinSslMode(url: string): string {
+  return url.replace(/([?&]sslmode=)(prefer|require|verify-ca)(?=&|$)/, '$1verify-full')
+}
+
 export function databaseUrl(): string {
   const url = (process.env.GATEWAY_DATABASE_URL || '').trim() || neonFallback('DATABASE_URL')
   if (!url) {
@@ -74,12 +86,13 @@ export function databaseUrl(): string {
       '未配置 GATEWAY_DATABASE_URL。示例：postgres://satuwork:satuwork@127.0.0.1:5434/satuwork（docker compose up -d postgres）',
     )
   }
-  return url
+  return pinSslMode(url)
 }
 
 /** 迁移要**直连**串：迁移锁是会话级 advisory lock，过 PgBouncer 的事务池会漂（ADR §5.2）。 */
 export function migrateDatabaseUrl(): string {
-  return (process.env.GATEWAY_MIGRATE_DATABASE_URL || '').trim() || neonFallback('DATABASE_URL_UNPOOLED') || databaseUrl()
+  const url = (process.env.GATEWAY_MIGRATE_DATABASE_URL || '').trim() || neonFallback('DATABASE_URL_UNPOOLED')
+  return url ? pinSslMode(url) : databaseUrl()
 }
 
 /**
