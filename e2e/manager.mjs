@@ -2101,9 +2101,10 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         { name: './bin/satuwork-manager.mjs', data: '#!/usr/bin/env node\n' },
         { name: './VERSION', data: 'remote-1\n' },
       ])
-      const host = createServer((_req, res) => {
+      let lateBody = null
+      const host = createServer((hreq, res) => {
         res.writeHead(200, { 'content-type': 'application/gzip' })
-        res.end(pkg)
+        res.end(hreq.url === '/late.tgz' ? lateBody : pkg)
       })
       const port = await listenOn(host, 0)
       const url = `http://127.0.0.1:${port}/manager.tgz`
@@ -2141,6 +2142,22 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         assert(dl.status === 200, `下发 ${dl.status}`)
         assert(dl.headers.get('x-bot-sha256') === sha256Of(pkg), '校验头丢了')
         assert(Buffer.from(await dl.arrayBuffer()).equals(pkg), '字节对不上')
+
+        // 入口排在包的**后面**也要认得出。真实的包就是这样：pack.mjs 打出来的 bin/ 在几百个
+        // 依赖文件之后（管家包里是第 474 个成员）。前面垫 3 MiB 随机字节（压不小），入口落在
+        // 压缩流 2 MiB 之后——以前只扫前 2 MiB，这种包一个都登记不上。
+        const { randomBytes } = await import('node:crypto')
+        const late = tarGz([
+          { name: './node_modules/pad.bin', data: randomBytes(3 * 1024 * 1024) },
+          { name: './bin/satuwork-manager.mjs', data: '#!/usr/bin/env node\n' },
+        ])
+        assert(late.length > 3 * 1024 * 1024, `垫料被压小了：${late.length}`)
+        lateBody = late
+        const lateOk = await req(gwBase, 'POST', '/platform/manager-releases', {
+          token: ownerTok,
+          body: { version: 'remote-late-1', url: `http://127.0.0.1:${port}/late.tgz`, size: late.length, sha256: sha256Of(late) },
+        })
+        assert(lateOk.status === 201, `入口在后面的包登记 ${lateOk.status} ${lateOk.text}`)
       } finally {
         // closeServer 先掐 keep-alive 连接再关：裸 close() 会等 Gateway 那条拉包连接自己断。
         await closeServer(host, 'release host')
