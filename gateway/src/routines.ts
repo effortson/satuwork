@@ -29,7 +29,7 @@
  */
 import { RoutineBusyError, type Db, type Machine, type Routine, type RoutineRun, type RoutineRunTrigger } from './db.ts'
 import { nextRunAtOf } from './lib/schedule.ts'
-import { MIN_WORKER_PROTOCOL, machineLink } from './deploy.ts'
+import { MIN_WORKER_PROTOCOL, machineLink, reconcileStuckDeploys } from './deploy.ts'
 import { runtimeKindOf } from './lib/catalog.ts'
 import { sweepHandoffs } from './handoff-sweep.ts'
 import { refreshDiscovered } from './model-discovery.ts'
@@ -446,6 +446,13 @@ export async function maintenanceTick(db: Db): Promise<void> {
     // 自动对话审计与删除终审复用同一个粗节拍。批次和删除请求都在库里，tick 只负责推进。
     .then(() => tickConversationAudits(db))
     .then(() => tickBotDeletions(db))
+    /**
+     * 停在「安装中」没人收尾的席位，去管家那儿问结局（见 deploy.ts 的 reconcileStuckDeploys）。
+     * Vercel 上后台装机那一段会随函数实例一起被冻住，这一拍是没人开着页面时唯一的收尾。
+     */
+    .then(() => reconcileStuckDeploys(db).then((n) => {
+      if (n) console.log(`satuwork-gateway: 补上了 ${n} 个席位的部署结局`)
+    }))
     /**
      * 模型目录的自动发现（见 model-discovery.ts）。**同样不新起定时器**——理由和
      * 上面两处一样。它自己按 GATEWAY_MODEL_DISCOVERY_MS 节流（默认 6 小时），
