@@ -82,8 +82,12 @@ trap 'rm -rf "$TMP"' EXIT
 # fetch the package with the machine token that pairing wrote to manager.json. Without
 # this branch the re-run dies on a 401 right here and "just run it again" is a promise
 # the script cannot keep.
+# The Gateway either streams the package or 302s to its GitHub Release; either way the
+# checksum rides on the Gateway's own response as x-bot-sha256. -D keeps every hop's
+# headers so it survives the redirect. curl does not carry our Authorization header to
+# another host when following a redirect, so the machine token stays with the Gateway.
 if [ -n "$CODE" ]; then
-  curl -fsSL "$GATEWAY_URL/manager/release?code=$CODE" -o "$TMP/manager.tgz"
+  curl -fsSL -D "$TMP/headers" "$GATEWAY_URL/manager/release?code=$CODE" -o "$TMP/manager.tgz"
 else
   MT="$(node -p 'JSON.parse(require("fs").readFileSync("/etc/satuwork/manager.json","utf8")).token' 2>/dev/null || true)"
   if [ -z "$MT" ]; then
@@ -92,8 +96,13 @@ else
   fi
   # The Gateway reads the machine token from Authorization (lib/guards.ts requireMachine);
   # x-satuwork-machine is the manager's own convention and does not apply here.
-  curl -fsSL -H "authorization: Bearer $MT" "$GATEWAY_URL/manager/release" -o "$TMP/manager.tgz"
+  curl -fsSL -D "$TMP/headers" -H "authorization: Bearer $MT" "$GATEWAY_URL/manager/release" -o "$TMP/manager.tgz"
 fi
+# This package runs as root: no checksum, no install.
+WANT="$(awk -F': *' 'tolower($1) == "x-bot-sha256" { print $2; exit }' "$TMP/headers" | tr -d '[:space:]')"
+if [ -z "$WANT" ]; then echo "the Gateway sent no x-bot-sha256 for the manager package, refusing to install" >&2; exit 1; fi
+GOT="$(sha256sum "$TMP/manager.tgz" | cut -d' ' -f1)"
+if [ "$GOT" != "$WANT" ]; then echo "manager package checksum mismatch: got $GOT, want $WANT" >&2; exit 1; fi
 STAGED=/opt/satuwork/manager/releases/staged.$$
 mkdir -p "$STAGED"
 tar -xzf "$TMP/manager.tgz" -C "$STAGED"

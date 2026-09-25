@@ -238,6 +238,8 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       assert(r.text.includes('satuwork-manager.service'), '要装 systemd 单元')
       assert(r.text.includes('satuwork-manager-confirm'), '要装回滚定时器')
       assert(!r.text.includes('smt_'), '安装脚本不该含任何机器票')
+      // 包以 root 跑：没有校验值、或者对不上，就不装。
+      assert(r.text.includes('x-bot-sha256') && r.text.includes('sha256sum'), '安装脚本要核对管家包的 sha256')
     })
 
     // 管家先起来再配对：Gateway 收到配对请求会立刻回拨一次 /health。
@@ -2271,10 +2273,27 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(fresh.url === url, `3 号管家该直连外部地址：${fresh.url}`)
           assert(fresh.sha256 === sha256Of(pkg), '直连也要带校验值')
 
+          // 装机脚本那条路（重跑装机脚本用机器票）：能直连的 302 到外部地址，校验值挂在
+          // 这一跳的头上——脚本 curl -D 记下每一跳的头，拿它比对下到的字节。
+          const inst = await fetch(`${gwBase}/manager/release`, {
+            headers: { authorization: 'Bearer ' + machineTok },
+            redirect: 'manual',
+          })
+          assert(inst.status === 302, `装机脚本拉包该 302 到外部地址，实际 ${inst.status}`)
+          assert(inst.headers.get('location') === url, `跳到 ${inst.headers.get('location')}`)
+          assert(inst.headers.get('x-bot-sha256') === sha256Of(pkg), '302 上要挂校验值')
+
           await publishRelease({ req, gwBase, token: ownerTok, version: 'local-mgr-1', kind: 'manager' })
           await req(gwBase, 'PUT', '/platform/settings', { token: ownerTok, body: { managerVersion: 'local-mgr-1' } })
           const local = await hbAt(10)
           assert(String(local.url).endsWith('/internal/manager-releases/local-mgr-1'), `本机的包只能走转发：${local.url}`)
+          const instLocal = await fetch(`${gwBase}/manager/release`, {
+            headers: { authorization: 'Bearer ' + machineTok },
+            redirect: 'manual',
+          })
+          assert(instLocal.status === 200, `本机的包照旧直接给字节，实际 ${instLocal.status}`)
+          const localBytes = Buffer.from(await instLocal.arrayBuffer())
+          assert(instLocal.headers.get('x-bot-sha256') === sha256Of(localBytes), '直接给字节也要带校验值')
         } finally {
           await req(gwBase, 'PUT', '/platform/settings', { token: ownerTok, body: settingsBefore })
         }
