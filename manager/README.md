@@ -62,6 +62,9 @@ ANY    /w-local/*           本机工人的中继口          回环地址 + wor
 ANY    /llm/v1/*            替本机 Bot 调模型         回环地址 + Bot 的 sk_sw_（协议 10；不是回环一律 404）
 ```
 
+最后两条的「回环地址」不认带 `x-forwarded-for` / `forwarded` / `x-real-ip` 的请求——那是被反代
+转进来的，见下面「用 Caddy 给管家配 https」。
+
 bot 那条**原样透传 `authorization`**——bot 自己要验席位票（`sat_`），管家不掺和，
 所以用一个自己的头 `x-satuwork-machine`，两层互不干扰。
 
@@ -206,6 +209,73 @@ x-satuwork-machine / cookie，所以反代过去的聊天流量上它还在—�
 但它不必等重铺：Gateway 反代任意一条通过 `sat_` 验证的 `/api/*` 请求时都会把同一个
 `x-satuwork-gateway-url` 头带到 Bot；Bot 先原子写回 `bot.env`，再更新进程内环境，当下就
 恢复模型、目录和上报。重铺仍会重写整份部署配置，可作为席位完全收不到入站请求时的兜底。
+
+## 用 Caddy 给管家配 https
+
+管家自己只说 http。要给「管家地址」和「桌面直连地址」配 https（桌面直连**必须**是 https，
+见 [../docs/gateway-runtime.md](../docs/gateway-runtime.md) §7），在机器上装一个 Caddy，
+整站反到管家：
+
+```
+# /etc/caddy/Caddyfile
+mgr.example.com {
+	# 这两条是给本机进程的：/llm/* 是 Bot 调模型，/w-local/* 是席位工人的中继口。
+	# 外面的人不该碰到，也不该知道它们在。
+	@local_only path /llm/* /w-local/*
+	respond @local_only 404
+
+	reverse_proxy 127.0.0.1:8443 {
+		# 对话流、名单流、日志 follow 都是 SSE，别攒——理由见
+		# ../gateway/deploy/Caddyfile.example 里同一行的注释。
+		flush_interval -1
+
+		# 不设超时（0 = 不掐）：首次 PUT /seats/:id 要装桌面栈、拉包，十几分钟很正常；
+		# SSE 和桌面的 WebSocket 也都是长连接。Caddy 默认本来就是 0，写出来是为了
+		# 别让后来的人顺手填个 60s。
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+}
+```
+
+证书 Caddy 自己申请，80/443 要对外开；8443 在最后一步之后就不必再开了。
+
+**为什么要单独挡那两条。** 管家判「本机来的」看的是 socket 的源地址，而 Caddy 转进来的
+每一条请求源地址都是 127.0.0.1。管家这边已经兜了一层：带 `x-forwarded-for` /
+`forwarded` / `x-real-ip` 的请求一律不算本机（本机的 Bot 和工人直连，从来不带；Caddy
+默认会加 `X-Forwarded-For`）——见 [src/http.ts](src/http.ts) 的 `isLoopback`。但那是纵深
+防御，**Caddyfile 里这两行照样要写**：别让某个反代配法恰好没加转发头，就把这两条路交给
+一张票去守。
+
+`X-Forwarded-Proto` 也要留着（Caddy 默认会带）：桌面落地页按它决定 cookie 是不是
+`SameSite=None; Secure`，丢了它桌面在桌面端里会全 401（见 [src/proxy.ts](src/proxy.ts)）。
+
+**然后让管家只听回环**，别再从公网直接进 8443：
+
+```
+# /etc/systemd/system/satuwork-manager.service.d/listen-local.conf
+[Service]
+Environment=SATUWORK_MANAGER_HOST=127.0.0.1
+```
+
+```
+sudo systemctl daemon-reload && sudo systemctl restart satuwork-manager
+```
+
+只能钉 `127.0.0.1`，不能钉某张网卡的地址——Bot 调模型打的是 `127.0.0.1:<端口>/llm`
+（见 [src/seats.ts](src/seats.ts) 里 `MANAGER_LLM_URL` 那段注释）。
+
+**顺序不能反：**
+
+1. 装好 Caddy，确认 `https://mgr.example.com/health` 从外面能通（没票是 401，说明到了管家）。
+2. 在 Gateway 的机器页把**管家地址**和**桌面直连地址**都改成 `https://mgr.example.com`，
+   按「保存并探活」，两条都探活成功。
+3. 这时才写上面那个 drop-in、重启管家。
+
+先改只听回环的话，Gateway 手里那条 `http://<ip>:8443` 当场打不通，机器在平台上变成失联；
+而改地址、推新席位都要经过管家——那时就只剩上机器把 drop-in 删掉这一条路。
 
 ## 还原
 

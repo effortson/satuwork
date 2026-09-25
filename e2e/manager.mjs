@@ -2819,16 +2819,28 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(u.prompt === 10 && u.completion === 2, `被拒的调用记了用量：${u.prompt}/${u.completion}`)
         })
 
-        await test('模型中继：/llm 只收回环地址；不是回环 404，不暴露有这条路', async () => {
-          // 管家只监听 127.0.0.1，从别的地址进不来；能验的是「路由自己按来源判」——
-          // 拿 x-forwarded-for 骗不到它（它看的是 socket），这里钉住的是无钥匙时的形状。
-          const r = await fetch(`${mgrBase}/llm/v1/chat/completions`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.0.0.9' },
-            body: JSON.stringify(chatBody),
-          })
-          assert(r.status === 401, `回环上无钥匙该 401（不看 x-forwarded-for），实际 ${r.status}`)
-          await r.text()
+        await test('模型中继：/llm 只收回环地址；从回环进来但带转发头的也算外人，404 不暴露有这条路', async () => {
+          // 机器前面挂了反代（Caddy 反到 127.0.0.1:8443）时，外面的请求在 socket 上也是回环。
+          // 本机 Bot 直连不带转发头，带了就是被代理转进来的——哪怕钥匙是对的也当没有这条路。
+          upSeen.length = 0
+          const cases = [
+            { 'x-forwarded-for': '203.0.113.9' },
+            { forwarded: 'for=203.0.113.9;proto=https' },
+            { 'x-real-ip': '203.0.113.9' },
+          ]
+          for (const extra of cases) {
+            const r = await fetch(`${mgrBase}/llm/v1/chat/completions`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}`, ...extra },
+              body: JSON.stringify(chatBody),
+            })
+            const text = await r.text()
+            assert(r.status === 404, `带 ${Object.keys(extra)[0]} 的该 404，实际 ${r.status} ${text.slice(0, 200)}`)
+          }
+          assert(upSeen.length === 0, `带转发头的调用不该打到上游，实际打了 ${upSeen.length} 次`)
+          // 同一把钥匙、不带转发头，照常通——拒的是转发头，不是钥匙。
+          const ok = await req(mgrBase, 'GET', '/llm/v1/models', { token: apiKey })
+          assert(ok.status === 200, `不带转发头的 models 该 200，实际 ${ok.status} ${ok.text.slice(0, 200)}`)
         })
 
         await test('模型中继：Gateway 那半边——机器票直接领授权，钱只收一次但 token 会补正', async () => {
