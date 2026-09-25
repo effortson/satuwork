@@ -107,26 +107,14 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes "${NOTE:-Desktop 本地 Bot 运行时（按操作系统和架构分包）。运行中的任务不会被重启。}"
 
-      - name: 传给 Gateway
-        env:
-          TOK: ${{ secrets.GATEWAY_PLATFORM_TOKEN }}
-          GW: ${{ secrets.GATEWAY_URL }}
-          NOTE: ${{ inputs.note }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          for target in darwin-x64 darwin-arm64 windows-x64 windows-arm64 linux-x64 linux-arm64; do
-            files=(dist/local-bot-*-"$target".tgz)
-            [ ${#files[@]} -eq 1 ] || { echo "期望正好一个 $target 包，实际 ${#files[@]}" >&2; exit 1; }
-            f="${files[0]}"
-            v=$(basename "$f" .tgz); v=${v#local-bot-}
-            sha=$(sha256sum "$f" | cut -d' ' -f1)
-            code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X PUT \
-              "${GW%/}/platform/local-bot-releases/$(jq -rn --arg v "$v" '$v|@uri')?note=$(jq -rn --arg n "${NOTE:-}" '$n|@uri')" \
-              -H "authorization: Bearer $TOK" \
-              -H 'content-type: application/gzip' \
-              -H "x-bot-sha256: $sha" \
-              --data-binary "@$f")
-            echo "$target -> $code $(head -c 300 /tmp/resp.json)"
-            [ "$code" = "200" ] || [ "$code" = "201" ] || exit 1
-          done
+  # 登记到 Gateway：按 Release 的下载地址登记，不 PUT 整包（Vercel 上请求体上限 4.5 MB，
+  # PUT 一律 413）。顺序、校验、重跑的约定都在 register-release.yml 里。
+  # 手动触发没有 Release、也就没有可登记的地址：那种只出 artifact。
+  register:
+    needs: release
+    if: github.ref_type == 'tag'
+    uses: ./.github/workflows/register-release.yml
+    with:
+      tag: ${{ github.ref_name }}
+      note: ${{ inputs.note || '' }}
+    secrets: inherit
