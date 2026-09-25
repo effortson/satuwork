@@ -9,13 +9,13 @@
  * 那份源码，所以自动是关的），省得改一行 bot 代码就得推一趟 CI。
  */
 import { createHash, randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import {
   createReadStream,
   createWriteStream,
   existsSync,
   mkdirSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -423,28 +423,36 @@ async function verifyRemote(
   }
   if (!res.ok || !res.body) throw new HttpError(502, `取这个地址返回 ${res.status}`)
 
-  // 边下边算，同时把字节喂给 tar 头扫描——只为确认入口文件在，不解包、不落盘。
+  // 边下边算 sha256，整包流式写进临时文件，再扫 tar 头确认入口文件在。
+  //
+  // **要扫整包，不能只留开头**：入口在 tar 里的位置由打包时的目录顺序定，pack.mjs 打出来的
+  // bin/ 排在几百个依赖文件之后（管家包里是第 474 个成员），只留前 2 MiB 的话永远扫不到，
+  // 真实的包一个都登记不上。落临时文件而不是攒在内存里：包能到 256 MiB，函数环境的 /tmp
+  // 放得下，内存放不下。
   const hash = createHash('sha256')
   let size = 0
-  const chunks: Buffer[] = []
-  let kept = 0
-  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-    const buf = Buffer.from(chunk)
-    size += buf.length
-    if (size > limit) throw new HttpError(413, `发布包超过 ${limit} 字节上限`)
-    hash.update(buf)
-    // tar 的入口都在头部，留前 2 MiB 足够扫到。全留会把大包整个吃进内存。
-    if (kept < 2 * 1024 * 1024) {
-      chunks.push(buf)
-      kept += buf.length
-    }
-  }
-  if (size === 0) throw new HttpError(400, '这个地址返回的是空文件')
-
   const dest = join(tmpdir(), `satuwork-verify-${randomUUID()}.tgz`)
   try {
-    writeFileSync(dest, Buffer.concat(chunks))
-    // 只写了前 2 MiB，gunzip 中途会断——tarHasEntry 找到入口就返回，找不到才走到断流。
+    const out = createWriteStream(dest)
+    try {
+      for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+        const buf = Buffer.from(chunk)
+        size += buf.length
+        if (size > limit) throw new HttpError(413, `发布包超过 ${limit} 字节上限`)
+        hash.update(buf)
+        if (!out.write(buf)) await once(out, 'drain')
+      }
+      out.end()
+      await once(out, 'close')
+    } finally {
+      // 中途抛了（超限、断流）也要等文件句柄关掉，外层的 discard 才删得干净。
+      if (!out.closed) {
+        out.destroy()
+        await once(out, 'close')
+      }
+    }
+    if (size === 0) throw new HttpError(400, '这个地址返回的是空文件')
+
     let ok = false
     try {
       ok = await tarHasEntry(dest, ENTRY[kind])
