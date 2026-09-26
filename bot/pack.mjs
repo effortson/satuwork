@@ -23,7 +23,7 @@
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -94,12 +94,19 @@ const stage = join(tmp, 'bot')
 try {
   console.log(`pack: 版本 ${version}`)
   console.log('pack: pnpm deploy 中（把依赖实体化进 staging 目录）…')
-  const dep = spawnSync('pnpm', ['--filter', 'satuwork', 'deploy', '--legacy', stage], {
+  /**
+   * Windows 上的 pnpm 是 `pnpm.cmd`，不走 shell 起不来（spawnSync 回一个 ENOENT、status 为
+   * null）——桌面端的 local-bot 包在 Windows runner 上就是卡在这一步。走 shell 时参数是
+   * 拼成一整行交给 cmd 的，路径要自己加引号（临时目录可能带空格）。
+   */
+  const win = process.platform === 'win32'
+  const dep = spawnSync('pnpm', ['--filter', 'satuwork', 'deploy', '--legacy', win ? `"${stage}"` : stage], {
     cwd: root,
     stdio: 'inherit',
     encoding: 'utf8',
+    shell: win,
   })
-  if (dep.status !== 0) die('pnpm deploy 失败')
+  if (dep.status !== 0) die(`pnpm deploy 失败（status=${dep.status}${dep.error ? `，${dep.error.message}` : ''}）`)
   if (!existsSync(join(stage, 'bin', 'satuwork.mjs'))) die('staging 里没有 bin/satuwork.mjs')
   if (!existsSync(join(stage, 'node_modules', 'tsx'))) die('staging 里没有 tsx，包跑不起来')
   if (!process.argv.includes('--allow-foreign-platform')) assertLinuxPack(stage)
@@ -107,22 +114,29 @@ try {
   writeFileSync(join(stage, 'VERSION'), version + '\n')
 
   console.log('pack: tar 中…')
+  /**
+   * **只给 tar 相对路径**：在临时目录里打成 `bot.tgz`，再复制到输出位置。Windows runner 的
+   * Git Bash 里是 GNU tar，它把 `D:\…` 这种带盘符的绝对路径当成「主机:路径」去连远程，
+   * 直接 exit 2；而输出目录和临时目录常常不在同一个盘上，凑不出相对路径。GNU tar 的
+   * `--force-local` 能治，但 macOS 和 Windows 自带的 bsdtar 不认它。
+   */
   const tar = spawnSync(
     'tar',
     [
       '-czf',
-      outPath,
+      'bot.tgz',
       '--exclude=node_modules/.cache',
       '--exclude=.data',
       '--exclude=*.log',
       '--exclude=cordis.e2e.yml',
       '-C',
-      stage,
+      'bot',
       '.',
     ],
-    { encoding: 'utf8' },
+    { cwd: tmp, encoding: 'utf8' },
   )
-  if (tar.status !== 0) die('tar 失败: ' + String(tar.stderr || '').slice(0, 400))
+  if (tar.status !== 0) die('tar 失败: ' + String(tar.stderr || tar.error?.message || '').slice(0, 400))
+  copyFileSync(join(tmp, 'bot.tgz'), outPath)
 } finally {
   rmSync(tmp, { recursive: true, force: true })
 }
