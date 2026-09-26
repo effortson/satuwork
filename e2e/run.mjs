@@ -47,6 +47,7 @@ import { runGatewayUrl } from './gateway-url.mjs'
 import { runMaxSteps } from './max-steps.mjs'
 import { runDelegate } from './delegate.mjs'
 import { runToolCalls } from './toolcalls.mjs'
+import { runResponses } from './responses.mjs'
 import { runShutdown } from './shutdown.mjs'
 import { runGuards } from './guards.mjs'
 import { runHandoff } from './handoff.mjs'
@@ -3479,6 +3480,7 @@ async function main() {
     await suite('max-steps', () => runMaxSteps({ root, test, assert, log }))
     await suite('delegate', () => runDelegate({ root, test, assert, log }))
     await suite('toolcalls', () => runToolCalls({ root, test, assert, log }))
+    await suite('responses', () => runResponses({ root, test, assert, log }))
     await suite('guards', () => runGuards({ root, test, assert, log }))
     await suite('handoff', () => runHandoff({ root, gwRoot, test, req, start, waitHttp, assert, log, skip }))
     await suite('routine-retry', () => runRoutineRetry({ gwRoot, test, req, start, waitHttp, assert, log }))

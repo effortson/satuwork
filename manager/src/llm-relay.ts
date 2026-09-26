@@ -253,8 +253,15 @@ interface GrantAsk {
   openaiBeta?: string
   /** 这次是不是流式。Gateway 靠它决定要不要补 `stream_options.include_usage`。 */
   stream?: boolean
-  /** Bot 报的 `reasoning_effort`。钳到哪一档由 Gateway 按目录定。 */
+  /** Bot 报的推理档。钳到哪一档由 Gateway 按目录定。 */
   reasoningEffort?: string
+}
+
+/** 推理档在哪：chat 是顶层的 `reasoning_effort`，responses 是 `reasoning.effort`。 */
+function reasoningEffortOf(body: Record<string, unknown>): string | undefined {
+  if (typeof body.reasoning_effort === 'string') return body.reasoning_effort
+  const reasoning = body.reasoning as { effort?: unknown } | null | undefined
+  return reasoning && typeof reasoning === 'object' && typeof reasoning.effort === 'string' ? reasoning.effort : undefined
 }
 
 /** 409 的正文里写着 `relayable: false` 吗——「这家中继不了」和「这次不给过」是两回事。 */
@@ -395,7 +402,7 @@ async function relayCall(
       anthropicVersion: headerStr(req, 'anthropic-version'),
       openaiBeta: headerStr(req, 'openai-beta'),
       stream: body.stream === true,
-      reasoningEffort: typeof body.reasoning_effort === 'string' ? body.reasoning_effort : undefined,
+      reasoningEffort: reasoningEffortOf(body),
     }
 
     const asked = await askGrant(deps, ask, res)

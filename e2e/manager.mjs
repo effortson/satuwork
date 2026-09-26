@@ -2915,6 +2915,34 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(smartBody.reasoning_effort === 'high', `该夹到 high，实际 ${JSON.stringify(smartBody.reasoning_effort)}`)
         })
 
+        await test('模型中继：responses 路由的推理档在 `reasoning.effort`，同样由 Gateway 夹好', async () => {
+          /**
+           * `api: 'openai-responses'` 的模型 Bot 改走 /v1/responses（gpt-5.6-sol 这一批在 chat
+           * 口上「工具 + reasoning_effort」直接 400）。推理档换了个位置，夹法不能跟着丢：
+           * 管家要把 `reasoning.effort` 报给授权，Gateway 的 responsesBodyPatch 按目录夹。
+           */
+          const resBody = { model: `${PROVIDER}/${MODEL}`, input: [{ role: 'user', content: 'hi' }], stream: true, store: false }
+          upSeen.length = 0
+          const dumb = await req(mgrBase, 'POST', '/llm/v1/responses', {
+            token: apiKey,
+            body: { ...resBody, reasoning: { effort: 'xhigh' } },
+          })
+          assert(dumb.status === 200, `不会推理的模型 ${dumb.status} ${dumb.text.slice(0, 300)}`)
+          const dumbSeen = upLast()
+          assert(dumbSeen?.path === '/v1/responses', `该打上游的 /v1/responses，实际 ${dumbSeen?.path}`)
+          assert(!('reasoning' in (dumbSeen.body || {})), `模型不会推理，reasoning 该整个删掉，实际 ${JSON.stringify(dumbSeen.body?.reasoning)}`)
+
+          upSeen.length = 0
+          const smart = await req(mgrBase, 'POST', '/llm/v1/responses', {
+            token: apiKey,
+            body: { ...resBody, model: `${PROVIDER}/${THINK_MODEL}`, reasoning: { effort: 'xhigh' } },
+          })
+          assert(smart.status === 200, `会推理的模型 ${smart.status} ${smart.text.slice(0, 300)}`)
+          const smartBody = upLast()?.body || {}
+          assert(smartBody.reasoning?.effort === 'high', `该夹到 high，实际 ${JSON.stringify(smartBody.reasoning)}`)
+          assert(!('provider' in smartBody) && smartBody.model === THINK_MODEL, `model/provider 没换：${smartBody.model} ${smartBody.provider}`)
+        })
+
         await test('模型中继：抹密钥别把 application/json 一起抹了', async () => {
           /**
            * 抹密钥那条规矩曾经是「授权头里的值长到 16 个字符就抹」，而
