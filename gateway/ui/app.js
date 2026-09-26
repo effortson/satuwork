@@ -2605,6 +2605,11 @@ document.getElementById('app').addEventListener('change', async (e) => {
     await saveSettings({ [role]: { provider: cur.provider, model: el.value, reasoningEffort: 'off' } })
     return
   }
+  if (act === 'alt-provider') {
+    state.altProvider = el.value
+    render()
+    return
+  }
   if (act === 'alt-add') {
     const key = el.value
     const cut = key.indexOf('/')

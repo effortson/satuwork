@@ -316,21 +316,30 @@ function isAlternate(provider, model) {
 }
 
 /**
- * 还能加进备选的模型：供应商配好了密钥、上架了（enabledModels 空 = 全部）、
- * 不是默认那个、也不已经在备选里。按供应商分组，一个下拉框就能挑完。
+ * 还能加进备选的模型，按供应商分组：上架了（enabledModels 空 = 全部）、不是默认那个、
+ * 也不已经在备选里。
+ *
+ * **所有供应商都列，不只平台存了密钥的那几家。** 备选本来就是「换一家的模型试试」，
+ * 而密钥不一定存在平台那张表里（环境变量里的那把、自定义供应商的那把都调得通），
+ * 按那张表筛就等于只剩当前那一家。存了密钥的排前面；没存的照样能加，名字后面标一句，
+ * 真调不通的话备选那一行上的「测试」会说清楚。
  */
 function alternateCandidates() {
   const daily = state.settings?.daily || {}
   const enabled = Array.isArray(state.settings?.enabledModels) ? state.settings.enabledModels : []
-  return configuredProviders()
+  const configured = configuredSet()
+  return state.catalog
     .map((p) => ({
-      ...p,
-      models: p.models.filter((m) =>
+      provider: p.provider,
+      name: p.name || p.provider,
+      configured: configured.has(p.provider),
+      models: (p.models || []).filter((m) =>
         (!enabled.length || enabled.includes(`${p.provider}/${m.id}`)) &&
         !(daily.provider === p.provider && daily.model === m.id) &&
         !isAlternate(p.provider, m.id)),
     }))
     .filter((p) => p.models.length)
+    .sort((a, b) => Number(b.configured) - Number(a.configured))
 }
 
 /**
@@ -363,22 +372,32 @@ function alternatesPanel() {
     })
     .join('')
   const groups = alternateCandidates()
+  // 先挑供应商、再挑模型，和上面两块角色面板一个做法：目录里几十家、上千个模型，
+  // 塞进一个下拉框里是翻不到的。记住上次挑的那家，加完一个接着加同一家的很常见。
+  const shown = groups.find((p) => p.provider === state.altProvider) || groups[0]
   const full = list.length >= DAILY_ALTERNATES_MAX
   const add = full
     ? `<span style="font-size: 12px; color: var(--muted-foreground);">${t(`最多 ${DAILY_ALTERNATES_MAX} 个`, `Up to ${DAILY_ALTERNATES_MAX}`)}</span>`
-    : `<select class="input" style="width: 250px; flex: none;" data-act="alt-add" ${groups.length ? '' : 'disabled'}>
-        <option value="">${groups.length ? t('添加备选模型') : t('没有可添加的模型')}</option>
-        ${groups
-          .map((p) => `<optgroup label="${esc(p.name)}">${p.models.map((m) => `<option value="${esc(`${p.provider}/${m.id}`)}">${esc(m.name || m.id)}</option>`).join('')}</optgroup>`)
-          .join('')}
-      </select>`
+    : !groups.length
+      ? `<span style="font-size: 12px; color: var(--muted-foreground);">${t('没有可添加的模型')}</span>`
+      : `<div style="display: flex; gap: var(--space-2); flex: none; flex-wrap: wrap; justify-content: flex-end;">
+          <select class="input" style="width: 200px; flex: none;" data-act="alt-provider" aria-label="${esc(t('供应商'))}">
+            ${groups
+              .map((p) => `<option value="${esc(p.provider)}" ${p.provider === shown.provider ? 'selected' : ''}>${esc(p.name)}${p.configured ? '' : esc(t('（平台未存密钥）', ' (no platform key)'))}</option>`)
+              .join('')}
+          </select>
+          <select class="input" style="width: 250px; flex: none;" data-act="alt-add" aria-label="${esc(t('添加备选模型'))}">
+            <option value="">${t('添加备选模型')}</option>
+            ${shown.models.map((m) => `<option value="${esc(`${shown.provider}/${m.id}`)}">${esc(m.name || m.id)}</option>`).join('')}
+          </select>
+        </div>`
   return `
     <div class="satu-panel">
       <span class="satu-panel-title">${t('日常模型备选')}</span>
       <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('成员可以在对话框里把自己和某个 Bot 的对话换成这些模型，也可以在渠道里发 /model 切换。一个都不配时只用默认的日常模型。', 'Members can switch their conversation with a bot to any of these, from the chat box or with /model in a channel. With none configured, the default daily model is used.')}</p>
       ${rows || `<div class="satu-toggleRow"><span style="font-size: 13px; color: var(--muted-foreground);">${t('还没有备选。')}</span></div>`}
       <div class="satu-toggleRow">
-        <div style="min-width: 0; font-size: 12px; color: var(--muted-foreground);">${t('只列出已启用、且不是默认的模型。', 'Only enabled models other than the default are listed.')}</div>
+        <div style="min-width: 0; font-size: 12px; color: var(--muted-foreground);">${t('可以选任意供应商的模型；只列出已启用、且不是默认的。', 'Any provider works; only enabled models other than the default are listed.')}</div>
         ${add}
       </div>
     </div>`
