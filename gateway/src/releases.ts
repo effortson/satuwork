@@ -86,6 +86,47 @@ export function localBotReleaseTarget(version: string): { platform: string; arch
   return matched ? { platform: matched[1], arch: matched[2] } : undefined
 }
 
+/**
+ * 没登记最低 Desktop 版本时的默认值：第一版 Desktop，也就是「谁都能装」。老的登记流程
+ * （本地 PUT、没带这个字段的 CI）照旧能用，和改动前写死的那个值一样。
+ */
+export const DEFAULT_MIN_DESKTOP_VERSION = '0.1.0'
+
+const DESKTOP_VERSION_RE = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/
+
+/**
+ * 登记时收的最低 Desktop 版本。只收严格的 `x.y.z`：Desktop 那头（main.rs 的
+ * version_numbers）认不出的值一律当「不满足」，登记一个它读不懂的值等于把这个包锁死。
+ */
+export function parseMinDesktopVersion(raw: unknown): string {
+  const text = String(raw ?? '').trim()
+  if (!text) return DEFAULT_MIN_DESKTOP_VERSION
+  if (!DESKTOP_VERSION_RE.test(text)) throw new HttpError(400, 'minDesktopVersion 须为 x.y.z，例如 0.2.0')
+  return text
+}
+
+/** 某种包该存的最低 Desktop 版本：只有 local-bot 有，别的种类不管传什么都存 null。 */
+function minDesktopFor(kind: ReleaseKind, raw: unknown): string | null {
+  return kind === 'local-bot' ? parseMinDesktopVersion(raw) : null
+}
+
+function desktopVersionNumbers(raw: string): [number, number, number] | undefined {
+  // 和 main.rs 的 version_numbers 同一个读法：去掉 v 前缀，`-` / `+` 之后的不看，缺的段当 0。
+  const core = String(raw || '').trim().replace(/^v/, '').split(/[-+]/)[0]
+  const parts = core.split('.')
+  if (!parts[0] || parts.length > 3 || !parts.every((p) => /^\d+$/.test(p))) return undefined
+  return [Number(parts[0]), Number(parts[1] ?? 0), Number(parts[2] ?? 0)]
+}
+
+/** `have` 这版 Desktop 装不装得了要求 `minimum` 的包。认不出的版本号一律算不满足，同 Desktop。 */
+export function desktopSupports(have: string, minimum: string): boolean {
+  const a = desktopVersionNumbers(have)
+  const b = desktopVersionNumbers(minimum)
+  if (!a || !b) return false
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i]
+  return true
+}
+
 function uploadLimit(): number {
   const raw = Number(process.env.GATEWAY_RELEASE_MAX_BYTES ?? 0)
   return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : 256 * 1024 * 1024
@@ -145,6 +186,8 @@ export function publicBotRelease(row: BotRelease, base = '') {
     size: row.size,
     createdAt: row.createdAt,
     note: row.note,
+    /** 装这个包至少要哪一版 Desktop。只有 local-bot 有，别的为 null。 */
+    minDesktopVersion: row.minDesktopVersion,
   }
 }
 
@@ -242,17 +285,18 @@ async function assertBotArchive(path: string, kind: ReleaseKind): Promise<void> 
  */
 export async function storeUploadedRelease(
   db: Db,
-  input: { version: string; note?: string; body: Readable; sha256?: string; kind?: ReleaseKind },
+  input: { version: string; note?: string; body: Readable; sha256?: string; kind?: ReleaseKind; minDesktopVersion?: string },
 ): Promise<BotRelease> {
   const kind: ReleaseKind = input.kind ?? 'bot'
   const version = parseBotVersion(input.version)
   const note = String(input.note ?? '').trim()
+  const minDesktopVersion = minDesktopFor(kind, input.minDesktopVersion)
   const expected = String(input.sha256 ?? '')
     .trim()
     .toLowerCase()
   if (expected && !SHA256_RE.test(expected)) throw new HttpError(400, 'sha256 须为 64 位十六进制')
   if (await db.botRelease(version, kind)) throw new HttpError(409, '这个版本已经发布过')
-  if (blobToken()) return storeToBlob(db, { kind, version, note, body: input.body, expected })
+  if (blobToken()) return storeToBlob(db, { kind, version, note, body: input.body, expected, minDesktopVersion })
   /**
    * 函数环境（Vercel）只有 /tmp，不跨实例、不跨部署：包写进去等于随手丢，而登记已经进了库，
    * 管家来拉时 404，比一句「不能上传」难查一百倍。Vercel 上要么配 BLOB_READ_WRITE_TOKEN
@@ -294,7 +338,7 @@ export async function storeUploadedRelease(
     const sha256 = hash.digest('hex')
     if (expected && expected !== sha256) throw new HttpError(400, 'sha256 对不上，包在路上坏了')
     await assertBotArchive(dest, kind)
-    const row: BotRelease = { kind, version, sha256, size, createdAt: Date.now(), note, url: '' }
+    const row: BotRelease = { kind, version, sha256, size, createdAt: Date.now(), note, url: '', minDesktopVersion }
     try {
       await db.insertBotRelease(row)
     } catch (e) {
@@ -318,9 +362,9 @@ export async function storeUploadedRelease(
  */
 async function storeToBlob(
   db: Db,
-  input: { kind: ReleaseKind; version: string; note: string; body: Readable; expected: string },
+  input: { kind: ReleaseKind; version: string; note: string; body: Readable; expected: string; minDesktopVersion: string | null },
 ): Promise<BotRelease> {
-  const { kind, version, note, expected } = input
+  const { kind, version, note, expected, minDesktopVersion } = input
   const limit = uploadLimit()
   const hash = createHash('sha256')
   let size = 0
@@ -360,7 +404,7 @@ async function storeToBlob(
     if (expected && expected !== sha256) throw new HttpError(400, 'sha256 对不上，包在路上坏了')
     const probe = await verifyRemote(uploaded.url, kind, limit)
     if (probe.sha256 !== sha256 || probe.size !== size) throw new HttpError(502, '对象存储里的包和收到的不一样')
-    const row: BotRelease = { kind, version, sha256, size, createdAt: Date.now(), note, url: uploaded.url }
+    const row: BotRelease = { kind, version, sha256, size, createdAt: Date.now(), note, url: uploaded.url, minDesktopVersion }
     try {
       await db.insertBotRelease(row)
     } catch (e) {
@@ -386,11 +430,12 @@ async function storeToBlob(
  */
 export async function registerRemoteRelease(
   db: Db,
-  input: { kind?: ReleaseKind; version: string; url: string; size: number; sha256: string; note?: string },
+  input: { kind?: ReleaseKind; version: string; url: string; size: number; sha256: string; note?: string; minDesktopVersion?: string },
 ): Promise<BotRelease> {
   const kind: ReleaseKind = input.kind ?? 'bot'
   const version = parseBotVersion(input.version)
   const note = String(input.note ?? '').trim()
+  const minDesktopVersion = minDesktopFor(kind, input.minDesktopVersion)
   const url = parseReleaseUrl(input.url)
   const wantSha = String(input.sha256 ?? '').trim().toLowerCase()
   if (!SHA256_RE.test(wantSha)) throw new HttpError(400, 'sha256 须为 64 位十六进制')
@@ -402,7 +447,7 @@ export async function registerRemoteRelease(
   if (probe.size !== wantSize) throw new HttpError(400, `实际大小 ${probe.size} 字节，和填的 ${wantSize} 对不上`)
   if (probe.sha256 !== wantSha) throw new HttpError(400, `实际 sha256 ${probe.sha256.slice(0, 16)}… 和填的对不上`)
 
-  const row: BotRelease = { kind, version, sha256: probe.sha256, size: probe.size, createdAt: Date.now(), note, url }
+  const row: BotRelease = { kind, version, sha256: probe.sha256, size: probe.size, createdAt: Date.now(), note, url, minDesktopVersion }
   try {
     await db.insertBotRelease(row)
   } catch (e) {

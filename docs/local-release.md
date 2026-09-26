@@ -114,8 +114,9 @@ Desktop 本地 Bot 包必须在它实际运行的平台上打（依赖里有当�
 pnpm --filter satuwork-desktop pack:runtime-release -- --version "0.1.13+$(git rev-parse --short HEAD)"
 F=$(find dist -maxdepth 1 -name 'local-bot-*.tgz' -print -quit)
 V=$(basename "$F" .tgz | sed 's/^local-bot-//')
+MIN=$(node -p "require('./bot/package.json').minDesktopVersion || '0.1.0'")
 curl -X PUT "http://127.0.0.1:3099/platform/local-bot-releases/$(python3 -c \
-      "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$V")" \
+      "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$V")?minDesktopVersion=$MIN" \
   -H "authorization: Bearer $TOK" \
   -H 'content-type: application/gzip' \
   -H "x-bot-sha256: $(shasum -a 256 "$F" | awk '{print $1}')" \
@@ -123,7 +124,9 @@ curl -X PUT "http://127.0.0.1:3099/platform/local-bot-releases/$(python3 -c \
 ```
 
 脚本自动给版本加 `-darwin-arm64`、`-windows-x64` 等目标后缀。Gateway 按后缀给 Desktop
-选包；不能手工改成另一种平台。正式发布推 `local-bot-v0.1.13` tag，
+选包；不能手工改成另一种平台。`minDesktopVersion` 是这个包要求的最低 Desktop 版本，不带
+按 `0.1.0` 登记；Gateway 只把包发给版本够得上的 Desktop（CI 登记时从 tag 上的
+bot/package.json 读同一个字段）。正式发布推 `local-bot-v0.1.13` tag，
 `.github/workflows/local-bot-release.yml` 会构建六个目标包并上传。上传只让新版本变为可用，
 不会强杀正在运行的 Bot；Desktop 下次启动第一颗本地 Bot 时静默切换。
 

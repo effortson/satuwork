@@ -112,7 +112,10 @@ Desktop 壳与本地 Bot 分开发版。每次 Desktop 启动、第一颗本地 
 4. 新运行时连进程都无法拉起时，自动把 `CURRENT` 指回旧版本并重试。网络、校验或兼容性
    错误也不会阻止旧版本启动，界面会给出升级失败提示。
 
-运行时要求更高版本 Desktop 时不会硬装，会提示先升级 Desktop。运行时状态保存在应用数据
+每个运行时包登记时各带一个**最低 Desktop 版本**，来源是 bot/package.json 的
+`minDesktopVersion`：bot 代码开始依赖某一版壳才有的东西时，把它抬到那一版。检查更新时
+壳会带上自己的版本，Gateway 给它装得了的最新一版；够得着的已经装上、更新的又要新壳时，
+仍发最新那版，由壳比对后提示先升级 Desktop，不会硬装。运行时状态保存在应用数据
 目录的 `local-runtime/{CURRENT,PENDING,LAST_ERROR}`，可用于排查；每颗 Bot 的启动输出保存在
 `local-bots/<bot-id>/runtime.log`（超过 2 MiB 自动轮换）。正常使用不需要手工维护。
 

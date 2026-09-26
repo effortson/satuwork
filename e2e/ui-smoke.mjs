@@ -3015,9 +3015,9 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const requested = []
       const releases = {
         releases: [
-          { version: '0.1.13+aaaaaaa-darwin-arm64', size: 1, sha256: 'a', createdAt: 2 },
-          { version: '0.1.12+bbbbbbb-darwin-arm64', size: 1, sha256: 'b', createdAt: 1 },
-          { version: '0.1.12+bbbbbbb-windows-x64', size: 1, sha256: 'c', createdAt: 1 },
+          { version: '0.1.13+aaaaaaa-darwin-arm64', size: 1, sha256: 'a', createdAt: 2, minDesktopVersion: '0.2.0' },
+          { version: '0.1.12+bbbbbbb-darwin-arm64', size: 1, sha256: 'b', createdAt: 1, minDesktopVersion: '0.1.0' },
+          { version: '0.1.12+bbbbbbb-windows-x64', size: 1, sha256: 'c', createdAt: 1, minDesktopVersion: '0.1.0' },
         ],
         latestByTarget: { 'darwin-arm64': '0.1.13+aaaaaaa-darwin-arm64', 'windows-x64': '0.1.12+bbbbbbb-windows-x64' },
       }
@@ -3047,6 +3047,12 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const oldRow = html.slice(html.indexOf('0.1.12+bbbbbbb-darwin-arm64'), html.indexOf('0.1.12+bbbbbbb-darwin-arm64') + 200)
       assert(!oldRow.includes('tag-accent'), 'darwin 的老版本也被标成了最新')
       assert(html.includes('data-form="add-release" data-kind="local-bot"'), '新增表单没有按 local-bot 走')
+      // 每个包各自的最低 Desktop 版本：列表里逐条写，平台表只在高于 0.1.0 时提一句。
+      assert(html.includes('name="minDesktopVersion"'), '新增表单没有最低 Desktop 版本那一栏')
+      const panel = html.slice(html.indexOf('macOS · Apple Silicon'), html.indexOf('macOS · Intel'))
+      assert(panel.includes('≥ 0.2.0'), `平台表没写出最新那版要的 Desktop：${panel}`)
+      const winPanel = html.slice(html.indexOf('Windows · x64'), html.indexOf('Windows · ARM64'))
+      assert(!winPanel.includes('≥'), '要求是 0.1.0 的平台不该再提一句')
     })
 
     await test('审计总结翻页：游标跟着请求走，换筛选回到第一页', async () => {

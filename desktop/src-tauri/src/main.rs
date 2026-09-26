@@ -789,14 +789,17 @@ fn stage_runtime_update(
     let home = runtime_home(app)?;
     let current = read_runtime_pointer(&home, "CURRENT").unwrap_or_default();
     let (platform, arch) = local_runtime_target()?;
+    let desktop_version = app.package_info().version.to_string();
     let mut endpoint = gateway
         .join("/runtime/local-bot-release")
         .map_err(|e| format!("生成更新检查地址失败：{e}"))?;
+    // 带上壳的版本：每个包登记了自己要的最低 Desktop 版本，Gateway 据此给这台装得了的最新一版。
     endpoint
         .query_pairs_mut()
         .append_pair("platform", platform)
         .append_pair("arch", arch)
-        .append_pair("have", &current);
+        .append_pair("have", &current)
+        .append_pair("desktop", &desktop_version);
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(120))
@@ -821,7 +824,6 @@ fn stage_runtime_update(
     let release: LocalBotRelease = response
         .json()
         .map_err(|e| format!("读取本地运行时更新信息失败：{e}"))?;
-    let desktop_version = app.package_info().version.to_string();
     if !desktop_version_supports(&desktop_version, &release.min_desktop_version) {
         return Err(format!(
             "本地 Bot 新版本需要 Satuwork Desktop {} 或更高版本；当前是 {}，请先升级 Desktop",
