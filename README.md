@@ -31,8 +31,8 @@ old `/download`) goes to chat / overview. It picks Windows / macOS from the plat
 the card lets people switch manually.
 
 Files point at a fixed `desktop-latest` Release, so shipping a new version needs no page change: desktop release CI copies the
-installers there under version-less names (`Satuwork_x64-setup.exe`, `Satuwork_aarch64.dmg`, `Satuwork_x64.dmg`), but only when the
-tag is the newest `desktop-v*`. Those names are pinned against `dlBuilds` by an e2e check. It deliberately **doesn't use GitHub's
+installers there under version-less names (`Satuwork_x64-setup.exe`, `Satuwork_aarch64.dmg`, `Satuwork_x64.dmg`), always mirroring the newest
+**stable** `desktop-v*` (plain `X.Y.Z`; pre-releases don't count, and re-publishing an old tag never rolls it back). Those names are pinned against `dlBuilds` by an e2e check. It deliberately **doesn't use GitHub's
 `releases/latest`**: every release line shares one Release list, and all of them create Releases with `--latest=false`, so the
 repo's "Latest" badge doesn't track any one line.
 
