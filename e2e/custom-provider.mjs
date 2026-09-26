@@ -424,6 +424,19 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       const st = await req(base, 'GET', '/platform/settings', { token })
       assert((st.json.dailyAlternates || []).length === 1, `读回来不对：${JSON.stringify(st.json.dailyAlternates)}`)
 
+      // 别家供应商的模型同样能当备选：默认是 my-llm 的，备选挑一个内置目录里的。
+      const builtin = ((await req(base, 'GET', '/v1/models', { token })).json.data || [])
+        .map((m) => String(m.id))
+        .find((id) => id.indexOf('/') > 0 && !id.startsWith('my-llm/'))
+      assert(builtin, '内置目录里挑不出一个别家的模型')
+      const cut = builtin.indexOf('/')
+      const cross = await req(base, 'PUT', '/platform/settings', {
+        token,
+        body: { dailyAlternates: [{ provider: 'my-llm', model: 'second' }, { provider: builtin.slice(0, cut), model: builtin.slice(cut + 1) }] },
+      })
+      assert(cross.status === 200 && (cross.json.dailyAlternates || []).length === 2, `跨供应商的备选存不进去：${cross.status} ${cross.text}`)
+      await req(base, 'PUT', '/platform/settings', { token, body: { dailyAlternates: [{ provider: 'my-llm', model: 'second' }] } })
+
       // 目录里没有的：拦下，原来那份一个字不动。
       const ghost = await req(base, 'PUT', '/platform/settings', { token, body: { dailyAlternates: [{ provider: 'my-llm', model: 'nope' }] } })
       assert(ghost.status === 400, `目录里没有的也收了：${ghost.status} ${ghost.text}`)

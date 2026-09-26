@@ -268,6 +268,36 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(relive.statusAt === t0 + 21000, `起点该退到最后一条事件，实际 ${relive.statusAt - t0}ms`)
     })
 
+    await test('日常模型备选：任何供应商的模型都能加，不只平台存了密钥的那一家', async () => {
+      /**
+       * 备选本来就是「换一家的模型试试」。按平台密钥表筛候选的话，只存了一家密钥（其余的
+       * 走环境变量、或者还没存）的平台上，下拉框里就只剩当前那一家——人想加别家的模型，
+       * 界面上根本找不到入口。
+       */
+      const ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: 'ui-smoke-token',
+        fetchImpl: async () => ({ ok: true, status: 200, text: async () => '{}' }),
+      })
+      ui.state.me = { account: { id: 'o', role: 'owner', name: 'O' }, settings: {} }
+      ui.state.path = '/models'
+      ui.state.catalog = [
+        { provider: 'deepseek', name: 'DeepSeek', models: [{ id: 'deepseek-v4', name: 'DeepSeek V4' }, { id: 'deepseek-r2', name: 'DeepSeek R2' }] },
+        { provider: 'openrouter', name: 'OpenRouter', models: [{ id: 'qwen/qwen3', name: 'Qwen3' }] },
+      ]
+      ui.state.creds = [{ provider: 'deepseek', configured: true }]
+      ui.state.settings = { daily: { provider: 'deepseek', model: 'deepseek-v4' }, utility: { provider: '', model: '' }, dailyAlternates: [], enabledModels: [] }
+      ui.state.selectedProvider = 'deepseek'
+      ui.render()
+      const first = ui.html()
+      assert(/data-act="alt-provider"[\s\S]*value="openrouter"/.test(first), `别家供应商不在备选的供应商下拉里：${first.slice(0, 300)}`)
+      assert(first.includes('value="deepseek/deepseek-r2"'), '存了密钥的那家排在前面、默认展开')
+      ui.state.altProvider = 'openrouter'
+      ui.render()
+      assert(ui.html().includes('value="openrouter/qwen/qwen3"'), '换到别家之后，那家的模型没列出来')
+    })
+
     await test('日常任务跑着的时候，轮询没变化就一下都不重画', async () => {
       /**
        * 这一栏挂在**对话页**上，而它的轮询只在「有一轮正在跑」时才转——也就是说，
