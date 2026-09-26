@@ -249,6 +249,37 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       assert(upModel === 'vendor/model-1', `上游收到的 model 是 ${upModel}`)
     })
 
+    await test('模型 id 的前缀恰好是另一家供应商：给了 provider 就认这家，不被切到别家去', async () => {
+      /**
+       * openrouter 的 `google/gemini-3.7-flash`：按第一个斜杠切成 google + gemini-3.7-flash，
+       * 而 Google 自家目录里真有这个模型——于是「测试连通性」回「没有 google 的密钥」，
+       * 聊天那一轮也会打到 Google 去。这里拿内置目录里随便一个不带斜杠的模型造同样的撞车。
+       */
+      const list = await req(base, 'GET', '/v1/models', { token })
+      const victim = (list.json.data || []).find((x) => x.provider && x.provider !== 'my-llm' && x.model && !String(x.model).includes('/'))
+      assert(victim, '内置目录里挑不出一个不带斜杠的模型')
+      const collide = `${victim.provider}/${victim.model}`
+      const upd = await req(base, 'PUT', '/platform/providers/my-llm', {
+        token,
+        body: { name: 'My LLM', baseUrl, api: 'openai-completions', models: [model, { ...model, id: collide, name: 'Collide' }] },
+      })
+      assert(upd.status === 200, `撞车的模型没存下 ${upd.status} ${upd.text}`)
+
+      const probe = await req(base, 'POST', '/platform/llm/test', { token, body: { provider: 'my-llm', model: collide } })
+      assert(probe.status === 200 && probe.json.ok === true, `probe 没通：${probe.status} ${probe.text}`)
+      assert(probe.json.provider === 'my-llm' && probe.json.model === collide, `probe 认成了 ${probe.json.provider}/${probe.json.model}`)
+
+      seen = { auth: null, path: null, body: null }
+      const chat = await req(base, 'POST', '/v1/chat/completions', {
+        token,
+        body: { model: collide, provider: 'my-llm', messages: [{ role: 'user', content: 'hi' }] },
+      })
+      assert(chat.status === 200, `裸 id + provider 的 chat 没打到 my-llm：${chat.status} ${chat.text}`)
+      assert(JSON.parse(seen.body || '{}').model === collide, `上游收到的 model 是 ${JSON.parse(seen.body || '{}').model}`)
+
+      await req(base, 'PUT', '/platform/providers/my-llm', { token, body: { name: 'My LLM', baseUrl, api: 'openai-completions', models: [model] } })
+    })
+
     await test('斜杠只能夹在中间：开头、结尾、连着两个都拦掉', async () => {
       for (const bad of ['/lead', 'trail/', 'a//b', 'a/ /b']) {
         const r = await req(base, 'PUT', '/platform/providers/my-llm', {
