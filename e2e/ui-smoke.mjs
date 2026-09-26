@@ -2999,6 +2999,76 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!ui.pathAllowed('/audit/session-1'), '旧的原始对话详情不该再能打开')
     })
 
+    await test('审计总结翻页：游标跟着请求走，换筛选回到第一页', async () => {
+      const requested = []
+      let page = 0
+      const ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: 'ui-smoke-token',
+        fetchImpl: async (path) => {
+          requested.push(path)
+          page += 1
+          const body = { filters: { accounts: [], bots: [] }, items: [{ id: `p${page}`, taskSummary: `第${page}批`, outcome: 'completed', endedAt: 1 }], hasMore: page < 2, nextCursor: page < 2 ? `100:p${page}` : null }
+          return { ok: true, status: 200, text: async () => JSON.stringify(body) }
+        },
+      })
+      ui.state.me = { account: { id: 'a', role: 'admin', companyId: 'c' }, company: { id: 'c' }, settings: {} }
+      ui.state.path = '/audit'
+      await ui.loadConversationAudits(true)
+      ui.render()
+      assert(/data-act="audit-next"(?![^>]*disabled)/.test(ui.html()), '有下一页却点不了')
+      assert(requested[0].includes('limit=20') && !requested[0].includes('cursor='), `第一页不该带游标：${requested[0]}`)
+      ui.state.auditCursors.push(ui.state.auditNextCursor)
+      await ui.loadConversationAudits()
+      assert(requested[1].includes('cursor=100%3Ap1'), `第二页没带上一页给的游标：${requested[1]}`)
+      ui.render()
+      assert(ui.html().includes('第 2 页') && !/data-act="audit-next"(?![^>]*disabled)/.test(ui.html()), '最后一页还能点下一页')
+      await ui.loadConversationAudits(true)
+      assert(!requested[2].includes('cursor='), `换了筛选还在接着翻旧游标：${requested[2]}`)
+
+      /**
+       * 从详情页回来留在原来那一页；从别的页（侧栏）进来回到第一页——上次停在第 2 页的那串
+       * 游标是按当时的结果算的。
+       */
+      ui.state.auditCursors = [null, '100:p1']
+      ui.state.path = '/audit/summary/p1'
+      await ui.loadPage()
+      ui.state.path = '/audit'
+      await ui.loadPage()
+      assert(ui.state.auditCursors.length === 2, `从详情页回来被弹回了第一页：${JSON.stringify(ui.state.auditCursors)}`)
+      ui.state.path = '/usage'
+      await ui.loadPage()
+      ui.state.path = '/audit'
+      await ui.loadPage()
+      assert(ui.state.auditCursors.length === 1, `从别的页进来还停在旧的第 2 页：${JSON.stringify(ui.state.auditCursors)}`)
+    })
+
+    await test('审计详情：评分明细逐项写出得分、满分和原因', async () => {
+      const ui = loadApp({ appPath, base: gwBase, token: 'ui-smoke-token', fetchImpl: async () => ({ ok: true, status: 200, text: async () => '{}' }) })
+      ui.state.me = { account: { id: 'a', role: 'admin', companyId: 'c' }, company: { id: 'c' }, settings: {} }
+      ui.state.path = '/audit/summary/i1'
+      ui.state.auditItemDetail = {
+        batch: null,
+        item: {
+          id: 'i1', taskSummary: '发报价', outcome: 'partial', modelScore: 70, timeline: [], evidence: [], riskFlags: [],
+          scoreBreakdown: { completion: 28, evidence: 22, instructionFollowing: 9, efficiency: 6, communication: 5 },
+          scoreReasons: { completion: 'UI-SMOKE-漏了抄送财务', instructionFollowing: 'UI-SMOKE-没按要求抄送' },
+        },
+      }
+      ui.render()
+      const html = ui.html()
+      assert(html.includes('完成度') && html.includes('28') && html.includes('/ 40'), '分项没画成「得分 / 满分」')
+      assert(html.includes('UI-SMOKE-漏了抄送财务') && html.includes('UI-SMOKE-没按要求抄送'), '评分原因没画出来')
+      assert(html.includes('没有写原因'), '缺原因的那几项该如实说没有，不该空着')
+      assert(!html.includes('completion: 28'), '还在画旧的「键: 分数」那一串')
+
+      // 条目自己带了满分（评分规则改过）：按它画，不按前端那份旧规则。
+      ui.state.auditItemDetail.item.scoreMax = { completion: 50, evidence: 20, instructionFollowing: 10, efficiency: 10, communication: 10 }
+      ui.render()
+      assert(ui.html().includes('/ 50') && !ui.html().includes('/ 40'), '满分没按条目自带的画')
+    })
+
     await test('建连失败（503）之后闩要放开，聊天还能重连', async () => {
       // chatAbort / chatStreamId 这对「当前流」的闩，建连失败时一度不放。
       // ensureChatSession 和 startChatStream 都拿它判断「已经有流在跑」，于是实例

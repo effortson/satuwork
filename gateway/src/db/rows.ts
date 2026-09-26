@@ -567,6 +567,8 @@ export function conversationAuditBatchOf(r: Row): ConversationAuditBatch {
 export function conversationAuditItemOf(r: Row): ConversationAuditItem {
   const timeline = jsonOf(r.timeline)
   const breakdown = jsonOf(r.scoreBreakdown)
+  const reasons = jsonOf(r.scoreReasons)
+  const maxes = jsonOf(r.scoreMax)
   const evidence = jsonOf(r.evidence)
   const risks = jsonOf(r.riskFlags)
   return {
@@ -579,8 +581,15 @@ export function conversationAuditItemOf(r: Row): ConversationAuditItem {
     userQuestion: str(r.userQuestion || ''), modelAnswer: str(r.modelAnswer || ''), finalResult: str(r.finalResult || ''),
     outcome: str(r.outcome) as ConversationAuditItem['outcome'], modelScore: numOrNull(r.modelScore),
     scoreBreakdown: breakdown && typeof breakdown === 'object' && !Array.isArray(breakdown) ? breakdown as Record<string, number> : {},
+    scoreReasons: reasons && typeof reasons === 'object' && !Array.isArray(reasons)
+      ? Object.fromEntries(Object.entries(reasons as Record<string, unknown>).map(([k, v]) => [k, str(v)]))
+      : {},
+    scoreMax: maxes && typeof maxes === 'object' && !Array.isArray(maxes)
+      ? Object.fromEntries(Object.entries(maxes as Record<string, unknown>).map(([k, v]) => [k, num(v)]))
+      : {},
     scoreConfidence: r.scoreConfidence == null ? null : Number(r.scoreConfidence),
     evidence: Array.isArray(evidence) ? evidence.map(str) : [], riskFlags: Array.isArray(risks) ? risks.map(str) : [],
+    locale: str(r.locale) === 'en' ? 'en' : 'zh',
     createdAt: num(r.createdAt), expiresAt: num(r.expiresAt),
   }
 }

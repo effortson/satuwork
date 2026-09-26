@@ -794,10 +794,21 @@ async function loadAudit() {
   state.events = data.events || []
 }
 
-async function loadConversationAudits() {
+/** 审计总结一页几条。一屏放得下、又不至于翻个没完。 */
+const AUDIT_PAGE_SIZE = 20
+
+/**
+ * 取当前页的审计总结。`fromStart` = 换了筛选条件，回到第一页——旧游标是按旧条件算的，
+ * 拿去接着翻会从一个不相干的位置开始。
+ */
+async function loadConversationAudits(fromStart = false) {
   const id = orgId()
   if (!id) return
+  if (fromStart || !Array.isArray(state.auditCursors) || !state.auditCursors.length) state.auditCursors = [null]
   const q = new URLSearchParams()
+  q.set('limit', String(AUDIT_PAGE_SIZE))
+  const cursor = state.auditCursors[state.auditCursors.length - 1]
+  if (cursor) q.set('cursor', cursor)
   if (state.auditAccountId) q.set('accountId', state.auditAccountId)
   if (state.auditBotId) q.set('botId', state.auditBotId)
   const from = dayStart(state.auditFrom)
@@ -805,9 +816,16 @@ async function loadConversationAudits() {
   if (from !== '') q.set('from', String(from))
   if (to !== '') q.set('to', String(to))
   const qs = q.toString()
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/conversation-audits${qs ? '?' + qs : ''}`)
-  state.auditItems = data.items || []
-  state.auditFilterOptions = data.filters || state.auditFilterOptions || { accounts: [], bots: [] }
+  state.auditLoading = true
+  try {
+    const data = await api('GET', `/orgs/${encodeURIComponent(id)}/conversation-audits${qs ? '?' + qs : ''}`)
+    state.auditItems = data.items || []
+    // 老 Gateway 不回这一格：当成没有下一页，界面上就只有一页，和从前一样。
+    state.auditNextCursor = data.hasMore && data.nextCursor ? data.nextCursor : null
+    state.auditFilterOptions = data.filters || state.auditFilterOptions || { accounts: [], bots: [] }
+  } finally {
+    state.auditLoading = false
+  }
 }
 
 async function loadConversationAuditCoverage() {
@@ -972,7 +990,12 @@ async function loadUsage() {
   state.usage = await api('GET', `/me/stats?${q}`)
 }
 
+/** 上一次 loadPage 加载的是哪一页。审计列表据此分辨「从详情页回来」和「从别处进来」。 */
+let lastLoadedPath = ''
+
 async function loadPage() {
+  const cameFrom = lastLoadedPath
+  lastLoadedPath = state.path
   if (state.path.startsWith('/join/')) return
   // 隐私政策和服务条款（pages-legal.js）没有要取的数据，而且**有票的人也进得去**——
   // 它们不在侧栏里，pathAllowed 一律说不行，落到下面那段会被弹回 `/`，表现是页脚上
@@ -1071,8 +1094,15 @@ async function loadPage() {
     } else if (state.path === '/accounts') {
       await loadAccounts()
     } else if (state.path === '/audit') {
+      /**
+       * 从某条总结的详情页回来：留在原来那一页，人是点开一条看完回来接着往下看的。
+       * 从侧栏或别的页进来：回到第一页——上次停在第 3 页的那串游标是按当时的结果算的，
+       * 拿它接着翻会跳过这期间新落库的那些，页码还写着「第 3 页」。
+       */
+      // 同一页上重新加载（刷新数据）也不动页码。
+      const keepPage = cameFrom === '/audit' || cameFrom.startsWith('/audit/summary/')
       await Promise.all([
-        loadConversationAudits().catch(() => { state.auditItems = state.auditItems || [] }),
+        loadConversationAudits(!keepPage).catch(() => { state.auditItems = state.auditItems || [] }),
         loadConversationAuditCoverage().catch(() => { state.auditCoverage = state.auditCoverage || [] }),
         loadConversationAuditSettings().catch(() => { state.auditSettings = null }),
       ])

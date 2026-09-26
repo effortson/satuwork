@@ -602,9 +602,15 @@ export interface ConversationAuditItem {
   outcome: ConversationAuditOutcome
   modelScore: number | null
   scoreBreakdown: Record<string, number>
+  /** 与 scoreBreakdown 同键：每一项为什么是这个分。老条目（0042 之前）是空对象。 */
+  scoreReasons: Record<string, string>
+  /** 与 scoreBreakdown 同键：每一项的满分（评分时的规则）。老条目是空对象。 */
+  scoreMax: Record<string, number>
   scoreConfidence: number | null
   evidence: string[]
   riskFlags: string[]
+  /** 这一条的文字用哪种语言写的（会话主人的界面语言）。 */
+  locale: Locale
   createdAt: number
   expiresAt: number
 }

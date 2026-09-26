@@ -1720,6 +1720,28 @@ document.getElementById('app').addEventListener('click', async (e) => {
     await loadCharges(btn.getAttribute('data-scope'), btn.getAttribute('data-org') || '')
     return
   }
+  // 审计总结翻页。在途闸同计费明细：上一页还没回来就再点一下，游标栈会被压两次。
+  if (act === 'audit-next' || act === 'audit-prev') {
+    if (state.auditLoading) return
+    const before = state.auditCursors.slice()
+    if (act === 'audit-next') {
+      if (!state.auditNextCursor) return
+      state.auditCursors.push(state.auditNextCursor)
+    } else {
+      if (state.auditCursors.length <= 1) return
+      state.auditCursors.pop()
+    }
+    render()
+    try {
+      await loadConversationAudits()
+    } catch (err) {
+      // 没翻过去就把栈还原，页码别停在一个没取到的页上。
+      state.auditCursors = before
+      flash('err', err.message)
+    }
+    render()
+    return
+  }
   if (act === 'charges-next') {
     // 在途闸：上一页还没回来就又点一下，游标栈会被压两次，两份响应谁后到谁赢，
     // 页码和内容对不上。按钮在请求中也禁用了（pages-admin.js），这里是第二道。
@@ -1862,7 +1884,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     state.auditBotId = ''
     state.auditFrom = ''
     state.auditTo = ''
-    loadConversationAudits()
+    loadConversationAudits(true)
       .catch((err) => flash('err', err.message))
       .finally(() => render())
     return

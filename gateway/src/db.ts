@@ -3837,14 +3837,16 @@ export class Db {
           `insert into conversation_audit_items
            (id,"batchId","companyId","accountId","botId","sessionId","botNameSnapshot","accountNameSnapshot",
             "itemKey","firstSeq","lastSeq","startedAt","endedAt","taskSummary",timeline,"userQuestion","modelAnswer",
-            "finalResult",outcome,"modelScore","scoreBreakdown","scoreConfidence",evidence,"riskFlags","createdAt","expiresAt")
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict do nothing`,
+            "finalResult",outcome,"modelScore","scoreBreakdown","scoreReasons","scoreMax","scoreConfidence",evidence,"riskFlags",locale,"createdAt","expiresAt")
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict do nothing`,
           [
             randomUUID(), cur.id, cur.companyId, cur.accountId, cur.botId, cur.sessionId, input.botName, input.accountName,
             item.itemKey, item.firstSeq, item.lastSeq, item.startedAt, item.endedAt, item.taskSummary,
             JSON.stringify(item.timeline), item.userQuestion, item.modelAnswer, item.finalResult, item.outcome,
-            item.modelScore, JSON.stringify(item.scoreBreakdown), item.scoreConfidence, JSON.stringify(item.evidence),
-            JSON.stringify(item.riskFlags), now, expiresAt,
+            // 两格是 0042 才有的：列是 not null，没带的调用方（老探针、脚本）按「没有原因、中文」落。
+            item.modelScore, JSON.stringify(item.scoreBreakdown), JSON.stringify(item.scoreReasons ?? {}),
+            JSON.stringify(item.scoreMax ?? {}), item.scoreConfidence,
+            JSON.stringify(item.evidence), JSON.stringify(item.riskFlags), item.locale === 'en' ? 'en' : 'zh', now, expiresAt,
           ],
         )
       }
@@ -3883,16 +3885,27 @@ export class Db {
     outcome?: ConversationAuditOutcome
     scoreLte?: number
     limit?: number
+    /**
+     * 翻页游标：上一页最后一条的排序键。排序是「结束时间倒序、id 倒序」，所以下一页就是
+     * 严格排在它后面的那些。用键而不是 offset：翻页的同时新批次还在落库，offset 会把
+     * 同一条推到下一页再出现一次。
+     */
+    before?: { at: number; id: string }
   } = {}): Promise<ConversationAuditItem[]> {
     const where = ['"companyId" = ?']
     const args: unknown[] = [companyId]
+    if (filter.before) {
+      where.push('(coalesce("endedAt","createdAt"), id) < (?, ?)')
+      args.push(filter.before.at, filter.before.id)
+    }
     if (filter.accountId) { where.push('"accountId" = ?'); args.push(filter.accountId) }
     if (filter.botId) { where.push('"botId" = ?'); args.push(filter.botId) }
     if (filter.from != null) { where.push('coalesce("endedAt","createdAt") >= ?'); args.push(filter.from) }
     if (filter.to != null) { where.push('coalesce("endedAt","createdAt") <= ?'); args.push(filter.to) }
     if (filter.outcome) { where.push('outcome = ?'); args.push(filter.outcome) }
     if (filter.scoreLte != null) { where.push('"modelScore" <= ?'); args.push(filter.scoreLte) }
-    args.push(Math.min(200, Math.max(1, Math.trunc(filter.limit ?? 100))))
+    // 上限 201：接口按「要 n 条就查 n+1 条」判有没有下一页，页大小自己最多 200。
+    args.push(Math.min(201, Math.max(1, Math.trunc(filter.limit ?? 100))))
     const rows = await this.many(
       `select * from conversation_audit_items where ${where.join(' and ')}
        order by coalesce("endedAt","createdAt") desc, id desc limit ?`,
