@@ -529,11 +529,15 @@ const LOCAL_BOT_TARGETS = [
  * 各平台现在生效的是哪一版。桌面端没有「期望版本」可钉：它跟的就是自己那个平台最新
  * 登记的一版，下次启动第一颗本地 Bot 时静默切过去。所以这张表回答的是最常问的那一句——
  * 「我这台 Windows 下次会用哪个包」，缺了哪个平台也一眼看得出来。
+ *
+ * 最新那版要求更高的 Desktop 时一并写出来：够不上的桌面端会停在它够得着的那一版上。
  */
-function localBotTargetsPanel(latestByTarget) {
+function localBotTargetsPanel(latestByTarget, releases) {
   const rows = LOCAL_BOT_TARGETS.map((x) => {
     const v = latestByTarget?.[x.key]
-    return `<div class="satu-kv"><span>${esc(x.label)}</span><span style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; ${v ? '' : 'color: var(--muted-foreground);'}">${esc(v || t('还没有这个平台的包', 'No package for this platform'))}</span></div>`
+    const min = v ? (releases || []).find((r) => r.version === v)?.minDesktopVersion : null
+    const needs = min && min !== '0.1.0' ? ` · ${t('需要 Desktop', 'Needs Desktop')} ≥ ${esc(min)}` : ''
+    return `<div class="satu-kv"><span>${esc(x.label)}</span><span style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; ${v ? '' : 'color: var(--muted-foreground);'}">${esc(v || t('还没有这个平台的包', 'No package for this platform'))}${needs}</span></div>`
   }).join('')
   return `<div style="display: flex; flex-direction: column;">${rows}</div>`
 }
@@ -569,12 +573,12 @@ function releasesPage() {
             kind: 'local-bot',
             title: t('桌面端本地 Bot', 'Desktop local bot'),
             hint: t(
-              '桌面端按自己的操作系统和架构，取那个平台最新登记的一版，下次启动第一颗本地 Bot 时静默切换；正在跑的不会被打断。包必须在对应平台上打（或推 local-bot-v* tag 走 CI），版本号以 -<平台>-<架构> 结尾。',
-              'Each Desktop app takes the newest package registered for its own OS and architecture and switches to it the next time it starts its first local bot; running bots are not interrupted. Packages must be built on the target platform (or via a local-bot-v* tag in CI) and the version must end in -<platform>-<arch>.',
+              '桌面端按自己的操作系统和架构，取那个平台最新登记、且自己的版本够得上「最低 Desktop 版本」的一版，下次启动第一颗本地 Bot 时静默切换；正在跑的不会被打断。包必须在对应平台上打（或推 local-bot-v* tag 走 CI），版本号以 -<平台>-<架构> 结尾。',
+              'Each Desktop app takes the newest package registered for its own OS and architecture whose minimum Desktop version it meets, and switches to it the next time it starts its first local bot; running bots are not interrupted. Packages must be built on the target platform (or via a local-bot-v* tag in CI) and the version must end in -<platform>-<arch>.',
             ),
             data: { releases: state.localBotReleases?.releases || [], latest: new Set(Object.values(state.localBotReleases?.latestByTarget || {})), desired: '' },
             desired: false,
-            extra: localBotTargetsPanel(state.localBotReleases?.latestByTarget),
+            extra: localBotTargetsPanel(state.localBotReleases?.latestByTarget, state.localBotReleases?.releases),
           })
   return `
     <div class="gw-page">
@@ -610,7 +614,7 @@ function releaseRow(r, latest) {
       <span style="color: var(--muted-foreground); word-break: break-all;">${from}${dl ? ` · <button type="button" class="satu-linkbtn" data-act="copy-release-url" data-url="${esc(dl)}">${t('复制')}</button>` : ''}</span>
     </span>`
   return `<div class="satu-memberrow" style="grid-template-columns: 200px 90px 120px 1fr 150px;">
-    <span style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-all;">${esc(r.version)}${(latest instanceof Set ? latest.has(r.version) : r.version === latest) ? ` <span class="tag tag-accent">${t('最新')}</span>` : ''}</span>
+    <span style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-all;">${esc(r.version)}${(latest instanceof Set ? latest.has(r.version) : r.version === latest) ? ` <span class="tag tag-accent">${t('最新')}</span>` : ''}${r.minDesktopVersion ? `<span style="display: block; font-size: 12px; color: var(--muted-foreground);">${t('需要 Desktop', 'Needs Desktop')} ≥ ${esc(r.minDesktopVersion)}</span>` : ''}</span>
     <span style="font-size: 13px;">${esc(fmtSize(r.size))}</span>
     <span style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted-foreground);">${esc(shaShort(r.sha256))}</span>
     <span style="font-size: 12px;">${where}</span>
@@ -678,6 +682,10 @@ function addReleaseForm(kind) {
           <label for="ar-size-${kind}">${t('大小')}（${t('字节')}）</label>
           <input class="input" id="ar-size-${kind}" name="size" required inputmode="numeric" placeholder="9376749" autocomplete="off">
         </div>
+        ${kind === 'local-bot' ? `<div class="field" style="margin: 0; width: 160px;">
+          <label for="ar-mindesk-${kind}">${t('最低 Desktop 版本', 'Min Desktop version')}</label>
+          <input class="input" id="ar-mindesk-${kind}" name="minDesktopVersion" pattern="\\d+\\.\\d+\\.\\d+" placeholder="0.1.0" autocomplete="off">
+        </div>` : ''}
       </div>
       <div class="field" style="margin: 0;">
         <label for="ar-sha-${kind}">sha256</label>

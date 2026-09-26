@@ -2849,8 +2849,8 @@ export class Db {
 
   async insertBotRelease(row: BotRelease): Promise<BotRelease> {
     await this.run(
-      'insert into bot_releases (kind, version, sha256, size, "createdAt", note, url) values (?,?,?,?,?,?,?)',
-      [row.kind, row.version, row.sha256, row.size, row.createdAt, row.note, row.url],
+      'insert into bot_releases (kind, version, sha256, size, "createdAt", note, url, "minDesktopVersion") values (?,?,?,?,?,?,?,?)',
+      [row.kind, row.version, row.sha256, row.size, row.createdAt, row.note, row.url, row.minDesktopVersion],
     )
     return row
   }

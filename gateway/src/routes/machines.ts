@@ -1065,12 +1065,13 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     }
     const note = (req.query.get('note') || '').trim()
     const sha256 = String(req.headers['x-bot-sha256'] || '').trim()
+    const minDesktopVersion = (req.query.get('minDesktopVersion') || '').trim()
     const release = await storeUploadedRelease(db, {
-      version, note, body: req, sha256, kind: 'local-bot',
+      version, note, body: req, sha256, kind: 'local-bot', minDesktopVersion,
     })
     await db.audit({
       companyId: '', accountId: accountId || null, action: 'local-bot-release.upload',
-      detail: { version: release.version, sha256: release.sha256, size: release.size },
+      detail: { version: release.version, sha256: release.sha256, size: release.size, minDesktopVersion: release.minDesktopVersion },
     })
     json(res, 200, { release: publicBotRelease(release, gatewayBaseFor(req)) })
   })

@@ -6,7 +6,7 @@ import type { RouteCtx } from './ctx.ts'
 import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
-import type { Account, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
+import type { Account, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deployInFlight, deploySeat, listSeatRuntime, logsDirectPayload, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, defaultBotModel, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
@@ -16,7 +16,7 @@ import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
 import { machineHeader, managerTargetFor, proxyDownload, proxyJson, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
-import { directReleaseUrl, localBotReleaseTarget } from '../releases.ts'
+import { DEFAULT_MIN_DESKTOP_VERSION, desktopSupports, directReleaseUrl, localBotReleaseTarget } from '../releases.ts'
 
 /**
  * 一个人最多建几个 Bot。
@@ -1416,6 +1416,13 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   /**
    * Desktop 的轻量更新探针。平台与架构由本机上报；没有对应包或已经是最新版都回 204。
    * 下载仍走带 sat_ 鉴权的 internal 路由，manifest 本身不泄露运行时凭证。
+   *
+   * **按 Desktop 版本挑包**（`desktop=<壳的版本>`）：每个包登记时各带一个最低 Desktop
+   * 版本，这里给的是这台 Desktop 装得了的最新一版——最新那版要新壳，老壳也还能先升到
+   * 它够得着的那一版，而不是卡在原地。够得着的已经装上了、更新的又装不了，就把最新那版
+   * 照发下去：Desktop 自己比对后写 LAST_ERROR，界面提示先升级 Desktop。
+   *
+   * 不带 `desktop` 的是这条参数之前的老壳：照旧给最新一版，由它自己比对。
    */
   router.get('/runtime/local-bot-release', async (req, res) => {
     await requireSeatOnly(req, db)
@@ -1423,11 +1430,16 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const arch = String(req.query.get('arch') || '').trim().toLowerCase()
     if (!['darwin', 'windows', 'linux'].includes(platform)) throw new HttpError(400, '不支持这个 Desktop 平台')
     if (!['x64', 'arm64'].includes(arch)) throw new HttpError(400, '不支持这个 Desktop 架构')
-    const latest = (await db.botReleases('local-bot')).find((release) => {
+    const desktop = String(req.query.get('desktop') || '').trim()
+    const have = String(req.query.get('have') || '').trim()
+    const forTarget = (await db.botReleases('local-bot')).filter((release) => {
       const target = localBotReleaseTarget(release.version)
       return target?.platform === platform && target.arch === arch
     })
-    const have = String(req.query.get('have') || '').trim()
+    const minOf = (release: BotRelease) => release.minDesktopVersion || DEFAULT_MIN_DESKTOP_VERSION
+    const newest = forTarget[0]
+    const fits = desktop ? forTarget.find((release) => desktopSupports(desktop, minOf(release))) : newest
+    const latest = fits && fits.version !== have ? fits : newest
     if (!latest || latest.version === have) {
       res.writeHead(204, { 'cache-control': 'no-store' })
       res.end()
@@ -1442,7 +1454,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       // 以后的壳用的：有它就裸取、按 sha256 / size 比对，不经 Gateway 转发（原因见
       // releases.ts 的 directReleaseUrl）。null = 只能走 `url`。
       directUrl: directReleaseUrl(latest),
-      minDesktopVersion: '0.1.0',
+      minDesktopVersion: minOf(latest),
       mandatory: false,
       note: latest.note,
     })
