@@ -492,13 +492,16 @@ async function loadAccounts() {
 }
 
 async function loadReleases() {
-  const [data, mgr] = await Promise.all([
+  const [data, mgr, local] = await Promise.all([
     api('GET', '/platform/bot-releases'),
     api('GET', '/platform/manager-releases').catch(() => null),
+    // 老 Gateway 没有这条路：那一页就画成「还没有发布版本」，别让另外两页跟着挂。
+    api('GET', '/platform/local-bot-releases').catch(() => null),
   ])
   state.releases = data.releases || []
   state.latestRelease = data.latest || null
   state.managerReleases = mgr
+  state.localBotReleases = local
 }
 
 /**

@@ -1233,7 +1233,8 @@ async function redeploySeat(orgId, accountId, botId) {
 async function addRelease(e) {
   e.preventDefault()
   const form = e.target
-  const kind = form.getAttribute('data-kind') === 'manager' ? 'manager' : 'bot'
+  const raw = form.getAttribute('data-kind')
+  const kind = raw === 'manager' || raw === 'local-bot' ? raw : 'bot'
   const fd = new FormData(form)
   const body = {
     version: String(fd.get('version') || '').trim(),
@@ -1245,7 +1246,7 @@ async function addRelease(e) {
   state.addRelease = kind
   render()
   try {
-    const path = kind === 'manager' ? '/platform/manager-releases' : '/platform/bot-releases'
+    const path = `/platform/${kind}-releases`
     const data = await api('POST', path, body)
     await loadReleases()
     state.addRelease = ''
