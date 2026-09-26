@@ -171,9 +171,7 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
 - **登录态**。token 现在在 `sessionStorage`（[gateway/ui/state.js](../gateway/ui/state.js)），
   关窗即失效。浏览器里合理，桌面端会被当成 bug——这是产品决定，不是技术问题。
 - **发版 CI**。已接入 `.github/workflows/desktop-release.yml`：`desktop-v*` tag 触发
-  或手动触发，出 macOS（Apple 芯片 / Intel）与 Windows 三档包。
-  下载页（[gateway/ui/pages-download.js](../gateway/ui/pages-download.js)）指着那个 tag 下面的
-  资产名，**两边是一对**：Release 里必须正好是这三个文件：
+  或手动触发，出 macOS（Apple 芯片 / Intel）与 Windows 三档包，建 `desktop-v<版本>` 那个 Release：
 
   ```
   Satuwork_<版本>_x64-setup.exe   Windows
@@ -181,5 +179,8 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
   Satuwork_<版本>_x64.dmg         macOS / Intel
   ```
 
-  第一版发出去之后，核对那个文件里的 `DL_VERSION` 对上，并关掉 `DL_PENDING`。Linux 暂未开包。
+  最后一步再把这三个包去掉版本号（`Satuwork_x64-setup.exe` 这样），覆盖传到固定的
+  `desktop-latest` Release——只在这一版是现有 `desktop-v*` 里最新的时候。首页的下载那一段
+  （[gateway/ui/pages-landing.js](../gateway/ui/pages-landing.js) 的 `dlBase` / `dlBuilds`）只认
+  `desktop-latest`，所以**发新版不用改页面**，打 tag 就完了。Linux 暂未开包。
 - **图标**。现在这套是拿 64×64 的 logo 放大到 1024 生成的，糊。要一份真正的大图。

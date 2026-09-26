@@ -23,11 +23,11 @@ cd gateway && pnpm dev
 首页和登录页的页脚都指过去。里面的落款主体、管辖地和联系邮箱现在是占位的，上线前要换掉
 （见那个文件顶上的 `LEGAL_DRAFT`）。
 
-`/download` 是桌面端下载页（`gateway/ui/pages-download.js`），同样**不看登录状态**——拿到这条
-地址的人手上多半只有一条管理员发来的链接。它按浏览器报的平台自动挑 Windows / macOS，顶上
-那排随时能自己切；文件指的是 GitHub Release 上 `desktop-v<版本>` 那个 tag（**不是 `latest`**，
-那会指到管家或 bot 的包上去）。桌面端的发版 CI 还没做，所以现在那几条地址是 404，页面上挂着
-一条横条说明（见那个文件顶上的 `DL_VERSION` 和 `DL_PENDING`）。
+桌面端下载是首页上的一段，紧接在「怎么开始」后面（`gateway/ui/pages-landing.js` 的 `lpDownload`）；
+`/#download` 直接落到那一段，老的 `/download` 地址也折到那儿。它按浏览器报的平台自动挑
+Windows / macOS，卡片顶上那排随时能自己切；文件指的是一个固定的 `desktop-latest` Release，
+桌面端发版 CI 每次把新包去掉版本号覆盖上去，所以发新版不用改页面（**不是 GitHub 的 `releases/latest`**，
+那个指的是 bot、管家、本地 Bot 几条线里最后发的那个）。
 
 整套跑在容器里：`docker compose up -d`（Gateway + PostgreSQL）。
 Bot 不在 compose 里——它由席位机器上的机器管家按 (账号, botId) 部署，不是容器编排出来的。

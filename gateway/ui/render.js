@@ -347,25 +347,20 @@ function render() {
     syncDesktop()
     return
   }
-  /**
-   * 下载页（pages-download.js）。**同样在登录判断之前**，理由和上面那两页一样，而且
-   * 更硬：拿到这条地址的人手上还只有一条管理员发来的链接，他要的就是那个文件——把
-   * 一个登录表单摆在安装包前面，等于让他先去要一个他正要装的东西才能用的账号。
-   *
-   * 桌面壳里也照画。壳子里当然不必再下一次，但这一页从别处（页脚、别人发的链接）
-   * 点得到，画不出来的表现是壳子里一片空白，比多此一举糟。
-   */
-  if (state.path === '/download') {
-    root.innerHTML = downloadView()
-    syncDesktop()
-    return
-  }
   if (!state.me && state.needsSetup) {
     root.innerHTML = setupView()
     syncDesktop()
     return
   }
   root.innerHTML = state.me ? appView() : anonView()
+  // 进来时要落在首页哪一段（见 app.js 的 boot：老的 /download 地址和 /#download）。
+  // 只在第一次画完时跳一次，不管这一帧画的是不是首页——否则登录进来、再登出回到首页
+  // 时它还挂着，会莫名其妙把人拽到页底。
+  if (state.lpJump) {
+    const at = document.getElementById(state.lpJump)
+    state.lpJump = ''
+    at?.scrollIntoView({ block: 'start' })
+  }
   // 对话页的正文不在 appView 里——chatPage 只搭空壳，消息由 paintChat 增量填。
   // 整页重绘会把那个壳换掉，所以每次 render 之后要补一次。
   if (document.getElementById('chat-thread')) {

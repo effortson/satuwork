@@ -1177,18 +1177,18 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       consent(join.html(), '加入 Satuwork')
     })
 
-    await test('下载页：Windows 的浏览器进来摆 Windows 的包，Mac 的摆 Mac 的', async () => {
+    await test('首页下载那一段：Windows 的浏览器进来摆 Windows 的包，Mac 的摆 Mac 的', async () => {
       /**
-       * 这一页（gateway/ui/pages-download.js）唯一的自动动作就是认系统，而它退化的
+       * 这一段（gateway/ui/pages-landing.js 的 lpDownload）唯一的自动动作就是认系统，而它退化的
        * 方式最安静：页面照样完整、按钮照样能点，只是 Mac 上摆着一个 .exe——人下下来
        * 双击，什么都不会发生，也不会有人回来报这个 bug。
        */
-      const win = await boot(undefined, { path: '/download', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36' })
+      const win = await boot(undefined, { path: '/', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36' })
       const winHtml = win.html()
       assert(winHtml.includes('-setup.exe'), 'Windows 上没摆出 .exe：' + winHtml.slice(0, 200))
       assert(!winHtml.includes('.dmg'), 'Windows 上摆出了 .dmg')
 
-      const mac = await boot(undefined, { path: '/download', userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15' })
+      const mac = await boot(undefined, { path: '/', userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15' })
       const macHtml = mac.html()
       // Intel Mac 的 UA 里也带着 `Mac OS X`，Apple 芯片的机器一样报这一串——两档都该
       // 摆出来，让人自己认（浏览器里认不出芯片，见 dlBuilds 上那段）。
@@ -1197,7 +1197,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!macHtml.includes('-setup.exe'), 'Mac 上摆出了 .exe')
     })
 
-    await test('下载页：iPhone、iPad 不认成 Mac——那上面没有桌面端可装', async () => {
+    await test('首页下载那一段：iPhone、iPad 不认成 Mac——那上面没有桌面端可装', async () => {
       // iPhone / iPad 的 UA 里都写着「like Mac OS X」；只看字样的话它们全被认成 Mac，页面还说
       // 「看起来你正用的就是这个系统」，把一个装不上的 .dmg 摆到人面前。
       const phones = [
@@ -1206,31 +1206,21 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Mobile Safari/537.36',
       ]
       for (const userAgent of phones) {
-        const html = (await boot(undefined, { path: '/download', userAgent })).html()
+        const html = (await boot(undefined, { path: '/', userAgent })).html()
         assert(!html.includes('看起来你正用的就是这个系统'), `移动设备被认成了桌面系统：${userAgent}`)
         assert(html.includes('没认出你的系统'), `移动设备上该照实说没认出来：${userAgent}`)
       }
       // iPadOS 默认的桌面版网页模式：UA 和 Mac 一字不差，只有触点数露馅（Mac 没有触摸屏）。
       const desktopMode = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15'
-      const ipad = (await boot(undefined, { path: '/download', userAgent: desktopMode, maxTouchPoints: 5 })).html()
+      const ipad = (await boot(undefined, { path: '/', userAgent: desktopMode, maxTouchPoints: 5 })).html()
       assert(!ipad.includes('看起来你正用的就是这个系统'), '桌面版网页模式的 iPad 被认成了 Mac')
-      const mac = (await boot(undefined, { path: '/download', userAgent: desktopMode })).html()
+      const mac = (await boot(undefined, { path: '/', userAgent: desktopMode })).html()
       assert(mac.includes('看起来你正用的就是这个系统'), '真 Mac（没有触点）反而不认了')
     })
 
-    await test('下载页那条「还没发布」的横条是说给来下载的人听的，不教人改源码', async () => {
-      // 这条地址是要发给员工的。以前横条上写着「核对 pages-download.js 里的 DL_VERSION，并把
-      // DL_PENDING 关掉」——员工读不懂也改不了，只会以为这个产品没做完。
-      const html = (await boot(undefined, { path: '/download' })).html()
-      for (const dev of ['DL_PENDING', 'DL_VERSION', 'pages-download.js', 'desktop/README.md', '发版 CI']) {
-        assert(!html.includes(dev), `页面上露出了给开发者看的字：${dev}`)
-      }
-      assert(html.includes('satu-lg-note'), '还没发布时横条本身该在：那是这件没做完的事在页面上唯一的痕迹')
-    })
-
-    await test('下载页：认不出系统也要有东西可下，而且能自己切', async () => {
+    await test('首页下载那一段：认不出系统也要有东西可下，而且能自己切', async () => {
       // 垫片默认那个 UA（satuwork-ui-smoke）两边都不像，走的正是「没认出来」那条路。
-      const ui = await boot(undefined, { path: '/download' })
+      const ui = await boot(undefined, { path: '/' })
       assert(ui.html().includes('-setup.exe'), '认不出系统时一个包都没摆出来')
       assert(ui.html().includes('没认出你的系统'), '没说明是没认出来，人会以为这就是他的系统')
 
@@ -1238,75 +1228,97 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       await ui.fire('click', el('button', { 'data-act': 'download-os', 'data-os': 'mac' }))
       assert(ui.html().includes('_aarch64.dmg'), '切到 macOS 之后没换包：' + ui.html().slice(0, 200))
       assert(!ui.html().includes('-setup.exe'), '切过去了 Windows 的包还在')
+      // 没签名的 Mac 包报的是「已损坏」，右键打开绕不过去——得给那行 xattr，和 Release 说明一致。
+      assert(ui.html().includes('xattr -dr com.apple.quarantine /Applications/Satuwork.app'), 'Mac 那一档没给摘隔离标记的命令')
+      assert(!ui.html().includes('右键选「打开」'), 'Mac 那一档还在教右键打开，那条路对「已损坏」不管用')
     })
 
-    await test('下载地址指的是 GitHub Release 上那个 tag，不是 latest', async () => {
+    await test('下载地址指的是 desktop-latest，而且和发版 CI 传上去的名字对得上', async () => {
       /**
-       * 这个仓库里 bot、管家、桌面端三条发布线共用一个 Release 列表，`latest` 指的是
-       * **时间上最新的那一个**——管家发一版，下载页就跟着指到管家的包上去，而页面上
-       * 看不出任何毛病。所以这里钉住「带 tag 的那种地址」。
+       * 这个仓库里几条发布线共用一个 Release 列表，GitHub 的 `releases/latest` 指的是**别条线
+       * 上最新的那一个**——本地 Bot 发一版，下载那一段就跟着指到它的包上去，而页面上看不出
+       * 任何毛病。所以地址钉在一个固定的 Release（desktop-latest）上，发版 CI 每次覆盖它。
+       *
+       * 两边是一对：页面上的文件名（pages-landing.js 的 dlBuilds）必须正是 CI 往 desktop-latest
+       * 传的那几个（desktop-release.yml 的「同步到 desktop-latest」）。改了一边忘了另一边，
+       * 按钮全是 404，而 CI 和页面都看不出错。
        */
-      const html = (await boot(undefined, { path: '/download' })).html()
-      const links = [...html.matchAll(/<a[^>]*href="([^"]+)"[^>]*\bdownload\b/g)].map((m) => m[1])
-      assert(links.length, '一条下载链接都没有')
-      for (const href of links) {
-        assert(href.startsWith('https://github.com/effortson/satuwork/releases/download/desktop-v'), '下载地址不对：' + href)
-        assert(!href.includes('/releases/latest/'), 'latest 会指到别条发布线的包上：' + href)
+      const workflow = readFileSync(join(root, '.github/workflows/desktop-release.yml'), 'utf8')
+      const hrefs = []
+      for (const os of ['windows', 'mac']) {
+        const ui = await boot(undefined, { path: '/' })
+        await ui.fire('click', el('button', { 'data-act': 'download-os', 'data-os': os }))
+        hrefs.push(...[...ui.html().matchAll(/<a[^>]*href="([^"]+)"[^>]*\bdownload\b/g)].map((m) => m[1]))
       }
+      assert(hrefs.length === 3, '该是三档包（Windows 一档、Mac 两档）：' + hrefs.join(' '))
+      for (const href of hrefs) {
+        assert(href.startsWith('https://github.com/effortson/satuwork/releases/download/desktop-latest/'), '下载地址不对：' + href)
+        assert(!href.includes('/releases/latest/'), 'latest 会指到别条发布线的包上：' + href)
+        const file = href.split('/').pop()
+        assert(!/\d+\.\d+\.\d+/.test(file), '文件名里带着版本号，发了新版就 404：' + file)
+        assert(workflow.includes(`latest/${file}`), `发版 CI 没往 desktop-latest 传 ${file}`)
+      }
+      const html = (await boot(undefined, { path: '/' })).html()
       // **是 `<a download>` 不是 data-act 按钮**：右键「链接存储为」、复制地址这些要能用，
-      // 而这一页上恰恰有人要把地址复制给别人。
+      // 而这一段恰恰有人要把地址复制给别人。
       assert(!html.includes('data-act="download-get"'), '下载做成了按钮，右键复制地址就没了')
     })
 
-    await test('下载页不看登录状态，桌面壳里也画得出来', async () => {
-      // 理由见 render.js 里那段：拿到这条地址的人手上只有一条管理员发来的链接，把登录
-      // 表单摆在安装包前面，等于让他先要一个他正要装的东西才能用的账号。
-      for (const opts of [{}, { desktop: true }, { token: ownerToken }]) {
-        const { token: tok, ...rest } = opts
-        const ui = await boot(tok, { ...rest, path: '/download' })
-        const html = ui.html()
-        assert(html.includes('下载 Satuwork 桌面端'), `${JSON.stringify(opts)} 没画出下载页：` + html.slice(0, 160))
-        assert(!html.includes('id="login-form"'), `${JSON.stringify(opts)} 被登录表单挡住了`)
-        assert(ui.state.path === '/download', `${JSON.stringify(opts)} 被弹去了 ` + ui.state.path)
-      }
+    await test('老的 /download 地址折到首页下载那一段', async () => {
+      // 那一页已经并进首页（pages-landing.js 的 lpDownload），可这条地址早被管理员发出去过。
+      // 折回来的样子：地址换成 /#download，画的是首页，第一次画完滚到那一段（render.js）。
+      const ui = await boot(undefined, { path: '/download' })
+      const html = ui.html()
+      assert(ui.state.path === '/', '老地址没折回首页：' + ui.state.path)
+      assert(ui.location.pathname !== '/download', '地址栏还停在 /download')
+      assert(html.includes('id="download"'), '折回首页了，却没有下载那一段：' + html.slice(0, 160))
+      assert(html.includes('satu-lp-hero'), '画的不是首页')
+      assert(!ui.state.lpJump, '跳转那一下画完了还挂着，登出再回首页会被莫名拽到页底')
     })
 
-    await test('下载页切成英文：正文跟着换', async () => {
-      const ui = await boot(undefined, { path: '/download' })
+    await test('首页下载那一段切成英文：正文跟着换', async () => {
+      const ui = await boot(undefined, { path: '/' })
       await ui.fire('click', el('button', { 'data-act': 'landing-locale', 'data-locale': 'en' }))
       const html = ui.html()
       assert(html.includes('Download Satuwork for desktop'), '标题没换成英文')
       assert(!html.includes('下载 Satuwork 桌面端'), '中英混在了一起')
     })
 
-    await test('首页和登录页底下都找得到下载页', async () => {
+    await test('下载那一段接在「怎么开始」后面，首页和登录页都找得到它', async () => {
       const home = (await boot()).html()
-      assert(home.includes('data-href="/download"'), '首页页脚上没有下载页')
+      const band = home.indexOf('satu-lp-band')
+      const dl = home.indexOf('id="download"')
+      assert(band > 0 && dl > band, '下载那一段没接在「怎么开始」后面')
+      assert(dl < home.indexOf('satu-lp-foot'), '下载那一段跑到页脚后面去了')
       /**
-       * **正文里也要有**，不能只剩页脚那一条。页脚是「翻得到」，不是「看得见」——
-       * 这一条最早就只有页脚，表现是首页上一个字都不提桌面端，没人知道有这东西。
-       * 两处：首屏 CTA 底下那行小字，和「怎么开始」收尾那颗次级按钮。
+       * **首屏上也要有一条路**：那一段在页面最底下，首屏一个字都不提的话没人知道有这东西。
+       * 首屏 CTA 底下那行小字和页脚各一条，都是滚到那一段，不再跳去别的页。
        */
-      assert(home.includes('satu-lp-finelink'), '首屏那行小字里没提桌面端')
-      assert(home.includes('satu-lp-tailget'), '「怎么开始」收尾没有下载桌面端那颗')
+      assert(home.includes('satu-lp-finelink" data-act="landing-download"'), '首屏那行小字里没指到下载那一段')
+      assert((home.match(/data-act="landing-download"/g) || []).length >= 2, '页脚上没有指到下载那一段')
+      assert(!home.includes('data-href="/download"'), '首页上还有指向老下载页的站内跳转')
       // 登录那三屏上是**真链接、开新标签页**（见 shell.js 的 authAside）：底下那个表单
       // 填了一半，站内跳过去再回来，口令那两格是空的。
       const login = (await boot(undefined, { path: '/login' })).html()
-      const a = login.match(/<a[^>]*href="\/download"[^>]*>/)
-      assert(a, '登录页上没有下载页')
-      assert(a[0].includes('target="_blank"'), '下载页不是开新标签页，会把填了一半的表单冲掉：' + a[0])
-      assert(a[0].includes('rel="noopener noreferrer"'), '下载页开新标签页没带 noopener：' + a[0])
+      const a = login.match(/<a[^>]*href="\/#download"[^>]*>/)
+      assert(a, '登录页上没有下载桌面端')
+      assert(a[0].includes('target="_blank"'), '下载桌面端不是开新标签页，会把填了一半的表单冲掉：' + a[0])
+      assert(a[0].includes('rel="noopener noreferrer"'), '下载桌面端开新标签页没带 noopener：' + a[0])
+      // 桌面壳里不给：人已经在桌面端里了，而且壳里的 `/` 就是登录，没有首页可指。
+      const shell = (await boot(undefined, { path: '/login', desktop: true })).html()
+      assert(!shell.includes('#download'), '桌面壳的登录页上还挂着下载桌面端')
     })
 
-    await test('这三页刷新和它们那两个分片都由 Gateway 交得出来', async () => {
+    await test('这三个地址刷新和法律页那个分片都由 Gateway 交得出来', async () => {
       // 分片漏进 http.ts 的 UI_PARTS 是条安静的路：本地开 index.html 一切正常，
-      // 线上那个文件 404，两页连同整串脚本一起死在浏览器里。
+      // 线上那个文件 404，两页连同整串脚本一起死在浏览器里。/download 已经不是一页了，
+      // 但地址还得交得出 index.html——发出去的老链接靠它折回首页。
       for (const path of ['/privacy', '/terms', '/download']) {
         const page = await req(gwBase, 'GET', path, { headers: { accept: 'text/html' } })
         assert(page.status === 200, `刷新 ${path} → ${page.status}`)
         assert(page.text.includes('data-app-part'), `刷新 ${path} 拿到的不是 index.html`)
       }
-      for (const file of ['/pages-legal.js', '/pages-download.js']) {
+      for (const file of ['/pages-legal.js']) {
         const part = await req(gwBase, 'GET', file)
         assert(part.status === 200, `${file} → ${part.status}`)
         assert(String(part.headers.get('content-type')).includes('javascript'), `${file} 的 content-type 是 ${part.headers.get('content-type')}`)

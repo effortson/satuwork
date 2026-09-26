@@ -23,11 +23,11 @@ With a valid session, `/` goes straight to chat / overview as before. The deskto
 and the footers of both the landing page and the sign-in page link to them. The legal entity, jurisdiction and contact email in them are placeholders
 and must be replaced before launch (see `LEGAL_DRAFT` at the top of that file).
 
-`/download` is the desktop download page (`gateway/ui/pages-download.js`), which likewise **doesn't depend on sign-in state** — whoever
-lands there most likely only has a link an administrator sent them. It picks Windows / macOS from the platform the browser reports, and the
-row at the top lets people switch manually. Files point at the `desktop-v<version>` tag on GitHub Releases (**not `latest`**, which
-would point at a manager or bot package). Desktop release CI isn't built yet, so those links currently 404 and the page shows
-a banner explaining that (see `DL_VERSION` and `DL_PENDING` at the top of that file).
+Desktop downloads live in their own section on the landing page, right after "Getting started" (`lpDownload` in
+`gateway/ui/pages-landing.js`); `/#download` jumps straight to it, and the old `/download` address folds into it. It picks
+Windows / macOS from the platform the browser reports, and the row at the top of the card lets people switch manually. Files point
+at a fixed `desktop-latest` Release that desktop release CI overwrites with version-less file names on every release, so shipping a new
+version needs no page change. (**Not GitHub's `releases/latest`**, which points at whichever release line — bot, manager, local bot — shipped last.)
 
 To run everything in containers: `docker compose up -d` (Gateway + PostgreSQL).
 The Bot isn't in compose — it's deployed per (account, botId) by the machine manager on the seat machine, not orchestrated as a container.

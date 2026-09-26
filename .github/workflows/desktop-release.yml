@@ -1,14 +1,18 @@
-# 构建 Desktop 安装包（macOS、Windows）：建 GitHub Release，下载页直接从这里取。
+# 构建 Desktop 安装包（macOS、Windows）：建 GitHub Release，再同步到 `desktop-latest`。
 #
 # 打 `desktop-v0.1.0` 这样的 tag 触发。**tag 里的版本必须等于 tauri.conf.json 的 version**：
 # 资产名是 Tauri 按那个 version 起的（`Satuwork_<版本>_<架构>.dmg`、`Satuwork_<版本>_x64-setup.exe`），
-# 下载页（gateway/ui/pages-download.js 的 DL_VERSION + dlBuilds）按 tag 拼地址——三处对不上，
-# 页面上的按钮就是 404，而 CI 照样是绿的。所以在这儿先断言。
+# 两边对不上的话 Release 的名字和里面的包说的不是同一版，而 CI 照样是绿的。所以在这儿先断言。
+#
+# **首页的下载那一段不认 `desktop-v*`**，只认一个固定的 Release：`desktop-latest`
+# （gateway/ui/pages-landing.js 的 dlBase + dlBuilds）。每次发版最后一步把三个包去掉版本号、
+# 覆盖传到那儿，页面上的地址于是永远不用改。不用 GitHub 自带的 `releases/latest`：几条发布线
+# 共用一个 Release 列表，那个「Latest」指的是别条线上最新的包。
 #
 # 手动触发支持填 tag 发布到指定 Release；留空则只出 artifact、不建/更新 Release。
 #
 # 不传 Gateway：Desktop 壳没有自动更新（见 desktop/README.md「还没做的事」），装的人
-# 是从下载页拿包。本地 Bot 运行时是另一条线（local-bot-release.yml）。
+# 是从首页的下载那一段拿包。本地 Bot 运行时是另一条线（local-bot-release.yml）。
 #
 # **没有签名和公证**：下载来的 .app 会被 Gatekeeper 拦（「已损坏」），Windows 会弹 SmartScreen。
 # 要发给外人之前得先有证书。
@@ -86,7 +90,7 @@ jobs:
             want="${target_tag#desktop-v}"
             got=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
             [ "$got" = "$want" ] || {
-              echo "tag 是 $want，tauri.conf.json 却是 $got：资产名会按后者起，下载页按前者找" >&2; exit 1; }
+              echo "tag 是 $want，tauri.conf.json 却是 $got：资产名会按后者起，Release 按前者建" >&2; exit 1; }
           fi
 
       - uses: dtolnay/rust-toolchain@stable
@@ -187,4 +191,57 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "$target_tag" \
               --notes-file notes.md
+          fi
+
+      # 首页的下载那一段指着 desktop-latest（见 gateway/ui/pages-landing.js 的 dlBase）。
+      # 三个包去掉版本号那一截，覆盖传上去——**名字和 dlBuilds 里的 file 是一对**，改一边
+      # 要改另一边（e2e/ui-smoke.mjs 里有一条用例盯着）。
+      #
+      # 只在这一版**是现有 desktop-v* 里最新的那个**时才同步：手动补发一个老 tag
+      # （workflow_dispatch 填 desktop-v0.1.0）不该把首页上的新包换回旧的。
+      - name: 同步到 desktop-latest
+        if: github.ref_type == 'tag' || inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          target_tag="$TAG_INPUT"
+          if [ -z "$target_tag" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            target_tag="$GITHUB_REF_NAME"
+          fi
+          [ -n "$target_tag" ] || exit 0
+          v="${target_tag#desktop-v}"
+
+          newest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --exclude-drafts --json tagName --jq '.[].tagName' \
+            | sed -n 's/^desktop-v//p' | sort -V | tail -1)
+          if [ "$newest" != "$v" ]; then
+            echo "desktop-v$v 不是最新的桌面端版本（最新是 desktop-v$newest），不动 desktop-latest"
+            exit 0
+          fi
+
+          mkdir -p latest
+          cp "dist/Satuwork_${v}_x64-setup.exe" latest/Satuwork_x64-setup.exe
+          cp "dist/Satuwork_${v}_aarch64.dmg"   latest/Satuwork_aarch64.dmg
+          cp "dist/Satuwork_${v}_x64.dmg"       latest/Satuwork_x64.dmg
+
+          {
+            echo "Satuwork 桌面端的**最新版**，当前是 desktop-v${v}。"
+            echo
+            echo "这个 Release 每次发新版都会被覆盖，文件名不带版本号，官网首页的下载按钮指的就是这里。"
+            echo "要某一个具体版本，去对应的 \`desktop-v<版本>\` Release。"
+          } > latest-notes.md
+
+          if gh release view desktop-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload desktop-latest latest/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit desktop-latest --repo "$GITHUB_REPOSITORY" \
+              --title "桌面端最新版（desktop-v${v}）" --notes-file latest-notes.md --latest=false
+          else
+            # --latest=false：别把仓库的「Latest」抢过来，那个位置归别条发布线。
+            gh release create desktop-latest latest/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "桌面端最新版（desktop-v${v}）" \
+              --notes-file latest-notes.md \
+              --latest=false
           fi

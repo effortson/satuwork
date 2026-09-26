@@ -103,10 +103,12 @@ function authAside(
       <div style="position: relative; width: 100%; max-width: 440px; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent);">
         <span>© 2026 Satuwork</span>
         <span class="satu-lg-links">
-          ${/* 下载页（pages-download.js）。这三屏上最该有它：人是拿着一条被发过来的地址
-                打开的，而管理员多半只说了「登录这个」——桌面端要不要装、去哪儿装，除了
-                这儿没别处说得着。和那两条一样开新标签页，理由见上面那段。 */ ''}
-          <a href="/download" target="_blank" rel="noopener noreferrer">${t('下载桌面端', 'Desktop app')}</a>
+          ${/* 下载桌面端：指首页上那一段（pages-landing.js 的 lpDownload）。这三屏上最该
+                有它：人是拿着一条被发过来的地址打开的，而管理员多半只说了「登录这个」
+                ——桌面端要不要装、去哪儿装，除了这儿没别处说得着。和那两条一样开新标签页，
+                理由见上面那段。**桌面壳里不给**：人已经在桌面端里了，而且壳里的 `/` 就是
+                这一屏，没有首页可指（见 render.js 的 anonView）。 */ ''}
+          ${desktopShell() ? '' : `<a href="/#download" target="_blank" rel="noopener noreferrer">${t('下载桌面端', 'Desktop app')}</a>`}
           <a href="/privacy" target="_blank" rel="noopener noreferrer">${t('隐私政策', 'Privacy Policy')}</a>
           <a href="/terms" target="_blank" rel="noopener noreferrer">${t('服务条款', 'Terms of Service')}</a>
         </span>

@@ -1004,9 +1004,6 @@ async function loadPage() {
   // 它们不在侧栏里，pathAllowed 一律说不行，落到下面那段会被弹回 `/`，表现是页脚上
   // 那两个链接在登录之后点了没反应。
   if (state.path === '/privacy' || state.path === '/terms') return
-  // 下载页（pages-download.js）同理：没有要取的数据，而且它不在侧栏里，pathAllowed
-  // 一律说不行——不放行的话登录之后点页脚那条链接会被弹回 `/`。
-  if (state.path === '/download') return
   if (!state.me) return
   if (!pathAllowed(state.path)) {
     state.path = '/'
