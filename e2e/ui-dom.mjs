@@ -279,9 +279,9 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
     // secureContext: false = 内网 http 那种页面。navigator.clipboard 在规范里标了
     // [SecureContext]，那种页面上整个对象都不存在——不是 writeText 被拒，是它压根没挂
     // 出来。这是「复制失败」最常见的成因，所以垫片得能演出来。
-    // userAgent 由测试指定：下载页靠它认操作系统（见 gateway/ui/pages-download.js 的
+    // userAgent 由测试指定：首页的下载那一段靠它认操作系统（见 gateway/ui/pages-landing.js 的
     // dlDetect），认错的表现是 Mac 上摆着 Windows 的包——页面看着完整，下下来装不上。
-    // maxTouchPoints：iPadOS 的桌面版网页模式连 UA 都和 Mac 一样，下载页只能靠触点数认出它。
+    // maxTouchPoints：iPadOS 的桌面版网页模式连 UA 都和 Mac 一样，只能靠触点数认出它。
     { userAgent, maxTouchPoints, ...(secureContext ? { clipboard: { writeText: async (v) => void copied.push(String(v)) } } : {}) },
     shimFetch,
     { escape: (s) => String(s) },

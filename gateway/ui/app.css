@@ -1028,10 +1028,6 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 
 .satu-lp-tail { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); margin-top: clamp(32px, 3.6vw, 48px); }
 .satu-lp-tail span { font-size: 12.5px; letter-spacing: 0.02em; color: color-mix(in srgb, var(--lp-dark-ink) 62%, transparent); }
-/* 深色带上的「下载桌面端」。**不能用 .btn-secondary 的原打扮**——那身浅底是给奶油色
-   页面调的，落在这条深色带上是一块突兀的白斑。改成描边的幽灵按钮，底色借带子自己的。 */
-.satu-lp-tailget { background: transparent; border: 1px solid color-mix(in srgb, var(--lp-dark-ink) 38%, transparent); color: var(--lp-dark-ink); }
-.satu-lp-tailget:hover { background: color-mix(in srgb, var(--lp-dark-ink) 10%, transparent); border-color: color-mix(in srgb, var(--lp-dark-ink) 58%, transparent); color: var(--lp-dark-ink); }
 
 /* ── 页脚 ──────────────────────────────────────────────────────────────
    顶上那条 3px 的赭红是收尾的一笔：整页只有两处实心赭红（顶栏末端那格、这一条），
@@ -1188,10 +1184,20 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lg-links button:focus-visible,
 .satu-lg-links a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
 
-/* ── 下载页（/download，见 ui/pages-download.js）──────────────────────────
-   外壳（顶栏、页脚、那条 wrap、标题那一块 .satu-lg-head）借首页和法律页那一套，
-   这里只管中间：左边一张卡装当前平台的包，右边一列说明。 */
-.satu-dl-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: var(--space-8); align-items: start; padding-top: var(--space-8); padding-bottom: 64px; }
+/* ── 首页上下载桌面端那一段（见 ui/pages-landing.js 的 lpDownload）─────────
+   外框（栏线、上下留白、居中的标题块）借首页 .satu-lp-sec 那一套，这里只管里面：
+   左边一张卡装当前平台的包，右边一列说明。
+   scroll-margin 让出顶栏那一条：首屏那行小字、页脚和老的 /download 地址都是滚到这儿的，
+   不让的话标题正好被吸顶的顶栏盖住。 */
+.satu-lp-dl { scroll-margin-top: 64px; }
+/* 标题块比别的段宽：底下那句说明有三行长，塞进 30ch 会折成一根细柱子。 */
+.satu-lp-dlhead { max-width: 62ch; }
+/* 「总是最新版 · 历次版本」那行借法律页 .satu-lg-meta 的打扮，但 `.satu-lp-sechead p` 的
+   权重更高，会把字号、颜色、外边距一起抹掉——所以在这儿按原样再写一遍。 */
+.satu-lp-dlhead .satu-lg-meta { margin: var(--space-4) 0 0; font-size: 13px; color: var(--muted-foreground); }
+.satu-lp-dlhead .satu-lg-meta a { color: var(--color-accent-700); text-decoration: underline; text-underline-offset: 3px; }
+.satu-lp-dlhead .satu-lg-meta a:hover { color: var(--color-accent-600); }
+.satu-dl-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: var(--space-8); align-items: start; }
 
 .satu-dl-card { border: 1px solid var(--color-divider); border-radius: var(--radius-lg); padding: var(--space-6); background: var(--color-bg); }
 
@@ -1217,11 +1223,11 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 
 .satu-dl-head { display: flex; align-items: flex-start; gap: var(--space-4); margin-top: var(--space-6); }
 .satu-dl-osicon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: var(--radius-md); background: var(--secondary); color: var(--color-text); }
-.satu-dl-head h2 { margin: 0 0 4px; font-size: 20px; }
+.satu-dl-head h3 { margin: 0 0 4px; font-size: 20px; }
 .satu-dl-head p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--muted-foreground); }
 
 .satu-dl-gets { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-6); }
-/* 下载那颗**是个 `<a>`**（右键存储为、复制地址都要能用，见 pages-download.js 的 dlRow），
+/* 下载那颗**是个 `<a>`**（右键存储为、复制地址都要能用，见 pages-landing.js 的 dlRow），
    而 .btn 那套是按 <button> 调的：行高和内边距在链接上对不齐，所以这里补一档。 */
 .satu-dl-get { display: flex; align-items: center; justify-content: flex-start; gap: var(--space-3); height: auto; padding: 12px 16px; text-align: left; text-decoration: none; }
 .satu-dl-get svg { flex: none; }
@@ -1242,15 +1248,15 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-dl-note + .satu-dl-note { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--color-divider); }
 .satu-dl-note h3 { margin: 0 0 var(--space-2); font-size: 14.5px; }
 .satu-dl-note p { margin: 0; font-size: 13.5px; line-height: 1.8; color: color-mix(in srgb, var(--color-text) 78%, transparent); }
+/* 要贴进终端的那一行。点一下全选（user-select: all），窄屏上可以在任意处折行——一条
+   横向滚出去的命令在手机上看不全，人会照着前半截抄。 */
+.satu-dl-cmd { display: block; margin-top: var(--space-3); padding: 8px 10px; border-radius: var(--radius-sm); background: var(--secondary); color: var(--color-text); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; line-height: 1.6; user-select: all; overflow-wrap: anywhere; }
 
 @media (max-width: 900px) {
-  /* 说明挪到卡片底下。**别撤掉**——「第一次打开会被拦」那条是这一页上最要紧的一句，
-     手机上照样得看得见（人常常是用手机扫码打开这一页、再转给自己的电脑）。 */
-  .satu-dl-grid { grid-template-columns: 1fr; gap: var(--space-6); padding-bottom: 48px; }
+  /* 说明挪到卡片底下。**别撤掉**——「第一次打开会被拦」那条是这一段里最要紧的一句，
+     手机上照样得看得见（人常常是用手机扫码打开首页、再转给自己的电脑）。 */
+  .satu-dl-grid { grid-template-columns: 1fr; gap: var(--space-6); }
   .satu-dl-card { padding: var(--space-4); }
-  /* 顶栏那颗「登录」在窄屏上是藏起来的（见上面 900 那段）。这一页和法律页一样没有
-     首页底下那颗主 CTA，跟着藏的话手机上从这儿再也走不进产品。 */
-  .satu-dl .satu-lp-topsign { display: inline-flex; }
 }
 
 /* 「点击『…』即表示你同意…」那句（shell.js 的 authConsent）：注册和接受邀请两屏的

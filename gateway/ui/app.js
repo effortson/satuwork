@@ -340,17 +340,21 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'landing-sales-dialog') return
-  // ── 下载页（pages-download.js）上那排平台切换 ──────────────────────
+  // ── 首页下载那一段（pages-landing.js 的 lpDownload）上那排平台切换 ──────
   if (act === 'download-os') {
     const os = btn.getAttribute('data-os')
     if (os !== 'windows' && os !== 'mac') return
-    // 人点过就听他的，这一帧之后 dlOs() 不再去认系统（见 pages-download.js 的 dlOs）。
+    // 人点过就听他的，这一帧之后 dlOs() 不再去认系统（见 pages-landing.js 的 dlOs）。
     state.dlOs = os
-    render()
+    paintLpDownload(os)
     return
   }
   if (act === 'landing-more') {
     document.getElementById('satu-lp-features')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    return
+  }
+  if (act === 'landing-download') {
+    document.getElementById('download')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     return
   }
   if (act === 'sessions-more') {
@@ -2865,6 +2869,12 @@ window.addEventListener('popstate', () => {
 
 async function boot() {
   if (location.pathname === '/costs') history.replaceState({}, '', '/billing')
+  // 以前的下载页地址。那一页已经并进首页（pages-landing.js 的 lpDownload），可这条地址
+  // 早被管理员发出去过——折回首页，并在第一次画出来时滚到下载那一段（见 render.js）。
+  if (location.pathname === '/download') {
+    history.replaceState({}, '', '/#download')
+    state.lpJump = 'download'
+  } else if (location.hash === '#download') state.lpJump = 'download'
   state.path = pathOf()
   if (state.path.startsWith('/join/')) {
     await loadInvite()
