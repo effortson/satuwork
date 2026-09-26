@@ -398,7 +398,7 @@ async function seatOnMachine(db: RouteCtx['db'], machine: Machine, accountId: st
  *   请求  { apiKey, route: 'chat'|'messages'|'responses', model,
  *           provider?, anthropicVersion?, openaiBeta?,
  *           stream?: boolean,          // 请求体里的 `stream`
- *           reasoningEffort?: string } // 请求体里的 `reasoning_effort`
+ *           reasoningEffort?: string } // chat 的 `reasoning_effort` / responses 的 `reasoning.effort`
  *   200   { callId, provider, model, url, headers,
  *           body: { set: Record<string, unknown>, unset: string[] } }
  *         `body` **一定在**，且 `set.model` / `unset` 里的 `provider` 一定在。管家照

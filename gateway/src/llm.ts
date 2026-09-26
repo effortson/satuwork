@@ -167,6 +167,29 @@ function chatBodyPatch(patch: UpstreamBodyPatch, piModel: PiModelShape, req: { s
 }
 
 /**
+ * responses 路由上的推理档：和 chat 那条一个规矩，只是字段换成 `reasoning.effort`。
+ *
+ * 夹完之后还要过一道 `thinkingLevelMap`：pi-ai 的 openai-responses 发的是
+ * `thinkingLevelMap[档] ?? 档`（api/openai-responses.js 的 buildParams），这里照做。
+ * 夹到 `off`、或者模型不会推理，就把 `reasoning` 整个删掉，同 chat。
+ *
+ * `set.reasoning` 是整块换掉：Bot 那边只发 `{ effort }`（bot/src/llm/gateway.ts 的
+ * toOpenAIResponses），没有别的键会被盖掉。
+ */
+function responsesBodyPatch(patch: UpstreamBodyPatch, piModel: PiModelShape, req: { reasoningEffort?: string }): void {
+  const wanted = (req.reasoningEffort || '').trim()
+  if (!wanted) return
+  if (!piModel.reasoning) {
+    patch.unset.push('reasoning')
+    return
+  }
+  const clamped = clampThinkingLevel(piModel as Parameters<typeof clampThinkingLevel>[0], wanted as ModelThinkingLevel)
+  const effort = clamped === 'off' ? null : (piModel.thinkingLevelMap?.[clamped] ?? clamped)
+  if (!effort) patch.unset.push('reasoning')
+  else if (effort !== wanted) patch.set.reasoning = { effort }
+}
+
+/**
  * 内置 openai / anthropic 的上游主机覆盖。给 e2e 指到 stub、或者走企业代理用。
  * 值是**主机**（不含 `/v1`），往后拼路径的只有 baseUrlOf → upstreamTargetOf 这一条路
  * ——/v1 的两条透传路由以前自己拼一份，那份已经并进来了。
@@ -557,6 +580,7 @@ export class Llm {
       const headers = req.openaiBeta
         ? { ...withoutHeaders(bearer, ['openai-beta']), 'openai-beta': req.openaiBeta }
         : bearer
+      responsesBodyPatch(patch, piModel, req)
       return { url: `${baseUrl}/responses`, headers, model: found.id, body: patch }
     }
     if (api !== 'anthropic-messages') return { error: `/v1/messages 只接受 Anthropic 协议的模型，收到的是 ${found.provider}`, relayable: true }

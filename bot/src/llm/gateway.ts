@@ -45,9 +45,21 @@ const ANTHROPIC_VERSION = '2023-06-01'
  * 情况下总在。拿不到时才退回原来那条按名字认的规矩——那说明目录还没拉到，这时候猜错也
  * 只是回到改动前的样子，不会更差。
  */
-function apiFor(model: { provider?: string; api?: string } | null | undefined): '/v1/messages' | '/v1/chat/completions' {
+type LlmPath = '/v1/messages' | '/v1/chat/completions' | '/v1/responses'
+
+function apiFor(model: { provider?: string; api?: string } | null | undefined): LlmPath {
   const api = String(model?.api || '').trim()
-  if (api) return api === 'anthropic-messages' ? '/v1/messages' : '/v1/chat/completions'
+  if (api === 'anthropic-messages') return '/v1/messages'
+  /**
+   * `openai-responses` 的模型走 Responses 协议，**不能**再塞进 chat 路由。
+   *
+   * 以前中继之前 /v1/chat/completions 底下是 pi-ai，它按 `api` 自己换成 /responses；中继
+   * 之后请求体原样打到上游的 /chat/completions，于是 OpenAI 新一代推理模型（gpt-5.6-sol
+   * 这一批）一带工具又带 `reasoning_effort` 就回 400：「Function tools with reasoning_effort
+   * are not supported … use /v1/responses」。Agent 每一轮都带工具，等于这批模型完全不能用。
+   */
+  if (api === 'openai-responses') return '/v1/responses'
+  if (api) return '/v1/chat/completions'
   return model?.provider === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'
 }
 
@@ -150,6 +162,85 @@ export function toOpenAI(context: any, model: { provider: string; id: string }, 
   }
 }
 
+/**
+ * Responses 协议的调用 id。
+ *
+ * 会话历史里的工具调用可能来自别的协议（Anthropic 的 `toolu_…`、chat 的 `call_…`，
+ * 或者中途换过模型），Responses 对 `call_id` 的字符和长度比另外两家挑。`function_call`
+ * 和 `function_call_output` 走同一个函数，两头始终对得上。
+ */
+function responsesCallId(id: unknown): string {
+  const s = String(id ?? '').split('|')[0].replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
+  return s || 'call'
+}
+
+/**
+ * pi 的上下文 → Responses 协议的请求体。
+ *
+ * 用的是无状态那一套（`store: false`，每轮把整段历史都发过去），和 chat 路由一样；
+ * 助手的正文用 `{role:'assistant', content}` 的简写，不带 item id——那是有状态模式
+ * 才需要回填的东西。推理条目不回放：我们没存它（和 chat 路由的 reasoning_content
+ * 一样不收），Responses 在缺了它们的历史上照样能接着推理，只是少了上一轮的思路。
+ *
+ * 推理档是 `reasoning.effort`，不是 chat 那个顶层的 `reasoning_effort`。夹到这颗模型
+ * 认的那几档由 Gateway 按目录做（gateway/src/llm.ts 的 responsesBodyPatch），这里原样报。
+ */
+export function toOpenAIResponses(context: any, model: { provider: string; id: string }, options?: GatewayStreamOptions) {
+  const input: any[] = []
+  for (const m of context.messages ?? []) {
+    if (m.role === 'user') {
+      const content = userContent(m.content, (c) => ({
+        type: 'input_image',
+        image_url: `data:${c.mimeType || 'image/png'};base64,${c.data}`,
+      }))
+      input.push({
+        role: 'user',
+        content: Array.isArray(content)
+          ? content.map((c: any) => (c.type === 'text' ? { type: 'input_text', text: c.text } : c))
+          : content,
+      })
+    } else if (m.role === 'assistant') {
+      const text = (m.content ?? [])
+        .filter((c: any) => c.type === 'text')
+        .map((c: any) => c.text)
+        .join('')
+      if (text) input.push({ role: 'assistant', content: text })
+      for (const c of m.content ?? []) {
+        if (c.type !== 'toolCall') continue
+        input.push({
+          type: 'function_call',
+          call_id: responsesCallId(c.id),
+          name: c.name,
+          arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {}),
+        })
+      }
+    } else if (m.role === 'toolResult') {
+      input.push({
+        type: 'function_call_output',
+        call_id: responsesCallId(m.toolCallId),
+        output: contentText(m.content),
+      })
+    }
+  }
+  const tools = (context.tools ?? []).map((t: any) => ({
+    type: 'function',
+    name: t.name,
+    description: t.description ?? '',
+    parameters: t.parameters ?? { type: 'object', properties: {} },
+  }))
+  const level = reasoningLevel(options)
+  return {
+    model: `${model.provider}/${model.id}`,
+    provider: model.provider,
+    ...(context.systemPrompt ? { instructions: context.systemPrompt } : {}),
+    input,
+    ...(tools.length ? { tools } : {}),
+    stream: true,
+    store: false,
+    ...(level ? { reasoning: { effort: level } } : {}),
+  }
+}
+
 export function toAnthropic(context: any, model: { id: string; provider?: string; maxTokens?: number }, options?: GatewayStreamOptions) {
   const messages: any[] = []
   for (const m of context.messages ?? []) {
@@ -242,7 +333,20 @@ export async function completeOnce(spec: {
   const base = llmBaseUrl()
   const path = apiFor({ provider: spec.provider, api: apiLookup(spec.provider, spec.model) })
   const anthropic = path === '/v1/messages'
-  const body: Record<string, unknown> = anthropic
+  const responses = path === '/v1/responses'
+  const effort = spec.reasoningEffort && spec.reasoningEffort !== 'off' ? spec.reasoningEffort : undefined
+  const body: Record<string, unknown> = responses
+    ? {
+        model: `${spec.provider}/${spec.model}`,
+        provider: spec.provider,
+        stream: false,
+        store: false,
+        instructions: spec.system,
+        input: [{ role: 'user', content: spec.user }],
+        ...(spec.temperature === undefined ? {} : { temperature: spec.temperature }),
+        ...(effort ? { reasoning: { effort } } : {}),
+      }
+    : anthropic
     ? {
         model: spec.model,
         // 同 toAnthropic：重名的模型 id 要靠它才认得出是哪一家，转给上游之前会被删掉。
@@ -262,7 +366,7 @@ export async function completeOnce(spec: {
         provider: spec.provider,
         stream: false,
         ...(spec.temperature === undefined ? {} : { temperature: spec.temperature }),
-        ...(spec.reasoningEffort && spec.reasoningEffort !== 'off' ? { reasoning_effort: spec.reasoningEffort } : {}),
+        ...(effort ? { reasoning_effort: effort } : {}),
         messages: [
           { role: 'system', content: spec.system },
           { role: 'user', content: spec.user },
@@ -282,8 +386,15 @@ export async function completeOnce(spec: {
   })
   if (!r.ok) return { ok: false, status: r.status, text: '' }
   const data = (await r.json()) as any
-  // 正文在哪两家不一样：chat 在 choices[0].message.content，messages 在顶层 content[]。
-  return { ok: true, status: r.status, text: contentText(anthropic ? data?.content : data?.choices?.[0]?.message?.content) }
+  // 正文在哪三家不一样：chat 在 choices[0].message.content，messages 在顶层 content[]，
+  // responses 在 output[] 里 type 为 message 的那几条的 content[]（推理条目也在 output 里，跳过）。
+  const text = responses
+    ? (Array.isArray(data?.output) ? data.output : [])
+        .filter((o: any) => o?.type === 'message')
+        .map((o: any) => contentText(o.content))
+        .join('')
+    : contentText(anthropic ? data?.content : data?.choices?.[0]?.message?.content)
+  return { ok: true, status: r.status, text }
 }
 
 async function* readSse(
@@ -467,6 +578,163 @@ async function consumeOpenAI(
   }
   if (finished) {
     stream.push({ type: 'done', reason: finished.reason, message: finished.message })
+    return
+  }
+  if (!started) {
+    fail(stream, model, 'empty stream')
+    return
+  }
+  stream.push({ type: 'done', reason: 'stop', message: partial })
+}
+
+/** Responses 的 usage → pi 的四项。口径同 chat：`input_tokens` 含缓存命中，要减掉。 */
+function responsesUsage(u: any) {
+  const cacheRead = Math.max(0, Number(u.input_tokens_details?.cached_tokens ?? 0) || 0)
+  const prompt = Math.max(0, Number(u.input_tokens ?? 0) || 0)
+  const output = Math.max(0, Number(u.output_tokens ?? 0) || 0)
+  return {
+    input: Math.max(0, prompt - cacheRead),
+    output,
+    cacheRead,
+    cacheWrite: 0,
+    totalTokens: Number(u.total_tokens ?? prompt + output) || 0,
+    cost: { ...EMPTY_USAGE.cost },
+  }
+}
+
+/**
+ * Responses 协议的流。
+ *
+ * 它按「输出条目」组织：`response.output_item.added` 开一条（message / function_call /
+ * reasoning），中间是按 `output_index` 归属的增量，`response.output_item.done` 收一条，
+ * 最后 `response.completed`（或 `incomplete` / `failed`）收整轮，usage 只在那一帧里。
+ * 下标的坑和 chat 一样：`output_index` 数的是条目，里面有我们不收的推理条目，所以
+ * 照样按 key 记账，块建在 content 末尾。
+ */
+async function consumeResponses(
+  res: Response,
+  stream: AssistantMessageEventStream,
+  model: any,
+  kick: (bytes?: number) => void = () => {},
+) {
+  let partial: any = emptyAssistant(model)
+  let started = false
+  const slots = new Map<number, number>()
+  const start = () => {
+    if (started) return
+    started = true
+    stream.push({ type: 'start', partial })
+  }
+  const textSlot = (key: number) => {
+    let idx = slots.get(key)
+    if (idx === undefined) {
+      idx = Number(partial.content.length)
+      slots.set(key, idx)
+      partial.content.push({ type: 'text', text: '' })
+      stream.push({ type: 'text_start', contentIndex: idx, partial })
+    }
+    return idx
+  }
+  const toolSlot = (key: number, item: any = {}) => {
+    let idx = slots.get(key)
+    if (idx === undefined) {
+      idx = Number(partial.content.length)
+      slots.set(key, idx)
+      partial.content.push({ type: 'toolCall', id: '', name: '', arguments: {}, _raw: '' })
+      stream.push({ type: 'toolcall_start', contentIndex: idx, partial })
+    }
+    const block = partial.content[idx]
+    if (item.call_id) block.id = item.call_id
+    if (item.name) block.name = item.name
+    return idx
+  }
+  const setArgs = (block: any, raw: string) => {
+    block._raw = raw
+    try {
+      block.arguments = raw ? JSON.parse(raw) : {}
+    } catch {
+      block.arguments = {}
+    }
+  }
+  // 同 consumeOpenAI：收口了先不推 done，等流真的读完，免得收口之后的错误帧被吞掉。
+  let finished: { reason: string } | null = null
+  for await (const ev of readSse(res, kick)) {
+    if (!ev.data || ev.data === '[DONE]') continue
+    let chunk: any
+    try {
+      chunk = JSON.parse(ev.data)
+    } catch {
+      continue
+    }
+    const type = chunk.type || ev.event
+    if (type === 'error' || (chunk.error && !chunk.response)) {
+      fail(stream, model, chunk.error?.message || chunk.message || JSON.stringify(chunk.error ?? chunk))
+      return
+    }
+    if (type === 'response.failed') {
+      fail(stream, model, chunk.response?.error?.message || 'response failed')
+      return
+    }
+    if (type === 'response.completed' || type === 'response.incomplete') {
+      if (chunk.response?.usage) partial.usage = responsesUsage(chunk.response.usage)
+      if (finished) continue
+      for (let i = 0; i < partial.content.length; i++) {
+        const block = partial.content[i]
+        if (block.type !== 'toolCall' || !('_raw' in block)) continue
+        delete block._raw
+        stream.push({ type: 'toolcall_end', contentIndex: i, toolCall: block, partial })
+      }
+      const hasTool = partial.content.some((c: any) => c.type === 'toolCall')
+      const cut = type === 'response.incomplete' && chunk.response?.incomplete_details?.reason === 'max_output_tokens'
+      const reason = hasTool ? 'toolUse' : cut ? 'length' : 'stop'
+      partial.stopReason = reason
+      finished = { reason }
+      continue
+    }
+    if (finished) continue
+    const key = Number(chunk.output_index ?? 0)
+    if (type === 'response.created' || type === 'response.in_progress') {
+      start()
+    } else if (type === 'response.output_item.added') {
+      start()
+      const item = chunk.item ?? {}
+      if (item.type === 'message') textSlot(key)
+      else if (item.type === 'function_call') {
+        const idx = toolSlot(key, item)
+        if (item.arguments) setArgs(partial.content[idx], String(item.arguments))
+      }
+    } else if (type === 'response.output_text.delta' && typeof chunk.delta === 'string' && chunk.delta) {
+      start()
+      const idx = textSlot(key)
+      partial.content[idx].text += chunk.delta
+      stream.push({ type: 'text_delta', contentIndex: idx, delta: chunk.delta, partial })
+    } else if (type === 'response.function_call_arguments.delta' && typeof chunk.delta === 'string') {
+      start()
+      const idx = toolSlot(key)
+      const block = partial.content[idx]
+      setArgs(block, (typeof block._raw === 'string' ? block._raw : '') + chunk.delta)
+      stream.push({ type: 'toolcall_delta', contentIndex: idx, delta: chunk.delta, partial })
+    } else if (type === 'response.function_call_arguments.done' && typeof chunk.arguments === 'string') {
+      const idx = slots.get(key)
+      if (idx !== undefined) setArgs(partial.content[idx], chunk.arguments)
+    } else if (type === 'response.output_item.done') {
+      const item = chunk.item ?? {}
+      const idx = slots.get(key)
+      if (idx === undefined) continue
+      const block = partial.content[idx]
+      if (block.type === 'text') {
+        stream.push({ type: 'text_end', contentIndex: idx, content: block.text, partial })
+      } else if (block.type === 'toolCall' && '_raw' in block) {
+        if (item.call_id) block.id = item.call_id
+        if (item.name) block.name = item.name
+        if (typeof item.arguments === 'string') setArgs(block, item.arguments)
+        delete block._raw
+        stream.push({ type: 'toolcall_end', contentIndex: idx, toolCall: block, partial })
+      }
+    }
+  }
+  if (finished) {
+    stream.push({ type: 'done', reason: finished.reason, message: partial })
     return
   }
   if (!started) {
@@ -666,7 +934,12 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
     }
     // 选路、请求体、版本头、收流的解析器，四处必须是同一个判断，改一处就得跟着改四处。
     const path = apiFor(model)
-    const body = path === '/v1/messages' ? toAnthropic(context, model, options) : toOpenAI(context, model, options)
+    const body =
+      path === '/v1/messages'
+        ? toAnthropic(context, model, options)
+        : path === '/v1/responses'
+          ? toOpenAIResponses(context, model, options)
+          : toOpenAI(context, model, options)
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       authorization: `Bearer ${apiKey}`,
@@ -696,6 +969,7 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
       return
     }
     if (path === '/v1/messages') await consumeAnthropic(res, stream, model, kick)
+    else if (path === '/v1/responses') await consumeResponses(res, stream, model, kick)
     else await consumeOpenAI(res, stream, model, kick)
     console.log(`[INFO] llm: ${model?.provider}/${model?.id} 收流结束（${bytes} 字节，${Date.now() - at}ms）`)
   }

@@ -113,7 +113,7 @@ function upstreamOr400(
   found: CatalogModel,
   route: 'chat' | 'messages' | 'responses',
   secret: string,
-  req: { anthropicVersion?: string; openaiBeta?: string },
+  req: { anthropicVersion?: string; openaiBeta?: string; reasoningEffort?: string },
 ): UpstreamTarget {
   const target = llm.upstreamTargetOf(found, route, secret, req)
   if ('error' in target) throw new HttpError(400, target.error)
@@ -651,8 +651,10 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
     // 可记。反过来的话每一次打错路由都在 llm_calls 里留一行 0 token、账本上没有对应行
     // 的孤儿——那正是 unledgeredCalls 那条横幅要数的东西，会被一个走错路的客户端刷高。
     // 授权那条路（routes/worker.ts 的 grant）本来就是这个顺序。
+    const reasoning = body.reasoning as { effort?: unknown } | undefined
     const target = upstreamOr400(llm, found, 'responses', secret, {
       openaiBeta: typeof beta === 'string' && beta ? beta : undefined,
+      reasoningEffort: typeof reasoning?.effort === 'string' ? reasoning.effort : undefined,
     })
     await gateOr402(meter, account, found)
     const callId = await recordLlmCall(db, account, found)
