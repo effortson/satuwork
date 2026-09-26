@@ -2999,6 +2999,44 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!ui.pathAllowed('/audit/session-1'), '旧的原始对话详情不该再能打开')
     })
 
+    await test('机器配置：桌面端本地 Bot 一页，按平台列出生效版本，新增走 local-bot 那条路', async () => {
+      const requested = []
+      const releases = {
+        releases: [
+          { version: '0.1.13+aaaaaaa-darwin-arm64', size: 1, sha256: 'a', createdAt: 2 },
+          { version: '0.1.12+bbbbbbb-darwin-arm64', size: 1, sha256: 'b', createdAt: 1 },
+          { version: '0.1.12+bbbbbbb-windows-x64', size: 1, sha256: 'c', createdAt: 1 },
+        ],
+        latestByTarget: { 'darwin-arm64': '0.1.13+aaaaaaa-darwin-arm64', 'windows-x64': '0.1.12+bbbbbbb-windows-x64' },
+      }
+      const ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: 'ui-smoke-token',
+        fetchImpl: async (path, init) => {
+          requested.push(`${(init && init.method) || 'GET'} ${path}`)
+          const body = path.startsWith('/platform/local-bot-releases') && (!init || !init.method || init.method === 'GET')
+            ? releases
+            : path.startsWith('/platform/local-bot-releases') ? { release: { version: 'x' } } : { releases: [] }
+          return { ok: true, status: 200, text: async () => JSON.stringify(body) }
+        },
+      })
+      ui.state.me = { account: { id: 'o', role: 'owner', name: 'O' }, settings: {} }
+      ui.state.path = '/releases'
+      await ui.loadPage()
+      assert(requested.some((x) => x === 'GET /platform/local-bot-releases'), `没取本地 Bot 的发布：${requested.join(', ')}`)
+      ui.state.machineTab = 'local-bot'
+      ui.render()
+      const html = ui.html()
+      assert(html.includes('data-tab="local-bot"'), '没有桌面端本地 Bot 那个 tab')
+      assert(html.includes('Windows · x64') && html.includes('0.1.12+bbbbbbb-windows-x64'), '没按平台列出生效版本')
+      assert(html.includes('还没有这个平台的包'), '缺包的平台该如实说没有')
+      // 每个平台各有一个「最新」：darwin 那条老版本不该被标成最新。
+      const oldRow = html.slice(html.indexOf('0.1.12+bbbbbbb-darwin-arm64'), html.indexOf('0.1.12+bbbbbbb-darwin-arm64') + 200)
+      assert(!oldRow.includes('tag-accent'), 'darwin 的老版本也被标成了最新')
+      assert(html.includes('data-form="add-release" data-kind="local-bot"'), '新增表单没有按 local-bot 走')
+    })
+
     await test('审计总结翻页：游标跟着请求走，换筛选回到第一页', async () => {
       const requested = []
       let page = 0

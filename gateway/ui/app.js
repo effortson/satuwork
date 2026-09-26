@@ -869,7 +869,8 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'machine-tab') {
-    state.machineTab = btn.getAttribute('data-tab') === 'bot' ? 'bot' : 'manager'
+    const tab = btn.getAttribute('data-tab')
+    state.machineTab = tab === 'bot' || tab === 'local-bot' ? tab : 'manager'
     render()
     return
   }

@@ -513,13 +513,39 @@ curl -sf -X PUT "$GATEWAY_URL/platform/bot-releases/$VERSION" \\
   --data-binary @bot.tgz`
 
 /**
- * 机器配置。两个 tab：机器管家、Bot 运行时。
+ * 桌面端本地 Bot 的六个目标：Gateway 按版本号末尾的 `-<平台>-<架构>` 给每台桌面端挑包
+ * （gateway/src 的 localBotReleaseTarget），一个目标一条独立的版本线。
+ */
+const LOCAL_BOT_TARGETS = [
+  { key: 'darwin-arm64', label: 'macOS · Apple Silicon' },
+  { key: 'darwin-x64', label: 'macOS · Intel' },
+  { key: 'windows-x64', label: 'Windows · x64' },
+  { key: 'windows-arm64', label: 'Windows · ARM64' },
+  { key: 'linux-x64', label: 'Linux · x64' },
+  { key: 'linux-arm64', label: 'Linux · ARM64' },
+]
+
+/**
+ * 各平台现在生效的是哪一版。桌面端没有「期望版本」可钉：它跟的就是自己那个平台最新
+ * 登记的一版，下次启动第一颗本地 Bot 时静默切过去。所以这张表回答的是最常问的那一句——
+ * 「我这台 Windows 下次会用哪个包」，缺了哪个平台也一眼看得出来。
+ */
+function localBotTargetsPanel(latestByTarget) {
+  const rows = LOCAL_BOT_TARGETS.map((x) => {
+    const v = latestByTarget?.[x.key]
+    return `<div class="satu-kv"><span>${esc(x.label)}</span><span style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; ${v ? '' : 'color: var(--muted-foreground);'}">${esc(v || t('还没有这个平台的包', 'No package for this platform'))}</span></div>`
+  }).join('')
+  return `<div style="display: flex; flex-direction: column;">${rows}</div>`
+}
+
+/**
+ * 机器配置。三个 tab：机器管家、Bot 运行时、桌面端本地 Bot。
  *
- * 两边是同一套东西——按版本发布的包、一张列表、一个新增表单——只是 kind 不同，
- * 所以渲染共用 `releaseSection`，避免两份会各自漂移的相似代码。
+ * 三边是同一套东西——按版本发布的包、一张列表、一个新增表单——只是 kind 不同，
+ * 所以渲染共用 `releaseSection`，避免几份会各自漂移的相似代码。
  */
 function releasesPage() {
-  const tab = state.machineTab === 'bot' ? 'bot' : 'manager'
+  const tab = state.machineTab === 'bot' || state.machineTab === 'local-bot' ? state.machineTab : 'manager'
   const tabBtn = (id, label) =>
     `<button type="button" class="btn ${tab === id ? 'btn-primary' : ''}" data-act="machine-tab" data-tab="${id}">${label}</button>`
   const body =
@@ -531,24 +557,38 @@ function releasesPage() {
           data: state.managerReleases,
           desired: true,
         })
-      : releaseSection({
-          kind: 'bot',
-          title: t('Bot 运行时'),
-          hint: t('部署席位时用最新版本；也可以在部署时指定某一版。'),
-          data: { releases: state.releases || [], latest: state.latestRelease, desired: '' },
-          desired: false,
-        })
+      : tab === 'bot'
+        ? releaseSection({
+            kind: 'bot',
+            title: t('Bot 运行时'),
+            hint: t('部署席位时用最新版本；也可以在部署时指定某一版。'),
+            data: { releases: state.releases || [], latest: state.latestRelease, desired: '' },
+            desired: false,
+          })
+        : releaseSection({
+            kind: 'local-bot',
+            title: t('桌面端本地 Bot', 'Desktop local bot'),
+            hint: t(
+              '桌面端按自己的操作系统和架构，取那个平台最新登记的一版，下次启动第一颗本地 Bot 时静默切换；正在跑的不会被打断。包必须在对应平台上打（或推 local-bot-v* tag 走 CI），版本号以 -<平台>-<架构> 结尾。',
+              'Each Desktop app takes the newest package registered for its own OS and architecture and switches to it the next time it starts its first local bot; running bots are not interrupted. Packages must be built on the target platform (or via a local-bot-v* tag in CI) and the version must end in -<platform>-<arch>.',
+            ),
+            data: { releases: state.localBotReleases?.releases || [], latest: new Set(Object.values(state.localBotReleases?.latestByTarget || {})), desired: '' },
+            desired: false,
+            extra: localBotTargetsPanel(state.localBotReleases?.latestByTarget),
+          })
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
         <div>
           <h1 style="font-size: 24px; margin: 0 0 4px;">${t('机器配置')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('Gateway 只登记和分发发布包，自己不构建。包必须在 Linux 上打，架构要和席位机器一致。')}</p>
+          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${tab === 'local-bot'
+            ? t('Gateway 只登记和分发发布包，自己不构建。', 'The Gateway only registers and serves packages; it never builds them.')
+            : t('Gateway 只登记和分发发布包，自己不构建。包必须在 Linux 上打，架构要和席位机器一致。')}</p>
           <p style="margin: 4px 0 0; font-size: 13px; color: var(--muted-foreground);">${t('下载地址就是那台 Debian 拉包用的 URL。登记在 GitHub Release 上的包机器直接去取、不带凭据，按 sha256 核对；Gateway 转发地址要机器令牌（curl -H "Authorization: Bearer smt_…"），管家自己会带上。')}</p>
         </div>
         ${flashes()}
         <div style="display: flex; gap: var(--space-2);">
-          ${tabBtn('manager', t('机器管家'))}${tabBtn('bot', t('Bot 运行时'))}
+          ${tabBtn('manager', t('机器管家'))}${tabBtn('bot', t('Bot 运行时'))}${tabBtn('local-bot', t('桌面端本地 Bot', 'Desktop local bot'))}
         </div>
         ${body}
       </div>
@@ -570,7 +610,7 @@ function releaseRow(r, latest) {
       <span style="color: var(--muted-foreground); word-break: break-all;">${from}${dl ? ` · <button type="button" class="satu-linkbtn" data-act="copy-release-url" data-url="${esc(dl)}">${t('复制')}</button>` : ''}</span>
     </span>`
   return `<div class="satu-memberrow" style="grid-template-columns: 200px 90px 120px 1fr 150px;">
-    <span style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-all;">${esc(r.version)}${r.version === latest ? ` <span class="tag tag-accent">${t('最新')}</span>` : ''}</span>
+    <span style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-all;">${esc(r.version)}${(latest instanceof Set ? latest.has(r.version) : r.version === latest) ? ` <span class="tag tag-accent">${t('最新')}</span>` : ''}</span>
     <span style="font-size: 13px;">${esc(fmtSize(r.size))}</span>
     <span style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted-foreground);">${esc(shaShort(r.sha256))}</span>
     <span style="font-size: 12px;">${where}</span>
@@ -578,7 +618,11 @@ function releaseRow(r, latest) {
   </div>`
 }
 
-function releaseSection({ kind, title, hint, data, desired }) {
+/**
+ * `latest` 是一个版本号，或者一组（桌面端本地 Bot 每个平台各有一个「最新」）。
+ * `extra` 摆在说明和列表之间，给某一类独有的东西用。
+ */
+function releaseSection({ kind, title, hint, data, desired, extra = '' }) {
   const d = data || { releases: [], latest: null, desired: '' }
   const rows = d.releases || []
   // 两个 tab 各翻各的：管家和 Bot 是两条独立的版本线，在管家那边翻到第 3 页，
@@ -607,6 +651,7 @@ function releaseSection({ kind, title, hint, data, desired }) {
     <span class="satu-panel-title">${esc(title)}</span>
     <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${esc(hint)}</p>
     ${desiredForm}
+    ${extra}
     ${table}
     ${addReleaseForm(kind)}
   </div>`
@@ -627,7 +672,7 @@ function addReleaseForm(kind) {
       <div style="display: flex; gap: var(--space-3); flex-wrap: wrap;">
         <div class="field" style="margin: 0; flex: 1; min-width: 200px;">
           <label for="ar-ver-${kind}">${t('版本号')}</label>
-          <input class="input" id="ar-ver-${kind}" name="version" required placeholder="0.1.0+abc1234-arm64" autocomplete="off">
+          <input class="input" id="ar-ver-${kind}" name="version" required placeholder="${kind === 'local-bot' ? '0.1.0+abc1234-windows-x64' : '0.1.0+abc1234-arm64'}" autocomplete="off">
         </div>
         <div class="field" style="margin: 0; width: 160px;">
           <label for="ar-size-${kind}">${t('大小')}（${t('字节')}）</label>
