@@ -460,6 +460,11 @@ export interface BotRelease {
    * 因为 `x-bot-sha256` 那个校验头要跟着响应走，重定向之后管家就拿不到了。
    */
   url: string
+  /**
+   * 装这个包至少要哪一版 Desktop（`x.y.z`）。只有 local-bot 有，别的种类为 null。
+   * Gateway 按它给每台 Desktop 挑包，Desktop 自己也会再比一遍。
+   */
+  minDesktopVersion: string | null
 }
 
 export interface CatalogItem {

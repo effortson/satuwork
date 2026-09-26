@@ -1242,6 +1242,8 @@ async function addRelease(e) {
     sha256: String(fd.get('sha256') || '').trim().toLowerCase(),
     url: String(fd.get('url') || '').trim(),
   }
+  // 只有桌面端本地 Bot 有这一栏；留空由 Gateway 按 0.1.0 登记。
+  if (kind === 'local-bot') body.minDesktopVersion = String(fd.get('minDesktopVersion') || '').trim()
   state.busy = true
   state.addRelease = kind
   render()

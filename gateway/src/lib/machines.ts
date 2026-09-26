@@ -387,6 +387,8 @@ export async function registerFromBody(db: Db, req: Req, kind: ReleaseKind) {
     size: Number((body as Record<string, unknown>).size),
     sha256: strField(body, 'sha256'),
     note: strField(body, 'note', false),
+    // 只有 local-bot 用得上（见 releases.ts 的 minDesktopFor）；不填按 0.1.0。
+    minDesktopVersion: strField(body, 'minDesktopVersion', false),
   })
 }
 

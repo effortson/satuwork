@@ -438,6 +438,7 @@ export function botReleaseOf(r: Row): BotRelease {
     createdAt: num(r.createdAt),
     note: str(r.note || ''),
     url: str(r.url || ''),
+    minDesktopVersion: r.minDesktopVersion ? str(r.minDesktopVersion) : null,
   }
 }
 /** jsonb 的字符串数组。脏数据（不是数组、混了别的类型）一律当空，不让它往下传。 */

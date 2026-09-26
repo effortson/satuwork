@@ -1,10 +1,10 @@
 # 把一个 GitHub Release 里的发布包**登记**到 Gateway（按地址，不传字节）。
 #
 # 为什么不 PUT 整包：Gateway 跑在 Vercel 上，函数请求体上限 4.5 MB，管家包 9 MB、bot 包
-# 近 30 MB，PUT 一律 413。`POST /platform/{kind}-releases` 只收 {version,url,size,sha256}，
-# Gateway 自己把包从 url 整个拉一遍、比对大小和 sha256、确认入口文件在，验不过不入库；
-# 下发给机器时也是从这个 url 流式转过去（带着 x-bot-sha256）。仓库是公开的，Release 的
-# 下载地址不用凭据。
+# 近 30 MB，PUT 一律 413。`POST /platform/{kind}-releases` 只收 {version,url,size,sha256}
+# （local-bot 另带 minDesktopVersion），Gateway 自己把包从 url 整个拉一遍、比对大小和
+# sha256、确认入口文件在，验不过不入库；下发给机器时也是从这个 url 流式转过去（带着
+# x-bot-sha256）。仓库是公开的，Release 的下载地址不用凭据。
 #
 # 两种用法：
 # - bot / manager / local-bot 三条发版流水线建完 Release 后 `uses:` 这里（workflow_call）。
@@ -66,6 +66,15 @@ jobs:
             *) echo "认不出 $TAG 是哪种包（要 bot-v / manager-v / local-bot-v 开头）" >&2; exit 1 ;;
           esac
 
+          # local-bot 包各自登记最低 Desktop 版本：取这个 tag 上 bot/package.json 的
+          # minDesktopVersion（加这个字段之前的老 tag 按 0.1.0）。别的种类不带这个字段。
+          min_desktop=""
+          if [ "$kind" = local-bot ]; then
+            min_desktop=$(gh api -H 'Accept: application/vnd.github.raw+json' \
+              "repos/$GITHUB_REPOSITORY/contents/bot/package.json?ref=$TAG" | jq -r '.minDesktopVersion // "0.1.0"')
+            echo "最低 Desktop 版本：$min_desktop"
+          fi
+
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
             --jq '.assets[] | [.name, .browser_download_url] | @tsv' > assets.tsv
           cat assets.tsv
@@ -88,8 +97,9 @@ jobs:
             rm -f pkg.tgz
 
             body=$(jq -n --arg version "$v" --arg url "$url" --argjson size "$size" \
-              --arg sha256 "$sha" --arg note "$NOTE" \
-              '{version: $version, url: $url, size: $size, sha256: $sha256, note: $note}')
+              --arg sha256 "$sha" --arg note "$NOTE" --arg minDesktop "$min_desktop" \
+              '{version: $version, url: $url, size: $size, sha256: $sha256, note: $note}
+               + (if $minDesktop == "" then {} else {minDesktopVersion: $minDesktop} end)')
             echo "POST $kind $v ($size 字节)"
             code=$(curl -sS -o resp.json -w '%{http_code}' -X POST \
               "${GW%/}/platform/$kind-releases" \

@@ -989,6 +989,48 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       assert(other.status === 204, `没有当前目标包应是 204，实际 ${other.status}`)
     })
 
+    await test('Desktop local-bot 包各自登记最低 Desktop 版本，按壳的版本挑包', async () => {
+      const detail = await req(gwBase, 'GET', `/platform/accounts/${memberId}`, { token: ownerTok })
+      const seatAccess = detail.json.accessToken
+      const older = '1.0.0+desktop-darwin-arm64' // 上一条传的，没带这个参数 → 0.1.0
+      const newer = '1.0.1+desktop-darwin-arm64'
+      const bad = await req(
+        gwBase,
+        'PUT',
+        `/platform/local-bot-releases/${encodeURIComponent('1.0.2+desktop-darwin-arm64')}?minDesktopVersion=1.2`,
+        { token: PLATFORM_TOK, raw: goodPack, headers: { 'x-bot-sha256': sha256Of(goodPack) } },
+      )
+      assert(bad.status === 400, `不是 x.y.z 的最低版本应拒收，实际 ${bad.status} ${bad.text}`)
+      const uploaded = await req(
+        gwBase,
+        'PUT',
+        `/platform/local-bot-releases/${encodeURIComponent(newer)}?minDesktopVersion=9.0.0`,
+        { token: PLATFORM_TOK, raw: goodPack, headers: { 'x-bot-sha256': sha256Of(goodPack) } },
+      )
+      assert(uploaded.status === 200, `local upload ${uploaded.status} ${uploaded.text}`)
+      assert(uploaded.json.release.minDesktopVersion === '9.0.0', `登记的最低版本 ${uploaded.json.release.minDesktopVersion}`)
+
+      const list = await req(gwBase, 'GET', '/platform/local-bot-releases', { token: PLATFORM_TOK })
+      const byVersion = Object.fromEntries(list.json.releases.map((r) => [r.version, r.minDesktopVersion]))
+      assert(byVersion[older] === '0.1.0' && byVersion[newer] === '9.0.0', `列表里的最低版本 ${JSON.stringify(byVersion)}`)
+
+      const probe = (query) => req(gwBase, 'GET', `/runtime/local-bot-release?platform=darwin&arch=arm64&${query}`, { token: seatAccess })
+      // 老壳够不着最新那版：先给它够得着的那一版。
+      const fits = await probe('have=old&desktop=0.1.0')
+      assert(fits.status === 200 && fits.json.version === older, `老壳该拿 ${older}，实际 ${fits.status} ${fits.text}`)
+      assert(fits.json.minDesktopVersion === '0.1.0', `manifest 最低版本 ${fits.json.minDesktopVersion}`)
+      // 够得着的已经装上了：把最新那版照发，Desktop 自己比对后提示升级。
+      const hint = await probe(`have=${encodeURIComponent(older)}&desktop=0.1.0`)
+      assert(hint.status === 200 && hint.json.version === newer && hint.json.minDesktopVersion === '9.0.0', `该发最新那版做提示，实际 ${hint.status} ${hint.text}`)
+      // 新壳直接拿最新；不带 desktop 的老壳照旧拿最新。
+      const fresh = await probe('have=old&desktop=9.0.0')
+      assert(fresh.status === 200 && fresh.json.version === newer, `新壳该拿 ${newer}，实际 ${fresh.status} ${fresh.text}`)
+      const legacy = await probe('have=old')
+      assert(legacy.status === 200 && legacy.json.version === newer, `不带 desktop 该拿最新，实际 ${legacy.status} ${legacy.text}`)
+      const current = await probe(`have=${encodeURIComponent(newer)}&desktop=9.0.0`)
+      assert(current.status === 204, `已是最新应是 204，实际 ${current.status}`)
+    })
+
     await test('Desktop local-bot 发布拒绝缺少目标后缀的版本', async () => {
       const r = await req(gwBase, 'PUT', '/platform/local-bot-releases/1.0.1', {
         token: PLATFORM_TOK,
