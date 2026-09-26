@@ -96,10 +96,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NOTE: ${{ inputs.note }}
         run: |
+          # --latest=false：几条发布线共用一个 Release 列表，仓库的「Latest」不归哪一条——
+          # 不写的话 GitHub 按日期自动挑，谁最后发谁就是 Latest。没有代码依赖 releases/latest。
           gh release create "$GITHUB_REF_NAME" dist/*.tgz \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --notes "${NOTE:-Bot 发布包（x64 / arm64）。装到席位机器上时**架构必须对上**。}"
+            --notes "${NOTE:-Bot 发布包（x64 / arm64）。装到席位机器上时**架构必须对上**。}" \
+            --latest=false
 
   # 登记到 Gateway：按 Release 的下载地址登记，不 PUT 整包（Vercel 上请求体上限 4.5 MB，
   # PUT 一律 413）。顺序、校验、重跑的约定都在 register-release.yml 里。
