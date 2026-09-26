@@ -182,8 +182,8 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
   Satuwork_<版本>_x64.dmg         macOS / Intel
   ```
 
-  最后一步再把这三个包去掉版本号（`Satuwork_x64-setup.exe` 这样），覆盖传到固定的
-  `desktop-latest` Release——只在这一版是现有 `desktop-v*` 里最新的时候。首页的下载那一段
+  最后一步再把这三个包去掉版本号（`Satuwork_x64-setup.exe` 这样），传到固定的
+  `desktop-latest` Release——总是对齐到现有 `desktop-v*` 里最新的正式版（纯 `X.Y.Z`，预发布不算）。首页的下载那一段
   （[gateway/ui/pages-landing.js](../gateway/ui/pages-landing.js) 的 `dlBase` / `dlBuilds`）只认
   `desktop-latest`，所以**发新版不用改页面**，打 tag 就完了。Linux 暂未开包。
 - **图标**。现在这套是拿 64×64 的 logo 放大到 1024 生成的，糊。要一份真正的大图。

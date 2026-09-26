@@ -5,9 +5,9 @@
 # 两边对不上的话 Release 的名字和里面的包说的不是同一版，而 CI 照样是绿的。所以在这儿先断言。
 #
 # **首页的下载那一段不认 `desktop-v*`**，只认一个固定的 Release：`desktop-latest`
-# （gateway/ui/pages-landing.js 的 dlBase + dlBuilds）。每次发版最后一步把三个包去掉版本号、
-# 覆盖传到那儿，页面上的地址于是永远不用改。不用 GitHub 自带的 `releases/latest`：几条发布线
-# 共用一个 Release 列表，那个「Latest」指的是别条线上最新的包。
+# （gateway/ui/pages-landing.js 的 dlBase + dlBuilds）。每次发版最后一个 job（sync-latest）把
+# 那儿对齐到最新的正式版：三个包去掉版本号传上去，页面上的地址于是永远不用改。不用 GitHub
+# 自带的 `releases/latest`：几条发布线共用一个 Release 列表，那个「Latest」指的是别条线上最新的包。
 #
 # 手动触发支持填 tag 发布到指定 Release；留空则只出 artifact、不建/更新 Release。
 #
@@ -197,55 +197,109 @@ jobs:
               --latest=false
           fi
 
-      # 首页的下载那一段指着 desktop-latest（见 gateway/ui/pages-landing.js 的 dlBase）。
-      # 三个包去掉版本号那一截，覆盖传上去——**名字和 dlBuilds 里的 file 是一对**，改一边
-      # 要改另一边（e2e/ui-smoke.mjs 里有一条用例盯着）。
-      #
-      # 只在这一版**是现有 desktop-v* 里最新的那个**时才同步：手动补发一个老 tag
-      # （workflow_dispatch 填 desktop-v0.1.0）不该把首页上的新包换回旧的。
+  # 首页的下载那一段指着 desktop-latest（见 gateway/ui/pages-landing.js 的 dlBase）。
+  #
+  # **这个 job 不看「这次发的是哪个 tag」**：每次都把 desktop-latest 对齐到当时最新的那个
+  # 正式版 desktop-v*（包从那一版自己的 Release 上取）。所以谁最后跑谁说了算，结果都一样——
+  # 手动补发一个老 tag 不会把首页换回旧包，两个 tag 前后脚推也不会让慢的那个盖掉快的。
+  # concurrency 让它们排队、一次只一个在动 desktop-latest；排着的被更新的一次顶掉也无妨。
+  sync-latest:
+    needs: release
+    if: github.ref_type == 'tag' || inputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 传资产、改名、挪 tag 都要写仓库内容
+    concurrency:
+      group: desktop-latest
+      cancel-in-progress: false
+    steps:
       - name: 同步到 desktop-latest
-        if: github.ref_type == 'tag' || inputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_INPUT: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          target_tag="$TAG_INPUT"
-          if [ -z "$target_tag" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            target_tag="$GITHUB_REF_NAME"
-          fi
-          [ -n "$target_tag" ] || exit 0
-          v="${target_tag#desktop-v}"
+          repo="$GITHUB_REPOSITORY"
 
-          newest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --exclude-drafts --json tagName --jq '.[].tagName' \
-            | sed -n 's/^desktop-v//p' | sort -V | tail -1)
-          if [ "$newest" != "$v" ]; then
-            echo "desktop-v$v 不是最新的桌面端版本（最新是 desktop-v$newest），不动 desktop-latest"
+          # 最新的**正式版**。翻遍全部 Release（--paginate：四条发布线共用这个列表，只看最近
+          # N 个的话桌面端的会被挤出去）；草稿、标了预发布的不算，版本号只认纯 X.Y.Z——
+          # `sort -V` 把 0.2.0-rc.1 排在 0.2.0 后面，带后缀的不先滤掉，rc 一发首页就换成 rc，
+          # 之后的正式版反倒被当成旧的。
+          newest=$(gh api --paginate "repos/$repo/releases?per_page=100" \
+              --jq '.[] | select((.draft | not) and (.prerelease | not)) | .tag_name' \
+            | sed -n 's/^desktop-v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' | sort -V | tail -1)
+          [ -n "$newest" ] || { echo "还没有正式版的 desktop-v* Release，不动 desktop-latest"; exit 0; }
+          # tag 可能是 annotated 的，commits/<ref> 会一路解到提交上。
+          sha=$(gh api "repos/$repo/commits/desktop-v${newest}" --jq .sha)
+          title="桌面端最新版（desktop-v${newest}）"
+          echo "最新正式版：desktop-v${newest}（${sha}）"
+
+          asset_id() {
+            gh api "repos/$repo/releases/tags/desktop-latest" --jq ".assets[] | select(.name == \"$1\") | .id"
+          }
+          # desktop-latest 这个 tag 跟着挪到那一版的提交上：不挪的话它永远停在第一次建它的那个
+          # 提交，Release 页上的源码包和标题说的不是同一版。
+          move_tag() {
+            gh api -X PATCH "repos/$repo/git/refs/tags/desktop-latest" -f sha="$sha" -F force=true >/dev/null
+          }
+
+          exists=false
+          if gh release view desktop-latest --repo "$repo" >/dev/null 2>&1; then exists=true; fi
+
+          # 已经对齐了就别再搬三百兆：标题是最后一步才改的，标题对上说明上一次整套换完了。
+          if $exists && [ "$(gh release view desktop-latest --repo "$repo" --json name --jq .name)" = "$title" ] \
+            && [ -n "$(asset_id Satuwork_x64-setup.exe)" ] && [ -n "$(asset_id Satuwork_aarch64.dmg)" ] \
+            && [ -n "$(asset_id Satuwork_x64.dmg)" ]; then
+            move_tag
+            echo "desktop-latest 已经是 desktop-v${newest}，不用再传"
             exit 0
           fi
 
-          mkdir -p latest
-          cp "dist/Satuwork_${v}_x64-setup.exe" latest/Satuwork_x64-setup.exe
-          cp "dist/Satuwork_${v}_aarch64.dmg"   latest/Satuwork_aarch64.dmg
-          cp "dist/Satuwork_${v}_x64.dmg"       latest/Satuwork_x64.dmg
+          # 三个包去掉版本号那一截——**名字和 dlBuilds 里的 file 是一对**，改一边要改另一边
+          # （e2e/ui-smoke.mjs 里有一条用例盯着）。
+          mkdir -p src latest
+          gh release download "desktop-v${newest}" --repo "$repo" --dir src \
+            --pattern "Satuwork_${newest}_x64-setup.exe" \
+            --pattern "Satuwork_${newest}_aarch64.dmg" \
+            --pattern "Satuwork_${newest}_x64.dmg"
+          mv "src/Satuwork_${newest}_x64-setup.exe" latest/Satuwork_x64-setup.exe
+          mv "src/Satuwork_${newest}_aarch64.dmg"   latest/Satuwork_aarch64.dmg
+          mv "src/Satuwork_${newest}_x64.dmg"       latest/Satuwork_x64.dmg
 
           {
-            echo "Satuwork 桌面端的**最新版**，当前是 desktop-v${v}。"
+            echo "Satuwork 桌面端的**最新版**，当前是 desktop-v${newest}。"
             echo
             echo "这个 Release 每次发新版都会被覆盖，文件名不带版本号，官网首页的下载按钮指的就是这里。"
             echo "要某一个具体版本，去对应的 \`desktop-v<版本>\` Release。"
           } > latest-notes.md
 
-          if gh release view desktop-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload desktop-latest latest/* --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit desktop-latest --repo "$GITHUB_REPOSITORY" \
-              --title "桌面端最新版（desktop-v${v}）" --notes-file latest-notes.md --latest=false
-          else
+          if ! $exists; then
             # --latest=false：别把仓库的「Latest」抢过来，那个位置归别条发布线。
             gh release create desktop-latest latest/* \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "桌面端最新版（desktop-v${v}）" \
+              --repo "$repo" \
+              --target "$sha" \
+              --title "$title" \
               --notes-file latest-notes.md \
               --latest=false
+            exit 0
           fi
+
+          # **不直接 --clobber 覆盖正式名字**：gh 是先删旧的再传新的，一个包传几十秒，这段时间
+          # 首页那颗按钮是 404；传到一半断了，旧包已经没了，要等人重跑。所以先整套传成
+          # `<名字>.next`（--clobber 只会碰上一次没换完留下的 .next），三个都传完了再逐个
+          # 「删旧的、把 .next 改成正式名」——空档只剩两次 API 调用那么长。
+          mkdir -p next
+          for f in latest/*; do ln "$f" "next/$(basename "$f").next"; done
+          gh release upload desktop-latest next/* --repo "$repo" --clobber
+          for f in latest/*; do
+            name=$(basename "$f")
+            next_id=$(asset_id "$name.next")
+            [ -n "$next_id" ] || { echo "$name.next 没传上去" >&2; exit 1; }
+            old_id=$(asset_id "$name")
+            [ -z "$old_id" ] || gh api -X DELETE "repos/$repo/releases/assets/$old_id"
+            gh api -X PATCH "repos/$repo/releases/assets/$next_id" -f name="$name" >/dev/null
+          done
+
+          # 标题最后改：它是上面「已经对齐了」那个判断的依据，包没换完之前不能先说换好了。
+          gh release edit desktop-latest --repo "$repo" \
+            --title "$title" --notes-file latest-notes.md --latest=false
+          move_tag

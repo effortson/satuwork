@@ -30,8 +30,8 @@ cd gateway && pnpm dev
 自动挑 Windows / macOS，卡片顶上那排随时能自己切。
 
 文件指的是一个固定的 `desktop-latest` Release，所以发新版不用改页面：桌面端发版 CI 把安装包去掉
-版本号（`Satuwork_x64-setup.exe`、`Satuwork_aarch64.dmg`、`Satuwork_x64.dmg`）覆盖传上去，只在这个 tag
-是现有 `desktop-v*` 里最新的时候。这几个名字和 `dlBuilds` 是一对，有一条 e2e 盯着。**不用 GitHub 的
+版本号（`Satuwork_x64-setup.exe`、`Satuwork_aarch64.dmg`、`Satuwork_x64.dmg`）传上去，而且总是对齐到
+现有 `desktop-v*` 里最新的**正式版**（纯 `X.Y.Z`，预发布不算；补发老 tag 不会把它换回旧包）。这几个名字和 `dlBuilds` 是一对，有一条 e2e 盯着。**不用 GitHub 的
 `releases/latest`**：几条发布线共用一个 Release 列表，而且都以 `--latest=false` 建 Release，仓库的
 「Latest」不跟着哪一条走。
 
