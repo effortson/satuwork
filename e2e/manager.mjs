@@ -1511,6 +1511,113 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       }
     })
 
+    /**
+     * 部署的结局没人回写时，Gateway 去管家那儿问（deploy.ts 的 reconcileDeploy）。
+     *
+     * Vercel 上「后台装、装完回写」那一段会随函数实例一起被冻住：机器上装好了，库里那一行
+     * 却永远停在 installing，界面说「上一次安装没做完」。这里把一行手工拨回 installing，
+     * 再让一个假管家分别说「还在装」「名册里只有上一次的」「这次装好了」「这次装砸了」。
+     */
+    await test('部署结局补收：还在装接着等，上一次的不算，这次装好 / 装砸都落库', async () => {
+      const state = { progress: null, seats: [] }
+      const fakeMgr = createServer((mreq, res) => {
+        let body = ''
+        mreq.on('data', (c) => (body += c))
+        mreq.on('end', () => {
+          const path = mreq.url.split('?')[0]
+          let out = {}
+          if (mreq.method === 'GET' && path === '/seats') out = { seats: state.seats }
+          else if (mreq.method === 'GET' && /^\/seats\/[^/]+\/progress$/.test(path)) out = { progress: state.progress }
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify(out))
+        })
+      })
+      const fakePort = await listenOn(fakeMgr, 0)
+      const adminLogin = await req(gwBase, 'POST', '/auth/login', {
+        body: { email: 'admin@mgrtest.local', password: 'manager-admin-1234' },
+      })
+      assert(adminLogin.status === 200, `admin login ${adminLogin.status} ${adminLogin.text}`)
+      const adminTok = adminLogin.json.token
+      const made = await req(gwBase, 'POST', '/platform/bots', { token: ownerTok, body: { name: '补收验证 Bot' } })
+      assert(made.status === 201, `建 Bot ${made.status} ${made.text}`)
+      const botId = made.json.bot.id
+      const mid = await machineIdOf(req, gwBase, ownerTok, orgId)
+      const point = (h) => req(gwBase, 'PUT', `/platform/orgs/${orgId}/machine`, { token: ownerTok, body: { host: h } })
+
+      const { createRequire } = await import('node:module')
+      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
+      const pg = require('pg')
+      const client = new pg.Client({ connectionString: PG_URL })
+      await client.connect()
+      await client.query(`set search_path to ${SCHEMA}`)
+      /** 把这一行拨回「装到一半、这个进程手上没有」，开始时刻在 startedAgo 毫秒之前。 */
+      const stick = (startedAgo) =>
+        client.query(
+          `update seat_runtimes set status = 'deploying', "deployPhase" = 'installing', "deployStartedAt" = $2, "lastError" = null where "botId" = $1`,
+          [botId, Date.now() - startedAgo],
+        )
+      const rowOf = async () => (await client.query(`select * from seat_runtimes where "botId" = $1`, [botId])).rows[0]
+      const progress = () => req(gwBase, 'GET', `/runtime/deploy/progress?botId=${encodeURIComponent(botId)}`, { token: adminTok })
+      try {
+        await publishRelease({ req, gwBase, token: ownerTok, version: '0.2.0-recon' })
+        // 进度要问管家装到第几步，这条路按协议号挡着；前面有用例拿假心跳把它报低过。
+        const hb = await req(gwBase, 'POST', `/internal/machines/${mid}/heartbeat`, {
+          token: machineTok,
+          body: { managerVersion: 'e2e-11', protocol: 11, node: process.versions.node, seats: [] },
+        })
+        assert(hb.status === 200, `heartbeat ${hb.status} ${hb.text}`)
+        const moved = await point(`http://127.0.0.1:${fakePort}`)
+        assert(moved.status === 200, `改管家地址 ${moved.status} ${moved.text}`)
+        const d = await req(gwBase, 'POST', '/runtime/deploy', { token: adminTok, body: { botId, version: '0.2.0-recon' } })
+        assert(d.status === 200, `头一次部署 ${d.status} ${d.text}`)
+        const seatId = (await rowOf()).seatId
+
+        // 1) 机器上还在装：接着等，不是「没做完」，步数照问。
+        await stick(120_000)
+        state.progress = { step: 2, total: 5, label: '装桌面', at: Date.now() }
+        const busy = await progress()
+        assert(busy.status === 200, `进度 ${busy.status} ${busy.text}`)
+        assert(busy.json.status === 'deploying' && busy.json.stale === false, `还在装却说成了 ${JSON.stringify(busy.json)}`)
+        assert(busy.json.step?.step === 2, `步数没带上：${JSON.stringify(busy.json.step)}`)
+
+        // 2) 名册里只有上一次装的那一行：不认，照旧是「没做完」，库里不动。
+        state.progress = null
+        state.seats = [{ seatId, status: 'ready', deployedAt: Date.now() - 600_000, lastError: null, botVersion: 'old-1' }]
+        const old = await progress()
+        assert(old.json.status === 'deploying' && old.json.stale === true, `上一次的结局被当成了这一次：${JSON.stringify(old.json)}`)
+        assert((await rowOf()).status === 'deploying', '库里那一行不该被动')
+
+        // 3) 这一次装好了：落 ready，版本以管家装上的为准，进度字段清空。
+        state.seats = [{ seatId, status: 'ready', deployedAt: Date.now() - 60_000, lastError: null, botVersion: '0.2.0-recon' }]
+        const done = await progress()
+        assert(done.json.status === 'ready' && done.json.stale === false, `装好了却没收：${JSON.stringify(done.json)}`)
+        const row = await rowOf()
+        assert(row.status === 'ready' && row.botVersion === '0.2.0-recon', `库里 ${row.status} ${row.botVersion}`)
+        assert(row.deployPhase === null && row.deployStartedAt === null, `进度字段没清：${row.deployPhase} ${row.deployStartedAt}`)
+
+        // 4) 没人开着页面：交给维护那一拍。这一次装砸了，落 error 并带上管家的原话。
+        await stick(120_000)
+        state.seats = [{ seatId, status: 'error', deployedAt: Date.now() - 60_000, lastError: 'apt-get install xfce4 failed', botVersion: '0.2.0-recon' }]
+        const tick = await req(gwBase, 'GET', '/cron/tick', { token: CRON_SECRET, timeout: 60000 })
+        assert(tick.status === 200, `tick ${tick.status} ${tick.text}`)
+        const failed = await rowOf()
+        assert(failed.status === 'error', `维护那一拍没收：${failed.status}`)
+        assert(String(failed.lastError).includes('apt-get install xfce4 failed'), `原因没带上：${failed.lastError}`)
+      } finally {
+        await client.end()
+        const back = await point(mgrBase)
+        assert(back.status === 200, `管家地址没改回去，后面的用例全会坏：${back.status} ${back.text}`)
+        const cleaned = await req(gwBase, 'DELETE', `/platform/bots/${encodeURIComponent(botId)}`, { token: ownerTok })
+        assert(cleaned.status === 200, `没收拾干净：删 Bot ${cleaned.status} ${cleaned.text}`)
+        const left = await req(mgrBase, 'GET', '/seats', { token: machineTok })
+        assert(
+          (left.json.seats || []).length === 0,
+          `席位没从名册里拆掉，后面的用例会莫名其妙地坏：${JSON.stringify(left.json.seats)}`,
+        )
+        await closeServer(fakeMgr, '假管家')
+      }
+    })
+
     await test('心跳带回期望版本；没发过管家包时为 null', async () => {
       const r = await req(gwBase, 'POST', `/internal/machines/${(await machineIdOf(req, gwBase, ownerTok, orgId))}/heartbeat`, {
         token: machineTok,

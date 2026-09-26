@@ -7,7 +7,7 @@ import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
 import type { Account, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
-import { LOGS_FOLLOW_GONE, deployInFlight, deploySeat, listSeatRuntime, logsDirectPayload, publicSeatRuntime, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
+import { LOGS_FOLLOW_GONE, deployInFlight, deploySeat, listSeatRuntime, logsDirectPayload, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, defaultBotModel, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
@@ -1160,14 +1160,22 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     requireSeat(account)
     const botId = (req.query.get('botId') || '').trim()
     if (!botId) throw new HttpError(400, 'botId 不能为空')
-    const runtime = await db.seatRuntime(account.id, botId)
-    const live = deployInFlight(account.id, botId)
-    if (!runtime) {
+    const found = await db.seatRuntime(account.id, botId)
+    if (!found) {
+      const live = deployInFlight(account.id, botId)
       // 后台那次登记还没落库（建完 Bot 之后的头几百毫秒），也说成「在装」——这一屏
       // 上「还没有部署」那句话会带一颗按钮，让人在机器已经开工的时候再按一次。
       json(res, 200, { status: live ? 'deploying' : 'none', phase: live ? 'queued' : null, elapsedMs: null, lastError: null, step: null, stale: false })
       return
     }
+    /**
+     * 这个进程手上没有这次部署时，先去管家那儿问结局（reconcileDeploy）。
+     *
+     * 在 Vercel 上这是常态而不是例外：装是在另一个实例里发出去的，那个实例回完包可能已经被
+     * 冻住，这一格 inFlightDeploys 在这里永远是空的。不问的话，机器上装得好好的席位会被说成
+     * 「上一次安装没做完」，而机器上还在装的会被说成「没人在装」。
+     */
+    const { runtime, live, step: knownStep } = await reconcileDeploy(db, found)
     /**
      * **装到一半没人管了。**
      *
@@ -1179,7 +1187,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * 这活儿。所以这一格由 deployInFlight 回答，界面据此改口并给出「重新部署」。
      */
     const stale = runtime.status === 'deploying' && !live
-    const machine = runtime.status === 'deploying' && !stale ? await db.machine(runtime.machineId) : undefined
+    const machine = runtime.status === 'deploying' && !stale && !knownStep ? await db.machine(runtime.machineId) : undefined
     json(res, 200, {
       status: runtime.status,
       phase: runtime.deployPhase,
@@ -1187,7 +1195,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       lastError: runtime.lastError,
       stale,
       // 只有真的在装才去问机器：装完之后每两秒敲一次管家，问的是一件已经没有答案的事。
-      step: machine && runtime.deployPhase === 'installing' ? (await seatStepOf(machine, runtime.seatId)) ?? null : null,
+      step: knownStep ?? (machine && runtime.deployPhase === 'installing' ? (await seatStepOf(machine, runtime.seatId)) ?? null : null),
     })
   })
 

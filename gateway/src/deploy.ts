@@ -4,6 +4,7 @@ import { canonicalTimezone, isUniqueViolation, releaseArch, type Account, type B
 import { signLogsTicket, type JwtKeys } from './crypto.ts'
 import { HttpError } from './http.ts'
 import { botReleaseFile, directReleaseUrl } from './releases.ts'
+import { waitUntil } from '@vercel/functions'
 
 /** 管家握手协议。低于这个数的机器不给下发部署——字段对不上会失败得很难看。 */
 export const MIN_MANAGER_PROTOCOL = 1
@@ -959,7 +960,7 @@ export async function startSeatDeploy(
     if ('done' in res) return { ok: true, runtime: res.done.runtime, installing: false }
     const plan = res.plan
     handedOff = true
-    void installSeat(db, plan)
+    const job = installSeat(db, plan)
       .then((out) => {
         if (!out.ok) {
           // 失败已经写进席位行了（lastError），这里只留一行日志：后台没有调用方，
@@ -972,6 +973,14 @@ export async function startSeatDeploy(
       })
       // 后台那一段跑完才松手——「有没有人在装」这个问题，答的就是它。
       .finally(release)
+    /**
+     * **Vercel 上要 waitUntil，否则这一段在回包之后随时会被冻住。** 函数实例回完响应就可能
+     * 被挂起，后台那个 `PUT /seats/:id` 管家照样装完了，可等它回来、把 `ready` 写回库的这一段
+     * 再也没人跑——库里那一行永远停在 `installing`，界面说「上一次安装没做完」。waitUntil
+     * 让实例撑到这个 promise 结束（上限是函数自己的 maxDuration）；撑不住的（首装超过时限）
+     * 由 reconcileDeploy 收尾。不在 Vercel 上时它什么都不做（没有请求上下文）。
+     */
+    waitUntil(job)
     return { ok: true, runtime: plan.row, installing: true }
   } finally {
     if (!handedOff) release()
@@ -1255,8 +1264,19 @@ async function installSeat(db: Db, plan: DeployPlan): Promise<DeployOutcome> {
     return { ok: false, status: 409, error: '这个 Bot 在部署过程中被删掉了', runtime: undefined }
   }
 
+  const ready = await markSeatReady(db, { ...sending, accountId: account.id, botId, companyId }, version, machine)
+  return { ok: true, result: { runtime: ready, machine } }
+}
+
+/**
+ * 装好了：那一行落成 `ready`，并登记 bot 的反代地址。
+ *
+ * 两处用：installSeat 等到管家回包之后，以及 reconcileDeploy 事后从管家那儿问到结局时。
+ * 两边写的必须是同一件事，不然「自己等到的」和「事后补上的」会是两种 ready。
+ */
+async function markSeatReady(db: Db, row: SeatRuntime, version: string, machine: Machine): Promise<SeatRuntime> {
   const ready = await db.upsertSeatRuntime({
-    ...sending,
+    ...row,
     status: 'ready',
     lastError: null,
     deployedAt: Date.now(),
@@ -1266,13 +1286,127 @@ async function installSeat(db: Db, plan: DeployPlan): Promise<DeployOutcome> {
     deployStartedAt: null,
   })
   await db.upsertInstance({
-    accountId: account.id,
-    botId,
-    companyId,
+    accountId: row.accountId,
+    botId: row.botId,
+    companyId: row.companyId,
     // 反代地址，不是 bot 的直连地址。席位端口只听 127.0.0.1，只有管家够得着。
     host: botBaseOf(machine.host, row.seatId),
   })
-  return { ok: true, result: { runtime: ready, machine } }
+  return ready
+}
+
+/** 管家名册里的一行（manager/src/seats.ts 的 SeatRecord，去掉了 gatewayToken）。只取要用的几格。 */
+interface ManagerSeat {
+  seatId: string
+  status: 'ready' | 'error'
+  /** 管家**开始**装这一次的时刻（管家自己的钟），见 seats.ts 的 base。 */
+  deployedAt: number
+  lastError: string | null
+  botVersion: string
+}
+
+/** 管家的名册。问不到（机器没配对、不通、老管家）就是 undefined，调用方当「不知道」处理。 */
+async function managerSeatsOf(machine: Machine, timeoutMs = 5000): Promise<ManagerSeat[] | undefined> {
+  if (!machinePaired(machine)) return undefined
+  try {
+    const res = await fetch(`${machine.host!.replace(/\/$/, '')}/seats`, {
+      headers: { ...managerHeaders(machine.token), authorization: 'Bearer ' + machine.token },
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok) return undefined
+    const body = (await res.json()) as { seats?: unknown }
+    return Array.isArray(body?.seats) ? (body.seats as ManagerSeat[]) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Gateway 和管家的钟差多少还认。管家名册里那一行的 `deployedAt` 是管家自己的钟，拿去和
+ * 库里的 `deployStartedAt`（Gateway 的钟）比；差个几秒是常事，差出半分钟就该去修 NTP 了。
+ */
+const DEPLOY_CLOCK_SLACK_MS = 30_000
+
+/**
+ * **没人等着的那次部署，结局去管家那儿问。**
+ *
+ * 在 Vercel 上，「后台装、装完回写」那一段会随函数实例一起被冻住或掐掉（见 startSeatDeploy
+ * 的 waitUntil）；进程内的 inFlightDeploys 也只对**这个实例**有效——轮询进度的请求多半落在
+ * 别的实例上。于是库里那一行停在 `installing`，而机器上早就装好了（或者装砸了）。
+ *
+ * 只收 `installing` 的：`queued` 说明 `PUT /seats/:id` 还没发出去，机器上什么都没有，
+ * 那就是真的没做完，照旧给「重新部署」。
+ *
+ * - 管家报得出这一步装到哪了 → 机器上还在装：`live`，接着等。
+ * - 管家名册里有这个席位，而且是**这一次**装的（它开始装的时刻不早于库里记的开始时刻）
+ *   → 按它的结局落 `ready` / `error`，和 installSeat 自己等到的一样。
+ * - 别的（问不到、名册里没有、那一行是上一次的）→ 不知道，原样返回，`live: false`。
+ */
+export async function reconcileDeploy(
+  db: Db,
+  runtime: SeatRuntime,
+  known: { machine?: Machine; seats?: ManagerSeat[] } = {},
+): Promise<{ runtime: SeatRuntime; live: boolean; step?: SeatStep }> {
+  const live = deployInFlight(runtime.accountId, runtime.botId)
+  if (runtime.status !== 'deploying' || live) return { runtime, live }
+  if (runtime.deployPhase !== 'installing' || runtime.deployStartedAt == null) return { runtime, live: false }
+  const machine = known.machine ?? (await db.machine(runtime.machineId))
+  if (!machine || !machinePaired(machine)) return { runtime, live: false }
+
+  const step = await seatStepOf(machine, runtime.seatId)
+  if (step) return { runtime, live: true, step }
+
+  const seats = known.seats ?? (await managerSeatsOf(machine))
+  const rec = seats?.find((x) => x?.seatId === runtime.seatId)
+  if (!rec || !(Number(rec.deployedAt) >= runtime.deployStartedAt - DEPLOY_CLOCK_SLACK_MS)) return { runtime, live: false }
+
+  if (rec.status === 'ready') {
+    // 版本以管家装上的为准：库里那一行在装的过程中还记着上一版（见 reserveSeat）。
+    const version = typeof rec.botVersion === 'string' && /^[A-Za-z0-9._+-]{1,64}$/.test(rec.botVersion)
+      ? rec.botVersion
+      : runtime.botVersion ?? ''
+    return { runtime: await markSeatReady(db, runtime, version, machine), live: false }
+  }
+  const failed = await db.upsertSeatRuntime({
+    ...runtime,
+    status: 'error',
+    lastError: tailOf(String(rec.lastError || '管家报告部署失败'), 900),
+    updatedAt: Date.now(),
+    deployPhase: null,
+    deployStartedAt: null,
+  })
+  return { runtime: failed, live: false }
+}
+
+/**
+ * 定时扫一遍：停在 `installing` 超过一分钟、这个进程手上又没有的席位，挨台去问管家。
+ *
+ * 进度那条路（/runtime/deploy/progress）只在有人开着那一屏时才会问；没人看的那些——建完
+ * Bot 就关了页面、批量铺的——靠这里收尾。一分钟的门槛是给「别的实例正在正常等回包」留的：
+ * 那次会自己写，这里抢着写也无害（写的是同一个结局），只是没必要。
+ */
+export async function reconcileStuckDeploys(db: Db): Promise<number> {
+  let settled = 0
+  const now = Date.now()
+  for (const machine of await db.allMachines()) {
+    if (!machinePaired(machine)) continue
+    const stuck = (await db.seatRuntimesOfMachine(machine.id)).filter(
+      (r) =>
+        r.status === 'deploying' &&
+        r.deployPhase === 'installing' &&
+        r.deployStartedAt != null &&
+        now - r.deployStartedAt > 60_000 &&
+        !deployInFlight(r.accountId, r.botId),
+    )
+    if (!stuck.length) continue
+    const seats = await managerSeatsOf(machine)
+    if (!seats) continue
+    for (const row of stuck) {
+      const out = await reconcileDeploy(db, row, { machine, seats })
+      if (out.runtime.status !== 'deploying') settled++
+    }
+  }
+  return settled
 }
 
 /** 失败的那一行：状态标红、写清理由、进度清空。 */
@@ -1288,13 +1422,13 @@ async function failSeat(db: Db, plan: DeployPlan, status: number, message: strin
   return { ok: false, status, error: message, runtime: failed }
 }
 
-/** Gateway 下发给管家的席位规格。字段和 manager/src/seats.ts 的 SeatSpec 一一对应。 */
 /** 部署规格里那两个直连字段（见 SeatSpec.botUrl）。不能直连就什么都不加。 */
 function directBotPackage(release: BotRelease): Pick<SeatSpec, 'botUrl' | 'botSha256'> {
   const url = directReleaseUrl(release)
   return url ? { botUrl: url, botSha256: release.sha256 } : {}
 }
 
+/** Gateway 下发给管家的席位规格。字段和 manager/src/seats.ts 的 SeatSpec 一一对应。 */
 export interface SeatSpec {
   seatId: string
   linuxUser: string
