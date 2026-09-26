@@ -187,10 +187,14 @@ jobs:
             gh release edit "$target_tag" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
           else
             echo "Release $target_tag 不存在，新建 Release..."
+            # --latest=false：仓库的「Latest」不归桌面端。不写的话 GitHub 按日期自动挑，
+            # 桌面端一发版就把它从别条线手里抢过来（desktop-v0.1.1 就这么抢过一次）。
+            # 首页要的「桌面端最新版」走的是下面那个 desktop-latest，不靠这个标记。
             gh release create "$target_tag" dist/* \
               --repo "$GITHUB_REPOSITORY" \
               --title "$target_tag" \
-              --notes-file notes.md
+              --notes-file notes.md \
+              --latest=false
           fi
 
       # 首页的下载那一段指着 desktop-latest（见 gateway/ui/pages-landing.js 的 dlBase）。
