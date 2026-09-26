@@ -71,11 +71,34 @@ function providerOptions(selected) {
   return list.map((p) => `<option value="${esc(p.provider)}" ${p.provider === selected ? 'selected' : ''}>${esc(p.name || p.provider)}</option>`).join('')
 }
 
+/**
+ * 模型下拉框的选项。角色面板和备选列表**共用这一份**——两边各写各的时候，一边显示 id、
+ * 一边显示名字，同一个模型在同一屏上长成两个样子。
+ *
+ * 显示目录里的名字（`Google: Gemini 3.7 Flash`），没有名字就退回 id；同一家里有重名的
+ * （免费版和付费版常常只差一个后缀、有时连后缀都没有）补上 id 区分。完整 id 挂在 title 上。
+ */
+function modelOptionsHtml(provider, models, selected = '') {
+  const names = new Map()
+  for (const m of models) {
+    const name = m.name || m.id
+    names.set(name, (names.get(name) || 0) + 1)
+  }
+  return models
+    .map((m) => {
+      const name = m.name || m.id
+      const label = names.get(name) > 1 && name !== m.id ? `${name}（${m.id}）` : name
+      return `<option value="${esc(provider ? `${provider}/${m.id}` : m.id)}" title="${esc(m.id)}" ${m.id === selected ? 'selected' : ''}>${esc(label)}</option>`
+    })
+    .join('')
+}
+
 function modelOptions(provider, selected) {
   const shown = state.catalog.find((p) => p.provider === provider)
-  const models = shown?.models?.length ? shown.models : selected ? [{ id: selected }] : []
+  const models = shown?.models?.length ? shown.models.slice() : selected ? [{ id: selected }] : []
   if (selected && !models.some((m) => m.id === selected)) models.unshift({ id: selected })
-  return models.map((m) => `<option value="${esc(m.id)}" ${m.id === selected ? 'selected' : ''}>${esc(m.id)}</option>`).join('')
+  // 角色面板的 value 只要模型 id（供应商在旁边那个下拉框里），所以不带 provider 前缀。
+  return modelOptionsHtml('', models, selected)
 }
 
 /** 当前生效的报价倍率。没设过就是 1（按原价）。 */
@@ -388,7 +411,7 @@ function alternatesPanel() {
           </select>
           <select class="input" style="width: 250px; flex: none;" data-act="alt-add" aria-label="${esc(t('添加备选模型'))}">
             <option value="">${t('添加备选模型')}</option>
-            ${shown.models.map((m) => `<option value="${esc(`${shown.provider}/${m.id}`)}">${esc(m.name || m.id)}</option>`).join('')}
+            ${modelOptionsHtml(shown.provider, shown.models)}
           </select>
         </div>`
   return `

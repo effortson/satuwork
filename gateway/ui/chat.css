@@ -788,6 +788,9 @@
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
 }
+/* 上面那条 display: flex 会盖掉 hidden 属性自带的 display: none——不补这一行，浮层收着的
+   时候也画着一个带边框的空框，就贴在选择器头顶上。 */
+.sw-modelpop[hidden] { display: none; }
 .sw-modelpop .sw-pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
 .sw-modelpop small { flex: none; }
 .sw-modelnote { margin: var(--space-1) 0 0; padding: var(--space-2) var(--space-2) 0; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.5; color: var(--muted-foreground); }

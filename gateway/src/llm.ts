@@ -448,17 +448,30 @@ export class Llm {
   async find(companyId: string | null, raw: string, hint?: string): Promise<CatalogModel | undefined> {
     const ref = parseModelRef(raw, hint)
     const list = await this.catalog(companyId)
+    /**
+     * **调用方给了供应商，就先按「这家 + 整条 id」认。**
+     *
+     * 模型 id 自己带斜杠的时候（openrouter 的 `google/gemini-3.7-flash`），下面那一刀会把
+     * `google` 当成供应商——而 Google 自家目录里偏偏也有一个 `gemini-3.7-flash`，于是命中
+     * 的是另一家，接着去找 google 的密钥：「测试连通性」回「没有 google 的密钥」，用它聊天
+     * 的那一轮也一样。先认 hint 这一步不会伤到老写法：`openrouter/google/...` 这种整条
+     * 带前缀的，在 hint 那家底下找不到同名 id，照旧落到下面去切。
+     */
+    const bare = String(raw || '').trim()
+    if (hint && bare) {
+      const direct = list.find((m) => m.provider === hint && m.id === bare)
+      if (direct) return direct
+    }
     if (ref.provider && ref.id) {
       const hit = list.find((m) => m.provider === ref.provider && m.id === ref.id)
       if (hit) return hit
     }
-    // 模型 id 自己带斜杠时（`openai/gpt-4o` 这种），上面那一刀会把前半段当成 provider。
-    // 切错了就把整条再当作裸 id 找一遍——唯一命中，或者跟 hint 的供应商对得上，才算数。
-    const bare = String(raw || '').trim()
+    // 模型 id 自己带斜杠、又没给 hint 时（`openai/gpt-4o` 这种），上面那一刀会把前半段
+    // 当成 provider。切错了就把整条再当作裸 id 找一遍——唯一命中才算数；给了 hint 的
+    // 那种在最上面已经按 hint 认过了。
     if (bare) {
       const hits = list.filter((m) => m.id === bare)
       if (hits.length === 1) return hits[0]
-      if (hint) return hits.find((m) => m.provider === hint)
     }
     return undefined
   }
