@@ -23,11 +23,18 @@ With a valid session, `/` goes straight to chat / overview as before. The deskto
 and the footers of both the landing page and the sign-in page link to them. The legal entity, jurisdiction and contact email in them are placeholders
 and must be replaced before launch (see `LEGAL_DRAFT` at the top of that file).
 
-Desktop downloads live in their own section on the landing page, right after "Getting started" (`lpDownload` in
-`gateway/ui/pages-landing.js`); `/#download` jumps straight to it, and the old `/download` address folds into it. It picks
-Windows / macOS from the platform the browser reports, and the row at the top of the card lets people switch manually. Files point
-at a fixed `desktop-latest` Release that desktop release CI overwrites with version-less file names on every release, so shipping a new
-version needs no page change. (**Not GitHub's `releases/latest`**, which points at whichever release line — bot, manager, local bot — shipped last.)
+Desktop downloads are a section of the landing page, right after "Getting started" (`lpDownload` in `gateway/ui/pages-landing.js`);
+there is no separate download page any more. `/#download` jumps straight to that section, and the old `/download` address still
+serves the UI and is rewritten to `/#download`. The sign-in, setup and invite screens link there too (in a new tab; hidden in the
+desktop shell). Because it lives on the landing page it is **only reachable while signed out** — with a valid session `/` (and the
+old `/download`) goes to chat / overview. It picks Windows / macOS from the platform the browser reports, and the row at the top of
+the card lets people switch manually.
+
+Files point at a fixed `desktop-latest` Release, so shipping a new version needs no page change: desktop release CI copies the
+installers there under version-less names (`Satuwork_x64-setup.exe`, `Satuwork_aarch64.dmg`, `Satuwork_x64.dmg`), but only when the
+tag is the newest `desktop-v*`. Those names are pinned against `dlBuilds` by an e2e check. It deliberately **doesn't use GitHub's
+`releases/latest`**: every release line shares one Release list, and all of them create Releases with `--latest=false`, so the
+repo's "Latest" badge doesn't track any one line.
 
 To run everything in containers: `docker compose up -d` (Gateway + PostgreSQL).
 The Bot isn't in compose — it's deployed per (account, botId) by the machine manager on the seat machine, not orchestrated as a container.
@@ -60,7 +67,8 @@ routines are picked up by the Bot process itself. Why it's shaped this way, and 
 ## Packaging
 
 Local test packages (built as Linux packages through Docker and uploaded to a local Gateway): see
-[docs/local-release.md](docs/local-release.md). Production goes through CI: push a `bot-v*` / `manager-v*` tag.
+[docs/local-release.md](docs/local-release.md). Production goes through CI: push a `bot-v*` / `manager-v*` / `local-bot-v*` /
+`desktop-v*` tag. A `desktop-v*` tag also refreshes the `desktop-latest` Release that the landing page downloads from (see above).
 
 ## Billing
 

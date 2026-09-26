@@ -23,11 +23,17 @@ cd gateway && pnpm dev
 首页和登录页的页脚都指过去。里面的落款主体、管辖地和联系邮箱现在是占位的，上线前要换掉
 （见那个文件顶上的 `LEGAL_DRAFT`）。
 
-桌面端下载是首页上的一段，紧接在「怎么开始」后面（`gateway/ui/pages-landing.js` 的 `lpDownload`）；
-`/#download` 直接落到那一段，老的 `/download` 地址也折到那儿。它按浏览器报的平台自动挑
-Windows / macOS，卡片顶上那排随时能自己切；文件指的是一个固定的 `desktop-latest` Release，
-桌面端发版 CI 每次把新包去掉版本号覆盖上去，所以发新版不用改页面（**不是 GitHub 的 `releases/latest`**，
-那个指的是 bot、管家、本地 Bot 几条线里最后发的那个）。
+桌面端下载是首页上的一段，紧接在「怎么开始」后面（`gateway/ui/pages-landing.js` 的 `lpDownload`），
+不再有单独的下载页。`/#download` 直接落到那一段；老的 `/download` 地址照样交得出界面，进来改写成
+`/#download`。登录、创建管理员、接受邀请三屏底下也指过去（开新标签页；桌面壳里不给）。因为它在首页上，
+**只有没登录时看得到**——有票的话 `/`（和老的 `/download`）照旧是对话 / 概览。它按浏览器报的平台
+自动挑 Windows / macOS，卡片顶上那排随时能自己切。
+
+文件指的是一个固定的 `desktop-latest` Release，所以发新版不用改页面：桌面端发版 CI 把安装包去掉
+版本号（`Satuwork_x64-setup.exe`、`Satuwork_aarch64.dmg`、`Satuwork_x64.dmg`）覆盖传上去，只在这个 tag
+是现有 `desktop-v*` 里最新的时候。这几个名字和 `dlBuilds` 是一对，有一条 e2e 盯着。**不用 GitHub 的
+`releases/latest`**：几条发布线共用一个 Release 列表，而且都以 `--latest=false` 建 Release，仓库的
+「Latest」不跟着哪一条走。
 
 整套跑在容器里：`docker compose up -d`（Gateway + PostgreSQL）。
 Bot 不在 compose 里——它由席位机器上的机器管家按 (账号, botId) 部署，不是容器编排出来的。
@@ -59,7 +65,8 @@ Gateway 有一个函数形态（`gateway/src/serverless.ts`）：没有监听、
 ## 出包
 
 本地测试包（过一层 Docker 打 Linux 包、传进本地 Gateway）见
-[docs/local-release.md](docs/local-release.md)。生产走 CI：推 `bot-v*` / `manager-v*` tag。
+[docs/local-release.md](docs/local-release.md)。生产走 CI：推 `bot-v*` / `manager-v*` / `local-bot-v*` /
+`desktop-v*` tag。`desktop-v*` 还会顺手刷新首页下载用的 `desktop-latest` Release（见上文）。
 
 ## 计费
 
