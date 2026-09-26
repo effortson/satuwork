@@ -1078,6 +1078,11 @@ window.SATU_I18N = {
   '这台席位的版本还不支持切换模型，升级后可用': 'This seat is too old to switch models; available after it upgrades',
   '还没取到可选的模型，过几秒再试': 'Model options have not loaded yet; try again in a few seconds',
   '平台目前只配了一个日常模型，没有可换的': 'Only one daily model is configured; there is nothing to switch to',
+  // ── 审计总结：结果状态 ──
+  已完成: 'Completed',
+  部分完成: 'Partially done',
+  受阻: 'Blocked',
+  已回答: 'Answered',
   // ── 模型配置页：日常模型备选 ──
   日常模型备选: 'Daily model alternatives',
   '还没有备选。': 'No alternatives yet.',

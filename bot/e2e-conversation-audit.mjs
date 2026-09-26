@@ -1,5 +1,5 @@
 /** 席位侧审计切轮、工具证据和出站脱敏的纯函数探针。 */
-import { chunksOf, completedTurns, redactValue, turnText } from './src/conversation-audit/index.ts'
+import { SCORE_ITEMS, auditSystem, chunksOf, completedTurns, redactValue, turnText } from './src/conversation-audit/index.ts'
 
 const ev = (seq, time, type, data) => ({ seq, time, type, data })
 const events = [
@@ -24,7 +24,17 @@ const many = Array.from({ length: 8 }, (_, i) => ({
 }))
 const chunks = chunksOf(many)
 
+const zh = auditSystem('zh')
+const en = auditSystem('en')
+
 console.log('__RESULT__' + JSON.stringify({
+  提示词: {
+    要求写评分理由: zh.includes('scoreReasons') && /为什么得这个分/.test(zh),
+    五项满分合计一百: SCORE_ITEMS.reduce((n, x) => n + x.max, 0) === 100,
+    每项都列进提示词: SCORE_ITEMS.every((x) => zh.includes(`${x.key} 满分 ${x.max}`)),
+    英文用户要英文: /in English/.test(en) && !/用简体中文写/.test(en),
+    中文用户要中文: /用简体中文写/.test(zh) && !/in English/.test(zh),
+  },
   切轮: {
     只收已完成轮次: turns.length === 1,
     seq范围完整: turns[0].firstSeq === 1 && turns[0].lastSeq === 6,

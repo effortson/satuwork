@@ -977,7 +977,7 @@ async function submitAuditFilter(e) {
   state.auditFrom = String(fd.get('from') || '')
   state.auditTo = String(fd.get('to') || '')
   try {
-    await loadConversationAudits()
+    await loadConversationAudits(true)
   } catch (err) {
     flash('err', err.message)
   }

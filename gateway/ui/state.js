@@ -46,6 +46,13 @@ const state = {
   sessionEvents: null,
   sessionPullError: '',
   auditItems: [],
+  /**
+   * 审计总结的翻页：游标栈，最后一个是当前页的起点（null = 第一页）。和计费明细同一种做法，
+   * 往回翻是弹栈，不用接口支持「上一页」。换筛选条件时整个栈清回第一页。
+   */
+  auditCursors: [null],
+  auditNextCursor: null,
+  auditLoading: false,
   auditFilterOptions: { accounts: [], bots: [] },
   auditAccountId: '',
   auditBotId: '',

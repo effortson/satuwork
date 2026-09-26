@@ -1278,3 +1278,11 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
      主 CTA。**这两页没有那颗**——跟着藏的话，手机上从这儿再也走不进产品。 */
   .satu-lg .satu-lp-topsign { display: inline-flex; }
 }
+
+/* 审计详情的评分明细：项目 · 得分 / 满分 · 原因。窄屏把原因挪到下一行。 */
+.satu-audit-score { display: grid; grid-template-columns: minmax(140px, 1fr) 96px minmax(0, 2.4fr); gap: var(--space-4); align-items: start; padding: var(--space-3) 0; border-top: 1px solid var(--border); }
+.satu-audit-score:first-child { border-top: 0; }
+@media (max-width: 760px) {
+  .satu-audit-score { grid-template-columns: 1fr 96px; }
+  .satu-audit-score > :last-child { grid-column: 1 / -1; }
+}

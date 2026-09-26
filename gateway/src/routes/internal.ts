@@ -13,7 +13,7 @@ import { METRIC_RETENTION_MS, MINUTE_MS, egressDelta, telemetryOf } from '../lib
 import { HANDOFF_STATES, type HandoffState, type Machine } from '../db.ts'
 import { resolveAssignee } from '../lib/handoff.ts'
 import { notify } from '../handoff-sweep.ts'
-import { createHash } from 'node:crypto'
+import { auditResultHash } from '../conversation-audit.ts'
 
 /**
  * 席位报上来的 guard / outcome 只认这两张表里的值。
@@ -436,6 +436,9 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
       return Number.isFinite(n) ? n : fallback
     }
     const outcomes = new Set(['completed', 'partial', 'failed', 'blocked', 'answered', 'unknown'])
+    // 席位按派活时给的语言写（见 conversation-audit.ts 的 postAuditJob）并原样回报。老席位
+    // 不回这一格——它们的提示词只会写中文，按 zh 记正好。
+    const locale = body.locale === 'en' ? 'en' as const : 'zh' as const
     const items = rawItems.map((raw, index) => {
       const o = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
       const firstSeq = Math.trunc(finite(o.firstSeq, fromSeq))
@@ -451,6 +454,23 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
       const scoreBreakdown = Object.fromEntries(
         Object.entries(breakdownRaw).slice(0, 10).map(([k, v]) => [text(k, 40), Math.max(0, Math.min(100, finite(v)))]),
       )
+      // 原因只收分项里有的那几个键：多出来的键没有分数可对，界面上也没地方摆。
+      const reasonsRaw = o.scoreReasons && typeof o.scoreReasons === 'object' && !Array.isArray(o.scoreReasons)
+        ? o.scoreReasons as Record<string, unknown> : {}
+      const scoreReasons = Object.fromEntries(
+        Object.entries(reasonsRaw)
+          .map(([k, v]) => [text(k, 40), text(v, 400)] as const)
+          // hasOwn 而不是 in：模型输出不可信，`in` 会把 toString / constructor 这类原型上的键也放过去。
+          .filter(([k, v]) => v && Object.hasOwn(scoreBreakdown, k)),
+      )
+      // 每一项的满分：席位按它评分时用的规则写（不是模型填的）。同样只收分项里有的键。
+      const maxRaw = o.scoreMax && typeof o.scoreMax === 'object' && !Array.isArray(o.scoreMax)
+        ? o.scoreMax as Record<string, unknown> : {}
+      const scoreMax = Object.fromEntries(
+        Object.entries(maxRaw)
+          .map(([k, v]) => [text(k, 40), Math.trunc(finite(v))] as const)
+          .filter(([k, v]) => v > 0 && v <= 100 && Object.hasOwn(scoreBreakdown, k)),
+      )
       const rawScore = o.modelScore == null ? null : Math.trunc(finite(o.modelScore))
       const rawConfidence = o.scoreConfidence == null ? null : finite(o.scoreConfidence)
       return {
@@ -464,13 +484,15 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
         outcome: outcomes.has(String(o.outcome)) ? String(o.outcome) as any : 'unknown' as const,
         modelScore: rawScore == null ? null : Math.max(0, Math.min(100, rawScore)),
         scoreBreakdown,
+        scoreReasons,
+        scoreMax,
         scoreConfidence: rawConfidence == null ? null : Math.max(0, Math.min(1, rawConfidence)),
         evidence: (Array.isArray(o.evidence) ? o.evidence : []).slice(0, 10).map((x) => text(x, 200)),
         riskFlags: (Array.isArray(o.riskFlags) ? o.riskFlags : []).slice(0, 10).map((x) => text(x, 80)),
+        locale,
       }
     })
-    const canonical = JSON.stringify({ fromSeq, toSeq, eventCount, turnCount, sourceHash, items })
-    const resultHash = createHash('sha256').update(canonical).digest('hex')
+    const resultHash = auditResultHash({ fromSeq, toSeq, eventCount, turnCount, sourceHash, items })
     if ((batch.status === 'succeeded' || batch.status === 'empty') && batch.resultHash !== resultHash) {
       throw new HttpError(409, '这个批次已经提交过不同的结果')
     }

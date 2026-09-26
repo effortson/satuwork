@@ -13,6 +13,32 @@ const DISPATCH_LIMIT = 20
 const RETRIES = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000]
 let lastPruneAt = 0
 
+/**
+ * 一个批次结果的指纹：同一个批次重报时靠它判「是不是同一份」（routes/internal.ts）。
+ *
+ * **按加 scoreReasons / scoreMax / locale 之前的形状算**：三格都是默认值（空、空、zh）时不进
+ * 指纹，有内容才追加在每一条的末尾。否则升级前已经落库的批次，席位在升级后重报同一份结果
+ * （上次回报超时、其实已经存上了）会算出另一个指纹、被 409 顶回去，那一条永远卡在席位的
+ * 待报队列里。
+ */
+export function auditResultHash(input: {
+  fromSeq: number
+  toSeq: number
+  eventCount: number
+  turnCount: number
+  sourceHash: string
+  items: Array<Record<string, unknown> & { scoreReasons?: Record<string, string>; scoreMax?: Record<string, number>; locale?: string }>
+}): string {
+  const { fromSeq, toSeq, eventCount, turnCount, sourceHash } = input
+  const items = input.items.map(({ scoreReasons, scoreMax, locale, ...rest }) => ({
+    ...rest,
+    ...(scoreReasons && Object.keys(scoreReasons).length ? { scoreReasons } : {}),
+    ...(scoreMax && Object.keys(scoreMax).length ? { scoreMax } : {}),
+    ...(locale && locale !== 'zh' ? { locale } : {}),
+  }))
+  return createHash('sha256').update(JSON.stringify({ fromSeq, toSeq, eventCount, turnCount, sourceHash, items })).digest('hex')
+}
+
 function addDays(y: number, mo: number, d: number, n: number) {
   const at = new Date(Date.UTC(y, mo - 1, d + n))
   return { year: at.getUTCFullYear(), month: at.getUTCMonth() + 1, day: at.getUTCDate() }
@@ -195,6 +221,12 @@ async function targetHeaders(db: Db, batch: ConversationAuditBatch) {
 async function postAuditJob(db: Db, batch: ConversationAuditBatch): Promise<void> {
   const target = await targetHeaders(db, batch)
   const deletion = batch.deletionRequestId ? await db.botDeletion(batch.deletionRequestId) : undefined
+  /**
+   * 审计文字用会话主人的界面语言写（个人设置里那个中文 / English）。按派活这一刻取，
+   * 不存在批次上：改了语言之后，还没跑的批次就该用新的；已经跑完的那几条照旧是当时的语言，
+   * 条目自己记着（conversation_audit_items.locale）。
+   */
+  const owner = await db.account(batch.accountId)
   const r = await fetch(target.url, {
     method: 'POST',
     headers: target.headers,
@@ -212,6 +244,7 @@ async function postAuditJob(db: Db, batch: ConversationAuditBatch): Promise<void
       model: batch.model,
       reasoningEffort: batch.reasoningEffort,
       promptVersion: batch.promptVersion,
+      locale: owner?.locale === 'en' ? 'en' : 'zh',
       quiesceMs: batch.kind === 'pre_delete' ? QUIET_MS : 0,
       forceAbort: Boolean(deletion && Date.now() - deletion.requestedAt >= FORCE_ABORT_MS),
     }),

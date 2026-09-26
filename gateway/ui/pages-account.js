@@ -761,6 +761,7 @@ function profilePage() {
             <div style="display: flex; gap: var(--space-2); flex-wrap: wrap;">
               ${langPills}
             </div>
+            <span style="font-size: 12px; color: var(--muted-foreground);">${t('你和 Bot 的对话生成审计总结时，摘要和每一项的评分原因也按这个语言写（对之后生成的生效）。', 'Audit summaries of your conversations, including the reason behind each score, are written in this language (applies to summaries generated from now on).')}</span>
           </div>
           <span style="font-size: 12px; color: var(--muted-foreground);">
             ${t('两项都存在这台机器上，并同步到你的账号——换台机器登录会自动跟过去。', 'Both are stored on this machine and synced to your account, so they follow you to another machine.')}

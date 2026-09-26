@@ -169,12 +169,32 @@ export function attachSessions(router: Router, ctx: RouteCtx) {
       to: range.to,
       outcome: rawOutcome ? rawOutcome as any : undefined,
       scoreLte: intField({ scoreLte: req.query.get('scoreLte') ?? undefined }, 'scoreLte'),
-      limit: intField({ limit: req.query.get('limit') ?? undefined }, 'limit'),
     }
-    const [items, filters] = await Promise.all([
-      db.conversationAuditItems(req.params.id, filter),
+    /**
+     * 一页多少条、从哪儿接着翻。游标是上一页最后一条的 `结束时间:id`（和计费明细同一种
+     * 写法），多查一条判「后面还有没有」——少了这一步，最后一页也会画一颗点不出东西的
+     * 「下一页」。
+     */
+    // 没带 limit 的是老客户端（打包在旧版桌面端里的界面没有翻页），照旧给 100 条——给 20 条
+    // 的话它们就只剩最新的 20 条、而且没有办法看到后面的。新界面自己带 limit=20。
+    const pageSize = Math.min(200, Math.max(1, intField({ limit: req.query.get('limit') ?? undefined }, 'limit') ?? 100))
+    const cursor = (req.query.get('cursor') || '').trim()
+    let before: { at: number; id: string } | undefined
+    if (cursor) {
+      const cut = cursor.indexOf(':')
+      const at = Number(cursor.slice(0, cut))
+      const id = cursor.slice(cut + 1)
+      if (cut <= 0 || !Number.isFinite(at) || !id) throw new HttpError(400, 'cursor 不合法')
+      before = { at, id }
+    }
+    const [rows, filters] = await Promise.all([
+      db.conversationAuditItems(req.params.id, { ...filter, before, limit: pageSize + 1 }),
       db.conversationAuditFilterOptions(req.params.id),
     ])
+    const hasMore = rows.length > pageSize
+    const items = rows.slice(0, pageSize)
+    const last = items[items.length - 1]
+    const nextCursor = hasMore && last ? `${last.endedAt ?? last.createdAt}:${last.id}` : null
     await db.audit({
       companyId: req.params.id,
       accountId: account.id,
@@ -183,6 +203,8 @@ export function attachSessions(router: Router, ctx: RouteCtx) {
     })
     json(res, 200, {
       filters,
+      hasMore,
+      nextCursor,
       items: items.map((x) => ({
         id: x.id, batchId: x.batchId, accountId: x.accountId, botId: x.botId,
         accountName: x.accountNameSnapshot, botName: x.botNameSnapshot,

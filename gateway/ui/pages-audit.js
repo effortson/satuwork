@@ -105,7 +105,65 @@ function auditTabs(tab) {
 }
 
 function auditOutcomeLabel(value) {
-  return ({ completed: '已完成', partial: '部分完成', failed: '失败', blocked: '受阻', answered: '已回答', unknown: '未知' })[value] || value || '—'
+  const zh = ({ completed: '已完成', partial: '部分完成', failed: '失败', blocked: '受阻', answered: '已回答', unknown: '未知' })[value]
+  return zh ? t(zh) : value || '—'
+}
+
+/**
+ * 评分项目的名称和说明（只管怎么称呼它们）。**满分不在这里定**：条目自己带着评分时的满分
+ * （`scoreMax`，席位按它那份规则写进来），规则改了老条目也照当时的画。`legacyMax` 只给
+ * 0042 之前、没带满分的老条目用——那时的规则就是这一套。认不出来的键（将来加的、老模型
+ * 自己编的）照原样画在最后。
+ */
+const AUDIT_SCORE_ITEMS = [
+  { key: 'completion', label: ['完成度', 'Completion'], legacyMax: 40, hint: ['任务做完了没有、做到了哪一步', 'Whether the task got done, and how far'] },
+  { key: 'evidence', label: ['证据可靠性', 'Evidence'], legacyMax: 25, hint: ['结论有没有工具结果或用户确认撑着', 'Whether claims are backed by tool results or user confirmation'] },
+  { key: 'instructionFollowing', label: ['指令与边界', 'Instructions & limits'], legacyMax: 15, hint: ['照没照用户的要求做、有没有越界', 'Whether it followed the request and stayed in bounds'] },
+  { key: 'efficiency', label: ['效率', 'Efficiency'], legacyMax: 10, hint: ['有没有绕远路、多余的步骤', 'Detours and unnecessary steps'] },
+  { key: 'communication', label: ['沟通', 'Communication'], legacyMax: 10, hint: ['说得清不清楚、有没有如实交代', 'Clarity and honesty of the replies'] },
+]
+
+/**
+ * 评分明细：每一项「得分 / 满分」加一句原因。原因是审计模型在同一次调用里写的（0042 之后
+ * 的条目才有），语言跟着会话主人的界面语言走。老条目只有分数，那一格如实说没有，不编。
+ */
+function auditScoreTable(item) {
+  const scores = item.scoreBreakdown || {}
+  const reasons = item.scoreReasons || {}
+  const maxes = item.scoreMax || {}
+  // 条目带了满分就只认它的；一格都没带的是老条目，才按旧规则补。
+  const legacy = !Object.keys(maxes).length
+  const maxOf = (key, legacyMax) => (Number(maxes[key]) > 0 ? Number(maxes[key]) : legacy ? legacyMax ?? null : null)
+  const known = AUDIT_SCORE_ITEMS.filter((x) => Object.hasOwn(scores, x.key))
+  const extra = Object.keys(scores).filter((k) => !AUDIT_SCORE_ITEMS.some((x) => x.key === k))
+  const rows = known
+    .map((x) => ({ key: x.key, label: t(x.label[0], x.label[1]), hint: t(x.hint[0], x.hint[1]), max: maxOf(x.key, x.legacyMax) }))
+    .concat(extra.map((k) => ({ key: k, label: k, hint: '', max: maxOf(k, null) })))
+  if (!rows.length) return ''
+  const anyReason = rows.some((r) => reasons[r.key])
+  const body = rows
+    .map((r) => {
+      const score = Number(scores[r.key])
+      const pct = r.max ? Math.max(0, Math.min(1, score / r.max)) : null
+      const reason = reasons[r.key]
+      return `<div class="satu-audit-score">
+        <div style="min-width: 0;">
+          <div style="font-size: 13.5px; font-weight: 600;">${esc(r.label)}</div>
+          ${r.hint ? `<div style="font-size: 11.5px; color: var(--muted-foreground);">${esc(r.hint)}</div>` : ''}
+        </div>
+        <div style="text-align: right; font-variant-numeric: tabular-nums;">
+          <span style="font-size: 15px; font-weight: 600;">${esc(String(Number.isFinite(score) ? score : '—'))}</span>${r.max ? `<span style="font-size: 12px; color: var(--muted-foreground);"> / ${r.max}</span>` : ''}
+          ${pct == null ? '' : `<div class="satu-meter" style="margin-top: 4px;"><div class="satu-meterfill" style="width: ${Math.round(pct * 100)}%;"></div></div>`}
+        </div>
+        <div style="font-size: 13px; line-height: 1.6; ${reason ? '' : 'color: var(--muted-foreground);'}">${esc(reason || t('没有写原因', 'No reason given'))}</div>
+      </div>`
+    })
+    .join('')
+  return `<div class="satu-panel" style="margin: 0;">
+    <span class="satu-panel-title">${t('评分明细')}</span>
+    ${anyReason ? '' : `<p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('这条是早先生成的，当时的审计只给分数、不写原因。之后生成的审计总结每一项都会写明得分原因。', 'This summary predates per-item reasons; newer summaries explain every score.')}</p>`}
+    <div style="display: flex; flex-direction: column;">${body}</div>
+  </div>`
 }
 
 function conversationAuditTable() {
@@ -167,7 +225,24 @@ function conversationAuditTable() {
     </form>
     <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
       <div class="satu-usagehead" style="${grid}"><span>${t('任务总结')}</span><span>${t('员工 / Bot')}</span><span>${t('结果 / 评分')}</span><span>${t('结束时间')}</span><span>${t('打开')}</span></div>
-      ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有审计总结。完成首个 8 小时时段后会自动生成。')}</div>`}
+      ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.auditLoading ? t('加载中…') : (state.auditCursors || []).length > 1 ? t('这一页没有内容了。', 'Nothing on this page.') : t('还没有审计总结。完成首个 8 小时时段后会自动生成。')}</div>`}
+    </div>
+    ${auditPager()}`
+}
+
+/**
+ * 翻页。只有真有第二页时才画——同计费明细那张表，不然就是两颗永远点不动的按钮。
+ * 页码靠游标栈的深度算，接口不给总数：审计条目一直在涨，「共 N 页」翻着翻着就不对了。
+ */
+function auditPager() {
+  const page = (state.auditCursors || [null]).length
+  const more = Boolean(state.auditNextCursor)
+  if (!more && page <= 1) return ''
+  const busy = state.auditLoading
+  return `<div style="display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2);">
+      <span style="font-size: 12px; color: var(--muted-foreground);">${t(`第 ${page} 页`, `Page ${page}`)}</span>
+      <button type="button" class="btn btn-ghost" data-act="audit-prev" ${page > 1 && !busy ? '' : 'disabled'}>${t('上一页')}</button>
+      <button type="button" class="btn btn-ghost" data-act="audit-next" ${more && !busy ? '' : 'disabled'}>${t('下一页')}</button>
     </div>`
 }
 
@@ -212,12 +287,12 @@ function conversationAuditDetailPage() {
   const batch = detail?.batch
   if (!item) return `<div class="gw-page"><div class="gw-page-inner">${flashes()}<p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('找不到这条审计总结。')}</p></div></div>`
   const timeline = (item.timeline || []).map((x) => `<div style="display: grid; grid-template-columns: 150px 1fr; gap: var(--space-3); font-size: 13px;"><span style="color: var(--muted-foreground);">${esc(fmtTime(x.at))}</span><span>${esc(x.action)}</span></div>`).join('')
-  const breakdown = Object.entries(item.scoreBreakdown || {}).map(([key, value]) => `${key}: ${value}`).join(' · ')
   const textBlock = (title, value) => `<div class="satu-panel" style="margin: 0;"><span class="satu-panel-title">${t(title)}</span><div style="white-space: pre-wrap; font-size: 13px; line-height: 1.65;">${esc(value || '—')}</div></div>`
   return `<div class="gw-page"><div class="gw-page-inner">
     <div><h1 style="font-size: 24px; margin: 0 0 4px;">${esc(item.taskSummary || t('审计总结'))}</h1><p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${esc(item.accountNameSnapshot || item.accountId)} · ${esc(item.botNameSnapshot || item.botId)} · ${esc(fmtTime(item.endedAt || item.startedAt))}</p></div>
     ${flashes()}
-    <div class="satu-panel" style="margin: 0;"><span class="satu-panel-title">${t('结果与评分')}</span><div class="satu-kv"><span>${t('最终状态')}</span><span>${esc(auditOutcomeLabel(item.outcome))}</span></div><div class="satu-kv"><span>${t('评分')}</span><span>${item.modelScore == null ? '—' : esc(String(item.modelScore))}${item.scoreConfidence == null ? '' : ` · ${esc(t('置信度'))} ${esc(String(item.scoreConfidence))}`}</span></div>${breakdown ? `<div class="satu-kv"><span>${t('评分明细')}</span><span>${esc(breakdown)}</span></div>` : ''}<div class="satu-kv"><span>${t('审计模型')}</span><span>${esc(batch ? `${batch.modelRole} · ${batch.provider}/${batch.model}` : '—')}</span></div></div>
+    <div class="satu-panel" style="margin: 0;"><span class="satu-panel-title">${t('结果与评分')}</span><div class="satu-kv"><span>${t('最终状态')}</span><span>${esc(auditOutcomeLabel(item.outcome))}</span></div><div class="satu-kv"><span>${t('评分')}</span><span>${item.modelScore == null ? '—' : esc(String(item.modelScore))}${item.scoreConfidence == null ? '' : ` · ${esc(t('置信度'))} ${esc(String(item.scoreConfidence))}`}</span></div><div class="satu-kv"><span>${t('审计模型')}</span><span>${esc(batch ? `${batch.modelRole} · ${batch.provider}/${batch.model}` : '—')}</span></div></div>
+    ${auditScoreTable(item)}
     ${textBlock('用户问题', item.userQuestion)}
     ${textBlock('模型回答', item.modelAnswer)}
     ${textBlock('最终结果', item.finalResult)}
