@@ -172,8 +172,8 @@ const MIME: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
 }
 
-// `/download` 是以前的下载页，已并进首页那一段（ui/pages-landing.js 的 lpDownload）。地址
-// 留着：它早被发出去过，前端进来会折到 `/#download`（见 ui/app.js 的 boot）。
+// `/download`：没登录时折到首页那一段（`/#download`），登录了是应用内那一页——两样都在
+// ui/pages-landing.js，怎么折见 ui/app.js 的 foldDownload。地址早被发出去过，得一直交得出。
 const SPA_PATHS = new Set(['/', '/login', '/privacy', '/terms', '/download', '/index.html', '/ui', '/ui/', '/models', '/providers', '/company', '/accounts', '/audit', '/companies', '/users', '/plans', '/orders', '/stats', '/tools', '/costs', '/billing', '/usage', '/catalog', '/profile', '/bots', '/skills', '/chat', '/releases', '/machines', '/connectors', '/handoffs', '/channels'])
 // 前端脚本拆成了一串（见 gateway/ui/index.html 里那组 data-app-part），
 // 加一个新的分片就要在这里也加一行，否则线上直接 404，而本地跑 index.html 是好的。

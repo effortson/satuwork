@@ -23,11 +23,15 @@ cd gateway && pnpm dev
 首页和登录页的页脚都指过去。里面的落款主体、管辖地和联系邮箱现在是占位的，上线前要换掉
 （见那个文件顶上的 `LEGAL_DRAFT`）。
 
-桌面端下载是首页上的一段，紧接在「怎么开始」后面（`gateway/ui/pages-landing.js` 的 `lpDownload`），
-不再有单独的下载页。`/#download` 直接落到那一段；老的 `/download` 地址照样交得出界面，进来改写成
-`/#download`。登录、创建管理员、接受邀请三屏底下也指过去（开新标签页；桌面壳里不给）。因为它在首页上，
-**只有没登录时看得到**——有票的话 `/`（和老的 `/download`）照旧是对话 / 概览。它按浏览器报的平台
-自动挑 Windows / macOS，卡片顶上那排随时能自己切。
+桌面端下载在两个地方，画的是同一张卡（`gateway/ui/pages-landing.js` 的 `dlGrid`）：
+
+- **没登录**：首页上的一段，紧接在「怎么开始」后面（`lpDownload`）。`/#download` 直接落到那一段；
+  登录、创建管理员、接受邀请三屏底下也指过去（开新标签页）。
+- **登录了**：应用内的 `/download` 一页（`downloadPage`），入口在个人设置里。
+
+老的 `/download` 地址照样交得出界面，进来按登录状态分流：没登录改写成 `/#download`，登录了就是那一页
+（`gateway/ui/app.js` 的 `foldDownload`）。桌面壳里两样都不给。卡片按浏览器报的平台自动挑 Windows / macOS，
+顶上那排随时能自己切。
 
 文件指的是一个固定的 `desktop-latest` Release，所以发新版不用改页面：桌面端发版 CI 把安装包去掉
 版本号（`Satuwork_x64-setup.exe`、`Satuwork_aarch64.dmg`、`Satuwork_x64.dmg`）传上去，而且总是对齐到

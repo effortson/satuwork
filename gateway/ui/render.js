@@ -57,6 +57,8 @@ function pageView() {
       return placeholderPage(t('公司目录'), t('公司 Bot / Skill / MCP'))
     case '/profile':
       return profilePage()
+    case '/download':
+      return downloadPage()
     default:
       return overviewPage()
   }
@@ -353,13 +355,14 @@ function render() {
     return
   }
   root.innerHTML = state.me ? appView() : anonView()
-  // 进来时要落在首页哪一段（见 app.js 的 boot：老的 /download 地址和 /#download）。
+  // 进来时要落在首页哪一段（见 app.js 的 foldDownload：老的 /download 地址和 /#download）。
   // 只在第一次画完时跳一次，不管这一帧画的是不是首页——否则登录进来、再登出回到首页
   // 时它还挂着，会莫名其妙把人拽到页底。
   if (state.lpJump) {
     const at = document.getElementById(state.lpJump)
     state.lpJump = ''
     at?.scrollIntoView({ block: 'start' })
+    at?.focus?.({ preventScroll: true })
   }
   // 对话页的正文不在 appView 里——chatPage 只搭空壳，消息由 paintChat 增量填。
   // 整页重绘会把那个壳换掉，所以每次 render 之后要补一次。

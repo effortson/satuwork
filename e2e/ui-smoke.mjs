@@ -1274,6 +1274,39 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(html.includes('id="download"'), '折回首页了，却没有下载那一段：' + html.slice(0, 160))
       assert(html.includes('satu-lp-hero'), '画的不是首页')
       assert(!ui.state.lpJump, '跳转那一下画完了还挂着，登出再回首页会被莫名拽到页底')
+      assert(ui.location.hash === '#download', '老地址折回首页了，却没带上 #download：' + ui.location.hash)
+    })
+
+    await test('登录了的人：老的 /download 和 /#download 都进应用内那一页', async () => {
+      // 首页只给没登录的人看。登录了的人拿着以前发出去的 /download 进来，要是也折去首页，
+      // 落下的是一张总览——下载在哪儿一个字都没有（见 app.js 的 foldDownload）。
+      for (const path of ['/download', '/#download']) {
+        const ui = await boot(ownerToken, { path })
+        const html = ui.html()
+        assert(ui.state.path === '/download', `${path} 登录后落到了 ${ui.state.path}`)
+        assert(ui.location.pathname === '/download' && !ui.location.hash, `${path} 登录后地址栏是 ${ui.location.pathname}${ui.location.hash}`)
+        assert(html.includes('id="dl-grid"'), `${path} 登录后没画下载卡`)
+        assert(!html.includes('satu-lp-hero'), `${path} 登录后画成了首页`)
+        // 卡上那句「直接用网页版登录」是给没登录的人的，已经在网页版里的人看到是说胡话。
+        assert(!html.includes('satu-dl-weblink'), `${path} 登录后卡上还叫人去登录网页版`)
+      }
+      // 入口在个人设置里：登录之后首页那一段看不到，这是唯一一条路。
+      const profile = (await boot(ownerToken, { path: '/profile' })).html()
+      assert(profile.includes('data-href="/download"'), '个人设置里没有下载桌面端的入口')
+    })
+
+    await test('桌面壳里：/download 和个人设置里的入口都不给', async () => {
+      const ui = await boot(ownerToken, { path: '/download', desktop: true })
+      assert(ui.state.path !== '/download', '桌面壳里还进得了下载页')
+      assert(!ui.html().includes('id="dl-grid"'), '桌面壳里画出了下载卡')
+      const profile = (await boot(ownerToken, { path: '/profile', desktop: true })).html()
+      assert(!profile.includes('data-href="/download"'), '桌面壳的个人设置里还挂着下载桌面端')
+    })
+
+    await test('首页上点「下载桌面端」：地址换成 /#download', async () => {
+      const ui = await boot(undefined, { path: '/', stubIds: ['download'] })
+      await ui.fire('click', el('button', { 'data-act': 'landing-download' }))
+      assert(ui.location.pathname === '/' && ui.location.hash === '#download', '地址没跟着换：' + ui.location.pathname + ui.location.hash)
     })
 
     await test('首页下载那一段切成英文：正文跟着换', async () => {

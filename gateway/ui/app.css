@@ -1184,7 +1184,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lg-links button:focus-visible,
 .satu-lg-links a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
 
-/* ── 首页上下载桌面端那一段（见 ui/pages-landing.js 的 lpDownload）─────────
+/* ── 下载桌面端：首页那一段（lpDownload）和应用内那一页（downloadPage），见 ui/pages-landing.js ──
    外框（栏线、上下留白、居中的标题块）借首页 .satu-lp-sec 那一套，这里只管里面：
    左边一张卡装当前平台的包，右边一列说明。
    scroll-margin 让出顶栏那一条：首屏那行小字、页脚和老的 /download 地址都是滚到这儿的，
@@ -1192,11 +1192,13 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-dl { scroll-margin-top: 64px; }
 /* 标题块比别的段宽：底下那句说明有三行长，塞进 30ch 会折成一根细柱子。 */
 .satu-lp-dlhead { max-width: 62ch; }
-/* 「总是最新版 · 历次版本」那行借法律页 .satu-lg-meta 的打扮，但 `.satu-lp-sechead p` 的
-   权重更高，会把字号、颜色、外边距一起抹掉——所以在这儿按原样再写一遍。 */
-.satu-lp-dlhead .satu-lg-meta { margin: var(--space-4) 0 0; font-size: 13px; color: var(--muted-foreground); }
-.satu-lp-dlhead .satu-lg-meta a { color: var(--color-accent-700); text-decoration: underline; text-underline-offset: 3px; }
-.satu-lp-dlhead .satu-lg-meta a:hover { color: var(--color-accent-600); }
+/* 那一段带 tabindex="-1"，点首屏小字 / 页脚跳过来时焦点落在它身上（见 app.js 的
+   landing-download）。整段描一圈框没有意义，里面的按钮自己有焦点环。 */
+.satu-lp-dl:focus { outline: none; }
+/* 「总是最新版 · 历次版本」那行是 .satu-lg-meta（法律页那一行）本身，这里只补链接的样子。
+   它是 <div> 不是 <p>，`.satu-lp-sechead p` 够不着它（见 pages-landing.js 的 dlMeta）。 */
+.satu-dl-meta a { color: var(--color-accent-700); text-decoration: underline; text-underline-offset: 3px; }
+.satu-dl-meta a:hover { color: var(--color-accent-600); }
 .satu-dl-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: var(--space-8); align-items: start; }
 
 .satu-dl-card { border: 1px solid var(--color-divider); border-radius: var(--radius-lg); padding: var(--space-6); background: var(--color-bg); }
