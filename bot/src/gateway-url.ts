@@ -1,5 +1,7 @@
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { satuworkHome } from './home.ts'
+import { isSeatMode } from './seat-secrets.ts'
 
 /**
  * 「Gateway 现在在哪」——从入站请求上学回来。
@@ -32,6 +34,18 @@ import { satuworkHome } from './home.ts'
  *
  * Gateway 那边**只在显式配了 `GATEWAY_PUBLIC_URL` 时才带这个头**（
  * `gatewayPublicUrlExplicit`），所以不会拿一个按 Host 猜出来的地址教坏席位。
+ *
+ * ## 落盘落在哪
+ *
+ * - **远程席位**（凭据从 fd 0 读到，见 seat-secrets.ts）：`bot.env` 现在在
+ *   `/etc/satuwork/seats/<席位>/`，root 的，bot 写不动——也**不能**让它写得动：那是 systemd
+ *   以 root 读的 EnvironmentFile，席位用户（包括 terminal 里的任何子进程）写得动就能往里塞
+ *   `NODE_OPTIONS`、`LD_PRELOAD`，或者把 `GATEWAY_URL` 指向自己、下次重启时白拿席位票。
+ *   所以新地址写进 `$SATUWORK_HOME/gateway-url`，**用席位票做 HMAC**，启动时由 bot 自己
+ *   校验着读（`loadGatewayUrlOverride`）。子进程改得动这个文件，但算不出 MAC，改了也只会被
+ *   忽略。MAC 里还带着部署写死的那个地址：重新部署换了地址，旧的覆盖自动作废。
+ * - **老布局**（bot.env 还在 `$SATUWORK_HOME` 里、归 bot 自己）：照旧改写那一行。
+ * - 都没有（本地开发）：什么都不做。
  */
 
 /** 只收裸 origin：协议限 http/https，不许带路径、查询、片段、用户名口令。 */
@@ -54,7 +68,7 @@ const norm = (raw: string) => raw.trim().replace(/\/$/, '')
 let lastFailed = ''
 
 /**
- * 把新地址写回 `bot.env`。
+ * 老布局：把新地址写回 `$SATUWORK_HOME/bot.env`（凭据还在那个文件里的那一代部署）。
  *
  * **写临时文件再 rename**：rename 在同一个文件系统上是原子的。就地改写的话，进程在
  * write 中途被 systemd 换掉，留下的是一个截断的 env 文件——那会同时丢掉
@@ -73,16 +87,91 @@ function rewrite(file: string, next: string): void {
   renameSync(tmp, file)
 }
 
+/** 席位上学到的新地址落在这里（不是 bot.env）。 */
+const OVERRIDE_FILE = 'gateway-url'
+
+/**
+ * 部署写死的那个地址（进程启动时 `GATEWAY_URL` 的值，覆盖生效之前）。MAC 算在它和新地址
+ * 两个值上：重新部署换了地址 → 旧覆盖的 base 对不上 → 作废，以部署的为准。
+ */
+let deployedUrl: string | null = null
+
+function deployed(): string {
+  if (deployedUrl === null) deployedUrl = norm(process.env.GATEWAY_URL || '')
+  return deployedUrl
+}
+
+function macOf(base: string, url: string): string {
+  const key = (process.env.GATEWAY_TOKEN || '').trim()
+  return createHmac('sha256', key).update(`satuwork-gateway-url\n${base}\n${url}`).digest('hex')
+}
+
+function macMatches(given: unknown, expected: string): boolean {
+  if (typeof given !== 'string') return false
+  const a = Buffer.from(given)
+  const b = Buffer.from(expected)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
+function writeOverride(file: string, next: string): void {
+  const base = deployed()
+  const body = JSON.stringify({ url: next, base, mac: macOf(base, next) }) + '\n'
+  const tmp = `${file}.tmp`
+  writeFileSync(tmp, body, { mode: 0o600 })
+  renameSync(tmp, file)
+}
+
+/**
+ * 启动时读一次 `$SATUWORK_HOME/gateway-url`，验过 MAC 才认。只在远程席位上做。
+ *
+ * 必须在凭据读进来之后调（MAC 的钥匙是席位票），也必须在任何消费者读 `GATEWAY_URL` 之前。
+ * 返回最后生效的地址来源，给启动日志用。
+ */
+export function loadGatewayUrlOverride(log?: { info?: (s: string) => void; warn?: (s: string) => void }): 'override' | 'deployed' {
+  if (!isSeatMode()) return 'deployed'
+  const base = deployed()
+  const file = satuworkHome(OVERRIDE_FILE)
+  if (!existsSync(file)) return 'deployed'
+  let rec: { url?: unknown; base?: unknown; mac?: unknown }
+  try {
+    rec = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    log?.warn?.(`gateway-url: ${file} 读不出来或不是 JSON，不认，按部署时的 ${base || '（空）'}`)
+    return 'deployed'
+  }
+  let url: string
+  try {
+    url = originOf(String(rec.url ?? ''))
+  } catch {
+    log?.warn?.(`gateway-url: ${file} 里的地址形状不对，不认`)
+    return 'deployed'
+  }
+  if (rec.base !== base) {
+    // 重新部署换过地址——部署拿到的是 Gateway 当时亲口给的，比这份旧覆盖新。
+    log?.info?.(`gateway-url: ${file} 是按旧部署地址 ${String(rec.base)} 学来的，现在部署的是 ${base}，作废`)
+    return 'deployed'
+  }
+  if (!macMatches(rec.mac, macOf(base, url))) {
+    // 票换过（重新部署），或者有人改过这个文件。两种都不能认——后者正是要防的：把地址指向
+    // 自己的服务器，下一次调用就把席位票和 API Key 送过去。
+    log?.warn?.(`gateway-url: ${file} 的校验对不上（票换过，或文件被改过），不认，按部署时的 ${base || '（空）'}`)
+    return 'deployed'
+  }
+  process.env.GATEWAY_URL = url
+  log?.info?.(`gateway-url: 按上次从 Gateway 学到的地址 ${url} 起（部署时是 ${base}）`)
+  return 'override'
+}
+
 /**
  * 认一下新地址。**先落盘，再改内存。**
  *
  * 反过来的话，一次写不进去（盘满在这类机器上是真会发生的事）会留下最难查的那种状态：
  * 内存里已经是新地址、于是下一次调用因为「和现在的一样」提前返回，**再也不会有第二次
- * 尝试**；界面上看着好了，重启回来 bot.env 还是旧地址，席位又一次静默哑掉。
+ * 尝试**；界面上看着好了，重启回来还是旧地址，席位又一次静默哑掉。
  *
  * 改内存就够让**当下**立刻生效：所有消费者（llm、catalog、web-search、session/gateway）
  * 都是每次现调 `gatewayUrl()` 读 `process.env`，没有谁在启动时把它读死。落盘管的是
- * 下一次重启——`bot.env` 是那个 systemd 单元的 `EnvironmentFile`。
+ * 下一次重启——远程席位写 `gateway-url`（见文件头「落盘落在哪」），老布局写 `bot.env`。
  */
 export function adoptGatewayUrl(raw: unknown, log?: { info?: (s: string) => void; warn?: (s: string) => void }): void {
   const given = String(raw ?? '').trim()
@@ -96,10 +185,12 @@ export function adoptGatewayUrl(raw: unknown, log?: { info?: (s: string) => void
   const cur = norm(process.env.GATEWAY_URL || '')
   if (next === cur) return
 
-  const file = satuworkHome('bot.env')
-  if (!existsSync(file)) {
+  const seat = isSeatMode()
+  const file = seat ? satuworkHome(OVERRIDE_FILE) : satuworkHome('bot.env')
+  const where = seat ? OVERRIDE_FILE : 'bot.env'
+  if (!seat && !existsSync(file)) {
     /**
-     * 没有 bot.env——本地开发（`GATEWAY_URL` 来自 shell 或 .env），不是部署出来的席位。
+     * 不是远程席位、也没有 bot.env——本地开发（`GATEWAY_URL` 来自 shell 或 .env）。
      *
      * **那就什么都不做，连内存也不改。** 改了内存却没地方落盘，得到的是「这次好了、
      * 重启又回去」的间歇故障，比一直不生效难查得多。本地开发也根本不需要这条路：
@@ -113,12 +204,13 @@ export function adoptGatewayUrl(raw: unknown, log?: { info?: (s: string) => void
   }
 
   try {
-    rewrite(file, next)
+    if (seat) writeOverride(file, next)
+    else rewrite(file, next)
   } catch (e) {
     if (lastFailed !== next) {
       lastFailed = next
       log?.warn?.(
-        `gateway-url: 收到新的 Gateway 地址 ${next}，但写不进 bot.env（${(e as Error).message}）。` +
+        `gateway-url: 收到新的 Gateway 地址 ${next}，但写不进 ${where}（${(e as Error).message}）。` +
           '这次不改，仍按旧地址；盘满或文件系统只读的话先处理那个。',
       )
     }
@@ -126,10 +218,11 @@ export function adoptGatewayUrl(raw: unknown, log?: { info?: (s: string) => void
   }
   process.env.GATEWAY_URL = next
   lastFailed = ''
-  log?.info?.(`gateway-url: Gateway 换地址了，${cur || '（原先没配）'} → ${next}，已写回 bot.env`)
+  log?.info?.(`gateway-url: Gateway 换地址了，${cur || '（原先没配）'} → ${next}，已写回 ${where}`)
 }
 
-/** 测试用：把「上次没写成」的记忆清掉。 */
+/** 测试用：把「上次没写成」和「部署时的地址」的记忆清掉。 */
 export function resetAdoptState(): void {
   lastFailed = ''
+  deployedUrl = null
 }

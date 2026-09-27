@@ -44,6 +44,7 @@ import { runRoutineTools } from './routine-tools.mjs'
 import { runHistoryTime } from './history-time.mjs'
 import { runCompact } from './compact.mjs'
 import { runGatewayUrl } from './gateway-url.mjs'
+import { runSeatSecrets } from './seat-secrets.mjs'
 import { runMaxSteps } from './max-steps.mjs'
 import { runDelegate } from './delegate.mjs'
 import { runToolCalls } from './toolcalls.mjs'
@@ -3477,6 +3478,7 @@ async function main() {
     await suite('history-time', () => runHistoryTime({ root, test, assert, log }))
     await suite('compact', () => runCompact({ root, test, assert, log }))
     await suite('gateway-url', () => runGatewayUrl({ root, test, assert, log }))
+    await suite('seat-secrets', () => runSeatSecrets({ root, test, assert, log }))
     await suite('max-steps', () => runMaxSteps({ root, test, assert, log }))
     await suite('delegate', () => runDelegate({ root, test, assert, log }))
     await suite('toolcalls', () => runToolCalls({ root, test, assert, log }))

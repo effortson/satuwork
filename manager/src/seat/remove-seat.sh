@@ -126,6 +126,12 @@ case "$SEAT_DIR" in
   *) warn "席位目录 $SEAT_DIR 不在它该在的位置，跳过删除" ;;
 esac
 rm -rf "/tmp/xdg-runtime-$SEAT_ID" || warn "运行时目录没删干净"
+# bot 单元读的 bot.env 和凭据（deploy-seat.sh 写在 /etc/satuwork/seats/<席位>/）。票在
+# Gateway 那边会跟着席位一起作废，留下的只是垃圾，但它们是 root 的文件，没人会想到去清。
+case "$SEAT_ID" in
+  *[!A-Za-z0-9_-]* | '') warn "SEAT_ID 形状不对，跳过删 /etc/satuwork/seats 下的文件" ;;
+  *) rm -rf "/etc/satuwork/seats/$SEAT_ID" || warn "/etc/satuwork/seats/$SEAT_ID 没删干净" ;;
+esac
 
 # 退出码只答一个问题：端口还被这个席位占着吗。
 #

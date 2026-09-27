@@ -398,6 +398,10 @@ export function humanSize(bytes: number): string {
  * `GATEWAY_*`、`SATUWORK_*`，以及名字里明显是密钥的（`*_TOKEN` / `*_API_KEY` /
  * `*_SECRET` / `*_PASSWORD`）；PATH / HOME / LANG / DISPLAY / XDG_* 这些子进程真要
  * 用的都留着。每次调用现算一份副本，调用方改它不会污染本进程。
+ *
+ * **这只管「递下去的那份」。** 子进程和 bot 同一个 uid，自己去读 `/proc/$PPID/environ`
+ * 就能看到 bot 启动时的环境——所以远程席位上凭据压根不进环境，从 fd 0 读（见
+ * seat-secrets.ts）；进程内存那条路靠 deploy 设的 ptrace_scope=1 堵。
  */
 export function childEnv(): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {}

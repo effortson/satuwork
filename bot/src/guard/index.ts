@@ -37,8 +37,8 @@ export const inject = ['server']
  * 席位票。按账号发，作用域到这个席位为止。
  *
  * 不认机器票（`smt_`）：那把票同时是管家 `PUT /seats/:id` 的凭据，等同于整台机器的
- * root；它会被写进 `$SEAT_DIR/bot.env`，而那个文件属于席位那个普通 Linux 用户，
- * 员工在桌面里 `cat` 一下就拿到了。
+ * root；而这个进程的内存、它起的子进程，都在席位那个普通 Linux 用户名下。席位票本身也
+ * 不走 env / bot.env 了，从 fd 0 读（见 seat-secrets.ts）。
  */
 function seatToken(): string {
   return (process.env.GATEWAY_TOKEN || '').trim()
