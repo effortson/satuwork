@@ -114,6 +114,7 @@ try {
     'remove-seat.sh',
     'slim-desktop.sh',
     'satuwork-bot.sh',
+    'seat-cdp-guard.sh',
     'manager-confirm.sh',
     'purge-machine.sh',
   ]) {

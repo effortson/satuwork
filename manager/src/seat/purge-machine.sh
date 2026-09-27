@@ -258,6 +258,15 @@ for f in /tmp/.X*-lock /tmp/.X11-unix/X*; do
     if [ "$owner" = "$u" ]; then act rm -f "$f"; break; fi
   done
 done
+# CDP 口的 nft 表（seat-cdp-guard.sh 装的，一个口一张 satuwork_cdp_<port>）。不拆的话
+# 这台机器上以后谁再用 9222+N 这几个口，除了早就不在的那个席位账号谁都连不上。
+# 这里不调 seat-cdp-guard.sh：它可能已经被上面删掉了，也可能是装机太早压根没有。
+if command -v nft >/dev/null 2>&1; then
+  for t in $(nft list tables inet 2>/dev/null | sed -n 's/^table inet \(satuwork_cdp_[0-9]*\)$/\1/p' || true); do
+    act nft delete table inet "$t" || true
+  done
+fi
+act rm -f /usr/local/bin/seat-cdp-guard.sh
 
 # ── 5. 管家落盘 ───────────────────────────────────────────────────────
 # manager.json 是**机器身份**（machineId、smt_ 票、Gateway 公钥）。删掉就等于解绑，
