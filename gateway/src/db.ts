@@ -42,6 +42,31 @@ export function safeSchema(name: string): string {
   return name
 }
 
+/** updateAccount 能改的那几列。 */
+export type AccountPatch = Partial<
+  Pick<
+    Account,
+    | 'name'
+    | 'title'
+    | 'phone'
+    | 'theme'
+    | 'locale'
+    | 'role'
+    | 'status'
+    | 'lastSeenAt'
+    | 'passwordHash'
+    | 'passwordChangedAt'
+    | 'tokenRevokedAt'
+  >
+>
+
+/** updateAccountIf 的前提：写了的项都得和库里当前值对上，才落这次改动。 */
+export interface AccountExpect {
+  status?: AccountStatus[]
+  passwordHash?: string
+  tokenRevokedAt?: number | null
+}
+
 export interface DbOptions {
   url: string
   schema?: string
@@ -643,61 +668,61 @@ export class Db {
     return Number(r?.n ?? 0)
   }
 
-  async updateAccount(
-    id: string,
-    patch: Partial<
-      Pick<
-        Account,
-        | 'name'
-        | 'title'
-        | 'phone'
-        | 'theme'
-        | 'locale'
-        | 'role'
-        | 'status'
-        | 'lastSeenAt'
-        | 'passwordHash'
-        | 'passwordChangedAt'
-        | 'tokenRevokedAt'
-      >
-    >,
-  ): Promise<Account> {
-    const cur = await this.account(id)
-    if (!cur) throw new Error('账号不存在')
-    const next: Account = {
-      ...cur,
-      name: patch.name !== undefined ? patch.name : cur.name,
-      title: patch.title !== undefined ? patch.title : cur.title,
-      phone: patch.phone !== undefined ? patch.phone : cur.phone,
-      theme: patch.theme ?? cur.theme,
-      locale: patch.locale ?? cur.locale,
-      role: patch.role ?? cur.role,
-      status: patch.status ?? cur.status,
-      lastSeenAt: patch.lastSeenAt !== undefined ? patch.lastSeenAt : cur.lastSeenAt,
-      passwordHash: patch.passwordHash ?? cur.passwordHash,
-      passwordChangedAt: patch.passwordChangedAt !== undefined ? patch.passwordChangedAt : cur.passwordChangedAt,
-      tokenRevokedAt: patch.tokenRevokedAt !== undefined ? patch.tokenRevokedAt : cur.tokenRevokedAt,
-      updatedAt: Date.now(),
-    }
-    await this.run(
-      'update accounts set name=?, title=?, phone=?, theme=?, locale=?, role=?, status=?, "lastSeenAt"=?, "passwordHash"=?, "passwordChangedAt"=?, "tokenRevokedAt"=?, "updatedAt"=? where id=?',
-      [
-        next.name,
-        next.title,
-        next.phone,
-        next.theme,
-        next.locale,
-        next.role,
-        next.status,
-        next.lastSeenAt,
-        next.passwordHash,
-        next.passwordChangedAt,
-        next.tokenRevokedAt,
-        next.updatedAt,
-        id,
-      ],
-    )
+  /**
+   * 改账号：**只写补丁里出现的列**，一条 `update … returning *` 落完。
+   *
+   * 以前是先整行读出来、合并补丁、再把十一列全写回去，中间不锁也不开事务。两个请求前后脚
+   * 改同一个人（管理员停用 + 这个人正在登录记 lastSeenAt），后写的那个会把先写的那几列
+   * 用它手上的旧值盖回去——停用当场被「登录」改回 active。现在各写各的列，互不覆盖。
+   *
+   * 取值规矩和原来一样：theme / locale / role / status / passwordHash 传 null 当没传
+   * （这几列不能空）；其余几列 null 就是清空。
+   */
+  async updateAccount(id: string, patch: AccountPatch): Promise<Account> {
+    const next = await this.updateAccountIf(id, patch, {})
+    if (!next) throw new Error('账号不存在')
     return next
+  }
+
+  /**
+   * 带条件的改：`expect` 里写的是「我读到、并据此做了判断的那一刻的值」，库里已经不是
+   * 这个值就一行都不改，返回 undefined——比较和写入在同一条语句里，中间插不进别人。
+   *
+   * - `status`：当前状态必须是其中之一（登录只认 active，接受邀请不认 disabled）
+   * - `passwordHash` / `tokenRevokedAt`：口令和作废点没被别人动过（改口令、登录顺手升级
+   *   哈希都靠它让管理员的重置赢）
+   */
+  async updateAccountIf(id: string, patch: AccountPatch, expect: AccountExpect): Promise<Account | undefined> {
+    const sets: string[] = []
+    const params: unknown[] = []
+    const put = (col: string, v: unknown) => {
+      sets.push(`"${col}"=?`)
+      params.push(v)
+    }
+    for (const k of ['name', 'title', 'phone', 'lastSeenAt', 'passwordChangedAt', 'tokenRevokedAt'] as const) {
+      if (patch[k] !== undefined) put(k, patch[k])
+    }
+    for (const k of ['theme', 'locale', 'role', 'status', 'passwordHash'] as const) {
+      if (patch[k] != null) put(k, patch[k])
+    }
+    put('updatedAt', Date.now())
+    const where = ['id=?']
+    params.push(id)
+    if (expect.status) {
+      if (!expect.status.length) return undefined
+      where.push(`status in (${expect.status.map(() => '?').join(',')})`)
+      params.push(...expect.status)
+    }
+    if (expect.passwordHash !== undefined) {
+      where.push('"passwordHash"=?')
+      params.push(expect.passwordHash)
+    }
+    if (expect.tokenRevokedAt !== undefined) {
+      where.push('"tokenRevokedAt" is not distinct from ?')
+      params.push(expect.tokenRevokedAt)
+    }
+    const r = await this.one(`update accounts set ${sets.join(', ')} where ${where.join(' and ')} returning *`, params)
+    return r ? accountOf(r) : undefined
   }
 
   async deleteAccount(id: string): Promise<void> {
@@ -1965,6 +1990,15 @@ export class Db {
 
   async deleteInvite(id: string): Promise<void> {
     await this.run('delete from invites where id = ?', [id])
+  }
+
+  /**
+   * 把一条邀请**领走**：还没过期就删掉并交回这一行，删不到（不存在、过期、被别人先领了）
+   * 就是 undefined。两个人同时拿同一条链接去接受，只有一个能领到。
+   */
+  async takeInvite(id: string, now: number): Promise<Invite | undefined> {
+    const r = await this.one('delete from invites where id = ? and "expiresAt" >= ? returning *', [id, now])
+    return r ? inviteOf(r) : undefined
   }
 
   // ── 套餐 ──────────────────────────────────────────────────────────────
