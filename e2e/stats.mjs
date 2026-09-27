@@ -177,6 +177,53 @@ export async function runStats({ gwRoot, test, req, start, waitHttp, assert, log
       assert(m && m.priced === true, '有单价的模型被标成了 priced=false')
     })
 
+    await test('只有半边价的模型也要落进「目录里没有单价」那一格', async () => {
+      /**
+       * 半价模型（目录里有 input、没 output）从前是算「有价」的：输出 token 按 $0 收，
+       * 只收到四分之一，而 `unpriced` 是 false——**统计屏这一句正是唯一会喊出来的地方**，
+       * 它不响，少收的那截就谁也发现不了（docs/billing.md §3.3）。收口条件改成「缺一侧
+       * 就不算有价」之后，这类调用落的账本行和「四项全 0」那批一模一样，这一屏得照样喊。
+       *
+       * **这一份测的是聚合，不是计价**（见文件头）：行是手工种的，形状取自
+       * `e2e/billing.mjs` 里那条走真实路径的用例——那边钉的是服务端真会写出这个形状，
+       * 这边钉的是写成这样之后统计屏认得出来。目录条目只是把夹具说清楚，聚合不看它。
+       */
+      const prov = await req(base, 'POST', '/platform/providers', {
+        token,
+        body: {
+          id: 'halfprice', name: 'HalfPrice', baseUrl: 'https://halfprice.test/v1', api: 'openai-completions',
+          // 只填了 input：自定义供应商那张表单四个价格框只填第一个，就是这个形状。
+          models: [{ id: 'half-model', name: 'Half', contextWindow: 8192, maxTokens: 1024, cost: { input: 5 } }],
+        },
+      })
+      assert(prov.status === 201, `provider ${prov.status} ${prov.text}`)
+
+      // 自己的窗口，和上面几条互不打扰（45/46 缓存、55 没账本行、61 倍率、65 金额卡、70–90 空）。
+      const at = now - 35 * DAY
+      await client.query(
+        'insert into llm_calls (id, "accountId", "companyId", provider, model, "promptTokens", "completionTokens", "createdAt") values ($1,$2,$3,$4,$5,$6,$7,$8)',
+        ['s-half', accountId, orgId, 'halfprice', 'half-model', 1_000_000, 400_000, at],
+      )
+      // 金额 0 + unpriced + **单价快照是空的**——空快照正是「没单价」和「没拿到用量」的分界。
+      await client.query(
+        'insert into usage_charges (id, "companyId", "accountId", kind, subject, status, quantity, "unitPrice", multiplier, "amountMicros", "bonusMicros", unpriced, "refId", "createdAt")' +
+          " values ($1,$2,$3,'llm','halfprice/half-model','ok','{}','{}',1,0,0,true,'s-half',$4)",
+        ['c-s-half', orgId, accountId, at],
+      )
+
+      const r = await req(base, 'GET', q(now - 36 * DAY, now - 34 * DAY), { token })
+      assert(r.status === 200, `${r.status} ${r.text}`)
+      assert(r.json.totals.calls === 1, `这个窗口应只有 1 条，实际 ${r.json.totals.calls}`)
+      assert(r.json.unpricedModels.includes('halfprice/half-model'), `半价模型没喊出来：${JSON.stringify(r.json.unpricedModels)}`)
+      assert(r.json.totals.unpricedCalls === 1, `没单价的调用数 ${r.json.totals.unpricedCalls}`)
+      // 「没单价」和「没拿到用量」是两回事，半价模型属于前者：它该去配置页补价。
+      assert(!r.json.unmeteredModels.includes('halfprice/half-model'), `跑进「没拿到用量」那一格了：${JSON.stringify(r.json.unmeteredModels)}`)
+      const m = r.json.byModel.find((x) => x.model === 'half-model')
+      assert(m && m.priced === false, `按模型那行没标 priced=false：${JSON.stringify(m)}`)
+      // 半边价不能折成半边钱混进金额：那正是从前只收四分之一还不告警的样子。
+      assert(r.json.totals.amountMicros === 0, `半价模型把钱算进去了：${r.json.totals.amountMicros}`)
+    })
+
     await test('缓存那两截要汇总出来，它们是提示词的子集不是加项', async () => {
       // 缓存读的单价比输入低一个数量级，缓存写反而更高。统计屏上要能看见这两截，
       // 否则「token 涨了金额没怎么涨」这件事在界面上没有任何解释。
