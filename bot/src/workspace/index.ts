@@ -1,5 +1,5 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
-import { createReadStream, createWriteStream, existsSync, lstatSync, readFileSync, realpathSync, statSync, type WriteStream } from 'node:fs'
+import { createReadStream, createWriteStream, lstatSync, readFileSync, realpathSync, statSync, type WriteStream } from 'node:fs'
 import { lstat, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
@@ -76,8 +76,12 @@ export class WorkspaceService extends Service {
       let cursor = this.root
       for (const part of rel ? rel.split(sep) : []) {
         cursor = join(cursor, part)
-        if (!existsSync(cursor)) break
-        if (lstatSync(cursor).isSymbolicLink() && !this.isApprovedLink(cursor)) {
+        // 用 lstat 判存在，不能用 existsSync：后者跟着链接走，一条悬空链接（指向还不存在的
+        // 外部文件，比如仓库里提交的 `cfg -> ~/Library/LaunchAgents/x.plist`）会被当成
+        // 「不存在」而提前 break，write_file 随后就顺着它写到工作区外面去了。
+        const info = lstatSync(cursor, { throwIfNoEntry: false })
+        if (!info) break
+        if (info.isSymbolicLink() && !this.isApprovedLink(cursor)) {
           throw new WorkspaceError(`路径越界：${path}。本地 Bot 不能经过符号链接访问工作区外部。`)
         }
       }
@@ -334,8 +338,10 @@ async function freshPath(dir: string, name: string): Promise<string> {
     const candidate = resolve(dir, i ? `${stem}-${i}${ext}` : name)
     // 落在 dir 之外说明清洗漏了东西，宁可整个拒掉。
     if (candidate !== dir && !candidate.startsWith(dir + sep)) throw new WorkspaceError('文件名不合法')
+    // lstat 而不是 stat：悬空的符号链接 stat 会报不存在，这里就会把它当成空位交出去，
+    // createWriteStream 再顺着链接写到别处。链接本身占着这个名字，就算有人。
     try {
-      await stat(candidate)
+      await lstat(candidate)
     } catch {
       return candidate
     }
