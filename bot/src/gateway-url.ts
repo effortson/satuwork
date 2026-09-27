@@ -20,15 +20,17 @@ import { satuworkHome } from './home.ts'
  * 「重新部署」）。所以反过来说：**Gateway 每次打进来时顺便报一下自己在哪**。
  *
  * 头是 `x-satuwork-gateway-url`，由 Gateway 的 `managerHeaders()` 拼在每一条发往席位的
- * 代理请求上，管家的 `forwardHeaders` 原样透传（它只摘 host / connection /
- * x-satuwork-machine / cookie）。**Gateway 和管家一行都不用改**——这套头本来就为管家
- * 自己学地址而存在（见 manager/src/index.ts 的 adoptGatewayUrl），这里只是让链路末端
- * 的 bot 也听一句。
+ * 代理请求上，管家在**验过机器票**的 `/seats/:id/bot/*` 那条路上把它透传下来。这套头
+ * 本来就为管家自己学地址而存在（见 manager/src/index.ts 的 adoptGatewayUrl），这里只是
+ * 让链路末端的 bot 也听一句。
  *
- * ## 信任面没有变大
+ * ## 信任面
  *
- * 只在**席位票验过之后**才调（见 guard/index.ts）。说得出 `sat_` 的人，本来就能通过
- * `/api/*` 让这个进程做任何事；而这个头能做的事比那小得多。
+ * 只在**席位票验过之后**才调（见 guard/index.ts）。但席位票对上**不等于**说话的是
+ * Gateway：浏览器直连的 stream、票进来的 vnc、本机工人的中继，这几条路上都是管家验完
+ * 别的凭据之后**替调用方换上 `sat_`**。所以管家在那几条路上把一切 `x-satuwork-*` 都摘掉
+ * （manager/src/proxy.ts 的 forwardHeaders）——否则任何一个登录了的人都能把这里的
+ * GATEWAY_URL 指到自己的服务器上，连同 GATEWAY_TOKEN / GATEWAY_API_KEY 一起收走。
  *
  * Gateway 那边**只在显式配了 `GATEWAY_PUBLIC_URL` 时才带这个头**（
  * `gatewayPublicUrlExplicit`），所以不会拿一个按 Host 猜出来的地址教坏席位。
