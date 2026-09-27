@@ -1107,6 +1107,29 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       // 票是 Gateway 签的，管家验签换 cookie；这里只钉「真的带了一张」。
       assert(String(direct).split('ticket=')[1].length > 20, `票太短，不像签过的：${direct}`)
 
+      /**
+       * **公司管理员替员工点「部署」拿不到桌面票。** 票里带着明文 VNC 口令，拿到就是进了
+       * 那块屏；席位已经 ready 时这条 deploy 什么都不碰，原先等于一条「管理员随取员工桌面」
+       * 的后门。novncUrl 照给不带票的那一版，口令也不给；owner 和本人照旧带票。
+       */
+      const bare = `https://m001.satuwork.test/seats/${seatId}/vnc/`
+      const byAdmin = await req(gwBase, 'POST', `/orgs/${orgId}/accounts/${memberId}/deploy`, {
+        token: adminTok,
+        body: { botId: botA },
+      })
+      assert(byAdmin.status === 200, `管理员替人部署 ${byAdmin.status} ${byAdmin.text}`)
+      assert(byAdmin.json.novncUrl === bare, `管理员替人部署不该带票：${byAdmin.json.novncUrl}`)
+      assert(!byAdmin.json.vncPassword, `管理员替人部署不该拿到口令：${byAdmin.json.vncPassword}`)
+      const byOwner = await req(gwBase, 'POST', `/orgs/${orgId}/accounts/${memberId}/deploy`, {
+        token: ownerTok,
+        body: { botId: botA },
+      })
+      assert(byOwner.status === 200, `owner 部署 ${byOwner.status} ${byOwner.text}`)
+      assert(String(byOwner.json.novncUrl).startsWith(`${bare}?ticket=`), `owner 该照旧带票：${byOwner.json.novncUrl}`)
+      const bySelf = await req(gwBase, 'POST', '/runtime/deploy', { token: memberTok, body: { botId: botA } })
+      assert(bySelf.status === 200, `本人部署 ${bySelf.status} ${bySelf.text}`)
+      assert(String(bySelf.json.novncUrl).startsWith(`${bare}?ticket=`), `本人部署该带票：${bySelf.json.novncUrl}`)
+
       // owner 那份席位列表也走同一个公式，只是不签票：给后台看一眼用，点进去要去
       // /runtime/desktop 现签一张。
       const listed = await req(gwBase, 'GET', `/orgs/${orgId}/accounts`, { token: ownerTok })
