@@ -295,9 +295,15 @@ sudo /opt/satuwork/manager/current/src/seat/purge-machine.sh
 装的、机器上别的东西也可能在用，各要一个显式的开关：`--accounts` / `--packages` /
 `--node`。
 
-席位从四个地方找并集——`seats.json`、systemd 单元、drop-in 目录、`/home/*/.satuwork/*`。
+席位从四个地方找并集——`seats.json`、systemd 单元、drop-in 目录、`/home/sw-*/.satuwork/sw-*`。
 任何一处都可能残缺，而**漏认一个席位就会留下一个还占着端口的 x11vnc**，那正是
 `deploy-seat.sh` 里 `verify_seat_listener` 后来要挡的那种故障。
+
+**只认 Gateway 算出来的那两种形状**：账号 `sw-<12 hex>`、席位号 `<账号>-<12 hex>`
+（`gateway/src/deploy.ts` 的 `linuxUserOf` / `seatIdOf`），账号的家还得正好是
+`/home/<账号>`。`~/.satuwork` 也是 bot 本地跑时的默认家目录，所以「家里有 `.satuwork`」
+不算数——运维自己账号下的 `/home/alice/.satuwork` 不会被删，`--accounts` 也不会碰
+`alice`。没认下的候选会在清单里列成 `skipped`，老的 `bot-xxxxxxxx` 账号同样只列不删。
 
 Gateway 那侧的机器记录不会因此消失，要在控制台单独移除。
 
