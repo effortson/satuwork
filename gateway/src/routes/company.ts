@@ -512,9 +512,20 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
       },
     })
     if (!out.ok) throw new HttpError(out.status, out.error)
+    /**
+     * **票和口令同一条规矩：只给 owner 和席位本人。**
+     *
+     * 桌面票里带着明文 VNC 口令（见 signDesktopTicket），拿到票就等于进了那块屏。原先这里
+     * 口令按角色收住了，票却无条件签：席位已经 ready、版本也对时 deploySeat 什么都不碰，
+     * 于是公司管理员对任何一个员工反复点「部署」，就能反复拿到进他桌面的票，审计里只落
+     * 一条 runtime.deploy——而 owner 那条救急入口 `/platform/desktop-ticket` 是专门记
+     * desktop.ticket 的。管理员替人部署只需要知道装没装好，不需要看屏幕；novncUrl 照给
+     * 不带票的那一版，点进去管家不认。
+     */
+    const mayView = actor.role === 'owner' || actor.id === row.id
     json(res, 200, publicSeatRuntime(out.result.runtime, out.result.machine, {
-      includePassword: actor.role === 'owner' || actor.id === row.id,
-      ticket: desktopTicketFor(keys, out.result.machine, out.result.runtime),
+      includePassword: mayView,
+      ticket: mayView ? desktopTicketFor(keys, out.result.machine, out.result.runtime) : undefined,
     }))
   })
 
