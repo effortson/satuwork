@@ -116,7 +116,13 @@ struct LocalBotRelease {
     version: String,
     sha256: String,
     size: u64,
+    /// Gateway 转发的同源地址（`/internal/local-bot-releases/<版本>`），要带席位票。
     url: String,
+    /// 包在外面的公开地址（GitHub Release），null = 只能走 `url`。见 gateway/src/releases.ts
+    /// 的 directReleaseUrl：Gateway 在 Vercel 上时函数响应体有 4.5 MB 上限，几十 MB 的包
+    /// 从 `url` 转发一定失败，所以有这个就先走它。老 Gateway 不带这个字段，按 null 算。
+    #[serde(default)]
+    direct_url: Option<String>,
     min_desktop_version: String,
     mandatory: bool,
     note: String,
@@ -766,6 +772,88 @@ fn runtime_update_error(app: &AppHandle, message: Option<&str>) {
     }
 }
 
+/// 本地运行时包的上限。manifest 声明的 size 和实际下载都按它卡。
+const MAX_RUNTIME_BYTES: u64 = 256 * 1024 * 1024;
+
+/**
+ * 把一次下载响应落进 `archive`，边写边算 sha256，最后和 manifest 声明的 size / sha256 比对。
+ * 不通过就返回错误，调用方负责删临时文件。
+ */
+fn save_verified(
+    mut response: reqwest::blocking::Response,
+    release: &LocalBotRelease,
+    archive: &Path,
+) -> Result<(), String> {
+    if !response.status().is_success() {
+        return Err(format!("下载本地运行时失败：HTTP {}", response.status()));
+    }
+    let mut file = fs::File::create(archive).map_err(|e| format!("创建更新临时文件失败：{e}"))?;
+    let mut hash = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .map_err(|e| format!("下载本地运行时失败：{e}"))?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        if size > release.size || size > MAX_RUNTIME_BYTES {
+            return Err("下载的本地运行时超过声明大小".into());
+        }
+        hash.update(&buffer[..read]);
+        file.write_all(&buffer[..read])
+            .map_err(|e| format!("保存本地运行时失败：{e}"))?;
+    }
+    file.sync_all()
+        .map_err(|e| format!("保存本地运行时失败：{e}"))?;
+    if size != release.size {
+        return Err("下载的本地运行时大小与声明不符".into());
+    }
+    let actual = format!("{:x}", hash.finalize());
+    if actual != release.sha256.to_ascii_lowercase() {
+        return Err("下载的本地运行时 SHA-256 校验失败".into());
+    }
+    Ok(())
+}
+
+/**
+ * 直连外部地址（GitHub Release）取包。
+ *
+ * 和走 Gateway 那条的两处不同，都是刻意的：
+ * - **不带任何 Gateway 凭据。** 这是个公开地址，席位票只给 Gateway 自己。
+ * - **允许跳转，但只跳 https、最多 5 次。** GitHub 的 release 下载一定会 302 到
+ *   objects.githubusercontent.com（带签名的临时地址），不跟就永远取不到。跳到哪儿都不影响
+ *   完整性：字节最后要过 save_verified 的 size + sha256，而那两个值来自带票的 manifest。
+ *   不许降到 http，是为了别把「这台机器在取哪个版本」明文发出去。
+ */
+fn download_direct(raw: &str, release: &LocalBotRelease, archive: &Path) -> Result<(), String> {
+    let url = Url::parse(raw).map_err(|e| format!("直连下载地址不合法：{e}"))?;
+    if url.scheme() != "https" {
+        return Err("直连下载地址不是 https".into());
+    }
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(120))
+        .redirect(Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                attempt.error("直连下载跳转次数过多")
+            } else if attempt.url().scheme() != "https" {
+                attempt.error("直连下载跳到了非 https 地址")
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()
+        .map_err(|e| format!("创建直连下载请求失败：{e}"))?;
+    let response = client
+        .get(url.as_str())
+        .send()
+        .map_err(|e| format!("直连下载本地运行时失败：{e}"))?;
+    save_verified(response, release, archive).map_err(|e| format!("直连下载：{e}"))
+}
+
 /**
  * 下载并暂存适合本机的最新版。任何失败都只记状态，不阻止旧 Bot 启动。
  *
@@ -838,50 +926,47 @@ fn stage_runtime_update(
     if release.sha256.len() != 64 || !release.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("服务器返回的运行时校验值不合法".into());
     }
-    if release.size == 0 || release.size > 256 * 1024 * 1024 {
+    if release.size == 0 || release.size > MAX_RUNTIME_BYTES {
         return Err("服务器返回的运行时大小不合法".into());
     }
-    let download_url = Url::parse(&release.url).map_err(|e| format!("更新地址不合法：{e}"))?;
-    if !same_origin(gateway, &download_url) {
-        return Err("本地运行时下载地址与 Gateway 不同源".into());
-    }
-    let mut response = client
-        .get(download_url.as_str())
-        .bearer_auth(access_token)
-        .send()
-        .map_err(|e| format!("下载本地运行时失败：{e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("下载本地运行时失败：HTTP {}", response.status()));
-    }
     let archive = home.join(format!(".{version}.download"));
-    let mut file = fs::File::create(&archive).map_err(|e| format!("创建更新临时文件失败：{e}"))?;
-    let mut hash = Sha256::new();
-    let mut size = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
     let result: Result<(), String> = (|| {
-        loop {
-            let read = response
-                .read(&mut buffer)
-                .map_err(|e| format!("下载本地运行时失败：{e}"))?;
-            if read == 0 {
-                break;
+        // 先走直连（GitHub Release），失败了再退回 Gateway 转发。两条路落到同一个临时文件、
+        // 过同一套 size + sha256 比对——sha256 来自上面那次带席位票的 manifest 请求，直连这条路
+        // 本身不需要可信。
+        let mut direct_error = None;
+        let fetched = match release.direct_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(raw) => match download_direct(raw, &release, &archive) {
+                Ok(()) => true,
+                Err(error) => {
+                    direct_error = Some(error);
+                    false
+                }
+            },
+            None => false,
+        };
+        if !fetched {
+            let via_gateway = (|| {
+                let download_url =
+                    Url::parse(&release.url).map_err(|e| format!("更新地址不合法：{e}"))?;
+                if !same_origin(gateway, &download_url) {
+                    return Err("本地运行时下载地址与 Gateway 不同源".to_string());
+                }
+                // 这一条带席位票，所以沿用 Policy::none()：Gateway 的转发不该跳到别处，
+                // 真跳了宁可失败，也不把票带去一个没核过的地址。
+                let response = client
+                    .get(download_url.as_str())
+                    .bearer_auth(access_token)
+                    .send()
+                    .map_err(|e| format!("下载本地运行时失败：{e}"))?;
+                save_verified(response, &release, &archive)
+            })();
+            if let Err(error) = via_gateway {
+                return Err(match direct_error {
+                    Some(direct) => format!("{direct}；改走 Gateway 转发也失败：{error}"),
+                    None => error,
+                });
             }
-            size += read as u64;
-            if size > release.size || size > 256 * 1024 * 1024 {
-                return Err("下载的本地运行时超过声明大小".into());
-            }
-            hash.update(&buffer[..read]);
-            file.write_all(&buffer[..read])
-                .map_err(|e| format!("保存本地运行时失败：{e}"))?;
-        }
-        file.sync_all()
-            .map_err(|e| format!("保存本地运行时失败：{e}"))?;
-        if size != release.size {
-            return Err("下载的本地运行时大小与声明不符".into());
-        }
-        let actual = format!("{:x}", hash.finalize());
-        if actual != release.sha256.to_ascii_lowercase() {
-            return Err("下载的本地运行时 SHA-256 校验失败".into());
         }
         let destination = home.join("releases").join(&version);
         unpack_runtime(&archive, &destination)?;
