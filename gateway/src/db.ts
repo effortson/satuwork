@@ -3555,6 +3555,18 @@ export class Db {
   }
 
   /**
+   * 投递进度往前推一段，顺带续租。只认当前租约持有者，而且只增不减：迟到的旧请求推不回去。
+   * 返回 false 就是租约已经不在手里，调用方必须停手，剩下的归接管者。
+   */
+  async advanceChannelDelivery(id: string, leaseToken: string, deliveredParts: number, leaseUntil: number): Promise<boolean> {
+    return (await this.run(
+      `update channel_events set "deliveredParts"=greatest("deliveredParts", ?), "leaseUntil"=?, "updatedAt"=?
+       where id=? and status='processing' and "leaseToken"=?`,
+      [deliveredParts, leaseUntil, Date.now(), id, leaseToken],
+    )) === 1
+  }
+
+  /**
    * 只让当前租约持有者提交结果。状态离开 processing 时同时清掉 token 和租约，避免
    * 一个迟到的旧请求在接管者之后把 delivered/retry 覆盖回去。
    */

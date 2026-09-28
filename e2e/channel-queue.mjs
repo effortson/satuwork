@@ -77,6 +77,8 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
       GATEWAY_OWNER_PASSWORD: 'test-owner-queue',
       SATUWORK_DEPLOY_STUB: '1',
       GATEWAY_CHANNEL_TICK_MS: '300',
+      // 租约取下限，「发得比租约还久」那条用例才不用等太久。
+      GATEWAY_CHANNEL_EVENT_LEASE_MS: '15000',
     },
   })
   let fn = null
@@ -205,6 +207,87 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
       assert(lastError.includes('satuwork-worker'), `A 的绑定上该说清楚没人来领，实际 ${JSON.stringify(lastError)}`)
       const b = (await withPg((c) => c.query('select "lastError" from channel_bindings where id = $1', ['bind-b']))).rows[0].lastError
       assert(!String(b || '').includes('satuwork-worker'), `B 的工人在领活，不该被报：${b}`)
+    })
+
+    // ── 投递按段记进度：失败从那一段接着发；发得再慢也不会被接管重发 ─────────
+    // 三段回复（每段一个两万字的块，RichMessage 一段装不下两块）加一张转人工卡。
+    const block = (ch) => `${ch}：${ch.repeat(20000)}`
+    const threeParts = [block('甲'), block('乙'), block('丙')].join('\n\n')
+    const handoffJson = JSON.stringify([{
+      id: 'hf-progress', state: 'open', reason: '要人确认', ask: '看一眼', blocking: true, repeats: 0, createdAt: now, updatedAt: now,
+    }])
+    const partsTo = (chat) =>
+      telegram.seen.sent.filter((s) => String(s.chat_id) === chat).map((s) => {
+        const t = textOf(s)
+        return t.startsWith('甲：') ? '甲' : t.startsWith('乙：') ? '乙' : t.startsWith('丙：') ? '丙' : t.includes('转人工') ? '卡' : '?'
+      })
+    const deliveredParts = async (id) =>
+      (await withPg((c) => c.query('select "deliveredParts" from channel_events where id = $1', [id]))).rows[0]?.deliveredParts
+
+    await test('投递第二段失败：重试只从第二段接着发，第一段不重发；短 retry_after 原地等', async () => {
+      await withPg((c) =>
+        c.query(
+          `insert into channel_events (id,"bindingId","externalEventId","externalConversationId","remoteUserId","remoteDisplayName",title,text,status,attempts,"nextTryAt","leaseUntil","leaseToken","sessionId",reply,files,handoffs,"lastError","createdAt","updatedAt","deliveredAt")
+           values ('ev-parts','bind-b','tg:parts','conv-parts','conv-parts','Yan','','你好','retry',1,$1,null,'','s-y',$2,'[]',$3,'Telegram 429',$1,$1,null)`,
+          [Date.now() + 60_000, threeParts, handoffJson],
+        ),
+      )
+      // 第二段连着被 429 顶回去三次（retry_after 1 秒）：原地等两回还不行，这一次收成 retry。
+      let refused = 0
+      telegram.seen.hook = (method, body) => {
+        if (String(body.chat_id) !== 'conv-parts' || !textOf(body).startsWith('乙：')) return null
+        if (refused >= 3) return null
+        refused += 1
+        return { status: 429, retryAfter: 1, description: 'Too Many Requests: retry after 1' }
+      }
+      try {
+        await withPg((c) => c.query(`update channel_events set "nextTryAt" = $1 where id = 'ev-parts'`, [Date.now() - 1000]))
+        let row = null
+        for (let i = 0; i < 150; i++) {
+          row = await eventRow('ev-parts')
+          if (row?.status === 'delivered' || row?.status === 'dead') break
+          await sleep(100)
+        }
+        assert(row?.status === 'delivered', `该投递出去，实际 ${JSON.stringify(row)}`)
+        assert(refused === 3, `第二段该被顶回去三次，实际 ${refused}`)
+        const got = partsTo('conv-parts')
+        assert(got.join(',') === '甲,乙,丙,卡', `每段只该到一次、按顺序：${got.join(',')}`)
+        assert((await deliveredParts('ev-parts')) === 4, `进度该记到 4：${await deliveredParts('ev-parts')}`)
+      } finally {
+        telegram.seen.hook = null
+      }
+    })
+
+    await test('工人收场后投递得比租约还久：逐段续租，不会被 Gateway 的扫描接管重发', async () => {
+      await withPg((c) =>
+        c.query(
+          `insert into channel_events (id,"bindingId","externalEventId","externalConversationId","remoteUserId","remoteDisplayName",title,text,status,attempts,"nextTryAt","leaseUntil","leaseToken","sessionId",reply,files,handoffs,"lastError","createdAt","updatedAt","deliveredAt")
+           values ('ev-slow','bind-b','tg:slow','conv-slow','conv-slow','Yan','','慢慢来','pending',0,$1,null,'',null,'','[]','[]',null,$1,$1,null)`,
+          [Date.now()],
+        ),
+      )
+      const due = await req(gwBase, 'GET', '/worker/channels/events/due', { token: machineB.token })
+      assert(due.status === 200, `due ${due.status} ${due.text}`)
+      const job = (due.json.jobs || []).find((j) => j.eventId === 'ev-slow')
+      assert(job, `工人该领到这一条：${due.text}`)
+      // 每条发出去都要 7 秒：三段加一张卡 28 秒，远远超过 15 秒的租约。
+      telegram.seen.hook = (method, body) => (String(body.chat_id) === 'conv-slow' ? { delayMs: 7000 } : null)
+      try {
+        const fin = await req(gwBase, 'POST', `/worker/channels/events/ev-slow/finish`, {
+          token: machineB.token,
+          body: { lease: job.lease, sessionId: 's-slow', reply: threeParts, handoffs: JSON.parse(handoffJson) },
+          timeout: 90_000,
+        })
+        assert(fin.status === 200, `finish ${fin.status} ${fin.text}`)
+        const row = await eventRow('ev-slow')
+        assert(row?.status === 'delivered', `该投递出去，实际 ${JSON.stringify(row)}`)
+        // 再等两拍，确认扫描没有再捡起来发一遍。
+        await sleep(1500)
+        const got = partsTo('conv-slow')
+        assert(got.join(',') === '甲,乙,丙,卡', `每段只该到一次：${got.join(',')}`)
+      } finally {
+        telegram.seen.hook = null
+      }
     })
 
     // ── 函数形态：没有分发器，靠 /cron/tick ─────────────────────────────

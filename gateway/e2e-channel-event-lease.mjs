@@ -40,6 +40,11 @@ try {
   const saveReply = await db.updateClaimedChannelEvent(id, newToken, {
     status: 'processing', reply: '接管后的回复', sessionId: 'session-1',
   })
+  // 投递进度：只有持有者能推，只增不减，落结果时也不会被抹掉。
+  const advance = await db.advanceChannelDelivery(id, newToken, 2, base + 500)
+  const staleAdvance = await db.advanceChannelDelivery(id, oldToken, 5, base + 500)
+  const backwards = await db.advanceChannelDelivery(id, newToken, 1, base + 500)
+  const progress = (await db.channelEvent(id))?.deliveredParts
   const delivered = await db.updateClaimedChannelEvent(id, newToken, {
     status: 'delivered', reply: '接管后的回复', sessionId: 'session-1', deliveredAt: base + 203,
   })
@@ -47,6 +52,7 @@ try {
 
   console.log('__RESULT__' + JSON.stringify({
     oldClaim, oldRenew, earlyTakeover, takeover, staleRenew, staleCommit, saveReply, delivered,
+    advance, staleAdvance, backwards, progress, finalParts: row?.deliveredParts,
     finalStatus: row?.status, finalReply: row?.reply, leaseCleared: row?.leaseUntil === null && row?.leaseToken === '',
   }))
 } finally {
