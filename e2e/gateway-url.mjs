@@ -93,4 +93,15 @@ export async function runGatewayUrl({ root, test, assert, log }) {
     assert(r.localIgnores.fileThere, '前提没造出来')
     assert(r.localIgnores.memory === 'http://192.168.5.59:3080' && r.localIgnores.src === 'deployed', '本地 bot 认了 gateway-url')
   })
+
+  await test('https 部署的席位不许被降成明文 http', () => {
+    const d = r.noDowngrade
+    // 学来的地址从此收走每一次调用带的席位票和 API Key：明文地址链路上谁都读得到。
+    assert(d.refused.memory === 'https://gw.example.com', `被降成了 ${d.refused.memory}`)
+    assert(!d.refused.fileThere, '明文地址落了盘')
+    assert(d.refused.said, '拒了但没说')
+    assert(d.httpsOk === 'https://gw2.example.com', `https 的新地址没认：${d.httpsOk}`)
+    assert(d.optIn === 'http://192.168.5.40:3080', `SATUWORK_ALLOW_INSECURE_GATEWAY=1 没放行：${d.optIn}`)
+    assert(d.reload.memory === 'https://gw.example.com' && d.reload.src === 'deployed', `重启时认了覆盖里的明文地址：${JSON.stringify(d.reload)}`)
+  })
 }

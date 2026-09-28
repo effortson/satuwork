@@ -225,4 +225,35 @@ function restart(deployedUrl = OLD) {
   out.localIgnores = { memory: process.env.GATEWAY_URL, src, fileThere: statSync(join(home, 'gateway-url')).isFile() }
 }
 
+// 13. https 部署的席位，头里报来一个明文 http 地址：不认（不落盘、不改内存）；换成 https 照认；
+//     明知有风险的开关打开也照认。
+{
+  setSeatModeForTest(true)
+  const HTTPS = 'https://gw.example.com'
+  const { home } = seat({ withEnv: false })
+  restart(HTTPS)
+  logs.length = 0
+  adoptGatewayUrl(NEW, log)
+  const refused = {
+    memory: process.env.GATEWAY_URL,
+    fileThere: (() => { try { statSync(join(home, 'gateway-url')); return true } catch { return false } })(),
+    said: logs.some((l) => l.includes('明文 http')),
+  }
+  adoptGatewayUrl('https://gw2.example.com', log)
+  const httpsOk = process.env.GATEWAY_URL
+  restart(HTTPS)
+  process.env.SATUWORK_ALLOW_INSECURE_GATEWAY = '1'
+  adoptGatewayUrl(NEW, log)
+  const optIn = process.env.GATEWAY_URL
+  delete process.env.SATUWORK_ALLOW_INSECURE_GATEWAY
+  // 覆盖文件里被塞进一个 http 地址（MAC 就算对得上也不认）：启动时按部署的 https 起
+  restart(HTTPS)
+  process.env.SATUWORK_ALLOW_INSECURE_GATEWAY = '1'
+  adoptGatewayUrl(NEW, log)
+  delete process.env.SATUWORK_ALLOW_INSECURE_GATEWAY
+  restart(HTTPS)
+  const src = loadGatewayUrlOverride(log)
+  out.noDowngrade = { refused, httpsOk, optIn, reload: { memory: process.env.GATEWAY_URL, src } }
+}
+
 console.log('__RESULT__' + JSON.stringify(out))
