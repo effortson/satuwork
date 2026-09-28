@@ -1088,6 +1088,11 @@ async function overlayLocalRuntime(bots) {
         machineLink: running ? 'online' : 'offline',
         workspace: (s && s.workspace) || 'desktop',
         port: running ? s.port : null,
+        // 壳子的运行时指针（local-runtime/CURRENT / PENDING / LAST_ERROR）。字段名跟远程
+        // 席位的 runtime.botVersion 对齐：Bot 设置页那一行版本号两种 Bot 读同一个名字。
+        botVersion: (s && s.runtimeVersion) || null,
+        pendingVersion: (s && s.pendingRuntimeVersion) || null,
+        updateError: (s && s.runtimeUpdateError) || null,
       }
       const known = localBots.get(bot.id)
       if (running && (!known || !known.token || known.login !== token())) {
