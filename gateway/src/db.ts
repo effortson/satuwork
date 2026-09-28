@@ -5,8 +5,8 @@ import { randomAccessToken, randomApiKey, randomMachineToken } from './crypto.ts
 import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
-import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
-import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
+import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
+import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
  * 类型、常量和行解析都在 `db/` 底下；这里原样再导出，调用点仍然
@@ -2746,8 +2746,8 @@ export class Db {
       `insert into seat_runtimes (
          "accountId", "botId", "companyId", "linuxUser", "seatId", "machineId", slot, display, "vncPort", "novncPort",
          "botPort", "vncPassword", status, "lastError", "deployedAt", "updatedAt", "botVersion",
-         "deployPhase", "deployStartedAt"
-       ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         "deployPhase", "deployStartedAt", "deployBeatAt"
+       ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        on conflict ("accountId", "botId") do update set
          "companyId"=excluded."companyId",
          "linuxUser"=excluded."linuxUser",
@@ -2765,7 +2765,11 @@ export class Db {
          "updatedAt"=excluded."updatedAt",
          "botVersion"=excluded."botVersion",
          "deployPhase"=excluded."deployPhase",
-         "deployStartedAt"=excluded."deployStartedAt"`,
+         "deployStartedAt"=excluded."deployStartedAt",
+         -- 在装心跳**只往前走**：这一行在装的过程中会被整行写好几次（登记、改成 installing），
+         -- 手上那份是登记那一刻的旧值，照抄会把心跳往回拨。落地（不是 deploying）一律清空。
+         "deployBeatAt"=case when excluded.status = 'deploying'
+           then greatest(excluded."deployBeatAt", seat_runtimes."deployBeatAt") else null end`,
       [
         row.accountId,
         row.botId,
@@ -2786,9 +2790,74 @@ export class Db {
         row.botVersion,
         row.deployPhase,
         row.deployStartedAt,
+        row.status === 'deploying' ? row.deployBeatAt ?? null : null,
       ],
     )
     return (await this.seatRuntime(row.accountId, row.botId))!
+  }
+
+  /**
+   * 同一个席位的部署排队进这把锁：登记那一步「看一眼有没有人在装、没有就写下我在装」必须
+   * 是原子的，不然两个实例同时来，各自看到没人、各自登记（理由同 lockExclusive 那段）。
+   * **必须在 db.tx 里调**。按席位散列，不同席位互不等。
+   */
+  async lockSeatDeploy(accountId: string, botId: string): Promise<void> {
+    if (!this.txClient.getStore()) throw new Error('lockSeatDeploy 必须在 db.tx 里调——事务外的锁当场就放了')
+    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`seat_deploy:${accountId}:${botId}`])
+  }
+
+  /**
+   * 在装心跳：推着这次部署的进程每十几秒报一次到（见 deploy.ts 的 DEPLOY_BEAT_MS）。
+   *
+   * 认 `deployStartedAt`：只续**自己那一次**。自己这次已经被别人接手（心跳断过、有人重新
+   * 登记）的话，那一行的开始时刻已经换了，这一句什么都不改——不能替别人的那次报到。
+   */
+  async beatSeatDeploy(seatId: string, startedAt: number, now = Date.now()): Promise<boolean> {
+    const n = await this.run(
+      `update seat_runtimes set "deployBeatAt" = ?
+        where "seatId" = ? and status = 'deploying' and "deployStartedAt" = ?`,
+      [now, seatId, startedAt],
+    )
+    return n > 0
+  }
+
+  /**
+   * 给一个席位排一次部署（批量更新那两条路）。席位行别的格一个都不动。
+   *
+   * 已经排着的就盖掉：后排的那一次说的是「现在要的样子」，前一次没轮到就没必要做了。
+   */
+  async queueSeatDeploy(accountId: string, botId: string, request: SeatDeployRequest): Promise<boolean> {
+    const n = await this.run(
+      'update seat_runtimes set "deployQueued" = ?::jsonb where "accountId" = ? and "botId" = ?',
+      [JSON.stringify(request), accountId, botId],
+    )
+    return n > 0
+  }
+
+  /**
+   * 领走排着的那一次：清掉并把参数交出来。**两个执行者只有一个领得到**（清和取是同一条
+   * 带条件的 update），另一个拿到 undefined，就当没这回事。
+   */
+  async takeSeatDeploy(accountId: string, botId: string): Promise<SeatDeployRequest | undefined> {
+    const r = await this.one(
+      `update seat_runtimes s set "deployQueued" = null
+         from (select "accountId", "botId", "deployQueued" as q from seat_runtimes
+                where "accountId" = ? and "botId" = ? and "deployQueued" is not null for update) old
+        where s."accountId" = old."accountId" and s."botId" = old."botId"
+        returning old.q`,
+      [accountId, botId],
+    )
+    if (!r) return undefined
+    return seatDeployRequestOf(r.q) ?? {}
+  }
+
+  /** 排着队的席位，先排的在前。队列那一段按机器分组、每台一个一个来。 */
+  async queuedSeatDeploys(): Promise<SeatRuntime[]> {
+    const rows = await this.many(
+      'select * from seat_runtimes where "deployQueued" is not null order by "machineId", "updatedAt", "seatId"',
+      [],
+    )
+    return rows.map(seatRuntimeOf)
   }
 
   /**

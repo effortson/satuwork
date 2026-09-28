@@ -1,4 +1,4 @@
-import { Account, AuditEvent, BotDeletionRequest, BotRelease, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorCall, ConnectorCallStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseConversationAuditSettings, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
+import { Account, AuditEvent, BotDeletionRequest, BotRelease, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorCall, ConnectorCallStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatDeployRequest, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseConversationAuditSettings, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
 
 /**
  * `select *` 回来的裸行 → 上面那些类型。
@@ -426,7 +426,23 @@ export function seatRuntimeOf(r: Row): SeatRuntime {
     tplSyncedAt: numOrNull(r.tplSyncedAt),
     deployPhase: seatPhaseOf(r.deployPhase),
     deployStartedAt: numOrNull(r.deployStartedAt),
+    deployBeatAt: numOrNull(r.deployBeatAt),
+    deployQueued: seatDeployRequestOf(r.deployQueued),
   }
+}
+
+/** 排队参数只认那四格、各自按类型收，别的一概不要（库里那一格是 jsonb，谁都可能写坏）。 */
+export function seatDeployRequestOf(v: unknown): SeatDeployRequest | null {
+  if (v == null) return null
+  const o = jsonOf(v)
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null
+  const x = o as Record<string, unknown>
+  const out: SeatDeployRequest = {}
+  if (typeof x.version === 'string' && x.version) out.version = x.version
+  if (x.update === true) out.update = true
+  if (x.force === true) out.force = true
+  if (typeof x.interrupt === 'boolean') out.interrupt = x.interrupt
+  return out
 }
 export function botReleaseOf(r: Row): BotRelease {
   const kind = str(r.kind || 'bot')

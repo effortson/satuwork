@@ -1210,8 +1210,8 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
        *
        * 装跑在后台，Gateway 一重启，库里那一行就永远停在 `deploying`：机器上什么都没在
        * 装，而界面上那个读秒会一直往上走——人守着一屏永远不会完成的进度，手里连一颗能
-       * 按的按钮都没有。库里看不出这件事（两种 `deploying` 一模一样），所以判据是「这个
-       * 进程手上有没有这活儿」。这里直接把那一行改回 `deploying` 来造这个现场。
+       * 按的按钮都没有。判据是库里的在装心跳（`deployBeatAt`）断了、管家那边也没在装。这里
+       * 直接把那一行改回 `deploying`（心跳是空的）来造这个现场。
        */
       const require = createRequire(`${gwRoot}/package.json`)
       const pg = require('pg')
@@ -1237,6 +1237,133 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       const del = await req(gwBase, 'DELETE', `/runtime/bots/${newBot}`, { token: memberTok })
       assert(del.status === 200, `删 ${del.status} ${del.text}`)
     })
+
+    /**
+     * **两个 Gateway 实例共用一个库**——Vercel 上就是这个样子：装的那个实例和问的那个多半
+     * 不是同一个。以前「有没有人在装」是进程里的一张 Map，另一个实例上的进度页永远说「没人
+     * 在装」、给出「重新部署」，一按就再登记一遍、再发一次 `PUT /seats/:id`。
+     *
+     * 第二个实例的 stub 要「装」几秒（SATUWORK_DEPLOY_STUB_MS），外加只等 300 毫秒就回
+     * （GATEWAY_DEPLOY_WAIT_MS）：装的过程这才有一段看得见的时间，请求也必然先于装完回来。
+     * 原来那个实例的 stub 是瞬间装完的——它要是真的又登记了一次，这一次会当场 ready，
+     * deployStartedAt 也会被重写，两处都看得出来。
+     */
+    {
+      const GW2_PORT = await freePort()
+      const gw2Base = `http://127.0.0.1:${GW2_PORT}`
+      const gw2 = start('machine-gw2', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
+        cwd: gwRoot,
+        env: {
+          // 同一个 home：密钥在那儿，两个实例签的票要互认。
+          SATUWORK_GATEWAY_HOME: GW_HOME,
+          GATEWAY_DATABASE_URL: PG_URL,
+          GATEWAY_PG_SCHEMA: SCHEMA,
+          // 不清库、不播种：它是第二个实例，不是另一套环境。
+          GATEWAY_PG_RESET: '',
+          GATEWAY_HOST: '127.0.0.1',
+          GATEWAY_PORT: String(GW2_PORT),
+          GATEWAY_MACHINE_TOKEN: MACHINE_TOK,
+          GATEWAY_PLATFORM_TOKEN: PLATFORM_TOK,
+          GATEWAY_ACCESS_HOST: 'satuwork.com',
+          SATUWORK_DEPLOY_STUB: '1',
+          SATUWORK_DEPLOY_STUB_MS: '2500',
+          GATEWAY_DEPLOY_WAIT_MS: '300',
+        },
+      })
+      const require = createRequire(`${gwRoot}/package.json`)
+      const pg = require('pg')
+      const client = new pg.Client({ connectionString: PG_URL })
+      try {
+        await waitHttp(gw2Base + '/health', { child: gw2, what: 'machine-deploy gateway #2' })
+        await client.connect()
+        await client.query(`set search_path to ${SCHEMA}`)
+        const seatRow = async (accountId, botId) =>
+          (await client.query('select * from seat_runtimes where "accountId" = $1 and "botId" = $2', [accountId, botId])).rows[0]
+        const auditCount = async (action, since) =>
+          Number((await client.query('select count(*)::int as n from audit_events where action = $1 and "createdAt" >= $2', [action, since])).rows[0].n)
+
+        await test('多实例：装在 A 上，B 看得出在装；在 B 上再按一次也不会再装一遍', async () => {
+          const before = await seatRow(memberId, botA)
+          assert(before && before.status === 'ready', `前提：botA 的席位该是 ready，实际 ${before && before.status}`)
+          const t0 = Date.now()
+          const first = await req(gw2Base, 'POST', '/runtime/deploy', { token: memberTok, body: { botId: botA, force: true } })
+          const took = Date.now() - t0
+          assert(first.status === 202, `装不完就该先回 202：${first.status} ${first.text}`)
+          assert(first.json.installing === true && first.json.status === 'deploying', `回执没说在装：${first.text.slice(0, 300)}`)
+          assert(took < 2000, `请求不该挂到装完：用了 ${took}ms`)
+          const mid = await seatRow(memberId, botA)
+          assert(mid.status === 'deploying' && mid.deployStartedAt != null, `库里没登记在装：${mid.status}`)
+          assert(mid.deployBeatAt != null, '登记时没写在装心跳')
+
+          // 另一个实例上的进度页：在装，不是「没人在装」。
+          const prog = await req(gwBase, 'GET', '/runtime/deploy/progress?botId=' + botA, { token: memberTok })
+          assert(prog.status === 200 && prog.json.status === 'deploying', `进度 ${prog.status} ${prog.text}`)
+          assert(prog.json.stale === false, `另一个实例把在装的说成了没人管：${prog.text}`)
+
+          // 另一个实例上再按一次「重新部署」：这次什么都不登记。
+          const again = await req(gwBase, 'POST', '/runtime/deploy', { token: memberTok, body: { botId: botA, force: true } })
+          assert(again.status === 202 && again.json.already === true, `第二次该认出已经在装：${again.status} ${again.text.slice(0, 300)}`)
+          const still = await seatRow(memberId, botA)
+          assert(String(still.deployStartedAt) === String(mid.deployStartedAt), `第二次重新登记了：${mid.deployStartedAt} → ${still.deployStartedAt}`)
+          assert(still.status === 'deploying', `瞬间装完的那个实例把它装掉了：${still.status}`)
+
+          let done
+          for (let i = 0; i < 100; i++) {
+            done = await seatRow(memberId, botA)
+            if (done.status !== 'deploying') break
+            await sleep(100)
+          }
+          assert(done.status === 'ready', `后台没装完：${done.status} ${done.lastError}`)
+          assert(Number(done.deployedAt) > Number(before.deployedAt), 'deployedAt 没动')
+          assert(done.deployBeatAt === null && done.deployPhase === null, `装完了心跳/阶段没清：${done.deployBeatAt} ${done.deployPhase}`)
+          assert((await auditCount('runtime.deploy', t0)) === 1, '只该有一次部署进审计')
+        })
+
+        await test('批量更新当场回来、在后台一个一个往下推，审计先写上', async () => {
+          const mine = await seatRow(memberId, botA)
+          const machineId = mine.machineId
+          // 只看好着的那几个：上面那条用例删 Bot 时留下的待清理席位也会被推一遍，但它的 Bot
+          // 已经没了，推的结局是一句「没有这个 Bot」，不在这里要钉的事情里。
+          const seatsBefore = (await client.query('select * from seat_runtimes where "machineId" = $1 and status = $2', [machineId, 'ready'])).rows
+          assert(seatsBefore.length >= 2, `这台机器上席位不够，看不出「一个一个」：${seatsBefore.length}`)
+          const t0 = Date.now()
+          const r = await req(gw2Base, 'POST', `/platform/machines/${machineId}/runtime/update`, { token: ownerTok, body: { force: true } })
+          const took = Date.now() - t0
+          assert(r.status === 202, `推不完就该 202：${r.status} ${r.text.slice(0, 300)}`)
+          assert(took < 3000, `批量更新挂在请求上了：${took}ms`)
+          assert(r.json.queued >= 1 && r.json.results.some((x) => x.queued), `回执里没有排队的：${r.text.slice(0, 300)}`)
+          // 审计在回包之前就写了：函数被掐也丢不了。
+          assert((await auditCount('runtime.update', t0)) === 1, '批量更新的审计没写上')
+
+          // 另一个实例上看机器详情：先看得见排队，最后都落地；**任何时刻一台机器上只装一个**。
+          let sawQueued = false
+          let maxDeploying = 0
+          let rows = []
+          for (let i = 0; i < 300; i++) {
+            const d = await req(gwBase, 'GET', `/platform/machines/${machineId}`, { token: ownerTok })
+            assert(d.status === 200, `机器详情 ${d.status}`)
+            rows = (d.json.seatList || []).filter((s) => seatsBefore.some((b) => b.seatId === s.seatId))
+            if (rows.some((s) => s.queued)) sawQueued = true
+            maxDeploying = Math.max(maxDeploying, rows.filter((s) => s.status === 'deploying').length)
+            if (!rows.some((s) => s.queued || s.status === 'deploying')) break
+            await sleep(200)
+          }
+          assert(sawQueued, '详情里从来没看到「排队中」')
+          assert(maxDeploying <= 1, `同一台机器上同时装了 ${maxDeploying} 个`)
+          for (const b of seatsBefore) {
+            const now = rows.find((s) => s.seatId === b.seatId)
+            assert(now && now.status === 'ready', `${b.seatId} 没铺完：${JSON.stringify(now)}`)
+            assert(Number(now.deployedAt) > Number(b.deployedAt ?? 0), `${b.seatId} 的 deployedAt 没动`)
+            assert(now.botVersion === b.botVersion, `重铺换了 ${b.seatId} 的版本：${b.botVersion} → ${now.botVersion}`)
+          }
+        })
+      } finally {
+        await client.end().catch(() => {})
+        try {
+          gw2.kill('SIGTERM')
+        } catch {}
+      }
+    }
 
     await test('没有机器的时候：Bot 照建，装不成的理由说出来', async () => {
       const co = await createCompany(req, gwBase, {

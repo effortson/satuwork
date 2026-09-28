@@ -10,7 +10,7 @@ import { balanceOf } from '../lib/billing.ts'
 import { parseBilling } from '../db.ts'
 import { isUniqueViolation } from '../db/rows.ts'
 import { bodyOf, deployOptsOf, strField, usd, usdMicros } from '../lib/validate.ts'
-import { companyMachineOf, deploySeat, listSeatRuntime, publicMachine, publicSeatRuntime, releaseSeats } from '../deploy.ts'
+import { companyMachineOf, deploySeatBriefly, listSeatRuntime, publicMachine, publicSeatRuntime, releaseSeats } from '../deploy.ts'
 import { companyStatusOf, emailOf, groupRoleOf, membersInCompany, orgSettings, patchAccount, phoneOf, publicAccount, publicCompany, publicGroup, publicPlan, publicSettings, roleOf, slugOf, stringIds, websiteOf } from '../lib/org.ts'
 import { desktopTicketFor, machineHostOf, machineResolver } from '../lib/machines.ts'
 import { inviteLinkOf, issueInvite, rangeQuery, requireOrgUser, requireOwner, requireUser, usagePayload } from '../lib/guards.ts'
@@ -496,8 +496,9 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     const row = await db.account(req.params.accountId)
     if (!row || row.companyId !== req.params.id) throw new HttpError(404, '账号不存在')
     if (row.role === 'owner') throw new HttpError(403, '系统管理员没有席位')
-    const out = await deploySeat(db, keys, row, deployOptsOf(req))
-    const rt = out.ok ? out.result.runtime : out.runtime
+    // 后台装、先等一小会儿，理由同 `/runtime/deploy`：首装挂在请求上必然 504。
+    const out = await deploySeatBriefly(db, row, deployOptsOf(req))
+    const rt = out.runtime
     await db.audit({
       companyId: req.params.id,
       accountId: actor.id,
@@ -509,6 +510,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
         seatId: rt?.seatId,
         slot: rt?.slot,
         status: rt?.status,
+        ...(out.ok && out.already ? { already: true } : {}),
       },
     })
     if (!out.ok) throw new HttpError(out.status, out.error)
@@ -523,10 +525,14 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
      * 不带票的那一版，点进去管家不认。
      */
     const mayView = actor.role === 'owner' || actor.id === row.id
-    json(res, 200, publicSeatRuntime(out.result.runtime, out.result.machine, {
-      includePassword: mayView,
-      ticket: mayView ? desktopTicketFor(keys, out.result.machine, out.result.runtime) : undefined,
-    }))
+    json(res, out.installing ? 202 : 200, {
+      ...publicSeatRuntime(out.runtime, out.machine ?? null, {
+        includePassword: mayView,
+        ticket: mayView ? desktopTicketFor(keys, out.machine, out.runtime) : undefined,
+      }),
+      installing: out.installing,
+      ...(out.already ? { already: true } : {}),
+    })
   })
 
   router.delete('/orgs/:id/accounts/:accountId', async (req, res) => {

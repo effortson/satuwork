@@ -133,6 +133,11 @@ openssl rand -base64 32   # GATEWAY_CHANNEL_KEY
   gateway-runtime.md「模型调用」），Gateway 不再在那条流的路径上。`/v1` 是请求级的，模型答完
   就结束，不是小时级；函数的 `maxDuration` 建议给到 800 秒，让桌面端一轮长回答（连同工具调用）
   不被半路砍断。这里不动，上线前按需要改 `build-vercel.mjs` 里写 `.vc-config.json` 那段。
+- **席位部署不挂在请求上**：`/runtime/deploy`、公司侧替人部署只等 `GATEWAY_DEPLOY_WAIT_MS`
+  （默认 20 秒），装不完回 202，界面轮询进度；两条批量更新（按公司、按机器）只排队，请求的
+  waitUntil 先推一段，没推完的由 `/cron/tick` 每分钟接着推，同一台机器一次只装一个。
+  「有没有人在装」看库里的在装心跳（`seat_runtimes.deployBeatAt`），不看实例；心跳断了（函数被掐）
+  由每分钟那一拍去管家那儿问结局。
 - **老协议机器上的日常任务与渠道**：Gateway 不再自己跑那一轮（那要等席位 20 分钟），< 8 号的
   机器上这两样不动。先升管家。
 

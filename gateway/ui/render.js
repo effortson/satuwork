@@ -1166,28 +1166,58 @@ async function updateMachineRuntime(machineId, reflow) {
      * 失败里的话，一次「中午大家都在用」会被报成一片红，人会去查根本不存在的故障。
      */
     const held = results.filter((r) => r.busy).length
-    const bad = results.filter((r) => !r.busy && (r.error || r.status === 'error')).length
-    const tail = held ? t(`，${held} 个有会话在跑没换`, `, ${held} skipped (busy)`) : ''
+    // 还没轮到的（202 + queued）：服务端在后台一个一个往下推，不算成功也不算失败——
+    // 席位表上画「排队中」，下面那条轮询把表刷到它们都落地。
+    const waiting = results.filter((r) => r.queued).length
+    const bad = results.filter((r) => !r.busy && !r.queued && (r.error || r.status === 'error')).length
+    const tail =
+      (held ? t(`，${held} 个有会话在跑没换`, `, ${held} skipped (busy)`) : '') +
+      (waiting ? t(`，${waiting} 个在后台排队`, `, ${waiting} queued in the background`) : '')
+    const tone = bad && !ok && !waiting ? 'err' : 'ok'
     if (!results.length) flash('ok', t('没有需要更新的席位', 'No seats needed updating'))
     else if (reflow)
       // 重铺没有「统一的那个版本」（每个席位各是各的），所以这一句里不摆版本号——
       // 摆一个就是在暗示所有席位都变成了它。
-      flash(
-        bad && !ok ? 'err' : 'ok',
-        t(`重铺：成功 ${ok}，失败 ${bad}`, `Reinstalled: ${ok} ok, ${bad} failed`) + tail,
-      )
+      flash(tone, t(`重铺：成功 ${ok}，失败 ${bad}`, `Reinstalled: ${ok} ok, ${bad} failed`) + tail)
     else
-      flash(
-        bad && !ok ? 'err' : 'ok',
-        t(`更新 ${data.version}：成功 ${ok}，失败 ${bad}`, `Updated ${data.version}: ${ok} ok, ${bad} failed`) + tail,
-      )
+      flash(tone, t(`更新 ${data.version}：成功 ${ok}，失败 ${bad}`, `Updated ${data.version}: ${ok} ok, ${bad} failed`) + tail)
     await loadMachineDetail(machineId)
+    if (waiting) watchMachineSeats(machineId)
   } catch (err) {
     flash('err', err.message)
   } finally {
     state.updatingRuntime = false
     render()
   }
+}
+
+/**
+ * 批量更新排了队之后，把这台机器的详情刷到席位都落地为止。
+ *
+ * **这不是一个长明的定时器**：没有排队、没有在装的席位就停；人离开这台机器的详情页也停；
+ * 最多看半小时（首装十几分钟，再久就是真卡住了，表上照样看得见）。五秒一轮：一个席位
+ * 重铺也就十几秒，再密只是白问。
+ */
+let machineSeatWatch = null
+function watchMachineSeats(machineId) {
+  if (machineSeatWatch) clearInterval(machineSeatWatch)
+  const until = Date.now() + 30 * 60_000
+  machineSeatWatch = setInterval(async () => {
+    const here = state.machineDetail?.machine?.id === machineId
+    const seats = (here && state.machineDetail.seatList) || []
+    const moving = seats.some((s) => s.queued || s.status === 'deploying')
+    if (!here || !moving || Date.now() > until) {
+      clearInterval(machineSeatWatch)
+      machineSeatWatch = null
+      return
+    }
+    if (document.hidden || state.busy) return
+    try {
+      await loadMachineDetail(machineId)
+      render()
+    } catch {}
+  }, 5000)
+  if (machineSeatWatch && typeof machineSeatWatch.unref === 'function') machineSeatWatch.unref()
 }
 
 /**
@@ -1214,12 +1244,18 @@ async function redeploySeat(orgId, accountId, botId) {
     // 席位那侧把失败写在 lastError 里，状态码仍是 200 的情况是有的（部署登记成了、
     // 机器上没成）。照实说，别一律报「已重新部署」。
     if (rt && rt.status === 'error') flash('err', rt.lastError || t('部署失败'))
+    // 服务端等不到装完就先回了（202 + installing）：在后台装，表上会自己刷到落地。
+    else if (rt && rt.installing) flash('ok', t('已开始重新部署，在后台装', 'Redeploy started in the background'))
     else flash('ok', t('已重新部署', 'Redeployed'))
   } catch (err) {
     flash('err', err.message)
   } finally {
     state.busy = false
-    if (state.machineDetail?.machine?.id) await loadMachineDetail(state.machineDetail.machine.id).catch(() => {})
+    const mid = state.machineDetail?.machine?.id
+    if (mid) {
+      await loadMachineDetail(mid).catch(() => {})
+      watchMachineSeats(mid)
+    }
     render()
   }
 }
