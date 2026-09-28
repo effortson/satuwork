@@ -149,6 +149,12 @@ export async function runMentions({ root, test, assert, log }) {
     assert(r.viaMention.没点那台不算, '没点名的服务器被算成点了名')
   })
 
+  await test('开轮那几秒里按停止：停得下来，这一轮以 aborted 收口，模型一次不调', () => {
+    // 以前 abort 只看 live：重拉目录、同步压缩那几秒里按停止回 false，然后整轮照跑。
+    const bad = Object.entries(r.abortStarting || {}).filter(([, v]) => v !== true).map(([k]) => k)
+    assert(r.abortStarting && !bad.length, `这几条不对：${bad.join('、') || '没有结果'}`)
+  })
+
   await test('取消掉的那条一个字都不留在日志里', () => {
     // 队列不写 JSONL：被取消的消息从没进过模型，写进去会让重放凭空多一条用户消息。
     assert(r.cancelled.取消的那条没进日志, '取消掉的消息进了 JSONL')
