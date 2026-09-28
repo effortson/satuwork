@@ -2611,6 +2611,33 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
             '墓碑上的心跳不该刷新 lastHeartbeatAt',
           )
 
+          // ── 墓碑的票**只**能收信。─────────────────────────────────────────
+          //
+          // 移除往往就是因为怀疑这台机器被攻破了。墓碑躺着的这段时间（等回执或等 TTL），
+          // 它的票要是还能以原公司的身份报会话索引、报守卫事件、拉发布包，「移除」就只在
+          // 界面上生效。心跳和回执之外，一律 403 machine_removed。
+          const doomedTok = { token: 'smt_e2e-doomed' }
+          const blocked = [
+            ['POST', '/internal/sessions/index', { accountId: 'x', botId: 'bot-doomed', sessions: [] }],
+            ['POST', '/internal/guard-events', { accountId: 'x', events: [] }],
+            ['GET', '/internal/bot-releases/0.0.0-e2e'],
+            ['GET', '/internal/manager-releases/0.0.0-e2e'],
+            ['GET', '/worker/routines/due'],
+          ]
+          for (const [method, path, body] of blocked) {
+            const r = await req(gwBase, method, path, { ...doomedTok, ...(body ? { body } : {}) })
+            assert(
+              r.status === 403 && r.json?.code === 'machine_removed',
+              `墓碑的票还能用 ${method} ${path}：${r.status} ${r.text}`,
+            )
+          }
+          // 挡完之后心跳照样收得到信——管家还没来得及收的话，下一轮不能丢。
+          const hb2 = await req(gwBase, 'POST', `/internal/machines/${doomed}/heartbeat`, {
+            ...doomedTok,
+            body: { managerVersion: 'e2e-1', protocol: 1, node: process.versions.node, seats: [] },
+          })
+          assert(hb2.status === 200 && hb2.json.removed === true, `挡了别的路之后心跳收不到信：${hb2.status} ${hb2.text}`)
+
           // 管家收拾完的回执 → 这一行才真的没。
           const receipt = await req(gwBase, 'POST', `/internal/machines/${doomed}/removed`, { token: 'smt_e2e-doomed', body: {} })
           assert(receipt.status === 200, `回执 ${receipt.status} ${receipt.text}`)

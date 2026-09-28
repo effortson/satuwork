@@ -277,12 +277,27 @@ export function requireBootstrapMachine(req: Req) {
   }
 }
 
-export async function requireMachine(req: Req, db: Db): Promise<Machine> {
+/**
+ * 凭机器票 `smt_` 认出是哪台机器。
+ *
+ * **默认不认墓碑**（`removedAt` 已立）。`machineByToken` 故意把墓碑也查出来——心跳要靠
+ * 它把「你被移除了」送下去——但这不等于墓碑的票还能干别的：平台移除一台疑似被攻破
+ * 的机器之后，它的票在墓碑躺着的那段时间（等回执，或者等 TTL 扫掉）里要是还能报会话
+ * 索引、报守卫事件、拉发布包，就等于「移除」只在界面上生效。所以这里一律 403
+ * `machine_removed`：肯定式的「我认识你，你已经被移除了」，和 401「不认识」分开。
+ *
+ * 只有收信那两条要 `allowRemoved`：心跳（回 `removed: true`）和收尾回执
+ * （`/internal/machines/:id/removed`）。它们都只对墓碑做「告诉它 / 删掉它」这一件事。
+ */
+export async function requireMachine(req: Req, db: Db, opts: { allowRemoved?: boolean } = {}): Promise<Machine> {
   const token = bearer(req)
   if (!token) throw new HttpError(401, '无效的机器凭证')
   const machine = await db.machineByToken(token)
   if (!machine || !machine.token || !timingSafeToken(token, machine.token)) {
     throw new HttpError(401, '无效的机器凭证')
+  }
+  if (machine.removedAt && !opts.allowRemoved) {
+    throw new HttpError(403, '这台机器已在平台上移除', { code: 'machine_removed' })
   }
   return machine
 }

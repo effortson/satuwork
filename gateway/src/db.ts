@@ -2368,7 +2368,8 @@ export class Db {
    * 按机器票取，**墓碑也返回**。
    *
    * 这是整个库里唯一看得见墓碑的查询，而且必须看得见：移除之后管家还会照常心跳，
-   * 那一下正是把「你被移除了」交给它的唯一机会。调用方（心跳）要自己判 `removedAt`。
+   * 那一下正是把「你被移除了」交给它的唯一机会。`requireMachine` 默认把墓碑挡在外面，
+   * 只有心跳和收尾回执显式放行（`allowRemoved`），别的地方不要直接拿它鉴权。
    */
   async machineByToken(token: string): Promise<Machine | undefined> {
     if (!token) return undefined
