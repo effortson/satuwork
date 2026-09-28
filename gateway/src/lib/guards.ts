@@ -119,11 +119,26 @@ export async function issueInvite(db: Db, user: Account, createdBy: string, ttl:
   return { token, expiresAt: now + ttl }
 }
 
+/**
+ * 登录成功之后记一笔 lastSeenAt，**顺带确认这一刻账号还是验口令时那个样子**。
+ *
+ * `account` 是登录一开始读出来的那一行，中间隔着一次 scrypt（几十毫秒）。以前这里拿它的
+ * status 整行写回去：管理员恰好在这几十毫秒里停用了这个人，这一句就把 active 写回去了——
+ * 账号复活、席位检查绕过，签出来的票 iat 还在 tokenRevokedAt 之后，是张好票。
+ *
+ * 现在不写 status，只在「还是 active、口令和作废点都没被动过」时写 lastSeenAt；对不上就
+ * 当登录失败，不签票。invited 本来就进不了登录（auth.ts 先拦了），这里也不再替它翻成 active。
+ */
 export async function noteLogin(db: Db, account: Account): Promise<Account> {
-  return await db.updateAccount(account.id, {
-    lastSeenAt: Date.now(),
-    status: account.status === 'invited' ? 'active' : account.status,
-  })
+  const next = await db.updateAccountIf(
+    account.id,
+    { lastSeenAt: Date.now() },
+    { status: ['active'], passwordHash: account.passwordHash, tokenRevokedAt: account.tokenRevokedAt },
+  )
+  if (next) return next
+  const cur = await db.account(account.id)
+  if (cur?.status === 'disabled') throw new HttpError(403, '这个账号已被停用，请联系管理员')
+  throw new HttpError(401, '邮箱或口令不对')
 }
 
 export function statusOf(v: unknown): AccountStatus {
