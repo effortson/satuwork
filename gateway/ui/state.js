@@ -600,7 +600,8 @@ function navGroupsForRole() {
 
 function allowedHrefs() {
   // '/' 不在导航里也必须可达：公司侧它就是对话页，是这些人的落点。
-  const set = new Set([...navForRole().map((n) => n.href), '/profile', '/'])
+  // '/download' 同理不在导航里：入口在个人设置，老的 /download 链接登录之后也落这儿。
+  const set = new Set([...navForRole().map((n) => n.href), '/profile', '/download', '/'])
   // 全局 Bot 从 owner 的菜单里撤了（见 OWNER_NAV），但**页面没撤**：撤的是入口，
   // 不是功能。少了这一行，owner 直接输 /bots 会被 pathAllowed 踢回首页，全局 Bot
   // 目录就此没人改得动了——而他是唯一改得动的人。
@@ -759,6 +760,8 @@ function crumbsOf(path) {
     const one = acc && acc.id === userIdOfPath(path) ? acc : null
     return { href: '/users', parent: t('用户'), current: one?.name || one?.email || t('账号详情') }
   }
+  // 入口在个人设置里，上一级就回那儿。
+  if (path === '/download') return { href: '/profile', parent: t('个人设置'), current: t('下载桌面端') }
   if (path.startsWith('/audit/summary/')) {
     const item = state.auditItemDetail?.item
     const id = auditItemIdOfPath(path)

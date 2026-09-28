@@ -121,8 +121,24 @@ systemctl daemon-reload >/dev/null 2>&1 || warn "daemon-reload 失败"
 
 # 目录里有会话日志，删之前确认路径确实长得像一个席位目录——这段是以 root 跑的。
 # 不长得像就跳过：这是一道防手滑的闸，不是拆除失败。
+#
+# **以席位用户的身份删，不以 root 删。** 路径长对了不等于指对了：~/.satuwork 归席位
+# 用户，他可以把它换成指向任意目录的链接，root 的 `rm -rf` 就会顺着删到别处去。检查
+# 和删除之间换一次链接只要一个系统调用，所以不靠 `[ -L ]` 预检，而是让删除本身没有
+# 越权的余地（同 deploy-seat.sh 的 as_user）。代价：老版本中途失败留下的 root 文件删
+# 不掉，只是留下垃圾——按上面的约定，这不算拆除失败。
+# 账号已经没了（手工 deluser 过）就没有能换链接的人，这时才由 root 删，且仍拒绝链接。
+remove_seat_dir() {
+  if id "$LINUX_USER" >/dev/null 2>&1; then
+    runuser -u "$LINUX_USER" -- env -i -C / PATH=/usr/bin:/bin rm -rf "$SEAT_DIR"
+  elif [ -L "/home/$LINUX_USER" ] || [ -L "/home/$LINUX_USER/.satuwork" ]; then
+    warn "席位目录的上层是符号链接，跳过删除：$SEAT_DIR"
+  else
+    rm -rf "$SEAT_DIR"
+  fi
+}
 case "$SEAT_DIR" in
-  /home/"$LINUX_USER"/.satuwork/"$SEAT_ID") rm -rf "$SEAT_DIR" || warn "席位目录没删干净：$SEAT_DIR" ;;
+  /home/"$LINUX_USER"/.satuwork/"$SEAT_ID") remove_seat_dir || warn "席位目录没删干净：$SEAT_DIR" ;;
   *) warn "席位目录 $SEAT_DIR 不在它该在的位置，跳过删除" ;;
 esac
 rm -rf "/tmp/xdg-runtime-$SEAT_ID" || warn "运行时目录没删干净"

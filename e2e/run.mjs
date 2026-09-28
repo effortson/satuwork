@@ -2193,6 +2193,81 @@ async function runGateway() {
     assert(String(r.json.error).includes('自己'), '自己 文案')
   })
 
+  await test('并发改账号：停用不被登录 / 接受邀请盖回去，同一条链接只能接受一次，改口令输给重置', async () => {
+    // 这几条以前都是「整行读出来、合并、整行写回去」：谁后写谁赢，停用可以被一次恰好在
+    // 验口令的登录改回 active。下面每一条都让两件事同时发生，只看最后落下的状态——
+    // 不管谁先谁后，这个状态都得是对的。
+    const email = 'race@invite.test'
+    const inv = await req(base, 'POST', `/orgs/${inviteOrg}/accounts/members`, {
+      token: inviteAdminTok,
+      body: { email, name: '并发', role: 'member', ttlDays: 7 },
+    })
+    assert(inv.status === 201, `invite ${inv.status} ${inv.text}`)
+    const id = inv.json.user.id
+    const tokenOf = (url) => String(url || '').split('/join/')[1]
+    const patch = (status) =>
+      req(base, 'PATCH', `/orgs/${inviteOrg}/accounts/${id}`, { token: inviteAdminTok, body: { status } })
+    const statusNow = async () => (await req(base, 'GET', `/orgs/${inviteOrg}/accounts/${id}`, { token: inviteAdminTok })).json.account.status
+    const login = (password) => req(base, 'POST', '/auth/login', { body: { email, password } })
+
+    // 同一条链接两个人一起接受：只能成一个，口令是成的那个设的。
+    const link = tokenOf(inv.json.invite.url)
+    const [a, b] = await Promise.all([
+      req(base, 'POST', `/invites/${link}/accept`, { body: { password: 'race-pass-aaa' } }),
+      req(base, 'POST', `/invites/${link}/accept`, { body: { password: 'race-pass-bbb' } }),
+    ])
+    const codes = [a.status, b.status].sort()
+    assert(codes[0] === 200 && codes[1] === 400, `两次接受该一成一败：${a.status} ${b.status}`)
+    const won = a.status === 200 ? 'race-pass-aaa' : 'race-pass-bbb'
+    const lost = a.status === 200 ? 'race-pass-bbb' : 'race-pass-aaa'
+    assert((await login(won)).status === 200, '接受成功的那个口令登不进')
+    assert((await login(lost)).status === 401, '接受失败的那个口令也能登录')
+
+    // 登录和停用前后脚：停用必须留下来，登录不许把 active 写回去。
+    for (let i = 0; i < 4; i++) {
+      if ((await statusNow()) !== 'active') assert((await patch('active')).status === 200, 're-enable')
+      const [, dis] = await Promise.all([login(won), patch('disabled')])
+      assert(dis.status === 200, `disable ${dis.status} ${dis.text}`)
+      assert((await statusNow()) === 'disabled', `第 ${i + 1} 轮：停用被并发的登录改回去了`)
+      assert((await login(won)).status === 403, '停用之后还能登录')
+    }
+
+    // 停用的人手上有重置链接：接受不了，也不会被接受改回 active。
+    const reset = await req(base, 'POST', `/orgs/${inviteOrg}/accounts/${id}/reset`, { token: inviteAdminTok })
+    assert(reset.status === 200, `reset ${reset.status} ${reset.text}`)
+    const dead = await req(base, 'POST', `/invites/${tokenOf(reset.json.invite.url)}/accept`, { body: { password: 'race-pass-ccc' } })
+    assert(dead.status === 400, `停用账号接受邀请该 400，实际 ${dead.status} ${dead.text}`)
+    assert((await statusNow()) === 'disabled', '停用账号被接受邀请改回 active')
+
+    // 接受和停用前后脚：一样，停用得留下来。
+    assert((await patch('active')).status === 200, 're-enable')
+    const reset2 = await req(base, 'POST', `/orgs/${inviteOrg}/accounts/${id}/reset`, { token: inviteAdminTok })
+    const [, dis2] = await Promise.all([
+      req(base, 'POST', `/invites/${tokenOf(reset2.json.invite.url)}/accept`, { body: { password: won } }),
+      patch('disabled'),
+    ])
+    assert(dis2.status === 200, `disable ${dis2.status}`)
+    assert((await statusNow()) === 'disabled', '停用被并发的接受邀请改回去了')
+
+    // 改口令和管理员重置前后脚：重置得赢，旧口令、新口令最后都登不进。
+    assert((await patch('active')).status === 200, 're-enable')
+    const reset3 = await req(base, 'POST', `/orgs/${inviteOrg}/accounts/${id}/reset`, { token: inviteAdminTok })
+    const acc = await req(base, 'POST', `/invites/${tokenOf(reset3.json.invite.url)}/accept`, { body: { password: 'race-pass-ddd' } })
+    assert(acc.status === 200, `accept ${acc.status} ${acc.text}`)
+    await new Promise((r) => setTimeout(r, 1100))
+    const [chg, rs] = await Promise.all([
+      req(base, 'POST', '/me/password', { token: acc.json.token, body: { current: 'race-pass-ddd', next: 'race-pass-eee' } }),
+      req(base, 'POST', `/orgs/${inviteOrg}/accounts/${id}/reset`, { token: inviteAdminTok }),
+    ])
+    assert(rs.status === 200, `reset ${rs.status}`)
+    assert(chg.status === 200 || chg.status === 401, `改口令 ${chg.status} ${chg.text}`)
+    assert((await login('race-pass-ddd')).status === 401, '重置之后旧口令还能登录')
+    assert((await login('race-pass-eee')).status === 401, '改口令盖掉了并发的重置')
+
+    const del = await req(base, 'DELETE', `/orgs/${inviteOrg}/accounts/${id}`, { token: inviteAdminTok })
+    assert(del.status === 200, `delete ${del.status} ${del.text}`)
+  })
+
   let groupId
 
   await test('GET accounts 含 builtin 全体成员（含管理员）', async () => {

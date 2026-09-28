@@ -748,6 +748,21 @@ function profilePage() {
           </p>
         </div>
 
+        ${/* 登录之后唯一的下载入口：首页那一段只给没登录的人看。桌面壳里不给——人已经在桌面端里了。 */ ''}
+        ${
+          desktopShell()
+            ? ''
+            : `<div class="satu-panel">
+          <span class="satu-panel-title">${t('桌面端', 'Desktop app')}</span>
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
+            <p style="margin: 0; font-size: 13px; color: var(--muted-foreground); flex: 1; min-width: 220px;">
+              ${t('装上之后能在这台电脑上直接跑「本地」那种 AI 员工。Windows 和 macOS 都有。', 'Run “local” coworkers right on this machine. Available for Windows and macOS.')}
+            </p>
+            <button type="button" class="btn btn-secondary" style="flex: none;" data-act="go" data-href="/download">${t('下载桌面端', 'Get the desktop app')}</button>
+          </div>
+        </div>`
+        }
+
         <div class="satu-panel">
           <span class="satu-panel-title">${t('偏好', 'Preferences')}</span>
           <div class="field">

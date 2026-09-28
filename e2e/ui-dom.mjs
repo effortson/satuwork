@@ -92,6 +92,7 @@ function countingStub() {
     setAttribute() {},
     getAttribute: () => null,
     focus() {},
+    scrollIntoView() {},
     style: {},
   }
 }
@@ -203,13 +204,19 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
 
   // 进来时地址栏上是什么。`/` 和 `/login` 在没登录时画的是两屏（见 render.js 的
   // anonView），所以这一条得能由测试指定。
-  const location = { pathname: path, search: '', hash: '', href: base + path }
+  // `#` 片段要拆出来：`/#download` 是首页上那一段，pathname 是 `/`、hash 才是 `#download`。
+  const location = { pathname: '/', search: '', hash: '', href: '' }
+  const go = (url) => {
+    const u = new URL(String(url), base + location.pathname)
+    Object.assign(location, { pathname: u.pathname, search: u.search, hash: u.hash, href: u.href })
+  }
+  go(path)
   const history = {
     replaceState: (_s, _t, url) => {
-      if (url) location.pathname = String(url).split('?')[0]
+      if (url) go(url)
     },
     pushState: (_s, _t, url) => {
-      if (url) location.pathname = String(url).split('?')[0]
+      if (url) go(url)
     },
   }
   // app.js 里是相对路径，node 的 fetch 只收绝对地址。

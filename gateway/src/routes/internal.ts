@@ -148,7 +148,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
    * 情况（机器活着、收到了信）当场干净收场，而不是干等十分钟。
    */
   router.post('/internal/machines/:id/removed', async (req, res) => {
-    const machine = await requireMachine(req, db)
+    const machine = await requireMachine(req, db, { allowRemoved: true })
     if (machine.id !== req.params.id) throw new HttpError(403, '机器凭证与路径不符')
     if (!machine.removedAt) throw new HttpError(409, '这台机器没有被移除')
     await db.deleteMachine(machine.id)
@@ -219,7 +219,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
   }
 
   router.post('/internal/machines/:id/heartbeat', async (req, res) => {
-    const machine = await requireMachine(req, db)
+    const machine = await requireMachine(req, db, { allowRemoved: true })
     if (machine.id !== req.params.id) throw new HttpError(403, '机器凭证与路径不符')
     // 这台机器已经在平台上被移除了，这一下心跳就是把消息交给它的机会。
     //

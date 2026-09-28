@@ -638,7 +638,11 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       const anon = await fetch(`${mgrBase}/seats/seat-1/bot/api/hello`)
       assert(anon.status === 401, `无机器票 ${anon.status}`)
       const r = await fetch(`${mgrBase}/seats/seat-1/bot/api/hello?x=1`, {
-        headers: { 'x-satuwork-machine': machineTok, authorization: 'Bearer sat_seat_token' },
+        headers: {
+          'x-satuwork-machine': machineTok,
+          authorization: 'Bearer sat_seat_token',
+          'x-satuwork-gateway-url': 'http://10.0.0.7:3080',
+        },
       })
       assert(r.status === 200, `反代 ${r.status}`)
       const body = await r.json()
@@ -647,6 +651,8 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       // 席位票原样透传给 bot；机器票是给管家的，不该继续往下走。
       assert(last.headers.authorization === 'Bearer sat_seat_token', 'authorization 没透传')
       assert(!last.headers['x-satuwork-machine'], '机器票漏给了 bot')
+      // 机器票这条是 Gateway 在说话：它报的「我现在在哪」要递到 bot（见 bot/src/gateway-url.ts）。
+      assert(last.headers['x-satuwork-gateway-url'] === 'http://10.0.0.7:3080', 'Gateway 报的地址没递到 bot')
     })
 
     await test('SSE 经过反代不被缓冲，一帧一帧出来', async () => {
@@ -728,7 +734,15 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       try {
       const before = bot.seen.length
       const r = await fetch(`${mgrBase}/seats/seat-3/stream/sessions/s1/events?after=7`, {
-        headers: { authorization: 'Bearer ' + ownerTok, origin: gwBase, accept: 'text/event-stream' },
+        headers: {
+          authorization: 'Bearer ' + ownerTok,
+          origin: gwBase,
+          accept: 'text/event-stream',
+          // 登录了的人自己塞的：管家换上 sat_ 之后 bot 分不出是谁在说话，一旦透传，
+          // 它就把 GATEWAY_URL 永久改到这里，此后连票带 key 送过去。
+          'x-satuwork-gateway-url': 'https://evil.example',
+          'x-satuwork-purpose': 'forged',
+        },
       })
       // 正文只读一次：模板串里的 `await r.text()` 在断言成立时也会执行，再 .json() 就读不到了。
       const text = await r.text()
@@ -740,6 +754,8 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       assert(bot.seen.length === before + 1, '应当正好打到 bot 一次')
       const last = bot.seen[bot.seen.length - 1]
       assert(last.headers.authorization === 'Bearer sat_owner_3', `到 bot 的票是 ${last.headers.authorization}`)
+      const leaked = Object.keys(last.headers).filter((k) => k.startsWith('x-satuwork-'))
+      assert(leaked.length === 0, `登录票这条路把 x-satuwork-* 递给了 bot：${leaked.join(', ')}`)
 
       const post = await fetch(`${mgrBase}/seats/seat-3/stream/sessions/s1/messages`, {
         method: 'POST',
@@ -977,8 +993,13 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
     })
 
     await test('拿着 cookie 能取 noVNC 静态资源，也能建 WebSocket', async () => {
-      const page = await fetch(`${mgrBase}/seats/seat-1/vnc/vnc.html`, { headers: { cookie: deskCookie } })
+      const page = await fetch(`${mgrBase}/seats/seat-1/vnc/vnc.html`, {
+        headers: { cookie: deskCookie, 'x-satuwork-gateway-url': 'https://evil.example' },
+      })
       assert(page.status === 200, `静态 ${page.status}`)
+      // 票/cookie 这条是浏览器，不是 Gateway：它塞的 x-satuwork-* 不许往下走。
+      const hit = novnc.seen[novnc.seen.length - 1]
+      assert(!hit.headers['x-satuwork-gateway-url'], '桌面票这条路把 x-satuwork-gateway-url 透传下去了')
       // **按 noVNC 自己的拼法去连**，不要照着「应该是什么路径」手写——它拼的是
       // `'/' + path`（从根开始），path 只能从落地页的 query 里来。原先这条断言直接
       // 写死了正确路径，于是「跳转没把 path 告诉 noVNC」这个 bug 一路测过去了：
@@ -2589,6 +2610,33 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
             Number(stillThere.rows[0].lastHeartbeatAt) < Number(stillThere.rows[0].removedAt),
             '墓碑上的心跳不该刷新 lastHeartbeatAt',
           )
+
+          // ── 墓碑的票**只**能收信。─────────────────────────────────────────
+          //
+          // 移除往往就是因为怀疑这台机器被攻破了。墓碑躺着的这段时间（等回执或等 TTL），
+          // 它的票要是还能以原公司的身份报会话索引、报守卫事件、拉发布包，「移除」就只在
+          // 界面上生效。心跳和回执之外，一律 403 machine_removed。
+          const doomedTok = { token: 'smt_e2e-doomed' }
+          const blocked = [
+            ['POST', '/internal/sessions/index', { accountId: 'x', botId: 'bot-doomed', sessions: [] }],
+            ['POST', '/internal/guard-events', { accountId: 'x', events: [] }],
+            ['GET', '/internal/bot-releases/0.0.0-e2e'],
+            ['GET', '/internal/manager-releases/0.0.0-e2e'],
+            ['GET', '/worker/routines/due'],
+          ]
+          for (const [method, path, body] of blocked) {
+            const r = await req(gwBase, method, path, { ...doomedTok, ...(body ? { body } : {}) })
+            assert(
+              r.status === 403 && r.json?.code === 'machine_removed',
+              `墓碑的票还能用 ${method} ${path}：${r.status} ${r.text}`,
+            )
+          }
+          // 挡完之后心跳照样收得到信——管家还没来得及收的话，下一轮不能丢。
+          const hb2 = await req(gwBase, 'POST', `/internal/machines/${doomed}/heartbeat`, {
+            ...doomedTok,
+            body: { managerVersion: 'e2e-1', protocol: 1, node: process.versions.node, seats: [] },
+          })
+          assert(hb2.status === 200 && hb2.json.removed === true, `挡了别的路之后心跳收不到信：${hb2.status} ${hb2.text}`)
 
           // 管家收拾完的回执 → 这一行才真的没。
           const receipt = await req(gwBase, 'POST', `/internal/machines/${doomed}/removed`, { token: 'smt_e2e-doomed', body: {} })
