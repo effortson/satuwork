@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { hostname } from 'node:os'
-import { managerVersion, PROTOCOL, readState, writeState, type BootConfig, type ManagerState } from './config.ts'
+import { gatewayUrlProblem, managerVersion, PROTOCOL, readState, writeState, type BootConfig, type ManagerState } from './config.ts'
 
 /**
  * 配对：拿一次性配对码换这台机器的长期 `smt_`。
@@ -74,6 +74,9 @@ export async function pairIfNeeded(boot: BootConfig): Promise<PairResult | undef
 
 /** 拿配对码换一份身份，成了才落盘。失败一律抛——退不退回由上面那层决定。 */
 async function pairWithCode(boot: BootConfig): Promise<PairResult> {
+  // 配对请求换回来的就是 smt_：明文 http 上走这一趟，票当场就不只是我们的了。
+  const problem = gatewayUrlProblem(boot.gatewayUrl)
+  if (problem) throw new Error(problem)
   const res = await fetch(`${boot.gatewayUrl}/machines/pair`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

@@ -47,15 +47,30 @@ stop_unit "$DESKTOP_UNIT"
 # 立刻分给下一个席位——下一次部署撞上同一个口，报「端口被别人占着」，而那个「别人」
 # 正是刚拆掉的这个席位。真跑出来过：sw-…-7bbe43f21941 的 x11vnc 占着 5910。
 #
-# 按 XDG_RUNTIME_DIR 认领：它是 /tmp/xdg-runtime-$SEAT_ID，**逐席位唯一**，
-# slim-desktop.sh 在起任何东西之前就 export 了，所有子进程都带着。命令行认不出来
-# ——`Xvfb :10`、`websockify 127.0.0.1:6081` 里没有席位标识，而同一个员工的几块屏
-# 还共用一个 Linux 账号，按用户杀会把别的屏一起带走。
+# 认领靠 seat-owner.sh 的 seat_of_pid：cgroup / logind 会话加 uid（和管家的
+# src/seat-owner.ts 同一套）。命令行认不出来——`Xvfb :10`、`websockify 127.0.0.1:6081`
+# 里没有席位标识，而同一个员工的几块屏还共用一个 Linux 账号，按用户杀会把别的屏一起带走。
+# 以前按进程自报的 XDG_RUNTIME_DIR 认，那是谁都能伪造的：别的账号挂一个带伪造环境的进程，
+# 这里就会把它当成「这个席位还有进程活着」——拆除永远报失败、槽位永远让不出去；它环境里
+# 写的 DISPLAY 还会让 root 去删别的显示号的 X 锁。
+#
+# 账号用 $LINUX_USER，不读 drop-in：结尾那次核对排在删 drop-in 之后。
+# shellcheck source=seat-owner.sh
+. "$(dirname "$0")/seat-owner.sh"
+# 先用内建的 read 粗筛一遍 cgroup（不 fork）：这个函数在下面的等待循环里一轮要扫全机进程，
+# 每个进程都走一遍 seat_of_pid 的话要 fork 上千次。落不进这个席位的单元、又不在任何 logind
+# 会话里的，seat_of_pid 也一定认不出来。
 seat_pids() {
-  local pid
+  local pid cg
   for pid in /proc/[0-9]*; do
     pid="${pid##*/}"
-    grep -qzFx "XDG_RUNTIME_DIR=/tmp/xdg-runtime-$SEAT_ID" "/proc/$pid/environ" 2>/dev/null || continue
+    cg=""
+    IFS= read -r -d '' cg < "/proc/$pid/cgroup" 2>/dev/null
+    case "$cg" in
+      *"@$SEAT_ID.service"* | */session-*.scope*) ;;
+      *) continue ;;
+    esac
+    [ "$(seat_of_pid "$pid" "$LINUX_USER")" = "$SEAT_ID" ] || continue
     printf '%s\n' "$pid"
   done
 }
@@ -152,7 +167,13 @@ case "$SEAT_DIR" in
   /home/"$LINUX_USER"/.satuwork/"$SEAT_ID") remove_seat_dir || warn "席位目录没删干净：$SEAT_DIR" ;;
   *) warn "席位目录 $SEAT_DIR 不在它该在的位置，跳过删除" ;;
 esac
-rm -rf "/tmp/xdg-runtime-$SEAT_ID" || warn "运行时目录没删干净"
+# 运行时目录：/run/satuwork/<席位> 是 systemd 建的（RuntimeDirectoryPreserve=yes，单元停了也
+# 不删），/tmp/xdg-runtime-<席位> 是老部署留下的。/run 下只有 root 写得动；/tmp 那个就算被人
+# 换成链接，rm -rf 删的也只是链接本身。
+case "$SEAT_ID" in
+  *[!A-Za-z0-9_-]* | '') ;;
+  *) rm -rf "/run/satuwork/$SEAT_ID" "/tmp/xdg-runtime-$SEAT_ID" || warn "运行时目录没删干净" ;;
+esac
 # bot 单元读的 bot.env 和凭据（deploy-seat.sh 写在 /etc/satuwork/seats/<席位>/）。票在
 # Gateway 那边会跟着席位一起作废，留下的只是垃圾，但它们是 root 的文件，没人会想到去清。
 case "$SEAT_ID" in

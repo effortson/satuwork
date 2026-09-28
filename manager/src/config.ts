@@ -201,6 +201,60 @@ export function patchState(patch: (state: ManagerState) => Partial<ManagerState>
   return next
 }
 
+/**
+ * 这个 Gateway 地址能不能用。能用回 null，不能用回一句人话（原因）。
+ *
+ * **非回环的 Gateway 必须是 https。** 管家以 root 跑，而它从 Gateway 那儿听的话分量极重：
+ * 心跳回包里一句 `removed: true` 就会 standDown 拆掉所有席位；升级要约里的地址和 sha256
+ * 决定下一版以 root 跑什么；心跳本身还把 `smt_` 放在头上寄过去——拿到它就能反过来冒充
+ * Gateway 给管家下部署。走明文 http，这一路上任何一个中间人（同网段、上游路由、公共
+ * Wi-Fi）都能读票、改回包。
+ *
+ * 放行的只有开发和 e2e 用的那几种：回环（localhost / 127.x / ::1）以及 `*.localhost`、
+ * `*.test`——它们不出本机（或者只在开发者自己的解析里存在）。本地开发常见的「管家在虚拟机
+ * 里、Gateway 在宿主机 http://192.168.64.1:3080」不在其中：要用得在 manager.env 里显式写
+ * `SATUWORK_ALLOW_INSECURE_GATEWAY=1`，而且每次启动都会吼一句（见 warnInsecureGateway）。
+ */
+export function gatewayUrlProblem(url: string): string | null {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return `Gateway 地址 ${JSON.stringify(url)} 不是一个合法地址`
+  }
+  if (u.protocol === 'https:') return null
+  if (u.protocol !== 'http:') return `Gateway 地址 ${u.origin} 的协议不是 https`
+  if (isDevHost(u.hostname)) return null
+  if (process.env.SATUWORK_ALLOW_INSECURE_GATEWAY === '1') return null
+  return (
+    `Gateway 地址 ${u.origin} 是明文 http：中间人能读走机器票、伪造心跳回包（拆席位、以 root 装它给的包）。` +
+    '换成 https；只在开发环境、明知有这个风险时，才在 /etc/satuwork/manager.env 里加 SATUWORK_ALLOW_INSECURE_GATEWAY=1'
+  )
+}
+
+/** 回环和开发用的域名。`URL.hostname` 对 IPv6 带方括号。 */
+function isDevHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.test')) return true
+  if (h === '::1') return true
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)
+}
+
+/** 靠 SATUWORK_ALLOW_INSECURE_GATEWAY=1 放过去的明文地址：放行，但每次启动都说一声。 */
+export function warnInsecureGateway(url: string): void {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return
+  }
+  if (u.protocol !== 'http:' || isDevHost(u.hostname)) return
+  console.warn(
+    `satuwork-manager: **警告** Gateway 地址 ${u.origin} 是明文 http，靠 SATUWORK_ALLOW_INSECURE_GATEWAY=1 放行。` +
+      '机器票和心跳回包全程不加密，同一条链路上的任何人都能读票、伪造回包。只该出现在开发环境里。',
+  )
+}
+
 export interface BootConfig {
   gatewayUrl: string
   pairingCode: string
