@@ -479,7 +479,22 @@ async function runGateway() {
     })
     assert(machHost.status === 403, `admin 写 host ${machHost.status} ${machHost.text}`)
 
-    const mach = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: {} })
+    // 建机器、认领没归属的机器是平台的事：管理员不带 id、带一个不存在的 id、带一台
+    // 预登记还没派给本公司的机器，都不该成——以前后两种会就地建一行空机器 / 抢先认走。
+    const noId = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: {} })
+    assert(noId.status === 400, `admin 不带 id ${noId.status} ${noId.text}`)
+    const ghostId = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: { id: 'no-such-machine' } })
+    assert(ghostId.status === 404, `admin 给不存在的 id ${ghostId.status} ${ghostId.text}`)
+    const pre = await req(base, 'POST', '/internal/machines', { token: MACHINE_TOK, body: {} })
+    assert(pre.status === 201, `预登记 ${pre.status} ${pre.text}`)
+    const grab = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: { id: pre.json.machine.id } })
+    assert(grab.status === 403, `admin 认领预登记机器 ${grab.status} ${grab.text}`)
+    const viaPatch = await req(base, 'PATCH', `/orgs/${orgId}`, { token, body: { machineId: pre.json.machine.id } })
+    assert(viaPatch.status === 403, `admin 走 PATCH 认领 ${viaPatch.status} ${viaPatch.text}`)
+    const noRow = await req(base, 'GET', `/orgs/${orgId}/machine`, { token })
+    assert(noRow.status === 200 && noRow.json.machine == null, `被拒之后不该留下机器：${noRow.text}`)
+
+    const mach = await req(base, 'POST', `/orgs/${orgId}/machine`, { token: ownerTok, body: {} })
     assert(mach.status === 201, `machine ${mach.status} ${mach.text}`)
     assert(mach.json.company.accessUrl === 'https://acme.satuwork.com', 'accessUrl')
     assert(!mach.json.machine.token, 'admin assign 带了 token')
@@ -701,7 +716,7 @@ async function runGateway() {
     })
     assert(readyBoot.status === 401, `bootstrap ready ${readyBoot.status}`)
 
-    const bind = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: { id: mid } })
+    const bind = await req(base, 'POST', `/orgs/${orgId}/machine`, { token: ownerTok, body: { id: mid } })
     assert(bind.status === 201, `bind ${bind.status} ${bind.text}`)
     assert(!bind.json.machine.token, 'bind 响应带 token')
     orgMachineTok = smt
@@ -986,7 +1001,7 @@ async function runGateway() {
       assert(mach.status === 201, `mock machine ${mach.status} ${mach.text}`)
       liveTok = mach.json.machine.token
       assert(typeof liveTok === 'string' && liveTok.startsWith('smt_'), 'live smt_')
-      const bind = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: { id: mach.json.machine.id } })
+      const bind = await req(base, 'POST', `/orgs/${orgId}/machine`, { token: ownerTok, body: { id: mach.json.machine.id } })
       assert(bind.status === 201, `bind live ${bind.status} ${bind.text}`)
       orgMachineTok = liveTok
       const idx = await req(base, 'POST', '/internal/sessions/index', {
@@ -1336,12 +1351,11 @@ async function runGateway() {
       slug: 'otherco',
     })
     const otherOrg = other.company.id
-    const otherAdminTok = other.token
     const otherMach = await req(base, 'POST', '/internal/machines', { token: MACHINE_TOK, body: {} })
     assert(otherMach.status === 201, `other machine ${otherMach.status}`)
     const otherSmt = otherMach.json.machine.token
     const bindOther = await req(base, 'POST', `/orgs/${otherOrg}/machine`, {
-      token: otherAdminTok,
+      token: ownerTok,
       body: { id: otherMach.json.machine.id },
     })
     assert(bindOther.status === 201, `bind other ${bindOther.status} ${bindOther.text}`)

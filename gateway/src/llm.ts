@@ -205,8 +205,18 @@ export function openaiModelId(m: { provider: string; id: string }): string {
   return `${m.provider}/${m.id}`
 }
 
-/** 常见 provider 的环境变量名。只在 Gateway 进程里读，绝不下发。 */
-export function envSecret(provider: string): string | undefined {
+const warnedUnprefixed = new Set<string>()
+
+/**
+ * 常见 provider 的环境变量名。只在 Gateway 进程里读，绝不下发。
+ *
+ * **自定义供应商只认 `SATUWORK_<ID>_API_KEY`。** 它的 id 是 owner 起的，以前会先试
+ * 不带前缀的 `<ID>_API_KEY`：起个 `stripe` / `composio`，Gateway 自己的 STRIPE_API_KEY
+ * 就被当成这家的密钥，打到它的 baseUrl 上，还经中继授权头发给席位。不带前缀的那种
+ * 只留给内置 provider（id 是 pi-ai 定的，不是谁都能起）；自定义的配了老名字、没配新
+ * 名字时不去用它，只打一句提示让人改名。
+ */
+export function envSecret(provider: string, builtin: boolean): string | undefined {
   const aliases: Record<string, string[]> = {
     deepseek: ['DEEPSEEK_API_KEY'],
     openai: ['OPENAI_API_KEY'],
@@ -217,14 +227,17 @@ export function envSecret(provider: string): string | undefined {
     xai: ['XAI_API_KEY'],
     mistral: ['MISTRAL_API_KEY'],
   }
-  const keys = aliases[provider] ?? [
-    `${provider.toUpperCase().replace(/-/g, '_')}_API_KEY`,
-    // 自定义供应商用带前缀的名字，免得撞上机器上别的同名变量。
-    customEnvVar(provider),
-  ]
+  const plain = `${provider.toUpperCase().replace(/-/g, '_')}_API_KEY`
+  const keys = builtin ? (aliases[provider] ?? [plain]) : [customEnvVar(provider)]
   for (const k of keys) {
     const v = process.env[k]?.trim()
     if (v) return v
+  }
+  if (!builtin && process.env[plain]?.trim() && !warnedUnprefixed.has(provider)) {
+    warnedUnprefixed.add(provider)
+    console.warn(
+      `satuwork-gateway: 自定义供应商 ${provider} 不再读 ${plain}（可能是别的服务的密钥），请改名为 ${customEnvVar(provider)}`,
+    )
   }
 }
 
@@ -504,7 +517,7 @@ export class Llm {
   async secret(_companyId: string | null, provider: string): Promise<string | undefined> {
     const platform = await this.db.platformCredential(provider)
     if (platform?.secret) return platform.secret
-    return envSecret(provider)
+    return envSecret(provider, this.builtinIds.has(provider))
   }
 
   /**

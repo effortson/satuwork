@@ -78,11 +78,16 @@ export function telegramDeleteWebhook(token: string, dropPending = false): Promi
  * 让 Telegram 主动把 update 推到我们的地址上，不再长轮询。`secret` 会原样出现在每条推送的
  * `X-Telegram-Bot-Api-Secret-Token` 头里，收的那一头拿它认「真是 Telegram 发的」。
  * `allowed_updates` 和 getUpdates 那边保持一致——少一种就少收一类事件，而且不报错。
+ *
+ * `max_connections: 1`：Telegram 默认最多 40 路并发推送，同一个人连发两句可能后一句先
+ * 到。channel_events 按 `createdAt` 排同一会话的先后（dueChannelEvents），入库时刻乱了，
+ * 模型看到的顺序就乱了。一路推送 = 一条一条来，和长轮询时一样有序。
  */
 export function telegramSetWebhook(token: string, url: string, secret: string): Promise<boolean> {
   return call(token, 'setWebhook', {
     url,
     secret_token: secret,
+    max_connections: 1,
     allowed_updates: ['message', 'callback_query', 'my_chat_member'],
     drop_pending_updates: false,
   })

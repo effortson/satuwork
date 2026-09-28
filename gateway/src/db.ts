@@ -2721,15 +2721,6 @@ export class Db {
   }
 
   /** 同一家公司再生成一个码时，把之前没用掉的作废——桌上不该同时躺着两张有效的票。 */
-  /** 这台机器是不是这家公司配对进来的。认领只认自己配对的那台。 */
-  async machinePairedBy(machineId: string, companyId: string): Promise<boolean> {
-    const r = await this.one(
-      'select 1 as n from machine_pairings where "machineId" = ? and "companyId" = ? limit 1',
-      [machineId, companyId],
-    )
-    return Boolean(r)
-  }
-
   async expireMachinePairings(companyId: string, now: number): Promise<void> {
     await this.run('update machine_pairings set "expiresAt" = ? where "companyId" = ? and "usedAt" is null and "expiresAt" > ?', [
       now,
@@ -3487,6 +3478,17 @@ export class Db {
   async lockChannelBinding(id: string): Promise<void> {
     if (!this.txClient.getStore()) throw new Error('lockChannelBinding 必须在事务里调用')
     await this.one('select id from channel_bindings where id = ? for update', [id])
+  }
+
+  /**
+   * 收信方式对齐（setWebhook 换 secret + 存散列）按绑定串行，见 channels/inbound.ts。
+   *
+   * 不用上面那把行锁：锁里要等一次 Telegram（最长 20 秒），行锁会把同一绑定上的推送
+   * 入库、配对一起堵住。这把是咨询锁，只和另一次对齐互斥。**必须在 db.tx 里调**。
+   */
+  async lockChannelInbound(id: string): Promise<void> {
+    if (!this.txClient.getStore()) throw new Error('lockChannelInbound 必须在事务里调用')
+    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`channel_inbound:${id}`])
   }
 
   /**

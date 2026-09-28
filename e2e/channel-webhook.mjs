@@ -5,6 +5,7 @@
  * 钉住另一种模式：绑定时设 webhook 而不轮询；推送认 publicId + secret；处理逻辑和长轮询
  * 同一条（配对、入队、去重）；模式切换双向自愈。
  */
+import { createHash } from 'node:crypto'
 import { rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { PG_URL } from './pg.mjs'
@@ -94,6 +95,8 @@ export async function runChannelWebhook({ gwRoot, test, req, start, waitHttp, as
       assert(telegram.seen.webhook.secret.length >= 20, 'secret 太短')
       assert(row.rows[0].webhookSecretHash && row.rows[0].webhookSecretHash !== telegram.seen.webhook.secret, '库里该存散列，不是明文')
       assert(telegram.seen.webhook.allowed.includes('callback_query'), 'allowed_updates 要和 getUpdates 那边一致')
+      // 默认 40 路并发推送会让同一会话的两句话乱序入库，而 channel_events 按 createdAt 排先后。
+      assert(telegram.seen.webhook.maxConnections === 1, `max_connections 该是 1：${telegram.seen.webhook.maxConnections}`)
       await sleep(1200)
       assert(telegram.seen.polls.length === 0, `webhook 模式下还在 getUpdates：${telegram.seen.polls.length} 次`)
     })
@@ -127,6 +130,28 @@ export async function runChannelWebhook({ gwRoot, test, req, start, waitHttp, as
       assert(again.status === 200, `重送 ${again.status}`)
       const events = await withPg((c) => c.query(`select count(*)::int as n from "${schema}".channel_events where "bindingId" = $1`, [bindingId]))
       assert(events.rows[0].n === 1, `账本该只有 1 条，有 ${events.rows[0].n}`)
+    })
+
+    await test('两次重连撞在一起：Telegram 手里那把 secret 和库里的散列是同一把', async () => {
+      // 第一次 setWebhook 当场生效、回包晚到。不串行的话第二次会趁这个空当设上 secretB、
+      // 存下 hashB，第一次回来再把 hashA 盖上去——Telegram 推 secretB，库认 hashA，全 404。
+      let calls = 0
+      telegram.seen.hook = (method) => (method === 'setWebhook' && ++calls === 1 ? { lateMs: 800 } : null)
+      try {
+        const [a, b] = await Promise.all([
+          req(base, 'POST', `/channels/${bindingId}/reconnect`, { token }),
+          req(base, 'POST', `/channels/${bindingId}/reconnect`, { token }),
+        ])
+        assert(a.status === 200 && b.status === 200, `重连 ${a.status} ${b.status} ${a.text} ${b.text}`)
+      } finally {
+        telegram.seen.hook = null
+      }
+      assert(calls === 2, `该设两次 webhook，设了 ${calls} 次`)
+      const row = await withPg((c) => c.query(`select "webhookSecretHash" from "${schema}".channel_bindings where id = $1`, [bindingId]))
+      assert(row.rows[0].webhookSecretHash === createHash('sha256').update(telegram.seen.webhook.secret).digest('hex'),
+        'Telegram 上的 secret 和库里的散列对不上，之后每条推送都会 404')
+      const ok = await hook(publicId, telegram.seen.webhook.secret, { update_id: 20, message: { message_id: 20, chat: { id: 456, type: 'private' }, from: { id: 456, is_bot: false, first_name: 'Alice' }, text: '重连之后' } })
+      assert(ok.status === 200, `重连后用 Telegram 手里那把推送该 200：${ok.status}`)
     })
 
     await test('重连仍是 webhook；模式关掉重启后自己删 webhook、回到长轮询', async () => {

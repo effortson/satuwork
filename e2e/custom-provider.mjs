@@ -404,7 +404,11 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
 
       await stop(gw)
       // 环境变量那把是给所有公司兜底的：重启后该落到它上面，而不是落到遗留的那把上。
-      gw = boot('custom-gw-restart', { env: { SATUWORK_MY_LLM_API_KEY: 'env-fallback-key' } })
+      // 不带前缀的 MY_LLM_API_KEY 同时在：自定义供应商的 id 是 owner 起的，那个名字可能
+      // 是别的服务的密钥（起个 stripe 就是 STRIPE_API_KEY），不能被拿去打这家的上游。
+      gw = boot('custom-gw-restart', {
+        env: { SATUWORK_MY_LLM_API_KEY: 'env-fallback-key', MY_LLM_API_KEY: 'unprefixed-other-service-key' },
+      })
       await waitHttp(`${base}/health`, { child: gw, what: 'custom gateway restart' })
 
       const creds = await req(base, 'GET', '/platform/credentials', { token })
@@ -420,6 +424,7 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       })
       assert(asA.status === 200, `chat ${asA.status} ${asA.text}`)
       assert(seen.auth !== 'Bearer only-company-a-key', '遗留的公司密钥还在被使用——公司那一档没撤干净')
+      assert(seen.auth !== 'Bearer unprefixed-other-service-key', '自定义供应商读了不带前缀的环境变量')
       assert(seen.auth === 'Bearer env-fallback-key', `上游收到的是 ${seen.auth}`)
 
       // 收拾干净：后面几条用例还指着平台那把 sk-custom-123。
