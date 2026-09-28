@@ -74,8 +74,11 @@ PENDING，切换仍留给下一次「没有本地 Bot 在跑」的启动。
     iframe（`{directUrl}/seats/<席位>/vnc/`），而它的加载在守卫眼里也是一次 http(s)
     导航——wry 的 `navigation_policy` 不区分主框架和子框架，`targetFrame.isMainFrame`
     压根没传上来。所以路径形如 `/seats/<席位>/vnc` 的放行，否则表现是**桌面从窗口里
-    跳到系统浏览器里打开**，而配置上看不出任何毛病。判据只认路径不认源：机器的直连
-    地址按公司各不相同，壳子这头无从枚举。
+    跳到系统浏览器里打开**，而配置上看不出任何毛病。光认路径不够（`http://evil/seats/x/vnc/`
+    也会被放进来、把窗口带走），所以还认源：机器的直连地址壳子无从枚举，由界面在挂
+    iframe 前调 `allow_seat_desktop` 报上来，守卫只放行报过的源和 Gateway 自己的源
+    （`seat_desktop_allowed`）。外链暗号 `/__satuwork_open` 同理只在界面源 / Gateway 源上认
+    （`open_path_allowed`），否则框里那页能借它让系统浏览器打开任意地址。
 - **连不上**。WKWebView 没有内建错误页，装不上东西时窗口里一个字都没有。所以进主窗口
   之前先敲一下 TCP：敲不开就停在设置屏并说明原因，也**不把这个地址写进 server.txt**
   ——写了的话下次启动会直奔那个地址，又是一片空白。代价：敲的只是 TCP，端口通着但

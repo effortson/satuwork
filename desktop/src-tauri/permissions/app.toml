@@ -12,3 +12,8 @@ commands.allow = [
   "local_bot_status",
   "approve_local_directory",
 ]
+
+[[permission]]
+identifier = "seat-desktop-commands"
+description = "允许主窗口在挂内嵌桌面前把席位机器的源报给导航守卫。"
+commands.allow = ["allow_seat_desktop"]
