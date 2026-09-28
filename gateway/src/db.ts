@@ -4244,6 +4244,48 @@ export class Db {
     return botDeletionRequestOf(r!)
   }
 
+  /**
+   * 删除请求的状态迁移，**带旧状态条件**：库里那一行还是 `expect` 描述的样子才改，改到了
+   * 返回新行，没改到（别人先动了）返回 undefined。
+   *
+   * 重叠的两拍 tick、requestBotDeletion 的同步推进、升级时新旧两个进程，都会拿着同一行去
+   * 推同一个请求。不带条件的话两边都走到 purgeBot——席位被释放两遍、完成审计记两条。
+   * 只有抢到这一次更新的那一边往下做。
+   */
+  async casBotDeletion(
+    id: string,
+    expect: { status: BotDeletionStatus; attempts: number; nextTryAt?: number | null },
+    patch: Parameters<Db['updateBotDeletion']>[1],
+  ): Promise<BotDeletionRequest | undefined> {
+    const cols: Record<string, string> = {
+      status: 'status',
+      targetCount: '"targetCount"',
+      auditedCount: '"auditedCount"',
+      attempts: 'attempts',
+      nextTryAt: '"nextTryAt"',
+      lastError: '"lastError"',
+      orphans: 'orphans',
+      auditCompletedAt: '"auditCompletedAt"',
+      deletedAt: '"deletedAt"',
+    }
+    const sets: string[] = []
+    const args: unknown[] = []
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined || !cols[k]) continue
+      sets.push(`${cols[k]} = ?`)
+      args.push(k === 'orphans' ? JSON.stringify(v) : v)
+    }
+    if (!sets.length) throw new Error('casBotDeletion 没有要改的字段')
+    let where = 'id = ? and status = ? and attempts = ?'
+    args.push(id, expect.status, expect.attempts)
+    if (expect.nextTryAt !== undefined) {
+      where += ' and "nextTryAt" is not distinct from ?'
+      args.push(expect.nextTryAt)
+    }
+    const r = await this.one(`update bot_deletion_requests set ${sets.join(', ')} where ${where} returning *`, args)
+    return r ? botDeletionRequestOf(r) : undefined
+  }
+
   /** 失败的删除请求不无限重试：试满这么多次就停在 failed 上，等人来看。 */
   async dueBotDeletions(now = Date.now(), limit = 20): Promise<BotDeletionRequest[]> {
     const rows = await this.many(
