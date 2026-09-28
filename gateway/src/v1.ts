@@ -2,7 +2,7 @@ import type { ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import type { Account, ChargeStatus, Db } from './db.ts'
 import type { JwtKeys } from './crypto.ts'
-import { verifyJwt } from './crypto.ts'
+import { ticketRevoked, verifyJwt } from './crypto.ts'
 import { HttpError, bearer, json, watchClient, type Req, type Router } from './http.ts'
 import { EMPTY_USAGE, applyBodyPatch, openaiModelId, redact, type CatalogModel, type Llm, type UpstreamTarget } from './llm.ts'
 import type { Meter } from './lib/meter.ts'
@@ -42,8 +42,8 @@ async function requireUser(req: Req, db: Db, keys: JwtKeys): Promise<Account> {
   }
   const account = await db.account(payload.accountId)
   if (!account) throw new HttpError(401, '账号不存在')
-  // iat 只有秒精度：同一秒内新签发的票不能被刚写下的 tokenRevokedAt 误杀。
-  if (account.tokenRevokedAt && payload.iat < Math.floor(account.tokenRevokedAt / 1000)) {
+  // 新票按毫秒 iatMs 比，老票退回按秒（见 ticketRevoked）。
+  if (ticketRevoked(account.tokenRevokedAt, payload)) {
     throw new HttpError(401, '登录已失效，请重新登录')
   }
   return assertUsable(db, account)

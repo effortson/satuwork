@@ -650,6 +650,25 @@ export class Db {
     return Number(r?.n ?? 0)
   }
 
+  /**
+   * 「至少留一个管理员」的那把锁。数 adminCount 再写之前先拿它，**必须在 db.tx 里调**
+   * （同 lockExclusive）。不锁的话两个管理员同时互相降级 / 停用 / 删除，各自数到 2、各自
+   * 放行，公司就一个管理员都不剩了。按公司散列，不同公司互不等。
+   */
+  async lockCompanyAdmins(companyId: string): Promise<void> {
+    if (!this.txClient.getStore()) throw new Error('lockCompanyAdmins 必须在 db.tx 里调——事务外的锁当场就放了')
+    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`company_admins:${companyId}`])
+  }
+
+  /**
+   * 「至少留一个能登录的系统管理员」的那把锁，道理同 lockCompanyAdmins。平台账号全库只有
+   * 一队，键里折进 schema 名，e2e 各套 schema 之间不互相排队。
+   */
+  async lockPlatformOwners(): Promise<void> {
+    if (!this.txClient.getStore()) throw new Error('lockPlatformOwners 必须在 db.tx 里调——事务外的锁当场就放了')
+    await this.one("select pg_advisory_xact_lock(hashtext(current_schema() || ':platform_owners'))")
+  }
+
   /** 还能管事的管理员：未停用的 admin（含待接受）。最后一个管理员靠它守门。 */
   /**
    * 还能登录的系统管理员有几个。停用最后一个之前要问它——平台账号不属于任何公司，

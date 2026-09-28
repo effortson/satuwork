@@ -3,9 +3,9 @@ import { basename } from 'node:path'
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
-import { requireUser } from '../lib/guards.ts'
+import { gateCompany, requireUser } from '../lib/guards.ts'
 import { requireSeat, pairRuntime, proxyDownload, seatBearer, seatTargetForSession } from '../lib/runtime.ts'
-import { encryptChannelSecret, decryptChannelSecret, verifyArtifactTicket } from '../crypto.ts'
+import { encryptChannelSecret, decryptChannelSecret, ticketRevoked, verifyArtifactTicket } from '../crypto.ts'
 import { startSeatDeploy } from '../deploy.ts'
 import { botContext, publicBot } from '../lib/catalog.ts'
 import { newPairingCode, pairingCodeHash } from '../channels/pairing.ts'
@@ -130,6 +130,10 @@ export function attachChannels(router: Router, ctx: RouteCtx) {
     if (!ticket) throw new HttpError(404, '预览链接不存在或已过期')
     const account = await db.account(ticket.accountId)
     if (!account || account.status !== 'active') throw new HttpError(404, '预览链接不存在或已过期')
+    // 和登录票同一套作废点：改口令、被重置、被停用之后，之前发出去的预览链接一起失效；
+    // 公司被停用也一样挡住，不能拿着七天的链接接着读席位工作区。原因不外露，一律 404。
+    if (ticketRevoked(account.tokenRevokedAt, ticket)) throw new HttpError(404, '预览链接不存在或已过期')
+    await gateCompany(db, account).catch(() => { throw new HttpError(404, '预览链接不存在或已过期') })
     const target = await seatTargetForSession(db, account, ticket.sessionId)
       .catch(() => { throw new HttpError(404, '预览链接不存在或已过期') })
     const upstream = `${target.host}/api/workspace/file?path=${encodeURIComponent(ticket.path)}`

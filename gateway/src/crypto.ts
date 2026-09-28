@@ -254,16 +254,36 @@ export interface JwtPayload {
   companyId: string
   role: 'owner' | 'admin' | 'member'
   iat: number
+  /**
+   * 签发时刻，毫秒。iat 只有秒精度，拿它比 tokenRevokedAt（毫秒）同一秒内分不出先后：
+   * 12.1 秒签的票、12.9 秒改的口令，按秒比这张票就活下来了。新票都带这一格，按它比；
+   * 没有这一格的老票退回按秒比（见 ticketRevoked）。
+   */
+  iatMs?: number
   exp: number
+}
+
+/**
+ * 这张票是不是签在账号作废点（tokenRevokedAt）之前。
+ *
+ * 带 iatMs 的按毫秒严格比：作废那一刻之后签的新票（改口令、接受邀请当场发的那张）不早于
+ * 作废点，照样有效。老票没有 iatMs，只能按秒比——同一秒内的那一小段放过去，和以前一样。
+ */
+export function ticketRevoked(revokedAt: number | null | undefined, t: { iat: number; iatMs?: unknown }): boolean {
+  if (!revokedAt) return false
+  if (typeof t.iatMs === 'number' && Number.isFinite(t.iatMs)) return t.iatMs < revokedAt
+  return !(typeof t.iat === 'number' && t.iat >= Math.floor(revokedAt / 1000))
 }
 
 const b64url = (data: Buffer | string) => Buffer.from(data).toString('base64url')
 
-export function signJwt(keys: JwtKeys, claims: Omit<JwtPayload, 'iss' | 'iat' | 'exp'>, ttlSec: number): string {
-  const now = Math.floor(Date.now() / 1000)
+export function signJwt(keys: JwtKeys, claims: Omit<JwtPayload, 'iss' | 'iat' | 'iatMs' | 'exp'>, ttlSec: number): string {
+  const ms = Date.now()
+  const now = Math.floor(ms / 1000)
   const payload: JwtPayload = {
     iss: process.env.GATEWAY_ISS ?? 'satuwork-gateway',
     iat: now,
+    iatMs: ms,
     exp: now + ttlSec,
     ...claims,
   }
@@ -363,6 +383,8 @@ export interface ArtifactTicket {
   sessionId: string
   path: string
   iat: number
+  /** 同 JwtPayload.iatMs：账号改口令、被停用之后，之前发出去的预览链接一起作废。 */
+  iatMs?: number
   exp: number
 }
 
@@ -377,8 +399,9 @@ export function signArtifactTicket(
   path: string,
   ttlSec = 7 * 24 * 3600,
 ): string {
-  const now = Math.floor(Date.now() / 1000)
-  const payload: ArtifactTicket = { typ: 'satu-artifact', accountId, sessionId, path, iat: now, exp: now + ttlSec }
+  const ms = Date.now()
+  const now = Math.floor(ms / 1000)
+  const payload: ArtifactTicket = { typ: 'satu-artifact', accountId, sessionId, path, iat: now, iatMs: ms, exp: now + ttlSec }
   const h = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: keys.kid }))
   const p = b64url(JSON.stringify(payload))
   return `${h}.${p}.${sign('sha256', Buffer.from(`${h}.${p}`), keys.privatePem).toString('base64url')}`

@@ -540,8 +540,23 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     const row = await db.account(req.params.accountId)
     if (!row || row.companyId !== req.params.id) throw new HttpError(404, '账号不存在')
     if (row.id === actor.id) throw new HttpError(400, '不能删除自己')
-    if (row.role === 'admin' && row.status !== 'disabled' && row.companyId && await db.adminCount(row.companyId) <= 1) {
-      throw new HttpError(409, '不能删掉最后一个管理员')
+    /**
+     * 「不能删掉最后一个管理员」要和改角色 / 停用排在同一把锁上（lib/org.ts 的 patchAccount）：
+     * 两个管理员同时互删、或者一个删一个降级，不锁就各自数到 2、各自放行。
+     *
+     * 下面拆席位是远程调用，锁不能握着它等。所以在锁里**先把这个管理员停掉**（顺带作废他的票）
+     * ——从这一刻起他就不算在 adminCount 里，别的请求排到锁时数到的是真数。拆席位失败回 502 时
+     * 这个人留在停用状态，比留一个删了一半、还能登录的管理员稳当；再删一次就接着走完。
+     */
+    if (row.role === 'admin' && row.status !== 'disabled' && row.companyId) {
+      const companyId = row.companyId
+      await db.tx(async () => {
+        await db.lockCompanyAdmins(companyId)
+        const cur = await db.account(row.id)
+        if (!cur || cur.role !== 'admin' || cur.status === 'disabled') return
+        if (await db.adminCount(companyId) <= 1) throw new HttpError(409, '不能删掉最后一个管理员')
+        await db.updateAccount(row.id, { status: 'disabled', tokenRevokedAt: Date.now() })
+      })
     }
     // **先拆机器上的席位，再删库里的行。** 理由见 deploy.ts 的 releaseSeats——
     // 删公司走的是同一条。

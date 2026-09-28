@@ -280,6 +280,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
   let pairingCode = ''
   let bindingId = ''
   let botId = ''
+  let previewLink = ''
   try {
     await test('短租约到期后可接管，旧 Gateway 不能续租或覆盖新结果', async () => {
       const result = await runProbe(new URL('..', import.meta.url).pathname, 'gateway/e2e-channel-event-lease.mjs', {
@@ -515,6 +516,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       parsedPreview.pathname = pieces.join('/')
       const tampered = await fetch(parsedPreview)
       assert(tampered.status === 404, `篡改后的预览票仍拿到 ${tampered.status}`)
+      previewLink = previews.get('eth-report.txt').url
       assert(seat.seen.approvals[0].body.decision === 'approve' && seat.seen.approvals[0].body.scope === 'once', '批准范围传错')
       assert(telegram.seen.callbackAnswers.some((a) => a.callback_query_id === 'callback-approved' && String(a.text).includes('已批准')), '批准回调没有应答')
       assert(telegram.seen.editedMarkups.some((m) => Array.isArray(m.reply_markup?.inline_keyboard) && m.reply_markup.inline_keyboard.length === 0), '审批完成后没有移除按钮')
@@ -529,6 +531,45 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       await waitFor(() => telegram.seen.callbackAnswers.find((a) => a.callback_query_id === 'callback-duplicate'), '重复审批被应答')
       assert(seat.seen.successfulApprovals === 1, '重复点击导致二次批准')
       assert(telegram.seen.callbackAnswers.some((a) => a.callback_query_id === 'callback-duplicate' && String(a.text).includes('已经结束')), '重复点击没有提示审批已结束')
+    })
+
+    await test('预览链接跟着公司停用、账号作废点一起失效', async () => {
+      /**
+       * 七天的预览票以前只看账号 active：公司被停用了照样能读席位工作区，改口令、被重置
+       * 之后发出去的旧链接也还活着。现在它和登录票走同一道公司闸、同一个作废点。
+       * 直接改库做停用 / 作废，验完原样放回——后面几条用例还要用这家公司和这张登录票。
+       */
+      assert(previewLink, '上一条用例没拿到预览链接')
+      const ok = await fetch(`${previewLink}?raw=1`)
+      assert(ok.status === 200, `预览链接本来就打不开：${ok.status}`)
+      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
+      const pg = require('pg')
+      const client = new pg.Client({ connectionString: PG_URL })
+      await client.connect()
+      try {
+        const own = await client.query(`select "accountId","companyId" from "${schema}".channel_bindings where id = $1`, [bindingId])
+        const { accountId, companyId } = own.rows[0]
+        await client.query(`update "${schema}".companies set status = 'disabled' where id = $1`, [companyId])
+        try {
+          const off = await fetch(`${previewLink}?raw=1`)
+          assert(off.status === 404, `公司停用了预览链接还能读：${off.status}`)
+          const page = await fetch(previewLink, { headers: { accept: 'text/html' } })
+          assert(page.status === 404, `公司停用了预览页还能开：${page.status}`)
+        } finally {
+          await client.query(`update "${schema}".companies set status = 'active' where id = $1`, [companyId])
+        }
+        const prev = (await client.query(`select "tokenRevokedAt" from "${schema}".accounts where id = $1`, [accountId])).rows[0].tokenRevokedAt
+        // 作废点落在票签发之后（毫秒级）：同一秒里也得死。
+        await client.query(`update "${schema}".accounts set "tokenRevokedAt" = $2 where id = $1`, [accountId, Date.now()])
+        try {
+          const revoked = await fetch(`${previewLink}?raw=1`)
+          assert(revoked.status === 404, `作废点之后预览链接还能读：${revoked.status}`)
+        } finally {
+          await client.query(`update "${schema}".accounts set "tokenRevokedAt" = $2 where id = $1`, [accountId, prev])
+        }
+        const back = await fetch(`${previewLink}?raw=1`)
+        assert(back.status === 200, `放回之后预览链接打不开了：${back.status}`)
+      } finally { await client.end() }
     })
 
     await test('Telegram 转人工卡可接手，并通过回复输入把结论交还原工单', async () => {
