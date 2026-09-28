@@ -63,13 +63,14 @@ function localBotOf(botId) {
   return lb && lb.token ? lb : null
 }
 
-/** 这条 Gateway 路径要不要改道到本地 Bot。返回 { url, token } 或 null。 */
+/** 这条 Gateway 路径要不要改道到本地 Bot。返回 { url, token, botId } 或 null。 */
 function localRoute(path, method) {
   if (typeof path !== 'string' || !path.startsWith('/runtime/')) return null
   let m = /^\/runtime\/bots\/([^/?]+)\/session(\?.*)?$/.exec(path)
   if (m) {
-    const lb = localBotOf(decodeURIComponent(m[1]))
-    return lb ? { url: lb.base + '/api/bots/' + m[1] + '/session' + (m[2] || ''), token: lb.token } : null
+    const botId = decodeURIComponent(m[1])
+    const lb = localBotOf(botId)
+    return lb ? { url: lb.base + '/api/bots/' + m[1] + '/session' + (m[2] || ''), token: lb.token, botId } : null
   }
   m = /^\/runtime\/sessions\/([^/?]+)(\/[^?]*)?(\?.*)?$/.exec(path)
   if (!m) return null
@@ -83,7 +84,7 @@ function localRoute(path, method) {
   if (rest === '/files' && q && verb === 'GET') target = '/api/workspace/file' + q
   else if (rest === '/workspace') target = (verb === 'DELETE' ? '/api/workspace/file' : '/api/workspace/list') + q
   else target = '/api/sessions/' + m[1] + rest + q
-  return { url: lb.base + target, token: lb.token }
+  return { url: lb.base + target, token: lb.token, botId }
 }
 
 /**
@@ -99,12 +100,31 @@ function swFetch(path, init) {
   return fetch(route.url, { ...(init || {}), headers })
 }
 
-async function api(method, path, body) {
+/**
+ * botId → 正在进行的那次「重新要本地 Bot 的票」。同一拍里几条请求一起撞上 401 时只要一次：
+ * 每要一次壳子就可能拿新票把进程重起一遍（见 chat.js 的 startDesktopLocalBot）。
+ */
+const localTicketRenewals = new Map()
+
+function renewLocalTicket(botId) {
+  let p = localTicketRenewals.get(botId)
+  if (!p) {
+    p = Promise.resolve()
+      .then(() => startDesktopLocalBot(botId))
+      .finally(() => localTicketRenewals.delete(botId))
+    localTicketRenewals.set(botId, p)
+  }
+  return p
+}
+
+async function api(method, path, body, localRetried = false) {
   const headers = { accept: 'application/json' }
   // 别叫 t——下面 401 那支要用上面那个文案函数。
   const tok = token()
   if (tok) headers.authorization = 'Bearer ' + tok
   if (body !== undefined) headers['content-type'] = 'application/json'
+  // 改道到本机的那几条（见 swFetch）：它们的 401 是**本地 Bot** 说的，跟登录票无关。
+  const local = localRoute(path, method)
   const res = await swFetch(path, {
     method,
     headers,
@@ -115,9 +135,34 @@ async function api(method, path, body) {
   try {
     json = text ? JSON.parse(text) : null
   } catch {}
-  if (res.status === 401 && tok && path !== '/auth/login' && !path.startsWith('/invites/')) {
-    clearToken()
-    state.me = null
+  /**
+   * 本地 Bot 回的 401：多半是它重启过、或者票换过一轮（登录票变了之后 overlayLocalRuntime
+   * 会重新要），手上这把席位票作废了。这**不是**登录过期——当成登录过期的话，桌面端里
+   * 本地 Bot 重起一次就把人踢回登录页。重新向 Gateway 要一把票、重试一次；还是 401 就
+   * 照普通错误抛，别登出。要票那一跳本身打的是 Gateway，真是登录过期的话由它那条 401 去登出。
+   */
+  if (res.status === 401 && local) {
+    if (!localRetried) {
+      const cur = localBotOf(local.botId)
+      // 并发的另一条已经换过票了：直接拿新票重试，别再要一次。
+      const renewed = cur && cur.token !== local.token
+        ? true
+        : await renewLocalTicket(local.botId).then(() => true, () => false)
+      if (renewed) return api(method, path, body, true)
+    }
+    const err = new Error(errText((json && json.error) || t('本地 Bot 拒绝了这次请求', 'The local bot rejected this request')))
+    err.status = res.status
+    throw err
+  }
+  /**
+   * Gateway 说登录票不认了（过期、账号被停用）：走和「退出登录」同一条拆法（app.js 的
+   * endSignedIn），流、轮询、上一个人的草稿和文件树一起拆。
+   *
+   * `tok === token()`：这条请求是拿**当时那张**票发的。它在路上时人可能已经重新登录过
+   * ——那张旧票的 401 不能把新登进来的人再踢出去。
+   */
+  if (res.status === 401 && tok && tok === token() && path !== '/auth/login' && !path.startsWith('/invites/')) {
+    endSignedIn()
     state.loginError = t('登录已过期，请重新登录')
     // 明确挪到 `/login`。票过期时人多半正停在 `/`（对话页就是那儿），而没登录的 `/`
     // 现在画的是首页（见 render.js 的 anonView）——不挪的话，上面那句话没有地方说，

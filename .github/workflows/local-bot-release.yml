@@ -12,6 +12,10 @@ on:
         required: false
         default: ''
 
+# 默认只读；要写 Release 的 job 自己再要 contents: write。
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:

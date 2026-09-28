@@ -87,6 +87,46 @@ out.foreground = {
   workdir生效: (await call('terminal', { command: 'pwd', workdir: '.' })).text.trim().endsWith(root.split('/').pop()),
 }
 
+// ── 1.5 逃出进程组的后代攥着管道：超时 / 停止照样要返回 ─────────────────
+/**
+ * `setsid foo &` 出来的后代换了会话，`kill(-pgid)` 杀不到它，而它继承了 stdout/stderr。
+ * 以前那次调用只等 `close`，管道不关就永远不返回——这一轮挂死。
+ *
+ * 用 perl 的 POSIX::setsid 而不是 `setsid` 命令：后者 macOS 上没有。两种形状都要：
+ * `& wait` 是 shell 还活着的时候被杀，`&` 后面什么都不跟是 shell 早就退了、只剩后代。
+ */
+{
+  const escapee = `perl -e 'use POSIX; setsid(); sleep 1000'`
+  const pidsOf = (text) => [...String(text).matchAll(/pid=(\d+)/g)].map((m) => Number(m[1]))
+  const leftovers = []
+  const timed = async (args, signal) => {
+    const t0 = Date.now()
+    const r = await call('terminal', args, 's-1', signal)
+    leftovers.push(...pidsOf(r.text))
+    return { ms: Date.now() - t0, r }
+  }
+  const waiting = await timed({ command: `${escapee} & echo pid=$!; wait`, timeout: 1 })
+  const orphaned = await timed({ command: `${escapee} & echo pid=$!`, timeout: 1 })
+  const ac = new AbortController()
+  const stopping = timed({ command: `${escapee} & echo pid=$!; wait`, timeout: 60 }, ac.signal)
+  await sleep(300)
+  ac.abort()
+  const stopped = await stopping
+  out.escapee = {
+    // 1 秒超时 + 2 秒拆管道的余量，再留一点给慢机器。
+    shell还活着时超时会返回: waiting.ms < 6_000 && waiting.r.text.includes('超时'),
+    shell早退了超时也会返回: orphaned.ms < 6_000 && orphaned.r.text.includes('超时'),
+    停止按钮会返回: stopped.ms < 6_000,
+    输出没丢: waiting.r.text.includes('pid='),
+  }
+  // 收掉逃出去的那几个：它们本来就不在进程组里，探针自己不收就会在机器上活一千秒。
+  for (const pid of leftovers) {
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {}
+  }
+}
+
 // ── 2. 输出超限：截断，但全文捞得回来 ─────────────────────────────────
 {
   const r = await call('terminal', { command: 'for i in $(seq 1 40000); do echo "第 $i 行 xxxxxxxxxxxxxxxxxxxx"; done' })

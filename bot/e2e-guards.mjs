@@ -371,6 +371,35 @@ const approvals = {}
   approvals.递归删被拒后没跑 = ran.terminal === before + 1
 }
 {
+  /**
+   * terminal 的「这一轮都批准」只放行**同一条命令**。
+   *
+   * 按工具名放行的话，对 `rm -f build.log` 点的那一下会放过这一轮后面每一条要确认的
+   * 命令——递归删工作区、强推，一张卡片都不弹。
+   */
+  const before = ran.terminal
+  let cards = pendingOf('s6').length
+  const first = call('s6', 'terminal', { command: 'rm -f build.log' })
+  await untilPending('s6', cards + 1, { until: first })
+  approvals.命令放行_第一次要问 = pendingOf('s6').length === cards + 1
+  ctx.policy.approvals.decide('s6', pendingOf('s6').at(-1).data.callId, 'approve', 'turn')
+  await first
+  cards = pendingOf('s6').length
+  // 同一条命令（多几个空格也算）原样再跑：不再问。
+  const again = await call('s6', 'terminal', { command: 'rm  -f   build.log' })
+  approvals.命令放行_同一条不再问 = pendingOf('s6').length === cards && again.failed !== true && ran.terminal === before + 2
+  approvals.命令放行_名单里不是整把工具 = !ctx.policy.approvals.grantedIn('s6').includes('terminal')
+  // 换了目标的另一条毁东西的命令：必须重新弹卡。
+  const other = call('s6', 'terminal', { command: 'rm -rf ../work' })
+  await untilPending('s6', cards + 1, { until: other })
+  approvals.命令放行_别的命令还要问 = pendingOf('s6').length === cards + 1
+  ctx.policy.approvals.decide('s6', pendingOf('s6').at(-1).data.callId, 'deny')
+  await other
+  approvals.命令放行_别的命令没跑 = ran.terminal === before + 2
+  ctx.emit('session/event', 's6', { seq: 0, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: 'completed' } })
+  await settle(10)
+}
+{
   // 「这一轮别再试了」：拒绝也能带范围，之后同一把工具**连卡片都不弹**，直接挡。
   const before = ran.mcp_b_send_mail
   const cardsBefore = pendingOf('s6').length

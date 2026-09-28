@@ -3031,12 +3031,27 @@ export class Db {
     return { ...cur, scope: 'company', accountId: null, botId: null, updatedAt }
   }
 
-  /** 这家公司里全部的私有档，不分主人。界面上「Bot 自己写的」那一栏读它。 */
+  /**
+   * 这家公司里全部的私有档，不分主人。**只给管理员那一屏**（目录页「Bot 自己写的」那一栏）。
+   *
+   * 正文是模型从员工的对话里写下来的，可能带着客户的名字、电话。普通成员要看的是
+   * 自己那几颗 Bot 的，走下面的 accountSeatSkills。
+   */
   async companySeatSkills(companyId: string): Promise<CatalogItem[]> {
     const rows = await this.many(
       `select * from catalog_items where kind = 'skill' and scope = 'user' and "companyId" = ?
        order by "updatedAt" desc`,
       [companyId],
+    )
+    return rows.map(catalogOf)
+  }
+
+  /** 某个员工名下全部 Bot 的私有档。主人这一维写进 where，同 botsFor。 */
+  async accountSeatSkills(companyId: string, accountId: string): Promise<CatalogItem[]> {
+    const rows = await this.many(
+      `select * from catalog_items where kind = 'skill' and scope = 'user'
+         and "companyId" = ? and "accountId" = ? order by "updatedAt" desc`,
+      [companyId, accountId],
     )
     return rows.map(catalogOf)
   }
@@ -3536,6 +3551,18 @@ export class Db {
       `update channel_events set "approvalKey"=?, "approvalMessageId"=?, "updatedAt"=?
        where id=? and status='processing' and "leaseToken"=?`,
       [approvalKey, messageId, Date.now(), id, leaseToken],
+    )) === 1
+  }
+
+  /**
+   * 投递进度往前推一段，顺带续租。只认当前租约持有者，而且只增不减：迟到的旧请求推不回去。
+   * 返回 false 就是租约已经不在手里，调用方必须停手，剩下的归接管者。
+   */
+  async advanceChannelDelivery(id: string, leaseToken: string, deliveredParts: number, leaseUntil: number): Promise<boolean> {
+    return (await this.run(
+      `update channel_events set "deliveredParts"=greatest("deliveredParts", ?), "leaseUntil"=?, "updatedAt"=?
+       where id=? and status='processing' and "leaseToken"=?`,
+      [deliveredParts, leaseUntil, Date.now(), id, leaseToken],
     )) === 1
   }
 

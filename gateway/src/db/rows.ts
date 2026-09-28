@@ -153,7 +153,7 @@ export function channelEventOf(r: Row): ChannelEvent {
     nextTryAt: numOrNull(r.nextTryAt), leaseUntil: numOrNull(r.leaseUntil), leaseToken: str(r.leaseToken || ''),
     approvalKey: str(r.approvalKey || ''), approvalMessageId: numOrNull(r.approvalMessageId),
     sessionId: strOrNull(r.sessionId),
-    reply: str(r.reply || ''), files, handoffs, lastError: strOrNull(r.lastError), createdAt: num(r.createdAt),
+    reply: str(r.reply || ''), files, handoffs, deliveredParts: num(r.deliveredParts || 0), lastError: strOrNull(r.lastError), createdAt: num(r.createdAt),
     updatedAt: num(r.updatedAt), deliveredAt: numOrNull(r.deliveredAt),
   }
 }
