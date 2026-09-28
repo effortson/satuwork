@@ -68,6 +68,7 @@ const LEDGER = `
  *
  * - **改了已应用的迁移**：库里是旧形状，代码以为是新的。继续跑只会在几百行之后
  *   报一个和真正原因毫无关系的错。
+ *   （`previousChecksums` 里登记过的旧版本除外，见 migrations/index.ts。）
  * - **库里有代码里没有的编号**：这个库被一个更新的版本升过，现在回滚了代码。
  *   往下跑等于让新库配旧代码，能读到不存在的列。
  *
@@ -84,7 +85,7 @@ function verify(applied: AppliedRow[], all: Migration[]): void {
           '先把代码升回去，或者手工评估之后从 schema_migrations 里删掉那一行。',
       )
     }
-    if (checksum(known.sql) !== row.checksum) {
+    if (checksum(known.sql) !== row.checksum && !known.previousChecksums?.includes(row.checksum)) {
       throw new Error(
         `迁移 ${row.id}（${known.name}）在应用之后被改过：库里记的是 ${row.checksum}，` +
           `代码算出来是 ${checksum(known.sql)}。已经跑过的迁移不能改——把改动写成新的一条。`,
