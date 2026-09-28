@@ -17,9 +17,10 @@
  * 就退回纯文本——公式显示 TeX 原文、图显示源码、代码不高亮，但页面不会坏。三者都带
  * SRI 摘要，内容对不上一律当拉不到（见 LIBS）。
  *
- * CDN 地址可以用 window.SATU_CDN 覆盖（内网部署时指到自己的镜像）。**换了这个就要同时
- * 设 Gateway 的 `GATEWAY_UI_CDN`**：CSP 的 script-src 是按后者写的，只换一边的话脚本会
- * 被浏览器挡掉，而表现和「CDN 拉不到」一模一样（见 gateway/src/http.ts 的 CSP）。
+ * CDN 地址跟着 Gateway 的 `GATEWAY_UI_CDN` 走（内网部署时指到自己的镜像）：Gateway 换了
+ * 镜像就在页面里插一条 `<meta name="satu-cdn">`，这里读它；没有就用 jsdelivr。CSP 的
+ * script-src 只放行 LIBS 里那几个「包@版本/」目录（见 gateway/src/ui-cdn.ts），**在这里
+ * 加库或改版本要同时改那张表**，否则浏览器把脚本挡掉，表现和「CDN 拉不到」一模一样。
  */
 ;(function () {
   'use strict'
@@ -705,7 +706,11 @@
   }
 
   // ── 按需加载：KaTeX / highlight.js / Mermaid ─────────────────────────
-  const CDN = window.SATU_CDN || 'https://cdn.jsdelivr.net/npm'
+  const CDN = (function () {
+    const meta = document.querySelector && document.querySelector('meta[name="satu-cdn"]')
+    const v = meta && meta.getAttribute('content')
+    return v ? v.replace(/\/+$/, '') : 'https://cdn.jsdelivr.net/npm'
+  })()
   const loaded = {}
 
   /**
@@ -720,7 +725,7 @@
    *
    *   curl -sSL <url> | openssl dgst -sha384 -binary | openssl base64 -A
    *
-   * `window.SATU_CDN` 指到内网镜像时这几个摘要照样成立——它算的是内容，不是地址。
+   * CDN 指到内网镜像时这几个摘要照样成立——它算的是内容，不是地址。
    * 镜像里放的要是另一个版本，这里会当场拒载，那也是对的。
    */
   const LIBS = {

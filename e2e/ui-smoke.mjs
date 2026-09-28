@@ -61,6 +61,11 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(page.status === 200, `刷新 /channels → ${page.status} ${page.text}`)
       assert((page.headers.get('content-type') || '').includes('text/html'), `刷新 /channels 没拿到 HTML：${page.headers.get('content-type')}`)
       assert(page.text.includes('data-app-part'), '刷新 /channels 拿到的不是管理页 index.html')
+      // CSP 只放行 CDN 上那几个「包@版本/」目录，不放整个 jsdelivr（见 gateway/src/ui-cdn.ts）。
+      const csp = String(page.headers.get('content-security-policy') || '')
+      const scriptSrc = csp.split(';').map((d) => d.trim()).find((d) => d.startsWith('script-src ')) || ''
+      assert(scriptSrc.includes('https://cdn.jsdelivr.net/npm/katex@'), `script-src 少了 KaTeX 的路径：${scriptSrc}`)
+      assert(!/https:\/\/cdn\.jsdelivr\.net(\s|$)/.test(scriptSrc), `script-src 又放行了整个 jsdelivr：${scriptSrc}`)
 
       const api = await req(gwBase, 'GET', '/channels', { headers: { accept: 'application/json' } })
       assert(api.status === 401 && api.json?.error === '需要登录', `JSON /channels 没走原来的鉴权 API：${api.status} ${api.text}`)

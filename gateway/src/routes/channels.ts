@@ -13,6 +13,7 @@ import { TelegramError, telegramGetMe, telegramSetMyCommands } from '../channels
 import { ensureTelegramInbound, telegramWebhookSecretOk } from '../channels/inbound.ts'
 import { processTelegramUpdate } from '../channels.ts'
 import { USER_BOT_QUOTA_LOCK } from './runtime.ts'
+import { uiCdnMeta, uiCdnSources } from '../ui-cdn.ts'
 
 const MAX_USER_BOTS = Math.max(1, Math.trunc(Number(process.env.GATEWAY_MAX_USER_BOTS) || 10))
 // 绑渠道顺手建的那颗 Bot 和 POST /runtime/bots 数的是同一个配额，锁也得是同一把（键定义在那边）。
@@ -62,7 +63,7 @@ function channelPreviewPage(name: string, path: string, kind: ReturnType<typeof 
 <meta property="og:description" content="Satuwork 生成文档预览">
 <link rel="icon" type="image/png" href="/assets/satuwork-logo.png">
 <link rel="stylesheet" href="/theme.css"><link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/chat.css">
-</head><body class="sw-channel-preview-page" data-kind="${safeKind}" data-name="${safeName}" data-raw-url="${safeRawUrl}">
+${uiCdnMeta()}</head><body class="sw-channel-preview-page" data-kind="${safeKind}" data-name="${safeName}" data-raw-url="${safeRawUrl}">
 <main class="gw-modal sw-preview sw-channel-preview">
   <div class="sw-preview-head">
     <div class="sw-preview-title"><h2>${safeName}</h2><p><code>${safePath}</code><span id="preview-size"></span></p></div>
@@ -143,7 +144,7 @@ export function attachChannels(router: Router, ctx: RouteCtx) {
     res.writeHead(200, {
       'content-type': 'text/html; charset=utf-8',
       'content-length': String(Buffer.byteLength(page)),
-      'content-security-policy': "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:; connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: blob: https:; media-src data: blob: https:; frame-src blob:; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors *",
+      'content-security-policy': `default-src 'none'; script-src 'self' ${uiCdnSources()}; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:; connect-src 'self' ${uiCdnSources()}; img-src 'self' data: blob: https:; media-src data: blob: https:; frame-src blob:; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors *`,
       'referrer-policy': 'no-referrer',
       'x-content-type-options': 'nosniff',
       'x-robots-tag': 'noindex, nofollow, noarchive',

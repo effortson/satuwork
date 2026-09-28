@@ -143,4 +143,37 @@ export async function runMarkdown({ root, test, assert, log }) {
     const blocks = md.splitBlocks('段一\n\n$$\na\n\nb\n$$\n\n段二')
     assert(blocks.length === 3, `应切成 3 块，实际 ${blocks.length}：${JSON.stringify(blocks)}`)
   })
+
+  // ── CDN 白名单：加载器、Gateway 的 CSP、桌面端的 CSP 三处一致 ───────────
+  /**
+   * CSP 只放行 gateway/src/ui-cdn.ts 里那几个「包@版本/」目录（放行整个 jsdelivr 等于放行
+   * 任何人发的脚本）。markdown.js 的 LIBS 多一条路径、或者版本号只改了一边，浏览器就把它
+   * 挡掉，而表现是静默退回纯文本——DOM 垫片里不管 CSP，只能按源码核。
+   */
+  await test('CDN：LIBS、ui-cdn.ts、桌面 UI_CSP 的包和版本一致', async () => {
+    const tsSrc = readFileSync(join(root, 'gateway/src/ui-cdn.ts'), 'utf8')
+    const list = tsSrc.match(/UI_CDN_PACKAGES = \[([^\]]*)\]/)
+    assert(list, 'ui-cdn.ts 里找不到 UI_CDN_PACKAGES')
+    const pkgs = [...list[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
+    assert(pkgs.length > 0, 'UI_CDN_PACKAGES 是空的')
+    for (const p of pkgs) assert(/@\d+\.\d+\.\d+$/.test(p), `${p} 没钉到具体版本`)
+
+    const mdSrc = readFileSync(join(root, 'gateway/ui/markdown.js'), 'utf8')
+    const paths = [...mdSrc.matchAll(/path: '([^']+)'/g)].map((m) => m[1])
+    assert(paths.length > 0, 'markdown.js 里找不到 LIBS 的 path')
+    for (const p of paths) {
+      assert(pkgs.some((pkg) => p.startsWith(`/${pkg}/`)), `markdown.js 的 ${p} 不在 UI_CDN_PACKAGES 底下，CSP 会挡掉它`)
+    }
+    for (const pkg of pkgs) {
+      assert(paths.some((p) => p.startsWith(`/${pkg}/`)), `UI_CDN_PACKAGES 里的 ${pkg} 没人用了，从 CSP 里删掉`)
+    }
+
+    const rs = readFileSync(join(root, 'desktop/src-tauri/src/main.rs'), 'utf8')
+    const mac = rs.match(/macro_rules! ui_cdn \{\s*\(\) => \{\s*"([^"]*)"/)
+    assert(mac, 'main.rs 里找不到 ui_cdn! 宏')
+    const want = pkgs.map((pkg) => `https://cdn.jsdelivr.net/npm/${pkg}/`).join(' ')
+    assert(mac[1] === want, `桌面 UI_CSP 的 CDN 路径和 ui-cdn.ts 对不上：\n  main.rs：${mac[1]}\n  应为：   ${want}`)
+    const csp = rs.slice(rs.indexOf('const UI_CSP'), rs.indexOf(');', rs.indexOf('const UI_CSP')))
+    assert(!/cdn\.jsdelivr\.net[;" ]/.test(csp), '桌面 UI_CSP 又放行了整个 cdn.jsdelivr.net')
+  })
 }

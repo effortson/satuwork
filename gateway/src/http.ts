@@ -2,6 +2,7 @@ import { createReadStream, readFileSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { uiCdnMeta, uiCdnSources } from './ui-cdn.ts'
 
 export class HttpError extends Error {
   constructor(
@@ -193,13 +194,12 @@ const VERCEL_ANALYTICS = process.env.VERCEL === '1'
   : ''
 
 /**
- * 按需加载的那三个库（KaTeX / highlight.js / Mermaid）从哪儿来。
- *
- * **要和 `gateway/ui/markdown.js` 的 `window.SATU_CDN` 指同一处**：那边换了镜像而这里
- * 没换，CSP 会把脚本挡掉，表现是公式和图静默不渲染——而那正是它「拉不到就退回纯文本」
- * 的降级路径，看上去像 CDN 慢，不像配错了。所以两边共用这一个环境变量。
+ * 按需加载的那三个库（KaTeX / highlight.js / Mermaid）从哪儿来、CSP 放到哪一层，见
+ * `ui-cdn.ts`。`GATEWAY_UI_CDN` 换了镜像时，同一个地址经 `<meta name="satu-cdn">` 交给
+ * markdown.js（UI_CDN_META），两边读的是同一个值，不会一边换了一边没换。
  */
-const UI_CDN = (process.env.GATEWAY_UI_CDN || 'https://cdn.jsdelivr.net').trim().replace(/\/+$/, '')
+const UI_CDN_SRC = uiCdnSources()
+const UI_CDN_META = uiCdnMeta()
 
 /**
  * 界面字体（`gateway/ui/theme.css` 顶上那句 `@import`）。样式表从 googleapis 来，
@@ -269,9 +269,9 @@ const CSP = [
   "object-src 'none'",
   "form-action 'self'",
   "frame-ancestors 'self'",
-  `script-src 'self' ${UI_CDN}`,
-  `style-src 'self' 'unsafe-inline' ${UI_CDN} ${FONT_CSS}`,
-  `font-src 'self' data: ${UI_CDN} ${FONT_FILES}`,
+  `script-src 'self' ${UI_CDN_SRC}`,
+  `style-src 'self' 'unsafe-inline' ${UI_CDN_SRC} ${FONT_CSS}`,
+  `font-src 'self' data: ${UI_CDN_SRC} ${FONT_FILES}`,
   "img-src 'self' data: blob: https: http:",
   "media-src 'self' data: blob:",
   // http://127.0.0.1:* 是桌面端里的本地 Bot（ui/data.js 的 localRoute）：那一条和 directUrl
@@ -333,8 +333,8 @@ function serveUi(pathname: string, res: ServerResponse): boolean {
     // CSP 只挂在网页本身上：脚本和样式是被这一页加载的，约束它们的是这一页的策略。
     ...(ext === '.html' ? { 'content-security-policy': CSP } : {}),
   })
-  if (VERCEL_ANALYTICS && rel === 'index.html') {
-    res.end(readFileSync(file, 'utf8').replace('</body>', VERCEL_ANALYTICS + '</body>'))
+  if ((VERCEL_ANALYTICS || UI_CDN_META) && rel === 'index.html') {
+    res.end(readFileSync(file, 'utf8').replace('</head>', UI_CDN_META + '</head>').replace('</body>', VERCEL_ANALYTICS + '</body>'))
     return true
   }
   createReadStream(file).pipe(res)
