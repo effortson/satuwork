@@ -13,6 +13,7 @@ import {
   applyFilters,
   backendOf,
   fetchDocument,
+  guardUrl,
   looksLikeDocument,
   stubFetchDocument,
   needsSecret,
@@ -44,6 +45,9 @@ const CACHE_MAX = 64
  *
  * 只在内存里，重启即空，多实例各存各的。这是刻意的：为一层 15 分钟的缓存引一个
  * 共享存储，运维成本比它省下的钱高。
+ *
+ * **键里带公司。** 「命中不计费」只在同一家公司里成立——付过钱的是它。不带的话，
+ * B 公司搜 A 公司刚搜过的词会白拿结果：不记 web_calls、不落账，配额也数不到它。
  */
 const cache = new Map<string, { at: number; value: unknown }>()
 
@@ -58,6 +62,11 @@ function cacheGet<T>(key: string): T | undefined {
   cache.delete(key)
   cache.set(key, hit)
   return hit.value as T
+}
+
+/** 缓存按谁分。没有公司的账号（平台自己）按账号分，不和任何一家公司共用。 */
+function cacheScope(account: Account): string {
+  return account.companyId ? `co:${account.companyId}` : `acct:${account.id}`
 }
 
 function cachePut(key: string, value: unknown) {
@@ -238,7 +247,7 @@ export async function runSearch(db: Db, meter: Meter, account: Account, raw: Sea
   const { web } = await settingsOf(db)
   await checkCredit(meter, account, [id], 'search')
   await checkQuota(db, account.companyId, web)
-  const key = `search:${id}:${JSON.stringify(q)}`
+  const key = `search:${cacheScope(account)}:${id}:${JSON.stringify(q)}`
   const cached = cacheGet<SearchHit[]>(key)
   const started = Date.now()
   const hits = cached ?? (await backendOf(id)!.search!(q, cfg))
@@ -287,6 +296,36 @@ function docTitle(url: string): string {
   }
 }
 
+/**
+ * 交给提取后端之前先过一遍 SSRF 闸（协议 + 解析出的 IP）。
+ *
+ * 地址是模型给的，而提取后端**替我们去打它**：自托管的 Firecrawl（FIRECRAWL_API_URL
+ * 指 localhost:3002 那种）就在我们的内网里，不设闸的话模型给一个
+ * `http://169.254.169.254/latest/meta-data/` 或 `http://10.0.0.5:5432/`，它照打不误，
+ * 我们自己那道闸等于被绕开。托管的 Tavily/Firecrawl 打不到我们的内网，但一样没理由
+ * 替模型去探别人的内网段。
+ *
+ * **这道闸关不死 DNS rebinding。** 我们判的是「此刻解析出来的 IP」，后端连的时候会自己
+ * 再解析一次——TTL 0 的权威 DNS 可以先答公网、再答内网。自己打的那条路（safeFetch）
+ * 靠 pinnedLookup 把 IP 钉在 socket 上补上了这个缝，第三方后端的解析我们够不着。
+ * 所以自托管 Firecrawl 本身仍然要在网络层隔离（出口不许访问内网与 metadata 地址），
+ * 这里只挡住直给内网地址和解析到内网的域名这两种最直接的打法。
+ *
+ * e2e 用假后端时，`.test` 结尾的域名（RFC 6761 保留，现实里永远解析不了）只查协议——
+ * 那几条用例要验的是计量计价，不是 DNS。直给的 IP 与别的域名照常全套过闸。
+ */
+async function guardExtractUrl(url: string): Promise<void> {
+  if (process.env.E2E_STUB_WEB === '1') {
+    try {
+      const u = new URL(url)
+      if ((u.protocol === 'http:' || u.protocol === 'https:') && u.hostname.endsWith('.test')) return
+    } catch {
+      // 坏地址交给 guardUrl 去报。
+    }
+  }
+  await guardUrl(url)
+}
+
 export function parseExtractUrls(raw: unknown): string[] {
   const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []
   // **先去重再数**。同一个地址写两遍在模型那儿并不罕见（尤其是从搜索结果里拉列表的
@@ -316,11 +355,13 @@ export async function runExtract(db: Db, meter: Meter, account: Account, rawUrls
   // 一条 URL 收两份钱，连同一次调用里真正命中缓存的那几条也一起收了。
   const done = await Promise.all(
     urls.map(async (url): Promise<{ page: ExtractedPage; billable: string | null }> => {
-      const key = `extract:${id}:${url}`
-      const hit = cacheGet<ExtractedPage>(key)
-      // 命中缓存这一次没打后端，也就没有这笔成本。
-      if (hit) return { page: hit, billable: null }
+      const key = `extract:${cacheScope(account)}:${id}:${url}`
       try {
+        // 先过闸，再谈缓存和后端。见 guardExtractUrl。
+        await guardExtractUrl(url)
+        const hit = cacheGet<ExtractedPage>(key)
+        // 命中缓存这一次没打后端，也就没有这笔成本。
+        if (hit) return { page: hit, billable: null }
         // 看着像文档就自己取字节：提取后端对着一份 PDF 要么给空、要么给乱码。
         if (looksLikeDocument(url)) {
           const doc = await fetchDoc(url)
