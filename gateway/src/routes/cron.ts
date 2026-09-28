@@ -27,12 +27,14 @@ export function attachCron(router: Router, { db, keys, channelKey }: RouteCtx) {
     const given = bearer(req) || ''
     if (!given || !timingSafeToken(given, expected)) throw new HttpError(401, '无效的 Cron 凭证')
     const startedAt = Date.now()
-    await maintenanceTick(db)
+    // 每一步各自兜错（见 runMaintenanceSteps），这里只把出错的那几步带回去，Cron 日志里看得见。
+    const { failed } = await maintenanceTick(db)
     // 同 maintenanceTick：一拍里某一件事出错只记一笔，不把整拍报成失败——下一拍还会再来。
     const channels = await tickChannelDeliveries(db, channelKey, keys).catch((e: Error) => {
       console.error(`satuwork-gateway: 渠道投递扫描失败：${e.message}`)
+      failed.push('渠道投递')
       return 0
     })
-    json(res, 200, { ok: true, ms: Date.now() - startedAt, channels })
+    json(res, 200, { ok: true, ms: Date.now() - startedAt, channels, failed })
   })
 }
