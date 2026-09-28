@@ -625,8 +625,9 @@ function memoryPanel(a, ro) {
 }
 
 function botDetailPage() {
-  const bot = state.bot
-  const a = state.botDraft
+  // 同 machineDetailPage：id 对不上就是上一颗 Bot 的，宁可画「载入中」。
+  const bot = routeBot()
+  const a = bot ? state.botDraft : null
   if (!bot || !a) {
     return `<div class="gw-page"><div class="gw-page-inner" style="max-width: 820px;">${flashes()}<p style="color: var(--muted-foreground);">${t('载入中…')}</p></div></div>`
   }

@@ -537,7 +537,8 @@ document.getElementById('app').addEventListener('click', async (e) => {
      * （docs/memory.md §12 ⑤）。**搬家不是复制**，推上去之后它就不在个人那一层了。
      */
     const id = btn.getAttribute('data-id') || ''
-    const bot = state.bot?.id || botIdOfPath(state.path)
+    // 只认地址里那颗、且已经载到的：草稿还是上一颗的时候，这一条根本不是它的记忆。
+    const bot = routeBot()?.id || ''
     const one = (state.botDraft?.memories || []).find((m) => m.id === id)
     if (!id || !bot) return
     state.confirm = {
@@ -564,7 +565,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
      * 而就地改 state 会让「服务端到底存成了什么」和屏幕上显示的分家。
      */
     const id = btn.getAttribute('data-id') || ''
-    const bot = state.bot?.id || botIdOfPath(state.path)
+    const bot = routeBot()?.id || ''
     if (!id || !bot) return
     const cur = (state.botDraft?.memories || []).find((m) => m.id === id)
     /**
@@ -679,8 +680,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-file-drop') {
-    // 传的过程中不让删：删得掉列表项，删不掉已经在路上的请求。
-    if (state.chatUploading) return
+    // data-i 只编在 chatFiles 上：正在传的那几个在 chatUploads 里，本来就没有这颗按钮。
     const i = Number(btn.getAttribute('data-i'))
     state.chatFiles = (state.chatFiles || []).filter((_, n) => n !== i)
     paintChatFiles()
@@ -1087,7 +1087,9 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'user-secret-copy') {
     const kind = btn.getAttribute('data-kind')
-    const value = kind === 'apiKey' ? state.userDetail?.apiKey : kind === 'accessToken' ? state.userDetail?.accessToken : ''
+    // 同 routeBot：只复制地址里那个账号的，别把上一个人的钥匙交出去。
+    const d = state.userDetail?.account?.id === userIdOfPath(state.path) ? state.userDetail : null
+    const value = kind === 'apiKey' ? d?.apiKey : kind === 'accessToken' ? d?.accessToken : ''
     if (!value) return
     const ok = await copyText(value)
     if (!ok) flash('err', '复制失败，请手动选中复制。')
@@ -1397,7 +1399,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'bot-save') {
     const base = catalogBase()
-    const bot = state.bot
+    const bot = routeBot()
     const a = state.botDraft
     if (!bot || !a) return
     // 自己建的那种：只发身份那几个字段。人设、边界、能力在公司模版里，服务端也不收。
@@ -1459,7 +1461,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'bot-delete') {
-    const bot = state.bot
+    const bot = routeBot()
     const a = state.botDraft
     if (!bot) return
     state.confirm = {
@@ -2889,13 +2891,9 @@ document.getElementById('app').addEventListener('mousedown', (e) => {
 window.addEventListener('popstate', () => {
   if (location.pathname === '/costs') history.replaceState({}, '', '/billing')
   state.path = pathOf()
-  state.addOpen = false
-  closeMemberUi()
-  if (state.path.startsWith('/join/')) {
-    loadInvite().then(render)
-    return
-  }
-  loadPage().then(render)
+  // 和 go() 走同一条：清提示、加序号。这里以前自己 `loadPage().then(render)`，连按后退时
+  // 慢的那一页晚回来会把眼前这页盖掉。
+  enterPath()
 })
 
 /**

@@ -4849,6 +4849,195 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       sse.close()
     })
 
+    /**
+     * 附件那几秒里的草稿归属（chat.js 的 chatUploads / returnDraft）。
+     *
+     * 两个 Bot 各有各的会话和直连上传地址；A 的上传被一道闸卡住，什么时候放行由测试说了算。
+     */
+    const uploadRaceUi = async (gateUpload) => {
+      const sse = fakeSse()
+      const posted = []
+      const ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: adminToken,
+        fetchImpl: async (path, init) => {
+          if (path.startsWith('https://m-race.example/')) return gateUpload()
+          if (path.includes('/events')) return sse.response
+          // 只认 `/runtime/bots/:id/session`：发消息那条 `/runtime/sessions/…` 也带着这几个字。
+          if (/^\/runtime\/bots\/[^/]+\/session$/.test(path)) {
+            return { ok: true, status: 200, text: async () => JSON.stringify({ sessionId: 's-' + path.split('/bots/')[1].split('/')[0] }) }
+          }
+          if (path.includes('/messages') && init && init.method === 'POST') {
+            posted.push({ path, text: JSON.parse(init.body).text })
+            return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) }
+          }
+          return fetch(gwBase + path, init)
+        },
+      })
+      await ui.boot()
+      ui.state.path = '/chat'
+      ui.state.runtimeBots = ['bot-ra', 'bot-rb'].map((id) => ({
+        id,
+        name: id,
+        runtime: { status: 'ready', uploadUrl: `https://m-race.example/seats/${id}/stream` },
+      }))
+      await ui.ensureChatSession('bot-ra')
+      return { ui, sse, posted }
+    }
+    const tick = () => new Promise((r) => setTimeout(r, 20))
+
+    await test('传附件途中切到别的 Bot：附件不回到 A 的草稿，B 照常能发', async () => {
+      let release
+      const gate = new Promise((r) => {
+        release = r
+      })
+      const { ui, sse, posted } = await uploadRaceUi(async () => {
+        await gate
+        return { ok: true, status: 200, text: async () => JSON.stringify({ path: 'uploads/a.txt', name: 'a.txt' }) }
+      })
+      try {
+        ui.state.chatDraft = 'A 的那句'
+        ui.state.chatFiles = [{ name: 'a.txt', size: 3, file: {} }]
+        const job = ui.sendChat()
+        await tick()
+        // 按下去那一刻附件就不在草稿里了——还挂在 chatFiles 上的话，切走那一下会被当成
+        // A 的草稿收起来，切回来又摆出来，再按一次就是第二遍。
+        assert(!ui.state.chatFiles.length, `正在传的附件还挂在草稿上：${JSON.stringify(ui.state.chatFiles)}`)
+
+        await ui.ensureChatSession('bot-rb')
+        const keptA = ui.state.chatDrafts['bot-ra'] || { files: [] }
+        assert(!(keptA.files || []).length, `换 Bot 时把在路上的附件收进了 A 的草稿：${JSON.stringify(keptA)}`)
+
+        // A 还在传，B 上按发送不该被那颗闩挡住。
+        ui.state.chatDraft = 'B 的那句'
+        await ui.sendChat()
+        assert(
+          posted.some((p) => p.path.includes('/s-bot-rb/') && p.text === 'B 的那句'),
+          `A 传附件期间 B 发不出去：${JSON.stringify(posted)}`,
+        )
+
+        release()
+        await job
+        const a = posted.filter((p) => p.path.includes('/s-bot-ra/'))
+        assert(a.length === 1 && a[0].text.includes('A 的那句') && a[0].text.includes('uploads/a.txt'), `A 那条没发对：${JSON.stringify(a)}`)
+
+        await ui.ensureChatSession('bot-ra')
+        assert(!ui.state.chatFiles.length, `切回 A 附件又回来了，再按就传第二遍：${JSON.stringify(ui.state.chatFiles)}`)
+        assert(ui.state.chatDraft === '', `切回 A 草稿不该还有已经发出去的那句：${JSON.stringify(ui.state.chatDraft)}`)
+      } finally {
+        ui.stopChatStream()
+        sse.close()
+      }
+    })
+
+    await test('附件传失败时人在别的 Bot 上：正文、附件、@ 还给 A，不进 B', async () => {
+      let fail
+      const gate = new Promise((r) => {
+        fail = r
+      })
+      const { ui, sse, posted } = await uploadRaceUi(async () => {
+        await gate
+        return { ok: false, status: 500, text: async () => JSON.stringify({ error: '磁盘满了' }) }
+      })
+      try {
+        const mention = { kind: 'connector', id: 'm-race', label: '邮箱' }
+        ui.state.chatDraft = 'A 的那句'
+        ui.state.chatFiles = [{ name: 'a.txt', size: 3, file: {} }]
+        ui.state.chatMentions = [mention]
+        const job = ui.sendChat()
+        await tick()
+
+        // 同一个 Bot 上一条还在传：这一条不抢跑，但要说一声，不能点了没反应。
+        ui.state.chatDraft = '又补的一句'
+        await ui.sendChat()
+        assert(String(ui.state.error || '').includes('还在传'), `同一个 Bot 连按两次没有任何提示：${ui.state.error}`)
+        assert(ui.state.chatDraft === '又补的一句', '被挡下的那一条草稿不该被清掉')
+
+        await ui.ensureChatSession('bot-rb')
+        fail()
+        await job
+        assert(!posted.some((p) => p.path.includes('/s-bot-ra/')), `附件没传上去却发了消息：${JSON.stringify(posted)}`)
+        assert(ui.state.chatDraft === '' && !ui.state.chatFiles.length, `A 的东西塞进了 B 的输入框：${JSON.stringify([ui.state.chatDraft, ui.state.chatFiles])}`)
+
+        await ui.ensureChatSession('bot-ra')
+        assert(ui.state.chatDraft === 'A 的那句\n又补的一句', `A 的正文没还回来：${JSON.stringify(ui.state.chatDraft)}`)
+        assert(ui.state.chatFiles.length === 1 && ui.state.chatFiles[0].name === 'a.txt', `A 的附件没还回来：${JSON.stringify(ui.state.chatFiles)}`)
+        assert(ui.state.chatMentions.some((m) => m.id === 'm-race'), `A 的 @ 没还回来：${JSON.stringify(ui.state.chatMentions)}`)
+      } finally {
+        ui.stopChatStream()
+        sse.close()
+      }
+    })
+
+    await test('详情页：晚到的上一条不盖当前页，这一条失败时不顶着上一条', async () => {
+      const gates = {}
+      const ok = (obj) => ({ ok: true, status: 200, text: async () => JSON.stringify(obj) })
+      const bad = (status, error) => ({ ok: false, status, text: async () => JSON.stringify({ error }) })
+      const ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: ownerToken,
+        fetchImpl: async (path, init) => {
+          const acc = path.match(/^\/platform\/accounts\/([^/?]+)$/)
+          if (acc) {
+            const id = decodeURIComponent(acc[1])
+            if (id === 'u-slow') await new Promise((r) => (gates[id] = r))
+            if (id === 'u-bad') return bad(500, '账号那边炸了')
+            return ok({ account: { id, email: `${id}@race.test`, name: id, role: 'member', status: 'active' } })
+          }
+          if (path === '/platform/bots/options') return ok({})
+          const bot = path.match(/^\/platform\/bots\/([^/?]+)$/)
+          if (bot) {
+            const id = decodeURIComponent(bot[1])
+            if (id === 'b-bad') return bad(403, '看不了这个 Bot')
+            return ok({ bot: { id, name: `BOT-${id}`, origin: 'global' } })
+          }
+          return fetch(gwBase + path, init)
+        },
+      })
+      await ui.boot()
+      const until = async (fn) => {
+        for (let i = 0; i < 200 && !fn(); i++) await new Promise((r) => setTimeout(r, 10))
+      }
+
+      // 慢的 A 还在路上，人已经点到 B。A 后到，不能把 B 盖掉。
+      ui.state.path = '/users/u-slow'
+      ui.enterPath()
+      await until(() => gates['u-slow'])
+      ui.state.path = '/users/u-fast'
+      ui.enterPath()
+      await until(() => ui.state.userDetail?.account?.id === 'u-fast')
+      gates['u-slow']()
+      await tick()
+      assert(ui.state.userDetail?.account?.id === 'u-fast', `晚到的 A 盖掉了 B：${JSON.stringify(ui.state.userDetail?.account)}`)
+      assert(ui.html().includes('u-fast@race.test') && !ui.html().includes('u-slow@race.test'), '页面上画的不是 B')
+
+      // 前进后退走的也是 enterPath：上一页的报错不该带过来。
+      ui.state.error = '上一页的报错'
+      ui.state.path = '/users/u-bad'
+      ui.enterPath()
+      assert(ui.state.error === '', `换页没清上一页的报错：${ui.state.error}`)
+      await until(() => String(ui.state.error || '').includes('炸了'))
+      assert(!ui.state.userDetail, `B 失败了，state 里还顶着上一个账号：${JSON.stringify(ui.state.userDetail?.account)}`)
+      assert(!ui.html().includes('u-fast@race.test'), '/users/u-bad 上画出了上一个账号')
+
+      // Bot 详情同理，而且按钮不能打到上一颗身上。
+      ui.state.path = '/bots/b-ok'
+      ui.enterPath()
+      await until(() => ui.state.bot?.id === 'b-ok')
+      ui.state.path = '/bots/b-bad'
+      ui.enterPath()
+      await until(() => String(ui.state.error || '').includes('看不了'))
+      assert(!ui.state.bot && !ui.state.botDraft, `B 403 了，state 里还是 A：${JSON.stringify(ui.state.bot)}`)
+      assert(!ui.html().includes('BOT-b-ok'), '/bots/b-bad 上画出了上一颗 Bot')
+      // 就算 state 被别处写回了 A，按钮也只认地址里那一颗。
+      ui.state.bot = { id: 'b-ok', name: 'BOT-b-ok', origin: 'global' }
+      ui.state.botDraft = { name: 'BOT-b-ok' }
+      await ui.fire('click', el('button', { 'data-act': 'bot-delete' }))
+      assert(!ui.state.confirm, `在 /bots/b-bad 上按删除，要删的是 A：${JSON.stringify(ui.state.confirm)}`)
+    })
+
     await test('正文里的 HTML 被转义，不当标签渲染', async () => {
       const ui = await boot(ownerToken)
       const html = ui.auditTranscript([
