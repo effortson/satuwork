@@ -7849,15 +7849,28 @@ async function loadHandoffDetail(id) {
  */
 let handoffTimer = null
 
+/** 切回前台补的那一次。具名是为了停得掉：匿名的每起一次就多挂一个，退出登录也摘不下来。 */
+function handoffOnVisible() {
+  if (!document.hidden) void loadHandoffs()
+}
+
 function startHandoffPoll() {
   if (handoffTimer) return
   handoffTimer = setInterval(() => {
     if (document.hidden) return
     void loadHandoffs()
   }, 30_000)
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void loadHandoffs()
-  })
+  document.addEventListener('visibilitychange', handoffOnVisible)
+}
+
+/**
+ * 退出登录 / 票过期时停（见 app.js 的 endSignedIn）。不停的话票清了它还在每半分钟敲一次；
+ * 换成 owner 登进来，它敲的每一下都是 403。下一个人登进来之后由 loadPage 按角色重新起。
+ */
+function stopHandoffPoll() {
+  clearInterval(handoffTimer)
+  handoffTimer = null
+  if (typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', handoffOnVisible)
 }
 
 /**
@@ -7886,9 +7899,18 @@ function startSeatWatch() {
   }, SEAT_WATCH_MS)
   // Node 环境（e2e 垫片）下别拽着进程不退出；浏览器里 setInterval 是数字，没有 unref。
   if (seatWatchTimer && typeof seatWatchTimer.unref === 'function') seatWatchTimer.unref()
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void pollSeatLinks()
-  })
+  document.addEventListener('visibilitychange', seatWatchOnVisible)
+}
+
+function seatWatchOnVisible() {
+  if (!document.hidden) void pollSeatLinks()
+}
+
+/** 同 stopHandoffPoll：退出登录 / 票过期时停，登进来之后 loadPage 按角色重新起。 */
+function stopSeatWatch() {
+  clearInterval(seatWatchTimer)
+  seatWatchTimer = null
+  if (typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', seatWatchOnVisible)
 }
 
 async function pollSeatLinks() {

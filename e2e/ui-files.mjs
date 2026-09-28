@@ -9,7 +9,7 @@
  * 目录树那一屏又一个都点不动。两头都不会有人报 bug，只会觉得「这功能怪怪的」。
  */
 import { join } from 'node:path'
-import { loadApp, el } from './ui-dom.mjs'
+import { loadApp, el, fakeSse } from './ui-dom.mjs'
 
 /** 一份现成的名册：两个目录下各一个文件，外加一个重名的。 */
 function knownOf(ui, paths) {
@@ -517,5 +517,138 @@ export async function runUiFiles({ root, test, assert, log }) {
     const html = app.workspacePanel()
     assert(!/还是空的/.test(html), `没取到却说成了空工作区：${html}`)
     assert(/列不出来/.test(html), `没说出「没取到」：${html}`)
+  })
+
+  /**
+   * 票过期（Gateway 回 401）走的必须是和「退出登录」同一套拆法。
+   *
+   * 原先那支只清了票和 state.me：名单流拿着上一个人的票接着连、每帧往侧栏送他那几个 Bot
+   * 的摘要；换人在同一个标签页登进来，startRosterStream 见 rosterAbort 还在就直接 return，
+   * 新账号的侧栏从此收不到更新。待办和席位通联那两根轮询也还在转。
+   */
+  await test('登录票过期（401）：名单流断掉、轮询停下、上一个人的草稿和文件树清空', async () => {
+    const streams = []
+    const app = loadApp({
+      appPath: join(root, 'gateway/ui/app.js'),
+      base: 'http://127.0.0.1:1',
+      token: 'jwt-a',
+      fetchImpl: async (path) => {
+        if (String(path).includes('/roster/stream')) {
+          const sse = fakeSse()
+          streams.push(sse)
+          return sse.response
+        }
+        if (path === '/runtime/bots') {
+          return new Response(JSON.stringify({ error: '需要登录' }), { status: 401, headers: { 'content-type': 'application/json' } })
+        }
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+      },
+    })
+    try {
+      app.state.rosterStreamUrl = 'https://m001.satuwork.test/roster/stream'
+      void app.startRosterStream()
+      for (let i = 0; i < 100 && !streams.length; i++) await new Promise((r) => setTimeout(r, 5))
+      assert(streams.length === 1, '前置条件没成立：名单流没开')
+      app.startHandoffPoll()
+      app.startSeatWatch()
+      app.state.chatBotId = 'bot-a'
+      app.state.chatSessionId = 's-a'
+      app.state.chatDrafts = { 'bot-a': { text: '上一个人打了一半', files: [] } }
+      app.state.chatPending = [{ sessionId: 's-a', text: '还没回执' }]
+      app.state.wsDirs = { '': { entries: [{ name: '裁员名单.xlsx', path: '裁员名单.xlsx', dir: false, size: 9 }], more: 0 } }
+      app.state.wsSession = 's-a'
+      app.state.runtimeBots = [{ id: 'bot-a', name: '上一个人的助理' }]
+
+      let threw = false
+      await app.api('GET', '/runtime/bots').catch(() => { threw = true })
+      assert(threw, '401 没有抛错')
+      const live = app.liveHandles()
+      assert(!live.rosterAbort, '票过期了名单流还连着——还在往侧栏送上一个人的摘要')
+      assert(!live.handoffTimer, '待办轮询还在转')
+      assert(!live.seatWatchTimer, '席位通联轮询还在转')
+      assert(!app.token(), '票没清')
+      assert(Object.keys(app.state.chatDrafts).length === 0, `草稿没清：${JSON.stringify(app.state.chatDrafts)}`)
+      assert(app.state.chatPending.length === 0, '待回执的那几条没清')
+      assert(!app.state.wsSession && !app.state.wsDirs[''], '上一个人的文件树还在')
+      assert(app.state.runtimeBots.length === 0, 'Bot 名单没清')
+      assert(app.state.path === '/login' && /过期/.test(app.state.loginError), `没挪到登录页说清楚：${app.state.path} ${app.state.loginError}`)
+
+      // 换人登进来（同一家公司、同一个名单流地址）：名单流得真的重开一条，不能被旧的那条挡住。
+      app.setToken('jwt-b')
+      void app.startRosterStream()
+      for (let i = 0; i < 100 && streams.length < 2; i++) await new Promise((r) => setTimeout(r, 5))
+      assert(streams.length === 2, '换人登录之后名单流没重开——新账号的侧栏收不到更新')
+    } finally {
+      app.stopRosterStream()
+      for (const s of streams) s.close()
+      app.endSignedIn()
+    }
+  })
+
+  await test('路上那条拿的是旧票：它的 401 不能把刚登进来的人踢出去', async () => {
+    let release = null
+    const held = new Promise((r) => { release = r })
+    const app = loadApp({
+      appPath: join(root, 'gateway/ui/app.js'),
+      base: 'http://127.0.0.1:1',
+      token: 'jwt-a',
+      fetchImpl: async () => {
+        await held
+        return new Response(JSON.stringify({ error: '需要登录' }), { status: 401, headers: { 'content-type': 'application/json' } })
+      },
+    })
+    const inflight = app.api('GET', '/me').catch(() => {})
+    app.setToken('jwt-b')
+    release()
+    await inflight
+    assert(app.token() === 'jwt-b', '旧票的 401 把新登进来的票清掉了')
+  })
+
+  /**
+   * 桌面端里本地 Bot 的请求改道到 127.0.0.1、拿的是席位票。它回 401 是**它**不认这把票了
+   * （重启过、票换过一轮），不是登录过期——原先 api() 分不出来，本地 Bot 一重启就把人登出。
+   */
+  await test('本地 Bot 回 401：重新要一把席位票、重试一次，不登出', async () => {
+    let issued = 0
+    let rejectAll = false
+    const hits = []
+    const app = loadApp({
+      appPath: join(root, 'gateway/ui/app.js'),
+      base: 'http://127.0.0.1:1',
+      token: 'jwt-a',
+      desktop: true,
+      localBotBridge: {
+        status: async () => ({ running: true, port: 41001, workspace: '/w' }),
+        start: async () => ({ running: true, port: 41002 }),
+      },
+      fetchImpl: async (path, init) => {
+        const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+        if (path === '/runtime/bots/local-1/local-bootstrap') {
+          issued += 1
+          return json({ botId: 'local-1', accessToken: `sat_v${issued}` })
+        }
+        if (String(path).startsWith('http://127.0.0.1:41002/')) {
+          const auth = init.headers.authorization
+          hits.push(auth)
+          return !rejectAll && auth === 'Bearer sat_v2' ? json({ sessionId: 's-local' }) : json({ error: 'unauthorized' }, 401)
+        }
+        return json({ error: `unexpected ${path}` }, 404)
+      },
+    })
+    await app.overlayLocalRuntime([{ id: 'local-1', name: 'Mac 助手', runtimeKind: 'local' }])
+    assert(issued === 1, `前置条件没成立：该先要过一次票，实际 ${issued}`)
+    const got = await app.api('GET', '/runtime/bots/local-1/session')
+    assert(got && got.sessionId === 's-local', `重试之后没拿到会话：${JSON.stringify(got)}`)
+    assert(issued === 2 && hits.join() === 'Bearer sat_v1,Bearer sat_v2', `该换票重试恰好一次：issued=${issued} hits=${hits}`)
+    assert(app.token() === 'jwt-a', '本地 Bot 的 401 把人登出了')
+
+    // 换了票还是 401：照普通错误报，仍然不登出，也不无限重试。
+    rejectAll = true
+    hits.length = 0
+    let err = null
+    await app.api('GET', '/runtime/bots/local-1/session').catch((e) => { err = e })
+    assert(err && err.status === 401, `该抛一个带 401 的普通错误：${err}`)
+    assert(hits.length === 2, `只该重试一次：${hits.length}`)
+    assert(app.token() === 'jwt-a' && app.state.path !== '/login', '本地 Bot 的 401 把人登出了')
   })
 }
