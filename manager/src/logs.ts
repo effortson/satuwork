@@ -72,6 +72,14 @@ export function followLogs(
   extra: Record<string, string> = {},
 ): Promise<void> {
   return new Promise((resolve) => {
+    // **先看人还在不在。** 走到这里之前多半有过 await（proxy.ts 验日志票，冷启动时要去
+    // Gateway 拉 JWKS，最多 8 秒）；那段时间里浏览器关了面板，'close' 已经发过了、不会
+    // 再发——下面那句 res.on('close') 挂上去也等不到，journalctl -f 和 15 秒一跳的心跳
+    // 就永远挂着。roster.ts 的 rosterStream 是同一个坑，同一个补法。
+    if (res.destroyed || res.writableEnded || res.req?.destroyed) {
+      resolve()
+      return
+    }
     res.writeHead(200, {
       ...extra,
       'content-type': 'text/event-stream; charset=utf-8',
@@ -121,7 +129,7 @@ export function followLogs(
       finish()
     })
     child.on('close', finish)
-    // 人关了面板就别让 journalctl -f 一直挂着。
+    // 人关了面板就别让 journalctl -f 一直挂着。（挂之前就已经关掉的那种见函数开头。）
     res.on('close', finish)
   })
 }
