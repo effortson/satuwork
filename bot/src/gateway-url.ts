@@ -60,6 +60,34 @@ function originOf(raw: string): string {
 
 const norm = (raw: string) => raw.trim().replace(/\/$/, '')
 
+/** 回环和开发用的域名，和管家的 isDevHost（manager/src/config.ts）同一份判据。 */
+function isDevHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.test')) return true
+  if (h === '::1') return true
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)
+}
+
+/**
+ * 学来的地址能不能换上：**不许从 https 降成明文 http。**
+ *
+ * 学来的地址从此收走每一次调用带的席位票和 API Key。管家那头已经只认 https
+ * （manager/src/config.ts 的 gatewayUrlProblem），这里是同一条规矩的末端：一个明文地址，
+ * 链路上的任何人都能读票。放行的只有三种——
+ * - https；
+ * - 回环 / `*.localhost` / `*.test`（开发和 e2e）；
+ * - 部署时写死的地址**不是 https**（明文 http，或者压根没配）：那台席位从头就是明文部署的
+ *   （家里的开发虚机就是这样），学一个同样是 http 的新地址不会让它更糟；
+ *   `SATUWORK_ALLOW_INSECURE_GATEWAY=1` 同理，和管家那头一样是「明知有风险」的开关。
+ * 要挡的是**降级**：一台 https 部署的席位，头里报来一个 http 地址，一律不认。
+ */
+function mayAdopt(next: string): boolean {
+  const u = new URL(next)
+  if (u.protocol === 'https:' || isDevHost(u.hostname)) return true
+  if (process.env.SATUWORK_ALLOW_INSECURE_GATEWAY === '1') return true
+  return !deployed().startsWith('https:')
+}
+
 /**
  * 上一次没写成的目标地址。
  *
@@ -148,6 +176,10 @@ export function loadGatewayUrlOverride(log?: { info?: (s: string) => void; warn?
     log?.warn?.(`gateway-url: ${file} 里的地址形状不对，不认`)
     return 'deployed'
   }
+  if (!mayAdopt(url)) {
+    log?.warn?.(`gateway-url: ${file} 里的 ${url} 是明文 http，而部署时是 ${base}，不认`)
+    return 'deployed'
+  }
   if (rec.base !== base) {
     // 重新部署换过地址——部署拿到的是 Gateway 当时亲口给的，比这份旧覆盖新。
     log?.info?.(`gateway-url: ${file} 是按旧部署地址 ${String(rec.base)} 学来的，现在部署的是 ${base}，作废`)
@@ -186,6 +218,13 @@ export function adoptGatewayUrl(raw: unknown, log?: { info?: (s: string) => void
   }
   const cur = norm(process.env.GATEWAY_URL || '')
   if (next === cur) return
+  if (!mayAdopt(next)) {
+    if (lastFailed !== next) {
+      lastFailed = next
+      log?.warn?.(`gateway-url: Gateway 报的新地址 ${next} 是明文 http，而这台席位部署在 ${deployed() || '（空）'}，不认`)
+    }
+    return
+  }
 
   const seat = isSeatMode()
   const file = seat ? satuworkHome(OVERRIDE_FILE) : satuworkHome('bot.env')
