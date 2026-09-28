@@ -18,11 +18,41 @@ export interface PendingApproval {
 export type Verdict = 'approved' | 'denied' | 'timeout' | 'aborted'
 
 /**
- * 放行 / 拦停名单里的键：剥掉 `*_sw_run` 这层壳之后的真实工具名。
+ * 拦停名单里的键：剥掉 `*_sw_run` 这层壳之后的真实工具名。
  * 没套壳时就是工具名本身，所以非壳工具的行为和以前完全一样。
  */
-function grantKey(call: { name: string; arguments: string }): string {
+function blockKey(call: { name: string; arguments: string }): string {
   return unwrapCall(call).tool
+}
+
+/**
+ * 风险写在**参数**里、不写在工具名上的那几把。
+ *
+ * 眼下只有 `terminal`：它弹卡的理由是「这条命令」会毁东西（policy/shell.ts 的
+ * destructiveCommand），同一把工具的下一条命令毁的可能是完全不同的东西。MCP 工具的风险
+ * 是按工具标的（发信那把每次都是发信），按工具名放行正是那颗按钮的本意。浏览器那几把
+ * 虽然也按参数判，但它们的卡片本来就指望「这一轮都批准」来消化（见 browser.ts 的
+ * submitAction），不收进来。
+ */
+const ARGUMENT_RISK = new Set(['terminal'])
+
+/**
+ * 放行名单里的键。
+ *
+ * 大多数工具就是剥壳后的工具名。`terminal` 要连**命令本身和工作目录**一起记：只按
+ * 工具名记的话，人对 `rm -f build.log` 点的「这一轮都批准」会放行这一轮后面每一条要
+ * 确认的命令——递归删工作区、强推、网页内容里被塞进来的那几条，一张卡片都不弹，而
+ * 一轮能走一百多步。收成「同一条命令」：重试、原样再跑一次不用再问，换了目标就重新问。
+ * 空白压成一个，免得多一个空格就要再点一次。
+ *
+ * 拦停那一侧照旧按工具名（blockKey）：挡得宽是安全的那一侧。
+ */
+function grantKey(call: { name: string; arguments: string }): string {
+  const { tool, args } = unwrapCall(call)
+  if (!ARGUMENT_RISK.has(tool)) return tool
+  const command = String(args.command ?? '').trim().replace(/\s+/g, ' ')
+  const workdir = String(args.workdir ?? '').trim()
+  return `${tool} ${JSON.stringify([command, workdir])}`
 }
 
 /**
@@ -80,7 +110,7 @@ export class ApprovalGate {
     }
   >()
   /**
-   * 「这一轮都批准」的口子：sessionId → 工具名。**轮末清空**（见 clearGrants）。
+   * 「这一轮都批准」的口子：sessionId → 工具名（terminal 是工具名 + 命令，见 grantKey）。**轮末清空**（见 clearGrants）。
    *
    * 一开始这里是「本会话都批准」，那是错的：**一个 Bot 一辈子只有一条会话**
    * （registry.ts 的 ensureSession——有就复用，只增不减），而席位上的 bot 是常驻进程。
@@ -163,12 +193,11 @@ export class ApprovalGate {
      * 的「删仓库」。没套壳的工具 unwrapCall 原样返回，行为不变。查和写（decide）两边
      * 都走 grantKey。
      */
-    const toolKey = grantKey(call)
     const blocked = this.denials.get(sessionId)
-    if (blocked?.has(toolKey)) return { verdict: 'denied', scope: 'turn', viaBlock: true }
+    if (blocked?.has(blockKey(call))) return { verdict: 'denied', scope: 'turn', viaBlock: true }
 
     const granted = this.grants.get(sessionId)
-    if (granted?.has(toolKey)) return { verdict: 'approved', scope: 'turn', viaGrant: true }
+    if (granted?.has(grantKey(call))) return { verdict: 'approved', scope: 'turn', viaGrant: true }
 
     const key = `${sessionId}:${call.callId}`
     const now = Date.now()
@@ -278,17 +307,16 @@ export class ApprovalGate {
      * 然后默许了之后几封没人看过的。
      */
     if (edited.length) scope = 'once'
-    // 记的是剥壳后的内层工具名（见 ask 里的说明），和查的那一侧用同一把钥匙。
-    const toolKey = grantKey(hit.rec)
+    // 记的是剥壳后的内层工具名（terminal 连命令一起，见 grantKey），和查的那一侧用同一把钥匙。
     if (decision === 'approve' && scope === 'turn') {
       const set = this.grants.get(sessionId) ?? new Set<string>()
-      set.add(toolKey)
+      set.add(grantKey(hit.rec))
       this.grants.set(sessionId, set)
     }
     // 「这一轮别再试了」：拒绝也能带范围，落进拦停名单，这一轮同一把工具直接挡。
     if (decision === 'deny' && scope === 'turn') {
       const set = this.denials.get(sessionId) ?? new Set<string>()
-      set.add(toolKey)
+      set.add(blockKey(hit.rec))
       this.denials.set(sessionId, set)
     }
     /**

@@ -16,6 +16,88 @@ function sitesOf(text) {
 }
 
 /**
+ * 这个标签页上「已登录」的一切，全部拆掉：票、流、轮询、内存里上一个账号的数据。
+ *
+ * 退出登录和 api() 里的 401（票过期、账号被停用）走的是**同一条**。401 那支原先只清了票
+ * 和 state.me：名单流还拿着上一个人的票连着、每一帧照样往侧栏送他那几个 Bot 的摘要；
+ * 草稿、待发的那几条、工作区文件树也都还在内存里。换个人在同一个标签页登进来，
+ * startRosterStream 见 rosterAbort 还在就直接 return，同一家公司地址也没变，于是新账号的
+ * 侧栏收不到任何更新，喂进来的仍是上一个人的。
+ *
+ * 只拆不走：跳到哪一页、要不要留一句话，由调用方各自决定。
+ */
+function endSignedIn() {
+  clearToken()
+  // 先掐流再清数据：SSE 还连着的话，下一个人登进来之前就会有上一个人的事件继续往
+  // state.chatEvents 里落，然后被画出来。聊天正文、草稿、名册都是上一个账号的东西，
+  // 同一个标签页换人登录时一条都不能留。
+  stopChatStream()
+  // 名单那条通道同理，而且更露骨：它一直在往侧栏送**上一个账号**每个 Bot 的
+  // 「最近说了什么」，那是正文摘要。票都清了它还连着的话，下一个人登进来的第一屏
+  // 就能读到。
+  stopRosterStream()
+  // 那几根慢速长跑（流的、会话的）比退避链活得久得多，**必须在这里全撤**：票都清了
+  // 还在照着上一个人的席位敲接口，就不只是难看了。开一条新流时只撤它自己那一根
+  // （cancelIdleRetry），别的 Bot 断着还得有人去接。
+  cancelIdleRetries()
+  // 挂着「等会话到了就发」的那条也清掉：同一个标签页换人登进来，绝不能把上一个人
+  // 打了一半的话补发出去。
+  clearHeldSend()
+  chatLive.clear()
+  state.chatBotId = ''
+  state.chatSessionId = ''
+  state.chatEvents = []
+  state.chatDraft = ''
+  // 按 Bot 存的那份草稿、以及发出去还没回执的那几条，同样是上一个账号的东西。
+  // 上面那句「一条都不能留」原先漏了这两个：chatDraft 只是当前这一个输入框，
+  // chatDrafts 里躺着他在每一个 Bot 上打了一半的话，chatPending 里是正文连同附件。
+  state.chatDrafts = {}
+  state.chatPending = []
+  state.chatStatus = ''
+  // 右栏那棵工作区文件树同理，而且它比草稿更露骨：里面是上一个人工作区里的文件名和
+  // 目录名（「二季度裁员名单.xlsx」这一类名字本身就是内容）。`wsSession` 是「这棵树
+  // 是给哪条会话取的」，跟着一起归零——不清的话，下一个人打开对话页的**第一帧**画的
+  // 就是上一个人的清单：那一帧的 HTML 在 render() 末尾那句 ensureWorkspaceTree 之前
+  // 就拼好了，而登出这会儿 state.me 已经空了，它自己压根轮不到跑。
+  state.wsDirs = {}
+  state.wsOpen = {}
+  state.wsSession = ''
+  state.runtimeBots = []
+  state.runtimeError = ''
+  state.runtimeMachine = null
+  state.desktopRuntime = null
+  // 日常任务同理：它带着上一个人的任务名和运行记录，还有一个每四秒一次的轮询。
+  state.routines = []
+  state.routinesBotId = ''
+  state.routineOpen = ''
+  state.routineRuns = []
+  state.routineError = ''
+  syncRoutinePoll()
+  // 模版那一页的同步轮询同理：不清掉的话，登出之后它还在每 15 秒问一次。
+  state.templateSync = null
+  syncTemplatePoll()
+  state.me = null
+  state.profileDraft = null
+  state.profileSaved = false
+  state.profileError = ''
+  state.pwOpen = false
+  state.pwForm = { current: '', next: '', confirm: '' }
+  state.pwError = ''
+  state.notifyOff = []
+  // 翻到第几页是上一个人的看法，跟聊天正文一样不能留给下一个登进来的人。
+  state.listPage = {}
+  // 待办和席位通联那两根 30 秒的轮询同理：票清了还在转，就是一路未登录的请求；换成
+  // owner 登进来，loadHandoffs 还会一直 403。登进来之后 loadPage 按角色重新起。
+  stopHandoffPoll()
+  stopSeatWatch()
+  state.handoffs = []
+  state.handoffCount = 0
+  state.handoffStats = null
+  state.handoffOpenId = ''
+  state.handoffDetail = {}
+}
+
+/**
  * 改一个账号的状态。「用户」那一页的行上和账号详情页上按的是同一颗。
  *
  * 改完**两份都刷**：详情页开着的时候，只刷列表会让眼前这一页还显示旧状态；只刷详情
@@ -1397,66 +1479,8 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'logout') {
-    clearToken()
-    // 先掐流再清数据：SSE 还连着的话，下一个人登进来之前就会有上一个人的事件继续往
-    // state.chatEvents 里落，然后被画出来。聊天正文、草稿、名册都是上一个账号的东西，
-    // 同一个标签页换人登录时一条都不能留。
-    stopChatStream()
-    // 名单那条通道同理，而且更露骨：它一直在往侧栏送**上一个账号**每个 Bot 的
-    // 「最近说了什么」，那是正文摘要。票都清了它还连着的话，下一个人登进来的第一屏
-    // 就能读到。
-    stopRosterStream()
-    // 那几根慢速长跑（流的、会话的）比退避链活得久得多，**必须在这里全撤**：票都清了
-    // 还在照着上一个人的席位敲接口，就不只是难看了。开一条新流时只撤它自己那一根
-    // （cancelIdleRetry），别的 Bot 断着还得有人去接。
-    cancelIdleRetries()
-    // 挂着「等会话到了就发」的那条也清掉：同一个标签页换人登进来，绝不能把上一个人
-    // 打了一半的话补发出去。
-    clearHeldSend()
-    chatLive.clear()
-    state.chatBotId = ''
-    state.chatSessionId = ''
-    state.chatEvents = []
-    state.chatDraft = ''
-    // 按 Bot 存的那份草稿、以及发出去还没回执的那几条，同样是上一个账号的东西。
-    // 上面那句「一条都不能留」原先漏了这两个：chatDraft 只是当前这一个输入框，
-    // chatDrafts 里躺着他在每一个 Bot 上打了一半的话，chatPending 里是正文连同附件。
-    state.chatDrafts = {}
-    state.chatPending = []
-    state.chatStatus = ''
-    // 右栏那棵工作区文件树同理，而且它比草稿更露骨：里面是上一个人工作区里的文件名和
-    // 目录名（「二季度裁员名单.xlsx」这一类名字本身就是内容）。`wsSession` 是「这棵树
-    // 是给哪条会话取的」，跟着一起归零——不清的话，下一个人打开对话页的**第一帧**画的
-    // 就是上一个人的清单：那一帧的 HTML 在 render() 末尾那句 ensureWorkspaceTree 之前
-    // 就拼好了，而登出这会儿 state.me 已经空了，它自己压根轮不到跑。
-    state.wsDirs = {}
-    state.wsOpen = {}
-    state.wsSession = ''
-    state.runtimeBots = []
-    state.runtimeError = ''
-    state.runtimeMachine = null
-    state.desktopRuntime = null
-    // 日常任务同理：它带着上一个人的任务名和运行记录，还有一个每四秒一次的轮询。
-    state.routines = []
-    state.routinesBotId = ''
-    state.routineOpen = ''
-    state.routineRuns = []
-    state.routineError = ''
-    syncRoutinePoll()
-    // 模版那一页的同步轮询同理：不清掉的话，登出之后它还在每 15 秒问一次。
-    state.templateSync = null
-    syncTemplatePoll()
-    state.me = null
+    endSignedIn()
     state.loginError = ''
-    state.profileDraft = null
-    state.profileSaved = false
-    state.profileError = ''
-    state.pwOpen = false
-    state.pwForm = { current: '', next: '', confirm: '' }
-    state.pwError = ''
-    state.notifyOff = []
-    // 翻到第几页是上一个人的看法，跟聊天正文一样不能留给下一个登进来的人。
-    state.listPage = {}
     history.replaceState({}, '', '/')
     state.path = '/'
     render()

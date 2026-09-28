@@ -404,12 +404,12 @@ export interface SeatRuntime {
   deployPhase: SeatDeployPhase | null
   deployStartedAt: number | null
   /**
-   * 推着这次部署的那个进程最近一次报到的时刻（见迁移 0044）。**「有没有人在装」只认它**，
+   * 推着这次部署的那个进程最近一次报到的时刻（见迁移 0045）。**「有没有人在装」只认它**，
    * 不认进程里的任何东西——Gateway 在 Vercel 上是好几个实例，问的和装的多半不是同一个。
    * 可选：拼整行的地方（e2e、老代码）不带它也行，upsertSeatRuntime 自己会续上库里那份。
    */
   deployBeatAt?: number | null
-  /** 批量更新排下、还没轮到的那一次部署（见迁移 0044）。空 = 没有排队。 */
+  /** 批量更新排下、还没轮到的那一次部署（见迁移 0045）。空 = 没有排队。 */
   deployQueued?: SeatDeployRequest | null
 }
 
@@ -756,6 +756,11 @@ export interface ChannelEvent {
   files: { path: string; name: string }[]
   /** 这一轮新开的转人工卡；和 reply/files 一起可靠投递。 */
   handoffs: ChannelHandoffPrompt[]
+  /**
+   * 结果已经发出去几段（回复分段、文件卡、转人工卡按这个顺序数）。只有租约持有者能往前推，
+   * 重试和接管从这一段接着发，不从头再来（见 channels.ts 的 deliverClaimedEvent）。
+   */
+  deliveredParts: number
   lastError: string | null
   createdAt: number
   updatedAt: number

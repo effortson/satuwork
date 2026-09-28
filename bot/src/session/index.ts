@@ -79,6 +79,10 @@ export class SessionService extends Service {
    * 有上限：一台席位能跑几周、委派几千次，每条子会话的全部事件都常驻的话只涨不落。
    * 超了先淘汰非 main 的（委派子会话读完结论就没人再碰），再淘汰最久没用的主会话。
    * 淘汰只丢内存态，下次访问从盘上重读。
+   *
+   * **两种不淘汰**（见 evictable）：这个进程里还开着一轮的，和还有追加没写完的。前者
+   * 重读时会被 healDanglingTurn 当成上个进程的残局补一条假 turn/end；后者重读拿到的
+   * seq 比内存里已经发出去的小，下一条就撞号。
    */
   private cache = new Map<string, SessionState>()
   /**
@@ -86,6 +90,18 @@ export class SessionService extends Service {
    * 否则两份 SessionState 各自记 seq，各自往同一个文件写，事件会互相盖掉。
    */
   private loading = new Map<string, Promise<SessionState>>()
+  /**
+   * 每条会话的追加队尾。追加一条接一条地排：拿号、进内存、落盘、广播做完才轮下一条，
+   * 于是 seq、文件行序、广播顺序是同一个顺序。队里有东西的会话不淘汰。
+   */
+  private tails = new Map<string, Promise<unknown>>()
+  /**
+   * 这个进程里写过 turn/start、还没写 turn/end 的会话。
+   *
+   * 「悬着的 turn」只有不在这里的才是上个进程留下的——在这里的是正跑着的一轮（比如
+   * 委派子会话卡在一条长命令或一次审批上），补 turn/end 等于替它宣布结束。
+   */
+  private openTurns = new Set<string>()
   private root: string
   /**
    * 旧会话没有 botId 时挂到这个 Bot。
@@ -136,12 +152,32 @@ export class SessionService extends Service {
     type: T,
     data: SessionEventMap[T],
   ): Promise<EventEnvelope<T>> {
-    const state = await this.load(sessionId)
+    const prev = this.tails.get(sessionId)
+    const run = (prev ? prev.then(() => this.load(sessionId)) : this.load(sessionId)).then((state) =>
+      this.write(state, type, data),
+    )
+    // 队尾吞掉错误：前一条写失败不该连累后面的。自己是队尾时顺手摘掉，不留空条目。
+    const tail = run.catch(() => {})
+    this.tails.set(sessionId, tail)
+    void tail.then(() => {
+      if (this.tails.get(sessionId) === tail) this.tails.delete(sessionId)
+    })
+    return run
+  }
+
+  /** 真正的写：调用方保证同一条会话上不并发（append 的队列，或者 read 里的收口）。 */
+  private async write<T extends keyof SessionEventMap>(
+    state: SessionState,
+    type: T,
+    data: SessionEventMap[T],
+  ): Promise<EventEnvelope<T>> {
     const event = { seq: ++state.seq, time: Date.now(), type, data } as EventEnvelope<T>
     state.events.push(event as SessionEvent)
+    if (type === 'turn/start') this.openTurns.add(state.id)
+    else if (type === 'turn/end') this.openTurns.delete(state.id)
     // 先落盘再广播：监听者看到事件时，它已经是持久的。
     await appendFile(state.file, JSON.stringify(event) + '\n', 'utf8')
-    this.ctx.emit('session/event', sessionId, event as SessionEvent)
+    this.ctx.emit('session/event', state.id, event as SessionEvent)
     return event
   }
 
@@ -164,6 +200,9 @@ export class SessionService extends Service {
    * 那天它会被静默地当成主会话——而卡是天天在跑的。
    *
    * 要连它们一起看（调试、清理）传 `{ tasks: true }`。
+   *
+   * **不进缓存。** 没缓存的会话只读盘取摘要，不 load：目录里常有几百条委派子会话，
+   * 侧栏每刷一次都整份 load 一遍的话，缓存会被整个冲掉——正跑着的会话也跟着被挤出去。
    */
   async list(opts: { tasks?: boolean } = {}): Promise<
     { id: string; title: string; createdAt: number; botId?: string; kind?: 'main' | 'task' | 'card'; channel?: ChannelSessionMeta }[]
@@ -177,7 +216,7 @@ export class SessionService extends Service {
         // ——那样侧栏会一条都画不出来，包括那些好好的。
         let events: SessionEvent[]
         try {
-          events = await this.events(id)
+          events = this.cache.get(id)?.events ?? (await this.peek(id))
         } catch (e) {
           this.ctx.logger?.warn?.(`sessions: 列表跳过 ${id}：${(e as Error).message}`)
           return null
@@ -201,7 +240,8 @@ export class SessionService extends Service {
             data.title ??
             '新会话',
           createdAt: data.createdAt,
-          botId: data.botId ?? data.agentId,
+          // 没缓存的是没迁移过的原样，旧会话在这里按 load 的规则补 botId。
+          botId: data.botId ?? data.agentId ?? this.fallbackBotId,
           ...(data.kind ? { kind: data.kind } : {}),
           ...(data.channel ? { channel: data.channel } : {}),
         }
@@ -228,6 +268,32 @@ export class SessionService extends Service {
         this.ctx.logger?.warn?.(`sessions: 迁移 ${id} 失败：${(e as Error).message}`)
       }
     }
+  }
+
+  /**
+   * 只读盘、不缓存、不迁移、不收口，给 list() 取摘要用。坏行跳过；格式太新照样抛，
+   * 和 load 一样由调用方跳过这一条。
+   */
+  private async peek(sessionId: string): Promise<SessionEvent[]> {
+    const raw = await readFile(join(this.root, `${sessionId}.jsonl`), 'utf8')
+    const events: SessionEvent[] = []
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue
+      let event: SessionEvent
+      try {
+        event = JSON.parse(line) as SessionEvent
+      } catch {
+        continue
+      }
+      if (event.type === 'session') {
+        const version = (event.data as { version: number }).version
+        if (version > SESSION_FORMAT_VERSION) {
+          throw new Error(`sessions: ${sessionId} 是格式 v${version}，当前是 v${SESSION_FORMAT_VERSION}，需要迁移`)
+        }
+      }
+      events.push(event)
+    }
+    return events
   }
 
   /** 惰性从磁盘恢复。进程重启后第一次访问某会话会走这里。并发进来的共用同一次。 */
@@ -325,9 +391,16 @@ export class SessionService extends Service {
       }, badSeq),
       file,
     }
-    this.remember(state)
+    // 先收口再进缓存：收口期间别的 load 还在等 loading 里这同一个 promise，不会拿到
+    // 一份正在写的 state 去并发拿号。
     await this.healDanglingTurn(state)
+    this.remember(state)
     return state
+  }
+
+  /** 还开着一轮、或者追加队里有东西的，不能丢（理由见 cache 上的说明）。 */
+  private evictable(id: string): boolean {
+    return !this.openTurns.has(id) && !this.tails.has(id)
   }
 
   /** 进缓存，超上限就淘汰（规则见 cache 上的说明）。刚放进去的这条不会被自己淘汰掉。 */
@@ -342,7 +415,7 @@ export class SessionService extends Service {
     while (this.cache.size > CACHE_MAX) {
       let victim: string | undefined
       for (const [id, s] of this.cache) {
-        if (id === state.id) continue
+        if (id === state.id || !this.evictable(id)) continue
         if (!isMain(s)) {
           victim = id
           break
@@ -367,6 +440,9 @@ export class SessionService extends Service {
    *
    * 从磁盘恢复的这一刻正是唯一能确定「那个进程已经死了」的时机：它写的东西我们读到
    * 了，而它自己不在了。所以在这里补一条 reason: 'error' 的 turn/end。
+   *
+   * **这个进程自己开着的那一轮除外**（openTurns）：它还在跑，只是会话被挤出了缓存。
+   * 正常情况下开着一轮的会话不会被淘汰，这里是兜底。
    */
   private async healDanglingTurn(state: SessionState): Promise<void> {
     let lastStart = -1
@@ -378,9 +454,11 @@ export class SessionService extends Service {
       if (lastStart >= 0 && lastEnd >= 0) break
     }
     if (lastStart < 0 || lastStart < lastEnd) return
+    if (this.openTurns.has(state.id)) return
     const turn = Number((state.events[lastStart].data as { turn?: unknown }).turn) || 0
     this.ctx.logger?.warn?.(`sessions: ${state.id} 第 ${turn} 轮没有收口（上个进程没能写完），补一条 turn/end`)
-    await this.append(state.id, 'turn/end', { turn, reason: 'error' })
+    // 直接 write，不走 append：这里是 load 里面，append 的队列正等着这次 load。
+    await this.write(state, 'turn/end', { turn, reason: 'error' })
   }
 }
 

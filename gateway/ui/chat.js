@@ -3294,6 +3294,15 @@ function emailPreviewDoc(html) {
 /** 卡片底下那排按钮。发信那张的第一个按钮说「批准并发送」——它就是要干这件事。 */
 function approvalActs(a, okLabel) {
   const touched = approvalTouched(a)
+  /**
+   * terminal 的「这一轮都批准」只放行一字不差的同一条命令（席位那边 approvals.ts 的
+   * grantKey）：它的风险在命令里，按工具放行等于批了一条删临时文件、放过一整轮的删目录。
+   * 按钮上的话要跟着改，不然人以为后面的命令都不会再问。
+   */
+  const byCommand = ((a.form && a.form.tool) || a.name) === 'terminal'
+  const turnTip = byCommand
+    ? t('这一轮里一字不差的同一条命令不再问；换一条命令照样会问。', 'This exact command won\'t ask again until this reply finishes; any other command still asks.')
+    : t('从你刚才那句话到它答完，这把工具不再问；下一句话会重新问。', 'Until this reply finishes, this tool won\'t ask again; your next message starts over.')
   return (
     `<div class="sw-approval-acts">` +
     `<button type="button" class="btn btn-primary" data-act="chat-approve" data-call="${esc(a.callId)}" data-scope="once">${esc(okLabel)}</button>` +
@@ -3309,8 +3318,8 @@ function approvalActs(a, okLabel) {
     (touched
       ? // 改过的这一次不能顺带放行后面几次：后面那些带的是模型自己写的内容，不是人刚改的这份。
         ` disabled title="${esc(t('这一次改过内容，只能批准这一次', 'You edited this one, so it can only be approved once'))}"`
-      : ` title="${esc(t('从你刚才那句话到它答完，这把工具不再问；下一句话会重新问。', 'Until this reply finishes, this tool won\'t ask again; your next message starts over.'))}"`) +
-    `>${esc(t('这一轮都批准', 'Approve for this turn'))}</button>` +
+      : ` title="${esc(turnTip)}"`) +
+    `>${esc(byCommand ? t('这一轮这条都批准', 'Approve this command for this turn') : t('这一轮都批准', 'Approve for this turn'))}</button>` +
     `<button type="button" class="btn btn-ghost" data-act="chat-deny" data-call="${esc(a.callId)}" data-scope="once">${esc(t('拒绝', 'Deny'))}</button>` +
     /**
      * 拒绝那一侧也配一颗带范围的，和批准那一对对称。
@@ -7849,15 +7858,28 @@ async function loadHandoffDetail(id) {
  */
 let handoffTimer = null
 
+/** 切回前台补的那一次。具名是为了停得掉：匿名的每起一次就多挂一个，退出登录也摘不下来。 */
+function handoffOnVisible() {
+  if (!document.hidden) void loadHandoffs()
+}
+
 function startHandoffPoll() {
   if (handoffTimer) return
   handoffTimer = setInterval(() => {
     if (document.hidden) return
     void loadHandoffs()
   }, 30_000)
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void loadHandoffs()
-  })
+  document.addEventListener('visibilitychange', handoffOnVisible)
+}
+
+/**
+ * 退出登录 / 票过期时停（见 app.js 的 endSignedIn）。不停的话票清了它还在每半分钟敲一次；
+ * 换成 owner 登进来，它敲的每一下都是 403。下一个人登进来之后由 loadPage 按角色重新起。
+ */
+function stopHandoffPoll() {
+  clearInterval(handoffTimer)
+  handoffTimer = null
+  if (typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', handoffOnVisible)
 }
 
 /**
@@ -7886,9 +7908,18 @@ function startSeatWatch() {
   }, SEAT_WATCH_MS)
   // Node 环境（e2e 垫片）下别拽着进程不退出；浏览器里 setInterval 是数字，没有 unref。
   if (seatWatchTimer && typeof seatWatchTimer.unref === 'function') seatWatchTimer.unref()
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void pollSeatLinks()
-  })
+  document.addEventListener('visibilitychange', seatWatchOnVisible)
+}
+
+function seatWatchOnVisible() {
+  if (!document.hidden) void pollSeatLinks()
+}
+
+/** 同 stopHandoffPoll：退出登录 / 票过期时停，登进来之后 loadPage 按角色重新起。 */
+function stopSeatWatch() {
+  clearInterval(seatWatchTimer)
+  seatWatchTimer = null
+  if (typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', seatWatchOnVisible)
 }
 
 async function pollSeatLinks() {

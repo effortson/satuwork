@@ -148,6 +148,24 @@ export async function mockTelegram() {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, result }))
       }
+      // 用例可以挂一个 hook 注入故障：返回 { status, retryAfter } 就照 Telegram 的样子回错，
+      // 返回 { delayMs } 就晚这么久再照常处理（慢请求）。
+      const hooked = seen.hook?.(method, body) || null
+      if (hooked?.status) {
+        res.writeHead(hooked.status, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          ok: false, error_code: hooked.status, description: hooked.description || 'e2e 注入的失败',
+          ...(hooked.retryAfter ? { parameters: { retry_after: hooked.retryAfter } } : {}),
+        }))
+        return
+      }
+      if (hooked?.delayMs) {
+        setTimeout(() => respond(method, body, send), hooked.delayMs)
+        return
+      }
+      respond(method, body, send)
+    })
+    const respond = (method, body, send) => {
       if (method === 'getMe') return send({ id: 88776655, is_bot: true, first_name: 'E2E', username: 'satuwork_e2e_bot' })
       if (method === 'deleteWebhook') {
         seen.deleteWebhook += 1
@@ -213,7 +231,7 @@ export async function mockTelegram() {
       }
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: false, description: `unknown ${method}` }))
-    })
+    }
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   return { server, seen, url: `http://127.0.0.1:${server.address().port}` }
@@ -276,6 +294,8 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       assert(result.takeover, `租约到期后没有接管：${JSON.stringify(result)}`)
       assert(result.staleRenew === false && result.staleCommit === false, `旧进程还能续租或回写：${JSON.stringify(result)}`)
       assert(result.saveReply && result.delivered, `接管者没有完成落盘与投递：${JSON.stringify(result)}`)
+      assert(result.advance && result.staleAdvance === false && result.backwards && result.progress === 2 && result.finalParts === 2,
+        `投递进度没有按租约 fencing、或者往回退了：${JSON.stringify(result)}`)
       assert(result.finalStatus === 'delivered' && result.finalReply === '接管后的回复' && result.leaseCleared,
         `最终状态不对：${JSON.stringify(result)}`)
     })

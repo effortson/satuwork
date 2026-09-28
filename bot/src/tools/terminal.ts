@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createWriteStream, type WriteStream } from 'node:fs'
+import { createWriteStream, readdirSync, readFileSync, type WriteStream } from 'node:fs'
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -300,13 +300,89 @@ interface Proc {
   timers: NodeJS.Timeout[]
 }
 
-/** 杀整个进程组。只杀 shell 的话，它 fork 出去的会留下来，端口和 CPU 一起占着。 */
-function killTree(child: ChildProcess) {
+/**
+ * 杀完之后最多再等多久输出管道自己关上。过了这个点就把我们这一头的管道拆掉。
+ *
+ * 两秒：进程组里的进程吃了 SIGKILL，管道在几毫秒内就会关；还没关，说明拿着写端的
+ * 是一个逃出了进程组的后代（见 killTree），它不会再自己关了。
+ */
+const PIPE_GRACE_MS = 2_000
+
+/**
+ * 这个进程的所有后代 pid（只在 Linux 上走得通，读 /proc）。
+ *
+ * `setsid foo &` 出来的那个换了会话、也换了进程组，`kill(-pgid)` 够不着它；但在 shell
+ * 还活着的时候，它的 ppid 还指着这条链，顺着 ppid 找得到。shell 已经退了的话它被过继
+ * 给了 init，这条路也找不回来——那种情况只能靠下面拆管道保证调用返回。
+ */
+function descendantsOf(root: number): number[] {
+  if (process.platform !== 'linux') return []
+  const children = new Map<number, number[]>()
   try {
-    process.kill(-child.pid!, 'SIGKILL')
+    for (const name of readdirSync('/proc')) {
+      if (!/^\d+$/.test(name)) continue
+      try {
+        // stat 的第二格是带括号的进程名，里面可以有空格和括号，从最后一个 `)` 往后切。
+        const raw = readFileSync(`/proc/${name}/stat`, 'utf8')
+        const ppid = Number(raw.slice(raw.lastIndexOf(')') + 2).split(' ')[1])
+        const list = children.get(ppid) ?? []
+        list.push(Number(name))
+        children.set(ppid, list)
+      } catch {
+        /* 进程在读的这一瞬间没了 */
+      }
+    }
+  } catch {
+    return []
+  }
+  const out: number[] = []
+  const queue = [root]
+  while (queue.length) {
+    for (const pid of children.get(queue.shift()!) ?? []) {
+      out.push(pid)
+      queue.push(pid)
+    }
+  }
+  return out
+}
+
+/**
+ * 杀整个进程组。只杀 shell 的话，它 fork 出去的会留下来，端口和 CPU 一起占着。
+ *
+ * **杀完还要保证 `close` 一定会来。** 前台那次调用、后台的 finish 都挂在 `close` 上，
+ * 而 `close` 要等 stdout/stderr 两条管道都关——管道的写端是会被继承的。模型写一句
+ * `setsid some-server &`，那个后代换了会话，`kill(-pgid)` 杀不到它，它手里攥着管道，
+ * `close` 永远不来：超时、停止按钮都停不下这次调用，这一轮一直挂着、isRunning 一直是真。
+ * 所以进程本身退出（`exit`）之后再等一小会儿，管道还开着就把我们这一头拆掉——
+ * 拆掉之后 Node 照常发 `close`，带的还是真实的退出码和信号。
+ */
+function killTree(child: ChildProcess) {
+  const pid = child.pid
+  if (pid) {
+    for (const d of descendantsOf(pid)) {
+      try {
+        process.kill(d, 'SIGKILL')
+      } catch {
+        /* 已经没了 */
+      }
+    }
+  }
+  try {
+    process.kill(-pid!, 'SIGKILL')
   } catch {
     child.kill('SIGKILL')
   }
+  const release = () => {
+    const t = setTimeout(() => {
+      child.stdout?.destroy()
+      child.stderr?.destroy()
+    }, PIPE_GRACE_MS)
+    t.unref?.()
+    child.once('close', () => clearTimeout(t))
+  }
+  // shell 可能早就退了（`foo &` 之后 bash 马上结束，只剩后代攥着管道）：那时 exit 不会再来。
+  if (child.exitCode !== null || child.signalCode !== null) release()
+  else child.once('exit', release)
 }
 
 function lastLines(text: string, n: number): string {
