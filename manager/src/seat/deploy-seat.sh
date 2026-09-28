@@ -167,15 +167,49 @@ ensure_chrome
 
 step 4 "铺席位目录"
 mkdir -p /usr/local/bin /etc/systemd/system
+
+# ── 家目录底下的东西，root 一律不亲手碰 ─────────────────────────────────
+# $HOME_DIR 往下每一层都归席位用户，**他能随时把任何一层换成符号链接**。而这个脚本是
+# root：从前那句 `chown "$LINUX_USER" "$WORK_DIR"` 不带 -h，是跟着链接走的——员工
+# `rm -rf ~/work && ln -s /etc ~/work`，下一次重新部署 root 就把 /etc 送给了他。同一
+# 类洞还有一串：root 往 $SEAT_DIR 里 `cat >`、`printf >`、`chmod`、`chown -R`，以及
+# `rsync --delete` 到 $SEAT_DIR/app/（app 要是指向 /etc/systemd/system，整个目录会被
+# 清空）。
+#
+# 逐条补 `[ -L ]` 堵不住：检查和使用之间有时间差，席位用户的 bot 这时候正跑着，换一个
+# 链接只要一个系统调用。所以换个思路——**家目录底下的写，全部以席位用户的身份做**。
+# 他换什么链接都只能指到他自己本来就写得动的地方，等于没换。root 只剩两件事：
+#   - $HOME_DIR 本身：它在 /home（root 的目录）底下，席位用户换不掉它，是链接就拒绝；
+#   - 修归属：只用 `chown -h`（不跟链接），递归用 `chown -hR`（GNU 默认 -P，一层链接都不跟）。
+#
+# env -i：不把这个脚本的环境（GATEWAY_API_KEY、VNC_PASSWORD……）带进席位用户的进程。
+# 要写进文件的内容一律走 stdin，不上命令行。-C /：管家的工作目录席位用户未必进得去。
+as_user() {
+  runuser -u "$LINUX_USER" -- env -i -C / PATH=/usr/local/bin:/usr/bin:/bin HOME="$HOME_DIR" "$@"
+}
+# stdin 原样写进 $1，0600。umask 077 让文件**一出生**就是 0600——先按默认 0644 建出来
+# 再 chmod，中间那一瞬谁都读得到（bot.env 里是票和 API key）。
+write_as_user() {
+  as_user sh -c 'umask 077; cat > "$1"' sh "$1"
+}
+
+if [ -L "$HOME_DIR" ]; then
+  echo "refusing: $HOME_DIR 是符号链接" >&2
+  exit 1
+fi
+mkdir -p "$HOME_DIR"
+chown -h "$LINUX_USER:$LINUX_USER" "$HOME_DIR"
+# 老版本留下的、中途失败时是 root 的目录，先把归属修回来，否则下面以席位用户建目录会
+# 被拒。-h：它们要是链接，改的是链接本身，不碰指向的东西。不存在就算了。
+chown -h "$LINUX_USER:$LINUX_USER" "$WORK_DIR" "$HOME_DIR/.satuwork" 2>/dev/null || true
+if [ -d "$SEAT_DIR" ] && [ ! -L "$SEAT_DIR" ]; then
+  chown -hR "$LINUX_USER:$LINUX_USER" "$SEAT_DIR"
+fi
 # 账号级：共享工作区。已存在就别动，里面是员工和 bot 的资料。
-mkdir -p "$HOME_DIR" "$WORK_DIR" "$HOME_DIR/.satuwork"
-chown "$LINUX_USER:$LINUX_USER" "$HOME_DIR" "$WORK_DIR" "$HOME_DIR/.satuwork"
-# 席位级：整棵子树都归这个席位，chown -R 只扫它，不扫可能很大的 work/。
-mkdir -p "$SEAT_DIR" "$SEAT_DIR/app" "$SEAT_DIR/bin" "$SEAT_DIR/chrome" "$SEAT_DIR/cache" \
+# 席位级：整棵子树都归这个席位。
+as_user mkdir -p "$WORK_DIR" "$HOME_DIR/.satuwork" \
+  "$SEAT_DIR" "$SEAT_DIR/app" "$SEAT_DIR/bin" "$SEAT_DIR/chrome" "$SEAT_DIR/cache" \
   "$SEAT_DIR/config/picom" "$SEAT_DIR/config/plank/dock1/launchers" "$SEAT_DIR/share/applications"
-# 先归属一次：后面的文件都是 root 写的，最后（step 5 之后）还会整体 chown 一遍，这里
-# 先归属是让中途失败时目录也不至于留成 root 的。
-chown -R "$LINUX_USER:$LINUX_USER" "$SEAT_DIR"
 
 install -m 755 "$SEAT_ASSETS/slim-desktop.sh" /usr/local/bin/slim-desktop.sh
 install -m 755 "$SEAT_ASSETS/satuwork-bot.sh" /usr/local/bin/satuwork-bot.sh
@@ -202,7 +236,7 @@ Environment=SEAT_DIR=$SEAT_DIR
 EnvironmentFile=-$SEAT_DIR/bot.env
 EOF_BOT_DROPIN
 
-cat > "$SEAT_DIR/desktop.env" << EOF_ENV
+write_as_user "$SEAT_DIR/desktop.env" << EOF_ENV
 DISPLAY_NUM=$DISPLAY_NUM
 DISPLAY=$DISPLAY_VAR
 RFB=$RFB
@@ -213,12 +247,13 @@ EOF_ENV
 # 口令**直接写文件**，不再经 `x11vnc -storepasswd <口令> <文件>`：那样口令挂在命令行上，
 # 这台机器上任何用户 `ps` 一下都看得见（虽然只有一瞬）。x11vnc 的 -storepasswd 没有
 # 从 stdin 读的口子（只给文件名时它走 getpass 找 /dev/tty，runuser 下没有）。所以写成
-# 明文文件（0600、归席位用户，见下面的 chmod），slim-desktop.sh 用 -passwdfile 读它；
+# 明文文件（0600、归席位用户，见 write_as_user），slim-desktop.sh 用 -passwdfile 读它；
 # 老席位留下的 DES 文件那边照旧用 -rfbauth 认，按大小分（DES 文件恰好 8 字节）。
 # 顺带也没了「storepasswd 的正常输出混进错误里」那桩老毛病。
 # 加密强度没有变差：-rfbauth 那个 DES 文件用的是公开的固定密钥，本来就等于明文。
-(umask 077; printf '%s\n' "$VNC_PASSWORD" > "$SEAT_DIR/vnc-passwd")
-printf 'backend = "xrender";\nvsync = false;\nuse-damage = false;\n' > "$SEAT_DIR/config/picom/picom.conf"
+# printf 是内建命令，口令不会出现在任何进程的命令行上。
+printf '%s\n' "$VNC_PASSWORD" | write_as_user "$SEAT_DIR/vnc-passwd"
+printf 'backend = "xrender";\nvsync = false;\nuse-damage = false;\n' | write_as_user "$SEAT_DIR/config/picom/picom.conf"
 
 step 5 "拷贝 Bot 程序"
 if [ ! -f "$BOT_EXTRACT/bin/satuwork.mjs" ]; then
@@ -228,21 +263,22 @@ fi
 
 # 每个席位还是各自一份 app：cordis.yml 里的监听端口是逐席位 sed 出来的，共享一份
 # 目录就没法让两个席位听不同的口。版本也因此能逐席位钉死。
-if command -v rsync >/dev/null 2>&1; then
-  rsync -a --delete "$BOT_EXTRACT/" "$SEAT_DIR/app/"
-else
-  rm -rf "$SEAT_DIR/app"
-  mkdir -p "$SEAT_DIR/app"
-  cp -a "$BOT_EXTRACT/." "$SEAT_DIR/app/"
-fi
-printf '%s\n' "$BOT_VERSION" > "$SEAT_DIR/app/VERSION"
+#
+# **root 读、席位用户写**：root 把发布包打成 tar 流，席位用户在自己的 app/ 里解开。
+# 不再是 root 的 `rsync --delete` 往一个席位用户换得掉的路径里写（见 step 4 开头）。
+# 也不指望席位用户读得动管家的 releases 目录——那是 root 的。
+# 先整个删掉再解，效果等于原来的 --delete：上一版多出来的文件不会留下。
+as_user rm -rf "$SEAT_DIR/app"
+as_user mkdir -p "$SEAT_DIR/app"
+tar -C "$BOT_EXTRACT" -cf - . | as_user tar -C "$SEAT_DIR/app" -xpf -
+printf '%s\n' "$BOT_VERSION" | as_user sh -c 'cat > "$1"' sh "$SEAT_DIR/app/VERSION"
 if [ -f "$SEAT_DIR/app/cordis.yml" ]; then
   # bot 只听 127.0.0.1：对外那一跳由管家反代，席位端口不再需要暴露到网络上。
-  sed -i -E "s/^([[:space:]]*host:).*/\1 127.0.0.1/" "$SEAT_DIR/app/cordis.yml"
-  sed -i -E "s/^([[:space:]]*port:)[[:space:]]*[0-9]+/\1 $BOT_PORT/" "$SEAT_DIR/app/cordis.yml"
+  as_user sed -i -E "s/^([[:space:]]*host:).*/\1 127.0.0.1/" "$SEAT_DIR/app/cordis.yml"
+  as_user sed -i -E "s/^([[:space:]]*port:)[[:space:]]*[0-9]+/\1 $BOT_PORT/" "$SEAT_DIR/app/cordis.yml"
 fi
 
-cat > "$SEAT_DIR/bot.env" << EOF_ENV
+write_as_user "$SEAT_DIR/bot.env" << EOF_ENV
 GATEWAY_URL=$GATEWAY_URL
 GATEWAY_TOKEN=$GATEWAY_TOKEN
 GATEWAY_API_KEY=$GATEWAY_API_KEY
@@ -266,8 +302,9 @@ GDK_BACKEND=x11
 HOME=$HOME_DIR
 EOF_ENV
 
-chown -R "$LINUX_USER:$LINUX_USER" "$SEAT_DIR"
-chmod 600 "$SEAT_DIR/desktop.env" "$SEAT_DIR/vnc-passwd" "$SEAT_DIR/bot.env"
+# 文件本来就是席位用户建的，不用再 chown。chmod 补的是「文件早就在」的情况：
+# `cat >` 截断重写不改已有文件的权限位，老席位的 bot.env 可能是 0644。
+as_user chmod 600 "$SEAT_DIR/desktop.env" "$SEAT_DIR/vnc-passwd" "$SEAT_DIR/bot.env"
 
 step 6 "启动桌面与 Bot"
 systemctl daemon-reload

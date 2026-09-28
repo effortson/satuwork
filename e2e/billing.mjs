@@ -357,6 +357,85 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
       assert(again.amount === 0 && again.unpriced === true, `撤掉兜底之后该退回 unpriced：${JSON.stringify(again)}`)
     })
 
+    await test('只有半边价的模型：不按四分之一收，收 0 并标 unpriced；兜底补上缺的那侧才收钱', async () => {
+      /**
+       * 这条盯的是又一条**安静漏钱**的路，而且比「四项全 0」那条更难发现：模型只填了
+       * `cost.input`（自定义供应商那张表单有四个价格框，只填第一个是最自然的用法），
+       * 收口条件从前是「两侧都是 0 才不计价」，于是这一颗算「有价」——输出 token 乘的是
+       * 那个 0，一分钱不收。输出通常是输入的 3–5 倍，等于只收了四分之一。
+       *
+       * 真正要命的是它**不响**：`unpriced` 是 false，统计屏不喊、模型表不标、余额闸
+       * 照判，整条链上没有一处看得出少收了钱（docs/billing.md §3.3）。
+       *
+       * 所以这里钉两件事：缺一侧 = 不算有价（收 0 并喊出来，**不是**只收 input 那一半），
+       * 以及兜底逐字段把缺的那一侧补上之后，钱按「目录的 input + 兜底的 output」精确收到。
+       */
+      const created = await req(base, 'POST', '/platform/providers', {
+        token: owner,
+        body: {
+          id: 'halfprice-llm', name: 'Half Price LLM', baseUrl: upstream.url, api: 'anthropic-messages',
+          // **只填 input**：这就是那张表单只填了第一个框的形状。
+          models: [{ id: 'half-model', name: 'Half Model', contextWindow: 65536, maxTokens: 4096, reasoning: false, input: ['text'], cost: { input: 4 } }],
+        },
+      })
+      assert(created.status === 201, `建供应商 ${created.status} ${created.text}`)
+      const cred = await req(base, 'POST', '/platform/credentials', { token: owner, body: { provider: 'halfprice-llm', secret: 'half-key' } })
+      assert(cred.status === 201, `配密钥 ${cred.status} ${cred.text}`)
+
+      const askHalf = async () => {
+        const before = (await charges(orgA)).length
+        const r = await req(base, 'POST', '/v1/messages', {
+          token: tokenA,
+          body: { model: 'halfprice-llm/half-model', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }] },
+        })
+        assert(r.status === 200, `messages ${r.status} ${r.text.slice(0, 200)}`)
+        await settled(orgA, before + 1)
+        return (await charges(orgA))[0]
+      }
+
+      /**
+       * 一、没配兜底：收 0 且标 unpriced。
+       *
+       * 那个 0 是「不知道」，不是「免费」——**也不是**「只收了 input 那一半」。旧口径下
+       * 这一次会收 100k×4 + 900k×4 + 40k×4 + 50k×0 = $4.16（缓存两项回落到 input），
+       * 一分钱告警都不响；断言把这个数也钉住，免得哪天又悄悄变回去。
+       */
+      const zero = await askHalf()
+      assert(zero.subject === 'halfprice-llm/half-model', `拿错行了：${JSON.stringify(zero)}`)
+      assert(zero.unpriced === true, `缺一侧该算「不知道」并喊出来：${JSON.stringify(zero)}`)
+      assert(zero.amount === 0, `缺一侧还在收钱（旧口径会收 4160000 微元，只有真实的四分之一）：${zero.amount}`)
+      // 单价快照也得是空的：统计屏靠「unpriced 且快照为空」把「没单价」和「没拿到用量」分开。
+      assert(Object.keys(zero.unitPrice).length === 0, `快照该是空的，否则会被报成「没拿到用量」：${JSON.stringify(zero.unitPrice)}`)
+
+      /**
+       * 二、配上兜底：缺的那一侧（output / 缓存两项）由兜底补，**有的那一侧仍旧用目录价**。
+       *
+       *   input 目录的 4（不是兜底的 10）、output 兜底的 20、缓存读 1、缓存写 12.5
+       *   100k×4 + 900k×1 + 40k×12.5 + 50k×20 = 0.40 + 0.90 + 0.50 + 1.00 = $2.80
+       *
+       * 兜底价特意和目录价取了不同的 input，这样「input 是谁给的」能被这个数字分辨出来：
+       * 整份顶掉的话会收到 $3.40。
+       */
+      const put = await req(base, 'PUT', '/platform/settings', { token: owner, body: { defaultModelRate: RATE } })
+      assert(put.status === 200, `settings ${put.status} ${put.text}`)
+      const paid = await askHalf()
+      assert(paid.unpriced === false, `兜底补齐之后不该再标 unpriced：${JSON.stringify(paid)}`)
+      assert(paid.amount === 2_800_000, `应当是 2800000 微元（目录 input 4 + 兜底 output 20），拿到 ${paid.amount}`)
+      assert(
+        paid.unitPrice.input === 4 && paid.unitPrice.output === RATE.output,
+        `input 该留在目录价上、output 该是兜底给的：${JSON.stringify(paid.unitPrice)}`,
+      )
+
+      // 三、撤掉兜底，退回第一步——这一刀得是撤得掉的。
+      const off = await req(base, 'PUT', '/platform/settings', {
+        token: owner,
+        body: { defaultModelRate: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+      })
+      assert(off.status === 200, `撤兜底 ${off.status} ${off.text}`)
+      const again = await askHalf()
+      assert(again.amount === 0 && again.unpriced === true, `撤掉兜底之后该退回 unpriced：${JSON.stringify(again)}`)
+    })
+
     await test('改倍率不追溯改动已经落账的金额', async () => {
       // 快照**所有**已经落账的行，不是只看最新那一条：改价不追溯是对整段历史的承诺。
       const rows = await charges(orgA)

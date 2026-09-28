@@ -119,11 +119,26 @@ export async function issueInvite(db: Db, user: Account, createdBy: string, ttl:
   return { token, expiresAt: now + ttl }
 }
 
+/**
+ * 登录成功之后记一笔 lastSeenAt，**顺带确认这一刻账号还是验口令时那个样子**。
+ *
+ * `account` 是登录一开始读出来的那一行，中间隔着一次 scrypt（几十毫秒）。以前这里拿它的
+ * status 整行写回去：管理员恰好在这几十毫秒里停用了这个人，这一句就把 active 写回去了——
+ * 账号复活、席位检查绕过，签出来的票 iat 还在 tokenRevokedAt 之后，是张好票。
+ *
+ * 现在不写 status，只在「还是 active、口令和作废点都没被动过」时写 lastSeenAt；对不上就
+ * 当登录失败，不签票。invited 本来就进不了登录（auth.ts 先拦了），这里也不再替它翻成 active。
+ */
 export async function noteLogin(db: Db, account: Account): Promise<Account> {
-  return await db.updateAccount(account.id, {
-    lastSeenAt: Date.now(),
-    status: account.status === 'invited' ? 'active' : account.status,
-  })
+  const next = await db.updateAccountIf(
+    account.id,
+    { lastSeenAt: Date.now() },
+    { status: ['active'], passwordHash: account.passwordHash, tokenRevokedAt: account.tokenRevokedAt },
+  )
+  if (next) return next
+  const cur = await db.account(account.id)
+  if (cur?.status === 'disabled') throw new HttpError(403, '这个账号已被停用，请联系管理员')
+  throw new HttpError(401, '邮箱或口令不对')
 }
 
 export function statusOf(v: unknown): AccountStatus {
@@ -277,12 +292,27 @@ export function requireBootstrapMachine(req: Req) {
   }
 }
 
-export async function requireMachine(req: Req, db: Db): Promise<Machine> {
+/**
+ * 凭机器票 `smt_` 认出是哪台机器。
+ *
+ * **默认不认墓碑**（`removedAt` 已立）。`machineByToken` 故意把墓碑也查出来——心跳要靠
+ * 它把「你被移除了」送下去——但这不等于墓碑的票还能干别的：平台移除一台疑似被攻破
+ * 的机器之后，它的票在墓碑躺着的那段时间（等回执，或者等 TTL 扫掉）里要是还能报会话
+ * 索引、报守卫事件、拉发布包，就等于「移除」只在界面上生效。所以这里一律 403
+ * `machine_removed`：肯定式的「我认识你，你已经被移除了」，和 401「不认识」分开。
+ *
+ * 只有收信那两条要 `allowRemoved`：心跳（回 `removed: true`）和收尾回执
+ * （`/internal/machines/:id/removed`）。它们都只对墓碑做「告诉它 / 删掉它」这一件事。
+ */
+export async function requireMachine(req: Req, db: Db, opts: { allowRemoved?: boolean } = {}): Promise<Machine> {
   const token = bearer(req)
   if (!token) throw new HttpError(401, '无效的机器凭证')
   const machine = await db.machineByToken(token)
   if (!machine || !machine.token || !timingSafeToken(token, machine.token)) {
     throw new HttpError(401, '无效的机器凭证')
+  }
+  if (machine.removedAt && !opts.allowRemoved) {
+    throw new HttpError(403, '这台机器已在平台上移除', { code: 'machine_removed' })
   }
   return machine
 }

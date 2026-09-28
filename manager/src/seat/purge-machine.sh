@@ -13,7 +13,7 @@
 # 默认只删 satuwork 自己放上去的东西：管家、席位单元、席位私有目录、发布包缓存。
 # 三样「装机时顺带装上、但不只 satuwork 在用」的东西要单独点头：
 #
-#   --accounts   删席位 Linux 账号，连 /home/<user>/work 一起
+#   --accounts   删席位 Linux 账号（只认 sw-<12 hex>，见「清点」），连 /home/<user>/work 一起
 #                work/ 是**人的资料**，不是这个席位的运行态——remove-seat.sh 一直刻意不碰它
 #   --packages   apt purge 桌面栈和浏览器
 #   --node       apt purge nodejs 和 nodesource 源；这台机器上别的东西很可能也在用 Node
@@ -50,7 +50,9 @@ Restores a Satuwork seat machine to its pre-install state. Run as root.
   -n, --dry-run    Print every step without touching anything
   -y, --yes        Skip the confirmation prompt (required when piped)
       --accounts   Also delete the seat Linux accounts AND their home
-                   directories, including /home/<user>/work (people's files)
+                   directories, including /home/<user>/work (people's files).
+                   Only accounts named sw-<12 hex> with home /home/<name>;
+                   anything else is listed as skipped and left alone
       --packages   Also apt purge the desktop stack and the browser
       --node       Also apt purge nodejs and the NodeSource apt source
       --all        --accounts --packages --node
@@ -99,11 +101,37 @@ if [ "${SATUWORK_PURGE_REEXEC:-}" = 1 ]; then
 fi
 
 # ── 清点 ──────────────────────────────────────────────────────────────
-# 席位从四个地方找，取并集。**任何一处都可能是残缺的**：seats.json 可能已经被删了，
-# 单元可能已经 disable 了，席位目录可能被手工删过。少认出一个席位的后果是留下一个
+# **形状先于来源。** 席位账号和席位号都是 Gateway 按固定式子算出来的
+# （gateway/src/deploy.ts 的 linuxUserOf / seatIdOf）：
+#
+#   账号    sw-<sha256(accountId) 前 12 hex>
+#   席位号  <账号>-<sha256(botId) 前 12 hex>
+#
+# 这里**只认这两种形状**，别的一律不碰。以前的认法是「/home 下谁有 ~/.satuwork 谁就是
+# 席位账号」——可 ~/.satuwork 也是 bot 本地跑时的默认家目录（bot/src/home.ts），一个
+# 在自己账号下跑过 bot 的运维，/home/alice/.satuwork/sessions 就被当成了席位目录 rm -rf，
+# 加 --accounts 时连 alice 这个人都会被 pkill + deluser --remove-home。脚本是 root 跑的。
+#
+# 老机器上可能还有 `bot-xxxxxxxx` 形状的旧账号（改成 sw- 之前按 (account, bot) 建的）。
+# 它们**也不在这里删**：那个前缀不够特别，认错一个的代价是删掉一个人。要清就手工清。
+SEAT_USER_RE='^sw-[0-9a-f]{12}$'
+SEAT_ID_RE='^sw-[0-9a-f]{12}-[0-9a-f]{12}$'
+
+# 被拒掉的候选，最后原样报出来：**跳过要跳得响**，不然人会以为那台机器已经清干净了。
+SKIPPED=""
+skip() {
+  SKIPPED="$SKIPPED$1"$'\n'
+}
+
+# 席位号的候选从三个地方找，取并集。**任何一处都可能是残缺的**：seats.json 可能已经被删
+# 了，单元可能已经 disable 了，席位目录可能被手工删过。少认出一个席位的后果是留下一个
 # 还在跑的 x11vnc 占着端口，而下一次装机时那正是最难查的一种故障。
-seat_ids() {
-  local d b
+#
+# 前两处是管家自己写的（名册、它建的单元和 drop-in）。第三处是磁盘，**只看席位账号的家**：
+# /home/sw-<12hex>/.satuwork 下面、名字又恰好以这个账号开头的目录。别人家里的 .satuwork
+# 从来不进这张单子。
+seat_id_candidates() {
+  local d b u
   if [ -f "$ETC_DIR/seats.json" ]; then
     sed -n 's/.*"seatId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ETC_DIR/seats.json" || true
   fi
@@ -114,37 +142,72 @@ seat_ids() {
     b="${d##*/}"; b="${b%.service.d}"
     printf '%s\n' "${b#*@}"
   done
-  for d in /home/*/.satuwork/*; do
+  for d in /home/sw-*/.satuwork/sw-*; do
     [ -d "$d" ] || continue
-    printf '%s\n' "${d##*/}"
+    u="${d%/.satuwork/*}"; u="${u##*/}"
+    b="${d##*/}"
+    # 目录名得是「这个账号自己的」席位号：/home/sw-A/.satuwork/sw-B-… 不认。
+    case "$b" in "$u"-*) printf '%s\n' "$b" ;; esac
   done
 }
 
-# 席位账号同理：磁盘上还在的 .satuwork 目录，加上 seats.json 里记着的 seatDir。
-seat_users() {
+# 账号的候选：名册里记着的 linuxUser、每个席位号的前缀（账号就是它），加上 /home 下
+# 本身就是席位形状、且有 .satuwork 的家目录。
+seat_user_candidates() {
   local d u
+  if [ -f "$ETC_DIR/seats.json" ]; then
+    sed -n 's/.*"linuxUser"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ETC_DIR/seats.json" || true
+  fi
+  for u in $SEATS; do
+    printf '%s\n' "${u%-*}"
+  done
   for d in /home/*/.satuwork; do
     [ -d "$d" ] || continue
     u="${d%/.satuwork}"
     printf '%s\n' "${u##*/}"
   done
-  if [ -f "$ETC_DIR/seats.json" ]; then
-    sed -n 's#.*"seatDir"[[:space:]]*:[[:space:]]*"/home/\([^/"]*\)/\.satuwork/.*#\1#p' "$ETC_DIR/seats.json" || true
-  fi
 }
 
-# 形状过一遍再往下走：下面这些值会变成 rm -rf 和 deluser 的参数，而脚本是以 root 跑的。
-# 和 deploy-seat.sh / remove-seat.sh 里那两段 case 一个理由，代价近乎零。
-SEATS="$(seat_ids | grep -E '^[A-Za-z0-9_-]+$' | sort -u || true)"
-USERS="$(seat_users | grep -E '^[A-Za-z0-9_-]+$' | grep -vx root | sort -u || true)"
+# 过形状：认的留下，不认的记进 SKIPPED。下面这些值会变成 rm -rf、pkill -u 和 deluser 的
+# 参数，而脚本是以 root 跑的。
+SEATS=""
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  if printf '%s\n' "$c" | grep -Eq "$SEAT_ID_RE"; then
+    SEATS="$SEATS$c"$'\n'
+  else
+    skip "seat id '$c' (not of the form sw-<12hex>-<12hex>)"
+  fi
+done < <(seat_id_candidates | sort -u)
+SEATS="$(printf '%s' "$SEATS" | sort -u)"
+
+USERS=""
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  if ! printf '%s\n' "$c" | grep -Eq "$SEAT_USER_RE"; then
+    skip "account '$c' (not of the form sw-<12hex>; /home/$c/.satuwork is left alone)"
+    continue
+  fi
+  # 形状对了还要**家也对**：席位账号是 deploy-seat.sh 用 adduser 建的，家一定是 /home/<名>。
+  # 对不上说明这个名字不是我们建的（或者被人改过），deluser --remove-home 会删到别处去。
+  if id "$c" >/dev/null 2>&1; then
+    home="$(getent passwd "$c" | cut -d: -f6)"
+    if [ "$home" != "/home/$c" ]; then
+      skip "account '$c' (home is '$home', not /home/$c)"
+      continue
+    fi
+  fi
+  USERS="$USERS$c"$'\n'
+done < <(seat_user_candidates | sort -u)
+USERS="$(printf '%s' "$USERS" | sort -u)"
 
 seat_dir_of() {
-  # 席位目录只认 /home/<user>/.satuwork/<seatId> 这一种形状，别的一律不删。
+  # 席位目录只有一个可能的位置：/home/<席位号的账号前缀>/.satuwork/<席位号>。
+  # 不再 glob /home/*——那正是把别人家当成席位的来路。
   local seat="$1" d
-  for d in /home/*/.satuwork/"$seat"; do
-    [ -d "$d" ] || continue
-    printf '%s\n' "$d"
-  done
+  d="/home/${seat%-*}/.satuwork/$seat"
+  [ -d "$d" ] && printf '%s\n' "$d"
+  return 0
 }
 
 DESKTOP_PKGS="xvfb dbus-x11 x11-xserver-utils xfwm4 thunar xfce4-terminal plank picom hsetroot x11vnc novnc python3-websockify google-chrome-stable chromium chromium-browser"
@@ -164,6 +227,10 @@ if [ "$DO_ACCOUNTS" = 1 ]; then
   echo "  accounts:  DELETE $(echo ${USERS:-none}) with their home dirs, INCLUDING work/"
 else
   echo "  accounts:  keep $(echo ${USERS:-none}) (pass --accounts to delete them and their work/)"
+fi
+if [ -n "$SKIPPED" ]; then
+  echo "  skipped:   not recognised as Satuwork seats, will NOT be touched:"
+  printf '%s' "$SKIPPED" | sed 's/^/               /'
 fi
 if [ "$DO_PACKAGES" = 1 ]; then
   echo "  packages:  apt purge the desktop stack and the browser, then autoremove"

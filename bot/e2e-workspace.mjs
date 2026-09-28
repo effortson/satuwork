@@ -321,4 +321,43 @@ out.paging = {
   }
 }
 
+// ── 12. 本地模式：悬空的符号链接 ────────────────────────────────────
+/**
+ * 本地 Bot（SATUWORK_RUNTIME_KIND=local）没有专用系统用户兜底，resolve 会逐段拒绝
+ * 符号链接。这里钉的是**悬空**的那种：链接指向一个还不存在的外部文件（仓库里提交的
+ * `cfg -> ~/Library/LaunchAgents/x.plist`）。existsSync 跟着链接走、说它不存在，
+ * 检查要是据此提前收手，write_file 就会顺着链接在工作区外面新建出那个文件。
+ */
+{
+  const prevKind = process.env.SATUWORK_RUNTIME_KIND
+  process.env.SATUWORK_RUNTIME_KIND = 'local'
+  const outside = mkdtempSync(join(tmpdir(), 'satu-dangle-'))
+  mkdirSync(join(root, 'dangle'), { recursive: true })
+  symlinkSync(join(outside, 'x.plist'), join(root, 'dangle/cfg'))
+  symlinkSync(join(outside, '还没有的目录'), join(root, 'dangle/dir'))
+  // 先问 resolve：后面那几次写一旦漏过去，链接就不再悬空，这两条也就测不出东西了。
+  const resolveFile = throws(() => ws.resolve('dangle/cfg'))
+  const resolveThrough = throws(() => ws.resolve('dangle/dir/a.txt'))
+  const patched = await call('patch', { path: 'dangle/cfg', old_string: 'a', new_string: 'b' })
+  const wroteFile = await call('write_file', { path: 'dangle/cfg', content: 'evil' })
+  const wroteThrough = await call('write_file', { path: 'dangle/dir/a.txt', content: 'evil' })
+  mkdirSync(join(root, 'uploads/sess-dangle'), { recursive: true })
+  symlinkSync(join(outside, 'up.txt'), join(root, 'uploads/sess-dangle/up.txt'))
+  const up = await ws.saveUpload('sess-dangle', 'up.txt', streamOf('x')).catch(() => undefined)
+  out.dangling = {
+    resolve拒绝悬空链接: resolveFile,
+    resolve拒绝穿过悬空链接: resolveThrough,
+    写悬空链接被拒: /越界/.test(wroteFile.text || ''),
+    外面没被写出文件: !existsSync(join(outside, 'x.plist')),
+    穿过悬空目录链接被拒: /越界/.test(wroteThrough.text || ''),
+    外面没被建出目录: !existsSync(join(outside, '还没有的目录')),
+    改悬空链接被拒: /越界/.test(patched.text || ''),
+    正常新文件照写: !throws(() => ws.resolve('dangle/新文件.txt')),
+    上传不顺着悬空链接写: Boolean(up) && up.path !== 'uploads/sess-dangle/up.txt' && !existsSync(join(outside, 'up.txt')),
+  }
+  if (prevKind === undefined) delete process.env.SATUWORK_RUNTIME_KIND
+  else process.env.SATUWORK_RUNTIME_KIND = prevKind
+  rmSync(outside, { recursive: true, force: true })
+}
+
 console.log('__RESULT__' + JSON.stringify(out))

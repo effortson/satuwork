@@ -96,7 +96,14 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
      */
     if (needsRehash(account.passwordHash)) {
       try {
-        account = await db.updateAccount(account.id, { passwordHash: await hashPassword(password) })
+        // 只在哈希还是刚验过的那一个时换：验口令这几十毫秒里管理员重置了的话，这一句不能
+        // 拿旧口令的新哈希把重置盖掉。没换成就原样往下走，noteLogin 会发现口令变了。
+        const upgraded = await db.updateAccountIf(
+          account.id,
+          { passwordHash: await hashPassword(password) },
+          { passwordHash: account.passwordHash },
+        )
+        if (upgraded) account = upgraded
       } catch (e) {
         console.error(`satuwork-gateway: 口令哈希升级失败 ${account.id}：${(e as Error).message}`)
       }
@@ -141,22 +148,40 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
     const name = strField(body, 'name', false)
     const passwordHash = await hashPassword(password)
     const now = Date.now()
-    const next = await db.updateAccount(found.user.id, {
-      name: name || found.user.name,
-      passwordHash,
-      status: 'active',
-      passwordChangedAt: now,
-      lastSeenAt: now,
-      /**
-       * 口令换了，之前签出去的票一律作废（同 /me/password）。
-       *
-       * 这条链接也是管理员「重置口令」发出去的那一条（routes/company.ts 的 reset）：重置之后、
-       * 被接受之前签出的票，不能带着旧口令的效力再活七天。下面这张新票签在同一刻之后，iat 不早
-       * 于这个时间（按秒比），不会把自己也作废掉。
-       */
-      tokenRevokedAt: now,
+    /**
+     * 领邀请和改账号放进一个事务，**两步都带条件**：
+     *
+     * - 邀请先领走（`takeInvite` 删到才算）：同一条链接两个人同时接受，只有一个领得到，
+     *   不会「两个都成功、后写的口令说了算」；上面 inviteeOf 之后被重发 / 重置换掉的旧链接
+     *   也领不到。
+     * - 账号只在没被停用时改：哈希那几十毫秒里管理员停用了他，这一句不能把 active 写回去。
+     *
+     * 任何一步落空就整体回滚，回一句和「链接不可用」一样的话。
+     */
+    const next = await db.tx(async () => {
+      const invite = await db.takeInvite(found.id, now)
+      if (!invite || invite.userId !== found.user.id) return undefined
+      return db.updateAccountIf(
+        found.user.id,
+        {
+          ...(name ? { name } : {}),
+          passwordHash,
+          status: 'active',
+          passwordChangedAt: now,
+          lastSeenAt: now,
+          /**
+           * 口令换了，之前签出去的票一律作废（同 /me/password）。
+           *
+           * 这条链接也是管理员「重置口令」发出去的那一条（routes/company.ts 的 reset）：重置之后、
+           * 被接受之前签出的票，不能带着旧口令的效力再活七天。下面这张新票签在同一刻之后，iat 不早
+           * 于这个时间（按秒比），不会把自己也作废掉。
+           */
+          tokenRevokedAt: now,
+        },
+        { status: ['invited', 'active'] },
+      )
     })
-    await db.deleteInvite(found.id)
+    if (!next) throw new HttpError(400, '这条邀请链接不可用')
     json(res, 200, { token: issue(keys, next), account: publicAccount(next) })
   })
 
@@ -236,11 +261,15 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
     if (next === current) throw new HttpError(400, '新口令不能和当前口令相同')
     const passwordHash = await hashPassword(next)
     const now = Date.now()
-    const nextAccount = await db.updateAccount(account.id, {
-      passwordHash,
-      passwordChangedAt: now,
-      tokenRevokedAt: now,
-    })
+    // 比较并交换：只在口令和作废点还是刚验过的那一份时改。验旧口令、算新哈希这段时间里
+    // 管理员重置了（换了哈希、挪了 tokenRevokedAt），重置得赢——拿着旧票旧口令的人不能
+    // 借这一步换回一个自己知道的口令和一张新票。
+    const nextAccount = await db.updateAccountIf(
+      account.id,
+      { passwordHash, passwordChangedAt: now, tokenRevokedAt: now },
+      { status: ['active'], passwordHash: account.passwordHash, tokenRevokedAt: account.tokenRevokedAt },
+    )
+    if (!nextAccount) throw new HttpError(401, '登录已失效，请重新登录')
     await db.audit({
       companyId: account.companyId ?? 'platform',
       accountId: account.id,
