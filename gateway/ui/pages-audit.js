@@ -702,7 +702,8 @@ function addReleaseForm(kind) {
 }
 
 function companyDetailPage() {
-  const c = state.org
+  // 同 machineDetailPage：id 对不上就是上一家公司的，宁可画「载入中」。
+  const c = state.org && state.org.id === companyIdOfPath(state.path) ? state.org : null
   if (!c) {
     return `<div class="gw-page"><div class="gw-page-inner">${flashes()}<p style="color: var(--muted-foreground);">${t('载入中…')}</p></div></div>`
   }

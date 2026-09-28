@@ -74,7 +74,8 @@ function userSecretRow(label, kind, value) {
 }
 
 function userDetailPage() {
-  const d = state.userDetail
+  // 同 machineDetailPage：载到的要跟地址里的 id 对得上，不然就是上一个账号的。
+  const d = state.userDetail?.account?.id === userIdOfPath(state.path) ? state.userDetail : null
   if (!d || !d.account) {
     return `<div class="gw-page"><div class="gw-page-inner">${flashes()}<p style="color: var(--muted-foreground);">${t('载入中…')}</p></div></div>`
   }

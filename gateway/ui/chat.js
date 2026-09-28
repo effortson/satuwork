@@ -1460,6 +1460,19 @@ function retryChatSession(botId, attempt) {
 }
 
 /**
+ * 把一份收起来的草稿摆回输入框。
+ *
+ * `mentions` 平时不在草稿里（点名只管「这一条消息」，换页就清，见 loadChatPage）；只有
+ * 「附件没传上去」退回来的那份才带着——那是人已经按过发送的一整条，@ 丢了就是另一条话。
+ */
+function applyDraft(kept) {
+  state.chatDraft = kept.text
+  state.chatFiles = kept.files
+  if (Array.isArray(kept.mentions) && kept.mentions.length) state.chatMentions = kept.mentions
+  paintChatFiles()
+}
+
+/**
  * 把当前会话换成这个 Bot 的。
  *
  * **换 Bot 的第一件事是清场，不是去拿新会话。** 原先是等新会话拿回来、比对出
@@ -1487,8 +1500,7 @@ async function ensureChatSession(botId, attempt = 0) {
     resetWorkspaceTree()
     state.chatEvents = warm.events
     state.chatReplaying = false
-    state.chatDraft = kept.text
-    state.chatFiles = kept.files
+    applyDraft(kept)
     chatAbort = warm.ac
     chatStreamId = warm.sessionId
     // 先把手上有的画出来——流垫的那一轮已经在桶里，切过去是**这一帧**就有东西看。
@@ -1517,8 +1529,7 @@ async function ensureChatSession(botId, attempt = 0) {
     state.chatEvents = botStreamOf(botId).events
     state.chatStatus = ''
     state.chatReplaying = false
-    state.chatDraft = kept.text
-    state.chatFiles = kept.files
+    applyDraft(kept)
   }
   try {
     const data = await api('GET', '/runtime/bots/' + encodeURIComponent(botId) + '/session')
@@ -7247,25 +7258,36 @@ function paintMentionPick() {
     : `<div class="sw-pick-empty">${esc(t('没有可用的连接。去「连接器」装一个再连上。'))}</div>`
 }
 
+/**
+ * 正在传的附件，按 Bot 记：`botId → 那一条的附件`。
+ *
+ * **不再放在 state.chatFiles 里，也不再是一个全局开关。** 以前传的那几秒里附件还挂在
+ * chatFiles 上、`state.chatUploading` 是一颗全局的闩：人这时切到 B，换 Bot 那一步把
+ * 「在路上的」附件当成 A 的草稿收了起来，传完又因为人不在 A 而没清——切回 A，同一批
+ * 附件又摆在输入框上，再按一次就传两遍、发两遍；而在 B 上按发送，撞上那颗全局闩，什么
+ * 也不发生。现在一按发送，附件就从草稿里挪到这儿：草稿里只剩没发的，闩只闩这一个 Bot。
+ */
+const chatUploads = new Map()
+
 function paintChatFiles() {
   const box = document.getElementById('chat-files')
   if (!box) return
+  const flying = chatUploads.get(chatBotIdNow()) || []
   const files = state.chatFiles || []
-  box.hidden = !files.length
-  const busy = Boolean(state.chatUploading)
-  box.innerHTML = files
-    .map(
-      (f, i) =>
-        `<span class="sw-file">` +
-        `<span>${esc(f.name)}</span><small>${esc(fileSize(f.size))}</small>` +
-        // 传的时候不给「移除」：那一下删得掉列表项，删不掉已经在路上的请求。
-        (busy
-          ? ''
-          : `<button type="button" class="sw-file-x" data-act="chat-file-drop" data-i="${i}" ` +
-            `aria-label="${esc(t('移除'))} ${esc(f.name)}">${ICON_X}</button>`) +
-        `</span>`,
-    )
-    .join('')
+  box.hidden = !flying.length && !files.length
+  const chip = (f, x) => `<span class="sw-file"><span>${esc(f.name)}</span><small>${esc(fileSize(f.size))}</small>${x}</span>`
+  // 在路上的不给「移除」：那一下删得掉列表项，删不掉已经在路上的请求。
+  box.innerHTML =
+    flying.map((f) => chip(f, '')).join('') +
+    files
+      .map((f, i) =>
+        chip(
+          f,
+          `<button type="button" class="sw-file-x" data-act="chat-file-drop" data-i="${i}" ` +
+            `aria-label="${esc(t('移除'))} ${esc(f.name)}">${ICON_X}</button>`,
+        ),
+      )
+      .join('')
 }
 
 function fileSize(bytes) {
@@ -7448,6 +7470,37 @@ function flushHeldSend(botId) {
   void sendChat()
 }
 
+/**
+ * 没发成的那一条还给**它自己那个 Bot** 的草稿。
+ *
+ * 人还停在那个 Bot 上就还进输入框；已经切走了就写进 chatDrafts，切回去时 applyDraft
+ * 摆出来。等的这几秒里人可能又打了几个字、又挑了附件：都留着，退回来的排在前面。
+ */
+function returnDraft(botId, text, files, mentions) {
+  const here = chatBotIdNow() === botId
+  const cur = here
+    ? { text: state.chatDraft || '', files: state.chatFiles || [], mentions: state.chatMentions || [] }
+    : state.chatDrafts[botId] || { text: '', files: [] }
+  const curText = String(cur.text || '')
+  const curMentions = Array.isArray(cur.mentions) ? cur.mentions : []
+  const next = {
+    text: curText.trim() ? text + '\n' + curText : text,
+    files: files.concat(cur.files || []),
+    mentions: mentions.concat(curMentions.filter((m) => !mentions.some((x) => x.id === m.id))),
+  }
+  if (!here) {
+    state.chatDrafts[botId] = next
+    return
+  }
+  state.chatDraft = next.text
+  state.chatFiles = next.files
+  state.chatMentions = next.mentions
+  const input = document.getElementById('chat-input')
+  if (input) input.value = next.text
+  paintChatFiles()
+  paintChatMentions()
+}
+
 async function sendChat() {
   const text = (state.chatDraft || '').trim()
   const files = state.chatFiles || []
@@ -7456,14 +7509,18 @@ async function sendChat() {
   /**
    * 发这条消息时人停在哪个 Bot 上。
    *
-   * 下面几处失败回滚（还草稿、还点名）和 `state.chatFiles = []` 写的都是**当前**那个
-   * Bot 的输入框，而中间隔着一段传附件的时间，几秒起步。人这会儿切到了别的 Bot 的话：
-   * 传失败会把 A 的正文和 @ 塞进 B 的输入框，传成功那句清空又会把 B 刚选好的附件抹掉。
-   * 所以每一处回写前都要问一句「人还在不在 A」——loadDesktopRuntime 那道门是同一个理由。
+   * 中间隔着一段传附件的时间，几秒起步，人这会儿可能已经切到了别的 Bot。所以草稿在
+   * 按下的那一刻就整条从 A 的输入框里拿走（附件挪进 chatUploads），失败时经 returnDraft
+   * 还给 A——不管人这会儿停在谁身上。
    */
   const forBot = chatBotIdNow()
-  const stillHere = () => chatBotIdNow() === forBot
-  if ((!text && !files.length && !mentions.length) || state.chatUploading) return
+  if (!text && !files.length && !mentions.length) return
+  if (chatUploads.has(forBot)) {
+    // 同一个 Bot 上一条的附件还在传：这一条抢在前面发，顺序就反了。别的 Bot 不受影响。
+    flash('err', t('上一条的附件还在传，传完再发这一条', 'Still uploading the previous attachments — send this once they finish'))
+    render()
+    return
+  }
   /**
    * 斜杠命令**在这里拦下，绝不往 /messages 走**。
    *
@@ -7550,6 +7607,7 @@ async function sendChat() {
 
   state.chatDraft = ''
   state.chatMentions = []
+  state.chatFiles = []
   closeMentionPick()
   paintChatMentions()
   const input = document.getElementById('chat-input')
@@ -7561,30 +7619,22 @@ async function sendChat() {
   // 附件先落地，再发消息。反过来的话，模型会先读到路径、文件还没到。
   let uploaded = []
   if (files.length) {
-    state.chatUploading = true
+    chatUploads.set(forBot, files)
     paintChatFiles()
     render()
     try {
       for (const f of files) uploaded.push(await uploadChatFile(sessionId, f.file))
     } catch (err) {
       // 传失败就把草稿、附件和点名原样还回去，别让人重新选一遍文件、重新 @ 一遍。
-      state.chatUploading = false
-      if (stillHere()) {
-        state.chatDraft = text
-        state.chatMentions = mentions
-        paintChatFiles()
-        paintChatMentions()
-      }
+      chatUploads.delete(forBot)
+      returnDraft(forBot, text, files, mentions)
       flash('err', t('附件没传上去：') + err.message)
       render()
       return
     }
-    state.chatUploading = false
+    chatUploads.delete(forBot)
   }
-  if (stillHere()) {
-    state.chatFiles = []
-    paintChatFiles()
-  }
+  paintChatFiles()
 
   const images = pickImages(uploaded)
   const body = composeChatBody(uploaded, text)
@@ -7629,17 +7679,14 @@ async function sendChat() {
   } catch (err) {
     // 没发出去就把这条回显撤掉，别让屏幕上留一条其实不存在的消息。
     state.chatPending = (state.chatPending || []).filter((p) => p !== pending)
-    if (stillHere()) {
-      // 文件已经传上去了，退回来的只有草稿——附件不还，还了会传第二遍。
-      state.chatDraft = text
-      /**
-       * **点名也要还。** 只还正文的话，人按重发时这一条不带任何 `@`——而
-       * `mentionOnly` 的连接（比如个人邮箱）这一轮根本不在工具表里，Bot 会回一句
-       * 「没有可用的邮箱」，用户却以为自己点过名了。
-       */
-      state.chatMentions = mentions
-      paintChatMentions()
-    }
+    /**
+     * 文件已经传上去了，退回来的只有草稿——附件不还，还了会传第二遍。
+     *
+     * **点名也要还。** 只还正文的话，人按重发时这一条不带任何 `@`——而
+     * `mentionOnly` 的连接（比如个人邮箱）这一轮根本不在工具表里，Bot 会回一句
+     * 「没有可用的邮箱」，用户却以为自己点过名了。
+     */
+    returnDraft(forBot, text, [], mentions)
     if (uploaded.length) flash('err', t('附件已经在工作区里了，但这条消息没发出去。'))
     if (String(err.message || '').includes('实例还没上线')) state.runtimeError = '实例还没上线'
     else if (!uploaded.length) flash('err', err.message)

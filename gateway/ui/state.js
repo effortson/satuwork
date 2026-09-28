@@ -690,6 +690,18 @@ function ownBotPath(p) {
   return Boolean(state.bot && state.bot.id === id && isMyBot(state.bot))
 }
 
+/**
+ * 地址里那颗 Bot 的已载详情；对不上就是 null。
+ *
+ * Bot 详情页上的按钮（保存、删除、记忆的删 / 钉 / 推）一律从这儿取对象，**不直接读
+ * state.bot**：/bots/A 切到 /bots/B、B 还没到（或者 403 了）的那段时间里，state.bot
+ * 可能还是 A，按下去打的就是 A。
+ */
+function routeBot() {
+  const id = botIdOfPath(state.path)
+  return id && state.bot && state.bot.id === id ? state.bot : null
+}
+
 function companyIdOfPath(p) {
   if (!p.startsWith('/companies/')) return ''
   return decodeURIComponent(p.slice('/companies/'.length).split('/')[0] || '')
@@ -882,12 +894,23 @@ function joinToken() {
   return decodeURIComponent(state.path.slice('/join/'.length).split('/')[0] || '')
 }
 
-/** 导航序号：每次 go() 加一。loadPage 回来时序号已经变了，说明人又点去了别处。 */
+/** 导航序号：每次换页（go() 或前进后退）加一。loadPage 回来时序号已经变了，说明人又点去了别处。 */
 let navSeq = 0
 
 function go(href) {
   if (location.pathname !== href) history.pushState({}, '', href)
   state.path = href
+  enterPath()
+}
+
+/**
+ * 换页之后那一套：清掉上一页的提示和弹层、加载、按序号决定画不画。
+ *
+ * **go() 和浏览器的前进后退共用这一条。** popstate 以前自己写了一份 `loadPage().then(render)`：
+ * 不加序号、不清提示——连按两下后退，慢的那一页晚回来会把快的那一页盖掉，上一页的报错
+ * 也跟着带到新页面上。调用前 state.path 要已经是新地址。
+ */
+function enterPath() {
   state.error = ''
   state.notice = ''
   state.addOpen = false
@@ -900,10 +923,11 @@ function go(href) {
   state.seatReveal = false
   state.seatError = ''
   // 慢的那一页回来时人已经点到下一页去了：那次 render 会把新页面盖成旧页面的内容，
-  // 所以序号不对就不画。loadPage 自己写的共享字段（state.path 之类）由它内部各自把关，
-  // 这里只保证「不重画」这一条最小闸。
+  // 所以序号不对就不画。loadPage 自己写的共享字段由它内部各自把关（详情页那三份见
+  // data.js 的 detailSeq），这里只保证「不重画」这一条最小闸。
   const seq = ++navSeq
-  loadPage().then(() => {
+  const load = state.path.startsWith('/join/') ? loadInvite() : loadPage()
+  load.then(() => {
     if (seq === navSeq) render()
   })
 }

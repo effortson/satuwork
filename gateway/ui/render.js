@@ -371,6 +371,8 @@ function render() {
     // 输入框上下那三块（排队 dock、已选的 @ 药丸、选单）同样是空壳 + 增量填。
     paintChatQueue()
     paintChatMentions()
+    // 附件那一栏同理。漏了它，发送时那次 render 一换壳，「正在传」的附件就从眼前消失了。
+    paintChatFiles()
     paintMentionPick()
     // 命令选单也在这三块里。漏掉它的话，重绘之后 state.cmdPick 还开着、DOM 里却空了——
     // 上下键选不动（一条候选都查不到），回车穿到发送那条路上去。
