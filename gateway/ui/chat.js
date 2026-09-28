@@ -5989,7 +5989,18 @@ function mountDesktop(url, seatId) {
   document.body.appendChild(back)
   document.body.appendChild(layer)
   // src 最后给：DOM 先进树，iframe 才只加载一次。
-  layer.querySelector('.sw-deskl-frame').src = url
+  const frame = layer.querySelector('.sw-deskl-frame')
+  // 桌面壳的导航守卫只放行报过的席位机器（desktop main.rs 的 allow_seat_desktop），
+  // 先报再给 src；报失败也照给，最坏是这块屏被守卫送去系统浏览器，和以前一样。
+  const seatGate = window.__SATUWORK_SEAT_DESKTOP__
+  if (seatGate?.allow) {
+    void Promise.resolve()
+      .then(() => seatGate.allow(url))
+      .catch(() => {})
+      .then(() => {
+        if (frame.isConnected) frame.src = url
+      })
+  } else frame.src = url
   deskMounted = { seat: seatId, url }
   state.deskFull = wasFull
 }

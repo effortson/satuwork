@@ -1,0 +1,12 @@
+# 只管 workflow 里的 actions：第三方的都钉在 commit SHA 上（tag 可以被人挪），
+# 升级就靠这里每周开 PR，把 SHA 和后面的 `# vX.Y.Z` 注释一起改掉。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

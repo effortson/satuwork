@@ -83,9 +83,12 @@ services:
   # 配置在 ./searxng/core-config/settings.yml，那里开了 json 输出——不开就没有
   # API，web-tools.ts 打 format=json 会拿回一坨 HTML。
   #
-  # 密钥从根目录 .env 的 SEARXNG_SECRET 来（.env 不进 git）：
-  #   echo "SEARXNG_SECRET=$(openssl rand -hex 32)" >> .env
-  # 没填的话容器会自己拒绝启动（说 secret_key is not changed），不会带着默认密钥跑。
+  # 密钥：根目录 .env 里填了 SEARXNG_SECRET 就用它（.env 不进 git）；没填就在第一次
+  # 启动时随机生成一把，存进 searxng-data 卷里的 .secret_key，之后重启一直用这把。
+  # 不给默认值——以前那个 ultrasecretkey 谁都知道，等于没有。
+  #
+  # 端口只绑 127.0.0.1，和 PG、Gateway 一样：限流器是关的，端口一对外就是个谁都能
+  # 用的搜索代理。要给别的机器用，前面自己挂反代加鉴权。
   #
   # 没有 valkey：它只在开限流器时才用得上，而这台是自己人的 API 后端，限流器是关的
   # （官方 compose 里那个 valkey 其实也没接上，镜像默认 valkey.url = false）。
@@ -96,12 +99,26 @@ services:
     image: docker.io/searxng/searxng:${SEARXNG_VERSION:-2026.9.3-a1144dda3}
     restart: unless-stopped
     environment:
-      SEARXNG_SECRET: ${SEARXNG_SECRET:-ultrasecretkey}
+      # 空串等于没填，交给下面的 entrypoint 生成。
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-}
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8888/}
+    # 包一层镜像自己的入口脚本，只多做「没密钥就生成一把存进数据卷」这一件事。
+    # `$$` 是给 compose 转义的，到容器里就是 `$`。
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -z "$${SEARXNG_SECRET:-}" ]; then
+          f=/var/cache/searxng/.secret_key
+          [ -s "$$f" ] || (umask 077 && head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$$f")
+          SEARXNG_SECRET=$$(cat "$$f")
+          export SEARXNG_SECRET
+        fi
+        exec /usr/local/searxng/entrypoint.sh "$$@"
+      - searxng-entrypoint
     ports:
-      # 和 PG 那条不一样，这个要对外：管理员在控制台里填的实例地址得打得进来。
-      # 只给本机用就把左边写成 127.0.0.1:8888。
-      - '${SEARXNG_PORT:-8888}:8080'
+      # 只绑本机，理由见上面。同一套 compose 里的 Gateway 走 http://searxng:8080，不经宿主机。
+      - '127.0.0.1:${SEARXNG_PORT:-8888}:8080'
     volumes:
       - ./searxng/core-config/:/etc/searxng/:Z
       - searxng-data:/var/cache/searxng/

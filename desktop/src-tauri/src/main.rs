@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
@@ -258,6 +258,10 @@ const LINK_SCRIPT: &str = r#"
     status: function (botId) { return window.__TAURI_INTERNALS__.invoke('local_bot_status', { botId: botId }) },
     approveDirectory: function (botId) { return window.__TAURI_INTERNALS__.invoke('approve_local_directory', { botId: botId }) }
   }
+  // 内嵌桌面挂上之前先报一声地址，导航守卫只放行报过的机器（allow_seat_desktop）。
+  window.__SATUWORK_SEAT_DESKTOP__ = {
+    allow: function (url) { return window.__TAURI_INTERNALS__.invoke('allow_seat_desktop', { url: url }) }
+  }
   if (window.__satuLinkPatched) return
   window.__satuLinkPatched = true
   function hand(raw) {
@@ -301,7 +305,8 @@ const LINK_SCRIPT: &str = r#"
  */
 fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
     // 链接脚本递过来的暗号：在界面自己的源上，路径是 OPEN_PATH。先认它，再看 scheme。
-    if url.path() == OPEN_PATH {
+    // 源不对的不认（见 open_path_allowed），当一次普通导航往下走。
+    if open_path_allowed(url, base) {
         route_open(app, base, url);
         return false;
     }
@@ -314,7 +319,9 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
         _ => return true,
     }
     // 内嵌桌面那块 iframe 也是一次 http(s) 导航，不能跟着往系统浏览器送。
-    if is_seat_desktop(url) {
+    let seats = app.state::<SeatOrigins>();
+    let allowed = seats.0.lock().map(|s| seat_desktop_allowed(url, base, &s)).unwrap_or(false);
+    if allowed {
         return true;
     }
     // 界面在自己的源上，任何 http(s) 导航都是往外走（OAuth 跳转、外链）：交给系统浏览器，
@@ -332,11 +339,10 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
  * 见 gateway/ui/chat.js 的 mountDesktop）一挂上去就被判成「往外走」：地址送进系统浏览器，
  * iframe 这边 Cancel。表现是桌面从窗口里跳到浏览器里打开，而配置上看不出任何毛病。
  *
- * **判据只认路径，不认源。** 机器的直连地址按公司各不相同、随时会加，壳子这头无从枚举
- * （它只知道 Gateway 在哪）。代价照实写：有人要是能诱导主窗口导航到
- * `http://evil.com/seats/x/vnc/`，窗口就跑出去了——但能往界面里塞进链接或脚本的人，本来
- * 就有比这省事的办法（见上面那段注释：这条回调不是页面的边界）。跑出去的那一页也拿不到
- * IPC：本地 Bot 那组命令只放给本地源（capabilities/main.json），不放给任何远端页面。
+ * **只认路径不够，还得认源。** 以前只看路径，于是 `http://evil.com/seats/x/vnc/` 也放行：
+ * 被诱导的主窗口、或者框里那页自己导航过去，窗口就跑出去了。机器的直连地址按公司各不相同、
+ * 壳子这头无从枚举，所以由界面在挂 iframe 之前把那个地址报上来（allow_seat_desktop），
+ * 这里只放行报过的源和 Gateway 自己的源，见 seat_desktop_allowed。
  *
  * 管家那一跳（`/seats/<席位>/vnc/` → `/seats/<席位>/vnc/vnc.html?…`，见 manager/src/proxy.ts）
  * 也是一次导航，所以判的是前缀而不是整条路径。
@@ -350,6 +356,52 @@ fn is_seat_desktop(url: &Url) -> bool {
     seg.next() == Some("seats")
         && seg.next().is_some_and(|s| !s.is_empty())
         && seg.next() == Some("vnc")
+}
+
+/// 界面报上来的席位机器源（`https://m001.example.com` 这种），见 allow_seat_desktop。
+#[derive(Default)]
+struct SeatOrigins(Mutex<HashSet<String>>);
+
+fn origin_key(url: &Url) -> String {
+    url.origin().ascii_serialization()
+}
+
+/**
+ * 内嵌桌面放不放行：路径是 `/seats/<席位>/vnc…`，**并且**源是 Gateway 自己的、或者界面
+ * 挂 iframe 前报过的那台机器。报名单的命令只放给本地源（capabilities/main.json），框里那页
+ * 和跑到站外的页面都调不到，所以名单上只会有界面自己拿到的桌面地址。
+ */
+fn seat_desktop_allowed(url: &Url, gateway: &Url, seats: &HashSet<String>) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && is_seat_desktop(url)
+        && (same_origin(url, gateway) || seats.contains(&origin_key(url)))
+}
+
+/**
+ * 暗号认不认：路径是 OPEN_PATH，**并且**导航发生在界面自己的源或 Gateway 的源上。
+ *
+ * 链接脚本只注入主框架，它拼出来的暗号总在界面的源上。以前只看路径，框里那页（席位的
+ * noVNC）或者随便哪个被诱导打开的站外页，导航到 `https://随便哪/__satuwork_open?u=…`
+ * 就能让系统浏览器替它打开任意地址。
+ */
+fn open_path_allowed(url: &Url, gateway: &Url) -> bool {
+    url.path() == OPEN_PATH && (is_ui_origin(url) || same_origin(url, gateway))
+}
+
+/**
+ * 界面挂内嵌桌面之前调一次：把这块屏的源记进放行名单（seat_desktop_allowed）。
+ * 只收 http(s) 的 `/seats/<席位>/vnc…` 地址，别的一律拒——名单只该装席位机器。
+ */
+#[tauri::command]
+fn allow_seat_desktop(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = Url::parse(&url).map_err(|e| format!("桌面地址解析不了：{e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || !is_seat_desktop(&parsed) {
+        return Err("不是席位桌面地址".into());
+    }
+    let state = app.state::<SeatOrigins>();
+    let mut seats = state.0.lock().map_err(|_| "放行名单锁坏了".to_string())?;
+    seats.insert(origin_key(&parsed));
+    Ok(())
 }
 
 /** 暗号里带的那个地址：同源的另开一扇应用窗口，站外的交给系统浏览器。 */
@@ -1636,10 +1688,73 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        desktop_version_supports, is_seat_desktop, is_ui_origin, runtime_older, safe_runtime_version,
-        safe_ui_segment,
+        desktop_version_supports, is_seat_desktop, is_ui_origin, open_path_allowed, origin_key,
+        runtime_older, safe_runtime_version, safe_ui_segment, seat_desktop_allowed,
     };
+    use std::collections::HashSet;
     use tauri::Url;
+
+    fn u(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
+
+    /// 外链暗号只在界面源和 Gateway 源上认（见 open_path_allowed）。
+    #[test]
+    fn open_path_only_from_ui_or_gateway_origin() {
+        let gw = u("https://gw.example.com/");
+        let yes = [
+            "satu://localhost/__satuwork_open?u=https%3A%2F%2Fa.com",
+            "http://satu.localhost/__satuwork_open?u=https%3A%2F%2Fa.com",
+            "https://gw.example.com/__satuwork_open?u=https%3A%2F%2Fa.com",
+        ];
+        for s in yes {
+            assert!(open_path_allowed(&u(s), &gw), "该认：{s}");
+        }
+        let no = [
+            "https://evil.com/__satuwork_open?u=https%3A%2F%2Fphish",
+            "https://m001.example.com/__satuwork_open?u=https%3A%2F%2Fphish",
+            // 端口、scheme 不同都不算 Gateway 的源
+            "http://gw.example.com/__satuwork_open?u=x",
+            "https://gw.example.com:8443/__satuwork_open?u=x",
+            "https://gw.example.com.evil.com/__satuwork_open?u=x",
+            // 界面源上别的路径不是暗号
+            "satu://localhost/index.html?u=x",
+        ];
+        for s in no {
+            assert!(!open_path_allowed(&u(s), &gw), "不该认：{s}");
+        }
+    }
+
+    /// 内嵌桌面只放行 Gateway 源和界面报过的机器源（见 seat_desktop_allowed）。
+    #[test]
+    fn seat_desktop_only_on_known_origins() {
+        let gw = u("https://gw.example.com/");
+        let mut seats = HashSet::new();
+        seats.insert(origin_key(&u("https://m001.example.com/seats/sw-a/vnc/")));
+        seats.insert(origin_key(&u("http://192.168.64.1:8443/seats/sw-a/vnc/")));
+        let yes = [
+            "https://m001.example.com/seats/sw-abc/vnc/",
+            "https://m001.example.com/seats/sw-abc/vnc/vnc.html?path=x",
+            "http://192.168.64.1:8443/seats/sw-abc/vnc/",
+            "https://gw.example.com/seats/sw-abc/vnc/",
+        ];
+        for s in yes {
+            assert!(seat_desktop_allowed(&u(s), &gw, &seats), "该放行：{s}");
+        }
+        let no = [
+            "http://evil.com/seats/x/vnc/",
+            // 同主机换 scheme / 端口不算报过的源
+            "http://m001.example.com/seats/sw-abc/vnc/",
+            "https://m001.example.com:8443/seats/sw-abc/vnc/",
+            "http://192.168.64.1/seats/sw-abc/vnc/",
+            // 源对了路径不对
+            "https://m001.example.com/other",
+        ];
+        for s in no {
+            assert!(!seat_desktop_allowed(&u(s), &gw, &seats), "不该放行：{s}");
+        }
+        assert!(!seat_desktop_allowed(&u("https://m001.example.com/seats/a/vnc/"), &gw, &HashSet::new()));
+    }
 
     #[test]
     fn ui_origin_stays_in_the_window() {
@@ -1740,6 +1855,7 @@ fn main() {
         .manage(Startup::default())
         .manage(LocalBots::default())
         .manage(UpdateSource::default())
+        .manage(SeatOrigins::default())
         .invoke_handler(tauri::generate_handler![
             current_server,
             startup_error,
@@ -1747,7 +1863,8 @@ fn main() {
             start_local_bot,
             stop_local_bot,
             local_bot_status,
-            approve_local_directory
+            approve_local_directory,
+            allow_seat_desktop
         ])
         .setup(|app| {
             let handle = app.handle().clone();

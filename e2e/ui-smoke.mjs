@@ -100,7 +100,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // Tauri 把自注册的协议判为本地源，capability 不需要 remote 就够得着。这里以前带着
       // `remote.urls: http://*:* / https://*:*`——那是窗口直接装 Gateway 页面时代留下的，如今等于
       // 把 start_local_bot 放给主窗口里导航到的任何一个 http(s) 页面（导航守卫对
-      // `/seats/<x>/vnc/` 这种路径是不看源的）。
+      // `/seats/<x>/vnc/` 这种路径当年是不看源的，现在只认界面报过的机器）。
       const dir = join(root, 'desktop/src-tauri/capabilities')
       const main = JSON.parse(readFileSync(join(dir, 'main.json'), 'utf8'))
       assert(main.windows?.includes('main'), `主窗口没有挂上这份 capability：${JSON.stringify(main.windows)}`)
