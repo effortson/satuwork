@@ -46,9 +46,16 @@ function blobApiUrl(): string {
 function isBlobUrl(url: string): boolean {
   try {
     const u = new URL(url)
-    if (u.hostname.endsWith('.blob.vercel-storage.com')) return true
-    const api = blobApiUrl()
-    return Boolean(api && url.startsWith(api))
+    if (u.protocol === 'https:' && u.hostname.endsWith('.blob.vercel-storage.com')) return true
+    const raw = blobApiUrl()
+    if (!raw) return false
+    // **按解析后的 origin 比，不按字符串前缀。** `https://blob.example` 是
+    // `https://blob.example.evil.com/x.tgz` 的前缀——登记一个这样的远端包，拉的时候
+    // 就把 BLOB_READ_WRITE_TOKEN 送到别人家去了。路径前缀也按段比，/api 不认 /api-x。
+    const api = new URL(raw)
+    if (u.origin !== api.origin) return false
+    const base = api.pathname.replace(/\/$/, '')
+    return !base || u.pathname === base || u.pathname.startsWith(base + '/')
   } catch {
     return false
   }
