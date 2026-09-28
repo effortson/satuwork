@@ -21,6 +21,12 @@ Xvfb 1280x800 + xfwm4 + picom + plank + x11vnc + websockify，外加一个 Chrom
 --remote-debugging-port=${CDP} --remote-debugging-address=127.0.0.1 --user-data-dir=$SEAT_DIR/chrome
 ```
 
+CDP 没有鉴权，「只听 127.0.0.1」挡不住同一台机器上别的员工账号。挡它的是部署时 root
+装的一条 nft 规则（[seat-cdp-guard.sh](../manager/src/seat/seat-cdp-guard.sh)）：发往这个口
+的连接，socket 不属于这个席位账号的一律 RST；Bot 连之前也会核对口上的监听者是不是自己
+这个账号的（[cdp.ts](../bot/src/browser/cdp.ts) 的 `listenerIsOurs`），防别人抢先占口。
+X 那一侧同理：Xvfb 不再 `-ac`，只认席位目录里那份 0600 的 `Xauthority`。
+
 **CDP 端口早就分好、早就在监听了**（[gateway-runtime.md](./gateway-runtime.md) §槽位，
 `9222+N`），今天没有任何一个调用方。而 `$SEAT_DIR/chrome` 是员工自己在 noVNC 桌面里
 用的那份 profile——他在里面登过公司的 ERP、供应商后台、某个没有 API 的国产 SaaS，

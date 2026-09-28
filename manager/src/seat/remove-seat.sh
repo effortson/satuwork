@@ -115,6 +115,17 @@ kill_escapees
 # 进 ESCAPEE_DISPLAYS 的——杀完再问就问不出来了。
 drop_x_locks ${ESCAPEE_DISPLAYS:-}
 
+# CDP 口的那条 nft 规则（deploy-seat.sh 装的，见 seat-cdp-guard.sh）。排在进程都杀完
+# 之后：Chrome 还活着的时候拆掉它，同机别的账号就又连得上那个浏览器了。按席位认领，
+# 不看端口——desktop.env 这会儿可能已经没了。拆不掉只是留一张表：口下次分出去时，新
+# 席位装规则会把它原子地顶掉，不影响槽位回收，所以不算失败。
+# 用和本脚本同一包里的那份（管家是 `bash <包>/remove-seat.sh` 调的），不找 /usr/local/bin
+# ——老版本部署的机器上那里还没有它。
+GUARD="$(dirname "$0")/seat-cdp-guard.sh"
+if [ -f "$GUARD" ]; then
+  bash "$GUARD" del "$SEAT_ID" || warn "CDP 口的防火墙规则没拆掉"
+fi
+
 rm -rf "/etc/systemd/system/$BOT_UNIT.d" "/etc/systemd/system/$DESKTOP_UNIT.d" ||
   warn "drop-in 没删干净"
 systemctl daemon-reload >/dev/null 2>&1 || warn "daemon-reload 失败"

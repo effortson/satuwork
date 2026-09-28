@@ -101,7 +101,33 @@ eval "$(dbus-launch --sh-syntax)"
 printf '%s\n' "${DBUS_SESSION_BUS_PID:-}" > "$DBUS_PIDFILE"
 trap 'kill "${DBUS_SESSION_BUS_PID:-}" 2>/dev/null || true; rm -f "$DBUS_PIDFILE"' EXIT
 trap 'exit 143' TERM
-Xvfb "$DISPLAY" -screen 0 1280x800x24 -ac +extension GLX +render -noreset &
+# ── X 的门禁：每个席位一张**自己的** MIT-MAGIC-COOKIE ────────────────────
+# 这里以前是 `Xvfb ... -ac`，也就是**关掉 X 的访问控制**。/tmp/.X11-unix/X<N> 谁都连得
+# 上，于是同一台机器上另一个员工（另一个 Linux 账号，他的 Bot 能跑 shell）一句
+# `DISPLAY=:11 xdotool type ...` 就能往这块屏的终端里打字，`import -window root` 就能
+# 截走屏上的一切——包括员工登录着的网页。
+#
+# 现在 Xvfb 只认 -auth 那份文件里的 cookie。文件在席位目录里、0600、归席位账号，别的
+# 账号读不到也就连不上。每次起屏换一张新的：上一轮泄出去的 cookie（如果有）跟着作废。
+# XAUTHORITY 一 export，下面起的每一样（xdpyinfo、x11vnc、xfwm4、picom、plank、从 dock
+# 点开的 Chrome/终端）都自己会去读它；Bot 那边 bot.env 里有同一条（deploy-seat.sh），
+# 它拉起的 Chrome 和 terminal 里的 X 工具走的是那一份。
+export XAUTHORITY="$SEAT_DIR/Xauthority"
+# -c / -l 是 xauth 自己的锁。上一轮在写文件的半路被杀掉会留下它们，而 xauth 见锁就等、
+# 等不到就失败——set -e 下整块屏起不来。这一刻本席位还没有别人在写这份文件，直接删。
+rm -f "$XAUTHORITY" "$XAUTHORITY-c" "$XAUTHORITY-l"
+# 再补一条「任意主机名」（family ffff）的同一张 cookie：`xauth add :N` 记的是**此刻的**
+# 主机名，客户端按主机名去查。开机时 cloud-init 改主机名、或者人手工改过的话，之后起的
+# 客户端就查不到，表现是 Chrome / 终端点了没反应——没有 cookie 可比没有 -ac 更难查。
+(
+  umask 077
+  # 先建空文件：不然 xauth 每次都往 journal 里吼一句「file does not exist」。
+  : > "$XAUTHORITY"
+  xauth -q -f "$XAUTHORITY" add "$DISPLAY" . "$(mcookie)"
+  xauth -q -f "$XAUTHORITY" nlist "$DISPLAY" | sed -e 's/^..../ffff/' | xauth -q -f "$XAUTHORITY" nmerge -
+)
+chmod 600 "$XAUTHORITY"
+Xvfb "$DISPLAY" -screen 0 1280x800x24 -auth "$XAUTHORITY" +extension GLX +render -noreset &
 XVFB_PID=$!
 ready=0
 for _ in $(seq 1 50); do
@@ -115,10 +141,12 @@ PASSFILE="$SEAT_DIR/vnc-passwd"
 # 发的口令固定 16 位），x11vnc 用 -passwdfile 读；老席位留下的是 `x11vnc -storepasswd`
 # 生成的 DES 文件，恰好 8 字节、没有换行，还得用 -rfbauth。这样管家升级之后没重铺过
 # 的席位重启照样能连——这份脚本是全机共享的，不能只认新格式。
+# -auth 显式给一遍：x11vnc 自己也认 XAUTHORITY，但它有一套「猜 display 管理器的 cookie
+# 在哪」的逻辑，写明了就不用赌它猜对。
 if [ "$(stat -c %s "$PASSFILE" 2>/dev/null || echo 0)" = 8 ]; then
-  x11vnc -display "$DISPLAY" -localhost -rfbauth "$PASSFILE" -shared -forever -noxdamage -rfbport "$RFB" &
+  x11vnc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -rfbauth "$PASSFILE" -shared -forever -noxdamage -rfbport "$RFB" &
 else
-  x11vnc -display "$DISPLAY" -localhost -passwdfile "$PASSFILE" -shared -forever -noxdamage -rfbport "$RFB" &
+  x11vnc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -passwdfile "$PASSFILE" -shared -forever -noxdamage -rfbport "$RFB" &
 fi
 NOVNC_WEB="/usr/share/novnc"
 # 只听回环：对外那一跳由管家反代，并且要过 Gateway 签的桌面票。绑 0.0.0.0 会让
@@ -168,6 +196,12 @@ if [ -n "$CHROME_BIN" ]; then
   # 「开个标签页」发给第一个实例然后自己退出——于是 B 席位要看的网页开在了 A 的屏上。
   WRAP="$SEAT_DIR/bin/seat-chrome"
   echo "#!/bin/bash" > "$WRAP"
+  # XAUTHORITY 写死进 wrapper：谁拉起它（dock、Bot、员工在终端里敲）都连得上这块屏，
+  # 不依赖调用方的环境里正好带着那一条。
+  #
+  # CDP 口本身没有鉴权，「只听 127.0.0.1」挡不住同机的别的账号。挡它的是 root 装的
+  # 那条按 uid 放行的规则（seat-cdp-guard.sh），不在这里。
+  echo "export XAUTHORITY=\"$XAUTHORITY\"" >> "$WRAP"
   echo "exec $CHROME_BIN --password-store=basic --no-first-run --no-default-browser-check --remote-debugging-port=${CDP} --remote-debugging-address=127.0.0.1 --user-data-dir=$SEAT_DIR/chrome \"\$@\"" >> "$WRAP"
   chmod +x "$WRAP"
   # 图标跟着**实际装的是哪个**走。写死 google-chrome 的话，装 Chromium 的机器上
