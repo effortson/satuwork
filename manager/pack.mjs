@@ -115,6 +115,8 @@ try {
     'slim-desktop.sh',
     'satuwork-bot.sh',
     'seat-cdp-guard.sh',
+    // deploy-seat.sh / remove-seat.sh 都 source 它（「这个进程是哪个席位的」）。少了它两条脚本当场失败。
+    'seat-owner.sh',
     'manager-confirm.sh',
     'purge-machine.sh',
   ]) {

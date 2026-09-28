@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tryRun } from './run.ts'
+import { claimSeat, hostLookup, pidFacts } from './seat-owner.ts'
 import { seat, type SeatRecord } from './seats.ts'
 
 /**
@@ -61,7 +62,7 @@ interface PortInfo {
   cmd?: string
   /**
    * 占着这个口的是不是**本席位**（不是「本席位那个用户」——见 portOf）。
-   * false = 撞上了别人的东西，undefined = 认不出来（进程刚退、environ 读不到）。
+   * false = 撞上了别人的东西，undefined = 认不出来（进程刚退、/proc 读不到）。
    */
   mine?: boolean
 }
@@ -127,9 +128,9 @@ async function unitOf(unit: string): Promise<UnitInfo> {
  * **`mine` 按席位判，不按 Linux 用户名判。** 一个员工的所有席位共用一个账号，按用户
  * 名判的话，同账号下另一块屏的 x11vnc 蹲在这个口上会被认成「是本席位的」——而那正
  * 是这份报告要抓的头号故障（连得上、口令永远不对）。判据和 processesOf 里的 mine
- * 是同一条：席位目录逐席位唯一，用户名不是。
+ * 是同一条，见 ownsSeat。
  */
-async function portOf(port: number, what: string, seatDir: string): Promise<PortInfo> {
+async function portOf(port: number, what: string, row: SeatRecord): Promise<PortInfo> {
   const out = await tryRun('ss', ['-ltnp'])
   const line = out.split('\n').find((l) => new RegExp(`[:.]${port}\\b`).test(l))
   if (!line) return { port, what, listening: false }
@@ -144,7 +145,7 @@ async function portOf(port: number, what: string, seatDir: string): Promise<Port
     pid,
     user: user || '?',
     cmd: scrub(rest.join(' ')).slice(0, 200),
-    mine: ownsSeat(pid, seatDir),
+    mine: ownsSeat(pid, row),
   }
 }
 
@@ -167,7 +168,7 @@ async function processesOf(row: SeatRecord): Promise<ProcInfo[]> {
     new RegExp(`websockify .*:${row.novncPort}\\b`),
     new RegExp(`slim-desktop\\.sh ${row.seatId}\\b`),
     new RegExp(`satuwork.*${row.seatId}\\b`),
-    // plank / xfwm4 的命令行里没有席位标识，只能先全收，再靠 /proc/<pid>/environ 认领
+    // plank / xfwm4 的命令行里没有席位标识，只能先全收，再按 cgroup / 会话认领
     // （见下面的 mine 标记）。**只按命令行匹配会骗人**：同机另一个席位的 plank 也叫
     // `plank --name dock1`，于是「本席位的 dock 进程没了」会被它顶掉，报告说一切正常。
     /\bplank\b/,
@@ -181,7 +182,7 @@ async function processesOf(row: SeatRecord): Promise<ProcInfo[]> {
     const row2: ProcInfo = m
       ? { pid: m[1], user: m[2], started: m[3], cmd: scrub(m[4]).slice(0, 200) }
       : { pid: '?', user: '?', started: '?', cmd: scrub(line).slice(0, 200) }
-    row2.mine = ownsSeat(row2.pid, row.seatDir)
+    row2.mine = ownsSeat(row2.pid, row)
     rows.push(row2)
   }
   return rows.slice(0, 40)
@@ -190,18 +191,16 @@ async function processesOf(row: SeatRecord): Promise<ProcInfo[]> {
 /**
  * 这个进程属不属于本席位。
  *
- * 靠 `/proc/<pid>/environ` 里的 XDG_CONFIG_HOME——席位目录是逐席位唯一的，而命令行
- * 不是（同机另一个席位的 plank 长得一模一样）。管家以 root 跑，读得到别人的 environ。
+ * 判据和端口回收是同一条（seat-owner.ts）：cgroup / logind 会话加 uid，**不看进程自报的
+ * 环境变量**。以前看 environ 里的 XDG_CONFIG_HOME——那是进程自己写的，同机别的账号带一条
+ * 伪造的环境起个 plank，这份报告就会说「本席位的 dock 在跑」。
+ *
+ * undefined = 认不出来（进程刚退、/proc 读不到）。
  */
-function ownsSeat(pid: string, seatDir: string): boolean | undefined {
-  if (!/^\d+$/.test(pid)) return undefined
-  try {
-    const env = readFileSync(`/proc/${pid}/environ`, 'utf8')
-    if (!env) return undefined
-    return env.split('\0').some((kv) => kv.startsWith('XDG_CONFIG_HOME=') && kv.includes(seatDir))
-  } catch {
-    return undefined
-  }
+function ownsSeat(pid: string, row: SeatRecord): boolean | undefined {
+  const facts = pidFacts(pid)
+  if (!facts) return undefined
+  return claimSeat(facts, hostLookup(row.linuxUser)) === row.seatId
 }
 
 function fileOf(path: string, note?: string): FileInfo {
@@ -252,9 +251,9 @@ export async function diagnose(seatId: string, lines = 40): Promise<DiagResult> 
   const [units, ports, processes, browser, journalRaw] = await Promise.all([
     Promise.all([unitOf(desktopUnit), unitOf(botUnit)]),
     Promise.all([
-      portOf(rfb, 'x11vnc', row.seatDir),
-      portOf(row.novncPort, 'websockify', row.seatDir),
-      portOf(row.botPort, 'bot', row.seatDir),
+      portOf(rfb, 'x11vnc', row),
+      portOf(row.novncPort, 'websockify', row),
+      portOf(row.botPort, 'bot', row),
     ]),
     processesOf(row),
     browserOf(),

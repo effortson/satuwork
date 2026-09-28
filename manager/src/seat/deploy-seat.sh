@@ -425,20 +425,18 @@ enable_and_restart() {
 enable_and_restart "slim-desktop@$SEAT_ID.service"
 enable_and_restart "satuwork-bot@$SEAT_ID.service"
 
-# 占着这个 pid 的是哪个席位。认不出来回空。
+# 占着这个 pid 的是哪个席位（seat_of_pid）。认不出来回空。
 #
 # **不能只比 Linux 用户名。** 一个员工的所有席位共用一个账号，于是同账号下另一块屏
 # 的 x11vnc 蹲在这个口上时，`owner = $LINUX_USER` 是成立的——这道自证会放它过去，
 # 而界面上「打开桌面」进的是另一块屏，口令永远对不上。正是这道自证要拦的那种事。
 #
-# XDG_RUNTIME_DIR 是 /tmp/xdg-runtime-$SEAT_ID，逐席位唯一，slim-desktop.sh 在起任何
-# 东西之前就 export 了；bot.env 里也有同一条。三个监听进程都带着自己那一份。
-# `|| true` 写在命令替换**里面**——和下面 verify_seat_listener 里 pid= 那处同一个理由：
-# errtrace 会让 ERR trap 在子 shell 里先响，写在外面拦不住那一声。进程刚退时
-# /proc/<pid>/environ 就没了，而那恰恰是这个函数最常被调用的时刻。
-seat_of_pid() {
-  printf '%s' "$(tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n 's|^XDG_RUNTIME_DIR=/tmp/xdg-runtime-||p' | head -1 || true)"
-}
+# **也不能按进程自报的 XDG_RUNTIME_DIR 认**（以前就是这么认的）：环境变量谁都能伪造一条，
+# 别的账号起个 `nc -l` 带上这个席位的名字，就能蹲在口上骗过这道自证。判据改成 cgroup /
+# logind 会话加 uid，写在 seat-owner.sh（和管家的 src/seat-owner.ts 同一套）。
+# 它自己兜住了所有失败：进程刚退、/proc 读不到时回空，而那恰恰是这个函数最常被调用的时刻。
+# shellcheck source=seat-owner.sh
+. "$SEAT_ASSETS/seat-owner.sh"
 
 # ── 部署完自证：那两个端口上蹲着的得是**这个席位的**进程 ────────────────
 # 「起完就算成功」在这里是不够的。机器上完全可能有另一套 VNC 占着 6081——这台就
@@ -449,7 +447,7 @@ seat_of_pid() {
 # 输口令永远 password check failed，重新部署多少次都一样。这种失败不会自己浮出来，
 # 只能靠人去 ps 里翻。所以在这里就断掉，把原因写进部署错误里报回 Gateway。
 verify_seat_listener() {
-  local port="$1" what="$2" pid owner holder
+  local port="$1" what="$2" pid owner holder p mine
   # 等 30 秒。**新建席位第一次起屏比想象的慢**：adduser、daemon-reload、Xvfb 就绪、
   # 上一轮残留的端口释放，叠起来轻松过十秒——等太短会把「慢」判成「坏」。
   for _ in $(seq 1 120); do
@@ -460,15 +458,28 @@ verify_seat_listener() {
     # （`|| true` 要写在命令替换**里面**：errtrace 会让 ERR trap 在子 shell 里先响，
     # 写在外面的 `|| pid=` 拦不住那一声。顺带也挡掉 head -1 提前关管道给 grep 的
     # SIGPIPE——那同样是非零。）
-    pid=$(ss -ltnp 2>/dev/null | grep -E ":${port}\b" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)
+    #
+    # **这个口上的每一个监听都得是这个席位的**，不是「第一行是」就算：别的账号先占了
+    # 127.0.0.1:5910，x11vnc -localhost 退而只绑 [::1]:5910——ss 里两行，谁排前面说不准，
+    # 而 websockify 连的是 127.0.0.1 那一个。所以挨个认，挑出第一个不是本席位的当 pid。
+    pid=""
+    mine=0
+    for p in $(ss -ltnpH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true); do
+      if [ "$(seat_of_pid "$p" || true)" = "$SEAT_ID" ]; then
+        mine=1
+        continue
+      fi
+      pid="$p"
+      break
+    done
+    if [ -z "$pid" ] && [ "$mine" = 1 ]; then return 0; fi
     if [ -n "${pid:-}" ]; then
-      # 同上：pid 是上一条 ss 抓的，进程完全可能在这一瞬已经退了，读 environ、跑 ps
+      # 同上：pid 是上一条 ss 抓的，进程完全可能在这一瞬已经退了，读 /proc、跑 ps
       # 于是都可能空手而归。那时该继续等，而不是让整个部署崩掉。
       holder=$(seat_of_pid "$pid" || true)
-      [ "$holder" = "$SEAT_ID" ] && return 0
       owner=$(ps -o user:32= -p "$pid" 2>/dev/null | tr -d ' ' || true)
-      # 认不出席位、用户又对得上：多半是本席位刚 fork 出来还没走到 export，也可能
-      # 进程已经退了。**不据此放行**（放行就是上面那个「进的是另一块屏」的洞），
+      # 认不出席位、用户又对得上：多半是进程已经退了，也可能是这个员工在别处（比如 ssh
+      # 会话里）起的东西。**不据此放行**（放行就是上面那个「进的是另一块屏」的洞），
       # 继续绕圈；真起不来的话，下面那句超时告警会兜住，且不算部署失败。
       if [ -z "$holder" ] && [ "$owner" = "$LINUX_USER" ]; then
         sleep 0.25

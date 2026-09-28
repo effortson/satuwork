@@ -148,10 +148,15 @@ if [ "$(stat -c %s "$PASSFILE" 2>/dev/null || echo 0)" = 8 ]; then
 else
   x11vnc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -passwdfile "$PASSFILE" -shared -forever -noxdamage -rfbport "$RFB" &
 fi
+X11VNC_PID=$!
 NOVNC_WEB="/usr/share/novnc"
 # 只听回环：对外那一跳由管家反代，并且要过 Gateway 签的桌面票。绑 0.0.0.0 会让
 # 6081+N 直接暴露在网上，票就白验了——停用的员工照样能连上桌面。
-websockify --web="$NOVNC_WEB" --heartbeat=30 "127.0.0.1:${HTTP}" "localhost:${RFB}" &
+# 后端写死 127.0.0.1，不写 localhost：别的账号先占了 127.0.0.1:RFB 时，x11vnc -localhost 只绑得上
+# [::1]，照样「起来了」；而 localhost 先解析到 127.0.0.1，websockify 就把人送进了别人的 VNC。
+# 下面 require_listener 核的正是 127.0.0.1 这一个口。
+websockify --web="$NOVNC_WEB" --heartbeat=30 "127.0.0.1:${HTTP}" "127.0.0.1:${RFB}" &
+WEBSOCKIFY_PID=$!
 
 # ── 起来了没有？没起来就必须**失败**，不能接着往下跑 ──────────────────
 # 这两条以前是 `&` 扔到后台就不管了。于是端口被别人占着时：websockify 起不来、直接
@@ -162,20 +167,57 @@ websockify --web="$NOVNC_WEB" --heartbeat=30 "127.0.0.1:${HTTP}" "localhost:${RF
 #
 # 「装作成功」是这里最贵的失败方式：它把一个一眼能看出的端口冲突，变成了一个要翻
 # ps 才找得到的谜。宁可让这个单元 failed——那至少会写进 lastError 报回 Gateway。
+#
+# **「口上有人在听」不够，得是我们刚起的那一个在听。** 以前只看 `ss -ltn` 里有没有这个口：
+# 同机别的账号抢先蹲在 5910+N 上，这一步照样通过，界面上报 ready，而「打开桌面」连进的是
+# 它那一套。所以按 pid 认：监听这个口的必须是上面 `&` 起的那个进程（或者它的子孙——防着哪天
+# 换成一个会 fork 的包装）。以席位用户跑的 `ss -ltnp` 只给得出**自己 uid** 的 pid，别的账号
+# 的监听在这里看不到 pid，也就认不成我们的。父子关系是内核记的，谁也伪造不了。
+#
+# **看的是 IPv4 回环那一个口**（以及通配地址：蹲在 0.0.0.0 上的同样接得到 127.0.0.1 的连接）。
+# 光看端口号会被这样骗过去：别的账号先占 127.0.0.1:5910，x11vnc -localhost 退而只绑 [::1]:5910，
+# 端口上「有我们的进程」——而 websockify 和管家连的都是 127.0.0.1。所以这几个地址上的监听
+# 必须**全是**我们的，而且至少有一个；[::1] 上的不算数。
+is_ours() {
+  local pid="$1" want="$2" _
+  for _ in 1 2 3 4 5 6 7 8; do
+    [ "$pid" = "$want" ] && return 0
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+    case "$pid" in
+      '' | 0 | 1) return 1 ;;
+    esac
+  done
+  return 1
+}
+listener_is_ours() {
+  local port="$1" want="$2" local_addr rest pid seen=0
+  while read -r _ _ _ local_addr _ rest; do
+    case "$local_addr" in
+      "127.0.0.1:$port" | "0.0.0.0:$port" | "*:$port" | "[::]:$port" | "[::ffff:127.0.0.1]:$port") ;;
+      *) continue ;;
+    esac
+    pid=$(printf '%s' "$rest" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)
+    [ -n "$pid" ] && is_ours "$pid" "$want" || return 1
+    seen=1
+  done < <(ss -ltnpH "sport = :$port" 2>/dev/null || true)
+  [ "$seen" = 1 ]
+}
 require_listener() {
-  local port="$1" what="$2"
+  local port="$1" what="$2" want="$3"
   for _ in $(seq 1 40); do
-    if ss -ltn 2>/dev/null | grep -qE ":${port}\b"; then return 0; fi
+    if listener_is_ours "$port" "$want"; then return 0; fi
+    # 我们的进程已经退了（多半是口被占着、bind 失败）：不必再等满十秒。
+    kill -0 "$want" 2>/dev/null || break
     sleep 0.25
   done
-  echo "$what 没能在端口 $port 上起来。" >&2
-  echo "端口很可能被这台机器上别的进程占着（另一套 VNC / 上一轮的残留）：" >&2
+  echo "$what 没能在端口 $port 上起来（或者在听这个口的不是本席位刚起的那个进程 $want）。" >&2
+  echo "端口很可能被这台机器上别的进程占着（另一套 VNC / 上一轮的残留 / 别的账号）：" >&2
   ss -ltnp 2>/dev/null | grep -E ":${port}\b" >&2 || true
   ps -eo pid,user,cmd 2>/dev/null | grep -E "x11vnc|websockify" | grep -v grep >&2 || true
   exit 1
 }
-require_listener "$RFB" x11vnc
-require_listener "$HTTP" websockify
+require_listener "$RFB" x11vnc "$X11VNC_PID"
+require_listener "$HTTP" websockify "$WEBSOCKIFY_PID"
 xfwm4 --compositor=off &
 for _ in $(seq 1 40); do
   xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1 && break
