@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { lstatSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { completeOnce, gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../llm/gateway.ts'
@@ -303,7 +303,7 @@ export class WebSearchService extends Service {
     const base = fileNameFor(url, title, new Date()).replace(/\.md$/, ext)
     let name = base
     for (let i = 2; i < 100; i++) {
-      if (!existsSync(this.ctx.workspace.resolve(`web/${name}`))) break
+      if (!taken(this.ctx.workspace.resolve(`web/${name}`))) break
       name = base.slice(0, -ext.length) + `-${i}${ext}`
     }
     const target = this.ctx.workspace.resolve(`web/${name}`)
@@ -334,7 +334,7 @@ export class WebSearchService extends Service {
     // 路径一律过 workspace.resolve()，和 document() 同一条规矩。
     let name = base
     for (let i = 2; i < 100; i++) {
-      if (!existsSync(this.ctx.workspace.resolve(`web/${name}`))) break
+      if (!taken(this.ctx.workspace.resolve(`web/${name}`))) break
       name = base.replace(/\.md$/, `-${i}.md`)
     }
     const target = this.ctx.workspace.resolve(`web/${name}`)
@@ -349,4 +349,12 @@ export const inject = ['workspace', 'catalog', 'roster']
 
 export function apply(ctx: Context) {
   ctx.plugin(WebSearchService)
+}
+
+/**
+ * 这个名字有没有人占着。用 lstat 而不是 existsSync：后者跟着链接走，悬空的符号链接
+ * 会被当成空位，随后的 writeFile 就顺着链接写到它指的地方去了。
+ */
+function taken(path: string): boolean {
+  return lstatSync(path, { throwIfNoEntry: false }) !== undefined
 }

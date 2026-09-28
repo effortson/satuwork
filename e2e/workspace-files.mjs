@@ -134,6 +134,13 @@ export async function runWorkspaceFiles({ root, test, assert, log }) {
     assert(d.工作区还在, '删完一层把工作区根一起带走了')
   })
 
+  await test('本地模式：悬空符号链接一样不放行', () => {
+    // existsSync 跟着链接走，悬空链接会被当成「不存在」——逐段检查要是据此提前收手，
+    // write_file 就顺着它在工作区外面新建文件（比如一条指向 LaunchAgents 的 plist）。
+    const bad = Object.entries(r.dangling || {}).filter(([, v]) => v !== true).map(([k]) => k)
+    assert(r.dangling && !bad.length, `这几条不对：${bad.join('、')}（${JSON.stringify(r.dangling)}）`)
+  })
+
   await test('只有白名单里的类型允许内联', () => {
     assert(r.inline.png && r.inline.pdf, '图片和 PDF 应该能直接看')
     assert(r.inline.大写后缀也认, '大写后缀没认出来，会被当成未知格式')
