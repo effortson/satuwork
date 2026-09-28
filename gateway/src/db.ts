@@ -339,9 +339,15 @@ export class Db {
    * 两份并行的 e2e 会在同一个号上互相等一下——等的是一次 insert 的工夫，可以接受；要是
    * 哪天有一处锁里带上了慢活，那时再把 schema 名折进第二个参数。
    */
-  async lockExclusive(key: number): Promise<void> {
+  /**
+   * 带 `sub` 时锁的是「这一处 × 这一个对象」（两参数形式的 advisory lock，第二个数取
+   * `hashtext(sub)`）：同一颗 Bot 的并发写互相排队，不同 Bot 之间不必等。哈希撞了只是
+   * 两颗不相干的 Bot 偶尔排一次队，不影响对错。
+   */
+  async lockExclusive(key: number, sub?: string): Promise<void> {
     if (!this.txClient.getStore()) throw new Error('lockExclusive 必须在 db.tx 里调——事务外的锁当场就放了')
-    await this.one('select pg_advisory_xact_lock(?)', [key])
+    if (sub === undefined) await this.one('select pg_advisory_xact_lock(?)', [key])
+    else await this.one('select pg_advisory_xact_lock(?::int, hashtext(?))', [key, sub])
   }
 
   async tx<T>(fn: () => Promise<T> | T): Promise<T> {

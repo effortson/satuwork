@@ -401,6 +401,33 @@ export async function runSkills({ root, gwRoot, test, req, start, waitHttp, asse
       assert(!left.some((x) => x.id === wrote.json.skill.id), `Bot 删了，它的私有档还在：${wrote.json.skill.id}`)
     })
 
+    await test('并发写：同名只成一条，条数不超过上限', async () => {
+      /**
+       * 查重名、数条数、再插原来是三步各走各的：并发的几次都读到「没有同名」「还差一条」，
+       * 一起插进去。一颗新 Bot 上先同时写五条同名，再同时写五条不同名（上限 3）。
+       */
+      const made = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '并发工' } })
+      assert(made.status === 201, `bot ${made.status} ${made.text}`)
+      const tmp = made.json.bot.id
+      const post = (name) => req(base, 'POST', `/runtime/skills?botId=${tmp}`, { token: seatTok, body: { name, body: '正文' } })
+      try {
+        const same = await Promise.all([1, 2, 3, 4, 5].map(() => post('同一个名字')))
+        const sameOk = same.filter((r) => r.status === 201).length
+        assert(sameOk === 1, `同名并发该只成一条，实际 ${same.map((r) => r.status).join(',')}`)
+        assert(same.every((r) => r.status === 201 || r.status === 409), `其余该是 409：${same.map((r) => r.status).join(',')}`)
+
+        const many = await Promise.all([1, 2, 3, 4, 5].map((n) => post(`并发 ${n}`)))
+        const manyOk = many.filter((r) => r.status === 201).length
+        assert(manyOk === 2, `上限 3、已有 1，并发五条该只成两条，实际 ${many.map((r) => r.status).join(',')}`)
+        const mine = (await req(base, 'GET', `/runtime/catalog?botId=${encodeURIComponent(tmp)}`, { token: seatTok })).json.skills.filter(
+          (x) => x.origin === 'seat',
+        )
+        assert(mine.length === 3, `这颗 Bot 的私有档该正好 3 条，实际 ${mine.length}`)
+      } finally {
+        await req(base, 'DELETE', `/runtime/bots/${tmp}`, { token: memberTok })
+      }
+    })
+
     await test('模版上那个开关下发到席位', async () => {
       const before = await req(base, 'GET', `/runtime/catalog?botId=${botId}`, { token: seatTok })
       assert(before.json.bots[0].selfSkills === true, `默认该是开的：${JSON.stringify(before.json.bots[0].selfSkills)}`)
