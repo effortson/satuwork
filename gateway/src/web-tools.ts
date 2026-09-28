@@ -25,7 +25,7 @@ import { lookup } from 'node:dns/promises'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { isIP, type LookupFunction } from 'node:net'
-import { Readable } from 'node:stream'
+import { Readable, pipeline } from 'node:stream'
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
 
 export class WebToolError extends Error {
@@ -123,7 +123,16 @@ export function isPrivateIp(ip: string): boolean {
     if (a === 192 && b === 168) return true
     if (a === 169 && b === 254) return true
     if (a === 100 && b >= 64 && b <= 127) return true // CGNAT
-    if (a >= 224) return true // 组播与保留段
+    // 下面几段对照 IANA 的 IPv4 Special-Purpose Address Registry：都不是正常网站该在的
+    // 地方，而其中几段在云上/机房里是实打实能路由的（198.18/15 常被拿来当内网用）。
+    const c = p[2]!
+    if (a === 192 && b === 0 && c === 0) return true // 192.0.0.0/24 协议保留
+    if (a === 192 && b === 0 && c === 2) return true // TEST-NET-1
+    if (a === 192 && b === 88 && c === 99) return true // 6to4 中继（已废弃）
+    if (a === 198 && (b === 18 || b === 19)) return true // 198.18.0.0/15 基准测试
+    if (a === 198 && b === 51 && c === 100) return true // TEST-NET-2
+    if (a === 203 && b === 0 && c === 113) return true // TEST-NET-3
+    if (a >= 224) return true // 组播、240/4 保留段与 255.255.255.255
     return false
   }
   if (v === 6) {
@@ -149,19 +158,38 @@ export function isPrivateIp(ip: string): boolean {
     const zeroPrefix = a === 0 && b === 0 && c === 0 && d === 0 && e === 0
     // ::/128 与 ::1/128
     if (zeroPrefix && f === 0 && g[6] === 0 && (g[7] === 0 || g[7] === 1)) return true
-    if ((a & 0xffc0) === 0xfe80) return true // fe80::/10 链路本地
-    if ((a & 0xfe00) === 0xfc00) return true // fc00::/7 唯一本地
     /**
      * 末 32 位是一个 v4 地址的那几种前缀，按它内嵌的 v4 再判一遍：
-     * `::ffff:0:0/96`（IPv4 映射）、`::/96`（已废弃的 IPv4 兼容写法）、
-     * `64:ff9b::/96`（NAT64）。三者都会让内核把包发到那个 v4 地址上。
+     * `::ffff:0:0/96`（IPv4 映射）、`::ffff:0:0:0/96`（SIIT）、`::/96`（已废弃的 IPv4
+     * 兼容写法）、`64:ff9b::/96`（NAT64）。它们都会被翻译或路由到那个 v4 地址上。
      */
     const embedsV4 =
-      (zeroPrefix && f === 0xffff) || (zeroPrefix && f === 0) || (a === 0x64 && b === 0xff9b && c === 0 && d === 0 && e === 0 && f === 0)
-    if (embedsV4) return isPrivateIp(`${g[6]! >> 8}.${g[6]! & 0xff}.${g[7]! >> 8}.${g[7]! & 0xff}`)
+      (zeroPrefix && f === 0xffff) ||
+      (zeroPrefix && f === 0) ||
+      (a === 0 && b === 0 && c === 0 && d === 0 && e === 0xffff && f === 0) ||
+      (a === 0x64 && b === 0xff9b && c === 0 && d === 0 && e === 0 && f === 0)
+    if (embedsV4) return isPrivateIp(v4Of(g[6]!, g[7]!))
+    // 2002::/16 6to4：第 2、3 组就是那个 v4。2002:7f00:1:: 会被 6to4 中继送到 127.0.0.1。
+    if (a === 0x2002) return isPrivateIp(v4Of(b, c))
+    /**
+     * 其余一律**按白名单**判：正常的全球单播只在 2000::/3。组播 ff00::/8、链路本地
+     * fe80::/10、唯一本地 fc00::/7、已废弃的站点本地 fec0::/10、丢弃段 100::/64、
+     * 本地 NAT64 `64:ff9b:1::/48`、SRv6 的 5f00::/16 都在它外面——逐段列黑名单总会漏
+     * 一段，这条原先就漏了组播和 `64:ff9b:1::/48`。
+     */
+    if ((a & 0xe000) !== 0x2000) return true
+    // 2000::/3 里还有几块不是网站该在的地方。
+    if (a === 0x2001 && b <= 0x01ff) return true // 2001::/23 协议保留（含 Teredo 2001::/32）
+    if (a === 0x2001 && b === 0x0db8) return true // 2001:db8::/32 文档
+    if (a === 0x3fff && (b & 0xf000) === 0) return true // 3fff::/20 文档
     return false
   }
   return true
+}
+
+/** 两组 16 位 → 点分 v4。 */
+function v4Of(hi: number, lo: number): string {
+  return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`
 }
 
 /**
@@ -265,11 +293,25 @@ async function pinnedFetch(
       { method, headers: Object.fromEntries(headers.entries()), lookup: pinnedLookup(Boolean(init.allowPrivate)), signal: init.signal },
       (res) => {
         const enc = String(res.headers['content-encoding'] || '').toLowerCase()
-        let stream: Readable = res
-        if (enc === 'gzip' || enc === 'x-gzip') stream = res.pipe(createGunzip())
-        else if (enc === 'deflate') stream = res.pipe(createInflate())
-        else if (enc === 'br') stream = res.pipe(createBrotliDecompress())
-        stream.on('error', () => res.destroy())
+        /**
+         * **解压要用 pipeline，不能用 pipe。**
+         *
+         * `pipe()` 在源头出错时不会结束、也不会销毁下游：上游发完响应头、吐半截 gzip
+         * 就不动了，30 秒的超时把 req/res 掐掉，可解压器永远等不到 end，
+         * `Readable.toWeb()` 也就永远不关，`res.text()` / `readCapped()` 一直挂着——
+         * `/runtime/web/*` 不回话，在 Vercel 上一直烧到函数时限。pipeline 会把源头的
+         * 错误（含超时掐断）传到解压器上，读的那头随之 reject；反过来读的那头 cancel，
+         * 也会顺着把 res 销毁掉。
+         */
+        const decoder =
+          enc === 'gzip' || enc === 'x-gzip'
+            ? createGunzip()
+            : enc === 'deflate'
+              ? createInflate()
+              : enc === 'br'
+                ? createBrotliDecompress()
+                : null
+        const stream: Readable = decoder ? pipeline(res, decoder, () => {}) : res
         const out = new Headers()
         for (const [k, v] of Object.entries(res.headers)) {
           for (const one of Array.isArray(v) ? v : [v]) if (one !== undefined) out.append(k, String(one))
@@ -429,6 +471,26 @@ export async function fetchDocument(url: string): Promise<FetchedDocument | null
  * 地址都能拿 Gateway 的内存换一次拒绝——而 Gateway 是所有公司共用的那一个进程。
  * workspace 的 saveUpload 对上传走的是同一条规矩。
  */
+/**
+ * 正文读到一半断了（超时掐断、上游掉线）翻成 WebToolError。
+ *
+ * 不翻的话，超时在 upstreamJson 里会被说成「返回的不是 JSON，可能配置不对」，在搜索
+ * 那条路上干脆是一个裸 Error → 500。模型该看到的是「超时了，等会儿再试」。
+ */
+function bodyError(e: unknown): WebToolError {
+  if (e instanceof WebToolError) return e
+  const msg = (e as Error)?.message || 'body read failed'
+  return new WebToolError(msg, /timeout|abort/i.test(msg) ? '上游超时了，等一会儿再试。' : `读上游的正文时断了：${msg}`)
+}
+
+export async function readText(res: Response): Promise<string> {
+  try {
+    return await res.text()
+  } catch (e) {
+    throw bodyError(e)
+  }
+}
+
 export async function readCapped(res: Response, max: number): Promise<Buffer> {
   if (!res.body) return Buffer.alloc(0)
   const chunks: Buffer[] = []
@@ -436,7 +498,9 @@ export async function readCapped(res: Response, max: number): Promise<Buffer> {
   const reader = res.body.getReader()
   try {
     for (;;) {
-      const { done, value } = await reader.read()
+      const { done, value } = await reader.read().catch((e: unknown) => {
+        throw bodyError(e)
+      })
       if (done) break
       size += value.byteLength
       if (size > max) {
@@ -468,8 +532,10 @@ async function upstreamJson(
     const body = await res.text().catch(() => '')
     throw new WebToolError(`${backend} HTTP ${res.status} ${body.slice(0, 200)}`, statusHint(res.status, backend))
   }
+  // 先读完再解析：读的时候断了是「超时 / 掉线」，读完了解析不了才是「不是 JSON」。
+  const text = await readText(res)
   try {
-    return await res.json()
+    return JSON.parse(text)
   } catch {
     throw new WebToolError(`${backend} bad json`, `${backend} 返回的不是 JSON，可能配置不对。`)
   }
@@ -596,7 +662,7 @@ const duckduckgo: WebBackend = {
       throw new WebToolError('ddg rate limited', 'DuckDuckGo 限流了，等一会儿再试，或者让系统管理员换一个搜索后端。')
     }
     if (!res.ok) throw new WebToolError(`ddg HTTP ${res.status}`, statusHint(res.status, 'DuckDuckGo'))
-    return parseDdg(await res.text(), q.count)
+    return parseDdg(await readText(res), q.count)
   },
 }
 
@@ -671,7 +737,7 @@ const searxng: WebBackend = {
     if (q.freshness) params.set('time_range', q.freshness === 'day' ? 'day' : q.freshness === 'week' ? 'week' : q.freshness === 'month' ? 'month' : 'year')
     const res = await safeFetch(`${raw}/search?${params}`, { allowHost: host, timeoutMs: SEARCH_TIMEOUT_MS })
     if (!res.ok) throw new WebToolError(`searxng HTTP ${res.status}`, statusHint(res.status, 'SearXNG'))
-    const text = await res.text()
+    const text = await readText(res)
     let data: any
     try {
       data = JSON.parse(text)

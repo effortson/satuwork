@@ -380,6 +380,71 @@ export async function runWebTools({ gwRoot, test, req, start, waitHttp, assert, 
       assert(rows[rows.length - 1].units === 1, `计费条数 ${rows[rows.length - 1].units}，应当只算没命中的那一条`)
     })
 
+    await test('缓存按公司分：别家搜过的词，这家照样打后端、照样记账', async () => {
+      // 键里不带公司的话，B 公司会白拿 A 公司付过钱的结果：不记 web_calls、不落账，
+      // 配额也数不到它。
+      const org = await req(base, 'POST', '/platform/orgs', {
+        token,
+        body: {
+          name: 'Beta', slug: 'beta-web',
+          contactName: '李四', contactPhone: '+86 139 0000 0000', contactEmail: 'l@web.test',
+          adminEmail: 'b@web.test', adminPassword: 'correct-horse-1',
+        },
+      })
+      assert(org.status === 201, `org ${org.status} ${org.text}`)
+      const otherCompany = org.json.company.id
+      const topup = await req(base, 'POST', '/platform/orders', {
+        token,
+        body: { companyId: otherCompany, kind: 'topup', amount: 10, payStatus: 'paid', note: 'web e2e b' },
+      })
+      assert(topup.status === 201, `topup ${topup.status} ${topup.text}`)
+      const secrets = await client.query(
+        `select s."accessToken" from account_secrets s join accounts a on a.id = s."accountId" where a.email = 'b@web.test'`,
+      )
+      const otherSeat = secrets.rows[0].accessToken
+
+      // A 先搜、先抓一遍，让缓存里有东西。
+      await req(base, 'POST', '/runtime/web/search', { token: seatToken, body: { query: '两家都搜' } })
+      await req(base, 'POST', '/runtime/web/extract', { token: seatToken, body: { urls: ['https://shared.test/1'] } })
+      const again = await req(base, 'POST', '/runtime/web/search', { token: seatToken, body: { query: '两家都搜' } })
+      assert(again.json.cached === true, '同一家公司第二次该命中缓存')
+
+      const before = (await webCalls()).filter((r) => r.companyId === otherCompany).length
+      const s = await req(base, 'POST', '/runtime/web/search', { token: otherSeat, body: { query: '两家都搜' } })
+      assert(s.json.ok === true && s.json.cached !== true, `B 公司拿到了 A 公司的缓存：${s.text}`)
+      assert(s.json.amountMicros > 0, `B 公司这一次没收钱：${s.json.amountMicros}`)
+      const e = await req(base, 'POST', '/runtime/web/extract', { token: otherSeat, body: { urls: ['https://shared.test/1'] } })
+      assert(e.json.ok === true && e.json.amountMicros > 0, `B 公司的提取吃了 A 的缓存：${e.text}`)
+      const mine = (await webCalls()).filter((r) => r.companyId === otherCompany)
+      assert(mine.length === before + 2, `B 公司该落两笔，实际 ${mine.length - before}`)
+    })
+
+    await test('提取：内网地址在交给后端之前就被拦下，也不记账', async () => {
+      // 自托管 Firecrawl 在我们的内网里，替模型去打它给的地址——不过闸就等于把
+      // metadata 和内网数据库交出去。假后端对任何地址都会返回 ok，所以「ok:false +
+      // 内网」就说明这一条根本没到后端。
+      const before = (await webCalls()).length
+      const bad = [
+        'http://169.254.169.254/latest/meta-data/',
+        'http://10.0.0.5:5432/',
+        'http://127.0.0.1:8443/',
+        'http://[::ffff:a9fe:a9fe]/',
+        'http://[2002:a00:5::1]/',
+        'http://198.18.0.1/',
+        'http://localhost:3002/',
+      ]
+      const r = await req(base, 'POST', '/runtime/web/extract', { token: seatToken, body: { urls: bad.slice(0, 5) } })
+      assert(r.json.ok === true, r.text)
+      const r2 = await req(base, 'POST', '/runtime/web/extract', { token: seatToken, body: { urls: bad.slice(5) } })
+      const pages = [...r.json.pages, ...r2.json.pages]
+      for (const p of pages) {
+        assert(p.ok === false && /内网/.test(p.error), `${p.url} 没被拦：${JSON.stringify(p).slice(0, 200)}`)
+      }
+      const scheme = await req(base, 'POST', '/runtime/web/extract', { token: seatToken, body: { urls: ['file:///etc/passwd'] } })
+      assert(scheme.json.pages[0].ok === false && /http\/https/.test(scheme.json.pages[0].error), `file:// 没被拦：${scheme.text}`)
+      assert((await webCalls()).length === before, '被拦的地址记了账')
+    })
+
     await test('公司配额：用满就拦住，且拦住的那次不记账', async () => {
       // 配额是按公司计的，就按这家公司的 companyId 数。以前那句「非空的条数，否则全部」
       // 在查询根本不带 companyId 的情况下永远落到「全部」——碰巧对，但没验到按公司。
@@ -424,9 +489,9 @@ export async function runWebTools({ gwRoot, test, req, start, waitHttp, assert, 
       assert(r.json.totals.amountMicros === 0, '网页那几笔混进了模型合计')
     })
 
-    await test('闸与限流：SSRF、跳转不带凭据、文档边读边数、DDG 排队、Firecrawl 自托管', async () => {
+    await test('闸与限流：SSRF、跳转不带凭据、文档边读边数、压缩响应卡住会超时、DDG 排队、Firecrawl 自托管', async () => {
       const g = await runGuardProbe(gwRoot)
-      for (const group of ['scheme', 'private', 'publicOk', 'redirect', 'redirectCreds', 'docLimit', 'ddgThrottle', 'firecrawl']) {
+      for (const group of ['scheme', 'private', 'specialRanges', 'publicOk', 'redirect', 'redirectCreds', 'docLimit', 'stalledBody', 'ddgThrottle', 'firecrawl']) {
         for (const [k, v] of Object.entries(g[group])) assert(v === true, `${group}.${k} 不成立`)
       }
     })
