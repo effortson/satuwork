@@ -238,6 +238,33 @@ export async function runSkills({ root, gwRoot, test, req, start, waitHttp, asse
         !theirs.json.skills.some((x) => x.origin === 'seat'),
         `另一颗 Bot 不该看见这颗的私有档：${JSON.stringify(theirs.json.skills.map((x) => x.name))}`,
       )
+
+      /**
+       * 目录页那条接口成员也调得到。私有档的正文是模型从员工对话里写下的——主人自己
+       * 看得见，同公司的另一个成员不行；管理员照旧看全公司的（晋升那条用例在测）。
+       */
+      const own = await req(base, 'GET', `/orgs/${orgId}/skills`, { token: memberTok })
+      assert(own.status === 200, `member list ${own.status} ${own.text}`)
+      assert(
+        own.json.skills.some((x) => x.origin === 'seat' && x.name === '周报工单导出'),
+        `主人该看得见自己 Bot 写的私有档：${JSON.stringify(own.json.skills.map((x) => x.name))}`,
+      )
+      const peer = await req(base, 'POST', `/orgs/${orgId}/accounts`, {
+        token: adminTok,
+        body: { email: 'm2@sk.test', name: '小李', password: 'correct-horse-1', role: 'member' },
+      })
+      assert(peer.status === 201, `member2 ${peer.status} ${peer.text}`)
+      const peerTok = (await req(base, 'POST', '/auth/login', { body: { email: 'm2@sk.test', password: 'correct-horse-1' } })).json.token
+      const peerList = await req(base, 'GET', `/orgs/${orgId}/skills`, { token: peerTok })
+      assert(peerList.status === 200, `member2 list ${peerList.status} ${peerList.text}`)
+      assert(
+        !peerList.json.skills.some((x) => x.origin === 'seat'),
+        `同事不该翻得到别人 Bot 的私有档：${JSON.stringify(peerList.json.skills.map((x) => x.name))}`,
+      )
+      assert(peerList.json.skills.some((x) => x.id === refundId), '公司目录照旧看得见')
+      const seatId = own.json.skills.find((x) => x.origin === 'seat').id
+      const peerOne = await req(base, 'GET', `/orgs/${orgId}/skills/${seatId}`, { token: peerTok })
+      assert(peerOne.status === 404, `单条详情也不该给同事，实际 ${peerOne.status}`)
     })
 
     await test('撞名不自动加序号，写满了要说清楚', async () => {
