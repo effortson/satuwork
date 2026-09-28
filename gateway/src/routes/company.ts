@@ -146,16 +146,11 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
         const machine = await db.machine(machineId)
         if (!machine) throw new HttpError(404, '机器不存在')
         if (machine.companyId && machine.companyId !== company.id) throw new HttpError(409, '这台机器已经派给别的公司')
-        // 和 POST /orgs/:id/machine 同一条判据，一个字都不能少：companyId 为空不代表
-        // 这台是干净的新机器——公司被删时它会被置空，而机器上的席位还在跑。少了这一句，
-        // 那边拦住的认领从这条 PATCH 上原样走过去了。
-        if (
-          !machine.companyId &&
-          machine.pairedAt &&
-          account.role !== 'owner' &&
-          !(await db.machinePairedBy(machine.id, company.id))
-        ) {
-          throw new HttpError(403, '这台机器不是本公司配对的，请让系统管理员指派')
+        // 和 POST /orgs/:id/machine 同一条判据，一个字都不能少：公司管理员只能在本公司
+        // 名下的机器里挑默认，没归属的机器（预登记的、公司被删后留下的）一律等 owner
+        // 指派。少了这一句，那边拦住的认领从这条 PATCH 上原样走过去了。
+        if (account.role !== 'owner' && machine.companyId !== company.id) {
+          throw new HttpError(403, '这台机器还没派给本公司，请让系统管理员指派')
         }
         // **改默认，不是换一台。** 以前这里会把原来那台解绑——多机之后那等于把一台正在
         // 跑的机器连同它上面的席位一起踢出公司，容量凭空缩水（POST 那条路已经改掉了）。
@@ -834,7 +829,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     if (!company) throw new HttpError(404, '公司不存在')
     const body = bodyOf(req)
     // 机器地址是平台的事：登记走 POST /internal/machines（引导票），改走
-    // PUT /platform/orgs/:id/machine（owner）。公司管理员只能把已有机器认领过来。
+    // PUT /platform/orgs/:id/machine（owner）。公司管理员只能在本公司的机器里挑默认。
     // 否则管理员能把 host 指到自己的服务器上，让 Gateway 带着 smt_ 打过去。
     const rawHost = body.host != null ? strField(body, 'host', false) : ''
     if (rawHost && account.role !== 'owner') throw new HttpError(403, '机器地址由系统管理员配置')
@@ -844,18 +839,15 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     if (existing && existing.companyId && existing.companyId !== company.id) {
       throw new HttpError(409, '这台机器已经派给别的公司')
     }
-    // **配过对的机器不是「谁先认领谁得」。** companyId 为空不代表这台是干净的新机器：
-    // 公司被删时 machines.companyId 会被置空，而那台机器上的席位还在跑。这种机器只能
-    // 由 owner 重新指派，或者由**当初配对它的那家公司**认回去。没配过对的预登记机器
-    // （平台先 POST /internal/machines 建好、再交给公司）不受影响，照旧可以认领。
-    if (
-      existing &&
-      !existing.companyId &&
-      existing.pairedAt &&
-      account.role !== 'owner' &&
-      !(await db.machinePairedBy(existing.id, company.id))
-    ) {
-      throw new HttpError(403, '这台机器不是本公司配对的，请让系统管理员指派')
+    // **公司管理员只能在本公司名下的机器里挑默认那台。** 建机器、认领没归属的机器都是
+    // 平台的事（配对、PUT /platform/machines/:id/company）。以前这里给不存在的 id 就地
+    // insert 一行空机器，companyMachineOf 的兜底会把它当成公司的机器用；知道预登记
+    // 机器 id 的任何管理员也能抢先把它认过来。配过对、公司被删后留下的机器同理，
+    // 一律等 owner 重新指派。
+    if (account.role !== 'owner') {
+      if (!id) throw new HttpError(400, '要指定本公司名下的机器 id')
+      if (!existing) throw new HttpError(404, '机器不存在')
+      if (existing.companyId !== company.id) throw new HttpError(403, '这台机器还没派给本公司，请让系统管理员指派')
     }
     const { machine, next } = await db.tx(async () => {
       // **认领是「加一台」，不是「换一台」。** 以前这里会把 company.machineId 指向的

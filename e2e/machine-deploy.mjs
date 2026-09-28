@@ -571,8 +571,14 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
         body: { host: '10.9.9.9:3200' },
       })
       assert(ghost.status === 201, `ghost ${ghost.status} ${ghost.text}`)
-      const claimed = await req(gwBase, 'POST', `/orgs/${orgId}/machine`, {
+      // 没派给本公司的机器，公司管理员认领不了——那是 owner 的事。
+      const grabbed = await req(gwBase, 'POST', `/orgs/${orgId}/machine`, {
         token: adminTok,
+        body: { id: ghost.json.machine.id },
+      })
+      assert(grabbed.status === 403, `admin 认领 ${grabbed.status} ${grabbed.text}`)
+      const claimed = await req(gwBase, 'POST', `/orgs/${orgId}/machine`, {
+        token: ownerTok,
         body: { id: ghost.json.machine.id },
       })
       assert(claimed.status === 201, `claim ${claimed.status} ${claimed.text}`)

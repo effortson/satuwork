@@ -2702,15 +2702,6 @@ export class Db {
   }
 
   /** 同一家公司再生成一个码时，把之前没用掉的作废——桌上不该同时躺着两张有效的票。 */
-  /** 这台机器是不是这家公司配对进来的。认领只认自己配对的那台。 */
-  async machinePairedBy(machineId: string, companyId: string): Promise<boolean> {
-    const r = await this.one(
-      'select 1 as n from machine_pairings where "machineId" = ? and "companyId" = ? limit 1',
-      [machineId, companyId],
-    )
-    return Boolean(r)
-  }
-
   async expireMachinePairings(companyId: string, now: number): Promise<void> {
     await this.run('update machine_pairings set "expiresAt" = ? where "companyId" = ? and "usedAt" is null and "expiresAt" > ?', [
       now,
