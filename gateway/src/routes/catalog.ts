@@ -181,6 +181,8 @@ export function attachCatalog(router: Router, ctx: RouteCtx) {
     base: string
     /** 读请求的守卫。返回这次请求的归属。 */
     read(req: Req): Promise<CatalogOwner>
+    /** 同 read，多带出账号。私有档要按「是不是管理员、是谁」裁，光有归属不够。 */
+    readAs(req: Req): Promise<{ account: Account; owner: CatalogOwner }>
     /** 写请求的守卫。审计要用到账号，所以一并带出来。 */
     write(req: Req): Promise<{ account: Account; owner: CatalogOwner }>
     /** 建东西前确认归属还在。公司会被删，平台不会。 */
@@ -202,8 +204,12 @@ export function attachCatalog(router: Router, ctx: RouteCtx) {
   const PLATFORM_SCOPE: CatalogRouteScope = {
     base: '/platform',
     async read(req) {
-      requireOwner(await requireUser(req, db, keys))
-      return GLOBAL_OWNER
+      return (await this.readAs(req)).owner
+    },
+    async readAs(req) {
+      const account = await requireUser(req, db, keys)
+      requireOwner(account)
+      return { account, owner: GLOBAL_OWNER }
     },
     async write(req) {
       const account = await requireOwnerUser(req, db, keys)
@@ -220,8 +226,11 @@ export function attachCatalog(router: Router, ctx: RouteCtx) {
   const COMPANY_SCOPE: CatalogRouteScope = {
     base: '/orgs/:id',
     async read(req) {
-      await requireOrgUser(req, db, keys, req.params.id)
-      return companyOwner(req.params.id)
+      return (await this.readAs(req)).owner
+    },
+    async readAs(req) {
+      const account = await requireOrgUser(req, db, keys, req.params.id)
+      return { account, owner: companyOwner(req.params.id) }
     },
     async write(req) {
       const account = await requireOrgUser(req, db, keys, req.params.id, true)
@@ -362,19 +371,28 @@ export function attachCatalog(router: Router, ctx: RouteCtx) {
      * **重名序号在这里算一次**（skillDisplayNames）。席位那边按「这颗 Bot 看得见的那些」
      * 另算一次，两份可能对不齐——只可能发生在两颗 Bot 各自写了同名的私有档时，而那时
      * 席位上的那份才是模型用的，这一屏是给人看的。
+     *
+     * **私有档按人裁**：管理员 / owner 看全公司的（§7「员工 + 管理员」），普通成员只看
+     * 自己名下 Bot 写的。这条接口成员也调（编辑自己的 Bot 要挑 Skill），而私有档的正文
+     * 是模型从员工对话里写下来的——同事之间不该互相翻得到。
      */
-    async function listSkills(owner: CatalogOwner) {
+    async function listSkills(owner: CatalogOwner, account: Account) {
       const items = await db.visibleCatalog('skill', owner.companyId)
-      if (owner.companyId) items.push(...(await db.companySeatSkills(owner.companyId)))
+      if (owner.companyId) {
+        const admin = account.role === 'owner' || account.role === 'admin'
+        items.push(...(await (admin
+          ? db.companySeatSkills(owner.companyId)
+          : db.accountSeatSkills(owner.companyId, account.id))))
+      }
       const names = skillDisplayNames(items)
       return items.map((i) => publicSkill(i, names.get(i.id)))
     }
 
     // ── Skill ──────────────────────────────────────────────────────────
     router.get(`${s.base}/skills`, async (req, res) => {
-      const owner = await s.read(req)
+      const { account, owner } = await s.readAs(req)
       json(res, 200, {
-        skills: await listSkills(owner),
+        skills: await listSkills(owner, account),
         servers: (await db.visibleCatalog('mcp', owner.companyId)).map(publicServer),
         tags: await knownTags(db, owner.auditCompanyId),
       })
