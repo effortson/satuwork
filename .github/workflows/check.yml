@@ -22,6 +22,10 @@ concurrency:
   group: check-${{ github.ref }}
   cancel-in-progress: true
 
+# 只读：检查不写仓库。
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
