@@ -441,6 +441,54 @@ fn mime_of(path: &Path) -> &'static str {
 }
 
 /**
+ * 主窗口那份界面的 CSP，挂在 serve_ui 发出的每一个 html 响应上。
+ *
+ * **为什么要有。** 主窗口调得动本地 Bot 那组命令（起进程、批准目录），渲染的又是模型输出和
+ * 用户写的 markdown——等同于外部输入。markdown.js 那层已经转义、白名单协议，但它是唯一一道
+ * 防线；漏一处，注进来的脚本就能直接 invoke。这条头是第二道：**脚本只认包里的文件和那一个
+ * CDN**，内联脚本、`javascript:`、eval、`<object>` 都不行。tauri.conf.json 里的 `csp` 管不到
+ * 这里——Tauri 只把它挂在自己的 tauri:// 资源上（设置屏），自注册协议的响应得自己带。
+ *
+ * 底子照抄 Gateway 发页面时那条（gateway/src/http.ts 的 CSP），界面是同一批文件、在浏览器里
+ * 已经跑得通。和它的不同都是因为源换了：
+ *
+ * - `'self'` 之外再写一遍 `satu:` 和 `http(s)://satu.localhost`：自定义 scheme 在各家 webview
+ *   里算不算 `'self'` 不一定，Windows 上它又被映射成 http://satu.localhost。
+ * - `connect-src` 放整个 `https: http:`（外加 `ws: wss:`）：Gateway 是人填的地址，内网部署
+ *   就是 http；席位机器的直连对话流、本机的本地 Bot（http://127.0.0.1:<随机口>）也都在这里。
+ *   `ipc: http://ipc.localhost` 是 Tauri 的 IPC 通道（invoke 走的就是它），少了本地 Bot 的
+ *   命令全调不动。
+ * - `frame-src https: http: blob:`：桌面那块 noVNC iframe（席位机器的直连地址）和文件预览的
+ *   blob iframe。
+ * - `img-src` / `media-src` 放 `https: http:`：图片地址是模型写的，附件从 Gateway 来。
+ *
+ * 刻意的松：`style-src 'unsafe-inline'`（界面里几十处 `style="…"`，内联样式换不出脚本执行）。
+ * 刻意的紧：`script-src` 不带 `'unsafe-inline'` / `'unsafe-eval'`，和 Gateway 那条一样；
+ * index.html 和各分片里没有内联脚本，e2e 有一条按源码扫的用例守着。Tauri 注入的初始化脚本
+ * （LINK_SCRIPT、IPC 那几段）是 webview 的 user script，不受页面 CSP 管。
+ *
+ * CDN 要和 gateway/ui/markdown.js 的 `window.SATU_CDN` 默认值同源（cdn.jsdelivr.net）：
+ * KaTeX / highlight.js / Mermaid 按需从那儿拉，挡掉的表现是公式和图静默退回纯文本。
+ *
+ * 设置屏（shell/index.html，走 tauri://）的那条在 tauri.conf.json 的 `csp`：只认自己的文件和
+ * IPC；页面里那段内联 `<script>` / `<style>` 由 Tauri 编译期算哈希补进策略，不用开
+ * `'unsafe-inline'`。
+ */
+const UI_CSP: &str = concat!(
+    "default-src 'self' satu: http://satu.localhost https://satu.localhost; ",
+    "base-uri 'none'; ",
+    "object-src 'none'; ",
+    "script-src 'self' satu: http://satu.localhost https://satu.localhost https://cdn.jsdelivr.net; ",
+    "style-src 'self' satu: http://satu.localhost https://satu.localhost 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; ",
+    "font-src 'self' satu: http://satu.localhost https://satu.localhost data: https://cdn.jsdelivr.net https://fonts.gstatic.com; ",
+    "img-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; ",
+    "media-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; ",
+    "connect-src 'self' satu: http://satu.localhost https://satu.localhost ipc: http://ipc.localhost https: http: wss: ws:; ",
+    "frame-src 'self' satu: http://satu.localhost https://satu.localhost blob: https: http:; ",
+    "worker-src 'self' satu: http://satu.localhost https://satu.localhost blob:"
+);
+
+/**
  * `satu://localhost/…`：从包里发界面。
  *
  * 和 Gateway 的 serveUi 同一套规矩：路径不得逃出目录；找不到的路径**回 index.html**——这是个
@@ -475,12 +523,16 @@ fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>) -> tauri::
         file = if alt.is_file() && !stripped.is_empty() { alt } else { dir.join("index.html") };
     }
     let Ok(bytes) = fs::read(&file) else { return not_found() };
-    tauri::http::Response::builder()
+    let mime = mime_of(&file);
+    let mut response = tauri::http::Response::builder()
         .status(tauri::http::StatusCode::OK)
-        .header("content-type", mime_of(&file))
-        .header("cache-control", "no-store")
-        .body(Cow::Owned(bytes))
-        .unwrap()
+        .header("content-type", mime)
+        .header("cache-control", "no-store");
+    // 和 Gateway 一样只挂在页面本身上：脚本、样式是被这一页加载的，约束它们的是这一页的策略。
+    if mime.starts_with("text/html") {
+        response = response.header("content-security-policy", UI_CSP);
+    }
+    response.body(Cow::Owned(bytes)).unwrap()
 }
 
 fn open_main(app: &AppHandle, url: Url) -> tauri::Result<()> {
