@@ -281,6 +281,76 @@
   .sw-chip[data-state='running'] svg { animation: none; }
 }
 
+/* 工具痕迹的折叠框（chat.js 的 toolFoldHtml）。整行占满，产出 / 读过的文件药丸接在它下面。
+   默认收着：标题一句话说正在执行什么，展开是原来那些药丸，一行一颗。 */
+.sw-toolfold {
+  flex: 1 1 100%;
+  min-width: 0;
+  border-radius: 10px;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: 11.5px;
+}
+.sw-toolfold-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  list-style: none;
+  line-height: 1.6;
+}
+.sw-toolfold-head::-webkit-details-marker { display: none; }
+.sw-toolfold-head::after {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  opacity: 0.6;
+  transition: transform 0.15s ease;
+}
+.sw-toolfold[open] > .sw-toolfold-head::after { transform: rotate(45deg); }
+.sw-toolfold-head:hover { background: var(--muted); border-radius: 10px; }
+.sw-toolfold-head svg { flex: none; opacity: 0.75; }
+.sw-toolfold-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-toolfold-n {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--background);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.sw-toolfold[data-state='running'] .sw-toolfold-head { color: var(--muted-foreground); }
+.sw-toolfold[data-state='running'] .sw-toolfold-head svg { animation: sw-pulse 1.4s ease-in-out infinite; }
+.sw-toolfold[data-state='error'] .sw-toolfold-n { background: var(--color-accent-100); color: var(--color-accent-800); }
+@media (prefers-reduced-motion: reduce) {
+  .sw-toolfold[data-state='running'] .sw-toolfold-head svg { animation: none; }
+}
+/* 最多摊开 5 行（TOOLFOLD_ROWS），多了在框里滚。一行 24px、行距 4px：5 × 24 + 4 × 4 = 136，
+   再加上下内边距。药丸高度钉死，max-height 才对得上「正好 5 行」。 */
+.sw-toolfold-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 2px 8px 8px;
+  max-height: calc(5 * 24px + 4 * 4px + 10px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.sw-toolfold-list .sw-chip {
+  height: 24px;
+  box-sizing: border-box;
+  flex: none;
+  background: var(--background);
+}
+.sw-toolfold-list .sw-chip[data-state='error'] { background: var(--color-accent-100); }
+
 /* 正在思考：三个点。这是**空气泡**，不是状态栏文字——回答一开始吐字它就地变成正文，
    位置不跳。 */
 .sw-typing { display: inline-flex; align-items: center; gap: 4px; padding: 3px 0; }

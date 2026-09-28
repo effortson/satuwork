@@ -2920,6 +2920,70 @@ function chipHtml(x, i) {
 }
 
 /**
+ * 工具折叠框摊开时最多几行，多了就在框里滚（高度见 chat.css 的 .sw-toolfold-list）。
+ * 改这个数要连那边的 max-height 一起改——两边写的是同一件事。
+ */
+const TOOLFOLD_ROWS = 5
+
+/**
+ * 一次调用在标题里怎么称呼：工具名，带命令的（terminal 这种）再接上那条命令。
+ *
+ * 「正在执行什么」里人要的是**那条命令**，不是 `terminal` 这个名字——一轮里十几次都叫
+ * terminal，只看名字分不出是在装依赖还是在删文件。args 是模型给的 JSON 串，解不开就
+ * 只报名字，不猜。
+ */
+function toolCommandOf(x) {
+  let cmd = ''
+  try {
+    const o = typeof x.args === 'string' ? JSON.parse(x.args) : x.args
+    if (o && typeof o === 'object') cmd = String(o.command || o.cmd || '').trim()
+  } catch {}
+  cmd = cmd.replace(/\s+/g, ' ')
+  if (cmd.length > 80) cmd = cmd.slice(0, 80) + '…'
+  return cmd ? `${x.name} · ${cmd}` : String(x.name || '')
+}
+
+/**
+ * 工具痕迹收进一个折叠框：**默认收着，标题上说正在执行什么。**
+ *
+ * 一轮十几次调用摊成一排药丸，会把正文下面那几颗真正要点的东西（产出的文件、读过的
+ * 文件）挤到好几行之后；可「它现在在干什么」又是人盯着看的那一句，不能跟着一起藏。
+ * 所以标题就是那一句：有还在跑的就写「正在执行 <最后一个在跑的>」，都跑完了写一共
+ * 几次、失败几次、最后一次是什么。展开之后是原来那些药丸，一行一颗，悬浮详情照旧；
+ * 超过 TOOLFOLD_ROWS 行在框里滚，不把气泡撑长。
+ *
+ * 已有结论的确认药丸也收在里面：它们和工具痕迹是同一类东西（这一轮路上发生过什么），
+ * 还等着人点的那几张确认卡不进来，照旧摊在下面。
+ */
+function toolFoldHtml(tools, settled) {
+  const running = [...tools].reverse().find((x) => x.result == null)
+  const failed = tools.filter((x) => x.result != null && x.failed).length
+  const n = tools.length + settled.length
+  let state_ = 'done'
+  let title
+  if (running) {
+    state_ = 'running'
+    title = t('正在执行', 'Running') + ' ' + toolCommandOf(running)
+  } else {
+    if (failed) state_ = 'error'
+    const last = tools[tools.length - 1]
+    title = t(`${tools.length} 次工具调用`, `${tools.length} tool calls`)
+    if (failed) title += ' · ' + t(`${failed} 次失败`, `${failed} failed`)
+    if (last) title += ' · ' + t('最后一次', 'last') + ' ' + toolCommandOf(last)
+    if (!tools.length) title = t(`${settled.length} 次确认`, `${settled.length} approvals`)
+  }
+  return (
+    `<details class="sw-toolfold" data-state="${state_}">` +
+    `<summary class="sw-toolfold-head" title="${esc(title)}">${ICON_TOOL}<span class="sw-toolfold-title">${esc(title)}</span>` +
+    `<span class="sw-toolfold-n">${n}</span></summary>` +
+    `<div class="sw-toolfold-list" data-rows="${TOOLFOLD_ROWS}">` +
+    tools.map(chipHtml).join('') +
+    settled.map((a, i) => approvalChipHtml(a, tools.length + i)).join('') +
+    `</div></details>`
+  )
+}
+
+/**
  * 正文里被**行内代码**点了名的产出文件。
  *
  * 判据是 markdown 源码里出现 `` `路径` ``，而不是去渲染后的 DOM 里找。两个理由：
@@ -3697,13 +3761,16 @@ function updateRow(el, b, streaming, since) {
     settled.map((a) => a.callId + ':' + approvalState(a)).join('|')
   if (chips.getAttribute('data-sig') !== sig) {
     chips.setAttribute('data-sig', sig)
+    // 重画会把折叠框换掉：人点开了就保持开着——「调用中 → 完成」那一下正是他在看的时候。
+    const wasOpen = Boolean(chips.querySelector('.sw-toolfold')?.open)
     chips.innerHTML =
-      tools.map(chipHtml).join('') +
+      (tools.length || settled.length ? toolFoldHtml(tools, settled) : '') +
       shownOuts.map(fileChipHtml).join('') +
       (moreOuts > 0 ? outMoreHtml(moreOuts) : '') +
       shownReads.map(readChipHtml).join('') +
-      (moreReads > 0 ? readMoreHtml(moreReads) : '') +
-      settled.map((a, i) => approvalChipHtml(a, tools.length + i)).join('')
+      (moreReads > 0 ? readMoreHtml(moreReads) : '')
+    const fold = chips.querySelector('.sw-toolfold')
+    if (fold && wasOpen) fold.open = true
     chips.hidden = !tools.length && !rest.length && !shownReads.length && !settled.length
     /**
      * 工具对象直接挂到节点上，悬浮窗按需取。
