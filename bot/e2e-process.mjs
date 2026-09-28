@@ -388,6 +388,40 @@ out.killed = (await call('process', { action: 'kill', session_id: bg })).text.in
   }
 }
 
+// ── 6b. 日志有上限，log 只读要的那几行 ───────────────────────────────
+/**
+ * 以前日志只增不减：一个刷屏的 `pnpm dev` 跑满 24 小时能把盘写满；`log` 还整份 readFile，
+ * 几百 MB 的日志一次摆进内存。现在一段 8 MB 就滚一次，盘上最多两段；行号从第一行输出
+ * 数起，滚掉的那截照样算进去——翻页的 offset 不因为滚段而错位。
+ */
+{
+  // 20 万行、每行百来个字节，一共 20 MB 出头：要滚两次。
+  const cmd = `yes ${'x'.repeat(90)} | head -n 200000 | nl -ba -w8 -nrz`
+  const r = await call('terminal', { command: cmd, background: true }, 's-cap')
+  const id = idOf(r.text)
+  await call('process', { action: 'wait', session_id: id, timeout: 30 }, 's-cap')
+  await sleep(300)
+  const { statSync } = await import('node:fs')
+  const sizeOf = (f) => { try { return statSync(f).size } catch { return -1 } }
+  const cur = sizeOf(join(home, 'proc', `${id}.log`))
+  const prev = sizeOf(join(home, 'proc', `${id}.log.1`))
+  const tail = (await call('process', { action: 'log', session_id: id, limit: 3 }, 's-cap')).text
+  const total = Number((tail.match(/共 (\d+) 行/) ?? [])[1])
+  const lastLine = tail.split('\n').pop() ?? ''
+  const head = (await call('process', { action: 'log', session_id: id, offset: 1, limit: 2 }, 's-cap')).text
+  const near = (await call('process', { action: 'log', session_id: id, offset: total - 1, limit: 5 }, 's-cap')).text
+  out.logCap = {
+    当前段有上限: cur > 0 && cur <= 9 * 1024 * 1024,
+    滚出来的那段也有上限: prev > 0 && prev <= 9 * 1024 * 1024,
+    盘上加起来比输出少: cur + prev < 20 * 1024 * 1024,
+    行号从第一行数起: total === 200000,
+    末行行号和内容对得上: /^200000\|00200000\t/.test(lastLine),
+    滚掉的那截说清楚: /已经滚掉了/.test(head),
+    翻到最后照样接得上: near.split('\n')[1]?.startsWith('199999|00199999') && !/还有/.test(near),
+    raw: { cur, prev, tail: tail.slice(0, 300), head: head.slice(0, 300), near: near.slice(0, 400) },
+  }
+}
+
 // ── 7. callId 洗过再拼路径 ────────────────────────────────────────────
 /**
  * callId 是 provider 在响应里给的，一路透传到落盘那一步，没有任何一层校验过它长什么样。

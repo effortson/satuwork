@@ -147,6 +147,13 @@ export async function runProcess({ root, test, assert, log }) {
     assert(!bad.length, `这几条不对：${bad.join('、')}`)
   })
 
+  await test('后台日志有上限，log 只读要的那几行、行号不因滚段错位', () => {
+    // 以前只增不减：刷屏的 dev server 跑一天能写满盘，log 还整份读进内存。
+    const { raw, ...rest } = r.logCap || {}
+    const bad = all(rest)
+    assert(r.logCap && !bad.length, `这几条不对：${bad.join('、') || '没有结果'}（${JSON.stringify(raw)}）`)
+  })
+
   await test('callId 洗过再拼路径', () => {
     // callId 是 provider 给的，一路透传到落盘那一步。上传文件名和 sessionId 早就走
     // safeName / safeSegment 了，这条新路不该是例外。
