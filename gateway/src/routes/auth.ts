@@ -202,8 +202,8 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
            * 口令换了，之前签出去的票一律作废（同 /me/password）。
            *
            * 这条链接也是管理员「重置口令」发出去的那一条（routes/company.ts 的 reset）：重置之后、
-           * 被接受之前签出的票，不能带着旧口令的效力再活七天。下面这张新票签在同一刻之后，iat 不早
-           * 于这个时间（按秒比），不会把自己也作废掉。
+           * 被接受之前签出的票，不能带着旧口令的效力再活七天。下面这张新票签在同一刻之后，iatMs 不早
+           * 于这个时间，不会把自己也作废掉。
            */
           tokenRevokedAt: now,
         },

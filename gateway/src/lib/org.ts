@@ -247,32 +247,43 @@ export async function patchAccount(
   // 那一层的写入口全都 requireOwner，降掉最后一个之后再没人能改回来。
   if (row.role === 'owner' && patch.role && patch.role !== 'owner') throw new HttpError(400, '系统管理员的角色不能改')
   if (body.status != null && body.status !== '') patch.status = statusOf(body.status)
-  const nextRole = patch.role ?? row.role
-  const nextStatus = patch.status ?? row.status
   if (patch.status === 'invited' && row.status !== 'invited') {
     throw new HttpError(400, '已激活的账号不能退回待接受，需要重设口令请用重置链接')
   }
   if (patch.status === 'active' && row.status === 'invited') {
     throw new HttpError(400, '待接受的账号不能由管理员直接激活，对方需用邀请链接设置口令')
   }
-  if (row.companyId && losingAdmin(row, nextRole, nextStatus) && (await db.adminCount(row.companyId)) <= 1) {
-    throw new HttpError(409, '至少要留一个管理员')
-  }
-  /**
-   * 系统管理员这一层同理：**最后一个还能登录的 owner 不许停**。
-   *
-   * 平台账号不属于任何公司，上面那条按公司数的检查够不着它。把最后一个 owner 停掉之后，
-   * 没有任何一条路能再把它开回来——这一层的写入口全都 requireOwner。
-   */
-  // 不再要求 `!row.companyId`：owner 行本不该有公司，但万一有（老数据、手改的库），
-  // 上面那条按公司数的检查看的是 admin，仍然够不着它。
-  if (row.role === 'owner' && patch.status === 'disabled' && (await db.activeOwnerCount()) <= 1) {
-    throw new HttpError(409, '至少要留一个能登录的系统管理员')
-  }
   if (patch.status === 'disabled') patch.tokenRevokedAt = Date.now()
-  // 停用的人重新激活会多占一个席位。满了就不让激活——先加席位，或者停掉别人。
-  // 检查和写入放在同一个事务里，并先锁住套餐行，否则两个人同时激活会一起挤进来。
+  /**
+   * 「至少留一个管理员」「最后一个能登录的 owner 不许停」「重新激活要占席位」都是先数再写，
+   * 三条都放进同一个事务、先拿锁再数：两个管理员同时互相降级，不锁就各自数到 2、各自放行，
+   * 公司一个管理员都不剩。锁拿到之后**重读这一行**——排队那会儿它可能已经被别人改过了，
+   * 拿进来的 row 是锁外读的。
+   *
+   * 系统管理员这一层同理：平台账号不属于任何公司，按公司数的那条够不着它。把最后一个
+   * owner 停掉之后，没有任何一条路能再把它开回来——这一层的写入口全都 requireOwner。
+   * 不再要求 `!row.companyId`：owner 行本不该有公司，但万一有（老数据、手改的库），
+   * 按公司数的检查看的是 admin，仍然够不着它。
+   */
   const account = await db.tx(async () => {
+    // 锁外读的 row 可能已经不是 admin 了、也可能刚被提成 admin，所以只要动了角色或状态就排队重判。
+    if (row.companyId && (patch.role || patch.status)) {
+      await db.lockCompanyAdmins(row.companyId)
+      const cur = (await db.account(row.id)) ?? row
+      const losing = losingAdmin(cur, patch.role ?? cur.role, patch.status ?? cur.status)
+      if (losing && (await db.adminCount(row.companyId)) <= 1) {
+        throw new HttpError(409, '至少要留一个管理员')
+      }
+    }
+    if (row.role === 'owner' && patch.status === 'disabled') {
+      await db.lockPlatformOwners()
+      const cur = await db.account(row.id)
+      if (cur && cur.status !== 'disabled' && (await db.activeOwnerCount()) <= 1) {
+        throw new HttpError(409, '至少要留一个能登录的系统管理员')
+      }
+    }
+    // 停用的人重新激活会多占一个席位。满了就不让激活——先加席位，或者停掉别人。
+    // 先锁住套餐行，否则两个人同时激活会一起挤进来。
     if (patch.status === 'active' && row.status === 'disabled' && row.companyId) {
       await db.lockPlan(row.companyId)
       const seats = (await db.plan(row.companyId))?.seats ?? 0

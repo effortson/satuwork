@@ -6,7 +6,7 @@
 import { HttpError, type Req, bearer } from '../http.ts'
 import { JWT_TTL, KIND, usdMicros } from './validate.ts'
 import { type Account, type AccountStatus, type CatalogKind, type Db, type Machine, type Role } from '../db.ts'
-import { type JwtKeys, type JwtPayload, randomInviteToken, sha256Hex, signJwt, timingSafeToken, verifyJwt } from '../crypto.ts'
+import { type JwtKeys, type JwtPayload, randomInviteToken, sha256Hex, signJwt, ticketRevoked, timingSafeToken, verifyJwt } from '../crypto.ts'
 
 export function gateAccount(account: Account | undefined): Account {
   if (!account) throw new HttpError(401, '需要登录')
@@ -38,7 +38,7 @@ export async function accountFromJwt(req: Req, db: Db, keys: JwtKeys): Promise<A
   }
   const account = await db.account(payload.accountId)
   if (!account) throw new HttpError(401, '账号不存在')
-  if (account.tokenRevokedAt && payload.iat < Math.floor(account.tokenRevokedAt / 1000)) {
+  if (ticketRevoked(account.tokenRevokedAt, payload)) {
     throw new HttpError(401, '登录已失效，请重新登录')
   }
   return gateCompany(db, gateAccount(account))
