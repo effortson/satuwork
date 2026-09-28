@@ -2272,6 +2272,55 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(direct()?.token === 'sat_v2', `直连该换成新票：${JSON.stringify(direct())}`)
     })
 
+    await test('Bot 设置页画出这颗 Bot 跑的是哪一版：远程看席位，本地看壳子', async () => {
+      /**
+       * 「这颗 Bot 现在是哪一版」以前只有机器页和审计页上看得到，员工自己的设置页上没有；
+       * 本地 Bot 更是只能去翻 ~/Library/…/local-runtime/CURRENT。这里**真的把那一屏渲染出来**，
+       * 按人看得见的字去找。
+       */
+      const draft = { name: '助手', description: '', icon: 'bot', enabled: true, extraPrompt: '', greeting: '', guards: [] }
+      const page = (ui, bot) => {
+        ui.state.template = { version: 1, prompt: 'soul', skills: [], mcps: [] }
+        ui.state.botOptions = { skills: [], mcps: [] }
+        return ui.myBotPage(bot, draft)
+      }
+
+      // 远程：名单里这一颗的 runtime.botVersion（管家装完回报的）
+      const web = loadApp({ appPath, base: gwBase, token: 'jwt' })
+      web.state.runtimeBots = [{ id: 'r-1', runtimeKind: 'remote', runtime: { kind: 'remote', status: 'ready', botVersion: '0.1.14+3e76b53-arm64' } }]
+      let html = page(web, { id: 'r-1', name: '助手', runtimeKind: 'remote', scope: 'user', origin: 'company' })
+      assert(html.includes('Bot 版本') && html.includes('0.1.14+3e76b53-arm64'), '远程 Bot 的版本号没画出来')
+      web.state.runtimeBots = [{ id: 'r-1', runtimeKind: 'remote', runtime: null }]
+      html = page(web, { id: 'r-1', name: '助手', runtimeKind: 'remote', scope: 'user', origin: 'company' })
+      assert(html.includes('未部署') && !html.includes('data-bot-version'), '没有席位时该说「未部署」')
+
+      // 本地、普通浏览器：Gateway 不知道那台电脑装的是哪版，照实说
+      web.state.runtimeBots = [{ id: 'l-1', runtimeKind: 'local', runtime: { kind: 'local', status: 'none' } }]
+      html = page(web, { id: 'l-1', name: '助手', runtimeKind: 'local', scope: 'user', origin: 'company' })
+      assert(html.includes('本地运行时') && html.includes('只在桌面端里看得到'), '浏览器里的本地 Bot 该说「只在桌面端里看得到」')
+
+      // 本地、桌面端：壳子 status 里的 CURRENT / PENDING / LAST_ERROR 一路带到这一行
+      const desk = loadApp({
+        appPath, base: gwBase, token: 'jwt', desktop: true,
+        localBotBridge: {
+          status: async () => ({
+            running: false, workspace: '/w',
+            runtimeVersion: '0.1.14+3e76b53-darwin-arm64',
+            pendingRuntimeVersion: '0.1.15+abcdef0-darwin-arm64',
+            runtimeUpdateError: 'sha256 对不上',
+          }),
+        },
+      })
+      const bots = [{ id: 'l-1', name: '助手', runtimeKind: 'local' }]
+      await desk.overlayLocalRuntime(bots)
+      assert(bots[0].runtime.botVersion === '0.1.14+3e76b53-darwin-arm64', `壳子报的版本没带进 runtime：${JSON.stringify(bots[0].runtime)}`)
+      desk.state.runtimeBots = bots
+      html = page(desk, { id: 'l-1', name: '助手', runtimeKind: 'local', scope: 'user', origin: 'company' })
+      assert(html.includes('0.1.14+3e76b53-darwin-arm64'), '桌面端里本地运行时的版本没画出来')
+      assert(html.includes('0.1.15+abcdef0-darwin-arm64') && html.includes('下次启动换上'), '已下载、待换上的那一版没说')
+      assert(html.includes('上次升级没成功') && html.includes('sha256 对不上'), '上次升级失败的原因没给出来')
+    })
+
     await test('Bot 名单在非对话页也要在——它是顶层导航，不是对话页的附属', async () => {
       // 名单从「对话」子项提到侧栏顶层之后，取数的路径没跟着搬：loadRuntimeBots 一直
       // 只在 loadChatPage 里跑。于是管理员一进概览页（首页就是概览，根本不走那条路），

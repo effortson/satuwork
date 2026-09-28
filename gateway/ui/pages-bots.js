@@ -678,6 +678,39 @@ function myMemories(a) {
   </div>`
 }
 
+/**
+ * Bot 设置页上「这颗 Bot 跑的是哪一版」那一行。
+ *
+ * - 远程 Bot：席位上装着的 bot 发布包，`/runtime/bots` 里的 `runtime.botVersion`（管家装完
+ *   回报、Gateway 记在席位行上的那个）。没有席位就是「未部署」。
+ * - 本地 Bot：桌面壳的运行时 `CURRENT`，由 overlayLocalRuntime 从壳子的 status 带过来。
+ *   Gateway 不知道这台电脑上装的是哪版，普通浏览器里照实说「只在桌面端里看得到」。
+ *   壳子已经下好、等下次启动才换上的那版（PENDING）和上一次升级失败的原因也一起给出来
+ *   ——「为什么还是旧版」的答案就在这两格里。
+ *
+ * 取的是名单（state.runtimeBots）里这一颗：进 Bot 设置页不单独拉运行态，名单每一页都有。
+ */
+function botVersionLine(bot) {
+  const local = bot.runtimeKind === 'local'
+  const rt = (state.runtimeBots || []).find((b) => b.id === bot.id)?.runtime || bot.runtime || null
+  const mono = 'font-family: ui-monospace, SFMono-Regular, Menlo, monospace;'
+  let value
+  if (local && !window.__SATUWORK_DESKTOP__) value = `<span>${t('只在桌面端里看得到', 'Visible in the desktop app only')}</span>`
+  else if (rt?.botVersion) value = `<span style="${mono}" data-bot-version>${esc(rt.botVersion)}</span>`
+  else value = `<span>${local ? t('还没装上', 'Not installed yet') : t('未部署', 'Not deployed')}</span>`
+  const extra = []
+  if (local && rt?.pendingVersion && rt.pendingVersion !== rt.botVersion) {
+    extra.push(t(`已下载 <span style="${mono}">${esc(rt.pendingVersion)}</span>，下次启动换上`, `<span style="${mono}">${esc(rt.pendingVersion)}</span> downloaded, applied on next start`))
+  }
+  if (local && rt?.updateError) {
+    extra.push(`<span style="color: var(--destructive);" title="${esc(rt.updateError)}">${t('上次升级没成功', 'Last update failed')}</span>`)
+  }
+  const label = local ? t('本地运行时', 'Local runtime') : t('Bot 版本')
+  return `<div style="font-size: 12.5px; color: var(--muted-foreground); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline;">
+    <span>${label}</span>${value}${extra.map((x) => `<span>· ${x}</span>`).join('')}
+  </div>`
+}
+
 function myBotPage(bot, a) {
   const tplVersion = bot.templateVersion || state.template?.version || 1
   const opts = state.botOptions || { skills: [], mcps: [] }
@@ -702,6 +735,7 @@ function myBotPage(bot, a) {
                 </div>
                 <input class="input" data-bot="description" value="${esc(a.description)}" placeholder="${esc(t('简介'))}">
                 <div style="font-size: 12.5px; color: var(--muted-foreground);">${t(`模型 ${esc(a.model || '—')}（平台指定）`, `model ${esc(a.model || '—')} (set by the platform)`)}</div>
+                ${botVersionLine(bot)}
                 <div style="display: flex; flex-wrap: wrap; gap: 6px;">${iconPick}</div>
               </div>
             </div>
