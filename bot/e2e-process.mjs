@@ -6,7 +6,7 @@
  * 用 `kill(pid, 0)` 去问操作系统，不看我们自己那本账。
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -118,6 +118,19 @@ out.foreground = {
     shell早退了超时也会返回: orphaned.ms < 6_000 && orphaned.r.text.includes('超时'),
     停止按钮会返回: stopped.ms < 6_000,
     输出没丢: waiting.r.text.includes('pid='),
+    /**
+     * **杀的时候连逃出去的也要收掉。** shell 还活着时顺着 ppid 找得到；shell 早退了的那个
+     * 被过继给了 init，只能按命令的标签（SATUWORK_RUN）认。只在 Linux 上查（要读 /proc）。
+     * 僵尸也算没了：容器里 PID 1 未必会收尸。
+     */
+    逃出去的也被杀了: process.platform !== 'linux' || leftovers.every((pid) => {
+      try {
+        const st = readFileSync(`/proc/${pid}/stat`, 'utf8')
+        return st.slice(st.lastIndexOf(')') + 2).startsWith('Z')
+      } catch {
+        return true
+      }
+    }),
   }
   // 收掉逃出去的那几个：它们本来就不在进程组里，探针自己不收就会在机器上活一千秒。
   for (const pid of leftovers) {

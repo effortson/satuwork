@@ -338,7 +338,7 @@ const PIPE_GRACE_MS = 2_000
  *
  * `setsid foo &` 出来的那个换了会话、也换了进程组，`kill(-pgid)` 够不着它；但在 shell
  * 还活着的时候，它的 ppid 还指着这条链，顺着 ppid 找得到。shell 已经退了的话它被过继
- * 给了 init，这条路也找不回来——那种情况只能靠下面拆管道保证调用返回。
+ * 给了 init，这条路就找不回来了——那种由 taggedPids 按标签补上。
  */
 function descendantsOf(root: number): number[] {
   if (process.platform !== 'linux') return []
@@ -372,6 +372,46 @@ function descendantsOf(root: number): number[] {
 }
 
 /**
+ * 每条命令一个随机标签，放进它的环境（`SATUWORK_RUN=<tag>`）。环境会被每一代子孙继承，
+ * `setsid` 也换不掉它——所以 shell 退了、后代被过继给 init、顺着 ppid 已经找不回来的时候，
+ * 还能按标签把它们认出来（见 taggedPids）。
+ *
+ * 不是边界：进程自己 `env -i` 或 `unset SATUWORK_RUN` 就能躲过去。它补的是「模型顺手写了
+ * 一句 `setsid foo &`」这种常见的漏网，不是故意藏起来的进程。
+ */
+const RUN_TAG = 'SATUWORK_RUN'
+const runTags = new WeakMap<ChildProcess, string>()
+
+/**
+ * 环境里带着这个标签的所有进程（只在 Linux 上走得通）。
+ *
+ * `/proc/<pid>/environ` 只有同一个用户（或 root）读得到，别人的进程读不出来、自然也不会
+ * 被误杀。读到的是进程**启动时**的环境，正是要的那一份：子孙是带着它 exec 起来的。
+ */
+function taggedPids(tag: string): number[] {
+  if (process.platform !== 'linux') return []
+  const needle = Buffer.from(`\0${RUN_TAG}=${tag}\0`)
+  const first = Buffer.from(`${RUN_TAG}=${tag}\0`)
+  const out: number[] = []
+  let names: string[]
+  try {
+    names = readdirSync('/proc')
+  } catch {
+    return []
+  }
+  for (const name of names) {
+    if (!/^\d+$/.test(name) || Number(name) === process.pid) continue
+    try {
+      const env = readFileSync(`/proc/${name}/environ`)
+      if (env.includes(needle) || env.subarray(0, first.length).equals(first)) out.push(Number(name))
+    } catch {
+      /* 别人的进程读不了，或者在读的这一瞬间没了 */
+    }
+  }
+  return out
+}
+
+/**
  * 杀整个进程组。只杀 shell 的话，它 fork 出去的会留下来，端口和 CPU 一起占着。
  *
  * **杀完还要保证 `close` 一定会来。** 前台那次调用、后台的 finish 都挂在 `close` 上，
@@ -384,7 +424,11 @@ function descendantsOf(root: number): number[] {
 function killTree(child: ChildProcess) {
   const pid = child.pid
   if (pid) {
-    for (const d of descendantsOf(pid)) {
+    // 顺着 ppid 找（shell 还活着时找得全），再按标签补一遍（shell 已经退了、后代被过继走的）。
+    const tag = runTags.get(child)
+    const doomed = new Set([...descendantsOf(pid), ...(tag ? taggedPids(tag) : [])])
+    doomed.delete(pid)
+    for (const d of doomed) {
       try {
         process.kill(d, 'SIGKILL')
       } catch {
@@ -428,13 +472,17 @@ function since(ms: number): string {
  * （`npm run dev &`、管道里的子进程）会活下来。
  */
 function spawnShell(command: string, cwd: string): ChildProcess {
-  return spawn('bash', ['-c', command], {
+  const tag = randomBytes(9).toString('base64url')
+  const child = spawn('bash', ['-c', command], {
     cwd,
     // 不递整份 process.env：里面有 Gateway 凭据和 SATUWORK_* 内部配置，见 childEnv。
-    env: childEnv(),
+    // 唯一加回去的 SATUWORK_* 是这条命令的标签：一串随机字，不是配置（见 RUN_TAG）。
+    env: { ...childEnv(), [RUN_TAG]: tag },
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
   })
+  runTags.set(child, tag)
+  return child
 }
 
 /**
