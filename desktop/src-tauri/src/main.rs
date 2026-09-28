@@ -440,6 +440,13 @@ fn mime_of(path: &Path) -> &'static str {
     }
 }
 
+// UI_CSP 里 CDN 那几条路径源，三条指令共用；由来见 UI_CSP 的注释。
+macro_rules! ui_cdn {
+    () => {
+        "https://cdn.jsdelivr.net/npm/katex@0.16.11/ https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/ https://cdn.jsdelivr.net/npm/mermaid@11.4.1/"
+    };
+}
+
 /**
  * 主窗口那份界面的 CSP，挂在 serve_ui 发出的每一个 html 响应上。
  *
@@ -467,8 +474,11 @@ fn mime_of(path: &Path) -> &'static str {
  * index.html 和各分片里没有内联脚本，e2e 有一条按源码扫的用例守着。Tauri 注入的初始化脚本
  * （LINK_SCRIPT、IPC 那几段）是 webview 的 user script，不受页面 CSP 管。
  *
- * CDN 要和 gateway/ui/markdown.js 的 `window.SATU_CDN` 默认值同源（cdn.jsdelivr.net）：
- * KaTeX / highlight.js / Mermaid 按需从那儿拉，挡掉的表现是公式和图静默退回纯文本。
+ * CDN 只放行 KaTeX / highlight.js / Mermaid 那三个「包@版本/」目录，不放整个 cdn.jsdelivr.net
+ * （jsdelivr 出任意 npm 包，放行整个源等于放行任何人发的脚本）。这三条是照
+ * gateway/src/ui-cdn.ts 的 UI_CDN_PACKAGES 手抄的——桌面包里的页面没有 Gateway 插的
+ * `<meta name="satu-cdn">`，markdown.js 用的是 jsdelivr 默认值。**改版本要一起改**，e2e 的
+ * markdown 那一组按源码核对这三处；挡掉的表现是公式和图静默退回纯文本。
  *
  * 设置屏（shell/index.html，走 tauri://）的那条在 tauri.conf.json 的 `csp`：只认自己的文件和
  * IPC；页面里那段内联 `<script>` / `<style>` 由 Tauri 编译期算哈希补进策略，不用开
@@ -478,9 +488,9 @@ const UI_CSP: &str = concat!(
     "default-src 'self' satu: http://satu.localhost https://satu.localhost; ",
     "base-uri 'none'; ",
     "object-src 'none'; ",
-    "script-src 'self' satu: http://satu.localhost https://satu.localhost https://cdn.jsdelivr.net; ",
-    "style-src 'self' satu: http://satu.localhost https://satu.localhost 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; ",
-    "font-src 'self' satu: http://satu.localhost https://satu.localhost data: https://cdn.jsdelivr.net https://fonts.gstatic.com; ",
+    "script-src 'self' satu: http://satu.localhost https://satu.localhost ", ui_cdn!(), "; ",
+    "style-src 'self' satu: http://satu.localhost https://satu.localhost 'unsafe-inline' ", ui_cdn!(), " https://fonts.googleapis.com; ",
+    "font-src 'self' satu: http://satu.localhost https://satu.localhost data: ", ui_cdn!(), " https://fonts.gstatic.com; ",
     "img-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; ",
     "media-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; ",
     "connect-src 'self' satu: http://satu.localhost https://satu.localhost ipc: http://ipc.localhost https: http: wss: ws:; ",

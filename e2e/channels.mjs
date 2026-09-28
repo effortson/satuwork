@@ -479,6 +479,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
         assert(previewHtml.includes('/channel-preview.js') && previewHtml.includes('/markdown.js'), `${filename} 没有加载预览运行时`)
         assert(preview.headers.get('referrer-policy') === 'no-referrer', `${filename} 没有阻止签名票随 referrer 外泄`)
         assert(String(preview.headers.get('content-security-policy')).includes("frame-src blob:"), `${filename} 没有限制预览 frame 来源`)
+        assert(!/https:\/\/cdn\.jsdelivr\.net[\s;]/.test(String(preview.headers.get('content-security-policy'))), `${filename} 的 CSP 放行了整个 jsdelivr`)
         previews.set(filename, { url: previewUrl, html: previewHtml })
       }
 
