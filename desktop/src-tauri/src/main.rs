@@ -676,10 +676,37 @@ fn ensure_bundled_runtime(app: &AppHandle) -> Result<Option<String>, String> {
     let home = runtime_home(app)?;
     let destination = home.join("releases").join(&wanted);
     unpack_runtime(&archive, &destination)?;
-    if read_runtime_pointer(&home, "CURRENT").is_none() {
+    // 以前只在 CURRENT 不存在时才指向内置版：Desktop 升级之后新包里那份 Bot 永远用不上，
+    // 比它还旧的远端版反倒一直占着 CURRENT。现在按版本号比，内置的更新就切过去。
+    let switch = match read_runtime_pointer(&home, "CURRENT") {
+        None => true,
+        Some(current) if current == wanted => false,
+        Some(current) => match runtime_older(&current, &wanted) {
+            Some(older) => older,
+            // 比不出来：CURRENT 读不出版本号，是老壳内置的那种（VERSION 只写了 sha256），
+            // 刚装的这份不会比它旧，切；内置这份读不出而 CURRENT 读得出（老打包脚本打的包），
+            // 不动。
+            None => version_numbers(&current).is_none(),
+        },
+    };
+    if switch {
         write_runtime_pointer(&home, "CURRENT", &wanted)?;
     }
+    // 比内置版还旧的 PENDING 留着，下一次启动就会被提升成 CURRENT——等于降级，删掉。
+    if let Some(pending) = read_runtime_pointer(&home, "PENDING") {
+        if runtime_older(&pending, &wanted) == Some(true) {
+            let _ = fs::remove_file(home.join("PENDING"));
+        }
+    }
     Ok(Some(wanted))
+}
+
+/**
+ * `a` 是不是比 `b` 旧：只比 x.y.z（version_numbers），`+构建号`、`-平台-架构` 不参与。
+ * 任一方读不出版本号时返回 None，由调用方决定怎么办。
+ */
+fn runtime_older(a: &str, b: &str) -> Option<bool> {
+    Some(version_numbers(a)? < version_numbers(b)?)
 }
 
 fn promote_pending_runtime(app: &AppHandle) -> Result<Option<(String, String)>, String> {
@@ -688,6 +715,11 @@ fn promote_pending_runtime(app: &AppHandle) -> Result<Option<(String, String)>, 
         return Ok(None);
     };
     let previous = read_runtime_pointer(&home, "CURRENT").unwrap_or_default();
+    // 只往前走：PENDING 比 CURRENT 还旧（例如 CURRENT 刚被切到更新的内置版）就丢掉。
+    if runtime_older(&pending, &previous) == Some(true) {
+        let _ = fs::remove_file(home.join("PENDING"));
+        return Ok(None);
+    }
     write_runtime_pointer(&home, "CURRENT", &pending)?;
     let _ = fs::remove_file(home.join("PENDING"));
     Ok(Some((previous, pending)))
@@ -932,6 +964,12 @@ fn stage_runtime_update(
     let expected_suffix = format!("-{platform}-{arch}");
     if !version.ends_with(&expected_suffix) {
         return Err("服务器返回了不适合本机的运行时".into());
+    }
+    // Gateway 只看「和 have 不一样」，会把比本机还旧的版本发下来（例如 Desktop 升级后内置的
+    // Bot 比 Gateway 上登记的都新）。不降级：这种情况等同于没有更新。同号不同构建的照样收。
+    if runtime_older(&version, &current) == Some(true) {
+        runtime_update_error(app, None);
+        return Ok(None);
     }
     if release.sha256.len() != 64 || !release.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("服务器返回的运行时校验值不合法".into());
@@ -1511,7 +1549,7 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{desktop_version_supports, is_seat_desktop, is_ui_origin, safe_runtime_version};
+    use super::{desktop_version_supports, is_seat_desktop, is_ui_origin, runtime_older, safe_runtime_version};
     use tauri::Url;
 
     #[test]
@@ -1545,6 +1583,16 @@ mod tests {
         assert!(safe_runtime_version("../CURRENT").is_err());
         assert!(safe_runtime_version("a/b").is_err());
         assert!(safe_runtime_version(".hidden").is_err());
+    }
+
+    #[test]
+    fn runtime_versions_compare_on_numbers_only() {
+        assert_eq!(runtime_older("0.1.13+abc1234-darwin-arm64", "0.1.14+0123456789abcdef"), Some(true));
+        assert_eq!(runtime_older("0.1.14+abc1234-darwin-arm64", "0.1.14+0123456789abcdef"), Some(false));
+        assert_eq!(runtime_older("0.2.0+abc1234-darwin-arm64", "0.1.14+0123456789abcdef"), Some(false));
+        // 老壳内置版的 VERSION 只是 sha256，读不出版本号
+        let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(runtime_older(sha, "0.1.14+0123456789abcdef"), None);
     }
 
     #[test]

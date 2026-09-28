@@ -42,7 +42,16 @@ if (packed.status !== 0) {
   process.exit(packed.status || 1)
 }
 rmSync(bot, { recursive: true, force: true })
-const version = createHash('sha256').update(readFileSync(join(runtime, 'bot.tgz'))).digest('hex')
+// 内置版的版本号 = bot/package.json 的 version + 包的 sha256 前 16 位。前半截给壳子比新旧
+// （main.rs 的 ensure_bundled_runtime：Desktop 升级后内置的更新就切过去，远端的更旧就不降级），
+// 后半截区分同号的不同构建。以前只写 sha256，壳子比不出新旧，升级后的内置版永远用不上。
+const sha = createHash('sha256').update(readFileSync(join(runtime, 'bot.tgz'))).digest('hex')
+const botVersion = String(JSON.parse(readFileSync(join(root, 'bot', 'package.json'), 'utf8')).version || '').trim()
+if (!/^\d+\.\d+\.\d+$/.test(botVersion)) {
+  logSummary(`prepare-runtime: bot/package.json 的 version「${botVersion}」须为 x.y.z`)
+  process.exit(1)
+}
+const version = `${botVersion}+${sha.slice(0, 16)}`
 writeFileSync(join(runtime, 'VERSION'), version + '\n')
 
 const node = process.platform === 'win32'
