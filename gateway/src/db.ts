@@ -3462,6 +3462,17 @@ export class Db {
   }
 
   /**
+   * 收信方式对齐（setWebhook 换 secret + 存散列）按绑定串行，见 channels/inbound.ts。
+   *
+   * 不用上面那把行锁：锁里要等一次 Telegram（最长 20 秒），行锁会把同一绑定上的推送
+   * 入库、配对一起堵住。这把是咨询锁，只和另一次对齐互斥。**必须在 db.tx 里调**。
+   */
+  async lockChannelInbound(id: string): Promise<void> {
+    if (!this.txClient.getStore()) throw new Error('lockChannelInbound 必须在事务里调用')
+    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`channel_inbound:${id}`])
+  }
+
+  /**
    * 该去长轮询的绑定。`webhookOnly = false`（webhook 模式）时挂着 webhook 的不选——它们的
    * 消息由 Telegram 推过来；模式关着时全选，好让轮询循环把残留的 webhook 删掉
    * （见 channels.ts 的 pollOne 与 channels/inbound.ts）。

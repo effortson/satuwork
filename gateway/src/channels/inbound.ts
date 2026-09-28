@@ -45,17 +45,27 @@ export function telegramWebhookUrl(publicId: string): string {
 /**
  * 把这条绑定的收信方式对齐到当前模式。绑定、重连、以及轮询扫到不对的时候都调它。
  * 返回之后 `webhookSecretHash` 就是真相：非空走 webhook，空走轮询。
+ *
+ * **按绑定串行。** setWebhook 换 secret 和把散列写进库是两步，两次重连（或重连撞上
+ * 轮询那边的对齐）交错的话，Telegram 手里是 secretB、库里是 hashA，之后每条推送都
+ * 404，而且没人报错。所以整段放在一个事务里、先拿这条绑定的对齐锁（lockChannelInbound）：
+ * 谁后拿到锁，谁的 secret 同时是 Telegram 和库里的那一把。锁里重新读一次绑定，轮询分支
+ * 看的是最新的散列。
  */
 export async function ensureTelegramInbound(db: Db, binding: ChannelBinding, token: string): Promise<ChannelBinding> {
-  if (telegramWebhookMode()) {
-    const secret = randomBytes(24).toString('base64url')
-    await telegramSetWebhook(token, telegramWebhookUrl(binding.publicId), secret)
-    return db.updateChannelBinding(binding.id, { webhookSecretHash: sha256Hex(secret), pollLeaseUntil: null, pollLastError: null })
-  }
-  // getUpdates 和 webhook 互斥；轮询模式下显式清掉，否则 getUpdates 会被 Telegram 以 409 顶回来。
-  await telegramDeleteWebhook(token, false)
-  if (!binding.webhookSecretHash) return binding
-  return db.updateChannelBinding(binding.id, { webhookSecretHash: '' })
+  return db.tx(async () => {
+    await db.lockChannelInbound(binding.id)
+    const cur = (await db.channelBinding(binding.id)) ?? binding
+    if (telegramWebhookMode()) {
+      const secret = randomBytes(24).toString('base64url')
+      await telegramSetWebhook(token, telegramWebhookUrl(cur.publicId), secret)
+      return db.updateChannelBinding(cur.id, { webhookSecretHash: sha256Hex(secret), pollLeaseUntil: null, pollLastError: null })
+    }
+    // getUpdates 和 webhook 互斥；轮询模式下显式清掉，否则 getUpdates 会被 Telegram 以 409 顶回来。
+    await telegramDeleteWebhook(token, false)
+    if (!cur.webhookSecretHash) return cur
+    return db.updateChannelBinding(cur.id, { webhookSecretHash: '' })
+  })
 }
 
 /** 一条推送头上的 secret 对不对。空散列的绑定不收推送——它在走轮询。 */

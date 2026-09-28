@@ -149,7 +149,8 @@ export async function mockTelegram() {
         res.end(JSON.stringify({ ok: true, result }))
       }
       // 用例可以挂一个 hook 注入故障：返回 { status, retryAfter } 就照 Telegram 的样子回错，
-      // 返回 { delayMs } 就晚这么久再照常处理（慢请求）。
+      // 返回 { delayMs } 就晚这么久再照常处理（慢请求）；返回 { lateMs } 是当场生效、
+      // 回包晚到（Telegram 已经改了，Gateway 还没听到回音）。
       const hooked = seen.hook?.(method, body) || null
       if (hooked?.status) {
         res.writeHead(hooked.status, { 'content-type': 'application/json' })
@@ -163,6 +164,10 @@ export async function mockTelegram() {
         setTimeout(() => respond(method, body, send), hooked.delayMs)
         return
       }
+      if (hooked?.lateMs) {
+        respond(method, body, (result) => setTimeout(() => send(result), hooked.lateMs))
+        return
+      }
       respond(method, body, send)
     })
     const respond = (method, body, send) => {
@@ -173,7 +178,10 @@ export async function mockTelegram() {
         return send(true)
       }
       if (method === 'setWebhook') {
-        seen.webhook = { url: String(body.url || ''), secret: String(body.secret_token || ''), allowed: body.allowed_updates || [] }
+        seen.webhook = {
+          url: String(body.url || ''), secret: String(body.secret_token || ''), allowed: body.allowed_updates || [],
+          maxConnections: body.max_connections,
+        }
         return send(true)
       }
       if (method === 'setMyCommands') {
