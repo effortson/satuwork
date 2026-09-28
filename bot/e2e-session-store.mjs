@@ -172,10 +172,93 @@ const danglingTurn = () => inTmp('satuwork-sess-c-', async (root) => {
   }
 })
 
+/** 默认缓存上限是 64；造比它多的会话才挤得动缓存。 */
+const CROWD = 72
+
+/** 造 n 条委派子会话，挂在 parent 下面。 */
+async function crowd(sessions, parent, n) {
+  const ids = []
+  for (let i = 0; i < n; i++) {
+    ids.push(await sessions.create({ botId: 'default', kind: 'task', parent: { sessionId: parent, callId: `c-${i}`, taskId: `k-${i}` } }))
+  }
+  return ids
+}
+
+/**
+ * 场景四：一条委派子会话正跑着一轮（卡在长命令 / 审批上），这时目录里的会话数超过
+ * 缓存上限、侧栏又刷了一下列表。
+ *
+ * 修之前：子会话被挤出缓存，下一次 append 从盘上重读，healDanglingTurn 把正跑着的
+ * 这一轮当成上个进程的残局，补一条假的 turn/end error——然后真的 turn/end 再来一条。
+ */
+const liveTurnUnderChurn = () => inTmp('satuwork-sess-d-', async (root) => {
+  const sessions = await freshService(root)
+  const main = await sessions.create({ botId: 'default', title: '主会话' })
+  const live = await sessions.create({ botId: 'default', kind: 'task', parent: { sessionId: main, callId: 'c-live', taskId: 'k-live' } })
+  await sessions.append(live, 'turn/start', { turn: 1 })
+  const others = await crowd(sessions, main, CROWD)
+  await sessions.list()
+  await sessions.list({ tasks: true })
+  // 把别的会话都读一遍：每一条都要进缓存，逼着淘汰。
+  for (const id of others) await sessions.events(id)
+  await sessions.append(live, 'turn/end', { turn: 1, reason: 'completed' })
+  const ends = (await sessions.events(live)).filter((e) => e.type === 'turn/end')
+
+  // list() 本身不该往缓存里塞东西：换一个空缓存的服务单独列一次。
+  const lister = await freshService(root)
+  const listed = await lister.list({ tasks: true })
+  return {
+    turnEnds: ends.length,
+    endReason: ends[0]?.data?.reason,
+    listedTotal: listed.length,
+    expectedTotal: CROWD + 2,
+    cacheAfterList: lister.cache.size,
+  }
+})
+
+/**
+ * 场景五：并发追加的同时别的会话在大批载入、挤缓存。
+ *
+ * 修之前：拿了号、还没落盘的那条会话被挤出去，再有人读它就从盘上重读出一份更小的
+ * seq，下一条事件跟已经发出去的撞号。
+ */
+const appendUnderChurn = () => inTmp('satuwork-sess-e-', async (root) => {
+  const first = await freshService(root)
+  const main = await first.create({ botId: 'default', title: '主会话' })
+  const [target] = await crowd(first, main, 1)
+  const others = await crowd(first, main, CROWD)
+
+  const sessions = await freshService(root)
+  const appends = Array.from({ length: CONCURRENCY }, (_, i) =>
+    sessions.append(target, 'user/message', {
+      message: { id: `m-${i}`, role: 'user', content: [{ type: 'text', text: textOf(i) }] },
+      source: { kind: 'user' },
+    }),
+  )
+  const churn = others.map((id) => sessions.events(id))
+  const reads = Array.from({ length: CONCURRENCY }, () => sessions.events(target))
+  const seqs = (await Promise.all(appends)).map((e) => e.seq)
+  await Promise.all([...churn, ...reads])
+
+  const fileSeqs = linesOf(join(root, `${target}.jsonl`)).map((l) => JSON.parse(l).seq)
+  return {
+    uniqueSeqs: new Set(seqs).size,
+    expectedSeqs: CONCURRENCY,
+    // 追加排成一条队：调用顺序就是拿号顺序，也是落盘行序。
+    increasing: seqs.every((n, i) => i === 0 || n > seqs[i - 1]),
+    fileIncreasing: fileSeqs.every((n, i) => i === 0 || n > fileSeqs[i - 1]),
+    fileUnique: new Set(fileSeqs).size === fileSeqs.length,
+    fileLines: fileSeqs.length,
+    expectedLines: 1 + CONCURRENCY,
+  }
+})
+
 const result = {
   concurrentAppend: await concurrentAppend(),
   migrateUnderLoad: await migrateUnderLoad(),
   danglingTurn: await danglingTurn(),
+  liveTurnUnderChurn: await liveTurnUnderChurn(),
+  appendUnderChurn: await appendUnderChurn(),
 }
 console.log('__RESULT__' + JSON.stringify(result))
 process.exit(0)
