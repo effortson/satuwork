@@ -276,6 +276,55 @@ out.paging = {
   }
 }
 
+// ── 10b. 大文件与非普通文件 ────────────────────────────────────────
+/**
+ * read_file 以前整份 `readFile` 再 `split`：一份 1.5 GB 的日志要摆出好几 GB，进程 OOM；
+ * 工作区里一个命名管道则让 readFile 一直等写端，中止也叫不醒。这里钉住流着读的口径
+ * （跨块的行号、跨块的超长行）、非普通文件一律拒、patch 的大小上限和中止信号。
+ */
+{
+  // 3 MB 出头、跨三四个读块，末行在最后一块里——行号数错一位就对不上。
+  const n = 300_000
+  writeFileSync(join(root, 'huge.log'), Array.from({ length: n }, (_, i) => `line-${i + 1}-${'y'.repeat(4)}`).join('\n') + '\n')
+  const tailPage = (await call('read_file', { path: 'huge.log', offset: n - 1, limit: 5 })).text
+  const midPage = (await call('read_file', { path: 'huge.log', offset: 150_000, limit: 2 })).text
+  // 一整行比读块还长：截断提示里报的字符数得是整行的，不是第一块的。
+  writeFileSync(join(root, 'wide2.txt'), 'z'.repeat(3 * 1024 * 1024) + '\nafter\n')
+  const wide2 = (await call('read_file', { path: 'wide2.txt' })).text
+  const { execFileSync } = await import('node:child_process')
+  let fifoRead = ''
+  let fifoPatch = ''
+  try {
+    execFileSync('mkfifo', [join(root, 'pipe')])
+    // 挂住的话 race 那一头会先到——测的就是「不会挂」。
+    const hung = new Promise((r) => setTimeout(() => r({ text: '挂住了' }), 3000))
+    fifoRead = (await Promise.race([call('read_file', { path: 'pipe' }), hung])).text
+    fifoPatch = (await Promise.race([call('patch', { path: 'pipe', old_string: 'a', new_string: 'b' }), hung])).text
+  } catch (e) {
+    fifoRead = fifoPatch = `mkfifo 失败：${e.message}`
+  }
+  writeFileSync(join(root, 'fat.txt'), 'q'.repeat(9 * 1024 * 1024))
+  const fatPatch = (await call('patch', { path: 'fat.txt', old_string: 'qqq', new_string: 'r' })).text
+  const ac = new AbortController()
+  ac.abort()
+  const aborted = await ctx.tools
+    .execute({ callId: 'c2', name: 'read_file', arguments: JSON.stringify({ path: 'huge.log' }), sessionId: 's-1', signal: ac.signal })
+    .then((r) => r.text)
+    .catch((e) => `抛了：${e.message}`)
+  out.bigFiles = {
+    跨块末行对得上: tailPage.split('\n')[0] === `${n - 1}|line-${n - 1}-yyyy` && tailPage.split('\n')[1] === `${n}|line-${n}-yyyy`,
+    末尾空行照旧算一行: tailPage.split('\n')[2] === `${n + 1}|`,
+    中间一页对得上: midPage.split('\n')[0] === '150000|line-150000-yyyy',
+    中间一页的提示: midPage.split('\n').pop() === `…（还有 ${n + 1 - 150_001} 行，用 offset=150002 接着读）`,
+    超长行跨块也报整行长度: wide2.includes(`已截断，共 ${3 * 1024 * 1024} 字符`) && wide2.includes('2|after'),
+    管道读不挂: /不是普通文件/.test(fifoRead),
+    管道改不挂: /不是普通文件/.test(fifoPatch),
+    太大的不给patch: /超过 patch 能编辑的上限/.test(fatPatch),
+    中止了就不读: /已中止/.test(aborted),
+    raw: { tailPage, midTail: midPage.split('\n').pop(), fifoRead, fifoPatch, fatPatch, aborted },
+  }
+}
+
 // ── 11. 删（右栏那棵树上的那颗按钮） ─────────────────────────────────
 /**
  * 这一组和上面那些同一个理由：删除是这个目录上**唯一不可逆**的操作，写松了不会有人
