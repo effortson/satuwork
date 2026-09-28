@@ -88,7 +88,8 @@ fi
 
 step 2 "安装桌面组件"
 # procps/iproute2：slim-desktop.sh 靠 pkill 和 ss 清上一轮的残留，少了它们那段会静默失效。
-PKGS="xorg xvfb dbus-x11 x11-xserver-utils xfwm4 thunar xfce4-terminal plank picom hsetroot x11vnc novnc python3-websockify procps iproute2"
+# xauth：slim-desktop.sh 给每块屏发 cookie（不再 -ac）；nftables：seat-cdp-guard.sh 的 nft。
+PKGS="xorg xvfb dbus-x11 x11-xserver-utils xfwm4 thunar xfce4-terminal plank picom hsetroot x11vnc novnc python3-websockify procps iproute2 xauth nftables"
 NEED=""
 for p in $PKGS; do
   if ! dpkg -s "$p" >/dev/null 2>&1; then NEED="$NEED $p"; fi
@@ -213,11 +214,17 @@ as_user mkdir -p "$WORK_DIR" "$HOME_DIR/.satuwork" \
 
 install -m 755 "$SEAT_ASSETS/slim-desktop.sh" /usr/local/bin/slim-desktop.sh
 install -m 755 "$SEAT_ASSETS/satuwork-bot.sh" /usr/local/bin/satuwork-bot.sh
+install -m 755 "$SEAT_ASSETS/seat-cdp-guard.sh" /usr/local/bin/seat-cdp-guard.sh
 install -m 644 "$SEAT_ASSETS/slim-desktop@.service" /etc/systemd/system/slim-desktop@.service
 install -m 644 "$SEAT_ASSETS/satuwork-bot@.service" /etc/systemd/system/satuwork-bot@.service
 
 # 模板里的 %i 是席位 ID，不再是用户名，所以 User= 只能从这儿来。模板里的
 # User=nobody 是兜底；drop-in 在主文件之后加载，标量设置后写覆盖先写。
+#
+# ExecStartPre=+ 那一行以 root 跑（`+` 不受 User= 管）：把 CDP 口判给这个席位的账号，
+# 别的账号连不上（见 seat-cdp-guard.sh）。nft 规则重启就没，所以挂在单元启动前而不是只
+# 在部署时装一次；两个单元都挂，因为 Chrome 两边都拉得起来（dock 上点、Bot 自己拉）。
+# 参数写死在这份 root 写的 drop-in 里，不从席位用户写得动的 desktop.env 读。
 mkdir -p "/etc/systemd/system/slim-desktop@$SEAT_ID.service.d" \
   "/etc/systemd/system/satuwork-bot@$SEAT_ID.service.d"
 cat > "/etc/systemd/system/slim-desktop@$SEAT_ID.service.d/seat.conf" << EOF_DESK_DROPIN
@@ -226,6 +233,7 @@ User=$LINUX_USER
 Group=$LINUX_USER
 Environment=HOME=$HOME_DIR
 Environment=SEAT_DIR=$SEAT_DIR
+ExecStartPre=+/usr/local/bin/seat-cdp-guard.sh add $SEAT_ID $LINUX_USER $CDP
 EOF_DESK_DROPIN
 cat > "/etc/systemd/system/satuwork-bot@$SEAT_ID.service.d/seat.conf" << EOF_BOT_DROPIN
 [Service]
@@ -234,6 +242,7 @@ Group=$LINUX_USER
 Environment=HOME=$HOME_DIR
 Environment=SEAT_DIR=$SEAT_DIR
 EnvironmentFile=-$SEAT_DIR/bot.env
+ExecStartPre=+/usr/local/bin/seat-cdp-guard.sh add $SEAT_ID $LINUX_USER $CDP
 EOF_BOT_DROPIN
 
 write_as_user "$SEAT_DIR/desktop.env" << EOF_ENV
@@ -293,6 +302,9 @@ SATUWORK_WORK_DIR=$WORK_DIR
 # 那几把工具连不上自己席位的浏览器。两份写的是同一个值，来源都是 $CDP。
 SATUWORK_CDP_PORT=$CDP
 DISPLAY=$DISPLAY_VAR
+# 这块屏的 X cookie（slim-desktop.sh 每次起屏写一张新的）。Bot 拉起的 Chrome、terminal
+# 里跑的 X 工具要靠它才连得上屏——Xvfb 已经不再 -ac 了。
+XAUTHORITY=$SEAT_DIR/Xauthority
 XDG_SESSION_TYPE=x11
 XDG_CONFIG_HOME=$SEAT_DIR/config
 XDG_DATA_HOME=$SEAT_DIR/share
@@ -318,6 +330,10 @@ enable_and_restart() {
   systemctl enable "$1" >/dev/null 2>&1 || true
   systemctl restart "$1"
 }
+# 先当场装一遍 CDP 口的规则：单元里的 ExecStartPre 也会装，但那里失败只落进 journal，
+# 部署这边只看到一句 restart 失败。装不上（没有 nf_tables、容器里没权限）就让部署失败
+# ——没有这一层，同机的别的员工就能直接驱动这个席位的浏览器。
+/usr/local/bin/seat-cdp-guard.sh add "$SEAT_ID" "$LINUX_USER" "$CDP"
 enable_and_restart "slim-desktop@$SEAT_ID.service"
 enable_and_restart "satuwork-bot@$SEAT_ID.service"
 

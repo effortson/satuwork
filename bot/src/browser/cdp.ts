@@ -7,6 +7,47 @@
  * 回来」——写出来比接一层适配器短。
  */
 
+import { readFileSync } from 'node:fs'
+
+/**
+ * 这个口上蹲着的监听者是不是**本进程这个账号**的。`true` 是，`false` 不是，`null` 判不了
+ * （不是 Linux、读不到 /proc、或者此刻根本没人在听）。
+ *
+ * **为什么要问。** 一台机器上跑着好几个员工的席位（一人一个 Linux 账号）。root 装的那条
+ * nft 规则（manager/src/seat/seat-cdp-guard.sh）挡的是「别的账号连进这个口」，挡不了
+ * 反方向：席位的 Chrome 没起来的时候口是空的（员工没点过、或者刚崩了），别的账号可以
+ * 抢先在 127.0.0.1:<这个口> 上听着。Bot 这时候连过去，就是把「开哪个网址、填什么」发给
+ * 了别人，还把别人回的页面当成自己席位上的内容读进上下文。nft 按 uid 挡不住这一半：
+ * 回包（SYN-ACK）不带完整的 socket，uid 那一项在那条路上是认不出来的。
+ *
+ * /proc/net/tcp{,6} 谁都读得到，每一行带着 socket 属主的 uid——拿来对一下就够了。
+ */
+export function listenerIsOurs(port: number): boolean | null {
+  if (process.platform !== 'linux' || typeof process.getuid !== 'function') return null
+  const me = process.getuid()
+  const hexPort = port.toString(16).toUpperCase().padStart(4, '0')
+  let seen = false
+  for (const file of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let text: string
+    try {
+      text = readFileSync(file, 'utf8')
+    } catch {
+      continue
+    }
+    for (const line of text.split('\n').slice(1)) {
+      // sl local_address rem_address st tx:rx tr:when retrnsmt uid timeout inode
+      const cols = line.trim().split(/\s+/)
+      if (cols.length < 8) continue
+      const [, local, , state, , , , uid] = cols
+      // 0A = LISTEN。地址不挑：0.0.0.0 / :: 上的监听一样接得住发往 127.0.0.1 的连接。
+      if (state !== '0A' || !local.endsWith(':' + hexPort)) continue
+      seen = true
+      if (Number(uid) !== me) return false
+    }
+  }
+  return seen ? true : null
+}
+
 /** 一条命令等多久。页面加载那类慢操作自己传更大的值。 */
 const DEFAULT_TIMEOUT = 15_000
 
@@ -46,6 +87,14 @@ export class Cdp {
    * 每次启动都变的 GUID。
    */
   static async connect(port: number, timeoutMs = 5_000): Promise<Cdp> {
+    // 先认人再说话：口上听着的不是自己这个账号，就一个字节都别发（见 listenerIsOurs）。
+    // 判不了（null）的放行——那是非 Linux 的本地 Bot，或者此刻没人在听、下面自然连不上。
+    if (listenerIsOurs(port) === false) {
+      throw new CdpError(
+        `127.0.0.1:${port} 上听着的不是这个席位账号的进程，拒绝连接。` +
+          '多半是同一台机器上别的账号抢先占了这个口；停掉它再重启这个席位的桌面。',
+      )
+    }
     const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
       signal: AbortSignal.timeout(timeoutMs),
       // CDP 的 HTTP 端点只认 Host 是 localhost / IP 的请求，这是 Chrome 自己防 DNS
