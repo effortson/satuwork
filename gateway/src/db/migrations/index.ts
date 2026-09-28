@@ -51,6 +51,12 @@ export interface Migration {
   /** 给人看的一句话，写进 schema_migrations，出问题时日志里认得出是哪一条。 */
   name: string
   sql: string
+  /**
+   * 这一条**发布之后又改过**时，旧版本的校验和。只给「补一步不改结果的前置修补」用
+   * （例如 0035 建唯一索引前先去重）：跑过旧版本的库形状已经对了，不必重跑，也不该被
+   * 当成「迁移被人改过」拦在门外。改了结果形状的，照旧写成新的一条。
+   */
+  previousChecksums?: string[]
 }
 
 /**
@@ -122,7 +128,14 @@ export const MIGRATIONS: Migration[] = [
   { id: '0032-channel-event-lease-token', name: '渠道消息短租约的续租与所有权隔离', sql: m0032 },
   { id: '0033-channel-approval-prompt', name: '渠道审批提示去重与重启恢复', sql: m0033 },
   { id: '0034-drop-task-board', name: '移除任务看板、时间线与对话任务抽取日志', sql: m0034 },
-  { id: '0035-routine-one-running', name: '日常任务同一时刻只允许一条 running 流水', sql: m0035 },
+  // 发布后补了一步「建索引前先去重」：存量库里真有两条 running 时旧版本会让 Gateway 起不来。
+  // 跑过旧版本的库索引已经在了，认旧校验和，不重跑。
+  {
+    id: '0035-routine-one-running',
+    name: '日常任务同一时刻只允许一条 running 流水',
+    sql: m0035,
+    previousChecksums: ['c321a7b2686a50d1'],
+  },
   { id: '0036-channel-event-files', name: '渠道事件保存本轮产出文件，供 Telegram 可靠投递预览', sql: m0036 },
   { id: '0037-channel-event-handoffs', name: '渠道事件保存本轮转人工卡，供 Telegram 可靠投递操作入口', sql: m0037 },
   { id: '0038-machine-direct-url', name: '席位机器的公网直连地址，桌面像素不再经过 Gateway', sql: m0038 },

@@ -6,7 +6,7 @@ import { partsIn } from './src/lib/schedule.ts'
 const url = process.env.E2E_DATABASE_URL || 'postgres://satuwork:satuwork@127.0.0.1:5434/satuwork'
 const schema = process.env.E2E_AUDIT_SCHEMA || 'e2e_conversation_audit'
 const db = new Db({ url, schema })
-const out = { 窗口: {}, 配置: {}, 空时段: {}, 筛选: {}, 翻页: {}, 评分理由: {}, 结果指纹: {}, 删除终审: {} }
+const out = { 窗口: {}, 配置: {}, 空时段: {}, 筛选: {}, 翻页: {}, 评分理由: {}, 结果指纹: {}, 删除终审: {}, 删除并发: {} }
 
 try {
   await db.init()
@@ -188,6 +188,34 @@ try {
     无会话也有空终审: batches.length === 1 && batches[0].kind === 'pre_delete' && batches[0].status === 'empty',
     终审后才删除: final?.status === 'completed' && !(await db.catalog(bot.id)),
     审计批次删除后保留: (await db.conversationAuditBatchesOfDeletion(first.id)).length === 1,
+  }
+
+  /**
+   * 同一个待拆的删除请求被三拍 tick 同时推：只有一边走到 purgeBot，完成审计只记一条。
+   * 状态迁移不带旧状态条件时，三边都会拆一遍席位、各记一条 bot.delete.completed。
+   */
+  const raceBot = await db.insertCatalog({ kind: 'bot', scope: 'user', companyId: company.id, accountId: account.id, name: '并发删除 Bot' })
+  const raceReq = await db.createBotDeletion({
+    companyId: company.id, accountId: account.id, botId: raceBot.id, botName: raceBot.name, requestedBy: account.id,
+  })
+  // 先一拍一拍正常推：没有会话，建一份空终审、停到 ready_to_purge 上。
+  for (let i = 0; i < 5 && (await db.botDeletion(raceReq.id))?.status !== 'ready_to_purge'; i++) {
+    await db.updateBotDeletion(raceReq.id, { nextTryAt: Date.now() - 1 })
+    await tickBotDeletions(db)
+  }
+  const raceReady = (await db.botDeletion(raceReq.id))?.status === 'ready_to_purge'
+  await db.updateBotDeletion(raceReq.id, { nextTryAt: Date.now() - 1 })
+  await Promise.all([tickBotDeletions(db), tickBotDeletions(db), tickBotDeletions(db)])
+  const raceFinal = await db.botDeletion(raceReq.id)
+  const raceAudits = (await db.auditsOf(company.id, 500)).filter(
+    (a) => a.action === 'bot.delete.completed' && a.detail?.requestId === raceReq.id,
+  )
+  // 已经被别人推过的快照再拿来推一次：条件更新改不到，什么都不做。
+  const staleClaim = await db.casBotDeletion(raceReq.id, { status: 'ready_to_purge', attempts: 0 }, { status: 'purging' })
+  out.删除并发 = {
+    只完成一次: raceReady && raceFinal?.status === 'completed' && raceFinal.attempts === 1,
+    完成审计只记一条: raceAudits.length === 1,
+    旧快照认领不到: staleClaim === undefined && (await db.botDeletion(raceReq.id))?.status === 'completed',
   }
 
   console.log('__RESULT__' + JSON.stringify(out))

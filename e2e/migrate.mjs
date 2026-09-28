@@ -312,6 +312,76 @@ export async function runMigrate({ gwRoot, test, start, waitHttp, assert, log })
       }
     })
 
+    /**
+     * 0035 建的是「每条任务最多一条 running」的唯一索引。它要防的正是「已经并发出了两条」，
+     * 存量库里真有这种行的话，裸建索引当场失败、Gateway 起不来。所以 0035 先去重。
+     *
+     * 造法：整套跑完之后把索引和 0035 那行账抹掉、塞进三条同一任务的 running，再起一次——
+     * 这时只有 0035 会重跑，跑的正是「存量库带着脏数据升级」那一刻。
+     */
+    await test('0035 遇上同一任务的多条 running：先去重再建索引，只留最新一条', async () => {
+      await fresh()
+      gw = boot('migrate-0035-base')
+      try {
+        await waitHttp(`${base}/health`, { child: gw, what: 'migrate-0035-base' })
+      } finally {
+        await stop(gw)
+      }
+      await client.query('drop index if exists routine_runs_one_running')
+      await client.query(`delete from schema_migrations where id = '0035-routine-one-running'`)
+      // 流水表外键连着 routines → catalog / accounts / companies，这里只关心流水本身：
+      // 本会话里关掉外键触发器，省得为了三行流水造一整家公司。
+      await client.query(`set session_replication_role = replica`)
+      try {
+        const ins = (id, routineId, startedAt) =>
+          client.query(
+            `insert into routine_runs (id, "routineId", "botId", "accountId", "companyId", trigger, status, "startedAt") values ($1,$2,'b','a','c','manual','running',$3)`,
+            [id, routineId, startedAt],
+          )
+        await ins('run-old', 'rt-dup', 1000)
+        await ins('run-mid', 'rt-dup', 2000)
+        await ins('run-new', 'rt-dup', 3000)
+        await ins('run-solo', 'rt-solo', 1500)
+      } finally {
+        await client.query(`set session_replication_role = origin`)
+      }
+      gw = boot('migrate-0035-dedupe')
+      try {
+        await waitHttp(`${base}/health`, { child: gw, what: 'migrate-0035-dedupe' })
+        /**
+         * 按 error 文案认是谁收的：进程起来之后 sweepUnclaimed 会把这几条没有租约的试跑
+         * 一并收掉（它们本来就没人领），状态看不出迁移留下了哪条，文案看得出。
+         */
+        const r = await client.query(`select id, status, error, "endedAt" from routine_runs order by id`)
+        const by = Object.fromEntries(r.rows.map((x) => [x.id, x]))
+        const dedupedByMigration = (x) => x.status === 'error' && String(x.error).includes('升级时只保留最新一条')
+        assert(!dedupedByMigration(by['run-new']), `最新那条不该被迁移收掉：${JSON.stringify(r.rows)}`)
+        assert(!dedupedByMigration(by['run-solo']), `别的任务的 running 不该被动：${JSON.stringify(r.rows)}`)
+        for (const id of ['run-old', 'run-mid']) {
+          assert(dedupedByMigration(by[id]) && by[id].endedAt != null, `${id} 应被迁移收成 error 并记上结束时刻：${JSON.stringify(by[id])}`)
+        }
+        const idx = await client.query(
+          `select 1 from pg_indexes where schemaname = $1 and indexname = 'routine_runs_one_running'`,
+          [SCHEMA],
+        )
+        assert(idx.rows.length === 1, '唯一索引没建出来')
+      } finally {
+        await stop(gw)
+      }
+    })
+
+    await test('0035 旧版本（没有去重那一步）跑过的库：认旧校验和，照常起来', async () => {
+      // 发布后给 0035 补了去重，已经跑过旧版本的库校验和对不上新代码——不能因此起不来。
+      await client.query(`update schema_migrations set checksum = 'c321a7b2686a50d1' where id = '0035-routine-one-running'`)
+      gw = boot('migrate-0035-legacy')
+      try {
+        await waitHttp(`${base}/health`, { child: gw, what: 'migrate-0035-legacy' })
+        assert(gw._out.includes('已是最新'), `没说「已是最新」：\n${gw._out.slice(-400)}`)
+      } finally {
+        await stop(gw)
+      }
+    })
+
     await test('两个进程同时起：迁移只跑一遍，锁还得放开', async () => {
       // 滚动重启、compose 起两个副本、有人手滑跑了两次 start——这个场景在部署脚本里
       // 太容易出现，而两个连接同时 create table 的报错很难看懂。

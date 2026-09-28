@@ -86,6 +86,12 @@ function oneBotRuntime(db: RouteCtx['db'], account: Account, item: CatalogItem) 
  * 所以**必须是同一把锁**——各用各的号，两边就能同时读到「还差一个」一起挤进来。
  */
 export const USER_BOT_QUOTA_LOCK = 0x43484e
+/**
+ * 席位写私有档 Skill / 长期记忆时「查重名、数条数、再插」那一段的锁（第二个键是对象，见
+ * db.lockExclusive）。不锁的话并发的两次写都读到「还差一条」「没有同名」，一起插进去。
+ */
+const SEAT_SKILL_LOCK = 0x534b4c
+const SEAT_MEMORY_LOCK = 0x4d454d
 
 /**
  * 「这份目录变了没有」的指纹。
@@ -448,40 +454,44 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     if (!text) throw new HttpError(400, 'Skill 要有正文')
     if (text.length > SEAT_SKILL_BODY_MAX) throw new HttpError(400, `正文最多 ${SEAT_SKILL_BODY_MAX} 个字符，写短一点`)
 
-    const visible = await db.skillsFor(companyId, account.id, botId)
-    const clash = visible.find((i) => i.name === name)
-    if (clash) {
-      throw new HttpError(409, `已经有一条「${name}」了。要改它就用 update，确实是另一件事就换个名字。`)
-    }
-    const mine = visible.filter((i) => i.scope === 'user')
-    if (mine.length >= SEAT_SKILL_MAX) {
-      throw new HttpError(409, `你自己写的 Skill 已经有 ${mine.length} 条（上限 ${SEAT_SKILL_MAX}）。先删掉用不上的那些。`)
-    }
+    // 查重名、数条数、插入放同一个事务、先拿这颗 Bot 的锁（同 POST /runtime/bots 的配额）。
+    const item = await db.tx(async () => {
+      await db.lockExclusive(SEAT_SKILL_LOCK, `${account.id}:${botId}`)
+      const visible = await db.skillsFor(companyId, account.id, botId)
+      const clash = visible.find((i) => i.name === name)
+      if (clash) {
+        throw new HttpError(409, `已经有一条「${name}」了。要改它就用 update，确实是另一件事就换个名字。`)
+      }
+      const mine = visible.filter((i) => i.scope === 'user')
+      if (mine.length >= SEAT_SKILL_MAX) {
+        throw new HttpError(409, `你自己写的 Skill 已经有 ${mine.length} 条（上限 ${SEAT_SKILL_MAX}）。先删掉用不上的那些。`)
+      }
 
-    const now = Date.now()
-    const item = await db.insertCatalog({
-      kind: 'skill',
-      scope: 'user',
-      companyId,
-      accountId: account.id,
-      botId,
-      name,
-      definition: {
-        body: text,
-        tags: tagsOf(body.tags),
-        source: '手动编写',
-        enabled: true,
-        /**
-         * **模型写的一律按需。** `mode` 这个参数它给不了：常驻直接改这颗 Bot 之后
-         * 每一轮的行为、还占着提示词前缀，那是管理员点的，不是模型给自己开的。
-         */
-        mode: '按需',
-        // 席位扫出来的 PII 类型，**只存不判**：判据那一份在席位上（policy/pii.ts），
-        // 抄第二份就会分叉。界面拿它标红给管理员看。
-        ...(Array.isArray(body.pii) && body.pii.length ? { pii: body.pii.map(String).slice(0, 8) } : {}),
-        createdAt: now,
-        updatedAt: now,
-      },
+      const now = Date.now()
+      return db.insertCatalog({
+        kind: 'skill',
+        scope: 'user',
+        companyId,
+        accountId: account.id,
+        botId,
+        name,
+        definition: {
+          body: text,
+          tags: tagsOf(body.tags),
+          source: '手动编写',
+          enabled: true,
+          /**
+           * **模型写的一律按需。** `mode` 这个参数它给不了：常驻直接改这颗 Bot 之后
+           * 每一轮的行为、还占着提示词前缀，那是管理员点的，不是模型给自己开的。
+           */
+          mode: '按需',
+          // 席位扫出来的 PII 类型，**只存不判**：判据那一份在席位上（policy/pii.ts），
+          // 抄第二份就会分叉。界面拿它标红给管理员看。
+          ...(Array.isArray(body.pii) && body.pii.length ? { pii: body.pii.map(String).slice(0, 8) } : {}),
+          createdAt: now,
+          updatedAt: now,
+        },
+      })
     })
     await db.audit({
       companyId,
@@ -664,50 +674,58 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     if (!companyId) throw new HttpError(400, '这个账号不属于任何公司，写不了记忆')
     const botId = await seatBotOf(req, account)
     const body = bodyOf(req)
-    const { mem, all, mine, max } = await memoryCtx(account, companyId, botId)
-    if (!mem.on) throw new HttpError(403, '这个 Bot 的长期记忆是关着的。')
-
-    const layer = seatLayerOf(body.layer)
-    const text = seatTextOf(body)
-    const kind = seatKindOf(body, mem)
-
     /**
-     * **完全重复的直接拒**（同 hermes 那份）。
-     *
-     * 判重的范围是**这颗 Bot 真的会看到的那几层**（按模版的「记忆范围」裁），不是库里
-     * 读得出来的全部。差别不是洁癖：`scope` 是「仅本人」时，公司层那些条目一条都不会
-     * 进它的提示词——拿它们去挡写入，模型收到的是「这条已经记过了」，而它永远看不见
-     * 那一条，于是它既记不下来、也答不上来（这条是 code review 抓出来的）。
+     * 判重、数条数、插入放同一个事务、先拿锁（同私有档 Skill 那条）。锁按**人**不按 Bot：
+     * `self` 那一层跟着人走、几颗 Bot 共用，两颗 Bot 同时往里写也得排队。
      */
-    const visible = memoryScopeLayers(mem.scope)
-    const key = memoryKey(text)
-    const dup = all.filter((m) => visible.has(m.layer)).find((m) => memoryKey(m.text) === key)
-    if (dup) {
-      throw new HttpError(409, `这条已经记过了（${dup.layer === 'bot' || dup.layer === 'self' ? '你自己记的' : '管理员设的'}）：${dup.text}`)
-    }
-    if (mine.length >= max) {
-      /** 到顶不自动淘汰最老的：那等于「它记住了，然后某天悄悄忘了」，而人不会收到任何
-       *  提示。让它撞墙、自己整合，是唯一能让「忘了什么」留下痕迹的做法。 */
-      const oldest = [...mine].sort((a, b) => a.updatedAt - b.updatedAt).slice(0, 3)
-      throw new HttpError(
-        409,
-        `记忆满了（${mine.length}/${max}）。先用 remove 或 replace 整合掉几条，最老的几条是：${oldest.map((m) => m.text).join('；')}`,
-      )
-    }
+    const { row, used, max, layer, kind } = await db.tx(async () => {
+      await db.lockExclusive(SEAT_MEMORY_LOCK, account.id)
+      const { mem, all, mine, max } = await memoryCtx(account, companyId, botId)
+      if (!mem.on) throw new HttpError(403, '这个 Bot 的长期记忆是关着的。')
 
-    const row = await db.insertMemory({
-      layer,
-      companyId,
-      accountId: account.id,
-      botId,
-      kind,
-      text,
-      by: 'agent',
-      sourceSessionId: typeof body.sessionId === 'string' ? body.sessionId : null,
-      // 席位扫出来的敏感类型，**只存不判**：判据那一份在席位上（policy/pii.ts），
-      // 抄第二份就会分叉。界面拿它标红给管理员看。
-      pii: Array.isArray(body.pii) ? body.pii.map(String).slice(0, 8) : [],
-      expiresAt: memoryExpiresAt(mem),
+      const layer = seatLayerOf(body.layer)
+      const text = seatTextOf(body)
+      const kind = seatKindOf(body, mem)
+
+      /**
+       * **完全重复的直接拒**（同 hermes 那份）。
+       *
+       * 判重的范围是**这颗 Bot 真的会看到的那几层**（按模版的「记忆范围」裁），不是库里
+       * 读得出来的全部。差别不是洁癖：`scope` 是「仅本人」时，公司层那些条目一条都不会
+       * 进它的提示词——拿它们去挡写入，模型收到的是「这条已经记过了」，而它永远看不见
+       * 那一条，于是它既记不下来、也答不上来（这条是 code review 抓出来的）。
+       */
+      const visible = memoryScopeLayers(mem.scope)
+      const key = memoryKey(text)
+      const dup = all.filter((m) => visible.has(m.layer)).find((m) => memoryKey(m.text) === key)
+      if (dup) {
+        throw new HttpError(409, `这条已经记过了（${dup.layer === 'bot' || dup.layer === 'self' ? '你自己记的' : '管理员设的'}）：${dup.text}`)
+      }
+      if (mine.length >= max) {
+        /** 到顶不自动淘汰最老的：那等于「它记住了，然后某天悄悄忘了」，而人不会收到任何
+         *  提示。让它撞墙、自己整合，是唯一能让「忘了什么」留下痕迹的做法。 */
+        const oldest = [...mine].sort((a, b) => a.updatedAt - b.updatedAt).slice(0, 3)
+        throw new HttpError(
+          409,
+          `记忆满了（${mine.length}/${max}）。先用 remove 或 replace 整合掉几条，最老的几条是：${oldest.map((m) => m.text).join('；')}`,
+        )
+      }
+
+      const row = await db.insertMemory({
+        layer,
+        companyId,
+        accountId: account.id,
+        botId,
+        kind,
+        text,
+        by: 'agent',
+        sourceSessionId: typeof body.sessionId === 'string' ? body.sessionId : null,
+        // 席位扫出来的敏感类型，**只存不判**：判据那一份在席位上（policy/pii.ts），
+        // 抄第二份就会分叉。界面拿它标红给管理员看。
+        pii: Array.isArray(body.pii) ? body.pii.map(String).slice(0, 8) : [],
+        expiresAt: memoryExpiresAt(mem),
+      })
+      return { row, used: mine.length + 1, max, layer, kind }
     })
     await db.audit({
       companyId,
@@ -715,7 +733,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       action: 'memory.create',
       detail: { id: row.id, layer, kind, botId, by: 'bot' },
     })
-    json(res, 201, memoryOut(row, mine.length + 1, max))
+    json(res, 201, memoryOut(row, used, max))
   })
 
   /**

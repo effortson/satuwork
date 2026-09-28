@@ -424,60 +424,95 @@ function sweepLeases(db: Db): Promise<void> {
     })
 }
 
+/** 维护节拍里的一步。`name` 只用来在日志里认出是哪一步出的错。 */
+export interface MaintenanceStep {
+  name: string
+  run: (db: Db) => unknown
+}
+
 /**
- * 一拍要做的全部事。Debian 上由 startRoutineScheduler 每 30 秒调一次；Vercel 上由 Cron 打
- * `/cron/tick`（routes/cron.ts）每分钟调一次。**两边同一份**，节拍不同而已。
+ * 一拍要做的全部事，**按顺序**。Debian 上由 startRoutineScheduler 每 30 秒调一次；Vercel 上由
+ * Cron 打 `/cron/tick`（routes/cron.ts）每分钟调一次。**两边同一份**，节拍不同而已。
  *
  * 顺序里的每一项都是可重入、无状态的扫描（各有自己的 claim / lease），叠着跑不会做两遍。
+ * 每一步各自兜错（见 runMaintenanceSteps）：某一步持续报错，不能让排在它后面的删除终审、
+ * 部署对账跟着每一拍都被跳过。
  */
-export async function maintenanceTick(db: Db): Promise<void> {
-  await Promise.resolve()
-    .then(() => tickRoutines(db))
-    // 没人来领的试跑跟着每一轮收（见 sweepUnclaimed）。
-    .then(() => sweepUnclaimed(db))
-    .then(() => sweepLeases(db))
-    // 管家拿了模型调用的授权却没回来结算的，同一个节拍收（见 sweepUnsettledLlmCalls）。
-    .then(() => sweepUnsettledLlmCalls(db))
-    /**
-     * 转人工的催办跟着同一个节拍走（见 handoff-sweep.ts）。
-     *
-     * **不新起一个定时器**：两件事的周期一样（半分钟量级的粗节拍），而多一个
-     * 定时器就多一处要在关停时记得清的东西——忘了清的表现是进程不退出。
-     */
-    .then(() => sweepHandoffs(db))
-    // 登录限流过了窗口的桶（lib/auth-throttle.ts）。不收也不影响对错，只是不让表一直长。
-    .then(() => sweepAuthThrottle(db))
-    // 自动对话审计与删除终审复用同一个粗节拍。批次和删除请求都在库里，tick 只负责推进。
-    .then(() => tickConversationAudits(db))
-    .then(() => tickBotDeletions(db))
-    /**
-     * 停在「安装中」没人收尾的席位，去管家那儿问结局（见 deploy.ts 的 reconcileStuckDeploys）。
-     * Vercel 上后台装机那一段会随函数实例一起被冻住，这一拍是没人开着页面时唯一的收尾。
-     */
-    .then(() => reconcileStuckDeploys(db).then((n) => {
-      if (n) console.log(`satuwork-gateway: 补上了 ${n} 个席位的部署结局`)
-    }))
-    /**
-     * 批量更新排下、还没轮到的席位，接着往前推一段（见 deploy.ts 的 runSeatDeployQueue）。
-     * 排在对账后面：刚补上结局的那台机器这一拍就能接着装下一个。**不等它**，一段要几分钟。
-     */
-    .then(() => kickSeatDeployQueue(db))
-    /**
-     * 模型目录的自动发现（见 model-discovery.ts）。**同样不新起定时器**——理由和
-     * 上面两处一样。它自己按 GATEWAY_MODEL_DISCOVERY_MS 节流（默认 6 小时），
-     * 所以挂在这个半分钟的粗节拍上不会真的每半分钟去拉一次。
-     */
-    .then(() => refreshDiscovered(db).then(async (r) => {
-      if (r.error) console.error(`satuwork-gateway: 模型目录刷新失败：${r.error}`)
-      else if (r.ran) {
-        console.log(`satuwork-gateway: 模型目录已刷新，models.dev 收录 ${r.added} 个可用模型`)
-        // 上游不再收录的模型掉出了目录，备选里指着它的一起拿掉（见 lib/alternates.ts）。
-        // 只在真刷新过的那一拍做：Llm 建一个要把内置目录整份铺开，不值得每半分钟来一次。
-        const dropped = await pruneDailyAlternates(db, createLlm(db))
-        if (dropped.length) console.log(`satuwork-gateway: 日常模型备选里 ${dropped.join('、')} 已不在目录里，已移除`)
-      }
-    }))
-    .catch((e: Error) => console.error(`satuwork-gateway: 日常任务扫描失败：${e.message}`))
+export const MAINTENANCE_STEPS: MaintenanceStep[] = [
+  { name: '日常任务调度', run: (db) => tickRoutines(db) },
+  // 没人来领的试跑跟着每一轮收（见 sweepUnclaimed）。
+  { name: '收没人领的试跑', run: (db) => sweepUnclaimed(db) },
+  { name: '收工人租约', run: (db) => sweepLeases(db) },
+  // 管家拿了模型调用的授权却没回来结算的，同一个节拍收（见 sweepUnsettledLlmCalls）。
+  { name: '收未结算的模型调用', run: (db) => sweepUnsettledLlmCalls(db) },
+  /**
+   * 转人工的催办跟着同一个节拍走（见 handoff-sweep.ts）。
+   *
+   * **不新起一个定时器**：两件事的周期一样（半分钟量级的粗节拍），而多一个
+   * 定时器就多一处要在关停时记得清的东西——忘了清的表现是进程不退出。
+   */
+  { name: '转人工催办', run: (db) => sweepHandoffs(db) },
+  // 登录限流过了窗口的桶（lib/auth-throttle.ts）。不收也不影响对错，只是不让表一直长。
+  { name: '清登录限流', run: (db) => sweepAuthThrottle(db) },
+  // 自动对话审计与删除终审复用同一个粗节拍。批次和删除请求都在库里，tick 只负责推进。
+  { name: '对话审计', run: (db) => tickConversationAudits(db) },
+  { name: '删除 Bot', run: (db) => tickBotDeletions(db) },
+  /**
+   * 停在「安装中」没人收尾的席位，去管家那儿问结局（见 deploy.ts 的 reconcileStuckDeploys）。
+   * Vercel 上后台装机那一段会随函数实例一起被冻住，这一拍是没人开着页面时唯一的收尾。
+   */
+  {
+    name: '部署对账',
+    run: (db) =>
+      reconcileStuckDeploys(db).then((n) => {
+        if (n) console.log(`satuwork-gateway: 补上了 ${n} 个席位的部署结局`)
+      }),
+  },
+  /**
+   * 批量更新排下、还没轮到的席位，接着往前推一段（见 deploy.ts 的 runSeatDeployQueue）。
+   * 排在对账后面：刚补上结局的那台机器这一拍就能接着装下一个。**不等它**，一段要几分钟。
+   */
+  { name: '推部署队列', run: (db) => kickSeatDeployQueue(db) },
+  /**
+   * 模型目录的自动发现（见 model-discovery.ts）。**同样不新起定时器**——理由和
+   * 上面两处一样。它自己按 GATEWAY_MODEL_DISCOVERY_MS 节流（默认 6 小时），
+   * 所以挂在这个半分钟的粗节拍上不会真的每半分钟去拉一次。
+   */
+  {
+    name: '模型目录刷新',
+    run: (db) =>
+      refreshDiscovered(db).then(async (r) => {
+        if (r.error) console.error(`satuwork-gateway: 模型目录刷新失败：${r.error}`)
+        else if (r.ran) {
+          console.log(`satuwork-gateway: 模型目录已刷新，models.dev 收录 ${r.added} 个可用模型`)
+          // 上游不再收录的模型掉出了目录，备选里指着它的一起拿掉（见 lib/alternates.ts）。
+          // 只在真刷新过的那一拍做：Llm 建一个要把内置目录整份铺开，不值得每半分钟来一次。
+          const dropped = await pruneDailyAlternates(db, createLlm(db))
+          if (dropped.length) console.log(`satuwork-gateway: 日常模型备选里 ${dropped.join('、')} 已不在目录里，已移除`)
+        }
+      }),
+  },
+]
+
+/**
+ * 一步一步按顺序跑，**每一步单独兜错**：出错只记一笔、接着跑下一步，返回出错的那几步。
+ * 下一拍还会再来，一次失败不值得把整拍报废。
+ */
+export async function runMaintenanceSteps(db: Db, steps: MaintenanceStep[]): Promise<{ failed: string[] }> {
+  const failed: string[] = []
+  for (const step of steps) {
+    try {
+      await step.run(db)
+    } catch (e) {
+      failed.push(step.name)
+      console.error(`satuwork-gateway: 维护节拍「${step.name}」失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  return { failed }
+}
+
+export function maintenanceTick(db: Db): Promise<{ failed: string[] }> {
+  return runMaintenanceSteps(db, MAINTENANCE_STEPS)
 }
 
 /**
