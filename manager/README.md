@@ -201,6 +201,7 @@ x-satuwork-machine / cookie，所以反代过去的聊天流量上它还在—�
 
 - 只有过了 `requireMachine` 才会被读到——说话的人拿得出 `smt_`。
 - 形状不对（带路径、不是 http/https）一律不认，保持原样。
+- 非回环的明文 http 也不认（见下面「Gateway 必须是 https」）。
 - Gateway 那侧只在**明确配过** `GATEWAY_PUBLIC_URL` 时才发这个头：没配时它会回落成
   `GATEWAY_HOST:GATEWAY_PORT`（多半是 `127.0.0.1:3080`），拿那个去教管家等于当场把
   机器打死。
@@ -209,6 +210,20 @@ x-satuwork-machine / cookie，所以反代过去的聊天流量上它还在—�
 但它不必等重铺：Gateway 反代任意一条通过 `sat_` 验证的 `/api/*` 请求时都会把同一个
 `x-satuwork-gateway-url` 头带到 Bot；Bot 先原子写回 `bot.env`，再更新进程内环境，当下就
 恢复模型、目录和上报。重铺仍会重写整份部署配置，可作为席位完全收不到入站请求时的兜底。
+
+## Gateway 必须是 https
+
+管家以 root 跑，而它从 Gateway 那儿听的话分量极重：心跳回包里一句 `removed: true` 就拆掉
+所有席位，升级要约里的地址和 sha256 决定下一版以 root 跑什么，心跳头上还带着 `smt_`。所以
+**非回环的 Gateway 地址必须是 https**（[src/config.ts](src/config.ts) 的 `gatewayUrlProblem`）：
+配对、心跳、拉 bot 包、入站调用教的新地址、写进席位 `bot.env` 的 `GATEWAY_URL` 都过这一道。
+地址不过关时配对直接失败；已经配过的机器不再发心跳（平台上显示失联，席位照跑），journal
+里有一句说得清的话。
+
+放行的只有回环（`localhost`、`127.x`、`::1`）和 `*.localhost` / `*.test`——e2e 和单机开发用。
+管家在虚拟机里、Gateway 在宿主机 `http://192.168.64.1:3080` 这种局域网开发环境，要在
+`/etc/satuwork/manager.env` 里显式加一行 `SATUWORK_ALLOW_INSECURE_GATEWAY=1`，每次启动都会吼
+一句警告。线上机器别开它。
 
 ## 用 Caddy 给管家配 https
 

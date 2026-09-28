@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { managerVersion, releaseRoot } from './config.ts'
+import { gatewayUrlProblem, managerVersion, releaseRoot } from './config.ts'
 import { run } from './run.ts'
 
 /**
@@ -84,6 +84,13 @@ async function fetchRelease(
 
   const direct = opts.url && opts.sha256 ? opts.url : ''
   const url = direct || `${opts.gatewayUrl}/internal/bot-releases/${encodeURIComponent(version)}`
+  // 要带机器票的那一路（走 Gateway 转发，或直连地址和 Gateway 同源），Gateway 必须是 https：
+  // 明文上一趟就把票交给了路上的人（见 config.ts 的 gatewayUrlProblem）。直连 GitHub 那一路
+  // 不带票、按规格里的 sha256 核对，不受这一条管。
+  if (!direct || sameOrigin(direct, opts.gatewayUrl)) {
+    const problem = gatewayUrlProblem(opts.gatewayUrl)
+    if (problem) throw new Error(problem)
+  }
   // 机器票只交给 Gateway 自己：直连地址和配对的 Gateway 不同源就裸取（同 upgrade.ts）。
   // 票是这台机器的 root 控制面凭据，不能因为规格里一行地址就寄到 GitHub 去。
   const res = await fetch(url, {
