@@ -489,6 +489,15 @@ const UI_CSP: &str = concat!(
 );
 
 /**
+ * 界面路径里的一段能不能拼到 ui 目录后面。`..` / `.` 逃目录；`\\` 在 Windows 上是分隔符；
+ * `:` 挡的是 Windows 的盘符前缀（`C:foo` 被 PathBuf::push 当成另一个盘上的路径，整个替换掉
+ * ui 目录）和 NTFS 的备用数据流（`index.html:x`）。界面文件名里本来就没有冒号。
+ */
+fn safe_ui_segment(seg: &str) -> bool {
+    !(seg == ".." || seg == "." || seg.contains('\\') || seg.contains(':'))
+}
+
+/**
  * `satu://localhost/…`：从包里发界面。
  *
  * 和 Gateway 的 serveUi 同一套规矩：路径不得逃出目录；找不到的路径**回 index.html**——这是个
@@ -508,7 +517,7 @@ fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>) -> tauri::
     let rel = raw.split('?').next().unwrap_or("");
     let mut file = dir.clone();
     for seg in rel.split('/').filter(|s| !s.is_empty()) {
-        if seg == ".." || seg == "." || seg.contains('\\') {
+        if !safe_ui_segment(seg) {
             return not_found();
         }
         file.push(seg);
@@ -1446,7 +1455,20 @@ fn stop_local_bot(app: AppHandle, bot_id: String) -> Result<(), String> {
     {
         terminate_local_bot(&mut child.child).map_err(|e| format!("停止本地 Bot 失败：{e}"))?;
     }
+    // 一颗都不剩了，就别再拿最后那张票每小时去问更新：人可能已经退出登录、票也可能作废了。
+    // 下一次 start 会重新记上。
+    let empty = app.state::<LocalBots>().0.lock().map(|bots| bots.is_empty()).unwrap_or(false);
+    if empty {
+        clear_update_source(&app);
+    }
     Ok(())
+}
+
+/** 清掉每小时运行时自查用的 Gateway 地址和票（见 UpdateSource）。 */
+fn clear_update_source(app: &AppHandle) {
+    if let Ok(mut src) = app.state::<UpdateSource>().0.lock() {
+        *src = None;
+    }
 }
 
 #[tauri::command]
@@ -1588,6 +1610,8 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
                 let _ = win.close();
             }
         }
+        // 老服务器的地址和票也别留给每小时的运行时自查；换到新服务器、起了 Bot 之后会重新记上。
+        clear_update_source(app);
         // 建窗口不能在菜单回调里同步做：Windows 上 WebviewWindowBuilder::build() 在同步命令和
         // 事件回调里会死锁（WebView2 的已知问题，见 Tauri 的 WebviewWindowBuilder 文档），
         // 要换到别的线程上建。
@@ -1601,7 +1625,10 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{desktop_version_supports, is_seat_desktop, is_ui_origin, runtime_older, safe_runtime_version};
+    use super::{
+        desktop_version_supports, is_seat_desktop, is_ui_origin, runtime_older, safe_runtime_version,
+        safe_ui_segment,
+    };
     use tauri::Url;
 
     #[test]
@@ -1626,6 +1653,16 @@ mod tests {
         ];
         for u in no {
             assert!(!is_ui_origin(&Url::parse(u).unwrap()), "不该当界面源：{u}");
+        }
+    }
+
+    #[test]
+    fn ui_path_segments_cannot_escape_ui_directory() {
+        for ok in ["index.html", "chat.js", "assets", "satuwork-logo.png"] {
+            assert!(safe_ui_segment(ok), "该放行：{ok}");
+        }
+        for bad in ["..", ".", "C:", "C:..", "c:foo", "index.html:x", "a\\b"] {
+            assert!(!safe_ui_segment(bad), "不该放行：{bad}");
         }
     }
 
