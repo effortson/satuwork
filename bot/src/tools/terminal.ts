@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createWriteStream, readdirSync, readFileSync, type WriteStream } from 'node:fs'
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { createWriteStream, readdirSync, readFileSync, renameSync, type WriteStream } from 'node:fs'
+import { mkdir, open, readdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
@@ -274,6 +274,24 @@ const MAX_TAIL_CHARS = 256 * 1024
 const LOG_TAIL_LINES = 200
 /** 通知里带最后几行。不带的话模型的下一步一定是 `process(action='log')`，白花一步。 */
 const NOTIFY_TAIL_LINES = 20
+/**
+ * 一段日志写到多大就滚一次：当前这段改名成 `<id>.log.1`（顶掉更早的那段），再开一段新的。
+ *
+ * 盘上于是最多两段。以前是只增不减：一个刷屏的 `pnpm dev` 跑满 24 小时能把盘写满，
+ * 而人要看的几乎总是最近那一截。
+ */
+const LOG_SEGMENT_BYTES = 8 * 1024 * 1024
+/**
+ * 写流里积压超过这么多就丢，不再往里塞。
+ *
+ * 盘慢（或者满了在重试）时 `write` 不会失败，只会把数据攒在 WriteStream 的缓冲里——
+ * 不设上限的话积压全在内存里涨。丢掉的量记下来，等缓冲下去了在日志里补一句。
+ */
+const MAX_LOG_PENDING = 2 * 1024 * 1024
+/** `log` 读回来时一行最多多少字符。进度条那种几 MB 不换行的输出，整行摆回去只会冲掉上下文。 */
+const MAX_LOG_LINE_CHARS = 2000
+/** 读日志一次从盘上拿多少字节。 */
+const LOG_READ_CHUNK = 1024 * 1024
 
 interface Proc {
   id: string
@@ -287,6 +305,13 @@ interface Proc {
   child: ChildProcess
   log: WriteStream
   logPath: string
+  /** 当前这段写了多少字节、多少个换行；`.1` 那段有多少个换行；滚掉的段里一共多少个换行。 */
+  segBytes: number
+  segLines: number
+  prevLines: number
+  goneLines: number
+  /** 因为写流积压而丢掉、还没在日志里交代的字节数。 */
+  logDropped: number
   /** 内存里的尾巴，以及它在整条输出流里的起点——`poll` 靠这两个算「上次之后的新输出」。 */
   tail: string
   tailFrom: number
@@ -422,6 +447,88 @@ function spawnShell(command: string, cwd: string): ChildProcess {
  *
  * 回调拿到解码后的文本和这一块的**字节数**（截断判据看的是字节，不是字符）。
  */
+function countNewlines(text: string): number {
+  let n = 0
+  for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) n++
+  return n
+}
+
+/**
+ * 把几段日志当成一整条流按行读，只留要的那几行。
+ *
+ * 以前是整份 `readFile` 再 `split`：几百 MB 的日志一次摆进内存，大到超过字符串上限时
+ * 直接 ERR_STRING_TOO_LONG。现在按块扫、一行最多留 MAX_LOG_LINE_CHARS 个字符，内存里
+ * 只有这一页。`from` 给了就取 `[from, from+cap)`，没给就取最后 `cap` 行（从 1 数）。
+ * 末尾换行之后那个空行不算一行。一段都读不到时返回 undefined。
+ */
+async function readLogLines(paths: string[], from: number | undefined, cap: number) {
+  const picked: { no: number; text: string }[] = []
+  let line = 1
+  let parts: Buffer[] = []
+  let kept = 0
+  /** 当前这一行一共多少字节（不管留没留）——判「末尾是不是空行」要看它。 */
+  let cur = 0
+  let long = false
+  let any = false
+  const keep = (no: number) => (from === undefined ? true : no >= from && no < from + cap)
+  const finish = () => {
+    if (keep(line)) {
+      let text = Buffer.concat(parts).toString('utf8')
+      if (long || text.length > MAX_LOG_LINE_CHARS) text = `${text.slice(0, MAX_LOG_LINE_CHARS)}…（这一行太长，截断了）`
+      picked.push({ no: line, text })
+      if (from === undefined && picked.length > cap + 1) picked.shift()
+    }
+    parts = []
+    kept = 0
+    cur = 0
+    long = false
+  }
+  const buf = Buffer.alloc(LOG_READ_CHUNK)
+  for (const path of paths) {
+    const fh = await open(path, 'r').catch(() => undefined)
+    if (!fh) continue
+    any = true
+    try {
+      for (;;) {
+        const { bytesRead: n } = await fh.read(buf, 0, buf.length, null)
+        if (!n) break
+        let pos = 0
+        while (pos < n) {
+          const nl = buf.indexOf(10, pos)
+          const stop = nl === -1 || nl >= n ? n : nl
+          cur += stop - pos
+          if (keep(line)) {
+            const room = MAX_LOG_LINE_CHARS * 4 - kept
+            if (stop - pos > room) long = true
+            if (room > 0) {
+              const slice = Buffer.from(buf.subarray(pos, Math.min(stop, pos + room)))
+              parts.push(slice)
+              kept += slice.length
+            }
+          }
+          if (stop === n) break
+          finish()
+          line++
+          pos = stop + 1
+        }
+      }
+    } finally {
+      await fh.close()
+    }
+  }
+  if (!any) return undefined
+  // 最后一行没有换行收尾；是空的就是末尾换行之后那一个，不算。
+  const lastEmpty = !cur
+  finish()
+  let total = line
+  if (lastEmpty) {
+    total--
+    if (picked.length && picked[picked.length - 1].no === line) picked.pop()
+  }
+  if (from === undefined && picked.length > cap) picked.shift()
+  return { picked, total }
+}
+
 function pipeInto(child: ChildProcess, onText: (text: string, bytes: number) => void) {
   for (const stream of [child.stdout, child.stderr]) {
     if (!stream) continue
@@ -657,6 +764,7 @@ export function apply(ctx: Context, config: Config = {}) {
     const gone = setTimeout(() => {
       procs.delete(p.id)
       void unlink(p.logPath).catch(() => {})
+      void unlink(`${p.logPath}.1`).catch(() => {})
     }, KEEP_AFTER_EXIT_MS)
     gone.unref?.()
     p.timers.push(gone)
@@ -668,6 +776,55 @@ export function apply(ctx: Context, config: Config = {}) {
      * 冒出来，账上还多一次模型调用。关机同理：进程马上就没了，没有人在等这句话。
      */
     if (p.notify && p.killedBy !== 'shutdown' && p.killedBy !== 'model') void notifyExit(p)
+  }
+
+  const openLog = (p: Proc) => {
+    const log = createWriteStream(p.logPath)
+    // 写日志失败（盘满）不该把进程带走：少一份全文，poll 那条尾巴还在。
+    log.on('error', (e) => ctx.logger?.warn?.(`terminal: ${p.id} 的日志写不下去：${e.message}`))
+    return log
+  }
+
+  /**
+   * 当前这段滚成 `.1`，开一段新的。
+   *
+   * 先改名再 end：旧流里还没落盘的那点数据跟着 fd 走，照样写进改完名的那个文件。
+   * 改名失败（文件还没来得及打开）就先不滚，接着写这一段，下一次写再试。
+   */
+  const rotate = (p: Proc) => {
+    try {
+      renameSync(p.logPath, `${p.logPath}.1`)
+    } catch {
+      return
+    }
+    p.log.end()
+    p.goneLines += p.prevLines
+    p.prevLines = p.segLines
+    p.segLines = 0
+    p.segBytes = 0
+    p.log = openLog(p)
+  }
+
+  const put = (p: Proc, text: string) => {
+    p.log.write(text)
+    p.segBytes += Buffer.byteLength(text)
+    p.segLines += countNewlines(text)
+    if (p.segBytes >= LOG_SEGMENT_BYTES) rotate(p)
+  }
+
+  /** 往日志里写一截输出：有上限（滚段）、有背压（积压太多就丢，丢多少记着）。 */
+  const writeLog = (p: Proc, text: string) => {
+    if (!text || p.log.writableEnded) return
+    if (p.log.writableLength > MAX_LOG_PENDING) {
+      p.logDropped += Buffer.byteLength(text)
+      return
+    }
+    if (p.logDropped) {
+      const note = `\n…（这里有 ${humanSize(p.logDropped)} 输出来不及落盘，丢了；最近的输出 poll 里可能还有）\n`
+      p.logDropped = 0
+      put(p, note)
+    }
+    put(p, text)
   }
 
   const start = async (sessionId: string, command: string, cwd: string, notify: boolean): Promise<Proc> => {
@@ -684,8 +841,13 @@ export function apply(ctx: Context, config: Config = {}) {
       code: null,
       signal: null,
       child,
-      log: createWriteStream(logPath),
+      log: undefined as unknown as WriteStream,
       logPath,
+      segBytes: 0,
+      segLines: 0,
+      prevLines: 0,
+      goneLines: 0,
+      logDropped: 0,
       tail: '',
       tailFrom: 0,
       bytes: 0,
@@ -694,11 +856,10 @@ export function apply(ctx: Context, config: Config = {}) {
       waiters: [],
       timers: [],
     }
-    // 写日志失败（盘满）不该把进程带走：少一份全文，poll 那条尾巴还在。
-    p.log.on('error', (e) => ctx.logger?.warn?.(`terminal: ${id} 的日志写不下去：${e.message}`))
+    p.log = openLog(p)
     pipeInto(child, (text, n) => {
       p.bytes += n
-      p.log.write(text)
+      writeLog(p, text)
       p.tail += text
       if (p.tail.length > MAX_TAIL_CHARS) {
         const drop = p.tail.length - MAX_TAIL_CHARS
@@ -1008,18 +1169,36 @@ export function apply(ctx: Context, config: Config = {}) {
 
       if (action === 'log') {
         const p = find(call.sessionId, sessionId ?? '')
-        const text = await readFile(p.logPath, 'utf8').catch(() => p.tail)
-        const lines = text.replace(/\s+$/, '').split('\n')
         const cap = Math.max(1, Math.min(Math.floor(limit || LOG_TAIL_LINES), 2000))
-        const startAt = offset ? Math.max(1, Math.floor(offset)) : Math.max(1, lines.length - cap + 1)
-        const picked = lines.slice(startAt - 1, startAt - 1 + cap)
-        if (!picked.length) return `${p.id} 一共 ${lines.length} 行，offset ${startAt} 超出了。`
-        const left = lines.length - (startAt - 1 + picked.length)
-        const width = String(startAt + picked.length - 1).length
-        const body = picked.map((l, i) => `${String(startAt + i).padStart(width, ' ')}|${l}`).join('\n')
+        /**
+         * 行号是**从这个进程第一行输出数起**的：滚掉的段里有多少行记着（goneLines），
+         * 盘上这两段接在它后面数。offset 指到已经滚掉的那一截时，从还留着的第一行给起。
+         */
+        const gone = p.goneLines
+        const want = offset ? Math.max(1, Math.floor(offset)) : undefined
+        const local = want === undefined ? undefined : Math.max(1, want - gone)
+        const read =
+          (await readLogLines([`${p.logPath}.1`, p.logPath], local, cap).catch(() => undefined)) ??
+          (() => {
+            const lines = p.tail.replace(/\s+$/, '').split('\n')
+            const at = local ?? Math.max(1, lines.length - cap + 1)
+            return { picked: lines.slice(at - 1, at - 1 + cap).map((text, i) => ({ no: at + i, text })), total: lines.length }
+          })()
+        const total = gone + read.total
+        if (!total) return `${p.id}  ${stateOf(p)}\n（还没有输出）`
+        if (!read.picked.length) return `${p.id} 一共 ${total} 行，offset ${want ?? 1} 超出了。`
+        const startAt = gone + read.picked[0].no
+        const lastAt = gone + read.picked[read.picked.length - 1].no
+        const left = total - lastAt
+        const width = String(lastAt).length
+        const body = read.picked.map((l) => `${String(gone + l.no).padStart(width, ' ')}|${l.text}`).join('\n')
+        const rolled =
+          want !== undefined && want < startAt
+            ? `\n（前 ${startAt - 1} 行已经滚掉了——日志只留最近的约 ${humanSize(LOG_SEGMENT_BYTES * 2)}，从第 ${startAt} 行给起）`
+            : ''
         return (
-          `${p.id}  ${stateOf(p)}  共 ${lines.length} 行\n${body}` +
-          (left > 0 ? `\n…（还有 ${left} 行，用 offset=${startAt + picked.length} 接着看）` : '')
+          `${p.id}  ${stateOf(p)}  共 ${total} 行${rolled}\n${body}` +
+          (left > 0 ? `\n…（还有 ${left} 行，用 offset=${lastAt + 1} 接着看）` : '')
         )
       }
 

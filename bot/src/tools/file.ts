@@ -1,5 +1,5 @@
 import type { Dirent } from 'node:fs'
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { humanSize, looksBinary } from '../workspace/index.ts'
@@ -55,6 +55,122 @@ const MAX_SUBDIRS = 40
  * 重放。前几十个已经够界面把正文里提到的那几个文件名接上——正文里根本提不到第一百个。
  */
 const MAX_REF_FILES = 60
+/**
+ * read_file 一次从磁盘拿多少字节。
+ *
+ * 文件是**流着读**的，不整份进内存：一份 1.5 GB 的日志 `readFile` 下来再 `toString`、
+ * `split`，进程要先后摆出好几 GB，直接 OOM。按块扫，内存里只留要返回的那一页。
+ */
+const READ_CHUNK_BYTES = 1024 * 1024
+/**
+ * 拿够这一页之后，最多再往后扫多少字节去数「还剩几行」。
+ *
+ * 数行只是为了末尾那句提示；为了它把几个 GB 的文件从头扫到尾不划算。超过就不数了，
+ * 提示改成「后面还有」。
+ */
+const MAX_COUNT_BYTES = 256 * 1024 * 1024
+/** 每行最多留多少字节。够装下 MAX_LINE_CHARS 个任意 UTF-8 字符；再多的只计数、不留。 */
+const MAX_LINE_BYTES = MAX_LINE_CHARS * 4
+/**
+ * patch 能编辑的文件上限。
+ *
+ * patch 要把整份文件读进来、模糊匹配、再整份写回，这一路都是整份的。几十 MB 的文件
+ * 不是模型该用字符串替换去改的东西——拒掉，并指给它 terminal 里的 sed。
+ */
+const MAX_PATCH_BYTES = 8 * 1024 * 1024
+
+/**
+ * 非普通文件（FIFO、socket、设备）一律不碰。
+ *
+ * 工作区里一个命名管道被 `readFile` 打开，会一直等写端，永远不返回——中止也叫不醒它，
+ * 这一轮就卡死在这儿。`/dev/zero` 这类设备则读不到头。先 stat，只放普通文件过去。
+ */
+function assertRegular(info: { isFile(): boolean; isDirectory(): boolean }, shown: string) {
+  if (info.isDirectory()) return
+  if (!info.isFile()) fail(`${shown} 不是普通文件（命名管道、socket 或设备），不能按文件读写。`)
+}
+
+/** 一个 UTF-8 片段折成 UTF-16 是几个字符——和 `string.length` 对得上，截断提示里报的是它。 */
+function utf16Units(buf: Buffer, from: number, to: number): number {
+  let n = 0
+  for (let i = from; i < to; i++) {
+    const b = buf[i]
+    if ((b & 0xc0) !== 0x80) n += b >= 0xf0 ? 2 : 1
+  }
+  return n
+}
+
+/**
+ * 流着读出 `[start, start + count)` 这几行，顺带数出总行数。
+ *
+ * 行的口径和 `text.split('\n')` 一样：n 个换行就是 n+1 行，末尾换行之后那个空行也算。
+ * `total` 为 undefined 表示文件太大、拿够之后没往下数完。`binary` 看的是开头 8000 字节，
+ * 和 looksBinary 同一个判据。
+ */
+async function readLineWindow(
+  target: string,
+  start: number,
+  count: number,
+  signal?: AbortSignal,
+): Promise<{ empty: boolean; binary: boolean; bodies: string[]; total?: number }> {
+  const fh = await open(target, 'r')
+  try {
+    const buf = Buffer.alloc(READ_CHUNK_BYTES)
+    const bodies: string[] = []
+    const end = start + count
+    let line = 1
+    let parts: Buffer[] = []
+    let kept = 0
+    let chars = 0
+    let first = true
+    let after = 0
+    const take = (chunk: Buffer, from: number, to: number) => {
+      chars += utf16Units(chunk, from, to)
+      const room = MAX_LINE_BYTES - kept
+      if (room <= 0) return
+      const slice = chunk.subarray(from, Math.min(to, from + room))
+      // 块会被下一次 read 覆盖，留下来的这一段得拷走。
+      parts.push(Buffer.from(slice))
+      kept += slice.length
+    }
+    const finish = () => {
+      const text = Buffer.concat(parts).toString('utf8')
+      bodies.push(chars > MAX_LINE_CHARS ? `${text.slice(0, MAX_LINE_CHARS)}\n…（已截断，共 ${chars} 字符）` : text)
+      parts = []
+      kept = 0
+      chars = 0
+    }
+    for (;;) {
+      if (signal?.aborted) fail('已中止。')
+      const { bytesRead: n } = await fh.read(buf, 0, buf.length, null)
+      if (first) {
+        first = false
+        if (!n) return { empty: true, binary: false, bodies }
+        if (buf.subarray(0, Math.min(n, 8000)).includes(0)) return { empty: false, binary: true, bodies }
+      }
+      if (!n) break
+      if (line >= end) {
+        after += n
+        if (after > MAX_COUNT_BYTES) return { empty: false, binary: false, bodies }
+      }
+      let pos = 0
+      while (pos < n) {
+        const nl = buf.indexOf(10, pos)
+        const stop = nl === -1 || nl >= n ? n : nl
+        if (line >= start && line < end) take(buf, pos, stop)
+        if (stop === n) break
+        if (line >= start && line < end) finish()
+        line++
+        pos = stop + 1
+      }
+    }
+    // 最后一行（可能是末尾换行之后的那个空行）没有换行收尾，在这儿收。
+    if (line >= start && line < end) finish()
+    return { empty: false, binary: false, bodies, total: line }
+  } finally {
+    await fh.close()
+  }
+}
 
 /**
  * glob → 正则。支持 `**`（跨目录）、`*`、`?`。
@@ -165,11 +281,12 @@ export function apply(ctx: Context) {
         required: ['path'],
       },
     },
-    async ({ path, offset, limit }: { path?: string; offset?: number; limit?: number }) => {
+    async ({ path, offset, limit }: { path?: string; offset?: number; limit?: number }, call: ToolCall) => {
       if (!path) fail('缺少 path 参数')
       const target = resolveIn(path)
       const info = await stat(target)
       if (info.isDirectory()) fail(`${show(target)} 是目录，用 search_files 列它的内容。`)
+      assertRegular(info, show(target))
       /**
        * 读到的这一个就是 refs。
        *
@@ -177,53 +294,61 @@ export function apply(ctx: Context) {
        * 界面拿正文一个字也接不上。有这一条，那份报告才在消息底下留下一个能点开的入口。
        */
       const me = refsOf([show(target)])
+      const start = Math.max(1, Math.floor(offset ?? 1))
+      const count = Math.max(1, Math.min(Math.floor(limit ?? MAX_READ_LINES), MAX_READ_LINES))
 
       /**
        * PDF / Word / Excel 先转成文本，再照常按行分页。
        *
-       * 放在 looksBinary 之前：这几种格式**都是二进制**，交给下面那一关只会得到
-       * 「不能按文本读」——而它们恰恰是人最想让 Bot 读的东西。
+       * 放在二进制判断之前：这几种格式**都是二进制**，交给下面那一关只会得到
+       * 「不能按文本读」——而它们恰恰是人最想让 Bot 读的东西。转出来的文本本身有上限
+       * （extract.ts 的 MAX_DOC_BYTES 与截断），整份拿在手里没事。
        */
       const kind = docKindOf(target)
-      let text: string | undefined
+      let bodies: string[]
+      let total: number | undefined
       if (kind) {
         const doc = await extractDocument(target, kind).catch((e: Error) => {
           fail(`${show(target)} 解析失败：${e.message}。文件可能是坏的，或者加了密。`)
         })
-        text =
+        const text =
           `${show(target)}（${kind.toUpperCase()}，${doc.parts} ${doc.unit}${doc.truncated ? '，太长已截断' : ''}）\n` +
           '以下是转成文本之后的内容，行号是转换后的行号，不是原文件里的。\n' +
           doc.text
-      }
-
-      const buf = text === undefined ? await readFile(target) : Buffer.alloc(0)
-      if (text === undefined) {
-        if (!buf.length) return { text: `${show(target)} 是空文件。`, refs: me }
+        const lines = text.split('\n')
+        total = lines.length
+        bodies = lines.slice(start - 1, start - 1 + count).map((l) => clip(l, MAX_LINE_CHARS))
+      } else {
+        const got = await readLineWindow(target, start, count, call.signal)
+        if (got.empty) return { text: `${show(target)} 是空文件。`, refs: me }
         // 二进制读不成文本，但**照样报 refs**：界面能预览的恰恰是这一类（图片、PDF）。
-        if (looksBinary(buf)) {
+        if (got.binary) {
           return { text: `${show(target)} 是二进制文件（${humanSize(info.size)}），不能按文本读。`, refs: me }
         }
+        bodies = got.bodies
+        total = got.total
       }
+      if (total !== undefined && start > total) fail(`offset ${start} 超出文件长度（共 ${total} 行）`)
 
-      const lines = (text ?? buf.toString('utf8')).split('\n')
-      const start = Math.max(1, Math.floor(offset ?? 1))
-      const count = Math.max(1, Math.min(Math.floor(limit ?? MAX_READ_LINES), MAX_READ_LINES))
-      if (start > lines.length) fail(`offset ${start} 超出文件长度（共 ${lines.length} 行）`)
-
-      const width = String(Math.min(start + count - 1, lines.length)).length
+      const width = String(total === undefined ? start + count - 1 : Math.min(start + count - 1, total)).length
       const picked: string[] = []
       let budget = READ_BUDGET
       let at = start - 1
-      for (; at < lines.length && picked.length < count; at++) {
-        const body = clip(lines[at], MAX_LINE_CHARS)
+      for (const body of bodies) {
         // 第一行无论多长都收下：不然一个超长单行文件会返回空，模型看不出为什么。
         if (picked.length && body.length + width + 1 > budget) break
         budget -= body.length + width + 1
         picked.push(`${String(at + 1).padStart(width, ' ')}|${body}`)
+        at++
       }
 
-      const left = lines.length - at
-      const tail = left > 0 ? `\n…（还有 ${left} 行，用 offset=${at + 1} 接着读）` : ''
+      const left = total === undefined ? 1 : total - at
+      const tail =
+        left <= 0
+          ? ''
+          : total === undefined
+            ? `\n…（后面还有，文件 ${humanSize(info.size)} 太大没数完行数，用 offset=${at + 1} 接着读）`
+            : `\n…（还有 ${left} 行，用 offset=${at + 1} 接着读）`
       return { text: clip(picked.join('\n'), MAX_TEXT_CHARS) + tail, refs: me }
     },
   )
@@ -261,7 +386,11 @@ export function apply(ctx: Context) {
       if (typeof content !== 'string') fail(`content 必须是字符串，收到的是 ${typeof content}。`)
       const target = resolveIn(path)
       const existed = await stat(target).then(
-        (s) => (s.isDirectory() ? fail(`${show(target)} 是目录，不能当文件写。`) : true),
+        (s) => {
+          if (s.isDirectory()) fail(`${show(target)} 是目录，不能当文件写。`)
+          assertRegular(s, show(target))
+          return true
+        },
         () => false,
       )
       await mkdir(dirname(target), { recursive: true })
@@ -303,13 +432,22 @@ export function apply(ctx: Context) {
       old_string: oldString,
       new_string: newString,
       replace_all: replaceAll,
-    }: { path?: string; old_string?: string; new_string?: string; replace_all?: boolean }) => {
+    }: { path?: string; old_string?: string; new_string?: string; replace_all?: boolean }, call: ToolCall) => {
       if (!path) fail('缺少 path 参数')
       if (typeof oldString !== 'string' || !oldString) fail('缺少 old_string 参数')
       if (typeof newString !== 'string') fail('缺少 new_string 参数')
 
       const target = resolveIn(path)
-      const buf = await readFile(target)
+      const info = await stat(target)
+      if (info.isDirectory()) fail(`${show(target)} 是目录，不能编辑。`)
+      assertRegular(info, show(target))
+      if (info.size > MAX_PATCH_BYTES) {
+        fail(
+          `${show(target)} 有 ${humanSize(info.size)}，超过 patch 能编辑的上限（${humanSize(MAX_PATCH_BYTES)}）。` +
+            '这么大的文件用 terminal 里的 sed 之类的命令改。',
+        )
+      }
+      const buf = await readFile(target, { signal: call.signal })
       if (looksBinary(buf)) fail(`${show(target)} 是二进制文件，不能编辑。`)
 
       const r = fuzzyReplace(show(target), buf.toString('utf8'), oldString, newString, Boolean(replaceAll))
@@ -445,7 +583,7 @@ export function apply(ctx: Context) {
         // 起点本身就是个文件时，「相对起点」的路径是空串，什么模式都配不上——那就拿文件名去配。
         if (match && !match(file === base ? basename(file) : relative(base, file).split(sep).join('/'))) continue
         const s = await stat(file).catch(() => undefined)
-        if (!s || s.size > MAX_GREP_FILE_BYTES) continue
+        if (!s || !s.isFile() || s.size > MAX_GREP_FILE_BYTES) continue
         const buf = await readFile(file).catch(() => undefined)
         if (!buf || looksBinary(buf)) continue
 

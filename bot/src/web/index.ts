@@ -1411,18 +1411,33 @@ function dispositionName(name: string): string {
 const INSTANCE_ID = randomUUID()
 const STARTED_AT = Date.now()
 
-function sse(
+/** 导出只为探针（bot/e2e-replay.mjs）能直接起一条流、模拟中途断开。 */
+export function sse(
   ctx: Context,
   sessionId: string,
   after: number,
-  res: { _res?: { on?: Function } },
+  res: { _res?: { on?: Function; destroyed?: boolean } },
   tail = 0,
 ) {
   const encoder = new TextEncoder()
+  /**
+   * 收尾：摘监听、停心跳、关流。**幂等**，三条路都会叫它——连接 close、流被 cancel、
+   * 重放完发现人早走了。
+   *
+   * 以前只有 close 那一条，而且是重放**之后**才挂上的：重放慢（长会话要从盘上读），
+   * 客户端在那期间断开，close 在监听器出现之前就已经发过了——off()/offQueue() 从此
+   * 没人调，每次重连在进程里留一个死监听器。
+   */
+  let closed = false
+  let cleanup = () => {}
   return new Response(
     new ReadableStream({
+      cancel() {
+        cleanup()
+      },
       async start(controller) {
         const send = (event: SessionEvent) => {
+          if (closed) return
           const safe = publicSessionEvents([event])[0]
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(safe)}\n\n`))
         }
@@ -1440,6 +1455,18 @@ function sse(
          * 进程」才好决定这一批事件是接着看还是全部作废。它不是会话事件，不进事件桶
          * （和 replay/done、queue/change 一样按 type 分流）。
          */
+        let beat: NodeJS.Timeout | undefined
+        cleanup = () => {
+          if (closed) return
+          closed = true
+          if (beat) clearInterval(beat)
+          off()
+          offQueue()
+          try {
+            controller.close()
+          } catch {}
+        }
+
         controller.enqueue(
           encoder.encode(
             `data: ${JSON.stringify({ type: 'runtime/hello', instanceId: INSTANCE_ID, startedAt: STARTED_AT, version: process.env.SATUWORK_VERSION || '' })}\n\n`,
@@ -1467,6 +1494,9 @@ function sse(
             /* 流已经关了，下一次心跳会清掉 */
           }
         })
+        // 长连接不该等到插件卸载才释放（ctx.on 是 effect，那只是兜底）。**挂在重放之前**，
+        // 理由见上面 cleanup。
+        res._res?.on?.('close', () => cleanup())
 
         let replayed = 0
         let firstSeq: number | null = null
@@ -1500,14 +1530,15 @@ function sse(
             hasMore = slice.hasMore
           }
         } catch (e) {
+          if (closed) return
           ctx.logger?.warn?.(`sse: 会话 ${sessionId} 读不出来：${(e as Error).message}`)
           controller.enqueue(
             encoder.encode(`event: error\ndata: ${JSON.stringify({ error: (e as Error).message })}\n\n`),
           )
-          off()
-          offQueue()
-          return controller.close()
+          return cleanup()
         }
+        // 重放期间人已经走了：close 那一下可能早于上面那个监听器（socket 先断了），再看一眼。
+        if (closed || res._res?.destroyed) return cleanup()
 
         /**
          * 历史放完了。
@@ -1581,23 +1612,13 @@ function sse(
          * 一条 `: ping` 注释就够：它不是事件，客户端解析时直接跳过，但它是新字节，
          * 会把压着的那一截一起冲出去。顺带也让掉线被及时发现。
          */
-        const beat = setInterval(() => {
+        beat = setInterval(() => {
           try {
             controller.enqueue(encoder.encode(': ping\n\n'))
           } catch {
-            clearInterval(beat)
+            cleanup()
           }
         }, 15000)
-
-        // 长连接不该等到插件卸载才释放。ctx.on 是 effect，那只是兜底。
-        res._res?.on?.('close', () => {
-          clearInterval(beat)
-          off()
-          offQueue()
-          try {
-            controller.close()
-          } catch {}
-        })
       },
     }),
     {

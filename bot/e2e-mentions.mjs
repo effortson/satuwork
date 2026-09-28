@@ -46,10 +46,13 @@ class FakeCatalog extends Service {
     this.pulls = 0
     /** 这一把「重拉之后才出现」——刚在浏览器里授权完、席位还没同步到的那个时序。 */
     this.appearOnPull = ''
+    /** 给了就让 pull 等它——模拟「重拉目录要好几秒」，测开轮那一段能不能喊停。 */
+    this.gate = null
   }
   /** 真的 CatalogService 会去打 Gateway；这里只记一笔，顺便把「迟到的那把」放出来。 */
   async pull() {
     this.pulls += 1
+    if (this.gate) await this.gate
     const late = this.appearOnPull
     if (!late) return true
     this.appearOnPull = ''
@@ -402,6 +405,49 @@ await ctx.agents
     点了名的照样认得出: call(viaOk, 's1', 'srv-1') === true,
     没点那台不算: call(viaOk, 's1', 'srv-2') === false,
   }
+}
+
+// ── 开轮那几秒里按停止 ───────────────────────────────────────────────
+/**
+ * 停止按钮以前只看 live：点名缺工具要重拉目录、轮首要同步压缩，那几秒里 agent 还没
+ * 建出来，按停止回 aborted:false，然后这一轮照样整轮跑完。拿一次慢的重拉卡在开轮那一段。
+ */
+{
+  const sid = await ctx.sessions.create({ title: '开轮时停止', botId: 'default' })
+  let release
+  ctx.catalog.gate = new Promise((r) => (release = r))
+  const pullsBefore = ctx.catalog.pulls
+  captured = null
+  hold = null
+  let settled = false
+  const sending = ctx.agents
+    .send(sid, '帮我发封邮件', [], [{ kind: 'connector', id: 'conn-ghost', label: '没挂上的' }])
+    .then(() => (settled = true), () => (settled = true))
+  for (let i = 0; i < 100 && ctx.catalog.pulls === pullsBefore; i++) await new Promise((r) => setTimeout(r, 10))
+  const wasRunning = ctx.agents.isRunning(sid)
+  const aborted = ctx.agents.abort(sid)
+  for (let i = 0; i < 100 && !settled; i++) await new Promise((r) => setTimeout(r, 10))
+  const settledBeforeRelease = settled
+  release()
+  ctx.catalog.gate = null
+  await sending
+  const events = await ctx.sessions.events(sid)
+  const end = events.filter((e) => e.type === 'turn/end').pop()
+  out.abortStarting = {
+    卡在重拉目录上: ctx.catalog.pulls === pullsBefore + 1,
+    开轮时算在跑: wasRunning,
+    停得下来: aborted === true,
+    不等目录拉完就收口: settledBeforeRelease,
+    模型一次没调: captured === null,
+    这一轮记成aborted: end?.data?.reason === 'aborted',
+    那句话还在: events.some((e) => e.type === 'user/message' && JSON.stringify(e.data).includes('帮我发封邮件')),
+    收口之后不在跑: !ctx.agents.isRunning(sid),
+    再按一次是false: ctx.agents.abort(sid) === false,
+  }
+  // 下一轮不许被错认成「被喊停了」：aborting 里不能留一笔。
+  await ctx.agents.send(sid, '再来一次').catch(() => {})
+  const next = (await ctx.sessions.events(sid)).filter((e) => e.type === 'turn/end').pop()
+  out.abortStarting.下一轮不受影响 = next?.data?.reason !== 'aborted' && captured !== null
 }
 
 hold = null

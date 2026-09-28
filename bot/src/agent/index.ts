@@ -220,6 +220,32 @@ export interface SkillSplit {
 }
 
 /**
+ * 等一个 promise，但喊停了就不等了（resolve 成 undefined，由调用方接着看信号）。
+ *
+ * 被丢下的那个 promise 照样跑完；它之后要是拒绝，这里先挂一个空的 catch 接住，
+ * 免得变成未处理的拒绝。
+ */
+function untilAborted<T>(p: Promise<T>, signal?: AbortSignal): Promise<T | undefined> {
+  if (!signal) return p
+  p.catch(() => {})
+  if (signal.aborted) return Promise.resolve(undefined)
+  return new Promise<T | undefined>((resolve, reject) => {
+    const onAbort = () => resolve(undefined)
+    signal.addEventListener('abort', onAbort, { once: true })
+    p.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(v)
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(e)
+      },
+    )
+  })
+}
+
+/**
  * 挂上的 Skill 分成**常驻**和**按需**两摞，外加按需那摞的索引。
  *
  * 纯函数：同一份输入必然得到同一份输出。`composeSystem` 和 `toolSchemasFor` 各调一次
@@ -394,6 +420,15 @@ export class AgentService extends Service {
    * 同步做掉。
    */
   private starting = new Set<string>()
+  /**
+   * 还在「开轮」那一段的会话各自的中止开关。
+   *
+   * 停止按钮以前只看 `live`：轮首那次同步压缩要跑一次模型、点名缺工具要重拉目录，
+   * 那几秒里 agent 还没建出来，按停止回的是 aborted:false，然后这一轮照样整轮跑完。
+   * runGuarded 一进来就登记一个，abort() 找不到 live 时掐它，runTurn 在进 live 之前的
+   * 每个 await 之后看一眼。
+   */
+  private startingAbort = new Map<string, AbortController>()
   /**
    * 正在压缩的会话。轮末那次是后台跑的，下一轮很可能在它还没写完时就开始了——
    * 两次压缩同时算，会各自按自己看到的历史挑边界，然后写下两条互相矛盾的压缩点。
@@ -1064,11 +1099,14 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     modelRole?: TurnModelRole,
   ): Promise<void> {
     this.starting.add(sessionId)
+    const stop = new AbortController()
+    this.startingAbort.set(sessionId, stop)
     this.turnMentions.set(sessionId, new Set(mentions.filter((m) => m.kind === 'connector').map((m) => m.id)))
     try {
-      await this.runTurn(sessionId, text, images, mentions, source, modelRole)
+      await this.runTurn(sessionId, text, images, mentions, source, modelRole, stop.signal)
     } finally {
       this.starting.delete(sessionId)
+      if (this.startingAbort.get(sessionId) === stop) this.startingAbort.delete(sessionId)
       this.turnMentions.delete(sessionId)
     }
   }
@@ -1127,9 +1165,16 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
 
   abort(sessionId: string): boolean {
     const agent = this.live.get(sessionId)
-    if (!agent) return false
+    if (agent) {
+      this.aborting.add(sessionId)
+      agent.abort()
+      return true
+    }
+    // 还在开轮：agent 没建出来，掐的是 runTurn 手上那个信号（见 startingAbort）。
+    const pending = this.startingAbort.get(sessionId)
+    if (!pending || pending.signal.aborted) return false
     this.aborting.add(sessionId)
-    agent.abort()
+    pending.abort()
     return true
   }
 
@@ -1335,9 +1380,30 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     mentions: Mention[] = [],
     source: MessageSource = { kind: 'user' },
     modelRole?: TurnModelRole,
+    signal?: AbortSignal,
   ): Promise<void> {
     const { sessions, llm } = this.ctx
     let history = await sessions.events(sessionId)
+    /**
+     * 进 live 之前被喊停了：把这句话落下、这一轮以 aborted 收口，不再往下跑。
+     *
+     * 照 failBeforeTurn 的样子补齐 user/message + turn/start——HTTP 早就回了
+     * accepted:true，一个字不留的话界面上这句话就凭空没了。
+     */
+    const stoppedBeforeTurn = async () => {
+      if (!signal?.aborted) return false
+      const turn = history.filter((e) => e.type === 'turn/start').length + 1
+      await sessions.append(sessionId, 'user/message', {
+        message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, mentions) },
+        source,
+      })
+      await sessions.append(sessionId, 'turn/start', { turn })
+      this.aborting.delete(sessionId)
+      await sessions.append(sessionId, 'turn/end', { turn, reason: 'aborted' })
+      this.ctx.logger?.info?.(`agents: 会话 ${sessionId} 第 ${turn} 轮还没开跑就被停下`)
+      return true
+    }
+    if (await stoppedBeforeTurn()) return
     let system: { text: string; base: string; skills: string; memory: string }
     let provider: string
     let modelId: string
@@ -1383,7 +1449,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
        */
       if (this.mentionGaps(mentions).length) {
         try {
-          await this.ctx.catalog.pull()
+          await untilAborted(this.ctx.catalog.pull(), signal)
         } catch (e) {
           this.ctx.logger?.warn?.(`agents: 为点名重拉目录失败 ${(e as Error).message}`)
         }
@@ -1399,6 +1465,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       await this.failBeforeTurn(sessionId, history, text, images, e as Error, mentions, source)
       throw e
     }
+    if (await stoppedBeforeTurn()) return
 
     // 兜底：轮末那次压缩可能失败了、也可能上个进程根本没跑到那一步。已经顶到硬顶
     // 还往上游发，换来的是一个 400，用户看到的是「出错了」。宁可这一轮多等几秒。
@@ -1428,7 +1495,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     try {
       if (estMessages(await toAgentMessages(history, model, this.ctx)) > hard) {
         this.ctx.logger?.warn?.(`agents: ${sessionId} 已顶到上下文硬顶，先同步压一次`)
-        await this.maybeCompact(sessionId, homeProvider, homeModel, true, { atLeast: hard })
+        // 喊停了就不等它：压缩在后台照样跑完落盘（它有自己的锁），这一轮先走。
+        await untilAborted(this.maybeCompact(sessionId, homeProvider, homeModel, true, { atLeast: hard }), signal)
         /**
          * **压没压都要重读**，不能只在 compacted 时重读。
          *
@@ -1480,6 +1548,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       }
     }
 
+    if (await stoppedBeforeTurn()) return
     const turn = history.filter((e) => e.type === 'turn/start').length + 1
     const reasoningEffort = this.roleReasoningEffort(provider, modelId, modelRole)
 
@@ -1507,6 +1576,15 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     } catch (e) {
       await this.failAfterTurnStart(sessionId, turn, e as Error)
       throw e
+    }
+    /**
+     * 最后一道：重建历史（读图）期间被喊停。从这里到 `live.set` 之间**没有 await**，
+     * 之后再按停止走的就是 live 那条路了——中间不会有一个两边都接不住的空档。
+     */
+    if (signal?.aborted) {
+      this.aborting.delete(sessionId)
+      await sessions.append(sessionId, 'turn/end', { turn, reason: 'aborted' })
+      return
     }
 
     // 跑飞的刹车。**数的是带工具调用的步**：模型不再要工具的那一步，循环本来就要退出，
@@ -1544,6 +1622,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     } as any)
 
     this.live.set(sessionId, agent)
+    // 进了 live 就不再归开轮那个开关管。留着的话，收尾那几个 await 期间按停止会掐到它、
+    // 往 aborting 里留一笔，下一轮收口时被错认成「被喊停了」。
+    this.startingAbort.delete(sessionId)
     const off = agent.subscribe(this.projector(sessionId, turn, this.turnMeta(provider, modelId, system, toolSchemas, reasoningEffort)))
 
     let reason: 'completed' | 'error' | 'aborted' | 'capped' = 'completed'

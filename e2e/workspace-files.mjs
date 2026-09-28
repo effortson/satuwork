@@ -79,6 +79,13 @@ export async function runWorkspaceFiles({ root, test, assert, log }) {
     assert(!bad.length, `这几条不对：${bad.join('、')}`)
   })
 
+  await test('read_file / patch：大文件流着读，管道不挂，太大的不给改，中止就停', () => {
+    // 整份 readFile 的那一版，1.5 GB 的日志直接 OOM、一个命名管道能把这一轮卡死。
+    const { raw, ...rest } = r.bigFiles
+    const bad = Object.entries(rest).filter(([, v]) => v !== true).map(([k]) => k)
+    assert(!bad.length, `这几条不对：${bad.join('、')}（${JSON.stringify(raw)}）`)
+  })
+
   await test('file 工具集：行号格式、目录可见、旧名字有出路', () => {
     // 行号格式是 patch 剥前缀的前提——它一变，模型从 read_file 里复制粘贴的 old_string
     // 就再也剥不干净，而报出来的会是「没找到那段文本」。
