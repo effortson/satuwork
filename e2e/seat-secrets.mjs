@@ -58,4 +58,18 @@ export async function runSeatSecrets({ root, test, assert, log }) {
     assert(d.migrate, '老席位 $SEAT_DIR/bot.env 里的凭据没删')
     assert(r.launcher.sigusr1, '启动器没带 --disable-sigusr1——kill -USR1 就能开 inspector')
   })
+
+  await test('bot 程序归 root：子进程改不动代码、也塞不进编译缓存', () => {
+    const d = r.deploy
+    const l = r.launcher
+    // 代码要是席位用户写得动，改一个 .ts 再 kill 一下 bot，重启跑的就是改过的代码，
+    // 照样从 fd 0 读到凭据——上面那几条全白做。
+    assert(d.appRoot, 'deploy-seat.sh 没把 app 放进 /opt/satuwork/seats/<席位>/app')
+    assert(d.appRootOwned, 'app 没改成 root 所有、go-w')
+    assert(d.appInSeatDir.length === 0, `deploy-seat.sh 还在往 $SEAT_DIR/app 写：${d.appInSeatDir.join(' | ')}`)
+    assert(d.appMigrate, '老席位的 $SEAT_DIR/app 没清')
+    assert(l.appRoot && !l.appInSeatDir, '启动器还从 $SEAT_DIR/app 起 bot')
+    assert(l.ownerCheck, '启动器没核对 app 归 root')
+    assert(l.tsxNoCache, '启动器没关 tsx 的编译缓存（$TMPDIR/tsx-<uid> 归席位用户）')
+  })
 }

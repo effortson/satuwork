@@ -142,8 +142,20 @@ out.deploy = {
   umask: /\(umask 077; cat > "\$tmp"\)/.test(script),
   ptrace: /kernel\.yama\.ptrace_scope/.test(script) && /\/etc\/sysctl\.d\/60-satuwork-ptrace\.conf/.test(script),
   migrate: /rm -f "\$SEAT_DIR\/bot\.env" "\$SEAT_DIR\/bot\.env\.tmp"/.test(script),
+  // bot 程序在 root 的 /opt/satuwork/seats/<席位>/app：席位用户（也就是 bot 的每个子进程）
+  // 改不动它。除了迁移那一句 rm，脚本里不该再有任何往 $SEAT_DIR/app 写的地方。
+  appRoot: /^SEAT_APP_ROOT="\/opt\/satuwork\/seats\/\$SEAT_ID"$/m.test(script) && /^APP_DIR="\$SEAT_APP_ROOT\/app"$/m.test(script),
+  appRootOwned: /chown -hR root:root "\$APP_DIR\.new"/.test(script) && /chmod -R u\+rwX,go\+rX,go-w "\$APP_DIR\.new"/.test(script),
+  appInSeatDir: script.split('\n').filter((l) => !/^\s*#/.test(l) && l.includes('$SEAT_DIR/app') && !/as_user rm -rf "\$SEAT_DIR\/app"$/.test(l.trim())),
+  appMigrate: /as_user rm -rf "\$SEAT_DIR\/app"/.test(script),
 }
 const launcher = readFileSync(join(self, '..', '..', 'manager', 'src', 'seat', 'satuwork-bot.sh'), 'utf8')
-out.launcher = { sigusr1: launcher.includes('--disable-sigusr1') }
+out.launcher = {
+  sigusr1: launcher.includes('--disable-sigusr1'),
+  appRoot: /^APP="\/opt\/satuwork\/seats\/\$SEAT_ID\/app"$/m.test(launcher),
+  appInSeatDir: /^APP="\$SEAT_DIR/m.test(launcher),
+  ownerCheck: /stat -c %u "\$APP"/.test(launcher),
+  tsxNoCache: /^export TSX_DISABLE_CACHE=1$/m.test(launcher),
+}
 
 console.log('__RESULT__' + JSON.stringify(out))

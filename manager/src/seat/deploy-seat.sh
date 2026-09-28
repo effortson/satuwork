@@ -10,7 +10,9 @@
 # （$SEAT_ID）。所以对账号的部分是幂等复用的，对席位的部分才是新建。
 #
 #   $HOME_DIR/work                 共享工作区。同员工的所有席位都看得见，这是共享入口。
-#   $HOME_DIR/.satuwork/$SEAT_ID   席位私有：$SATUWORK_HOME、app、Chrome profile、XDG 各目录
+#   $HOME_DIR/.satuwork/$SEAT_ID   席位私有：$SATUWORK_HOME、Chrome profile、XDG 各目录
+#   /etc/satuwork/seats/$SEAT_ID   root 的：bot 单元读的 bot.env 和凭据
+#   /opt/satuwork/seats/$SEAT_ID   root 的：这个席位的 bot 程序（app/），席位用户只读
 # -E（errtrace）**不能省**：不加的话下面那条 ERR trap 只在顶层生效，进不了函数、
 # 命令替换和子 shell。这脚本里失败最可能发生的地方恰恰都在函数里（ensure_chrome、
 # verify_seat_listener），漏了 -E 等于白加——已经这样白加过一轮了。
@@ -68,6 +70,9 @@ DISPLAY_VAR=":${DISPLAY_NUM}"
 SEAT_ETC="/etc/satuwork/seats/$SEAT_ID"
 BOT_ENV_FILE="$SEAT_ETC/bot.env"
 SECRETS_FILE="$SEAT_ETC/secrets.env"
+# bot 的程序：root 的目录，席位用户只读、改不动。理由见 step 5。
+SEAT_APP_ROOT="/opt/satuwork/seats/$SEAT_ID"
+APP_DIR="$SEAT_APP_ROOT/app"
 
 # ── 进度自报 ──────────────────────────────────────────────────────────
 # 一行 `@@step <第几步>/<共几步> <这一步在干什么>`，管家按行读（见 manager/src/seats.ts
@@ -214,7 +219,7 @@ fi
 # 账号级：共享工作区。已存在就别动，里面是员工和 bot 的资料。
 # 席位级：整棵子树都归这个席位。
 as_user mkdir -p "$WORK_DIR" "$HOME_DIR/.satuwork" \
-  "$SEAT_DIR" "$SEAT_DIR/app" "$SEAT_DIR/bin" "$SEAT_DIR/chrome" "$SEAT_DIR/cache" \
+  "$SEAT_DIR" "$SEAT_DIR/bin" "$SEAT_DIR/chrome" "$SEAT_DIR/cache" \
   "$SEAT_DIR/config/picom" "$SEAT_DIR/config/plank/dock1/launchers" "$SEAT_DIR/share/applications"
 
 install -m 755 "$SEAT_ASSETS/slim-desktop.sh" /usr/local/bin/slim-desktop.sh
@@ -339,19 +344,33 @@ fi
 # 每个席位还是各自一份 app：cordis.yml 里的监听端口是逐席位 sed 出来的，共享一份
 # 目录就没法让两个席位听不同的口。版本也因此能逐席位钉死。
 #
-# **root 读、席位用户写**：root 把发布包打成 tar 流，席位用户在自己的 app/ 里解开。
-# 不再是 root 的 `rsync --delete` 往一个席位用户换得掉的路径里写（见 step 4 开头）。
-# 也不指望席位用户读得动管家的 releases 目录——那是 root 的。
-# 先整个删掉再解，效果等于原来的 --delete：上一版多出来的文件不会留下。
-as_user rm -rf "$SEAT_DIR/app"
-as_user mkdir -p "$SEAT_DIR/app"
-tar -C "$BOT_EXTRACT" -cf - . | as_user tar -C "$SEAT_DIR/app" -xpf -
-printf '%s\n' "$BOT_VERSION" | as_user sh -c 'cat > "$1"' sh "$SEAT_DIR/app/VERSION"
-if [ -f "$SEAT_DIR/app/cordis.yml" ]; then
+# **app 放在 root 的 /opt/satuwork/seats/<席位>/app，席位用户只读。** 它以前在
+# $SEAT_DIR/app，归席位用户——而 bot 起的每个子进程（terminal 的 bash、被提示注入
+# 驱动的脚本）都是这个用户。凭据挪进 root 的文件、从 fd 0 递进去之后，这里就成了最
+# 短的那条路：改掉 app 里的一个 .ts，`kill -9 $PPID`，Restart=on-failure 把 bot 拉起来，
+# 跑的已经是改过的代码，它照样从 fd 0 读到 sat_ 和 API key。代码归 root，这条路就断了。
+#
+# root 在这里只碰 root 自己的目录，所以可以放心地 cp / chown / sed（不必像家目录那样
+# 绕 as_user）。先整份铺进 app.new，改好属主和 cordis.yml，再换名顶上去：换的那一下
+# 之前旧的 app 完好，部署半路失败不会留下半份代码。
+install -d -m 755 -o root -g root /opt/satuwork /opt/satuwork/seats "$SEAT_APP_ROOT"
+rm -rf "$APP_DIR.new" "$APP_DIR.old"
+cp -a "$BOT_EXTRACT/." "$APP_DIR.new/"
+printf '%s\n' "$BOT_VERSION" > "$APP_DIR.new/VERSION"
+if [ -f "$APP_DIR.new/cordis.yml" ]; then
   # bot 只听 127.0.0.1：对外那一跳由管家反代，席位端口不再需要暴露到网络上。
-  as_user sed -i -E "s/^([[:space:]]*host:).*/\1 127.0.0.1/" "$SEAT_DIR/app/cordis.yml"
-  as_user sed -i -E "s/^([[:space:]]*port:)[[:space:]]*[0-9]+/\1 $BOT_PORT/" "$SEAT_DIR/app/cordis.yml"
+  sed -i -E "s/^([[:space:]]*host:).*/\1 127.0.0.1/" "$APP_DIR.new/cordis.yml"
+  sed -i -E "s/^([[:space:]]*port:)[[:space:]]*[0-9]+/\1 $BOT_PORT/" "$APP_DIR.new/cordis.yml"
 fi
+# 属主一律 root，谁都不许写；读和进目录留给所有人（席位用户要能读它来跑）。
+chown -hR root:root "$APP_DIR.new"
+chmod -R u+rwX,go+rX,go-w "$APP_DIR.new"
+if [ -d "$APP_DIR" ]; then mv "$APP_DIR" "$APP_DIR.old"; fi
+mv "$APP_DIR.new" "$APP_DIR"
+rm -rf "$APP_DIR.old"
+# **迁移**：老版本的 app 在 $SEAT_DIR/app（归席位用户）。不删的话，谁看都以为 bot 跑的
+# 是那一份。以席位用户身份删：那是他的目录，root 不在里面动手（见 step 4 开头）。
+as_user rm -rf "$SEAT_DIR/app"
 
 # 非机密配置。写到 $SEAT_ETC，不再写 $SEAT_DIR——理由见 step 4「bot 单元读的文件」。
 write_root_file "$BOT_ENV_FILE" << EOF_ENV

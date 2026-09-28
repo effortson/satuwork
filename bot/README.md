@@ -108,6 +108,10 @@ bot 启动时的环境，而拿到 `sat_` 就能自己去把审批点掉。所�
   留在席位用户可写的目录里就能被换成符号链接，或塞进 `NODE_OPTIONS` / `LD_PRELOAD`。
 - deploy 把 `kernel.yama.ptrace_scope` 设成至少 1（`/etc/sysctl.d/60-satuwork-ptrace.conf`），
   启动器带 `--disable-sigusr1`：子进程读不了 bot 的内存，也开不了它的 inspector。
+- bot 程序本身装在 `/opt/satuwork/seats/<席位>/app`（root 所有、go-w），不在 `$SEAT_DIR`：
+  代码要是席位用户写得动，改一个 .ts 再 kill 一下 bot，重启跑的就是改过的代码，照样从 fd 0
+  读到凭据。启动器（`satuwork-bot.sh`）核对 app 归 root 才起，并设 `TSX_DISABLE_CACHE=1`——
+  tsx 的编译缓存在 `$TMPDIR/tsx-<uid>`，归席位用户，塞一份伪造的缓存等于改源码。
 
 ## Gateway 换了地址
 
