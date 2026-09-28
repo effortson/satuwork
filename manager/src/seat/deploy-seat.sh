@@ -235,6 +235,13 @@ install -m 644 "$SEAT_ASSETS/satuwork-bot@.service" /etc/systemd/system/satuwork
 # 别的账号连不上（见 seat-cdp-guard.sh）。nft 规则重启就没，所以挂在单元启动前而不是只
 # 在部署时装一次；两个单元都挂，因为 Chrome 两边都拉得起来（dock 上点、Bot 自己拉）。
 # 参数写死在这份 root 写的 drop-in 里，不从席位用户写得动的 desktop.env 读。
+#
+# RuntimeDirectory=：席位的 XDG_RUNTIME_DIR（dbus、dconf、Chrome 的 socket 都在里面）由 systemd
+# 以 root 建成 /run/satuwork/<席位>、归席位账号、0700。它以前是 /tmp/xdg-runtime-<席位>——
+# 世界可写的 /tmp 里一个猜得到的名字，席位用户自己 mkdir 再 `chmod 700 || true`：别的账号抢先
+# 建好这个目录，chmod 失败被吞掉，这个席位的总线和 socket 就全落在别人的目录里。/run 只有
+# root 写得动，抢不了。两个单元写同一个目录：Preserve=yes，否则先停的那个会把它从另一个脚下
+# 删掉；拆席位时由 remove-seat.sh 删。
 mkdir -p "/etc/systemd/system/slim-desktop@$SEAT_ID.service.d" \
   "/etc/systemd/system/satuwork-bot@$SEAT_ID.service.d"
 cat > "/etc/systemd/system/slim-desktop@$SEAT_ID.service.d/seat.conf" << EOF_DESK_DROPIN
@@ -243,6 +250,9 @@ User=$LINUX_USER
 Group=$LINUX_USER
 Environment=HOME=$HOME_DIR
 Environment=SEAT_DIR=$SEAT_DIR
+RuntimeDirectory=satuwork/$SEAT_ID
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 ExecStartPre=+/usr/local/bin/seat-cdp-guard.sh add $SEAT_ID $LINUX_USER $CDP
 EOF_DESK_DROPIN
 cat > "/etc/systemd/system/satuwork-bot@$SEAT_ID.service.d/seat.conf" << EOF_BOT_DROPIN
@@ -251,6 +261,9 @@ User=$LINUX_USER
 Group=$LINUX_USER
 Environment=HOME=$HOME_DIR
 Environment=SEAT_DIR=$SEAT_DIR
+RuntimeDirectory=satuwork/$SEAT_ID
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 # 两个文件都在 $SEAT_ETC（root 的 0700 目录），理由见下面「bot 单元读的文件」。
 EnvironmentFile=$BOT_ENV_FILE
 # 两把凭据不进 env：systemd（root）打开 root 的 0600 文件接到 fd 0 上，bot 启动读完即关。
@@ -393,7 +406,8 @@ XDG_SESSION_TYPE=x11
 XDG_CONFIG_HOME=$SEAT_DIR/config
 XDG_DATA_HOME=$SEAT_DIR/share
 XDG_CACHE_HOME=$SEAT_DIR/cache
-XDG_RUNTIME_DIR=/tmp/xdg-runtime-$SEAT_ID
+# root 建的（两个单元 drop-in 里的 RuntimeDirectory=），见 step 4。
+XDG_RUNTIME_DIR=/run/satuwork/$SEAT_ID
 GDK_BACKEND=x11
 HOME=$HOME_DIR
 EOF_ENV

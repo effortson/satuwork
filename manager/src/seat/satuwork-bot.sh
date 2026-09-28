@@ -22,6 +22,14 @@ if [ "$(stat -c %u "$APP")" != 0 ] || [ -n "$(find "$APP" -maxdepth 0 -perm /022
   echo "refusing: $APP 不是 root 独占可写的，重新部署这个席位" >&2
   exit 1
 fi
+# 席位的 XDG_RUNTIME_DIR（bot.env 里那一行）：systemd 以 root 建、归本席位账号、0700
+# （drop-in 里的 RuntimeDirectory=）。不对就不起——bot 拉起的 Chrome 会把 socket 放进去，
+# 放进一个别人建的目录等于把浏览器交出去。见 slim-desktop.sh 里同一段。
+RUN_DIR="/run/satuwork/$SEAT_ID"
+if [ -L "$RUN_DIR" ] || [ ! -d "$RUN_DIR" ] || [ "$(stat -c %u:%a "$RUN_DIR")" != "$(id -u):700" ]; then
+  echo "refusing: 运行时目录 $RUN_DIR 不在、不归 $(id -un) 或不是 0700（老部署的席位要重新部署一次）" >&2
+  exit 1
+fi
 cd "$APP"
 # tsx 默认把编译好的 .ts 缓存在 $TMPDIR/tsx-<uid>/，那个目录归席位用户——往里放一份
 # 伪造的缓存，和改 app 里的源码是一回事。关掉缓存，每次启动现编（多一两秒）。

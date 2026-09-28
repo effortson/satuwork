@@ -11,6 +11,9 @@
 set -euo pipefail
 SEAT_ID="${1:-}"
 [ -n "$SEAT_ID" ] || { echo "usage: slim-desktop.sh <seatId>" >&2; exit 1; }
+case "$SEAT_ID" in
+  *[!A-Za-z0-9_-]*) echo "bad seat id: '$SEAT_ID'" >&2; exit 1 ;;
+esac
 : "${SEAT_DIR:?SEAT_DIR unset - check /etc/systemd/system/slim-desktop@${SEAT_ID}.service.d/seat.conf}"
 : "${HOME:?HOME unset - same drop-in}"
 
@@ -31,13 +34,25 @@ export XDG_SESSION_TYPE=x11
 export GDK_BACKEND=x11
 # logind（PAMName=login）会把 XDG_RUNTIME_DIR 设成 /run/user/<uid>，那是**按 uid**
 # 的，同一员工的两块屏会撞在一起。改成按席位。
-export XDG_RUNTIME_DIR="/tmp/xdg-runtime-${SEAT_ID}"
+#
+# 目录由 systemd 以 root 建（drop-in 里的 RuntimeDirectory=，见 deploy-seat.sh step 4），这里
+# **只核对、不建**。以前是这里自己在 /tmp 下 mkdir 再 `chmod 700 || true`：别的账号抢先建好
+# /tmp/xdg-runtime-<席位>，chmod 失败被吞掉，dbus / dconf / Chrome 的 socket 就全落进别人的
+# 目录。宁可起不来，也不在一个不归自己的目录里起总线。
+export XDG_RUNTIME_DIR="/run/satuwork/${SEAT_ID}"
+if [ -L "$XDG_RUNTIME_DIR" ] || [ ! -d "$XDG_RUNTIME_DIR" ] \
+  || [ "$(stat -c %u:%a "$XDG_RUNTIME_DIR")" != "$(id -u):700" ] \
+  || [ "$(stat -c %u "/run/satuwork")" != 0 ] || [ -n "$(find /run/satuwork -maxdepth 0 -perm /022)" ]; then
+  echo "refusing: 运行时目录 $XDG_RUNTIME_DIR 不在、不归 $(id -un)、不是 0700，或者上层不是 root 独占可写的：" >&2
+  ls -ld /run/satuwork "$XDG_RUNTIME_DIR" >&2 || true
+  echo "它该由 systemd 建（slim-desktop@${SEAT_ID}.service.d/seat.conf 里的 RuntimeDirectory=）；老部署的席位重新部署一次。" >&2
+  exit 1
+fi
 export XDG_CONFIG_HOME="$SEAT_DIR/config"
 export XDG_DATA_HOME="$SEAT_DIR/share"
 export XDG_CACHE_HOME="$SEAT_DIR/cache"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME/picom" "$XDG_CONFIG_HOME/plank/dock1/launchers" \
+mkdir -p "$XDG_CONFIG_HOME/picom" "$XDG_CONFIG_HOME/plank/dock1/launchers" \
   "$XDG_DATA_HOME/applications" "$XDG_CACHE_HOME" "$SEAT_DIR/bin" "$SEAT_DIR/chrome"
-chmod 700 "$XDG_RUNTIME_DIR" || true
 
 # ── 清掉上一轮的残留 ────────────────────────────────────────────────
 # **这一段不能省。** 本单元是 PAMName=login 起的，Xvfb / x11vnc / websockify 会落进

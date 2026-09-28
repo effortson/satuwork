@@ -314,7 +314,8 @@ for seat in $SEATS; do
   for dir in $(seat_dir_of "$seat"); do
     act rm -rf "$dir"
   done
-  act rm -rf "/tmp/xdg-runtime-$seat"
+  # 运行时目录：新部署在 /run/satuwork/<席位>（systemd 建，单元停了不删），老部署在 /tmp。
+  act rm -rf "/run/satuwork/$seat" "/tmp/xdg-runtime-$seat"
   # bot 单元读的 bot.env 和凭据固定放在 /etc/satuwork/seats 下（不跟 SATUWORK_MANAGER_HOME
   # 走），单独删。
   act rm -rf "/etc/satuwork/seats/$seat"
@@ -323,6 +324,7 @@ for seat in $SEATS; do
 done
 if [ -d /etc/satuwork/seats ]; then act rmdir /etc/satuwork/seats 2>/dev/null || true; fi
 if [ -d /opt/satuwork/seats ]; then act rmdir /opt/satuwork/seats 2>/dev/null || true; fi
+if [ -d /run/satuwork ]; then act rmdir /run/satuwork 2>/dev/null || true; fi
 # deploy-seat.sh 的 ensure_ptrace_scope 留下的持久化配置。只删文件、不把当前内核值调回去：
 # 那是更安全的一侧，调低要管理员自己决定。
 act rm -f /etc/sysctl.d/60-satuwork-ptrace.conf

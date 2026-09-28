@@ -99,7 +99,7 @@ export function pidFacts(pid: string): PidFacts | null {
 }
 
 /** /etc/passwd 里这个名字的 uid。席位账号是 deploy-seat.sh 用 adduser 建的本地账号。 */
-function uidOfUser(name: string): number | null {
+export function uidOfUser(name: string): number | null {
   const passwd = readText('/etc/passwd')
   if (!passwd) return null
   for (const line of passwd.split('\n')) {

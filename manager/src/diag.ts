@@ -1,7 +1,7 @@
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tryRun } from './run.ts'
-import { claimSeat, hostLookup, pidFacts } from './seat-owner.ts'
+import { claimSeat, hostLookup, pidFacts, uidOfUser } from './seat-owner.ts'
 import { seat, type SeatRecord } from './seats.ts'
 
 /**
@@ -213,6 +213,26 @@ function fileOf(path: string, note?: string): FileInfo {
   }
 }
 
+/**
+ * 席位的 XDG_RUNTIME_DIR 对不对。它由 systemd 以 root 建（drop-in 里的 RuntimeDirectory=），
+ * 两个单元启动前都会核对，不对就起不来——所以单元起不来时这一条多半就是原因。
+ * 老部署（还在用 /tmp/xdg-runtime-*）的席位没有它，重新部署一次就有了。
+ */
+function runtimeDirNote(row: SeatRecord): string | null {
+  const dir = join('/run/satuwork', row.seatId)
+  let st
+  try {
+    st = lstatSync(dir)
+  } catch {
+    return `运行时目录 ${dir} 不在：单元还没起过，或者这是老版本部署的席位（重新部署一次）`
+  }
+  if (!st.isDirectory()) return `运行时目录 ${dir} 不是目录（链接或文件），两个单元都会拒绝启动`
+  if ((st.mode & 0o777) !== 0o700) return `运行时目录 ${dir} 的权限是 ${(st.mode & 0o777).toString(8)}，不是 700，两个单元都会拒绝启动`
+  const uid = uidOfUser(row.linuxUser)
+  if (uid !== null && st.uid !== uid) return `运行时目录 ${dir} 不归 ${row.linuxUser}（属主 uid ${st.uid}），两个单元都会拒绝启动`
+  return null
+}
+
 async function browserOf(): Promise<{ found: string | null; candidates: string[] }> {
   const candidates = ['google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser']
   for (const c of candidates) {
@@ -273,6 +293,7 @@ export async function diagnose(seatId: string, lines = 40): Promise<DiagResult> 
     fileOf(join(row.seatDir, 'share/applications/seat-terminal.desktop')),
     // bot 程序在 root 的目录里，不在 seatDir（见 deploy-seat.sh step 5）。
     fileOf(join('/opt/satuwork/seats', row.seatId, 'app/VERSION')),
+    fileOf(join('/run/satuwork', row.seatId), '运行时目录（XDG_RUNTIME_DIR），systemd 建、归席位账号、0700'),
   ]
 
   // ── 把「一眼能看出的不对劲」直接写成人话，别让人自己去比对上面那堆字段 ──
@@ -284,6 +305,8 @@ export async function diagnose(seatId: string, lines = 40): Promise<DiagResult> 
   if (desktop.active !== 'active') notes.push(`${desktopUnit} 不是 active（${desktop.active}/${desktop.sub}）`)
   if (Number(desktop.restarts) > 3) notes.push(`${desktopUnit} 重启过 ${desktop.restarts} 次，多半在起不来的循环里`)
   if (!browser.found) notes.push('这台机器上没找到任何浏览器，dock 上会少一格')
+  const runtimeNote = runtimeDirNote(row)
+  if (runtimeNote) notes.push(runtimeNote)
   if (!files.find((f) => f.path.endsWith('files.dockitem'))?.exists) notes.push('files.dockitem 不在，dock 上不会有文件管理器')
   // 认本席位的那一个。同机另一个席位的 plank 会把这条检查骗过去——它正是这次
   // 「dock 不见了」查了好几轮才找到的原因（两块屏共用一条 dbus，第二个 plank 自己退了）。
