@@ -32,6 +32,7 @@ import { nextRunAtOf } from './lib/schedule.ts'
 import { MIN_WORKER_PROTOCOL, machineLink, reconcileStuckDeploys } from './deploy.ts'
 import { runtimeKindOf } from './lib/catalog.ts'
 import { sweepHandoffs } from './handoff-sweep.ts'
+import { sweepAuthThrottle } from './lib/auth-throttle.ts'
 import { refreshDiscovered } from './model-discovery.ts'
 import { pruneDailyAlternates } from './lib/alternates.ts'
 import { tickBotDeletions, tickConversationAudits } from './conversation-audit.ts'
@@ -444,6 +445,8 @@ export async function maintenanceTick(db: Db): Promise<void> {
      * 定时器就多一处要在关停时记得清的东西——忘了清的表现是进程不退出。
      */
     .then(() => sweepHandoffs(db))
+    // 登录限流过了窗口的桶（lib/auth-throttle.ts）。不收也不影响对错，只是不让表一直长。
+    .then(() => sweepAuthThrottle(db))
     // 自动对话审计与删除终审复用同一个粗节拍。批次和删除请求都在库里，tick 只负责推进。
     .then(() => tickConversationAudits(db))
     .then(() => tickBotDeletions(db))

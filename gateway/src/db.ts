@@ -2632,6 +2632,47 @@ export class Db {
     return this.run('delete from machine_metric_minutes where "minuteStart" < ?', [before])
   }
 
+  // ── 登录类接口的失败计数（lib/auth-throttle.ts，迁移 0044）。──
+
+  /**
+   * 给这几个桶各记一次，**一条语句、原子地**拿回记完之后的数。
+   *
+   * 先记后验：并发打进来的 N 条请求各自拿到 1..N，不会都读到「还差一次」然后一起放行。
+   * 窗口到期的行就地从 1 重新数起，不依赖清扫是否已经跑过。
+   */
+  async bumpAuthThrottle(keys: string[], now: number, windowMs: number): Promise<{ key: string; count: number; resetAt: number }[]> {
+    if (!keys.length) return []
+    const values = keys.map(() => '(?, 1, ?)').join(', ')
+    const args: unknown[] = []
+    for (const key of keys) args.push(key, now + windowMs)
+    args.push(now, now)
+    const rows = await this.many(
+      `insert into auth_throttle (key, count, "resetAt") values ${values}
+       on conflict (key) do update set
+         count = case when auth_throttle."resetAt" <= ? then 1 else auth_throttle.count + 1 end,
+         "resetAt" = case when auth_throttle."resetAt" <= ? then excluded."resetAt" else auth_throttle."resetAt" end
+       returning key, count, "resetAt"`,
+      args,
+    )
+    return rows.map((r) => ({ key: String(r.key), count: Number(r.count), resetAt: Number(r.resetAt) }))
+  }
+
+  /** 把先记上的那一次退回去（这次没被评判，或者评判结果是对的）。 */
+  async refundAuthThrottle(keys: string[]): Promise<void> {
+    if (!keys.length) return
+    await this.run('update auth_throttle set count = greatest(count - 1, 0) where key = any(?::text[])', [keys])
+  }
+
+  /** 整个桶清零：口令对了，这个邮箱之前的失败一笔勾销。 */
+  async clearAuthThrottle(keys: string[]): Promise<void> {
+    if (!keys.length) return
+    await this.run('delete from auth_throttle where key = any(?::text[])', [keys])
+  }
+
+  async sweepAuthThrottle(now: number): Promise<number> {
+    return this.run('delete from auth_throttle where "resetAt" <= ?', [now])
+  }
+
   // ── 配对码。一次性、30 分钟过期，装管家时拿它换这台机器的 smt_。──
 
   async insertMachinePairing(row: MachinePairing): Promise<MachinePairing> {

@@ -49,7 +49,7 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
 | `GATEWAY_CHANNEL_KEY` | 32 字节 base64 | 渠道 token 的加密钥匙。换了就解不开已有绑定 |
 | `CRON_SECRET` | 随机串 | Vercel 触发 Cron 时带在 Authorization 上；没配 `/cron/tick` 整条关着 |
 | `GATEWAY_PUBLIC_URL` | `https://…` | 对外地址。**必须 https**：Telegram 收信靠它自动切到 webhook（channels/inbound.ts），管家学地址也靠它 |
-| `GATEWAY_TRUST_FORWARDED` | `1` | 信平台反代写的 `x-forwarded-for` 最右一跳（配对时记「机器在哪」用） |
+| `GATEWAY_TRUST_FORWARDED` | `1` | 信平台反代写的 `x-forwarded-for` 最右一跳（配对时记「机器在哪」用；登录限流的 IP 桶也靠它——不开的话全站共用一个桶） |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob 库的读写 token | 发布包不落盘、边收边传到 Blob（私有），下发时带 token 取。Debian 上也可以配，两边的包就在同一个地方。见 gateway/src/releases.ts |
 | `GATEWAY_ACCESS_HOST`、`GATEWAY_PLATFORM_TOKEN`、各家模型 key | 同 Debian | 见 docker-compose.yml |
 

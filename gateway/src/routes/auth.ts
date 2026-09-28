@@ -8,6 +8,7 @@ import { MIN_PASSWORD, hashPassword, jwks, needsRehash, verifyPassword } from '.
 import { emailOf, orgSettings, orgSummary, publicAccount, publicCompany, publicPlan, publicSettings } from '../lib/org.ts'
 import { headerOf, inviteeOf, issue, noteLogin, requireSeatOrUser, requireUser } from '../lib/guards.ts'
 import { type Account } from '../db.ts'
+import { enterThrottle, throttleKeys } from '../lib/auth-throttle.ts'
 
 /**
  * 建系统管理员那把事务级锁的号。
@@ -42,6 +43,9 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
     const password = strField(body, 'password')
     if (password.length < MIN_PASSWORD) throw new HttpError(400, `口令至少 ${MIN_PASSWORD} 位`)
     const name = strField(body, 'name', false)
+    // 先便宜地查一遍再算哈希：建完之后这条接口仍然公开，不能让每一次 409 都白烧一次 scrypt。
+    // 真正的判定还是下面事务里那一次。
+    if ((await db.owners()).length) throw new HttpError(409, '已经有系统管理员了')
     const passwordHash = await hashPassword(password)
     /**
      * 并发点两次「创建」也只成一个。
@@ -79,9 +83,25 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
     const body = bodyOf(req)
     const email = emailOf(strField(body, 'email'))
     const password = strField(body, 'password')
-    let account = await db.accountByEmail(email)
-    // 找不到也走同一条失败路径，不靠耗时差泄露「这个邮箱在不在」。
-    const ok = account ? await verifyPassword(password, account.passwordHash) : await verifyPassword(password, await LOGIN_DUMMY_HASH)
+    /**
+     * 失败限流（lib/auth-throttle.ts）：邮箱一个桶、来源地址一个桶。锁住期间口令对了也进不来——
+     * 在验口令之前就挡掉，否则这扇门就成了「猜中才放行」的判定器。邮箱不存在也照样数，
+     * 不然数没数就泄露了「这个邮箱在不在」。
+     */
+    const emailKey = throttleKeys.email(email)
+    const settle = await enterThrottle(db, [emailKey, throttleKeys.ip(req)])
+    let ok = false
+    let judged = false
+    let account: Account | undefined
+    try {
+      account = await db.accountByEmail(email)
+      // 找不到也走同一条失败路径，不靠耗时差泄露「这个邮箱在不在」。
+      ok = account ? await verifyPassword(password, account.passwordHash) : await verifyPassword(password, await LOGIN_DUMMY_HASH)
+      judged = true
+    } finally {
+      // 半路抛错（库挂了、scrypt 忙）没判出对错，不算失败；口令对了清掉这个邮箱之前的失败。
+      await settle(judged ? { ok, clear: ok ? [emailKey] : [] } : { ok: true })
+    }
     if (!account || !ok) throw new HttpError(401, '邮箱或口令不对')
     if (account.status === 'disabled') throw new HttpError(403, '这个账号已被停用，请联系管理员')
     if (account.status === 'invited') throw new HttpError(403, '请先用邀请链接设置口令')
@@ -140,7 +160,16 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
   })
 
   router.post('/invites/:token/accept', async (req, res) => {
-    const found = await inviteeOf(db, req.params.token)
+    // 拿不存在的链接来试也算来源地址的一次失败，和登录共用一个桶（lib/auth-throttle.ts）。
+    const settle = await enterThrottle(db, [throttleKeys.ip(req)])
+    let found: Awaited<ReturnType<typeof inviteeOf>> = null
+    let judged = false
+    try {
+      found = await inviteeOf(db, req.params.token)
+      judged = true
+    } finally {
+      await settle({ ok: !judged || !!found })
+    }
     if (!found) throw new HttpError(400, '这条邀请链接不可用')
     const body = bodyOf(req)
     const password = strField(body, 'password')
@@ -255,7 +284,20 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
     const body = bodyOf(req)
     const current = strField(body, 'current')
     const next = strField(body, 'next')
-    const ok = await verifyPassword(current, account.passwordHash)
+    /**
+     * 拿着一张偷来的票也能在这儿猜当前口令（猜中就能换掉它、把主人锁在外面），所以同样限次数，
+     * 按账号数（lib/auth-throttle.ts）。
+     */
+    const pwKey = throttleKeys.password(account.id)
+    const settle = await enterThrottle(db, [pwKey])
+    let ok = false
+    let judged = false
+    try {
+      ok = await verifyPassword(current, account.passwordHash)
+      judged = true
+    } finally {
+      await settle(judged ? { ok, clear: ok ? [pwKey] : [] } : { ok: true })
+    }
     if (!ok) throw new HttpError(400, '当前口令不对')
     if (next.length < MIN_PASSWORD) throw new HttpError(400, `口令至少 ${MIN_PASSWORD} 位`)
     if (next === current) throw new HttpError(400, '新口令不能和当前口令相同')

@@ -96,6 +96,8 @@ function errText(msg) {
   // 带数字的那几句进不了字典（键是变的），在这里按模式翻。
   const queued = msg.match(/^还有 (\d+) 条消息排着队，先取消它们再开新对话$/)
   if (queued) return `${queued[1]} message(s) are still queued — cancel them before starting a new conversation.`
+  const throttled = msg.match(/^尝试次数太多，请 (\d+) (秒|分钟)后再试$/)
+  if (throttled) return `Too many attempts — try again in ${throttled[1]} ${throttled[2] === '秒' ? 'seconds' : 'minutes'}.`
   return msg
 }
 

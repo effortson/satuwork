@@ -508,7 +508,10 @@ async function onLogin(e) {
   } catch (err) {
     clearToken()
     state.me = null
-    state.loginError = err.message || '登录失败'
+    // 429：连续输错被限流（服务端的话里带着要等多久）。补一句为什么、以及忘了口令怎么办。
+    state.loginError = err.status === 429
+      ? `${err.message} ${t('为保护账号，连续输错口令会暂时锁定；忘了口令请找管理员重置。', 'Repeated wrong passwords lock sign-in for a while to protect the account; if you forgot it, ask an admin to reset it.')}`
+      : err.message || '登录失败'
   } finally {
     state.busy = false
     render()
@@ -1958,7 +1961,9 @@ async function submitJoin(e) {
     history.replaceState({}, '', '/')
     await loadPage()
   } catch (err) {
-    state.joinError = err.message || '加入失败'
+    state.joinError = err.status === 429
+      ? `${err.message} ${t('这台设备最近失败的尝试太多，稍后再打开邀请链接。', 'Too many failed attempts from this device recently; open the invite link again later.')}`
+      : err.message || '加入失败'
   } finally {
     state.busy = false
     render()
