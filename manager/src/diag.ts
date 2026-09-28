@@ -272,7 +272,8 @@ export async function diagnose(seatId: string, lines = 40): Promise<DiagResult> 
     fileOf(join(row.seatDir, 'share/applications/seat-chrome.desktop')),
     fileOf(join(row.seatDir, 'share/applications/seat-files.desktop')),
     fileOf(join(row.seatDir, 'share/applications/seat-terminal.desktop')),
-    fileOf(join(row.seatDir, 'app/VERSION')),
+    // bot 程序在 root 的目录里，不在 seatDir（见 deploy-seat.sh step 5）。
+    fileOf(join('/opt/satuwork/seats', row.seatId, 'app/VERSION')),
   ]
 
   // ── 把「一眼能看出的不对劲」直接写成人话，别让人自己去比对上面那堆字段 ──
