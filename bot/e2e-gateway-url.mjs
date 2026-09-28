@@ -11,7 +11,8 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { adoptGatewayUrl, resetAdoptState } from './src/gateway-url.ts'
+import { adoptGatewayUrl, loadGatewayUrlOverride, resetAdoptState } from './src/gateway-url.ts'
+import { setSeatModeForTest } from './src/seat-secrets.ts'
 
 const OLD = 'http://192.168.5.59:3080'
 const NEW = 'http://192.168.5.40:3080'
@@ -126,6 +127,102 @@ const log = { info: (s) => logs.push(s), warn: (s) => logs.push(s) }
     keptToken: body.includes('GATEWAY_TOKEN=sat_x'),
     memory: process.env.GATEWAY_URL,
   }
+}
+
+// ── 远程席位（凭据从 fd 0 读到）：bot.env 在 root 的目录里，新地址写 gateway-url ──
+// 那份文件席位用户（terminal 里的任何子进程）也写得动，所以带着席位票做的 HMAC，启动时
+// 验过才认——不然改一行就能让 bot 下次重启把票送到别人的服务器上。
+setSeatModeForTest(true)
+process.env.GATEWAY_TOKEN = 'sat_seat-token-for-mac'
+
+/** 模拟一次重启：清掉「部署时的地址」的记忆，内存回到 bot.env 写的那个。 */
+function restart(deployedUrl = OLD) {
+  resetAdoptState()
+  process.env.GATEWAY_URL = deployedUrl
+}
+
+// 7. 学到新地址：写 gateway-url，不碰（也不需要有）bot.env；重启回来按它起
+{
+  const { home } = seat({ withEnv: false })
+  adoptGatewayUrl(NEW, log)
+  const file = join(home, 'gateway-url')
+  let rec = null
+  try {
+    rec = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {}
+  const mode = rec ? (statSync(file).mode & 0o777).toString(8) : ''
+  const memory = process.env.GATEWAY_URL
+  restart()
+  const src = loadGatewayUrlOverride(log)
+  out.seatAdopt = {
+    memory,
+    wrote: rec?.url === NEW && rec?.base === OLD && typeof rec?.mac === 'string',
+    hasToken: readFileSync(file, 'utf8').includes('sat_'),
+    mode,
+    noBotEnv: (() => {
+      try {
+        statSync(join(home, 'bot.env'))
+        return false
+      } catch {
+        return true
+      }
+    })(),
+    afterRestart: process.env.GATEWAY_URL,
+    src,
+  }
+}
+
+// 8. 子进程改了地址（没有票，算不出 MAC）：重启时不认
+{
+  const { home } = seat({ withEnv: false })
+  adoptGatewayUrl(NEW, log)
+  const file = join(home, 'gateway-url')
+  const rec = JSON.parse(readFileSync(file, 'utf8'))
+  writeFileSync(file, JSON.stringify({ ...rec, url: 'http://evil.example:3080' }))
+  restart()
+  logs.length = 0
+  const src = loadGatewayUrlOverride(log)
+  out.seatTampered = { memory: process.env.GATEWAY_URL, src, said: logs.some((l) => l.includes('校验对不上')) }
+}
+
+// 9. 重新部署换了地址：旧覆盖的 base 对不上，以部署的为准
+{
+  seat({ withEnv: false })
+  adoptGatewayUrl(NEW, log)
+  const REDEPLOYED = 'http://192.168.5.77:3080'
+  restart(REDEPLOYED)
+  const src = loadGatewayUrlOverride(log)
+  out.seatRedeployed = { memory: process.env.GATEWAY_URL, src, expect: REDEPLOYED }
+}
+
+// 10. 票换过（重新部署发了新票）：旧 MAC 作废
+{
+  seat({ withEnv: false })
+  adoptGatewayUrl(NEW, log)
+  process.env.GATEWAY_TOKEN = 'sat_rotated'
+  restart()
+  const src = loadGatewayUrlOverride(log)
+  out.seatRotated = { memory: process.env.GATEWAY_URL, src }
+  process.env.GATEWAY_TOKEN = 'sat_seat-token-for-mac'
+}
+
+// 11. 远程席位写不进 gateway-url：内存照样不改
+{
+  const { home } = seat({ withEnv: false })
+  mkdirSync(join(home, 'gateway-url'))
+  logs.length = 0
+  adoptGatewayUrl(NEW, log)
+  out.seatUnwritable = { memory: process.env.GATEWAY_URL, said: logs.some((l) => l.includes('写不进 gateway-url')) }
+}
+
+// 12. 不是远程席位：启动时根本不读 gateway-url（本地 bot 的 SATUWORK_HOME 里放着一份也不认）
+{
+  const { home } = seat({ withEnv: false })
+  adoptGatewayUrl(NEW, log)
+  setSeatModeForTest(false)
+  restart()
+  const src = loadGatewayUrlOverride(log)
+  out.localIgnores = { memory: process.env.GATEWAY_URL, src, fileThere: statSync(join(home, 'gateway-url')).isFile() }
 }
 
 console.log('__RESULT__' + JSON.stringify(out))

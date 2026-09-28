@@ -504,7 +504,7 @@ export function apply(ctx: Context, _config: Config = {}) {
   /**
    * 换版前的静默：**这几秒不开新的一轮**，好让管家等手上这一轮干净地跑完再重启。
    *
-   * 只有管家会调（它手上有席位票，见 deploy-seat.sh 写进 bot.env 的 GATEWAY_TOKEN）。
+   * 只有管家会调（它手上有席位票，见 deploy-seat.sh 写进 /etc/satuwork/seats/<席位>/secrets.env 的 GATEWAY_TOKEN）。
    * 语义见 agent/index.ts 上那段：只挡新一轮，不挡 steering；只在内存里，带 TTL，
    * 所以管家中途挂了也不会把这台席位冻成一块砖。
    *

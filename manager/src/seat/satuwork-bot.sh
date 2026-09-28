@@ -13,4 +13,13 @@ if [ ! -f "$APP/bin/satuwork.mjs" ]; then
   exit 1
 fi
 cd "$APP"
-exec /usr/bin/node --import tsx "$APP/bin/satuwork.mjs"
+# 关掉 SIGUSR1 开 inspector 那条路：同 uid 的子进程 `kill -USR1 $PPID` 一下，Node 就在
+# 127.0.0.1:9229 上开调试口，连上去就能读 bot 内存里的席位凭据——绕过 ptrace_scope。
+# Node 22.14 / 23.7 起才有这个开关；老 Node 上加它会直接起不来，所以先探一下。
+NODE_FLAGS=()
+if /usr/bin/node --disable-sigusr1 -e '' </dev/null >/dev/null 2>&1; then
+  NODE_FLAGS+=(--disable-sigusr1)
+else
+  echo "satuwork-bot: 这版 Node 没有 --disable-sigusr1，SIGUSR1 仍能打开 inspector；升级到 Node 24" >&2
+fi
+exec /usr/bin/node "${NODE_FLAGS[@]}" --import tsx "$APP/bin/satuwork.mjs"

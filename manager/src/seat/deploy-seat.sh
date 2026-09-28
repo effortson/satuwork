@@ -63,6 +63,11 @@ esac
 [ "$SEAT_DIR" = "$HOME_DIR/.satuwork/$SEAT_ID" ] || { echo "refusing: SEAT_DIR $SEAT_DIR" >&2; exit 1; }
 
 DISPLAY_VAR=":${DISPLAY_NUM}"
+# bot 单元要 root（systemd）读的文件都放这儿：$HOME 之外、root 的 0700 目录。
+# 理由见 step 4 的「bot 单元读的文件」那一段。
+SEAT_ETC="/etc/satuwork/seats/$SEAT_ID"
+BOT_ENV_FILE="$SEAT_ETC/bot.env"
+SECRETS_FILE="$SEAT_ETC/secrets.env"
 
 # ── 进度自报 ──────────────────────────────────────────────────────────
 # 一行 `@@step <第几步>/<共几步> <这一步在干什么>`，管家按行读（见 manager/src/seats.ts
@@ -241,9 +246,70 @@ User=$LINUX_USER
 Group=$LINUX_USER
 Environment=HOME=$HOME_DIR
 Environment=SEAT_DIR=$SEAT_DIR
-EnvironmentFile=-$SEAT_DIR/bot.env
+# 两个文件都在 $SEAT_ETC（root 的 0700 目录），理由见下面「bot 单元读的文件」。
+EnvironmentFile=$BOT_ENV_FILE
+# 两把凭据不进 env：systemd（root）打开 root 的 0600 文件接到 fd 0 上，bot 启动读完即关。
+# 见 bot/src/seat-secrets.ts。
+StandardInput=file:$SECRETS_FILE
+StandardOutput=journal
+StandardError=journal
+Environment=SATUWORK_SECRETS_STDIN=1
 ExecStartPre=+/usr/local/bin/seat-cdp-guard.sh add $SEAT_ID $LINUX_USER $CDP
 EOF_BOT_DROPIN
+
+# ── bot 单元读的文件：只放在 root 的目录里 ─────────────────────────────
+# bot 和它起的子进程（terminal 的 bash、Chrome）是**同一个 Linux 用户**。凭据原先两处
+# 都摸得到：$SEAT_DIR/bot.env 归席位用户，`cat` 就有；EnvironmentFile 又把它们放进 bot
+# 的初始环境，`/proc/$PPID/environ` 一读就有（Node 里 delete process.env 改不到那个
+# 文件）。拿到 sat_ 的脚本能自己去 /api/sessions/<sid>/approvals 把审批全点掉。
+#
+# 光把凭据挪走还不够：EnvironmentFile= 和 StandardInput=file: 是 **systemd 以 root 打开**
+# 的。文件留在 $SEAT_DIR 里（席位用户可写的目录），他随时能把它换成符号链接——指向
+# 管家的配置之类只有 root 读得了的 KEY=VALUE 文件，杀掉自己的 bot，Restart=on-failure
+# 就把那份内容注入进他的进程；或者往 bot.env 里写一行 NODE_OPTIONS / LD_PRELOAD。
+# 所以这两个文件都放 $SEAT_ETC：root 的 0700 目录，文件 root 0600。
+#
+# 非机密的那部分（GATEWAY_URL 之外）bot 运行时不改；GATEWAY_URL 学到新地址时 bot 写的是
+# $SEAT_DIR/gateway-url（带席位票做的 HMAC，由 bot 自己在启动时校验着读，root 不碰它），
+# 见 bot/src/gateway-url.ts。
+#
+# 写法：先写同目录的临时文件再 rename——umask 077 让它一出生就是 0600。
+write_root_file() {
+  local tmp="$1.tmp"
+  rm -f "$tmp"
+  (umask 077; cat > "$tmp")
+  chown root:root "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$1"
+}
+install -d -m 700 -o root -g root /etc/satuwork/seats "$SEAT_ETC"
+printf 'GATEWAY_TOKEN=%s\nGATEWAY_API_KEY=%s\n' "$GATEWAY_TOKEN" "$GATEWAY_API_KEY" | write_root_file "$SECRETS_FILE"
+
+# ── 同 uid 的子进程不许读 bot 的内存 ──────────────────────────────────
+# 凭据挪出 env 之后还在 bot 进程的内存里。Debian 默认 kernel.yama.ptrace_scope=0：同 uid
+# 的任何进程都能 ptrace 它、读 /proc/<pid>/mem。设成 1 之后只有祖先进程能这么做，而
+# terminal 起的 bash 是 bot 的**子孙**，够不着它；同一员工另一个席位的子进程也够不着。
+# 已经更严（2/3）的不降；写进 sysctl.d 是为了重启之后还在。
+# 设不上（内核没有 Yama、容器里 /proc/sys 只读）不让部署失败，但要吼出来。
+ensure_ptrace_scope() {
+  local knob=/proc/sys/kernel/yama/ptrace_scope cur target
+  if [ ! -r "$knob" ]; then
+    echo "ptrace: 内核没有 Yama（$knob 不存在），同 uid 的子进程仍能读 bot 的内存" >&2
+    return 0
+  fi
+  cur=$(cat "$knob" 2>/dev/null || echo 0)
+  case "$cur" in [0-3]) ;; *) cur=0 ;; esac
+  target=$cur
+  if [ "$cur" -lt 1 ]; then target=1; fi
+  printf '# satuwork：席位 bot 的子进程不许 ptrace / 读 bot 的内存（见 deploy-seat.sh）\nkernel.yama.ptrace_scope = %s\n' "$target" \
+    > /etc/sysctl.d/60-satuwork-ptrace.conf
+  if [ "$cur" -lt 1 ]; then
+    if ! sysctl -q -w kernel.yama.ptrace_scope=1 >/dev/null 2>&1; then
+      echo "ptrace: kernel.yama.ptrace_scope 设不成 1（当前 $cur），同 uid 的子进程仍能读 bot 的内存" >&2
+    fi
+  fi
+}
+ensure_ptrace_scope
 
 write_as_user "$SEAT_DIR/desktop.env" << EOF_ENV
 DISPLAY_NUM=$DISPLAY_NUM
@@ -287,10 +353,9 @@ if [ -f "$SEAT_DIR/app/cordis.yml" ]; then
   as_user sed -i -E "s/^([[:space:]]*port:)[[:space:]]*[0-9]+/\1 $BOT_PORT/" "$SEAT_DIR/app/cordis.yml"
 fi
 
-write_as_user "$SEAT_DIR/bot.env" << EOF_ENV
+# 非机密配置。写到 $SEAT_ETC，不再写 $SEAT_DIR——理由见 step 4「bot 单元读的文件」。
+write_root_file "$BOT_ENV_FILE" << EOF_ENV
 GATEWAY_URL=$GATEWAY_URL
-GATEWAY_TOKEN=$GATEWAY_TOKEN
-GATEWAY_API_KEY=$GATEWAY_API_KEY
 # 协议 10：调模型走管家的回环口（管家再向 Gateway 要授权、报结算），不直打 Gateway 的 /v1。
 GATEWAY_LLM_URL=$MANAGER_LLM_URL
 SATUWORK_BOT_ID=$SATUWORK_BOT_ID
@@ -315,8 +380,12 @@ HOME=$HOME_DIR
 EOF_ENV
 
 # 文件本来就是席位用户建的，不用再 chown。chmod 补的是「文件早就在」的情况：
-# `cat >` 截断重写不改已有文件的权限位，老席位的 bot.env 可能是 0644。
-as_user chmod 600 "$SEAT_DIR/desktop.env" "$SEAT_DIR/vnc-passwd" "$SEAT_DIR/bot.env"
+# `cat >` 截断重写不改已有文件的权限位，老席位留下的可能是 0644。
+as_user chmod 600 "$SEAT_DIR/desktop.env" "$SEAT_DIR/vnc-passwd"
+# **迁移**：老版本把票和 API key 写在 $SEAT_DIR/bot.env 里（gateway-url.ts 改写时还可能留
+# 下一份 bot.env.tmp）。现在两样都不用了，删掉。以席位用户身份删（as_user 带 env -i）：
+# root 不在席位用户换得掉的路径上动手，也不把这个脚本的环境（票、口令）带进他的进程。
+as_user rm -f "$SEAT_DIR/bot.env" "$SEAT_DIR/bot.env.tmp"
 
 step 6 "启动桌面与 Bot"
 systemctl daemon-reload
