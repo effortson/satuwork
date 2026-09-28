@@ -517,9 +517,13 @@ fn startup_error(app: AppHandle) -> String {
  * 的来源；停在这一屏、把话说清楚，人还在键盘前面，改一个字母就好了。
  */
 #[tauri::command]
-fn connect(app: AppHandle, url: String) -> Result<(), String> {
+async fn connect(app: AppHandle, url: String) -> Result<(), String> {
     let parsed = normalize(&url)?;
-    reachable(&parsed)?;
+    // 敲门每个地址最多等 3 秒，放进阻塞线程池：同步命令在主线程上，等的这几秒窗口全冻住。
+    let probe = parsed.clone();
+    tauri::async_runtime::spawn_blocking(move || reachable(&probe))
+        .await
+        .map_err(|e| e.to_string())??;
     write_server(&app, parsed.as_str())?;
     open_main(&app, parsed).map_err(|e| e.to_string())?;
     if let Some(win) = app.get_webview_window(SETUP) {
@@ -857,10 +861,10 @@ fn download_direct(raw: &str, release: &LocalBotRelease, archive: &Path) -> Resu
 /**
  * 下载并暂存适合本机的最新版。任何失败都只记状态，不阻止旧 Bot 启动。
  *
- * 一次只允许一路跑：每小时的更新线程（不持任何锁）和 start_local_bot（持 LocalBots）
+ * 一次只允许一路跑：每小时的更新线程（不持任何锁）和 start_local_bot（持 STARTING，不持 LocalBots）
  * 都会调它，而 unpack_runtime 对已存在的目标目录是先 remove_dir_all 再解。两路交错的话，
  * 一路刚解好、正要写 PENDING 的目录会被另一路当作损坏删掉。锁是这个函数自己的，
- * 不跟 LocalBots 扯上关系，不会构成锁序问题。
+ * 不跟 LocalBots 扯上关系（锁序永远是 STARTING → STAGING），不会构成锁序问题。
  */
 fn stage_runtime_update(
     app: &AppHandle,
@@ -1137,8 +1141,28 @@ fn verify_local_bot_started(
     })
 }
 
+/**
+ * 起一颗本地 Bot。
+ *
+ * **必须是 async 命令、活儿放进 spawn_blocking。** Tauri v2 里同步命令跑在主线程上，而这里
+ * 要联网问更新、可能下载解包上百 MB（120 秒超时）、再等 500ms 看进程有没有立刻退出——同步
+ * 写的话整个界面冻在那儿，窗口拖不动、菜单点不开。
+ */
 #[tauri::command]
-fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotStatus, String> {
+async fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || start_local_bot_blocking(app, config))
+        .await
+        .map_err(|e| format!("启动本地 Bot 的后台任务异常：{e}"))?
+}
+
+/**
+ * start_local_bot 的本体，在阻塞线程池里跑。
+ *
+ * 锁分两把：STARTING 把「起 Bot」这件事整段串起来（两次 start 交错的话，同一颗 Bot 会起两份、
+ * 「是不是第一颗」的判断也会失真）；LocalBots 只在查表、改表那一下持有，**绝不跨着联网、
+ * 解包、sleep 拿着**——status / stop / approve 都要这把锁，拿着它等 IO 就等于把它们一起卡住。
+ */
+fn start_local_bot_blocking(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotStatus, String> {
     let bot_id = safe_bot_id(&config.bot_id)?;
     let configured = read_server(&app).ok_or("还没有配置 Gateway")?;
     let expected = normalize(&configured)?;
@@ -1150,26 +1174,36 @@ fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotSta
         return Err("本地 Bot 凭证格式不对".into());
     }
     let (data, work) = bot_paths(&app, &bot_id)?;
+    static STARTING: Mutex<()> = Mutex::new(());
+    // 上一路带着锁 panic 了也照常往下走：这把锁不护内存里的数据，只负责排队。
+    let _starting = STARTING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let state = app.state::<LocalBots>();
-    let mut bots = state.0.lock().map_err(|_| "本地 Bot 状态锁损坏")?;
-    if let Some(proc_) = bots.get_mut(&bot_id) {
-        if proc_.child.try_wait().map_err(|e| e.to_string())?.is_none() {
-            if proc_.access_token == config.access_token {
-                let port = proc_.port;
-                return Ok(runtime_status(&app, true, Some(port), &work));
-            }
-            // 票换了：Gateway 已经把这个进程手上那把作废了（改口令、被管理员重置之后，本地 Bot
-            // 的票跟登录票一起作废），它从此每一次回 Gateway 都是 401、页面也敲不开它。手上的
-            // 活反正已经做不下去，用新票重起一遍。
-            terminate_local_bot(&mut proc_.child).map_err(|e| format!("换票时停止本地 Bot 失败：{e}"))?;
+    let (stale, first) = {
+        let mut bots = state.0.lock().map_err(|_| "本地 Bot 状态锁损坏")?;
+        let alive = match bots.get_mut(&bot_id) {
+            Some(proc_) => proc_.child.try_wait().map_err(|e| e.to_string())?.is_none(),
+            None => false,
+        };
+        if let Some(proc_) = bots.get(&bot_id).filter(|p| alive && p.access_token == config.access_token) {
+            let port = proc_.port;
+            drop(bots);
+            return Ok(runtime_status(&app, true, Some(port), &work));
         }
-        bots.remove(&bot_id);
+        // 票换了：Gateway 已经把这个进程手上那把作废了（改口令、被管理员重置之后，本地 Bot
+        // 的票跟登录票一起作废），它从此每一次回 Gateway 都是 401、页面也敲不开它。手上的
+        // 活反正已经做不下去，用新票重起一遍。先从表里摘出来，出了锁再杀。
+        let stale = bots.remove(&bot_id).filter(|_| alive);
+        (stale, bots.is_empty())
+    };
+    if let Some(mut proc_) = stale {
+        terminate_local_bot(&mut proc_.child).map_err(|e| format!("换票时停止本地 Bot 失败：{e}"))?;
     }
     // 仅第一颗 Bot 启动前检查和切换。已有 Bot 在跑时只使用同一版本，绝不形成一台
-    // Desktop 上多个运行时混跑，更不会为了升级强杀正在执行的任务。
+    // Desktop 上多个运行时混跑，更不会为了升级强杀正在执行的任务。`first` 是上面那一眼看到的，
+    // 有 STARTING 串着，这期间别处只可能停 Bot、不可能再起一颗，所以它不会过期成「错的第一颗」。
     let mut previous_runtime = None;
     let mut promoted_runtime = None;
-    if bots.is_empty() && !cfg!(debug_assertions) && std::env::var_os("SATUWORK_BOT_ROOT").is_none()
+    if first && !cfg!(debug_assertions) && std::env::var_os("SATUWORK_BOT_ROOT").is_none()
     {
         // 第一次联网升级前也先安装内置版，否则新包失败时还没有可回滚目标。
         let _ = ensure_bundled_runtime(&app)?;
@@ -1249,7 +1283,11 @@ fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotSta
         }
         Err(error) => return Err(error),
     };
-    bots.insert(bot_id, LocalBotProc { child, port, access_token: config.access_token.clone() });
+    state
+        .0
+        .lock()
+        .map_err(|_| "本地 Bot 状态锁损坏")?
+        .insert(bot_id, LocalBotProc { child, port, access_token: config.access_token.clone() });
     // 记下这次的地址和票，运行时自查（每小时一次）拿它去问 Gateway 有没有新版。
     if let Ok(mut src) = app.state::<UpdateSource>().0.lock() {
         *src = Some((gateway.clone(), config.access_token.clone()));
