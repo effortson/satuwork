@@ -736,6 +736,11 @@ export interface ChannelEvent {
   files: { path: string; name: string }[]
   /** 这一轮新开的转人工卡；和 reply/files 一起可靠投递。 */
   handoffs: ChannelHandoffPrompt[]
+  /**
+   * 结果已经发出去几段（回复分段、文件卡、转人工卡按这个顺序数）。只有租约持有者能往前推，
+   * 重试和接管从这一段接着发，不从头再来（见 channels.ts 的 deliverClaimedEvent）。
+   */
+  deliveredParts: number
   lastError: string | null
   createdAt: number
   updatedAt: number

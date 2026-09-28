@@ -41,6 +41,7 @@ import { SQL as m0040 } from './0040-llm-call-relay-machine.ts'
 import { SQL as m0041 } from './0041-desktop-secrets.ts'
 import { SQL as m0042 } from './0042-audit-score-reasons.ts'
 import { SQL as m0043 } from './0043-local-bot-min-desktop.ts'
+import { SQL as m0044 } from './0044-channel-delivery-progress.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -128,6 +129,7 @@ export const MIGRATIONS: Migration[] = [
   { id: '0041-desktop-secrets', name: '桌面端本地 Bot 的凭证单独存，跟登录票一起作废', sql: m0041 },
   { id: '0042-audit-score-reasons', name: '审计条目加评分理由和语言', sql: m0042 },
   { id: '0043-local-bot-min-desktop', name: '桌面端本地 Bot 包各自登记最低 Desktop 版本', sql: m0043 },
+  { id: '0044-channel-delivery-progress', name: '渠道事件记下投递到第几段，重试和接管从那一段接着发', sql: m0044 },
 ]
 
 /**

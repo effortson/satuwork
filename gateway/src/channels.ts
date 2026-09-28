@@ -12,7 +12,8 @@ import {
   TelegramError, normalizeTelegramCallback, normalizeTelegramUpdate, telegramAnswerCallbackQuery,
   telegramClearApprovalButtons, telegramGetUpdates, telegramJoinedSharedChat, telegramSendApproval,
   telegramSendHandoff, telegramSendHandoffReplyPrompt,
-  startTelegramTyping, telegramLeaveChat, telegramSendArtifactPreviews, telegramSendDraft, telegramSendText, telegramSetMyCommands,
+  startTelegramTyping, telegramArtifactPreviewCards, telegramLeaveChat, telegramRichTextParts, telegramSendArtifactPreview, telegramSendDraft,
+  telegramSendText, telegramSendTextPart, telegramSetMyCommands,
 } from './channels/telegram.ts'
 
 export interface StoredSecret { token: string; pairingCode: string }
@@ -37,6 +38,8 @@ const EVENT_LEASE_RENEW_MS = Math.max(1000, Math.min(
   Math.trunc(Number(process.env.GATEWAY_CHANNEL_EVENT_LEASE_RENEW_MS ?? 10_000)),
 ))
 const MAX_ATTEMPTS = 8
+/** 投递时 429 的 retry_after 不超过这么久就原地等；再长就排进 retry，不占着租约干等。 */
+const INLINE_RETRY_AFTER_MAX_MS = Math.max(0, Math.trunc(Number(process.env.GATEWAY_CHANNEL_INLINE_RETRY_AFTER_MS ?? 5000)))
 const POLL_SCAN_MS = Math.max(250, Math.trunc(Number(process.env.GATEWAY_CHANNEL_POLL_SCAN_MS ?? 1000)))
 const POLL_TIMEOUT_SECONDS = Math.min(50, Math.max(1, Math.trunc(Number(process.env.GATEWAY_CHANNEL_POLL_TIMEOUT_SECONDS ?? 30))))
 const POLL_LEASE_MS = (POLL_TIMEOUT_SECONDS + 20) * 1000
@@ -436,12 +439,20 @@ async function processOne(db: Db, key: Buffer, keys: JwtKeys, event: ChannelEven
 
 type Binding = NonNullable<Awaited<ReturnType<Db['channelBinding']>>>
 
+/** 投递途中租约被别人接走了。不是失败：不记错、不排重试，剩下的归接管者。 */
+class ChannelLeaseLost extends Error {
+  constructor() { super('渠道事件租约已经转交') }
+}
+
 /**
  * 一轮已经跑完，把结果送到 Telegram 并把事件收成 delivered。**Gateway 自己跑完的和工人回报
  * 的都走这一条**（routes/worker.ts 的 finish），投递、去重、收口只有一份。
  *
  * 先把结果落盘、继续持有租约，再发：进程若在发送前崩溃，接管者只会重发这份 reply，绝不会
  * 再烧一轮模型。结果里 reply 已有（接管重发）时不再落一次。抛出的错由 failClaimedEvent 接。
+ *
+ * 发送按段记进度（channel_events.deliveredParts）：第 N 段失败排进 retry，下一次从第 N 段接着
+ * 发，前面已经到了用户手里的不再重发。
  */
 export async function deliverClaimedEvent(
   db: Db,
@@ -462,19 +473,50 @@ export async function deliverClaimedEvent(
     })
     if (!saved) return
   }
-  // 出站最多 20 秒；发送前把 30 秒窗口重新撑满，正常情况下不会被另一进程并发重发。
-  if (!await db.renewChannelEventLease(current.id, leaseToken, Date.now() + EVENT_LEASE_MS)) return
-  // 渠道只接受私聊，conversationId 就是唯一配对用户的 chat id。
-  await telegramSendText(secret.token, current.externalConversationId, reply)
-  if (sessionId && files.length) {
-    await telegramSendArtifactPreviews(
-      secret.token,
-      current.externalConversationId,
-      artifactPreviews(keys, binding.accountId, sessionId, files),
-    )
+  const chatId = current.externalConversationId
+  // 要发的每一段排成一张固定的单子：只取决于落了盘的 reply / files / handoffs，重试、接管、
+  // 换一个进程来发，切出来的都一样，deliveredParts 才对得上号。
+  const parts: ((keep: () => Promise<void>) => Promise<unknown>)[] = [
+    // 渠道只接受私聊，conversationId 就是唯一配对用户的 chat id。
+    ...telegramRichTextParts(reply).map((part) => (keep: () => Promise<void>) =>
+      telegramSendTextPart(secret.token, chatId, part, '', keep)),
+    ...(sessionId && files.length
+      ? telegramArtifactPreviewCards(artifactPreviews(keys, binding.accountId, sessionId, files)).map((card) => () =>
+        telegramSendArtifactPreview(secret.token, chatId, card))
+      : []),
+    ...handoffs.map((handoff) => () =>
+      telegramSendHandoff(secret.token, chatId, handoffMarkdown(handoff), handoff.id)),
+  ]
+  /**
+   * 每发一条之前把租约撑满 30 秒。一条出站最多 20 秒，所以不管一共几段、Telegram 多慢，租约
+   * 都不会在发送途中过期、被另一个进程接管重发。工人那条路（routes/worker.ts 的 finish）没有
+   * processOne 的心跳定时器，函数形态上也不能指望定时器跨请求，全靠这里逐段续。
+   * 续不上就是已经被接管了：立刻停手，剩下的归接管者发。
+   */
+  const keep = async () => {
+    if (!await db.renewChannelEventLease(current.id, leaseToken, Date.now() + EVENT_LEASE_MS)) throw new ChannelLeaseLost()
   }
-  for (const handoff of handoffs) {
-    await telegramSendHandoff(secret.token, current.externalConversationId, handoffMarkdown(handoff), handoff.id)
+  try {
+    // 前几次已经发出去的那几段不再发。
+    for (let i = Math.min(current.reply ? current.deliveredParts : 0, parts.length); i < parts.length; i++) {
+      for (let tries = 0; ; tries++) {
+        await keep()
+        try {
+          await parts[i](keep)
+          break
+        } catch (e) {
+          // 429 给了很短的 retry_after 就原地等完再发这一段；等得久的交给 failClaimedEvent 按
+          // retry_after 排下一次，不在这里占着租约干等。
+          const wait = e instanceof TelegramError && e.status === 429 ? e.retryAfterMs : 0
+          if (!wait || wait > INLINE_RETRY_AFTER_MAX_MS || tries >= 2) throw e
+          await new Promise((resolve) => setTimeout(resolve, wait))
+        }
+      }
+      if (!await db.advanceChannelDelivery(current.id, leaseToken, i + 1, Date.now() + EVENT_LEASE_MS)) return
+    }
+  } catch (e) {
+    if (e instanceof ChannelLeaseLost) return
+    throw e
   }
   const delivered = await db.updateClaimedChannelEvent(current.id, leaseToken, {
     status: 'delivered', attempts: current.attempts, nextTryAt: null, leaseUntil: null,
