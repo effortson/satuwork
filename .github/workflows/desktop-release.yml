@@ -10,6 +10,11 @@
 # 自带的 `releases/latest`：几条发布线共用一个 Release 列表，那个「Latest」指的是别条线上最新的包。
 #
 # 手动触发支持填 tag 发布到指定 Release；留空则只出 artifact、不建/更新 Release。
+# **填了 tag 就按那个 tag 的代码构建**，不是按「Use workflow from」选的分支：先查 tag 在不在
+# （不在就失败，手动触发从不新建 tag），checkout `refs/tags/<tag>`，再断言 HEAD 就是 tag 指的
+# 提交、tauri.conf.json 的版本等于 tag 里的版本。以前是 checkout 分支，develop 上版本号没改的话
+# 断言照过，`--clobber` 就拿 develop 的代码把正式 Release 的安装包盖了；tag 不存在时
+# `gh release create` 还会在默认分支 HEAD 上新建一个。注意 workflow 文件本身仍取自所选分支。
 #
 # 不传 Gateway：Desktop 壳没有自动更新（见 desktop/README.md「还没做的事」），装的人
 # 是从首页的下载那一段拿包。本地 Bot 运行时是另一条线（local-bot-release.yml）。
@@ -32,8 +37,47 @@ on:
         required: false
         default: ''
 
+# 默认只读；要写 Release 的 job 自己再要 contents: write。
+permissions:
+  contents: read
+
 jobs:
+  # 定下这次发的 tag 和要构建的提交，后面的 job 都只认这里的输出。
+  # - tag 推送：tag 就是触发的那个。
+  # - 手动触发填了 tag：校验格式（输入是任意字符串，只经 env 传、不直接拼进脚本），
+  #   查仓库里这个 tag 解到哪个提交（annotated tag 也一路解到提交），查不到就失败。
+  # - 手动触发没填、也不是从 tag 上跑的：tag 为空，按所选分支构建，只出 artifact。
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      sha: ${{ steps.r.outputs.sha }}
+      ref: ${{ steps.r.outputs.ref }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${TAG_INPUT:-}"
+          if [ -z "$tag" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          fi
+          if [ -z "$tag" ]; then
+            echo "没有目标 tag：按 $GITHUB_REF 构建，只出 artifact"
+            { echo "tag="; echo "sha=$GITHUB_SHA"; echo "ref=$GITHUB_SHA"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          re='^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+          [[ "$tag" =~ $re ]] || { echo "tag 格式不对：要 desktop-vX.Y.Z 或 desktop-vX.Y.Z-后缀" >&2; exit 1; }
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$tag" --jq .sha 2>/dev/null) || sha=""
+          [ -n "$sha" ] || { echo "仓库里没有 tag $tag：先打 tag 推上去，手动触发不会新建 tag" >&2; exit 1; }
+          echo "目标 tag：$tag（$sha）"
+          { echo "tag=$tag"; echo "sha=$sha"; echo "ref=refs/tags/$tag"; } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: resolve
     strategy:
       # 同 bot-release：一个架构挂了不取消另一个，但 release 要整套齐了才发。
       fail-fast: false
@@ -56,11 +100,23 @@ jobs:
             runner: windows-latest
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - name: 校验 checkout 的提交
+        env:
+          WANT_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          got=$(git rev-parse HEAD)
+          [ "$got" = "$WANT_SHA" ] || {
+            echo "checkout 出来是 $got，要构建的却是 $WANT_SHA" >&2; exit 1; }
 
       - uses: pnpm/action-setup@v4
 
@@ -80,18 +136,14 @@ jobs:
             echo "runner 是 $got，矩阵却说 ${{ matrix.arch }}" >&2; exit 1; }
 
       - name: 校验 tag 与 tauri.conf.json 版本一致
-        if: github.ref_type == 'tag' || inputs.tag != ''
+        if: needs.resolve.outputs.tag != ''
+        env:
+          TARGET_TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          target_tag="${{ inputs.tag }}"
-          if [ -z "$target_tag" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            target_tag="${GITHUB_REF_NAME}"
-          fi
-          if [ -n "$target_tag" ]; then
-            want="${target_tag#desktop-v}"
-            got=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
-            [ "$got" = "$want" ] || {
-              echo "tag 是 $want，tauri.conf.json 却是 $got：资产名会按后者起，Release 按前者建" >&2; exit 1; }
-          fi
+          want="${TARGET_TAG#desktop-v}"
+          got=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+          [ "$got" = "$want" ] || {
+            echo "tag 是 $want，tauri.conf.json 却是 $got：资产名会按后者起，Release 按前者建" >&2; exit 1; }
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -135,7 +187,7 @@ jobs:
           retention-days: 14
 
   release:
-    needs: build
+    needs: [resolve, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write # 建 Release / 上传资产要写仓库内容
@@ -149,17 +201,18 @@ jobs:
       - run: ls -la dist
 
       - name: 发布到 GitHub Release
-        if: github.ref_type == 'tag' || inputs.tag != ''
+        if: needs.resolve.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           NOTE: ${{ inputs.note }}
-          TAG_INPUT: ${{ inputs.tag }}
+          target_tag: ${{ needs.resolve.outputs.tag }}
+          WANT_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
-          target_tag="$TAG_INPUT"
-          if [ -z "$target_tag" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            target_tag="$GITHUB_REF_NAME"
-          fi
-          [ -n "$target_tag" ] || { echo "没有目标 tag，跳过 Release" >&2; exit 0; }
+          set -euo pipefail
+          # 构建要几十分钟，这期间 tag 可能被挪过：再解一次，对不上就不发，免得包和 tag 说的不是同一份代码。
+          now=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$target_tag" --jq .sha)
+          [ "$now" = "$WANT_SHA" ] || {
+            echo "tag $target_tag 现在指向 $now，构建用的是 $WANT_SHA：tag 被挪过，不发" >&2; exit 1; }
 
           if [ -n "${NOTE:-}" ]; then
             printf '%s\n' "$NOTE" > notes.md
@@ -190,8 +243,10 @@ jobs:
             # --latest=false：仓库的「Latest」不归桌面端。不写的话 GitHub 按日期自动挑，
             # 桌面端一发版就把它从别条线手里抢过来（desktop-v0.1.1 就这么抢过一次）。
             # 首页要的「桌面端最新版」走的是下面那个 desktop-latest，不靠这个标记。
+            # --verify-tag：tag 不在就失败，绝不让 gh 在默认分支 HEAD 上新建 tag（resolve 已查过，这是兜底）。
             gh release create "$target_tag" dist/* \
               --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
               --title "$target_tag" \
               --notes-file notes.md \
               --latest=false
@@ -204,8 +259,8 @@ jobs:
   # 手动补发一个老 tag 不会把首页换回旧包，两个 tag 前后脚推也不会让慢的那个盖掉快的。
   # concurrency 让它们排队、一次只一个在动 desktop-latest；排着的被更新的一次顶掉也无妨。
   sync-latest:
-    needs: release
-    if: github.ref_type == 'tag' || inputs.tag != ''
+    needs: [resolve, release]
+    if: needs.resolve.outputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write # 传资产、改名、挪 tag 都要写仓库内容
