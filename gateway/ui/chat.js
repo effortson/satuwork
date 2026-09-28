@@ -3294,6 +3294,15 @@ function emailPreviewDoc(html) {
 /** 卡片底下那排按钮。发信那张的第一个按钮说「批准并发送」——它就是要干这件事。 */
 function approvalActs(a, okLabel) {
   const touched = approvalTouched(a)
+  /**
+   * terminal 的「这一轮都批准」只放行一字不差的同一条命令（席位那边 approvals.ts 的
+   * grantKey）：它的风险在命令里，按工具放行等于批了一条删临时文件、放过一整轮的删目录。
+   * 按钮上的话要跟着改，不然人以为后面的命令都不会再问。
+   */
+  const byCommand = ((a.form && a.form.tool) || a.name) === 'terminal'
+  const turnTip = byCommand
+    ? t('这一轮里一字不差的同一条命令不再问；换一条命令照样会问。', 'This exact command won\'t ask again until this reply finishes; any other command still asks.')
+    : t('从你刚才那句话到它答完，这把工具不再问；下一句话会重新问。', 'Until this reply finishes, this tool won\'t ask again; your next message starts over.')
   return (
     `<div class="sw-approval-acts">` +
     `<button type="button" class="btn btn-primary" data-act="chat-approve" data-call="${esc(a.callId)}" data-scope="once">${esc(okLabel)}</button>` +
@@ -3309,8 +3318,8 @@ function approvalActs(a, okLabel) {
     (touched
       ? // 改过的这一次不能顺带放行后面几次：后面那些带的是模型自己写的内容，不是人刚改的这份。
         ` disabled title="${esc(t('这一次改过内容，只能批准这一次', 'You edited this one, so it can only be approved once'))}"`
-      : ` title="${esc(t('从你刚才那句话到它答完，这把工具不再问；下一句话会重新问。', 'Until this reply finishes, this tool won\'t ask again; your next message starts over.'))}"`) +
-    `>${esc(t('这一轮都批准', 'Approve for this turn'))}</button>` +
+      : ` title="${esc(turnTip)}"`) +
+    `>${esc(byCommand ? t('这一轮这条都批准', 'Approve this command for this turn') : t('这一轮都批准', 'Approve for this turn'))}</button>` +
     `<button type="button" class="btn btn-ghost" data-act="chat-deny" data-call="${esc(a.callId)}" data-scope="once">${esc(t('拒绝', 'Deny'))}</button>` +
     /**
      * 拒绝那一侧也配一颗带范围的，和批准那一对对称。
@@ -5160,7 +5169,7 @@ function seatStage() {
    * 库里那一行两种情况长得一模一样，可人要做的事完全相反：一个是接着等（什么都不用
    * 按），一个是这次装到一半没人接着装了（非按一下不可）。混成一档的代价是后者——
    * 一屏永远走不完的读秒，外加一颗都没有的按钮。判据由服务端给（见
-   * `/runtime/deploy/progress` 的 stale）：只有那个进程知道自己手上有没有这活儿。
+   * `/runtime/deploy/progress` 的 stale：库里的在装心跳断了、管家那边也没在装）。
    */
   if (p && p.status === 'deploying') return p.stale ? 'stalled' : 'deploying'
   const mine = state.desktopRuntime
@@ -7849,15 +7858,28 @@ async function loadHandoffDetail(id) {
  */
 let handoffTimer = null
 
+/** 切回前台补的那一次。具名是为了停得掉：匿名的每起一次就多挂一个，退出登录也摘不下来。 */
+function handoffOnVisible() {
+  if (!document.hidden) void loadHandoffs()
+}
+
 function startHandoffPoll() {
   if (handoffTimer) return
   handoffTimer = setInterval(() => {
     if (document.hidden) return
     void loadHandoffs()
   }, 30_000)
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void loadHandoffs()
-  })
+  document.addEventListener('visibilitychange', handoffOnVisible)
+}
+
+/**
+ * 退出登录 / 票过期时停（见 app.js 的 endSignedIn）。不停的话票清了它还在每半分钟敲一次；
+ * 换成 owner 登进来，它敲的每一下都是 403。下一个人登进来之后由 loadPage 按角色重新起。
+ */
+function stopHandoffPoll() {
+  clearInterval(handoffTimer)
+  handoffTimer = null
+  if (typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', handoffOnVisible)
 }
 
 /**
@@ -7886,9 +7908,18 @@ function startSeatWatch() {
   }, SEAT_WATCH_MS)
   // Node 环境（e2e 垫片）下别拽着进程不退出；浏览器里 setInterval 是数字，没有 unref。
   if (seatWatchTimer && typeof seatWatchTimer.unref === 'function') seatWatchTimer.unref()
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void pollSeatLinks()
-  })
+  document.addEventListener('visibilitychange', seatWatchOnVisible)
+}
+
+function seatWatchOnVisible() {
+  if (!document.hidden) void pollSeatLinks()
+}
+
+/** 同 stopHandoffPoll：退出登录 / 票过期时停，登进来之后 loadPage 按角色重新起。 */
+function stopSeatWatch() {
+  clearInterval(seatWatchTimer)
+  seatWatchTimer = null
+  if (typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', seatWatchOnVisible)
 }
 
 async function pollSeatLinks() {
@@ -7934,12 +7965,16 @@ async function updateOrgRuntime() {
      * 失败里的话，一次「中午大家都在用」会被报成一片红，人会去查根本不存在的故障。
      */
     const held = results.filter((r) => r.busy).length
-    const bad = results.filter((r) => !r.busy && (r.error || r.status === 'error')).length
-    const tail = held ? t(`，${held} 个有会话在跑没换`, `, ${held} skipped (busy)`) : ''
+    // 还没轮到的（202 + queued）：服务端在后台一台机器一个地往下推，不算成功也不算失败。
+    const waiting = results.filter((r) => r.queued).length
+    const bad = results.filter((r) => !r.busy && !r.queued && (r.error || r.status === 'error')).length
+    const tail =
+      (held ? t(`，${held} 个有会话在跑没换`, `, ${held} skipped (busy)`) : '') +
+      (waiting ? t(`，${waiting} 个在后台排队`, `, ${waiting} queued in the background`) : '')
     if (!results.length) flash('ok', t('没有需要更新的席位', 'No seats needed updating'))
     else
       flash(
-        bad && !ok ? 'err' : 'ok',
+        bad && !ok && !waiting ? 'err' : 'ok',
         t(`更新 ${data.version}：成功 ${ok}，失败 ${bad}`, `Updated ${data.version}: ${ok} ok, ${bad} failed`) + tail,
       )
     await loadCompanyDetail(org)
@@ -8101,7 +8136,24 @@ async function deployMyRuntime(botId, opts = {}) {
     const body = { botId: id }
     if (opts.update) body.update = true
     if (opts.force) body.force = true
-    await api('POST', '/runtime/deploy', body)
+    const started = await api('POST', '/runtime/deploy', body)
+    /**
+     * **服务端等不到装完就先回了（202 + installing）。** 首装要 apt 十几分钟，那条请求以前
+     * 一直挂到装完，在 Vercel 上必然 504——界面说「部署失败」，机器上装得好好的。现在它
+     * 只等一小会儿，剩下的交给进度轮询（和建完 Bot 那一屏同一套，见 ensureDeployWatch）。
+     * 另一个人 / 另一个标签页已经在装（`already`）也走这里：这次什么都没发，接着看那一次。
+     */
+    if (started && started.installing) {
+      if (chatBotIdNow() === id) {
+        state.desktopRuntime = started
+        state.desktopRuntimeAt = Date.now()
+      }
+      state.deployHint = ''
+      flash('ok', started.already ? t('已经在装了，装完这一页会自己接上') : t('已开始安装，装完这一页会自己接上'))
+      await loadRuntimeBots().catch(() => {})
+      ensureDeployWatch()
+      return
+    }
     const startAt = Date.now()
     // 部署结果按这一份说话，不看 state.desktopRuntime——那一份可能已经是别的 Bot 的了。
     let last = null

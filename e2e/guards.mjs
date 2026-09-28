@@ -119,6 +119,15 @@ export async function runGuards({ root, test, assert, log }) {
     assert(r.approvals.递归删被拒后没跑, '拒绝之后命令还是跑了')
   })
 
+  await test('terminal 的「这一轮都批准」只放行同一条命令', () => {
+    const a = r.approvals
+    assert(a.命令放行_第一次要问, 'rm -f 没有要求确认')
+    assert(a.命令放行_同一条不再问, '批过的同一条命令还在问（或没跑）')
+    assert(a.命令放行_名单里不是整把工具, '放行名单记成了整把 terminal')
+    assert(a.命令放行_别的命令还要问, '批了 rm -f build.log 之后，rm -rf 别的路径没再弹卡')
+    assert(a.命令放行_别的命令没跑, '没批的那条命令还是跑了')
+  })
+
   await test('个人敏感信息：出站方向真的被拦下', () => {
     const p = r.pii
     assert(p.带身份证被拦 && p.没跑到工具里, '带身份证的调用还是发出去了')

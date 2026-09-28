@@ -7,7 +7,7 @@ import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
 import type { Account, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
-import { LOGS_FOLLOW_GONE, deployInFlight, deploySeat, listSeatRuntime, logsDirectPayload, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
+import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, defaultBotModel, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
@@ -1162,29 +1162,25 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     if (!botId) throw new HttpError(400, 'botId 不能为空')
     const found = await db.seatRuntime(account.id, botId)
     if (!found) {
-      const live = deployInFlight(account.id, botId)
-      // 后台那次登记还没落库（建完 Bot 之后的头几百毫秒），也说成「在装」——这一屏
-      // 上「还没有部署」那句话会带一颗按钮，让人在机器已经开工的时候再按一次。
-      json(res, 200, { status: live ? 'deploying' : 'none', phase: live ? 'queued' : null, elapsedMs: null, lastError: null, step: null, stale: false })
+      // 没有行就是没登记过：建 Bot 那条路要等登记落库才回 201（startSeatDeploy），不存在
+      // 「在装、但行还没写」的那几百毫秒。
+      json(res, 200, { status: 'none', phase: null, elapsedMs: null, lastError: null, step: null, stale: false })
       return
     }
     /**
-     * 这个进程手上没有这次部署时，先去管家那儿问结局（reconcileDeploy）。
+     * 「有没有人在装」先看库里的在装心跳，没人推着了再去管家那儿问（reconcileDeploy）。
      *
-     * 在 Vercel 上这是常态而不是例外：装是在另一个实例里发出去的，那个实例回完包可能已经被
-     * 冻住，这一格 inFlightDeploys 在这里永远是空的。不问的话，机器上装得好好的席位会被说成
-     * 「上一次安装没做完」，而机器上还在装的会被说成「没人在装」。
+     * 在 Vercel 上装和问多半不在同一个实例，所以这一格**不能**由进程自己答（以前那张
+     * inFlightDeploys 在这里永远是空的：机器上还在装的被说成「没人在装」，界面给出「重新部署」，
+     * 一按就是第二次登记、第二次 `PUT`）。
      */
     const { runtime, live, step: knownStep } = await reconcileDeploy(db, found)
     /**
      * **装到一半没人管了。**
      *
-     * 装现在跑在后台，于是 Gateway 一重启，库里那一行就永远停在 `deploying`：机器上
-     * 什么都没在装，而界面上那个读秒会一直往上走。人守着一屏永远不会完成的进度，
-     * 手里连一颗能按的按钮都没有——这是把「装得久」换成了「永远装不完」。
-     *
-     * 库里看不出这件事（两种 `deploying` 长得一模一样），只有进程自己知道手上有没有
-     * 这活儿。所以这一格由 deployInFlight 回答，界面据此改口并给出「重新部署」。
+     * Gateway 一重启（或者函数被掐），库里那一行就停在 `deploying`：心跳断了、管家那边
+     * 也没在装，而界面上那个读秒会一直往上走。人守着一屏永远不会完成的进度，手里连一颗
+     * 能按的按钮都没有。这种时候说清楚，并给出「重新部署」。
      */
     const stale = runtime.status === 'deploying' && !live
     const machine = runtime.status === 'deploying' && !stale && !knownStep ? await db.machine(runtime.machineId) : undefined
@@ -1205,24 +1201,38 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const opts = deployOptsOf(req)
     const item = await visibleBotOf(db, account, opts.botId)
     if (runtimeKindOf(item) === 'local') throw new HttpError(409, '本地 Bot 由 Satuwork Desktop 启动，不能部署到远程机器')
-    const out = await deploySeat(db, keys, account, opts)
+    /**
+     * **装不挂在这条请求上。** 以前这里一直等到机器上装完：首装要 apt 十几分钟，函数 300 秒
+     * 就被掐——调用方拿到 504、审计没写、那一行停在 `installing`，界面说「失败」而机器上
+     * 装得好好的。现在后台装、先等一小会儿（deployWaitMs）：等得到就照旧回结局，等不到
+     * 回 202 + `installing`，界面转去轮询 `/runtime/deploy/progress`（和建完 Bot 那条一样）。
+     *
+     * 已经有一次在装（别的实例、双击）也是 202 + `already`：什么都没登记，没有第二次 `PUT`。
+     */
+    const out = await deploySeatBriefly(db, account, opts)
     if (!out.ok) throw new HttpError(out.status, out.error)
-    await db.audit({
-      companyId: account.companyId!,
-      accountId: account.id,
-      action: 'runtime.deploy',
-      detail: {
-        botId: out.result.runtime.botId,
-        linuxUser: out.result.runtime.linuxUser,
-        seatId: out.result.runtime.seatId,
-        slot: out.result.runtime.slot,
-        status: out.result.runtime.status,
-      },
+    if (!out.already) {
+      await db.audit({
+        companyId: account.companyId!,
+        accountId: account.id,
+        action: 'runtime.deploy',
+        detail: {
+          botId: out.runtime.botId,
+          linuxUser: out.runtime.linuxUser,
+          seatId: out.runtime.seatId,
+          slot: out.runtime.slot,
+          status: out.runtime.status,
+        },
+      })
+    }
+    json(res, out.installing ? 202 : 200, {
+      ...publicSeatRuntime(out.runtime, out.machine ?? null, {
+        includePassword: true,
+        ticket: desktopTicketFor(keys, out.machine, out.runtime),
+      }),
+      installing: out.installing,
+      ...(out.already ? { already: true } : {}),
     })
-    json(res, 200, publicSeatRuntime(out.result.runtime, out.result.machine, {
-      includePassword: true,
-      ticket: desktopTicketFor(keys, out.result.machine, out.result.runtime),
-    }))
   })
 
   // ── 对话。名册走 Gateway 目录；会话才反代到该 pair 的实例。────────

@@ -833,8 +833,9 @@ async function askAndRecord(ctx: Context, call: ToolCall, bot: BotRecord | undef
     outcome: verdict === 'approved' ? 'approved' : verdict === 'timeout' ? 'timeout' : 'denied',
     // 出处（`来自子任务《…》`）跟着进审计。卡片上说了、留档里不说的话，事后翻记录的
     // 人看到的是一次凭空出现的发信确认——而那正是最该问出处的一种。
+    // terminal 的放行只认同一条命令（approvals.ts 的 grantKey），留档的话要跟着说准。
     reason: viaGrant
-      ? `${why}（这一轮此前已批准同一把工具）`
+      ? `${why}（这一轮此前已批准${call.name === 'terminal' ? '同一条命令' : '同一把工具'}）`
       : viaBlock
         ? `${why}（这一轮此前已拒绝同一把工具，没有再问）`
         : edited?.length

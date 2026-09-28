@@ -7,7 +7,7 @@
  *
  * Vercel 上是多个函数实例、没有常驻进程也没有定时器（docs/adr-gateway-vercel-neon.md），
  * 进程内的计数器每个实例各数各的，等于没限。所以一行一个桶放在 `auth_throttle`（迁移
- * 0044），固定窗口，原子 upsert。过期行由 maintenanceTick 顺手收掉——不收也不影响对错，
+ * 0046），固定窗口，原子 upsert。过期行由 maintenanceTick 顺手收掉——不收也不影响对错，
  * 到期的行下一次碰到时就地从 1 数起。
  *
  * ## 只数失败

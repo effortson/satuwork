@@ -302,6 +302,9 @@ window.SATU_I18N = {
   桌面: 'Desktop',
   '公司的运行机器还没配好': 'The company machine is not set up yet',
   '正在部署…': 'Deploying…',
+  '已开始安装，装完这一页会自己接上': 'Installation started — this page picks up on its own once it is done',
+  '已经在装了，装完这一页会自己接上': 'Already being installed — this page picks up on its own once it is done',
+  排队中: 'Queued',
   '机器那边正在装这个席位，通常一两分钟。装好之后这里会自己变成对话。':
     'The seat is being installed on the machine — usually a minute or two. This turns into the conversation on its own once it is done.',
   上一次部署没成功: 'The last deploy did not go through',

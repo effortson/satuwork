@@ -1,10 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { canonicalTimezone, isUniqueViolation, releaseArch, type Account, type BotRelease, type Db, type Machine, type SeatRuntime } from './db.ts'
+import { canonicalTimezone, isUniqueViolation, releaseArch, type Account, type BotRelease, type Db, type Machine, type SeatDeployRequest, type SeatRuntime } from './db.ts'
 import { signLogsTicket, type JwtKeys } from './crypto.ts'
 import { HttpError } from './http.ts'
 import { botReleaseFile, directReleaseUrl } from './releases.ts'
-import { waitUntil } from '@vercel/functions'
+import { afterResponse } from './lib/background.ts'
 
 /** 管家握手协议。低于这个数的机器不给下发部署——字段对不上会失败得很难看。 */
 export const MIN_MANAGER_PROTOCOL = 1
@@ -815,6 +815,16 @@ export interface DeployFailure {
    * 来」，而且因为一个失败都没有，那句提示还是绿的——真正的原因从此浮不出来。
    */
   busy?: boolean
+  /**
+   * 这个席位上已经有一次部署在进行（别的实例、别的人登记的），这次什么都没动。和 busy
+   * 一样是「晚点再来」，但原因不同：busy 是席位上有人在说话，这个是机器上正在装。
+   */
+  inFlight?: boolean
+  /**
+   * 等到自己的超时了，机器上多半还在装（管家不知道调用方走了）。**那一行留在 `installing`**，
+   * 结局由 reconcileDeploy 事后去管家那儿问——当场标红的话，机器上装得好好的席位会被说成失败。
+   */
+  pending?: boolean
 }
 
 export type DeployOutcome = { ok: true; result: DeployResult } | DeployFailure
@@ -857,26 +867,23 @@ type Reservation =
  * Live：`PUT {machine.host}/seats/{seatId}`，机器上的活儿全由管家做。
  *
  * **整段是同步的**：调用方要一直等到机器上装完（最长 DEPLOY_TIMEOUT_MS）。要「先回执、
- * 后台装」的那条路走 startSeatDeploy。
+ * 后台装」的那条路走 startSeatDeploy / deploySeatBriefly；Vercel 上一条请求最多活 300 秒，
+ * 只有自己给了短超时的（模版下发、批量更新的队列）才该走这一条。
  */
 export async function deploySeat(
   db: Db,
-  keys: JwtKeys,
+  _keys: JwtKeys,
   account: Account,
   opts: DeployOpts,
 ): Promise<DeployOutcome> {
-  // **从登记就开始记**，不是等到真的开装：这中间隔着几次查库，而进度那条路每两秒问一
-  // 次，问在这个缝里就会得到一句「没人在装」——界面据此改口，人手上多出一颗不该点的
-  // 「重新部署」。
-  const release = markDeploying(seatKeyOf(account.id, (opts.botId || '').trim()))
-  try {
-    const res = await reserveSeat(db, account, opts)
-    if (!res.ok) return res
-    if ('done' in res) return { ok: true, result: res.done }
-    return await installSeat(db, res.plan)
-  } finally {
-    release()
-  }
+  return await deploySeatNow(db, account, opts)
+}
+
+async function deploySeatNow(db: Db, account: Account, opts: DeployOpts): Promise<DeployOutcome> {
+  const res = await reserveSeat(db, account, opts)
+  if (!res.ok) return res
+  if ('done' in res) return { ok: true, result: res.done }
+  return await installSeat(db, res.plan)
 }
 
 export interface DeployOpts {
@@ -894,40 +901,64 @@ export interface DeployOpts {
 }
 
 /**
- * 这一刻**这个进程里**正在装的席位。key 是 `accountId:botId`。
+ * 在装心跳的节拍和时限。
  *
- * 两个用处，缺一个都会在界面上变成一句假话：
- *
- * 1. **挡住重复的自动部署**（见 startSeatDeploy）。建 Bot 那一屏上双击一下、或者人在
- *    装到一半时刷新页面又触发一次，两次登记会各自分一个槽、各自往机器上铺同一个
- *    seatId——管家那头虽然按 seatId 排队（withSeatLock），但库里已经先被后写的那次盖
- *    过一遍了，进度和结局都会开始骗人。
- * 2. **认出「装到一半没人管了」**（见 deployInFlight 和 `/runtime/deploy/progress`）。
- *    装现在跑在后台，Gateway 一重启，那一行就永远停在 `deploying`：机器上什么都没在
- *    装，而界面上那个读秒会一直往上走，人守着一屏永远不会完成的进度，连一颗能按的
- *    按钮都没有。库里看不出这件事——`deploying` 那一行在两种情况下长得一模一样，只有
- *    进程自己知道手上有没有这活儿。
+ * 推着一次部署的那个进程（installSeat）每 DEPLOY_BEAT_MS 往那一行写一次 `deployBeatAt`；
+ * 超过 DEPLOY_BEAT_TTL_MS 没写，就当那个进程没了——函数实例被掐（300 秒的顶）、Gateway
+ * 重启。时限取节拍的四倍：续约赶上库抖一两下，不该让别的实例以为没人在装、抢着再装一遍。
  */
-const inFlightDeploys = new Map<string, number>()
+export const DEPLOY_BEAT_MS = 15_000
+export const DEPLOY_BEAT_TTL_MS = 60_000
 
 /**
- * 标记「这个席位这会儿有人在装」。**计数，不是布尔**：手工重铺和自动部署完全可能叠在
- * 一起，用布尔的话先结束的那个会把还在跑的那个也一起抹掉——而那正好会让界面把一个装
- * 得好好的席位说成「装到一半没人管了」。
+ * 这一行此刻有没有一个活着的 Gateway 进程在推。**看库，不看进程。**
+ *
+ * 以前答这件事的是进程里的一张 Map（inFlightDeploys），而 Gateway 在 Vercel 上是好几个
+ * 实例：装的那个和问的那个多半不是同一个，问的那边永远看到「没人在装」——进度页改口说
+ * 「上一次安装没做完」、给出「重新部署」，一按就再登记一遍、重写 deployStartedAt、再往
+ * 机器上发一次 `PUT /seats/:id`。
+ *
+ * 只答「Gateway 这边有没有人推着」。Gateway 这边没人了、机器上还在装的那种（函数被掐了，
+ * 管家不知道调用方已经走了）由 reconcileDeploy 去问管家。
  */
-function markDeploying(key: string): () => void {
-  inFlightDeploys.set(key, (inFlightDeploys.get(key) ?? 0) + 1)
-  let done = false
-  return () => {
-    if (done) return
-    done = true
-    const n = (inFlightDeploys.get(key) ?? 1) - 1
-    if (n > 0) inFlightDeploys.set(key, n)
-    else inFlightDeploys.delete(key)
+export function deployBeating(row: Pick<SeatRuntime, 'status' | 'deployBeatAt'>, now = Date.now()): boolean {
+  return row.status === 'deploying' && row.deployBeatAt != null && now - row.deployBeatAt < DEPLOY_BEAT_TTL_MS
+}
+
+/** reserveSeat 在锁里发现别人刚登记上时用它跳出事务（不是错误，是「这次不用你装了」）。 */
+class DeployInFlight extends Error {
+  constructor(readonly runtime: SeatRuntime) {
+    super('这个席位正在部署')
   }
 }
 
-const seatKeyOf = (accountId: string, botId: string) => accountId + ':' + botId
+const IN_FLIGHT_MESSAGE = '这个席位正在部署，等这一次装完再来'
+
+/**
+ * /runtime/deploy 这类「人在等」的入口等后台那一段多久。
+ *
+ * 在这之内装完的（stub、给已经装好桌面栈的席位重铺）照旧当场回结局，界面和脚本都不用
+ * 改；装不完的（第一次装要 apt 十几分钟）回 202，界面转去轮询进度。**必须远小于函数的
+ * 300 秒**：以前这里一直等到装完，首装必然 504，审计没写、界面说失败，而机器上装得好好的。
+ */
+export function deployWaitMs(): number {
+  const raw = (process.env.GATEWAY_DEPLOY_WAIT_MS || '').trim()
+  const n = Number(raw)
+  return raw && Number.isFinite(n) && n >= 0 ? n : 20_000
+}
+
+/** 登记完、机器上的那段交给后台之后，调用方手上的东西。 */
+export interface StartedDeploy {
+  ok: true
+  runtime: SeatRuntime
+  machine: Machine | undefined
+  /** 这一刻机器上是不是还在装（false = 已经是这个版本、什么都不用做）。 */
+  installing: boolean
+  /** 在装的是**别人**登记的那一次，这次什么都没登记、什么都没发。 */
+  already?: boolean
+  /** 后台那一段的结局。永远 resolve（异常折成 DeployFailure），没人接着也无妨。 */
+  settled?: Promise<DeployOutcome>
+}
 
 /**
  * **先登记，后台装。** 登记那一段（挑机器、定槽位、写下 `deploying` 那一行）等着做完
@@ -938,64 +969,84 @@ const seatKeyOf = (accountId: string, botId: string) => accountId + ':' + botId
  * 部署失败了，而机器上装得好好的。
  *
  * 后台那一段的结局落在席位行上（`ready` / `error` + lastError），界面照旧从
- * `/runtime/desktop` 读——**不需要有人接着这个 promise**。
+ * `/runtime/desktop` 和 `/runtime/deploy/progress` 读——**不需要有人接着这个 promise**。
+ *
+ * 已经有人在装（别的实例、别的人、双击）就当这次也算数：调用方要的是「它在装」，而它
+ * 确实在装。**不再登记、不再发第二次 `PUT`**——判据在库里（见 reserveSeat 的认领）。
  */
 export async function startSeatDeploy(
   db: Db,
   account: Account,
   opts: DeployOpts,
-): Promise<{ ok: true; runtime: SeatRuntime; installing: boolean } | DeployFailure> {
-  const botId = (opts.botId || '').trim()
-  const key = seatKeyOf(account.id, botId)
-  if (inFlightDeploys.has(key)) {
-    const row = await db.seatRuntime(account.id, botId)
-    // 已经在装了就当这次也算数：调用方要的是「它在装」，而它确实在装。
-    if (row) return { ok: true, runtime: row, installing: true }
+): Promise<StartedDeploy | DeployFailure> {
+  const res = await reserveSeat(db, account, opts)
+  if (!res.ok) {
+    if (res.inFlight && res.runtime) {
+      return { ok: true, runtime: res.runtime, machine: await db.machine(res.runtime.machineId), installing: true, already: true }
+    }
+    return res
   }
-  const release = markDeploying(key)
-  let handedOff = false
-  try {
-    const res = await reserveSeat(db, account, opts)
-    if (!res.ok) return res
-    if ('done' in res) return { ok: true, runtime: res.done.runtime, installing: false }
-    const plan = res.plan
-    handedOff = true
-    const job = installSeat(db, plan)
-      .then((out) => {
-        if (!out.ok) {
-          // 失败已经写进席位行了（lastError），这里只留一行日志：后台没有调用方，
-          // 不打的话这台机器上发生过什么在进程外一个字都看不到。
-          console.warn(`satuwork-gateway: 席位 ${plan.row.seatId} 自动部署失败：${out.error}`)
-        }
-      })
-      .catch((e) => {
-        console.warn(`satuwork-gateway: 席位 ${plan.row.seatId} 自动部署异常：${e instanceof Error ? e.message : String(e)}`)
-      })
-      // 后台那一段跑完才松手——「有没有人在装」这个问题，答的就是它。
-      .finally(release)
-    /**
-     * **Vercel 上要 waitUntil，否则这一段在回包之后随时会被冻住。** 函数实例回完响应就可能
-     * 被挂起，后台那个 `PUT /seats/:id` 管家照样装完了，可等它回来、把 `ready` 写回库的这一段
-     * 再也没人跑——库里那一行永远停在 `installing`，界面说「上一次安装没做完」。waitUntil
-     * 让实例撑到这个 promise 结束（上限是函数自己的 maxDuration）；撑不住的（首装超过时限）
-     * 由 reconcileDeploy 收尾。不在 Vercel 上时它什么都不做（没有请求上下文）。
-     */
-    waitUntil(job)
-    return { ok: true, runtime: plan.row, installing: true }
-  } finally {
-    if (!handedOff) release()
-  }
+  if ('done' in res) return { ok: true, runtime: res.done.runtime, machine: res.done.machine, installing: false }
+  const plan = res.plan
+  const settled: Promise<DeployOutcome> = installSeat(db, plan).then(
+    (out) => {
+      // 失败已经写进席位行了（lastError），这里只留一行日志：后台没有调用方，不打的话
+      // 这台机器上发生过什么在进程外一个字都看不到。
+      if (!out.ok && !out.busy) console.warn(`satuwork-gateway: 席位 ${plan.row.seatId} 后台部署没成：${out.error}`)
+      return out
+    },
+    (e): DeployFailure => {
+      const error = e instanceof Error ? e.message : String(e)
+      console.warn(`satuwork-gateway: 席位 ${plan.row.seatId} 后台部署异常：${error}`)
+      return { ok: false, status: 500, error, runtime: undefined }
+    },
+  )
+  /**
+   * **Vercel 上要 waitUntil，否则这一段在回包之后随时会被冻住。** 函数实例回完响应就可能
+   * 被挂起，后台那个 `PUT /seats/:id` 管家照样装完了，可等它回来、把 `ready` 写回库的这一段
+   * 再也没人跑。waitUntil 让实例撑到这个 promise 结束（上限是函数自己的 maxDuration）；撑
+   * 不住的（首装超过时限）心跳跟着断，由 reconcileDeploy 去管家那儿问结局收尾。
+   */
+  afterResponse(`席位 ${plan.row.seatId} 的后台部署`, settled)
+  return { ok: true, runtime: plan.row, machine: plan.machine, installing: true, settled }
 }
 
 /**
- * 这个席位此刻有没有一次部署真的在跑（**这个进程里**）。
+ * 「人在等」的那几条部署入口（`/runtime/deploy`、公司侧替人部署）：后台装，**但先等一小会儿**。
  *
- * 进度那条路靠它把两种 `deploying` 分开：一种是机器上正在装，另一种是上一次装到一半、
- * Gateway 重启了，库里那一行再也没人来收。前者要接着等，后者要当场说清楚并给一颗
- * 「重新部署」——两者在库里长得一模一样。
+ * 等得到结局就照旧回结局（ready / 失败原因），和以前同步的那条路一个样子；等不到（首装、
+ * 机器慢）就回「在装」，调用方转去轮询进度。在装的那一段不挂在这条请求上，所以请求
+ * 永远在 deployWaitMs 之内回来，审计也一定写得上。
  */
-export function deployInFlight(accountId: string, botId: string): boolean {
-  return inFlightDeploys.has(seatKeyOf(accountId, botId))
+export async function deploySeatBriefly(
+  db: Db,
+  account: Account,
+  opts: DeployOpts,
+  waitMs = deployWaitMs(),
+): Promise<Omit<StartedDeploy, 'settled'> | DeployFailure> {
+  const started = await startSeatDeploy(db, account, opts)
+  if (!started.ok || !started.settled) return started
+  const { settled, ...rest } = started
+  const out = await within(settled, waitMs)
+  if (!out) return rest
+  if (out.ok) return { ok: true, runtime: out.result.runtime, machine: out.result.machine, installing: false }
+  // 等超时了、机器上还在装（见 ManagerTimeoutError）：不是失败，照「在装」回。
+  if (out.pending && out.runtime) return { ...rest, runtime: out.runtime }
+  return out
+}
+
+/** 等一个 promise 至多 ms 毫秒；等不到是 undefined（promise 本身照旧跑下去）。 */
+async function within<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const gate = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms)
+    timer.unref?.()
+  })
+  try {
+    return await Promise.race([p, gate])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /**
@@ -1079,7 +1130,20 @@ async function reserveSeat(db: Db, account: Account, opts: DeployOpts): Promise<
 
   const linuxUser = linuxUserOf(account.id)
   const seatId = seatIdOf(account.id, botId)
-  const existing = await db.seatRuntime(account.id, botId)
+  let existing = await db.seatRuntime(account.id, botId)
+  /**
+   * **已经有一次在装，就不再登记第二次。**
+   *
+   * 判据全在库里（在装心跳，见 deployBeating），不在进程里——Gateway 在 Vercel 上是好几个
+   * 实例，双击、刷新、另一个实例上的进度页按下的「重新部署」都可能落在不是装的那个实例上。
+   * Gateway 这边没人推了的，再问一次管家（reconcileDeploy）：机器上还在装就照样算在装；
+   * 管家那边已经有结局的顺手落库，这次照常往下走。
+   */
+  if (existing?.status === 'deploying') {
+    const rec = await reconcileDeploy(db, existing, existing.machineId === machine.id ? { machine } : {})
+    if (rec.live) return { ok: false, status: 409, error: IN_FLIGHT_MESSAGE, runtime: rec.runtime, inFlight: true }
+    existing = rec.runtime
+  }
   // 已经是这个版本、而且好着 → 不重装。**但 force 必须能穿过这道门。**
   //
   // 界面上「重新部署」按钮发的就是不带 force 的请求，于是它一直什么都没做：确认框写
@@ -1097,6 +1161,11 @@ async function reserveSeat(db: Db, account: Account, opts: DeployOpts): Promise<
     for (let i = 0; i < 8; i++) {
       try {
         row = await db.tx(async () => {
+          // 「看一眼没人在装、写下我在装」要在同一把锁里：上面那次查是在锁外，两个实例
+          // 同时来的话都会看到没人。锁是按席位的，别的席位不排这条队。
+          await db.lockSeatDeploy(account.id, botId)
+          const cur = await db.seatRuntime(account.id, botId)
+          if (cur && deployBeating(cur)) throw new DeployInFlight(cur)
           const slot = await allocateSlot(db, machine.id, i === 0 ? existing?.slot : undefined)
           const ports = portsOf(slot)
           const now = Date.now()
@@ -1128,6 +1197,8 @@ async function reserveSeat(db: Db, account: Account, opts: DeployOpts): Promise<
              */
             deployPhase: 'queued',
             deployStartedAt: now,
+            // 登记这一刻就算报到：从这里到 installSeat 起心跳之间还隔着几次查库。
+            deployBeatAt: now,
           })
         })
         break
@@ -1138,6 +1209,7 @@ async function reserveSeat(db: Db, account: Account, opts: DeployOpts): Promise<
     }
   } catch (e) {
     if (e instanceof SlotsExhausted) return { ok: false, status: 409, error: e.message, runtime: existing }
+    if (e instanceof DeployInFlight) return { ok: false, status: 409, error: IN_FLIGHT_MESSAGE, runtime: e.runtime, inFlight: true }
     throw e
   }
   if (!row) return { ok: false, status: 500, error: '无法分配席位槽', runtime: existing }
@@ -1161,9 +1233,37 @@ async function seatStillThere(db: Db, plan: DeployPlan): Promise<boolean> {
  * 就写成 `installing`——界面上那句「正在装」和机器上真的在装，指的必须是同一段时间。
  */
 async function installSeat(db: Db, plan: DeployPlan): Promise<DeployOutcome> {
+  /**
+   * 装多久就报到多久（见 deployBeating）。**进程没了心跳就跟着断**——那正是别的实例要认出来
+   * 的事；不会有人替一个死掉的进程续上。续不上（库抖了一下）只记一笔：TTL 是节拍的四倍。
+   */
+  const startedAt = plan.row.deployStartedAt ?? 0
+  const beat = setInterval(() => {
+    db.beatSeatDeploy(plan.row.seatId, startedAt).catch((e) => {
+      console.warn(`satuwork-gateway: 席位 ${plan.row.seatId} 的在装心跳没写上：${e instanceof Error ? e.message : String(e)}`)
+    })
+  }, DEPLOY_BEAT_MS)
+  beat.unref?.()
+  try {
+    return await installSeatOnce(db, plan)
+  } finally {
+    clearInterval(beat)
+  }
+}
+
+async function installSeatOnce(db: Db, plan: DeployPlan): Promise<DeployOutcome> {
   const { account, companyId, botId, machine, release, version, row, existing, vncPassword } = plan
 
   if (process.env.SATUWORK_DEPLOY_STUB === '1') {
+    /**
+     * 仅供 e2e：让 stub 也「装」一会儿。不给的话 stub 一瞬间就 ready，「装的过程中又来了一次」
+     * 「批量更新在后台往前走」这些时序一条都钉不住。
+     */
+    const stubMs = Math.max(0, Number(process.env.SATUWORK_DEPLOY_STUB_MS) || 0)
+    if (stubMs) {
+      await db.upsertSeatRuntime({ ...row, updatedAt: Date.now(), deployPhase: 'installing' })
+      await new Promise((r) => setTimeout(r, stubMs))
+    }
     const ready = await db.upsertSeatRuntime({
       ...row,
       status: 'ready',
@@ -1242,6 +1342,14 @@ async function installSeat(db: Db, plan: DeployPlan): Promise<DeployOutcome> {
         deployStartedAt: null,
       })
       return { ok: false, status: 409, error: e.message, runtime: kept, busy: true }
+    }
+    /**
+     * 等到自己的超时了。**机器上多半还在装**：管家不知道调用方走了，照样装完、照样记进它的
+     * 名册。当场标红就是「界面说失败、机器好好的」——所以那一行留在 `installing`，心跳随着
+     * 这一段结束而断，结局由 reconcileDeploy 去管家那儿问（进度页、每分钟那一拍都会问）。
+     */
+    if (e instanceof ManagerTimeoutError) {
+      return { ok: false, status: 504, error: e.message, runtime: sending, pending: true }
     }
     return await failSeat(db, plan, 502, sanitizeError(e, [machine.token, secrets.accessToken, secrets.apiKey, vncPassword]))
   }
@@ -1331,8 +1439,8 @@ const DEPLOY_CLOCK_SLACK_MS = 30_000
  * **没人等着的那次部署，结局去管家那儿问。**
  *
  * 在 Vercel 上，「后台装、装完回写」那一段会随函数实例一起被冻住或掐掉（见 startSeatDeploy
- * 的 waitUntil）；进程内的 inFlightDeploys 也只对**这个实例**有效——轮询进度的请求多半落在
- * 别的实例上。于是库里那一行停在 `installing`，而机器上早就装好了（或者装砸了）。
+ * 的 waitUntil），在装心跳也跟着断了（见 deployBeating）。于是库里那一行停在 `installing`，
+ * 而机器上早就装好了（或者装砸了、或者还在装）。Gateway 这边还有人推着的不用问。
  *
  * 只收 `installing` 的：`queued` 说明 `PUT /seats/:id` 还没发出去，机器上什么都没有，
  * 那就是真的没做完，照旧给「重新部署」。
@@ -1347,7 +1455,7 @@ export async function reconcileDeploy(
   runtime: SeatRuntime,
   known: { machine?: Machine; seats?: ManagerSeat[] } = {},
 ): Promise<{ runtime: SeatRuntime; live: boolean; step?: SeatStep }> {
-  const live = deployInFlight(runtime.accountId, runtime.botId)
+  const live = deployBeating(runtime)
   if (runtime.status !== 'deploying' || live) return { runtime, live }
   if (runtime.deployPhase !== 'installing' || runtime.deployStartedAt == null) return { runtime, live: false }
   const machine = known.machine ?? (await db.machine(runtime.machineId))
@@ -1379,11 +1487,12 @@ export async function reconcileDeploy(
 }
 
 /**
- * 定时扫一遍：停在 `installing` 超过一分钟、这个进程手上又没有的席位，挨台去问管家。
+ * 定时扫一遍：停在 `installing` 超过一分钟、又没有哪个 Gateway 进程还在推着的席位，挨台
+ * 去问管家。
  *
  * 进度那条路（/runtime/deploy/progress）只在有人开着那一屏时才会问；没人看的那些——建完
- * Bot 就关了页面、批量铺的——靠这里收尾。一分钟的门槛是给「别的实例正在正常等回包」留的：
- * 那次会自己写，这里抢着写也无害（写的是同一个结局），只是没必要。
+ * Bot 就关了页面、批量铺的——靠这里收尾。心跳还新鲜的是别的实例正在正常等回包，那次会
+ * 自己写，不去抢。
  */
 export async function reconcileStuckDeploys(db: Db): Promise<number> {
   let settled = 0
@@ -1396,7 +1505,7 @@ export async function reconcileStuckDeploys(db: Db): Promise<number> {
         r.deployPhase === 'installing' &&
         r.deployStartedAt != null &&
         now - r.deployStartedAt > 60_000 &&
-        !deployInFlight(r.accountId, r.botId),
+        !deployBeating(r, now),
     )
     if (!stuck.length) continue
     const seats = await managerSeatsOf(machine)
@@ -1407,6 +1516,169 @@ export async function reconcileStuckDeploys(db: Db): Promise<number> {
     }
   }
   return settled
+}
+
+/**
+ * 批量更新的队列里，一个席位允许花多久。
+ *
+ * 队列那一段跑在函数里（批量更新那条请求的 waitUntil，或者每分钟那一拍），函数最多活
+ * 300 秒；排空给一半（见 reserveSeat 的 drainMs），剩下的够给已经装好桌面栈的席位重铺。
+ * 真的超了（这个席位要首装）也不算失败：那一行留在 `installing`，由 reconcileDeploy 收尾。
+ */
+export const QUEUE_SEAT_TIMEOUT_MS = 240_000
+
+/**
+ * 队列一次跑多久就收手、剩下的留给下一拍。算的是「再开一个席位会不会越过这条线」：
+ * 开到一半被函数掐掉，那一个席位的结局就只能等对账了。
+ */
+const QUEUE_WINDOW_MS = 270_000
+
+/** 队列里一个席位的结局，和批量更新那两条路回给界面的那一行同形。 */
+export interface QueuedDeployResult {
+  accountId: string
+  botId: string
+  seatId: string
+  status: string
+  botVersion: string | null
+  error?: string
+  busy?: boolean
+  /** 还没有结局：还在排队，或者机器上还在装。 */
+  queued?: boolean
+}
+
+function queuedResultOf(seat: SeatRuntime, out: DeployOutcome): QueuedDeployResult {
+  const base = { accountId: seat.accountId, botId: seat.botId, seatId: seat.seatId }
+  if (out.ok) return { ...base, status: out.result.runtime.status, botVersion: out.result.runtime.botVersion ?? null }
+  return {
+    ...base,
+    status: out.runtime?.status ?? 'error',
+    botVersion: out.runtime?.botVersion ?? null,
+    error: out.error,
+    // 认 out.busy，不认状态码：deploySeat 有六处 409（见它的返回类型）。
+    ...(out.busy ? { busy: true } : {}),
+    ...(out.pending ? { queued: true } : {}),
+  }
+}
+
+/**
+ * 把排着队的部署往前推一段。**同一台机器一个一个来，不同机器并排走。**
+ *
+ * 批量更新以前是在请求里串着 `await deploySeat`，一个最长 15 分钟：Vercel 上推不到几个
+ * 函数就被掐了——剩下的没升级、`runtime.update` 的审计没写、调用方拿到 504，正在装的那个
+ * 停在 `installing`。现在请求只排队（db.queueSeatDeploy），推它的是这里：批量更新那条
+ * 请求的 waitUntil 先推一段，没推完的由每分钟那一拍（maintenanceTick）接着推。
+ *
+ * 几个执行者可以同时在跑（两个实例、请求和那一拍），靠库里的两道闸不撞车：
+ * - 领一个席位是一条带条件的 update（db.takeSeatDeploy），同一个只有一个人领得到；
+ * - 一台机器上已经有谁在装（在装心跳新鲜），这一台这一轮先不动——排队本来就是为了
+ *   不同时往一台机器上铺好几个。
+ *
+ * `only` 给了就只推这几个席位（批量更新那条请求只管自己排下的）；`onResult` 每落一个结局
+ * 就报一次，调用方等不到整段跑完时也拿得到已经有的那些。
+ */
+export async function runSeatDeployQueue(
+  db: Db,
+  opts: { only?: Set<string>; onResult?: (r: QueuedDeployResult) => void } = {},
+): Promise<QueuedDeployResult[]> {
+  const t0 = Date.now()
+  const results: QueuedDeployResult[] = []
+  const push = (r: QueuedDeployResult) => {
+    results.push(r)
+    opts.onResult?.(r)
+  }
+  const queued = (await db.queuedSeatDeploys()).filter((r) => !opts.only || opts.only.has(r.seatId))
+  const byMachine = new Map<string, SeatRuntime[]>()
+  for (const r of queued) byMachine.set(r.machineId, [...(byMachine.get(r.machineId) ?? []), r])
+  await Promise.all(
+    [...byMachine].map(async ([machineId, list]) => {
+      for (const seat of list) {
+        if (Date.now() - t0 + QUEUE_SEAT_TIMEOUT_MS > QUEUE_WINDOW_MS) return
+        const onMachine = await db.seatRuntimesOfMachine(machineId)
+        if (onMachine.some((r) => deployBeating(r))) return
+        const request = await db.takeSeatDeploy(seat.accountId, seat.botId)
+        if (!request) continue
+        const account = await db.account(seat.accountId)
+        if (!account) {
+          push({ accountId: seat.accountId, botId: seat.botId, seatId: seat.seatId, status: seat.status, botVersion: seat.botVersion ?? null, error: '账号不存在' })
+          continue
+        }
+        const out = await deploySeatNow(db, account, { botId: seat.botId, ...request, timeoutMs: QUEUE_SEAT_TIMEOUT_MS }).catch(
+          (e): DeployFailure => ({ ok: false, status: 500, error: e instanceof Error ? e.message : String(e), runtime: undefined }),
+        )
+        // 这一刻有人抢先在装（员工自己按了部署、另一个执行者）：放回队里，下一拍再来。
+        if (!out.ok && out.inFlight) {
+          await db.queueSeatDeploy(seat.accountId, seat.botId, request)
+          return
+        }
+        push(queuedResultOf(seat, out))
+      }
+    }),
+  )
+  return results
+}
+
+/** 这个进程里是不是已经有一段在推队列。只是省一次白跑，真正防撞车的是库里那两道闸。 */
+let queueRunning = false
+
+/**
+ * 每一拍顺手推一段队列（maintenanceTick 调它）。**不等**：一段最长几分钟，而那一拍里别的
+ * 事都在秒级；等它的话 Debian 上的调度节拍会被拖住，函数形态的 /cron/tick 会撞 maxDuration。
+ * 用 afterResponse 挂着：Vercel 上实例撑到它跑完，Debian 上照旧在进程里跑。
+ */
+export function kickSeatDeployQueue(db: Db): void {
+  if (queueRunning) return
+  queueRunning = true
+  afterResponse(
+    '席位部署队列',
+    runSeatDeployQueue(db)
+      .then((rs) => {
+        if (rs.length) console.log(`satuwork-gateway: 部署队列推完 ${rs.length} 个席位`)
+      })
+      .finally(() => {
+        queueRunning = false
+      }),
+  )
+}
+
+/**
+ * 批量更新那两条路（按公司、按机器）共用的一段：排队、推一段、等一小会儿、报结局。
+ *
+ * 等得到的照旧逐个报结局（和以前同步那条路一个样子）；等不到的报 `queued`，界面转去看
+ * 席位列表。**不论等没等到，这条请求都在 deployWaitMs 之内回来**，审计一定写得上。
+ */
+export async function queueSeatUpdates(
+  db: Db,
+  seats: SeatRuntime[],
+  requestOf: (seat: SeatRuntime) => SeatDeployRequest,
+  waitMs = deployWaitMs(),
+): Promise<{ results: QueuedDeployResult[]; queued: number }> {
+  const results: QueuedDeployResult[] = []
+  const mine = new Set<string>()
+  for (const seat of seats) {
+    if (!(await db.account(seat.accountId))) {
+      results.push({ accountId: seat.accountId, botId: seat.botId, seatId: seat.seatId, status: seat.status, botVersion: seat.botVersion ?? null, error: '账号不存在' })
+      continue
+    }
+    if (await db.queueSeatDeploy(seat.accountId, seat.botId, requestOf(seat))) mine.add(seat.seatId)
+  }
+  if (!mine.size) return { results, queued: 0 }
+  const done = new Map<string, QueuedDeployResult>()
+  const job = runSeatDeployQueue(db, { only: mine, onResult: (r) => done.set(r.seatId, r) })
+  afterResponse('批量更新的部署队列', job)
+  await within(job, waitMs)
+  let queued = 0
+  for (const seat of seats) {
+    if (!mine.has(seat.seatId)) continue
+    const r = done.get(seat.seatId)
+    if (r) {
+      results.push(r)
+      if (r.queued) queued++
+      continue
+    }
+    queued++
+    results.push({ accountId: seat.accountId, botId: seat.botId, seatId: seat.seatId, status: seat.status, botVersion: seat.botVersion ?? null, queued: true })
+  }
+  return { results, queued }
 }
 
 /** 失败的那一行：状态标红、写清理由、进度清空。 */
@@ -1472,6 +1744,14 @@ export class SeatBusyError extends Error {
   }
 }
 
+/** 管家在我们给的时限里没回话（不是连不上——连不上是当场就知道的）。见 installSeat 的处置。 */
+export class ManagerTimeoutError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ManagerTimeoutError'
+  }
+}
+
 /**
  * 把一个席位交给管家去建。
  *
@@ -1501,6 +1781,9 @@ async function managerDeploy(machine: Machine, spec: SeatSpec, timeoutMs = DEPLO
       signal: AbortSignal.timeout(timeoutMs),
     })
   } catch (e) {
+    if (e instanceof Error && e.name === 'TimeoutError') {
+      throw new ManagerTimeoutError(`管家 ${Math.round(timeoutMs / 1000)} 秒内没装完，机器上多半还在装，结局稍后补上`)
+    }
     throw new Error('联系不上机器管家: ' + (e instanceof Error ? e.message : String(e)))
   }
   if (res.ok) return

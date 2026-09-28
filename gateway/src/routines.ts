@@ -29,7 +29,7 @@
  */
 import { RoutineBusyError, type Db, type Machine, type Routine, type RoutineRun, type RoutineRunTrigger } from './db.ts'
 import { nextRunAtOf } from './lib/schedule.ts'
-import { MIN_WORKER_PROTOCOL, machineLink, reconcileStuckDeploys } from './deploy.ts'
+import { MIN_WORKER_PROTOCOL, kickSeatDeployQueue, machineLink, reconcileStuckDeploys } from './deploy.ts'
 import { runtimeKindOf } from './lib/catalog.ts'
 import { sweepHandoffs } from './handoff-sweep.ts'
 import { sweepAuthThrottle } from './lib/auth-throttle.ts'
@@ -457,6 +457,11 @@ export async function maintenanceTick(db: Db): Promise<void> {
     .then(() => reconcileStuckDeploys(db).then((n) => {
       if (n) console.log(`satuwork-gateway: 补上了 ${n} 个席位的部署结局`)
     }))
+    /**
+     * 批量更新排下、还没轮到的席位，接着往前推一段（见 deploy.ts 的 runSeatDeployQueue）。
+     * 排在对账后面：刚补上结局的那台机器这一拍就能接着装下一个。**不等它**，一段要几分钟。
+     */
+    .then(() => kickSeatDeployQueue(db))
     /**
      * 模型目录的自动发现（见 model-discovery.ts）。**同样不新起定时器**——理由和
      * 上面两处一样。它自己按 GATEWAY_MODEL_DISCOVERY_MS 节流（默认 6 小时），

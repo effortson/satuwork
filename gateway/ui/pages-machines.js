@@ -820,7 +820,11 @@ function machineSeatsPanel(card) {
     .map((s) => {
       // 认不出来的状态照原样显示，别硬塞进某一档——多出一个状态时，屏幕上要看得见
       // 那个新词，而不是被冒充成「运行中」。
-      const st = SEAT_STATUS[s.status] || { label: s.status || '—', tag: 'tag-neutral' }
+      // 批量更新排下、还没轮到的：状态格照旧是它现在的样子（多半是运行中、旧版本），
+      // 摆着「运行中」的话，人看不出这一行还在等着换。
+      const st = s.queued && s.status !== 'deploying'
+        ? { label: '排队中', tag: 'tag-outline' }
+        : SEAT_STATUS[s.status] || { label: s.status || '—', tag: 'tag-neutral' }
       return `<div class="satu-memberrow" style="grid-template-columns: ${cols};">
         <div style="min-width: 0;">
           <div style="font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(s.whoName || s.who)}</div>

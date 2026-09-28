@@ -9,6 +9,7 @@
  * 127.0.0.1 就绕过去了。
  */
 import { createServer } from 'node:http'
+import { gzipSync } from 'node:zlib'
 import { guardUrl, isPrivateIp, readCapped, reserveDdgSlot, safeFetch, stripCredentials } from './src/web-tools.ts'
 
 const out = {}
@@ -44,6 +45,35 @@ out.private = {
   // ::ffff:10.0.0.1 是 IPv4 映射地址，按它映射的那个 v4 判，不然是条现成的绕道。
   ipv4映射: isPrivateIp('::ffff:10.0.0.1'),
   管家端口: await rejects('http://localhost:8443/'),
+}
+
+// IANA 特殊用途段里原先漏掉的那几块。IPv6 这边按 WHATWG 序列化之后的十六进制写法给——
+// 从 new URL() 的 hostname 过来的就是这种写法。
+out.specialRanges = {
+  基准测试段: isPrivateIp('198.18.0.1') && isPrivateIp('198.19.255.254'),
+  协议保留段: isPrivateIp('192.0.0.8'),
+  文档段: isPrivateIp('192.0.2.1') && isPrivateIp('198.51.100.1') && isPrivateIp('203.0.113.1'),
+  六转四中继: isPrivateIp('192.88.99.1'),
+  CGNAT: isPrivateIp('100.64.0.1') && isPrivateIp('100.127.255.254'),
+  零段: isPrivateIp('0.1.2.3'),
+  保留段: isPrivateIp('240.0.0.1') && isPrivateIp('255.255.255.255'),
+  组播: isPrivateIp('224.0.0.1') && isPrivateIp('239.255.255.250'),
+  // 6to4：2002:<v4>::/48，第 2、3 组就是 v4。
+  六转四内嵌回环: isPrivateIp('2002:7f00:1::1'),
+  六转四内嵌metadata: isPrivateIp('2002:a9fe:a9fe::1'),
+  六转四内嵌公网放行: !isPrivateIp('2002:808:808::1'),
+  NAT64内嵌私网: isPrivateIp('64:ff9b::a00:1'),
+  NAT64内嵌公网放行: !isPrivateIp('64:ff9b::808:808'),
+  本地NAT64: isPrivateIp('64:ff9b:1::808:808'),
+  SIIT内嵌回环: isPrivateIp('::ffff:0:7f00:1'),
+  ipv6组播: isPrivateIp('ff02::1'),
+  站点本地: isPrivateIp('fec0::1'),
+  丢弃段: isPrivateIp('100::1'),
+  Teredo: isPrivateIp('2001:0:4136:e378::1'),
+  ipv6文档段: isPrivateIp('2001:db8::1') && isPrivateIp('3fff::1'),
+  链路本地整段: isPrivateIp('febf::1'),
+  ipv6公网放行: !isPrivateIp('2606:4700:4700::1111') && !isPrivateIp('2400:cb00::1'),
+  URL写法的六转四也拦: await rejects('http://[2002:7f00:1::1]/'),
 }
 
 out.publicOk = {
@@ -175,6 +205,54 @@ out.docLimit = {
     .catch(() => false),
 }
 docs.close()
+
+// ── 5b. 压缩响应卡在半路：超时要真的传到读正文的那一头 ──────────────
+//
+// 上游发完 gzip 响应头、吐几十个字节就不动了。原先解压是 `res.pipe(gunzip)`：超时把
+// res 掐掉，可 pipe 不会把错误传给解压器，于是 res.text() 永远不返回——整条
+// /runtime/web/* 就挂在那儿。这里给 1 秒超时，要求 5 秒内一定 reject。
+const gzBody = gzipSync(Buffer.alloc(200_000, 0x41))
+const stall = createServer((req, res) => {
+  if (req.url === '/gz-ok') {
+    res.writeHead(200, { 'content-type': 'text/plain', 'content-encoding': 'gzip' })
+    return res.end(gzBody)
+  }
+  const enc = req.url === '/br-stall' ? 'br' : req.url === '/deflate-stall' ? 'deflate' : 'gzip'
+  res.writeHead(200, { 'content-type': 'text/plain', 'content-encoding': enc })
+  // gzip 那条给真的半截；另两种给几个字节就够——解压器等的都是后续数据。
+  res.write(enc === 'gzip' ? gzBody.subarray(0, 50) : Buffer.from([0x78, 0x9c]))
+  // 然后什么也不发，也不 end。
+})
+await new Promise((r) => stall.listen(0, '127.0.0.1', r))
+const stallHost = `127.0.0.1:${stall.address().port}`
+
+/** 返回 'rejected' / 'resolved' / 'hung'，以及用了多久。 */
+const settle = async (p) => {
+  const t = Date.now()
+  const r = await Promise.race([
+    p.then(() => 'resolved', () => 'rejected'),
+    new Promise((ok) => setTimeout(() => ok('hung'), 5000)),
+  ])
+  return { r, ms: Date.now() - t }
+}
+const stalled = async (path, read) =>
+  settle(safeFetch(`http://${stallHost}${path}`, { allowHost: stallHost, timeoutMs: 1000 }).then(read))
+
+const gzText = await stalled('/gz-stall', (r) => r.text())
+const gzCapped = await stalled('/gz-stall', (r) => readCapped(r, CAP))
+const brText = await stalled('/br-stall', (r) => r.text())
+const deflateText = await stalled('/deflate-stall', (r) => r.text())
+const gzOk = await safeFetch(`http://${stallHost}/gz-ok`, { allowHost: stallHost, timeoutMs: 3000 }).then((r) => r.text())
+
+out.stalledBody = {
+  gzip卡住会报错: gzText.r === 'rejected',
+  gzip卡住在超时附近报错: gzText.ms < 4000,
+  边读边数那条也报错: gzCapped.r === 'rejected',
+  br卡住会报错: brText.r === 'rejected',
+  deflate卡住会报错: deflateText.r === 'rejected',
+  正常gzip照样解开: gzOk.length === 200_000 && gzOk[0] === 'A',
+}
+stall.close()
 
 // ── 6. DuckDuckGo 的节流要真的排队 ────────────────────────────────────
 //

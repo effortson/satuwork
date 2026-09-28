@@ -50,4 +50,21 @@ export async function runSessionStore({ root, test, assert, log }) {
     assert(d.stableOnReload === 1, `重载后 turn/end 应仍只有 1 条，实际 ${d.stableOnReload}`)
     assert(d.untouchedDone === 3, `已收口的会话不该被加东西，实际 ${d.untouchedDone} 条`)
   })
+
+  await test('缓存被挤满时正跑着的子会话一轮：不补假的 turn/end', async () => {
+    const d = r.liveTurnUnderChurn
+    // 多出来的那条 reason:error 会让审计、界面、交接、审批各自当成这轮已经结束。
+    assert(d.turnEnds === 1, `turn/end 应只有真的那 1 条，实际 ${d.turnEnds}`)
+    assert(d.endReason === 'completed', `turn/end 应为 completed，实际 ${d.endReason}`)
+    assert(d.listedTotal === d.expectedTotal, `列表应有 ${d.expectedTotal} 条，实际 ${d.listedTotal}`)
+    assert(d.cacheAfterList === 0, `list() 不该往缓存里放东西，实际放了 ${d.cacheAfterList} 条`)
+  })
+
+  await test('挤缓存的同时并发追加：seq 唯一且严格递增', async () => {
+    const e = r.appendUnderChurn
+    assert(e.uniqueSeqs === e.expectedSeqs, `seq 去重后 ${e.uniqueSeqs}，应为 ${e.expectedSeqs}`)
+    assert(e.increasing, '返回的 seq 没按调用顺序递增')
+    assert(e.fileUnique && e.fileIncreasing, '落盘的 seq 有重复或乱序')
+    assert(e.fileLines === e.expectedLines, `落盘行数 ${e.fileLines}，应为 ${e.expectedLines}`)
+  })
 }
