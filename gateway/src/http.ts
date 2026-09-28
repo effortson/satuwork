@@ -461,6 +461,8 @@ export class Router {
         return
       }
       if (e instanceof HttpError) {
+        // 429 / 503 带上 retryAfter（秒）的，同时写进 Retry-After 头：浏览器和脚本都认这个。
+        if (typeof e.extra.retryAfter === 'number') res.setHeader('retry-after', String(e.extra.retryAfter))
         json(res, e.status, { error: e.message, ...e.extra })
         return
       }

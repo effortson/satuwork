@@ -14,6 +14,7 @@ import { HANDOFF_STATES, type HandoffState, type Machine } from '../db.ts'
 import { resolveAssignee } from '../lib/handoff.ts'
 import { notify } from '../handoff-sweep.ts'
 import { auditResultHash } from '../conversation-audit.ts'
+import { afterResponse } from '../lib/background.ts'
 
 /**
  * 席位报上来的 guard / outcome 只认这两张表里的值。
@@ -639,8 +640,12 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
      * **不 await**：席位那边在等这一跳的回执，而回执晚一秒，人点「接手」就晚一秒
      * 得到反馈。通知发失败也不该让上报失败——那张单已经落库了，站内照样看得见，
      * 而 outbox 那头会因为一个 500 把同一张单反复重报。
+     *
+     * **但也不能是裸的 `void`**：Vercel 上回完 200 实例就可能被冻住，这一条就再也发不出去，
+     * 而且没有补发——催办（sweepHandoffs）要等 NUDGE_MS 之后才会第一次想起它。afterResponse
+     * 让实例撑到它发完。
      */
-    if (!known && handoff.state === 'open') void notify(db, handoff, 'new')
+    if (!known && handoff.state === 'open') afterResponse(`转人工 ${handoff.id} 的新单通知`, notify(db, handoff, 'new'))
     /**
      * 状态流转进审计。
      *

@@ -5169,7 +5169,7 @@ function seatStage() {
    * 库里那一行两种情况长得一模一样，可人要做的事完全相反：一个是接着等（什么都不用
    * 按），一个是这次装到一半没人接着装了（非按一下不可）。混成一档的代价是后者——
    * 一屏永远走不完的读秒，外加一颗都没有的按钮。判据由服务端给（见
-   * `/runtime/deploy/progress` 的 stale）：只有那个进程知道自己手上有没有这活儿。
+   * `/runtime/deploy/progress` 的 stale：库里的在装心跳断了、管家那边也没在装）。
    */
   if (p && p.status === 'deploying') return p.stale ? 'stalled' : 'deploying'
   const mine = state.desktopRuntime
@@ -7965,12 +7965,16 @@ async function updateOrgRuntime() {
      * 失败里的话，一次「中午大家都在用」会被报成一片红，人会去查根本不存在的故障。
      */
     const held = results.filter((r) => r.busy).length
-    const bad = results.filter((r) => !r.busy && (r.error || r.status === 'error')).length
-    const tail = held ? t(`，${held} 个有会话在跑没换`, `, ${held} skipped (busy)`) : ''
+    // 还没轮到的（202 + queued）：服务端在后台一台机器一个地往下推，不算成功也不算失败。
+    const waiting = results.filter((r) => r.queued).length
+    const bad = results.filter((r) => !r.busy && !r.queued && (r.error || r.status === 'error')).length
+    const tail =
+      (held ? t(`，${held} 个有会话在跑没换`, `, ${held} skipped (busy)`) : '') +
+      (waiting ? t(`，${waiting} 个在后台排队`, `, ${waiting} queued in the background`) : '')
     if (!results.length) flash('ok', t('没有需要更新的席位', 'No seats needed updating'))
     else
       flash(
-        bad && !ok ? 'err' : 'ok',
+        bad && !ok && !waiting ? 'err' : 'ok',
         t(`更新 ${data.version}：成功 ${ok}，失败 ${bad}`, `Updated ${data.version}: ${ok} ok, ${bad} failed`) + tail,
       )
     await loadCompanyDetail(org)
@@ -8132,7 +8136,24 @@ async function deployMyRuntime(botId, opts = {}) {
     const body = { botId: id }
     if (opts.update) body.update = true
     if (opts.force) body.force = true
-    await api('POST', '/runtime/deploy', body)
+    const started = await api('POST', '/runtime/deploy', body)
+    /**
+     * **服务端等不到装完就先回了（202 + installing）。** 首装要 apt 十几分钟，那条请求以前
+     * 一直挂到装完，在 Vercel 上必然 504——界面说「部署失败」，机器上装得好好的。现在它
+     * 只等一小会儿，剩下的交给进度轮询（和建完 Bot 那一屏同一套，见 ensureDeployWatch）。
+     * 另一个人 / 另一个标签页已经在装（`already`）也走这里：这次什么都没发，接着看那一次。
+     */
+    if (started && started.installing) {
+      if (chatBotIdNow() === id) {
+        state.desktopRuntime = started
+        state.desktopRuntimeAt = Date.now()
+      }
+      state.deployHint = ''
+      flash('ok', started.already ? t('已经在装了，装完这一页会自己接上') : t('已开始安装，装完这一页会自己接上'))
+      await loadRuntimeBots().catch(() => {})
+      ensureDeployWatch()
+      return
+    }
     const startAt = Date.now()
     // 部署结果按这一份说话，不看 state.desktopRuntime——那一份可能已经是别的 Bot 的了。
     let last = null

@@ -403,6 +403,26 @@ export interface SeatRuntime {
    */
   deployPhase: SeatDeployPhase | null
   deployStartedAt: number | null
+  /**
+   * 推着这次部署的那个进程最近一次报到的时刻（见迁移 0045）。**「有没有人在装」只认它**，
+   * 不认进程里的任何东西——Gateway 在 Vercel 上是好几个实例，问的和装的多半不是同一个。
+   * 可选：拼整行的地方（e2e、老代码）不带它也行，upsertSeatRuntime 自己会续上库里那份。
+   */
+  deployBeatAt?: number | null
+  /** 批量更新排下、还没轮到的那一次部署（见迁移 0045）。空 = 没有排队。 */
+  deployQueued?: SeatDeployRequest | null
+}
+
+/**
+ * 排进队列的一次部署要带的参数：deploy.ts 的 DeployOpts 里**能落库**的那几项。
+ *
+ * 超时不在里面——那是执行队列的那一段按自己的处境定的（函数形态有 300 秒的顶）。
+ */
+export interface SeatDeployRequest {
+  version?: string
+  update?: boolean
+  force?: boolean
+  interrupt?: boolean
 }
 
 /**

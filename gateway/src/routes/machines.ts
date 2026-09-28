@@ -4,7 +4,7 @@
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { INSTANCE_DOWN, MIN_MANAGER_NODE, PAIRING_TTL, desiredManagerRelease, directUrlOf, gatewayBaseFor, installCommandFor, machineBase, machineCard, machineOfOrg, machineResolver, managerHostOf, normalizePairingCode, randomPairingCode, registerFromBody, sendReleaseFile } from '../lib/machines.ts'
-import { LOGS_FOLLOW_GONE, MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, deploySeat, gatewayPublicUrl, gatewayPublicUrlExplicit, logsDirectPayload, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, rehostSeatInstances, releaseSeats } from '../deploy.ts'
+import { LOGS_FOLLOW_GONE, MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, gatewayPublicUrl, gatewayPublicUrlExplicit, logsDirectPayload, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, queueSeatUpdates, rehostSeatInstances, releaseSeats } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { installScript } from '../install.ts'
@@ -414,6 +414,9 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
         tplSyncedAt: r.tplSyncedAt ?? null,
         lastError: r.lastError,
         deployedAt: r.deployedAt,
+        // 批量更新排下、还没轮到（见 deploy.ts 的 runSeatDeployQueue）。状态格照旧是它现在
+        // 的样子（多半是 ready、旧版本），界面另画一个「排队中」。
+        queued: Boolean(r.deployQueued),
       }
     })
   }
@@ -717,8 +720,8 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    * 的人都用上新版」，这一条答的是「这台机器上的东西都是新的」——排查一台机器时，
    * 按公司升级会连带动到别的机器上的席位，那不是这时候想要的。
    *
-   * 逐个席位串着推：部署要在机器上解包、建目录、起 systemd，并发推一台机器只会
-   * 让它更慢，还把失败搅在一起看不清是哪一个。
+   * 逐个席位推（排队、后台推，见下面）：部署要在机器上解包、建目录、起 systemd，并发推
+   * 一台机器只会让它更慢，还把失败搅在一起看不清是哪一个。
    */
   router.post('/platform/machines/:id/runtime/update', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
@@ -750,24 +753,18 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     }
     const seats = (await db.seatRuntimesOfMachine(machine.id)).filter((r) => r.status !== 'none')
     /**
+     * **排队，不在请求里串着装。** 以前这里逐个 `await deploySeat`、一个最长 15 分钟，Vercel 上
+     * 推不到几个函数就被掐了：剩下的没铺、审计没写、调用方 504。现在请求只排队、先推一小段
+     * （queueSeatUpdates），等得到的照旧逐个报结局，没轮到的报 `queued`，由后台接着推（见
+     * deploy.ts 的 runSeatDeployQueue）。同一台机器仍然一个一个来：并发推一台机器只会让它
+     * 更慢，还把失败搅在一起看不清是哪一个。
+     *
      * `busy` 是**第三种结局**，不是一种失败：席位上有人正在说话，管家等过了也没等到
      * 这一轮结束，于是什么都没动（见 manager/src/seats.ts 的排空）。界面上要分开数——
      * 混进「失败」里，一次「今天中午大家都在用」会被报成一片红，人会去查根本不存在
      * 的部署故障。
      */
-    const results: { accountId: string; botId: string; status: string; botVersion: string | null; error?: string; busy?: boolean }[] = []
-    for (const seat of seats) {
-      const row = await db.account(seat.accountId)
-      if (!row) {
-        results.push({
-          accountId: seat.accountId,
-          botId: seat.botId,
-          status: seat.status,
-          botVersion: seat.botVersion ?? null,
-          error: '账号不存在',
-        })
-        continue
-      }
+    const { results, queued } = await queueSeatUpdates(db, seats, (seat) => {
       /**
        * 重铺用**这个席位自己那一版**；它没记版本（老数据、上一次部署失败）就干脆不传，
        * 交给 deploySeat 去挑。
@@ -785,45 +782,23 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
        *
        * `force` 默认是带打断的——人在员工那一侧按「重新部署」时要的就是「现在就重铺」。
        * 但这条是整台机器一次推过去：真打断的话，一次点击会掐掉那台机器上所有人正在
-       * 进行的对话。让它照常排空，忙的席位回 `busy`（第三种结局，见下），过会儿再来
+       * 进行的对话。让它照常排空，忙的席位回 `busy`（第三种结局，见上），过会儿再来
        * 一次就是了。
        */
-      const out = await deploySeat(
-        db,
-        keys,
-        row,
-        force
-          ? { botId: seat.botId, version: target, force: true, interrupt: false }
-          : { botId: seat.botId, version: target, update: true },
-      )
-      results.push(
-        out.ok
-          ? {
-              accountId: row.id,
-              botId: seat.botId,
-              status: out.result.runtime.status,
-              botVersion: out.result.runtime.botVersion ?? null,
-            }
-          : {
-              accountId: row.id,
-              botId: seat.botId,
-              status: out.runtime?.status ?? 'error',
-              botVersion: out.runtime?.botVersion ?? null,
-              error: out.error,
-              // 席位有会话在跑，这次没换（见上面 results 的注释）。**认 out.busy，不认
-              // 状态码**：deploySeat 有六处 409，含义各不相同。
-              ...(out.busy ? { busy: true } : {}),
-            },
-      )
-    }
+      return force
+        ? { version: target, force: true, interrupt: false }
+        : { version: target, update: true }
+    })
     await auditMachine(machine, account.id, 'runtime.update', {
       machineId: machine.id,
       // 重铺时没有「统一的那个版本」——每个席位各是各的，写 null 比写一个假的准。
       version: version || null,
       force,
       count: results.length,
+      queued,
     })
-    json(res, 200, { version: version || null, force, results })
+    // 还有没轮到的就是 202：请求收下了，事情还没做完。
+    json(res, queued ? 202 : 200, { version: version || null, force, results, queued })
   })
 
   /**
@@ -1250,51 +1225,17 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     }
     const seats = (await db.seatRuntimesOf(company.id)).filter((r) => r.status !== 'none')
     /**
-     * `busy` 是**第三种结局**，不是一种失败：席位上有人正在说话，管家等过了也没等到
-     * 这一轮结束，于是什么都没动（见 manager/src/seats.ts 的排空）。界面上要分开数——
-     * 混进「失败」里，一次「今天中午大家都在用」会被报成一片红，人会去查根本不存在
-     * 的部署故障。
+     * 排队、后台推，理由同 `/platform/machines/:id/runtime/update`：串着 `await deploySeat`
+     * 在函数里推不完。等得到的逐个报结局（`busy` 单独数，见那边的注释），没轮到的报 `queued`。
      */
-    const results: { accountId: string; botId: string; status: string; botVersion: string | null; error?: string; busy?: boolean }[] = []
-    for (const seat of seats) {
-      const row = await db.account(seat.accountId)
-      if (!row) {
-        results.push({
-          accountId: seat.accountId,
-          botId: seat.botId,
-          status: seat.status,
-          botVersion: seat.botVersion ?? null,
-          error: '账号不存在',
-        })
-        continue
-      }
-      const out = await deploySeat(db, keys, row, { botId: seat.botId, version, update: true })
-      if (out.ok) {
-        results.push({
-          accountId: row.id,
-          botId: seat.botId,
-          status: out.result.runtime.status,
-          botVersion: out.result.runtime.botVersion ?? null,
-        })
-      } else {
-        results.push({
-          accountId: row.id,
-          botId: seat.botId,
-          status: out.runtime?.status ?? 'error',
-          botVersion: out.runtime?.botVersion ?? null,
-          error: out.error,
-          // 认 out.busy，不认状态码：deploySeat 有六处 409（见它的返回类型）。
-          ...(out.busy ? { busy: true } : {}),
-        })
-      }
-    }
+    const { results, queued } = await queueSeatUpdates(db, seats, () => ({ version, update: true }))
     await db.audit({
       companyId: company.id,
       accountId: actor.id,
       action: 'runtime.update',
-      detail: { version, count: results.length },
+      detail: { version, count: results.length, queued },
     })
-    json(res, 200, { version, results })
+    json(res, queued ? 202 : 200, { version, results, queued })
   })
 
   router.get('/platform/orgs/:id/accounts/:accountId/runtime', async (req, res) => {
