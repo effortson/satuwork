@@ -155,6 +155,8 @@ export class Db {
   private claim: pg.Client | null = null
   /** 事务期间把 client 放这儿，`db.tx(() => db.xxx())` 里的每条语句才走同一个连接。 */
   private txClient = new AsyncLocalStorage<PoolClient>()
+  /** 保存点起名用，见 savepoint。 */
+  private savepointSeq = 0
 
   constructor(opts: DbOptions | string) {
     const o = typeof opts === 'string' ? { url: opts } : opts
@@ -347,6 +349,9 @@ export class Db {
     // 已经在事务里就直接跑，不开嵌套事务。
     if (existing) return fn()
     const client = await this.pool.connect()
+    // rollback 本身失败时，这条连接停在什么状态没人说得清（事务可能还开着、连接可能半断），
+    // 不能原样还回池子给下一个请求用——带着错误 release，pg 会直接销毁它。
+    let broken: Error | undefined
     try {
       await client.query('begin')
       const out = await this.txClient.run(client, async () => fn())
@@ -355,10 +360,34 @@ export class Db {
     } catch (e) {
       try {
         await client.query('rollback')
-      } catch {}
+      } catch (re) {
+        broken = re instanceof Error ? re : new Error(String(re))
+      }
       throw e
     } finally {
-      client.release()
+      client.release(broken)
+    }
+  }
+
+  /**
+   * 「撞了唯一约束就换一串再插」那一类用它包住**那一条会撞的语句**。
+   *
+   * 事务里任何一条语句报错，PG 就把整个事务标成 aborted，之后每条语句都是
+   * `current transaction is aborted`——catch 住 23505 再重试在事务里根本走不通。
+   * 在事务里时这里套一层 SAVEPOINT：出错回滚到保存点，事务照常可用；不在事务里就直接跑。
+   */
+  private async savepoint<T>(fn: () => Promise<T>): Promise<T> {
+    const client = this.txClient.getStore()
+    if (!client) return fn()
+    const name = `sp_${++this.savepointSeq}`
+    await client.query(`savepoint ${name}`)
+    try {
+      const out = await fn()
+      await client.query(`release savepoint ${name}`)
+      return out
+    } catch (e) {
+      await client.query(`rollback to savepoint ${name}`)
+      throw e
     }
   }
 
@@ -772,9 +801,11 @@ export class Db {
       const accessToken = randomAccessToken()
       const createdAt = Date.now()
       try {
-        await this.run(
-          'insert into account_secrets ("accountId", "apiKey", "accessToken", "createdAt") values (?,?,?,?)',
-          [accountId, apiKey, accessToken, createdAt],
+        await this.savepoint(() =>
+          this.run(
+            'insert into account_secrets ("accountId", "apiKey", "accessToken", "createdAt") values (?,?,?,?)',
+            [accountId, apiKey, accessToken, createdAt],
+          ),
         )
         return { accountId, apiKey, accessToken, createdAt }
       } catch (e) {
@@ -1240,9 +1271,11 @@ export class Db {
       updatedAt: now,
     }
     try {
-      await this.run(
-        'insert into connector_installs (id, "connectorId", "accountId", "companyId", "enabledTools", "createdAt", "updatedAt") values (?,?,?,?,?,?,?)',
-        [row.id, row.connectorId, row.accountId, row.companyId, JSON.stringify(row.enabledTools), row.createdAt, row.updatedAt],
+      await this.savepoint(() =>
+        this.run(
+          'insert into connector_installs (id, "connectorId", "accountId", "companyId", "enabledTools", "createdAt", "updatedAt") values (?,?,?,?,?,?,?)',
+          [row.id, row.connectorId, row.accountId, row.companyId, JSON.stringify(row.enabledTools), row.createdAt, row.updatedAt],
+        ),
       )
     } catch (e) {
       // 两次点击撞在一起：唯一索引兜住，取回已有的那条。
@@ -2343,26 +2376,28 @@ export class Db {
     for (let i = 0; i < 8; i++) {
       const row: Machine = { ...base, token: randomMachineToken() }
       try {
-        await this.run(
-          'insert into machines (id, host, "companyId", "lastHeartbeatAt", "createdAt", "pairedAt", "managerVersion", protocol, "lastError", arch, "desiredManagerVersion", "maxAccounts", timezone, "currentTimezone", "logCapMb", token) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [
-            row.id,
-            row.host,
-            row.companyId,
-            row.lastHeartbeatAt,
-            row.createdAt,
-            row.pairedAt,
-            row.managerVersion,
-            row.protocol,
-            row.lastError,
-            row.arch,
-            row.desiredManagerVersion,
-            row.maxAccounts,
-            row.timezone,
-            row.currentTimezone,
-            row.logCapMb,
-            row.token,
-          ],
+        await this.savepoint(() =>
+          this.run(
+            'insert into machines (id, host, "companyId", "lastHeartbeatAt", "createdAt", "pairedAt", "managerVersion", protocol, "lastError", arch, "desiredManagerVersion", "maxAccounts", timezone, "currentTimezone", "logCapMb", token) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            [
+              row.id,
+              row.host,
+              row.companyId,
+              row.lastHeartbeatAt,
+              row.createdAt,
+              row.pairedAt,
+              row.managerVersion,
+              row.protocol,
+              row.lastError,
+              row.arch,
+              row.desiredManagerVersion,
+              row.maxAccounts,
+              row.timezone,
+              row.currentTimezone,
+              row.logCapMb,
+              row.token,
+            ],
+          ),
         )
         return row
       } catch (e) {
@@ -2379,7 +2414,7 @@ export class Db {
   async rotateMachineToken(id: string): Promise<Machine | undefined> {
     for (let i = 0; i < 8; i++) {
       try {
-        await this.run('update machines set token = ? where id = ?', [randomMachineToken(), id])
+        await this.savepoint(() => this.run('update machines set token = ? where id = ?', [randomMachineToken(), id]))
         return this.machine(id)
       } catch (e) {
         if (i === 7 || !isUniqueViolation(e)) throw e
