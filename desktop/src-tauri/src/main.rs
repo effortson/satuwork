@@ -374,7 +374,12 @@ fn route_open(app: &AppHandle, base: &Url, url: &Url) {
     let _ = app.opener().open_url(parsed.as_str(), None::<&str>);
 }
 
-/** 装界面的窗口都从这儿出：同一套导航守卫，同一段链接脚本（连同注入的 Gateway 地址）。 */
+/**
+ * 装界面的窗口都从这儿出：同一套导航守卫，同一段链接脚本（连同注入的 Gateway 地址）。
+ *
+ * 只从 setup 钩子、async 命令或别的线程上调：Windows 上 build() 放在同步命令、事件回调里
+ * 会死锁（WebView2 的已知问题）。open_setup 同理。
+ */
 fn build_window(
     app: &AppHandle,
     label: &str,
@@ -525,6 +530,7 @@ async fn connect(app: AppHandle, url: String) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())??;
     write_server(&app, parsed.as_str())?;
+    // 在 async 命令里建窗口没问题；同步命令里建，Windows 上会死锁（见 build_window）。
     open_main(&app, parsed).map_err(|e| e.to_string())?;
     if let Some(win) = app.get_webview_window(SETUP) {
         let _ = win.close();
@@ -1492,7 +1498,13 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
                 let _ = win.close();
             }
         }
-        let _ = open_setup(app);
+        // 建窗口不能在菜单回调里同步做：Windows 上 WebviewWindowBuilder::build() 在同步命令和
+        // 事件回调里会死锁（WebView2 的已知问题，见 Tauri 的 WebviewWindowBuilder 文档），
+        // 要换到别的线程上建。
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = open_setup(&app);
+        });
     });
     Ok(())
 }
