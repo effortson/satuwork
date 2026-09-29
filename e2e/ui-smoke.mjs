@@ -2351,9 +2351,16 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const decided = posted.find((p) => p.path.includes('/approvals/call-folder'))
       assert(decided && decided.body.decision === 'approve' && decided.body.scope === 'once', `选中之后该提交一次「批准这一次」：${JSON.stringify(posted)}`)
 
-      // 右栏列表：选完就有，撤销后就没
+      // 右栏列表：默认收起，只露一行「已批准访问的文件夹 · 1」，不挤下面的日常任务；点开才列
       html = desk.localDirsHtml('l-1')
-      assert(html.includes('Downloads') && html.includes('/Users/me/Downloads') && html.includes('local-dir-revoke'), `已批准的文件夹没列出来：${html}`)
+      assert(html.includes('已批准访问的文件夹 · 1') && html.includes('aria-expanded="false"'), `默认该收起、带条数：${html}`)
+      assert(!html.includes('/Users/me/Downloads') && !html.includes('local-dir-revoke'), '收起时不该摊开列表')
+      await desk.fire('click', el('button', { 'data-act': 'local-dirs-toggle', 'data-bot': 'l-1' }))
+      html = desk.localDirsHtml('l-1')
+      assert(html.includes('aria-expanded="true"') && html.includes('Downloads') && html.includes('/Users/me/Downloads') && html.includes('local-dir-revoke'), `点开后没列出来：${html}`)
+      // 重画不收回：开合记在 state 里
+      desk.render()
+      assert(desk.localDirsHtml('l-1').includes('aria-expanded="true"'), '重画之后自己收回去了')
       await desk.fire('click', el('button', { 'data-act': 'local-dir-revoke', 'data-bot': 'l-1', 'data-path': '/Users/me/Downloads' }))
       assert(revoked.join() === '/Users/me/Downloads', '撤销没交给壳子')
       assert(!desk.localDirsHtml('l-1').includes('/Users/me/Downloads'), '撤销之后列表没刷新')

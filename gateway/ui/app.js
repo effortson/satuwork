@@ -1311,6 +1311,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'local-dirs-toggle') {
+    const id = btn.getAttribute('data-bot') || ''
+    if (!id) return
+    state.localDirsOpen = { ...(state.localDirsOpen || {}), [id]: !(state.localDirsOpen || {})[id] }
+    render()
+    return
+  }
   if (act === 'local-dir-revoke') {
     // 只拆掉 Bot 的访问入口，文件夹本身一个字节都不动（壳子那边只删链接和清单那一行），
     // 所以不弹二次确认：撤错了再批一次就回来了。

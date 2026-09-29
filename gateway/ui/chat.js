@@ -5457,6 +5457,21 @@ function localDirsHtml(botId) {
   }
   if (got.error) return `<div class="gw-flash gw-flash-err" style="margin: 0;">${esc(got.error)}</div>`
   if (!got.list.length) return ''
+  /**
+   * **默认收起**，标题带条数。摊开的话批得越多、下面的「日常任务」被挤得越远——而日常任务
+   * 是这一栏里天天要看的东西，批过哪些文件夹是偶尔才查一次的。
+   *
+   * 开合记在 state 里而不是用 <details> 自己的 open：右栏每次 render 都整块重画，<details>
+   * 的开合会被一起抹掉，人刚点开，下一帧（名单流一来）就又收回去了。
+   */
+  const open = Boolean((state.localDirsOpen || {})[botId])
+  const head =
+    `<button type="button" class="sw-localdirs-head" data-act="local-dirs-toggle" data-bot="${esc(botId)}" aria-expanded="${String(open)}" ` +
+    `style="display: flex; align-items: center; gap: 6px; width: 100%; padding: 0; border: 0; background: none; cursor: pointer; font: inherit; font-size: 12px; color: var(--muted-foreground); text-align: left;">` +
+    `<span style="flex: 1;">${esc(t('已批准访问的文件夹', 'Approved folders'))} · ${got.list.length}</span>` +
+    `<span aria-hidden="true" style="display: inline-block; transition: transform 0.15s ease; transform: rotate(${open ? 90 : 0}deg);">›</span>` +
+    `</button>`
+  if (!open) return `<div class="sw-localdirs">${head}</div>`
   const rows = got.list.map((d) => {
     const name = String(d.mount || '').replace(/^External\//, '') || d.path
     return (
@@ -5471,8 +5486,9 @@ function localDirsHtml(botId) {
   })
   return (
     `<div class="sw-localdirs" style="display: flex; flex-direction: column; gap: 8px;">` +
-    `<div style="font-size: 12px; color: var(--muted-foreground);">${esc(t('已批准访问的文件夹', 'Approved folders'))}</div>` +
-    rows.join('') +
+    head +
+    // 批得多了也不把整栏撑长：最多露出五六行，其余在框里滚。
+    `<div style="display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto;">${rows.join('')}</div>` +
     `</div>`
   )
 }
