@@ -10,3 +10,9 @@ updates:
     groups:
       actions:
         patterns: ['*']
+    # pnpm/action-setup v6.1.0 要拿锁文件核对 pnpm 原生二进制，而 pnpm-lock.yaml 里没有
+    # @pnpm/exe.darwin-x64——Intel Mac 那几档（桌面端 x64、本地 Bot darwin-x64）直接装不上 pnpm。
+    # 先停在 v4；锁文件补上各平台那份之后再放开。
+    ignore:
+      - dependency-name: pnpm/action-setup
+        update-types: ['version-update:semver-major']

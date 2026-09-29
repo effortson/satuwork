@@ -1,7 +1,7 @@
 [[permission]]
 identifier = "setup-commands"
 description = "允许本地设置页读取、检查并保存 Gateway 地址。"
-commands.allow = ["current_server", "startup_error", "connect"]
+commands.allow = ["current_server", "startup_error", "connect", "server_is_locked"]
 
 [[permission]]
 identifier = "local-bot-commands"

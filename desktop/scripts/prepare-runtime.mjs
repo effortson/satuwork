@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { appendFileSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, copyFileSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,6 +30,64 @@ const deployed = spawnSync('pnpm', ['--filter', 'satuwork', 'deploy', '--legacy'
 if (deployed.status !== 0) {
   logSummary(`prepare-runtime: pnpm deploy 失败，status=${deployed.status}, error=${deployed.error}`)
   process.exit(deployed.status || 1)
+}
+
+/**
+ * 目录里所有 Mach-O（可执行文件、`.node`、`.dylib`）。按文件头认，不按扩展名：esbuild 那个
+ * 可执行文件没有扩展名。符号链接跳过——pnpm 的 node_modules 里满是指向 .pnpm 的链接，
+ * 真文件都在 .pnpm 底下，顺着链接走只会把同一个文件签好几遍。
+ */
+function machOFiles(dir, out = []) {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name)
+    const st = lstatSync(path)
+    if (st.isSymbolicLink()) continue
+    if (st.isDirectory()) machOFiles(path, out)
+    else if (st.isFile() && st.size >= 8 && isMachO(path)) out.push(path)
+  }
+  return out
+}
+
+function isMachO(path) {
+  const head = Buffer.alloc(8)
+  const fd = openSync(path, 'r')
+  try {
+    readSync(fd, head, 0, 8, 0)
+  } finally {
+    closeSync(fd)
+  }
+  const magic = head.readUInt32BE(0)
+  // 32/64 位，两种字节序
+  if ([0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe].includes(magic)) return true
+  // 通用二进制（fat）。Java 的 .class 也是 CAFEBABE 开头，后面跟的是版本号（≥45）；
+  // fat 头后面是架构数，实际不会超过个位数。
+  if (magic === 0xcafebabe || magic === 0xbebafeca) return head.readUInt32BE(4) < 20
+  return false
+}
+
+/**
+ * **macOS 上签名、公证的包，bot.tgz 里的原生二进制也得签。** Apple 公证会把 tgz 解开，逐个
+ * 查里面的 Mach-O：esbuild、fsevents.node、各种 napi 预编译件都要 Developer ID 签名、开
+ * hardened runtime、带时间戳，缺一样整个包就是 Invalid。
+ *
+ * 身份由 CI 给（SATUWORK_CODESIGN_IDENTITY，证书已在它导入的钥匙串里）；没给就不签——本地
+ * `pnpm build` 出的包不公证，也就不需要。包里那份 Node 不在这儿：它是 Node 官方的 Developer ID
+ * 签名，自带 V8 要的 JIT 权限，公证认它，重签反倒会把那些权限弄丢。
+ */
+const signIdentity = (process.env.SATUWORK_CODESIGN_IDENTITY || '').trim()
+if (process.platform === 'darwin' && signIdentity) {
+  const files = machOFiles(bot)
+  const keychain = (process.env.SATUWORK_CODESIGN_KEYCHAIN || '').trim()
+  const args = ['--force', '--sign', signIdentity, '--options', 'runtime', '--timestamp', ...(keychain ? ['--keychain', keychain] : []), ...files]
+  if (files.length) {
+    const signed = spawnSync('codesign', args, { stdio: 'inherit' })
+    if (signed.status !== 0) {
+      logSummary(`prepare-runtime: 给运行时里的原生二进制签名失败，status=${signed.status}`)
+      process.exit(signed.status || 1)
+    }
+  }
+  console.log(`desktop: 运行时里 ${files.length} 个原生二进制已签名`)
+  for (const f of files) console.log(`  ${f.slice(bot.length + 1)}`)
 }
 
 // 走相对路径在 runtime 目录内执行 tar，避开 Windows 下 GNU tar 对带盘符绝对路径（如 D:\...）误判为远程机器并报 exit code 2 的问题

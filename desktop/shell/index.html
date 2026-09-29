@@ -25,6 +25,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body {
     margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
     background: var(--bg); color: var(--fg);
@@ -54,11 +55,11 @@
 <main>
   <h1>连接到 Gateway</h1>
   <p class="sub">这台机器上的 Satuwork 界面从哪台服务器取。</p>
-  <label for="url">服务器地址</label>
+  <label for="url" id="url-label">服务器地址</label>
   <input id="url" type="text" placeholder="gw.example.com 或 192.168.1.10:3080" autocomplete="off" spellcheck="false" autofocus>
   <button id="go" type="button">连接</button>
   <div class="err" id="err"></div>
-  <p class="hint">不写协议就按 <code>http://</code> 算。连不上会停在这一屏并说明原因，不会存下一个打不开的地址。之后可以在菜单「服务器 → 切换服务器…」里改。</p>
+  <p class="hint" id="hint">不写协议就按 <code>http://</code> 算。连不上会停在这一屏并说明原因，不会存下一个打不开的地址。之后可以在菜单「服务器 → 切换服务器…」里改。</p>
 </main>
 <script>
   // 走 __TAURI_INTERNALS__ 而不是 __TAURI__：后者要开 withGlobalTauri，而那个开关是
@@ -73,6 +74,14 @@
   const err = document.getElementById('err')
 
   invoke('current_server').then((s) => { if (s) url.value = s }).catch(() => {})
+  // 正式发布包的地址是锁死的（固定连 satuwork.com）：不让填，只剩「连不上的原因」和「重试」。
+  // 输入框只在本地测试（debug 构建）里出现。
+  invoke('server_is_locked').then((locked) => {
+    if (!locked) return
+    for (const id of ['url-label', 'url', 'hint']) document.getElementById(id).hidden = true
+    document.querySelector('p.sub').textContent = '暂时连不上服务器，请检查网络后重试。'
+    go.textContent = '重试'
+  }).catch(() => {})
   // 「存过地址却还是回到了这一屏」——原因摆在这儿，否则人只会以为是自己没填过。
   invoke('startup_error').then((s) => { if (s) err.textContent = s }).catch(() => {})
 

@@ -776,7 +776,7 @@ function myBotPage(bot, a) {
           <button type="button" class="btn btn-primary" data-act="bot-save" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存配置')}</button>
         </div>
         <p style="margin: 0 0 var(--space-4); font-size: 12px; color: var(--muted-foreground);">${bot.runtimeKind === 'local'
-          ? t('删除会移除这颗 Bot 的配置与会话；Mac 上的工作目录保留，避免误删你的文件。', 'Deleting removes this bot and its conversations; its Mac workspace is kept to avoid deleting your files.')
+          ? t('删除会移除这颗 Bot 的配置与会话；这台电脑上的工作目录保留，避免误删你的文件。', 'Deleting removes this bot and its conversations; its local workspace is kept to avoid deleting your files.')
           : t('删除会连它的席位一起拆掉，机器上那块屏和这个 Bot 的会话都不再保留。', 'Deleting also tears down its seat — that screen and this bot\'s conversations are gone.')}</p>
       </div>
     </div>`
@@ -898,7 +898,7 @@ function newBotModal() {
           <label class="satu-card" style="padding:12px;cursor:${window.__SATUWORK_DESKTOP__ ? 'pointer' : 'not-allowed'};opacity:${window.__SATUWORK_DESKTOP__ ? '1' : '.55'};border-color:${f.runtimeKind === 'local' ? 'var(--primary)' : 'var(--border)'};">
             <input type="radio" name="nb-runtime" data-newbot="runtimeKind" value="local" ${f.runtimeKind === 'local' ? 'checked' : ''} ${window.__SATUWORK_DESKTOP__ ? '' : 'disabled'}>
             <strong>${t('本地 Bot', 'Local bot')}</strong>
-            <small style="display:block;margin-top:4px;color:var(--muted-foreground);">${t('运行在这台 Mac，使用独立工作目录', 'Runs on this Mac with its own workspace')}</small>
+            <small style="display:block;margin-top:4px;color:var(--muted-foreground);">${t('运行在这台电脑，使用独立工作目录', 'Runs on this computer with its own workspace')}</small>
           </label>
         </div>
         ${window.__SATUWORK_DESKTOP__ ? '' : `<small style="color:var(--muted-foreground);">${t('本地 Bot 只能在 Satuwork Desktop 中创建。', 'Local bots can only be created in Satuwork Desktop.')}</small>`}
