@@ -172,9 +172,16 @@ Desktop 壳与本地 Bot 分开发版。每次 Desktop 启动、第一颗本地 
 **不能交叉编译**：Windows 包要 Windows 机器，Linux 包要 Linux 机器（和管家那边一样的
 道理，只是原因不同——这里是系统 webview 的开发库）。三个系统各要一台 runner。
 
-现在打出来的包**没有签名**：macOS 上别人下载会被 Gatekeeper 拦（自己 build 的不会，
-隔离标记只加在下载来的文件上），Windows 上会弹 SmartScreen。签名和公证要先有证书，
-见下面「还没做的事」。
+**macOS 包由 CI 签名并公证**（Developer ID Application: ADIX INTELLIGENCE PTE. LTD.，团队
+37TR7L5SSP），证书和 App Store Connect 公证密钥都在仓库 secret 里，细节见
+desktop-release.yml 的文件头。本地 `pnpm build` 不签名——自己 build 的包没有隔离标记，
+本机照样能开。
+
+签名之后要盯的一件事：包里带着一份 Node（`Resources/runtime/node/bin/node`）。它要是在
+签名时被重签、丢了 V8 要的 JIT 权限，签名和公证都照过，本地 Bot 却一起就崩。CI 的
+「校验签名」那步会真跑一次它。
+
+**Windows 包没有签名**，会弹 SmartScreen；要单独的代码签名证书，见下面「还没做的事」。
 
 ## webview 自检
 
@@ -214,8 +221,8 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
 
 按「值不值得下一步做」排的，不是按难度：
 
-- **签名与公证**。macOS 要 Apple 开发者账号（99 美元/年）+ 公证；Windows 不签名就
-  一路 SmartScreen。这是发给外人之前唯一的硬门槛，代码上没有工作量，全是行政成本。
+- **Windows 代码签名**。macOS 已经签名 + 公证；Windows 不签名就一路 SmartScreen，要一张
+  代码签名证书（EV 或 OV），代码上没什么工作量。
 - **单实例 + 托盘 + 通知**。这三样是「装成桌面端」之后用户会立刻期待的东西，也是
   相对浏览器唯一说得出口的增量。通知要接的是聊天那条流。
 - **登录态**。token 现在在 `sessionStorage`（[gateway/ui/state.js](../gateway/ui/state.js)），
