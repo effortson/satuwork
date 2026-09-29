@@ -21,6 +21,10 @@ Bot 的守卫三处都对它开 CORS；管家那张桌面 cookie 在 https 下�
 pnpm --filter satuwork-desktop dev
 ```
 
+**正式发布包固定连 `https://satuwork.com`**：不问地址、菜单里也没有「切换服务器…」，
+磁盘上老版本存过的 server.txt 也不再看；连不上时设置屏只显示原因和「重试」。以下都是
+本地测试（`pnpm dev`，debug 构建）的行为：
+
 第一次打开是「连接到 Gateway」那一屏；填过一次就直接进去了。地址存在
 `~/Library/Application Support/sg.dami.satuwork/server.txt`（Windows 在
 `%APPDATA%`，Linux 在 `~/.config`）。要改地址走菜单「服务器 → 切换服务器…」。
