@@ -1819,21 +1819,26 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
         if event.id() != SWITCH_ITEM {
             return;
         }
-        // 装着界面的窗口全关掉——包括「打开桌面」那种另开的。留着的话它们注入的还是
-        // 老地址，而人正要换一台。
-        for (label, win) in app.webview_windows() {
-            if label != SETUP {
-                let _ = win.close();
-            }
-        }
         // 老服务器的地址和票也别留给每小时的运行时自查；换到新服务器、起了 Bot 之后会重新记上。
         clear_update_source(app);
         // 建窗口不能在菜单回调里同步做：Windows 上 WebviewWindowBuilder::build() 在同步命令和
         // 事件回调里会死锁（WebView2 的已知问题，见 Tauri 的 WebviewWindowBuilder 文档），
         // 要换到别的线程上建。
+        // 先打开设置窗口，再关旧窗口：如果先关旧窗口，主窗口一关所有窗口数为 0，
+        // Tauri 会按默认行为触发退出流程导致应用异常退出。
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = open_setup(&app);
+            if let Err(e) = open_setup(&app) {
+                eprintln!("打开设置窗口失败：{e}");
+                return;
+            }
+            // 装着界面的窗口全关掉——包括「打开桌面」那种另开的。留着的话它们注入的还是
+            // 老地址，而人正要换一台。
+            for (label, win) in app.webview_windows() {
+                if label != SETUP {
+                    let _ = win.close();
+                }
+            }
         });
     });
     Ok(())
