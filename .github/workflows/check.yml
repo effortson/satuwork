@@ -51,13 +51,13 @@ jobs:
       E2E_DATABASE_URL: postgres://satuwork:satuwork@127.0.0.1:5432/satuwork
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 版本由根 package.json 的 packageManager 字段给。
       # 不写在这儿：bot-release / manager-release 也用这个 action，三处各写一遍必然会漂。
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # 席位机器上的下限也是 24（gateway/src/routes.ts 的 MIN_MANAGER_NODE）。
           node-version: 24
@@ -82,7 +82,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Tauri 在 Linux 上编译要 webkit2gtk 的开发头文件；4.1 是 Tauri 2 的那一档。
       - name: 系统依赖
