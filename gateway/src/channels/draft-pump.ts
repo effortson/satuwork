@@ -142,6 +142,13 @@ export function createDraftPump(
       if (closed) return
       const text = String(raw || '').trim()
       if (!text) return
+      /**
+       * **只往后长。** 同一个草稿 id 上，客户端对「不以上一帧开头」的新帧会从分叉处重播打字
+       * 动画——用户看到的是前面那段一遍遍重打。席位侧的 channelDraft 已经只往后接；这里再兜
+       * 一道：老版本 bot 给的草稿会在中间改（末尾那张工具状态表），那种帧宁可不发，草稿停在
+       * 上一帧，等最终回复把它换掉。reset() 之后 lastText 清空，新一段草稿不受约束。
+       */
+      if (lastText && !text.startsWith(lastText)) return
       const now = Date.now()
       if (text === lastText && now - lastSentAt < keepaliveMs) return
       pending = { text, since: pending?.since ?? now }

@@ -107,6 +107,30 @@ try {
   pump.enqueue('结束后不能再发')
   await new Promise((resolve) => setTimeout(resolve, 30))
 
+  // 只往后长：中间被改过的帧不发（老版本 bot 会给这种），草稿停在上一帧；接着长的照发。
+  const appendOnlyDrafts = []
+  const appendPump = createDraftPump(async (text) => { appendOnlyDrafts.push(text) }, {
+    minMs: 0, batchChars: 1, maxWaitMs: 0, initialWaitMs: 0, keepaliveMs: 1000,
+  })
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 15))
+  appendPump.enqueue('第一段')
+  await tick()
+  appendPump.enqueue('第一段\n\n🔧 工具调用\n⏳ web_search · 调用中')
+  await tick()
+  appendPump.enqueue('第一段\n\n第二段\n\n🔧 工具调用\n✓ web_search · 完成')
+  await tick()
+  appendPump.enqueue('第一段\n\n🔧 工具调用\n⏳ web_search · 调用中\n\n第二段')
+  await tick()
+  await appendPump.finish()
+
+  // 超长草稿停在开头，不往后滑：连着两帧发出去的是同一段开头。
+  rejectRich = false
+  seen.length = 0
+  const longBase = '长'.repeat(4200)
+  await telegramSendDraft(token, '456', 27, longBase, '88')
+  await telegramSendDraft(token, '456', 27, longBase + '再长一点', '88')
+  const longDrafts = seen.filter((entry) => entry.method === 'sendMessageDraft').map((entry) => entry.body.text)
+
   rejectRich = false
   seen.length = 0
   const approvalKey = 'AbCdEfGhIjKlMnOpQrStUv'
@@ -177,6 +201,8 @@ try {
   const huge = `\`\`\`txt\n${'x'.repeat(31_000)}\n\`\`\``
   const parts = telegramRichTextParts(huge)
   console.log('__RESULT__' + JSON.stringify({
+    appendOnlyDrafts,
+    longDrafts,
     nativeMethod: native?.method,
     nativeMarkdown: native?.body?.rich_message?.markdown,
     nativeThread: native?.body?.message_thread_id,

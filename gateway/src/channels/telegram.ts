@@ -480,10 +480,17 @@ function canFallBackToPlain(error: unknown): boolean {
   return error instanceof TelegramError && (error.status === 400 || error.status === 404)
 }
 
-function draftTail(text: string, max: number): string {
+/**
+ * 草稿超过上限就**停在前 max 字**，不再往后滑。
+ *
+ * 以前超长时发「…\n + 最后 max 字」：每一帧的开头都在往后挪，没有一帧以上一帧开头，
+ * Telegram 客户端于是每帧整段重播打字动画。草稿只是预览，完整内容由最终那条 RichMessage
+ * 发出；停住之后每一帧都相同，草稿泵按重复帧丢掉，只剩保活。
+ */
+function draftHead(text: string, max: number): string {
   const chars = Array.from(String(text || ''))
   if (chars.length <= max) return chars.join('')
-  return `…\n${chars.slice(-(max - 2)).join('')}`
+  return `${chars.slice(0, max - 1).join('')}…`
 }
 
 /**
@@ -503,7 +510,7 @@ export async function telegramSendDraft(
   await call(token, 'sendMessageDraft', {
     chat_id: chatId,
     draft_id: draftId,
-    text: draftTail(markdown, 4000),
+    text: draftHead(markdown, 4000),
     ...(threadId ? { message_thread_id: threadId } : {}),
   }, 3_000)
 }
