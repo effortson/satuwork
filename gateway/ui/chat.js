@@ -3484,7 +3484,41 @@ function approvalEmailHtml(a) {
  * **参数要摆出来。** 「Bot 想调用 send_email，批准吗」这句话本身没有信息量——人要批的
  * 是「发给谁、写了什么」，看不到这些就只能凭信任点，那和没有这个开关是一样的。
  */
+/**
+ * 本地 Bot 申请访问一个文件夹（席位那边的 request_folder_access）。
+ *
+ * **批准就是「选一个文件夹」**，不是点一下「同意」：按钮拉起 Desktop 的系统选择框
+ * （approve_local_directory），人选中之后才替他提交批准；选择框里点取消就什么都不提交，
+ * 卡片留着。所以这张卡没有「这一轮都批准」——放行后面几次申请，等于跳过了选文件夹这一步。
+ * 卡上 Bot 建议的那个路径只是提示，批准的永远是人选的那个。
+ *
+ * 普通浏览器里拉不起选择框，照实说，只留一颗拒绝。
+ */
+function approvalFolderHtml(a) {
+  const fields = (a.form && a.form.fields) || []
+  const reason = (fields.find((f) => f.key === 'reason') || {}).value || a.reason || ''
+  const suggested = (fields.find((f) => f.key === 'suggested') || {}).value || ''
+  const bridge = window.__SATUWORK_LOCAL_BOT__
+  const canPick = Boolean(window.__SATUWORK_DESKTOP__ && bridge && typeof bridge.approveDirectory === 'function')
+  return (
+    `<div class="sw-approval sw-approval-folder" data-state="pending" data-call="${esc(a.callId)}">` +
+    `<div class="sw-approval-head">${ICON_SHIELD}<span>${esc(t('Bot 想访问一个文件夹', 'The bot wants to access a folder'))}</span></div>` +
+    (reason ? `<div class="sw-approval-why">${esc(reason)}</div>` : '') +
+    (suggested
+      ? `<div class="sw-approval-tool">${esc(t('它想要的是', 'It asked for'))} <code>${esc(suggested)}</code>` +
+        `<span style="color: var(--muted-foreground);"> · ${esc(t('以你选的为准', 'you decide which one'))}</span></div>`
+      : '') +
+    `<div class="sw-approval-acts">` +
+    (canPick
+      ? `<button type="button" class="btn btn-primary" data-act="chat-folder-pick" data-call="${esc(a.callId)}">${esc(t('选择文件夹…', 'Choose a folder…'))}</button>`
+      : `<span style="font-size: 12.5px; color: var(--muted-foreground);">${esc(t('要在 Satuwork 桌面端里批准：那里才打得开系统的文件夹选择框。', 'Approve this in the Satuwork desktop app — only it can open the folder picker.'))}</span>`) +
+    `<button type="button" class="btn btn-ghost" data-act="chat-deny" data-call="${esc(a.callId)}" data-scope="once">${esc(t('拒绝', 'Deny'))}</button>` +
+    `</div></div>`
+  )
+}
+
 function approvalHtml(a) {
+  if (a.form && a.form.kind === 'folder') return approvalFolderHtml(a)
   if (a.form && a.form.kind === 'email' && (a.form.fields || []).length) return approvalEmailHtml(a)
   const args = prettyArgs(a.args)
   return (
@@ -5389,6 +5423,60 @@ function chatDeployPrompt(botId) {
   </div></div>`
 }
 
+/**
+ * 本地 Bot 批准过的文件夹：壳子那边的清单（local_directories），逐条带「撤销」。
+ *
+ * 数据只有壳子有（批准记录在这台电脑的应用数据目录里，Gateway 不知道），所以第一次画到
+ * 这一格时去要一次，要回来再重画；批准、撤销、Bot 自己申请下来之后各重要一次。老版本的壳
+ * 没有 `directories` 这条桥，整格不画——不能画一张永远是空的「没有批准任何文件夹」骗人。
+ */
+const localDirsLoading = new Set()
+
+async function loadLocalDirs(botId) {
+  const bridge = window.__SATUWORK_LOCAL_BOT__
+  if (!botId || !bridge || typeof bridge.directories !== 'function') return
+  state.localDirs = state.localDirs || {}
+  localDirsLoading.add(botId)
+  try {
+    const list = await bridge.directories(botId)
+    state.localDirs[botId] = { list: Array.isArray(list) ? list : [] }
+  } catch (err) {
+    state.localDirs[botId] = { list: [], error: err instanceof Error ? err.message : String(err || '') }
+  } finally {
+    localDirsLoading.delete(botId)
+  }
+}
+
+function localDirsHtml(botId) {
+  const bridge = window.__SATUWORK_LOCAL_BOT__
+  if (!bridge || typeof bridge.directories !== 'function') return ''
+  const got = (state.localDirs || {})[botId]
+  if (!got) {
+    if (!localDirsLoading.has(botId)) void loadLocalDirs(botId).then(() => render())
+    return ''
+  }
+  if (got.error) return `<div class="gw-flash gw-flash-err" style="margin: 0;">${esc(got.error)}</div>`
+  if (!got.list.length) return ''
+  const rows = got.list.map((d) => {
+    const name = String(d.mount || '').replace(/^External\//, '') || d.path
+    return (
+      `<div class="sw-localdir" style="display: flex; align-items: center; gap: 8px; min-width: 0;">` +
+      `<div style="flex: 1; min-width: 0;">` +
+      `<div style="font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(name)}</div>` +
+      `<div style="font-size: 11.5px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(d.path)}">${esc(d.path)}</div>` +
+      `</div>` +
+      `<button type="button" class="btn btn-ghost btn-sm" data-act="local-dir-revoke" data-bot="${esc(botId)}" data-path="${esc(d.path)}">${esc(t('撤销', 'Revoke'))}</button>` +
+      `</div>`
+    )
+  })
+  return (
+    `<div class="sw-localdirs" style="display: flex; flex-direction: column; gap: 8px;">` +
+    `<div style="font-size: 12px; color: var(--muted-foreground);">${esc(t('已批准访问的文件夹', 'Approved folders'))}</div>` +
+    rows.join('') +
+    `</div>`
+  )
+}
+
 function chatMachinePanel() {
   const selected = chatBotIdOf(state.path) || state.chatBotId
   if (!selected) return ''
@@ -5407,6 +5495,7 @@ function chatMachinePanel() {
     )}</p>`)
     if (window.__SATUWORK_DESKTOP__) {
       rows.push(`<button type="button" class="btn btn-secondary" data-act="local-dir-approve" data-bot="${esc(selected)}">${t('批准访问其他文件夹', 'Approve another folder')}</button>`)
+      rows.push(localDirsHtml(selected))
     }
   } else if (stage === 'unbound') {
     rows.push(

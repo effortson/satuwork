@@ -5,12 +5,14 @@ commands.allow = ["current_server", "startup_error", "connect"]
 
 [[permission]]
 identifier = "local-bot-commands"
-description = "允许主窗口启动、停止和查询本人本地 Bot，并通过系统选择器批准额外目录。"
+description = "允许主窗口启动、停止和查询本人本地 Bot，通过系统选择器批准额外目录，列出和撤销已批准的目录。"
 commands.allow = [
   "start_local_bot",
   "stop_local_bot",
   "local_bot_status",
   "approve_local_directory",
+  "local_directories",
+  "revoke_local_directory",
 ]
 
 [[permission]]

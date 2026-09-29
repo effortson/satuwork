@@ -2305,6 +2305,64 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(/\.sw-toolfold-list \{[^}]*overflow-y: auto/.test(css), '超过 5 行该在框里滚')
     })
 
+    await test('本地 Bot 的文件夹：右栏列出已批准的、能撤销；Bot 申请时卡片拉起选择框，选中才批准', async () => {
+      const folderApproval = {
+        callId: 'call-folder', name: 'request_folder_access', reason: '整理发票', args: '{}', state: 'pending',
+        form: { kind: 'folder', tool: 'request_folder_access', fields: [
+          { key: 'reason', label: '用途', value: '整理下载目录里的发票' },
+          { key: 'suggested', label: '建议的文件夹', value: '~/Downloads' },
+        ] },
+      }
+      // 普通浏览器：拉不起选择框，照实说，只留拒绝
+      const web = loadApp({ appPath, base: gwBase, token: 'jwt' })
+      let html = web.approvalHtml(folderApproval)
+      assert(html.includes('Bot 想访问一个文件夹') && html.includes('整理下载目录里的发票') && html.includes('~/Downloads'), `文件夹卡没画对：${html}`)
+      assert(!html.includes('chat-folder-pick') && html.includes('桌面端'), '浏览器里不该有「选择文件夹」，要说去桌面端')
+      assert(!html.includes('data-scope="turn"'), '文件夹卡不该有「这一轮都批准」——那等于跳过选文件夹')
+
+      // 桌面端：选择框 → 选中才替人提交批准；取消什么都不交
+      const posted = []
+      let pick = { path: '/Users/me/Downloads', mount: 'External/Downloads' }
+      let dirs = []
+      const revoked = []
+      const desk = loadApp({
+        appPath, base: gwBase, token: 'jwt', desktop: true,
+        localBotBridge: {
+          status: async () => ({ running: true, port: 41009, workspace: '/w' }),
+          approveDirectory: async () => { if (pick) dirs = [pick]; return pick },
+          directories: async () => dirs,
+          revokeDirectory: async (_id, path) => { revoked.push(path); dirs = dirs.filter((d) => d.path !== path); return true },
+        },
+        fetchImpl: async (path, init) => {
+          posted.push({ path, body: init && init.body ? JSON.parse(init.body) : null })
+          return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+        },
+      })
+      html = desk.approvalHtml(folderApproval)
+      assert(html.includes('data-act="chat-folder-pick"') && html.includes('选择文件夹'), '桌面端该有「选择文件夹…」')
+      desk.state.path = '/a/l-1'
+      desk.state.chatBotId = 'l-1'
+      desk.state.chatSessionId = 's-local'
+      pick = null
+      await desk.fire('click', el('button', { 'data-act': 'chat-folder-pick', 'data-call': 'call-folder' }))
+      assert(!posted.some((p) => p.path.includes('/approvals/')), '选择框里点了取消，不该提交任何决定')
+      pick = { path: '/Users/me/Downloads', mount: 'External/Downloads' }
+      await desk.fire('click', el('button', { 'data-act': 'chat-folder-pick', 'data-call': 'call-folder' }))
+      const decided = posted.find((p) => p.path.includes('/approvals/call-folder'))
+      assert(decided && decided.body.decision === 'approve' && decided.body.scope === 'once', `选中之后该提交一次「批准这一次」：${JSON.stringify(posted)}`)
+
+      // 右栏列表：选完就有，撤销后就没
+      html = desk.localDirsHtml('l-1')
+      assert(html.includes('Downloads') && html.includes('/Users/me/Downloads') && html.includes('local-dir-revoke'), `已批准的文件夹没列出来：${html}`)
+      await desk.fire('click', el('button', { 'data-act': 'local-dir-revoke', 'data-bot': 'l-1', 'data-path': '/Users/me/Downloads' }))
+      assert(revoked.join() === '/Users/me/Downloads', '撤销没交给壳子')
+      assert(!desk.localDirsHtml('l-1').includes('/Users/me/Downloads'), '撤销之后列表没刷新')
+
+      // 老版本的壳没有 directories 这条桥：整格不画，不能画一张永远空的列表
+      const old = loadApp({ appPath, base: gwBase, token: 'jwt', desktop: true, localBotBridge: { approveDirectory: async () => null } })
+      assert(old.localDirsHtml('l-1') === '', '老壳子不该画文件夹列表')
+    })
+
     await test('Bot 设置页画出这颗 Bot 跑的是哪一版：远程看席位，本地看壳子', async () => {
       /**
        * 「这颗 Bot 现在是哪一版」以前只有机器页和审计页上看得到，员工自己的设置页上没有；
