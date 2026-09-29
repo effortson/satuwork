@@ -5,7 +5,7 @@
  * 哪些类型允许浏览器内联。这类错不会在日常使用里露面——它要等到有人专门去试才发作，
  * 所以只能靠断言守着。
  */
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,6 +13,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { WorkspaceService, contentTypeOf, safeName } from './src/workspace/index.ts'
 import { ToolService } from './src/tools/index.ts'
 import * as fileTools from './src/tools/file.ts'
+import * as folderTools from './src/tools/folders.ts'
 import { walkFiles } from './src/tools/common.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'satu-ws-'))
@@ -407,6 +408,89 @@ out.paging = {
   if (prevKind === undefined) delete process.env.SATUWORK_RUNTIME_KIND
   else process.env.SATUWORK_RUNTIME_KIND = prevKind
   rmSync(outside, { recursive: true, force: true })
+}
+
+// ── 13. 本地模式：用户批准的文件夹 ──────────────────────────────────
+/**
+ * 批准过的文件夹（清单 + `External/<名字>` 链接两头都对上）要**真的访问得到**：挂载路径、
+ * 模型直接写的绝对路径、`~/` 路径都行；没批准的一样越界。再用一个假的 policy 把
+ * request_folder_access 从开卡到返回走一遍：询问那一刻模拟 Desktop 往清单里记一行、建一条
+ * 链接，工具要把**新批准的那一个**报回去。
+ */
+{
+  const prevKind = process.env.SATUWORK_RUNTIME_KIND
+  const prevDirs = process.env.SATUWORK_APPROVED_DIRS
+  const prevHome = process.env.HOME
+  process.env.SATUWORK_RUNTIME_KIND = 'local'
+  const home = mkdtempSync(join(tmpdir(), 'satu-home-'))
+  const dl = join(home, 'Downloads')
+  mkdirSync(join(dl, 'sub'), { recursive: true })
+  writeFileSync(join(dl, 'a.txt'), '下载里的文件\n')
+  writeFileSync(join(dl, 'sub/b.txt'), '深一层 TODO\n')
+  const secret = join(home, 'Secret')
+  mkdirSync(secret)
+  writeFileSync(join(secret, 's.txt'), '不该看到\n')
+  const manifest = join(home, 'approved-dirs.json')
+  writeFileSync(manifest, JSON.stringify([realpathSync(dl)]))
+  process.env.SATUWORK_APPROVED_DIRS = manifest
+  process.env.HOME = home
+  mkdirSync(join(root, 'External'), { recursive: true })
+  symlinkSync(dl, join(root, 'External/Downloads'))
+  // 只有链接、不在清单里：既不列，也不给进
+  symlinkSync(secret, join(root, 'External/Secret'))
+
+  const mounts = ws.approvedMounts()
+  const readAbs = await call('read_file', { path: join(realpathSync(dl), 'a.txt') })
+  const readTilde = await call('read_file', { path: '~/Downloads/sub/b.txt' })
+  const readMount = await call('read_file', { path: 'External/Downloads/a.txt' })
+  const readSecretAbs = await call('read_file', { path: join(realpathSync(secret), 's.txt') })
+  const readSecretMount = await call('read_file', { path: 'External/Secret/s.txt' })
+  const search = await call('search_files', { pattern: 'TODO', path: 'External/Downloads' })
+
+  let asked = null
+  let behave = () => ({ verdict: 'denied', scope: 'once' })
+  folderTools.apply({
+    tools: ctx.tools,
+    workspace: ws,
+    policy: { approvals: { ask: async (_call, reason, form) => { asked = asked || { reason, form }; return behave() } } },
+  })
+  const denied = await call('request_folder_access', { reason: '整理发票', suggested: '~/Desktop' })
+  const desk = join(home, 'Desktop')
+  mkdirSync(desk)
+  behave = () => {
+    writeFileSync(manifest, JSON.stringify([realpathSync(dl), realpathSync(desk)]))
+    symlinkSync(desk, join(root, 'External/Desktop'))
+    return { verdict: 'approved', scope: 'once' }
+  }
+  const approved = await call('request_folder_access', { reason: '整理发票', suggested: '~/Desktop' })
+  behave = () => ({ verdict: 'approved', scope: 'once' })
+  const approvedNothing = await call('request_folder_access', { reason: '再来一个' })
+
+  out.folders = {
+    列出批准的: JSON.stringify(mounts) === JSON.stringify([{ mount: 'External/Downloads', path: realpathSync(dl) }]),
+    绝对路径读得到: /下载里的文件/.test(readAbs.text || ''),
+    波浪号路径读得到: /深一层/.test(readTilde.text || ''),
+    挂载路径读得到: /下载里的文件/.test(readMount.text || ''),
+    没批准的绝对路径照样越界: /越界/.test(readSecretAbs.text || '') && !/不该看到/.test(readSecretAbs.text || ''),
+    没批准的挂载照样越界: /越界/.test(readSecretMount.text || '') && !/不该看到/.test(readSecretMount.text || ''),
+    搜得进批准的文件夹: /b\.txt/.test(search.text || ''),
+    开的是文件夹卡: asked?.form?.kind === 'folder' && asked.form.fields.some((f) => f.key === 'suggested' && f.value === '~/Desktop'),
+    拒绝如实说: /拒绝/.test(denied.text || ''),
+    批准后只报新入口: /External\/Desktop/.test(approved.text || '') && !/External\/Downloads/.test(approved.text || ''),
+    批准了没选说清楚: /没有选新的文件夹/.test(approvedNothing.text || ''),
+  }
+  // 系统提示里那一段：模型得知道 External/Downloads 就是用户说的「下载目录」。
+  const { localFoldersBlock } = await import('./src/agent/index.ts')
+  const listed = localFoldersBlock([{ mount: 'External/Downloads', path: '/Users/me/Downloads' }], true)
+  const none = localFoldersBlock([], true)
+  out.folders.提示词列出入口 = listed.includes('`External/Downloads` → /Users/me/Downloads') && listed.includes('request_folder_access')
+  out.folders.没批准时教它申请 = none.includes('request_folder_access') && !none.includes('External/')
+  out.folders.远程席位不出现 = localFoldersBlock(null, false) === '' && localFoldersBlock([], false) === ''
+  for (const [k, v] of [['SATUWORK_RUNTIME_KIND', prevKind], ['SATUWORK_APPROVED_DIRS', prevDirs], ['HOME', prevHome]]) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  rmSync(home, { recursive: true, force: true })
 }
 
 console.log('__RESULT__' + JSON.stringify(out))

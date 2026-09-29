@@ -60,6 +60,8 @@ function endSignedIn() {
   // 就是上一个人的清单：那一帧的 HTML 在 render() 末尾那句 ensureWorkspaceTree 之前
   // 就拼好了，而登出这会儿 state.me 已经空了，它自己压根轮不到跑。
   state.wsDirs = {}
+  // 上一个人批准过哪些本地文件夹（路径里带着他的用户名）也是他的东西。
+  state.localDirs = {}
   state.wsOpen = {}
   state.wsSession = ''
   state.runtimeBots = []
@@ -1305,6 +1307,51 @@ document.getElementById('app').addEventListener('click', async (e) => {
     } catch (err) {
       flash('err', err instanceof Error ? err.message : String(err || t('没有批准这个文件夹', 'The folder was not approved')))
     }
+    await loadLocalDirs(id)
+    render()
+    return
+  }
+  if (act === 'local-dirs-toggle') {
+    const id = btn.getAttribute('data-bot') || ''
+    if (!id) return
+    state.localDirsOpen = { ...(state.localDirsOpen || {}), [id]: !(state.localDirsOpen || {})[id] }
+    render()
+    return
+  }
+  if (act === 'local-dir-revoke') {
+    // 只拆掉 Bot 的访问入口，文件夹本身一个字节都不动（壳子那边只删链接和清单那一行），
+    // 所以不弹二次确认：撤错了再批一次就回来了。
+    const id = btn.getAttribute('data-bot') || chatBotIdOf(state.path)
+    const path = btn.getAttribute('data-path') || ''
+    const bridge = window.__SATUWORK_LOCAL_BOT__
+    if (!id || !path || !bridge || typeof bridge.revokeDirectory !== 'function') return
+    try {
+      await bridge.revokeDirectory(id, path)
+      flash('ok', t('已撤销。Bot 从下一次读写起就访问不到这个文件夹了。', 'Revoked. The bot loses access from its next read or write.'))
+    } catch (err) {
+      flash('err', err instanceof Error ? err.message : String(err || t('没能撤销', 'Could not revoke')))
+    }
+    await loadLocalDirs(id)
+    render()
+    return
+  }
+  if (act === 'chat-folder-pick') {
+    // Bot 申请的那张卡：选中了才替人提交批准；选择框里点取消就什么都不交，卡片留着。
+    const callId = btn.getAttribute('data-call') || ''
+    const id = chatBotIdOf(state.path) || state.chatBotId
+    const bridge = window.__SATUWORK_LOCAL_BOT__
+    if (!callId || !id || !bridge || typeof bridge.approveDirectory !== 'function') return
+    let approved = null
+    try {
+      approved = await bridge.approveDirectory(id)
+    } catch (err) {
+      flash('err', err instanceof Error ? err.message : String(err || t('没有批准这个文件夹', 'The folder was not approved')))
+      render()
+      return
+    }
+    if (!approved) return
+    await decideApproval(callId, 'approve', 'once')
+    await loadLocalDirs(id)
     render()
     return
   }

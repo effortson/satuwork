@@ -2086,7 +2086,12 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * Skill 正文的缓存作废一次。
      */
     const memory = this.memoryBlock(bot)
-    const tail = [skills, memory].filter(Boolean).join('\n\n')
+    /**
+     * 本地 Bot 上用户批准过的文件夹。**和记忆一样排在最末尾**：批准 / 撤销随时会发生，
+     * 插在前面等于每批一次就把整段 Skill 的前缀缓存作废一次。
+     */
+    const folders = localFoldersBlock(this.ctx.workspace?.approvedMounts?.() ?? null, this.ctx.tools.has('request_folder_access'))
+    const tail = [skills, memory, folders].filter(Boolean).join('\n\n')
     return { text: tail ? `${base}\n\n${tail}` : base, base, skills, memory }
   }
 
@@ -3392,6 +3397,33 @@ function linkOutBlock(): string {
     '地址原样抄，一个字符都不要改、不要缩短。**手上没有地址的那一条就只写文字**，不要照着规律拼一个看起来对的：',
     '拼出来的地址点下去是 404，而人会以为是自己这边的问题，比不给链接更坏。',
     '正文里已经写成链接的东西，末尾不必再列一遍「参考链接」。',
+  ].join('\n')
+}
+
+/**
+ * 本地 Bot 能碰到工作区之外的哪些文件夹。
+ *
+ * **不说这一段的代价**：用户在右栏批准了 ~/Downloads，回头问「看看下载目录」，模型却回
+ * 「系统级 ~/Downloads 不在工作区内，我无法查看」——它根本不知道 `External/Downloads`
+ * 那条入口存在。所以批准过的逐条列出来，连同「用哪个路径去读」。
+ *
+ * 一个都没批准时，只在挂着 request_folder_access 的时候说一句「可以申请」：没有那把工具就
+ * 什么都不说，别教模型走一条走不到的路。`mounts` 为 null（不是本地 Bot）时整段不出现。
+ */
+export function localFoldersBlock(mounts: { mount: string; path: string }[] | null, canRequest: boolean): string {
+  if (!mounts) return ''
+  if (!mounts.length) {
+    return canRequest
+      ? '## 工作区之外的文件夹\n你现在只能访问自己的工作区。用户要你处理工作区之外的文件夹（下载、桌面、某个项目目录）时，调 `request_folder_access` 请用户批准，不要让用户自己去拷贝文件。'
+      : ''
+  }
+  return [
+    '## 用户批准你访问的文件夹',
+    '下面这些文件夹在这台电脑上，用户已经批准你访问。它们挂在工作区的 `External/` 下，读写都用左边那个路径：',
+    ...mounts.map((m) => `- \`${m.mount}\` → ${m.path}`),
+    '',
+    '用户说的是右边的真实路径（比如「下载目录」「~/Downloads」）时，就是在说对应的那个 `External/…`。' +
+      (canRequest ? '要访问不在这张表里的文件夹，调 `request_folder_access` 申请。' : ''),
   ].join('\n')
 }
 

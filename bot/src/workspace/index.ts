@@ -1,7 +1,8 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
-import { createReadStream, createWriteStream, lstatSync, readFileSync, realpathSync, statSync, type WriteStream } from 'node:fs'
+import { createReadStream, createWriteStream, lstatSync, readdirSync, readFileSync, realpathSync, statSync, type WriteStream } from 'node:fs'
 import { lstat, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { homedir } from 'node:os'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { satuworkHome } from '../home.ts'
 
@@ -65,7 +66,7 @@ export class WorkspaceService extends Service {
    * 也就是说符号链接绕得过去——见类注释，这层挡的是手滑，不是恶意。
    */
   resolve(path?: string): string {
-    const target = resolve(this.root, path?.trim() || '.')
+    const target = this.mapApproved(path) ?? resolve(this.root, path?.trim() || '.')
     if (target !== this.root && !target.startsWith(this.root + sep)) {
       throw new WorkspaceError(`路径越界：${path}。只能访问工作区 ${this.root} 以内的文件。`)
     }
@@ -87,6 +88,62 @@ export class WorkspaceService extends Service {
       }
     }
     return target
+  }
+
+  /**
+   * 本地 Bot 上**用户批准过的那些文件夹**，以及它们在工作区里的入口。
+   *
+   * Desktop 批准一个文件夹时做两件事（desktop/src-tauri 的 approve_local_directory）：把它的
+   * 真实路径记进 `SATUWORK_APPROVED_DIRS` 那份清单，并在工作区里建一个 `External/<名字>`
+   * 符号链接指过去。这里两头都对上才算：清单里有、`External/` 下也有一条指向它的链接。
+   * 只剩一头的（撤销到一半、手工删过）不算——宁可少一个，也不能多认一个。
+   *
+   * 远程席位上永远是空的：那边没有批准这回事，工作区就是边界。
+   */
+  approvedMounts(): { mount: string; path: string }[] {
+    if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return []
+    const external = join(this.root, 'External')
+    let names: string[]
+    try {
+      names = readdirSync(external)
+    } catch {
+      return []
+    }
+    const out: { mount: string; path: string }[] = []
+    for (const name of names.sort()) {
+      const link = join(external, name)
+      try {
+        if (!this.isApprovedLink(link)) continue
+        out.push({ mount: `External/${name}`, path: realpathSync(link) })
+      } catch {
+        /* 链接悬空、目标没了：不算 */
+      }
+    }
+    return out
+  }
+
+  /**
+   * 模型给的是批准文件夹里的**绝对路径**（`~/Downloads/a.pdf`、`/Users/me/Downloads/a.pdf`）
+   * 时，换成工作区里对应的 `External/…`。不换的话它会撞上「路径越界」，然后告诉用户「我访问
+   * 不到」——而那个文件夹用户明明刚批准过。不在任何一个批准文件夹里的绝对路径原样返回
+   * undefined，照旧走越界检查。
+   */
+  private mapApproved(path?: string): string | undefined {
+    const raw = path?.trim()
+    if (!raw) return undefined
+    const expanded = raw === '~' ? homedir() : raw.startsWith('~/') ? join(homedir(), raw.slice(2)) : raw
+    if (!isAbsolute(expanded)) return undefined
+    const plain = resolve(expanded)
+    if (plain === this.root || plain.startsWith(this.root + sep)) return undefined
+    const mounts = this.approvedMounts()
+    if (!mounts.length) return undefined
+    // 清单里记的是真实路径（Desktop 批准时 canonicalize 过）。模型写的路径可能经过符号链接
+    // （macOS 的 /var → /private/var、挪过位置的家目录），不先落到真实路径就对不上前缀。
+    const abs = realish(plain)
+    for (const m of mounts) {
+      if (abs === m.path || abs.startsWith(m.path + sep)) return join(this.root, m.mount, relative(m.path, abs))
+    }
+    return undefined
   }
 
   private isApprovedPath(path: string): boolean {
@@ -418,6 +475,25 @@ export function childEnv(): NodeJS.ProcessEnv {
     out[key] = value
   }
   return out
+}
+
+/**
+ * 一条可能还不存在的绝对路径的「真实路径」：从最近一层存在的祖先取 realpath，再把余下的
+ * 几段原样接回去。写新文件时路径本身还不存在，直接 realpath 会抛。
+ */
+function realish(path: string): string {
+  const rest: string[] = []
+  let cur = path
+  for (;;) {
+    try {
+      return rest.length ? join(realpathSync(cur), ...rest.reverse()) : realpathSync(cur)
+    } catch {
+      const up = dirname(cur)
+      if (up === cur) return path
+      rest.push(basename(cur))
+      cur = up
+    }
+  }
 }
 
 /** \0 出现在头部就当二进制。够用，且比嗅探 MIME 便宜。 */

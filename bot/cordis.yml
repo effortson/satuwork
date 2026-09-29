@@ -101,6 +101,10 @@
 # 名字是 policy 不是 guard：src/guard 是入站席位票的闸门，两件事不能同名。
 - name: './src/policy/index.ts'
 
+# 本地 Bot 向用户申请访问工作区之外的文件夹：开一张确认卡，人在 Desktop 的选择框里选。
+# 排在 policy 之后——它 inject 'policy'，卡片走同一个 ApprovalGate。远程席位上不挂工具。
+- name: './src/tools/folders.ts'
+
 # 会话索引上报 + 给 Gateway 按 sessionId 拉全文（机器凭证）+ 实例 ready。
 - name: './src/session/gateway.ts'
 

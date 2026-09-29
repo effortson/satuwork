@@ -148,6 +148,13 @@ export async function runWorkspaceFiles({ root, test, assert, log }) {
     assert(r.dangling && !bad.length, `这几条不对：${bad.join('、')}（${JSON.stringify(r.dangling)}）`)
   })
 
+  await test('本地模式：批准的文件夹读得到（挂载 / 绝对 / ~ 路径），没批准的照样越界；Bot 能自己申请', () => {
+    // 用户批准了 ~/Downloads，模型却说「不在工作区里，我访问不到」——那是因为它既不知道
+    // External/Downloads 的存在，写绝对路径又撞上越界。这里钉住两头都通，而且只通批准过的。
+    const bad = Object.entries(r.folders || {}).filter(([, v]) => v !== true).map(([k]) => k)
+    assert(r.folders && !bad.length, `这几条不对：${bad.join('、')}（${JSON.stringify(r.folders)}）`)
+  })
+
   await test('只有白名单里的类型允许内联', () => {
     assert(r.inline.png && r.inline.pdf, '图片和 PDF 应该能直接看')
     assert(r.inline.大写后缀也认, '大写后缀没认出来，会被当成未知格式')
