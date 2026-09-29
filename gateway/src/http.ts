@@ -2,6 +2,7 @@ import { createReadStream, readFileSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { uiCdnMeta, uiCdnSources } from './ui-cdn.ts'
 
 export class HttpError extends Error {
   constructor(
@@ -172,8 +173,8 @@ const MIME: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
 }
 
-// `/download` 是以前的下载页，已并进首页那一段（ui/pages-landing.js 的 lpDownload）。地址
-// 留着：它早被发出去过，前端进来会折到 `/#download`（见 ui/app.js 的 boot）。
+// `/download`：没登录时折到首页那一段（`/#download`），登录了是应用内那一页——两样都在
+// ui/pages-landing.js，怎么折见 ui/app.js 的 foldDownload。地址早被发出去过，得一直交得出。
 const SPA_PATHS = new Set(['/', '/login', '/privacy', '/terms', '/download', '/index.html', '/ui', '/ui/', '/models', '/providers', '/company', '/accounts', '/audit', '/companies', '/users', '/plans', '/orders', '/stats', '/tools', '/costs', '/billing', '/usage', '/catalog', '/profile', '/bots', '/skills', '/chat', '/releases', '/machines', '/connectors', '/handoffs', '/channels'])
 // 前端脚本拆成了一串（见 gateway/ui/index.html 里那组 data-app-part），
 // 加一个新的分片就要在这里也加一行，否则线上直接 404，而本地跑 index.html 是好的。
@@ -193,13 +194,12 @@ const VERCEL_ANALYTICS = process.env.VERCEL === '1'
   : ''
 
 /**
- * 按需加载的那三个库（KaTeX / highlight.js / Mermaid）从哪儿来。
- *
- * **要和 `gateway/ui/markdown.js` 的 `window.SATU_CDN` 指同一处**：那边换了镜像而这里
- * 没换，CSP 会把脚本挡掉，表现是公式和图静默不渲染——而那正是它「拉不到就退回纯文本」
- * 的降级路径，看上去像 CDN 慢，不像配错了。所以两边共用这一个环境变量。
+ * 按需加载的那三个库（KaTeX / highlight.js / Mermaid）从哪儿来、CSP 放到哪一层，见
+ * `ui-cdn.ts`。`GATEWAY_UI_CDN` 换了镜像时，同一个地址经 `<meta name="satu-cdn">` 交给
+ * markdown.js（UI_CDN_META），两边读的是同一个值，不会一边换了一边没换。
  */
-const UI_CDN = (process.env.GATEWAY_UI_CDN || 'https://cdn.jsdelivr.net').trim().replace(/\/+$/, '')
+const UI_CDN_SRC = uiCdnSources()
+const UI_CDN_META = uiCdnMeta()
 
 /**
  * 界面字体（`gateway/ui/theme.css` 顶上那句 `@import`）。样式表从 googleapis 来，
@@ -269,9 +269,9 @@ const CSP = [
   "object-src 'none'",
   "form-action 'self'",
   "frame-ancestors 'self'",
-  `script-src 'self' ${UI_CDN}`,
-  `style-src 'self' 'unsafe-inline' ${UI_CDN} ${FONT_CSS}`,
-  `font-src 'self' data: ${UI_CDN} ${FONT_FILES}`,
+  `script-src 'self' ${UI_CDN_SRC}`,
+  `style-src 'self' 'unsafe-inline' ${UI_CDN_SRC} ${FONT_CSS}`,
+  `font-src 'self' data: ${UI_CDN_SRC} ${FONT_FILES}`,
   "img-src 'self' data: blob: https: http:",
   "media-src 'self' data: blob:",
   // http://127.0.0.1:* 是桌面端里的本地 Bot（ui/data.js 的 localRoute）：那一条和 directUrl
@@ -333,8 +333,8 @@ function serveUi(pathname: string, res: ServerResponse): boolean {
     // CSP 只挂在网页本身上：脚本和样式是被这一页加载的，约束它们的是这一页的策略。
     ...(ext === '.html' ? { 'content-security-policy': CSP } : {}),
   })
-  if (VERCEL_ANALYTICS && rel === 'index.html') {
-    res.end(readFileSync(file, 'utf8').replace('</body>', VERCEL_ANALYTICS + '</body>'))
+  if ((VERCEL_ANALYTICS || UI_CDN_META) && rel === 'index.html') {
+    res.end(readFileSync(file, 'utf8').replace('</head>', UI_CDN_META + '</head>').replace('</body>', VERCEL_ANALYTICS + '</body>'))
     return true
   }
   createReadStream(file).pipe(res)
@@ -461,6 +461,8 @@ export class Router {
         return
       }
       if (e instanceof HttpError) {
+        // 429 / 503 带上 retryAfter（秒）的，同时写进 Retry-After 头：浏览器和脚本都认这个。
+        if (typeof e.extra.retryAfter === 'number') res.setHeader('retry-after', String(e.extra.retryAfter))
         json(res, e.status, { error: e.message, ...e.extra })
         return
       }

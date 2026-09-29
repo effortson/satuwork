@@ -19,6 +19,8 @@ const state = {
    * 要改成记住，改的是这里的取值来源，不是上面那条 `!== false`。
    */
   navGroupOpen: { company: false },
+  /** Desktop 壳的升级状态（self_update.rs 的 UpdateView）。浏览器里永远是 null，见 shell.js 的 desktopUpdateBridge。 */
+  desktopUpdate: null,
   busy: false,
   loginError: '',
   loginEmail: '',
@@ -600,7 +602,8 @@ function navGroupsForRole() {
 
 function allowedHrefs() {
   // '/' 不在导航里也必须可达：公司侧它就是对话页，是这些人的落点。
-  const set = new Set([...navForRole().map((n) => n.href), '/profile', '/'])
+  // '/download' 同理不在导航里：入口在个人设置，老的 /download 链接登录之后也落这儿。
+  const set = new Set([...navForRole().map((n) => n.href), '/profile', '/download', '/'])
   // 全局 Bot 从 owner 的菜单里撤了（见 OWNER_NAV），但**页面没撤**：撤的是入口，
   // 不是功能。少了这一行，owner 直接输 /bots 会被 pathAllowed 踢回首页，全局 Bot
   // 目录就此没人改得动了——而他是唯一改得动的人。
@@ -689,6 +692,18 @@ function ownBotPath(p) {
   return Boolean(state.bot && state.bot.id === id && isMyBot(state.bot))
 }
 
+/**
+ * 地址里那颗 Bot 的已载详情；对不上就是 null。
+ *
+ * Bot 详情页上的按钮（保存、删除、记忆的删 / 钉 / 推）一律从这儿取对象，**不直接读
+ * state.bot**：/bots/A 切到 /bots/B、B 还没到（或者 403 了）的那段时间里，state.bot
+ * 可能还是 A，按下去打的就是 A。
+ */
+function routeBot() {
+  const id = botIdOfPath(state.path)
+  return id && state.bot && state.bot.id === id ? state.bot : null
+}
+
 function companyIdOfPath(p) {
   if (!p.startsWith('/companies/')) return ''
   return decodeURIComponent(p.slice('/companies/'.length).split('/')[0] || '')
@@ -759,6 +774,8 @@ function crumbsOf(path) {
     const one = acc && acc.id === userIdOfPath(path) ? acc : null
     return { href: '/users', parent: t('用户'), current: one?.name || one?.email || t('账号详情') }
   }
+  // 入口在个人设置里，上一级就回那儿。
+  if (path === '/download') return { href: '/profile', parent: t('个人设置'), current: t('下载桌面端') }
   if (path.startsWith('/audit/summary/')) {
     const item = state.auditItemDetail?.item
     const id = auditItemIdOfPath(path)
@@ -879,12 +896,23 @@ function joinToken() {
   return decodeURIComponent(state.path.slice('/join/'.length).split('/')[0] || '')
 }
 
-/** 导航序号：每次 go() 加一。loadPage 回来时序号已经变了，说明人又点去了别处。 */
+/** 导航序号：每次换页（go() 或前进后退）加一。loadPage 回来时序号已经变了，说明人又点去了别处。 */
 let navSeq = 0
 
 function go(href) {
   if (location.pathname !== href) history.pushState({}, '', href)
   state.path = href
+  enterPath()
+}
+
+/**
+ * 换页之后那一套：清掉上一页的提示和弹层、加载、按序号决定画不画。
+ *
+ * **go() 和浏览器的前进后退共用这一条。** popstate 以前自己写了一份 `loadPage().then(render)`：
+ * 不加序号、不清提示——连按两下后退，慢的那一页晚回来会把快的那一页盖掉，上一页的报错
+ * 也跟着带到新页面上。调用前 state.path 要已经是新地址。
+ */
+function enterPath() {
   state.error = ''
   state.notice = ''
   state.addOpen = false
@@ -897,10 +925,11 @@ function go(href) {
   state.seatReveal = false
   state.seatError = ''
   // 慢的那一页回来时人已经点到下一页去了：那次 render 会把新页面盖成旧页面的内容，
-  // 所以序号不对就不画。loadPage 自己写的共享字段（state.path 之类）由它内部各自把关，
-  // 这里只保证「不重画」这一条最小闸。
+  // 所以序号不对就不画。loadPage 自己写的共享字段由它内部各自把关（详情页那三份见
+  // data.js 的 detailSeq），这里只保证「不重画」这一条最小闸。
   const seq = ++navSeq
-  loadPage().then(() => {
+  const load = state.path.startsWith('/join/') ? loadInvite() : loadPage()
+  load.then(() => {
     if (seq === navSeq) render()
   })
 }

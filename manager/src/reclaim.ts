@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { run, tryRun } from './run.ts'
+import { seatOfPid } from './seat-owner.ts'
 import type { SeatRecord } from './seats.ts'
 
 /**
@@ -56,9 +57,6 @@ export interface ReclaimReport {
   blocked: string[]
 }
 
-/** 席位私有运行时目录的前缀。**逐席位唯一**，见下面 seatOfPid 为什么认它。 */
-const RUNTIME_PREFIX = '/tmp/xdg-runtime-'
-
 function environOf(pid: string): string[] {
   try {
     return readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')
@@ -75,27 +73,12 @@ function cmdlineOf(pid: string): string {
   }
 }
 
-/**
- * 这个进程属于哪个席位。认不出来就是 null——那才是「外面的东西」。
- *
- * **按 `XDG_RUNTIME_DIR` 认，不按命令行认。** 命令行分不出席位：`Xvfb :10`、
- * `websockify 127.0.0.1:6081 localhost:5910` 里一个席位标识都没有，而同一个员工的
- * 多块屏还共用同一个 Linux 账号，`ps -u` 也分不开。slim-desktop.sh 在起任何东西
- * 之前就 export 了 `XDG_RUNTIME_DIR=/tmp/xdg-runtime-$SEAT_ID`，bot.env 里也有同一
- * 条，所以这三个监听进程全都带着它，而且带的是**自己那一份**。
+/*
+ * 「这个进程属于哪个席位」见 seat-owner.ts 的 seatOfPid。**命令行分不出席位**（`Xvfb :10`、
+ * `websockify 127.0.0.1:6081 localhost:5910` 里一个席位标识都没有，同一个员工的多块屏还共用
+ * 一个 Linux 账号），**环境变量又是进程自己写的**——以前按 XDG_RUNTIME_DIR 认，别的账号伪造
+ * 一条就能让这里把一个活着的席位当孤儿停掉。现在只认 cgroup / logind 会话加 uid。
  */
-function seatOfPid(pid: string): string | null {
-  const env = environOf(pid)
-  for (const kv of env) {
-    if (kv.startsWith(`XDG_RUNTIME_DIR=${RUNTIME_PREFIX}`)) {
-      return kv.slice(`XDG_RUNTIME_DIR=${RUNTIME_PREFIX}`.length) || null
-    }
-  }
-  // environ 读不到时的兜底（进程刚退、或者内核不给）：x11vnc 的 -rfbauth 和 bot 的
-  // SATUWORK_HOME 路径里带着席位目录，形状是 /home/<user>/.satuwork/<seatId>/…
-  const m = /\/home\/[A-Za-z0-9_-]+\/\.satuwork\/([A-Za-z0-9_-]+)[/\s]/.exec(cmdlineOf(pid) + ' ')
-  return m ? m[1] : null
-}
 
 /** 谁在听这些口。`ss -ltnp` 要 root 才给得出 pid——管家正是以 root 跑的。 */
 async function listeners(): Promise<Map<number, string>> {
@@ -187,9 +170,8 @@ async function killPids(pids: string[]): Promise<void> {
   }
 }
 
-/** 这个席位逃出单元的那些进程。按 XDG_RUNTIME_DIR 认领，理由见 seatOfPid。 */
+/** 这个席位逃出单元的那些进程（以及还在单元里的）。认领的判据见 seat-owner.ts。 */
 function pidsOfSeat(seatId: string): string[] {
-  const marker = `XDG_RUNTIME_DIR=${RUNTIME_PREFIX}${seatId}`
   const out: string[] = []
   let names: string[]
   try {
@@ -199,7 +181,7 @@ function pidsOfSeat(seatId: string): string[] {
   }
   for (const name of names) {
     if (!/^\d+$/.test(name)) continue
-    if (environOf(name).includes(marker)) out.push(name)
+    if (seatOfPid(name) === seatId) out.push(name)
   }
   return out
 }

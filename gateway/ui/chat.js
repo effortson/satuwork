@@ -1088,6 +1088,11 @@ async function overlayLocalRuntime(bots) {
         machineLink: running ? 'online' : 'offline',
         workspace: (s && s.workspace) || 'desktop',
         port: running ? s.port : null,
+        // 壳子的运行时指针（local-runtime/CURRENT / PENDING / LAST_ERROR）。字段名跟远程
+        // 席位的 runtime.botVersion 对齐：Bot 设置页那一行版本号两种 Bot 读同一个名字。
+        botVersion: (s && s.runtimeVersion) || null,
+        pendingVersion: (s && s.pendingRuntimeVersion) || null,
+        updateError: (s && s.runtimeUpdateError) || null,
       }
       const known = localBots.get(bot.id)
       if (running && (!known || !known.token || known.login !== token())) {
@@ -1460,6 +1465,19 @@ function retryChatSession(botId, attempt) {
 }
 
 /**
+ * 把一份收起来的草稿摆回输入框。
+ *
+ * `mentions` 平时不在草稿里（点名只管「这一条消息」，换页就清，见 loadChatPage）；只有
+ * 「附件没传上去」退回来的那份才带着——那是人已经按过发送的一整条，@ 丢了就是另一条话。
+ */
+function applyDraft(kept) {
+  state.chatDraft = kept.text
+  state.chatFiles = kept.files
+  if (Array.isArray(kept.mentions) && kept.mentions.length) state.chatMentions = kept.mentions
+  paintChatFiles()
+}
+
+/**
  * 把当前会话换成这个 Bot 的。
  *
  * **换 Bot 的第一件事是清场，不是去拿新会话。** 原先是等新会话拿回来、比对出
@@ -1487,8 +1505,7 @@ async function ensureChatSession(botId, attempt = 0) {
     resetWorkspaceTree()
     state.chatEvents = warm.events
     state.chatReplaying = false
-    state.chatDraft = kept.text
-    state.chatFiles = kept.files
+    applyDraft(kept)
     chatAbort = warm.ac
     chatStreamId = warm.sessionId
     // 先把手上有的画出来——流垫的那一轮已经在桶里，切过去是**这一帧**就有东西看。
@@ -1517,8 +1534,7 @@ async function ensureChatSession(botId, attempt = 0) {
     state.chatEvents = botStreamOf(botId).events
     state.chatStatus = ''
     state.chatReplaying = false
-    state.chatDraft = kept.text
-    state.chatFiles = kept.files
+    applyDraft(kept)
   }
   try {
     const data = await api('GET', '/runtime/bots/' + encodeURIComponent(botId) + '/session')
@@ -2904,6 +2920,70 @@ function chipHtml(x, i) {
 }
 
 /**
+ * 工具折叠框摊开时最多几行，多了就在框里滚（高度见 chat.css 的 .sw-toolfold-list）。
+ * 改这个数要连那边的 max-height 一起改——两边写的是同一件事。
+ */
+const TOOLFOLD_ROWS = 5
+
+/**
+ * 一次调用在标题里怎么称呼：工具名，带命令的（terminal 这种）再接上那条命令。
+ *
+ * 「正在执行什么」里人要的是**那条命令**，不是 `terminal` 这个名字——一轮里十几次都叫
+ * terminal，只看名字分不出是在装依赖还是在删文件。args 是模型给的 JSON 串，解不开就
+ * 只报名字，不猜。
+ */
+function toolCommandOf(x) {
+  let cmd = ''
+  try {
+    const o = typeof x.args === 'string' ? JSON.parse(x.args) : x.args
+    if (o && typeof o === 'object') cmd = String(o.command || o.cmd || '').trim()
+  } catch {}
+  cmd = cmd.replace(/\s+/g, ' ')
+  if (cmd.length > 80) cmd = cmd.slice(0, 80) + '…'
+  return cmd ? `${x.name} · ${cmd}` : String(x.name || '')
+}
+
+/**
+ * 工具痕迹收进一个折叠框：**默认收着，标题上说正在执行什么。**
+ *
+ * 一轮十几次调用摊成一排药丸，会把正文下面那几颗真正要点的东西（产出的文件、读过的
+ * 文件）挤到好几行之后；可「它现在在干什么」又是人盯着看的那一句，不能跟着一起藏。
+ * 所以标题就是那一句：有还在跑的就写「正在执行 <最后一个在跑的>」，都跑完了写一共
+ * 几次、失败几次、最后一次是什么。展开之后是原来那些药丸，一行一颗，悬浮详情照旧；
+ * 超过 TOOLFOLD_ROWS 行在框里滚，不把气泡撑长。
+ *
+ * 已有结论的确认药丸也收在里面：它们和工具痕迹是同一类东西（这一轮路上发生过什么），
+ * 还等着人点的那几张确认卡不进来，照旧摊在下面。
+ */
+function toolFoldHtml(tools, settled) {
+  const running = [...tools].reverse().find((x) => x.result == null)
+  const failed = tools.filter((x) => x.result != null && x.failed).length
+  const n = tools.length + settled.length
+  let state_ = 'done'
+  let title
+  if (running) {
+    state_ = 'running'
+    title = t('正在执行', 'Running') + ' ' + toolCommandOf(running)
+  } else {
+    if (failed) state_ = 'error'
+    const last = tools[tools.length - 1]
+    title = t(`${tools.length} 次工具调用`, `${tools.length} tool calls`)
+    if (failed) title += ' · ' + t(`${failed} 次失败`, `${failed} failed`)
+    if (last) title += ' · ' + t('最后一次', 'last') + ' ' + toolCommandOf(last)
+    if (!tools.length) title = t(`${settled.length} 次确认`, `${settled.length} approvals`)
+  }
+  return (
+    `<details class="sw-toolfold" data-state="${state_}">` +
+    `<summary class="sw-toolfold-head" title="${esc(title)}">${ICON_TOOL}<span class="sw-toolfold-title">${esc(title)}</span>` +
+    `<span class="sw-toolfold-n">${n}</span></summary>` +
+    `<div class="sw-toolfold-list" data-rows="${TOOLFOLD_ROWS}">` +
+    tools.map(chipHtml).join('') +
+    settled.map((a, i) => approvalChipHtml(a, tools.length + i)).join('') +
+    `</div></details>`
+  )
+}
+
+/**
  * 正文里被**行内代码**点了名的产出文件。
  *
  * 判据是 markdown 源码里出现 `` `路径` ``，而不是去渲染后的 DOM 里找。两个理由：
@@ -3294,6 +3374,15 @@ function emailPreviewDoc(html) {
 /** 卡片底下那排按钮。发信那张的第一个按钮说「批准并发送」——它就是要干这件事。 */
 function approvalActs(a, okLabel) {
   const touched = approvalTouched(a)
+  /**
+   * terminal 的「这一轮都批准」只放行一字不差的同一条命令（席位那边 approvals.ts 的
+   * grantKey）：它的风险在命令里，按工具放行等于批了一条删临时文件、放过一整轮的删目录。
+   * 按钮上的话要跟着改，不然人以为后面的命令都不会再问。
+   */
+  const byCommand = ((a.form && a.form.tool) || a.name) === 'terminal'
+  const turnTip = byCommand
+    ? t('这一轮里一字不差的同一条命令不再问；换一条命令照样会问。', 'This exact command won\'t ask again until this reply finishes; any other command still asks.')
+    : t('从你刚才那句话到它答完，这把工具不再问；下一句话会重新问。', 'Until this reply finishes, this tool won\'t ask again; your next message starts over.')
   return (
     `<div class="sw-approval-acts">` +
     `<button type="button" class="btn btn-primary" data-act="chat-approve" data-call="${esc(a.callId)}" data-scope="once">${esc(okLabel)}</button>` +
@@ -3309,8 +3398,8 @@ function approvalActs(a, okLabel) {
     (touched
       ? // 改过的这一次不能顺带放行后面几次：后面那些带的是模型自己写的内容，不是人刚改的这份。
         ` disabled title="${esc(t('这一次改过内容，只能批准这一次', 'You edited this one, so it can only be approved once'))}"`
-      : ` title="${esc(t('从你刚才那句话到它答完，这把工具不再问；下一句话会重新问。', 'Until this reply finishes, this tool won\'t ask again; your next message starts over.'))}"`) +
-    `>${esc(t('这一轮都批准', 'Approve for this turn'))}</button>` +
+      : ` title="${esc(turnTip)}"`) +
+    `>${esc(byCommand ? t('这一轮这条都批准', 'Approve this command for this turn') : t('这一轮都批准', 'Approve for this turn'))}</button>` +
     `<button type="button" class="btn btn-ghost" data-act="chat-deny" data-call="${esc(a.callId)}" data-scope="once">${esc(t('拒绝', 'Deny'))}</button>` +
     /**
      * 拒绝那一侧也配一颗带范围的，和批准那一对对称。
@@ -3395,7 +3484,41 @@ function approvalEmailHtml(a) {
  * **参数要摆出来。** 「Bot 想调用 send_email，批准吗」这句话本身没有信息量——人要批的
  * 是「发给谁、写了什么」，看不到这些就只能凭信任点，那和没有这个开关是一样的。
  */
+/**
+ * 本地 Bot 申请访问一个文件夹（席位那边的 request_folder_access）。
+ *
+ * **批准就是「选一个文件夹」**，不是点一下「同意」：按钮拉起 Desktop 的系统选择框
+ * （approve_local_directory），人选中之后才替他提交批准；选择框里点取消就什么都不提交，
+ * 卡片留着。所以这张卡没有「这一轮都批准」——放行后面几次申请，等于跳过了选文件夹这一步。
+ * 卡上 Bot 建议的那个路径只是提示，批准的永远是人选的那个。
+ *
+ * 普通浏览器里拉不起选择框，照实说，只留一颗拒绝。
+ */
+function approvalFolderHtml(a) {
+  const fields = (a.form && a.form.fields) || []
+  const reason = (fields.find((f) => f.key === 'reason') || {}).value || a.reason || ''
+  const suggested = (fields.find((f) => f.key === 'suggested') || {}).value || ''
+  const bridge = window.__SATUWORK_LOCAL_BOT__
+  const canPick = Boolean(window.__SATUWORK_DESKTOP__ && bridge && typeof bridge.approveDirectory === 'function')
+  return (
+    `<div class="sw-approval sw-approval-folder" data-state="pending" data-call="${esc(a.callId)}">` +
+    `<div class="sw-approval-head">${ICON_SHIELD}<span>${esc(t('Bot 想访问一个文件夹', 'The bot wants to access a folder'))}</span></div>` +
+    (reason ? `<div class="sw-approval-why">${esc(reason)}</div>` : '') +
+    (suggested
+      ? `<div class="sw-approval-tool">${esc(t('它想要的是', 'It asked for'))} <code>${esc(suggested)}</code>` +
+        `<span style="color: var(--muted-foreground);"> · ${esc(t('以你选的为准', 'you decide which one'))}</span></div>`
+      : '') +
+    `<div class="sw-approval-acts">` +
+    (canPick
+      ? `<button type="button" class="btn btn-primary" data-act="chat-folder-pick" data-call="${esc(a.callId)}">${esc(t('选择文件夹…', 'Choose a folder…'))}</button>`
+      : `<span style="font-size: 12.5px; color: var(--muted-foreground);">${esc(t('要在 Satuwork 桌面端里批准：那里才打得开系统的文件夹选择框。', 'Approve this in the Satuwork desktop app — only it can open the folder picker.'))}</span>`) +
+    `<button type="button" class="btn btn-ghost" data-act="chat-deny" data-call="${esc(a.callId)}" data-scope="once">${esc(t('拒绝', 'Deny'))}</button>` +
+    `</div></div>`
+  )
+}
+
 function approvalHtml(a) {
+  if (a.form && a.form.kind === 'folder') return approvalFolderHtml(a)
   if (a.form && a.form.kind === 'email' && (a.form.fields || []).length) return approvalEmailHtml(a)
   const args = prettyArgs(a.args)
   return (
@@ -3672,13 +3795,16 @@ function updateRow(el, b, streaming, since) {
     settled.map((a) => a.callId + ':' + approvalState(a)).join('|')
   if (chips.getAttribute('data-sig') !== sig) {
     chips.setAttribute('data-sig', sig)
+    // 重画会把折叠框换掉：人点开了就保持开着——「调用中 → 完成」那一下正是他在看的时候。
+    const wasOpen = Boolean(chips.querySelector('.sw-toolfold')?.open)
     chips.innerHTML =
-      tools.map(chipHtml).join('') +
+      (tools.length || settled.length ? toolFoldHtml(tools, settled) : '') +
       shownOuts.map(fileChipHtml).join('') +
       (moreOuts > 0 ? outMoreHtml(moreOuts) : '') +
       shownReads.map(readChipHtml).join('') +
-      (moreReads > 0 ? readMoreHtml(moreReads) : '') +
-      settled.map((a, i) => approvalChipHtml(a, tools.length + i)).join('')
+      (moreReads > 0 ? readMoreHtml(moreReads) : '')
+    const fold = chips.querySelector('.sw-toolfold')
+    if (fold && wasOpen) fold.open = true
     chips.hidden = !tools.length && !rest.length && !shownReads.length && !settled.length
     /**
      * 工具对象直接挂到节点上，悬浮窗按需取。
@@ -5160,7 +5286,7 @@ function seatStage() {
    * 库里那一行两种情况长得一模一样，可人要做的事完全相反：一个是接着等（什么都不用
    * 按），一个是这次装到一半没人接着装了（非按一下不可）。混成一档的代价是后者——
    * 一屏永远走不完的读秒，外加一颗都没有的按钮。判据由服务端给（见
-   * `/runtime/deploy/progress` 的 stale）：只有那个进程知道自己手上有没有这活儿。
+   * `/runtime/deploy/progress` 的 stale：库里的在装心跳断了、管家那边也没在装）。
    */
   if (p && p.status === 'deploying') return p.stale ? 'stalled' : 'deploying'
   const mine = state.desktopRuntime
@@ -5297,6 +5423,76 @@ function chatDeployPrompt(botId) {
   </div></div>`
 }
 
+/**
+ * 本地 Bot 批准过的文件夹：壳子那边的清单（local_directories），逐条带「撤销」。
+ *
+ * 数据只有壳子有（批准记录在这台电脑的应用数据目录里，Gateway 不知道），所以第一次画到
+ * 这一格时去要一次，要回来再重画；批准、撤销、Bot 自己申请下来之后各重要一次。老版本的壳
+ * 没有 `directories` 这条桥，整格不画——不能画一张永远是空的「没有批准任何文件夹」骗人。
+ */
+const localDirsLoading = new Set()
+
+async function loadLocalDirs(botId) {
+  const bridge = window.__SATUWORK_LOCAL_BOT__
+  if (!botId || !bridge || typeof bridge.directories !== 'function') return
+  state.localDirs = state.localDirs || {}
+  localDirsLoading.add(botId)
+  try {
+    const list = await bridge.directories(botId)
+    state.localDirs[botId] = { list: Array.isArray(list) ? list : [] }
+  } catch (err) {
+    state.localDirs[botId] = { list: [], error: err instanceof Error ? err.message : String(err || '') }
+  } finally {
+    localDirsLoading.delete(botId)
+  }
+}
+
+function localDirsHtml(botId) {
+  const bridge = window.__SATUWORK_LOCAL_BOT__
+  if (!bridge || typeof bridge.directories !== 'function') return ''
+  const got = (state.localDirs || {})[botId]
+  if (!got) {
+    if (!localDirsLoading.has(botId)) void loadLocalDirs(botId).then(() => render())
+    return ''
+  }
+  if (got.error) return `<div class="gw-flash gw-flash-err" style="margin: 0;">${esc(got.error)}</div>`
+  if (!got.list.length) return ''
+  /**
+   * **默认收起**，标题带条数。摊开的话批得越多、下面的「日常任务」被挤得越远——而日常任务
+   * 是这一栏里天天要看的东西，批过哪些文件夹是偶尔才查一次的。
+   *
+   * 开合记在 state 里而不是用 <details> 自己的 open：右栏每次 render 都整块重画，<details>
+   * 的开合会被一起抹掉，人刚点开，下一帧（名单流一来）就又收回去了。
+   */
+  const open = Boolean((state.localDirsOpen || {})[botId])
+  const head =
+    `<button type="button" class="sw-localdirs-head" data-act="local-dirs-toggle" data-bot="${esc(botId)}" aria-expanded="${String(open)}" ` +
+    `style="display: flex; align-items: center; gap: 6px; width: 100%; padding: 0; border: 0; background: none; cursor: pointer; font: inherit; font-size: 12px; color: var(--muted-foreground); text-align: left;">` +
+    `<span style="flex: 1;">${esc(t('已批准访问的文件夹', 'Approved folders'))} · ${got.list.length}</span>` +
+    `<span aria-hidden="true" style="display: inline-block; transition: transform 0.15s ease; transform: rotate(${open ? 90 : 0}deg);">›</span>` +
+    `</button>`
+  if (!open) return `<div class="sw-localdirs">${head}</div>`
+  const rows = got.list.map((d) => {
+    const name = String(d.mount || '').replace(/^External\//, '') || d.path
+    return (
+      `<div class="sw-localdir" style="display: flex; align-items: center; gap: 8px; min-width: 0;">` +
+      `<div style="flex: 1; min-width: 0;">` +
+      `<div style="font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(name)}</div>` +
+      `<div style="font-size: 11.5px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(d.path)}">${esc(d.path)}</div>` +
+      `</div>` +
+      `<button type="button" class="btn btn-ghost btn-sm" data-act="local-dir-revoke" data-bot="${esc(botId)}" data-path="${esc(d.path)}">${esc(t('撤销', 'Revoke'))}</button>` +
+      `</div>`
+    )
+  })
+  return (
+    `<div class="sw-localdirs" style="display: flex; flex-direction: column; gap: 8px;">` +
+    head +
+    // 批得多了也不把整栏撑长：最多露出五六行，其余在框里滚。
+    `<div style="display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto;">${rows.join('')}</div>` +
+    `</div>`
+  )
+}
+
 function chatMachinePanel() {
   const selected = chatBotIdOf(state.path) || state.chatBotId
   if (!selected) return ''
@@ -5315,6 +5511,7 @@ function chatMachinePanel() {
     )}</p>`)
     if (window.__SATUWORK_DESKTOP__) {
       rows.push(`<button type="button" class="btn btn-secondary" data-act="local-dir-approve" data-bot="${esc(selected)}">${t('批准访问其他文件夹', 'Approve another folder')}</button>`)
+      rows.push(localDirsHtml(selected))
     }
   } else if (stage === 'unbound') {
     rows.push(
@@ -5969,7 +6166,18 @@ function mountDesktop(url, seatId) {
   document.body.appendChild(back)
   document.body.appendChild(layer)
   // src 最后给：DOM 先进树，iframe 才只加载一次。
-  layer.querySelector('.sw-deskl-frame').src = url
+  const frame = layer.querySelector('.sw-deskl-frame')
+  // 桌面壳的导航守卫只放行报过的席位机器（desktop main.rs 的 allow_seat_desktop），
+  // 先报再给 src；报失败也照给，最坏是这块屏被守卫送去系统浏览器，和以前一样。
+  const seatGate = window.__SATUWORK_SEAT_DESKTOP__
+  if (seatGate?.allow) {
+    void Promise.resolve()
+      .then(() => seatGate.allow(url))
+      .catch(() => {})
+      .then(() => {
+        if (frame.isConnected) frame.src = url
+      })
+  } else frame.src = url
   deskMounted = { seat: seatId, url }
   state.deskFull = wasFull
 }
@@ -6831,7 +7039,7 @@ function chatHeadInline() {
           <button type="button" class="satu-menuitem" data-act="chat-export">${t('导出 Markdown')}</button>
         </div>`
       : ''
-  return `<div class="sw-convo-avatar" aria-hidden="true">${ICON_BOT}</div>
+  return `<div class="sw-convo-avatar" data-bot="${bot ? '1' : '0'}" aria-hidden="true">${bot ? botAvatar(bot.icon, 34, bot.origin) : ICON_BOT}</div>
     <div class="sw-convo-id">
       <div class="sw-convo-title">
         <span class="sw-convo-name">${esc(name)}</span>
@@ -7247,25 +7455,36 @@ function paintMentionPick() {
     : `<div class="sw-pick-empty">${esc(t('没有可用的连接。去「连接器」装一个再连上。'))}</div>`
 }
 
+/**
+ * 正在传的附件，按 Bot 记：`botId → 那一条的附件`。
+ *
+ * **不再放在 state.chatFiles 里，也不再是一个全局开关。** 以前传的那几秒里附件还挂在
+ * chatFiles 上、`state.chatUploading` 是一颗全局的闩：人这时切到 B，换 Bot 那一步把
+ * 「在路上的」附件当成 A 的草稿收了起来，传完又因为人不在 A 而没清——切回 A，同一批
+ * 附件又摆在输入框上，再按一次就传两遍、发两遍；而在 B 上按发送，撞上那颗全局闩，什么
+ * 也不发生。现在一按发送，附件就从草稿里挪到这儿：草稿里只剩没发的，闩只闩这一个 Bot。
+ */
+const chatUploads = new Map()
+
 function paintChatFiles() {
   const box = document.getElementById('chat-files')
   if (!box) return
+  const flying = chatUploads.get(chatBotIdNow()) || []
   const files = state.chatFiles || []
-  box.hidden = !files.length
-  const busy = Boolean(state.chatUploading)
-  box.innerHTML = files
-    .map(
-      (f, i) =>
-        `<span class="sw-file">` +
-        `<span>${esc(f.name)}</span><small>${esc(fileSize(f.size))}</small>` +
-        // 传的时候不给「移除」：那一下删得掉列表项，删不掉已经在路上的请求。
-        (busy
-          ? ''
-          : `<button type="button" class="sw-file-x" data-act="chat-file-drop" data-i="${i}" ` +
-            `aria-label="${esc(t('移除'))} ${esc(f.name)}">${ICON_X}</button>`) +
-        `</span>`,
-    )
-    .join('')
+  box.hidden = !flying.length && !files.length
+  const chip = (f, x) => `<span class="sw-file"><span>${esc(f.name)}</span><small>${esc(fileSize(f.size))}</small>${x}</span>`
+  // 在路上的不给「移除」：那一下删得掉列表项，删不掉已经在路上的请求。
+  box.innerHTML =
+    flying.map((f) => chip(f, '')).join('') +
+    files
+      .map((f, i) =>
+        chip(
+          f,
+          `<button type="button" class="sw-file-x" data-act="chat-file-drop" data-i="${i}" ` +
+            `aria-label="${esc(t('移除'))} ${esc(f.name)}">${ICON_X}</button>`,
+        ),
+      )
+      .join('')
 }
 
 function fileSize(bytes) {
@@ -7448,6 +7667,37 @@ function flushHeldSend(botId) {
   void sendChat()
 }
 
+/**
+ * 没发成的那一条还给**它自己那个 Bot** 的草稿。
+ *
+ * 人还停在那个 Bot 上就还进输入框；已经切走了就写进 chatDrafts，切回去时 applyDraft
+ * 摆出来。等的这几秒里人可能又打了几个字、又挑了附件：都留着，退回来的排在前面。
+ */
+function returnDraft(botId, text, files, mentions) {
+  const here = chatBotIdNow() === botId
+  const cur = here
+    ? { text: state.chatDraft || '', files: state.chatFiles || [], mentions: state.chatMentions || [] }
+    : state.chatDrafts[botId] || { text: '', files: [] }
+  const curText = String(cur.text || '')
+  const curMentions = Array.isArray(cur.mentions) ? cur.mentions : []
+  const next = {
+    text: curText.trim() ? text + '\n' + curText : text,
+    files: files.concat(cur.files || []),
+    mentions: mentions.concat(curMentions.filter((m) => !mentions.some((x) => x.id === m.id))),
+  }
+  if (!here) {
+    state.chatDrafts[botId] = next
+    return
+  }
+  state.chatDraft = next.text
+  state.chatFiles = next.files
+  state.chatMentions = next.mentions
+  const input = document.getElementById('chat-input')
+  if (input) input.value = next.text
+  paintChatFiles()
+  paintChatMentions()
+}
+
 async function sendChat() {
   const text = (state.chatDraft || '').trim()
   const files = state.chatFiles || []
@@ -7456,14 +7706,18 @@ async function sendChat() {
   /**
    * 发这条消息时人停在哪个 Bot 上。
    *
-   * 下面几处失败回滚（还草稿、还点名）和 `state.chatFiles = []` 写的都是**当前**那个
-   * Bot 的输入框，而中间隔着一段传附件的时间，几秒起步。人这会儿切到了别的 Bot 的话：
-   * 传失败会把 A 的正文和 @ 塞进 B 的输入框，传成功那句清空又会把 B 刚选好的附件抹掉。
-   * 所以每一处回写前都要问一句「人还在不在 A」——loadDesktopRuntime 那道门是同一个理由。
+   * 中间隔着一段传附件的时间，几秒起步，人这会儿可能已经切到了别的 Bot。所以草稿在
+   * 按下的那一刻就整条从 A 的输入框里拿走（附件挪进 chatUploads），失败时经 returnDraft
+   * 还给 A——不管人这会儿停在谁身上。
    */
   const forBot = chatBotIdNow()
-  const stillHere = () => chatBotIdNow() === forBot
-  if ((!text && !files.length && !mentions.length) || state.chatUploading) return
+  if (!text && !files.length && !mentions.length) return
+  if (chatUploads.has(forBot)) {
+    // 同一个 Bot 上一条的附件还在传：这一条抢在前面发，顺序就反了。别的 Bot 不受影响。
+    flash('err', t('上一条的附件还在传，传完再发这一条', 'Still uploading the previous attachments — send this once they finish'))
+    render()
+    return
+  }
   /**
    * 斜杠命令**在这里拦下，绝不往 /messages 走**。
    *
@@ -7550,6 +7804,7 @@ async function sendChat() {
 
   state.chatDraft = ''
   state.chatMentions = []
+  state.chatFiles = []
   closeMentionPick()
   paintChatMentions()
   const input = document.getElementById('chat-input')
@@ -7561,30 +7816,22 @@ async function sendChat() {
   // 附件先落地，再发消息。反过来的话，模型会先读到路径、文件还没到。
   let uploaded = []
   if (files.length) {
-    state.chatUploading = true
+    chatUploads.set(forBot, files)
     paintChatFiles()
     render()
     try {
       for (const f of files) uploaded.push(await uploadChatFile(sessionId, f.file))
     } catch (err) {
       // 传失败就把草稿、附件和点名原样还回去，别让人重新选一遍文件、重新 @ 一遍。
-      state.chatUploading = false
-      if (stillHere()) {
-        state.chatDraft = text
-        state.chatMentions = mentions
-        paintChatFiles()
-        paintChatMentions()
-      }
+      chatUploads.delete(forBot)
+      returnDraft(forBot, text, files, mentions)
       flash('err', t('附件没传上去：') + err.message)
       render()
       return
     }
-    state.chatUploading = false
+    chatUploads.delete(forBot)
   }
-  if (stillHere()) {
-    state.chatFiles = []
-    paintChatFiles()
-  }
+  paintChatFiles()
 
   const images = pickImages(uploaded)
   const body = composeChatBody(uploaded, text)
@@ -7629,17 +7876,14 @@ async function sendChat() {
   } catch (err) {
     // 没发出去就把这条回显撤掉，别让屏幕上留一条其实不存在的消息。
     state.chatPending = (state.chatPending || []).filter((p) => p !== pending)
-    if (stillHere()) {
-      // 文件已经传上去了，退回来的只有草稿——附件不还，还了会传第二遍。
-      state.chatDraft = text
-      /**
-       * **点名也要还。** 只还正文的话，人按重发时这一条不带任何 `@`——而
-       * `mentionOnly` 的连接（比如个人邮箱）这一轮根本不在工具表里，Bot 会回一句
-       * 「没有可用的邮箱」，用户却以为自己点过名了。
-       */
-      state.chatMentions = mentions
-      paintChatMentions()
-    }
+    /**
+     * 文件已经传上去了，退回来的只有草稿——附件不还，还了会传第二遍。
+     *
+     * **点名也要还。** 只还正文的话，人按重发时这一条不带任何 `@`——而
+     * `mentionOnly` 的连接（比如个人邮箱）这一轮根本不在工具表里，Bot 会回一句
+     * 「没有可用的邮箱」，用户却以为自己点过名了。
+     */
+    returnDraft(forBot, text, [], mentions)
     if (uploaded.length) flash('err', t('附件已经在工作区里了，但这条消息没发出去。'))
     if (String(err.message || '').includes('实例还没上线')) state.runtimeError = '实例还没上线'
     else if (!uploaded.length) flash('err', err.message)
@@ -7849,15 +8093,28 @@ async function loadHandoffDetail(id) {
  */
 let handoffTimer = null
 
+/** 切回前台补的那一次。具名是为了停得掉：匿名的每起一次就多挂一个，退出登录也摘不下来。 */
+function handoffOnVisible() {
+  if (!document.hidden) void loadHandoffs()
+}
+
 function startHandoffPoll() {
   if (handoffTimer) return
   handoffTimer = setInterval(() => {
     if (document.hidden) return
     void loadHandoffs()
   }, 30_000)
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void loadHandoffs()
-  })
+  document.addEventListener('visibilitychange', handoffOnVisible)
+}
+
+/**
+ * 退出登录 / 票过期时停（见 app.js 的 endSignedIn）。不停的话票清了它还在每半分钟敲一次；
+ * 换成 owner 登进来，它敲的每一下都是 403。下一个人登进来之后由 loadPage 按角色重新起。
+ */
+function stopHandoffPoll() {
+  clearInterval(handoffTimer)
+  handoffTimer = null
+  if (typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', handoffOnVisible)
 }
 
 /**
@@ -7886,9 +8143,18 @@ function startSeatWatch() {
   }, SEAT_WATCH_MS)
   // Node 环境（e2e 垫片）下别拽着进程不退出；浏览器里 setInterval 是数字，没有 unref。
   if (seatWatchTimer && typeof seatWatchTimer.unref === 'function') seatWatchTimer.unref()
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void pollSeatLinks()
-  })
+  document.addEventListener('visibilitychange', seatWatchOnVisible)
+}
+
+function seatWatchOnVisible() {
+  if (!document.hidden) void pollSeatLinks()
+}
+
+/** 同 stopHandoffPoll：退出登录 / 票过期时停，登进来之后 loadPage 按角色重新起。 */
+function stopSeatWatch() {
+  clearInterval(seatWatchTimer)
+  seatWatchTimer = null
+  if (typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', seatWatchOnVisible)
 }
 
 async function pollSeatLinks() {
@@ -7934,12 +8200,16 @@ async function updateOrgRuntime() {
      * 失败里的话，一次「中午大家都在用」会被报成一片红，人会去查根本不存在的故障。
      */
     const held = results.filter((r) => r.busy).length
-    const bad = results.filter((r) => !r.busy && (r.error || r.status === 'error')).length
-    const tail = held ? t(`，${held} 个有会话在跑没换`, `, ${held} skipped (busy)`) : ''
+    // 还没轮到的（202 + queued）：服务端在后台一台机器一个地往下推，不算成功也不算失败。
+    const waiting = results.filter((r) => r.queued).length
+    const bad = results.filter((r) => !r.busy && !r.queued && (r.error || r.status === 'error')).length
+    const tail =
+      (held ? t(`，${held} 个有会话在跑没换`, `, ${held} skipped (busy)`) : '') +
+      (waiting ? t(`，${waiting} 个在后台排队`, `, ${waiting} queued in the background`) : '')
     if (!results.length) flash('ok', t('没有需要更新的席位', 'No seats needed updating'))
     else
       flash(
-        bad && !ok ? 'err' : 'ok',
+        bad && !ok && !waiting ? 'err' : 'ok',
         t(`更新 ${data.version}：成功 ${ok}，失败 ${bad}`, `Updated ${data.version}: ${ok} ok, ${bad} failed`) + tail,
       )
     await loadCompanyDetail(org)
@@ -8101,7 +8371,24 @@ async function deployMyRuntime(botId, opts = {}) {
     const body = { botId: id }
     if (opts.update) body.update = true
     if (opts.force) body.force = true
-    await api('POST', '/runtime/deploy', body)
+    const started = await api('POST', '/runtime/deploy', body)
+    /**
+     * **服务端等不到装完就先回了（202 + installing）。** 首装要 apt 十几分钟，那条请求以前
+     * 一直挂到装完，在 Vercel 上必然 504——界面说「部署失败」，机器上装得好好的。现在它
+     * 只等一小会儿，剩下的交给进度轮询（和建完 Bot 那一屏同一套，见 ensureDeployWatch）。
+     * 另一个人 / 另一个标签页已经在装（`already`）也走这里：这次什么都没发，接着看那一次。
+     */
+    if (started && started.installing) {
+      if (chatBotIdNow() === id) {
+        state.desktopRuntime = started
+        state.desktopRuntimeAt = Date.now()
+      }
+      state.deployHint = ''
+      flash('ok', started.already ? t('已经在装了，装完这一页会自己接上') : t('已开始安装，装完这一页会自己接上'))
+      await loadRuntimeBots().catch(() => {})
+      ensureDeployWatch()
+      return
+    }
     const startAt = Date.now()
     // 部署结果按这一份说话，不看 state.desktopRuntime——那一份可能已经是别的 Bot 的了。
     let last = null

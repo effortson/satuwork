@@ -78,11 +78,16 @@ export function telegramDeleteWebhook(token: string, dropPending = false): Promi
  * 让 Telegram 主动把 update 推到我们的地址上，不再长轮询。`secret` 会原样出现在每条推送的
  * `X-Telegram-Bot-Api-Secret-Token` 头里，收的那一头拿它认「真是 Telegram 发的」。
  * `allowed_updates` 和 getUpdates 那边保持一致——少一种就少收一类事件，而且不报错。
+ *
+ * `max_connections: 1`：Telegram 默认最多 40 路并发推送，同一个人连发两句可能后一句先
+ * 到。channel_events 按 `createdAt` 排同一会话的先后（dueChannelEvents），入库时刻乱了，
+ * 模型看到的顺序就乱了。一路推送 = 一条一条来，和长轮询时一样有序。
  */
 export function telegramSetWebhook(token: string, url: string, secret: string): Promise<boolean> {
   return call(token, 'setWebhook', {
     url,
     secret_token: secret,
+    max_connections: 1,
     allowed_updates: ['message', 'callback_query', 'my_chat_member'],
     drop_pending_updates: false,
   })
@@ -475,10 +480,17 @@ function canFallBackToPlain(error: unknown): boolean {
   return error instanceof TelegramError && (error.status === 400 || error.status === 404)
 }
 
-function draftTail(text: string, max: number): string {
+/**
+ * 草稿超过上限就**停在前 max 字**，不再往后滑。
+ *
+ * 以前超长时发「…\n + 最后 max 字」：每一帧的开头都在往后挪，没有一帧以上一帧开头，
+ * Telegram 客户端于是每帧整段重播打字动画。草稿只是预览，完整内容由最终那条 RichMessage
+ * 发出；停住之后每一帧都相同，草稿泵按重复帧丢掉，只剩保活。
+ */
+function draftHead(text: string, max: number): string {
   const chars = Array.from(String(text || ''))
   if (chars.length <= max) return chars.join('')
-  return `…\n${chars.slice(-(max - 2)).join('')}`
+  return `${chars.slice(0, max - 1).join('')}…`
 }
 
 /**
@@ -498,33 +510,47 @@ export async function telegramSendDraft(
   await call(token, 'sendMessageDraft', {
     chat_id: chatId,
     draft_id: draftId,
-    text: draftTail(markdown, 4000),
+    text: draftHead(markdown, 4000),
     ...(threadId ? { message_thread_id: threadId } : {}),
   }, 3_000)
 }
 
-async function telegramSendPlain(token: string, chatId: string, text: string, threadId: string): Promise<void> {
-  for (const part of telegramTextParts(text)) await call(token, 'sendMessage', {
-    chat_id: chatId,
-    text: part,
-    ...(threadId ? { message_thread_id: threadId } : {}),
-  })
+async function telegramSendPlain(
+  token: string, chatId: string, text: string, threadId: string, beforeEach?: () => Promise<void>,
+): Promise<void> {
+  for (const part of telegramTextParts(text)) {
+    await beforeEach?.()
+    await call(token, 'sendMessage', {
+      chat_id: chatId,
+      text: part,
+      ...(threadId ? { message_thread_id: threadId } : {}),
+    })
+  }
+}
+
+/**
+ * 发 telegramRichTextParts 切出来的**一段**。渠道投递按段记进度（channels.ts 的
+ * deliverClaimedEvent），所以单独露出来。降级成纯文本时一段可能再拆成几条，`beforeEach`
+ * 在每条之前调一次，调用方拿它续租、租约丢了就抛错停手。
+ */
+export async function telegramSendTextPart(
+  token: string, chatId: string, part: string, threadId = '', beforeEach?: () => Promise<void>,
+): Promise<void> {
+  try {
+    await call(token, 'sendRichMessage', {
+      chat_id: chatId,
+      rich_message: { markdown: part },
+      ...(threadId ? { message_thread_id: threadId } : {}),
+    })
+  } catch (error) {
+    // 兼容旧版 Bot API，也防止模型生成的半截 Markdown 让回复整体丢失。
+    if (!canFallBackToPlain(error)) throw error
+    await telegramSendPlain(token, chatId, part, threadId, beforeEach)
+  }
 }
 
 export async function telegramSendText(token: string, chatId: string, text: string, threadId = ''): Promise<void> {
-  for (const part of telegramRichTextParts(text)) {
-    try {
-      await call(token, 'sendRichMessage', {
-        chat_id: chatId,
-        rich_message: { markdown: part },
-        ...(threadId ? { message_thread_id: threadId } : {}),
-      })
-    } catch (error) {
-      // 兼容旧版 Bot API，也防止模型生成的半截 Markdown 让回复整体丢失。
-      if (!canFallBackToPlain(error)) throw error
-      await telegramSendPlain(token, chatId, part, threadId)
-    }
-  }
+  for (const part of telegramRichTextParts(text)) await telegramSendTextPart(token, chatId, part, threadId)
 }
 
 export interface TelegramArtifactPreview {
@@ -540,19 +566,8 @@ function telegramHtml(value: string): string {
     .replace(/"/g, '&quot;')
 }
 
-/**
- * 给每个产出文件发一张标准 Bot API 链接卡。
- *
- * URL 同时放在正文链接和 inline button：Telegram 能抓到公开地址时会画网页预览；抓不
- * 到（例如 Gateway 只在局域网）时，桌面/手机仍能点按钮在自己的网络里打开。新版本的
- * link_preview_options 被旧 API 拒绝时只去掉提示字段重试，链接和按钮都保留。
- */
-export async function telegramSendArtifactPreviews(
-  token: string,
-  chatId: string,
-  artifacts: TelegramArtifactPreview[],
-  threadId = '',
-): Promise<void> {
+/** 去重、去掉不合法的，最多 8 张。结果只取决于输入，投递重试时每次切出来的都一样。 */
+export function telegramArtifactPreviewCards(artifacts: TelegramArtifactPreview[]): TelegramArtifactPreview[] {
   const unique = new Map<string, TelegramArtifactPreview>()
   for (const artifact of artifacts) {
     const name = String(artifact?.name || '').trim()
@@ -561,28 +576,53 @@ export async function telegramSendArtifactPreviews(
     unique.set(url, { name: name.slice(0, 200), url })
     if (unique.size >= 8) break
   }
-  for (const artifact of unique.values()) {
-    const text = `📄 <a href="${telegramHtml(artifact.url)}">${telegramHtml(artifact.name)}</a>`
-    const common = {
-      chat_id: chatId,
-      text,
-      parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: [[{ text: '打开预览', url: artifact.url }]] },
-      ...(threadId ? { message_thread_id: threadId } : {}),
-    }
-    try {
-      await call(token, 'sendMessage', {
-        ...common,
-        link_preview_options: {
-          is_disabled: false,
-          url: artifact.url,
-          prefer_large_media: true,
-          show_above_text: false,
-        },
-      })
-    } catch (error) {
-      if (!(error instanceof TelegramError) || error.status !== 400) throw error
-      await call(token, 'sendMessage', common)
-    }
+  return [...unique.values()]
+}
+
+/**
+ * 给一个产出文件发一张标准 Bot API 链接卡。
+ *
+ * URL 同时放在正文链接和 inline button：Telegram 能抓到公开地址时会画网页预览；抓不
+ * 到（例如 Gateway 只在局域网）时，桌面/手机仍能点按钮在自己的网络里打开。新版本的
+ * link_preview_options 被旧 API 拒绝时只去掉提示字段重试，链接和按钮都保留。
+ */
+export async function telegramSendArtifactPreview(
+  token: string,
+  chatId: string,
+  artifact: TelegramArtifactPreview,
+  threadId = '',
+): Promise<void> {
+  const text = `📄 <a href="${telegramHtml(artifact.url)}">${telegramHtml(artifact.name)}</a>`
+  const common = {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard: [[{ text: '打开预览', url: artifact.url }]] },
+    ...(threadId ? { message_thread_id: threadId } : {}),
+  }
+  try {
+    await call(token, 'sendMessage', {
+      ...common,
+      link_preview_options: {
+        is_disabled: false,
+        url: artifact.url,
+        prefer_large_media: true,
+        show_above_text: false,
+      },
+    })
+  } catch (error) {
+    if (!(error instanceof TelegramError) || error.status !== 400) throw error
+    await call(token, 'sendMessage', common)
+  }
+}
+
+export async function telegramSendArtifactPreviews(
+  token: string,
+  chatId: string,
+  artifacts: TelegramArtifactPreview[],
+  threadId = '',
+): Promise<void> {
+  for (const artifact of telegramArtifactPreviewCards(artifacts)) {
+    await telegramSendArtifactPreview(token, chatId, artifact, threadId)
   }
 }

@@ -561,6 +561,8 @@ async function doDeploy(spec: SeatSpec, token: string): Promise<SeatRecord> {
       SEAT_ASSETS: seatAssets(),
       VNC_PASSWORD: spec.vncPassword,
       GATEWAY_URL: spec.gatewayUrl,
+      // 这两把 deploy-seat.sh 写进 root 的 /etc/satuwork/seats/<席位>/secrets.env，由 systemd
+      // 接到 bot 的 fd 0 上，不进 bot 的环境（见 bot/src/seat-secrets.ts）。
       GATEWAY_TOKEN: spec.gatewayToken,
       GATEWAY_API_KEY: spec.gatewayApiKey,
       // 协议 10：Bot 调模型不再直打 Gateway 的 /v1，而是打管家在回环地址上的 /llm/v1/*
@@ -570,7 +572,7 @@ async function doDeploy(spec: SeatSpec, token: string): Promise<SeatRecord> {
       // selftest 那种临时起在 :0 的进程不会走到部署这里。
       MANAGER_LLM_URL: `http://127.0.0.1:${bootConfig().port}/llm`,
       // **机器票不进席位环境。** 它是管家自己的控制面凭据（PUT /seats/:id 认的就是
-      // 它），而 bot.env 属于席位那个普通 Linux 用户。bot 上报 /internal/* 用席位票
+      // 它），而 bot 进程和它的子进程都在席位那个普通 Linux 用户名下。bot 上报 /internal/* 用席位票
       // （GATEWAY_TOKEN）就够了。`token` 在这个函数里只用于向 Gateway 拉发布包。
       SATUWORK_BOT_ID: spec.botId,
     },

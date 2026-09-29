@@ -58,4 +58,50 @@ export async function runGatewayUrl({ root, test, assert, log }) {
     assert(r.missingLine.added, '没补上 GATEWAY_URL')
     assert(r.missingLine.keptToken, '补的时候把原有内容冲掉了')
   })
+
+  // ── 远程席位：bot.env 在 root 的 /etc/satuwork/seats/<席位>/ 里，bot 写不动 ──
+  // 新地址写 $SATUWORK_HOME/gateway-url。那份文件 terminal 里的子进程也写得动，所以必须
+  // 带席位票做的 MAC——不然改一行就能让 bot 下次重启把票和 API Key 送到别人的服务器上。
+
+  await test('远程席位：新地址写进 gateway-url（带 MAC、不含票），重启回来按它起', () => {
+    const s = r.seatAdopt
+    assert(s.memory === 'http://192.168.5.40:3080', `内存里还是 ${s.memory}`)
+    assert(s.wrote, 'gateway-url 没写成 { url, base, mac }')
+    assert(!s.hasToken, 'gateway-url 里出现了票')
+    assert(s.mode === '600', `权限是 ${s.mode}`)
+    assert(s.noBotEnv, '远程席位上又在 SATUWORK_HOME 里造了一份 bot.env')
+    assert(s.afterRestart === 'http://192.168.5.40:3080' && s.src === 'override', `重启后是 ${s.afterRestart}（${s.src}）`)
+  })
+
+  await test('远程席位：gateway-url 被改过就不认', () => {
+    assert(r.seatTampered.memory === 'http://192.168.5.59:3080', `认了被改过的地址：${r.seatTampered.memory}`)
+    assert(r.seatTampered.src === 'deployed', r.seatTampered.src)
+    assert(r.seatTampered.said, '被改了一声不吭')
+  })
+
+  await test('远程席位：重新部署换了地址或换了票，旧覆盖作废', () => {
+    assert(r.seatRedeployed.memory === r.seatRedeployed.expect, `重新部署的地址被旧覆盖盖掉了：${r.seatRedeployed.memory}`)
+    assert(r.seatRotated.memory === 'http://192.168.5.59:3080', `票换了还认旧 MAC：${r.seatRotated.memory}`)
+  })
+
+  await test('远程席位：写不进 gateway-url 时绝不改内存', () => {
+    assert(r.seatUnwritable.memory === 'http://192.168.5.59:3080', '盘没写成，内存却改了')
+    assert(r.seatUnwritable.said, '写失败了一声不吭')
+  })
+
+  await test('不是远程席位：启动时不读 gateway-url', () => {
+    assert(r.localIgnores.fileThere, '前提没造出来')
+    assert(r.localIgnores.memory === 'http://192.168.5.59:3080' && r.localIgnores.src === 'deployed', '本地 bot 认了 gateway-url')
+  })
+
+  await test('https 部署的席位不许被降成明文 http', () => {
+    const d = r.noDowngrade
+    // 学来的地址从此收走每一次调用带的席位票和 API Key：明文地址链路上谁都读得到。
+    assert(d.refused.memory === 'https://gw.example.com', `被降成了 ${d.refused.memory}`)
+    assert(!d.refused.fileThere, '明文地址落了盘')
+    assert(d.refused.said, '拒了但没说')
+    assert(d.httpsOk === 'https://gw2.example.com', `https 的新地址没认：${d.httpsOk}`)
+    assert(d.optIn === 'http://192.168.5.40:3080', `SATUWORK_ALLOW_INSECURE_GATEWAY=1 没放行：${d.optIn}`)
+    assert(d.reload.memory === 'https://gw.example.com' && d.reload.src === 'deployed', `重启时认了覆盖里的明文地址：${JSON.stringify(d.reload)}`)
+  })
 }

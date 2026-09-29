@@ -625,8 +625,9 @@ function memoryPanel(a, ro) {
 }
 
 function botDetailPage() {
-  const bot = state.bot
-  const a = state.botDraft
+  // 同 machineDetailPage：id 对不上就是上一颗 Bot 的，宁可画「载入中」。
+  const bot = routeBot()
+  const a = bot ? state.botDraft : null
   if (!bot || !a) {
     return `<div class="gw-page"><div class="gw-page-inner" style="max-width: 820px;">${flashes()}<p style="color: var(--muted-foreground);">${t('载入中…')}</p></div></div>`
   }
@@ -677,13 +678,46 @@ function myMemories(a) {
   </div>`
 }
 
+/**
+ * Bot 设置页上「这颗 Bot 跑的是哪一版」那一行。
+ *
+ * - 远程 Bot：席位上装着的 bot 发布包，`/runtime/bots` 里的 `runtime.botVersion`（管家装完
+ *   回报、Gateway 记在席位行上的那个）。没有席位就是「未部署」。
+ * - 本地 Bot：桌面壳的运行时 `CURRENT`，由 overlayLocalRuntime 从壳子的 status 带过来。
+ *   Gateway 不知道这台电脑上装的是哪版，普通浏览器里照实说「只在桌面端里看得到」。
+ *   壳子已经下好、等下次启动才换上的那版（PENDING）和上一次升级失败的原因也一起给出来
+ *   ——「为什么还是旧版」的答案就在这两格里。
+ *
+ * 取的是名单（state.runtimeBots）里这一颗：进 Bot 设置页不单独拉运行态，名单每一页都有。
+ */
+function botVersionLine(bot) {
+  const local = bot.runtimeKind === 'local'
+  const rt = (state.runtimeBots || []).find((b) => b.id === bot.id)?.runtime || bot.runtime || null
+  const mono = 'font-family: ui-monospace, SFMono-Regular, Menlo, monospace;'
+  let value
+  if (local && !window.__SATUWORK_DESKTOP__) value = `<span>${t('只在桌面端里看得到', 'Visible in the desktop app only')}</span>`
+  else if (rt?.botVersion) value = `<span style="${mono}" data-bot-version>${esc(rt.botVersion)}</span>`
+  else value = `<span>${local ? t('还没装上', 'Not installed yet') : t('未部署', 'Not deployed')}</span>`
+  const extra = []
+  if (local && rt?.pendingVersion && rt.pendingVersion !== rt.botVersion) {
+    extra.push(t(`已下载 <span style="${mono}">${esc(rt.pendingVersion)}</span>，下次启动换上`, `<span style="${mono}">${esc(rt.pendingVersion)}</span> downloaded, applied on next start`))
+  }
+  if (local && rt?.updateError) {
+    extra.push(`<span style="color: var(--destructive);" title="${esc(rt.updateError)}">${t('上次升级没成功', 'Last update failed')}</span>`)
+  }
+  const label = local ? t('本地运行时', 'Local runtime') : t('Bot 版本')
+  return `<div style="font-size: 12.5px; color: var(--muted-foreground); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline;">
+    <span>${label}</span>${value}${extra.map((x) => `<span>· ${x}</span>`).join('')}
+  </div>`
+}
+
 function myBotPage(bot, a) {
   const tplVersion = bot.templateVersion || state.template?.version || 1
   const opts = state.botOptions || { skills: [], mcps: [] }
   const iconPick = avatarKeysFor('company').map((key) => {
     const on = a.icon === key
     const label = t(BOT_AVATARS[key]?.label || key)
-    return `<button type="button" class="satu-iconpick" aria-pressed="${String(on)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="bot-icon" data-icon="${esc(key)}">${botAvatar(key, 30, 'company')}</button>`
+    return `<button type="button" class="satu-iconpick" aria-pressed="${String(on)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="bot-icon" data-icon="${esc(key)}">${botAvatar(key, 34, 'company')}</button>`
   }).join('')
   const base = { ...a, prompt: state.template?.prompt || '', skills: state.template?.skills || [], mcps: state.template?.mcps || [] }
   return `
@@ -701,6 +735,7 @@ function myBotPage(bot, a) {
                 </div>
                 <input class="input" data-bot="description" value="${esc(a.description)}" placeholder="${esc(t('简介'))}">
                 <div style="font-size: 12.5px; color: var(--muted-foreground);">${t(`模型 ${esc(a.model || '—')}（平台指定）`, `model ${esc(a.model || '—')} (set by the platform)`)}</div>
+                ${botVersionLine(bot)}
                 <div style="display: flex; flex-wrap: wrap; gap: 6px;">${iconPick}</div>
               </div>
             </div>
@@ -754,7 +789,7 @@ function fullBotPage(bot, a) {
   const iconPick = avatarKeysFor(bot.origin).map((key) => {
     const on = a.icon === key
     const label = t(BOT_AVATARS[key]?.label || key)
-    return `<button type="button" class="satu-iconpick" aria-pressed="${String(on)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="bot-icon" data-icon="${esc(key)}" ${ro ? 'disabled' : ''}>${botAvatar(key, 30, bot.origin)}</button>`
+    return `<button type="button" class="satu-iconpick" aria-pressed="${String(on)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="bot-icon" data-icon="${esc(key)}" ${ro ? 'disabled' : ''}>${botAvatar(key, 34, bot.origin)}</button>`
   }).join('')
   const roNote = bot.legacy
     ? t('这个 Bot 建于 Bot 模版之前，已经停用。公司的底座现在在「Bot 模版」那一页。', 'This bot predates the company template and is disabled. The company base now lives on the Bot template page.')
@@ -837,7 +872,7 @@ function newBotModal() {
   if (!f) return ''
   const icons = avatarKeysFor('company').map((key) => {
     const label = t(BOT_AVATARS[key]?.label || key)
-    return `<button type="button" class="satu-iconpick" aria-pressed="${String(f.icon === key)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="new-bot-icon" data-icon="${esc(key)}">${botAvatar(key, 30, 'company')}</button>`
+    return `<button type="button" class="satu-iconpick" aria-pressed="${String(f.icon === key)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="new-bot-icon" data-icon="${esc(key)}">${botAvatar(key, 34, 'company')}</button>`
   }).join('')
   const version = state.template?.version
   return `<div class="gw-modal-backdrop" data-act="new-bot-close">

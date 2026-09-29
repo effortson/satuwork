@@ -16,6 +16,90 @@ function sitesOf(text) {
 }
 
 /**
+ * 这个标签页上「已登录」的一切，全部拆掉：票、流、轮询、内存里上一个账号的数据。
+ *
+ * 退出登录和 api() 里的 401（票过期、账号被停用）走的是**同一条**。401 那支原先只清了票
+ * 和 state.me：名单流还拿着上一个人的票连着、每一帧照样往侧栏送他那几个 Bot 的摘要；
+ * 草稿、待发的那几条、工作区文件树也都还在内存里。换个人在同一个标签页登进来，
+ * startRosterStream 见 rosterAbort 还在就直接 return，同一家公司地址也没变，于是新账号的
+ * 侧栏收不到任何更新，喂进来的仍是上一个人的。
+ *
+ * 只拆不走：跳到哪一页、要不要留一句话，由调用方各自决定。
+ */
+function endSignedIn() {
+  clearToken()
+  // 先掐流再清数据：SSE 还连着的话，下一个人登进来之前就会有上一个人的事件继续往
+  // state.chatEvents 里落，然后被画出来。聊天正文、草稿、名册都是上一个账号的东西，
+  // 同一个标签页换人登录时一条都不能留。
+  stopChatStream()
+  // 名单那条通道同理，而且更露骨：它一直在往侧栏送**上一个账号**每个 Bot 的
+  // 「最近说了什么」，那是正文摘要。票都清了它还连着的话，下一个人登进来的第一屏
+  // 就能读到。
+  stopRosterStream()
+  // 那几根慢速长跑（流的、会话的）比退避链活得久得多，**必须在这里全撤**：票都清了
+  // 还在照着上一个人的席位敲接口，就不只是难看了。开一条新流时只撤它自己那一根
+  // （cancelIdleRetry），别的 Bot 断着还得有人去接。
+  cancelIdleRetries()
+  // 挂着「等会话到了就发」的那条也清掉：同一个标签页换人登进来，绝不能把上一个人
+  // 打了一半的话补发出去。
+  clearHeldSend()
+  chatLive.clear()
+  state.chatBotId = ''
+  state.chatSessionId = ''
+  state.chatEvents = []
+  state.chatDraft = ''
+  // 按 Bot 存的那份草稿、以及发出去还没回执的那几条，同样是上一个账号的东西。
+  // 上面那句「一条都不能留」原先漏了这两个：chatDraft 只是当前这一个输入框，
+  // chatDrafts 里躺着他在每一个 Bot 上打了一半的话，chatPending 里是正文连同附件。
+  state.chatDrafts = {}
+  state.chatPending = []
+  state.chatStatus = ''
+  // 右栏那棵工作区文件树同理，而且它比草稿更露骨：里面是上一个人工作区里的文件名和
+  // 目录名（「二季度裁员名单.xlsx」这一类名字本身就是内容）。`wsSession` 是「这棵树
+  // 是给哪条会话取的」，跟着一起归零——不清的话，下一个人打开对话页的**第一帧**画的
+  // 就是上一个人的清单：那一帧的 HTML 在 render() 末尾那句 ensureWorkspaceTree 之前
+  // 就拼好了，而登出这会儿 state.me 已经空了，它自己压根轮不到跑。
+  state.wsDirs = {}
+  // 上一个人批准过哪些本地文件夹（路径里带着他的用户名）也是他的东西。
+  state.localDirs = {}
+  state.wsOpen = {}
+  state.wsSession = ''
+  state.runtimeBots = []
+  state.runtimeError = ''
+  state.runtimeMachine = null
+  state.desktopRuntime = null
+  // 日常任务同理：它带着上一个人的任务名和运行记录，还有一个每四秒一次的轮询。
+  state.routines = []
+  state.routinesBotId = ''
+  state.routineOpen = ''
+  state.routineRuns = []
+  state.routineError = ''
+  syncRoutinePoll()
+  // 模版那一页的同步轮询同理：不清掉的话，登出之后它还在每 15 秒问一次。
+  state.templateSync = null
+  syncTemplatePoll()
+  state.me = null
+  state.profileDraft = null
+  state.profileSaved = false
+  state.profileError = ''
+  state.pwOpen = false
+  state.pwForm = { current: '', next: '', confirm: '' }
+  state.pwError = ''
+  state.notifyOff = []
+  // 翻到第几页是上一个人的看法，跟聊天正文一样不能留给下一个登进来的人。
+  state.listPage = {}
+  // 待办和席位通联那两根 30 秒的轮询同理：票清了还在转，就是一路未登录的请求；换成
+  // owner 登进来，loadHandoffs 还会一直 403。登进来之后 loadPage 按角色重新起。
+  stopHandoffPoll()
+  stopSeatWatch()
+  state.handoffs = []
+  state.handoffCount = 0
+  state.handoffStats = null
+  state.handoffOpenId = ''
+  state.handoffDetail = {}
+}
+
+/**
  * 改一个账号的状态。「用户」那一页的行上和账号详情页上按的是同一颗。
  *
  * 改完**两份都刷**：详情页开着的时候，只刷列表会让眼前这一页还显示旧状态；只刷详情
@@ -340,13 +424,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'landing-sales-dialog') return
-  // ── 首页下载那一段（pages-landing.js 的 lpDownload）上那排平台切换 ──────
+  // ── 下载卡（pages-landing.js 的 dlGrid：首页那一段、应用内那一页）上那排平台切换 ──
   if (act === 'download-os') {
     const os = btn.getAttribute('data-os')
     if (os !== 'windows' && os !== 'mac') return
     // 人点过就听他的，这一帧之后 dlOs() 不再去认系统（见 pages-landing.js 的 dlOs）。
     state.dlOs = os
-    paintLpDownload(os)
+    paintDownload(os)
     return
   }
   if (act === 'landing-more') {
@@ -354,7 +438,14 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'landing-download') {
-    document.getElementById('download')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    const sec = document.getElementById('download')
+    if (!sec) return
+    // 地址跟着换成 /#download：这一段能被复制出去，刷新也还落在这儿（见 foldDownload）。
+    history.replaceState({}, '', '/#download')
+    sec.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    // 焦点跟着挪过去（那一段带 tabindex="-1"）。只滚不挪的话，键盘上的人看着页面到了底，
+    // 下一下 Tab 却又回到首屏；读屏的人则什么都没听到。
+    sec.focus({ preventScroll: true })
     return
   }
   if (act === 'sessions-more') {
@@ -448,7 +539,8 @@ document.getElementById('app').addEventListener('click', async (e) => {
      * （docs/memory.md §12 ⑤）。**搬家不是复制**，推上去之后它就不在个人那一层了。
      */
     const id = btn.getAttribute('data-id') || ''
-    const bot = state.bot?.id || botIdOfPath(state.path)
+    // 只认地址里那颗、且已经载到的：草稿还是上一颗的时候，这一条根本不是它的记忆。
+    const bot = routeBot()?.id || ''
     const one = (state.botDraft?.memories || []).find((m) => m.id === id)
     if (!id || !bot) return
     state.confirm = {
@@ -475,7 +567,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
      * 而就地改 state 会让「服务端到底存成了什么」和屏幕上显示的分家。
      */
     const id = btn.getAttribute('data-id') || ''
-    const bot = state.bot?.id || botIdOfPath(state.path)
+    const bot = routeBot()?.id || ''
     if (!id || !bot) return
     const cur = (state.botDraft?.memories || []).find((m) => m.id === id)
     /**
@@ -590,8 +682,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-file-drop') {
-    // 传的过程中不让删：删得掉列表项，删不掉已经在路上的请求。
-    if (state.chatUploading) return
+    // data-i 只编在 chatFiles 上：正在传的那几个在 chatUploads 里，本来就没有这颗按钮。
     const i = Number(btn.getAttribute('data-i'))
     state.chatFiles = (state.chatFiles || []).filter((_, n) => n !== i)
     paintChatFiles()
@@ -998,7 +1089,9 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'user-secret-copy') {
     const kind = btn.getAttribute('data-kind')
-    const value = kind === 'apiKey' ? state.userDetail?.apiKey : kind === 'accessToken' ? state.userDetail?.accessToken : ''
+    // 同 routeBot：只复制地址里那个账号的，别把上一个人的钥匙交出去。
+    const d = state.userDetail?.account?.id === userIdOfPath(state.path) ? state.userDetail : null
+    const value = kind === 'apiKey' ? d?.apiKey : kind === 'accessToken' ? d?.accessToken : ''
     if (!value) return
     const ok = await copyText(value)
     if (!ok) flash('err', '复制失败，请手动选中复制。')
@@ -1214,6 +1307,51 @@ document.getElementById('app').addEventListener('click', async (e) => {
     } catch (err) {
       flash('err', err instanceof Error ? err.message : String(err || t('没有批准这个文件夹', 'The folder was not approved')))
     }
+    await loadLocalDirs(id)
+    render()
+    return
+  }
+  if (act === 'local-dirs-toggle') {
+    const id = btn.getAttribute('data-bot') || ''
+    if (!id) return
+    state.localDirsOpen = { ...(state.localDirsOpen || {}), [id]: !(state.localDirsOpen || {})[id] }
+    render()
+    return
+  }
+  if (act === 'local-dir-revoke') {
+    // 只拆掉 Bot 的访问入口，文件夹本身一个字节都不动（壳子那边只删链接和清单那一行），
+    // 所以不弹二次确认：撤错了再批一次就回来了。
+    const id = btn.getAttribute('data-bot') || chatBotIdOf(state.path)
+    const path = btn.getAttribute('data-path') || ''
+    const bridge = window.__SATUWORK_LOCAL_BOT__
+    if (!id || !path || !bridge || typeof bridge.revokeDirectory !== 'function') return
+    try {
+      await bridge.revokeDirectory(id, path)
+      flash('ok', t('已撤销。Bot 从下一次读写起就访问不到这个文件夹了。', 'Revoked. The bot loses access from its next read or write.'))
+    } catch (err) {
+      flash('err', err instanceof Error ? err.message : String(err || t('没能撤销', 'Could not revoke')))
+    }
+    await loadLocalDirs(id)
+    render()
+    return
+  }
+  if (act === 'chat-folder-pick') {
+    // Bot 申请的那张卡：选中了才替人提交批准；选择框里点取消就什么都不交，卡片留着。
+    const callId = btn.getAttribute('data-call') || ''
+    const id = chatBotIdOf(state.path) || state.chatBotId
+    const bridge = window.__SATUWORK_LOCAL_BOT__
+    if (!callId || !id || !bridge || typeof bridge.approveDirectory !== 'function') return
+    let approved = null
+    try {
+      approved = await bridge.approveDirectory(id)
+    } catch (err) {
+      flash('err', err instanceof Error ? err.message : String(err || t('没有批准这个文件夹', 'The folder was not approved')))
+      render()
+      return
+    }
+    if (!approved) return
+    await decideApproval(callId, 'approve', 'once')
+    await loadLocalDirs(id)
     render()
     return
   }
@@ -1308,7 +1446,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'bot-save') {
     const base = catalogBase()
-    const bot = state.bot
+    const bot = routeBot()
     const a = state.botDraft
     if (!bot || !a) return
     // 自己建的那种：只发身份那几个字段。人设、边界、能力在公司模版里，服务端也不收。
@@ -1370,7 +1508,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'bot-delete') {
-    const bot = state.bot
+    const bot = routeBot()
     const a = state.botDraft
     if (!bot) return
     state.confirm = {
@@ -1390,66 +1528,8 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'logout') {
-    clearToken()
-    // 先掐流再清数据：SSE 还连着的话，下一个人登进来之前就会有上一个人的事件继续往
-    // state.chatEvents 里落，然后被画出来。聊天正文、草稿、名册都是上一个账号的东西，
-    // 同一个标签页换人登录时一条都不能留。
-    stopChatStream()
-    // 名单那条通道同理，而且更露骨：它一直在往侧栏送**上一个账号**每个 Bot 的
-    // 「最近说了什么」，那是正文摘要。票都清了它还连着的话，下一个人登进来的第一屏
-    // 就能读到。
-    stopRosterStream()
-    // 那几根慢速长跑（流的、会话的）比退避链活得久得多，**必须在这里全撤**：票都清了
-    // 还在照着上一个人的席位敲接口，就不只是难看了。开一条新流时只撤它自己那一根
-    // （cancelIdleRetry），别的 Bot 断着还得有人去接。
-    cancelIdleRetries()
-    // 挂着「等会话到了就发」的那条也清掉：同一个标签页换人登进来，绝不能把上一个人
-    // 打了一半的话补发出去。
-    clearHeldSend()
-    chatLive.clear()
-    state.chatBotId = ''
-    state.chatSessionId = ''
-    state.chatEvents = []
-    state.chatDraft = ''
-    // 按 Bot 存的那份草稿、以及发出去还没回执的那几条，同样是上一个账号的东西。
-    // 上面那句「一条都不能留」原先漏了这两个：chatDraft 只是当前这一个输入框，
-    // chatDrafts 里躺着他在每一个 Bot 上打了一半的话，chatPending 里是正文连同附件。
-    state.chatDrafts = {}
-    state.chatPending = []
-    state.chatStatus = ''
-    // 右栏那棵工作区文件树同理，而且它比草稿更露骨：里面是上一个人工作区里的文件名和
-    // 目录名（「二季度裁员名单.xlsx」这一类名字本身就是内容）。`wsSession` 是「这棵树
-    // 是给哪条会话取的」，跟着一起归零——不清的话，下一个人打开对话页的**第一帧**画的
-    // 就是上一个人的清单：那一帧的 HTML 在 render() 末尾那句 ensureWorkspaceTree 之前
-    // 就拼好了，而登出这会儿 state.me 已经空了，它自己压根轮不到跑。
-    state.wsDirs = {}
-    state.wsOpen = {}
-    state.wsSession = ''
-    state.runtimeBots = []
-    state.runtimeError = ''
-    state.runtimeMachine = null
-    state.desktopRuntime = null
-    // 日常任务同理：它带着上一个人的任务名和运行记录，还有一个每四秒一次的轮询。
-    state.routines = []
-    state.routinesBotId = ''
-    state.routineOpen = ''
-    state.routineRuns = []
-    state.routineError = ''
-    syncRoutinePoll()
-    // 模版那一页的同步轮询同理：不清掉的话，登出之后它还在每 15 秒问一次。
-    state.templateSync = null
-    syncTemplatePoll()
-    state.me = null
+    endSignedIn()
     state.loginError = ''
-    state.profileDraft = null
-    state.profileSaved = false
-    state.profileError = ''
-    state.pwOpen = false
-    state.pwForm = { current: '', next: '', confirm: '' }
-    state.pwError = ''
-    state.notifyOff = []
-    // 翻到第几页是上一个人的看法，跟聊天正文一样不能留给下一个登进来的人。
-    state.listPage = {}
     history.replaceState({}, '', '/')
     state.path = '/'
     render()
@@ -1506,6 +1586,15 @@ document.getElementById('app').addEventListener('click', async (e) => {
     if (!key) return
     state.notifyOff = state.notifyOff.includes(key) ? state.notifyOff.filter((x) => x !== key) : state.notifyOff.concat(key)
     render()
+    return
+  }
+  // ── Desktop 壳自己的升级（shell.js 的 desktopUpdate*）──────────────
+  if (act === 'desktop-update-install') {
+    await installDesktopUpdate()
+    return
+  }
+  if (act === 'desktop-update-check') {
+    await checkDesktopUpdate(true)
     return
   }
   if (act === 'rail') {
@@ -2858,23 +2947,37 @@ document.getElementById('app').addEventListener('mousedown', (e) => {
 window.addEventListener('popstate', () => {
   if (location.pathname === '/costs') history.replaceState({}, '', '/billing')
   state.path = pathOf()
-  state.addOpen = false
-  closeMemberUi()
-  if (state.path.startsWith('/join/')) {
-    loadInvite().then(render)
-    return
-  }
-  loadPage().then(render)
+  // 和 go() 走同一条：清提示、加序号。这里以前自己 `loadPage().then(render)`，连按后退时
+  // 慢的那一页晚回来会把眼前这页盖掉。
+  enterPath()
 })
 
+/**
+ * 「下载桌面端」落在哪儿，要等知道登没登录才定得下来，所以 boot 在每次画之前都过一遍：
+ *
+ * - **没登录**：首页上那一段（pages-landing.js 的 lpDownload）。地址折成 `/#download`，
+ *   第一次画完滚过去（见 render.js 的 `state.lpJump`）。
+ * - **登录了**：应用内那一页 `/download`（downloadPage）。首页只给没登录的人看，折过去
+ *   的话落在一张总览上，找不到下载在哪儿。
+ * - **桌面壳**：两样都不给，回 `/`——人已经在桌面端里了。
+ *
+ * 进来的地址有两种：老的 `/download`（早被管理员发出去过）和 `/#download`（登录那三屏
+ * 底下那条链接、首页上点过之后的地址）。反复调也没关系：已经在该在的地方就什么都不做。
+ */
+function foldDownload() {
+  const asked = state.path === '/download' || (state.path === '/' && location.hash === '#download')
+  if (!asked) return
+  const shell = desktopShell()
+  const to = state.me && !shell ? '/download' : shell ? '/' : '/#download'
+  if (location.pathname + location.hash !== to) history.replaceState({}, '', to)
+  state.path = to === '/download' ? '/download' : '/'
+  state.lpJump = to === '/#download' ? 'download' : ''
+}
+
 async function boot() {
+  // 桌面壳的升级跟谁登录无关，登录页上也要能提示（见 shell.js 的 startDesktopUpdateWatch）。
+  startDesktopUpdateWatch()
   if (location.pathname === '/costs') history.replaceState({}, '', '/billing')
-  // 以前的下载页地址。那一页已经并进首页（pages-landing.js 的 lpDownload），可这条地址
-  // 早被管理员发出去过——折回首页，并在第一次画出来时滚到下载那一段（见 render.js）。
-  if (location.pathname === '/download') {
-    history.replaceState({}, '', '/#download')
-    state.lpJump = 'download'
-  } else if (location.hash === '#download') state.lpJump = 'download'
   state.path = pathOf()
   if (state.path.startsWith('/join/')) {
     await loadInvite()
@@ -2893,20 +2996,25 @@ async function boot() {
     clearToken()
     state.me = null
     state.loginError = ''
+    foldDownload()
     render()
     return
   }
   if (!token()) {
+    foldDownload()
     render()
     return
   }
   try {
     await loadMe()
+    // 在 loadPage 之前折：它按 state.path 取数据、判放行。
+    foldDownload()
     await loadPage()
   } catch {
     clearToken()
     state.me = null
   }
+  foldDownload()
   render()
 }
 

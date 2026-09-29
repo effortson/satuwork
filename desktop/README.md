@@ -74,8 +74,11 @@ PENDING，切换仍留给下一次「没有本地 Bot 在跑」的启动。
     iframe（`{directUrl}/seats/<席位>/vnc/`），而它的加载在守卫眼里也是一次 http(s)
     导航——wry 的 `navigation_policy` 不区分主框架和子框架，`targetFrame.isMainFrame`
     压根没传上来。所以路径形如 `/seats/<席位>/vnc` 的放行，否则表现是**桌面从窗口里
-    跳到系统浏览器里打开**，而配置上看不出任何毛病。判据只认路径不认源：机器的直连
-    地址按公司各不相同，壳子这头无从枚举。
+    跳到系统浏览器里打开**，而配置上看不出任何毛病。光认路径不够（`http://evil/seats/x/vnc/`
+    也会被放进来、把窗口带走），所以还认源：机器的直连地址壳子无从枚举，由界面在挂
+    iframe 前调 `allow_seat_desktop` 报上来，守卫只放行报过的源和 Gateway 自己的源
+    （`seat_desktop_allowed`）。外链暗号 `/__satuwork_open` 同理只在界面源 / Gateway 源上认
+    （`open_path_allowed`），否则框里那页能借它让系统浏览器打开任意地址。
 - **连不上**。WKWebView 没有内建错误页，装不上东西时窗口里一个字都没有。所以进主窗口
   之前先敲一下 TCP：敲不开就停在设置屏并说明原因，也**不把这个地址写进 server.txt**
   ——写了的话下次启动会直奔那个地址，又是一片空白。代价：敲的只是 TCP，端口通着但
@@ -99,6 +102,49 @@ Desktop 退出时本地进程会一起退出，再次打开并恢复登录后会
 受工作区约束的文件工具；真 shell 暂不开放，避免它用 `cd /` 绕过跨目录审批边界。需要
 访问其他目录时，在对话右栏点「批准访问其他文件夹」，系统选择器里由用户亲自选择；批准
 后的目录挂在工作区的 `External/` 下，记录按 Bot 独立保存。
+
+### Desktop 壳自己升级
+
+壳子（Rust、内置 Node、权限声明）变了只能换整个安装包，这条线用 `tauri-plugin-updater`，
+代码在 [src-tauri/src/self_update.rs](src-tauri/src/self_update.rs)，界面在
+[gateway/ui/shell.js](../gateway/ui/shell.js) 的 `desktopUpdate*`。
+
+1. **去哪儿问**：`tauri.conf.json` 的 `plugins.updater.endpoints`，即 GitHub 上
+   `desktop-latest` 里的 `latest.json`。不经过 Gateway——换壳跟连哪台 Gateway 无关。
+   界面启动 3 秒后问一次，之后每 6 小时一次；壳子那头 10 分钟内的重复询问直接回缓存。
+2. **提示**：有新版就在侧栏底部（头像那一行上面）亮一条「有新版本 x.y.z」，登录页上也有
+   （Gateway 升级后老壳可能连登录都过不去）。个人设置里有「桌面端」一块：当前版本和
+   「检查更新」。浏览器里这些都不出现。
+3. **点了才下**：下载在壳子后台跑，侧栏画进度条；下完先**验签**（公钥编在壳里，私钥只在
+   CI secret 里），验不过不装。然后停掉所有本地 Bot，再换：
+   - macOS：解开 `.app.tar.gz` 原地替换 `Satuwork.app`（没有写权限时弹管理员授权），然后重启。
+     不是从 `.app` 里跑的（开发版、拷出来的裸二进制）一律拒绝——插件在那种情况下会把可执行
+     文件所在的整个目录换掉。
+   - Windows：起 NSIS 安装器（passive，只有进度条，不用点下一步），装完自动把应用拉起来。
+4. **失败**：回到「有新版本」那一态并说明原因，再点一次就是重试；旧版照常能用。
+
+不做「后台静默下好、下次启动自动换」：换壳要重启整个应用、打断本地 Bot 手上的活，这一下
+由人来按。
+
+这层签名与 Apple / 微软的代码签名无关，没有证书也成立；通过应用内下载的包不带隔离标记，
+不会触发「已损坏」和 SmartScreen。**0.1.1 及更早的版本没有这套**，要手动装一次带升级功能的
+版本，之后才能自己升。
+
+**发版要带的东西**（desktop-release.yml 已接好）：
+
+- 仓库 secret `TAURI_SIGNING_PRIVATE_KEY` 与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，缺了 CI 直接失败。
+  私钥和 `plugins.updater.pubkey` 是一对：**换钥匙或者私钥丢了，已装的壳就再也验不过新包**，
+  只能让所有人手动重装一次。私钥请另外备份。
+- `createUpdaterArtifacts` 只在 CI 里用 `--config` 打开，本地 `pnpm build` 没有私钥也能出包。
+- release job 把三个平台的签名拼成 `latest.json` 挂到 `desktop-v<版本>`，sync-latest 把最新
+  正式版那份同步到 `desktop-latest`。清单里的下载地址指向 `desktop-v<版本>`，不指 `desktop-latest`。
+
+排查时不用发版：`SATUWORK_UPDATE_ENDPOINT` 把检查地址指到本机的一份 `latest.json`；开发版
+默认不查，加 `SATUWORK_SELF_UPDATE=1` 强开。验签的公钥不跟着换，包仍要用正式私钥签。
+
+```bash
+SATUWORK_SELF_UPDATE=1 SATUWORK_UPDATE_ENDPOINT=http://127.0.0.1:18765/latest.json pnpm --filter satuwork-desktop dev
+```
 
 ### 本地 Bot 运行时自动升级
 
@@ -166,9 +212,6 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
 
 - **签名与公证**。macOS 要 Apple 开发者账号（99 美元/年）+ 公证；Windows 不签名就
   一路 SmartScreen。这是发给外人之前唯一的硬门槛，代码上没有工作量，全是行政成本。
-- **Desktop 壳自动更新**（`tauri-plugin-updater`）。本地 Bot 运行时已经能独立静默升级，
-  但 Rust 壳、内置 Node、系统权限声明变更仍然必须发新安装器；这一层需要签名和公证后
-  才适合接自动更新。
 - **单实例 + 托盘 + 通知**。这三样是「装成桌面端」之后用户会立刻期待的东西，也是
   相对浏览器唯一说得出口的增量。通知要接的是聊天那条流。
 - **登录态**。token 现在在 `sessionStorage`（[gateway/ui/state.js](../gateway/ui/state.js)），
@@ -186,4 +229,4 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
   `desktop-latest` Release——总是对齐到现有 `desktop-v*` 里最新的正式版（纯 `X.Y.Z`，预发布不算）。首页的下载那一段
   （[gateway/ui/pages-landing.js](../gateway/ui/pages-landing.js) 的 `dlBase` / `dlBuilds`）只认
   `desktop-latest`，所以**发新版不用改页面**，打 tag 就完了。Linux 暂未开包。
-- **图标**。现在这套是拿 64×64 的 logo 放大到 1024 生成的，糊。要一份真正的大图。
+- **图标**。源文件是 [gateway/ui/assets/satuwork-logo.svg](../gateway/ui/assets/satuwork-logo.svg)。改标志后用 `pnpm --filter satuwork-desktop icon` 重新生成桌面端各尺寸；脚本会给 macOS 的 `icon.icns` 单独加透明边距，使 Dock 图标和其他 app 看起来一样大。网页用的 `gateway/ui/assets/satuwork-logo.png` 不加边距，需要时从 `desktop/src-tauri/icons/128x128@2x.png` 复制。

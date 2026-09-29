@@ -31,6 +31,12 @@ export async function runProcess({ root, test, assert, log }) {
     assert(r.foreground.workdir生效, 'workdir 没生效')
   })
 
+  await test('前台：逃出进程组的后代攥着管道，超时和停止照样返回', () => {
+    // 以前只等 close：`setsid foo &` 的后代拿着 stdout 不放，这次调用永远不返回，整轮挂死。
+    const bad = all(r.escapee || {})
+    assert(r.escapee && !bad.length, `这几条不对：${bad.join('、') || '没有结果'}`)
+  })
+
   await test('输出超限：截断，但全文捞得回来', () => {
     // 工具描述里禁止模型自己 `| tail`（管道会把退出码盖掉），那句话只有配上这一条
     // 才站得住：得给它一条把全文捞回来的路。
@@ -139,6 +145,13 @@ export async function runProcess({ root, test, assert, log }) {
     // 是屏幕上花一下，后台那份还会落进 proc/<id>.log，原字节再也捞不回来。
     const bad = all(r.utf8)
     assert(!bad.length, `这几条不对：${bad.join('、')}`)
+  })
+
+  await test('后台日志有上限，log 只读要的那几行、行号不因滚段错位', () => {
+    // 以前只增不减：刷屏的 dev server 跑一天能写满盘，log 还整份读进内存。
+    const { raw, ...rest } = r.logCap || {}
+    const bad = all(rest)
+    assert(r.logCap && !bad.length, `这几条不对：${bad.join('、') || '没有结果'}（${JSON.stringify(raw)}）`)
   })
 
   await test('callId 洗过再拼路径', () => {

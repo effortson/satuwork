@@ -223,6 +223,7 @@ function lpDemos() {
   return [
     {
       id: 'support',
+      icon: 'c-chat',
       name: t('小满 · 客服', 'Mia · Support'),
       role: t('客服席位', 'Support seat'),
       snip: t('3 封工单回完了', '3 tickets answered'),
@@ -241,6 +242,7 @@ function lpDemos() {
     },
     {
       id: 'ops',
+      icon: 'c-flow',
       name: t('阿橙 · 运营', 'Orin · Ops'),
       role: t('运营席位', 'Ops seat'),
       snip: t('昨夜的对账好了', 'Reconciliation done'),
@@ -258,6 +260,7 @@ function lpDemos() {
     },
     {
       id: 'research',
+      icon: 'c-book',
       name: t('小雨 · 研究', 'Yu · Research'),
       role: t('研究席位', 'Research seat'),
       snip: t('在等人接手', 'Needs a human'),
@@ -288,9 +291,9 @@ function lpDemoAt() {
  * 一条消息。**照着真界面那条来**（chat.css 的 .sw-msg）：头像在外，气泡和时间在一列
  * 里，人说的那一侧整行反过来。这三样任缺一样，它就从「一条对话」退回成「两个方块」。
  */
-function lpDemoMsg(m, who) {
+function lpDemoMsg(m, icon) {
   return `<div class="satu-lp-msg" data-role="${m.me ? 'user' : 'assistant'}">
-    <span class="satu-lp-face">${esc(m.me ? t('我', 'Me') : who)}</span>
+    <span class="satu-lp-face"${m.me ? '' : ' data-bot="1"'}>${m.me ? esc(t('我', 'Me')) : botAvatar(icon, 32, 'company')}</span>
     <div class="satu-lp-col">
       <div class="satu-lp-bubble" data-role="${m.me ? 'user' : 'assistant'}">
         <span>${esc(m.text)}</span>
@@ -313,9 +316,8 @@ function lpDemoMsg(m, who) {
  */
 function lpDemoPane() {
   const d = lpDemoAt()
-  const who = d.name.slice(0, 1)
   return `<div class="satu-lp-convohead">
-      <span class="satu-lp-face" data-big>${esc(who)}</span>
+      <span class="satu-lp-face" data-big data-bot="1">${botAvatar(d.icon, 34, 'company')}</span>
       <span class="satu-lp-convoid">
         <b>${esc(d.name)}</b>
         <span>${esc(d.role)}</span>
@@ -323,7 +325,7 @@ function lpDemoPane() {
       <span class="satu-lp-live" data-state="${esc(d.state)}"><i></i>${esc(d.live)}</span>
     </div>
     <div class="satu-lp-thread">
-      ${d.turns.map((m) => lpDemoMsg(m, who)).join('')}
+      ${d.turns.map((m) => lpDemoMsg(m, d.icon)).join('')}
       ${
         d.handoff
           ? `<div class="satu-lp-handoff">${svg(LP_ICONS.handoff, 14)}<span>${esc(d.handoff)}</span></div>`
@@ -379,7 +381,7 @@ function lpShot() {
         ${/* 名字在窄屏上是 display:none 的（见 app.css 的 560 那段），光靠可见文字的话
               手机上这三颗就是三个没有名字的按钮。名字写在 aria-label 上，藏不藏都在。 */ ''}
         aria-label="${esc(d.name)}">
-        <span class="satu-lp-shotface">${esc(d.name.slice(0, 1))}</span>
+        <span class="satu-lp-shotface" data-bot="1">${botAvatar(d.icon, 30, 'company')}</span>
         <span class="satu-lp-shottext">
           <span class="satu-lp-shotname"><i class="satu-lp-shotdot" data-state="${d.state}"></i><b>${esc(d.name)}</b></span>
           <span class="satu-lp-shotsnip">${esc(d.snip)}</span>
@@ -621,114 +623,164 @@ function dlNote(title, body, cmd) {
   </div>`
 }
 
+/** 那段介绍。`signedIn` 时去掉末尾那句「随时也可以直接登录网页版」——应用内那一页上的人正在网页版里。 */
+function dlLead(signedIn) {
+  return signedIn
+    ? t(
+        '桌面端把界面装进本机，并且能在这台电脑上直接跑「本地」那种 AI 员工——他的工作区就是你电脑上的文件夹，对话不经过服务器。',
+        'The desktop app bundles the interface and runs “local” coworkers right on this machine — their workspace is a folder on your computer and those conversations never leave it.',
+      )
+    : t(
+        '桌面端把界面装进本机，并且能在这台电脑上直接跑「本地」那种 AI 员工——他的工作区就是你电脑上的文件夹，对话不经过服务器。浏览器里用不到这一层，随时也可以直接登录网页版。',
+        'The desktop app bundles the interface and runs “local” coworkers right on this machine — their workspace is a folder on your computer and those conversations never leave it. You can always use the web version instead.',
+      )
+}
+
+/**
+ * 「总是最新版 · 历次版本」那一行。借法律页 `.satu-lg-meta` 的打扮；**是 `<div>` 不是 `<p>`**：
+ * 首页那一段里 `.satu-lp-sechead p` 的权重更高，是 `<p>` 的话字号、颜色、外边距全被它抹掉。
+ */
+function dlMeta() {
+  return `<div class="satu-lg-meta satu-dl-meta">${t('这里下到的总是最新版。', 'You always get the latest version here.')}${t('', ' ')}<a href="${esc(dlHistory())}" target="_blank" rel="noopener noreferrer">${t('历次版本', 'All versions')}</a></div>`
+}
+
+/**
+ * 左边一张卡（当前平台的包）、右边一列说明。首页那一段（lpDownload）和应用内那一页
+ * （downloadPage）画的是同一个东西；切平台时只换这一块（见 paintDownload），所以带着 id。
+ */
+function dlGrid(cur) {
+  const builds = dlBuilds().filter((b) => b.os === cur)
+  const guessed = dlDetect()
+  return `<div class="satu-dl-grid" id="dl-grid">
+    <div class="satu-dl-card">
+      ${dlTabs(cur)}
+      <div class="satu-dl-head">
+        <span class="satu-dl-osicon" aria-hidden="true">${DL_OS[cur].icon}</span>
+        <div>
+          <h3>${esc(DL_OS[cur].label)}</h3>
+          <p>${esc(
+            guessed === cur
+              ? t('看起来你正用的就是这个系统。', 'This looks like the system you are on.')
+              : guessed
+                ? t('你正用的是另一个系统，这一档是给别的电脑准备的。', 'You are on the other system — this one is for a different machine.')
+                : t('没认出你的系统，上面那排可以自己切。', 'We could not detect your system — switch it above.'),
+          )}</p>
+        </div>
+      </div>
+      <div class="satu-dl-gets">
+        ${builds.map((b, i) => dlRow(b, i === 0)).join('')}
+      </div>
+      ${
+        cur === 'mac'
+          ? `<p class="satu-dl-fine">${t(
+              '不确定是哪种芯片？左上角苹果菜单 →「关于本机」，写着 Apple M 开头的选上面那个。',
+              'Not sure which chip? Apple menu → “About This Mac”. Anything starting with Apple M takes the first one.',
+            )}</p>`
+          : ''
+      }
+      ${dlServerHint()}
+      ${/* 只给没登录的人：已经登录在网页版里的人（应用内那一页），再叫他去登录网页版是说胡话。 */ ''}
+      ${
+        state.me
+          ? ''
+          : `<p class="satu-dl-fine">${t('装不了也不耽误用：', 'Can’t install it? Nothing is lost: ')}<button type="button" class="satu-dl-weblink" data-act="go" data-href="/login">${t('直接用网页版登录', 'sign in to the web version')}</button>${t('，除了本地 AI 员工之外都一样。', ' — everything except local coworkers works the same.')}</p>`
+      }
+    </div>
+
+    <div class="satu-dl-side">
+      ${/* Mac 那条**不是「右键 → 打开」**：没签名的包下载下来带着隔离标记，系统报的是
+            「已损坏」，右键打开绕不过去，只能在终端里把那个标记摘掉。和发版 CI 写进
+            Release 说明里的是同一句（见 .github/workflows/desktop-release.yml）。 */ ''}
+      ${dlNote(
+        t('第一次打开会拦一下', 'The first launch gets blocked'),
+        cur === 'mac'
+          ? t(
+              '这个包还没做苹果签名，打开时系统会说「已损坏，无法打开」——包本身没有坏。先把 Satuwork 拖进「应用程序」，再打开「终端」执行下面这一行，之后就能正常打开。只需要做一次。',
+              'The build is not signed by Apple yet, so macOS says it is “damaged and can’t be opened” — it isn’t. Drag Satuwork into Applications, then run this line once in Terminal and it opens normally from then on.',
+            )
+          : t(
+              '这个包还没做代码签名，SmartScreen 会挡一下。在那个蓝框里点「更多信息」→「仍要运行」——只有第一次要这么做。',
+              'The build is not code-signed yet, so SmartScreen steps in. Click “More info” → “Run anyway” in that blue box. Only the first launch needs this.',
+            ),
+        cur === 'mac' ? 'xattr -dr com.apple.quarantine /Applications/Satuwork.app' : '',
+      )}
+      ${dlNote(
+        t('账号还是原来那个', 'Same account as the web'),
+        t(
+          '桌面端不另开账号：填完服务器地址，用管理员给你开的那个邮箱和口令登录即可。没有账号就找公司管理员开通。',
+          'The desktop app does not have its own accounts. After the server address, sign in with the email and password your admin gave you. No account yet? Ask your company admin.',
+        ),
+      )}
+      ${dlNote(
+        t('自己会升级的只有一半', 'Half of it updates itself'),
+        t(
+          '本地 AI 员工的运行时会自己在后台更新；外面这层应用还要手工换新版——所以升级的时候回这里再下一次。',
+          'The local coworker runtime updates itself in the background. The app shell around it still needs a new installer, so come back here to upgrade.',
+        ),
+      )}
+      ${dlNote(
+        t('Linux 暂时没有包', 'No Linux build yet'),
+        t(
+          'Linux 上的桌面端还没验过，暂时不发包。那边先用浏览器打开这台服务器，除了本地 AI 员工之外功能一样。',
+          'The Linux desktop build is not verified yet, so we don’t ship one. Open this server in a browser there — everything except local coworkers is the same.',
+        ),
+      )}
+    </div>
+  </div>`
+}
+
 /**
  * 下载桌面端那一段：**接在「怎么开始」那条深色带后面**，是首页正文的最后一段。
  *
  * 以前它是单独一页（`/download`）。现在并进首页：读完三步的人下一件事就是装客户端，
- * 放在同一页上往下一滚就到，不必再多开一页。老的 `/download` 地址还收着，进来会折到
- * 这一段上（见 app.js 的 boot 和 render.js 里 `state.lpJump` 那一句）。
+ * 放在同一页上往下一滚就到，不必再多开一页。老的 `/download` 地址还收着：没登录的人
+ * 折到这一段，登录了的人进应用内那一页（见 app.js 的 foldDownload）。
  *
- * 版式：头上一段说明，底下左边一张大卡（当前平台的包），右边一列说明。
+ * `tabindex="-1"`：首屏小字和页脚那两条点下去要把焦点挪过来（见 app.js 的 landing-download），
+ * 不然键盘上的人看着页面滚到了底，下一下 Tab 却又回到页首。
  */
 function lpDownload() {
-  const cur = dlOs()
-  const builds = dlBuilds().filter((b) => b.os === cur)
-  const guessed = dlDetect()
-  return `<section class="satu-lp-wrap satu-lp-rail satu-lp-sec satu-lp-dl" id="download">
+  return `<section class="satu-lp-wrap satu-lp-rail satu-lp-sec satu-lp-dl" id="download" tabindex="-1">
     <div class="satu-lp-sechead satu-lp-dlhead">
       <span class="satu-lp-kicker">${t('桌面端', 'Desktop app')}</span>
       <h2>${t('下载 Satuwork 桌面端', 'Download Satuwork for desktop')}</h2>
-      <p>${t(
-        '桌面端把界面装进本机，并且能在这台电脑上直接跑「本地」那种 AI 员工——他的工作区就是你电脑上的文件夹，对话不经过服务器。浏览器里用不到这一层，随时也可以直接登录网页版。',
-        'The desktop app bundles the interface and runs “local” coworkers right on this machine — their workspace is a folder on your computer and those conversations never leave it. You can always use the web version instead.',
-      )}</p>
-      <p class="satu-lg-meta">${t('这里下到的总是最新版。', 'You always get the latest version here.')}${t('', ' ')}<a href="${esc(dlHistory())}" target="_blank" rel="noopener noreferrer">${t('历次版本', 'All versions')}</a></p>
+      <p>${dlLead(false)}</p>
+      ${dlMeta()}
     </div>
 
-    <div class="satu-dl-grid">
-      <div class="satu-dl-card">
-        ${dlTabs(cur)}
-        <div class="satu-dl-head">
-          <span class="satu-dl-osicon" aria-hidden="true">${DL_OS[cur].icon}</span>
-          <div>
-            <h3>${esc(DL_OS[cur].label)}</h3>
-            <p>${esc(
-              guessed === cur
-                ? t('看起来你正用的就是这个系统。', 'This looks like the system you are on.')
-                : guessed
-                  ? t('你正用的是另一个系统，这一档是给别的电脑准备的。', 'You are on the other system — this one is for a different machine.')
-                  : t('没认出你的系统，上面那排可以自己切。', 'We could not detect your system — switch it above.'),
-            )}</p>
-          </div>
-        </div>
-        <div class="satu-dl-gets">
-          ${builds.map((b, i) => dlRow(b, i === 0)).join('')}
-        </div>
-        ${
-          cur === 'mac'
-            ? `<p class="satu-dl-fine">${t(
-                '不确定是哪种芯片？左上角苹果菜单 →「关于本机」，写着 Apple M 开头的选上面那个。',
-                'Not sure which chip? Apple menu → “About This Mac”. Anything starting with Apple M takes the first one.',
-              )}</p>`
-            : ''
-        }
-        ${dlServerHint()}
-        <p class="satu-dl-fine">${t('装不了也不耽误用：', 'Can’t install it? Nothing is lost: ')}<button type="button" class="satu-dl-weblink" data-act="go" data-href="/login">${t('直接用网页版登录', 'sign in to the web version')}</button>${t('，除了本地 AI 员工之外都一样。', ' — everything except local coworkers works the same.')}</p>
-      </div>
-
-      <div class="satu-dl-side">
-        ${/* Mac 那条**不是「右键 → 打开」**：没签名的包下载下来带着隔离标记，系统报的是
-              「已损坏」，右键打开绕不过去，只能在终端里把那个标记摘掉。和发版 CI 写进
-              Release 说明里的是同一句（见 .github/workflows/desktop-release.yml）。 */ ''}
-        ${dlNote(
-          t('第一次打开会拦一下', 'The first launch gets blocked'),
-          cur === 'mac'
-            ? t(
-                '这个包还没做苹果签名，打开时系统会说「已损坏，无法打开」——包本身没有坏。先把 Satuwork 拖进「应用程序」，再打开「终端」执行下面这一行，之后就能正常打开。只需要做一次。',
-                'The build is not signed by Apple yet, so macOS says it is “damaged and can’t be opened” — it isn’t. Drag Satuwork into Applications, then run this line once in Terminal and it opens normally from then on.',
-              )
-            : t(
-                '这个包还没做代码签名，SmartScreen 会挡一下。在那个蓝框里点「更多信息」→「仍要运行」——只有第一次要这么做。',
-                'The build is not code-signed yet, so SmartScreen steps in. Click “More info” → “Run anyway” in that blue box. Only the first launch needs this.',
-              ),
-          cur === 'mac' ? 'xattr -dr com.apple.quarantine /Applications/Satuwork.app' : '',
-        )}
-        ${dlNote(
-          t('账号还是原来那个', 'Same account as the web'),
-          t(
-            '桌面端不另开账号：填完服务器地址，用管理员给你开的那个邮箱和口令登录即可。没有账号就找公司管理员开通。',
-            'The desktop app does not have its own accounts. After the server address, sign in with the email and password your admin gave you. No account yet? Ask your company admin.',
-          ),
-        )}
-        ${dlNote(
-          t('自己会升级的只有一半', 'Half of it updates itself'),
-          t(
-            '本地 AI 员工的运行时会自己在后台更新；外面这层应用还要手工换新版——所以升级的时候回首页这一段再下一次。',
-            'The local coworker runtime updates itself in the background. The app shell around it still needs a new installer, so come back here to upgrade.',
-          ),
-        )}
-        ${dlNote(
-          t('Linux 暂时没有包', 'No Linux build yet'),
-          t(
-            'Linux 上的桌面端还没验过，暂时不发包。那边先用浏览器打开这台服务器，除了本地 AI 员工之外功能一样。',
-            'The Linux desktop build is not verified yet, so we don’t ship one. Open this server in a browser there — everything except local coworkers is the same.',
-          ),
-        )}
-      </div>
-    </div>
+    ${dlGrid(dlOs())}
   </section>`
 }
 
 /**
- * 切平台：只换这一段，不重绘整页（理由同 paintLpDemo——整页 innerHTML 一换，文档
- * 滚动跟着抖一下，而人正停在页面最底下）。换完把焦点还给刚按的那颗，键盘上的人不至于
- * 被扔回页首。这一段不在（不是首页）就退回整页重绘。
+ * 应用内的「下载桌面端」（`/download`，登录之后）。首页只给没登录的人看，而已经在用
+ * 网页版的人同样会想装个客户端——入口在个人设置里，以前发出去的 `/download` 链接登录
+ * 之后也落到这儿。桌面壳里不给（见 app.js 的 foldDownload）。
  */
-function paintLpDownload(os) {
-  const sec = document.getElementById('download')
-  if (!sec) return render()
-  sec.outerHTML = lpDownload()
-  document.querySelector(`#download [data-act="download-os"][data-os="${os}"]`)?.focus()
+function downloadPage() {
+  return `
+    <div class="gw-page">
+      <div class="gw-page-inner">
+        <div>
+          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('下载 Satuwork 桌面端', 'Download Satuwork for desktop')}</h1>
+          <p style="margin: 0; font-size: 14px; line-height: 1.7; color: var(--muted-foreground);">${dlLead(true)}</p>
+          ${dlMeta()}
+        </div>
+        ${dlGrid(dlOs())}
+      </div>
+    </div>`
+}
+
+/**
+ * 切平台：只换那张卡和那列说明，不重绘整页（理由同 paintLpDemo——整页 innerHTML 一换，
+ * 文档滚动跟着抖一下，而人正停在页面最底下）。换完把焦点还给刚按的那颗，键盘上的人
+ * 不至于被扔回页首。那一块不在就退回整页重绘。
+ */
+function paintDownload(os) {
+  const grid = document.getElementById('dl-grid')
+  if (!grid) return render()
+  grid.outerHTML = dlGrid(os)
+  document.querySelector(`#dl-grid [data-act="download-os"][data-os="${os}"]`)?.focus()
 }
 
 
@@ -762,7 +814,7 @@ function landingView() {
             得到右沿（见 app.css 的 .satu-lp-topin）。 */ ''}
       <div class="satu-lp-wrap satu-lp-topin">
         <button type="button" class="satu-lp-brand" data-act="go" data-href="/">
-          <img src="/assets/satuwork-logo.png" alt="Satuwork" width="28" height="28">
+          <img class="satu-lp-home-logo" src="/assets/satuwork-logo.png" alt="Satuwork" width="40" height="40">
           <span>Satuwork</span>
         </button>
         <div class="satu-lp-topact">

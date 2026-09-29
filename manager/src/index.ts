@@ -1,5 +1,15 @@
 import { hostname } from 'node:os'
-import { bootConfig, managerVersion, PROTOCOL, patchState, readState, watchState, type ManagerState } from './config.ts'
+import {
+  bootConfig,
+  gatewayUrlProblem,
+  managerVersion,
+  PROTOCOL,
+  patchState,
+  readState,
+  warnInsecureGateway,
+  watchState,
+  type ManagerState,
+} from './config.ts'
 import { HttpError, json, listen, Router, sameToken, type Req } from './http.ts'
 import { attachUpgrade, proxyIntercept } from './proxy.ts'
 import { bootChallenge, pairIfNeeded } from './pair.ts'
@@ -29,7 +39,15 @@ let state: ManagerState | undefined
 const boot = bootConfig()
 
 const token = () => state?.token ?? ''
-const gatewayUrl = () => state?.gatewayUrl ?? boot.gatewayUrl
+/**
+ * 反代、中继、验票拉 JWKS 都从这里拿 Gateway 地址，其中好几条会带着机器票出去。地址过不了
+ * gatewayUrlProblem（非回环的明文 http）就给空串：拼出来的 URL 当场 fetch 失败，**宁可这几条
+ * 路不通，也不把票寄到明文上**。为什么不通、怎么改，启动时和心跳那儿各吼一声。
+ */
+const gatewayUrl = () => {
+  const url = state?.gatewayUrl ?? boot.gatewayUrl
+  return gatewayUrlProblem(url) ? '' : url
+}
 
 /**
  * 控制类接口的鉴权。
@@ -87,6 +105,13 @@ function adoptGatewayUrl(req: Req): void {
     return
   }
   if (next === state.gatewayUrl) return
+  // 形状对了还得是 https（回环和开发域名除外，见 config.ts）：采信一个明文地址，下一次心跳
+  // 就把机器票寄了过去，回包也就谁都能改了。
+  const problem = gatewayUrlProblem(next)
+  if (problem) {
+    console.error(`satuwork-manager: 入站调用报了新的 Gateway 地址，不采信：${problem}`)
+    return
+  }
   const prev = state.gatewayUrl
   /**
    * **先落盘，再改内存。**
@@ -153,6 +178,17 @@ function shaped(value: string, re: RegExp, key: string): string {
 }
 
 const SHA256_RE = /^[0-9a-f]{64}$/
+
+/**
+ * 写进席位 bot.env 的 `GATEWAY_URL`。bot 拿它带着 `sat_` 和 API key 去调 Gateway，所以和管家
+ * 自己那份同一条规矩：非回环的必须 https（见 config.ts 的 gatewayUrlProblem）。
+ */
+function seatGatewayUrlOf(b: Record<string, unknown>): string {
+  const url = line(b, 'gatewayUrl')
+  const problem = gatewayUrlProblem(url)
+  if (problem) throw new HttpError(400, `gatewayUrl is invalid: ${problem}`)
+  return url
+}
 
 /**
  * 部署规格里的 bot 包直连地址（`botUrl` + `botSha256`，协议 11）。
@@ -226,7 +262,7 @@ function specOf(rawSeatId: string, body: unknown): SeatSpec {
     botVersion: shaped(line(b, 'botVersion', 64), VERSION_RE, 'botVersion'),
     ...directPackageOf(b),
     vncPassword: line(b, 'vncPassword', 256),
-    gatewayUrl: line(b, 'gatewayUrl'),
+    gatewayUrl: seatGatewayUrlOf(b),
     gatewayToken: line(b, 'gatewayToken'),
     gatewayApiKey: line(b, 'gatewayApiKey'),
     ports: {
@@ -453,6 +489,8 @@ if (!state) {
 } else {
   console.log(`satuwork-manager: paired machineId=${state.machineId} -> ${state.gatewayUrl}`)
 }
+// 明文 Gateway：放行了（开发环境的显式开关）就每次启动吼一声；没放行的，心跳那边会说为什么不敲。
+warnInsecureGateway(state?.gatewayUrl ?? boot.gatewayUrl)
 
 // 兜底脚本跟着包走，每次启动刷一遍——它装在 /usr/local/bin，不刷的话机器装好那天是
 // 什么样就一直是什么样，改了也只有重装才拿得到。dryRun 下不碰宿主机的 /usr/local/bin。
@@ -479,8 +517,23 @@ const IDLE_HEARTBEAT_MS = 5 * 60_000
 let authFails = 0
 let idled = false
 
+/** 地址不过关这件事只在心跳里吼一次：每 30 秒刷同一行等于没说。 */
+let refusedGateway = ''
+
 async function heartbeat(): Promise<void> {
   if (!state) return
+  // **明文 Gateway 一下都不敲。** 心跳头上是机器票，回包里的 removed / 升级要约由 root 照办
+  // （见 config.ts 的 gatewayUrlProblem）。老机器配对时没有这道闸，manager.json 里可能就是
+  // 一个 http 地址——那样这台机器在平台上会变成「失联」，席位照跑；改成 https（或开发环境
+  // 显式放行）之后重启管家即可。
+  const problem = gatewayUrlProblem(state.gatewayUrl)
+  if (problem) {
+    if (refusedGateway !== state.gatewayUrl) {
+      refusedGateway = state.gatewayUrl
+      console.error(`satuwork-manager: 不给 Gateway 发心跳——${problem}`)
+    }
+    return
+  }
   try {
     const res = await fetch(`${state.gatewayUrl}/internal/machines/${encodeURIComponent(state.machineId)}/heartbeat`, {
       method: 'POST',

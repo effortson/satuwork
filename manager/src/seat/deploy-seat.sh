@@ -10,7 +10,9 @@
 # （$SEAT_ID）。所以对账号的部分是幂等复用的，对席位的部分才是新建。
 #
 #   $HOME_DIR/work                 共享工作区。同员工的所有席位都看得见，这是共享入口。
-#   $HOME_DIR/.satuwork/$SEAT_ID   席位私有：$SATUWORK_HOME、app、Chrome profile、XDG 各目录
+#   $HOME_DIR/.satuwork/$SEAT_ID   席位私有：$SATUWORK_HOME、Chrome profile、XDG 各目录
+#   /etc/satuwork/seats/$SEAT_ID   root 的：bot 单元读的 bot.env 和凭据
+#   /opt/satuwork/seats/$SEAT_ID   root 的：这个席位的 bot 程序（app/），席位用户只读
 # -E（errtrace）**不能省**：不加的话下面那条 ERR trap 只在顶层生效，进不了函数、
 # 命令替换和子 shell。这脚本里失败最可能发生的地方恰恰都在函数里（ensure_chrome、
 # verify_seat_listener），漏了 -E 等于白加——已经这样白加过一轮了。
@@ -63,6 +65,14 @@ esac
 [ "$SEAT_DIR" = "$HOME_DIR/.satuwork/$SEAT_ID" ] || { echo "refusing: SEAT_DIR $SEAT_DIR" >&2; exit 1; }
 
 DISPLAY_VAR=":${DISPLAY_NUM}"
+# bot 单元要 root（systemd）读的文件都放这儿：$HOME 之外、root 的 0700 目录。
+# 理由见 step 4 的「bot 单元读的文件」那一段。
+SEAT_ETC="/etc/satuwork/seats/$SEAT_ID"
+BOT_ENV_FILE="$SEAT_ETC/bot.env"
+SECRETS_FILE="$SEAT_ETC/secrets.env"
+# bot 的程序：root 的目录，席位用户只读、改不动。理由见 step 5。
+SEAT_APP_ROOT="/opt/satuwork/seats/$SEAT_ID"
+APP_DIR="$SEAT_APP_ROOT/app"
 
 # ── 进度自报 ──────────────────────────────────────────────────────────
 # 一行 `@@step <第几步>/<共几步> <这一步在干什么>`，管家按行读（见 manager/src/seats.ts
@@ -88,7 +98,8 @@ fi
 
 step 2 "安装桌面组件"
 # procps/iproute2：slim-desktop.sh 靠 pkill 和 ss 清上一轮的残留，少了它们那段会静默失效。
-PKGS="xorg xvfb dbus-x11 x11-xserver-utils xfwm4 thunar xfce4-terminal plank picom hsetroot x11vnc novnc python3-websockify procps iproute2"
+# xauth：slim-desktop.sh 给每块屏发 cookie（不再 -ac）；nftables：seat-cdp-guard.sh 的 nft。
+PKGS="xorg xvfb dbus-x11 x11-xserver-utils xfwm4 thunar xfce4-terminal plank picom hsetroot x11vnc novnc python3-websockify procps iproute2 xauth nftables"
 NEED=""
 for p in $PKGS; do
   if ! dpkg -s "$p" >/dev/null 2>&1; then NEED="$NEED $p"; fi
@@ -208,16 +219,29 @@ fi
 # 账号级：共享工作区。已存在就别动，里面是员工和 bot 的资料。
 # 席位级：整棵子树都归这个席位。
 as_user mkdir -p "$WORK_DIR" "$HOME_DIR/.satuwork" \
-  "$SEAT_DIR" "$SEAT_DIR/app" "$SEAT_DIR/bin" "$SEAT_DIR/chrome" "$SEAT_DIR/cache" \
+  "$SEAT_DIR" "$SEAT_DIR/bin" "$SEAT_DIR/chrome" "$SEAT_DIR/cache" \
   "$SEAT_DIR/config/picom" "$SEAT_DIR/config/plank/dock1/launchers" "$SEAT_DIR/share/applications"
 
 install -m 755 "$SEAT_ASSETS/slim-desktop.sh" /usr/local/bin/slim-desktop.sh
 install -m 755 "$SEAT_ASSETS/satuwork-bot.sh" /usr/local/bin/satuwork-bot.sh
+install -m 755 "$SEAT_ASSETS/seat-cdp-guard.sh" /usr/local/bin/seat-cdp-guard.sh
 install -m 644 "$SEAT_ASSETS/slim-desktop@.service" /etc/systemd/system/slim-desktop@.service
 install -m 644 "$SEAT_ASSETS/satuwork-bot@.service" /etc/systemd/system/satuwork-bot@.service
 
 # 模板里的 %i 是席位 ID，不再是用户名，所以 User= 只能从这儿来。模板里的
 # User=nobody 是兜底；drop-in 在主文件之后加载，标量设置后写覆盖先写。
+#
+# ExecStartPre=+ 那一行以 root 跑（`+` 不受 User= 管）：把 CDP 口判给这个席位的账号，
+# 别的账号连不上（见 seat-cdp-guard.sh）。nft 规则重启就没，所以挂在单元启动前而不是只
+# 在部署时装一次；两个单元都挂，因为 Chrome 两边都拉得起来（dock 上点、Bot 自己拉）。
+# 参数写死在这份 root 写的 drop-in 里，不从席位用户写得动的 desktop.env 读。
+#
+# RuntimeDirectory=：席位的 XDG_RUNTIME_DIR（dbus、dconf、Chrome 的 socket 都在里面）由 systemd
+# 以 root 建成 /run/satuwork/<席位>、归席位账号、0700。它以前是 /tmp/xdg-runtime-<席位>——
+# 世界可写的 /tmp 里一个猜得到的名字，席位用户自己 mkdir 再 `chmod 700 || true`：别的账号抢先
+# 建好这个目录，chmod 失败被吞掉，这个席位的总线和 socket 就全落在别人的目录里。/run 只有
+# root 写得动，抢不了。两个单元写同一个目录：Preserve=yes，否则先停的那个会把它从另一个脚下
+# 删掉；拆席位时由 remove-seat.sh 删。
 mkdir -p "/etc/systemd/system/slim-desktop@$SEAT_ID.service.d" \
   "/etc/systemd/system/satuwork-bot@$SEAT_ID.service.d"
 cat > "/etc/systemd/system/slim-desktop@$SEAT_ID.service.d/seat.conf" << EOF_DESK_DROPIN
@@ -226,6 +250,10 @@ User=$LINUX_USER
 Group=$LINUX_USER
 Environment=HOME=$HOME_DIR
 Environment=SEAT_DIR=$SEAT_DIR
+RuntimeDirectory=satuwork/$SEAT_ID
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStartPre=+/usr/local/bin/seat-cdp-guard.sh add $SEAT_ID $LINUX_USER $CDP
 EOF_DESK_DROPIN
 cat > "/etc/systemd/system/satuwork-bot@$SEAT_ID.service.d/seat.conf" << EOF_BOT_DROPIN
 [Service]
@@ -233,8 +261,73 @@ User=$LINUX_USER
 Group=$LINUX_USER
 Environment=HOME=$HOME_DIR
 Environment=SEAT_DIR=$SEAT_DIR
-EnvironmentFile=-$SEAT_DIR/bot.env
+RuntimeDirectory=satuwork/$SEAT_ID
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# 两个文件都在 $SEAT_ETC（root 的 0700 目录），理由见下面「bot 单元读的文件」。
+EnvironmentFile=$BOT_ENV_FILE
+# 两把凭据不进 env：systemd（root）打开 root 的 0600 文件接到 fd 0 上，bot 启动读完即关。
+# 见 bot/src/seat-secrets.ts。
+StandardInput=file:$SECRETS_FILE
+StandardOutput=journal
+StandardError=journal
+Environment=SATUWORK_SECRETS_STDIN=1
+ExecStartPre=+/usr/local/bin/seat-cdp-guard.sh add $SEAT_ID $LINUX_USER $CDP
 EOF_BOT_DROPIN
+
+# ── bot 单元读的文件：只放在 root 的目录里 ─────────────────────────────
+# bot 和它起的子进程（terminal 的 bash、Chrome）是**同一个 Linux 用户**。凭据原先两处
+# 都摸得到：$SEAT_DIR/bot.env 归席位用户，`cat` 就有；EnvironmentFile 又把它们放进 bot
+# 的初始环境，`/proc/$PPID/environ` 一读就有（Node 里 delete process.env 改不到那个
+# 文件）。拿到 sat_ 的脚本能自己去 /api/sessions/<sid>/approvals 把审批全点掉。
+#
+# 光把凭据挪走还不够：EnvironmentFile= 和 StandardInput=file: 是 **systemd 以 root 打开**
+# 的。文件留在 $SEAT_DIR 里（席位用户可写的目录），他随时能把它换成符号链接——指向
+# 管家的配置之类只有 root 读得了的 KEY=VALUE 文件，杀掉自己的 bot，Restart=on-failure
+# 就把那份内容注入进他的进程；或者往 bot.env 里写一行 NODE_OPTIONS / LD_PRELOAD。
+# 所以这两个文件都放 $SEAT_ETC：root 的 0700 目录，文件 root 0600。
+#
+# 非机密的那部分（GATEWAY_URL 之外）bot 运行时不改；GATEWAY_URL 学到新地址时 bot 写的是
+# $SEAT_DIR/gateway-url（带席位票做的 HMAC，由 bot 自己在启动时校验着读，root 不碰它），
+# 见 bot/src/gateway-url.ts。
+#
+# 写法：先写同目录的临时文件再 rename——umask 077 让它一出生就是 0600。
+write_root_file() {
+  local tmp="$1.tmp"
+  rm -f "$tmp"
+  (umask 077; cat > "$tmp")
+  chown root:root "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$1"
+}
+install -d -m 700 -o root -g root /etc/satuwork/seats "$SEAT_ETC"
+printf 'GATEWAY_TOKEN=%s\nGATEWAY_API_KEY=%s\n' "$GATEWAY_TOKEN" "$GATEWAY_API_KEY" | write_root_file "$SECRETS_FILE"
+
+# ── 同 uid 的子进程不许读 bot 的内存 ──────────────────────────────────
+# 凭据挪出 env 之后还在 bot 进程的内存里。Debian 默认 kernel.yama.ptrace_scope=0：同 uid
+# 的任何进程都能 ptrace 它、读 /proc/<pid>/mem。设成 1 之后只有祖先进程能这么做，而
+# terminal 起的 bash 是 bot 的**子孙**，够不着它；同一员工另一个席位的子进程也够不着。
+# 已经更严（2/3）的不降；写进 sysctl.d 是为了重启之后还在。
+# 设不上（内核没有 Yama、容器里 /proc/sys 只读）不让部署失败，但要吼出来。
+ensure_ptrace_scope() {
+  local knob=/proc/sys/kernel/yama/ptrace_scope cur target
+  if [ ! -r "$knob" ]; then
+    echo "ptrace: 内核没有 Yama（$knob 不存在），同 uid 的子进程仍能读 bot 的内存" >&2
+    return 0
+  fi
+  cur=$(cat "$knob" 2>/dev/null || echo 0)
+  case "$cur" in [0-3]) ;; *) cur=0 ;; esac
+  target=$cur
+  if [ "$cur" -lt 1 ]; then target=1; fi
+  printf '# satuwork：席位 bot 的子进程不许 ptrace / 读 bot 的内存（见 deploy-seat.sh）\nkernel.yama.ptrace_scope = %s\n' "$target" \
+    > /etc/sysctl.d/60-satuwork-ptrace.conf
+  if [ "$cur" -lt 1 ]; then
+    if ! sysctl -q -w kernel.yama.ptrace_scope=1 >/dev/null 2>&1; then
+      echo "ptrace: kernel.yama.ptrace_scope 设不成 1（当前 $cur），同 uid 的子进程仍能读 bot 的内存" >&2
+    fi
+  fi
+}
+ensure_ptrace_scope
 
 write_as_user "$SEAT_DIR/desktop.env" << EOF_ENV
 DISPLAY_NUM=$DISPLAY_NUM
@@ -264,24 +357,37 @@ fi
 # 每个席位还是各自一份 app：cordis.yml 里的监听端口是逐席位 sed 出来的，共享一份
 # 目录就没法让两个席位听不同的口。版本也因此能逐席位钉死。
 #
-# **root 读、席位用户写**：root 把发布包打成 tar 流，席位用户在自己的 app/ 里解开。
-# 不再是 root 的 `rsync --delete` 往一个席位用户换得掉的路径里写（见 step 4 开头）。
-# 也不指望席位用户读得动管家的 releases 目录——那是 root 的。
-# 先整个删掉再解，效果等于原来的 --delete：上一版多出来的文件不会留下。
-as_user rm -rf "$SEAT_DIR/app"
-as_user mkdir -p "$SEAT_DIR/app"
-tar -C "$BOT_EXTRACT" -cf - . | as_user tar -C "$SEAT_DIR/app" -xpf -
-printf '%s\n' "$BOT_VERSION" | as_user sh -c 'cat > "$1"' sh "$SEAT_DIR/app/VERSION"
-if [ -f "$SEAT_DIR/app/cordis.yml" ]; then
+# **app 放在 root 的 /opt/satuwork/seats/<席位>/app，席位用户只读。** 它以前在
+# $SEAT_DIR/app，归席位用户——而 bot 起的每个子进程（terminal 的 bash、被提示注入
+# 驱动的脚本）都是这个用户。凭据挪进 root 的文件、从 fd 0 递进去之后，这里就成了最
+# 短的那条路：改掉 app 里的一个 .ts，`kill -9 $PPID`，Restart=on-failure 把 bot 拉起来，
+# 跑的已经是改过的代码，它照样从 fd 0 读到 sat_ 和 API key。代码归 root，这条路就断了。
+#
+# root 在这里只碰 root 自己的目录，所以可以放心地 cp / chown / sed（不必像家目录那样
+# 绕 as_user）。先整份铺进 app.new，改好属主和 cordis.yml，再换名顶上去：换的那一下
+# 之前旧的 app 完好，部署半路失败不会留下半份代码。
+install -d -m 755 -o root -g root /opt/satuwork /opt/satuwork/seats "$SEAT_APP_ROOT"
+rm -rf "$APP_DIR.new" "$APP_DIR.old"
+cp -a "$BOT_EXTRACT/." "$APP_DIR.new/"
+printf '%s\n' "$BOT_VERSION" > "$APP_DIR.new/VERSION"
+if [ -f "$APP_DIR.new/cordis.yml" ]; then
   # bot 只听 127.0.0.1：对外那一跳由管家反代，席位端口不再需要暴露到网络上。
-  as_user sed -i -E "s/^([[:space:]]*host:).*/\1 127.0.0.1/" "$SEAT_DIR/app/cordis.yml"
-  as_user sed -i -E "s/^([[:space:]]*port:)[[:space:]]*[0-9]+/\1 $BOT_PORT/" "$SEAT_DIR/app/cordis.yml"
+  sed -i -E "s/^([[:space:]]*host:).*/\1 127.0.0.1/" "$APP_DIR.new/cordis.yml"
+  sed -i -E "s/^([[:space:]]*port:)[[:space:]]*[0-9]+/\1 $BOT_PORT/" "$APP_DIR.new/cordis.yml"
 fi
+# 属主一律 root，谁都不许写；读和进目录留给所有人（席位用户要能读它来跑）。
+chown -hR root:root "$APP_DIR.new"
+chmod -R u+rwX,go+rX,go-w "$APP_DIR.new"
+if [ -d "$APP_DIR" ]; then mv "$APP_DIR" "$APP_DIR.old"; fi
+mv "$APP_DIR.new" "$APP_DIR"
+rm -rf "$APP_DIR.old"
+# **迁移**：老版本的 app 在 $SEAT_DIR/app（归席位用户）。不删的话，谁看都以为 bot 跑的
+# 是那一份。以席位用户身份删：那是他的目录，root 不在里面动手（见 step 4 开头）。
+as_user rm -rf "$SEAT_DIR/app"
 
-write_as_user "$SEAT_DIR/bot.env" << EOF_ENV
+# 非机密配置。写到 $SEAT_ETC，不再写 $SEAT_DIR——理由见 step 4「bot 单元读的文件」。
+write_root_file "$BOT_ENV_FILE" << EOF_ENV
 GATEWAY_URL=$GATEWAY_URL
-GATEWAY_TOKEN=$GATEWAY_TOKEN
-GATEWAY_API_KEY=$GATEWAY_API_KEY
 # 协议 10：调模型走管家的回环口（管家再向 Gateway 要授权、报结算），不直打 Gateway 的 /v1。
 GATEWAY_LLM_URL=$MANAGER_LLM_URL
 SATUWORK_BOT_ID=$SATUWORK_BOT_ID
@@ -293,18 +399,26 @@ SATUWORK_WORK_DIR=$WORK_DIR
 # 那几把工具连不上自己席位的浏览器。两份写的是同一个值，来源都是 $CDP。
 SATUWORK_CDP_PORT=$CDP
 DISPLAY=$DISPLAY_VAR
+# 这块屏的 X cookie（slim-desktop.sh 每次起屏写一张新的）。Bot 拉起的 Chrome、terminal
+# 里跑的 X 工具要靠它才连得上屏——Xvfb 已经不再 -ac 了。
+XAUTHORITY=$SEAT_DIR/Xauthority
 XDG_SESSION_TYPE=x11
 XDG_CONFIG_HOME=$SEAT_DIR/config
 XDG_DATA_HOME=$SEAT_DIR/share
 XDG_CACHE_HOME=$SEAT_DIR/cache
-XDG_RUNTIME_DIR=/tmp/xdg-runtime-$SEAT_ID
+# root 建的（两个单元 drop-in 里的 RuntimeDirectory=），见 step 4。
+XDG_RUNTIME_DIR=/run/satuwork/$SEAT_ID
 GDK_BACKEND=x11
 HOME=$HOME_DIR
 EOF_ENV
 
 # 文件本来就是席位用户建的，不用再 chown。chmod 补的是「文件早就在」的情况：
-# `cat >` 截断重写不改已有文件的权限位，老席位的 bot.env 可能是 0644。
-as_user chmod 600 "$SEAT_DIR/desktop.env" "$SEAT_DIR/vnc-passwd" "$SEAT_DIR/bot.env"
+# `cat >` 截断重写不改已有文件的权限位，老席位留下的可能是 0644。
+as_user chmod 600 "$SEAT_DIR/desktop.env" "$SEAT_DIR/vnc-passwd"
+# **迁移**：老版本把票和 API key 写在 $SEAT_DIR/bot.env 里（gateway-url.ts 改写时还可能留
+# 下一份 bot.env.tmp）。现在两样都不用了，删掉。以席位用户身份删（as_user 带 env -i）：
+# root 不在席位用户换得掉的路径上动手，也不把这个脚本的环境（票、口令）带进他的进程。
+as_user rm -f "$SEAT_DIR/bot.env" "$SEAT_DIR/bot.env.tmp"
 
 step 6 "启动桌面与 Bot"
 systemctl daemon-reload
@@ -318,23 +432,25 @@ enable_and_restart() {
   systemctl enable "$1" >/dev/null 2>&1 || true
   systemctl restart "$1"
 }
+# 先当场装一遍 CDP 口的规则：单元里的 ExecStartPre 也会装，但那里失败只落进 journal，
+# 部署这边只看到一句 restart 失败。装不上（没有 nf_tables、容器里没权限）就让部署失败
+# ——没有这一层，同机的别的员工就能直接驱动这个席位的浏览器。
+/usr/local/bin/seat-cdp-guard.sh add "$SEAT_ID" "$LINUX_USER" "$CDP"
 enable_and_restart "slim-desktop@$SEAT_ID.service"
 enable_and_restart "satuwork-bot@$SEAT_ID.service"
 
-# 占着这个 pid 的是哪个席位。认不出来回空。
+# 占着这个 pid 的是哪个席位（seat_of_pid）。认不出来回空。
 #
 # **不能只比 Linux 用户名。** 一个员工的所有席位共用一个账号，于是同账号下另一块屏
 # 的 x11vnc 蹲在这个口上时，`owner = $LINUX_USER` 是成立的——这道自证会放它过去，
 # 而界面上「打开桌面」进的是另一块屏，口令永远对不上。正是这道自证要拦的那种事。
 #
-# XDG_RUNTIME_DIR 是 /tmp/xdg-runtime-$SEAT_ID，逐席位唯一，slim-desktop.sh 在起任何
-# 东西之前就 export 了；bot.env 里也有同一条。三个监听进程都带着自己那一份。
-# `|| true` 写在命令替换**里面**——和下面 verify_seat_listener 里 pid= 那处同一个理由：
-# errtrace 会让 ERR trap 在子 shell 里先响，写在外面拦不住那一声。进程刚退时
-# /proc/<pid>/environ 就没了，而那恰恰是这个函数最常被调用的时刻。
-seat_of_pid() {
-  printf '%s' "$(tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n 's|^XDG_RUNTIME_DIR=/tmp/xdg-runtime-||p' | head -1 || true)"
-}
+# **也不能按进程自报的 XDG_RUNTIME_DIR 认**（以前就是这么认的）：环境变量谁都能伪造一条，
+# 别的账号起个 `nc -l` 带上这个席位的名字，就能蹲在口上骗过这道自证。判据改成 cgroup /
+# logind 会话加 uid，写在 seat-owner.sh（和管家的 src/seat-owner.ts 同一套）。
+# 它自己兜住了所有失败：进程刚退、/proc 读不到时回空，而那恰恰是这个函数最常被调用的时刻。
+# shellcheck source=seat-owner.sh
+. "$SEAT_ASSETS/seat-owner.sh"
 
 # ── 部署完自证：那两个端口上蹲着的得是**这个席位的**进程 ────────────────
 # 「起完就算成功」在这里是不够的。机器上完全可能有另一套 VNC 占着 6081——这台就
@@ -345,7 +461,7 @@ seat_of_pid() {
 # 输口令永远 password check failed，重新部署多少次都一样。这种失败不会自己浮出来，
 # 只能靠人去 ps 里翻。所以在这里就断掉，把原因写进部署错误里报回 Gateway。
 verify_seat_listener() {
-  local port="$1" what="$2" pid owner holder
+  local port="$1" what="$2" pid owner holder p mine
   # 等 30 秒。**新建席位第一次起屏比想象的慢**：adduser、daemon-reload、Xvfb 就绪、
   # 上一轮残留的端口释放，叠起来轻松过十秒——等太短会把「慢」判成「坏」。
   for _ in $(seq 1 120); do
@@ -356,15 +472,28 @@ verify_seat_listener() {
     # （`|| true` 要写在命令替换**里面**：errtrace 会让 ERR trap 在子 shell 里先响，
     # 写在外面的 `|| pid=` 拦不住那一声。顺带也挡掉 head -1 提前关管道给 grep 的
     # SIGPIPE——那同样是非零。）
-    pid=$(ss -ltnp 2>/dev/null | grep -E ":${port}\b" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)
+    #
+    # **这个口上的每一个监听都得是这个席位的**，不是「第一行是」就算：别的账号先占了
+    # 127.0.0.1:5910，x11vnc -localhost 退而只绑 [::1]:5910——ss 里两行，谁排前面说不准，
+    # 而 websockify 连的是 127.0.0.1 那一个。所以挨个认，挑出第一个不是本席位的当 pid。
+    pid=""
+    mine=0
+    for p in $(ss -ltnpH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true); do
+      if [ "$(seat_of_pid "$p" || true)" = "$SEAT_ID" ]; then
+        mine=1
+        continue
+      fi
+      pid="$p"
+      break
+    done
+    if [ -z "$pid" ] && [ "$mine" = 1 ]; then return 0; fi
     if [ -n "${pid:-}" ]; then
-      # 同上：pid 是上一条 ss 抓的，进程完全可能在这一瞬已经退了，读 environ、跑 ps
+      # 同上：pid 是上一条 ss 抓的，进程完全可能在这一瞬已经退了，读 /proc、跑 ps
       # 于是都可能空手而归。那时该继续等，而不是让整个部署崩掉。
       holder=$(seat_of_pid "$pid" || true)
-      [ "$holder" = "$SEAT_ID" ] && return 0
       owner=$(ps -o user:32= -p "$pid" 2>/dev/null | tr -d ' ' || true)
-      # 认不出席位、用户又对得上：多半是本席位刚 fork 出来还没走到 export，也可能
-      # 进程已经退了。**不据此放行**（放行就是上面那个「进的是另一块屏」的洞），
+      # 认不出席位、用户又对得上：多半是进程已经退了，也可能是这个员工在别处（比如 ssh
+      # 会话里）起的东西。**不据此放行**（放行就是上面那个「进的是另一块屏」的洞），
       # 继续绕圈；真起不来的话，下面那句超时告警会兜住，且不算部署失败。
       if [ -z "$holder" ] && [ "$owner" = "$LINUX_USER" ]; then
         sleep 0.25

@@ -48,6 +48,12 @@ export async function runReplaySlice({ root, test, assert, log }) {
     assert(r.paging.还有更早的 === true, '第二页之后还有 4 轮')
   })
 
+  await test('SSE：重放期间断开或 cancel，监听器照样摘掉', async () => {
+    // close 以前挂在重放之后：慢重放期间断开，close 早已发过，每次重连留一个死监听器。
+    const bad = Object.entries(r.sseClose || {}).filter(([, v]) => v !== true).map(([k]) => k)
+    assert(r.sseClose && !bad.length, `这几条不对：${bad.join('、') || '没有结果'}（${JSON.stringify(r.sseClose)}）`)
+  })
+
   await test('翻到头了就说没有了，别让「加载更多」一直挂着', async () => {
     assert(r.exhausted.hasMore === false, 'hasMore 该收敛成 false')
     assert(r.exhausted.轮数 === 2, `要的比有的多时该全给：${r.exhausted.轮数}`)

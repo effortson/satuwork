@@ -164,6 +164,40 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 .satu-newbot:hover { color: var(--color-text); border-color: var(--color-text); }
 .satu-rail .satu-newbot { justify-content: center; }
 .satu-rail .satu-newbot span { display: none; }
+/* ── 桌面端有新版本（shell.js 的 desktopUpdateInner）──────────────────
+   沉在侧栏底部、头像那一行上面。实心的强调色底：它是这一栏里唯一一条「要你去点」的东西，
+   跟虚线的「新建 Bot」、灰色的导航都不一样。空槽不占高度。 */
+.satu-dupdate-slot:empty { display: none; }
+.satu-dupdate-slot { flex: none; margin-top: var(--space-2); }
+.satu-dupdate {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+}
+button.satu-dupdate { cursor: pointer; }
+button.satu-dupdate:hover { background: color-mix(in srgb, var(--primary) 16%, transparent); }
+.satu-dupdate-icon { flex: none; display: flex; color: var(--primary); }
+.satu-dupdate-text { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; line-height: 1.25; }
+.satu-dupdate-text strong { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.satu-dupdate-text small { font-size: 11px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.satu-dupdate-text small[data-error="true"] { color: var(--color-accent-700); }
+.satu-dupdate-bar { display: block; height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--primary) 18%, transparent); overflow: hidden; }
+.satu-dupdate-bar i { display: block; height: 100%; background: var(--primary); border-radius: inherit; transition: width .3s ease; }
+.satu-dupdate-bar[data-indeterminate="true"] i { animation: satu-dupdate-slide 1.2s ease-in-out infinite; }
+@keyframes satu-dupdate-slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+/* 窄栏只剩图标，居中；字藏掉，悬停看 title。 */
+.satu-rail .satu-dupdate { justify-content: center; padding: 8px 0; }
+.satu-rail .satu-dupdate-text { display: none; }
+
 /* 「新建 Bot」和它右边那颗「更多」并排一行。
    **position: relative 是给弹出菜单当锚的**（.satu-menu 是 absolute）：少了它，菜单
    会跑去贴最近的定位祖先，在这一列里就是整个视口。 */
@@ -571,6 +605,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 }
 .satu-lp-brand[data-static] { cursor: default; font-size: 16px; }
 .satu-lp-brand img { border-radius: var(--radius-sm); object-fit: contain; }
+.satu-lp-brand .satu-lp-home-logo { width: 40px; height: 40px; flex: none; }
 /* 顶栏右边是**一排圆钮**，不是被竖线切开的几格。格子那版和登录页对不上：人从这儿
    点「登录」过去，落地那一屏上所有的按钮和输入框都是圆头的药丸。 */
 .satu-lp-topact { display: flex; align-items: center; gap: var(--space-3); }
@@ -765,6 +800,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   font-family: var(--font-heading);
   font-size: 13px;
 }
+.satu-lp-shotface[data-bot='1'] { border-radius: 0; background: transparent; }
 .satu-lp-shottext { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .satu-lp-shotname { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; }
 /* 名字单独包一层，只为窄屏上能把**名字**收掉而把那颗状态点留下（见下面 560 那段）。 */
@@ -817,8 +853,10 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   font-family: var(--font-heading);
   font-size: 12px;
 }
-.satu-lp-face[data-big] { width: 30px; height: 30px; font-size: 13px; background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
+.satu-lp-face[data-big] { width: 34px; height: 34px; font-size: 13px; background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
 .satu-lp-msg[data-role="assistant"] .satu-lp-face { background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
+.satu-lp-face[data-bot='1'], .satu-lp-msg[data-role="assistant"] .satu-lp-face[data-bot='1'] { width: 32px; height: 32px; border-radius: 0; background: transparent; }
+.satu-lp-face[data-big][data-bot='1'] { width: 34px; height: 34px; }
 /* 气泡列最宽 72%，和真界面一个数：再宽长句一行装太多字，眼睛回行会丢。 */
 .satu-lp-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 72%; }
 .satu-lp-msg[data-role="user"] .satu-lp-col { align-items: flex-end; }
@@ -1092,6 +1130,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 }
 
 @media (max-width: 560px) {
+  .satu-lp-brand .satu-lp-home-logo { width: 36px; height: 36px; }
   /* 「联系销售」收成一颗只有图标的圆钮：顶栏那一行在这个宽度上已经排着 logo、
      GitHub、语言开关三样了，再加四个字就换行。**不能跟着「登录」一起藏**（那条在
      900 那段里）——藏了的话页面上再没有第二处能联系到人。
@@ -1184,7 +1223,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lg-links button:focus-visible,
 .satu-lg-links a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
 
-/* ── 首页上下载桌面端那一段（见 ui/pages-landing.js 的 lpDownload）─────────
+/* ── 下载桌面端：首页那一段（lpDownload）和应用内那一页（downloadPage），见 ui/pages-landing.js ──
    外框（栏线、上下留白、居中的标题块）借首页 .satu-lp-sec 那一套，这里只管里面：
    左边一张卡装当前平台的包，右边一列说明。
    scroll-margin 让出顶栏那一条：首屏那行小字、页脚和老的 /download 地址都是滚到这儿的，
@@ -1192,11 +1231,13 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-dl { scroll-margin-top: 64px; }
 /* 标题块比别的段宽：底下那句说明有三行长，塞进 30ch 会折成一根细柱子。 */
 .satu-lp-dlhead { max-width: 62ch; }
-/* 「总是最新版 · 历次版本」那行借法律页 .satu-lg-meta 的打扮，但 `.satu-lp-sechead p` 的
-   权重更高，会把字号、颜色、外边距一起抹掉——所以在这儿按原样再写一遍。 */
-.satu-lp-dlhead .satu-lg-meta { margin: var(--space-4) 0 0; font-size: 13px; color: var(--muted-foreground); }
-.satu-lp-dlhead .satu-lg-meta a { color: var(--color-accent-700); text-decoration: underline; text-underline-offset: 3px; }
-.satu-lp-dlhead .satu-lg-meta a:hover { color: var(--color-accent-600); }
+/* 那一段带 tabindex="-1"，点首屏小字 / 页脚跳过来时焦点落在它身上（见 app.js 的
+   landing-download）。整段描一圈框没有意义，里面的按钮自己有焦点环。 */
+.satu-lp-dl:focus { outline: none; }
+/* 「总是最新版 · 历次版本」那行是 .satu-lg-meta（法律页那一行）本身，这里只补链接的样子。
+   它是 <div> 不是 <p>，`.satu-lp-sechead p` 够不着它（见 pages-landing.js 的 dlMeta）。 */
+.satu-dl-meta a { color: var(--color-accent-700); text-decoration: underline; text-underline-offset: 3px; }
+.satu-dl-meta a:hover { color: var(--color-accent-600); }
 .satu-dl-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: var(--space-8); align-items: start; }
 
 .satu-dl-card { border: 1px solid var(--color-divider); border-radius: var(--radius-lg); padding: var(--space-6); background: var(--color-bg); }

@@ -47,15 +47,30 @@ stop_unit "$DESKTOP_UNIT"
 # 立刻分给下一个席位——下一次部署撞上同一个口，报「端口被别人占着」，而那个「别人」
 # 正是刚拆掉的这个席位。真跑出来过：sw-…-7bbe43f21941 的 x11vnc 占着 5910。
 #
-# 按 XDG_RUNTIME_DIR 认领：它是 /tmp/xdg-runtime-$SEAT_ID，**逐席位唯一**，
-# slim-desktop.sh 在起任何东西之前就 export 了，所有子进程都带着。命令行认不出来
-# ——`Xvfb :10`、`websockify 127.0.0.1:6081` 里没有席位标识，而同一个员工的几块屏
-# 还共用一个 Linux 账号，按用户杀会把别的屏一起带走。
+# 认领靠 seat-owner.sh 的 seat_of_pid：cgroup / logind 会话加 uid（和管家的
+# src/seat-owner.ts 同一套）。命令行认不出来——`Xvfb :10`、`websockify 127.0.0.1:6081`
+# 里没有席位标识，而同一个员工的几块屏还共用一个 Linux 账号，按用户杀会把别的屏一起带走。
+# 以前按进程自报的 XDG_RUNTIME_DIR 认，那是谁都能伪造的：别的账号挂一个带伪造环境的进程，
+# 这里就会把它当成「这个席位还有进程活着」——拆除永远报失败、槽位永远让不出去；它环境里
+# 写的 DISPLAY 还会让 root 去删别的显示号的 X 锁。
+#
+# 账号用 $LINUX_USER，不读 drop-in：结尾那次核对排在删 drop-in 之后。
+# shellcheck source=seat-owner.sh
+. "$(dirname "$0")/seat-owner.sh"
+# 先用内建的 read 粗筛一遍 cgroup（不 fork）：这个函数在下面的等待循环里一轮要扫全机进程，
+# 每个进程都走一遍 seat_of_pid 的话要 fork 上千次。落不进这个席位的单元、又不在任何 logind
+# 会话里的，seat_of_pid 也一定认不出来。
 seat_pids() {
-  local pid
+  local pid cg
   for pid in /proc/[0-9]*; do
     pid="${pid##*/}"
-    grep -qzFx "XDG_RUNTIME_DIR=/tmp/xdg-runtime-$SEAT_ID" "/proc/$pid/environ" 2>/dev/null || continue
+    cg=""
+    IFS= read -r -d '' cg < "/proc/$pid/cgroup" 2>/dev/null
+    case "$cg" in
+      *"@$SEAT_ID.service"* | */session-*.scope*) ;;
+      *) continue ;;
+    esac
+    [ "$(seat_of_pid "$pid" "$LINUX_USER")" = "$SEAT_ID" ] || continue
     printf '%s\n' "$pid"
   done
 }
@@ -115,6 +130,17 @@ kill_escapees
 # 进 ESCAPEE_DISPLAYS 的——杀完再问就问不出来了。
 drop_x_locks ${ESCAPEE_DISPLAYS:-}
 
+# CDP 口的那条 nft 规则（deploy-seat.sh 装的，见 seat-cdp-guard.sh）。排在进程都杀完
+# 之后：Chrome 还活着的时候拆掉它，同机别的账号就又连得上那个浏览器了。按席位认领，
+# 不看端口——desktop.env 这会儿可能已经没了。拆不掉只是留一张表：口下次分出去时，新
+# 席位装规则会把它原子地顶掉，不影响槽位回收，所以不算失败。
+# 用和本脚本同一包里的那份（管家是 `bash <包>/remove-seat.sh` 调的），不找 /usr/local/bin
+# ——老版本部署的机器上那里还没有它。
+GUARD="$(dirname "$0")/seat-cdp-guard.sh"
+if [ -f "$GUARD" ]; then
+  bash "$GUARD" del "$SEAT_ID" || warn "CDP 口的防火墙规则没拆掉"
+fi
+
 rm -rf "/etc/systemd/system/$BOT_UNIT.d" "/etc/systemd/system/$DESKTOP_UNIT.d" ||
   warn "drop-in 没删干净"
 systemctl daemon-reload >/dev/null 2>&1 || warn "daemon-reload 失败"
@@ -141,7 +167,23 @@ case "$SEAT_DIR" in
   /home/"$LINUX_USER"/.satuwork/"$SEAT_ID") remove_seat_dir || warn "席位目录没删干净：$SEAT_DIR" ;;
   *) warn "席位目录 $SEAT_DIR 不在它该在的位置，跳过删除" ;;
 esac
-rm -rf "/tmp/xdg-runtime-$SEAT_ID" || warn "运行时目录没删干净"
+# 运行时目录：/run/satuwork/<席位> 是 systemd 建的（RuntimeDirectoryPreserve=yes，单元停了也
+# 不删），/tmp/xdg-runtime-<席位> 是老部署留下的。/run 下只有 root 写得动；/tmp 那个就算被人
+# 换成链接，rm -rf 删的也只是链接本身。
+case "$SEAT_ID" in
+  *[!A-Za-z0-9_-]* | '') ;;
+  *) rm -rf "/run/satuwork/$SEAT_ID" "/tmp/xdg-runtime-$SEAT_ID" || warn "运行时目录没删干净" ;;
+esac
+# bot 单元读的 bot.env 和凭据（deploy-seat.sh 写在 /etc/satuwork/seats/<席位>/）。票在
+# Gateway 那边会跟着席位一起作废，留下的只是垃圾，但它们是 root 的文件，没人会想到去清。
+case "$SEAT_ID" in
+  *[!A-Za-z0-9_-]* | '') warn "SEAT_ID 形状不对，跳过删 /etc/satuwork/seats 下的文件" ;;
+  *)
+    rm -rf "/etc/satuwork/seats/$SEAT_ID" || warn "/etc/satuwork/seats/$SEAT_ID 没删干净"
+    # 这个席位的 bot 程序（deploy-seat.sh 装在 root 的 /opt/satuwork/seats/<席位>/）。
+    rm -rf "/opt/satuwork/seats/$SEAT_ID" || warn "/opt/satuwork/seats/$SEAT_ID 没删干净"
+    ;;
+esac
 
 # 退出码只答一个问题：端口还被这个席位占着吗。
 #

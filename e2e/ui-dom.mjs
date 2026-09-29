@@ -92,6 +92,7 @@ function countingStub() {
     setAttribute() {},
     getAttribute: () => null,
     focus() {},
+    scrollIntoView() {},
     style: {},
   }
 }
@@ -189,7 +190,7 @@ export function uiSource(uiDir) {
  * 见 uiSource。末尾那句 boot() 去掉，由调用方决定什么时候起，否则一 import 就开始打
  * 网络，断言没法安排在它前面。
  */
-export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, persistentStorage, localBotBridge, path = '/', secureContext = true, userAgent = 'satuwork-ui-smoke', maxTouchPoints = 0 }) {
+export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, persistentStorage, localBotBridge, desktopUpdateBridge, path = '/', secureContext = true, userAgent = 'satuwork-ui-smoke', maxTouchPoints = 0 }) {
   const raw = uiSource(dirname(appPath))
   const src = raw.replace(/\nboot\(\)\s*$/, '\n')
   // 复制过的东西都落这儿，两条路（navigator.clipboard 和 execCommand）都记。
@@ -203,13 +204,19 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
 
   // 进来时地址栏上是什么。`/` 和 `/login` 在没登录时画的是两屏（见 render.js 的
   // anonView），所以这一条得能由测试指定。
-  const location = { pathname: path, search: '', hash: '', href: base + path }
+  // `#` 片段要拆出来：`/#download` 是首页上那一段，pathname 是 `/`、hash 才是 `#download`。
+  const location = { pathname: '/', search: '', hash: '', href: '' }
+  const go = (url) => {
+    const u = new URL(String(url), base + location.pathname)
+    Object.assign(location, { pathname: u.pathname, search: u.search, hash: u.hash, href: u.href })
+  }
+  go(path)
   const history = {
     replaceState: (_s, _t, url) => {
-      if (url) location.pathname = String(url).split('?')[0]
+      if (url) go(url)
     },
     pushState: (_s, _t, url) => {
-      if (url) location.pathname = String(url).split('?')[0]
+      if (url) go(url)
     },
   }
   // app.js 里是相对路径，node 的 fetch 只收绝对地址。
@@ -236,7 +243,7 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
     'HTMLSelectElement',
     'HTMLTextAreaElement',
     'HTMLFormElement',
-    `${src}\n;return { boot, render, state, api, loadPage, auditTranscript, messageText, setToken, clearToken, token, onSetup, testLlm, saveSettings, savePriceMultiplier, saveCustomProvider, saveCustomModel, loadCustomProviders, runConfirm, statsWindow, chargesWindow, usageRangeMs, loadStats, loadCharges, loadConversationAudits, catalogBase, pathAllowed, machineHead, readOnlyItem, startChatStream, stopChatStream, paintChat, ensureChatSession, sendChat, fold, threadRows, paintRowTime, refreshRoutine, refreshRoutineList, routineShot, loadOlderChat, hydrateChat, pushBotEvent, botStreamOf, resetBotStream, trimBotStreams, BOT_BUCKET_MAX, startRosterStream, stopRosterStream, noteRosterFrame, openBotStreams, BOT_STREAM_MAX, chatPages, CHAT_TAIL_TURNS, STREAM_TAIL_TURNS, CHAT_RETRY_MAX, sweepSilentStreams, STREAM_SILENT_MS, streamPulse, loadWebTools, saveWebTools, saveWebPrice, testWebBackend, mentionQueryAt, paintChatMentions, paintChatQueue, paintMentionPick, takeMention, chatQueues, idleTimers, flushHeldSend, clearHeldSend, seatRestarted, retryChatSession, SESSION_RETRY_MAX, approvalState, approvalChipHtml, approvalPop, approvalDead, approvalHtml, toolPopBody, handoffHtml, handoffDoneHtml, handoffsPage, handoffBell, applyHandoffSnapshot, settleDot, handoffDead, handoffRow, stepShots, stepMoreHtml, MAX_STEP_SHOTS, knownFiles, fileCands, fileHits, readFiles, workspacePanel, maybeLivePreview, openPreview, previewBody, liveLamp, composerTip, stopTipText, abortChat, seatLink, seatLinkOf, linkDown, machineDownBanner, myBotPage, storedMemories, seatStage, chatDeployPrompt, installProgressBody, ensureDeployWatch, pollDeployProgress, uploadTargetOf, uploadChatFile, overlayLocalRuntime, localRoute }`,
+    `${src}\n;return { boot, render, state, api, loadPage, enterPath, auditTranscript, messageText, setToken, clearToken, token, onSetup, testLlm, saveSettings, savePriceMultiplier, saveCustomProvider, saveCustomModel, loadCustomProviders, runConfirm, statsWindow, chargesWindow, usageRangeMs, loadStats, loadCharges, loadConversationAudits, catalogBase, pathAllowed, machineHead, readOnlyItem, startChatStream, stopChatStream, paintChat, ensureChatSession, sendChat, fold, threadRows, paintRowTime, refreshRoutine, refreshRoutineList, routineShot, loadOlderChat, hydrateChat, pushBotEvent, botStreamOf, resetBotStream, trimBotStreams, BOT_BUCKET_MAX, startRosterStream, stopRosterStream, noteRosterFrame, openBotStreams, BOT_STREAM_MAX, chatPages, CHAT_TAIL_TURNS, STREAM_TAIL_TURNS, CHAT_RETRY_MAX, sweepSilentStreams, STREAM_SILENT_MS, streamPulse, loadWebTools, saveWebTools, saveWebPrice, testWebBackend, mentionQueryAt, paintChatMentions, paintChatQueue, paintMentionPick, takeMention, chatQueues, idleTimers, flushHeldSend, clearHeldSend, seatRestarted, retryChatSession, SESSION_RETRY_MAX, approvalState, approvalChipHtml, loadLocalDirs, localDirsHtml, decideApproval, toolFoldHtml, TOOLFOLD_ROWS, approvalPop, approvalDead, approvalHtml, toolPopBody, handoffHtml, handoffDoneHtml, handoffsPage, handoffBell, applyHandoffSnapshot, settleDot, handoffDead, handoffRow, stepShots, stepMoreHtml, MAX_STEP_SHOTS, knownFiles, fileCands, fileHits, readFiles, workspacePanel, maybeLivePreview, openPreview, previewBody, liveLamp, composerTip, stopTipText, abortChat, seatLink, seatLinkOf, linkDown, machineDownBanner, myBotPage, botVersionLine, storedMemories, seatStage, chatDeployPrompt, installProgressBody, ensureDeployWatch, pollDeployProgress, uploadTargetOf, uploadChatFile, overlayLocalRuntime, localRoute, startHandoffPoll, startSeatWatch, endSignedIn, loginView, desktopUpdateSlot, desktopUpdateInner, checkDesktopUpdate, installDesktopUpdate, liveHandles: () => ({ rosterAbort, handoffTimer, seatWatchTimer }) }`,
   )
 
   /**
@@ -250,6 +257,7 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
   const windowStub = {
     __SATUWORK_DESKTOP__: desktop,
     __SATUWORK_LOCAL_BOT__: localBotBridge,
+    __SATUWORK_DESKTOP_UPDATE__: desktopUpdateBridge,
     addEventListener() {},
     satuUnzip: null,
     location,

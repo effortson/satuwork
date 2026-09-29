@@ -35,12 +35,21 @@ export async function runTelegramChannel({ root, test, assert, log }) {
     assert(result.draft.match(/我先查行情/g)?.length === 1, '完整消息和流式分片重复了')
   })
 
-  await test('Telegram 临时草稿展示工具调用状态，但不泄漏参数和结果', async () => {
-    assert(result.toolDraft.includes('✓ web_search · 完成'), `完成状态没有展示：${result.toolDraft}`)
-    assert(result.toolDraft.includes('⏳ web_extract · 调用中'), `运行状态没有展示：${result.toolDraft}`)
-    assert(result.toolDraft.includes('✗ browser_navigate · 失败'), `失败状态没有展示：${result.toolDraft}`)
+  await test('Telegram 临时草稿按发生顺序接上工具调用，但不泄漏参数和结果', async () => {
+    // 工具在它发生的位置占一行，不再维护末尾那张会被回头改的状态表（见下一条）。
+    assert(result.toolDraft === '我先查一下。\n\n🔧 web_search\n🔧 web_extract\n🔧 browser_navigate',
+      `工具行不对：${JSON.stringify(result.toolDraft)}`)
     assert(!result.toolDraft.includes('ETH') && !result.toolDraft.includes('example.test') && !result.toolDraft.includes('不能露出来'),
       `工具参数或结果泄漏到草稿：${result.toolDraft}`)
+  })
+
+  await test('Telegram 草稿只往后长：每一帧都以上一帧开头，客户端不会从头重播', async () => {
+    const f = result.growFrames
+    assert(result.growBroken === -1,
+      `第 ${result.growBroken} 帧不以上一帧开头：\n上一帧 ${JSON.stringify(f[result.growBroken - 1])}\n这一帧 ${JSON.stringify(f[result.growBroken])}`)
+    assert(f.at(-1) === '我先查一下。\n\n🔧 web_search\n🔧 web_extract\n\n找到了三条，整理中\n\n🔧 write_file\n\n报告写好了。',
+      `最后一帧不对：${JSON.stringify(f.at(-1))}`)
+    assert(!f.at(-1).includes('秘密'), '工具参数漏进了草稿')
   })
 
   await test('Telegram 只带回当前轮工具明确产出的文件并按路径去重', async () => {

@@ -41,6 +41,9 @@ import { SQL as m0040 } from './0040-llm-call-relay-machine.ts'
 import { SQL as m0041 } from './0041-desktop-secrets.ts'
 import { SQL as m0042 } from './0042-audit-score-reasons.ts'
 import { SQL as m0043 } from './0043-local-bot-min-desktop.ts'
+import { SQL as m0044 } from './0044-channel-delivery-progress.ts'
+import { SQL as m0045 } from './0045-seat-deploy-claim.ts'
+import { SQL as m0046 } from './0046-auth-throttle.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -48,6 +51,12 @@ export interface Migration {
   /** 给人看的一句话，写进 schema_migrations，出问题时日志里认得出是哪一条。 */
   name: string
   sql: string
+  /**
+   * 这一条**发布之后又改过**时，旧版本的校验和。只给「补一步不改结果的前置修补」用
+   * （例如 0035 建唯一索引前先去重）：跑过旧版本的库形状已经对了，不必重跑，也不该被
+   * 当成「迁移被人改过」拦在门外。改了结果形状的，照旧写成新的一条。
+   */
+  previousChecksums?: string[]
 }
 
 /**
@@ -119,7 +128,14 @@ export const MIGRATIONS: Migration[] = [
   { id: '0032-channel-event-lease-token', name: '渠道消息短租约的续租与所有权隔离', sql: m0032 },
   { id: '0033-channel-approval-prompt', name: '渠道审批提示去重与重启恢复', sql: m0033 },
   { id: '0034-drop-task-board', name: '移除任务看板、时间线与对话任务抽取日志', sql: m0034 },
-  { id: '0035-routine-one-running', name: '日常任务同一时刻只允许一条 running 流水', sql: m0035 },
+  // 发布后补了一步「建索引前先去重」：存量库里真有两条 running 时旧版本会让 Gateway 起不来。
+  // 跑过旧版本的库索引已经在了，认旧校验和，不重跑。
+  {
+    id: '0035-routine-one-running',
+    name: '日常任务同一时刻只允许一条 running 流水',
+    sql: m0035,
+    previousChecksums: ['c321a7b2686a50d1'],
+  },
   { id: '0036-channel-event-files', name: '渠道事件保存本轮产出文件，供 Telegram 可靠投递预览', sql: m0036 },
   { id: '0037-channel-event-handoffs', name: '渠道事件保存本轮转人工卡，供 Telegram 可靠投递操作入口', sql: m0037 },
   { id: '0038-machine-direct-url', name: '席位机器的公网直连地址，桌面像素不再经过 Gateway', sql: m0038 },
@@ -128,6 +144,9 @@ export const MIGRATIONS: Migration[] = [
   { id: '0041-desktop-secrets', name: '桌面端本地 Bot 的凭证单独存，跟登录票一起作废', sql: m0041 },
   { id: '0042-audit-score-reasons', name: '审计条目加评分理由和语言', sql: m0042 },
   { id: '0043-local-bot-min-desktop', name: '桌面端本地 Bot 包各自登记最低 Desktop 版本', sql: m0043 },
+  { id: '0044-channel-delivery-progress', name: '渠道事件记下投递到第几段，重试和接管从那一段接着发', sql: m0044 },
+  { id: '0045-seat-deploy-claim', name: '席位部署的在装心跳与批量更新的排队参数落库，多实例共用一份', sql: m0045 },
+  { id: '0046-auth-throttle', name: '登录、领邀请、改口令的失败计数（限流）', sql: m0046 },
 ]
 
 /**

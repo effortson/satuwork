@@ -57,6 +57,8 @@ function pageView() {
       return placeholderPage(t('公司目录'), t('公司 Bot / Skill / MCP'))
     case '/profile':
       return profilePage()
+    case '/download':
+      return downloadPage()
     default:
       return overviewPage()
   }
@@ -265,6 +267,9 @@ function appView() {
             : ''
         }
       </div>
+      ${/* 桌面端有新版本时亮在这里：沉在底部、紧挨着自己的头像，是「这台电脑上的应用」的事，
+            不是哪颗 Bot 的事。没有新版时槽是空的，不占高度。 */ ''}
+      ${desktopUpdateSlot('side')}
       ${/* box-sizing 必须写死：侧栏是 border-box，这一行不写就按 content-box 算，
             宽度比容器多出左右内边距，齿轮会顶出侧栏外沿。 */ ''}
       <div class="satu-userrow" style="display: flex; align-items: center; gap: var(--space-2); box-sizing: border-box; width: 100%; padding: var(--space-3); margin-top: var(--space-2); border-top: 1px solid var(--color-divider);">
@@ -353,13 +358,14 @@ function render() {
     return
   }
   root.innerHTML = state.me ? appView() : anonView()
-  // 进来时要落在首页哪一段（见 app.js 的 boot：老的 /download 地址和 /#download）。
+  // 进来时要落在首页哪一段（见 app.js 的 foldDownload：老的 /download 地址和 /#download）。
   // 只在第一次画完时跳一次，不管这一帧画的是不是首页——否则登录进来、再登出回到首页
   // 时它还挂着，会莫名其妙把人拽到页底。
   if (state.lpJump) {
     const at = document.getElementById(state.lpJump)
     state.lpJump = ''
     at?.scrollIntoView({ block: 'start' })
+    at?.focus?.({ preventScroll: true })
   }
   // 对话页的正文不在 appView 里——chatPage 只搭空壳，消息由 paintChat 增量填。
   // 整页重绘会把那个壳换掉，所以每次 render 之后要补一次。
@@ -368,6 +374,8 @@ function render() {
     // 输入框上下那三块（排队 dock、已选的 @ 药丸、选单）同样是空壳 + 增量填。
     paintChatQueue()
     paintChatMentions()
+    // 附件那一栏同理。漏了它，发送时那次 render 一换壳，「正在传」的附件就从眼前消失了。
+    paintChatFiles()
     paintMentionPick()
     // 命令选单也在这三块里。漏掉它的话，重绘之后 state.cmdPick 还开着、DOM 里却空了——
     // 上下键选不动（一条候选都查不到），回车穿到发送那条路上去。
@@ -505,7 +513,10 @@ async function onLogin(e) {
   } catch (err) {
     clearToken()
     state.me = null
-    state.loginError = err.message || '登录失败'
+    // 429：连续输错被限流（服务端的话里带着要等多久）。补一句为什么、以及忘了口令怎么办。
+    state.loginError = err.status === 429
+      ? `${err.message} ${t('为保护账号，连续输错口令会暂时锁定；忘了口令请找管理员重置。', 'Repeated wrong passwords lock sign-in for a while to protect the account; if you forgot it, ask an admin to reset it.')}`
+      : err.message || '登录失败'
   } finally {
     state.busy = false
     render()
@@ -1163,28 +1174,58 @@ async function updateMachineRuntime(machineId, reflow) {
      * 失败里的话，一次「中午大家都在用」会被报成一片红，人会去查根本不存在的故障。
      */
     const held = results.filter((r) => r.busy).length
-    const bad = results.filter((r) => !r.busy && (r.error || r.status === 'error')).length
-    const tail = held ? t(`，${held} 个有会话在跑没换`, `, ${held} skipped (busy)`) : ''
+    // 还没轮到的（202 + queued）：服务端在后台一个一个往下推，不算成功也不算失败——
+    // 席位表上画「排队中」，下面那条轮询把表刷到它们都落地。
+    const waiting = results.filter((r) => r.queued).length
+    const bad = results.filter((r) => !r.busy && !r.queued && (r.error || r.status === 'error')).length
+    const tail =
+      (held ? t(`，${held} 个有会话在跑没换`, `, ${held} skipped (busy)`) : '') +
+      (waiting ? t(`，${waiting} 个在后台排队`, `, ${waiting} queued in the background`) : '')
+    const tone = bad && !ok && !waiting ? 'err' : 'ok'
     if (!results.length) flash('ok', t('没有需要更新的席位', 'No seats needed updating'))
     else if (reflow)
       // 重铺没有「统一的那个版本」（每个席位各是各的），所以这一句里不摆版本号——
       // 摆一个就是在暗示所有席位都变成了它。
-      flash(
-        bad && !ok ? 'err' : 'ok',
-        t(`重铺：成功 ${ok}，失败 ${bad}`, `Reinstalled: ${ok} ok, ${bad} failed`) + tail,
-      )
+      flash(tone, t(`重铺：成功 ${ok}，失败 ${bad}`, `Reinstalled: ${ok} ok, ${bad} failed`) + tail)
     else
-      flash(
-        bad && !ok ? 'err' : 'ok',
-        t(`更新 ${data.version}：成功 ${ok}，失败 ${bad}`, `Updated ${data.version}: ${ok} ok, ${bad} failed`) + tail,
-      )
+      flash(tone, t(`更新 ${data.version}：成功 ${ok}，失败 ${bad}`, `Updated ${data.version}: ${ok} ok, ${bad} failed`) + tail)
     await loadMachineDetail(machineId)
+    if (waiting) watchMachineSeats(machineId)
   } catch (err) {
     flash('err', err.message)
   } finally {
     state.updatingRuntime = false
     render()
   }
+}
+
+/**
+ * 批量更新排了队之后，把这台机器的详情刷到席位都落地为止。
+ *
+ * **这不是一个长明的定时器**：没有排队、没有在装的席位就停；人离开这台机器的详情页也停；
+ * 最多看半小时（首装十几分钟，再久就是真卡住了，表上照样看得见）。五秒一轮：一个席位
+ * 重铺也就十几秒，再密只是白问。
+ */
+let machineSeatWatch = null
+function watchMachineSeats(machineId) {
+  if (machineSeatWatch) clearInterval(machineSeatWatch)
+  const until = Date.now() + 30 * 60_000
+  machineSeatWatch = setInterval(async () => {
+    const here = state.machineDetail?.machine?.id === machineId
+    const seats = (here && state.machineDetail.seatList) || []
+    const moving = seats.some((s) => s.queued || s.status === 'deploying')
+    if (!here || !moving || Date.now() > until) {
+      clearInterval(machineSeatWatch)
+      machineSeatWatch = null
+      return
+    }
+    if (document.hidden || state.busy) return
+    try {
+      await loadMachineDetail(machineId)
+      render()
+    } catch {}
+  }, 5000)
+  if (machineSeatWatch && typeof machineSeatWatch.unref === 'function') machineSeatWatch.unref()
 }
 
 /**
@@ -1211,12 +1252,18 @@ async function redeploySeat(orgId, accountId, botId) {
     // 席位那侧把失败写在 lastError 里，状态码仍是 200 的情况是有的（部署登记成了、
     // 机器上没成）。照实说，别一律报「已重新部署」。
     if (rt && rt.status === 'error') flash('err', rt.lastError || t('部署失败'))
+    // 服务端等不到装完就先回了（202 + installing）：在后台装，表上会自己刷到落地。
+    else if (rt && rt.installing) flash('ok', t('已开始重新部署，在后台装', 'Redeploy started in the background'))
     else flash('ok', t('已重新部署', 'Redeployed'))
   } catch (err) {
     flash('err', err.message)
   } finally {
     state.busy = false
-    if (state.machineDetail?.machine?.id) await loadMachineDetail(state.machineDetail.machine.id).catch(() => {})
+    const mid = state.machineDetail?.machine?.id
+    if (mid) {
+      await loadMachineDetail(mid).catch(() => {})
+      watchMachineSeats(mid)
+    }
     render()
   }
 }
@@ -1955,7 +2002,9 @@ async function submitJoin(e) {
     history.replaceState({}, '', '/')
     await loadPage()
   } catch (err) {
-    state.joinError = err.message || '加入失败'
+    state.joinError = err.status === 429
+      ? `${err.message} ${t('这台设备最近失败的尝试太多，稍后再打开邀请链接。', 'Too many failed attempts from this device recently; open the invite link again later.')}`
+      : err.message || '加入失败'
   } finally {
     state.busy = false
     render()

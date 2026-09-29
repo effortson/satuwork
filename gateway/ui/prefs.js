@@ -96,6 +96,8 @@ function errText(msg) {
   // 带数字的那几句进不了字典（键是变的），在这里按模式翻。
   const queued = msg.match(/^还有 (\d+) 条消息排着队，先取消它们再开新对话$/)
   if (queued) return `${queued[1]} message(s) are still queued — cancel them before starting a new conversation.`
+  const throttled = msg.match(/^尝试次数太多，请 (\d+) (秒|分钟)后再试$/)
+  if (throttled) return `Too many attempts — try again in ${throttled[1]} ${throttled[2] === '秒' ? 'seconds' : 'minutes'}.`
   return msg
 }
 
@@ -120,6 +122,9 @@ const PATHS = {
   // 画的是 legalView，和登录状态无关，从来走不到 appView 的标题栏。
   '/privacy': { title: '隐私政策' },
   '/terms': { title: '服务条款' },
+  // 应用内的「下载桌面端」（pages-landing.js 的 downloadPage），登录之后才走得到——没登录
+  // 的人被 app.js 的 foldDownload 折到首页那一段。
+  '/download': { title: '下载桌面端' },
   '/models': { title: '模型配置' },
   '/tools': { title: '工具配置' },
   '/providers': { title: '供应商' },
@@ -183,33 +188,102 @@ const ICONS = {
 /**
  * Bot 头像。两个层级各八个，两套不重合。
  *
- * 底板形状就是层级：公司是圆角方牌，全局是六边牌 + 一圈内环。混在同一张列表里
- * （公司的 Bot 页会同时列出两种）扫一眼就能分开，不用去看那个「全局」小标。
- * 颜色只是帮衬——深浅主题下色相会变，形状不会。
+ * 公司 Bot 是有表情和配饰的小角色；全局 Bot 仍用六边牌 + 内环表示平台能力。
+ * 键沿用旧值，已经选过头像的 Bot 会直接看到新版插画。
  *
  * 每个头像是一整张图（底板填色 + 上面的线条），不是一枚线框图标；所以外面不用再
  * 套一层带背景的 .satu-providermark。
  */
-const BOT_AVATAR_TILE = {
-  // 圆角方牌。
-  company: '<rect x="2" y="2" width="36" height="36" rx="11"/>',
-  // 六边牌：顶点朝上下，和方牌在任何尺寸下都不会看混。
-  global: '<path d="M20 1.8 35.8 10.9v18.2L20 38.2 4.2 29.1V10.9z"/>',
-}
+const BOT_AVATAR_TILE = '<path d="M20 1.8 35.8 10.9v18.2L20 38.2 4.2 29.1V10.9z"/>'
 
 /** 全局那套多一圈内环，进一步跟公司那套拉开。 */
 const BOT_AVATAR_RING = '<path d="M20 6.6 31.1 13v12.8L20 32.2 8.9 25.8V13z" fill="none" stroke-width="1.4" opacity="0.45"/>'
 
+// 公司头像是完整的小插画。轮廓和五官都画在 40px 画布上，缩到列表里的 30px 也能辨认。
+const COMPANY_AVATAR_ART = {
+  'c-bot': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#FFE8D9"/>
+    <path d="M11 33c1-5 5-7 9-7s8 2 9 7v5H11z" fill="#F28A70"/>
+    <path d="M20 10V7" stroke="#714A48" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="20" cy="6" r="2.3" fill="#F7B650"/>
+    <rect x="8" y="13" width="24" height="17" rx="8" fill="#FFF9F1" stroke="#714A48" stroke-width="1.5"/>
+    <circle cx="7.5" cy="21" r="2" fill="#F7B650"/><circle cx="32.5" cy="21" r="2" fill="#F7B650"/>
+    <circle cx="15" cy="21" r="1.5" fill="#493C44"/><circle cx="25" cy="21" r="1.5" fill="#493C44"/>
+    <circle cx="11.5" cy="25" r="2" fill="#FFB5AB"/><circle cx="28.5" cy="25" r="2" fill="#FFB5AB"/>
+    <path d="M17 25c1.6 2 4.4 2 6 0" fill="none" stroke="#714A48" stroke-width="1.5" stroke-linecap="round"/>`,
+  'c-chat': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#DDF3F5"/>
+    <path d="M10 37c0-6 4-9 10-9s10 3 10 9" fill="#76B8C7"/>
+    <circle cx="20" cy="20" r="11" fill="#FFF8EE"/>
+    <path d="M9 21v-3a11 11 0 0 1 22 0v3" fill="none" stroke="#428BA5" stroke-width="3" stroke-linecap="round"/>
+    <rect x="7" y="19" width="4" height="8" rx="2" fill="#428BA5"/><rect x="29" y="19" width="4" height="8" rx="2" fill="#428BA5"/>
+    <circle cx="16" cy="21" r="1.5" fill="#3F4A55"/><circle cx="24" cy="21" r="1.5" fill="#3F4A55"/>
+    <path d="M17 26c2 1.5 4 1.5 6 0M30 27c0 3-3 4-6 4" fill="none" stroke="#428BA5" stroke-width="1.6" stroke-linecap="round"/>
+    <circle cx="23.5" cy="31" r="1.5" fill="#428BA5"/>`,
+  'c-chart': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#FFF1CE"/>
+    <path d="M10 38c0-6 4-9 10-9s10 3 10 9" fill="#E8B65C"/>
+    <circle cx="11" cy="14" r="4" fill="#C47E49"/><circle cx="29" cy="14" r="4" fill="#C47E49"/>
+    <rect x="9" y="11" width="22" height="20" rx="10" fill="#F8D9A8"/>
+    <circle cx="16" cy="21" r="4" fill="#FFFDF5" stroke="#66514B" stroke-width="1.5"/>
+    <circle cx="24" cy="21" r="4" fill="#FFFDF5" stroke="#66514B" stroke-width="1.5"/>
+    <path d="M20 20h0" stroke="#66514B" stroke-width="1.5"/>
+    <circle cx="16" cy="21" r="1.2" fill="#443C3C"/><circle cx="24" cy="21" r="1.2" fill="#443C3C"/>
+    <path d="M18 27q2 2 4 0" fill="none" stroke="#66514B" stroke-width="1.4" stroke-linecap="round"/>
+    <path d="M17 34v3m3-5v5m3-2v2" stroke="#FFF7E4" stroke-width="1.4" stroke-linecap="round"/>`,
+  'c-pen': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#EFE6FA"/>
+    <path d="M9 38c0-6 5-9 11-9s11 3 11 9" fill="#A991CF"/>
+    <path d="M10 16c0-7 4-11 10-11s10 4 10 11" fill="#684E86"/>
+    <circle cx="20" cy="21" r="11" fill="#FFE9D3"/>
+    <path d="M9 17c1-8 6-11 12-11 4 0 8 3 10 9-5-2-7-4-8-6-2 4-7 7-14 8" fill="#684E86"/>
+    <path d="M15 22h2m6 0h2" stroke="#4D3E50" stroke-width="2" stroke-linecap="round"/>
+    <path d="M18 27q2 2 4 0" fill="none" stroke="#9B5B66" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M27 35l6-9 2 2-6 9-3 1z" fill="#F5B85A" stroke="#684E86" stroke-width="1"/>`,
+  'c-deal': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#FFE5DC"/>
+    <path d="M10 38c0-6 4-9 10-9s10 3 10 9" fill="#E97D69"/>
+    <path d="M9 20 10 9l7 5m14 6L30 9l-7 5" fill="#D56A52" stroke="#985244" stroke-width="1.2" stroke-linejoin="round"/>
+    <path d="M10 17c2-6 6-8 10-8s8 2 10 8l1 7c-2 5-6 8-11 8s-9-3-11-8z" fill="#F6A477"/>
+    <path d="M12 23c1-3 4-4 8-2 4-2 7-1 8 2-1 5-4 8-8 8s-7-3-8-8" fill="#FFF6E9"/>
+    <path d="M14 21h3m6 0h3" stroke="#5B4341" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M18 25h4l-2 2z" fill="#6B4B48"/>
+    <circle cx="15" cy="26" r="1.5" fill="#F7B4A9"/><circle cx="25" cy="26" r="1.5" fill="#F7B4A9"/>`,
+  'c-code': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#DEF4E8"/>
+    <path d="M9 38c0-6 5-9 11-9s11 3 11 9" fill="#75BCA4"/>
+    <path d="M9 16c0-6 5-9 11-9s11 3 11 9v7c0 6-5 10-11 10S9 29 9 23z" fill="#E6BC91"/>
+    <path d="M8 17c0-7 5-11 12-11s12 4 12 11c-4-1-7-3-9-6-3 4-8 6-15 6" fill="#3C655F"/>
+    <rect x="11" y="19" width="8" height="6" rx="2.5" fill="#FFFDF4" stroke="#3C655F" stroke-width="1.4"/>
+    <rect x="21" y="19" width="8" height="6" rx="2.5" fill="#FFFDF4" stroke="#3C655F" stroke-width="1.4"/>
+    <path d="M19 21h2" stroke="#3C655F" stroke-width="1.4"/>
+    <circle cx="15" cy="22" r="1.1" fill="#344640"/><circle cx="25" cy="22" r="1.1" fill="#344640"/>
+    <path d="M18 28q2 1.5 4 0" fill="none" stroke="#76594B" stroke-width="1.4" stroke-linecap="round"/>
+    <path d="m16 34-2 2 2 2m8-4 2 2-2 2" fill="none" stroke="#F5FFF9" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>`,
+  'c-flow': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#E5ECFF"/>
+    <path d="M10 38c0-6 4-9 10-9s10 3 10 9" fill="#899EDD"/>
+    <circle cx="8" cy="22" r="3" fill="#8198D6"/><circle cx="32" cy="22" r="3" fill="#8198D6"/>
+    <rect x="9" y="11" width="22" height="21" rx="8" fill="#F8F7FF" stroke="#6279BA" stroke-width="1.5"/>
+    <path d="M14 10V7m12 3V7" stroke="#6279BA" stroke-width="1.7" stroke-linecap="round"/>
+    <circle cx="14" cy="6" r="2" fill="#F2B96E"/><circle cx="26" cy="6" r="2" fill="#F2B96E"/>
+    <rect x="13" y="19" width="5" height="5" rx="2.5" fill="#6279BA"/>
+    <rect x="22" y="19" width="5" height="5" rx="2.5" fill="#6279BA"/>
+    <path d="M17 27q3 2 6 0" fill="none" stroke="#6279BA" stroke-width="1.4" stroke-linecap="round"/>
+    <circle cx="20" cy="35" r="2" fill="#F2B96E"/>`,
+  'c-book': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#FCECD9"/>
+    <path d="M9 38c0-6 4-9 11-9s11 3 11 9" fill="#B08C77"/>
+    <path d="M9 17 7 8l9 4m15 5 2-9-9 4" fill="#8E6D61"/>
+    <path d="M9 19c0-7 5-11 11-11s11 4 11 11v4c0 6-5 10-11 10S9 29 9 23z" fill="#CFAB8B"/>
+    <path d="M11 20c0-4 3-6 7-5l2 3 2-3c4-1 7 1 7 5-1 6-4 10-9 10s-8-4-9-10" fill="#FFF5E8"/>
+    <circle cx="16" cy="21" r="2" fill="#4E4544"/><circle cx="24" cy="21" r="2" fill="#4E4544"/>
+    <path d="m18 25 2 2 2-2z" fill="#E7A063"/>
+    <path d="M14 34c3-1 5 0 6 2 1-2 3-3 6-2v4c-3-1-5 0-6 1-1-1-3-2-6-1z" fill="#FFF9ED" stroke="#8E6D61" stroke-width="1"/>`,
+}
+
 const BOT_AVATARS = {
   // ── 公司：日常岗位。─────────────────────────────────────────────
-  'c-bot': { family: 'company', label: '助理', glyph: ['M13 16h14v10a2 2 0 0 1-2 2H15a2 2 0 0 1-2-2z', 'M20 11v5', 'M20 9.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6z', 'M17 21h.02', 'M23 21h.02'] },
-  'c-chat': { family: 'company', label: '客服', glyph: ['M11 14h18v10h-4l-5 4v-4h-9z', 'M16 19h.02', 'M20 19h.02', 'M24 19h.02'] },
-  'c-chart': { family: 'company', label: '分析', glyph: ['M12 27h16', 'M16 27v-7', 'M20 27V13', 'M24 27v-10'] },
-  'c-pen': { family: 'company', label: '文案', glyph: ['M12 28h16', 'M25.5 11.5a2.1 2.1 0 0 1 3 3L18 25l-4 1 1-4z'] },
-  'c-deal': { family: 'company', label: '销售', glyph: ['M12 24l5-5 4 4 7-8', 'M23 15h5v5'] },
-  'c-code': { family: 'company', label: '研发', glyph: ['M16 15l-5 5 5 5', 'M24 15l5 5-5 5', 'M22 13l-4 14'] },
-  'c-flow': { family: 'company', label: '调度', glyph: ['M13 13h6v6h-6z', 'M21 21h6v6h-6z', 'M16 19v5h5'] },
-  'c-book': { family: 'company', label: '知识', glyph: ['M12 13h7a3 3 0 0 1 3 3v12a3 3 0 0 0-3-3h-7z', 'M28 13h-6a3 3 0 0 0-3 3v12a3 3 0 0 1 3-3h6z'] },
+  'c-bot': { family: 'company', label: '助理' },
+  'c-chat': { family: 'company', label: '客服' },
+  'c-chart': { family: 'company', label: '分析' },
+  'c-pen': { family: 'company', label: '文案' },
+  'c-deal': { family: 'company', label: '销售' },
+  'c-code': { family: 'company', label: '研发' },
+  'c-flow': { family: 'company', label: '调度' },
+  'c-book': { family: 'company', label: '知识' },
 
   // ── 全局：平台级能力。──────────────────────────────────────────
   'g-core': { family: 'global', label: '核心', glyph: ['M20 15.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z', 'M20 11v3', 'M20 26v3', 'M14.3 14.3l2.1 2.1', 'M23.6 23.6l2.1 2.1', 'M25.7 14.3l-2.1 2.1', 'M16.4 23.6l-2.1 2.1'] },
@@ -234,17 +308,21 @@ function avatarKeysFor(origin) {
 
 /**
  * 画一个头像。origin 决定层级（拿不准就按 key 前缀猜），key 决定画哪一个。
- * 颜色走主题变量，深浅色都成立。
+ * 公司头像用固定的插画配色；全局头像沿用主题色。
  */
 function botAvatar(key, size = 34, origin) {
   const k = LEGACY_AVATARS[key] || key
   const a = BOT_AVATARS[k]
   const fam = a ? a.family : origin === 'global' || String(k).startsWith('g-') ? 'global' : 'company'
   const def = a || BOT_AVATARS[fam === 'global' ? 'g-core' : 'c-bot']
-  const bg = fam === 'global' ? 'var(--color-accent-2-200)' : 'var(--color-accent-200)'
-  const fg = fam === 'global' ? 'var(--color-accent-2-800)' : 'var(--color-accent-800)'
-  const tile = BOT_AVATAR_TILE[fam].replace('/>', ` fill="${bg}"/>`)
-  const ring = fam === 'global' ? BOT_AVATAR_RING.replace('stroke-width', `stroke="${fg}" stroke-width`) : ''
+  if (fam === 'company') {
+    const art = COMPANY_AVATAR_ART[a?.family === 'company' ? k : 'c-bot']
+    return `<svg width="${size}" height="${size}" viewBox="0 0 40 40" role="img" aria-label="${esc(t(def.label))}" style="flex: none; display: block;">${art}</svg>`
+  }
+  const bg = 'var(--color-accent-2-200)'
+  const fg = 'var(--color-accent-2-800)'
+  const tile = BOT_AVATAR_TILE.replace('/>', ` fill="${bg}"/>`)
+  const ring = BOT_AVATAR_RING.replace('stroke-width', `stroke="${fg}" stroke-width`)
   const glyph = def.glyph.map((d) => `<path d="${esc(d)}"/>`).join('')
   return `<svg width="${size}" height="${size}" viewBox="0 0 40 40" role="img" aria-label="${esc(t(def.label))}" style="flex: none; display: block;">
     ${tile}${ring}

@@ -88,4 +88,82 @@ const out = {}
   out.exhausted = { hasMore: r.hasMore, 轮数: r.events.filter((e) => e.type === 'turn/start').length }
 }
 
+// ── SSE：重放期间断开，监听器照样摘掉 ─────────────────────────────────
+/**
+ * close 的监听器以前挂在重放**之后**：重放慢、客户端在那期间断开的话，close 早就发过了，
+ * off()/offQueue() 从此没人调——每次重连在进程里留一个死监听器。流也没有 cancel。
+ * 拿一个假 ctx 起真的 sse()，数监听器。
+ */
+{
+  const { EventEmitter } = await import('node:events')
+  const { sse } = await import('./src/web/index.ts')
+  const fakeCtx = (gate) => {
+    const listeners = new Set()
+    return {
+      listeners,
+      ctx: {
+        logger: { info() {}, warn() {} },
+        on(_name, fn) {
+          listeners.add(fn)
+          return () => listeners.delete(fn)
+        },
+        sessions: {
+          async events() {
+            await gate
+            return conversation(2)
+          },
+        },
+        agents: { isRunning: () => false, queued: () => [] },
+      },
+    }
+  }
+  const tick = (ms) => new Promise((r) => setTimeout(r, ms))
+
+  // 1. 重放中途断开（socket 先断、close 先发）。
+  let release
+  const a = fakeCtx(new Promise((r) => (release = r)))
+  const resA = new EventEmitter()
+  const bodyA = sse(a.ctx, 's', 0, { _res: resA }, 5).body
+  await tick(20)
+  const duringA = a.listeners.size
+  resA.destroyed = true
+  resA.emit('close')
+  release()
+  await tick(20)
+
+  // 2. 读的那头 cancel（fetch 被 abort）。
+  let releaseB
+  const b = fakeCtx(new Promise((r) => (releaseB = r)))
+  const resB = new EventEmitter()
+  const bodyB = sse(b.ctx, 's', 0, { _res: resB }, 5).body
+  await tick(20)
+  await bodyB.cancel()
+  const afterCancel = b.listeners.size
+  releaseB()
+  await tick(20)
+
+  // 3. 正常放完、之后才断开：照旧摘掉。
+  const c = fakeCtx(Promise.resolve())
+  const resC = new EventEmitter()
+  const bodyC = sse(c.ctx, 's', 0, { _res: resC }, 5).body
+  const reader = bodyC.getReader()
+  let text = ''
+  while (!text.includes('replay/done')) {
+    const { value, done } = await reader.read()
+    if (done) break
+    text += new TextDecoder().decode(value)
+  }
+  const liveC = c.listeners.size
+  resC.emit('close')
+  await tick(10)
+
+  out.sseClose = {
+    重放时挂着两个监听: duringA === 2,
+    重放中途断开也摘掉了: a.listeners.size === 0,
+    cancel也摘掉了: afterCancel === 0 && b.listeners.size === 0,
+    正常放完时还挂着: liveC === 2,
+    放完之后断开也摘掉了: c.listeners.size === 0,
+  }
+}
+
 console.log('__RESULT__' + JSON.stringify(out))

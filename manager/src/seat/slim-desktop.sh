@@ -11,6 +11,9 @@
 set -euo pipefail
 SEAT_ID="${1:-}"
 [ -n "$SEAT_ID" ] || { echo "usage: slim-desktop.sh <seatId>" >&2; exit 1; }
+case "$SEAT_ID" in
+  *[!A-Za-z0-9_-]*) echo "bad seat id: '$SEAT_ID'" >&2; exit 1 ;;
+esac
 : "${SEAT_DIR:?SEAT_DIR unset - check /etc/systemd/system/slim-desktop@${SEAT_ID}.service.d/seat.conf}"
 : "${HOME:?HOME unset - same drop-in}"
 
@@ -31,13 +34,25 @@ export XDG_SESSION_TYPE=x11
 export GDK_BACKEND=x11
 # logind（PAMName=login）会把 XDG_RUNTIME_DIR 设成 /run/user/<uid>，那是**按 uid**
 # 的，同一员工的两块屏会撞在一起。改成按席位。
-export XDG_RUNTIME_DIR="/tmp/xdg-runtime-${SEAT_ID}"
+#
+# 目录由 systemd 以 root 建（drop-in 里的 RuntimeDirectory=，见 deploy-seat.sh step 4），这里
+# **只核对、不建**。以前是这里自己在 /tmp 下 mkdir 再 `chmod 700 || true`：别的账号抢先建好
+# /tmp/xdg-runtime-<席位>，chmod 失败被吞掉，dbus / dconf / Chrome 的 socket 就全落进别人的
+# 目录。宁可起不来，也不在一个不归自己的目录里起总线。
+export XDG_RUNTIME_DIR="/run/satuwork/${SEAT_ID}"
+if [ -L "$XDG_RUNTIME_DIR" ] || [ ! -d "$XDG_RUNTIME_DIR" ] \
+  || [ "$(stat -c %u:%a "$XDG_RUNTIME_DIR")" != "$(id -u):700" ] \
+  || [ "$(stat -c %u "/run/satuwork")" != 0 ] || [ -n "$(find /run/satuwork -maxdepth 0 -perm /022)" ]; then
+  echo "refusing: 运行时目录 $XDG_RUNTIME_DIR 不在、不归 $(id -un)、不是 0700，或者上层不是 root 独占可写的：" >&2
+  ls -ld /run/satuwork "$XDG_RUNTIME_DIR" >&2 || true
+  echo "它该由 systemd 建（slim-desktop@${SEAT_ID}.service.d/seat.conf 里的 RuntimeDirectory=）；老部署的席位重新部署一次。" >&2
+  exit 1
+fi
 export XDG_CONFIG_HOME="$SEAT_DIR/config"
 export XDG_DATA_HOME="$SEAT_DIR/share"
 export XDG_CACHE_HOME="$SEAT_DIR/cache"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME/picom" "$XDG_CONFIG_HOME/plank/dock1/launchers" \
+mkdir -p "$XDG_CONFIG_HOME/picom" "$XDG_CONFIG_HOME/plank/dock1/launchers" \
   "$XDG_DATA_HOME/applications" "$XDG_CACHE_HOME" "$SEAT_DIR/bin" "$SEAT_DIR/chrome"
-chmod 700 "$XDG_RUNTIME_DIR" || true
 
 # ── 清掉上一轮的残留 ────────────────────────────────────────────────
 # **这一段不能省。** 本单元是 PAMName=login 起的，Xvfb / x11vnc / websockify 会落进
@@ -101,7 +116,33 @@ eval "$(dbus-launch --sh-syntax)"
 printf '%s\n' "${DBUS_SESSION_BUS_PID:-}" > "$DBUS_PIDFILE"
 trap 'kill "${DBUS_SESSION_BUS_PID:-}" 2>/dev/null || true; rm -f "$DBUS_PIDFILE"' EXIT
 trap 'exit 143' TERM
-Xvfb "$DISPLAY" -screen 0 1280x800x24 -ac +extension GLX +render -noreset &
+# ── X 的门禁：每个席位一张**自己的** MIT-MAGIC-COOKIE ────────────────────
+# 这里以前是 `Xvfb ... -ac`，也就是**关掉 X 的访问控制**。/tmp/.X11-unix/X<N> 谁都连得
+# 上，于是同一台机器上另一个员工（另一个 Linux 账号，他的 Bot 能跑 shell）一句
+# `DISPLAY=:11 xdotool type ...` 就能往这块屏的终端里打字，`import -window root` 就能
+# 截走屏上的一切——包括员工登录着的网页。
+#
+# 现在 Xvfb 只认 -auth 那份文件里的 cookie。文件在席位目录里、0600、归席位账号，别的
+# 账号读不到也就连不上。每次起屏换一张新的：上一轮泄出去的 cookie（如果有）跟着作废。
+# XAUTHORITY 一 export，下面起的每一样（xdpyinfo、x11vnc、xfwm4、picom、plank、从 dock
+# 点开的 Chrome/终端）都自己会去读它；Bot 那边 bot.env 里有同一条（deploy-seat.sh），
+# 它拉起的 Chrome 和 terminal 里的 X 工具走的是那一份。
+export XAUTHORITY="$SEAT_DIR/Xauthority"
+# -c / -l 是 xauth 自己的锁。上一轮在写文件的半路被杀掉会留下它们，而 xauth 见锁就等、
+# 等不到就失败——set -e 下整块屏起不来。这一刻本席位还没有别人在写这份文件，直接删。
+rm -f "$XAUTHORITY" "$XAUTHORITY-c" "$XAUTHORITY-l"
+# 再补一条「任意主机名」（family ffff）的同一张 cookie：`xauth add :N` 记的是**此刻的**
+# 主机名，客户端按主机名去查。开机时 cloud-init 改主机名、或者人手工改过的话，之后起的
+# 客户端就查不到，表现是 Chrome / 终端点了没反应——没有 cookie 可比没有 -ac 更难查。
+(
+  umask 077
+  # 先建空文件：不然 xauth 每次都往 journal 里吼一句「file does not exist」。
+  : > "$XAUTHORITY"
+  xauth -q -f "$XAUTHORITY" add "$DISPLAY" . "$(mcookie)"
+  xauth -q -f "$XAUTHORITY" nlist "$DISPLAY" | sed -e 's/^..../ffff/' | xauth -q -f "$XAUTHORITY" nmerge -
+)
+chmod 600 "$XAUTHORITY"
+Xvfb "$DISPLAY" -screen 0 1280x800x24 -auth "$XAUTHORITY" +extension GLX +render -noreset &
 XVFB_PID=$!
 ready=0
 for _ in $(seq 1 50); do
@@ -115,15 +156,22 @@ PASSFILE="$SEAT_DIR/vnc-passwd"
 # 发的口令固定 16 位），x11vnc 用 -passwdfile 读；老席位留下的是 `x11vnc -storepasswd`
 # 生成的 DES 文件，恰好 8 字节、没有换行，还得用 -rfbauth。这样管家升级之后没重铺过
 # 的席位重启照样能连——这份脚本是全机共享的，不能只认新格式。
+# -auth 显式给一遍：x11vnc 自己也认 XAUTHORITY，但它有一套「猜 display 管理器的 cookie
+# 在哪」的逻辑，写明了就不用赌它猜对。
 if [ "$(stat -c %s "$PASSFILE" 2>/dev/null || echo 0)" = 8 ]; then
-  x11vnc -display "$DISPLAY" -localhost -rfbauth "$PASSFILE" -shared -forever -noxdamage -rfbport "$RFB" &
+  x11vnc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -rfbauth "$PASSFILE" -shared -forever -noxdamage -rfbport "$RFB" &
 else
-  x11vnc -display "$DISPLAY" -localhost -passwdfile "$PASSFILE" -shared -forever -noxdamage -rfbport "$RFB" &
+  x11vnc -display "$DISPLAY" -auth "$XAUTHORITY" -localhost -passwdfile "$PASSFILE" -shared -forever -noxdamage -rfbport "$RFB" &
 fi
+X11VNC_PID=$!
 NOVNC_WEB="/usr/share/novnc"
 # 只听回环：对外那一跳由管家反代，并且要过 Gateway 签的桌面票。绑 0.0.0.0 会让
 # 6081+N 直接暴露在网上，票就白验了——停用的员工照样能连上桌面。
-websockify --web="$NOVNC_WEB" --heartbeat=30 "127.0.0.1:${HTTP}" "localhost:${RFB}" &
+# 后端写死 127.0.0.1，不写 localhost：别的账号先占了 127.0.0.1:RFB 时，x11vnc -localhost 只绑得上
+# [::1]，照样「起来了」；而 localhost 先解析到 127.0.0.1，websockify 就把人送进了别人的 VNC。
+# 下面 require_listener 核的正是 127.0.0.1 这一个口。
+websockify --web="$NOVNC_WEB" --heartbeat=30 "127.0.0.1:${HTTP}" "127.0.0.1:${RFB}" &
+WEBSOCKIFY_PID=$!
 
 # ── 起来了没有？没起来就必须**失败**，不能接着往下跑 ──────────────────
 # 这两条以前是 `&` 扔到后台就不管了。于是端口被别人占着时：websockify 起不来、直接
@@ -134,20 +182,57 @@ websockify --web="$NOVNC_WEB" --heartbeat=30 "127.0.0.1:${HTTP}" "localhost:${RF
 #
 # 「装作成功」是这里最贵的失败方式：它把一个一眼能看出的端口冲突，变成了一个要翻
 # ps 才找得到的谜。宁可让这个单元 failed——那至少会写进 lastError 报回 Gateway。
+#
+# **「口上有人在听」不够，得是我们刚起的那一个在听。** 以前只看 `ss -ltn` 里有没有这个口：
+# 同机别的账号抢先蹲在 5910+N 上，这一步照样通过，界面上报 ready，而「打开桌面」连进的是
+# 它那一套。所以按 pid 认：监听这个口的必须是上面 `&` 起的那个进程（或者它的子孙——防着哪天
+# 换成一个会 fork 的包装）。以席位用户跑的 `ss -ltnp` 只给得出**自己 uid** 的 pid，别的账号
+# 的监听在这里看不到 pid，也就认不成我们的。父子关系是内核记的，谁也伪造不了。
+#
+# **看的是 IPv4 回环那一个口**（以及通配地址：蹲在 0.0.0.0 上的同样接得到 127.0.0.1 的连接）。
+# 光看端口号会被这样骗过去：别的账号先占 127.0.0.1:5910，x11vnc -localhost 退而只绑 [::1]:5910，
+# 端口上「有我们的进程」——而 websockify 和管家连的都是 127.0.0.1。所以这几个地址上的监听
+# 必须**全是**我们的，而且至少有一个；[::1] 上的不算数。
+is_ours() {
+  local pid="$1" want="$2" _
+  for _ in 1 2 3 4 5 6 7 8; do
+    [ "$pid" = "$want" ] && return 0
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+    case "$pid" in
+      '' | 0 | 1) return 1 ;;
+    esac
+  done
+  return 1
+}
+listener_is_ours() {
+  local port="$1" want="$2" local_addr rest pid seen=0
+  while read -r _ _ _ local_addr _ rest; do
+    case "$local_addr" in
+      "127.0.0.1:$port" | "0.0.0.0:$port" | "*:$port" | "[::]:$port" | "[::ffff:127.0.0.1]:$port") ;;
+      *) continue ;;
+    esac
+    pid=$(printf '%s' "$rest" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)
+    [ -n "$pid" ] && is_ours "$pid" "$want" || return 1
+    seen=1
+  done < <(ss -ltnpH "sport = :$port" 2>/dev/null || true)
+  [ "$seen" = 1 ]
+}
 require_listener() {
-  local port="$1" what="$2"
+  local port="$1" what="$2" want="$3"
   for _ in $(seq 1 40); do
-    if ss -ltn 2>/dev/null | grep -qE ":${port}\b"; then return 0; fi
+    if listener_is_ours "$port" "$want"; then return 0; fi
+    # 我们的进程已经退了（多半是口被占着、bind 失败）：不必再等满十秒。
+    kill -0 "$want" 2>/dev/null || break
     sleep 0.25
   done
-  echo "$what 没能在端口 $port 上起来。" >&2
-  echo "端口很可能被这台机器上别的进程占着（另一套 VNC / 上一轮的残留）：" >&2
+  echo "$what 没能在端口 $port 上起来（或者在听这个口的不是本席位刚起的那个进程 $want）。" >&2
+  echo "端口很可能被这台机器上别的进程占着（另一套 VNC / 上一轮的残留 / 别的账号）：" >&2
   ss -ltnp 2>/dev/null | grep -E ":${port}\b" >&2 || true
   ps -eo pid,user,cmd 2>/dev/null | grep -E "x11vnc|websockify" | grep -v grep >&2 || true
   exit 1
 }
-require_listener "$RFB" x11vnc
-require_listener "$HTTP" websockify
+require_listener "$RFB" x11vnc "$X11VNC_PID"
+require_listener "$HTTP" websockify "$WEBSOCKIFY_PID"
 xfwm4 --compositor=off &
 for _ in $(seq 1 40); do
   xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1 && break
@@ -168,6 +253,12 @@ if [ -n "$CHROME_BIN" ]; then
   # 「开个标签页」发给第一个实例然后自己退出——于是 B 席位要看的网页开在了 A 的屏上。
   WRAP="$SEAT_DIR/bin/seat-chrome"
   echo "#!/bin/bash" > "$WRAP"
+  # XAUTHORITY 写死进 wrapper：谁拉起它（dock、Bot、员工在终端里敲）都连得上这块屏，
+  # 不依赖调用方的环境里正好带着那一条。
+  #
+  # CDP 口本身没有鉴权，「只听 127.0.0.1」挡不住同机的别的账号。挡它的是 root 装的
+  # 那条按 uid 放行的规则（seat-cdp-guard.sh），不在这里。
+  echo "export XAUTHORITY=\"$XAUTHORITY\"" >> "$WRAP"
   echo "exec $CHROME_BIN --password-store=basic --no-first-run --no-default-browser-check --remote-debugging-port=${CDP} --remote-debugging-address=127.0.0.1 --user-data-dir=$SEAT_DIR/chrome \"\$@\"" >> "$WRAP"
   chmod +x "$WRAP"
   # 图标跟着**实际装的是哪个**走。写死 google-chrome 的话，装 Chromium 的机器上

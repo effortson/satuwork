@@ -238,6 +238,33 @@ export async function runSkills({ root, gwRoot, test, req, start, waitHttp, asse
         !theirs.json.skills.some((x) => x.origin === 'seat'),
         `另一颗 Bot 不该看见这颗的私有档：${JSON.stringify(theirs.json.skills.map((x) => x.name))}`,
       )
+
+      /**
+       * 目录页那条接口成员也调得到。私有档的正文是模型从员工对话里写下的——主人自己
+       * 看得见，同公司的另一个成员不行；管理员照旧看全公司的（晋升那条用例在测）。
+       */
+      const own = await req(base, 'GET', `/orgs/${orgId}/skills`, { token: memberTok })
+      assert(own.status === 200, `member list ${own.status} ${own.text}`)
+      assert(
+        own.json.skills.some((x) => x.origin === 'seat' && x.name === '周报工单导出'),
+        `主人该看得见自己 Bot 写的私有档：${JSON.stringify(own.json.skills.map((x) => x.name))}`,
+      )
+      const peer = await req(base, 'POST', `/orgs/${orgId}/accounts`, {
+        token: adminTok,
+        body: { email: 'm2@sk.test', name: '小李', password: 'correct-horse-1', role: 'member' },
+      })
+      assert(peer.status === 201, `member2 ${peer.status} ${peer.text}`)
+      const peerTok = (await req(base, 'POST', '/auth/login', { body: { email: 'm2@sk.test', password: 'correct-horse-1' } })).json.token
+      const peerList = await req(base, 'GET', `/orgs/${orgId}/skills`, { token: peerTok })
+      assert(peerList.status === 200, `member2 list ${peerList.status} ${peerList.text}`)
+      assert(
+        !peerList.json.skills.some((x) => x.origin === 'seat'),
+        `同事不该翻得到别人 Bot 的私有档：${JSON.stringify(peerList.json.skills.map((x) => x.name))}`,
+      )
+      assert(peerList.json.skills.some((x) => x.id === refundId), '公司目录照旧看得见')
+      const seatId = own.json.skills.find((x) => x.origin === 'seat').id
+      const peerOne = await req(base, 'GET', `/orgs/${orgId}/skills/${seatId}`, { token: peerTok })
+      assert(peerOne.status === 404, `单条详情也不该给同事，实际 ${peerOne.status}`)
     })
 
     await test('撞名不自动加序号，写满了要说清楚', async () => {
@@ -372,6 +399,33 @@ export async function runSkills({ root, gwRoot, test, req, start, waitHttp, asse
        */
       const left = (await req(base, 'GET', `/orgs/${orgId}/skills`, { token: adminTok })).json.skills
       assert(!left.some((x) => x.id === wrote.json.skill.id), `Bot 删了，它的私有档还在：${wrote.json.skill.id}`)
+    })
+
+    await test('并发写：同名只成一条，条数不超过上限', async () => {
+      /**
+       * 查重名、数条数、再插原来是三步各走各的：并发的几次都读到「没有同名」「还差一条」，
+       * 一起插进去。一颗新 Bot 上先同时写五条同名，再同时写五条不同名（上限 3）。
+       */
+      const made = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '并发工' } })
+      assert(made.status === 201, `bot ${made.status} ${made.text}`)
+      const tmp = made.json.bot.id
+      const post = (name) => req(base, 'POST', `/runtime/skills?botId=${tmp}`, { token: seatTok, body: { name, body: '正文' } })
+      try {
+        const same = await Promise.all([1, 2, 3, 4, 5].map(() => post('同一个名字')))
+        const sameOk = same.filter((r) => r.status === 201).length
+        assert(sameOk === 1, `同名并发该只成一条，实际 ${same.map((r) => r.status).join(',')}`)
+        assert(same.every((r) => r.status === 201 || r.status === 409), `其余该是 409：${same.map((r) => r.status).join(',')}`)
+
+        const many = await Promise.all([1, 2, 3, 4, 5].map((n) => post(`并发 ${n}`)))
+        const manyOk = many.filter((r) => r.status === 201).length
+        assert(manyOk === 2, `上限 3、已有 1，并发五条该只成两条，实际 ${many.map((r) => r.status).join(',')}`)
+        const mine = (await req(base, 'GET', `/runtime/catalog?botId=${encodeURIComponent(tmp)}`, { token: seatTok })).json.skills.filter(
+          (x) => x.origin === 'seat',
+        )
+        assert(mine.length === 3, `这颗 Bot 的私有档该正好 3 条，实际 ${mine.length}`)
+      } finally {
+        await req(base, 'DELETE', `/runtime/bots/${tmp}`, { token: memberTok })
+      }
     })
 
     await test('模版上那个开关下发到席位', async () => {

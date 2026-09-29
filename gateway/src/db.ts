@@ -5,8 +5,8 @@ import { randomAccessToken, randomApiKey, randomMachineToken } from './crypto.ts
 import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
-import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
-import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
+import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
+import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
  * 类型、常量和行解析都在 `db/` 底下；这里原样再导出，调用点仍然
@@ -155,6 +155,8 @@ export class Db {
   private claim: pg.Client | null = null
   /** 事务期间把 client 放这儿，`db.tx(() => db.xxx())` 里的每条语句才走同一个连接。 */
   private txClient = new AsyncLocalStorage<PoolClient>()
+  /** 保存点起名用，见 savepoint。 */
+  private savepointSeq = 0
 
   constructor(opts: DbOptions | string) {
     const o = typeof opts === 'string' ? { url: opts } : opts
@@ -337,9 +339,15 @@ export class Db {
    * 两份并行的 e2e 会在同一个号上互相等一下——等的是一次 insert 的工夫，可以接受；要是
    * 哪天有一处锁里带上了慢活，那时再把 schema 名折进第二个参数。
    */
-  async lockExclusive(key: number): Promise<void> {
+  /**
+   * 带 `sub` 时锁的是「这一处 × 这一个对象」（两参数形式的 advisory lock，第二个数取
+   * `hashtext(sub)`）：同一颗 Bot 的并发写互相排队，不同 Bot 之间不必等。哈希撞了只是
+   * 两颗不相干的 Bot 偶尔排一次队，不影响对错。
+   */
+  async lockExclusive(key: number, sub?: string): Promise<void> {
     if (!this.txClient.getStore()) throw new Error('lockExclusive 必须在 db.tx 里调——事务外的锁当场就放了')
-    await this.one('select pg_advisory_xact_lock(?)', [key])
+    if (sub === undefined) await this.one('select pg_advisory_xact_lock(?)', [key])
+    else await this.one('select pg_advisory_xact_lock(?::int, hashtext(?))', [key, sub])
   }
 
   async tx<T>(fn: () => Promise<T> | T): Promise<T> {
@@ -347,6 +355,9 @@ export class Db {
     // 已经在事务里就直接跑，不开嵌套事务。
     if (existing) return fn()
     const client = await this.pool.connect()
+    // rollback 本身失败时，这条连接停在什么状态没人说得清（事务可能还开着、连接可能半断），
+    // 不能原样还回池子给下一个请求用——带着错误 release，pg 会直接销毁它。
+    let broken: Error | undefined
     try {
       await client.query('begin')
       const out = await this.txClient.run(client, async () => fn())
@@ -355,10 +366,34 @@ export class Db {
     } catch (e) {
       try {
         await client.query('rollback')
-      } catch {}
+      } catch (re) {
+        broken = re instanceof Error ? re : new Error(String(re))
+      }
       throw e
     } finally {
-      client.release()
+      client.release(broken)
+    }
+  }
+
+  /**
+   * 「撞了唯一约束就换一串再插」那一类用它包住**那一条会撞的语句**。
+   *
+   * 事务里任何一条语句报错，PG 就把整个事务标成 aborted，之后每条语句都是
+   * `current transaction is aborted`——catch 住 23505 再重试在事务里根本走不通。
+   * 在事务里时这里套一层 SAVEPOINT：出错回滚到保存点，事务照常可用；不在事务里就直接跑。
+   */
+  private async savepoint<T>(fn: () => Promise<T>): Promise<T> {
+    const client = this.txClient.getStore()
+    if (!client) return fn()
+    const name = `sp_${++this.savepointSeq}`
+    await client.query(`savepoint ${name}`)
+    try {
+      const out = await fn()
+      await client.query(`release savepoint ${name}`)
+      return out
+    } catch (e) {
+      await client.query(`rollback to savepoint ${name}`)
+      throw e
     }
   }
 
@@ -650,6 +685,25 @@ export class Db {
     return Number(r?.n ?? 0)
   }
 
+  /**
+   * 「至少留一个管理员」的那把锁。数 adminCount 再写之前先拿它，**必须在 db.tx 里调**
+   * （同 lockExclusive）。不锁的话两个管理员同时互相降级 / 停用 / 删除，各自数到 2、各自
+   * 放行，公司就一个管理员都不剩了。按公司散列，不同公司互不等。
+   */
+  async lockCompanyAdmins(companyId: string): Promise<void> {
+    if (!this.txClient.getStore()) throw new Error('lockCompanyAdmins 必须在 db.tx 里调——事务外的锁当场就放了')
+    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`company_admins:${companyId}`])
+  }
+
+  /**
+   * 「至少留一个能登录的系统管理员」的那把锁，道理同 lockCompanyAdmins。平台账号全库只有
+   * 一队，键里折进 schema 名，e2e 各套 schema 之间不互相排队。
+   */
+  async lockPlatformOwners(): Promise<void> {
+    if (!this.txClient.getStore()) throw new Error('lockPlatformOwners 必须在 db.tx 里调——事务外的锁当场就放了')
+    await this.one("select pg_advisory_xact_lock(hashtext(current_schema() || ':platform_owners'))")
+  }
+
   /** 还能管事的管理员：未停用的 admin（含待接受）。最后一个管理员靠它守门。 */
   /**
    * 还能登录的系统管理员有几个。停用最后一个之前要问它——平台账号不属于任何公司，
@@ -772,9 +826,11 @@ export class Db {
       const accessToken = randomAccessToken()
       const createdAt = Date.now()
       try {
-        await this.run(
-          'insert into account_secrets ("accountId", "apiKey", "accessToken", "createdAt") values (?,?,?,?)',
-          [accountId, apiKey, accessToken, createdAt],
+        await this.savepoint(() =>
+          this.run(
+            'insert into account_secrets ("accountId", "apiKey", "accessToken", "createdAt") values (?,?,?,?)',
+            [accountId, apiKey, accessToken, createdAt],
+          ),
         )
         return { accountId, apiKey, accessToken, createdAt }
       } catch (e) {
@@ -1240,9 +1296,11 @@ export class Db {
       updatedAt: now,
     }
     try {
-      await this.run(
-        'insert into connector_installs (id, "connectorId", "accountId", "companyId", "enabledTools", "createdAt", "updatedAt") values (?,?,?,?,?,?,?)',
-        [row.id, row.connectorId, row.accountId, row.companyId, JSON.stringify(row.enabledTools), row.createdAt, row.updatedAt],
+      await this.savepoint(() =>
+        this.run(
+          'insert into connector_installs (id, "connectorId", "accountId", "companyId", "enabledTools", "createdAt", "updatedAt") values (?,?,?,?,?,?,?)',
+          [row.id, row.connectorId, row.accountId, row.companyId, JSON.stringify(row.enabledTools), row.createdAt, row.updatedAt],
+        ),
       )
     } catch (e) {
       // 两次点击撞在一起：唯一索引兜住，取回已有的那条。
@@ -2343,26 +2401,28 @@ export class Db {
     for (let i = 0; i < 8; i++) {
       const row: Machine = { ...base, token: randomMachineToken() }
       try {
-        await this.run(
-          'insert into machines (id, host, "companyId", "lastHeartbeatAt", "createdAt", "pairedAt", "managerVersion", protocol, "lastError", arch, "desiredManagerVersion", "maxAccounts", timezone, "currentTimezone", "logCapMb", token) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [
-            row.id,
-            row.host,
-            row.companyId,
-            row.lastHeartbeatAt,
-            row.createdAt,
-            row.pairedAt,
-            row.managerVersion,
-            row.protocol,
-            row.lastError,
-            row.arch,
-            row.desiredManagerVersion,
-            row.maxAccounts,
-            row.timezone,
-            row.currentTimezone,
-            row.logCapMb,
-            row.token,
-          ],
+        await this.savepoint(() =>
+          this.run(
+            'insert into machines (id, host, "companyId", "lastHeartbeatAt", "createdAt", "pairedAt", "managerVersion", protocol, "lastError", arch, "desiredManagerVersion", "maxAccounts", timezone, "currentTimezone", "logCapMb", token) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            [
+              row.id,
+              row.host,
+              row.companyId,
+              row.lastHeartbeatAt,
+              row.createdAt,
+              row.pairedAt,
+              row.managerVersion,
+              row.protocol,
+              row.lastError,
+              row.arch,
+              row.desiredManagerVersion,
+              row.maxAccounts,
+              row.timezone,
+              row.currentTimezone,
+              row.logCapMb,
+              row.token,
+            ],
+          ),
         )
         return row
       } catch (e) {
@@ -2379,7 +2439,7 @@ export class Db {
   async rotateMachineToken(id: string): Promise<Machine | undefined> {
     for (let i = 0; i < 8; i++) {
       try {
-        await this.run('update machines set token = ? where id = ?', [randomMachineToken(), id])
+        await this.savepoint(() => this.run('update machines set token = ? where id = ?', [randomMachineToken(), id]))
         return this.machine(id)
       } catch (e) {
         if (i === 7 || !isUniqueViolation(e)) throw e
@@ -2632,6 +2692,47 @@ export class Db {
     return this.run('delete from machine_metric_minutes where "minuteStart" < ?', [before])
   }
 
+  // ── 登录类接口的失败计数（lib/auth-throttle.ts，迁移 0046）。──
+
+  /**
+   * 给这几个桶各记一次，**一条语句、原子地**拿回记完之后的数。
+   *
+   * 先记后验：并发打进来的 N 条请求各自拿到 1..N，不会都读到「还差一次」然后一起放行。
+   * 窗口到期的行就地从 1 重新数起，不依赖清扫是否已经跑过。
+   */
+  async bumpAuthThrottle(keys: string[], now: number, windowMs: number): Promise<{ key: string; count: number; resetAt: number }[]> {
+    if (!keys.length) return []
+    const values = keys.map(() => '(?, 1, ?)').join(', ')
+    const args: unknown[] = []
+    for (const key of keys) args.push(key, now + windowMs)
+    args.push(now, now)
+    const rows = await this.many(
+      `insert into auth_throttle (key, count, "resetAt") values ${values}
+       on conflict (key) do update set
+         count = case when auth_throttle."resetAt" <= ? then 1 else auth_throttle.count + 1 end,
+         "resetAt" = case when auth_throttle."resetAt" <= ? then excluded."resetAt" else auth_throttle."resetAt" end
+       returning key, count, "resetAt"`,
+      args,
+    )
+    return rows.map((r) => ({ key: String(r.key), count: Number(r.count), resetAt: Number(r.resetAt) }))
+  }
+
+  /** 把先记上的那一次退回去（这次没被评判，或者评判结果是对的）。 */
+  async refundAuthThrottle(keys: string[]): Promise<void> {
+    if (!keys.length) return
+    await this.run('update auth_throttle set count = greatest(count - 1, 0) where key = any(?::text[])', [keys])
+  }
+
+  /** 整个桶清零：口令对了，这个邮箱之前的失败一笔勾销。 */
+  async clearAuthThrottle(keys: string[]): Promise<void> {
+    if (!keys.length) return
+    await this.run('delete from auth_throttle where key = any(?::text[])', [keys])
+  }
+
+  async sweepAuthThrottle(now: number): Promise<number> {
+    return this.run('delete from auth_throttle where "resetAt" <= ?', [now])
+  }
+
   // ── 配对码。一次性、30 分钟过期，装管家时拿它换这台机器的 smt_。──
 
   async insertMachinePairing(row: MachinePairing): Promise<MachinePairing> {
@@ -2661,15 +2762,6 @@ export class Db {
   }
 
   /** 同一家公司再生成一个码时，把之前没用掉的作废——桌上不该同时躺着两张有效的票。 */
-  /** 这台机器是不是这家公司配对进来的。认领只认自己配对的那台。 */
-  async machinePairedBy(machineId: string, companyId: string): Promise<boolean> {
-    const r = await this.one(
-      'select 1 as n from machine_pairings where "machineId" = ? and "companyId" = ? limit 1',
-      [machineId, companyId],
-    )
-    return Boolean(r)
-  }
-
   async expireMachinePairings(companyId: string, now: number): Promise<void> {
     await this.run('update machine_pairings set "expiresAt" = ? where "companyId" = ? and "usedAt" is null and "expiresAt" > ?', [
       now,
@@ -2746,8 +2838,8 @@ export class Db {
       `insert into seat_runtimes (
          "accountId", "botId", "companyId", "linuxUser", "seatId", "machineId", slot, display, "vncPort", "novncPort",
          "botPort", "vncPassword", status, "lastError", "deployedAt", "updatedAt", "botVersion",
-         "deployPhase", "deployStartedAt"
-       ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         "deployPhase", "deployStartedAt", "deployBeatAt"
+       ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        on conflict ("accountId", "botId") do update set
          "companyId"=excluded."companyId",
          "linuxUser"=excluded."linuxUser",
@@ -2765,7 +2857,11 @@ export class Db {
          "updatedAt"=excluded."updatedAt",
          "botVersion"=excluded."botVersion",
          "deployPhase"=excluded."deployPhase",
-         "deployStartedAt"=excluded."deployStartedAt"`,
+         "deployStartedAt"=excluded."deployStartedAt",
+         -- 在装心跳**只往前走**：这一行在装的过程中会被整行写好几次（登记、改成 installing），
+         -- 手上那份是登记那一刻的旧值，照抄会把心跳往回拨。落地（不是 deploying）一律清空。
+         "deployBeatAt"=case when excluded.status = 'deploying'
+           then greatest(excluded."deployBeatAt", seat_runtimes."deployBeatAt") else null end`,
       [
         row.accountId,
         row.botId,
@@ -2786,9 +2882,74 @@ export class Db {
         row.botVersion,
         row.deployPhase,
         row.deployStartedAt,
+        row.status === 'deploying' ? row.deployBeatAt ?? null : null,
       ],
     )
     return (await this.seatRuntime(row.accountId, row.botId))!
+  }
+
+  /**
+   * 同一个席位的部署排队进这把锁：登记那一步「看一眼有没有人在装、没有就写下我在装」必须
+   * 是原子的，不然两个实例同时来，各自看到没人、各自登记（理由同 lockExclusive 那段）。
+   * **必须在 db.tx 里调**。按席位散列，不同席位互不等。
+   */
+  async lockSeatDeploy(accountId: string, botId: string): Promise<void> {
+    if (!this.txClient.getStore()) throw new Error('lockSeatDeploy 必须在 db.tx 里调——事务外的锁当场就放了')
+    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`seat_deploy:${accountId}:${botId}`])
+  }
+
+  /**
+   * 在装心跳：推着这次部署的进程每十几秒报一次到（见 deploy.ts 的 DEPLOY_BEAT_MS）。
+   *
+   * 认 `deployStartedAt`：只续**自己那一次**。自己这次已经被别人接手（心跳断过、有人重新
+   * 登记）的话，那一行的开始时刻已经换了，这一句什么都不改——不能替别人的那次报到。
+   */
+  async beatSeatDeploy(seatId: string, startedAt: number, now = Date.now()): Promise<boolean> {
+    const n = await this.run(
+      `update seat_runtimes set "deployBeatAt" = ?
+        where "seatId" = ? and status = 'deploying' and "deployStartedAt" = ?`,
+      [now, seatId, startedAt],
+    )
+    return n > 0
+  }
+
+  /**
+   * 给一个席位排一次部署（批量更新那两条路）。席位行别的格一个都不动。
+   *
+   * 已经排着的就盖掉：后排的那一次说的是「现在要的样子」，前一次没轮到就没必要做了。
+   */
+  async queueSeatDeploy(accountId: string, botId: string, request: SeatDeployRequest): Promise<boolean> {
+    const n = await this.run(
+      'update seat_runtimes set "deployQueued" = ?::jsonb where "accountId" = ? and "botId" = ?',
+      [JSON.stringify(request), accountId, botId],
+    )
+    return n > 0
+  }
+
+  /**
+   * 领走排着的那一次：清掉并把参数交出来。**两个执行者只有一个领得到**（清和取是同一条
+   * 带条件的 update），另一个拿到 undefined，就当没这回事。
+   */
+  async takeSeatDeploy(accountId: string, botId: string): Promise<SeatDeployRequest | undefined> {
+    const r = await this.one(
+      `update seat_runtimes s set "deployQueued" = null
+         from (select "accountId", "botId", "deployQueued" as q from seat_runtimes
+                where "accountId" = ? and "botId" = ? and "deployQueued" is not null for update) old
+        where s."accountId" = old."accountId" and s."botId" = old."botId"
+        returning old.q`,
+      [accountId, botId],
+    )
+    if (!r) return undefined
+    return seatDeployRequestOf(r.q) ?? {}
+  }
+
+  /** 排着队的席位，先排的在前。队列那一段按机器分组、每台一个一个来。 */
+  async queuedSeatDeploys(): Promise<SeatRuntime[]> {
+    const rows = await this.many(
+      'select * from seat_runtimes where "deployQueued" is not null order by "machineId", "updatedAt", "seatId"',
+      [],
+    )
+    return rows.map(seatRuntimeOf)
   }
 
   /**
@@ -3031,12 +3192,27 @@ export class Db {
     return { ...cur, scope: 'company', accountId: null, botId: null, updatedAt }
   }
 
-  /** 这家公司里全部的私有档，不分主人。界面上「Bot 自己写的」那一栏读它。 */
+  /**
+   * 这家公司里全部的私有档，不分主人。**只给管理员那一屏**（目录页「Bot 自己写的」那一栏）。
+   *
+   * 正文是模型从员工的对话里写下来的，可能带着客户的名字、电话。普通成员要看的是
+   * 自己那几颗 Bot 的，走下面的 accountSeatSkills。
+   */
   async companySeatSkills(companyId: string): Promise<CatalogItem[]> {
     const rows = await this.many(
       `select * from catalog_items where kind = 'skill' and scope = 'user' and "companyId" = ?
        order by "updatedAt" desc`,
       [companyId],
+    )
+    return rows.map(catalogOf)
+  }
+
+  /** 某个员工名下全部 Bot 的私有档。主人这一维写进 where，同 botsFor。 */
+  async accountSeatSkills(companyId: string, accountId: string): Promise<CatalogItem[]> {
+    const rows = await this.many(
+      `select * from catalog_items where kind = 'skill' and scope = 'user'
+         and "companyId" = ? and "accountId" = ? order by "updatedAt" desc`,
+      [companyId, accountId],
     )
     return rows.map(catalogOf)
   }
@@ -3346,6 +3522,17 @@ export class Db {
   }
 
   /**
+   * 收信方式对齐（setWebhook 换 secret + 存散列）按绑定串行，见 channels/inbound.ts。
+   *
+   * 不用上面那把行锁：锁里要等一次 Telegram（最长 20 秒），行锁会把同一绑定上的推送
+   * 入库、配对一起堵住。这把是咨询锁，只和另一次对齐互斥。**必须在 db.tx 里调**。
+   */
+  async lockChannelInbound(id: string): Promise<void> {
+    if (!this.txClient.getStore()) throw new Error('lockChannelInbound 必须在事务里调用')
+    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`channel_inbound:${id}`])
+  }
+
+  /**
    * 该去长轮询的绑定。`webhookOnly = false`（webhook 模式）时挂着 webhook 的不选——它们的
    * 消息由 Telegram 推过来；模式关着时全选，好让轮询循环把残留的 webhook 删掉
    * （见 channels.ts 的 pollOne 与 channels/inbound.ts）。
@@ -3536,6 +3723,18 @@ export class Db {
       `update channel_events set "approvalKey"=?, "approvalMessageId"=?, "updatedAt"=?
        where id=? and status='processing' and "leaseToken"=?`,
       [approvalKey, messageId, Date.now(), id, leaseToken],
+    )) === 1
+  }
+
+  /**
+   * 投递进度往前推一段，顺带续租。只认当前租约持有者，而且只增不减：迟到的旧请求推不回去。
+   * 返回 false 就是租约已经不在手里，调用方必须停手，剩下的归接管者。
+   */
+  async advanceChannelDelivery(id: string, leaseToken: string, deliveredParts: number, leaseUntil: number): Promise<boolean> {
+    return (await this.run(
+      `update channel_events set "deliveredParts"=greatest("deliveredParts", ?), "leaseUntil"=?, "updatedAt"=?
+       where id=? and status='processing' and "leaseToken"=?`,
+      [deliveredParts, leaseUntil, Date.now(), id, leaseToken],
     )) === 1
   }
 
@@ -4070,6 +4269,48 @@ export class Db {
         JSON.stringify(next.orphans), next.auditCompletedAt, next.deletedAt, id],
     )
     return botDeletionRequestOf(r!)
+  }
+
+  /**
+   * 删除请求的状态迁移，**带旧状态条件**：库里那一行还是 `expect` 描述的样子才改，改到了
+   * 返回新行，没改到（别人先动了）返回 undefined。
+   *
+   * 重叠的两拍 tick、requestBotDeletion 的同步推进、升级时新旧两个进程，都会拿着同一行去
+   * 推同一个请求。不带条件的话两边都走到 purgeBot——席位被释放两遍、完成审计记两条。
+   * 只有抢到这一次更新的那一边往下做。
+   */
+  async casBotDeletion(
+    id: string,
+    expect: { status: BotDeletionStatus; attempts: number; nextTryAt?: number | null },
+    patch: Parameters<Db['updateBotDeletion']>[1],
+  ): Promise<BotDeletionRequest | undefined> {
+    const cols: Record<string, string> = {
+      status: 'status',
+      targetCount: '"targetCount"',
+      auditedCount: '"auditedCount"',
+      attempts: 'attempts',
+      nextTryAt: '"nextTryAt"',
+      lastError: '"lastError"',
+      orphans: 'orphans',
+      auditCompletedAt: '"auditCompletedAt"',
+      deletedAt: '"deletedAt"',
+    }
+    const sets: string[] = []
+    const args: unknown[] = []
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined || !cols[k]) continue
+      sets.push(`${cols[k]} = ?`)
+      args.push(k === 'orphans' ? JSON.stringify(v) : v)
+    }
+    if (!sets.length) throw new Error('casBotDeletion 没有要改的字段')
+    let where = 'id = ? and status = ? and attempts = ?'
+    args.push(id, expect.status, expect.attempts)
+    if (expect.nextTryAt !== undefined) {
+      where += ' and "nextTryAt" is not distinct from ?'
+      args.push(expect.nextTryAt)
+    }
+    const r = await this.one(`update bot_deletion_requests set ${sets.join(', ')} where ${where} returning *`, args)
+    return r ? botDeletionRequestOf(r) : undefined
   }
 
   /** 失败的删除请求不无限重试：试满这么多次就停在 failed 上，等人来看。 */

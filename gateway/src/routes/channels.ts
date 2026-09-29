@@ -3,9 +3,9 @@ import { basename } from 'node:path'
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
-import { requireUser } from '../lib/guards.ts'
+import { gateCompany, requireUser } from '../lib/guards.ts'
 import { requireSeat, pairRuntime, proxyDownload, seatBearer, seatTargetForSession } from '../lib/runtime.ts'
-import { encryptChannelSecret, decryptChannelSecret, verifyArtifactTicket } from '../crypto.ts'
+import { encryptChannelSecret, decryptChannelSecret, ticketRevoked, verifyArtifactTicket } from '../crypto.ts'
 import { startSeatDeploy } from '../deploy.ts'
 import { botContext, publicBot } from '../lib/catalog.ts'
 import { newPairingCode, pairingCodeHash } from '../channels/pairing.ts'
@@ -13,6 +13,7 @@ import { TelegramError, telegramGetMe, telegramSetMyCommands } from '../channels
 import { ensureTelegramInbound, telegramWebhookSecretOk } from '../channels/inbound.ts'
 import { processTelegramUpdate } from '../channels.ts'
 import { USER_BOT_QUOTA_LOCK } from './runtime.ts'
+import { uiCdnMeta, uiCdnSources } from '../ui-cdn.ts'
 
 const MAX_USER_BOTS = Math.max(1, Math.trunc(Number(process.env.GATEWAY_MAX_USER_BOTS) || 10))
 // 绑渠道顺手建的那颗 Bot 和 POST /runtime/bots 数的是同一个配额，锁也得是同一把（键定义在那边）。
@@ -62,7 +63,7 @@ function channelPreviewPage(name: string, path: string, kind: ReturnType<typeof 
 <meta property="og:description" content="Satuwork 生成文档预览">
 <link rel="icon" type="image/png" href="/assets/satuwork-logo.png">
 <link rel="stylesheet" href="/theme.css"><link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/chat.css">
-</head><body class="sw-channel-preview-page" data-kind="${safeKind}" data-name="${safeName}" data-raw-url="${safeRawUrl}">
+${uiCdnMeta()}</head><body class="sw-channel-preview-page" data-kind="${safeKind}" data-name="${safeName}" data-raw-url="${safeRawUrl}">
 <main class="gw-modal sw-preview sw-channel-preview">
   <div class="sw-preview-head">
     <div class="sw-preview-title"><h2>${safeName}</h2><p><code>${safePath}</code><span id="preview-size"></span></p></div>
@@ -129,6 +130,10 @@ export function attachChannels(router: Router, ctx: RouteCtx) {
     if (!ticket) throw new HttpError(404, '预览链接不存在或已过期')
     const account = await db.account(ticket.accountId)
     if (!account || account.status !== 'active') throw new HttpError(404, '预览链接不存在或已过期')
+    // 和登录票同一套作废点：改口令、被重置、被停用之后，之前发出去的预览链接一起失效；
+    // 公司被停用也一样挡住，不能拿着七天的链接接着读席位工作区。原因不外露，一律 404。
+    if (ticketRevoked(account.tokenRevokedAt, ticket)) throw new HttpError(404, '预览链接不存在或已过期')
+    await gateCompany(db, account).catch(() => { throw new HttpError(404, '预览链接不存在或已过期') })
     const target = await seatTargetForSession(db, account, ticket.sessionId)
       .catch(() => { throw new HttpError(404, '预览链接不存在或已过期') })
     const upstream = `${target.host}/api/workspace/file?path=${encodeURIComponent(ticket.path)}`
@@ -143,7 +148,7 @@ export function attachChannels(router: Router, ctx: RouteCtx) {
     res.writeHead(200, {
       'content-type': 'text/html; charset=utf-8',
       'content-length': String(Buffer.byteLength(page)),
-      'content-security-policy': "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:; connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: blob: https:; media-src data: blob: https:; frame-src blob:; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors *",
+      'content-security-policy': `default-src 'none'; script-src 'self' ${uiCdnSources()}; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:; connect-src 'self' ${uiCdnSources()}; img-src 'self' data: blob: https:; media-src data: blob: https:; frame-src blob:; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors *`,
       'referrer-policy': 'no-referrer',
       'x-content-type-options': 'nosniff',
       'x-robots-tag': 'noindex, nofollow, noarchive',

@@ -40,6 +40,16 @@ export async function runTelegramRich({ root, test, assert, log }) {
     assert(result.maxActiveDraftSends === 1, `同时有 ${result.maxActiveDraftSends} 个草稿请求`)
     assert(result.pumpedDrafts.length === 2, `没有合并中间帧：${JSON.stringify(result.pumpedDrafts)}`)
     assert(result.pumpedDrafts.at(-1) === '一二三四五六七八九十', `最后快照丢失：${JSON.stringify(result.pumpedDrafts)}`)
+    // 只往后长：中间改过的那一帧（老 bot 的工具状态表）不发，接着长的照发。
+    assert(JSON.stringify(result.appendOnlyDrafts) === JSON.stringify([
+      '第一段',
+      '第一段\n\n🔧 工具调用\n⏳ web_search · 调用中',
+      '第一段\n\n🔧 工具调用\n⏳ web_search · 调用中\n\n第二段',
+    ]), `中间改过的帧被发出去了：${JSON.stringify(result.appendOnlyDrafts)}`)
+    // 超长草稿停在开头：两帧一样、不超上限、以原文开头——不再每帧往后滑。
+    const [a, b] = result.longDrafts
+    assert(a && a === b, '超长草稿两帧不一样（还在往后滑）')
+    assert(Array.from(a).length <= 4000 && a.startsWith('长长长') && a.endsWith('…'), `超长草稿没停在开头：${a.slice(0, 20)}… 长 ${Array.from(a).length}`)
   })
 
   await test('Telegram 审批卡可点击、回调有应答且完成后移除按钮', async () => {

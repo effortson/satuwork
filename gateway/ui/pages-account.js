@@ -74,7 +74,8 @@ function userSecretRow(label, kind, value) {
 }
 
 function userDetailPage() {
-  const d = state.userDetail
+  // 同 machineDetailPage：载到的要跟地址里的 id 对得上，不然就是上一个账号的。
+  const d = state.userDetail?.account?.id === userIdOfPath(state.path) ? state.userDetail : null
   if (!d || !d.account) {
     return `<div class="gw-page"><div class="gw-page-inner">${flashes()}<p style="color: var(--muted-foreground);">${t('载入中…')}</p></div></div>`
   }
@@ -747,6 +748,23 @@ function profilePage() {
             ${t('用于将 Telegram 私聊绑定到你的账号。请先在「渠道」页面绑定 Bot，再使用页面生成的一次性配对码。', 'Connect a private Telegram chat to your account. Bind a bot on the Channels page, then use the one-time pairing code shown there.')}
           </p>
         </div>
+
+        ${/* 登录之后唯一的下载入口：首页那一段只给没登录的人看。桌面壳里换成当前版本和「检查更新」。 */ ''}
+        ${
+          desktopShell()
+            ? desktopUpdateBridge()
+              ? `<div class="satu-panel" data-desktop-update="profile">${desktopUpdateInner('profile')}</div>`
+              : ''
+            : `<div class="satu-panel">
+          <span class="satu-panel-title">${t('桌面端', 'Desktop app')}</span>
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
+            <p style="margin: 0; font-size: 13px; color: var(--muted-foreground); flex: 1; min-width: 220px;">
+              ${t('装上之后能在这台电脑上直接跑「本地」那种 AI 员工。Windows 和 macOS 都有。', 'Run “local” coworkers right on this machine. Available for Windows and macOS.')}
+            </p>
+            <button type="button" class="btn btn-secondary" style="flex: none;" data-act="go" data-href="/download">${t('下载桌面端', 'Get the desktop app')}</button>
+          </div>
+        </div>`
+        }
 
         <div class="satu-panel">
           <span class="satu-panel-title">${t('偏好', 'Preferences')}</span>

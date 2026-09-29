@@ -22,6 +22,10 @@ concurrency:
   group: check-${{ github.ref }}
   cancel-in-progress: true
 
+# 只读：检查不写仓库。
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -51,7 +55,7 @@ jobs:
 
       # 版本由根 package.json 的 packageManager 字段给。
       # 不写在这儿：bot-release / manager-release 也用这个 action，三处各写一遍必然会漂。
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - uses: actions/setup-node@v4
         with:
@@ -86,9 +90,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 分支，2026-09-03
+        with:
+          # 按 SHA 引用时它没法从 ref 名（@stable）推出工具链，得写明。
+          toolchain: stable
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: './desktop/src-tauri -> target'
 

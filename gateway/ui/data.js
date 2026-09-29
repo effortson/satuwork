@@ -63,13 +63,14 @@ function localBotOf(botId) {
   return lb && lb.token ? lb : null
 }
 
-/** 这条 Gateway 路径要不要改道到本地 Bot。返回 { url, token } 或 null。 */
+/** 这条 Gateway 路径要不要改道到本地 Bot。返回 { url, token, botId } 或 null。 */
 function localRoute(path, method) {
   if (typeof path !== 'string' || !path.startsWith('/runtime/')) return null
   let m = /^\/runtime\/bots\/([^/?]+)\/session(\?.*)?$/.exec(path)
   if (m) {
-    const lb = localBotOf(decodeURIComponent(m[1]))
-    return lb ? { url: lb.base + '/api/bots/' + m[1] + '/session' + (m[2] || ''), token: lb.token } : null
+    const botId = decodeURIComponent(m[1])
+    const lb = localBotOf(botId)
+    return lb ? { url: lb.base + '/api/bots/' + m[1] + '/session' + (m[2] || ''), token: lb.token, botId } : null
   }
   m = /^\/runtime\/sessions\/([^/?]+)(\/[^?]*)?(\?.*)?$/.exec(path)
   if (!m) return null
@@ -83,7 +84,7 @@ function localRoute(path, method) {
   if (rest === '/files' && q && verb === 'GET') target = '/api/workspace/file' + q
   else if (rest === '/workspace') target = (verb === 'DELETE' ? '/api/workspace/file' : '/api/workspace/list') + q
   else target = '/api/sessions/' + m[1] + rest + q
-  return { url: lb.base + target, token: lb.token }
+  return { url: lb.base + target, token: lb.token, botId }
 }
 
 /**
@@ -99,12 +100,31 @@ function swFetch(path, init) {
   return fetch(route.url, { ...(init || {}), headers })
 }
 
-async function api(method, path, body) {
+/**
+ * botId → 正在进行的那次「重新要本地 Bot 的票」。同一拍里几条请求一起撞上 401 时只要一次：
+ * 每要一次壳子就可能拿新票把进程重起一遍（见 chat.js 的 startDesktopLocalBot）。
+ */
+const localTicketRenewals = new Map()
+
+function renewLocalTicket(botId) {
+  let p = localTicketRenewals.get(botId)
+  if (!p) {
+    p = Promise.resolve()
+      .then(() => startDesktopLocalBot(botId))
+      .finally(() => localTicketRenewals.delete(botId))
+    localTicketRenewals.set(botId, p)
+  }
+  return p
+}
+
+async function api(method, path, body, localRetried = false) {
   const headers = { accept: 'application/json' }
   // 别叫 t——下面 401 那支要用上面那个文案函数。
   const tok = token()
   if (tok) headers.authorization = 'Bearer ' + tok
   if (body !== undefined) headers['content-type'] = 'application/json'
+  // 改道到本机的那几条（见 swFetch）：它们的 401 是**本地 Bot** 说的，跟登录票无关。
+  const local = localRoute(path, method)
   const res = await swFetch(path, {
     method,
     headers,
@@ -115,9 +135,34 @@ async function api(method, path, body) {
   try {
     json = text ? JSON.parse(text) : null
   } catch {}
-  if (res.status === 401 && tok && path !== '/auth/login' && !path.startsWith('/invites/')) {
-    clearToken()
-    state.me = null
+  /**
+   * 本地 Bot 回的 401：多半是它重启过、或者票换过一轮（登录票变了之后 overlayLocalRuntime
+   * 会重新要），手上这把席位票作废了。这**不是**登录过期——当成登录过期的话，桌面端里
+   * 本地 Bot 重起一次就把人踢回登录页。重新向 Gateway 要一把票、重试一次；还是 401 就
+   * 照普通错误抛，别登出。要票那一跳本身打的是 Gateway，真是登录过期的话由它那条 401 去登出。
+   */
+  if (res.status === 401 && local) {
+    if (!localRetried) {
+      const cur = localBotOf(local.botId)
+      // 并发的另一条已经换过票了：直接拿新票重试，别再要一次。
+      const renewed = cur && cur.token !== local.token
+        ? true
+        : await renewLocalTicket(local.botId).then(() => true, () => false)
+      if (renewed) return api(method, path, body, true)
+    }
+    const err = new Error(errText((json && json.error) || t('本地 Bot 拒绝了这次请求', 'The local bot rejected this request')))
+    err.status = res.status
+    throw err
+  }
+  /**
+   * Gateway 说登录票不认了（过期、账号被停用）：走和「退出登录」同一条拆法（app.js 的
+   * endSignedIn），流、轮询、上一个人的草稿和文件树一起拆。
+   *
+   * `tok === token()`：这条请求是拿**当时那张**票发的。它在路上时人可能已经重新登录过
+   * ——那张旧票的 401 不能把新登进来的人再踢出去。
+   */
+  if (res.status === 401 && tok && tok === token() && path !== '/auth/login' && !path.startsWith('/invites/')) {
+    endSignedIn()
     state.loginError = t('登录已过期，请重新登录')
     // 明确挪到 `/login`。票过期时人多半正停在 `/`（对话页就是那儿），而没登录的 `/`
     // 现在画的是首页（见 render.js 的 anonView）——不挪的话，上面那句话没有地方说，
@@ -437,11 +482,6 @@ async function loadOrders() {
   state.orders = data.orders || []
 }
 
-async function loadOrgTopups(id) {
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/topups`)
-  state.orgTopups = data.topups || []
-}
-
 async function loadPlanSkus() {
   const data = await api('GET', '/platform/plans')
   state.planSkus = data.plans || []
@@ -452,7 +492,25 @@ async function loadUsers() {
   state.users = data.accounts || []
 }
 
+/**
+ * 三个详情页（账号 / 公司 / Bot）各自「最新一次加载」的序号。
+ *
+ * go() 的 navSeq 只拦得住「旧页面回来那次 render」，拦不住**写 state**：/users/A 慢、
+ * 人已经点到 /users/B，A 的响应后到照样把 state.userDetail 盖成 A，接下来 B 那一页上
+ * 按的每一颗按钮打的都是 A。所以写之前再问两件事：这是不是这一类里最新发出去的那次，
+ * 地址里的 id 还是不是它。任一不对就整份丢掉，失败也不报——那条错说的是别人。
+ */
+const detailSeq = { user: 0, company: 0, bot: 0 }
+
+function detailStale(kind, seq, id, idOfPath) {
+  return seq !== detailSeq[kind] || idOfPath(state.path) !== id
+}
+
 async function loadUserDetail(id) {
+  // 换了一个账号就先清掉上一个：这一个要是 403/500，页面该停在「载入中」加一条报错，
+  // 而不是顶着上一个人的 API Key。
+  if (state.userDetail?.account?.id !== id) state.userDetail = null
+  const seq = ++detailSeq.user
   if (!id) {
     flash('err', t('账号不存在'))
     state.path = '/users'
@@ -461,9 +519,12 @@ async function loadUserDetail(id) {
     return
   }
   try {
-    state.userDetail = await api('GET', `/platform/accounts/${encodeURIComponent(id)}`)
+    const detail = await api('GET', `/platform/accounts/${encodeURIComponent(id)}`)
+    if (detailStale('user', seq, id, userIdOfPath)) return
+    state.userDetail = detail
     state.userReveal = { apiKey: false, accessToken: false }
   } catch (err) {
+    if (detailStale('user', seq, id, userIdOfPath)) return
     flash('err', err.message)
     if (err.status === 404) {
       state.path = '/users'
@@ -570,6 +631,9 @@ async function loadMachines(id) {
 
 async function loadCompanyDetail(id) {
   resetChargePaging()
+  // 同 loadUserDetail：换了公司先清掉上一家，失败时别顶着它的名字和成员。
+  if (state.org && state.org.id !== id) state.org = null
+  const seq = ++detailSeq.company
   if (!id) {
     flash('err', t('公司不存在'))
     state.path = '/companies'
@@ -578,7 +642,7 @@ async function loadCompanyDetail(id) {
     return
   }
   try {
-    const [org, accounts, billing, machineRes, botsRes] = await Promise.all([
+    const [org, accounts, billing, machineRes, botsRes, , , topups] = await Promise.all([
       api('GET', `/orgs/${encodeURIComponent(id)}`),
       api('GET', `/orgs/${encodeURIComponent(id)}/accounts`),
       api('GET', `/orgs/${encodeURIComponent(id)}/billing`),
@@ -589,11 +653,14 @@ async function loadCompanyDetail(id) {
       // 订阅那一栏要按价目表画下拉；拉不到就只剩「未设置」，不挡住整页。
       loadPlanSkus().catch(() => { state.planSkus = [] }),
       // 充值记录：只有已付款的充值单才有，拉不到就当空的，不挡整页。
-      loadOrgTopups(id).catch(() => { state.orgTopups = [] }),
+      // 充值记录也等下面那道闸过了再写：晚到的上一家会盖掉这一家的。
+      api('GET', `/orgs/${encodeURIComponent(id)}/topups`).catch(() => null),
       // 这家公司的计费明细。owner 在这一屏要回答的是「这家的钱花在哪了」，
       // 而那个问题在汇总数字上答不了。
       loadCharges('org', id).catch(() => { state.charges = null }),
     ])
+    if (detailStale('company', seq, id, companyIdOfPath)) return
+    state.orgTopups = topups?.topups || []
     state.org = org.company
     state.plan = org.plan
     state.balance = org.balance || null
@@ -603,6 +670,7 @@ async function loadCompanyDetail(id) {
     applyMachineRes(machineRes)
     if (botsRes && Array.isArray(botsRes.bots)) state.bots = botsRes.bots
   } catch (err) {
+    if (detailStale('company', seq, id, companyIdOfPath)) return
     flash('err', err.message)
     if (err.status === 404) {
       state.path = '/companies'
@@ -745,12 +813,28 @@ function draftFromBot(bot) {
 
 async function loadBotDetail(botId) {
   if (!botId) return
+  // 同 loadUserDetail：换了 Bot 先清掉上一颗。不清的话这一颗 403 时页面上画的、
+  // 「保存」「删除」「钉住」打的都是上一颗。
+  if (state.bot && state.bot.id !== botId) {
+    state.bot = null
+    state.botDraft = null
+  }
+  const seq = ++detailSeq.bot
+  // 晚到的那次连错也吞掉：它的报错说的是另一颗 Bot。
+  const stale = () => detailStale('bot', seq, botId, botIdOfPath)
   // 不再拉 /v1/models：模型由平台指定，这一页没有可挑的下拉了。
   if (isOwner()) {
-    const [one, opts] = await Promise.all([
-      api('GET', `/platform/bots/${encodeURIComponent(botId)}`),
-      api('GET', '/platform/bots/options'),
-    ])
+    let one, opts
+    try {
+      ;[one, opts] = await Promise.all([
+        api('GET', `/platform/bots/${encodeURIComponent(botId)}`),
+        api('GET', '/platform/bots/options'),
+      ])
+    } catch (err) {
+      if (stale()) return
+      throw err
+    }
+    if (stale()) return
     state.bot = one.bot
     state.botDraft = draftFromBot(one.bot)
     state.botOptions = { skills: opts.skills || [], mcps: opts.mcps || [], groups: opts.groups || [], kbs: opts.kbs || [] }
@@ -768,11 +852,18 @@ async function loadBotDetail(botId) {
    * Bot 在对话里刚记下的一条，人切回这一页就该看见。拉不到不挡这一页：少的是一格
    * 列表，而人来这儿多半是改提示词的。
    */
-  const [one, tpl, mems] = await Promise.all([
-    api('GET', `/runtime/bots/${encodeURIComponent(botId)}`),
-    api('GET', `${catalogBase()}/bot-template`).catch(() => null),
-    api('GET', `/runtime/bots/${encodeURIComponent(botId)}/memories`).catch(() => null),
-  ])
+  let one, tpl, mems
+  try {
+    ;[one, tpl, mems] = await Promise.all([
+      api('GET', `/runtime/bots/${encodeURIComponent(botId)}`),
+      api('GET', `${catalogBase()}/bot-template`).catch(() => null),
+      api('GET', `/runtime/bots/${encodeURIComponent(botId)}/memories`).catch(() => null),
+    ])
+  } catch (err) {
+    if (stale()) return
+    throw err
+  }
+  if (stale()) return
   state.bot = one.bot
   state.botDraft = {
     ...draftFromBot(one.bot),

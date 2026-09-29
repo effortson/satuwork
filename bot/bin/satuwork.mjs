@@ -19,6 +19,17 @@ import { fileURLToPath } from 'node:url'
 import * as vendored from '@deepseek-ai/cordis'
 import * as aliased from 'cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
+import { loadSeatSecrets } from '../src/seat-secrets.ts'
+import { loadGatewayUrlOverride } from '../src/gateway-url.ts'
+
+// **第一件事**：远程席位的两把凭据从 fd 0 读（见 src/seat-secrets.ts），读完就把 fd 0
+// 换成 /dev/null。必须赶在任何子进程起来之前——之后起的子进程才碰不到那个 fd。
+// 没设 SATUWORK_SECRETS_STDIN（本地桌面 bot、开发）时什么都不做。
+const seatSecrets = loadSeatSecrets()
+if (seatSecrets.length) console.log(`satuwork: 从标准输入读到席位凭据 ${seatSecrets.join(', ')}`)
+// 上次从 Gateway 学到的新地址（带席位票做的 HMAC，见 src/gateway-url.ts）。要在凭据之后、
+// 任何插件读 GATEWAY_URL 之前。只在远程席位上生效。
+loadGatewayUrlOverride({ info: (s) => console.log(s), warn: (s) => console.warn(s) })
 
 const { Context } = vendored
 

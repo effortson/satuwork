@@ -266,6 +266,18 @@ export async function maybeUpgrade(offer: UpgradeOffer, token: string): Promise<
       return
     }
 
+    /**
+     * **换链接之前先把时刻落盘。** 回滚脚本（manager-confirm.sh，定时器每 120 秒敲一次，
+     * 不看我们在干什么）只认三样：previous 在不在、current 是不是 confirmedVersion、
+     * lastUpgradeAt 过没过宽限期。要是先换 current 再写时刻，中间那一瞬它读到的是
+     * 「current 是新版、没确认、时刻还是上一次升级的（早过了宽限期）」——当场把一次好好
+     * 的升级判成失败搬回去，还留下 rolled-back 记号。
+     *
+     * 只先写这一个字段：它单独落盘是无害的——current 还没换时脚本看到 current 就是
+     * confirmedVersion，直接 keep；下面换链接失败了，多出来的只是一段用不上的宽限期。
+     * lastUpgradeTo 仍然排在真的换完之后（理由见下面「先真的换，再记账」）。
+     */
+    patchState(() => ({ lastUpgradeAt: Date.now() }))
     const prev = currentTarget()
     if (prev) relink('previous', prev)
     /**
@@ -280,7 +292,7 @@ export async function maybeUpgrade(offer: UpgradeOffer, token: string): Promise<
      * 版本，收敛得掉。宁可重试，不要假的黑名单。
      */
     relink('current', dir)
-    // 时刻是给回滚脚本用的——它靠这个才分得出「连不上 Gateway」和「还没来得及起来」。
+    // 时刻已经在换链接之前写过了（见上面）；这里再写一次，宽限期从真正换完那一刻算起。
     // patchState 现读现写：这里离函数开头那次 readState 已经隔了好几分钟，整份写回会把
     // 期间落盘的别的字段（confirmedVersion、gatewayUrl）抹掉。重试计数只在「同一个版本
     // 被回滚后再试」时加一，换了目标版本就归零。

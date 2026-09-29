@@ -611,6 +611,8 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         ['botVersion 想跳出目录', { ...good, botVersion: '../../etc/passwd' }],
         ['botId 带换行', { ...good, botId: 'bot-1\nGATEWAY_URL=http://evil' }],
         ['端口越界', { ...good, ports: { ...good.ports, botPort: 99999 } }],
+        // 席位的 GATEWAY_URL 上要带 sat_ 和 API key：非回环的明文 http 不收（config.ts 的 gatewayUrlProblem）。
+        ['gatewayUrl 是明文 http', { ...good, gatewayUrl: 'http://10.0.0.7:3080' }],
         // 直连字段（协议 11）：成对出现，地址只收 http/https 且不带凭据，校验值是 64 位十六进制。
         ['有 botUrl 没 botSha256', { ...good, botUrl: 'https://github.com/x/y.tgz' }],
         ['有 botSha256 没 botUrl', { ...good, botSha256: 'a'.repeat(64) }],
@@ -1786,13 +1788,18 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         assert(urlOf() === gwBase, `坏地址被采信了：${JSON.stringify(bad)} → ${urlOf()}`)
       }
 
+      // ①' 非回环的明文 http 也不认：采信了，下一次心跳就把机器票寄到明文上，回包（removed、
+      //    升级要约）谁都能改。回环和 *.test / *.localhost 放行，e2e 自己就跑在 127.0.0.1 上。
+      await tell('http://10.0.0.9:3080')
+      assert(urlOf() === gwBase, `明文 http 地址被采信了：${urlOf()}`)
+
       // ② 没票的说话不算数——它在 requireMachine **之后**才被读到。
-      const anon = await tell('http://10.0.0.9:3080', { anon: true })
+      const anon = await tell('https://10.0.0.9:3080', { anon: true })
       assert(anon.status === 401, `无票该 401，实际 ${anon.status}`)
       assert(urlOf() === gwBase, `无票也改动了状态：${urlOf()}`)
 
       // ③ 带票 + 形状对 → 当场改、当场落盘。**落盘**是关键：重启之后还得是新地址。
-      const moved = 'http://10.0.0.9:3080'
+      const moved = 'https://10.0.0.9:3080'
       await tell(moved)
       assert(urlOf() === moved, `没学到新地址：${urlOf()}`)
 

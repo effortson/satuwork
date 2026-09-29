@@ -24,6 +24,7 @@ import { runMachineDeploy } from './machine-deploy.mjs'
 import { runLlmUsage } from './llm-usage.mjs'
 import { runMarkdown } from './markdown.mjs'
 import { runChatFold } from './chat-fold.mjs'
+import { runDesktopUpdate } from './desktop-update.mjs'
 import { runToolNames } from './tool-names.mjs'
 import { runSessionStore } from './session-store.mjs'
 import { runLlmIdle } from './llm-idle.mjs'
@@ -44,6 +45,7 @@ import { runRoutineTools } from './routine-tools.mjs'
 import { runHistoryTime } from './history-time.mjs'
 import { runCompact } from './compact.mjs'
 import { runGatewayUrl } from './gateway-url.mjs'
+import { runSeatSecrets } from './seat-secrets.mjs'
 import { runMaxSteps } from './max-steps.mjs'
 import { runDelegate } from './delegate.mjs'
 import { runToolCalls } from './toolcalls.mjs'
@@ -61,6 +63,7 @@ import { runReleaseBlob } from './release-blob.mjs'
 import { runBrowser } from './browser.mjs'
 import { runMounted } from './mounted.mjs'
 import { runSetup } from './setup.mjs'
+import { runAuthThrottle } from './auth-throttle.mjs'
 import { runUiSmoke } from './ui-smoke.mjs'
 import { runUiFiles } from './ui-files.mjs'
 import { uiSource } from './ui-dom.mjs'
@@ -77,6 +80,7 @@ import { runSkillsBot } from './skills-bot.mjs'
 import { runMemoryBot } from './memory-bot.mjs'
 import { runMemory } from './memory.mjs'
 import { runConversationAudit } from './conversation-audit.mjs'
+import { runMaintenance } from './maintenance.mjs'
 import { runBotTemplate } from './bot-template.mjs'
 import { runManager } from './manager.mjs'
 import { runManagerConfirm } from './manager-confirm.mjs'
@@ -477,7 +481,22 @@ async function runGateway() {
     })
     assert(machHost.status === 403, `admin 写 host ${machHost.status} ${machHost.text}`)
 
-    const mach = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: {} })
+    // 建机器、认领没归属的机器是平台的事：管理员不带 id、带一个不存在的 id、带一台
+    // 预登记还没派给本公司的机器，都不该成——以前后两种会就地建一行空机器 / 抢先认走。
+    const noId = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: {} })
+    assert(noId.status === 400, `admin 不带 id ${noId.status} ${noId.text}`)
+    const ghostId = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: { id: 'no-such-machine' } })
+    assert(ghostId.status === 404, `admin 给不存在的 id ${ghostId.status} ${ghostId.text}`)
+    const pre = await req(base, 'POST', '/internal/machines', { token: MACHINE_TOK, body: {} })
+    assert(pre.status === 201, `预登记 ${pre.status} ${pre.text}`)
+    const grab = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: { id: pre.json.machine.id } })
+    assert(grab.status === 403, `admin 认领预登记机器 ${grab.status} ${grab.text}`)
+    const viaPatch = await req(base, 'PATCH', `/orgs/${orgId}`, { token, body: { machineId: pre.json.machine.id } })
+    assert(viaPatch.status === 403, `admin 走 PATCH 认领 ${viaPatch.status} ${viaPatch.text}`)
+    const noRow = await req(base, 'GET', `/orgs/${orgId}/machine`, { token })
+    assert(noRow.status === 200 && noRow.json.machine == null, `被拒之后不该留下机器：${noRow.text}`)
+
+    const mach = await req(base, 'POST', `/orgs/${orgId}/machine`, { token: ownerTok, body: {} })
     assert(mach.status === 201, `machine ${mach.status} ${mach.text}`)
     assert(mach.json.company.accessUrl === 'https://acme.satuwork.com', 'accessUrl')
     assert(!mach.json.machine.token, 'admin assign 带了 token')
@@ -699,7 +718,7 @@ async function runGateway() {
     })
     assert(readyBoot.status === 401, `bootstrap ready ${readyBoot.status}`)
 
-    const bind = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: { id: mid } })
+    const bind = await req(base, 'POST', `/orgs/${orgId}/machine`, { token: ownerTok, body: { id: mid } })
     assert(bind.status === 201, `bind ${bind.status} ${bind.text}`)
     assert(!bind.json.machine.token, 'bind 响应带 token')
     orgMachineTok = smt
@@ -984,7 +1003,7 @@ async function runGateway() {
       assert(mach.status === 201, `mock machine ${mach.status} ${mach.text}`)
       liveTok = mach.json.machine.token
       assert(typeof liveTok === 'string' && liveTok.startsWith('smt_'), 'live smt_')
-      const bind = await req(base, 'POST', `/orgs/${orgId}/machine`, { token, body: { id: mach.json.machine.id } })
+      const bind = await req(base, 'POST', `/orgs/${orgId}/machine`, { token: ownerTok, body: { id: mach.json.machine.id } })
       assert(bind.status === 201, `bind live ${bind.status} ${bind.text}`)
       orgMachineTok = liveTok
       const idx = await req(base, 'POST', '/internal/sessions/index', {
@@ -1208,6 +1227,61 @@ async function runGateway() {
     assert(missing.status === 404, `不存在的账号 ${missing.status}`)
   })
 
+  await test('两个管理员同时互相降级 / 互删：总得留下一个管理员', async () => {
+    /**
+     * 「至少留一个管理员」是先数再写。以前数和写之间没有锁：两个管理员同时把对方降成成员，
+     * 两边都数到 2、都放行，公司就一个管理员都不剩了。现在数和写在同一个事务里排队
+     * （lib/org.ts 的 patchAccount、company.ts 的删账号），并发的两下里必然有一下 409。
+     */
+    const org = await req(base, 'POST', '/platform/orgs', {
+      token: ownerTok,
+      body: {
+        name: 'AdminRace', slug: 'adminrace', contactName: '孙八',
+        contactPhone: '+86 13800000002', contactEmail: 'c@adminrace.test',
+        adminEmail: 'a@adminrace.test', adminPassword: 'correct-horse-4',
+      },
+    })
+    assert(org.status === 201, `建公司 ${org.status} ${org.text}`)
+    const raceOrg = org.json.company.id
+    const up = await req(base, 'PUT', `/platform/orgs/${raceOrg}/plan`, { token: ownerTok, body: { seats: 5 } })
+    assert(up.status === 200, `加席位 ${up.status} ${up.text}`)
+    const madeB = await req(base, 'POST', `/orgs/${raceOrg}/accounts`, {
+      token: ownerTok,
+      body: { email: 'b@adminrace.test', password: 'correct-horse-5', name: '管理员乙', role: 'admin' },
+    })
+    assert(madeB.status === 201, `建第二个管理员 ${madeB.status} ${madeB.text}`)
+    const idB = madeB.json.account.id
+    const tokA = (await req(base, 'POST', '/auth/login', { body: { email: 'a@adminrace.test', password: 'correct-horse-4' } })).json.token
+    const tokB = (await req(base, 'POST', '/auth/login', { body: { email: 'b@adminrace.test', password: 'correct-horse-5' } })).json.token
+    const idA = (await req(base, 'GET', '/me', { token: tokA })).json.account.id
+    const admins = async () =>
+      (await req(base, 'GET', `/orgs/${raceOrg}/accounts`, { token: ownerTok })).json.members.filter(
+        (m) => m.role === 'admin' && m.status !== 'disabled',
+      )
+
+    const [ab, ba] = await Promise.all([
+      req(base, 'PATCH', `/orgs/${raceOrg}/accounts/${idB}`, { token: tokA, body: { role: 'member' } }),
+      req(base, 'PATCH', `/orgs/${raceOrg}/accounts/${idA}`, { token: tokB, body: { role: 'member' } }),
+    ])
+    const codes = [ab.status, ba.status].sort()
+    assert(codes[0] !== 200 || codes[1] !== 200, `两下互相降级都成了：${ab.text} / ${ba.text}`)
+    assert((await admins()).length >= 1, '互相降级之后一个管理员都不剩了')
+
+    // 再来一轮：把两个人都拉回管理员，然后一边删甲、一边停用乙。删账号那条路也得排同一把锁。
+    for (const id of [idA, idB]) {
+      const r = await req(base, 'PATCH', `/orgs/${raceOrg}/accounts/${id}`, { token: ownerTok, body: { role: 'admin', status: 'active' } })
+      assert(r.status === 200, `拉回管理员 ${r.status} ${r.text}`)
+    }
+    assert((await admins()).length === 2, '两个管理员没拉回来')
+    const [del, off] = await Promise.all([
+      req(base, 'DELETE', `/orgs/${raceOrg}/accounts/${idA}`, { token: ownerTok }),
+      req(base, 'PATCH', `/orgs/${raceOrg}/accounts/${idB}`, { token: ownerTok, body: { status: 'disabled' } }),
+    ])
+    assert(del.status !== 200 || off.status !== 200, `删甲、停乙两下都成了：${del.text} / ${off.text}`)
+    assert([del.status, off.status].includes(409), `该有一下 409：${del.status} ${off.status}`)
+    assert((await admins()).length >= 1, '删 + 停用之后一个管理员都不剩了')
+  })
+
   await test('API Key 调 /v1/models；access token 调 /me；交叉 401', async () => {
     const adminMe = await req(base, 'GET', '/me', { token })
     const adminId = adminMe.json.account.id
@@ -1279,12 +1353,11 @@ async function runGateway() {
       slug: 'otherco',
     })
     const otherOrg = other.company.id
-    const otherAdminTok = other.token
     const otherMach = await req(base, 'POST', '/internal/machines', { token: MACHINE_TOK, body: {} })
     assert(otherMach.status === 201, `other machine ${otherMach.status}`)
     const otherSmt = otherMach.json.machine.token
     const bindOther = await req(base, 'POST', `/orgs/${otherOrg}/machine`, {
-      token: otherAdminTok,
+      token: ownerTok,
       body: { id: otherMach.json.machine.id },
     })
     assert(bindOther.status === 201, `bind other ${bindOther.status} ${bindOther.text}`)
@@ -2026,9 +2099,7 @@ async function runGateway() {
   })
 
   await test('管理员重置口令：旧登录、旧口令当场作废；接受链接回来的票当场能用', async () => {
-    // 作废按秒比（iat < tokenRevokedAt 的那一秒）。刚登录拿的票和重置落在同一秒的话，
-    // 它会按规矩被放过——先跨过这一秒，下面「旧票作废」那句才是确定的。
-    await new Promise((r) => setTimeout(r, 1100))
+    // 作废按毫秒比（票里的 iatMs）：刚登录拿的票和重置落在同一秒也得作废，不用先跨过这一秒。
     const reset = await req(base, 'POST', `/orgs/${inviteOrg}/accounts/${invitedId}/reset`, { token: inviteAdminTok })
     assert(reset.status === 200, `reset ${reset.status} ${reset.text}`)
     const resetToken = String(reset.json.invite?.url || '').split('/join/')[1]
@@ -2412,12 +2483,16 @@ async function runGateway() {
   })
 
   await test('POST /me/password 成功 → 新票可用、旧票 401', async () => {
-    // iat 只有秒精度：同一秒内签发的旧票不会被 tokenRevokedAt 杀掉（新票也要活）。
-    await new Promise((x) => setTimeout(x, 1100))
+    // 不等跨秒：作废按毫秒 iatMs 比，同一秒里先签的旧票也得死，改完当场发的新票得活。
+    // 紧挨着改口令之前再登一次——以前按秒比，这张和作废点多半落在同一秒，会活满七天。
+    const justBefore = await req(base, 'POST', '/auth/login', { body: { email: 'boss@invite.test', password: 'correct-horse' } })
+    assert(justBefore.status === 200, `login ${justBefore.status} ${justBefore.text}`)
     const r = await req(base, 'POST', '/me/password', {
       token: inviteAdminTok,
       body: { current: 'correct-horse', next: 'new-horse-10' },
     })
+    const sameSec = await req(base, 'GET', '/me', { token: justBefore.json.token })
+    assert(sameSec.status === 401, `改口令前一刻签的票还能用 ${sameSec.status} ${sameSec.text}`)
     assert(r.status === 200, `ok ${r.status} ${r.text}`)
     assert(r.json.ok === true, 'ok')
     assert(typeof r.json.token === 'string' && r.json.token.split('.').length === 3, 'new jwt')
@@ -3507,6 +3582,7 @@ async function main() {
         log,
       }))
     await suite('setup', () => runSetup({ gwRoot, test, req, start, waitHttp, assert, log }))
+    await suite('auth-throttle', () => runAuthThrottle({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('custom-provider', () => runCustomProvider({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('stats', () => runStats({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('web-tools', () => runWebTools({ gwRoot, test, req, start, waitHttp, assert, log }))
@@ -3520,6 +3596,7 @@ async function main() {
     await suite('memory-bot', () => runMemoryBot({ root, test, assert, log }))
     await suite('memory', () => runMemory({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('conversation-audit', () => runConversationAudit({ root, test, assert, log }))
+    await suite('maintenance', () => runMaintenance({ root, test, assert, log }))
     await suite('bot-template', () => runBotTemplate({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('manager', () => runManager({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('manager-confirm', () => runManagerConfirm({ root, test, assert, log }))
@@ -3532,6 +3609,7 @@ async function main() {
     await suite('ui-files', () => runUiFiles({ root, test, assert, log }))
     await suite('markdown', () => runMarkdown({ root, test, assert, log }))
     await suite('chat-fold', () => runChatFold({ root, test, assert, log }))
+    await suite('desktop-update', () => runDesktopUpdate({ root, test, assert, log }))
     await suite('tool-names', () => runToolNames({ root, test, assert, log }))
     await suite('session-store', () => runSessionStore({ root, test, assert, log }))
     await suite('llm-idle', () => runLlmIdle({ root, test, assert, log }))
@@ -3552,6 +3630,7 @@ async function main() {
     await suite('history-time', () => runHistoryTime({ root, test, assert, log }))
     await suite('compact', () => runCompact({ root, test, assert, log }))
     await suite('gateway-url', () => runGatewayUrl({ root, test, assert, log }))
+    await suite('seat-secrets', () => runSeatSecrets({ root, test, assert, log }))
     await suite('max-steps', () => runMaxSteps({ root, test, assert, log }))
     await suite('delegate', () => runDelegate({ root, test, assert, log }))
     await suite('toolcalls', () => runToolCalls({ root, test, assert, log }))

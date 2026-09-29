@@ -49,7 +49,7 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
 | `GATEWAY_CHANNEL_KEY` | 32 字节 base64 | 渠道 token 的加密钥匙。换了就解不开已有绑定 |
 | `CRON_SECRET` | 随机串 | Vercel 触发 Cron 时带在 Authorization 上；没配 `/cron/tick` 整条关着 |
 | `GATEWAY_PUBLIC_URL` | `https://…` | 对外地址。**必须 https**：Telegram 收信靠它自动切到 webhook（channels/inbound.ts），管家学地址也靠它 |
-| `GATEWAY_TRUST_FORWARDED` | `1` | 信平台反代写的 `x-forwarded-for` 最右一跳（配对时记「机器在哪」用） |
+| `GATEWAY_TRUST_FORWARDED` | `1` | 信平台反代写的 `x-forwarded-for` 最右一跳（配对时记「机器在哪」用；登录限流的 IP 桶也靠它——不开的话全站共用一个桶） |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob 库的读写 token | 发布包不落盘、边收边传到 Blob（私有），下发时带 token 取。Debian 上也可以配，两边的包就在同一个地方。见 gateway/src/releases.ts |
 | `GATEWAY_ACCESS_HOST`、`GATEWAY_PLATFORM_TOKEN`、各家模型 key | 同 Debian | 见 docker-compose.yml |
 
@@ -133,6 +133,11 @@ openssl rand -base64 32   # GATEWAY_CHANNEL_KEY
   gateway-runtime.md「模型调用」），Gateway 不再在那条流的路径上。`/v1` 是请求级的，模型答完
   就结束，不是小时级；函数的 `maxDuration` 建议给到 800 秒，让桌面端一轮长回答（连同工具调用）
   不被半路砍断。这里不动，上线前按需要改 `build-vercel.mjs` 里写 `.vc-config.json` 那段。
+- **席位部署不挂在请求上**：`/runtime/deploy`、公司侧替人部署只等 `GATEWAY_DEPLOY_WAIT_MS`
+  （默认 20 秒），装不完回 202，界面轮询进度；两条批量更新（按公司、按机器）只排队，请求的
+  waitUntil 先推一段，没推完的由 `/cron/tick` 每分钟接着推，同一台机器一次只装一个。
+  「有没有人在装」看库里的在装心跳（`seat_runtimes.deployBeatAt`），不看实例；心跳断了（函数被掐）
+  由每分钟那一拍去管家那儿问结局。
 - **老协议机器上的日常任务与渠道**：Gateway 不再自己跑那一轮（那要等席位 20 分钟），< 8 号的
   机器上这两样不动。先升管家。
 

@@ -13,6 +13,7 @@ import {
 } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { HttpError } from './http.ts'
 
 /** 口令下限。和 Bot 框架同一条，不多写一条服务端不检查的。 */
 export const MIN_PASSWORD = 10
@@ -43,7 +44,43 @@ function maxmemFor(N: number, r: number): number {
 
 type ScryptParams = { N: number; r: number; p: number }
 
+/**
+ * 同时在算的 scrypt 最多几个，排队最多几个。
+ *
+ * scrypt 跑在 libuv 线程池上（默认 4 条线程），读文件、DNS 解析也在同一个池里。没有这道闸，
+ * 一串并发的 `/auth/login`（不认识的邮箱也照样算一遍假哈希）就能把四条线程全占住，进程里
+ * 别的 fs / DNS 活儿跟着排队——不用猜中任何东西就能把 Gateway 拖死。只管一个进程之内；
+ * 跨实例、跨时间的次数限制在 lib/auth-throttle.ts。
+ *
+ * 默认留一半线程给别人。队伍满了直接回 503，不无限排：排在后面的请求反正也等不到超时之前。
+ */
+const SCRYPT_CONCURRENCY = Math.max(1, Number(process.env.GATEWAY_SCRYPT_CONCURRENCY) || 2)
+const SCRYPT_QUEUE = Math.max(0, Number(process.env.GATEWAY_SCRYPT_QUEUE) || 32)
+let scryptRunning = 0
+const scryptWaiting: (() => void)[] = []
+
+async function withScryptSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (scryptRunning >= SCRYPT_CONCURRENCY) {
+    if (scryptWaiting.length >= SCRYPT_QUEUE) throw new HttpError(503, '服务器忙，请稍后再试', { retryAfter: 1 })
+    await new Promise<void>((resolve) => scryptWaiting.push(resolve))
+  } else {
+    scryptRunning += 1
+  }
+  try {
+    return await fn()
+  } finally {
+    // 名额直接交给排头那一个，不先减再加——中间那一拍会让刚到的请求插队。
+    const next = scryptWaiting.shift()
+    if (next) next()
+    else scryptRunning -= 1
+  }
+}
+
 function scrypt(password: string, salt: Buffer, params: ScryptParams = SCRYPT): Promise<Buffer> {
+  return withScryptSlot(() => scryptRaw(password, salt, params))
+}
+
+function scryptRaw(password: string, salt: Buffer, params: ScryptParams): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     scryptCb(
       password,
@@ -90,7 +127,9 @@ export async function verifyPassword(password: string, stored: string): Promise<
   let key: Buffer
   try {
     key = await scrypt(password, Buffer.from(salt, 'hex'), params)
-  } catch {
+  } catch (e) {
+    // 忙（503）要原样抛出去：吞成 false 就成了一次「口令不对」，还会记进失败次数。
+    if (e instanceof HttpError) throw e
     return false
   }
   const expected = Buffer.from(hash, 'hex')
@@ -215,16 +254,36 @@ export interface JwtPayload {
   companyId: string
   role: 'owner' | 'admin' | 'member'
   iat: number
+  /**
+   * 签发时刻，毫秒。iat 只有秒精度，拿它比 tokenRevokedAt（毫秒）同一秒内分不出先后：
+   * 12.1 秒签的票、12.9 秒改的口令，按秒比这张票就活下来了。新票都带这一格，按它比；
+   * 没有这一格的老票退回按秒比（见 ticketRevoked）。
+   */
+  iatMs?: number
   exp: number
+}
+
+/**
+ * 这张票是不是签在账号作废点（tokenRevokedAt）之前。
+ *
+ * 带 iatMs 的按毫秒严格比：作废那一刻之后签的新票（改口令、接受邀请当场发的那张）不早于
+ * 作废点，照样有效。老票没有 iatMs，只能按秒比——同一秒内的那一小段放过去，和以前一样。
+ */
+export function ticketRevoked(revokedAt: number | null | undefined, t: { iat: number; iatMs?: unknown }): boolean {
+  if (!revokedAt) return false
+  if (typeof t.iatMs === 'number' && Number.isFinite(t.iatMs)) return t.iatMs < revokedAt
+  return !(typeof t.iat === 'number' && t.iat >= Math.floor(revokedAt / 1000))
 }
 
 const b64url = (data: Buffer | string) => Buffer.from(data).toString('base64url')
 
-export function signJwt(keys: JwtKeys, claims: Omit<JwtPayload, 'iss' | 'iat' | 'exp'>, ttlSec: number): string {
-  const now = Math.floor(Date.now() / 1000)
+export function signJwt(keys: JwtKeys, claims: Omit<JwtPayload, 'iss' | 'iat' | 'iatMs' | 'exp'>, ttlSec: number): string {
+  const ms = Date.now()
+  const now = Math.floor(ms / 1000)
   const payload: JwtPayload = {
     iss: process.env.GATEWAY_ISS ?? 'satuwork-gateway',
     iat: now,
+    iatMs: ms,
     exp: now + ttlSec,
     ...claims,
   }
@@ -324,6 +383,8 @@ export interface ArtifactTicket {
   sessionId: string
   path: string
   iat: number
+  /** 同 JwtPayload.iatMs：账号改口令、被停用之后，之前发出去的预览链接一起作废。 */
+  iatMs?: number
   exp: number
 }
 
@@ -338,8 +399,9 @@ export function signArtifactTicket(
   path: string,
   ttlSec = 7 * 24 * 3600,
 ): string {
-  const now = Math.floor(Date.now() / 1000)
-  const payload: ArtifactTicket = { typ: 'satu-artifact', accountId, sessionId, path, iat: now, exp: now + ttlSec }
+  const ms = Date.now()
+  const now = Math.floor(ms / 1000)
+  const payload: ArtifactTicket = { typ: 'satu-artifact', accountId, sessionId, path, iat: now, iatMs: ms, exp: now + ttlSec }
   const h = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: keys.kid }))
   const p = b64url(JSON.stringify(payload))
   return `${h}.${p}.${sign('sha256', Buffer.from(`${h}.${p}`), keys.privatePem).toString('base64url')}`

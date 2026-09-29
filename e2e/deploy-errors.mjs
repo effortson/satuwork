@@ -120,4 +120,25 @@ export async function runDeployErrors({ root, test, assert, log }) {
     // 在部署最前面清掉自己的桌面，后面 apt 一失败，本来还在服务的那一套白死一回。
     assert(r.ownStale.action === 'ours', `${JSON.stringify(r.ownStale)}`)
   })
+
+  // ── 占口的是哪个席位：只认改不了的东西 ────────────────────────────────
+  // 以前按进程自报的 XDG_RUNTIME_DIR 认：别的账号带一条伪造的环境蹲在某个席位下一个槽位的
+  // 口上，回收就会把那个活着的席位当孤儿停掉。现在是 cgroup / logind 会话加 uid。
+
+  await test('单元 cgroup 里的进程：认得出，而且环境里怎么自报都不算数', async () => {
+    assert(r.ownBot === 'sw-a' && r.ownDesktopUnit === 'sw-a', `${r.ownBot} / ${r.ownDesktopUnit}`)
+    assert(r.botForgesOther === 'sw-a', `bot 单元里的进程自报成 sw-b 就被认成了 ${r.botForgesOther}`)
+  })
+
+  await test('桌面进程在 login 会话的 scope 里：按候选认、核 uid（新老两种运行时目录都认）', async () => {
+    assert(r.desktopInScope === 'sw-a', `${r.desktopInScope}`)
+    assert(r.desktopLegacyDir === 'sw-a', `老部署的 /tmp/xdg-runtime-* 没认出来：${r.desktopLegacyDir}`)
+  })
+
+  await test('伪造的环境一律不认：别的账号、ssh 会话、不在任何会话里', async () => {
+    assert(r.otherUserForges === null, `别的账号冒充成功：${r.otherUserForges}`)
+    assert(r.sshForges === null, `ssh 会话里冒充成功：${r.sshForges}`)
+    assert(r.noScopeForges === null, `不在会话里冒充成功：${r.noScopeForges}`)
+    assert(r.unitWrongUid === null && r.unknownSeat === null, `${r.unitWrongUid} / ${r.unknownSeat}`)
+  })
 }

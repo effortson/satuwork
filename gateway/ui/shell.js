@@ -82,7 +82,7 @@ function authAside(
     <div class="satu-authside">
       <div style="position: absolute; top: -60px; right: -60px; width: 220px; height: 220px; border-radius: 50%; background: var(--color-accent-2-200); opacity: 0.6;"></div>
       <div style="position: relative; width: 100%; max-width: 440px; display: flex; align-items: center; gap: var(--space-2);">
-        <img src="/assets/satuwork-logo.png" alt="Satuwork" style="width: 34px; height: 34px; border-radius: 999px;">
+        <img src="/assets/satuwork-logo.png" alt="Satuwork" style="width: 34px; height: 34px; border-radius: 10px;">
         <span style="font-family: var(--font-heading); font-size: 20px;">Satuwork</span>
       </div>
       <div style="position: relative; width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: var(--space-4);">
@@ -202,6 +202,8 @@ function loginView() {
           <p style="margin: 0; color: color-mix(in srgb, var(--color-text) 60%, transparent); font-size: 14px;">${t('进入控制台，管理你的 AI 员工')}</p>
         </div>
         ${state.loginError ? `<div class="gw-flash gw-flash-err">${esc(state.loginError)}</div>` : ''}
+        ${/* 登录页也给：Gateway 升级后老壳可能连登录都过不去，那时唯一的出路就是先升级。 */ ''}
+        ${desktopUpdateSlot('login')}
         <form id="login-form" style="display: flex; flex-direction: column; gap: var(--space-4);">
           <div class="field">
             <label for="login-email">${t('邮箱')}</label>
@@ -486,5 +488,193 @@ function placeholderPage(title, body) {
         </div>
         ${flashes()}
       </div>
+    </div>`
+}
+
+/* ── Desktop 壳自己的升级 ─────────────────────────────────────────────
+   壳子那头见 desktop/src-tauri/src/self_update.rs：它去 GitHub 的 desktop-latest 问
+   latest.json、验签、装。这里只管三件事：隔一阵问一次、有新版就在侧栏底部亮一条、
+   人点了以后画进度。浏览器里 __SATUWORK_DESKTOP_UPDATE__ 不存在，下面一律不出现。
+
+   **只在人点了之后才下载。** 换壳要重启整个应用，本地 Bot 手上的活会被打断；
+   后台偷偷装好、下次启动自动换，等于替人决定了什么时候打断。 */
+
+/** 多久问一次。壳子那头还有十分钟的缓存，窗口开开关关不会每次都去敲 GitHub。 */
+const DESKTOP_UPDATE_EVERY = 6 * 60 * 60 * 1000
+/** 下载时多久看一次进度。 */
+const DESKTOP_UPDATE_POLL = 500
+
+let desktopUpdateTimer = null
+let desktopUpdatePolling = false
+
+function desktopUpdateBridge() {
+  const bridge = window.__SATUWORK_DESKTOP_UPDATE__
+  return desktopShell() && bridge && typeof bridge.check === 'function' ? bridge : null
+}
+
+function desktopUpdateBusy(u) {
+  return Boolean(u && (u.phase === 'downloading' || u.phase === 'installing'))
+}
+
+/** boot() 里调一次。先取一眼状态（当前版本号要给个人设置页用），过几秒再真去问。 */
+function startDesktopUpdateWatch() {
+  const bridge = desktopUpdateBridge()
+  if (!bridge || desktopUpdateTimer) return
+  if (typeof bridge.status === 'function') {
+    Promise.resolve(bridge.status())
+      .then((view) => {
+        if (!state.desktopUpdate) setDesktopUpdate(view)
+      })
+      .catch(() => {})
+  }
+  const tick = async () => {
+    await checkDesktopUpdate(false)
+    desktopUpdateTimer = setTimeout(tick, DESKTOP_UPDATE_EVERY)
+  }
+  // 让开第一屏：登录、名单、会话都在这几秒里取。
+  desktopUpdateTimer = setTimeout(tick, 3000)
+}
+
+async function checkDesktopUpdate(force) {
+  const bridge = desktopUpdateBridge()
+  if (!bridge) return null
+  let view
+  try {
+    view = await bridge.check(Boolean(force))
+  } catch (e) {
+    view = { ...(state.desktopUpdate || {}), phase: 'error', error: String((e && e.message) || e) }
+  }
+  setDesktopUpdate(view)
+  if (desktopUpdateBusy(view)) void pollDesktopUpdate()
+  return view
+}
+
+/** 点了「升级」：壳子立即返回、下载在它那边后台跑，这里轮询进度直到换壳重启。 */
+async function installDesktopUpdate() {
+  const bridge = desktopUpdateBridge()
+  if (!bridge) return
+  const before = state.desktopUpdate
+  if (desktopUpdateBusy(before)) return
+  try {
+    setDesktopUpdate(await bridge.install())
+  } catch (e) {
+    setDesktopUpdate({ ...(before || {}), error: String((e && e.message) || e) })
+    return
+  }
+  await pollDesktopUpdate()
+}
+
+async function pollDesktopUpdate() {
+  const bridge = desktopUpdateBridge()
+  if (!bridge || desktopUpdatePolling) return
+  desktopUpdatePolling = true
+  try {
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, DESKTOP_UPDATE_POLL))
+      let view
+      try {
+        view = await bridge.status()
+      } catch {
+        break
+      }
+      setDesktopUpdate(view)
+      // 装好之后壳子自己重启，这一页连同这个循环一起没了；走出循环的只有失败（回到 available）。
+      if (!desktopUpdateBusy(view)) break
+    }
+  } finally {
+    desktopUpdatePolling = false
+  }
+}
+
+/**
+ * 换状态、就地重画那几个槽。**不走 render()**：下载时每半秒来一次，整页重画会把正在
+ * 打字的输入框一起换掉（同 paintRoster）。槽是 desktopUpdateSlot 画出来的外壳，一直在，
+ * 空的时候里面什么都没有——这样从「没有新版」变成「有新版」时也有地方可填。
+ */
+function setDesktopUpdate(view) {
+  state.desktopUpdate = view || null
+  for (const slot of document.querySelectorAll('[data-desktop-update]')) {
+    slot.innerHTML = desktopUpdateInner(slot.getAttribute('data-desktop-update'))
+  }
+}
+
+function desktopUpdateSlot(kind) {
+  if (!desktopUpdateBridge()) return ''
+  return `<div class="satu-dupdate-slot" data-desktop-update="${esc(kind)}">${desktopUpdateInner(kind)}</div>`
+}
+
+function desktopUpdatePercent(u) {
+  if (!u.total) return null
+  return Math.max(0, Math.min(100, Math.floor((u.downloaded / u.total) * 100)))
+}
+
+function desktopUpdateInner(kind) {
+  const u = state.desktopUpdate
+  if (kind === 'profile') return desktopUpdateProfile(u)
+  if (!u || !(u.phase === 'available' || desktopUpdateBusy(u)) || !u.version) return ''
+  const icon = svg(['M12 3v12', 'm7 10 5 5 5-5', 'M5 21h14'], 15)
+  const version = esc(u.version)
+  if (u.phase === 'available') {
+    const sub = u.error
+      ? t('上次没升级成功，点击重试', 'Last attempt failed — click to retry')
+      : t('点击下载并升级，完成后自动重启', 'Click to download; the app restarts when done')
+    return `<button type="button" class="satu-dupdate" data-act="desktop-update-install" data-phase="available"
+        title="${esc(u.error || t(`升级到 ${u.version}`, `Update to ${u.version}`))}" aria-label="${esc(t(`有新版本 ${u.version}，点击升级`, `Version ${u.version} is available — click to update`))}">
+      <span class="satu-dupdate-icon">${icon}</span>
+      <span class="satu-dupdate-text">
+        <strong>${t(`有新版本 ${version}`, `Update ${version} available`)}</strong>
+        <small${u.error ? ' data-error="true"' : ''}>${esc(sub)}</small>
+      </span>
+    </button>`
+  }
+  const pct = u.phase === 'downloading' ? desktopUpdatePercent(u) : 100
+  const line =
+    u.phase === 'installing'
+      ? t(`正在安装 ${version}，马上重启…`, `Installing ${version}, restarting…`)
+      : pct === null
+        ? t(`正在下载 ${version}…`, `Downloading ${version}…`)
+        : t(`正在下载 ${version} · ${pct}%`, `Downloading ${version} · ${pct}%`)
+  return `<div class="satu-dupdate" data-phase="${esc(u.phase)}" role="status" title="${esc(line)}">
+      <span class="satu-dupdate-icon">${icon}</span>
+      <span class="satu-dupdate-text">
+        <strong>${line}</strong>
+        <span class="satu-dupdate-bar"${pct === null ? ' data-indeterminate="true"' : ''}><i style="width: ${pct === null ? 30 : pct}%"></i></span>
+      </span>
+    </div>`
+}
+
+/** 个人设置里的「桌面端」那一块：当前版本、手动检查、查到了就地给升级按钮。 */
+function desktopUpdateProfile(u) {
+  const current = u && u.current ? esc(u.current) : '…'
+  let line = ''
+  let action = `<button type="button" class="btn btn-secondary" style="flex: none;" data-act="desktop-update-check" ${u && u.phase === 'checking' ? 'disabled' : ''}>${t('检查更新', 'Check for updates')}</button>`
+  if (!u || u.phase === 'idle') line = ''
+  else if (u.phase === 'disabled') {
+    line = t('开发版不检查更新。', 'Development builds do not check for updates.')
+    action = ''
+  } else if (u.phase === 'checking') line = t('正在检查…', 'Checking…')
+  else if (u.phase === 'latest') line = t('已是最新版本。', 'You are on the latest version.')
+  else if (u.phase === 'error') line = esc(u.error || t('检查更新失败。', 'Could not check for updates.'))
+  else if (u.phase === 'available') {
+    line = u.error
+      ? `${t(`新版本 ${esc(u.version)} 上次没升级成功：`, `Updating to ${esc(u.version)} failed: `)}${esc(u.error)}`
+      : t(`有新版本 ${esc(u.version)}，升级时会自动下载并重启应用。`, `Version ${esc(u.version)} is available. Updating downloads it and restarts the app.`)
+    action = `<button type="button" class="btn btn-primary" style="flex: none;" data-act="desktop-update-install">${t('立即升级', 'Update now')}</button>`
+  } else if (desktopUpdateBusy(u)) {
+    const pct = desktopUpdatePercent(u)
+    line =
+      u.phase === 'installing'
+        ? t('正在安装，马上重启…', 'Installing, restarting…')
+        : pct === null
+          ? t('正在下载…', 'Downloading…')
+          : t(`正在下载 · ${pct}%`, `Downloading · ${pct}%`)
+    action = ''
+  }
+  return `<span class="satu-panel-title">${t('桌面端', 'Desktop app')}</span>
+    <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
+      <p style="margin: 0; font-size: 13px; color: var(--muted-foreground); flex: 1; min-width: 220px;">
+        ${t(`当前版本 ${current}。`, `Current version ${current}.`)}${line ? ` ${line}` : ''}
+      </p>
+      ${action}
     </div>`
 }

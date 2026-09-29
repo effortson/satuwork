@@ -23,12 +23,15 @@ With a valid session, `/` goes straight to chat / overview as before. The deskto
 and the footers of both the landing page and the sign-in page link to them. The legal entity, jurisdiction and contact email in them are placeholders
 and must be replaced before launch (see `LEGAL_DRAFT` at the top of that file).
 
-Desktop downloads are a section of the landing page, right after "Getting started" (`lpDownload` in `gateway/ui/pages-landing.js`);
-there is no separate download page any more. `/#download` jumps straight to that section, and the old `/download` address still
-serves the UI and is rewritten to `/#download`. The sign-in, setup and invite screens link there too (in a new tab; hidden in the
-desktop shell). Because it lives on the landing page it is **only reachable while signed out** — with a valid session `/` (and the
-old `/download`) goes to chat / overview. It picks Windows / macOS from the platform the browser reports, and the row at the top of
-the card lets people switch manually.
+Desktop downloads live in two places that render the same card (`dlGrid` in `gateway/ui/pages-landing.js`):
+
+- **Signed out**: a section of the landing page, right after "Getting started" (`lpDownload`). `/#download` jumps straight to it,
+  and the sign-in, setup and invite screens link there too (in a new tab).
+- **Signed in**: an in-app `/download` page (`downloadPage`), linked from Preferences.
+
+The old `/download` address still serves the UI and is routed by sign-in state: signed out it is rewritten to `/#download`, signed
+in it is that page (`foldDownload` in `gateway/ui/app.js`). Neither is offered inside the desktop shell. The card picks Windows /
+macOS from the platform the browser reports, and the row at the top lets people switch manually.
 
 Files point at a fixed `desktop-latest` Release, so shipping a new version needs no page change: desktop release CI copies the
 installers there under version-less names (`Satuwork_x64-setup.exe`, `Satuwork_aarch64.dmg`, `Satuwork_x64.dmg`), always mirroring the newest

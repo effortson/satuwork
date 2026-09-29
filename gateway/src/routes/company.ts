@@ -10,7 +10,7 @@ import { balanceOf } from '../lib/billing.ts'
 import { parseBilling } from '../db.ts'
 import { isUniqueViolation } from '../db/rows.ts'
 import { bodyOf, deployOptsOf, strField, usd, usdMicros } from '../lib/validate.ts'
-import { companyMachineOf, deploySeat, listSeatRuntime, publicMachine, publicSeatRuntime, releaseSeats } from '../deploy.ts'
+import { companyMachineOf, deploySeatBriefly, listSeatRuntime, publicMachine, publicSeatRuntime, releaseSeats } from '../deploy.ts'
 import { companyStatusOf, emailOf, groupRoleOf, membersInCompany, orgSettings, patchAccount, phoneOf, publicAccount, publicCompany, publicGroup, publicPlan, publicSettings, roleOf, slugOf, stringIds, websiteOf } from '../lib/org.ts'
 import { desktopTicketFor, machineHostOf, machineResolver } from '../lib/machines.ts'
 import { inviteLinkOf, issueInvite, rangeQuery, requireOrgUser, requireOwner, requireUser, usagePayload } from '../lib/guards.ts'
@@ -146,16 +146,11 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
         const machine = await db.machine(machineId)
         if (!machine) throw new HttpError(404, '机器不存在')
         if (machine.companyId && machine.companyId !== company.id) throw new HttpError(409, '这台机器已经派给别的公司')
-        // 和 POST /orgs/:id/machine 同一条判据，一个字都不能少：companyId 为空不代表
-        // 这台是干净的新机器——公司被删时它会被置空，而机器上的席位还在跑。少了这一句，
-        // 那边拦住的认领从这条 PATCH 上原样走过去了。
-        if (
-          !machine.companyId &&
-          machine.pairedAt &&
-          account.role !== 'owner' &&
-          !(await db.machinePairedBy(machine.id, company.id))
-        ) {
-          throw new HttpError(403, '这台机器不是本公司配对的，请让系统管理员指派')
+        // 和 POST /orgs/:id/machine 同一条判据，一个字都不能少：公司管理员只能在本公司
+        // 名下的机器里挑默认，没归属的机器（预登记的、公司被删后留下的）一律等 owner
+        // 指派。少了这一句，那边拦住的认领从这条 PATCH 上原样走过去了。
+        if (account.role !== 'owner' && machine.companyId !== company.id) {
+          throw new HttpError(403, '这台机器还没派给本公司，请让系统管理员指派')
         }
         // **改默认，不是换一台。** 以前这里会把原来那台解绑——多机之后那等于把一台正在
         // 跑的机器连同它上面的席位一起踢出公司，容量凭空缩水（POST 那条路已经改掉了）。
@@ -496,8 +491,9 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     const row = await db.account(req.params.accountId)
     if (!row || row.companyId !== req.params.id) throw new HttpError(404, '账号不存在')
     if (row.role === 'owner') throw new HttpError(403, '系统管理员没有席位')
-    const out = await deploySeat(db, keys, row, deployOptsOf(req))
-    const rt = out.ok ? out.result.runtime : out.runtime
+    // 后台装、先等一小会儿，理由同 `/runtime/deploy`：首装挂在请求上必然 504。
+    const out = await deploySeatBriefly(db, row, deployOptsOf(req))
+    const rt = out.runtime
     await db.audit({
       companyId: req.params.id,
       accountId: actor.id,
@@ -509,6 +505,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
         seatId: rt?.seatId,
         slot: rt?.slot,
         status: rt?.status,
+        ...(out.ok && out.already ? { already: true } : {}),
       },
     })
     if (!out.ok) throw new HttpError(out.status, out.error)
@@ -523,10 +520,14 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
      * 不带票的那一版，点进去管家不认。
      */
     const mayView = actor.role === 'owner' || actor.id === row.id
-    json(res, 200, publicSeatRuntime(out.result.runtime, out.result.machine, {
-      includePassword: mayView,
-      ticket: mayView ? desktopTicketFor(keys, out.result.machine, out.result.runtime) : undefined,
-    }))
+    json(res, out.installing ? 202 : 200, {
+      ...publicSeatRuntime(out.runtime, out.machine ?? null, {
+        includePassword: mayView,
+        ticket: mayView ? desktopTicketFor(keys, out.machine, out.runtime) : undefined,
+      }),
+      installing: out.installing,
+      ...(out.already ? { already: true } : {}),
+    })
   })
 
   router.delete('/orgs/:id/accounts/:accountId', async (req, res) => {
@@ -534,8 +535,23 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     const row = await db.account(req.params.accountId)
     if (!row || row.companyId !== req.params.id) throw new HttpError(404, '账号不存在')
     if (row.id === actor.id) throw new HttpError(400, '不能删除自己')
-    if (row.role === 'admin' && row.status !== 'disabled' && row.companyId && await db.adminCount(row.companyId) <= 1) {
-      throw new HttpError(409, '不能删掉最后一个管理员')
+    /**
+     * 「不能删掉最后一个管理员」要和改角色 / 停用排在同一把锁上（lib/org.ts 的 patchAccount）：
+     * 两个管理员同时互删、或者一个删一个降级，不锁就各自数到 2、各自放行。
+     *
+     * 下面拆席位是远程调用，锁不能握着它等。所以在锁里**先把这个管理员停掉**（顺带作废他的票）
+     * ——从这一刻起他就不算在 adminCount 里，别的请求排到锁时数到的是真数。拆席位失败回 502 时
+     * 这个人留在停用状态，比留一个删了一半、还能登录的管理员稳当；再删一次就接着走完。
+     */
+    if (row.role === 'admin' && row.status !== 'disabled' && row.companyId) {
+      const companyId = row.companyId
+      await db.tx(async () => {
+        await db.lockCompanyAdmins(companyId)
+        const cur = await db.account(row.id)
+        if (!cur || cur.role !== 'admin' || cur.status === 'disabled') return
+        if (await db.adminCount(companyId) <= 1) throw new HttpError(409, '不能删掉最后一个管理员')
+        await db.updateAccount(row.id, { status: 'disabled', tokenRevokedAt: Date.now() })
+      })
     }
     // **先拆机器上的席位，再删库里的行。** 理由见 deploy.ts 的 releaseSeats——
     // 删公司走的是同一条。
@@ -828,7 +844,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     if (!company) throw new HttpError(404, '公司不存在')
     const body = bodyOf(req)
     // 机器地址是平台的事：登记走 POST /internal/machines（引导票），改走
-    // PUT /platform/orgs/:id/machine（owner）。公司管理员只能把已有机器认领过来。
+    // PUT /platform/orgs/:id/machine（owner）。公司管理员只能在本公司的机器里挑默认。
     // 否则管理员能把 host 指到自己的服务器上，让 Gateway 带着 smt_ 打过去。
     const rawHost = body.host != null ? strField(body, 'host', false) : ''
     if (rawHost && account.role !== 'owner') throw new HttpError(403, '机器地址由系统管理员配置')
@@ -838,18 +854,15 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     if (existing && existing.companyId && existing.companyId !== company.id) {
       throw new HttpError(409, '这台机器已经派给别的公司')
     }
-    // **配过对的机器不是「谁先认领谁得」。** companyId 为空不代表这台是干净的新机器：
-    // 公司被删时 machines.companyId 会被置空，而那台机器上的席位还在跑。这种机器只能
-    // 由 owner 重新指派，或者由**当初配对它的那家公司**认回去。没配过对的预登记机器
-    // （平台先 POST /internal/machines 建好、再交给公司）不受影响，照旧可以认领。
-    if (
-      existing &&
-      !existing.companyId &&
-      existing.pairedAt &&
-      account.role !== 'owner' &&
-      !(await db.machinePairedBy(existing.id, company.id))
-    ) {
-      throw new HttpError(403, '这台机器不是本公司配对的，请让系统管理员指派')
+    // **公司管理员只能在本公司名下的机器里挑默认那台。** 建机器、认领没归属的机器都是
+    // 平台的事（配对、PUT /platform/machines/:id/company）。以前这里给不存在的 id 就地
+    // insert 一行空机器，companyMachineOf 的兜底会把它当成公司的机器用；知道预登记
+    // 机器 id 的任何管理员也能抢先把它认过来。配过对、公司被删后留下的机器同理，
+    // 一律等 owner 重新指派。
+    if (account.role !== 'owner') {
+      if (!id) throw new HttpError(400, '要指定本公司名下的机器 id')
+      if (!existing) throw new HttpError(404, '机器不存在')
+      if (existing.companyId !== company.id) throw new HttpError(403, '这台机器还没派给本公司，请让系统管理员指派')
     }
     const { machine, next } = await db.tx(async () => {
       // **认领是「加一台」，不是「换一台」。** 以前这里会把 company.machineId 指向的

@@ -6,7 +6,7 @@
  * 用 `kill(pid, 0)` 去问操作系统，不看我们自己那本账。
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -85,6 +85,59 @@ out.foreground = {
     return Date.now() - t0 < 5_000 && r.text.includes('超时')
   })(),
   workdir生效: (await call('terminal', { command: 'pwd', workdir: '.' })).text.trim().endsWith(root.split('/').pop()),
+}
+
+// ── 1.5 逃出进程组的后代攥着管道：超时 / 停止照样要返回 ─────────────────
+/**
+ * `setsid foo &` 出来的后代换了会话，`kill(-pgid)` 杀不到它，而它继承了 stdout/stderr。
+ * 以前那次调用只等 `close`，管道不关就永远不返回——这一轮挂死。
+ *
+ * 用 perl 的 POSIX::setsid 而不是 `setsid` 命令：后者 macOS 上没有。两种形状都要：
+ * `& wait` 是 shell 还活着的时候被杀，`&` 后面什么都不跟是 shell 早就退了、只剩后代。
+ */
+{
+  const escapee = `perl -e 'use POSIX; setsid(); sleep 1000'`
+  const pidsOf = (text) => [...String(text).matchAll(/pid=(\d+)/g)].map((m) => Number(m[1]))
+  const leftovers = []
+  const timed = async (args, signal) => {
+    const t0 = Date.now()
+    const r = await call('terminal', args, 's-1', signal)
+    leftovers.push(...pidsOf(r.text))
+    return { ms: Date.now() - t0, r }
+  }
+  const waiting = await timed({ command: `${escapee} & echo pid=$!; wait`, timeout: 1 })
+  const orphaned = await timed({ command: `${escapee} & echo pid=$!`, timeout: 1 })
+  const ac = new AbortController()
+  const stopping = timed({ command: `${escapee} & echo pid=$!; wait`, timeout: 60 }, ac.signal)
+  await sleep(300)
+  ac.abort()
+  const stopped = await stopping
+  out.escapee = {
+    // 1 秒超时 + 2 秒拆管道的余量，再留一点给慢机器。
+    shell还活着时超时会返回: waiting.ms < 6_000 && waiting.r.text.includes('超时'),
+    shell早退了超时也会返回: orphaned.ms < 6_000 && orphaned.r.text.includes('超时'),
+    停止按钮会返回: stopped.ms < 6_000,
+    输出没丢: waiting.r.text.includes('pid='),
+    /**
+     * **杀的时候连逃出去的也要收掉。** shell 还活着时顺着 ppid 找得到；shell 早退了的那个
+     * 被过继给了 init，只能按命令的标签（SATUWORK_RUN）认。只在 Linux 上查（要读 /proc）。
+     * 僵尸也算没了：容器里 PID 1 未必会收尸。
+     */
+    逃出去的也被杀了: process.platform !== 'linux' || leftovers.every((pid) => {
+      try {
+        const st = readFileSync(`/proc/${pid}/stat`, 'utf8')
+        return st.slice(st.lastIndexOf(')') + 2).startsWith('Z')
+      } catch {
+        return true
+      }
+    }),
+  }
+  // 收掉逃出去的那几个：它们本来就不在进程组里，探针自己不收就会在机器上活一千秒。
+  for (const pid of leftovers) {
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {}
+  }
 }
 
 // ── 2. 输出超限：截断，但全文捞得回来 ─────────────────────────────────
@@ -345,6 +398,40 @@ out.killed = (await call('process', { action: 'kill', session_id: bg })).text.in
     后台日志没有替换字符: !log.text.includes('�'),
     poll没有替换字符: !poll.text.includes('�'),
     真的是中文: log.text.includes('中文中文'),
+  }
+}
+
+// ── 6b. 日志有上限，log 只读要的那几行 ───────────────────────────────
+/**
+ * 以前日志只增不减：一个刷屏的 `pnpm dev` 跑满 24 小时能把盘写满；`log` 还整份 readFile，
+ * 几百 MB 的日志一次摆进内存。现在一段 8 MB 就滚一次，盘上最多两段；行号从第一行输出
+ * 数起，滚掉的那截照样算进去——翻页的 offset 不因为滚段而错位。
+ */
+{
+  // 20 万行、每行百来个字节，一共 20 MB 出头：要滚两次。
+  const cmd = `yes ${'x'.repeat(90)} | head -n 200000 | nl -ba -w8 -nrz`
+  const r = await call('terminal', { command: cmd, background: true }, 's-cap')
+  const id = idOf(r.text)
+  await call('process', { action: 'wait', session_id: id, timeout: 30 }, 's-cap')
+  await sleep(300)
+  const { statSync } = await import('node:fs')
+  const sizeOf = (f) => { try { return statSync(f).size } catch { return -1 } }
+  const cur = sizeOf(join(home, 'proc', `${id}.log`))
+  const prev = sizeOf(join(home, 'proc', `${id}.log.1`))
+  const tail = (await call('process', { action: 'log', session_id: id, limit: 3 }, 's-cap')).text
+  const total = Number((tail.match(/共 (\d+) 行/) ?? [])[1])
+  const lastLine = tail.split('\n').pop() ?? ''
+  const head = (await call('process', { action: 'log', session_id: id, offset: 1, limit: 2 }, 's-cap')).text
+  const near = (await call('process', { action: 'log', session_id: id, offset: total - 1, limit: 5 }, 's-cap')).text
+  out.logCap = {
+    当前段有上限: cur > 0 && cur <= 9 * 1024 * 1024,
+    滚出来的那段也有上限: prev > 0 && prev <= 9 * 1024 * 1024,
+    盘上加起来比输出少: cur + prev < 20 * 1024 * 1024,
+    行号从第一行数起: total === 200000,
+    末行行号和内容对得上: /^200000\|00200000\t/.test(lastLine),
+    滚掉的那截说清楚: /已经滚掉了/.test(head),
+    翻到最后照样接得上: near.split('\n')[1]?.startsWith('199999|00199999') && !/还有/.test(near),
+    raw: { cur, prev, tail: tail.slice(0, 300), head: head.slice(0, 300), near: near.slice(0, 400) },
   }
 }
 

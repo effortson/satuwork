@@ -74,6 +74,34 @@ function fakeBlob() {
   return { server, store, seen }
 }
 
+function listenOn(server, port) {
+  return new Promise((resolve) => {
+    const fail = () => resolve(false)
+    server.once('error', fail)
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', fail)
+      resolve(true)
+    })
+  })
+}
+
+/**
+ * 假 Blob 挑一个 ≤ 6553 的端口，再在「它后面补一位」的端口上起一个冒充者：
+ * `http://127.0.0.1:5123` 按字符串就是 `http://127.0.0.1:51234/x.tgz` 的前缀——和
+ * `https://blob.example` 之于 `https://blob.example.evil.com` 是同一个坑，本机就能复现。
+ */
+async function listenWithLookalike(blobServer, fake) {
+  for (let i = 0; i < 50; i++) {
+    const port = 2000 + Math.floor(Math.random() * 4500)
+    if (!(await listenOn(blobServer, port))) continue
+    for (let d = 0; d <= 9; d++) {
+      if (await listenOn(fake, port * 10 + d)) return { port, fakePort: port * 10 + d }
+    }
+    await closeServer(blobServer)
+  }
+  throw new Error('挑不到一对能用的端口')
+}
+
 export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, assert, log }) {
   log('\n# release-blob')
   const GW_HOME = tmpOf('satuwork-e2e-release-blob')
@@ -81,8 +109,16 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
   const gwBase = `http://127.0.0.1:${GW_PORT}`
   rmSync(GW_HOME, { recursive: true, force: true })
   const blob = fakeBlob()
-  await new Promise((r) => blob.server.listen(0, '127.0.0.1', r))
-  const blobBase = `http://127.0.0.1:${blob.server.address().port}`
+  // 冒充者：谁来拉都给一个能过校验的包，记下来的人带没带 authorization。
+  const fakeTgz = tarGz([{ name: './bin/satuwork.mjs', data: '#!/usr/bin/env node\n' }, { name: './VERSION', data: '0.9.2\n' }])
+  const fakeSeen = []
+  const fake = createServer((req, res) => {
+    fakeSeen.push({ path: req.url, auth: req.headers.authorization || '' })
+    res.writeHead(200, { 'content-type': 'application/gzip', 'content-length': String(fakeTgz.length) })
+    res.end(fakeTgz)
+  })
+  const { port: blobPort, fakePort } = await listenWithLookalike(blob.server, fake)
+  const blobBase = `http://127.0.0.1:${blobPort}`
 
   const gw = start('release-blob-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
     cwd: gwRoot,
@@ -147,8 +183,21 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
       assert(!(list.json.releases || []).some((x) => x.version === '0.9.1'), '坏包入库了')
       assert(blob.store.size === 1, `Blob 里该只剩 1 个包，有 ${blob.store.size}`)
     })
+
+    await test('长得像 Blob 的地址（字符串前缀相同、origin 不同）拉的时候不带 token', async () => {
+      const url = `http://127.0.0.1:${fakePort}/x.tgz`
+      assert(url.startsWith(blobBase), `前提不成立：${url} 不以 ${blobBase} 开头`)
+      const r = await req(gwBase, 'POST', '/platform/bot-releases', {
+        token: ownerTok,
+        body: { version: '0.9.2', url, size: fakeTgz.length, sha256: sha256Of(fakeTgz) },
+      })
+      assert(r.status === 201, `登记 ${r.status} ${r.text}`)
+      assert(fakeSeen.length >= 1, '冒充者没被拉过，测不出东西')
+      assert(fakeSeen.every((x) => !x.auth), `BLOB_READ_WRITE_TOKEN 漏给了别的 origin：${JSON.stringify(fakeSeen)}`)
+    })
   } finally {
     gw.kill('SIGTERM')
     await closeServer(blob.server)
+    await closeServer(fake)
   }
 }

@@ -24,8 +24,8 @@ package.json 里有一条别名把 cordis 指向同一个物理包，避免加�
 | 变量 | 作用 |
 |---|---|
 | GATEWAY_URL | Gateway 基址，例如 http://127.0.0.1:3080 |
-| GATEWAY_TOKEN | 席位 access token（sat_ 前缀）。Gateway 与 Bot 双向 |
-| GATEWAY_API_KEY | 席位 API Key（sk_sw_ 前缀）。打 /v1，用量记在该用户 |
+| GATEWAY_TOKEN | 席位 access token（sat_ 前缀）。Gateway 与 Bot 双向。远程席位上不走环境变量，见下面「席位凭据」 |
+| GATEWAY_API_KEY | 席位 API Key（sk_sw_ 前缀）。打 /v1，用量记在该用户。同上 |
 | SATUWORK_BOT_ID | 部署必填。目录只钉这一颗，不种本地 default |
 | SATUWORK_WORK_DIR | 文件与命令工具的工作区根目录。部署注入 /home/{linuxUser}/work；本地回落 $SATUWORK_HOME/work |
 | SATUWORK_UPLOAD_MAX | 单个附件上限（字节）。默认 100 MiB |
@@ -94,6 +94,25 @@ SQLite 用 Node 24 内置的 node:sqlite：零依赖，不用编译原生模块�
 
 ctx.storage 给三样东西：命名空间化的设置（写入后广播 settings/change，插件据此自我更新，不用重启）、文档集合（Bot、任务、连接器），以及一个原生库句柄——需要真正的 SQL 时用它，别硬套文档接口。
 
+## 席位凭据
+
+远程席位上 bot 和它起的子进程（terminal 的 bash、Chrome）是**同一个 Linux 用户**，
+`childEnv()` 剔掉的只是递下去的那份 env——子进程自己读 `/proc/$PPID/environ` 照样看得到
+bot 启动时的环境，而拿到 `sat_` 就能自己去把审批点掉。所以：
+
+- `GATEWAY_TOKEN` / `GATEWAY_API_KEY` 写在 `/etc/satuwork/seats/<席位>/secrets.env`（root、
+  0600，目录 0700），单元用 `StandardInput=file:` 接到 bot 的 fd 0 上；bot 启动第一件事读完、
+  把 fd 0 换成 /dev/null（[src/seat-secrets.ts](src/seat-secrets.ts)）。单元里的
+  `SATUWORK_SECRETS_STDIN=1` 是开关，本地桌面 bot 没有它，行为不变。
+- 非机密配置（`bot.env`）也挪到同一个 root 目录：它是 systemd 以 root 读的 EnvironmentFile，
+  留在席位用户可写的目录里就能被换成符号链接，或塞进 `NODE_OPTIONS` / `LD_PRELOAD`。
+- deploy 把 `kernel.yama.ptrace_scope` 设成至少 1（`/etc/sysctl.d/60-satuwork-ptrace.conf`），
+  启动器带 `--disable-sigusr1`：子进程读不了 bot 的内存，也开不了它的 inspector。
+- bot 程序本身装在 `/opt/satuwork/seats/<席位>/app`（root 所有、go-w），不在 `$SEAT_DIR`：
+  代码要是席位用户写得动，改一个 .ts 再 kill 一下 bot，重启跑的就是改过的代码，照样从 fd 0
+  读到凭据。启动器（`satuwork-bot.sh`）核对 app 归 root 才起，并设 `TSX_DISABLE_CACHE=1`——
+  tsx 的编译缓存在 `$TMPDIR/tsx-<uid>`，归席位用户，塞一份伪造的缓存等于改源码。
+
 ## Gateway 换了地址
 
 `bot.env` 里的 `GATEWAY_URL` 是**部署那一刻写死的**（管家的 deploy-seat.sh 从 Gateway 的
@@ -107,14 +126,16 @@ ctx.storage 给三样东西：命名空间化的设置（写入后广播 setting
 哪——`x-satuwork-gateway-url`，由 Gateway 的 `managerHeaders()` 拼在每条发往席位的代理
 请求上，管家的 `forwardHeaders` 原样透传。席位在**席位票验过之后**认它（见
 [src/guard/index.ts](src/guard/index.ts) 与 [src/gateway-url.ts](src/gateway-url.ts)），
-**先落盘再改内存**：写回 `bot.env`（临时文件 + rename，保住 600 和其余各行）管下一次
-重启，改 `process.env.GATEWAY_URL` 让当下立刻生效——所有消费者都是每次现调
+**先落盘再改内存**：远程席位写 `$SATUWORK_HOME/gateway-url`（`bot.env` 在 root 的目录里，
+bot 写不动；这份用席位票做 HMAC，启动时校验着读，子进程改了也不认；重新部署换了地址则
+自动作废），老布局写回 `bot.env`（临时文件 + rename，保住 600 和其余各行），都管下一次
+重启；改 `process.env.GATEWAY_URL` 让当下立刻生效——所有消费者都是每次现调
 `gatewayUrl()`，没有谁在启动时把它读死。
 
 所以现在只要界面上还打得开这颗 Bot，地址就会自己回来，不用重铺席位。管家那半见
 [manager/README.md](../manager/README.md)，两边是同一套头。
 
-**没有 bot.env 时（本地开发）什么都不做**，连内存也不改：改了却没地方落盘，得到的是
+**不是远程席位、也没有 bot.env 时（本地开发）什么都不做**，连内存也不改：改了却没地方落盘，得到的是
 「这次好了、重启又回去」的间歇故障，比一直不生效难查得多。
 
 ## 上下文

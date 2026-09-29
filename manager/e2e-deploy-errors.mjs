@@ -7,6 +7,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { classifyHolder } from './src/reclaim.ts'
+import { claimSeat } from './src/seat-owner.ts'
 import { pruneRetired, stepOf } from './src/seats.ts'
 import { run, tailError } from './src/run.ts'
 
@@ -39,6 +40,41 @@ function verdicts() {
     displayOrphan: classifyHolder(SPEC, [LIVE], ...atDisplay(10), holder('sw-gone-7bbe', 'Xvfb :10 -screen 0 1280x800x24')),
     // LIVE 在 slot 5（display :15），它的 Xvfb 蹲在 :10 就是上一代的残留。
     displayStaleGeneration: classifyHolder(SPEC, [LIVE], ...atDisplay(10), holder('sw-other-0002', 'Xvfb :10')),
+  }
+}
+
+/**
+ * 「这个进程是哪个席位的」（seat-owner.ts 的 claimSeat）。回收拿它决定停谁，判错就是停掉
+ * 别人的席位。**环境变量是进程自己写的**，所以只看 cgroup / logind 会话加 uid。
+ *
+ * 场景：sw-a 的账号 uid 1001，sw-b 的账号 uid 1002。
+ */
+function owners() {
+  const uids = { 'sw-a': 1001, 'sw-b': 1002 }
+  const sessions = { 7: 'login', 9: 'sshd' }
+  const look = { sessionService: (id) => sessions[id] ?? null, seatUid: (id) => uids[id] ?? null }
+  const unit = (u) => `0::/system.slice/system-${u.split('@')[0].replace(/-/g, '\\x2d')}.slice/${u}`
+  const scope = (uid, n) => `0::/user.slice/user-${uid}.slice/session-${n}.scope`
+  const env = (dir) => [`DISPLAY=:10`, `XDG_RUNTIME_DIR=${dir}`]
+  const claim = (cgroup, environ, uid) => claimSeat({ cgroup, environ, uid }, look)
+  return {
+    ownBot: claim(unit('satuwork-bot@sw-a.service'), [], 1001),
+    // bot 单元里的进程自报成别的席位：以 cgroup 为准，环境不算数。
+    botForgesOther: claim(unit('satuwork-bot@sw-a.service'), env('/run/satuwork/sw-b'), 1001),
+    ownDesktopUnit: claim(unit('slim-desktop@sw-a.service'), [], 1001),
+    // 桌面单元是 PAMName=login：x11vnc 落在 login 会话的 scope 里，按环境里的候选认，再核 uid。
+    desktopInScope: claim(scope(1001, 7), env('/run/satuwork/sw-a'), 1001),
+    desktopLegacyDir: claim(scope(1001, 7), env('/tmp/xdg-runtime-sw-a'), 1001),
+    // 别的账号在自己的 login 会话里冒充 sw-a：uid 对不上。
+    otherUserForges: claim(scope(1002, 7), env('/run/satuwork/sw-a'), 1002),
+    // ssh 进来的会话里冒充：会话不是 login 开的。
+    sshForges: claim(scope(1001, 9), env('/run/satuwork/sw-a'), 1001),
+    // 不在任何单元、任何会话里（比如 user@.service 底下）带一条伪造的环境：一律不认。
+    noScopeForges: claim('0::/user.slice/user-1002.slice/user@1002.service/app.slice/x.service', env('/run/satuwork/sw-a'), 1002),
+    // 单元对得上但 uid 不对（不该出现，出现了就不认）。
+    unitWrongUid: claim(unit('slim-desktop@sw-a.service'), [], 0),
+    // 名册、drop-in 里都查不到账号的席位：认不出来。
+    unknownSeat: claim(unit('satuwork-bot@sw-zz.service'), [], 1001),
   }
 }
 
@@ -102,6 +138,7 @@ const out = {
   longTail: tailError({ code: 1, stdout: long('OUT', 400) + ' 最后一句', stderr: '' }, 'x'),
   code0: tailError({ code: 0, stdout: '', stderr: '' }, '兜底'),
   ...verdicts(),
+  ...owners(),
   ...pruning(),
   ...scriptSteps(),
   ...(await progress()),

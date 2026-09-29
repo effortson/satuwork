@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
@@ -19,6 +19,8 @@ use tauri::menu::{Menu, MenuItem, Submenu};
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
+
+mod self_update;
 
 /**
  * Satuwork 桌面壳。
@@ -116,13 +118,19 @@ struct LocalBotRelease {
     version: String,
     sha256: String,
     size: u64,
+    /// Gateway 转发的同源地址（`/internal/local-bot-releases/<版本>`），要带席位票。
     url: String,
+    /// 包在外面的公开地址（GitHub Release），null = 只能走 `url`。见 gateway/src/releases.ts
+    /// 的 directReleaseUrl：Gateway 在 Vercel 上时函数响应体有 4.5 MB 上限，几十 MB 的包
+    /// 从 `url` 转发一定失败，所以有这个就先走它。老 Gateway 不带这个字段，按 null 算。
+    #[serde(default)]
+    direct_url: Option<String>,
     min_desktop_version: String,
     mandatory: bool,
     note: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct ApprovedDirectory {
     path: String,
@@ -250,7 +258,19 @@ const LINK_SCRIPT: &str = r#"
     start: function (config) { return window.__TAURI_INTERNALS__.invoke('start_local_bot', { config: config }) },
     stop: function (botId) { return window.__TAURI_INTERNALS__.invoke('stop_local_bot', { botId: botId }) },
     status: function (botId) { return window.__TAURI_INTERNALS__.invoke('local_bot_status', { botId: botId }) },
-    approveDirectory: function (botId) { return window.__TAURI_INTERNALS__.invoke('approve_local_directory', { botId: botId }) }
+    approveDirectory: function (botId) { return window.__TAURI_INTERNALS__.invoke('approve_local_directory', { botId: botId }) },
+    directories: function (botId) { return window.__TAURI_INTERNALS__.invoke('local_directories', { botId: botId }) },
+    revokeDirectory: function (botId, path) { return window.__TAURI_INTERNALS__.invoke('revoke_local_directory', { botId: botId, path: path }) }
+  }
+  // Desktop 壳自己的升级（self_update.rs）：侧栏那条「有新版本」由它驱动。
+  window.__SATUWORK_DESKTOP_UPDATE__ = {
+    status: function () { return window.__TAURI_INTERNALS__.invoke('desktop_update_status') },
+    check: function (force) { return window.__TAURI_INTERNALS__.invoke('desktop_update_check', { force: Boolean(force) }) },
+    install: function () { return window.__TAURI_INTERNALS__.invoke('desktop_update_install') }
+  }
+  // 内嵌桌面挂上之前先报一声地址，导航守卫只放行报过的机器（allow_seat_desktop）。
+  window.__SATUWORK_SEAT_DESKTOP__ = {
+    allow: function (url) { return window.__TAURI_INTERNALS__.invoke('allow_seat_desktop', { url: url }) }
   }
   if (window.__satuLinkPatched) return
   window.__satuLinkPatched = true
@@ -295,7 +315,8 @@ const LINK_SCRIPT: &str = r#"
  */
 fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
     // 链接脚本递过来的暗号：在界面自己的源上，路径是 OPEN_PATH。先认它，再看 scheme。
-    if url.path() == OPEN_PATH {
+    // 源不对的不认（见 open_path_allowed），当一次普通导航往下走。
+    if open_path_allowed(url, base) {
         route_open(app, base, url);
         return false;
     }
@@ -308,7 +329,9 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
         _ => return true,
     }
     // 内嵌桌面那块 iframe 也是一次 http(s) 导航，不能跟着往系统浏览器送。
-    if is_seat_desktop(url) {
+    let seats = app.state::<SeatOrigins>();
+    let allowed = seats.0.lock().map(|s| seat_desktop_allowed(url, base, &s)).unwrap_or(false);
+    if allowed {
         return true;
     }
     // 界面在自己的源上，任何 http(s) 导航都是往外走（OAuth 跳转、外链）：交给系统浏览器，
@@ -326,11 +349,10 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
  * 见 gateway/ui/chat.js 的 mountDesktop）一挂上去就被判成「往外走」：地址送进系统浏览器，
  * iframe 这边 Cancel。表现是桌面从窗口里跳到浏览器里打开，而配置上看不出任何毛病。
  *
- * **判据只认路径，不认源。** 机器的直连地址按公司各不相同、随时会加，壳子这头无从枚举
- * （它只知道 Gateway 在哪）。代价照实写：有人要是能诱导主窗口导航到
- * `http://evil.com/seats/x/vnc/`，窗口就跑出去了——但能往界面里塞进链接或脚本的人，本来
- * 就有比这省事的办法（见上面那段注释：这条回调不是页面的边界）。跑出去的那一页也拿不到
- * IPC：本地 Bot 那组命令只放给本地源（capabilities/main.json），不放给任何远端页面。
+ * **只认路径不够，还得认源。** 以前只看路径，于是 `http://evil.com/seats/x/vnc/` 也放行：
+ * 被诱导的主窗口、或者框里那页自己导航过去，窗口就跑出去了。机器的直连地址按公司各不相同、
+ * 壳子这头无从枚举，所以由界面在挂 iframe 之前把那个地址报上来（allow_seat_desktop），
+ * 这里只放行报过的源和 Gateway 自己的源，见 seat_desktop_allowed。
  *
  * 管家那一跳（`/seats/<席位>/vnc/` → `/seats/<席位>/vnc/vnc.html?…`，见 manager/src/proxy.ts）
  * 也是一次导航，所以判的是前缀而不是整条路径。
@@ -344,6 +366,52 @@ fn is_seat_desktop(url: &Url) -> bool {
     seg.next() == Some("seats")
         && seg.next().is_some_and(|s| !s.is_empty())
         && seg.next() == Some("vnc")
+}
+
+/// 界面报上来的席位机器源（`https://m001.example.com` 这种），见 allow_seat_desktop。
+#[derive(Default)]
+struct SeatOrigins(Mutex<HashSet<String>>);
+
+fn origin_key(url: &Url) -> String {
+    url.origin().ascii_serialization()
+}
+
+/**
+ * 内嵌桌面放不放行：路径是 `/seats/<席位>/vnc…`，**并且**源是 Gateway 自己的、或者界面
+ * 挂 iframe 前报过的那台机器。报名单的命令只放给本地源（capabilities/main.json），框里那页
+ * 和跑到站外的页面都调不到，所以名单上只会有界面自己拿到的桌面地址。
+ */
+fn seat_desktop_allowed(url: &Url, gateway: &Url, seats: &HashSet<String>) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && is_seat_desktop(url)
+        && (same_origin(url, gateway) || seats.contains(&origin_key(url)))
+}
+
+/**
+ * 暗号认不认：路径是 OPEN_PATH，**并且**导航发生在界面自己的源或 Gateway 的源上。
+ *
+ * 链接脚本只注入主框架，它拼出来的暗号总在界面的源上。以前只看路径，框里那页（席位的
+ * noVNC）或者随便哪个被诱导打开的站外页，导航到 `https://随便哪/__satuwork_open?u=…`
+ * 就能让系统浏览器替它打开任意地址。
+ */
+fn open_path_allowed(url: &Url, gateway: &Url) -> bool {
+    url.path() == OPEN_PATH && (is_ui_origin(url) || same_origin(url, gateway))
+}
+
+/**
+ * 界面挂内嵌桌面之前调一次：把这块屏的源记进放行名单（seat_desktop_allowed）。
+ * 只收 http(s) 的 `/seats/<席位>/vnc…` 地址，别的一律拒——名单只该装席位机器。
+ */
+#[tauri::command]
+fn allow_seat_desktop(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = Url::parse(&url).map_err(|e| format!("桌面地址解析不了：{e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || !is_seat_desktop(&parsed) {
+        return Err("不是席位桌面地址".into());
+    }
+    let state = app.state::<SeatOrigins>();
+    let mut seats = state.0.lock().map_err(|_| "放行名单锁坏了".to_string())?;
+    seats.insert(origin_key(&parsed));
+    Ok(())
 }
 
 /** 暗号里带的那个地址：同源的另开一扇应用窗口，站外的交给系统浏览器。 */
@@ -368,7 +436,12 @@ fn route_open(app: &AppHandle, base: &Url, url: &Url) {
     let _ = app.opener().open_url(parsed.as_str(), None::<&str>);
 }
 
-/** 装界面的窗口都从这儿出：同一套导航守卫，同一段链接脚本（连同注入的 Gateway 地址）。 */
+/**
+ * 装界面的窗口都从这儿出：同一套导航守卫，同一段链接脚本（连同注入的 Gateway 地址）。
+ *
+ * 只从 setup 钩子、async 命令或别的线程上调：Windows 上 build() 放在同步命令、事件回调里
+ * 会死锁（WebView2 的已知问题）。open_setup 同理。
+ */
 fn build_window(
     app: &AppHandle,
     label: &str,
@@ -429,6 +502,73 @@ fn mime_of(path: &Path) -> &'static str {
     }
 }
 
+// UI_CSP 里 CDN 那几条路径源，三条指令共用；由来见 UI_CSP 的注释。
+macro_rules! ui_cdn {
+    () => {
+        "https://cdn.jsdelivr.net/npm/katex@0.16.11/ https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/ https://cdn.jsdelivr.net/npm/mermaid@11.4.1/"
+    };
+}
+
+/**
+ * 主窗口那份界面的 CSP，挂在 serve_ui 发出的每一个 html 响应上。
+ *
+ * **为什么要有。** 主窗口调得动本地 Bot 那组命令（起进程、批准目录），渲染的又是模型输出和
+ * 用户写的 markdown——等同于外部输入。markdown.js 那层已经转义、白名单协议，但它是唯一一道
+ * 防线；漏一处，注进来的脚本就能直接 invoke。这条头是第二道：**脚本只认包里的文件和那一个
+ * CDN**，内联脚本、`javascript:`、eval、`<object>` 都不行。tauri.conf.json 里的 `csp` 管不到
+ * 这里——Tauri 只把它挂在自己的 tauri:// 资源上（设置屏），自注册协议的响应得自己带。
+ *
+ * 底子照抄 Gateway 发页面时那条（gateway/src/http.ts 的 CSP），界面是同一批文件、在浏览器里
+ * 已经跑得通。和它的不同都是因为源换了：
+ *
+ * - `'self'` 之外再写一遍 `satu:` 和 `http(s)://satu.localhost`：自定义 scheme 在各家 webview
+ *   里算不算 `'self'` 不一定，Windows 上它又被映射成 http://satu.localhost。
+ * - `connect-src` 放整个 `https: http:`（外加 `ws: wss:`）：Gateway 是人填的地址，内网部署
+ *   就是 http；席位机器的直连对话流、本机的本地 Bot（http://127.0.0.1:<随机口>）也都在这里。
+ *   `ipc: http://ipc.localhost` 是 Tauri 的 IPC 通道（invoke 走的就是它），少了本地 Bot 的
+ *   命令全调不动。
+ * - `frame-src https: http: blob:`：桌面那块 noVNC iframe（席位机器的直连地址）和文件预览的
+ *   blob iframe。
+ * - `img-src` / `media-src` 放 `https: http:`：图片地址是模型写的，附件从 Gateway 来。
+ *
+ * 刻意的松：`style-src 'unsafe-inline'`（界面里几十处 `style="…"`，内联样式换不出脚本执行）。
+ * 刻意的紧：`script-src` 不带 `'unsafe-inline'` / `'unsafe-eval'`，和 Gateway 那条一样；
+ * index.html 和各分片里没有内联脚本，e2e 有一条按源码扫的用例守着。Tauri 注入的初始化脚本
+ * （LINK_SCRIPT、IPC 那几段）是 webview 的 user script，不受页面 CSP 管。
+ *
+ * CDN 只放行 KaTeX / highlight.js / Mermaid 那三个「包@版本/」目录，不放整个 cdn.jsdelivr.net
+ * （jsdelivr 出任意 npm 包，放行整个源等于放行任何人发的脚本）。这三条是照
+ * gateway/src/ui-cdn.ts 的 UI_CDN_PACKAGES 手抄的——桌面包里的页面没有 Gateway 插的
+ * `<meta name="satu-cdn">`，markdown.js 用的是 jsdelivr 默认值。**改版本要一起改**，e2e 的
+ * markdown 那一组按源码核对这三处；挡掉的表现是公式和图静默退回纯文本。
+ *
+ * 设置屏（shell/index.html，走 tauri://）的那条在 tauri.conf.json 的 `csp`：只认自己的文件和
+ * IPC；页面里那段内联 `<script>` / `<style>` 由 Tauri 编译期算哈希补进策略，不用开
+ * `'unsafe-inline'`。
+ */
+const UI_CSP: &str = concat!(
+    "default-src 'self' satu: http://satu.localhost https://satu.localhost; ",
+    "base-uri 'none'; ",
+    "object-src 'none'; ",
+    "script-src 'self' satu: http://satu.localhost https://satu.localhost ", ui_cdn!(), "; ",
+    "style-src 'self' satu: http://satu.localhost https://satu.localhost 'unsafe-inline' ", ui_cdn!(), " https://fonts.googleapis.com; ",
+    "font-src 'self' satu: http://satu.localhost https://satu.localhost data: ", ui_cdn!(), " https://fonts.gstatic.com; ",
+    "img-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; ",
+    "media-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; ",
+    "connect-src 'self' satu: http://satu.localhost https://satu.localhost ipc: http://ipc.localhost https: http: wss: ws:; ",
+    "frame-src 'self' satu: http://satu.localhost https://satu.localhost blob: https: http:; ",
+    "worker-src 'self' satu: http://satu.localhost https://satu.localhost blob:"
+);
+
+/**
+ * 界面路径里的一段能不能拼到 ui 目录后面。`..` / `.` 逃目录；`\\` 在 Windows 上是分隔符；
+ * `:` 挡的是 Windows 的盘符前缀（`C:foo` 被 PathBuf::push 当成另一个盘上的路径，整个替换掉
+ * ui 目录）和 NTFS 的备用数据流（`index.html:x`）。界面文件名里本来就没有冒号。
+ */
+fn safe_ui_segment(seg: &str) -> bool {
+    !(seg == ".." || seg == "." || seg.contains('\\') || seg.contains(':'))
+}
+
 /**
  * `satu://localhost/…`：从包里发界面。
  *
@@ -449,7 +589,7 @@ fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>) -> tauri::
     let rel = raw.split('?').next().unwrap_or("");
     let mut file = dir.clone();
     for seg in rel.split('/').filter(|s| !s.is_empty()) {
-        if seg == ".." || seg == "." || seg.contains('\\') {
+        if !safe_ui_segment(seg) {
             return not_found();
         }
         file.push(seg);
@@ -464,12 +604,16 @@ fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>) -> tauri::
         file = if alt.is_file() && !stripped.is_empty() { alt } else { dir.join("index.html") };
     }
     let Ok(bytes) = fs::read(&file) else { return not_found() };
-    tauri::http::Response::builder()
+    let mime = mime_of(&file);
+    let mut response = tauri::http::Response::builder()
         .status(tauri::http::StatusCode::OK)
-        .header("content-type", mime_of(&file))
-        .header("cache-control", "no-store")
-        .body(Cow::Owned(bytes))
-        .unwrap()
+        .header("content-type", mime)
+        .header("cache-control", "no-store");
+    // 和 Gateway 一样只挂在页面本身上：脚本、样式是被这一页加载的，约束它们的是这一页的策略。
+    if mime.starts_with("text/html") {
+        response = response.header("content-security-policy", UI_CSP);
+    }
+    response.body(Cow::Owned(bytes)).unwrap()
 }
 
 fn open_main(app: &AppHandle, url: Url) -> tauri::Result<()> {
@@ -511,10 +655,15 @@ fn startup_error(app: AppHandle) -> String {
  * 的来源；停在这一屏、把话说清楚，人还在键盘前面，改一个字母就好了。
  */
 #[tauri::command]
-fn connect(app: AppHandle, url: String) -> Result<(), String> {
+async fn connect(app: AppHandle, url: String) -> Result<(), String> {
     let parsed = normalize(&url)?;
-    reachable(&parsed)?;
+    // 敲门每个地址最多等 3 秒，放进阻塞线程池：同步命令在主线程上，等的这几秒窗口全冻住。
+    let probe = parsed.clone();
+    tauri::async_runtime::spawn_blocking(move || reachable(&probe))
+        .await
+        .map_err(|e| e.to_string())??;
     write_server(&app, parsed.as_str())?;
+    // 在 async 命令里建窗口没问题；同步命令里建，Windows 上会死锁（见 build_window）。
     open_main(&app, parsed).map_err(|e| e.to_string())?;
     if let Some(win) = app.get_webview_window(SETUP) {
         let _ = win.close();
@@ -660,10 +809,37 @@ fn ensure_bundled_runtime(app: &AppHandle) -> Result<Option<String>, String> {
     let home = runtime_home(app)?;
     let destination = home.join("releases").join(&wanted);
     unpack_runtime(&archive, &destination)?;
-    if read_runtime_pointer(&home, "CURRENT").is_none() {
+    // 以前只在 CURRENT 不存在时才指向内置版：Desktop 升级之后新包里那份 Bot 永远用不上，
+    // 比它还旧的远端版反倒一直占着 CURRENT。现在按版本号比，内置的更新就切过去。
+    let switch = match read_runtime_pointer(&home, "CURRENT") {
+        None => true,
+        Some(current) if current == wanted => false,
+        Some(current) => match runtime_older(&current, &wanted) {
+            Some(older) => older,
+            // 比不出来：CURRENT 读不出版本号，是老壳内置的那种（VERSION 只写了 sha256），
+            // 刚装的这份不会比它旧，切；内置这份读不出而 CURRENT 读得出（老打包脚本打的包），
+            // 不动。
+            None => version_numbers(&current).is_none(),
+        },
+    };
+    if switch {
         write_runtime_pointer(&home, "CURRENT", &wanted)?;
     }
+    // 比内置版还旧的 PENDING 留着，下一次启动就会被提升成 CURRENT——等于降级，删掉。
+    if let Some(pending) = read_runtime_pointer(&home, "PENDING") {
+        if runtime_older(&pending, &wanted) == Some(true) {
+            let _ = fs::remove_file(home.join("PENDING"));
+        }
+    }
     Ok(Some(wanted))
+}
+
+/**
+ * `a` 是不是比 `b` 旧：只比 x.y.z（version_numbers），`+构建号`、`-平台-架构` 不参与。
+ * 任一方读不出版本号时返回 None，由调用方决定怎么办。
+ */
+fn runtime_older(a: &str, b: &str) -> Option<bool> {
+    Some(version_numbers(a)? < version_numbers(b)?)
 }
 
 fn promote_pending_runtime(app: &AppHandle) -> Result<Option<(String, String)>, String> {
@@ -672,6 +848,11 @@ fn promote_pending_runtime(app: &AppHandle) -> Result<Option<(String, String)>, 
         return Ok(None);
     };
     let previous = read_runtime_pointer(&home, "CURRENT").unwrap_or_default();
+    // 只往前走：PENDING 比 CURRENT 还旧（例如 CURRENT 刚被切到更新的内置版）就丢掉。
+    if runtime_older(&pending, &previous) == Some(true) {
+        let _ = fs::remove_file(home.join("PENDING"));
+        return Ok(None);
+    }
     write_runtime_pointer(&home, "CURRENT", &pending)?;
     let _ = fs::remove_file(home.join("PENDING"));
     Ok(Some((previous, pending)))
@@ -766,13 +947,95 @@ fn runtime_update_error(app: &AppHandle, message: Option<&str>) {
     }
 }
 
+/// 本地运行时包的上限。manifest 声明的 size 和实际下载都按它卡。
+const MAX_RUNTIME_BYTES: u64 = 256 * 1024 * 1024;
+
+/**
+ * 把一次下载响应落进 `archive`，边写边算 sha256，最后和 manifest 声明的 size / sha256 比对。
+ * 不通过就返回错误，调用方负责删临时文件。
+ */
+fn save_verified(
+    mut response: reqwest::blocking::Response,
+    release: &LocalBotRelease,
+    archive: &Path,
+) -> Result<(), String> {
+    if !response.status().is_success() {
+        return Err(format!("下载本地运行时失败：HTTP {}", response.status()));
+    }
+    let mut file = fs::File::create(archive).map_err(|e| format!("创建更新临时文件失败：{e}"))?;
+    let mut hash = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .map_err(|e| format!("下载本地运行时失败：{e}"))?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        if size > release.size || size > MAX_RUNTIME_BYTES {
+            return Err("下载的本地运行时超过声明大小".into());
+        }
+        hash.update(&buffer[..read]);
+        file.write_all(&buffer[..read])
+            .map_err(|e| format!("保存本地运行时失败：{e}"))?;
+    }
+    file.sync_all()
+        .map_err(|e| format!("保存本地运行时失败：{e}"))?;
+    if size != release.size {
+        return Err("下载的本地运行时大小与声明不符".into());
+    }
+    let actual = format!("{:x}", hash.finalize());
+    if actual != release.sha256.to_ascii_lowercase() {
+        return Err("下载的本地运行时 SHA-256 校验失败".into());
+    }
+    Ok(())
+}
+
+/**
+ * 直连外部地址（GitHub Release）取包。
+ *
+ * 和走 Gateway 那条的两处不同，都是刻意的：
+ * - **不带任何 Gateway 凭据。** 这是个公开地址，席位票只给 Gateway 自己。
+ * - **允许跳转，但只跳 https、最多 5 次。** GitHub 的 release 下载一定会 302 到
+ *   objects.githubusercontent.com（带签名的临时地址），不跟就永远取不到。跳到哪儿都不影响
+ *   完整性：字节最后要过 save_verified 的 size + sha256，而那两个值来自带票的 manifest。
+ *   不许降到 http，是为了别把「这台机器在取哪个版本」明文发出去。
+ */
+fn download_direct(raw: &str, release: &LocalBotRelease, archive: &Path) -> Result<(), String> {
+    let url = Url::parse(raw).map_err(|e| format!("直连下载地址不合法：{e}"))?;
+    if url.scheme() != "https" {
+        return Err("直连下载地址不是 https".into());
+    }
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(120))
+        .redirect(Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                attempt.error("直连下载跳转次数过多")
+            } else if attempt.url().scheme() != "https" {
+                attempt.error("直连下载跳到了非 https 地址")
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()
+        .map_err(|e| format!("创建直连下载请求失败：{e}"))?;
+    let response = client
+        .get(url.as_str())
+        .send()
+        .map_err(|e| format!("直连下载本地运行时失败：{e}"))?;
+    save_verified(response, release, archive).map_err(|e| format!("直连下载：{e}"))
+}
+
 /**
  * 下载并暂存适合本机的最新版。任何失败都只记状态，不阻止旧 Bot 启动。
  *
- * 一次只允许一路跑：每小时的更新线程（不持任何锁）和 start_local_bot（持 LocalBots）
+ * 一次只允许一路跑：每小时的更新线程（不持任何锁）和 start_local_bot（持 STARTING，不持 LocalBots）
  * 都会调它，而 unpack_runtime 对已存在的目标目录是先 remove_dir_all 再解。两路交错的话，
  * 一路刚解好、正要写 PENDING 的目录会被另一路当作损坏删掉。锁是这个函数自己的，
- * 不跟 LocalBots 扯上关系，不会构成锁序问题。
+ * 不跟 LocalBots 扯上关系（锁序永远是 STARTING → STAGING），不会构成锁序问题。
  */
 fn stage_runtime_update(
     app: &AppHandle,
@@ -835,53 +1098,56 @@ fn stage_runtime_update(
     if !version.ends_with(&expected_suffix) {
         return Err("服务器返回了不适合本机的运行时".into());
     }
+    // Gateway 只看「和 have 不一样」，会把比本机还旧的版本发下来（例如 Desktop 升级后内置的
+    // Bot 比 Gateway 上登记的都新）。不降级：这种情况等同于没有更新。同号不同构建的照样收。
+    if runtime_older(&version, &current) == Some(true) {
+        runtime_update_error(app, None);
+        return Ok(None);
+    }
     if release.sha256.len() != 64 || !release.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("服务器返回的运行时校验值不合法".into());
     }
-    if release.size == 0 || release.size > 256 * 1024 * 1024 {
+    if release.size == 0 || release.size > MAX_RUNTIME_BYTES {
         return Err("服务器返回的运行时大小不合法".into());
     }
-    let download_url = Url::parse(&release.url).map_err(|e| format!("更新地址不合法：{e}"))?;
-    if !same_origin(gateway, &download_url) {
-        return Err("本地运行时下载地址与 Gateway 不同源".into());
-    }
-    let mut response = client
-        .get(download_url.as_str())
-        .bearer_auth(access_token)
-        .send()
-        .map_err(|e| format!("下载本地运行时失败：{e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("下载本地运行时失败：HTTP {}", response.status()));
-    }
     let archive = home.join(format!(".{version}.download"));
-    let mut file = fs::File::create(&archive).map_err(|e| format!("创建更新临时文件失败：{e}"))?;
-    let mut hash = Sha256::new();
-    let mut size = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
     let result: Result<(), String> = (|| {
-        loop {
-            let read = response
-                .read(&mut buffer)
-                .map_err(|e| format!("下载本地运行时失败：{e}"))?;
-            if read == 0 {
-                break;
+        // 先走直连（GitHub Release），失败了再退回 Gateway 转发。两条路落到同一个临时文件、
+        // 过同一套 size + sha256 比对——sha256 来自上面那次带席位票的 manifest 请求，直连这条路
+        // 本身不需要可信。
+        let mut direct_error = None;
+        let fetched = match release.direct_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(raw) => match download_direct(raw, &release, &archive) {
+                Ok(()) => true,
+                Err(error) => {
+                    direct_error = Some(error);
+                    false
+                }
+            },
+            None => false,
+        };
+        if !fetched {
+            let via_gateway = (|| {
+                let download_url =
+                    Url::parse(&release.url).map_err(|e| format!("更新地址不合法：{e}"))?;
+                if !same_origin(gateway, &download_url) {
+                    return Err("本地运行时下载地址与 Gateway 不同源".to_string());
+                }
+                // 这一条带席位票，所以沿用 Policy::none()：Gateway 的转发不该跳到别处，
+                // 真跳了宁可失败，也不把票带去一个没核过的地址。
+                let response = client
+                    .get(download_url.as_str())
+                    .bearer_auth(access_token)
+                    .send()
+                    .map_err(|e| format!("下载本地运行时失败：{e}"))?;
+                save_verified(response, &release, &archive)
+            })();
+            if let Err(error) = via_gateway {
+                return Err(match direct_error {
+                    Some(direct) => format!("{direct}；改走 Gateway 转发也失败：{error}"),
+                    None => error,
+                });
             }
-            size += read as u64;
-            if size > release.size || size > 256 * 1024 * 1024 {
-                return Err("下载的本地运行时超过声明大小".into());
-            }
-            hash.update(&buffer[..read]);
-            file.write_all(&buffer[..read])
-                .map_err(|e| format!("保存本地运行时失败：{e}"))?;
-        }
-        file.sync_all()
-            .map_err(|e| format!("保存本地运行时失败：{e}"))?;
-        if size != release.size {
-            return Err("下载的本地运行时大小与声明不符".into());
-        }
-        let actual = format!("{:x}", hash.finalize());
-        if actual != release.sha256.to_ascii_lowercase() {
-            return Err("下载的本地运行时 SHA-256 校验失败".into());
         }
         let destination = home.join("releases").join(&version);
         unpack_runtime(&archive, &destination)?;
@@ -1052,8 +1318,28 @@ fn verify_local_bot_started(
     })
 }
 
+/**
+ * 起一颗本地 Bot。
+ *
+ * **必须是 async 命令、活儿放进 spawn_blocking。** Tauri v2 里同步命令跑在主线程上，而这里
+ * 要联网问更新、可能下载解包上百 MB（120 秒超时）、再等 500ms 看进程有没有立刻退出——同步
+ * 写的话整个界面冻在那儿，窗口拖不动、菜单点不开。
+ */
 #[tauri::command]
-fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotStatus, String> {
+async fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || start_local_bot_blocking(app, config))
+        .await
+        .map_err(|e| format!("启动本地 Bot 的后台任务异常：{e}"))?
+}
+
+/**
+ * start_local_bot 的本体，在阻塞线程池里跑。
+ *
+ * 锁分两把：STARTING 把「起 Bot」这件事整段串起来（两次 start 交错的话，同一颗 Bot 会起两份、
+ * 「是不是第一颗」的判断也会失真）；LocalBots 只在查表、改表那一下持有，**绝不跨着联网、
+ * 解包、sleep 拿着**——status / stop / approve 都要这把锁，拿着它等 IO 就等于把它们一起卡住。
+ */
+fn start_local_bot_blocking(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotStatus, String> {
     let bot_id = safe_bot_id(&config.bot_id)?;
     let configured = read_server(&app).ok_or("还没有配置 Gateway")?;
     let expected = normalize(&configured)?;
@@ -1065,26 +1351,36 @@ fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotSta
         return Err("本地 Bot 凭证格式不对".into());
     }
     let (data, work) = bot_paths(&app, &bot_id)?;
+    static STARTING: Mutex<()> = Mutex::new(());
+    // 上一路带着锁 panic 了也照常往下走：这把锁不护内存里的数据，只负责排队。
+    let _starting = STARTING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let state = app.state::<LocalBots>();
-    let mut bots = state.0.lock().map_err(|_| "本地 Bot 状态锁损坏")?;
-    if let Some(proc_) = bots.get_mut(&bot_id) {
-        if proc_.child.try_wait().map_err(|e| e.to_string())?.is_none() {
-            if proc_.access_token == config.access_token {
-                let port = proc_.port;
-                return Ok(runtime_status(&app, true, Some(port), &work));
-            }
-            // 票换了：Gateway 已经把这个进程手上那把作废了（改口令、被管理员重置之后，本地 Bot
-            // 的票跟登录票一起作废），它从此每一次回 Gateway 都是 401、页面也敲不开它。手上的
-            // 活反正已经做不下去，用新票重起一遍。
-            terminate_local_bot(&mut proc_.child).map_err(|e| format!("换票时停止本地 Bot 失败：{e}"))?;
+    let (stale, first) = {
+        let mut bots = state.0.lock().map_err(|_| "本地 Bot 状态锁损坏")?;
+        let alive = match bots.get_mut(&bot_id) {
+            Some(proc_) => proc_.child.try_wait().map_err(|e| e.to_string())?.is_none(),
+            None => false,
+        };
+        if let Some(proc_) = bots.get(&bot_id).filter(|p| alive && p.access_token == config.access_token) {
+            let port = proc_.port;
+            drop(bots);
+            return Ok(runtime_status(&app, true, Some(port), &work));
         }
-        bots.remove(&bot_id);
+        // 票换了：Gateway 已经把这个进程手上那把作废了（改口令、被管理员重置之后，本地 Bot
+        // 的票跟登录票一起作废），它从此每一次回 Gateway 都是 401、页面也敲不开它。手上的
+        // 活反正已经做不下去，用新票重起一遍。先从表里摘出来，出了锁再杀。
+        let stale = bots.remove(&bot_id).filter(|_| alive);
+        (stale, bots.is_empty())
+    };
+    if let Some(mut proc_) = stale {
+        terminate_local_bot(&mut proc_.child).map_err(|e| format!("换票时停止本地 Bot 失败：{e}"))?;
     }
     // 仅第一颗 Bot 启动前检查和切换。已有 Bot 在跑时只使用同一版本，绝不形成一台
-    // Desktop 上多个运行时混跑，更不会为了升级强杀正在执行的任务。
+    // Desktop 上多个运行时混跑，更不会为了升级强杀正在执行的任务。`first` 是上面那一眼看到的，
+    // 有 STARTING 串着，这期间别处只可能停 Bot、不可能再起一颗，所以它不会过期成「错的第一颗」。
     let mut previous_runtime = None;
     let mut promoted_runtime = None;
-    if bots.is_empty() && !cfg!(debug_assertions) && std::env::var_os("SATUWORK_BOT_ROOT").is_none()
+    if first && !cfg!(debug_assertions) && std::env::var_os("SATUWORK_BOT_ROOT").is_none()
     {
         // 第一次联网升级前也先安装内置版，否则新包失败时还没有可回滚目标。
         let _ = ensure_bundled_runtime(&app)?;
@@ -1164,7 +1460,11 @@ fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotSta
         }
         Err(error) => return Err(error),
     };
-    bots.insert(bot_id, LocalBotProc { child, port, access_token: config.access_token.clone() });
+    state
+        .0
+        .lock()
+        .map_err(|_| "本地 Bot 状态锁损坏")?
+        .insert(bot_id, LocalBotProc { child, port, access_token: config.access_token.clone() });
     // 记下这次的地址和票，运行时自查（每小时一次）拿它去问 Gateway 有没有新版。
     if let Ok(mut src) = app.state::<UpdateSource>().0.lock() {
         *src = Some((gateway.clone(), config.access_token.clone()));
@@ -1215,6 +1515,19 @@ fn terminate_local_bot(child: &mut Child) -> Result<(), String> {
     Ok(())
 }
 
+/**
+ * 所有本地 Bot 一起停。应用退出（RunEvent::Exit）和换壳（self_update）都走这里；换壳那条
+ * 不会经过 RunEvent::Exit——Windows 上安装器起来后插件直接 process::exit，macOS 上是 restart。
+ */
+pub(crate) fn stop_all_local_bots(app: &AppHandle) {
+    if let Ok(mut bots) = app.state::<LocalBots>().0.lock() {
+        for (_, mut proc_) in bots.drain() {
+            let _ = terminate_local_bot(&mut proc_.child);
+        }
+    }
+    clear_update_source(app);
+}
+
 #[tauri::command]
 fn stop_local_bot(app: AppHandle, bot_id: String) -> Result<(), String> {
     let id = safe_bot_id(&bot_id)?;
@@ -1227,7 +1540,20 @@ fn stop_local_bot(app: AppHandle, bot_id: String) -> Result<(), String> {
     {
         terminate_local_bot(&mut child.child).map_err(|e| format!("停止本地 Bot 失败：{e}"))?;
     }
+    // 一颗都不剩了，就别再拿最后那张票每小时去问更新：人可能已经退出登录、票也可能作废了。
+    // 下一次 start 会重新记上。
+    let empty = app.state::<LocalBots>().0.lock().map(|bots| bots.is_empty()).unwrap_or(false);
+    if empty {
+        clear_update_source(&app);
+    }
     Ok(())
+}
+
+/** 清掉每小时运行时自查用的 Gateway 地址和票（见 UpdateSource）。 */
+fn clear_update_source(app: &AppHandle) {
+    if let Ok(mut src) = app.state::<UpdateSource>().0.lock() {
+        *src = None;
+    }
 }
 
 #[tauri::command]
@@ -1344,6 +1670,102 @@ async fn approve_local_directory(
 }
 
 /**
+ * 批准过的文件夹：清单（approved-dirs.json）和工作区 `External/` 下的符号链接**两头都对上**
+ * 才算——和 bot 那边 workspace.approvedMounts 同一条判据。只剩一头的（撤销到一半、手工删过
+ * 链接）不列：列出来人会以为 Bot 还能访问，而 bot 那边已经不认了。
+ */
+fn list_approved(manifest: &Path, work: &Path) -> Vec<ApprovedDirectory> {
+    let approved: Vec<String> = fs::read_to_string(manifest)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(work.join("External")) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let link = entry.path();
+        let is_link = fs::symlink_metadata(&link)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if !is_link {
+            continue;
+        }
+        let Ok(target) = link.canonicalize() else {
+            continue;
+        };
+        let shown = target.display().to_string();
+        if approved.iter().any(|p| p == &shown) {
+            out.push(ApprovedDirectory {
+                path: shown,
+                mount: format!("External/{}", entry.file_name().to_string_lossy()),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.mount.cmp(&b.mount));
+    out
+}
+
+/**
+ * 撤销一个批准：从清单里去掉，再拆掉 `External/` 下指向它的链接。
+ *
+ * **只拆链接，不碰文件夹本身**——`remove_file` 作用在符号链接上删的是链接；Windows 的目录
+ * 链接要用 `remove_dir`，同样只删链接。先改清单再拆链接：拆到一半失败时，bot 那边按清单
+ * 已经不认了（isApprovedPath），剩下的链接只是一条进不去的死路。
+ */
+fn revoke_approved(manifest: &Path, work: &Path, path: &str) -> Result<bool, String> {
+    let mut approved: Vec<String> = fs::read_to_string(manifest)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let before = approved.len();
+    approved.retain(|p| p != path);
+    let changed = approved.len() != before;
+    if changed {
+        fs::write(
+            manifest,
+            serde_json::to_vec_pretty(&approved).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("保存目录批准记录失败：{e}"))?;
+    }
+    if let Ok(entries) = fs::read_dir(work.join("External")) {
+        for entry in entries.flatten() {
+            let link = entry.path();
+            let is_link = fs::symlink_metadata(&link)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            if !is_link || link.canonicalize().ok().map(|t| t.display().to_string()).as_deref() != Some(path) {
+                continue;
+            }
+            #[cfg(unix)]
+            fs::remove_file(&link).map_err(|e| format!("拆除目录入口失败：{e}"))?;
+            #[cfg(windows)]
+            fs::remove_dir(&link).map_err(|e| format!("拆除目录入口失败：{e}"))?;
+        }
+    }
+    Ok(changed)
+}
+
+/** 右栏那张「批准访问的文件夹」列表。 */
+#[tauri::command]
+fn local_directories(app: AppHandle, bot_id: String) -> Result<Vec<ApprovedDirectory>, String> {
+    let id = safe_bot_id(&bot_id)?;
+    let (data, work) = bot_paths(&app, &id)?;
+    Ok(list_approved(&data.join("approved-dirs.json"), &work))
+}
+
+/**
+ * 撤销一个批准。不用等 Bot 重启：bot 每次访问都现读清单（workspace.isApprovedPath），
+ * 下一次读写就不认了；系统提示里的那张表下一轮也跟着变。
+ */
+#[tauri::command]
+fn revoke_local_directory(app: AppHandle, bot_id: String, path: String) -> Result<bool, String> {
+    let id = safe_bot_id(&bot_id)?;
+    let (data, work) = bot_paths(&app, &id)?;
+    revoke_approved(&data.join("approved-dirs.json"), &work, &path)
+}
+
+/**
  * 菜单里那一条「切换服务器…」。
  *
  * **少了它这个壳会砖。** 地址填对了但那台机器换了地方、或者页面被导航到了一个回不来
@@ -1369,15 +1791,90 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
                 let _ = win.close();
             }
         }
-        let _ = open_setup(app);
+        // 老服务器的地址和票也别留给每小时的运行时自查；换到新服务器、起了 Bot 之后会重新记上。
+        clear_update_source(app);
+        // 建窗口不能在菜单回调里同步做：Windows 上 WebviewWindowBuilder::build() 在同步命令和
+        // 事件回调里会死锁（WebView2 的已知问题，见 Tauri 的 WebviewWindowBuilder 文档），
+        // 要换到别的线程上建。
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = open_setup(&app);
+        });
     });
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{desktop_version_supports, is_seat_desktop, is_ui_origin, safe_runtime_version};
+    use super::{
+        desktop_version_supports, is_seat_desktop, is_ui_origin, list_approved, open_path_allowed,
+        origin_key, revoke_approved, runtime_older, safe_runtime_version, safe_ui_segment,
+        seat_desktop_allowed,
+    };
+    use std::collections::HashSet;
     use tauri::Url;
+
+    fn u(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
+
+    /// 外链暗号只在界面源和 Gateway 源上认（见 open_path_allowed）。
+    #[test]
+    fn open_path_only_from_ui_or_gateway_origin() {
+        let gw = u("https://gw.example.com/");
+        let yes = [
+            "satu://localhost/__satuwork_open?u=https%3A%2F%2Fa.com",
+            "http://satu.localhost/__satuwork_open?u=https%3A%2F%2Fa.com",
+            "https://gw.example.com/__satuwork_open?u=https%3A%2F%2Fa.com",
+        ];
+        for s in yes {
+            assert!(open_path_allowed(&u(s), &gw), "该认：{s}");
+        }
+        let no = [
+            "https://evil.com/__satuwork_open?u=https%3A%2F%2Fphish",
+            "https://m001.example.com/__satuwork_open?u=https%3A%2F%2Fphish",
+            // 端口、scheme 不同都不算 Gateway 的源
+            "http://gw.example.com/__satuwork_open?u=x",
+            "https://gw.example.com:8443/__satuwork_open?u=x",
+            "https://gw.example.com.evil.com/__satuwork_open?u=x",
+            // 界面源上别的路径不是暗号
+            "satu://localhost/index.html?u=x",
+        ];
+        for s in no {
+            assert!(!open_path_allowed(&u(s), &gw), "不该认：{s}");
+        }
+    }
+
+    /// 内嵌桌面只放行 Gateway 源和界面报过的机器源（见 seat_desktop_allowed）。
+    #[test]
+    fn seat_desktop_only_on_known_origins() {
+        let gw = u("https://gw.example.com/");
+        let mut seats = HashSet::new();
+        seats.insert(origin_key(&u("https://m001.example.com/seats/sw-a/vnc/")));
+        seats.insert(origin_key(&u("http://192.168.64.1:8443/seats/sw-a/vnc/")));
+        let yes = [
+            "https://m001.example.com/seats/sw-abc/vnc/",
+            "https://m001.example.com/seats/sw-abc/vnc/vnc.html?path=x",
+            "http://192.168.64.1:8443/seats/sw-abc/vnc/",
+            "https://gw.example.com/seats/sw-abc/vnc/",
+        ];
+        for s in yes {
+            assert!(seat_desktop_allowed(&u(s), &gw, &seats), "该放行：{s}");
+        }
+        let no = [
+            "http://evil.com/seats/x/vnc/",
+            // 同主机换 scheme / 端口不算报过的源
+            "http://m001.example.com/seats/sw-abc/vnc/",
+            "https://m001.example.com:8443/seats/sw-abc/vnc/",
+            "http://192.168.64.1/seats/sw-abc/vnc/",
+            // 源对了路径不对
+            "https://m001.example.com/other",
+        ];
+        for s in no {
+            assert!(!seat_desktop_allowed(&u(s), &gw, &seats), "不该放行：{s}");
+        }
+        assert!(!seat_desktop_allowed(&u("https://m001.example.com/seats/a/vnc/"), &gw, &HashSet::new()));
+    }
 
     #[test]
     fn ui_origin_stays_in_the_window() {
@@ -1405,11 +1902,31 @@ mod tests {
     }
 
     #[test]
+    fn ui_path_segments_cannot_escape_ui_directory() {
+        for ok in ["index.html", "chat.js", "assets", "satuwork-logo.png"] {
+            assert!(safe_ui_segment(ok), "该放行：{ok}");
+        }
+        for bad in ["..", ".", "C:", "C:..", "c:foo", "index.html:x", "a\\b"] {
+            assert!(!safe_ui_segment(bad), "不该放行：{bad}");
+        }
+    }
+
+    #[test]
     fn runtime_version_cannot_escape_release_directory() {
         assert!(safe_runtime_version("0.1.0+abc-darwin-arm64").is_ok());
         assert!(safe_runtime_version("../CURRENT").is_err());
         assert!(safe_runtime_version("a/b").is_err());
         assert!(safe_runtime_version(".hidden").is_err());
+    }
+
+    #[test]
+    fn runtime_versions_compare_on_numbers_only() {
+        assert_eq!(runtime_older("0.1.13+abc1234-darwin-arm64", "0.1.14+0123456789abcdef"), Some(true));
+        assert_eq!(runtime_older("0.1.14+abc1234-darwin-arm64", "0.1.14+0123456789abcdef"), Some(false));
+        assert_eq!(runtime_older("0.2.0+abc1234-darwin-arm64", "0.1.14+0123456789abcdef"), Some(false));
+        // 老壳内置版的 VERSION 只是 sha256，读不出版本号
+        let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(runtime_older(sha, "0.1.14+0123456789abcdef"), None);
     }
 
     #[test]
@@ -1448,16 +1965,54 @@ mod tests {
             assert!(!is_seat_desktop(&Url::parse(u).unwrap()), "不该放行：{u}");
         }
     }
+    #[cfg(unix)]
+    #[test]
+    fn approved_directories_list_and_revoke() {
+        use std::fs;
+        let base = std::env::temp_dir().join(format!("satu-approved-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let work = base.join("work");
+        let target = base.join("Downloads");
+        let stray = base.join("NotApproved");
+        fs::create_dir_all(work.join("External")).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&stray).unwrap();
+        fs::write(target.join("keep.txt"), "别删我").unwrap();
+        let target_real = target.canonicalize().unwrap().display().to_string();
+        let manifest = base.join("approved-dirs.json");
+        fs::write(&manifest, serde_json::to_vec(&vec![target_real.clone()]).unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, work.join("External/Downloads")).unwrap();
+        // 只有链接、不在清单里的：不列
+        std::os::unix::fs::symlink(&stray, work.join("External/NotApproved")).unwrap();
+
+        let listed = list_approved(&manifest, &work);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].mount, "External/Downloads");
+        assert_eq!(listed[0].path, target_real);
+
+        assert!(revoke_approved(&manifest, &work, &target_real).unwrap());
+        assert!(list_approved(&manifest, &work).is_empty());
+        assert!(fs::symlink_metadata(work.join("External/Downloads")).is_err(), "链接该拆掉");
+        // 文件夹本身和里面的东西一个字节都不能动
+        assert_eq!(fs::read_to_string(target.join("keep.txt")).unwrap(), "别删我");
+        // 别人的链接不动
+        assert!(fs::symlink_metadata(work.join("External/NotApproved")).is_ok());
+        // 再撤一次：清单里已经没有，返回 false，不报错
+        assert!(!revoke_approved(&manifest, &work, &target_real).unwrap());
+        let _ = fs::remove_dir_all(&base);
+    }
 }
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .register_uri_scheme_protocol(UI_SCHEME, |ctx, request| serve_ui(&ctx.app_handle().clone(), &request))
         .manage(Startup::default())
         .manage(LocalBots::default())
         .manage(UpdateSource::default())
+        .manage(SeatOrigins::default())
         .invoke_handler(tauri::generate_handler![
             current_server,
             startup_error,
@@ -1465,10 +2020,17 @@ fn main() {
             start_local_bot,
             stop_local_bot,
             local_bot_status,
-            approve_local_directory
+            approve_local_directory,
+            local_directories,
+            revoke_local_directory,
+            allow_seat_desktop,
+            self_update::desktop_update_status,
+            self_update::desktop_update_check,
+            self_update::desktop_update_install
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            handle.manage(self_update::SelfUpdate::new(handle.package_info().version.to_string()));
             install_menu(&handle)?;
             // 存过地址、且那台机器现在敲得开，才直接进去。敲不开就回设置屏，并且把
             // 敲门的结果原样摆在上面。
@@ -1488,11 +2050,7 @@ fn main() {
         .expect("Satuwork 桌面壳起不来")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                if let Ok(mut bots) = app.state::<LocalBots>().0.lock() {
-                    for (_, mut proc_) in bots.drain() {
-                        let _ = terminate_local_bot(&mut proc_.child);
-                    }
-                }
+                stop_all_local_bots(app);
             }
         })
 }

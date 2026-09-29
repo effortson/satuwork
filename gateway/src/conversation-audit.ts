@@ -395,53 +395,84 @@ async function resumeStatusOf(db: Db, request: BotDeletionRequest): Promise<BotD
   return 'freezing'
 }
 
+/** 认领一次推进之后，这么久之内别的 tick 不来碰它。推进本身是几次查库，一分钟绰绰有余。 */
+const DELETION_CLAIM_MS = 60_000
+/**
+ * 拆席位那一步的认领更长：purgeBot 要逐台去管家那儿释放席位，机器慢的时候一分钟不够，
+ * 认领先过期的话下一拍会接着再拆一遍。进程死在半路时，等这么久之后由下一拍接手。
+ */
+const DELETION_PURGE_CLAIM_MS = 10 * 60_000
+
+/** 条件更新没改到：别人先推了这一步。这一边就此停手，不算失败。 */
+class DeletionClaimLost extends Error {}
+
 async function advanceDeletion(db: Db, request: BotDeletionRequest): Promise<void> {
+  /**
+   * 先认领：拿着手里这一份快照（状态、次数、下次时刻）去做一次条件更新，库里那一行已经
+   * 不是这个样子（另一拍 / 另一个进程先动了）就当场放手。之后每一步迁移都以「上一步写下
+   * 的那一行」为条件，中途被人接手也只有一边走得到 purgeBot。
+   */
+  let held = await db.casBotDeletion(
+    request.id,
+    { status: request.status, attempts: request.attempts, nextTryAt: request.nextTryAt },
+    { nextTryAt: Date.now() + DELETION_CLAIM_MS },
+  )
+  if (!held) return
+  const step = async (patch: Parameters<Db['updateBotDeletion']>[1]) => {
+    const next = await db.casBotDeletion(held!.id, { status: held!.status, attempts: held!.attempts }, patch)
+    if (!next) throw new DeletionClaimLost()
+    held = next
+    return next
+  }
   try {
-    const status = await resumeStatusOf(db, request)
+    const status = await resumeStatusOf(db, held)
     if (status === 'freezing') {
-      const count = await createDeletionBatches(db, request)
+      const count = await createDeletionBatches(db, held)
       if (!count) {
-        await db.updateBotDeletion(request.id, {
+        await step({
           status: 'ready_to_purge', targetCount: 0, auditedCount: 0, auditCompletedAt: Date.now(), nextTryAt: Date.now(),
         })
       } else {
-        await db.updateBotDeletion(request.id, { status: 'auditing', targetCount: count, lastError: null, nextTryAt: Date.now() + 5000 })
+        await step({ status: 'auditing', targetCount: count, lastError: null, nextTryAt: Date.now() + 5000 })
       }
       return
     }
     if (status === 'auditing') {
-      const batches = await db.conversationAuditBatchesOfDeletion(request.id)
+      const batches = await db.conversationAuditBatchesOfDeletion(held.id)
       const done = batches.filter((b) => b.status === 'succeeded' || b.status === 'empty').length
       if (done < batches.length) {
-        await db.updateBotDeletion(request.id, { auditedCount: done, nextTryAt: Date.now() + 5000 })
+        await step({ auditedCount: done, nextTryAt: Date.now() + 5000 })
         return
       }
-      await db.updateBotDeletion(request.id, {
+      await step({
         status: 'ready_to_purge', auditedCount: done, auditCompletedAt: Date.now(), nextTryAt: Date.now(),
       })
       return
     }
     if (status === 'ready_to_purge' || status === 'purging') {
-      await db.updateBotDeletion(request.id, { status: 'purging', attempts: request.attempts + 1, nextTryAt: Date.now() + 60_000 })
-      const { released, failed } = await purgeBot(db, request.botId)
+      await step({ status: 'purging', attempts: held.attempts + 1, nextTryAt: Date.now() + DELETION_PURGE_CLAIM_MS })
+      const { released, failed } = await purgeBot(db, held.botId)
       const orphans = failed.map((f) => ({ seatId: f.seat.seatId, error: f.error }))
-      await db.updateBotDeletion(request.id, {
+      await step({
         status: 'completed', orphans, deletedAt: Date.now(), nextTryAt: null, lastError: null,
       })
       await db.audit({
-        companyId: request.companyId,
-        accountId: request.requestedBy,
+        companyId: held.companyId,
+        accountId: held.requestedBy,
         action: 'bot.delete.completed',
-        detail: { requestId: request.id, botId: request.botId, seats: released.length, orphans },
+        detail: { requestId: held.id, botId: held.botId, seats: released.length, orphans },
       })
     }
   } catch (e) {
+    if (e instanceof DeletionClaimLost) return
+    // 按认领那一刻的次数加一：拆席位那一步已经先加过一次，这里不能再叠一次。
     const attempts = request.attempts + 1
     let message = (e instanceof Error ? e.message : String(e)).slice(0, 500)
     // 到了上限就不再自动重试（dueBotDeletions 按 attempts 过滤），状态仍是 failed，
     // 错误里说清楚是停了而不是还在转，留给管理员处理。
     if (attempts >= MAX_BOT_DELETION_ATTEMPTS) message += `（已重试 ${attempts} 次，不再自动重试）`
-    await db.updateBotDeletion(request.id, {
+    // 同样带条件：这时要是已经被别人接手了，失败记在别人的进度上只会添乱。
+    await db.casBotDeletion(held.id, { status: held.status, attempts: held.attempts }, {
       status: 'failed', attempts, lastError: message, nextTryAt: Date.now() + 60_000,
     })
   }

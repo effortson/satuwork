@@ -26,13 +26,20 @@ export interface Config {
 }
 
 /**
- * 渠道这一轮目前已经写到哪儿。
+ * 渠道这一轮目前已经写到哪儿——给 Telegram 的 sendMessageDraft 用。
  *
- * 一步模型调用会先落若干 assistant/chunk，收口时再落一条完整的 assistant/message；
- * 两份是同一句话，不能直接全拼起来。这里按 step 归并：有完整消息就用完整消息，否则用
- * 尚未收口的 delta。这样 Telegram 草稿既能跟着当前 token 长，也不会在每一步结束时把
- * 同一句话重复一遍。工具调用只把名称和状态放进临时草稿，不带参数/结果；正式回复发出
- * 后 Telegram 会自动清掉草稿，因此工具过程不会永久留在聊天记录里。
+ * **只往后长，不回头改。** Telegram 客户端给同一个 draft_id 的草稿做打字动画：新的一帧以
+ * 上一帧开头，它只播长出来的那一截；不是的话从分叉处（常常就是开头）重播。以前这里把
+ * 「🔧 工具调用」那张状态表固定压在末尾——于是工具一出现，下一步的正文插在它**前面**、
+ * ⏳ 改成 ✓ 改的是已经发出去的那几行，每一帧都在中间变，用户看到的就是「前面那段一遍
+ * 遍重打，直到最后才完整」。
+ *
+ * 所以按事件**发生的顺序**拼：正文的 text-delta 一路往后接；工具调用在它发生的位置接一行
+ * 「🔧 名字」，之后不再回头改它的状态（完成与否看最终回复，Web 上有完整痕迹），参数和
+ * 结果一概不进草稿。一步收口时那条 assistant/message 和前面的 delta 是同一句话：只拿它
+ * 补齐 delta 缺掉的尾巴（比如不流式、只落一条完整消息的模型），以已接上的 delta 开头才补，
+ * 否则不动——宁可草稿少几个字，也不能把已经发出去的改掉。正式回复发出后 Telegram 自动清掉
+ * 草稿，工具过程不会留在记录里。
  */
 export function channelDraft(events: SessionEvent[], eventId: string): string {
   const start = events.findIndex((event) => {
@@ -45,64 +52,62 @@ export function channelDraft(events: SessionEvent[], eventId: string): string {
   const turn = Number((turnStart?.data as { turn?: unknown } | undefined)?.turn)
   if (!Number.isFinite(turn)) return ''
 
-  const steps = new Map<number, { chunks: string; settled?: string }>()
-  const tools = new Map<string, { name: string; status: 'running' | 'done' | 'failed' }>()
+  let draft = ''
+  // 上一段接的是什么：换一种（正文 ↔ 工具）或者换了一步，先空一行再接；连着几个工具各占
+  // 一行。分隔符只加在**新内容之前**，草稿末尾永远不挂着等下一段的空行——那样的空行会被
+  // 两头的 trim 吃掉又长回来，同样破坏「以上一帧开头」。
+  let last: { kind: 'text' | 'tool'; step: number } | null = null
+  const stepText = new Map<number, string>()
+  const put = (kind: 'text' | 'tool', step: number, piece: string) => {
+    if (!piece) return
+    if (draft && last) {
+      // 先收掉末尾的空白再接分隔：正文自己带的换行加上这里的空行会叠成两三行。发出去的
+      // 每一帧本来就是 trim 过的（草稿泵），收掉之后仍以上一帧开头。
+      if (last.kind === 'tool' && kind === 'tool') draft = draft.trimEnd() + '\n'
+      else if (last.kind !== kind || last.step !== step) draft = draft.trimEnd() + '\n\n'
+    }
+    draft += piece
+    last = { kind, step }
+  }
   for (const event of events.slice(start + 1)) {
     const data = event.data as {
       turn?: unknown
       step?: unknown
-      callId?: unknown
       name?: unknown
-      failed?: unknown
       chunk?: { type?: string; text?: unknown }
       message?: { content?: unknown }
     }
     if (Number(data.turn) !== turn) continue
     const step = Number(data.step)
     if (!Number.isFinite(step)) continue
-    const row = steps.get(step) || { chunks: '' }
     if (event.type === 'assistant/chunk' && data.chunk?.type === 'text-delta' && typeof data.chunk.text === 'string') {
-      row.chunks += data.chunk.text
+      const have = stepText.get(step) ?? ''
+      // 一步的第一段 delta 前面的空白不要：它会变成两段之间多出来的空行。
+      const piece = have ? data.chunk.text : data.chunk.text.replace(/^\s+/, '')
+      stepText.set(step, have + piece)
+      put('text', step, piece)
     } else if (event.type === 'assistant/message') {
       const content = data.message?.content
-      row.settled = Array.isArray(content)
+      const settled = Array.isArray(content)
         ? content
           .filter((block): block is { type: 'text'; text: string } =>
             block?.type === 'text' && typeof block.text === 'string')
           .map((block) => block.text)
           .join('')
+          .replace(/^\s+/, '')
         : ''
+      const have = stepText.get(step) ?? ''
+      // 只补尾巴：完整消息以已经接上的 delta 开头才补；收口时改了措辞的不动。
+      if (settled.length > have.length && settled.startsWith(have)) {
+        stepText.set(step, settled)
+        put('text', step, settled.slice(have.length))
+      }
     } else if (event.type === 'tool/call') {
-      const callId = String(data.callId ?? '').trim()
       const name = Array.from(String(data.name ?? '').replace(/\s+/g, ' ').trim()).slice(0, 80).join('')
-      if (callId && name) tools.set(callId, { name, status: 'running' })
-    } else if (event.type === 'tool/result') {
-      const callId = String(data.callId ?? '').trim()
-      const tool = tools.get(callId)
-      if (tool) tool.status = data.failed ? 'failed' : 'done'
+      if (name) put('tool', step, `🔧 ${name}`)
     }
-    steps.set(step, row)
   }
-  const text = [...steps.entries()]
-    .sort(([a], [b]) => a - b)
-    .map(([, row]) => row.settled === undefined ? row.chunks : row.settled)
-    .filter((text) => text.trim())
-    .join('\n\n')
-    .trim()
-  const allTools = [...tools.values()]
-  const shownTools = allTools.slice(-8)
-  const activity = shownTools.length
-    ? [
-      '🔧 工具调用',
-      ...(allTools.length > shownTools.length ? [`… 还有 ${allTools.length - shownTools.length} 项`] : []),
-      ...shownTools.map((tool) => {
-        const state = tool.status === 'running' ? '调用中' : tool.status === 'failed' ? '失败' : '完成'
-        const icon = tool.status === 'running' ? '⏳' : tool.status === 'failed' ? '✗' : '✓'
-        return `${icon} ${tool.name} · ${state}`
-      }),
-    ].join('\n')
-    : ''
-  return [text, activity].filter(Boolean).join('\n\n')
+  return draft.trimEnd()
 }
 
 export interface ChannelFile {
@@ -504,7 +509,7 @@ export function apply(ctx: Context, _config: Config = {}) {
   /**
    * 换版前的静默：**这几秒不开新的一轮**，好让管家等手上这一轮干净地跑完再重启。
    *
-   * 只有管家会调（它手上有席位票，见 deploy-seat.sh 写进 bot.env 的 GATEWAY_TOKEN）。
+   * 只有管家会调（它手上有席位票，见 deploy-seat.sh 写进 /etc/satuwork/seats/<席位>/secrets.env 的 GATEWAY_TOKEN）。
    * 语义见 agent/index.ts 上那段：只挡新一轮，不挡 steering；只在内存里，带 TTL，
    * 所以管家中途挂了也不会把这台席位冻成一块砖。
    *
@@ -1411,18 +1416,33 @@ function dispositionName(name: string): string {
 const INSTANCE_ID = randomUUID()
 const STARTED_AT = Date.now()
 
-function sse(
+/** 导出只为探针（bot/e2e-replay.mjs）能直接起一条流、模拟中途断开。 */
+export function sse(
   ctx: Context,
   sessionId: string,
   after: number,
-  res: { _res?: { on?: Function } },
+  res: { _res?: { on?: Function; destroyed?: boolean } },
   tail = 0,
 ) {
   const encoder = new TextEncoder()
+  /**
+   * 收尾：摘监听、停心跳、关流。**幂等**，三条路都会叫它——连接 close、流被 cancel、
+   * 重放完发现人早走了。
+   *
+   * 以前只有 close 那一条，而且是重放**之后**才挂上的：重放慢（长会话要从盘上读），
+   * 客户端在那期间断开，close 在监听器出现之前就已经发过了——off()/offQueue() 从此
+   * 没人调，每次重连在进程里留一个死监听器。
+   */
+  let closed = false
+  let cleanup = () => {}
   return new Response(
     new ReadableStream({
+      cancel() {
+        cleanup()
+      },
       async start(controller) {
         const send = (event: SessionEvent) => {
+          if (closed) return
           const safe = publicSessionEvents([event])[0]
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(safe)}\n\n`))
         }
@@ -1440,6 +1460,18 @@ function sse(
          * 进程」才好决定这一批事件是接着看还是全部作废。它不是会话事件，不进事件桶
          * （和 replay/done、queue/change 一样按 type 分流）。
          */
+        let beat: NodeJS.Timeout | undefined
+        cleanup = () => {
+          if (closed) return
+          closed = true
+          if (beat) clearInterval(beat)
+          off()
+          offQueue()
+          try {
+            controller.close()
+          } catch {}
+        }
+
         controller.enqueue(
           encoder.encode(
             `data: ${JSON.stringify({ type: 'runtime/hello', instanceId: INSTANCE_ID, startedAt: STARTED_AT, version: process.env.SATUWORK_VERSION || '' })}\n\n`,
@@ -1467,6 +1499,9 @@ function sse(
             /* 流已经关了，下一次心跳会清掉 */
           }
         })
+        // 长连接不该等到插件卸载才释放（ctx.on 是 effect，那只是兜底）。**挂在重放之前**，
+        // 理由见上面 cleanup。
+        res._res?.on?.('close', () => cleanup())
 
         let replayed = 0
         let firstSeq: number | null = null
@@ -1500,14 +1535,15 @@ function sse(
             hasMore = slice.hasMore
           }
         } catch (e) {
+          if (closed) return
           ctx.logger?.warn?.(`sse: 会话 ${sessionId} 读不出来：${(e as Error).message}`)
           controller.enqueue(
             encoder.encode(`event: error\ndata: ${JSON.stringify({ error: (e as Error).message })}\n\n`),
           )
-          off()
-          offQueue()
-          return controller.close()
+          return cleanup()
         }
+        // 重放期间人已经走了：close 那一下可能早于上面那个监听器（socket 先断了），再看一眼。
+        if (closed || res._res?.destroyed) return cleanup()
 
         /**
          * 历史放完了。
@@ -1581,23 +1617,13 @@ function sse(
          * 一条 `: ping` 注释就够：它不是事件，客户端解析时直接跳过，但它是新字节，
          * 会把压着的那一截一起冲出去。顺带也让掉线被及时发现。
          */
-        const beat = setInterval(() => {
+        beat = setInterval(() => {
           try {
             controller.enqueue(encoder.encode(': ping\n\n'))
           } catch {
-            clearInterval(beat)
+            cleanup()
           }
         }, 15000)
-
-        // 长连接不该等到插件卸载才释放。ctx.on 是 effect，那只是兜底。
-        res._res?.on?.('close', () => {
-          clearInterval(beat)
-          off()
-          offQueue()
-          try {
-            controller.close()
-          } catch {}
-        })
       },
     }),
     {

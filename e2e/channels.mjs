@@ -148,6 +148,29 @@ export async function mockTelegram() {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, result }))
       }
+      // 用例可以挂一个 hook 注入故障：返回 { status, retryAfter } 就照 Telegram 的样子回错，
+      // 返回 { delayMs } 就晚这么久再照常处理（慢请求）；返回 { lateMs } 是当场生效、
+      // 回包晚到（Telegram 已经改了，Gateway 还没听到回音）。
+      const hooked = seen.hook?.(method, body) || null
+      if (hooked?.status) {
+        res.writeHead(hooked.status, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          ok: false, error_code: hooked.status, description: hooked.description || 'e2e 注入的失败',
+          ...(hooked.retryAfter ? { parameters: { retry_after: hooked.retryAfter } } : {}),
+        }))
+        return
+      }
+      if (hooked?.delayMs) {
+        setTimeout(() => respond(method, body, send), hooked.delayMs)
+        return
+      }
+      if (hooked?.lateMs) {
+        respond(method, body, (result) => setTimeout(() => send(result), hooked.lateMs))
+        return
+      }
+      respond(method, body, send)
+    })
+    const respond = (method, body, send) => {
       if (method === 'getMe') return send({ id: 88776655, is_bot: true, first_name: 'E2E', username: 'satuwork_e2e_bot' })
       if (method === 'deleteWebhook') {
         seen.deleteWebhook += 1
@@ -155,7 +178,10 @@ export async function mockTelegram() {
         return send(true)
       }
       if (method === 'setWebhook') {
-        seen.webhook = { url: String(body.url || ''), secret: String(body.secret_token || ''), allowed: body.allowed_updates || [] }
+        seen.webhook = {
+          url: String(body.url || ''), secret: String(body.secret_token || ''), allowed: body.allowed_updates || [],
+          maxConnections: body.max_connections,
+        }
         return send(true)
       }
       if (method === 'setMyCommands') {
@@ -213,7 +239,7 @@ export async function mockTelegram() {
       }
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: false, description: `unknown ${method}` }))
-    })
+    }
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   return { server, seen, url: `http://127.0.0.1:${server.address().port}` }
@@ -262,6 +288,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
   let pairingCode = ''
   let bindingId = ''
   let botId = ''
+  let previewLink = ''
   try {
     await test('短租约到期后可接管，旧 Gateway 不能续租或覆盖新结果', async () => {
       const result = await runProbe(new URL('..', import.meta.url).pathname, 'gateway/e2e-channel-event-lease.mjs', {
@@ -276,6 +303,8 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       assert(result.takeover, `租约到期后没有接管：${JSON.stringify(result)}`)
       assert(result.staleRenew === false && result.staleCommit === false, `旧进程还能续租或回写：${JSON.stringify(result)}`)
       assert(result.saveReply && result.delivered, `接管者没有完成落盘与投递：${JSON.stringify(result)}`)
+      assert(result.advance && result.staleAdvance === false && result.backwards && result.progress === 2 && result.finalParts === 2,
+        `投递进度没有按租约 fencing、或者往回退了：${JSON.stringify(result)}`)
       assert(result.finalStatus === 'delivered' && result.finalReply === '接管后的回复' && result.leaseCleared,
         `最终状态不对：${JSON.stringify(result)}`)
     })
@@ -459,6 +488,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
         assert(previewHtml.includes('/channel-preview.js') && previewHtml.includes('/markdown.js'), `${filename} 没有加载预览运行时`)
         assert(preview.headers.get('referrer-policy') === 'no-referrer', `${filename} 没有阻止签名票随 referrer 外泄`)
         assert(String(preview.headers.get('content-security-policy')).includes("frame-src blob:"), `${filename} 没有限制预览 frame 来源`)
+        assert(!/https:\/\/cdn\.jsdelivr\.net[\s;]/.test(String(preview.headers.get('content-security-policy'))), `${filename} 的 CSP 放行了整个 jsdelivr`)
         previews.set(filename, { url: previewUrl, html: previewHtml })
       }
 
@@ -494,6 +524,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       parsedPreview.pathname = pieces.join('/')
       const tampered = await fetch(parsedPreview)
       assert(tampered.status === 404, `篡改后的预览票仍拿到 ${tampered.status}`)
+      previewLink = previews.get('eth-report.txt').url
       assert(seat.seen.approvals[0].body.decision === 'approve' && seat.seen.approvals[0].body.scope === 'once', '批准范围传错')
       assert(telegram.seen.callbackAnswers.some((a) => a.callback_query_id === 'callback-approved' && String(a.text).includes('已批准')), '批准回调没有应答')
       assert(telegram.seen.editedMarkups.some((m) => Array.isArray(m.reply_markup?.inline_keyboard) && m.reply_markup.inline_keyboard.length === 0), '审批完成后没有移除按钮')
@@ -508,6 +539,45 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       await waitFor(() => telegram.seen.callbackAnswers.find((a) => a.callback_query_id === 'callback-duplicate'), '重复审批被应答')
       assert(seat.seen.successfulApprovals === 1, '重复点击导致二次批准')
       assert(telegram.seen.callbackAnswers.some((a) => a.callback_query_id === 'callback-duplicate' && String(a.text).includes('已经结束')), '重复点击没有提示审批已结束')
+    })
+
+    await test('预览链接跟着公司停用、账号作废点一起失效', async () => {
+      /**
+       * 七天的预览票以前只看账号 active：公司被停用了照样能读席位工作区，改口令、被重置
+       * 之后发出去的旧链接也还活着。现在它和登录票走同一道公司闸、同一个作废点。
+       * 直接改库做停用 / 作废，验完原样放回——后面几条用例还要用这家公司和这张登录票。
+       */
+      assert(previewLink, '上一条用例没拿到预览链接')
+      const ok = await fetch(`${previewLink}?raw=1`)
+      assert(ok.status === 200, `预览链接本来就打不开：${ok.status}`)
+      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
+      const pg = require('pg')
+      const client = new pg.Client({ connectionString: PG_URL })
+      await client.connect()
+      try {
+        const own = await client.query(`select "accountId","companyId" from "${schema}".channel_bindings where id = $1`, [bindingId])
+        const { accountId, companyId } = own.rows[0]
+        await client.query(`update "${schema}".companies set status = 'disabled' where id = $1`, [companyId])
+        try {
+          const off = await fetch(`${previewLink}?raw=1`)
+          assert(off.status === 404, `公司停用了预览链接还能读：${off.status}`)
+          const page = await fetch(previewLink, { headers: { accept: 'text/html' } })
+          assert(page.status === 404, `公司停用了预览页还能开：${page.status}`)
+        } finally {
+          await client.query(`update "${schema}".companies set status = 'active' where id = $1`, [companyId])
+        }
+        const prev = (await client.query(`select "tokenRevokedAt" from "${schema}".accounts where id = $1`, [accountId])).rows[0].tokenRevokedAt
+        // 作废点落在票签发之后（毫秒级）：同一秒里也得死。
+        await client.query(`update "${schema}".accounts set "tokenRevokedAt" = $2 where id = $1`, [accountId, Date.now()])
+        try {
+          const revoked = await fetch(`${previewLink}?raw=1`)
+          assert(revoked.status === 404, `作废点之后预览链接还能读：${revoked.status}`)
+        } finally {
+          await client.query(`update "${schema}".accounts set "tokenRevokedAt" = $2 where id = $1`, [accountId, prev])
+        }
+        const back = await fetch(`${previewLink}?raw=1`)
+        assert(back.status === 200, `放回之后预览链接打不开了：${back.status}`)
+      } finally { await client.end() }
     })
 
     await test('Telegram 转人工卡可接手，并通过回复输入把结论交还原工单', async () => {

@@ -10,15 +10,20 @@
 
 ## 起 / 停
 
-先在**仓库根目录**的 `.env` 里放一把密钥（`.env` 不进 git）：
+密钥（`server.secret_key`，签 cookie 用的）不用手配：`.env` 里没有 `SEARXNG_SECRET` 的话，
+容器第一次启动时随机生成一把，写进 `searxng-data` 卷里的 `/var/cache/searxng/.secret_key`，
+之后重启都读这把。compose 里不再带默认值——以前那个 `ultrasecretkey` 是公开的。
+
+想自己定就在**仓库根目录**的 `.env` 里放一把（`.env` 不进 git），它优先于卷里那把：
 
 ```bash
 echo "SEARXNG_SECRET=$(openssl rand -hex 32)" >> .env
 ```
 
-没填这一步容器会直接退出并说 `server.secret_key is not changed`——它不会带着默认密钥跑。
+要换密钥：删掉 `.env` 里那行再 `docker compose --profile searxng down -v`（连卷一起删，
+favicon 缓存也会跟着清掉，无所谓），或者直接在 `.env` 里填一把新的。
 
-对外提供服务的话再加一条 `SEARXNG_BASE_URL=http://<本机地址>:8888/`（默认 `localhost`，
+改了端口或地址的话再加一条 `SEARXNG_BASE_URL=http://<本机地址>:8888/`（默认 `localhost`，
 opensearch 描述和 RSS 里的链接指的就是它，写错了那些链接会指到别处）。
 
 ```bash
@@ -28,14 +33,15 @@ docker compose --profile searxng logs -f searxng
 docker compose --profile searxng down            # 停；不带 --profile 是停不掉它的
 ```
 
-宿主机 **8888** → 容器 8080，绑 0.0.0.0，局域网可达：
+宿主机 **127.0.0.1:8888** → 容器 8080，**只绑本机**，和 PG、Gateway 一样：
 
-- 网页：<http://127.0.0.1:8888/>（局域网就换成本机地址）
+- 网页：<http://127.0.0.1:8888/>
 - JSON：`http://127.0.0.1:8888/search?q=关键词&format=json&language=zh-CN`
-- 控制台「工具配置 → 网页与搜索」里填的实例地址就是这个；Gateway 也跑在这套 compose 里
-  的话，容器之间直接用 `http://searxng:8080`，不用绕宿主机。
+- 控制台「工具配置 → 网页与搜索」里填的实例地址：Gateway 跑在这套 compose 里就填
+  `http://searxng:8080`（容器之间直连，不绕宿主机）；Gateway 跑在本机别处就填上面那个。
 
-只想给本机用，就把 compose 里那条端口改成 `127.0.0.1:8888:8080`；换端口设 `SEARXNG_PORT`。
+换端口设 `SEARXNG_PORT`。**别把左边的 `127.0.0.1:` 去掉**：限流器是关的（见下），端口一对外
+就是个谁都能用的搜索代理。Gateway 在别的机器上的话，前面挂一层带鉴权的反代再对外。
 
 ## 配置里只有三件事和默认不一样
 
@@ -48,12 +54,14 @@ docker compose --profile searxng down            # 停；不带 --profile 是停
    开着会把不带浏览器指纹的直连请求判成机器人。**所以这个端口不要暴露到公网。**
 3. `general.instance_name` 改了个名字，纯装饰。
 
-## 两处和官方 compose 的出入
+## 三处和官方 compose 的出入
 
 - **没有 valkey。** 它只在开限流器时才用得上，而限流器是关的；官方那份里的 valkey 其实
   也没接上——镜像默认 `valkey.url = false`，除非自己设 `SEARXNG_VALKEY_URL`。
-- **端口在宿主机侧改**（`8888:8080`），不像官方那样用 `SEARXNG_PORT` 同时改容器内的监听口。
-  容器内固定 8080，换端口只动左边那个数。
+- **端口在宿主机侧改**（`127.0.0.1:8888:8080`），不像官方那样用 `SEARXNG_PORT` 同时改容器内的
+  监听口。容器内固定 8080，换端口只动 `8888` 那个数。
+- **entrypoint 包了一层**：先补上密钥（见上），再 `exec` 镜像自己的
+  `/usr/local/searxng/entrypoint.sh`。升级镜像时要是这个路径变了，容器会起不来，照着改一下。
 
 ## 一部分引擎会报错，这是正常的
 
