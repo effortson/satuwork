@@ -28,8 +28,15 @@
 #   不指 desktop-latest（那边的包每次发版都会被换掉）。
 # 本地 Bot 运行时是另一条线（local-bot-release.yml）。
 #
-# **没有签名和公证**：下载来的 .app 会被 Gatekeeper 拦（「已损坏」），Windows 会弹 SmartScreen。
-# 要发给外人之前得先有证书。
+# **macOS 签名 + 公证**（Developer ID Application: ADIX INTELLIGENCE PTE. LTD.，团队 37TR7L5SSP）：
+# Tauri 看到 APPLE_CERTIFICATE 会自己建临时钥匙串导入证书、签 .app、交公证、钉票据；dmg 由下面
+# 「公证 dmg」那步另交一次。六个 secret：APPLE_CERTIFICATE（p12 的 base64）、
+# APPLE_CERTIFICATE_PASSWORD、APPLE_SIGNING_IDENTITY、APPLE_API_ISSUER、APPLE_API_KEY、
+# APPLE_API_KEY_P8（App Store Connect 的 .p8 内容）。缺了 macOS 那两档直接失败，不发半成品。
+# 「校验签名」那步会跑一遍包里的 Node：它被重签后丢了 JIT 权限的话，签名、公证都照过，
+# 本地 Bot 却一起就崩——这种事只有真跑一下才看得出来。
+#
+# **Windows 仍没有签名**，会弹 SmartScreen；要单独的代码签名证书。
 name: desktop-release
 
 on:
@@ -174,15 +181,85 @@ jobs:
       #
       # createUpdaterArtifacts 只在这里用 --config 打开，不写进 tauri.conf.json：写进去的话本地
       # `pnpm build` 没有私钥就出不了包，而本地包本来也不走自动升级。
+      # 公证用的 App Store Connect 私钥只能以文件路径交给 Tauri（APPLE_API_KEY_PATH），落到
+      # runner 的临时目录里，job 结束就没了。
+      - name: 写入公证密钥
+        if: matrix.os == 'macos'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          [ -n "$APPLE_API_KEY_P8" ] || { echo "没有 APPLE_API_KEY_P8：公证不了" >&2; exit 1; }
+          p="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$p"
+          chmod 600 "$p"
+          echo "APPLE_API_KEY_PATH=$p" >> "$GITHUB_ENV"
+
       - name: 打包
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # 只给 macOS 那两档；Windows 那档拿到也用不上。
+          APPLE_CERTIFICATE: ${{ matrix.os == 'macos' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.os == 'macos' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_API_ISSUER: ${{ matrix.os == 'macos' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ matrix.os == 'macos' && secrets.APPLE_API_KEY || '' }}
         run: |
           [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || {
             echo "没有 TAURI_SIGNING_PRIVATE_KEY：出不了升级包，装过的桌面端收不到这一版" >&2; exit 1; }
+          if [ "${{ matrix.os }}" = "macos" ]; then
+            for k in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_PATH; do
+              [ -n "${!k:-}" ] || { echo "没有 $k：macOS 包签不了名或公证不了" >&2; exit 1; }
+            done
+          fi
           pnpm --filter satuwork-desktop exec tauri build --bundles ${{ matrix.bundle }} \
             --config '{"bundle":{"createUpdaterArtifacts":true}}'
+
+      # Tauri 只公证 .app（钉好票据后再装进 dmg、打成升级包），dmg 本身没交过。不交的话，下载来的
+      # dmg 在没联网的机器上打开时 Gatekeeper 查不到票据。这里补交一次、钉上。
+      - name: 公证 dmg
+        if: matrix.os == 'macos'
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          v=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+          dmg="desktop/src-tauri/target/release/bundle/dmg/Satuwork_${v}_${{ matrix.tauri_arch }}.dmg"
+          codesign -dv "$dmg" 2>&1 || echo "（dmg 本身没签名，照样交公证）"
+          xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" --wait --timeout 30m
+          xcrun stapler staple "$dmg"
+
+      # 签名、公证、票据都在，而且包里的 Node 真能跑起来（见文件头）。任何一条不过都失败。
+      - name: 校验签名
+        if: matrix.os == 'macos'
+        run: |
+          set -euo pipefail
+          v=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+          b=desktop/src-tauri/target/release/bundle
+          app="$b/macos/Satuwork.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | grep -E 'Authority=Developer ID Application|TeamIdentifier|flags='
+          # 先存下来再 grep：`| grep -q` 提前退出会让前面的管道吃 SIGPIPE，pipefail 下整步误判失败。
+          gk=$(spctl -a -t exec -vv "$app" 2>&1); echo "$gk"
+          grep -q 'Notarized Developer ID' <<<"$gk" || { echo ".app 没过 Gatekeeper 的公证检查" >&2; exit 1; }
+          xcrun stapler validate "$app"
+
+          # 升级包里的那份才是装过的人拿到的，单独解开看一遍。
+          t=$(mktemp -d)
+          tar -xzf "$b/macos/Satuwork.app.tar.gz" -C "$t"
+          gk=$(spctl -a -t exec -vv "$t/Satuwork.app" 2>&1); echo "$gk"
+          grep -q 'Notarized Developer ID' <<<"$gk" || { echo "升级包里的 .app 没过公证检查" >&2; exit 1; }
+
+          dmg="$b/dmg/Satuwork_${v}_${{ matrix.tauri_arch }}.dmg"
+          xcrun stapler validate "$dmg"
+
+          # 包里的 Node：看它是谁签的、带没带 JIT 权限，再真跑一段会触发 JIT 的循环。
+          n="$app/Contents/Resources/runtime/node/bin/node"
+          [ -x "$n" ] || { echo "包里没有 Node：$n" >&2; exit 1; }
+          codesign -dv --entitlements - "$n" 2>&1 | grep -E 'Authority=|TeamIdentifier|flags=|allow-jit|unsigned-executable-memory' || true
+          "$n" -e 'let s = 0; for (let i = 0; i < 5e7; i++) s += i % 7; console.log("node 能跑：", process.version, process.arch, s)'
 
       # 安装包、升级包、升级包的签名收进 out/，名字统一带版本和架构。macOS 的升级包 Tauri 起名
       # 就叫 Satuwork.app.tar.gz、两个架构同名，不改名的话合进同一个 Release 会互相覆盖。
@@ -279,12 +356,11 @@ jobs:
               echo '- **macOS**：Apple 芯片选 aarch64，Intel 选 x64。'
               echo '- **Windows**：64 位选 x64-setup.exe。'
               echo
-              echo '**安装包还没有签名**：'
-              echo '- macOS：下载后系统提示「已损坏，无法打开」。拖进「应用程序」后在终端执行一次：'
-              echo '  ```'
-              echo '  xattr -dr com.apple.quarantine /Applications/Satuwork.app'
-              echo '  ```'
-              echo '- Windows：SmartScreen 会提示拦截，在提示框中点击「更多信息」→「仍要运行」。'
+              echo 'macOS 包已签名并经 Apple 公证，直接打开即可。'
+              echo
+              echo '**Windows 包还没有签名**：SmartScreen 会提示拦截，在提示框中点击「更多信息」→「仍要运行」。'
+              echo
+              echo '已装过 0.1.2 及以上版本的桌面端会在侧栏提示升级，不用手动下载。'
             } > notes.md
           fi
 
