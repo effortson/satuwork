@@ -24,6 +24,7 @@
   background: var(--secondary);
   color: var(--secondary-foreground);
 }
+.sw-convo-avatar[data-bot='1'] { background: transparent; }
 /* flex: 1 把中间这段撑开，右边的操作按钮才会被顶到最右；min-width: 0 是省略号
    能生效的前提——不写的话 flex 子项按内容宽度算，长名字会把按钮挤出顶栏。 */
 .sw-convo-id { min-width: 0; flex: 1; }

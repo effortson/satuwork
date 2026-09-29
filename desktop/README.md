@@ -229,4 +229,4 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
   `desktop-latest` Release——总是对齐到现有 `desktop-v*` 里最新的正式版（纯 `X.Y.Z`，预发布不算）。首页的下载那一段
   （[gateway/ui/pages-landing.js](../gateway/ui/pages-landing.js) 的 `dlBase` / `dlBuilds`）只认
   `desktop-latest`，所以**发新版不用改页面**，打 tag 就完了。Linux 暂未开包。
-- **图标**。现在这套是拿 64×64 的 logo 放大到 1024 生成的，糊。要一份真正的大图。
+- **图标**。源文件是 [gateway/ui/assets/satuwork-logo.svg](../gateway/ui/assets/satuwork-logo.svg)。改标志后用 `pnpm --filter satuwork-desktop icon ../gateway/ui/assets/satuwork-logo.svg` 重新生成桌面端各尺寸，并将 `desktop/src-tauri/icons/128x128@2x.png` 复制为 `gateway/ui/assets/satuwork-logo.png`。

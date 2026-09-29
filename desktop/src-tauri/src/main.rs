@@ -130,7 +130,7 @@ struct LocalBotRelease {
     note: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct ApprovedDirectory {
     path: String,
@@ -258,7 +258,9 @@ const LINK_SCRIPT: &str = r#"
     start: function (config) { return window.__TAURI_INTERNALS__.invoke('start_local_bot', { config: config }) },
     stop: function (botId) { return window.__TAURI_INTERNALS__.invoke('stop_local_bot', { botId: botId }) },
     status: function (botId) { return window.__TAURI_INTERNALS__.invoke('local_bot_status', { botId: botId }) },
-    approveDirectory: function (botId) { return window.__TAURI_INTERNALS__.invoke('approve_local_directory', { botId: botId }) }
+    approveDirectory: function (botId) { return window.__TAURI_INTERNALS__.invoke('approve_local_directory', { botId: botId }) },
+    directories: function (botId) { return window.__TAURI_INTERNALS__.invoke('local_directories', { botId: botId }) },
+    revokeDirectory: function (botId, path) { return window.__TAURI_INTERNALS__.invoke('revoke_local_directory', { botId: botId, path: path }) }
   }
   // Desktop 壳自己的升级（self_update.rs）：侧栏那条「有新版本」由它驱动。
   window.__SATUWORK_DESKTOP_UPDATE__ = {
@@ -1668,6 +1670,102 @@ async fn approve_local_directory(
 }
 
 /**
+ * 批准过的文件夹：清单（approved-dirs.json）和工作区 `External/` 下的符号链接**两头都对上**
+ * 才算——和 bot 那边 workspace.approvedMounts 同一条判据。只剩一头的（撤销到一半、手工删过
+ * 链接）不列：列出来人会以为 Bot 还能访问，而 bot 那边已经不认了。
+ */
+fn list_approved(manifest: &Path, work: &Path) -> Vec<ApprovedDirectory> {
+    let approved: Vec<String> = fs::read_to_string(manifest)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(work.join("External")) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let link = entry.path();
+        let is_link = fs::symlink_metadata(&link)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if !is_link {
+            continue;
+        }
+        let Ok(target) = link.canonicalize() else {
+            continue;
+        };
+        let shown = target.display().to_string();
+        if approved.iter().any(|p| p == &shown) {
+            out.push(ApprovedDirectory {
+                path: shown,
+                mount: format!("External/{}", entry.file_name().to_string_lossy()),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.mount.cmp(&b.mount));
+    out
+}
+
+/**
+ * 撤销一个批准：从清单里去掉，再拆掉 `External/` 下指向它的链接。
+ *
+ * **只拆链接，不碰文件夹本身**——`remove_file` 作用在符号链接上删的是链接；Windows 的目录
+ * 链接要用 `remove_dir`，同样只删链接。先改清单再拆链接：拆到一半失败时，bot 那边按清单
+ * 已经不认了（isApprovedPath），剩下的链接只是一条进不去的死路。
+ */
+fn revoke_approved(manifest: &Path, work: &Path, path: &str) -> Result<bool, String> {
+    let mut approved: Vec<String> = fs::read_to_string(manifest)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let before = approved.len();
+    approved.retain(|p| p != path);
+    let changed = approved.len() != before;
+    if changed {
+        fs::write(
+            manifest,
+            serde_json::to_vec_pretty(&approved).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("保存目录批准记录失败：{e}"))?;
+    }
+    if let Ok(entries) = fs::read_dir(work.join("External")) {
+        for entry in entries.flatten() {
+            let link = entry.path();
+            let is_link = fs::symlink_metadata(&link)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            if !is_link || link.canonicalize().ok().map(|t| t.display().to_string()).as_deref() != Some(path) {
+                continue;
+            }
+            #[cfg(unix)]
+            fs::remove_file(&link).map_err(|e| format!("拆除目录入口失败：{e}"))?;
+            #[cfg(windows)]
+            fs::remove_dir(&link).map_err(|e| format!("拆除目录入口失败：{e}"))?;
+        }
+    }
+    Ok(changed)
+}
+
+/** 右栏那张「批准访问的文件夹」列表。 */
+#[tauri::command]
+fn local_directories(app: AppHandle, bot_id: String) -> Result<Vec<ApprovedDirectory>, String> {
+    let id = safe_bot_id(&bot_id)?;
+    let (data, work) = bot_paths(&app, &id)?;
+    Ok(list_approved(&data.join("approved-dirs.json"), &work))
+}
+
+/**
+ * 撤销一个批准。不用等 Bot 重启：bot 每次访问都现读清单（workspace.isApprovedPath），
+ * 下一次读写就不认了；系统提示里的那张表下一轮也跟着变。
+ */
+#[tauri::command]
+fn revoke_local_directory(app: AppHandle, bot_id: String, path: String) -> Result<bool, String> {
+    let id = safe_bot_id(&bot_id)?;
+    let (data, work) = bot_paths(&app, &id)?;
+    revoke_approved(&data.join("approved-dirs.json"), &work, &path)
+}
+
+/**
  * 菜单里那一条「切换服务器…」。
  *
  * **少了它这个壳会砖。** 地址填对了但那台机器换了地方、或者页面被导航到了一个回不来
@@ -1709,8 +1807,9 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        desktop_version_supports, is_seat_desktop, is_ui_origin, open_path_allowed, origin_key,
-        runtime_older, safe_runtime_version, safe_ui_segment, seat_desktop_allowed,
+        desktop_version_supports, is_seat_desktop, is_ui_origin, list_approved, open_path_allowed,
+        origin_key, revoke_approved, runtime_older, safe_runtime_version, safe_ui_segment,
+        seat_desktop_allowed,
     };
     use std::collections::HashSet;
     use tauri::Url;
@@ -1866,6 +1965,42 @@ mod tests {
             assert!(!is_seat_desktop(&Url::parse(u).unwrap()), "不该放行：{u}");
         }
     }
+    #[cfg(unix)]
+    #[test]
+    fn approved_directories_list_and_revoke() {
+        use std::fs;
+        let base = std::env::temp_dir().join(format!("satu-approved-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let work = base.join("work");
+        let target = base.join("Downloads");
+        let stray = base.join("NotApproved");
+        fs::create_dir_all(work.join("External")).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&stray).unwrap();
+        fs::write(target.join("keep.txt"), "别删我").unwrap();
+        let target_real = target.canonicalize().unwrap().display().to_string();
+        let manifest = base.join("approved-dirs.json");
+        fs::write(&manifest, serde_json::to_vec(&vec![target_real.clone()]).unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, work.join("External/Downloads")).unwrap();
+        // 只有链接、不在清单里的：不列
+        std::os::unix::fs::symlink(&stray, work.join("External/NotApproved")).unwrap();
+
+        let listed = list_approved(&manifest, &work);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].mount, "External/Downloads");
+        assert_eq!(listed[0].path, target_real);
+
+        assert!(revoke_approved(&manifest, &work, &target_real).unwrap());
+        assert!(list_approved(&manifest, &work).is_empty());
+        assert!(fs::symlink_metadata(work.join("External/Downloads")).is_err(), "链接该拆掉");
+        // 文件夹本身和里面的东西一个字节都不能动
+        assert_eq!(fs::read_to_string(target.join("keep.txt")).unwrap(), "别删我");
+        // 别人的链接不动
+        assert!(fs::symlink_metadata(work.join("External/NotApproved")).is_ok());
+        // 再撤一次：清单里已经没有，返回 false，不报错
+        assert!(!revoke_approved(&manifest, &work, &target_real).unwrap());
+        let _ = fs::remove_dir_all(&base);
+    }
 }
 
 fn main() {
@@ -1886,6 +2021,8 @@ fn main() {
             stop_local_bot,
             local_bot_status,
             approve_local_directory,
+            local_directories,
+            revoke_local_directory,
             allow_seat_desktop,
             self_update::desktop_update_status,
             self_update::desktop_update_check,

@@ -22,11 +22,12 @@ export interface ApprovalField {
  *
  * `kind` 决定界面用哪一套样式：`generic` 是那张通用卡（工具名 + 参数 JSON），
  * `email` 是发信那张（收件人、主题、正文，正文可改），`memory` 是记一条事实那张
- * （正文和类别可改，层不可改）。**界面认不出的 kind 一律退回 generic**——新增一种
+ * （正文和类别可改，层不可改），`folder` 是本地 Bot 申请访问一个文件夹那张（界面上是
+ * 「选择文件夹…」按钮，拉起 Desktop 的系统选择框）。**界面认不出的 kind 一律退回 generic**——新增一种
  * 表单不该让老版本的浏览器白屏。
  */
 export interface ApprovalForm {
-  kind: 'generic' | 'email' | 'memory'
+  kind: 'generic' | 'email' | 'memory' | 'folder'
   /** 真正要跑的那把工具：穿过 SW_RUN 这类元工具之后的名字。 */
   tool: string
   fields: ApprovalField[]

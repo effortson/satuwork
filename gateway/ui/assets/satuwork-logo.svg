@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Satuwork">
+  <defs>
+    <linearGradient id="clay" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E79170"/>
+      <stop offset="1" stop-color="#C7654E"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="124" fill="url(#clay)"/>
+  <path d="M251 172c0-24-8-40-24-54" fill="none" stroke="#FFE5D4" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="213" cy="106" r="24" fill="#FFF9F2"/>
+  <rect x="78" y="236" width="59" height="84" rx="29" fill="#FFE5D4"/>
+  <rect x="375" y="236" width="59" height="84" rx="29" fill="#FFE5D4"/>
+  <rect x="102" y="155" width="308" height="238" rx="105" fill="#FFE5D4"/>
+  <rect x="121" y="175" width="270" height="199" rx="88" fill="#FFF9F2"/>
+  <ellipse cx="165" cy="311" rx="24" ry="15" fill="#F8B9B2"/>
+  <ellipse cx="347" cy="311" rx="24" ry="15" fill="#F8B9B2"/>
+  <ellipse cx="204" cy="260" rx="27" ry="35" fill="#59434C"/>
+  <ellipse cx="308" cy="260" rx="27" ry="35" fill="#59434C"/>
+  <circle cx="194" cy="247" r="9" fill="#FFF9F2"/>
+  <circle cx="298" cy="247" r="9" fill="#FFF9F2"/>
+  <path d="M228 321c15 18 41 18 56 0" fill="none" stroke="#AA686C" stroke-width="13" stroke-linecap="round"/>
+</svg>

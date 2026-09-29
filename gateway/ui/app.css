@@ -605,6 +605,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 }
 .satu-lp-brand[data-static] { cursor: default; font-size: 16px; }
 .satu-lp-brand img { border-radius: var(--radius-sm); object-fit: contain; }
+.satu-lp-brand .satu-lp-home-logo { width: 40px; height: 40px; flex: none; }
 /* 顶栏右边是**一排圆钮**，不是被竖线切开的几格。格子那版和登录页对不上：人从这儿
    点「登录」过去，落地那一屏上所有的按钮和输入框都是圆头的药丸。 */
 .satu-lp-topact { display: flex; align-items: center; gap: var(--space-3); }
@@ -799,6 +800,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   font-family: var(--font-heading);
   font-size: 13px;
 }
+.satu-lp-shotface[data-bot='1'] { border-radius: 0; background: transparent; }
 .satu-lp-shottext { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .satu-lp-shotname { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; }
 /* 名字单独包一层，只为窄屏上能把**名字**收掉而把那颗状态点留下（见下面 560 那段）。 */
@@ -851,8 +853,10 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   font-family: var(--font-heading);
   font-size: 12px;
 }
-.satu-lp-face[data-big] { width: 30px; height: 30px; font-size: 13px; background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
+.satu-lp-face[data-big] { width: 34px; height: 34px; font-size: 13px; background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
 .satu-lp-msg[data-role="assistant"] .satu-lp-face { background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
+.satu-lp-face[data-bot='1'], .satu-lp-msg[data-role="assistant"] .satu-lp-face[data-bot='1'] { width: 32px; height: 32px; border-radius: 0; background: transparent; }
+.satu-lp-face[data-big][data-bot='1'] { width: 34px; height: 34px; }
 /* 气泡列最宽 72%，和真界面一个数：再宽长句一行装太多字，眼睛回行会丢。 */
 .satu-lp-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 72%; }
 .satu-lp-msg[data-role="user"] .satu-lp-col { align-items: flex-end; }
@@ -1126,6 +1130,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 }
 
 @media (max-width: 560px) {
+  .satu-lp-brand .satu-lp-home-logo { width: 36px; height: 36px; }
   /* 「联系销售」收成一颗只有图标的圆钮：顶栏那一行在这个宽度上已经排着 logo、
      GitHub、语言开关三样了，再加四个字就换行。**不能跟着「登录」一起藏**（那条在
      900 那段里）——藏了的话页面上再没有第二处能联系到人。
