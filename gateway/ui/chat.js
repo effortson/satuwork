@@ -5373,7 +5373,7 @@ function chatDeployPrompt(botId) {
   if (bot.runtimeKind === 'local') {
     title = t('%s 正在等待 Desktop', '%s is waiting for Desktop').replace('%s', name)
     body = window.__SATUWORK_DESKTOP__
-      ? t('本地运行时正在启动；它会使用这台 Mac 上独立的默认工作目录。', 'The local runtime is starting with its own workspace on this Mac.')
+      ? t('本地运行时正在启动；它会使用这台电脑上独立的默认工作目录。', 'The local runtime is starting with its own workspace on this computer.')
       : t('请用 Satuwork Desktop 打开这个页面。本地 Bot 不会在普通浏览器里启动。', 'Open this page in Satuwork Desktop; local bots do not start in a regular browser.')
     action = window.__SATUWORK_DESKTOP__
       ? `<button type="button" class="btn btn-primary" data-act="local-bot-start" data-bot="${esc(botId)}">${t('重新启动', 'Start again')}</button>`
@@ -5506,7 +5506,7 @@ function chatMachinePanel() {
   if (local) {
     rows.push(`<p style="margin:0;font-size:12px;color:var(--muted-foreground);line-height:1.6;">${esc(
       stage === 'ready'
-        ? t('运行在这台 Mac；默认只访问自己的工作目录。', 'Running on this Mac with access limited to its own workspace.')
+        ? t('运行在这台电脑；默认只访问自己的工作目录。', 'Running on this computer with access limited to its own workspace.')
         : t('本地运行时尚未连接。', 'The local runtime is not connected yet.'),
     )}</p>`)
     if (window.__SATUWORK_DESKTOP__) {
