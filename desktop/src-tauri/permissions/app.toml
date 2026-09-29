@@ -17,3 +17,12 @@ commands.allow = [
 identifier = "seat-desktop-commands"
 description = "允许主窗口在挂内嵌桌面前把席位机器的源报给导航守卫。"
 commands.allow = ["allow_seat_desktop"]
+
+[[permission]]
+identifier = "desktop-update-commands"
+description = "允许主窗口查询、检查并安装 Desktop 新版本（下载地址与签名公钥都写死在壳里，页面只能说「查」和「装」）。"
+commands.allow = [
+  "desktop_update_status",
+  "desktop_update_check",
+  "desktop_update_install",
+]

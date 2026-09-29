@@ -20,6 +20,8 @@ use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
+mod self_update;
+
 /**
  * Satuwork 桌面壳。
  *
@@ -257,6 +259,12 @@ const LINK_SCRIPT: &str = r#"
     stop: function (botId) { return window.__TAURI_INTERNALS__.invoke('stop_local_bot', { botId: botId }) },
     status: function (botId) { return window.__TAURI_INTERNALS__.invoke('local_bot_status', { botId: botId }) },
     approveDirectory: function (botId) { return window.__TAURI_INTERNALS__.invoke('approve_local_directory', { botId: botId }) }
+  }
+  // Desktop 壳自己的升级（self_update.rs）：侧栏那条「有新版本」由它驱动。
+  window.__SATUWORK_DESKTOP_UPDATE__ = {
+    status: function () { return window.__TAURI_INTERNALS__.invoke('desktop_update_status') },
+    check: function (force) { return window.__TAURI_INTERNALS__.invoke('desktop_update_check', { force: Boolean(force) }) },
+    install: function () { return window.__TAURI_INTERNALS__.invoke('desktop_update_install') }
   }
   // 内嵌桌面挂上之前先报一声地址，导航守卫只放行报过的机器（allow_seat_desktop）。
   window.__SATUWORK_SEAT_DESKTOP__ = {
@@ -1505,6 +1513,19 @@ fn terminate_local_bot(child: &mut Child) -> Result<(), String> {
     Ok(())
 }
 
+/**
+ * 所有本地 Bot 一起停。应用退出（RunEvent::Exit）和换壳（self_update）都走这里；换壳那条
+ * 不会经过 RunEvent::Exit——Windows 上安装器起来后插件直接 process::exit，macOS 上是 restart。
+ */
+pub(crate) fn stop_all_local_bots(app: &AppHandle) {
+    if let Ok(mut bots) = app.state::<LocalBots>().0.lock() {
+        for (_, mut proc_) in bots.drain() {
+            let _ = terminate_local_bot(&mut proc_.child);
+        }
+    }
+    clear_update_source(app);
+}
+
 #[tauri::command]
 fn stop_local_bot(app: AppHandle, bot_id: String) -> Result<(), String> {
     let id = safe_bot_id(&bot_id)?;
@@ -1851,6 +1872,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .register_uri_scheme_protocol(UI_SCHEME, |ctx, request| serve_ui(&ctx.app_handle().clone(), &request))
         .manage(Startup::default())
         .manage(LocalBots::default())
@@ -1864,10 +1886,14 @@ fn main() {
             stop_local_bot,
             local_bot_status,
             approve_local_directory,
-            allow_seat_desktop
+            allow_seat_desktop,
+            self_update::desktop_update_status,
+            self_update::desktop_update_check,
+            self_update::desktop_update_install
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            handle.manage(self_update::SelfUpdate::new(handle.package_info().version.to_string()));
             install_menu(&handle)?;
             // 存过地址、且那台机器现在敲得开，才直接进去。敲不开就回设置屏，并且把
             // 敲门的结果原样摆在上面。
@@ -1887,11 +1913,7 @@ fn main() {
         .expect("Satuwork 桌面壳起不来")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                if let Ok(mut bots) = app.state::<LocalBots>().0.lock() {
-                    for (_, mut proc_) in bots.drain() {
-                        let _ = terminate_local_bot(&mut proc_.child);
-                    }
-                }
+                stop_all_local_bots(app);
             }
         })
 }
