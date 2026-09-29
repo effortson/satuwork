@@ -60,6 +60,33 @@ const toolDraft = channelDraft([
   // 参数和结果可能含敏感内容，只能展示名称和状态。
   { type: 'tool/result', data: { turn: 8, step: 2, callId: 'orphan', text: '不能露出来的结果', failed: false } },
 ], 'update-tools')
+/**
+ * 草稿**只往后长**：按事件一条一条喂进来，每喂一条算一帧，每一帧都要以上一帧开头——
+ * 不是的话 Telegram 客户端会从分叉处重播打字动画（「前面那段一遍遍重打」）。
+ * 序列覆盖以前出问题的那几个点：工具之后下一步的正文、工具状态从调用中变成完成、
+ * 一步收口的完整消息、不流式只落完整消息的一步。
+ */
+const growEvents = [
+  { type: 'user/message', data: { source: { kind: 'plugin', plugin: 'channel', form: 'update-grow' } } },
+  { type: 'turn/start', data: { turn: 9 } },
+  { type: 'assistant/chunk', data: { turn: 9, step: 1, chunk: { type: 'text-delta', text: '我先' } } },
+  { type: 'assistant/chunk', data: { turn: 9, step: 1, chunk: { type: 'text-delta', text: '查一下。\n' } } },
+  { type: 'assistant/message', data: { turn: 9, step: 1, message: { content: [{ type: 'text', text: '我先查一下。\n' }] } } },
+  { type: 'tool/call', data: { turn: 9, step: 1, callId: 'c1', name: 'web_search', arguments: '{"q":"秘密"}' } },
+  { type: 'tool/call', data: { turn: 9, step: 1, callId: 'c2', name: 'web_extract', arguments: '{}' } },
+  { type: 'tool/result', data: { turn: 9, step: 1, callId: 'c1', text: '结果', failed: false } },
+  { type: 'tool/result', data: { turn: 9, step: 1, callId: 'c2', text: '超时', failed: true } },
+  { type: 'assistant/chunk', data: { turn: 9, step: 2, chunk: { type: 'text-delta', text: '\n\n找到了三条' } } },
+  { type: 'assistant/chunk', data: { turn: 9, step: 2, chunk: { type: 'text-delta', text: '，整理中' } } },
+  // 收口时改了措辞（不以已接上的 delta 开头）：不能回头改已经发出去的那几个字。
+  { type: 'assistant/message', data: { turn: 9, step: 2, message: { content: [{ type: 'text', text: '找到三条，整理中。' }] } } },
+  { type: 'tool/call', data: { turn: 9, step: 2, callId: 'c3', name: 'write_file', arguments: '{}' } },
+  { type: 'tool/result', data: { turn: 9, step: 2, callId: 'c3', text: 'ok', failed: false } },
+  // 不流式的一步：只落一条完整消息，整段接上。
+  { type: 'assistant/message', data: { turn: 9, step: 3, message: { content: [{ type: 'text', text: '报告写好了。' }] } } },
+]
+const growFrames = growEvents.map((_, i) => channelDraft(growEvents.slice(0, i + 1), 'update-grow').trim())
+const growBroken = growFrames.findIndex((frame, i) => i > 0 && !frame.startsWith(growFrames[i - 1]))
 const files = channelFiles([
   { type: 'user/message', data: { source: { kind: 'plugin', plugin: 'channel', form: 'update-7' } } },
   { type: 'turn/start', data: { turn: 7 } },
@@ -96,6 +123,8 @@ const open = todoFixture([
 const openCleared = await clearSettledTodos(open.ctx, 'session-2', 'channel:update-next')
 
 console.log('__RESULT__' + JSON.stringify({
+  growFrames,
+  growBroken,
   commands: [channelCommand('/new'), channelCommand('/new@satuwork_bot'), channelCommand('/tasks'), channelCommand('/mentions')],
   parsed,
   ambiguous,
