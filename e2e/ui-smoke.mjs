@@ -2272,6 +2272,39 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(direct()?.token === 'sat_v2', `直连该换成新票：${JSON.stringify(direct())}`)
     })
 
+    await test('工具痕迹收进折叠框：默认收着，标题说正在执行什么，最多摊开 5 行', async () => {
+      /**
+       * 一轮十几次调用摊成一排药丸，会把产出文件挤到好几行之后；可「它现在在干什么」是人
+       * 盯着看的那一句。所以收进 <details>（默认不 open），标题就是那一句。
+       */
+      const ui = loadApp({ appPath, base: gwBase, token: 'jwt' })
+      const run = { name: 'terminal', args: JSON.stringify({ command: 'pnpm   install\n--frozen-lockfile' }), result: null }
+      const ok = { name: 'mcp_google_d_default_create_folder_7ca6', args: '{}', result: 'ok' }
+      const bad = { name: 'mcp_google_d_default_create_file_from_text_55c5', args: '{"name":"a.md"}', result: 'x', failed: true }
+
+      let html = ui.toolFoldHtml([ok, run], [])
+      assert(html.startsWith('<details class="sw-toolfold"') && !/<details[^>]*\sopen/.test(html), '该是默认收着的 <details>')
+      assert(html.includes('data-state="running"'), '有还在跑的调用时整框该标 running')
+      assert(html.includes('正在执行 terminal · pnpm install --frozen-lockfile'), `标题该是正在执行的那条命令：${html.slice(0, 400)}`)
+      assert((html.match(/sw-toolchip/g) || []).length === 2, '展开后该是原来那两颗药丸')
+
+      html = ui.toolFoldHtml([ok, bad, ok], [])
+      assert(html.includes('data-state="error"'), '跑完有失败时整框该标 error')
+      assert(html.includes('3 次工具调用') && html.includes('1 次失败') && html.includes('最后一次 mcp_google_d_default_create_folder_7ca6'), `跑完的标题不对：${html.slice(0, 400)}`)
+
+      // 已有结论的确认也收在框里，接在工具后面数（data-i，悬浮窗靠它接回节点）
+      const settled = [{ callId: 'c1', tool: 'mcp_x', state: 'approved', args: '{}' }]
+      html = ui.toolFoldHtml([ok], settled)
+      assert(html.includes('sw-approvalchip') && html.includes('data-i="1"'), '确认药丸该收进框里、下标接在工具后面')
+
+      // 「最多 5 行」写在两处：JS 的 TOOLFOLD_ROWS 和 CSS 的 max-height。钉住它们说的是同一个数。
+      assert(ui.TOOLFOLD_ROWS === 5 && html.includes('data-rows="5"'), 'TOOLFOLD_ROWS 该是 5')
+      const css = readFileSync(join(root, 'gateway/ui/chat.css'), 'utf8')
+      const m = /\.sw-toolfold-list \{[^}]*max-height: calc\((\d+) \* 24px \+ (\d+) \* 4px/.exec(css)
+      assert(m && Number(m[1]) === 5 && Number(m[2]) === 4, `chat.css 的 max-height 和 TOOLFOLD_ROWS 对不上：${m && m[0]}`)
+      assert(/\.sw-toolfold-list \{[^}]*overflow-y: auto/.test(css), '超过 5 行该在框里滚')
+    })
+
     await test('Bot 设置页画出这颗 Bot 跑的是哪一版：远程看席位，本地看壳子', async () => {
       /**
        * 「这颗 Bot 现在是哪一版」以前只有机器页和审计页上看得到，员工自己的设置页上没有；
