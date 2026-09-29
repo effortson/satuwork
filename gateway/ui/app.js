@@ -1588,6 +1588,15 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  // ── Desktop 壳自己的升级（shell.js 的 desktopUpdate*）──────────────
+  if (act === 'desktop-update-install') {
+    await installDesktopUpdate()
+    return
+  }
+  if (act === 'desktop-update-check') {
+    await checkDesktopUpdate(true)
+    return
+  }
   if (act === 'rail') {
     state.rail = !state.rail
     render()
@@ -2966,6 +2975,8 @@ function foldDownload() {
 }
 
 async function boot() {
+  // 桌面壳的升级跟谁登录无关，登录页上也要能提示（见 shell.js 的 startDesktopUpdateWatch）。
+  startDesktopUpdateWatch()
   if (location.pathname === '/costs') history.replaceState({}, '', '/billing')
   state.path = pathOf()
   if (state.path.startsWith('/join/')) {

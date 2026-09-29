@@ -267,6 +267,9 @@ function appView() {
             : ''
         }
       </div>
+      ${/* 桌面端有新版本时亮在这里：沉在底部、紧挨着自己的头像，是「这台电脑上的应用」的事，
+            不是哪颗 Bot 的事。没有新版时槽是空的，不占高度。 */ ''}
+      ${desktopUpdateSlot('side')}
       ${/* box-sizing 必须写死：侧栏是 border-box，这一行不写就按 content-box 算，
             宽度比容器多出左右内边距，齿轮会顶出侧栏外沿。 */ ''}
       <div class="satu-userrow" style="display: flex; align-items: center; gap: var(--space-2); box-sizing: border-box; width: 100%; padding: var(--space-3); margin-top: var(--space-2); border-top: 1px solid var(--color-divider);">

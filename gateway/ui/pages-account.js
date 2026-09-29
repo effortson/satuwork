@@ -749,10 +749,12 @@ function profilePage() {
           </p>
         </div>
 
-        ${/* 登录之后唯一的下载入口：首页那一段只给没登录的人看。桌面壳里不给——人已经在桌面端里了。 */ ''}
+        ${/* 登录之后唯一的下载入口：首页那一段只给没登录的人看。桌面壳里换成当前版本和「检查更新」。 */ ''}
         ${
           desktopShell()
-            ? ''
+            ? desktopUpdateBridge()
+              ? `<div class="satu-panel" data-desktop-update="profile">${desktopUpdateInner('profile')}</div>`
+              : ''
             : `<div class="satu-panel">
           <span class="satu-panel-title">${t('桌面端', 'Desktop app')}</span>
           <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">

@@ -16,8 +16,17 @@
 # 断言照过，`--clobber` 就拿 develop 的代码把正式 Release 的安装包盖了；tag 不存在时
 # `gh release create` 还会在默认分支 HEAD 上新建一个。注意 workflow 文件本身仍取自所选分支。
 #
-# 不传 Gateway：Desktop 壳没有自动更新（见 desktop/README.md「还没做的事」），装的人
-# 是从首页的下载那一段拿包。本地 Bot 运行时是另一条线（local-bot-release.yml）。
+# 不传 Gateway。装过的桌面端自己升级（desktop/src-tauri/src/self_update.rs）：它去问
+# `desktop-latest` 里那份 `latest.json`，照里面的地址从 `desktop-v<版本>` 取升级包、验签、装。
+# 所以每次构建还要多出两样东西：
+# - **升级包和签名**：macOS 是 `.app.tar.gz`，Windows 就是那个 setup.exe 本身；签名用的是
+#   secret 里的 TAURI_SIGNING_PRIVATE_KEY（+ _PASSWORD），公钥在 tauri.conf.json 的
+#   plugins.updater.pubkey。**两边是一对**，换钥匙要一起换，而且换了之后旧壳验不过新包，
+#   只能手动重装一次。私钥丢了同理。
+# - **latest.json**：release job 拿三份签名拼出来，传到这一版的 Release；sync-latest 再把最新
+#   正式版的那份同步到 desktop-latest。里面的下载地址指向 `desktop-v<版本>`（不变的那份），
+#   不指 desktop-latest（那边的包每次发版都会被换掉）。
+# 本地 Bot 运行时是另一条线（local-bot-release.yml）。
 #
 # **没有签名和公证**：下载来的 .app 会被 Gatekeeper 拦（「已损坏」），Windows 会弹 SmartScreen。
 # 要发给外人之前得先有证书。
@@ -83,15 +92,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macOS 要 app 这一档才会出升级包（.app.tar.gz），dmg 给首次安装。
           - os: macos
             arch: arm64
             tauri_arch: aarch64
-            bundle: dmg
+            bundle: app,dmg
             runner: macos-14
           - os: macos
             arch: x64
             tauri_arch: x64
-            bundle: dmg
+            bundle: app,dmg
             runner: macos-15-intel
           - os: windows
             arch: x64
@@ -160,33 +170,51 @@ jobs:
       - name: 准备 UI
         run: pnpm --filter satuwork-desktop prepare:ui
 
-      # macOS 用 dmg，Windows 用 nsis。
+      # macOS 用 dmg（外加升级用的 app），Windows 用 nsis。
+      #
+      # createUpdaterArtifacts 只在这里用 --config 打开，不写进 tauri.conf.json：写进去的话本地
+      # `pnpm build` 没有私钥就出不了包，而本地包本来也不走自动升级。
       - name: 打包
-        run: pnpm --filter satuwork-desktop exec tauri build --bundles ${{ matrix.bundle }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || {
+            echo "没有 TAURI_SIGNING_PRIVATE_KEY：出不了升级包，装过的桌面端收不到这一版" >&2; exit 1; }
+          pnpm --filter satuwork-desktop exec tauri build --bundles ${{ matrix.bundle }} \
+            --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
+      # 安装包、升级包、升级包的签名收进 out/，名字统一带版本和架构。macOS 的升级包 Tauri 起名
+      # 就叫 Satuwork.app.tar.gz、两个架构同名，不改名的话合进同一个 Release 会互相覆盖。
       - name: 核对产物
-        id: artifact
         run: |
           set -euo pipefail
-          shopt -s nullglob
           v=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
-          if [ "${{ matrix.os }}" = "macos" ]; then
-            f="desktop/src-tauri/target/release/bundle/dmg/Satuwork_${v}_${{ matrix.tauri_arch }}.dmg"
-          else
-            f="desktop/src-tauri/target/release/bundle/nsis/Satuwork_${v}_${{ matrix.tauri_arch }}-setup.exe"
-          fi
-          [ -f "$f" ] || {
-            echo "没有 $f，实际目录内容：" >&2
-            ls -la "desktop/src-tauri/target/release/bundle/${{ matrix.bundle }}" >&2 || true
-            exit 1
+          a="${{ matrix.tauri_arch }}"
+          b=desktop/src-tauri/target/release/bundle
+          mkdir -p out
+          take() {
+            [ -f "$1" ] || {
+              echo "没有 $1，实际目录内容：" >&2
+              ls -la "$(dirname "$1")" >&2 || true
+              exit 1
+            }
+            cp "$1" "out/$2"
           }
-          ls -l "$f"
-          echo "path=$f" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.os }}" = "macos" ]; then
+            take "$b/dmg/Satuwork_${v}_${a}.dmg"        "Satuwork_${v}_${a}.dmg"
+            take "$b/macos/Satuwork.app.tar.gz"         "Satuwork_${v}_${a}.app.tar.gz"
+            take "$b/macos/Satuwork.app.tar.gz.sig"     "Satuwork_${v}_${a}.app.tar.gz.sig"
+          else
+            take "$b/nsis/Satuwork_${v}_${a}-setup.exe"     "Satuwork_${v}_${a}-setup.exe"
+            take "$b/nsis/Satuwork_${v}_${a}-setup.exe.sig" "Satuwork_${v}_${a}-setup.exe.sig"
+          fi
+          ls -l out
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.os }}-${{ matrix.arch }}
-          path: ${{ steps.artifact.outputs.path }}
+          path: out/*
           retention-days: 14
 
   release:
@@ -216,6 +244,31 @@ jobs:
           now=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$target_tag" --jq .sha)
           [ "$now" = "$WANT_SHA" ] || {
             echo "tag $target_tag 现在指向 $now，构建用的是 $WANT_SHA：tag 被挪过，不发" >&2; exit 1; }
+
+          # 升级清单。签名是 .sig 文件的**内容**（Tauri 只认内容，不认路径）；三个平台缺一个都不发——
+          # 插件会先校验整份文件，任何一个平台不完整，所有平台都查不到更新。
+          v="${target_tag#desktop-v}"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$target_tag"
+          V="$v" BASE="$base" NOTE="${NOTE:-}" node -e '
+            const fs = require("fs")
+            const { V, BASE, NOTE } = process.env
+            const plat = {
+              "darwin-aarch64": `Satuwork_${V}_aarch64.app.tar.gz`,
+              "darwin-x86_64": `Satuwork_${V}_x64.app.tar.gz`,
+              "windows-x86_64": `Satuwork_${V}_x64-setup.exe`,
+            }
+            const platforms = {}
+            for (const [key, file] of Object.entries(plat)) {
+              const sig = fs.readFileSync(`dist/${file}.sig`, "utf8").trim()
+              if (!sig || !fs.existsSync(`dist/${file}`)) throw new Error(`${key} 缺包或缺签名`)
+              platforms[key] = { signature: sig, url: `${BASE}/${file}` }
+            }
+            const manifest = { version: V, notes: NOTE, pub_date: new Date().toISOString().replace(/\.\d+Z$/, "Z"), platforms }
+            fs.writeFileSync("dist/latest.json", JSON.stringify(manifest, null, 2) + "\n")
+          '
+          # 签名已经进了 latest.json，不另挂到 Release 上。
+          rm -f dist/*.sig
+          cat dist/latest.json
 
           if [ -n "${NOTE:-}" ]; then
             printf '%s\n' "$NOTE" > notes.md
@@ -303,10 +356,17 @@ jobs:
           exists=false
           if gh release view desktop-latest --repo "$repo" >/dev/null 2>&1; then exists=true; fi
 
+          # 那一版有没有升级清单。接入自动升级之前发的版本没有，那时 desktop-latest 也不放。
+          has_manifest=false
+          if [ -n "$(gh api "repos/$repo/releases/tags/desktop-v${newest}" --jq '.assets[] | select(.name == "latest.json") | .id')" ]; then
+            has_manifest=true
+          fi
+
           # 已经对齐了就别再搬三百兆：标题是最后一步才改的，标题对上说明上一次整套换完了。
           if $exists && [ "$(gh release view desktop-latest --repo "$repo" --json name --jq .name)" = "$title" ] \
             && [ -n "$(asset_id Satuwork_x64-setup.exe)" ] && [ -n "$(asset_id Satuwork_aarch64.dmg)" ] \
-            && [ -n "$(asset_id Satuwork_x64.dmg)" ]; then
+            && [ -n "$(asset_id Satuwork_x64.dmg)" ] \
+            && { ! $has_manifest || [ -n "$(asset_id latest.json)" ]; }; then
             move_tag
             echo "desktop-latest 已经是 desktop-v${newest}，不用再传"
             exit 0
@@ -322,6 +382,11 @@ jobs:
           mv "src/Satuwork_${newest}_x64-setup.exe" latest/Satuwork_x64-setup.exe
           mv "src/Satuwork_${newest}_aarch64.dmg"   latest/Satuwork_aarch64.dmg
           mv "src/Satuwork_${newest}_x64.dmg"       latest/Satuwork_x64.dmg
+          # 装过的桌面端问的就是这一份（tauri.conf.json 的 plugins.updater.endpoints）。里面的
+          # 地址指向 desktop-v<版本>，原样搬过来，不用改。
+          if $has_manifest; then
+            gh release download "desktop-v${newest}" --repo "$repo" --dir latest --pattern latest.json
+          fi
 
           {
             echo "Satuwork 桌面端的**最新版**，当前是 desktop-v${newest}。"

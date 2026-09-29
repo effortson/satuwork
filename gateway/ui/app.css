@@ -164,6 +164,40 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 .satu-newbot:hover { color: var(--color-text); border-color: var(--color-text); }
 .satu-rail .satu-newbot { justify-content: center; }
 .satu-rail .satu-newbot span { display: none; }
+/* ── 桌面端有新版本（shell.js 的 desktopUpdateInner）──────────────────
+   沉在侧栏底部、头像那一行上面。实心的强调色底：它是这一栏里唯一一条「要你去点」的东西，
+   跟虚线的「新建 Bot」、灰色的导航都不一样。空槽不占高度。 */
+.satu-dupdate-slot:empty { display: none; }
+.satu-dupdate-slot { flex: none; margin-top: var(--space-2); }
+.satu-dupdate {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+}
+button.satu-dupdate { cursor: pointer; }
+button.satu-dupdate:hover { background: color-mix(in srgb, var(--primary) 16%, transparent); }
+.satu-dupdate-icon { flex: none; display: flex; color: var(--primary); }
+.satu-dupdate-text { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; line-height: 1.25; }
+.satu-dupdate-text strong { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.satu-dupdate-text small { font-size: 11px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.satu-dupdate-text small[data-error="true"] { color: var(--color-accent-700); }
+.satu-dupdate-bar { display: block; height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--primary) 18%, transparent); overflow: hidden; }
+.satu-dupdate-bar i { display: block; height: 100%; background: var(--primary); border-radius: inherit; transition: width .3s ease; }
+.satu-dupdate-bar[data-indeterminate="true"] i { animation: satu-dupdate-slide 1.2s ease-in-out infinite; }
+@keyframes satu-dupdate-slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+/* 窄栏只剩图标，居中；字藏掉，悬停看 title。 */
+.satu-rail .satu-dupdate { justify-content: center; padding: 8px 0; }
+.satu-rail .satu-dupdate-text { display: none; }
+
 /* 「新建 Bot」和它右边那颗「更多」并排一行。
    **position: relative 是给弹出菜单当锚的**（.satu-menu 是 absolute）：少了它，菜单
    会跑去贴最近的定位祖先，在这一列里就是整个视口。 */

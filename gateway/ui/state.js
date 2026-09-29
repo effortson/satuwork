@@ -19,6 +19,8 @@ const state = {
    * 要改成记住，改的是这里的取值来源，不是上面那条 `!== false`。
    */
   navGroupOpen: { company: false },
+  /** Desktop 壳的升级状态（self_update.rs 的 UpdateView）。浏览器里永远是 null，见 shell.js 的 desktopUpdateBridge。 */
+  desktopUpdate: null,
   busy: false,
   loginError: '',
   loginEmail: '',
