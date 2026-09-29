@@ -271,6 +271,7 @@ textarea.satu-code { background: var(--popover); color: var(--color-text); borde
 .satu-dot { width: 7px; height: 7px; flex: none; border-radius: 999px; background: var(--color-neutral-400); }
 .satu-dot[data-on="true"] { background: var(--color-accent-2-600); }
 .satu-iconpick { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex: none; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--popover); color: var(--secondary-foreground); cursor: pointer; }
+.satu-iconpick[data-act="bot-icon"], .satu-iconpick[data-act="new-bot-icon"] { border-radius: 12px; }
 .satu-iconpick:disabled { cursor: default; opacity: 0.55; }
 .satu-iconpick:hover { background: var(--secondary); color: var(--color-text); }
 .satu-iconpick[aria-pressed="true"] { border-color: var(--color-accent-400); background: var(--color-accent-100); color: var(--color-accent-800); }

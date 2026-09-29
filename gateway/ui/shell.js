@@ -82,7 +82,7 @@ function authAside(
     <div class="satu-authside">
       <div style="position: absolute; top: -60px; right: -60px; width: 220px; height: 220px; border-radius: 50%; background: var(--color-accent-2-200); opacity: 0.6;"></div>
       <div style="position: relative; width: 100%; max-width: 440px; display: flex; align-items: center; gap: var(--space-2);">
-        <img src="/assets/satuwork-logo.png" alt="Satuwork" style="width: 34px; height: 34px; border-radius: 999px;">
+        <img src="/assets/satuwork-logo.png" alt="Satuwork" style="width: 34px; height: 34px; border-radius: 10px;">
         <span style="font-family: var(--font-heading); font-size: 20px;">Satuwork</span>
       </div>
       <div style="position: relative; width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: var(--space-4);">

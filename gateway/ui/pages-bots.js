@@ -717,7 +717,7 @@ function myBotPage(bot, a) {
   const iconPick = avatarKeysFor('company').map((key) => {
     const on = a.icon === key
     const label = t(BOT_AVATARS[key]?.label || key)
-    return `<button type="button" class="satu-iconpick" aria-pressed="${String(on)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="bot-icon" data-icon="${esc(key)}">${botAvatar(key, 30, 'company')}</button>`
+    return `<button type="button" class="satu-iconpick" aria-pressed="${String(on)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="bot-icon" data-icon="${esc(key)}">${botAvatar(key, 34, 'company')}</button>`
   }).join('')
   const base = { ...a, prompt: state.template?.prompt || '', skills: state.template?.skills || [], mcps: state.template?.mcps || [] }
   return `
@@ -789,7 +789,7 @@ function fullBotPage(bot, a) {
   const iconPick = avatarKeysFor(bot.origin).map((key) => {
     const on = a.icon === key
     const label = t(BOT_AVATARS[key]?.label || key)
-    return `<button type="button" class="satu-iconpick" aria-pressed="${String(on)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="bot-icon" data-icon="${esc(key)}" ${ro ? 'disabled' : ''}>${botAvatar(key, 30, bot.origin)}</button>`
+    return `<button type="button" class="satu-iconpick" aria-pressed="${String(on)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="bot-icon" data-icon="${esc(key)}" ${ro ? 'disabled' : ''}>${botAvatar(key, 34, bot.origin)}</button>`
   }).join('')
   const roNote = bot.legacy
     ? t('这个 Bot 建于 Bot 模版之前，已经停用。公司的底座现在在「Bot 模版」那一页。', 'This bot predates the company template and is disabled. The company base now lives on the Bot template page.')
@@ -872,7 +872,7 @@ function newBotModal() {
   if (!f) return ''
   const icons = avatarKeysFor('company').map((key) => {
     const label = t(BOT_AVATARS[key]?.label || key)
-    return `<button type="button" class="satu-iconpick" aria-pressed="${String(f.icon === key)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="new-bot-icon" data-icon="${esc(key)}">${botAvatar(key, 30, 'company')}</button>`
+    return `<button type="button" class="satu-iconpick" aria-pressed="${String(f.icon === key)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="new-bot-icon" data-icon="${esc(key)}">${botAvatar(key, 34, 'company')}</button>`
   }).join('')
   const version = state.template?.version
   return `<div class="gw-modal-backdrop" data-act="new-bot-close">

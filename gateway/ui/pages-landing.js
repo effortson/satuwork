@@ -223,6 +223,7 @@ function lpDemos() {
   return [
     {
       id: 'support',
+      icon: 'c-chat',
       name: t('小满 · 客服', 'Mia · Support'),
       role: t('客服席位', 'Support seat'),
       snip: t('3 封工单回完了', '3 tickets answered'),
@@ -241,6 +242,7 @@ function lpDemos() {
     },
     {
       id: 'ops',
+      icon: 'c-flow',
       name: t('阿橙 · 运营', 'Orin · Ops'),
       role: t('运营席位', 'Ops seat'),
       snip: t('昨夜的对账好了', 'Reconciliation done'),
@@ -258,6 +260,7 @@ function lpDemos() {
     },
     {
       id: 'research',
+      icon: 'c-book',
       name: t('小雨 · 研究', 'Yu · Research'),
       role: t('研究席位', 'Research seat'),
       snip: t('在等人接手', 'Needs a human'),
@@ -288,9 +291,9 @@ function lpDemoAt() {
  * 一条消息。**照着真界面那条来**（chat.css 的 .sw-msg）：头像在外，气泡和时间在一列
  * 里，人说的那一侧整行反过来。这三样任缺一样，它就从「一条对话」退回成「两个方块」。
  */
-function lpDemoMsg(m, who) {
+function lpDemoMsg(m, icon) {
   return `<div class="satu-lp-msg" data-role="${m.me ? 'user' : 'assistant'}">
-    <span class="satu-lp-face">${esc(m.me ? t('我', 'Me') : who)}</span>
+    <span class="satu-lp-face"${m.me ? '' : ' data-bot="1"'}>${m.me ? esc(t('我', 'Me')) : botAvatar(icon, 32, 'company')}</span>
     <div class="satu-lp-col">
       <div class="satu-lp-bubble" data-role="${m.me ? 'user' : 'assistant'}">
         <span>${esc(m.text)}</span>
@@ -313,9 +316,8 @@ function lpDemoMsg(m, who) {
  */
 function lpDemoPane() {
   const d = lpDemoAt()
-  const who = d.name.slice(0, 1)
   return `<div class="satu-lp-convohead">
-      <span class="satu-lp-face" data-big>${esc(who)}</span>
+      <span class="satu-lp-face" data-big data-bot="1">${botAvatar(d.icon, 34, 'company')}</span>
       <span class="satu-lp-convoid">
         <b>${esc(d.name)}</b>
         <span>${esc(d.role)}</span>
@@ -323,7 +325,7 @@ function lpDemoPane() {
       <span class="satu-lp-live" data-state="${esc(d.state)}"><i></i>${esc(d.live)}</span>
     </div>
     <div class="satu-lp-thread">
-      ${d.turns.map((m) => lpDemoMsg(m, who)).join('')}
+      ${d.turns.map((m) => lpDemoMsg(m, d.icon)).join('')}
       ${
         d.handoff
           ? `<div class="satu-lp-handoff">${svg(LP_ICONS.handoff, 14)}<span>${esc(d.handoff)}</span></div>`
@@ -379,7 +381,7 @@ function lpShot() {
         ${/* 名字在窄屏上是 display:none 的（见 app.css 的 560 那段），光靠可见文字的话
               手机上这三颗就是三个没有名字的按钮。名字写在 aria-label 上，藏不藏都在。 */ ''}
         aria-label="${esc(d.name)}">
-        <span class="satu-lp-shotface">${esc(d.name.slice(0, 1))}</span>
+        <span class="satu-lp-shotface" data-bot="1">${botAvatar(d.icon, 30, 'company')}</span>
         <span class="satu-lp-shottext">
           <span class="satu-lp-shotname"><i class="satu-lp-shotdot" data-state="${d.state}"></i><b>${esc(d.name)}</b></span>
           <span class="satu-lp-shotsnip">${esc(d.snip)}</span>
@@ -812,7 +814,7 @@ function landingView() {
             得到右沿（见 app.css 的 .satu-lp-topin）。 */ ''}
       <div class="satu-lp-wrap satu-lp-topin">
         <button type="button" class="satu-lp-brand" data-act="go" data-href="/">
-          <img src="/assets/satuwork-logo.png" alt="Satuwork" width="28" height="28">
+          <img class="satu-lp-home-logo" src="/assets/satuwork-logo.png" alt="Satuwork" width="40" height="40">
           <span>Satuwork</span>
         </button>
         <div class="satu-lp-topact">

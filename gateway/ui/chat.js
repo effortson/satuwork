@@ -7039,7 +7039,7 @@ function chatHeadInline() {
           <button type="button" class="satu-menuitem" data-act="chat-export">${t('导出 Markdown')}</button>
         </div>`
       : ''
-  return `<div class="sw-convo-avatar" aria-hidden="true">${ICON_BOT}</div>
+  return `<div class="sw-convo-avatar" data-bot="${bot ? '1' : '0'}" aria-hidden="true">${bot ? botAvatar(bot.icon, 34, bot.origin) : ICON_BOT}</div>
     <div class="sw-convo-id">
       <div class="sw-convo-title">
         <span class="sw-convo-name">${esc(name)}</span>
