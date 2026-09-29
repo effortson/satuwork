@@ -145,6 +145,33 @@ fn server_file(app: &AppHandle) -> Option<PathBuf> {
         .map(|dir| dir.join("server.txt"))
 }
 
+/** 正式发布包连的 Gateway。 */
+const DEFAULT_SERVER: &str = "https://satuwork.com";
+
+/**
+ * 服务器地址锁死：**正式发布包不让填、不让换**，固定连 DEFAULT_SERVER；只有 debug 构建
+ * （`tauri dev`，本地测试）才有「连接到 Gateway」那一屏和菜单里的「切换服务器…」。
+ */
+fn server_locked() -> bool {
+    !cfg!(debug_assertions)
+}
+
+/**
+ * 这次连哪儿。`SATUWORK_SERVER` 两种构建都认（排查用，不写盘）；再往下：
+ * 锁死时是 DEFAULT_SERVER，存在磁盘上的老地址（0.1.2 及之前用户填过的）一律不看；
+ * 没锁时是用户存过的，没有就是 None，交给设置屏去问。
+ * 拆成纯函数是为了能不起应用就把这条规则钉住。
+ */
+fn pick_server(locked: bool, from_env: Option<&str>, saved: Option<&str>) -> Option<String> {
+    let fallback = if locked { Some(DEFAULT_SERVER) } else { saved };
+    [from_env, fallback]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /**
  * 这次该连哪儿。
  *
@@ -152,19 +179,9 @@ fn server_file(app: &AppHandle) -> Option<PathBuf> {
  * 存着的那个地址。
  */
 fn read_server(app: &AppHandle) -> Option<String> {
-    if let Ok(from_env) = std::env::var("SATUWORK_SERVER") {
-        let s = from_env.trim().to_string();
-        if !s.is_empty() {
-            return Some(s);
-        }
-    }
-    let raw = fs::read_to_string(server_file(app)?).ok()?;
-    let s = raw.trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
+    let from_env = std::env::var("SATUWORK_SERVER").ok();
+    let saved = server_file(app).and_then(|path| fs::read_to_string(path).ok());
+    pick_server(server_locked(), from_env.as_deref(), saved.as_deref())
 }
 
 fn write_server(app: &AppHandle, url: &str) -> Result<(), String> {
@@ -637,6 +654,12 @@ fn open_setup(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/** 设置页据此决定要不要画输入框：锁死时只剩「连不上的原因」和「重试」。 */
+#[tauri::command]
+fn server_is_locked() -> bool {
+    server_locked()
+}
+
 #[tauri::command]
 fn current_server(app: AppHandle) -> String {
     read_server(&app).unwrap_or_default()
@@ -656,13 +679,21 @@ fn startup_error(app: AppHandle) -> String {
  */
 #[tauri::command]
 async fn connect(app: AppHandle, url: String) -> Result<(), String> {
+    // 锁死时页面上没有输入框，这里也不认页面传来的地址——「重试」就是重连默认那台。
+    let url = if server_locked() {
+        read_server(&app).ok_or("没有可连的服务器")?
+    } else {
+        url
+    };
     let parsed = normalize(&url)?;
     // 敲门每个地址最多等 3 秒，放进阻塞线程池：同步命令在主线程上，等的这几秒窗口全冻住。
     let probe = parsed.clone();
     tauri::async_runtime::spawn_blocking(move || reachable(&probe))
         .await
         .map_err(|e| e.to_string())??;
-    write_server(&app, parsed.as_str())?;
+    if !server_locked() {
+        write_server(&app, parsed.as_str())?;
+    }
     // 在 async 命令里建窗口没问题；同步命令里建，Windows 上会死锁（见 build_window）。
     open_main(&app, parsed).map_err(|e| e.to_string())?;
     if let Some(win) = app.get_webview_window(SETUP) {
@@ -1776,6 +1807,10 @@ fn revoke_local_directory(app: AppHandle, bot_id: String, path: String) -> Resul
  */
 fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::default(app)?;
+    if server_locked() {
+        app.set_menu(menu)?;
+        return Ok(());
+    }
     let switch = MenuItem::with_id(app, SWITCH_ITEM, "切换服务器…", true, None::<&str>)?;
     let submenu = Submenu::with_items(app, "服务器", true, &[&switch])?;
     menu.append(&submenu)?;
@@ -1808,7 +1843,7 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
 mod tests {
     use super::{
         desktop_version_supports, is_seat_desktop, is_ui_origin, list_approved, open_path_allowed,
-        origin_key, revoke_approved, runtime_older, safe_runtime_version, safe_ui_segment,
+        origin_key, pick_server, revoke_approved, runtime_older, safe_runtime_version, safe_ui_segment,
         seat_desktop_allowed,
     };
     use std::collections::HashSet;
@@ -1816,6 +1851,29 @@ mod tests {
 
     fn u(s: &str) -> Url {
         Url::parse(s).unwrap()
+    }
+
+    /// 正式包固定连默认地址，存过的老地址不看；本地测试按 环境变量 > 存过的，没有就 None。
+    #[test]
+    fn server_locked_ignores_saved_address() {
+        let d = Some("https://satuwork.com");
+        assert_eq!(pick_server(true, None, Some("http://old")).as_deref(), d);
+        assert_eq!(pick_server(true, None, None).as_deref(), d);
+        assert_eq!(pick_server(true, Some("  "), None).as_deref(), d);
+        assert_eq!(
+            pick_server(true, Some("http://e"), Some("http://old")).as_deref(),
+            Some("http://e")
+        );
+        assert_eq!(
+            pick_server(false, Some("http://e"), Some("http://s")).as_deref(),
+            Some("http://e")
+        );
+        assert_eq!(
+            pick_server(false, None, Some(" http://s\n")).as_deref(),
+            Some("http://s")
+        );
+        assert_eq!(pick_server(false, None, Some("")), None);
+        assert_eq!(pick_server(false, None, None), None);
     }
 
     /// 外链暗号只在界面源和 Gateway 源上认（见 open_path_allowed）。
@@ -2017,6 +2075,7 @@ fn main() {
             current_server,
             startup_error,
             connect,
+            server_is_locked,
             start_local_bot,
             stop_local_bot,
             local_bot_status,
