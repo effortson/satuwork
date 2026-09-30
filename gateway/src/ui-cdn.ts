@@ -1,12 +1,13 @@
 /**
- * 界面按需从 CDN 拉的那几个库（KaTeX / highlight.js / Mermaid），以及 CSP 该放行到哪一层。
+ * 界面按需从 CDN 拉的那几个库（KaTeX / highlight.js / Mermaid，首页演示背景的 three.js），
+ * 以及 CSP 该放行到哪一层。
  *
  * **CSP 只放到包加版本那一级目录，不放整个 CDN 源。** jsdelivr 出的是任意 npm 包和 GitHub
  * 仓库：放行 `https://cdn.jsdelivr.net` 等于放行任何人发的任何脚本，XSS 注进来一句
  * `<script src=cdn.jsdelivr.net/npm/自己的包>` 就过了，那条头形同虚设。源表达式以 `/` 结尾时
  * 按前缀匹配，所以 `…/npm/mermaid@11.4.1/` 连它运行时再 import 的那些 chunk 一起放行。
  *
- * 这张表和 `gateway/ui/markdown.js` 的 `LIBS` 是一对：那边的每条路径都得落在这里某一项
+ * 这张表和 `gateway/ui/markdown.js` 的 `LIBS`（外加 `pages-landing.js` 的 `LP_THREE`）是一对：那边的每条路径都得落在这里某一项
  * 底下，这里的每一项那边都得用到；桌面端 `desktop/src-tauri/src/main.rs` 的 `UI_CSP` 是照
  * 这张表手抄的。三处由 e2e 的 markdown 那一组按源码核对，**改版本号三处一起改**（markdown.js
  * 那边还要换 SRI 摘要）。
@@ -15,6 +16,7 @@ export const UI_CDN_PACKAGES = [
   'katex@0.16.11',
   '@highlightjs/cdn-assets@11.10.0',
   'mermaid@11.4.1',
+  'three@0.170.0',
 ] as const
 
 /** jsdelivr 的 npm 根。markdown.js 里写死的默认值与此相同。 */
