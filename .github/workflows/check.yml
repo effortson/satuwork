@@ -105,3 +105,26 @@ jobs:
       - name: cargo check
         working-directory: desktop/src-tauri
         run: cargo check --locked
+
+  # Windows 单独一档，**跑 cargo test 而不只是 check**：main.rs 里有一整段只在 Windows 编译的
+  # 代码（本地 Bot 运行时解包时的 junction / 硬链接降级，见 unpack_links_windows），上面那档
+  # 在 Linux 上一行都编译不到。以前它要等发版流水线打 Windows 包才第一次被编译，坏了就是发版
+  # 当天才知道；那段的两条 Windows 单测（强制走降级、坏链接不留半个版本目录）也只有这里跑。
+  desktop-windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 分支，2026-09-03
+        with:
+          toolchain: stable
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: './desktop/src-tauri -> target'
+
+      - name: cargo test
+        working-directory: desktop/src-tauri
+        run: cargo test --locked
