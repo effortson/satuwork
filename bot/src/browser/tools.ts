@@ -72,12 +72,19 @@ export const inject = ['tools', 'browser']
 export function apply(ctx: Context) {
   const browser = ctx.browser
 
-  /** 每把工具都从这儿进：对话框挂着、页面被判定落错地方时，先把话说清楚。 */
-  const guarded = <T>(fn: (args: T, call: ToolCall) => Promise<ToolResult>) => {
+  /**
+   * 每把工具都从这儿进：对话框挂着、页面被判定落错地方时，先把话说清楚。
+   *
+   * `still`：这把工具不动页面（读快照、读正文、等文字）。不动页面的不作废上一步还在后台
+   * 等着拍的那张截图——页面还是那一页，让它接着拍；会动页面的一进门就作废它（见
+   * BrowserService.dropShot）。
+   */
+  const guarded = <T>(fn: (args: T, call: ToolCall) => Promise<ToolResult>, opts: { still?: boolean } = {}) => {
     return async (rawArgs: unknown, call: ToolCall): Promise<ToolResult> => {
       // 哪把工具能穿过哪条封锁，判据在 blockedNow 里——它知道每条封锁的出路是谁。
       const blocked = browser.blockedNow(call.name)
       if (blocked) return fail(blocked)
+      if (!opts.still) browser.dropShot()
       try {
         return await fn((rawArgs ?? {}) as T, call)
       } catch (e) {
@@ -117,14 +124,18 @@ export function apply(ctx: Context) {
    *
    * `action` 只是文件名里那一截（`…-click.jpg`），让人在工作区里一眼看出这张是哪一步。
    *
+   * **截图不 await。** 它要等页面画出来才拍（最多三秒），快照文字早就就绪了——挡在结果
+   * 前面的话，模型每次跳转都陪着多等两三秒。结果先交出去，这张在后台拍，拍完 agent 补一条
+   * `tool/shot`（见 ToolResult.pendingShot）。
+   *
    * 页面上的链接不走这里：它们跟着快照正文进模型的上下文（每条 link 行行尾带着自己
    * 的地址），由模型在回答里写成 markdown 链接——摆在回答底下的那一排和正文对不上号，
    * 「第七个视频是哪一颗」人得自己猜。见 agent 里 linkOutBlock 那段。
    */
-  const withTrace = async (text: string, call: ToolCall, action: string): Promise<ToolResult> => {
+  const withTrace = (text: string, call: ToolCall, action: string): ToolResult => {
     const files = browser.takeDownloads()
-    const shot = await browser.screenshot(call.sessionId, action, call.signal)
-    return { text, ...(files.length ? { files } : {}), ...(shot ? { shot } : {}) }
+    const pendingShot = browser.screenshot(call.sessionId, action, call.signal).catch(() => undefined)
+    return { text, ...(files.length ? { files } : {}), pendingShot }
   }
 
   ctx.tools.register({
@@ -169,7 +180,7 @@ export function apply(ctx: Context) {
       const snap = await browser.snapshot(a.full === true, call.signal)
       const cut = snap.truncated ? '\n…（元素太多，已截断。先点进更具体的页面，别指望在这一页上找全）' : ''
       return withTrace(`${snap.title || '（无标题）'}\n${page(snap.url, `${snap.body || '（这一页没有可操作的元素）'}${cut}`)}`, call, 'snapshot')
-    }),
+    }, { still: true }),
   })
 
   ctx.tools.register({
@@ -347,7 +358,7 @@ export function apply(ctx: Context) {
       const cut = total > MAX
       const shown = cut ? `${body.slice(0, MAX)}\n\n…（正文太长，这里只给了前 ${MAX} 字，共 ${total} 字。要看后面的给一个 ref 只读某一块，或者换一页更具体的）` : body
       return { text: page(String(got.url ?? ''), shown) }
-    }),
+    }, { still: true }),
   })
 
   ctx.tools.register({
@@ -386,7 +397,7 @@ export function apply(ctx: Context) {
       }
       // 等不到是**业务**结果，不是故障：模型要看到它并自己决定下一步。
       return { text: `等到超时也没等到（${wantText ? `出现「${wantText}」` : `「${goneText}」消失`}）。先 browser_snapshot 看一眼现在是什么状态。` }
-    }),
+    }, { still: true }),
   })
 
   ctx.tools.register({
@@ -446,12 +457,14 @@ export function apply(ctx: Context) {
         return fail(`index 要在 1 到 ${tabs.length} 之间。现在的列表：\n${show()}`)
       }
       const target = tabs[idx - 1]
+      // list 不动页面；换过去、关掉都动（still 只罩住了 list 那一支）。
+      browser.dropShot()
       if (action === 'close') {
         await browser.closeTab(target.targetId, call.signal)
         return { text: `已关掉「${target.title || target.url}」。` }
       }
       await browser.selectTab(target.targetId, call.signal)
       return withTrace(after('已切过去。', await browser.settleAndSnapshot(call.signal)), call, 'tabs')
-    }),
+    }, { still: true }),
   })
 }

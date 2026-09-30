@@ -190,6 +190,29 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 没拍照的那把工具不该凭空多出一张。
       assert(tools[1]?.shot == null, `没截图的工具被塞了一张：${JSON.stringify(tools[1]?.shot)}`)
 
+      /**
+       * 新日志：截图在工具结果**之后**才拍完，另来一条 tool/shot，按 callId 认回那次调用。
+       * 中间隔着后面几步（这里是 c2 的整次调用）也要认得回去；callId 对不上的不能贴到
+       * 随便哪颗药丸上——贴错一张比少一张更坏。
+       */
+      const late = ui.fold([
+        ev(1, 'user/message', { message: { content: [{ type: 'text', text: '去看看' }] }, source: { kind: 'user' } }),
+        ev(2, 'turn/start', { turn: 1 }),
+        ev(3, 'tool/call', { turn: 1, step: 1, callId: 'c1', name: 'browser_navigate', arguments: '{}' }),
+        ev(4, 'tool/result', { turn: 1, step: 1, callId: 'c1', text: '已打开。', failed: false }),
+        ev(5, 'tool/call', { turn: 1, step: 2, callId: 'c2', name: 'browser_click', arguments: '{}' }),
+        ev(6, 'tool/result', { turn: 1, step: 2, callId: 'c2', text: '点了。', failed: false }),
+        ev(7, 'tool/shot', { turn: 1, step: 1, callId: 'c1', shot: shot(1) }),
+        ev(8, 'tool/shot', { turn: 1, step: 9, callId: 'nobody', shot: shot(9) }),
+        ev(9, 'tool/shot', { turn: 1, step: 2, callId: 'c2', shot: { path: '' } }),
+        ev(10, 'assistant/message', { turn: 1, step: 3, message: { content: [{ type: 'text', text: '看完了' }] } }),
+        ev(11, 'turn/end', { turn: 1, reason: 'completed' }),
+      ])
+      const lateTools = late.blocks.find((b) => b.kind === 'assistant')?.tools || []
+      assert(lateTools[0]?.shot?.path === 'browser/s1/2026-1-click.jpg', `晚到的截图没认回那次调用：${JSON.stringify(lateTools[0]?.shot)}`)
+      assert(lateTools[1]?.shot == null, `认不回去的 / 空的截图被贴到了别的调用上：${JSON.stringify(lateTools[1]?.shot)}`)
+      assert(ui.stepShots(lateTools).length === 1, `缩略图条数不对：${ui.stepShots(lateTools).length}`)
+
       // 老日志没有这个字段，界面要退回「没有」，不能崩。
       assert(!ui.stepShots([{ name: 'bash' }]).length, '没有 shot 的老日志把它弄崩了')
       // 同一张图在一条消息里只摆一次。

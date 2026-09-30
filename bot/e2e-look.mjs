@@ -155,8 +155,10 @@ ctx.llm.streamFn = (model, context) => {
   const partial = emptyAssistant(model)
   queueMicrotask(() => {
     stream.push({ type: 'start', partial })
-    if (step === 'look') {
-      partial.content.push({ type: 'toolCall', id: `call_${captured.length}`, name: 'fake_look', arguments: {} })
+    if (step !== 'stop') {
+      // 'look' 调 fake_look；别的名字就调同名的那把（B5 的截图探针用）。
+      const name = step === 'look' ? 'fake_look' : step
+      partial.content.push({ type: 'toolCall', id: `call_${captured.length}`, name, arguments: {} })
       stream.push({ type: 'toolcall_start', contentIndex: 0, partial })
       stream.push({ type: 'toolcall_end', contentIndex: 0, toolCall: partial.content[0], partial })
       partial.stopReason = 'toolUse'
@@ -287,6 +289,74 @@ const imagesOfMsg = (m) => blocks(m).filter((c) => c.type === 'image')
     看得了图时留不下: compactionPoint(events, 3000, true)?.seq === ends[1],
     // 只算活动窗口里的 6 张，不是全部 20 张：预算 12000 装得下 6 张，装不下 20 张。
     只算最近六张: compactionPoint(events, 12000, true)?.seq === ends[0],
+  }
+}
+
+// ── B5. 晚到的截图：结果先给模型，截图拍完补一条 tool/shot，落在 turn/end 之前 ─────
+{
+  /**
+   * 浏览器工具的截图要等页面画出来（最多三秒），快照文字零点几秒就就绪了。截图不再挡在
+   * 工具结果前面（ToolResult.pendingShot），而是拍完由 agent 补一条 `tool/shot`。这里用
+   * 两把假工具把 agent 那一段钉住：模型拿到结果时截图还没拍完；补的那条按 callId 认得回
+   * 去；拍不成的不补；而且都落在这一轮的 turn/end 之前（压缩边界只切在 turn/end 上）。
+   */
+  const SHOT_MS = 400
+  let shotAt = 0
+  ctx.tools.register({
+    name: 'fake_shot',
+    delegation: {},
+    risk: ['read'],
+    description: '探针用：结果马上回，截图 400ms 后才拍完',
+    parameters: { type: 'object', properties: {} },
+    execute: async () => ({
+      text: '打开了',
+      pendingShot: new Promise((r) => setTimeout(() => {
+        shotAt = Date.now()
+        r({ path: 'pic1.png', name: 'pic1.png' })
+      }, SHOT_MS)),
+    }),
+  })
+  ctx.tools.register({
+    name: 'fake_noshot',
+    delegation: {},
+    risk: ['read'],
+    description: '探针用：截图没拍成',
+    parameters: { type: 'object', properties: {} },
+    execute: async () => ({ text: '点了', pendingShot: new Promise((r) => setTimeout(() => r(undefined), 50)) }),
+  })
+  const sid = await ctx.sessions.create({ title: '晚到的截图', botId: 'default' })
+  captured = []
+  const askedAt = []
+  const orig = ctx.llm.streamFn
+  ctx.llm.streamFn = (model, context) => {
+    askedAt.push(Date.now())
+    return orig(model, context)
+  }
+  script = ['fake_shot', 'fake_noshot', 'stop']
+  await ctx.agents.send(sid, '去看看').catch(() => {})
+  ctx.llm.streamFn = orig
+  const events = await ctx.sessions.events(sid)
+  const callOf = (name) => events.find((e) => e.type === 'tool/call' && e.data.name === name)?.data.callId
+  const shotCall = callOf('fake_shot')
+  const noCall = callOf('fake_noshot')
+  const seqOf = (pred) => events.find(pred)?.seq ?? -1
+  const resultSeq = seqOf((e) => e.type === 'tool/result' && e.data.callId === shotCall)
+  const shots = events.filter((e) => e.type === 'tool/shot')
+  const shotSeq = seqOf((e) => e.type === 'tool/shot' && e.data.callId === shotCall)
+  const endSeq = seqOf((e) => e.type === 'turn/end')
+  // 下一轮从日志重建历史：多出来的这种事件不能把回放弄坏。
+  captured = []
+  script = ['stop']
+  await ctx.agents.send(sid, '接着说').catch(() => {})
+  out.lateShot = {
+    // 第二次问模型（拿着 fake_shot 的结果）的时刻早于截图拍完：模型没陪着截图等。
+    模型没等截图: askedAt.length >= 2 && shotAt > 0 && askedAt[1] < shotAt,
+    结果上没有截图: resultSeq > 0 && !events.find((e) => e.seq === resultSeq)?.data.shot,
+    补了一条认得回去的: shots.length === 1 && shots[0].data.callId === shotCall && shots[0].data.shot?.path === 'pic1.png',
+    拍不成的不补: Boolean(noCall) && !shots.some((e) => e.data.callId === noCall),
+    在结果之后: shotSeq > resultSeq,
+    在这一轮收尾之前: shotSeq > 0 && shotSeq < endSeq,
+    下一轮回放没坏: toolResults(captured[0]).length === 2 && events.length > 0,
   }
 }
 
