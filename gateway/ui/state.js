@@ -234,6 +234,8 @@ const state = {
   machineLoadBusy: false,
   machineLoadError: '',
   botLatest: null,
+  /** 平台钉的 Bot 版本（机器配置页那一格），空 = 跟最新走。 */
+  botDesired: '',
   managerLatest: null,
   managerReleases: null,
   /** 机器配置页当前 tab：manager | bot。 */

@@ -1150,7 +1150,7 @@ async function saveMachineCompany(e) {
  *
  * 两种口径共用这条路（见 pages-machines.js 的 botBtn）：
  *
- * - `reflow = false`：升级，全铺到最新版本。
+ * - `reflow = false`：升级，全铺到目标版本（平台钉的那一版，没钉就是最新）。
  * - `reflow = true`：**照现状重铺**，不带版本——每个席位仍是它自己那一版，重走一遍
  *   部署。要的是让部署脚本重写 `bot.env`，把席位连的 Gateway 地址刷成当前这一份。
  *   这一档不需要平台上有发布包（席位自己那一版就够），所以那道「还没有发布 Bot 版本」
@@ -1158,19 +1158,15 @@ async function saveMachineCompany(e) {
  */
 async function updateMachineRuntime(machineId, reflow) {
   if (!machineId || state.updatingRuntime) return
-  const version = state.botLatest || state.latestRelease
-  if (!reflow && !version) {
-    flash('err', '还没有发布 Bot 版本')
-    render()
-    return
-  }
   state.updatingRuntime = true
   render()
   try {
+    // 升级**不带版本**：服务端按这台机器的架构挑平台钉的那一版（没钉就是最新），和心跳里
+    // 的自动跟版同一个目标。还没有发布版本时服务端回 409，落进下面的 catch。
     const data = await api(
       'POST',
       `/platform/machines/${encodeURIComponent(machineId)}/runtime/update`,
-      reflow ? { force: true } : { version },
+      reflow ? { force: true } : {},
     )
     const results = Array.isArray(data.results) ? data.results : []
     const ok = results.filter((r) => r.status === 'ready' && !r.error).length
@@ -1313,15 +1309,20 @@ async function addRelease(e) {
   }
 }
 
-async function saveManagerVersion(e) {
+/**
+ * 存期望版本。管家和 Bot 两条版本线各一格，存进平台设置的 managerVersion / botVersion。
+ * 只带这一个字段：PUT /platform/settings 对没带的字段一律沿用原值。
+ */
+async function saveDesiredVersion(e) {
   e.preventDefault()
-  const managerVersion = String(new FormData(e.target).get('managerVersion') || '').trim()
+  const field = e.target.getAttribute('data-kind') === 'bot' ? 'botVersion' : 'managerVersion'
+  const version = String(new FormData(e.target).get('version') || '').trim()
   state.busy = true
   render()
   try {
-    await api('PUT', '/platform/settings', { managerVersion })
+    await api('PUT', '/platform/settings', { [field]: version })
     await loadReleases()
-    flash('ok', managerVersion ? `期望版本已设为 ${managerVersion}` : '期望版本已清空，跟最新发布走')
+    flash('ok', version ? `期望版本已设为 ${version}` : '期望版本已清空，跟最新发布走')
   } catch (err) {
     flash('err', err.message)
   } finally {

@@ -468,6 +468,17 @@ export class Router {
       }
       const err = e as Error
       console.error(`satuwork-gateway: ${err.stack ?? err.message}`)
+      /**
+       * PG 判了死锁（40P01）或序列化冲突（40001）：这一条是被库挑出来牺牲掉的，换个时刻
+       * 重发就能过，不是服务坏了。回 503 + Retry-After 让客户端知道该重试，别回 500。
+       * 这只是兜底——出现了照样要去查是哪几条语句的加锁顺序没对齐（栈已经打在上面）。
+       */
+      const code = (e as { code?: unknown }).code
+      if (code === '40P01' || code === '40001') {
+        res.setHeader('retry-after', '1')
+        json(res, 503, { error: '服务器忙，请稍后再试', retryAfter: 1 })
+        return
+      }
       json(res, 500, { error: 'internal error' })
     }
   }

@@ -171,6 +171,7 @@ export function publicSettings(s: CompanySettings | PlatformSettings): PlatformS
     priceMultiplier: parsePriceMultiplier((s as PlatformSettings).priceMultiplier),
     connectorPricing: parseConnectorPricing((s as PlatformSettings).connectorPricing),
     managerVersion: (s as PlatformSettings).managerVersion ?? '',
+    botVersion: (s as PlatformSettings).botVersion ?? '',
     modelPricing: parseModelPricing((s as PlatformSettings).modelPricing),
     defaultModelRate: parseModelRate((s as PlatformSettings).defaultModelRate),
     billing: parseBilling((s as PlatformSettings).billing),

@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { canonicalTimezone, isUniqueViolation, releaseArch, type Account, type BotRelease, type Db, type Machine, type SeatDeployRequest, type SeatRuntime } from './db.ts'
 import { signLogsTicket, type JwtKeys } from './crypto.ts'
 import { HttpError } from './http.ts'
-import { botReleaseFile, directReleaseUrl } from './releases.ts'
+import { botReleaseFile, desiredBotRelease, directReleaseUrl } from './releases.ts'
 import { afterResponse } from './lib/background.ts'
 
 /** 管家握手协议。低于这个数的机器不给下发部署——字段对不上会失败得很难看。 */
@@ -1122,9 +1122,11 @@ async function reserveSeat(db: Db, account: Account, opts: DeployOpts): Promise<
     }
     release = rel
   } else {
-    const latest = await db.latestBotRelease('bot', machine.arch)
-    if (!latest) return { ok: false, status: 409, error: '还没有发布 Bot 版本', runtime: await db.seatRuntime(account.id, botId) }
-    release = latest
+    // 不指定版本 = 平台钉的那一版（没钉就是最新）。直接取最新的话，钉版本时新铺的席位会
+    // 装上最新，十分钟后又被心跳里的跟版拉回钉的那版——白装一遍，人还看得见它来回跳。
+    const target = await desiredBotRelease(db, machine.arch)
+    if (!target) return { ok: false, status: 409, error: '还没有发布 Bot 版本', runtime: await db.seatRuntime(account.id, botId) }
+    release = target
   }
   const version = release.version
 
@@ -1615,6 +1617,59 @@ export async function runSeatDeployQueue(
     }),
   )
   return results
+}
+
+/**
+ * 自动跟版：同一个席位两次尝试之间至少隔多久。
+ *
+ * 心跳 30 秒一轮，没有这道间隔的话，一个一直有人在说话的席位会被每一轮排一次——每次
+ * 管家都要落闸排空（见 manager/src/seats.ts 的 drainSeat），那个人看到的是 Bot 隔三差
+ * 五「暂停接新活」。看的是席位行的 `updatedAt`：排空没等到（busy）那一支会把它刷成现在。
+ */
+export const BOT_FOLLOW_RETRY_MS = 10 * 60_000
+
+/**
+ * 心跳里顺手做的 Bot 自动跟版：把这台机器上**不在目标版本上**的席位排进部署队列。
+ *
+ * 和管家自升级同一个道理：推送要求推的那一刻机器在线，心跳驱动只要机器最终上线就会
+ * 收敛——关机期间发的版，开机后第一轮心跳就排上。真正去装的是每一拍的队列
+ * （runSeatDeployQueue），这里只排队，不在心跳请求里等任何部署。
+ *
+ * 目标是 desiredBotRelease：平台钉的那一版，没钉就是这台机器架构的最新包。比的是
+ * 「不相等」而不是「更旧」——回滚就是把钉的版本改回上一版，席位跟着退回去。也因此
+ * 单个席位手工装的别的版本会在 BOT_FOLLOW_RETRY_MS 之后被拉回目标版本：全机队的版本
+ * 只有「钉」这一个开关，不另设逐席位的例外。
+ *
+ * 只排这些席位，别的一律不碰：
+ * - `ready`：出错的留给人看。自动重试一个装不上的版本只会每十分钟再红一次；
+ * - 队里没有别的活：已经排着的多半是人手工排的（重铺、指定版本），盖掉它就是替人改了主意。
+ *   这一条**在库里判**（queueSeatDeploy 的 ifIdle），不看手上这份快照——人可能就在
+ *   读完快照、写队列之间按下了「全部重铺」；
+ * - 上次动它已经过了 BOT_FOLLOW_RETRY_MS。
+ *
+ * 整台跳过的两种：
+ * - 管家自己还没换到期望版本（`managerPending`）：管家换版会重启自己，赶在那之前铺下去的
+ *   席位会被半路掐断，等它换完下一轮心跳再来。调用方要把「换版在报错」排除在外——换不
+ *   上去的管家不会重启，不能拿它把 Bot 也一起卡住；
+ * - 机器没报过架构：不知道架构就挑不对包，而这里给的是**显式版本**，deploySeat 对显式
+ *   版本的架构关只在两边都认得出来时才拦，会放一个错架构的包过去。
+ */
+export async function queueBotFollow(db: Db, machine: Machine, opts: { managerPending?: boolean; now?: number } = {}): Promise<number> {
+  if (!machine.pairedAt || !machine.arch || opts.managerPending) return 0
+  if (machine.protocol < MIN_MANAGER_PROTOCOL) return 0
+  const target = await desiredBotRelease(db, machine.arch)
+  if (!target) return 0
+  const now = opts.now ?? Date.now()
+  let n = 0
+  for (const seat of await db.seatRuntimesOfMachine(machine.id)) {
+    // botVersion 为空（老数据、上一次没写上）也算没跟上：它恰恰最可能是旧的。
+    if (seat.status !== 'ready' || seat.deployQueued || seat.botVersion === target.version) continue
+    if (now - seat.updatedAt < BOT_FOLLOW_RETRY_MS) continue
+    const request = { version: target.version, update: true }
+    if (await db.queueSeatDeploy(seat.accountId, seat.botId, request, { ifIdle: true })) n++
+  }
+  if (n) console.log(`satuwork-gateway: 机器 ${machine.id.slice(0, 8)} 有 ${n} 个席位不在 ${target.version} 上，已排队跟版`)
+  return n
 }
 
 /** 这个进程里是不是已经有一段在推队列。只是省一次白跑，真正防撞车的是库里那两道闸。 */

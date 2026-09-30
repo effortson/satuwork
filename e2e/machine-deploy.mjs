@@ -748,6 +748,139 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       }
     })
 
+    await test('心跳里 Bot 自动跟版：不在目标版本上的 ready 席位排进队列，别的一律不碰', async () => {
+      /**
+       * 关机期间发的版，开机后第一轮心跳就该排上——和管家自升级同一个道理（见 deploy.ts
+       * 的 queueBotFollow）。心跳只排队，真正去装的是每一拍的队列，所以这里看的是
+       * seat_runtimes."deployQueued"。
+       *
+       * **先把那一拍挡在这台机器外面。** 这个 Gateway 每 30 秒推一次队列，不挡的话它随时会把
+       * 刚排下的请求领走、在后台真装一遍——断言看到的就是一个空队列，装的那一遍还会拖进
+       * 下一个用例。挡法是队列自己的规矩：同一台机器上有席位正在装（在装心跳新鲜），这一
+       * 台就整台跳过（runSeatDeployQueue）。所以把同机的 botB 摆成「正在装」。
+       *
+       * 现场：机器自报 arm64，本机架构的最新包是 0.3.0-arm64。
+       */
+      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
+      const pg = require('pg')
+      const client = new pg.Client({ connectionString: PG_URL })
+      await client.connect()
+      let machineId = ''
+      let heldB = null
+      try {
+        await client.query(`set search_path to ${SCHEMA}`)
+        machineId = (await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })).json.machine.id
+        const where = 'where "accountId" = $1 and "botId" = $2'
+        heldB = (await client.query(`select "machineId", status, "deployBeatAt" from seat_runtimes ${where}`, [memberId, botB])).rows[0]
+        assert(heldB?.machineId === machineId, `botB 该和 botA 在同一台机器上，才挡得住这台的队列：${JSON.stringify(heldB)}`)
+        const hold = () =>
+          client.query(`update seat_runtimes set status = 'deploying', "deployBeatAt" = $3 ${where}`, [memberId, botB, Date.now()])
+        await hold()
+
+        const stage = (sets, args = []) =>
+          client.query(`update seat_runtimes set ${sets} ${where}`, [memberId, botA, ...args])
+        const rowOf = async () =>
+          (await client.query(`select status, "botVersion", "deployQueued" from seat_runtimes ${where}`, [memberId, botA]))
+            .rows[0]
+        const beat = async (body = { managerVersion: 'e2e', protocol: 1, arch: 'arm64', seats: [] }) => {
+          await hold()
+          const hb = await req(gwBase, 'POST', `/internal/machines/${machineId}/heartbeat`, { token: machineTok, body })
+          assert(hb.status === 200, `heartbeat ${hb.status} ${hb.text}`)
+        }
+        const longAgo = Date.now() - 11 * 60_000
+        const behind = (extra = '') =>
+          stage(`status = 'ready', "botVersion" = '0.2.0', "deployQueued" = null, "updatedAt" = $3${extra}`, [longAgo])
+
+        // 落后、ready、队里空、上次动它是十一分钟前 → 排上，目标是本机架构的最新包。
+        await behind()
+        await beat()
+        const queued = (await rowOf()).deployQueued
+        assert(queued?.version === '0.3.0-arm64' && queued.update === true, `落后的席位该排上跟到 0.3.0-arm64：${JSON.stringify(queued)}`)
+
+        // 没记版本（老数据、上一次没写上）也算没跟上：它恰恰最可能是旧的。
+        await stage(`status = 'ready', "botVersion" = null, "deployQueued" = null, "updatedAt" = $3`, [longAgo])
+        await beat()
+        assert((await rowOf()).deployQueued?.version === '0.3.0-arm64', '没记版本的席位也该跟版')
+
+        // 已经在目标版本上 → 不排。
+        await stage(`status = 'ready', "botVersion" = '0.3.0-arm64', "deployQueued" = null, "updatedAt" = $3`, [longAgo])
+        await beat()
+        assert(!(await rowOf()).deployQueued, '已经是目标版本的席位不该再排')
+
+        // 刚动过（排空没等到会把 updatedAt 刷成现在）→ 这一轮不排，免得每 30 秒落一次闸。
+        await stage(`status = 'ready', "botVersion" = '0.2.0', "deployQueued" = null, "updatedAt" = $3`, [Date.now()])
+        await beat()
+        assert(!(await rowOf()).deployQueued, '刚动过的席位不该马上又排一次')
+
+        // 出错的留给人看：自动重试一个装不上的版本只会每十分钟再红一次。
+        await stage(`status = 'error', "botVersion" = '0.2.0', "deployQueued" = null, "updatedAt" = $3`, [longAgo])
+        await beat()
+        assert(!(await rowOf()).deployQueued, '出错的席位不该被自动跟版')
+
+        // 队里已经有人手工排的活（重铺），不能被跟版盖掉。
+        await stage(`status = 'ready', "botVersion" = '0.2.0', "deployQueued" = $3::jsonb, "updatedAt" = $4`, [
+          JSON.stringify({ force: true }),
+          longAgo,
+        ])
+        await beat()
+        const kept = (await rowOf()).deployQueued
+        assert(kept?.force === true && !kept.version, `手工排的重铺被盖掉了：${JSON.stringify(kept)}`)
+
+        // 机器没报过架构 → 整台跳过：跟版给的是显式版本，架构不明就可能放一个错架构的包过去。
+        await client.query('update machines set arch = null where id = $1', [machineId])
+        await behind()
+        await beat({ managerVersion: 'e2e', protocol: 1, seats: [] })
+        assert(!(await rowOf()).deployQueued, '没报过架构的机器不该跟版')
+        await client.query(`update machines set arch = 'arm64' where id = $1`, [machineId])
+
+        // ── 平台钉 Bot 版本 ──
+        // 钉一个没登记过的版本 → 400。回落成「跟最新走」的话，恰好把想躲开的那版铺满全机队。
+        const typo = await req(gwBase, 'PUT', '/platform/settings', { token: ownerTok, body: { botVersion: '9.9.9-nope' } })
+        assert(typo.status === 400, `钉一个不存在的版本该 400，实际 ${typo.status} ${typo.text}`)
+
+        // 钉回 0.2.0：在 0.3.0-arm64 上的席位要**退回去**——比的是「不相等」，回滚就是这么做的。
+        const pin = await req(gwBase, 'PUT', '/platform/settings', { token: ownerTok, body: { botVersion: '0.2.0' } })
+        assert(pin.status === 200 && pin.json.botVersion === '0.2.0', `钉版本 ${pin.status} ${pin.text}`)
+        const listed = await req(gwBase, 'GET', '/platform/bot-releases', { token: ownerTok })
+        assert(listed.json.desired === '0.2.0', `发布列表该带出钉的版本：${listed.json.desired}`)
+        await stage(`status = 'ready', "botVersion" = '0.3.0-arm64', "deployQueued" = null, "updatedAt" = $3`, [longAgo])
+        await beat()
+        assert((await rowOf()).deployQueued?.version === '0.2.0', `钉了 0.2.0，席位该排上退回 0.2.0：${JSON.stringify((await rowOf()).deployQueued)}`)
+
+        // 机器页「全部升级」不带版本 → 也是钉的那一版，不是最新。（队列被挡着，这里只会排上。）
+        await stage(`"deployQueued" = null`)
+        const up = await req(gwBase, 'POST', `/platform/machines/${machineId}/runtime/update`, { token: ownerTok, body: {} })
+        assert(up.status === 200 || up.status === 202, `全部升级 ${up.status} ${up.text}`)
+        assert(up.json.version === '0.2.0', `不带版本的升级该用钉的版本，实际 ${up.json.version}`)
+
+        // 卡片的「可升级」按目标版本判：钉住时，在最新版上的席位才是要动的那个。
+        const cards = await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })
+        const card = cards.json.machines.find((c) => c.machine.id === machineId)
+        assert(card?.botDesired === '0.2.0', `卡片的目标版本该是钉的 0.2.0：${card?.botDesired}`)
+      } finally {
+        // 摆回跟版之前的样子，后面的用例照旧用这两个席位。
+        await req(gwBase, 'PUT', '/platform/settings', { token: ownerTok, body: { botVersion: '' } }).catch(() => {})
+        if (machineId) await client.query(`update machines set arch = 'arm64' where id = $1`, [machineId]).catch(() => {})
+        await client
+          .query(
+            `update seat_runtimes set status = 'ready', "botVersion" = '0.3.0-arm64', "deployQueued" = null where "accountId" = $1 and "botId" = $2`,
+            [memberId, botA],
+          )
+          .catch(() => {})
+        if (heldB) {
+          await client
+            .query(`update seat_runtimes set status = $3, "deployBeatAt" = $4, "deployQueued" = null where "accountId" = $1 and "botId" = $2`, [
+              memberId,
+              botB,
+              heldB.status,
+              heldB.deployBeatAt,
+            ])
+            .catch(() => {})
+        }
+        await client.end().catch(() => {})
+      }
+    })
+
     /**
      * 改机器地址要**连着把席位的 instances.host 一起重铺**。
      *

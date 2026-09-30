@@ -125,7 +125,21 @@ export async function runBrowser({ root, test, assert, log }) {
      * 顺带钉一条：**页面冻住的时候不拍。** confirm 挂着时整页不动，拍照的回执和快照
      * 一样永远等不到，拍下去只是白等一个超时，而那次点击本身是成功的。
      */
-    const bad = all(r.shot).concat(all(r.shotDialog))
+    const LATE = ['结果不等截图', '下一步开始上一张作废', '作废不重新计时']
+    const bad = all(r.shot).filter((k) => !LATE.includes(k)).concat(all(r.shotDialog))
+    assert(!bad.length, `这几条不对：${bad.join('、')}`)
+  })
+
+  await test('截图不挡工具结果：先把结果给模型，截图在后台拍完再补', () => {
+    /**
+     * 截图要等页面画出来（最多三秒），快照文字 0.7 秒就就绪了。早先截图 await 在工具结果
+     * 前面，模型每次跳转都陪着多等两三秒。现在结果先回，截图在后台拍——
+     *
+     * - 正文 1.5 秒后才画出来的页面：结果 1.5 秒内回来，截图照样是画完之后那张；
+     * - 下一步一开始，上一张就作废（拍到的会是下一步的画面，贴错比少一张更坏）；
+     * - 作废不重新计时：等待上限按文档算，否则一步紧跟一步的时候这一页一张都拍不到。
+     */
+    const bad = ['结果不等截图', '下一步开始上一张作废', '作废不重新计时'].filter((k) => r.shot?.[k] !== true)
     assert(!bad.length, `这几条不对：${bad.join('、')}`)
   })
 

@@ -231,6 +231,7 @@ export function parsePlatformPayload(raw: unknown): PlatformSettings {
     connectorPricing: parseConnectorPricing(o.connectorPricing),
     // 空字符串 = 没钉，跟最新发布走。写端和这里必须成对，少一边这个开关就是死的。
     managerVersion: typeof o.managerVersion === 'string' ? o.managerVersion.trim() : '',
+    botVersion: typeof o.botVersion === 'string' ? o.botVersion.trim() : '',
     webTools: parseWebTools(o.webTools),
     modelPricing: parseModelPricing(o.modelPricing),
     // 老库里没有这个字段，读出来是四项全 0 = 没设兜底，行为和从前一模一样。

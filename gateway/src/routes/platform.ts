@@ -13,6 +13,7 @@ import { pruneDailyAlternates } from '../lib/alternates.ts'
 import { rangeQuery, requireOwnerUser } from '../lib/guards.ts'
 import { DAILY_ALTERNATES_MAX, WEB_BACKENDS, WEB_DOCUMENT, type PlatformSettings, modelKey, emptyWebTools, parseBilling, parseConnectorPricing, parseModelPricing, parseModelRate, parsePriceMultiplier, parseWebTools } from '../db.ts'
 import { WebToolError, canExtract, canSearch, needsSecret } from '../web-tools.ts'
+import { parseBotVersion } from '../releases.ts'
 import { testBackend } from '../web-service.ts'
 
 export function attachPlatform(router: Router, ctx: RouteCtx) {
@@ -71,6 +72,20 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     json(res, 200, { models })
   })
 
+  /**
+   * 钉的 Bot 版本：空 = 跟最新走；非空就**必须是登记过的版本**。
+   *
+   * 管家那一档不校验，钉错了只是回落到最新。Bot 这一档校验：钉版本常常是为了回滚，一个
+   * 打错的版本号回落成「跟最新走」，恰好把人想躲开的那一版铺满全机队，而界面上看着钉住了。
+   */
+  async function pinnedBotVersionOf(raw: unknown): Promise<string> {
+    const version = String(raw ?? '').trim()
+    if (!version) return ''
+    parseBotVersion(version)
+    if (!(await db.botRelease(version))) throw new HttpError(400, `没有登记过 Bot 版本 ${version}`)
+    return version
+  }
+
   router.put('/platform/settings', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
     const body = bodyOf(req)
@@ -90,6 +105,7 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       connectorPricing: 'connectorPricing' in body ? parseConnectorPricing(body.connectorPricing) : cur.connectorPricing,
       managerVersion:
         'managerVersion' in body ? String(body.managerVersion ?? '').trim() : (cur.managerVersion ?? ''),
+      botVersion: 'botVersion' in body ? await pinnedBotVersionOf(body.botVersion) : (cur.botVersion ?? ''),
       // 这一屏不管网页工具，但 next 是整份覆盖上去的——不带着它，去模型配置页存一次
       // 就把工具配置抹了。
       webTools: cur.webTools ?? emptyWebTools(),
