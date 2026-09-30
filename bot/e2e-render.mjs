@@ -215,7 +215,19 @@ const hardening = existsSync(xcu) ? readFileSync(xcu, 'utf8') : ''
 out.hardening = {
   blockLinks: /BlockUntrustedRefererLinks[^]*?<value>true<\/value>/.test(hardening),
   noMacros: /DisableMacrosExecution[^]*?<value>true<\/value>/.test(hardening),
+  // 表格打开时总是重算：不然改了被引用的数，渲染出来还是旧合计。
+  recalc: /OOXMLRecalcMode[^]*?<value>0<\/value>/.test(hardening) && /ODFRecalcMode[^]*?<value>0<\/value>/.test(hardening),
 }
+
+// ── 6f. 这一版之前建的配置目录（只有前三项）：下一次转换时补齐 ──────────
+writeFileSync(
+  xcu,
+  '<?xml version="1.0" encoding="UTF-8"?><oor:items xmlns:oor="http://openoffice.org/2001/registry">' +
+    '<item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true</value></prop></item>' +
+    '</oor:items>',
+)
+await renderToPdf(file('upgrade.docx', 'upgrade'))
+out.hardeningUpgraded = /OOXMLRecalcMode/.test(readFileSync(xcu, 'utf8'))
 
 // ── 7. 太大：不交给 soffice ───────────────────────────────────────────
 const big = join(dir, 'big.xlsx')
@@ -276,6 +288,18 @@ if (real || realOverride) {
     const xdoc = await getDocumentProxy(new Uint8Array(readFileSync(await renderToPdf(realXlsx))))
     const { text: xtext } = await extractText(xdoc, { mergePages: true })
     out.realXlsx = { header: String(xtext).includes('地区'), number: String(xtext).includes('12345') }
+
+    // 公式格里存着旧结果（999），真值是 111 + 222 = 333：模型改了被引用的数、没动公式格时就是这样。
+    const stale = new ExcelJS.Workbook()
+    const sheet = stale.addWorksheet('S')
+    sheet.addRow(['甲', 111])
+    sheet.addRow(['乙', 222])
+    sheet.getCell('B3').value = { formula: 'SUM(B1:B2)', result: 999 }
+    const staleFile = join(dir, 'stale.xlsx')
+    await stale.xlsx.writeFile(staleFile)
+    const sdoc = await getDocumentProxy(new Uint8Array(readFileSync(await renderToPdf(staleFile))))
+    const { text: stext } = await extractText(sdoc, { mergePages: true })
+    out.realRecalc = { 重算了: String(stext).includes('333'), 没用旧值: !String(stext).includes('999') }
 
     // 外链：docx 里一张指向本机 HTTP 的链接图片。转换时不该有人来取。
     const { createServer } = await import('node:http')

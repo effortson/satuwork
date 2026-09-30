@@ -72,19 +72,26 @@ const CACHE_MAX_BYTES = 256 * 1024 * 1024
 const PIPE_GRACE_MS = 1_000
 
 /**
- * 写进私有配置目录的加固项（`user/registrymodifications.xcu`）。
+ * 写进私有配置目录的几项（`user/registrymodifications.xcu`）。
  *
  * - BlockUntrustedRefererLinks：文档里引用的外部图片 / 链接不去取。
  * - MacroSecurityLevel 3 + DisableMacrosExecution：宏一律不跑（.xlsm 这类带宏的也收）。
+ * - OOXMLRecalcMode / ODFRecalcMode 0：打开表格时**总是重算公式**。LibreOffice 默认信文件里
+ *   存的计算结果；模型改了被公式引用的数、却没动公式那一格时，那份结果就是旧的——渲染出来
+ *   的合计还是改之前的数，模型拿图核对时会被它骗过去（实测：改前合计 999、应为 333，默认
+ *   渲染出 999）。
  *
- * LibreOffice 退出时会重写这个文件、保留这些项；每次转换前看一眼标记，没有就整份写回。
+ * LibreOffice 退出时会重写这个文件、保留这些项；每次转换前看一眼，**缺哪一项都整份写回**
+ * ——只看一个标记的话，这一版之前建的配置目录永远补不上后加的那几项。
  */
-const HARDENING_MARK = 'BlockUntrustedRefererLinks'
+const HARDENING_KEYS = ['BlockUntrustedRefererLinks', 'MacroSecurityLevel', 'DisableMacrosExecution', 'OOXMLRecalcMode', 'ODFRecalcMode']
 const HARDENING = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 <item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true</value></prop></item>
 <item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop></item>
 <item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="DisableMacrosExecution" oor:op="fuse"><value>true</value></prop></item>
+<item oor:path="/org.openoffice.Office.Calc/Formula/Load"><prop oor:name="OOXMLRecalcMode" oor:op="fuse"><value>0</value></prop></item>
+<item oor:path="/org.openoffice.Office.Calc/Formula/Load"><prop oor:name="ODFRecalcMode" oor:op="fuse"><value>0</value></prop></item>
 </oor:items>
 `
 
@@ -223,11 +230,11 @@ async function convert(bin: string, file: string): Promise<string> {
   }
 }
 
-/** 配置目录里没有加固项（第一次用，或者是这版之前建的）就整份写进去。 */
+/** 配置目录里缺了哪一项（第一次用，或者是这版之前建的）就整份写进去。 */
 async function harden(profile: string) {
   const file = join(profile, 'user', 'registrymodifications.xcu')
   const now = await readFile(file, 'utf8').catch(() => '')
-  if (now.includes(HARDENING_MARK)) return
+  if (HARDENING_KEYS.every((k) => now.includes(`"${k}"`))) return
   await mkdir(join(profile, 'user'), { recursive: true })
   await writeFile(file, HARDENING)
 }

@@ -76,8 +76,10 @@ export async function runDocRender({ root, test, assert, log }) {
     assert(r.moved.cachedUnderNewKey, '新内容没按新键缓存')
   })
 
-  await test('私有配置目录里写好了「挡外链、禁宏」', () => {
-    assert(r.hardening.blockLinks && r.hardening.noMacros, `加固项没写进去：${JSON.stringify(r.hardening)}`)
+  await test('私有配置目录里写好了「挡外链、禁宏、表格总是重算」，老配置目录会补齐', () => {
+    assert(r.hardening.blockLinks && r.hardening.noMacros && r.hardening.recalc, `配置项没写全：${JSON.stringify(r.hardening)}`)
+    // 只看一个标记的话，这一版之前建的配置目录永远补不上后加的项。
+    assert(r.hardeningUpgraded, '老配置目录没补上重算项')
   })
 
   await test('太大的文件不交给 soffice', () => {
@@ -99,6 +101,11 @@ export async function runDocRender({ root, test, assert, log }) {
     // 席位上没装 fonts-noto-cjk 时，中文在 PDF 里是方块（文字层里也就对不上）。
     assert(r.real.chinese && r.real.latin, `Word 转出来缺字：${JSON.stringify(r.real)}`)
     assert(r.realXlsx && r.realXlsx.header && r.realXlsx.number, `Excel 转出来缺东西：${JSON.stringify(r.realXlsx)}`)
+  })
+
+  await test('真 LibreOffice：公式格里存着旧结果时，渲染出来的是重算后的值', () => {
+    // 默认它信文件里存的结果；模型改了被引用的数、没动公式格，渲染出来就是旧合计，拿图核对时会被骗过去。
+    assert(r.realRecalc && r.realRecalc.重算了 && r.realRecalc.没用旧值, `没重算：${JSON.stringify(r.realRecalc)}`)
   })
 
   await test('真 LibreOffice：文档里的外链图片不会被取，加固项活过了它的重写', () => {
