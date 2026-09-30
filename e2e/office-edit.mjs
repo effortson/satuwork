@@ -88,6 +88,48 @@ export async function runOfficeEdit({ root, test, assert, log }) {
     assert(c.跑通了 && c.三个都有 && c.docx能读, `脚本没跑通：${JSON.stringify(c)}`)
   })
 
+  await test('原文件本来就带缩进的部件（CRLF 缩进的 styles、不合格的 VML）：没碰过就原字节放回', () => {
+    const b = r.byteIdentical
+    assert(b.打包成功 && b.改的那处在, `打包失败：${JSON.stringify(b)}`)
+    // 只靠「美化再还原」的话，这两份会被压成一行——没碰过的部件也变了。
+    assert(b.没碰过的原字节.length === 0, `没碰过的部件变了：${b.没碰过的原字节.join('，')}`)
+    assert(b.没有目录条目, '包里多了 word/ 这样的目录条目')
+    assert(b.原字节目录收掉了, '.orig 目录没收')
+  })
+
+  await test('扩展名要一样：.xlsm 不许存成 .xlsx', () => {
+    assert(r.ext.拒了, '宏工作簿被存成了 .xlsx，Excel 打不开')
+    assert(r.ext.同扩展名可以, '同扩展名另存被拦了')
+  })
+
+  await test('炸弹：声明很小、实际很大的条目，流着解、超了当场停，不留半截', () => {
+    // 先看声明的大小是挡不住的——那个数是文件自己写的。
+    assert(r.bomb.拦下了, `没拦下：${r.bomb.原话}`)
+    assert(r.bomb.没留半截, '解到一半的目录没收')
+  })
+
+  await test('写不进去（文件被占着）：说清楚，不留临时文件', () => {
+    for (const [k, v] of Object.entries(r.renameFail)) assert(v === true, `${k}：${JSON.stringify(r.renameFail)}`)
+  })
+
+  await test('美化之后超过 patch 上限的不拆行，并且明说', () => {
+    for (const [k, v] of Object.entries(r.tooWide)) assert(v === true, `${k}：${JSON.stringify(r.tooWide)}`)
+  })
+
+  await test('部件名里的裸百分号不让整份文件解不开', () => {
+    assert(Array.isArray(r.percent) && r.percent.length === 0, `出错了：${JSON.stringify(r.percent)}`)
+  })
+
+  await test('换个大小写指向原文件，也认得出、也拦「解包后被改过」', () => {
+    if (r.caseFold === null) return log('  - 盘是大小写敏感的，这条不适用')
+    for (const [k, v] of Object.entries(r.caseFold)) assert(v === true, `${k}：${JSON.stringify(r.caseFold)}`)
+  })
+
+  await test('NODE_PATH 只放行那四个库，Bot 自己的别的依赖漏不出去', () => {
+    assert(r.narrow.四个库都在, `库 require 不到：${r.narrow.原话}`)
+    assert(r.narrow.别的不漏, `tsx 也 require 得到：${r.narrow.原话}`)
+  })
+
   if (!r.real) {
     log('  - 这台机器没有 LibreOffice，改完真打开看那段跳过')
     return
