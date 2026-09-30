@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createWriteStream, readdirSync, readFileSync, renameSync, type WriteStream } from 'node:fs'
 import { mkdir, open, readdir, stat, unlink, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, delimiter, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { StringDecoder } from 'node:string_decoder'
@@ -489,6 +490,31 @@ function since(ms: number): string {
 }
 
 /**
+ * Bot 自己带的那批 node 库（exceljs / docx / pptxgenjs / jszip）。
+ *
+ * 模型新建 Word / PPT / Excel 的办法是在 terminal 里写一段 .cjs 脚本 require 它们
+ * （见 tools/office.ts）。席位上的包是 `pnpm deploy` 出来的，这些库就在 app/node_modules
+ * 里；给 NODE_PATH 指过去，脚本放在工作区哪儿都 require 得到，不用每次 npm install。
+ *
+ * **追加，不覆盖**：人自己的 NODE_PATH 排在前面。NODE_PATH 只是 require 找不到时的
+ * 最后一站，工作区里自己装过依赖的项目照旧用它自己的那份。只对 CommonJS 生效（ESM 的
+ * import 不认 NODE_PATH），所以说明里一律让写 .cjs。
+ */
+const BOT_MODULES = fileURLToPath(new URL('../../node_modules', import.meta.url))
+
+/**
+ * 跑 Bot 的这个 node 所在的目录，**接在** PATH 最后。
+ *
+ * 桌面端的本地 Bot 用的是壳子里带的 node，那台电脑上未必另装了 node；不接上的话，
+ * 模型写好的脚本 `node x.cjs` 一句 command not found。接在最后：机器上本来有 node 的，
+ * 照旧用它自己的那个。
+ */
+function scriptEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const join2 = (a: string | undefined, b: string) => (a ? `${a}${delimiter}${b}` : b)
+  return { ...env, NODE_PATH: join2(env.NODE_PATH, BOT_MODULES), PATH: join2(env.PATH, dirname(process.execPath)) }
+}
+
+/**
  * detached：拿到自己的进程组。否则超时只杀得掉 bash，它 fork 出去的
  * （`npm run dev &`、管道里的子进程）会活下来。
  */
@@ -498,7 +524,7 @@ function spawnShell(command: string, cwd: string): ChildProcess {
     cwd,
     // 不递整份 process.env：里面有 Gateway 凭据和 SATUWORK_* 内部配置，见 childEnv。
     // 唯一加回去的 SATUWORK_* 是这条命令的标签：一串随机字，不是配置（见 RUN_TAG）。
-    env: { ...childEnv(), [RUN_TAG]: tag },
+    env: { ...scriptEnv(childEnv()), [RUN_TAG]: tag },
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
   })
