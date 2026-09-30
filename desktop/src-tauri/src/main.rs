@@ -76,7 +76,7 @@ struct Startup(Mutex<String>);
 /// 一颗跑着的本地 Bot：进程，和它听的那个口。口要记下来——页面直连本机就靠它
 /// （隧道拆了，见 gateway/ui/data.js 的 localRoute），而端口是这里随机分的，别处没有。
 struct LocalBotProc {
-    child: Child,
+    child: BotChild,
     port: u16,
     /// 起这个进程时交给它的席位票。Gateway 换了票（口令改过、被重置，旧票跟着作废），
     /// 再来 start 时拿得出不一样的一把——那时要用新票重起，见 start_local_bot。
@@ -85,6 +85,88 @@ struct LocalBotProc {
 
 #[derive(Default)]
 struct LocalBots(Mutex<HashMap<String, LocalBotProc>>);
+
+/// 本地 Bot 的 node 进程，连同它往下拉起的一整棵（Bot 自己起的 Chrome 等）。停的时候要一起清：
+/// Unix 上靠 spawn 时开的进程组，Windows 上靠这里挂着的 Job Object。
+struct BotChild {
+    /// 没建成就是 None，停止时退回只杀 node。
+    #[cfg(windows)]
+    job: Option<BotJob>,
+    child: Child,
+}
+
+impl std::ops::Deref for BotChild {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.child
+    }
+}
+
+impl std::ops::DerefMut for BotChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+}
+
+/// 装着一颗本地 Bot 整棵进程树的 Job Object。node 之后拉起的子孙自动继承这个 Job，
+/// TerminateJobObject 一把全清，相当于 Unix 上 kill 整个进程组。另设 KILL_ON_JOB_CLOSE：
+/// 句柄一关系统就清场——Desktop 崩了、或者死掉的 Bot 从表里被换下来时，也不留孤儿 Chrome。
+#[cfg(windows)]
+struct BotJob(windows_sys::Win32::Foundation::HANDLE);
+
+// 内核对象句柄，换线程用没问题；放进 LocalBots 那把 Mutex 要求 Send。
+#[cfg(windows)]
+unsafe impl Send for BotJob {}
+
+#[cfg(windows)]
+impl BotJob {
+    fn assign(child: &Child) -> std::io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        // 先包起来：下面任何一步失败，Drop 都会把句柄关掉。
+        let job = BotJob(handle);
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of_val(&info) as u32,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if unsafe { AssignProcessToJobObject(handle, child.as_raw_handle() as _) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(job)
+    }
+
+    fn terminate(&self) -> std::io::Result<()> {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        if unsafe { TerminateJobObject(self.0, 1) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for BotJob {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
 
 /// 最近一次成功启动用的 Gateway 地址和席位票，给每小时一次的运行时自查用。
 #[derive(Default)]
@@ -1464,7 +1546,7 @@ fn spawn_local_bot_process(
     work: &Path,
     port: u16,
     browser_port: u16,
-) -> Result<Child, String> {
+) -> Result<BotChild, String> {
     let (root, entry, _) = bot_runtime(app)?;
     let log_path = data.join("runtime.log");
     if fs::metadata(&log_path).is_ok_and(|meta| meta.len() > 2 * 1024 * 1024) {
@@ -1515,9 +1597,23 @@ fn spawn_local_bot_process(
         // Bot 与它拉起的独立 Chrome 在同一进程组；停止 Bot 时可以一并清掉，不留孤儿进程。
         command.process_group(0);
     }
-    command
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Windows 下 node.exe 是控制台子系统程序，GUI 宿主直接 spawn 会被系统（尤其是 Windows Terminal）
+        // 弹出黑色终端窗口。传入 CREATE_NO_WINDOW 避免为 node 进程分配/弹出控制台窗口。
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    let child = command
         .spawn()
-        .map_err(|e| format!("启动本地 Bot 失败：{e}"))
+        .map_err(|e| format!("启动本地 Bot 失败：{e}"))?;
+    Ok(BotChild {
+        // node 在挂进 Job 之前就已经开跑，但它起 Chrome 远在这之后（要等浏览器工具被调用），
+        // 那时的子孙都会继承 Job。挂不上（极少见）不拦启动，只是停止时退回只杀 node。
+        #[cfg(windows)]
+        job: BotJob::assign(&child).ok(),
+        child,
+    })
 }
 
 fn local_bot_log_tail(data: &Path, config: &LocalBotConfig) -> String {
@@ -1538,10 +1634,10 @@ fn local_bot_log_tail(data: &Path, config: &LocalBotConfig) -> String {
 }
 
 fn verify_local_bot_started(
-    mut child: Child,
+    mut child: BotChild,
     data: &Path,
     config: &LocalBotConfig,
-) -> Result<Child, String> {
+) -> Result<BotChild, String> {
     // 配置、原生依赖或入口损坏通常会在这一拍退出。不能先回“运行中”再让 UI 静默等死。
     std::thread::sleep(Duration::from_millis(500));
     let Some(status) = child.try_wait().map_err(|e| e.to_string())? else {
@@ -1736,7 +1832,7 @@ fn start_runtime_updater(app: &AppHandle) {
     });
 }
 
-fn terminate_local_bot(child: &mut Child) -> Result<(), String> {
+fn terminate_local_bot(child: &mut BotChild) -> Result<(), String> {
     #[cfg(unix)]
     {
         let result = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
@@ -1747,8 +1843,13 @@ fn terminate_local_bot(child: &mut Child) -> Result<(), String> {
             }
         }
     }
-    #[cfg(not(unix))]
-    child.kill().map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    {
+        // 整个 Job 一起终止：node 连同它拉起的 Chrome。Job 没建成或终止失败才退回只杀 node。
+        if !child.job.as_ref().is_some_and(|job| job.terminate().is_ok()) {
+            child.kill().map_err(|e| e.to_string())?;
+        }
+    }
     let _ = child.wait();
     Ok(())
 }
@@ -2486,6 +2587,50 @@ mod tests {
             assert!(!destination.exists(), "{name} 失败后不该留下版本目录");
             let _ = fs::remove_dir_all(&base);
         }
+    }
+
+    /// 停本地 Bot 要连它拉起的孙进程一起清——Chrome 就是这么挂在 node 底下的。这里拿 PowerShell
+    /// 当「Bot」，过一拍再起一个长命的 ping 当「Chrome」并写出它的 PID；停下之后 ping 也得没了。
+    #[cfg(windows)]
+    #[test]
+    fn windows_stop_takes_down_grandchildren() {
+        use super::{terminate_local_bot, BotChild, BotJob};
+        use std::fs;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+        let base = scratch("win-job");
+        let pid_file = base.join("grandchild.pid");
+        let script = format!(
+            "Start-Sleep -Milliseconds 500; \
+             $p = Start-Process ping -ArgumentList '-n','120','127.0.0.1' -NoNewWindow -PassThru; \
+             Set-Content -Path '{}' -Value $p.Id; Start-Sleep 120",
+            pid_file.display()
+        );
+        let child = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut bot = BotChild { job: Some(BotJob::assign(&child).unwrap()), child };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let pid: u32 = loop {
+            if let Some(pid) = fs::read_to_string(&pid_file).ok().and_then(|s| s.trim().parse().ok()) {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "PowerShell 没写出孙进程的 PID");
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let grandchild = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        assert!(!grandchild.is_null(), "孙进程已经不在了，测不出东西");
+        terminate_local_bot(&mut bot).unwrap();
+        let waited = unsafe { WaitForSingleObject(grandchild, 10_000) };
+        unsafe { CloseHandle(grandchild) };
+        assert_eq!(waited, WAIT_OBJECT_0, "停下 Bot 之后孙进程还活着");
+        let _ = fs::remove_dir_all(&base);
     }
 }
 
