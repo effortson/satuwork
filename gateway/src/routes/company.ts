@@ -675,28 +675,43 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
   ) {
     const column = scope.companyId ? 'companyId' : 'accountId'
     const value = scope.companyId ?? scope.accountId ?? ''
-    const [buckets, models, charges] = await Promise.all([
+    /**
+     * 「今日」= 看的人所在时区的零点到现在，**不跟着上面选的范围走**：选「近 30 天」
+     * 的时候想知道的也常常是「今天已经花了多少」，那一格从 30 根柱子里抠不准（最后一根
+     * 的时区、边界都得自己心算）。
+     */
+    const day = 86400000
+    const now = Date.now()
+    const todayBucket = Math.floor((now + offsetMs) / day)
+    const todayRange = { from: todayBucket * day - offsetMs, to: now }
+    const [buckets, spentBuckets, models, charges, todayUsage, todayCharges] = await Promise.all([
       db.llmDailyBy(column, value, range, offsetMs),
+      db.chargeDailyBy(column, value, range, offsetMs),
       db.llmUsageByCompanyModel(range, scope.companyId, scope.accountId),
       db.chargeUsageBy(['botId', 'kind', 'subject'], range, scope),
+      scope.companyId ? db.llmUsageOfCompany(scope.companyId, todayRange) : db.llmUsageOfAccount(value, todayRange),
+      db.chargeUsageBy(['kind'], todayRange, scope),
     ])
 
     /**
      * 日线要**把没有调用的那天也画出来**：只画有数的那几天，横轴会被悄悄压缩，
      * 「周末没人用」看上去和「天天都在用」长得一样。
      */
-    const day = 86400000
     const first = range.from != null ? Math.floor((range.from + offsetMs) / day) : buckets[0]?.bucket
     const last = range.to != null ? Math.floor((range.to + offsetMs) / day) : buckets[buckets.length - 1]?.bucket
-    const daily: { label: string; value: number }[] = []
+    const dayLabel = (b: number) => {
+      const d = new Date(b * day)
+      return `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`
+    }
+    const daily: { label: string; value: number; amount: string; amountMicros: number }[] = []
     if (first != null && last != null && last >= first) {
       const counts = new Map(buckets.map((b) => [b.bucket, b.calls]))
+      const spent = new Map(spentBuckets.map((b) => [b.bucket, b.amountMicros]))
       // 92 根柱子已经挤不下了；手搓一个三年的 from/to 不该把这一屏拖垮。
       const start = Math.max(first, last - 91)
       for (let b = start; b <= last; b += 1) {
-        const d = new Date(b * day)
-        const label = `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`
-        daily.push({ label, value: counts.get(b) ?? 0 })
+        const micros = spent.get(b) ?? 0
+        daily.push({ label: dayLabel(b), value: counts.get(b) ?? 0, amount: usdMicros(micros), amountMicros: micros })
       }
     }
 
@@ -761,7 +776,21 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
       pct: pctOf(x.calls, topBot),
     }))
 
-    return { daily, byAgent, byModel, byKind }
+    const todayKind = new Map(todayCharges.map((c) => [c.kind, c]))
+    const today = {
+      label: dayLabel(todayBucket),
+      calls: todayUsage.calls,
+      promptTokens: todayUsage.promptTokens,
+      completionTokens: todayUsage.completionTokens,
+      amount: usdMicros(todayCharges.reduce((n, c) => n + c.amountMicros, 0)),
+      // 三条路各自的次数和钱，一条都没有的不列——和上面「按类型」同一个口径。
+      byKind: KINDS.filter(([k]) => todayKind.has(k)).map(([k, label]) => {
+        const x = todayKind.get(k) as { calls: number; amountMicros: number }
+        return { name: label, value: `${n(x.calls)} 次 · ${usdMicros(x.amountMicros)}` }
+      }),
+    }
+
+    return { daily, byAgent, byModel, byKind, today }
   }
 
   /**
