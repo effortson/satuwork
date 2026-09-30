@@ -6664,8 +6664,13 @@ const PREVIEW_TEXT_EXT = new Set([
   'rb', 'go', 'rs', 'java', 'c', 'h', 'cpp', 'sql', 'env', 'gitignore', 'diff', 'patch',
 ])
 
-/** 这几种在浏览器里没有原生渲染，得靠席位那边先提取成文本（见 fetchDocText）。 */
-const PREVIEW_DOC_EXT = new Set(['docx', 'xlsx', 'xlsm', 'pptx'])
+/**
+ * 这几种在浏览器里没有原生渲染，得靠席位那边：先要一份渲染好的 PDF（fetchDocPdf，
+ * 席位上的 LibreOffice 转），要不到再退回提取文本（fetchDocText）。
+ *
+ * 老格式（.doc / .xls / .ppt）和 ODF 只有 PDF 那条路——文本提取那套库不认它们。
+ */
+const PREVIEW_DOC_EXT = new Set(['docx', 'xlsx', 'xlsm', 'pptx', 'doc', 'xls', 'ppt', 'rtf', 'odt', 'ods', 'odp'])
 
 function extOf(name) {
   const base = String(name || '').split('/').pop() || ''
@@ -6773,11 +6778,14 @@ async function openPreview(path, name, options = {}) {
       return
     }
     if (k === 'doc') {
-      const blob = await res.blob()
+      // 原文件的字节在这里用不上（浏览器看不了），拿到大小就停，别白下一遍。
+      ac.abort()
       if (!state.preview || state.preview.path !== path) return
-      state.preview = { path, name, loading: false, url: '', type, size: blob.size, error: '', kind: k, mode, docLoading: true }
+      // 就算停在「原文」页（实时预览重开时会带着原来的 mode）也先要 PDF：没有它就没有
+      // 「预览」页签，人切不回去。
+      state.preview = { path, name, loading: false, url: '', type, size, error: '', kind: k, mode, docLoading: 'pdf' }
       render()
-      void fetchDocText(path, name)
+      void fetchDocPdf(path, name)
       return
     }
     const blob = await res.blob()
@@ -6828,18 +6836,68 @@ async function fetchDocText(path, name) {
     '/runtime/sessions/' + encodeURIComponent(state.chatSessionId) + '/files?path=' + encodeURIComponent(path) + '&as=text'
   try {
     const res = await swFetch(url, { headers: authHeaders({ accept: 'application/json' }) })
+    // 415 是「这种格式提取不了」（.doc / .xls 这些老格式），席位那句原话就是答案；
+    // 别的失败才可能是「席位太老、没有这个接口」。
+    if (res.status === 415) throw Object.assign(new Error(), { unsupported: true })
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const data = await res.json()
     if (!state.preview || state.preview.path !== path) return
     state.preview.docLoading = false
     state.preview.text = String((data && data.text) || '')
     state.preview.docNote = String((data && data.note) || '')
-    if (!state.preview.text) state.preview.tooBig = true
-  } catch {
+    if (!state.preview.text && !state.preview.url) state.preview.tooBig = true
+  } catch (err) {
     if (!state.preview || state.preview.path !== path) return
     state.preview.docLoading = false
-    state.preview.tooBig = true
-    state.preview.docNote = t('这个席位还不支持把 Office 文档提取出来预览（要更新 Bot 版本）。')
+    state.preview.text = ''
+    // 有渲染好的 PDF 时只是「原文」页没东西，不能把整个预览判成看不了。
+    if (!state.preview.url) state.preview.tooBig = true
+    state.preview.docNote = err && err.unsupported
+      ? t('这种格式没法提取成文本，下载下来用 Office 打开看吧。', 'This format cannot be extracted as text. Download it and open it in Office.')
+      : t('这个席位还不支持把 Office 文档提取出来预览（要更新 Bot 版本）。')
+  }
+  render()
+}
+
+/**
+ * 要一份渲染好的 PDF（席位上 LibreOffice 转的，见 bot 的 workspace/render.ts）。
+ *
+ * **只认明确的 `application/pdf`**：老席位不认 `as=pdf`，会把原文件字节当普通预览原样
+ * 回来（octet-stream）——那不是 PDF，拿去塞 PDF 阅读器只会是一片解析失败。
+ *
+ * 要不到（老席位、这台机器没装 LibreOffice、转坏了、太大）一律退回提取文本，和这个
+ * 功能出现之前一模一样，不当成出错。
+ */
+async function fetchDocPdf(path, name) {
+  const url =
+    '/runtime/sessions/' + encodeURIComponent(state.chatSessionId) + '/files?path=' + encodeURIComponent(path) + '&as=pdf'
+  const ac = new AbortController()
+  if (state.preview && state.preview.path === path) state.preview.abort = ac
+  let buf = null
+  try {
+    const res = await swFetch(url, { headers: authHeaders(), signal: ac.signal })
+    const type = (res.headers.get('content-type') || '').split(';')[0].trim()
+    if (res.ok && type === 'application/pdf') buf = await res.arrayBuffer()
+    // 不是 PDF 的那份正文不读完：老席位回的可能是一整个大文件。
+    else ac.abort()
+  } catch {
+    // 预览被关掉或换了文件，上面那个 abort 已经把这次请求收了；否则按「要不到」处理。
+    if (!state.preview || state.preview.path !== path || state.preview.abort !== ac) return
+  }
+  if (!state.preview || state.preview.path !== path) return
+  if (!buf || !buf.byteLength) {
+    state.preview.mode = 'source'
+    state.preview.docLoading = 'text'
+    render()
+    void fetchDocText(path, name)
+    return
+  }
+  // 类型钉死成 application/pdf，理由同 openPreview 里 PDF 那支。
+  state.preview.url = URL.createObjectURL(new Blob([buf], { type: 'application/pdf' }))
+  state.preview.docLoading = false
+  if (state.preview.mode === 'source') {
+    state.preview.docLoading = 'text'
+    void fetchDocText(path, name)
   }
   render()
 }
@@ -6882,7 +6940,9 @@ async function downloadWorkspaceFile(path, name) {
 
 /** 渲染视图和原文之间的切换。只有两者都成立的类型才给，别摆一颗按不动的按钮。 */
 function previewTabs(p) {
-  const both = (p.kind === 'markdown' || p.kind === 'html') && !p.tooBig && !p.error && !p.loading
+  // Office 文档：渲染出了 PDF 才有「预览」可切；没有的话只剩提取文本，不摆按钮。
+  const both =
+    (p.kind === 'markdown' || p.kind === 'html' || (p.kind === 'doc' && p.url)) && !p.tooBig && !p.error && !p.loading
   if (!both) return ''
   const tab = (mode, label) =>
     `<button type="button" class="sw-preview-tab" data-act="preview-mode" data-mode="${mode}"` +
@@ -6916,7 +6976,9 @@ function spinNote(text) {
 function previewBody(p) {
   if (p.loading) return spinNote(t('正在取文件…'))
   if (p.error) return `<p class="sw-preview-note sw-preview-err">${esc(p.error)}</p>`
-  if (p.docLoading) return spinNote(t('正在提取文档内容…'))
+  if (p.docLoading) {
+    return spinNote(p.docLoading === 'pdf' ? t('正在渲染文档…', 'Rendering the document…') : t('正在提取文档内容…'))
+  }
   if (p.tooBig) {
     const why = p.docNote || t('这个文件不适合在浏览器里打开（太大，或者是不认识的格式）。下载下来看吧。')
     return `<p class="sw-preview-note">${esc(why)}</p>`
@@ -6927,7 +6989,7 @@ function previewBody(p) {
         `${DONE} data-onerror="busy-done">`,
     )
   }
-  if (p.kind === 'pdf') {
+  if (p.kind === 'pdf' || (p.kind === 'doc' && p.mode === 'view' && p.url)) {
     /**
      * PDF 交给浏览器自带的阅读器，**这个 iframe 不能带 sandbox**。
      *
@@ -6961,6 +7023,8 @@ function previewBody(p) {
     const html = md ? md.render(String(p.text || '')) : ''
     if (md) return `<div class="sw-preview-md sw-md">${html}</div>`
   }
+  // Office 文档的「原文」页提取不出东西时（老格式、老席位），把原因说出来，别给一块空白。
+  if (p.kind === 'doc' && !p.text && p.docNote) return `<p class="sw-preview-note">${esc(p.docNote)}</p>`
   // 其余一律看原文：Markdown/HTML 的「原文」页、纯文本、以及提取出来的 Office 文档。
   return `<pre class="sw-preview-src">${esc(String(p.text || ''))}</pre>`
 }
@@ -6991,6 +7055,12 @@ function previewModal() {
 function setPreviewMode(mode) {
   if (!state.preview || state.preview.mode === mode) return
   state.preview.mode = mode === 'source' ? 'source' : 'view'
+  // Office 文档的文本是切到「原文」时才去取的——大多数人只看渲染出来的那一份。
+  const p = state.preview
+  if (p.kind === 'doc' && p.mode === 'source' && p.text == null && !p.docLoading) {
+    p.docLoading = 'text'
+    void fetchDocText(p.path, p.name)
+  }
   render()
   // 渲染出来的 Markdown 里可能有代码块、公式、mermaid——和聊天气泡一样要 enhance 一次，
   // 否则代码不高亮、公式显示 TeX 原文。

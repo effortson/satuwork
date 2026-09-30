@@ -38,6 +38,7 @@ import { runPatch } from './patch.mjs'
 import { runProcess } from './process.mjs'
 import { runDesktop } from './desktop.mjs'
 import { runDocExtract } from './doc-extract.mjs'
+import { runDocRender } from './doc-render.mjs'
 import { runWebBot } from './web-bot.mjs'
 import { runVision } from './vision.mjs'
 import { runTurnImages } from './turn-images.mjs'
@@ -2981,6 +2982,8 @@ async function runBot() {
       GATEWAY_TOKEN: SEAT_TOK,
       GATEWAY_API_KEY: '',
       SATUWORK_BOT_ID: '',
+      // 钉死「这台机器没有 LibreOffice」：as=pdf 那条要的是确定的 501，不能随开发机装没装而变。
+      SATUWORK_SOFFICE: join(BOT_HOME, 'no-soffice'),
       // 空 key 不删：套件不能因为没配模型就整组失败，但进程环境保持原样。
     },
   })
@@ -3156,6 +3159,22 @@ async function runBot() {
     assert(missing.status === 404, `不存在应该 404，实为 ${missing.status} ${missing.text}`)
     const empty = await req(base, 'GET', '/api/workspace/file', { token: SEAT_TOK })
     assert(empty.status === 400, `缺 path 应该 400，实为 ${empty.status}`)
+  })
+
+  await test('预览：as=pdf 不认的格式 415，没装 LibreOffice 501（界面据此退回文本）', async () => {
+    const csv = await req(base, 'GET', `/api/workspace/file?path=${encodeURIComponent(uploadedPath)}&as=pdf`, { token: SEAT_TOK })
+    assert(csv.status === 415, `csv 该 415，实为 ${csv.status} ${csv.text}`)
+    const up = await req(base, 'POST', `/api/sessions/${sessionId}/files`, {
+      token: SEAT_TOK,
+      raw: Buffer.from('PK not really a docx'),
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': encodeURIComponent('报告.docx') },
+    })
+    assert(up.status === 200, `upload docx ${up.status} ${up.text}`)
+    const r = await req(base, 'GET', `/api/workspace/file?path=${encodeURIComponent(up.json.path)}&as=pdf`, { token: SEAT_TOK })
+    // 501 而不是 500：「这台机器转不了」是预期内的答案，不是故障。
+    assert(r.status === 501 && r.json && r.json.reason === 'unavailable', `该 501 unavailable，实为 ${r.status} ${r.text}`)
+    const missing = await req(base, 'GET', `/api/workspace/file?path=${encodeURIComponent('nope.docx')}&as=pdf`, { token: SEAT_TOK })
+    assert(missing.status === 404, `不存在应该 404，实为 ${missing.status} ${missing.text}`)
   })
 
   await test('附件这两条路一样要过鉴权', async () => {
@@ -3630,6 +3649,7 @@ async function main() {
     await suite('process', () => runProcess({ root, test, assert, log }))
     await suite('desktop', () => runDesktop({ root, test, assert, log }))
     await suite('doc-extract', () => runDocExtract({ root, test, assert, log }))
+    await suite('doc-render', () => runDocRender({ root, test, assert, log }))
     await suite('web-bot', () => runWebBot({ root, test, assert, log }))
     await suite('vision', () => runVision({ root, test, assert, log }))
     await suite('turn-images', () => runTurnImages({ root, test, assert, log }))
