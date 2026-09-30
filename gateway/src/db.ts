@@ -4921,12 +4921,19 @@ export class Db {
     return row
   }
 
-  async finishRoutineRun(id: string, patch: { status: RoutineRunStatus; error?: string | null; sessionId?: string | null }): Promise<void> {
+  /**
+   * 改一条流水的状态。**只改还在 running 的那一条**，返回改没改到。
+   *
+   * 以前按 id 无条件改：租约清扫（failExpiredRoutineLeases）刚把它收成 error 并排了补跑，
+   * 同一刻工人报「开跑了」就把它写回 running，一次已收场的运行被复活；两次并发的收尾都
+   * 过了 claimedRun，armRetry 连跑两次、少补一次。收过场的流水一律不再动，调用方看返回值。
+   */
+  async finishRoutineRun(id: string, patch: { status: RoutineRunStatus; error?: string | null; sessionId?: string | null }): Promise<boolean> {
     const sets = ['status = ?', 'error = ?', '"endedAt" = ?']
     const args: unknown[] = [patch.status, patch.error ?? null, patch.status === 'running' ? null : Date.now()]
     if (patch.sessionId !== undefined) (sets.push('"sessionId" = ?'), args.push(patch.sessionId))
     args.push(id)
-    await this.run(`update routine_runs set ${sets.join(', ')} where id = ?`, args)
+    return (await this.run(`update routine_runs set ${sets.join(', ')} where id = ? and status = 'running'`, args)) > 0
   }
 
   async routineRuns(routineId: string, limit = 10): Promise<RoutineRun[]> {

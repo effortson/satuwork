@@ -136,7 +136,8 @@ async function routineStarted(db: RouteCtx['db'], run: RoutineRun, machineId: st
     })
     return { blocked: blocking.ask.slice(0, 60) || '没写要做什么' }
   }
-  await db.finishRoutineRun(run.id, { status: 'running', sessionId })
+  // 只在还是 running 时记上会话：租约清扫可能刚把它收掉，不能写回 running 复活它。
+  if (!(await db.finishRoutineRun(run.id, { status: 'running', sessionId }))) throw new HttpError(404, '这一次已经收场了')
   await db.renewRoutineRun(run.id, machineId, Date.now() + ROUTINE_LEASE_MS)
   return { blocked: null }
 }

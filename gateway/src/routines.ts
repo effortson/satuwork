@@ -156,7 +156,8 @@ export async function settleRun(
   patch: SettlePatch,
   retryable = false,
 ): Promise<void> {
-  await db.finishRoutineRun(runId, patch)
+  // 已经收过场（租约清扫、并发的另一次收尾）就到此为止：补跑那一步只该排一次。
+  if (!(await db.finishRoutineRun(runId, patch))) return
   if (trigger === 'manual') return
   await (patch.status === 'ok' || !retryable ? db.clearRoutineRetry(routineId) : armRetry(db, routineId)).catch((e: Error) => {
     console.error(`satuwork-gateway: 日常任务 ${routineId} 的重试没排上：${e.message}`)
