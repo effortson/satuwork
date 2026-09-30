@@ -3077,6 +3077,37 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(smartBody.reasoning_effort === 'high', `该夹到 high，实际 ${JSON.stringify(smartBody.reasoning_effort)}`)
         })
 
+        await test('模型中继：推理模型不带 temperature，不会推理的照转', async () => {
+          /**
+           * OpenAI 的推理模型收到 temperature 当场 400（「Unsupported parameter: 'temperature'」），
+           * 会话审计发的就是 `temperature: 0`。授权下发的请求体补丁要把它删掉（gateway/src/llm.ts
+           * 的 rejectsTemperature）；不会推理的模型不动，免得把调用方要的采样参数也吞了。
+           */
+          upSeen.length = 0
+          const dumb = await req(mgrBase, 'POST', '/llm/v1/chat/completions', {
+            token: apiKey,
+            body: { ...chatBody, temperature: 0 },
+          })
+          assert(dumb.status === 200, `不会推理的模型 ${dumb.status} ${dumb.text.slice(0, 300)}`)
+          assert(upLast()?.body?.temperature === 0, `不会推理的模型 temperature 该原样转，实际 ${JSON.stringify(upLast()?.body?.temperature)}`)
+
+          upSeen.length = 0
+          const smart = await req(mgrBase, 'POST', '/llm/v1/chat/completions', {
+            token: apiKey,
+            body: { ...chatBody, model: `${PROVIDER}/${THINK_MODEL}`, temperature: 0 },
+          })
+          assert(smart.status === 200, `会推理的模型 ${smart.status} ${smart.text.slice(0, 300)}`)
+          assert(!('temperature' in (upLast()?.body || {})), `推理模型不该带 temperature，实际 ${JSON.stringify(upLast()?.body?.temperature)}`)
+
+          upSeen.length = 0
+          const res = await req(mgrBase, 'POST', '/llm/v1/responses', {
+            token: apiKey,
+            body: { model: `${PROVIDER}/${THINK_MODEL}`, input: [{ role: 'user', content: 'hi' }], stream: true, store: false, temperature: 0 },
+          })
+          assert(res.status === 200, `responses 路由 ${res.status} ${res.text.slice(0, 300)}`)
+          assert(!('temperature' in (upLast()?.body || {})), `responses 路由上推理模型也不该带 temperature，实际 ${JSON.stringify(upLast()?.body?.temperature)}`)
+        })
+
         await test('模型中继：responses 路由的推理档在 `reasoning.effort`，同样由 Gateway 夹好', async () => {
           /**
            * `api: 'openai-responses'` 的模型 Bot 改走 /v1/responses（gpt-5.6-sol 这一批在 chat
