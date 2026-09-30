@@ -734,7 +734,7 @@ function machineVersionPanel(card) {
     : m.protocolTooOld
       ? ' · ' + t('版本过旧，等它自升级')
       : card.managerOutdated
-        ? ` · ${t('最新')} ${esc(state.managerLatest || '')}`
+        ? ` · ${t('最新')} ${esc(card.managerLatest || state.managerLatest || '')}`
         : ''
   const mgrBtn = card.managerOutdated
     ? `<button type="button" class="btn" data-act="upgrade-manager" data-scope="platform" data-machine="${esc(m.id)}" ${state.busy ? 'disabled' : ''}>${t('升级管家')}</button>`
@@ -758,7 +758,7 @@ function machineVersionPanel(card) {
     <span class="satu-panel-title">${t('版本')}</span>
     <div class="satu-kv"><span>${t('管家版本')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${esc(m.managerVersion || '—')}${mgrNote}${mgrBtn}</span></div>
     <div class="satu-kv"><span>${t('期望版本')}</span><span>${esc(card.managerDesired || t('跟平台的最新发布走'))}</span></div>
-    <div class="satu-kv"><span>${t('Bot 运行时')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${botText}${card.botOutdated ? ` · ${t('最新')} ${esc(state.botLatest || '')}` : ''}${botBtn}</span></div>
+    <div class="satu-kv"><span>${t('Bot 运行时')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${botText}${card.botOutdated ? ` · ${t('最新')} ${esc(card.botLatest || state.botLatest || '')}` : ''}${botBtn}</span></div>
     ${/* 装的是哪个包、跑的是哪一版公司模版，两件事各自会落后。渲染函数在 pages-audit.js，
          那一页的机器卡片画的是同一行——同一台机器不该在两个页面上说两种话。 */ ''}
     ${botTemplateRow(card)}

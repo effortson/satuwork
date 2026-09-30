@@ -341,6 +341,16 @@ export async function machineCard(
     .map(([version, n]) => ({ version, seats: n }))
     .sort((a, b) => b.seats - a.seats)
   const desired = (await desiredManagerRelease(db, machine))?.version ?? null
+  /**
+   * 「最新」按**这台机器的架构**取。
+   *
+   * 调用方给的 `latest` 是不分架构的那个（最后登记的一份），而 CI 是 arm64 先、x64 后串行
+   * 登记的——拿它比，arm64 机器升到 `0.1.16+…-arm64` 之后照样和 `0.1.16+…-x64` 不相等，
+   * 卡片上永远挂着「可升级 · 最新 …-x64」。还没报过架构的机器（没心跳过）只能退回那个。
+   */
+  const arch = machine.arch ?? null
+  const botLatest = arch ? ((await db.latestBotRelease('bot', arch))?.version ?? null) : latest.botLatest
+  const managerLatest = arch ? ((await db.latestBotRelease('manager', arch))?.version ?? null) : latest.managerLatest
   // 席位清单给平台端的日志选择器用：要看某个席位的 bot 日志，得先知道有哪些席位。
   const seatList =
     opts.seatList === false
@@ -365,10 +375,11 @@ export async function machineCard(
     full,
     botVersions,
     tplVersions,
-    botOutdated: Boolean(latest.botLatest) && botVersions.some((v) => v.version !== latest.botLatest),
+    botLatest,
+    managerLatest,
+    botOutdated: Boolean(botLatest) && botVersions.some((v) => v.version !== botLatest),
     managerDesired: desired,
-    managerOutdated:
-      Boolean(latest.managerLatest) && Boolean(machine.managerVersion) && machine.managerVersion !== latest.managerLatest,
+    managerOutdated: Boolean(managerLatest) && Boolean(machine.managerVersion) && machine.managerVersion !== managerLatest,
     managerPending: Boolean(desired) && Boolean(machine.managerVersion) && machine.managerVersion !== desired,
     // 时区和管家版本一样是「下指令 → 机器自己去改 → 下一轮心跳才知道成没成」。
     timezonePending: Boolean(machine.timezone) && machine.currentTimezone !== machine.timezone,
