@@ -6,7 +6,7 @@
  * 放 manager/ 而不是 e2e/：和别的探针同一个理由，裸导入按文件所在目录往上找。
  */
 import { readFileSync } from 'node:fs'
-import { classifyHolder } from './src/reclaim.ts'
+import { classifyHolder, xDisplayOf } from './src/reclaim.ts'
 import { claimSeat } from './src/seat-owner.ts'
 import { pruneRetired, stepOf } from './src/seats.ts'
 import { run, tailError } from './src/run.ts'
@@ -137,6 +137,8 @@ const out = {
   // 超长输出留尾不留头：原因在最后。
   longTail: tailError({ code: 1, stdout: long('OUT', 400) + ' 最后一句', stderr: '' }, 'x'),
   code0: tailError({ code: 0, stdout: '', stderr: '' }, '兜底'),
+  // 显示号只认 X 服务器自己命令行上的 `:N`。
+  xDisplays: ['Xvfb :15 -screen 0 1920x1080x24', '/usr/bin/Xvfb :10 -nolisten tcp', 'sleep inf', 'bash -c Xvfb :1', 'x11vnc -display :10'].map(xDisplayOf),
   ...verdicts(),
   ...owners(),
   ...pruning(),

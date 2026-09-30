@@ -111,6 +111,10 @@ export async function runDeployErrors({ root, test, assert, log }) {
     assert(r.displayStaleGeneration.action === 'kill-pid', `${JSON.stringify(r.displayStaleGeneration)}`)
   })
 
+  await test('显示号只认 X 服务器自己的命令行，不认别的进程（DISPLAY 环境变量谁都能写）', async () => {
+    assert(JSON.stringify(r.xDisplays) === JSON.stringify([15, 10, null, null, null]), `${JSON.stringify(r.xDisplays)}`)
+  })
+
   await test('不是 satuwork 的进程 → 不动，把话说准', async () => {
     assert(r.foreign.action === 'blocked', `${JSON.stringify(r.foreign)}`)
     assert(r.foreign.reason.includes('不是任何一个 satuwork 席位'), `${r.foreign.reason}`)
