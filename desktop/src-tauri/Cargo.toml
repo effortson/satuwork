@@ -27,6 +27,9 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 sha2 = "0.10"
 tauri-plugin-updater = "2"
 
+[target.'cfg(windows)'.dependencies]
+junction = "1.2"
+
 # 壳子不该有调试符号那么大。桌面包是用户下载的东西，几 MB 和几十 MB 的区别他们看得见。
 [profile.release]
 opt-level = "s"
