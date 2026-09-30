@@ -457,7 +457,54 @@ out.percent = (() => {
   out.narrow = { 四个库都在: !r.includes('Cannot find module') , 别的不漏: r.includes('NARROW') && !r.includes('LEAK'), 原话: r.slice(0, 200) }
 }
 
-// ── 20. 真 LibreOffice（有才跑）：改过的三份都打得开，PPT 是三页 ──────────
+// ── 20. 新建的要点：office_guide 给的模板原样写进工作区，terminal 跑得出来，包是干净的 ──
+// 模板是要点里最占地方、也最容易跟着库升级悄悄坏掉的那部分；照模型真会做的来一遍。
+{
+  const { NEW_TEMPLATES } = await import('./src/tools/office-new.ts')
+  out.guide = {
+    认错格式: (await call('office_guide', { format: 'pdf' })).includes('只能是'),
+    带点大写也认: (await call('office_guide', { format: '.DOCX' })).includes('Word（docx 库）要点'),
+  }
+  const expect = { docx: '第二步', xlsx: '市场活动', pptx: '季度收入' }
+  for (const kind of ['docx', 'xlsx', 'pptx']) {
+    const guide = await call('office_guide', { format: kind })
+    const script = `.satuwork/scripts/new-${kind}.cjs`
+    await call('write_file', { path: script, content: NEW_TEMPLATES[kind] })
+    const run = await call('terminal', { command: `node ${script} new.${kind}` })
+    const file = at(`new.${kind}`)
+    const made = existsSync(file)
+    let problems = ['没生成']
+    if (made) {
+      const zip = await JSZip.loadAsync(readFileSync(file))
+      const names = Object.keys(zip.files).filter((n) => !zip.files[n].dir)
+      const texts = new Map()
+      for (const n of names) if (/\.(xml|rels)$/i.test(n)) texts.set(n, await zip.file(n).async('string'))
+      // pptxgenjs 自己会登记几个不存在的 slideMasterN.xml（页越多越多，见 office.ts 的 Manifest.baseline），
+      // PowerPoint 照开，不算模板的错。
+      problems = checkPackage(names, (n) => texts.get(n)).filter((l) => !/登记了 \/ppt\/slideMasters\/slideMaster\d+\.xml，但包里没有/.test(l))
+      for (const [n, t] of texts) {
+        const bad = checkXml(t)
+        if (bad) problems.push(`${n}：${bad}`)
+      }
+    }
+    out.guide[kind] = {
+      模板原样在要点里: guide.includes(NEW_TEMPLATES[kind].trimEnd()),
+      跑出来了: made,
+      读得出内容: made ? (await extractDocument(file, kind)).text.includes(expect[kind]) : false,
+      包的问题: problems,
+      输出: run.slice(0, 300),
+    }
+  }
+  if (existsSync(at('new.xlsx'))) {
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.readFile(at('new.xlsx'))
+    const d = wb.getWorksheet('预算').getCell('B2').value
+    out.guide.xlsx.日期没差一天 = d instanceof Date && d.toISOString().startsWith('2026-10-08')
+    out.guide.xlsx.打开时重算 = /fullCalcOnLoad="1"/.test(await zipText(at('new.xlsx'), 'xl/workbook.xml'))
+  }
+}
+
+// ── 21. 真 LibreOffice（有才跑）：改过的三份都打得开，PPT 是三页；新建模板出的三份也打得开 ──
 {
   const { officeExecutable, renderToPdf } = await import('./src/workspace/render.ts')
   if (officeExecutable()) {
@@ -471,6 +518,7 @@ out.percent = (() => {
       }
     }
     out.real = { docx: await pages('report.docx'), pptx: await pages('deck.pptx'), xlsx: await pages('sales.xlsx') }
+    out.realNew = { docx: await pages('new.docx'), pptx: await pages('new.pptx'), xlsx: await pages('new.xlsx') }
   } else {
     out.real = null
   }
