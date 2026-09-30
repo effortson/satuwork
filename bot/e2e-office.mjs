@@ -7,7 +7,7 @@
  * 加一页按解包结果里给的「四处」一步步做。这一层坏了的表现是 Office 说「文件已损坏」，而
  * 那时候已经没人知道是哪一步，所以每一步都钉。
  */
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -23,6 +23,8 @@ import * as terminalTools from './src/tools/terminal.ts'
 import { extractDocument } from './src/workspace/extract.ts'
 import { checkPackage, checkXml, condenseXml, prettyXml } from './src/workspace/ooxml.ts'
 
+// 解包总量上限调小：要造一个「声明很小、实际很大」的炸弹，几百 MB 太慢。office.ts 每次解包时读它。
+process.env.SATUWORK_OFFICE_MAX_UNPACKED = String(16 * 1024 * 1024)
 const home = mkdtempSync(join(tmpdir(), 'satu-office-home-'))
 process.env.SATUWORK_HOME = home
 const root = mkdtempSync(join(tmpdir(), 'satu-office-'))
@@ -327,7 +329,135 @@ const out = {}
   }
 }
 
-// ── 12. 真 LibreOffice（有才跑）：改过的三份都打得开，PPT 是三页 ──────────
+// ── 12. 原文件本来就带缩进的部件：没碰过就原字节放回 ────────────────
+{
+  const base = await JSZip.loadAsync(await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('缩进样本')] }] })))
+  // styles.xml 换成带 CRLF 缩进的版本（别的生成器就这么存）；再加一个 Excel 批注那种不合格的 VML。
+  const styles = await base.file('word/styles.xml').async('string')
+  base.file('word/styles.xml', prettyXml(styles).replace(/\n/g, '\r\n'))
+  base.file('word/vmlDrawing1.vml', '<xml xmlns:v="urn:v">\r\n <v:shape>\r\n  <div>第一行<br>第二行</div>\r\n </v:shape>\r\n</xml>')
+  const types = await base.file('[Content_Types].xml').async('string')
+  base.file('[Content_Types].xml', types.replace('<Default ', '<Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/><Default '))
+  writeFileSync(at('indented.docx'), await base.generateAsync({ type: 'nodebuffer' }))
+  const before = await JSZip.loadAsync(readFileSync(at('indented.docx')))
+  const dir = dirOf(await call('office_unpack', { path: 'indented.docx' }))
+  await call('patch', { path: `${dir}/word/document.xml`, old_string: '缩进样本', new_string: '改过了' })
+  const packed = await call('office_pack', { dir })
+  const after = await JSZip.loadAsync(readFileSync(at('indented.docx')))
+  const changed = []
+  for (const name of Object.keys(before.files)) {
+    if (name === 'word/document.xml' || before.files[name].dir) continue
+    const a = await before.file(name).async('nodebuffer')
+    const b = await after.file(name)?.async('nodebuffer')
+    if (!b || Buffer.compare(a, b) !== 0) changed.push(name)
+  }
+  out.byteIdentical = {
+    打包成功: packed.includes('已覆盖'),
+    改的那处在: (await extractDocument(at('indented.docx'), 'docx')).text.includes('改过了'),
+    没碰过的原字节: changed,
+    // JSZip 默认会补 `word/` 这样的目录条目，Office 自己存的包里没有。
+    没有目录条目: !Object.keys(after.files).some((n) => n.endsWith('/')),
+    原字节目录收掉了: !existsSync(at(`${dir}.orig`)),
+  }
+}
+
+// ── 13. 扩展名：xlsm 不许存成 xlsx ─────────────────────────────────────
+{
+  const wb = new ExcelJS.Workbook()
+  wb.addWorksheet('S').addRow(['宏'])
+  await wb.xlsx.writeFile(at('macro.xlsm'))
+  const dir = dirOf(await call('office_unpack', { path: 'macro.xlsm' }))
+  const r = await call('office_pack', { dir, path: 'macro-copy.xlsx', keep: true })
+  const ok = await call('office_pack', { dir, path: 'macro-copy.xlsm' })
+  out.ext = { 拒了: r.includes('扩展名要和原文件一样') && !existsSync(at('macro-copy.xlsx')), 同扩展名可以: ok.includes('已写出') }
+}
+
+// ── 14. 炸弹：中央目录声明很小、实际解开很大，流着解、超了当场停 ────────
+{
+  const bomb = new JSZip()
+  bomb.file('[Content_Types].xml', '<Types/>')
+  bomb.file('word/big.xml', Buffer.alloc(40 * 1024 * 1024, 0x20))
+  const bytes = await bomb.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  // 把 word/big.xml 在本地头（偏移 22）和中央目录（偏移 24）里声明的解压大小都改成 1000。
+  const lie = (sig, nameLenAt, nameAt, sizeAt) => {
+    for (let i = bytes.indexOf(sig); i !== -1; i = bytes.indexOf(sig, i + 4)) {
+      const len = bytes.readUInt16LE(i + nameLenAt)
+      if (bytes.subarray(i + nameAt, i + nameAt + len).toString() === 'word/big.xml') bytes.writeUInt32LE(1000, i + sizeAt)
+    }
+  }
+  lie(Buffer.from([0x50, 0x4b, 0x03, 0x04]), 26, 30, 22)
+  lie(Buffer.from([0x50, 0x4b, 0x01, 0x02]), 28, 46, 24)
+  writeFileSync(at('bomb.docx'), bytes)
+  const r = await call('office_unpack', { path: 'bomb.docx' })
+  const left = existsSync(at('.satuwork/office')) ? readdirSync(at('.satuwork/office')).filter((n) => n.startsWith('bomb')) : []
+  out.bomb = { 拦下了: r.includes('超过了上限'), 没留半截: left.length === 0, 原话: r.slice(0, 200) }
+}
+
+// ── 15. 写不进去：不留临时文件，说人话 ────────────────────────────────
+{
+  writeFileSync(at('locked.docx'), await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('x')] }] })))
+  const dir = dirOf(await call('office_unpack', { path: 'locked.docx' }))
+  // 输出位置是个非空目录：rename 一定失败（和 Windows 上文件被 Word 占着是同一条路）。
+  mkdirSync(at('taken.docx'))
+  writeFileSync(at('taken.docx/inside.txt'), 'x')
+  const r = await call('office_pack', { dir, path: 'taken.docx' })
+  out.renameFail = {
+    说了写不进: r.includes('写不进'),
+    没留临时文件: !readdirSync(root).some((n) => n.startsWith('.taken.docx.') && n.endsWith('.tmp')),
+  }
+}
+
+// ── 16. 美化后超过 patch 上限的不拆行，并且明说 ───────────────────────
+{
+  const base = await JSZip.loadAsync(await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('深')] }] })))
+  // 嵌套 300 层、最里面两万个空元素：原文件才一百多 KB，美化之后每个元素前面都是六百个空格。
+  base.file('word/deep.xml', '<a>'.repeat(300) + '<b/>'.repeat(20000) + '</a>'.repeat(300))
+  writeFileSync(at('deep.docx'), await base.generateAsync({ type: 'nodebuffer' }))
+  const r = await call('office_unpack', { path: 'deep.docx' })
+  const dir = dirOf(r)
+  out.tooWide = {
+    明说了: /太大没拆行.*word\/deep\.xml/.test(r),
+    磁盘上是原样: dir ? readFileSync(at(`${dir}/word/deep.xml`), 'utf8').split('\n').length === 1 : false,
+  }
+}
+
+// ── 17. 部件名里的百分号：不许把整份文件搞到解不开 ────────────────────
+out.percent = (() => {
+  try {
+    const files = {
+      '[Content_Types].xml': '<Types><Default Extension="xml" ContentType="x"/><Default Extension="rels" ContentType="r"/><Override PartName="/word/100%.xml" ContentType="y"/></Types>',
+      'word/100%.xml': '<a/>',
+      '_rels/.rels': '<Relationships><Relationship Id="r1" Type="t" Target="word/100%.xml"/></Relationships>',
+    }
+    return checkPackage(Object.keys(files), (p) => files[p])
+  } catch (e) {
+    return `抛了：${e.message}`
+  }
+})()
+
+// ── 18. 大小写不敏感的盘上，换个大小写也认得出是原文件 ────────────────
+{
+  writeFileSync(at('case.docx'), await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('v1')] }] })))
+  if (existsSync(at('CASE.docx'))) {
+    const dir = dirOf(await call('office_unpack', { path: 'case.docx' }))
+    writeFileSync(at('case.docx'), await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('别人改的')] }] })))
+    utimesSync(at('case.docx'), new Date(), new Date(Date.now() + 5000))
+    const r = await call('office_pack', { dir, path: 'CASE.docx' })
+    out.caseFold = { 拦下了: r.includes('被改过'), 别人的改动还在: (await extractDocument(at('case.docx'), 'docx')).text.includes('别人改的') }
+  } else {
+    out.caseFold = null // 大小写敏感的盘（Linux）：两个名字就是两个文件，这条不适用
+  }
+}
+
+// ── 19. NODE_PATH 只放行那几个库，不把 Bot 的整个 node_modules 漏出去 ──
+{
+  const r = await call('terminal', {
+    command: `node -e "require('docx');require('pptxgenjs');require('exceljs');require('jszip');try{require('tsx');console.log('LEAK')}catch(e){console.log('NARROW')}"`,
+  })
+  out.narrow = { 四个库都在: !r.includes('Cannot find module') , 别的不漏: r.includes('NARROW') && !r.includes('LEAK'), 原话: r.slice(0, 200) }
+}
+
+// ── 20. 真 LibreOffice（有才跑）：改过的三份都打得开，PPT 是三页 ──────────
 {
   const { officeExecutable, renderToPdf } = await import('./src/workspace/render.ts')
   if (officeExecutable()) {

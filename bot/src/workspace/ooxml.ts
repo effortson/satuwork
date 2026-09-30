@@ -188,7 +188,8 @@ function ownerOfRels(relsPath: string): string {
   return dir === '.' ? base : `${dir}/${base}`
 }
 
-function attr(tag: string, name: string): string | undefined {
+/** 一个开始标签里某个属性的原始值（没反转义）。 */
+export function attr(tag: string, name: string): string | undefined {
   const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(tag)
   return m ? (m[1] ?? m[2]) : undefined
 }
@@ -202,6 +203,46 @@ function unescapeAttr(v: string): string {
     .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
     .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
     .replace(/&amp;/g, '&')
+}
+
+/**
+ * 百分号解码，**解不了就原样回**。部件名是外部输入：`100%.png` 这种没编码的百分号让
+ * decodeURI 当场抛 URIError，而那只是个奇怪的文件名，不值得让整份文件解不开。
+ */
+function decodePart(name: string): string {
+  try {
+    return decodeURI(name)
+  } catch {
+    return name
+  }
+}
+
+export interface Relationship {
+  id: string
+  type: string
+  /** 解析到包根的部件路径。External 的不在这里面。 */
+  part: string
+}
+
+/**
+ * 一份 .rels 里的内部关系，Target 已经解析成相对包根的部件路径。
+ *
+ * **只有这一处解析关系**：解包时列「工作表 → 文件」「第几页 → 文件」、打包时查引用有没有
+ * 断，用的都是它。两处各写一份的话，同一个 Target 在一边认得出、在另一边认不出。
+ */
+export function relationships(relsPath: string, text: string | undefined): Relationship[] {
+  const base = posix.dirname(ownerOfRels(relsPath))
+  const out: Relationship[] = []
+  for (const m of (text ?? '').matchAll(/<(?:\w+:)?Relationship\b[^>]*>/g)) {
+    if (attr(m[0], 'TargetMode') === 'External') continue
+    const raw = attr(m[0], 'Target')
+    if (!raw) continue
+    const target = unescapeAttr(raw).split('#')[0]
+    if (!target) continue
+    const joined = target.startsWith('/') ? target.slice(1) : posix.normalize(posix.join(base === '.' ? '' : base, target))
+    out.push({ id: attr(m[0], 'Id') ?? '?', type: attr(m[0], 'Type') ?? '', part: decodePart(joined) })
+  }
+  return out
 }
 
 /**
@@ -227,7 +268,7 @@ export function checkPackage(parts: string[], read: (path: string) => string | u
   for (const m of types.matchAll(/<(?:\w+:)?Override\b[^>]*>/g)) {
     const name = attr(m[0], 'PartName')
     if (!name) continue
-    const part = decodeURI(name.replace(/^\//, ''))
+    const part = decodePart(name.replace(/^\//, ''))
     overrides.add(part.toLowerCase())
     if (!have.has(part) && !parts.some((p) => p.toLowerCase() === part.toLowerCase())) {
       problems.push(`[Content_Types].xml 里登记了 /${part}，但包里没有这个部件（删掉那条 Override）`)
@@ -252,25 +293,8 @@ export function checkPackage(parts: string[], read: (path: string) => string | u
     }
   }
   for (const rels of parts.filter((p) => p.endsWith('.rels'))) {
-    const text = read(rels)
-    if (text === undefined) continue
-    const owner = ownerOfRels(rels)
-    const base = posix.dirname(owner)
-    for (const m of text.matchAll(/<(?:\w+:)?Relationship\b[^>]*>/g)) {
-      if (attr(m[0], 'TargetMode') === 'External') continue
-      const raw = attr(m[0], 'Target')
-      if (!raw) continue
-      const target = unescapeAttr(raw).split('#')[0]
-      if (!target) continue
-      let resolved: string
-      try {
-        resolved = decodeURI(target.startsWith('/') ? target.slice(1) : posix.normalize(posix.join(base === '.' ? '' : base, target)))
-      } catch {
-        resolved = target
-      }
-      if (!have.has(resolved)) {
-        problems.push(`${rels} 里 Id="${attr(m[0], 'Id') ?? '?'}" 指向 ${resolved}，包里没有这个部件`)
-      }
+    for (const rel of relationships(rels, read(rels))) {
+      if (!have.has(rel.part)) problems.push(`${rels} 里 Id="${rel.id}" 指向 ${rel.part}，包里没有这个部件`)
     }
   }
   return problems
