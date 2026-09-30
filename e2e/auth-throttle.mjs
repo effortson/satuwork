@@ -12,7 +12,11 @@ import { freePort } from './ports.mjs'
 
 const WINDOW_MS = 10000
 const MAX_ACCOUNT = 5
-const MAX_IP = 15
+// 要容得下下面那几轮并发（每轮往 IP 桶里记 MAX_ACCOUNT 次）再加最后一条用例自己的量。
+const MAX_IP = 50
+/** 同一邮箱 + 同一 IP 一次并发几条、连打几轮。修之前一轮 20 条约七成的轮次会撞死锁。 */
+const BURST = 20
+const BURST_ROUNDS = 5
 
 export async function runAuthThrottle({ gwRoot, test, req, start, waitHttp, assert, log }) {
   const GW_HOME = tmpOf('satuwork-e2e-auth-throttle-gw')
@@ -101,6 +105,27 @@ export async function runAuthThrottle({ gwRoot, test, req, start, waitHttp, asse
       const s429 = rs.filter((r) => r.status === 429).length
       assert(s401 === MAX_ACCOUNT && s429 === n - MAX_ACCOUNT, `401×${s401} 429×${s429}：${rs.map((r) => r.status).join(',')}`)
       ipFails += s401
+    })
+
+    /**
+     * 抓的是 db.ts 那几条语句的加锁顺序：一次登录要碰邮箱行和 IP 行两行，记一次（upsert）
+     * 和退回去（update）要是按不同次序锁这两行，同一批并发里一条在记、一条在退就会互等，
+     * PG 判死锁杀掉一条 → 500，计数也跟着乱（后面 IP 桶那条会提前 429）。上面 8 条并发
+     * 只是偶尔撞上；这里一轮 20 条、打 5 轮，修之前几乎每次都红。
+     */
+    await test(`同一邮箱 + 同一 IP 并发 ${BURST} 条失败登录 × ${BURST_ROUNDS} 轮：每轮恰好 ${MAX_ACCOUNT} 个 401，其余 429，没有 5xx`, async () => {
+      for (let round = 0; round < BURST_ROUNDS; round++) {
+        const rs = await Promise.all(
+          Array.from({ length: BURST }, (_, i) => login(`burst${round}@throttle.test`, 'wrong-' + i)),
+        )
+        const s401 = rs.filter((r) => r.status === 401).length
+        const s429 = rs.filter((r) => r.status === 429).length
+        assert(
+          s401 === MAX_ACCOUNT && s429 === BURST - MAX_ACCOUNT,
+          `第 ${round + 1} 轮 401×${s401} 429×${s429}：${rs.map((r) => r.status).join(',')}`,
+        )
+        ipFails += s401
+      }
     })
 
     await test('IP 桶：登录和领邀请的失败算在一起，满了换邮箱也 429', async () => {

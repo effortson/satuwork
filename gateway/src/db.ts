@@ -2714,6 +2714,20 @@ export class Db {
   }
 
   // ── 登录类接口的失败计数（lib/auth-throttle.ts，迁移 0046）。──
+  //
+  // 一次登录同时碰「邮箱桶」和「IP 桶」两行，而且是分两条语句碰的（先记、后退）。**这里每一条
+  // 碰多行的语句都按 `key collate "C"` 的顺序拿行锁**，一个都不能例外：
+  //
+  // 原来记一次是 `values (email), (ip)`——按传进来的顺序锁 email 再锁 ip；退回去是
+  // `update ... where key = any(...)`——这张表小，走顺序扫描，按行在堆里的物理位置锁。IP 行
+  // 被反复改写、新版本在页里前后挪，于是时而先 ip 后 email，和前者正好反过来：同一个邮箱
+  // 并发打进来一批，一条在记、一条在退，互相等对方手里那一行，PG 判死锁、杀掉其中一条，
+  // 用户拿到 500，计数还漏记 / 多记一笔（CI 上间歇性挂在 auth-throttle 那组，本地一批 20
+  // 并发十轮能撞七轮）。
+  //
+  // 定序只能在库里定：`insert ... select ... order by` 按排好的次序逐行 upsert；更新和删除
+  // 先 `select ... order by ... for update` 把行按次序锁上，外层语句再动这些已经锁住的行。
+  // 显式写 `collate "C"`，不跟着库的默认排序规则走，几条语句保证是同一个次序。
 
   /**
    * 给这几个桶各记一次，**一条语句、原子地**拿回记完之后的数。
@@ -2723,17 +2737,14 @@ export class Db {
    */
   async bumpAuthThrottle(keys: string[], now: number, windowMs: number): Promise<{ key: string; count: number; resetAt: number }[]> {
     if (!keys.length) return []
-    const values = keys.map(() => '(?, 1, ?)').join(', ')
-    const args: unknown[] = []
-    for (const key of keys) args.push(key, now + windowMs)
-    args.push(now, now)
     const rows = await this.many(
-      `insert into auth_throttle (key, count, "resetAt") values ${values}
+      `insert into auth_throttle (key, count, "resetAt")
+       select k, 1, ?::bigint from unnest(?::text[]) as k order by k collate "C"
        on conflict (key) do update set
          count = case when auth_throttle."resetAt" <= ? then 1 else auth_throttle.count + 1 end,
          "resetAt" = case when auth_throttle."resetAt" <= ? then excluded."resetAt" else auth_throttle."resetAt" end
        returning key, count, "resetAt"`,
-      args,
+      [now + windowMs, [...new Set(keys)], now, now],
     )
     return rows.map((r) => ({ key: String(r.key), count: Number(r.count), resetAt: Number(r.resetAt) }))
   }
@@ -2741,17 +2752,33 @@ export class Db {
   /** 把先记上的那一次退回去（这次没被评判，或者评判结果是对的）。 */
   async refundAuthThrottle(keys: string[]): Promise<void> {
     if (!keys.length) return
-    await this.run('update auth_throttle set count = greatest(count - 1, 0) where key = any(?::text[])', [keys])
+    await this.run(
+      `update auth_throttle t set count = greatest(t.count - 1, 0)
+       from (select key from auth_throttle where key = any(?::text[]) order by key collate "C" for update) l
+       where t.key = l.key`,
+      [keys],
+    )
   }
 
   /** 整个桶清零：口令对了，这个邮箱之前的失败一笔勾销。 */
   async clearAuthThrottle(keys: string[]): Promise<void> {
     if (!keys.length) return
-    await this.run('delete from auth_throttle where key = any(?::text[])', [keys])
+    await this.run(
+      `delete from auth_throttle t
+       using (select key from auth_throttle where key = any(?::text[]) order by key collate "C" for update) l
+       where t.key = l.key`,
+      [keys],
+    )
   }
 
+  /** 清扫到期的桶。正被登录碰着的行跳过（skip locked），下一轮再收，清扫不去和登录抢锁。 */
   async sweepAuthThrottle(now: number): Promise<number> {
-    return this.run('delete from auth_throttle where "resetAt" <= ?', [now])
+    return this.run(
+      `delete from auth_throttle t
+       using (select key from auth_throttle where "resetAt" <= ? order by key collate "C" for update skip locked) l
+       where t.key = l.key`,
+      [now],
+    )
   }
 
   // ── 配对码。一次性、30 分钟过期，装管家时拿它换这台机器的 smt_。──
