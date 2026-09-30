@@ -1140,6 +1140,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         mcps: a.mcps,
         guards: Object.fromEntries((a.guards || []).map((g) => [g.id, !!g.on])),
         browser: { on: !!a.browserOn, sites: sitesOf(a.browserSites) },
+        desktop: { on: a.desktopOn !== false },
         // 「让它自己记 Skill」长在模版上，所以只有这一份要发；每颗 Bot 那一屏是只读的。
         selfSkills: a.selfSkills !== false,
         memory: { on: a.memoryOn, scope: a.scope, kinds: a.kinds, ttl: a.ttl, cap: a.cap, confirm: a.confirmOn, pii: a.piiOn },
@@ -1439,6 +1440,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'bot-desktop') {
+    const d = editingDraft()
+    if (!d) return
+    setEditingDraft({ ...d, desktopOn: d.desktopOn === false })
+    render()
+    return
+  }
   if (act === 'bot-self-skills') {
     const d = editingDraft()
     if (!d) return
@@ -1501,6 +1509,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         mcps: a.mcps,
         guards: Object.fromEntries((a.guards || []).map((g) => [g.id, !!g.on])),
         browser: { on: !!a.browserOn, sites: sitesOf(a.browserSites) },
+        desktop: { on: a.desktopOn !== false },
         memory: { on: a.memoryOn, scope: a.scope, kinds: a.kinds, ttl: a.ttl, cap: a.cap, confirm: a.confirmOn, pii: a.piiOn },
       })
       state.bot = data.bot

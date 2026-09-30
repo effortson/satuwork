@@ -46,6 +46,8 @@ const SERVICES = ['storage', 'sessions', 'roster', 'tools', 'llm', 'workspace', 
 const TOOLS = [
   'now',
   'read_file', 'write_file', 'patch', 'search_files', 'terminal', 'process',
+  // 席位桌面那两把只在远程席位挂；这里裸起的就是远程形态（没设 SATUWORK_RUNTIME_KIND=local）。
+  'desktop_terminal', 'desktop_open_folder',
   'web_search', 'web_extract',
   'history_read', 'history_search',
   'todo', 'delegate_task',

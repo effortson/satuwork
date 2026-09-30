@@ -14,7 +14,7 @@ import type {
 export type { MessageSource }
 import type { ReassignedItem, WorkspaceFile } from '../tools/index.ts'
 import { budgetToolText } from '../tools/result-budget.ts'
-import { browserOf, memoryOf, type BotRecord } from '../registry/index.ts'
+import { browserOf, desktopOf, memoryOf, type BotRecord } from '../registry/index.ts'
 import { cachedMemories, cachedSkill, cachedSkills, type CachedMemory, type CachedSkill, type ReasoningEffort } from '../catalog/index.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -2368,6 +2368,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 会看见十来把它永远调不通的工具，然后一遍遍去试。
      */
     const browserOn = browserOf(bot as BotRecord | undefined).on
+    // 席位桌面同理：关掉了就不进表，真正的拒绝在 policy 的 pre-execute 里。
+    const desktopOn = desktopOf(bot as BotRecord | undefined).on
     /**
      * `skills_list` **只在索引装不下的那一档进表**（见 skillsOf）。
      *
@@ -2400,6 +2402,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       (t) =>
         (!t.name.startsWith('mcp_') || mcpNames.has(t.name)) &&
         (browserOn || !t.name.startsWith('browser_')) &&
+        (desktopOn || !t.name.startsWith('desktop_')) &&
         (!memoryOff || !t.name.startsWith('memory_')) &&
         skillTool(t.name),
     )
