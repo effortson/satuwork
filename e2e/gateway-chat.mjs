@@ -165,6 +165,8 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       const hit = (r.json.bots || []).find((b) => b.id === catalogBotId)
       assert(hit, '名册没有那颗全局 Bot')
       assert(hit.runtime == null, 'member runtime 应为空')
+      // 没配机器时接口照样给全局 Bot，只是带上 hasMachine=false，藏不藏归界面。
+      assert(r.json.hasMachine === false, `hasMachine ${r.json.hasMachine}`)
     })
 
     await test('管理员无实例 GET /runtime/bots → 200', async () => {
@@ -536,6 +538,7 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
     await test('成员在管理员实例上线后名册仍 200，session 503', async () => {
       const r = await req(gwBase, 'GET', '/runtime/bots', { token: memberTok })
       assert(r.status === 200, `member after ready ${r.status} ${r.text}`)
+      assert(r.json.hasMachine === true, `配对之后 hasMachine ${r.json.hasMachine}`)
       const hit = (r.json.bots || []).find((b) => b.id === botId)
       assert(hit, '成员名册没有 bot')
       assert(hit.runtime == null, '成员不该看到管理员的 runtime')
