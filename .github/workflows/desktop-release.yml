@@ -135,7 +135,9 @@ jobs:
           [ "$got" = "$WANT_SHA" ] || {
             echo "checkout 出来是 $got，要构建的却是 $WANT_SHA" >&2; exit 1; }
 
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.3.0（v6 拿锁文件核对 pnpm 原生二进制，锁文件里没有 darwin-x64 那份，Intel Mac 上装不上）
+      # 别升到 v6：v6.1.0 拿锁文件核对 pnpm 原生二进制，锁文件里没有 darwin-x64 那份，Intel Mac 上装不上
+      # （.github/dependabot.yml 挡了它的大版本升级）。版本注释单独放在下一行末尾，dependabot 才认得出、会跟着改。
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
       # 这一份 Node 会被 prepare-runtime.mjs 原样拷进安装包（process.execPath），
       # 所以它的架构就是包里 Node 的架构——下面那步校验的正是这个。
