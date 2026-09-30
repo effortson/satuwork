@@ -348,7 +348,10 @@ if (real || realOverride) {
     server.close()
     // LibreOffice 退出时会重写配置文件：加固项得还在。
     const after = readFileSync(join(home, 'render-cache', 'profile', 'user', 'registrymodifications.xcu'), 'utf8')
-    out.realLinks = { rendered: linkedOk, hits: hits.length, hardeningKept: /BlockUntrustedRefererLinks/.test(after) }
+    // 五项都得活过它的重写：有一项被丢掉的话，harden() 会在每次转换前整份重写配置，冲掉
+    // LibreOffice 自己记的状态，而且没有别的地方看得出来。
+    const keys = ['BlockUntrustedRefererLinks', 'MacroSecurityLevel', 'DisableMacrosExecution', 'OOXMLRecalcMode', 'ODFRecalcMode']
+    out.realLinks = { rendered: linkedOk, hits: hits.length, hardeningKept: keys.every((k) => after.includes(`"${k}"`)), lost: keys.filter((k) => !after.includes(`"${k}"`)) }
   } catch (e) {
     out.real = failure(e)
   }

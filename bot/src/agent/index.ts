@@ -1798,11 +1798,14 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     const at = this.config.compactAt ?? 0.6
     const keep = this.config.compactKeep ?? 0.3
     const events = await this.ctx.sessions.events(sessionId)
+    // 按这一轮真正的模型重建：看不看得了图决定工具结果里带的是图还是一句说明（见 seesImages），
+    // 传 undefined 就一律当看不了，带图的会话会被估低。
+    const model = this.ctx.llm.modelOf(provider, modelId)
     // 本地估算看不到 system prompt、工具 schema、provider 特殊 token，也很难准确估 CJK。
     // provider 已经回报过的 prompt 用量才是真值：input + cache read 都是本次提示词的一部分。
     // 取边界之后的高水位，避免压缩前的 usage 让新摘要反复触发压缩。
     const before = Math.max(
-      estMessages(await toAgentMessages(events, undefined, this.ctx)),
+      estMessages(await toAgentMessages(events, model, this.ctx)),
       observedPromptHighWater(events),
     )
     if (!force && before < window * at) return { compacted: false, reason: 'below-threshold' }
@@ -1830,7 +1833,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      */
     const prior = contextBoundary(events)
     const scope = scopeAfterBoundary(events)
-    const cut = compactionPoint(scope, opts.keepBudget ?? window * keep)
+    const cut = compactionPoint(scope, opts.keepBudget ?? window * keep, seesImages(model))
     if (!cut) {
       // 近期那几轮自己就超预算了——没有能切的位置，切了也不省。这种情况只可能是
       // 单轮塞进了巨大的工具结果，压缩帮不上忙，交给别的手段。
@@ -2587,10 +2590,22 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
   }
 }
 
+/**
+ * 落进日志的工具正文。
+ *
+ * **只取第一块**：bridgeTools 把工具自己的 text 放在第一块，后面跟的是按**这一轮的模型**
+ * 追加的东西——图片块，或者「这颗模型看不了图」「图读不出来」这类说明。那些不是工具的
+ * 结果，是这一轮的临时处理；写进日志的话，下一轮回放时 toAgentMessages 会按那一轮的模型
+ * 再追加一遍，同一句说明出现两次，或者换了能看图的模型之后一边说「看不了图」一边带着图。
+ */
 function textOf(result: any): string {
   if (typeof result === 'string') return result
   const content = result?.content
-  if (Array.isArray(content)) return content.map((c: any) => c?.text ?? '').join('')
+  if (Array.isArray(content)) {
+    const first = content[0]
+    if (first?.type === 'text' || (first && typeof first.text === 'string')) return String(first.text ?? '')
+    return content.map((c: any) => c?.text ?? '').join('')
+  }
   return JSON.stringify(result ?? null)
 }
 
@@ -3130,10 +3145,13 @@ export function observedPromptHighWater(
 export function compactionPoint(
   events: Awaited<ReturnType<Context['sessions']['events']>>,
   keepBudget: number,
+  /** 这一轮的模型看不看得了图。默认 true：估高只是早压一轮，估低是撞窗口。 */
+  sees = true,
 ): { seq: number; time: number } | undefined {
   // 每条事件进模型时值多少 token，一次算完；再求后缀和，于是「切在这里之后还剩多少」
   // 是 O(1)。挨个切点重跑一遍 toAgentMessages 是 O(n²)，长会话上会明显卡一下。
-  const cost = events.map(estEvent)
+  const liveTool = liveToolImageKeys(events)
+  const cost = events.map((e) => estEvent(e, sees, liveTool))
   const suffix = new Array<number>(events.length + 1).fill(0)
   for (let i = events.length - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + cost[i]
 
@@ -3162,8 +3180,29 @@ export function compactionPoint(
  */
 const EST_TOKENS_PER_IMAGE = 1_500
 
-/** 单条事件进模型时的估算大小。不进上下文的事件（chunk、header…）算 0。 */
-function estEvent(e: Awaited<ReturnType<Context['sessions']['events']>>[number]): number {
+/**
+ * 工具结果里**这一轮会带字节**的那几张图（`seq:下标`），和 toAgentMessages 里 liveToolImages
+ * 同一个口径：按顺序数，只留最后 MAX_LIVE_TOOL_IMAGES 张。
+ */
+function liveToolImageKeys(events: Awaited<ReturnType<Context['sessions']['events']>>): Set<string> {
+  const keys: string[] = []
+  for (const e of events) {
+    if (e.type === 'tool/result') e.data.images?.forEach((_, i) => keys.push(`${e.seq}:${i}`))
+  }
+  return new Set(keys.slice(-MAX_LIVE_TOOL_IMAGES))
+}
+
+/** 一句「看不了图 / 离太远」的说明大约值多少 token。 */
+const EST_TOKENS_PER_IMAGE_NOTE = 40
+
+/**
+ * 单条事件进模型时的估算大小。不进上下文的事件（chunk、header…）算 0。
+ *
+ * 工具结果里的图按**这一轮实际会送进去的**算：看不了图的模型只收到一句说明，能看图的也
+ * 只有最近几张带字节（liveTool），其余都是一句话。全按图算的话，一个看不了图、却调过几次
+ * office_render 的会话会被估高几万 token，压缩提前触发，白白丢掉还装得下的原文。
+ */
+function estEvent(e: Awaited<ReturnType<Context['sessions']['events']>>[number], sees = true, liveTool?: Set<string>): number {
   if (e.type === 'user/message') {
     // 图片按张计，别按 textFrom 的结果算——textFrom 只取文本块，一条「看看这张图」
     // 会被估成十几个 token，而它实际值一两千。带图的会话会因此一路估不到阈值，
@@ -3173,8 +3212,11 @@ function estEvent(e: Awaited<ReturnType<Context['sessions']['events']>>[number])
   }
   if (e.type === 'assistant/message') return estTokens(contentDigest(e.data.message.content)) + 4
   if (e.type === 'tool/result') {
-    // 工具结果里的图同样按张计（office_render 一次好几页），理由同上。
-    return estTokens(e.data.modelText ?? budgetToolText('', e.data.text).text) + 4 + (e.data.images?.length ?? 0) * EST_TOKENS_PER_IMAGE
+    let images = 0
+    e.data.images?.forEach((_, i) => {
+      images += sees && (!liveTool || liveTool.has(`${e.seq}:${i}`)) ? EST_TOKENS_PER_IMAGE : EST_TOKENS_PER_IMAGE_NOTE
+    })
+    return estTokens(e.data.modelText ?? budgetToolText('', e.data.text).text) + 4 + images
   }
   return 0
 }

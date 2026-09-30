@@ -383,9 +383,15 @@ export async function renderPages(
   if (!wanted.length) throw new RenderError('failed', `没有这几页：这份文件一共 ${total} 页。`)
 
   const toppm = pdftoppmExecutable()
-  const office = toppm ? null : officeExecutable()
+  const office = officeExecutable()
   if (!toppm && !office) throw new RenderError('unavailable', '这台机器上既没有 pdftoppm 也没有 LibreOffice，画不了图。')
-  const engine = toppm ? 'pdftoppm' : 'libreoffice'
+  let engine: 'pdftoppm' | 'libreoffice' = toppm ? 'pdftoppm' : 'libreoffice'
+  const byOffice = (page: number, target: string) => {
+    // 和转 PDF 共用那一队：LibreOffice 一次只能跑一个（见文件开头）。
+    const job = queue.then(() => pageByOffice(office!, doc, page, width, target))
+    queue = job.catch(() => {})
+    return job
+  }
 
   const dir = join(outDir, cacheKey(pdf, await stat(pdf)))
   await mkdir(dir, { recursive: true })
@@ -396,12 +402,17 @@ export async function renderPages(
   for (const page of wanted) {
     const target = join(dir, `p${page}-w${width}.png`)
     if (!existsSync(target)) {
-      if (toppm) await pageByPdftoppm(toppm, pdf, page, width, target)
+      if (!toppm) await byOffice(page, target)
       else {
-        // 和转 PDF 共用那一队：LibreOffice 一次只能跑一个（见文件开头）。
-        const job = queue.then(() => pageByOffice(office!, doc, page, width, target))
-        queue = job.catch(() => {})
-        await job
+        try {
+          await pageByPdftoppm(toppm, pdf, page, width, target)
+        } catch (e) {
+          // pdftoppm 画不了这一页（某些 PDF 它解析不了、或者超时）：有 LibreOffice 就换它再试，
+          // 别让验收这一步因为一个引擎的毛病整个跳过。两边都不行才报错。
+          if (!office || !(e instanceof RenderError)) throw e
+          await byOffice(page, target)
+          engine = 'libreoffice'
+        }
       }
     }
     images.push({ page, file: target })

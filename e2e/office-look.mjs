@@ -20,6 +20,8 @@ export async function runOfficeLook({ root, test, assert, log }) {
     assert(JSON.stringify(p.默认) === '[1,2,3]' && JSON.stringify(p.范围) === '[2,3,4]' && JSON.stringify(p.混写) === '[1,3,5]', JSON.stringify(p))
     assert(String(p.倒着写).startsWith('错') && String(p.乱写).startsWith('错'), `写错的没拦：${JSON.stringify(p)}`)
     assert(p.超大范围.长度 <= 7 && p.超大范围.毫秒 < 100, `超大范围：${JSON.stringify(p.超大范围)}`)
+    // 去重之后再比上限：「1-4,2-4」只涉及四页，不能按七个数算成超了。
+    assert(JSON.stringify(p.重叠) === '[1,2,3,4]', `重叠：${JSON.stringify(p.重叠)}`)
   })
 
   await test('OpenAI chat：tool 消息只放文本，图补在这批 tool 之后的一条用户消息里', () => {
@@ -51,6 +53,15 @@ export async function runOfficeLook({ root, test, assert, log }) {
     for (const [k, v] of Object.entries(r.blind)) assert(v === true, `${k}：${JSON.stringify(r.blind)}`)
   })
 
+  await test('换模型：说明不落进日志正文，同一句只出现一次，换成能看图的就只带图', () => {
+    // 说明写进日志的话，下一轮回放时按当时的模型又补一遍：要么说两次，要么一边说「看不了」一边带图。
+    for (const [k, v] of Object.entries(r.switch)) assert(v === true, `${k}：${JSON.stringify(r.switch)}`)
+  })
+
+  await test('压缩估算：看不了图只算说明，看得了图只算最近六张', () => {
+    for (const [k, v] of Object.entries(r.estimate)) assert(v === true, `${k}：${JSON.stringify(r.estimate)}`)
+  })
+
   await test('两样都没有（pdftoppm / LibreOffice）：明说画不了', () => {
     assert(/画不出来/.test(r.real.none), `没说清楚：${r.real.none}`)
   })
@@ -72,6 +83,16 @@ export async function runOfficeLook({ root, test, assert, log }) {
       assert(/LibreOffice 画的/.test(r.real.docx.原话), r.real.docx.原话)
     })
   }
+  await test('交出去的图另存在会话目录下：渲染缓存修剪掉，历史里的图和缩略图还在', () => {
+    for (const [k, v] of Object.entries(r.real.kept)) assert(v === true, `${k}：${JSON.stringify(r.real.kept)}`)
+  })
+
+  if (r.real.hasOffice) {
+    await test('pdftoppm 画不了某一页：换 LibreOffice 再试', () => {
+      assert(r.real.toppmFallback.画出来了, `没退到 LibreOffice：${r.real.toppmFallback.原话}`)
+    })
+  }
+
   await test('边界：页码超了、一次太多、不是文档、部分越界都说清楚', () => {
     const e = r.real.edges
     assert(/一共 3 页/.test(e.页码超了), e.页码超了)
