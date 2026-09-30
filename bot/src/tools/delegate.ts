@@ -157,7 +157,7 @@ export function apply(ctx: Context) {
                 tools: {
                   type: 'array',
                   items: { type: 'string' },
-                  description: '只准它用这几把工具（工具名）。可选，不给就继承你现在这张表。浏览器一批里只有一条拿得到，想给谁就在谁这里点名。',
+                  description: '只准它用这几把工具（工具名）。可选，不给就继承你现在这张表。浏览器、席位桌面这两组一批里各只有一条拿得到，想给谁就在谁这里点名。',
                 },
                 model_reason: {
                   type: 'string',
@@ -263,7 +263,7 @@ export function apply(ctx: Context) {
       })
 
       /**
-       * 独占资源的租约（今天只有浏览器）。
+       * 独占资源的租约（今天是浏览器和席位桌面）。
        *
        * **按资源名发，不按 `browser_` 前缀判**：将来席位上再多一样只能有一个主人的东西，
        * 它写上自己的资源名就自动落进这套租约，这里一行都不用改（docs/delegation.md §7.1）。

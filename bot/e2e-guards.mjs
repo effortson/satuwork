@@ -165,8 +165,9 @@ tool('write_local', ['write'])
 tool('web_search', ['external', 'read'])
 tool('terminal', ['write', 'destructive', 'external'])
 // 席位桌面那两把，risk 照抄 tools/desktop.ts。desktop_terminal 带命令时要和 terminal 一个待遇。
-tool('desktop_terminal', ['write', 'destructive', 'external'])
-tool('desktop_open_folder', ['read'])
+// 委派标注也照抄（`exclusive: 'desktop'`），同浏览器那几把：不照抄的话「没租到就调不了」测的是另一把工具。
+tool('desktop_terminal', ['write', 'destructive', 'external'], { exclusive: 'desktop' })
+tool('desktop_open_folder', ['read'], { exclusive: 'desktop' })
 tool('mcp_a_read_mail', ['external', 'read'])
 tool('mcp_b_read_mail', ['external', 'read'])
 tool('mcp_a_send_mail', ['external', 'write'])
@@ -984,6 +985,14 @@ const delegation = {}
   // exclusive：这一批里浏览器租给了别的子任务（leases 空）。
   const r = await call('s6t', 'browser_navigate', { url: 'https://example.com' })
   delegation.没租到浏览器就调不了 = r.failed === true && r.text.includes('browser')
+}
+{
+  // 席位桌面同理：同一块屏，一批里只有拿到 desktop 租约的那条开得了窗口。
+  const before = ran.desktop_terminal
+  const a = await call('s6t', 'desktop_terminal', {})
+  const b = await call('s6t', 'desktop_open_folder', {})
+  delegation.没租到桌面就调不了 =
+    a.failed === true && a.text.includes('desktop') && b.failed === true && ran.desktop_terminal === before
 }
 out.delegation = delegation
 

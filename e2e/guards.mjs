@@ -285,6 +285,7 @@ export async function runGuards({ root, test, assert, log }) {
     assert(d.主代理照旧调得了, '拦的应该是子会话，不是这把工具')
     // 一台席位一颗浏览器、一块员工正看着的屏。租约按资源名发，不按工具名前缀判。
     assert(d.没租到浏览器就调不了, '没拿到 browser 租约的子任务照样驱动了浏览器')
+    assert(d.没租到桌面就调不了, '没拿到 desktop 租约的子任务照样在桌面上开了窗口')
   })
 
   await test('在卡片上改过的内容，真的是发出去的那一份', () => {

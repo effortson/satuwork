@@ -136,7 +136,11 @@ export function apply(ctx: Context) {
     ctx,
     {
       name: 'desktop_terminal',
-      delegation: {},
+      /**
+       * 桌面是席位单例，员工正看着：一批委派里只给一个子代理，同浏览器（docs/delegation.md §7.1）。
+       * 不标的话三个并行子代理各开一串窗口叠在同一块屏上，人分不清哪条命令是谁跑的。
+       */
+      delegation: { exclusive: 'desktop' },
       // 同 terminal：窗口里能跑任何命令。真正按命令判的在 policy（SHELL_TOOLS）。
       risk: ['write', 'destructive', 'external'],
       description:
@@ -187,7 +191,7 @@ export function apply(ctx: Context) {
     ctx,
     {
       name: 'desktop_open_folder',
-      delegation: {},
+      delegation: { exclusive: 'desktop' },
       risk: ['read'],
       description:
         '在席位的远程桌面上用文件管理器打开一个文件夹，给用户看。' +
