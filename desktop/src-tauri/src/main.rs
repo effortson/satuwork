@@ -1515,6 +1515,14 @@ fn spawn_local_bot_process(
         // Bot 与它拉起的独立 Chrome 在同一进程组；停止 Bot 时可以一并清掉，不留孤儿进程。
         command.process_group(0);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Windows 下 node.exe 是控制台子系统程序，GUI 宿主直接 spawn 会被系统（尤其是 Windows Terminal）
+        // 弹出黑色终端窗口。传入 CREATE_NO_WINDOW 避免为 node 进程分配/弹出控制台窗口。
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     command
         .spawn()
         .map_err(|e| format!("启动本地 Bot 失败：{e}"))
