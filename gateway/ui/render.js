@@ -383,6 +383,8 @@ function render() {
     // 上下键选不动（一条候选都查不到），回车穿到发送那条路上去。
     paintCmdPick()
   }
+  // 预览里的「局部重绘」画布：弹层是整个换掉的，笔画存在 state 里，每次都要重新贴上去。
+  if (document.getElementById('sw-paint-canvas')) mountPainter()
   // 日志面板同理：壳在 render 里，内容由 paintLogs 增量填。
   if (document.getElementById('log-body')) paintLogs()
   // 右栏那棵工作区文件树：开着而这条会话还没取过的话，补一次（见 chat.js 的
@@ -599,6 +601,8 @@ async function saveModelPrice(clear = false) {
     state.settings = saved
     if (state.me) state.me.settings = saved
     state.priceDraft = null
+    // 生图面板上的「每张约多少」是服务端按单价算的，改了价要重取。
+    if (state.imageModels) await loadImageModels()
     flash('ok', empty ? '已撤掉覆盖，回到目录价' : '已保存单价')
   } catch (err) {
     state.priceError = err.message
@@ -668,6 +672,8 @@ async function savePriceMultiplier(raw) {
     const saved = await api('PUT', '/platform/settings', { ...state.settings, priceMultiplier: n })
     state.settings = saved
     if (state.me) state.me.settings = saved
+    // 同 saveModelPrice：倍率也进生图面板上那个「每张约多少」。
+    if (state.imageModels) await loadImageModels()
     flash('ok', '已保存单价倍率')
   } catch (err) {
     state.settings = { ...state.settings, priceMultiplier: prev }

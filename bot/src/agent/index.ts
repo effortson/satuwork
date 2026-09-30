@@ -2447,9 +2447,15 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      */
     const memoryOff =
       (process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() === 'off' || !memoryOf(bot as BotRecord | undefined).on
+    /**
+     * 平台没挑生图模型时，generate_image 不进表。同上面几层，**只是遮掩**：模型照着历史里
+     * 的名字报过来，工具自己会回一句「平台还没有开通生图」。
+     */
+    const imageOn = !!catalog.models?.image
     const picked = all.filter(
       (t) =>
         (!t.name.startsWith('mcp_') || mcpNames.has(t.name)) &&
+        (imageOn || t.name !== 'generate_image') &&
         (browserOn || !t.name.startsWith('browser_')) &&
         (desktopOn || !t.name.startsWith('desktop_')) &&
         (!memoryOff || !t.name.startsWith('memory_')) &&
@@ -3407,7 +3413,14 @@ async function userContentFor(m: Message, ctx?: Context, isLive?: (index: number
   if (!picked.length) return textFrom(m)
   const out: any[] = []
   for (const { c, i } of picked) {
-    out.push(isLive && !isLive(i) ? stale(c) : await loadImage(c, ctx))
+    const part = isLive && !isLive(i) ? stale(c) : await loadImage(c, ctx)
+    out.push(part)
+    /**
+     * 真带上了字节的那几张，**跟一行它在工作区的路径**。模型看得见图，却不知道它叫什么——
+     * 要拿它去改（generate_image 的 images）、或者交给别的工具读，都得有个名字。没带上字节
+     * 的那两种（太靠前、读不出来）说明里本来就写着路径。
+     */
+    if (part.type === 'image') out.push({ type: 'text', text: `[附图 ${c.path}]` })
   }
   const text = textFrom(m)
   if (text) out.push({ type: 'text', text })

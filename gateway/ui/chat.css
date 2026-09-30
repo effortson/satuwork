@@ -1173,6 +1173,15 @@
 }
 /* 图片按原始比例缩进框里，不裁切也不拉伸。 */
 .sw-preview-img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+/*
+ * 局部重绘：画布叠在图上，和图一样大（mountPainter 按图的实际显示尺寸定）。
+ * 容器贴着图的大小走，不然画布的坐标和图对不上。
+ */
+.sw-paint { position: relative; display: inline-block; max-width: 100%; max-height: 100%; line-height: 0; }
+.sw-paint .sw-preview-img { max-height: calc(70vh - 2px); }
+.sw-paint canvas { position: absolute; left: 0; top: 0; touch-action: none; cursor: crosshair; }
+.sw-paint-brush { display: inline-flex; align-items: center; gap: var(--space-2); font-size: 12px; color: var(--muted-foreground); }
+.sw-paint-brush input { width: 96px; }
 .sw-preview-frame { width: 100%; height: 100%; border: 0; background: var(--background); border-radius: var(--radius); }
 .sw-preview-note {
   margin: 0;
@@ -1255,6 +1264,12 @@
  */
 .sw-steps { margin: 8px 0 0; }
 .sw-steps .sw-shot { width: 132px; height: 82px; }
+/*
+ * Bot 产出的图片。比过程截图大一号：那一条只是痕迹，这一张就是答案本身。
+ * contain 而不是 cover：画出来的图裁掉一截就不是它画的那张了；留白用底色垫着。
+ */
+.sw-outshots .sw-shot { width: 240px; height: 240px; max-width: 100%; }
+.sw-outshots .sw-shot img { object-fit: contain; }
 .sw-steps .sw-shot img { object-position: top center; }
 /* 没摆下的那些。不是可点的东西，所以别长成可点的样子。 */
 .sw-stepmore { color: var(--muted-foreground); align-self: center; }

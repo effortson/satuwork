@@ -230,6 +230,26 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(more.includes('browser/'), `没说清去哪儿找：${more}`)
     })
 
+    await test('Bot 产出的图片摆成缩略图，别的产出照旧是药丸', async () => {
+      /**
+       * generate_image 画的图（以及脚本生成的图表）要一眼看得到画成了什么，不是一颗要点开
+       * 才知道的药丸。只认浏览器能内联的位图：SVG 能带脚本，预览接口本来就不给它内联。
+       */
+      const ui = await boot()
+      const f = (path) => ({ path, name: path.split('/').pop() })
+      const tools = [
+        { name: 'generate_image', files: [f('images/猫.jpg')] },
+        { name: 'write_file', files: [f('report.md'), f('chart.PNG'), f('logo.svg')] },
+        // 同一张图被两把工具报出来：只摆一次。
+        { name: 'terminal', files: [f('images/猫.jpg'), f('a.webp')] },
+      ]
+      const imgs = ui.outputImages(ui.outputFiles(tools)).map((x) => x.path)
+      assert(imgs.join('|') === 'images/猫.jpg|chart.PNG|a.webp', `认出来的图：${imgs.join('|')}`)
+      const many = Array.from({ length: 12 }, (_, i) => f(`images/${i}.png`))
+      assert(ui.outputImages(many).length === ui.MAX_OUT_IMAGES && ui.MAX_OUT_IMAGES === 8, `上限：${ui.MAX_OUT_IMAGES}`)
+      assert(!ui.outputImages([{ name: 'bash' }].flatMap((x) => x.files || [])).length, '没有产出的老日志把它弄崩了')
+    })
+
     await test('读秒：这一轮一开始就在走，第一个字落地时不从头数起', async () => {
       /**
        * 气泡下面那行秒表回答的是「我已经等了多久」。

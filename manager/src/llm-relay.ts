@@ -37,12 +37,21 @@ import { mergeUsage, usageFromPayload, type TokenUsage } from './llm-usage.ts'
  * Gateway 会定期把没结算的调用扫掉。
  */
 
-type Route = 'chat' | 'messages' | 'responses'
+type Route = 'chat' | 'messages' | 'responses' | 'images' | 'image-edits'
 
+/**
+ * `images` / `image-edits` 是生图（Bot 的 generate_image：按描述画 / 拿已有的图改）。对管家
+ * 来说它们和另外三条没有区别：要授权、照补丁改请求体、原样转答复、从答复里数 usage 去结算
+ * ——gpt-image 的 usage 和 Responses API 一个形状，Gemini 的 usageMetadata 在 llm-usage.ts 里
+ * 有专门的一岔。Bot 总是要流式答复（图在最后那一帧里，几 MB），走的是 proxyUpstream 的流式
+ * 那一岔。改图的请求体带着 base64 的原图，32 MB 的上限（BODY_LIMIT）够用。
+ */
 const ROUTES: Record<string, Route> = {
   '/llm/v1/chat/completions': 'chat',
   '/llm/v1/messages': 'messages',
   '/llm/v1/responses': 'responses',
+  '/llm/v1/images/generations': 'images',
+  '/llm/v1/images/edits': 'image-edits',
 }
 
 /** 请求体上限。对话历史里塞图片是常事，4 MB 那档（http.ts）不够；32 MB 之上就不是正常请求了。 */

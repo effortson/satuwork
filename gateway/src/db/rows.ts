@@ -1,4 +1,4 @@
-import { Account, AuditEvent, BotDeletionRequest, BotRelease, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorCall, ConnectorCallStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatDeployRequest, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseConversationAuditSettings, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
+import { Account, AuditEvent, BotDeletionRequest, BotRelease, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorCall, ConnectorCallStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, ImageModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatDeployRequest, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseConversationAuditSettings, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
 
 /**
  * `select *` 回来的裸行 → 上面那些类型。
@@ -182,6 +182,14 @@ export function parseModelRole(raw: Partial<ModelRole> | undefined): ModelRole {
   }
 }
 
+/** 生图模型那一格。两格不齐就当没开——半截的配置调不出任何东西。 */
+export function parseImageRole(raw: unknown): ImageModelRole {
+  const o = raw && typeof raw === 'object' ? (raw as Partial<ImageModelRole>) : {}
+  const provider = String(o.provider ?? '').trim()
+  const model = String(o.model ?? '').trim()
+  return provider && model ? { provider, model } : { provider: '', model: '' }
+}
+
 /**
  * 日常模型的备选，读写两头共用这一份收口：空的、重复的、和默认那个相同的都丢掉，
  * 超出上限的截掉。**顺序保留**——那是管理员排的，对话框里照这个顺序画。
@@ -213,6 +221,8 @@ export function parsePlatformPayload(raw: unknown): PlatformSettings {
   return {
     daily,
     utility: parseModelRole(o.utility),
+    // 老库里没有这个字段，读出来是空 = 没开生图。
+    image: parseImageRole(o.image),
     // 老库里没有这个字段，读出来是空 = 只有默认那一个，对话框里不画选择器。
     dailyAlternates: parseDailyAlternates(o.dailyAlternates, daily),
     enabledModels: enabled,

@@ -24,6 +24,7 @@ import type { Account, ChargeStatus, Db, ModelRate, PlatformSettings, UsageCharg
 import { emptyWebTools, parseBilling, parseModelPricing, parseModelRate, parsePriceMultiplier } from '../db.ts'
 import { balanceOf } from './billing.ts'
 import { type LlmTokens, connectorMicros, llmMicros, rateOf, rateSnapshot, webMicros } from './pricing.ts'
+import { type ImageBaseline, imageBaseline } from './image-estimate.ts'
 
 /**
  * 一次计费调用的事实。三种 kind 一个联合类型——`quote` 按 kind 分支，漏一支编译不过。
@@ -99,7 +100,16 @@ export type GateResult = { ok: true } | { ok: false; reason: string }
  * 还没有计量（模型那条尤其：跑完才知道用了多少 token）。
  */
 export type GateSubject =
-  | { kind: 'llm'; provider: string; model: string; cost: unknown }
+  /**
+   * `estimate`：这一次**至少**会用掉多少 token。只有生图带（lib/llm-billing.ts 的 gateOr402）：对话调用事先不知道会写多长，一张图的价钱却大体是定的——
+   * Nano Banana Pro 一张两毛多，余额只剩几分钱时放它过去，账上就是一笔实打实的透支。
+   * 带了它，闸判的就是「余额够不够这一次」，而不只是「还有没有余额」。
+   */
+  /**
+   * 是个**取值函数**，不是值：生图的预估要查实测基线（一次库查询），而闸门多半在那之前就放行了
+   * ——owner 自己的调用、熔断没开、这颗模型不收钱。只有真走到「要比余额」那一步才去取。
+   */
+  | { kind: 'llm'; provider: string; model: string; cost: unknown; estimate?: () => Promise<LlmTokens> }
   | { kind: 'connector'; toolkit: string }
   /**
    * `backends` 是复数：一次提取可能同时落在提取后端和 `document` 两档价上（PDF /
@@ -181,8 +191,43 @@ export class Meter {
     // 把「平台还没开始定价」变成「所有公司一上来就用不了」。
     if (!chargeable(s, subject)) return { ok: true }
     const budget = await this.budget(account.companyId)
+    const need = subject.kind === 'llm' && subject.estimate ? estimateMicros(s, subject, await subject.estimate()) : 0
+    if (need > 0) {
+      if (budget.left + billing.graceMicros >= need) return { ok: true }
+      // 还有余额、只是不够这一次：说清楚差在哪儿，不然人看着账上还有钱，会以为是出了故障。
+      if (budget.left + billing.graceMicros > 0) {
+        return { ok: false, reason: `这家公司剩下的额度不够这一次（预估 $${(need / 1e6).toFixed(2)}），请联系管理员充值。` }
+      }
+      return { ok: false, reason: OUT_OF_CREDIT }
+    }
     if (budget.left + billing.graceMicros > 0) return { ok: true }
     return { ok: false, reason: OUT_OF_CREDIT }
+  }
+
+  /**
+   * 按这些 token 大概要收多少（微元）。**和 quote 同一套单价**：平台覆盖、兜底、倍率都算进去，
+   * 所以模型配置页上显示的「每张约多少」和闸门判的、以及事后真收的是同一个口径。查不到单价
+   * 就是 undefined（同 quote 的 unpriced），不编一个数。
+   */
+  /** 生图模型的实测基线（lib/image-estimate.ts）。闸门和模型配置页用同一份。 */
+  imageBaseline(provider: string, model: string): Promise<ImageBaseline | undefined> {
+    return imageBaseline(this.db, provider, model)
+  }
+
+  async estimate(provider: string, model: string, cost: unknown, tokens: LlmTokens): Promise<number | undefined> {
+    return (await this.estimator())(provider, model, cost, tokens)
+  }
+
+  /**
+   * 一次读好平台设置，回一个同步的算价函数。要连着估一串（模型配置页上每颗生图模型 × 每一档）
+   * 时用它，不然每估一个数都读一遍设置。
+   */
+  async estimator(): Promise<(provider: string, model: string, cost: unknown, tokens: LlmTokens) => number | undefined> {
+    const s = await this.db.platformSettings()
+    return (provider, model, cost, tokens) => {
+      const n = estimateMicros(s, { provider, model, cost }, tokens)
+      return n > 0 ? n : undefined
+    }
   }
 
   /**
@@ -329,6 +374,13 @@ export class Meter {
 }
 
 /** 这一类调用当前的单价是不是 0。0 = 现在不收钱，闸放行。 */
+/** 预估金额：取单价的规矩和 quote 一字不差（覆盖 → 目录 → 兜底），再乘平台倍率。查不到单价是 0。 */
+function estimateMicros(s: PlatformSettings, m: { provider: string; model: string; cost: unknown }, tokens: LlmTokens): number {
+  const override: ModelRate | undefined = parseModelPricing(s.modelPricing)[`${m.provider}/${m.model}`]
+  const rate = rateOf(m.cost, override, parseModelRate(s.defaultModelRate))
+  return rate ? llmMicros(rate, tokens, parsePriceMultiplier(s.priceMultiplier)) : 0
+}
+
 function chargeable(s: PlatformSettings, subject: GateSubject): boolean {
   if (subject.kind === 'llm') {
     const override: ModelRate | undefined = parseModelPricing(s.modelPricing)[`${subject.provider}/${subject.model}`]

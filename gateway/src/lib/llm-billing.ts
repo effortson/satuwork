@@ -12,6 +12,7 @@ import type { CatalogModel } from '../llm.ts'
 import type { Billable, Meter } from './meter.ts'
 import { gateAccount, gateCompany } from './guards.ts'
 import type { TokenUsage } from './llm-usage.ts'
+import { imageEstimateTokens, imageModelDef, isImageModel } from '../image-models.ts'
 
 /** settle 只用得着这三样。管家结算时目录里可能已经没有这个模型了，那时只有这三样。 */
 type Billed = Pick<CatalogModel, 'provider' | 'id' | 'cost'>
@@ -155,11 +156,19 @@ export async function recordUsageOnly(db: Db, callId: string, usage: TokenUsage)
  * 用户看，所以这句话要能直接读。
  */
 export async function gateOr402(meter: Meter, account: Account, found: CatalogModel): Promise<void> {
+  /**
+   * 生图模型一张图的价钱大体是定的，闸判「够不够这一张」（见 meter.ts 的 GateSubject）。
+   * 这颗模型有实测基线就按实测的 P95，没有才按表里最贵那档（lib/image-estimate.ts）。
+   */
+  const image = isImageModel(found) ? imageModelDef(found.provider, found.id) : undefined
   const gate = await meter.gate(account, {
     kind: 'llm',
     provider: found.provider,
     model: found.id,
     cost: found.cost,
+    ...(image
+      ? { estimate: async () => (await meter.imageBaseline(found.provider, found.id))?.p95 ?? imageEstimateTokens(image) }
+      : {}),
   })
   if (gate.ok) return
   // 被拒的也落一行（金额 0）。「为什么我的 Bot 停了」这个问题得有一个地方答得了，

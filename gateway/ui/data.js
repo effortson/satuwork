@@ -324,6 +324,18 @@ async function loadDiscovery() {
   }
 }
 
+/**
+ * 能挑的生图模型。**owner 才有这个接口**，理由同 loadDiscovery：拿不到就当没有，
+ * 面板不画。
+ */
+async function loadImageModels() {
+  try {
+    state.imageModels = (await api('GET', '/platform/image-models')).models || []
+  } catch {
+    state.imageModels = null
+  }
+}
+
 /** 当前月份，YYYY-MM。月份选择器留空时用它。 */
 function thisMonth() {
   const d = new Date()
@@ -1158,7 +1170,7 @@ async function loadPage() {
         await loadChatPage()
       }
     } else if (state.path === '/models') {
-      await Promise.all([loadCatalog(), loadCreds(), loadSettings(), loadDiscovery()])
+      await Promise.all([loadCatalog(), loadCreds(), loadSettings(), loadDiscovery(), loadImageModels()])
       const configured = configuredSet()
       if (!state.selectedProvider || !configured.has(state.selectedProvider)) {
         const dailyP = state.settings.daily?.provider

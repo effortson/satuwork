@@ -1016,9 +1016,20 @@ export interface CompanySettings {
   conversationAudit: ConversationAuditSettings
 }
 
+/**
+ * 平台钉的生图模型（Bot 的 generate_image 工具用它）。两格都空 = 没开，席位上那把工具
+ * 不进工具表。没有推理档，所以不复用 ModelRole。
+ */
+export interface ImageModelRole {
+  provider: string
+  model: string
+}
+
 export interface PlatformSettings {
   daily: ModelRole
   utility: ModelRole
+  /** 生图模型。只能是 image-models.ts 那张表里的（写端收口，见 routes/platform.ts）。 */
+  image?: ImageModelRole
   /**
    * 日常模型的备选。`daily` 是默认那一个；人在对话框里可以给自己和某颗 Bot 的那条会话
    * 换成这里的任意一个（席位按会话记，见 bot 的 `session/model`）。
@@ -1281,6 +1292,7 @@ export function emptyPlatformSettings(): PlatformSettings {
   return {
     daily: { provider: '', model: '', reasoningEffort: 'off' },
     utility: { provider: '', model: '', reasoningEffort: 'off' },
+    image: { provider: '', model: '' },
     dailyAlternates: [],
     enabledModels: [],
     priceMultiplier: 1,

@@ -6,7 +6,7 @@ import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
 import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
-import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
+import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
  * 类型、常量和行解析都在 `db/` 底下；这里原样再导出，调用点仍然
@@ -972,6 +972,23 @@ export class Db {
       'update llm_calls set "promptTokens"=?, "completionTokens"=?, "cachedTokens"=?, "cacheWriteTokens"=? where id=?',
       [usage.prompt_tokens, usage.completion_tokens, usage.cached_tokens ?? 0, usage.cache_write_tokens ?? 0, id],
     )
+  }
+
+  /**
+   * 这颗模型最近成功调用的用量，新的在前。生图预估的实测基线用（lib/image-estimate.ts）。
+   *
+   * 只要**真成交过**的：账本上那一行是 `ok`、而且真有输出。被拒的、失败的、清扫收口的
+   * 占位行都是 0 token，混进来会把基线往下拽——而基线偏低就是闸门放过透支。
+   */
+  async recentModelUsage(provider: string, model: string, since: number, limit: number): Promise<{ promptTokens: number; completionTokens: number }[]> {
+    const rows = await this.many(
+      `select c."promptTokens", c."completionTokens" from llm_calls c
+         join usage_charges u on u."refId" = c.id and u.kind = 'llm' and u.status = 'ok'
+        where c.provider = ? and c.model = ? and c."createdAt" >= ? and c."completionTokens" > 0
+        order by c."createdAt" desc limit ?`,
+      [provider, model, since, limit],
+    )
+    return rows.map((r) => ({ promptTokens: Number(r.promptTokens) || 0, completionTokens: Number(r.completionTokens) || 0 }))
   }
 
   async llmCall(id: string): Promise<LlmCall | undefined> {
@@ -4420,6 +4437,8 @@ export class Db {
       utility: { provider: next.utility.provider, model: next.utility.model, reasoningEffort: parseReasoningEffort(next.utility.reasoningEffort) },
       // 同下面那一串「不能漏」：整份重写，漏了它备选就是能填、回 200、读出来永远是空。
       dailyAlternates: parseDailyAlternates(next.dailyAlternates, next.daily),
+      // 同上：生图模型也是整份重写里的一格，漏了就是「能选、回 200、席位上永远没有那把工具」。
+      image: parseImageRole(next.image),
       enabledModels: enabled,
       priceMultiplier: parsePriceMultiplier(next.priceMultiplier),
       connectorPricing: parseConnectorPricing(next.connectorPricing),
