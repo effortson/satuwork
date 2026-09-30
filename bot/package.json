@@ -18,9 +18,11 @@
     "@deepseek-ai/cosmokit": "^1.8.2",
     "@earendil-works/pi-agent-core": "^0.84.4",
     "cordis": "npm:@deepseek-ai/cordis@^4.0.1",
+    "docx": "^9.8.1",
     "exceljs": "^4.4.0",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.1",
+    "pptxgenjs": "^4.0.1",
     "unpdf": "^1.8.1"
   },
   "devDependencies": {
