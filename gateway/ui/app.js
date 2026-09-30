@@ -744,8 +744,12 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-model') {
-    state.chatModelOpen = !state.chatModelOpen
-    paintChatModel()
+    if (state.chatModelOpen) {
+      state.chatModelOpen = false
+      paintChatModel()
+    } else {
+      openChatModel()
+    }
     return
   }
   if (act === 'chat-model-pick') {

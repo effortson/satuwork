@@ -25,6 +25,7 @@ import { runLlmUsage } from './llm-usage.mjs'
 import { runMarkdown } from './markdown.mjs'
 import { runChatFold } from './chat-fold.mjs'
 import { runDesktopUpdate } from './desktop-update.mjs'
+import { runChatModelRefresh } from './chat-model-refresh.mjs'
 import { runToolNames } from './tool-names.mjs'
 import { runSessionStore } from './session-store.mjs'
 import { runLlmIdle } from './llm-idle.mjs'
@@ -3610,6 +3611,7 @@ async function main() {
     await suite('markdown', () => runMarkdown({ root, test, assert, log }))
     await suite('chat-fold', () => runChatFold({ root, test, assert, log }))
     await suite('desktop-update', () => runDesktopUpdate({ root, test, assert, log }))
+    await suite('chat-model-refresh', () => runChatModelRefresh({ root, test, assert, log }))
     await suite('tool-names', () => runToolNames({ root, test, assert, log }))
     await suite('session-store', () => runSessionStore({ root, test, assert, log }))
     await suite('llm-idle', () => runLlmIdle({ root, test, assert, log }))
