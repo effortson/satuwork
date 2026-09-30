@@ -367,6 +367,8 @@ function render() {
     at?.scrollIntoView({ block: 'start' })
     at?.focus?.({ preventScroll: true })
   }
+  // 首页那段演示：计时器、观察者和 three.js 背景都挂在 DOM 上，整页重绘之后要重新接上。
+  if (document.getElementById('satu-lp-film')) lpFilmMount()
   // 对话页的正文不在 appView 里——chatPage 只搭空壳，消息由 paintChat 增量填。
   // 整页重绘会把那个壳换掉，所以每次 render 之后要补一次。
   if (document.getElementById('chat-thread')) {

@@ -404,11 +404,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
-  if (act === 'landing-demo') {
-    // 只换右半边（见 pages-landing.js 的 paintLpDemo）。走 render() 的话整页 innerHTML
-    // 会换掉，文档滚动位置跟着抖一下——而人的手正停在名册上。
-    state.lpDemo = Number(btn.getAttribute('data-i')) || 0
-    paintLpDemo()
+  if (act === 'landing-film') {
+    // 只换演示那块舞台（见 pages-landing.js 的 lpFilmGo），不走 render()。
+    lpFilmPick(Number(btn.getAttribute('data-i')) || 0)
+    return
+  }
+  if (act === 'landing-film-play') {
+    lpFilmToggle()
     return
   }
   if (act === 'landing-sales') {

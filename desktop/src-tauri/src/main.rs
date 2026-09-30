@@ -522,7 +522,7 @@ fn mime_of(path: &Path) -> &'static str {
 // UI_CSP 里 CDN 那几条路径源，三条指令共用；由来见 UI_CSP 的注释。
 macro_rules! ui_cdn {
     () => {
-        "https://cdn.jsdelivr.net/npm/katex@0.16.11/ https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/ https://cdn.jsdelivr.net/npm/mermaid@11.4.1/"
+        "https://cdn.jsdelivr.net/npm/katex@0.16.11/ https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/ https://cdn.jsdelivr.net/npm/mermaid@11.4.1/ https://cdn.jsdelivr.net/npm/three@0.170.0/"
     };
 }
 
