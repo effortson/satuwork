@@ -167,8 +167,9 @@ export async function runImageGen({ root, gwRoot, test, req, start, waitHttp, as
       seen.push({ auth: r.headers.authorization, key: r.headers['x-goog-api-key'], path: r.url, body })
       if (r.url.startsWith('/v1beta/models/')) {
         // Gemini：一帧思考、一帧图、一帧用量。用量里图片 1290、文字 10、思考 90。
+        // 帧之间是 `\r\n\r\n`，跟真 Gemini 一样——只认 `\n\n` 的拆帧会一帧都切不出来、记 0 元。
         res.writeHead(200, { 'content-type': 'text/event-stream' })
-        const frame = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`)
+        const frame = (o) => res.write(`data: ${JSON.stringify(o)}\r\n\r\n`)
         frame({ candidates: [{ content: { parts: [{ text: '想一想', thought: true }] } }], usageMetadata: { promptTokenCount: 20 } })
         frame({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'aW1n' } }] }, finishReason: 'STOP' }] })
         frame({

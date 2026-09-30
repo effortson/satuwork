@@ -7,7 +7,7 @@ import { HttpError, bearer, json, watchClient, type Req, type Router } from './h
 import { EMPTY_USAGE, applyBodyPatch, openaiModelId, redact, rejectsTemperature, type CatalogModel, type Llm, type UpstreamRoute, type UpstreamTarget } from './llm.ts'
 import { isImageModel } from './image-models.ts'
 import type { Meter } from './lib/meter.ts'
-import { mergeUsage, openaiUsage, tokensOf, usageFromPayload, type TokenUsage } from './lib/llm-usage.ts'
+import { mergeUsage, openaiUsage, sseUsage, tokensOf, usageFromPayload, type TokenUsage } from './lib/llm-usage.ts'
 import { accountByApiKey, assertUsable, gateOr402, recordLlmCall, withSettle, type RunOutcome } from './lib/llm-billing.ts'
 
 function str(v: unknown): string {
@@ -544,20 +544,9 @@ async function proxyUpstream(
       const bytes = typeof piece === 'string' ? piece : Buffer.from(piece)
       res.write(bytes)
       buf += typeof piece === 'string' ? piece : decoder.decode(piece, { stream: true })
-      let idx
-      while ((idx = buf.indexOf('\n\n')) >= 0) {
-        const frame = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        for (const line of frame.split('\n')) {
-          if (!line.startsWith('data:')) continue
-          const payload = line.slice(5).trim()
-          if (!payload || payload === '[DONE]') continue
-          try {
-            const u = usageFromPayload(JSON.parse(payload))
-            if (u) usage = mergeUsage(usage, u)
-          } catch {}
-        }
-      }
+      const next = sseUsage(buf, usage)
+      buf = next.rest
+      usage = next.usage
     }
     // 读流放在 try 里：以前它在外面，任何中途失败（120s 超时会连响应体一起中止）都会
     // 一路抛出去，`res.end()` 和外层的 updateLlmCallTokens 都不执行——**这一次调用已经
