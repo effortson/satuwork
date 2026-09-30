@@ -42,11 +42,14 @@ const GUARD_OUTCOMES = new Set(['blocked', 'approved', 'denied', 'timeout', 'red
  * 转人工工单、对话审计结果三条只比了公司，于是同公司的一台机器被攻破，就能拿别的机器上
  * 任意员工的 accountId 伪造 `bot.guard.*` 审计、开出转人工工单（会发公司 webhook）、覆盖
  * 不属于本机的审计批次结果。席位票那条不用查：callerAccountId 已经把它钉在自己身上。
+ *
+ * 口径和会话索引那条一样：一个席位都没有的账号（老数据 / stub）放过，那时没有依据可核；
+ * 有席位、但一个都不在这台机器上的，拒。
  */
 async function requireSeatOnCaller(db: Db, caller: InternalCaller, accountId: string): Promise<void> {
   if (caller.kind !== 'machine') return
   const seats = await db.seatRuntimesOfAccount(accountId)
-  if (!seats.some((s) => s.machineId === caller.machine.id)) throw new HttpError(403, '这个账号的席位不在这台机器上')
+  if (seats.length && !seats.some((s) => s.machineId === caller.machine.id)) throw new HttpError(403, '这个账号的席位不在这台机器上')
 }
 
 export function attachInternal(router: Router, ctx: RouteCtx) {
