@@ -558,7 +558,7 @@ function releasesPage() {
           kind: 'manager',
           title: t('机器管家'),
           hint: t('机器心跳时拿到期望版本，自己换版并在失败时回滚。留空表示跟最新发布走。'),
-          data: state.managerReleases,
+          data: state.managerReleases && { ...state.managerReleases, latest: latestPerArch(state.managerReleases.releases) },
           desired: true,
         })
       : tab === 'bot'
@@ -566,7 +566,7 @@ function releasesPage() {
             kind: 'bot',
             title: t('Bot 运行时'),
             hint: t('部署席位时用最新版本；也可以在部署时指定某一版。'),
-            data: { releases: state.releases || [], latest: state.latestRelease, desired: '' },
+            data: { releases: state.releases || [], latest: latestPerArch(state.releases), desired: '' },
             desired: false,
           })
         : releaseSection({
@@ -599,6 +599,23 @@ function releasesPage() {
     </div>`
 }
 
+/**
+ * 每个架构各自最新的那一版（列表已按登记时间倒序）。
+ *
+ * 一次发布是 arm64、x64 两份包，CI 串行登记，服务端的 `latest` 只是最后登记的那一份——
+ * 只拿它标「最新」的话，同一次发布的另一份看着像旧版。机器取包也是按自己的架构取最新
+ * （db.latestBotRelease 带 arch），这里和它一个口径。没有架构后缀的老版本单算一组。
+ */
+function latestPerArch(releases) {
+  const out = new Map()
+  for (const r of releases || []) {
+    const m = /-(x64|arm64)$/.exec(String(r.version || ''))
+    const arch = m ? m[1] : ''
+    if (!out.has(arch)) out.set(arch, r.version)
+  }
+  return new Set(out.values())
+}
+
 function releaseRow(r, latest) {
   // 下载地址永远给出来，**包括字节就在 Gateway 磁盘上的时候**：那台 Debian 上没有
   // 别的地方能看到它，这一栏写「本机存储」等于没给。字节在哪儿降级成一行小字。
@@ -613,8 +630,16 @@ function releaseRow(r, latest) {
       <span style="font-family: var(--font-mono, ui-monospace, monospace); word-break: break-all;">${esc(dl)}</span>
       <span style="color: var(--muted-foreground); word-break: break-all;">${from}${dl ? ` · <button type="button" class="satu-linkbtn" data-act="copy-release-url" data-url="${esc(dl)}">${t('复制')}</button>` : ''}</span>
     </span>`
-  return `<div class="satu-memberrow" style="grid-template-columns: 200px 90px 120px 1fr 150px;">
-    <span style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-all;">${esc(r.version)}${(latest instanceof Set ? latest.has(r.version) : r.version === latest) ? ` <span class="tag tag-accent">${t('最新')}</span>` : ''}${r.minDesktopVersion ? `<span style="display: block; font-size: 12px; color: var(--muted-foreground);">${t('需要 Desktop', 'Needs Desktop')} ≥ ${esc(r.minDesktopVersion)}</span>` : ''}</span>
+  return `<div class="satu-memberrow" style="grid-template-columns: 240px 90px 120px 1fr 150px;">
+    ${/* 行里的格子一律单行省略（shell.css），版本号一长，跟在后面的「最新」会先被截掉——
+         0.1.16+…-arm64 比 -x64 长两个字，同一次发布一个有标一个没有。所以版本号自己省略
+         （悬停看全），标签 flex: none 不让它挤。 */ ''}<span style="display: flex; flex-direction: column; gap: 2px;">
+      <span style="display: flex; align-items: center; gap: 6px; min-width: 0;">
+        <span title="${esc(r.version)}" style="min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;">${esc(r.version)}</span>
+        ${(latest instanceof Set ? latest.has(r.version) : r.version === latest) ? `<span class="tag tag-accent" style="flex: none;">${t('最新')}</span>` : ''}
+      </span>
+      ${r.minDesktopVersion ? `<span style="font-size: 12px; color: var(--muted-foreground);">${t('需要 Desktop', 'Needs Desktop')} ≥ ${esc(r.minDesktopVersion)}</span>` : ''}
+    </span>
     <span style="font-size: 13px;">${esc(fmtSize(r.size))}</span>
     <span style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted-foreground);">${esc(shaShort(r.sha256))}</span>
     <span style="font-size: 12px;">${where}</span>
@@ -623,7 +648,7 @@ function releaseRow(r, latest) {
 }
 
 /**
- * `latest` 是一个版本号，或者一组（桌面端本地 Bot 每个平台各有一个「最新」）。
+ * `latest` 是一个版本号，或者一组（每个架构 / 平台各有一个「最新」）。
  * `extra` 摆在说明和列表之间，给某一类独有的东西用。
  */
 function releaseSection({ kind, title, hint, data, desired, extra = '' }) {
@@ -634,7 +659,7 @@ function releaseSection({ kind, title, hint, data, desired, extra = '' }) {
   const view = pageSlice(`releases:${kind}`, rows)
   const table = rows.length
     ? `<div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover); overflow: hidden;">
-        <div class="satu-memberhead" style="grid-template-columns: 200px 90px 120px 1fr 150px;">
+        <div class="satu-memberhead" style="grid-template-columns: 240px 90px 120px 1fr 150px;">
           <span>${t('版本')}</span><span>${t('大小')}</span><span>sha256</span><span>${t('下载地址')}</span><span>${t('时间')}</span>
         </div>
         ${view.rows.map((r) => releaseRow(r, d.latest)).join('')}
@@ -813,7 +838,8 @@ function companyDetailPage() {
           <div style="display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;">
             <h2 style="font-size: 18px; margin: 0;">${t('成员')}</h2>
             <div style="display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
-              <span style="font-size: 12px; color: var(--muted-foreground);">${t(`平台最新 ${esc(state.latestRelease || t('还没有发布版本'))}`, `Latest ${esc(state.latestRelease || t('还没有发布版本'))}`)} · ${t(`${members.length} 人`, `${members.length} people`)} · ${t('已用')} ${t(`${esc(used)} / ${esc(total)} 席位`, `${esc(used)} / ${esc(total)} seats`)}</span>
+              <span style="font-size: 12px; color: var(--muted-foreground);">${/* 一次发布有 arm64 / x64 两份，这里说的是「平台发到哪一版」，架构后缀去掉——
+     不然永远显示最后登记的那份（x64），arm64 的公司看着像自己落后了。 */ ''}${t(`平台最新 ${esc(state.latestRelease ? String(state.latestRelease).replace(/-(x64|arm64)$/, '') : t('还没有发布版本'))}`, `Latest ${esc(state.latestRelease ? String(state.latestRelease).replace(/-(x64|arm64)$/, '') : t('还没有发布版本'))}`)} · ${t(`${members.length} 人`, `${members.length} people`)} · ${t('已用')} ${t(`${esc(used)} / ${esc(total)} 席位`, `${esc(used)} / ${esc(total)} seats`)}</span>
             </div>
           </div>
           <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
@@ -1073,7 +1099,8 @@ function timezoneOptions() {
  */
 function managerVersionRow(orgId, m, card) {
   const cur = m.managerVersion || '—'
-  const latest = state.managerLatest
+  // 卡片自己带的那个是按这台机器的架构取的；老 Gateway 没带时退回全局那个。
+  const latest = card.managerLatest || state.managerLatest
   const canUp = card.managerOutdated
   const note = card.managerPending
     ? ` · ${t('已下指令，等机器换版')} → ${esc(card.managerDesired || '')}`
@@ -1100,7 +1127,7 @@ function botVersionRow(orgId, card) {
     ? list.map((v) => `${esc(v.version || t('未部署'))} × ${v.seats}`).join('、')
     : t('还没有部署席位')
   const canUp = card.botOutdated
-  const note = canUp ? ` · ${t('最新')} ${esc(state.botLatest || '')}` : ''
+  const note = canUp ? ` · ${t('最新')} ${esc(card.botLatest || state.botLatest || '')}` : ''
   const btn = canUp
     ? `<button type="button" class="btn" data-act="upgrade-bot" data-id="${esc(orgId)}" ${state.updatingRuntime ? 'disabled' : ''}>${state.updatingRuntime ? t('更新中…') : t('全部升级')}</button>`
     : ''

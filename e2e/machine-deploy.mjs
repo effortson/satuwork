@@ -668,6 +668,16 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
         aware.json.botVersion === '0.3.0-arm64',
         `arm64 机器该拿 arm64 的包，实际 ${aware.json.botVersion}`,
       )
+
+      // 机器卡片上的「最新」也得按架构说：拿全局那个（x64，后登记的）比，arm64 机器装上
+      // 0.3.0-arm64 之后照样被判「可升级 · 最新 0.3.0-x64」，永远消不掉。
+      const cards = await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })
+      const card = cards.json.machines.find((c) => c.machine.id === machineId)
+      assert(card?.botLatest === '0.3.0-arm64', `arm64 机器卡片的最新版该是 0.3.0-arm64，实际 ${card?.botLatest}`)
+      assert(
+        card.botOutdated === card.botVersions.some((v) => v.version !== '0.3.0-arm64'),
+        `可升级该按本机架构的最新版判：${JSON.stringify({ botOutdated: card.botOutdated, botVersions: card.botVersions })}`,
+      )
     })
 
     await test('按架构选包：显式指定错架构的版本 → 换成同版本的兄弟包；没有兄弟才 409', async () => {
