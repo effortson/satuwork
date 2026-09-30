@@ -1,10 +1,12 @@
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, extname, join, posix, sep } from 'node:path'
+import type { Stats } from 'node:fs'
+import { basename, dirname, extname, join, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { humanSize } from '../workspace/index.ts'
-import { checkPackage, checkXml, condenseXml, prettyXml } from '../workspace/ooxml.ts'
-import { fail, registerTool } from './common.ts'
+import { attr, checkPackage, checkXml, condenseXml, prettyXml, relationships } from '../workspace/ooxml.ts'
+import { ToolFailure, fail, registerTool } from './common.ts'
+import { MAX_PATCH_BYTES } from './file.ts'
 
 /**
  * Office 工具集：`office_unpack` / `office_pack`——改已有的 Word / Excel / PPT，**原格式不丢**。
@@ -37,12 +39,22 @@ const KINDS: Record<string, Kind> = { '.docx': 'docx', '.xlsx': 'xlsx', '.xlsm':
 
 /** 肯解的文件大小。再大的 Office 文档多半是塞满了图片，XML 那部分用不着这么大。 */
 const MAX_SOURCE_BYTES = 50 * 1024 * 1024
-/** 解开之后的总量和件数上限：zip 炸弹挡在这儿，不等写满磁盘。 */
-const MAX_UNPACKED_BYTES = 300 * 1024 * 1024
+/**
+ * 解开之后的总量上限：zip 炸弹挡在这儿，不等写满磁盘、撑爆内存。
+ *
+ * 每次解包时读：环境变量只给 e2e 用（造一个几百 MB 的炸弹太慢），而探针的静态 import
+ * 先于它设环境变量的那一行执行，模块加载时读就读不到。
+ */
+function maxUnpacked(): number {
+  return Math.max(1024 * 1024, Number(process.env.SATUWORK_OFFICE_MAX_UNPACKED) || 300 * 1024 * 1024)
+}
 const MAX_ENTRIES = 5000
 /**
- * 多大的 XML 还美化。patch 能改的上限是 8 MB（file.ts 的 MAX_PATCH_BYTES），美化会让文件
- * 涨一截；再大的留成一行，说明里讲清楚这份只能用 search_files 找、terminal 改。
+ * 多大的 XML 还美化。再大的留成一行，说明里讲清楚这份只能用 search_files 找、terminal 改。
+ *
+ * 美化**之后**还要再看一眼：缩进会让文件涨一截，嵌套深的能翻好几倍。超过 patch 能改的
+ * 上限（file.ts 的 MAX_PATCH_BYTES）就不美化——不然解包结果说「改这个文件」，patch 却说
+ * 「文件太大」。
  */
 const MAX_PRETTY_BYTES = 4 * 1024 * 1024
 /** 一次最多报几条错。修完这些再打包，会看到下一批。 */
@@ -57,8 +69,15 @@ interface Manifest {
   size: number
   /** zip 里原来的顺序。打回去照这个排，新加的排在后面。 */
   order: string[]
-  /** 被美化过的那些——打包时只还原它们。 */
-  pretty: string[]
+  /**
+   * 被美化过的那些 → 美化后那份的哈希。
+   *
+   * 打包时磁盘上那份和哈希对得上，说明模型没碰它，**直接放回原字节**（存在旁边的
+   * `<目录>.orig/` 里）；对不上才还原美化。只靠「美化再还原」的话，原文件里本来就带
+   * 缩进的部件（Excel 批注的 VML、别的生成器存的 XML）会被顺手压成一行——没碰过的部件
+   * 也变了。
+   */
+  pretty: Record<string, string>
   /**
    * 原文件**本来就有**的问题：包级检查的原话，以及本来就不合格的 XML 部件。
    *
@@ -72,6 +91,61 @@ interface Manifest {
 
 const isXmlPart = (name: string) => /\.(xml|rels|vml)$/i.test(name)
 
+const sha = (text: string) => createHash('sha256').update(text).digest('hex')
+
+/** 两个路径是不是同一个文件。比 inode，不比字符串：macOS / Windows 上 Report.docx 和 report.docx 是同一个。 */
+const sameFile = (a: Stats | null, b: Stats | null) => Boolean(a && b && a.dev === b.dev && a.ino === b.ino)
+
+/** 标签里指向关系的那个 `r:id`（前缀不一定是 r）。不认不带前缀的 `id`——`<p:sldId id="256">` 那个是页号。 */
+const relIdOf = (tag: string) => /\s\w+:id\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(tag)?.slice(1).find((v) => v !== undefined)
+
+type Entry = { name: string; internalStream(type: 'nodebuffer'): JSZipStream }
+interface JSZipStream {
+  on(event: 'data', cb: (chunk: Buffer) => void): JSZipStream
+  on(event: 'error', cb: (e: Error) => void): JSZipStream
+  on(event: 'end', cb: () => void): JSZipStream
+  resume(): JSZipStream
+  pause(): JSZipStream
+}
+
+/**
+ * 解一个条目，**边解边数**。
+ *
+ * 不能先看声明的大小再 `async('nodebuffer')`：中央目录里那个大小是文件自己写的，能造假；
+ * `async` 会把整个条目解进内存才回来——一个声明几 KB、实际解开几 GB 的条目，进程在检查
+ * 生效之前就已经 OOM 了。流着解，超了当场停。
+ */
+function inflate(entry: Entry, budget: { left: number; limit: number }, shown: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let done = false
+    const stream = entry.internalStream('nodebuffer')
+    stream
+      .on('data', (chunk) => {
+        if (done) return
+        budget.left -= chunk.length
+        if (budget.left < 0) {
+          done = true
+          stream.pause()
+          reject(new ToolFailure(`${shown} 解开超过了上限 ${humanSize(budget.limit)}，不解。`))
+          return
+        }
+        chunks.push(chunk)
+      })
+      .on('error', (e) => {
+        if (done) return
+        done = true
+        reject(new ToolFailure(`${shown} 里的 ${entry.name} 解不开：${e.message}`))
+      })
+      .on('end', () => {
+        if (done) return
+        done = true
+        resolve(Buffer.concat(chunks))
+      })
+      .resume()
+  })
+}
+
 /** zip 条目名是外部输入：绝对路径、`..`、反斜杠一律不收，不然解包就是往工作区外面写。 */
 function safeEntry(name: string): boolean {
   if (!name || name.startsWith('/') || name.includes('\\') || /^[A-Za-z]:/.test(name)) return false
@@ -84,21 +158,9 @@ function lineCount(text: string): number {
   return n
 }
 
-function attrOf(tag: string, name: string): string | undefined {
-  const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(tag)
-  return m ? (m[1] ?? m[2]) : undefined
-}
-
 /** 一份 .rels 里 Id → 目标部件（相对包根）。 */
-function relTargets(rels: string | undefined, base: string): Map<string, string> {
-  const out = new Map<string, string>()
-  for (const m of (rels ?? '').matchAll(/<(?:\w+:)?Relationship\b[^>]*>/g)) {
-    const id = attrOf(m[0], 'Id')
-    const target = attrOf(m[0], 'Target')
-    if (!id || !target || attrOf(m[0], 'TargetMode') === 'External') continue
-    out.set(id, target.startsWith('/') ? target.slice(1) : posix.normalize(posix.join(base, target)))
-  }
-  return out
+function relTargets(texts: Map<string, string>, relsPath: string): Map<string, string> {
+  return new Map(relationships(relsPath, texts.get(relsPath)).map((r) => [r.id, r.part]))
 }
 
 /** 一页里的前几段文字，给「第几页是哪个文件」那张表认页用。 */
@@ -121,19 +183,19 @@ function overview(kind: Kind, texts: Map<string, string>, dir: string): string {
     if (extra.length) out.push(`页眉页脚 / 脚注 / 批注：${extra.map((p) => `${p}${lines(p)}`).join('，')}`)
     out.push(`样式：${at('word/styles.xml')}`)
   } else if (kind === 'xlsx') {
-    const targets = relTargets(texts.get('xl/_rels/workbook.xml.rels'), 'xl')
+    const targets = relTargets(texts, 'xl/_rels/workbook.xml.rels')
     out.push('工作表：')
     for (const m of (texts.get('xl/workbook.xml') ?? '').matchAll(/<(?:\w+:)?sheet\b[^>]*>/g)) {
-      const part = targets.get(attrOf(m[0], 'r:id') ?? '')
-      out.push(`  · 「${attrOf(m[0], 'name') ?? '?'}」 → ${part ? `${at(part)}${lines(part)}` : '（找不到对应文件）'}`)
+      const part = targets.get(relIdOf(m[0]) ?? '')
+      out.push(`  · 「${attr(m[0], 'name') ?? '?'}」 → ${part ? `${at(part)}${lines(part)}` : '（找不到对应文件）'}`)
     }
     if (texts.has('xl/sharedStrings.xml')) out.push(`共享字符串：${at('xl/sharedStrings.xml')}${lines('xl/sharedStrings.xml')}`)
   } else {
-    const targets = relTargets(texts.get('ppt/_rels/presentation.xml.rels'), 'ppt')
+    const targets = relTargets(texts, 'ppt/_rels/presentation.xml.rels')
     out.push('页序（按 ppt/presentation.xml 的 <p:sldIdLst>，文件名里的数字不代表第几页）：')
     let n = 0
     for (const m of (texts.get('ppt/presentation.xml') ?? '').matchAll(/<p:sldId\b[^>]*>/g)) {
-      const part = targets.get(attrOf(m[0], 'r:id') ?? '')
+      const part = targets.get(relIdOf(m[0]) ?? '')
       n++
       const said = part ? snippet(texts.get(part)) : ''
       out.push(`  ${n}. ${part ? `${at(part)}${lines(part)}` : '（找不到对应文件）'}${said ? `「${said}」` : ''}`)
@@ -245,9 +307,10 @@ export function apply(ctx: Context) {
       }
       const entries = Object.values(zip.files).filter((f) => !f.dir)
       if (entries.length > MAX_ENTRIES) fail(`${show(source)} 里有 ${entries.length} 个部件，超过上限 ${MAX_ENTRIES}。`)
-      // 解压前先看声明的大小：真解出来才发现是炸弹，磁盘已经满了。
+      // 解压前先看声明的大小，挡掉老实的大包；声明可以造假，真正的闸在 inflate 里边解边数。
+      const limit = maxUnpacked()
       const declared = entries.reduce((n, f) => n + Number((f as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize ?? 0), 0)
-      if (declared > MAX_UNPACKED_BYTES) fail(`${show(source)} 解开有 ${humanSize(declared)}，超过上限 ${humanSize(MAX_UNPACKED_BYTES)}。`)
+      if (declared > limit) fail(`${show(source)} 解开有 ${humanSize(declared)}，超过上限 ${humanSize(limit)}。`)
       // JSZip 加载时会把 `../x` 这种名字规整掉、原名放在 unsafeOriginalName 里——两个都看：
       // 名字被人动过手脚的包，规整之后能解也不该解。
       const rawName = (f: (typeof entries)[number]) => (f as unknown as { unsafeOriginalName?: string }).unsafeOriginalName ?? f.name
@@ -255,34 +318,41 @@ export function apply(ctx: Context) {
       if (bad) fail(`${show(source)} 里有路径不对的部件（${rawName(bad)}），不解。`)
 
       const dir = workDirOf(source)
-      await rm(dir, { recursive: true, force: true })
+      /** 美化过的部件，原字节存在这儿：打包时没被改过的就原样放回去（见 Manifest.pretty）。 */
+      const orig = `${dir}.orig`
+      for (const p of [dir, orig, `${dir}.json`]) await rm(p, { recursive: true, force: true })
       await mkdir(dir, { recursive: true })
       const texts = new Map<string, string>()
-      const pretty: string[] = []
+      const pretty: Record<string, string> = {}
       const big: string[] = []
-      let total = 0
-      for (const f of entries) {
-        const bytes = await f.async('nodebuffer')
-        total += bytes.length
-        if (total > MAX_UNPACKED_BYTES) {
-          await rm(dir, { recursive: true, force: true })
-          fail(`${show(source)} 解开超过了上限 ${humanSize(MAX_UNPACKED_BYTES)}。`)
-        }
-        const target = join(dir, ...f.name.split('/'))
-        await mkdir(dirname(target), { recursive: true })
-        if (isXmlPart(f.name)) {
-          const text = bytes.toString('utf8')
-          if (bytes.length <= MAX_PRETTY_BYTES) {
-            const nice = prettyXml(text)
-            texts.set(f.name, nice)
-            pretty.push(f.name)
-            await writeFile(target, nice, 'utf8')
-            continue
+      const budget = { left: limit, limit }
+      try {
+        for (const f of entries) {
+          const bytes = await inflate(f as unknown as Entry, budget, show(source))
+          const target = join(dir, ...f.name.split('/'))
+          await mkdir(dirname(target), { recursive: true })
+          if (isXmlPart(f.name)) {
+            const text = bytes.toString('utf8')
+            const nice = bytes.length <= MAX_PRETTY_BYTES ? prettyXml(text) : null
+            if (nice !== null && Buffer.byteLength(nice) <= MAX_PATCH_BYTES) {
+              texts.set(f.name, nice)
+              pretty[f.name] = sha(nice)
+              await writeFile(target, nice, 'utf8')
+              const kept = join(orig, ...f.name.split('/'))
+              await mkdir(dirname(kept), { recursive: true })
+              await writeFile(kept, bytes)
+              continue
+            }
+            big.push(f.name)
+            texts.set(f.name, text)
           }
-          big.push(f.name)
-          texts.set(f.name, text)
+          await writeFile(target, bytes)
         }
-        await writeFile(target, bytes)
+      } catch (e) {
+        // 解到一半停下（炸弹、坏条目）：半截目录不留，免得下一次 office_pack 拿它打包。
+        await rm(dir, { recursive: true, force: true })
+        await rm(orig, { recursive: true, force: true })
+        throw e
       }
       const brokenParts = [...texts].filter(([, text]) => checkXml(text) !== null).map(([name]) => name)
       const manifest: Manifest = {
@@ -343,10 +413,15 @@ export function apply(ctx: Context) {
       )
       const source = resolveIn(manifest.source)
       const out = path ? resolveIn(path) : source
-      const outKind = KINDS[extname(out).toLowerCase()]
-      if (outKind !== manifest.kind) fail(`输出文件的扩展名要和原文件同类（${extname(source)}），收到的是 ${extname(out) || '没有扩展名'}。`)
-      if (out === source) {
-        const now = await stat(source).catch(() => null)
+      // 扩展名要**一样**，不是「同类」就行：.xlsm 的主部件是带宏的类型，存成 .xlsx 的话
+      // Excel 会说「文件格式或扩展名无效」、直接不开；反过来也一样。
+      if (extname(out).toLowerCase() !== extname(source).toLowerCase()) {
+        fail(`输出文件的扩展名要和原文件一样（${extname(source)}），收到的是 ${extname(out) || '没有扩展名'}。`)
+      }
+      const [sourceNow, outNow] = await Promise.all([stat(source).catch(() => null), stat(out).catch(() => null)])
+      const overwriting = out === source || sameFile(sourceNow, outNow)
+      if (overwriting) {
+        const now = sourceNow
         if (now && (now.mtimeMs !== manifest.mtimeMs || now.size !== manifest.size)) {
           fail(
             `${manifest.source} 在解包之后被改过（人或者别的工具），覆盖会把那些改动丢掉。` +
@@ -359,13 +434,24 @@ export function apply(ctx: Context) {
       if (!names.includes('[Content_Types].xml')) fail(`${show(work)} 里没有 [Content_Types].xml，这不是一个完整的 Office 包。`)
       const problems: string[] = []
       const texts = new Map<string, string>()
+      /** 没被改过的美化部件 → 原字节。打包时放它，不放「美化再还原」的那份。 */
+      const untouched = new Map<string, Buffer>()
       for (const name of names.filter(isXmlPart)) {
         const text = await readFile(join(work, ...name.split('/')), 'utf8')
+        const hash = manifest.pretty[name]
+        if (hash && sha(text) === hash) {
+          const bytes = await readFile(join(`${work}.orig`, ...name.split('/'))).catch(() => null)
+          if (bytes) {
+            untouched.set(name, bytes)
+            texts.set(name, bytes.toString('utf8'))
+            continue
+          }
+        }
         // 检查的是磁盘上那份（美化过的），行号才对得上 read_file 看到的。原文件里本来就
         // 不合格的部件不查（见 Manifest.baseline）。
         const err = manifest.brokenParts?.includes(name) ? null : checkXml(text)
         if (err) problems.push(`${show(work)}/${name}：${err}`)
-        texts.set(name, manifest.pretty.includes(name) ? condenseXml(text) : text)
+        texts.set(name, hash ? condenseXml(text) : text)
       }
       if (!problems.length) {
         const before = new Set(manifest.baseline ?? [])
@@ -389,27 +475,40 @@ export function apply(ctx: Context) {
         ...names.filter((n) => !known.has(n)).sort(),
       ]
       for (const name of ordered) {
-        zip.file(name, texts.get(name) ?? (await readFile(join(work, ...name.split('/')))))
+        const content = untouched.get(name) ?? texts.get(name) ?? (await readFile(join(work, ...name.split('/'))))
+        // createFolders: false——JSZip 默认会给每一级目录补一个 `word/` 这样的目录条目，
+        // Office 自己存的包里没有这种东西，严一点的读取器会把它当成没登记的部件。
+        zip.file(name, content, { createFolders: false })
       }
       const bytes = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } })
       await mkdir(dirname(out), { recursive: true })
       // 先写旁边再换名：写到一半出错，原文件还是好的。
       const tmp = join(dirname(out), `.${basename(out)}.${randomUUID().slice(0, 8)}.tmp`)
-      await writeFile(tmp, bytes)
-      await rename(tmp, out)
+      try {
+        await writeFile(tmp, bytes)
+        await rename(tmp, out)
+      } catch (e) {
+        await rm(tmp, { force: true }).catch(() => {})
+        const code = (e as NodeJS.ErrnoException).code
+        fail(
+          `写不进 ${show(out)}：` +
+            (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES'
+              ? '文件可能正被别的程序（比如 Word / Excel / PowerPoint）打开着，请用户关掉它再试，或者给 path 另存一份。'
+              : (e as Error).message),
+        )
+      }
       if (!keep) {
-        await rm(work, { recursive: true, force: true })
-        await rm(`${work}.json`, { force: true })
-      } else {
+        for (const p of [work, `${work}.orig`, `${work}.json`]) await rm(p, { recursive: true, force: true })
+      } else if (overwriting) {
         // 留着接着改：这一份现在就是新的「原文件」，下一次覆盖别再报「被别人改过」。
         const now = await stat(out)
-        if (out === source) await writeFile(`${work}.json`, JSON.stringify({ ...manifest, mtimeMs: now.mtimeMs, size: now.size }))
+        await writeFile(`${work}.json`, JSON.stringify({ ...manifest, mtimeMs: now.mtimeMs, size: now.size }))
       }
       const added = names.filter((n) => !known.has(n)).length
       const removed = manifest.order.filter((n) => !names.includes(n)).length
       return {
         text:
-          `已${out === source ? '覆盖' : '写出'} ${show(out)}（${ordered.length} 个部件${added ? `，新增 ${added}` : ''}${removed ? `，删掉 ${removed}` : ''}，${humanSize(bytes.length)}）。` +
+          `已${overwriting ? '覆盖' : '写出'} ${show(out)}（${ordered.length} 个部件${added ? `，新增 ${added}` : ''}${removed ? `，删掉 ${removed}` : ''}，${humanSize(bytes.length)}）。` +
           (keep ? `解包目录 ${show(work)}/ 留着。` : ''),
         files: [{ path: show(out), name: basename(out) }],
       }
