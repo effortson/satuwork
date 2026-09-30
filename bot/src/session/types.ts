@@ -561,6 +561,13 @@ export interface SessionEventMap {
      * 这个字段，界面照旧不显示。
      */
     shot?: { path: string; name: string }
+    /**
+     * 这次调用交给**模型**看的图（ToolResult.images），路径相对工作区根目录。
+     *
+     * 存路径不存字节，和用户消息里的图一样（见上面 image 块）：回放时现读，而且只有最近
+     * 几张带字节。老日志没有这个字段。
+     */
+    images?: { path: string; mime: string }[]
   }
 }
 

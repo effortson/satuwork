@@ -46,6 +46,7 @@ const SERVICES = ['storage', 'sessions', 'roster', 'tools', 'llm', 'workspace', 
 const TOOLS = [
   'now',
   'read_file', 'write_file', 'patch', 'search_files', 'terminal', 'process',
+  'office_unpack', 'office_pack', 'office_render',
   // 席位桌面那两把只在有桌面的远程席位挂；这里裸起的是远程形态，DISPLAY 在下面垫了一个。
   'desktop_terminal', 'desktop_open_folder',
   'web_search', 'web_extract',

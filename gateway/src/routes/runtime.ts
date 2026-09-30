@@ -1987,13 +1987,18 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       )
       return
     }
-    const q = `?path=${encodeURIComponent(path)}${req.query.get('download') === '1' ? '&download=1' : ''}`
+    // `as=pdf` 回的是渲染出来的 PDF 字节（席位 workspace/render.ts），和原文件一样走
+    // proxyDownload。它那几个失败码（415 格式不认、413 太大、422 转坏了、501 没装
+    // LibreOffice）都是业务答案，原样交出去；界面反正都退回提取文本，但排查时要看得出是哪种。
+    const pdf = req.query.get('as') === 'pdf'
+    const q = `?path=${encodeURIComponent(path)}${pdf ? '&as=pdf' : ''}${req.query.get('download') === '1' ? '&download=1' : ''}`
     await proxyDownload(
       req,
       res,
       `${target.host}/api/workspace/file${q}`,
       await seatBearer(db, account.id),
       target.machineToken,
+      pdf ? [400, 404, 413, 415, 422, 501] : undefined,
     )
   })
 }

@@ -3267,7 +3267,7 @@ dependencies = [
 
 [[package]]
 name = "satuwork-desktop"
-version = "0.1.4"
+version = "0.1.6"
 dependencies = [
  "flate2",
  "junction",
@@ -3282,6 +3282,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-updater",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

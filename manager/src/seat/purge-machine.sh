@@ -210,7 +210,7 @@ seat_dir_of() {
   return 0
 }
 
-DESKTOP_PKGS="xvfb dbus-x11 x11-xserver-utils xfwm4 thunar xfce4-terminal plank picom hsetroot x11vnc novnc python3-websockify google-chrome-stable chromium chromium-browser"
+DESKTOP_PKGS="xvfb dbus-x11 x11-xserver-utils xfwm4 thunar xfce4-terminal plank picom hsetroot x11vnc novnc python3-websockify google-chrome-stable chromium chromium-browser libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui"
 
 # ── 说清楚要干什么 ────────────────────────────────────────────────────
 echo "Satuwork machine purge"

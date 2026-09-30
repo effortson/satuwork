@@ -112,10 +112,53 @@ function userContent(content: unknown, image: (c: any) => any): any {
     .filter((c: any) => c.type !== 'text' || c.text)
 }
 
+/** 工具结果里的图片块（agent 的 toolImageBlocks 放进去的，pi 的 ImageContent 形状）。 */
+function imagesIn(content: unknown): { data: string; mimeType?: string }[] {
+  return Array.isArray(content) ? content.filter((c: any) => c?.type === 'image' && typeof c.data === 'string') : []
+}
+
+/**
+ * OpenAI 两种协议的工具结果**只收文本**（chat 的 `role: 'tool'`、Responses 的
+ * `function_call_output`），图放不进去。所以一批工具结果之后补一条用户消息，把这批里的图
+ * 一起带上，并说明是哪次调用的——模型在下一步里正好看得到。Anthropic 的 tool_result 本身
+ * 收图，不走这条路。
+ *
+ * 必须等**这一批**工具结果都排完再补：chat 协议要求 assistant 的 tool_calls 后面紧跟全部
+ * tool 消息，中间插一条 user 会被拒。
+ */
+class PendingToolImages {
+  private items: { callId: string; images: { data: string; mimeType?: string }[] }[] = []
+  add(callId: string, content: unknown) {
+    const images = imagesIn(content)
+    if (images.length) this.items.push({ callId, images })
+  }
+  /** 有待补的图就回一条用户消息的正文（文字 + 图），并清空。 */
+  flush(image: (c: { data: string; mimeType?: string }) => any, text: (t: string) => any): any[] | null {
+    if (!this.items.length) return null
+    const parts: any[] = []
+    for (const it of this.items) {
+      parts.push(text(`（上面工具调用 ${it.callId} 返回的 ${it.images.length} 张图：）`))
+      for (const img of it.images) parts.push(image(img))
+    }
+    this.items = []
+    return parts
+  }
+}
+
 export function toOpenAI(context: any, model: { provider: string; id: string }, options?: GatewayStreamOptions) {
   const messages: any[] = []
   if (context.systemPrompt) messages.push({ role: 'system', content: context.systemPrompt })
+  const pending = new PendingToolImages()
+  const openaiImage = (c: { data: string; mimeType?: string }) => ({
+    type: 'image_url',
+    image_url: { url: `data:${c.mimeType || 'image/png'};base64,${c.data}` },
+  })
+  const flush = () => {
+    const parts = pending.flush(openaiImage, (t) => ({ type: 'text', text: t }))
+    if (parts) messages.push({ role: 'user', content: parts })
+  }
   for (const m of context.messages ?? []) {
+    if (m.role !== 'toolResult') flush()
     if (m.role === 'user') {
       // OpenAI 走 data URI：`image_url.url` 里塞 `data:<mime>;base64,<...>`。
       messages.push({
@@ -135,7 +178,7 @@ export function toOpenAI(context: any, model: { provider: string; id: string }, 
         .map((c: any) => ({
           id: c.id,
           type: 'function',
-          function: { name: c.name, arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {}) },
+          function: { name: wireToolName(c.name), arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {}) },
         }))
       const row: any = { role: 'assistant', content: text || null }
       if (tool_calls.length) row.tool_calls = tool_calls
@@ -146,8 +189,10 @@ export function toOpenAI(context: any, model: { provider: string; id: string }, 
         tool_call_id: m.toolCallId,
         content: contentText(m.content),
       })
+      pending.add(m.toolCallId, m.content)
     }
   }
+  flush()
   const tools = (context.tools ?? []).map((t: any) => ({
     type: 'function',
     function: { name: t.name, description: t.description ?? '', parameters: t.parameters ?? { type: 'object', properties: {} } },
@@ -175,6 +220,24 @@ function responsesCallId(id: unknown): string {
 }
 
 /**
+ * 历史里助手那一侧的工具名，回传前按三家里最严的规矩收一遍：`[a-zA-Z0-9_-]`，不超过 64。
+ *
+ * 我们自己挂的工具名本来就在这个范围里（见 catalog/mcp.ts 的 mcpToolName），出格的只可能
+ * 是**模型编出来的**：小模型偶尔把参数、中文说明一股脑塞进 name，宽松的供应商照单收下，
+ * pi 找不到这把工具、回一条错误结果，这一来一回都写进了会话日志。之后这段历史只要落到
+ * 严一点的供应商手里（Responses 的 name 上限 128、chat 是 64），整条请求当场 400——
+ * 线上见过的是一条 168 字的名字，日常任务从此每轮都跑不起来，重试也一样。
+ *
+ * 合规的名字一个字节都不动；改的只是一把本来就没执行成的调用，和结果之间靠 call id 配对，
+ * 不靠名字。
+ */
+function wireToolName(name: unknown): string {
+  const s = String(name ?? '')
+  if (/^[a-zA-Z0-9_-]{1,64}$/.test(s)) return s
+  return s.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 64) || 'unknown_tool'
+}
+
+/**
  * pi 的上下文 → Responses 协议的请求体。
  *
  * 用的是无状态那一套（`store: false`，每轮把整段历史都发过去），和 chat 路由一样；
@@ -187,7 +250,16 @@ function responsesCallId(id: unknown): string {
  */
 export function toOpenAIResponses(context: any, model: { provider: string; id: string }, options?: GatewayStreamOptions) {
   const input: any[] = []
+  const pending = new PendingToolImages()
+  const flush = () => {
+    const parts = pending.flush(
+      (c) => ({ type: 'input_image', image_url: `data:${c.mimeType || 'image/png'};base64,${c.data}` }),
+      (t) => ({ type: 'input_text', text: t }),
+    )
+    if (parts) input.push({ role: 'user', content: parts })
+  }
   for (const m of context.messages ?? []) {
+    if (m.role !== 'toolResult') flush()
     if (m.role === 'user') {
       const content = userContent(m.content, (c) => ({
         type: 'input_image',
@@ -210,7 +282,7 @@ export function toOpenAIResponses(context: any, model: { provider: string; id: s
         input.push({
           type: 'function_call',
           call_id: responsesCallId(c.id),
-          name: c.name,
+          name: wireToolName(c.name),
           arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {}),
         })
       }
@@ -220,8 +292,10 @@ export function toOpenAIResponses(context: any, model: { provider: string; id: s
         call_id: responsesCallId(m.toolCallId),
         output: contentText(m.content),
       })
+      pending.add(responsesCallId(m.toolCallId), m.content)
     }
   }
+  flush()
   const tools = (context.tools ?? []).map((t: any) => ({
     type: 'function',
     name: t.name,
@@ -257,7 +331,7 @@ export function toAnthropic(context: any, model: { id: string; provider?: string
       const content: any[] = []
       for (const c of m.content ?? []) {
         if (c.type === 'text' && c.text) content.push({ type: 'text', text: c.text })
-        else if (c.type === 'toolCall') content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments ?? {} })
+        else if (c.type === 'toolCall') content.push({ type: 'tool_use', id: c.id, name: wireToolName(c.name), input: c.arguments ?? {} })
       }
       if (!content.length) content.push({ type: 'text', text: '' })
       messages.push({ role: 'assistant', content })
@@ -268,7 +342,16 @@ export function toAnthropic(context: any, model: { id: string; provider?: string
           {
             type: 'tool_result',
             tool_use_id: m.toolCallId,
-            content: contentText(m.content),
+            // tool_result 收图：文字和图放进同一个 content 数组。没图照旧给字符串。
+            content: imagesIn(m.content).length
+              ? [
+                  ...(contentText(m.content) ? [{ type: 'text', text: contentText(m.content) }] : []),
+                  ...imagesIn(m.content).map((c) => ({
+                    type: 'image',
+                    source: { type: 'base64', media_type: c.mimeType || 'image/png', data: c.data },
+                  })),
+                ]
+              : contentText(m.content),
             is_error: !!m.isError,
           },
         ],

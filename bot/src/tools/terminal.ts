@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createWriteStream, readdirSync, readFileSync, renameSync, type WriteStream } from 'node:fs'
+import { createWriteStream, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, type WriteStream } from 'node:fs'
 import { mkdir, open, readdir, stat, unlink, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, delimiter, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { StringDecoder } from 'node:string_decoder'
@@ -488,6 +489,71 @@ function since(ms: number): string {
   return `${Math.floor(m / 60)} 小时 ${m % 60} 分`
 }
 
+/** Bot 自己的 node_modules（席位上是 `pnpm deploy` 出来的 app/node_modules）。 */
+const BOT_MODULES = fileURLToPath(new URL('../../node_modules', import.meta.url))
+
+/** 给模型写的生成脚本用的那几个库。新建 Word / PPT / Excel 靠它们（见 tools/office.ts）。 */
+const SCRIPT_LIBS = ['docx', 'pptxgenjs', 'exceljs', 'jszip']
+
+let scriptLibs: string | null | undefined
+
+/**
+ * 一个**只装着这几个库**的 node_modules，NODE_PATH 指它。
+ *
+ * 不直接把 NODE_PATH 指向 Bot 自己的 node_modules：那里有几百个包（cordis、tsx…），
+ * NODE_PATH 又对这台机器上 terminal 里跑的每一条 node 命令都生效——工作区里人自己的项目
+ * 漏装了某个依赖，会悄悄 require 到 Bot 的那份，换台机器才炸。这里只放行这四个名字。
+ *
+ * 链接指向真实路径，换版之后 Bot 的目录变了，下一次对不上就重连。放在席位私有目录
+ * （SATUWORK_HOME），不在工作区。建不起来（只读盘、Windows 上没权限）就不设，不耽误跑命令。
+ */
+function scriptLibsDir(): string | null {
+  if (scriptLibs !== undefined) return scriptLibs
+  scriptLibs = null
+  try {
+    const dir = satuworkHome('script-libs', 'node_modules')
+    mkdirSync(dir, { recursive: true })
+    for (const lib of SCRIPT_LIBS) {
+      let target: string
+      try {
+        target = realpathSync(join(BOT_MODULES, lib))
+      } catch {
+        continue // 这一版的包里没有它
+      }
+      const link = join(dir, lib)
+      let current = ''
+      try {
+        current = realpathSync(link)
+      } catch {}
+      if (current === target) continue
+      // rm 不跟着链接走：删掉的是链接本身，不是 Bot 的库。
+      rmSync(link, { recursive: true, force: true })
+      symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir')
+    }
+    scriptLibs = dir
+  } catch {}
+  return scriptLibs
+}
+
+/**
+ * 跑 Bot 的这个 node 所在的目录，**接在** PATH 最后。
+ *
+ * 桌面端的本地 Bot 用的是壳子里带的 node，那台电脑上未必另装了 node；不接上的话，
+ * 模型写好的脚本 `node x.cjs` 一句 command not found。接在最后：机器上本来有 node 的，
+ * 照旧用它自己的那个。
+ */
+function scriptEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const join2 = (a: string | undefined, b: string) => (a ? `${a}${delimiter}${b}` : b)
+  const libs = scriptLibsDir()
+  // NODE_PATH 追加在人自己的后面；它只是 require 找不到时的最后一站，而且只对 CommonJS
+  // 生效（ESM 的 import 不认它），所以说明里一律让写 .cjs。
+  return {
+    ...env,
+    ...(libs ? { NODE_PATH: join2(env.NODE_PATH, libs) } : {}),
+    PATH: join2(env.PATH, dirname(process.execPath)),
+  }
+}
+
 /**
  * detached：拿到自己的进程组。否则超时只杀得掉 bash，它 fork 出去的
  * （`npm run dev &`、管道里的子进程）会活下来。
@@ -498,7 +564,7 @@ function spawnShell(command: string, cwd: string): ChildProcess {
     cwd,
     // 不递整份 process.env：里面有 Gateway 凭据和 SATUWORK_* 内部配置，见 childEnv。
     // 唯一加回去的 SATUWORK_* 是这条命令的标签：一串随机字，不是配置（见 RUN_TAG）。
-    env: { ...childEnv(), [RUN_TAG]: tag },
+    env: { ...scriptEnv(childEnv()), [RUN_TAG]: tag },
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
   })

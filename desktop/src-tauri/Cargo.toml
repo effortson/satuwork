@@ -1,6 +1,6 @@
 [package]
 name = "satuwork-desktop"
-version = "0.1.4"
+version = "0.1.6"
 edition = "2021"
 rust-version = "1.77.2"
 publish = false
@@ -29,6 +29,8 @@ tauri-plugin-updater = "2"
 
 [target.'cfg(windows)'.dependencies]
 junction = "1.2"
+# 本地 Bot 的 Job Object（停 Bot 时连它拉起的 Chrome 一起清）。junction / tauri 早就间接带着这一版，不多下载东西。
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 # 壳子不该有调试符号那么大。桌面包是用户下载的东西，几 MB 和几十 MB 的区别他们看得见。
 [profile.release]
