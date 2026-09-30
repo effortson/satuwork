@@ -3,5 +3,6 @@
   "regions": ["sin1"],
   "installCommand": "pnpm install --frozen-lockfile",
   "buildCommand": "pnpm --filter satuwork-gateway vercel-build",
-  "crons": [{ "path": "/cron/tick", "schedule": "* * * * *" }]
+  "crons": [{ "path": "/cron/tick", "schedule": "* * * * *" }],
+  "git": { "deploymentEnabled": { "main": true, "**": false } }
 }
