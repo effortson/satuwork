@@ -650,10 +650,23 @@ export function apply(ctx: Context) {
          * 那两道一样直接回一句话。多一个 guard 类别就得 Gateway 那张 GUARD_IDS 先认——
          * 席位先升级的话，每一次拦截都会变成一行永远重发的 outbox。
          */
-        if (call.name.startsWith('desktop_') && !desktopOf(bot).on) {
-          return {
-            text: `${call.name} 用不了：这个 Bot 的模版里关掉了「操作席位桌面」这项能力。这件事改用 terminal / read_file 做，或者请管理员在 Bot 设置里打开它。`,
-            failed: true,
+        if (call.name.startsWith('desktop_')) {
+          /**
+           * **查不到 Bot 就拒**，同 checkBrowser / checkExternal：会话根读不到、名册里没有
+           * 这颗 Bot 的时候，没法确认它的模版有没有关掉这项能力。`desktopOf` 缺字段按开，
+           * 那说的是「Bot 在、只是老 Gateway 没下发这一格」，不是「连 Bot 都认不出来」。
+           */
+          if (!bot) {
+            return {
+              text: `${call.name} 用不了：认不出这条会话属于哪个 Bot，不能确认它能不能操作席位桌面。这件事改用 terminal / read_file 做。`,
+              failed: true,
+            }
+          }
+          if (!desktopOf(bot).on) {
+            return {
+              text: `${call.name} 用不了：这个 Bot 的模版里关掉了「操作席位桌面」这项能力。这件事改用 terminal / read_file 做，或者请管理员在 Bot 设置里打开它。`,
+              failed: true,
+            }
           }
         }
 

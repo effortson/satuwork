@@ -2380,7 +2380,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      */
     const browserOn = browserOf(bot as BotRecord | undefined).on
     // 席位桌面同理：关掉了就不进表，真正的拒绝在 policy 的 pre-execute 里。
-    const desktopOn = desktopOf(bot as BotRecord | undefined).on
+    // 认不出 Bot 时不进表——policy 那边在这种情况下会拒（见 pre-execute 的 desktop_ 分支）。
+    const desktopOn = !!bot && desktopOf(bot as BotRecord).on
     /**
      * `skills_list` **只在索引装不下的那一档进表**（见 skillsOf）。
      *

@@ -148,7 +148,14 @@ export const MIGRATIONS: Migration[] = [
   { id: '0044-channel-delivery-progress', name: '渠道事件记下投递到第几段，重试和接管从那一段接着发', sql: m0044 },
   { id: '0045-seat-deploy-claim', name: '席位部署的在装心跳与批量更新的排队参数落库，多实例共用一份', sql: m0045 },
   { id: '0046-auth-throttle', name: '登录、领邀请、改口令的失败计数（限流）', sql: m0046 },
-  { id: '0047-browser-desktop-default-on', name: '浏览器默认开、站点全放行；席位桌面能力默认开', sql: m0047 },
+  // 首版把已经开着的浏览器名单也一并改成了 *.*，只在 develop 上出现过、没进生产；
+  // 跑过首版的开发库 / e2e 库认它的旧校验和，不重跑。
+  {
+    id: '0047-browser-desktop-default-on',
+    name: '浏览器默认开、站点全放行；席位桌面能力默认开',
+    sql: m0047,
+    previousChecksums: ['bf5038f83155b1a2'],
+  },
 ]
 
 /**

@@ -390,8 +390,18 @@ function descendantsOf(root: number): number[] {
  * 不是边界：进程自己 `env -i` 或 `unset SATUWORK_RUN` 就能躲过去。它补的是「模型顺手写了
  * 一句 `setsid foo &`」这种常见的漏网，不是故意藏起来的进程。
  */
-const RUN_TAG = 'SATUWORK_RUN'
+export const RUN_TAG = 'SATUWORK_RUN'
 const runTags = new WeakMap<ChildProcess, string>()
+
+/**
+ * 登记一个别处起的子进程的标签，让 `killTree` 也能按标签把它的后代找全。
+ *
+ * 给 desktop_terminal 用：窗口里那条命令同样可能 `setsid foo &`，窗口进程自己退了之后
+ * 顺着 ppid 就找不回来了。
+ */
+export function tagChild(child: ChildProcess, tag: string): void {
+  runTags.set(child, tag)
+}
 
 /**
  * 环境里带着这个标签的所有进程（只在 Linux 上走得通）。
@@ -432,7 +442,7 @@ function taggedPids(tag: string): number[] {
  * 所以进程本身退出（`exit`）之后再等一小会儿，管道还开着就把我们这一头拆掉——
  * 拆掉之后 Node 照常发 `close`，带的还是真实的退出码和信号。
  */
-function killTree(child: ChildProcess) {
+export function killTree(child: ChildProcess) {
   const pid = child.pid
   if (pid) {
     // 顺着 ppid 找（shell 还活着时找得全），再按标签补一遍（shell 已经退了、后代被过继走的）。

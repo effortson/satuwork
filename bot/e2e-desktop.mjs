@@ -28,10 +28,12 @@ writeFileSync(
   `#!/bin/bash
 { printf 'argv'; printf ' [%s]' "$@"; printf '\\n'; echo "cwd $PWD"; echo "display $DISPLAY"; echo "token \${GATEWAY_TOKEN:-none}"; } >> "${rec}/term"
 while [ $# -gt 0 ]; do
-  if [ "$1" = -x ]; then shift; "$@" < /dev/null >> "${rec}/term-out" 2>&1; exit 0; fi
+  if [ "$1" = -x ]; then shift; echo "cmd $$" >> "${rec}/pids"; "$@" < /dev/null >> "${rec}/term-out" 2>&1; exit 0; fi
   shift
 done
-sleep 5
+# 空终端：像真窗口一样一直开着，等人来关。
+echo "plain $$" >> "${rec}/pids"
+exec sleep 60
 `,
 )
 // 假文件管理器：记下开的是哪个目录。退 0——真 thunar 把窗口交给已有实例时也是这样。
@@ -47,14 +49,30 @@ process.env.GATEWAY_TOKEN = 'secret-should-not-leak'
 const basePath = process.env.PATH
 process.env.PATH = `${bin}:${basePath}`
 
-const ctx = new Context()
-ctx.provide('logger', { warn() {}, info() {}, error() {} })
-ctx.plugin(WorkspaceService, { root })
-await new Promise((r) => setTimeout(r, 50))
-ctx.plugin(ToolService)
-await new Promise((r) => setTimeout(r, 50))
-ctx.plugin(await import('./src/tools/desktop.ts'))
-await new Promise((r) => setTimeout(r, 100))
+const desktopTools = await import('./src/tools/desktop.ts')
+const boot = async () => {
+  const c = new Context()
+  c.provide('logger', { warn() {}, info() {}, error() {} })
+  c.plugin(WorkspaceService, { root })
+  await new Promise((r) => setTimeout(r, 50))
+  c.plugin(ToolService)
+  await new Promise((r) => setTimeout(r, 50))
+  const fork = c.plugin(desktopTools)
+  await new Promise((r) => setTimeout(r, 100))
+  return { c, fork }
+}
+
+const out = {}
+
+// ── 0. 没有 DISPLAY 就不注册：模型不该看见两把每次都失败的工具 ───────────
+delete process.env.DISPLAY
+{
+  const { c } = await boot()
+  out.unregistered = { 终端没挂: !c.tools.has('desktop_terminal'), 文件夹没挂: !c.tools.has('desktop_open_folder') }
+}
+
+process.env.DISPLAY = ':42'
+const { c: ctx, fork } = await boot()
 
 let seq = 0
 const call = (name, args) => ctx.tools.execute({ callId: `c${++seq}`, name, arguments: JSON.stringify(args), sessionId: 's-1' })
@@ -64,9 +82,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 mkdirSync(join(root, 'out', 'deep'), { recursive: true })
 writeFileSync(join(root, 'out', 'report.md'), '# hi')
 
-const out = {}
-
-// ── 1. 没有 DISPLAY：不拉起任何东西，说清楚是没桌面 ────────────────────
+// ── 1. 注册之后 DISPLAY 没了：不拉起任何东西，说清楚是没桌面 ──────────────
 delete process.env.DISPLAY
 {
   const r = await call('desktop_terminal', {})
@@ -135,6 +151,28 @@ process.env.PATH = basePath
 {
   const r = await call('desktop_terminal', {})
   out.missing = { 说了没装: /没有 xfce4-terminal/.test(r.text) }
+}
+
+// 放在最后：dispose 之后两把工具就从表里下去了。
+// ── 8. 收尾：跑过命令的窗口连命令一起收掉，空终端留给人 ─────────────────
+process.env.PATH = `${bin}:${basePath}`
+{
+  const alive = (pid) => { try { process.kill(pid, 0); return true } catch { return false } }
+  const pidsOf = (kind) => read('pids').split('\n').filter((l) => l.startsWith(kind + ' ')).map((l) => Number(l.split(' ')[1]))
+  const beforeCmd = pidsOf('cmd').length
+  await call('desktop_terminal', { command: 'sleep 60' })
+  for (let i = 0; i < 20 && pidsOf('cmd').length === beforeCmd; i++) await sleep(50)
+  const cmdPid = pidsOf('cmd').at(-1)
+  const plainPid = pidsOf('plain').at(-1)
+  const before = { 命令窗口在: alive(cmdPid), 空终端在: alive(plainPid) }
+  fork.dispose()
+  await sleep(300)
+  out.shutdown = {
+    ...before,
+    命令窗口被收掉: !alive(cmdPid),
+    空终端没被碰: alive(plainPid),
+  }
+  for (const pid of pidsOf('plain')) try { process.kill(pid, 'SIGKILL') } catch {}
 }
 
 console.log('__RESULT__' + JSON.stringify(out))

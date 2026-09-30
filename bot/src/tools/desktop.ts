@@ -1,9 +1,11 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { childEnv } from '../workspace/index.ts'
 import { fail, registerTool } from './common.ts'
+import { RUN_TAG, killTree, tagChild } from './terminal.ts'
 
 /**
  * 席位桌面上的两把手：开一个终端窗口（`desktop_terminal`）、开文件管理器
@@ -17,8 +19,13 @@ import { fail, registerTool } from './common.ts'
  * 桌面栈是 slim-desktop.sh 起的那一套（xfce4-terminal、thunar，deploy-seat.sh 装的），
  * Bot 进程的 DISPLAY / XAUTHORITY 来自 bot.env——Chrome 也是靠这两条连上这块屏的。
  *
- * **只在远程席位上挂。** 本地 Bot 跑在员工自己的电脑上，没有「席位桌面」这回事，
- * 而且那边连 terminal 都没开（见 terminal.ts 的 apply）。
+ * **只在有桌面的远程席位上挂。** 本地 Bot 跑在员工自己的电脑上，没有「席位桌面」这回事，
+ * 而且那边连 terminal 都没开（见 terminal.ts 的 apply）；没有 DISPLAY 的（`pnpm dev`、没
+ * 部署桌面的机器）也不挂——挂上的话模型看见两把每次都失败的工具，只会一遍遍去试。
+ *
+ * **窗口里跑过命令的，换版和关机时连窗口带命令一起收掉**，同 terminal 的后台进程
+ * （见 terminal.ts 的 killAll）：不收的话，模型在窗口里起的服务器会跨过换版活下来，占着
+ * 端口，而 `process` 看不见也杀不掉它。空终端是给人用的，不碰。
  *
  * 能力开关在模版的 `desktop.on`：关掉时这两把不进工具表（agent 的 toolSchemasFor），
  * 硬报名字也会在 policy 的 pre-execute 里被拒。窗口里跑的命令和 `terminal` 走同一套
@@ -50,10 +57,22 @@ const RUN_IN_WINDOW = [
   'exec bash',
 ].join('\n')
 
-/** 拉起一个桌面程序，等它要么起来、要么当场退出。返回 null 表示起来了。 */
-function launch(bin: string, args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<string | null> {
+/**
+ * 拉起一个桌面程序，等它要么起来、要么当场退出。
+ *
+ * `onStart` 在 spawn 之后**立刻**调——早于那 1.5 秒：这段时间里进程已经在跑了，恰好
+ * 这时候来一次换版的话，它得已经在收尾名单上。
+ */
+function launch(
+  bin: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  onStart?: (child: ChildProcess) => void,
+): Promise<string | null> {
   return new Promise((resolve) => {
     const child = spawn(bin, args, { detached: true, stdio: 'ignore', env, cwd })
+    onStart?.(child)
     const timer = setTimeout(() => {
       child.unref()
       resolve(null)
@@ -72,6 +91,38 @@ function launch(bin: string, args: string[], env: NodeJS.ProcessEnv, cwd: string
 
 export function apply(ctx: Context) {
   if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local') return
+  if (!(process.env.DISPLAY || '').trim()) {
+    ctx.logger?.info?.('desktop: 没有 DISPLAY，席位桌面工具不注册')
+    return
+  }
+
+  /**
+   * 跑过命令的窗口。**只在内存里**，同 terminal 的 procs：进程被换掉时它们本来也要一起没。
+   * 窗口自己关掉（人点了 ×、命令里 exit）就从这里摘掉。
+   */
+  const windows = new Set<ChildProcess>()
+  const closeAll = () => {
+    for (const child of windows) killTree(child)
+    windows.clear()
+  }
+  /**
+   * 两道都要有，理由同 terminal.ts：`ctx.effect` 管插件卸载，信号处理管 systemd 重启。
+   * **杀完摘掉自己再把信号重发一次**——装了监听器就摘掉了 Node 的默认退出，不重发的话
+   * 进程要等 systemd 的 90 秒超时。
+   */
+  const onSignal = (sig: NodeJS.Signals) => {
+    closeAll()
+    process.off('SIGTERM', onSignal)
+    process.off('SIGINT', onSignal)
+    process.kill(process.pid, sig || 'SIGTERM')
+  }
+  process.on('SIGTERM', onSignal)
+  process.on('SIGINT', onSignal)
+  ctx.effect(() => () => {
+    process.off('SIGTERM', onSignal)
+    process.off('SIGINT', onSignal)
+    closeAll()
+  })
 
   const show = (path: string) => ctx.workspace.show(path)
   /** 没有 DISPLAY 就是没部署桌面（e2e、开发机上直接跑 bot）。说清楚，别让它去猜。 */
@@ -92,6 +143,8 @@ export function apply(ctx: Context) {
         '在席位的远程桌面（用户在右栏看得到的那块屏）上打开一个终端窗口，可以顺带在里面跑一条命令。' +
         '用户说「打开终端 / 命令行 / cmd」「在桌面上跑给我看」、或者要跑一个需要人来交互的程序（要输入、要确认、全屏界面）时用它。\n' +
         '**窗口里的输出你读不到**，它只留在屏幕上给用户看。你要拿结果接着干活的命令，用 terminal，不要用这把。\n' +
+        '**不要用它起服务器或长时间跑的任务**——那种用 terminal(background=true)，process 才管得到；' +
+        '窗口里跑过命令的，Bot 换版或重启时会连窗口一起关掉。\n' +
         '命令跑完窗口不会关，会留一个 shell 给用户继续用。',
       parameters: {
         type: 'object',
@@ -109,11 +162,20 @@ export function apply(ctx: Context) {
       const command = String(args.command || '').trim()
       const env = childEnv()
       const argv = ['--disable-server', `--working-directory=${dir}`]
+      let track: ((child: ChildProcess) => void) | undefined
       if (command) {
         env.SATU_DESKTOP_CMD = command
         argv.push('-x', 'bash', '-c', RUN_IN_WINDOW)
+        // 同 terminal 的 spawnShell：标签跟着每一代后代走，窗口退了也认得出它起的东西。
+        const tag = randomBytes(9).toString('base64url')
+        env[RUN_TAG] = tag
+        track = (child) => {
+          tagChild(child, tag)
+          windows.add(child)
+          child.once('exit', () => windows.delete(child))
+        }
       }
-      const err = await launch('xfce4-terminal', argv, env, dir)
+      const err = await launch('xfce4-terminal', argv, env, dir, track)
       if (err) fail(err)
       return command
         ? `已在桌面上打开终端（${show(dir)}），正在跑：${command}\n输出只在那个窗口里，你看不到；跑完窗口会留着给用户。`
