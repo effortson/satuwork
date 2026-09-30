@@ -7,7 +7,7 @@
  * `<script src=cdn.jsdelivr.net/npm/自己的包>` 就过了，那条头形同虚设。源表达式以 `/` 结尾时
  * 按前缀匹配，所以 `…/npm/mermaid@11.4.1/` 连它运行时再 import 的那些 chunk 一起放行。
  *
- * 这张表和 `gateway/ui/markdown.js` 的 `LIBS`（外加 `pages-landing.js` 的 `LP_THREE`）是一对：那边的每条路径都得落在这里某一项
+ * 这张表和 `gateway/ui/markdown.js` 的 `LIBS`（外加 `pages-landing.js` 的 `LP_THREE`、`office-view.js` 的 `LIBS`）是一对：那边的每条路径都得落在这里某一项
  * 底下，这里的每一项那边都得用到；桌面端 `desktop/src-tauri/src/main.rs` 的 `UI_CSP` 是照
  * 这张表手抄的。三处由 e2e 的 markdown 那一组按源码核对，**改版本号三处一起改**（markdown.js
  * 那边还要换 SRI 摘要）。
@@ -17,6 +17,11 @@ export const UI_CDN_PACKAGES = [
   '@highlightjs/cdn-assets@11.10.0',
   'mermaid@11.4.1',
   'three@0.170.0',
+  // 浏览器里预览 Word / Excel / PPT（ui/office-view.js，只跑在不透明源的 sandbox iframe 里）。
+  'jszip@3.10.1',
+  'docx-preview@0.4.1',
+  'exceljs@4.4.0',
+  '@aiden0z/pptx-renderer@1.3.0',
 ] as const
 
 /** jsdelivr 的 npm 根。markdown.js 里写死的默认值与此相同。 */

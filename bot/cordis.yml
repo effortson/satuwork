@@ -55,6 +55,11 @@
 # terminal 工具集跑命令。为什么是这个形状见 docs/file-terminal-tools.md。
 - name: './src/tools/file.ts'
 - name: './src/tools/terminal.ts'
+# 改已有的 Word / Excel / PPT 且不丢格式（office_unpack / office_pack）：解成 XML、用 file 那几把改、
+# 打回去。新建文档不走它，走 terminal 里的 .cjs 脚本。见 tools/office.ts。
+- name: './src/tools/office.ts'
+# 把 Word / Excel / PPT / PDF 的某几页画成图给模型自己看（office_render），改完文档自己验收。见 tools/look.ts。
+- name: './src/tools/look.ts'
 # 席位桌面上开终端窗口、开文件管理器（desktop_*）。只在远程席位注册；进不进工具表看模版的 desktop.on。
 - name: './src/tools/desktop.ts'
 

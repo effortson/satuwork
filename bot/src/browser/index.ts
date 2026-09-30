@@ -3,7 +3,8 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { lookup } from 'node:dns/promises'
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { join } from 'node:path'
+import { findExecutable } from '../executable.ts'
 import { satuworkHome } from '../home.ts'
 import { childEnv } from '../workspace/index.ts'
 import { blockedHost, hostOf, privateAddress, siteAllowed, type ActionContext } from '../policy/browser.ts'
@@ -49,17 +50,11 @@ export interface Config {
  * 不在这里运行 `which` / shell，避免浏览器路径变成一段可执行命令。
  */
 export function localBrowserExecutable(): string | null {
-  const override = process.env.SATUWORK_CHROME?.trim()
-  if (override) return existsSync(override) ? override : null
-
   const names =
     process.platform === 'win32'
       ? ['chrome.exe', 'msedge.exe', 'chromium.exe']
       : ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']
-  const onPath = names.flatMap((name) =>
-    (process.env.PATH || '').split(delimiter).filter(Boolean).map((dir) => join(dir, name)),
-  )
-  const candidates =
+  const fixed =
     process.platform === 'darwin'
       ? [
           '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -67,7 +62,6 @@ export function localBrowserExecutable(): string | null {
           '/Applications/Chromium.app/Contents/MacOS/Chromium',
           join(homedir(), 'Applications/Chromium.app/Contents/MacOS/Chromium'),
           '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-          ...onPath,
         ]
       : process.platform === 'win32'
         ? [
@@ -80,10 +74,9 @@ export function localBrowserExecutable(): string | null {
             ...(process.env.LOCALAPPDATA
               ? [join(process.env.LOCALAPPDATA, 'Google/Chrome/Application/chrome.exe')]
               : []),
-            ...onPath,
           ]
-        : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', ...onPath]
-  return candidates.find((candidate) => existsSync(candidate)) ?? null
+        : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium']
+  return findExecutable(process.env.SATUWORK_CHROME, names, fixed)
 }
 
 /** 一次动作之后等页面消化多久。够 SPA 跑完一轮渲染，又不至于每一步都明显卡一下。 */
@@ -109,6 +102,19 @@ const PAGE_CALL_TIMEOUT = 5_000
  */
 const SHOT_QUALITY = 70
 const SHOT_TIMEOUT = 5_000
+/**
+ * 拍照前最多等页面加载多久。
+ *
+ * 动作之后那两拍 settle（共 0.7 秒）是给快照的：DOM 早就在了，文字读得到。但画面要晚得多
+ * ——字体、样式、脚本渲染的正文都还在路上，这时候拍出来是一张白图，顶多一条导航栏。
+ * `Page.captureScreenshot` 自己会等下一帧，可下一帧往往就是「第一次绘制」，上面也没东西。
+ * load 也靠不住：联合早报 load 在半秒触发，正文是之后脚本画出来的。
+ *
+ * 所以等 `networkAlmostIdle`（连接数压到两条以内、持续 500ms）。2026-09-30 拿新浪、联合早报、
+ * Google、Bing、香港电台、香港01 实测：到这一刻全都画出来了，最晚的三秒上下。长轮询的页面
+ * 永远等不到它，所以要有上限——超了照拍，一张不完整的图也比多卡几秒强。
+ */
+const SHOT_SETTLE_MAX = 3_000
 /**
  * 一条会话最多留多少张。
  *
@@ -254,6 +260,19 @@ export class BrowserService extends Service {
   private dialog: { kind: 'alert' | 'confirm' | 'prompt' | 'beforeunload'; message: string } | null = null
   /** 在等「对话框弹出来了」这个信号的人。见 dispatch。 */
   private dialogWaiters = new Set<() => void>()
+  /**
+   * 主框架这一页还在加载。**只有截图看它**，见 SHOT_SETTLE_MAX。
+   *
+   * `Page.lifecycleEvent` 的 `init`（新文档 commit）置上，`networkAlmostIdle` 放下；等满
+   * SHOT_SETTLE_MAX 也放下——每份文档只等一次，永远安静不下来的页面不能让之后每一步都卡。
+   *
+   * 不用在请求一发出去（`frameStartedLoading`）就置上：点一下、服务器慢慢才回的跳转，动作收尾
+   * 那次快照的 `Runtime.evaluate` 会被 Chrome 压到新文档 commit 之后才跑，轮到截图时 init
+   * 早就到了。e2e-browser 里「点击触发的慢跳转也等」钉着这件事。
+   */
+  private loading = false
+  /** 在等 `loading` 放下的人（截图）。 */
+  private idleWaiters = new Set<() => void>()
   /** 这一页是不是落在了不该落的地方（响应回来才发现解析到内网）。 */
   private poisoned = ''
   /**
@@ -364,6 +383,17 @@ export class BrowserService extends Service {
         `--user-data-dir=${profile}`,
         '--no-first-run',
         '--no-default-browser-check',
+        /**
+         * **窗口被挡住、切到后台也照常画。**
+         *
+         * 本机那个窗口就开在员工的桌面上，被别的窗口盖住是常态。Chrome 默认把被遮住的窗口
+         * 当成不可见、停掉绘制，后台页的渲染和定时器也会被降频——这时截图拍到的是白屏或者
+         * 旧的一帧，页面里靠定时器跑的渲染也慢半拍。这几条只作用于这个独立 profile 起的
+         * 进程，不碰员工自己的 Chrome。
+         */
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-background-timer-throttling',
         '--new-window',
         'about:blank',
       ]
@@ -461,6 +491,8 @@ export class BrowserService extends Service {
   private async enableDomains(cdp: Cdp, sessionId: string, signal?: AbortSignal): Promise<void> {
     const on = { sessionId, signal }
     await cdp.send('Page.enable', {}, on)
+    // 截图要知道页面加载到哪一步了（见 SHOT_SETTLE_MAX）。默认不发这组事件。
+    await cdp.send('Page.setLifecycleEventsEnabled', { enabled: true }, on)
     await cdp.send('Runtime.enable', {}, on)
     await cdp.send('Network.enable', {}, on)
     /**
@@ -527,6 +559,8 @@ export class BrowserService extends Service {
     this.labels.clear()
     this.dialog = null
     this.poisoned = ''
+    // 「还在加载」说的是旧那一页。新那一页之前的事件没收到，就当它加载完了。
+    this.settleIdle()
     await this.enableDomains(cdp, this.sessionId, signal)
     // 换完页要知道现在停在哪——策略下一次调用就靠这个地址判站点。
     const where = await this.call<{ url: string }>('where', [], signal)
@@ -629,6 +663,13 @@ export class BrowserService extends Service {
         }
         return
       }
+      case 'Page.lifecycleEvent': {
+        // 只认主框架：页面里嵌的 iframe 各有各的一套，混进来会把「还在加载」按错。
+        if (this.mainFrame && p.frameId !== this.mainFrame) return
+        if (p.name === 'init') this.loading = true
+        else if (p.name === 'networkAlmostIdle') this.settleIdle()
+        return
+      }
       case 'Target.targetCreated': {
         const info = p.targetInfo as { targetId?: string; type?: string; openerId?: string } | undefined
         // 自己这一页点出来的新标签页也算自己的。认 openerId，不认「页面上新开的都算」
@@ -660,6 +701,8 @@ export class BrowserService extends Service {
         }
         for (const wake of this.dialogWaiters) wake()
         this.dialogWaiters.clear()
+        // 截图那边在等页面加载的话也叫醒它：挂着对话框就不拍了，别白等。
+        for (const wake of this.idleWaiters) wake()
         return
       }
       case 'Page.javascriptDialogClosed': {
@@ -729,6 +772,37 @@ export class BrowserService extends Service {
     this.url = ''
     this.labels.clear()
     this.dialog = null
+    this.settleIdle()
+  }
+
+  /** 这一页不再算「还在加载」，把等着的人都叫醒。 */
+  private settleIdle(): void {
+    this.loading = false
+    for (const wake of this.idleWaiters) wake()
+  }
+
+  /**
+   * 等这一页加载到网络基本安静，最多等 `max`。本来就不在加载的话立刻回来。
+   *
+   * **等满了就当这一页加载完了**（放下 loading）：安静不下来的页面（长轮询、轮播广告）
+   * 之后每一次截图都再等满一轮的话，十几步浏览凭空多出半分钟以上。
+   */
+  private async untilIdle(max: number, signal?: AbortSignal): Promise<void> {
+    if (!this.loading || signal?.aborted) return
+    await new Promise<void>((resolve) => {
+      const wake = () => {
+        clearTimeout(timer)
+        this.idleWaiters.delete(wake)
+        signal?.removeEventListener('abort', wake)
+        resolve()
+      }
+      const timer = setTimeout(() => {
+        wake()
+        this.settleIdle()
+      }, max)
+      this.idleWaiters.add(wake)
+      signal?.addEventListener('abort', wake, { once: true })
+    })
   }
 
   private async onRequest(p: Record<string, unknown>): Promise<void> {
@@ -1066,6 +1140,9 @@ export class BrowserService extends Service {
    * **拍不成一律当没拍**，不往上抛：这张图是痕迹，不是动作的一部分。因为拍照失败把一次
    * 成功的点击报成失败，是拿一个附带功能去毁主功能。
    *
+   * **拍之前先等页面画出来**（最多 SHOT_SETTLE_MAX）：刚跳转过去的页面，动作收尾那一刻
+   * 多半还是白的，见 SHOT_SETTLE_MAX 上的说明。已经加载完的页面不等。
+   *
    * 三种情况直接不拍：
    * - **页面上挂着原生对话框**——那时候整页是冻住的，`captureScreenshot` 的回执和快照
    *   一样永远等不到，只会白等一个超时。这是 settleAndSnapshot 上那段说明的同一个坑。
@@ -1083,6 +1160,9 @@ export class BrowserService extends Service {
     if (!ws?.saveBytes) return undefined
     const taken = this.shots.get(sessionId) ?? 0
     if (taken >= MAX_SHOTS) return undefined
+    await this.untilIdle(SHOT_SETTLE_MAX, signal)
+    // 等的这一会儿里，对话框可能弹出来了、窗口可能被关了、人可能点了停止。
+    if (this.dialog || signal?.aborted || this.cdp !== cdp || this.sessionId !== target) return undefined
     try {
       const got = await cdp.send<{ data?: string }>(
         'Page.captureScreenshot',
@@ -1128,6 +1208,7 @@ export class BrowserService extends Service {
     this.targetId = ''
     this.own.clear()
     this.dialogWaiters.clear()
+    this.settleIdle()
   }
 }
 

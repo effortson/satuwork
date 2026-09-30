@@ -77,7 +77,7 @@ const MAX_LINE_BYTES = MAX_LINE_CHARS * 4
  * patch 要把整份文件读进来、模糊匹配、再整份写回，这一路都是整份的。几十 MB 的文件
  * 不是模型该用字符串替换去改的东西——拒掉，并指给它 terminal 里的 sed。
  */
-const MAX_PATCH_BYTES = 8 * 1024 * 1024
+export const MAX_PATCH_BYTES = 8 * 1024 * 1024
 
 /**
  * 非普通文件（FIFO、socket、设备）一律不碰。

@@ -27,6 +27,8 @@ export interface CatalogProvider {
     contextWindow?: number
     maxTokens?: number
     cost?: unknown
+    /** 收什么输入。Gateway 的 /v1/models 发 `input: ['text', 'image']`；没发的当只收文本。 */
+    input?: ('text' | 'image')[]
   }[]
 }
 
@@ -79,9 +81,11 @@ export class LlmService extends Service {
           reasoning: !!found.reasoning,
           contextWindow: found.contextWindow ?? base.contextWindow,
           maxTokens: found.maxTokens ?? base.maxTokens,
+          input: found.input ?? ['text'],
         }
       : base
   }
+
 
   async configured(): Promise<string[]> {
     return []
@@ -169,6 +173,7 @@ export class LlmService extends Service {
           contextWindow: m.context_window,
           maxTokens: m.max_tokens,
           cost: m.cost,
+          input: Array.isArray(m.input) ? m.input.filter((x: unknown) => x === 'text' || x === 'image') : ['text'],
         })
       }
       this.cached = [...by.values()]

@@ -6664,8 +6664,22 @@ const PREVIEW_TEXT_EXT = new Set([
   'rb', 'go', 'rs', 'java', 'c', 'h', 'cpp', 'sql', 'env', 'gitignore', 'diff', 'patch',
 ])
 
-/** 这几种在浏览器里没有原生渲染，得靠席位那边先提取成文本（见 fetchDocText）。 */
-const PREVIEW_DOC_EXT = new Set(['docx', 'xlsx', 'xlsm', 'pptx'])
+/**
+ * 这几种在浏览器里没有原生渲染，得靠席位那边：先要一份渲染好的 PDF（fetchDocPdf，
+ * 席位上的 LibreOffice 转），要不到再退回提取文本（fetchDocText）。
+ *
+ * 老格式（.doc / .xls / .ppt）和 ODF 只有 PDF 那条路——文本提取那套库不认它们。
+ */
+const PREVIEW_DOC_EXT = new Set(['docx', 'xlsx', 'xlsm', 'pptx', 'doc', 'xls', 'ppt', 'rtf', 'odt', 'ods', 'odp'])
+
+/**
+ * 要不到 PDF 时（席位 / 这台电脑没装 LibreOffice——桌面端的本地 Bot 多半如此），这几种还能在
+ * 浏览器里渲染（office-view.html / office-view.js）。老格式和 ODF 这几个前端库不认，只剩提取文本。
+ */
+const PREVIEW_WEB_KIND = { docx: 'docx', xlsx: 'xlsx', xlsm: 'xlsx', pptx: 'pptx' }
+
+/** 浏览器里渲染 Office 的那一页。Gateway 和桌面壳都认 `/ui/` 前缀（http.ts 的 serveUi、main.rs 的 serve_ui）。 */
+const OFFICE_VIEW_SRC = '/ui/office-view.html'
 
 function extOf(name) {
   const base = String(name || '').split('/').pop() || ''
@@ -6732,6 +6746,20 @@ async function openPreview(path, name, options = {}) {
   revokePreview()
   const kind = previewKindOf(name || path, '')
   const mode = options.mode === 'source' ? 'source' : 'view'
+  /**
+   * Office 文档不取原文件：浏览器看不了那段字节，取它只为了一个大小不值一趟往返
+   * （经 Gateway 就是一次函数调用加一次席位读流）。直接要渲染好的 PDF，要不到退回文本；
+   * 太大由席位那头说（413 / 提取那条的说明）。
+   *
+   * 就算停在「原文」页（实时预览重开时会带着原来的 mode）也先要 PDF：没有它就没有
+   * 「预览」页签，人切不回去。
+   */
+  if (kind === 'doc') {
+    state.preview = { path, name, loading: false, url: '', type: '', size: 0, error: '', kind, mode, docLoading: 'pdf' }
+    render()
+    void fetchDocPdf(path, name)
+    return
+  }
   state.preview = { path, name, loading: true, url: '', type: '', size: 0, error: '', kind, mode }
   render()
   const url = '/runtime/sessions/' + encodeURIComponent(state.chatSessionId) + '/files?path=' + encodeURIComponent(path)
@@ -6770,14 +6798,6 @@ async function openPreview(path, name, options = {}) {
       if (!state.preview || state.preview.path !== path) return
       state.preview = { path, name, loading: false, url: '', type, size, error: '', kind: k, mode, tooBig: true }
       render()
-      return
-    }
-    if (k === 'doc') {
-      const blob = await res.blob()
-      if (!state.preview || state.preview.path !== path) return
-      state.preview = { path, name, loading: false, url: '', type, size: blob.size, error: '', kind: k, mode, docLoading: true }
-      render()
-      void fetchDocText(path, name)
       return
     }
     const blob = await res.blob()
@@ -6828,21 +6848,164 @@ async function fetchDocText(path, name) {
     '/runtime/sessions/' + encodeURIComponent(state.chatSessionId) + '/files?path=' + encodeURIComponent(path) + '&as=text'
   try {
     const res = await swFetch(url, { headers: authHeaders({ accept: 'application/json' }) })
+    // 415 是「这种格式提取不了」（.doc / .xls 这些老格式），席位那句原话就是答案；
+    // 别的失败才可能是「席位太老、没有这个接口」。
+    if (res.status === 415) throw Object.assign(new Error(), { unsupported: true })
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const data = await res.json()
     if (!state.preview || state.preview.path !== path) return
     state.preview.docLoading = false
     state.preview.text = String((data && data.text) || '')
     state.preview.docNote = String((data && data.note) || '')
-    if (!state.preview.text) state.preview.tooBig = true
-  } catch {
+    if (!state.preview.text && !state.preview.url) state.preview.tooBig = true
+  } catch (err) {
     if (!state.preview || state.preview.path !== path) return
     state.preview.docLoading = false
-    state.preview.tooBig = true
-    state.preview.docNote = t('这个席位还不支持把 Office 文档提取出来预览（要更新 Bot 版本）。')
+    state.preview.text = ''
+    // 有渲染好的 PDF 时只是「原文」页没东西，不能把整个预览判成看不了。
+    if (!state.preview.url) state.preview.tooBig = true
+    // 「席位太老」只在 PDF 也没要到时才可能成立：PDF 要到了，席位就是新的，失败是别的原因。
+    state.preview.docNote = err && err.unsupported
+      ? t('这种格式没法提取成文本，下载下来用 Office 打开看吧。', 'This format cannot be extracted as text. Download it and open it in Office.')
+      : state.preview.url
+        ? t('文本提取失败了，稍后再试，或者直接看「预览」。', 'Text extraction failed. Try again later, or use the Preview tab.')
+        : t('这个席位还不支持把 Office 文档提取出来预览（要更新 Bot 版本）。')
   }
   render()
 }
+
+/**
+ * 要一份渲染好的 PDF（席位上 LibreOffice 转的，见 bot 的 workspace/render.ts）。
+ *
+ * **只认明确的 `application/pdf`**：老席位不认 `as=pdf`，会把原文件字节当普通预览原样
+ * 回来（octet-stream）——那不是 PDF，拿去塞 PDF 阅读器只会是一片解析失败。
+ *
+ * 要不到（老席位、这台机器没装 LibreOffice、转坏了、太大）一律退回提取文本，和这个
+ * 功能出现之前一模一样，不当成出错。
+ */
+async function fetchDocPdf(path, name) {
+  const url =
+    '/runtime/sessions/' + encodeURIComponent(state.chatSessionId) + '/files?path=' + encodeURIComponent(path) + '&as=pdf'
+  const ac = new AbortController()
+  if (state.preview && state.preview.path === path) state.preview.abort = ac
+  let buf = null
+  try {
+    const res = await swFetch(url, { headers: authHeaders(), signal: ac.signal })
+    const type = (res.headers.get('content-type') || '').split(';')[0].trim()
+    if (res.ok && type === 'application/pdf') buf = await res.arrayBuffer()
+    // 不是 PDF 的那份正文不读完：老席位回的可能是一整个大文件。
+    else ac.abort()
+  } catch {
+    // 预览被关掉或换了文件，上面那个 abort 已经把这次请求收了；否则按「要不到」处理。
+    if (!state.preview || state.preview.path !== path || state.preview.abort !== ac) return
+  }
+  if (!state.preview || state.preview.path !== path) return
+  if (!buf || !buf.byteLength) {
+    // 没有 PDF：能在浏览器里渲染的先试那条路，再不行才只看提取出来的文字。
+    if (PREVIEW_WEB_KIND[extOf(name || path)]) {
+      state.preview.docLoading = 'web'
+      render()
+      void fetchDocWeb(path, name)
+      return
+    }
+    state.preview.mode = 'source'
+    state.preview.docLoading = 'text'
+    render()
+    void fetchDocText(path, name)
+    return
+  }
+  // 类型钉死成 application/pdf，理由同 openPreview 里 PDF 那支。
+  state.preview.url = URL.createObjectURL(new Blob([buf], { type: 'application/pdf' }))
+  state.preview.docLoading = false
+  if (state.preview.mode === 'source') {
+    state.preview.docLoading = 'text'
+    void fetchDocText(path, name)
+  }
+  render()
+}
+
+/**
+ * 要不到 PDF 时，取原文件交给浏览器渲染（office-view.html，跑在不透明源的 sandbox iframe 里）。
+ *
+ * 字节留在 `state.preview.web` 上：那个 iframe 会跟着每一次 render() 重建，重建后它会再说一声
+ * ready，这边再把同一份字节递进去（onOfficeViewMessage）。取不到、太大就退回提取文本。
+ */
+async function fetchDocWeb(path, name) {
+  const url = '/runtime/sessions/' + encodeURIComponent(state.chatSessionId) + '/files?path=' + encodeURIComponent(path)
+  const ac = new AbortController()
+  if (state.preview && state.preview.path === path) state.preview.abort = ac
+  let data = null
+  try {
+    const res = await swFetch(url, { headers: authHeaders(), signal: ac.signal })
+    const size = Number(res.headers.get('content-length') || 0)
+    if (res.ok && !(size && size > CHAT_PREVIEW_MAX)) data = await res.arrayBuffer()
+    else ac.abort()
+  } catch {
+    if (!state.preview || state.preview.path !== path || state.preview.abort !== ac) return
+  }
+  if (!state.preview || state.preview.path !== path) return
+  if (!data || !data.byteLength || data.byteLength > CHAT_PREVIEW_MAX) {
+    officeViewFallback(path, name)
+    return
+  }
+  // nonce：放进 iframe 地址的 # 后面，查看页每条消息都带回来（见 onOfficeViewMessage）。
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('')
+  state.preview.web = { kind: PREVIEW_WEB_KIND[extOf(name || path)], data, nonce }
+  state.preview.size = data.byteLength
+  state.preview.docLoading = false
+  if (state.preview.mode === 'source') {
+    state.preview.docLoading = 'text'
+    void fetchDocText(path, name)
+  }
+  render()
+}
+
+/** 浏览器里也渲染不了（取不到、太大、库报错）：和这条路出现之前一样，只看提取出来的文字。 */
+function officeViewFallback(path, name) {
+  const p = state.preview
+  if (!p || p.path !== path) return
+  p.web = null
+  p.mode = 'source'
+  if (p.text == null) {
+    p.docLoading = 'text'
+    void fetchDocText(path, name)
+  }
+  render()
+}
+
+/** 这台 Gateway 配的 CDN 根（内网镜像时由 index.html 的 meta 带过来，同 markdown.js）。 */
+function officeViewCdn() {
+  const meta = typeof document !== 'undefined' ? document.querySelector('meta[name="satu-cdn"]') : null
+  const base = meta && meta.getAttribute('content')
+  return base && /^https?:\/\//.test(base) ? base.replace(/\/+$/, '') : 'https://cdn.jsdelivr.net/npm'
+}
+
+/**
+ * 和浏览器渲染那一页（office-view.js）的交接。
+ *
+ * **只认当前预览里那个 iframe、而且口令对得上的**：别的 frame（HTML 预览、noVNC 桌面）也能
+ * postMessage。光看 `e.source` 还不够——那个 iframe 要是被导航走了（文档里的链接），contentWindow
+ * 还是同一个对象，新页面同样是不透明源（sandbox 跟着 iframe 走），它冒充一声 ready 就能把文件
+ * 字节要走。口令放在 iframe 地址的 # 后面，只有我们发出去的那一页读得到（片段不进 referrer）。
+ *
+ * 字节是复制过去的（不是 transfer），留一份给下一次 render() 重建之后再递。
+ */
+function onOfficeViewMessage(e) {
+  const msg = e && e.data
+  if (!msg || msg.type !== 'satu-office-view') return
+  const p = state.preview
+  const frame = typeof document !== 'undefined' ? document.querySelector('iframe[data-office-view]') : null
+  if (!p || !p.web || !frame || e.source !== frame.contentWindow || msg.nonce !== p.web.nonce) return
+  if (msg.event === 'ready') {
+    frame.contentWindow.postMessage(
+      { type: 'satu-office-view', event: 'render', kind: p.web.kind, name: p.name, cdn: officeViewCdn(), data: p.web.data },
+      '*',
+    )
+  } else if (msg.event === 'error') {
+    officeViewFallback(p.path, p.name)
+  }
+}
+if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('message', onOfficeViewMessage)
 
 /** blob: 的生命周期得自己管——不撤销，这一份就在内存里待到刷新页面为止。 */
 function revokePreview() {
@@ -6882,7 +7045,9 @@ async function downloadWorkspaceFile(path, name) {
 
 /** 渲染视图和原文之间的切换。只有两者都成立的类型才给，别摆一颗按不动的按钮。 */
 function previewTabs(p) {
-  const both = (p.kind === 'markdown' || p.kind === 'html') && !p.tooBig && !p.error && !p.loading
+  // Office 文档：有 PDF、或者浏览器能渲染，才有「预览」可切；没有的话只剩提取文本，不摆按钮。
+  const both =
+    (p.kind === 'markdown' || p.kind === 'html' || (p.kind === 'doc' && (p.url || p.web))) && !p.tooBig && !p.error && !p.loading
   if (!both) return ''
   const tab = (mode, label) =>
     `<button type="button" class="sw-preview-tab" data-act="preview-mode" data-mode="${mode}"` +
@@ -6916,7 +7081,15 @@ function spinNote(text) {
 function previewBody(p) {
   if (p.loading) return spinNote(t('正在取文件…'))
   if (p.error) return `<p class="sw-preview-note sw-preview-err">${esc(p.error)}</p>`
-  if (p.docLoading) return spinNote(t('正在提取文档内容…'))
+  if (p.docLoading) {
+    return spinNote(
+      p.docLoading === 'pdf'
+        ? t('正在渲染文档…', 'Rendering the document…')
+        : p.docLoading === 'web'
+          ? t('正在取文件…')
+          : t('正在提取文档内容…'),
+    )
+  }
   if (p.tooBig) {
     const why = p.docNote || t('这个文件不适合在浏览器里打开（太大，或者是不认识的格式）。下载下来看吧。')
     return `<p class="sw-preview-note">${esc(why)}</p>`
@@ -6927,7 +7100,7 @@ function previewBody(p) {
         `${DONE} data-onerror="busy-done">`,
     )
   }
-  if (p.kind === 'pdf') {
+  if (p.kind === 'pdf' || (p.kind === 'doc' && p.mode === 'view' && p.url)) {
     /**
      * PDF 交给浏览器自带的阅读器，**这个 iframe 不能带 sandbox**。
      *
@@ -6940,6 +7113,19 @@ function previewBody(p) {
      * 被当成 HTML 解释——而 sandbox 在这里防的正是「HTML 跑起脚本」。
      */
     return busyBox(`<iframe class="sw-preview-frame" src="${esc(p.url)}" title="${esc(p.name)}" ${DONE}></iframe>`)
+  }
+  if (p.kind === 'doc' && p.mode === 'view' && p.web) {
+    /**
+     * 浏览器里渲染 Office（office-view.html）。**只加 allow-scripts，绝不加 allow-same-origin。**
+     *
+     * 渲染库得跑脚本，所以不能像 HTML 预览那样一个 allow-* 都不给；但不给 allow-same-origin，
+     * 它就是个不透明源：拿不到 Gateway 的登录票、摸不到这一页。文档内容（超链接、图表数据）
+     * 等同外部输入，哪个库没转义干净，脚本也只能在那个空房间里跑。两个一起加等于没有 sandbox。
+     */
+    return busyBox(
+      `<iframe class="sw-preview-frame" data-office-view="1" src="${OFFICE_VIEW_SRC}#${esc(p.web.nonce)}" sandbox="allow-scripts" ` +
+        `title="${esc(p.name)}" ${DONE}></iframe>`,
+    )
   }
   if (p.kind === 'html' && p.mode === 'view') {
     /**
@@ -6961,6 +7147,8 @@ function previewBody(p) {
     const html = md ? md.render(String(p.text || '')) : ''
     if (md) return `<div class="sw-preview-md sw-md">${html}</div>`
   }
+  // Office 文档的「原文」页提取不出东西时（老格式、老席位），把原因说出来，别给一块空白。
+  if (p.kind === 'doc' && !p.text && p.docNote) return `<p class="sw-preview-note">${esc(p.docNote)}</p>`
   // 其余一律看原文：Markdown/HTML 的「原文」页、纯文本、以及提取出来的 Office 文档。
   return `<pre class="sw-preview-src">${esc(String(p.text || ''))}</pre>`
 }
@@ -6991,6 +7179,12 @@ function previewModal() {
 function setPreviewMode(mode) {
   if (!state.preview || state.preview.mode === mode) return
   state.preview.mode = mode === 'source' ? 'source' : 'view'
+  // Office 文档的文本是切到「原文」时才去取的——大多数人只看渲染出来的那一份。
+  const p = state.preview
+  if (p.kind === 'doc' && p.mode === 'source' && p.text == null && !p.docLoading) {
+    p.docLoading = 'text'
+    void fetchDocText(p.path, p.name)
+  }
   render()
   // 渲染出来的 Markdown 里可能有代码块、公式、mermaid——和聊天气泡一样要 enhance 一次，
   // 否则代码不高亮、公式显示 TeX 原文。

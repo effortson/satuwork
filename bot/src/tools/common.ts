@@ -35,6 +35,8 @@ export interface ToolDef {
   risk?: ToolRisk[]
   /** 见 tools/index.ts 的 ToolDelegation。**内置工具必须写**，register 会拦。 */
   delegation?: ToolDelegation
+  /** 见 tools/index.ts 的 ToolDefinition.vision。 */
+  vision?: boolean
   /** 见 tools/index.ts。标了 `retains` 就必须实现它。 */
   reassign?(from: string, to: string): ReassignedItem[] | Promise<ReassignedItem[]>
 }

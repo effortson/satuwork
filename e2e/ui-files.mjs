@@ -152,6 +152,146 @@ export async function runUiFiles({ root, test, assert, log }) {
     assert(preview.maybeLivePreview(event(2)), '下一轮重新生成同一路径没有再次打开')
   })
 
+  /**
+   * Office 文档预览：先要席位渲染好的 PDF，要不到退回提取文本。
+   * `pdf` 决定 as=pdf 那条怎么答：'ok' 回真 PDF、'old' 学老席位把原文件字节原样回来、
+   * 数字就回那个状态码。
+   */
+  const officePreview = ({ pdf, text = { status: 200, body: { text: '正文', note: '' } } }) => {
+    const calls = []
+    const app = loadApp({
+      appPath: join(root, 'gateway/ui/app.js'),
+      base: 'http://127.0.0.1:1',
+      fetchImpl: async (path) => {
+        calls.push(path)
+        const as = new URL(path, 'http://x').searchParams.get('as')
+        if (as === 'pdf') {
+          if (pdf === 'ok') return new Response('%PDF-1.4 fake', { status: 200, headers: { 'content-type': 'application/pdf' } })
+          if (pdf === 'old') return new Response('PK raw docx', { status: 200, headers: { 'content-type': 'application/octet-stream' } })
+          return new Response(JSON.stringify({ error: 'x' }), { status: pdf, headers: { 'content-type': 'application/json' } })
+        }
+        if (as === 'text') {
+          return new Response(JSON.stringify(text.body), { status: text.status, headers: { 'content-type': 'application/json' } })
+        }
+        return new Response('PK raw docx', { status: 200, headers: { 'content-type': 'application/octet-stream', 'content-length': '11' } })
+      },
+    })
+    app.state.me = { account: { id: 'a1', role: 'member', email: 'a@b.c' } }
+    app.state.path = '/chat'
+    app.state.chatSessionId = 's-doc'
+    app.state.chatEvents = []
+    return {
+      app,
+      calls,
+      asOf: (v) => calls.filter((c) => c.includes('as=' + v)).length,
+      raw: () => calls.filter((c) => !c.includes('as=')).length,
+    }
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
+
+  await test('Office 预览：有 PDF 就看 PDF，「原文」页用到时才去提取', async () => {
+    const { app, asOf, raw } = officePreview({ pdf: 'ok' })
+    await app.openPreview('reports/q2.docx', 'q2.docx')
+    await settle()
+    const p = app.state.preview
+    // 原文件的字节浏览器看不了，取它只为一个大小——经 Gateway 就是白跑一次函数调用。
+    assert(raw() === 0, `还去取了原文件：${raw()} 次`)
+    assert(p.kind === 'doc' && p.url && !p.docLoading, `PDF 没接上：${JSON.stringify({ ...p, abort: undefined })}`)
+    const html = app.previewModal()
+    assert(html.includes('sw-preview-frame') && html.includes(p.url), '没画成 PDF 阅读器')
+    assert(html.includes('data-mode="source"'), '有 PDF 时该有「原文」页签')
+    // 大多数人只看渲染出来的那份，不该顺手把文本也提一遍。
+    assert(asOf('text') === 0, '没切「原文」就去提取了')
+    app.setPreviewMode('source')
+    await settle()
+    assert(asOf('text') === 1 && app.state.preview.text === '正文', `切「原文」没取到文本：${app.state.preview.text}`)
+    app.setPreviewMode('view')
+    app.setPreviewMode('source')
+    await settle()
+    assert(asOf('text') === 1, '来回切又提取了一遍')
+  })
+
+  await test('Office 预览：老格式要不到 PDF（老席位 / 没装 LibreOffice）就退回文本', async () => {
+    // .doc 这些老格式前端库不认，浏览器渲染那条路走不了，只剩提取文本。
+    for (const pdf of ['old', 501]) {
+      const { app, asOf, raw } = officePreview({ pdf })
+      await app.openPreview('reports/q2.doc', 'q2.doc')
+      await settle()
+      const p = app.state.preview
+      // 把 octet-stream 当 PDF 塞给阅读器只会是一片解析失败。
+      assert(!p.url && !p.web, `${pdf}：不是 PDF 的东西被当成 PDF 了，或者老格式走了浏览器渲染`)
+      assert(raw() === 0, `${pdf}：老格式还去取了原文件`)
+      assert(p.mode === 'source' && p.text === '正文' && asOf('text') === 1, `${pdf}：没退回文本：${JSON.stringify({ ...p, abort: undefined })}`)
+      assert(!app.previewModal().includes('data-mode="view"'), `${pdf}：没 PDF 还摆着「预览」页签`)
+    }
+  })
+
+  await test('Office 预览：docx / xlsx / pptx 要不到 PDF 就在浏览器里渲染，iframe 只给 allow-scripts', async () => {
+    for (const [pdf, file, kind] of [[501, 'deck.pptx', 'pptx'], ['old', 'q2.xlsm', 'xlsx'], [501, 'memo.docx', 'docx']]) {
+      const { app, asOf, raw } = officePreview({ pdf })
+      await app.openPreview(`reports/${file}`, file)
+      await settle()
+      const p = app.state.preview
+      assert(p.web && p.web.kind === kind && p.web.data.byteLength === 11, `${file}：没走浏览器渲染：${JSON.stringify({ ...p, abort: undefined, web: p.web && { kind: p.web.kind } })}`)
+      assert(raw() === 1 && asOf('text') === 0, `${file}：取原文件 ${raw()} 次、提取 ${asOf('text')} 次`)
+      const html = app.previewModal()
+      const frame = /<iframe[^>]*data-office-view[^>]*>/.exec(html)?.[0] ?? ''
+      assert(/sandbox="allow-scripts"/.test(frame), `${file}：sandbox 不对：${frame}`)
+      // 加了 allow-same-origin，渲染库跑的脚本就和 Gateway 同源，拿得到登录票——sandbox 等于没有。
+      assert(!/allow-same-origin/.test(frame), `${file}：给了 allow-same-origin`)
+      assert(frame.includes(`/ui/office-view.html#${p.web.nonce}`) && p.web.nonce.length >= 16, `${file}：地址里没带口令：${frame}`)
+      assert(html.includes('data-mode="source"'), `${file}：浏览器渲染时也该能切「原文」`)
+    }
+  })
+
+  await test('Office 预览：只把字节交给当前那个 iframe、口令对得上的；它报错就退回文本', async () => {
+    const { app, asOf } = officePreview({ pdf: 501 })
+    await app.openPreview('reports/deck.pptx', 'deck.pptx')
+    await settle()
+    const p = app.state.preview
+    const posted = []
+    const frameWin = { postMessage: (m) => posted.push(m) }
+    app.document.querySelector = (sel) => (sel === 'iframe[data-office-view]' ? { contentWindow: frameWin } : null)
+    const msg = (event, nonce = p.web.nonce) => ({ type: 'satu-office-view', event, nonce })
+    // 别的 frame（HTML 预览、noVNC）发来的：不理。
+    app.onOfficeViewMessage({ source: {}, data: msg('ready') })
+    // 同一个 iframe，但口令不对（iframe 被导航到了别的页面）：不理。
+    app.onOfficeViewMessage({ source: frameWin, data: msg('ready', 'guess') })
+    app.onOfficeViewMessage({ source: frameWin, data: { type: 'satu-office-view', event: 'ready' } })
+    const leaked = posted.length
+    app.onOfficeViewMessage({ source: frameWin, data: msg('ready') })
+    const sent = posted[0]
+    // 报错：退回提取文本。
+    app.onOfficeViewMessage({ source: frameWin, data: msg('error') })
+    await settle()
+    assert(leaked === 0, `口令不对 / 来源不对也把字节交出去了（${leaked} 次）`)
+    assert(sent && sent.event === 'render' && sent.kind === 'pptx' && sent.data?.byteLength === 11, `没把字节交给查看页：${JSON.stringify(sent && { ...sent, data: sent.data?.byteLength })}`)
+    assert(/^https?:\/\//.test(sent.cdn), `CDN 根不对：${sent.cdn}`)
+    assert(!app.state.preview.web && app.state.preview.mode === 'source' && asOf('text') === 1, '查看页报错之后没退回文本')
+  })
+
+  await test('Office 预览：PDF 有了而文本提取失败，不说成「席位太老」', async () => {
+    const { app } = officePreview({ pdf: 'ok', text: { status: 500, body: { error: 'x' } } })
+    await app.openPreview('reports/q2.docx', 'q2.docx')
+    await settle()
+    app.setPreviewMode('source')
+    await settle()
+    const html = app.previewModal()
+    // PDF 要到了，席位就是新的；叫人去升级 Bot 是把人往错的方向上指。
+    assert(!html.includes('要更新 Bot 版本'), '把一次提取失败说成了席位太老')
+    assert(html.includes('文本提取失败'), `没说清楚：${html.slice(0, 400)}`)
+    assert(html.includes('data-mode="view"'), '「预览」页签没了，人切不回 PDF')
+  })
+
+  await test('Office 预览：老格式转不了 PDF 也提取不了，说清楚原因', async () => {
+    const { app } = officePreview({ pdf: 501, text: { status: 415, body: { error: '这种格式没法提取成文本' } } })
+    await app.openPreview('old/budget.xls', 'budget.xls')
+    await settle()
+    const html = app.previewModal()
+    assert(html.includes('没法提取成文本'), `没说原因：${html.slice(0, 400)}`)
+    assert(!html.includes('要更新 Bot 版本'), '把「格式不支持」说成了「席位太老」')
+  })
+
   await test('列不出来时说出来，不画成一棵空树', async () => {
     ui.state.wsDirs = { '': { entries: null, error: '实例还没接上' } }
     ui.state.wsOpen = {}
