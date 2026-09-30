@@ -784,6 +784,88 @@ fn write_runtime_pointer(home: &Path, name: &str, version: &str) -> Result<(), S
     Ok(())
 }
 
+#[cfg(unix)]
+fn create_symlink_or_fallback(link_path: &Path, rel_target: &Path) -> Result<(), String> {
+    std::os::unix::fs::symlink(rel_target, link_path)
+        .map_err(|e| format!("创建符号链接失败 {}: {e}", link_path.display()))
+}
+
+#[cfg(windows)]
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let entry_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if entry_type.is_dir() {
+            copy_dir_all(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn create_symlink_or_fallback(link_path: &Path, rel_target: &Path) -> Result<(), String> {
+    let parent = link_path
+        .parent()
+        .ok_or_else(|| "链接路径缺少父目录".to_string())?;
+    let target_full = parent.join(rel_target);
+    let is_dir = target_full.is_dir();
+
+    // 1. 优先尝试标准符号链接（开发者模式已开启或以管理员运行时直接成功，且保持相对路径）
+    if is_dir {
+        if std::os::windows::fs::symlink_dir(rel_target, link_path).is_ok() {
+            return Ok(());
+        }
+    } else {
+        if std::os::windows::fs::symlink_file(rel_target, link_path).is_ok() {
+            return Ok(());
+        }
+    }
+
+    // 2. 符号链接失败（普通用户权限不足，Windows Error 1314）：降级处理
+    if !target_full.exists() {
+        // 如果目标路径本身不存在（例如构建环境遗留的悬空软链，如 ../../../../../../../bot），
+        // 且因权限限制无法创建悬空符号链接，直接忽略，不阻断主流程。
+        return Ok(());
+    }
+
+    if is_dir {
+        // 优先尝试 NTFS Junction（普通用户完全无需提权即可创建）
+        let target_canonical = target_full.canonicalize().unwrap_or_else(|_| target_full.clone());
+        if junction::create(&target_canonical, link_path).is_ok()
+            || junction::create(&target_full, link_path).is_ok()
+        {
+            return Ok(());
+        }
+        // 若 Junction 依然失败（例如非 NTFS 卷），降级为递归拷贝目录
+        copy_dir_all(&target_full, link_path).map_err(|e| {
+            format!(
+                "解开本地运行时降级拷贝目录失败 {} -> {}: {e}",
+                target_full.display(),
+                link_path.display()
+            )
+        })
+    } else {
+        // 文件优先硬链接（同卷无需特权），失败则拷贝文件
+        if fs::hard_link(&target_full, link_path).is_ok() {
+            return Ok(());
+        }
+        fs::copy(&target_full, link_path)
+            .map(|_| ())
+            .map_err(|e| {
+                format!(
+                    "解开本地运行时降级拷贝文件失败 {} -> {}: {e}",
+                    target_full.display(),
+                    link_path.display()
+                )
+            })
+    }
+}
+
 /**
  * 只在 STAGING 锁里调（见 stage_runtime_update）：它会把已经存在的 destination 整个删掉
  * 重解，两路并发跑到这里，一路刚解好的目录会被另一路当「损坏」删掉。有锁之后开头这一次
@@ -808,13 +890,47 @@ fn unpack_runtime(archive: &Path, destination: &Path) -> Result<(), String> {
     let result: Result<(), String> = (|| {
         let file = fs::File::open(archive).map_err(|e| format!("打开本地运行时包失败：{e}"))?;
         let gz = flate2::read::GzDecoder::new(file);
-        tar::Archive::new(gz)
-            .unpack(&bot)
-            .map_err(|e| format!("解开本地运行时失败：{e}"))?;
+        let mut archive = tar::Archive::new(gz);
+        let mut deferred_symlinks: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+        for entry in archive.entries().map_err(|e| format!("读取本地运行时条目失败：{e}"))? {
+            let mut entry = entry.map_err(|e| format!("解开本地运行时条目失败：{e}"))?;
+            let entry_type = entry.header().entry_type();
+            if entry_type == tar::EntryType::Symlink {
+                let rel_path = entry
+                    .path()
+                    .map_err(|e| format!("读取链接路径失败：{e}"))?
+                    .into_owned();
+                let target = entry
+                    .link_name()
+                    .map_err(|e| format!("读取链接目标失败：{e}"))?
+                    .ok_or_else(|| "链接目标为空".to_string())?
+                    .into_owned();
+                deferred_symlinks.push((rel_path, target));
+            } else {
+                entry
+                    .unpack_in(&bot)
+                    .map_err(|e| format!("解开本地运行时失败：{e}"))?;
+            }
+        }
+
         if !bot.join("bin/satuwork.mjs").is_file() {
             return Err("本地运行时包缺少 bin/satuwork.mjs".into());
         }
-        fs::rename(&staging, destination).map_err(|e| format!("安装本地运行时失败：{e}"))
+        fs::rename(&staging, destination).map_err(|e| format!("安装本地运行时失败：{e}"))?;
+
+        let final_bot = destination.join("bot");
+        for (rel_path, rel_target) in deferred_symlinks {
+            let link_path = final_bot.join(&rel_path);
+            if let Some(parent_dir) = link_path.parent() {
+                fs::create_dir_all(parent_dir).map_err(|e| format!("创建链接父目录失败：{e}"))?;
+            }
+            if let Err(e) = create_symlink_or_fallback(&link_path, &rel_target) {
+                let _ = fs::remove_dir_all(destination);
+                return Err(e);
+            }
+        }
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_dir_all(&staging);
@@ -1692,8 +1808,12 @@ async fn approve_local_directory(
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, &link).map_err(|e| format!("创建批准目录入口失败：{e}"))?;
     #[cfg(windows)]
-    std::os::windows::fs::symlink_dir(&target, &link)
-        .map_err(|e| format!("创建批准目录入口失败：{e}"))?;
+    {
+        if let Err(_) = std::os::windows::fs::symlink_dir(&target, &link) {
+            junction::create(&target, &link)
+                .map_err(|e| format!("创建批准目录入口失败：{e}"))?;
+        }
+    }
     Ok(Some(ApprovedDirectory {
         path: shown,
         mount: format!("External/{}", link.file_name().unwrap().to_string_lossy()),
@@ -1849,7 +1969,7 @@ mod tests {
     use super::{
         desktop_version_supports, is_seat_desktop, is_ui_origin, list_approved, open_path_allowed,
         origin_key, pick_server, revoke_approved, runtime_older, safe_runtime_version, safe_ui_segment,
-        seat_desktop_allowed,
+        seat_desktop_allowed, unpack_runtime,
     };
     use std::collections::HashSet;
     use tauri::Url;
@@ -2028,7 +2148,6 @@ mod tests {
             assert!(!is_seat_desktop(&Url::parse(u).unwrap()), "不该放行：{u}");
         }
     }
-    #[cfg(unix)]
     #[test]
     fn approved_directories_list_and_revoke() {
         use std::fs;
@@ -2044,9 +2163,20 @@ mod tests {
         let target_real = target.canonicalize().unwrap().display().to_string();
         let manifest = base.join("approved-dirs.json");
         fs::write(&manifest, serde_json::to_vec(&vec![target_real.clone()]).unwrap()).unwrap();
-        std::os::unix::fs::symlink(&target, work.join("External/Downloads")).unwrap();
-        // 只有链接、不在清单里的：不列
-        std::os::unix::fs::symlink(&stray, work.join("External/NotApproved")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&target, work.join("External/Downloads")).unwrap();
+            std::os::unix::fs::symlink(&stray, work.join("External/NotApproved")).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(&target, work.join("External/Downloads")).is_err() {
+                junction::create(&target, work.join("External/Downloads")).unwrap();
+            }
+            if std::os::windows::fs::symlink_dir(&stray, work.join("External/NotApproved")).is_err() {
+                junction::create(&stray, work.join("External/NotApproved")).unwrap();
+            }
+        }
 
         let listed = list_approved(&manifest, &work);
         assert_eq!(listed.len(), 1);
@@ -2062,6 +2192,63 @@ mod tests {
         assert!(fs::symlink_metadata(work.join("External/NotApproved")).is_ok());
         // 再撤一次：清单里已经没有，返回 false，不报错
         assert!(!revoke_approved(&manifest, &work, &target_real).unwrap());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_unpack_runtime_with_symlinks() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::fs;
+
+        let base = std::env::temp_dir().join(format!("satu-unpack-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let archive_path = base.join("bot.tgz");
+        let destination = base.join("releases/v1");
+
+        let file = fs::File::create(&archive_path).unwrap();
+        let enc = GzEncoder::new(file, Compression::default());
+        let mut tar = tar::Builder::new(enc);
+
+        let satuwork_code = b"console.log('hello');";
+        let mut header = tar::Header::new_gnu();
+        header.set_path("bin/satuwork.mjs").unwrap();
+        header.set_size(satuwork_code.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append(&header, &satuwork_code[..]).unwrap();
+
+        let dep_code = b"module.exports = 42;";
+        let mut header = tar::Header::new_gnu();
+        header.set_path("node_modules/.pnpm/dep@1.0.0/node_modules/dep/index.js").unwrap();
+        header.set_size(dep_code.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append(&header, &dep_code[..]).unwrap();
+
+        let mut header = tar::Header::new_gnu();
+        header.set_path("node_modules/dep").unwrap();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_link_name(".pnpm/dep@1.0.0/node_modules/dep").unwrap();
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_cksum();
+        tar.append(&header, &[][..]).unwrap();
+
+        let enc = tar.into_inner().unwrap();
+        enc.finish().unwrap();
+
+        unpack_runtime(&archive_path, &destination).unwrap();
+
+        assert!(destination.join("bot/bin/satuwork.mjs").is_file());
+        assert!(destination.join("bot/node_modules/dep/index.js").is_file());
+        assert_eq!(
+            fs::read_to_string(destination.join("bot/node_modules/dep/index.js")).unwrap(),
+            "module.exports = 42;"
+        );
+
         let _ = fs::remove_dir_all(&base);
     }
 }
