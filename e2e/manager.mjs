@@ -1140,6 +1140,8 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       // **口令一个字都不能出去。** vnc-passwd 只报存在与时间；报告会经 Gateway 到浏览器。
       const blob = JSON.stringify(d)
       assert(!blob.includes('vncPassword'), '报告里不该出现 vncPassword 字段')
+      // 名册行里的席位票同理：拿着它能绕过审批直接调 bot。
+      assert(!('gatewayToken' in d.seat), `报告里漏出了席位票：${JSON.stringify(d.seat)}`)
       const pw = d.files.find((f) => f.path.endsWith('vnc-passwd'))
       assert(pw && !('content' in pw), 'vnc-passwd 只能报存在与时间，不能报内容')
     })

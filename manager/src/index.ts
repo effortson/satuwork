@@ -18,7 +18,7 @@ import { botUnit, clampLines, followLogs, MANAGER_UNIT, recentLogs } from './log
 import { checkLogs, defaultKeepMb, logUsage, setDesiredCapMb, startLogWatch, vacuum } from './logdisk.ts'
 import { metrics, startMetrics } from './metrics.ts'
 import { SeatBusy, busy, deploySeat, removeSeat, seat, seatProgress, seatsWithLiveness, waitForDeploys, type SeatSpec } from './seats.ts'
-import { confirmVersion, maybeUpgrade, refreshConfirmScript, upgradeDeferred, upgradeError } from './upgrade.ts'
+import { confirmVersion, maybeUpgrade, refreshConfirmScript, rootOwnReleases, upgradeDeferred, upgradeError } from './upgrade.ts'
 import { currentTimezone, maybeSetTimezone, timezoneError } from './timezone.ts'
 import { standDown } from './standdown.ts'
 import { ensureWorkerEnv, relayIntercept } from './relay.ts'
@@ -495,6 +495,8 @@ warnInsecureGateway(state?.gatewayUrl ?? boot.gatewayUrl)
 // 兜底脚本跟着包走，每次启动刷一遍——它装在 /usr/local/bin，不刷的话机器装好那天是
 // 什么样就一直是什么样，改了也只有重装才拿得到。dryRun 下不碰宿主机的 /usr/local/bin。
 if (!boot.dryRun) refreshConfirmScript()
+// 老版本解出来的发布目录归包里的 uid 1001，启动时改回 root（见 upgrade.ts 的 rootOwnReleases）。
+if (!boot.dryRun) void rootOwnReleases()
 
 // 负载采样和日志看守**在配对之前就起**：这两件事只关乎这台机器本身，不需要 Gateway
 // 同意。一台还没配上（或者被移除之后还没人来收拾）的机器，日志照样在涨。

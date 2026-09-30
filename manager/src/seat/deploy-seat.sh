@@ -252,9 +252,20 @@ chown -h "$LINUX_USER:$LINUX_USER" "$HOME_DIR"
 # 老版本留下的、中途失败时是 root 的目录，先把归属修回来，否则下面以席位用户建目录会
 # 被拒。-h：它们要是链接，改的是链接本身，不碰指向的东西。不存在就算了。
 chown -h "$LINUX_USER:$LINUX_USER" "$WORK_DIR" "$HOME_DIR/.satuwork" 2>/dev/null || true
-if [ -d "$SEAT_DIR" ] && [ ! -L "$SEAT_DIR" ]; then
-  chown -hR "$LINUX_USER:$LINUX_USER" "$SEAT_DIR"
-fi
+# **递归那一步不能写成 `chown -hR "$SEAT_DIR"`。** -h / -P 只管「不跟要改的那个链接」，
+# 路径**中间**的分量照样解析：$SEAT_DIR 是 ~/.satuwork/<席位>，而 ~/.satuwork 归席位用户，
+# 他 `ln -s /opt/satuwork/seats ~/.satuwork` 之后，$SEAT_DIR 就解析成 root 的
+# /opt/satuwork/seats/<席位>——整个 app/ 被送给了他，改一个入口文件再 kill 掉自己的 bot，
+# 拉起来的就是他的代码。事前 `[ -L ]` 也挡不住：检查和使用之间他可以随时换。
+#
+# 所以从 $HOME_DIR（上面核过不是链接、父目录归 root）开始用 find -P 往下走：一层链接都
+# 不跟，~/.satuwork 是链接就根本不会进去；只进本席位这一支，别处全剪掉。-execdir 在
+# find 自己安全打开的那一层目录里、用 ./名字 去改，不再从头解析整条路径。
+# PATH 写死：GNU find 的 -execdir 碰上 PATH 里有相对目录会直接拒跑。
+env PATH=/usr/sbin:/usr/bin:/sbin:/bin find -P "$HOME_DIR" -xdev \
+  \( -path "$HOME_DIR/*" ! -path "$HOME_DIR/.satuwork" ! -path "$SEAT_DIR" ! -path "$SEAT_DIR/*" -prune \) -o \
+  \( \( -path "$SEAT_DIR" -o -path "$SEAT_DIR/*" \) ! -user "$LINUX_USER" \
+     -execdir chown -h "$LINUX_USER:$LINUX_USER" {} + \)
 # 账号级：共享工作区。已存在就别动，里面是员工和 bot 的资料。
 # 席位级：整棵子树都归这个席位。
 as_user mkdir -p "$WORK_DIR" "$HOME_DIR/.satuwork" \

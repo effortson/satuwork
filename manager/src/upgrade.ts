@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { installRoot, managerVersion, patchState, readState, seatAssets } from './config.ts'
+import { installRoot, managerVersion, patchState, readState, releaseRoot, seatAssets } from './config.ts'
 import { sameOrigin } from './releases.ts'
 import { run } from './run.ts'
 import { busy, busySeats } from './seats.ts'
@@ -123,6 +123,37 @@ function relink(name: string, target: string): void {
  * 只在内容不同时写，省掉每次启动一次无谓的写盘；写不动（只读根、权限不对）就算了，
  * 记一行日志——它是兜底，不该反过来把管家启动搞挂。
  */
+/**
+ * 老版本解出来的发布目录，属主一律改回 root。
+ *
+ * 以前解包没带 `--no-same-owner`，管家和 bot 的发布目录都归包里的 uid 1001（CI runner），
+ * 机器上 uid 1001 的那个席位账号能改它们。解包那边补上了，**已经解开的**得在这里收一遍：
+ * 每次启动查一下，有不归 root 的就整棵 `chown -hR root:root`（-h / GNU 默认 -P：一层链接
+ * 都不跟，里面被人放了指向别处的链接也只改链接本身）。
+ *
+ * 改回属主堵的是以后。之前有没有人动过手，这里判断不了——所以发现了就在日志里明说。
+ */
+export async function rootOwnReleases(): Promise<void> {
+  for (const dir of [join(installRoot(), 'releases'), releaseRoot()]) {
+    if (!existsSync(dir)) continue
+    try {
+      const found = await run('find', [dir, '-not', '-user', 'root', '-print', '-quit'], { timeout: 60_000 })
+      if (found.code !== 0 || !found.stdout.trim()) continue
+      const fixed = await run('chown', ['-hR', 'root:root', dir], { timeout: 120_000 })
+      if (fixed.code !== 0) {
+        console.error(`satuwork-manager: ${dir} 里有不归 root 的文件，改属主失败：${(fixed.stderr || fixed.stdout).slice(-200)}`)
+        continue
+      }
+      console.warn(
+        `satuwork-manager: ${dir} 里有不归 root 的文件（例如 ${found.stdout.trim()}），已改回 root。` +
+          '老版本解包时保留了发布包里的属主；若机器上有 uid 1001 的席位账号，建议重装管家、重铺全部席位。',
+      )
+    } catch (e) {
+      console.error(`satuwork-manager: 检查 ${dir} 的属主失败：${(e as Error).message}`)
+    }
+  }
+}
+
 export function refreshConfirmScript(): void {
   const src = join(seatAssets(), 'manager-confirm.sh')
   const dst = '/usr/local/bin/satuwork-manager-confirm.sh'
@@ -236,7 +267,8 @@ export async function maybeUpgrade(offer: UpgradeOffer, token: string): Promise<
     const tgz = join(root, `.${want}.tgz`)
     writeFileSync(tgz, bytes)
     try {
-      const untar = await run('tar', ['-xzf', tgz, '-C', dir], { timeout: 300_000 })
+      // --no-same-owner：解出来一律归 root。见 releases.ts 的 unpackRelease 那条注释。
+      const untar = await run('tar', ['--no-same-owner', '-xzf', tgz, '-C', dir], { timeout: 300_000 })
       if (untar.code !== 0) throw new Error('cannot untar the manager package')
     } finally {
       rmSync(tgz, { force: true })

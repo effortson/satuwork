@@ -199,6 +199,13 @@ async function ownBotOf(db: RouteCtx['db'], account: Account, id: string, allowD
   return item
 }
 
+/** 诊断报告里名册那一行不带席位票（见 /runtime/diag）。 */
+function withoutSeatToken(parsed: unknown): unknown {
+  const seat = (parsed as { seat?: unknown } | null)?.seat
+  if (seat && typeof seat === 'object') delete (seat as Record<string, unknown>).gatewayToken
+  return parsed
+}
+
 export function attachRuntime(router: Router, ctx: RouteCtx) {
   const { db, keys, meter } = ctx
 
@@ -1135,7 +1142,12 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const t = await managerTargetFor(db, account, (req.query.get('botId') || '').trim())
     const lines = Number(req.query.get('lines') || 40)
     const q = Number.isFinite(lines) ? `?lines=${Math.min(200, Math.max(1, Math.trunc(lines)))}` : ''
-    await proxyJson(res, 'GET', `${t.base}/seats/${encodeURIComponent(t.seatId)}/diag${q}`, undefined, undefined, t.machineToken)
+    /**
+     * 名册行里的席位票（`seat.gatewayToken`）**摘掉再转**。管家从 diag.ts 那头已经不带它了，
+     * 这里再摘一遍是给还没升级的老管家：它们回的是整行名册，票就这么到了浏览器——拿着它能
+     * 绕过审批直接调 bot，也能冒充 bot 调 Gateway。
+     */
+    await proxyJson(res, 'GET', `${t.base}/seats/${encodeURIComponent(t.seatId)}/diag${q}`, undefined, undefined, t.machineToken, undefined, undefined, withoutSeatToken)
   })
 
   /**
