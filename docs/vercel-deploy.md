@@ -31,12 +31,25 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
   顺带，那套要配的 `outputDirectory: "."` 会让 static-build 把整个仓库当静态资源传上去
   （静态文件的匹配在 rewrites 之前，`/gateway/src/db.ts` 这类路径就把源码发出去了）。产出
   `.vercel/output` 之后 static-build 直接透传这个目录，不再看 `outputDirectory`。
-- `vercel.json` 只剩三件事：`installCommand`、`buildCommand`（生产先迁移再打包）、`crons`（CLI 会把 crons 并进最终
+- `vercel.json` 只剩四件事：`installCommand`、`buildCommand`（生产先迁移再打包）、`git.deploymentEnabled`（见下一条）、`crons`（CLI 会把 crons 并进最终
   的 `config.json`）。Cron 每分钟打 `/cron/tick`（跑的是 Debian 上调度器每 30 秒跑的那份
   `maintenanceTick`，外加 Debian 上渠道分发器做的那一半：投递「已经有回复、只差发出去」的
   渠道事件和它们的重试，报出「归工人却没人领」的绑定）。**Cron 每分钟一次要 Pro**，Hobby
   只能每天一次——那样交接催办、审计派发、租约回收、渠道重试都成了一天一拍，不能用。
 - **迁移只在生产构建里跑**：`buildCommand` 在 `VERCEL_ENV=production` 时先迁移再打包，preview 只打包。见下面「迁移怎么跑」。
+- **只有 main 自动部署，preview 手动触发。** `git.deploymentEnabled` 是 `{ "main": true, "**": false }`：
+  分支名按 minimatch 匹配，一个分支命中多条时只要有一条是 `true` 就部署——main 两条都命中，照常
+  出生产；别的分支（develop、`claude/…`、`dependabot/…`）只命中 `**`，推上去不再自动 build。用
+  `**` 不用 `*`：`*` 不匹配带斜杠的分支名。Vercel 读的是**被推送那个提交里**的 `vercel.json`，
+  所以这条在哪个分支上生效，取决于那个分支有没有合进这一版。
+
+  要 preview 时在仓库根目录（已 `vercel link` 到这个项目）手动发：
+
+  ```bash
+  vercel deploy
+  ```
+
+  它传的是本地工作区（包括没提交的改动），不走 Git，所以不受上面那条限制。
 
 ## 环境变量
 
