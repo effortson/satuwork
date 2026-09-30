@@ -78,9 +78,13 @@ struct Startup(Mutex<String>);
 struct LocalBotProc {
     child: BotChild,
     port: u16,
-    /// 起这个进程时交给它的席位票。Gateway 换了票（口令改过、被重置，旧票跟着作废），
-    /// 再来 start 时拿得出不一样的一把——那时要用新票重起，见 start_local_bot。
-    access_token: String,
+    /// 起这个进程时的那份配置。
+    ///
+    /// 里面的席位票：Gateway 换了票（口令改过、被重置，旧票跟着作废），再来 start 时拿得出
+    /// 不一样的一把——那时要用新票重起，见 start_local_bot。整份留着是给换壳用的：装新壳前
+    /// 要把 Bot 全停掉，装失败了得按原样再拉起来（见 self_update 的 download_and_install），
+    /// 而 api_key 这些只有页面 start 的那一刻给过一次。
+    config: LocalBotConfig,
 }
 
 #[derive(Default)]
@@ -173,9 +177,9 @@ impl Drop for BotJob {
 struct UpdateSource(Mutex<Option<(Url, String)>>);
 static UPDATER_STARTED: AtomicBool = AtomicBool::new(false);
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct LocalBotConfig {
+pub(crate) struct LocalBotConfig {
     bot_id: String,
     gateway_url: String,
     access_token: String,
@@ -1695,7 +1699,7 @@ fn start_local_bot_blocking(app: AppHandle, config: LocalBotConfig) -> Result<Lo
             Some(proc_) => proc_.child.try_wait().map_err(|e| e.to_string())?.is_none(),
             None => false,
         };
-        if let Some(proc_) = bots.get(&bot_id).filter(|p| alive && p.access_token == config.access_token) {
+        if let Some(proc_) = bots.get(&bot_id).filter(|p| alive && p.config.access_token == config.access_token) {
             let port = proc_.port;
             drop(bots);
             return Ok(runtime_status(&app, true, Some(port), &work));
@@ -1798,7 +1802,7 @@ fn start_local_bot_blocking(app: AppHandle, config: LocalBotConfig) -> Result<Lo
         .0
         .lock()
         .map_err(|_| "本地 Bot 状态锁损坏")?
-        .insert(bot_id, LocalBotProc { child, port, access_token: config.access_token.clone() });
+        .insert(bot_id, LocalBotProc { child, port, config: config.clone() });
     // 记下这次的地址和票，运行时自查（每小时一次）拿它去问 Gateway 有没有新版。
     if let Ok(mut src) = app.state::<UpdateSource>().0.lock() {
         *src = Some((gateway.clone(), config.access_token.clone()));
@@ -1855,16 +1859,39 @@ fn terminate_local_bot(child: &mut BotChild) -> Result<(), String> {
 }
 
 /**
- * 所有本地 Bot 一起停。应用退出（RunEvent::Exit）和换壳（self_update）都走这里；换壳那条
- * 不会经过 RunEvent::Exit——Windows 上安装器起来后插件直接 process::exit，macOS 上是 restart。
+ * 所有本地 Bot 一起停，返回停掉的那几颗当初的配置。应用退出（RunEvent::Exit）和换壳
+ * （self_update）都走这里；换壳那条不会经过 RunEvent::Exit——Windows 上安装器起来后插件直接
+ * process::exit，macOS 上是 restart。换壳没换成时拿返回值交给 restart_local_bots。
  */
-pub(crate) fn stop_all_local_bots(app: &AppHandle) {
+pub(crate) fn stop_all_local_bots(app: &AppHandle) -> Vec<LocalBotConfig> {
+    let mut stopped = Vec::new();
     if let Ok(mut bots) = app.state::<LocalBots>().0.lock() {
         for (_, mut proc_) in bots.drain() {
             let _ = terminate_local_bot(&mut proc_.child);
+            stopped.push(proc_.config);
         }
     }
     clear_update_source(app);
+    stopped
+}
+
+/**
+ * 按原配置把停掉的本地 Bot 再拉起来。换壳时装新包失败（macOS 上管理员授权点了取消、Windows
+ * 上安装器没起来）走这里：Bot 是为了换壳才停的，壳没换成就不该让人一颗颗手动重开。
+ *
+ * 在阻塞线程里一颗颗起（start_local_bot_blocking 本来就靠 STARTING 串行）。起不来的只记一行，
+ * 返回起不来的那几颗的 id——页面上它们显示成没在跑，人还能自己点。
+ */
+pub(crate) fn restart_local_bots(app: &AppHandle, configs: Vec<LocalBotConfig>) -> Vec<String> {
+    let mut failed = Vec::new();
+    for config in configs {
+        let id = config.bot_id.clone();
+        if let Err(e) = start_local_bot_blocking(app.clone(), config) {
+            eprintln!("换壳失败后重起本地 Bot {id} 失败：{e}");
+            failed.push(id);
+        }
+    }
+    failed
 }
 
 #[tauri::command]
@@ -2682,7 +2709,7 @@ fn main() {
         .expect("Satuwork 桌面壳起不来")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                stop_all_local_bots(app);
+                let _ = stop_all_local_bots(app);
             }
         })
 }

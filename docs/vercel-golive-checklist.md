@@ -51,7 +51,8 @@
 - [ ] `GATEWAY_PUBLIC_URL` 是 **https** 的正式域名（不是 `*.vercel.app` 预览域名）：Telegram 自动切
       webhook、管家学地址都靠它。
 - [ ] `CRON_SECRET` 配了；部署后看 Cron 的执行记录有 200。
-- [ ] `GATEWAY_TRUST_FORWARDED=1`，`GATEWAY_PG_POOL_MAX=2`。
+- [ ] `GATEWAY_PG_POOL_MAX=2`。`GATEWAY_TRUST_FORWARDED` 不用配（Vercel 上默认信平台的 `x-forwarded-for`），
+      别把它设成 `0`。
 - [ ] Blob 库建好，`BLOB_READ_WRITE_TOKEN` 配了；**传一个包、让一台机器拉一次**——假 Blob 上验过，
       真 Blob 没有。> 100 MB 的包走「登记远端包」。
 - [ ] Vercel 上的 `x-forwarded-for`、CORS（桌面源）、CSP 都不用另配，代码里有。

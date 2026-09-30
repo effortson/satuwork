@@ -25,8 +25,9 @@
  * 已知设备）以后再说。
  *
  * IP 桶放宽：同一个出口 NAT 后面可能是整间办公室。来源地址用 runtime.ts 的 sourceIpOf：
- * Debian 上默认只信 socket，挂了反代要配 `GATEWAY_TRUSTED_PROXIES`；Vercel 上要开
- * `GATEWAY_TRUST_FORWARDED=1`——不开的话所有人共用平台内网那一个地址，IP 桶就成了全站一个桶。
+ * Debian 上默认只信 socket，挂了反代要配 `GATEWAY_TRUSTED_PROXIES`；Vercel 上默认信平台写的
+ * `x-forwarded-for`（runtime.ts 的 trustsForwarded）——不信的话所有人共用平台内网那一个地址，
+ * IP 桶就成了全站一个桶。
  *
  * 数值都能用环境变量改，e2e 靠这个把窗口缩到几秒。
  */

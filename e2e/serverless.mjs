@@ -56,6 +56,26 @@ export async function runServerless({ root, gwRoot, test, req, start, waitHttp, 
     assert(again.status === 0 && again.stdout.includes('已是最新'), `第二次该说已是最新：${again.stdout} ${again.stderr}`)
   })
 
+  await test('Vercel 上默认信平台写的 x-forwarded-for，平台以外照旧要显式开', async () => {
+    // 漏配这一个变量，全站共用平台内网那一个来源地址：登录限流的 IP 桶成了全站一个桶。
+    // runtime.ts 牵着 http.ts，Node 自带的类型剥离吃不下，起一个 tsx 子进程去打。
+    const cases = [
+      [{ VERCEL: '1' }, true],
+      [{ VERCEL: '1', GATEWAY_TRUST_FORWARDED: '0' }, false],
+      [{ VERCEL: '1', GATEWAY_TRUST_FORWARDED: '1' }, true],
+      [{}, false],
+      [{ GATEWAY_TRUST_FORWARDED: '1' }, true],
+      [{ GATEWAY_TRUST_FORWARDED: 'yes' }, false],
+    ]
+    const script =
+      `import { trustsForwarded } from './src/lib/runtime.ts'\n` +
+      `console.log(JSON.stringify(${JSON.stringify(cases.map(([e]) => e))}.map((e) => trustsForwarded(e))))`
+    const r = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { cwd: gwRoot, encoding: 'utf8', timeout: 60000 })
+    assert(r.status === 0, `跑不起来：${r.stderr.slice(-400)}`)
+    const got = JSON.parse(r.stdout.trim().split('\n').pop())
+    cases.forEach(([env, want], i) => assert(got[i] === want, `${JSON.stringify(env)} 该是 ${want}，实际 ${got[i]}`))
+  })
+
   await test('Neon 的 DATABASE_URL_UNPOOLED 只在 Vercel 上回落，别的地方照旧报错', async () => {
     // Neon 的 Vercel 集成注入的是它自己那套名字，一个都不叫 GATEWAY_*。
     const { GATEWAY_DATABASE_URL: _gw, ...noGateway } = env
