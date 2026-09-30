@@ -412,6 +412,15 @@ export class AgentService extends Service {
   /** 正在跑的 agent。steering 要够得着它，所以不能只是个局部变量。 */
   private live = new Map<string, Agent>()
   /**
+   * 工具结果交出去之后才拍完的截图（ToolResult.pendingShot）：会话 → callId → 那张图。
+   *
+   * bridgeTools 收下，projector 在 `tool/result` 落盘之后取走、挂上补写 `tool/shot`。
+   * 两边隔着 pi 的事件循环，所以要一个地方交接。
+   */
+  private laterShots = new Map<string, Map<string, Promise<WorkspaceFile | undefined>>>()
+  /** 每条会话还没写完的 `tool/shot`。写 `turn/end` 之前等它们，见 settleShots。 */
+  private shotWrites = new Map<string, Set<Promise<void>>>()
+  /**
    * 已经开跑、但 Agent 还没造出来的会话。
    *
    * send() 里「检查在不在跑」和「登记进 live」之间隔着好几个 await（读历史、组 system、
@@ -816,6 +825,7 @@ export class AgentService extends Service {
         off()
         this.live.delete(child)
         if (this.aborting.delete(child)) state = timedOut ? 'timeout' : state === 'done' ? 'aborted' : state
+        await this.settleShots(child)
         await sessions.append(child, 'turn/end', {
           turn: 1,
           reason: state === 'done' || state === 'capped' ? (capped ? 'capped' : 'completed') : state === 'failed' ? 'error' : 'aborted',
@@ -1727,6 +1737,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       off()
       this.live.delete(sessionId)
       if (this.aborting.delete(sessionId)) reason = 'aborted'
+      await this.settleShots(sessionId)
       await sessions.append(sessionId, 'turn/end', { turn, reason })
       // 有这一行，「那一轮到底结束没有」就不用再猜了。
       this.ctx.logger?.info?.(
@@ -1965,6 +1976,12 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
           // 就跑了，那时候还没有 agent，更没有这一轮的信号。
           signal: this.live.get(sessionId)?.signal,
         })
+        // 后台还在拍的那张截图：交给 projector，等 `tool/result` 落完盘再补。见 laterShots。
+        if (result.pendingShot) {
+          let byCall = this.laterShots.get(sessionId)
+          if (!byCall) this.laterShots.set(sessionId, (byCall = new Map()))
+          byCall.set(toolCallId, result.pendingShot)
+        }
         if (result.failed) throw new Error(result.text)
         // 给模型看的图（ToolResult.images）：这一轮的模型看得了就读成图片块跟在文字后面，
         // 看不了就换成一句说明。**这里是这一轮之内的唯一入口**——pi 在同一轮里用的是这份
@@ -2483,6 +2500,52 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     }
   }
 
+  /**
+   * 这次调用的截图还在后台拍（ToolResult.pendingShot）：拍完补一条 `tool/shot`。
+   *
+   * **单独一条事件，不回头改 `tool/result`。** 会话日志只追加（见 session 的 append），
+   * 而且那一条早就广播出去了。界面按 callId 把这张折回那次调用（chat.js 的 fold）；
+   * 老日志里 shot 在 `tool/result` 上，那条路照旧认。
+   *
+   * 不 await：模型不等它。写 `turn/end` 之前由 settleShots 收齐。
+   */
+  private followShot(sessionId: string, turn: number, step: number, callId: string): void {
+    const byCall = this.laterShots.get(sessionId)
+    const later = byCall?.get(callId)
+    if (!byCall || !later) return
+    byCall.delete(callId)
+    if (!byCall.size) this.laterShots.delete(sessionId)
+    const write = later
+      .then(async (shot) => {
+        if (shot) await this.ctx.sessions.append(sessionId, 'tool/shot', { turn, step, callId, shot })
+      })
+      .catch((e: Error) => this.ctx.logger?.warn?.(`agents: ${sessionId} 截图补记失败 ${e.message}`))
+    let pending = this.shotWrites.get(sessionId)
+    if (!pending) this.shotWrites.set(sessionId, (pending = new Set()))
+    pending.add(write)
+    void write.finally(() => {
+      pending.delete(write)
+      if (!pending.size && this.shotWrites.get(sessionId) === pending) this.shotWrites.delete(sessionId)
+    })
+  }
+
+  /**
+   * 写 `turn/end` 之前把这一轮后台的截图收齐。
+   *
+   * **这一轮的事件都要落在 `turn/end` 之前。** 压缩的边界只切在 `turn/end` 上（见 session
+   * 的 throughSeq），一条晚到的 `tool/shot` 排到它后面，就成了压缩点之后指向一次已经被
+   * 摘要掉的调用的孤儿。多等的只是界面上「正在处理」多亮一会儿——模型那边早就说完了；
+   * 截图自己有上限（SHOT_SETTLE_MAX + SHOT_TIMEOUT），人点停止时它当场放弃。
+   *
+   * 没等到 `tool/result` 的（pi 半路收口，projector 没见到那次调用的结尾）直接丢掉：
+   * 没有结果的调用挂一张图，界面也认不回去。
+   */
+  private async settleShots(sessionId: string): Promise<void> {
+    this.laterShots.delete(sessionId)
+    const pending = this.shotWrites.get(sessionId)
+    if (pending?.size) await Promise.allSettled([...pending])
+  }
+
   private projector(
     sessionId: string,
     turn: number,
@@ -2584,6 +2647,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
             shot: shotOf(event.result),
             images: imagesOf(event.result),
           })
+          this.followShot(sessionId, turn, step, event.toolCallId)
           break
       }
     }

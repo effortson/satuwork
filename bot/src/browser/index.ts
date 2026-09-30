@@ -98,7 +98,9 @@ const PAGE_CALL_TIMEOUT = 5_000
  * 只拍视口，不拍整页（`captureBeyondViewport`）：整页截图在无限滚动的页面上会拍出一张
  * 几万像素高的东西，而「Bot 当时看到的」本来就是那一屏。
  *
- * 超时压短：拍照卡住不该把这次工具调用一起拖住——这张图没拍成，动作本身照样是成功的。
+ * 超时压短：截图虽然在后台拍（不挡工具结果），这一轮写 `turn/end` 之前还是要等它收齐
+ * （agent 的 settleShots）——卡住的那张不该让「正在处理」一直亮着。没拍成就没拍成，动作本身
+ * 照样是成功的。
  */
 const SHOT_QUALITY = 70
 const SHOT_TIMEOUT = 5_000
@@ -271,8 +273,22 @@ export class BrowserService extends Service {
    * 早就到了。e2e-browser 里「点击触发的慢跳转也等」钉着这件事。
    */
   private loading = false
+  /**
+   * 这份文档是什么时候开始加载的（`init` 那一刻）。SHOT_SETTLE_MAX 从这儿算，**不从每次
+   * 开始等的那一刻算**。
+   *
+   * 截图是在后台等的，下一步动作一开始就作废它（见 dropShot）。按「每次开始等」计时的话，
+   * 一页永远安静不下来、模型又两秒一步，每张都在等满之前被作废、下一张重新从零数——
+   * 这一页一张都拍不到。
+   */
+  private loadingSince = 0
   /** 在等 `loading` 放下的人（截图）。 */
   private idleWaiters = new Set<() => void>()
+  /**
+   * 后台还没拍完的那一张（最多一张）。abort 它就是作废它：还在等页面加载就不等了，
+   * 已经发出去的 `captureScreenshot` 回来了也不落盘。见 dropShot。
+   */
+  private shotJob: AbortController | null = null
   /** 这一页是不是落在了不该落的地方（响应回来才发现解析到内网）。 */
   private poisoned = ''
   /**
@@ -666,7 +682,10 @@ export class BrowserService extends Service {
       case 'Page.lifecycleEvent': {
         // 只认主框架：页面里嵌的 iframe 各有各的一套，混进来会把「还在加载」按错。
         if (this.mainFrame && p.frameId !== this.mainFrame) return
-        if (p.name === 'init') this.loading = true
+        if (p.name === 'init') {
+          this.loading = true
+          this.loadingSince = Date.now()
+        }
         else if (p.name === 'networkAlmostIdle') this.settleIdle()
         return
       }
@@ -782,13 +801,17 @@ export class BrowserService extends Service {
   }
 
   /**
-   * 等这一页加载到网络基本安静，最多等 `max`。本来就不在加载的话立刻回来。
+   * 等这一页加载到网络基本安静，最多等到这份文档开始加载之后的 `max`。本来就不在加载
+   * 的话立刻回来。
    *
    * **等满了就当这一页加载完了**（放下 loading）：安静不下来的页面（长轮询、轮播广告）
-   * 之后每一次截图都再等满一轮的话，十几步浏览凭空多出半分钟以上。
+   * 之后每一次截图都再等满一轮的话，十几步浏览凭空多出半分钟以上。上限按文档算、不按
+   * 这一次等算，理由见 loadingSince。
    */
   private async untilIdle(max: number, signal?: AbortSignal): Promise<void> {
     if (!this.loading || signal?.aborted) return
+    const left = this.loadingSince + max - Date.now()
+    if (left <= 0) return this.settleIdle()
     await new Promise<void>((resolve) => {
       const wake = () => {
         clearTimeout(timer)
@@ -799,7 +822,7 @@ export class BrowserService extends Service {
       const timer = setTimeout(() => {
         wake()
         this.settleIdle()
-      }, max)
+      }, left)
       this.idleWaiters.add(wake)
       signal?.addEventListener('abort', wake, { once: true })
     })
@@ -1137,20 +1160,30 @@ export class BrowserService extends Service {
    * 那边不需要它——它手上有快照，而且默认那个对话模型没有视觉（见 docs/browser-tools.md
    * 第 1 节，那一条没有变）。
    *
-   * **拍不成一律当没拍**，不往上抛：这张图是痕迹，不是动作的一部分。因为拍照失败把一次
-   * 成功的点击报成失败，是拿一个附带功能去毁主功能。
+   * **调用方不 await 它**（见 tools.ts 的 withTrace）：工具结果先交给模型，这张在后台等
+   * 页面画出来再拍，拍完由 agent 补一条 `tool/shot`。拍之前要等页面画出来（最多
+   * SHOT_SETTLE_MAX），而快照文字早在那之前就就绪了——这段等待挡在模型前面的话，每次
+   * 跳转都白白多等两三秒。
    *
-   * **拍之前先等页面画出来**（最多 SHOT_SETTLE_MAX）：刚跳转过去的页面，动作收尾那一刻
-   * 多半还是白的，见 SHOT_SETTLE_MAX 上的说明。已经加载完的页面不等。
+   * **拍不成一律当没拍**，不往上抛：这张图是痕迹，不是动作的一部分。
    *
-   * 三种情况直接不拍：
+   * **同一时刻最多一张在后台。** 新的一张开拍、或者下一个会动页面的动作开始（dropShot），
+   * 旧的那张就作废：还在等加载就不等了；`captureScreenshot` 已经发出去的，回来了也不落盘
+   * ——那一帧可能已经是下一步的画面，贴在这一步底下是错的。宁可少一张。
+   *
+   * 这些情况直接不拍：
    * - **页面上挂着原生对话框**——那时候整页是冻住的，`captureScreenshot` 的回执和快照
    *   一样永远等不到，只会白等一个超时。这是 settleAndSnapshot 上那段说明的同一个坑。
+   *   等的这一会儿里弹出来的也一样（弹出时会叫醒等着的人）。
    * - 没有工作区（图没地方放）。
    * - 这条会话已经拍够了（见 MAX_SHOTS）。
+   * - 人点了停止（`signal`）。
    */
   async screenshot(sessionId: string, action: string, signal?: AbortSignal): Promise<WorkspaceFile | undefined> {
-    if (this.dialog) return undefined
+    this.dropShot()
+    // **下面到第一个 await 之前都是同步的**：对话框、当前页面、计数都按「动作刚收尾」
+    // 那一刻判，不按后台轮到它时判。
+    if (this.dialog || signal?.aborted) return undefined
     const cdp = this.cdp
     const target = this.sessionId
     // 没有页面就没什么可拍的。**不在这里 page()**：那会为了一张截图把一个已经关掉的
@@ -1158,26 +1191,52 @@ export class BrowserService extends Service {
     if (!cdp?.alive || !target) return undefined
     const ws = this.workspaceOf()
     if (!ws?.saveBytes) return undefined
-    const taken = this.shots.get(sessionId) ?? 0
-    if (taken >= MAX_SHOTS) return undefined
-    await this.untilIdle(SHOT_SETTLE_MAX, signal)
-    // 等的这一会儿里，对话框可能弹出来了、窗口可能被关了、人可能点了停止。
-    if (this.dialog || signal?.aborted || this.cdp !== cdp || this.sessionId !== target) return undefined
+    if ((this.shots.get(sessionId) ?? 0) >= MAX_SHOTS) return undefined
+    const job = new AbortController()
+    this.shotJob = job
+    const stop = signal ? AbortSignal.any([signal, job.signal]) : job.signal
+    // 等的这一会儿里，对话框可能弹出来了、窗口可能被关了、人可能点了停止、下一步可能开始了。
+    const gone = () => this.dialog !== null || stop.aborted || this.cdp !== cdp || this.sessionId !== target
+    let counted = false
     try {
+      await this.untilIdle(SHOT_SETTLE_MAX, stop)
+      if (gone()) return undefined
       const got = await cdp.send<{ data?: string }>(
         'Page.captureScreenshot',
         { format: 'jpeg', quality: SHOT_QUALITY },
-        { sessionId: target, signal, timeout: SHOT_TIMEOUT },
+        { sessionId: target, signal: stop, timeout: SHOT_TIMEOUT },
       )
+      // 回执回来的这一刻下一步还没开始，这一帧就一定是这一步的；开始了就不认。
+      if (gone()) return undefined
       const data = typeof got?.data === 'string' ? got.data : ''
       if (!data) return undefined
-      const file = await ws.saveBytes(`browser/${sessionId}`, `${shotStamp()}-${action}.jpg`, Buffer.from(data, 'base64'))
+      // 落盘前先占一个名额：落盘要时间，那期间下一张可能已经开拍，两边都读到同一个
+      // 计数的话 MAX_SHOTS 会多放一张出去。
+      const taken = this.shots.get(sessionId) ?? 0
+      if (taken >= MAX_SHOTS) return undefined
       this.shots.set(sessionId, taken + 1)
+      counted = true
+      const file = await ws.saveBytes(`browser/${sessionId}`, `${shotStamp()}-${action}.jpg`, Buffer.from(data, 'base64'))
       return { path: file.path, name: file.name }
     } catch (e) {
-      this.ctx.logger?.warn?.(`browser: 截图没拍成 ${(e as Error).message}`)
+      if (counted) this.shots.set(sessionId, Math.max(0, (this.shots.get(sessionId) ?? 1) - 1))
+      // 被作废、被停止不算「没拍成」，不值得一行警告。
+      if (!stop.aborted) this.ctx.logger?.warn?.(`browser: 截图没拍成 ${(e as Error).message}`)
       return undefined
+    } finally {
+      if (this.shotJob === job) this.shotJob = null
     }
+  }
+
+  /**
+   * 作废后台还没拍完的那张截图（见 screenshot）。
+   *
+   * 会动页面的动作一开始就调它：点击、输入、跳转、换标签页之后的画面不是上一步的。
+   * 只读不动的（读正文、等文字）不调——那时候页面还是上一步那一页，让它接着等、接着拍。
+   */
+  dropShot(): void {
+    this.shotJob?.abort()
+    this.shotJob = null
   }
 
   /** 这一次动作之后新落下来的文件。报给界面用，模型不看。 */
@@ -1198,6 +1257,7 @@ export class BrowserService extends Service {
    * `Fetch.requestPaused`，同一条请求被 continue 两次，第二次报错。
    */
   private teardown(): void {
+    this.dropShot()
     this.cdp?.close()
     if (this.localBrowser) {
       this.localBrowser.kill()

@@ -525,6 +525,15 @@ export interface SessionEventMap {
   }
 
   'tool/call': { turn: number; step: number; callId: string; name: string; arguments: string }
+  /**
+   * 一次工具调用之后**才拍完**的那张页面截图（ToolResult.pendingShot），按 callId 认回
+   * 那次调用。
+   *
+   * 浏览器工具的结果先交给模型、截图在后台等页面画出来再拍，所以它落在那条 `tool/result`
+   * 之后，而且可能隔着后面几步的事件——但一定在这一轮的 `turn/end` 之前。老日志没有这种
+   * 事件，截图在 `tool/result` 的 shot 上；界面两条路都认。
+   */
+  'tool/shot': { turn: number; step: number; callId: string; shot: { path: string; name: string } }
   'tool/result': {
     turn: number
     step: number

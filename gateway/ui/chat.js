@@ -606,6 +606,11 @@ function fold(events, live, channelBot = false) {
   let statusAt = 0
   // 空壳工具调用的 callId（见下面 tool/call）。它们的结果也要一起跳过。
   const phantoms = new Set()
+  /**
+   * callId → 那颗工具药丸，跨块认。给 `tool/shot` 用：它晚于 `tool/result` 到，中间可能
+   * 隔着后面几步，`tools` 这时候未必还是那次调用所在的那一份。
+   */
+  const toolByCall = new Map()
   /** 最后一条 `todo/list` 快照。见下面那一支。 */
   let todos = null
   /** 单号 → 已经画在某一块上的那张交接卡。跨块认，见下面 human/handoff。 */
@@ -697,13 +702,15 @@ function fold(events, live, channelBot = false) {
       }
       // arguments 要留着：工具药丸的悬浮窗全靠它回答「这次到底拿什么跑的」。存的是
       // bot 那边 JSON.stringify 过的原串，展示时再 parse 一次做缩进（见 toolPopBody）。
-      tools.push({
+      const call = {
         callId: data.callId,
         name: data.name,
         args: typeof data.arguments === 'string' ? data.arguments : '',
         result: null,
         failed: false,
-      })
+      }
+      tools.push(call)
+      if (data.callId) toolByCall.set(data.callId, call)
       assistant.tools = tools
       assistant.endTime = at
     } else if (type === 'tool/result') {
@@ -721,10 +728,20 @@ function fold(events, live, channelBot = false) {
         // 这次调用**看到**的文件（ls 列的、grep 命中的、read 读的那一个）。正文里
         // 出现的文件名靠它接成能点开的链接——同样是工具报出来的，不是扫文本猜的。
         hit.refs = Array.isArray(data.refs) ? data.refs : null
-        // 浏览器工具拍的那张页面截图。老日志没有这个字段，那就没有——**不去猜**。
-        hit.shot = data.shot && typeof data.shot.path === 'string' && data.shot.path ? data.shot : null
+        // 浏览器工具拍的那张页面截图。老日志把它放在这儿；新日志另来一条 tool/shot（见下）。
+        // 两样都没有就是没有——**不去猜**。
+        hit.shot = isShot(data.shot) ? data.shot : hit.shot || null
       }
       if (assistant) assistant.endTime = at
+    } else if (type === 'tool/shot') {
+      /**
+       * 工具结果交出去之后才拍完的那张截图（bot 的 ToolResult.pendingShot）。
+       *
+       * **只按 callId 认，认不到就丢。** 不像 tool/result 那样退回「最后一颗」：
+       * 贴错一张图比少一张更坏——人会拿它去判断那一步到底点到了什么。
+       */
+      const hit = toolByCall.get(data.callId)
+      if (hit && isShot(data.shot)) hit.shot = data.shot
     } else if (type === 'agent/task') {
       /**
        * 一次委派（见 docs/delegation.md）。**挂在助手那一块上**，理由和确认卡一字不差：
@@ -2879,6 +2896,11 @@ function shotHtml(img) {
  * 的」，而**一张都没丢**——全都在工作区 `browser/<会话>/` 里按时间排着。
  */
 const MAX_STEP_SHOTS = 12
+
+/** 一张像样的截图记录：至少有个路径。老日志、坏数据一律当没有。 */
+function isShot(x) {
+  return Boolean(x && typeof x.path === 'string' && x.path)
+}
 
 /**
  * 这条消息里浏览器每走一步拍下的那张图，按步骤顺序、按路径去重。
