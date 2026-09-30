@@ -2809,7 +2809,12 @@ function toolsText(tools: { name: string; description: string; parameters?: unkn
 function toUsage(u: any): Usage {
   if (!u) return EMPTY_USAGE
   return {
-    inputTokens: u.input ?? 0,
+    /**
+     * 写缓存的那截也是这次真发出去的提示词，算进输入。Anthropic 的 input 不含它（也不含
+     * 缓存命中），首轮建缓存时它往往占了提示词的大头——不算的话 observedPromptHighWater
+     * 低估一大截，压缩触发得晚。我们的 Usage 没有单独的写缓存一格，并进 inputTokens。
+     */
+    inputTokens: (u.input ?? 0) + (u.cacheWrite ?? 0),
     outputTokens: u.output ?? 0,
     cacheReadTokens: u.cacheRead ?? 0,
     reasoningTokens: u.reasoning ?? 0,
