@@ -52,7 +52,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0（v6 拿锁文件核对 pnpm 原生二进制，锁文件里没有 darwin-x64 那份，Intel Mac 上装不上）
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.3.0（v6 拿锁文件核对 pnpm 原生二进制，锁文件里没有 darwin-x64 那份，Intel Mac 上装不上）
       - uses: actions/setup-node@v7
         with:
           node-version: 24
