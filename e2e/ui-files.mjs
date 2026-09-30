@@ -180,15 +180,22 @@ export async function runUiFiles({ root, test, assert, log }) {
     app.state.path = '/chat'
     app.state.chatSessionId = 's-doc'
     app.state.chatEvents = []
-    return { app, calls, asOf: (v) => calls.filter((c) => c.includes('as=' + v)).length }
+    return {
+      app,
+      calls,
+      asOf: (v) => calls.filter((c) => c.includes('as=' + v)).length,
+      raw: () => calls.filter((c) => !c.includes('as=')).length,
+    }
   }
   const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
 
   await test('Office 预览：有 PDF 就看 PDF，「原文」页用到时才去提取', async () => {
-    const { app, asOf } = officePreview({ pdf: 'ok' })
+    const { app, asOf, raw } = officePreview({ pdf: 'ok' })
     await app.openPreview('reports/q2.docx', 'q2.docx')
     await settle()
     const p = app.state.preview
+    // 原文件的字节浏览器看不了，取它只为一个大小——经 Gateway 就是白跑一次函数调用。
+    assert(raw() === 0, `还去取了原文件：${raw()} 次`)
     assert(p.kind === 'doc' && p.url && !p.docLoading, `PDF 没接上：${JSON.stringify({ ...p, abort: undefined })}`)
     const html = app.previewModal()
     assert(html.includes('sw-preview-frame') && html.includes(p.url), '没画成 PDF 阅读器')
@@ -215,6 +222,19 @@ export async function runUiFiles({ root, test, assert, log }) {
       assert(p.mode === 'source' && p.text === '正文' && asOf('text') === 1, `${pdf}：没退回文本：${JSON.stringify({ ...p, abort: undefined })}`)
       assert(!app.previewModal().includes('data-mode="view"'), `${pdf}：没 PDF 还摆着「预览」页签`)
     }
+  })
+
+  await test('Office 预览：PDF 有了而文本提取失败，不说成「席位太老」', async () => {
+    const { app } = officePreview({ pdf: 'ok', text: { status: 500, body: { error: 'x' } } })
+    await app.openPreview('reports/q2.docx', 'q2.docx')
+    await settle()
+    app.setPreviewMode('source')
+    await settle()
+    const html = app.previewModal()
+    // PDF 要到了，席位就是新的；叫人去升级 Bot 是把人往错的方向上指。
+    assert(!html.includes('要更新 Bot 版本'), '把一次提取失败说成了席位太老')
+    assert(html.includes('文本提取失败'), `没说清楚：${html.slice(0, 400)}`)
+    assert(html.includes('data-mode="view"'), '「预览」页签没了，人切不回 PDF')
   })
 
   await test('Office 预览：老格式转不了 PDF 也提取不了，说清楚原因', async () => {

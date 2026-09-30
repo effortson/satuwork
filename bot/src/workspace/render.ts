@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, mkdtemp, readdir, rename, rm, stat, utimes } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import type { Stats } from 'node:fs'
 import { homedir } from 'node:os'
-import { delimiter, extname, join } from 'node:path'
+import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { findExecutable } from '../executable.ts'
 import { satuworkHome } from '../home.ts'
 
 /**
@@ -25,8 +27,14 @@ import { satuworkHome } from '../home.ts'
  *   同一份文件同时来的请求合成一次。
  * - **结果落盘缓存**，键是「路径 + mtime + 大小」：文件改了自然不命中，不用额外失效。
  *   PDF 可能好几 MB，不放内存。
- * - **先拷一份再转**：Bot 可能正在往原文件里写，拿半截文件去转只会得到一个解析失败；
- *   拷贝也让输出文件名固定（soffice 按输入的文件名起输出名）。
+ * - **先拷一份再转**，拷之前、拷之后各 stat 一次：两次对不上说明 Bot 正在往里写，拷到的
+ *   是半截，直接报「正在改写」，不拿它去转。缓存键也按拷之前那次算——请求进来时 stat 到的
+ *   那份在排队期间可能已经变了，按它记键会把新内容存到旧键底下。拷贝还让输出文件名固定
+ *   （soffice 按输入的文件名起输出名）。
+ * - **不让它往外连**：工作区里的文档可能是从网上下来的。LibreOffice 7.4 默认转换时不取
+ *   外链（实测 docx 外链图片、ODT 外链图片、Calc 的 WEBSERVICE 都没发请求），但这靠的是
+ *   它的默认值和版本；这份配置目录是我们自己的，所以把「挡外链、禁宏」显式写进去
+ *   （见 HARDENING）。
  */
 
 /** LibreOffice 转得动、而且值得在界面上渲染的扩展名。老二进制格式和 ODF 一并收下。 */
@@ -54,6 +62,32 @@ function renderTimeoutMs(): number {
 const CACHE_MAX_FILES = 24
 const CACHE_MAX_BYTES = 256 * 1024 * 1024
 
+/**
+ * 进程退出之后，最多再等多久让 stderr 管道关上。
+ *
+ * soffice 的某个后代要是换了会话、手里还攥着 stderr 的写端，`close` 就永远不来——
+ * 杀进程组也杀不到它（同 tools/terminal.ts 的 killTree 那段）。只等 `close` 的话，这一次
+ * 永不结束，而后面所有转换都排在它后面，整个席位的预览一起卡死。
+ */
+const PIPE_GRACE_MS = 1_000
+
+/**
+ * 写进私有配置目录的加固项（`user/registrymodifications.xcu`）。
+ *
+ * - BlockUntrustedRefererLinks：文档里引用的外部图片 / 链接不去取。
+ * - MacroSecurityLevel 3 + DisableMacrosExecution：宏一律不跑（.xlsm 这类带宏的也收）。
+ *
+ * LibreOffice 退出时会重写这个文件、保留这些项；每次转换前看一眼标记，没有就整份写回。
+ */
+const HARDENING_MARK = 'BlockUntrustedRefererLinks'
+const HARDENING = `<?xml version="1.0" encoding="UTF-8"?>
+<oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true</value></prop></item>
+<item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop></item>
+<item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="DisableMacrosExecution" oor:op="fuse"><value>true</value></prop></item>
+</oor:items>
+`
+
 export type RenderFailure = 'unavailable' | 'too-big' | 'failed'
 
 export class RenderError extends Error {
@@ -65,33 +99,26 @@ export class RenderError extends Error {
 }
 
 /**
- * 找 soffice。`SATUWORK_SOFFICE` 优先，其次 PATH，再其次各平台的默认安装位置
- * （找浏览器那段的同一个写法，见 browser/index.ts 的 localBrowserExecutable）。
+ * 找 soffice。`SATUWORK_SOFFICE` 优先，其次各平台的默认安装位置，再其次 PATH
+ * （和找浏览器共用 executable.ts）。
  */
 export function officeExecutable(): string | null {
-  const override = process.env.SATUWORK_SOFFICE?.trim()
-  if (override) return existsSync(override) ? override : null
   const names = process.platform === 'win32' ? ['soffice.exe'] : ['soffice', 'libreoffice']
-  const onPath = names.flatMap((name) =>
-    (process.env.PATH || '').split(delimiter).filter(Boolean).map((dir) => join(dir, name)),
-  )
-  const candidates =
+  const fixed =
     process.platform === 'darwin'
       ? [
           '/Applications/LibreOffice.app/Contents/MacOS/soffice',
           join(homedir(), 'Applications/LibreOffice.app/Contents/MacOS/soffice'),
-          ...onPath,
         ]
       : process.platform === 'win32'
         ? [
-            ...onPath,
             ...(process.env.PROGRAMFILES ? [join(process.env.PROGRAMFILES, 'LibreOffice/program/soffice.exe')] : []),
             ...(process.env['PROGRAMFILES(X86)']
               ? [join(process.env['PROGRAMFILES(X86)'], 'LibreOffice/program/soffice.exe')]
               : []),
           ]
-        : ['/usr/bin/soffice', '/usr/bin/libreoffice', ...onPath]
-  return candidates.find((c) => existsSync(c)) ?? null
+        : ['/usr/bin/soffice', '/usr/bin/libreoffice']
+  return findExecutable(process.env.SATUWORK_SOFFICE, names, fixed)
 }
 
 function cacheDir(...segments: string[]): string {
@@ -117,19 +144,14 @@ export async function renderToPdf(file: string): Promise<string> {
       `这个文件有 ${(info.size / 1024 / 1024).toFixed(1)} MB，超过了渲染预览的上限（${MAX_RENDER_BYTES / 1024 / 1024} MB）。`,
     )
   }
-  const key = createHash('sha256').update(`${file}|${info.mtimeMs}|${info.size}`).digest('hex').slice(0, 32)
-  const out = cacheDir(`${key}.pdf`)
-  if (existsSync(out)) {
-    // 碰一下 mtime：修剪按它排，常看的那几份不该被挤掉。
-    const now = new Date()
-    await utimes(out, now, now).catch(() => {})
-    return out
-  }
+  const key = cacheKey(file, info)
+  const hit = await cached(key)
+  if (hit) return hit
   const running = inflight.get(key)
   if (running) return running
   const bin = officeExecutable()
   if (!bin) throw new RenderError('unavailable', '这台机器上没有 LibreOffice，渲染不了。')
-  const job = queue.then(() => convert(bin, file, out))
+  const job = queue.then(() => convert(bin, file))
   // 队伍不能因为一次失败就断掉：后面排着的照样要跑。
   queue = job.catch(() => {})
   inflight.set(key, job)
@@ -140,16 +162,40 @@ export async function renderToPdf(file: string): Promise<string> {
   }
 }
 
-async function convert(bin: string, file: string, out: string): Promise<string> {
+function cacheKey(file: string, info: Stats): string {
+  return createHash('sha256').update(`${file}|${info.mtimeMs}|${info.size}`).digest('hex').slice(0, 32)
+}
+
+/** 缓存里有这份就回它的路径，顺手碰一下 mtime：修剪按它排，常看的那几份不该被挤掉。 */
+async function cached(key: string): Promise<string | null> {
+  const out = cacheDir(`${key}.pdf`)
+  if (!existsSync(out)) return null
+  const now = new Date()
+  await utimes(out, now, now).catch(() => {})
+  return out
+}
+
+async function convert(bin: string, file: string): Promise<string> {
   await mkdir(cacheDir(), { recursive: true })
+  // 排队期间文件可能又被改过：按轮到时的这份算键，改过的话也许别人已经替它转好了。
+  const before = await stat(file)
+  const key = cacheKey(file, before)
+  const hit = await cached(key)
+  if (hit) return hit
+  const out = cacheDir(`${key}.pdf`)
   const dir = await mkdtemp(cacheDir('job-'))
   try {
     const input = join(dir, `in${extname(file).toLowerCase()}`)
     await copyFile(file, input)
+    const after = await stat(file)
+    if (after.mtimeMs !== before.mtimeMs || after.size !== before.size) {
+      throw new RenderError('failed', '文件正在被改写，稍后再预览。')
+    }
     const profile = cacheDir('profile')
     // 用户配置目录是这一队独占的（一次只跑一个，见上面）。上一次被超时杀掉的话会留下
     // 一把 .lock，不清的话下一次 soffice 以为有人在用，直接退出、什么都不产出。
     await rm(join(profile, '.lock'), { force: true })
+    await harden(profile)
     await run(bin, [
       '--headless',
       '--norestore',
@@ -177,6 +223,15 @@ async function convert(bin: string, file: string, out: string): Promise<string> 
   }
 }
 
+/** 配置目录里没有加固项（第一次用，或者是这版之前建的）就整份写进去。 */
+async function harden(profile: string) {
+  const file = join(profile, 'user', 'registrymodifications.xcu')
+  const now = await readFile(file, 'utf8').catch(() => '')
+  if (now.includes(HARDENING_MARK)) return
+  await mkdir(join(profile, 'user'), { recursive: true })
+  await writeFile(file, HARDENING)
+}
+
 function run(bin: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const group = process.platform !== 'win32'
@@ -187,30 +242,52 @@ function run(bin: string, args: string[]): Promise<void> {
     child.stderr?.on('data', (b: Buffer) => {
       if (stderr.length < 4000) stderr += b.toString('utf8')
     })
-    let timedOut = false
     const limit = renderTimeoutMs()
-    const timer = setTimeout(() => {
-      timedOut = true
-      try {
-        if (group && child.pid) process.kill(-child.pid, 'SIGKILL')
-        // Windows 没有进程组：soffice.exe 也只是个启动器，干活的 soffice.bin 要连树一起杀。
-        else if (child.pid) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
-        else child.kill('SIGKILL')
-      } catch {}
-    }, limit)
-    child.on('error', (e) => {
+    let timedOut = false
+    let settled = false
+    let grace: ReturnType<typeof setTimeout> | undefined
+    /**
+     * 只结一次账。`close`、`exit` 之后的宽限、超时之后的宽限，三条路谁先到都算；
+     * 结账时把 stderr 拆掉，攥着它的那个后代就不会让这个 child 对象一直挂着。
+     */
+    const settle = (code: number | null) => {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
-      reject(new RenderError('failed', `LibreOffice 起不来：${e.message}`))
-    })
-    child.on('close', (code) => {
-      clearTimeout(timer)
+      clearTimeout(grace)
+      child.stderr?.destroy()
       if (timedOut) return reject(new RenderError('failed', `渲染超时（${Math.round(limit / 1000)} 秒）。`))
       if (code !== 0) {
         const tail = stderr.trim().split('\n').slice(-3).join(' ').slice(0, 300)
         return reject(new RenderError('failed', `LibreOffice 退出码 ${code}${tail ? `：${tail}` : ''}`))
       }
       resolve()
+    }
+    const timer = setTimeout(() => {
+      timedOut = true
+      try {
+        if (group && child.pid) process.kill(-child.pid, 'SIGKILL')
+        // Windows 没有进程组：soffice.exe 也只是个启动器，干活的 soffice.bin 要连树一起杀。
+        // taskkill 起不来是异步的 'error' 事件，外面这层 try 接不住，不挂监听会把整个进程带走。
+        else if (child.pid) {
+          spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => child.kill('SIGKILL'))
+        } else child.kill('SIGKILL')
+      } catch {}
+      // 杀完连 exit 都等不来（杀不到的后代、平台差异），也不能让这一队永远等下去。
+      grace = setTimeout(() => settle(null), PIPE_GRACE_MS)
+    }, limit)
+    child.on('error', (e) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      clearTimeout(grace)
+      reject(new RenderError('failed', `LibreOffice 起不来：${e.message}`))
     })
+    child.on('exit', (code) => {
+      clearTimeout(grace)
+      grace = setTimeout(() => settle(code), PIPE_GRACE_MS)
+    })
+    child.on('close', (code) => settle(code))
   })
 }
 

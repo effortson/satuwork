@@ -6737,6 +6737,20 @@ async function openPreview(path, name, options = {}) {
   revokePreview()
   const kind = previewKindOf(name || path, '')
   const mode = options.mode === 'source' ? 'source' : 'view'
+  /**
+   * Office 文档不取原文件：浏览器看不了那段字节，取它只为了一个大小不值一趟往返
+   * （经 Gateway 就是一次函数调用加一次席位读流）。直接要渲染好的 PDF，要不到退回文本；
+   * 太大由席位那头说（413 / 提取那条的说明）。
+   *
+   * 就算停在「原文」页（实时预览重开时会带着原来的 mode）也先要 PDF：没有它就没有
+   * 「预览」页签，人切不回去。
+   */
+  if (kind === 'doc') {
+    state.preview = { path, name, loading: false, url: '', type: '', size: 0, error: '', kind, mode, docLoading: 'pdf' }
+    render()
+    void fetchDocPdf(path, name)
+    return
+  }
   state.preview = { path, name, loading: true, url: '', type: '', size: 0, error: '', kind, mode }
   render()
   const url = '/runtime/sessions/' + encodeURIComponent(state.chatSessionId) + '/files?path=' + encodeURIComponent(path)
@@ -6775,17 +6789,6 @@ async function openPreview(path, name, options = {}) {
       if (!state.preview || state.preview.path !== path) return
       state.preview = { path, name, loading: false, url: '', type, size, error: '', kind: k, mode, tooBig: true }
       render()
-      return
-    }
-    if (k === 'doc') {
-      // 原文件的字节在这里用不上（浏览器看不了），拿到大小就停，别白下一遍。
-      ac.abort()
-      if (!state.preview || state.preview.path !== path) return
-      // 就算停在「原文」页（实时预览重开时会带着原来的 mode）也先要 PDF：没有它就没有
-      // 「预览」页签，人切不回去。
-      state.preview = { path, name, loading: false, url: '', type, size, error: '', kind: k, mode, docLoading: 'pdf' }
-      render()
-      void fetchDocPdf(path, name)
       return
     }
     const blob = await res.blob()
@@ -6852,9 +6855,12 @@ async function fetchDocText(path, name) {
     state.preview.text = ''
     // 有渲染好的 PDF 时只是「原文」页没东西，不能把整个预览判成看不了。
     if (!state.preview.url) state.preview.tooBig = true
+    // 「席位太老」只在 PDF 也没要到时才可能成立：PDF 要到了，席位就是新的，失败是别的原因。
     state.preview.docNote = err && err.unsupported
       ? t('这种格式没法提取成文本，下载下来用 Office 打开看吧。', 'This format cannot be extracted as text. Download it and open it in Office.')
-      : t('这个席位还不支持把 Office 文档提取出来预览（要更新 Bot 版本）。')
+      : state.preview.url
+        ? t('文本提取失败了，稍后再试，或者直接看「预览」。', 'Text extraction failed. Try again later, or use the Preview tab.')
+        : t('这个席位还不支持把 Office 文档提取出来预览（要更新 Bot 版本）。')
   }
   render()
 }
