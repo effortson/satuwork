@@ -127,5 +127,31 @@ out.replay = {
   results: replayed.filter((m) => m.role === 'toolResult').map((m) => m.toolCallId),
 }
 
+/**
+ * ⑤ 进程死在一步中间：工具结果落盘了，带 tool-call 的助手消息还没有（它要等这一步所有工具
+ * 跑完才写）。以前重建时那条结果被当成无主的丢掉——邮件已经发了，下一轮模型却不知道。
+ */
+seq = 0
+const crashed = await toAgentMessages(
+  [
+    ev('session', { version: 4, id: 's', createdAt: 1, botId: 'b' }),
+    ev('user/message', { message: { id: 'u1', role: 'user', content: [{ type: 'text', text: '发封邮件再跑个脚本' }] }, source: { kind: 'user' } }),
+    ev('turn/start', { turn: 1 }),
+    ev('step/start', { turn: 1, step: 1 }),
+    ev('tool/call', { turn: 1, step: 1, callId: 'call_mail', name: 'send_email', arguments: '{"to":"a@b.c"}' }),
+    ev('tool/call', { turn: 1, step: 1, callId: 'call_sh', name: 'terminal', arguments: '{"command":"sleep 999"}' }),
+    ev('tool/result', { turn: 1, step: 1, callId: 'call_mail', text: '已发送', failed: false }),
+    // 进程在这里被杀；开机后 healDanglingTurn 补了一条 turn/end。
+    ev('turn/end', { turn: 1, reason: 'error' }),
+    ev('user/message', { message: { id: 'u2', role: 'user', content: [{ type: 'text', text: '刚才怎么样了' }] }, source: { kind: 'user' } }),
+  ],
+  { api: 'openai-completions', provider: 'p', model: 'm' },
+)
+out.crashed = {
+  roles: crashed.map((m) => m.role),
+  calls: crashed.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall').map((c) => c.name)),
+  results: crashed.filter((m) => m.role === 'toolResult').map((m) => `${m.toolCallId}:${m.isError ? 'err' : 'ok'}:${m.content[0].text}`),
+}
+
 console.log('__RESULT__' + JSON.stringify(out))
 server.close()

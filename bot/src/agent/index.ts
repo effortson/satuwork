@@ -2930,10 +2930,17 @@ export async function toAgentMessages(
   const resultIds = new Set<string>()
   /** 每个 step 的下界（step/start，老日志没有它时用第一条 tool/call）：给插话挪位用，见下。 */
   const stepFrom = new Map<string, number>()
+  /** 每个 step 开跑过的工具（tool/call），给下面「助手消息没落盘」那种情况补锚点用。 */
+  const callsOf = new Map<string, { seq: number; time: number; calls: SessionEventMap['tool/call'][] }>()
   for (const e of events) {
     if (e.type === 'step/start' || e.type === 'tool/call') {
       const key = stepKey(e.data.turn, e.data.step)
       if (!stepFrom.has(key)) stepFrom.set(key, e.seq)
+      if (e.type === 'tool/call') {
+        const got = callsOf.get(key) ?? { seq: e.seq, time: e.time, calls: [] }
+        got.calls.push(e.data)
+        callsOf.set(key, got)
+      }
     } else if (e.type === 'tool/result') {
       resultIds.add(e.data.callId)
     } else if (e.type === 'assistant/message') {
@@ -2945,6 +2952,27 @@ export async function toAgentMessages(
       }
     }
   }
+  /**
+   * **这一步开跑过工具、助手消息却没落盘**：进程死在这一步中间了。
+   *
+   * 带 tool-call 的助手消息要等 pi 的 `turn_end`——也就是这一步**所有**工具都跑完——才写，
+   * 而工具结果是一个个先落盘的。同一步并行调了 send_email（已发出、结果已写）和一个长时间的
+   * terminal，这时 OOM / 重铺把进程杀了：重建时找不到这一步的助手消息，send_email 那条结果
+   * 被当成无主的丢掉，下一轮模型完全不知道邮件已经发过，很可能再发一次。
+   *
+   * 每把工具开跑时都先写了 `tool/call`（名字、参数都在），拿它们补出这一步的助手消息，锚在
+   * 第一条 tool/call 上。有结果的照常挂在后面，没结果的走下面「有调用没结果」那条补 error。
+   */
+  const synthesized = new Map<number, { key: string; time: number; calls: SessionEventMap['tool/call'][] }>()
+  for (const [key, step] of callsOf) {
+    if (assistantSeq.has(key)) continue
+    const calls = step.calls.filter((c) => String(c.name || '').trim())
+    if (!calls.length) continue
+    assistantSeq.set(key, step.seq)
+    for (const c of calls) toolNames.set(c.callId, c.name)
+    synthesized.set(step.seq, { key, time: step.time, calls })
+  }
+
   /**
    * 插话（steer）的落位。
    *
@@ -2995,6 +3023,35 @@ export async function toAgentMessages(
   let resultIndex = 0
 
   for (const e of events) {
+    const lost = synthesized.get(e.seq)
+    if (lost) {
+      entries.push({
+        order: e.seq,
+        message: {
+          role: 'assistant',
+          content: lost.calls.map((c) => ({ type: 'toolCall', id: c.callId, name: c.name, arguments: safeParse(c.arguments) })),
+          api: model.api ?? 'unknown',
+          provider: model.provider ?? 'unknown',
+          model: model.id ?? 'unknown',
+          usage: piUsage(undefined),
+          timestamp: lost.time,
+        } as any,
+      })
+      for (const c of lost.calls) {
+        if (resultIds.has(c.callId)) continue
+        entries.push({
+          order: e.seq + 1e-6 * ++resultIndex,
+          message: {
+            role: 'toolResult',
+            toolCallId: c.callId,
+            toolName: '',
+            content: [{ type: 'text', text: '工具执行被中断，没有结果。' }],
+            isError: true,
+            timestamp: lost.time,
+          } as any,
+        })
+      }
+    }
     if (e.type === 'user/message') {
       entries.push({
         order: userOrder(e.seq),
