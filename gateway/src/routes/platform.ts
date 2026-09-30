@@ -645,7 +645,16 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       }
       if (!model) throw new HttpError(400, '这个供应商没有可测的模型')
     }
-    const result = await llm.probe(null, provider, model)
+    /**
+     * 推理档用**服务端存着的**那一格（日常 / utility / 某个备选），不收页面传的：测试要回答的
+     * 是「按现在的配置真用起来通不通」。只点了供应商、不在任何一格上的，按 off 测。
+     */
+    const slots = [cur.daily, cur.utility, ...(cur.dailyAlternates ?? [])]
+    const slot =
+      role === 'daily' || role === 'utility'
+        ? cur[role]
+        : slots.find((r) => r.provider === provider && r.model === model)
+    const result = await llm.probe(null, provider, model, slot?.reasoningEffort)
     if (!result.ok && result.error === '模型不在可见目录里') {
       throw new HttpError(404, result.error, { model: `${result.provider}/${result.model}` })
     }

@@ -646,13 +646,31 @@ export class Llm {
     return (cheap || list[0])?.id || ''
   }
 
-  async probe(companyId: string | null, provider: string, model: string): Promise<ProbeResult> {
+  /**
+   * 探一下这颗模型通不通。`effort` 是这一格**实际配置**的推理档（off / low / high …），要和
+   * 真用的时候发出去的一样，否则「测试通了、用起来 400」或者反过来。
+   *
+   * **不传档位不等于不带推理字段。** pi-ai 的 openai-responses 在调用方没给档位时，会替推理
+   * 模型补一个 `reasoning.effort = thinkingLevelMap.off ?? "none"`——从目录里补进来的模型多半
+   * 没有 thinkingLevelMap，于是发的就是 `none`，而 gpt-6.1-sol 这类只收 low 以上的直接 400。
+   * 真用的时候档位是 off，Bot 压根不带推理字段、Gateway 也不补（见 responsesBodyPatch），由
+   * 上游用默认值。这里照做：夹到 off 就把 `thinkingLevelMap.off` 设成 null，pi-ai 就不发了。
+   */
+  async probe(companyId: string | null, provider: string, model: string, effort?: string): Promise<ProbeResult> {
     const found = await this.find(companyId, model, provider)
     if (!found) return { ok: false, provider, model, latencyMs: 0, error: '模型不在可见目录里' }
     const secret = await this.secret(companyId, found.provider)
     if (!secret) return { ok: false, provider: found.provider, model: found.id, latencyMs: 0, error: `没有 ${found.provider} 的密钥` }
-    const piModel = this.piModel(found.provider, found.id)
-    if (!piModel) return { ok: false, provider: found.provider, model: found.id, latencyMs: 0, error: '模型不在可见目录里' }
+    const found0 = this.piModel(found.provider, found.id)
+    if (!found0) return { ok: false, provider: found.provider, model: found.id, latencyMs: 0, error: '模型不在可见目录里' }
+    let piModel = found0
+    let reasoning: Exclude<ModelThinkingLevel, 'off'> | undefined
+    if (found0.reasoning) {
+      const wanted = (effort || '').trim()
+      const level = wanted && wanted !== 'off' ? clampThinkingLevel(found0, wanted as ModelThinkingLevel) : 'off'
+      if (level === 'off') piModel = { ...found0, thinkingLevelMap: { ...(found0.thinkingLevelMap || {}), off: null } }
+      else reasoning = level as Exclude<ModelThinkingLevel, 'off'>
+    }
     const started = Date.now()
     const abort = AbortSignal.timeout(PROBE_TIMEOUT_MS)
     try {
@@ -661,7 +679,7 @@ export class Llm {
         {
           messages: [{ role: 'user', content: 'Reply with exactly: ok', timestamp: Date.now() }],
         } as any,
-        { apiKey: secret, maxTokens: 16, temperature: 0, signal: abort },
+        { apiKey: secret, maxTokens: 16, temperature: 0, signal: abort, ...(reasoning ? { reasoning } : {}) },
       )
       const latencyMs = Date.now() - started
       if (message?.stopReason === 'aborted' || abort.aborted) {

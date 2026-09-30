@@ -24,6 +24,7 @@ import { runMachineDeploy } from './machine-deploy.mjs'
 import { runLlmUsage } from './llm-usage.mjs'
 import { runMarkdown } from './markdown.mjs'
 import { runChatFold } from './chat-fold.mjs'
+import { runLlmProbeEffort } from './llm-probe-effort.mjs'
 import { runDesktopUpdate } from './desktop-update.mjs'
 import { runChatModelRefresh } from './chat-model-refresh.mjs'
 import { runToolNames } from './tool-names.mjs'
@@ -3610,6 +3611,7 @@ async function main() {
     await suite('ui-files', () => runUiFiles({ root, test, assert, log }))
     await suite('markdown', () => runMarkdown({ root, test, assert, log }))
     await suite('chat-fold', () => runChatFold({ root, test, assert, log }))
+    await suite('llm-probe-effort', () => runLlmProbeEffort({ root, test, assert, log }))
     await suite('desktop-update', () => runDesktopUpdate({ root, test, assert, log }))
     await suite('chat-model-refresh', () => runChatModelRefresh({ root, test, assert, log }))
     await suite('tool-names', () => runToolNames({ root, test, assert, log }))
