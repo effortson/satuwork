@@ -2790,6 +2790,15 @@ function outputFiles(tools) {
  */
 const SHOT_AUTO_MAX = 2 * 1024 * 1024
 
+/**
+ * Bot **产出的图片**自动加载的上限，比上面那道宽。
+ *
+ * 那道 2 MB 是给过程截图和用户附图定的——一屏十几张，大图不值得自动拉。产出的图不一样：它就是
+ * 这一轮的答案，一条消息最多摆 8 张（MAX_OUT_IMAGES），而生图模型出的 PNG 常常两三 MB 起
+ * （Gemini 选不了格式，2K 的 PNG 四五 MB）。卡在 2 MB 的话，画出来的图多半只显示一个占位。
+ */
+const OUT_IMAGE_AUTO_MAX = 8 * 1024 * 1024
+
 /** path → blob URL。同一张图在历史里可能出现多次，只取一次。 */
 const SHOT_CACHE = new Map()
 const SHOT_CACHE_MAX = 40
@@ -2820,8 +2829,11 @@ function shotInUse(url) {
   return false
 }
 
-/** 把占位换成真图。失败就留占位——一张图没取到，不该让整条消息看起来出了错。 */
-async function fillShots(host) {
+/**
+ * 把占位换成真图。失败就留占位——一张图没取到，不该让整条消息看起来出了错。
+ * `max` 是自动加载的上限：过程截图和附图用 SHOT_AUTO_MAX，产出的图用 OUT_IMAGE_AUTO_MAX。
+ */
+async function fillShots(host, max = SHOT_AUTO_MAX) {
   if (!host || !state.chatSessionId) return
   const sessionId = state.chatSessionId
   for (const el of host.querySelectorAll('.sw-shot[data-shot]')) {
@@ -2843,7 +2855,7 @@ async function fillShots(host) {
         await res.body?.cancel().catch(() => {})
         continue
       }
-      if (Number(res.headers.get('content-length') || 0) > SHOT_AUTO_MAX) {
+      if (Number(res.headers.get('content-length') || 0) > max) {
         await res.body?.cancel().catch(() => {})
         continue
       }
@@ -2893,6 +2905,23 @@ function stepShots(tools) {
     if (shot && shot.path && !seen.has(shot.path)) seen.set(shot.path, shot)
   }
   return [...seen.values()]
+}
+
+/**
+ * Bot 产出的图片（generate_image 画的、脚本生成的图表……）直接摆缩略图，不只给一颗药丸。
+ *
+ * 图片就是拿来看的：一颗写着 `image-20260930-101500.jpg` 的药丸要点开才知道画成了什么，
+ * 而人要的正是「画成了什么」。和上面的过程截图分开摆（那一条是「路上看到了什么」），
+ * 摆不下的照旧落回药丸那一排，一张都不丢。
+ *
+ * 只认浏览器能内联渲染的位图，判据和工作区那张内联白名单一样按扩展名（SVG 故意不在：
+ * 它能带脚本，预览接口本来就不给它内联）。
+ */
+const OUT_IMAGE_RE = /\.(png|jpe?g|gif|webp|avif|bmp)$/i
+const MAX_OUT_IMAGES = 8
+
+function outputImages(files) {
+  return files.filter((f) => f && f.path && OUT_IMAGE_RE.test(f.path)).slice(0, MAX_OUT_IMAGES)
 }
 
 /** 没摆下的那些。**不闷声吞掉**——闷声截断会让人以为这次就走了这么几步。 */
@@ -3740,6 +3769,25 @@ function updateRow(el, b, streaming, since) {
    * 模型看不见这些图（默认那个对话模型没有视觉），所以它们**只在这里有用**——没有这条，
    * 那些图就只是躺在工作区里没人会去翻的东西。
    */
+  /**
+   * 产出的图片，摆在正文底下、过程截图上面（见 outputImages）。只看工具产出的——用户自己
+   * 发的图在正文上面那一排，这里再摆一遍就重复了。
+   */
+  const outImgs = b.kind === 'assistant' ? outputImages(outputFiles(tools)) : []
+  let outbox = bubble.querySelector('.sw-outshots')
+  const outSig = outImgs.map((f) => f.path).join('|')
+  if (outImgs.length && !outbox) {
+    outbox = document.createElement('div')
+    outbox.className = 'sw-shots sw-outshots'
+    bubble.insertBefore(outbox, chips)
+  }
+  if (outbox && outbox.getAttribute('data-sig') !== outSig) {
+    outbox.setAttribute('data-sig', outSig)
+    outbox.innerHTML = outImgs.map(shotHtml).join('')
+    outbox.hidden = !outImgs.length
+    void fillShots(outbox, OUT_IMAGE_AUTO_MAX)
+  }
+
   const allSteps = stepShots(tools)
   const steps = allSteps.slice(0, MAX_STEP_SHOTS)
   const moreSteps = allSteps.length - steps.length
@@ -3769,7 +3817,8 @@ function updateRow(el, b, streaming, since) {
   const settled = apps.filter((a) => !waiting.includes(a))
 
   // 底下只留没被正文点过名的。摆不下的收成一行，不闷声截断（见 outMoreHtml）。
-  const rest = outs.filter((f) => !inlined.has(f.path))
+  const imgPaths = new Set(outImgs.map((f) => f.path))
+  const rest = outs.filter((f) => !inlined.has(f.path) && !imgPaths.has(f.path))
   const shownOuts = rest.slice(0, MAX_OUT_CHIPS)
   const moreOuts = rest.length - shownOuts.length
   /**
@@ -6853,6 +6902,7 @@ function revokePreview() {
 }
 
 function closePreview() {
+  unwatchPaint()
   revokePreview()
   state.preview = null
   render()
@@ -6921,6 +6971,13 @@ function previewBody(p) {
     const why = p.docNote || t('这个文件不适合在浏览器里打开（太大，或者是不认识的格式）。下载下来看吧。')
     return `<p class="sw-preview-note">${esc(why)}</p>`
   }
+  if (p.kind === 'image' && p.paint) {
+    // 涂抹时不套 busyBox：图早就解码好了（从「预览」切过来的），而那层转圈会盖住画布。
+    return (
+      `<div class="sw-paint"><img id="sw-paint-img" class="sw-preview-img" src="${esc(p.url)}" alt="${esc(p.name)}">` +
+      `<canvas id="sw-paint-canvas" aria-label="${esc(t('涂出要重画的区域'))}"></canvas></div>`
+    )
+  }
   if (p.kind === 'image') {
     return busyBox(
       `<img class="sw-preview-img" src="${esc(p.url)}" alt="${esc(p.name)}" ` +
@@ -6978,6 +7035,7 @@ function previewModal() {
         </div>
         <div class="sw-preview-acts">
           ${previewTabs(p)}
+          ${paintActs(p)}
           <button type="button" class="btn" data-act="preview-download" data-path="${esc(p.path)}" data-name="${esc(p.name)}">${t('下载')}</button>
           <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="preview-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
         </div>
@@ -6997,6 +7055,235 @@ function setPreviewMode(mode) {
   if (state.preview.mode === 'view' && window.satuMd) {
     const host = document.querySelector('.sw-preview-md')
     if (host) window.satuMd.enhance(host)
+  }
+}
+
+/**
+ * 局部重绘：在预览的图上涂出要重画的那一块，生成一张蒙版 PNG 当附件发给 Bot。
+ *
+ * Bot 那边的 generate_image 收 `mask`（bot/src/tools/image.ts），但让模型自己做蒙版几乎做不到
+ * ——它多半看不见图，看得见也说不准坐标。人来涂是唯一靠谱的办法，而这件事只有界面做得了。
+ *
+ * **笔画存在 state 里，不只画在画布上**：任何一次无关的 render()（对话流来了一帧、侧栏刷新）
+ * 都会把整个弹层换掉，画布上的东西就没了。所以笔画按**原图像素**坐标存进 `state.preview.paint`，
+ * 每次画布重新挂上来（mountPainter，render.js 在每次 render 之后调）都照着重画一遍。
+ *
+ * 蒙版的约定是 OpenAI 的：和原图一样大，**透明的地方重画**，其余不透明。
+ */
+const PAINT_BRUSH_DEFAULT = 40
+const PAINT_COLOR = 'rgba(239, 68, 68, 0.45)'
+
+/**
+ * 盯着那张图的尺寸：窗口一缩、侧栏一开，图跟着变小，画布得跟着重新贴上去——不然画布还是
+ * 旧的大小，笔落下的地方和光标对不上，涂出来的蒙版也就不是人看到的那一块。
+ * 同一时间只有一个画布，所以只留一个观察者，换画布（重挂、关掉）时先断开旧的。
+ */
+let paintObserver = null
+
+function unwatchPaint() {
+  if (paintObserver) paintObserver.disconnect()
+  paintObserver = null
+}
+
+function paintActs(p) {
+  if (p.kind !== 'image' || !p.url || p.loading || p.error || p.tooBig) return ''
+  if (!p.paint) {
+    return `<button type="button" class="btn" data-act="paint-start" title="${esc(t('涂出要重画的区域，让 Bot 只改那一块', 'Paint the area to redraw; the bot changes only that part'))}">${t('局部重绘', 'Inpaint')}</button>`
+  }
+  return (
+    `<label class="sw-paint-brush">${t('笔刷', 'Brush')}` +
+    `<input type="range" id="sw-paint-brush" min="8" max="160" step="4" value="${esc(String(p.paint.brush))}"></label>` +
+    `<button type="button" class="btn btn-ghost" data-act="paint-undo" ${p.paint.strokes.length ? '' : 'disabled'}>${t('撤销', 'Undo')}</button>` +
+    `<button type="button" class="btn btn-ghost" data-act="paint-clear" ${p.paint.strokes.length ? '' : 'disabled'}>${t('清除', 'Clear')}</button>` +
+    `<button type="button" class="btn btn-ghost" data-act="paint-cancel">${t('取消', 'Cancel')}</button>` +
+    `<button type="button" class="btn btn-primary" data-act="paint-done" ${p.paint.strokes.length && !p.paint.busy ? '' : 'disabled'}>${t('用这块重绘', 'Use this area')}</button>`
+  )
+}
+
+function startPaint() {
+  const p = state.preview
+  if (!p || p.kind !== 'image' || !p.url) return
+  p.paint = { strokes: [], brush: PAINT_BRUSH_DEFAULT }
+  render()
+}
+
+function stopPaint() {
+  unwatchPaint()
+  if (!state.preview) return
+  state.preview.paint = null
+  render()
+}
+
+/** 撤销 / 清除只动 state 和这两颗按钮的可用状态，**不整页重绘**——画布重挂会闪一下。 */
+function editPaint(act) {
+  const paint = state.preview && state.preview.paint
+  if (!paint) return
+  if (act === 'undo') paint.strokes.pop()
+  else paint.strokes = []
+  redrawPaint()
+  syncPaintButtons()
+}
+
+function syncPaintButtons() {
+  const paint = state.preview && state.preview.paint
+  const empty = !paint || !paint.strokes.length
+  for (const act of ['paint-undo', 'paint-clear', 'paint-done']) {
+    const b = document.querySelector(`[data-act="${act}"]`)
+    if (b) b.disabled = empty || (act === 'paint-done' && !!paint.busy)
+  }
+}
+
+/** 一笔：原图像素坐标下的点列和笔宽。单点（点一下没拖）画成一个圆。 */
+function strokePath(ctx, stroke, scale) {
+  const pts = stroke.pts
+  ctx.lineWidth = stroke.w * scale
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  if (pts.length === 1) {
+    ctx.beginPath()
+    ctx.arc(pts[0].x * scale, pts[0].y * scale, (stroke.w * scale) / 2, 0, Math.PI * 2)
+    ctx.fill()
+    return
+  }
+  ctx.beginPath()
+  ctx.moveTo(pts[0].x * scale, pts[0].y * scale)
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * scale, pts[i].y * scale)
+  ctx.stroke()
+}
+
+function redrawPaint() {
+  const canvas = document.getElementById('sw-paint-canvas')
+  const img = document.getElementById('sw-paint-img')
+  const paint = state.preview && state.preview.paint
+  if (!canvas || !img || !paint || !img.naturalWidth) return
+  const ctx = canvas.getContext('2d')
+  const dpr = window.devicePixelRatio || 1
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.strokeStyle = PAINT_COLOR
+  ctx.fillStyle = PAINT_COLOR
+  const scale = img.clientWidth / img.naturalWidth
+  for (const s of paint.strokes) strokePath(ctx, s, scale)
+}
+
+/**
+ * 把画布贴到图上、接上笔。render.js 每次 render 之后调一次（节点是新的，监听也是新挂的，
+ * 旧节点连同旧监听一起被丢掉，不会攒）。
+ */
+function mountPainter() {
+  const canvas = document.getElementById('sw-paint-canvas')
+  const img = document.getElementById('sw-paint-img')
+  if (!canvas || !img) return
+  const fit = () => {
+    const dpr = window.devicePixelRatio || 1
+    canvas.style.width = img.clientWidth + 'px'
+    canvas.style.height = img.clientHeight + 'px'
+    canvas.width = Math.round(img.clientWidth * dpr)
+    canvas.height = Math.round(img.clientHeight * dpr)
+    redrawPaint()
+  }
+  if (img.complete && img.naturalWidth) fit()
+  else img.addEventListener('load', fit, { once: true })
+  unwatchPaint()
+  if (typeof ResizeObserver === 'function') {
+    paintObserver = new ResizeObserver(() => {
+      if (img.naturalWidth) fit()
+    })
+    paintObserver.observe(img)
+  }
+
+  const range = document.getElementById('sw-paint-brush')
+  if (range) {
+    range.addEventListener('input', () => {
+      const paint = state.preview && state.preview.paint
+      if (paint) paint.brush = Number(range.value) || PAINT_BRUSH_DEFAULT
+    })
+  }
+
+  let current = null
+  const at = (e) => {
+    const r = canvas.getBoundingClientRect()
+    const k = img.naturalWidth / r.width
+    return { x: Math.round((e.clientX - r.left) * k), y: Math.round((e.clientY - r.top) * k) }
+  }
+  canvas.addEventListener('pointerdown', (e) => {
+    const paint = state.preview && state.preview.paint
+    if (!paint || !img.naturalWidth) return
+    e.preventDefault()
+    canvas.setPointerCapture(e.pointerId)
+    // 笔宽按**屏幕上看到的**粗细换算成原图像素：人调的是眼睛看到的那支笔。
+    const k = img.naturalWidth / canvas.getBoundingClientRect().width
+    current = { w: Math.max(1, Math.round(paint.brush * k)), pts: [at(e)] }
+    paint.strokes.push(current)
+    redrawPaint()
+    syncPaintButtons()
+  })
+  canvas.addEventListener('pointermove', (e) => {
+    if (!current) return
+    current.pts.push(at(e))
+    redrawPaint()
+  })
+  const end = () => {
+    current = null
+  }
+  canvas.addEventListener('pointerup', end)
+  canvas.addEventListener('pointercancel', end)
+}
+
+/**
+ * 按原图尺寸出一张蒙版：先整张涂成不透明，再把笔画那几块「挖掉」（destination-out）。
+ * 返回 PNG 的 Blob；没涂任何东西返回 null。
+ */
+function buildMask(strokes, width, height) {
+  if (!strokes.length || !width || !height) return Promise.resolve(null)
+  const c = document.createElement('canvas')
+  c.width = width
+  c.height = height
+  const ctx = c.getContext('2d')
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, width, height)
+  ctx.globalCompositeOperation = 'destination-out'
+  ctx.strokeStyle = '#000'
+  ctx.fillStyle = '#000'
+  for (const s of strokes) strokePath(ctx, s, 1)
+  return new Promise((resolve) => c.toBlob((b) => resolve(b), 'image/png'))
+}
+
+/**
+ * 涂完了：蒙版作为附件挂到输入框上，再预填一句「按蒙版 X 局部重绘 Y：」，光标停在句尾，
+ * 人接着写要改成什么。蒙版随消息一起传进工作区，Bot 在消息里看到它的路径（`[附图 …]`），
+ * 原图的路径就在这句话里。
+ */
+async function finishPaint() {
+  const p = state.preview
+  const img = document.getElementById('sw-paint-img')
+  // 出蒙版要等 toBlob，那段时间里按钮还在：双击一下就是两张蒙版、两句预填。
+  if (!p || !p.paint || !img || p.paint.busy) return
+  p.paint.busy = true
+  const done = document.querySelector('[data-act="paint-done"]')
+  if (done) done.disabled = true
+  const blob = await buildMask(p.paint.strokes, img.naturalWidth, img.naturalHeight)
+  if (!blob || state.preview !== p) {
+    if (state.preview === p && p.paint) p.paint.busy = false
+    syncPaintButtons()
+    return
+  }
+  /**
+   * 名字要**每次都不一样**。同一张图再涂一次，蒙版要是还叫 `mask-猫.png`，上传时撞名会被存成
+   * `mask-猫-1.png`，可预填的那句话写的仍是 `mask-猫.png`——模型照着那句话去找，拿到的是上一次
+   * 那张旧蒙版，改的是上一次涂的那一块，而且一句错都不报。
+   */
+  const stem = String(p.name || 'image').replace(/\.[^.]+$/, '').slice(0, 60) || 'image'
+  const file = new File([blob], `mask-${stem}-${Date.now().toString(36)}.png`, { type: 'image/png' })
+  state.chatFiles = [...(state.chatFiles || []), { name: file.name, size: file.size, file }]
+  const line = t(`按蒙版 ${file.name} 局部重绘 ${p.path}，涂掉的那块改成：`, `Inpaint ${p.path} using mask ${file.name}; change the painted area to: `)
+  state.chatDraft = (state.chatDraft || '').trim() ? `${state.chatDraft}\n${line}` : line
+  unwatchPaint()
+  closePreview()
+  const input = document.getElementById('chat-input')
+  if (input) {
+    input.focus()
+    input.setSelectionRange(input.value.length, input.value.length)
   }
 }
 

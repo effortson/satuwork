@@ -703,6 +703,22 @@ document.getElementById('app').addEventListener('click', async (e) => {
     setPreviewMode(btn.getAttribute('data-mode') || 'view')
     return
   }
+  if (act === 'paint-start') {
+    startPaint()
+    return
+  }
+  if (act === 'paint-cancel') {
+    stopPaint()
+    return
+  }
+  if (act === 'paint-undo' || act === 'paint-clear') {
+    editPaint(act === 'paint-undo' ? 'undo' : 'clear')
+    return
+  }
+  if (act === 'paint-done') {
+    await finishPaint()
+    return
+  }
   if (act === 'preview-download') {
     await downloadWorkspaceFile(btn.getAttribute('data-path') || '', btn.getAttribute('data-name') || '')
     return
@@ -1794,7 +1810,11 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'model-price') {
     const provider = btn.getAttribute('data-provider')
     const model = btn.getAttribute('data-model')
-    const catalog = (state.catalog.find((p) => p.provider === provider)?.models || []).find((m) => m.id === model)?.cost || {}
+    // 生图模型不在对话目录里（见 imagePanel），它们的目录价在 /platform/image-models 那一份。
+    const catalog =
+      (state.catalog.find((p) => p.provider === provider)?.models || []).find((m) => m.id === model)?.cost ||
+      (state.imageModels || []).find((m) => m.provider === provider && m.id === model)?.cost ||
+      {}
     const cur = state.settings?.modelPricing?.[`${provider}/${model}`] || {}
     // 覆盖里没有的项留空，不预填目录价——预填之后一按保存，目录价就被抄成了覆盖，
     // 上游再调价也不会跟着动了。占位符里给的才是目录价。
@@ -2742,6 +2762,12 @@ document.getElementById('app').addEventListener('change', async (e) => {
   if (act === 'alt-provider') {
     state.altProvider = el.value
     render()
+    return
+  }
+  if (act === 'image-model') {
+    const key = el.value
+    const cut = key.indexOf('/')
+    await saveSettings({ image: cut > 0 ? { provider: key.slice(0, cut), model: key.slice(cut + 1) } : null })
     return
   }
   if (act === 'alt-add') {

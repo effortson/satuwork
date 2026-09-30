@@ -34,6 +34,8 @@ const state = {
   catalog: [],
   /** 模型自动发现的状态；null = 没拿到（非 owner，或接口挂了）。 */
   discovery: null,
+  /** 能挑的生图模型（/platform/image-models）；null = 没拿到（非 owner，或接口挂了）。 */
+  imageModels: null,
   creds: [],
   settings: {
     daily: { provider: '', model: '', reasoningEffort: 'off' },

@@ -402,6 +402,11 @@ export class PolicyService extends Service {
      */
     if (name === 'web_search' || name === 'web_extract') return { ok: true }
     /**
+     * 生图：**放行**，理由同上。出口是模型那条路（管家 / Gateway），密钥在那边，用哪颗
+     * 生图模型由平台挑；它和「别碰没授权的业务系统」同样不是一回事。
+     */
+    if (name === 'generate_image') return { ok: true }
+    /**
      * 浏览器：**这里放行，真正的判在 checkBrowser 里**。
      *
      * 它有一半（能力开关、硬黑名单）不受这条开关控制，所以整块挪到钩子里更前面的位置

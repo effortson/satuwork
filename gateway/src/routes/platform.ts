@@ -5,7 +5,8 @@ import type { RouteCtx } from './ctx.ts'
 import { CUSTOM_APIS, type CustomProviderDef, DefError, parseProviderDef } from '../providers.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
-import { billingOf, dailyAlternatesOf, defaultModelRateOf, enabledModelsOf, modelPricingOf, modelProviderCreds, modelRoleOf, priceMultiplierOf, publicPlatformCred, publicSettings } from '../lib/org.ts'
+import { billingOf, dailyAlternatesOf, defaultModelRateOf, enabledModelsOf, imageRoleOf, modelPricingOf, modelProviderCreds, modelRoleOf, priceMultiplierOf, publicPlatformCred, publicSettings } from '../lib/org.ts'
+import { IMAGE_TIERS, imageEstimateTokens, imageModelDef } from '../image-models.ts'
 import { refreshDiscovered, REFRESH_MS } from '../model-discovery.ts'
 import { isVendor } from '../connectors/index.ts'
 import { pruneDailyAlternates } from '../lib/alternates.ts'
@@ -24,6 +25,52 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     json(res, 200, publicSettings(await db.platformSettings()))
   })
 
+  /**
+   * 能挑的生图模型（image-models.ts 那张表），带单价和「平台存没存这家的密钥」。模型配置页
+   * 「生图模型」那一块拿它画下拉框。只给 owner：单价是平台的成本价，同 /platform/settings。
+   *
+   * `estimates` 是每张图按质量档预估要**收**多少微元：改价、兜底、倍率都算进去，和余额闸门判
+   * 「够不够这一张」用的是同一个数（meter.ts 的 estimate）。查不到单价的那一档是 null。
+   */
+  router.get('/platform/image-models', async (req, res) => {
+    await requireOwnerUser(req, db, keys)
+    // 平台设置只读一次（estimator）；几颗模型各自的密钥和实测基线互不相干，一起取。
+    const price = await meter.estimator()
+    const models = await Promise.all(
+      llm.imageCatalog().map(async (m) => {
+        const def = imageModelDef(m.provider, m.id)
+        const estimates: Record<string, number | null> = {}
+        for (const tier of IMAGE_TIERS) {
+          estimates[tier] = def ? (price(m.provider, m.id, m.cost, imageEstimateTokens(def, tier)) ?? null) : null
+        }
+        const [secret, base] = await Promise.all([llm.secret(null, m.provider), meter.imageBaseline(m.provider, m.id)])
+        /**
+         * 实测：这颗模型最近真成交过的那些（lib/image-estimate.ts）。有它的时候闸门按它的 P95 判，
+         * 上面那份按档的估数只剩参考；没有（样本不够）就是 null，闸门按表里最贵那档判。
+         */
+        const measured = base
+          ? {
+              samples: base.samples,
+              avg: price(m.provider, m.id, m.cost, base.avg) ?? null,
+              p95: price(m.provider, m.id, m.cost, base.p95) ?? null,
+            }
+          : null
+        return {
+          estimates,
+          measured,
+          provider: m.provider,
+          id: m.id,
+          name: m.name,
+          api: m.api,
+          cost: m.cost,
+          // 和供应商页一个口径：平台表或环境变量里有一把就算配了。值永不回显。
+          configured: Boolean(secret),
+        }
+      }),
+    )
+    json(res, 200, { models })
+  })
+
   router.put('/platform/settings', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
     const body = bodyOf(req)
@@ -32,6 +79,7 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     const next: PlatformSettings = {
       daily: 'daily' in body ? modelRoleOf(body.daily, 'daily') : cur.daily,
       utility: 'utility' in body ? modelRoleOf(body.utility, 'utility') : cur.utility,
+      image: 'image' in body ? keptImageOr400(body.image, cur.image) : cur.image,
       // 没带就沿用；和默认相同的那条由 putPlatformSettings 里的收口剔掉（「设为日常」那一下）。
       dailyAlternates: 'dailyAlternates' in body
         ? await alternatesOr400(body.dailyAlternates, enabledModels, cur.daily)
@@ -68,6 +116,19 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
    * 只收窄了上架名单、没动备选：已经不在名单里的备选当场拿掉。留着的话，下架一个模型
    * 之后人照样能在对话框里把它挑回来——上架名单管得住目录，管不住备选。
    */
+  /**
+   * 生图模型：**原样带回来的那一个不再过一遍校验**。改价弹层存的是 `{ ...state.settings, … }`，
+   * 整份设置都会捎上；选中的那颗要是在某次升级里从生图表里拿掉了，不这样的话改一个单价都会
+   * 400，而那个人根本没碰生图。真换了才校验。
+   */
+  function keptImageOr400(raw: unknown, cur: PlatformSettings['image']) {
+    const same =
+      !!raw && typeof raw === 'object' && !Array.isArray(raw) &&
+      (raw as Record<string, unknown>).provider === (cur?.provider ?? '') &&
+      (raw as Record<string, unknown>).model === (cur?.model ?? '')
+    return same ? cur : imageRoleOf(raw, llm.imageCatalog())
+  }
+
   function keptAlternates(list: NonNullable<PlatformSettings['dailyAlternates']>, enabled: string[]) {
     return enabled.length ? list.filter((r) => enabled.includes(modelKey(r))) : list
   }

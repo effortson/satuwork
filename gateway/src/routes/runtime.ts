@@ -4,6 +4,7 @@
 import type { ServerResponse } from 'node:http'
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
+import { IMAGE_MODELS } from '../image-models.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
 import type { Account, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
@@ -155,10 +156,29 @@ type StampRole = { provider: string; model: string; reasoningEffort?: string }
  * 备选**不能省**，理由同 catalogStamp 那条 models：管理员下架一个备选，席位不重拉目录
  * 的话，已经选了它的会话会一直打那个模型——而名单这头明明已经没有它了。
  */
-function modelStamp(s: { daily: StampRole; utility: StampRole; dailyAlternates?: StampRole[] }): string {
+function modelStamp(s: {
+  daily: StampRole
+  utility: StampRole
+  dailyAlternates?: StampRole[]
+  image?: { provider: string; model: string }
+}): string {
   const one = (r: StampRole) => `${r.provider}/${r.model}:${r.reasoningEffort || 'off'}`
   const alts = (s.dailyAlternates ?? []).map(one).join(',')
-  return `${one(s.daily)}|${one(s.utility)}${alts ? `|${alts}` : ''}`
+  // 生图模型同理：开了、关了、换了，席位都得重拉，那把工具才会进表 / 下表。
+  // 没开时一个字都不加——指纹和加这一格之前一模一样，老席位不会白白全体重拉一次。
+  const image = s.image?.provider && s.image.model ? `|img:${s.image.provider}/${s.image.model}` : ''
+  return `${one(s.daily)}|${one(s.utility)}${alts ? `|${alts}` : ''}${image}`
+}
+
+/**
+ * 下发给席位的生图模型：平台挑的那一个 + 它的 `api`（Bot 按它拼请求体）。没开、或者挑的那个
+ * 已经不在生图表里了（升级时从表里拿掉了），就是 null——席位上那把工具不进工具表。
+ */
+function imageModelOf(s: { image?: { provider: string; model: string } }) {
+  const pick = s.image
+  if (!pick?.provider || !pick.model) return null
+  const def = IMAGE_MODELS.find((m) => m.provider === pick.provider && m.id === pick.model)
+  return def ? { provider: def.provider, model: def.id, api: def.api } : null
 }
 
 /** 这个账号的连接器状态指纹：安装和连接一起算，删一条也要能看出来。 */
@@ -304,7 +324,13 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       // 实例照着这个数字判断「底座换了没有」。和下面那条探针给的是同一个值。
       templateVersion: tpl.version,
       // 备选只在这里下发给席位：会话选哪一个由席位按这份名单认（见 bot 的 session/model）。
-      models: { daily: settings.daily, utility: settings.utility, dailyAlternates: settings.dailyAlternates ?? [] },
+      models: {
+        daily: settings.daily,
+        utility: settings.utility,
+        dailyAlternates: settings.dailyAlternates ?? [],
+        // 生图（Bot 的 generate_image）。老席位不认这一格，照旧没有那把工具。
+        image: imageModelOf(settings),
+      },
       /**
        * **这一份内容的指纹，和探针给的算法完全一样。**
        *

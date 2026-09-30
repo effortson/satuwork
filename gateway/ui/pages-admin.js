@@ -435,6 +435,82 @@ function alternatesPanel() {
     </div>`
 }
 
+/**
+ * 生图模型。Bot 的 generate_image 用它；不选就是没开，席位上那把工具不进工具表。
+ *
+ * 只给 owner：候选和单价来自 `/platform/image-models`（平台的成本价），和备选、改价一样。
+ * 候选是 Gateway 里写死的一张小表（gateway/src/image-models.ts），不是上面那份对话目录——
+ * 生图模型不走对话协议，混进去会出现在「设为日常」的列表里。
+ */
+function imagePanel() {
+  const list = state.imageModels
+  if (!list) return ''
+  const cur = state.settings?.image || {}
+  const key = cur.provider && cur.model ? `${cur.provider}/${cur.model}` : ''
+  const picked = list.find((m) => `${m.provider}/${m.id}` === key)
+  const mult = priceMultiplier()
+  const options = [`<option value="" ${key ? '' : 'selected'}>${t('不开通', 'Off')}</option>`]
+    .concat(
+      list.map((m) => {
+        const k = `${m.provider}/${m.id}`
+        return `<option value="${esc(k)}" ${k === key ? 'selected' : ''}>${esc(m.name)}${m.configured ? '' : esc(t('（平台未存密钥）', ' (no platform key)'))}</option>`
+      }),
+    )
+    .join('')
+  // 选中的那个已经不在表里了（升级时拿掉了）：照实说，别装作没开。
+  const stale = key && !picked
+  // 改过价就按改过的画：和下面那张模型表一个口径（effectiveCost = 覆盖 → 目录 → 兜底）。
+  const cost = picked ? effectiveCost(picked.provider, picked.id, picked.cost) : null
+  const overridden = picked ? !!priceOverride(picked.provider, picked.id) : false
+  /**
+   * 每张图大概收多少：服务端按改价、兜底、倍率算好的（/platform/image-models 的 estimates），
+   * 和余额闸门判「够不够这一张」是同一个数。只是估的——真收钱按答复里的 token。
+   */
+  const est = picked?.estimates || {}
+  const perImage = (tier) => (est[tier] == null ? '—' : esc(money(est[tier] / 1e6)))
+  const estimateLine = picked
+    ? `<div>${t(
+        `每张约 ${perImage('low')} / ${perImage('medium')} / ${perImage('high')}（低 / 中 / 高质量，已含倍率；按 token 事后结算，这是估数）`,
+        `About ${perImage('low')} / ${perImage('medium')} / ${perImage('high')} per image (low / medium / high quality, marked up; billed per token afterwards, so this is an estimate)`,
+      )}</div>` + measuredLine(picked.measured)
+    : ''
+  const detail = picked
+    ? `${esc(key)} · ${t('单价 / 1M tok', 'Price / 1M tok')} ${ratePair(cost, 1)}${mult !== 1 ? ` · ${t(`倍率后 ${ratePair(cost, mult)}`, `marked-up ${ratePair(cost, mult)}`)}` : ''}` +
+      ` · <button type="button" class="satu-linkbtn" data-act="model-price" data-provider="${esc(picked.provider)}" data-model="${esc(picked.id)}">${overridden ? t('已改价') : t('改价')}</button>` +
+      estimateLine
+    : stale
+      ? `<span style="color: var(--color-warn-800);">${esc(t(`${key} 已经不能用了，请重新选一个`, `${key} is no longer available; pick another`))}</span>`
+      : esc(t('没开通时，Bot 不会看到画图工具。', 'While off, bots do not see the image tool.'))
+  return `
+    <div class="satu-panel">
+      <span class="satu-panel-title">${t('生图模型', 'Image model')}</span>
+      <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('Bot 画图、改图时用这个模型，图存进工作区 images/，在对话里直接显示。按 token 计费，和对话模型记在同一本账上；输入价按图片输入那一档算（改图要把原图喂进去）。', 'Bots use this model to draw and edit images, which are saved to images/ in the workspace and shown in the chat. Billed per token, on the same ledger as chat models; input is priced at the image-input rate, since edits send the original image.')}</p>
+      <div class="satu-toggleRow">
+        <div style="min-width: 0; font-size: 12px; color: var(--muted-foreground); overflow-wrap: anywhere;">${detail}</div>
+        <select class="input" style="width: 250px; flex: none;" data-act="image-model" aria-label="${esc(t('生图模型', 'Image model'))}">${options}</select>
+      </div>
+    </div>`
+}
+
+/**
+ * 这颗生图模型的实测：最近真画过的那些平均多少、P95 多少（gateway/src/lib/image-estimate.ts）。
+ * 一张图用多少 token 随画面内容变，官方也没全公布，所以闸门有实测就按实测的 P95 判——这一行
+ * 把「现在按什么判」摆出来，不然看着上面那行按档的估数，会以为闸门也是按它。
+ */
+function measuredLine(m) {
+  if (!m) {
+    return `<div>${t(
+      '实测样本还不够（最近 30 天要 20 张以上），余额闸门先按高质量那档判。',
+      'Not enough measured images yet (20+ in the last 30 days needed); the balance gate uses the high-quality estimate for now.',
+    )}</div>`
+  }
+  const fmt = (n) => (n == null ? '—' : esc(money(n / 1e6)))
+  return `<div>${t(
+    `实测最近 ${m.samples} 张：平均 ${fmt(m.avg)}，P95 ${fmt(m.p95)}；余额闸门按 P95 判。`,
+    `Measured over the last ${m.samples} images: average ${fmt(m.avg)}, P95 ${fmt(m.p95)}; the balance gate uses the P95.`,
+  )}</div>`
+}
+
 function modelsPage() {
   const shown = state.catalog.find((p) => p.provider === state.selectedProvider)
   const selected = shown?.provider || state.selectedProvider || ''
@@ -485,6 +561,7 @@ function modelsPage() {
           ${rolePanel('utility', t('Utility 模型'), t('用于轻量、快速的任务。'))}
         </div>
         ${isOwner() ? alternatesPanel() : ''}
+        ${isOwner() ? imagePanel() : ''}
         ${isOwner() ? pricePanel() : ''}
         ${discoveryPanel()}
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">

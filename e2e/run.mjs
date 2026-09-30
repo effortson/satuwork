@@ -73,6 +73,7 @@ import { uiSource } from './ui-dom.mjs'
 import { runCustomProvider } from './custom-provider.mjs'
 import { runStats } from './stats.mjs'
 import { runWebTools } from './web-tools.mjs'
+import { runImageGen } from './image-gen.mjs'
 import { runBilling } from './billing.mjs'
 import { runMigrate } from './migrate.mjs'
 import { runGlobalCatalog } from './global-catalog.mjs'
@@ -3593,6 +3594,7 @@ async function main() {
     await suite('custom-provider', () => runCustomProvider({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('stats', () => runStats({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('web-tools', () => runWebTools({ gwRoot, test, req, start, waitHttp, assert, log }))
+    await suite('image-gen', () => runImageGen({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('billing', () => runBilling({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('migrate', () => runMigrate({ gwRoot, test, start, waitHttp, assert, log }))
     await suite('global-catalog', () => runGlobalCatalog({ gwRoot, test, req, start, waitHttp, assert, log }))

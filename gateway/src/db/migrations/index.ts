@@ -45,6 +45,7 @@ import { SQL as m0044 } from './0044-channel-delivery-progress.ts'
 import { SQL as m0045 } from './0045-seat-deploy-claim.ts'
 import { SQL as m0046 } from './0046-auth-throttle.ts'
 import { SQL as m0047 } from './0047-browser-desktop-default-on.ts'
+import { SQL as m0048 } from './0048-llm-calls-model.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -156,6 +157,7 @@ export const MIGRATIONS: Migration[] = [
     sql: m0047,
     previousChecksums: ['bf5038f83155b1a2'],
   },
+  { id: '0048-llm-calls-model', name: 'llm_calls 按模型查的索引（生图预估的实测基线）', sql: m0048 },
 ]
 
 /**

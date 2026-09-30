@@ -192,6 +192,11 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       // 要按自己的节奏驱动 maintenanceTick（未结算清扫就在那一拍里），不能等 30 秒调度器。
       CRON_SECRET,
       SATUWORK_DEPLOY_STUB: '',
+      // 内置 openai 的上游指到模型中继那一组的假上游：生图（gpt-image）只有内置 openai
+      // 这一家，打的是 {OPENAI_BASE_URL}/v1/images/generations。别的用例不碰内置 openai。
+      OPENAI_BASE_URL: `http://127.0.0.1:${UP_PORT}`,
+      // 同上，Gemini 原生出图（Nano Banana）那条：{GEMINI_BASE_URL}/v1beta/models/…:streamGenerateContent。
+      GEMINI_BASE_URL: `http://127.0.0.1:${UP_PORT}`,
     },
   })
   await waitHttp(`${gwBase}/health`, { timeout: 40000 })
@@ -2704,7 +2709,25 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           try {
             body = JSON.parse(buf)
           } catch {}
-          upSeen.push({ auth: r.headers.authorization, path: r.url, body })
+          upSeen.push({ auth: r.headers.authorization, key: r.headers['x-goog-api-key'], path: r.url, body })
+          // Gemini 生图：一帧图、一帧用量（图片 1290 + 文字 10 + 思考 90）。
+          if (r.url.startsWith('/v1beta/models/')) {
+            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+            res.write(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'aW1hZ2U=' } }] }, finishReason: 'STOP' }] })}\n\n`)
+            res.write(
+              `data: ${JSON.stringify({ usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 1300, thoughtsTokenCount: 90, candidatesTokensDetails: [{ modality: 'IMAGE', tokenCount: 1290 }, { modality: 'TEXT', tokenCount: 10 }] } })}\n\n`,
+            )
+            res.end()
+            return
+          }
+          // 生图（gpt-image）：OpenAI Images 的流式答复——图和 usage 都在 completed 那一帧里。
+          if (r.url === '/v1/images/generations') {
+            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+            const usage = { total_tokens: 1040, input_tokens: 40, output_tokens: 1000, input_tokens_details: { text_tokens: 40, image_tokens: 0 } }
+            res.write(`event: image_generation.completed\ndata: ${JSON.stringify({ type: 'image_generation.completed', b64_json: 'aW1hZ2U=', output_format: 'jpeg', usage })}\n\n`)
+            res.end()
+            return
+          }
           // 走 Anthropic 协议那家：这条路是 Gateway 自己的 /v1 底下 pi-ai 打过来的
           // （中继退回去了），所以要发 Messages 协议的事件流，不是 OpenAI 那种 chunk。
           if (r.url.startsWith('/anthropic/')) {
@@ -3366,6 +3389,69 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(noSecret.status === 402, `没密钥该 402，实际 ${noSecret.status} ${noSecret.text}`)
           const relayNoSecret = await req(mgrBase, 'POST', '/llm/v1/chat/completions', { token: apiKey, body: chatBody })
           assert(relayNoSecret.status === 402, `管家那头没密钥也该 402 转回来，实际 ${relayNoSecret.status} ${relayNoSecret.text.slice(0, 200)}`)
+        })
+
+        await test('模型中继：生图走 /llm/v1/images/generations，上游是 OpenAI Images，按 token 记账', async () => {
+          const cred = await req(gwBase, 'POST', '/platform/credentials', { token: ownerTok, body: { provider: 'openai', secret: 'openai-platform-key' } })
+          assert(cred.status === 201, `openai 平台密钥 ${cred.status} ${cred.text}`)
+          const before = await rawUsage(adminTok)
+          upSeen.length = 0
+          const body = { model: 'openai/gpt-image-2', provider: 'openai', prompt: '一只猫', n: 1, size: '1024x1024', stream: true, partial_images: 0 }
+          const r = await req(mgrBase, 'POST', '/llm/v1/images/generations', { token: apiKey, body })
+          assert(r.status === 200, `images ${r.status} ${r.text.slice(0, 300)}`)
+          assert(r.text.includes('"b64_json":"aW1hZ2U="'), `流里没有那张图：${r.text.slice(0, 300)}`)
+          assert(!r.text.includes('openai-platform-key'), '密钥漏进了给 Bot 的响应')
+          const up = upLast()
+          assert(upSeen.length === 1 && up, `上游该收到 1 次请求，实际 ${upSeen.length}`)
+          assert(up.path === '/v1/images/generations', `上游路径 ${up.path}`)
+          assert(up.auth === 'Bearer openai-platform-key', `上游收到的是 ${up.auth}`)
+          assert(up.body.model === 'gpt-image-2' && !('provider' in up.body), `上游收到的 model/provider 不对：${JSON.stringify(up.body)}`)
+          assert(up.body.prompt === '一只猫' && up.body.stream === true, `请求体被改坏了：${JSON.stringify(up.body)}`)
+          // 结算在响应写完之后才报回 Gateway，给它两拍。
+          await new Promise((res) => setTimeout(res, 400))
+          const after = await rawUsage(adminTok)
+          assert(after.prompt - before.prompt === 40 && after.completion - before.completion === 1000, `生图的用量没记上：${after.prompt - before.prompt}/${after.completion - before.completion}`)
+          await withPg(async (client) => {
+            const q = await client.query(
+              `select u."amountMicros", c.provider, c.model from usage_charges u join llm_calls c on c.id = u."refId"
+               where u.kind = 'llm' and c."companyId" = $1 and c.model = 'gpt-image-2'`,
+              [orgId],
+            )
+            // gpt-image-2：输入按图片输入那一档 $8 / 1M、输出 $30 / 1M → 40×8 + 1000×30 = 30320 微元（倍率 1）。
+            assert(q.rowCount === 1 && Number(q.rows[0].amountMicros) === 30320, `生图的账不对：${JSON.stringify(q.rows)}`)
+          })
+        })
+
+        await test('模型中继：Gemini 改图走 /llm/v1/images/edits，上游是 streamGenerateContent，管家那份用量解析认 usageMetadata', async () => {
+          const cred = await req(gwBase, 'POST', '/platform/credentials', { token: ownerTok, body: { provider: 'google', secret: 'gemini-platform-key' } })
+          assert(cred.status === 201, `google 平台密钥 ${cred.status} ${cred.text}`)
+          const before = await rawUsage(adminTok)
+          upSeen.length = 0
+          const body = {
+            model: 'google/gemini-3.1-flash-image',
+            provider: 'google',
+            contents: [{ role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: 'QUJD' } }, { text: '把猫换成狗' }] }],
+            generationConfig: { responseModalities: ['IMAGE'], imageConfig: { imageSize: '1K' } },
+          }
+          const r = await req(mgrBase, 'POST', '/llm/v1/images/edits', { token: apiKey, body })
+          assert(r.status === 200 && r.text.includes('"inlineData"'), `edits ${r.status} ${r.text.slice(0, 300)}`)
+          assert(!r.text.includes('gemini-platform-key'), '密钥漏进了给 Bot 的响应')
+          const up = upLast()
+          assert(upSeen.length === 1 && up.path === '/v1beta/models/gemini-3.1-flash-image:streamGenerateContent?alt=sse', `上游路径 ${up?.path}`)
+          assert(up.key === 'gemini-platform-key' && up.auth === undefined, `鉴权头：key=${up.key} auth=${up.auth}`)
+          assert(!('model' in up.body) && !('provider' in up.body), `请求体里还有 model / provider：${JSON.stringify(Object.keys(up.body))}`)
+          assert(up.body.contents[0].parts[0].inlineData.data === 'QUJD', '原图没带过去')
+          await new Promise((res) => setTimeout(res, 400))
+          const after = await rawUsage(adminTok)
+          // 输出折算：图片 1290 + ⌈(10 + 90) / 10⌉ = 1300（见 llm-usage.ts 的 geminiUsage）。
+          assert(after.prompt - before.prompt === 20 && after.completion - before.completion === 1300, `用量：${after.prompt - before.prompt}/${after.completion - before.completion}`)
+        })
+
+        await test('模型中继：生图和对话各走各的路，走错了是 400 不是退回 /v1', async () => {
+          const chatAsImage = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, route: 'images', model: `${ANTHRO_PROVIDER}/${ANTHRO_MODEL}` } })
+          assert(chatAsImage.status === 400 && /不是生图模型/.test(chatAsImage.text), `对话模型走 images 该 400，实际 ${chatAsImage.status} ${chatAsImage.text}`)
+          const imageAsChat = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, route: 'chat', model: 'openai/gpt-image-2' } })
+          assert(imageAsChat.status === 400 && /生图模型/.test(imageAsChat.text), `生图模型走 chat 该 400，实际 ${imageAsChat.status} ${imageAsChat.text}`)
         })
 
         await test('模型中继：席位的 bot.env 会多一行 GATEWAY_LLM_URL 指向管家回环', async () => {

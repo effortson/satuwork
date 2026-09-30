@@ -23,6 +23,7 @@ import { claimDue, RUN_TIMEOUT_MS, settleRun, turnFailure } from '../routines.ts
 import type { ChannelEvent, ChargeStatus, Machine, Routine, RoutineRun } from '../db.ts'
 import { accountByApiKey, fillSweptCharge, gateOr402, recordLlmCall, recordUsageOnly, settle } from '../lib/llm-billing.ts'
 import type { TokenUsage } from '../lib/llm-usage.ts'
+import type { UpstreamRoute } from '../llm.ts'
 import { randomUUID } from 'node:crypto'
 import {
   CHANNEL_WORKER_TUNING, approvalMarkdown, channelFiles, channelHandoffs, deliverClaimedEvent, failClaimedEvent,
@@ -365,7 +366,7 @@ function attachChannelWorker(router: Router, db: RouteCtx['db'], keys: RouteCtx[
 
 // ── 模型调用的中继（管家在席位机器上直接打上游；Gateway 只授权和结算）──
 
-const GRANT_ROUTES = new Set(['chat', 'messages', 'responses'])
+const GRANT_ROUTES = new Set(['chat', 'messages', 'responses', 'images', 'image-edits'])
 const SETTLE_STATUSES = new Set<ChargeStatus>(['ok', 'failed', 'error', 'timeout'])
 
 /** 这台机器上有没有这个账号的席位。授权和结算都按它认：别的机器的账号一律 403。 */
@@ -395,13 +396,15 @@ async function seatOnMachine(db: RouteCtx['db'], machine: Machine, accountId: st
  *
  * ── 授权的收发形状（管家和 e2e 都钉着它，改之前先改那两边）──
  *
- *   请求  { apiKey, route: 'chat'|'messages'|'responses', model,
+ *   请求  { apiKey, route: 'chat'|'messages'|'responses'|'images'|'image-edits', model,
  *           provider?, anthropicVersion?, openaiBeta?,
  *           stream?: boolean,          // 请求体里的 `stream`
  *           reasoningEffort?: string } // chat 的 `reasoning_effort` / responses 的 `reasoning.effort`
  *   200   { callId, provider, model, url, headers,
  *           body: { set: Record<string, unknown>, unset: string[] } }
- *         `body` **一定在**，且 `set.model` / `unset` 里的 `provider` 一定在。管家照
+ *         `body` **一定在**，且 `set.model` / `unset` 里的 `provider` 一定在——唯一的例外是
+ *         Gemini 生图（`api: 'gemini-images'`）：模型在地址里，`model` 和 `provider` 都进 `unset`，
+ *         `set` 是空的（见 llm.ts 的 imageTargetOf）。管家照
  *         「先删 unset、再 Object.assign(body, set)」的顺序改自己手里那份请求体，不再
  *         自己动手改 model / provider。`headers` 整份都当密文：里面有供应商密钥，也可能
  *         有运营在自定义供应商定义里写的私货，一个字都不该落日志。这份 headers **保证
@@ -426,20 +429,21 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
     const machine = await requireMachine(req, db)
     const body = bodyOf(req)
     const route = strField(body, 'route')
-    if (!GRANT_ROUTES.has(route)) throw new HttpError(400, 'route 只能是 chat / messages / responses')
+    if (!GRANT_ROUTES.has(route)) throw new HttpError(400, 'route 只能是 chat / messages / responses / images / image-edits')
     const account = await accountByApiKey(db, strField(body, 'apiKey'))
     // 只能替本机席位上的账号要授权。smt_ 泄一把，能拿到的密钥也只是这台机器上那几家的。
     if (!(await seatOnMachine(db, machine, account.id))) throw new HttpError(403, '这个账号的席位不在这台机器上')
     const modelRaw = strField(body, 'model')
     const provider = body.provider == null ? '' : strField(body, 'provider', false)
     // 和 /v1 的两条透传路由一样：没给 provider 时按路由的原生厂商猜。
+    // 生图那两条不猜：表里有两家，Bot 总会带 provider。
     const hint = provider || (route === 'messages' ? 'anthropic' : route === 'responses' ? 'openai' : undefined)
     const found = await llm.find(account.companyId, modelRaw, hint)
     if (!found) throw new HttpError(404, '模型不在可见目录里', { model: modelRaw })
     const secret = await llm.secret(account.companyId, found.provider)
     if (!secret) throw new HttpError(402, `没有 ${found.provider} 的密钥`, { provider: found.provider })
     await gateOr402(meter, account, found)
-    const target = llm.upstreamTargetOf(found, route as 'chat' | 'messages' | 'responses', secret, {
+    const target = llm.upstreamTargetOf(found, route as UpstreamRoute, secret, {
       anthropicVersion: body.anthropicVersion == null ? undefined : strField(body, 'anthropicVersion', false) || undefined,
       openaiBeta: body.openaiBeta == null ? undefined : strField(body, 'openaiBeta', false) || undefined,
       stream: body.stream === true,

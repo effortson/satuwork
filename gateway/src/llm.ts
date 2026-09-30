@@ -3,6 +3,7 @@ import { builtinModels } from '@earendil-works/pi-ai/providers/all'
 import type { Db } from './db.ts'
 import { overlayProvider, resolveOverlay, type DiscoverySnapshot } from './model-discovery.ts'
 import { buildProvider, customEnvVar, isModelId, parseProviderDef, PROVIDER_ID_RE, type CustomProviderDef } from './providers.ts'
+import { IMAGE_MODELS, imageCatalogModel, isImageModel, isImageModelKey } from './image-models.ts'
 
 export interface CatalogModel {
   provider: string
@@ -14,6 +15,8 @@ export interface CatalogModel {
   reasoning?: boolean
   reasoningLevels?: string[]
   input?: ('text' | 'image')[]
+  /** 只有生图模型带（`['image']`，见 image-models.ts）。对话模型不写这一格。 */
+  output?: ('text' | 'image')[]
   cost?: unknown
   source: 'builtin' | 'company' | 'custom' | 'discovered'
 }
@@ -37,6 +40,18 @@ const PROBE_TIMEOUT_MS = 20_000
 
 /** 调用方没带 `anthropic-version` 时补的那一个。/v1/messages 和管家授权共用。 */
 export const ANTHROPIC_VERSION = '2023-06-01'
+
+/**
+ * 授权 / 代理的路由。后两条是生图：`images` 是 `/v1/images/generations`（按描述画），
+ * `image-edits` 是 `/v1/images/edits`（拿已有的图改）。两条的区别只对 OpenAI 有意义——
+ * 它们在上游是两个接口；Gemini 画和改是同一个 generateContent。
+ */
+export type UpstreamRoute = 'chat' | 'messages' | 'responses' | 'images' | 'image-edits'
+
+/** 这条路由是不是生图的那两条。 */
+export function isImageRoute(route: string): boolean {
+  return route === 'images' || route === 'image-edits'
+}
 
 /** 管家中继要打的上游。`headers` 里带着供应商密钥，只能进内存，不能落日志。 */
 export interface UpstreamTarget {
@@ -215,6 +230,10 @@ function openaiBase(): string {
 }
 function anthropicBase(): string {
   return (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '')
+}
+/** Gemini 原生接口的主机（不含 `/v1beta`）。只有生图用它；e2e 指到 stub 靠这个变量。 */
+function geminiBase(): string {
+  return (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com').replace(/\/$/, '')
 }
 
 export function openaiModelId(m: { provider: string; id: string }): string {
@@ -416,6 +435,9 @@ export class Llm {
       for (const m of this.models.getModels(p.id) ?? []) {
         const key = `${p.id}/${m.id}`
         if (seen.has(key)) continue
+        // 生图表里的模型不当对话模型：pi-ai 或者自动发现可能把它当成一颗普通模型收了进来，
+        // 留着的话它会出现在「设为日常」里，而且 find 会先在这儿认到它、按对话协议去调。
+        if (isImageModelKey(p.id, m.id)) continue
         seen.add(key)
         out.push({
           provider: p.id,
@@ -449,6 +471,8 @@ export class Llm {
       if (item.scope === 'company' && !(await this.companyModelAllowed(provider, id, enabled)).ok) continue
       const key = `${provider}/${id}`
       if (seen.has(key)) continue
+      // 同上：平台 / 公司目录里手录的同名条目也不当对话模型。
+      if (isImageModelKey(provider, id)) continue
       seen.add(key)
       out.push({
         provider,
@@ -502,7 +526,40 @@ export class Llm {
       const hits = list.filter((m) => m.id === bare)
       if (hits.length === 1) return hits[0]
     }
-    return undefined
+    return this.findImage(raw, hint)
+  }
+
+  /**
+   * 生图模型的目录（image-models.ts 那张表）。**不进 catalog()**，理由见那个文件头。
+   *
+   * 不过 `enabledModels`：挑生图模型的只有平台 owner（平台设置里的 `image`），和「日常」当
+   * 默认的时候从没被要求在白名单里是同一个道理——白名单管的是公司能在目录里看见什么。
+   */
+  imageCatalog(): CatalogModel[] {
+    return IMAGE_MODELS.map(imageCatalogModel)
+  }
+
+  /**
+   * find 的最后一档：对话目录里没有，再到生图表里认。认法同上面那几刀——给了 hint 就按
+   * 「这家 + 整条 id」，带前缀就切开，裸 id 唯一命中才算。
+   *
+   * 放进 find 而不是另开一个口子，是因为授权、结算（worker.ts 的 pricedOf）、清扫、/v1 都
+   * 靠 find 认模型、拿单价：另开的话这几处都得记得多问一句，漏一处就是一笔 unpriced。
+   * 走错路由（生图模型打 chat、对话模型打 images）由 upstreamTargetOf 挡。
+   */
+  private findImage(raw: string, hint?: string): CatalogModel | undefined {
+    const list = this.imageCatalog()
+    const bare = String(raw || '').trim()
+    if (!bare) return undefined
+    if (hint) {
+      const direct = list.find((m) => m.provider === hint && m.id === bare)
+      if (direct) return direct
+    }
+    const ref = parseModelRef(bare, hint)
+    const hit = list.find((m) => m.provider === ref.provider && m.id === ref.id)
+    if (hit) return hit
+    const hits = list.filter((m) => m.id === bare)
+    return hits.length === 1 ? hits[0] : undefined
   }
 
   /**
@@ -562,13 +619,24 @@ export class Llm {
    * **请求体上要改什么也归这里**（`body`，见 UpstreamBodyPatch）。「往哪打、带什么头、
    * 改哪几处 body」是同一条规矩的三面，拆成两个函数就会各自漂——/v1 的两条透传路由
    * 以前正是这么手搓出一份和这里不一样的实现的。
+   *
+   * **生图（`images`）单独一岔**，见 imageTargetOf：生图模型不在 pi-ai 的注册表里，上面那套
+   * 从 Model.baseUrl 推地址的办法用不上。路由和模型对不上（生图模型打 chat、对话模型打
+   * images）是调用方走错了路，退回 /v1 也是同一个错，所以是 relayable: true。
    */
   upstreamTargetOf(
     found: CatalogModel,
-    route: 'chat' | 'messages' | 'responses',
+    route: UpstreamRoute,
     secret: string,
     req: { anthropicVersion?: string; openaiBeta?: string; stream?: boolean; reasoningEffort?: string } = {},
   ): UpstreamTarget | UpstreamRefusal {
+    if (isImageModel(found)) {
+      if (!isImageRoute(route)) {
+        return { error: `${found.provider}/${found.id} 是生图模型，只能走 /v1/images/generations`, relayable: true }
+      }
+      return this.imageTargetOf(found, route as 'images' | 'image-edits', secret)
+    }
+    if (isImageRoute(route)) return { error: `${found.provider}/${found.id} 不是生图模型`, relayable: true }
     const piModel = this.piModel(found.provider, found.id) as PiModelShape | undefined
     if (!piModel) return { error: '模型不在可见目录里', relayable: true }
     const api = String(piModel.api ?? found.api ?? '')
@@ -643,6 +711,42 @@ export class Llm {
        */
       body: patch,
     }
+  }
+
+  /**
+   * 生图的上游，按表里的 `api` 分（image-models.ts）：
+   *
+   *   openai-images   `{OPENAI_BASE_URL 或 https://api.openai.com}/v1/images/generations`（画）或
+   *                   `/v1/images/edits`（改）。请求体只改 model / provider 两处，同对话：`provider`
+   *                   是给 Gateway 选路的，上游认不出会拒掉。尺寸、质量、格式、输入图这些是 Bot
+   *                   按 OpenAI Images 的形状拼好的，这里不碰。
+   *   gemini-images   `{GEMINI_BASE_URL 或 https://generativelanguage.googleapis.com}/v1beta/models/
+   *                   {id}:streamGenerateContent?alt=sse`，画和改是同一个接口（原图作为 inlineData
+   *                   放进 contents）。**一律流式**：理由同 Bot 那边——非流式要等整张图画完才给
+   *                   响应头，管家和 Gateway 都只等 120 秒。鉴权头是 `x-goog-api-key`。
+   *                   请求体里的 `model` 和 `provider` **都删**：模型在地址里，generateContent
+   *                   的请求体认不出这两个键，带着就是 400。所以这一家的补丁 `set` 是空的。
+   *
+   * 两家的 `model` 都是目录里的正名；各家自己的环境变量覆盖和对话那边同一个口径。
+   */
+  private imageTargetOf(found: CatalogModel, route: 'images' | 'image-edits', secret: string): UpstreamTarget | UpstreamRefusal {
+    if (found.api === 'openai-images') {
+      return {
+        url: `${openaiBase()}/v1/images/${route === 'images' ? 'generations' : 'edits'}`,
+        headers: { authorization: `Bearer ${secret}` },
+        model: found.id,
+        body: { set: { model: found.id }, unset: ['provider'] },
+      }
+    }
+    if (found.api === 'gemini-images') {
+      return {
+        url: `${geminiBase()}/v1beta/models/${encodeURIComponent(found.id)}:streamGenerateContent?alt=sse`,
+        headers: { 'x-goog-api-key': secret },
+        model: found.id,
+        body: { set: {}, unset: ['model', 'provider'] },
+      }
+    }
+    return { error: `${found.provider}/${found.id} 的生图接口（${found.api}）还没接`, relayable: true }
   }
 
   /** 内置 openai / anthropic 认环境变量覆盖，其余照 pi-ai 的 Model.baseUrl。 */
