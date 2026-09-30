@@ -21,7 +21,7 @@ import { bodyOf, strField } from '../lib/validate.ts'
 import { requireMachine, requireSeatOnly } from '../lib/guards.ts'
 import { claimDue, RUN_TIMEOUT_MS, settleRun, turnFailure } from '../routines.ts'
 import type { ChannelEvent, ChargeStatus, Machine, Routine, RoutineRun } from '../db.ts'
-import { accountByApiKey, fillSweptCharge, gateOr402, recordLlmCall, recordUsageOnly, settle } from '../lib/llm-billing.ts'
+import { accountByApiKey, fillSweptCharge, gateOr402, recordLlmCall, recordUsageOnly, settle, withSettleLock } from '../lib/llm-billing.ts'
 import type { TokenUsage } from '../lib/llm-usage.ts'
 import type { UpstreamRoute } from '../llm.ts'
 import { randomUUID } from 'node:crypto'
@@ -479,48 +479,49 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
      * `llm_calls` 分家，统计屏那个 join 就取不到钱了。目录里已经没有这个模型了（平台
      * 下架、公司条目删了）也走这条：账照记，只是没有单价，settle 记成 unpriced。
      */
-    const pricedOf = async () => ({
+    const priced = {
       provider: call.provider,
       id: call.model,
       cost: (await llm.find(call.companyId, `${call.provider}/${call.model}`))?.cost,
-    })
-    if (await db.chargeExistsForRef(call.id)) {
-      /**
-       * 已经有账了。**钱仍然不重记**——一次调用只该有一个金额，重算等于给同一行挂两个数。
-       * 但「已经有账」在中继这条路上有两种来路，结局不该一样：
-       *
-       * 一、**清扫写的占位行。** 一次跑过 LLM_SETTLE_GRACE_MS 的长回答会先被收成
-       *     `failed` / 0 元 / unpriced，管家随后才带着真实用量回来。那一行**从来没有
-       *     成交过**，钉着它不放的结果是：这通调用真金白银发生过，账上永远是 0，而且
-       *     补不回来（用量只在管家这一次回调里）。所以把它补成真的——docs/billing.md §2
-       *     唯一的例外，判据严到只认清扫写出来的那个形状，见 db.fillPlaceholderCharge。
-       *
-       * 二、**上一次已经真结过了**（管家自己重试、或者两边撞在一起）。这种一行都不动，
-       *     只把 token 补正：不补的话 llm_calls 永远停在 0/0，那一行读起来像「这次调用
-       *     什么都没发生」，而它明明发生过、还很贵。
-       */
-      if (usage) {
-        /**
-         * 账号和目录只在**真要补录**的时候才查。放到分支外面去查过一版，代价是：账号被
-         * 硬删掉之后（删公司 / 删员工都会 `delete from accounts`，而 `llm_calls` 上没有
-         * 外键、调用行不跟着走），管家重试上报会从 `200 already` 变成 `404 账号不存在`
-         * ——一个本来幂等成功的空操作变成了错误。补不了就补不了，账本原样不动，这条路
-         * 仍旧回 already。
-         */
-        const account = await db.account(call.accountId)
-        if (account && (await fillSweptCharge(db, meter, account, await pricedOf(), call.id, usage, status as ChargeStatus | undefined))) {
-          json(res, 200, { settled: true, reason: 'filled' })
-          return
-        }
-        await recordUsageOnly(db, call.id, usage)
-      }
-      json(res, 200, { settled: false, reason: 'already' })
-      return
     }
+    /**
+     * 账号和目录在锁**外面**先查好：`llm.find` 在 Vercel 冷启动时要把目录整份铺开，拿着锁等它
+     * 就是让同一次调用的重试一起排队。账号被硬删掉（删公司 / 删员工都会 `delete from accounts`，
+     * `llm_calls` 上没有外键）时，已经有账的那条路照旧回 already——一个本来幂等成功的空操作
+     * 不能变成 404。
+     */
     const account = await db.account(call.accountId)
-    if (!account) throw new HttpError(404, '账号不存在')
-    await settle(db, meter, account, await pricedOf(), call.id, usage, status as ChargeStatus | undefined)
-    json(res, 200, { settled: true })
+    /** 查有没有账和落账在同一把锁里（见 withSettleLock），重试和清扫撞在一起也只落一行。 */
+    const outcome = await withSettleLock(db, call.id, async () => {
+      if (await db.chargeExistsForRef(call.id)) {
+        /**
+         * 已经有账了。**钱仍然不重记**——一次调用只该有一个金额，重算等于给同一行挂两个数。
+         * 但「已经有账」在中继这条路上有两种来路，结局不该一样：
+         *
+         * 一、**清扫写的占位行。** 一次跑过 LLM_SETTLE_GRACE_MS 的长回答会先被收成
+         *     `failed` / 0 元 / unpriced，管家随后才带着真实用量回来。那一行**从来没有
+         *     成交过**，钉着它不放的结果是：这通调用真金白银发生过，账上永远是 0，而且
+         *     补不回来（用量只在管家这一次回调里）。所以把它补成真的——docs/billing.md §2
+         *     唯一的例外，判据严到只认清扫写出来的那个形状，见 db.fillPlaceholderCharge。
+         *
+         * 二、**上一次已经真结过了**（管家自己重试、或者两边撞在一起）。这种一行都不动，
+         *     只把 token 补正：不补的话 llm_calls 永远停在 0/0，那一行读起来像「这次调用
+         *     什么都没发生」，而它明明发生过、还很贵。
+         */
+        if (usage) {
+          if (account && (await fillSweptCharge(db, meter, account, priced, call.id, usage, status as ChargeStatus | undefined))) return 'filled'
+          await recordUsageOnly(db, call.id, usage)
+        }
+        return 'already'
+      }
+      if (!account) return 'no-account'
+      await settle(db, meter, account, priced, call.id, usage, status as ChargeStatus | undefined)
+      return 'settled'
+    })
+    if (outcome === 'no-account') throw new HttpError(404, '账号不存在')
+    if (outcome === 'filled') json(res, 200, { settled: true, reason: 'filled' })
+    else if (outcome === 'already') json(res, 200, { settled: false, reason: 'already' })
+    else json(res, 200, { settled: true })
   })
 }
 

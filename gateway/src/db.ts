@@ -1819,6 +1819,15 @@ export class Db {
    * 落账各自读到同一个 sum 仍会把赠送桶扣穿，所以落账那一条 insert 要排队。
    * **必须在 db.tx 里调**（同 lockExclusive）。按公司散列，不同公司互不等。
    */
+  /**
+   * 一次模型调用的结算锁：「这次调用有没有落过账」和「落账」要在它底下成对做完。
+   * **先拿它、再拿账本锁**（meter.charge 里那把），各处同一个顺序，不会互等。
+   */
+  async lockLlmSettle(callId: string): Promise<void> {
+    if (!this.txClient.getStore()) throw new Error('lockLlmSettle 必须在 db.tx 里调——事务外的锁当场就放了')
+    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`llm_settle:${callId}`])
+  }
+
   async lockCompanyLedger(companyId: string): Promise<void> {
     if (!this.txClient.getStore()) throw new Error('lockCompanyLedger 必须在 db.tx 里调——事务外的锁当场就放了')
     await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`usage_charges:${companyId}`])

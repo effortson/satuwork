@@ -3083,6 +3083,35 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(u.prompt === 17 && u.completion === 5, `补正后的用量不对：${u.prompt}/${u.completion}`)
         })
 
+        await test('模型中继：同一次调用并发结算（管家超时重试撞上还没跑完的第一次），账本只落一行', async () => {
+          /**
+           * 以前「有没有账」在事务外查、insert 才进账本锁，而账本按 refId **求和**：两次结算
+           * 同时查到「没账」、各插一行，这次调用就扣了两次钱。管家的结算 20 秒超时、2 秒后
+           * 重试，Vercel 冷启动时第一次请求还没跑完——这就是那两次。
+           */
+          const grant = await req(gwBase, 'POST', '/worker/llm/grant', {
+            token: machineTok,
+            body: { apiKey, route: 'chat', model: `${PROVIDER}/${MODEL}` },
+          })
+          assert(grant.status === 200, `grant ${grant.status} ${grant.text}`)
+          const callId = grant.json.callId
+          const rs = await Promise.all(
+            Array.from({ length: 8 }, () =>
+              req(gwBase, 'POST', `/worker/llm/${callId}/settle`, {
+                token: machineTok,
+                body: { usage: { prompt_tokens: 50, completion_tokens: 10, cached_tokens: 0, cache_write_tokens: 0 }, status: 'ok' },
+              }),
+            ),
+          )
+          assert(rs.every((r) => r.status === 200), `并发结算有非 200：${rs.map((r) => `${r.status} ${r.text.slice(0, 80)}`).join(' | ')}`)
+          const firsts = rs.filter((r) => r.json.settled === true).length
+          assert(firsts === 1, `该恰好有一次真结算，实际 ${firsts} 次：${rs.map((r) => r.text).join(' | ')}`)
+          await withPg(async (client) => {
+            const charges = await client.query('select count(*)::int as n from usage_charges where "refId" = $1', [callId])
+            assert(charges.rows[0].n === 1, `并发结算挂了 ${charges.rows[0].n} 笔账——钱被重收了`)
+          })
+        })
+
         await test('模型中继：推理档由 Gateway 夹好，`xhigh` 不会原样打到上游', async () => {
           /**
            * `xhigh` / `max` 是 pi-ai 自己的抽象档，上游多数不认，原样打过去就是 400。
