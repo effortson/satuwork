@@ -39,9 +39,16 @@ export interface BotRecord {
   guards?: Record<string, boolean>
   /**
    * 浏览器能力。**缺字段按关算**，和 guards 那条正好相反——它不是一道边界，是一把
-   * 工具；「老 Gateway 没下发」在这里的正确读法是「这家公司还没开过它」。
+   * 握着员工登录态的工具。Gateway 那边出厂已经是开着的（而且一直明写着下发），所以
+   * 缺字段只剩「本机自建、没有模版」和「目录里读坏了」两种，都该往不给的方向走。
    */
   browser?: BotBrowser
+  /**
+   * 席位桌面能力（`desktop_*` 进不进工具表）。**缺字段按开算**，同 selfSkills：模版上
+   * 它默认就是开的，「老 Gateway 没发」的正确读法是「这家公司没关过它」。窗口里跑的
+   * 命令和 terminal 走同一套拦截，给错了方向的代价只是桌面上多开一个窗口。
+   */
+  desktop?: BotDesktop
   /**
    * 让它自己记 Skill（`skill_manage` 进不进工具表）。**缺字段按开算**。
    *
@@ -72,8 +79,19 @@ export interface BotBrowser {
   sites: string[]
 }
 
-/** 出厂值：关着，一条站点都没有。 */
+/** 认不出来时的值：关着，一条站点都没有。Gateway 的出厂值（开、`*.*`）不在这里——见 browserOf。 */
 export const DEFAULT_BROWSER: BotBrowser = { on: false, sites: [] }
+
+/** 席位桌面能力。和 Gateway 的 BotDesktop 是同一个形状（gateway/src/lib/catalog.ts）。 */
+export interface BotDesktop {
+  on: boolean
+}
+
+/** 这个 Bot 能不能在席位桌面上开窗口。缺字段、认不出来都按开算（见 BotRecord.desktop）。 */
+export function desktopOf(bot: { desktop?: BotDesktop } | undefined): BotDesktop {
+  const raw = bot?.desktop
+  return { on: !(raw && typeof raw === 'object' && raw.on === false) }
+}
 
 /**
  * 记忆策略。和 Gateway 的 `BotMemory` 是同一个形状（gateway/src/lib/catalog.ts），
@@ -276,6 +294,7 @@ export class AgentRegistry extends Service {
     mcps?: string[]
     guards?: Record<string, boolean>
     browser?: BotBrowser
+    desktop?: BotDesktop
     selfSkills?: boolean
     memory?: BotMemory
     escalate?: string
@@ -306,6 +325,7 @@ export class AgentRegistry extends Service {
       // 同上：没下发就沿用上一次同步到的那份。一次「字段暂时没了」不该表现成
       // 浏览器能力被悄悄关掉——那会让一个跑了一半的任务在下一次调用时突然被拦。
       browser: input.browser ?? current?.browser,
+      desktop: input.desktop ?? current?.desktop,
       // 同上：没下发就沿用上一次同步到的那份。缺字段不该表现成「记忆被关掉了」。
       memory: input.memory ?? current?.memory,
       selfSkills: typeof input.selfSkills === 'boolean' ? input.selfSkills : current?.selfSkills,

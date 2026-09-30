@@ -1,6 +1,6 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
-import { browserOf, guardsOf, type BotRecord } from '../registry/index.ts'
+import { browserOf, desktopOf, guardsOf, type BotRecord } from '../registry/index.ts'
 import { mcpToolName, mcpToolRisk, McpHttpClient, type JsonRpcTool } from './mcp.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -30,6 +30,8 @@ interface RemoteBot {
    */
   guards?: Record<string, boolean>
   browser?: { on?: boolean; sites?: string[] }
+  /** 模版上的席位桌面能力。老 Gateway 不发，缺字段按**开**算（见 registry 的 desktopOf）。 */
+  desktop?: { on?: boolean }
   /** 模版上「让它自己记 Skill」那个开关。老 Gateway 不发，缺字段按**开**算。 */
   selfSkills?: boolean
   /**
@@ -373,6 +375,7 @@ export class CatalogService extends Service {
         guards: guardsOf(b),
         // 和 guards 同一个理由：管理员开了浏览器、席位跟没跟上，光看版本号看不出来。
         browser: browserOf(b),
+        desktop: desktopOf(b),
         escalate: b.escalate ?? '',
       })),
       skills: this.ctx.storage.collection<CachedSkill>('skills').list().map((r) => ({
@@ -792,6 +795,7 @@ export class CatalogService extends Service {
       browser: b.browser && typeof b.browser === 'object'
         ? { on: b.browser.on === true, sites: Array.isArray(b.browser.sites) ? b.browser.sites : [] }
         : undefined,
+      desktop: b.desktop && typeof b.desktop === 'object' ? { on: b.desktop.on !== false } : undefined,
       selfSkills: typeof b.selfSkills === 'boolean' ? b.selfSkills : undefined,
       // 记忆策略。**这一行就是那个坑的补丁**：Gateway 一直在发，之前这儿不接，
       // 于是模版上改的每一样在席位上都不生效（docs/memory.md 开头）。

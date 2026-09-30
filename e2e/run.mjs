@@ -36,6 +36,7 @@ import { runManagerDownload } from './manager-download.mjs'
 import { runWorkspaceFiles } from './workspace-files.mjs'
 import { runPatch } from './patch.mjs'
 import { runProcess } from './process.mjs'
+import { runDesktop } from './desktop.mjs'
 import { runDocExtract } from './doc-extract.mjs'
 import { runWebBot } from './web-bot.mjs'
 import { runVision } from './vision.mjs'
@@ -2582,14 +2583,14 @@ async function runGateway() {
     assert(tpl.memory && tpl.memory.on === true && tpl.memory.scope === '所属分组', `默认记忆 ${JSON.stringify(tpl.memory)}`)
     assert(tpl.memory.cap === 20 && tpl.memory.ttl === '90 天', `默认上限/时长 ${JSON.stringify(tpl.memory)}`)
     /**
-     * 浏览器**默认关着**，站点清单默认是空的。
+     * 浏览器**默认开着、站点全放行**（`*.*`），席位桌面也默认开。
      *
-     * 和上面那三条守卫的默认值方向相反，这不是笔误：那三条是「要不要收紧」，全开等于
-     * 最严；这一条是「要不要放开」，关着才是最严。它握着的是员工本人在那些网站上的
-     * 登录态，一次误开等于以他的名义做了一件事。
+     * 以前浏览器默认关、名单空，装完 Bot 就说自己没有浏览器工具，而没人会去找一个自己
+     * 没听说过的开关。回环 / 内网那层不受名单影响，一直在席位上拦着。
      */
-    assert(tpl.browser && tpl.browser.on === false, `浏览器默认该是关的 ${JSON.stringify(tpl.browser)}`)
-    assert(Array.isArray(tpl.browser.sites) && !tpl.browser.sites.length, `站点默认该是空的 ${JSON.stringify(tpl.browser)}`)
+    assert(tpl.browser && tpl.browser.on === true, `浏览器默认该是开的 ${JSON.stringify(tpl.browser)}`)
+    assert(JSON.stringify(tpl.browser.sites) === '["*.*"]', `站点默认该是全放行 ${JSON.stringify(tpl.browser)}`)
+    assert(tpl.desktop && tpl.desktop.on === true, `席位桌面默认该是开的 ${JSON.stringify(tpl.desktop)}`)
 
     const saved = await req(base, 'PUT', `/orgs/${inviteOrg}/bot-template`, {
       token: tok,
@@ -2617,9 +2618,12 @@ async function runGateway() {
             'app.example.com',
           ],
         },
+        // 席位桌面能关：关掉之后要落库、要被自建 Bot 继承。
+        desktop: { on: false },
       },
     })
     assert(saved.status === 200, `存 ${saved.status} ${saved.text}`)
+    assert(saved.json.template.desktop && saved.json.template.desktop.on === false, `席位桌面没关上 ${JSON.stringify(saved.json.template.desktop)}`)
     assert(saved.json.template.version === tpl.version + 1, `版本号没加一：${saved.json.template.version}`)
     const g = saved.json.template.guards
     assert(g.pii === false && g['high-risk'] === true && g['no-external'] === true, `守卫合并 ${JSON.stringify(g)}`)
@@ -2665,6 +2669,7 @@ async function runGateway() {
     assert(made.json.bot.memory.cap === 50, `没继承记忆 ${JSON.stringify(made.json.bot.memory)}`)
     assert(made.json.bot.escalate.includes('转人工'), '没继承升级条件')
     assert(made.json.bot.browser && made.json.bot.browser.on === true, `没继承浏览器能力 ${JSON.stringify(made.json.bot.browser)}`)
+    assert(made.json.bot.desktop && made.json.bot.desktop.on === false, `没继承席位桌面开关 ${JSON.stringify(made.json.bot.desktop)}`)
     await req(base, 'DELETE', `/runtime/bots/${made.json.bot.id}`, { token: tok })
   })
 
@@ -3623,6 +3628,7 @@ async function main() {
     await suite('workspace-files', () => runWorkspaceFiles({ root, test, assert, log }))
     await suite('patch', () => runPatch({ root, test, assert, log }))
     await suite('process', () => runProcess({ root, test, assert, log }))
+    await suite('desktop', () => runDesktop({ root, test, assert, log }))
     await suite('doc-extract', () => runDocExtract({ root, test, assert, log }))
     await suite('web-bot', () => runWebBot({ root, test, assert, log }))
     await suite('vision', () => runVision({ root, test, assert, log }))

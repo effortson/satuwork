@@ -729,8 +729,12 @@ function behaviorDraft(src) {
     guards: DEFAULT_BOT_GUARDS.map((g) => ({ ...g, on: typeof saved[g.id] === 'boolean' ? saved[g.id] : g.on })),
     // 站点在草稿里是一整段文本（一行一个），保存时才切成数组——输入框里敲到一半的
     // 那一行不该在每次按键时都被切一次、归一化一次，光标会跳。
-    browserOn: br.on === true,
-    browserSites: (Array.isArray(br.sites) ? br.sites : []).join('\n'),
+    // 缺字段按服务端的出厂值：开着、站点全放行（gateway/src/lib/catalog.ts 的 DEFAULT_BOT_BROWSER）。
+    // 新建 Bot 的草稿就是从一份空的 src 起的，照「缺了算关」画的话，一保存就把它关掉了。
+    browserOn: br.on !== false,
+    browserSites: (Array.isArray(br.sites) ? br.sites : src.browser ? [] : ['*.*']).join('\n'),
+    // 席位桌面：同上，缺字段按开。
+    desktopOn: !(src.desktop && typeof src.desktop === 'object' && src.desktop.on === false),
     // 缺字段按开算：老模版没存过这个键，而它在服务端的默认就是开的。
     selfSkills: src.selfSkills !== false,
     memoryOn: mem.on !== false,

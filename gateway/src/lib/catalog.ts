@@ -103,9 +103,13 @@ export const DEFAULT_BOT_GUARDS: Record<string, boolean> = { 'high-risk': true, 
 /**
  * 浏览器能力。**不是第四个行为边界开关。**
  *
- * 那三个开关的语义是「要不要收紧」，默认全开等于最严；这一个是「要不要放开」，默认
- * 关才是最严。方向相反的东西摆进同一列勾选框，管理员读到的是「都打着勾＝都管着」，
- * 而其中一个的勾恰恰是放开。所以它和 skills / mcps 一样属于「这份底座带哪些能力」。
+ * 那三个开关的语义是「要不要收紧」；这一个是「要不要放开」。方向相反的东西摆进同一列
+ * 勾选框，管理员读到的是「都打着勾＝都管着」，而其中一个的勾恰恰是放开。所以它和
+ * skills / mcps 一样属于「这份底座带哪些能力」。
+ *
+ * **出厂是开着的、站点全放行（`*.*`）。** 以前默认关、名单空：装完之后 Bot 说自己「没有
+ * 能操控浏览器的工具」，而没人会去找一个自己没听说过的开关——这项能力等于不存在。
+ * 管理员照样可以关掉它或收窄名单；回环、内网、非 http 那一层不受这里影响，一直拦着。
  *
  * 席位那边靠它决定 browser_* 进不进工具表（bot/src/agent 的 toolSchemasFor），以及
  * 每一次调用拦不拦（bot/src/policy 的 checkExternal）。两层缺一不可：前者只是遮掩，
@@ -114,10 +118,10 @@ export const DEFAULT_BOT_GUARDS: Record<string, boolean> = { 'high-risk': true, 
 export interface BotBrowser {
   on: boolean
   /**
-   * 允许打开的站点。**空列表 = 除硬黑名单外全拦**，不是全放。
+   * 允许打开的站点。**空列表 = 除硬黑名单外全拦**，不是全放。出厂值是 `['*.*']`。
    *
-   * 装完就能用和默认最严之间选后者：这把工具握着的是员工本人在那些网站上的登录态，
-   * 一次误开的代价是以他的名义做了一件事，而不是读到一点不该读的东西。
+   * 这把工具握着的是员工本人在那些网站上的登录态，一次误开的代价是以他的名义做了一件
+   * 事——所以「提交」类的点击另有一层确认（high-risk 那条开关），名单只管去哪儿。
    *
    * 写法（匹配逻辑在 bot/src/policy/browser.ts 的 siteAllowed，那边是唯一一份判据）：
    *
@@ -134,7 +138,28 @@ export interface BotBrowser {
   sites: string[]
 }
 
-export const DEFAULT_BOT_BROWSER: BotBrowser = { on: false, sites: [] }
+export const DEFAULT_BOT_BROWSER: BotBrowser = { on: true, sites: ['*.*'] }
+
+/**
+ * 席位桌面能力：在远程席位的 VNC 桌面上开终端窗口、开文件管理器（`desktop_*` 那几把）。
+ *
+ * 和浏览器一样属于「能力」，**出厂开着**。只对远程席位有意义——本地 Bot 那侧根本不注册
+ * 这几把工具（bot/src/tools/desktop.ts），这里存的开关对它们是空转。
+ *
+ * 在终端窗口里跑的命令和 `terminal` 走同一套拦截（高风险确认、外联判定），所以这个
+ * 开关不是在给命令开后门，只决定「让不让它在人看得见的桌面上动手」。
+ */
+export interface BotDesktop {
+  on: boolean
+}
+
+export const DEFAULT_BOT_DESKTOP: BotDesktop = { on: true }
+
+/** 只认 on；没传的沿用 base。 */
+export function botDesktopOf(v: unknown, base: BotDesktop = DEFAULT_BOT_DESKTOP): BotDesktop {
+  const raw = objOf(v)
+  return { on: typeof raw.on === 'boolean' ? raw.on : base.on }
+}
 
 /** 站点最多几条。够写下一家公司真正在用的那些系统，又不至于变成一份等于没有的清单。 */
 export const MAX_BROWSER_SITES = 50
@@ -341,14 +366,14 @@ export interface BotTemplate {
   escalateTo: string
   guards: Record<string, boolean>
   browser: BotBrowser
+  desktop: BotDesktop
   memory: BotMemory
   /**
    * 让 Bot 自己记 Skill（`skill_manage`）。
    *
-   * **默认开，和浏览器那个开关方向相反**，理由是两者的代价差着一个量级：浏览器握着
-   * 员工本人的登录态，一次误开就是以他的名义做了一件事；而这里写下的东西绑在这一颗
-   * Bot 上、进不了公司目录、每一次写都落审计、界面上一键能删。默认关的代价则很实在
-   * ——这套东西装完是哑的，而没人会去点一个自己没听说过的开关。
+   * **默认开**：这里写下的东西绑在这一颗 Bot 上、进不了公司目录、每一次写都落审计、
+   * 界面上一键能删。默认关的代价则很实在——这套东西装完是哑的，而没人会去点一个自己
+   * 没听说过的开关（浏览器那个开关后来也是因为同一个理由改成默认开的）。
    *
    * 关掉时 `skill_manage` 不进席位的工具表（bot/src/agent 的 toolSchemasFor），
    * `skill_view` / `skills_list` 不受影响：读公司写好的方法和自己记东西是两件事。
@@ -384,7 +409,8 @@ export function defaultBotTemplate(now = Date.now()): BotTemplate {
     escalate: '',
     escalateTo: 'owner',
     guards: { ...DEFAULT_BOT_GUARDS },
-    browser: { ...DEFAULT_BOT_BROWSER, sites: [] },
+    browser: { ...DEFAULT_BOT_BROWSER, sites: [...DEFAULT_BOT_BROWSER.sites] },
+    desktop: { ...DEFAULT_BOT_DESKTOP },
     memory: { ...DEFAULT_BOT_MEMORY, kinds: [...DEFAULT_BOT_MEMORY.kinds] },
     selfSkills: true,
     skills: [],
@@ -406,6 +432,7 @@ export function botTemplateOf(item: CatalogItem | undefined): BotTemplate {
     escalateTo: escalateToOf(def.escalateTo),
     guards: botGuardsOf(def.guards),
     browser: botBrowserOf(def.browser),
+    desktop: botDesktopOf(def.desktop),
     memory: botMemoryOf(def.memory),
     selfSkills: def.selfSkills !== false,
     skills: idList(def.skills),
@@ -474,6 +501,7 @@ export async function applyTemplatePatch(db: Db, companyId: string, cur: BotTemp
     escalateTo: body.escalateTo !== undefined ? escalateToOf(body.escalateTo) : cur.escalateTo,
     guards: body.guards !== undefined ? botGuardsOf(body.guards, cur.guards) : cur.guards,
     browser: body.browser !== undefined ? botBrowserOf(body.browser, cur.browser) : cur.browser,
+    desktop: body.desktop !== undefined ? botDesktopOf(body.desktop, cur.desktop) : cur.desktop,
     memory: body.memory !== undefined ? botMemoryOf(body.memory, cur.memory) : cur.memory,
     selfSkills: typeof body.selfSkills === 'boolean' ? body.selfSkills : cur.selfSkills,
     skills: Array.isArray(body.skills) ? await assignedIds(db, owner, 'skill', body.skills) : cur.skills,
@@ -521,6 +549,7 @@ export function publicBot(item: CatalogItem, pinned: { provider: string; model: 
       escalateTo: template.escalateTo,
       guards: template.guards,
       browser: template.browser,
+      desktop: template.desktop,
       memory: template.memory,
       selfSkills: template.selfSkills,
       icon: botIconOf(def.icon, 'company'),
@@ -558,6 +587,7 @@ export function publicBot(item: CatalogItem, pinned: { provider: string; model: 
     escalateTo: escalateToOf(def.escalateTo),
     guards: botGuardsOf(def.guards),
     browser: botBrowserOf(def.browser),
+    desktop: botDesktopOf(def.desktop),
     memory: botMemoryOf(def.memory),
     selfSkills: def.selfSkills !== false,
     icon: botIconOf(def.icon, item.scope),

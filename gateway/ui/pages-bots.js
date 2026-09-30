@@ -401,6 +401,7 @@ function capabilityPanel(a, opts, ro) {
       <span class="satu-panel-title" style="margin-top: var(--space-2);">${t('可用 MCP 服务器')}</span>
       <div style="display: flex; flex-wrap: wrap; gap: 6px;">${chips(names(a.mcps, opts.mcps))}</div>
       ${browserBlock(a, true)}
+      ${desktopBlock(a, true)}
       ${selfSkillsBlock(a, true)}
     </div>`
   }
@@ -411,6 +412,7 @@ function capabilityPanel(a, opts, ro) {
     ${botPicks('mcps', opts.mcps, a.mcps, t('没有可选项'))}
     <span style="font-size: 12px; color: var(--muted-foreground);">${t('未勾选的能力，Agent 在任务中不可调用。')}</span>
     ${browserBlock(a, false)}
+    ${desktopBlock(a, false)}
     ${selfSkillsBlock(a, false)}
   </div>`
 }
@@ -437,10 +439,28 @@ function selfSkillsBlock(a, ro) {
 }
 
 /**
+ * 「操作席位桌面」：在远程席位的 VNC 桌面上开终端窗口、开文件管理器（bot/src/tools/desktop.ts）。
+ *
+ * 和浏览器一样是「要不要放开」，默认开。本地 Bot 不注册这两把工具，开关对它空转——
+ * 说明里点一句「远程」，省得本地 Bot 的主人以为自己关掉了什么。
+ */
+function desktopBlock(a, ro) {
+  return botToggle(
+    t('允许操作席位桌面', 'Allow seat desktop control'),
+    t(
+      '让远程 Bot 在它的桌面上打开终端、文件夹给你看。终端里跑的命令和命令行工具走同一套拦截。',
+      'Let a remote bot open terminals and folders on its desktop for you to see. Commands run there go through the same checks as its command-line tool.',
+    ),
+    a.desktopOn !== false,
+    ro ? '' : 'bot-desktop',
+  )
+}
+
+/**
  * 浏览器这一格摆在**能力**里，不摆在行为边界里。
  *
- * 那三条边界的语义是「要不要收紧」，默认全开等于最严；这一个是「要不要放开」，默认
- * 关才是最严。方向相反的东西并排放，管理员读到的会是「都打着勾＝都管着」。
+ * 那三条边界的语义是「要不要收紧」；这一个是「要不要放开」。方向相反的东西并排放，
+ * 管理员读到的会是「都打着勾＝都管着」。出厂是开着的、站点 `*.*` 全放行。
  *
  * 站点列表只在开着的时候露出来：关着的时候它是一片没有任何作用的输入框，而一片看着
  * 能填的输入框比没有这一格更容易让人以为自己配好了。

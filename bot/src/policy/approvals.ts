@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { agentsOf, type ToolCall } from '../tools/index.ts'
 import { applyEdits, unwrapCall, type ApprovalForm } from './forms.ts'
+import { SHELL_TOOLS } from './shell.ts'
 
 /** 一条还等着人拍板的调用。刷新页面之后界面靠它把卡片摆回来。 */
 export interface PendingApproval {
@@ -34,7 +35,7 @@ function blockKey(call: { name: string; arguments: string }): string {
  * 虽然也按参数判，但它们的卡片本来就指望「这一轮都批准」来消化（见 browser.ts 的
  * submitAction），不收进来。
  */
-const ARGUMENT_RISK = new Set(['terminal'])
+const ARGUMENT_RISK = SHELL_TOOLS
 
 /**
  * 放行名单里的键。

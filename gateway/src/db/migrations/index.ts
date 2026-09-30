@@ -44,6 +44,7 @@ import { SQL as m0043 } from './0043-local-bot-min-desktop.ts'
 import { SQL as m0044 } from './0044-channel-delivery-progress.ts'
 import { SQL as m0045 } from './0045-seat-deploy-claim.ts'
 import { SQL as m0046 } from './0046-auth-throttle.ts'
+import { SQL as m0047 } from './0047-browser-desktop-default-on.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -147,6 +148,7 @@ export const MIGRATIONS: Migration[] = [
   { id: '0044-channel-delivery-progress', name: '渠道事件记下投递到第几段，重试和接管从那一段接着发', sql: m0044 },
   { id: '0045-seat-deploy-claim', name: '席位部署的在装心跳与批量更新的排队参数落库，多实例共用一份', sql: m0045 },
   { id: '0046-auth-throttle', name: '登录、领邀请、改口令的失败计数（限流）', sql: m0046 },
+  { id: '0047-browser-desktop-default-on', name: '浏览器默认开、站点全放行；席位桌面能力默认开', sql: m0047 },
 ]
 
 /**
