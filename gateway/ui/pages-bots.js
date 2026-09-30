@@ -1641,6 +1641,18 @@ function billingPage() {
     </div>`
 }
 
+/**
+ * 微元 → `$1.514`。和服务端 lib/validate.ts 的 usdMicros 同一个写法（到厘、整分时两位），
+ * 日线的合计和各卡片里服务端格式化好的金额摆在一起，写法不一样会像两套数。
+ */
+function fmtUsdMicros(micros) {
+  const mils = Math.round((Number(micros) || 0) / 1000)
+  const a = Math.abs(mils)
+  const frac = a % 1000
+  const dec = frac % 10 === 0 ? String(frac / 10).padStart(2, '0') : String(frac).padStart(3, '0')
+  return `${mils < 0 ? '-' : ''}$${Math.floor(a / 1000).toLocaleString('en-US')}.${dec}`
+}
+
 function usageMeter(name, value, pct, alt, mono) {
   const font = mono ? ' font-family: ui-monospace, SFMono-Regular, Menlo, monospace;' : ''
   return `<div style="display: flex; flex-direction: column; gap: 5px;">
@@ -1698,29 +1710,64 @@ function usagePage() {
       </div>`,
     )
     .join('')
+  // 金额只在柱子够宽时画在柱顶：「近 30 天」三十根柱子每根二十来像素，`$0.212` 塞不下，
+  // 挤着画只会糊成一条；那时金额留在悬停里，标题行照样给合计。
+  const showAmounts = daily.length > 0 && daily.length <= 14
   const dailyBody = daily.length
     ? (() => {
         const peak = Math.max(...daily.map((d) => Number(d.value) || 0), 0)
+        const spentMicros = daily.reduce((n, d) => n + (Number(d.amountMicros) || 0), 0)
+        const hasAmounts = daily.some((d) => d.amount != null)
+        // 柱子多了日期也得抽稀：三十个「09/01」并排只会叠成一条。从最后一根（今天）往回数，
+        // 每隔 step 根标一个，今天那根一定有字。
+        const step = Math.max(1, Math.ceil(daily.length / 10))
         const cols = daily
-          .map((d) => {
+          .map((d, i) => {
             const v = Number(d.value) || 0
+            const labelled = (daily.length - 1 - i) % step === 0
             const h = peak ? Math.round((v / peak) * 100) : 0
-            return `<div class="satu-barcol" title="${esc(t(`${d.label} · ${v} 次`, `${d.label} · ${v} calls`))}">
+            const amount = d.amount || '—'
+            const tip = hasAmounts
+              ? t(`${d.label} · ${v} 次 · ${amount}`, `${d.label} · ${v} calls · ${amount}`)
+              : t(`${d.label} · ${v} 次`, `${d.label} · ${v} calls`)
+            return `<div class="satu-barcol" title="${esc(tip)}">
+                ${showAmounts && hasAmounts ? `<span class="satu-baramt"${Number(d.amountMicros) ? '' : ' data-zero="true"'}>${esc(amount)}</span>` : ''}
                 <div class="satu-barstack">
                   <div class="satu-barfill" style="height: ${h}%;"></div>
                 </div>
-                <span class="satu-barlabel">${esc(d.label)}</span>
+                <span class="satu-barlabel"${labelled ? '' : ' style="visibility: hidden;"'}>${esc(d.label)}</span>
               </div>`
           })
           .join('')
+        // 合计按微元加总再格式化，不去把每根柱子上四舍五入过的字符串相加。
+        const total = hasAmounts ? ` · ${t('合计', 'total')} ${fmtUsdMicros(spentMicros)}` : ''
         return `<div style="display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;">
             <span class="satu-panel-title">${t('每日任务执行量')}</span>
-            <span style="font-size: 12px; color: var(--muted-foreground);">${t(`峰值 ${peak} 次`, `peak ${peak} calls`)}</span>
+            <span style="font-size: 12px; color: var(--muted-foreground);">${t(`峰值 ${peak} 次`, `peak ${peak} calls`)}${esc(total)}</span>
           </div>
           <div class="satu-bars">${cols}</div>`
       })()
     : `<span class="satu-panel-title">${t('每日任务执行量')}</span>
           ${emptyBox(t('这个时间段里还没有调用。'))}`
+  // 今日用量：服务端按看的人所在时区的零点算，不跟着上面选的范围走。老 Gateway 不带
+  // `today`，这一块就不画，而不是画一排 0——0 会被读成「今天没用」。
+  const today = data.today && typeof data.today === 'object' ? data.today : null
+  const todayBody = today
+    ? `<div style="display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3);">
+          <span class="satu-panel-title">${t('今日用量', 'Today')}</span>
+          <span style="font-size: 12px; color: var(--muted-foreground);">${esc(today.label || '')}</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <span style="font-family: var(--font-heading); font-size: 26px; line-height: 1;">${esc(today.amount || '—')}</span>
+          <span style="font-size: 12px; color: var(--muted-foreground);">${t('今天已扣费用', 'charged so far today')}</span>
+        </div>
+        <div class="satu-kv"><span>${t('任务执行')}</span><span>${esc(String(Number(today.calls) || 0))}</span></div>
+        <div class="satu-kv"><span>${t('输入 Tokens')}</span><span title="${esc(exactTokens(today.promptTokens))}">${esc(megaTokens(today.promptTokens))}</span></div>
+        <div class="satu-kv"><span>${t('输出 Tokens')}</span><span title="${esc(exactTokens(today.completionTokens))}">${esc(megaTokens(today.completionTokens))}</span></div>
+        ${(Array.isArray(today.byKind) ? today.byKind : [])
+          .map((k) => `<div class="satu-kv"><span>${esc(t(k.name))}</span><span>${esc(k.value)}</span></div>`)
+          .join('')}`
+    : ''
   const agentBody = byAgent.length
     ? byAgent.map((a) => usageMeter(a.name, a.value, a.pct, false, false)).join('')
     // 「没有数」和「这一维盖不全」是两件事。模型调用还带不上 Bot 标识（Gateway 收到的
@@ -1771,8 +1818,11 @@ function usagePage() {
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--space-3);">
           ${statCards}
         </div>
-        <div class="satu-panel">
-          ${dailyBody}
+        <div class="satu-dailyrow">
+          <div class="satu-panel">
+            ${dailyBody}
+          </div>
+          ${todayBody ? `<div class="satu-panel">${todayBody}</div>` : ''}
         </div>
         <div class="satu-agentpair">
           ${/* 按类型排在最前：模型 / 连接器 / 网页三条路是**盖得全**的那一维，

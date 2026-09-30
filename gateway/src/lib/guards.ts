@@ -190,8 +190,20 @@ export function rangeQuery(req: Req): { from?: number; to?: number } {
   return { from, to }
 }
 
-/** 日线上的一根柱子。`label` 是给人看的日期，怎么写由算它的那一层决定。 */
-export type UsageBar = { label: string; value: number }
+/**
+ * 日线上的一根柱子。`label` 是给人看的日期，怎么写由算它的那一层决定。`value` 是模型调用
+ * 次数（柱高），`amount` 是那一天账本上扣的钱（三条计费路都算）。
+ */
+export type UsageBar = { label: string; value: number; amount?: string; amountMicros?: number }
+/** 看的人所在时区的「今天」：零点到现在。不跟着界面上选的范围走。 */
+export type UsageToday = {
+  label: string
+  calls: number
+  promptTokens: number
+  completionTokens: number
+  amount: string
+  byKind: { name: string; value: string }[]
+}
 /** 一条量表：名字、右边那行小字、以及 0–100 的占比。 */
 export type UsageMeter = { name: string; value: string; pct: number }
 
@@ -212,7 +224,7 @@ export function usagePayload(
      * 下面那几块维度：日线、按 Bot、按模型、按类型。都由路由那边算好——这里只负责
      * 把它们摆进同一个信封，不去碰库。给空数组时界面画各自的空态。
      */
-    dims?: { daily?: UsageBar[]; byAgent?: UsageMeter[]; byModel?: UsageMeter[]; byKind?: UsageMeter[] }
+    dims?: { daily?: UsageBar[]; byAgent?: UsageMeter[]; byModel?: UsageMeter[]; byKind?: UsageMeter[]; today?: UsageToday }
   },
 ) {
   const spent = opts.spentByAccount ?? new Map<string, number>()
@@ -248,6 +260,7 @@ export function usagePayload(
       { label: '费用', value: usdMicros(opts.spentMicros ?? 0), delta: '—' },
     ],
     daily: opts.dims?.daily ?? [],
+    today: opts.dims?.today ?? null,
     byAgent: opts.dims?.byAgent ?? [],
     byModel: opts.dims?.byModel ?? [],
     // 套餐额度这一维**故意还是空的**：当前套餐只约束席位，没有任务次数和 token 额度，

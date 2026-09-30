@@ -1171,6 +1171,27 @@ export class Db {
     return rows.map((row) => ({ bucket: num(row.bucket), calls: num(row.calls) }))
   }
 
+  /**
+   * 每日扣了多少钱，给日线每根柱子标金额。切天的规矩和 `llmDailyBy` 一样（按看的人所在
+   * 时区平移），两边桶号才对得上。钱走账本，三条计费路（模型 / 连接器 / 网页）都算——
+   * 柱高是模型调用次数，金额是那一天一共花出去的。
+   */
+  async chargeDailyBy(
+    column: 'companyId' | 'accountId',
+    value: string,
+    range?: { from?: number; to?: number },
+    offsetMs = 0,
+  ): Promise<{ bucket: number; amountMicros: number }[]> {
+    const r = this.llmRangeSql(range)
+    const rows = await this.many(
+      `select floor(("createdAt" + ?) / 86400000.0)::bigint as bucket, coalesce(sum("amountMicros"), 0) as "amountMicros"
+       from usage_charges where "${column}" = ?${r.sql}
+       group by bucket order by bucket`,
+      [offsetMs, value, ...r.args],
+    )
+    return rows.map((row) => ({ bucket: num(row.bucket), amountMicros: num(row.amountMicros) }))
+  }
+
   llmUsageOfCompany(companyId: string, range?: { from?: number; to?: number }): Promise<LlmUsage> {
     return this.llmUsageBy('companyId', companyId, range)
   }
