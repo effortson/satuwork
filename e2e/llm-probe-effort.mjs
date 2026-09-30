@@ -10,7 +10,9 @@
  * 的请求体：
  *   - 档位是 off / 没配：不带 `reasoning`（和真用一样，由上游用默认）；
  *   - 档位是 high：`reasoning.effort` 就是 high；
- *   - 不会推理的模型：不带 `reasoning`。
+ *   - 不会推理的模型：不带 `reasoning`；
+ *   - 一律不带 `temperature`：以前写死 0，gpt-6.1-sol / gpt-6-luna 当场 400
+ *     「Unsupported parameter: 'temperature'」，测试按钮对推理模型永远是红的。
  *
  * llm.ts 用了参数属性，node 自带的去类型跑不了，所以另起一个 `--import tsx` 的子进程。
  */
@@ -79,6 +81,7 @@ export async function runLlmProbeEffort({ root, test, assert, log }) {
       assert(!('reasoning' in off), `off 时不该带 reasoning：${JSON.stringify(off.reasoning)}`)
       assert(high.reasoning?.effort === 'high', `high 时该发 high：${JSON.stringify(high.reasoning)}`)
       assert(!('reasoning' in plain), `不会推理的模型不该带 reasoning：${JSON.stringify(plain.reasoning)}`)
+      for (const b of up.bodies) assert(!('temperature' in b), `probe 不该带 temperature（推理模型会 400）：${JSON.stringify(b.temperature)}`)
     } finally {
       up.server.close()
     }

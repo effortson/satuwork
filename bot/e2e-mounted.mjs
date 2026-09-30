@@ -46,6 +46,8 @@ const SERVICES = ['storage', 'sessions', 'roster', 'tools', 'llm', 'workspace', 
 const TOOLS = [
   'now',
   'read_file', 'write_file', 'patch', 'search_files', 'terminal', 'process',
+  // 席位桌面那两把只在有桌面的远程席位挂；这里裸起的是远程形态，DISPLAY 在下面垫了一个。
+  'desktop_terminal', 'desktop_open_folder',
   'web_search', 'web_extract',
   'history_read', 'history_search',
   'todo', 'delegate_task',
@@ -69,6 +71,12 @@ process.on('exit', cleanup)
 // 这一道管「正常被叫停」，那一道管「被硬杀」。
 process.on('SIGINT', () => process.exit(130))
 process.on('SIGTERM', () => process.exit(143))
+
+/**
+ * 垫一个 DISPLAY：desktop_* 没有它就不注册（见 tools/desktop.ts）。只要求**注册**，
+ * 这个探针不拉任何窗口，所以不需要真有一块屏；「没有 DISPLAY 就不挂」由 e2e-desktop 钉。
+ */
+process.env.DISPLAY = process.env.DISPLAY || ':99'
 
 // 端口挪开，别跟正式入口和别的套件抢。
 writeFileSync(ymlPath, readFileSync(join(botRoot, 'cordis.yml'), 'utf8').replace(/port:\s*\d+/, `port: ${process.env.SATUWORK_PORT || '18124'}`))

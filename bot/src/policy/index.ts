@@ -1,11 +1,11 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
-import { browserOf, guardsOf, memoryOf, type BotRecord } from '../registry/index.ts'
+import { browserOf, desktopOf, guardsOf, memoryOf, type BotRecord } from '../registry/index.ts'
 import { agentsOf, type ToolCall, type ToolResult } from '../tools/index.ts'
 import { ApprovalGate, type Verdict } from './approvals.ts'
 import { formOf, unwrapCall } from './forms.ts'
 import { type ActionContext, blockedHost, hostOf, siteAllowed, submitAction } from './browser.ts'
 import { scanPii } from './pii.ts'
-import { destructiveCommand, networkCommand } from './shell.ts'
+import { SHELL_TOOLS, destructiveCommand, networkCommand } from './shell.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -120,7 +120,7 @@ export class PolicyService extends Service {
    *     说的也是对外那一侧。
    */
   needsApproval(call: ToolCall, risk: readonly string[]): string | null {
-    if (call.name === 'terminal') {
+    if (SHELL_TOOLS.has(call.name)) {
       const hit = destructiveCommand(call.arguments)
       return hit ? `这条命令会不可逆地改动系统（${hit}）` : null
     }
@@ -408,7 +408,7 @@ export class PolicyService extends Service {
      * 单独跑。在这儿再判一次只会出现两份都得改的判据。
      */
     if (name.startsWith('browser_')) return { ok: true }
-    if (name === 'terminal') {
+    if (SHELL_TOOLS.has(name)) {
       const hit = networkCommand(call.arguments)
       if (hit) return { ok: false, reason: `命令里的 ${hit} 会连到外部网络` }
       return { ok: true }
@@ -643,6 +643,33 @@ export function apply(ctx: Context) {
          * 那两件事跟管理员把哪条边界关掉了没有关系。放在 no-external 底下的话，
          * 关掉那条开关就等于把回环地址一起放开了。
          */
+        /**
+         * 席位桌面（`desktop_*`）：模版上关了就拒。工具表那一层只是遮掩，同 browser_*。
+         *
+         * **不走 deny、不记 guard 事件**：这不是一道边界，是一项没开的能力，和上面子代理
+         * 那两道一样直接回一句话。多一个 guard 类别就得 Gateway 那张 GUARD_IDS 先认——
+         * 席位先升级的话，每一次拦截都会变成一行永远重发的 outbox。
+         */
+        if (call.name.startsWith('desktop_')) {
+          /**
+           * **查不到 Bot 就拒**，同 checkBrowser / checkExternal：会话根读不到、名册里没有
+           * 这颗 Bot 的时候，没法确认它的模版有没有关掉这项能力。`desktopOf` 缺字段按开，
+           * 那说的是「Bot 在、只是老 Gateway 没下发这一格」，不是「连 Bot 都认不出来」。
+           */
+          if (!bot) {
+            return {
+              text: `${call.name} 用不了：认不出这条会话属于哪个 Bot，不能确认它能不能操作席位桌面。这件事改用 terminal / read_file 做。`,
+              failed: true,
+            }
+          }
+          if (!desktopOf(bot).on) {
+            return {
+              text: `${call.name} 用不了：这个 Bot 的模版里关掉了「操作席位桌面」这项能力。这件事改用 terminal / read_file 做，或者请管理员在 Bot 设置里打开它。`,
+              failed: true,
+            }
+          }
+        }
+
         if (call.name.startsWith('browser_')) {
           const v = ctx.policy.checkBrowser(bot, call, guards['no-external'] === true)
           if (!v.ok) {
@@ -808,7 +835,7 @@ function urlArgOf(raw: string): string {
 }
 
 function outboundOf(call: ToolCall, risk: readonly string[]): boolean {
-  if (call.name === 'terminal') return Boolean(networkCommand(call.arguments))
+  if (SHELL_TOOLS.has(call.name)) return Boolean(networkCommand(call.arguments))
   return risk.includes('external')
 }
 
@@ -835,7 +862,7 @@ async function askAndRecord(ctx: Context, call: ToolCall, bot: BotRecord | undef
     // 人看到的是一次凭空出现的发信确认——而那正是最该问出处的一种。
     // terminal 的放行只认同一条命令（approvals.ts 的 grantKey），留档的话要跟着说准。
     reason: viaGrant
-      ? `${why}（这一轮此前已批准${call.name === 'terminal' ? '同一条命令' : '同一把工具'}）`
+      ? `${why}（这一轮此前已批准${SHELL_TOOLS.has(call.name) ? '同一条命令' : '同一把工具'}）`
       : viaBlock
         ? `${why}（这一轮此前已拒绝同一把工具，没有再问）`
         : edited?.length

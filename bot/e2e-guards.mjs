@@ -67,10 +67,12 @@ const bots = {
   // 后缀放开和全局放开各一颗。b14 那颗尤其要盯住：名单开到最大，回环和内网**照样**拦。
   b13: { id: 'b13', name: '后缀放开', origin: 'company', mcps: [], browser: { on: true, sites: ['example.*'] }, guards: { 'high-risk': false, pii: false, 'no-external': true } },
   b14: { id: 'b14', name: '全局放开', origin: 'company', mcps: [], browser: { on: true, sites: ['*.*'] }, guards: { 'high-risk': false, pii: false, 'no-external': true } },
+  // 席位桌面被模版关掉的一颗。边界全关，拦它的只能是能力开关本身。
+  b15: { id: 'b15', name: '关了席位桌面', origin: 'company', mcps: [], desktop: { on: false }, guards: { 'high-risk': false, pii: false, 'no-external': false } },
 }
 
 const sessions = fakeSessions({ s1: 'b1', s2: 'b2', s3: 'b3', s4: 'b4', s5: 'b-不存在', s6: 'b6', s7: 'b7', s8: 'b1',
-  s8b: 'b8', s9: 'b9', s10: 'b10', s11: 'b11', s12: 'b12', s13: 'b13', s14: 'b14',
+  s8b: 'b8', s9: 'b9', s10: 'b10', s11: 'b11', s12: 'b12', s13: 'b13', s14: 'b14', s15: 'b15',
   // s6t 是 s6 派出去的一条子会话（见 docs/delegation.md）。**botId 和主会话是同一个**
   // ——policy 的每一条判定都从会话根读 botId，子会话上写别的等于给它换了一颗 Bot。
   s6t: 'b6' })
@@ -162,6 +164,10 @@ tool('read_local', ['read'])
 tool('write_local', ['write'])
 tool('web_search', ['external', 'read'])
 tool('terminal', ['write', 'destructive', 'external'])
+// 席位桌面那两把，risk 照抄 tools/desktop.ts。desktop_terminal 带命令时要和 terminal 一个待遇。
+// 委派标注也照抄（`exclusive: 'desktop'`），同浏览器那几把：不照抄的话「没租到就调不了」测的是另一把工具。
+tool('desktop_terminal', ['write', 'destructive', 'external'], { exclusive: 'desktop' })
+tool('desktop_open_folder', ['read'], { exclusive: 'desktop' })
 tool('mcp_a_read_mail', ['external', 'read'])
 tool('mcp_b_read_mail', ['external', 'read'])
 tool('mcp_a_send_mail', ['external', 'write'])
@@ -226,6 +232,24 @@ out.terminal = {
   git推送被拦: (await call('s1', 'terminal', { command: 'git push origin main' })).failed === true,
 }
 out.terminalRuns = ran.terminal - terminalRanBefore
+
+// ── 2b. 席位桌面：窗口里的命令和 terminal 同一套判据；模版关了就整把拒 ──────
+{
+  const before = ran.desktop_terminal
+  out.desktop = {
+    空终端放行: (await call('s1', 'desktop_terminal', {})).failed !== true,
+    本地命令放行: (await call('s1', 'desktop_terminal', { command: 'htop' })).failed !== true,
+    联网命令被拦: (await call('s1', 'desktop_terminal', { command: 'curl -sL https://example.com' })).failed === true,
+    开文件夹放行: (await call('s1', 'desktop_open_folder', { path: 'out' })).failed !== true,
+    关了能力终端被拒: (await call('s15', 'desktop_terminal', {})).failed === true,
+    关了能力文件夹被拒: (await call('s15', 'desktop_open_folder', {})).failed === true,
+    // 认不出 Bot 时没法确认模版关没关这项能力：拒，同浏览器和 MCP 那两条。
+    认不出Bot终端被拒: (await call('s5', 'desktop_terminal', {})).failed === true,
+    认不出Bot文件夹被拒: (await call('s5', 'desktop_open_folder', {})).failed === true,
+  }
+  out.desktopTerminalRuns = ran.desktop_terminal - before
+  out.desktopOffText = (await call('s15', 'desktop_open_folder', {})).text
+}
 
 // ── 3. 关掉开关就该放行 ────────────────────────────────────────────────
 out.offGuards = {
@@ -369,6 +393,20 @@ const approvals = {}
   ctx.policy.approvals.decide('s6', pending[pending.length - 1].data.callId, 'deny')
   await running
   approvals.递归删被拒后没跑 = ran.terminal === before + 1
+}
+{
+  // 桌面终端同理：开一个空窗口不问，窗口里要跑 rm -rf 就问——它不是绕开确认的暗路。
+  const before = ran.desktop_terminal
+  const ok = await call('s6', 'desktop_terminal', {})
+  approvals.桌面空终端不问 = ran.desktop_terminal === before + 1 && ok.failed !== true
+  const cardsBefore = pendingOf('s6').length
+  const running = call('s6', 'desktop_terminal', { command: 'rm -rf build' })
+  await untilPending('s6', cardsBefore + 1, { until: running })
+  const pending = pendingOf('s6')
+  approvals.桌面终端递归删要问 = pending[pending.length - 1].data.name === 'desktop_terminal'
+  ctx.policy.approvals.decide('s6', pending[pending.length - 1].data.callId, 'deny')
+  await running
+  approvals.桌面终端递归删被拒后没跑 = ran.desktop_terminal === before + 1
 }
 {
   /**
@@ -947,6 +985,14 @@ const delegation = {}
   // exclusive：这一批里浏览器租给了别的子任务（leases 空）。
   const r = await call('s6t', 'browser_navigate', { url: 'https://example.com' })
   delegation.没租到浏览器就调不了 = r.failed === true && r.text.includes('browser')
+}
+{
+  // 席位桌面同理：同一块屏，一批里只有拿到 desktop 租约的那条开得了窗口。
+  const before = ran.desktop_terminal
+  const a = await call('s6t', 'desktop_terminal', {})
+  const b = await call('s6t', 'desktop_open_folder', {})
+  delegation.没租到桌面就调不了 =
+    a.failed === true && a.text.includes('desktop') && b.failed === true && ran.desktop_terminal === before
 }
 out.delegation = delegation
 

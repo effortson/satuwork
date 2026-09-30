@@ -183,6 +183,7 @@ export interface ToolDelegation {
 | `mode: 'root-only'` | `delegate_task` | 深度定死 1（§2） |
 | `mode: 'root-only'` | `escalate_to_human` | §3 口径三：子代理面前没有人。没有它，`escalateBlock` 那段提示词也跟着不加——那是在教它用一把它没有的工具，纯占上下文（[context-assembly.md §2](./context-assembly.md) 的条件加载原则） |
 | `exclusive: 'browser'` | `browser_*` | §7.1 |
+| `exclusive: 'desktop'` | `desktop_terminal` / `desktop_open_folder` | §7.1。同一块员工正看着的屏，并行开窗口会叠成一团 |
 | `rebind: true` | `history_read` / `history_search` | §6.3 |
 | `retains: true` | `terminal` | §7.3。**`process` 不标**：留下东西的是 `terminal`，`process` 只是在管它起的那几个；两把都标的话移交会跑两遍，第二遍必然空手 |
 | 全默认 | `todo` | 子代理要有**自己的**清单。理由和陷阱见下面那一段 |
@@ -339,7 +340,8 @@ attach 上去的页面（`private sessionId = ''` 存的是 CDP 的 session，�
 （**遮掩之外还有强制**：`checkBrowser` 那道谁都关不掉的闸认的是 sessionId，加一条「这条子会话
 没有 `browser` 租约」）。
 
-**租约按资源名发，不按 `browser_` 前缀判。** 今天这个名字下只有浏览器那一组工具；将来席位上
+**租约按资源名发，不按 `browser_` 前缀判。** 这套最早只有浏览器那一组工具；席位桌面那两把
+（`exclusive: 'desktop'`）就是后来照这条规矩加进来的，委派这边一行没改。将来席位上
 再多一样只能有一个主人的东西（一块屏、一个串口、一个只允许单连接的客户端），它写上自己的资源
 名就自动落进这套租约，委派这边一行都不用改——这正是把判据挂在工具身上而不是写成名单的全部
 理由（§6.1）。
@@ -879,7 +881,7 @@ Hermes 的委派立即返回一个 handle，对话可以接着进行。那个形
 | 7 | [policy/index.ts](../bot/src/policy/index.ts) | 子会话里 `root-only` 和没租到的 `exclusive` 一律 pre-execute 短路（**按标注判**）；审批理由带上「来自子任务《…》」；`ESCALATE_AFTER` 在子会话里换成「把卡在哪儿写进结论」 |
 | 8 | [policy/approvals.ts](../bot/src/policy/approvals.ts) | 卡片、放行/拦停名单、等待键全部落在**主会话**上（`rootOf`）。等的仍然是那次真调用本身 |
 | 9 | [tools/index.ts](../bot/src/tools/index.ts) | `ToolDelegation` / `ReassignedItem`；`register` 的两条启动断言；`rebind` 在管道里过 `rootOf`（**策略之后、execute 之前**）；`reassign(from, to)` 按标注遍历 |
-| 9b | 各工具注册处 | `delegate_task` / `escalate_to_human` → `root-only`；`browser_*`（12 把）→ `exclusive: 'browser'`；`history_*` → `rebind`；`terminal` → `retains`；其余（`now` / `read_file` / `write_file` / `patch` / `search_files` / `process` / `todo` / `web_*`）→ `{}` |
+| 9b | 各工具注册处 | `delegate_task` / `escalate_to_human` → `root-only`；`browser_*`（12 把）→ `exclusive: 'browser'`；`desktop_*`（2 把）→ `exclusive: 'desktop'`；`history_*` → `rebind`；`terminal` → `retains`；其余（`now` / `read_file` / `write_file` / `patch` / `search_files` / `process` / `todo` / `web_*`）→ `{}` |
 | 9c | [tools/terminal.ts](../bot/src/tools/terminal.ts) | `handOver()`：只移交**还活着**的那些，只动记账那一行；`notify` 的 `send` 那一跳走 `rootOf`，**`steer` 那一跳一个字没动** |
 | 10 | agent/index.ts 的 `apply` | 启动时 `healTasks()`，把上个进程留下的 `running` 补成 `lost`。不 await、不挡启动 |
 | 11 | [web/index.ts](../bot/src/web/index.ts)、[runtime.ts](../gateway/src/routes/runtime.ts)、gateway/ui | 子会话全文那条经主会话授权的路（§13）；chat.js 折叠 `agent/task` + 委派卡 + 过程摊开；app.js 两个动作；chat.css |

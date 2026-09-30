@@ -1038,7 +1038,13 @@ async function loadRuntimeBots() {
   try {
     const before = state.runtimeBots || []
     const data = await api('GET', '/runtime/bots')
-    state.runtimeBots = data.bots || []
+    state.runtimeHasMachine = typeof data.hasMachine === 'boolean' ? data.hasMachine : null
+    /**
+     * 公司没配运行机器时，全局 / 公司 Bot 永远装不上（它们只能是远程的），摆在名册里只会
+     * 是一排「公司的运行机器还没配好」。这时候名册里只留本人建的——本地 Bot 用得了，
+     * 自己建过的远程 Bot 也留着，那是本人的东西，删不删由本人定。
+     */
+    state.runtimeBots = (data.bots || []).filter((bot) => state.runtimeHasMachine !== false || bot.scope === 'user')
     // 本地 Bot 在不在跑、听哪个口，Gateway 不知道（隧道拆了），只有壳子知道。
     await overlayLocalRuntime(state.runtimeBots)
     // 名单流的直连地址（机器够新、配了公网地址、这个人没有本地 Bot 时才有），没有就是 null。

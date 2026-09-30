@@ -4,7 +4,7 @@ import type { Account, ChargeStatus, Db } from './db.ts'
 import type { JwtKeys } from './crypto.ts'
 import { ticketRevoked, verifyJwt } from './crypto.ts'
 import { HttpError, bearer, json, watchClient, type Req, type Router } from './http.ts'
-import { EMPTY_USAGE, applyBodyPatch, openaiModelId, redact, type CatalogModel, type Llm, type UpstreamTarget } from './llm.ts'
+import { EMPTY_USAGE, applyBodyPatch, openaiModelId, redact, rejectsTemperature, type CatalogModel, type Llm, type UpstreamTarget } from './llm.ts'
 import type { Meter } from './lib/meter.ts'
 import { mergeUsage, openaiUsage, tokensOf, usageFromPayload, type TokenUsage } from './lib/llm-usage.ts'
 import { accountByApiKey, assertUsable, gateOr402, recordLlmCall, withSettle, type RunOutcome } from './lib/llm-billing.ts'
@@ -295,7 +295,8 @@ async function streamChatCompletions(
   const watch = watchClient(res)
   const stream = llm.models.streamSimple(piModel as any, context as any, {
     apiKey: secret,
-    temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+    // 推理模型不转 temperature，同中继那条路（见 rejectsTemperature）。
+    temperature: typeof body.temperature === 'number' && !rejectsTemperature(piModel) ? body.temperature : undefined,
     maxTokens: typeof body.max_tokens === 'number' ? body.max_tokens : typeof body.max_completion_tokens === 'number' ? body.max_completion_tokens : undefined,
     reasoning: reasoningOf(body),
     signal: watch.signal,
@@ -414,7 +415,7 @@ async function completeChatCompletions(
   try {
     message = await llm.models.completeSimple(piModel as any, context as any, {
       apiKey: secret,
-      temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+      temperature: typeof body.temperature === 'number' && !rejectsTemperature(piModel) ? body.temperature : undefined,
       // 同流式那一岔：新版 OpenAI SDK 发的是 max_completion_tokens，只认 max_tokens 会把上限静静丢掉。
       maxTokens: typeof body.max_tokens === 'number' ? body.max_tokens : typeof body.max_completion_tokens === 'number' ? body.max_completion_tokens : undefined,
       reasoning: reasoningOf(body),

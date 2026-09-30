@@ -55,6 +55,8 @@
 # terminal 工具集跑命令。为什么是这个形状见 docs/file-terminal-tools.md。
 - name: './src/tools/file.ts'
 - name: './src/tools/terminal.ts'
+# 席位桌面上开终端窗口、开文件管理器（desktop_*）。只在远程席位注册；进不进工具表看模版的 desktop.on。
+- name: './src/tools/desktop.ts'
 
 # 网页：搜索与提取。后端和密钥都在 Gateway（/runtime/web/*），这边只做形状与摘要。
 # 排在 workspace 之后——web_extract 的 save 要往工作区写。

@@ -1052,23 +1052,6 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!html.includes('satu-lp-hero'), '桌面壳里画了首页')
     })
 
-    await test('首页那块演示是真能点的：换个 AI 员工，右边整条对话跟着换', async () => {
-      // 首屏右边不是一张图，是一块小演示（gateway/ui/pages-landing.js 的 lpShot）。
-      // 它退化成图的方式很安静：名册还画得出来、点下去却没反应——那时页面看着一切正常。
-      // 换人只重画 #satu-lp-demo 那一格（不走 render），所以这里把它桩起来看。
-      const ui = await boot(undefined, { stubIds: ['satu-lp-demo'] })
-      assert(ui.html().includes('data-act="landing-demo"'), '名册那几行不是按钮')
-      await ui.fire('click', el('button', { 'data-act': 'landing-demo', 'data-i': '2' }))
-      const pane = ui.stubs.get('satu-lp-demo')
-      assert(pane.innerHTML.includes('已转人工'), '换人之后右边没跟着换：' + pane.innerHTML.slice(0, 120))
-      assert(!pane.innerHTML.includes('退款单'), '上一个人的对话还留在右边')
-      // 对话下沿那个输入框**是一颗去登录的按钮**，不是个能打字的框（见 lpComposer）。
-      // 哪天它退化成一个死框，页面看着照样完整——所以这里钉住那条 href。
-      const box = pane.innerHTML.match(/<button[^>]*satu-lp-composer[^>]*>/)
-      assert(box, '对话底下那个输入框不见了')
-      assert(box[0].includes('data-href="/login"'), '输入框点下去不去登录：' + box[0])
-    })
-
     await test('首页顶栏的「联系销售」：二维码那张图真的取得到，链接和图对的是同一个号', async () => {
       const ui = await boot()
       assert(ui.html().includes('data-act="landing-sales"'), '顶栏没有「联系销售」')
@@ -2177,6 +2160,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
     await test('新建 Bot 的运行位置：选哪个，红框和按钮就跟到哪个', async () => {
       const ui = loadApp({ appPath, base: gwBase, token: adminToken, desktop: true })
       await ui.boot()
+      // 这家公司在 e2e 里没配机器，默认会是本地（见下一条）；这一条验的是有机器时的那一档。
+      ui.state.runtimeHasMachine = true
       await ui.fire('click', el('button', { 'data-act': 'new-bot' }))
 
       const selected = (html, value) => new RegExp(
@@ -2192,6 +2177,38 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       await ui.fire('input', el('input', { 'data-newbot': 'runtimeKind' }, 'remote'))
       assert(selected(ui.html(), 'remote'), '切回远程后，红框没有回到远程 Bot')
       assert(ui.html().includes('创建并安装'), '切回远程后，底部按钮没有同步切换')
+    })
+
+    await test('公司没配运行机器：名册只留自己建的，新建默认本地', async () => {
+      // 全局 / 公司 Bot 只能跑在机器上。没机器的公司里它们只会是一排「运行机器还没配好」，
+      // 而远程这一档建了也装不上——在桌面端里就该直接落在本地。
+      const roster = (hasMachine) => ({
+        hasMachine,
+        rosterStreamUrl: null,
+        quota: { used: 2, max: 10 },
+        bots: [
+          { id: 'g1', name: '全局助理', scope: 'global', runtimeKind: 'remote', runtime: null },
+          { id: 'u1', name: '我的本地', scope: 'user', runtimeKind: 'local', runtime: null },
+          { id: 'u2', name: '我的远程', scope: 'user', runtimeKind: 'remote', runtime: null },
+        ],
+      })
+      for (const [hasMachine, want, kind] of [[false, ['u1', 'u2'], 'local'], [true, ['g1', 'u1', 'u2'], 'remote']]) {
+        const ui = loadApp({
+          appPath,
+          base: 'http://127.0.0.1:1',
+          token: 'jwt-a',
+          desktop: true,
+          fetchImpl: async (path) => new Response(JSON.stringify(path === '/runtime/bots' ? roster(hasMachine) : {}), { status: 200, headers: { 'content-type': 'application/json' } }),
+        })
+        ui.state.me = { account: { id: 'me', companyId: 'c1', role: 'member', email: 'm@x' }, company: { id: 'c1' } }
+        ui.state.path = '/chat'
+        await ui.loadRuntimeBots()
+        const ids = ui.state.runtimeBots.map((b) => b.id)
+        assert(JSON.stringify(ids) === JSON.stringify(want), `hasMachine=${hasMachine} 名册 ${JSON.stringify(ids)}`)
+        await ui.fire('click', el('button', { 'data-act': 'new-bot' }))
+        assert(ui.state.newBot.runtimeKind === kind, `hasMachine=${hasMachine} 默认 ${ui.state.newBot.runtimeKind}`)
+        assert(ui.html().includes('公司还没配对运行机器') === !hasMachine, `hasMachine=${hasMachine} 远程那一格的提示不对`)
+      }
     })
 
     await test('本地 Bot 启动失败要把真实原因画出来，不能永远停在等待 Desktop', async () => {

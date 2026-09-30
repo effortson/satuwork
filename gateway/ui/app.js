@@ -65,6 +65,7 @@ function endSignedIn() {
   state.wsOpen = {}
   state.wsSession = ''
   state.runtimeBots = []
+  state.runtimeHasMachine = null
   state.runtimeError = ''
   state.runtimeMachine = null
   state.desktopRuntime = null
@@ -404,11 +405,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
-  if (act === 'landing-demo') {
-    // 只换右半边（见 pages-landing.js 的 paintLpDemo）。走 render() 的话整页 innerHTML
-    // 会换掉，文档滚动位置跟着抖一下——而人的手正停在名册上。
-    state.lpDemo = Number(btn.getAttribute('data-i')) || 0
-    paintLpDemo()
+  if (act === 'landing-film') {
+    // 只换演示那块舞台（见 pages-landing.js 的 lpFilmGo），不走 render()。
+    lpFilmPick(Number(btn.getAttribute('data-i')) || 0)
+    return
+  }
+  if (act === 'landing-film-play') {
+    lpFilmToggle()
     return
   }
   if (act === 'landing-sales') {
@@ -1137,6 +1140,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         mcps: a.mcps,
         guards: Object.fromEntries((a.guards || []).map((g) => [g.id, !!g.on])),
         browser: { on: !!a.browserOn, sites: sitesOf(a.browserSites) },
+        desktop: { on: a.desktopOn !== false },
         // 「让它自己记 Skill」长在模版上，所以只有这一份要发；每颗 Bot 那一屏是只读的。
         selfSkills: a.selfSkills !== false,
         memory: { on: a.memoryOn, scope: a.scope, kinds: a.kinds, ttl: a.ttl, cap: a.cap, confirm: a.confirmOn, pii: a.piiOn },
@@ -1215,7 +1219,9 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'new-bot') {
-    state.newBot = { name: '', description: '', extraPrompt: '', icon: 'c-bot', runtimeKind: 'remote' }
+    // 公司没配运行机器的话远程 Bot 建了也装不上，在桌面端里就直接默认本地。
+    const localFirst = state.runtimeHasMachine === false && !!window.__SATUWORK_DESKTOP__
+    state.newBot = { name: '', description: '', extraPrompt: '', icon: 'c-bot', runtimeKind: localFirst ? 'local' : 'remote' }
     state.newBotError = ''
     render()
     return
@@ -1434,6 +1440,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'bot-desktop') {
+    const d = editingDraft()
+    if (!d) return
+    setEditingDraft({ ...d, desktopOn: d.desktopOn === false })
+    render()
+    return
+  }
   if (act === 'bot-self-skills') {
     const d = editingDraft()
     if (!d) return
@@ -1496,6 +1509,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         mcps: a.mcps,
         guards: Object.fromEntries((a.guards || []).map((g) => [g.id, !!g.on])),
         browser: { on: !!a.browserOn, sites: sitesOf(a.browserSites) },
+        desktop: { on: a.desktopOn !== false },
         memory: { on: a.memoryOn, scope: a.scope, kinds: a.kinds, ttl: a.ttl, cap: a.cap, confirm: a.confirmOn, pii: a.piiOn },
       })
       state.bot = data.bot

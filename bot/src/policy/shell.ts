@@ -18,6 +18,16 @@
  *     「挡住蓄意」。写在这里，是为了没有人拿它当成后者。
  */
 
+/**
+ * 参数里带一条 shell 命令（`command` / `workdir`）的工具。策略层凡是「按命令判」的地方
+ * 都认这一张表，不写 `name === 'terminal'`。
+ *
+ * `desktop_terminal` 在席位桌面上开窗口跑命令，和 terminal 是同一种能力、同一套风险：
+ * 漏认它的话，它的 risk（写 + 毁 + 外联的并集）会让每一次开终端都弹确认卡，而真正
+ * 危险的那条命令反倒没人按内容看过。
+ */
+export const SHELL_TOOLS: ReadonlySet<string> = new Set(['terminal', 'desktop_terminal'])
+
 /** 只要出现就是在联网。这些命令没有「本地用法」可言。 */
 const ALWAYS_NETWORK = new Set([
   'curl', 'wget', 'nc', 'ncat', 'netcat', 'telnet', 'ssh', 'scp', 'sftp', 'rsync',

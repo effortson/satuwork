@@ -119,6 +119,17 @@ export async function runGuards({ root, test, assert, log }) {
     assert(r.approvals.递归删被拒后没跑, '拒绝之后命令还是跑了')
   })
 
+  await test('席位桌面：窗口里的命令和 terminal 同一套判据，模版关了整把拒', () => {
+    const bad = all(r.desktop)
+    assert(!bad.length, `这几条不对：${bad.join('、')}`)
+    // 空终端、htop 两次；curl 被拦、关了能力的那颗都不该跑到工具里。
+    assert(r.desktopTerminalRuns === 2, `desktop_terminal 跑的次数不对：${r.desktopTerminalRuns}`)
+    assert(r.desktopOffText.includes('Bot 设置'), `关了能力的那句话没给出路：${r.desktopOffText}`)
+    assert(r.approvals.桌面空终端不问, '开一个空终端也在弹确认')
+    assert(r.approvals.桌面终端递归删要问, '桌面终端里的 rm -rf 没有要求确认')
+    assert(r.approvals.桌面终端递归删被拒后没跑, '拒绝之后桌面终端还是开了')
+  })
+
   await test('terminal 的「这一轮都批准」只放行同一条命令', () => {
     const a = r.approvals
     assert(a.命令放行_第一次要问, 'rm -f 没有要求确认')
@@ -274,6 +285,7 @@ export async function runGuards({ root, test, assert, log }) {
     assert(d.主代理照旧调得了, '拦的应该是子会话，不是这把工具')
     // 一台席位一颗浏览器、一块员工正看着的屏。租约按资源名发，不按工具名前缀判。
     assert(d.没租到浏览器就调不了, '没拿到 browser 租约的子任务照样驱动了浏览器')
+    assert(d.没租到桌面就调不了, '没拿到 desktop 租约的子任务照样在桌面上开了窗口')
   })
 
   await test('在卡片上改过的内容，真的是发出去的那一份', () => {

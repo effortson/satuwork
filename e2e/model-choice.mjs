@@ -16,7 +16,7 @@ export async function runModelChoice({ root, test, assert, log }) {
   let r
   await test('探针跑得完', async () => {
     r = await runProbe(root)
-    assert(r && r.options && r.pick && r.reject && r.running && r.routine && r.removed && r.cold && r.reset && r.channel, `结果不完整：${JSON.stringify(r)}`)
+    assert(r && r.options && r.pick && r.reject && r.running && r.routine && r.removed && r.cold && r.reset && r.channel && r.staleCatalog, `结果不完整：${JSON.stringify(r)}`)
   })
 
   await test('名单：默认排第一，备选跟在后面，和默认重复的不出现', () => {
@@ -50,5 +50,9 @@ export async function runModelChoice({ root, test, assert, log }) {
 
   await test('渠道 /model：序号、default、key、id、显示名；认不出来不猜', () => {
     assert(!failed(r.channel).length, `渠道命令：${failed(r.channel).join('、')}`)
+  })
+
+  await test('目录跟不上名单：先重拉目录再算，名字、推理、窗口不按裸 id 猜', () => {
+    assert(!failed(r.staleCatalog).length, `目录过期：${failed(r.staleCatalog).join('、')}——新加的备选在选择器上只剩裸 id，真跑时推理也关着`)
   })
 }

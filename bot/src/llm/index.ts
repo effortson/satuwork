@@ -32,6 +32,8 @@ export interface CatalogProvider {
 
 /** 拉目录的超时。Gateway 就在本机或内网，10 秒还没回就是它出问题了。 */
 const REFRESH_TIMEOUT_MS = 10_000
+/** ensureKnown 因为「有不认识的模型」重拉目录的最小间隔。 */
+const MISS_REFRESH_MS = 30_000
 
 /**
  * 模型接缝：Gateway 的薄客户端。
@@ -92,6 +94,35 @@ export class LlmService extends Service {
 
   catalog(): CatalogProvider[] {
     return this.cached
+  }
+
+  private lastMissRefresh = 0
+  private missRefresh: Promise<unknown> | null = null
+
+  /**
+   * 这几个模型目录里要是有不认识的，当场重拉一次目录（节流）。
+   *
+   * 目录只在启动时和 /api/models 被问到时拉，**没有定时刷新**；而平台的日常备选跟着
+   * /runtime/catalog 一分钟内就到席位。管理员新加一个备选（常见的是刚被自动发现补进来的
+   * 模型），席位的名单里有它、这份目录里却没有：选择器上只剩一个裸 id，没有推理和窗口；
+   * 更要紧的是真跑这一轮时 modelOf 查不到，退回 stubModel——推理关着、窗口按猜的算。
+   *
+   * 按 catalog() 查而不是直接查 cached：探针会把 catalog 换成假目录，两边得是同一份。
+   * 目录里本来就没有的（平台那边下架了）会一直不认识，所以按时间节流，不是每次都拉。
+   */
+  async ensureKnown(models: { provider: string; model: string }[]): Promise<void> {
+    const cat = this.catalog()
+    const known = (p: string, id: string) => cat.some((x) => x.provider === p && x.models.some((m) => m.id === id))
+    if (models.every((m) => known(m.provider, m.model))) return
+    // 同一时刻的几个请求（选择器 GET 和这一轮开跑）等的是同一次拉取，不各拉一次，
+    // 也不让后到的那个因为节流直接拿着旧目录走了。
+    if (this.missRefresh) return void (await this.missRefresh)
+    if (Date.now() - this.lastMissRefresh < MISS_REFRESH_MS) return
+    this.lastMissRefresh = Date.now()
+    this.missRefresh = this.refresh().finally(() => {
+      this.missRefresh = null
+    })
+    await this.missRefresh
   }
 
   async refresh(): Promise<CatalogProvider[]> {

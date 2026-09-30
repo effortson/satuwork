@@ -698,6 +698,22 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
       assert(r.json.daily.length === 7, `日线该是 7 根，实际 ${r.json.daily.length}`)
       assert(r.json.daily.every((d) => /^\d{2}\/\d{2}$/.test(d.label)), `日期格式不对：${JSON.stringify(r.json.daily[0])}`)
       assert(r.json.daily.reduce((n, d) => n + d.value, 0) > 0, '这家公司这几天有调用，日线却全是 0')
+      // 每根柱子带那一天扣的钱（账本，三条路都算）；加起来就是顶上「费用」那张卡。
+      assert(r.json.daily.every((d) => typeof d.amount === 'string' && d.amount.startsWith('$') && Number.isFinite(d.amountMicros)), `日线缺金额：${JSON.stringify(r.json.daily[0])}`)
+      const dailyMicros = r.json.daily.reduce((n, d) => n + d.amountMicros, 0)
+      assert(dailyMicros > 0, '这几天扣过钱，日线金额却全是 0')
+      const fee = r.json.stats.find((s) => s.label === '费用')?.value
+      const mils = Math.round(dailyMicros / 1000)
+      const dec = mils % 1000 % 10 === 0 ? String((mils % 1000) / 10).padStart(2, '0') : String(mils % 1000).padStart(3, '0')
+      assert(fee === `$${Math.floor(mils / 1000).toLocaleString('en-US')}.${dec}`, `日线金额加起来 ${dailyMicros} 微元，和「费用」${fee} 对不上`)
+
+      // 今日：看的人所在时区的零点到现在，不跟着选的范围走。这组用例里的调用都是刚打的。
+      const today = r.json.today
+      assert(today && /^\d{2}\/\d{2}$/.test(today.label), `今日缺日期：${JSON.stringify(today)}`)
+      assert(today.label === r.json.daily.at(-1).label, `今日 ${today.label} 该是日线最后一根 ${r.json.daily.at(-1).label}`)
+      assert(today.calls > 0 && today.amount.startsWith('$'), `今日该有调用和金额：${JSON.stringify(today)}`)
+      assert(today.calls === r.json.daily.at(-1).value, `今日 ${today.calls} 次，日线最后一根 ${r.json.daily.at(-1).value} 次`)
+      assert(Array.isArray(today.byKind) && today.byKind.some((k) => k.name === '模型'), `今日缺按类型：${JSON.stringify(today.byKind)}`)
 
       // 按类型：钱就是从这三处出去的，这一维要盖得全。
       const kinds = r.json.byKind.map((x) => x.name)
@@ -716,6 +732,7 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
       const me = await req(base, 'GET', `/me/stats?${q}`, { token: tokenA })
       assert(me.status === 200, `me/stats ${me.status} ${me.text}`)
       assert(me.json.daily.length === 7, `自己那屏的日线 ${me.json.daily.length} 根`)
+      assert(me.json.today && typeof me.json.today.calls === 'number', `自己那屏缺今日：${JSON.stringify(me.json.today)}`)
       assert(Array.isArray(me.json.byKind) && Array.isArray(me.json.byModel), '自己那屏缺维度')
 
       // tz 只影响切天，坏值不许把日线整体推走，更不许 500。

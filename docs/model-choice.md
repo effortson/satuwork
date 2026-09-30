@@ -41,6 +41,11 @@
 - 委派子任务选 `model_role: daily` 时（「跟主代理同一个」）；
 - 定时任务选 `daily` 时（「和聊天时一样」，docs/routines.md §4）。utility 那一档不受影响。
 
+**名单和模型目录是两份，刷新节奏不一样**：备选名单跟着 `/runtime/catalog` 一分钟内到，
+模型目录（`/v1/models`，名字、推理、窗口都从这儿来）只在启动和 `/api/models` 时拉。所以
+算状态、开跑之前先过 `LlmService.ensureKnown`：名单里有目录不认识的就重拉一次（30 秒节流）。
+不这样的话，新加的备选在选择器上只剩裸 id，真跑时 `modelOf` 查不到、退回 `stubModel`，推理关着跑。
+
 推理强度按选中那一项自己的 `reasoningEffort`（`roleReasoningEffort` 先认 daily、再认备选）。
 
 **跑着的时候也能换**：那一轮的模型开跑时就定了，换不了；挑选从下一轮起生效，接口回

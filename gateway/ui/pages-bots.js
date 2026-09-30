@@ -401,6 +401,7 @@ function capabilityPanel(a, opts, ro) {
       <span class="satu-panel-title" style="margin-top: var(--space-2);">${t('可用 MCP 服务器')}</span>
       <div style="display: flex; flex-wrap: wrap; gap: 6px;">${chips(names(a.mcps, opts.mcps))}</div>
       ${browserBlock(a, true)}
+      ${desktopBlock(a, true)}
       ${selfSkillsBlock(a, true)}
     </div>`
   }
@@ -411,6 +412,7 @@ function capabilityPanel(a, opts, ro) {
     ${botPicks('mcps', opts.mcps, a.mcps, t('没有可选项'))}
     <span style="font-size: 12px; color: var(--muted-foreground);">${t('未勾选的能力，Agent 在任务中不可调用。')}</span>
     ${browserBlock(a, false)}
+    ${desktopBlock(a, false)}
     ${selfSkillsBlock(a, false)}
   </div>`
 }
@@ -437,10 +439,28 @@ function selfSkillsBlock(a, ro) {
 }
 
 /**
+ * 「操作席位桌面」：在远程席位的 VNC 桌面上开终端窗口、开文件管理器（bot/src/tools/desktop.ts）。
+ *
+ * 和浏览器一样是「要不要放开」，默认开。本地 Bot 不注册这两把工具，开关对它空转——
+ * 说明里点一句「远程」，省得本地 Bot 的主人以为自己关掉了什么。
+ */
+function desktopBlock(a, ro) {
+  return botToggle(
+    t('允许操作席位桌面', 'Allow seat desktop control'),
+    t(
+      '让远程 Bot 在它的桌面上打开终端、文件夹给你看。终端里跑的命令和命令行工具走同一套拦截。',
+      'Let a remote bot open terminals and folders on its desktop for you to see. Commands run there go through the same checks as its command-line tool.',
+    ),
+    a.desktopOn !== false,
+    ro ? '' : 'bot-desktop',
+  )
+}
+
+/**
  * 浏览器这一格摆在**能力**里，不摆在行为边界里。
  *
- * 那三条边界的语义是「要不要收紧」，默认全开等于最严；这一个是「要不要放开」，默认
- * 关才是最严。方向相反的东西并排放，管理员读到的会是「都打着勾＝都管着」。
+ * 那三条边界的语义是「要不要收紧」；这一个是「要不要放开」。方向相反的东西并排放，
+ * 管理员读到的会是「都打着勾＝都管着」。出厂是开着的、站点 `*.*` 全放行。
  *
  * 站点列表只在开着的时候露出来：关着的时候它是一片没有任何作用的输入框，而一片看着
  * 能填的输入框比没有这一格更容易让人以为自己配好了。
@@ -893,7 +913,7 @@ function newBotModal() {
           <label class="satu-card" style="padding:12px;cursor:pointer;border-color:${f.runtimeKind === 'remote' ? 'var(--primary)' : 'var(--border)'};">
             <input type="radio" name="nb-runtime" data-newbot="runtimeKind" value="remote" ${f.runtimeKind === 'remote' ? 'checked' : ''}>
             <strong>${t('远程 Bot', 'Remote bot')}</strong>
-            <small style="display:block;margin-top:4px;color:var(--muted-foreground);">${t('运行在公司配置的机器上', 'Runs on the company machine')}</small>
+            <small style="display:block;margin-top:4px;color:var(--muted-foreground);">${state.runtimeHasMachine === false ? t('公司还没配对运行机器，建了也装不上', 'No company machine is paired yet, so it cannot be installed') : t('运行在公司配置的机器上', 'Runs on the company machine')}</small>
           </label>
           <label class="satu-card" style="padding:12px;cursor:${window.__SATUWORK_DESKTOP__ ? 'pointer' : 'not-allowed'};opacity:${window.__SATUWORK_DESKTOP__ ? '1' : '.55'};border-color:${f.runtimeKind === 'local' ? 'var(--primary)' : 'var(--border)'};">
             <input type="radio" name="nb-runtime" data-newbot="runtimeKind" value="local" ${f.runtimeKind === 'local' ? 'checked' : ''} ${window.__SATUWORK_DESKTOP__ ? '' : 'disabled'}>
@@ -1621,6 +1641,18 @@ function billingPage() {
     </div>`
 }
 
+/**
+ * 微元 → `$1.514`。和服务端 lib/validate.ts 的 usdMicros 同一个写法（到厘、整分时两位），
+ * 日线的合计和各卡片里服务端格式化好的金额摆在一起，写法不一样会像两套数。
+ */
+function fmtUsdMicros(micros) {
+  const mils = Math.round((Number(micros) || 0) / 1000)
+  const a = Math.abs(mils)
+  const frac = a % 1000
+  const dec = frac % 10 === 0 ? String(frac / 10).padStart(2, '0') : String(frac).padStart(3, '0')
+  return `${mils < 0 ? '-' : ''}$${Math.floor(a / 1000).toLocaleString('en-US')}.${dec}`
+}
+
 function usageMeter(name, value, pct, alt, mono) {
   const font = mono ? ' font-family: ui-monospace, SFMono-Regular, Menlo, monospace;' : ''
   return `<div style="display: flex; flex-direction: column; gap: 5px;">
@@ -1678,29 +1710,64 @@ function usagePage() {
       </div>`,
     )
     .join('')
+  // 金额只在柱子够宽时画在柱顶：「近 30 天」三十根柱子每根二十来像素，`$0.212` 塞不下，
+  // 挤着画只会糊成一条；那时金额留在悬停里，标题行照样给合计。
+  const showAmounts = daily.length > 0 && daily.length <= 14
   const dailyBody = daily.length
     ? (() => {
         const peak = Math.max(...daily.map((d) => Number(d.value) || 0), 0)
+        const spentMicros = daily.reduce((n, d) => n + (Number(d.amountMicros) || 0), 0)
+        const hasAmounts = daily.some((d) => d.amount != null)
+        // 柱子多了日期也得抽稀：三十个「09/01」并排只会叠成一条。从最后一根（今天）往回数，
+        // 每隔 step 根标一个，今天那根一定有字。
+        const step = Math.max(1, Math.ceil(daily.length / 10))
         const cols = daily
-          .map((d) => {
+          .map((d, i) => {
             const v = Number(d.value) || 0
+            const labelled = (daily.length - 1 - i) % step === 0
             const h = peak ? Math.round((v / peak) * 100) : 0
-            return `<div class="satu-barcol" title="${esc(t(`${d.label} · ${v} 次`, `${d.label} · ${v} calls`))}">
+            const amount = d.amount || '—'
+            const tip = hasAmounts
+              ? t(`${d.label} · ${v} 次 · ${amount}`, `${d.label} · ${v} calls · ${amount}`)
+              : t(`${d.label} · ${v} 次`, `${d.label} · ${v} calls`)
+            return `<div class="satu-barcol" title="${esc(tip)}">
+                ${showAmounts && hasAmounts ? `<span class="satu-baramt"${Number(d.amountMicros) ? '' : ' data-zero="true"'}>${esc(amount)}</span>` : ''}
                 <div class="satu-barstack">
                   <div class="satu-barfill" style="height: ${h}%;"></div>
                 </div>
-                <span class="satu-barlabel">${esc(d.label)}</span>
+                <span class="satu-barlabel"${labelled ? '' : ' style="visibility: hidden;"'}>${esc(d.label)}</span>
               </div>`
           })
           .join('')
+        // 合计按微元加总再格式化，不去把每根柱子上四舍五入过的字符串相加。
+        const total = hasAmounts ? ` · ${t('合计', 'total')} ${fmtUsdMicros(spentMicros)}` : ''
         return `<div style="display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;">
             <span class="satu-panel-title">${t('每日任务执行量')}</span>
-            <span style="font-size: 12px; color: var(--muted-foreground);">${t(`峰值 ${peak} 次`, `peak ${peak} calls`)}</span>
+            <span style="font-size: 12px; color: var(--muted-foreground);">${t(`峰值 ${peak} 次`, `peak ${peak} calls`)}${esc(total)}</span>
           </div>
           <div class="satu-bars">${cols}</div>`
       })()
     : `<span class="satu-panel-title">${t('每日任务执行量')}</span>
           ${emptyBox(t('这个时间段里还没有调用。'))}`
+  // 今日用量：服务端按看的人所在时区的零点算，不跟着上面选的范围走。老 Gateway 不带
+  // `today`，这一块就不画，而不是画一排 0——0 会被读成「今天没用」。
+  const today = data.today && typeof data.today === 'object' ? data.today : null
+  const todayBody = today
+    ? `<div style="display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3);">
+          <span class="satu-panel-title">${t('今日用量', 'Today')}</span>
+          <span style="font-size: 12px; color: var(--muted-foreground);">${esc(today.label || '')}</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <span style="font-family: var(--font-heading); font-size: 26px; line-height: 1;">${esc(today.amount || '—')}</span>
+          <span style="font-size: 12px; color: var(--muted-foreground);">${t('今天已扣费用', 'charged so far today')}</span>
+        </div>
+        <div class="satu-kv"><span>${t('任务执行')}</span><span>${esc(String(Number(today.calls) || 0))}</span></div>
+        <div class="satu-kv"><span>${t('输入 Tokens')}</span><span title="${esc(exactTokens(today.promptTokens))}">${esc(megaTokens(today.promptTokens))}</span></div>
+        <div class="satu-kv"><span>${t('输出 Tokens')}</span><span title="${esc(exactTokens(today.completionTokens))}">${esc(megaTokens(today.completionTokens))}</span></div>
+        ${(Array.isArray(today.byKind) ? today.byKind : [])
+          .map((k) => `<div class="satu-kv"><span>${esc(t(k.name))}</span><span>${esc(k.value)}</span></div>`)
+          .join('')}`
+    : ''
   const agentBody = byAgent.length
     ? byAgent.map((a) => usageMeter(a.name, a.value, a.pct, false, false)).join('')
     // 「没有数」和「这一维盖不全」是两件事。模型调用还带不上 Bot 标识（Gateway 收到的
@@ -1751,8 +1818,11 @@ function usagePage() {
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--space-3);">
           ${statCards}
         </div>
-        <div class="satu-panel">
-          ${dailyBody}
+        <div class="satu-dailyrow">
+          <div class="satu-panel">
+            ${dailyBody}
+          </div>
+          ${todayBody ? `<div class="satu-panel">${todayBody}</div>` : ''}
         </div>
         <div class="satu-agentpair">
           ${/* 按类型排在最前：模型 / 连接器 / 网页三条路是**盖得全**的那一维，
