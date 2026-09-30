@@ -39,6 +39,7 @@ import { runProcess } from './process.mjs'
 import { runDesktop } from './desktop.mjs'
 import { runDocExtract } from './doc-extract.mjs'
 import { runOfficeEdit } from './office-edit.mjs'
+import { runOfficeLook } from './office-look.mjs'
 import { runDocRender } from './doc-render.mjs'
 import { runWebBot } from './web-bot.mjs'
 import { runVision } from './vision.mjs'
@@ -3651,6 +3652,7 @@ async function main() {
     await suite('desktop', () => runDesktop({ root, test, assert, log }))
     await suite('doc-extract', () => runDocExtract({ root, test, assert, log }))
     await suite('office-edit', () => runOfficeEdit({ root, test, assert, log }))
+    await suite('office-look', () => runOfficeLook({ root, test, assert, log }))
     await suite('doc-render', () => runDocRender({ root, test, assert, log }))
     await suite('web-bot', () => runWebBot({ root, test, assert, log }))
     await suite('vision', () => runVision({ root, test, assert, log }))

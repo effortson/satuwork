@@ -83,6 +83,15 @@ export interface ToolResult {
    * 挤得找不着。截图是**过程痕迹**，属于它那一步，界面另摆一条。
    */
   shot?: WorkspaceFile
+  /**
+   * 给**模型**看的图，路径相对工作区根目录。和 shot 正好反过来：那张是给人看的过程截图，
+   * 这几张是模型自己要看的东西（office_render 把文档某几页画出来，让它检查排版）。
+   *
+   * 工具只管报路径。送不送进模型由 agent 那一层按**这一轮的模型**决定：看得了图的，
+   * 读出字节作为图片块跟在结果后面；看不了的换成一句说明——把图塞给纯文本模型，上游
+   * 会把整个请求拒掉。
+   */
+  images?: { path: string; mime: string }[]
 }
 
 /**
@@ -186,6 +195,13 @@ export interface ToolDefinition extends ToolSchema {
   /** 见 ToolDelegation。内置工具必须写。 */
   delegation?: ToolDelegation
   /**
+   * 这把工具**只对看得了图的模型有用**（office_render：画出来的图就是它全部的结果）。
+   *
+   * agent 按这一轮的模型挑工具：看不了图的模型根本看不到它——摆在表里只会被调一次、
+   * 拿回一句「看不了图」，白花一步，还多占一段工具描述。
+   */
+  vision?: boolean
+  /**
    * 把这把工具留下的、还活着的东西从一条会话改挂到另一条。返回移交了什么。
    *
    * 只有 `delegation.retains` 的工具要实现。**只动记账那一行，不碰东西本身**——
@@ -270,6 +286,11 @@ export class ToolService extends Service {
 
   has(name: string) {
     return this.defs.has(name)
+  }
+
+  /** 见 ToolDefinition.vision。 */
+  needsVision(name: string): boolean {
+    return this.defs.get(name)?.vision === true
   }
 
   /**
