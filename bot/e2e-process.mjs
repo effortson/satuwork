@@ -410,9 +410,13 @@ out.killed = (await call('process', { action: 'kill', session_id: bg })).text.in
 {
   // 20 万行、每行百来个字节，一共 20 MB 出头：要滚两次。
   const cmd = `yes ${'x'.repeat(90)} | head -n 200000 | nl -ba -w8 -nrz`
+  // 这 20 MB 是一口气吐出来的，比盘写得快：CI 上写流积压一过 2 MB 就开始丢（MAX_LOG_PENDING），
+  // 丢掉的行不进行号，「共 200000 行」时过时不过。这条测滚段和行号，把积压上限临时抬高。
+  process.env.SATUWORK_LOG_MAX_PENDING = String(256 * 1024 * 1024)
   const r = await call('terminal', { command: cmd, background: true }, 's-cap')
   const id = idOf(r.text)
   await call('process', { action: 'wait', session_id: id, timeout: 30 }, 's-cap')
+  delete process.env.SATUWORK_LOG_MAX_PENDING
   await sleep(300)
   const { statSync } = await import('node:fs')
   const sizeOf = (f) => { try { return statSync(f).size } catch { return -1 } }

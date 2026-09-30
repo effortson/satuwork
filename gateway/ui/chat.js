@@ -4997,13 +4997,20 @@ function paintChatCtx() {
  * 的状态**以席位为准**：先 GET 一份快照，之后看到新的 `session/model` 事件就再取一次
  * ——事件里只有 key 和名字，名单和「现在生效的是哪个」还是得席位说。
  *
- * 快照按会话存：`{ data, upto }`，取不到时是 `{ failedAt, retryMs }`。404 多半是席位
+ * **平台改了名单，席位一分钟内就跟上，但席位不会发 `session/model` 事件**——那份名单不是这条
+ * 会话的事。所以快照还得自己过期：取到之后 CHAT_MODEL_TTL_MS 再重取一次；人点开选择器时不管
+ * 过没过期都当场重取（chatModelOpen），挑的那一刻看到的一定是席位眼下的名单。以前两样都没有，
+ * 网页刷新一下就好，桌面端的窗口一开几天，就一直挂着打开时那份。
+ *
+ * 快照按会话存：`{ data, upto, at }`，取不到时是 `{ failedAt, retryMs }`。404 多半是席位
  * 还不认这条路（老版本），但席位随时可能在人开着页面时升级，所以也只是隔久一点再问，
  * 不是永远不问。paintChat 一秒能跑好几次，重试一律按时间节流。
  */
 const chatModelSnap = new Map()
 const chatModelSyncing = new Set()
 const CHAT_MODEL_RETRY_MS = 30_000
+/** 一份好快照用多久。只决定「选择器上那个名字」多久对一次，挑之前另有 chatModelOpen 当场重取。 */
+const CHAT_MODEL_TTL_MS = 5 * 60_000
 /** 404 之后多久再问一次：够盖过一次换版，又不至于让升级之后的选择器迟迟不出来。 */
 const CHAT_MODEL_UNSUPPORTED_RETRY_MS = 5 * 60_000
 
@@ -5016,7 +5023,9 @@ function lastModelSeq(events) {
 }
 
 function chatModelDue(snap) {
-  return Boolean(snap && snap.failedAt && Date.now() - snap.failedAt > snap.retryMs)
+  if (!snap) return false
+  if (snap.failedAt) return Date.now() - snap.failedAt > snap.retryMs
+  return Boolean(snap.data && Date.now() - (snap.at || 0) > CHAT_MODEL_TTL_MS)
 }
 
 async function syncChatModel(sessionId, force) {
@@ -5031,7 +5040,7 @@ async function syncChatModel(sessionId, force) {
     chatModelSnap.set(
       sessionId,
       data && Array.isArray(data.options)
-        ? { data, upto }
+        ? { data, upto, at: Date.now() }
         : { failedAt: Date.now(), retryMs: CHAT_MODEL_UNSUPPORTED_RETRY_MS, upto },
     )
   } catch (err) {
@@ -5077,6 +5086,16 @@ function paintChatModel(folded) {
   if (state.chatModelOpen) pop.innerHTML = chatModelPop(data)
 }
 
+/**
+ * 点开选择器：先拿手上那份画出来，同时当场向席位重取一次，取回来 syncChatModel 会再画一遍。
+ * 人一般只在要换模型时才点开它，多一个请求换「挑的那一刻名单是对的」，划算。
+ */
+function openChatModel() {
+  state.chatModelOpen = true
+  paintChatModel()
+  if (state.chatSessionId) void syncChatModel(state.chatSessionId, true)
+}
+
 function chatModelPop(data) {
   const rows = data.options
     .map((c) => {
@@ -5105,7 +5124,7 @@ function chatModelPop(data) {
  */
 async function setChatModel(sessionId, body) {
   const r = await api('PUT', `/runtime/sessions/${encodeURIComponent(sessionId)}/model`, body)
-  chatModelSnap.set(sessionId, { data: r, upto: lastModelSeq(state.chatEvents) })
+  chatModelSnap.set(sessionId, { data: r, upto: lastModelSeq(state.chatEvents), at: Date.now() })
   if (state.chatSessionId === sessionId) paintChatModel()
   const label = (r && r.effective && r.effective.label) || body.key || ''
   if (!r || !r.changed) return t(`已经在用 ${label}`, `Already using ${label}`)
@@ -5141,8 +5160,7 @@ async function modelCommand(sessionId, arg) {
       : t('还没取到可选的模型，过几秒再试'))
   }
   if (data.options.length < 2) throw new Error(t('平台目前只配了一个日常模型，没有可换的'))
-  state.chatModelOpen = true
-  paintChatModel()
+  openChatModel()
   return null
 }
 

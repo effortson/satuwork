@@ -288,6 +288,17 @@ const LOG_SEGMENT_BYTES = 8 * 1024 * 1024
  * 不设上限的话积压全在内存里涨。丢掉的量记下来，等缓冲下去了在日志里补一句。
  */
 const MAX_LOG_PENDING = 2 * 1024 * 1024
+
+/**
+ * 当下生效的积压上限。`SATUWORK_LOG_MAX_PENDING` 只给测试用：滚段那条 e2e 一口气吐 20 MB，
+ * CI 的盘慢一点就会触发上面的丢弃，丢掉的几千行不进行号，断言「共 200000 行」就时过时不过
+ * ——那条测的是滚段和行号，不是丢弃，得把这道闸挪开。每次现读：探针 import 这个模块早于它
+ * 设环境变量。
+ */
+function maxLogPending(): number {
+  const n = Number(process.env.SATUWORK_LOG_MAX_PENDING)
+  return Number.isFinite(n) && n > 0 ? n : MAX_LOG_PENDING
+}
 /** `log` 读回来时一行最多多少字符。进度条那种几 MB 不换行的输出，整行摆回去只会冲掉上下文。 */
 const MAX_LOG_LINE_CHARS = 2000
 /** 读日志一次从盘上拿多少字节。 */
@@ -863,7 +874,7 @@ export function apply(ctx: Context, config: Config = {}) {
   /** 往日志里写一截输出：有上限（滚段）、有背压（积压太多就丢，丢多少记着）。 */
   const writeLog = (p: Proc, text: string) => {
     if (!text || p.log.writableEnded) return
-    if (p.log.writableLength > MAX_LOG_PENDING) {
+    if (p.log.writableLength > maxLogPending()) {
       p.logDropped += Buffer.byteLength(text)
       return
     }
