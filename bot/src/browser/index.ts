@@ -261,8 +261,14 @@ export class BrowserService extends Service {
   /** 在等「对话框弹出来了」这个信号的人。见 dispatch。 */
   private dialogWaiters = new Set<() => void>()
   /**
-   * 主框架这一页还在加载：`Page.lifecycleEvent` 的 `init`（新文档起头）置上，
-   * `networkAlmostIdle` 放下。**只有截图看它**，见 SHOT_SETTLE_MAX。
+   * 主框架这一页还在加载。**只有截图看它**，见 SHOT_SETTLE_MAX。
+   *
+   * `Page.lifecycleEvent` 的 `init`（新文档 commit）置上，`networkAlmostIdle` 放下；等满
+   * SHOT_SETTLE_MAX 也放下——每份文档只等一次，永远安静不下来的页面不能让之后每一步都卡。
+   *
+   * 不用在请求一发出去（`frameStartedLoading`）就置上：点一下、服务器慢慢才回的跳转，动作收尾
+   * 那次快照的 `Runtime.evaluate` 会被 Chrome 压到新文档 commit 之后才跑，轮到截图时 init
+   * 早就到了。e2e-browser 里「点击触发的慢跳转也等」钉着这件事。
    */
   private loading = false
   /** 在等 `loading` 放下的人（截图）。 */
@@ -775,7 +781,12 @@ export class BrowserService extends Service {
     for (const wake of this.idleWaiters) wake()
   }
 
-  /** 等这一页加载到网络基本安静，最多等 `max`。本来就不在加载的话立刻回来。 */
+  /**
+   * 等这一页加载到网络基本安静，最多等 `max`。本来就不在加载的话立刻回来。
+   *
+   * **等满了就当这一页加载完了**（放下 loading）：安静不下来的页面（长轮询、轮播广告）
+   * 之后每一次截图都再等满一轮的话，十几步浏览凭空多出半分钟以上。
+   */
   private async untilIdle(max: number, signal?: AbortSignal): Promise<void> {
     if (!this.loading || signal?.aborted) return
     await new Promise<void>((resolve) => {
@@ -785,7 +796,10 @@ export class BrowserService extends Service {
         signal?.removeEventListener('abort', wake)
         resolve()
       }
-      const timer = setTimeout(wake, max)
+      const timer = setTimeout(() => {
+        wake()
+        this.settleIdle()
+      }, max)
       this.idleWaiters.add(wake)
       signal?.addEventListener('abort', wake, { once: true })
     })

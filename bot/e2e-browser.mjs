@@ -91,11 +91,49 @@ const LATE_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>晚�
 <script src="/late.js?1" async></script><script src="/late.js?2" async></script><script src="/late.js?3" async></script>
 </head><body><main id="m"></main></body></html>`
 let lateServedAt = 0
+/**
+ * 点一下、服务器一秒多才回的跳转——表单提交就是这样。截图拍的得是新那一页：动作收尾那次
+ * 快照会被 Chrome 压到新文档 commit 之后才跑，截图借的就是这一点（见 index.ts 的 `loading`）。
+ * 哪天 Chrome 不这么压了，这条会红。
+ */
+const SLOW_LINK_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>慢跳转</title></head>
+<body><main><a id="slow" href="/slow-doc">去慢的那一页</a></main></body></html>`
+let slowDocAt = 0
+/**
+ * 永远安静不下来的页面：三条请求一直不回（长轮询、轮播广告就是这样）。截图只该等满一次上限，
+ * 之后在同一页上的动作不能每一步都再等一轮。
+ */
+const HANG_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>一直在加载</title>
+<script src="/hang.js?1" async></script><script src="/hang.js?2" async></script><script src="/hang.js?3" async></script>
+</head><body><main><h1>一直在加载</h1></main></body></html>`
 
 const server = createServer((req, res) => {
   if (req.url === '/late') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(LATE_PAGE)
+    return
+  }
+  if (req.url === '/slow-link') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(SLOW_LINK_PAGE)
+    return
+  }
+  if (req.url === '/slow-doc') {
+    setTimeout(() => {
+      slowDocAt = Date.now()
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end('<!doctype html><html><head><meta charset="utf-8"><title>到了</title></head><body><h1>慢的那一页到了</h1></body></html>')
+    }, 1_200)
+    return
+  }
+  if (req.url === '/hang') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(HANG_PAGE)
+    return
+  }
+  // 一直不回。页面换走时 Chrome 会自己断开；兜底二十秒后掐掉，别拖住 server.close。
+  if (req.url?.startsWith('/hang.js')) {
+    setTimeout(() => res.destroy(), 20_000).unref()
     return
   }
   if (req.url?.startsWith('/late.js')) {
@@ -472,9 +510,29 @@ try {
    * 一大半截图是白图（见 index.ts 的 SHOT_SETTLE_MAX）。这一页的正文要等 1.5 秒后的脚本，
    * 截图落盘必须在那几段脚本都给出去之后。
    */
+  // 截图落盘的时刻。文件不在就是 0——别让一次 stat 抛错把后面整套用例都带成 crashed。
+  const shotAt = (r) => {
+    const abs = r?.shot ? join(workRoot, r.shot.path) : ''
+    return abs && existsSync(abs) ? statSync(abs).mtimeMs : 0
+  }
   const lateNav = await run('browser_navigate', { url: `http://${HOST}/late` })
-  const lateAbs = lateNav.shot ? join(workRoot, lateNav.shot.path) : ''
-  out.shot.等页面加载完才拍 = Boolean(lateAbs && lateServedAt && statSync(lateAbs).mtimeMs >= lateServedAt)
+  out.shot.等页面加载完才拍 = Boolean(lateServedAt && shotAt(lateNav) >= lateServedAt)
+
+  // 点一下之后 1.2 秒才回的跳转：截图要在新页回来之后。
+  const slowLink = await run('browser_navigate', { url: `http://${HOST}/slow-link` })
+  const slowClick = await run('browser_click', { ref: refOf(slowLink.text, '去慢的那一页') })
+  out.shot.点击触发的慢跳转也等 = Boolean(slowDocAt && shotAt(slowClick) >= slowDocAt)
+
+  // 永远安静不下来的页面：第一次等满上限就拍，之后同一页上的动作不再等。
+  let t = Date.now()
+  const hangNav = await run('browser_navigate', { url: `http://${HOST}/hang` })
+  const hangNavMs = Date.now() - t
+  t = Date.now()
+  const hangSnap = await run('browser_snapshot')
+  const hangSnapMs = Date.now() - t
+  out.shot.安静不下来的页面照样拍 = hangNav.failed !== true && Boolean(hangNav.shot) && hangNavMs < 8_000
+  // 上限是 3 秒；再等一轮的话这一步至少 3 秒。
+  out.shot.同一页不再重复等 = hangSnap.failed !== true && Boolean(hangSnap.shot) && hangSnapMs < 2_500
   await run('browser_navigate', { url: `http://${HOST}/` })
 
   out.frame = {
