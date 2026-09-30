@@ -9,7 +9,7 @@ import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { installScript } from '../install.ts'
 import { proxyJson } from '../lib/runtime.ts'
-import { directReleaseUrl, localBotReleaseTarget, parseBotVersion, publicBotRelease, storeUploadedRelease } from '../releases.ts'
+import { desiredBotRelease, directReleaseUrl, localBotReleaseTarget, parseBotVersion, publicBotRelease, storeUploadedRelease } from '../releases.ts'
 import { requireMachine, requireOrgUser, requireOwnerUser, requireReleaseAuthor } from '../lib/guards.ts'
 import { MANAGER_VACUUM_TIMEOUT_MS, MAX_LOG_CAP_MB, METRIC_RETENTION_MS, MINUTE_MS } from '../lib/telemetry.ts'
 import { signDesktopTicket } from '../crypto.ts'
@@ -747,9 +747,11 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
       if (!rel) throw new HttpError(404, '没有这个 Bot 版本')
       version = rel.version
     } else if (!force) {
-      const latest = await db.latestBotRelease()
-      if (!latest) throw new HttpError(409, '还没有发布 Bot 版本')
-      version = latest.version
+      // 平台钉的那一版（没钉就是最新），按这台机器的架构挑——和心跳里的自动跟版同一个目标，
+      // 不然这里铺成最新，十分钟后又被跟版拉回钉的那版。
+      const target = await desiredBotRelease(db, machine.arch)
+      if (!target) throw new HttpError(409, '还没有发布 Bot 版本')
+      version = target.version
     }
     const seats = (await db.seatRuntimesOfMachine(machine.id)).filter((r) => r.status !== 'none')
     /**
@@ -980,6 +982,8 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     json(res, 200, {
       releases: releases.map((r) => publicBotRelease(r, gatewayBaseFor(req))),
       latest: releases[0]?.version ?? null,
+      // 空 = 跟最新走。机器心跳时席位按它跟版（deploy.ts 的 queueBotFollow），改它就是发起一轮灰度或回滚。
+      desired: (await db.platformSettings()).botVersion ?? '',
     })
   })
 
@@ -1219,9 +1223,11 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
       if (!rel) throw new HttpError(404, '没有这个 Bot 版本')
       version = rel.version
     } else {
-      const latest = await db.latestBotRelease()
-      if (!latest) throw new HttpError(409, '还没有发布 Bot 版本')
-      version = latest.version
+      // 同机器那条：平台钉的那一版，没钉就是最新。这里横跨好几台机器、架构不一定一样，
+      // 所以不按架构挑；deploySeat 会把它换成每台机器自己架构的兄弟包。
+      const target = await desiredBotRelease(db, null)
+      if (!target) throw new HttpError(409, '还没有发布 Bot 版本')
+      version = target.version
     }
     const seats = (await db.seatRuntimesOf(company.id)).filter((r) => r.status !== 'none')
     /**

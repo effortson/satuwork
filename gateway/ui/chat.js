@@ -8420,16 +8420,13 @@ async function pollSeatLinks() {
 async function updateOrgRuntime() {
   const org = state.org && state.org.id
   if (!org || state.updatingRuntime) return
-  const version = state.latestRelease
-  if (!version) {
-    flash('err', '还没有发布 Bot 版本')
-    render()
-    return
-  }
   state.updatingRuntime = true
   render()
   try {
-    const data = await api('POST', `/platform/orgs/${encodeURIComponent(org)}/runtime/update`, { version })
+    // **不带版本**：升到哪一版由服务端定（平台钉的那一版，没钉就是最新），和心跳里的自动
+    // 跟版同一个目标。这里自己带最新版的话，钉版本时一按就铺上最新，十分钟后又被跟版拉回去。
+    // 还没有发布版本时服务端回 409，落进下面的 catch。
+    const data = await api('POST', `/platform/orgs/${encodeURIComponent(org)}/runtime/update`, {})
     const results = Array.isArray(data.results) ? data.results : []
     const ok = results.filter((r) => r.status === 'ready' && !r.error).length
     /**

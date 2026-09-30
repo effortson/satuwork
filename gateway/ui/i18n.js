@@ -18,6 +18,8 @@ window.SATU_I18N = {
   审计: 'Audit',
   公司: 'Companies',
   'Bot 运行时': 'Bot runtime',
+  管家: 'Manager',
+  目标版本: 'Target',
   机器配置: 'Machine setup',
   机器管理: 'Machines',
   用户: 'Users',
@@ -475,8 +477,8 @@ window.SATU_I18N = {
     'The Gateway registers and serves releases; it does not build them. Packages must be built on Linux, matching the seat machine architecture.',
   '保存前会把包整个拉一遍，核对大小与 sha256、确认入口文件在。验不过不入库。':
     'Before saving, the whole package is fetched once to check its size and sha256 and confirm the entry file is present. Nothing is stored if it fails.',
-  '部署席位时用最新版本；也可以在部署时指定某一版。':
-    'Seats deploy the latest version by default; a specific version can be pinned at deploy time.',
+  '机器心跳时，不在期望版本上的席位会被排进部署队列，等席位上的会话跑完再换。留空表示跟最新发布走；要回滚就填上一版。':
+    'On each machine heartbeat, seats not on the desired version are queued for redeploy and switch once their running sessions finish. Leave empty to follow the latest release; to roll back, enter the previous version.',
   机器管家: 'Machine manager',
   期望版本: 'Desired version',
   '留空 = 跟最新': 'Empty = follow latest',
