@@ -327,7 +327,14 @@ async function relayUpstreamError(res: ServerResponse, r: Response, passthrough:
  * `content-type` 与 `content-disposition` 原样透传——它们由 bot 的白名单算出来
  * （见 workspace/index.ts 的 INLINE），Gateway 不该二次猜测，猜了反而会和白名单打架。
  */
-export async function proxyDownload(req: Req, res: ServerResponse, url: string, token?: string, machineToken?: string) {
+export async function proxyDownload(
+  req: Req,
+  res: ServerResponse,
+  url: string,
+  token?: string,
+  machineToken?: string,
+  passthrough: number[] = [400, 404],
+) {
   const ac = new AbortController()
   const onClose = () => ac.abort()
   req.on('close', onClose)
@@ -347,7 +354,7 @@ export async function proxyDownload(req: Req, res: ServerResponse, url: string, 
   }
   if (!r.ok || !r.body) {
     req.off('close', onClose)
-    await relayUpstreamError(res, r, [400, 404])
+    await relayUpstreamError(res, r, passthrough)
     return
   }
   const type = r.headers.get('content-type') || 'application/octet-stream'

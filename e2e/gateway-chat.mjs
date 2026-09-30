@@ -374,6 +374,15 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(csp.includes('sandbox'), `少了 CSP sandbox：${csp}`)
     })
 
+    await test('经 Gateway 要 PDF：as=pdf 转到席位，业务失败码原样交出', async () => {
+      // 这个文件是 .txt，席位那头答 415。Gateway 要是把 as=pdf 丢了，回来的就是 200 + 原文件字节。
+      const r = await req(gwBase, 'GET', `/runtime/sessions/${sessionId}/files?path=${encodeURIComponent(gwPath)}&as=pdf`, {
+        token: adminTok,
+      })
+      assert(r.status === 415, `该 415，实际 ${r.status} ${r.text}`)
+      assert(String(r.json && r.json.error).includes('PDF'), `没带席位的原话：${r.text}`)
+    })
+
     await test('经 Gateway 列工作区：右栏那棵树看得见刚传上去的文件', async () => {
       // 这一跳是右栏文件树的全部数据来源（见 chat.js 的 workspacePanel）。它和上面
       // 那条预览必须给出**同一个 path**，否则树上点开就是 404。

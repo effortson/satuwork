@@ -2,9 +2,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SessionEvent } from '../session/types.ts'
 import { historySlice, publicSessionEvents } from '../session/replay.ts'
 import { createHash, randomUUID } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
+import { basename } from 'node:path'
+import { Readable } from 'node:stream'
 import { WorkspaceError } from '../workspace/index.ts'
 import { docKindOf, extractDocument } from '../workspace/extract.ts'
+import { RenderError, renderToPdf, renderableOf } from '../workspace/render.ts'
 import { CommandError, QUIET_MESSAGE, type ImageRef, type Mention, type MessageSource } from '../agent/index.ts'
 import { expiredMessage, returnMessage, type Disposition, type HandoffActor } from '../policy/handoff.ts'
 import { clearSettledTodos, readTodos } from '../tools/todo.ts'
@@ -1265,6 +1269,49 @@ export function apply(ctx: Context, _config: Config = {}) {
         })
       }
       return
+    }
+    /**
+     * `?as=pdf`：把 Word / Excel / PPT 渲染成 PDF 给界面预览（workspace/render.ts）。
+     *
+     * 和上面 `as=text` 是一对：那条是「模型读到的是什么」，这条是「它长什么样」。这台
+     * 机器没装 LibreOffice 时回 **501**——界面据此退回提取文本，不当成出错。
+     *
+     * 同样摆在 open() 前面，理由同上。
+     */
+    if (req.query.get('as') === 'pdf') {
+      if (!renderableOf(path)) {
+        res.status = 415
+        res.json({ error: '这种格式没法渲染成 PDF' })
+        return
+      }
+      let pdf: string
+      try {
+        pdf = await renderToPdf(ctx.workspace.resolve(path))
+      } catch (e) {
+        const err = e as NodeJS.ErrnoException
+        if (e instanceof RenderError) {
+          res.status = e.reason === 'unavailable' ? 501 : e.reason === 'too-big' ? 413 : 422
+          res.json({ error: e.message, reason: e.reason })
+          return
+        }
+        res.status = e instanceof WorkspaceError ? 400 : err?.code === 'ENOENT' ? 404 : 500
+        res.json({
+          error: e instanceof WorkspaceError ? e.message : err?.code === 'ENOENT' ? '文件不存在' : `渲染失败：${err.message}`,
+        })
+        return
+      }
+      const info = await stat(pdf)
+      const name = basename(path).replace(/\.[^.]+$/, '') + '.pdf'
+      return new Response(Readable.toWeb(createReadStream(pdf)) as ReadableStream<Uint8Array>, {
+        status: 200,
+        headers: {
+          'content-type': 'application/pdf',
+          'content-length': String(info.size),
+          'content-disposition': `inline; ${dispositionName(name)}`,
+          'x-content-type-options': 'nosniff',
+          'cache-control': 'private, no-store',
+        },
+      })
     }
     let file: Awaited<ReturnType<typeof ctx.workspace.open>>
     try {

@@ -88,7 +88,7 @@ APP_DIR="$SEAT_APP_ROOT/app"
 #
 # 步数写死在这里，加减步骤时两个数一起改——管家不认识这几步，它只是把括号里的数原样
 # 往上送。
-STEPS=7
+STEPS=8
 step() { echo "@@step $1/$STEPS $2"; }
 
 step 1 "创建席位账号"
@@ -176,7 +176,41 @@ ensure_chrome() {
 step 3 "安装浏览器"
 ensure_chrome
 
-step 4 "铺席位目录"
+# ── 文档渲染 ──────────────────────────────────────────────────────────
+# 界面上预览 Word / Excel / PPT 靠它：bot 调 soffice 把文件转成 PDF（bot 的
+# workspace/render.ts）。没有它预览退回「只看提取出来的文字」，所以和浏览器一样
+# **装不上不让部署失败**，但要吼出来。
+#
+# 装 -nogui 那一套：只转格式用不着界面，省掉一大截依赖。机器上已经有 soffice（比如
+# 人自己装过带界面的 LibreOffice）就不动它——两套 core 包互相冲突，硬装会把 apt 弄坏。
+#
+# fonts-noto-cjk **不能省**：没有中文字体，转出来的 PDF 里中文全是方块，看起来像是
+# 文件本身坏了。
+# 第 2 步只在缺包时才 `apt-get update`，老机器重铺时索引可能早就过期——装不上先刷一次再试。
+apt_install_quiet() {
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@" >/dev/null 2>&1 && return 0
+  apt-get update -y >/dev/null 2>&1 || return 1
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@" >/dev/null 2>&1
+}
+
+ensure_office() {
+  if command -v soffice >/dev/null 2>&1; then
+    echo "office: 已在位（$(command -v soffice)）"
+  elif apt_install_quiet libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
+      && command -v soffice >/dev/null 2>&1; then
+    echo "office: 装好了（$(command -v soffice)）"
+  else
+    echo "office: 装不上（源里没有或网络不通），这个席位的 Office 文档预览只有文字版" >&2
+  fi
+  if ! dpkg -s fonts-noto-cjk >/dev/null 2>&1; then
+    apt_install_quiet fonts-noto-cjk || echo "office: 中文字体装不上，渲染出来的中文会是方块" >&2
+  fi
+  return 0
+}
+step 4 "安装文档渲染组件"
+ensure_office
+
+step 5 "铺席位目录"
 mkdir -p /usr/local/bin /etc/systemd/system
 
 # ── 家目录底下的东西，root 一律不亲手碰 ─────────────────────────────────
@@ -348,7 +382,7 @@ EOF_ENV
 printf '%s\n' "$VNC_PASSWORD" | write_as_user "$SEAT_DIR/vnc-passwd"
 printf 'backend = "xrender";\nvsync = false;\nuse-damage = false;\n' | write_as_user "$SEAT_DIR/config/picom/picom.conf"
 
-step 5 "拷贝 Bot 程序"
+step 6 "拷贝 Bot 程序"
 if [ ! -f "$BOT_EXTRACT/bin/satuwork.mjs" ]; then
   echo "release $BOT_VERSION has no bin/satuwork.mjs" >&2
   exit 42
@@ -420,7 +454,7 @@ as_user chmod 600 "$SEAT_DIR/desktop.env" "$SEAT_DIR/vnc-passwd"
 # root 不在席位用户换得掉的路径上动手，也不把这个脚本的环境（票、口令）带进他的进程。
 as_user rm -f "$SEAT_DIR/bot.env" "$SEAT_DIR/bot.env.tmp"
 
-step 6 "启动桌面与 Bot"
+step 7 "启动桌面与 Bot"
 systemctl daemon-reload
 # **两个都要 restart，不能用 `enable --now`。**
 # `--now` 的语义是「没在跑就起来」——已经在跑就什么都不做。桌面这条以前正是
@@ -527,6 +561,6 @@ verify_seat_listener() {
   echo "$what 还没在端口 $port 上起来（等了 30 秒）；systemd 会继续拉起。" >&2
   echo "若一直不好：journalctl -u slim-desktop@$SEAT_ID" >&2
 }
-step 7 "等桌面起来"
+step 8 "等桌面起来"
 verify_seat_listener "$RFB" x11vnc
 verify_seat_listener "$HTTP" websockify
