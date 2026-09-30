@@ -130,6 +130,20 @@ export async function runOfficeEdit({ root, test, assert, log }) {
     assert(r.narrow.别的不漏, `tsx 也 require 得到：${r.narrow.原话}`)
   })
 
+  await test('新建的要点：office_guide 认格式，给的模板原样跑得出来、包是干净的', () => {
+    const g = r.guide
+    assert(g.认错格式 && g.带点大写也认, `格式参数：${JSON.stringify(g)}`)
+    for (const kind of ['docx', 'xlsx', 'pptx']) {
+      const k = g[kind]
+      assert(k.模板原样在要点里, `${kind}：要点里的模板和 office-new.ts 的对不上`)
+      assert(k.跑出来了 && k.读得出内容, `${kind} 模板没跑通：${k.输出}`)
+      assert(k.包的问题.length === 0, `${kind} 生成的包有问题：${k.包的问题.join('；')}`)
+    }
+    // 要点里写了的两个坑，模板自己得先躲开。
+    assert(g.xlsx.日期没差一天, 'xlsx 模板的日期差了一天：要用 Date.UTC')
+    assert(g.xlsx.打开时重算, 'xlsx 模板没设 fullCalcOnLoad')
+  })
+
   if (!r.real) {
     log('  - 这台机器没有 LibreOffice，改完真打开看那段跳过')
     return
@@ -137,5 +151,10 @@ export async function runOfficeEdit({ root, test, assert, log }) {
   await test('真 LibreOffice：改过的三份都打得开，PPT 是三页', () => {
     assert(r.real.docx >= 1 && r.real.xlsx >= 1, `打不开：${JSON.stringify(r.real)}`)
     assert(r.real.pptx === 3, `PPT 页数不对：${JSON.stringify(r.real)}`)
+  })
+  await test('真 LibreOffice：新建模板出的三份都打得开，PPT 是四页', () => {
+    const n = r.realNew
+    assert(n.docx >= 1 && n.xlsx >= 1, `打不开：${JSON.stringify(n)}`)
+    assert(n.pptx === 4, `PPT 页数不对：${JSON.stringify(n)}`)
   })
 }
