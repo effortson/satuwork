@@ -243,5 +243,35 @@ out.channel = {
   清单标出当前: /Bot 默认（默认） `p-bot\/m-bot` ← 当前/.test(channelModelHelp({ effective: opts[0], options: opts })),
 }
 
+// ── 8. 目录跟不上名单：平台刚加的备选（常见的是自动发现刚补进来的模型），名单一分钟内到了，
+// 模型目录却还是启动时那份。选择器上会只剩一个裸 id、没有推理和窗口；真跑时 modelOf 查不到，
+// 推理关着跑。算状态之前要先重拉一次目录，而且按时间节流——真不在目录里的别每次都拉。
+{
+  const fullCatalog = ctx.llm.catalog
+  const stale = fullCatalog().filter((p) => p.provider !== 'p-alt')
+  let pulls = 0
+  ctx.llm.catalog = () => stale
+  ctx.llm.refresh = async () => {
+    pulls++
+    ctx.llm.catalog = fullCatalog
+    return fullCatalog()
+  }
+  const plain = (await stateNow()).options.find((c) => c.key === 'p-alt/m-alt')
+  const fresh = (await ctx.agents.freshModelState(await ctx.sessions.events(sessionId))).options.find((c) => c.key === 'p-alt/m-alt')
+  const again = await ctx.agents.freshModelState(await ctx.sessions.events(sessionId))
+  // 目录里压根没有的：拉过一次之后 30 秒内不再拉。
+  const ghostRefresh = pulls
+  ctx.catalog.models.dailyAlternates.push({ provider: 'p-ghost', model: 'm-ghost', reasoningEffort: 'off' })
+  await ctx.agents.freshModelState(await ctx.sessions.events(sessionId))
+  await ctx.agents.freshModelState(await ctx.sessions.events(sessionId))
+  ctx.catalog.models.dailyAlternates.pop()
+  out.staleCatalog = {
+    旧目录下只有裸id: plain?.label === 'm-alt' && !plain?.reasoning,
+    先重拉再算: fresh?.label === 'Alt 大模型' && fresh?.reasoning === true && fresh?.contextWindow === 200000,
+    认得的不再拉: pulls === 1 && again.options[1]?.label === 'Alt 大模型',
+    不认得的节流: pulls - ghostRefresh <= 1,
+  }
+}
+
 console.log('__RESULT__' + JSON.stringify(out))
 process.exit(0)

@@ -330,7 +330,7 @@ export function apply(ctx: Context, _config: Config = {}) {
       let reply = ''
       try {
         const history = await ctx.sessions.events(mapped.sessionId)
-        const state = ctx.agents.sessionModelState(history)
+        const state = await ctx.agents.freshModelState(history)
         if (!modelCmd.arg) reply = channelModelHelp(state)
         else {
           const want = pickModelArg(modelCmd.arg, state.options)
@@ -1125,7 +1125,7 @@ export function apply(ctx: Context, _config: Config = {}) {
    */
   ctx.server.get('/api/sessions/:id/model', async (req, res) => {
     try {
-      res.json(ctx.agents.sessionModelState(await ctx.agents.sessionHistoryOr404(req.params.id)))
+      res.json(await ctx.agents.freshModelState(await ctx.agents.sessionHistoryOr404(req.params.id)))
     } catch (e) {
       res.status = e instanceof CommandError ? e.status : 500
       res.json({ error: (e as Error).message })
@@ -1148,7 +1148,7 @@ export function apply(ctx: Context, _config: Config = {}) {
     try {
       let key = (body.key as string | null | undefined) || null
       if (typeof body.arg === 'string' && body.arg.trim()) {
-        const state = ctx.agents.sessionModelState(await ctx.agents.sessionHistoryOr404(req.params.id))
+        const state = await ctx.agents.freshModelState(await ctx.agents.sessionHistoryOr404(req.params.id))
         const hit = pickModelArg(body.arg, state.options)
         if (!hit) {
           const names = state.options.map((c, i) => `${i + 1}. ${c.label}`).join('  ')
