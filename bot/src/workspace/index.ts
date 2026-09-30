@@ -382,7 +382,7 @@ export function safeName(raw: string): string {
  * 跑不出去（resolve 还会再拦一道），但让一个可疑的 id 在磁盘上留下这么个目录名，
  * 下次有人看到只会以为出了别的事。
  */
-function safeSegment(raw: string): string {
+export function safeSegment(raw: string): string {
   const cleaned = (raw || '').replace(/[^A-Za-z0-9._-]/g, '').replace(/^\.+/, '').slice(0, 100)
   return cleaned || 'misc'
 }

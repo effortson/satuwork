@@ -1,7 +1,10 @@
+import { copyFile, link, mkdir, readdir, rm } from 'node:fs/promises'
 import { basename, extname, join, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { RenderError, renderPages, renderableOf } from '../workspace/render.ts'
+import { safeSegment } from '../workspace/index.ts'
+import { RenderError, renderPages, renderableOf, type PageImage } from '../workspace/render.ts'
 import { fail, registerTool } from './common.ts'
+import type { ToolCall } from './index.ts'
 
 /**
  * `office_render`：把 Word / Excel / PPT / PDF 的某几页画成图，交给模型自己看。
@@ -31,11 +34,22 @@ const DEFAULT_PAGES = 3
  */
 const WIDTH = 1024
 
-/** `"1-3,5"` → [1,2,3,5]。写错的段直接报错，不静默丢掉。 */
+/**
+ * 一条会话最多留几张 office_render 的图。
+ *
+ * 渲染缓存（`.satuwork/render/<键>/`）会被修剪，而会话日志里的 images、消息底下那张缩略图
+ * 指着的都是这里的路径——所以每次交出去的图另存一份到会话自己的目录下（硬链接，不占双份
+ * 盘），只按这条会话自己的份数修剪。浏览器截图也是按会话存的（browser/<会话>/），一个道理。
+ * 更早的缩略图过了这个数会没，那时它早就不在模型的上下文里了（MAX_LIVE_TOOL_IMAGES）。
+ */
+const KEPT_PER_SESSION = 200
+
+/** `"1-3,5"` → [1,2,3,5]（去重、从小到大）。写错的段直接报错，不静默丢掉。 */
 export function parsePages(spec: unknown): number[] {
   if (spec === undefined || spec === null || spec === '') return Array.from({ length: DEFAULT_PAGES }, (_, i) => i + 1)
   if (typeof spec === 'number') return [Math.trunc(spec)]
-  const out: number[] = []
+  // 去重之后再和上限比：「1-4,2-4」只涉及四页，不该按七个数算成超了。
+  const out = new Set<number>()
   for (const part of String(spec).split(/[,，\s]+/).filter(Boolean)) {
     const m = /^(\d+)(?:\s*[-~–]\s*(\d+))?$/.exec(part)
     if (!m) fail(`pages 写得不对：「${part}」。写成 "1-3" 或 "2,5" 这样。`)
@@ -43,8 +57,27 @@ export function parsePages(spec: unknown): number[] {
     const to = m[2] ? Number(m[2]) : from
     if (from < 1 || to < from) fail(`pages 写得不对：「${part}」。页码从 1 开始，范围要从小到大。`)
     // 先按上限截住：「1-100000」不该在这儿先摆出十万个数。
-    for (let p = from; p <= to && out.length <= MAX_PAGES; p++) out.push(p)
+    for (let p = from; p <= to && out.size <= MAX_PAGES; p++) out.add(p)
   }
+  return [...out].sort((a, b) => a - b)
+}
+
+/** 把渲染缓存里的图另存到会话自己的目录（见 KEPT_PER_SESSION），回新的绝对路径。 */
+async function keepForSession(root: string, sessionId: string, source: string, images: PageImage[]): Promise<PageImage[]> {
+  const dir = join(root, '.satuwork', 'render', 'sessions', safeSegment(sessionId))
+  await mkdir(dir, { recursive: true })
+  // 文件名打头是时间戳：按名字排就是按先后排，修剪时不用再 stat。
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '')
+  const stem = safeSegment(basename(source, extname(source))).slice(0, 40)
+  const out: PageImage[] = []
+  for (const img of images) {
+    const dest = join(dir, `${stamp}-${Math.random().toString(36).slice(2, 6)}-${stem}-p${img.page}.png`)
+    // 硬链接不占双份盘；跨盘、或者文件系统不支持时退回复制。
+    await link(img.file, dest).catch(() => copyFile(img.file, dest))
+    out.push({ page: img.page, file: dest })
+  }
+  const names = (await readdir(dir)).filter((n) => n.endsWith('.png')).sort()
+  for (const n of names.slice(0, Math.max(0, names.length - KEPT_PER_SESSION))) await rm(join(dir, n), { force: true })
   return out
 }
 
@@ -72,7 +105,7 @@ export function apply(ctx: Context) {
         required: ['path'],
       },
     },
-    async ({ path, pages }: { path?: string; pages?: unknown }) => {
+    async ({ path, pages }: { path?: string; pages?: unknown }, call: ToolCall) => {
       if (!path) fail('缺少 path 参数')
       const file = ctx.workspace.resolve(path)
       if (!renderableOf(file) && extname(file).toLowerCase() !== '.pdf') {
@@ -87,7 +120,8 @@ export function apply(ctx: Context) {
         if (e instanceof RenderError) fail(`${show(file)} 画不出来：${e.message}`)
         throw e
       }
-      const images = got.images.map((i) => ({ path: show(i.file), mime: 'image/png' }))
+      const kept = await keepForSession(ctx.workspace.root, call.sessionId, file, got.images)
+      const images = kept.map((i) => ({ path: show(i.file), mime: 'image/png' }))
       const skipped = wanted.filter((p) => !got.images.some((i) => i.page === p))
       return {
         text:

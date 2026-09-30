@@ -112,6 +112,6 @@ export async function runDocRender({ root, test, assert, log }) {
     // 工作区里的文档可能是从网上下来的，转换时去取外链就是从席位发出的请求。
     assert(r.realLinks && r.realLinks.rendered, `带外链的文档没转出来：${JSON.stringify(r.realLinks)}`)
     assert(r.realLinks.hits === 0, `转换时取了外链：${r.realLinks.hits} 次`)
-    assert(r.realLinks.hardeningKept, 'LibreOffice 退出时把加固项冲掉了')
+    assert(r.realLinks.hardeningKept, `LibreOffice 退出时把配置项冲掉了：${(r.realLinks.lost || []).join('、')}`)
   })
 }

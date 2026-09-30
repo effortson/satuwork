@@ -24,6 +24,7 @@ import * as agentPlugin from './src/agent/index.ts'
 import * as lookTools from './src/tools/look.ts'
 import { parsePages } from './src/tools/look.ts'
 import { toAnthropic, toOpenAI, toOpenAIResponses } from './src/llm/gateway.ts'
+import { compactionPoint } from './src/agent/index.ts'
 import { AssistantMessageEventStream, emptyAssistant } from './src/llm/stream.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'satu-look-'))
@@ -48,6 +49,8 @@ out.pages = {
   范围: tryPages('2-4'),
   混写: tryPages('1, 3，5'),
   数字: tryPages(7),
+  // 去重之后再比上限：「1-4,2-4」只涉及四页。
+  重叠: tryPages('1-4,2-4'),
   倒着写: tryPages('5-2'),
   乱写: tryPages('第二页'),
   // 不能先摆出十万个数再说超了。
@@ -233,6 +236,60 @@ const imagesOfMsg = (m) => blocks(m).filter((c) => c.type === 'image')
   }
 }
 
+// ── B3. 换模型：上一轮看不了图，这一轮看得了——不许一边说「看不了」一边带着图 ─────
+{
+  setVision(false)
+  const sid = await ctx.sessions.create({ title: '换模型', botId: 'default' })
+  captured = []
+  script = ['look', 'stop']
+  await ctx.agents.send(sid, '画出来看看').catch(() => {})
+  const logged = (await ctx.sessions.events(sid)).filter((e) => e.type === 'tool/result').map((e) => e.data.text)
+  // 同一条会话再用看不了图的模型来一轮：说明只该出现一次。
+  captured = []
+  script = ['stop']
+  await ctx.agents.send(sid, '还是看不了').catch(() => {})
+  const blindAgain = toolResults(captured[0])
+  const notes = (m) => blocks(m).filter((c) => c.type === 'text' && c.text.includes('看不了图')).length
+  setVision(true)
+  captured = []
+  script = ['stop']
+  await ctx.agents.send(sid, '换个能看图的').catch(() => {})
+  const switched = toolResults(captured[0])
+  out.switch = {
+    日志正文里没有说明: logged.length === 1 && !logged[0].includes('看不了图'),
+    同一条说明只出现一次: blindAgain.length === 1 && notes(blindAgain[0]) === 1,
+    换了模型就带图: switched.length === 1 && imagesOfMsg(switched[0]).length === 4,
+    换了模型不再说看不了: switched.length === 1 && notes(switched[0]) === 0,
+  }
+}
+
+// ── B4. 压缩估算：图按这一轮实际送进去的算 ─────────────────────────────
+{
+  let seq = 0
+  const ev = (type, data) => ({ seq: ++seq, time: 1000 + seq, type, data })
+  const turn = (n, withImages) => {
+    const rows = [ev('user/message', { message: { id: `u${n}`, role: 'user', content: [{ type: 'text', text: `问题${n}` }] }, source: { kind: 'user' } }), ev('turn/start', { turn: n })]
+    if (withImages) {
+      rows.push(
+        ev('assistant/message', { turn: n, step: 1, message: { id: `a${n}`, role: 'assistant', content: [{ type: 'tool-call', callId: `c${n}`, name: 'office_render', arguments: '{}' }] }, usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, reasoningTokens: 0 } }),
+        ev('tool/call', { turn: n, step: 1, callId: `c${n}`, name: 'office_render', arguments: '{}' }),
+        ev('tool/result', { turn: n, step: 1, callId: `c${n}`, text: '画好了', failed: false, images: Array.from({ length: 20 }, (_, i) => ({ path: `p${i}.png`, mime: 'image/png' })) }),
+      )
+    }
+    rows.push(ev('assistant/message', { turn: n, step: 2, message: { id: `b${n}`, role: 'assistant', content: [{ type: 'text', text: `回答${n}` }] }, usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, reasoningTokens: 0 } }), ev('turn/end', { turn: n, reason: 'completed' }))
+    return rows
+  }
+  const events = [ev('session', { version: 3, id: 's', createdAt: 1000, botId: 'b' }), ...turn(1, false), ...turn(2, true), ...turn(3, false)]
+  const ends = events.filter((e) => e.type === 'turn/end').map((e) => e.seq)
+  // 预算 3000：看不了图时第 2 轮只值二十句说明（约 800），留得下；按图算（活动窗口 6 张 ≈ 9000）留不下。
+  out.estimate = {
+    看不了图时留得下第二轮: compactionPoint(events, 3000, false)?.seq === ends[0],
+    看得了图时留不下: compactionPoint(events, 3000, true)?.seq === ends[1],
+    // 只算活动窗口里的 6 张，不是全部 20 张：预算 12000 装得下 6 张，装不下 20 张。
+    只算最近六张: compactionPoint(events, 12000, true)?.seq === ends[0],
+  }
+}
+
 // ── C. 真出图（机器上有 pdftoppm 或 LibreOffice 才跑） ─────────────────
 {
   const { officeExecutable, pdftoppmExecutable } = await import('./src/workspace/render.ts')
@@ -294,6 +351,32 @@ const imagesOfMsg = (m) => blocks(m).filter((c) => c.type === 'image')
   }
   out.real = { hasToppm, hasOffice }
   if (hasToppm) out.real.pdftoppm = await describe('pdftoppm', 'three.pdf')
+  if (hasToppm || hasOffice) {
+    // 渲染缓存被修剪（这里直接删光）之后，交出去的图还在：它们另存在会话自己的目录下。
+    const r = await call({ path: 'three.pdf', pages: '1' })
+    const renderRoot = join(work, '.satuwork', 'render')
+    const { readdirSync } = await import('node:fs')
+    for (const n of readdirSync(renderRoot)) if (n !== 'sessions') rmSync(join(renderRoot, n), { recursive: true, force: true })
+    const { existsSync } = await import('node:fs')
+    out.real.kept = {
+      在会话目录下: String(r.images?.[0]?.path ?? '').includes('.satuwork/render/sessions/'),
+      缓存删了图还在: Boolean(r.images?.length) && existsSync(join(work, r.images[0].path)),
+      缩略图也还在: Boolean(r.shot) && existsSync(join(work, r.shot.path)),
+    }
+  }
+  if (hasOffice) {
+    // pdftoppm 在但画不了（这里用一个一跑就失败的假 pdftoppm）：换 LibreOffice 再试。
+    const broken = join(home, 'broken-pdftoppm')
+    writeFileSync(broken, '#!/bin/sh\necho "Syntax Error: broken" >&2\nexit 1\n')
+    ;(await import('node:fs')).chmodSync(broken, 0o755)
+    const keep = process.env.SATUWORK_PDFTOPPM
+    process.env.SATUWORK_PDFTOPPM = broken
+    rmSync(join(work, '.satuwork', 'render'), { recursive: true, force: true })
+    const r = await call({ path: 'three.pdf', pages: '2' })
+    out.real.toppmFallback = { 画出来了: (r.images ?? []).length === 1, 原话: (r.text ?? '').slice(0, 120) }
+    if (keep === undefined) delete process.env.SATUWORK_PDFTOPPM
+    else process.env.SATUWORK_PDFTOPPM = keep
+  }
   if (hasOffice) {
     // 退路：没有 pdftoppm，只剩 LibreOffice——三页必须真是三页，不是三张第一页。
     out.real.libreoffice = await withoutToppm(() => describe('libreoffice', 'three.pdf'))
