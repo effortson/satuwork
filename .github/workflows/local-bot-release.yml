@@ -52,7 +52,9 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.3.0（v6 拿锁文件核对 pnpm 原生二进制，锁文件里没有 darwin-x64 那份，Intel Mac 上装不上）
+      # 别升到 v6：v6.1.0 拿锁文件核对 pnpm 原生二进制，锁文件里没有 darwin-x64 那份，Intel Mac 上装不上
+      # （.github/dependabot.yml 挡了它的大版本升级）。版本注释单独放在下一行末尾，dependabot 才认得出、会跟着改。
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@v7
         with:
           node-version: 24
