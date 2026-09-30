@@ -29,6 +29,8 @@ const real = officeExecutable()
 /**
  * 假 soffice。照真货的命令行取 --outdir 和输入文件，按输入内容决定怎么表现：
  * HANG 卡住、EMPTY 退出码 0 但什么都不写（真货对读不了的文件就这样）、FAIL 非零退出，
+ * LINGER 转完就退、却留一个攥着 stderr 的后台进程，HANGESC 卡住并且留一个**逃出进程组**
+ * 的后代攥着 stderr，SLOW 转得慢一点（用来在排队期间改文件），
  * 其余写一份以 %PDF 开头的「PDF」，正文带上输入内容，好认出是哪份转出来的。
  *
  * 每次调用往 calls 里记一行；`running` 目录当互斥标记，撞上了记 overlap——一次只该
@@ -54,7 +56,12 @@ echo "$input" >> "$LOG/calls"
 if ! mkdir "$LOG/running" 2>/dev/null; then echo overlap >> "$LOG/overlap"; fi
 body=$(cat "$input")
 case "$body" in
+  HANGESC*)
+    perl -MPOSIX -e 'POSIX::setsid(); sleep 30' & echo $! > "$LOG/escaped-pid"
+    sleep 30 & wait $! ;;
   HANG*) sleep 30 & echo $! > "$LOG/hang-pid"; wait ;;
+  LINGER*) printf '%%PDF-1.4 fake %s' "$body" > "$out/in.pdf"; sleep 30 & echo $! > "$LOG/linger-pid" ;;
+  SLOW*) sleep 0.5; printf '%%PDF-1.4 fake %s' "$body" > "$out/in.pdf" ;;
   EMPTY*) ;;
   FAIL*) echo "boom: cannot load" >&2; rmdir "$LOG/running"; exit 3 ;;
   *) sleep 0.05; printf '%%PDF-1.4 fake %s' "$body" > "$out/in.pdf" ;;
@@ -134,19 +141,81 @@ const t0 = Date.now()
 out.hang = await renderToPdf(file('h.docx', 'HANG')).then(() => ({ rendered: true }), failure)
 out.hangMs = Date.now() - t0
 await new Promise((r) => setTimeout(r, 200))
-const hangPid = Number(readFileSync(join(log, 'hang-pid'), 'utf8'))
-let alive = true
-try {
-  process.kill(hangPid, 0)
-} catch {
-  alive = false
+/**
+ * 进程还在不在。**僵尸不算活着**：它已经死了，只是没人收尸——在 PID 1 不回收僵尸的地方
+ * （不带 --init 的容器）被杀的进程会一直挂成 Z，`kill(pid, 0)` 照样成功，只看它会误报。
+ */
+function alive(pid) {
+  try {
+    process.kill(pid, 0)
+  } catch {
+    return false
+  }
+  try {
+    // /proc/<pid>/stat：「pid (comm) state ...」，comm 里可能有空格和括号，从最后一个 ) 往后取。
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z'
+  } catch {
+    return true // 没有 /proc（macOS）：孤儿僵尸由 launchd 马上收掉，kill 0 的结果就够了
+  }
 }
-out.hangChildKilled = !alive
+out.hangChildKilled = !alive(Number(readFileSync(join(log, 'hang-pid'), 'utf8')))
 // 假装上一次被杀时留下了锁。
 mkdirSync(join(home, 'render-cache', 'profile'), { recursive: true })
 writeFileSync(join(home, 'render-cache', 'profile', '.lock'), 'x')
 out.afterHang = await renderToPdf(file('after-hang.docx', 'after hang')).then(() => true, () => false)
 out.staleLockCleared = !existsSync(join(log, 'stale-lock'))
+
+const killPid = (name) => {
+  try {
+    process.kill(Number(readFileSync(join(log, name), 'utf8')), 'SIGKILL')
+  } catch {}
+}
+
+// ── 6b. 进程退了、后代还攥着 stderr：不能永远等 close ────────────────
+// 修之前只等 'close'：这一次永不结束，后面所有转换都排在它后面，整个席位的预览一起卡死。
+const l0 = Date.now()
+out.linger = await Promise.race([
+  renderToPdf(file('linger.docx', 'LINGER')).then((p) => readFileSync(p, 'utf8').includes('LINGER'), failure),
+  new Promise((r) => setTimeout(() => r('stuck'), 8000)),
+])
+out.lingerMs = Date.now() - l0
+killPid('linger-pid')
+
+// ── 6c. 超时、而且有个后代逃出了进程组：杀不到它也要按时报超时 ─────────
+const e0 = Date.now()
+out.escaped = await Promise.race([
+  renderToPdf(file('esc.docx', 'HANGESC')).then(() => ({ rendered: true }), failure),
+  new Promise((r) => setTimeout(() => r('stuck'), 8000)),
+])
+out.escapedMs = Date.now() - e0
+killPid('escaped-pid')
+out.afterEscaped = await renderToPdf(file('after-esc.docx', 'after escaped')).then(() => true, () => false)
+
+// ── 6d. 排队期间文件被改：按轮到时的那份记键，内容和键对得上 ──────────
+rmSync(join(log, 'running'), { recursive: true, force: true })
+const slow = renderToPdf(file('slow.docx', 'SLOW first'))
+const moving = file('moving.docx', 'moving v1')
+const movingJob = renderToPdf(moving) // stat 到的是 v1，然后排在 SLOW 后面
+writeFileSync(moving, 'moving v2')
+utimesSync(moving, new Date(), new Date(Date.now() + 10_000))
+await slow
+const movedPdf = await movingJob
+const m0 = calls()
+const again = await renderToPdf(moving)
+out.moved = {
+  newContent: readFileSync(movedPdf, 'utf8').includes('moving v2'),
+  // 修之前 v2 的内容存在 v1 的键底下，v2 再来一次还得重转。
+  cachedUnderNewKey: again === movedPdf && calls() === m0,
+}
+
+// ── 6e. 私有配置目录里写好了「挡外链、禁宏」 ─────────────────────────
+const xcu = join(home, 'render-cache', 'profile', 'user', 'registrymodifications.xcu')
+const hardening = existsSync(xcu) ? readFileSync(xcu, 'utf8') : ''
+out.hardening = {
+  blockLinks: /BlockUntrustedRefererLinks[^]*?<value>true<\/value>/.test(hardening),
+  noMacros: /DisableMacrosExecution[^]*?<value>true<\/value>/.test(hardening),
+}
 
 // ── 7. 太大：不交给 soffice ───────────────────────────────────────────
 const big = join(dir, 'big.xlsx')
@@ -207,6 +276,55 @@ if (real || realOverride) {
     const xdoc = await getDocumentProxy(new Uint8Array(readFileSync(await renderToPdf(realXlsx))))
     const { text: xtext } = await extractText(xdoc, { mergePages: true })
     out.realXlsx = { header: String(xtext).includes('地区'), number: String(xtext).includes('12345') }
+
+    // 外链：docx 里一张指向本机 HTTP 的链接图片。转换时不该有人来取。
+    const { createServer } = await import('node:http')
+    const hits = []
+    const server = createServer((req, res) => {
+      hits.push(req.url)
+      res.end()
+    })
+    await new Promise((r) => server.listen(0, '127.0.0.1', r))
+    const port = server.address().port
+    const linked = new JSZip()
+    linked.file(
+      '[Content_Types].xml',
+      '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+        '<Default Extension="xml" ContentType="application/xml"/>' +
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    )
+    linked.folder('_rels').file(
+      '.rels',
+      '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+    )
+    linked.folder('word/_rels').file(
+      'document.xml.rels',
+      '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        `<Relationship Id="rImg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="http://127.0.0.1:${port}/linked.png" TargetMode="External"/></Relationships>`,
+    )
+    linked.folder('word').file(
+      'document.xml',
+      '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
+        'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" ' +
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+        'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body><w:p><w:r>' +
+        '<w:drawing><wp:inline><wp:extent cx="914400" cy="914400"/><wp:docPr id="1" name="p"/><a:graphic>' +
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic>' +
+        '<pic:nvPicPr><pic:cNvPr id="1" name="p"/><pic:cNvPicPr/></pic:nvPicPr>' +
+        '<pic:blipFill><a:blip r:link="rImg"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+        '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr>' +
+        '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>',
+    )
+    const linkedDoc = join(dir, 'linked.docx')
+    writeFileSync(linkedDoc, await linked.generateAsync({ type: 'nodebuffer' }))
+    const linkedOk = await renderToPdf(linkedDoc).then(() => true, () => false)
+    server.close()
+    // LibreOffice 退出时会重写配置文件：加固项得还在。
+    const after = readFileSync(join(home, 'render-cache', 'profile', 'user', 'registrymodifications.xcu'), 'utf8')
+    out.realLinks = { rendered: linkedOk, hits: hits.length, hardeningKept: /BlockUntrustedRefererLinks/.test(after) }
   } catch (e) {
     out.real = failure(e)
   }

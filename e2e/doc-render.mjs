@@ -57,6 +57,29 @@ export async function runDocRender({ root, test, assert, log }) {
     assert(r.staleLockCleared, '上一次留下的 .lock 没清，下一次 soffice 会直接退出')
   })
 
+  await test('进程退了、后代还攥着 stderr：照常交差，不等一个永远不来的 close', () => {
+    // 只等 close 的话这一次永不结束，而后面所有转换都排在它后面——整个席位的预览一起卡死。
+    assert(r.linger === true, `没交差：${JSON.stringify(r.linger)}`)
+    assert(r.lingerMs < 5000, `等太久了：${r.lingerMs} ms`)
+  })
+
+  await test('超时且有后代逃出进程组：杀不到它也按时报超时，队伍不堵', () => {
+    assert(r.escaped !== 'stuck', '超时之后这一次一直没结束')
+    assert(r.escaped.reason === 'failed' && /超时/.test(r.escaped.message), `没报超时：${JSON.stringify(r.escaped)}`)
+    assert(r.escapedMs < 6000, `报得太晚：${r.escapedMs} ms`)
+    assert(r.afterEscaped, '之后的转换被堵住了')
+  })
+
+  await test('排队期间文件被改：转的是新内容，键也记在新内容上', () => {
+    assert(r.moved.newContent, '转出来的不是最新那份')
+    // 键按请求进来时的 stat 记，新内容就存在旧键底下，新内容再来一次还得重转。
+    assert(r.moved.cachedUnderNewKey, '新内容没按新键缓存')
+  })
+
+  await test('私有配置目录里写好了「挡外链、禁宏」', () => {
+    assert(r.hardening.blockLinks && r.hardening.noMacros, `加固项没写进去：${JSON.stringify(r.hardening)}`)
+  })
+
   await test('太大的文件不交给 soffice', () => {
     assert(r.big.reason === 'too-big' && /MB/.test(r.big.message), `拒绝得不清不楚：${JSON.stringify(r.big)}`)
     assert(r.bigNotRun, '超限的文件还是被转了')
@@ -76,5 +99,12 @@ export async function runDocRender({ root, test, assert, log }) {
     // 席位上没装 fonts-noto-cjk 时，中文在 PDF 里是方块（文字层里也就对不上）。
     assert(r.real.chinese && r.real.latin, `Word 转出来缺字：${JSON.stringify(r.real)}`)
     assert(r.realXlsx && r.realXlsx.header && r.realXlsx.number, `Excel 转出来缺东西：${JSON.stringify(r.realXlsx)}`)
+  })
+
+  await test('真 LibreOffice：文档里的外链图片不会被取，加固项活过了它的重写', () => {
+    // 工作区里的文档可能是从网上下来的，转换时去取外链就是从席位发出的请求。
+    assert(r.realLinks && r.realLinks.rendered, `带外链的文档没转出来：${JSON.stringify(r.realLinks)}`)
+    assert(r.realLinks.hits === 0, `转换时取了外链：${r.realLinks.hits} 次`)
+    assert(r.realLinks.hardeningKept, 'LibreOffice 退出时把加固项冲掉了')
   })
 }

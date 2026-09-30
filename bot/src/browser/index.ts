@@ -3,7 +3,8 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { lookup } from 'node:dns/promises'
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { join } from 'node:path'
+import { findExecutable } from '../executable.ts'
 import { satuworkHome } from '../home.ts'
 import { childEnv } from '../workspace/index.ts'
 import { blockedHost, hostOf, privateAddress, siteAllowed, type ActionContext } from '../policy/browser.ts'
@@ -49,17 +50,11 @@ export interface Config {
  * 不在这里运行 `which` / shell，避免浏览器路径变成一段可执行命令。
  */
 export function localBrowserExecutable(): string | null {
-  const override = process.env.SATUWORK_CHROME?.trim()
-  if (override) return existsSync(override) ? override : null
-
   const names =
     process.platform === 'win32'
       ? ['chrome.exe', 'msedge.exe', 'chromium.exe']
       : ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']
-  const onPath = names.flatMap((name) =>
-    (process.env.PATH || '').split(delimiter).filter(Boolean).map((dir) => join(dir, name)),
-  )
-  const candidates =
+  const fixed =
     process.platform === 'darwin'
       ? [
           '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -67,7 +62,6 @@ export function localBrowserExecutable(): string | null {
           '/Applications/Chromium.app/Contents/MacOS/Chromium',
           join(homedir(), 'Applications/Chromium.app/Contents/MacOS/Chromium'),
           '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-          ...onPath,
         ]
       : process.platform === 'win32'
         ? [
@@ -80,10 +74,9 @@ export function localBrowserExecutable(): string | null {
             ...(process.env.LOCALAPPDATA
               ? [join(process.env.LOCALAPPDATA, 'Google/Chrome/Application/chrome.exe')]
               : []),
-            ...onPath,
           ]
-        : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', ...onPath]
-  return candidates.find((candidate) => existsSync(candidate)) ?? null
+        : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium']
+  return findExecutable(process.env.SATUWORK_CHROME, names, fixed)
 }
 
 /** 一次动作之后等页面消化多久。够 SPA 跑完一轮渲染，又不至于每一步都明显卡一下。 */
