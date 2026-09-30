@@ -6,10 +6,10 @@
 import type { ServerResponse } from 'node:http'
 import { gatewayPageIsHttp, HttpError, type Req } from '../http.ts'
 import { bodyOf, strField } from './validate.ts'
-import { directReleaseUrl, openRelease, parseBotVersion, registerRemoteRelease } from '../releases.ts'
+import { desiredBotRelease, directReleaseUrl, openRelease, parseBotVersion, registerRemoteRelease, releaseForArch } from '../releases.ts'
 import { pipeline } from 'node:stream/promises'
 import { randomBytes } from 'node:crypto'
-import { type BotRelease, type Db, type Machine, type ReleaseKind, releaseArch } from '../db.ts'
+import { type BotRelease, type Db, type Machine, type ReleaseKind } from '../db.ts'
 import { type JwtKeys, signDesktopTicket } from '../crypto.ts'
 import { MIN_DIRECT_MANAGER_DOWNLOAD_PROTOCOL, type MachineLoad, machinePaired, ownerMachine } from '../deploy.ts'
 
@@ -207,32 +207,17 @@ export function desktopTicketFor(
  */
 export const MIN_MANAGER_NODE = 24
 
+/** 管家那条版本线上的 releaseForArch（见 releases.ts）。 */
+export async function managerReleaseFor(db: Db, version: string, arch: string | null) {
+  return releaseForArch(db, 'manager', version, arch)
+}
+
 /**
  * 这台机器该跑哪个管家版本。
  *
  * 优先级：单机钉的 > 平台全局钉的 > 最新发布。单机那一层是灰度用的——先让一台机器
  * 追新版本，看几天再改全局。
  */
-/**
- * 钉的那一版，但**换成这台机器的架构**。
- *
- * `0.1.2+abc-x64` 和 `0.1.2+abc-arm64` 是同一次发布的两份包。钉版本的人（尤其是平台
- * 全局那一档）只能写一个字符串，写不了两个架构；照着发下去，另一半机器必然拿到错包。
- * 所以先按原样找，架构对不上就找同版本的兄弟包。
- *
- * 找不到兄弟就返回 undefined，让调用方回落——发一个已知错架构的包没有任何意义。
- */
-export async function managerReleaseFor(db: Db, version: string, arch: string | null) {
-  const row = await db.botRelease(version, 'manager')
-  const want = arch?.trim()
-  if (!want) return row
-  const got = row ? releaseArch(row.version) : undefined
-  if (row && (!got || got === want)) return row
-  const sibling = version.replace(/-(x64|arm64)$/, '') + '-' + want
-  if (sibling === version) return row
-  return await db.botRelease(sibling, 'manager')
-}
-
 export async function desiredManagerRelease(db: Db, machine?: Machine) {
   const arch = machine?.arch ?? null
   const pinned = machine?.desiredManagerVersion?.trim()
@@ -351,6 +336,12 @@ export async function machineCard(
   const arch = machine.arch ?? null
   const botLatest = arch ? ((await db.latestBotRelease('bot', arch))?.version ?? null) : latest.botLatest
   const managerLatest = arch ? ((await db.latestBotRelease('manager', arch))?.version ?? null) : latest.managerLatest
+  /**
+   * 席位该跑的那一版：平台钉的，没钉就是这台机器架构的最新包。「可升级」按它判，不按最新判
+   * ——钉住的时候最新那版恰恰是不该装的，按最新判会让卡片永远挂着一个不该按的「全部升级」。
+   * 和心跳里的自动跟版、不指定版本的部署是同一个目标（releases.ts 的 desiredBotRelease）。
+   */
+  const botDesired = (await desiredBotRelease(db, arch))?.version ?? null
   // 席位清单给平台端的日志选择器用：要看某个席位的 bot 日志，得先知道有哪些席位。
   const seatList =
     opts.seatList === false
@@ -377,7 +368,8 @@ export async function machineCard(
     tplVersions,
     botLatest,
     managerLatest,
-    botOutdated: Boolean(botLatest) && botVersions.some((v) => v.version !== botLatest),
+    botDesired,
+    botOutdated: Boolean(botDesired) && botVersions.some((v) => v.version !== botDesired),
     managerDesired: desired,
     managerOutdated: Boolean(managerLatest) && Boolean(machine.managerVersion) && machine.managerVersion !== managerLatest,
     managerPending: Boolean(desired) && Boolean(machine.managerVersion) && machine.managerVersion !== desired,

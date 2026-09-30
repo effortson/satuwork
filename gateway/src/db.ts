@@ -2938,10 +2938,18 @@ export class Db {
    * 给一个席位排一次部署（批量更新那两条路）。席位行别的格一个都不动。
    *
    * 已经排着的就盖掉：后排的那一次说的是「现在要的样子」，前一次没轮到就没必要做了。
+   *
+   * `ifIdle` 反过来：**队里已经有活就不排**，判断和写入是同一条 update。给心跳里的自动跟版
+   * 用——它是背景里的例行公事，不能盖掉人手工排下的那一次。
    */
-  async queueSeatDeploy(accountId: string, botId: string, request: SeatDeployRequest): Promise<boolean> {
+  async queueSeatDeploy(
+    accountId: string,
+    botId: string,
+    request: SeatDeployRequest,
+    opts: { ifIdle?: boolean } = {},
+  ): Promise<boolean> {
     const n = await this.run(
-      'update seat_runtimes set "deployQueued" = ?::jsonb where "accountId" = ? and "botId" = ?',
+      `update seat_runtimes set "deployQueued" = ?::jsonb where "accountId" = ? and "botId" = ?${opts.ifIdle ? ' and "deployQueued" is null' : ''}`,
       [JSON.stringify(request), accountId, botId],
     )
     return n > 0
@@ -4393,6 +4401,8 @@ export class Db {
       // 后果是「全机队钉版本」这一级完全失效：传一个包上去，所有没有逐台钉过的机器
       // 都会在下一次心跳自己升上去，而唯一能拦住它的开关，看起来能设、其实存不进去。
       managerVersion: String(next.managerVersion ?? '').trim(),
+      // 同上，Bot 的那一档。漏了它，钉 Bot 版本就是「能填、回 200、席位照样跟最新走」。
+      botVersion: String(next.botVersion ?? '').trim(),
       // 同上：这一行漏了，工具配置那一屏就是「能填、回 200、读出来永远是空」。
       webTools: parseWebTools(next.webTools),
       // 同上第三次。这两项漏了的后果更重：单价覆盖存不进去，缺价的模型就永远缺价；

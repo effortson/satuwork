@@ -4,7 +4,7 @@
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { MIN_MANAGER_NODE, desiredManagerRelease, gatewayBaseFor, machineHostOf, managerHostOf, managerPackageUrl, normalizePairingCode, sendReleaseFile } from '../lib/machines.ts'
-import { MIN_MANAGER_PROTOCOL, botBaseOf, managerHealth, normalizeTimezone, publicMachine } from '../deploy.ts'
+import { MIN_MANAGER_PROTOCOL, botBaseOf, managerHealth, normalizeTimezone, publicMachine, queueBotFollow } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { callerAccountId, requireBootstrapMachine, requireInternalCaller, requireMachine } from '../lib/guards.ts'
@@ -265,6 +265,13 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     await rollUp(machine, next, telemetry)
 
     const desired = await desiredManagerRelease(db, next)
+    // Bot 自动跟版：落后的席位排进部署队列，由每一拍去装（见 deploy.ts 的 queueBotFollow）。
+    // **出错只记一笔**：心跳是这台机器唯一的控制通道，跟版这件附带的事不能把它带成 500。
+    // 管家换版在报错时不算「待换版」：换不上去就不会重启，不该拿它把 Bot 跟版也一起卡住。
+    const managerPending = Boolean(desired) && next.managerVersion !== desired?.version && !upgradeError
+    await queueBotFollow(db, next, { managerPending }).catch((e: Error) => {
+      console.error(`satuwork-gateway: 机器 ${next.id.slice(0, 8)} 的 Bot 跟版没排上：${e.message}`)
+    })
     json(res, 200, {
       machine: { id: next.id, lastHeartbeatAt: next.lastHeartbeatAt },
       desiredManagerVersion: desired?.version ?? null,

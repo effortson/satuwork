@@ -565,9 +565,9 @@ function releasesPage() {
         ? releaseSection({
             kind: 'bot',
             title: t('Bot 运行时'),
-            hint: t('部署席位时用最新版本；也可以在部署时指定某一版。'),
-            data: { releases: state.releases || [], latest: latestPerArch(state.releases), desired: '' },
-            desired: false,
+            hint: t('机器心跳时，不在期望版本上的席位会被排进部署队列，等席位上的会话跑完再换。留空表示跟最新发布走；要回滚就填上一版。'),
+            data: { releases: state.releases || [], latest: latestPerArch(state.releases), desired: state.botDesired || '' },
+            desired: true,
           })
         : releaseSection({
             kind: 'local-bot',
@@ -666,12 +666,13 @@ function releaseSection({ kind, title, hint, data, desired, extra = '' }) {
         ${listPager(`releases:${kind}`, view, '版')}
       </div>`
     : `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: var(--radius-lg);">${t('还没有发布版本')}</div>`
-  // 期望版本只有管家有：bot 是部署时挑版本，管家是机器自己去追一个目标版本。
+  // 期望版本：管家和 Bot 运行时都是机器心跳时自己去追一个目标版本（Bot 是席位跟版，见
+  // gateway/src/deploy.ts 的 queueBotFollow）。桌面端本地 Bot 没有这一档。
   const desiredForm = desired
-    ? `<form data-form="manager-version" style="display: flex; gap: var(--space-2); align-items: flex-end;">
+    ? `<form data-form="release-desired" data-kind="${esc(kind)}" style="display: flex; gap: var(--space-2); align-items: flex-end;">
         <div class="field" style="margin: 0; flex: 1;">
-          <label for="mgr-ver">${t('期望版本')}</label>
-          <input class="input" id="mgr-ver" name="managerVersion" value="${esc(d.desired || '')}" placeholder="${esc(t('留空 = 跟最新'))}" autocomplete="off">
+          <label for="desired-${esc(kind)}">${t('期望版本')}</label>
+          <input class="input" id="desired-${esc(kind)}" name="version" value="${esc(d.desired || '')}" placeholder="${esc(t('留空 = 跟最新'))}" autocomplete="off">
         </div>
         <button type="submit" class="btn" ${state.busy ? 'disabled' : ''}>${t('保存')}</button>
       </form>`
@@ -1123,11 +1124,10 @@ function managerVersionRow(orgId, m, card) {
  */
 function botVersionRow(orgId, card) {
   const list = card.botVersions || []
-  const text = list.length
-    ? list.map((v) => `${esc(v.version || t('未部署'))} × ${v.seats}`).join('、')
-    : t('还没有部署席位')
+  const text = list.length ? esc(botVersionsSummary(list)) : t('还没有部署席位')
   const canUp = card.botOutdated
-  const note = canUp ? ` · ${t('最新')} ${esc(card.botLatest || state.botLatest || '')}` : ''
+  // 「可升级」比的是目标版本（平台钉的那一版，没钉就是最新），所以这里说的也是目标版本。
+  const note = canUp ? ` · ${t('目标版本')} ${esc(card.botDesired || card.botLatest || state.botLatest || '')}` : ''
   const btn = canUp
     ? `<button type="button" class="btn" data-act="upgrade-bot" data-id="${esc(orgId)}" ${state.updatingRuntime ? 'disabled' : ''}>${state.updatingRuntime ? t('更新中…') : t('全部升级')}</button>`
     : ''

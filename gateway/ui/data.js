@@ -561,6 +561,8 @@ async function loadReleases() {
   ])
   state.releases = data.releases || []
   state.latestRelease = data.latest || null
+  // 平台钉的 Bot 版本，空 = 跟最新走。老 Gateway 没有这个字段，读出来就是空。
+  state.botDesired = data.desired || ''
   state.managerReleases = mgr
   state.localBotReleases = local
 }

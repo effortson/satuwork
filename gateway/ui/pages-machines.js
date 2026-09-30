@@ -89,9 +89,17 @@ function machinesPage() {
   //
   // 砍掉的是「负载」那一列：详情页有完整的 CPU / 内存 / 磁盘面板，而列表这一格本来
   // 就只画三项里最吃紧的那一项，是最容易割舍的。剩下七列的门槛降到 940px。
-  const cols = '120px minmax(180px, 2fr) minmax(120px, 1.2fr) 110px 72px minmax(140px, 1.2fr) minmax(110px, 1fr)'
+  //
+  // 「最近心跳」和「账号位」按内容量过之后定窄：心跳最长是「58 min ago」（63px），账号位
+  // 最长是「10 / 10」加一颗「已满」。省下来的全给「版本」——它一格叠着管家和 Bot 两个
+  // 带提交号的版本串（「↑ Bot 0.1.41+ab12cd3-arm64 +1」约 180px），是这张表里最容易被
+  // 截的。面板在常见窗口下只有九百出头，各列基本都卡在最小宽度上，所以要给就得给在
+  // 最小宽度上，靠 fr 分不到。最小宽度总和 842，比原来的 852 还少，上面那个门槛不变。
+  const cols = '120px minmax(180px, 2fr) minmax(120px, 1.2fr) 88px 72px minmax(190px, 2fr) 72px'
+  // 带 title：这几列都是定宽、一长就省略，英文的「Never checked in」在心跳那一格放不下，
+  // 悬停得看得全。
   const dim = (text) =>
-    `<span style="font-size: 13px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(text || '—')}</span>`
+    `<span style="font-size: 13px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(text || '')}">${esc(text || '—')}</span>`
   const tabs = MACHINE_FILTERS.map((f) => {
     const n = f.key ? counts[f.key] || 0 : all.length
     return `<button type="button" class="btn ${filter === f.key ? 'btn-primary' : ''}" data-act="machine-filter" data-filter="${esc(f.key)}">${t(f.label)} ${n}</button>`
@@ -112,9 +120,9 @@ function machinesPage() {
             ? `<span style="font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(card.company.name)}</span>`
             : `<span class="tag tag-neutral">${t('未分配')}</span>`
         }
-        <span style="font-size: 13px;">${m.paired ? `${esc(card.accounts)} / ${esc(card.maxAccounts)}` : '—'}${card.full ? ` <span class="tag">${t('已满')}</span>` : ''}</span>
+        <span style="font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${m.paired ? esc(`${card.accounts} / ${card.maxAccounts}`) : ''}">${m.paired ? `${esc(card.accounts)} / ${esc(card.maxAccounts)}` : '—'}${card.full ? ` <span class="tag">${t('已满')}</span>` : ''}</span>
         ${dim(String(card.seats))}
-        ${dim(m.managerVersion || t('未知'))}
+        ${machineVersionsCell(card)}
         ${dim(m.lastHeartbeatAt ? sinceMs(m.heartbeatAge) : t('从未心跳'))}
       </div>`
     })
@@ -136,7 +144,7 @@ function machinesPage() {
         <div style="display: flex; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
           <div class="satu-memberhead" style="grid-template-columns: ${cols};">
-            <span>${t('状态')}</span><span>${t('机器')}</span><span>${t('归属公司')}</span><span>${t('账号位')}</span><span>${t('已部署 Bot')}</span><span>${t('管家版本')}</span><span>${t('最近心跳')}</span>
+            <span>${t('状态')}</span><span>${t('机器')}</span><span>${t('归属公司')}</span><span>${t('账号位')}</span><span>${t('已部署 Bot')}</span><span>${t('版本')}</span><span>${t('最近心跳')}</span>
           </div>
           ${body || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${all.length ? t('这一档下没有机器') : t('还没有机器配对进来。到某家公司的详情页生成配对码，在那台 Debian 上跑一条命令即可。')}</div>`}
           ${listPager('machines', view, '台')}
@@ -144,6 +152,41 @@ function machinesPage() {
         <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('机器是在公司名下配对进来的：新增一台请到公司详情页生成配对码。这里管的是已经进来的那些。')}</p>
       </div>
     </div>`
+}
+
+/**
+ * 列表上的「版本」一格：管家一行、Bot 运行时一行。
+ *
+ * **两行叠在一格里，不另开一列**：见 machinesPage 里那段量宽度的话，再加一列最后那格
+ * 「最近心跳」又会被挤出去。机器那一列本来就是两行高，这一格跟着两行不增加行高。
+ *
+ * 一台机器上的席位可能各跑各的版本，这里只写席位最多的那一版，其余的进 title；
+ * 有新版本就在前面挂一个 ↑——要升级、要看全，点进详情页。
+ */
+/**
+ * 「0.1.41 × 5、0.1.40 × 2」——一台机器上各版本 Bot 各有几个席位。**纯文本**，调用方自己转义。
+ *
+ * 列表那一格的悬停、机器详情和公司详情的「Bot 运行时」一行共用这一份，免得三处各拼
+ * 各的，哪天一处改了「未部署」的说法、另两处还是老样子。
+ */
+function botVersionsSummary(list) {
+  return (list || []).map((v) => `${v.version || t('未部署')} × ${v.seats}`).join('、')
+}
+
+function machineVersionsCell(card) {
+  const m = card.machine || {}
+  const bots = card.botVersions || []
+  const botMain = bots.length ? bots[0].version || t('未部署') : '—'
+  const up = `<span style="flex: none; color: var(--color-warn-500);">↑</span>`
+  // 「+N」挂在省略号外面：版本号长，一截断它就先没了，而它恰恰在说「这台机器不齐」。
+  const line = (label, text, outdated, title, more = '') =>
+    `<div style="display: flex; gap: 4px; font-size: 12.5px; color: var(--muted-foreground); white-space: nowrap;" title="${esc(title)}">${outdated ? up : ''}<span style="min-width: 0; overflow: hidden; text-overflow: ellipsis;">${esc(label)} ${esc(text)}</span>${more ? `<span style="flex: none;">${esc(more)}</span>` : ''}</div>`
+  const mgrTitle = `${t('管家版本')}：${m.managerVersion || t('未知')}${card.managerOutdated ? ` · ${t('最新')} ${card.managerLatest || ''}` : ''}`
+  const botTitle = `${t('Bot 运行时')}：${botVersionsSummary(bots) || '—'}${card.botOutdated ? ` · ${t('目标版本')} ${card.botDesired || card.botLatest || ''}` : ''}`
+  return `<div style="min-width: 0;">
+    ${line(t('管家'), m.managerVersion || t('未知'), card.managerOutdated, mgrTitle)}
+    ${line('Bot', botMain, card.botOutdated, botTitle, bots.length > 1 ? `+${bots.length - 1}` : '')}
+  </div>`
 }
 
 function machineStat(label, value, unit) {
@@ -726,9 +769,7 @@ function machineCapacityPanel(card) {
 function machineVersionPanel(card) {
   const m = card.machine
   const list = card.botVersions || []
-  const botText = list.length
-    ? list.map((v) => `${esc(v.version || t('未部署'))} × ${v.seats}`).join('、')
-    : t('还没有部署 Bot')
+  const botText = list.length ? esc(botVersionsSummary(list)) : t('还没有部署 Bot')
   const mgrNote = card.managerPending
     ? ` · ${t('已下指令，等机器换版')} → ${esc(card.managerDesired || '')}`
     : m.protocolTooOld
@@ -758,7 +799,7 @@ function machineVersionPanel(card) {
     <span class="satu-panel-title">${t('版本')}</span>
     <div class="satu-kv"><span>${t('管家版本')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${esc(m.managerVersion || '—')}${mgrNote}${mgrBtn}</span></div>
     <div class="satu-kv"><span>${t('期望版本')}</span><span>${esc(card.managerDesired || t('跟平台的最新发布走'))}</span></div>
-    <div class="satu-kv"><span>${t('Bot 运行时')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${botText}${card.botOutdated ? ` · ${t('最新')} ${esc(card.botLatest || state.botLatest || '')}` : ''}${botBtn}</span></div>
+    <div class="satu-kv"><span>${t('Bot 运行时')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${botText}${card.botOutdated ? ` · ${t('目标版本')} ${esc(card.botDesired || card.botLatest || state.botLatest || '')}` : ''}${botBtn}</span></div>
     ${/* 装的是哪个包、跑的是哪一版公司模版，两件事各自会落后。渲染函数在 pages-audit.js，
          那一页的机器卡片画的是同一行——同一台机器不该在两个页面上说两种话。 */ ''}
     ${botTemplateRow(card)}

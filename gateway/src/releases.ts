@@ -23,7 +23,7 @@ import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGunzip } from 'node:zlib'
 import { del, put } from '@vercel/blob'
-import type { BotRelease, Db, ReleaseKind } from './db.ts'
+import { releaseArch, type BotRelease, type Db, type ReleaseKind } from './db.ts'
 import { gatewayHome } from './home.ts'
 import { HttpError } from './http.ts'
 
@@ -145,6 +145,46 @@ export function parseBotVersion(raw: string): string {
     throw new HttpError(400, 'version 须为 1–64 位字母数字或 . _ + -')
   }
   return version
+}
+
+/**
+ * 钉的那一版，但**换成这台机器的架构**。
+ *
+ * `0.1.2+abc-x64` 和 `0.1.2+abc-arm64` 是同一次发布的两份包。钉版本的人（尤其是平台
+ * 全局那一档）只能写一个字符串，写不了两个架构；照着发下去，另一半机器必然拿到错包。
+ * 所以先按原样找，架构对不上就找同版本的兄弟包。
+ *
+ * 找不到兄弟就返回 undefined，让调用方回落——发一个已知错架构的包没有任何意义。
+ * 管家和 Bot 两条版本线共用这一份（lib/machines.ts 的 managerReleaseFor、下面的
+ * desiredBotRelease）。
+ */
+export async function releaseForArch(db: Db, kind: ReleaseKind, version: string, arch: string | null | undefined) {
+  const row = await db.botRelease(version, kind)
+  const want = arch?.trim()
+  if (!want) return row
+  const got = row ? releaseArch(row.version) : undefined
+  if (row && (!got || got === want)) return row
+  const sibling = version.replace(/-(x64|arm64)$/, '') + '-' + want
+  if (sibling === version) return row
+  return await db.botRelease(sibling, kind)
+}
+
+/**
+ * 这个架构的机器上，席位该跑哪个 Bot 版本：平台钉的（`settings.botVersion`）> 最新发布。
+ *
+ * 钉的那一版这个架构上没有包（也没有兄弟包）时回落到最新，和管家那一档
+ * （desiredManagerRelease）一个口径；写端（PUT /platform/settings）会先挡掉根本不存在的版本。
+ *
+ * 所有「不指定版本」的地方都走它：新部署、批量升级、心跳里的自动跟版。有一处还在直接取
+ * 最新，钉版本就会被那一处悄悄绕过去——新铺的席位装最新，十分钟后又被跟版拉回钉的那版。
+ */
+export async function desiredBotRelease(db: Db, arch: string | null | undefined): Promise<BotRelease | undefined> {
+  const pinned = String((await db.platformSettings()).botVersion ?? '').trim()
+  if (pinned) {
+    const row = await releaseForArch(db, 'bot', pinned, arch)
+    if (row) return row
+  }
+  return db.latestBotRelease('bot', arch)
 }
 
 export function botReleaseDir(): string {
