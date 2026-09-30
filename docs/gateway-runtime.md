@@ -433,7 +433,9 @@ Gateway 账号分两类，公司账号再分两种。JWT 带 `role`：`owner` | 
 同一栏还有 `desktop.on`（出厂开）：远程席位上 `desktop_terminal` / `desktop_open_folder`
 进不进工具表（[bot/src/tools/desktop.ts](../bot/src/tools/desktop.ts)）。关掉时硬调会在
 pre-execute 被拒，但不记 guard 事件——它是一项没开的能力，不是一道边界。窗口里跑的命令
-和 `terminal` 同一套判据（`policy/shell.ts` 的 `SHELL_TOOLS`）。本地 Bot 不注册这两把。
+和 `terminal` 同一套判据（`policy/shell.ts` 的 `SHELL_TOOLS`）。本地 Bot 和没有 DISPLAY 的
+进程不注册这两把；认不出会话属于哪颗 Bot 时拒。窗口里跑过命令的，换版 / 关机时连窗口带
+命令一起收掉（同 terminal 的后台进程），空终端不碰。
 
 几条要点：
 

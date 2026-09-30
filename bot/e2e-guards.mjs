@@ -242,6 +242,9 @@ out.terminalRuns = ran.terminal - terminalRanBefore
     开文件夹放行: (await call('s1', 'desktop_open_folder', { path: 'out' })).failed !== true,
     关了能力终端被拒: (await call('s15', 'desktop_terminal', {})).failed === true,
     关了能力文件夹被拒: (await call('s15', 'desktop_open_folder', {})).failed === true,
+    // 认不出 Bot 时没法确认模版关没关这项能力：拒，同浏览器和 MCP 那两条。
+    认不出Bot终端被拒: (await call('s5', 'desktop_terminal', {})).failed === true,
+    认不出Bot文件夹被拒: (await call('s5', 'desktop_open_folder', {})).failed === true,
   }
   out.desktopTerminalRuns = ran.desktop_terminal - before
   out.desktopOffText = (await call('s15', 'desktop_open_folder', {})).text
