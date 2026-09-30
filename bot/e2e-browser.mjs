@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -80,7 +80,32 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>测试页<
   <a id="huge" href="http://other.example.test/x?q=${'LONGLONG'.repeat(300)}">超长的那条</a>
 </main></body></html>`
 
+/**
+ * 正文靠晚到的脚本画出来的页面——联合早报就是这样：load 早就触发了，画面却还是白的。
+ * 三段脚本都压到 1.5 秒之后才给，记下最后一段给出去的时刻，好对照截图是什么时候落盘的。
+ *
+ * **要三段，不是一段。** 拍照等的是 `networkAlmostIdle`（连接压到两条以内），只挂一条慢请求
+ * 的页面在它眼里本来就「基本安静」。真实的新闻页一开就是几十条请求，三条才像它。
+ */
+const LATE_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>晚到的正文</title>
+<script src="/late.js?1" async></script><script src="/late.js?2" async></script><script src="/late.js?3" async></script>
+</head><body><main id="m"></main></body></html>`
+let lateServedAt = 0
+
 const server = createServer((req, res) => {
+  if (req.url === '/late') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(LATE_PAGE)
+    return
+  }
+  if (req.url?.startsWith('/late.js')) {
+    setTimeout(() => {
+      lateServedAt = Math.max(lateServedAt, Date.now())
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' })
+      res.end(`document.getElementById('m').textContent = '正文到了'`)
+    }, 1_500)
+    return
+  }
   // 一条真的 302，跳到名单外的域名——「跳出去之后内容还拿不拿得回来」只能这么试。
   if (req.url === '/gooff') {
     res.writeHead(302, { location: `http://${OFFSITE}/` })
@@ -442,6 +467,15 @@ try {
     // 模型不该看见它——它进的是 details，不是给模型的那段文本。
     没混进给模型的文本里: !shotSnap.text.includes('browser/s1/'),
   }
+  /**
+   * **页面画出来了才拍。** 动作收尾那 0.7 秒只够快照读 DOM，画面还是白的——线上一次浏览里
+   * 一大半截图是白图（见 index.ts 的 SHOT_SETTLE_MAX）。这一页的正文要等 1.5 秒后的脚本，
+   * 截图落盘必须在那几段脚本都给出去之后。
+   */
+  const lateNav = await run('browser_navigate', { url: `http://${HOST}/late` })
+  const lateAbs = lateNav.shot ? join(workRoot, lateNav.shot.path) : ''
+  out.shot.等页面加载完才拍 = Boolean(lateAbs && lateServedAt && statSync(lateAbs).mtimeMs >= lateServedAt)
+  await run('browser_navigate', { url: `http://${HOST}/` })
 
   out.frame = {
     快照包了标签: framed.text.includes('<page_content url=') && framed.text.includes('</page_content>'),
