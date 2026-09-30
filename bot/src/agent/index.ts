@@ -759,7 +759,7 @@ export class AgentService extends Service {
           model,
           thinkingLevel: reasoningEffort,
           messages: [],
-          tools: this.bridgeTools(child, toolSchemas),
+          tools: this.bridgeTools(child, this.forModel(toolSchemas, model), seesImages(model)),
         },
         streamFn: llm.streamFn,
         steeringMode: 'one-at-a-time',
@@ -776,7 +776,7 @@ export class AgentService extends Service {
       } as any)
 
       this.live.set(child, agent)
-      const off = agent.subscribe(this.projector(child, 1, this.turnMeta(provider, modelId, system, toolSchemas, reasoningEffort)))
+      const off = agent.subscribe(this.projector(child, 1, this.turnMeta(provider, modelId, system, this.forModel(toolSchemas, model), reasoningEffort)))
 
       /**
        * 墙钟。Hermes 那边明确不设，我们必须设——他们的委派在后台，我们的主轮真的
@@ -1604,7 +1604,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         model,
         thinkingLevel: reasoningEffort,
         messages,
-        tools: this.bridgeTools(sessionId, toolSchemas),
+        tools: this.bridgeTools(sessionId, this.forModel(toolSchemas, model), seesImages(model)),
       },
       streamFn: llm.streamFn,
       steeringMode: 'one-at-a-time',
@@ -1626,7 +1626,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     // 进了 live 就不再归开轮那个开关管。留着的话，收尾那几个 await 期间按停止会掐到它、
     // 往 aborting 里留一笔，下一轮收口时被错认成「被喊停了」。
     this.startingAbort.delete(sessionId)
-    const off = agent.subscribe(this.projector(sessionId, turn, this.turnMeta(provider, modelId, system, toolSchemas, reasoningEffort)))
+    const off = agent.subscribe(this.projector(sessionId, turn, this.turnMeta(provider, modelId, system, this.forModel(toolSchemas, model), reasoningEffort)))
 
     let reason: 'completed' | 'error' | 'aborted' | 'capped' = 'completed'
     const startedAt = Date.now()
@@ -1929,7 +1929,19 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
    * 工具表越长，模型越容易在前几个里选。传集合的话这里会退回 `ctx.tools.schemas()`
    * 的注册顺序，点名等于白点。
    */
-  private bridgeTools(sessionId: string, picked?: { name: string; description: string; parameters?: unknown }[]) {
+  /**
+   * 按这一轮**最终定下来的**模型筛一遍工具表：看不了图的，去掉只对视觉有用的那几把
+   * （ToolDefinition.vision）。
+   *
+   * 不在 toolSchemasFor 里筛：挑完工具之后模型还可能换（钉的模型窗口装不下，退回主模型），
+   * 筛早了就是按一颗这一轮根本不用的模型筛的。
+   */
+  private forModel<T extends { name: string }>(schemas: T[], model: { input?: unknown } | undefined): T[] {
+    if (seesImages(model)) return schemas
+    return schemas.filter((s) => !this.ctx.tools.needsVision(s.name))
+  }
+
+  private bridgeTools(sessionId: string, picked?: { name: string; description: string; parameters?: unknown }[], sees = false) {
     const schemas = picked ?? this.ctx.tools.schemas()
     return schemas.map((schema) => ({
       name: schema.name,
@@ -1951,18 +1963,23 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
           signal: this.live.get(sessionId)?.signal,
         })
         if (result.failed) throw new Error(result.text)
+        // 给模型看的图（ToolResult.images）：这一轮的模型看得了就读成图片块跟在文字后面，
+        // 看不了就换成一句说明。**这里是这一轮之内的唯一入口**——pi 在同一轮里用的是这份
+        // content，不会回头去读日志；跨轮重建历史时 toAgentMessages 再按同一个规矩来一遍。
+        const pictures = result.images?.length ? await toolImageBlocks(result.images, sees, this.ctx) : []
         // files/rawText 走 details 而不是 content：content 是给模型的；details 是日志与
         // 界面的旁路。rawText 尤其不能混进 content，否则预算形同虚设。
         // 自己写了什么；details 是 pi 留给「日志与界面渲染」的那一格，正好是这个用途。
         return {
-          content: [{ type: 'text' as const, text: result.text }],
+          content: [{ type: 'text' as const, text: result.text }, ...pictures],
           details:
-            result.files?.length || result.refs?.length || result.shot || result.rawText
+            result.files?.length || result.refs?.length || result.shot || result.rawText || result.images?.length
               ? {
                   ...(result.files?.length ? { files: result.files } : {}),
                   ...(result.refs?.length ? { refs: result.refs } : {}),
                   ...(result.shot ? { shot: result.shot } : {}),
                   ...(result.rawText ? { rawText: result.rawText } : {}),
+                  ...(result.images?.length ? { images: result.images } : {}),
                 }
               : undefined,
         }
@@ -2562,6 +2579,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
             files: filesOf(event.result),
             refs: refsOf(event.result),
             shot: shotOf(event.result),
+            images: imagesOf(event.result),
           })
           break
       }
@@ -2591,6 +2609,67 @@ function shotOf(result: any): { path: string; name: string } | undefined {
   const raw = result?.details?.shot
   if (typeof raw?.path !== 'string' || !raw.path) return undefined
   return { path: raw.path, name: typeof raw.name === 'string' ? raw.name : raw.path }
+}
+
+/** 工具交给模型看的图（ToolResult.images）。逐字段挑，理由同 filesOf。 */
+function imagesOf(result: any): { path: string; mime: string }[] | undefined {
+  const raw = result?.details?.images
+  if (!Array.isArray(raw)) return undefined
+  const out = raw
+    .filter((x: any) => typeof x?.path === 'string' && x.path)
+    .map((x: any) => ({ path: x.path as string, mime: typeof x.mime === 'string' && x.mime ? x.mime : 'image/png' }))
+  return out.length ? out : undefined
+}
+
+/**
+ * 这一轮的模型看不看得了图。看的是目录里的 `input`（Gateway 的 /v1/models 发的）。
+ *
+ * **目录里没写的当看不了**（llm 的 stubModel 就是 `['text']`）：把图塞给纯文本模型，上游会
+ * 把整个请求拒掉、这一轮直接失败；少给一张图，最多是模型说它看不到。宁可少给。
+ */
+export function seesImages(model: { input?: unknown } | undefined): boolean {
+  return Array.isArray(model?.input) && model.input.includes('image')
+}
+
+/**
+ * 工具结果里一次最多带几张图的字节（跨调用算，只留最近的）。
+ *
+ * 渲染一页文档约一千多 token；模型核对排版通常只看刚画的那几页，更早的换成一句说明。
+ * 和用户消息里的图（MAX_LIVE_IMAGES）分开算：两边回答的不是一个问题。
+ */
+const MAX_LIVE_TOOL_IMAGES = 6
+
+/** 回放历史里某条工具结果的图：太靠前的换成一句说明，其余照 toolImageBlocks。 */
+async function replayToolImages(
+  seq: number,
+  images: { path: string; mime: string }[],
+  sees: boolean,
+  live: Set<string>,
+  ctx?: Context,
+): Promise<any[]> {
+  if (!sees) return toolImageBlocks(images, false, ctx)
+  const out: any[] = []
+  for (const [i, img] of images.entries()) {
+    out.push(live.has(`${seq}:${i}`) ? await loadImage(img, ctx) : { type: 'text', text: `（这里有一张图 ${img.path}，离现在太远，这一轮没有放进上下文。）` })
+  }
+  return out
+}
+
+/** 工具结果里的图 → 送进模型的块：看得了就是图片块，看不了就是一句说明。 */
+async function toolImageBlocks(images: { path: string; mime: string }[], sees: boolean, ctx?: Context): Promise<any[]> {
+  if (!sees) {
+    return [
+      {
+        type: 'text',
+        text:
+          `\n（这一轮用的模型看不了图，${images.length} 张图没有送进来：${images.map((i) => i.path).join('、')}。` +
+          '要核对样子，可以请用户在界面上点开文件预览看。）',
+      },
+    ]
+  }
+  const out: any[] = []
+  for (const img of images) out.push(await loadImage(img, ctx))
+  return out
 }
 
 /**
@@ -2686,7 +2765,7 @@ function fromAgentContent(content: any[]): ContentBlock[] {
  */
 export async function toAgentMessages(
   events: Awaited<ReturnType<Context['sessions']['events']>>,
-  model: { api?: string; provider?: string; id?: string } = {},
+  model: { api?: string; provider?: string; id?: string; input?: unknown } = {},
   ctx?: Context,
 ): Promise<AgentMessage[]> {
   const stepKey = (t: number, s: number) => `${t}:${s}`
@@ -2774,6 +2853,14 @@ export async function toAgentMessages(
     })
   }
   const liveImages = new Set(imageKeys.slice(-MAX_LIVE_IMAGES))
+  /** 工具结果里的图同理，只是单独一份额度（见 MAX_LIVE_TOOL_IMAGES）。 */
+  const toolImageKeys: string[] = []
+  for (const e of events) {
+    if (e.type !== 'tool/result' || !toolNames.has(e.data.callId)) continue
+    e.data.images?.forEach((_, i) => toolImageKeys.push(`${e.seq}:${i}`))
+  }
+  const liveToolImages = new Set(toolImageKeys.slice(-MAX_LIVE_TOOL_IMAGES))
+  const sees = seesImages(model)
 
   const entries: { order: number; message: AgentMessage }[] = []
   let resultIndex = 0
@@ -2849,6 +2936,7 @@ export async function toAgentMessages(
               type: 'text',
               text: e.data.modelText ?? budgetToolText(toolNames.get(e.data.callId) ?? '', e.data.text).text,
             },
+            ...(e.data.images?.length ? await replayToolImages(e.seq, e.data.images, sees, liveToolImages, ctx) : []),
           ],
           isError: e.data.failed,
           timestamp: e.time,
@@ -3084,7 +3172,10 @@ function estEvent(e: Awaited<ReturnType<Context['sessions']['events']>>[number])
     return estTokens(textFrom(e.data.message)) + 12 + images * EST_TOKENS_PER_IMAGE // 12 ≈ [时间] 前缀
   }
   if (e.type === 'assistant/message') return estTokens(contentDigest(e.data.message.content)) + 4
-  if (e.type === 'tool/result') return estTokens(e.data.modelText ?? budgetToolText('', e.data.text).text) + 4
+  if (e.type === 'tool/result') {
+    // 工具结果里的图同样按张计（office_render 一次好几页），理由同上。
+    return estTokens(e.data.modelText ?? budgetToolText('', e.data.text).text) + 4 + (e.data.images?.length ?? 0) * EST_TOKENS_PER_IMAGE
+  }
   return 0
 }
 

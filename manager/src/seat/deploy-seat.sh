@@ -205,6 +205,11 @@ ensure_office() {
   if ! dpkg -s fonts-noto-cjk >/dev/null 2>&1; then
     apt_install_quiet fonts-noto-cjk || echo "office: 中文字体装不上，渲染出来的中文会是方块" >&2
   fi
+  # pdftoppm：把文档的某几页画成图给 Bot 自己看（bot 的 tools/look.ts）。LibreOffice 导出图片只认
+  # 第一页，没有它就得一页一页切 PDF 再转，慢得多。装不上照样能用，只是慢。
+  if ! command -v pdftoppm >/dev/null 2>&1; then
+    apt_install_quiet poppler-utils || echo "office: poppler-utils 装不上，文档看图会慢一些" >&2
+  fi
   return 0
 }
 step 4 "安装文档渲染组件"

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import type { Stats } from 'node:fs'
@@ -232,7 +232,7 @@ async function harden(profile: string) {
   await writeFile(file, HARDENING)
 }
 
-function run(bin: string, args: string[]): Promise<void> {
+function run(bin: string, args: string[], label = 'LibreOffice'): Promise<void> {
   return new Promise((resolve, reject) => {
     const group = process.platform !== 'win32'
     // detached：拿到自己的进程组。soffice 在 Linux 上是个包装脚本，真正干活的
@@ -259,7 +259,7 @@ function run(bin: string, args: string[]): Promise<void> {
       if (timedOut) return reject(new RenderError('failed', `渲染超时（${Math.round(limit / 1000)} 秒）。`))
       if (code !== 0) {
         const tail = stderr.trim().split('\n').slice(-3).join(' ').slice(0, 300)
-        return reject(new RenderError('failed', `LibreOffice 退出码 ${code}${tail ? `：${tail}` : ''}`))
+        return reject(new RenderError('failed', `${label} 退出码 ${code}${tail ? `：${tail}` : ''}`))
       }
       resolve()
     }
@@ -281,7 +281,7 @@ function run(bin: string, args: string[]): Promise<void> {
       settled = true
       clearTimeout(timer)
       clearTimeout(grace)
-      reject(new RenderError('failed', `LibreOffice 起不来：${e.message}`))
+      reject(new RenderError('failed', `${label} 起不来：${e.message}`))
     })
     child.on('exit', (code) => {
       clearTimeout(grace)
@@ -307,4 +307,169 @@ async function prune() {
     // 最新那份（刚转出来、调用方正要去读的）无论如何不删。
     if (i > 0 && (i >= CACHE_MAX_FILES || total > CACHE_MAX_BYTES)) await rm(f.path, { force: true })
   }
+}
+
+// ── 按页出图：给模型自己看一眼（tools/look.ts 的 office_render） ─────────
+
+/**
+ * 找 pdftoppm（poppler-utils）。按页出图首选它：快，而且就是照 PDF 原样画。
+ *
+ * 为什么不全交给 LibreOffice：它导出 PNG **只认第一页**——7.4 上 `PageRange` 参数照收不误，
+ * 出来的还是第一页（实测）。所以没有 pdftoppm 时，先用 pdf-lib 把那一页单独切成一份 PDF，
+ * 再让 LibreOffice 画它的「第一页」。桌面端的电脑上一般只有后者。
+ */
+export function pdftoppmExecutable(): string | null {
+  const names = process.platform === 'win32' ? ['pdftoppm.exe'] : ['pdftoppm']
+  const fixed =
+    process.platform === 'darwin'
+      ? ['/opt/homebrew/bin/pdftoppm', '/usr/local/bin/pdftoppm']
+      : process.platform === 'win32'
+        ? []
+        : ['/usr/bin/pdftoppm']
+  return findExecutable(process.env.SATUWORK_PDFTOPPM, names, fixed)
+}
+
+export interface PageImage {
+  page: number
+  /** 绝对路径。 */
+  file: string
+}
+
+/** 一个出图目录下最多留几份文档的图。全是缓存，删了下次再画。 */
+const PAGE_DIRS_MAX = 20
+
+/**
+ * 把一份 Office 文档（或 PDF）的某几页画成 PNG，放进 `outDir/<键>/` 下。
+ *
+ * `outDir` 由调用方给，而且**必须在工作区里**：这些图要作为图片块送进模型，而读图那一层
+ * （agent 的 loadImage）只认工作区相对路径。键按 PDF 的路径 + mtime + 大小算，文件改了
+ * 自然换一个目录，旧的由修剪收掉。
+ *
+ * `width` 是出图的像素宽度，高度按页面比例算。
+ */
+export async function renderPages(
+  file: string,
+  pages: number[],
+  outDir: string,
+  width: number,
+): Promise<{ total: number; images: PageImage[]; engine: 'pdftoppm' | 'libreoffice' }> {
+  const isPdf = extname(file).toLowerCase() === '.pdf'
+  if (isPdf) {
+    const info = await stat(file)
+    if (info.size > MAX_RENDER_BYTES) {
+      throw new RenderError(
+        'too-big',
+        `这个文件有 ${(info.size / 1024 / 1024).toFixed(1)} MB，超过了渲染的上限（${MAX_RENDER_BYTES / 1024 / 1024} MB）。`,
+      )
+    }
+  }
+  const pdf = isPdf ? file : await renderToPdf(file)
+  const { PDFDocument } = await import('pdf-lib')
+  let doc: Awaited<ReturnType<typeof PDFDocument.load>>
+  try {
+    doc = await PDFDocument.load(await readFile(pdf), { ignoreEncryption: true, updateMetadata: false })
+  } catch (e) {
+    throw new RenderError('failed', `PDF 读不出来（${(e as Error).message}）：文件可能是坏的，或者加了密码。`)
+  }
+  const total = doc.getPageCount()
+  const wanted = [...new Set(pages)].filter((p) => p >= 1 && p <= total).sort((a, b) => a - b)
+  if (!wanted.length) throw new RenderError('failed', `没有这几页：这份文件一共 ${total} 页。`)
+
+  const toppm = pdftoppmExecutable()
+  const office = toppm ? null : officeExecutable()
+  if (!toppm && !office) throw new RenderError('unavailable', '这台机器上既没有 pdftoppm 也没有 LibreOffice，画不了图。')
+  const engine = toppm ? 'pdftoppm' : 'libreoffice'
+
+  const dir = join(outDir, cacheKey(pdf, await stat(pdf)))
+  await mkdir(dir, { recursive: true })
+  // 碰一下目录的 mtime：修剪按它排，正在看的这份不该被挤掉。
+  const now = new Date()
+  await utimes(dir, now, now).catch(() => {})
+  const images: PageImage[] = []
+  for (const page of wanted) {
+    const target = join(dir, `p${page}-w${width}.png`)
+    if (!existsSync(target)) {
+      if (toppm) await pageByPdftoppm(toppm, pdf, page, width, target)
+      else {
+        // 和转 PDF 共用那一队：LibreOffice 一次只能跑一个（见文件开头）。
+        const job = queue.then(() => pageByOffice(office!, doc, page, width, target))
+        queue = job.catch(() => {})
+        await job
+      }
+    }
+    images.push({ page, file: target })
+  }
+  await prunePages(outDir, dir).catch(() => {})
+  return { total, images, engine }
+}
+
+async function pageByPdftoppm(bin: string, pdf: string, page: number, width: number, target: string) {
+  // -singlefile：输出名不带页码后缀，就是 `<前缀>.png`。先写到旁边再换名，半张图不留。
+  // 带随机后缀：两个调用同时画同一页时各写各的，最后谁换名都是一张完整的图。
+  const prefix = `${target}.${randomUUID().slice(0, 8)}.part`
+  await run(
+    bin,
+    ['-png', '-f', String(page), '-l', String(page), '-scale-to-x', String(width), '-scale-to-y', '-1', '-singlefile', pdf, prefix],
+    'pdftoppm',
+  )
+  const produced = `${prefix}.png`
+  if (!(await stat(produced).then((s) => s.size > 0).catch(() => false))) {
+    throw new RenderError('failed', `pdftoppm 没有画出第 ${page} 页。`)
+  }
+  await rename(produced, target)
+}
+
+async function pageByOffice(bin: string, doc: import('pdf-lib').PDFDocument, page: number, width: number, target: string) {
+  const { PDFDocument } = await import('pdf-lib')
+  await mkdir(cacheDir(), { recursive: true })
+  const dir = await mkdtemp(cacheDir('page-'))
+  try {
+    // 只留这一页：LibreOffice 导出图片只认第一页。
+    const single = await PDFDocument.create()
+    const [copied] = await single.copyPages(doc, [page - 1])
+    single.addPage(copied)
+    const input = join(dir, 'page.pdf')
+    await writeFile(input, await single.save())
+    const { width: w, height: h } = copied.getSize()
+    const height = Math.max(1, Math.round((width * h) / Math.max(1, w)))
+    const profile = cacheDir('profile')
+    await rm(join(profile, '.lock'), { force: true })
+    await harden(profile)
+    const filter = `png:draw_png_Export:${JSON.stringify({
+      PixelWidth: { type: 'long', value: String(width) },
+      PixelHeight: { type: 'long', value: String(height) },
+    })}`
+    await run(bin, [
+      '--headless',
+      '--norestore',
+      '--nolockcheck',
+      '--nodefault',
+      '--nologo',
+      `-env:UserInstallation=${pathToFileURL(profile).href}`,
+      '--convert-to',
+      filter,
+      '--outdir',
+      dir,
+      input,
+    ])
+    const produced = join(dir, 'page.png')
+    if (!(await stat(produced).then((s) => s.size > 0).catch(() => false))) {
+      throw new RenderError('failed', `LibreOffice 没有画出第 ${page} 页。`)
+    }
+    await rename(produced, target)
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+/** 出图目录下按 mtime 留最近的 PAGE_DIRS_MAX 份；正在用的这份（keep）不删。 */
+async function prunePages(outDir: string, keep: string) {
+  const entries = await readdir(outDir, { withFileTypes: true })
+  const dirs = await Promise.all(
+    entries
+      .filter((e) => e.isDirectory())
+      .map(async (e) => ({ path: join(outDir, e.name), mtime: (await stat(join(outDir, e.name))).mtimeMs })),
+  )
+  dirs.sort((a, b) => b.mtime - a.mtime)
+  for (const d of dirs.slice(PAGE_DIRS_MAX)) if (d.path !== keep) await rm(d.path, { recursive: true, force: true })
 }
