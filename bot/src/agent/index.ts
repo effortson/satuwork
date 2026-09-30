@@ -1434,6 +1434,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       if (pinned) {
         provider = pinned.provider
         modelId = pinned.model
+        await llm.ensureKnown([pinned])
       }
       model = llm.modelOf(provider, modelId)
       toolSchemas = this.toolSchemasFor(bot, mentions)
@@ -2216,6 +2217,16 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
   }
 
   /**
+   * sessionModelState 的「先对一遍目录」版：名单里有目录还不认识的模型，先重拉目录再算
+   * （见 LlmService.ensureKnown）。给人看的（选择器、`/model`）和真开跑的都走这个——
+   * 不然名字、推理、窗口全是按裸 id 猜的，`/model <显示名>` 也认不出新加的那个。
+   */
+  async freshModelState(history: Awaited<ReturnType<Context['sessions']['events']>>): Promise<SessionModelState> {
+    await this.ctx.llm.ensureKnown(this.dailyChoices(this.botOf(history)))
+    return this.sessionModelState(history)
+  }
+
+  /**
    * 这条会话的全部事件；没有这条会话就是 404。
    *
    * sessions.events 对未知 id 是**抛**（读不到那个 jsonl），不是返回空数组——不接住的话
@@ -2244,7 +2255,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     by: 'user' | 'system' = 'user',
   ): Promise<SessionModelState & { changed: boolean; nextTurn: boolean }> {
     const history = await this.sessionHistoryOr404(sessionId)
-    const before = this.sessionModelState(history)
+    const before = await this.freshModelState(history)
     const want = key ? before.options.find((c) => c.key === key) : before.options[0]
     if (!want) {
       const names = before.options.map((c) => c.label).join('、')
@@ -2275,7 +2286,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     history: Awaited<ReturnType<Context['sessions']['events']>>,
     settle = false,
   ): Promise<{ provider: string; model: string }> {
-    const state = this.sessionModelState(history)
+    const state = await this.freshModelState(history)
     if (state.removed && settle) {
       this.ctx.logger?.warn?.(`agents: ${sessionId} 选的 ${state.picked} 已不在日常模型名单里，退回默认 ${state.effective.key}`)
       await this.ctx.sessions.append(sessionId, 'session/model', {
