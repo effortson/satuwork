@@ -238,3 +238,34 @@ export function mergeUsage(cur: TokenUsage | undefined, next: PartialUsage): Tok
     cache_write_tokens: pick(next.cache_write_tokens, cur?.cache_write_tokens),
   }
 }
+
+/**
+ * SSE 帧之间的空行。**`\r\n\r\n` 也得认**：Gemini 的 streamGenerateContent（生图走的那条）
+ * 就是这么分帧的。以前只找 `\n\n`，那条流一帧都切不出来，usageMetadata 一次都没解析过，
+ * 每一张图都按 unpriced、0 元落账（Bot 那边 payloadsOf 早就是按 `\r?\n\r?\n` 切的）。
+ */
+const SSE_FRAME_END = /\r?\n\r?\n/
+
+/**
+ * 从攒着的流里取出所有完整的帧、累积其中的 usage，返回剩下的半帧。**纯函数**。
+ *
+ * 行尾的 `\r` 由 `trim()` 去掉。一个 `\r\n\r\n` 被切在两个 chunk 之间时，前半截里
+ * 凑不出两个换行，不会提前切；等后半截到了再整体匹配。
+ */
+export function sseUsage(buf: string, usage: TokenUsage | undefined): { rest: string; usage: TokenUsage | undefined } {
+  let m: RegExpExecArray | null
+  while ((m = SSE_FRAME_END.exec(buf))) {
+    const frame = buf.slice(0, m.index)
+    buf = buf.slice(m.index + m[0].length)
+    for (const line of frame.split('\n')) {
+      if (!line.startsWith('data:')) continue
+      const payload = line.slice(5).trim()
+      if (!payload || payload === '[DONE]') continue
+      try {
+        const u = usageFromPayload(JSON.parse(payload))
+        if (u) usage = mergeUsage(usage, u)
+      } catch {}
+    }
+  }
+  return { rest: buf, usage }
+}

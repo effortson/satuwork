@@ -187,6 +187,23 @@ export async function runLlmUsage({ gwRoot, test, req, start, waitHttp, assert, 
       return { prompt: statOf(u, '输入 Tokens'), completion: statOf(u, '输出 Tokens') }
     }
 
+    await test('SSE 拆帧认 \\r\\n\\r\\n（Gemini 的分帧），切在两个 chunk 中间也不丢', async () => {
+      const { sseUsage } = await import('../gateway/src/lib/llm-usage.ts')
+      const frame = (o) => `data: ${JSON.stringify(o)}\r\n\r\n`
+      const whole =
+        frame({ candidates: [{ content: { parts: [{ text: '想' }] } }], usageMetadata: { promptTokenCount: 20 } }) +
+        frame({ usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 1300, candidatesTokensDetails: [{ modality: 'IMAGE', tokenCount: 1300 }] } })
+      // 三字节一刀：`\r\n\r\n` 必然被切开过。
+      let buf = ''
+      let usage
+      for (let i = 0; i < whole.length; i += 3) {
+        buf += whole.slice(i, i + 3)
+        ;({ rest: buf, usage } = sseUsage(buf, usage))
+      }
+      assert(buf === '', `帧都完整，不该剩半截：${JSON.stringify(buf)}`)
+      assert(usage?.prompt_tokens === 20 && usage?.completion_tokens === 1300, `CRLF 分帧的用量：${JSON.stringify(usage)}`)
+    })
+
     await test('/v1/messages 流式：输入 token 在 message_start 里，缓存那两项也要加进提示词', async () => {
       const r = await req(gwBase, 'POST', '/v1/messages', {
         token,

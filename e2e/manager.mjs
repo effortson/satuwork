@@ -2697,6 +2697,8 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
        *   'stream'   照旧发 SSE（openai-completions 的常态）
        *   'json'     发一整包**成功**的 JSON，正文里故意含 `application/json` 这几个字
        *   'error'    发 4xx，并把收到的 Authorization 原样回显进正文（真上游就这么干）
+       *   'error-text'  同上，但错误页是 `text/plain`（代理层的错误页常是这个形状）——它不能走
+       *              流式那一支原样转出去
        *
        * 后两种是给「抹密钥别把 application/json 一起抹了」那条用的，见下面那条用例。
        */
@@ -2713,9 +2715,10 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           // Gemini 生图：一帧图、一帧用量（图片 1290 + 文字 10 + 思考 90）。
           if (r.url.startsWith('/v1beta/models/')) {
             res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
-            res.write(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'aW1hZ2U=' } }] }, finishReason: 'STOP' }] })}\n\n`)
+            // 真 Gemini 的帧之间是 `\r\n\r\n`，不是 `\n\n`——只认后者的拆帧会一帧都切不出来。
+            res.write(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'aW1hZ2U=' } }] }, finishReason: 'STOP' }] })}\r\n\r\n`)
             res.write(
-              `data: ${JSON.stringify({ usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 1300, thoughtsTokenCount: 90, candidatesTokensDetails: [{ modality: 'IMAGE', tokenCount: 1290 }, { modality: 'TEXT', tokenCount: 10 }] } })}\n\n`,
+              `data: ${JSON.stringify({ usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 1300, thoughtsTokenCount: 90, candidatesTokensDetails: [{ modality: 'IMAGE', tokenCount: 1290 }, { modality: 'TEXT', tokenCount: 10 }] } })}\r\n\r\n`,
             )
             res.end()
             return
@@ -2742,6 +2745,11 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
             ev('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } })
             ev('message_stop', {})
             res.end()
+            return
+          }
+          if (upMode === 'error-text') {
+            res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+            res.end(`bad gateway. request headers: authorization=${r.headers.authorization}`)
             return
           }
           if (upMode === 'json' || upMode === 'error') {
@@ -3189,6 +3197,16 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
             assert(!bad.text.includes('platform-key'), `上游回显的密钥漏给 Bot 了：${bad.text.slice(0, 300)}`)
             assert(bad.text.includes('[redacted]'), `密钥没被抹掉：${bad.text.slice(0, 300)}`)
             assert(bad.text.includes('application/json'), `同一段错误文本里的 application/json 被连累抹掉了：${bad.text.slice(0, 300)}`)
+
+            // text/plain 的错误页：以前按类型走了流式那一支，一个字节不抹就转给了 Bot。
+            upMode = 'error-text'
+            const plain = await req(mgrBase, 'POST', '/llm/v1/chat/completions', {
+              token: apiKey,
+              body: { model: `${PROVIDER}/${MODEL}`, messages: [{ role: 'user', content: 'hi' }] },
+            })
+            assert(plain.status === 502, `上游 text/plain 的 502 该原样转 502，实际 ${plain.status} ${plain.text.slice(0, 300)}`)
+            assert(!plain.text.includes('platform-key'), `text/plain 错误页里回显的密钥漏给 Bot 了：${plain.text.slice(0, 300)}`)
+            assert(plain.text.includes('[redacted]'), `text/plain 错误页里的密钥没被抹掉：${plain.text.slice(0, 300)}`)
           } finally {
             upMode = 'stream'
           }

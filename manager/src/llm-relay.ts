@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { bearer, isLoopback, json, readRaw } from './http.ts'
-import { mergeUsage, usageFromPayload, type TokenUsage } from './llm-usage.ts'
+import { mergeUsage, sseUsage, usageFromPayload, type TokenUsage } from './llm-usage.ts'
 
 /**
  * 管家替本机 Bot 调模型（协议 10）。
@@ -573,7 +573,12 @@ async function proxyUpstream(
   clearDeadline()
   const httpStatus = upstream.status
   const ctype = upstream.headers.get('content-type') || 'application/json; charset=utf-8'
-  const streaming = ctype.includes('text/event-stream') || ctype.includes('text/plain')
+  /**
+   * **只有 2xx 才边收边转**（同 Gateway 那份）。非 2xx 是一页错误：上游或它前面那层代理的
+   * 错误页常把请求头原样回显，而 `text/plain` 正是这类页最常见的形状。只按类型判的话它会
+   * 走流式这一支、一个字节都不抹，平台的供应商密钥就原样交给了席位上的 Bot。
+   */
+  const streaming = upstream.ok && (ctype.includes('text/event-stream') || ctype.includes('text/plain'))
   if (streaming) {
     res.writeHead(upstream.status, {
       'content-type': ctype,
@@ -589,20 +594,9 @@ async function proxyUpstream(
       // 字节**原样**写给 Bot——数 usage 只看副本，不改流。
       res.write(piece)
       buf += decoder.decode(piece, { stream: true })
-      let idx
-      while ((idx = buf.indexOf('\n\n')) >= 0) {
-        const frame = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        for (const line of frame.split('\n')) {
-          if (!line.startsWith('data:')) continue
-          const payload = line.slice(5).trim()
-          if (!payload || payload === '[DONE]') continue
-          try {
-            const u = usageFromPayload(JSON.parse(payload))
-            if (u) usage = mergeUsage(usage, u)
-          } catch {}
-        }
-      }
+      const next = sseUsage(buf, usage)
+      buf = next.rest
+      usage = next.usage
     }
     // 读流放在 try 里：中途失败（Bot 走了、上游掐了）不能把已经累计的 usage 一起丢掉。
     // 断流是断流，账还是要记。
@@ -620,7 +614,7 @@ async function proxyUpstream(
       }
     }
     if (!res.writableEnded) res.end()
-    const status: Settlement = broke ? (watch.gone() ? 'failed' : 'error') : upstream.ok ? 'ok' : 'failed'
+    const status: Settlement = broke ? (watch.gone() ? 'failed' : 'error') : 'ok'
     return { status, usage, httpStatus }
   }
   let text: string
