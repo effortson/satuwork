@@ -131,7 +131,7 @@ const EMPTY_USAGE: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0
 export interface CompactOutcome {
   compacted: boolean
   /** 没压成的原因。`inflight` = 已经有一次在跑，这次不排队。 */
-  reason?: 'below-threshold' | 'no-cut' | 'no-summary' | 'inflight'
+  reason?: 'below-threshold' | 'no-cut' | 'no-summary' | 'inflight' | 'superseded'
   throughSeq?: number
   tokensBefore?: number
   tokensAfter?: number
@@ -443,6 +443,14 @@ export class AgentService extends Service {
    * 两次压缩同时算，会各自按自己看到的历史挑边界，然后写下两条互相矛盾的压缩点。
    */
   private compacting = new Map<string, Promise<CompactOutcome>>()
+  /**
+   * 每条会话 `/new` 过几次。压缩开工时记下这个数，写回之前再比一次（见 compactOnce）。
+   *
+   * 自动压缩在后台跑、要调一次模型写摘要，十几到几十秒。这期间人打了 `/new`：重置点先落盘，
+   * 压缩随后写下一条 throughSeq 更小的压缩点——而上下文边界认的是**最后一条**，于是重置前的
+   * 原文连同一份旧摘要全回到上下文里，`/new` 等于没做，也不报错。重置一次就作废一次在飞的压缩。
+   */
+  private resets = new Map<string, number>()
 
   constructor(
     ctx: Context,
@@ -504,17 +512,37 @@ export class AgentService extends Service {
     return this.quietUntil > Date.now()
   }
 
-  /** 进入静默。返回实际生效到什么时候，调用方好核对自己那一头的预算。 */
+  /** TTL 到点时把静默期里攒下的队列排掉。 */
+  private quietTimer: ReturnType<typeof setTimeout> | undefined
+
+  /**
+   * 进入静默；`ttlMs: 0` 是放开（管家的 `/api/quiesce {ttlMs:0}` 走的就是这条，等同 resume）。
+   * 返回实际生效到什么时候，调用方好核对自己那一头的预算。
+   */
   quiesce(ttlMs: number): number {
     const ttl = Math.min(AgentService.QUIET_MAX_MS, Math.max(0, Math.trunc(Number(ttlMs) || 0)))
-    this.quietUntil = ttl ? Date.now() + ttl : 0
-    this.ctx.logger?.info?.(ttl ? `agents: 进入换版静默 ${Math.round(ttl / 1000)} 秒，期间不开新的一轮` : 'agents: 静默已放开')
+    clearTimeout(this.quietTimer)
+    if (!ttl) {
+      this.resume()
+      return 0
+    }
+    this.quietUntil = Date.now() + ttl
+    /**
+     * **到点也要排一遍。** 管家中途挂了、没来得及放开，静默会自己过期；可静默期里排进来的消息
+     * 没有任何东西会再来叫醒（drainQueue 那时是直接 return 的），人只能再发一条——而那一条会
+     * 先跑，顺序也倒了。
+     */
+    this.quietTimer = setTimeout(() => {
+      if (!this.quiesced()) this.resume()
+    }, ttl + 50)
+    this.quietTimer.unref?.()
+    this.ctx.logger?.info?.(`agents: 进入换版静默 ${Math.round(ttl / 1000)} 秒，期间不开新的一轮`)
     return this.quietUntil
   }
 
-  /** 放开。部署失败、或者根本没走到重启那一步时，管家要负责调它。 */
+  /** 放开，并把静默期里攒下的队列排掉。部署失败、或者根本没走到重启那一步时，管家要负责调它。 */
   resume(): void {
-    if (!this.quietUntil) return
+    clearTimeout(this.quietTimer)
     this.quietUntil = 0
     this.ctx.logger?.info?.('agents: 静默已放开，恢复接活')
     /**
@@ -1073,6 +1101,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       // 静默期里不接着跑：那会开出新的一轮，排空就永远等不到空闲。**留在队列里**，
       // 和「进程在这一刻被杀掉」是同一个结局（队列本来就是落盘的）。
       if (this.quiesced()) return
+      // 这条会话正在跑（resume 叫醒它的时候、或者别的 send 抢先开了一轮）：不另开一轮，
+      // 那一轮收口时会自己来排空。并发两轮会交错写同一份 JSONL。
+      if (this.isRunning(sessionId)) return
       const next = this.queued(sessionId)[0]
       if (!next) return
       // **先出队再跑。** 反过来的话，这一条要是每次都在同一处抛，队列就成了死循环。
@@ -1214,6 +1245,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     // **压不动要说人话**，不能静默返回——人点了一下，界面上必须有个交代。
     if (out.reason === 'no-cut') throw new CommandError('这条对话还太短，没有可压的历史', 409)
     if (out.reason === 'no-summary') throw new CommandError('摘要没写成，上下文原样没动，过一会儿再试', 502)
+    if (out.reason === 'superseded') throw new CommandError('压缩期间这条对话被 /new 重置了，这次压缩没有写下', 409)
     /**
      * 走到这儿说明 compactOnce 返回了一种这里还不认识的「没压成」。**也要抛**——
      * 返回一个 compacted:false 给调用方，换来的是界面弹一句「已压缩：0 → 0」而实际
@@ -1231,6 +1263,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
    */
   async resetContext(sessionId: string): Promise<{ throughSeq: number; droppedMessages: number }> {
     if (this.isRunning(sessionId)) throw new CommandError('这一轮还在跑，先停下或等它跑完', 409)
+    // 同步记一笔，排在任何 await 之前：在飞的压缩写回前会看到它、作废自己（见 resets）。
+    this.resets.set(sessionId, (this.resets.get(sessionId) ?? 0) + 1)
     /**
      * 队里还排着的消息也要拦。
      *
@@ -1808,6 +1842,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     const window = this.windowOf(provider, modelId) ?? this.config.contextWindowFallback ?? 128_000
     const at = this.config.compactAt ?? 0.6
     const keep = this.config.compactKeep ?? 0.3
+    const resetsAtStart = this.resets.get(sessionId) ?? 0
     const events = await this.ctx.sessions.events(sessionId)
     // 按这一轮真正的模型重建：看不看得了图决定工具结果里带的是图还是一句说明（见 seesImages），
     // 传 undefined 就一律当看不了，带图的会话会被估低。
@@ -1883,6 +1918,15 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         estTokens(summaryText({ ...span, droppedMessages: 0, tokensBefore: 0, tokensAfter: 0 })) +
         estMessages(await toAgentMessages(kept, undefined, this.ctx)),
       by: opts.by ?? 'auto',
+    }
+    /**
+     * **写回之前再看一眼有没有人 `/new` 过。** 有就作废：这份摘要和切点都是按重置之前的日志算的，
+     * 落下去会成为最后一条边界、把刚清掉的上下文放回来（见 resets）。比较和 append 之间没有 await，
+     * 而 append 按调用顺序排队，所以不会再有一次重置插进这两步中间。
+     */
+    if ((this.resets.get(sessionId) ?? 0) !== resetsAtStart) {
+      this.ctx.logger?.info?.(`agents: ${sessionId} 压缩期间上下文被重置了，这次压缩作废`)
+      return { compacted: false, reason: 'superseded' }
     }
     await this.ctx.sessions.append(sessionId, 'session/compact', data)
     this.ctx.logger?.info?.(

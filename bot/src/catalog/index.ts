@@ -511,7 +511,8 @@ export class CatalogService extends Service {
       (m): m is Partial<CachedMemory> & { id: string } => typeof m?.id === 'string' && !!m.id,
     )
     this.syncMemories(memories, { since: startedAt })
-    this.syncServers(Array.isArray(body.servers) ? body.servers : [])
+    // 没有这一格（老 Gateway）就只补不删：拿一份「空」去剪，会把所有服务器连同 token 一起清掉。
+    this.syncServers(Array.isArray(body.servers) ? body.servers : [], { prune: Array.isArray(body.servers) })
     const pinned = this.pinBots(this.remoteBots)
     await this.connectMcp()
     if (!pinned) return false
@@ -760,9 +761,24 @@ export class CatalogService extends Service {
     }
   }
 
-  private syncServers(items: RemoteServer[]) {
+  /**
+   * 把目录里的 MCP 服务器落进本地缓存。**目录里没有的要删掉，token 一起删。**
+   *
+   * 以前只 upsert 不剪枝（Skill 和记忆都有剪枝，唯独这里没有）：管理员下线一台 MCP、或者
+   * 移除一个连接器之后，席位上这一行和它的明文 token 一直留着，重启也还在——每次 connectMcp
+   * 照旧拿旧 token 去握手、注册它的工具，@ 选单里照样列着它，只能靠远端自己拒掉旧 token 兜底。
+   */
+  private syncServers(items: RemoteServer[], opts: { prune?: boolean } = {}) {
     const col = this.ctx.storage.collection<CachedServer>('mcp-servers')
     const now = Date.now()
+    if (opts.prune) {
+      const live = new Set(items.map((s) => s.id))
+      for (const row of col.list()) {
+        if (live.has(row.value.id)) continue
+        col.delete(row.value.id)
+        this.ctx.storage.setSetting(TOKEN_NS, row.value.id, null)
+      }
+    }
     for (const s of items) {
       const prev = col.get(s.id)
       const kind = (KINDS as readonly string[]).includes(s.kind || '') ? (s.kind as CachedServer['kind']) : 'SSE'

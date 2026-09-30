@@ -146,6 +146,10 @@ export async function runSkillsBot({ root, test, assert, log }) {
     assert(!r.raceAfter.includes('id-stale'), `晚发车的目录里没有的，就该剪掉：${JSON.stringify(r.raceAfter)}`)
   })
 
+  await test('MCP 服务器下线：缓存那一行和它的 token 一起删；老 Gateway 不带 servers 时不剪', () => {
+    for (const [k, v] of Object.entries(r.mcpPrune)) assert(v === true, `${k} 不成立：${JSON.stringify(r.mcpPrune)}`)
+  })
+
   await test('撞名照 Gateway 的原话说；公司目录里的改不动删不掉', () => {
     assert(r.clash.includes('用 update'), `撞名要指路：${r.clash}`)
     assert(r.updateCompany.includes('管理员'), `改公司目录要指路给管理员：${r.updateCompany}`)

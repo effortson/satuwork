@@ -242,6 +242,22 @@ await ctx.agents
     上限夹得住: ctx.agents.quiesce(999 * 60_000) - Date.now() <= 5 * 60_000 + 1000,
   }
   ctx.agents.resume()
+
+  /**
+   * 管家放开走的是 `/api/quiesce {ttlMs:0}`，也就是 quiesce(0)——**它也得把静默期里攒下的
+   * 队列排掉**。以前只有 resume() 会排，而 resume() 除了这份探针没人调：部署失败、管家放开
+   * 之后，那些消息就一直挂在 dock 上，要等人再发一条。
+   */
+  const quietQ = 's-quiet-queue'
+  ctx.agents.quiesce(60_000)
+  ctx.agents.enqueue(quietQ, '静默期间排进来的', [], [])
+  const heldDuringQuiet = ctx.agents.queued(quietQ).length === 1
+  ctx.agents.quiesce(0)
+  await new Promise((r) => setTimeout(r, 50))
+  const drained = ctx.agents.queued(quietQ).length === 0
+  // 等它那一轮收口，别和下面那几段抢会话。
+  for (let i = 0; i < 100 && ctx.agents.isRunning(quietQ); i++) await new Promise((r) => setTimeout(r, 50))
+  out.quietDrain = { 静默期里留在队列: heldDuringQuiet, 用ttl0放开也排空: drained }
 }
 
 // ── 5. 出队之后、agent 建出来之前，isRunning 必须一直是 true ─────────

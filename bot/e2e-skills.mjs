@@ -299,6 +299,52 @@ col.delete('id-old')
   if (prevUrl) process.env.GATEWAY_URL = prevUrl
 }
 
+/**
+ * MCP 服务器下线之后，席位缓存里那一行和它的 token 要跟着删掉。以前只 upsert 不剪枝：
+ * 旧 token 一直躺在盘上，connectMcp 每次照旧拿它去握手、注册工具，@ 选单里也还列着。
+ * 目录里没有 `servers` 这一格（老 Gateway）时不剪——拿「空」去剪会把全部服务器一起清掉。
+ */
+{
+  const { CatalogService } = await import('./src/catalog/index.ts')
+  let servers = [
+    { id: 'mcp-keep', name: '留下的', kind: 'SSE', endpoint: 'http://127.0.0.1:1/sse', enabled: false, token: 'tok-keep' },
+    { id: 'mcp-gone', name: '下线的', kind: 'SSE', endpoint: 'http://127.0.0.1:1/sse', enabled: false, token: 'tok-gone' },
+  ]
+  let n = 0
+  const cat = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    const body = { stamp: `m${++n}`, bots: [], skills: [] }
+    if (servers) body.servers = servers
+    res.end(JSON.stringify(body))
+  })
+  await new Promise((r) => cat.listen(0, '127.0.0.1', r))
+  const prevUrl = process.env.GATEWAY_URL
+  process.env.GATEWAY_URL = `http://127.0.0.1:${cat.address().port}`
+  const ctx3 = new Context()
+  await ctx3.plugin(StorageService, { path: join(home, 'mcp-prune.db') })
+  ctx3.provide('roster', { list: () => [], get: () => undefined, pin: () => ({}), pruneExcept: () => {} })
+  await ctx3.plugin(ToolService)
+  await ctx3.plugin(CatalogService)
+  for (let i = 0; i < 100 && !ctx3.catalog; i++) await new Promise((r) => setTimeout(r, 20))
+  const ids = () => ctx3.storage.collection('mcp-servers').list().map((r) => r.value.id).sort()
+  await ctx3.catalog.pull().catch(() => {})
+  const first = ids()
+  servers = servers.slice(0, 1)
+  await ctx3.catalog.pull().catch(() => {})
+  const second = ids()
+  servers = undefined
+  await ctx3.catalog.pull().catch(() => {})
+  out.mcpPrune = {
+    先是两台: JSON.stringify(first) === JSON.stringify(['mcp-gone', 'mcp-keep']),
+    下线的那台删了: JSON.stringify(second) === JSON.stringify(['mcp-keep']),
+    它的token也删了: !ctx3.storage.getSetting('mcp-tokens', 'mcp-gone'),
+    留下的token还在: ctx3.storage.getSetting('mcp-tokens', 'mcp-keep') === 'tok-keep',
+    老Gateway不带servers不剪: JSON.stringify(ids()) === JSON.stringify(['mcp-keep']),
+  }
+  cat.close()
+  if (prevUrl) process.env.GATEWAY_URL = prevUrl
+}
+
 server.close()
 console.log(`__RESULT__${JSON.stringify(out)}`)
 process.exit(0)

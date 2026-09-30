@@ -64,6 +64,7 @@ export async function runMentions({ root, test, assert, log }) {
     assert(r.quiet.回绝之后没留下半个轮次, `回绝了却留下了半个轮次：${JSON.stringify(r.quiet)}`)
     assert(r.quiet.放开之后又接活了, `放开之后还不接活——这道闸只该管换版那几秒`)
     assert(r.quiet.上限夹得住, `TTL 没夹住：管家半路挂了，这台席位就成了一块永远不接活的砖`)
+    assert(r.quietDrain.静默期里留在队列 && r.quietDrain.用ttl0放开也排空, `管家放开（ttlMs:0）之后队列没排：${JSON.stringify(r.quietDrain)}`)
   })
 
   await test('上一轮在跑：带 @ 的排队，跑完自己接上', () => {
