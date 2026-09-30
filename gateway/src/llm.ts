@@ -133,6 +133,20 @@ type PiModelShape = {
 }
 
 /**
+ * 推理模型不带 `temperature`。OpenAI 的推理模型（gpt-6.1-sol、gpt-6-luna 这一批）收到它当场
+ * 400「Unsupported parameter: 'temperature'」，而 pi-ai 的 openai-completions / openai-responses
+ * 只要调用方给了就原样发，不看模型会不会推理（Anthropic 那一路它自己会在开思考时跳过）。
+ * 别家 OpenAI 兼容的推理模型收到了也多半是忽略，删掉不亏。只动 OpenAI 协议这两种 api，
+ * Google 的兼容口和其它协议照旧。
+ *
+ * 中继的请求体补丁（chatBodyPatch / responsesBodyPatch）和 /v1/chat/completions 走 pi-ai
+ * 那一岔用的是这同一条判据。
+ */
+export function rejectsTemperature(piModel: { api?: string; reasoning?: boolean }): boolean {
+  return piModel.reasoning === true && (piModel.api === 'openai-completions' || piModel.api === 'openai-responses')
+}
+
+/**
  * chat 路由上那两件 pi-ai 以前顺手做、中继之后没人做的事。
  *
  * **一、流式要 usage。** OpenAI 兼容的流不带 `stream_options.include_usage` 就一个
@@ -150,6 +164,7 @@ type PiModelShape = {
  * `off` 上去同样有上游不认。
  */
 function chatBodyPatch(patch: UpstreamBodyPatch, piModel: PiModelShape, req: { stream?: boolean; reasoningEffort?: string }): void {
+  if (rejectsTemperature(piModel)) patch.unset.push('temperature')
   if (req.stream === true && piModel.compat?.supportsUsageInStreaming !== false) {
     patch.set.stream_options = { include_usage: true }
   }
@@ -177,6 +192,7 @@ function chatBodyPatch(patch: UpstreamBodyPatch, piModel: PiModelShape, req: { s
  * toOpenAIResponses），没有别的键会被盖掉。
  */
 function responsesBodyPatch(patch: UpstreamBodyPatch, piModel: PiModelShape, req: { reasoningEffort?: string }): void {
+  if (rejectsTemperature(piModel)) patch.unset.push('temperature')
   const wanted = (req.reasoningEffort || '').trim()
   if (!wanted) return
   if (!piModel.reasoning) {
@@ -655,6 +671,9 @@ export class Llm {
    * 没有 thinkingLevelMap，于是发的就是 `none`，而 gpt-6.1-sol 这类只收 low 以上的直接 400。
    * 真用的时候档位是 off，Bot 压根不带推理字段、Gateway 也不补（见 responsesBodyPatch），由
    * 上游用默认值。这里照做：夹到 off 就把 `thinkingLevelMap.off` 设成 null，pi-ai 就不发了。
+   *
+   * **也不带 `temperature`。** 以前写死 0，推理模型一律 400（见 rejectsTemperature）；探的只是
+   * 「回一句 ok」，用不着它。
    */
   async probe(companyId: string | null, provider: string, model: string, effort?: string): Promise<ProbeResult> {
     const found = await this.find(companyId, model, provider)
@@ -679,7 +698,7 @@ export class Llm {
         {
           messages: [{ role: 'user', content: 'Reply with exactly: ok', timestamp: Date.now() }],
         } as any,
-        { apiKey: secret, maxTokens: 16, temperature: 0, signal: abort, ...(reasoning ? { reasoning } : {}) },
+        { apiKey: secret, maxTokens: 16, signal: abort, ...(reasoning ? { reasoning } : {}) },
       )
       const latencyMs = Date.now() - started
       if (message?.stopReason === 'aborted' || abort.aborted) {
