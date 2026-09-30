@@ -65,6 +65,7 @@ function endSignedIn() {
   state.wsOpen = {}
   state.wsSession = ''
   state.runtimeBots = []
+  state.runtimeHasMachine = null
   state.runtimeError = ''
   state.runtimeMachine = null
   state.desktopRuntime = null
@@ -1215,7 +1216,9 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'new-bot') {
-    state.newBot = { name: '', description: '', extraPrompt: '', icon: 'c-bot', runtimeKind: 'remote' }
+    // 公司没配运行机器的话远程 Bot 建了也装不上，在桌面端里就直接默认本地。
+    const localFirst = state.runtimeHasMachine === false && !!window.__SATUWORK_DESKTOP__
+    state.newBot = { name: '', description: '', extraPrompt: '', icon: 'c-bot', runtimeKind: localFirst ? 'local' : 'remote' }
     state.newBotError = ''
     render()
     return

@@ -893,7 +893,7 @@ function newBotModal() {
           <label class="satu-card" style="padding:12px;cursor:pointer;border-color:${f.runtimeKind === 'remote' ? 'var(--primary)' : 'var(--border)'};">
             <input type="radio" name="nb-runtime" data-newbot="runtimeKind" value="remote" ${f.runtimeKind === 'remote' ? 'checked' : ''}>
             <strong>${t('远程 Bot', 'Remote bot')}</strong>
-            <small style="display:block;margin-top:4px;color:var(--muted-foreground);">${t('运行在公司配置的机器上', 'Runs on the company machine')}</small>
+            <small style="display:block;margin-top:4px;color:var(--muted-foreground);">${state.runtimeHasMachine === false ? t('公司还没配对运行机器，建了也装不上', 'No company machine is paired yet, so it cannot be installed') : t('运行在公司配置的机器上', 'Runs on the company machine')}</small>
           </label>
           <label class="satu-card" style="padding:12px;cursor:${window.__SATUWORK_DESKTOP__ ? 'pointer' : 'not-allowed'};opacity:${window.__SATUWORK_DESKTOP__ ? '1' : '.55'};border-color:${f.runtimeKind === 'local' ? 'var(--primary)' : 'var(--border)'};">
             <input type="radio" name="nb-runtime" data-newbot="runtimeKind" value="local" ${f.runtimeKind === 'local' ? 'checked' : ''} ${window.__SATUWORK_DESKTOP__ ? '' : 'disabled'}>

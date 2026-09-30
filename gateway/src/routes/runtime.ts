@@ -7,7 +7,7 @@ import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
 import type { Account, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
-import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
+import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, defaultBotModel, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
@@ -1262,10 +1262,11 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const { pinned, tpl } = await botContext(db, account.companyId)
     // 渠道归属与 Bot 定义分表保存。给名册带稳定标记，前端才能只给渠道 Bot 画来源标签，
     // 不能拿固定名称 `telegram bot` 猜：名称能改，也可能有普通 Bot 恰好同名。
-    const [bindings, seatRows, items] = await Promise.all([
+    const [bindings, seatRows, items, machines] = await Promise.all([
       db.channelBindings(account.id),
       db.seatRuntimesOfAccount(account.id),
       db.botsFor(account.companyId, account.id),
+      account.companyId ? db.machinesOfCompany(account.companyId) : [],
     ])
     const channelByBot = new Map(bindings.map((row) => [row.botId, row.kind]))
     const seats = new Map(seatRows.map((rt) => [rt.botId, rt]))
@@ -1281,6 +1282,12 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       bots,
       quota: { used: await db.countUserBots(account.id), max: MAX_USER_BOTS },
       rosterStreamUrl: (await rosterStreamUrlFor(seats, machineOf, bots)) || null,
+      /**
+       * 公司名下有没有一台配对好的运行机器。没有的话这家公司只能用本地 Bot：界面据此
+       * 把装不上的全局 / 公司 Bot 从名册里收掉，新建 Bot 默认选「本地」。名册本身照旧
+       * 全给——藏不藏是界面的事，接口不替它做决定。
+       */
+      hasMachine: machines.some(machinePaired),
     })
   })
 

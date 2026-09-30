@@ -185,6 +185,11 @@ const state = {
   usage: null,
   usageRange: null,
   runtimeBots: [],
+  /**
+   * 公司名下有没有配对好的运行机器（GET /runtime/bots 的 hasMachine）。`null` = 还没拉到，
+   * 那时一律按「有」对待——拿不准的时候不藏东西、不改默认。
+   */
+  runtimeHasMachine: null,
   runtimeError: '',
   machine: null,
   /** 这台机器上现在跑着什么：管家版本、各 bot 版本的席位数、有没有更新的版本。 */
