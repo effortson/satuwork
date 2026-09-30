@@ -17,6 +17,11 @@ export async function runWorkspaceFiles({ root, test, assert, log }) {
     assert(r && r.escape && r.upload, `结果不完整：${JSON.stringify(r)}`)
   })
 
+  await test('search_files：灾难性回溯的正则几秒内收口，进程不被卡死，普通正则照常', () => {
+    assert(r.redos, `没有 redos 结果：${JSON.stringify(Object.keys(r))}`)
+    for (const [k, v] of Object.entries(r.redos)) assert(v === true, `${k} 不成立：${JSON.stringify(r.redos)}`)
+  })
+
   await test('列目录：目录在前、隐藏项和符号链接不列、越界照样拦', () => {
     assert(r.list.路径 === 'sub', `path → ${r.list.路径}`)
     assert(r.list.目录在前, `顺序不对：${JSON.stringify(r.list.条目)}`)

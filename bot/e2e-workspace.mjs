@@ -227,6 +227,26 @@ out.paging2 = {
   第二页正文里就是那个文件: mark2.text.includes((mark2.refs || [])[0]?.path ?? ' '),
 }
 
+// ── 9b. 灾难性回溯的正则卡不死进程 ───────────────────────────────────────
+/**
+ * 正则是模型给的（提示注入也能给）。`(a|aa)+$` 碰上一行几十个 a 就是指数级回溯，在主线程上
+ * 跑会把事件循环整个占住：所有会话的流、停止按钮、健康检查一起没响应。现在在 worker 里跑、
+ * 按文件计时，超时整个线程杀掉，给模型一句能照着改的话。
+ */
+mkdirSync(join(root, 'redos'), { recursive: true })
+writeFileSync(join(root, 'redos/blob.txt'), 'a'.repeat(60) + 'b\n')
+let ticks = 0
+const ticker = setInterval(() => ticks++, 100)
+const redosAt = Date.now()
+const redos = await call('search_files', { pattern: '(a|aa)+$', path: 'redos' })
+clearInterval(ticker)
+out.redos = {
+  几秒内收口: Date.now() - redosAt < 10_000,
+  说清楚是回溯: /灾难性回溯/.test(redos.text),
+  主线程一直在转: ticks >= 10,
+  普通正则照常: (await call('search_files', { pattern: 'a+b', path: 'redos' })).text.includes('blob.txt'),
+}
+
 // ── 10. read_file 的分页 ─────────────────────────────────────────────
 /**
  * 大文件是**必然**要分页的，而分页的唯一出口是末尾那句话里的 offset。它算错一位，

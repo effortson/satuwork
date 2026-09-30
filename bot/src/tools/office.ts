@@ -256,6 +256,14 @@ async function listFiles(root: string, rel = ''): Promise<string[]> {
   return out
 }
 
+/**
+ * 这台 Bot 有没有 terminal。**本地 Bot 没有**（tools/terminal.ts：OS 沙箱做完之前本地模式不开 shell）。
+ *
+ * 新建文档整条路都靠 terminal 跑 .cjs 脚本（office_guide 给的就是脚本模板），本地 Bot 上照着做，
+ * 模型会去调一把工具表里根本没有的 terminal。所以本地不注册 office_guide，说明里也不指路过去。
+ */
+const hasShell = () => (process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local'
+
 export function apply(ctx: Context) {
   const resolveIn = (path?: string) => ctx.workspace.resolve(path)
   const show = (path: string) => ctx.workspace.show(path).split(sep).join('/')
@@ -276,8 +284,11 @@ export function apply(ctx: Context) {
       description:
         '要改一份已有的 Word（.docx）/ Excel（.xlsx）/ PPT（.pptx），并且保留它原来的格式时用：把它解成一堆 XML（已拆成一个标签一行），' +
         '然后用 read_file / patch 改，改完调 office_pack 打回原文件。结果里会列出该看哪几个文件，并附上这种格式的改法要点。' +
-        '只是读内容用 read_file 就行，不用解包。**新建文档不用它**：先调 office_guide 拿到那种格式的要点和模板，' +
-        '再在 terminal 里写 .cjs 脚本生成。同一个文件再解一次会丢掉还没打包的改动。',
+        '只是读内容用 read_file 就行，不用解包。' +
+        (hasShell()
+          ? '**新建文档不用它**：先调 office_guide 拿到那种格式的要点和模板，再在 terminal 里写 .cjs 脚本生成。'
+          : '这台 Bot 新建不了 Word / Excel / PPT（没有能跑脚本的 terminal），要新建就请用户先建一份空白的，再解包来改。') +
+        '同一个文件再解一次会丢掉还没打包的改动。',
       parameters: {
         type: 'object',
         properties: {
@@ -386,7 +397,7 @@ export function apply(ctx: Context) {
     },
   )
 
-  registerTool(
+  if (hasShell()) registerTool(
     ctx,
     {
       name: 'office_guide',

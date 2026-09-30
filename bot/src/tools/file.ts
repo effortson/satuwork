@@ -6,6 +6,7 @@ import { humanSize, looksBinary } from '../workspace/index.ts'
 import { docKindOf, extractDocument } from '../workspace/extract.ts'
 import { clip, fail, registerTool, SKIPPED_DIRS, walkFiles, type ToolOut } from './common.ts'
 import { fuzzyReplace } from './fuzzy.ts'
+import { regexMatcher, RegexTimeoutError } from './regex-worker.ts'
 import type { ToolCall, WorkspaceFile } from './index.ts'
 
 /**
@@ -577,57 +578,76 @@ export function apply(ctx: Context) {
       let stopped = false
 
       let scanned = 0
-      outer: for await (const file of filesUnder(base, wantsHidden(fileGlob), (path) => ctx.workspace.isApprovedLink(path))) {
-        if (call.signal?.aborted) break
-        if (++scanned % YIELD_EVERY_FILES === 0) await new Promise((r) => setImmediate(r))
-        // 起点本身就是个文件时，「相对起点」的路径是空串，什么模式都配不上——那就拿文件名去配。
-        if (match && !match(file === base ? basename(file) : relative(base, file).split(sep).join('/'))) continue
-        const s = await stat(file).catch(() => undefined)
-        if (!s || !s.isFile() || s.size > MAX_GREP_FILE_BYTES) continue
-        const buf = await readFile(file).catch(() => undefined)
-        if (!buf || looksBinary(buf)) continue
+      // 正则在 worker 里跑（见 regex-worker.ts）：模型给的正则可能是灾难性回溯，在主线程上跑
+      // 会把整个 Bot 进程卡死，而一次正在跑的 `re.test` 是叫不停的。
+      const matcher = regexMatcher(re.source, re.flags)
+      try {
+        outer: for await (const file of filesUnder(base, wantsHidden(fileGlob), (path) => ctx.workspace.isApprovedLink(path))) {
+          if (call.signal?.aborted) break
+          if (++scanned % YIELD_EVERY_FILES === 0) await new Promise((r) => setImmediate(r))
+          // 起点本身就是个文件时，「相对起点」的路径是空串，什么模式都配不上——那就拿文件名去配。
+          if (match && !match(file === base ? basename(file) : relative(base, file).split(sep).join('/'))) continue
+          const s = await stat(file).catch(() => undefined)
+          if (!s || !s.isFile() || s.size > MAX_GREP_FILE_BYTES) continue
+          const buf = await readFile(file).catch(() => undefined)
+          if (!buf || looksBinary(buf)) continue
 
-        const rel = show(file)
-        const lines = buf.toString('utf8').split('\n')
-        let hits = 0
-        /** 这个文件真的往结果里摆了几段。**和 hits 不是一回事**——见下面收尾那一步。 */
-        let shown = 0
-        for (let i = 0; i < lines.length; i++) {
-          if (!re.test(lines[i].length > MAX_REGEX_LINE_CHARS ? lines[i].slice(0, MAX_REGEX_LINE_CHARS) : lines[i])) continue
-          hits++
-          if (shape === 'content') {
-            total++
-            if (total > skip && blocks.length < cap) {
-              const rows: string[] = []
-              for (let j = Math.max(0, i - around); j < i; j++) rows.push(`${rel}-${j + 1}- ${clip(lines[j].trim(), MAX_LINE_CHARS)}`)
-              rows.push(`${rel}:${i + 1}: ${clip(lines[i].trim(), MAX_LINE_CHARS)}`)
-              for (let j = i + 1; j <= Math.min(lines.length - 1, i + around); j++) {
-                rows.push(`${rel}-${j + 1}- ${clip(lines[j].trim(), MAX_LINE_CHARS)}`)
-              }
-              blocks.push(rows.join('\n'))
-              shown++
-            } else if (blocks.length >= cap) {
-              stopped = true
-              // 还要不要接着扫：只为了报一个准确的总数不值得把整个工作区读一遍。
-              if (shown) files.push({ rel, hits })
-              break outer
+          const rel = show(file)
+          const lines = buf.toString('utf8').split('\n')
+          let matched: number[]
+          try {
+            matched = await matcher.match(
+              lines.map((l) => (l.length > MAX_REGEX_LINE_CHARS ? l.slice(0, MAX_REGEX_LINE_CHARS) : l)),
+              call.signal,
+            )
+          } catch (e) {
+            if ((e as Error).name === 'AbortError') break
+            if (e instanceof RegexTimeoutError) {
+              fail(`正则 ${pattern} 在 ${rel} 上跑了几秒还没完，多半是写法会导致灾难性回溯（比如 (a|aa)+、(\\w+\\s?)*）。换个更直接的写法，或者先用 file_glob 缩小范围。`)
             }
+            throw e
           }
-          if (shape === 'files_only') break
+          let hits = 0
+          /** 这个文件真的往结果里摆了几段。**和 hits 不是一回事**——见下面收尾那一步。 */
+          let shown = 0
+          for (const i of matched) {
+            hits++
+            if (shape === 'content') {
+              total++
+              if (total > skip && blocks.length < cap) {
+                const rows: string[] = []
+                for (let j = Math.max(0, i - around); j < i; j++) rows.push(`${rel}-${j + 1}- ${clip(lines[j].trim(), MAX_LINE_CHARS)}`)
+                rows.push(`${rel}:${i + 1}: ${clip(lines[i].trim(), MAX_LINE_CHARS)}`)
+                for (let j = i + 1; j <= Math.min(lines.length - 1, i + around); j++) {
+                  rows.push(`${rel}-${j + 1}- ${clip(lines[j].trim(), MAX_LINE_CHARS)}`)
+                }
+                blocks.push(rows.join('\n'))
+                shown++
+              } else if (blocks.length >= cap) {
+                stopped = true
+                // 还要不要接着扫：只为了报一个准确的总数不值得把整个工作区读一遍。
+                if (shown) files.push({ rel, hits })
+                break outer
+              }
+            }
+            if (shape === 'files_only') break
+          }
+          /**
+           * 内容搜索按**摆出来了几段**记这个文件，不按命中几行。
+           *
+           * 被 offset 整个翻过去的那些文件一行都没进正文，把它们算进「来自 N 个文件」是
+           * 虚报；更要紧的是它们会进 `refs`，界面于是在正文底下摆出一颗指向正文根本没提
+           * 过的文件的药丸——而 refs 存在的全部意义就是「正文里这个文件名指哪个文件」。
+           */
+          if (shape === 'content' ? !shown : !hits) continue
+          files.push({ rel, hits })
+          if (shape !== 'content' && files.length >= skip + cap) {
+            stopped = true
+            break
+          }
         }
-        /**
-         * 内容搜索按**摆出来了几段**记这个文件，不按命中几行。
-         *
-         * 被 offset 整个翻过去的那些文件一行都没进正文，把它们算进「来自 N 个文件」是
-         * 虚报；更要紧的是它们会进 `refs`，界面于是在正文底下摆出一颗指向正文根本没提
-         * 过的文件的药丸——而 refs 存在的全部意义就是「正文里这个文件名指哪个文件」。
-         */
-        if (shape === 'content' ? !shown : !hits) continue
-        files.push({ rel, hits })
-        if (shape !== 'content' && files.length >= skip + cap) {
-          stopped = true
-          break
-        }
+      } finally {
+        matcher.close()
       }
 
       if (shape === 'files_only') {
