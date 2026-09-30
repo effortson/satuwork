@@ -158,14 +158,20 @@ export async function runMarkdown({ root, test, assert, log }) {
     assert(pkgs.length > 0, 'UI_CDN_PACKAGES 是空的')
     for (const p of pkgs) assert(/@\d+\.\d+\.\d+$/.test(p), `${p} 没钉到具体版本`)
 
-    // 从 CDN 拉库的两处：markdown.js 的 LIBS，首页演示背景的 LP_THREE（pages-landing.js）。
+    // 从 CDN 拉库的几处：markdown.js 的 LIBS，首页演示背景的 LP_THREE（pages-landing.js），下面还有 office-view.js。
     const mdSrc = readFileSync(join(root, 'gateway/ui/markdown.js'), 'utf8')
     const mdPaths = [...mdSrc.matchAll(/path: '([^']+)'/g)].map((m) => m[1])
     assert(mdPaths.length > 0, 'markdown.js 里找不到 LIBS 的 path')
     const lpSrc = readFileSync(join(root, 'gateway/ui/pages-landing.js'), 'utf8')
     const lpPaths = [...lpSrc.matchAll(/path: '(\/[^']+)'/g)].map((m) => m[1])
     assert(lpPaths.length > 0, 'pages-landing.js 里找不到 LP_THREE 的 path')
-    const paths = [...mdPaths, ...lpPaths]
+    // 第三处：浏览器里预览 Office 的那一页（office-view.js 的 LIBS）。
+    const ovSrc = readFileSync(join(root, 'gateway/ui/office-view.js'), 'utf8')
+    const ovPaths = [...ovSrc.matchAll(/path: '(\/[^']+)'/g)].map((m) => m[1])
+    assert(ovPaths.length > 0, 'office-view.js 里找不到 LIBS 的 path')
+    // 每一条都得带 SRI：这一页跑的就是文档里的内容，CDN 那头被换了包也得认得出来。
+    assert([...ovSrc.matchAll(/sri: 'sha384-[A-Za-z0-9+/=]{64}'/g)].length === ovPaths.length, 'office-view.js 的 LIBS 有一条没带 SRI')
+    const paths = [...mdPaths, ...lpPaths, ...ovPaths]
     for (const p of paths) {
       assert(pkgs.some((pkg) => p.startsWith(`/${pkg}/`)), `${p} 不在 UI_CDN_PACKAGES 底下，CSP 会挡掉它`)
     }
