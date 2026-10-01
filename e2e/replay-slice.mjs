@@ -54,6 +54,11 @@ export async function runReplaySlice({ root, test, assert, log }) {
     assert(r.sseClose && !bad.length, `这几条不对：${bad.join('、') || '没有结果'}（${JSON.stringify(r.sseClose)}）`)
   })
 
+  await test('/clear：清除点之前的不给界面、翻不回去，/new 不受影响', async () => {
+    const bad = Object.entries(r.clear || {}).filter(([, v]) => v !== true).map(([k]) => k)
+    assert(r.clear && !bad.length, `这几条不对：${bad.join('、') || '没有结果'}（${JSON.stringify(r.clear)}）`)
+  })
+
   await test('翻到头了就说没有了，别让「加载更多」一直挂着', async () => {
     assert(r.exhausted.hasMore === false, 'hasMore 该收敛成 false')
     assert(r.exhausted.轮数 === 2, `要的比有的多时该全给：${r.exhausted.轮数}`)

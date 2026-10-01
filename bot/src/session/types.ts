@@ -223,6 +223,16 @@ export interface SessionEventMap {
     droppedMessages: number
     /** 只有人能触发。留着这个字段是为了跟 compact 的 by 对齐，将来真有自动重置也不用改形状。 */
     by: 'user'
+    /**
+     * 人打的是 `/clear` 而不是 `/new`（见 docs/chat-commands.md §15）。
+     *
+     * 上下文这一侧和 `/new` 完全一样，多出来的只有「看不见」：throughSeq（含）之前的事件
+     * 不再给界面（historySlice / SSE），模型的 history_read / history_search 也翻不到。
+     * **日志照样一条不删**——审计、计费走的是 /internal 那条全量原文，不受影响。
+     *
+     * 老席位读到它就是一条普通的 `/new`：前文照样从上下文里去掉，只是界面上还翻得到。
+     */
+    clear?: boolean
   }
 
   'turn/start': { turn: number }

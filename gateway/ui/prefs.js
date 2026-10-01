@@ -112,6 +112,13 @@ function errText(msg) {
   // 带数字的那几句进不了字典（键是变的），在这里按模式翻。
   const queued = msg.match(/^还有 (\d+) 条消息排着队，先取消它们再开新对话$/)
   if (queued) return `${queued[1]} message(s) are still queued — cancel them before starting a new conversation.`
+  const queuedClear = msg.match(/^还有 (\d+) 条消息排着队，先取消它们再清空$/)
+  if (queuedClear) return `${queuedClear[1]} message(s) are still queued — cancel them before clearing.`
+  const handoffs = msg.match(/^还有 (\d+) 张转人工的单子没结，先处理掉、或等它交回来再(开新对话|清空)$/)
+  if (handoffs) {
+    const what = handoffs[2] === '清空' ? 'clearing' : 'starting a new conversation'
+    return `${handoffs[1]} human handoff(s) are still open — resolve them or wait for them to come back before ${what}.`
+  }
   const throttled = msg.match(/^尝试次数太多，请 (\d+) (秒|分钟)后再试$/)
   if (throttled) return `Too many attempts — try again in ${throttled[1]} ${throttled[2] === '秒' ? 'seconds' : 'minutes'}.`
   return msg

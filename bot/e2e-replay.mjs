@@ -1,7 +1,7 @@
 /**
  * historySlice 的语义。纯函数，不起服务——探针要 tsx 才 import 得了 .ts。
  */
-import { historySlice } from './src/session/replay.ts'
+import { historySlice, visibleEvents } from './src/session/replay.ts'
 
 let seq = 0
 const ev = (type, data) => ({ seq: ++seq, time: 1, type, data })
@@ -163,6 +163,29 @@ const out = {}
     cancel也摘掉了: afterCancel === 0 && b.listeners.size === 0,
     正常放完时还挂着: liveC === 2,
     放完之后断开也摘掉了: c.listeners.size === 0,
+  }
+}
+
+// /clear：清除点之前的不再给界面，也翻不回去（docs/chat-commands.md §15）。
+{
+  const all = conversation(2)
+  const cut = all.at(-1).seq // 切在最后一条 turn/end 上，和 resetContext 一样
+  all.push(ev('session/reset', { throughSeq: cut, from: 1, to: 1, droppedMessages: 4, by: 'user', clear: true }))
+  // conversation() 会把 seq 计数归零，接在后面的那一轮要自己续号。
+  let next = all.at(-1).seq
+  for (const e of conversation(1).slice(1)) all.push({ ...e, seq: ++next })
+  const page = historySlice(all, { turns: 20 })
+  const older = historySlice(all, { turns: 20, before: cut + 1 })
+  // 只打 /new 不藏：同一个位置的普通重置点，之前的照样给。
+  const plain = all.map((e) => (e.type === 'session/reset' ? { ...e, data: { ...e.data, clear: undefined } } : e))
+  out.clear = {
+    清除点之前一条不给: page.events.every((e) => e.seq > cut),
+    清除点那条留着画线: page.events[0]?.type === 'session/reset',
+    清除之后的轮次都在: page.events.filter((e) => e.type === 'turn/end').length === 1,
+    不给加载更多: page.hasMore === false,
+    往前翻也翻不出来: older.events.length === 0 && older.hasMore === false,
+    翻历史工具同一口径: visibleEvents(all).every((e) => e.seq > cut),
+    普通重置不藏: visibleEvents(plain).length === plain.length,
   }
 }
 

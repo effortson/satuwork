@@ -166,7 +166,9 @@
 }
 /* /new 比压缩硬：压缩还留着摘要，重置什么都不留。线也跟着实一档。 */
 .sw-ctxdiv[data-mark='reset']::before,
-.sw-ctxdiv[data-mark='reset']::after { background: var(--foreground); opacity: 0.28; }
+.sw-ctxdiv[data-mark='reset']::after,
+.sw-ctxdiv[data-mark='clear']::before,
+.sw-ctxdiv[data-mark='clear']::after { background: var(--foreground); opacity: 0.28; }
 .sw-ctxdiv-text { flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .sw-msg { display: flex; gap: var(--space-3); align-items: flex-start; }
