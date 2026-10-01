@@ -1,6 +1,6 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { createReadStream, createWriteStream, lstatSync, readdirSync, readFileSync, realpathSync, statSync, type WriteStream } from 'node:fs'
-import { lstat, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
@@ -236,6 +236,21 @@ export class WorkspaceService extends Service {
     const file = await freshPath(target, safeName(filename))
     await writeFile(file, bytes)
     return { path: this.show(file), name: basename(file), size: bytes.byteLength }
+  }
+
+  /**
+   * 把一个已经落在工作区里的文件挪到工作区根目录，按 `filename` 取一个**不重名**的名字。
+   *
+   * 给浏览器下载用：Chrome 先按 guid 存进 `.satuwork/downloads/`，下完再挪出来。直接让 Chrome
+   * 存到根目录的话，同名文件它是**覆盖**的——网页上下一份「合同.docx」，员工原来那份就没了。
+   * `src` 必须在工作区里（resolve 兜底），名字照样过 safeName / freshPath。
+   */
+  async adopt(src: string, filename: string) {
+    const from = resolve(src)
+    if (from !== this.root && !from.startsWith(this.root + sep)) throw new WorkspaceError('文件不在工作区里')
+    const file = await freshPath(this.root, safeName(filename))
+    await rename(from, file)
+    return { path: this.show(file), name: basename(file) }
   }
 
   /**

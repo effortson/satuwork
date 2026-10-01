@@ -2,6 +2,7 @@ import { Service, type Context } from '@deepseek-ai/cordis'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { lookup } from 'node:dns/promises'
 import { existsSync, mkdirSync } from 'node:fs'
+import { mkdir, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { findExecutable } from '../executable.ts'
@@ -143,6 +144,7 @@ interface Snapshot {
 interface WorkspaceLike {
   root?: string
   saveBytes?: (dir: string, filename: string, bytes: Uint8Array) => Promise<{ path: string; name: string }>
+  adopt?: (src: string, filename: string) => Promise<{ path: string; name: string }>
 }
 
 interface Located {
@@ -236,6 +238,16 @@ export class BrowserService extends Service {
    * 一次性交出去」——而它存在的理由只是「点一下开出了新标签页，得切过去」。
    */
   private own = new Set<string>()
+  /**
+   * Bot 附着的那几页里出现过的框架（主框架和 iframe）。
+   *
+   * 下载要靠它认来源：下载目录只能整颗浏览器一起设（Bot 和员工共用同一个 context，cookie 是
+   * 全部的意义），`Browser.downloadWillBegin` 也是谁的下载都发。只按事件收的话，员工在另一个
+   * 标签页下的工资条会出现在这一次 browser_* 调用的产出里——进会话日志、进界面，还可能经
+   * 渠道发进 Telegram。Page.* 事件只来自 Bot 附着的会话，所以这里收到的就是 Bot 的框架；
+   * Bot 点出来、没附着的新标签页，主框架 id 就是它的 targetId，已经在 own 里。
+   */
+  private ownFrames = new Set<string>()
   /** 当前页的主框架 id。请求拦截要靠它把顶层导航和第三方 iframe 分开。 */
   private mainFrame = ''
   /**
@@ -303,7 +315,9 @@ export class BrowserService extends Service {
    * 下载：guid → 建议文件名。**两个事件才凑齐一次下载**——`downloadWillBegin` 知道
    * 叫什么名字但还没落盘，`downloadProgress` 知道落完了但只带 guid。
    */
-  private downloading = new Map<string, string>()
+  private downloading = new Map<string, { name: string; mine: boolean }>()
+  /** Chrome 按 guid 落盘的那个目录（见 setDownloadDir）。空 = 没设上。 */
+  private incoming = ''
   private downloads: string[] = []
   /** 每条会话已经拍了多少张。见 MAX_SHOTS。 */
   private shots = new Map<string, number>()
@@ -634,11 +648,27 @@ export class BrowserService extends Service {
     }
   }
 
+  /**
+   * 下载落哪儿、叫什么。
+   *
+   * **`allowAndName` 而不是 `allow`。** `allow` 按建议名存，撞上同名文件 Chrome 是**覆盖**的（实测：
+   * 连下三次 report.txt，盘上始终只有一份）——网页上下一份「合同.docx」，员工工作区里原来那份
+   * 就没了。所以让 Chrome 按 guid 存进 `.satuwork/downloads/`，下完由我们挪到工作区根目录、取一个
+   * 不重名的名字（workspace.adopt）。
+   *
+   * 这个设置对整颗浏览器生效（Bot 和员工共用一个 context），所以员工的下载也走这条路、同样不会
+   * 被覆盖，只是不算 Bot 的产出（见 ownFrames）。**Bot 断开 CDP 之后 Chrome 自己恢复默认行为**
+   * （实测），不会留下一个只认 guid 的浏览器给员工。
+   */
   private async setDownloadDir(cdp: Cdp): Promise<void> {
-    const root = this.workspaceOf()?.root ?? ''
-    if (!root) return
+    const ws = this.workspaceOf()
+    const root = ws?.root ?? ''
+    if (!root || !ws?.adopt) return
+    const incoming = join(root, '.satuwork', 'downloads')
     try {
-      await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: root, eventsEnabled: true })
+      await mkdir(incoming, { recursive: true })
+      await cdp.send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: incoming, eventsEnabled: true })
+      this.incoming = incoming
     } catch (e) {
       // 下载落不到工作区不该让整套工具起不来：还能浏览，只是下不了东西。
       this.ctx.logger?.warn?.(`browser: 下载目录设不上 ${(e as Error).message}`)
@@ -652,8 +682,13 @@ export class BrowserService extends Service {
         void this.onRequest(p)
         return
       }
+      case 'Page.frameAttached': {
+        if (typeof p.frameId === 'string' && p.frameId) this.noteFrame(p.frameId)
+        return
+      }
       case 'Page.frameNavigated': {
         const frame = p.frame as { id?: string; url?: string; parentId?: string } | undefined
+        if (frame?.id) this.noteFrame(frame.id)
         // 只认主框架：iframe 里的地址不是「当前停在哪一页」。
         if (frame && !frame.parentId && typeof frame.url === 'string') {
           /**
@@ -764,22 +799,46 @@ export class BrowserService extends Service {
       case 'Browser.downloadWillBegin': {
         const guid = String(p.guid ?? '')
         const name = String(p.suggestedFilename ?? '')
-        if (guid && name) this.downloading.set(guid, name)
+        // 只有 Bot 自己的页面发起的才算它的产出（见 ownFrames）。员工的也要记：落盘之后同样要挪出来取名。
+        const frame = String(p.frameId ?? '')
+        const mine = !!frame && (this.own.has(frame) || this.ownFrames.has(frame))
+        if (guid) this.downloading.set(guid, { name: name || 'download', mine })
         return
       }
       case 'Browser.downloadProgress': {
         const guid = String(p.guid ?? '')
         if (!guid) return
         // **只报下完的。** 报「开始下载」等于在文件还不存在的时候给用户一张文件卡片。
-        if (p.state === 'completed') {
-          const name = this.downloading.get(guid)
-          if (name) this.downloads.push(name)
-        }
+        const job = this.downloading.get(guid)
         if (p.state === 'completed' || p.state === 'canceled') this.downloading.delete(guid)
+        if (!job || !this.incoming) return
+        const src = join(this.incoming, guid)
+        if (p.state === 'canceled') void rm(src, { force: true }).catch(() => {})
+        if (p.state === 'completed') void this.adoptDownload(src, job)
         return
       }
       default:
         return
+    }
+  }
+
+  /** 记下一个 Bot 的框架。一直开着的进程会走过成千上万页，到顶就清空重收——当前页的框架马上又会被记上。 */
+  private noteFrame(id: string): void {
+    if (this.ownFrames.size >= 1000) this.ownFrames.clear()
+    this.ownFrames.add(id)
+  }
+
+  /**
+   * 下完的那个 guid 文件挪进工作区、取不重名的名字。Bot 自己的才进 downloads（报给界面）。
+   *
+   * 挪是异步的，可能晚于紧接着的那次工具结果——那这份就挂在下一次的结果上，不会丢。
+   */
+  private async adoptDownload(src: string, job: { name: string; mine: boolean }): Promise<void> {
+    try {
+      const saved = await this.workspaceOf()?.adopt?.(src, job.name)
+      if (saved && job.mine) this.downloads.push(saved.path)
+    } catch (e) {
+      this.ctx.logger?.warn?.(`browser: 下载的 ${job.name} 没挪进工作区：${(e as Error).message}`)
     }
   }
 
@@ -1241,9 +1300,9 @@ export class BrowserService extends Service {
 
   /** 这一次动作之后新落下来的文件。报给界面用，模型不看。 */
   takeDownloads(): WorkspaceFile[] {
-    const names = [...new Set(this.downloads)]
+    const paths = [...new Set(this.downloads)]
     this.downloads = []
-    return names.map((name) => ({ path: name, name }))
+    return paths.map((path) => ({ path, name: path.split('/').pop() || path }))
   }
 
   /**
