@@ -82,13 +82,15 @@ function handoffStatsStrip() {
  * Gateway，浏览器这边是唯一答得上来的地方。**所以只看得见自己名下的 Bot**——管理员在
  * 这一段里看不到别人的确认，那是对的：别人的确认只有别人点得动。
  */
+/** 等着拍板的那条是哪颗 Bot 的。名单里没有（刚删掉）就露 id，好过一片空白。 */
+function handoffBotName(id) {
+  const b = (state.runtimeBots || []).find((x) => x.id === id)
+  return (b && (b.name || b.id)) || id
+}
+
 function approvalWaitPanel() {
   const list = typeof pendingApprovals === 'function' ? pendingApprovals() : []
   if (!list.length) return ''
-  const nameOf = (id) => {
-    const b = (state.runtimeBots || []).find((x) => x.id === id)
-    return (b && (b.name || b.id)) || id
-  }
   const rows = list
     .map(
       (a) => `<div class="satu-handoffrow">
@@ -99,7 +101,7 @@ function approvalWaitPanel() {
           <div style="font-size: 12px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(a.name || '')}</div>
         </div>
         <span><span class="tag tag-warn">${t('等你拍板', 'Approve')}</span></span>
-        <span style="font-size: 12.5px; color: var(--muted-foreground);">${esc(nameOf(a.botId))}</span>
+        <span style="font-size: 12.5px; color: var(--muted-foreground);">${esc(handoffBotName(a.botId))}</span>
         <span style="font-size: 12.5px; color: var(--muted-foreground);">${t('只有你点得动', 'only you can')}</span>
         <span style="font-size: 12px; color: var(--muted-foreground);">${esc(a.at ? chatClock(a.at) : '')}</span>
         <div class="satu-rowactions" style="display: flex; gap: var(--space-2); justify-content: flex-end;">
@@ -276,16 +278,12 @@ function handoffsAside() {
         }</p>`
       : ''
   const asks = typeof pendingApprovals === 'function' ? pendingApprovals() : []
-  const botName = (id) => {
-    const b = (state.runtimeBots || []).find((x) => x.id === id)
-    return (b && (b.name || b.id)) || id
-  }
   const askCards = asks
     .map(
       (a) => `<div class="satu-hocard" data-kind="ask">
         <div class="satu-hocard-top"><span class="tag tag-warn">${t('等你拍板', 'Approve')}</span><span>${esc(a.at ? chatClock(a.at) : '')}</span></div>
         <div class="satu-hocard-ask">${esc(a.reason || t('要你拍板才能往下走', 'Needs your approval to continue'))}</div>
-        <div class="satu-hocard-meta">${esc(botName(a.botId))}${a.name ? ' · ' + esc(a.name) : ''}</div>
+        <div class="satu-hocard-meta">${esc(handoffBotName(a.botId))}${a.name ? ' · ' + esc(a.name) : ''}</div>
         <div class="satu-hocard-acts"><button type="button" class="btn btn-primary" data-act="handoff-open" data-bot="${esc(a.botId)}">${t('去拍板', 'Go approve')}</button></div>
       </div>`,
     )

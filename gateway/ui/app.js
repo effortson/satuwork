@@ -635,17 +635,17 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-handoff-claim') {
-    await actOnHandoff(btn.getAttribute('data-id'), 'claim')
+    await actOnHandoff(btn.getAttribute('data-id'), 'claim', undefined, btn)
     return
   }
   if (act === 'chat-handoff-return') {
     // `done` 是「照你说的做完了」，`instructions` 是「我换了个做法，你按这个来」。
     // 两句话对模型的意思完全不同（见 policy/handoff.ts 的 returnMessage）。
-    await returnHandoff(btn.getAttribute('data-id'), btn.getAttribute('data-disp') || 'done')
+    await returnHandoff(btn.getAttribute('data-id'), btn.getAttribute('data-disp') || 'done', btn)
     return
   }
   if (act === 'chat-handoff-cancel') {
-    await actOnHandoff(btn.getAttribute('data-id'), 'cancel')
+    await actOnHandoff(btn.getAttribute('data-id'), 'cancel', undefined, btn)
     return
   }
   if (act === 'handoff-claim') {
@@ -2940,7 +2940,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || e.defaultPrevented || !shownPreview()) return
   const el = document.activeElement
   const typing = el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || ''))
-  if (typing && !el.closest('.sw-preview-side')) return
+  if (typing && !el.closest('.sw-preview-side, .sw-previewl')) return
   e.preventDefault()
   closePreview()
 })
@@ -2995,7 +2995,7 @@ document.getElementById('app').addEventListener('mousedown', (e) => {
     // 往左拖变宽：栏在右边，所以是起点减当前。
     const next = asideWidthOf(Math.round(startW + (startX - ev.clientX)), preview)
     asidePref[key] = next
-    main.style.gridTemplateColumns = asideColumns(next)
+    main.style.gridTemplateColumns = asideColumns(next, preview)
   }
   const onUp = () => {
     document.removeEventListener('mousemove', onMove)

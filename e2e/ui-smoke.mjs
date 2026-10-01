@@ -644,6 +644,24 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(ui.handoffBell().includes('data-href="/handoffs"'), '离开对话页之后待办入口没了')
     })
 
+    await test('右栏待办：数据没变就不重画那一屏（正写着的交还说明不被 30 秒轮询冲掉）', async () => {
+      const ui = await boot(undefined, { stubIds: ['aside-handoffs'] })
+      ui.state.me = { account: { id: 'me', companyId: 'c1', role: 'admin' } }
+      ui.state.path = '/chat'
+      ui.state.chatBotId = 'b1'
+      ui.state.handoffs = [{ id: 'h1', botId: 'b2', state: 'open', accountId: 'x', ask: '付款', createdAt: 1, ownerName: '张三' }]
+      const host = ui.stubs.get('aside-handoffs')
+      host.childElementCount = 1
+      ui.paintAsideHandoffs()
+      const first = host.writes
+      ui.paintAsideHandoffs()
+      ui.paintAsideHandoffs()
+      assert(host.writes === first, `数据没变也重画了 ${host.writes - first} 次`)
+      ui.state.handoffs = [...ui.state.handoffs, { id: 'h2', botId: 'b2', state: 'open', accountId: 'x', ask: '对账', createdAt: 2, ownerName: '李四' }]
+      ui.paintAsideHandoffs()
+      assert(host.writes === first + 1 && host.innerHTML.includes('对账'), '多了一张单，右栏却没跟上')
+    })
+
     await test('席位上已经没有的那张单：画成一行字，不留按钮', async () => {
       /**
        * 交接单是落盘的，但席位重装 / 换机器 / 手工清过库之后，日志里那条 open 还在而
