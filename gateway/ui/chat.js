@@ -6805,6 +6805,12 @@ function maybeLivePreview(event) {
   }
   const html = files.find((file) => previewKindOf(file.name || file.path, '') === 'html')
   if (!html) return false
+  /**
+   * 右栏收着就不自己弹。预览现在摆在右栏里，人把栏收起来就是不想让那一块占地方；Bot
+   * 每产出一个 HTML 就把栏撑开一次，他得每一轮都去点一次收起。文件卡片还在对话里，
+   * 想看点一下就出来。（已经开着的那份照旧跟着刷新，见上面。）
+   */
+  if (!asidePref.open) return false
   const key = `${state.chatSessionId}:${Number(data.turn) || 0}:${html.path}`
   if (autoPreviewed.has(key)) return false
   rememberAutoPreview(key)
@@ -6817,6 +6823,8 @@ function maybeLivePreview(event) {
  * 文件（多半根本不存在），「下载」也会按新会话去取——所以那一份就不该再摆着。
  */
 let previewSession = ''
+/** 预览是哪颗 Bot 的。换页时用它判「人是不是离开了这颗 Bot」，见 leavePreview。 */
+let previewBot = ''
 
 /** 右栏眼下该摆的那份预览；不在对话页、或者已经换了会话，就是没有。 */
 function shownPreview() {
@@ -6829,6 +6837,7 @@ async function openPreview(path, name, options = {}) {
   if (!state.chatSessionId) return
   revokePreview()
   previewSession = state.chatSessionId
+  previewBot = state.chatBotId || ''
   const kind = previewKindOf(name || path, '')
   const mode = options.mode === 'source' ? 'source' : 'view'
   /**
@@ -6911,12 +6920,8 @@ async function openPreview(path, name, options = {}) {
     if (!state.preview || state.preview.path !== path) return
     state.preview = { path, name, loading: false, url: '', type: '', size: 0, error: err.message, kind, mode }
   }
+  // 刚画出来的 Markdown 里的代码块 / 公式 / mermaid，由内容层换内容时一起过一遍（syncPreview）。
   render()
-  // 刚画出来的 Markdown 里可能有代码块 / 公式 / mermaid，和聊天气泡一样要过一遍。
-  if (state.preview && state.preview.kind === 'markdown' && window.satuMd) {
-    const host = document.querySelector('.sw-preview-md')
-    if (host) window.satuMd.enhance(host)
-  }
 }
 
 /**
@@ -7102,11 +7107,24 @@ function revokePreview() {
 
 /** 撤掉预览但不重绘：换页、收右栏的时候跟着别的事一起画。 */
 function dropPreview() {
+  unmountPreviewLayer()
   if (!state.preview) return
   unwatchPaint()
   revokePreview()
   state.preview = null
   previewSession = ''
+  previewBot = ''
+}
+
+/**
+ * 换页时要不要撤掉预览（state.js 的 enterPath 调）。**只在离开这颗 Bot 的对话时撤**：
+ * 点名单里正开着的这颗、或者待办里「去对话里处理」指回眼前这颗，地址没变，人也没离开，
+ * 那份预览就该还在。换了会话由 shownPreview 自己认出来。
+ */
+function leavePreview() {
+  if (!state.preview) return
+  const bot = isChatPath(state.path) ? chatBotIdOf(state.path) || state.chatBotId : ''
+  if (bot !== previewBot) dropPreview()
 }
 
 function closePreview() {
@@ -7280,9 +7298,109 @@ function previewPanel() {
         ${paintActs(p)}
         <button type="button" class="btn" data-act="preview-download" data-path="${esc(p.path)}" data-name="${esc(p.name)}">${t('下载')}</button>
       </div>
-      <div class="sw-preview-body" data-flow="${p.error || p.loading || p.docLoading || p.tooBig || p.kind === 'image' ? 'center' : 'top'}">${previewBody(p)}</div>
+      <div class="sw-preview-slot" id="sw-preview-slot"></div>
     </section>`
 }
+
+/** 内容框里是居中摆（图、提示、转圈）还是从顶上排（文本、渲染出来的 Markdown、iframe）。 */
+function previewFlow(p) {
+  return p.error || p.loading || p.docLoading || p.tooBig || p.kind === 'image' ? 'center' : 'top'
+}
+
+/**
+ * 预览的内容层：真正的 iframe / 图 / 正文**不画在右栏里**，挂在 body 上的一个常驻层上，
+ * 位置跟着右栏那个空槽（#sw-preview-slot）走。和内嵌桌面（syncDesktop）是同一个理由。
+ *
+ * render() 是整页 innerHTML 换掉的，而对话页上它来得很勤：发一条消息就是十来次。内容
+ * 要是画在右栏里，每来一次 PDF 就重新加载、跳回第一页，HTML 重跑一遍，Office 重新渲染，
+ * Markdown 丢掉代码高亮和 mermaid——预览挪进右栏图的就是「边看边说」，说一句它就重来
+ * 一遍，等于没挪。弹层那会儿没这个问题，是因为弹层开着人什么也干不了。
+ *
+ * 所以这一层只在**要画的东西真的变了**才换内容（签名见 previewSig），其余时候只对位置。
+ */
+let previewLayerSig = ''
+let previewLayerFor = null
+let previewSlotSeen = null
+let previewObserver = null
+
+function previewLayer() {
+  return document.getElementById('sw-previewl')
+}
+
+/**
+ * 内容签名：这几样之外的变化（涂抹的笔画、按钮的忙闲）都不该让内容重建。
+ * 对象本身也要比——重新打开同一个文件（Bot 刚改过）是一个新对象，字段可能一个都没变。
+ */
+function previewSig(p) {
+  return [
+    p.path, p.kind, p.mode, p.url, p.loading, p.error, p.docLoading, p.tooBig, p.docNote,
+    Boolean(p.paint), p.web ? p.web.nonce : '', typeof p.text === 'string' ? p.text.length : -1,
+  ].join('|')
+}
+
+function unmountPreviewLayer() {
+  const layer = typeof document !== 'undefined' ? previewLayer() : null
+  if (layer) layer.remove()
+  if (previewObserver) previewObserver.disconnect()
+  previewObserver = null
+  previewSlotSeen = null
+  previewLayerSig = ''
+  previewLayerFor = null
+}
+
+/** render() 之后调：对位置，内容变了才换内容。 */
+function syncPreview() {
+  const slot = document.getElementById('sw-preview-slot')
+  const p = shownPreview()
+  if (!slot || !p) {
+    if (previewLayer()) {
+      unwatchPaint()
+      unmountPreviewLayer()
+    }
+    return
+  }
+  let layer = previewLayer()
+  if (!layer) {
+    layer = document.createElement('div')
+    layer.id = 'sw-previewl'
+    document.body.appendChild(layer)
+    previewLayerSig = ''
+  }
+  const sig = previewSig(p)
+  if (sig !== previewLayerSig || p !== previewLayerFor) {
+    previewLayerSig = sig
+    previewLayerFor = p
+    layer.className = 'sw-preview-body sw-previewl'
+    layer.setAttribute('data-flow', previewFlow(p))
+    layer.innerHTML = previewBody(p)
+    // 渲染出来的 Markdown 里可能有代码块、公式、mermaid——和聊天气泡一样要 enhance 一次。
+    const md = p.kind === 'markdown' && p.mode === 'view' && window.satuMd ? layer.querySelector('.sw-preview-md') : null
+    if (md) window.satuMd.enhance(md)
+    // 画布跟着内容一起换了：笔画在 state 里，重新挂上去照着重画。
+    if (p.paint) mountPainter()
+    else unwatchPaint()
+  }
+  if (slot !== previewSlotSeen) {
+    // 整页重绘换了个新的槽：观察器跟着换过去（拖宽右栏、窗口变化都靠它）。
+    previewSlotSeen = slot
+    if (previewObserver) previewObserver.disconnect()
+    previewObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => placePreview()) : null
+    if (previewObserver) previewObserver.observe(slot)
+  }
+  placePreview()
+}
+
+function placePreview() {
+  const layer = previewLayer()
+  const slot = document.getElementById('sw-preview-slot')
+  if (!layer || !slot) return
+  const r = slot.getBoundingClientRect()
+  layer.style.top = r.top + 'px'
+  layer.style.left = r.left + 'px'
+  layer.style.width = r.width + 'px'
+  layer.style.height = r.height + 'px'
+}
+if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('resize', () => placePreview())
 
 /** 切「预览 / 原文」。只改一个字段，字节早就在手上了，不用再取一次。 */
 function setPreviewMode(mode) {
@@ -7294,13 +7412,9 @@ function setPreviewMode(mode) {
     p.docLoading = 'text'
     void fetchDocText(p.path, p.name)
   }
+  // 切到「预览」那一刻 Markdown 要 enhance 一次（代码高亮、公式、mermaid）——内容层换
+  // 内容时自己会做，见 syncPreview。
   render()
-  // 渲染出来的 Markdown 里可能有代码块、公式、mermaid——和聊天气泡一样要 enhance 一次，
-  // 否则代码不高亮、公式显示 TeX 原文。
-  if (state.preview.mode === 'view' && window.satuMd) {
-    const host = document.querySelector('.sw-preview-md')
-    if (host) window.satuMd.enhance(host)
-  }
 }
 
 /**
@@ -7310,8 +7424,8 @@ function setPreviewMode(mode) {
  * ——它多半看不见图，看得见也说不准坐标。人来涂是唯一靠谱的办法，而这件事只有界面做得了。
  *
  * **笔画存在 state 里，不只画在画布上**：任何一次无关的 render()（对话流来了一帧、侧栏刷新）
- * 都会把整个预览换掉，画布上的东西就没了。所以笔画按**原图像素**坐标存进 `state.preview.paint`，
- * 每次画布重新挂上来（mountPainter，render.js 在每次 render 之后调）都照着重画一遍。
+ * 都可能把预览换掉，画布上的东西就没了。所以笔画按**原图像素**坐标存进 `state.preview.paint`，
+ * 每次画布重新挂上来（mountPainter，内容层换内容时调，见 syncPreview）都照着重画一遍。
  *
  * 蒙版的约定是 OpenAI 的：和原图一样大，**透明的地方重画**，其余不透明。
  */
@@ -7415,6 +7529,19 @@ function redrawPaint() {
  * 把画布贴到图上、接上笔。render.js 每次 render 之后调一次（节点是新的，监听也是新挂的，
  * 旧节点连同旧监听一起被丢掉，不会攒）。
  */
+/**
+ * 笔刷那根滑杆在右栏的按钮行里，随 render() 换掉，每次都要重新接上。画布在内容层里，
+ * 不跟着换（见 syncPreview），所以两件事分开挂。
+ */
+function bindPaintBrush() {
+  const range = document.getElementById('sw-paint-brush')
+  if (!range) return
+  range.addEventListener('input', () => {
+    const paint = state.preview && state.preview.paint
+    if (paint) paint.brush = Number(range.value) || PAINT_BRUSH_DEFAULT
+  })
+}
+
 function mountPainter() {
   const canvas = document.getElementById('sw-paint-canvas')
   const img = document.getElementById('sw-paint-img')
@@ -7435,14 +7562,6 @@ function mountPainter() {
       if (img.naturalWidth) fit()
     })
     paintObserver.observe(img)
-  }
-
-  const range = document.getElementById('sw-paint-brush')
-  if (range) {
-    range.addEventListener('input', () => {
-      const paint = state.preview && state.preview.paint
-      if (paint) paint.brush = Number(range.value) || PAINT_BRUSH_DEFAULT
-    })
   }
 
   let current = null
@@ -8556,25 +8675,39 @@ const handoffDrafts = new Map()
  *
  * 对话里那张卡有自己的一套（updateRow 按签名比，变了才换），右栏和整页是 render() /
  * paintAsideHandoffs 整块换的，换一次框里的字就没了——而 render() 在对话页上随时会来。
+ *
+ * **两边各存各的**（panelDrafts / handoffDrafts）。同一张单可能两边各有一个框，共用一份
+ * 的话，对话卡里写的那句会在下一次重画时被抄进右栏那个框，之后两个框各改各的就对不上了。
  */
+const panelDrafts = new Map()
+
+function noteMapOf(ta) {
+  return ta.closest && ta.closest('.gw-aside, .gw-page') ? panelDrafts : handoffDrafts
+}
+
 function stashHandoffNotes(root) {
   if (!root || !root.querySelectorAll) return
-  // 同一张单可能有两个框（对话里、右栏里），只要有一个写了字就记那一句。
+  // 同一边同一张单只该有一个框；真有两个，只要有一个写了字就记那一句。
   const seen = new Map()
   for (const ta of root.querySelectorAll('.sw-handoff-note')) {
     const id = ta.getAttribute('data-handoff')
-    if (id) seen.set(id, seen.get(id) || ta.value)
+    if (!id) continue
+    const map = noteMapOf(ta)
+    const key = (map === panelDrafts ? 'p:' : 'c:') + id
+    const prev = seen.get(key)
+    seen.set(key, { map, id, text: (prev && prev.text) || ta.value })
   }
-  for (const [id, text] of seen) {
-    if (text) handoffDrafts.set(id, text)
-    else handoffDrafts.delete(id)
+  for (const { map, id, text } of seen.values()) {
+    if (text) map.set(id, text)
+    else map.delete(id)
   }
 }
 
+/** 填回去的只有右栏 / 待办页的框：对话里那张卡由 updateRow 自己填，这时它还没画出来。 */
 function fillHandoffNotes(root) {
   if (!root || !root.querySelectorAll) return
-  for (const ta of root.querySelectorAll('.sw-handoff-note')) {
-    const draft = handoffDrafts.get(ta.getAttribute('data-handoff'))
+  for (const ta of root.querySelectorAll('.gw-aside .sw-handoff-note, .gw-page .sw-handoff-note')) {
+    const draft = panelDrafts.get(ta.getAttribute('data-handoff'))
     if (draft && !ta.value) ta.value = draft
   }
 }
@@ -8586,9 +8719,12 @@ function fillHandoffNotes(root) {
  * 根本不是他的——按会话鉴权的那几条路由在那时会把他挡在外面，而他恰恰是该来处理这件
  * 事的人（见 gateway/src/routes/handoffs.ts）。
  */
-async function actOnHandoff(id, act, body) {
+async function actOnHandoff(id, act, body, near) {
   if (!id) return
-  const box = [...document.querySelectorAll('.sw-handoff')].find((el) => el.getAttribute('data-handoff') === id)
+  // 先认点的那张卡（同一张单可能两边各摆一张，见 handoffNote），认不到再按单号找。
+  const box =
+    (near && near.closest ? near.closest('.sw-handoff') : null) ||
+    [...document.querySelectorAll('.sw-handoff')].find((el) => el.getAttribute('data-handoff') === id)
   if (box) {
     if (box.getAttribute('data-busy') === '1') return
     box.setAttribute('data-busy', '1')
@@ -8596,16 +8732,15 @@ async function actOnHandoff(id, act, body) {
   try {
     await api('POST', '/runtime/handoffs/' + encodeURIComponent(id) + '/' + act, body || {})
     handoffDrafts.delete(id)
+    panelDrafts.delete(id)
     // 状态变化会顺着 SSE 回来（席位落了一条 human/handoff），卡片跟着重画。
     // 待办计数是 Gateway 那张表上的，单独刷一次。
     void loadHandoffs()
   } catch (err) {
     if (box) box.removeAttribute('data-busy')
-    // render 会换掉 textarea，先保住人已经写好的交接说明。此前这里只改 state.error
-    // 却不重绘，所以远程席位离线、本地通道断开、工单已被别人接走时，用户看到的都是
-    // “按钮完全点不动”，连真实错误都没有。
-    const draft = handoffNote(id)
-    if (draft) handoffDrafts.set(id, draft)
+    // 要重绘，不能只改 state.error：此前不重绘，远程席位离线、本地通道断开、工单已被
+    // 别人接走时，用户看到的都是「按钮完全点不动」，连真实错误都没有。人已经写好的交接
+    // 说明由 render() 自己先存后填（stashHandoffNotes），两边的框各回各的。
     // 409「已经被别人接走了 / 这张单不在了」不是错误，但必须说出来：点了一下什么都
     // 没发生才是最糟的。
     flash('err', (err && err.message) || t('这一下没成', 'That did not go through'))
@@ -8614,22 +8749,29 @@ async function actOnHandoff(id, act, body) {
 }
 
 /**
- * 同一张单可能同时摆着两张卡（对话里一张、右栏待办一张），人只在其中一张里写了字。
- * 取写了字的那张，别拿到另一张空的然后报「写一句你做了什么」。
+ * 交还时那句话从哪个框里取。
+ *
+ * **先认点的那颗按钮所在的那张卡。** 同一张单可能同时摆着两张卡（对话里一张、右栏待办
+ * 一张），两个框里的字未必一样——按文档顺序取第一个写了字的，取到的可能是另一张卡里
+ * 旧的那句，交给 Bot 的就是人已经改掉的话。找不到按钮（失败重试那条路）才退回按单号
+ * 找一个写了字的。
  */
-function handoffNote(id) {
+function handoffNote(id, near) {
+  const card = near && near.closest ? near.closest('.sw-handoff') : null
+  const own = card ? card.querySelector('.sw-handoff-note') : null
+  if (own) return own.value.trim()
   const tas = [...document.querySelectorAll('.sw-handoff-note')].filter((x) => x.getAttribute('data-handoff') === id)
   return tas.map((ta) => ta.value.trim()).find(Boolean) || ''
 }
 
-async function returnHandoff(id, disposition) {
-  const text = handoffNote(id)
+async function returnHandoff(id, disposition, near) {
+  const text = handoffNote(id, near)
   if (!text) {
     // 空的交还等于把「我处理完了」五个字扔给模型——它接着要做什么全靠猜。
     flash('err', t('写一句你做了什么，Bot 要靠它接着做', 'Say what you did — the bot continues from it'))
     return
   }
-  await actOnHandoff(id, 'return', { disposition: disposition || 'done', text })
+  await actOnHandoff(id, 'return', { disposition: disposition || 'done', text }, near)
 }
 
 /**

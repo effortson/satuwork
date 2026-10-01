@@ -1166,11 +1166,17 @@
 .sw-preview-side .sw-preview-head h2 { font-size: 15px; line-height: 1.35; }
 /* 右栏窄：看法 / 涂抹 / 下载那一排单独一行，放不下就折行，别把文件名挤没了。 */
 .sw-preview-side .sw-preview-acts { flex-wrap: wrap; gap: var(--space-2); }
-/* 高度不再写死 70vh：右栏本来就是整屏高，内容框吃掉头上两行剩下的全部。 */
-.sw-preview-side .sw-preview-body { flex: 1; min-height: 0; height: auto; margin-top: 0; }
-.sw-preview-side .sw-preview-body[data-flow='top'] { padding: var(--space-3) var(--space-4); }
-.sw-preview-side .sw-preview-body[data-flow='top']:has(.sw-preview-load) { padding: 0; }
-.sw-preview-side .sw-paint .sw-preview-img { max-height: calc(100vh - 220px); }
+/* 右栏里只留一个空槽，吃掉头上两行剩下的全部高度；真正的内容在 body 上的常驻层里
+   （.sw-previewl），照着这个槽的位置摆——见 chat.js 的 syncPreview。 */
+.sw-preview-slot { flex: 1; min-height: 0; border-radius: var(--radius); background: var(--muted); }
+/* 常驻层：样式和弹层时代的内容框是同一套（.sw-preview-body），只是位置由 placePreview
+   按槽给。14 压在菜单（15）之下，弹层蒙版（25）和全屏桌面（61）更在它上面。 */
+/* 选择器带上 .sw-preview-body：那一套规则排在后面，同权重会被它的 margin-top / 70vh /
+   内边距盖回去。 */
+.sw-preview-body.sw-previewl { position: fixed; z-index: 14; box-sizing: border-box; margin: 0; height: auto; }
+.sw-preview-body.sw-previewl[data-flow='top'] { padding: var(--space-3) var(--space-4); }
+.sw-preview-body.sw-previewl[data-flow='top']:has(.sw-preview-load) { padding: 0; }
+.sw-previewl .sw-paint .sw-preview-img { max-height: calc(100vh - 220px); }
 .sw-preview-head {
   display: flex;
   align-items: flex-start;

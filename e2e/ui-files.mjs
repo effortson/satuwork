@@ -184,6 +184,83 @@ export async function runUiFiles({ root, test, assert, log }) {
     assert(preview.asidePref.open === false, '收起右栏却把栏打开了')
   })
 
+  await test('对话页上的重画不重建预览内容：PDF 不重新加载、Markdown 不丢渲染', async () => {
+    /**
+     * 预览挪进右栏之后对话照常能用，发一条消息就是十来次 render()。内容要是跟着重建，
+     * PDF 每次跳回第一页、HTML 重跑、Markdown 丢掉代码高亮——等于说一句它就重来一遍。
+     */
+    const app = loadApp({
+      appPath: join(root, 'gateway/ui/app.js'),
+      base: 'http://127.0.0.1:1',
+      fetchImpl: async () =>
+        new Response('<h1>报告</h1>', { status: 200, headers: { 'content-type': 'application/octet-stream', 'content-length': '15' } }),
+      stubIds: ['sw-preview-slot', 'sw-previewl'],
+    })
+    app.stubs.get('sw-preview-slot').getBoundingClientRect = () => ({ top: 10, left: 600, width: 500, height: 700 })
+    app.state.me = { account: { id: 'a1', role: 'member', email: 'a@b.c' } }
+    app.state.path = '/chat'
+    app.state.chatBotId = 'b1'
+    app.state.chatSessionId = 's1'
+    app.state.chatEvents = []
+    await app.openPreview('reports/a.html', 'a.html')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const layer = app.stubs.get('sw-previewl')
+    const first = layer.writes
+    assert(first >= 1 && /sw-preview-frame/.test(layer.innerHTML), `内容层没画出来：${layer.innerHTML}`)
+    assert(layer.style.left === '600px' && layer.style.height === '700px', `内容层没对到槽上：${JSON.stringify(layer.style)}`)
+    app.render()
+    app.render()
+    app.syncPreview()
+    assert(layer.writes === first, `重画了 ${layer.writes - first} 次内容，PDF / HTML 每次都会重新加载`)
+    // 真要换的时候（切到「原文」）才换。
+    app.state.preview.mode = 'source'
+    app.render()
+    assert(layer.writes === first + 1 && /sw-preview-src/.test(layer.innerHTML), '切了看法内容却没换')
+  })
+
+  await test('右栏宽度：只有预览那一档给对话留 420px，平时那一档照写死的像素', async () => {
+    const app = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base: 'http://127.0.0.1:1' })
+    assert(app.asideColumns(280, false) === 'minmax(0, 1fr) 280px', `平时那一档被压窄了：${app.asideColumns(280, false)}`)
+    assert(app.asideColumns(900, true).includes('calc(100% - 420px)'), '预览那一档没给对话留地方')
+  })
+
+  await test('点回眼前这颗 Bot 不关预览；换到别的 Bot 才关', async () => {
+    const app = loadApp({
+      appPath: join(root, 'gateway/ui/app.js'),
+      base: 'http://127.0.0.1:1',
+      fetchImpl: async () => new Response('# 标题', { status: 200, headers: { 'content-type': 'text/markdown', 'content-length': '8' } }),
+    })
+    app.state.me = { account: { id: 'a1', role: 'member', email: 'a@b.c' } }
+    app.state.path = '/a/b1'
+    app.state.chatBotId = 'b1'
+    app.state.chatSessionId = 's1'
+    app.state.chatEvents = []
+    await app.openPreview('notes.md', 'notes.md')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    app.leavePreview()
+    assert(app.state.preview, '地址没变（点回眼前这颗），预览却被关了')
+    app.state.path = '/a/b2'
+    app.leavePreview()
+    assert(!app.state.preview, '换到别的 Bot 了，上一颗的预览还挂着')
+  })
+
+  await test('右栏收着时 Bot 产出的 HTML 不自己弹出来', async () => {
+    const app = loadApp({
+      appPath: join(root, 'gateway/ui/app.js'),
+      base: 'http://127.0.0.1:1',
+      fetchImpl: async () => new Response('<p>x</p>', { status: 200, headers: { 'content-type': 'text/html', 'content-length': '8' } }),
+    })
+    app.state.me = { account: { id: 'a1', role: 'member', email: 'a@b.c' } }
+    app.state.path = '/chat'
+    app.state.chatBotId = 'b1'
+    app.state.chatSessionId = 's1'
+    app.state.chatEvents = []
+    app.asidePref.open = false
+    const ev = { type: 'tool/result', data: { turn: 1, files: [{ path: 'a.html', name: 'a.html' }] } }
+    assert(!app.maybeLivePreview(ev), '人把右栏收起来了，Bot 一产出 HTML 又把它撑开')
+    assert(!app.state.preview, '没弹出来却留下了一份预览')
+  })
+
   /**
    * Office 文档预览：先要席位渲染好的 PDF，要不到退回提取文本。
    * `pdf` 决定 as=pdf 那条怎么答：'ok' 回真 PDF、'old' 学老席位把原文件字节原样回来、
@@ -220,6 +297,11 @@ export async function runUiFiles({ root, test, assert, log }) {
     }
   }
   const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
+  /**
+   * 右栏里看得见的那一份预览：头上那几行（previewPanel）加内容层里的东西（previewBody）。
+   * 内容不画在右栏里，挂在 body 上的常驻层上（见 chat.js 的 syncPreview），所以要拼起来看。
+   */
+  const previewShown = (app) => app.previewPanel() + app.previewBody(app.state.preview)
 
   await test('Office 预览：有 PDF 就看 PDF，「原文」页用到时才去提取', async () => {
     const { app, asOf, raw } = officePreview({ pdf: 'ok' })
@@ -229,7 +311,7 @@ export async function runUiFiles({ root, test, assert, log }) {
     // 原文件的字节浏览器看不了，取它只为一个大小——经 Gateway 就是白跑一次函数调用。
     assert(raw() === 0, `还去取了原文件：${raw()} 次`)
     assert(p.kind === 'doc' && p.url && !p.docLoading, `PDF 没接上：${JSON.stringify({ ...p, abort: undefined })}`)
-    const html = app.previewPanel()
+    const html = previewShown(app)
     assert(html.includes('sw-preview-frame') && html.includes(p.url), '没画成 PDF 阅读器')
     assert(html.includes('data-mode="source"'), '有 PDF 时该有「原文」页签')
     // 大多数人只看渲染出来的那份，不该顺手把文本也提一遍。
@@ -254,7 +336,7 @@ export async function runUiFiles({ root, test, assert, log }) {
       assert(!p.url && !p.web, `${pdf}：不是 PDF 的东西被当成 PDF 了，或者老格式走了浏览器渲染`)
       assert(raw() === 0, `${pdf}：老格式还去取了原文件`)
       assert(p.mode === 'source' && p.text === '正文' && asOf('text') === 1, `${pdf}：没退回文本：${JSON.stringify({ ...p, abort: undefined })}`)
-      assert(!app.previewPanel().includes('data-mode="view"'), `${pdf}：没 PDF 还摆着「预览」页签`)
+      assert(!previewShown(app).includes('data-mode="view"'), `${pdf}：没 PDF 还摆着「预览」页签`)
     }
   })
 
@@ -266,7 +348,7 @@ export async function runUiFiles({ root, test, assert, log }) {
       const p = app.state.preview
       assert(p.web && p.web.kind === kind && p.web.data.byteLength === 11, `${file}：没走浏览器渲染：${JSON.stringify({ ...p, abort: undefined, web: p.web && { kind: p.web.kind } })}`)
       assert(raw() === 1 && asOf('text') === 0, `${file}：取原文件 ${raw()} 次、提取 ${asOf('text')} 次`)
-      const html = app.previewPanel()
+      const html = previewShown(app)
       const frame = /<iframe[^>]*data-office-view[^>]*>/.exec(html)?.[0] ?? ''
       assert(/sandbox="allow-scripts"/.test(frame), `${file}：sandbox 不对：${frame}`)
       // 加了 allow-same-origin，渲染库跑的脚本就和 Gateway 同源，拿得到登录票——sandbox 等于没有。
@@ -308,7 +390,7 @@ export async function runUiFiles({ root, test, assert, log }) {
     await settle()
     app.setPreviewMode('source')
     await settle()
-    const html = app.previewPanel()
+    const html = previewShown(app)
     // PDF 要到了，席位就是新的；叫人去升级 Bot 是把人往错的方向上指。
     assert(!html.includes('要更新 Bot 版本'), '把一次提取失败说成了席位太老')
     assert(html.includes('文本提取失败'), `没说清楚：${html.slice(0, 400)}`)
@@ -319,7 +401,7 @@ export async function runUiFiles({ root, test, assert, log }) {
     const { app } = officePreview({ pdf: 501, text: { status: 415, body: { error: '这种格式没法提取成文本' } } })
     await app.openPreview('old/budget.xls', 'budget.xls')
     await settle()
-    const html = app.previewPanel()
+    const html = previewShown(app)
     assert(html.includes('没法提取成文本'), `没说原因：${html.slice(0, 400)}`)
     assert(!html.includes('要更新 Bot 版本'), '把「格式不支持」说成了「席位太老」')
   })

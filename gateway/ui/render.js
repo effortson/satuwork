@@ -129,12 +129,16 @@ function asideWidth() {
 }
 
 /**
- * 右栏那一列的 grid 写法。**给内容区留够 420px**：预览那一档能拖到 1600，窗口一窄，
- * 右栏照着记下来的宽度画，对话会被挤成一条缝——而预览挪进右栏的意义就是边看边说。
- * 拖动时（app.js）也走这一句。
+ * 右栏那一列的 grid 写法。拖动时（app.js）也走这一句。
+ *
+ * **预览那一档给内容区留够 420px**：它能拖到 1600，窗口一窄，右栏照着记下来的宽度画，
+ * 对话会被挤成一条缝——而预览挪进右栏的意义就是边看边说。
+ *
+ * **平时那一档不留**：它最宽也就 520，原来一直是写死的像素。也套上这一刀的话，中等宽度
+ * 的窗口里 280 的栏会被压窄，再窄一点直接算成 0——切屏按钮点下去像是没反应。
  */
-function asideColumns(width) {
-  return `minmax(0, 1fr) min(${width}px, calc(100% - 420px))`
+function asideColumns(width, preview) {
+  return preview ? `minmax(0, 1fr) min(${width}px, calc(100% - 420px))` : `minmax(0, 1fr) ${width}px`
 }
 
 /**
@@ -237,7 +241,7 @@ function appView() {
   // 下面的兄弟节点就顶不上去了。
   const aside = pageAside()
   const asideCols = aside
-    ? `grid-template-columns: ${asideColumns(asideWidth())};`
+    ? `grid-template-columns: ${asideColumns(asideWidth(), Boolean(shownPreview()))};`
     : 'grid-template-columns: minmax(0, 1fr);'
   return `
   <div style="height: 100vh; overflow: hidden; display: grid; grid-template-columns: ${rail ? '62px' : '248px'} 1fr; gap: var(--space-4); padding: var(--space-4); background: var(--color-bg); font-family: var(--font-body); color: var(--color-text); box-sizing: border-box;">
@@ -427,8 +431,10 @@ function render() {
     // 上下键选不动（一条候选都查不到），回车穿到发送那条路上去。
     paintCmdPick()
   }
-  // 预览里的「局部重绘」画布：右栏是整个换掉的，笔画存在 state 里，每次都要重新贴上去。
-  if (document.getElementById('sw-paint-canvas')) mountPainter()
+  // 右栏里的预览：内容在常驻层上，这里只对位置、内容变了才换（见 chat.js 的 syncPreview）。
+  // 笔刷滑杆在右栏的按钮行里，跟着整页换掉了，要重新接上。
+  syncPreview()
+  bindPaintBrush()
   // 日志面板同理：壳在 render 里，内容由 paintLogs 增量填。
   if (document.getElementById('log-body')) paintLogs()
   // 右栏那棵工作区文件树：开着而这条会话还没取过的话，补一次（见 chat.js 的
