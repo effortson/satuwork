@@ -235,6 +235,38 @@ export async function desiredManagerRelease(db: Db, machine?: Machine) {
 }
 
 /**
+ * 改这台机器的管家目标版本。界面上「升级管家」「恢复自动升级」两颗按钮都走这里。
+ *
+ * - 不带版本：**摘掉单机钉的版本**，回到跟平台走（平台钉的那一版，没钉就是这个架构的最新）。
+ *   管家本来就会在心跳里自己追最新，「升级」要做的只是把挡着它的那颗钉拔掉。
+ * - 带版本：钉到这一版，**按这台机器的架构存**。这一档是单机灰度用的：先让一台追新版本。
+ *
+ * 原来不带版本也是钉：把「当时的最新版」写进 `desiredManagerVersion`。于是点过一次升级的
+ * 机器从此停在那一版，之后发多少新版都轮不到它，而界面上没有任何地方看得出它被钉住了、
+ * 也没有地方摘掉。取的「最新」还不看架构——arm64 机器上钉进去的是 x64 的版本号，靠兄弟包
+ * 映射才没出错，看着更糊涂。
+ */
+export async function retargetManager(db: Db, machine: Machine, requested: string) {
+  let pin: string | null = null
+  if (requested) {
+    const version = parseBotVersion(requested)
+    const rel = await managerReleaseFor(db, version, machine.arch)
+    if (!rel) throw new HttpError(404, '没有这个管家版本')
+    pin = rel.version
+  }
+  const next = await db.updateMachine(machine.id, { desiredManagerVersion: pin })
+  const target = await desiredManagerRelease(db, next)
+  if (!target) throw new HttpError(409, '还没有发布管家版本')
+  return {
+    next,
+    version: target.version,
+    pinned: pin,
+    // 说清楚这一步只是下了指令：界面上别显示成「已升级」。
+    pending: next.managerVersion !== target.version,
+  }
+}
+
+/**
  * 心跳里给管家的升级包地址。
  *
  * 能直连就给外部地址（GitHub Release），管家裸取、用心跳里的 sha256 比对；够不上
@@ -371,6 +403,15 @@ export async function machineCard(
     botDesired,
     botOutdated: Boolean(botDesired) && botVersions.some((v) => v.version !== botDesired),
     managerDesired: desired,
+    /**
+     * 单机钉的版本，没钉是 null。**钉了就不再跟平台走**——界面上必须看得见，否则「为什么
+     * 这台不升级」只能去翻库。`managerFollow` 是摘掉钉之后它会去追的那一版，「恢复自动升级」
+     * 那颗按钮上写的就是它。
+     */
+    managerPinned: machine.desiredManagerVersion?.trim() || null,
+    managerFollow: machine.desiredManagerVersion?.trim()
+      ? ((await desiredManagerRelease(db, { ...machine, desiredManagerVersion: null }))?.version ?? null)
+      : desired,
     managerOutdated: Boolean(managerLatest) && Boolean(machine.managerVersion) && machine.managerVersion !== managerLatest,
     managerPending: Boolean(desired) && Boolean(machine.managerVersion) && machine.managerVersion !== desired,
     // 时区和管家版本一样是「下指令 → 机器自己去改 → 下一轮心跳才知道成没成」。

@@ -1091,28 +1091,10 @@ function timezoneOptions() {
   return `<datalist id="satu-timezones">${timezoneList.map((z) => `<option value="${esc(z)}"></option>`).join('')}</datalist>`
 }
 
-/**
- * 管家版本行。
- *
- * 「升级」只是**把期望版本钉到这台机器上**——真正换版由机器在下一轮心跳里自己做：
- * 它要挑不忙的时候、要跑自检、失败要回滚，这些只有机器上做得了。所以按下之后显示
- * 的是「等机器换版」，不是「已升级」。
- */
+/** 管家版本行。说明和按钮和机器详情页同一份，见 pages-machines.js 的 managerUpgradeBits。 */
 function managerVersionRow(orgId, m, card) {
   const cur = m.managerVersion || '—'
-  // 卡片自己带的那个是按这台机器的架构取的；老 Gateway 没带时退回全局那个。
-  const latest = card.managerLatest || state.managerLatest
-  const canUp = card.managerOutdated
-  const note = card.managerPending
-    ? ` · ${t('已下指令，等机器换版')} → ${esc(card.managerDesired || '')}`
-    : m.protocolTooOld
-      ? ' · ' + t('版本过旧，等它自升级')
-      : canUp
-        ? ` · ${t('最新')} ${esc(latest)}`
-        : ''
-  const btn = canUp
-    ? `<button type="button" class="btn" data-act="upgrade-manager" data-id="${esc(orgId)}" data-machine="${esc(m.id)}" ${state.busy ? 'disabled' : ''}>${t('升级')}</button>`
-    : ''
+  const { note, btn } = managerUpgradeBits(card, `data-id="${esc(orgId)}" data-machine="${esc(m.id)}"`)
   return `<div class="satu-kv"><span>${t('管家版本')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${esc(cur)}${note}${btn}</span></div>`
 }
 
