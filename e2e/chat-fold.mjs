@@ -200,6 +200,26 @@ export async function runChatFold({ root, test, assert, log }) {
     assert(!ctxDivText({ kind: 'mark', mark: 'compact', by: 'auto' }).includes('0'), '老日志缺字段时编了个数字出来')
   })
 
+  await test('/clear：之前画出来的全部扔掉，只剩一条线和之后的消息', async () => {
+    const events = twoTurns().concat([
+      ev(6, 'session/reset', { throughSeq: 5, from: T, to: T + 5000, droppedMessages: 2, by: 'user', clear: true }),
+      ev(7, 'user/message', { message: um('清空之后的问题'), source: { kind: 'user' } }),
+      ev(8, 'turn/start', { turn: 3 }),
+      ev(9, 'assistant/message', { turn: 3, message: am('清空之后的回答'), usage }),
+      ev(10, 'turn/end', { turn: 3, reason: 'completed' }),
+    ])
+    const blocks = fold(events).blocks
+    // 正开着的这一页事件桶里还躺着之前那些：不扔的话点完 /clear 屏幕上纹丝不动。
+    assert(blocks[0]?.kind === 'mark' && blocks[0].mark === 'clear', `第一块该是清空那条线：${JSON.stringify(blocks[0])}`)
+    const talk = blocks.filter((b) => b.kind === 'user' || b.kind === 'assistant')
+    assert(talk.length === 2, `清空之后只该剩 1 问 1 答，实际 ${talk.length} 块`)
+    assert(ctxDivText(blocks[0]).includes('已清空'), `清空那条线的字不对：${ctxDivText(blocks[0])}`)
+    // 只打 /new 的那条照旧不藏。
+    const plain = fold(twoTurns().concat([ev(6, 'session/reset', { throughSeq: 5, from: T, to: T + 5000, droppedMessages: 2, by: 'user' })])).blocks
+    assert(plain.filter((b) => b.kind === 'user').length === 1, '/new 把之前的消息也藏起来了')
+    assert(parseCommand('/clear')?.cmd?.name === 'clear', '/clear 没认出来')
+  })
+
   await test('认命令：typo 和参数都拦下，路径放行', async () => {
     assert(parseCommand('/compact')?.cmd?.name === 'compact', '/compact 没认出来')
     assert(parseCommand('  /NEW  ')?.cmd?.name === 'new', '大小写和空白该宽容')

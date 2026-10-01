@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ContentBlock, Message, SessionEvent } from '../session/types.ts'
 import type { ToolRisk } from './index.ts'
+import { visibleEvents } from '../session/replay.ts'
 
 /**
  * 翻自己的历史：`history_read` 按时间区间读原文，`history_search` 按关键词找。
@@ -180,10 +181,15 @@ export function apply(ctx: Context) {
     })
   }
 
-  /** 当前会话的全量事件。**不看压缩点**——翻记录要的就是压缩掉的那一段。 */
+  /**
+   * 当前会话的事件。**不看压缩点**——翻记录要的就是压缩掉的那一段。
+   *
+   * 但**看清除点**：人打过 `/clear`，要的就是「之前那些别再提了」，模型自己翻回去
+   * 等于没清（docs/chat-commands.md §15）。
+   */
   const allEvents = async (sessionId: string) => {
     try {
-      return await ctx.sessions.events(sessionId)
+      return visibleEvents(await ctx.sessions.events(sessionId))
     } catch {
       fail('读不到这条会话的记录。')
     }

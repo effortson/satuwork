@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionEvent } from '../session/types.ts'
-import { historySlice, publicSessionEvents } from '../session/replay.ts'
+import { historySlice, publicSessionEvents, visibleEvents } from '../session/replay.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
@@ -1089,6 +1089,18 @@ export function apply(ctx: Context, _config: Config = {}) {
     }
   })
 
+  /**
+   * `/new` 和 `/clear` 共用的那道闸：还开着的转人工工单。拦的时候回 409 + 原话，
+   * 返回 true；放行返回 false。
+   */
+  const openHandoffsBlock = (sessionId: string, res: { status: number; json: (v: unknown) => void }, what: string) => {
+    const open = ctx.handoffs.of(sessionId).filter((h) => h.state === 'open' || h.state === 'claimed')
+    if (!open.length) return false
+    res.status = 409
+    res.json({ error: `还有 ${open.length} 张转人工的单子没结，先处理掉、或等它交回来再${what}` })
+    return true
+  }
+
   /** 从这里起不再带前文。一次 append，不跑模型。 */
   ctx.server.post('/api/sessions/:id/reset', async (req, res) => {
     try {
@@ -1105,14 +1117,27 @@ export function apply(ctx: Context, _config: Config = {}) {
        * **闸在这儿而不在 agents 里**：那个服务的 inject 没有 handoffs，加进去会连累
        * 一批只搭半个应用的探针；而这里本来就有它，也正是 resetContext 唯一的调用点。
        */
-      const open = ctx.handoffs.of(req.params.id).filter((h) => h.state === 'open' || h.state === 'claimed')
-      if (open.length) {
-        res.status = 409
-        res.json({ error: `还有 ${open.length} 张转人工的单子没结，先处理掉、或等它交回来再开新对话` })
-        return
-      }
+      if (openHandoffsBlock(req.params.id, res, '开新对话')) return
       const r = await ctx.agents.resetContext(req.params.id)
       res.json({ reset: true, throughSeq: r.throughSeq, droppedMessages: r.droppedMessages })
+    } catch (e) {
+      res.status = e instanceof CommandError ? e.status : 500
+      res.json({ error: (e as Error).message })
+    }
+  })
+
+  /**
+   * `/clear`：在 `/new` 之上再把之前的记录从界面上拿掉（docs/chat-commands.md §15）。
+   *
+   * 落的还是 `session/reset`，带 `clear: true`。日志一条不删，审计照旧；看不见的是
+   * 聊天历史、SSE 重放和模型的 history_read / history_search。转人工那道闸照抄 `/reset`：
+   * 单子交回来时 Bot 要接着干的那段活，已经从它能翻到的地方消失了。
+   */
+  ctx.server.post('/api/sessions/:id/clear', async (req, res) => {
+    try {
+      if (openHandoffsBlock(req.params.id, res, '清空')) return
+      const r = await ctx.agents.resetContext(req.params.id, { clear: true })
+      res.json({ cleared: true, throughSeq: r.throughSeq, droppedMessages: r.droppedMessages })
     } catch (e) {
       res.status = e instanceof CommandError ? e.status : 500
       res.json({ error: (e as Error).message })
@@ -1564,8 +1589,11 @@ export function sse(
         try {
           if (after > 0) {
             // 断线续传：从游标之后原样发，不切也不筛——那是「补上错过的」，
-            // 和「打开页面看最近几轮」是两件事。
-            for (const event of publicSessionEvents(await ctx.sessions.events(sessionId, after))) {
+            // 和「打开页面看最近几轮」是两件事。只有 `/clear` 之前的照样不给：游标停在
+            // 清除点之前（断线期间别的标签页清过）时，那一段不该借续传又流回来。
+            const all = await ctx.sessions.events(sessionId)
+            const missed = visibleEvents(all).filter((e) => e.seq > after)
+            for (const event of publicSessionEvents(missed)) {
               send(event)
               replayed++
               if (event.seq > lastSeq) lastSeq = event.seq

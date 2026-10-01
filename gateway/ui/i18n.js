@@ -1138,6 +1138,15 @@ window.SATU_I18N = {
   '这条会话还没跑成过一轮，没有要清的上下文':
     'This conversation has not completed a turn yet — there is no context to clear.',
   '这里已经是新对话的开头了': 'This is already the start of a new conversation.',
+  // ── /clear（docs/chat-commands.md §15）──
+  清空对话记录: 'Clear conversation',
+  '清掉这条对话的全部记录和上下文，往上翻也看不到了':
+    'Remove every earlier message from view and from context. Scrolling up will not bring them back.',
+  '清空和这个 Bot 的全部对话记录？清空后往上翻也看不到了，Bot 也不再记得之前的内容。':
+    'Clear your whole conversation with this bot? Earlier messages will no longer show when you scroll up, and the bot will not remember them.',
+  对话记录已清空: 'Conversation cleared',
+  '这条会话还没有对话记录，没有要清的': 'There is nothing in this conversation to clear yet.',
+  '已经清空过了，没有新的记录': 'Already cleared — nothing new since then.',
   '本公司已禁用': 'Disabled by your company',
   '本公司已禁用这个连接器': 'Your company has disabled this connector',
   '先安装，再连接你的账号。': 'Install it first, then connect your account.',

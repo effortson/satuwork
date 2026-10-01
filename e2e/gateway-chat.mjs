@@ -305,6 +305,15 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
           assert(r.json && typeof r.json.error === 'string' && r.json.error, `${act} 被拒了却没说为什么：${r.status} ${r.text}`)
         }
       }
+      /**
+       * `/clear` 这里只钉要票和认账号，**不真清**：后面「历史那条路」那条要在历史里找到这一轮
+       * 的 ping，清了就找不到了。清完之后历史给什么，由 run.mjs 直连席位那条管。
+       */
+      const anon = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/clear`)
+      assert(anon.status === 401, `clear 无票该 401，实际 ${anon.status} ${anon.text}`)
+      const other = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/clear`, { token: memberTok })
+      // 别人的会话 Gateway 回的是找不到席位（503），和「历史那条路也认账号」同一个口径：只要不是 200。
+      assert(other.status !== 200, `成员清得动管理员的会话：${other.status} ${other.text}`)
     })
 
     await test('@ 点名：Gateway 把失效的剔掉，不让它进席位', async () => {
