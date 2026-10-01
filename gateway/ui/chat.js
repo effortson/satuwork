@@ -900,9 +900,27 @@ function fold(events, live, channelBot = false) {
        *
        * 不断的话，落在轮中间时这条线就画在那一块的后面，位置诚实，别的什么都不影响。
        */
+      /**
+       * `/clear`：之前画出来的全部扔掉，只剩这条线（docs/chat-commands.md §15）。
+       *
+       * 席位那头已经不再给清除点之前的事件了（historySlice），这里管的是**正开着的这一页**：
+       * 手上的事件桶里还躺着之前那些，不扔的话点完 `/clear` 屏幕上纹丝不动。
+       *
+       * 这一支可以断 assistant / tools——和上面那条「绝不能断」不矛盾：`/clear` 只在没在跑
+       * 时才收（席位那道闸），不会落在一轮中间。留着它们反倒会让一条迟到的 chunk 续写进
+       * 一个已经不在 blocks 里的块，凭空丢字。
+       */
+      if (type === 'session/reset' && data.clear) {
+        blocks.length = 0
+        assistant = null
+        tools = []
+        todos = null
+        toolByCall.clear()
+        handoffSeen.clear()
+      }
       blocks.push({
         kind: 'mark',
-        mark: type === 'session/reset' ? 'reset' : 'compact',
+        mark: type === 'session/reset' ? (data.clear ? 'clear' : 'reset') : 'compact',
         // 老日志没有 by（那时只有自动压缩），按 auto 读。
         by: data.by || (type === 'session/reset' ? 'user' : 'auto'),
         from: Number(data.from) || 0,
@@ -4419,6 +4437,9 @@ function ctxDivText(b) {
       ? t(`从这里起用 ${b.label}`, `Using ${b.label} from here`)
       : t(`从这里起换回默认模型 ${b.label}`, `Back to the default model ${b.label} from here`)
   }
+  // `/clear` 那条只说一件事：之前的看不见了。用不着数字，也用不着「仍在记录里」——
+  // 记录确实还在（审计要用），但人打 /clear 要的就是从这里起当它不存在。
+  if (b.mark === 'clear') return t('对话记录已清空')
   const head =
     b.mark === 'reset'
       ? t('新对话从这里开始')
@@ -9249,6 +9270,16 @@ const CHAT_COMMANDS = [
     run: (sessionId) => api('POST', '/runtime/sessions/' + encodeURIComponent(sessionId) + '/reset'),
   },
   {
+    name: 'clear',
+    title: '清空对话记录',
+    // 和 /new 的区别要一句话说清：它连界面上的记录也一并拿掉，往上翻也没有了。
+    hint: '清掉这条对话的全部记录和上下文，往上翻也看不到了',
+    idleOnly: true,
+    /** 点了就回不来（界面上），先问一句。见 runChatCommand。 */
+    confirm: '清空和这个 Bot 的全部对话记录？清空后往上翻也看不到了，Bot 也不再记得之前的内容。',
+    run: (sessionId) => api('POST', '/runtime/sessions/' + encodeURIComponent(sessionId) + '/clear'),
+  },
+  {
     name: 'model',
     title: '切换模型',
     // 跑着的时候也能换：那一轮的模型换不了，从下一轮起生效（席位那头就是这么收的）。
@@ -9376,6 +9407,11 @@ async function runChatCommand(cmd, arg = '') {
     render()
     return
   }
+  /**
+   * 唯一要先问一句的是 `/clear`：别的几条点错了都有退路（压缩后翻得到原文、/new 之后
+   * 往上翻还在、换模型再换回来），它点完界面上就回不来了。
+   */
+  if (cmd.confirm && !confirm(t(cmd.confirm))) return
   // 失败要把命令还回去（下面的 catch）。清空之前先留一份——同 sendChat 那条约定：
   // 一次 409 / 换版 404 不该让人重新把命令打一遍。
   const draft = state.chatDraft || '/' + cmd.name
@@ -9397,6 +9433,13 @@ async function runChatCommand(cmd, arg = '') {
       flash('ok', t('已压缩') + '：' + ctxNum(r.tokensBefore) + ' → ' + ctxNum(r.tokensAfter))
     } else if (r && r.reset) {
       flash('ok', t('已开始新对话，上面的内容不再进上下文'))
+    } else if (r && r.cleared) {
+      /**
+       * 「加载更早的对话」那颗按钮要当场收起：清除点之前的席位已经不给了，留着它点下去
+       * 只会取回一页空的。清除点那条事件由 SSE 推回来，fold 认得它、把之前画的全扔掉。
+       */
+      chatPages.set(sessionId, { firstSeq: r.throughSeq + 1, hasMore: false, loading: false })
+      flash('ok', t('对话记录已清空'))
     }
     /**
      * **不在这里自己画那条线。** 席位紧接着会经 SSE 把 `session/compact` /

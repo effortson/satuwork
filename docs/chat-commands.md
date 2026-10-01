@@ -2,7 +2,7 @@
 
 一条斜杠命令 = **人对这条会话下的一次控制指令**，不是发给模型的一句话。
 
-第一批两条，都只干一件事——**改这条会话的上下文边界**：
+第一批两条，都只干一件事——**改这条会话的上下文边界**（后来加的 `/model` 见 §14，`/clear` 见 §15）：
 
 | 命令 | 一句话 |
 |---|---|
@@ -463,7 +463,9 @@ SSE 推的是最近几轮（`historySlice` 的 tail），更早的边界事件�
 ## 14. 这一版不做的
 
 - **不做 `/clear` 当 `/new` 的别名。** 两个名字只会让人猜它们有什么区别。
+  （后来 `/clear` 真做了，但不是别名：它和 `/new` 的区别就是「藏不藏」，见 §15。）
 - **不做 `/new` 之后把上文藏起来。** 往上翻得见，正是「日志不删」的意义所在。
+  想藏的人用 `/clear`，`/new` 本身的行为不变。
 - **不做命令参数。** 第一批两条都不收；真需要「压到只剩三轮」时，那是配置，不是命令行。
   （后来加的 `/model` 是唯一的例外，见下一条。）
 - **`/export` 之类的第二批先不做。** `CHAT_COMMANDS` 是张表，加一行的成本很低，
@@ -471,3 +473,48 @@ SSE 推的是最近几轮（`historySlice` 的 tail），更早的边界事件�
   `/model` 已经回答过了：落 `session/model`，画一条「从这里起用 xx」的分割线，
   跑着的时候也收（下一轮起生效），带参数 `/model 2` / `/model default` 直接换。
   见 [model-choice.md](model-choice.md)。
+
+---
+
+## 15. `/clear`：连界面上的记录一起清掉
+
+用户要的是「清除和这个 Bot 的所有对话记录」。拍板的口径（2026-10-01）：
+
+- **界面上清空，后台留底。** 对话框里往上翻看不到，模型也翻不到；但席位 JSONL 一条不删，
+  审计（`/internal/sessions/:id` 全量原文）、计费、Gateway 那份镜像都不受影响。真删会让
+  按 seq 分批的自动审计出缺口，代价不值。
+- **只清自己和这个 Bot 的那一条会话。** 一人一 Bot 一条长会话，清的就是对话框里这条。
+
+| | `/new` | `/clear` |
+|---|---|---|
+| 上下文 | 前面的不再带上 | 同左 |
+| 落什么事件 | `session/reset` | `session/reset` + `clear: true` |
+| 往上翻 | 看得见 | **看不见**，也没有「加载更早」 |
+| `history_read` / `history_search` | 翻得到 | **翻不到** |
+| 日志 | 一条不删 | 一条不删 |
+| 先问一句 | 不问 | **问**（点完界面上就回不来了） |
+
+**为什么是一个标记而不是一种新事件。** 上下文那一侧 `/clear` 和 `/new` 是同一件事；
+另起一种事件，`contextBoundary` 等所有认边界的地方都得再认一种，漏一处就是 §4 那个坑
+重演。带标记的 `session/reset` 自动被它们全认上。
+
+**藏在哪儿。** 一处判定：[replay.ts](../bot/src/session/replay.ts) 的
+`clearedThrough` / `visibleEvents`（清除点那条事件自己 seq 更大，会留下来画线）。
+用它的地方：`historySlice`（打开对话、往前翻、SSE 首次重放）、SSE 断线续传、
+[tools/history.ts](../bot/src/tools/history.ts)。审计那条路不走它。
+
+**正开着的页面。** 事件桶里还躺着之前那些。`fold` 遇到带 `clear` 的重置点就把之前画出来的
+块全扔掉，`runChatCommand` 成功后把「加载更早」收起来。
+
+**闸照抄 `/new`：** 正在跑、排着队、有没结的转人工单子都拒（理由一样，而且单子交回来时
+Bot 要接着干的那段活已经翻不到了）。幂等：清过之后没有新轮次再清回 409；
+`/new` 之后紧接着 `/clear` **放行**（上下文早空了，但「藏」那一半还没做过）。
+
+**跨版本。** 老席位没有 `/clear` 那条路 → 404 → 界面说「升级后可用」。新日志回滚到老席位：
+标记被忽略，退化成一条普通 `/new`——上下文照样清着，只是往上翻又看得见了。
+
+**落地**：bot/src/session/{types,replay}.ts、bot/src/agent/index.ts（`resetContext` 收
+`{ clear }`）、bot/src/web/index.ts（`POST /api/sessions/:id/clear`）、bot/src/tools/history.ts、
+gateway/src/routes/runtime.ts（直转）、gateway/ui/{chat.js,chat.css,i18n.js,prefs.js}。
+验收：bot/e2e-replay.mjs + e2e/replay-slice.mjs（切片与翻历史同一口径）、e2e/chat-fold.mjs
+（fold 扔掉之前的块）、e2e/run.mjs（直连席位的 HTTP 面）、e2e/gateway-chat.mjs（只验要票与归属）。

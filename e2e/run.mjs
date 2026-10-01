@@ -3450,6 +3450,44 @@ async function runBot() {
     assert(String(c.json.error || '').includes('太短'), `压不动的理由说不清：${c.text}`)
   })
 
+  /**
+   * `/clear`（docs/chat-commands.md §15）：落的还是 session/reset，多一个 clear 标记；
+   * 之前的不再给界面，日志一条不删。接在上面那条后面跑：刚 /new 过，正好钉「/new 之后
+   * 紧接着 /clear 要放行」那一条。
+   */
+  await test('POST /api/sessions/:id/clear → 要票，清完界面只拿得到清除点之后的', async () => {
+    const anon = await req(base, 'POST', `/api/sessions/${sessionId}/clear`)
+    assert(anon.status === 401, `clear 无票该 401，实际 ${anon.status} ${anon.text}`)
+
+    const file = join(BOT_HOME, 'sessions', `${sessionId}.jsonl`)
+    const readLines = () =>
+      readFileSync(file, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l))
+    const before = readLines()
+    const r = await req(base, 'POST', `/api/sessions/${sessionId}/clear`, { token: SEAT_TOK })
+    if (!before.some((e) => e.type === 'turn/end')) {
+      assert(r.status === 409, `一轮都没跑完时该 409，实际 ${r.status} ${r.text}`)
+      assert(String(r.json.error || '').includes('没有对话记录'), `话说不清：${r.text}`)
+      return
+    }
+    assert(r.status === 200 && r.json.cleared === true, `/new 之后紧接着 /clear 该放行：${r.status} ${r.text}`)
+    const after = readLines()
+    const mark = after.at(-1)
+    assert(mark.type === 'session/reset' && mark.data.clear === true, `日志里没有带 clear 的重置点：${JSON.stringify(mark)}`)
+    assert(mark.data.throughSeq === r.json.throughSeq, `回给前端的 seq 和落盘的对不上：${r.text}`)
+    // **日志一条不删**：审计、计费还要用。
+    assert(after.length === before.length + 1, `清空之后日志该只多一条：${before.length} → ${after.length}`)
+
+    const h = await req(base, 'GET', `/api/sessions/${sessionId}/history?turns=50`, { token: SEAT_TOK })
+    assert(h.status === 200, `history ${h.status} ${h.text}`)
+    assert(h.json.events.every((e) => e.seq > mark.data.throughSeq), '清除点之前的事件还在往界面上给')
+    assert(h.json.hasMore === false, '清空之后还挂着「加载更早的对话」')
+
+    const twice = await req(base, 'POST', `/api/sessions/${sessionId}/clear`, { token: SEAT_TOK })
+    assert(twice.status === 409 && String(twice.json.error || '').includes('已经清空过'), `连着清两次该 409：${twice.status} ${twice.text}`)
+    const reset = await req(base, 'POST', `/api/sessions/${sessionId}/reset`, { token: SEAT_TOK })
+    assert(reset.status === 409, `清空之后再 /new 该 409：${reset.status} ${reset.text}`)
+  })
+
   await test('GET /api/billing → 404（账单已挪到 Gateway）', async () => {
     const r = await req(base, 'GET', '/api/billing', { token: SEAT_TOK })
     assert(r.status === 404 || r.status === 410, `billing ${r.status} ${r.text}`)

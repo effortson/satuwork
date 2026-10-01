@@ -78,13 +78,39 @@ function hasText(ev: SessionEvent): boolean {
   })
 }
 
+/**
+ * 最后一次 `/clear` 切到哪儿（含）。没清过就是 0。
+ *
+ * 认的是 `session/reset` 上的 `clear` 标记，不是另一种事件：上下文那一侧 `/clear` 和
+ * `/new` 是同一件事，判定共用 contextBoundary，这里只多管一件「给不给人看」。
+ */
+export function clearedThrough(events: readonly SessionEvent[]): number {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]
+    if (e.type === 'session/reset' && e.data.clear) return e.data.throughSeq
+  }
+  return 0
+}
+
+/**
+ * 人（和模型的翻历史工具）还看得见的那一段：最后一次 `/clear` 之后的。
+ *
+ * 清除点那条事件本身的 seq 比 throughSeq 大，会留下来——界面靠它画「对话记录已清除」
+ * 那条线。审计那条路（/internal/sessions/:id）不走这里，要的是全量原文。
+ */
+export function visibleEvents<T extends SessionEvent>(events: readonly T[]): T[] {
+  const through = clearedThrough(events)
+  return through ? events.filter((e) => e.seq > through) : events.slice()
+}
+
 export function historySlice(
   all: readonly SessionEvent[],
   opts: { turns?: number; before?: number } = {},
 ): HistorySlice {
   const turns = Math.max(0, Math.trunc(opts.turns ?? 0))
-  // 往前翻：只看这条之前的。
-  const events = opts.before ? all.filter((e) => e.seq < opts.before!) : all.slice()
+  // `/clear` 之前的不给；往前翻：只看这条之前的。
+  const visible = visibleEvents(all)
+  const events = opts.before ? visible.filter((e) => e.seq < opts.before!) : visible
 
   let start = 0
   if (turns > 0) {

@@ -1290,7 +1290,16 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
    * **日志一条不删**（不变量见 docs/context-assembly.md §9）：往上翻看得见，导出带得走，
    * 模型自己也仍能用 history_read 调阅。清掉的只是「下一轮请求里带什么」。
    */
-  async resetContext(sessionId: string): Promise<{ throughSeq: number; droppedMessages: number }> {
+  async resetContext(
+    sessionId: string,
+    opts: { clear?: boolean } = {},
+  ): Promise<{ throughSeq: number; droppedMessages: number }> {
+    /**
+     * `clear` = 人打的是 `/clear`：上下文这一侧和 `/new` 一模一样，只在事件上多记一个
+     * 标记，界面和翻历史工具据此把之前的藏起来（replay.ts 的 visibleEvents）。所以下面
+     * 每一道闸都照走，只有措辞和幂等那一条要分开说。
+     */
+    const clear = Boolean(opts.clear)
     if (this.isRunning(sessionId)) throw new CommandError('这一轮还在跑，先停下或等它跑完', 409)
     // 同步记一笔，排在任何 await 之前：在飞的压缩写回前会看到它、作废自己（见 resets）。
     this.resets.set(sessionId, (this.resets.get(sessionId) ?? 0) + 1)
@@ -1301,7 +1310,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 留到边界之后再执行，等于人以为清空了、Bot 却在接着回答几分钟前的事。
      */
     const queued = this.queued(sessionId).length
-    if (queued) throw new CommandError(`还有 ${queued} 条消息排着队，先取消它们再开新对话`, 409)
+    if (queued) throw new CommandError(`还有 ${queued} 条消息排着队，先取消它们再${clear ? '清空' : '开新对话'}`, 409)
     /**
      * **还开着的转人工工单是同一类东西，但那道闸在路由那边**（见 web/index.ts 的
      * `/reset`）。
@@ -1324,12 +1333,20 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 边界之后，它本来就该被下一轮看见。
      */
     const lastEnd = [...events].reverse().find((e) => e.type === 'turn/end')
-    if (!lastEnd) throw new CommandError('这条会话还没跑成过一轮，没有要清的上下文', 409)
+    if (!lastEnd) {
+      throw new CommandError(clear ? '这条会话还没有对话记录，没有要清的' : '这条会话还没跑成过一轮，没有要清的上下文', 409)
+    }
 
     const prior = contextBoundary(events)
-    if (prior && prior.data.throughSeq >= lastEnd.seq) {
-      // 已经切在这儿了。再打一条只会在对话里叠出两条紧挨着的分割线，而什么都没发生。
-      throw new CommandError('这里已经是新对话的开头了', 409)
+    /**
+     * 已经切在这儿了。再打一条只会在对话里叠出两条紧挨着的分割线，而什么都没发生。
+     *
+     * 唯一放行的是「`/new` 之后紧接着 `/clear`」：上下文早就空了，但人这次要的是连记录
+     * 一起藏起来——那一半还没做过。反过来 `/clear` 之后再 `/new` 照样拦。
+     */
+    const priorCleared = prior?.type === 'session/reset' && Boolean(prior.data.clear)
+    if (prior && prior.data.throughSeq >= lastEnd.seq && (!clear || priorCleared)) {
+      throw new CommandError(clear && priorCleared ? '已经清空过了，没有新的记录' : '这里已经是新对话的开头了', 409)
     }
 
     const scope = prior ? events.filter((e) => e.seq > prior.data.throughSeq) : events
@@ -1344,9 +1361,12 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         (e) => e.type === 'user/message' || e.type === 'assistant/message' || e.type === 'tool/result',
       ).length,
       by: 'user',
+      ...(clear ? { clear: true } : {}),
     }
     await this.ctx.sessions.append(sessionId, 'session/reset', data)
-    this.ctx.logger?.info?.(`agents: ${sessionId} 上下文重置到 seq ${lastEnd.seq}，切掉 ${data.droppedMessages} 条消息`)
+    this.ctx.logger?.info?.(
+      `agents: ${sessionId} ${clear ? '清空记录' : '上下文重置'}到 seq ${lastEnd.seq}，切掉 ${data.droppedMessages} 条消息`,
+    )
     return { throughSeq: data.throughSeq, droppedMessages: data.droppedMessages }
   }
 
