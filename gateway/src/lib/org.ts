@@ -6,7 +6,7 @@
 import { EMAIL_RE, PHONE_RE, SLUG_RE, strField } from './validate.ts'
 import { losingAdmin, statusOf } from './guards.ts'
 import { HttpError } from '../http.ts'
-import { type Account, type AccountStatus, type CatalogItem, type Company, type CompanySettings, type CompanyStatus, type Db, type Group, type ModelRate, type ModelRole, type BillingSettings, PRICE_MULTIPLIER_MAX, PRICE_MULTIPLIER_MIN, REASONING_EFFORTS, type Plan, type PlatformSettings, type Role, type SessionIndex, parseBilling, parseConnectorPricing, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort } from '../db.ts'
+import { type Account, type AccountStatus, type CatalogItem, type Company, type CompanySettings, type CompanyStatus, type Db, type Group, type ImageModelRole, type ModelRate, type ModelRole, type BillingSettings, PRICE_MULTIPLIER_MAX, PRICE_MULTIPLIER_MIN, REASONING_EFFORTS, type Plan, type PlatformSettings, type Role, type SessionIndex, parseBilling, parseConnectorPricing, parseImageRole, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort } from '../db.ts'
 import { WEB_BACKENDS, WEB_DOCUMENT } from '../db/types.ts'
 import { VENDORS } from '../connectors/index.ts'
 
@@ -128,6 +128,25 @@ export interface OrgSettings {
  * 管理员填了三个、存下来两个，比一句「第 2 个缺 model」难查得多。去重、剔掉默认、
  * 截上限交给 parseDailyAlternates（读写两头同一份），这里只挡形状。
  */
+/**
+ * `PUT /platform/settings` 里的 `image`。null / 两格都空 = 关掉；否则必须是生图表里有的
+ * （`known` 由路由传进来，就是 `Llm.imageCatalog()`）。只挡形状和「是不是生图模型」——
+ * 平台有没有这家的密钥不挡，同日常：密钥可能在环境变量里，调不调得通由「测试」说。
+ */
+export function imageRoleOf(v: unknown, known: { provider: string; id: string }[]): ImageModelRole {
+  if (v == null) return { provider: '', model: '' }
+  if (typeof v !== 'object' || Array.isArray(v)) throw new HttpError(400, 'image 必须是对象')
+  const o = v as Record<string, unknown>
+  const provider = o.provider == null || o.provider === '' ? '' : strField(o, 'provider')
+  const model = o.model == null || o.model === '' ? '' : strField(o, 'model')
+  if (!provider && !model) return { provider: '', model: '' }
+  if (!provider || !model) throw new HttpError(400, 'image 需要同时有 provider 和 model')
+  if (!known.some((m) => m.provider === provider && m.id === model)) {
+    throw new HttpError(400, `${provider}/${model} 不是能用的生图模型`)
+  }
+  return { provider, model }
+}
+
 export function dailyAlternatesOf(v: unknown): ModelRole[] {
   if (v == null) return []
   if (!Array.isArray(v)) throw new HttpError(400, 'dailyAlternates 必须是数组')
@@ -147,9 +166,12 @@ export function dailyAlternatesOf(v: unknown): ModelRole[] {
 export function publicSettings(s: CompanySettings | PlatformSettings): PlatformSettings {
   return {
     ...orgSettings(s),
+    // 生图模型只在平台侧：公司那一屏没有地方画它（见 orgSettings 的白名单）。
+    image: parseImageRole((s as PlatformSettings).image),
     priceMultiplier: parsePriceMultiplier((s as PlatformSettings).priceMultiplier),
     connectorPricing: parseConnectorPricing((s as PlatformSettings).connectorPricing),
     managerVersion: (s as PlatformSettings).managerVersion ?? '',
+    botVersion: (s as PlatformSettings).botVersion ?? '',
     modelPricing: parseModelPricing((s as PlatformSettings).modelPricing),
     defaultModelRate: parseModelRate((s as PlatformSettings).defaultModelRate),
     billing: parseBilling((s as PlatformSettings).billing),

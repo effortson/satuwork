@@ -606,6 +606,11 @@ function fold(events, live, channelBot = false) {
   let statusAt = 0
   // 空壳工具调用的 callId（见下面 tool/call）。它们的结果也要一起跳过。
   const phantoms = new Set()
+  /**
+   * callId → 那颗工具药丸，跨块认。给 `tool/shot` 用：它晚于 `tool/result` 到，中间可能
+   * 隔着后面几步，`tools` 这时候未必还是那次调用所在的那一份。
+   */
+  const toolByCall = new Map()
   /** 最后一条 `todo/list` 快照。见下面那一支。 */
   let todos = null
   /** 单号 → 已经画在某一块上的那张交接卡。跨块认，见下面 human/handoff。 */
@@ -697,13 +702,15 @@ function fold(events, live, channelBot = false) {
       }
       // arguments 要留着：工具药丸的悬浮窗全靠它回答「这次到底拿什么跑的」。存的是
       // bot 那边 JSON.stringify 过的原串，展示时再 parse 一次做缩进（见 toolPopBody）。
-      tools.push({
+      const call = {
         callId: data.callId,
         name: data.name,
         args: typeof data.arguments === 'string' ? data.arguments : '',
         result: null,
         failed: false,
-      })
+      }
+      tools.push(call)
+      if (data.callId) toolByCall.set(data.callId, call)
       assistant.tools = tools
       assistant.endTime = at
     } else if (type === 'tool/result') {
@@ -721,10 +728,20 @@ function fold(events, live, channelBot = false) {
         // 这次调用**看到**的文件（ls 列的、grep 命中的、read 读的那一个）。正文里
         // 出现的文件名靠它接成能点开的链接——同样是工具报出来的，不是扫文本猜的。
         hit.refs = Array.isArray(data.refs) ? data.refs : null
-        // 浏览器工具拍的那张页面截图。老日志没有这个字段，那就没有——**不去猜**。
-        hit.shot = data.shot && typeof data.shot.path === 'string' && data.shot.path ? data.shot : null
+        // 浏览器工具拍的那张页面截图。老日志把它放在这儿；新日志另来一条 tool/shot（见下）。
+        // 两样都没有就是没有——**不去猜**。
+        hit.shot = isShot(data.shot) ? data.shot : hit.shot || null
       }
       if (assistant) assistant.endTime = at
+    } else if (type === 'tool/shot') {
+      /**
+       * 工具结果交出去之后才拍完的那张截图（bot 的 ToolResult.pendingShot）。
+       *
+       * **只按 callId 认，认不到就丢。** 不像 tool/result 那样退回「最后一颗」：
+       * 贴错一张图比少一张更坏——人会拿它去判断那一步到底点到了什么。
+       */
+      const hit = toolByCall.get(data.callId)
+      if (hit && isShot(data.shot)) hit.shot = data.shot
     } else if (type === 'agent/task') {
       /**
        * 一次委派（见 docs/delegation.md）。**挂在助手那一块上**，理由和确认卡一字不差：
@@ -2790,6 +2807,15 @@ function outputFiles(tools) {
  */
 const SHOT_AUTO_MAX = 2 * 1024 * 1024
 
+/**
+ * Bot **产出的图片**自动加载的上限，比上面那道宽。
+ *
+ * 那道 2 MB 是给过程截图和用户附图定的——一屏十几张，大图不值得自动拉。产出的图不一样：它就是
+ * 这一轮的答案，一条消息最多摆 8 张（MAX_OUT_IMAGES），而生图模型出的 PNG 常常两三 MB 起
+ * （Gemini 选不了格式，2K 的 PNG 四五 MB）。卡在 2 MB 的话，画出来的图多半只显示一个占位。
+ */
+const OUT_IMAGE_AUTO_MAX = 8 * 1024 * 1024
+
 /** path → blob URL。同一张图在历史里可能出现多次，只取一次。 */
 const SHOT_CACHE = new Map()
 const SHOT_CACHE_MAX = 40
@@ -2820,8 +2846,11 @@ function shotInUse(url) {
   return false
 }
 
-/** 把占位换成真图。失败就留占位——一张图没取到，不该让整条消息看起来出了错。 */
-async function fillShots(host) {
+/**
+ * 把占位换成真图。失败就留占位——一张图没取到，不该让整条消息看起来出了错。
+ * `max` 是自动加载的上限：过程截图和附图用 SHOT_AUTO_MAX，产出的图用 OUT_IMAGE_AUTO_MAX。
+ */
+async function fillShots(host, max = SHOT_AUTO_MAX) {
   if (!host || !state.chatSessionId) return
   const sessionId = state.chatSessionId
   for (const el of host.querySelectorAll('.sw-shot[data-shot]')) {
@@ -2843,7 +2872,7 @@ async function fillShots(host) {
         await res.body?.cancel().catch(() => {})
         continue
       }
-      if (Number(res.headers.get('content-length') || 0) > SHOT_AUTO_MAX) {
+      if (Number(res.headers.get('content-length') || 0) > max) {
         await res.body?.cancel().catch(() => {})
         continue
       }
@@ -2880,6 +2909,11 @@ function shotHtml(img) {
  */
 const MAX_STEP_SHOTS = 12
 
+/** 一张像样的截图记录：至少有个路径。老日志、坏数据一律当没有。 */
+function isShot(x) {
+  return Boolean(x && typeof x.path === 'string' && x.path)
+}
+
 /**
  * 这条消息里浏览器每走一步拍下的那张图，按步骤顺序、按路径去重。
  *
@@ -2893,6 +2927,23 @@ function stepShots(tools) {
     if (shot && shot.path && !seen.has(shot.path)) seen.set(shot.path, shot)
   }
   return [...seen.values()]
+}
+
+/**
+ * Bot 产出的图片（generate_image 画的、脚本生成的图表……）直接摆缩略图，不只给一颗药丸。
+ *
+ * 图片就是拿来看的：一颗写着 `image-20260930-101500.jpg` 的药丸要点开才知道画成了什么，
+ * 而人要的正是「画成了什么」。和上面的过程截图分开摆（那一条是「路上看到了什么」），
+ * 摆不下的照旧落回药丸那一排，一张都不丢。
+ *
+ * 只认浏览器能内联渲染的位图，判据和工作区那张内联白名单一样按扩展名（SVG 故意不在：
+ * 它能带脚本，预览接口本来就不给它内联）。
+ */
+const OUT_IMAGE_RE = /\.(png|jpe?g|gif|webp|avif|bmp)$/i
+const MAX_OUT_IMAGES = 8
+
+function outputImages(files) {
+  return files.filter((f) => f && f.path && OUT_IMAGE_RE.test(f.path)).slice(0, MAX_OUT_IMAGES)
 }
 
 /** 没摆下的那些。**不闷声吞掉**——闷声截断会让人以为这次就走了这么几步。 */
@@ -3740,6 +3791,25 @@ function updateRow(el, b, streaming, since) {
    * 模型看不见这些图（默认那个对话模型没有视觉），所以它们**只在这里有用**——没有这条，
    * 那些图就只是躺在工作区里没人会去翻的东西。
    */
+  /**
+   * 产出的图片，摆在正文底下、过程截图上面（见 outputImages）。只看工具产出的——用户自己
+   * 发的图在正文上面那一排，这里再摆一遍就重复了。
+   */
+  const outImgs = b.kind === 'assistant' ? outputImages(outputFiles(tools)) : []
+  let outbox = bubble.querySelector('.sw-outshots')
+  const outSig = outImgs.map((f) => f.path).join('|')
+  if (outImgs.length && !outbox) {
+    outbox = document.createElement('div')
+    outbox.className = 'sw-shots sw-outshots'
+    bubble.insertBefore(outbox, chips)
+  }
+  if (outbox && outbox.getAttribute('data-sig') !== outSig) {
+    outbox.setAttribute('data-sig', outSig)
+    outbox.innerHTML = outImgs.map(shotHtml).join('')
+    outbox.hidden = !outImgs.length
+    void fillShots(outbox, OUT_IMAGE_AUTO_MAX)
+  }
+
   const allSteps = stepShots(tools)
   const steps = allSteps.slice(0, MAX_STEP_SHOTS)
   const moreSteps = allSteps.length - steps.length
@@ -3769,7 +3839,8 @@ function updateRow(el, b, streaming, since) {
   const settled = apps.filter((a) => !waiting.includes(a))
 
   // 底下只留没被正文点过名的。摆不下的收成一行，不闷声截断（见 outMoreHtml）。
-  const rest = outs.filter((f) => !inlined.has(f.path))
+  const imgPaths = new Set(outImgs.map((f) => f.path))
+  const rest = outs.filter((f) => !inlined.has(f.path) && !imgPaths.has(f.path))
   const shownOuts = rest.slice(0, MAX_OUT_CHIPS)
   const moreOuts = rest.length - shownOuts.length
   /**
@@ -6704,7 +6775,7 @@ function previewKindOf(name, type) {
   return ''
 }
 
-/** 文本类不该按图片那个尺度收：一份 2MB 的日志已经没人会在弹窗里读了。 */
+/** 文本类不该按图片那个尺度收：一份 2MB 的日志已经没人会在预览里读了。 */
 const PREVIEW_TEXT_MAX = 2 * 1024 * 1024
 
 /**
@@ -6725,7 +6796,7 @@ function maybeLivePreview(event) {
   const data = event.data || {}
   const files = Array.isArray(data.files) ? data.files.filter((file) => file && file.path) : []
   if (!files.length) return false
-  const current = state.preview
+  const current = shownPreview()
   if (current) {
     const changed = files.find((file) => file.path === current.path)
     if (!changed) return false
@@ -6734,6 +6805,12 @@ function maybeLivePreview(event) {
   }
   const html = files.find((file) => previewKindOf(file.name || file.path, '') === 'html')
   if (!html) return false
+  /**
+   * 右栏收着就不自己弹。预览现在摆在右栏里，人把栏收起来就是不想让那一块占地方；Bot
+   * 每产出一个 HTML 就把栏撑开一次，他得每一轮都去点一次收起。文件卡片还在对话里，
+   * 想看点一下就出来。（已经开着的那份照旧跟着刷新，见上面。）
+   */
+  if (!asidePref.open) return false
   const key = `${state.chatSessionId}:${Number(data.turn) || 0}:${html.path}`
   if (autoPreviewed.has(key)) return false
   rememberAutoPreview(key)
@@ -6741,9 +6818,26 @@ function maybeLivePreview(event) {
   return true
 }
 
+/**
+ * 预览是哪一条会话里的文件。换了 Bot、换了会话，那个路径在新会话的工作区里不是同一个
+ * 文件（多半根本不存在），「下载」也会按新会话去取——所以那一份就不该再摆着。
+ */
+let previewSession = ''
+/** 预览是哪颗 Bot 的。换页时用它判「人是不是离开了这颗 Bot」，见 leavePreview。 */
+let previewBot = ''
+
+/** 右栏眼下该摆的那份预览；不在对话页、或者已经换了会话，就是没有。 */
+function shownPreview() {
+  const p = state.preview
+  if (!p || !onChatPage()) return null
+  return previewSession && previewSession === state.chatSessionId ? p : null
+}
+
 async function openPreview(path, name, options = {}) {
   if (!state.chatSessionId) return
   revokePreview()
+  previewSession = state.chatSessionId
+  previewBot = state.chatBotId || ''
   const kind = previewKindOf(name || path, '')
   const mode = options.mode === 'source' ? 'source' : 'view'
   /**
@@ -6826,12 +6920,8 @@ async function openPreview(path, name, options = {}) {
     if (!state.preview || state.preview.path !== path) return
     state.preview = { path, name, loading: false, url: '', type: '', size: 0, error: err.message, kind, mode }
   }
+  // 刚画出来的 Markdown 里的代码块 / 公式 / mermaid，由内容层换内容时一起过一遍（syncPreview）。
   render()
-  // 刚画出来的 Markdown 里可能有代码块 / 公式 / mermaid，和聊天气泡一样要过一遍。
-  if (state.preview && state.preview.kind === 'markdown' && window.satuMd) {
-    const host = document.querySelector('.sw-preview-md')
-    if (host) window.satuMd.enhance(host)
-  }
 }
 
 /**
@@ -7015,9 +7105,30 @@ function revokePreview() {
   if (p.url) setTimeout(() => URL.revokeObjectURL(p.url), 0)
 }
 
-function closePreview() {
+/** 撤掉预览但不重绘：换页、收右栏的时候跟着别的事一起画。 */
+function dropPreview() {
+  unmountPreviewLayer()
+  if (!state.preview) return
+  unwatchPaint()
   revokePreview()
   state.preview = null
+  previewSession = ''
+  previewBot = ''
+}
+
+/**
+ * 换页时要不要撤掉预览（state.js 的 enterPath 调）。**只在离开这颗 Bot 的对话时撤**：
+ * 点名单里正开着的这颗、或者待办里「去对话里处理」指回眼前这颗，地址没变，人也没离开，
+ * 那份预览就该还在。换了会话由 shownPreview 自己认出来。
+ */
+function leavePreview() {
+  if (!state.preview) return
+  const bot = isChatPath(state.path) ? chatBotIdOf(state.path) || state.chatBotId : ''
+  if (bot !== previewBot) dropPreview()
+}
+
+function closePreview() {
+  dropPreview()
   render()
 }
 
@@ -7094,6 +7205,13 @@ function previewBody(p) {
     const why = p.docNote || t('这个文件不适合在浏览器里打开（太大，或者是不认识的格式）。下载下来看吧。')
     return `<p class="sw-preview-note">${esc(why)}</p>`
   }
+  if (p.kind === 'image' && p.paint) {
+    // 涂抹时不套 busyBox：图早就解码好了（从「预览」切过来的），而那层转圈会盖住画布。
+    return (
+      `<div class="sw-paint"><img id="sw-paint-img" class="sw-preview-img" src="${esc(p.url)}" alt="${esc(p.name)}">` +
+      `<canvas id="sw-paint-canvas" aria-label="${esc(t('涂出要重画的区域'))}"></canvas></div>`
+    )
+  }
   if (p.kind === 'image') {
     return busyBox(
       `<img class="sw-preview-img" src="${esc(p.url)}" alt="${esc(p.name)}" ` +
@@ -7153,27 +7271,136 @@ function previewBody(p) {
   return `<pre class="sw-preview-src">${esc(String(p.text || ''))}</pre>`
 }
 
-function previewModal() {
+/**
+ * 右栏里的预览（见 render.js 的 pageAside）。
+ *
+ * 原来是一个盖住整屏的弹层：人看着 Bot 刚产出的东西，想说「这一段改一下」，得先把
+ * 预览关掉才看得见输入框，说完再点开——一来一回什么都对不上。挪进右栏之后对话照旧在
+ * 左边，Bot 改完同一个文件，这边自己重载（maybeLivePreview）。
+ *
+ * 右栏比弹层窄，所以头上分两行：上面是文件名和关闭，下面是那一排看法 / 涂抹 / 下载，
+ * 窄的时候自己折行。
+ */
+function previewPanel() {
   const p = state.preview
   if (!p) return ''
   const meta = p.size ? fileSize(p.size) : ''
-  return `<div class="gw-modal-backdrop" data-act="preview-close">
-    <div class="gw-modal sw-preview" data-stop>
+  return `<section class="sw-preview sw-preview-side" aria-label="${esc(t('文件预览', 'File preview'))}">
       <div class="sw-preview-head">
         <div style="min-width: 0;">
           <h2>${esc(p.name)}</h2>
           <p><code>${esc(p.path)}</code>${meta ? ' · ' + esc(meta) : ''}</p>
         </div>
-        <div class="sw-preview-acts">
-          ${previewTabs(p)}
-          <button type="button" class="btn" data-act="preview-download" data-path="${esc(p.path)}" data-name="${esc(p.name)}">${t('下载')}</button>
-          <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="preview-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
-        </div>
+        <button type="button" class="btn btn-ghost btn-icon" style="flex: none;" aria-label="${esc(t('关闭'))}" title="${esc(t('关闭'))}" data-act="preview-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
       </div>
-      <div class="sw-preview-body" data-flow="${p.error || p.loading || p.docLoading || p.tooBig || p.kind === 'image' ? 'center' : 'top'}">${previewBody(p)}</div>
-    </div>
-  </div>`
+      <div class="sw-preview-acts">
+        ${previewTabs(p)}
+        ${paintActs(p)}
+        <button type="button" class="btn" data-act="preview-download" data-path="${esc(p.path)}" data-name="${esc(p.name)}">${t('下载')}</button>
+      </div>
+      <div class="sw-preview-slot" id="sw-preview-slot"></div>
+    </section>`
 }
+
+/** 内容框里是居中摆（图、提示、转圈）还是从顶上排（文本、渲染出来的 Markdown、iframe）。 */
+function previewFlow(p) {
+  return p.error || p.loading || p.docLoading || p.tooBig || p.kind === 'image' ? 'center' : 'top'
+}
+
+/**
+ * 预览的内容层：真正的 iframe / 图 / 正文**不画在右栏里**，挂在 body 上的一个常驻层上，
+ * 位置跟着右栏那个空槽（#sw-preview-slot）走。和内嵌桌面（syncDesktop）是同一个理由。
+ *
+ * render() 是整页 innerHTML 换掉的，而对话页上它来得很勤：发一条消息就是十来次。内容
+ * 要是画在右栏里，每来一次 PDF 就重新加载、跳回第一页，HTML 重跑一遍，Office 重新渲染，
+ * Markdown 丢掉代码高亮和 mermaid——预览挪进右栏图的就是「边看边说」，说一句它就重来
+ * 一遍，等于没挪。弹层那会儿没这个问题，是因为弹层开着人什么也干不了。
+ *
+ * 所以这一层只在**要画的东西真的变了**才换内容（签名见 previewSig），其余时候只对位置。
+ */
+let previewLayerSig = ''
+let previewLayerFor = null
+let previewSlotSeen = null
+let previewObserver = null
+
+function previewLayer() {
+  return document.getElementById('sw-previewl')
+}
+
+/**
+ * 内容签名：这几样之外的变化（涂抹的笔画、按钮的忙闲）都不该让内容重建。
+ * 对象本身也要比——重新打开同一个文件（Bot 刚改过）是一个新对象，字段可能一个都没变。
+ */
+function previewSig(p) {
+  return [
+    p.path, p.kind, p.mode, p.url, p.loading, p.error, p.docLoading, p.tooBig, p.docNote,
+    Boolean(p.paint), p.web ? p.web.nonce : '', typeof p.text === 'string' ? p.text.length : -1,
+  ].join('|')
+}
+
+function unmountPreviewLayer() {
+  const layer = typeof document !== 'undefined' ? previewLayer() : null
+  if (layer) layer.remove()
+  if (previewObserver) previewObserver.disconnect()
+  previewObserver = null
+  previewSlotSeen = null
+  previewLayerSig = ''
+  previewLayerFor = null
+}
+
+/** render() 之后调：对位置，内容变了才换内容。 */
+function syncPreview() {
+  const slot = document.getElementById('sw-preview-slot')
+  const p = shownPreview()
+  if (!slot || !p) {
+    if (previewLayer()) {
+      unwatchPaint()
+      unmountPreviewLayer()
+    }
+    return
+  }
+  let layer = previewLayer()
+  if (!layer) {
+    layer = document.createElement('div')
+    layer.id = 'sw-previewl'
+    document.body.appendChild(layer)
+    previewLayerSig = ''
+  }
+  const sig = previewSig(p)
+  if (sig !== previewLayerSig || p !== previewLayerFor) {
+    previewLayerSig = sig
+    previewLayerFor = p
+    layer.className = 'sw-preview-body sw-previewl'
+    layer.setAttribute('data-flow', previewFlow(p))
+    layer.innerHTML = previewBody(p)
+    // 渲染出来的 Markdown 里可能有代码块、公式、mermaid——和聊天气泡一样要 enhance 一次。
+    const md = p.kind === 'markdown' && p.mode === 'view' && window.satuMd ? layer.querySelector('.sw-preview-md') : null
+    if (md) window.satuMd.enhance(md)
+    // 画布跟着内容一起换了：笔画在 state 里，重新挂上去照着重画。
+    if (p.paint) mountPainter()
+    else unwatchPaint()
+  }
+  if (slot !== previewSlotSeen) {
+    // 整页重绘换了个新的槽：观察器跟着换过去（拖宽右栏、窗口变化都靠它）。
+    previewSlotSeen = slot
+    if (previewObserver) previewObserver.disconnect()
+    previewObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => placePreview()) : null
+    if (previewObserver) previewObserver.observe(slot)
+  }
+  placePreview()
+}
+
+function placePreview() {
+  const layer = previewLayer()
+  const slot = document.getElementById('sw-preview-slot')
+  if (!layer || !slot) return
+  const r = slot.getBoundingClientRect()
+  layer.style.top = r.top + 'px'
+  layer.style.left = r.left + 'px'
+  layer.style.width = r.width + 'px'
+  layer.style.height = r.height + 'px'
+}
+if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('resize', () => placePreview())
 
 /** 切「预览 / 原文」。只改一个字段，字节早就在手上了，不用再取一次。 */
 function setPreviewMode(mode) {
@@ -7185,12 +7412,242 @@ function setPreviewMode(mode) {
     p.docLoading = 'text'
     void fetchDocText(p.path, p.name)
   }
+  // 切到「预览」那一刻 Markdown 要 enhance 一次（代码高亮、公式、mermaid）——内容层换
+  // 内容时自己会做，见 syncPreview。
   render()
-  // 渲染出来的 Markdown 里可能有代码块、公式、mermaid——和聊天气泡一样要 enhance 一次，
-  // 否则代码不高亮、公式显示 TeX 原文。
-  if (state.preview.mode === 'view' && window.satuMd) {
-    const host = document.querySelector('.sw-preview-md')
-    if (host) window.satuMd.enhance(host)
+}
+
+/**
+ * 局部重绘：在预览的图上涂出要重画的那一块，生成一张蒙版 PNG 当附件发给 Bot。
+ *
+ * Bot 那边的 generate_image 收 `mask`（bot/src/tools/image.ts），但让模型自己做蒙版几乎做不到
+ * ——它多半看不见图，看得见也说不准坐标。人来涂是唯一靠谱的办法，而这件事只有界面做得了。
+ *
+ * **笔画存在 state 里，不只画在画布上**：任何一次无关的 render()（对话流来了一帧、侧栏刷新）
+ * 都可能把预览换掉，画布上的东西就没了。所以笔画按**原图像素**坐标存进 `state.preview.paint`，
+ * 每次画布重新挂上来（mountPainter，内容层换内容时调，见 syncPreview）都照着重画一遍。
+ *
+ * 蒙版的约定是 OpenAI 的：和原图一样大，**透明的地方重画**，其余不透明。
+ */
+const PAINT_BRUSH_DEFAULT = 40
+const PAINT_COLOR = 'rgba(239, 68, 68, 0.45)'
+
+/**
+ * 盯着那张图的尺寸：窗口一缩、侧栏一开，图跟着变小，画布得跟着重新贴上去——不然画布还是
+ * 旧的大小，笔落下的地方和光标对不上，涂出来的蒙版也就不是人看到的那一块。
+ * 同一时间只有一个画布，所以只留一个观察者，换画布（重挂、关掉）时先断开旧的。
+ */
+let paintObserver = null
+
+function unwatchPaint() {
+  if (paintObserver) paintObserver.disconnect()
+  paintObserver = null
+}
+
+function paintActs(p) {
+  if (p.kind !== 'image' || !p.url || p.loading || p.error || p.tooBig) return ''
+  if (!p.paint) {
+    return `<button type="button" class="btn" data-act="paint-start" title="${esc(t('涂出要重画的区域，让 Bot 只改那一块', 'Paint the area to redraw; the bot changes only that part'))}">${t('局部重绘', 'Inpaint')}</button>`
+  }
+  return (
+    `<label class="sw-paint-brush">${t('笔刷', 'Brush')}` +
+    `<input type="range" id="sw-paint-brush" min="8" max="160" step="4" value="${esc(String(p.paint.brush))}"></label>` +
+    `<button type="button" class="btn btn-ghost" data-act="paint-undo" ${p.paint.strokes.length ? '' : 'disabled'}>${t('撤销', 'Undo')}</button>` +
+    `<button type="button" class="btn btn-ghost" data-act="paint-clear" ${p.paint.strokes.length ? '' : 'disabled'}>${t('清除', 'Clear')}</button>` +
+    `<button type="button" class="btn btn-ghost" data-act="paint-cancel">${t('取消', 'Cancel')}</button>` +
+    `<button type="button" class="btn btn-primary" data-act="paint-done" ${p.paint.strokes.length && !p.paint.busy ? '' : 'disabled'}>${t('用这块重绘', 'Use this area')}</button>`
+  )
+}
+
+function startPaint() {
+  const p = state.preview
+  if (!p || p.kind !== 'image' || !p.url) return
+  p.paint = { strokes: [], brush: PAINT_BRUSH_DEFAULT }
+  render()
+}
+
+function stopPaint() {
+  unwatchPaint()
+  if (!state.preview) return
+  state.preview.paint = null
+  render()
+}
+
+/** 撤销 / 清除只动 state 和这两颗按钮的可用状态，**不整页重绘**——画布重挂会闪一下。 */
+function editPaint(act) {
+  const paint = state.preview && state.preview.paint
+  if (!paint) return
+  if (act === 'undo') paint.strokes.pop()
+  else paint.strokes = []
+  redrawPaint()
+  syncPaintButtons()
+}
+
+function syncPaintButtons() {
+  const paint = state.preview && state.preview.paint
+  const empty = !paint || !paint.strokes.length
+  for (const act of ['paint-undo', 'paint-clear', 'paint-done']) {
+    const b = document.querySelector(`[data-act="${act}"]`)
+    if (b) b.disabled = empty || (act === 'paint-done' && !!paint.busy)
+  }
+}
+
+/** 一笔：原图像素坐标下的点列和笔宽。单点（点一下没拖）画成一个圆。 */
+function strokePath(ctx, stroke, scale) {
+  const pts = stroke.pts
+  ctx.lineWidth = stroke.w * scale
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  if (pts.length === 1) {
+    ctx.beginPath()
+    ctx.arc(pts[0].x * scale, pts[0].y * scale, (stroke.w * scale) / 2, 0, Math.PI * 2)
+    ctx.fill()
+    return
+  }
+  ctx.beginPath()
+  ctx.moveTo(pts[0].x * scale, pts[0].y * scale)
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * scale, pts[i].y * scale)
+  ctx.stroke()
+}
+
+function redrawPaint() {
+  const canvas = document.getElementById('sw-paint-canvas')
+  const img = document.getElementById('sw-paint-img')
+  const paint = state.preview && state.preview.paint
+  if (!canvas || !img || !paint || !img.naturalWidth) return
+  const ctx = canvas.getContext('2d')
+  const dpr = window.devicePixelRatio || 1
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.strokeStyle = PAINT_COLOR
+  ctx.fillStyle = PAINT_COLOR
+  const scale = img.clientWidth / img.naturalWidth
+  for (const s of paint.strokes) strokePath(ctx, s, scale)
+}
+
+/**
+ * 把画布贴到图上、接上笔。render.js 每次 render 之后调一次（节点是新的，监听也是新挂的，
+ * 旧节点连同旧监听一起被丢掉，不会攒）。
+ */
+/**
+ * 笔刷那根滑杆在右栏的按钮行里，随 render() 换掉，每次都要重新接上。画布在内容层里，
+ * 不跟着换（见 syncPreview），所以两件事分开挂。
+ */
+function bindPaintBrush() {
+  const range = document.getElementById('sw-paint-brush')
+  if (!range) return
+  range.addEventListener('input', () => {
+    const paint = state.preview && state.preview.paint
+    if (paint) paint.brush = Number(range.value) || PAINT_BRUSH_DEFAULT
+  })
+}
+
+function mountPainter() {
+  const canvas = document.getElementById('sw-paint-canvas')
+  const img = document.getElementById('sw-paint-img')
+  if (!canvas || !img) return
+  const fit = () => {
+    const dpr = window.devicePixelRatio || 1
+    canvas.style.width = img.clientWidth + 'px'
+    canvas.style.height = img.clientHeight + 'px'
+    canvas.width = Math.round(img.clientWidth * dpr)
+    canvas.height = Math.round(img.clientHeight * dpr)
+    redrawPaint()
+  }
+  if (img.complete && img.naturalWidth) fit()
+  else img.addEventListener('load', fit, { once: true })
+  unwatchPaint()
+  if (typeof ResizeObserver === 'function') {
+    paintObserver = new ResizeObserver(() => {
+      if (img.naturalWidth) fit()
+    })
+    paintObserver.observe(img)
+  }
+
+  let current = null
+  const at = (e) => {
+    const r = canvas.getBoundingClientRect()
+    const k = img.naturalWidth / r.width
+    return { x: Math.round((e.clientX - r.left) * k), y: Math.round((e.clientY - r.top) * k) }
+  }
+  canvas.addEventListener('pointerdown', (e) => {
+    const paint = state.preview && state.preview.paint
+    if (!paint || !img.naturalWidth) return
+    e.preventDefault()
+    canvas.setPointerCapture(e.pointerId)
+    // 笔宽按**屏幕上看到的**粗细换算成原图像素：人调的是眼睛看到的那支笔。
+    const k = img.naturalWidth / canvas.getBoundingClientRect().width
+    current = { w: Math.max(1, Math.round(paint.brush * k)), pts: [at(e)] }
+    paint.strokes.push(current)
+    redrawPaint()
+    syncPaintButtons()
+  })
+  canvas.addEventListener('pointermove', (e) => {
+    if (!current) return
+    current.pts.push(at(e))
+    redrawPaint()
+  })
+  const end = () => {
+    current = null
+  }
+  canvas.addEventListener('pointerup', end)
+  canvas.addEventListener('pointercancel', end)
+}
+
+/**
+ * 按原图尺寸出一张蒙版：先整张涂成不透明，再把笔画那几块「挖掉」（destination-out）。
+ * 返回 PNG 的 Blob；没涂任何东西返回 null。
+ */
+function buildMask(strokes, width, height) {
+  if (!strokes.length || !width || !height) return Promise.resolve(null)
+  const c = document.createElement('canvas')
+  c.width = width
+  c.height = height
+  const ctx = c.getContext('2d')
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, width, height)
+  ctx.globalCompositeOperation = 'destination-out'
+  ctx.strokeStyle = '#000'
+  ctx.fillStyle = '#000'
+  for (const s of strokes) strokePath(ctx, s, 1)
+  return new Promise((resolve) => c.toBlob((b) => resolve(b), 'image/png'))
+}
+
+/**
+ * 涂完了：蒙版作为附件挂到输入框上，再预填一句「按蒙版 X 局部重绘 Y：」，光标停在句尾，
+ * 人接着写要改成什么。蒙版随消息一起传进工作区，Bot 在消息里看到它的路径（`[附图 …]`），
+ * 原图的路径就在这句话里。
+ */
+async function finishPaint() {
+  const p = state.preview
+  const img = document.getElementById('sw-paint-img')
+  // 出蒙版要等 toBlob，那段时间里按钮还在：双击一下就是两张蒙版、两句预填。
+  if (!p || !p.paint || !img || p.paint.busy) return
+  p.paint.busy = true
+  const done = document.querySelector('[data-act="paint-done"]')
+  if (done) done.disabled = true
+  const blob = await buildMask(p.paint.strokes, img.naturalWidth, img.naturalHeight)
+  if (!blob || state.preview !== p) {
+    if (state.preview === p && p.paint) p.paint.busy = false
+    syncPaintButtons()
+    return
+  }
+  /**
+   * 名字要**每次都不一样**。同一张图再涂一次，蒙版要是还叫 `mask-猫.png`，上传时撞名会被存成
+   * `mask-猫-1.png`，可预填的那句话写的仍是 `mask-猫.png`——模型照着那句话去找，拿到的是上一次
+   * 那张旧蒙版，改的是上一次涂的那一块，而且一句错都不报。
+   */
+  const stem = String(p.name || 'image').replace(/\.[^.]+$/, '').slice(0, 60) || 'image'
+  const file = new File([blob], `mask-${stem}-${Date.now().toString(36)}.png`, { type: 'image/png' })
+  state.chatFiles = [...(state.chatFiles || []), { name: file.name, size: file.size, file }]
+  const line = t(`按蒙版 ${file.name} 局部重绘 ${p.path}，涂掉的那块改成：`, `Inpaint ${p.path} using mask ${file.name}; change the painted area to: `)
+  state.chatDraft = (state.chatDraft || '').trim() ? `${state.chatDraft}\n${line}` : line
+  unwatchPaint()
+  closePreview()
+  const input = document.getElementById('chat-input')
+  if (input) {
+    input.focus()
+    input.setSelectionRange(input.value.length, input.value.length)
   }
 }
 
@@ -8214,15 +8671,60 @@ async function decideApproval(callId, decision, scope) {
 const handoffDrafts = new Map()
 
 /**
+ * 右栏待办那一屏（还有 /handoffs 整页）里正写着的结论：重画之前存起来、画完填回去。
+ *
+ * 对话里那张卡有自己的一套（updateRow 按签名比，变了才换），右栏和整页是 render() /
+ * paintAsideHandoffs 整块换的，换一次框里的字就没了——而 render() 在对话页上随时会来。
+ *
+ * **两边各存各的**（panelDrafts / handoffDrafts）。同一张单可能两边各有一个框，共用一份
+ * 的话，对话卡里写的那句会在下一次重画时被抄进右栏那个框，之后两个框各改各的就对不上了。
+ */
+const panelDrafts = new Map()
+
+function noteMapOf(ta) {
+  return ta.closest && ta.closest('.gw-aside, .gw-page') ? panelDrafts : handoffDrafts
+}
+
+function stashHandoffNotes(root) {
+  if (!root || !root.querySelectorAll) return
+  // 同一边同一张单只该有一个框；真有两个，只要有一个写了字就记那一句。
+  const seen = new Map()
+  for (const ta of root.querySelectorAll('.sw-handoff-note')) {
+    const id = ta.getAttribute('data-handoff')
+    if (!id) continue
+    const map = noteMapOf(ta)
+    const key = (map === panelDrafts ? 'p:' : 'c:') + id
+    const prev = seen.get(key)
+    seen.set(key, { map, id, text: (prev && prev.text) || ta.value })
+  }
+  for (const { map, id, text } of seen.values()) {
+    if (text) map.set(id, text)
+    else map.delete(id)
+  }
+}
+
+/** 填回去的只有右栏 / 待办页的框：对话里那张卡由 updateRow 自己填，这时它还没画出来。 */
+function fillHandoffNotes(root) {
+  if (!root || !root.querySelectorAll) return
+  for (const ta of root.querySelectorAll('.gw-aside .sw-handoff-note, .gw-page .sw-handoff-note')) {
+    const draft = panelDrafts.get(ta.getAttribute('data-handoff'))
+    if (draft && !ta.value) ta.value = draft
+  }
+}
+
+/**
  * 接手 / 交还 / 撤销。
  *
  * **走 `/runtime/handoffs/:id/*`，不走会话那条路。** 接手的人可能是管理员，这条会话
  * 根本不是他的——按会话鉴权的那几条路由在那时会把他挡在外面，而他恰恰是该来处理这件
  * 事的人（见 gateway/src/routes/handoffs.ts）。
  */
-async function actOnHandoff(id, act, body) {
+async function actOnHandoff(id, act, body, near) {
   if (!id) return
-  const box = [...document.querySelectorAll('.sw-handoff')].find((el) => el.getAttribute('data-handoff') === id)
+  // 先认点的那张卡（同一张单可能两边各摆一张，见 handoffNote），认不到再按单号找。
+  const box =
+    (near && near.closest ? near.closest('.sw-handoff') : null) ||
+    [...document.querySelectorAll('.sw-handoff')].find((el) => el.getAttribute('data-handoff') === id)
   if (box) {
     if (box.getAttribute('data-busy') === '1') return
     box.setAttribute('data-busy', '1')
@@ -8230,16 +8732,15 @@ async function actOnHandoff(id, act, body) {
   try {
     await api('POST', '/runtime/handoffs/' + encodeURIComponent(id) + '/' + act, body || {})
     handoffDrafts.delete(id)
+    panelDrafts.delete(id)
     // 状态变化会顺着 SSE 回来（席位落了一条 human/handoff），卡片跟着重画。
     // 待办计数是 Gateway 那张表上的，单独刷一次。
     void loadHandoffs()
   } catch (err) {
     if (box) box.removeAttribute('data-busy')
-    // render 会换掉 textarea，先保住人已经写好的交接说明。此前这里只改 state.error
-    // 却不重绘，所以远程席位离线、本地通道断开、工单已被别人接走时，用户看到的都是
-    // “按钮完全点不动”，连真实错误都没有。
-    const draft = handoffNote(id)
-    if (draft) handoffDrafts.set(id, draft)
+    // 要重绘，不能只改 state.error：此前不重绘，远程席位离线、本地通道断开、工单已被
+    // 别人接走时，用户看到的都是「按钮完全点不动」，连真实错误都没有。人已经写好的交接
+    // 说明由 render() 自己先存后填（stashHandoffNotes），两边的框各回各的。
     // 409「已经被别人接走了 / 这张单不在了」不是错误，但必须说出来：点了一下什么都
     // 没发生才是最糟的。
     flash('err', (err && err.message) || t('这一下没成', 'That did not go through'))
@@ -8247,19 +8748,30 @@ async function actOnHandoff(id, act, body) {
   }
 }
 
-function handoffNote(id) {
-  const ta = [...document.querySelectorAll('.sw-handoff-note')].find((x) => x.getAttribute('data-handoff') === id)
-  return ta ? ta.value.trim() : ''
+/**
+ * 交还时那句话从哪个框里取。
+ *
+ * **先认点的那颗按钮所在的那张卡。** 同一张单可能同时摆着两张卡（对话里一张、右栏待办
+ * 一张），两个框里的字未必一样——按文档顺序取第一个写了字的，取到的可能是另一张卡里
+ * 旧的那句，交给 Bot 的就是人已经改掉的话。找不到按钮（失败重试那条路）才退回按单号
+ * 找一个写了字的。
+ */
+function handoffNote(id, near) {
+  const card = near && near.closest ? near.closest('.sw-handoff') : null
+  const own = card ? card.querySelector('.sw-handoff-note') : null
+  if (own) return own.value.trim()
+  const tas = [...document.querySelectorAll('.sw-handoff-note')].filter((x) => x.getAttribute('data-handoff') === id)
+  return tas.map((ta) => ta.value.trim()).find(Boolean) || ''
 }
 
-async function returnHandoff(id, disposition) {
-  const text = handoffNote(id)
+async function returnHandoff(id, disposition, near) {
+  const text = handoffNote(id, near)
   if (!text) {
     // 空的交还等于把「我处理完了」五个字扔给模型——它接着要做什么全靠猜。
     flash('err', t('写一句你做了什么，Bot 要靠它接着做', 'Say what you did — the bot continues from it'))
     return
   }
-  await actOnHandoff(id, 'return', { disposition: disposition || 'done', text })
+  await actOnHandoff(id, 'return', { disposition: disposition || 'done', text }, near)
 }
 
 /**
@@ -8278,8 +8790,8 @@ async function loadHandoffs() {
     state.handoffStats = data.stats || null
     applyHandoffSnapshot(state.handoffs)
     paintHandoffBadge()
-    // 待办页正开着就重画：这个数刚变过，而那一页整屏都是它。
-    if (state.path === '/handoffs') render()
+    // 待办页正开着就重画：这个数刚变过，而那一页整屏都是它。右栏那一屏只补它自己。
+    repaintHandoffs()
   } catch {
     // 拉不到就保持上一份。**不清零**：一个突然消失的待办数会让人以为事情办完了。
   }
@@ -8299,7 +8811,7 @@ async function loadHandoffDetail(id) {
   } catch {
     state.handoffDetail = { ...(state.handoffDetail || {}), [id]: null }
   }
-  if (state.path === '/handoffs') render()
+  repaintHandoffs()
 }
 
 /**
@@ -8398,16 +8910,13 @@ async function pollSeatLinks() {
 async function updateOrgRuntime() {
   const org = state.org && state.org.id
   if (!org || state.updatingRuntime) return
-  const version = state.latestRelease
-  if (!version) {
-    flash('err', '还没有发布 Bot 版本')
-    render()
-    return
-  }
   state.updatingRuntime = true
   render()
   try {
-    const data = await api('POST', `/platform/orgs/${encodeURIComponent(org)}/runtime/update`, { version })
+    // **不带版本**：升到哪一版由服务端定（平台钉的那一版，没钉就是最新），和心跳里的自动
+    // 跟版同一个目标。这里自己带最新版的话，钉版本时一按就铺上最新，十分钟后又被跟版拉回去。
+    // 还没有发布版本时服务端回 409，落进下面的 catch。
+    const data = await api('POST', `/platform/orgs/${encodeURIComponent(org)}/runtime/update`, {})
     const results = Array.isArray(data.results) ? data.results : []
     const ok = results.filter((r) => r.status === 'ready' && !r.error).length
     /**

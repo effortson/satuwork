@@ -4,9 +4,10 @@ import type { Account, ChargeStatus, Db } from './db.ts'
 import type { JwtKeys } from './crypto.ts'
 import { ticketRevoked, verifyJwt } from './crypto.ts'
 import { HttpError, bearer, json, watchClient, type Req, type Router } from './http.ts'
-import { EMPTY_USAGE, applyBodyPatch, openaiModelId, redact, rejectsTemperature, type CatalogModel, type Llm, type UpstreamTarget } from './llm.ts'
+import { EMPTY_USAGE, applyBodyPatch, openaiModelId, redact, rejectsTemperature, type CatalogModel, type Llm, type UpstreamRoute, type UpstreamTarget } from './llm.ts'
+import { isImageModel } from './image-models.ts'
 import type { Meter } from './lib/meter.ts'
-import { mergeUsage, openaiUsage, tokensOf, usageFromPayload, type TokenUsage } from './lib/llm-usage.ts'
+import { mergeUsage, openaiUsage, sseUsage, tokensOf, usageFromPayload, type TokenUsage } from './lib/llm-usage.ts'
 import { accountByApiKey, assertUsable, gateOr402, recordLlmCall, withSettle, type RunOutcome } from './lib/llm-billing.ts'
 
 function str(v: unknown): string {
@@ -111,7 +112,7 @@ async function secretOr402(llm: Llm, companyId: string | null, provider: string)
 function upstreamOr400(
   llm: Llm,
   found: CatalogModel,
-  route: 'chat' | 'messages' | 'responses',
+  route: UpstreamRoute,
   secret: string,
   req: { anthropicVersion?: string; openaiBeta?: string; reasoningEffort?: string },
 ): UpstreamTarget {
@@ -543,20 +544,9 @@ async function proxyUpstream(
       const bytes = typeof piece === 'string' ? piece : Buffer.from(piece)
       res.write(bytes)
       buf += typeof piece === 'string' ? piece : decoder.decode(piece, { stream: true })
-      let idx
-      while ((idx = buf.indexOf('\n\n')) >= 0) {
-        const frame = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        for (const line of frame.split('\n')) {
-          if (!line.startsWith('data:')) continue
-          const payload = line.slice(5).trim()
-          if (!payload || payload === '[DONE]') continue
-          try {
-            const u = usageFromPayload(JSON.parse(payload))
-            if (u) usage = mergeUsage(usage, u)
-          } catch {}
-        }
-      }
+      const next = sseUsage(buf, usage)
+      buf = next.rest
+      usage = next.usage
     }
     // 读流放在 try 里：以前它在外面，任何中途失败（120s 超时会连响应体一起中止）都会
     // 一路抛出去，`res.end()` 和外层的 updateLlmCallTokens 都不执行——**这一次调用已经
@@ -624,6 +614,9 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
     if (!modelRaw) throw new HttpError(400, 'model 不能为空')
     const hint = str(body.provider) || undefined
     const found = await resolveOr404(llm, account.companyId, modelRaw, hint)
+    // 这条路底下是 pi-ai，不经 upstreamTargetOf，所以「生图模型走错路」要在这儿自己挡——
+    // 不挡的话 pi-ai 找不到这颗模型，报出来的是一句看不懂的内部错。措辞同授权那边。
+    if (isImageModel(found)) throw new HttpError(400, `${found.provider}/${found.id} 是生图模型，只能走 /v1/images/generations`)
     const secret = await secretOr402(llm, account.companyId, found.provider)
     await gateOr402(meter, account, found)
     const callId = await recordLlmCall(db, account, found)
@@ -669,6 +662,42 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
       }),
     )
   })
+
+  /**
+   * 生图的两条透传口：`generations` 按描述画，`edits` 拿已有的图改。Bot 的 generate_image 打的
+   * 就是它们（本地桌面 Bot 直连 Gateway；席位 Bot 打的是管家的 /llm/v1/images/*，那边用的是
+   * 同一个 upstreamTargetOf 的生图那一岔）。请求体是 Bot 按这颗模型的 `api` 拼好的原生形状——
+   * OpenAI Images 或者 Gemini 的 generateContent，这里不看，只按补丁改 model / provider。
+   *
+   * 计费和对话一样按 token（见 image-models.ts 的文件头）。
+   *
+   * **Bot 总是要流式答复**：非流式要等整张图画完才有响应头（proxyUpstream 只等 120 秒），
+   * 而且图片的 base64 是几 MB 的一整块，Vercel 上非流式的响应体有 4.5 MB 的上限。**请求体**
+   * 那头的 4.5 MB 躲不开——改图要把原图带上来，所以 Bot 直连这里时把输入图的总量压在 3 MB。
+   */
+  for (const [path, route] of [['/v1/images/generations', 'images'], ['/v1/images/edits', 'image-edits']] as const) {
+    router.post(path, async (req, res) => {
+      const account = await requireUser(req, db, keys)
+      const body = { ...bodyOf(req) }
+      const modelRaw = str(body.model)
+      if (!modelRaw) throw new HttpError(400, 'model 不能为空')
+      const found = await resolveOr404(llm, account.companyId, modelRaw, str(body.provider) || undefined)
+      const secret = await secretOr402(llm, account.companyId, found.provider)
+      // 算目标排在 recordLlmCall 之前，理由同 /v1/responses。
+      const target = upstreamOr400(llm, found, route, secret, {})
+      await gateOr402(meter, account, found)
+      const callId = await recordLlmCall(db, account, found)
+      applyBodyPatch(body, target.body)
+      await withSettle(db, meter, account, found, callId, () =>
+        proxyUpstream(res, {
+          url: target.url,
+          headers: { ...target.headers, 'content-type': 'application/json' },
+          body,
+          secret,
+        }),
+      )
+    })
+  }
 
   router.post('/v1/messages', async (req, res) => {
     const account = await requireUser(req, db, keys)

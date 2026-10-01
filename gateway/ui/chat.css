@@ -961,6 +961,12 @@
 /* 图片本身就是链接时不加：那张图已经摆在那儿了，角上再挂个小箭头只是脏。 */
 .sw-md a[data-md='link']:has(img)::after { content: none; }
 .sw-md img { margin: var(--space-2) 0; border-radius: var(--radius-sm); border: 1px solid var(--border); }
+.sw-md .sw-md-remote-img {
+  display: inline-block; max-width: 100%; margin: var(--space-2) 0; padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--border); border-radius: var(--radius-sm); background: transparent;
+  color: var(--color-accent-700); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere;
+}
+.sw-md .sw-md-remote-img:hover { color: var(--color-accent-600); border-style: solid; }
 .sw-md strong { font-weight: 600; }
 
 .sw-md code[data-md='inline-code'] {
@@ -1144,8 +1150,33 @@
 
 .sw-file > small { flex: none; color: var(--muted-foreground); font-size: 11px; }
 
-/* 预览层。比别的 modal 宽，因为里面是给人看的内容，不是一张表单。 */
+/* 预览。摆在对话页右栏里（见 chat.js 的 previewPanel），不再是盖住整屏的弹层。 */
 .sw-preview { max-width: min(1040px, 94vw); width: 100%; }
+.sw-preview-side {
+  flex: 1;
+  min-height: 0;
+  max-width: none;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+.sw-preview-side .sw-preview-head { align-items: center; gap: var(--space-2); }
+.sw-preview-side .sw-preview-head h2 { font-size: 15px; line-height: 1.35; }
+/* 右栏窄：看法 / 涂抹 / 下载那一排单独一行，放不下就折行，别把文件名挤没了。 */
+.sw-preview-side .sw-preview-acts { flex-wrap: wrap; gap: var(--space-2); }
+/* 右栏里只留一个空槽，吃掉头上两行剩下的全部高度；真正的内容在 body 上的常驻层里
+   （.sw-previewl），照着这个槽的位置摆——见 chat.js 的 syncPreview。 */
+.sw-preview-slot { flex: 1; min-height: 0; border-radius: var(--radius); background: var(--muted); }
+/* 常驻层：样式和弹层时代的内容框是同一套（.sw-preview-body），只是位置由 placePreview
+   按槽给。14 压在菜单（15）之下，弹层蒙版（25）和全屏桌面（61）更在它上面。 */
+/* 选择器带上 .sw-preview-body：那一套规则排在后面，同权重会被它的 margin-top / 70vh /
+   内边距盖回去。 */
+.sw-preview-body.sw-previewl { position: fixed; z-index: 14; box-sizing: border-box; margin: 0; height: auto; }
+.sw-preview-body.sw-previewl[data-flow='top'] { padding: var(--space-3) var(--space-4); }
+.sw-preview-body.sw-previewl[data-flow='top']:has(.sw-preview-load) { padding: 0; }
+.sw-previewl .sw-paint .sw-preview-img { max-height: calc(100vh - 220px); }
 .sw-preview-head {
   display: flex;
   align-items: flex-start;
@@ -1173,6 +1204,15 @@
 }
 /* 图片按原始比例缩进框里，不裁切也不拉伸。 */
 .sw-preview-img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+/*
+ * 局部重绘：画布叠在图上，和图一样大（mountPainter 按图的实际显示尺寸定）。
+ * 容器贴着图的大小走，不然画布的坐标和图对不上。
+ */
+.sw-paint { position: relative; display: inline-block; max-width: 100%; max-height: 100%; line-height: 0; }
+.sw-paint .sw-preview-img { max-height: calc(70vh - 2px); }
+.sw-paint canvas { position: absolute; left: 0; top: 0; touch-action: none; cursor: crosshair; }
+.sw-paint-brush { display: inline-flex; align-items: center; gap: var(--space-2); font-size: 12px; color: var(--muted-foreground); }
+.sw-paint-brush input { width: 96px; }
 .sw-preview-frame { width: 100%; height: 100%; border: 0; background: var(--background); border-radius: var(--radius); }
 .sw-preview-note {
   margin: 0;
@@ -1255,12 +1295,20 @@
  */
 .sw-steps { margin: 8px 0 0; }
 .sw-steps .sw-shot { width: 132px; height: 82px; }
+/*
+ * Bot 产出的图片。比过程截图大一号：那一条只是痕迹，这一张就是答案本身。
+ * contain 而不是 cover：画出来的图裁掉一截就不是它画的那张了；留白用底色垫着。
+ */
+.sw-outshots .sw-shot { width: 240px; height: 240px; max-width: 100%; }
+.sw-outshots .sw-shot img { object-fit: contain; }
 .sw-steps .sw-shot img { object-position: top center; }
 /* 没摆下的那些。不是可点的东西，所以别长成可点的样子。 */
 .sw-stepmore { color: var(--muted-foreground); align-self: center; }
 
 /* 抬头上那两颗切屏的图标。正看着的那一屏要留个底色——两颗长得一样大、挨在一起，
    不标出来的话，人得先点一下才知道现在开着的是哪一屏。 */
+/* 举手那一颗上压着待办的数（.satu-handoffcount 是 absolute），按钮得是它的定位参照。 */
+.sw-asidetab { position: relative; }
 .sw-asidetab[aria-pressed='true'] { background: var(--color-accent-100); color: var(--color-accent-800); }
 
 /* ── 右栏里的工作区文件树 ─────────────────────────────────────────────────

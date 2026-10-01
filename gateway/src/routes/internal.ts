@@ -4,13 +4,13 @@
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { MIN_MANAGER_NODE, desiredManagerRelease, gatewayBaseFor, machineHostOf, managerHostOf, managerPackageUrl, normalizePairingCode, sendReleaseFile } from '../lib/machines.ts'
-import { MIN_MANAGER_PROTOCOL, botBaseOf, managerHealth, normalizeTimezone, publicMachine } from '../deploy.ts'
+import { MIN_MANAGER_PROTOCOL, botBaseOf, managerHealth, normalizeTimezone, publicMachine, queueBotFollow } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
-import { callerAccountId, requireBootstrapMachine, requireInternalCaller, requireMachine } from '../lib/guards.ts'
+import { callerAccountId, requireBootstrapMachine, requireInternalCaller, requireMachine, type InternalCaller } from '../lib/guards.ts'
 import { instanceHostOf, sourceIpOf } from '../lib/runtime.ts'
 import { METRIC_RETENTION_MS, MINUTE_MS, egressDelta, telemetryOf } from '../lib/telemetry.ts'
-import { HANDOFF_STATES, type HandoffState, type Machine } from '../db.ts'
+import { HANDOFF_STATES, type Db, type HandoffState, type Machine } from '../db.ts'
 import { resolveAssignee } from '../lib/handoff.ts'
 import { notify } from '../handoff-sweep.ts'
 import { auditResultHash } from '../conversation-audit.ts'
@@ -34,6 +34,23 @@ const GUARD_IDS = new Set(['high-risk', 'pii', 'no-external', 'escalate', 'brows
 // `noted` 是事后补记的一笔（动作跑完了才发现它发出了写请求，而当时没弹过卡片），
 // 不是一次表态。混在同一张表里上报，但看审计的人要分得出来。
 const GUARD_OUTCOMES = new Set(['blocked', 'approved', 'denied', 'timeout', 'redacted', 'escalated', 'noted'])
+
+/**
+ * 机器票只能替**本机**上的席位说话。
+ *
+ * 文件头那句「机器票能替本机任意席位报」以前只在 ready 和会话索引两条上兑现；审计事件、
+ * 转人工工单、对话审计结果三条只比了公司，于是同公司的一台机器被攻破，就能拿别的机器上
+ * 任意员工的 accountId 伪造 `bot.guard.*` 审计、开出转人工工单（会发公司 webhook）、覆盖
+ * 不属于本机的审计批次结果。席位票那条不用查：callerAccountId 已经把它钉在自己身上。
+ *
+ * 口径和会话索引那条一样：一个席位都没有的账号（老数据 / stub）放过，那时没有依据可核；
+ * 有席位、但一个都不在这台机器上的，拒。
+ */
+async function requireSeatOnCaller(db: Db, caller: InternalCaller, accountId: string): Promise<void> {
+  if (caller.kind !== 'machine') return
+  const seats = await db.seatRuntimesOfAccount(accountId)
+  if (seats.length && !seats.some((s) => s.machineId === caller.machine.id)) throw new HttpError(403, '这个账号的席位不在这台机器上')
+}
 
 export function attachInternal(router: Router, ctx: RouteCtx) {
   const { db } = ctx
@@ -265,6 +282,13 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     await rollUp(machine, next, telemetry)
 
     const desired = await desiredManagerRelease(db, next)
+    // Bot 自动跟版：落后的席位排进部署队列，由每一拍去装（见 deploy.ts 的 queueBotFollow）。
+    // **出错只记一笔**：心跳是这台机器唯一的控制通道，跟版这件附带的事不能把它带成 500。
+    // 管家换版在报错时不算「待换版」：换不上去就不会重启，不该拿它把 Bot 跟版也一起卡住。
+    const managerPending = Boolean(desired) && next.managerVersion !== desired?.version && !upgradeError
+    await queueBotFollow(db, next, { managerPending }).catch((e: Error) => {
+      console.error(`satuwork-gateway: 机器 ${next.id.slice(0, 8)} 的 Bot 跟版没排上：${e.message}`)
+    })
     json(res, 200, {
       machine: { id: next.id, lastHeartbeatAt: next.lastHeartbeatAt },
       desiredManagerVersion: desired?.version ?? null,
@@ -411,6 +435,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     const body = bodyOf(req)
     const accountId = callerAccountId(caller, () => strField(body, 'accountId'))
     if (accountId !== batch.accountId) throw new HttpError(403, '席位票只能上报自己的审计')
+    await requireSeatOnCaller(db, caller, accountId)
     if (strField(body, 'botId') !== batch.botId || strField(body, 'sessionId') !== batch.sessionId) {
       throw new HttpError(403, '审计目标与批次不一致')
     }
@@ -532,6 +557,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     const accountId = callerAccountId(caller, () => strField(body, 'accountId'))
     const account = await db.account(accountId)
     if (!account || account.companyId !== caller.companyId) throw new HttpError(403, '账号不属于这家公司')
+    await requireSeatOnCaller(db, caller, accountId)
 
     const guard = strField(body, 'guard')
     const outcome = strField(body, 'outcome')
@@ -579,6 +605,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     const accountId = callerAccountId(caller, () => strField(body, 'accountId'))
     const account = await db.account(accountId)
     if (!account || account.companyId !== caller.companyId) throw new HttpError(403, '账号不属于这家公司')
+    await requireSeatOnCaller(db, caller, accountId)
 
     const state = strField(body, 'state') as HandoffState
     if (!HANDOFF_STATES.includes(state)) throw new HttpError(400, 'state 不认识')

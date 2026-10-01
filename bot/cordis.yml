@@ -56,7 +56,7 @@
 - name: './src/tools/file.ts'
 - name: './src/tools/terminal.ts'
 # 改已有的 Word / Excel / PPT 且不丢格式（office_unpack / office_pack）：解成 XML、用 file 那几把改、
-# 打回去。新建文档不走它，走 terminal 里的 .cjs 脚本。见 tools/office.ts。
+# 打回去。新建文档不走它，走 terminal 里的 .cjs 脚本，写之前 office_guide 给要点和模板。见 tools/office.ts。
 - name: './src/tools/office.ts'
 # 把 Word / Excel / PPT / PDF 的某几页画成图给模型自己看（office_render），改完文档自己验收。见 tools/look.ts。
 - name: './src/tools/look.ts'
@@ -94,6 +94,11 @@
 # 日常任务：routine_list / routine_manage。定义和调度仍然只在 Gateway；这两把只是让当前
 # Bot 用自己的席位票查看、新增、修改或立即试跑，不在席位本地另起一套定时器。
 - name: './src/tools/routine.ts'
+
+# 生图：generate_image。用哪颗模型由平台挑（目录下发的 models.image），调用走模型那条路
+# （管家 /llm/v1/images/generations），图落进工作区 images/。**排在 catalog 和 workspace 后面**
+# ——它 inject 这两样。平台没挑生图模型时不进工具表（agent 的 toolSchemasFor）。
+- name: './src/tools/image.ts'
 
 # 本地 Bot（桌面端）自己领、自己跑日常任务。没设 SATUWORK_RUNTIME_KIND=local 时完全不启用。
 - name: './src/local-routines/index.ts'

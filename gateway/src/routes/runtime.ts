@@ -4,12 +4,13 @@
 import type { ServerResponse } from 'node:http'
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
+import { IMAGE_MODELS } from '../image-models.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
 import type { Account, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
-import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, defaultBotModel, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
+import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, botTemplateOf, defaultBotModel, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
 import { WebToolError } from '../web-tools.ts'
@@ -155,10 +156,29 @@ type StampRole = { provider: string; model: string; reasoningEffort?: string }
  * 备选**不能省**，理由同 catalogStamp 那条 models：管理员下架一个备选，席位不重拉目录
  * 的话，已经选了它的会话会一直打那个模型——而名单这头明明已经没有它了。
  */
-function modelStamp(s: { daily: StampRole; utility: StampRole; dailyAlternates?: StampRole[] }): string {
+function modelStamp(s: {
+  daily: StampRole
+  utility: StampRole
+  dailyAlternates?: StampRole[]
+  image?: { provider: string; model: string }
+}): string {
   const one = (r: StampRole) => `${r.provider}/${r.model}:${r.reasoningEffort || 'off'}`
   const alts = (s.dailyAlternates ?? []).map(one).join(',')
-  return `${one(s.daily)}|${one(s.utility)}${alts ? `|${alts}` : ''}`
+  // 生图模型同理：开了、关了、换了，席位都得重拉，那把工具才会进表 / 下表。
+  // 没开时一个字都不加——指纹和加这一格之前一模一样，老席位不会白白全体重拉一次。
+  const image = s.image?.provider && s.image.model ? `|img:${s.image.provider}/${s.image.model}` : ''
+  return `${one(s.daily)}|${one(s.utility)}${alts ? `|${alts}` : ''}${image}`
+}
+
+/**
+ * 下发给席位的生图模型：平台挑的那一个 + 它的 `api`（Bot 按它拼请求体）。没开、或者挑的那个
+ * 已经不在生图表里了（升级时从表里拿掉了），就是 null——席位上那把工具不进工具表。
+ */
+function imageModelOf(s: { image?: { provider: string; model: string } }) {
+  const pick = s.image
+  if (!pick?.provider || !pick.model) return null
+  const def = IMAGE_MODELS.find((m) => m.provider === pick.provider && m.id === pick.model)
+  return def ? { provider: def.provider, model: def.id, api: def.api } : null
 }
 
 /** 这个账号的连接器状态指纹：安装和连接一起算，删一条也要能看出来。 */
@@ -177,6 +197,13 @@ async function ownBotOf(db: RouteCtx['db'], account: Account, id: string, allowD
   }
   if (item.deletingAt && !allowDeleting) throw new HttpError(409, '这个 Bot 正在完成删除前审计')
   return item
+}
+
+/** 诊断报告里名册那一行不带席位票（见 /runtime/diag）。 */
+function withoutSeatToken(parsed: unknown): unknown {
+  const seat = (parsed as { seat?: unknown } | null)?.seat
+  if (seat && typeof seat === 'object') delete (seat as Record<string, unknown>).gatewayToken
+  return parsed
 }
 
 export function attachRuntime(router: Router, ctx: RouteCtx) {
@@ -253,7 +280,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * 退回「全局 ∪ 公司」，看不见任何私有档——那时也没人知道该给谁的。
      */
     const skills = await db.skillsFor(companyId, account.id, botId || null)
-    const servers = await db.visibleCatalog('mcp', companyId)
+    // 只下发这几颗 Bot 用得到的（见 serversForBots）：token 和 env 是明文。
+    const servers = serversForBots(await db.visibleCatalog('mcp', companyId), bots, tpl)
     /**
      * **这颗 Bot 读得到的全部记忆**，四层一次取齐（`memoriesFor` 的 where 里带着层和
      * 归属，别人的一条都进不来）。
@@ -304,7 +332,13 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       // 实例照着这个数字判断「底座换了没有」。和下面那条探针给的是同一个值。
       templateVersion: tpl.version,
       // 备选只在这里下发给席位：会话选哪一个由席位按这份名单认（见 bot 的 session/model）。
-      models: { daily: settings.daily, utility: settings.utility, dailyAlternates: settings.dailyAlternates ?? [] },
+      models: {
+        daily: settings.daily,
+        utility: settings.utility,
+        dailyAlternates: settings.dailyAlternates ?? [],
+        // 生图（Bot 的 generate_image）。老席位不认这一格，照旧没有那把工具。
+        image: imageModelOf(settings),
+      },
       /**
        * **这一份内容的指纹，和探针给的算法完全一样。**
        *
@@ -382,9 +416,14 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * 探针都判「没变」，那条 Skill 永远不会出现在它的索引里——而工具明明回了成功。
      * 这是那种「哪一处看起来都对」的故障（docs/skills.md §7）。
      */
+    /**
+     * 服务器按和 `/runtime/catalog` 同一份口径筛（serversForBots）：指纹两边必须一字不差，
+     * 不然要么每分钟白拉一次整份目录，要么改了却永远判「没变」。
+     */
+    const tpl = tplItem ? botTemplateOf(tplItem) : defaultBotTemplate()
     const tools = [
       ...(await db.skillsFor(companyId, account.id, botId || null)),
-      ...(await db.visibleCatalog('mcp', companyId)),
+      ...serversForBots(await db.visibleCatalog('mcp', companyId), bot ? [bot] : bots, tpl),
     ]
     /** 记忆同理，而且它连 `catalog_items` 都不在——不算进去就永远同步不下来。 */
     const memories = companyId ? await db.memoriesFor(companyId, account.id, botId || null) : []
@@ -1109,7 +1148,12 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const t = await managerTargetFor(db, account, (req.query.get('botId') || '').trim())
     const lines = Number(req.query.get('lines') || 40)
     const q = Number.isFinite(lines) ? `?lines=${Math.min(200, Math.max(1, Math.trunc(lines)))}` : ''
-    await proxyJson(res, 'GET', `${t.base}/seats/${encodeURIComponent(t.seatId)}/diag${q}`, undefined, undefined, t.machineToken)
+    /**
+     * 名册行里的席位票（`seat.gatewayToken`）**摘掉再转**。管家从 diag.ts 那头已经不带它了，
+     * 这里再摘一遍是给还没升级的老管家：它们回的是整行名册，票就这么到了浏览器——拿着它能
+     * 绕过审批直接调 bot，也能冒充 bot 调 Gateway。
+     */
+    await proxyJson(res, 'GET', `${t.base}/seats/${encodeURIComponent(t.seatId)}/diag${q}`, undefined, undefined, t.machineToken, undefined, undefined, withoutSeatToken)
   })
 
   /**

@@ -12,6 +12,7 @@ import type { CatalogModel } from '../llm.ts'
 import type { Billable, Meter } from './meter.ts'
 import { gateAccount, gateCompany } from './guards.ts'
 import type { TokenUsage } from './llm-usage.ts'
+import { imageEstimateTokens, imageModelDef, isImageModel } from '../image-models.ts'
 
 /** settle 只用得着这三样。管家结算时目录里可能已经没有这个模型了，那时只有这三样。 */
 type Billed = Pick<CatalogModel, 'provider' | 'id' | 'cost'>
@@ -144,6 +145,25 @@ export async function fillSweptCharge(
  * 同一次调用在账上出现两个数。**这条和 `fillSweptCharge` 不矛盾**——那边补的是一行从来
  * 没成交过的占位，这边面对的是一笔已经成交的钱。
  */
+/**
+ * 一次调用的「查有没有账 → 落账」**串起来做**。
+ *
+ * 以前两步是分开的：先查 `chargeExistsForRef`（事务外），再 insert（只有 insert 在账本锁里）。
+ * 而 `usage_charges."refId"` 不是唯一键，账本按 refId **求和**（LEDGER_BY_REF）——同一次调用
+ * 落两行就是扣两次钱。撞上它的路不少：管家结算 20 秒超时、2 秒后重试，而 Vercel 冷启动时
+ * 第一次请求还没跑完；清扫和第一次结算同时看到「没账」；清扫写了占位行之后管家重试两次、
+ * 两次都去补它。
+ *
+ * 所以按 callId 加一把事务锁，查和写都在锁里：后到的那一个一定看得见先到的写下的行。
+ * 慢的事（目录、账号）调用方在锁外先做完，锁里只剩几条 SQL。
+ */
+export function withSettleLock<T>(db: Db, callId: string, fn: () => Promise<T>): Promise<T> {
+  return db.tx(async () => {
+    await db.lockLlmSettle(callId)
+    return fn()
+  })
+}
+
 export async function recordUsageOnly(db: Db, callId: string, usage: TokenUsage): Promise<void> {
   await db.updateLlmCallTokens(callId, usage)
 }
@@ -155,11 +175,19 @@ export async function recordUsageOnly(db: Db, callId: string, usage: TokenUsage)
  * 用户看，所以这句话要能直接读。
  */
 export async function gateOr402(meter: Meter, account: Account, found: CatalogModel): Promise<void> {
+  /**
+   * 生图模型一张图的价钱大体是定的，闸判「够不够这一张」（见 meter.ts 的 GateSubject）。
+   * 这颗模型有实测基线就按实测的 P95，没有才按表里最贵那档（lib/image-estimate.ts）。
+   */
+  const image = isImageModel(found) ? imageModelDef(found.provider, found.id) : undefined
   const gate = await meter.gate(account, {
     kind: 'llm',
     provider: found.provider,
     model: found.id,
     cost: found.cost,
+    ...(image
+      ? { estimate: async () => (await meter.imageBaseline(found.provider, found.id))?.p95 ?? imageEstimateTokens(image) }
+      : {}),
   })
   if (gate.ok) return
   // 被拒的也落一行（金额 0）。「为什么我的 Bot 停了」这个问题得有一个地方答得了，

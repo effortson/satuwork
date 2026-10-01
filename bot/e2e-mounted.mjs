@@ -46,7 +46,7 @@ const SERVICES = ['storage', 'sessions', 'roster', 'tools', 'llm', 'workspace', 
 const TOOLS = [
   'now',
   'read_file', 'write_file', 'patch', 'search_files', 'terminal', 'process',
-  'office_unpack', 'office_pack', 'office_render',
+  'office_unpack', 'office_pack', 'office_guide', 'office_render',
   // 席位桌面那两把只在有桌面的远程席位挂；这里裸起的是远程形态，DISPLAY 在下面垫了一个。
   'desktop_terminal', 'desktop_open_folder',
   'web_search', 'web_extract',
@@ -55,6 +55,8 @@ const TOOLS = [
   'skill_view', 'skills_list', 'skill_manage',
   'memory_write', 'memory_list',
   'routine_list', 'routine_manage',
+  // 注册是无条件的；平台没挑生图模型时只是不进工具表（agent 的 toolSchemasFor）。
+  'generate_image',
   'escalate_to_human',
   'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press',
   'browser_dialog', 'browser_back', 'browser_scroll', 'browser_read', 'browser_wait_for',

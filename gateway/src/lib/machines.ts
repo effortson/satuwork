@@ -6,10 +6,10 @@
 import type { ServerResponse } from 'node:http'
 import { gatewayPageIsHttp, HttpError, type Req } from '../http.ts'
 import { bodyOf, strField } from './validate.ts'
-import { directReleaseUrl, openRelease, parseBotVersion, registerRemoteRelease } from '../releases.ts'
+import { desiredBotRelease, directReleaseUrl, openRelease, parseBotVersion, registerRemoteRelease, releaseForArch } from '../releases.ts'
 import { pipeline } from 'node:stream/promises'
 import { randomBytes } from 'node:crypto'
-import { type BotRelease, type Db, type Machine, type ReleaseKind, releaseArch } from '../db.ts'
+import { type BotRelease, type Db, type Machine, type ReleaseKind } from '../db.ts'
 import { type JwtKeys, signDesktopTicket } from '../crypto.ts'
 import { MIN_DIRECT_MANAGER_DOWNLOAD_PROTOCOL, type MachineLoad, machinePaired, ownerMachine } from '../deploy.ts'
 
@@ -207,32 +207,17 @@ export function desktopTicketFor(
  */
 export const MIN_MANAGER_NODE = 24
 
+/** 管家那条版本线上的 releaseForArch（见 releases.ts）。 */
+export async function managerReleaseFor(db: Db, version: string, arch: string | null) {
+  return releaseForArch(db, 'manager', version, arch)
+}
+
 /**
  * 这台机器该跑哪个管家版本。
  *
  * 优先级：单机钉的 > 平台全局钉的 > 最新发布。单机那一层是灰度用的——先让一台机器
  * 追新版本，看几天再改全局。
  */
-/**
- * 钉的那一版，但**换成这台机器的架构**。
- *
- * `0.1.2+abc-x64` 和 `0.1.2+abc-arm64` 是同一次发布的两份包。钉版本的人（尤其是平台
- * 全局那一档）只能写一个字符串，写不了两个架构；照着发下去，另一半机器必然拿到错包。
- * 所以先按原样找，架构对不上就找同版本的兄弟包。
- *
- * 找不到兄弟就返回 undefined，让调用方回落——发一个已知错架构的包没有任何意义。
- */
-export async function managerReleaseFor(db: Db, version: string, arch: string | null) {
-  const row = await db.botRelease(version, 'manager')
-  const want = arch?.trim()
-  if (!want) return row
-  const got = row ? releaseArch(row.version) : undefined
-  if (row && (!got || got === want)) return row
-  const sibling = version.replace(/-(x64|arm64)$/, '') + '-' + want
-  if (sibling === version) return row
-  return await db.botRelease(sibling, 'manager')
-}
-
 export async function desiredManagerRelease(db: Db, machine?: Machine) {
   const arch = machine?.arch ?? null
   const pinned = machine?.desiredManagerVersion?.trim()
@@ -247,6 +232,38 @@ export async function desiredManagerRelease(db: Db, machine?: Machine) {
     if (row) return row
   }
   return db.latestBotRelease('manager', arch)
+}
+
+/**
+ * 改这台机器的管家目标版本。界面上「升级管家」「恢复自动升级」两颗按钮都走这里。
+ *
+ * - 不带版本：**摘掉单机钉的版本**，回到跟平台走（平台钉的那一版，没钉就是这个架构的最新）。
+ *   管家本来就会在心跳里自己追最新，「升级」要做的只是把挡着它的那颗钉拔掉。
+ * - 带版本：钉到这一版，**按这台机器的架构存**。这一档是单机灰度用的：先让一台追新版本。
+ *
+ * 原来不带版本也是钉：把「当时的最新版」写进 `desiredManagerVersion`。于是点过一次升级的
+ * 机器从此停在那一版，之后发多少新版都轮不到它，而界面上没有任何地方看得出它被钉住了、
+ * 也没有地方摘掉。取的「最新」还不看架构——arm64 机器上钉进去的是 x64 的版本号，靠兄弟包
+ * 映射才没出错，看着更糊涂。
+ */
+export async function retargetManager(db: Db, machine: Machine, requested: string) {
+  let pin: string | null = null
+  if (requested) {
+    const version = parseBotVersion(requested)
+    const rel = await managerReleaseFor(db, version, machine.arch)
+    if (!rel) throw new HttpError(404, '没有这个管家版本')
+    pin = rel.version
+  }
+  const next = await db.updateMachine(machine.id, { desiredManagerVersion: pin })
+  const target = await desiredManagerRelease(db, next)
+  if (!target) throw new HttpError(409, '还没有发布管家版本')
+  return {
+    next,
+    version: target.version,
+    pinned: pin,
+    // 说清楚这一步只是下了指令：界面上别显示成「已升级」。
+    pending: next.managerVersion !== target.version,
+  }
 }
 
 /**
@@ -351,6 +368,12 @@ export async function machineCard(
   const arch = machine.arch ?? null
   const botLatest = arch ? ((await db.latestBotRelease('bot', arch))?.version ?? null) : latest.botLatest
   const managerLatest = arch ? ((await db.latestBotRelease('manager', arch))?.version ?? null) : latest.managerLatest
+  /**
+   * 席位该跑的那一版：平台钉的，没钉就是这台机器架构的最新包。「可升级」按它判，不按最新判
+   * ——钉住的时候最新那版恰恰是不该装的，按最新判会让卡片永远挂着一个不该按的「全部升级」。
+   * 和心跳里的自动跟版、不指定版本的部署是同一个目标（releases.ts 的 desiredBotRelease）。
+   */
+  const botDesired = (await desiredBotRelease(db, arch))?.version ?? null
   // 席位清单给平台端的日志选择器用：要看某个席位的 bot 日志，得先知道有哪些席位。
   const seatList =
     opts.seatList === false
@@ -377,8 +400,18 @@ export async function machineCard(
     tplVersions,
     botLatest,
     managerLatest,
-    botOutdated: Boolean(botLatest) && botVersions.some((v) => v.version !== botLatest),
+    botDesired,
+    botOutdated: Boolean(botDesired) && botVersions.some((v) => v.version !== botDesired),
     managerDesired: desired,
+    /**
+     * 单机钉的版本，没钉是 null。**钉了就不再跟平台走**——界面上必须看得见，否则「为什么
+     * 这台不升级」只能去翻库。`managerFollow` 是摘掉钉之后它会去追的那一版，「恢复自动升级」
+     * 那颗按钮上写的就是它。
+     */
+    managerPinned: machine.desiredManagerVersion?.trim() || null,
+    managerFollow: machine.desiredManagerVersion?.trim()
+      ? ((await desiredManagerRelease(db, { ...machine, desiredManagerVersion: null }))?.version ?? null)
+      : desired,
     managerOutdated: Boolean(managerLatest) && Boolean(machine.managerVersion) && machine.managerVersion !== managerLatest,
     managerPending: Boolean(desired) && Boolean(machine.managerVersion) && machine.managerVersion !== desired,
     // 时区和管家版本一样是「下指令 → 机器自己去改 → 下一轮心跳才知道成没成」。

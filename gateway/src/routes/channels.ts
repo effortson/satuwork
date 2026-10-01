@@ -4,7 +4,7 @@ import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import { gateCompany, requireUser } from '../lib/guards.ts'
-import { requireSeat, pairRuntime, proxyDownload, seatBearer, seatTargetForSession } from '../lib/runtime.ts'
+import { requireSeat, pairRuntime, proxyDownload, proxyJson, seatBearer, seatTargetForSession } from '../lib/runtime.ts'
 import { encryptChannelSecret, decryptChannelSecret, ticketRevoked, verifyArtifactTicket } from '../crypto.ts'
 import { startSeatDeploy } from '../deploy.ts'
 import { botContext, publicBot } from '../lib/catalog.ts'
@@ -38,11 +38,23 @@ function htmlAttr(value: string): string {
     .replace(/'/g, '&#39;')
 }
 
-function channelPreviewKind(path: string): 'html' | 'markdown' | 'pdf' | 'text' | 'unknown' {
+/**
+ * 渠道预览页认得的几种文件。
+ *
+ * `doc`（Word / Excel / PPT）和 `image` 是后补的：Office 预览当初只接在对话页那套预览上
+ * （chat.js 的 openPreview），这一页漏了，Bot 在 Telegram 里发出来的 pptx / docx 点开只有
+ * 一句「暂不支持在线预览」。扩展名和对话页的 PREVIEW_DOC_EXT 保持一致。
+ */
+const CHANNEL_DOC_EXT = /\.(?:docx|xlsx|xlsm|pptx|doc|xls|ppt|rtf|odt|ods|odp)$/i
+const CHANNEL_IMAGE_EXT = /\.(?:png|jpe?g|gif|webp|avif|bmp)$/i
+
+function channelPreviewKind(path: string): 'html' | 'markdown' | 'pdf' | 'text' | 'doc' | 'image' | 'unknown' {
   if (/\.html?$/i.test(path)) return 'html'
   if (/\.(?:md|markdown)$/i.test(path)) return 'markdown'
   if (/\.pdf$/i.test(path)) return 'pdf'
   if (/\.txt$/i.test(path)) return 'text'
+  if (CHANNEL_DOC_EXT.test(path)) return 'doc'
+  if (CHANNEL_IMAGE_EXT.test(path)) return 'image'
   return 'unknown'
 }
 
@@ -140,15 +152,32 @@ export function attachChannels(router: Router, ctx: RouteCtx) {
     const token = await seatBearer(db, account.id)
     const name = basename(ticket.path) || req.params.name || '文档'
     if (req.query.get('raw') === '1') {
+      /**
+       * Office 文档两条路，和对话页的 `/runtime/sessions/:id/files` 同一套（见 routes/runtime.ts）：
+       * `as=pdf` 要席位渲染好的 PDF，`as=text` 要提取出来的正文（JSON，走 proxyJson）。
+       * 只放行这两个值，票授权的仍然只是这一个 path。
+       */
+      const as = req.query.get('as')
+      if (as === 'text') {
+        await proxyJson(res, 'GET', `${upstream}&as=text`, undefined, token, target.machineToken)
+        return
+      }
+      if (as === 'pdf') {
+        // 那几个失败码（415 格式不认、413 太大、422 转坏了、501 没装 LibreOffice）是业务答案，
+        // 原样交出去，页面据此退回别的看法。
+        await proxyDownload(req, res, `${upstream}&as=pdf`, token, target.machineToken, [400, 404, 413, 415, 422, 501])
+        return
+      }
       await proxyDownload(req, res, upstream, token, target.machineToken)
       return
     }
     const rawUrl = `/channel-artifacts/${encodeURIComponent(req.params.ticket)}/${encodeURIComponent(req.params.name)}?raw=1`
     const page = channelPreviewPage(name, ticket.path, channelPreviewKind(ticket.path), rawUrl)
+    // frame-src 带 'self'：Office 要不到 PDF 时在 /ui/office-view.html 里渲染（同源页，靠 sandbox 隔开）。
     res.writeHead(200, {
       'content-type': 'text/html; charset=utf-8',
       'content-length': String(Buffer.byteLength(page)),
-      'content-security-policy': `default-src 'none'; script-src 'self' ${uiCdnSources()}; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:; connect-src 'self' ${uiCdnSources()}; img-src 'self' data: blob: https:; media-src data: blob: https:; frame-src blob:; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors *`,
+      'content-security-policy': `default-src 'none'; script-src 'self' ${uiCdnSources()}; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:; connect-src 'self' ${uiCdnSources()}; img-src 'self' data: blob: https:; media-src data: blob: https:; frame-src 'self' blob:; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors *`,
       'referrer-policy': 'no-referrer',
       'x-content-type-options': 'nosniff',
       'x-robots-tag': 'noindex, nofollow, noarchive',

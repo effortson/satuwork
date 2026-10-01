@@ -72,63 +72,109 @@ function pageView() {
  */
 function pageAside() {
   if (!hasAside()) return ''
+  /**
+   * 文件预览也摆在这一栏里，不再是盖住整屏的弹层——人要一边看产出一边跟 Bot 说「这里
+   * 改一下」，弹层一开对话就被挡住了。预览开着的时候哪怕栏是收着的也要摆出来：人刚点了
+   * 一个文件，什么都没出现才是最糟的。关掉预览，栏回到原来那个样子（收着的就还是收着）。
+   */
+  const preview = shownPreview()
   // 折叠 = 整个不渲染。开关挪到了对话 header 上，这里不用再留一条竖条给人点回去。
-  if (!asidePref.open) return ''
-  const detail = Boolean(state.routineOpen && routineOpenRow())
+  if (!asidePref.open && !preview) return ''
+  const detail = !preview && Boolean(state.routineOpen && routineOpenRow())
   /**
    * 点开一条日常任务时，整栏换成那一屏——但**上面那块屏只是藏起来，不是拿掉**。
    *
    * 拿掉的代价是断一次 VNC（见 chat.js 的 syncDesktop：槽没了就卸载）。藏着的时候
    * 它的 getBoundingClientRect 全是 0，常驻层自己会判成不可见，连接照旧活着；人点
-   * 返回，槽一恢复尺寸，画面就在那儿。
+   * 返回，槽一恢复尺寸，画面就在那儿。预览盖上来时同理。
    */
   /**
    * 文件那一屏和运行环境是**两屏并存、只藏一屏**，理由和日常任务详情那条一样：
    * 拿掉运行环境等于断一次 VNC。切到文件去看一眼再切回来，屏还在那儿。
+   *
+   * 转人工待办不用这样：里面没有长连接，用不着藏着养着，摆着的时候才画。
    */
-  const files = asidePref.tab === 'files'
-  return `<aside class="gw-aside">
+  const tab = asideTab()
+  const cover = detail || Boolean(preview)
+  return `<aside class="gw-aside"${preview ? ' data-preview="1"' : ''}>
     <div class="gw-aside-grip" data-act="aside-grip" title="${esc(t('拖动调整宽度'))}"></div>
     <div class="gw-aside-body">
-      <div class="gw-aside-stack" ${detail || files ? 'hidden' : ''}>
+      <div class="gw-aside-stack" ${cover || tab !== 'env' ? 'hidden' : ''}>
         <h3>${t('运行环境')}</h3>
         ${chatMachinePanel()}
         ${routineListPanel()}
       </div>
-      <div class="gw-aside-stack" ${detail || !files ? 'hidden' : ''}>
+      <div class="gw-aside-stack" ${cover || tab !== 'files' ? 'hidden' : ''}>
         ${workspacePanel()}
       </div>
+      ${!cover && tab === 'handoffs' ? `<div class="gw-aside-stack" id="aside-handoffs">${handoffsAside()}</div>` : ''}
       ${detail ? routineDetailPanel() : ''}
+      ${preview ? previewPanel() : ''}
     </div>
   </aside>`
 }
 
 /**
+ * 右栏眼下该摆哪一屏。转人工待办只有公司里的人看得到（见 canSeeHandoffs）：上次停在
+ * 那一屏、这次换了个看不到的身份登进来，就退回运行环境，别摆一屏空的。
+ */
+function asideTab() {
+  if (asidePref.tab === 'handoffs' && !canSeeHandoffs()) return 'env'
+  return asidePref.tab
+}
+
+/** 右栏这一刻的宽度：预览和平时各记各的（见 prefs.js 的 asideWidthOf）。 */
+function asideWidth() {
+  return shownPreview() ? asidePref.previewWidth : asidePref.width
+}
+
+/**
+ * 右栏那一列的 grid 写法。拖动时（app.js）也走这一句。
+ *
+ * **预览那一档给内容区留够 420px**：它能拖到 1600，窗口一窄，右栏照着记下来的宽度画，
+ * 对话会被挤成一条缝——而预览挪进右栏的意义就是边看边说。
+ *
+ * **平时那一档不留**：它最宽也就 520，原来一直是写死的像素。也套上这一刀的话，中等宽度
+ * 的窗口里 280 的栏会被压窄，再窄一点直接算成 0——切屏按钮点下去像是没反应。
+ */
+function asideColumns(width, preview) {
+  return preview ? `minmax(0, 1fr) min(${width}px, calc(100% - 420px))` : `minmax(0, 1fr) ${width}px`
+}
+
+/**
  * 右栏开关。放在对话 header 上，所以折叠之后仍然点得到——右栏本身是整个不渲染的。
  *
- * **两颗切屏 + 一颗收起，收起排在最右。** 切屏那两颗永远画自己那一屏的图标（文件夹、
- * 显示器），正看着的那一屏留个底色；收起是另一件事——它不属于任何一屏，所以自己占一颗，
- * 而且只有栏开着的时候才在。
+ * **几颗切屏 + 一颗收起，收起排在最右。** 切屏那几颗永远画自己那一屏的图标（举手、文件
+ * 夹、显示器），正看着的那一屏留个底色；收起是另一件事——它不属于任何一屏，所以自己占
+ * 一颗，而且只有栏开着的时候才在。
  *
  * 一开始是让正看着那一屏的图标就地变成收起箭头的：省一颗按钮，但同一个位置上的图标
  * 一开一关是两个意思，而人是照位置去点的——要收起，得先想起来「现在开着的是哪一屏」。
+ *
+ * 转人工待办原来是顶栏一颗跳去 /handoffs 的按钮，点下去整页换掉、对话没了。在对话页上
+ * 它也是这一栏里的一屏；别的页没有右栏，那颗按钮照旧跳整页（见 handoffBell）。
  */
 function asideToggle() {
   if (!hasAside()) return ''
-  const open = asidePref.open
-  const tab = (name, icon, label) => {
-    const here = open && asidePref.tab === name
+  const preview = Boolean(shownPreview())
+  const open = asidePref.open || preview
+  const tab = (name, icon, label, extra = '') => {
+    const here = open && !preview && asideTab() === name
     return `<button type="button" class="btn btn-ghost btn-icon sw-asidetab" style="flex: none;"
       data-act="aside-tab" data-tab="${name}" aria-pressed="${here}"
-      aria-label="${esc(label)}" title="${esc(label)}">${svg(icon, 16)}</button>`
+      aria-label="${esc(label)}" title="${esc(label)}">${svg(icon, 16)}${extra}</button>`
   }
   const collapse = open
     ? `<button type="button" class="btn btn-ghost btn-icon" style="flex: none;"
         data-act="aside-toggle" aria-label="${esc(t('收起右栏'))}" title="${esc(t('收起右栏'))}"
         >${svg(CHEVRON_RIGHT, 16)}</button>`
     : ''
+  const n = needCount()
+  const handoffs = canSeeHandoffs()
+    ? tab('handoffs', ICON_HANDOFF, t('转人工待办', 'Handoffs'), `<span class="satu-handoffcount" ${n ? '' : 'hidden'}>${n > 99 ? '99+' : n}</span>`)
+    : ''
   return `<span style="margin-left: auto; flex: none; display: inline-flex; gap: 2px;"
-    >${tab('files', FOLDER, t('工作区文件'))}${tab('env', MONITOR, t('运行环境'))}${collapse}</span>`
+    >${handoffs}${tab('files', FOLDER, t('工作区文件'))}${tab('env', MONITOR, t('运行环境'))}${collapse}</span>`
 }
 
 /** 在不在对话页。顶栏换不换成会话身份行、右栏开不开，都看它，免得两处判断漂移。 */
@@ -195,7 +241,7 @@ function appView() {
   // 下面的兄弟节点就顶不上去了。
   const aside = pageAside()
   const asideCols = aside
-    ? `grid-template-columns: minmax(0, 1fr) ${asidePref.width}px;`
+    ? `grid-template-columns: ${asideColumns(asideWidth(), Boolean(shownPreview()))};`
     : 'grid-template-columns: minmax(0, 1fr);'
   return `
   <div style="height: 100vh; overflow: hidden; display: grid; grid-template-columns: ${rail ? '62px' : '248px'} 1fr; gap: var(--space-4); padding: var(--space-4); background: var(--color-bg); font-family: var(--font-body); color: var(--color-text); box-sizing: border-box;">
@@ -298,7 +344,6 @@ function appView() {
     ${newBotModal()}
     ${pluginsModal()}
     ${logsModal()}
-    ${previewModal()}
   </div>`
 }
 
@@ -357,7 +402,10 @@ function render() {
     syncDesktop()
     return
   }
+  // 右栏待办 / 待办页里正写着的结论，换壳之前存一下（见 chat.js 的 stashHandoffNotes）。
+  stashHandoffNotes(root)
   root.innerHTML = state.me ? appView() : anonView()
+  fillHandoffNotes(root)
   // 进来时要落在首页哪一段（见 app.js 的 foldDownload：老的 /download 地址和 /#download）。
   // 只在第一次画完时跳一次，不管这一帧画的是不是首页——否则登录进来、再登出回到首页
   // 时它还挂着，会莫名其妙把人拽到页底。
@@ -383,6 +431,10 @@ function render() {
     // 上下键选不动（一条候选都查不到），回车穿到发送那条路上去。
     paintCmdPick()
   }
+  // 右栏里的预览：内容在常驻层上，这里只对位置、内容变了才换（见 chat.js 的 syncPreview）。
+  // 笔刷滑杆在右栏的按钮行里，跟着整页换掉了，要重新接上。
+  syncPreview()
+  bindPaintBrush()
   // 日志面板同理：壳在 render 里，内容由 paintLogs 增量填。
   if (document.getElementById('log-body')) paintLogs()
   // 右栏那棵工作区文件树：开着而这条会话还没取过的话，补一次（见 chat.js 的
@@ -599,6 +651,8 @@ async function saveModelPrice(clear = false) {
     state.settings = saved
     if (state.me) state.me.settings = saved
     state.priceDraft = null
+    // 生图面板上的「每张约多少」是服务端按单价算的，改了价要重取。
+    if (state.imageModels) await loadImageModels()
     flash('ok', empty ? '已撤掉覆盖，回到目录价' : '已保存单价')
   } catch (err) {
     state.priceError = err.message
@@ -668,6 +722,8 @@ async function savePriceMultiplier(raw) {
     const saved = await api('PUT', '/platform/settings', { ...state.settings, priceMultiplier: n })
     state.settings = saved
     if (state.me) state.me.settings = saved
+    // 同 saveModelPrice：倍率也进生图面板上那个「每张约多少」。
+    if (state.imageModels) await loadImageModels()
     flash('ok', '已保存单价倍率')
   } catch (err) {
     state.settings = { ...state.settings, priceMultiplier: prev }
@@ -1144,7 +1200,7 @@ async function saveMachineCompany(e) {
  *
  * 两种口径共用这条路（见 pages-machines.js 的 botBtn）：
  *
- * - `reflow = false`：升级，全铺到最新版本。
+ * - `reflow = false`：升级，全铺到目标版本（平台钉的那一版，没钉就是最新）。
  * - `reflow = true`：**照现状重铺**，不带版本——每个席位仍是它自己那一版，重走一遍
  *   部署。要的是让部署脚本重写 `bot.env`，把席位连的 Gateway 地址刷成当前这一份。
  *   这一档不需要平台上有发布包（席位自己那一版就够），所以那道「还没有发布 Bot 版本」
@@ -1152,19 +1208,15 @@ async function saveMachineCompany(e) {
  */
 async function updateMachineRuntime(machineId, reflow) {
   if (!machineId || state.updatingRuntime) return
-  const version = state.botLatest || state.latestRelease
-  if (!reflow && !version) {
-    flash('err', '还没有发布 Bot 版本')
-    render()
-    return
-  }
   state.updatingRuntime = true
   render()
   try {
+    // 升级**不带版本**：服务端按这台机器的架构挑平台钉的那一版（没钉就是最新），和心跳里
+    // 的自动跟版同一个目标。还没有发布版本时服务端回 409，落进下面的 catch。
     const data = await api(
       'POST',
       `/platform/machines/${encodeURIComponent(machineId)}/runtime/update`,
-      reflow ? { force: true } : { version },
+      reflow ? { force: true } : {},
     )
     const results = Array.isArray(data.results) ? data.results : []
     const ok = results.filter((r) => r.status === 'ready' && !r.error).length
@@ -1307,15 +1359,20 @@ async function addRelease(e) {
   }
 }
 
-async function saveManagerVersion(e) {
+/**
+ * 存期望版本。管家和 Bot 两条版本线各一格，存进平台设置的 managerVersion / botVersion。
+ * 只带这一个字段：PUT /platform/settings 对没带的字段一律沿用原值。
+ */
+async function saveDesiredVersion(e) {
   e.preventDefault()
-  const managerVersion = String(new FormData(e.target).get('managerVersion') || '').trim()
+  const field = e.target.getAttribute('data-kind') === 'bot' ? 'botVersion' : 'managerVersion'
+  const version = String(new FormData(e.target).get('version') || '').trim()
   state.busy = true
   render()
   try {
-    await api('PUT', '/platform/settings', { managerVersion })
+    await api('PUT', '/platform/settings', { [field]: version })
     await loadReleases()
-    flash('ok', managerVersion ? `期望版本已设为 ${managerVersion}` : '期望版本已清空，跟最新发布走')
+    flash('ok', version ? `期望版本已设为 ${version}` : '期望版本已清空，跟最新发布走')
   } catch (err) {
     flash('err', err.message)
   } finally {
@@ -1473,6 +1530,35 @@ async function saveTimezone(e) {
     await s.reload()
     // 「已下指令」而不是「已改好」：真正改的是机器，下一轮心跳才知道成没成。
     flash('ok', !timezone ? '不再管这台机器的时区' : data.pending ? `已下指令：${timezone}，等机器改` : `时区改为 ${timezone}`)
+  } catch (err) {
+    flash('err', err.message)
+  } finally {
+    state.busy = false
+    render()
+  }
+}
+
+/**
+ * 单机钉一个管家版本（单机灰度）。和「恢复自动升级」同一条接口，带上版本就是钉，见
+ * gateway/src/lib/machines.ts 的 retargetManager。空值不提交：摘钉有自己那颗按钮。
+ */
+async function pinManagerVersion(e) {
+  e.preventDefault()
+  const form = e.target
+  const s = machineScope(form)
+  const version = String(new FormData(form).get('version') || '').trim()
+  if (!version) {
+    flash('err', '填一个管家版本号；要回到跟平台走，点「恢复自动升级」')
+    render()
+    return
+  }
+  state.busy = true
+  render()
+  try {
+    const data = await api('POST', `${s.base}/upgrade`, { version })
+    await s.reload()
+    // 「已下指令」而不是「已换好」：换版由机器在下一轮心跳里自己做。
+    flash('ok', data.pending ? `已单独钉到 ${data.version}，等机器下一轮心跳换版` : `已单独钉到 ${data.version}（已经是这一版）`)
   } catch (err) {
     flash('err', err.message)
   } finally {
@@ -1645,9 +1731,15 @@ async function upgradeManager(el) {
   state.busy = true
   render()
   try {
+    // 不带版本 = 摘掉单机钉、跟平台走（见 gateway/src/lib/machines.ts 的 retargetManager）。
     const data = await api('POST', `${s.base}/upgrade`, {})
     await s.reload()
-    flash('ok', data.pending ? `已下指令升到 ${data.version}，等机器下一轮心跳换版` : `已经是 ${data.version}`)
+    flash(
+      'ok',
+      data.pending
+        ? `已恢复自动升级，目标 ${data.version}，等机器下一轮心跳换版`
+        : `已恢复自动升级，已经是 ${data.version}`,
+    )
   } catch (err) {
     flash('err', err.message)
   } finally {

@@ -39,6 +39,19 @@ async function mockSeat() {
       res.setHeader('content-type', 'application/json')
       if (req.method === 'GET' && path === '/api/workspace/file') {
         const artifactPath = requestUrl.searchParams.get('path') || ''
+        // Office 那两条（见 bot/src/web/index.ts）：as=pdf 回渲染好的 PDF，as=text 回提取出来的正文。
+        const as = requestUrl.searchParams.get('as')
+        if (artifactPath === 'reports/eth-report.pptx' && as === 'pdf') {
+          seen.officeAs = [...(seen.officeAs || []), 'pdf']
+          res.setHeader('content-type', 'application/pdf')
+          res.end('%PDF-1.4\n% rendered pptx\n%%EOF')
+          return
+        }
+        if (artifactPath === 'reports/eth-report.pptx' && as === 'text') {
+          seen.officeAs = [...(seen.officeAs || []), 'text']
+          res.end(JSON.stringify({ text: '第 1 页：ETH 走势', note: '' }))
+          return
+        }
         const artifacts = {
           'reports/eth-report.html': {
             type: 'application/octet-stream',
@@ -47,6 +60,7 @@ async function mockSeat() {
           'reports/eth-report.md': { type: 'text/markdown; charset=utf-8', body: '# ETH report\n\n**Markdown preview**' },
           'reports/eth-report.pdf': { type: 'application/pdf', body: '%PDF-1.4\n% Telegram preview fixture\n%%EOF' },
           'reports/eth-report.txt': { type: 'text/plain; charset=utf-8', body: 'plain text report' },
+          'reports/eth-report.pptx': { type: 'application/octet-stream', body: 'PK\u0003\u0004 pptx fixture' },
         }
         const artifact = artifacts[artifactPath]
         if (!artifact) {
@@ -84,6 +98,7 @@ async function mockSeat() {
             { path: 'reports/eth-report.md', name: 'eth-report.md' },
             { path: 'reports/eth-report.pdf', name: 'eth-report.pdf' },
             { path: 'reports/eth-report.txt', name: 'eth-report.txt' },
+            { path: 'reports/eth-report.pptx', name: 'eth-report.pptx' },
           ],
           handoffs: [{
             id: HANDOFF_ID, state: 'open', reason: '需要人工确认业务流程', ask: '确认测试结果并交还',
@@ -445,8 +460,8 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       await waitFor(() => telegram.seen.sent.some((m) => String(m.rich_message?.markdown || m.text).includes('审批通过，操作已经完成')), '审批后原轮次完成并回复')
       const previewMessages = await waitFor(() => {
         const cards = telegram.seen.sent.filter((m) => m.reply_markup?.inline_keyboard?.[0]?.[0]?.text === '打开预览')
-        return cards.length >= 4 ? cards.slice(-4) : null
-      }, 'Telegram 收到四种产出文件预览卡')
+        return cards.length >= 5 ? cards.slice(-5) : null
+      }, 'Telegram 收到五种产出文件预览卡')
       for (const card of previewMessages) {
         const url = card.reply_markup.inline_keyboard[0][0].url
         assert(card.link_preview_options?.url === url, '链接预览与按钮不是同一个地址')
@@ -455,6 +470,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       assert(previewMessages.some((m) => String(m.text).includes('eth-report.md')), 'Markdown 预览卡没有文件名')
       assert(previewMessages.some((m) => String(m.text).includes('eth-report.pdf')), 'PDF 预览卡没有文件名')
       assert(previewMessages.some((m) => String(m.text).includes('eth-report.txt')), 'TXT 预览卡没有文件名')
+      assert(previewMessages.some((m) => String(m.text).includes('eth-report.pptx')), 'PPTX 预览卡没有文件名')
 
       // 模拟 Bot 正常上报的会话索引，使签名链接能沿会话归属找到同一席位。
       const require = createRequire(new URL('../gateway/package.json', import.meta.url))
@@ -479,7 +495,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       const previews = new Map()
       for (const message of previewMessages) {
         const previewUrl = message.reply_markup.inline_keyboard[0][0].url
-        const filename = String(message.text).match(/eth-report\.(?:html|md|pdf|txt)/)?.[0]
+        const filename = String(message.text).match(/eth-report\.(?:html|md|pdf|txt|pptx)/)?.[0]
         assert(filename, `预览卡文件名无法识别：${message.text}`)
         const preview = await fetch(previewUrl, { headers: { accept: 'text/html' } })
         const previewHtml = await preview.text()
@@ -487,7 +503,8 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
         assert(previewHtml.includes('class="gw-modal sw-preview sw-channel-preview"'), `${filename} 没有使用系统预览窗口`)
         assert(previewHtml.includes('/channel-preview.js') && previewHtml.includes('/markdown.js'), `${filename} 没有加载预览运行时`)
         assert(preview.headers.get('referrer-policy') === 'no-referrer', `${filename} 没有阻止签名票随 referrer 外泄`)
-        assert(String(preview.headers.get('content-security-policy')).includes("frame-src blob:"), `${filename} 没有限制预览 frame 来源`)
+        // 'self' 只为 /ui/office-view.html（Office 要不到 PDF 时在浏览器里渲染），外站一律不许框进来。
+        assert(String(preview.headers.get('content-security-policy')).includes("frame-src 'self' blob:;"), `${filename} 没有限制预览 frame 来源`)
         assert(!/https:\/\/cdn\.jsdelivr\.net[\s;]/.test(String(preview.headers.get('content-security-policy'))), `${filename} 的 CSP 放行了整个 jsdelivr`)
         previews.set(filename, { url: previewUrl, html: previewHtml })
       }
@@ -497,6 +514,21 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       assert(previews.get('eth-report.pdf')?.html.includes('data-kind="pdf"'), 'PDF 预览类型不对')
       assert(previews.get('eth-report.txt')?.html.includes('data-kind="text"'), 'TXT 预览类型不对')
       assert((previews.get('eth-report.md')?.html.match(/data-mode=/g) || []).length === 2, 'Markdown 没有预览/原文双模式')
+      // Office 原来落在 unknown 上，点开只有一句「暂不支持在线预览」。
+      assert(previews.get('eth-report.pptx')?.html.includes('data-kind="doc"'), `PPTX 预览类型不对：${previews.get('eth-report.pptx')?.html.match(/data-kind="[^"]*"/)?.[0]}`)
+      {
+        const pptx = previews.get('eth-report.pptx').url
+        const pdf = await fetch(`${pptx}?raw=1&as=pdf`)
+        const pdfBody = await pdf.text()
+        assert(pdf.status === 200 && pdf.headers.get('content-type') === 'application/pdf' && pdfBody.includes('rendered pptx'), `PPTX 没要到渲染好的 PDF：${pdf.status} ${pdfBody}`)
+        const text = await fetch(`${pptx}?raw=1&as=text`, { headers: { accept: 'application/json' } })
+        const textBody = await text.json().catch(() => null)
+        assert(text.status === 200 && textBody?.text === '第 1 页：ETH 走势', `PPTX 没要到提取的正文：${text.status} ${JSON.stringify(textBody)}`)
+        assert(String(seat.seen.officeAs) === "pdf,text", `as 没原样转给席位：${seat.seen.officeAs}`)
+        // 别的值不放行：票授权的只是这一个文件的字节。
+        const raw = await fetch(`${pptx}?raw=1&as=zip`)
+        assert(raw.status === 200 && (await raw.text()).includes('pptx fixture'), '未知的 as 没按原文件回')
+      }
 
       const expectedRaw = new Map([
         ['eth-report.html', '<h1>ETH report</h1>'],
@@ -515,6 +547,8 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       const previewRuntimeJs = await previewRuntime.text()
       assert(previewRuntime.status === 200 && previewRuntimeJs.includes("kind === 'markdown'"), '独立预览运行时没有发布')
       assert(previewRuntimeJs.includes("iframe.setAttribute('sandbox', '')"), 'HTML 预览没有放进无权限 sandbox')
+      // 浏览器里渲染 Office 的那个框只能是 allow-scripts，绝不能带 allow-same-origin。
+      assert(previewRuntimeJs.includes("iframe.setAttribute('sandbox', 'allow-scripts')") && !/setAttribute\('sandbox', '[^']*allow-same-origin/.test(previewRuntimeJs), 'Office 渲染框的 sandbox 不对')
 
       const parsedPreview = new URL(previews.get('eth-report.html').url)
       const pieces = parsedPreview.pathname.split('/')

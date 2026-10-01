@@ -21,8 +21,9 @@ import { bodyOf, strField } from '../lib/validate.ts'
 import { requireMachine, requireSeatOnly } from '../lib/guards.ts'
 import { claimDue, RUN_TIMEOUT_MS, settleRun, turnFailure } from '../routines.ts'
 import type { ChannelEvent, ChargeStatus, Machine, Routine, RoutineRun } from '../db.ts'
-import { accountByApiKey, fillSweptCharge, gateOr402, recordLlmCall, recordUsageOnly, settle } from '../lib/llm-billing.ts'
+import { accountByApiKey, fillSweptCharge, gateOr402, recordLlmCall, recordUsageOnly, settle, withSettleLock } from '../lib/llm-billing.ts'
 import type { TokenUsage } from '../lib/llm-usage.ts'
+import type { UpstreamRoute } from '../llm.ts'
 import { randomUUID } from 'node:crypto'
 import {
   CHANNEL_WORKER_TUNING, approvalMarkdown, channelFiles, channelHandoffs, deliverClaimedEvent, failClaimedEvent,
@@ -135,7 +136,8 @@ async function routineStarted(db: RouteCtx['db'], run: RoutineRun, machineId: st
     })
     return { blocked: blocking.ask.slice(0, 60) || '没写要做什么' }
   }
-  await db.finishRoutineRun(run.id, { status: 'running', sessionId })
+  // 只在还是 running 时记上会话：租约清扫可能刚把它收掉，不能写回 running 复活它。
+  if (!(await db.finishRoutineRun(run.id, { status: 'running', sessionId }))) throw new HttpError(404, '这一次已经收场了')
   await db.renewRoutineRun(run.id, machineId, Date.now() + ROUTINE_LEASE_MS)
   return { blocked: null }
 }
@@ -365,7 +367,7 @@ function attachChannelWorker(router: Router, db: RouteCtx['db'], keys: RouteCtx[
 
 // ── 模型调用的中继（管家在席位机器上直接打上游；Gateway 只授权和结算）──
 
-const GRANT_ROUTES = new Set(['chat', 'messages', 'responses'])
+const GRANT_ROUTES = new Set(['chat', 'messages', 'responses', 'images', 'image-edits'])
 const SETTLE_STATUSES = new Set<ChargeStatus>(['ok', 'failed', 'error', 'timeout'])
 
 /** 这台机器上有没有这个账号的席位。授权和结算都按它认：别的机器的账号一律 403。 */
@@ -395,13 +397,15 @@ async function seatOnMachine(db: RouteCtx['db'], machine: Machine, accountId: st
  *
  * ── 授权的收发形状（管家和 e2e 都钉着它，改之前先改那两边）──
  *
- *   请求  { apiKey, route: 'chat'|'messages'|'responses', model,
+ *   请求  { apiKey, route: 'chat'|'messages'|'responses'|'images'|'image-edits', model,
  *           provider?, anthropicVersion?, openaiBeta?,
  *           stream?: boolean,          // 请求体里的 `stream`
  *           reasoningEffort?: string } // chat 的 `reasoning_effort` / responses 的 `reasoning.effort`
  *   200   { callId, provider, model, url, headers,
  *           body: { set: Record<string, unknown>, unset: string[] } }
- *         `body` **一定在**，且 `set.model` / `unset` 里的 `provider` 一定在。管家照
+ *         `body` **一定在**，且 `set.model` / `unset` 里的 `provider` 一定在——唯一的例外是
+ *         Gemini 生图（`api: 'gemini-images'`）：模型在地址里，`model` 和 `provider` 都进 `unset`，
+ *         `set` 是空的（见 llm.ts 的 imageTargetOf）。管家照
  *         「先删 unset、再 Object.assign(body, set)」的顺序改自己手里那份请求体，不再
  *         自己动手改 model / provider。`headers` 整份都当密文：里面有供应商密钥，也可能
  *         有运营在自定义供应商定义里写的私货，一个字都不该落日志。这份 headers **保证
@@ -426,20 +430,21 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
     const machine = await requireMachine(req, db)
     const body = bodyOf(req)
     const route = strField(body, 'route')
-    if (!GRANT_ROUTES.has(route)) throw new HttpError(400, 'route 只能是 chat / messages / responses')
+    if (!GRANT_ROUTES.has(route)) throw new HttpError(400, 'route 只能是 chat / messages / responses / images / image-edits')
     const account = await accountByApiKey(db, strField(body, 'apiKey'))
     // 只能替本机席位上的账号要授权。smt_ 泄一把，能拿到的密钥也只是这台机器上那几家的。
     if (!(await seatOnMachine(db, machine, account.id))) throw new HttpError(403, '这个账号的席位不在这台机器上')
     const modelRaw = strField(body, 'model')
     const provider = body.provider == null ? '' : strField(body, 'provider', false)
     // 和 /v1 的两条透传路由一样：没给 provider 时按路由的原生厂商猜。
+    // 生图那两条不猜：表里有两家，Bot 总会带 provider。
     const hint = provider || (route === 'messages' ? 'anthropic' : route === 'responses' ? 'openai' : undefined)
     const found = await llm.find(account.companyId, modelRaw, hint)
     if (!found) throw new HttpError(404, '模型不在可见目录里', { model: modelRaw })
     const secret = await llm.secret(account.companyId, found.provider)
     if (!secret) throw new HttpError(402, `没有 ${found.provider} 的密钥`, { provider: found.provider })
     await gateOr402(meter, account, found)
-    const target = llm.upstreamTargetOf(found, route as 'chat' | 'messages' | 'responses', secret, {
+    const target = llm.upstreamTargetOf(found, route as UpstreamRoute, secret, {
       anthropicVersion: body.anthropicVersion == null ? undefined : strField(body, 'anthropicVersion', false) || undefined,
       openaiBeta: body.openaiBeta == null ? undefined : strField(body, 'openaiBeta', false) || undefined,
       stream: body.stream === true,
@@ -475,48 +480,49 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
      * `llm_calls` 分家，统计屏那个 join 就取不到钱了。目录里已经没有这个模型了（平台
      * 下架、公司条目删了）也走这条：账照记，只是没有单价，settle 记成 unpriced。
      */
-    const pricedOf = async () => ({
+    const priced = {
       provider: call.provider,
       id: call.model,
       cost: (await llm.find(call.companyId, `${call.provider}/${call.model}`))?.cost,
-    })
-    if (await db.chargeExistsForRef(call.id)) {
-      /**
-       * 已经有账了。**钱仍然不重记**——一次调用只该有一个金额，重算等于给同一行挂两个数。
-       * 但「已经有账」在中继这条路上有两种来路，结局不该一样：
-       *
-       * 一、**清扫写的占位行。** 一次跑过 LLM_SETTLE_GRACE_MS 的长回答会先被收成
-       *     `failed` / 0 元 / unpriced，管家随后才带着真实用量回来。那一行**从来没有
-       *     成交过**，钉着它不放的结果是：这通调用真金白银发生过，账上永远是 0，而且
-       *     补不回来（用量只在管家这一次回调里）。所以把它补成真的——docs/billing.md §2
-       *     唯一的例外，判据严到只认清扫写出来的那个形状，见 db.fillPlaceholderCharge。
-       *
-       * 二、**上一次已经真结过了**（管家自己重试、或者两边撞在一起）。这种一行都不动，
-       *     只把 token 补正：不补的话 llm_calls 永远停在 0/0，那一行读起来像「这次调用
-       *     什么都没发生」，而它明明发生过、还很贵。
-       */
-      if (usage) {
-        /**
-         * 账号和目录只在**真要补录**的时候才查。放到分支外面去查过一版，代价是：账号被
-         * 硬删掉之后（删公司 / 删员工都会 `delete from accounts`，而 `llm_calls` 上没有
-         * 外键、调用行不跟着走），管家重试上报会从 `200 already` 变成 `404 账号不存在`
-         * ——一个本来幂等成功的空操作变成了错误。补不了就补不了，账本原样不动，这条路
-         * 仍旧回 already。
-         */
-        const account = await db.account(call.accountId)
-        if (account && (await fillSweptCharge(db, meter, account, await pricedOf(), call.id, usage, status as ChargeStatus | undefined))) {
-          json(res, 200, { settled: true, reason: 'filled' })
-          return
-        }
-        await recordUsageOnly(db, call.id, usage)
-      }
-      json(res, 200, { settled: false, reason: 'already' })
-      return
     }
+    /**
+     * 账号和目录在锁**外面**先查好：`llm.find` 在 Vercel 冷启动时要把目录整份铺开，拿着锁等它
+     * 就是让同一次调用的重试一起排队。账号被硬删掉（删公司 / 删员工都会 `delete from accounts`，
+     * `llm_calls` 上没有外键）时，已经有账的那条路照旧回 already——一个本来幂等成功的空操作
+     * 不能变成 404。
+     */
     const account = await db.account(call.accountId)
-    if (!account) throw new HttpError(404, '账号不存在')
-    await settle(db, meter, account, await pricedOf(), call.id, usage, status as ChargeStatus | undefined)
-    json(res, 200, { settled: true })
+    /** 查有没有账和落账在同一把锁里（见 withSettleLock），重试和清扫撞在一起也只落一行。 */
+    const outcome = await withSettleLock(db, call.id, async () => {
+      if (await db.chargeExistsForRef(call.id)) {
+        /**
+         * 已经有账了。**钱仍然不重记**——一次调用只该有一个金额，重算等于给同一行挂两个数。
+         * 但「已经有账」在中继这条路上有两种来路，结局不该一样：
+         *
+         * 一、**清扫写的占位行。** 一次跑过 LLM_SETTLE_GRACE_MS 的长回答会先被收成
+         *     `failed` / 0 元 / unpriced，管家随后才带着真实用量回来。那一行**从来没有
+         *     成交过**，钉着它不放的结果是：这通调用真金白银发生过，账上永远是 0，而且
+         *     补不回来（用量只在管家这一次回调里）。所以把它补成真的——docs/billing.md §2
+         *     唯一的例外，判据严到只认清扫写出来的那个形状，见 db.fillPlaceholderCharge。
+         *
+         * 二、**上一次已经真结过了**（管家自己重试、或者两边撞在一起）。这种一行都不动，
+         *     只把 token 补正：不补的话 llm_calls 永远停在 0/0，那一行读起来像「这次调用
+         *     什么都没发生」，而它明明发生过、还很贵。
+         */
+        if (usage) {
+          if (account && (await fillSweptCharge(db, meter, account, priced, call.id, usage, status as ChargeStatus | undefined))) return 'filled'
+          await recordUsageOnly(db, call.id, usage)
+        }
+        return 'already'
+      }
+      if (!account) return 'no-account'
+      await settle(db, meter, account, priced, call.id, usage, status as ChargeStatus | undefined)
+      return 'settled'
+    })
+    if (outcome === 'no-account') throw new HttpError(404, '账号不存在')
+    if (outcome === 'filled') json(res, 200, { settled: true, reason: 'filled' })
+    else if (outcome === 'already') json(res, 200, { settled: false, reason: 'already' })
+    else json(res, 200, { settled: true })
   })
 }
 

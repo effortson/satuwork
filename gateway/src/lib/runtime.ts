@@ -70,10 +70,23 @@ function isTrustedProxy(ip: string): boolean {
  */
 /**
  * 平台自己的反代（Vercel）不在任何名单上，socket 那头永远是平台内网地址，而 `x-forwarded-for`
- * 由平台写、客户端改不了最右那一跳。`GATEWAY_TRUST_FORWARDED=1` 就是「信最右那一跳」。
- * 只在平台上开：自己挂的 nginx/Caddy 仍走 GATEWAY_TRUSTED_PROXIES 那套名单。
+ * 由平台写、客户端改不了最右那一跳。「信最右那一跳」就是这个开关。
+ * 自己挂的 nginx/Caddy 不走它，仍走 GATEWAY_TRUSTED_PROXIES 那套名单。
+ *
+ * **在 Vercel 上默认就开**（`VERCEL` 是平台注入的）。以前只认显式的 `GATEWAY_TRUST_FORWARDED=1`，
+ * 上线时漏配一个变量，所有请求的来源都成了平台内网那一个地址：配对记错机器在哪儿，登录
+ * 限流的 IP 桶（lib/auth-throttle.ts）也成了全站一个桶——任何人连错 100 次，全站 15 分钟
+ * 谁都登不进来。`GATEWAY_TRUST_FORWARDED=0` 可以在平台上显式关掉；平台以外照旧要显式开。
+ * **纯函数**，e2e 直接打它。
  */
-const TRUST_FORWARDED = process.env.GATEWAY_TRUST_FORWARDED === '1'
+export function trustsForwarded(env: NodeJS.ProcessEnv = process.env): boolean {
+  const flag = (env.GATEWAY_TRUST_FORWARDED || '').trim()
+  if (flag === '1') return true
+  if (flag === '0') return false
+  return Boolean(env.VERCEL)
+}
+
+const TRUST_FORWARDED = trustsForwarded()
 
 export function sourceIpOf(req: Req): string {
   const socketIp = plainIp(req.socket.remoteAddress || '')
@@ -263,6 +276,8 @@ export async function proxyJson(
    * 好好的，人看着报错就会再点一次。
    */
   timeoutMs = 15000,
+  /** 转出去之前改一下正文（摘掉不该到浏览器的字段）。只在正文是 JSON 时调用。 */
+  scrub?: (parsed: unknown) => unknown,
 ) {
   // authorization 上只能是席位票。bot 不认机器票了，回落到 smt_ 只会换回 401，
   // 而且会让人以为「票带了但没生效」，比空着更难查。
@@ -290,6 +305,7 @@ export async function proxyJson(
   } catch {
     parsed = { error: text.slice(0, 200) || INSTANCE_DOWN }
   }
+  if (scrub) parsed = scrub(parsed)
   if (extra && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     json(res, r.status, { ...(parsed as Record<string, unknown>), ...extra })
     return

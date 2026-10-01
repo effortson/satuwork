@@ -60,10 +60,12 @@ export async function runMentions({ root, test, assert, log }) {
   await test('换版静默：不开新的一轮，放开之后立刻恢复，TTL 夹得住', () => {
     // 排空等到「此刻没人在跑」之后，到真的 systemctl restart 之间还有几秒（拉包、
     // 解包、rsync）。没有这道闸，人在那几秒里发一句照样被砍断，而排空看上去是成功的。
+    assert(r.bootDrain && Object.values(r.bootDrain).every((v) => v === true), `开机排空不对：${JSON.stringify(r.bootDrain)}`)
     assert(r.quiet.静默期回绝了新一轮, `静默期还在开新一轮：${JSON.stringify(r.quiet)}`)
     assert(r.quiet.回绝之后没留下半个轮次, `回绝了却留下了半个轮次：${JSON.stringify(r.quiet)}`)
     assert(r.quiet.放开之后又接活了, `放开之后还不接活——这道闸只该管换版那几秒`)
     assert(r.quiet.上限夹得住, `TTL 没夹住：管家半路挂了，这台席位就成了一块永远不接活的砖`)
+    assert(r.quietDrain.静默期里留在队列 && r.quietDrain.用ttl0放开也排空, `管家放开（ttlMs:0）之后队列没排：${JSON.stringify(r.quietDrain)}`)
   })
 
   await test('上一轮在跑：带 @ 的排队，跑完自己接上', () => {

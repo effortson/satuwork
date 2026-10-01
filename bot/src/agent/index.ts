@@ -131,7 +131,7 @@ const EMPTY_USAGE: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0
 export interface CompactOutcome {
   compacted: boolean
   /** 没压成的原因。`inflight` = 已经有一次在跑，这次不排队。 */
-  reason?: 'below-threshold' | 'no-cut' | 'no-summary' | 'inflight'
+  reason?: 'below-threshold' | 'no-cut' | 'no-summary' | 'inflight' | 'superseded'
   throughSeq?: number
   tokensBefore?: number
   tokensAfter?: number
@@ -412,6 +412,15 @@ export class AgentService extends Service {
   /** 正在跑的 agent。steering 要够得着它，所以不能只是个局部变量。 */
   private live = new Map<string, Agent>()
   /**
+   * 工具结果交出去之后才拍完的截图（ToolResult.pendingShot）：会话 → callId → 那张图。
+   *
+   * bridgeTools 收下，projector 在 `tool/result` 落盘之后取走、挂上补写 `tool/shot`。
+   * 两边隔着 pi 的事件循环，所以要一个地方交接。
+   */
+  private laterShots = new Map<string, Map<string, Promise<WorkspaceFile | undefined>>>()
+  /** 每条会话还没写完的 `tool/shot`。写 `turn/end` 之前等它们，见 settleShots。 */
+  private shotWrites = new Map<string, Set<Promise<void>>>()
+  /**
    * 已经开跑、但 Agent 还没造出来的会话。
    *
    * send() 里「检查在不在跑」和「登记进 live」之间隔着好几个 await（读历史、组 system、
@@ -434,6 +443,14 @@ export class AgentService extends Service {
    * 两次压缩同时算，会各自按自己看到的历史挑边界，然后写下两条互相矛盾的压缩点。
    */
   private compacting = new Map<string, Promise<CompactOutcome>>()
+  /**
+   * 每条会话 `/new` 过几次。压缩开工时记下这个数，写回之前再比一次（见 compactOnce）。
+   *
+   * 自动压缩在后台跑、要调一次模型写摘要，十几到几十秒。这期间人打了 `/new`：重置点先落盘，
+   * 压缩随后写下一条 throughSeq 更小的压缩点——而上下文边界认的是**最后一条**，于是重置前的
+   * 原文连同一份旧摘要全回到上下文里，`/new` 等于没做，也不报错。重置一次就作废一次在飞的压缩。
+   */
+  private resets = new Map<string, number>()
 
   constructor(
     ctx: Context,
@@ -495,17 +512,37 @@ export class AgentService extends Service {
     return this.quietUntil > Date.now()
   }
 
-  /** 进入静默。返回实际生效到什么时候，调用方好核对自己那一头的预算。 */
+  /** TTL 到点时把静默期里攒下的队列排掉。 */
+  private quietTimer: ReturnType<typeof setTimeout> | undefined
+
+  /**
+   * 进入静默；`ttlMs: 0` 是放开（管家的 `/api/quiesce {ttlMs:0}` 走的就是这条，等同 resume）。
+   * 返回实际生效到什么时候，调用方好核对自己那一头的预算。
+   */
   quiesce(ttlMs: number): number {
     const ttl = Math.min(AgentService.QUIET_MAX_MS, Math.max(0, Math.trunc(Number(ttlMs) || 0)))
-    this.quietUntil = ttl ? Date.now() + ttl : 0
-    this.ctx.logger?.info?.(ttl ? `agents: 进入换版静默 ${Math.round(ttl / 1000)} 秒，期间不开新的一轮` : 'agents: 静默已放开')
+    clearTimeout(this.quietTimer)
+    if (!ttl) {
+      this.resume()
+      return 0
+    }
+    this.quietUntil = Date.now() + ttl
+    /**
+     * **到点也要排一遍。** 管家中途挂了、没来得及放开，静默会自己过期；可静默期里排进来的消息
+     * 没有任何东西会再来叫醒（drainQueue 那时是直接 return 的），人只能再发一条——而那一条会
+     * 先跑，顺序也倒了。
+     */
+    this.quietTimer = setTimeout(() => {
+      if (!this.quiesced()) this.resume()
+    }, ttl + 50)
+    this.quietTimer.unref?.()
+    this.ctx.logger?.info?.(`agents: 进入换版静默 ${Math.round(ttl / 1000)} 秒，期间不开新的一轮`)
     return this.quietUntil
   }
 
-  /** 放开。部署失败、或者根本没走到重启那一步时，管家要负责调它。 */
+  /** 放开，并把静默期里攒下的队列排掉。部署失败、或者根本没走到重启那一步时，管家要负责调它。 */
   resume(): void {
-    if (!this.quietUntil) return
+    clearTimeout(this.quietTimer)
     this.quietUntil = 0
     this.ctx.logger?.info?.('agents: 静默已放开，恢复接活')
     /**
@@ -816,6 +853,7 @@ export class AgentService extends Service {
         off()
         this.live.delete(child)
         if (this.aborting.delete(child)) state = timedOut ? 'timeout' : state === 'done' ? 'aborted' : state
+        await this.settleShots(child)
         await sessions.append(child, 'turn/end', {
           turn: 1,
           reason: state === 'done' || state === 'capped' ? (capped ? 'capped' : 'completed') : state === 'failed' ? 'error' : 'aborted',
@@ -1008,6 +1046,35 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     return [...new Set(this.queueCol().list().map((r) => r.value.sessionId))]
   }
 
+  /**
+   * 开机把上一条命留下的队列排掉。
+   *
+   * 队列是落盘的，可进程重启之后没有任何东西会来叫醒它：换版重启（最常见）之前排进来的那几条
+   * 一直挂在 dock 上，要等人再发一条——而那一条会先跑，顺序也倒了。
+   *
+   * **等目录拉下来再排。** 刚起来时模型配置还没从 Gateway 拿到，这时开跑会以「没有模型」失败，
+   * 而出队在开跑之前（见 drainQueue），那条消息就白白丢了。一直拉不到（没配 Gateway 的环境）
+   * 就不排，留在队列里，人再发一条时照旧会带走。
+   */
+  async drainAtBoot(opts: { waitMs?: number; pollMs?: number } = {}): Promise<number> {
+    const until = Date.now() + (opts.waitMs ?? 5 * 60_000)
+    while (!this.ctx.catalog?.pulledAt) {
+      if (Date.now() >= until) return 0
+      // unref：没配 Gateway 的进程（探针、本地试跑）不能被这段等待拖着不退出。
+      await new Promise((r) => setTimeout(r, opts.pollMs ?? 1_000).unref?.())
+    }
+    const sessions = this.queuedSessions()
+    for (const sessionId of sessions) {
+      // 等目录的这段时间里人可能已经发了一条、开了一轮：那一轮收口时自己会排空，这里不另开。
+      if (this.isRunning(sessionId)) continue
+      void this.drainQueue(sessionId).catch((e) => {
+        this.ctx.logger?.warn?.(`agents: 开机排空 ${sessionId} 失败：${(e as Error).message}`)
+      })
+    }
+    if (sessions.length) this.ctx.logger?.info?.(`agents: 开机接着跑 ${sessions.length} 条会话里排着的消息`)
+    return sessions.length
+  }
+
   /** 队列深度上限。满了就明说，不静默丢——用户以为发出去了才是最糟的。 */
   get queueMax(): number {
     return Math.max(1, Math.trunc(Number(process.env.SATUWORK_QUEUE_MAX) || 5))
@@ -1063,6 +1130,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       // 静默期里不接着跑：那会开出新的一轮，排空就永远等不到空闲。**留在队列里**，
       // 和「进程在这一刻被杀掉」是同一个结局（队列本来就是落盘的）。
       if (this.quiesced()) return
+      // 这条会话正在跑（resume 叫醒它的时候、或者别的 send 抢先开了一轮）：不另开一轮，
+      // 那一轮收口时会自己来排空。并发两轮会交错写同一份 JSONL。
+      if (this.isRunning(sessionId)) return
       const next = this.queued(sessionId)[0]
       if (!next) return
       // **先出队再跑。** 反过来的话，这一条要是每次都在同一处抛，队列就成了死循环。
@@ -1204,6 +1274,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     // **压不动要说人话**，不能静默返回——人点了一下，界面上必须有个交代。
     if (out.reason === 'no-cut') throw new CommandError('这条对话还太短，没有可压的历史', 409)
     if (out.reason === 'no-summary') throw new CommandError('摘要没写成，上下文原样没动，过一会儿再试', 502)
+    if (out.reason === 'superseded') throw new CommandError('压缩期间这条对话被 /new 重置了，这次压缩没有写下', 409)
     /**
      * 走到这儿说明 compactOnce 返回了一种这里还不认识的「没压成」。**也要抛**——
      * 返回一个 compacted:false 给调用方，换来的是界面弹一句「已压缩：0 → 0」而实际
@@ -1221,6 +1292,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
    */
   async resetContext(sessionId: string): Promise<{ throughSeq: number; droppedMessages: number }> {
     if (this.isRunning(sessionId)) throw new CommandError('这一轮还在跑，先停下或等它跑完', 409)
+    // 同步记一笔，排在任何 await 之前：在飞的压缩写回前会看到它、作废自己（见 resets）。
+    this.resets.set(sessionId, (this.resets.get(sessionId) ?? 0) + 1)
     /**
      * 队里还排着的消息也要拦。
      *
@@ -1727,6 +1800,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       off()
       this.live.delete(sessionId)
       if (this.aborting.delete(sessionId)) reason = 'aborted'
+      await this.settleShots(sessionId)
       await sessions.append(sessionId, 'turn/end', { turn, reason })
       // 有这一行，「那一轮到底结束没有」就不用再猜了。
       this.ctx.logger?.info?.(
@@ -1797,6 +1871,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     const window = this.windowOf(provider, modelId) ?? this.config.contextWindowFallback ?? 128_000
     const at = this.config.compactAt ?? 0.6
     const keep = this.config.compactKeep ?? 0.3
+    const resetsAtStart = this.resets.get(sessionId) ?? 0
     const events = await this.ctx.sessions.events(sessionId)
     // 按这一轮真正的模型重建：看不看得了图决定工具结果里带的是图还是一句说明（见 seesImages），
     // 传 undefined 就一律当看不了，带图的会话会被估低。
@@ -1872,6 +1947,15 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         estTokens(summaryText({ ...span, droppedMessages: 0, tokensBefore: 0, tokensAfter: 0 })) +
         estMessages(await toAgentMessages(kept, undefined, this.ctx)),
       by: opts.by ?? 'auto',
+    }
+    /**
+     * **写回之前再看一眼有没有人 `/new` 过。** 有就作废：这份摘要和切点都是按重置之前的日志算的，
+     * 落下去会成为最后一条边界、把刚清掉的上下文放回来（见 resets）。比较和 append 之间没有 await，
+     * 而 append 按调用顺序排队，所以不会再有一次重置插进这两步中间。
+     */
+    if ((this.resets.get(sessionId) ?? 0) !== resetsAtStart) {
+      this.ctx.logger?.info?.(`agents: ${sessionId} 压缩期间上下文被重置了，这次压缩作废`)
+      return { compacted: false, reason: 'superseded' }
     }
     await this.ctx.sessions.append(sessionId, 'session/compact', data)
     this.ctx.logger?.info?.(
@@ -1965,6 +2049,12 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
           // 就跑了，那时候还没有 agent，更没有这一轮的信号。
           signal: this.live.get(sessionId)?.signal,
         })
+        // 后台还在拍的那张截图：交给 projector，等 `tool/result` 落完盘再补。见 laterShots。
+        if (result.pendingShot) {
+          let byCall = this.laterShots.get(sessionId)
+          if (!byCall) this.laterShots.set(sessionId, (byCall = new Map()))
+          byCall.set(toolCallId, result.pendingShot)
+        }
         if (result.failed) throw new Error(result.text)
         // 给模型看的图（ToolResult.images）：这一轮的模型看得了就读成图片块跟在文字后面，
         // 看不了就换成一句说明。**这里是这一轮之内的唯一入口**——pi 在同一轮里用的是这份
@@ -2430,9 +2520,15 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      */
     const memoryOff =
       (process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() === 'off' || !memoryOf(bot as BotRecord | undefined).on
+    /**
+     * 平台没挑生图模型时，generate_image 不进表。同上面几层，**只是遮掩**：模型照着历史里
+     * 的名字报过来，工具自己会回一句「平台还没有开通生图」。
+     */
+    const imageOn = !!catalog.models?.image
     const picked = all.filter(
       (t) =>
         (!t.name.startsWith('mcp_') || mcpNames.has(t.name)) &&
+        (imageOn || t.name !== 'generate_image') &&
         (browserOn || !t.name.startsWith('browser_')) &&
         (desktopOn || !t.name.startsWith('desktop_')) &&
         (!memoryOff || !t.name.startsWith('memory_')) &&
@@ -2481,6 +2577,52 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         mcpTools: estTokens(toolsText(toolSchemas.filter(isMcp))),
       },
     }
+  }
+
+  /**
+   * 这次调用的截图还在后台拍（ToolResult.pendingShot）：拍完补一条 `tool/shot`。
+   *
+   * **单独一条事件，不回头改 `tool/result`。** 会话日志只追加（见 session 的 append），
+   * 而且那一条早就广播出去了。界面按 callId 把这张折回那次调用（chat.js 的 fold）；
+   * 老日志里 shot 在 `tool/result` 上，那条路照旧认。
+   *
+   * 不 await：模型不等它。写 `turn/end` 之前由 settleShots 收齐。
+   */
+  private followShot(sessionId: string, turn: number, step: number, callId: string): void {
+    const byCall = this.laterShots.get(sessionId)
+    const later = byCall?.get(callId)
+    if (!byCall || !later) return
+    byCall.delete(callId)
+    if (!byCall.size) this.laterShots.delete(sessionId)
+    const write = later
+      .then(async (shot) => {
+        if (shot) await this.ctx.sessions.append(sessionId, 'tool/shot', { turn, step, callId, shot })
+      })
+      .catch((e: Error) => this.ctx.logger?.warn?.(`agents: ${sessionId} 截图补记失败 ${e.message}`))
+    let pending = this.shotWrites.get(sessionId)
+    if (!pending) this.shotWrites.set(sessionId, (pending = new Set()))
+    pending.add(write)
+    void write.finally(() => {
+      pending.delete(write)
+      if (!pending.size && this.shotWrites.get(sessionId) === pending) this.shotWrites.delete(sessionId)
+    })
+  }
+
+  /**
+   * 写 `turn/end` 之前把这一轮后台的截图收齐。
+   *
+   * **这一轮的事件都要落在 `turn/end` 之前。** 压缩的边界只切在 `turn/end` 上（见 session
+   * 的 throughSeq），一条晚到的 `tool/shot` 排到它后面，就成了压缩点之后指向一次已经被
+   * 摘要掉的调用的孤儿。多等的只是界面上「正在处理」多亮一会儿——模型那边早就说完了；
+   * 截图自己有上限（SHOT_SETTLE_MAX + SHOT_TIMEOUT），人点停止时它当场放弃。
+   *
+   * 没等到 `tool/result` 的（pi 半路收口，projector 没见到那次调用的结尾）直接丢掉：
+   * 没有结果的调用挂一张图，界面也认不回去。
+   */
+  private async settleShots(sessionId: string): Promise<void> {
+    this.laterShots.delete(sessionId)
+    const pending = this.shotWrites.get(sessionId)
+    if (pending?.size) await Promise.allSettled([...pending])
   }
 
   private projector(
@@ -2584,6 +2726,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
             shot: shotOf(event.result),
             images: imagesOf(event.result),
           })
+          this.followShot(sessionId, turn, step, event.toolCallId)
           break
       }
     }
@@ -2739,7 +2882,12 @@ function toolsText(tools: { name: string; description: string; parameters?: unkn
 function toUsage(u: any): Usage {
   if (!u) return EMPTY_USAGE
   return {
-    inputTokens: u.input ?? 0,
+    /**
+     * 写缓存的那截也是这次真发出去的提示词，算进输入。Anthropic 的 input 不含它（也不含
+     * 缓存命中），首轮建缓存时它往往占了提示词的大头——不算的话 observedPromptHighWater
+     * 低估一大截，压缩触发得晚。我们的 Usage 没有单独的写缓存一格，并进 inputTokens。
+     */
+    inputTokens: (u.input ?? 0) + (u.cacheWrite ?? 0),
     outputTokens: u.output ?? 0,
     cacheReadTokens: u.cacheRead ?? 0,
     reasoningTokens: u.reasoning ?? 0,
@@ -2816,10 +2964,17 @@ export async function toAgentMessages(
   const resultIds = new Set<string>()
   /** 每个 step 的下界（step/start，老日志没有它时用第一条 tool/call）：给插话挪位用，见下。 */
   const stepFrom = new Map<string, number>()
+  /** 每个 step 开跑过的工具（tool/call），给下面「助手消息没落盘」那种情况补锚点用。 */
+  const callsOf = new Map<string, { seq: number; time: number; calls: SessionEventMap['tool/call'][] }>()
   for (const e of events) {
     if (e.type === 'step/start' || e.type === 'tool/call') {
       const key = stepKey(e.data.turn, e.data.step)
       if (!stepFrom.has(key)) stepFrom.set(key, e.seq)
+      if (e.type === 'tool/call') {
+        const got = callsOf.get(key) ?? { seq: e.seq, time: e.time, calls: [] }
+        got.calls.push(e.data)
+        callsOf.set(key, got)
+      }
     } else if (e.type === 'tool/result') {
       resultIds.add(e.data.callId)
     } else if (e.type === 'assistant/message') {
@@ -2831,6 +2986,27 @@ export async function toAgentMessages(
       }
     }
   }
+  /**
+   * **这一步开跑过工具、助手消息却没落盘**：进程死在这一步中间了。
+   *
+   * 带 tool-call 的助手消息要等 pi 的 `turn_end`——也就是这一步**所有**工具都跑完——才写，
+   * 而工具结果是一个个先落盘的。同一步并行调了 send_email（已发出、结果已写）和一个长时间的
+   * terminal，这时 OOM / 重铺把进程杀了：重建时找不到这一步的助手消息，send_email 那条结果
+   * 被当成无主的丢掉，下一轮模型完全不知道邮件已经发过，很可能再发一次。
+   *
+   * 每把工具开跑时都先写了 `tool/call`（名字、参数都在），拿它们补出这一步的助手消息，锚在
+   * 第一条 tool/call 上。有结果的照常挂在后面，没结果的走下面「有调用没结果」那条补 error。
+   */
+  const synthesized = new Map<number, { key: string; time: number; calls: SessionEventMap['tool/call'][] }>()
+  for (const [key, step] of callsOf) {
+    if (assistantSeq.has(key)) continue
+    const calls = step.calls.filter((c) => String(c.name || '').trim())
+    if (!calls.length) continue
+    assistantSeq.set(key, step.seq)
+    for (const c of calls) toolNames.set(c.callId, c.name)
+    synthesized.set(step.seq, { key, time: step.time, calls })
+  }
+
   /**
    * 插话（steer）的落位。
    *
@@ -2881,6 +3057,35 @@ export async function toAgentMessages(
   let resultIndex = 0
 
   for (const e of events) {
+    const lost = synthesized.get(e.seq)
+    if (lost) {
+      entries.push({
+        order: e.seq,
+        message: {
+          role: 'assistant',
+          content: lost.calls.map((c) => ({ type: 'toolCall', id: c.callId, name: c.name, arguments: safeParse(c.arguments) })),
+          api: model.api ?? 'unknown',
+          provider: model.provider ?? 'unknown',
+          model: model.id ?? 'unknown',
+          usage: piUsage(undefined),
+          timestamp: lost.time,
+        } as any,
+      })
+      for (const c of lost.calls) {
+        if (resultIds.has(c.callId)) continue
+        entries.push({
+          order: e.seq + 1e-6 * ++resultIndex,
+          message: {
+            role: 'toolResult',
+            toolCallId: c.callId,
+            toolName: '',
+            content: [{ type: 'text', text: '工具执行被中断，没有结果。' }],
+            isError: true,
+            timestamp: lost.time,
+          } as any,
+        })
+      }
+    }
     if (e.type === 'user/message') {
       entries.push({
         order: userOrder(e.seq),
@@ -3343,7 +3548,14 @@ async function userContentFor(m: Message, ctx?: Context, isLive?: (index: number
   if (!picked.length) return textFrom(m)
   const out: any[] = []
   for (const { c, i } of picked) {
-    out.push(isLive && !isLive(i) ? stale(c) : await loadImage(c, ctx))
+    const part = isLive && !isLive(i) ? stale(c) : await loadImage(c, ctx)
+    out.push(part)
+    /**
+     * 真带上了字节的那几张，**跟一行它在工作区的路径**。模型看得见图，却不知道它叫什么——
+     * 要拿它去改（generate_image 的 images）、或者交给别的工具读，都得有个名字。没带上字节
+     * 的那两种（太靠前、读不出来）说明里本来就写着路径。
+     */
+    if (part.type === 'image') out.push({ type: 'text', text: `[附图 ${c.path}]` })
   }
   const text = textFrom(m)
   if (text) out.push({ type: 'text', text })
@@ -3814,5 +4026,7 @@ export function apply(ctx: Context, config: Config = {}) {
    */
   ctx.inject(['agents'], (ctx: Context) => {
     void ctx.agents.healTasks().catch((e: Error) => ctx.logger?.warn?.(`agents: 收口遗留委派失败 ${e.message}`))
+    // 上一条命留下的排队消息（见 drainAtBoot）。同样不挡启动。
+    void ctx.agents.drainAtBoot().catch((e: Error) => ctx.logger?.warn?.(`agents: 开机排空队列失败 ${e.message}`))
   })
 }

@@ -1,13 +1,14 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createWriteStream, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, type WriteStream } from 'node:fs'
-import { mkdir, open, readdir, stat, unlink, writeFile } from 'node:fs/promises'
-import { basename, delimiter, dirname, join } from 'node:path'
+import { mkdir, open, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { basename, delimiter, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { StringDecoder } from 'node:string_decoder'
 import { childEnv, humanSize, safeName } from '../workspace/index.ts'
 import { satuworkHome } from '../home.ts'
+import { inspectOfficeFile } from '../workspace/ooxml.ts'
 import { fail, registerTool, SKIPPED_DIRS, walkFiles, type WalkBudget } from './common.ts'
 import type { ReassignedItem, ToolCall, WorkspaceFile } from './index.ts'
 
@@ -487,6 +488,31 @@ function since(ms: number): string {
   const m = Math.floor(s / 60)
   if (m < 60) return `${m} 分 ${s % 60} 秒`
   return `${Math.floor(m / 60)} 小时 ${m % 60} 分`
+}
+
+/** 产出里要查的 Office 文件。 */
+const OFFICE_EXT = new Set(['.docx', '.xlsx', '.xlsm', '.pptx'])
+/** 一条命令最多查几份。批量生成几十份的，查前几份就知道脚本有没有问题。 */
+const MAX_INSPECT = 5
+
+/**
+ * 命令新产出的 docx / xlsx / pptx 有没有 Office 打开会报「已修复」的问题。有就回一段话，
+ * 接在命令结果后面；没有（或者没有 Office 文件）回空串。
+ *
+ * 新建文档走的是这里（模型写脚本、terminal 跑），不经过 office_pack 那道打包前检查；
+ * 而这种问题 LibreOffice 渲染、office_render 看图都看不出来——不在这儿说，就只能等人在
+ * PowerPoint 里撞上。为什么查这几样见 workspace/ooxml.ts 的 inspectOfficeFile。
+ */
+async function inspectProduced(files: string[]): Promise<string> {
+  const lines: string[] = []
+  for (const full of files.filter((f) => OFFICE_EXT.has(extname(f).toLowerCase())).slice(0, MAX_INSPECT)) {
+    const problems = await readFile(full).then(inspectOfficeFile, () => [])
+    if (!problems.length) continue
+    lines.push(`${basename(full)}：`, ...problems.slice(0, 8).map((p) => `  - ${p}`))
+    if (problems.length > 8) lines.push(`  - …还有 ${problems.length - 8} 条`)
+  }
+  if (!lines.length) return ''
+  return '\n\n生成的 Office 文件有问题，Office 打开时会报错，或者报「已修复」并删掉内容（交给用户之前改脚本重跑）：\n' + lines.join('\n')
 }
 
 /** Bot 自己的 node_modules（席位上是 `pnpm deploy` 出来的 app/node_modules）。 */
@@ -1204,8 +1230,9 @@ export function apply(ctx: Context, config: Config = {}) {
        * 出现在**每一条**命令后面——那就成了背景噪音。
        */
       const bulk = made.bulk ? `\n（这条命令改动了 ${BULK_CHANGES} 个以上的文件，没有逐个列出。要给用户看具体某个，自己点名。）` : ''
+      const office = await inspectProduced(made.files)
       // 空数组不带出去：`!r.files` 是「这次没产出」的判据，给个 [] 会让它变成真值。
-      const withFiles = (text: string) => (files.length ? { text: text + bulk, files } : text + bulk)
+      const withFiles = (text: string) => (files.length ? { text: text + bulk + office, files } : text + bulk + office)
 
       const body = r.out.trim() || '（没有输出）'
       let cut = ''

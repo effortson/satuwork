@@ -123,6 +123,11 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 /* 抓手压在左边框上：可视只有 1px 的边框，但有 7px 的命中区，不然很难抓准。 */
 .gw-aside-grip { position: absolute; left: -3px; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 2; }
 .gw-aside-grip:hover { background: color-mix(in srgb, var(--color-accent-500) 35%, transparent); }
+/* 预览摆在右栏时整栏让给它：不要外层的滚动（预览自己的内容框会滚），也不要外层的内边距
+   （预览那一块自己留）。外层也滚的话，一份长 PDF 是两层滚动条套在一起。 */
+.gw-aside[data-preview] .gw-aside-body { overflow: hidden; padding: 0; }
+/* 拖右栏的时候 iframe 不接鼠标，不然一划进预览里的 PDF / HTML，mousemove 就收不到了。 */
+.gw-dragging iframe { pointer-events: none; }
 .gw-aside .satu-kv { display: block; padding: 0; border: 0; }
 .gw-aside .satu-kv > span:first-child { display: block; font-size: 11px; color: var(--muted-foreground); }
 /* 这些值是机器生成的长串（uid、路径、版本号），必须能断行，否则会把整栏撑开。 */

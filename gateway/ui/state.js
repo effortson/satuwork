@@ -34,6 +34,8 @@ const state = {
   catalog: [],
   /** 模型自动发现的状态；null = 没拿到（非 owner，或接口挂了）。 */
   discovery: null,
+  /** 能挑的生图模型（/platform/image-models）；null = 没拿到（非 owner，或接口挂了）。 */
+  imageModels: null,
   creds: [],
   settings: {
     daily: { provider: '', model: '', reasoningEffort: 'off' },
@@ -232,6 +234,8 @@ const state = {
   machineLoadBusy: false,
   machineLoadError: '',
   botLatest: null,
+  /** 平台钉的 Bot 版本（机器配置页那一格），空 = 跟最新走。 */
+  botDesired: '',
   managerLatest: null,
   managerReleases: null,
   /** 机器配置页当前 tab：manager | bot。 */
@@ -921,6 +925,8 @@ function enterPath() {
   state.error = ''
   state.notice = ''
   state.addOpen = false
+  // 预览摆在对话页的右栏里，是那一颗 Bot 的东西：离开它的对话就不该再挂着。
+  if (typeof leavePreview === 'function') leavePreview()
   if (typeof closeMemberUi === 'function') closeMemberUi()
   if (typeof closeSkillDialog === 'function') closeSkillDialog()
   state.seatMember = null

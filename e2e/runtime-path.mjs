@@ -150,6 +150,25 @@ export async function runRuntimePath({ root, gwRoot, botRoot, test, req, start, 
       assert(srv, 'runtime server')
       assert(typeof srv.token === 'string', 'runtime token field')
 
+      /**
+       * **只下发 Bot 用得到的 MCP。** 下发里带着明文 token 和 env，而一张 sat_ 不难拿——任何成员
+       * 都能给自己建一颗本地 Bot、领一张桌面票。以前下发的是公司看得见的全部，等于「成员 = 能读走
+       * 公司全部 MCP 的密钥」，包括他的 Bot 根本没被授权用的那些。
+       */
+      const unused = await req(gwBase, 'POST', `/orgs/${orgId}/mcp-servers`, {
+        token: adminTok,
+        body: { name: 'e2e-mcp-unused', kind: 'HTTP', endpoint: 'http://127.0.0.1:9/', perm: '只读', token: 'UNUSED-SECRET-7Q' },
+      })
+      assert(unused.status === 201, `第二台 mcp ${unused.status} ${unused.text}`)
+      const scoped = await req(gwBase, 'GET', `/runtime/catalog?botId=${remoteBotId}`, { token: seatAccess })
+      assert(scoped.status === 200, `runtime catalog ${scoped.status} ${scoped.text}`)
+      assert(scoped.json.servers.some((s) => s.id === mcpId), 'Bot 用到的那台没下发')
+      assert(!scoped.json.servers.some((s) => s.id === unused.json.server.id), 'Bot 没用到的那台也下发了')
+      assert(!scoped.text.includes('UNUSED-SECRET-7Q'), '没用到的那台的 token 漏进了下发')
+      // 探针按同一份口径算指纹：对不上的话席位要么每分钟白拉整份目录，要么改了永远判「没变」。
+      const probe = await req(gwBase, 'GET', `/runtime/catalog/version?botId=${remoteBotId}`, { token: seatAccess })
+      assert(probe.status === 200 && probe.json.stamp === scoped.json.stamp, `指纹对不上：${probe.json.stamp} vs ${scoped.json.stamp}`)
+
       const rtJwt = await req(gwBase, 'GET', '/runtime/catalog', { token: adminTok })
       assert(rtJwt.status === 401, `runtime 不该收 JWT ${rtJwt.status}`)
 

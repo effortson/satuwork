@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { bearer, isLoopback, json, readRaw } from './http.ts'
-import { mergeUsage, usageFromPayload, type TokenUsage } from './llm-usage.ts'
+import { mergeUsage, sseUsage, usageFromPayload, type TokenUsage } from './llm-usage.ts'
 
 /**
  * 管家替本机 Bot 调模型（协议 10）。
@@ -37,12 +37,21 @@ import { mergeUsage, usageFromPayload, type TokenUsage } from './llm-usage.ts'
  * Gateway 会定期把没结算的调用扫掉。
  */
 
-type Route = 'chat' | 'messages' | 'responses'
+type Route = 'chat' | 'messages' | 'responses' | 'images' | 'image-edits'
 
+/**
+ * `images` / `image-edits` 是生图（Bot 的 generate_image：按描述画 / 拿已有的图改）。对管家
+ * 来说它们和另外三条没有区别：要授权、照补丁改请求体、原样转答复、从答复里数 usage 去结算
+ * ——gpt-image 的 usage 和 Responses API 一个形状，Gemini 的 usageMetadata 在 llm-usage.ts 里
+ * 有专门的一岔。Bot 总是要流式答复（图在最后那一帧里，几 MB），走的是 proxyUpstream 的流式
+ * 那一岔。改图的请求体带着 base64 的原图，32 MB 的上限（BODY_LIMIT）够用。
+ */
 const ROUTES: Record<string, Route> = {
   '/llm/v1/chat/completions': 'chat',
   '/llm/v1/messages': 'messages',
   '/llm/v1/responses': 'responses',
+  '/llm/v1/images/generations': 'images',
+  '/llm/v1/images/edits': 'image-edits',
 }
 
 /** 请求体上限。对话历史里塞图片是常事，4 MB 那档（http.ts）不够；32 MB 之上就不是正常请求了。 */
@@ -564,7 +573,12 @@ async function proxyUpstream(
   clearDeadline()
   const httpStatus = upstream.status
   const ctype = upstream.headers.get('content-type') || 'application/json; charset=utf-8'
-  const streaming = ctype.includes('text/event-stream') || ctype.includes('text/plain')
+  /**
+   * **只有 2xx 才边收边转**（同 Gateway 那份）。非 2xx 是一页错误：上游或它前面那层代理的
+   * 错误页常把请求头原样回显，而 `text/plain` 正是这类页最常见的形状。只按类型判的话它会
+   * 走流式这一支、一个字节都不抹，平台的供应商密钥就原样交给了席位上的 Bot。
+   */
+  const streaming = upstream.ok && (ctype.includes('text/event-stream') || ctype.includes('text/plain'))
   if (streaming) {
     res.writeHead(upstream.status, {
       'content-type': ctype,
@@ -580,20 +594,9 @@ async function proxyUpstream(
       // 字节**原样**写给 Bot——数 usage 只看副本，不改流。
       res.write(piece)
       buf += decoder.decode(piece, { stream: true })
-      let idx
-      while ((idx = buf.indexOf('\n\n')) >= 0) {
-        const frame = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        for (const line of frame.split('\n')) {
-          if (!line.startsWith('data:')) continue
-          const payload = line.slice(5).trim()
-          if (!payload || payload === '[DONE]') continue
-          try {
-            const u = usageFromPayload(JSON.parse(payload))
-            if (u) usage = mergeUsage(usage, u)
-          } catch {}
-        }
-      }
+      const next = sseUsage(buf, usage)
+      buf = next.rest
+      usage = next.usage
     }
     // 读流放在 try 里：中途失败（Bot 走了、上游掐了）不能把已经累计的 usage 一起丢掉。
     // 断流是断流，账还是要记。
@@ -611,7 +614,7 @@ async function proxyUpstream(
       }
     }
     if (!res.writableEnded) res.end()
-    const status: Settlement = broke ? (watch.gone() ? 'failed' : 'error') : upstream.ok ? 'ok' : 'failed'
+    const status: Settlement = broke ? (watch.gone() ? 'failed' : 'error') : 'ok'
     return { status, usage, httpStatus }
   }
   let text: string

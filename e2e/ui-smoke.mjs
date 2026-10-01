@@ -190,6 +190,29 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 没拍照的那把工具不该凭空多出一张。
       assert(tools[1]?.shot == null, `没截图的工具被塞了一张：${JSON.stringify(tools[1]?.shot)}`)
 
+      /**
+       * 新日志：截图在工具结果**之后**才拍完，另来一条 tool/shot，按 callId 认回那次调用。
+       * 中间隔着后面几步（这里是 c2 的整次调用）也要认得回去；callId 对不上的不能贴到
+       * 随便哪颗药丸上——贴错一张比少一张更坏。
+       */
+      const late = ui.fold([
+        ev(1, 'user/message', { message: { content: [{ type: 'text', text: '去看看' }] }, source: { kind: 'user' } }),
+        ev(2, 'turn/start', { turn: 1 }),
+        ev(3, 'tool/call', { turn: 1, step: 1, callId: 'c1', name: 'browser_navigate', arguments: '{}' }),
+        ev(4, 'tool/result', { turn: 1, step: 1, callId: 'c1', text: '已打开。', failed: false }),
+        ev(5, 'tool/call', { turn: 1, step: 2, callId: 'c2', name: 'browser_click', arguments: '{}' }),
+        ev(6, 'tool/result', { turn: 1, step: 2, callId: 'c2', text: '点了。', failed: false }),
+        ev(7, 'tool/shot', { turn: 1, step: 1, callId: 'c1', shot: shot(1) }),
+        ev(8, 'tool/shot', { turn: 1, step: 9, callId: 'nobody', shot: shot(9) }),
+        ev(9, 'tool/shot', { turn: 1, step: 2, callId: 'c2', shot: { path: '' } }),
+        ev(10, 'assistant/message', { turn: 1, step: 3, message: { content: [{ type: 'text', text: '看完了' }] } }),
+        ev(11, 'turn/end', { turn: 1, reason: 'completed' }),
+      ])
+      const lateTools = late.blocks.find((b) => b.kind === 'assistant')?.tools || []
+      assert(lateTools[0]?.shot?.path === 'browser/s1/2026-1-click.jpg', `晚到的截图没认回那次调用：${JSON.stringify(lateTools[0]?.shot)}`)
+      assert(lateTools[1]?.shot == null, `认不回去的 / 空的截图被贴到了别的调用上：${JSON.stringify(lateTools[1]?.shot)}`)
+      assert(ui.stepShots(lateTools).length === 1, `缩略图条数不对：${ui.stepShots(lateTools).length}`)
+
       // 老日志没有这个字段，界面要退回「没有」，不能崩。
       assert(!ui.stepShots([{ name: 'bash' }]).length, '没有 shot 的老日志把它弄崩了')
       // 同一张图在一条消息里只摆一次。
@@ -205,6 +228,26 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const more = ui.stepMoreHtml(8)
       assert(more.includes('8'), `没说清还有多少张：${more}`)
       assert(more.includes('browser/'), `没说清去哪儿找：${more}`)
+    })
+
+    await test('Bot 产出的图片摆成缩略图，别的产出照旧是药丸', async () => {
+      /**
+       * generate_image 画的图（以及脚本生成的图表）要一眼看得到画成了什么，不是一颗要点开
+       * 才知道的药丸。只认浏览器能内联的位图：SVG 能带脚本，预览接口本来就不给它内联。
+       */
+      const ui = await boot()
+      const f = (path) => ({ path, name: path.split('/').pop() })
+      const tools = [
+        { name: 'generate_image', files: [f('images/猫.jpg')] },
+        { name: 'write_file', files: [f('report.md'), f('chart.PNG'), f('logo.svg')] },
+        // 同一张图被两把工具报出来：只摆一次。
+        { name: 'terminal', files: [f('images/猫.jpg'), f('a.webp')] },
+      ]
+      const imgs = ui.outputImages(ui.outputFiles(tools)).map((x) => x.path)
+      assert(imgs.join('|') === 'images/猫.jpg|chart.PNG|a.webp', `认出来的图：${imgs.join('|')}`)
+      const many = Array.from({ length: 12 }, (_, i) => f(`images/${i}.png`))
+      assert(ui.outputImages(many).length === ui.MAX_OUT_IMAGES && ui.MAX_OUT_IMAGES === 8, `上限：${ui.MAX_OUT_IMAGES}`)
+      assert(!ui.outputImages([{ name: 'bash' }].flatMap((x) => x.files || [])).length, '没有产出的老日志把它弄崩了')
     })
 
     await test('读秒：这一轮一开始就在走，第一个字落地时不从头数起', async () => {
@@ -572,6 +615,51 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 拉到了就把 Bot 做到哪一步摆出来——接手的人靠它不用从头问一遍。
       ui.state.handoffDetail = { h1: { id: 'h1', summary: '已经查到发票号 A-991' } }
       assert(ui.handoffRow(row({ accountId: 'x' })).includes('A-991'), '拉到了正文却没画出来')
+    })
+
+    await test('对话页上转人工待办是右栏的一屏，不把对话整页换走', async () => {
+      const ui = await boot()
+      ui.state.me = { account: { id: 'me', companyId: 'c1', role: 'admin' } }
+      ui.state.path = '/chat'
+      ui.state.chatBotId = 'b1'
+      ui.state.handoffs = [{
+        id: 'h1', botId: 'b2', sessionId: 's1', state: 'open', accountId: 'someone-else',
+        ask: '去财务系统里把这笔付了', reason: '超出我的权限', createdAt: 1, ownerName: '张三',
+      }]
+      ui.state.handoffCount = 1
+      // 顶栏不再有那颗跳整页的；举手那颗进了右栏的切屏里，数字跟着它走。
+      assert(ui.handoffBell() === '', '对话页上还画着跳去 /handoffs 的按钮')
+      const tabs = ui.asideToggle()
+      assert(tabs.includes('data-tab="handoffs"'), '右栏切屏里没有转人工待办')
+      assert(/satu-handoffcount[^>]*>1</.test(tabs), `待办的数没跟着举手那颗走：${tabs}`)
+      // 那一屏是一列卡片，按钮和整页那张表是同一套。
+      const panel = ui.handoffsAside()
+      assert(panel.includes('satu-hocard') && panel.includes('去财务系统里把这笔付了'), '右栏没画出待办')
+      assert(panel.includes('data-act="handoff-claim"') && panel.includes('data-act="handoff-detail"'), '右栏的待办少了按钮')
+      ui.state.handoffOpenId = 'h1'
+      ui.state.handoffDetail = { h1: { summary: '已经查到发票号 A-991' } }
+      assert(ui.handoffsAside().includes('A-991') && ui.handoffsAside().includes('sw-handoff-note'), '右栏里展开处理不了')
+      // 别的页没有右栏：照旧是一颗跳整页的按钮。
+      ui.state.path = '/bots'
+      assert(ui.handoffBell().includes('data-href="/handoffs"'), '离开对话页之后待办入口没了')
+    })
+
+    await test('右栏待办：数据没变就不重画那一屏（正写着的交还说明不被 30 秒轮询冲掉）', async () => {
+      const ui = await boot(undefined, { stubIds: ['aside-handoffs'] })
+      ui.state.me = { account: { id: 'me', companyId: 'c1', role: 'admin' } }
+      ui.state.path = '/chat'
+      ui.state.chatBotId = 'b1'
+      ui.state.handoffs = [{ id: 'h1', botId: 'b2', state: 'open', accountId: 'x', ask: '付款', createdAt: 1, ownerName: '张三' }]
+      const host = ui.stubs.get('aside-handoffs')
+      host.childElementCount = 1
+      ui.paintAsideHandoffs()
+      const first = host.writes
+      ui.paintAsideHandoffs()
+      ui.paintAsideHandoffs()
+      assert(host.writes === first, `数据没变也重画了 ${host.writes - first} 次`)
+      ui.state.handoffs = [...ui.state.handoffs, { id: 'h2', botId: 'b2', state: 'open', accountId: 'x', ask: '对账', createdAt: 2, ownerName: '李四' }]
+      ui.paintAsideHandoffs()
+      assert(host.writes === first + 1 && host.innerHTML.includes('对账'), '多了一张单，右栏却没跟上')
     })
 
     await test('席位上已经没有的那张单：画成一行字，不留按钮', async () => {
@@ -1328,6 +1416,28 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 桌面壳里不给：人已经在桌面端里了，而且壳里的 `/` 就是登录，没有首页可指。
       const shell = (await boot(undefined, { path: '/login', desktop: true })).html()
       assert(!shell.includes('#download'), '桌面壳的登录页上还挂着下载桌面端')
+    })
+
+    await test('gateway/ui 下每个脚本都解析得过，包括 i18n.js', async () => {
+      /**
+       * 这套冒烟只把界面分片装进来跑，**不装 i18n.js**，而前端读翻译又是
+       * `window.SATU_I18N || {}` 兜着的——于是那份文件语法错了，这里一条都不会红，浏览器里
+       * 英文界面却整片退回中文。就这么漏过：两个带全角逗号的键没加引号。
+       *
+       * 只解析不执行（`node --check`），所以不需要 window。用它而不是 vm.Script：分片里有
+       * ES 模块（unzip.js），按普通脚本解析会在 export 上报错；node --check 按 gateway 的
+       * package.json（type: module）认，两种都解析得了。
+       */
+      const { spawnSync } = await import('node:child_process')
+      const dir = join(root, 'gateway/ui')
+      const files = readdirSync(dir).filter((f) => f.endsWith('.js'))
+      assert(files.includes('i18n.js'), `没找到 i18n.js：${files.join(', ')}`)
+      const bad = []
+      for (const f of files) {
+        const out = spawnSync(process.execPath, ['--check', join(dir, f)], { encoding: 'utf8' })
+        if (out.status !== 0) bad.push(`${f}: ${out.stderr.trim().split('\n').slice(0, 3).join(' ')}`)
+      }
+      assert(!bad.length, `解析不过：\n${bad.join('\n')}`)
     })
 
     await test('这三个地址刷新和法律页那个分片都由 Gateway 交得出来', async () => {

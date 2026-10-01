@@ -178,7 +178,7 @@ export function toOpenAI(context: any, model: { provider: string; id: string }, 
         .map((c: any) => ({
           id: c.id,
           type: 'function',
-          function: { name: c.name, arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {}) },
+          function: { name: wireToolName(c.name), arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {}) },
         }))
       const row: any = { role: 'assistant', content: text || null }
       if (tool_calls.length) row.tool_calls = tool_calls
@@ -217,6 +217,24 @@ export function toOpenAI(context: any, model: { provider: string; id: string }, 
 function responsesCallId(id: unknown): string {
   const s = String(id ?? '').split('|')[0].replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
   return s || 'call'
+}
+
+/**
+ * 历史里助手那一侧的工具名，回传前按三家里最严的规矩收一遍：`[a-zA-Z0-9_-]`，不超过 64。
+ *
+ * 我们自己挂的工具名本来就在这个范围里（见 catalog/mcp.ts 的 mcpToolName），出格的只可能
+ * 是**模型编出来的**：小模型偶尔把参数、中文说明一股脑塞进 name，宽松的供应商照单收下，
+ * pi 找不到这把工具、回一条错误结果，这一来一回都写进了会话日志。之后这段历史只要落到
+ * 严一点的供应商手里（Responses 的 name 上限 128、chat 是 64），整条请求当场 400——
+ * 线上见过的是一条 168 字的名字，日常任务从此每轮都跑不起来，重试也一样。
+ *
+ * 合规的名字一个字节都不动；改的只是一把本来就没执行成的调用，和结果之间靠 call id 配对，
+ * 不靠名字。
+ */
+function wireToolName(name: unknown): string {
+  const s = String(name ?? '')
+  if (/^[a-zA-Z0-9_-]{1,64}$/.test(s)) return s
+  return s.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 64) || 'unknown_tool'
 }
 
 /**
@@ -264,7 +282,7 @@ export function toOpenAIResponses(context: any, model: { provider: string; id: s
         input.push({
           type: 'function_call',
           call_id: responsesCallId(c.id),
-          name: c.name,
+          name: wireToolName(c.name),
           arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {}),
         })
       }
@@ -312,8 +330,11 @@ export function toAnthropic(context: any, model: { id: string; provider?: string
     } else if (m.role === 'assistant') {
       const content: any[] = []
       for (const c of m.content ?? []) {
-        if (c.type === 'text' && c.text) content.push({ type: 'text', text: c.text })
-        else if (c.type === 'toolCall') content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments ?? {} })
+        // 思考块原样放回（签名是上游验的，没有签名的回放不了，丢掉）。见 consumeAnthropic。
+        if (c.type === 'thinking' && c.thinkingSignature) {
+          content.push(c.redacted ? { type: 'redacted_thinking', data: c.thinkingSignature } : { type: 'thinking', thinking: c.thinking ?? '', signature: c.thinkingSignature })
+        } else if (c.type === 'text' && c.text) content.push({ type: 'text', text: c.text })
+        else if (c.type === 'toolCall') content.push({ type: 'tool_use', id: c.id, name: wireToolName(c.name), input: c.arguments ?? {} })
       }
       if (!content.length) content.push({ type: 'text', text: '' })
       messages.push({ role: 'assistant', content })
@@ -349,7 +370,18 @@ export function toAnthropic(context: any, model: { id: string; provider?: string
   const ceiling = Math.max(1, Number(model.maxTokens) || 8192)
   const wanted = level === 'minimal' ? 1024 : level === 'low' ? 2048 : level === 'medium' ? 8192 : level ? 16384 : 0
   // Anthropic 的 max_tokens 同时包住思考和正文；至少给正文留 1024 token。
-  const budget = level ? Math.min(wanted, Math.max(0, ceiling - 1024)) : 0
+  /**
+   * **正在进行的那串工具调用里，最后一条 assistant 没有思考块，这一次就不开推理。**
+   *
+   * 开着推理时 Anthropic 要求它以思考块开头，否则整次 400。同一轮里的思考块 consumeAnthropic
+   * 已经留住了；但从日志重建的历史不带推理块（toAgentMessages 有意不回传），一旦在一串工具调用
+   * 的中间重建过（硬顶压缩重读、进程重启后接着跑），就只剩这一条路：这一步不思考，比整轮失败强。
+   */
+  const last = messages[messages.length - 1]
+  const lastAssistant = [...messages].reverse().find((x) => x.role === 'assistant')
+  const midToolLoop = last?.role === 'user' && Array.isArray(last.content) && last.content.length > 0 && last.content.every((c: any) => c.type === 'tool_result')
+  const unsigned = midToolLoop && !(lastAssistant?.content?.[0]?.type === 'thinking' || lastAssistant?.content?.[0]?.type === 'redacted_thinking')
+  const budget = level && !unsigned ? Math.min(wanted, Math.max(0, ceiling - 1024)) : 0
   return {
     model: model.id,
     /**
@@ -809,6 +841,22 @@ async function consumeResponses(
   stream.push({ type: 'done', reason: 'stop', message: partial })
 }
 
+/**
+ * Anthropic 的一帧 usage 并进已有的那份。input_tokens **不含**缓存的两项，各自单列、照搬。
+ *
+ * **取较大值，缺的不覆盖**：输入和缓存在 message_start，输出在 message_delta；某些版本的
+ * message_delta 会再回传一次累计 input_tokens 却不带缓存字段，后来居上会把缓存那截抹掉
+ * （同 gateway/src/lib/llm-usage.ts 的 mergeUsage）。
+ */
+function anthropicUsage(cur: any, u: any) {
+  const pick = (next: unknown, prev: number | undefined) => Math.max(Number(next) || 0, prev ?? 0)
+  const input = pick(u.input_tokens, cur?.input)
+  const output = pick(u.output_tokens, cur?.output)
+  const cacheRead = pick(u.cache_read_input_tokens, cur?.cacheRead)
+  const cacheWrite = pick(u.cache_creation_input_tokens, cur?.cacheWrite)
+  return { input, output, cacheRead, cacheWrite, totalTokens: input + cacheRead + cacheWrite + output, cost: { ...EMPTY_USAGE.cost } }
+}
+
 async function consumeAnthropic(
   res: Response,
   stream: AssistantMessageEventStream,
@@ -833,6 +881,12 @@ async function consumeAnthropic(
     const type = ev.event || chunk.type
     if (type === 'message_start') {
       start()
+      /**
+       * **输入和缓存的 token 在这一帧里**，message_delta 只报输出（有的版本再回传一次累计
+       * input 却不带缓存两项）。以前这里直接 continue，输入记成 0：压缩只剩本地估算（不含
+       * system prompt 和工具 schema），触发得晚、还会直接撞上上游的超长 400。
+       */
+      if (chunk.message?.usage) partial.usage = anthropicUsage(partial.usage, chunk.message.usage)
       continue
     }
     if (type === 'content_block_start') {
@@ -843,6 +897,20 @@ async function consumeAnthropic(
         while (partial.content.length <= index) partial.content.push({ type: 'toolCall', id: '', name: '', arguments: {} })
         partial.content[index] = { type: 'toolCall', id: block.id, name: block.name, arguments: block.input ?? {}, _raw: '' }
         stream.push({ type: 'toolcall_start', contentIndex: index, partial })
+      } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+        /**
+         * **思考块连同签名一起留下。** 开了 extended thinking 时，一步里调了工具，下一步回放
+         * 那条 assistant 消息必须原样带着它的思考块（签名是上游验的），否则 Anthropic 直接
+         * 400「final assistant message must start with a thinking block」——以前这里把它当成
+         * 空文字块，于是开了推理的 Bot 一用工具就失败。被安全策略打码的那种只有一段密文
+         * （`data`），同样原样放回去。
+         */
+        while (partial.content.length <= index) partial.content.push({ type: 'text', text: '' })
+        partial.content[index] =
+          block.type === 'redacted_thinking'
+            ? { type: 'thinking', thinking: '', thinkingSignature: block.data ?? '', redacted: true }
+            : { type: 'thinking', thinking: block.thinking ?? '', thinkingSignature: block.signature ?? '' }
+        stream.push({ type: 'thinking_start', contentIndex: index, partial })
       } else {
         while (partial.content.length <= index) partial.content.push({ type: 'text', text: '' })
         partial.content[index] = { type: 'text', text: block.text ?? '' }
@@ -857,6 +925,15 @@ async function consumeAnthropic(
         if (!partial.content[index]) partial.content[index] = { type: 'text', text: '' }
         partial.content[index].text += delta.text
         stream.push({ type: 'text_delta', contentIndex: index, delta: delta.text, partial })
+      } else if (delta.type === 'thinking_delta' && delta.thinking) {
+        const block = partial.content[index]
+        if (block?.type === 'thinking') {
+          block.thinking += delta.thinking
+          stream.push({ type: 'thinking_delta', contentIndex: index, delta: delta.thinking, partial })
+        }
+      } else if (delta.type === 'signature_delta' && delta.signature) {
+        const block = partial.content[index]
+        if (block?.type === 'thinking') block.thinkingSignature = (block.thinkingSignature || '') + delta.signature
       } else if (delta.type === 'input_json_delta' && delta.partial_json) {
         const block = partial.content[index]
         if (block) {
@@ -875,6 +952,7 @@ async function consumeAnthropic(
       const index = chunk.index ?? 0
       const block = partial.content[index]
       if (block?.type === 'text') stream.push({ type: 'text_end', contentIndex: index, content: block.text, partial })
+      else if (block?.type === 'thinking') stream.push({ type: 'thinking_end', contentIndex: index, content: block.thinking, partial })
       else if (block?.type === 'toolCall') {
         delete block._raw
         stream.push({ type: 'toolcall_end', contentIndex: index, toolCall: block, partial })
@@ -886,21 +964,7 @@ async function consumeAnthropic(
       if (stop === 'tool_use') partial.stopReason = 'toolUse'
       else if (stop === 'max_tokens') partial.stopReason = 'length'
       else partial.stopReason = 'stop'
-      const u = chunk.usage
-      if (u) {
-        // Anthropic 的 input_tokens **不含**缓存的两项，各自单列，直接照搬即可。
-        const input = u.input_tokens ?? 0
-        const cacheRead = u.cache_read_input_tokens ?? 0
-        const cacheWrite = u.cache_creation_input_tokens ?? 0
-        partial.usage = {
-          input,
-          output: u.output_tokens ?? 0,
-          cacheRead,
-          cacheWrite,
-          totalTokens: input + cacheRead + cacheWrite + (u.output_tokens ?? 0),
-          cost: { ...EMPTY_USAGE.cost },
-        }
-      }
+      if (chunk.usage) partial.usage = anthropicUsage(partial.usage, chunk.usage)
       continue
     }
     if (type === 'message_stop') {

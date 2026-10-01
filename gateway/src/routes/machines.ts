@@ -3,17 +3,17 @@
  */
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
-import { INSTANCE_DOWN, MIN_MANAGER_NODE, PAIRING_TTL, desiredManagerRelease, directUrlOf, gatewayBaseFor, installCommandFor, machineBase, machineCard, machineOfOrg, machineResolver, managerHostOf, normalizePairingCode, randomPairingCode, registerFromBody, sendReleaseFile } from '../lib/machines.ts'
+import { INSTANCE_DOWN, MIN_MANAGER_NODE, PAIRING_TTL, desiredManagerRelease, directUrlOf, gatewayBaseFor, installCommandFor, machineBase, machineCard, machineOfOrg, machineResolver, managerHostOf, retargetManager, normalizePairingCode, randomPairingCode, registerFromBody, sendReleaseFile } from '../lib/machines.ts'
 import { LOGS_FOLLOW_GONE, MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, gatewayPublicUrl, gatewayPublicUrlExplicit, logsDirectPayload, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, queueSeatUpdates, rehostSeatInstances, releaseSeats } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { installScript } from '../install.ts'
 import { proxyJson } from '../lib/runtime.ts'
-import { directReleaseUrl, localBotReleaseTarget, parseBotVersion, publicBotRelease, storeUploadedRelease } from '../releases.ts'
+import { desiredBotRelease, directReleaseUrl, localBotReleaseTarget, parseBotVersion, publicBotRelease, storeUploadedRelease } from '../releases.ts'
 import { requireMachine, requireOrgUser, requireOwnerUser, requireReleaseAuthor } from '../lib/guards.ts'
 import { MANAGER_VACUUM_TIMEOUT_MS, MAX_LOG_CAP_MB, METRIC_RETENTION_MS, MINUTE_MS } from '../lib/telemetry.ts'
 import { signDesktopTicket } from '../crypto.ts'
-import { type Account, type CatalogItem, type Machine, type SeatRuntime } from '../db.ts'
+import { releaseArch, type Account, type CatalogItem, type Machine, type SeatRuntime } from '../db.ts'
 
 export function attachMachines(router: Router, ctx: RouteCtx) {
   const { db, keys } = ctx
@@ -218,25 +218,14 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     if (!company) throw new HttpError(404, '公司不存在')
     const machine = await machineOfOrg(db, company.id, req.params.machineId)
     if (!machinePaired(machine)) throw new HttpError(409, '这台机器还没有配对')
-    const body = bodyOf(req)
-    const requested = strField(body, 'version', false)
-    const rel = requested
-      ? await db.botRelease(parseBotVersion(requested), 'manager')
-      : await db.latestBotRelease('manager')
-    if (!rel) throw new HttpError(requested ? 404 : 409, requested ? '没有这个管家版本' : '还没有发布管家版本')
-    const next = await db.updateMachine(machine.id, { desiredManagerVersion: rel.version })
+    const { next, version, pinned, pending } = await retargetManager(db, machine, strField(bodyOf(req), 'version', false))
     await db.audit({
       companyId: company.id,
       accountId: account.id,
       action: 'machine.upgrade',
-      detail: { machineId: machine.id, version: rel.version },
+      detail: { machineId: machine.id, version, pinned },
     })
-    json(res, 200, {
-      machine: ownerMachine(next),
-      version: rel.version,
-      // 说清楚这一步只是下了指令：界面上别显示成「已升级」。
-      pending: next.managerVersion !== rel.version,
-    })
+    json(res, 200, { machine: ownerMachine(next), version, pinned, pending })
   })
 
   /**
@@ -484,6 +473,14 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
        */
       seatGatewayUrl: gatewayPublicUrl(),
       seatGatewayUrlConfigured: Boolean(gatewayPublicUrlExplicit()),
+      /**
+       * 「单独钉」那一格的候选：这台机器架构能装的管家版本，新的在前。认不出架构的老版本号
+       * 也算（releaseArch 给 undefined）。只给版本号——人要的是从里面挑一个，不是看包。
+       */
+      managerVersions: (await db.botReleases('manager'))
+        .filter((r) => !machine.arch || !releaseArch(r.version) || releaseArch(r.version) === machine.arch)
+        .slice(0, 30)
+        .map((r) => r.version),
     })
   })
 
@@ -698,19 +695,17 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     )
   })
 
-  /** 钉一个管家版本。换版、自检、失败回滚都在机器上做，这里只下指令。 */
+  /**
+   * 改管家目标版本：不带版本 = 摘掉单机钉、跟平台走；带版本 = 单机钉到那一版。
+   * 换版、自检、失败回滚都在机器上做，这里只下指令。见 lib/machines.ts 的 retargetManager。
+   */
   router.post('/platform/machines/:id/upgrade', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
     const machine = await machineOr404(req.params.id)
     if (!machinePaired(machine)) throw new HttpError(409, '这台机器还没有配对')
-    const requested = strField(bodyOf(req), 'version', false)
-    const rel = requested
-      ? await db.botRelease(parseBotVersion(requested), 'manager')
-      : await db.latestBotRelease('manager')
-    if (!rel) throw new HttpError(requested ? 404 : 409, requested ? '没有这个管家版本' : '还没有发布管家版本')
-    const next = await db.updateMachine(machine.id, { desiredManagerVersion: rel.version })
-    await auditMachine(next, account.id, 'machine.upgrade', { machineId: next.id, version: rel.version })
-    json(res, 200, { machine: ownerMachine(next), version: rel.version, pending: next.managerVersion !== rel.version })
+    const { next, version, pinned, pending } = await retargetManager(db, machine, strField(bodyOf(req), 'version', false))
+    await auditMachine(next, account.id, 'machine.upgrade', { machineId: next.id, version, pinned })
+    json(res, 200, { machine: ownerMachine(next), version, pinned, pending })
   })
 
   /**
@@ -747,9 +742,11 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
       if (!rel) throw new HttpError(404, '没有这个 Bot 版本')
       version = rel.version
     } else if (!force) {
-      const latest = await db.latestBotRelease()
-      if (!latest) throw new HttpError(409, '还没有发布 Bot 版本')
-      version = latest.version
+      // 平台钉的那一版（没钉就是最新），按这台机器的架构挑——和心跳里的自动跟版同一个目标，
+      // 不然这里铺成最新，十分钟后又被跟版拉回钉的那版。
+      const target = await desiredBotRelease(db, machine.arch)
+      if (!target) throw new HttpError(409, '还没有发布 Bot 版本')
+      version = target.version
     }
     const seats = (await db.seatRuntimesOfMachine(machine.id)).filter((r) => r.status !== 'none')
     /**
@@ -980,6 +977,8 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     json(res, 200, {
       releases: releases.map((r) => publicBotRelease(r, gatewayBaseFor(req))),
       latest: releases[0]?.version ?? null,
+      // 空 = 跟最新走。机器心跳时席位按它跟版（deploy.ts 的 queueBotFollow），改它就是发起一轮灰度或回滚。
+      desired: (await db.platformSettings()).botVersion ?? '',
     })
   })
 
@@ -1219,9 +1218,11 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
       if (!rel) throw new HttpError(404, '没有这个 Bot 版本')
       version = rel.version
     } else {
-      const latest = await db.latestBotRelease()
-      if (!latest) throw new HttpError(409, '还没有发布 Bot 版本')
-      version = latest.version
+      // 同机器那条：平台钉的那一版，没钉就是最新。这里横跨好几台机器、架构不一定一样，
+      // 所以不按架构挑；deploySeat 会把它换成每台机器自己架构的兄弟包。
+      const target = await desiredBotRelease(db, null)
+      if (!target) throw new HttpError(409, '还没有发布 Bot 版本')
+      version = target.version
     }
     const seats = (await db.seatRuntimesOf(company.id)).filter((r) => r.status !== 'none')
     /**

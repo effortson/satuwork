@@ -44,6 +44,14 @@ export async function runToolCalls({ root, test, assert, log }) {
     assert(r.replay.results.join(',') === 'call_a', `工具结果没配平：${JSON.stringify(r.replay.results)}`)
   })
 
+  await test('进程死在一步中间（助手消息没落盘）：拿 tool/call 补回来，已落盘的结果不丢', () => {
+    const c = r.crashed
+    assert(c.roles.join(',') === 'user,assistant,toolResult,toolResult,user', `顺序：${c.roles.join(',')}`)
+    assert(c.calls.join(',') === 'send_email,terminal', `补出来的调用：${c.calls.join(',')}`)
+    assert(c.results.includes('call_mail:ok:已发送'), `已发出的那封邮件结果丢了：${JSON.stringify(c.results)}`)
+    assert(c.results.some((x) => x.startsWith('call_sh:err:')), `没跑完的那把要补一条被中断：${JSON.stringify(c.results)}`)
+  })
+
   await test('老老实实从 0 起、没有正文的那种，一个字都不许变', () => {
     assert(r.plain.tools.length === 1 && r.plain.tools[0].name === 'now', `常规那条被改坏了：${JSON.stringify(r.plain.tools)}`)
     assert(r.plain.starts.join(',') === '0', `toolcall_start 的下标不对：${r.plain.starts.join(',')}`)

@@ -111,6 +111,10 @@ export async function runDeployErrors({ root, test, assert, log }) {
     assert(r.displayStaleGeneration.action === 'kill-pid', `${JSON.stringify(r.displayStaleGeneration)}`)
   })
 
+  await test('显示号只认 X 服务器自己的命令行，不认别的进程（DISPLAY 环境变量谁都能写）', async () => {
+    assert(JSON.stringify(r.xDisplays) === JSON.stringify([15, 10, null, null, null]), `${JSON.stringify(r.xDisplays)}`)
+  })
+
   await test('不是 satuwork 的进程 → 不动，把话说准', async () => {
     assert(r.foreign.action === 'blocked', `${JSON.stringify(r.foreign)}`)
     assert(r.foreign.reason.includes('不是任何一个 satuwork 席位'), `${r.foreign.reason}`)
@@ -140,5 +144,49 @@ export async function runDeployErrors({ root, test, assert, log }) {
     assert(r.sshForges === null, `ssh 会话里冒充成功：${r.sshForges}`)
     assert(r.noScopeForges === null, `不在会话里冒充成功：${r.noScopeForges}`)
     assert(r.unitWrongUid === null && r.unknownSeat === null, `${r.unitWrongUid} / ${r.unknownSeat}`)
+  })
+  await test('占口的进程查到一半就退了 → 继续等，不判成「被外面的 VNC 占着」', async () => {
+    /**
+     * 现场：自动跟版重铺一个席位，部署 exited 43——「端口 5910 被 ? 的进程占着，它不是任何
+     * 一个 satuwork 席位」。那个进程正是这个席位自己上一代的 x11vnc：ss 抓到它的时候还在，
+     * 到去读 /proc 和 ps 的时候已经退了，主人读成空，于是走进了「外面的 VNC」那一支。
+     *
+     * 直接跑 deploy-seat.sh 里的那个函数（照原样抠出来），外面的命令换成桩：前两轮 ss 报一个
+     * 已经不存在的 pid，第三轮报这个席位自己的进程。修好之前第一轮就 exit 43。
+     */
+    const { readFileSync, mkdtempSync, rmSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const { spawnSync } = await import('node:child_process')
+    const script = readFileSync(join(root, 'manager/src/seat/deploy-seat.sh'), 'utf8')
+    const fn = /^verify_seat_listener\(\) \{\n[\s\S]*?^\}\n/m.exec(script)?.[0]
+    assert(fn, '在 deploy-seat.sh 里没找到 verify_seat_listener')
+    const dir = mkdtempSync(join(tmpdir(), 'satu-port-race-'))
+    try {
+      const harness = `set -Eeuo pipefail
+SEAT_ID=sw-me-0001
+LINUX_USER=sw-me
+COUNT=${JSON.stringify(join(dir, 'n'))}
+echo 0 > "$COUNT"
+# 命令替换跑在子 shell 里，计数只能落盘。
+ss() {
+  local n; n=$(( $(cat "$COUNT") + 1 )); echo "$n" > "$COUNT"
+  if [ "$n" -le 2 ]; then pid=999999999; else pid=777; fi
+  echo "LISTEN 0 5 127.0.0.1:5910 0.0.0.0:* users:((\"x11vnc\",pid=$pid,fd=5))"
+}
+seat_of_pid() { if [ "$1" = 777 ]; then printf '%s' "$SEAT_ID"; fi; }
+ps() { :; }
+sleep() { :; }
+${fn}
+verify_seat_listener 5910 x11vnc
+echo "ok scans=$(cat "$COUNT")"
+`
+      const out = spawnSync('bash', ['-c', harness], { encoding: 'utf8' })
+      assert(out.status === 0, `该等到自己的进程起来，实际退出 ${out.status}：${out.stderr.trim().slice(-300)}`)
+      assert(/ok scans=3/.test(out.stdout), `该扫到第三轮认出自己：${out.stdout} ${out.stderr}`)
+      assert(!out.stderr.includes('不是任何一个 satuwork 席位'), `还是报成了外面的 VNC：${out.stderr}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 }

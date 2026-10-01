@@ -55,6 +55,7 @@ import { runSeatSecrets } from './seat-secrets.mjs'
 import { runMaxSteps } from './max-steps.mjs'
 import { runDelegate } from './delegate.mjs'
 import { runToolCalls } from './toolcalls.mjs'
+import { runAnthropicThinking } from './anthropic-thinking.mjs'
 import { runResponses } from './responses.mjs'
 import { runShutdown } from './shutdown.mjs'
 import { runGuards } from './guards.mjs'
@@ -76,6 +77,7 @@ import { uiSource } from './ui-dom.mjs'
 import { runCustomProvider } from './custom-provider.mjs'
 import { runStats } from './stats.mjs'
 import { runWebTools } from './web-tools.mjs'
+import { runImageGen } from './image-gen.mjs'
 import { runBilling } from './billing.mjs'
 import { runMigrate } from './migrate.mjs'
 import { runGlobalCatalog } from './global-catalog.mjs'
@@ -3614,6 +3616,7 @@ async function main() {
     await suite('custom-provider', () => runCustomProvider({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('stats', () => runStats({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('web-tools', () => runWebTools({ gwRoot, test, req, start, waitHttp, assert, log }))
+    await suite('image-gen', () => runImageGen({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('billing', () => runBilling({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('migrate', () => runMigrate({ gwRoot, test, start, waitHttp, assert, log }))
     await suite('global-catalog', () => runGlobalCatalog({ gwRoot, test, req, start, waitHttp, assert, log }))
@@ -3668,6 +3671,7 @@ async function main() {
     await suite('max-steps', () => runMaxSteps({ root, test, assert, log }))
     await suite('delegate', () => runDelegate({ root, test, assert, log }))
     await suite('toolcalls', () => runToolCalls({ root, test, assert, log }))
+    await suite('anthropic-thinking', () => runAnthropicThinking({ root, test, assert, log }))
     await suite('responses', () => runResponses({ root, test, assert, log }))
     await suite('guards', () => runGuards({ root, test, assert, log }))
     await suite('handoff', () => runHandoff({ root, gwRoot, test, req, start, waitHttp, assert, log, skip }))

@@ -55,6 +55,12 @@ trap 'rc=$?; echo "deploy-seat.sh 第 $LINENO 行失败（退出码 $rc）" >&2;
 case "$LINUX_USER" in
   *[!A-Za-z0-9_-]* | '') echo "refusing: bad LINUX_USER" >&2; exit 1 ;;
 esac
+# 席位账号只能是 sw- 开头的那一种（同管家的 SEAT_USER_RE）：机器上原有的账号（debian、admin……）
+# 下面会跳过 adduser 直接拿来跑 bot，而它们常带着免密 sudo。
+case "$LINUX_USER" in
+  sw-?*) ;;
+  *) echo "refusing: LINUX_USER $LINUX_USER 不是席位账号（要以 sw- 开头）" >&2; exit 1 ;;
+esac
 case "$SEAT_ID" in
   *[!A-Za-z0-9_-]* | '') echo "refusing: bad SEAT_ID" >&2; exit 1 ;;
 esac
@@ -252,9 +258,20 @@ chown -h "$LINUX_USER:$LINUX_USER" "$HOME_DIR"
 # 老版本留下的、中途失败时是 root 的目录，先把归属修回来，否则下面以席位用户建目录会
 # 被拒。-h：它们要是链接，改的是链接本身，不碰指向的东西。不存在就算了。
 chown -h "$LINUX_USER:$LINUX_USER" "$WORK_DIR" "$HOME_DIR/.satuwork" 2>/dev/null || true
-if [ -d "$SEAT_DIR" ] && [ ! -L "$SEAT_DIR" ]; then
-  chown -hR "$LINUX_USER:$LINUX_USER" "$SEAT_DIR"
-fi
+# **递归那一步不能写成 `chown -hR "$SEAT_DIR"`。** -h / -P 只管「不跟要改的那个链接」，
+# 路径**中间**的分量照样解析：$SEAT_DIR 是 ~/.satuwork/<席位>，而 ~/.satuwork 归席位用户，
+# 他 `ln -s /opt/satuwork/seats ~/.satuwork` 之后，$SEAT_DIR 就解析成 root 的
+# /opt/satuwork/seats/<席位>——整个 app/ 被送给了他，改一个入口文件再 kill 掉自己的 bot，
+# 拉起来的就是他的代码。事前 `[ -L ]` 也挡不住：检查和使用之间他可以随时换。
+#
+# 所以从 $HOME_DIR（上面核过不是链接、父目录归 root）开始用 find -P 往下走：一层链接都
+# 不跟，~/.satuwork 是链接就根本不会进去；只进本席位这一支，别处全剪掉。-execdir 在
+# find 自己安全打开的那一层目录里、用 ./名字 去改，不再从头解析整条路径。
+# PATH 写死：GNU find 的 -execdir 碰上 PATH 里有相对目录会直接拒跑。
+env PATH=/usr/sbin:/usr/bin:/sbin:/bin find -P "$HOME_DIR" -xdev \
+  \( -path "$HOME_DIR/*" ! -path "$HOME_DIR/.satuwork" ! -path "$SEAT_DIR" ! -path "$SEAT_DIR/*" -prune \) -o \
+  \( \( -path "$SEAT_DIR" -o -path "$SEAT_DIR/*" \) ! -user "$LINUX_USER" \
+     -execdir chown -h "$LINUX_USER:$LINUX_USER" {} + \)
 # 账号级：共享工作区。已存在就别动，里面是员工和 bot 的资料。
 # 席位级：整棵子树都归这个席位。
 as_user mkdir -p "$WORK_DIR" "$HOME_DIR/.satuwork" \
@@ -531,6 +548,16 @@ verify_seat_listener() {
       # 于是都可能空手而归。那时该继续等，而不是让整个部署崩掉。
       holder=$(seat_of_pid "$pid" || true)
       owner=$(ps -o user:32= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+      # **进程已经不在了**：ss 抓到它、到这里读 /proc 和 ps 之间退掉的。多半是这个席位
+      # 自己上一代的 x11vnc——重启单元时旧的那个正在退。它已经不占口了，继续等。
+      # 不先挡这一下，下面会拿着空的 owner 走进「被外面的 VNC 占着」那一支、exit 43——
+      # 就这么误报过：自动跟版重铺一个席位，报「端口 5910 被 ? 的进程占着，不是任何一个
+      # satuwork 席位」，而那个进程正是这个席位自己的。
+      # 放在两次读之后而不是之前：读的过程中退掉的也要算进来。
+      if [ ! -e "/proc/$pid" ]; then
+        sleep 0.25
+        continue
+      fi
       # 认不出席位、用户又对得上：多半是进程已经退了，也可能是这个员工在别处（比如 ssh
       # 会话里）起的东西。**不据此放行**（放行就是上面那个「进的是另一块屏」的洞），
       # 继续绕圈；真起不来的话，下面那句超时告警会兜住，且不算部署失败。

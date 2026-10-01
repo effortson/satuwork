@@ -242,6 +242,22 @@ await ctx.agents
     上限夹得住: ctx.agents.quiesce(999 * 60_000) - Date.now() <= 5 * 60_000 + 1000,
   }
   ctx.agents.resume()
+
+  /**
+   * 管家放开走的是 `/api/quiesce {ttlMs:0}`，也就是 quiesce(0)——**它也得把静默期里攒下的
+   * 队列排掉**。以前只有 resume() 会排，而 resume() 除了这份探针没人调：部署失败、管家放开
+   * 之后，那些消息就一直挂在 dock 上，要等人再发一条。
+   */
+  const quietQ = 's-quiet-queue'
+  ctx.agents.quiesce(60_000)
+  ctx.agents.enqueue(quietQ, '静默期间排进来的', [], [])
+  const heldDuringQuiet = ctx.agents.queued(quietQ).length === 1
+  ctx.agents.quiesce(0)
+  await new Promise((r) => setTimeout(r, 50))
+  const drained = ctx.agents.queued(quietQ).length === 0
+  // 等它那一轮收口，别和下面那几段抢会话。
+  for (let i = 0; i < 100 && ctx.agents.isRunning(quietQ); i++) await new Promise((r) => setTimeout(r, 50))
+  out.quietDrain = { 静默期里留在队列: heldDuringQuiet, 用ttl0放开也排空: drained }
 }
 
 // ── 5. 出队之后、agent 建出来之前，isRunning 必须一直是 true ─────────
@@ -451,5 +467,31 @@ await ctx.agents
 }
 
 hold = null
+
+/**
+ * 开机排空：上一条命留下的队列，等目录拉下来就接着跑。**放在最后**：后台那次开机排空一直在
+ * 等 pulledAt，这里一设，它会把当时所有排着的消息都跑掉，放前面会搅了别的段。
+ */
+{
+  const sid = 's-boot-queue'
+  // drainAtBoot 的等待定时器是 unref 的（不拖住进程退出）；探针里没有别的东西占着事件循环，
+  // 这里挂一个占位的，不然 Node 会以「顶层 await 永远等不到」直接退出。
+  const keepAlive = setInterval(() => {}, 1_000)
+  ctx.agents.enqueue(sid, '换版重启之前排进来的', [], [])
+  // 目录还没拉下来：等满就放弃，一条都不动——这时开跑会以「没有模型」失败，消息白丢。
+  const notYet = await ctx.agents.drainAtBoot({ waitMs: 100, pollMs: 20 })
+  const keptWhileNotReady = ctx.agents.queued(sid).length === 1
+  ctx.catalog.pulledAt = Date.now()
+  const ran = await ctx.agents.drainAtBoot({ waitMs: 100, pollMs: 20 })
+  await new Promise((r) => setTimeout(r, 50))
+  const drained = ctx.agents.queued(sid).length === 0
+  for (let i = 0; i < 100 && ctx.agents.isRunning(sid); i++) await new Promise((r) => setTimeout(r, 50))
+  clearInterval(keepAlive)
+  out.bootDrain = {
+    目录没好时一条不动: notYet === 0 && keptWhileNotReady,
+    目录好了就接着跑: ran >= 1 && drained,
+  }
+}
+
 console.log('__RESULT__' + JSON.stringify(out))
 process.exit(0)

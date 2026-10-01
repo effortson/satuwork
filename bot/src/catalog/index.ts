@@ -80,6 +80,26 @@ function roleOf(raw: ModelRole | undefined): ModelRole {
   }
 }
 
+/**
+ * 平台钉的生图模型（generate_image 用它）。`api` 决定请求体怎么拼、答复怎么拆——现在只有
+ * `openai-images` 一种（gateway/src/image-models.ts）。
+ */
+export interface ImageModel {
+  provider: string
+  model: string
+  api: string
+}
+
+/** 三格缺一格就当没开：拼不出请求的配置和没配是一回事。 */
+function imageOf(raw: unknown): ImageModel | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  const provider = typeof o.provider === 'string' ? o.provider.trim() : ''
+  const model = typeof o.model === 'string' ? o.model.trim() : ''
+  const api = typeof o.api === 'string' ? o.api.trim() : ''
+  return provider && model && api ? { provider, model, api } : null
+}
+
 interface RemoteSkill {
   id: string
   name: string
@@ -303,7 +323,13 @@ export class CatalogService extends Service {
    * cordis.yml 也能改，等于给了一条绕过平台配置的暗路。
    * 网页提取的摘要走 utility——廉价、大批量、不面对用户，正是它的定义。
    */
-  models: { daily: ModelRole; utility: ModelRole; dailyAlternates: ModelRole[] } = { daily: EMPTY_ROLE, utility: EMPTY_ROLE, dailyAlternates: [] }
+  models: { daily: ModelRole; utility: ModelRole; dailyAlternates: ModelRole[]; image: ImageModel | null } = {
+    daily: EMPTY_ROLE,
+    utility: EMPTY_ROLE,
+    dailyAlternates: [],
+    // 生图模型。null = 平台没开，generate_image 不进工具表（agent 的 toolSchemasFor）。
+    image: null,
+  }
 
   /** 上一次拉到的公司模版版本号。给 /api/runtime/status 看，也用来打日志。 */
   templateVersion = 0
@@ -439,7 +465,7 @@ export class CatalogService extends Service {
       bots?: RemoteBot[]
       skills?: RemoteSkill[]
       servers?: RemoteServer[]
-      models?: { daily?: ModelRole; utility?: ModelRole; dailyAlternates?: ModelRole[] }
+      models?: { daily?: ModelRole; utility?: ModelRole; dailyAlternates?: ModelRole[]; image?: unknown }
       memories?: Partial<CachedMemory>[]
     }
     // **发车时刻要在 fetch 之前取**：豁免的判据就是「这份响应比那次写入更旧」。
@@ -476,6 +502,8 @@ export class CatalogService extends Service {
       dailyAlternates: (Array.isArray(body.models?.dailyAlternates) ? body.models.dailyAlternates : [])
         .map(roleOf)
         .filter((r) => r.provider && r.model),
+      // 老 Gateway 不带 = null = 没有生图工具。
+      image: imageOf(body.models?.image),
     }
     this.syncSkills(Array.isArray(body.skills) ? body.skills : [], { since: startedAt })
     /** 没有 id 的那些当场丢掉：缓存是按 id 认的，一条没有 id 的记录进去就再也删不掉。 */
@@ -483,7 +511,8 @@ export class CatalogService extends Service {
       (m): m is Partial<CachedMemory> & { id: string } => typeof m?.id === 'string' && !!m.id,
     )
     this.syncMemories(memories, { since: startedAt })
-    this.syncServers(Array.isArray(body.servers) ? body.servers : [])
+    // 没有这一格（老 Gateway）就只补不删：拿一份「空」去剪，会把所有服务器连同 token 一起清掉。
+    this.syncServers(Array.isArray(body.servers) ? body.servers : [], { prune: Array.isArray(body.servers) })
     const pinned = this.pinBots(this.remoteBots)
     await this.connectMcp()
     if (!pinned) return false
@@ -732,9 +761,24 @@ export class CatalogService extends Service {
     }
   }
 
-  private syncServers(items: RemoteServer[]) {
+  /**
+   * 把目录里的 MCP 服务器落进本地缓存。**目录里没有的要删掉，token 一起删。**
+   *
+   * 以前只 upsert 不剪枝（Skill 和记忆都有剪枝，唯独这里没有）：管理员下线一台 MCP、或者
+   * 移除一个连接器之后，席位上这一行和它的明文 token 一直留着，重启也还在——每次 connectMcp
+   * 照旧拿旧 token 去握手、注册它的工具，@ 选单里照样列着它，只能靠远端自己拒掉旧 token 兜底。
+   */
+  private syncServers(items: RemoteServer[], opts: { prune?: boolean } = {}) {
     const col = this.ctx.storage.collection<CachedServer>('mcp-servers')
     const now = Date.now()
+    if (opts.prune) {
+      const live = new Set(items.map((s) => s.id))
+      for (const row of col.list()) {
+        if (live.has(row.value.id)) continue
+        col.delete(row.value.id)
+        this.ctx.storage.setSetting(TOKEN_NS, row.value.id, null)
+      }
+    }
     for (const s of items) {
       const prev = col.get(s.id)
       const kind = (KINDS as readonly string[]).includes(s.kind || '') ? (s.kind as CachedServer['kind']) : 'SSE'

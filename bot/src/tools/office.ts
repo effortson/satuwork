@@ -7,6 +7,7 @@ import { humanSize } from '../workspace/index.ts'
 import { attr, checkPackage, checkXml, condenseXml, prettyXml, relationships } from '../workspace/ooxml.ts'
 import { ToolFailure, fail, registerTool } from './common.ts'
 import { MAX_PATCH_BYTES } from './file.ts'
+import { newGuide, type NewKind } from './office-new.ts'
 
 /**
  * Office 工具集：`office_unpack` / `office_pack`——改已有的 Word / Excel / PPT，**原格式不丢**。
@@ -18,10 +19,12 @@ import { MAX_PATCH_BYTES } from './file.ts'
  * 已有文档。
  *
  * **新建文档不走这里**：在 terminal 里写 .cjs 脚本，require('docx') / require('pptxgenjs') /
- * require('exceljs') 生成（terminal 给 node 设好了 NODE_PATH，见 tools/terminal.ts）。
+ * require('exceljs') 生成（terminal 给 node 设好了 NODE_PATH，见 tools/terminal.ts）。写之前
+ * 调 `office_guide` 拿那种格式的要点和一份能跑的模板（内容在 office-new.ts）。
  *
  * **格式要点跟着解包结果走**，不常驻：解开 docx 才带回 docx 那份（段、run、修订怎么写），
- * 解开 pptx 才带回复制一页要改哪四处。常驻在提示词里的只有两把工具的描述。
+ * 解开 pptx 才带回复制一页要改哪四处。新建的要点同理，调 office_guide 才给。常驻在提示词里的
+ * 只有三把工具的描述。
  *
  * 解出来的东西放在工作区的 `.satuwork/office/` 下：`.satuwork` 本来就不进文件树、不算
  * Bot 的产出（common.ts 的 SKIPPED_DIRS），人看到的只有原文件和打包出来的那一份。
@@ -253,6 +256,14 @@ async function listFiles(root: string, rel = ''): Promise<string[]> {
   return out
 }
 
+/**
+ * 这台 Bot 有没有 terminal。**本地 Bot 没有**（tools/terminal.ts：OS 沙箱做完之前本地模式不开 shell）。
+ *
+ * 新建文档整条路都靠 terminal 跑 .cjs 脚本（office_guide 给的就是脚本模板），本地 Bot 上照着做，
+ * 模型会去调一把工具表里根本没有的 terminal。所以本地不注册 office_guide，说明里也不指路过去。
+ */
+const hasShell = () => (process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local'
+
 export function apply(ctx: Context) {
   const resolveIn = (path?: string) => ctx.workspace.resolve(path)
   const show = (path: string) => ctx.workspace.show(path).split(sep).join('/')
@@ -273,8 +284,10 @@ export function apply(ctx: Context) {
       description:
         '要改一份已有的 Word（.docx）/ Excel（.xlsx）/ PPT（.pptx），并且保留它原来的格式时用：把它解成一堆 XML（已拆成一个标签一行），' +
         '然后用 read_file / patch 改，改完调 office_pack 打回原文件。结果里会列出该看哪几个文件，并附上这种格式的改法要点。' +
-        '只是读内容用 read_file 就行，不用解包。**新建文档不用它**：在 terminal 里写 .cjs 脚本，' +
-        "require('docx') / require('pptxgenjs') / require('exceljs') 生成（这几个库已装好，node 直接跑）。" +
+        '只是读内容用 read_file 就行，不用解包。' +
+        (hasShell()
+          ? '**新建文档不用它**：先调 office_guide 拿到那种格式的要点和模板，再在 terminal 里写 .cjs 脚本生成。'
+          : '这台 Bot 新建不了 Word / Excel / PPT（没有能跑脚本的 terminal），要新建就请用户先建一份空白的，再解包来改。') +
         '同一个文件再解一次会丢掉还没打包的改动。',
       parameters: {
         type: 'object',
@@ -381,6 +394,30 @@ export function apply(ctx: Context) {
           .join('\n'),
         refs: [{ path: show(source), name: basename(source) }],
       }
+    },
+  )
+
+  if (hasShell()) registerTool(
+    ctx,
+    {
+      name: 'office_guide',
+      delegation: {},
+      risk: ['read'],
+      description:
+        '要**新建**一份 Word / Excel / PPT 时，写脚本之前先调：返回用脚本生成这种文件的要点（单位、字体、' +
+        '常见的坑）和一份能直接跑的最小模板。改已有的文件不用它，用 office_unpack。',
+      parameters: {
+        type: 'object',
+        properties: {
+          format: { type: 'string', enum: ['docx', 'xlsx', 'pptx'], description: '要做的文件类型。' },
+        },
+        required: ['format'],
+      },
+    },
+    ({ format }: { format?: string }) => {
+      const kind = String(format ?? '').toLowerCase().replace(/^\./, '')
+      if (kind !== 'docx' && kind !== 'xlsx' && kind !== 'pptx') fail('format 只能是 docx / xlsx / pptx。')
+      return newGuide(kind as NewKind)
     },
   )
 

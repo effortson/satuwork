@@ -6,7 +6,7 @@ import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
 import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
-import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
+import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
  * 类型、常量和行解析都在 `db/` 底下；这里原样再导出，调用点仍然
@@ -974,6 +974,23 @@ export class Db {
     )
   }
 
+  /**
+   * 这颗模型最近成功调用的用量，新的在前。生图预估的实测基线用（lib/image-estimate.ts）。
+   *
+   * 只要**真成交过**的：账本上那一行是 `ok`、而且真有输出。被拒的、失败的、清扫收口的
+   * 占位行都是 0 token，混进来会把基线往下拽——而基线偏低就是闸门放过透支。
+   */
+  async recentModelUsage(provider: string, model: string, since: number, limit: number): Promise<{ promptTokens: number; completionTokens: number }[]> {
+    const rows = await this.many(
+      `select c."promptTokens", c."completionTokens" from llm_calls c
+         join usage_charges u on u."refId" = c.id and u.kind = 'llm' and u.status = 'ok'
+        where c.provider = ? and c.model = ? and c."createdAt" >= ? and c."completionTokens" > 0
+        order by c."createdAt" desc limit ?`,
+      [provider, model, since, limit],
+    )
+    return rows.map((r) => ({ promptTokens: Number(r.promptTokens) || 0, completionTokens: Number(r.completionTokens) || 0 }))
+  }
+
   async llmCall(id: string): Promise<LlmCall | undefined> {
     const r = await this.one('select * from llm_calls where id = ?', [id])
     return r ? llmCallOf(r) : undefined
@@ -1802,6 +1819,15 @@ export class Db {
    * 落账各自读到同一个 sum 仍会把赠送桶扣穿，所以落账那一条 insert 要排队。
    * **必须在 db.tx 里调**（同 lockExclusive）。按公司散列，不同公司互不等。
    */
+  /**
+   * 一次模型调用的结算锁：「这次调用有没有落过账」和「落账」要在它底下成对做完。
+   * **先拿它、再拿账本锁**（meter.charge 里那把），各处同一个顺序，不会互等。
+   */
+  async lockLlmSettle(callId: string): Promise<void> {
+    if (!this.txClient.getStore()) throw new Error('lockLlmSettle 必须在 db.tx 里调——事务外的锁当场就放了')
+    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`llm_settle:${callId}`])
+  }
+
   async lockCompanyLedger(companyId: string): Promise<void> {
     if (!this.txClient.getStore()) throw new Error('lockCompanyLedger 必须在 db.tx 里调——事务外的锁当场就放了')
     await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`usage_charges:${companyId}`])
@@ -2714,6 +2740,20 @@ export class Db {
   }
 
   // ── 登录类接口的失败计数（lib/auth-throttle.ts，迁移 0046）。──
+  //
+  // 一次登录同时碰「邮箱桶」和「IP 桶」两行，而且是分两条语句碰的（先记、后退）。**这里每一条
+  // 碰多行的语句都按 `key collate "C"` 的顺序拿行锁**，一个都不能例外：
+  //
+  // 原来记一次是 `values (email), (ip)`——按传进来的顺序锁 email 再锁 ip；退回去是
+  // `update ... where key = any(...)`——这张表小，走顺序扫描，按行在堆里的物理位置锁。IP 行
+  // 被反复改写、新版本在页里前后挪，于是时而先 ip 后 email，和前者正好反过来：同一个邮箱
+  // 并发打进来一批，一条在记、一条在退，互相等对方手里那一行，PG 判死锁、杀掉其中一条，
+  // 用户拿到 500，计数还漏记 / 多记一笔（CI 上间歇性挂在 auth-throttle 那组，本地一批 20
+  // 并发十轮能撞七轮）。
+  //
+  // 定序只能在库里定：`insert ... select ... order by` 按排好的次序逐行 upsert；更新和删除
+  // 先 `select ... order by ... for update` 把行按次序锁上，外层语句再动这些已经锁住的行。
+  // 显式写 `collate "C"`，不跟着库的默认排序规则走，几条语句保证是同一个次序。
 
   /**
    * 给这几个桶各记一次，**一条语句、原子地**拿回记完之后的数。
@@ -2723,17 +2763,14 @@ export class Db {
    */
   async bumpAuthThrottle(keys: string[], now: number, windowMs: number): Promise<{ key: string; count: number; resetAt: number }[]> {
     if (!keys.length) return []
-    const values = keys.map(() => '(?, 1, ?)').join(', ')
-    const args: unknown[] = []
-    for (const key of keys) args.push(key, now + windowMs)
-    args.push(now, now)
     const rows = await this.many(
-      `insert into auth_throttle (key, count, "resetAt") values ${values}
+      `insert into auth_throttle (key, count, "resetAt")
+       select k, 1, ?::bigint from unnest(?::text[]) as k order by k collate "C"
        on conflict (key) do update set
          count = case when auth_throttle."resetAt" <= ? then 1 else auth_throttle.count + 1 end,
          "resetAt" = case when auth_throttle."resetAt" <= ? then excluded."resetAt" else auth_throttle."resetAt" end
        returning key, count, "resetAt"`,
-      args,
+      [now + windowMs, [...new Set(keys)], now, now],
     )
     return rows.map((r) => ({ key: String(r.key), count: Number(r.count), resetAt: Number(r.resetAt) }))
   }
@@ -2741,17 +2778,33 @@ export class Db {
   /** 把先记上的那一次退回去（这次没被评判，或者评判结果是对的）。 */
   async refundAuthThrottle(keys: string[]): Promise<void> {
     if (!keys.length) return
-    await this.run('update auth_throttle set count = greatest(count - 1, 0) where key = any(?::text[])', [keys])
+    await this.run(
+      `update auth_throttle t set count = greatest(t.count - 1, 0)
+       from (select key from auth_throttle where key = any(?::text[]) order by key collate "C" for update) l
+       where t.key = l.key`,
+      [keys],
+    )
   }
 
   /** 整个桶清零：口令对了，这个邮箱之前的失败一笔勾销。 */
   async clearAuthThrottle(keys: string[]): Promise<void> {
     if (!keys.length) return
-    await this.run('delete from auth_throttle where key = any(?::text[])', [keys])
+    await this.run(
+      `delete from auth_throttle t
+       using (select key from auth_throttle where key = any(?::text[]) order by key collate "C" for update) l
+       where t.key = l.key`,
+      [keys],
+    )
   }
 
+  /** 清扫到期的桶。正被登录碰着的行跳过（skip locked），下一轮再收，清扫不去和登录抢锁。 */
   async sweepAuthThrottle(now: number): Promise<number> {
-    return this.run('delete from auth_throttle where "resetAt" <= ?', [now])
+    return this.run(
+      `delete from auth_throttle t
+       using (select key from auth_throttle where "resetAt" <= ? order by key collate "C" for update skip locked) l
+       where t.key = l.key`,
+      [now],
+    )
   }
 
   // ── 配对码。一次性、30 分钟过期，装管家时拿它换这台机器的 smt_。──
@@ -2938,10 +2991,18 @@ export class Db {
    * 给一个席位排一次部署（批量更新那两条路）。席位行别的格一个都不动。
    *
    * 已经排着的就盖掉：后排的那一次说的是「现在要的样子」，前一次没轮到就没必要做了。
+   *
+   * `ifIdle` 反过来：**队里已经有活就不排**，判断和写入是同一条 update。给心跳里的自动跟版
+   * 用——它是背景里的例行公事，不能盖掉人手工排下的那一次。
    */
-  async queueSeatDeploy(accountId: string, botId: string, request: SeatDeployRequest): Promise<boolean> {
+  async queueSeatDeploy(
+    accountId: string,
+    botId: string,
+    request: SeatDeployRequest,
+    opts: { ifIdle?: boolean } = {},
+  ): Promise<boolean> {
     const n = await this.run(
-      'update seat_runtimes set "deployQueued" = ?::jsonb where "accountId" = ? and "botId" = ?',
+      `update seat_runtimes set "deployQueued" = ?::jsonb where "accountId" = ? and "botId" = ?${opts.ifIdle ? ' and "deployQueued" is null' : ''}`,
       [JSON.stringify(request), accountId, botId],
     )
     return n > 0
@@ -4385,6 +4446,8 @@ export class Db {
       utility: { provider: next.utility.provider, model: next.utility.model, reasoningEffort: parseReasoningEffort(next.utility.reasoningEffort) },
       // 同下面那一串「不能漏」：整份重写，漏了它备选就是能填、回 200、读出来永远是空。
       dailyAlternates: parseDailyAlternates(next.dailyAlternates, next.daily),
+      // 同上：生图模型也是整份重写里的一格，漏了就是「能选、回 200、席位上永远没有那把工具」。
+      image: parseImageRole(next.image),
       enabledModels: enabled,
       priceMultiplier: parsePriceMultiplier(next.priceMultiplier),
       connectorPricing: parseConnectorPricing(next.connectorPricing),
@@ -4393,6 +4456,8 @@ export class Db {
       // 后果是「全机队钉版本」这一级完全失效：传一个包上去，所有没有逐台钉过的机器
       // 都会在下一次心跳自己升上去，而唯一能拦住它的开关，看起来能设、其实存不进去。
       managerVersion: String(next.managerVersion ?? '').trim(),
+      // 同上，Bot 的那一档。漏了它，钉 Bot 版本就是「能填、回 200、席位照样跟最新走」。
+      botVersion: String(next.botVersion ?? '').trim(),
       // 同上：这一行漏了，工具配置那一屏就是「能填、回 200、读出来永远是空」。
       webTools: parseWebTools(next.webTools),
       // 同上第三次。这两项漏了的后果更重：单价覆盖存不进去，缺价的模型就永远缺价；
@@ -4865,12 +4930,19 @@ export class Db {
     return row
   }
 
-  async finishRoutineRun(id: string, patch: { status: RoutineRunStatus; error?: string | null; sessionId?: string | null }): Promise<void> {
+  /**
+   * 改一条流水的状态。**只改还在 running 的那一条**，返回改没改到。
+   *
+   * 以前按 id 无条件改：租约清扫（failExpiredRoutineLeases）刚把它收成 error 并排了补跑，
+   * 同一刻工人报「开跑了」就把它写回 running，一次已收场的运行被复活；两次并发的收尾都
+   * 过了 claimedRun，armRetry 连跑两次、少补一次。收过场的流水一律不再动，调用方看返回值。
+   */
+  async finishRoutineRun(id: string, patch: { status: RoutineRunStatus; error?: string | null; sessionId?: string | null }): Promise<boolean> {
     const sets = ['status = ?', 'error = ?', '"endedAt" = ?']
     const args: unknown[] = [patch.status, patch.error ?? null, patch.status === 'running' ? null : Date.now()]
     if (patch.sessionId !== undefined) (sets.push('"sessionId" = ?'), args.push(patch.sessionId))
     args.push(id)
-    await this.run(`update routine_runs set ${sets.join(', ')} where id = ?`, args)
+    return (await this.run(`update routine_runs set ${sets.join(', ')} where id = ? and status = 'running'`, args)) > 0
   }
 
   async routineRuns(routineId: string, limit = 10): Promise<RoutineRun[]> {

@@ -395,7 +395,7 @@ create index if not exists handoff_assignee on handoffs (assignee, state);
 |---|---|---|
 | 会话里 | 一张交接卡：要做什么、为什么、谁接的、一个写结论的框；按钮「处理完了，交还 / 我来接手 / 换个做法 / 不用处理了」 | `chat.js` 的 `handoffHtml`，骨架复用 `.sw-approval` 那套样式 |
 | 侧栏 | 那颗点的第三态 `review`：**在等人 > 正在跑 > 空闲** | `chat.js` 的 `settleDot`（确认和交接各记一份，重算而不是按最后一条事件写） |
-| 顶栏 | 待办计数（角标压在图标右上角，为 0 时不出现） | `pages-handoffs.js` 的 `handoffBell`，挂在 `render.js` 的 `appView` 上 |
+| 顶栏 | 待办计数（角标压在图标右上角，为 0 时不出现）。**对话页上**它是右栏的一屏（和工作区文件、运行环境并列），点开不离开对话；别的页没有右栏，照旧跳 `/handoffs` | 对话页：`render.js` 的 `asideToggle` + `pages-handoffs.js` 的 `handoffsAside`；别的页：`handoffBell` |
 | 新一页 | `/handoffs`：30 天概览 + 清单（全部 / 要我处理的）+ 就地处理的卡 | 新分片 `pages-handoffs.js`——**加分片要同步改 `index.html` 和 `http.ts` 的 `UI_PARTS`** |
 
 几条要点：

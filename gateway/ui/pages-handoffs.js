@@ -82,13 +82,15 @@ function handoffStatsStrip() {
  * Gateway，浏览器这边是唯一答得上来的地方。**所以只看得见自己名下的 Bot**——管理员在
  * 这一段里看不到别人的确认，那是对的：别人的确认只有别人点得动。
  */
+/** 等着拍板的那条是哪颗 Bot 的。名单里没有（刚删掉）就露 id，好过一片空白。 */
+function handoffBotName(id) {
+  const b = (state.runtimeBots || []).find((x) => x.id === id)
+  return (b && (b.name || b.id)) || id
+}
+
 function approvalWaitPanel() {
   const list = typeof pendingApprovals === 'function' ? pendingApprovals() : []
   if (!list.length) return ''
-  const nameOf = (id) => {
-    const b = (state.runtimeBots || []).find((x) => x.id === id)
-    return (b && (b.name || b.id)) || id
-  }
   const rows = list
     .map(
       (a) => `<div class="satu-handoffrow">
@@ -99,7 +101,7 @@ function approvalWaitPanel() {
           <div style="font-size: 12px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(a.name || '')}</div>
         </div>
         <span><span class="tag tag-warn">${t('等你拍板', 'Approve')}</span></span>
-        <span style="font-size: 12.5px; color: var(--muted-foreground);">${esc(nameOf(a.botId))}</span>
+        <span style="font-size: 12.5px; color: var(--muted-foreground);">${esc(handoffBotName(a.botId))}</span>
         <span style="font-size: 12.5px; color: var(--muted-foreground);">${t('只有你点得动', 'only you can')}</span>
         <span style="font-size: 12px; color: var(--muted-foreground);">${esc(a.at ? chatClock(a.at) : '')}</span>
         <div class="satu-rowactions" style="display: flex; gap: var(--space-2); justify-content: flex-end;">
@@ -127,9 +129,37 @@ function approvalWaitPanel() {
   </div>`
 }
 
+/**
+ * 一张单右边那几颗按钮。整页那张表和右栏那一屏共用，按钮的规矩只写一遍。
+ *
+ * 「去处理」**只对自己的 Bot 给**。别人名下的 Bot 打不开：`/runtime/bots/:id` 按「这颗
+ * Bot 是不是你的」判（visibleBotOf → botsFor），管理员点过去落在一句「没有这个 Bot」上
+ * ——而管理员恰恰是这套东西里最该处理别人单子的人。所以那种就地展开处理（handoffPanel）。
+ */
+function handoffActs(h) {
+  const mine = state.me && state.me.account ? state.me.account.id : ''
+  const open = state.handoffOpenId === h.id
+  const claim =
+    h.state === 'open'
+      ? `<button type="button" class="btn btn-ghost" data-act="handoff-claim" data-id="${esc(h.id)}">${t('我来接手', 'Take it')}</button>`
+      : ''
+  const go =
+    h.accountId === mine
+      ? `<button type="button" class="btn btn-secondary" data-act="handoff-open" data-bot="${esc(h.botId)}">${t('去对话里处理', 'Open the chat')}</button>`
+      : `<button type="button" class="btn btn-secondary" data-act="handoff-detail" data-id="${esc(h.id)}" aria-expanded="${open}">${open ? t('收起', 'Close') : t('展开处理', 'Handle here')}</button>`
+  return claim + go
+}
+
+/** 「全部 / 要我处理的」筛完之后的那几张。 */
+function handoffRows() {
+  const list = state.handoffs || []
+  const me = state.me && state.me.account ? state.me.account.id : ''
+  if (state.handoffScope !== 'mine') return list
+  return list.filter((h) => h.assignee === me || h.claimedBy === me || (!h.assignee && isAdmin()))
+}
+
 function handoffRow(h) {
   const mine = state.me && state.me.account ? state.me.account.id : ''
-  const canClaim = h.state === 'open'
   const open = state.handoffOpenId === h.id
   return `
     <div class="satu-handoffrow">
@@ -141,21 +171,7 @@ function handoffRow(h) {
       <span style="font-size: 12.5px; color: var(--muted-foreground);">${esc(h.ownerName || h.accountId)}</span>
       <span style="font-size: 12.5px; color: var(--muted-foreground);">${esc(handoffWho(h))}${h.claimedBy && h.claimedBy === mine ? ' · ' + esc(t('我', 'me')) : ''}</span>
       <span style="font-size: 12px; color: var(--muted-foreground);">${esc(fmtTime(h.createdAt))}</span>
-      <div class="satu-rowactions" style="display: flex; gap: var(--space-2); justify-content: flex-end;">
-        ${/**
-           * 「去处理」**只对自己的 Bot 给**。
-           *
-           * 别人名下的 Bot 打不开：`/runtime/bots/:id` 按「这颗 Bot 是不是你的」判
-           * （visibleBotOf → botsFor），管理员点过去落在一句「没有这个 Bot」上——而管理员
-           * 恰恰是这套东西里最该处理别人单子的人。所以那种就地展开处理（下面那张卡）。
-           */ ''}
-        ${canClaim ? `<button type="button" class="btn btn-ghost" data-act="handoff-claim" data-id="${esc(h.id)}">${t('我来接手', 'Take it')}</button>` : ''}
-        ${
-          h.accountId === mine
-            ? `<button type="button" class="btn btn-secondary" data-act="handoff-open" data-bot="${esc(h.botId)}">${t('去对话里处理', 'Open the chat')}</button>`
-            : `<button type="button" class="btn btn-secondary" data-act="handoff-detail" data-id="${esc(h.id)}" aria-expanded="${open}">${open ? t('收起', 'Close') : t('展开处理', 'Handle here')}</button>`
-        }
-      </div>
+      <div class="satu-rowactions" style="display: flex; gap: var(--space-2); justify-content: flex-end;">${handoffActs(h)}</div>
     </div>${open ? handoffPanel(h) : ''}`
 }
 
@@ -169,7 +185,7 @@ function handoffRow(h) {
  * **正文要现拉**：Gateway 那张表只留了 reason / ask 各一段，而接手的人真正要看的是
  * 「Bot 已经做到哪一步」。拉不到就说明白是席位没应答，不要画成「这张单没有内容」。
  */
-function handoffPanel(h) {
+function handoffPanel(h, { inCard = false } = {}) {
   const d = (state.handoffDetail || {})[h.id]
   const body =
     d === undefined
@@ -181,8 +197,9 @@ function handoffPanel(h) {
           : `<div class="sw-handoff-who">${esc(t('Bot 没写它做到哪一步。', 'The bot did not say how far it got.'))}</div>`
   return `<div class="satu-handoffpanel">
     <div class="sw-approval sw-handoff" data-state="${esc(h.state)}" data-handoff="${esc(h.id)}">
-      <div class="sw-handoff-ask">${esc(h.ask || t('接手处理这件事', 'Take this over'))}</div>
-      ${h.reason ? `<div class="sw-approval-why">${esc(h.reason)}</div>` : ''}
+      ${/* 右栏那张卡上面已经写着这两句了，展开的这一块不再重复一遍。 */ ''}
+      ${inCard ? '' : `<div class="sw-handoff-ask">${esc(h.ask || t('接手处理这件事', 'Take this over'))}</div>`}
+      ${!inCard && h.reason ? `<div class="sw-approval-why">${esc(h.reason)}</div>` : ''}
       ${body}
       <textarea class="input sw-handoff-note" data-handoff="${esc(h.id)}" rows="2"
         placeholder="${esc(t('你做了什么、结论是什么？Bot 要靠它接着做', 'What did you do, and what came of it? The bot continues from this'))}"></textarea>
@@ -196,12 +213,8 @@ function handoffPanel(h) {
 }
 
 function handoffsPage() {
-  const list = state.handoffs || []
-  const me = state.me && state.me.account ? state.me.account.id : ''
   const mineOnly = state.handoffScope === 'mine'
-  const rows = mineOnly
-    ? list.filter((h) => h.assignee === me || h.claimedBy === me || (!h.assignee && isAdmin()))
-    : list
+  const rows = handoffRows()
   const body = rows.length
     ? `<div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
         <div class="satu-handoffhead">
@@ -240,6 +253,106 @@ function handoffsPage() {
     </div>`
 }
 
+/**
+ * 右栏里的转人工待办（对话页）。
+ *
+ * **和 /handoffs 那一页是同一份数据、同一套按钮，只是排成一列卡片。** 右栏只有两三百
+ * 像素宽，那张六列的表摆不下；而人在这里要的也不是全表，是「眼下有几件、哪件该我动手」。
+ *
+ * 为什么要有这一屏：顶栏那颗按钮原来一点就整页换成 /handoffs，人正在跟 Bot 说的话、
+ * 往上翻到的位置全没了，看完还得点回来。转人工本来就是「Bot 做到一半交给人」，人多半
+ * 正坐在对话里——待办该在旁边摆着，而不是把对话挤走。
+ */
+function handoffsAside() {
+  const mineOnly = state.handoffScope === 'mine'
+  const rows = handoffRows()
+  const st = state.handoffStats
+  const stats =
+    st && st.opened
+      ? `<p class="satu-hoaside-stats">${esc(
+          t(`近 30 天开出 ${st.opened} 张 · 还欠 ${st.waiting} · 没人接 ${st.expired}`, `${st.opened} opened in 30d · ${st.waiting} waiting · ${st.expired} untaken`),
+        )}${
+          st.p50ClaimMs == null
+            ? ''
+            : esc(t(` · 一般 ${handoffDuration(st.p50ClaimMs)}有人接`, ` · taken in ${handoffDuration(st.p50ClaimMs)} (median)`))
+        }</p>`
+      : ''
+  const asks = typeof pendingApprovals === 'function' ? pendingApprovals() : []
+  const askCards = asks
+    .map(
+      (a) => `<div class="satu-hocard" data-kind="ask">
+        <div class="satu-hocard-top"><span class="tag tag-warn">${t('等你拍板', 'Approve')}</span><span>${esc(a.at ? chatClock(a.at) : '')}</span></div>
+        <div class="satu-hocard-ask">${esc(a.reason || t('要你拍板才能往下走', 'Needs your approval to continue'))}</div>
+        <div class="satu-hocard-meta">${esc(handoffBotName(a.botId))}${a.name ? ' · ' + esc(a.name) : ''}</div>
+        <div class="satu-hocard-acts"><button type="button" class="btn btn-primary" data-act="handoff-open" data-bot="${esc(a.botId)}">${t('去拍板', 'Go approve')}</button></div>
+      </div>`,
+    )
+    .join('')
+  const mine = state.me && state.me.account ? state.me.account.id : ''
+  const cards = rows
+    .map(
+      (h) => `<div class="satu-hocard">
+        <div class="satu-hocard-top">${handoffStateTag(h)}<span>${esc(fmtTime(h.createdAt))}</span></div>
+        <div class="satu-hocard-ask">${esc(h.ask || t('（没写要做什么）', '(no ask)'))}</div>
+        ${h.reason ? `<div class="satu-hocard-why">${esc(h.reason)}</div>` : ''}
+        <div class="satu-hocard-meta">${esc(h.ownerName || h.accountId)} · ${esc(handoffWho(h))}${h.claimedBy && h.claimedBy === mine ? ' · ' + esc(t('我', 'me')) : ''}</div>
+        <div class="satu-hocard-acts">${handoffActs(h)}</div>
+        ${state.handoffOpenId === h.id ? handoffPanel(h, { inCard: true }) : ''}
+      </div>`,
+    )
+    .join('')
+  const empty =
+    !rows.length && !asks.length
+      ? `<p class="satu-hoaside-empty">${t(
+          '没有等着人处理的事。Bot 卡住、或者撞上公司规定要人拍板的事情时，会在这里开一张单。',
+          'Nothing waiting. When a bot gets stuck or hits a rule that needs a person, it opens a ticket here.',
+        )}</p>`
+      : ''
+  return `<h3>${t('转人工待办', 'Handoffs')}</h3>
+    ${stats}
+    <div class="satu-hoaside-scope">
+      <button type="button" class="btn ${mineOnly ? 'btn-ghost' : 'btn-secondary'}" data-act="handoff-scope" data-scope="all">${t('全部', 'All')}</button>
+      <button type="button" class="btn ${mineOnly ? 'btn-secondary' : 'btn-ghost'}" data-act="handoff-scope" data-scope="mine">${t('要我处理的', 'Mine')}</button>
+    </div>
+    ${askCards}${cards}${empty}`
+}
+
+/**
+ * 只重画右栏那一屏，不走 render()。
+ *
+ * 待办每 30 秒拉一次、确认那一路随时会动，照着它们整页重绘的话，输入框的焦点、对话
+ * 滚到的位置、那张卡里正写着的结论，每半分钟被冲一次。所以只换这一块，而且画出来的
+ * 东西没变就连这一块也不换；换之前把正在写的结论存起来，换完填回去、焦点还给它。
+ */
+let asideHandoffsHtml = ''
+
+function paintAsideHandoffs() {
+  const host = typeof document !== 'undefined' ? document.getElementById('aside-handoffs') : null
+  if (!host) return
+  const html = handoffsAside()
+  if (html === asideHandoffsHtml && host.childElementCount) return
+  const focused = document.activeElement
+  const focusId = focused && focused.classList && focused.classList.contains('sw-handoff-note') ? focused.getAttribute('data-handoff') : ''
+  const caret = focusId ? [focused.selectionStart, focused.selectionEnd] : null
+  stashHandoffNotes(host)
+  asideHandoffsHtml = html
+  host.innerHTML = html
+  fillHandoffNotes(host)
+  if (focusId) {
+    const ta = [...host.querySelectorAll('.sw-handoff-note')].find((x) => x.getAttribute('data-handoff') === focusId)
+    if (ta) {
+      ta.focus()
+      if (caret) ta.setSelectionRange(caret[0], caret[1])
+    }
+  }
+}
+
+/** 待办那份数据变了之后该重画哪儿：整页开着就重画整页，否则只补右栏那一屏。 */
+function repaintHandoffs() {
+  if (state.path === '/handoffs') render()
+  else paintAsideHandoffs()
+}
+
 let askShot = ''
 
 /**
@@ -253,7 +366,7 @@ function repaintAskPanel() {
   const shot = (typeof pendingApprovals === 'function' ? pendingApprovals() : []).map((a) => a.botId + ':' + a.callId).join(',')
   if (shot === askShot) return
   askShot = shot
-  if (state.path === '/handoffs') render()
+  repaintHandoffs()
 }
 
 /**
@@ -293,14 +406,20 @@ const ICON_HANDOFF = [
   'M9 12V8a1.5 1.5 0 0 0-3 0v6a7 7 0 0 0 7 7h1a7 7 0 0 0 7-7v-3',
 ]
 
+/** 转人工待办只对公司里的人有：owner 没有席位、也没有 Bot，那一侧永远是 0。 */
+function canSeeHandoffs() {
+  return Boolean(state.me && !isOwner() && state.me.account && state.me.account.companyId)
+}
+
 /**
- * 顶栏那颗按钮。
+ * 顶栏那颗按钮（对话页以外）。
  *
  * **只对公司里的人出现**：owner 没有席位、也没有 Bot，那一侧永远是 0。
  * 数字为 0 时按钮照样在——待办入口消失的话，人只能靠记性想起来去哪儿找它。
  */
 function handoffBell() {
-  if (!state.me || isOwner() || !state.me.account || !state.me.account.companyId) return ''
+  // 对话页上它是右栏的一屏（见 render.js 的 asideToggle），这里不再画一颗跳整页的。
+  if (!canSeeHandoffs() || hasAside()) return ''
   const n = needCount()
   const label = t('转人工待办', 'Handoffs')
   return `<button type="button" class="btn btn-ghost btn-icon satu-handoffbell" style="margin-left: auto; flex: none; position: relative;"

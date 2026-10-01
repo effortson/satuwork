@@ -324,10 +324,11 @@ document.getElementById('app').addEventListener('submit', (e) => {
   if (form.getAttribute('data-form') === 'org-profile') return saveOrgProfile(e)
   if (form.getAttribute('data-form') === 'machine') return saveMachine(e)
   if (form.getAttribute('data-form') === 'machine-direct') return saveMachineDirectUrl(e)
-  if (form.getAttribute('data-form') === 'manager-version') return saveManagerVersion(e)
+  if (form.getAttribute('data-form') === 'release-desired') return saveDesiredVersion(e)
   if (form.getAttribute('data-form') === 'add-release') return addRelease(e)
   if (form.getAttribute('data-form') === 'machine-capacity') return saveCapacity(e)
   if (form.getAttribute('data-form') === 'machine-timezone') return saveTimezone(e)
+  if (form.getAttribute('data-form') === 'machine-manager-pin') return pinManagerVersion(e)
   if (form.getAttribute('data-form') === 'machine-log-cap') return saveLogCap(e)
   if (form.getAttribute('data-form') === 'machine-company') return saveMachineCompany(e)
   if (form.getAttribute('data-form') === 'cred') {
@@ -634,17 +635,17 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-handoff-claim') {
-    await actOnHandoff(btn.getAttribute('data-id'), 'claim')
+    await actOnHandoff(btn.getAttribute('data-id'), 'claim', undefined, btn)
     return
   }
   if (act === 'chat-handoff-return') {
     // `done` 是「照你说的做完了」，`instructions` 是「我换了个做法，你按这个来」。
     // 两句话对模型的意思完全不同（见 policy/handoff.ts 的 returnMessage）。
-    await returnHandoff(btn.getAttribute('data-id'), btn.getAttribute('data-disp') || 'done')
+    await returnHandoff(btn.getAttribute('data-id'), btn.getAttribute('data-disp') || 'done', btn)
     return
   }
   if (act === 'chat-handoff-cancel') {
-    await actOnHandoff(btn.getAttribute('data-id'), 'cancel')
+    await actOnHandoff(btn.getAttribute('data-id'), 'cancel', undefined, btn)
     return
   }
   if (act === 'handoff-claim') {
@@ -701,6 +702,22 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'preview-mode') {
     setPreviewMode(btn.getAttribute('data-mode') || 'view')
+    return
+  }
+  if (act === 'paint-start') {
+    startPaint()
+    return
+  }
+  if (act === 'paint-cancel') {
+    stopPaint()
+    return
+  }
+  if (act === 'paint-undo' || act === 'paint-clear') {
+    editPaint(act === 'paint-undo' ? 'undo' : 'clear')
+    return
+  }
+  if (act === 'paint-done') {
+    await finishPaint()
     return
   }
   if (act === 'preview-download') {
@@ -772,18 +789,25 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'aside-toggle') {
-    asidePref.open = !asidePref.open
+    // 预览开着时栏一定是摆出来的（哪怕记下来的是收着），这颗按钮就是「整栏收起」：
+    // 预览一起关掉，不然下一帧它又把栏撑开。
+    const shown = asidePref.open || Boolean(shownPreview())
+    dropPreview()
+    asidePref.open = !shown
     saveAside()
     render()
     return
   }
   /**
-   * 右栏那两颗切屏。**只管换屏，不管开关**——收起是右边那颗自己的事（aside-toggle）。
-   * 栏收着的时候点任意一颗，开的就是刚点的那一屏。
+   * 右栏那几颗切屏。**只管换屏，不管开关**——收起是右边那颗自己的事（aside-toggle）。
+   * 栏收着的时候点任意一颗，开的就是刚点的那一屏。预览开着时点一颗，预览让位：人点的
+   * 就是想看那一屏。
    */
   if (act === 'aside-tab') {
+    const tab = btn.getAttribute('data-tab')
+    dropPreview()
     asidePref.open = true
-    asidePref.tab = btn.getAttribute('data-tab') === 'files' ? 'files' : 'env'
+    asidePref.tab = tab === 'files' || tab === 'handoffs' ? tab : 'env'
     saveAside()
     // 目录内容不在这儿取：重绘那一趟自己会补（见 chat.js 的 ensureWorkspaceTree）。
     render()
@@ -1794,7 +1818,11 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'model-price') {
     const provider = btn.getAttribute('data-provider')
     const model = btn.getAttribute('data-model')
-    const catalog = (state.catalog.find((p) => p.provider === provider)?.models || []).find((m) => m.id === model)?.cost || {}
+    // 生图模型不在对话目录里（见 imagePanel），它们的目录价在 /platform/image-models 那一份。
+    const catalog =
+      (state.catalog.find((p) => p.provider === provider)?.models || []).find((m) => m.id === model)?.cost ||
+      (state.imageModels || []).find((m) => m.provider === provider && m.id === model)?.cost ||
+      {}
     const cur = state.settings?.modelPricing?.[`${provider}/${model}`] || {}
     // 覆盖里没有的项留空，不预填目录价——预填之后一按保存，目录价就被抄成了覆盖，
     // 上游再调价也不会跟着动了。占位符里给的才是目录价。
@@ -2744,6 +2772,12 @@ document.getElementById('app').addEventListener('change', async (e) => {
     render()
     return
   }
+  if (act === 'image-model') {
+    const key = el.value
+    const cut = key.indexOf('/')
+    await saveSettings({ image: cut > 0 ? { provider: key.slice(0, cut), model: key.slice(cut + 1) } : null })
+    return
+  }
   if (act === 'alt-add') {
     const key = el.value
     const cut = key.indexOf('/')
@@ -2900,10 +2934,13 @@ document.addEventListener('keydown', (e) => {
   render()
 })
 
-/* Esc 关预览。排在上一条后面：两者不会同时开着，而预览是盖住整屏的那个，
-   人按 Esc 时想关的是它。 */
+/* Esc 关预览。预览现在摆在右栏里，不再盖住整屏：人在对话输入框里按 Esc 多半是想收
+   那几个浮层（上一条），不是想把旁边的预览关掉——所以焦点在别处的输入框里时不管。 */
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || !state.preview) return
+  if (e.key !== 'Escape' || e.defaultPrevented || !shownPreview()) return
+  const el = document.activeElement
+  const typing = el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || ''))
+  if (typing && !el.closest('.sw-preview-side, .sw-previewl')) return
   e.preventDefault()
   closePreview()
 })
@@ -2942,20 +2979,30 @@ document.getElementById('app').addEventListener('mousedown', (e) => {
   const main = document.getElementById('gw-main')
   if (!main) return
   const startX = e.clientX
-  const startW = asidePref.width
+  // 预览和平时各记各的宽度（见 prefs.js 的 asideWidthOf），拖的是眼下摆着的那一档。
+  const preview = Boolean(shownPreview())
+  const key = preview ? 'previewWidth' : 'width'
+  // 从画出来的宽度起算，不从记下来的数起算：窗口窄的时候那一列被 asideColumns 压过，
+  // 照记下来的数算，手一动栏会先跳一下。
+  const aside = main.querySelector('.gw-aside')
+  const startW = aside ? aside.getBoundingClientRect().width : asidePref[key]
   document.body.style.cursor = 'col-resize'
   document.body.style.userSelect = 'none'
+  // 鼠标划进预览的 iframe（PDF、HTML）之后，mousemove 就归那一页了，这边收不到，拖到一半
+  // 栏停住不动。拖的时候让 iframe 不接鼠标。
+  document.body.classList.add('gw-dragging')
   const onMove = (ev) => {
     // 往左拖变宽：栏在右边，所以是起点减当前。
-    const next = Math.min(520, Math.max(200, startW + (startX - ev.clientX)))
-    asidePref.width = next
-    main.style.gridTemplateColumns = `minmax(0, 1fr) ${next}px`
+    const next = asideWidthOf(Math.round(startW + (startX - ev.clientX)), preview)
+    asidePref[key] = next
+    main.style.gridTemplateColumns = asideColumns(next, preview)
   }
   const onUp = () => {
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
     document.body.style.cursor = ''
     document.body.style.userSelect = ''
+    document.body.classList.remove('gw-dragging')
     saveAside()
   }
   document.addEventListener('mousemove', onMove)

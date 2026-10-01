@@ -249,6 +249,25 @@ textarea.satu-code { background: var(--popover); color: var(--color-text); borde
 /* 就地处理那张卡：整行宽，压在它那一行下面（那一行是 grid，卡片是它的兄弟节点）。 */
 .satu-handoffpanel { padding: 0 var(--space-4) var(--space-3); border-bottom: 1px solid var(--border); background: var(--card); }
 .satu-handoffpanel .sw-approval { background: var(--popover); }
+/* 右栏里的转人工待办（pages-handoffs.js 的 handoffsAside）：那张六列的表摆不下，排成
+   一列卡片。一张卡从上到下就是人读它的顺序：现在什么状态、要人做什么、为什么、谁的。 */
+.satu-hoaside-stats { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted-foreground); }
+.satu-hoaside-scope { display: flex; gap: var(--space-2); }
+.satu-hoaside-scope .btn { padding: 4px 10px; font-size: 12px; }
+.satu-hoaside-empty { margin: 0; font-size: 13px; line-height: 1.6; color: var(--muted-foreground); }
+.satu-hocard { display: flex; flex-direction: column; gap: 4px; padding: var(--space-3); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); background: var(--popover); min-width: 0; }
+.satu-hocard[data-kind='ask'] { border-color: var(--color-warn-500); }
+.satu-hocard-top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+  font-size: 11.5px; color: var(--muted-foreground); }
+.satu-hocard-ask { font-size: 13.5px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.satu-hocard-why { font-size: 12.5px; line-height: 1.5; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.satu-hocard-meta { font-size: 12px; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.satu-hocard-acts { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: 4px; }
+.satu-hocard-acts .btn { padding: 4px 10px; font-size: 12px; }
+/* 就地处理那张卡在右栏里贴着卡片内边走，不要整页那一套左右留白和分隔线。 */
+.satu-hocard .satu-handoffpanel { padding: 0; margin-top: var(--space-2); border-bottom: 0; background: transparent; }
+.satu-hocard .sw-approval-acts { flex-wrap: wrap; }
 /* 顶栏那颗按钮上的计数。**数字压在图标右上角**，不排在它旁边：顶栏那一行寸土寸金，
    而这个数为 0 时整个角标是不出现的（hidden），排在旁边会让按钮宽度跳一下。 */
 .satu-handoffbell { position: relative; }

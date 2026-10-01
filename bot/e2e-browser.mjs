@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -108,6 +108,17 @@ const HANG_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>一�
 </head><body><main><h1>一直在加载</h1></main></body></html>`
 
 const server = createServer((req, res) => {
+  // 下载：一个带下载链接的页面，和一个 attachment 响应。
+  if (req.url === '/dl-page') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end('<!doctype html><html><head><meta charset="utf-8"><title>下载页</title></head><body><a id="dl" href="/dl">下载报表</a></body></html>')
+    return
+  }
+  if (req.url === '/dl') {
+    res.writeHead(200, { 'content-type': 'text/plain', 'content-disposition': 'attachment; filename="report.txt"' })
+    res.end('report')
+    return
+  }
   if (req.url === '/late') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(LATE_PAGE)
@@ -310,6 +321,11 @@ approver.unref?.()
 let seq = 0
 const run = (name, args = {}) =>
   ctx.tools.execute({ callId: `c${++seq}`, name, arguments: JSON.stringify(args), sessionId: 's1' })
+/**
+ * 这一步的截图。**工具结果里没有它**——结果先交给模型，截图在后台等页面画出来再拍
+ * （ToolResult.pendingShot）。要看它就得等这个 Promise，和 agent 补 `tool/shot` 那条路一样。
+ */
+const shotOf = async (r) => r?.shot ?? (await r?.pendingShot)
 
 const out = {}
 const refOf = (text, label) => {
@@ -433,7 +449,7 @@ try {
    * confirm 挂着时整页是冻住的，`Page.captureScreenshot` 的回执和快照一样永远等不到，
    * 拍下去只会白等一个超时——而那次点击本身是成功的。
    */
-  out.shotDialog = { 对话框挂着时不拍: clickAsk.shot === undefined }
+  out.shotDialog = { 对话框挂着时不拍: (await shotOf(clickAsk)) === undefined }
   const whileDialog = await run('browser_snapshot')
   out.dialog.挂着对话框时别的工具说人话 = whileDialog.failed === true && whileDialog.text.includes('对话框')
   const handled = await run('browser_dialog', { action: 'accept' })
@@ -491,7 +507,7 @@ try {
    * 抱怨——只有断言看得住。
    */
   const shotSnap = await run('browser_snapshot')
-  const shot = shotSnap.shot
+  const shot = await shotOf(shotSnap)
   const shotAbs = shot ? join(workRoot, shot.path) : ''
   const shotBytes = shotAbs && existsSync(shotAbs) ? readFileSync(shotAbs) : Buffer.alloc(0)
   out.shot = {
@@ -504,6 +520,8 @@ try {
     是jpeg: shotBytes[0] === 0xff && shotBytes[1] === 0xd8,
     // 模型不该看见它——它进的是 details，不是给模型的那段文本。
     没混进给模型的文本里: !shotSnap.text.includes('browser/s1/'),
+    // 结果本身不带截图：带着就说明又 await 回去了，模型又得陪着等。
+    结果里不带截图: shotSnap.shot === undefined && shotSnap.pendingShot instanceof Promise,
   }
   /**
    * **页面画出来了才拍。** 动作收尾那 0.7 秒只够快照读 DOM，画面还是白的——线上一次浏览里
@@ -511,28 +529,66 @@ try {
    * 截图落盘必须在那几段脚本都给出去之后。
    */
   // 截图落盘的时刻。文件不在就是 0——别让一次 stat 抛错把后面整套用例都带成 crashed。
-  const shotAt = (r) => {
-    const abs = r?.shot ? join(workRoot, r.shot.path) : ''
+  const shotAt = async (r) => {
+    const got = await shotOf(r)
+    const abs = got ? join(workRoot, got.path) : ''
     return abs && existsSync(abs) ? statSync(abs).mtimeMs : 0
   }
+  /**
+   * **截图不挡工具结果。** 这一页的正文 1.5 秒后才画出来，截图得等到那之后；但模型要的
+   * 快照文字 0.7 秒就就绪了——结果必须在 1.5 秒内回来，截图之后照样补上、照样是画完的那张。
+   * 早先截图 await 在结果前面，每次跳转模型都陪着多等两三秒。
+   */
+  lateServedAt = 0
+  let t = Date.now()
   const lateNav = await run('browser_navigate', { url: `http://${HOST}/late` })
-  out.shot.等页面加载完才拍 = Boolean(lateServedAt && shotAt(lateNav) >= lateServedAt)
+  const lateNavMs = Date.now() - t
+  out.shot.结果不等截图 = lateNav.failed !== true && lateNavMs < 1_500 && lateNav.text.includes('晚到的正文')
+  // 先等截图落定再读 lateServedAt：那几段脚本 1.5 秒后才给，结果回来那一刻它还是 0。
+  const lateShotAt = await shotAt(lateNav)
+  out.shot.等页面加载完才拍 = Boolean(lateServedAt && lateShotAt >= lateServedAt)
 
   // 点一下之后 1.2 秒才回的跳转：截图要在新页回来之后。
   const slowLink = await run('browser_navigate', { url: `http://${HOST}/slow-link` })
   const slowClick = await run('browser_click', { ref: refOf(slowLink.text, '去慢的那一页') })
-  out.shot.点击触发的慢跳转也等 = Boolean(slowDocAt && shotAt(slowClick) >= slowDocAt)
+  const slowShotAt = await shotAt(slowClick)
+  out.shot.点击触发的慢跳转也等 = Boolean(slowDocAt && slowShotAt >= slowDocAt)
 
   // 永远安静不下来的页面：第一次等满上限就拍，之后同一页上的动作不再等。
-  let t = Date.now()
+  t = Date.now()
   const hangNav = await run('browser_navigate', { url: `http://${HOST}/hang` })
+  const hangShot = await shotOf(hangNav)
   const hangNavMs = Date.now() - t
   t = Date.now()
   const hangSnap = await run('browser_snapshot')
+  const hangSnapShot = await shotOf(hangSnap)
   const hangSnapMs = Date.now() - t
-  out.shot.安静不下来的页面照样拍 = hangNav.failed !== true && Boolean(hangNav.shot) && hangNavMs < 8_000
+  out.shot.安静不下来的页面照样拍 = hangNav.failed !== true && Boolean(hangShot) && hangNavMs < 8_000
   // 上限是 3 秒；再等一轮的话这一步至少 3 秒。
-  out.shot.同一页不再重复等 = hangSnap.failed !== true && Boolean(hangSnap.shot) && hangSnapMs < 2_500
+  out.shot.同一页不再重复等 = hangSnap.failed !== true && Boolean(hangSnapShot) && hangSnapMs < 2_500
+
+  /**
+   * **下一步一开始，上一张就作废。** 截图在后台等页面画出来，这期间模型已经点了下一下：
+   * 这时候再拍，拍到的是下一步的画面，贴在上一步底下是错的——宁可不要这一张。
+   */
+  lateServedAt = 0
+  const staleNav = await run('browser_navigate', { url: `http://${HOST}/late` })
+  const staleNext = await run('browser_scroll', { direction: 'down', amount: 50 })
+  out.shot.下一步开始上一张作废 = (await shotOf(staleNav)) === undefined && Boolean(await shotOf(staleNext))
+
+  /**
+   * **作废不重新计时。** 安静不下来的页面上模型一步紧跟一步，每张都在等满之前被下一步
+   * 作废——上限要是按「这一张开始等」算，这一页一张都拍不到。按文档算：开始加载之后
+   * 3 秒上下就拍，不管中间作废过几张。
+   */
+  t = Date.now()
+  await run('browser_navigate', { url: `http://${HOST}/hang` })
+  await new Promise((r) => setTimeout(r, 1_500))
+  const quick = await run('browser_scroll', { direction: 'down', amount: 50 })
+  const quickShot = await shotOf(quick)
+  const quickMs = Date.now() - t
+  // 按文档算 3 秒上下就拍；按这一张重新计时得 1.5 + 0.7 + 3 秒以上。
+  out.shot.作废不重新计时 = Boolean(quickShot) && quickMs < 4_800
   await run('browser_navigate', { url: `http://${HOST}/` })
 
   out.frame = {
@@ -662,6 +718,39 @@ try {
     // navigate 走得通，而且走完这个标记就清了。
     还能导航出去: wayOut.failed !== true && wayOut.text.includes('提交订单'),
     出去之后标记清了: !svc.blockedNow(),
+  }
+
+  /**
+   * 下载：**只报 Bot 自己的，路径以 Chrome 实际落盘的为准。**
+   *
+   * 下载目录只能整颗浏览器一起设，下载事件也是谁的都发。员工在另一个标签页下的东西不能
+   * 出现在 Bot 的产出里；同名文件 Chrome 会存成 `report (1).txt`，卡片不能指回第一份。
+   */
+  // 已经有一份同名的员工文件：网页上下的 report.txt 不能把它盖掉。
+  writeFileSync(join(workRoot, 'report.txt'), '员工自己的那份')
+  const dlPage = await run('browser_navigate', { url: `http://${HOST}/dl-page` })
+  const dlRef = refOf(dlPage.text, '下载报表')
+  // 下载完成得很快，可能挂在点击那次的结果上，也可能挂在下一次上——两次都收。
+  const clickAndCollect = async () => {
+    const clicked = await run('browser_click', { ref: dlRef })
+    await new Promise((r) => setTimeout(r, 1500))
+    const after = await run('browser_snapshot')
+    return [...(clicked.files || []), ...(after.files || [])].map((f) => f.path)
+  }
+  const first = await clickAndCollect()
+  const second = await clickAndCollect()
+  // 「员工」自己开一个标签页下同一个文件：不经过 Bot，也不是 Bot 的页面点出来的。
+  await fetch(`http://127.0.0.1:${cdpPort}/json/new?${encodeURIComponent(`http://${HOST}/dl`)}`, { method: 'PUT' }).catch(() => {})
+  await new Promise((r) => setTimeout(r, 1500))
+  const theirs = ((await run('browser_snapshot')).files || []).map((f) => f.path)
+  const onDisk = readdirSync(workRoot).filter((n) => n.startsWith('report')).sort()
+  out.downloads = {
+    员工原来那份没被盖掉: readFileSync(join(workRoot, 'report.txt'), 'utf8') === '员工自己的那份',
+    第一份另起了名字: first.length === 1 && first[0] !== 'report.txt' && existsSync(join(workRoot, first[0])),
+    第二份又是另一个名字: second.length === 1 && second[0] !== first[0] && existsSync(join(workRoot, second[0])),
+    员工的下载不算Bot的: theirs.length === 0,
+    员工的下载也落了盘没覆盖: onDisk.length === 4,
+    detail: { first, second, theirs, onDisk },
   }
 
   /**

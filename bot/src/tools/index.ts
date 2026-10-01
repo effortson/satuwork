@@ -84,6 +84,17 @@ export interface ToolResult {
    */
   shot?: WorkspaceFile
   /**
+   * 和 shot 同一种东西，只是**还没拍完**：工具结果先交出去，这张之后才落定。
+   *
+   * 浏览器那几把用它：拍之前要等页面画出来（最多三秒），而模型要的快照文字零点几秒就
+   * 就绪了——让模型陪着截图干等，每次跳转凭空多两三秒。所以工具不 await 它，agent 先把
+   * `tool/result` 落盘、结果交给模型，这张拍完再补一条 `tool/shot`（按 callId 认回那次
+   * 调用）。
+   *
+   * **永远 resolve**，拍不成就是 undefined——它不能让一次成功的调用变成失败。
+   */
+  pendingShot?: Promise<WorkspaceFile | undefined>
+  /**
    * 给**模型**看的图，路径相对工作区根目录。和 shot 正好反过来：那张是给人看的过程截图，
    * 这几张是模型自己要看的东西（office_render 把文档某几页画出来，让它检查排版）。
    *

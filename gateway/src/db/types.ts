@@ -1016,9 +1016,20 @@ export interface CompanySettings {
   conversationAudit: ConversationAuditSettings
 }
 
+/**
+ * 平台钉的生图模型（Bot 的 generate_image 工具用它）。两格都空 = 没开，席位上那把工具
+ * 不进工具表。没有推理档，所以不复用 ModelRole。
+ */
+export interface ImageModelRole {
+  provider: string
+  model: string
+}
+
 export interface PlatformSettings {
   daily: ModelRole
   utility: ModelRole
+  /** 生图模型。只能是 image-models.ts 那张表里的（写端收口，见 routes/platform.ts）。 */
+  image?: ImageModelRole
   /**
    * 日常模型的备选。`daily` 是默认那一个；人在对话框里可以给自己和某颗 Bot 的那条会话
    * 换成这里的任意一个（席位按会话记，见 bot 的 `session/model`）。
@@ -1050,6 +1061,14 @@ export interface PlatformSettings {
    * 下一轮心跳各台机器自己退回去。
    */
   managerVersion?: string
+  /**
+   * 全机队期望的 Bot 运行时版本。留空 = 跟最新发布走。
+   *
+   * 和 managerVersion 同一个用法：机器心跳时，落后于它（或超前于它）的席位会被排进部署
+   * 队列（deploy.ts 的 queueBotFollow）。灰度、回滚都是改这一个数字——钉回上一版，各台
+   * 机器的席位就在接下来几轮心跳里退回去。新部署的席位不指定版本时也装它。
+   */
+  botVersion?: string
   /** 网页搜索/提取的后端与价目。密钥不在这里，在 platform_credentials。 */
   webTools?: WebToolsSettings
   /**
@@ -1273,11 +1292,13 @@ export function emptyPlatformSettings(): PlatformSettings {
   return {
     daily: { provider: '', model: '', reasoningEffort: 'off' },
     utility: { provider: '', model: '', reasoningEffort: 'off' },
+    image: { provider: '', model: '' },
     dailyAlternates: [],
     enabledModels: [],
     priceMultiplier: 1,
     connectorPricing: emptyConnectorPricing(),
     managerVersion: '',
+    botVersion: '',
     webTools: emptyWebTools(),
     modelPricing: {},
     defaultModelRate: emptyModelRate(),
