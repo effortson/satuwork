@@ -788,6 +788,24 @@ function managerUpgradeBits(card, attrs) {
   return { note, btn }
 }
 
+/**
+ * 单机灰度：把这一台单独钉到某个管家版本（先让一台追新版，看几天再改平台那一档）。
+ *
+ * 候选来自详情接口的 `managerVersions`（这台机器架构能装的那些）；不在里面的照样能填，
+ * 服务端会 404。要摘掉钉、回到跟平台走，用上面那颗「恢复自动升级」——这里不收空值，
+ * 免得把「清空输入框再提交」误当成一次摘钉。
+ */
+function managerPinForm(card) {
+  const m = card.machine || {}
+  const list = Array.isArray(card.managerVersions) ? card.managerVersions : []
+  const listId = `satu-mgr-versions-${m.id}`
+  return `<form data-form="machine-manager-pin" data-scope="platform" data-machine="${esc(m.id)}" style="display: inline-flex; gap: 6px; align-items: center;">
+    <input class="input" name="version" list="${esc(listId)}" placeholder="${esc(t('管家版本号'))}" autocomplete="off" spellcheck="false" style="width: 220px;">
+    <datalist id="${esc(listId)}">${list.map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>
+    <button type="submit" class="satu-linkbtn" ${state.busy ? 'disabled' : ''}>${t('单独钉这一版')}</button>
+  </form>`
+}
+
 /** 两行版本，两个按钮。管家那一行见 managerUpgradeBits。 */
 function machineVersionPanel(card) {
   const m = card.machine
@@ -812,9 +830,12 @@ function machineVersionPanel(card) {
   return `<div class="satu-panel">
     <span class="satu-panel-title">${t('版本')}</span>
     <div class="satu-kv"><span>${t('管家版本')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${esc(m.managerVersion || '—')}${mgrNote}${mgrBtn}</span></div>
-    <div class="satu-kv"><span>${t('期望版本')}</span><span>${card.managerPinned
-      ? `${esc(card.managerPinned)}（${t('这台单独钉的')}）`
-      : `${esc(card.managerDesired || '—')}（${t('跟平台走')}）`}</span></div>
+    <div class="satu-kv"><span>${t('期望版本')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">
+      ${card.managerPinned
+        ? `${esc(card.managerPinned)}（${t('这台单独钉的')}）`
+        : `${esc(card.managerDesired || '—')}（${t('跟平台走')}）`}
+      ${managerPinForm(card)}
+    </span></div>
     <div class="satu-kv"><span>${t('Bot 运行时')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${botText}${card.botOutdated ? ` · ${t('目标版本')} ${esc(card.botDesired || card.botLatest || state.botLatest || '')}` : ''}${botBtn}</span></div>
     ${/* 装的是哪个包、跑的是哪一版公司模版，两件事各自会落后。渲染函数在 pages-audit.js，
          那一页的机器卡片画的是同一行——同一台机器不该在两个页面上说两种话。 */ ''}

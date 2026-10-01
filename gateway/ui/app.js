@@ -328,6 +328,7 @@ document.getElementById('app').addEventListener('submit', (e) => {
   if (form.getAttribute('data-form') === 'add-release') return addRelease(e)
   if (form.getAttribute('data-form') === 'machine-capacity') return saveCapacity(e)
   if (form.getAttribute('data-form') === 'machine-timezone') return saveTimezone(e)
+  if (form.getAttribute('data-form') === 'machine-manager-pin') return pinManagerVersion(e)
   if (form.getAttribute('data-form') === 'machine-log-cap') return saveLogCap(e)
   if (form.getAttribute('data-form') === 'machine-company') return saveMachineCompany(e)
   if (form.getAttribute('data-form') === 'cred') {
