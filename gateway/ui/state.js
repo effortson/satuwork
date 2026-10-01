@@ -925,6 +925,8 @@ function enterPath() {
   state.error = ''
   state.notice = ''
   state.addOpen = false
+  // 预览摆在对话页的右栏里，是那一条会话的东西：换了页、换了 Bot 就不该再挂着。
+  if (typeof dropPreview === 'function') dropPreview()
   if (typeof closeMemberUi === 'function') closeMemberUi()
   if (typeof closeSkillDialog === 'function') closeSkillDialog()
   state.seatMember = null

@@ -617,6 +617,33 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(ui.handoffRow(row({ accountId: 'x' })).includes('A-991'), '拉到了正文却没画出来')
     })
 
+    await test('对话页上转人工待办是右栏的一屏，不把对话整页换走', async () => {
+      const ui = await boot()
+      ui.state.me = { account: { id: 'me', companyId: 'c1', role: 'admin' } }
+      ui.state.path = '/chat'
+      ui.state.chatBotId = 'b1'
+      ui.state.handoffs = [{
+        id: 'h1', botId: 'b2', sessionId: 's1', state: 'open', accountId: 'someone-else',
+        ask: '去财务系统里把这笔付了', reason: '超出我的权限', createdAt: 1, ownerName: '张三',
+      }]
+      ui.state.handoffCount = 1
+      // 顶栏不再有那颗跳整页的；举手那颗进了右栏的切屏里，数字跟着它走。
+      assert(ui.handoffBell() === '', '对话页上还画着跳去 /handoffs 的按钮')
+      const tabs = ui.asideToggle()
+      assert(tabs.includes('data-tab="handoffs"'), '右栏切屏里没有转人工待办')
+      assert(/satu-handoffcount[^>]*>1</.test(tabs), `待办的数没跟着举手那颗走：${tabs}`)
+      // 那一屏是一列卡片，按钮和整页那张表是同一套。
+      const panel = ui.handoffsAside()
+      assert(panel.includes('satu-hocard') && panel.includes('去财务系统里把这笔付了'), '右栏没画出待办')
+      assert(panel.includes('data-act="handoff-claim"') && panel.includes('data-act="handoff-detail"'), '右栏的待办少了按钮')
+      ui.state.handoffOpenId = 'h1'
+      ui.state.handoffDetail = { h1: { summary: '已经查到发票号 A-991' } }
+      assert(ui.handoffsAside().includes('A-991') && ui.handoffsAside().includes('sw-handoff-note'), '右栏里展开处理不了')
+      // 别的页没有右栏：照旧是一颗跳整页的按钮。
+      ui.state.path = '/bots'
+      assert(ui.handoffBell().includes('data-href="/handoffs"'), '离开对话页之后待办入口没了')
+    })
+
     await test('席位上已经没有的那张单：画成一行字，不留按钮', async () => {
       /**
        * 交接单是落盘的，但席位重装 / 换机器 / 手工清过库之后，日志里那条 open 还在而

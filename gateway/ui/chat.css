@@ -1150,8 +1150,27 @@
 
 .sw-file > small { flex: none; color: var(--muted-foreground); font-size: 11px; }
 
-/* 预览层。比别的 modal 宽，因为里面是给人看的内容，不是一张表单。 */
+/* 预览。摆在对话页右栏里（见 chat.js 的 previewPanel），不再是盖住整屏的弹层。 */
 .sw-preview { max-width: min(1040px, 94vw); width: 100%; }
+.sw-preview-side {
+  flex: 1;
+  min-height: 0;
+  max-width: none;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+.sw-preview-side .sw-preview-head { align-items: center; gap: var(--space-2); }
+.sw-preview-side .sw-preview-head h2 { font-size: 15px; line-height: 1.35; }
+/* 右栏窄：看法 / 涂抹 / 下载那一排单独一行，放不下就折行，别把文件名挤没了。 */
+.sw-preview-side .sw-preview-acts { flex-wrap: wrap; gap: var(--space-2); }
+/* 高度不再写死 70vh：右栏本来就是整屏高，内容框吃掉头上两行剩下的全部。 */
+.sw-preview-side .sw-preview-body { flex: 1; min-height: 0; height: auto; margin-top: 0; }
+.sw-preview-side .sw-preview-body[data-flow='top'] { padding: var(--space-3) var(--space-4); }
+.sw-preview-side .sw-preview-body[data-flow='top']:has(.sw-preview-load) { padding: 0; }
+.sw-preview-side .sw-paint .sw-preview-img { max-height: calc(100vh - 220px); }
 .sw-preview-head {
   display: flex;
   align-items: flex-start;
@@ -1282,6 +1301,8 @@
 
 /* 抬头上那两颗切屏的图标。正看着的那一屏要留个底色——两颗长得一样大、挨在一起，
    不标出来的话，人得先点一下才知道现在开着的是哪一屏。 */
+/* 举手那一颗上压着待办的数（.satu-handoffcount 是 absolute），按钮得是它的定位参照。 */
+.sw-asidetab { position: relative; }
 .sw-asidetab[aria-pressed='true'] { background: var(--color-accent-100); color: var(--color-accent-800); }
 
 /* ── 右栏里的工作区文件树 ─────────────────────────────────────────────────

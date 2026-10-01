@@ -11,24 +11,40 @@ const LOCALE_KEY = 'satu.locale'
 
 const ASIDE_KEY = 'satu.aside'
 /**
- * 右侧运行环境栏的宽度与折叠状态。
+ * 右栏的两档宽度。
+ *
+ * **文件预览单独记一个宽度。** 平时那一栏摆的是一列状态和一棵树，280 正好；预览摆的是
+ * 一整页 PDF、一张图、一份 HTML，280 宽什么也看不清。共用一个数的话，人每次打开预览都
+ * 要拖宽、关掉再拖窄——两件事各记各的，拖一次就记住。
+ */
+const ASIDE_PREVIEW_WIDTH = 560
+
+function asideWidthOf(raw, preview) {
+  return preview
+    ? Math.min(1600, Math.max(320, Number(raw) || ASIDE_PREVIEW_WIDTH))
+    : Math.min(520, Math.max(200, Number(raw) || 280))
+}
+
+/**
+ * 右栏的宽度、折叠状态和正摆着哪一屏。
  *
  * 落 localStorage：它是「工作台的形状」，不是页面状态——换个 Bot、切一次页面就恢复
  * 默认宽度会很烦人。
  */
 const asidePref = (() => {
-  // tab 决定这一栏现在摆的是哪一屏：运行环境（env）还是工作区文件（files）。
-  // 一起记下来，因为「我上次在看文件」和「我把它收起来了」是同一类偏好。
-  const tab = (raw) => (raw === 'files' ? 'files' : 'env')
+  // tab 决定这一栏现在摆的是哪一屏：运行环境（env）、工作区文件（files）还是转人工
+  // 待办（handoffs）。一起记下来，因为「我上次在看文件」和「我把它收起来了」是同一类偏好。
+  const tab = (raw) => (raw === 'files' || raw === 'handoffs' ? raw : 'env')
   try {
     const raw = JSON.parse(localStorage.getItem(ASIDE_KEY) || '{}')
     return {
       open: raw.open !== false,
-      width: Math.min(520, Math.max(200, Number(raw.width) || 280)),
+      width: asideWidthOf(raw.width, false),
+      previewWidth: asideWidthOf(raw.previewWidth, true),
       tab: tab(raw.tab),
     }
   } catch {
-    return { open: true, width: 280, tab: 'env' }
+    return { open: true, width: 280, previewWidth: ASIDE_PREVIEW_WIDTH, tab: 'env' }
   }
 })()
 

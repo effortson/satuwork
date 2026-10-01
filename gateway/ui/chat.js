@@ -6775,7 +6775,7 @@ function previewKindOf(name, type) {
   return ''
 }
 
-/** 文本类不该按图片那个尺度收：一份 2MB 的日志已经没人会在弹窗里读了。 */
+/** 文本类不该按图片那个尺度收：一份 2MB 的日志已经没人会在预览里读了。 */
 const PREVIEW_TEXT_MAX = 2 * 1024 * 1024
 
 /**
@@ -6796,7 +6796,7 @@ function maybeLivePreview(event) {
   const data = event.data || {}
   const files = Array.isArray(data.files) ? data.files.filter((file) => file && file.path) : []
   if (!files.length) return false
-  const current = state.preview
+  const current = shownPreview()
   if (current) {
     const changed = files.find((file) => file.path === current.path)
     if (!changed) return false
@@ -6812,9 +6812,23 @@ function maybeLivePreview(event) {
   return true
 }
 
+/**
+ * 预览是哪一条会话里的文件。换了 Bot、换了会话，那个路径在新会话的工作区里不是同一个
+ * 文件（多半根本不存在），「下载」也会按新会话去取——所以那一份就不该再摆着。
+ */
+let previewSession = ''
+
+/** 右栏眼下该摆的那份预览；不在对话页、或者已经换了会话，就是没有。 */
+function shownPreview() {
+  const p = state.preview
+  if (!p || !onChatPage()) return null
+  return previewSession && previewSession === state.chatSessionId ? p : null
+}
+
 async function openPreview(path, name, options = {}) {
   if (!state.chatSessionId) return
   revokePreview()
+  previewSession = state.chatSessionId
   const kind = previewKindOf(name || path, '')
   const mode = options.mode === 'source' ? 'source' : 'view'
   /**
@@ -7086,10 +7100,17 @@ function revokePreview() {
   if (p.url) setTimeout(() => URL.revokeObjectURL(p.url), 0)
 }
 
-function closePreview() {
+/** 撤掉预览但不重绘：换页、收右栏的时候跟着别的事一起画。 */
+function dropPreview() {
+  if (!state.preview) return
   unwatchPaint()
   revokePreview()
   state.preview = null
+  previewSession = ''
+}
+
+function closePreview() {
+  dropPreview()
   render()
 }
 
@@ -7232,27 +7253,35 @@ function previewBody(p) {
   return `<pre class="sw-preview-src">${esc(String(p.text || ''))}</pre>`
 }
 
-function previewModal() {
+/**
+ * 右栏里的预览（见 render.js 的 pageAside）。
+ *
+ * 原来是一个盖住整屏的弹层：人看着 Bot 刚产出的东西，想说「这一段改一下」，得先把
+ * 预览关掉才看得见输入框，说完再点开——一来一回什么都对不上。挪进右栏之后对话照旧在
+ * 左边，Bot 改完同一个文件，这边自己重载（maybeLivePreview）。
+ *
+ * 右栏比弹层窄，所以头上分两行：上面是文件名和关闭，下面是那一排看法 / 涂抹 / 下载，
+ * 窄的时候自己折行。
+ */
+function previewPanel() {
   const p = state.preview
   if (!p) return ''
   const meta = p.size ? fileSize(p.size) : ''
-  return `<div class="gw-modal-backdrop" data-act="preview-close">
-    <div class="gw-modal sw-preview" data-stop>
+  return `<section class="sw-preview sw-preview-side" aria-label="${esc(t('文件预览', 'File preview'))}">
       <div class="sw-preview-head">
         <div style="min-width: 0;">
           <h2>${esc(p.name)}</h2>
           <p><code>${esc(p.path)}</code>${meta ? ' · ' + esc(meta) : ''}</p>
         </div>
-        <div class="sw-preview-acts">
-          ${previewTabs(p)}
-          ${paintActs(p)}
-          <button type="button" class="btn" data-act="preview-download" data-path="${esc(p.path)}" data-name="${esc(p.name)}">${t('下载')}</button>
-          <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="preview-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
-        </div>
+        <button type="button" class="btn btn-ghost btn-icon" style="flex: none;" aria-label="${esc(t('关闭'))}" title="${esc(t('关闭'))}" data-act="preview-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+      </div>
+      <div class="sw-preview-acts">
+        ${previewTabs(p)}
+        ${paintActs(p)}
+        <button type="button" class="btn" data-act="preview-download" data-path="${esc(p.path)}" data-name="${esc(p.name)}">${t('下载')}</button>
       </div>
       <div class="sw-preview-body" data-flow="${p.error || p.loading || p.docLoading || p.tooBig || p.kind === 'image' ? 'center' : 'top'}">${previewBody(p)}</div>
-    </div>
-  </div>`
+    </section>`
 }
 
 /** 切「预览 / 原文」。只改一个字段，字节早就在手上了，不用再取一次。 */
@@ -7281,7 +7310,7 @@ function setPreviewMode(mode) {
  * ——它多半看不见图，看得见也说不准坐标。人来涂是唯一靠谱的办法，而这件事只有界面做得了。
  *
  * **笔画存在 state 里，不只画在画布上**：任何一次无关的 render()（对话流来了一帧、侧栏刷新）
- * 都会把整个弹层换掉，画布上的东西就没了。所以笔画按**原图像素**坐标存进 `state.preview.paint`，
+ * 都会把整个预览换掉，画布上的东西就没了。所以笔画按**原图像素**坐标存进 `state.preview.paint`，
  * 每次画布重新挂上来（mountPainter，render.js 在每次 render 之后调）都照着重画一遍。
  *
  * 蒙版的约定是 OpenAI 的：和原图一样大，**透明的地方重画**，其余不透明。
@@ -8523,6 +8552,34 @@ async function decideApproval(callId, decision, scope) {
 const handoffDrafts = new Map()
 
 /**
+ * 右栏待办那一屏（还有 /handoffs 整页）里正写着的结论：重画之前存起来、画完填回去。
+ *
+ * 对话里那张卡有自己的一套（updateRow 按签名比，变了才换），右栏和整页是 render() /
+ * paintAsideHandoffs 整块换的，换一次框里的字就没了——而 render() 在对话页上随时会来。
+ */
+function stashHandoffNotes(root) {
+  if (!root || !root.querySelectorAll) return
+  // 同一张单可能有两个框（对话里、右栏里），只要有一个写了字就记那一句。
+  const seen = new Map()
+  for (const ta of root.querySelectorAll('.sw-handoff-note')) {
+    const id = ta.getAttribute('data-handoff')
+    if (id) seen.set(id, seen.get(id) || ta.value)
+  }
+  for (const [id, text] of seen) {
+    if (text) handoffDrafts.set(id, text)
+    else handoffDrafts.delete(id)
+  }
+}
+
+function fillHandoffNotes(root) {
+  if (!root || !root.querySelectorAll) return
+  for (const ta of root.querySelectorAll('.sw-handoff-note')) {
+    const draft = handoffDrafts.get(ta.getAttribute('data-handoff'))
+    if (draft && !ta.value) ta.value = draft
+  }
+}
+
+/**
  * 接手 / 交还 / 撤销。
  *
  * **走 `/runtime/handoffs/:id/*`，不走会话那条路。** 接手的人可能是管理员，这条会话
@@ -8556,9 +8613,13 @@ async function actOnHandoff(id, act, body) {
   }
 }
 
+/**
+ * 同一张单可能同时摆着两张卡（对话里一张、右栏待办一张），人只在其中一张里写了字。
+ * 取写了字的那张，别拿到另一张空的然后报「写一句你做了什么」。
+ */
 function handoffNote(id) {
-  const ta = [...document.querySelectorAll('.sw-handoff-note')].find((x) => x.getAttribute('data-handoff') === id)
-  return ta ? ta.value.trim() : ''
+  const tas = [...document.querySelectorAll('.sw-handoff-note')].filter((x) => x.getAttribute('data-handoff') === id)
+  return tas.map((ta) => ta.value.trim()).find(Boolean) || ''
 }
 
 async function returnHandoff(id, disposition) {
@@ -8587,8 +8648,8 @@ async function loadHandoffs() {
     state.handoffStats = data.stats || null
     applyHandoffSnapshot(state.handoffs)
     paintHandoffBadge()
-    // 待办页正开着就重画：这个数刚变过，而那一页整屏都是它。
-    if (state.path === '/handoffs') render()
+    // 待办页正开着就重画：这个数刚变过，而那一页整屏都是它。右栏那一屏只补它自己。
+    repaintHandoffs()
   } catch {
     // 拉不到就保持上一份。**不清零**：一个突然消失的待办数会让人以为事情办完了。
   }
@@ -8608,7 +8669,7 @@ async function loadHandoffDetail(id) {
   } catch {
     state.handoffDetail = { ...(state.handoffDetail || {}), [id]: null }
   }
-  if (state.path === '/handoffs') render()
+  repaintHandoffs()
 }
 
 /**
