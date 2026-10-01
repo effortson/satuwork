@@ -72,63 +72,105 @@ function pageView() {
  */
 function pageAside() {
   if (!hasAside()) return ''
+  /**
+   * 文件预览也摆在这一栏里，不再是盖住整屏的弹层——人要一边看产出一边跟 Bot 说「这里
+   * 改一下」，弹层一开对话就被挡住了。预览开着的时候哪怕栏是收着的也要摆出来：人刚点了
+   * 一个文件，什么都没出现才是最糟的。关掉预览，栏回到原来那个样子（收着的就还是收着）。
+   */
+  const preview = shownPreview()
   // 折叠 = 整个不渲染。开关挪到了对话 header 上，这里不用再留一条竖条给人点回去。
-  if (!asidePref.open) return ''
-  const detail = Boolean(state.routineOpen && routineOpenRow())
+  if (!asidePref.open && !preview) return ''
+  const detail = !preview && Boolean(state.routineOpen && routineOpenRow())
   /**
    * 点开一条日常任务时，整栏换成那一屏——但**上面那块屏只是藏起来，不是拿掉**。
    *
    * 拿掉的代价是断一次 VNC（见 chat.js 的 syncDesktop：槽没了就卸载）。藏着的时候
    * 它的 getBoundingClientRect 全是 0，常驻层自己会判成不可见，连接照旧活着；人点
-   * 返回，槽一恢复尺寸，画面就在那儿。
+   * 返回，槽一恢复尺寸，画面就在那儿。预览盖上来时同理。
    */
   /**
    * 文件那一屏和运行环境是**两屏并存、只藏一屏**，理由和日常任务详情那条一样：
    * 拿掉运行环境等于断一次 VNC。切到文件去看一眼再切回来，屏还在那儿。
+   *
+   * 转人工待办不用这样：里面没有长连接，用不着藏着养着，摆着的时候才画。
    */
-  const files = asidePref.tab === 'files'
-  return `<aside class="gw-aside">
+  const tab = asideTab()
+  const cover = detail || Boolean(preview)
+  return `<aside class="gw-aside"${preview ? ' data-preview="1"' : ''}>
     <div class="gw-aside-grip" data-act="aside-grip" title="${esc(t('拖动调整宽度'))}"></div>
     <div class="gw-aside-body">
-      <div class="gw-aside-stack" ${detail || files ? 'hidden' : ''}>
+      <div class="gw-aside-stack" ${cover || tab !== 'env' ? 'hidden' : ''}>
         <h3>${t('运行环境')}</h3>
         ${chatMachinePanel()}
         ${routineListPanel()}
       </div>
-      <div class="gw-aside-stack" ${detail || !files ? 'hidden' : ''}>
+      <div class="gw-aside-stack" ${cover || tab !== 'files' ? 'hidden' : ''}>
         ${workspacePanel()}
       </div>
+      ${!cover && tab === 'handoffs' ? `<div class="gw-aside-stack" id="aside-handoffs">${handoffsAside()}</div>` : ''}
       ${detail ? routineDetailPanel() : ''}
+      ${preview ? previewPanel() : ''}
     </div>
   </aside>`
 }
 
 /**
+ * 右栏眼下该摆哪一屏。转人工待办只有公司里的人看得到（见 canSeeHandoffs）：上次停在
+ * 那一屏、这次换了个看不到的身份登进来，就退回运行环境，别摆一屏空的。
+ */
+function asideTab() {
+  if (asidePref.tab === 'handoffs' && !canSeeHandoffs()) return 'env'
+  return asidePref.tab
+}
+
+/** 右栏这一刻的宽度：预览和平时各记各的（见 prefs.js 的 asideWidthOf）。 */
+function asideWidth() {
+  return shownPreview() ? asidePref.previewWidth : asidePref.width
+}
+
+/**
+ * 右栏那一列的 grid 写法。**给内容区留够 420px**：预览那一档能拖到 1600，窗口一窄，
+ * 右栏照着记下来的宽度画，对话会被挤成一条缝——而预览挪进右栏的意义就是边看边说。
+ * 拖动时（app.js）也走这一句。
+ */
+function asideColumns(width) {
+  return `minmax(0, 1fr) min(${width}px, calc(100% - 420px))`
+}
+
+/**
  * 右栏开关。放在对话 header 上，所以折叠之后仍然点得到——右栏本身是整个不渲染的。
  *
- * **两颗切屏 + 一颗收起，收起排在最右。** 切屏那两颗永远画自己那一屏的图标（文件夹、
- * 显示器），正看着的那一屏留个底色；收起是另一件事——它不属于任何一屏，所以自己占一颗，
- * 而且只有栏开着的时候才在。
+ * **几颗切屏 + 一颗收起，收起排在最右。** 切屏那几颗永远画自己那一屏的图标（举手、文件
+ * 夹、显示器），正看着的那一屏留个底色；收起是另一件事——它不属于任何一屏，所以自己占
+ * 一颗，而且只有栏开着的时候才在。
  *
  * 一开始是让正看着那一屏的图标就地变成收起箭头的：省一颗按钮，但同一个位置上的图标
  * 一开一关是两个意思，而人是照位置去点的——要收起，得先想起来「现在开着的是哪一屏」。
+ *
+ * 转人工待办原来是顶栏一颗跳去 /handoffs 的按钮，点下去整页换掉、对话没了。在对话页上
+ * 它也是这一栏里的一屏；别的页没有右栏，那颗按钮照旧跳整页（见 handoffBell）。
  */
 function asideToggle() {
   if (!hasAside()) return ''
-  const open = asidePref.open
-  const tab = (name, icon, label) => {
-    const here = open && asidePref.tab === name
+  const preview = Boolean(shownPreview())
+  const open = asidePref.open || preview
+  const tab = (name, icon, label, extra = '') => {
+    const here = open && !preview && asideTab() === name
     return `<button type="button" class="btn btn-ghost btn-icon sw-asidetab" style="flex: none;"
       data-act="aside-tab" data-tab="${name}" aria-pressed="${here}"
-      aria-label="${esc(label)}" title="${esc(label)}">${svg(icon, 16)}</button>`
+      aria-label="${esc(label)}" title="${esc(label)}">${svg(icon, 16)}${extra}</button>`
   }
   const collapse = open
     ? `<button type="button" class="btn btn-ghost btn-icon" style="flex: none;"
         data-act="aside-toggle" aria-label="${esc(t('收起右栏'))}" title="${esc(t('收起右栏'))}"
         >${svg(CHEVRON_RIGHT, 16)}</button>`
     : ''
+  const n = needCount()
+  const handoffs = canSeeHandoffs()
+    ? tab('handoffs', ICON_HANDOFF, t('转人工待办', 'Handoffs'), `<span class="satu-handoffcount" ${n ? '' : 'hidden'}>${n > 99 ? '99+' : n}</span>`)
+    : ''
   return `<span style="margin-left: auto; flex: none; display: inline-flex; gap: 2px;"
-    >${tab('files', FOLDER, t('工作区文件'))}${tab('env', MONITOR, t('运行环境'))}${collapse}</span>`
+    >${handoffs}${tab('files', FOLDER, t('工作区文件'))}${tab('env', MONITOR, t('运行环境'))}${collapse}</span>`
 }
 
 /** 在不在对话页。顶栏换不换成会话身份行、右栏开不开，都看它，免得两处判断漂移。 */
@@ -195,7 +237,7 @@ function appView() {
   // 下面的兄弟节点就顶不上去了。
   const aside = pageAside()
   const asideCols = aside
-    ? `grid-template-columns: minmax(0, 1fr) ${asidePref.width}px;`
+    ? `grid-template-columns: ${asideColumns(asideWidth())};`
     : 'grid-template-columns: minmax(0, 1fr);'
   return `
   <div style="height: 100vh; overflow: hidden; display: grid; grid-template-columns: ${rail ? '62px' : '248px'} 1fr; gap: var(--space-4); padding: var(--space-4); background: var(--color-bg); font-family: var(--font-body); color: var(--color-text); box-sizing: border-box;">
@@ -298,7 +340,6 @@ function appView() {
     ${newBotModal()}
     ${pluginsModal()}
     ${logsModal()}
-    ${previewModal()}
   </div>`
 }
 
@@ -357,7 +398,10 @@ function render() {
     syncDesktop()
     return
   }
+  // 右栏待办 / 待办页里正写着的结论，换壳之前存一下（见 chat.js 的 stashHandoffNotes）。
+  stashHandoffNotes(root)
   root.innerHTML = state.me ? appView() : anonView()
+  fillHandoffNotes(root)
   // 进来时要落在首页哪一段（见 app.js 的 foldDownload：老的 /download 地址和 /#download）。
   // 只在第一次画完时跳一次，不管这一帧画的是不是首页——否则登录进来、再登出回到首页
   // 时它还挂着，会莫名其妙把人拽到页底。
@@ -383,7 +427,7 @@ function render() {
     // 上下键选不动（一条候选都查不到），回车穿到发送那条路上去。
     paintCmdPick()
   }
-  // 预览里的「局部重绘」画布：弹层是整个换掉的，笔画存在 state 里，每次都要重新贴上去。
+  // 预览里的「局部重绘」画布：右栏是整个换掉的，笔画存在 state 里，每次都要重新贴上去。
   if (document.getElementById('sw-paint-canvas')) mountPainter()
   // 日志面板同理：壳在 render 里，内容由 paintLogs 增量填。
   if (document.getElementById('log-body')) paintLogs()
