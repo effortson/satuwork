@@ -297,5 +297,87 @@ export function checkPackage(parts: string[], read: (path: string) => string | u
       if (!have.has(rel.part)) problems.push(`${rels} 里 Id="${rel.id}" 指向 ${rel.part}，包里没有这个部件`)
     }
   }
+  for (const part of parts) {
+    if (part.endsWith('.xml')) problems.push(...negativeExtents(part, read(part)))
+  }
   return problems
+}
+
+/**
+ * 图形的尺寸（`a:ext` / `a:chExt` / `wp:extent` / `xdr:ext` 上的 cx、cy）不能是负数。
+ *
+ * XML 本身合格、包也对，PowerPoint 却说「无法读取某些内容，已修复并删除」——删的就是这个
+ * 形状。最常见的来路是往右上画一条线：pptxgenjs 里写 `h: -2.6`，它原样写成 `cy="-2377440"`。
+ * 反方向要靠翻转（`<a:xfrm flipV="1">`），尺寸本身永远是正的。LibreOffice 照样画得出来，
+ * 所以渲染看图看不出这种错，只能在这里拦。
+ *
+ * `a:ext` 还有一个同名的扩展列表元素（`<a:ext uri="…">`），没有 cx / cy，不碰它。
+ */
+function negativeExtents(part: string, text: string | undefined): string[] {
+  if (!text || !text.includes('="-')) return []
+  const out: string[] = []
+  for (const m of text.matchAll(/<(?:\w+:)?(?:ext|chExt|extent)\b[^>]*>/g)) {
+    const neg = (['cx', 'cy'] as const).filter((k) => Number(attr(m[0], k)) < 0)
+    if (!neg.length) continue
+    // 形状的名字：PPT / Excel 的 cNvPr 在尺寸前面，Word 的 wp:docPr 在 wp:extent 后面。
+    const before = text.slice(Math.max(0, m.index - 4000), m.index)
+    const named = [...before.matchAll(/<(?:\w+:)?cNvPr\b[^>]*>/g)].pop()?.[0] ?? /<(?:\w+:)?docPr\b[^>]*>/.exec(text.slice(m.index, m.index + 2000))?.[0]
+    const name = named ? attr(named, 'name') : undefined
+    const what = neg.map((k) => `${k === 'cx' ? '宽' : '高'}（${k}="${attr(m[0], k)}"）`).join('、')
+    out.push(
+      `${part} 里${name ? `形状「${unescapeAttr(name)}」` : '有个形状'}的${what}是负数，Office 打开时会报修复并把它删掉。` +
+        '尺寸只能是正数，反方向的线、箭头靠翻转：pptxgenjs 里给 flipH / flipV: true，XML 里是 <a:xfrm flipH="1" / flipV="1">',
+    )
+  }
+  return out
+}
+
+/** 生成器自己就带着、Office 照样打得开的问题：不报。见 inspectOfficeFile。 */
+const KNOWN_HARMLESS = [
+  // pptxgenjs 每一页都登记一个不存在的 slideMasterN.xml（页越多越多），PowerPoint 从来不在乎。
+  /^\[Content_Types\]\.xml 里登记了 \/ppt\/slideMasters\/slideMaster\d+\.xml，但包里没有/,
+]
+
+/** 生成出来的文件多大还查。再大的多半是图片，XML 那部分用不着这么大。 */
+const INSPECT_MAX_BYTES = 30 * 1024 * 1024
+/** 解出来的 XML 总量上限：zip 炸弹挡在这儿。按声明的大小算，超了就不查。 */
+const INSPECT_MAX_XML = 64 * 1024 * 1024
+
+/**
+ * 查一份**刚生成**的 docx / xlsx / pptx：XML 结构、包级登记与引用、图形尺寸。回问题列表。
+ *
+ * 给 terminal 用：新建文档是模型在 terminal 里跑脚本出来的，不经过 office_pack，那一道
+ * 打包前检查碰不到它——PowerPoint 说「已修复」时，已经交到人手上了。所以命令跑完、
+ * 产出里有 Office 文件，就在这里查一遍，有问题当场告诉模型。
+ *
+ * 太大、打不开的一律当「不查」回空：这是顺手的一道，不该因为它让命令结果变成错误。
+ */
+export async function inspectOfficeFile(bytes: Buffer): Promise<string[]> {
+  if (bytes.length > INSPECT_MAX_BYTES) return []
+  const { default: JSZip } = await import('jszip')
+  let zip: InstanceType<typeof JSZip>
+  try {
+    zip = await JSZip.loadAsync(bytes)
+  } catch {
+    return []
+  }
+  const entries = Object.values(zip.files).filter((f) => !f.dir)
+  const isXml = (name: string) => /\.(xml|rels)$/i.test(name)
+  const declared = entries
+    .filter((f) => isXml(f.name))
+    .reduce((n, f) => n + Number((f as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize ?? 0), 0)
+  if (declared > INSPECT_MAX_XML) return []
+  const texts = new Map<string, string>()
+  try {
+    for (const f of entries) if (isXml(f.name)) texts.set(f.name, await f.async('string'))
+  } catch {
+    return []
+  }
+  const problems: string[] = []
+  for (const [name, text] of texts) {
+    const bad = checkXml(text)
+    if (bad) problems.push(`${name}：${bad}`)
+  }
+  problems.push(...checkPackage(entries.map((f) => f.name), (p) => texts.get(p)))
+  return problems.filter((p) => !KNOWN_HARMLESS.some((re) => re.test(p)))
 }

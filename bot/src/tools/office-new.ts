@@ -143,6 +143,8 @@ const PPTX_POINTS = [
   '- 表格 addTable(rows, { x, y, w, colW: [...] })，colW 合起来等于 w；格子可以是字符串，也可以是 { text, options } 单独设样式。',
   '- 图表 addChart(pres.charts.BAR / LINE / PIE, [{ name, labels, values }], { x, y, w, h })，柱状图竖着要 barDir: "col"。',
   '- 图片 addImage({ path, x, y, w, h })，按原图比例算 w、h，不然会被拉变形。备注 slide.addNotes("...")。',
+  '- x、y 可以是负的（出血到页面外），w、h 不能：往右上、左下画的线和箭头，w、h 照样写正数，再加 flipV: true（或 flipH: true）。' +
+    '写成负数 LibreOffice 照样画得出来，PowerPoint 却会报「已修复」并把这个形状删掉。',
   '- 阴影之类的选项对象会被库原地改掉，别在几次调用之间复用同一个对象：写成函数，每次返回一个新的。',
   '- 输出：pres.writeFile({ fileName: 路径 })。',
 ].join('\n')
