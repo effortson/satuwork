@@ -32,7 +32,8 @@ import { seat, type SeatRecord } from './seats.ts'
 export interface DiagResult {
   seatId: string
   at: number
-  seat: SeatRecord | null
+  /** 名册那一行，**不带席位票**（gatewayToken）：这份报告经 Gateway 一路转到浏览器。 */
+  seat: Omit<SeatRecord, 'gatewayToken'> | null
   units: UnitInfo[]
   ports: PortInfo[]
   processes: ProcInfo[]
@@ -245,6 +246,8 @@ async function browserOf(): Promise<{ found: string | null; candidates: string[]
 
 export async function diagnose(seatId: string, lines = 40): Promise<DiagResult> {
   const row = seat(seatId) ?? null
+  // 报告出去的那份摘掉席位票；本函数里别处仍用完整的 row。
+  const publicRow = row && (({ gatewayToken: _token, ...rest }) => rest)(row)
   const notes: string[] = []
   const at = Date.now()
   if (!row) {
@@ -320,7 +323,7 @@ export async function diagnose(seatId: string, lines = 40): Promise<DiagResult> 
   return {
     seatId,
     at,
-    seat: row,
+    seat: publicRow,
     units,
     ports,
     processes,

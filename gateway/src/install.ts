@@ -105,7 +105,9 @@ GOT="$(sha256sum "$TMP/manager.tgz" | cut -d' ' -f1)"
 if [ "$GOT" != "$WANT" ]; then echo "manager package checksum mismatch: got $GOT, want $WANT" >&2; exit 1; fi
 STAGED=/opt/satuwork/manager/releases/staged.$$
 mkdir -p "$STAGED"
-tar -xzf "$TMP/manager.tgz" -C "$STAGED"
+# --no-same-owner: the package is built in CI, its files belong to uid 1001 there.
+# Keeping that owner hands root's code to whichever local account has uid 1001.
+tar --no-same-owner -xzf "$TMP/manager.tgz" -C "$STAGED"
 [ -f "$STAGED/bin/satuwork-manager.mjs" ] || { echo "package has no bin/satuwork-manager.mjs" >&2; exit 1; }
 VERSION="$(cat "$STAGED/VERSION" 2>/dev/null || echo unknown)"
 FINAL="/opt/satuwork/manager/releases/$VERSION"

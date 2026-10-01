@@ -276,6 +276,8 @@ export async function proxyJson(
    * 好好的，人看着报错就会再点一次。
    */
   timeoutMs = 15000,
+  /** 转出去之前改一下正文（摘掉不该到浏览器的字段）。只在正文是 JSON 时调用。 */
+  scrub?: (parsed: unknown) => unknown,
 ) {
   // authorization 上只能是席位票。bot 不认机器票了，回落到 smt_ 只会换回 401，
   // 而且会让人以为「票带了但没生效」，比空着更难查。
@@ -303,6 +305,7 @@ export async function proxyJson(
   } catch {
     parsed = { error: text.slice(0, 200) || INSTANCE_DOWN }
   }
+  if (scrub) parsed = scrub(parsed)
   if (extra && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     json(res, r.status, { ...(parsed as Record<string, unknown>), ...extra })
     return

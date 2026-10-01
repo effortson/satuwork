@@ -38,7 +38,7 @@ import { pruneDailyAlternates } from './lib/alternates.ts'
 import { tickBotDeletions, tickConversationAudits } from './conversation-audit.ts'
 import { createMeter, type Meter } from './lib/meter.ts'
 import { createLlm, type Llm } from './llm.ts'
-import { settle } from './lib/llm-billing.ts'
+import { settle, withSettleLock } from './lib/llm-billing.ts'
 
 /** 调度器多久看一眼。设成 0 就不起调度器（e2e 里有几条不需要它自己跑）。 */
 const TICK_MS = Math.max(0, Math.trunc(Number(process.env.GATEWAY_ROUTINE_TICK_MS ?? 30_000)))
@@ -567,9 +567,6 @@ export async function sweepUnsettledLlmCalls(
   for (const call of due) {
     const account = await db.account(call.accountId)
     if (!account) continue
-    // 幂等：查和记之间管家可能刚结算完。settle 之前再看一眼，能省掉大多数重复行；剩下的
-    // 竞态窗口（两边同时 insert）账本按 refId 汇总时会合成一行，不至于翻倍。
-    if (await db.chargeExistsForRef(call.id)) continue
     try {
       /**
        * 只从目录里取 `cost`，**provider / model 仍旧用这次调用自己的那一份**。
@@ -582,8 +579,16 @@ export async function sweepUnsettledLlmCalls(
        * 目录里已经没有这个模型了（平台下架、公司条目删了）也一样：账照记，只是没有单价。
        */
       const found = await catalog.find(call.companyId, `${call.provider}/${call.model}`)
-      await settle(db, meter, account, { provider: call.provider, id: call.model, cost: found?.cost }, call.id, undefined, 'failed')
-      n++
+      /**
+       * 幂等：查和记之间管家可能刚结算完。**查和记在同一把锁里**（withSettleLock）——以前是
+       * 锁外先查一眼，两边同时 insert 的窗口还在，而账本按 refId 是求和的，撞上就扣两次。
+       */
+      const settled = await withSettleLock(db, call.id, async () => {
+        if (await db.chargeExistsForRef(call.id)) return false
+        await settle(db, meter, account, { provider: call.provider, id: call.model, cost: found?.cost }, call.id, undefined, 'failed')
+        return true
+      })
+      if (settled) n++
     } catch (e) {
       console.error(`satuwork-gateway: 收未结算的模型调用 ${call.id} 失败：${(e as Error).message}`)
     }

@@ -117,7 +117,13 @@ async function fetchRelease(
   const tgz = join(releaseRoot(), `.${version}.tgz`)
   writeFileSync(tgz, bytes)
   try {
-    const r = await run('tar', ['-xzf', tgz, '-C', dir], { timeout: 300_000 })
+    /**
+     * **`--no-same-owner` 不能省。** GNU tar 以 root 解包时默认保留包里的属主，而包是在
+     * CI 上打的，属主是 runner 的 uid 1001——Debian 云镜像的默认账号占 1000，第一个席位
+     * 账号正好就是 1001。不加这一条，这个席位的 bot 就能改全机共享的这份代码（deploy-seat.sh
+     * 会把它 cp -a 给别的员工的席位），管家那一份更是以 root 跑。
+     */
+    const r = await run('tar', ['--no-same-owner', '-xzf', tgz, '-C', dir], { timeout: 300_000 })
     if (r.code !== 0) throw new Error(`untarring ${version} failed: ${(r.stderr || r.stdout).slice(-300)}`)
     if (!existsSync(join(dir, 'bin', 'satuwork.mjs'))) {
       throw new Error(`release ${version} has no bin/satuwork.mjs`)
