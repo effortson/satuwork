@@ -1018,6 +1018,35 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     return [...new Set(this.queueCol().list().map((r) => r.value.sessionId))]
   }
 
+  /**
+   * 开机把上一条命留下的队列排掉。
+   *
+   * 队列是落盘的，可进程重启之后没有任何东西会来叫醒它：换版重启（最常见）之前排进来的那几条
+   * 一直挂在 dock 上，要等人再发一条——而那一条会先跑，顺序也倒了。
+   *
+   * **等目录拉下来再排。** 刚起来时模型配置还没从 Gateway 拿到，这时开跑会以「没有模型」失败，
+   * 而出队在开跑之前（见 drainQueue），那条消息就白白丢了。一直拉不到（没配 Gateway 的环境）
+   * 就不排，留在队列里，人再发一条时照旧会带走。
+   */
+  async drainAtBoot(opts: { waitMs?: number; pollMs?: number } = {}): Promise<number> {
+    const until = Date.now() + (opts.waitMs ?? 5 * 60_000)
+    while (!this.ctx.catalog?.pulledAt) {
+      if (Date.now() >= until) return 0
+      // unref：没配 Gateway 的进程（探针、本地试跑）不能被这段等待拖着不退出。
+      await new Promise((r) => setTimeout(r, opts.pollMs ?? 1_000).unref?.())
+    }
+    const sessions = this.queuedSessions()
+    for (const sessionId of sessions) {
+      // 等目录的这段时间里人可能已经发了一条、开了一轮：那一轮收口时自己会排空，这里不另开。
+      if (this.isRunning(sessionId)) continue
+      void this.drainQueue(sessionId).catch((e) => {
+        this.ctx.logger?.warn?.(`agents: 开机排空 ${sessionId} 失败：${(e as Error).message}`)
+      })
+    }
+    if (sessions.length) this.ctx.logger?.info?.(`agents: 开机接着跑 ${sessions.length} 条会话里排着的消息`)
+    return sessions.length
+  }
+
   /** 队列深度上限。满了就明说，不静默丢——用户以为发出去了才是最糟的。 */
   get queueMax(): number {
     return Math.max(1, Math.trunc(Number(process.env.SATUWORK_QUEUE_MAX) || 5))
@@ -3891,5 +3920,7 @@ export function apply(ctx: Context, config: Config = {}) {
    */
   ctx.inject(['agents'], (ctx: Context) => {
     void ctx.agents.healTasks().catch((e: Error) => ctx.logger?.warn?.(`agents: 收口遗留委派失败 ${e.message}`))
+    // 上一条命留下的排队消息（见 drainAtBoot）。同样不挡启动。
+    void ctx.agents.drainAtBoot().catch((e: Error) => ctx.logger?.warn?.(`agents: 开机排空队列失败 ${e.message}`))
   })
 }
