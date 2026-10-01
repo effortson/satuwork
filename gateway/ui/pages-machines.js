@@ -760,26 +760,40 @@ function machineCapacityPanel(card) {
 }
 
 /**
- * 两行版本，两个按钮。
+ * 管家版本那一行后面的说明和按钮。机器详情、公司详情两处共用，同一台机器不该在两个页面
+ * 上说两种话。`attrs` 是按钮上认机器用的那几个 data-* 属性（两处的路由不一样）。
  *
- * 「升级」都只是**下指令**：管家换版由机器自己在下一轮心跳里做（要挑不忙的时候、
- * 要自检、失败要回滚，这些只有机器上做得了），Bot 那条是逐个席位重铺。所以按下之后
- * 的提示语是「等机器换版」，不是「已升级」。
+ * **管家自己会升级**：心跳里拿到期望版本（单机钉的 > 平台钉的 > 最新）就自己去换。所以
+ * 没钉的机器上不画「升级」按钮——没有什么要人按的。要按的只有一种：这台机器被单独钉住了，
+ * 不再跟平台走。那颗按钮是「恢复自动升级」，按下去摘掉钉（见 gateway/src/lib/machines.ts
+ * 的 retargetManager）。以前那颗「升级」按下去反而是**钉**，点过的机器从此停在那一版。
+ *
+ * 按钮都只是**下指令**：换版由机器在下一轮心跳里做（要挑不忙的时候、要自检、失败要回滚），
+ * 所以提示语是「等机器换版」，不是「已升级」。
  */
+function managerUpgradeBits(card, attrs) {
+  const m = card.machine || {}
+  const note = card.managerPending
+    ? ` · ${t('已下指令，等机器换版')} → ${esc(card.managerDesired || '')}`
+    : m.protocolTooOld
+      ? ' · ' + t('版本过旧，等它自升级')
+      : card.managerPinned
+        ? ` · ${t('单独钉在这一版，不跟平台升级')}`
+        : card.managerOutdated
+          ? ` · ${t('平台钉在这一版')}`
+          : ''
+  const btn = card.managerPinned
+    ? `<button type="button" class="btn" data-act="upgrade-manager" ${attrs} title="${esc(card.managerFollow ? `${t('摘掉单机钉的版本，跟平台走')} → ${card.managerFollow}` : t('摘掉单机钉的版本，跟平台走'))}" ${state.busy ? 'disabled' : ''}>${t('恢复自动升级')}</button>`
+    : ''
+  return { note, btn }
+}
+
+/** 两行版本，两个按钮。管家那一行见 managerUpgradeBits。 */
 function machineVersionPanel(card) {
   const m = card.machine
   const list = card.botVersions || []
   const botText = list.length ? esc(botVersionsSummary(list)) : t('还没有部署 Bot')
-  const mgrNote = card.managerPending
-    ? ` · ${t('已下指令，等机器换版')} → ${esc(card.managerDesired || '')}`
-    : m.protocolTooOld
-      ? ' · ' + t('版本过旧，等它自升级')
-      : card.managerOutdated
-        ? ` · ${t('最新')} ${esc(card.managerLatest || state.managerLatest || '')}`
-        : ''
-  const mgrBtn = card.managerOutdated
-    ? `<button type="button" class="btn" data-act="upgrade-manager" data-scope="platform" data-machine="${esc(m.id)}" ${state.busy ? 'disabled' : ''}>${t('升级管家')}</button>`
-    : ''
+  const { note: mgrNote, btn: mgrBtn } = managerUpgradeBits(card, `data-scope="platform" data-machine="${esc(m.id)}"`)
   /**
    * 这颗按钮**不再只在有新版本时出现**。
    *
@@ -798,7 +812,9 @@ function machineVersionPanel(card) {
   return `<div class="satu-panel">
     <span class="satu-panel-title">${t('版本')}</span>
     <div class="satu-kv"><span>${t('管家版本')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${esc(m.managerVersion || '—')}${mgrNote}${mgrBtn}</span></div>
-    <div class="satu-kv"><span>${t('期望版本')}</span><span>${esc(card.managerDesired || t('跟平台的最新发布走'))}</span></div>
+    <div class="satu-kv"><span>${t('期望版本')}</span><span>${card.managerPinned
+      ? `${esc(card.managerPinned)}（${t('这台单独钉的')}）`
+      : `${esc(card.managerDesired || '—')}（${t('跟平台走')}）`}</span></div>
     <div class="satu-kv"><span>${t('Bot 运行时')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${botText}${card.botOutdated ? ` · ${t('目标版本')} ${esc(card.botDesired || card.botLatest || state.botLatest || '')}` : ''}${botBtn}</span></div>
     ${/* 装的是哪个包、跑的是哪一版公司模版，两件事各自会落后。渲染函数在 pages-audit.js，
          那一页的机器卡片画的是同一行——同一台机器不该在两个页面上说两种话。 */ ''}

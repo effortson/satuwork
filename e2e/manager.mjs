@@ -2330,6 +2330,61 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       }
     })
 
+    await test('「升级管家」不带版本 = 摘掉单机钉、跟平台走；带版本才钉，并能摘掉', async () => {
+      /**
+       * 原来那颗按钮不带版本也是**钉**：把当时的最新版写进这台机器的 desiredManagerVersion。
+       * 点过一次的机器从此停在那一版，之后发多少新版都轮不到它，界面上也没地方摘掉。
+       * 现在不带版本就是摘钉——管家本来就会在心跳里自己追最新。
+       *
+       * 要两个包才分得出「钉的」和「跟的」：上一条用例传的 pinned-9.9.9，再传一个更新的。
+       */
+      const { tarGz, sha256Of } = await import('./release.mjs')
+      const pkg = tarGz([
+        { name: './bin/satuwork-manager.mjs', data: '#!/usr/bin/env node\n' },
+        { name: './VERSION', data: 'follow-9.9.10\n' },
+      ])
+      const up = await req(gwBase, 'PUT', '/platform/manager-releases/follow-9.9.10', {
+        token: ownerTok,
+        raw: pkg,
+        headers: { 'content-type': 'application/gzip', 'x-bot-sha256': sha256Of(pkg) },
+      })
+      assert(up.status === 200, `传包 ${up.status} ${up.text}`)
+
+      const id = await machineIdOf(req, gwBase, ownerTok, orgId)
+      const beat = async () =>
+        (
+          await req(gwBase, 'POST', `/internal/machines/${id}/heartbeat`, {
+            token: machineTok,
+            body: { managerVersion: 'e2e-1', protocol: 1, node: process.versions.node, seats: [] },
+          })
+        ).json.desiredManagerVersion
+      const cardOf = async () => (await req(gwBase, 'GET', `/platform/machines/${id}`, { token: ownerTok })).json
+      try {
+        // 带版本 → 单机钉住，心跳下发钉的那版，卡片说得出「钉了」以及摘掉后会去追哪版。
+        const pin = await req(gwBase, 'POST', `/platform/machines/${id}/upgrade`, { token: ownerTok, body: { version: 'pinned-9.9.9' } })
+        assert(pin.status === 200, `钉 ${pin.status} ${pin.text}`)
+        assert(pin.json.pinned === 'pinned-9.9.9' && pin.json.version === 'pinned-9.9.9', `钉的回包 ${pin.text}`)
+        assert((await beat()) === 'pinned-9.9.9', '钉住之后心跳该下发钉的那一版')
+        const pinned = await cardOf()
+        assert(pinned.managerPinned === 'pinned-9.9.9', `卡片该说出钉在哪：${pinned.managerPinned}`)
+        assert(pinned.managerFollow === 'follow-9.9.10', `摘掉后该去追最新：${pinned.managerFollow}`)
+
+        // 不带版本 → 摘钉，回到跟平台走（平台没钉 = 最新）。
+        const free = await req(gwBase, 'POST', `/platform/machines/${id}/upgrade`, { token: ownerTok, body: {} })
+        assert(free.status === 200, `摘钉 ${free.status} ${free.text}`)
+        assert(free.json.pinned === null && free.json.version === 'follow-9.9.10', `摘钉的回包 ${free.text}`)
+        assert((await beat()) === 'follow-9.9.10', '摘钉之后心跳该下发最新版')
+        assert((await cardOf()).managerPinned === null, '摘钉之后卡片不该再说钉住')
+
+        // 钉一个不存在的版本 → 404，钉不上，也不动原来的。
+        const typo = await req(gwBase, 'POST', `/platform/machines/${id}/upgrade`, { token: ownerTok, body: { version: 'nope-1' } })
+        assert(typo.status === 404, `钉不存在的版本该 404：${typo.status} ${typo.text}`)
+        assert((await cardOf()).managerPinned === null, '钉失败不该留下半截状态')
+      } finally {
+        await req(gwBase, 'POST', `/platform/machines/${id}/upgrade`, { token: ownerTok, body: {} }).catch(() => {})
+      }
+    })
+
     await test('登记远端包：验证过才入库，size/sha256 对不上就拒', async () => {
       // 拿一个真的 tar.gz 挂在 mock HTTP 上，走完整的「拉下来核对」流程。
       const { tarGz, sha256Of } = await import('./release.mjs')

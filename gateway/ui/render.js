@@ -1652,9 +1652,15 @@ async function upgradeManager(el) {
   state.busy = true
   render()
   try {
+    // 不带版本 = 摘掉单机钉、跟平台走（见 gateway/src/lib/machines.ts 的 retargetManager）。
     const data = await api('POST', `${s.base}/upgrade`, {})
     await s.reload()
-    flash('ok', data.pending ? `已下指令升到 ${data.version}，等机器下一轮心跳换版` : `已经是 ${data.version}`)
+    flash(
+      'ok',
+      data.pending
+        ? `已恢复自动升级，目标 ${data.version}，等机器下一轮心跳换版`
+        : `已恢复自动升级，已经是 ${data.version}`,
+    )
   } catch (err) {
     flash('err', err.message)
   } finally {
