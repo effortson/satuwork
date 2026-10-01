@@ -1373,6 +1373,28 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!shell.includes('#download'), '桌面壳的登录页上还挂着下载桌面端')
     })
 
+    await test('gateway/ui 下每个脚本都解析得过，包括 i18n.js', async () => {
+      /**
+       * 这套冒烟只把界面分片装进来跑，**不装 i18n.js**，而前端读翻译又是
+       * `window.SATU_I18N || {}` 兜着的——于是那份文件语法错了，这里一条都不会红，浏览器里
+       * 英文界面却整片退回中文。就这么漏过：两个带全角逗号的键没加引号。
+       *
+       * 只解析不执行（`node --check`），所以不需要 window。用它而不是 vm.Script：分片里有
+       * ES 模块（unzip.js），按普通脚本解析会在 export 上报错；node --check 按 gateway 的
+       * package.json（type: module）认，两种都解析得了。
+       */
+      const { spawnSync } = await import('node:child_process')
+      const dir = join(root, 'gateway/ui')
+      const files = readdirSync(dir).filter((f) => f.endsWith('.js'))
+      assert(files.includes('i18n.js'), `没找到 i18n.js：${files.join(', ')}`)
+      const bad = []
+      for (const f of files) {
+        const out = spawnSync(process.execPath, ['--check', join(dir, f)], { encoding: 'utf8' })
+        if (out.status !== 0) bad.push(`${f}: ${out.stderr.trim().split('\n').slice(0, 3).join(' ')}`)
+      }
+      assert(!bad.length, `解析不过：\n${bad.join('\n')}`)
+    })
+
     await test('这三个地址刷新和法律页那个分片都由 Gateway 交得出来', async () => {
       // 分片漏进 http.ts 的 UI_PARTS 是条安静的路：本地开 index.html 一切正常，
       // 线上那个文件 404，两页连同整串脚本一起死在浏览器里。/download 已经不是一页了，

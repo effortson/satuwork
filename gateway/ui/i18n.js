@@ -24,6 +24,8 @@ window.SATU_I18N = {
   平台钉在这一版: 'Held here by the platform pin',
   '摘掉单机钉的版本，跟平台走': "Remove this machine's pin and follow the platform",
   恢复自动升级: 'Resume auto-upgrade',
+  管家版本号: 'Manager version',
+  单独钉这一版: 'Pin this machine',
   这台单独钉的: 'pinned on this machine',
   跟平台走: 'following the platform',
   机器配置: 'Machine setup',

@@ -13,7 +13,7 @@ import { desiredBotRelease, directReleaseUrl, localBotReleaseTarget, parseBotVer
 import { requireMachine, requireOrgUser, requireOwnerUser, requireReleaseAuthor } from '../lib/guards.ts'
 import { MANAGER_VACUUM_TIMEOUT_MS, MAX_LOG_CAP_MB, METRIC_RETENTION_MS, MINUTE_MS } from '../lib/telemetry.ts'
 import { signDesktopTicket } from '../crypto.ts'
-import { type Account, type CatalogItem, type Machine, type SeatRuntime } from '../db.ts'
+import { releaseArch, type Account, type CatalogItem, type Machine, type SeatRuntime } from '../db.ts'
 
 export function attachMachines(router: Router, ctx: RouteCtx) {
   const { db, keys } = ctx
@@ -473,6 +473,14 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
        */
       seatGatewayUrl: gatewayPublicUrl(),
       seatGatewayUrlConfigured: Boolean(gatewayPublicUrlExplicit()),
+      /**
+       * 「单独钉」那一格的候选：这台机器架构能装的管家版本，新的在前。认不出架构的老版本号
+       * 也算（releaseArch 给 undefined）。只给版本号——人要的是从里面挑一个，不是看包。
+       */
+      managerVersions: (await db.botReleases('manager'))
+        .filter((r) => !machine.arch || !releaseArch(r.version) || releaseArch(r.version) === machine.arch)
+        .slice(0, 30)
+        .map((r) => r.version),
     })
   })
 

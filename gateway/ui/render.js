@@ -1489,6 +1489,35 @@ async function saveTimezone(e) {
 }
 
 /**
+ * 单机钉一个管家版本（单机灰度）。和「恢复自动升级」同一条接口，带上版本就是钉，见
+ * gateway/src/lib/machines.ts 的 retargetManager。空值不提交：摘钉有自己那颗按钮。
+ */
+async function pinManagerVersion(e) {
+  e.preventDefault()
+  const form = e.target
+  const s = machineScope(form)
+  const version = String(new FormData(form).get('version') || '').trim()
+  if (!version) {
+    flash('err', '填一个管家版本号；要回到跟平台走，点「恢复自动升级」')
+    render()
+    return
+  }
+  state.busy = true
+  render()
+  try {
+    const data = await api('POST', `${s.base}/upgrade`, { version })
+    await s.reload()
+    // 「已下指令」而不是「已换好」：换版由机器在下一轮心跳里自己做。
+    flash('ok', data.pending ? `已单独钉到 ${data.version}，等机器下一轮心跳换版` : `已单独钉到 ${data.version}（已经是这一版）`)
+  } catch (err) {
+    flash('err', err.message)
+  } finally {
+    state.busy = false
+    render()
+  }
+}
+
+/**
  * 换机器负载那两档，或者换日期。
  *
  * 换完**立刻去拉**：这一页别的块都是一次性拉回来的快照，只有这两档是按范围现取的。

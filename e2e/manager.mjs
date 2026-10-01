@@ -2368,6 +2368,9 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         const pinned = await cardOf()
         assert(pinned.managerPinned === 'pinned-9.9.9', `卡片该说出钉在哪：${pinned.managerPinned}`)
         assert(pinned.managerFollow === 'follow-9.9.10', `摘掉后该去追最新：${pinned.managerFollow}`)
+        // 「单独钉这一版」那一格的候选：两个包都得在，新的在前。
+        const cands = pinned.managerVersions || []
+        assert(cands.indexOf('follow-9.9.10') === 0 && cands.includes('pinned-9.9.9'), `候选版本不对：${JSON.stringify(cands)}`)
 
         // 不带版本 → 摘钉，回到跟平台走（平台没钉 = 最新）。
         const free = await req(gwBase, 'POST', `/platform/machines/${id}/upgrade`, { token: ownerTok, body: {} })
