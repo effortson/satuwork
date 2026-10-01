@@ -235,6 +235,13 @@ export async function runBrowser({ root, test, assert, log }) {
     assert(!bad.length, `这几条不对：${bad.join('、')}`)
   })
 
+  await test('下载：不覆盖工作区里的同名文件，只报 Bot 自己的', () => {
+    assert(r.downloads, `没有 downloads 结果${r.crashed ? '：' + r.crashed : ''}`)
+    const { detail, ...checks } = r.downloads
+    const bad = all(checks)
+    assert(!bad.length, `这几条不对：${bad.join('、')}；${JSON.stringify(detail)}`)
+  })
+
   await test('员工把 Bot 的窗口关掉之后，下一次调用自己重开一个', () => {
     /**
      * 不认这件事的话，session 一直指向一个已经不存在的标签页，之后每一次调用都以

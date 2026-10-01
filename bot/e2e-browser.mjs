@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -108,6 +108,17 @@ const HANG_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>一�
 </head><body><main><h1>一直在加载</h1></main></body></html>`
 
 const server = createServer((req, res) => {
+  // 下载：一个带下载链接的页面，和一个 attachment 响应。
+  if (req.url === '/dl-page') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end('<!doctype html><html><head><meta charset="utf-8"><title>下载页</title></head><body><a id="dl" href="/dl">下载报表</a></body></html>')
+    return
+  }
+  if (req.url === '/dl') {
+    res.writeHead(200, { 'content-type': 'text/plain', 'content-disposition': 'attachment; filename="report.txt"' })
+    res.end('report')
+    return
+  }
   if (req.url === '/late') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(LATE_PAGE)
@@ -707,6 +718,39 @@ try {
     // navigate 走得通，而且走完这个标记就清了。
     还能导航出去: wayOut.failed !== true && wayOut.text.includes('提交订单'),
     出去之后标记清了: !svc.blockedNow(),
+  }
+
+  /**
+   * 下载：**只报 Bot 自己的，路径以 Chrome 实际落盘的为准。**
+   *
+   * 下载目录只能整颗浏览器一起设，下载事件也是谁的都发。员工在另一个标签页下的东西不能
+   * 出现在 Bot 的产出里；同名文件 Chrome 会存成 `report (1).txt`，卡片不能指回第一份。
+   */
+  // 已经有一份同名的员工文件：网页上下的 report.txt 不能把它盖掉。
+  writeFileSync(join(workRoot, 'report.txt'), '员工自己的那份')
+  const dlPage = await run('browser_navigate', { url: `http://${HOST}/dl-page` })
+  const dlRef = refOf(dlPage.text, '下载报表')
+  // 下载完成得很快，可能挂在点击那次的结果上，也可能挂在下一次上——两次都收。
+  const clickAndCollect = async () => {
+    const clicked = await run('browser_click', { ref: dlRef })
+    await new Promise((r) => setTimeout(r, 1500))
+    const after = await run('browser_snapshot')
+    return [...(clicked.files || []), ...(after.files || [])].map((f) => f.path)
+  }
+  const first = await clickAndCollect()
+  const second = await clickAndCollect()
+  // 「员工」自己开一个标签页下同一个文件：不经过 Bot，也不是 Bot 的页面点出来的。
+  await fetch(`http://127.0.0.1:${cdpPort}/json/new?${encodeURIComponent(`http://${HOST}/dl`)}`, { method: 'PUT' }).catch(() => {})
+  await new Promise((r) => setTimeout(r, 1500))
+  const theirs = ((await run('browser_snapshot')).files || []).map((f) => f.path)
+  const onDisk = readdirSync(workRoot).filter((n) => n.startsWith('report')).sort()
+  out.downloads = {
+    员工原来那份没被盖掉: readFileSync(join(workRoot, 'report.txt'), 'utf8') === '员工自己的那份',
+    第一份另起了名字: first.length === 1 && first[0] !== 'report.txt' && existsSync(join(workRoot, first[0])),
+    第二份又是另一个名字: second.length === 1 && second[0] !== first[0] && existsSync(join(workRoot, second[0])),
+    员工的下载不算Bot的: theirs.length === 0,
+    员工的下载也落了盘没覆盖: onDisk.length === 4,
+    detail: { first, second, theirs, onDisk },
   }
 
   /**
