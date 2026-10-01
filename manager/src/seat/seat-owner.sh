@@ -23,7 +23,9 @@ seat_of_pid() {
     sess=$(printf '%s\n' "$cg" | sed -nE 's#^.*/session-([A-Za-z0-9]+)\.scope$#\1#p' | head -1 || true)
     [ -n "$sess" ] || return 0
     grep -qx 'SERVICE=login' "/run/systemd/sessions/$sess" 2>/dev/null || return 0
-    id=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null |
+    # 2>/dev/null 写在 `<` **前面**：重定向从左往右生效，写在后面的话 environ 打不开
+    # （进程刚退）时那句「No such file or directory」已经先漏到 stderr 上了，会混进部署错误里。
+    id=$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/environ" |
       sed -nE 's#^XDG_RUNTIME_DIR=(/run/satuwork/|/tmp/xdg-runtime-)([A-Za-z0-9_-]+)$#\2#p' | head -1 || true)
     [ -n "$id" ] || return 0
   fi
