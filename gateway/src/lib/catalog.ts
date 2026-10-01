@@ -534,6 +534,22 @@ export function extraPromptOf(v: unknown, base = ''): string {
  * 记忆 / Skill / MCP 全部来自传进来的模版，读一次合成一次。所以「模版改了，公司里
  * 的 Bot 跟着变」不是一个要去触发的同步动作——没有副本，也就没有会漂的东西。
  */
+/**
+ * 下发给席位的 MCP 服务器：**只给这几颗 Bot 用得到的**（它们 `mcps` 的并集）。
+ *
+ * 以前是公司看得见的全部（全局 + 本公司），连同明文 token 和 env 一起下发。而一张 `sat_`
+ * 不难拿到——任何成员都能给自己建一颗本地 Bot、领一张桌面票——于是「成员 = 能读走公司全部
+ * MCP 的密钥」，包括那些他的 Bot 根本没被授权用的。
+ *
+ * 口径和 publicBot 的 `mcps` 一字不差：自建 Bot 跟模版走，其余看自己的定义。`@` 点名只点得到
+ * 本账号自己的连接器（Gateway 合成、另行下发），不经过这里，所以这一刀不会切掉点名。
+ * `/runtime/catalog` 和它的探针 `/runtime/catalog/version` 都要用这一份筛，指纹才对得上。
+ */
+export function serversForBots<T extends { id: string }>(servers: T[], bots: CatalogItem[], tpl: BotTemplate): T[] {
+  const ids = new Set(bots.flatMap((b) => (b.scope === 'user' ? tpl.mcps : idList(botDefOf(b.definition).mcps))))
+  return servers.filter((s) => ids.has(s.id))
+}
+
 export function publicBot(item: CatalogItem, pinned: { provider: string; model: string }, tpl?: BotTemplate) {
   const def = botDefOf(item.definition)
   if (item.scope === 'user') {

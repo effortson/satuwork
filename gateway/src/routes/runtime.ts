@@ -10,7 +10,7 @@ import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
 import type { Account, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
-import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, defaultBotModel, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
+import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, botTemplateOf, defaultBotModel, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
 import { WebToolError } from '../web-tools.ts'
@@ -280,7 +280,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * 退回「全局 ∪ 公司」，看不见任何私有档——那时也没人知道该给谁的。
      */
     const skills = await db.skillsFor(companyId, account.id, botId || null)
-    const servers = await db.visibleCatalog('mcp', companyId)
+    // 只下发这几颗 Bot 用得到的（见 serversForBots）：token 和 env 是明文。
+    const servers = serversForBots(await db.visibleCatalog('mcp', companyId), bots, tpl)
     /**
      * **这颗 Bot 读得到的全部记忆**，四层一次取齐（`memoriesFor` 的 where 里带着层和
      * 归属，别人的一条都进不来）。
@@ -415,9 +416,14 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * 探针都判「没变」，那条 Skill 永远不会出现在它的索引里——而工具明明回了成功。
      * 这是那种「哪一处看起来都对」的故障（docs/skills.md §7）。
      */
+    /**
+     * 服务器按和 `/runtime/catalog` 同一份口径筛（serversForBots）：指纹两边必须一字不差，
+     * 不然要么每分钟白拉一次整份目录，要么改了却永远判「没变」。
+     */
+    const tpl = tplItem ? botTemplateOf(tplItem) : defaultBotTemplate()
     const tools = [
       ...(await db.skillsFor(companyId, account.id, botId || null)),
-      ...(await db.visibleCatalog('mcp', companyId)),
+      ...serversForBots(await db.visibleCatalog('mcp', companyId), bot ? [bot] : bots, tpl),
     ]
     /** 记忆同理，而且它连 `catalog_items` 都不在——不算进去就永远同步不下来。 */
     const memories = companyId ? await db.memoriesFor(companyId, account.id, botId || null) : []
