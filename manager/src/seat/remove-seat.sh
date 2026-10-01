@@ -75,11 +75,16 @@ seat_pids() {
   done
 }
 
-# 这个席位的进程开在哪些显示号上。**杀之前问，杀完就问不出来了。**
+# 这个席位的 X 服务器开在哪些显示号上。**杀之前问，杀完就问不出来了。**
+#
+# 只认 X 服务器自己命令行上的 `:N`（`Xvfb :10 …`），**不读 DISPLAY 环境变量**：那是进程
+# 自己写的，席位用户起一个 `DISPLAY=:11 setsid sleep inf`，拆它的时候这里就会以 root 去删
+# 别的员工那块屏的锁和 socket（同管家 reclaim.ts 的 xDisplayOf）。
 seat_displays() {
-  local pid
+  local pid cmd
   for pid in $(seat_pids); do
-    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DISPLAY=://p'
+    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+    printf '%s\n' "$cmd" | sed -n -E 's#^([^ ]*/)?X(vfb|vnc|org|tigervnc)? :([0-9]+)( .*)?$#\3#p'
   done | sort -u
 }
 
@@ -93,11 +98,17 @@ seat_displays() {
 #
 # Xvfb 收到 TERM 通常会自己收拾这两个文件，但走到下面 SIGKILL 那一步就不会了。
 drop_x_locks() {
-  local d
+  local d owner
   for d in "$@"; do
     case "$d" in
       *[!0-9]* | '') continue ;;
     esac
+    # 锁得是这个席位的账号建的。别人的（包括别的员工那块屏的）一律不碰。
+    owner=$(stat -c %U "/tmp/.X$d-lock" 2>/dev/null || true)
+    if [ -n "$owner" ] && [ "$owner" != "$LINUX_USER" ]; then
+      warn "显示 :$d 的锁归 $owner，不是 $LINUX_USER，不删"
+      continue
+    fi
     rm -f "/tmp/.X$d-lock" "/tmp/.X11-unix/X$d" 2>/dev/null ||
       warn "显示 :$d 的锁没删掉，下一个用这个槽位的席位 Xvfb 会起不来"
   done

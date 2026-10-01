@@ -1046,6 +1046,7 @@ window.SATU_I18N = {
   // ── 气泡里的 Markdown（markdown.js 用的也是这张表） ────────────────────
   '下载': 'Download',
   '源码': 'Source',
+  点击加载图片: 'Click to load image',
   '图': 'Diagram',
   '正在画图…': 'Drawing…',
   '复制表格': 'Copy table',

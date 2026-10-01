@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { run, tryRun } from './run.ts'
 import { seatOfPid } from './seat-owner.ts'
 import type { SeatRecord } from './seats.ts'
@@ -57,14 +57,6 @@ export interface ReclaimReport {
   blocked: string[]
 }
 
-function environOf(pid: string): string[] {
-  try {
-    return readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')
-  } catch {
-    return []
-  }
-}
-
 function cmdlineOf(pid: string): string {
   try {
     return readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ').trim()
@@ -118,6 +110,36 @@ function displayOfSeat(row: SeatRecord): number {
 /** X 的锁和 socket。**没带席位号**，只能按显示号认——purge-machine.sh 那处同理。 */
 function xLockPaths(display: number): string[] {
   return [`/tmp/.X${display}-lock`, `/tmp/.X11-unix/X${display}`]
+}
+
+/** 进程的真实 uid（/proc/<pid>/status 的 Uid 第一格）。读不到是 null。 */
+function uidOfPid(pid: string): number | null {
+  try {
+    const m = /^Uid:\s+(\d+)/m.exec(readFileSync(`/proc/${pid}/status`, 'utf8'))
+    return m ? Number(m[1]) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 这个进程是不是某个显示号上的 X 服务器，是的话是哪一个（`Xvfb :15 …` → 15）。
+ *
+ * **只看命令行，不看环境变量**：DISPLAY 是进程自己写的，任何账号都能起一个
+ * `DISPLAY=:11 sleep inf` 冒充；而一个显示号的锁只该归真正起在它上面的那个 X 服务器。
+ */
+export function xDisplayOf(cmdline: string): number | null {
+  const m = /^\S*\/?X(?:vfb|vnc|org|wayland|tigervnc)?\s+:(\d+)(?:\s|$)/.exec(cmdline)
+  return m ? Number(m[1]) : null
+}
+
+/** 锁文件的属主。不在或读不了是 null。lstat：它要是个链接，看的是链接本身。 */
+function lockOwner(display: number): number | null {
+  try {
+    return lstatSync(xLockPaths(display)[0]).uid
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -200,15 +222,20 @@ async function retireSeat(seatId: string): Promise<string[]> {
   // 杀之前先记下它开在哪个显示号上。**杀完就问不出来了**，而那个锁不清掉，下一轮
   // Xvfb 起不来（见 dropXLock）。Xvfb 收到 TERM 通常会自己收拾，但走到 SIGKILL 那
   // 一步就不会了——不能指望它。
-  const displays = new Set<number>()
+  //
+  // **显示号只从这个席位自己的 X 服务器上取**（命令行里的 `:N`），不读 DISPLAY 环境变量：
+  // 那是进程自己写的，席位用户起一个 `DISPLAY=:11 setsid sleep inf`，拆它的时候 root
+  // 就会去删别的员工那块屏的锁和 socket。锁文件的属主也得是这个 X 服务器的用户，对不上的不碰。
+  const displays = new Map<number, number | null>()
   for (const pid of pids) {
-    for (const kv of environOf(pid)) {
-      const m = /^DISPLAY=:(\d+)/.exec(kv)
-      if (m) displays.add(Number(m[1]))
-    }
+    const d = xDisplayOf(cmdlineOf(pid))
+    if (d !== null) displays.set(d, uidOfPid(pid))
   }
   await killPids(pids)
-  for (const d of displays) dropXLock(d)
+  for (const [d, uid] of displays) {
+    const owner = lockOwner(d)
+    if (owner === null || owner === uid) dropXLock(d)
+  }
   return pids
 }
 
@@ -333,6 +360,17 @@ async function holderOfDisplay(display: number): Promise<{ pid: string; seatId: 
     return null
   }
   if (!/^\d+$/.test(pid)) return null
+  /**
+   * **锁里的 pid 是谁写的都行**——/tmp 世界可写，任何账号都能建一把 `/tmp/.X15-lock`，
+   * 里面填别的员工 bot 的 pid（下面就会以「换过槽位的残留」为由由 root 杀掉它），或者填 1
+   * （这个槽位从此永远 blocked）。所以这个 pid 必须真是**这个显示号上的 X 服务器**，而且锁
+   * 就是它自己建的（属主同一个用户）。对不上就是一把假锁或者旧锁，挡着新的 Xvfb 却没有真
+   * 主人——和下面「写锁的进程没了」同一个处理：root 删掉它。
+   */
+  if (alive(pid) && (xDisplayOf(cmdlineOf(pid)) !== display || lockOwner(display) !== uidOfPid(pid))) {
+    dropXLock(display)
+    return null
+  }
   // 锁在、写锁的进程没了：**这是一把死锁，但它照样挡着新的 Xvfb**（跨用户删不掉，
   // 见 dropXLock）。没有主人可判，也不必判——直接清掉，这正是 slim-desktop.sh 里
   // 那句 rm 想做而做不到的事。

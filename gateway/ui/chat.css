@@ -961,6 +961,12 @@
 /* 图片本身就是链接时不加：那张图已经摆在那儿了，角上再挂个小箭头只是脏。 */
 .sw-md a[data-md='link']:has(img)::after { content: none; }
 .sw-md img { margin: var(--space-2) 0; border-radius: var(--radius-sm); border: 1px solid var(--border); }
+.sw-md .sw-md-remote-img {
+  display: inline-block; max-width: 100%; margin: var(--space-2) 0; padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--border); border-radius: var(--radius-sm); background: transparent;
+  color: var(--color-accent-700); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere;
+}
+.sw-md .sw-md-remote-img:hover { color: var(--color-accent-600); border-style: solid; }
 .sw-md strong { font-weight: 600; }
 
 .sw-md code[data-md='inline-code'] {

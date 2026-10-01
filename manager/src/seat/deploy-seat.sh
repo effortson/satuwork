@@ -55,6 +55,12 @@ trap 'rc=$?; echo "deploy-seat.sh 第 $LINENO 行失败（退出码 $rc）" >&2;
 case "$LINUX_USER" in
   *[!A-Za-z0-9_-]* | '') echo "refusing: bad LINUX_USER" >&2; exit 1 ;;
 esac
+# 席位账号只能是 sw- 开头的那一种（同管家的 SEAT_USER_RE）：机器上原有的账号（debian、admin……）
+# 下面会跳过 adduser 直接拿来跑 bot，而它们常带着免密 sudo。
+case "$LINUX_USER" in
+  sw-?*) ;;
+  *) echo "refusing: LINUX_USER $LINUX_USER 不是席位账号（要以 sw- 开头）" >&2; exit 1 ;;
+esac
 case "$SEAT_ID" in
   *[!A-Za-z0-9_-]* | '') echo "refusing: bad SEAT_ID" >&2; exit 1 ;;
 esac

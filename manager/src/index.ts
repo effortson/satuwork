@@ -157,6 +157,14 @@ function strField(body: unknown, key: string): string {
  * `..`）、没有空白和 shell 元字符、长度有上限。
  */
 const IDENT_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+/**
+ * 席位的 Linux 账号**必须以 `sw-` 开头**（gateway/src/deploy.ts 的 linuxUserOf 就是这么起的）。
+ *
+ * 只按 IDENT_RE 校形状的话，`debian` / `admin` / `www-data` 这些机器上本来就有的账号都能过，
+ * 而 deploy-seat.sh 见账号已存在就跳过 adduser、直接 `User=$LINUX_USER`——拿到机器票的人
+ * 让 bot 以云镜像那个带免密 sudo 的默认账号跑自己的代码，就是 root。
+ */
+const SEAT_USER_RE = /^sw-[A-Za-z0-9_-]{1,60}$/
 /** botId 是 Gateway 的 catalog id（randomUUID 或 `default`），允许点但不许 `..`。 */
 const BOT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 /** 和 releases.ts 的 safeVersion 同一套口径。 */
@@ -239,7 +247,7 @@ function specOf(rawSeatId: string, body: unknown): SeatSpec {
     return n
   }
   const seatId = shaped(rawSeatId.trim(), IDENT_RE, 'seatId')
-  const linuxUser = shaped(line(b, 'linuxUser', 64), IDENT_RE, 'linuxUser')
+  const linuxUser = shaped(line(b, 'linuxUser', 64), SEAT_USER_RE, 'linuxUser')
   const homeDir = `/home/${linuxUser}`
   const workDir = `${homeDir}/work`
   const seatDir = `${homeDir}/.satuwork/${seatId}`

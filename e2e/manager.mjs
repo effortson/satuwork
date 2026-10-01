@@ -613,6 +613,8 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         ['homeDir 指到 /etc', { ...good, homeDir: '/etc', workDir: '/etc/satuwork' }],
         ['linuxUser 带换行', { ...good, linuxUser: 'sw-test\nUser=root' }],
         ['linuxUser 带斜杠', { ...good, linuxUser: '../root' }],
+        // 形状对、但是机器上原有的账号：跑 bot 就是以它的身份（云镜像的默认账号常带免密 sudo）。
+        ['linuxUser 不是席位账号', { ...good, linuxUser: 'debian', homeDir: '/home/debian', workDir: '/home/debian/work', seatDir: '/home/debian/.satuwork/seat-2' }],
         ['botVersion 想跳出目录', { ...good, botVersion: '../../etc/passwd' }],
         ['botId 带换行', { ...good, botId: 'bot-1\nGATEWAY_URL=http://evil' }],
         ['端口越界', { ...good, ports: { ...good.ports, botPort: 99999 } }],
