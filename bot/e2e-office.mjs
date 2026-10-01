@@ -493,6 +493,7 @@ out.percent = (() => {
       读得出内容: made ? (await extractDocument(file, kind)).text.includes(expect[kind]) : false,
       包的问题: problems,
       输出: run.slice(0, 300),
+      terminal没报问题: !run.includes('生成的 Office 文件有问题'),
     }
   }
   if (existsSync(at('new.xlsx'))) {
@@ -501,6 +502,40 @@ out.percent = (() => {
     const d = wb.getWorksheet('预算').getCell('B2').value
     out.guide.xlsx.日期没差一天 = d instanceof Date && d.toISOString().startsWith('2026-10-08')
     out.guide.xlsx.打开时重算 = /fullCalcOnLoad="1"/.test(await zipText(at('new.xlsx'), 'xl/workbook.xml'))
+  }
+}
+
+// ── 20b. 尺寸是负数的形状：PowerPoint 报「已修复」删掉它，LibreOffice 却照画 ──────────
+// 真出过的事：往右上画一条箭头线，pptxgenjs 里写了 h: -2.6，原样成了 cy="-2377440"。
+{
+  const line = (h, flip) =>
+    [
+      "const pptxgen = require('pptxgenjs')",
+      'const p = new pptxgen()',
+      "p.addSlide().addShape(p.ShapeType.line, { x: 8, y: " + (flip ? 3 : 5.6) + ', w: 3.75, h: ' + h + (flip ? ', flipV: true' : '') + ", objectName: '箭头线', line: { color: '91A7D4', width: 1.4, endArrowType: 'triangle' } })",
+      "p.writeFile({ fileName: process.argv[2] })",
+    ].join('\n')
+  writeFileSync(at('neg.cjs'), line(-2.6, false))
+  writeFileSync(at('flip.cjs'), line(2.6, true))
+  const neg = await call('terminal', { command: 'node neg.cjs neg.pptx' })
+  const flip = await call('terminal', { command: 'node flip.cjs flip.pptx' })
+  const flipXml = existsSync(at('flip.pptx')) ? await zipText(at('flip.pptx'), 'ppt/slides/slide1.xml') : ''
+
+  // 改已有文件时手滑写出负数：office_pack 也要拦（这是新出现的问题，不在 baseline 里）。
+  const dir = dirOf(await call('office_unpack', { path: 'flip.pptx' }))
+  const slide = `${dir}/ppt/slides/slide1.xml`
+  const before = readFileSync(at(slide), 'utf8')
+  // 第一个 cy 是组属性里的 cy="0"（改成 -0 不算负），要改的是线本身那个。
+  writeFileSync(at(slide), before.replace(/cy="([1-9]\d*)"/, 'cy="-$1"'))
+  const packed = await call('office_pack', { dir, path: 'flip-bad.pptx' })
+
+  out.negative = {
+    terminal报了: neg.includes('生成的 Office 文件有问题') && neg.includes('neg.pptx') && /「箭头线」的高.*是负数/.test(neg) && neg.includes('flipV'),
+    翻转的不报: existsSync(at('flip.pptx')) && !flip.includes('生成的 Office 文件有问题'),
+    翻转写对了: /<a:xfrm flipV="1">/.test(flipXml) && !/cy="-/.test(flipXml),
+    打包拦下: /「箭头线」的高.*是负数/.test(packed) && !existsSync(at('flip-bad.pptx')),
+    打包原话: packed.slice(0, 400),
+    原话: neg.slice(-400),
   }
 }
 

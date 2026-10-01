@@ -138,10 +138,18 @@ export async function runOfficeEdit({ root, test, assert, log }) {
       assert(k.模板原样在要点里, `${kind}：要点里的模板和 office-new.ts 的对不上`)
       assert(k.跑出来了 && k.读得出内容, `${kind} 模板没跑通：${k.输出}`)
       assert(k.包的问题.length === 0, `${kind} 生成的包有问题：${k.包的问题.join('；')}`)
+      assert(k.terminal没报问题, `${kind} 模板跑完 terminal 说有问题：${k.输出}`)
     }
     // 要点里写了的两个坑，模板自己得先躲开。
     assert(g.xlsx.日期没差一天, 'xlsx 模板的日期差了一天：要用 Date.UTC')
     assert(g.xlsx.打开时重算, 'xlsx 模板没设 fullCalcOnLoad')
+  })
+
+  await test('尺寸是负数的形状：terminal 跑完当场报、翻转写法不报、office_pack 也拦', () => {
+    const n = r.negative
+    assert(n.terminal报了, `负数高没报出来：${n.原话}`)
+    assert(n.翻转的不报 && n.翻转写对了, `flipV 写法被误报或没写对：${JSON.stringify(n)}`)
+    assert(n.打包拦下, `改出负数后 office_pack 没拦：${JSON.stringify(n)}`)
   })
 
   if (!r.real) {
