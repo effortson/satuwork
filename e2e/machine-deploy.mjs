@@ -1494,7 +1494,17 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
             rows = (d.json.seatList || []).filter((s) => seatsBefore.some((b) => b.seatId === s.seatId))
             if (rows.some((s) => s.queued)) sawQueued = true
             maxDeploying = Math.max(maxDeploying, rows.filter((s) => s.status === 'deploying').length)
-            if (!rows.some((s) => s.queued || s.status === 'deploying')) break
+            /**
+             * **「没有排队、也没有在装」还不够算推完。** 队列那一拍是先摘掉排队标记（takeSeatDeploy），
+             * 再查账号、进 deploySeatNow，状态才变成 deploying——中间有一个两样都不是的空档。轮询落在
+             * 那儿就会提前收尾，看到后一个席位的 deployedAt 还没动（CI 上真红过）。所以还要每一个都
+             * 真的重铺过了才停。
+             */
+            const allRedeployed = seatsBefore.every((b) => {
+              const now = rows.find((s) => s.seatId === b.seatId)
+              return now && Number(now.deployedAt) > Number(b.deployedAt ?? 0)
+            })
+            if (allRedeployed && !rows.some((s) => s.queued || s.status === 'deploying')) break
             await sleep(200)
           }
           assert(sawQueued, '详情里从来没看到「排队中」')
