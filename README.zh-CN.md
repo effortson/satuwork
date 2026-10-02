@@ -2,9 +2,59 @@
 
 [English](README.md) | 简体中文
 
-Two packages: `bot/` (headless runtime) and `gateway/` (control plane + the only chat UI). Spec: [docs/gateway-runtime.md](docs/gateway-runtime.md)
+**给公司用的 AI 员工。** 给公司里的每个人配几个 AI 员工：他们有自己的机器，会用你们已经在用的系统，
+拿不准的那一步会停下来等你。交代的方式和交给一个同事一样——说清楚要什么，然后去忙别的。
 
-Deploy is per (account, botId) pair. One Bot process = one bot. Chat goes through Gateway; instances do not serve a product SPA.
+## 项目介绍
+
+### 两种 AI 员工
+
+- **远程 AI 员工**：跑在公司自己的席位机器（Debian）上，有自己的工作区、终端、浏览器和一块桌面。
+  到点自己开工，浏览器关了、人下班了也照常干活。
+- **本地 AI 员工**：随桌面端（Windows / macOS）装在你自己的电脑上，直接动你的文件夹，文件不出这台机器。
+
+### 它不只是一个聊天框
+
+- **真的有一台机器**：读写文件、跑命令、开浏览器、上网搜索和取网页、处理 Office 文档、生图。
+- **拿不准就停下来**：该人点头的那一步等着你；处理不了的事转进人工待办，由人接手。
+- **日常任务**：写清楚指令和时间，到点自动进会话执行，结果记成一条流水。
+- **技能与记忆**：公司写好的做事方法挂在 Bot 上（常驻 / 按需两档），Bot 也能把跑通的方法自己记下来；
+  跨对话记得住事实（怎么称呼人、报表放哪、客户联系人是谁）。
+- **连接公司在用的系统**：连接器走 OAuth，外加 MCP；工具太多时自动退化成「先搜、再看、才调」。
+- **渠道**：除了网页和桌面端，也能从 Telegram 直接交代。
+- **大事拆小事**：一件子任务可以整个委派给一个干净的子代理，跑完只交回结论，不撑爆主会话的上下文。
+- **一本账**：模型（含缓存读写）、连接器、网页搜索按次落账，从「套餐赠送 → 账户余额」实时扣。
+- **审计**：公司级操作审计，以及脱敏后的对话审计（任务总结、时间线、评分）——Gateway 不存聊天全文。
+
+### 怎么管
+
+平台 → 公司（租户：套餐、席位、运行机器）→ 账号（一个人）→ Bot（侧栏里的一个 AI 员工）。
+模型、Skill、MCP 分**全局**和**公司**两层；公司维护一份带版本号的 **Bot 模版**，员工在它上面建自己的 Bot。
+席位按账号计，一个人多开几个 Bot **不**多占席位。
+
+### 怎么搭的
+
+```
+浏览器 / 桌面端 ──► Gateway（控制面 + 唯一聊天界面）
+                       │  反代聊天流、下发目录、调度、记账
+                       ▼
+                 机器管家（每台席位机器一个，唯一入站口）
+                       │  部署 / 升级
+                       ▼
+                 Bot 进程（每个「账号 × Bot」一个，无头）
+                       │
+                       └──► 模型调用经 Gateway 的 /v1，会话全文留在机器上
+```
+
+| 目录 | 是什么 |
+|---|---|
+| [`gateway/`](gateway) | 控制面 + 唯一的聊天界面：账号、公司、目录、计费、审计、调度；把聊天反代到席位；模型调用走它的 `/v1`。Debian 上常驻跑，也有 Vercel + Neon 的函数形态 |
+| [`bot/`](bot) | 运行面：无头的 AI 员工运行时（基于 Cordis）。一个进程恰好一个 Bot，按 (账号, botId) 部署，不发界面 |
+| [`manager/`](manager) | 机器管家：席位机器上的 root 常驻服务，和 Gateway 配对后负责部署、升级 Bot，对外只开它一个端口 |
+| [`desktop/`](desktop) | Tauri 桌面端：界面打在包里，连远程 Gateway，也能在本机跑本地 Bot |
+| [`e2e/`](e2e) | 端到端测试 |
+| [`docs/`](docs) | 设计文档；总规范是 [docs/gateway-runtime.md](docs/gateway-runtime.md) |
+| [`searxng/`](searxng) | 可选的自托管搜索 |
 
 ## 起步
 
@@ -53,6 +103,7 @@ Gateway 的业务数据在 PostgreSQL；宿主机端口用 **5434**（5432 一�
 Gateway 要全面进入 Vercel + Neon：进程里会动的和握长连接的东西按机器下沉到席位工人、按人
 下沉到桌面端，Gateway 只剩无状态接口、静态界面和 `/v1`。决定、去向、上线顺序见
 [docs/adr-gateway-vercel-neon.md](docs/adr-gateway-vercel-neon.md)。
+
 ## 部署到 Vercel + Neon
 
 Gateway 有一个函数形态（`gateway/src/serverless.ts`）：没有监听、定时器、迁移，钥匙来自环境变量，
