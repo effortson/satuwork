@@ -5783,7 +5783,7 @@ let wsPending = false
  * 于在那几种形态下一次都不取，那一屏永远是「载入中」。
  */
 function wsPanelOnScreen() {
-  return hasAside() && asidePref.open && asidePref.tab === 'files'
+  return hasAside() && asideOpen() && asidePref.tab === 'files'
 }
 
 /**
@@ -6831,7 +6831,7 @@ function maybeLivePreview(event) {
    * 每产出一个 HTML 就把栏撑开一次，他得每一轮都去点一次收起。文件卡片还在对话里，
    * 想看点一下就出来。（已经开着的那份照旧跟着刷新，见上面。）
    */
-  if (!asidePref.open) return false
+  if (!asideOpen()) return false
   const key = `${state.chatSessionId}:${Number(data.turn) || 0}:${html.path}`
   if (autoPreviewed.has(key)) return false
   rememberAutoPreview(key)

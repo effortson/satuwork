@@ -79,7 +79,7 @@ function pageAside() {
    */
   const preview = shownPreview()
   // 折叠 = 整个不渲染。开关挪到了对话 header 上，这里不用再留一条竖条给人点回去。
-  if (!asidePref.open && !preview) return ''
+  if (!asideOpen() && !preview) return ''
   const detail = !preview && Boolean(state.routineOpen && routineOpenRow())
   /**
    * 点开一条日常任务时，整栏换成那一屏——但**上面那块屏只是藏起来，不是拿掉**。
@@ -157,7 +157,7 @@ function asideColumns(width, preview) {
 function asideToggle() {
   if (!hasAside()) return ''
   const preview = Boolean(shownPreview())
-  const open = asidePref.open || preview
+  const open = asideOpen() || preview
   const tab = (name, icon, label, extra = '') => {
     const here = open && !preview && asideTab() === name
     return `<button type="button" class="btn btn-ghost btn-icon sw-asidetab" style="flex: none;"
@@ -190,7 +190,9 @@ function hasAside() {
 }
 
 function appView() {
-  const rail = state.rail
+  // 窄屏上没有「收窄成导轨」这一档：侧栏是盖上来的抽屉，要么整个出来，要么整个不在。
+  const narrow = narrowScreen()
+  const rail = state.rail && !narrow
   const crumbs = crumbsOf(state.path)
   // 一般的上一级是「回某个地址」（go）；有些屏的上一级要走一个动作，带的是 id 不是
   // 地址——crumbsOf 用 act 区分这两种，这里拼成按钮属性。
@@ -244,8 +246,8 @@ function appView() {
     ? `grid-template-columns: ${asideColumns(asideWidth(), Boolean(shownPreview()))};`
     : 'grid-template-columns: minmax(0, 1fr);'
   return `
-  <div style="height: 100vh; overflow: hidden; display: grid; grid-template-columns: ${rail ? '62px' : '248px'} 1fr; gap: var(--space-4); padding: var(--space-4); background: var(--color-bg); font-family: var(--font-body); color: var(--color-text); box-sizing: border-box;">
-    <aside class="${rail ? 'satu-rail' : ''}" style="height: 100%; min-height: 0; overflow: hidden; box-sizing: border-box; display: flex; flex-direction: column; background: var(--color-surface); border-radius: var(--radius-md); padding: var(--space-4) var(--space-2) var(--space-2);">
+  <div class="gw-shell" data-drawer="${narrow && state.drawer ? 'open' : 'closed'}" style="height: 100vh; height: 100dvh; overflow: hidden; display: grid; grid-template-columns: ${rail ? '62px' : '248px'} 1fr; gap: var(--space-4); padding: var(--space-4); background: var(--color-bg); font-family: var(--font-body); color: var(--color-text); box-sizing: border-box;">
+    <aside class="gw-side${rail ? ' satu-rail' : ''}" ${narrow && !state.drawer ? 'inert' : ''} style="height: 100%; min-height: 0; overflow: hidden; box-sizing: border-box; display: flex; flex-direction: column; background: var(--color-surface); border-radius: var(--radius-md); padding: var(--space-4) var(--space-2) var(--space-2);">
       <button type="button" class="satu-brand" data-act="go" data-href="/" style="display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-3) var(--space-4); border: 0; background: transparent; cursor: pointer; color: inherit;">
         <img src="/assets/satuwork-logo.png" alt="Satuwork" style="width: 32px; height: 32px; min-width: 32px; flex: none; object-fit: contain; border-radius: var(--radius-sm);">
         <span class="satu-brandtext" style="font-family: var(--font-heading); font-size: 19px;">Satuwork</span>
@@ -327,12 +329,18 @@ function appView() {
         <button type="button" class="btn btn-ghost btn-icon satu-usercog" style="flex: none;" data-act="go" data-href="/profile" aria-label="${esc(t('个人设置'))}" aria-pressed="${String(state.path === '/profile')}">${svg(GEAR, 16)}</button>
       </div>
     </aside>
+    ${/* 抽屉开着时盖在内容上的那层。点它就是收起——和点汉堡那颗是同一个动作。 */ ''}
+    <div class="gw-drawer-mask" data-act="rail" aria-hidden="true"></div>
     <main id="gw-main" class="gw-main${aside ? ' gw-main-aside' : ''}" style="${asideCols}">
       <div class="gw-head">
-        <button type="button" class="btn btn-ghost btn-icon" data-act="rail" aria-label="${rail ? t('展开侧栏') : t('收起侧栏')}">
+        ${
+          narrow
+            ? `<button type="button" class="btn btn-ghost btn-icon" style="flex: none;" data-act="rail" aria-label="${esc(t('打开菜单', 'Open menu'))}" aria-expanded="${String(Boolean(state.drawer))}">${svg(['M4 6h16', 'M4 12h16', 'M4 18h16'], 18)}</button>`
+            : `<button type="button" class="btn btn-ghost btn-icon" data-act="rail" aria-label="${rail ? t('展开侧栏') : t('收起侧栏')}">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
         </button>
-        <div style="width: 1px; height: 18px; background: var(--color-divider);"></div>
+        <div style="width: 1px; height: 18px; background: var(--color-divider);"></div>`
+        }
         ${head}
         ${handoffBell()}
         ${asideToggle()}
@@ -378,6 +386,9 @@ function render() {
   // 对话页没有 .gw-page（自己那套滚动容器由 paintChat 管），这里就是 null，跳过。
   const before = document.querySelector('.gw-page')
   const keep = before && paintedPath === state.path ? before.scrollTop : 0
+  // 窄屏的侧栏抽屉：换了页就收起。人从抽屉里点了一颗 Bot 或一页，要看的是那一页，
+  // 抽屉还盖在上面等于这一下没点着。
+  if (paintedPath !== state.path) state.drawer = false
   paintedPath = state.path
   if (state.path.startsWith('/join/')) {
     root.innerHTML = joinView()

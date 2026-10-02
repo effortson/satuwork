@@ -54,6 +54,38 @@ function saveAside() {
   } catch {}
 }
 
+/**
+ * 手机那一档。侧栏收成抽屉、右栏盖在对话上（见 app.css 末尾那段）。**断点和 CSS 里是
+ * 同一个数**，改一处要改两处。
+ */
+const narrowMq = matchMedia('(max-width: 760px)')
+
+function narrowScreen() {
+  return Boolean(narrowMq.matches)
+}
+
+/**
+ * 窄屏上右栏开没开，另记一份、不落盘。
+ *
+ * asidePref.open 是桌面上记下来的「工作台的形状」，默认就是开着的。手机上照它来，一进
+ * 对话页右栏就整块盖在对话上——人得先找到那颗收起，才看得见自己在跟谁说话。而且在手机
+ * 上收一下也不该把电脑上的右栏一起收掉。
+ */
+let narrowAsideOpen = false
+
+function asideOpen() {
+  return narrowScreen() ? narrowAsideOpen : asidePref.open
+}
+
+function setAsideOpen(open) {
+  if (narrowScreen()) {
+    narrowAsideOpen = open
+    return
+  }
+  asidePref.open = open
+  saveAside()
+}
+
 let themeMode = localStorage.getItem(THEME_KEY) || 'system'
 let localeMode = localStorage.getItem(LOCALE_KEY) || 'zh'
 

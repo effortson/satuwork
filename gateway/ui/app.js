@@ -791,10 +791,9 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'aside-toggle') {
     // 预览开着时栏一定是摆出来的（哪怕记下来的是收着），这颗按钮就是「整栏收起」：
     // 预览一起关掉，不然下一帧它又把栏撑开。
-    const shown = asidePref.open || Boolean(shownPreview())
+    const shown = asideOpen() || Boolean(shownPreview())
     dropPreview()
-    asidePref.open = !shown
-    saveAside()
+    setAsideOpen(!shown)
     render()
     return
   }
@@ -806,8 +805,8 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'aside-tab') {
     const tab = btn.getAttribute('data-tab')
     dropPreview()
-    asidePref.open = true
     asidePref.tab = tab === 'files' || tab === 'handoffs' ? tab : 'env'
+    setAsideOpen(true)
     saveAside()
     // 目录内容不在这儿取：重绘那一趟自己会补（见 chat.js 的 ensureWorkspaceTree）。
     render()
@@ -1640,7 +1639,9 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'rail') {
-    state.rail = !state.rail
+    // 同一颗按钮：宽屏是收窄成导轨，窄屏是拉出抽屉（导轨那一档在窄屏上不存在）。
+    if (narrowScreen()) state.drawer = !state.drawer
+    else state.rail = !state.rail
     render()
     return
   }
@@ -2938,6 +2939,21 @@ document.addEventListener('keydown', (e) => {
     state.chatModelOpen = false
     paintChatModel()
   }
+})
+
+/* 跨过窄屏那条线（转屏、拖窗口）要重画一次：侧栏是抽屉还是常驻、右栏开没开，都是
+   appView 拼字符串时按 narrowScreen() 定下来的，光靠 CSS 换不过来。 */
+narrowMq.addEventListener('change', () => {
+  state.drawer = false
+  if (state.me) render()
+})
+
+/* Esc 收起窄屏的侧栏抽屉。 */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !state.drawer || !narrowScreen()) return
+  e.preventDefault()
+  state.drawer = false
+  render()
 })
 
 /* Esc 关「联系销售」那个弹窗。它是首页上唯一一个盖住内容的东西，而按 Esc 关弹窗
