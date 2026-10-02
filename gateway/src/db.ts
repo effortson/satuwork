@@ -4081,10 +4081,15 @@ export class Db {
       `update conversation_audit_batches set status='leased', attempts=attempts+1,
          "leaseUntil"=?, "startedAt"=coalesce("startedAt", ?), "lastError"=null
        where id = (
-         select id from conversation_audit_batches
-         where ((status in ('queued','retry') and ("nextTryAt" is null or "nextTryAt" <= ?))
-            or (status in ('leased','processing') and "leaseUntil" < ?))
-         order by "createdAt" asc for update skip locked limit 1
+         select b.id from conversation_audit_batches b
+         where ((b.status in ('queued','retry') and (b."nextTryAt" is null or b."nextTryAt" <= ?))
+            or (b.status in ('leased','processing') and b."leaseUntil" < ?))
+           -- 公司关了自动审计：还没跑完的定时批次原地停着，重新打开后接着跑。删除终审不受影响。
+           and (b.kind <> 'scheduled' or exists (
+             select 1 from settings s where s."companyId" = b."companyId"
+             and s.payload->'conversationAudit'->>'enabled' = 'true'
+           ))
+         order by b."createdAt" asc for update of b skip locked limit 1
        ) returning *`,
       [now + leaseMs, now, now, now],
     )

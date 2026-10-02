@@ -533,7 +533,10 @@ export type ConversationAuditBatchStatus = 'queued' | 'leased' | 'processing' | 
 export type ConversationAuditOutcome = 'completed' | 'partial' | 'failed' | 'blocked' | 'answered' | 'unknown'
 
 export interface ConversationAuditSettings {
+  /** 总开关，默认关：公司管理员在审计页打开后才按时段审计，删除 Bot 时也才做终审。 */
   enabled: boolean
+  /** 最近一次打开的时刻。重新打开时只从这之前刚收口的那个时段接着审，关着的那段不回填。 */
+  enabledAt: number | null
   timezone: string
   /** 第一版固定 09:00。 */
   anchor: '09:00'
@@ -546,7 +549,8 @@ export interface ConversationAuditSettings {
 
 export function emptyConversationAuditSettings(): ConversationAuditSettings {
   return {
-    enabled: true,
+    enabled: false,
+    enabledAt: null,
     timezone: 'UTC',
     anchor: '09:00',
     windowMinutes: 480,
@@ -561,8 +565,10 @@ export function parseConversationAuditSettings(raw: unknown): ConversationAuditS
   const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
   const retention = Math.trunc(Number(o.retentionDays))
   const version = Math.trunc(Number(o.promptVersion))
+  const enabledAt = Math.trunc(Number(o.enabledAt))
   return {
-    enabled: o.enabled !== false,
+    enabled: o.enabled === true,
+    enabledAt: Number.isFinite(enabledAt) && enabledAt > 0 ? enabledAt : null,
     timezone: typeof o.timezone === 'string' && o.timezone.trim() ? o.timezone.trim() : base.timezone,
     anchor: '09:00',
     windowMinutes: 480,

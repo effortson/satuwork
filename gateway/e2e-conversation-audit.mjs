@@ -6,7 +6,7 @@ import { partsIn } from './src/lib/schedule.ts'
 const url = process.env.E2E_DATABASE_URL || 'postgres://satuwork:satuwork@127.0.0.1:5434/satuwork'
 const schema = process.env.E2E_AUDIT_SCHEMA || 'e2e_conversation_audit'
 const db = new Db({ url, schema })
-const out = { 窗口: {}, 配置: {}, 空时段: {}, 筛选: {}, 翻页: {}, 评分理由: {}, 结果指纹: {}, 删除终审: {}, 删除并发: {} }
+const out = { 窗口: {}, 配置: {}, 开关: {}, 空时段: {}, 筛选: {}, 翻页: {}, 评分理由: {}, 结果指纹: {}, 删除终审: {}, 删除并发: {} }
 
 try {
   await db.init()
@@ -29,6 +29,7 @@ try {
   const account = await db.insertAccount({ companyId: company.id, email: 'audit@example.test', passwordHash: 'x', role: 'member' })
   const defaults = (await db.settings(company.id)).conversationAudit
   out.配置 = {
+    默认关闭: defaults.enabled === false,
     默认任务模型: defaults.modelRole === 'daily',
     固定锚点: defaults.anchor === '09:00' && defaults.windowMinutes === 480,
   }
@@ -38,6 +39,45 @@ try {
     ...platform,
     daily: { provider: 'probe', model: 'probe', reasoningEffort: 'off' },
   })
+
+  /**
+   * 开关关着（默认）：模型已经配好，也不建定时批次、不派发；早先建好的定时批次原地停着；
+   * 删 Bot 不拿对话去终审，只留一笔空终审让删除照常走完。用另一家公司，免得停着的批次
+   * 混进下面的探针。
+   */
+  const offCompany = await db.insertCompany({ slug: 'audit-off', name: '审计关闭' })
+  const offAccount = await db.insertAccount({ companyId: offCompany.id, email: 'audit-off@example.test', passwordHash: 'x', role: 'member' })
+  const offBot = await db.insertCatalog({ kind: 'bot', scope: 'user', companyId: offCompany.id, accountId: offAccount.id, name: '关闭 Bot' })
+  await db.upsertSessionIndex({
+    sessionId: 'audit-off-session', companyId: offCompany.id, accountId: offAccount.id, botId: offBot.id,
+    messageCount: 4, createdAt: Date.now() - 30 * 60 * 60_000, updatedAt: Date.now() - 20 * 60 * 60_000,
+  })
+  const parked = await db.insertConversationAuditBatch({
+    companyId: offCompany.id, accountId: offAccount.id, botId: offBot.id, sessionId: 'audit-off-session', kind: 'scheduled',
+    windowStart: now - 8 * 60 * 60_000, windowEnd: now, timezone: 'UTC', modelRole: 'daily', provider: 'probe', model: 'probe',
+  })
+  const offTick = await tickConversationAudits(db)
+  const offCoverage = await db.conversationAuditCoverage(offAccount.id, offBot.id)
+  const parkedStatus = (await db.conversationAuditBatch(parked.id))?.status
+  const offDeletion = await requestBotDeletion(db, {
+    companyId: offCompany.id, accountId: offAccount.id, botId: offBot.id, botName: offBot.name, requestedBy: offAccount.id,
+  })
+  for (let i = 0; i < 10 && (await db.botDeletion(offDeletion.id))?.status !== 'completed'; i++) {
+    await db.updateBotDeletion(offDeletion.id, { nextTryAt: Date.now() - 1 })
+    await tickBotDeletions(db)
+  }
+  const offFinal = await db.botDeletion(offDeletion.id)
+  const offBatches = await db.conversationAuditBatchesOfDeletion(offDeletion.id)
+  out.开关 = {
+    关闭不建定时批次: offTick.created === 0 && offCoverage.windowEnd === 0,
+    关闭时停着的批次不派发: offTick.dispatched === 0 && parkedStatus === 'queued',
+    关闭时删除只留空终审: offFinal?.status === 'completed' && offBatches.length === 1 && offBatches[0].status === 'empty' && offBatches[0].sessionId === '',
+  }
+  await db.putSettings(company.id, {
+    ...(await db.settings(company.id)),
+    conversationAudit: { ...defaults, enabled: true, enabledAt: Date.now() },
+  })
+  out.开关.打开后落盘 = (await db.settings(company.id)).conversationAudit.enabled === true
   const idleBot = await db.insertCatalog({
     kind: 'bot', scope: 'user', companyId: company.id, accountId: account.id, name: '空时段 Bot',
   })

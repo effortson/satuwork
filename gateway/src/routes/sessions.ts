@@ -135,22 +135,39 @@ export function attachSessions(router: Router, ctx: RouteCtx) {
     const account = await requireOrgUser(req, db, keys, req.params.id, true)
     if (!await db.company(req.params.id)) throw new HttpError(404, '公司不存在')
     const body = bodyOf(req)
-    const role = String(body.modelRole ?? '')
-    if (role !== 'daily' && role !== 'utility') throw new HttpError(400, 'modelRole 只能是 daily 或 utility')
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled 只能是 true 或 false')
+    if (body.modelRole === undefined && body.enabled === undefined) throw new HttpError(400, '没有要改的设置')
     const platform = await db.platformSettings()
-    if (!platform[role].provider || !platform[role].model) {
+    const cur = await db.settings(req.params.id)
+    const before = cur.conversationAudit
+    const role = body.modelRole === undefined ? before.modelRole : String(body.modelRole)
+    if (role !== 'daily' && role !== 'utility') throw new HttpError(400, 'modelRole 只能是 daily 或 utility')
+    const enabled = body.enabled === undefined ? before.enabled : body.enabled as boolean
+    // 只在真要用到模型的时候拦：换模型，或者正要打开。关掉不需要模型。
+    if ((body.modelRole !== undefined || (enabled && !before.enabled)) && (!platform[role].provider || !platform[role].model)) {
       throw new HttpError(400, `${role === 'daily' ? '任务' : 'Utility'} 模型还没配置`)
     }
-    const cur = await db.settings(req.params.id)
-    const from = cur.conversationAudit.modelRole
-    cur.conversationAudit = { ...cur.conversationAudit, modelRole: role }
+    cur.conversationAudit = {
+      ...before,
+      modelRole: role,
+      enabled,
+      enabledAt: enabled && !before.enabled ? Date.now() : before.enabledAt,
+    }
     const saved = (await db.putSettings(req.params.id, cur)).conversationAudit
-    if (from !== role) {
+    if (before.modelRole !== role) {
       await db.audit({
         companyId: req.params.id,
         accountId: account.id,
         action: 'conversation_audit.model_role.update',
-        detail: { from, to: role },
+        detail: { from: before.modelRole, to: role },
+      })
+    }
+    if (before.enabled !== enabled) {
+      await db.audit({
+        companyId: req.params.id,
+        accountId: account.id,
+        action: enabled ? 'conversation_audit.enable' : 'conversation_audit.disable',
+        detail: {},
       })
     }
     json(res, 200, { settings: saved, model: platform[saved.modelRole] })
