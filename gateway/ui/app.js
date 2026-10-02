@@ -2029,6 +2029,21 @@ document.getElementById('app').addEventListener('click', async (e) => {
       .finally(() => render())
     return
   }
+  if (act === 'audit-enabled') {
+    const enabled = state.auditSettings?.settings?.enabled !== true
+    state.busy = true
+    render()
+    try {
+      await saveConversationAuditEnabled(enabled)
+      flash('ok', enabled ? '已开启自动审计' : '已关闭自动审计')
+    } catch (err) {
+      flash('err', err.message)
+    } finally {
+      state.busy = false
+      render()
+    }
+    return
+  }
   if (act === 'audit-model-role') {
     const role = btn.getAttribute('data-role') === 'utility' ? 'utility' : 'daily'
     state.busy = true

@@ -959,6 +959,12 @@ async function saveConversationAuditRole(modelRole) {
   state.auditSettings = await api('PATCH', `/orgs/${encodeURIComponent(id)}/conversation-audit-settings`, { modelRole })
 }
 
+async function saveConversationAuditEnabled(enabled) {
+  const id = orgId()
+  if (!id) return
+  state.auditSettings = await api('PATCH', `/orgs/${encodeURIComponent(id)}/conversation-audit-settings`, { enabled })
+}
+
 async function loadConversationAuditItem(itemId) {
   const id = orgId()
   if (!id || !itemId) return

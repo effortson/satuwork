@@ -97,7 +97,8 @@ Bot 删除不删除这些审计条目。审计表不对 `catalog_items(id)` 建�
 ```jsonc
 {
   "conversationAudit": {
-    "enabled": true,
+    "enabled": false,
+    "enabledAt": null,
     "timezone": "Asia/Kuching",
     "anchor": "09:00",
     "windowMinutes": 480,
@@ -113,6 +114,16 @@ Bot 删除不删除这些审计条目。审计表不对 `catalog_items(id)` 建�
 
 第一版固定要求 `anchor=09:00`、`windowMinutes=480`，服务端不接受其他值。这里保留结构化
 字段，是为了让时区和实际窗口口径能被明确记录，不代表公司管理员可以自行改成其他周期。
+
+`enabled` 是总开关，**默认关**（迁移 0050 把存量公司的旧默认值一并改成关）。公司管理员在审计页
+「自动审计设置」里打开后才按时段建批次；关着的时候：
+
+- 不建定时批次，已经建好、还没跑完的定时批次原地停着不派发，重新打开后接着跑；
+- 删除 Bot 不拿这家公司的对话做终审，只留一笔 `empty` 终审，删除照常走完；
+- 重新打开时写 `enabledAt`，水位停在打开之前的目标从打开前刚收口的那个时段接着审，关着的那段
+  不回填（和第一次启用一样）。
+
+打开要求所选角色的模型已经配好；关掉不需要。
 
 `modelRole` 只接受：
 
@@ -354,7 +365,7 @@ GET /orgs/:id/conversation-audits
 GET /orgs/:id/conversation-audits/:itemId
 GET /orgs/:id/conversation-audit-coverage
 GET /orgs/:id/conversation-audit-settings
-PATCH /orgs/:id/conversation-audit-settings   { "modelRole": "daily|utility" }
+PATCH /orgs/:id/conversation-audit-settings   { "modelRole"?: "daily|utility", "enabled"?: boolean }
 ```
 
 上述接口都要求 `requireOrg(..., true)`。列表只返回短摘要；详情才解密问题、回答和最终结果。
@@ -370,7 +381,8 @@ offset 会让同一条出现在两页上。排序是结束时间倒序、id 倒�
 
 设置读写同样要求公司审计管理权限。PATCH 只允许选择角色，不允许修改平台角色对应的
 provider/model；响应返回归一化后的角色和当前实际模型。修改成功写
-`conversation_audit.model_role.update` 操作审计，只记录 `from/to`，不记录任何会话内容。
+`conversation_audit.model_role.update` 操作审计，只记录 `from/to`，不记录任何会话内容；开关变化写
+`conversation_audit.enable` / `conversation_audit.disable`。
 
 ### 8.2 运行时上报
 
