@@ -127,10 +127,13 @@ async function createScheduledBatches(db: Db, now = Date.now()): Promise<number>
     if (!latest) continue
     const model = pickedModel(platform, settings)
     if (model) warnedNoModel.delete(company.id)
+    // 关掉的那段不补：重新打开后，从打开前刚收口的那个时段接着审，和第一次启用一样。
+    const enabledAt = settings.enabledAt
+    const resumeFrom = enabledAt ? windows.filter((w) => w.end <= enabledAt).at(-1)?.start ?? 0 : 0
     for (const { target, coverage } of targets) {
       // 第一次启用不回填整段历史，只从最近刚关闭的窗口开始；一旦有水位，停机期间的缺口全补。
       const eligible = coverage.windowEnd
-        ? windows.filter((w) => w.end > coverage.windowEnd)
+        ? windows.filter((w) => w.end > coverage.windowEnd && w.start >= resumeFrom)
         : [latest]
       // 同一 pair 串行推进水位；后一个窗口不能拿着前一个尚未确认的 fromSeq 抢跑。
       // 一轮只推一个窗口，fromSeq 就是上面刚取的那份水位，中间没有写过，不必再查一遍。
@@ -317,10 +320,16 @@ export async function tickConversationAudits(db: Db): Promise<{ created: number;
 }
 
 async function createDeletionBatches(db: Db, request: Awaited<ReturnType<Db['botDeletion']>> & object): Promise<number> {
-  const targets = await db.conversationAuditTargets(undefined, request.botId, true)
+  const enabledOf = new Map<string, boolean>()
+  const targets: Awaited<ReturnType<Db['conversationAuditTargets']>> = []
+  for (const target of await db.conversationAuditTargets(undefined, request.botId, true)) {
+    if (!enabledOf.has(target.companyId)) enabledOf.set(target.companyId, (await db.settings(target.companyId)).conversationAudit.enabled)
+    // 公司关了自动审计，删 Bot 时也不做终审，不拿这家的对话去调模型。
+    if (enabledOf.get(target.companyId)) targets.push(target)
+  }
   const platform = await db.platformSettings()
-  // 没有主会话也留下一笔明确的 empty 终审。物理删除的数据库防线要求终审批次必须存在，
-  // 因此“这颗 Bot 从未对话过”是可核验的结论，而不是绕过审计状态机的特殊通道。
+  // 没有要审的主会话也留下一笔明确的 empty 终审。物理删除的数据库防线要求终审批次必须存在，
+  // 因此“这颗 Bot 从未对话过 / 公司没开自动审计”是可核验的结论，而不是绕过审计状态机的特殊通道。
   if (!targets.length) {
     const settings = (await db.settings(request.companyId)).conversationAudit
     const picked = platform[settings.modelRole]
