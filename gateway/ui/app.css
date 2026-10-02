@@ -1376,3 +1376,101 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   .satu-audit-score { grid-template-columns: 1fr 96px; }
   .satu-audit-score > :last-child { grid-column: 1 / -1; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   手机那一档（≤760px，和 prefs.js 的 narrowMq 是同一个数）。
+
+   外壳在宽屏上是「侧栏 | 内容 | 右栏」三列，列宽全写在 appView 的内联样式里——所以
+   这一段到处是 !important，盖的就是那几条内联。
+
+   - 侧栏变成从左边盖上来的抽屉（顶栏最左那颗变汉堡，见 appView）。常驻的话 248 宽
+     的侧栏在 375 的屏上只给对话剩一条缝。
+   - 右栏不再占一列，而是盖在对话正文那一格上；顶栏留在原处，切屏和收起那几颗照样
+     点得到——右栏自己没有 header，盖住顶栏就没地方关了。
+   ══════════════════════════════════════════════════════════════════════ */
+.gw-drawer-mask { display: none; }
+@media (max-width: 760px) {
+  .gw-shell { grid-template-columns: minmax(0, 1fr) !important; gap: 0 !important; padding: 0 !important; }
+  .gw-side {
+    /* 压在弹窗（.gw-modal-backdrop 是 25）底下：「新建 Bot」「插件」这几个弹窗就是从抽屉里
+       点出来的，抽屉压在上面的话弹窗开了也看不见。 */
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 24;
+    width: min(300px, 86vw); height: auto !important;
+    border-radius: 0 var(--radius-md) var(--radius-md) 0 !important;
+    box-shadow: var(--shadow-lg);
+    transform: translateX(-105%);
+    transition: transform 200ms ease;
+  }
+  .gw-shell[data-drawer="open"] .gw-side { transform: none; }
+  .gw-shell[data-drawer="open"] .gw-drawer-mask {
+    display: block; position: fixed; inset: 0; z-index: 23;
+    background: color-mix(in srgb, var(--color-neutral-900) 42%, transparent);
+  }
+  /* 抽屉里的行要按得准：桌面上 9px 的上下内边距在指头底下太矮。 */
+  .gw-side .satu-nav { padding-top: 11px; padding-bottom: 11px; }
+
+  .gw-main { grid-template-columns: minmax(0, 1fr) !important; border: 0; border-radius: 0; }
+  .gw-head { gap: var(--space-2); padding: var(--space-2) var(--space-3); }
+  .gw-aside { grid-row: 2; grid-column: 1; z-index: 5; border-left: 0; background: var(--color-neutral-100); }
+  .gw-aside-grip { display: none; }
+  .gw-page { padding: var(--space-4); }
+  .gw-page-inner { gap: var(--space-4); }
+
+  /* 顶栏一行要挤下汉堡、头像、名字、待办铃和三四颗切屏：头像让出来给名字。 */
+  .gw-head .sw-convo-avatar { display: none; }
+  .gw-head .satu-localtag { display: none; }
+
+  /* 页面里那几处内联写死的两列 / 三列表单（个人设置、公司资料、弹窗里的表单），以及
+     卡片网格那几条 minmax(300px+)：343 宽的内容区放两列，每个输入框只剩一百出头。
+     数字小卡（概览、用量顶上那一排）反过来：auto-fit 到这个宽度会一张一行，四个数字
+     要滚一整屏，收成两两一排。 */
+  .gw-shell [style*="grid-template-columns: 1fr 1fr;"],
+  .gw-shell [style*="grid-template-columns: repeat(3, 1fr)"],
+  .gw-shell [style*="minmax(300px, 1fr)"],
+  .gw-shell [style*="minmax(320px, 1fr)"] { grid-template-columns: minmax(0, 1fr) !important; }
+  .gw-shell [style*="grid-template-columns: repeat(4, 1fr)"],
+  .gw-shell [style*="minmax(190px, 1fr)"],
+  .gw-shell [style*="minmax(150px, 1fr)"] { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .gw-shell [style*="grid-template-columns: 150px 1fr;"] { grid-template-columns: 96px minmax(0, 1fr) !important; }
+
+  /* iOS Safari 碰到字号小于 16px 的输入框，一聚焦就把整页放大，放大了还不缩回去。 */
+  .satu-prompt, .input { font-size: 16px; }
+
+  .gw-modal-backdrop { padding: var(--space-4); }
+  .gw-modal { padding: var(--space-4); max-height: calc(100dvh - var(--space-8)); overflow-y: auto; }
+}
+
+/* 表格 → 卡片（窄屏）。哪些是表、每格叫什么，由 render.js 的 cardifyTables 认出来、
+   打上 gw-tt-* 的记号；这里只管画。行上的 grid 列宽是各页内联写的，所以要 !important。
+   卡片的样子：第一格是标题，右上角是操作，下面每格一行「列名 … 值」。 */
+@media (max-width: 760px) {
+  .gw-tt-head { display: none !important; }
+  /* 带上 .gw-shell：上面那几条按内联 grid 写法改列宽的规则也是两段选择器，同级的话
+     后写的赢，这里要稳赢。 */
+  .gw-shell .gw-tt-row {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    gap: 6px var(--space-3) !important;
+    align-items: center !important;
+    padding: var(--space-3) var(--space-4) !important;
+    min-height: 0 !important;
+    text-align: left;
+  }
+  .gw-tt-row > * { grid-column: 1 / -1; min-width: 0; }
+  .gw-tt-row > [data-tt-cell="title"] { grid-column: 1; grid-row: 1; }
+  .gw-tt-row > [data-tt-cell="act"] { grid-column: 2; grid-row: 1; justify-self: end; }
+  .gw-tt-cell { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-width: 0; }
+  .gw-tt-cell::before {
+    content: attr(data-label);
+    flex: none; max-width: 45%;
+    font-size: 12px; font-weight: 400; color: var(--muted-foreground);
+  }
+  /* 值那一侧靠右；长的允许折行，不再截成省略号——卡片里竖着有的是地方。 */
+  .gw-tt-cell > * { min-width: 0; max-width: 100%; text-align: right; overflow-wrap: anywhere; white-space: normal; }
+  .gw-tt-cell > :empty:only-child { display: none; }
+  .gw-tt-cell:has(> :empty:only-child) { display: none; }
+}
+
+@media (max-width: 760px) and (prefers-reduced-motion: reduce) {
+  .gw-side { transition: none; }
+}

@@ -854,7 +854,7 @@ function chargeTable(scope, forOrg) {
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${kinds}</div>
       </div>
       <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
-        <div class="satu-billhead" style="grid-template-columns: ${cols};">${head}</div>
+        <div class="satu-billhead" style="grid-template-columns: ${cols};" data-tt-title="${scope === 'platform' ? 3 : 2}">${head}</div>
         ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.chargesLoading ? t('加载中…') : t('这个范围里还没有计费记录。')}</div>`}
       </div>
       ${

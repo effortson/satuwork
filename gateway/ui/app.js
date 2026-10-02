@@ -791,10 +791,9 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'aside-toggle') {
     // 预览开着时栏一定是摆出来的（哪怕记下来的是收着），这颗按钮就是「整栏收起」：
     // 预览一起关掉，不然下一帧它又把栏撑开。
-    const shown = asidePref.open || Boolean(shownPreview())
+    const shown = asideOpen() || Boolean(shownPreview())
     dropPreview()
-    asidePref.open = !shown
-    saveAside()
+    setAsideOpen(!shown)
     render()
     return
   }
@@ -806,8 +805,8 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'aside-tab') {
     const tab = btn.getAttribute('data-tab')
     dropPreview()
-    asidePref.open = true
     asidePref.tab = tab === 'files' || tab === 'handoffs' ? tab : 'env'
+    setAsideOpen(true)
     saveAside()
     // 目录内容不在这儿取：重绘那一趟自己会补（见 chat.js 的 ensureWorkspaceTree）。
     render()
@@ -1640,7 +1639,9 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'rail') {
-    state.rail = !state.rail
+    // 同一颗按钮：宽屏是收窄成导轨，窄屏是拉出抽屉（导轨那一档在窄屏上不存在）。
+    if (narrowScreen()) state.drawer = !state.drawer
+    else state.rail = !state.rail
     render()
     return
   }
@@ -2938,6 +2939,37 @@ document.addEventListener('keydown', (e) => {
     state.chatModelOpen = false
     paintChatModel()
   }
+})
+
+/* 跨过窄屏那条线（转屏、拖窗口）要重画一次：侧栏是抽屉还是常驻、右栏开没开，都是
+   appView 拼字符串时按 narrowScreen() 定下来的，光靠 CSS 换不过来。 */
+narrowMq.addEventListener('change', () => {
+  state.drawer = false
+  if (state.me) render()
+})
+
+/* 窄屏上的表格卡片化（render.js 的 cardifyTables）。挂在 MutationObserver 上，不是在
+   render() 末尾调一次：好几张表是 render() 之外就地重画的（翻页、轮询刷新、加载完补一
+   段），漏一处那一处就是一张挤成一条的表。
+
+   回调本身就排在这一帧画出来之前，直接在里面改，看不到表格样子闪一下。**别挪进 rAF**：
+   标签页在后台时 rAF 整个停掉，切回来那一眼是没排好的表。
+
+   只扫 .gw-page 和右栏：对话页流式出字时这里每一批改动都会被叫一次，扫整个 #app 不划算。
+   cardifyTables 自己套那一层也会再叫一次回调，那一趟什么都找不到（行上已经有 data-tt）。 */
+if (typeof MutationObserver === 'function') {
+  new MutationObserver(() => {
+    if (!narrowScreen()) return
+    for (const el of document.querySelectorAll('.gw-page, .gw-aside')) cardifyTables(el)
+  }).observe(document.getElementById('app'), { childList: true, subtree: true })
+}
+
+/* Esc 收起窄屏的侧栏抽屉。 */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !state.drawer || !narrowScreen()) return
+  e.preventDefault()
+  state.drawer = false
+  render()
 })
 
 /* Esc 关「联系销售」那个弹窗。它是首页上唯一一个盖住内容的东西，而按 Esc 关弹窗
