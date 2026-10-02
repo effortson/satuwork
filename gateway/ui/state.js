@@ -7,6 +7,8 @@ const state = {
   me: null,
   path: '/',
   rail: false,
+  /** 窄屏上侧栏抽屉开着没有（见 render.js 的 appView）。宽屏用不到它，那一档看 rail。 */
+  drawer: false,
   /**
    * 公司管理员侧栏各分类的展开状态。
    *
