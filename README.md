@@ -2,9 +2,69 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Two packages: `bot/` (headless runtime) and `gateway/` (control plane + the only chat UI). Spec: [docs/gateway-runtime.md](docs/gateway-runtime.md)
+**AI coworkers for companies.** Give everyone in your company a few AI coworkers. Each has its own machine, works
+your existing systems, and stops for you when it isn't sure. You hand off work the way you would to a colleague —
+say what you need, then go do something else.
 
-Deploy is per (account, botId) pair. One Bot process = one bot. Chat goes through Gateway; instances do not serve a product SPA.
+## About
+
+### Two kinds of coworker
+
+- **Remote coworker**: runs on your company's own seat machine (Debian), with its own workspace, terminal, browser
+  and desktop. It starts on schedule and keeps working after the browser is closed and everyone has gone home.
+- **Local coworker**: installed with the desktop app (Windows / macOS) on your own computer. It works your folders
+  directly, and files never leave that machine.
+
+### It isn't just a chat box
+
+- **It really has a machine**: reads and writes files, runs commands, drives a browser, searches and fetches the web,
+  handles Office documents, generates images.
+- **Unsure? It stops**: the step that needs your sign-off waits for you; what it can't handle goes into a human
+  handoff queue for a person to pick up.
+- **Routines**: write the instruction and the time, and it's sent into the session when due, with the result logged.
+- **Skills and memory**: your company's written-down ways of working attach to a bot (always-on or on-demand), and a
+  bot can write down a method that worked for later. It remembers facts across conversations (how to address someone,
+  where the reports live, who a client's contact is).
+- **Works your existing systems**: connectors over OAuth, plus MCP; when there are too many tools it falls back to
+  "search, inspect, then call".
+- **Channels**: besides the web and desktop apps, you can hand work off from Telegram.
+- **Delegation**: a subtask can be handed whole to a fresh sub-agent that reports back only its conclusion, keeping
+  the main session's context lean.
+- **One ledger**: models (including cache reads/writes), connectors and web search are recorded per call and deducted
+  in real time from "plan allowance → account balance".
+- **Audit**: company-level audit of operations, plus redacted conversation audits (task summary, timeline, scoring) —
+  Gateway never stores full chat transcripts.
+
+### How it's organized
+
+Platform → company (tenant: plan, seats, run machines) → account (one person) → bot (one AI coworker in the sidebar).
+Models, Skills and MCP come in two layers, **global** and **company**; each company keeps a versioned **bot
+template** that employees build their own bots on. Seats are counted per account, so running several bots does
+**not** take extra seats.
+
+### How it's built
+
+```
+Browser / desktop app ──► Gateway (control plane + the only chat UI)
+                             │  proxies chat streams, serves the catalog, schedules, bills
+                             ▼
+                       Machine manager (one per seat machine, the only inbound port)
+                             │  deploys / upgrades
+                             ▼
+                       Bot process (one per account × bot, headless)
+                             │
+                             └──► model calls go through Gateway's /v1; full transcripts stay on the machine
+```
+
+| Directory | What it is |
+|---|---|
+| [`gateway/`](gateway) | Control plane + the only chat UI: accounts, companies, catalog, billing, audit, scheduling; proxies chat to seats; model calls go through its `/v1`. Runs as a long-lived service on Debian, and also has a Vercel + Neon function form |
+| [`bot/`](bot) | Runtime: the headless AI coworker runtime (built on Cordis). One process is exactly one bot, deployed per (account, botId); serves no UI |
+| [`manager/`](manager) | Machine manager: a root service on each seat machine. Once paired with Gateway it deploys and upgrades bots, and it's the only port exposed |
+| [`desktop/`](desktop) | Tauri desktop app: UI bundled in the package, connects to a remote Gateway, and can run a local bot on this computer |
+| [`e2e/`](e2e) | End-to-end tests |
+| [`docs/`](docs) | Design docs; the master spec is [docs/gateway-runtime.md](docs/gateway-runtime.md) |
+| [`searxng/`](searxng) | Optional self-hosted search |
 
 ## Getting started
 
