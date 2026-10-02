@@ -373,6 +373,59 @@ function anonView() {
   return loginView()
 }
 
+/**
+ * 窄屏上把表格排成卡片（样式见 app.css 末尾「表格」那段）。
+ *
+ * 各页的表都是同一个形状：一行 `.satu-xxxhead`，后面跟着一串 `.satu-xxxrow`，格子是行的
+ * 直接子元素，列宽写死在 grid 上。手机上照原样排，七八列挤在 343 宽里，整页只能横着滚。
+ *
+ * **不去一张张改各页的 HTML**——二十几张表，改一张漏一张，以后加表还得记得再写一份窄屏
+ * 版。这里照着表头把每一格的列名抄到行上：第一格当卡片标题，表头是空的那一格（操作
+ * 按钮）放到右上角，其余每格套一层 `.gw-tt-cell`、带上 data-label，CSS 画成「列名 … 值」。
+ *
+ * 套那一层是因为好几格本身就是个药丸（.tag）：列名直接用 ::before 挂在它身上，会画进
+ * 药丸的底色里。
+ *
+ * 宽屏上不跑。从窄屏拖回宽屏时 narrowMq 的监听会整页重画，套的那层跟着没了。
+ */
+const TT_HEAD = /^satu-([a-z]+)head$/
+
+function cardifyTables(root) {
+  if (!root || !narrowScreen()) return
+  for (const head of root.querySelectorAll('[class*="head"]')) {
+    const m = [...head.classList].map((c) => TT_HEAD.exec(c)).find(Boolean)
+    if (!m) continue
+    // 行的类名跟表头配对（memberhead ↔ memberrow）。配不上的不是表（比如机器卡片顶上那条 machinehead）。
+    const rowClass = `satu-${m[1]}row`
+    const labels = [...head.children].map((c) => c.textContent.replace(/\s+/g, ' ').trim())
+    // 哪一格当卡片标题，默认第一格。第一格不适合当标题的表在表头上写 data-tt-title：
+    // 机器表第一格是一颗状态灯（用主机名），计费明细第一格是时间（用计费对象）。
+    const title = Number(head.getAttribute('data-tt-title')) || 0
+    // 表头整条收掉，空表也一样：一排列名底下只有一句「还没有…」，在手机上没意义。
+    head.classList.add('gw-tt-head')
+    for (let sib = head.nextElementSibling; sib; sib = sib.nextElementSibling) {
+      const rows = sib.classList.contains(rowClass) ? [sib] : sib.querySelectorAll(`:scope > .${rowClass}`)
+      for (const row of rows) cardifyRow(row, labels, title)
+    }
+  }
+}
+
+function cardifyRow(row, labels, title) {
+  if (row.hasAttribute('data-tt')) return
+  row.setAttribute('data-tt', '')
+  row.classList.add('gw-tt-row')
+  ;[...row.children].forEach((cell, i) => {
+    if (i === title) return cell.setAttribute('data-tt-cell', 'title')
+    const label = labels[i] || ''
+    if (!label) return cell.setAttribute('data-tt-cell', 'act')
+    const wrap = document.createElement('div')
+    wrap.className = 'gw-tt-cell'
+    wrap.setAttribute('data-label', label)
+    row.insertBefore(wrap, cell)
+    wrap.appendChild(cell)
+  })
+}
+
 /** 上一帧画的是哪个页面。换页要回到顶部，原地重绘不能动——见 render()。 */
 let paintedPath = null
 

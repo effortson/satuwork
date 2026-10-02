@@ -143,7 +143,7 @@ function machinesPage() {
         </div>
         <div style="display: flex; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
-          <div class="satu-memberhead" style="grid-template-columns: ${cols};">
+          <div class="satu-memberhead" data-tt-title="1" style="grid-template-columns: ${cols};">
             <span>${t('状态')}</span><span>${t('机器')}</span><span>${t('归属公司')}</span><span>${t('账号位')}</span><span>${t('已部署 Bot')}</span><span>${t('版本')}</span><span>${t('最近心跳')}</span>
           </div>
           ${body || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${all.length ? t('这一档下没有机器') : t('还没有机器配对进来。到某家公司的详情页生成配对码，在那台 Debian 上跑一条命令即可。')}</div>`}
