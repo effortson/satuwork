@@ -1421,12 +1421,17 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   .gw-head .satu-localtag { display: none; }
 
   /* 页面里那几处内联写死的两列 / 三列表单（个人设置、公司资料、弹窗里的表单），以及
-     卡片网格那几条 minmax(300px+)：343 宽的内容区放两列，每个输入框只剩一百出头。 */
+     卡片网格那几条 minmax(300px+)：343 宽的内容区放两列，每个输入框只剩一百出头。
+     数字小卡（概览、用量顶上那一排）反过来：auto-fit 到这个宽度会一张一行，四个数字
+     要滚一整屏，收成两两一排。 */
   .gw-shell [style*="grid-template-columns: 1fr 1fr;"],
   .gw-shell [style*="grid-template-columns: repeat(3, 1fr)"],
   .gw-shell [style*="minmax(300px, 1fr)"],
   .gw-shell [style*="minmax(320px, 1fr)"] { grid-template-columns: minmax(0, 1fr) !important; }
-  .gw-shell [style*="grid-template-columns: 150px 1fr"] { grid-template-columns: 96px minmax(0, 1fr) !important; }
+  .gw-shell [style*="grid-template-columns: repeat(4, 1fr)"],
+  .gw-shell [style*="minmax(190px, 1fr)"],
+  .gw-shell [style*="minmax(150px, 1fr)"] { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .gw-shell [style*="grid-template-columns: 150px 1fr;"] { grid-template-columns: 96px minmax(0, 1fr) !important; }
 
   /* iOS Safari 碰到字号小于 16px 的输入框，一聚焦就把整页放大，放大了还不缩回去。 */
   .satu-prompt, .input { font-size: 16px; }
@@ -1434,6 +1439,38 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   .gw-modal-backdrop { padding: var(--space-4); }
   .gw-modal { padding: var(--space-4); max-height: calc(100dvh - var(--space-8)); overflow-y: auto; }
 }
+
+/* 表格 → 卡片（窄屏）。哪些是表、每格叫什么，由 render.js 的 cardifyTables 认出来、
+   打上 gw-tt-* 的记号；这里只管画。行上的 grid 列宽是各页内联写的，所以要 !important。
+   卡片的样子：第一格是标题，右上角是操作，下面每格一行「列名 … 值」。 */
+@media (max-width: 760px) {
+  .gw-tt-head { display: none !important; }
+  /* 带上 .gw-shell：上面那几条按内联 grid 写法改列宽的规则也是两段选择器，同级的话
+     后写的赢，这里要稳赢。 */
+  .gw-shell .gw-tt-row {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    gap: 6px var(--space-3) !important;
+    align-items: center !important;
+    padding: var(--space-3) var(--space-4) !important;
+    min-height: 0 !important;
+    text-align: left;
+  }
+  .gw-tt-row > * { grid-column: 1 / -1; min-width: 0; }
+  .gw-tt-row > [data-tt-cell="title"] { grid-column: 1; grid-row: 1; }
+  .gw-tt-row > [data-tt-cell="act"] { grid-column: 2; grid-row: 1; justify-self: end; }
+  .gw-tt-cell { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-width: 0; }
+  .gw-tt-cell::before {
+    content: attr(data-label);
+    flex: none; max-width: 45%;
+    font-size: 12px; font-weight: 400; color: var(--muted-foreground);
+  }
+  /* 值那一侧靠右；长的允许折行，不再截成省略号——卡片里竖着有的是地方。 */
+  .gw-tt-cell > * { min-width: 0; max-width: 100%; text-align: right; overflow-wrap: anywhere; white-space: normal; }
+  .gw-tt-cell > :empty:only-child { display: none; }
+  .gw-tt-cell:has(> :empty:only-child) { display: none; }
+}
+
 @media (max-width: 760px) and (prefers-reduced-motion: reduce) {
   .gw-side { transition: none; }
 }
