@@ -4,7 +4,7 @@
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { MIN_PASSWORD, hashPassword } from '../crypto.ts'
-import { amountMilsOf, bodyOf, bonusMilsOf, dateMsOf, endOfPeriod, payStatusOf, periodOf, seatsOf, strField } from '../lib/validate.ts'
+import { amountMilsOf, bodyOf, bonusMilsOf, dateMsOf, endOfPeriod, knowledgeBasesOf, payStatusOf, periodOf, seatsOf, strField } from '../lib/validate.ts'
 import { balanceOf, orderKindOf, publicInvoice, publicPlanOrder, publicPlanSku, publicTopup, syncInvoiceOfOrder, syncTopupOfOrder } from '../lib/billing.ts'
 import { emailOf, expiresAtOf, orgSummary, patchAccount, phoneOf, publicAccount, publicCompany, publicPlan, slugOf, websiteOf } from '../lib/org.ts'
 import { requireOrgUser, requireOwnerUser } from '../lib/guards.ts'
@@ -15,7 +15,8 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
 
   router.get('/platform/orgs', async (req, res) => {
     await requireOwnerUser(req, db, keys)
-    json(res, 200, { orgs: await Promise.all((await db.companies()).map((c) => orgSummary(db, c))) })
+    const kbCounts = await db.knowledgeCountsByCompany()
+    json(res, 200, { orgs: await Promise.all((await db.companies()).map((c) => orgSummary(db, c, kbCounts))) })
   })
 
   router.get('/platform/accounts', async (req, res) => {
@@ -118,7 +119,13 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
     const seats = body.seats == null || body.seats === '' ? (sku?.seats ?? cur?.seats ?? 1) : seatsOf(body.seats)
     const used = await db.accountCount(req.params.id)
     if (seats < used) throw new HttpError(409, '席位不能少于已有账号数', { seats, used })
-    const patch: { skuId?: string | null; expiresAt?: number | null } = {}
+    // 知识库个数同席位：选了套餐没写就按套餐的；往下调要先腾位（docs/knowledge-base.md §4.2）。
+    const knowledgeBases = body.knowledgeBases == null || body.knowledgeBases === ''
+      ? (sku?.knowledgeBases ?? cur?.knowledgeBases ?? 0)
+      : knowledgeBasesOf(body.knowledgeBases)
+    const kbUsed = await db.countKnowledgeBases(req.params.id)
+    if (knowledgeBases < kbUsed) throw new HttpError(409, `知识库个数不能少于已有的 ${kbUsed} 个`, { knowledgeBases, used: kbUsed })
+    const patch: { skuId?: string | null; expiresAt?: number | null; knowledgeBases: number } = { knowledgeBases }
     if (body.skuId !== undefined) patch.skuId = sku ? sku.id : null
     if (body.expiresAt !== undefined) patch.expiresAt = expiresAtOf(body.expiresAt)
     const plan = await db.upsertPlan(req.params.id, seats, patch)
@@ -126,7 +133,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
       companyId: req.params.id,
       accountId: account.id,
       action: 'plan.update',
-      detail: { seats, skuId: plan.skuId, expiresAt: plan.expiresAt },
+      detail: { seats, knowledgeBases, skuId: plan.skuId, expiresAt: plan.expiresAt },
     })
     json(res, 200, await publicPlan(db, plan, used))
   })
@@ -158,14 +165,15 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
     const seats = seatsOf(body.seats)
     const period = periodOf(body.period)
     const bonusMils = bonusMilsOf(body.bonusTokens)
+    const knowledgeBases = knowledgeBasesOf(body.knowledgeBases)
     if (await db.planSkuByName(name)) throw new HttpError(409, '这个套餐名已存在')
     if (nameEn && await db.planSkuByName(nameEn)) throw new HttpError(409, '这个套餐名已存在')
-    const plan = await db.insertPlanSku({ name, nameEn, amountMils, seats, period, bonusMils })
+    const plan = await db.insertPlanSku({ name, nameEn, amountMils, seats, period, bonusMils, knowledgeBases })
     await db.audit({
       companyId: 'platform',
       accountId: account.id,
       action: 'platform.plan.create',
-      detail: { id: plan.id, name, nameEn, amountMils, seats, period, bonusMils },
+      detail: { id: plan.id, name, nameEn, amountMils, seats, period, bonusMils, knowledgeBases },
     })
     json(res, 201, { plan: publicPlanSku(plan) })
   })
@@ -181,6 +189,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
     const seats = 'seats' in body ? seatsOf(body.seats, cur.seats) : cur.seats
     const period = 'period' in body ? periodOf(body.period, cur.period) : cur.period
     const bonusMils = 'bonusTokens' in body ? bonusMilsOf(body.bonusTokens, cur.bonusMils) : cur.bonusMils
+    const knowledgeBases = 'knowledgeBases' in body ? knowledgeBasesOf(body.knowledgeBases, cur.knowledgeBases) : cur.knowledgeBases
     if (name !== cur.name) {
       const clash = await db.planSkuByName(name)
       if (clash && clash.id !== cur.id) throw new HttpError(409, '这个套餐名已存在')
@@ -190,13 +199,13 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
       if (clash && clash.id !== cur.id) throw new HttpError(409, '这个套餐名已存在')
     }
     if (nameEn && nameEn === name) throw new HttpError(400, '中英文名不能填成同一个')
-    const plan = await db.updatePlanSku(cur.id, { name, nameEn, amountMils, seats, period, bonusMils })
+    const plan = await db.updatePlanSku(cur.id, { name, nameEn, amountMils, seats, period, bonusMils, knowledgeBases })
     if (!plan) throw new HttpError(404, '套餐不存在')
     await db.audit({
       companyId: 'platform',
       accountId: account.id,
       action: 'platform.plan.update',
-      detail: { id: plan.id, name, nameEn, amountMils, seats, period, bonusMils },
+      detail: { id: plan.id, name, nameEn, amountMils, seats, period, bonusMils, knowledgeBases },
     })
     json(res, 200, { plan: publicPlanSku(plan) })
   })
@@ -241,6 +250,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
           period: 'month',
           // 充值没有席位、没有赠送、也没有账期：起止同一天，别装成一段订阅。
           seats: 0,
+          knowledgeBases: 0,
           amountMils,
           bonusMils: 0,
           startAt,
@@ -270,6 +280,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
     // 套餐内容作为默认值抄进订单，但允许逐项改（打折、送席位都靠这个）。
     const period = 'period' in body ? periodOf(body.period, sku.period) : sku.period
     const seats = 'seats' in body ? seatsOf(body.seats, sku.seats) : sku.seats
+    const knowledgeBases = 'knowledgeBases' in body ? knowledgeBasesOf(body.knowledgeBases, sku.knowledgeBases) : sku.knowledgeBases
     const amountMils = 'amount' in body ? amountMilsOf(body.amount, sku.amountMils) : sku.amountMils
     const bonusMils = 'bonusTokens' in body ? bonusMilsOf(body.bonusTokens, sku.bonusMils) : sku.bonusMils
     const startAt = dateMsOf(body.startAt, Date.now())
@@ -288,6 +299,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
         planNameEn: sku.nameEn,
         period,
         seats,
+        knowledgeBases,
         amountMils,
         bonusMils,
         startAt,
@@ -302,7 +314,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
       companyId: company.id,
       accountId: account.id,
       action: 'platform.order.create',
-      detail: { id: order.id, planId: sku.id, planName: sku.name, period, seats, amountMils, bonusMils, payStatus },
+      detail: { id: order.id, planId: sku.id, planName: sku.name, period, seats, knowledgeBases, amountMils, bonusMils, payStatus },
     })
     meter.forget(company.id)
     json(res, 201, { order: publicPlanOrder(order, company), invoice: publicInvoice(invoice) })
@@ -359,6 +371,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
     }
     const period = 'period' in body ? periodOf(body.period, cur.period) : sku?.period ?? cur.period
     const seats = 'seats' in body ? seatsOf(body.seats, cur.seats) : sku?.seats ?? cur.seats
+    const knowledgeBases = 'knowledgeBases' in body ? knowledgeBasesOf(body.knowledgeBases, cur.knowledgeBases) : sku?.knowledgeBases ?? cur.knowledgeBases
     const amountMils = 'amount' in body ? amountMilsOf(body.amount, cur.amountMils) : sku?.amountMils ?? cur.amountMils
     const bonusMils = 'bonusTokens' in body ? bonusMilsOf(body.bonusTokens, cur.bonusMils) : sku?.bonusMils ?? cur.bonusMils
     const startAt = 'startAt' in body ? dateMsOf(body.startAt, cur.startAt) : cur.startAt
@@ -367,7 +380,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
     const payStatus = payStatusOf(body.payStatus, cur.payStatus)
     const { order, invoice } = await db.tx(async () => {
       const order = await db.updatePlanOrder(cur.id, {
-        companyId: company.id, planId, planName, planNameEn, period, seats, amountMils, bonusMils, startAt, endAt, payStatus,
+        companyId: company.id, planId, planName, planNameEn, period, seats, knowledgeBases, amountMils, bonusMils, startAt, endAt, payStatus,
       })
       if (!order) throw new HttpError(404, '订单不存在')
       const invoice = await syncInvoiceOfOrder(db, order)
@@ -380,7 +393,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
       companyId: company.id,
       accountId: account.id,
       action: 'platform.order.update',
-      detail: { id: order.id, planId, planName, period, seats, amountMils, bonusMils, payStatus },
+      detail: { id: order.id, planId, planName, period, seats, knowledgeBases, amountMils, bonusMils, payStatus },
     })
     meter.forget(cur.companyId)
     meter.forget(company.id)

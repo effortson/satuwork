@@ -813,6 +813,7 @@ function chargeTable(scope, forOrg) {
     { key: 'llm', label: t('模型', 'Model') },
     { key: 'connector', label: t('连接器', 'Connector') },
     { key: 'web', label: t('网页', 'Web') },
+    { key: 'kb', label: t('知识库', 'Knowledge') },
   ]
     .map(
       (k) =>
@@ -877,6 +878,7 @@ function kindLabel(kind) {
   if (kind === 'llm') return t('模型', 'Model')
   if (kind === 'connector') return t('连接器', 'Connector')
   if (kind === 'web') return t('网页', 'Web')
+  if (kind === 'kb') return t('知识库')
   return kind
 }
 
@@ -916,6 +918,12 @@ function chargeQuantity(c, withPrice) {
     lines.push(withPrice
       ? t(`${units} 条 × ${usageMicros$(p.unit)}`, `${units} units × ${usageMicros$(p.unit)}`)
       : t(`${units} 条`, `${units} units`))
+  } else if (c.kind === 'kb') {
+    // 知识库按 Upstash 请求次数计：检索是查了几个库，入库是几批 upsert。
+    const units = Number(q.units || 0)
+    lines.push(withPrice
+      ? t(`${units} 次 × ${usageMicros$(p.unit)}`, `${units} requests × ${usageMicros$(p.unit)}`)
+      : t(`${units} 次`, `${units} requests`))
   } else {
     lines.push(withPrice
       ? t(`1 次 × ${usageMicros$(p.unit)}`, `1 call × ${usageMicros$(p.unit)}`)
@@ -1013,6 +1021,7 @@ function statsPage() {
       [t('模型', 'model'), spend.llm],
       [t('网页', 'web'), spend.web],
       [t('连接器', 'connector'), spend.connector],
+      [t('知识库', 'knowledge'), spend.kb || { calls: 0, amountMicros: 0, costMicros: 0 }],
     ].filter(([, m]) => pick(m) > 0)
     // 每一截自己不许断行：卡只有 150px 宽，不管的话会在「网页」和它的金额之间折，
     // 折出来的下一行以一个孤零零的 $0.050 开头，看着像另一个数。
@@ -1466,6 +1475,11 @@ function companyPage() {
             <label>${t('席位')}</label>
             <p style="margin: 0; font-size: 14px;">${t(`已用 ${esc(plan.used || 0)} / ${esc(plan.seats || 0)}`, `${esc(plan.used || 0)} / ${esc(plan.seats || 0)} used`)}</p>
             <span style="font-size: 12px; color: var(--muted-foreground);">${t('席位由系统管理员分配')}</span>
+          </div>
+          <div class="field">
+            <label>${t('知识库')}</label>
+            <p style="margin: 0; font-size: 14px;">${t(`已建 ${esc(plan.knowledgeUsed || 0)} / ${esc(plan.knowledgeBases || 0)}`, `${esc(plan.knowledgeUsed || 0)} / ${esc(plan.knowledgeBases || 0)} created`)}</p>
+            <span style="font-size: 12px; color: var(--muted-foreground);">${t('能建几个由套餐决定')}</span>
           </div>
           <div class="field">
             <label>${t('订阅套餐')}</label>

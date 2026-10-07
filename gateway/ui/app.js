@@ -128,6 +128,7 @@ async function runConfirm() {
   state.confirm = null
   state.menu = null
   try {
+    if (await knowledgeConfirm(c)) return
     if (c.kind === 'org-status') {
       await api('PATCH', `/orgs/${encodeURIComponent(c.id)}`, { status: c.next })
       await Promise.all([loadOrgs().catch(() => {}), loadCompanyDetail(c.id)])
@@ -316,6 +317,10 @@ document.getElementById('app').addEventListener('submit', (e) => {
   if (form.id === 'order-form') return saveOrder(e)
   if (form.id === 'audit-filter-form') return submitAuditFilter(e)
   if (form.id === 'channel-bind-form') return submitChannelBinding(e)
+  if (form.id === 'kb-create-form') return submitKnowledgeCreate(e)
+  if (form.id === 'kb-edit-form') return submitKnowledgeEdit(e)
+  if (form.id === 'kb-share-form') return submitKnowledgeShare(e)
+  if (form.id === 'kb-search-form') return submitKnowledgeSearch(e)
   if (form.id === 'chat-form') {
     e.preventDefault()
     return sendChat()
@@ -384,6 +389,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (btn.classList.contains('gw-modal-backdrop') && e.target !== btn) return
   const act = btn.getAttribute('data-act')
   if (await channelAct(act, btn)) return
+  if (await knowledgeAct(act, btn)) return
   // 连接器那一屏的动作都在 pages-connectors.js 里。这条 if 链已经六百多行了，
   // 再往上堆只会让下一个人更难找。
   if (await connectorAct(act, btn)) return
@@ -650,6 +656,11 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'handoff-claim') {
     await actOnHandoff(btn.getAttribute('data-id'), 'claim')
+    return
+  }
+  if (act === 'handoff-cancel') {
+    // 待办行和右栏卡片上那颗。撤销不叫醒 Bot，状态顺着 SSE 回来、清单单独刷一次（见 actOnHandoff）。
+    await actOnHandoff(btn.getAttribute('data-id'), 'cancel', undefined, btn)
     return
   }
   if (act === 'handoff-detail') {
@@ -1409,6 +1420,17 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  // 自己这颗 Bot 上把某个共享过来的知识库关掉 / 打开。改的是草稿，保存时跟着 PATCH 一起走。
+  if (act === 'bot-kb-toggle') {
+    if (!state.botDraft) return
+    const id = btn.getAttribute('data-id')
+    const off = new Set(state.botDraft.knowledgeOff || [])
+    if (off.has(id)) off.delete(id)
+    else off.add(id)
+    state.botDraft = { ...state.botDraft, knowledgeOff: [...off] }
+    render()
+    return
+  }
   if (act === 'bot-icon') {
     if (!state.botDraft) return
     const icon = btn.getAttribute('data-icon')
@@ -1501,6 +1523,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
           extraPrompt: a.extraPrompt || '',
           enabled: a.enabled,
           icon: a.icon,
+          knowledgeOff: a.knowledgeOff || [],
         })
         state.bot = data.bot
         state.botDraft = { ...draftFromBot(data.bot), extraPrompt: data.bot.extraPrompt || '' }
@@ -2704,6 +2727,7 @@ document.getElementById('app').addEventListener('change', async (e) => {
       set('amount', milsOf(sku, 'amount') / 1000)
       set('bonusTokens', milsOf(sku, 'bonus') / 1000)
       set('seats', sku.seats)
+      set('knowledgeBases', sku.knowledgeBases || 0)
       set('period', sku.period || 'month')
     }
     return
@@ -2720,6 +2744,23 @@ document.getElementById('app').addEventListener('change', async (e) => {
   }
   if (el.getAttribute?.('data-act') === 'web-limit') {
     await saveWebLimit(el.value)
+    return
+  }
+  // 知识库：选文件就开传；平台那两格单价和门槛。
+  if (el.getAttribute?.('data-act') === 'kb-files') {
+    const files = el.files
+    el.value = ''
+    await knowledgeUpload(files)
+    return
+  }
+  if (el.getAttribute?.('data-act') === 'kb-price') {
+    const n = Math.round(Number(el.value) * 1000)
+    await saveKnowledgeSettings({ pricing: { [el.getAttribute('data-field')]: Number.isFinite(n) && n >= 0 ? n : 0 } })
+    return
+  }
+  if (el.getAttribute?.('data-act') === 'kb-score') {
+    const n = Number(el.value)
+    await saveKnowledgeSettings({ scoreMin: Number.isFinite(n) && n >= 0 && n <= 1 ? n : 0.35 })
     return
   }
   if (el.getAttribute?.('data-act') === 'web-price') {

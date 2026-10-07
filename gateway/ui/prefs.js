@@ -203,6 +203,7 @@ const PATHS = {
   '/chat': { title: '对话' },
   '/handoffs': { title: '转人工待办' },
   '/channels': { title: '渠道' },
+  '/knowledge': { title: '知识库' },
 }
 
 const ICONS = {

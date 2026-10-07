@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ContentBlock, Message, SessionEvent } from '../session/types.ts'
 import type { ToolRisk } from './index.ts'
-import { visibleEvents } from '../session/replay.ts'
+import { historyEvents } from '../session/replay.ts'
 
 /**
  * 翻自己的历史：`history_read` 按时间区间读原文，`history_search` 按关键词找。
@@ -17,6 +17,9 @@ import { visibleEvents } from '../session/replay.ts'
  *
  * **只看当前会话。** `call.sessionId` 是执行管道给的，模型改不了。别的 Bot、别的会话
  * 都不在范围内：那是另一个人的工作台，跟"我记不记得昨天说过什么"是两件事。
+ *
+ * **只看这一场对话。** 人打过 `/new` 或 `/clear`，之前那些就不在范围内——哪怕界面上
+ * （`/new` 的情况）往上翻还看得见。见下面 allEvents 的说明。
  */
 export const name = 'satu-tools-history'
 export const inject = ['tools', 'sessions']
@@ -184,12 +187,14 @@ export function apply(ctx: Context) {
   /**
    * 当前会话的事件。**不看压缩点**——翻记录要的就是压缩掉的那一段。
    *
-   * 但**看清除点**：人打过 `/clear`，要的就是「之前那些别再提了」，模型自己翻回去
-   * 等于没清（docs/chat-commands.md §15）。
+   * 但**看重置点**：人打过 `/new` 或 `/clear`，要的就是「之前那些别再提了」，模型自己
+   * 翻回去等于没打（docs/chat-commands.md §2、§15）。实测过：`/new` 之后同一个问题再问
+   * 一遍，模型先 history_search 把上一场的回答搜出来接着说——人看到的就是 `/new` 没生效。
+   * 两条命令在这里口径一样；`/new` 和 `/clear` 的差别只在界面上往上翻看不看得见。
    */
   const allEvents = async (sessionId: string) => {
     try {
-      return visibleEvents(await ctx.sessions.events(sessionId))
+      return historyEvents(await ctx.sessions.events(sessionId))
     } catch {
       fail('读不到这条会话的记录。')
     }
@@ -200,11 +205,11 @@ export function apply(ctx: Context) {
       name: 'history_read',
       risk: ['read'],
       description:
-        '按时间区间读回这条会话更早的原始对话。上下文里那段“对话摘要”覆盖的内容、或者要核对用户当时的原话时用它。时间按本机时区。',
+        '按时间区间读回这场对话更早的原始对话。上下文里那段“对话摘要”覆盖的内容、或者要核对用户当时的原话时用它。范围止于用户最近一次 /new 或 /clear：更早的属于上一场对话，翻不到。时间按本机时区。',
       parameters: {
         type: 'object',
         properties: {
-          since: { type: 'string', description: '起点，含。"2026-08-18" 或 "2026-08-18 22:00"。不给就从会话开头。' },
+          since: { type: 'string', description: '起点，含。"2026-08-18" 或 "2026-08-18 22:00"。不给就从这场对话的开头。' },
           until: { type: 'string', description: '终点，含。只给日期时算到当天 23:59:59。不给就到最新。' },
           limit: { type: 'number', description: `最多返回多少条。默认 ${DEFAULT_ROWS}，上限 ${MAX_ROWS}。` },
           from_end: { type: 'boolean', description: '条数超出上限时保留最后 N 条而不是前 N 条。默认 true。' },
@@ -221,7 +226,7 @@ export function apply(ctx: Context) {
       )
       const tail = from_end !== false
       const picked = all.length <= cap ? all : tail ? all.slice(-cap) : all.slice(0, cap)
-      const scope = `${since ? stamp(a!) : '会话开头'} 至 ${until ? stamp(b!) : '最新'}`
+      const scope = `${since ? stamp(a!) : '这场对话开头'} 至 ${until ? stamp(b!) : '最新'}`
       const note =
         all.length <= cap
           ? `${scope}，共 ${all.length} 条：`
@@ -235,7 +240,7 @@ export function apply(ctx: Context) {
       name: 'history_search',
       risk: ['read'],
       description:
-        '在这条会话的全部历史里按关键词找，包括已经被摘要压缩掉的那一段。找到之后可以用 history_read 把那个时间点前后的原文调出来。',
+        '在这场对话的全部历史里按关键词找，包括已经被摘要压缩掉的那一段。范围止于用户最近一次 /new 或 /clear：更早的属于上一场对话，翻不到。找到之后可以用 history_read 把那个时间点前后的原文调出来。',
       parameters: {
         type: 'object',
         properties: {

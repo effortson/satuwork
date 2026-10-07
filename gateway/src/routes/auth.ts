@@ -218,13 +218,15 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
     const account = await requireSeatOrUser(req, db, keys)
     const stored = await db.platformSettings()
     if (account.role === 'owner') {
+      // 公司列表一次把各家的知识库个数查齐（同 /platform/orgs），别一家一条 count。
+      const kbCounts = await db.knowledgeCountsByCompany()
       json(res, 200, {
         account: publicAccount(account),
         company: null,
         plan: null,
         // 平台那几屏（单价、倍率、连接器计费、期望管家版本）就靠这一份画。
         settings: publicSettings(stored),
-        orgs: await Promise.all((await db.companies()).map((c) => orgSummary(db, c))),
+        orgs: await Promise.all((await db.companies()).map((c) => orgSummary(db, c, kbCounts))),
       })
       return
     }

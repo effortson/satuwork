@@ -90,6 +90,31 @@ export interface ImageModel {
   api: string
 }
 
+/**
+ * 这颗 Bot 查得到的知识库（docs/knowledge-base.md §8.2）。Gateway 按 Bot 筛过了：`all` 的，
+ * 加上名单里有它的；这里只搬运。名字和说明进 `knowledge_search` 的描述，正文不下发。
+ */
+export interface RemoteKnowledge {
+  id: string
+  name: string
+  desc: string
+  fileCount: number
+}
+
+function knowledgeOf(raw: unknown): RemoteKnowledge[] {
+  if (!Array.isArray(raw)) return []
+  const out: RemoteKnowledge[] = []
+  for (const x of raw) {
+    if (!x || typeof x !== 'object') continue
+    const o = x as Record<string, unknown>
+    const id = typeof o.id === 'string' ? o.id : ''
+    const name = typeof o.name === 'string' ? o.name.trim() : ''
+    if (!id || !name) continue
+    out.push({ id, name, desc: typeof o.desc === 'string' ? o.desc.trim() : '', fileCount: Number(o.fileCount) || 0 })
+  }
+  return out
+}
+
 /** 三格缺一格就当没开：拼不出请求的配置和没配是一回事。 */
 function imageOf(raw: unknown): ImageModel | null {
   if (!raw || typeof raw !== 'object') return null
@@ -331,6 +356,8 @@ export class CatalogService extends Service {
     image: null,
   }
 
+  /** 这颗 Bot 查得到的知识库。空 = 没有，`knowledge_search` 不进工具表（agent 的 toolSchemasFor）。 */
+  knowledge: RemoteKnowledge[] = []
   /** 上一次拉到的公司模版版本号。给 /api/runtime/status 看，也用来打日志。 */
   templateVersion = 0
   /** 上一次探针给的指纹。变了才重拉整份目录。 */
@@ -435,6 +462,7 @@ export class CatalogService extends Service {
         name: r.value.name,
         enabled: r.value.enabled,
       })),
+      knowledge: this.knowledge.map((k) => ({ id: k.id, name: k.name, files: k.fileCount })),
       servers: this.servers.map((s) => ({
         id: s.id,
         name: s.name,
@@ -493,6 +521,7 @@ export class CatalogService extends Service {
       servers?: RemoteServer[]
       models?: { daily?: ModelRole; utility?: ModelRole; dailyAlternates?: ModelRole[]; image?: unknown }
       memories?: Partial<CachedMemory>[]
+      knowledge?: unknown
     }
     // **发车时刻要在 fetch 之前取**：豁免的判据就是「这份响应比那次写入更旧」。
     const startedAt = Date.now()
@@ -531,6 +560,8 @@ export class CatalogService extends Service {
       // 老 Gateway 不带 = null = 没有生图工具。
       image: imageOf(body.models?.image),
     }
+    // 老 Gateway 不带 = 空 = 没有知识库工具。
+    this.knowledge = knowledgeOf(body.knowledge)
     this.syncSkills(Array.isArray(body.skills) ? body.skills : [], { since: startedAt })
     /** 没有 id 的那些当场丢掉：缓存是按 id 认的，一条没有 id 的记录进去就再也删不掉。 */
     const memories = (Array.isArray(body.memories) ? body.memories : []).filter(

@@ -175,11 +175,11 @@ const MIME: Record<string, string> = {
 
 // `/download`：没登录时折到首页那一段（`/#download`），登录了是应用内那一页——两样都在
 // ui/pages-landing.js，怎么折见 ui/app.js 的 foldDownload。地址早被发出去过，得一直交得出。
-const SPA_PATHS = new Set(['/', '/login', '/privacy', '/terms', '/download', '/index.html', '/ui', '/ui/', '/models', '/providers', '/company', '/accounts', '/audit', '/companies', '/users', '/plans', '/orders', '/stats', '/tools', '/costs', '/billing', '/usage', '/catalog', '/profile', '/bots', '/skills', '/chat', '/releases', '/machines', '/connectors', '/handoffs', '/channels'])
+const SPA_PATHS = new Set(['/', '/login', '/privacy', '/terms', '/download', '/index.html', '/ui', '/ui/', '/models', '/providers', '/company', '/accounts', '/audit', '/companies', '/users', '/plans', '/orders', '/stats', '/tools', '/costs', '/billing', '/usage', '/catalog', '/profile', '/bots', '/skills', '/chat', '/releases', '/machines', '/connectors', '/handoffs', '/channels', '/knowledge'])
 // 前端脚本拆成了一串（见 gateway/ui/index.html 里那组 data-app-part），
 // 加一个新的分片就要在这里也加一行，否则线上直接 404，而本地跑 index.html 是好的。
-const UI_PARTS = ['prefs.js', 'state.js', 'data.js', 'shell.js', 'pages-landing.js', 'pages-legal.js', 'pages-admin.js', 'pages-audit.js', 'pages-machines.js', 'pages-account.js', 'pages-bots.js', 'pages-tools.js', 'pages-connectors.js', 'pages-routines.js', 'pages-handoffs.js', 'pages-channels.js', 'chat.js', 'render.js', 'app.js']
-const ROOT_FILES = new Set(['theme.css', 'shell.css', 'app.css', 'chat.css', ...UI_PARTS, 'i18n.js', 'markdown.js', 'channel-preview.js', 'index.html', 'unzip.js', 'analytics.js'])
+const UI_PARTS = ['prefs.js', 'state.js', 'data.js', 'shell.js', 'pages-landing.js', 'pages-legal.js', 'pages-admin.js', 'pages-audit.js', 'pages-machines.js', 'pages-account.js', 'pages-bots.js', 'pages-tools.js', 'pages-connectors.js', 'pages-routines.js', 'pages-handoffs.js', 'pages-channels.js', 'pages-knowledge.js', 'chat.js', 'render.js', 'app.js']
+const ROOT_FILES = new Set(['theme.css', 'shell.css', 'app.css', 'chat.css', ...UI_PARTS, 'i18n.js', 'markdown.js', 'channel-preview.js', 'index.html', 'unzip.js', 'analytics.js', 'blob-client.js'])
 
 /**
  * Vercel Web Analytics 与 Speed Insights：**只在 Vercel 上开**（平台注入 `VERCEL=1`）。
@@ -308,7 +308,7 @@ function corsHeaders(req: IncomingMessage): Record<string, string> | null {
 /** GET / 与各管理屏、GET /ui/*、/theme.css、/assets/* 从 gateway/ui 出。路径不得逃出该目录。 */
 function serveUi(pathname: string, res: ServerResponse): boolean {
   let rel: string | null = ''
-  if (SPA_PATHS.has(pathname) || pathname.startsWith('/join/') || pathname.startsWith('/bots/') || pathname.startsWith('/connectors/') || pathname.startsWith('/companies/') || pathname.startsWith('/users/') || pathname.startsWith('/machines/') || pathname.startsWith('/audit') || pathname.startsWith('/a/')) rel = 'index.html'
+  if (SPA_PATHS.has(pathname) || pathname.startsWith('/join/') || pathname.startsWith('/bots/') || pathname.startsWith('/connectors/') || pathname.startsWith('/knowledge/') || pathname.startsWith('/companies/') || pathname.startsWith('/users/') || pathname.startsWith('/machines/') || pathname.startsWith('/audit') || pathname.startsWith('/a/')) rel = 'index.html'
   // 解不开的百分号不是路径，是坏请求：返回 null 让它落到 404，别抛进 handle 的 catch
   // 变成一句 500（同 match 里那道 decodeSegment）。
   else if (pathname.startsWith('/ui/')) rel = decodeSegment(pathname.slice('/ui/'.length))

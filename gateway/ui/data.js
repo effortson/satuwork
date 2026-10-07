@@ -479,6 +479,10 @@ async function loadSettings() {
 }
 
 /** 平台工具配置。只有 owner 拿得到——里面有价目，也有「哪家配了密钥」。 */
+async function loadKnowledgeStatus() {
+  state.kbStatus = await api('GET', '/platform/knowledge/status')
+}
+
 async function loadWebTools() {
   if (!isOwner()) return
   state.webTools = await api('GET', '/platform/tools/web')
@@ -817,6 +821,8 @@ function draftFromBot(bot) {
     mcps: Array.isArray(bot.mcps) ? bot.mcps.slice() : [],
     groups: [],
     kbs: [],
+    // 自己关掉的知识库（见 pages-bots.js 的 myKnowledgePanel）。
+    knowledgeOff: Array.isArray(bot.knowledgeOff) ? bot.knowledgeOff.slice() : [],
     escalate: bot.escalate || '',
     escalateTo: bot.escalateTo || 'owner',
     /**
@@ -1151,6 +1157,15 @@ async function loadPage() {
       await loadChannels().catch(() => { state.channels = state.channels || [] })
       return
     }
+    if (state.path === '/knowledge') {
+      await Promise.all([loadKnowledge(), loadKnowledgeConfig().catch(() => {})])
+      return
+    }
+    if (state.path.startsWith('/knowledge/')) {
+      // 共享名单的 Bot 列表只有管理员拿得到；成员那条会 403，吞掉。
+      await Promise.all([loadKnowledgeDetail(kbIdOfPath(state.path)), loadKnowledgeConfig().catch(() => {}), isOwner() || isAdmin() ? loadKnowledgeBots().catch(() => { state.kbBots = [] }) : Promise.resolve()])
+      return
+    }
     if (state.path === '/') {
       if (isOwner()) {
         await Promise.all([
@@ -1190,7 +1205,7 @@ async function loadPage() {
     } else if (state.path === '/stats') {
       await reloadStatsPage()
     } else if (state.path === '/tools') {
-      await loadWebTools()
+      await Promise.all([loadWebTools(), loadSettings().catch(() => {}), loadKnowledgeStatus().catch(() => { state.kbStatus = null })])
     } else if (state.path.startsWith('/connectors/')) {
       await loadConnectorDetail(connectorIdOfPath(state.path))
     } else if (state.path === '/connectors') {

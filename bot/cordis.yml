@@ -68,6 +68,10 @@
 - name: './src/web-search/index.ts'
 - name: './src/tools/web.ts'
 
+# 公司知识库：knowledge_search。向量库、共享范围都在 Gateway（/runtime/knowledge/search），这边只有形状。
+# 进不进工具表看目录里 knowledge 空不空（agent 的 toolSchemasFor）。
+- name: './src/tools/knowledge.ts'
+
 # 席位桌面上那个 Chrome 的遥控器（CDP，127.0.0.1:$SATUWORK_CDP_PORT）。
 # **连的是员工自己在用的那一个**——登录态就在那份 profile 里，这是整套工具唯一的理由。
 # 工具本身能不能进工具表，看公司模版里的 browser.on；每一次调用拦不拦，在 policy。

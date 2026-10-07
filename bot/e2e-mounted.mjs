@@ -59,6 +59,8 @@ const TOOLS = [
   'generate_image',
   // 同上：工具表里没有连接器工具时不进表，注册照样有。
   'connector_upload_file',
+  // 同上：这颗 Bot 没有可查的知识库时不进表，注册照样有。
+  'knowledge_search',
   'escalate_to_human',
   'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press',
   'browser_dialog', 'browser_back', 'browser_scroll', 'browser_read', 'browser_wait_for',

@@ -1,7 +1,7 @@
 /**
  * historySlice 的语义。纯函数，不起服务——探针要 tsx 才 import 得了 .ts。
  */
-import { historySlice, visibleEvents } from './src/session/replay.ts'
+import { historySlice, visibleEvents, historyEvents } from './src/session/replay.ts'
 
 let seq = 0
 const ev = (type, data) => ({ seq: ++seq, time: 1, type, data })
@@ -184,8 +184,29 @@ const out = {}
     清除之后的轮次都在: page.events.filter((e) => e.type === 'turn/end').length === 1,
     不给加载更多: page.hasMore === false,
     往前翻也翻不出来: older.events.length === 0 && older.hasMore === false,
-    翻历史工具同一口径: visibleEvents(all).every((e) => e.seq > cut),
+    翻历史工具同一口径: historyEvents(all).every((e) => e.seq > cut),
     普通重置不藏: visibleEvents(plain).length === plain.length,
+  }
+}
+
+// /new：界面上往上翻照样看得见，但模型的翻历史工具止于重置点——否则 /new 之后一句
+// history_search 就把上一场的东西搜回来，人看到的是「/new 没生效」。
+{
+  const all = conversation(2)
+  const cut = all.at(-1).seq
+  all.push(ev('session/reset', { throughSeq: cut, from: 1, to: 1, droppedMessages: 4, by: 'user' }))
+  let next = all.at(-1).seq
+  for (const e of conversation(1).slice(1)) all.push({ ...e, seq: ++next })
+  const scoped = historyEvents(all)
+  // 压缩点不是重置点：翻历史工具存在的意义就是把压缩掉的那段调回来，不能被它挡住。
+  const compacted = conversation(2)
+  const ccut = compacted.at(-1).seq
+  compacted.push(ev('session/compact', { throughSeq: ccut, summary: 's', droppedMessages: 4, tokensBefore: 1, tokensAfter: 1 }))
+  out.reset = {
+    界面照样给前文: visibleEvents(all).length === all.length,
+    翻历史工具翻不到前文: scoped.every((e) => e.seq > cut),
+    重置之后的轮次都在: scoped.filter((e) => e.type === 'turn/end').length === 1,
+    压缩点不挡翻历史: historyEvents(compacted).length === compacted.length,
   }
 }
 

@@ -36,6 +36,7 @@ import { sweepAuthThrottle } from './lib/auth-throttle.ts'
 import { refreshDiscovered } from './model-discovery.ts'
 import { pruneDailyAlternates } from './lib/alternates.ts'
 import { tickBotDeletions, tickConversationAudits } from './conversation-audit.ts'
+import { tickKnowledge } from './lib/knowledge.ts'
 import { createMeter, type Meter } from './lib/meter.ts'
 import { createLlm, type Llm } from './llm.ts'
 import { settle, withSettleLock } from './lib/llm-billing.ts'
@@ -458,6 +459,11 @@ export const MAINTENANCE_STEPS: MaintenanceStep[] = [
   // 自动对话审计与删除终审复用同一个粗节拍。批次和删除请求都在库里，tick 只负责推进。
   { name: '对话审计', run: (db) => tickConversationAudits(db) },
   { name: '删除 Bot', run: (db) => tickBotDeletions(db) },
+  /**
+   * 知识库入库、删库收尾、收没人管的上传，同一拍（docs/knowledge-base.md §6.1）。
+   * 一拍领一个文件、50 秒预算，预算用完放手，下一拍从 chunkDone 接着来。
+   */
+  { name: '知识库入库', run: (db) => tickKnowledge(db, createMeter(db)) },
   /**
    * 停在「安装中」没人收尾的席位，去管家那儿问结局（见 deploy.ts 的 reconcileStuckDeploys）。
    * Vercel 上后台装机那一段会随函数实例一起被冻住，这一拍是没人开着页面时唯一的收尾。

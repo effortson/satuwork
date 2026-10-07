@@ -1,4 +1,4 @@
-import { Account, AuditEvent, BotDeletionRequest, BotRelease, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorCall, ConnectorCallStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, ImageModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatDeployRequest, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseConversationAuditSettings, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
+import { Account, AuditEvent, BotDeletionRequest, BotRelease, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorCall, ConnectorCallStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, KNOWLEDGE_FILE_STATUSES, KNOWLEDGE_SHARES, KnowledgeBase, KnowledgeChunk, KnowledgeFile, KnowledgeFileStatus, KnowledgeShare, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, ImageModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatDeployRequest, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseConversationAuditSettings, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseKnowledgeSettings, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
 
 /**
  * `select *` 回来的裸行 → 上面那些类型。
@@ -233,6 +233,8 @@ export function parsePlatformPayload(raw: unknown): PlatformSettings {
     managerVersion: typeof o.managerVersion === 'string' ? o.managerVersion.trim() : '',
     botVersion: typeof o.botVersion === 'string' ? o.botVersion.trim() : '',
     webTools: parseWebTools(o.webTools),
+    // 老库里没有这个字段，读出来是两个单价 0 + 默认门槛。
+    knowledge: parseKnowledgeSettings(o.knowledge),
     modelPricing: parseModelPricing(o.modelPricing),
     // 老库里没有这个字段，读出来是四项全 0 = 没设兜底，行为和从前一模一样。
     defaultModelRate: parseModelRate(o.defaultModelRate),
@@ -244,6 +246,7 @@ export function planOf(r: Row): Plan {
   return {
     companyId: str(r.companyId),
     seats: num(r.seats),
+    knowledgeBases: num(r.knowledgeBases),
     skuId: strOrNull(r.skuId),
     expiresAt: r.expiresAt == null ? null : num(r.expiresAt),
     updatedAt: num(r.updatedAt),
@@ -304,6 +307,7 @@ export function planOrderOf(r: Row): PlanOrder {
     planNameEn: str(r.planNameEn || ''),
     period: periodOf(r.period),
     seats: num(r.seats),
+    knowledgeBases: num(r.knowledgeBases),
     amountMils: num(r.amountMils),
     bonusMils: num(r.bonusMils),
     startAt: num(r.startAt),
@@ -323,8 +327,71 @@ export function planSkuOf(r: Row): PlanSku {
     seats: num(r.seats),
     period: periodOf(r.period),
     bonusMils: num(r.bonusMils),
+    knowledgeBases: num(r.knowledgeBases),
     createdAt: num(r.createdAt),
     updatedAt: num(r.updatedAt),
+  }
+}
+
+// ── 知识库 ────────────────────────────────────────────────────────────
+
+export function knowledgeShareOf(v: unknown): KnowledgeShare {
+  const s = String(v ?? '')
+  return (KNOWLEDGE_SHARES as string[]).includes(s) ? (s as KnowledgeShare) : 'none'
+}
+
+export function knowledgeFileStatusOf(v: unknown): KnowledgeFileStatus {
+  const s = String(v ?? '')
+  return (KNOWLEDGE_FILE_STATUSES as string[]).includes(s) ? (s as KnowledgeFileStatus) : 'failed'
+}
+
+export function knowledgeBaseOf(r: Row): KnowledgeBase {
+  return {
+    id: str(r.id),
+    companyId: str(r.companyId),
+    name: str(r.name),
+    desc: str(r.desc || ''),
+    share: knowledgeShareOf(r.share),
+    bytesUsed: num(r.bytesUsed),
+    fileCount: num(r.fileCount),
+    chunkCount: num(r.chunkCount),
+    deletingAt: numOrNull(r.deletingAt),
+    createdBy: strOrNull(r.createdBy),
+    createdAt: num(r.createdAt),
+    updatedAt: num(r.updatedAt),
+  }
+}
+
+export function knowledgeFileOf(r: Row): KnowledgeFile {
+  return {
+    id: str(r.id),
+    kbId: str(r.kbId),
+    companyId: str(r.companyId),
+    name: str(r.name),
+    mime: str(r.mime || ''),
+    bytes: num(r.bytes),
+    storage: str(r.storage || ''),
+    sha256: str(r.sha256 || ''),
+    status: knowledgeFileStatusOf(r.status),
+    error: str(r.error || ''),
+    chunkCount: num(r.chunkCount),
+    chunkDone: num(r.chunkDone),
+    attempts: num(r.attempts),
+    leaseUntil: numOrNull(r.leaseUntil),
+    createdBy: strOrNull(r.createdBy),
+    createdAt: num(r.createdAt),
+    updatedAt: num(r.updatedAt),
+  }
+}
+
+export function knowledgeChunkOf(r: Row): KnowledgeChunk {
+  return {
+    id: str(r.id),
+    fileId: str(r.fileId),
+    kbId: str(r.kbId),
+    no: num(r.no),
+    page: numOrNull(r.page),
+    text: str(r.text || ''),
   }
 }
 

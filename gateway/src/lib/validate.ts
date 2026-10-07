@@ -68,6 +68,17 @@ export function seatsOf(v: unknown, fallback?: number): number {
   return n
 }
 
+/** 套餐里的知识库个数。0 合法（不含知识库），负数和小数不是。 */
+export function knowledgeBasesOf(v: unknown, fallback?: number): number {
+  if (v == null || v === '') {
+    if (fallback == null) return 0
+    return fallback
+  }
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isInteger(n) || n < 0) throw new HttpError(400, 'knowledgeBases 必须是非负整数')
+  return n
+}
+
 /**
  * 金额按「美元」进出接口，按「厘」（千分之一美元）存。0 是合法的（内部套餐、试用）。
  * 厘以下没有意义，直接拒掉——静默四舍五入会让人以为存进去了。

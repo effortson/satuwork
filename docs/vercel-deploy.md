@@ -64,6 +64,8 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
 | `GATEWAY_PUBLIC_URL` | `https://…` | 对外地址。**必须 https**：Telegram 收信靠它自动切到 webhook（channels/inbound.ts），管家学地址也靠它 |
 | `GATEWAY_TRUST_FORWARDED` | 不用配 | 信平台反代写的 `x-forwarded-for` 最右一跳（配对时记「机器在哪」用；登录限流的 IP 桶也靠它——不信的话全站共用一个桶）。Vercel 上默认就信（看平台注入的 `VERCEL`），`0` 显式关掉 |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob 库的读写 token | 发布包不落盘、边收边传到 Blob（私有），下发时带 token 取。Debian 上也可以配，两边的包就在同一个地方。见 gateway/src/releases.ts |
+| `UPSTASH_VECTOR_REST_URL` / `UPSTASH_VECTOR_REST_TOKEN` | Upstash Vector 索引的 REST 地址和 token | 公司知识库的向量库（docs/knowledge-base.md）。索引要选**内置 embedding 模型**（推荐 bge-m3）。没配 = 知识库整个关着：写接口 501，界面画「未开通」 |
+| `KB_DIR` | 不用配 | 没配 Blob 时知识库原文件落盘的目录，默认 `<data>/knowledge/`。配了 `BLOB_READ_WRITE_TOKEN` 走 Blob，浏览器直传 |
 | `GATEWAY_ACCESS_HOST`、`GATEWAY_PLATFORM_TOKEN`、各家模型 key | 同 Debian | 见 docker-compose.yml |
 
 ### 用 Neon 的 Vercel 集成时那两条串可以不配

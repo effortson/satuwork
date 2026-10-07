@@ -15,6 +15,7 @@ import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } 
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
 import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
+import { knowledgeOffOf, knowledgeUsableByBot, publicKnowledgeBase, searchKnowledge } from '../lib/knowledge.ts'
 import { machineHeader, managerTargetFor, proxyDownload, proxyJson, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
 import { DEFAULT_MIN_DESKTOP_VERSION, desktopSupports, directReleaseUrl, localBotReleaseTarget } from '../releases.ts'
@@ -189,6 +190,12 @@ async function connectorStampOf(db: RouteCtx['db'], accountId: string, companyId
   return { updatedAt, count: installs.length + conns.length }
 }
 
+/** 知识库那一截：哪几个、各自什么时候变的、各有多少片。 */
+function knowledgeStamp(list: Array<{ id: string; updatedAt: number; chunkCount: number }>): string {
+  if (!list.length) return ''
+  return '|kb:' + list.map((k) => `${k.id}:${k.updatedAt}:${k.chunkCount}`).join(',')
+}
+
 /** 自己建的那一颗。别人的、公司的、全局的都不是——改和删都走它。 */
 async function ownBotOf(db: RouteCtx['db'], account: Account, id: string, allowDeleting = false) {
   const item = await db.catalog((id || '').trim())
@@ -291,6 +298,12 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * 正在影响这颗 Bot，藏起来的话「它怎么知道这件事的」就没有出处（docs/memory.md §4）。
      */
     const memories = companyId ? await db.memoriesFor(companyId, account.id, botId || null) : []
+    /**
+     * 知识库**按这颗 Bot 下发**：`all` 的，加上 `bots` 且名单里有它的；再筛掉还没有可用
+     * 文件的。没带 botId 的调用只拿到 `all` 那些。目录是给模型看的提示，真正的边界在
+     * `/runtime/knowledge/search` 里再筛一遍（docs/knowledge-base.md §8.2、§13）。
+     */
+    const knowledge = companyId ? (await knowledgeUsableByBot(db, companyId, botId ? bots[0] : undefined)).filter((k) => k.chunkCount > 0) : []
 
     /**
      * 连接器合成出来的 MCP 记录：这个账号每一把 `active` 的连接一条。
@@ -352,7 +365,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
         [...skills, ...servers],
         await connectorStampOf(db, account.id, companyId),
         modelStamp(settings),
-        memoryStamp(memories),
+        memoryStamp(memories) + knowledgeStamp(knowledge),
       ),
       /**
        * 连接器绑账号、不绑 Bot：合成出来的那几条挂到**每一颗** Bot 的 `mcps` 上。
@@ -373,6 +386,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       })(),
       servers: [...servers.map(runtimeServer), ...synth],
       memories: memories.map(publicMemory),
+      // 知识库：名字和一句话进工具描述，fileCount 给界面。只有这几项，正文不下发。
+      knowledge: knowledge.map((k) => ({ id: k.id, name: k.name, desc: k.desc, fileCount: k.fileCount })),
     })
   })
 
@@ -427,6 +442,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     ]
     /** 记忆同理，而且它连 `catalog_items` 都不在——不算进去就永远同步不下来。 */
     const memories = companyId ? await db.memoriesFor(companyId, account.id, botId || null) : []
+    /** 知识库同理：建了库、传完第一份文件、改了共享范围，席位下一次探针就把工具表换掉。 */
+    const knowledge = companyId ? (await knowledgeUsableByBot(db, companyId, bot)).filter((k) => k.chunkCount > 0) : []
     json(res, 200, {
       templateVersion: version,
       stamp: catalogStamp(
@@ -435,9 +452,41 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
         tools,
         await connectorStampOf(db, account.id, companyId),
         modelStamp(await db.platformSettings()),
-        memoryStamp(memories),
+        memoryStamp(memories) + knowledgeStamp(knowledge),
       ),
     })
+  })
+
+  /**
+   * Bot 的 `knowledge_search`。公司边界按票上的账号定，Bot 按 `seatBotOf` 定，`kbIds` 只做交集
+   * ——传了查不到的 id 当没传。业务失败（没有可查的库、零命中）是结果不是 4xx，同网页那两条。
+   */
+  router.post('/runtime/knowledge/search', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    const companyId = account.role === 'owner' ? null : account.companyId
+    if (!companyId) {
+      json(res, 200, { ok: false, error: '这个账号不属于任何公司，没有知识库可查。' })
+      return
+    }
+    const botId = await seatBotOf(req, account)
+    const body = bodyOf(req)
+    const all = await knowledgeUsableByBot(db, companyId, await db.catalog(botId))
+    const ids = Array.isArray(body.kbIds) && body.kbIds.length ? new Set(body.kbIds.map(String)) : null
+    const names = Array.isArray(body.kbNames) && body.kbNames.length ? new Set(body.kbNames.map((x: unknown) => String(x).trim())) : null
+    const kbs = all.filter((k) => (!ids || ids.has(k.id)) && (!names || names.has(k.name)))
+    if (!kbs.length) {
+      json(res, 200, { ok: false, error: all.length ? '没有叫这个名字的知识库，可查的有：' + all.map((k) => k.name).join('、') : '这颗 Bot 没有可查的知识库。' })
+      return
+    }
+    try {
+      json(res, 200, { ok: true, ...(await searchKnowledge(db, meter, account, { kbs, query: String(body.query ?? ''), count: body.count == null ? undefined : Number(body.count), botId })) })
+    } catch (e) {
+      if (e instanceof HttpError && (e.status === 402 || e.status === 502 || e.status === 501 || e.status === 400)) {
+        json(res, 200, { ok: false, error: e.message })
+        return
+      }
+      throw e
+    }
   })
 
 
@@ -1457,6 +1506,15 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       if (iconSetFor('company').has(key)) def.icon = key
     }
     if (typeof body.enabled === 'boolean') def.enabled = body.enabled
+    /**
+     * 自己关掉的知识库。**只认共享给这颗 Bot 的**：不在名单里的 id 直接丢掉，不报错——
+     * 一个库后来被管理员收回了，它的 id 还留在上一次保存的列表里，再保存一次不该因此 400。
+     */
+    if (body.knowledgeOff !== undefined) {
+      if (!Array.isArray(body.knowledgeOff)) throw new HttpError(400, 'knowledgeOff 必须是数组')
+      const shared = new Set((await db.knowledgeForBot(account.companyId!, item.id)).map((k) => k.id))
+      def.knowledgeOff = [...new Set(body.knowledgeOff.map((x: unknown) => String(x ?? '').trim()))].filter((id) => shared.has(id))
+    }
     const next = await db.updateCatalog(item.id, {
       name: body.name !== undefined ? botNameOf(body.name) : undefined,
       definition: def,
@@ -1468,8 +1526,18 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       detail: { id: item.id, name: next.name },
     })
     const { pinned, tpl } = await botContext(db, account.companyId)
-    json(res, 200, { bot: { ...publicBot(next, pinned, tpl), runtime: await oneBotRuntime(db, account, next) } })
+    json(res, 200, { bot: { ...publicBot(next, pinned, tpl), runtime: await oneBotRuntime(db, account, next), knowledge: await botKnowledgeOut(account.companyId, next) } })
   })
+
+  /**
+   * 共享给这颗 Bot 的全部库，连同它自己关没关（docs/knowledge-base.md §8.4）。设置页那一块画的就是它。
+   * **不按 chunkCount 筛**：还没传文件的库也要让人看见、能先关掉。
+   */
+  async function botKnowledgeOut(companyId: string | null, bot: CatalogItem) {
+    if (!companyId || bot.scope !== 'user') return []
+    const off = knowledgeOffOf(bot)
+    return (await db.knowledgeForBot(companyId, bot.id)).map((k) => ({ ...publicKnowledgeBase(k), botIds: undefined, off: off.has(k.id) }))
+  }
 
   /**
    * Desktop 启动本地进程所需的短路径。只给本人自己的 local Bot。
@@ -1630,7 +1698,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const account = await requireUser(req, db, keys)
     const bot = await visibleBotOf(db, account, req.params.id)
     const { pinned, tpl } = await botContext(db, account.companyId)
-    json(res, 200, { bot: { ...publicBot(bot, pinned, tpl), runtime: await oneBotRuntime(db, account, bot) } })
+    json(res, 200, { bot: { ...publicBot(bot, pinned, tpl), runtime: await oneBotRuntime(db, account, bot), knowledge: await botKnowledgeOut(account.companyId, bot) } })
   })
 
   /**

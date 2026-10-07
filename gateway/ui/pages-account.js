@@ -127,6 +127,7 @@ function planSkuModal() {
     seats: cur ? cur.seats : 1,
     period: cur ? cur.period : 'month',
     bonus: cur ? milsOf(cur, 'bonus') / 1000 : 0,
+    knowledgeBases: cur ? cur.knowledgeBases || 0 : 0,
   }
   return `<div class="gw-modal-backdrop" data-act="plan-sku-close">
     <form id="plan-sku-form" class="gw-modal" style="max-width: 460px;" data-id="${esc(cur?.id || '')}" data-stop>
@@ -163,6 +164,11 @@ function planSkuModal() {
       <div class="field">
         <label for="plan-sku-seats">${t('席位')}</label>
         <input class="input" id="plan-sku-seats" name="seats" type="number" min="1" step="1" value="${esc(v.seats)}" required>
+      </div>
+      <div class="field">
+        <label for="plan-sku-kb">${t('知识库个数')}</label>
+        <input class="input" id="plan-sku-kb" name="knowledgeBases" type="number" min="0" step="1" value="${esc(v.knowledgeBases)}" required>
+        <p style="margin: 6px 0 0; font-size: 12px; color: var(--muted-foreground);">${t('这个套餐的公司能建几个知识库。0 表示不含知识库。')}</p>
       </div>
       <div class="field">
         <label for="plan-sku-bonus">${t('赠送 Token 额度（美元）')}</label>
@@ -256,6 +262,7 @@ function orderModal() {
     planId: cur?.planId || skus[0]?.id || '',
     period: cur?.period || 'month',
     seats: cur ? cur.seats : skus[0]?.seats ?? 1,
+    knowledgeBases: cur ? cur.knowledgeBases || 0 : skus[0]?.knowledgeBases ?? 0,
     amount: cur ? cur.amount : skus[0]?.amount ?? 0,
     bonus: cur ? cur.bonus : skus[0]?.bonus ?? 0,
     startAt: dayISO(cur ? cur.startAt : Date.now()),
@@ -324,6 +331,10 @@ function orderModal() {
         <input class="input" id="order-seats" name="seats" type="number" min="1" step="1" value="${esc(v.seats)}" required>
       </div>
       <div class="field">
+        <label for="order-kb">${t('知识库个数')}</label>
+        <input class="input" id="order-kb" name="knowledgeBases" type="number" min="0" step="1" value="${esc(v.knowledgeBases)}" required>
+      </div>
+      <div class="field">
         <label for="order-bonus">${t('赠送 Token 额度（美元）')}</label>
         <div class="satu-money">
           <span aria-hidden="true">$</span>
@@ -370,7 +381,7 @@ function ordersPage() {
         </div>
         <span style="font-size: 13px; font-weight: 600;">${esc(usd(milsOf(o, 'amount')))}</span>
         <span style="font-size: 13px;">${topup ? '—' : esc(usd(milsOf(o, 'bonus')))}</span>
-        <span style="font-size: 13px;">${topup ? '—' : t(`${esc(o.seats)} 席`, `${esc(o.seats)} seat${o.seats === 1 ? '' : 's'}`)}</span>
+        <span style="font-size: 13px; line-height: 1.5;">${topup ? '—' : `${t(`${esc(o.seats)} 席`, `${esc(o.seats)} seat${o.seats === 1 ? '' : 's'}`)}${o.knowledgeBases ? `<br>${t(`${esc(o.knowledgeBases)} 库`, `${esc(o.knowledgeBases)} KB`)}` : ''}`}</span>
         <!-- 起止两行：挤一行会被省略号切掉，日期切一半等于没显示。 -->
         <div style="font-size: 12px; color: var(--muted-foreground); line-height: 1.5;">
           ${topup ? esc(dayISO(o.startAt)) : `<div>${esc(dayISO(o.startAt))} →</div><div>${esc(dayISO(o.endAt))}</div>`}
