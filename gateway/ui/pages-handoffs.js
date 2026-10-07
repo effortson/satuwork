@@ -147,7 +147,16 @@ function handoffActs(h) {
     h.accountId === mine
       ? `<button type="button" class="btn btn-secondary" data-act="handoff-open" data-bot="${esc(h.botId)}">${t('去对话里处理', 'Open the chat')}</button>`
       : `<button type="button" class="btn btn-secondary" data-act="handoff-detail" data-id="${esc(h.id)}" aria-expanded="${open}">${open ? t('收起', 'Close') : t('展开处理', 'Handle here')}</button>`
-  return claim + go
+  // 「不用处理了」直接摆在单子上。原来只有展开那张卡里才有，而自己名下的 Bot 根本
+  // 展不开（只给「去对话里处理」）——一张重复开出来的单，要撤掉得先跳进对话再找那张卡。
+  // 只对还活着的单给（席位那边 LIVE 之外的一律 409「已经不在了」）；展开着的那张卡里
+  // 已经有同一颗，不再叠一颗。
+  const live = h.state === 'open' || h.state === 'claimed' || h.state === 'returned'
+  const cancel =
+    live && !open
+      ? `<button type="button" class="btn btn-ghost" data-act="handoff-cancel" data-id="${esc(h.id)}">${t('不用处理了', 'Never mind')}</button>`
+      : ''
+  return claim + go + cancel
 }
 
 /** 「全部 / 要我处理的」筛完之后的那几张。 */

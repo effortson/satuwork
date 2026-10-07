@@ -658,6 +658,11 @@ document.getElementById('app').addEventListener('click', async (e) => {
     await actOnHandoff(btn.getAttribute('data-id'), 'claim')
     return
   }
+  if (act === 'handoff-cancel') {
+    // 待办行和右栏卡片上那颗。撤销不叫醒 Bot，状态顺着 SSE 回来、清单单独刷一次（见 actOnHandoff）。
+    await actOnHandoff(btn.getAttribute('data-id'), 'cancel', undefined, btn)
+    return
+  }
   if (act === 'handoff-detail') {
     const id = btn.getAttribute('data-id') || ''
     // 再点一次收起。展开时才去拉正文——那是一跳打到席位的请求，不该在列表里挨个拉。
