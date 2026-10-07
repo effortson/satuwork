@@ -8,10 +8,11 @@
 import { createServer } from 'node:http'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
-import { closeServer } from './probe.mjs'
+import { closeServer, runProbe } from './probe.mjs'
 
 const TOOLKITS = {
   items: [
@@ -21,7 +22,25 @@ const TOOLKITS = {
 }
 const TOOLS = {
   items: [
-    { slug: 'GMAIL_SEND_EMAIL', name: 'Send email', description: '发一封邮件', input_parameters: { type: 'object', properties: { to: { type: 'string' } } } },
+    {
+      slug: 'GMAIL_SEND_EMAIL',
+      name: 'Send email',
+      description: '发一封邮件',
+      input_parameters: {
+        type: 'object',
+        properties: {
+          to: { type: 'string' },
+          // 文件参数照 Composio 的形状：`file_uploadable: true` + 三个字符串。模型只看得到
+          // 三个字符串，不告诉它 s3key 从哪来，它就会把本地路径填进去（线上真发生过）。
+          attachment: {
+            type: 'object',
+            file_uploadable: true,
+            description: 'File to attach',
+            properties: { name: { type: 'string' }, mimetype: { type: 'string' }, s3key: { type: 'string' } },
+          },
+        },
+      },
+    },
     { slug: 'GMAIL_FETCH_EMAILS', name: 'Fetch emails', description: '拉最近的邮件', input_parameters: { type: 'object', properties: {} } },
     // **不以 toolkit 名开头的 slug。** Composio 的自定义工具就是这种形状，而按前缀猜
     // 的还原会把它拼成 GMAIL_LOCAL_GMAIL_…，工具表里有、点了永远失败。
@@ -30,7 +49,7 @@ const TOOLS = {
 }
 
 function mockComposio() {
-  const seen = { keys: new Set(), initiated: [], deleted: [], executed: [] }
+  const seen = { keys: new Set(), initiated: [], deleted: [], executed: [], staged: [], puts: [] }
   // 授权状态由测试说了算：默认 INITIATED，测试调 seen.activate(id) 之后才 ACTIVE。
   const accounts = new Map()
   let n = 0
@@ -68,6 +87,30 @@ function mockComposio() {
           allowMultiple: body.allow_multiple === true,
         })
         send(200, { connected_account_id: id, redirect_url: `https://accounts.example.com/o/oauth2?ca=${id}` })
+      })
+      return
+    }
+    // 附件暂存的两步：先要地址，再 PUT 字节。预签名地址指回这台假服务器自己。
+    if (url.pathname === '/files/upload/request' && req.method === 'POST') {
+      let raw = ''
+      req.on('data', (d) => { raw += d })
+      req.on('end', () => {
+        const body = JSON.parse(raw || '{}')
+        seen.staged.push(body)
+        const key = `req/${body.toolkit_slug}/${body.md5}`
+        send(200, { id: `f_${seen.staged.length}`, key, new_presigned_url: `http://127.0.0.1:${server.address().port}/s3/${encodeURIComponent(key)}`, metadata: { storage_backend: 's3' } })
+      })
+      return
+    }
+    const s3 = /^\/s3\/(.+)$/.exec(url.pathname)
+    if (s3 && req.method === 'PUT') {
+      // 这条**不带 x-api-key**：它是对象存储的地址，不是 Composio 的 API。
+      const chunks = []
+      req.on('data', (d) => chunks.push(d))
+      req.on('end', () => {
+        seen.puts.push({ key: decodeURIComponent(s3[1]), apiKey: req.headers['x-api-key'] || '', contentType: req.headers['content-type'] || '', body: Buffer.concat(chunks) })
+        res.writeHead(200)
+        res.end()
       })
       return
     }
@@ -128,6 +171,8 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       COMPOSIO_BASE_URL: mock.url,
       // 超时那一档要验，45 秒等不起。
       CONNECTOR_UPSTREAM_TIMEOUT_MS: '1500',
+      // 附件上限压到 4 KB：413 那一档要验，25 MB 的字节不值得在 e2e 里真传。
+      CONNECTOR_UPLOAD_MAX_BYTES: '4096',
     },
   })
   await waitHttp(`${base}/health`, { child: gw, what: 'connectors gateway' })
@@ -512,6 +557,114 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       const ran = mock.seen.executed.at(-1)
       assert(ran.tool === 'GMAIL_SEND_EMAIL', `短名要还原成全名，实际 ${ran.tool}`)
       assert(ran.account === firstExternal, `要指定是哪一把连接，实际 ${ran.account}`)
+    })
+
+    await test('附件：文件参数的说明里写明先上传', async () => {
+      const cat = await req(base, 'GET', '/runtime/catalog', { token: seatTok })
+      const path = new URL(cat.json.servers.find((x) => x.connector === 'gmail').endpoint).pathname
+      const list = await req(base, 'POST', path, { token: seatTok, body: { jsonrpc: '2.0', id: 40, method: 'tools/list' } })
+      const send = list.json.result.tools.find((x) => x.name === 'SEND_EMAIL')
+      const att = send?.inputSchema?.properties?.attachment
+      assert(att, `SEND_EMAIL 的 attachment 不见了：${JSON.stringify(send)}`)
+      // 形状原样（三个字符串还在、标记还在），只在说明里补一句。
+      assert(att.file_uploadable === true && att.properties.s3key, `形状被改了：${JSON.stringify(att)}`)
+      assert(att.description.startsWith('File to attach'), `原来的说明要留着：${att.description}`)
+      assert(att.description.includes('connector_upload_file'), `没告诉模型先上传：${att.description}`)
+      assert(att.description.includes('不要自己编 s3key'), `没把那条坑写进去：${att.description}`)
+      // 没有文件参数的工具一个字节都不动。
+      const fetch_ = list.json.result.tools.find((x) => x.name === 'FETCH_EMAILS')
+      assert(JSON.stringify(fetch_.inputSchema) === JSON.stringify({ type: 'object', properties: {} }), `别的 schema 不该动：${JSON.stringify(fetch_.inputSchema)}`)
+    })
+
+    await test('附件：席位传字节，Gateway 两步交给供应商，句柄原样回来，不计费', async () => {
+      const cat = await req(base, 'GET', '/runtime/catalog', { token: seatTok })
+      const path = new URL(cat.json.servers.find((x) => x.connector === 'gmail').endpoint).pathname
+      const bytes = Buffer.from('%PDF-1.4 酒店版手册 ' + 'x'.repeat(500))
+      const callsBefore = (await req(base, 'GET', '/me/connector-stats', { token: memberTok })).json.total.calls
+
+      const up = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL&name=${encodeURIComponent('酒店版手册.pdf')}`, {
+        token: seatTok,
+        raw: bytes,
+        headers: { 'content-type': 'application/pdf' },
+      })
+      assert(up.status === 200, `上传 ${up.status} ${up.text}`)
+      const file = up.json.file
+      assert(file && file.name === '酒店版手册.pdf' && file.mimetype === 'application/pdf', `句柄不对：${up.text}`)
+      assert(typeof file.s3key === 'string' && file.s3key.startsWith('req/gmail/'), `s3key 要是供应商给的那个 key：${up.text}`)
+
+      // 第一步：要地址。toolkit / 真实 slug / 文件名 / MIME / md5 一样不少——md5 是上游去重用的。
+      const staged = mock.seen.staged.at(-1)
+      assert(staged.toolkit_slug === 'gmail' && staged.tool_slug === 'GMAIL_SEND_EMAIL', `要说清文件给谁用：${JSON.stringify(staged)}`)
+      assert(staged.filename === '酒店版手册.pdf' && staged.mimetype === 'application/pdf', `文件名和 MIME：${JSON.stringify(staged)}`)
+      assert(staged.md5 === createHash('md5').update(bytes).digest('hex'), `md5 不对：${staged.md5}`)
+      // 第二步：PUT 字节到预签名地址。字节原样、MIME 带上、**不带平台 key**。
+      const put = mock.seen.puts.at(-1)
+      assert(put && put.body.equals(bytes), '字节没原样到对象存储')
+      assert(put.contentType === 'application/pdf', `PUT 要带 MIME：${put.contentType}`)
+      assert(put.apiKey === '', '平台 key 漏到对象存储那条路上去了')
+      assert(put.key === file.s3key, `回去的 s3key 要和 PUT 的 key 一致：${put.key} vs ${file.s3key}`)
+
+      // 不是一次执行：没打 tools/execute，流水里也不多一行。
+      const callsAfter = (await req(base, 'GET', '/me/connector-stats', { token: memberTok })).json.total.calls
+      assert(callsAfter === callsBefore, `暂存不该计次：${callsBefore} → ${callsAfter}`)
+    })
+
+    await test('附件：门和调工具一样——关掉的工具传不上去，登录票不认，太大 413', async () => {
+      const cat = await req(base, 'GET', '/runtime/catalog', { token: seatTok })
+      const path = new URL(cat.json.servers.find((x) => x.connector === 'gmail').endpoint).pathname
+      const bytes = Buffer.from('hello')
+      const stagedBefore = mock.seen.staged.length
+
+      const asUser = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL&name=a.txt`, { token: memberTok, raw: bytes })
+      assert(asUser.status === 401, `登录票不该能传附件，实际 ${asUser.status}`)
+
+      const noName = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL`, { token: seatTok, raw: bytes })
+      assert(noName.status === 400, `没文件名该 400，实际 ${noName.status} ${noName.text}`)
+      const noTool = await req(base, 'POST', `${path}/files?name=a.txt`, { token: seatTok, raw: bytes })
+      assert(noTool.status === 400, `没说给谁用该 400，实际 ${noTool.status} ${noTool.text}`)
+
+      // 文件名只留最后一段：工作区的目录结构不该带出去。
+      const nested = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL&name=${encodeURIComponent('docs/2024/报价.pdf')}`, { token: seatTok, raw: bytes })
+      assert(nested.status === 200 && nested.json.file.name === '报价.pdf', `该只留文件名：${nested.text}`)
+
+      const big = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL&name=big.bin`, { token: seatTok, raw: Buffer.alloc(8192, 1) })
+      assert(big.status === 413, `超限该 413，实际 ${big.status} ${big.text}`)
+
+      await req(base, 'PUT', `/me/connectors/${connectorId}/tools`, { token: memberTok, body: { enabledTools: ['GMAIL_FETCH_EMAILS'] } })
+      const off = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL&name=a.txt`, { token: seatTok, raw: bytes })
+      assert(off.status === 403, `关掉的工具不该能传附件，实际 ${off.status} ${off.text}`)
+      await req(base, 'PUT', `/me/connectors/${connectorId}/tools`, { token: memberTok, body: { enabledTools: [] } })
+
+      // 被拒的那几次一次都没到供应商那边。
+      assert(mock.seen.staged.length === stagedBefore + 1, `被拒的也打到上游了：${mock.seen.staged.length - stagedBefore - 1} 次`)
+    })
+
+    await test('附件：席位那把 connector_upload_file 打对地方、带对东西', async () => {
+      const r = await runProbe(root, 'bot/e2e-connector-upload.mjs')
+      assert(r.mime.pdf === 'application/pdf' && r.mime.unknown === 'application/octet-stream', `MIME：${JSON.stringify(r.mime)}`)
+      assert(r.url.path === '/mcp/connectors/c1/files' && r.url.botId === 'b1' && r.url.tool === 'SEND_EMAIL', `地址：${JSON.stringify(r.url)}`)
+      assert(r.url.name === '报 价%41.pdf', `文件名要原样到对面：${r.url.name}`)
+
+      const bad = Object.entries(r.upload).filter(([, v]) => v === false).map(([k]) => k)
+      assert(!bad.length, `上传这几条不对：${bad.join('、')}\n${JSON.stringify(r.upload)}`)
+      assert(r.upload.路径 === '/mcp/connectors/conn-1/files' && r.upload.方法 === 'POST', `打错地方：${JSON.stringify(r.upload)}`)
+      assert(r.upload.票 === 'Bearer sat_seat_1', `票：${r.upload.票}`)
+      assert(r.upload.远端工具 === 'SEND_EMAIL' && r.upload.文件名 === '酒店版手册.pdf' && r.upload.归因 === 'bot-9', `查询串：${JSON.stringify(r.upload)}`)
+      assert(r.upload.MIME === 'application/pdf', `MIME：${r.upload.MIME}`)
+
+      assert(r.meta.没说target不打网络 && r.meta.没说target的话.includes('target'), `元工具要问 target：${JSON.stringify(r.meta)}`)
+      assert(r.meta.说了target按它传 === 'GMAIL_CREATE_EMAIL_DRAFT' && r.meta.不算失败, `元工具按 target 传：${JSON.stringify(r.meta)}`)
+
+      assert(r.refused.这些都不该打网络 && r.refused.都不置failed, `拒绝：${JSON.stringify(r.refused)}`)
+      assert(r.refused.不是连接器.includes('不是连接器的工具'), r.refused.不是连接器)
+      assert(r.refused.不是MCP.includes('不是连接器的工具'), r.refused.不是MCP)
+      assert(r.refused.太大.includes('超过附件上限'), r.refused.太大)
+      assert(r.refused.空文件.includes('空文件'), r.refused.空文件)
+      assert(r.refused.越界.includes('越界'), r.refused.越界)
+      assert(r.refused.不存在.includes('不存在'), r.refused.不存在)
+
+      assert(r.gateway.四xx原话.includes('没有开启') && r.gateway.四xx不置failed, `4xx 原话：${JSON.stringify(r.gateway)}`)
+      assert(r.gateway.五xx是管道故障, `5xx：${JSON.stringify(r.gateway)}`)
     })
 
     await test('不带 toolkit 前缀的 slug 也调得动（按真清单还原，不靠猜前缀）', async () => {

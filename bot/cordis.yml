@@ -100,6 +100,11 @@
 # ——它 inject 这两样。平台没挑生图模型时不进工具表（agent 的 toolSchemasFor）。
 - name: './src/tools/image.ts'
 
+# 连接器附件：connector_upload_file。工作区里的文件先暂存到连接器供应商那边（经 Gateway 的
+# /mcp/connectors/:id/files），换回工具参数里那个 { name, mimetype, s3key } 句柄。**排在 catalog 和
+# workspace 后面**——它 inject 这两样。工具表里有连接器工具时才进表（agent 的 toolSchemasFor）。
+- name: './src/tools/connector.ts'
+
 # 本地 Bot（桌面端）自己领、自己跑日常任务。没设 SATUWORK_RUNTIME_KIND=local 时完全不启用。
 - name: './src/local-routines/index.ts'
 
