@@ -93,10 +93,14 @@ function decodeText(bytes: Buffer): string {
 
 async function fromPdf(bytes: Buffer): Promise<ExtractedPage[]> {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  // 销毁要走 loading task：pdfjs 6 把 PDFDocumentProxy.destroy() 拿掉了，文档对象上只剩
+  // cleanup()；worker 和未完成的请求都挂在 task 上，不销毁它进程里会攒下一个个 worker。
+  const task = pdfjs.getDocument({ data: new Uint8Array(bytes), useSystemFonts: false, disableFontFace: true })
   let doc
   try {
-    doc = await pdfjs.getDocument({ data: new Uint8Array(bytes), useSystemFonts: false, disableFontFace: true }).promise
+    doc = await task.promise
   } catch (e) {
+    await task.destroy().catch(() => undefined)
     throw new ExtractError('PDF 打不开：' + oneLine(e))
   }
   const pages: ExtractedPage[] = []
@@ -114,7 +118,7 @@ async function fromPdf(bytes: Buffer): Promise<ExtractedPage[]> {
       page.cleanup()
     }
   } finally {
-    await doc.destroy().catch(() => undefined)
+    await task.destroy().catch(() => undefined)
   }
   return pages
 }
