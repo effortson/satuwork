@@ -226,8 +226,9 @@ export interface SessionEventMap {
     /**
      * 人打的是 `/clear` 而不是 `/new`（见 docs/chat-commands.md §15）。
      *
-     * 上下文这一侧和 `/new` 完全一样，多出来的只有「看不见」：throughSeq（含）之前的事件
-     * 不再给界面（historySlice / SSE），模型的 history_read / history_search 也翻不到。
+     * 上下文这一侧和 `/new` 完全一样，模型的 history_read / history_search 也和 `/new`
+     * 一样翻不到之前的（replay.ts 的 historyEvents 认所有重置点）。多出来的只有「人看不见」：
+     * throughSeq（含）之前的事件不再给界面（historySlice / SSE）。
      * **日志照样一条不删**——审计、计费走的是 /internal 那条全量原文，不受影响。
      *
      * 老席位读到它就是一条普通的 `/new`：前文照样从上下文里去掉，只是界面上还翻得到。

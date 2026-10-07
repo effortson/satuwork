@@ -1287,8 +1287,10 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
   /**
    * 打一个上下文重置点。不跑模型，一次 append 就完。
    *
-   * **日志一条不删**（不变量见 docs/context-assembly.md §9）：往上翻看得见，导出带得走，
-   * 模型自己也仍能用 history_read 调阅。清掉的只是「下一轮请求里带什么」。
+   * **日志一条不删**（不变量见 docs/context-assembly.md §9）：往上翻看得见，导出带得走。
+   * 清掉的是「下一轮请求里带什么」，以及模型 history_read / history_search 的翻阅范围——
+   * 翻历史工具止于最近一次重置点（replay.ts 的 historyEvents），否则人打的 `/new` 被模型
+   * 一句搜索就绕过去了。
    */
   async resetContext(
     sessionId: string,
@@ -1296,8 +1298,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
   ): Promise<{ throughSeq: number; droppedMessages: number }> {
     /**
      * `clear` = 人打的是 `/clear`：上下文这一侧和 `/new` 一模一样，只在事件上多记一个
-     * 标记，界面和翻历史工具据此把之前的藏起来（replay.ts 的 visibleEvents）。所以下面
-     * 每一道闸都照走，只有措辞和幂等那一条要分开说。
+     * 标记，界面据此把之前的藏起来（replay.ts 的 visibleEvents；翻历史工具两条命令都切，
+     * 不看这个标记）。所以下面每一道闸都照走，只有措辞和幂等那一条要分开说。
      */
     const clear = Boolean(opts.clear)
     if (this.isRunning(sessionId)) throw new CommandError('这一轮还在跑，先停下或等它跑完', 409)

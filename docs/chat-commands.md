@@ -47,9 +47,16 @@
 | 失败了会怎样 | 这一刀没切成，如实说，上下文原样 | 几乎不会失败（只是 append） |
 
 **两条都不删任何东西。** 这是 `session/compact` 一开始就立下的规矩，`/new` 照抄：
-JSONL 全量原文照旧，界面往上翻看得见，审计看得见，导出带得走，模型自己也仍能用
-`history_read` / `history_search` 调阅。「丢弃上下文」丢的是**下一轮请求里带什么**，
-不是丢掉记录。
+JSONL 全量原文照旧，界面往上翻看得见，审计看得见，导出带得走。「丢弃上下文」丢的是
+**下一轮请求里带什么**，不是丢掉记录。
+
+**但模型的 `history_read` / `history_search` 止于重置点**（2026-10-07 改）。这两把工具
+是给压缩点配的——把摘要掉的原文调回来——所以它们不看 `session/compact`；但 `/new` 不是
+压缩，是人说「这是一场新对话」。实测 `/new` 之后把同一个问题再问一遍，模型第一步就
+`history_search` 把上一场的回答搜出来接着说，人看到的是「`/new` 没生效」。于是
+[replay.ts](../bot/src/session/replay.ts) 多一条 `historyEvents`：最后一次 `session/reset`
+（不论有没有 `clear` 标记）之后的那一段，[tools/history.ts](../bot/src/tools/history.ts)
+只翻这一段。界面不跟着藏——那是 `/clear` 的事（§15）。
 
 > 界面文案要跟着这条走：`/new` 的分割线写「上面的内容不再进上下文」，
 > **不写**「已清空」——人会以为记录没了，而它还在。
@@ -490,7 +497,7 @@ SSE 推的是最近几轮（`historySlice` 的 tail），更早的边界事件�
 | 上下文 | 前面的不再带上 | 同左 |
 | 落什么事件 | `session/reset` | `session/reset` + `clear: true` |
 | 往上翻 | 看得见 | **看不见**，也没有「加载更早」 |
-| `history_read` / `history_search` | 翻得到 | **翻不到** |
+| `history_read` / `history_search` | 翻不到（§2） | 翻不到 |
 | 日志 | 一条不删 | 一条不删 |
 | 先问一句 | 不问 | **问**（点完界面上就回不来了） |
 
@@ -500,8 +507,9 @@ SSE 推的是最近几轮（`historySlice` 的 tail），更早的边界事件�
 
 **藏在哪儿。** 一处判定：[replay.ts](../bot/src/session/replay.ts) 的
 `clearedThrough` / `visibleEvents`（清除点那条事件自己 seq 更大，会留下来画线）。
-用它的地方：`historySlice`（打开对话、往前翻、SSE 首次重放）、SSE 断线续传、
-[tools/history.ts](../bot/src/tools/history.ts)。审计那条路不走它。
+用它的地方：`historySlice`（打开对话、往前翻、SSE 首次重放）、SSE 断线续传。
+[tools/history.ts](../bot/src/tools/history.ts) 用的是旁边更严一档的 `resetThrough` /
+`historyEvents`——`/new` 也切（§2）。审计那条路两个都不走。
 
 **正开着的页面。** 事件桶里还躺着之前那些。`fold` 遇到带 `clear` 的重置点就把之前画出来的
 块全扔掉，`runChatCommand` 成功后把「加载更早」收起来。
