@@ -782,7 +782,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
       pct: pctOf(m.micros, topModel),
     }))
 
-    const KINDS: [string, string][] = [['llm', '模型'], ['connector', '连接器'], ['web', '网页']]
+    const KINDS: [string, string][] = [['llm', '模型'], ['connector', '连接器'], ['web', '网页'], ['kb', '知识库']]
     const topKind = Math.max(0, ...[...byKindAcc.values()].map((x) => x.micros))
     const byKind = KINDS.filter(([k]) => byKindAcc.has(k)).map(([k, label]) => {
       const x = byKindAcc.get(k) as { calls: number; micros: number }

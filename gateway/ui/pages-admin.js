@@ -813,6 +813,7 @@ function chargeTable(scope, forOrg) {
     { key: 'llm', label: t('模型', 'Model') },
     { key: 'connector', label: t('连接器', 'Connector') },
     { key: 'web', label: t('网页', 'Web') },
+    { key: 'kb', label: t('知识库', 'Knowledge') },
   ]
     .map(
       (k) =>
