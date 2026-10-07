@@ -69,6 +69,33 @@ export interface ExecuteResult {
   text: string
 }
 
+/**
+ * 把一份文件暂存到供应商那边，换一个工具参数里认得的句柄。
+ *
+ * 供应商的工具（`GMAIL_SEND_EMAIL` 的 `attachment`）不收字节，只收一个指向它自己
+ * 存储的句柄——所以附件要先走这一步。字节来自席位的工作区，经 Gateway 转交；供应商
+ * 密钥仍然只在 Gateway（不变量 16）。
+ */
+export interface StageFileInput {
+  toolkit: string
+  /** 真实 slug（`GMAIL_SEND_EMAIL`）。供应商按它决定这份文件归谁用。 */
+  tool: string
+  filename: string
+  mimetype: string
+  bytes: Buffer
+  signal: AbortSignal
+}
+
+/**
+ * 暂存之后拿到的句柄。**形状是供应商工具参数里那一格的形状**（Composio 叫
+ * `FileUploadable`），模型拿到就能原样填进去，不用再拼。
+ */
+export interface StagedFile {
+  name: string
+  mimetype: string
+  s3key: string
+}
+
 /** 这家供应商能干什么。调用方按位判断，不按 vendor 名字判断。 */
 export interface ProviderCaps {
   /** 能直接给出一个 per-user 的 MCP 地址（将来可以少一跳）。 */
@@ -77,6 +104,8 @@ export interface ProviderCaps {
   search: boolean
   /** 同一个用户能不能连同一个 toolkit 的多个账号。 */
   multiAccount: boolean
+  /** 工具参数里的文件能不能先暂存到供应商那边（见 stageFile）。 */
+  fileUpload: boolean
 }
 
 export interface ConnectorProvider {
@@ -96,6 +125,12 @@ export interface ConnectorProvider {
   disconnect(externalId: string): Promise<void>
 
   execute(input: ExecuteInput): Promise<ExecuteResult>
+
+  /**
+   * 暂存一份文件，换工具参数里那个句柄。**不是一次执行，不计费**——它不产生供应商侧
+   * 的工具调用，和 `listTools` 同一档。`caps.fileUpload` 为 false 的供应商抛 ProviderError。
+   */
+  stageFile(input: StageFileInput): Promise<StagedFile>
 }
 
 /** 供应商侧的错误。上层据此决定回 402 / 502，而不是把栈丢给调用方。 */

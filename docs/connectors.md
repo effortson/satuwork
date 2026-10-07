@@ -184,6 +184,10 @@ export interface ConnectorProvider {
   /** 真正的一次调用。**唯一会产生费用的方法。** */
   execute(input: { tool: string; externalUserId: string; connectionId: string; args: unknown; signal: AbortSignal })
     : Promise<{ ok: boolean; result: unknown; /** 上游真的执行了 */ billable: boolean }>
+
+  /** 把一份文件暂存到供应商那边，换工具参数里那个句柄（§7「附件」）。**不是执行，不计费。** */
+  stageFile(input: { toolkit: string; tool: string; filename: string; mimetype: string; bytes: Buffer; signal: AbortSignal })
+    : Promise<{ name: string; mimetype: string; s3key: string }>
 }
 ```
 
@@ -196,6 +200,7 @@ export interface ConnectorProvider {
 | `initiate` | `POST /connected_accounts/link { auth_config_id, user_id, callback_url, allow_multiple: true }` → `connected_account_id` + `redirect_url` |
 | `status` | `GET /connected_accounts/{id}` → `ACTIVE` / 其他 |
 | `execute` | `tools.execute(slug, { user_id, connected_account_id, arguments })` |
+| `stageFile` | `POST /files/upload/request { toolkit_slug, tool_slug, filename, mimetype, md5 }` → `key` + 预签名地址；再把字节 `PUT` 到那个地址（不带 x-api-key）；`s3key` 就是 `key` |
 
 鉴权是 `x-api-key: <平台 key>`。密钥存在**已有的** `platform_credentials` 表里，
 `provider = 'composio'`——它和模型供应商密钥是同一种东西（平台一把、不回显、不下发），
@@ -469,6 +474,46 @@ append 一条 `user/message`，和别的消息没有区别。
 清单拉不到时才退回猜前缀：那时宁可猜错一个，也好过把所有调用堵死。两条路都保住同一个
 边界——结果要么来自这个 toolkit 的清单，要么带着它的前缀，跨 toolkit 够不着。
 
+### 附件：先暂存，再调用
+
+供应商的工具**不收字节，也不收路径**。`GMAIL_SEND_EMAIL` 的 `attachment` 长这样（Composio
+叫 `FileUploadable`，schema 上标着 `file_uploadable: true`）：
+
+```jsonc
+{ "name": "报价.pdf", "mimetype": "application/pdf", "s3key": "<供应商存储里的 key>" }
+```
+
+`s3key` 只能从供应商的文件接口换来，而席位工作区里的文件只在席位机器上——供应商那边
+永远不存在。没有这条路的时候线上真发生过一次：模型把工作区路径填进 `s3key`，上游去取
+就是 404，模型把这一步解释成「附件接口坏了」，然后把邮件改成不带附件的草稿转人工。
+
+三段，各管一件事：
+
+1. **Gateway 开一条暂存路**：`POST /mcp/connectors/:connectionId/files?tool=<短名>&name=<文件名>`，
+   body 是字节，`content-type` 是文件的 MIME。门和 `tools/call` **一样一道不少**（票 → 归属 →
+   active → 公司没禁 → 装了 → 工具在开着的子集里）——关掉的工具附件也传不上去，否则它就是
+   一条把文件送出公司的旁路。Gateway 调 provider 的 `stageFile`，把 `{ name, mimetype, s3key }`
+   还给席位。**不计费、不落流水**：上游没有因此执行任何工具，和 `tools/list` 同一档。
+   上限 `CONNECTOR_UPLOAD_MAX_BYTES`（默认 25 MB，Gmail 单封的上限）、时限
+   `CONNECTOR_UPLOAD_TIMEOUT_MS`（默认 90 秒，要比席位那边的 120 秒**先**超时）
+2. **席位一把工具** `connector_upload_file(tool, path, target?)`（`bot/src/tools/connector.ts`）：
+   `tool` 是接下来要调的那把 `mcp_*`，由目录的 `connectorToolOf()` 反查到连接的 `/files`
+   地址、票和远端工具名；`tool` 是 `SW_RUN` 那种元工具时再用 `target` 说真名。回给模型的话
+   里**原样**带着句柄，模型照抄就能填。risk 是 `external`、**不带 `write`**：「关掉外发」的
+   Bot 要拦得住它（policy 按参数里那把 `mcp_*` 的连接判，判据就是那把的判据），但不弹确认卡
+   ——文件到了暂存区还没到任何人手里，真正发出去的是下一把工具，而那一把自己有卡。同一封
+   邮件两张卡，人学到的是闭眼点批准。工具表里一把连接器工具都没有时它也不进表
+3. **schema 里说出来**：`tools/list` 和 `SW_DESCRIBE` 下发前过一遍 `annotateFileParams()`
+   （`gateway/src/lib/connectors.ts`），给每个文件参数的说明补一句「先调 `connector_upload_file`，
+   把返回的 `{ name, mimetype, s3key }` 原样填这里，不要自己编 s3key」。**只改说明，不改形状。**
+   不补的话模型只看得到三个字符串，不知道 `s3key` 从哪来
+
+为什么经 Gateway 而不是席位直传供应商：和 §2 同一条理由——暂存那一步要带平台 key，而
+key 不下机器。
+
+暂存是**短期**的（供应商文档明说）：上传要紧挨着调用做，不能提前很久、也不能跨轮复用。
+工具回话里写了这一句。
+
 ### 两百多个工具装不下
 
 绑账号不绑 Bot，工具数就随**安装数**线性涨，而不是随「这颗 Bot 需要什么」。算术很直白：
@@ -733,6 +778,7 @@ create index if not exists calls_account_time on connector_calls ("accountId","c
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | POST | `/mcp/connectors/:connectionId` | MCP over HTTP：`initialize` / `tools/list` / `tools/call` |
+| POST | `/mcp/connectors/:connectionId/files?tool=&name=` | 附件暂存：body 是字节，回 `{ file: { name, mimetype, s3key } }`。门同上，不计费（§7「附件」） |
 
 ### 实例（Gateway 反代过去，浏览器不直连）
 
@@ -849,6 +895,8 @@ create index if not exists calls_account_time on connector_calls ("accountId","c
 22. 排队的消息只在实例的 `satuwork.db` 里，不进 JSONL、不进 Gateway。它跑起来的那一刻
     才是一条 `user/message`；取消掉的，任何地方都不留正文
 23. 单价改动不影响已经落地的流水金额
+24. 附件暂存（`/mcp/connectors/*/files`）过的门和 `tools/call` 一道不少，但**不是执行**：不计费、
+    不落 `connector_calls`。字节只在席位 → Gateway → 供应商存储这一条路上，不落 Gateway 的盘
 
 ---
 

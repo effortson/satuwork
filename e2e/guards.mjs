@@ -20,6 +20,11 @@ export async function runGuards({ root, test, assert, log }) {
     assert(!bad.length, `这几条不对：${bad.join('、')}`)
   })
 
+  await test('上传附件：判据跟着参数里那把连接走，不弹卡', () => {
+    const bad = all(r.uploadRisk || {})
+    assert(r.uploadRisk && !bad.length, `这几条不对：${bad.join('、')}`)
+  })
+
   await test('被拦的调用一次都没跑到工具里', () => {
     // 这条才是重点。「返回了一句拒绝」和「那封邮件没发出去」是两件事，
     // 而只有后者算数——拦截必须发生在 execute 之前，不是之后的道歉。

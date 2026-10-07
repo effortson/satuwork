@@ -131,7 +131,12 @@ ctx.provide('agents', {
 })
 ctx.provide('catalog', {
   serverOf: (name) => (name.startsWith('mcp_a_') ? 'srv-a' : name.startsWith('mcp_b_') ? 'srv-b' : undefined),
+  // 上传附件那把工具会来问「这把 mcp_* 背后是哪把连接」。这里一律答不上：下面那一组
+  // 钉的是**策略放没放行**，放行之后工具自己回一句「不是连接器的工具」正好把两件事分开。
+  connectorToolOf: () => undefined,
 })
+// 同上：真的那把 connector_upload_file 要 workspace，给一个只认路径的替身。
+ctx.provide('workspace', { resolve: (p) => join(tmpdir(), String(p || '.')), show: (p) => String(p) })
 ctx.plugin(ToolService)
 await new Promise((r) => setTimeout(r, 50))
 
@@ -201,6 +206,12 @@ ctx.plugin(policy)
  */
 const delegateTool = await import('./src/tools/delegate.ts')
 ctx.plugin(delegateTool)
+/**
+ * **真的那把 `connector_upload_file`**，理由同上：要钉的是它声明的 risk（`external`、不带
+ * `write`）和策略对它的特殊判法——字节去的是参数里那把 mcp_* 的连接，判据就是那把的判据。
+ */
+const connectorTool = await import('./src/tools/connector.ts')
+ctx.plugin(connectorTool)
 await new Promise((r) => setTimeout(r, 80))
 
 let seq = 0
@@ -1017,6 +1028,28 @@ out.delegation = delegation
     外发闸下跑得起来: ext.failed !== true,
     不弹确认卡: pendingOf('s6').length === cardsBefore,
     高风险闸下跑得起来: hi.failed !== true,
+  }
+}
+
+/**
+ * ── 上传附件：判据跟着参数里那把 mcp_* 走，不弹卡 ────────────────────
+ *
+ * 字节是经 Gateway 送到那把连接的供应商那边，所以「这个 Bot 能不能用那把连接」就是
+ * 「能不能传」。放行之后工具会回一句「不是连接器的工具」（探针的 catalog 答不上来），
+ * 那是业务失败不是拦截——`failed` 不置位，正好和被策略拦掉的区分开。
+ */
+{
+  const allowed = await call('s1', 'connector_upload_file', { tool: 'mcp_a_send_mail', path: 'x.pdf' })
+  const denied = await call('s1', 'connector_upload_file', { tool: 'mcp_b_send_mail', path: 'x.pdf' })
+  const blank = await call('s1', 'connector_upload_file', { path: 'x.pdf' })
+  const cardsBefore = pendingOf('s6').length
+  const hi = await call('s6', 'connector_upload_file', { tool: 'mcp_a_send_mail', path: 'x.pdf' })
+  out.uploadRisk = {
+    给已授权连接用的放行: allowed.failed !== true && allowed.text.includes('不是连接器的工具'),
+    给没授权连接用的被拦: denied.failed === true,
+    没说明给谁用的被拦: blank.failed === true,
+    // b6 开着 high-risk。带 `write` 的话这里会弹卡：同一封邮件两张卡，人学到的是闭眼点批准。
+    不弹确认卡: pendingOf('s6').length === cardsBefore && hi.failed !== true,
   }
 }
 

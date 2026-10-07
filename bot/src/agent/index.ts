@@ -2545,10 +2545,17 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 的名字报过来，工具自己会回一句「平台还没有开通生图」。
      */
     const imageOn = !!catalog.models?.image
+    /**
+     * 工具表里一把连接器工具都没有时，`connector_upload_file` 也不进表。它只为那些工具
+     * 服务；单独摆着，模型会拿它去给公司自配的 MCP 传文件，然后收一句「不是连接器的工具」。
+     * 同样只是遮掩：直接报名字照样调得到，工具自己会拒。
+     */
+    const uploadOn = [...mcpNames].some((n) => Boolean(catalog.connectorToolOf?.(n)))
     const picked = all.filter(
       (t) =>
         (!t.name.startsWith('mcp_') || mcpNames.has(t.name)) &&
         (imageOn || t.name !== 'generate_image') &&
+        (uploadOn || t.name !== 'connector_upload_file') &&
         (browserOn || !t.name.startsWith('browser_')) &&
         (desktopOn || !t.name.startsWith('desktop_')) &&
         (!memoryOff || !t.name.startsWith('memory_')) &&

@@ -394,6 +394,22 @@ export class PolicyService extends Service {
       return { ok: false, reason: `这个 Bot 没有被授权使用 ${name} 所在的外部系统` }
     }
     /**
+     * 上传附件那把：字节去的是参数里那把 `mcp_*` 工具背后的连接（经 Gateway），所以判据
+     * 就是**那把工具的判据**——按它的名字走上面那一段。不另写一套：两套判据迟早分叉，
+     * 分叉的表现是「邮件发得出去、附件传不上去」或者反过来。
+     */
+    if (name === 'connector_upload_file') {
+      let target = ''
+      try {
+        const parsed = JSON.parse(call.arguments || '{}') as { tool?: unknown }
+        target = typeof parsed?.tool === 'string' ? parsed.tool.trim() : ''
+      } catch {
+        target = ''
+      }
+      if (!target.startsWith('mcp_')) return { ok: false, reason: `${name} 没说明是给哪把连接器工具用的` }
+      return this.checkExternal(bot, { ...call, name: target })
+    }
+    /**
      * 网页搜索与抓取：**放行**。
      *
      * 它们的出口在 Gateway（`/runtime/web/*`），密钥也在那边，席位这侧拿不到任何
