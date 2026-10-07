@@ -402,6 +402,11 @@ export class PolicyService extends Service {
      */
     if (name === 'web_search' || name === 'web_extract') return { ok: true }
     /**
+     * 知识库：**放行**，理由同上。出口在 Gateway（`/runtime/knowledge/search`），共享范围
+     * 也在那边判；它查的是公司自己传的资料，不是「没授权的业务系统」。
+     */
+    if (name === 'knowledge_search') return { ok: true }
+    /**
      * 生图：**放行**，理由同上。出口是模型那条路（管家 / Gateway），密钥在那边，用哪颗
      * 生图模型由平台挑；它和「别碰没授权的业务系统」同样不是一回事。
      */

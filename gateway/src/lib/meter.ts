@@ -21,7 +21,7 @@
  * 见 docs/billing.md。
  */
 import type { Account, ChargeStatus, Db, ModelRate, PlatformSettings, UsageCharge, WebCallKind } from '../db.ts'
-import { emptyWebTools, parseBilling, parseModelPricing, parseModelRate, parsePriceMultiplier } from '../db.ts'
+import { emptyWebTools, parseBilling, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier } from '../db.ts'
 import { balanceOf } from './billing.ts'
 import { type LlmTokens, connectorMicros, llmMicros, rateOf, rateSnapshot, webMicros } from './pricing.ts'
 import { type ImageBaseline, imageBaseline } from './image-estimate.ts'
@@ -70,6 +70,22 @@ export type Billable =
       units: number
       refId?: string | null
     }
+  /**
+   * 知识库（docs/knowledge-base.md §10）：一次检索 = 查了几个库（几次 Upstash 请求），
+   * 一份文件入库 = 几次 upsert 请求。单价按「厘 / 次」在平台设置里填，默认 0。
+   */
+  | {
+      kind: 'kb'
+      account: Account
+      botId?: string | null
+      sessionId?: string | null
+      status: ChargeStatus
+      kbOp: KbOp
+      units: number
+      refId?: string | null
+    }
+
+export type KbOp = 'query' | 'ingest'
 
 export interface Quote {
   amountMicros: number
@@ -118,6 +134,7 @@ export type GateSubject =
    * 而那次调用照样收钱——余额见底的公司能一直抓文档往负数走。
    */
   | { kind: 'web'; backends: string[]; webKind: WebCallKind }
+  | { kind: 'kb'; kbOp: KbOp }
 
 /**
  * 余额不足时给出去的那句话。**一句人话，不是错误码文案**——它会被原样交给模型
@@ -266,6 +283,16 @@ export class Meter {
       // （connectors.md §8）。这里的 1 是「没有倍率」，不是「倍率恰好是 1」。
       return { amountMicros: unit, unitPrice: { unit }, multiplier: 1, unpriced: false }
     }
+    if (b.kind === 'kb') {
+      // 和网页工具同一套：厘 → 微元，乘平台倍率（向量库是我们采购来转售的，有成本基准可以加成）。
+      const unitMils = kbUnitMils(s, b.kbOp)
+      return {
+        amountMicros: unitMils && b.units > 0 ? Math.max(0, Math.round(unitMils * 1000 * b.units * multiplier)) : 0,
+        unitPrice: { unit: Math.round(unitMils * 1000) },
+        multiplier,
+        unpriced: false,
+      }
+    }
     const web = s.webTools ?? emptyWebTools()
     const unitMils = web.pricing?.[b.backend]?.[b.webKind] ?? 0
     return {
@@ -389,15 +416,22 @@ function chargeable(s: PlatformSettings, subject: GateSubject): boolean {
     return !!rateOf(subject.cost, override, parseModelRate(s.defaultModelRate))
   }
   if (subject.kind === 'connector') return connectorMicros(s.connectorPricing, subject.toolkit) > 0
+  if (subject.kind === 'kb') return kbUnitMils(s, subject.kbOp) > 0
   const web = s.webTools ?? emptyWebTools()
   // 任意一档要钱，这一次就可能要钱，闸就得判。
   return subject.backends.some((b) => (web.pricing?.[b]?.[subject.webKind] ?? 0) > 0)
+}
+
+function kbUnitMils(s: PlatformSettings, op: KbOp): number {
+  const k = parseKnowledgeSettings(s.knowledge)
+  return op === 'query' ? k.pricing.queryMils : k.pricing.ingestMils
 }
 
 /** 收费对象的字面量。存下来不存外键：连接器下架、模型删了，上个月的账还得看得懂。 */
 export function subjectOf(b: Billable): string {
   if (b.kind === 'llm') return `${b.provider}/${b.model}`
   if (b.kind === 'connector') return `${b.toolkit}:${b.tool}`
+  if (b.kind === 'kb') return `kb:${b.kbOp}`
   return `${b.backend}:${b.webKind}`
 }
 
@@ -410,7 +444,7 @@ function quantityOf(b: Billable): Record<string, number> {
       cacheWriteTokens: b.tokens.cacheWriteTokens,
     }
   }
-  if (b.kind === 'web') return { units: b.units }
+  if (b.kind === 'web' || b.kind === 'kb') return { units: b.units }
   // 连接器恒为一次调用，没有可计量的维度。空对象比写一个恒等于 1 的字段诚实。
   return {}
 }

@@ -14,7 +14,7 @@ import { rangeQuery, requireOrgUser, requireOwnerUser, requireUser } from '../li
 import { chargeCursorOf } from '../lib/org.ts'
 import { CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type Account, type ChargeKind, type ChargeStatus, type Company, type UsageCharge } from '../db.ts'
 
-const KINDS: ChargeKind[] = ['llm', 'connector', 'web']
+const KINDS: ChargeKind[] = ['llm', 'connector', 'web', 'kb']
 const STATUSES: ChargeStatus[] = ['ok', 'failed', 'timeout', 'denied', 'error']
 
 function kindOf(raw: string | null): ChargeKind | undefined {

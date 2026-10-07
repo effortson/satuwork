@@ -2,6 +2,7 @@
  * 平台设置、上游密钥、用量统计、自定义供应商、连通性探测。owner-only。
  */
 import type { RouteCtx } from './ctx.ts'
+import { vectorInfo } from '../lib/knowledge-vector.ts'
 import { CUSTOM_APIS, type CustomProviderDef, DefError, parseProviderDef } from '../providers.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
@@ -11,7 +12,7 @@ import { refreshDiscovered, REFRESH_MS } from '../model-discovery.ts'
 import { isVendor } from '../connectors/index.ts'
 import { pruneDailyAlternates } from '../lib/alternates.ts'
 import { rangeQuery, requireOwnerUser } from '../lib/guards.ts'
-import { DAILY_ALTERNATES_MAX, WEB_BACKENDS, WEB_DOCUMENT, type PlatformSettings, modelKey, emptyWebTools, parseBilling, parseConnectorPricing, parseModelPricing, parseModelRate, parsePriceMultiplier, parseWebTools } from '../db.ts'
+import { DAILY_ALTERNATES_MAX, WEB_BACKENDS, WEB_DOCUMENT, type PlatformSettings, modelKey, emptyWebTools, parseBilling, parseConnectorPricing, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseWebTools } from '../db.ts'
 import { WebToolError, canExtract, canSearch, needsSecret } from '../web-tools.ts'
 import { parseBotVersion } from '../releases.ts'
 import { testBackend } from '../web-service.ts'
@@ -109,6 +110,8 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       // 这一屏不管网页工具，但 next 是整份覆盖上去的——不带着它，去模型配置页存一次
       // 就把工具配置抹了。
       webTools: cur.webTools ?? emptyWebTools(),
+      // 知识库的单价和门槛（docs/knowledge-base.md §10）。写端和 parsePlatformPayload 成对。
+      knowledge: 'knowledge' in body ? parseKnowledgeSettings(body.knowledge) : parseKnowledgeSettings(cur.knowledge),
       modelPricing: 'modelPricing' in body ? modelPricingOf(body.modelPricing, parseModelPricing(cur.modelPricing)) : parseModelPricing(cur.modelPricing),
       // 兜底单价：查不到价的模型按它收，而不是按 0 收（docs/billing.md §7）。
       defaultModelRate: 'defaultModelRate' in body
@@ -189,6 +192,12 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     if (isVendor(provider)) throw new HttpError(400, `${provider} 是连接器供应商，密钥请到「连接器」页保存`)
     return provider
   }
+
+  /** 「工具配置 → 知识库」那一屏的状态行：配没配、索引里多少向量。 */
+  router.get('/platform/knowledge/status', async (req, res) => {
+    await requireOwnerUser(req, db, keys)
+    json(res, 200, await vectorInfo())
+  })
 
   router.get('/platform/credentials', async (req, res) => {
     await requireOwnerUser(req, db, keys)
@@ -564,6 +573,7 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       llm: kind('llm'),
       connector: kind('connector'),
       web: kind('web'),
+      kb: kind('kb'),
       all: [...byKind.values()].reduce(
         (a, x) => ({ calls: a.calls + x.calls, amountMicros: a.amountMicros + x.amountMicros, costMicros: a.costMicros + x.costMicros }),
         { ...zero },

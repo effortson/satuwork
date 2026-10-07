@@ -87,6 +87,8 @@ export interface Invite {
 export interface Plan {
   companyId: string
   seats: number
+  /** 能建几个知识库（docs/knowledge-base.md §4）。和 seats 一样由订单算出来，平台也能单独给。 */
+  knowledgeBases: number
   /** 订的是价目表里的哪一条。null = 还没定套餐，只有席位。 */
   skuId: string | null
   /** 到期时间。null = 不限期。 */
@@ -128,6 +130,8 @@ export interface PlanOrder {
   note: string
   period: PlanPeriod
   seats: number
+  /** 下单时从 SKU 抄来的知识库个数。充值单是 0。 */
+  knowledgeBases: number
   amountMils: number
   bonusMils: number
   startAt: number
@@ -189,9 +193,94 @@ export interface PlanSku {
    * 它是一笔钱（可以拿去买 token），不是 token 个数——所以要小数和 $ 符号。
    */
   bonusMils: number
+  /** 这个套餐能建几个知识库。0 = 不含知识库。 */
+  knowledgeBases: number
   createdAt: number
   updatedAt: number
 }
+
+// ── 知识库（docs/knowledge-base.md）──────────────────────────────────────
+
+/**
+ * 共享范围。`all` = 公司里每颗 Bot 都查得到；`bots` = 只有 knowledge_shares 里那几颗；
+ * `none` = 谁也查不到，只有管理员在界面上看得见、试搜得到。
+ *
+ * 没有单独的「启用」开关：`none` 就是下线。两个开关叠在一起，「关了但共享给全部」这种
+ * 状态要解释一遍，而它和 `none` 没有区别。
+ */
+export type KnowledgeShare = 'all' | 'bots' | 'none'
+export const KNOWLEDGE_SHARES: KnowledgeShare[] = ['all', 'bots', 'none']
+
+export interface KnowledgeBase {
+  id: string
+  companyId: string
+  /** 公司内唯一。 */
+  name: string
+  /** 给模型看的一句话：这个库里是什么。进工具描述。 */
+  desc: string
+  share: KnowledgeShare
+  /** 原文件字节数之和，含还在上传、还在入库、失败了的（容量照占）。 */
+  bytesUsed: number
+  fileCount: number
+  /** ready 文件的分片数之和。 */
+  chunkCount: number
+  /** 删除开始的时刻。非空时不再出现在任何列表里，由 tick 收尾。 */
+  deletingAt: number | null
+  createdBy: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export type KnowledgeFileStatus = 'uploading' | 'queued' | 'processing' | 'ready' | 'failed'
+export const KNOWLEDGE_FILE_STATUSES: KnowledgeFileStatus[] = ['uploading', 'queued', 'processing', 'ready', 'failed']
+
+export interface KnowledgeFile {
+  id: string
+  kbId: string
+  /** 冗余一列，为的是任何一条查询都能不 join 就按公司过滤。 */
+  companyId: string
+  /** 展示用的原始文件名，已清洗。 */
+  name: string
+  mime: string
+  bytes: number
+  /** 原文件在哪：Blob 的 url，或本地盘的相对路径。空 = 还没传完。 */
+  storage: string
+  sha256: string
+  status: KnowledgeFileStatus
+  /** 失败原因，一句人话。其他状态为空串。 */
+  error: string
+  chunkCount: number
+  /** 已经灌进 Upstash 的分片数。入库是可恢复的，从这里接着来。 */
+  chunkDone: number
+  /** 连续几拍没推进（chunkDone 不变）。到 KB_FAIL_STREAK 就标失败，别无限重来。 */
+  attempts: number
+  /** 入库租约到期时刻。processing 且过期 = 上一拍没跑完，下一拍接着来。 */
+  leaseUntil: number | null
+  createdBy: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface KnowledgeChunk {
+  /** `${fileId}:${no}`，和 Upstash 里的向量 id 一字不差。 */
+  id: string
+  fileId: string
+  kbId: string
+  no: number
+  /** 页码（PDF / PPT）或行号（表格），没有就 null。只为了答案里能说「在第几页」。 */
+  page: number | null
+  text: string
+}
+
+/** 单个知识库的原文件总量上限。按原文件字节算，不按分片、不按向量（§5.3）。 */
+export const KB_BYTES_MAX = 200 * 1024 * 1024
+/** 单个文件上限。再大的建议拆：一份 50 MB 的 PDF 上千页，入库要跑好几拍。 */
+export const KB_FILE_MAX = 50 * 1024 * 1024
+/** 单库文件数上限。文件列表是前端切页的，500 条拉得动。 */
+export const KB_FILES_MAX = 500
+export const KB_NAME_MAX = 60
+export const KB_DESC_MAX = 200
+export const KB_FILE_NAME_MAX = 200
 
 export interface Group {
   id: string
@@ -1077,6 +1166,8 @@ export interface PlatformSettings {
   botVersion?: string
   /** 网页搜索/提取的后端与价目。密钥不在这里，在 platform_credentials。 */
   webTools?: WebToolsSettings
+  /** 知识库：检索 / 入库单价与相似度门槛（docs/knowledge-base.md §7.2、§10）。 */
+  knowledge?: KnowledgeSettings
   /**
    * 模型单价的**平台覆盖**，键是 `provider/model`。
    *
@@ -1175,7 +1266,7 @@ export function parseBilling(raw: unknown): BillingSettings {
 }
 
 /** 一次计费调用是哪一类。第四类出现时加在这里，账本表的 check 也要跟着改。 */
-export type ChargeKind = 'llm' | 'connector' | 'web'
+export type ChargeKind = 'llm' | 'connector' | 'web' | 'kb'
 
 /** 和 ConnectorCallStatus 同一套值，故意的：三条路的结局分类必须能横着比。 */
 export type ChargeStatus = ConnectorCallStatus
@@ -1306,9 +1397,41 @@ export function emptyPlatformSettings(): PlatformSettings {
     managerVersion: '',
     botVersion: '',
     webTools: emptyWebTools(),
+    knowledge: emptyKnowledgeSettings(),
     modelPricing: {},
     defaultModelRate: emptyModelRate(),
     billing: emptyBilling(),
+  }
+}
+
+/**
+ * 知识库的平台设置。两个单价按「厘 / 次」计（一次 = 一次 Upstash 请求），默认 0 = 记行
+ * 不收钱、不熔断（同网页工具）。`scoreMin` 是检索的相似度门槛：低于它的命中丢掉。
+ */
+export interface KnowledgeSettings {
+  pricing: { queryMils: number; ingestMils: number }
+  scoreMin: number
+}
+
+export const KB_SCORE_MIN_DEFAULT = 0.35
+/** 连续几拍没推进就标失败。 */
+export const KB_FAIL_STREAK_DEFAULT = 5
+
+export function emptyKnowledgeSettings(): KnowledgeSettings {
+  return { pricing: { queryMils: 0, ingestMils: 0 }, scoreMin: KB_SCORE_MIN_DEFAULT }
+}
+
+export function parseKnowledgeSettings(raw: unknown): KnowledgeSettings {
+  const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const p = (o.pricing && typeof o.pricing === 'object' ? o.pricing : {}) as Record<string, unknown>
+  const mils = (v: unknown) => {
+    const n = Math.round(Number(v))
+    return Number.isFinite(n) && n >= 0 ? n : 0
+  }
+  const score = Number(o.scoreMin)
+  return {
+    pricing: { queryMils: mils(p.queryMils), ingestMils: mils(p.ingestMils) },
+    scoreMin: Number.isFinite(score) && score >= 0 && score <= 1 ? score : KB_SCORE_MIN_DEFAULT,
   }
 }
 

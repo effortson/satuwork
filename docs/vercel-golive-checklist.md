@@ -56,6 +56,10 @@
 - [ ] Blob 库建好，`BLOB_READ_WRITE_TOKEN` 配了；**传一个包、让一台机器拉一次**——假 Blob 上验过，
       真 Blob 没有。> 100 MB 的包走「登记远端包」。
 - [ ] Vercel 上的 `x-forwarded-for`、CORS（桌面源）、CSP 都不用另配，代码里有。
+- [ ] 知识库：Upstash Vector 建一个索引，embedding 选 **bge-m3**（建完改不了，换模型要重灌），
+      `UPSTASH_VECTOR_REST_URL` / `UPSTASH_VECTOR_REST_TOKEN` 配了；平台「工具配置 → 知识库」那一屏显示
+      「已连接」。**传一份 PDF、等它变「可用」、试搜一次**——假 Upstash 和直传验过（e2e 的 knowledge），
+      真 Upstash 和浏览器直传 Blob 没有。
 
 ## 五、双跑与切换
 

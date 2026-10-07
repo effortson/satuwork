@@ -629,6 +629,8 @@ function allowedHrefs() {
   // 供应商配了、用的是谁的密钥），现在密钥只由平台配，公司这一侧没有任何一维是他
   // 答得上或改得动的。菜单里没有、直接输地址也会被踢回首页。
   if (!isOwner()) set.add('/channels')
+  // 知识库同理：入口在名单底下那颗「更多」里，不在侧栏菜单里（docs/knowledge-base.md §11.1）。
+  if (!isOwner()) set.add('/knowledge')
   return set
 }
 
@@ -673,6 +675,7 @@ function pathAllowed(p) {
   if (p.startsWith('/bots/') && (allowedHrefs().has('/bots') || !isOwner())) return true
   // 连接器详情不在侧栏，但装了连接器的人都要进得去。
   if (p.startsWith('/connectors/') && allowedHrefs().has('/connectors')) return true
+  if (p.startsWith('/knowledge/') && allowedHrefs().has('/knowledge')) return true
   if (p.startsWith('/companies/') && allowedHrefs().has('/companies')) return true
   if (p.startsWith('/users/') && allowedHrefs().has('/users')) return true
   if (p.startsWith('/machines/') && allowedHrefs().has('/machines')) return true
@@ -770,6 +773,10 @@ function crumbsOf(path) {
     const d = state.connectorDetail?.connector
     const one = d && d.id === connectorIdOfPath(path) ? d : null
     return { href: '/connectors', parent: t('连接器'), current: one?.name || t('连接器详情') }
+  }
+  if (path.startsWith('/knowledge/')) {
+    const d = state.kbDetail && state.kbDetail.id === kbIdOfPath(path) ? state.kbDetail : null
+    return { href: '/knowledge', parent: t('知识库'), current: d?.knowledge?.name || t('知识库详情', 'Knowledge base') }
   }
   if (path.startsWith('/companies/') && path !== '/companies') {
     const org = state.org && state.org.id === companyIdOfPath(path) ? state.org : null

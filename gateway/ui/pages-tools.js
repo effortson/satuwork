@@ -8,7 +8,11 @@
  * 密钥进 /platform/credentials——密钥那条路自带「存进去、不回显」的规矩，
  * 把它挪进配置对象里就等于把密钥也塞进了 payload。
  */
-const TOOL_TABS = [{ key: 'web', label: '网页与搜索' }]
+const TOOL_TABS = [
+  { key: 'web', label: '网页与搜索' },
+  // 知识库：单价、相似度门槛、向量库状态（docs/knowledge-base.md §10）。
+  { key: 'kb', label: '知识库' },
+]
 
 const WEB_BACKEND_NAMES = {
   tavily: 'Tavily',
@@ -205,6 +209,52 @@ function toolsPage() {
         ${flashes()}
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         ${tab === 'web' ? webToolsPanel() : ''}
+        ${tab === 'kb' ? knowledgeToolsPanel() : ''}
+      </div>
+    </div>`
+}
+
+function knowledgeToolsPanel() {
+  const k = state.settings?.knowledge || { pricing: { queryMils: 0, ingestMils: 0 }, scoreMin: 0.35 }
+  const st = state.kbStatus
+  const status = !st
+    ? t('状态读取中…', 'Reading status…')
+    : !st.configured
+      ? t('未配置。给 Gateway 配 UPSTASH_VECTOR_REST_URL / UPSTASH_VECTOR_REST_TOKEN 就开通了；索引要选内置 embedding 模型（推荐 bge-m3）。', 'Not configured. Set UPSTASH_VECTOR_REST_URL / UPSTASH_VECTOR_REST_TOKEN on the gateway; the index must use a built-in embedding model (bge-m3 recommended).')
+      : st.error
+        ? t(`已配置，但连不上：${st.error}`, `Configured, but unreachable: ${st.error}`)
+        : t(`已连接 · 索引里 ${st.vectors} 个向量 · ${st.dimension} 维`, `Connected · ${st.vectors} vectors · ${st.dimension} dims`)
+  return `
+    <div style="display: flex; flex-direction: column; gap: var(--space-5);">
+      <div class="satu-panel">
+        <div>
+          <h2 style="font-size: 16px; margin: 0 0 4px;">${t('向量库', 'Vector store')}</h2>
+          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${esc(status)}</p>
+        </div>
+      </div>
+      <div class="satu-panel" style="gap: var(--space-3);">
+        <div>
+          <h2 style="font-size: 16px; margin: 0 0 4px;">${t('单价')}</h2>
+          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('按 Upstash 请求次数计：一次检索 = 查了几个库；一份文件入库 = 分片数 ÷ 100 向上取整。0 = 不收钱、不熔断。倍率沿用模型配置里的那一个。', 'Priced per Upstash request: one search = number of knowledge bases queried; one ingest = chunks ÷ 100 rounded up. 0 = free and never cut off. The multiplier from model settings applies.')}</p>
+        </div>
+        <div class="satu-toggleRow">
+          <div style="min-width: 0;"><div style="font-size: 13.5px; font-weight: 600;">${t('检索 / 次（美元）', 'Search / request (USD)')}</div></div>
+          <input class="input" style="width: 140px; flex: none;" type="number" min="0" step="0.001" value="${esc(((k.pricing?.queryMils || 0) / 1000).toFixed(3))}" data-act="kb-price" data-field="queryMils">
+        </div>
+        <div class="satu-toggleRow">
+          <div style="min-width: 0;"><div style="font-size: 13.5px; font-weight: 600;">${t('入库 / 次（美元）', 'Ingest / request (USD)')}</div></div>
+          <input class="input" style="width: 140px; flex: none;" type="number" min="0" step="0.001" value="${esc(((k.pricing?.ingestMils || 0) / 1000).toFixed(3))}" data-act="kb-price" data-field="ingestMils">
+        </div>
+      </div>
+      <div class="satu-panel" style="gap: var(--space-3);">
+        <div>
+          <h2 style="font-size: 16px; margin: 0 0 4px;">${t('相似度门槛', 'Similarity threshold')}</h2>
+          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('低于这个分数的命中丢掉。太低模型会拿到一堆不相干的段落还当真话说，太高查不到东西。bge-m3 上 0.35 大致是「有点关系」的门槛。', 'Hits below this score are dropped. Too low and the model gets unrelated passages; too high and nothing is found. On bge-m3, 0.35 is roughly “somewhat related”.')}</p>
+        </div>
+        <div class="satu-toggleRow">
+          <div style="min-width: 0;"><div style="font-size: 13.5px; font-weight: 600;">${t('最低分', 'Minimum score')}</div></div>
+          <input class="input" style="width: 140px; flex: none;" type="number" min="0" max="1" step="0.01" value="${esc(String(k.scoreMin ?? 0.35))}" data-act="kb-score">
+        </div>
       </div>
     </div>`
 }

@@ -23,6 +23,7 @@ import { attachInternal } from './routes/internal.ts'
 import { attachChannels } from './routes/channels.ts'
 import { attachWorker } from './routes/worker.ts'
 import { attachCron } from './routes/cron.ts'
+import { attachKnowledge } from './routes/knowledge.ts'
 
 /**
  * 把控制面的路由挂上去。
@@ -54,6 +55,7 @@ export function attach(router: Router, db: Db, keys: JwtKeys, channelKey: Buffer
   attachWorker(router, ctx)
   attachCron(router, ctx)
   attachChannels(router, ctx)
+  attachKnowledge(router, ctx)
   attachCatalog(router, ctx)
   attachConnectors(router, ctx)
   attachConnectorMcp(router, ctx)

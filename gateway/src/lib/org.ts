@@ -6,7 +6,7 @@
 import { EMAIL_RE, PHONE_RE, SLUG_RE, strField } from './validate.ts'
 import { losingAdmin, statusOf } from './guards.ts'
 import { HttpError } from '../http.ts'
-import { type Account, type AccountStatus, type CatalogItem, type Company, type CompanySettings, type CompanyStatus, type Db, type Group, type ImageModelRole, type ModelRate, type ModelRole, type BillingSettings, PRICE_MULTIPLIER_MAX, PRICE_MULTIPLIER_MIN, REASONING_EFFORTS, type Plan, type PlatformSettings, type Role, type SessionIndex, parseBilling, parseConnectorPricing, parseImageRole, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort } from '../db.ts'
+import { type Account, type AccountStatus, type CatalogItem, type Company, type CompanySettings, type CompanyStatus, type Db, type Group, type ImageModelRole, type ModelRate, type ModelRole, type BillingSettings, PRICE_MULTIPLIER_MAX, PRICE_MULTIPLIER_MIN, REASONING_EFFORTS, type Plan, type PlatformSettings, type Role, type SessionIndex, parseBilling, parseConnectorPricing, parseImageRole, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort } from '../db.ts'
 import { WEB_BACKENDS, WEB_DOCUMENT } from '../db/types.ts'
 import { VENDORS } from '../connectors/index.ts'
 
@@ -175,6 +175,7 @@ export function publicSettings(s: CompanySettings | PlatformSettings): PlatformS
     modelPricing: parseModelPricing((s as PlatformSettings).modelPricing),
     defaultModelRate: parseModelRate((s as PlatformSettings).defaultModelRate),
     billing: parseBilling((s as PlatformSettings).billing),
+    knowledge: parseKnowledgeSettings((s as PlatformSettings).knowledge),
   }
 }
 
@@ -225,6 +226,9 @@ export async function publicPlan(db: Db, plan: Plan | undefined, used: number) {
   return {
     seats: plan?.seats ?? 0,
     used,
+    // 知识库配额和已建个数并排给：界面上那行「知识库 1 / 2」两个数都要。
+    knowledgeBases: plan?.knowledgeBases ?? 0,
+    knowledgeUsed: plan ? await db.countKnowledgeBases(plan.companyId) : 0,
     skuId: plan?.skuId ?? null,
     skuName: sku?.name ?? null,
     skuNameEn: sku?.nameEn ?? null,

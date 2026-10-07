@@ -48,6 +48,8 @@ import { SQL as m0047 } from './0047-browser-desktop-default-on.ts'
 import { SQL as m0048 } from './0048-llm-calls-model.ts'
 import { SQL as m0049 } from './0049-clear-manager-pins.ts'
 import { SQL as m0050 } from './0050-conversation-audit-default-off.ts'
+import { SQL as m0051 } from './0051-knowledge.ts'
+import { SQL as m0052 } from './0052-usage-charge-kb.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -162,6 +164,8 @@ export const MIGRATIONS: Migration[] = [
   { id: '0048-llm-calls-model', name: 'llm_calls 按模型查的索引（生图预估的实测基线）', sql: m0048 },
   { id: '0049-clear-manager-pins', name: '摘掉旧「升级管家」按钮留下的单机钉，回到跟平台走', sql: m0049 },
   { id: '0050-conversation-audit-default-off', name: '自动审计默认关，存量公司一律关掉', sql: m0050 },
+  { id: '0051-knowledge', name: '公司知识库：四张表与套餐配额列', sql: m0051 },
+  { id: '0052-usage-charge-kb', name: '账本 kind 多一种 kb', sql: m0052 },
 ]
 
 /**

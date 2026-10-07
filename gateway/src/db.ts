@@ -5,8 +5,8 @@ import { randomAccessToken, randomApiKey, randomMachineToken } from './crypto.ts
 import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
-import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
-import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
+import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type KnowledgeBase, type KnowledgeChunk, type KnowledgeFile, type KnowledgeFileStatus, type KnowledgeShare, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
+import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, knowledgeBaseOf, knowledgeChunkOf, knowledgeFileOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
  * 类型、常量和行解析都在 `db/` 底下；这里原样再导出，调用点仍然
@@ -536,6 +536,9 @@ export class Db {
     await this.run('delete from settings where "companyId" = ?', [id])
     await this.run('delete from credentials where "companyId" = ?', [id])
     await this.run('delete from catalog_items where "companyId" = ?', [id])
+    // 知识库三张从表都 on delete cascade 挂在 knowledge_bases 上。Upstash 命名空间和
+    // 原文件不在库里，由路由那侧在删之前列出来、回完包再清（routes/company.ts）。
+    await this.run('delete from knowledge_bases where "companyId" = ?', [id])
     await this.run('update machines set "companyId" = null where "companyId" = ?', [id])
     // machine_pairings."companyId" 有真外键指向 companies(id)。漏了这一条，最后那句
     // `delete from companies` 对**任何配对过机器的公司**都会外键报错，整条删除永远
@@ -2108,24 +2111,25 @@ export class Db {
 
   // ── 套餐 ──────────────────────────────────────────────────────────────
 
-  /** 套餐和到期时间是可选补丁：不传就保持原样，传 null 才是清空。 */
+  /** 套餐、到期时间、知识库个数是可选补丁：不传就保持原样，传 null 才是清空。 */
   async upsertPlan(
     companyId: string,
     seats: number,
-    patch: { skuId?: string | null; expiresAt?: number | null } = {},
+    patch: { skuId?: string | null; expiresAt?: number | null; knowledgeBases?: number } = {},
   ): Promise<Plan> {
     const now = Date.now()
     const cur = await this.plan(companyId)
     const next: Plan = {
       companyId,
       seats,
+      knowledgeBases: patch.knowledgeBases === undefined ? (cur?.knowledgeBases ?? 0) : patch.knowledgeBases,
       skuId: patch.skuId === undefined ? (cur?.skuId ?? null) : patch.skuId,
       expiresAt: patch.expiresAt === undefined ? (cur?.expiresAt ?? null) : patch.expiresAt,
       updatedAt: now,
     }
     await this.run(
-      'insert into plans ("companyId", seats, "skuId", "expiresAt", "updatedAt") values (?,?,?,?,?) on conflict ("companyId") do update set seats=excluded.seats, "skuId"=excluded."skuId", "expiresAt"=excluded."expiresAt", "updatedAt"=excluded."updatedAt"',
-      [companyId, next.seats, next.skuId, next.expiresAt, next.updatedAt],
+      'insert into plans ("companyId", seats, "knowledgeBases", "skuId", "expiresAt", "updatedAt") values (?,?,?,?,?,?) on conflict ("companyId") do update set seats=excluded.seats, "knowledgeBases"=excluded."knowledgeBases", "skuId"=excluded."skuId", "expiresAt"=excluded."expiresAt", "updatedAt"=excluded."updatedAt"',
+      [companyId, next.seats, next.knowledgeBases, next.skuId, next.expiresAt, next.updatedAt],
     )
     return next
   }
@@ -2160,6 +2164,7 @@ export class Db {
     seats: number
     period?: PlanPeriod
     bonusMils?: number
+    knowledgeBases?: number
   }): Promise<PlanSku> {
     const now = Date.now()
     const row: PlanSku = {
@@ -2170,12 +2175,13 @@ export class Db {
       seats: input.seats,
       period: input.period ?? 'month',
       bonusMils: input.bonusMils ?? 0,
+      knowledgeBases: input.knowledgeBases ?? 0,
       createdAt: now,
       updatedAt: now,
     }
     await this.run(
-      'insert into plan_skus (id, name, "nameEn", "amountMils", seats, period, "bonusMils", "createdAt", "updatedAt") values (?,?,?,?,?,?,?,?,?)',
-      [row.id, row.name, row.nameEn, row.amountMils, row.seats, row.period, row.bonusMils, row.createdAt, row.updatedAt],
+      'insert into plan_skus (id, name, "nameEn", "amountMils", seats, period, "bonusMils", "knowledgeBases", "createdAt", "updatedAt") values (?,?,?,?,?,?,?,?,?,?)',
+      [row.id, row.name, row.nameEn, row.amountMils, row.seats, row.period, row.bonusMils, row.knowledgeBases, row.createdAt, row.updatedAt],
     )
     return row
   }
@@ -2183,12 +2189,12 @@ export class Db {
   /** 只改传进来的字段。套餐不存在返回 undefined，由上层决定报 404 还是别的。 */
   async updatePlanSku(
     id: string,
-    patch: { name?: string; nameEn?: string; amountMils?: number; seats?: number; period?: PlanPeriod; bonusMils?: number },
+    patch: { name?: string; nameEn?: string; amountMils?: number; seats?: number; period?: PlanPeriod; bonusMils?: number; knowledgeBases?: number },
   ): Promise<PlanSku | undefined> {
     const cur = await this.planSku(id)
     if (!cur) return undefined
     const r = await this.one(
-      'update plan_skus set name=?, "nameEn"=?, "amountMils"=?, seats=?, period=?, "bonusMils"=?, "updatedAt"=? where id=? returning *',
+      'update plan_skus set name=?, "nameEn"=?, "amountMils"=?, seats=?, period=?, "bonusMils"=?, "knowledgeBases"=?, "updatedAt"=? where id=? returning *',
       [
         patch.name ?? cur.name,
         patch.nameEn ?? cur.nameEn,
@@ -2196,6 +2202,7 @@ export class Db {
         patch.seats ?? cur.seats,
         patch.period ?? cur.period,
         patch.bonusMils ?? cur.bonusMils,
+        patch.knowledgeBases ?? cur.knowledgeBases,
         Date.now(),
         id,
       ],
@@ -2225,11 +2232,11 @@ export class Db {
     const row: PlanOrder = { ...input, id: randomUUID(), createdAt: now, updatedAt: now }
     await this.run(
       `insert into plan_orders
-       (id, "companyId", kind, note, "planId", "planName", "planNameEn", period, seats, "amountMils", "bonusMils", "startAt", "endAt", "payStatus", "createdAt", "updatedAt")
-       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       (id, "companyId", kind, note, "planId", "planName", "planNameEn", period, seats, "knowledgeBases", "amountMils", "bonusMils", "startAt", "endAt", "payStatus", "createdAt", "updatedAt")
+       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         row.id, row.companyId, row.kind, row.note, row.planId, row.planName, row.planNameEn, row.period,
-        row.seats, row.amountMils, row.bonusMils, row.startAt, row.endAt, row.payStatus, row.createdAt, row.updatedAt,
+        row.seats, row.knowledgeBases, row.amountMils, row.bonusMils, row.startAt, row.endAt, row.payStatus, row.createdAt, row.updatedAt,
       ],
     )
     return row
@@ -2242,10 +2249,10 @@ export class Db {
     const next = { ...cur, ...patch, updatedAt: Date.now() }
     const r = await this.one(
       `update plan_orders set "companyId"=?, kind=?, note=?, "planId"=?, "planName"=?, "planNameEn"=?, period=?,
-       seats=?, "amountMils"=?, "bonusMils"=?, "startAt"=?, "endAt"=?, "payStatus"=?, "updatedAt"=? where id=? returning *`,
+       seats=?, "knowledgeBases"=?, "amountMils"=?, "bonusMils"=?, "startAt"=?, "endAt"=?, "payStatus"=?, "updatedAt"=? where id=? returning *`,
       [
         next.companyId, next.kind, next.note, next.planId, next.planName, next.planNameEn, next.period,
-        next.seats, next.amountMils, next.bonusMils, next.startAt, next.endAt, next.payStatus, next.updatedAt, id,
+        next.seats, next.knowledgeBases, next.amountMils, next.bonusMils, next.startAt, next.endAt, next.payStatus, next.updatedAt, id,
       ],
     )
     return r ? planOrderOf(r) : undefined
@@ -2281,14 +2288,22 @@ export class Db {
   async syncPlanFromOrders(companyId: string): Promise<void> {
     const active = await this.activePaidOrder(companyId)
     const used = await this.accountCount(companyId)
+    // 知识库和席位同一条规矩：订单给的个数不缩到已有库数以下——已经建好的库不能因为
+    // 一张单子少给了就凭空超额，先按现有个数保住（docs/knowledge-base.md §4.2）。
+    const kbUsed = await this.countKnowledgeBases(companyId)
     const cur = await this.plan(companyId)
     if (!active) {
       if (cur?.skuId == null && cur?.expiresAt == null && cur) return
       const seats = cur?.skuId != null ? Math.max(used, 1) : (cur?.seats ?? Math.max(used, 1))
-      await this.upsertPlan(companyId, seats, { skuId: null, expiresAt: null })
+      const knowledgeBases = cur?.skuId != null ? kbUsed : (cur?.knowledgeBases ?? kbUsed)
+      await this.upsertPlan(companyId, seats, { skuId: null, expiresAt: null, knowledgeBases })
       return
     }
-    await this.upsertPlan(companyId, Math.max(active.seats, used), { skuId: active.planId, expiresAt: active.endAt })
+    await this.upsertPlan(companyId, Math.max(active.seats, used), {
+      skuId: active.planId,
+      expiresAt: active.endAt,
+      knowledgeBases: Math.max(active.knowledgeBases, kbUsed),
+    })
   }
 
   /** 起进程时对一遍所有公司的订阅。返回被改动的公司数，只为在日志里说一声。 */
@@ -2298,9 +2313,277 @@ export class Db {
       const before = await this.plan(c.id)
       await this.syncPlanFromOrders(c.id)
       const after = await this.plan(c.id)
-      if (before?.skuId !== after?.skuId || before?.expiresAt !== after?.expiresAt || before?.seats !== after?.seats) changed++
+      if (before?.skuId !== after?.skuId || before?.expiresAt !== after?.expiresAt || before?.seats !== after?.seats || before?.knowledgeBases !== after?.knowledgeBases) changed++
     }
     return changed
+  }
+
+  // ── 知识库（docs/knowledge-base.md）────────────────────────────────────
+
+  /** 这家公司没在删除中的全部库。管理员看的就是这一份。 */
+  async knowledgeBasesOf(companyId: string): Promise<KnowledgeBase[]> {
+    const rows = await this.many(
+      'select * from knowledge_bases where "companyId" = ? and "deletingAt" is null order by "createdAt"',
+      [companyId],
+    )
+    return rows.map(knowledgeBaseOf)
+  }
+
+  /**
+   * 这颗 Bot 查得到的库：`share = 'all'` 的，加上 `share = 'bots'` 且名单里有它的。
+   * 共享范围在这里判，不在席位判——目录是给模型看的提示，不是授权（§13）。
+   */
+  async knowledgeForBot(companyId: string, botId: string | null): Promise<KnowledgeBase[]> {
+    const rows = botId
+      ? await this.many(
+          `select k.* from knowledge_bases k where k."companyId" = ? and k."deletingAt" is null and (
+             k.share = 'all' or (k.share = 'bots' and exists (select 1 from knowledge_shares s where s."kbId" = k.id and s."botId" = ?))
+           ) order by k."createdAt"`,
+          [companyId, botId],
+        )
+      : await this.many(
+          `select * from knowledge_bases where "companyId" = ? and "deletingAt" is null and share = 'all' order by "createdAt"`,
+          [companyId],
+        )
+    return rows.map(knowledgeBaseOf)
+  }
+
+  /**
+   * 成员看得见的库：共享给他**任何一颗** Bot 的（`all` 的，或名单里有他的 Bot 的）。
+   * `none` 的对成员不存在（§11.2）。
+   */
+  async knowledgeForAccount(companyId: string, accountId: string): Promise<KnowledgeBase[]> {
+    const rows = await this.many(
+      `select k.* from knowledge_bases k where k."companyId" = ? and k."deletingAt" is null and (
+         k.share = 'all' or (k.share = 'bots' and exists (
+           select 1 from knowledge_shares s join catalog_items b on b.id = s."botId"
+            where s."kbId" = k.id and b.kind = 'bot' and b."deletingAt" is null
+              and (b.scope = 'global' or (b."companyId" = ? and (b.scope = 'company' or b."accountId" = ?)))
+         ))
+       ) order by k."createdAt"`,
+      [companyId, companyId, accountId],
+    )
+    return rows.map(knowledgeBaseOf)
+  }
+
+  async knowledgeBase(id: string): Promise<KnowledgeBase | undefined> {
+    const r = await this.one('select * from knowledge_bases where id = ?', [id])
+    return r ? knowledgeBaseOf(r) : undefined
+  }
+
+  async knowledgeBaseByName(companyId: string, name: string): Promise<KnowledgeBase | undefined> {
+    const r = await this.one('select * from knowledge_bases where "companyId" = ? and name = ? and "deletingAt" is null', [companyId, name])
+    return r ? knowledgeBaseOf(r) : undefined
+  }
+
+  /** 配额数的就是它：没在删除中的。正在删的那些不占名额，不然删了还要等一拍才能再建。 */
+  async countKnowledgeBases(companyId: string): Promise<number> {
+    const r = await this.one('select count(*)::int as n from knowledge_bases where "companyId" = ? and "deletingAt" is null', [companyId])
+    return Number((r as { n?: number } | undefined)?.n ?? 0)
+  }
+
+  async insertKnowledgeBase(input: { companyId: string; name: string; desc: string; share: KnowledgeShare; createdBy: string | null }): Promise<KnowledgeBase> {
+    const now = Date.now()
+    const row: KnowledgeBase = {
+      id: randomUUID(),
+      companyId: input.companyId,
+      name: input.name,
+      desc: input.desc,
+      share: input.share,
+      bytesUsed: 0,
+      fileCount: 0,
+      chunkCount: 0,
+      deletingAt: null,
+      createdBy: input.createdBy,
+      createdAt: now,
+      updatedAt: now,
+    }
+    await this.run(
+      'insert into knowledge_bases (id, "companyId", name, "desc", share, "bytesUsed", "fileCount", "chunkCount", "deletingAt", "createdBy", "createdAt", "updatedAt") values (?,?,?,?,?,?,?,?,?,?,?,?)',
+      [row.id, row.companyId, row.name, row.desc, row.share, 0, 0, 0, null, row.createdBy, now, now],
+    )
+    return row
+  }
+
+  async updateKnowledgeBase(id: string, patch: { name?: string; desc?: string; share?: KnowledgeShare }): Promise<KnowledgeBase | undefined> {
+    const cur = await this.knowledgeBase(id)
+    if (!cur) return undefined
+    const r = await this.one(
+      'update knowledge_bases set name=?, "desc"=?, share=?, "updatedAt"=? where id=? returning *',
+      [patch.name ?? cur.name, patch.desc ?? cur.desc, patch.share ?? cur.share, Date.now(), id],
+    )
+    return r ? knowledgeBaseOf(r) : undefined
+  }
+
+  /** 写 deletingAt：列表里当场消失，真正的清理由 tick 做（§9）。 */
+  async markKnowledgeDeleting(id: string): Promise<void> {
+    await this.run('update knowledge_bases set "deletingAt" = ?, "updatedAt" = ? where id = ? and "deletingAt" is null', [Date.now(), Date.now(), id])
+  }
+
+  /** 正在删的库，给 tick 收尾用。 */
+  async deletingKnowledgeBases(): Promise<KnowledgeBase[]> {
+    const rows = await this.many('select * from knowledge_bases where "deletingAt" is not null order by "deletingAt" limit 20')
+    return rows.map(knowledgeBaseOf)
+  }
+
+  /** 硬删。三张从表 cascade。只有 tick 在 Upstash 和原文件都清掉之后才调。 */
+  async deleteKnowledgeBase(id: string): Promise<void> {
+    await this.run('delete from knowledge_bases where id = ?', [id])
+  }
+
+  /** 重算三个计数列。文件增删、入库完成后调。 */
+  async refreshKnowledgeCounters(kbId: string): Promise<void> {
+    await this.run(
+      `update knowledge_bases set
+         "bytesUsed"  = (select coalesce(sum(bytes), 0) from knowledge_files where "kbId" = ?),
+         "fileCount"  = (select count(*) from knowledge_files where "kbId" = ?),
+         "chunkCount" = (select coalesce(sum("chunkCount"), 0) from knowledge_files where "kbId" = ? and status = 'ready'),
+         "updatedAt"  = ?
+       where id = ?`,
+      [kbId, kbId, kbId, Date.now(), kbId],
+    )
+  }
+
+  async knowledgeShares(kbId: string): Promise<string[]> {
+    const rows = await this.many('select "botId" from knowledge_shares where "kbId" = ? order by "createdAt"', [kbId])
+    return rows.map((r) => str(r.botId))
+  }
+
+  async knowledgeSharesOfMany(kbIds: string[]): Promise<Map<string, string[]>> {
+    const out = new Map<string, string[]>()
+    if (!kbIds.length) return out
+    const rows = await this.many('select "kbId", "botId" from knowledge_shares where "kbId" = any(?::text[]) order by "createdAt"', [kbIds])
+    for (const r of rows) {
+      const k = str(r.kbId)
+      const list = out.get(k) ?? []
+      list.push(str(r.botId))
+      out.set(k, list)
+    }
+    return out
+  }
+
+  /** 整份覆盖，不做增删。`share ≠ 'bots'` 时名单清空（§16 不变量 7）。 */
+  async setKnowledgeShares(kbId: string, botIds: string[]): Promise<void> {
+    await this.tx(async () => {
+      await this.run('delete from knowledge_shares where "kbId" = ?', [kbId])
+      const now = Date.now()
+      for (const botId of [...new Set(botIds)]) {
+        await this.run('insert into knowledge_shares ("kbId", "botId", "createdAt") values (?,?,?)', [kbId, botId, now])
+      }
+    })
+  }
+
+  // 文件
+
+  async knowledgeFiles(kbId: string): Promise<KnowledgeFile[]> {
+    const rows = await this.many('select * from knowledge_files where "kbId" = ? order by "createdAt" desc', [kbId])
+    return rows.map(knowledgeFileOf)
+  }
+
+  async knowledgeFile(id: string): Promise<KnowledgeFile | undefined> {
+    const r = await this.one('select * from knowledge_files where id = ?', [id])
+    return r ? knowledgeFileOf(r) : undefined
+  }
+
+  async countKnowledgeFiles(kbId: string): Promise<number> {
+    const r = await this.one('select count(*)::int as n from knowledge_files where "kbId" = ?', [kbId])
+    return Number((r as { n?: number } | undefined)?.n ?? 0)
+  }
+
+  async insertKnowledgeFile(input: { kbId: string; companyId: string; name: string; mime: string; bytes: number; createdBy: string | null; status?: KnowledgeFileStatus; storage?: string }): Promise<KnowledgeFile> {
+    const now = Date.now()
+    const row: KnowledgeFile = {
+      id: randomUUID(),
+      kbId: input.kbId,
+      companyId: input.companyId,
+      name: input.name,
+      mime: input.mime,
+      bytes: input.bytes,
+      storage: input.storage ?? '',
+      sha256: '',
+      status: input.status ?? 'uploading',
+      error: '',
+      chunkCount: 0,
+      chunkDone: 0,
+      attempts: 0,
+      leaseUntil: null,
+      createdBy: input.createdBy,
+      createdAt: now,
+      updatedAt: now,
+    }
+    await this.run(
+      'insert into knowledge_files (id, "kbId", "companyId", name, mime, bytes, storage, sha256, status, error, "chunkCount", "chunkDone", attempts, "leaseUntil", "createdBy", "createdAt", "updatedAt") values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [row.id, row.kbId, row.companyId, row.name, row.mime, row.bytes, row.storage, row.sha256, row.status, row.error, 0, 0, 0, null, row.createdBy, now, now],
+    )
+    return row
+  }
+
+  async updateKnowledgeFile(
+    id: string,
+    patch: Partial<Pick<KnowledgeFile, 'bytes' | 'storage' | 'sha256' | 'status' | 'error' | 'chunkCount' | 'chunkDone' | 'attempts' | 'leaseUntil'>>,
+  ): Promise<KnowledgeFile | undefined> {
+    const cur = await this.knowledgeFile(id)
+    if (!cur) return undefined
+    const next = { ...cur, ...patch, updatedAt: Date.now() }
+    const r = await this.one(
+      'update knowledge_files set bytes=?, storage=?, sha256=?, status=?, error=?, "chunkCount"=?, "chunkDone"=?, attempts=?, "leaseUntil"=?, "updatedAt"=? where id=? returning *',
+      [next.bytes, next.storage, next.sha256, next.status, next.error, next.chunkCount, next.chunkDone, next.attempts, next.leaseUntil, next.updatedAt, id],
+    )
+    return r ? knowledgeFileOf(r) : undefined
+  }
+
+  async deleteKnowledgeFile(id: string): Promise<void> {
+    await this.run('delete from knowledge_files where id = ?', [id])
+  }
+
+  /**
+   * 领一个要入库的文件：排队的，或者在跑但租约过期的（上一拍没跑完）。
+   * `for update skip locked` 让两个实例同一拍各领各的，不会抢同一份。
+   */
+  async claimKnowledgeFile(now: number, leaseMs: number): Promise<KnowledgeFile | undefined> {
+    const r = await this.one(
+      `update knowledge_files set status = 'processing', "leaseUntil" = ?, "updatedAt" = ?
+        where id = (
+          select id from knowledge_files
+           where status = 'queued' or (status = 'processing' and ("leaseUntil" is null or "leaseUntil" < ?))
+           order by "createdAt" limit 1 for update skip locked
+        ) returning *`,
+      [now + leaseMs, now, now],
+    )
+    return r ? knowledgeFileOf(r) : undefined
+  }
+
+  /** 停在 uploading 太久的（浏览器关了、Blob 回调没来），给 tick 收掉。 */
+  async staleUploadingKnowledgeFiles(before: number): Promise<KnowledgeFile[]> {
+    const rows = await this.many(`select * from knowledge_files where status = 'uploading' and "createdAt" < ? order by "createdAt" limit 50`, [before])
+    return rows.map(knowledgeFileOf)
+  }
+
+  // 分片
+
+  /** 一个事务里整份落下：解析到一半被冻住，下一拍看到 chunkCount = 0 就从头来。 */
+  async replaceKnowledgeChunks(fileId: string, kbId: string, chunks: Array<{ no: number; page: number | null; text: string }>): Promise<void> {
+    await this.tx(async () => {
+      await this.run('delete from knowledge_chunks where "fileId" = ?', [fileId])
+      const size = 200
+      for (let i = 0; i < chunks.length; i += size) {
+        const batch = chunks.slice(i, i + size)
+        const values = batch.map(() => '(?,?,?,?,?,?)').join(',')
+        const params: unknown[] = []
+        for (const c of batch) params.push(`${fileId}:${c.no}`, fileId, kbId, c.no, c.page, c.text)
+        await this.run(`insert into knowledge_chunks (id, "fileId", "kbId", no, page, text) values ${values}`, params)
+      }
+      await this.run('update knowledge_files set "chunkCount" = ?, "chunkDone" = 0, "updatedAt" = ? where id = ?', [chunks.length, Date.now(), fileId])
+    })
+  }
+
+  async knowledgeChunks(fileId: string, from: number, limit: number): Promise<KnowledgeChunk[]> {
+    const rows = await this.many('select * from knowledge_chunks where "fileId" = ? and no >= ? order by no limit ?', [fileId, from, limit])
+    return rows.map(knowledgeChunkOf)
+  }
+
+  async deleteKnowledgeChunks(fileId: string): Promise<void> {
+    await this.run('delete from knowledge_chunks where "fileId" = ?', [fileId])
   }
 
   // ── 单独充值 ──────────────────────────────────────────────────────────
@@ -3105,6 +3388,9 @@ export class Db {
       if (!authorized) throw new Error('Bot 删除前审计尚未完成')
       await this.run('delete from session_index where "botId" = ?', [botId])
       await this.run('delete from instances where "botId" = ?', [botId])
+      // 知识库共享名单里它那一行跟着走：留着一个不存在的 id 不会出错（查不到就是查不到），
+      // 但界面上会画出一颗「未知 Bot」，没人删得掉它（docs/knowledge-base.md §9）。
+      await this.run('delete from knowledge_shares where "botId" = ?', [botId])
       // 分组按 jsonb 反查，**不按公司**：全局 Bot 可能被好几家公司各自编进分组，
       // 只扫它自己那家会把别家的引用留成一个指向不存在 Bot 的 id。
       const rows = await this.many('select * from groups where agents @> ?::jsonb', [JSON.stringify([botId])])
@@ -4472,6 +4758,8 @@ export class Db {
       // 于是缺价的模型继续按 0 收——正是加这一项要堵的那个洞。
       defaultModelRate: parseModelRate(next.defaultModelRate),
       billing: parseBilling(next.billing),
+      // 同上第五次：知识库的单价和门槛。漏了就是「工具配置那一屏能填、回 200、读出来永远是 0」。
+      knowledge: parseKnowledgeSettings(next.knowledge),
     })
     await this.run(
       "insert into platform_settings (id, payload, \"updatedAt\") values ('platform', ?, ?) on conflict (id) do update set payload=excluded.payload, \"updatedAt\"=excluded.\"updatedAt\"",

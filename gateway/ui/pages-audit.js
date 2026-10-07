@@ -862,6 +862,7 @@ function companyDetailPage() {
             ${plan.expiresAt && plan.expiresAt < Date.now() ? `<span class="tag tag-neutral">${t('已到期')}</span>` : ''}
           </div>
           <div class="satu-kv"><span>${t('席位')}</span><span>${esc(used)} / ${esc(total)}</span></div>
+          <div class="satu-kv"><span>${t('知识库')}</span><span>${esc(plan.knowledgeUsed || 0)} / ${esc(plan.knowledgeBases || 0)}</span></div>
           <div class="satu-kv"><span>${t('账期')}</span><span>${esc(bplan.period || '—')}</span></div>
           <div class="satu-kv"><span>${t('到期时间')}</span><span>${esc(plan.expiresAt ? dayISO(plan.expiresAt) : t('不限期'))}</span></div>
           <div class="satu-kv"><span>${t('周期费用')}</span><span>${esc(bplan.amount || '—')}</span></div>

@@ -6,6 +6,7 @@
 function pageView() {
   if (state.path.startsWith('/bots/')) return botDetailPage()
   if (state.path.startsWith('/connectors/')) return connectorDetailPage()
+  if (state.path.startsWith('/knowledge/')) return knowledgeDetailPage()
   if (state.path.startsWith('/companies/') && state.path !== '/companies') return companyDetailPage()
   if (state.path.startsWith('/users/') && state.path !== '/users') return userDetailPage()
   if (state.path.startsWith('/machines/') && state.path !== '/machines') return machineDetailPage()
@@ -32,6 +33,8 @@ function pageView() {
       return handoffsPage()
     case '/channels':
       return channelsPage()
+    case '/knowledge':
+      return knowledgePage()
     case '/audit':
       return auditPage()
     case '/machines':
@@ -293,6 +296,8 @@ function appView() {
               ? `<div class="satu-menu" data-flip="${String(Boolean(state.menuFlip))}">
               <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="plugins-open">${svg(ICONS.plugins, 15)}<span>${t('插件', 'Plugins')}</span></button>
               <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="go" data-href="/channels" aria-current="${state.path === '/channels'}">${svg(['M4 12a8 8 0 0 1 16 0', 'M12 4v4', 'M8 12h8', 'M6 18h12'], 15)}<span>${t('渠道', 'Channels')}</span></button>
+              ${/* 知识库排在渠道后面（docs/knowledge-base.md §11.1）：书本。 */ ''}
+              <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="go" data-href="/knowledge" aria-current="${state.path === '/knowledge' || state.path.startsWith('/knowledge/')}">${svg(['M4 4h7a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H4z', 'M20 4h-7a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h7z'], 15)}<span>${t('知识库')}</span></button>
             </div>`
               : ''
           }
@@ -304,6 +309,9 @@ function appView() {
           <button type="button" class="satu-newbot satu-newbot-rail" data-act="go" data-href="/channels"
             aria-current="${state.path === '/channels'}"
             aria-label="${esc(t('渠道', 'Channels'))}" title="${esc(t('渠道', 'Channels'))}">${svg(['M4 12a8 8 0 0 1 16 0', 'M12 4v4', 'M8 12h8', 'M6 18h12'], 15)}</button>
+          <button type="button" class="satu-newbot satu-newbot-rail" data-act="go" data-href="/knowledge"
+            aria-current="${state.path === '/knowledge' || state.path.startsWith('/knowledge/')}"
+            aria-label="${esc(t('知识库'))}" title="${esc(t('知识库'))}">${svg(['M4 4h7a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H4z', 'M20 4h-7a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h7z'], 15)}</button>
         </div>`
         }
         ${
@@ -840,6 +848,20 @@ async function testLlm(kind, payload) {
  * 整份而不是打补丁，是因为这一屏上的东西彼此有约束（提取后端必须支持提取），
  * 服务端要能一次看全再判——分片提交的话，中间那一刻的组合是不合法的。
  */
+/** 平台「工具配置 → 知识库」：两个单价和相似度门槛，走 /platform/settings 的 knowledge 字段。 */
+async function saveKnowledgeSettings(patch) {
+  const cur = state.settings?.knowledge || { pricing: { queryMils: 0, ingestMils: 0 }, scoreMin: 0.35 }
+  const next = { pricing: { ...cur.pricing, ...(patch.pricing || {}) }, scoreMin: patch.scoreMin ?? cur.scoreMin }
+  try {
+    await api('PUT', '/platform/settings', { ...state.settings, knowledge: next })
+    await loadSettings()
+    flash('ok', '已保存')
+  } catch (err) {
+    flash('err', err.message)
+  }
+  render()
+}
+
 async function saveWebTools(patch) {
   const cur = webCfg()
   const next = { ...cur, ...patch }
@@ -1852,6 +1874,7 @@ async function saveOrder(e) {
         planId: String(fd.get('planId') || ''),
         period: String(fd.get('period') || 'month'),
         seats: Number(fd.get('seats')),
+        knowledgeBases: Number(fd.get('knowledgeBases') || 0),
         amount: Number(fd.get('amount')),
         bonusTokens: Number(fd.get('bonusTokens') || 0),
         startAt: String(fd.get('startAt') || ''),
@@ -1875,7 +1898,7 @@ async function saveOrder(e) {
       kind,
       draft: {
         kind, companyId: body.companyId, planId: body.planId, period: body.period,
-        seats: body.seats, amount: body.amount, bonus: body.bonusTokens, startAt: body.startAt,
+        seats: body.seats, knowledgeBases: body.knowledgeBases, amount: body.amount, bonus: body.bonusTokens, startAt: body.startAt,
         payStatus: body.payStatus, note: body.note || '',
       },
     }
@@ -1923,6 +1946,7 @@ async function savePlanSku(e) {
     seats: Number(fd.get('seats')),
     period: String(fd.get('period') || 'month'),
     bonusTokens: Number(fd.get('bonusTokens') || 0),
+    knowledgeBases: Number(fd.get('knowledgeBases') || 0),
   }
   state.busy = true
   state.planSkuError = ''
@@ -1940,7 +1964,7 @@ async function savePlanSku(e) {
     // 弹窗读的是 bonus——直接塞 body 会让赠送额度那一栏在报错后变空。
     state.planSkuEdit = {
       id,
-      draft: { name: body.name, nameEn: body.nameEn, amount: body.amount, seats: body.seats, period: body.period, bonus: body.bonusTokens },
+      draft: { name: body.name, nameEn: body.nameEn, amount: body.amount, seats: body.seats, period: body.period, bonus: body.bonusTokens, knowledgeBases: body.knowledgeBases },
     }
   } finally {
     state.busy = false

@@ -15,6 +15,8 @@ import { companyStatusOf, emailOf, groupRoleOf, membersInCompany, orgSettings, p
 import { desktopTicketFor, machineHostOf, machineResolver } from '../lib/machines.ts'
 import { inviteLinkOf, issueInvite, rangeQuery, requireOrgUser, requireOwner, requireUser, usagePayload } from '../lib/guards.ts'
 import { randomUUID } from 'node:crypto'
+import { afterResponse } from '../lib/background.ts'
+import { cleanupKnowledgeBase } from '../lib/knowledge.ts'
 import { type CompanyStatus, type Group } from '../db.ts'
 
 /**
@@ -218,7 +220,25 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     } catch (e) {
       throw new HttpError(502, (e as Error).message)
     }
+    // 知识库的 Upstash 命名空间和原文件不在库里：删行之前把它们列出来，回完包再清。
+    // 清不干净只是留几个孤儿命名空间，不该挡住删公司。
+    const knowledge = await db.knowledgeBasesOf(company.id)
+    const knowledgeFiles = new Map(await Promise.all(knowledge.map(async (k) => [k.id, await db.knowledgeFiles(k.id)] as const)))
     await db.tx(() => db.deleteCompany(company.id))
+    if (knowledge.length) {
+      afterResponse(
+        '清理知识库',
+        (async () => {
+          const { deleteKbNamespace, vectorConfigured } = await import('../lib/knowledge-vector.ts')
+          const { removeStored } = await import('../lib/knowledge-store.ts')
+          for (const k of knowledge) {
+            if (vectorConfigured()) await deleteKbNamespace(k.id).catch(() => undefined)
+            for (const f of knowledgeFiles.get(k.id) ?? []) await removeStored(f).catch(() => undefined)
+          }
+        })(),
+      )
+    }
+    void cleanupKnowledgeBase
     // 审计写在事务**之后**：deleteCompany 会把这家公司的 audit_events 一起删掉，写在
     // 事务里等于白写。audit_events 没有指向 companies 的外键，公司没了这条也留得住。
     await db.audit({

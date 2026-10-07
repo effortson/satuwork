@@ -93,6 +93,7 @@ import { runBotTemplate } from './bot-template.mjs'
 import { runManager } from './manager.mjs'
 import { runManagerConfirm } from './manager-confirm.mjs'
 import { runChannels } from './channels.mjs'
+import { runKnowledge } from './knowledge.mjs'
 import { runTelegramRich } from './telegram-rich.mjs'
 import { runTelegramChannel } from './telegram-channel.mjs'
 import { runChannelQueue } from './channel-queue.mjs'
@@ -3670,6 +3671,7 @@ async function main() {
     await suite('manager', () => runManager({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('manager-confirm', () => runManagerConfirm({ root, test, assert, log }))
     await suite('channels', () => runChannels({ gwRoot, test, req, start, waitHttp, assert, log }))
+    await suite('knowledge', () => runKnowledge({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('channel-webhook', () => runChannelWebhook({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('channel-queue', () => runChannelQueue({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('telegram-rich', () => runTelegramRich({ root, test, assert, log }))
