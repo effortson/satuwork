@@ -57,6 +57,8 @@ const TOOLS = [
   'routine_list', 'routine_manage',
   // 注册是无条件的；平台没挑生图模型时只是不进工具表（agent 的 toolSchemasFor）。
   'generate_image',
+  // 同上：工具表里没有连接器工具时不进表，注册照样有。
+  'connector_upload_file',
   'escalate_to_human',
   'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press',
   'browser_dialog', 'browser_back', 'browser_scroll', 'browser_read', 'browser_wait_for',

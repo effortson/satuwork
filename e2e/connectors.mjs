@@ -576,81 +576,94 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(JSON.stringify(fetch_.inputSchema) === JSON.stringify({ type: 'object', properties: {} }), `别的 schema 不该动：${JSON.stringify(fetch_.inputSchema)}`)
     })
 
-    await test('附件：席位传字节，Gateway 两步交给供应商，句柄原样回来，不计费', async () => {
+    await test('附件：席位要上传位，Gateway 只转交供应商，字节由席位自己 PUT，不计费', async () => {
       const cat = await req(base, 'GET', '/runtime/catalog', { token: seatTok })
       const path = new URL(cat.json.servers.find((x) => x.connector === 'gmail').endpoint).pathname
       const bytes = Buffer.from('%PDF-1.4 酒店版手册 ' + 'x'.repeat(500))
+      const md5 = createHash('md5').update(bytes).digest('hex')
       const callsBefore = (await req(base, 'GET', '/me/connector-stats', { token: memberTok })).json.total.calls
+      const putsBefore = mock.seen.puts.length
 
-      const up = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL&name=${encodeURIComponent('酒店版手册.pdf')}`, {
+      const up = await req(base, 'POST', `${path}/files`, {
         token: seatTok,
-        raw: bytes,
-        headers: { 'content-type': 'application/pdf' },
+        body: { tool: 'SEND_EMAIL', name: '酒店版手册.pdf', mimetype: 'application/pdf', md5, size: bytes.length },
       })
-      assert(up.status === 200, `上传 ${up.status} ${up.text}`)
+      assert(up.status === 200, `要上传位 ${up.status} ${up.text}`)
       const file = up.json.file
       assert(file && file.name === '酒店版手册.pdf' && file.mimetype === 'application/pdf', `句柄不对：${up.text}`)
       assert(typeof file.s3key === 'string' && file.s3key.startsWith('req/gmail/'), `s3key 要是供应商给的那个 key：${up.text}`)
+      // 票里带预签名地址和要照发的头；**Gateway 自己一个字节都没推**。
+      assert(up.json.upload && typeof up.json.upload.url === 'string' && up.json.upload.url.includes('/s3/'), `要给预签名地址：${up.text}`)
+      assert(up.json.upload.headers['content-type'] === 'application/pdf', `PUT 要带 MIME：${JSON.stringify(up.json.upload.headers)}`)
+      assert(mock.seen.puts.length === putsBefore, 'Gateway 不该自己去 PUT 字节——那是席位的事，函数环境的请求体顶不住')
 
-      // 第一步：要地址。toolkit / 真实 slug / 文件名 / MIME / md5 一样不少——md5 是上游去重用的。
+      // 向供应商要位子：toolkit / 真实 slug / 文件名 / MIME / md5 一样不少——md5 是上游去重用的。
       const staged = mock.seen.staged.at(-1)
       assert(staged.toolkit_slug === 'gmail' && staged.tool_slug === 'GMAIL_SEND_EMAIL', `要说清文件给谁用：${JSON.stringify(staged)}`)
       assert(staged.filename === '酒店版手册.pdf' && staged.mimetype === 'application/pdf', `文件名和 MIME：${JSON.stringify(staged)}`)
-      assert(staged.md5 === createHash('md5').update(bytes).digest('hex'), `md5 不对：${staged.md5}`)
-      // 第二步：PUT 字节到预签名地址。字节原样、MIME 带上、**不带平台 key**。
-      const put = mock.seen.puts.at(-1)
-      assert(put && put.body.equals(bytes), '字节没原样到对象存储')
-      assert(put.contentType === 'application/pdf', `PUT 要带 MIME：${put.contentType}`)
-      assert(put.apiKey === '', '平台 key 漏到对象存储那条路上去了')
-      assert(put.key === file.s3key, `回去的 s3key 要和 PUT 的 key 一致：${put.key} vs ${file.s3key}`)
+      assert(staged.md5 === md5, `md5 要原样转交：${staged.md5}`)
+
+      // 席位照票 PUT：地址能用、key 对得上。
+      const put = await fetch(up.json.upload.url, { method: 'PUT', headers: up.json.upload.headers, body: bytes })
+      assert(put.status === 200, `照票 PUT 该成功，实际 ${put.status}`)
+      const landed = mock.seen.puts.at(-1)
+      assert(landed && landed.body.equals(bytes) && landed.key === file.s3key, `字节没到对象存储或 key 不一致：${landed?.key} vs ${file.s3key}`)
+      assert(landed.apiKey === '', '平台 key 漏到对象存储那条路上去了')
 
       // 不是一次执行：没打 tools/execute，流水里也不多一行。
       const callsAfter = (await req(base, 'GET', '/me/connector-stats', { token: memberTok })).json.total.calls
-      assert(callsAfter === callsBefore, `暂存不该计次：${callsBefore} → ${callsAfter}`)
+      assert(callsAfter === callsBefore, `要上传位不该计次：${callsBefore} → ${callsAfter}`)
     })
 
-    await test('附件：门和调工具一样——关掉的工具传不上去，登录票不认，太大 413', async () => {
+    await test('附件：门和调工具一样——关掉的工具拿不到位子，登录票不认，太大 413，参数不全 400', async () => {
       const cat = await req(base, 'GET', '/runtime/catalog', { token: seatTok })
       const path = new URL(cat.json.servers.find((x) => x.connector === 'gmail').endpoint).pathname
-      const bytes = Buffer.from('hello')
+      const ok = { tool: 'SEND_EMAIL', name: 'a.txt', mimetype: 'text/plain', md5: 'a'.repeat(32), size: 5 }
       const stagedBefore = mock.seen.staged.length
 
-      const asUser = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL&name=a.txt`, { token: memberTok, raw: bytes })
-      assert(asUser.status === 401, `登录票不该能传附件，实际 ${asUser.status}`)
+      const asUser = await req(base, 'POST', `${path}/files`, { token: memberTok, body: ok })
+      assert(asUser.status === 401, `登录票不该能要上传位，实际 ${asUser.status}`)
 
-      const noName = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL`, { token: seatTok, raw: bytes })
-      assert(noName.status === 400, `没文件名该 400，实际 ${noName.status} ${noName.text}`)
-      const noTool = await req(base, 'POST', `${path}/files?name=a.txt`, { token: seatTok, raw: bytes })
-      assert(noTool.status === 400, `没说给谁用该 400，实际 ${noTool.status} ${noTool.text}`)
+      for (const [label, bad] of [
+        ['没文件名', { ...ok, name: '' }],
+        ['没说给谁用', { ...ok, tool: '' }],
+        ['md5 不对', { ...ok, md5: 'xyz' }],
+        ['没大小', { ...ok, size: 0 }],
+      ]) {
+        const r = await req(base, 'POST', `${path}/files`, { token: seatTok, body: bad })
+        assert(r.status === 400, `${label}该 400，实际 ${r.status} ${r.text}`)
+      }
 
       // 文件名只留最后一段：工作区的目录结构不该带出去。
-      const nested = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL&name=${encodeURIComponent('docs/2024/报价.pdf')}`, { token: seatTok, raw: bytes })
+      const nested = await req(base, 'POST', `${path}/files`, { token: seatTok, body: { ...ok, name: 'docs/2024/报价.pdf' } })
       assert(nested.status === 200 && nested.json.file.name === '报价.pdf', `该只留文件名：${nested.text}`)
 
-      const big = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL&name=big.bin`, { token: seatTok, raw: Buffer.alloc(8192, 1) })
+      // 超限在要位子**之前**就拒：供应商那边不该为一份发不出去的文件开位子。
+      const big = await req(base, 'POST', `${path}/files`, { token: seatTok, body: { ...ok, size: 8192 } })
       assert(big.status === 413, `超限该 413，实际 ${big.status} ${big.text}`)
 
       await req(base, 'PUT', `/me/connectors/${connectorId}/tools`, { token: memberTok, body: { enabledTools: ['GMAIL_FETCH_EMAILS'] } })
-      const off = await req(base, 'POST', `${path}/files?tool=SEND_EMAIL&name=a.txt`, { token: seatTok, raw: bytes })
-      assert(off.status === 403, `关掉的工具不该能传附件，实际 ${off.status} ${off.text}`)
+      const off = await req(base, 'POST', `${path}/files`, { token: seatTok, body: ok })
+      assert(off.status === 403, `关掉的工具不该拿到位子，实际 ${off.status} ${off.text}`)
       await req(base, 'PUT', `/me/connectors/${connectorId}/tools`, { token: memberTok, body: { enabledTools: [] } })
 
       // 被拒的那几次一次都没到供应商那边。
       assert(mock.seen.staged.length === stagedBefore + 1, `被拒的也打到上游了：${mock.seen.staged.length - stagedBefore - 1} 次`)
     })
 
-    await test('附件：席位那把 connector_upload_file 打对地方、带对东西', async () => {
+    await test('附件：席位那把 connector_upload_file 先要位子、再自己 PUT 字节', async () => {
       const r = await runProbe(root, 'bot/e2e-connector-upload.mjs')
       assert(r.mime.pdf === 'application/pdf' && r.mime.unknown === 'application/octet-stream', `MIME：${JSON.stringify(r.mime)}`)
-      assert(r.url.path === '/mcp/connectors/c1/files' && r.url.botId === 'b1' && r.url.tool === 'SEND_EMAIL', `地址：${JSON.stringify(r.url)}`)
-      assert(r.url.name === '报 价%41.pdf', `文件名要原样到对面：${r.url.name}`)
+      assert(r.url.path === '/mcp/connectors/c1/files' && r.url.botId === 'b1', `地址：${JSON.stringify(r.url)}`)
 
       const bad = Object.entries(r.upload).filter(([, v]) => v === false).map(([k]) => k)
       assert(!bad.length, `上传这几条不对：${bad.join('、')}\n${JSON.stringify(r.upload)}`)
-      assert(r.upload.路径 === '/mcp/connectors/conn-1/files' && r.upload.方法 === 'POST', `打错地方：${JSON.stringify(r.upload)}`)
       assert(r.upload.票 === 'Bearer sat_seat_1', `票：${r.upload.票}`)
-      assert(r.upload.远端工具 === 'SEND_EMAIL' && r.upload.文件名 === '酒店版手册.pdf' && r.upload.归因 === 'bot-9', `查询串：${JSON.stringify(r.upload)}`)
-      assert(r.upload.MIME === 'application/pdf', `MIME：${r.upload.MIME}`)
+      assert(r.upload.远端工具 === 'SEND_EMAIL' && r.upload.文件名 === '酒店版手册.pdf' && r.upload.归因 === 'bot-9', `要位子的 body：${JSON.stringify(r.upload)}`)
+      assert(r.upload.MIME === 'application/pdf' && r.upload.md5对 && r.upload.大小对, `md5 / 大小 / MIME：${JSON.stringify(r.upload)}`)
+      assert(r.upload.PUT地址 === '/s3/req-1' && r.upload.PUT头 === 'application/pdf', `PUT：${JSON.stringify(r.upload)}`)
+
+      assert(r.dedup.不再PUT && r.dedup.不算失败 && r.dedup.话里带句柄, `去重命中：${JSON.stringify(r.dedup)}`)
 
       assert(r.meta.没说target不打网络 && r.meta.没说target的话.includes('target'), `元工具要问 target：${JSON.stringify(r.meta)}`)
       assert(r.meta.说了target按它传 === 'GMAIL_CREATE_EMAIL_DRAFT' && r.meta.不算失败, `元工具按 target 传：${JSON.stringify(r.meta)}`)
@@ -665,6 +678,7 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
 
       assert(r.gateway.四xx原话.includes('没有开启') && r.gateway.四xx不置failed, `4xx 原话：${JSON.stringify(r.gateway)}`)
       assert(r.gateway.五xx是管道故障, `5xx：${JSON.stringify(r.gateway)}`)
+      assert(r.gateway.存储拒收是业务失败 && r.gateway.存储拒收的话.includes('拒收'), `存储拒收：${JSON.stringify(r.gateway)}`)
     })
 
     await test('不带 toolkit 前缀的 slug 也调得动（按真清单还原，不靠猜前缀）', async () => {
