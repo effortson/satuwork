@@ -366,6 +366,8 @@ export class CatalogService extends Service {
   private mcpEffects: Dispose[] = []
   /** 工具名 → 所属服务器 id，用来按 Bot 的 mcps 过滤。 */
   private toolServer = new Map<string, string>()
+  /** 工具名 → 远端的原名（`SEND_EMAIL`）。上传附件要告诉 Gateway 文件是给哪个远端工具的。 */
+  private toolRemote = new Map<string, string>()
   /** 「仅 @ 时可用」的服务器 id。连上了，但平时不进工具表。 */
   private mentionOnly = new Set<string>()
   private clients = new Map<string, McpHttpClient>()
@@ -406,6 +408,30 @@ export class CatalogService extends Service {
    */
   serverOf(toolName: string): string | undefined {
     return this.toolServer.get(toolName)
+  }
+
+  /**
+   * 这把 `mcp_*` 工具背后的那把**连接器连接**。公司自配的 MCP、认不出的名字都回 undefined。
+   *
+   * 上传附件那把工具（tools/connector.ts）拿它找到三样东西：该打哪条 `/files` 路、带哪张
+   * 票、文件是给哪个远端工具的。**票从这里取而不是让工具自己翻 storage**：token 的命名
+   * 空间是这个服务的内部账本，第二处知道它的那一刻，「票存在哪」就有了两个真相。
+   */
+  connectorToolOf(
+    toolName: string,
+  ): { serverId: string; serverName: string; connector: string; remoteName: string; endpoint: string; token: string } | undefined {
+    const serverId = this.toolServer.get(toolName)
+    if (!serverId) return undefined
+    const row = this.ctx.storage.collection<CachedServer>('mcp-servers').get(serverId)
+    if (!row?.connector || !row.endpoint) return undefined
+    return {
+      serverId,
+      serverName: row.name,
+      connector: row.connector,
+      remoteName: this.toolRemote.get(toolName) ?? '',
+      endpoint: row.endpoint,
+      token: this.ctx.storage.getSetting<string>(TOKEN_NS, serverId) ?? '',
+    }
   }
 
   status() {
@@ -893,6 +919,7 @@ export class CatalogService extends Service {
       }
     }
     this.toolServer.clear()
+    this.toolRemote.clear()
     this.mentionOnly.clear()
     this.clients.clear()
   }
@@ -1029,6 +1056,7 @@ export class CatalogService extends Service {
     })
     this.mcpEffects.push(() => (fork as Dispose)())
     this.toolServer.set(name, serverId)
+    this.toolRemote.set(name, remoteName)
   }
 }
 

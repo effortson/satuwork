@@ -69,6 +69,49 @@ export interface ExecuteResult {
   text: string
 }
 
+/**
+ * 给一份文件向供应商要一个上传位：换回工具参数里认得的句柄，外加一条让席位**自己**把
+ * 字节 PUT 过去的地址。
+ *
+ * 供应商的工具（`GMAIL_SEND_EMAIL` 的 `attachment`）不收字节，只收一个指向它自己存储的
+ * 句柄——所以附件要先走这一步。**字节不经 Gateway**：Gateway 跑在函数环境里，请求体
+ * 有 4.5 MB 的硬顶；这一步只带 md5 和大小，字节由席位直接推到预签名地址。预签名地址
+ * 不带供应商密钥，密钥仍然只在 Gateway（不变量 16）。
+ */
+export interface PrepareUploadInput {
+  toolkit: string
+  /** 真实 slug（`GMAIL_SEND_EMAIL`）。供应商按它决定这份文件归谁用。 */
+  tool: string
+  filename: string
+  mimetype: string
+  /** 文件内容的 MD5（十六进制）。供应商拿它去重，也是预签名的一部分。 */
+  md5: string
+  signal: AbortSignal
+}
+
+/**
+ * 句柄 + 上传位。**句柄的形状是供应商工具参数里那一格的形状**（Composio 叫
+ * `FileUploadable`），模型拿到就能原样填进去。
+ *
+ * `upload` 为 null = 供应商说这份文件它已经有了（按 md5 去重命中），不用再传。
+ */
+export interface UploadTicket {
+  file: StagedFile
+  upload: {
+    /** 预签名的 PUT 地址。短期有效，拿到就要用。 */
+    url: string
+    /** PUT 时要带的头（content-type；Azure 还要 x-ms-blob-type）。 */
+    headers: Record<string, string>
+  } | null
+}
+
+/** 工具参数里那一格的形状。 */
+export interface StagedFile {
+  name: string
+  mimetype: string
+  s3key: string
+}
+
 /** 这家供应商能干什么。调用方按位判断，不按 vendor 名字判断。 */
 export interface ProviderCaps {
   /** 能直接给出一个 per-user 的 MCP 地址（将来可以少一跳）。 */
@@ -77,6 +120,8 @@ export interface ProviderCaps {
   search: boolean
   /** 同一个用户能不能连同一个 toolkit 的多个账号。 */
   multiAccount: boolean
+  /** 工具参数里的文件能不能先放到供应商那边（见 prepareUpload）。 */
+  fileUpload: boolean
 }
 
 export interface ConnectorProvider {
@@ -96,6 +141,13 @@ export interface ConnectorProvider {
   disconnect(externalId: string): Promise<void>
 
   execute(input: ExecuteInput): Promise<ExecuteResult>
+
+  /**
+   * 给一份文件要上传位：句柄 + 让席位自己 PUT 字节的预签名地址。**不是一次执行，不计费**
+   * ——它不产生供应商侧的工具调用，和 `listTools` 同一档。`caps.fileUpload` 为 false 的
+   * 供应商抛 ProviderError。
+   */
+  prepareUpload(input: PrepareUploadInput): Promise<UploadTicket>
 }
 
 /** 供应商侧的错误。上层据此决定回 402 / 502，而不是把栈丢给调用方。 */

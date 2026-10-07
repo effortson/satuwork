@@ -111,11 +111,27 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
   const blob = fakeBlob()
   // 冒充者：谁来拉都给一个能过校验的包，记下来的人带没带 authorization。
   const fakeTgz = tarGz([{ name: './bin/satuwork.mjs', data: '#!/usr/bin/env node\n' }, { name: './VERSION', data: '0.9.2\n' }])
+  /**
+   * 入口排在**倒数第二**、前后各垫一段压不动的随机字节的包。
+   *
+   * 这个形状会让 `tarHasEntry` 在找到入口 `break` 出去的那一刻，源文件已经读完、最后一块
+   * 还排在 gunzip 的写缓冲里。那时 destroy 掉 gunzip，`pipeline` 的 promise 在 Node 24 上
+   * 既不 resolve 也不 reject——原来的代码在 finally 里等它，于是登记卡到函数超时。线上
+   * local-bot 0.1.20 的 linux-arm64 包就是这样连着三次 504 的（入口是倒数第二个成员），
+   * 同一版的 x64 包入口恰好最后、break 时流已收完，一点事没有。两段随机字节的大小是
+   * 试出来的：前面那段要把入口推到第一块 64 KiB 输入的尾部，后面那段要正好成为最后一块。
+   */
+  const hangTgz = tarGz([
+    { name: './node_modules/aa-pre.bin', data: randomBytes(60000) },
+    { name: './bin/satuwork.mjs', data: '#!/usr/bin/env node\n' },
+    { name: './node_modules/zz-tail.bin', data: randomBytes(30000) },
+  ])
   const fakeSeen = []
   const fake = createServer((req, res) => {
     fakeSeen.push({ path: req.url, auth: req.headers.authorization || '' })
-    res.writeHead(200, { 'content-type': 'application/gzip', 'content-length': String(fakeTgz.length) })
-    res.end(fakeTgz)
+    const body = req.url === '/hang.tgz' ? hangTgz : fakeTgz
+    res.writeHead(200, { 'content-type': 'application/gzip', 'content-length': String(body.length) })
+    res.end(body)
   })
   const { port: blobPort, fakePort } = await listenWithLookalike(blob.server, fake)
   const blobBase = `http://127.0.0.1:${blobPort}`
@@ -194,6 +210,19 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
       assert(r.status === 201, `登记 ${r.status} ${r.text}`)
       assert(fakeSeen.length >= 1, '冒充者没被拉过，测不出东西')
       assert(fakeSeen.every((x) => !x.auth), `BLOB_READ_WRITE_TOKEN 漏给了别的 origin：${JSON.stringify(fakeSeen)}`)
+    })
+
+    await test('入口排在倒数第二的包：找到就该返回，不能等到函数超时', async () => {
+      const url = `http://127.0.0.1:${fakePort}/hang.tgz`
+      const t = Date.now()
+      // 原来的代码这里会一直等到 req 的 30 秒超时（线上是 Vercel 的 5 分钟）。
+      const r = await req(gwBase, 'POST', '/platform/bot-releases', {
+        token: ownerTok,
+        body: { version: '0.9.3', url, size: hangTgz.length, sha256: sha256Of(hangTgz) },
+        timeout: 20000,
+      })
+      assert(r.status === 201, `登记 ${r.status} ${r.text}`)
+      assert(Date.now() - t < 15000, `登记花了 ${Date.now() - t} ms，扫包那一步多半又卡住了`)
     })
   } finally {
     gw.kill('SIGTERM')

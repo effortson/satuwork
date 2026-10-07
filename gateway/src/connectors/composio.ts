@@ -8,7 +8,7 @@
  * 响应解析一律**防御式**：字段名在两版之间改过（`items` / `data`、`successful` /
  * `successfull`），少一个字段不该让整条路挂掉。
  */
-import { ProviderError, type ConnectorProvider, type ExecuteInput, type ExecuteResult, type InitiateInput, type InitiateResult, type ProviderCaps, type StatusResult, type ToolDef, type Toolkit } from './types.ts'
+import { ProviderError, type ConnectorProvider, type ExecuteInput, type ExecuteResult, type InitiateInput, type InitiateResult, type ProviderCaps, type PrepareUploadInput, type UploadTicket, type StatusResult, type ToolDef, type Toolkit } from './types.ts'
 
 const DEFAULT_BASE = 'https://backend.composio.dev/api/v3'
 /** 列目录这类只读请求的超时。慢过这个数，界面上等着也没意义。 */
@@ -47,7 +47,7 @@ function redirectOf(body: Json): string {
 
 export class ComposioProvider implements ConnectorProvider {
   readonly vendor = 'composio'
-  readonly caps: ProviderCaps = { mcpUrl: true, search: true, multiAccount: true }
+  readonly caps: ProviderCaps = { mcpUrl: true, search: true, multiAccount: true, fileUpload: true }
 
   constructor(
     private readonly apiKey: string,
@@ -221,5 +221,62 @@ export class ComposioProvider implements ConnectorProvider {
     const text = ok ? JSON.stringify(data) : errText || JSON.stringify(data)
     // 走到这里说明上游回了 2xx——它真的跑了一遍，哪怕工具自己说失败（「邮箱不存在」）。
     return { ok, text }
+  }
+
+  /**
+   * 附件的上传位：官方 SDK `files.upload` 的**第一步**，第二步（把字节 PUT 到预签名地址）
+   * 由席位自己做。
+   *
+   *  `POST /files/upload/request { toolkit_slug, tool_slug, filename, mimetype, md5 }`
+   *  → `key`（就是工具参数里的 `s3key`）+ 一条预签名地址。`md5` 必填：上游拿它去重，
+   *  同一份文件第二次来可能只回 `key` 不给地址，那时席位不用再传。
+   *
+   * 预签名地址是 S3（或 Azure Blob）的，PUT 时**不带 x-api-key**、不能当 JSON 发；
+   * Azure 要多一个 `x-ms-blob-type: BlockBlob` 头——这些都写进 `headers` 交给席位照发。
+   * 字段名在两版之间改过（`new_presigned_url` / `newPresignedUrl`），都认。
+   *
+   * **这不是一次执行。** 上游不会因为它跑任何工具，所以调用方不计费、不落流水。
+   */
+  async prepareUpload(input: PrepareUploadInput): Promise<UploadTicket> {
+    const body = obj(
+      await this.call('POST', '/files/upload/request', {
+        body: {
+          toolkit_slug: input.toolkit,
+          tool_slug: input.tool,
+          filename: input.filename,
+          mimetype: input.mimetype,
+          md5: input.md5,
+        },
+        signal: input.signal,
+      }),
+    )
+    const key = str(body.key || body.s3key || body.s3_key)
+    if (!key) throw new ProviderError('Composio 没有返回文件句柄', 0)
+    const file = { name: input.filename, mimetype: input.mimetype, s3key: key }
+    const url = str(
+      body.new_presigned_url ||
+        body.newPresignedUrl ||
+        body.update_presigned_url ||
+        body.updatePresignedUrl ||
+        body.presigned_url ||
+        body.presignedUrl,
+    )
+    const type = str(body.type).toLowerCase()
+    // 去重命中：上游说「已经有这份了」，没给地址，直接用那个 key。
+    if (!url) {
+      if (type === 'existing' || type === 'exists') return { file, upload: null }
+      throw new ProviderError('Composio 没有返回上传地址', 0)
+    }
+    const backend = str(obj(body.metadata).storage_backend || obj(body.metadata).storageBackend).toLowerCase()
+    return {
+      file,
+      upload: {
+        url,
+        headers: {
+          'content-type': input.mimetype,
+          ...(backend.startsWith('azure') ? { 'x-ms-blob-type': 'BlockBlob' } : {}),
+        },
+      },
+    }
   }
 }

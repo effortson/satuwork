@@ -42,6 +42,71 @@ export async function toolsOf(db: Db, vendor: string, toolkit: string): Promise<
 }
 
 
+/**
+ * 席位侧那把上传工具的名字。写在 schema 的说明里，模型照着它去找。
+ *
+ * **两边要对得上**：`bot/src/tools/connector.ts` 注册的就是这个名。改一边不改另一边的
+ * 表现是：说明里让模型去调一把不存在的工具，它试一次、被告知「未知工具」、然后又回到
+ * 自己编 s3key 的老路上。
+ */
+export const UPLOAD_TOOL_NAME = 'connector_upload_file'
+
+/**
+ * 这一格参数是不是「要先暂存的文件」。
+ *
+ * Composio 把它标成 `file_uploadable: true`，形状是 `{ name, mimetype, s3key }`。两种
+ * 判据都认：标记在、或者形状对——供应商改标记名的那天，形状多半还在。
+ */
+export function isFileParam(schema: unknown): boolean {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return false
+  const o = schema as Record<string, unknown>
+  if (o.file_uploadable === true || o.fileUploadable === true) return true
+  const props = o.properties
+  return Boolean(props && typeof props === 'object' && 's3key' in (props as Record<string, unknown>))
+}
+
+/**
+ * 给文件参数的说明补上「先上传」这一句。**只改说明，不改形状**。
+ *
+ * 不补的话模型只看得到 `{ name, mimetype, s3key }` 三个字符串——它不知道 `s3key` 是
+ * 从哪来的，于是把工作区路径、或者一个 URL 填进去，上游去取就是 404，而模型把这一步
+ * 解释成「附件接口坏了」。线上真发生过一次。
+ *
+ * 数组里的文件（`attachments: [{...}]`）也补，补在 `items` 上。再往深的嵌套不追：
+ * 供应商的文件参数都在顶层或一层数组里，为了一个不存在的形状写递归只会把 schema 搅乱。
+ */
+export function annotateFileParams(schema: Record<string, unknown>): Record<string, unknown> {
+  const props = schema.properties
+  if (!props || typeof props !== 'object' || Array.isArray(props)) return schema
+  let changed = false
+  const next: Record<string, unknown> = {}
+  for (const [key, raw] of Object.entries(props as Record<string, unknown>)) {
+    const hinted = hintFileParam(raw)
+    if (hinted !== raw) changed = true
+    next[key] = hinted
+  }
+  return changed ? { ...schema, properties: next } : schema
+}
+
+const FILE_HINT =
+  `【文件参数】先调用 ${UPLOAD_TOOL_NAME} 把工作区里的文件上传，再把它返回的 ` +
+  `{ name, mimetype, s3key } 原样填在这里。不要自己编 s3key，也不要填本地路径或网址。`
+
+function hintFileParam(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+  const o = raw as Record<string, unknown>
+  if (isFileParam(o)) {
+    const desc = typeof o.description === 'string' && o.description.trim() ? `${o.description.trim()}\n` : ''
+    return { ...o, description: `${desc}${FILE_HINT}` }
+  }
+  if (o.type === 'array' && isFileParam(o.items)) {
+    const inner = o.items as Record<string, unknown>
+    const desc = typeof o.description === 'string' && o.description.trim() ? `${o.description.trim()}\n` : ''
+    return { ...o, description: `${desc}${FILE_HINT}`, items: hintFileParam(inner) }
+  }
+  return raw
+}
+
 /** toolkit slug 会进工具名和流水表，不收怪字符。 */
 export const TOOLKIT_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 

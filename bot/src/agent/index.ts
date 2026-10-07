@@ -2558,11 +2558,18 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 模型会去查、查到「没有」、然后告诉用户「知识库里没有」——而它根本没资格查。
      */
     const knowledgeOn = (catalog.knowledge?.length ?? 0) > 0
+    /**
+     * 工具表里一把连接器工具都没有时，`connector_upload_file` 也不进表。它只为那些工具
+     * 服务；单独摆着，模型会拿它去给公司自配的 MCP 传文件，然后收一句「不是连接器的工具」。
+     * 同样只是遮掩：直接报名字照样调得到，工具自己会拒。
+     */
+    const uploadOn = [...mcpNames].some((n) => Boolean(catalog.connectorToolOf?.(n)))
     const picked = all.filter(
       (t) =>
         (!t.name.startsWith('mcp_') || mcpNames.has(t.name)) &&
         (imageOn || t.name !== 'generate_image') &&
         (knowledgeOn || t.name !== 'knowledge_search') &&
+        (uploadOn || t.name !== 'connector_upload_file') &&
         (browserOn || !t.name.startsWith('browser_')) &&
         (desktopOn || !t.name.startsWith('desktop_')) &&
         (!memoryOff || !t.name.startsWith('memory_')) &&

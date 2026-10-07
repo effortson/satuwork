@@ -11,7 +11,7 @@ import type { ServerResponse } from 'node:http'
 import { HttpError, json, type Req, type Router } from '../http.ts'
 import type { RouteCtx } from './ctx.ts'
 import { ProviderError, providerFor, type ToolDef } from '../connectors/index.ts'
-import { MAX_TOOLS, blockMapOf, connectorDefOf, matchTools, toolsOf } from '../lib/connectors.ts'
+import { MAX_TOOLS, annotateFileParams, blockMapOf, connectorDefOf, matchTools, toolsOf } from '../lib/connectors.ts'
 import {
   SEARCH_LIMIT,
   metaToolDefs,
@@ -33,6 +33,18 @@ import type { Account, ConnectorCallStatus, ConnectorConnection, Db } from '../d
  * 可以调小，只为一件事：e2e 要在几秒内验到超时那一档，而不是真等 45 秒。
  */
 const UPSTREAM_TIMEOUT_MS = Math.max(1000, Math.trunc(Number(process.env.CONNECTOR_UPSTREAM_TIMEOUT_MS) || 45_000))
+
+/**
+ * 附件的两道上限。
+ *
+ * 大小默认 25 MB——Gmail 单封邮件的附件上限就是这个数，再大的文件连接器那头也收不下。
+ * **字节不经这里**（见下面那条路由），所以这个数只用来在要上传位之前先拒掉：供应商那边
+ * 为一份注定发不出去的文件开一个位子没有意义。
+ * 时限是向供应商要上传位那一次往返的，和一次工具调用同一档。
+ */
+const UPLOAD_MAX_BYTES = Math.max(1024, Math.trunc(Number(process.env.CONNECTOR_UPLOAD_MAX_BYTES) || 25 * 1024 * 1024))
+const UPLOAD_TIMEOUT_MS = Math.max(1000, Math.trunc(Number(process.env.CONNECTOR_UPLOAD_TIMEOUT_MS) || 30_000))
+const MD5_RE = /^[0-9a-f]{32}$/
 
 /**
  * 工具名去掉 toolkit 前缀：`GMAIL_SEND_EMAIL` → `SEND_EMAIL`。
@@ -254,8 +266,10 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
         tools: kept.map((tl) => ({
           name: shortToolName(g.toolkit, tl.slug),
           description: tl.description || tl.name,
-          inputSchema:
+          // 文件参数的说明里要写明「先上传」（见 annotateFileParams）。形状原样。
+          inputSchema: annotateFileParams(
             tl.inputSchema && Object.keys(tl.inputSchema).length ? tl.inputSchema : { type: 'object', properties: {} },
+          ),
         })),
         // 席位不认这个字段，但它得出现在响应里：截断必须说出来。
         ...(dropped > 0 ? { truncated: dropped } : {}),
@@ -356,7 +370,7 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
       rpcOk(
         res,
         id,
-        toolResult(`${hit.slug} — ${hit.description || hit.name}\n\n参数（JSON Schema）：\n${JSON.stringify(hit.inputSchema ?? {}, null, 2)}`),
+        toolResult(`${hit.slug} — ${hit.description || hit.name}\n\n参数（JSON Schema）：\n${JSON.stringify(annotateFileParams(hit.inputSchema ?? {}), null, 2)}`),
       )
       return
     }
@@ -500,6 +514,77 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
       await recordAfterUpstream(timedOut ? 'timeout' : 'error', !timedOut)
       const msg = e instanceof ProviderError ? e.message : (e as Error).message
       rpcOk(res, id, toolResult(timedOut ? `工具调用超时（${UPSTREAM_TIMEOUT_MS / 1000} 秒）` : `工具调用失败：${msg}`, true))
+    }
+  })
+
+  /**
+   * 附件：席位来要一个**上传位**，Gateway 转交供应商，把句柄（`{ name, mimetype, s3key }`）
+   * 和预签名的 PUT 地址还回去；席位自己把字节推到那个地址，再把句柄填进工具参数。
+   *
+   *   POST /mcp/connectors/:connectionId/files
+   *   { "tool": "SEND_EMAIL", "name": "报价.pdf", "mimetype": "application/pdf", "md5": "<hex>", "size": 123 }
+   *   → { "file": { name, mimetype, s3key }, "upload": { url, headers } | null }
+   *
+   * **字节为什么不经 Gateway**：Gateway 跑在函数环境里，请求体有 4.5 MB 的硬顶，而附件
+   * 动辄十几 MB——第一版就是把字节 POST 到这里，一份 11.5 MB 的手册被 Vercel 的 413 挡在
+   * 路由之外（和 runtime.ts 里会话附件改成直传同一个教训）。预签名地址不带供应商密钥，
+   * 密钥不下机器这条（connectors.md §2）不破。
+   *
+   * **门和 tools/call 一样一道不少**：票 → 归属 → active → 公司没禁 → 装了 → 工具在开着
+   * 的子集里。关掉了的工具，附件也传不上去；否则它就是一条把文件送出公司的旁路。
+   *
+   * **不计费、不落流水。** 上游没有因此执行任何工具，和 tools/list 同一档（§8：一次
+   * `tools/call` 才是一个计费事件）。只写一行日志。文件名在 body 里不在查询串里：
+   * 查询串会进访问日志，而文件名常常就是内容本身。
+   */
+  router.post('/mcp/connectors/:connectionId/files', async (req, res) => {
+    const g = await gate(req)
+    const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}) as Record<string, unknown>
+    const toolName = String(body.tool ?? '').trim()
+    if (!toolName) throw new HttpError(400, '要说明这份文件是给哪个工具用的（tool）')
+    let known: ToolDef[] = []
+    try {
+      known = await toolsOf(db, g.vendor, g.toolkit)
+    } catch {
+      /* 目录拉不到就按前缀猜，同 tools/call */
+    }
+    const slug = resolveToolSlug(g.toolkit, toolName, known)
+    const allow = new Set(g.enabledTools)
+    if (allow.size && !allow.has(slug)) throw new HttpError(403, '这个工具没有开启，去连接器那一屏打开它')
+
+    // 只留最后一段：这是给供应商看的展示名，不是路径，也不该把工作区的目录结构带出去。
+    const filename = (String(body.name ?? '').trim().split(/[\\/]/).pop() || '').trim()
+    if (!filename) throw new HttpError(400, '要带文件名（name）')
+    const mimetype = String(body.mimetype ?? '').split(';')[0].trim() || 'application/octet-stream'
+    const md5 = String(body.md5 ?? '').trim().toLowerCase()
+    if (!MD5_RE.test(md5)) throw new HttpError(400, '要带文件内容的 md5（32 位十六进制）')
+    const size = Number(body.size)
+    if (!Number.isFinite(size) || size <= 0 || !Number.isInteger(size)) throw new HttpError(400, '要带文件大小（size，字节）')
+    if (size > UPLOAD_MAX_BYTES) throw new HttpError(413, `附件太大，上限 ${Math.floor(UPLOAD_MAX_BYTES / 1024 / 1024)} MB`)
+
+    const provider = await providerFor(db, g.vendor)
+    if (!provider.configured()) throw new HttpError(402, '平台还没配这家供应商的密钥')
+    if (!provider.caps.fileUpload) throw new HttpError(501, '这家供应商不支持先暂存文件')
+
+    const startedAt = Date.now()
+    try {
+      const ticket = await provider.prepareUpload({
+        toolkit: g.toolkit,
+        tool: slug,
+        filename,
+        mimetype,
+        md5,
+        signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+      })
+      console.log(
+        `satuwork-gateway: 连接 ${g.conn.id}（${g.toolkit}）为 ${slug} 开附件上传位 ${filename}（${size} 字节${ticket.upload ? '' : '，去重命中'}，${Date.now() - startedAt} ms）`,
+      )
+      json(res, 200, ticket)
+    } catch (e) {
+      // 供应商那头的失败回 502 带原话：席位把它当业务失败交给模型，模型照实告诉用户。
+      const msg = e instanceof ProviderError ? e.message : (e as Error).message
+      console.warn(`satuwork-gateway: 连接 ${g.conn.id}（${g.toolkit}）开附件上传位失败：${msg}`)
+      throw new HttpError(502, `附件没传上去：${msg}`)
     }
   })
 }

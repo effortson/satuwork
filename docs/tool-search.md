@@ -138,6 +138,10 @@ owner 没填推荐集就还是留空（全开），由本文的降级兜底。**
 
 不在清单里的名字，回一句「这把连接里没有这个工具，先用 SW_SEARCH 找」，不回错。
 
+返回前过一遍 `annotateFileParams()`：文件参数（`file_uploadable`）的说明里补上「先调
+`connector_upload_file` 上传，再把句柄原样填这里」——和 `tools/list` 直出那一档同一句话
+（connectors.md §7「附件」）。只改说明，不改形状。
+
 ### `SW_RUN(tool, args)`
 
 真正的执行。**它就是今天的 `tools/call`，只是名字从参数里来。**
