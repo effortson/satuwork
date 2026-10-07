@@ -316,7 +316,9 @@ async function ingestOne(db: Db, meter: Meter, now: number): Promise<number> {
     }
     return 1
   } catch (e) {
-    if (e instanceof ExtractError || e instanceof HttpError) {
+    // 永久失败只认两种：解析不了，和 4xx（原文件丢了、格式不对）。取原文件时 Blob 回 5xx 是
+    // 一时的，走下面那支重来。
+    if (e instanceof ExtractError || (e instanceof HttpError && e.status < 500)) {
       await db.updateKnowledgeFile(file.id, { status: 'failed', error: e.message, leaseUntil: null })
       await db.refreshKnowledgeCounters(file.kbId)
       return 1

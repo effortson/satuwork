@@ -218,7 +218,7 @@ export function modelProviderCreds<T extends { provider: string }>(creds: T[]): 
  * 公司当前的订阅。套餐名跟着 SKU 走（SKU 改名这里就改名），所以每次现查，不落一份副本。
  * 套餐被删了就当没订：skuId 留着，名字给 null，界面显示「—」。
  */
-export async function publicPlan(db: Db, plan: Plan | undefined, used: number) {
+export async function publicPlan(db: Db, plan: Plan | undefined, used: number, kbUsed?: number) {
   const sku = plan?.skuId ? await db.planSku(plan.skuId) : undefined
   // 账期按生效的那张订单来：订单上的周期可以跟价目表不一样（改过价、改过周期的单子），
   // 卖出去的那张才算数。
@@ -228,7 +228,8 @@ export async function publicPlan(db: Db, plan: Plan | undefined, used: number) {
     used,
     // 知识库配额和已建个数并排给：界面上那行「知识库 1 / 2」两个数都要。
     knowledgeBases: plan?.knowledgeBases ?? 0,
-    knowledgeUsed: plan ? await db.countKnowledgeBases(plan.companyId) : 0,
+    // 列表那一屏把各家的个数一次查齐再传进来（orgSummary）；单看一家的照旧现查。
+    knowledgeUsed: kbUsed ?? (plan ? await db.countKnowledgeBases(plan.companyId) : 0),
     skuId: plan?.skuId ?? null,
     skuName: sku?.name ?? null,
     skuNameEn: sku?.nameEn ?? null,
@@ -321,14 +322,15 @@ export async function patchAccount(
   return { account, patch }
 }
 
-export async function orgSummary(db: Db, c: Company) {
+/** `kbCounts` 是 `db.knowledgeCountsByCompany()` 一次查齐的结果：列表里一家一条 count 是 N+1。 */
+export async function orgSummary(db: Db, c: Company, kbCounts?: Map<string, number>) {
   const plan = await db.plan(c.id)
   const used = await db.accountCount(c.id)
   return {
     ...publicCompany(c),
     seats: plan?.seats ?? 0,
     used,
-    plan: await publicPlan(db, plan, used),
+    plan: await publicPlan(db, plan, used, kbCounts ? kbCounts.get(c.id) ?? 0 : undefined),
   }
 }
 

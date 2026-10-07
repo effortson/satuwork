@@ -310,6 +310,15 @@ export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert,
       const again = await req(base, 'PUT', reg.json.upload.url, { token: admin, raw: Buffer.from('x'), headers: { 'content-type': 'application/octet-stream' } })
       assert(again.status === 409, `重传该 409：${again.status}`)
 
+      // 直传收不下来（比登记的大得多）：413，而且登记当场撤掉、容量释放，不留一行 uploading 等清扫。
+      const small = await req(base, 'POST', orgPath(`/${kbA}/files`), { token: admin, body: { name: 'too-big.txt', bytes: 10 } })
+      assert(small.status === 201, `register small ${small.status} ${small.text}`)
+      const over = await req(base, 'PUT', small.json.upload.url, { token: admin, raw: Buffer.alloc(5000, 97), headers: { 'content-type': 'application/octet-stream' } })
+      assert(over.status === 413, `超大该 413：${over.status} ${over.text}`)
+      const afterOver = await req(base, 'GET', orgPath(`/${kbA}`), { token: admin })
+      assert(!afterOver.json.files.some((x) => x.id === small.json.file.id), '收不下来的登记该当场撤掉')
+      assert(afterOver.json.knowledge.bytesUsed === Buffer.byteLength(handbook), `容量该释放：${afterOver.json.knowledge.bytesUsed}`)
+
       const ready = await until(async () => {
         const d = await req(base, 'GET', orgPath(`/${kbA}`), { token: admin })
         const f = d.json.files.find((x) => x.id === fileId)

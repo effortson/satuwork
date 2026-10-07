@@ -22,6 +22,7 @@ async function loadKnowledge() {
   const data = await api('GET', kbBase())
   state.knowledge = {
     enabled: data.enabled !== false,
+    reason: data.reason || '',
     list: Array.isArray(data.knowledge) ? data.knowledge : [],
     quota: Number(data.quota) || 0,
     used: Number(data.used) || 0,
@@ -31,9 +32,10 @@ async function loadKnowledge() {
 async function loadKnowledgeDetail(id) {
   const data = await api('GET', kbBase(`/${encodeURIComponent(id)}`))
   state.kbDetail = { id, knowledge: data.knowledge, files: Array.isArray(data.files) ? data.files : [], canEdit: !!data.canEdit, enabled: data.enabled !== false }
-  // 共享范围的编辑态跟着新数据重置：别拿上一个库的草稿画这一个。
+  // 共享范围的编辑态和试搜结果都跟着库走：别拿上一个库的草稿、上一个库的命中画这一个。
   if (!state.kbShareDraft || state.kbShareDraft.id !== id) {
     state.kbShareDraft = { id, share: data.knowledge.share, botIds: [...(data.knowledge.botIds || [])] }
+    state.kbSearch = null
   }
   scheduleKnowledgePoll()
 }
@@ -84,7 +86,6 @@ function kbMeter(k) {
 }
 
 function kbCard(k) {
-  const busy = (k.fileCount || 0) - (k.readyCount ?? k.fileCount ?? 0)
   return `<button type="button" class="satu-panel" style="gap: var(--space-3); text-align: left; cursor: pointer;" data-act="go" data-href="/knowledge/${encodeURIComponent(k.id)}">
     <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
       <b style="font-size: 15px;">${esc(k.name)}</b>
@@ -92,7 +93,7 @@ function kbCard(k) {
     </div>
     <p style="margin: 0; font-size: 13px; color: var(--muted-foreground); min-height: 18px;">${esc(k.desc || t('还没有说明。说明会告诉 Bot 这个库里是什么。', 'No description yet. It tells the bot what is inside.'))}</p>
     ${kbMeter(k)}
-    <div style="font-size: 12px; color: var(--muted-foreground);">${t(`${k.fileCount || 0} 个文件 · ${k.chunkCount || 0} 段`, `${k.fileCount || 0} files · ${k.chunkCount || 0} chunks`)}${busy > 0 ? '' : ''}</div>
+    <div style="font-size: 12px; color: var(--muted-foreground);">${t(`${k.fileCount || 0} 个文件 · ${k.chunkCount || 0} 段`, `${k.fileCount || 0} files · ${k.chunkCount || 0} chunks`)}</div>
   </button>`
 }
 
@@ -158,7 +159,7 @@ function knowledgePage() {
         ${admin ? `<button type="button" class="btn btn-primary" data-act="kb-create-open" ${full || !k.enabled ? 'disabled' : ''} title="${esc(full ? (k.quota ? t('已达套餐上限', 'Plan limit reached') : t('当前套餐不含知识库', 'Your plan has no knowledge bases')) : '')}">${t('新建知识库', 'New knowledge base')}</button>` : ''}
       </div>
       ${flashes()}
-      ${!k.enabled ? `<div class="gw-flash">${t('平台还没开通知识库（没有配置向量库）。', 'Knowledge bases are not enabled on this platform yet (no vector store configured).')}</div>` : ''}
+      ${!k.enabled ? `<div class="gw-flash">${t('平台还没开通知识库', 'Knowledge bases are not enabled on this platform yet')}${k.reason ? `：${esc(k.reason)}` : t('（没有配置向量库）。', ' (no vector store configured).')}</div>` : ''}
       ${admin && k.enabled && !k.quota ? `<div class="gw-flash">${t('当前套餐不含知识库。要用的话请联系平台升级套餐。', 'Your current plan has no knowledge bases. Contact the platform to upgrade.')}</div>` : ''}
       ${k.list.length
         ? `<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-4);">${k.list.map(kbCard).join('')}</div>`
@@ -181,7 +182,7 @@ function kbFileRow(f, canEdit) {
     <span class="tag ${cls}">${t(zh, en)}${pct != null ? ` ${pct}%` : ''}</span>
     <span style="font-size: 12px; color: var(--muted-foreground);">${esc(fmtTime(f.createdAt))}</span>
     <div class="satu-rowactions" style="display: flex; gap: var(--space-2); justify-content: flex-end;">
-      ${f.status !== 'uploading' ? `<a class="btn btn-ghost" href="${esc(kbBase(`/${encodeURIComponent(f.kbId)}/files/${encodeURIComponent(f.id)}/download`))}" data-act="kb-download" data-id="${esc(f.id)}">${t('下载', 'Download')}</a>` : ''}
+      ${f.status !== 'uploading' ? `<button type="button" class="btn btn-ghost" data-act="kb-download" data-id="${esc(f.id)}" data-name="${esc(f.name)}">${t('下载', 'Download')}</button>` : ''}
       ${canEdit && f.status === 'failed' ? `<button type="button" class="btn btn-secondary" data-act="kb-file-retry" data-id="${esc(f.id)}">${t('重试', 'Retry')}</button>` : ''}
       ${canEdit ? `<button type="button" class="btn btn-ghost" data-act="kb-file-delete" data-id="${esc(f.id)}" data-name="${esc(f.name)}">${t('删除')}</button>` : ''}
     </div>
@@ -331,7 +332,18 @@ async function knowledgeAct(act, btn) {
     }
     return true
   }
-  if (act === 'kb-download') return false
+  if (act === 'kb-download') {
+    // 登录态在请求头里，不在 cookie 里：一个裸的 <a href> 拿不到文件，得自己带票取回来再交给浏览器存。
+    const d = state.kbDetail
+    if (!d) return true
+    try {
+      await knowledgeDownload(d.id, btn.getAttribute('data-id'), btn.getAttribute('data-name'))
+    } catch (err) {
+      flash('err', err.message)
+      render()
+    }
+    return true
+  }
   if (act === 'kb-file-retry') {
     const d = state.kbDetail
     if (!d) return true
@@ -457,6 +469,25 @@ async function submitKnowledgeSearch(e) {
     flash('err', err.message)
   }
   render()
+}
+
+async function knowledgeDownload(kbId, fileId, name) {
+  const r = await swFetch(kbBase(`/${encodeURIComponent(kbId)}/files/${encodeURIComponent(fileId)}/download`), {
+    headers: { authorization: 'Bearer ' + token() },
+  })
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`
+    try { msg = (await r.json()).error || msg } catch {}
+    throw new Error(msg)
+  }
+  const url = URL.createObjectURL(await r.blob())
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name || 'file'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 // ── 上传 ────────────────────────────────────────────────────────────────

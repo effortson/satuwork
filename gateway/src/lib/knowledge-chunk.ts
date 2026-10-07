@@ -97,8 +97,14 @@ function headingOf(para: string): { level: number; text: string } | null {
   if (para.includes('\n')) return null
   const m = /^(#{1,6})\s+(.+?)\s*#*$/.exec(para)
   if (m) return { level: m[1].length, text: m[2].trim() }
-  // 「三、考勤」「3.2 请假」这类中文文档常见的编号标题：短、不以句号结尾。
-  if (para.length <= 40 && /^([一二三四五六七八九十]+[、.．]|\d+(\.\d+)*[、.．\s])\S/.test(para) && !/[。！？.!?]$/.test(para)) {
+  // 「三、考勤」「3.2 请假」「1、入职」这类中文文档常见的编号标题：短、不以句号结尾。
+  // **「5 天带薪年假」「2024 年营收」不算**：纯数字加空格是正文里最常见的开头，当成标题会把
+  // 那一行从正文里抠掉；要么带顿号 / 点号（1、 1.）要么是多级编号（3.2），后面还不能再接数字。
+  if (
+    para.length <= 40 &&
+    /^([一二三四五六七八九十]+[、.．]\s*|\d+[、.．]\s*|\d+(\.\d+)+\s+)[^\d\s]/.test(para) &&
+    !/[。！？.!?，,；;]$/.test(para)
+  ) {
     const level = /^\d+\.\d+/.test(para) ? 2 : 1
     return { level, text: para }
   }

@@ -15,7 +15,7 @@ import { afterResponse } from '../lib/background.ts'
 import { originOf, requireOrgUser } from '../lib/guards.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import { KB_FILE_TYPES, requireSupported } from '../lib/knowledge-extract.ts'
-import { blobPathOf, openStored, saveStream, storeMode, verifyBlobUpload } from '../lib/knowledge-store.ts'
+import { STORE_NOT_WRITABLE, blobPathOf, openStored, saveStream, storeMode, storeWritable, verifyBlobUpload } from '../lib/knowledge-store.ts'
 import { VECTOR_NOT_CONFIGURED, vectorConfigured } from '../lib/knowledge-vector.ts'
 import { cleanFileName, deleteKnowledgeFileNow, publicKnowledgeBase, publicKnowledgeFile, retryKnowledgeFile, searchKnowledge, tickKnowledge } from '../lib/knowledge.ts'
 
@@ -42,6 +42,19 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
   /** 没配向量库，写接口一律 501：界面上那句「平台未开通知识库」就是从这儿来的。 */
   function requireVector(): void {
     if (!vectorConfigured()) throw new HttpError(501, VECTOR_NOT_CONFIGURED)
+  }
+
+  /** 原文件没地方放（Vercel 上没配 Blob）同样是「没开通」：建库和登记文件都拦在门口。 */
+  function requireStore(): void {
+    if (!storeWritable()) throw new HttpError(501, STORE_NOT_WRITABLE)
+  }
+
+  function enabled(): boolean {
+    return vectorConfigured() && storeWritable()
+  }
+
+  function disabledReason(): string {
+    return !vectorConfigured() ? VECTOR_NOT_CONFIGURED : !storeWritable() ? STORE_NOT_WRITABLE : ''
   }
 
   function isAdmin(account: Account): boolean {
@@ -96,7 +109,8 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
   router.get('/orgs/:id/knowledge/config', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id)
     json(res, 200, {
-      enabled: vectorConfigured(),
+      enabled: enabled(),
+      reason: disabledReason(),
       upload: storeMode() === 'blob' ? 'blob-client' : 'direct',
       limits: { bytesMax: KB_BYTES_MAX, fileMax: KB_FILE_MAX, filesMax: KB_FILES_MAX, nameMax: KB_NAME_MAX, descMax: KB_DESC_MAX },
       types: Object.keys(KB_FILE_TYPES),
@@ -140,7 +154,8 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
     const list = await visibleKnowledge(account, req.params.id)
     const shares = isAdmin(account) ? await db.knowledgeSharesOfMany(list.map((k) => k.id)) : new Map<string, string[]>()
     json(res, 200, {
-      enabled: vectorConfigured(),
+      enabled: enabled(),
+      reason: disabledReason(),
       knowledge: list.map((k) => publicKnowledgeBase(k, shares.get(k.id) ?? [])),
       ...(await quotaOf(req.params.id)),
     })
@@ -149,6 +164,7 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
   router.post('/orgs/:id/knowledge', async (req, res) => {
     const account = await requireOrgUser(req, db, keys, req.params.id, true)
     requireVector()
+    requireStore()
     await requireNotExpired(req.params.id)
     const body = bodyOf(req)
     const name = nameOf(body, 'name', KB_NAME_MAX)
@@ -188,7 +204,8 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
     json(res, 200, {
       knowledge: publicKnowledgeBase(kb, isAdmin(account) ? await db.knowledgeShares(kb.id) : []),
       files: files.map(publicKnowledgeFile),
-      enabled: vectorConfigured(),
+      enabled: enabled(),
+      reason: disabledReason(),
       canEdit: isAdmin(account),
     })
   })
@@ -241,6 +258,7 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
   router.post('/orgs/:id/knowledge/:kbId/files', async (req, res) => {
     const { account, kb } = await adminKb(req, req.params.id)
     requireVector()
+    requireStore()
     await requireNotExpired(req.params.id)
     const body = bodyOf(req)
     const name = cleanFileName(strField(body, 'name'))
@@ -347,7 +365,16 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
     const file = await fileOf(kb, req.params.fileId)
     if (file.status !== 'uploading') throw new HttpError(409, '这份文件已经传过了')
     // 比登记的多给一点余量：浏览器报的 size 和真正的字节数偶尔差一个 BOM。
-    const stored = await saveStream(file, req as unknown as AsyncIterable<Buffer>, Math.min(KB_FILE_MAX, file.bytes + 1024))
+    let stored
+    try {
+      stored = await saveStream(file, req as unknown as AsyncIterable<Buffer>, Math.min(KB_FILE_MAX, file.bytes + 1024))
+    } catch (e) {
+      // 收不下来的（超大、半路断了）当场把登记撤掉：留一行 uploading 等一小时后的清扫，
+      // 这一小时里它占着容量、界面上还一直「上传中」。
+      await db.deleteKnowledgeFile(file.id)
+      await db.refreshKnowledgeCounters(kb.id)
+      throw e
+    }
     const next = await db.updateKnowledgeFile(file.id, { ...stored, status: 'queued', error: '' })
     await db.refreshKnowledgeCounters(kb.id)
     kick()

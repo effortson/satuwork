@@ -221,8 +221,9 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
       throw new HttpError(502, (e as Error).message)
     }
     // 知识库的 Upstash 命名空间和原文件不在库里：删行之前把它们列出来，回完包再清。
+    // **连正在删的也列上**：那几个 tick 还没来得及收，行一旦跟着公司级联掉，就再没人清它的命名空间了。
     // 清不干净只是留几个孤儿命名空间，不该挡住删公司。
-    const knowledge = await db.knowledgeBasesOf(company.id)
+    const knowledge = await db.allKnowledgeBasesOf(company.id)
     const knowledgeFiles = new Map(await Promise.all(knowledge.map(async (k) => [k.id, await db.knowledgeFiles(k.id)] as const)))
     await db.tx(() => db.deleteCompany(company.id))
     if (knowledge.length) {

@@ -2366,6 +2366,18 @@ export class Db {
     return rows.map(knowledgeBaseOf)
   }
 
+  /** 含正在删的那些。只给删公司那条路用：那一刻什么都要一起清。 */
+  async allKnowledgeBasesOf(companyId: string): Promise<KnowledgeBase[]> {
+    const rows = await this.many('select * from knowledge_bases where "companyId" = ? order by "createdAt"', [companyId])
+    return rows.map(knowledgeBaseOf)
+  }
+
+  /** 每家公司建了几个（不含正在删的），一次查齐。公司列表那一屏用，省得一家一条 count。 */
+  async knowledgeCountsByCompany(): Promise<Map<string, number>> {
+    const rows = await this.many('select "companyId", count(*)::int as n from knowledge_bases where "deletingAt" is null group by "companyId"')
+    return new Map(rows.map((r) => [str(r.companyId), num(r.n)]))
+  }
+
   async knowledgeBase(id: string): Promise<KnowledgeBase | undefined> {
     const r = await this.one('select * from knowledge_bases where id = ?', [id])
     return r ? knowledgeBaseOf(r) : undefined

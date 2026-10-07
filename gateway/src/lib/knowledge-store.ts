@@ -50,10 +50,19 @@ function diskPathOf(storage: string): string {
   return full
 }
 
+export const STORE_NOT_WRITABLE = '函数环境没有可写磁盘：配 BLOB_READ_WRITE_TOKEN 走对象存储'
+
+/**
+ * 原文件有没有地方放。函数环境（Vercel）只有 /tmp，不跨实例，没配 Blob 就是没地方放——
+ * 这件事要在**登记**那一步就说出来，不能等到 PUT 才 501：登记已经占了容量、留了一行 uploading。
+ */
+export function storeWritable(): boolean {
+  if (storeMode() === 'blob') return true
+  return !(process.env.VERCEL && !process.env.SATUWORK_GATEWAY_HOME)
+}
+
 function assertDiskWritable(): void {
-  if (process.env.VERCEL && !process.env.SATUWORK_GATEWAY_HOME) {
-    throw new HttpError(501, '函数环境没有可写磁盘：配 BLOB_READ_WRITE_TOKEN 走对象存储')
-  }
+  if (!storeWritable()) throw new HttpError(501, STORE_NOT_WRITABLE)
 }
 
 export interface Stored {

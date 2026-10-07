@@ -15,7 +15,8 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
 
   router.get('/platform/orgs', async (req, res) => {
     await requireOwnerUser(req, db, keys)
-    json(res, 200, { orgs: await Promise.all((await db.companies()).map((c) => orgSummary(db, c))) })
+    const kbCounts = await db.knowledgeCountsByCompany()
+    json(res, 200, { orgs: await Promise.all((await db.companies()).map((c) => orgSummary(db, c, kbCounts))) })
   })
 
   router.get('/platform/accounts', async (req, res) => {
