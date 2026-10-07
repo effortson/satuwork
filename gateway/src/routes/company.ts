@@ -767,19 +767,26 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
       cur.calls += m.calls
       modelAcc.set(key, cur)
     }
-    const modelRows = [...modelAcc.entries()].sort((a, b) => b[1].tokens - a[1].tokens)
-    const topTokens = modelRows[0]?.[1].tokens ?? 0
-    const byModel = modelRows.map(([name, m]) => ({
-      name,
-      value: `${n(m.tokens)} token · ${usdMicros(spentBySubject.get(name) ?? 0)}`,
-      pct: pctOf(m.tokens, topTokens),
+    /**
+     * 三块分布的条长都按**钱**算，不按次数或 token：这一页回答的是「钱花哪了」，
+     * 一次 gpt-5 的调用和一次连接器查询按次数等长，按钱差两个量级。排序跟着条长走，
+     * 不然最长的条会出现在第二行。
+     */
+    const modelRows = [...modelAcc.entries()]
+      .map(([name, m]) => ({ name, tokens: m.tokens, micros: spentBySubject.get(name) ?? 0 }))
+      .sort((a, b) => b.micros - a.micros || b.tokens - a.tokens)
+    const topModel = modelRows[0]?.micros ?? 0
+    const byModel = modelRows.map((m) => ({
+      name: m.name,
+      value: `${n(m.tokens)} token · ${usdMicros(m.micros)}`,
+      pct: pctOf(m.micros, topModel),
     }))
 
     const KINDS: [string, string][] = [['llm', '模型'], ['connector', '连接器'], ['web', '网页']]
-    const topKind = Math.max(0, ...[...byKindAcc.values()].map((x) => x.calls))
+    const topKind = Math.max(0, ...[...byKindAcc.values()].map((x) => x.micros))
     const byKind = KINDS.filter(([k]) => byKindAcc.has(k)).map(([k, label]) => {
       const x = byKindAcc.get(k) as { calls: number; micros: number }
-      return { name: label, value: `${n(x.calls)} 次 · ${usdMicros(x.micros)}`, pct: pctOf(x.calls, topKind) }
+      return { name: label, value: `${n(x.calls)} 次 · ${usdMicros(x.micros)}`, pct: pctOf(x.micros, topKind) }
     })
 
     const bots = scope.companyId
@@ -788,13 +795,13 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
         ? await db.botsFor((await db.account(scope.accountId))?.companyId ?? null, scope.accountId)
         : []
     const botName = new Map(bots.map((b) => [b.id, b.name]))
-    const botRows = [...byBotAcc.entries()].sort((a, b) => b[1].calls - a[1].calls)
-    const topBot = botRows[0]?.[1].calls ?? 0
+    const botRows = [...byBotAcc.entries()].sort((a, b) => b[1].micros - a[1].micros || b[1].calls - a[1].calls)
+    const topBot = botRows[0]?.[1].micros ?? 0
     const byAgent = botRows.map(([id, x]) => ({
       // 名字查不到就用 id：Bot 被删了，它花过的钱还在账上。
       name: botName.get(id) ?? id,
       value: `${n(x.calls)} 次 · ${usdMicros(x.micros)}`,
-      pct: pctOf(x.calls, topBot),
+      pct: pctOf(x.micros, topBot),
     }))
 
     const todayKind = new Map(todayCharges.map((c) => [c.kind, c]))
