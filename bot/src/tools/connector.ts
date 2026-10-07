@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -11,9 +12,11 @@ import { fail, registerTool } from './common.ts'
  * 要的是一个指向供应商自己存储的句柄 `{ name, mimetype, s3key }`。工作区里的文件只在这台
  * 席位上，供应商那边永远不存在——所以要先把它送过去，换回那个句柄，再填进工具参数。
  *
- * 这把工具就是那一步。它**打的是 Gateway**（`/mcp/connectors/:id/files`），不直连供应商：
- * 暂存要带平台密钥，而密钥不下机器（docs/connectors.md §2）。Gateway 那边验的门和调工具
- * 一样一道不少——关掉的工具，附件也传不上去。
+ * 这把工具就是那一步，**两段**：先向 Gateway（`/mcp/connectors/:id/files`）要一个上传位
+ * ——要位子要带平台密钥，而密钥不下机器（docs/connectors.md §2），Gateway 那边验的门和
+ * 调工具一样一道不少；再把字节**自己** PUT 到 Gateway 回来的预签名地址。字节不经 Gateway：
+ * 它跑在函数环境里，请求体有 4.5 MB 的硬顶，一份十几 MB 的手册在第一版里就是这么被
+ * 413 挡掉的。
  *
  * 没有它的时候线上真发生过一次：模型把工作区路径填进 `s3key`，上游去取就是 404，它把
  * 这一步解释成「附件接口坏了」，然后把邮件改成不带附件的草稿转人工。
@@ -29,8 +32,10 @@ export const UPLOAD_TOOL = 'connector_upload_file'
 
 /** 单份附件上限。Gateway 也有一道（`CONNECTOR_UPLOAD_MAX_BYTES`），这边先劝一句，省一次往返。 */
 const MAX_BYTES = Math.max(1024, Math.trunc(Number(process.env.SATUWORK_CONNECTOR_UPLOAD_MAX_BYTES) || 25 * 1024 * 1024))
-/** 要比 Gateway 的 `CONNECTOR_UPLOAD_TIMEOUT_MS`（90 秒）长：那边先超时，这边才拿得到它的错误原文。 */
-const TIMEOUT_MS = 120_000
+/** 要上传位那一次往返。要比 Gateway 的 `CONNECTOR_UPLOAD_TIMEOUT_MS`（30 秒）长：那边先超时，这边才拿得到它的错误原文。 */
+const TICKET_TIMEOUT_MS = 60_000
+/** 把字节推到对象存储。25 MB 走慢一点的出口也得给够。 */
+const PUT_TIMEOUT_MS = 10 * 60_000
 
 /** 三个元工具（docs/tool-search.md §5）：真正的工具名在参数里，这把工具要另问一句。 */
 const META_TOOLS = new Set(['SW_SEARCH', 'SW_DESCRIBE', 'SW_RUN'])
@@ -87,16 +92,18 @@ export function mimeOf(filename: string): string {
  * 服务器的 MCP 地址 → 这把连接的 `/files` 地址。
  *
  * 目录下发的 endpoint 长这样：`https://gw/mcp/connectors/<id>?botId=<bot>`。路径后面接
- * `/files`，查询串原样保留（`botId` 是统计归因要的），再加上 `tool` 和 `name`。
- * **用 URLSearchParams 编码，Gateway 那边不再 decode**——两边各编解一次，名字里本来
- * 就有的 `%` 会被吃掉。
+ * `/files`，查询串原样保留（`botId` 是统计归因要的）。文件名走 body，不进查询串。
  */
-export function uploadUrlOf(endpoint: string, remoteTool: string, filename: string): string {
+export function uploadUrlOf(endpoint: string): string {
   const u = new URL(endpoint)
   u.pathname = `${u.pathname.replace(/\/+$/, '')}/files`
-  u.searchParams.set('tool', remoteTool)
-  u.searchParams.set('name', filename)
   return u.toString()
+}
+
+/** Gateway 回来的那张票。 */
+interface Ticket {
+  file?: { name?: unknown; mimetype?: unknown; s3key?: unknown }
+  upload?: { url?: unknown; headers?: unknown } | null
 }
 
 interface Args {
@@ -176,18 +183,20 @@ export function apply(ctx: Context) {
       const filename = basename(abs)
       const mimetype = mimeOf(filename)
       const bytes = await readFile(abs)
+      const md5 = createHash('md5').update(bytes).digest('hex')
+      const signals = call.signal ? [call.signal] : []
 
-      const signals = [AbortSignal.timeout(TIMEOUT_MS), ...(call.signal ? [call.signal] : [])]
+      // ── 第一段：向 Gateway 要上传位 ───────────────────────────────────
       let r: Response
       try {
-        r = await fetch(uploadUrlOf(info.endpoint, remoteTool, filename), {
+        r = await fetch(uploadUrlOf(info.endpoint), {
           method: 'POST',
           headers: {
             authorization: `Bearer ${info.token}`,
-            'content-type': mimetype,
+            'content-type': 'application/json',
           },
-          body: new Uint8Array(bytes),
-          signal: AbortSignal.any(signals),
+          body: JSON.stringify({ tool: remoteTool, name: filename, mimetype, md5, size: st.size }),
+          signal: AbortSignal.any([AbortSignal.timeout(TICKET_TIMEOUT_MS), ...signals]),
         })
       } catch (e) {
         // 连不上是管道故障，模型改什么都没用——照常抛，ToolService 标 failed。
@@ -210,15 +219,48 @@ export function apply(ctx: Context) {
         }
         throw new Error(`Gateway 返回 HTTP ${r.status}${text ? ` ${text.slice(0, 200)}` : ''}`)
       }
-      let file: { name?: unknown; mimetype?: unknown; s3key?: unknown } | undefined
+      let ticket: Ticket
       try {
-        file = (JSON.parse(text) as { file?: typeof file }).file
+        ticket = JSON.parse(text) as Ticket
       } catch {
-        file = undefined
+        ticket = {}
       }
+      const file = ticket.file
       if (!file || typeof file.s3key !== 'string' || !file.s3key) {
         throw new Error(`Gateway 没有返回文件句柄：${text.slice(0, 200)}`)
       }
+
+      // ── 第二段：字节自己推到预签名地址。null = 供应商按 md5 去重命中，已经有这份了。──
+      const upload = ticket.upload
+      if (upload && typeof upload.url === 'string' && upload.url) {
+        const headers: Record<string, string> = {}
+        if (upload.headers && typeof upload.headers === 'object') {
+          for (const [k, v] of Object.entries(upload.headers as Record<string, unknown>)) {
+            if (typeof v === 'string') headers[k.toLowerCase()] = v
+          }
+        }
+        if (!headers['content-type']) headers['content-type'] = mimetype
+        let put: Response
+        try {
+          put = await fetch(upload.url, {
+            method: 'PUT',
+            headers,
+            body: new Uint8Array(bytes),
+            signal: AbortSignal.any([AbortSignal.timeout(PUT_TIMEOUT_MS), ...signals]),
+          })
+        } catch (e) {
+          throw new Error(`传不到连接器的存储：${(e as Error).message}`)
+        }
+        await put.arrayBuffer().catch(() => undefined)
+        if (!put.ok) {
+          /**
+           * 存储拒收**是业务失败**：预签名过期（拿到票之后等太久）、地址被改过、文件比
+           * 报的大小还大。都是能照着话重来一次的事，不是管道坏了。
+           */
+          fail(`连接器的存储拒收了这份文件（HTTP ${put.status}）。重新调用一次这把工具再试；要是一直这样，换个方式分享。`)
+        }
+      }
+
       const handle = { name: String(file.name || filename), mimetype: String(file.mimetype || mimetype), s3key: file.s3key }
       return {
         text:

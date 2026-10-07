@@ -4,12 +4,14 @@
  *
  * 盯的是这把工具**自己**的那几件事，Gateway 那一侧由同一个套件里的 HTTP 用例守着：
  *
- * 1. 打到哪、带什么：`/mcp/connectors/<id>/files`，票在 authorization 里，文件是给哪个
- *    远端工具的在 `tool`，文件名在 `name`，字节原样、MIME 在 content-type
- * 2. 元工具那层壳：`SW_RUN` 的真名在参数里，这把工具要另问一句 `target`
- * 3. 回给模型的话里**原样**带着句柄，模型照抄就能填
- * 4. 拒绝各说各的话：不是连接器的工具、文件太大、越界、Gateway 判出来的 4xx
+ * 1. 两段：先向 `/mcp/connectors/<id>/files` 要位子（JSON：工具、文件名、MIME、md5、大小，
+ *    票在 authorization 里），再把字节**自己** PUT 到票里的地址、照票里的头发
+ * 2. 去重命中（票里 `upload` 为 null）就不再 PUT
+ * 3. 元工具那层壳：`SW_RUN` 的真名在参数里，这把工具要另问一句 `target`
+ * 4. 回给模型的话里**原样**带着句柄，模型照抄就能填
+ * 5. 拒绝各说各的话：不是连接器的工具、文件太大、越界、Gateway 判出来的 4xx、存储拒收
  */
+import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -27,29 +29,47 @@ const { mimeOf, uploadUrlOf } = connectorTool
 const root = mkdtempSync(join(tmpdir(), 'satu-upload-'))
 process.on('exit', () => { try { rmSync(root, { recursive: true, force: true }) } catch {} })
 
-// ── 假 Gateway：记下收到的每一次，按查询串决定回什么 ───────────────────
+// ── 假 Gateway + 假对象存储（同一台）：记下收到的每一次，按参数决定回什么 ──────────
 const seen = []
+let n = 0
 const gw = createServer((req, res) => {
   const url = new URL(req.url, 'http://x')
   const chunks = []
   req.on('data', (d) => chunks.push(d))
   req.on('end', () => {
     const body = Buffer.concat(chunks)
-    seen.push({
+    const entry = {
       method: req.method,
       path: url.pathname,
       query: Object.fromEntries(url.searchParams),
       auth: req.headers.authorization || '',
       contentType: req.headers['content-type'] || '',
+      blobType: req.headers['x-ms-blob-type'] || '',
       body,
-    })
+    }
+    seen.push(entry)
     const send = (code, obj) => {
       res.writeHead(code, { 'content-type': 'application/json' })
       res.end(JSON.stringify(obj))
     }
-    if (url.searchParams.get('tool') === 'GMAIL_REJECTED') return send(403, { error: '这个工具没有开启，去连接器那一屏打开它' })
-    if (url.searchParams.get('tool') === 'GMAIL_BROKEN') return send(500, { error: 'internal error' })
-    send(200, { file: { name: url.searchParams.get('name'), mimetype: req.headers['content-type'], s3key: `s3/${body.length}` } })
+    // 对象存储那一条：按 key 决定收不收。
+    if (req.method === 'PUT' && url.pathname.startsWith('/s3/')) {
+      if (url.pathname.endsWith('reject')) {
+        res.writeHead(403)
+        return res.end('<Error>SignatureDoesNotMatch</Error>')
+      }
+      res.writeHead(200)
+      return res.end()
+    }
+    let json = {}
+    try { json = JSON.parse(body.toString('utf8') || '{}') } catch {}
+    entry.json = json
+    if (json.tool === 'GMAIL_REJECTED') return send(403, { error: '这个工具没有开启，去连接器那一屏打开它' })
+    if (json.tool === 'GMAIL_BROKEN') return send(500, { error: 'internal error' })
+    const file = { name: json.name, mimetype: json.mimetype, s3key: `req-${++n}` }
+    if (json.tool === 'GMAIL_DEDUP') return send(200, { file, upload: null })
+    const key = json.tool === 'GMAIL_S3_REJECT' ? 'reject' : file.s3key
+    send(200, { file, upload: { url: `http://127.0.0.1:${gw.address().port}/s3/${key}`, headers: { 'content-type': json.mimetype, 'x-ms-blob-type': 'BlockBlob' } } })
   })
 })
 await new Promise((r) => gw.listen(0, '127.0.0.1', r))
@@ -99,33 +119,45 @@ out.mime = {
   unknown: mimeOf('x.whatever'),
 }
 {
-  const u = new URL(uploadUrlOf('https://gw.example.com/mcp/connectors/c1?botId=b1', 'SEND_EMAIL', '报 价%41.pdf'))
-  out.url = {
-    path: u.pathname,
-    botId: u.searchParams.get('botId'),
-    tool: u.searchParams.get('tool'),
-    // 名字里的空格和 `%41` 要原样到对面：这边编一次、那边只解一次。
-    name: u.searchParams.get('name'),
+  const u = new URL(uploadUrlOf('https://gw.example.com/mcp/connectors/c1?botId=b1'))
+  out.url = { path: u.pathname, botId: u.searchParams.get('botId') }
+}
+
+// ── 2. 正常上传：先要位子（JSON），再自己 PUT 字节 ─────────────────────
+{
+  const r = await call({ tool: 'mcp_gmail_default_send_email', path: 'docs/酒店版手册.pdf' })
+  const ticket = seen.at(-2)
+  const put = seen.at(-1)
+  out.upload = {
+    不算失败: r.failed !== true,
+    要位子的路径: ticket?.path === '/mcp/connectors/conn-1/files' && ticket?.method === 'POST',
+    要位子是JSON: ticket?.contentType.startsWith('application/json'),
+    票: ticket?.auth,
+    远端工具: ticket?.json?.tool,
+    文件名: ticket?.json?.name,
+    归因: ticket?.query.botId,
+    MIME: ticket?.json?.mimetype,
+    md5对: ticket?.json?.md5 === createHash('md5').update(pdf).digest('hex'),
+    大小对: ticket?.json?.size === pdf.length,
+    // 字节走的是票里那条地址，不是 Gateway；头照票里的发。
+    PUT地址: put?.path,
+    PUT头: put?.contentType,
+    PUT带了票里的头: put?.blobType === 'BlockBlob',
+    字节原样: put ? put.body.equals(pdf) : false,
+    话里带句柄: r.text.includes('"s3key":"req-1"') && r.text.includes('"mimetype":"application/pdf"'),
+    话里点名远端工具: r.text.includes('SEND_EMAIL'),
+    引用了那份文件: Array.isArray(r.refs) && r.refs[0]?.path === 'docs/酒店版手册.pdf',
   }
 }
 
-// ── 2. 正常上传：打对地方、带对东西、回的话里有句柄 ────────────────────
+// ── 2b. 去重命中：票里 upload 为 null，不再 PUT ─────────────────────────
 {
-  const r = await call({ tool: 'mcp_gmail_default_send_email', path: 'docs/酒店版手册.pdf' })
-  const hit = seen.at(-1)
-  out.upload = {
+  const before = seen.length
+  const r = await call({ tool: 'mcp_gmail_default_sw_run', target: 'GMAIL_DEDUP', path: 'docs/酒店版手册.pdf' })
+  out.dedup = {
+    不再PUT: seen.length === before + 1,
     不算失败: r.failed !== true,
-    路径: hit?.path,
-    方法: hit?.method,
-    票: hit?.auth,
-    远端工具: hit?.query.tool,
-    文件名: hit?.query.name,
-    归因: hit?.query.botId,
-    MIME: hit?.contentType,
-    字节原样: hit ? hit.body.equals(pdf) : false,
-    话里带句柄: r.text.includes('"s3key":"s3/' + pdf.length + '"') && r.text.includes('"mimetype":"application/pdf"'),
-    话里点名远端工具: r.text.includes('SEND_EMAIL'),
-    引用了那份文件: Array.isArray(r.refs) && r.refs[0]?.path === 'docs/酒店版手册.pdf',
+    话里带句柄: r.text.includes('"s3key":"req-'),
   }
 }
 
@@ -135,9 +167,9 @@ out.mime = {
   const ask = await call({ tool: 'mcp_gmail_default_sw_run', path: 'docs/酒店版手册.pdf' })
   const ok = await call({ tool: 'mcp_gmail_default_sw_run', path: 'docs/酒店版手册.pdf', target: 'GMAIL_CREATE_EMAIL_DRAFT' })
   out.meta = {
-    没说target不打网络: seen.length === before + 1,
+    没说target不打网络: seen.length === before + 2,
     没说target的话: ask.text,
-    说了target按它传: seen.at(-1)?.query.tool,
+    说了target按它传: seen.at(-2)?.json?.tool,
     不算失败: ok.failed !== true,
   }
 }
@@ -164,14 +196,17 @@ out.mime = {
   }
 }
 
-// ── 5. Gateway 判出来的拒绝原话给模型；5xx 当管道故障 ─────────────────
+// ── 5. Gateway 判出来的拒绝原话给模型；5xx 当管道故障；存储拒收是业务失败 ──
 {
   const rejected = await call({ tool: 'mcp_gmail_default_sw_run', target: 'GMAIL_REJECTED', path: 'docs/酒店版手册.pdf' })
   const broken = await call({ tool: 'mcp_gmail_default_sw_run', target: 'GMAIL_BROKEN', path: 'docs/酒店版手册.pdf' })
+  const s3 = await call({ tool: 'mcp_gmail_default_sw_run', target: 'GMAIL_S3_REJECT', path: 'docs/酒店版手册.pdf' })
   out.gateway = {
     四xx原话: rejected.text,
     四xx不置failed: rejected.failed !== true,
     五xx是管道故障: broken.failed === true,
+    存储拒收是业务失败: s3.failed !== true,
+    存储拒收的话: s3.text,
   }
 }
 
