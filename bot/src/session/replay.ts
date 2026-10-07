@@ -93,13 +93,42 @@ export function clearedThrough(events: readonly SessionEvent[]): number {
 }
 
 /**
- * 人（和模型的翻历史工具）还看得见的那一段：最后一次 `/clear` 之后的。
+ * 人还看得见的那一段：最后一次 `/clear` 之后的。
  *
  * 清除点那条事件本身的 seq 比 throughSeq 大，会留下来——界面靠它画「对话记录已清除」
  * 那条线。审计那条路（/internal/sessions/:id）不走这里，要的是全量原文。
+ *
+ * 模型的翻历史工具**不用这个**，用下面的 `historyEvents`：它们的口径比界面严一档。
  */
 export function visibleEvents<T extends SessionEvent>(events: readonly T[]): T[] {
   const through = clearedThrough(events)
+  return through ? events.filter((e) => e.seq > through) : events.slice()
+}
+
+/**
+ * 最后一次 `/new` **或** `/clear` 切到哪儿（含）。没打过就是 0。
+ *
+ * 只认 `session/reset`，不认 `session/compact`：翻历史工具存在的意义就是把压缩掉的
+ * 那段调回来，压缩点不能挡它。
+ */
+export function resetThrough(events: readonly SessionEvent[]): number {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]
+    if (e.type === 'session/reset') return e.data.throughSeq
+  }
+  return 0
+}
+
+/**
+ * 模型的翻历史工具（history_read / history_search）能翻到的那一段：最后一次 `/new` 或
+ * `/clear` 之后的。
+ *
+ * 比 `visibleEvents` 严一档：`/new` 之后界面上往上翻仍看得见前文，但模型翻不到。人打
+ * `/new` 要的是「这是一场新对话」——模型一句 history_search 就把上一场的东西搜回来，
+ * 等于 `/new` 没打（docs/chat-commands.md §2）。界面那边不跟着藏：那是 `/clear` 的事。
+ */
+export function historyEvents<T extends SessionEvent>(events: readonly T[]): T[] {
+  const through = resetThrough(events)
   return through ? events.filter((e) => e.seq > through) : events.slice()
 }
 
