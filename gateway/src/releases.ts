@@ -309,7 +309,19 @@ async function tarHasEntry(path: string, wanted: string): Promise<boolean> {
   } finally {
     src.destroy()
     gunzip.destroy()
-    await piped
+    /**
+     * **只等两条流真的关掉，不等 pipeline 的 promise。**
+     *
+     * 找到入口就 `break` 出去的那一刻，gunzip 多半还有没吐完的字节。这时把它 destroy 掉，
+     * pipeline 那个 promise 在 Node 24 上**既不 resolve 也不 reject**（gunzip 收到的是一个
+     * AbortError，pipeline 把它当成「被取消」然后就不再落定）。原来这里 `await piped`，于是
+     * 登记一个入口文件排在倒数第二的包会卡到函数超时——local-bot 0.1.20 的 linux-arm64
+     * 那一份就是这样连着三次 504 的，而同一版的 x64 包因为入口正好是最后一个成员、break 时
+     * 流已经收完，一点事没有。源的错误不靠这一句传：pipeline 早把它 destroy 进 gunzip、
+     * 上面的 for await 已经抛出来了。
+     */
+    await Promise.all([src, gunzip].map((st) => (st.closed ? undefined : once(st, 'close'))))
+    void piped
   }
   return found
 }
