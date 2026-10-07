@@ -6,7 +6,7 @@
  * 一拍里前面还有别的步，这一步不能把整拍吃光。
  */
 import { randomUUID } from 'node:crypto'
-import type { Account, Db, KnowledgeBase, KnowledgeFile } from '../db.ts'
+import type { Account, CatalogItem, Db, KnowledgeBase, KnowledgeFile } from '../db.ts'
 import { KB_FAIL_STREAK_DEFAULT, parseKnowledgeSettings } from '../db.ts'
 import { HttpError } from '../http.ts'
 import { chunkPages } from './knowledge-chunk.ts'
@@ -30,6 +30,21 @@ export const KB_RESULT_MAX = 12_000
 
 export function knowledgeEnabled(): boolean {
   return vectorConfigured()
+}
+
+/**
+ * 这颗 Bot 自己关掉的库（docs/knowledge-base.md §8.4）。存在 Bot 定义的 `knowledgeOff` 里：
+ * 记的是「关掉哪几个」而不是「开着哪几个」，这样管理员新共享过来的库默认就是开的。
+ */
+export function knowledgeOffOf(bot: CatalogItem | undefined): Set<string> {
+  const raw = (bot?.definition as { knowledgeOff?: unknown } | undefined)?.knowledgeOff
+  return new Set(Array.isArray(raw) ? raw.map((x) => String(x)) : [])
+}
+
+/** 共享给这颗 Bot、且它自己没关掉的库。目录下发、探针指纹、工具检索三处都用它，口径只有一份。 */
+export async function knowledgeUsableByBot(db: Db, companyId: string, bot: CatalogItem | undefined): Promise<KnowledgeBase[]> {
+  const off = knowledgeOffOf(bot)
+  return (await db.knowledgeForBot(companyId, bot?.id ?? null)).filter((k) => !off.has(k.id))
 }
 
 /** 展示用的文件名：去路径分隔符和控制字符，截到 200 字符。 */

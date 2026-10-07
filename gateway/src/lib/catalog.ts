@@ -582,6 +582,8 @@ export function publicBot(item: CatalogItem, pinned: { provider: string; model: 
       scope: 'user' as const,
       ownerId: item.accountId,
       extraPrompt,
+      /** 自己关掉的知识库 id（docs/knowledge-base.md §8.4）。哪些库共享给了它，由 /runtime/bots/:id 的 knowledge 字段说。 */
+      knowledgeOff: Array.isArray(def.knowledgeOff) ? def.knowledgeOff.map((x) => String(x)) : [],
       templateVersion: template.version,
       createdAt: item.createdAt,
       skills: template.skills,

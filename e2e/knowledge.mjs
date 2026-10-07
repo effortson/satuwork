@@ -380,6 +380,28 @@ export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert,
       await req(base, 'PUT', orgPath(`/${kbA}/share`), { token: admin, body: { share: 'all' } })
     })
 
+    await test('Bot 自己关掉一个共享过来的库：设置页看得见、目录和检索都不带它，打开又回来', async () => {
+      const detail = await req(base, 'GET', `/runtime/bots/${botId}`, { token: member })
+      assert(detail.status === 200, `bot ${detail.status} ${detail.text}`)
+      assert(Array.isArray(detail.json.bot.knowledge) && detail.json.bot.knowledge.some((k) => k.id === kbA && k.off === false), `设置页该列出 A：${JSON.stringify(detail.json.bot.knowledge)}`)
+      assert(!detail.json.bot.knowledge.some((k) => k.id === kbB), `none 的 B 不该出现：${JSON.stringify(detail.json.bot.knowledge)}`)
+
+      // 关掉 A；顺手塞一个没共享的 B，服务端该丢掉它而不是报错。
+      const off = await req(base, 'PATCH', `/runtime/bots/${botId}`, { token: member, body: { knowledgeOff: [kbA, kbB] } })
+      assert(off.status === 200, `patch ${off.status} ${off.text}`)
+      assert(off.json.bot.knowledgeOff.join() === kbA, `knowledgeOff ${JSON.stringify(off.json.bot.knowledgeOff)}`)
+      assert(off.json.bot.knowledge.find((k) => k.id === kbA)?.off === true, `A 该标成关：${JSON.stringify(off.json.bot.knowledge)}`)
+      const cat = await req(base, 'GET', `/runtime/catalog?botId=${botId}`, { token: seatTok })
+      assert(cat.json.knowledge.length === 0, `关掉后目录不该再带 A：${JSON.stringify(cat.json.knowledge)}`)
+      const s = await req(base, 'POST', `/runtime/knowledge/search?botId=${botId}`, { token: seatTok, body: { query: '报销' } })
+      assert(s.json.ok === false, `关掉后席位该查不到：${s.text}`)
+
+      const on = await req(base, 'PATCH', `/runtime/bots/${botId}`, { token: member, body: { knowledgeOff: [] } })
+      assert(on.json.bot.knowledgeOff.length === 0, `打开 ${on.text}`)
+      const back = await req(base, 'GET', `/runtime/catalog?botId=${botId}`, { token: seatTok })
+      assert(back.json.knowledge.length === 1, `打开后目录该回来：${JSON.stringify(back.json.knowledge)}`)
+    })
+
     await test('下载原文件：带登录态的走得通，内容一致', async () => {
       const r = await req(base, 'GET', orgPath(`/${kbA}/files/${fileId}/download`), { token: member })
       assert(r.status === 200, `download ${r.status}`)

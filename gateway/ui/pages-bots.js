@@ -788,6 +788,7 @@ function myBotPage(bot, a) {
         </div>
         ${guardsPanel(base, true)}
         ${capabilityPanel(base, opts, true)}
+        ${myKnowledgePanel(bot, a)}
         ${myMemories(a)}
 
         ${flashes()}
@@ -800,6 +801,27 @@ function myBotPage(bot, a) {
           : t('删除会连它的席位一起拆掉，机器上那块屏和这个 Bot 的会话都不再保留。', 'Deleting also tears down its seat — that screen and this bot\'s conversations are gone.')}</p>
       </div>
     </div>`
+}
+
+/**
+ * 共享给这颗 Bot 的知识库，每个一颗开关（docs/knowledge-base.md §8.4）。
+ *
+ * 能关的前提是**管理员已经共享给它**：哪些库共享过来由知识库那一页定，这里只决定「我这颗
+ * 用不用」。关掉的库不进它的工具描述、也查不到；重新打开下一次探针就回来。
+ */
+function myKnowledgePanel(bot, a) {
+  const list = Array.isArray(bot.knowledge) ? bot.knowledge : []
+  const off = new Set(a.knowledgeOff || [])
+  const rows = list.map((k) => {
+    const on = !off.has(k.id)
+    const desc = [k.desc, t(`${k.fileCount || 0} 个文件`, `${k.fileCount || 0} files`)].filter(Boolean).join(' · ')
+    return botToggle(k.name, desc, on, 'bot-kb-toggle', `data-id="${esc(k.id)}"`)
+  }).join('')
+  return `<div class="satu-panel">
+    <span class="satu-panel-title">${t('知识库')}</span>
+    <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('公司共享给这颗 Bot 的资料。关掉的它就不查了，想用时再打开。要加新的库，请公司管理员在「知识库」页共享。', 'Company documents shared with this bot. Switch one off and the bot stops searching it; switch it back on any time. Ask a company admin to share more on the Knowledge page.')}</p>
+    ${rows || `<span style="font-size: 12px; color: var(--muted-foreground);">${t('还没有共享给这颗 Bot 的知识库。', 'No knowledge base has been shared with this bot yet.')}</span>`}
+  </div>`
 }
 
 /** 全局 Bot（owner 编辑 / 公司侧只读），以及改版前留下的公司 Bot。 */

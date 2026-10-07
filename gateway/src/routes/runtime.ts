@@ -15,7 +15,7 @@ import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } 
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
 import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
-import { searchKnowledge } from '../lib/knowledge.ts'
+import { knowledgeOffOf, knowledgeUsableByBot, publicKnowledgeBase, searchKnowledge } from '../lib/knowledge.ts'
 import { machineHeader, managerTargetFor, proxyDownload, proxyJson, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
 import { DEFAULT_MIN_DESKTOP_VERSION, desktopSupports, directReleaseUrl, localBotReleaseTarget } from '../releases.ts'
@@ -303,7 +303,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * 文件的。没带 botId 的调用只拿到 `all` 那些。目录是给模型看的提示，真正的边界在
      * `/runtime/knowledge/search` 里再筛一遍（docs/knowledge-base.md §8.2、§13）。
      */
-    const knowledge = companyId ? (await db.knowledgeForBot(companyId, botId || null)).filter((k) => k.chunkCount > 0) : []
+    const knowledge = companyId ? (await knowledgeUsableByBot(db, companyId, botId ? bots[0] : undefined)).filter((k) => k.chunkCount > 0) : []
 
     /**
      * 连接器合成出来的 MCP 记录：这个账号每一把 `active` 的连接一条。
@@ -443,7 +443,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     /** 记忆同理，而且它连 `catalog_items` 都不在——不算进去就永远同步不下来。 */
     const memories = companyId ? await db.memoriesFor(companyId, account.id, botId || null) : []
     /** 知识库同理：建了库、传完第一份文件、改了共享范围，席位下一次探针就把工具表换掉。 */
-    const knowledge = companyId ? (await db.knowledgeForBot(companyId, botId || null)).filter((k) => k.chunkCount > 0) : []
+    const knowledge = companyId ? (await knowledgeUsableByBot(db, companyId, bot)).filter((k) => k.chunkCount > 0) : []
     json(res, 200, {
       templateVersion: version,
       stamp: catalogStamp(
@@ -470,7 +470,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     }
     const botId = await seatBotOf(req, account)
     const body = bodyOf(req)
-    const all = await db.knowledgeForBot(companyId, botId)
+    const all = await knowledgeUsableByBot(db, companyId, await db.catalog(botId))
     const ids = Array.isArray(body.kbIds) && body.kbIds.length ? new Set(body.kbIds.map(String)) : null
     const names = Array.isArray(body.kbNames) && body.kbNames.length ? new Set(body.kbNames.map((x: unknown) => String(x).trim())) : null
     const kbs = all.filter((k) => (!ids || ids.has(k.id)) && (!names || names.has(k.name)))
@@ -1506,6 +1506,15 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       if (iconSetFor('company').has(key)) def.icon = key
     }
     if (typeof body.enabled === 'boolean') def.enabled = body.enabled
+    /**
+     * 自己关掉的知识库。**只认共享给这颗 Bot 的**：不在名单里的 id 直接丢掉，不报错——
+     * 一个库后来被管理员收回了，它的 id 还留在上一次保存的列表里，再保存一次不该因此 400。
+     */
+    if (body.knowledgeOff !== undefined) {
+      if (!Array.isArray(body.knowledgeOff)) throw new HttpError(400, 'knowledgeOff 必须是数组')
+      const shared = new Set((await db.knowledgeForBot(account.companyId!, item.id)).map((k) => k.id))
+      def.knowledgeOff = [...new Set(body.knowledgeOff.map((x: unknown) => String(x ?? '').trim()))].filter((id) => shared.has(id))
+    }
     const next = await db.updateCatalog(item.id, {
       name: body.name !== undefined ? botNameOf(body.name) : undefined,
       definition: def,
@@ -1517,8 +1526,18 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       detail: { id: item.id, name: next.name },
     })
     const { pinned, tpl } = await botContext(db, account.companyId)
-    json(res, 200, { bot: { ...publicBot(next, pinned, tpl), runtime: await oneBotRuntime(db, account, next) } })
+    json(res, 200, { bot: { ...publicBot(next, pinned, tpl), runtime: await oneBotRuntime(db, account, next), knowledge: await botKnowledgeOut(account.companyId, next) } })
   })
+
+  /**
+   * 共享给这颗 Bot 的全部库，连同它自己关没关（docs/knowledge-base.md §8.4）。设置页那一块画的就是它。
+   * **不按 chunkCount 筛**：还没传文件的库也要让人看见、能先关掉。
+   */
+  async function botKnowledgeOut(companyId: string | null, bot: CatalogItem) {
+    if (!companyId || bot.scope !== 'user') return []
+    const off = knowledgeOffOf(bot)
+    return (await db.knowledgeForBot(companyId, bot.id)).map((k) => ({ ...publicKnowledgeBase(k), botIds: undefined, off: off.has(k.id) }))
+  }
 
   /**
    * Desktop 启动本地进程所需的短路径。只给本人自己的 local Bot。
@@ -1679,7 +1698,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const account = await requireUser(req, db, keys)
     const bot = await visibleBotOf(db, account, req.params.id)
     const { pinned, tpl } = await botContext(db, account.companyId)
-    json(res, 200, { bot: { ...publicBot(bot, pinned, tpl), runtime: await oneBotRuntime(db, account, bot) } })
+    json(res, 200, { bot: { ...publicBot(bot, pinned, tpl), runtime: await oneBotRuntime(db, account, bot), knowledge: await botKnowledgeOut(account.companyId, bot) } })
   })
 
   /**

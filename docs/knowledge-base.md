@@ -472,6 +472,21 @@ knowledge: Array<{ id: string; name: string; desc: string; fileCount: number }>
 
 就这一行。库的内容不进提示词——那正是知识库和 Skill 的分界：Skill 常驻，资料按需。
 
+### 8.4 Bot 自己关掉一个库
+
+共享是管理员的事，**用不用是 Bot 主人的事**。Bot 设置页（员工自己那颗的那一屏）多一块
+「知识库」：列出共享给这颗 Bot 的全部库，每个一颗开关。关掉的库不进它的目录、不进工具描述、
+`/runtime/knowledge/search` 也查不到；再打开，下一次探针就回来。
+
+- 存在 Bot 定义上的 `knowledgeOff: string[]`——记的是**关掉哪几个**，不是开着哪几个。
+  这样管理员新共享过来的库默认就是开的，和 `share = 'all'` 包括将来新建的 Bot 是同一个方向
+- 前提是**已经共享给它**：`PATCH /runtime/bots/:id` 只收名单里有的 id，不在的直接丢掉、不报错
+  ——一个库后来被管理员收回了，它的 id 还留在上一次保存的列表里，再保存一次不该因此 400
+- 目录下发、探针指纹、工具检索三处同一个口径（`lib/knowledge.ts` 的 `knowledgeUsableByBot`）；
+  `GET /runtime/bots/:id` 多一个 `knowledge` 字段（共享给它的全部库，连同 `off`），
+  **不按有没有文件筛**：还没传文件的库也要让人看见、能先关掉
+- 这是 Bot 主人自己的开关，不是授权：管理员把库从名单里拿掉，开关一起消失
+
 ---
 
 ## 9. 删除
@@ -597,7 +612,8 @@ Uploading / Queued / Indexing / Ready / Failed。
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/runtime/knowledge/search` | 工具调用。公司边界按票上的账号定，Bot 按 `seatBotOf` 定，`kbIds` 只能是共享给这颗 Bot 的 |
-| GET | `/runtime/catalog` | 多 `knowledge` 字段，按 `botId` 筛 |
+| GET | `/runtime/catalog` | 多 `knowledge` 字段，按 `botId` 筛，再去掉这颗 Bot 自己关掉的 |
+| GET / PATCH | `/runtime/bots/:id` | 多 `knowledge`（共享给它的全部库 + `off`）和 `knowledgeOff`；PATCH 收 `knowledgeOff` |
 
 平台侧（owner）：
 
@@ -718,8 +734,8 @@ Upstash 没配时，所有写接口和检索回 **501**「平台未配置向量�
    加上 `uploading` 的预留
 3. Postgres `knowledge_chunks` 与 Upstash 命名空间里的 id 集合：前者 ⊇ 后者；文件 `ready`
    时两者相等
-4. `knowledge_search` 在这颗 Bot 的工具表里 ⇔ 至少有一个共享给它（`all`，或 `bots` 且名单里有它）
-   且有 ready 文件的库
+4. `knowledge_search` 在这颗 Bot 的工具表里 ⇔ 至少有一个共享给它（`all`，或 `bots` 且名单里有它）、
+   它自己没关掉、且有 ready 文件的库
 7. `knowledge_shares` 里的每个 `botId` 都是本公司一颗未删除的 Bot；`share ≠ 'bots'` 的库在
    这张表里没有行（改回 `all` / `none` 时名单清空，不是留着备用）
 5. Upstash 命名空间里不存在任何不属于某个未删除 `kbId` 的向量（删除由 tick 收敛）

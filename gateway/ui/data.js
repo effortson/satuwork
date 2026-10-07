@@ -821,6 +821,8 @@ function draftFromBot(bot) {
     mcps: Array.isArray(bot.mcps) ? bot.mcps.slice() : [],
     groups: [],
     kbs: [],
+    // 自己关掉的知识库（见 pages-bots.js 的 myKnowledgePanel）。
+    knowledgeOff: Array.isArray(bot.knowledgeOff) ? bot.knowledgeOff.slice() : [],
     escalate: bot.escalate || '',
     escalateTo: bot.escalateTo || 'owner',
     /**

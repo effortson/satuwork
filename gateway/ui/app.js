@@ -1415,6 +1415,17 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  // 自己这颗 Bot 上把某个共享过来的知识库关掉 / 打开。改的是草稿，保存时跟着 PATCH 一起走。
+  if (act === 'bot-kb-toggle') {
+    if (!state.botDraft) return
+    const id = btn.getAttribute('data-id')
+    const off = new Set(state.botDraft.knowledgeOff || [])
+    if (off.has(id)) off.delete(id)
+    else off.add(id)
+    state.botDraft = { ...state.botDraft, knowledgeOff: [...off] }
+    render()
+    return
+  }
   if (act === 'bot-icon') {
     if (!state.botDraft) return
     const icon = btn.getAttribute('data-icon')
@@ -1507,6 +1518,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
           extraPrompt: a.extraPrompt || '',
           enabled: a.enabled,
           icon: a.icon,
+          knowledgeOff: a.knowledgeOff || [],
         })
         state.bot = data.bot
         state.botDraft = { ...draftFromBot(data.bot), extraPrompt: data.bot.extraPrompt || '' }
