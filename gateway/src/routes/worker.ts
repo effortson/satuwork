@@ -474,6 +474,14 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
     if (status !== undefined && !SETTLE_STATUSES.has(status as ChargeStatus)) throw new HttpError(400, 'status 只能是 ok / failed / error / timeout')
     const usage = usageOf(body.usage)
     /**
+     * 估算的线索（lib/llm-billing.ts 的 EstimateHint）。管家报了上游 2xx 才允许估：没回 2xx
+     * 的（连不上、429、一页错误）一分钱没花，估了就是多收。老管家不报这两格 → 不估，和从前
+     * 一样记 0 + unpriced。
+     */
+    const httpStatus = typeof body.httpStatus === 'number' && Number.isFinite(body.httpStatus) ? body.httpStatus : undefined
+    const requestBytes = typeof body.requestBytes === 'number' && Number.isFinite(body.requestBytes) && body.requestBytes > 0 ? body.requestBytes : undefined
+    const estimate = httpStatus != null && httpStatus >= 200 && httpStatus < 300 ? { requestBytes } : undefined
+    /**
      * 这一次按什么价收。**只从目录里取 `cost`，provider / model 用这次调用自己的那一份**
      * ——理由和清扫那边一字不差，见 routines.ts 的 sweepUnsettledLlmCalls：`llm.find` 的
      * 裸 id 回落可能命中另一家供应商的同名模型，拿它的名字落账会让账本 subject 和
@@ -516,7 +524,7 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
         return 'already'
       }
       if (!account) return 'no-account'
-      await settle(db, meter, account, priced, call.id, usage, status as ChargeStatus | undefined)
+      await settle(db, meter, account, priced, call.id, usage, status as ChargeStatus | undefined, estimate ? { estimate } : undefined)
       return 'settled'
     })
     if (outcome === 'no-account') throw new HttpError(404, '账号不存在')

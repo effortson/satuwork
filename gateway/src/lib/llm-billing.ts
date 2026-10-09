@@ -12,7 +12,7 @@ import type { CatalogModel } from '../llm.ts'
 import type { Billable, Meter } from './meter.ts'
 import { gateAccount, gateCompany } from './guards.ts'
 import type { TokenUsage } from './llm-usage.ts'
-import { imageEstimateTokens, imageModelDef, isImageModel } from '../image-models.ts'
+import { imageEstimateTokens, imageModelDef, isImageModel, isImageModelKey } from '../image-models.ts'
 
 /** settle 只用得着这三样。管家结算时目录里可能已经没有这个模型了，那时只有这三样。 */
 type Billed = Pick<CatalogModel, 'provider' | 'id' | 'cost'>
@@ -227,36 +227,129 @@ export async function settle(
   callId: string,
   usage: TokenUsage | undefined,
   status?: ChargeStatus,
+  /**
+   * `estimate`：没拿到用量时**允许估**，并给估算封顶用的线索。**不传就不估**，照旧记 0 +
+   * unpriced。要显式开，是因为「没拿到用量」有两种来路，钱只在其中一种里花掉了：
+   *
+   * - 上游回了 2xx、流在 usage 那一帧之前断了——输入和推理都真跑了，OpenAI 照收，该估；
+   * - 上游压根没接（连不上、429、400、503 一页错误）、或者管家在授权期间就发现 Bot 走了
+   *   ——一分钱没花，估了就是多收。
+   *
+   * 调用方只有拿到上游 2xx 响应头才传它（v1.ts 的 proxyUpstream / streamChatCompletions，
+   * worker.ts 按管家报的 httpStatus）。清扫（routines.ts）永远不传：它写的是占位行，要留着
+   * 「四项 token 全 0、金额 0、unpriced」的形状等管家回来按 §2.1 补成成交。
+   */
+  opts?: { estimate?: EstimateHint },
 ): Promise<void> {
   if (usage) await db.updateLlmCallTokens(callId, usage)
+  const estimate = usage || !opts?.estimate ? undefined : await estimateUsage(db, account, found, callId, opts.estimate)
+  const tokens = usage ?? estimate
+  if (estimate) await db.updateLlmCallTokens(callId, estimate)
   const billable: Billable = {
     kind: 'llm',
     account,
     // 没拿到用量不等于调用没发生：上游回了，只是没报数。记成 failed 而不是 ok，
     // 是为了让「这次到底花没花钱」在明细里一眼看得出来。断流 / 上游报错的那条路
-    // 会自己指定 status（见 streamChatCompletions）。
+    // 会自己指定 status（见 streamChatCompletions）。估出来的也照这条走：status 说的
+    // 是这次有没有正常收口，估不估是另一格。
     status: status ?? (usage ? 'ok' : 'failed'),
     provider: found.provider,
     model: found.id,
     tokens: {
-      promptTokens: usage?.prompt_tokens ?? 0,
-      completionTokens: usage?.completion_tokens ?? 0,
-      cachedTokens: usage?.cached_tokens ?? 0,
-      cacheWriteTokens: usage?.cache_write_tokens ?? 0,
+      promptTokens: tokens?.prompt_tokens ?? 0,
+      completionTokens: tokens?.completion_tokens ?? 0,
+      cachedTokens: tokens?.cached_tokens ?? 0,
+      cacheWriteTokens: tokens?.cache_write_tokens ?? 0,
     },
     cost: found.cost,
     refId: callId,
+    ...(estimate ? { estimated: true } : {}),
   }
   const quote = await meter.quote(billable)
-  // 没拿到用量就没有金额可言。硬按 0 收会让这一行看着像一次免费调用。
-  await meter.charge(billable, usage ? quote : { ...quote, amountMicros: 0, unpriced: true })
+  // 既没拿到用量、也推不出来，就没有金额可言。硬按 0 收会让这一行看着像一次免费调用。
+  await meter.charge(billable, tokens ? quote : { ...quote, amountMicros: 0, unpriced: true })
+  if (estimate) {
+    console.log(
+      `satuwork-gateway: 调用 ${callId}（${found.provider}/${found.id}）上游没报用量，按上一次调用估为 ` +
+        `prompt ${estimate.prompt_tokens}（缓存 ${estimate.cached_tokens}）/ completion ${estimate.completion_tokens}`,
+    )
+  }
+}
+
+/**
+ * 上一次结算过的调用往前推多久还算「同一段对话」。OpenAI 的前缀缓存大约活 5–10 分钟，
+ * 过了这个窗口上一次的提示词既不会命中缓存、也未必还是这条会话——两头都推不准了。
+ */
+export const ESTIMATE_WINDOW_MS = 10 * 60_000
+
+/**
+ * 估算的线索。`requestBytes` 是这次真发给上游的请求体有多少字节（UTF-8）：token 数不会超过
+ * 字节数（ASCII 四个字节一个 token，汉字三个字节一到两个 token），所以它是估算的**硬上限**。
+ * 没有它就不封顶。
+ */
+export interface EstimateHint {
+  requestBytes?: number
+}
+
+/**
+ * **上游没报用量时，按上一次调用推一个数。**
+ *
+ * 流在 usage 那一帧之前断了（OpenAI 把 usage 放在最后一帧：Bot 的静默超时、人点了停止、
+ * 管家等不到响应头，都拿不到它），可输入是真发出去了、推理是真跑了，OpenAI 照收。以前
+ * 这种行记 0 元 + unpriced，一天里一次 35 万 token 的调用就是账本上少掉的一块钱。
+ *
+ * 推法只用一条事实：**Bot 的调用在一轮里是累加的。** 这次的提示词 = 上次的提示词 + 上次
+ * 的回答 + 工具结果，而上次的整段提示词这次都是前缀、都会命中缓存。所以
+ *
+ *     prompt     = 上次 prompt + 上次 completion     （下界：工具结果没算）
+ *     cached     = 上次 prompt                       （前缀缓存；上次自己的缓存比例不重复算）
+ *     completion = 0                                 （断在哪不知道；推理 token 也不知道）
+ *
+ * 每一项都取**保守的那一侧**：估出来的是「至少花了这么多」，不是「大概花了这么多」。
+ * 按整段算未命中会高估十倍（这家公司九成四的输入命中缓存），按 0 收是低估到底——
+ * 这条推法夹在中间、而且每一步都说得出来路。
+ *
+ * **找不到十分钟内同账号同模型结算过的调用就不估**（回 undefined，照旧记 0 + unpriced）：
+ * 没有近期调用就没有缓存可命中，也没有可信的上一次；编一个数不如让 unpriced 喊出来。
+ * 生图模型也不估：一张图的 token 和上一张没关系，那条路有自己的预估基线。
+ *
+ * **按请求体大小封顶。** 「上一次」是按账号找的，而一个席位会同时跑好几条会话：A 会话是
+ * 35 万 token 的长回合，B 会话一句两千 token 的问候流断了，按 A 推就会把 B 多收一百倍。
+ * 这次真发出去的请求体有多少字节是调用方知道的（`hint.requestBytes`），token 数不会超过
+ * 字节数，所以提示词的估值压到它以下——压不掉全部误差，但把「借了别的会话的上下文」这种
+ * 错从百倍压到几倍，而且永远不会高于一个物理上限。
+ */
+export async function estimateUsage(db: Db, account: Account, found: Billed, callId: string, hint: EstimateHint): Promise<TokenUsage | undefined> {
+  const call = await db.llmCall(callId)
+  if (!call) return undefined
+  if (isImageModelKey(found.provider, found.id)) return undefined
+  const prev = await db.lastSettledLlmCall(account.id, found.provider, found.id, {
+    since: call.createdAt - ESTIMATE_WINDOW_MS,
+    before: call.createdAt,
+  })
+  if (!prev || prev.promptTokens <= 0) return undefined
+  const cap = Number.isFinite(hint.requestBytes) && (hint.requestBytes as number) > 0 ? Math.floor(hint.requestBytes as number) : Infinity
+  const prompt = Math.min(prev.promptTokens + prev.completionTokens, cap)
+  if (prompt <= 0) return undefined
+  return { prompt_tokens: prompt, completion_tokens: 0, cached_tokens: Math.min(prev.promptTokens, prompt), cache_write_tokens: 0 }
 }
 
 /**
  * 一次上游调用收口时交给 settle 的东西。多数路只回 usage；流式那条在断流 / 报错时
  * 还要说明「这次没正常收口」——账本的 status 由它定，usage 是到断开为止已知的那部分。
  */
-export type RunOutcome = TokenUsage | { usage: TokenUsage | undefined; status: ChargeStatus } | undefined
+export type RunOutcome =
+  | TokenUsage
+  | {
+      usage: TokenUsage | undefined
+      /** 这次没正常收口时的账本状态；不给就按 usage 有没有定 ok / failed。 */
+      status?: ChargeStatus
+      /** 上游回了 2xx 响应头（流至少开始了）。没拿到 usage 时只有这种才允许估。 */
+      started?: boolean
+      /** 真发给上游的请求体字节数，估算的上限。 */
+      requestBytes?: number
+    }
+  | undefined
 
 /**
  * 跑一次上游调用，**无论成败都收口**。
@@ -278,12 +371,15 @@ export async function withSettle(
 ): Promise<void> {
   let usage: TokenUsage | undefined
   let status: ChargeStatus | undefined
+  let estimate: EstimateHint | undefined
   let failed: unknown
   try {
     const out = await run()
-    if (out && 'status' in out) {
+    if (out && 'usage' in out) {
       usage = out.usage
       status = out.status
+      // 上游 2xx 开了流才有「花了钱没报数」这回事；抛出来的（503、连不上）一分钱没花，不估。
+      if (out.started) estimate = { requestBytes: out.requestBytes }
     } else {
       usage = out
     }
@@ -291,7 +387,7 @@ export async function withSettle(
     failed = e
   }
   try {
-    await settle(db, meter, account, found, callId, usage, status)
+    await settle(db, meter, account, found, callId, usage, status, estimate ? { estimate } : undefined)
   } catch (e) {
     if (!failed) throw e
   }

@@ -294,6 +294,8 @@ async function streamChatCompletions(
    * 半天不来一帧的流，「等下一帧」就等于白付那一段。
    */
   const watch = watchClient(res)
+  /** 至少收到过一帧 = 上游开了流。没拿到 usage 时只有这种才允许 settle 去估。 */
+  let started = false
   const stream = llm.models.streamSimple(piModel as any, context as any, {
     apiKey: secret,
     // 推理模型不转 temperature，同中继那条路（见 rejectsTemperature）。
@@ -316,6 +318,7 @@ async function streamChatCompletions(
   }
   try {
     for await (const event of stream) {
+      started = true
       // 先记用量，再看人走没走：中止收尾的那一帧（`error`，reason 是 aborted）带着的正是
       // 到此为止已经问上游要过的那些 token。
       if ('partial' in event) noteUsage(event.partial?.usage)
@@ -396,7 +399,9 @@ async function streamChatCompletions(
   // denied / error（迁移 0007 的 check），没有 aborted——要加得开一条新迁移，这里先用
   // 现有的两档；已知的 usage 照常计价，一点都没拿到时 settle 会标 unpriced。
   if (gone && !outcome) outcome = 'failed'
-  return outcome ? { usage, status: outcome } : usage
+  // 没拿到 usage 时把线索带上：至少收到过一帧才算上游开了流（started），请求体大小是估算上限。
+  if (outcome || !usage) return { usage, status: outcome, started, requestBytes: Buffer.byteLength(JSON.stringify(body)) }
+  return usage
 }
 
 async function completeChatCompletions(
@@ -477,10 +482,14 @@ async function proxyUpstream(
   // 不是 req（见 http.ts 的 watchClient）。
   const ac = new AbortController()
   const watch = watchClient(res, () => ac.abort())
+  const bodyText = JSON.stringify(opts.body)
+  /** 估算的线索：请求体多大（token 数的硬上限）、上游有没有回 2xx 头（没回就一分钱没花）。 */
+  const requestBytes = Buffer.byteLength(bodyText)
+  let started = false
   /** 人已经走了：没有人收这份响应，账按已知的那部分记 failed（同 streamChatCompletions）。 */
   const abandoned = (usage: TokenUsage | undefined): RunOutcome => {
     if (!res.writableEnded) res.end()
-    return { usage, status: 'failed' }
+    return { usage, status: 'failed', started, requestBytes }
   }
   /**
    * **这 120 秒只管到响应头为止。**
@@ -509,7 +518,7 @@ async function proxyUpstream(
     upstream = await fetch(opts.url, {
       method: 'POST',
       headers: opts.headers,
-      body: JSON.stringify(opts.body),
+      body: bodyText,
       signal: ac.signal,
     })
   } catch (e) {
@@ -520,6 +529,7 @@ async function proxyUpstream(
     throw new HttpError(503, redact((e as Error).message || 'upstream unreachable', opts.secret))
   }
   clearHeaderTimer()
+  started = upstream.ok
   const ctype = upstream.headers.get('content-type') || 'application/json; charset=utf-8'
   /**
    * **只有 2xx 才边收边转。**
@@ -573,7 +583,8 @@ async function proxyUpstream(
     // 客户端中途走了：读流是被上面那个信号中止的，已经累计到的 usage 照记，状态记 failed。
     if (watch.gone()) return abandoned(usage)
     if (!res.writableEnded) res.end()
-    return usage
+    // 流正常读完却一个 usage 都没有（上游中途掐了、没回最后那一帧）：带上线索让 settle 去估。
+    return usage ?? { usage: undefined, started, requestBytes }
   }
   let text: string
   try {
@@ -589,11 +600,12 @@ async function proxyUpstream(
     'cache-control': 'no-store',
   })
   res.end(text)
+  // 非 2xx 是一页错误，started 是 false：一分钱没花，settle 不会估。
   try {
     const u = usageFromPayload(JSON.parse(text))
-    return u ? mergeUsage(undefined, u) : undefined
+    return u ? mergeUsage(undefined, u) : { usage: undefined, started, requestBytes }
   } catch {
-    return undefined
+    return { usage: undefined, started, requestBytes }
   }
 }
 

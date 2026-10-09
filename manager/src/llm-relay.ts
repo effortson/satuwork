@@ -446,7 +446,7 @@ async function relayCall(
         ` cached=${u?.cached_tokens ?? 0} cache_write=${u?.cache_write_tokens ?? 0} ${ms}ms`,
     )
     // 结算不挡响应：响应已经收尾了，这里只是往 Gateway 报一声。
-    void settle(deps, grant.callId, u, out.status)
+    void settle(deps, grant.callId, u, out.status, { httpStatus: out.httpStatus, requestBytes: out.requestBytes })
   } finally {
     watch.release()
   }
@@ -537,8 +537,10 @@ async function fallbackToGateway(
 interface UpstreamOutcome {
   status: Settlement
   usage: TokenUsage | undefined
-  /** 上游的 HTTP 状态；没拿到响应头就是 undefined。 */
+  /** 上游的 HTTP 状态；没拿到响应头就是 undefined。Gateway 只在 2xx 时才会替没报用量的调用估一笔。 */
   httpStatus?: number
+  /** 真发给上游的请求体字节数。Gateway 拿它给估算封顶（token 数不会超过字节数）。 */
+  requestBytes?: number
 }
 
 /**
@@ -555,11 +557,13 @@ async function proxyUpstream(
   const timedOut = new Error('upstream did not send headers in 120s')
   const clearDeadline = headerDeadline(watch.ac, timedOut)
   let upstream: Response
+  const bodyText = JSON.stringify(opts.body)
+  const requestBytes = Buffer.byteLength(bodyText)
   try {
     upstream = await fetch(opts.url, {
       method: 'POST',
       headers: opts.headers,
-      body: JSON.stringify(opts.body),
+      body: bodyText,
       signal: watch.ac.signal,
     })
   } catch (e) {
@@ -568,7 +572,8 @@ async function proxyUpstream(
     if (!watch.gone() && !res.headersSent) {
       json(res, status === 'timeout' ? 504 : 503, { error: redact(errMsg(e) || 'upstream unreachable', opts.secrets) })
     }
-    return { status, usage: undefined }
+    // 没拿到响应头：不带 httpStatus，Gateway 据此不估——这一次一分钱没花。
+    return { status, usage: undefined, requestBytes }
   }
   clearDeadline()
   const httpStatus = upstream.status
@@ -615,14 +620,14 @@ async function proxyUpstream(
     }
     if (!res.writableEnded) res.end()
     const status: Settlement = broke ? (watch.gone() ? 'failed' : 'error') : 'ok'
-    return { status, usage, httpStatus }
+    return { status, usage, httpStatus, requestBytes }
   }
   let text: string
   try {
     text = await upstream.text()
   } catch {
     if (!watch.gone() && !res.headersSent) json(res, 502, { error: '读上游响应失败' })
-    return { status: watch.gone() ? 'failed' : 'error', usage: undefined, httpStatus }
+    return { status: watch.gone() ? 'failed' : 'error', usage: undefined, httpStatus, requestBytes }
   }
   // 成功的答复**一个字不动**地给 Bot；只有出错时才抹（上游的 4xx/5xx 会把请求头回显在
   // 正文里，密钥就在那里面）。
@@ -637,7 +642,7 @@ async function proxyUpstream(
     const u = usageFromPayload(JSON.parse(text))
     if (u) usage = mergeUsage(undefined, u)
   } catch {}
-  return { status: upstream.ok ? 'ok' : 'failed', usage, httpStatus }
+  return { status: upstream.ok ? 'ok' : 'failed', usage, httpStatus, requestBytes }
 }
 
 /**
@@ -645,9 +650,16 @@ async function proxyUpstream(
  * 而且会定期把没结算的调用扫掉，这里不值得为它排队。Gateway 明确拒了（4xx）不重试：再报
  * 一遍也是同一个答案。
  */
-async function settle(deps: LlmRelayDeps, callId: string, usage: TokenUsage | undefined, status: Settlement): Promise<void> {
+async function settle(
+  deps: LlmRelayDeps,
+  callId: string,
+  usage: TokenUsage | undefined,
+  status: Settlement,
+  /** 上游有没有回 2xx、请求体多大：没拿到 usage 时 Gateway 靠这两格决定估不估、估多少封顶。 */
+  upstream?: { httpStatus?: number; requestBytes?: number },
+): Promise<void> {
   const target = `${deps.gatewayUrl()}/worker/llm/${encodeURIComponent(callId)}/settle`
-  const payload = JSON.stringify({ usage, status })
+  const payload = JSON.stringify({ usage, status, httpStatus: upstream?.httpStatus, requestBytes: upstream?.requestBytes })
   let lastErr = ''
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt) await new Promise((r) => setTimeout(r, SETTLE_RETRY_MS))

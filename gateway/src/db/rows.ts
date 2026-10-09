@@ -622,6 +622,11 @@ export function usageChargeOf(r: Row): UsageCharge {
     amountMicros: num(r.amountMicros),
     bonusMicros: num(r.bonusMicros),
     unpriced: r.unpriced === true,
+    estimated: r.estimated === true,
+    originalAmountMicros: r.originalAmountMicros == null ? null : num(r.originalAmountMicros),
+    adjustedAt: r.adjustedAt == null ? null : num(r.adjustedAt),
+    adjustedBy: strOrNull(r.adjustedBy),
+    adjustNote: str(r.adjustNote ?? ''),
     refId: strOrNull(r.refId),
     createdAt: num(r.createdAt),
   }

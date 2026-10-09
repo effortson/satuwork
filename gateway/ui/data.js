@@ -1068,6 +1068,82 @@ function chargesWindow(where) {
   return null
 }
 
+/** 改一行金额：美元 → 微元在这里换一次，服务端只认微元。存完重拉这一页，余额也跟着动。 */
+async function saveChargeAdjust() {
+  const d = state.chargeEdit
+  if (!d) return
+  const usd = Number(String(d.amount ?? '').trim())
+  if (!Number.isFinite(usd) || usd < 0) {
+    state.chargeEditError = t('金额只能是不小于 0 的数字', 'Amount must be a number ≥ 0')
+    render()
+    return
+  }
+  state.busy = true
+  state.chargeEditError = ''
+  render()
+  try {
+    await api('PUT', `/platform/charges/${encodeURIComponent(d.id)}`, { amountMicros: Math.round(usd * 1_000_000), note: String(d.note || '').trim() })
+    state.chargeEdit = null
+    flash('ok', t('已改金额', 'Amount updated'))
+    await reloadStatsPage()
+  } catch (err) {
+    state.chargeEditError = err.message
+  } finally {
+    state.busy = false
+    render()
+  }
+}
+
+/** 重算用的筛选：和明细表此刻问的是同一个范围（公司 × 时间窗 × 类型）。 */
+function recalcFilter() {
+  const w = statsWindow()
+  return {
+    companyId: state.statsCompany || '',
+    kind: state.chargesKind || '',
+    from: w.from,
+    to: w.to,
+  }
+}
+
+async function openRecalc() {
+  const filter = recalcFilter()
+  const company = (state.stats?.companies || []).find((c) => c.id === filter.companyId)
+  const kindLabels = { llm: t('模型', 'Model'), connector: t('连接器', 'Connector'), web: t('网页', 'Web'), kb: t('知识库', 'Knowledge') }
+  const label = `${company ? company.name : t('全部公司', 'All companies')} · ${fmtTime(filter.from)} – ${fmtTime(filter.to)} · ${filter.kind ? kindLabels[filter.kind] : t('全部类型', 'All kinds')}`
+  const mine = { filter, label, preview: null, applying: false, error: '' }
+  state.recalc = mine
+  render()
+  // 等预览回来的时候人可能已经把弹层关了（state.recalc 变成 null，或者又开了一个新的）：
+  // 迟到的答复只配得上自己那一份，别往别人身上写。
+  try {
+    const preview = await api('POST', '/platform/charges/recalc', { ...filter, apply: false })
+    if (state.recalc !== mine) return
+    mine.preview = preview
+  } catch (err) {
+    if (state.recalc !== mine) return
+    mine.error = err.message
+  }
+  render()
+}
+
+async function applyRecalc() {
+  const r = state.recalc
+  if (!r || !r.preview || !r.preview.changed || r.applying) return
+  r.applying = true
+  r.error = ''
+  render()
+  try {
+    const done = await api('POST', '/platform/charges/recalc', { ...r.filter, apply: true })
+    state.recalc = null
+    flash('ok', t(`已重算 ${done.changed} 行`, `Recalculated ${done.changed} rows`))
+    await reloadStatsPage()
+  } catch (err) {
+    r.applying = false
+    r.error = err.message
+    render()
+  }
+}
+
 /** 换筛选、换时间窗都要回到第一页——停在第 3 页筛完只剩两页的话，那一下是空的。 */
 function resetChargePaging() {
   state.chargesCursors = [null]

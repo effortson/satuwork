@@ -7,7 +7,7 @@
  * 单位：单价是「每 100 万 token 多少**美元**」（pi-ai 内置目录的口径），金额是
  * **微元**（百万分之一美元）。
  */
-import { type ModelRate, type WebCallKind, type WebToolsSettings, emptyModelRate, parseModelRate } from '../db.ts'
+import { type ModelRate, type ModelRateTier, type WebCallKind, type WebToolsSettings, emptyModelRate, parseModelRate } from '../db.ts'
 
 /** 一次模型调用的四项 token。后两项都是 prompt 的**子集**，不是加项。 */
 export interface LlmTokens {
@@ -71,7 +71,41 @@ export function rateOf(cost: unknown, override?: ModelRate, fallback?: ModelRate
     cacheWrite: o.cacheWrite || base.cacheWrite || f.cacheWrite,
   }
   if (!merged.input || !merged.output) return undefined
-  return fillRate(merged)
+  const rate = fillRate(merged)
+  /**
+   * **长上下文档位整份取，不逐档合并。** 覆盖里写了 `tiers` 就用覆盖的，否则用目录的；
+   * 兜底价没有档位（它是给「不知道是什么模型」用的一个数，谈不上门槛）。两份档位表的
+   * 门槛多半对不上，逐档合并出来的东西谁也解释不了。
+   *
+   * 档里缺的项回落到**合完之后的基础价**，不回落到目录那一档：运营把 input 覆盖成 3，
+   * 目录那一档的 cacheRead 是 0，合理的读法是「过了门槛 cacheRead 照基础价收」，而基础价
+   * 此时就是合完的那份。
+   */
+  const tiers = (o.tiers?.length ? o.tiers : base.tiers) ?? []
+  if (tiers.length) {
+    rate.tiers = tiers.map((t) => ({
+      inputTokensAbove: t.inputTokensAbove,
+      input: t.input || rate.input,
+      output: t.output || rate.output,
+      cacheRead: t.cacheRead || rate.cacheRead,
+      cacheWrite: t.cacheWrite || rate.cacheWrite,
+    }))
+  }
+  return rate
+}
+
+/**
+ * 这一次调用落在哪一档：输入（含缓存那两截）超过门槛的最高一档；一档都不过就是基础价。
+ *
+ * **门槛看的是整个提示词**，不是未命中的那截。OpenAI 的 272k 是按 input_tokens 判的，
+ * 而它本来就含缓存命中；一次 35 万 token 的调用里 33 万命中缓存，照样按长上下文档收。
+ * 返回的是四项扁平单价，`inputTokensAbove` 只在真落到某一档时带上——快照里要留痕。
+ */
+export function tierFor(rate: ModelRate, promptTokens: number): ModelRate & { inputTokensAbove?: number } {
+  let hit: ModelRateTier | undefined
+  for (const t of rate.tiers ?? []) if (promptTokens > t.inputTokensAbove && (!hit || t.inputTokensAbove > hit.inputTokensAbove)) hit = t
+  if (!hit) return { input: rate.input, output: rate.output, cacheRead: rate.cacheRead, cacheWrite: rate.cacheWrite }
+  return { input: hit.input, output: hit.output, cacheRead: hit.cacheRead, cacheWrite: hit.cacheWrite, inputTokensAbove: hit.inputTokensAbove }
 }
 
 /** 合并之后仍然缺的缓存项补成 input。这是回落的最后一层。 */
@@ -94,14 +128,16 @@ function fillRate(r: ModelRate): ModelRate {
  * `promptTokens` 含缓存读和缓存写两截（见 v1.ts 的 usageFromPayload：Anthropic 那边
  * 是 input + cacheRead + cacheWrite，OpenAI 的 prompt_tokens 本来就含缓存读、且没有
  * 缓存写），所以未命中的部分要把两截都减掉。`max(0, …)` 是防脏数据，不是防逻辑错。
+ *
+ * 四项单价先按这次的输入量选档（tierFor）：过了长上下文门槛的调用**整次**按那一档收。
  */
 export function llmMicros(rate: ModelRate, tok: LlmTokens, multiplier: number): number {
   const prompt = Math.max(0, tok.promptTokens)
   const cached = Math.min(Math.max(0, tok.cachedTokens), prompt)
   const written = Math.min(Math.max(0, tok.cacheWriteTokens), prompt - cached)
   const fresh = prompt - cached - written
-  const usd =
-    fresh * rate.input + cached * rate.cacheRead + written * rate.cacheWrite + Math.max(0, tok.completionTokens) * rate.output
+  const r = tierFor(rate, prompt)
+  const usd = fresh * r.input + cached * r.cacheRead + written * r.cacheWrite + Math.max(0, tok.completionTokens) * r.output
   return Math.max(0, Math.round(usd * multiplier))
 }
 
@@ -127,8 +163,16 @@ export function webMicros(web: WebToolsSettings, backend: string, kind: WebCallK
   return Math.max(0, Math.round(unitMils * 1000 * units * multiplier))
 }
 
-/** 单价快照存进账本时的形状。llm 存四项，另两条存一个 `unit`（微元/次）。 */
-export function rateSnapshot(rate: ModelRate | undefined): Record<string, number> {
-  const r = rate ?? emptyModelRate()
-  return { input: r.input, output: r.output, cacheRead: r.cacheRead, cacheWrite: r.cacheWrite }
+/**
+ * 单价快照存进账本时的形状。llm 存四项，另两条存一个 `unit`（微元/次）。
+ *
+ * 存的是**这一次实际用的那一档**，不是整张档位表：快照回答的是「这一笔为什么是这个数」，
+ * 四项乘上计量就得对得上金额。落到长上下文档时多存一格 `tierAbove`（门槛），明细里才
+ * 看得出这一笔为什么比隔壁那笔贵一倍。
+ */
+export function rateSnapshot(rate: ModelRate | undefined, promptTokens = 0): Record<string, number> {
+  const r = tierFor(rate ?? emptyModelRate(), Math.max(0, promptTokens))
+  const out: Record<string, number> = { input: r.input, output: r.output, cacheRead: r.cacheRead, cacheWrite: r.cacheWrite }
+  if (r.inputTokensAbove) out.tierAbove = r.inputTokensAbove
+  return out
 }

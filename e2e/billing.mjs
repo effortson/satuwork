@@ -41,8 +41,18 @@ const USAGE = { input_tokens: 100_000, output_tokens: 50_000, cache_read_input_t
 const EXPECTED_MICROS = 3_400_000
 
 function startFakeAnthropic() {
+  /**
+   * noUsage：替身一个 usage 都不报——模拟流在 usage 那一帧之前断掉的那种答复。
+   * fail：回一页 500 错误——模拟上游压根没接（429 / 503 那一类），一分钱没花。
+   */
+  const flags = { noUsage: false, fail: false }
   const server = createServer(async (req, res) => {
     for await (const _ of req) void _
+    if (flags.fail) {
+      res.writeHead(500, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }))
+      return
+    }
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(
       JSON.stringify({
@@ -51,12 +61,12 @@ function startFakeAnthropic() {
         role: 'assistant',
         content: [{ type: 'text', text: 'ok' }],
         stop_reason: 'end_turn',
-        usage: USAGE,
+        ...(flags.noUsage ? {} : { usage: USAGE }),
       }),
     )
   })
   return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}` }))
+    server.listen(0, '127.0.0.1', () => resolve({ server, flags, url: `http://127.0.0.1:${server.address().port}` }))
   })
 }
 
@@ -96,7 +106,7 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
   const charges = async (companyId) =>
     (
       await client.query(
-        'select kind, subject, status, "amountMicros"::int as amount, "bonusMicros"::int as bonus, unpriced, quantity, "unitPrice", multiplier' +
+        'select id, kind, subject, status, "amountMicros"::int as amount, "bonusMicros"::int as bonus, unpriced, estimated, quantity, "unitPrice", multiplier, "refId", "originalAmountMicros"::int as original, "adjustNote"' +
           ' from usage_charges where "companyId" = $1 order by "createdAt" desc, id desc',
         [companyId],
       )
@@ -109,15 +119,17 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
    * 用量、才谈得上计价。客户端这边 fetch 一 resolve 就去查库的话，多半查了个空。
    * 所以这里等账本上真的多出一行再返回。
    */
-  const ask = async (token, companyId) => {
+  const ask = async (token, companyId, content = 'hi') => {
     const before = companyId ? (await charges(companyId)).length : 0
     const r = await req(base, 'POST', '/v1/messages', {
       token,
-      body: { model: MODEL, max_tokens: 64, messages: [{ role: 'user', content: 'hi' }] },
+      body: { model: MODEL, max_tokens: 64, messages: [{ role: 'user', content }] },
     })
     if (companyId) await settled(companyId, before + 1)
     return r
   }
+  /** 估算按请求体字节数封顶；要验「不封顶」的那条路，请求体得比估出来的 token 数还大。 */
+  const BIG = 'x'.repeat(1_200_000)
 
   /** 跑一次回填脚本，把退出码和全部输出都拿回来——错误界面本身就是要验的东西。 */
   const spawnScript = (env) =>
@@ -840,6 +852,238 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
       assert(unauth.status === 401, `无票 ${unauth.status}`)
       const denied = await req(base, 'GET', '/platform/charges', { token: tokenA })
       assert(denied.status === 403, `公司管理员 ${denied.status}`)
+    })
+
+    /**
+     * 长上下文档位。替身报的提示词是 1,040k（100k 未命中 + 900k 缓存读 + 40k 缓存写），
+     * 门槛定在 1,000k：过了，整次四项翻倍，该收 $6.80；门槛定在 2,000k：没过，还是 $3.40。
+     * OpenAI 的 272k 规则就是这个形状——门槛看含缓存的整个提示词，过了不是只对超出部分加价。
+     */
+    await test('长上下文档位：输入过了门槛整次按那一档收，快照记下门槛；没过照基础价', async () => {
+      // 下面这一串用例每次都是三四块钱的调用，A 原来那 $50 快见底了；先续上，别让后面的
+      // 断言被 402 搅了。
+      const top = await req(base, 'POST', '/platform/orders', {
+        token: owner,
+        body: { companyId: orgA, kind: 'topup', amount: 200, payStatus: 'paid', note: 'e2e 续费' },
+      })
+      assert(top.status === 201, `topup ${top.status} ${top.text}`)
+      const tiers = [{ inputTokensAbove: 1_000_000, input: 20, output: 40, cacheRead: 2, cacheWrite: 25 }]
+      const put = await req(base, 'PUT', '/platform/settings', {
+        token: owner,
+        body: { priceMultiplier: 1, modelPricing: { [MODEL]: { ...RATE, tiers } } },
+      })
+      assert(put.status === 200, `settings ${put.status} ${put.text}`)
+      assert(put.json.modelPricing[MODEL].tiers?.[0]?.inputTokensAbove === 1_000_000, `档位没存住：${put.text}`)
+
+      await ask(tokenA, orgA)
+      let row = (await charges(orgA))[0]
+      assert(row.amount === EXPECTED_MICROS * 2, `过门槛该收 ${EXPECTED_MICROS * 2}，收了 ${row.amount}`)
+      assert(Number(row.unitPrice.tierAbove) === 1_000_000 && Number(row.unitPrice.input) === 20, `快照该是那一档：${JSON.stringify(row.unitPrice)}`)
+
+      // 档里缺的项回落到基础价：只填 input 的档，output / 缓存两项还是 RATE 里的。
+      const half = [{ inputTokensAbove: 1_000_000, input: 20 }]
+      await req(base, 'PUT', '/platform/settings', { token: owner, body: { modelPricing: { [MODEL]: { ...RATE, tiers: half } } } })
+      await ask(tokenA, orgA)
+      row = (await charges(orgA))[0]
+      // 100k×20 + 900k×1 + 40k×12.5 + 50k×20 = 2.00 + 0.90 + 0.50 + 1.00 = $4.40
+      assert(row.amount === 4_400_000, `缺项的档该回落到基础价，收 4,400,000，收了 ${row.amount}`)
+
+      const far = [{ inputTokensAbove: 2_000_000, input: 20, output: 40, cacheRead: 2, cacheWrite: 25 }]
+      await req(base, 'PUT', '/platform/settings', { token: owner, body: { modelPricing: { [MODEL]: { ...RATE, tiers: far } } } })
+      await ask(tokenA, orgA)
+      row = (await charges(orgA))[0]
+      assert(row.amount === EXPECTED_MICROS, `没过门槛该收 ${EXPECTED_MICROS}，收了 ${row.amount}`)
+      assert(row.unitPrice.tierAbove === undefined, `没过门槛的快照不该带 tierAbove：${JSON.stringify(row.unitPrice)}`)
+
+      await req(base, 'PUT', '/platform/settings', { token: owner, body: { modelPricing: { [MODEL]: RATE } } })
+    })
+
+    /**
+     * 上游没报用量。上一次（刚刚那次）报的是提示词 1,040k、输出 50k，于是这次估成
+     * 提示词 1,090k、其中 1,040k 命中缓存、输出 0：50k×10 + 1,040k×1 = $1.54。
+     */
+    await test('上游没报用量：按上一次调用估一份、标 estimated 照常扣，不再记 0', async () => {
+      await ask(tokenA, orgA)
+      const prev = (await charges(orgA))[0]
+      assert(prev.status === 'ok' && !prev.estimated, `上一次该是正常成交：${JSON.stringify(prev)}`)
+
+      upstream.flags.noUsage = true
+      try {
+        await ask(tokenA, orgA, BIG)
+      } finally {
+        upstream.flags.noUsage = false
+      }
+      const row = (await charges(orgA))[0]
+      assert(row.status === 'failed', `没拿到用量该记 failed：${row.status}`)
+      assert(row.estimated === true && row.unpriced === false, `该标 estimated、不标 unpriced：${JSON.stringify(row)}`)
+      const q = row.quantity
+      assert(q.promptTokens === 1_090_000 && q.cachedTokens === 1_040_000 && q.completionTokens === 0, `估的用量不对：${JSON.stringify(q)}`)
+      assert(row.amount === 1_540_000, `估的金额该是 1,540,000，收了 ${row.amount}`)
+      // llm_calls 上也补了同一份，统计屏的 token 和账本对得上。
+      const call = (await client.query('select "promptTokens"::int as p, "cachedTokens"::int as c from llm_calls where id = $1', [row.refId])).rows[0]
+      assert(call && call.p === 1_090_000 && call.c === 1_040_000, `llm_calls 没补上估的用量：${JSON.stringify(call)}`)
+    })
+
+    await test('估的行不拿来再估：连着两次没报用量，第二次还是按最近一次真报的推', async () => {
+      upstream.flags.noUsage = true
+      try {
+        await ask(tokenA, orgA, BIG)
+      } finally {
+        upstream.flags.noUsage = false
+      }
+      const row = (await charges(orgA))[0]
+      assert(row.estimated === true && row.quantity.promptTokens === 1_090_000, `该照最近一次真报的推：${JSON.stringify(row.quantity)}`)
+      // 按上一行（估的）推的话缓存会是 1,090,000、金额 1,090,000；按真报的推缓存是 1,040,000、金额 1,540,000。
+      assert(row.amount === 1_540_000, `估的行被拿来再估了：${row.amount}`)
+    })
+
+    await test('估算按请求体字节数封顶：小请求断了流，不会借到上一次的大上下文', async () => {
+      upstream.flags.noUsage = true
+      try {
+        await ask(tokenA, orgA)
+      } finally {
+        upstream.flags.noUsage = false
+      }
+      const row = (await charges(orgA))[0]
+      const q = row.quantity
+      assert(row.estimated === true && q.promptTokens > 0 && q.promptTokens < 2_000, `该压到请求体大小以下：${JSON.stringify(q)}`)
+      assert(q.cachedTokens === q.promptTokens && q.completionTokens === 0, `封顶后缓存不该超过提示词：${JSON.stringify(q)}`)
+      assert(row.amount === q.promptTokens * RATE.cacheRead, `金额该是封顶后的缓存读：${row.amount}`)
+    })
+
+    await test('上游没接（500 一页错误）就不估：一分钱没花，照旧 0 元 + unpriced', async () => {
+      const before = (await charges(orgA)).length
+      upstream.flags.fail = true
+      try {
+        const r = await req(base, 'POST', '/v1/messages', {
+          token: tokenA,
+          body: { model: MODEL, max_tokens: 64, messages: [{ role: 'user', content: BIG }] },
+        })
+        assert(r.status === 500, `上游 500 该原样透出：${r.status}`)
+      } finally {
+        upstream.flags.fail = false
+      }
+      await settled(orgA, before + 1)
+      const row = (await charges(orgA))[0]
+      assert(row.amount === 0 && row.unpriced === true && row.estimated === false, `没打到上游的调用不该估：${JSON.stringify(row)}`)
+    })
+
+    /**
+     * 人工改金额。先确认一行有赠送承担（A 的套餐还有赠送），改小时赠送跟着压、改大时多的记充值，
+     * 原金额只记第一次改之前的那份。
+     */
+    await test('平台改一行金额：原金额留痕、赠送只减不加、审计一笔、公司管理员 403', async () => {
+      await req(base, 'PUT', '/platform/settings', { token: owner, body: { priceMultiplier: 1, modelPricing: { [MODEL]: RATE } } })
+      await ask(tokenA, orgA)
+      const row = (await charges(orgA))[0]
+      assert(row.amount === EXPECTED_MICROS && row.original === null, `起点该是一行没改过的 $3.40：${JSON.stringify(row)}`)
+
+      const denied = await req(base, 'PUT', `/platform/charges/${row.id}`, { token: tokenA, body: { amountMicros: 1, note: 'x' } })
+      assert(denied.status === 403, `公司管理员改金额该 403：${denied.status}`)
+      const bad = await req(base, 'PUT', `/platform/charges/${row.id}`, { token: owner, body: { amountMicros: -5 } })
+      assert(bad.status === 400, `负数该 400：${bad.status} ${bad.text}`)
+
+      // 改小到 $1：赠送那一份不能超过新金额。
+      const down = await req(base, 'PUT', `/platform/charges/${row.id}`, { token: owner, body: { amountMicros: 1_000_000, note: '客户投诉，减半' } })
+      assert(down.status === 200, `改金额 ${down.status} ${down.text}`)
+      assert(down.json.charge.amountMicros === 1_000_000 && down.json.charge.originalAmountMicros === EXPECTED_MICROS, `改小后：${down.text}`)
+      let after = (await charges(orgA)).find((c) => c.id === row.id)
+      assert(after.amount === 1_000_000 && after.bonus <= 1_000_000 && after.bonus <= row.bonus, `赠送该跟着压：改前 ${row.bonus}，改后 ${after.bonus}`)
+      assert(after.original === EXPECTED_MICROS && after.adjustNote === '客户投诉，减半', `原金额和备注：${JSON.stringify(after)}`)
+      const bonusAfterDown = after.bonus
+
+      // 再改大到 $5：赠送不动，多出来的全是充值；原金额仍是最初那份。
+      const up = await req(base, 'PUT', `/platform/charges/${row.id}`, { token: owner, body: { amountMicros: 5_000_000, note: '改回并补收' } })
+      assert(up.status === 200, `改大 ${up.status} ${up.text}`)
+      after = (await charges(orgA)).find((c) => c.id === row.id)
+      assert(after.amount === 5_000_000 && after.bonus === bonusAfterDown && after.original === EXPECTED_MICROS, `改大后：${JSON.stringify(after)}`)
+
+      // 余额跟着动：/orgs/:id/charges 带的 budget 要反映改过的金额，不等缓存过期。
+      const budget = (await req(base, 'GET', `/orgs/${orgA}/charges?limit=1`, { token: owner })).json.budget
+      assert(budget && typeof budget.left === 'number', `budget 没带上：${JSON.stringify(budget)}`)
+
+      const audits = (await client.query(`select action, detail from audit_events where action = 'platform.charge.adjust' order by "createdAt" desc limit 2`)).rows
+      assert(audits.length === 2 && audits[0].detail.toMicros === 5_000_000 && audits[1].detail.fromMicros === EXPECTED_MICROS, `审计：${JSON.stringify(audits)}`)
+    })
+
+    /**
+     * 按筛选重算。几行按基础价落账之后给模型加上长上下文档位，重算应当把过了门槛的那几行翻倍，
+     * 预览不改、应用才改，第二次预览没有可改的。倍率用行上的：先把倍率改成 2，重算后的金额
+     * 仍按行上的 1 算。
+     */
+    await test('按公司和时间重算：预览不改、应用才改、倍率用行上的、再算一遍没有可改的', async () => {
+      await req(base, 'PUT', '/platform/settings', { token: owner, body: { priceMultiplier: 1, modelPricing: { [MODEL]: RATE } } })
+      const from = Date.now()
+      await ask(tokenA, orgA)
+      await ask(tokenA, orgA)
+      const to = Date.now()
+      const flat = (await charges(orgA)).slice(0, 2)
+      assert(flat.every((c) => c.amount === EXPECTED_MICROS), `起点该是两行 $3.40：${JSON.stringify(flat.map((c) => c.amount))}`)
+
+      // 加档位，顺手把倍率改成 2——重算不该吃这个 2。
+      const tiers = [{ inputTokensAbove: 1_000_000, input: 20, output: 40, cacheRead: 2, cacheWrite: 25 }]
+      await req(base, 'PUT', '/platform/settings', { token: owner, body: { priceMultiplier: 2, modelPricing: { [MODEL]: { ...RATE, tiers } } } })
+
+      const noRange = await req(base, 'POST', '/platform/charges/recalc', { token: owner, body: { companyId: orgA } })
+      assert(noRange.status === 400, `没给时间范围该 400：${noRange.status}`)
+      const otherOrg = await req(base, 'POST', '/platform/charges/recalc', { token: owner, body: { companyId: orgB, kind: 'llm', from, to } })
+      assert(otherOrg.status === 200 && otherOrg.json.changed === 0, `B 家在这个窗口里没有行：${otherOrg.text}`)
+
+      // 窗口里再放一行手工改过的：重算不该碰它。
+      await ask(tokenA, orgA)
+      const handRow = (await charges(orgA))[0]
+      const hand = await req(base, 'PUT', `/platform/charges/${handRow.id}`, { token: owner, body: { amountMicros: 1_000_000, note: '手工定价' } })
+      assert(hand.status === 200, `手工改 ${hand.status} ${hand.text}`)
+      const to2 = Date.now()
+
+      const preview = await req(base, 'POST', '/platform/charges/recalc', { token: owner, body: { companyId: orgA, kind: 'llm', from, to: to2 } })
+      assert(preview.status === 200, `预览 ${preview.status} ${preview.text}`)
+      const pv = preview.json
+      assert(pv.applied === false && pv.scanned === 3 && pv.changed === 2 && pv.skipped === 0 && pv.manual === 1, `预览汇总：${preview.text}`)
+      assert(pv.beforeMicros === EXPECTED_MICROS * 2 && pv.afterMicros === EXPECTED_MICROS * 4 && pv.deltaMicros === EXPECTED_MICROS * 2, `预览金额：${preview.text}`)
+      assert(pv.rows.length === 2 && pv.rows.every((r) => r.beforeMicros === EXPECTED_MICROS && r.afterMicros === EXPECTED_MICROS * 2), `预览明细：${preview.text}`)
+      const untouched = (await charges(orgA)).slice(1, 3)
+      assert(untouched.every((c) => c.amount === EXPECTED_MICROS && c.original === null), `预览不该改账：${JSON.stringify(untouched.map((c) => c.amount))}`)
+
+      const applied = await req(base, 'POST', '/platform/charges/recalc', { token: owner, body: { companyId: orgA, kind: 'llm', from, to: to2, apply: true } })
+      assert(applied.status === 200 && applied.json.applied === true && applied.json.changed === 2 && applied.json.manual === 1, `应用 ${applied.status} ${applied.text}`)
+      const afterHand = (await charges(orgA)).find((c) => c.id === handRow.id)
+      assert(afterHand.amount === 1_000_000 && afterHand.adjustNote === '手工定价', `手工改过的行被重算碰了：${JSON.stringify(afterHand)}`)
+      const done = (await charges(orgA)).slice(1, 3)
+      for (const c of done) {
+        assert(c.amount === EXPECTED_MICROS * 2, `重算后该是 $6.80：${c.amount}`)
+        assert(c.multiplier === 1, `倍率该还是行上的 1：${c.multiplier}`)
+        assert(c.original === EXPECTED_MICROS && c.adjustNote === '按当前单价重算', `留痕：${JSON.stringify(c)}`)
+        assert(Number(c.unitPrice.tierAbove) === 1_000_000 && Number(c.unitPrice.input) === 20, `快照该换成那一档：${JSON.stringify(c.unitPrice)}`)
+      }
+      const again = await req(base, 'POST', '/platform/charges/recalc', { token: owner, body: { companyId: orgA, kind: 'llm', from, to: to2 } })
+      assert(again.json.changed === 0 && again.json.scanned === 3 && again.json.manual === 1, `再算一遍不该有可改的：${again.text}`)
+
+      const audit = (await client.query(`select detail from audit_events where action = 'platform.charge.recalc' order by "createdAt" desc limit 1`)).rows[0]
+      assert(audit && audit.detail.changed === 2 && audit.detail.companyId === orgA, `重算审计：${JSON.stringify(audit)}`)
+
+      const denied = await req(base, 'POST', '/platform/charges/recalc', { token: tokenA, body: { companyId: orgA, from, to } })
+      assert(denied.status === 403, `公司管理员重算该 403：${denied.status}`)
+      await req(base, 'PUT', '/platform/settings', { token: owner, body: { priceMultiplier: 1, modelPricing: { [MODEL]: RATE } } })
+    })
+
+    await test('十分钟内没有同模型的上一次就不估：照旧 0 元 + unpriced', async () => {
+      const other = 'anthropic/claude-sonnet-4-5'
+      const before = (await charges(orgA)).length
+      upstream.flags.noUsage = true
+      try {
+        const r = await req(base, 'POST', '/v1/messages', {
+          token: tokenA,
+          body: { model: other, max_tokens: 64, messages: [{ role: 'user', content: 'hi' }] },
+        })
+        assert(r.status === 200, `ask ${r.status} ${r.text}`)
+      } finally {
+        upstream.flags.noUsage = false
+      }
+      await settled(orgA, before + 1)
+      const row = (await charges(orgA))[0]
+      assert(row.subject === other, `最新一行该是 ${other}：${row.subject}`)
+      assert(row.amount === 0 && row.unpriced === true && row.estimated === false, `没有上一次该记 0 + unpriced：${JSON.stringify(row)}`)
     })
   } finally {
     gw.kill()

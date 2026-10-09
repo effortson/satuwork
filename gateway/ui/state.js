@@ -118,6 +118,11 @@ const state = {
   /** 改价弹层：{ key, catalog, input, output, cacheRead, cacheWrite }。 */
   priceDraft: null,
   priceError: '',
+  /** 改一行金额的弹层：{ id, subject, createdAt, amountMicros, amount（美元字符串）, note }。 */
+  chargeEdit: null,
+  chargeEditError: '',
+  /** 按筛选重算的弹层：{ filter, preview（接口回的预览）, applying }。 */
+  recalc: null,
   inviteOpen: false,
   inviteLink: '',
   inviteEmail: '',
