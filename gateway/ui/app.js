@@ -1906,6 +1906,45 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'charge-adjust') {
+    const c = (state.charges?.charges || []).find((x) => x.id === btn.getAttribute('data-id'))
+    if (!c) return
+    state.chargeEdit = {
+      id: c.id,
+      subject: c.subject,
+      createdAt: c.createdAt,
+      amountMicros: c.amountMicros,
+      originalAmountMicros: c.originalAmountMicros,
+      amount: String(c.amountMicros / 1_000_000),
+      note: '',
+    }
+    state.chargeEditError = ''
+    render()
+    return
+  }
+  if (act === 'charge-adjust-close') {
+    state.chargeEdit = null
+    render()
+    return
+  }
+  if (act === 'charge-adjust-save') {
+    await saveChargeAdjust()
+    return
+  }
+  if (act === 'charges-recalc') {
+    await openRecalc()
+    return
+  }
+  if (act === 'recalc-close') {
+    if (state.recalc?.applying) return
+    state.recalc = null
+    render()
+    return
+  }
+  if (act === 'recalc-apply') {
+    await applyRecalc()
+    return
+  }
   if (act === 'charges-next') {
     // 在途闸：上一页还没回来就又点一下，游标栈会被压两次，两份响应谁后到谁赢，
     // 页码和内容对不上。按钮在请求中也禁用了（pages-admin.js），这里是第二道。
@@ -2618,6 +2657,10 @@ document.getElementById('app').addEventListener('input', (e) => {
   }
   if (el.getAttribute('data-act') === 'price-field' && state.priceDraft) {
     state.priceDraft[el.getAttribute('data-field')] = el.value
+    return
+  }
+  if (el.getAttribute('data-act') === 'charge-field' && state.chargeEdit) {
+    state.chargeEdit[el.getAttribute('data-field')] = el.value
     return
   }
   const nb = el.getAttribute('data-newbot')

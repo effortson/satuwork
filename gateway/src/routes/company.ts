@@ -13,7 +13,7 @@ import { bodyOf, deployOptsOf, strField, usd, usdMicros } from '../lib/validate.
 import { companyMachineOf, deploySeatBriefly, listSeatRuntime, publicMachine, publicSeatRuntime, releaseSeats } from '../deploy.ts'
 import { companyStatusOf, emailOf, groupRoleOf, membersInCompany, orgSettings, patchAccount, phoneOf, publicAccount, publicCompany, publicGroup, publicPlan, publicSettings, roleOf, slugOf, stringIds, websiteOf } from '../lib/org.ts'
 import { desktopTicketFor, machineHostOf, machineResolver } from '../lib/machines.ts'
-import { inviteLinkOf, issueInvite, rangeQuery, requireOrgUser, requireOwner, requireUser, usagePayload } from '../lib/guards.ts'
+import { dailyBars, dayBucketOf, dayLabelOf, inviteLinkOf, issueInvite, rangeQuery, requireOrgUser, requireOwner, requireUser, tzOffsetMs, usagePayload } from '../lib/guards.ts'
 import { randomUUID } from 'node:crypto'
 import { afterResponse } from '../lib/background.ts'
 import { cleanupKnowledgeBase } from '../lib/knowledge.ts'
@@ -701,10 +701,9 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
      * 的时候想知道的也常常是「今天已经花了多少」，那一格从 30 根柱子里抠不准（最后一根
      * 的时区、边界都得自己心算）。
      */
-    const day = 86400000
     const now = Date.now()
-    const todayBucket = Math.floor((now + offsetMs) / day)
-    const todayRange = { from: todayBucket * day - offsetMs, to: now }
+    const todayBucket = dayBucketOf(now, offsetMs)
+    const todayRange = { from: todayBucket * 86400000 - offsetMs, to: now }
     const [buckets, spentBuckets, models, charges, todayUsage, todayCharges] = await Promise.all([
       db.llmDailyBy(column, value, range, offsetMs),
       db.chargeDailyBy(column, value, range, offsetMs),
@@ -714,27 +713,8 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
       db.chargeUsageBy(['kind'], todayRange, scope),
     ])
 
-    /**
-     * 日线要**把没有调用的那天也画出来**：只画有数的那几天，横轴会被悄悄压缩，
-     * 「周末没人用」看上去和「天天都在用」长得一样。
-     */
-    const first = range.from != null ? Math.floor((range.from + offsetMs) / day) : buckets[0]?.bucket
-    const last = range.to != null ? Math.floor((range.to + offsetMs) / day) : buckets[buckets.length - 1]?.bucket
-    const dayLabel = (b: number) => {
-      const d = new Date(b * day)
-      return `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`
-    }
-    const daily: { label: string; value: number; amount: string; amountMicros: number }[] = []
-    if (first != null && last != null && last >= first) {
-      const counts = new Map(buckets.map((b) => [b.bucket, b.calls]))
-      const spent = new Map(spentBuckets.map((b) => [b.bucket, b.amountMicros]))
-      // 92 根柱子已经挤不下了；手搓一个三年的 from/to 不该把这一屏拖垮。
-      const start = Math.max(first, last - 91)
-      for (let b = start; b <= last; b += 1) {
-        const micros = spent.get(b) ?? 0
-        daily.push({ label: dayLabel(b), value: counts.get(b) ?? 0, amount: usdMicros(micros), amountMicros: micros })
-      }
-    }
+    // 没有调用的那天也画一根 0 柱、右端不越过今天——规矩在 dailyBars 里，平台统计那一屏同一套。
+    const daily = dailyBars(buckets, spentBuckets, range, offsetMs)
 
     /** 账本上这一段的钱，按对象（模型是 `provider/model`、连接器是 `连接器:工具`）摊开。 */
     const spentBySubject = new Map<string, number>()
@@ -806,7 +786,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
 
     const todayKind = new Map(todayCharges.map((c) => [c.kind, c]))
     const today = {
-      label: dayLabel(todayBucket),
+      label: dayLabelOf(todayBucket),
       calls: todayUsage.calls,
       promptTokens: todayUsage.promptTokens,
       completionTokens: todayUsage.completionTokens,
@@ -819,20 +799,6 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     }
 
     return { daily, byAgent, byModel, byKind, today }
-  }
-
-  /**
-   * 时区偏移（毫秒）。前端传的是 `Date.getTimezoneOffset()` 的**相反数**（东八区 +480 分）。
-   * 缺省 0 = UTC 切天：老前端不带这个参数时，日线仍然画得出来，只是边界按 UTC。
-   */
-  function tzOffsetMs(req: Parameters<typeof rangeQuery>[0]): number {
-    const raw = (req.query.get('tz') || '').trim()
-    if (!raw) return 0
-    const n = Number(raw)
-    if (!Number.isFinite(n)) throw new HttpError(400, 'tz 必须是分钟数')
-    // 谁也不在 ±16 小时之外。越界的值当没传，而不是让日线整体飘走。
-    if (Math.abs(n) > 16 * 60) return 0
-    return n * 60000
   }
 
   /**

@@ -1688,6 +1688,54 @@ function usageMeter(name, value, pct, alt, mono) {
     </div>`
 }
 
+/**
+ * 日柱图：一天一根，柱高是模型调用次数，柱顶标那天扣的钱。公司用量屏和平台统计屏
+ * 共用这一张——两边的 `daily` 是同一个口径（服务端的 dailyBars），画法也该是同一套，
+ * 不然 owner 在两屏之间切的时候得重新学一遍怎么读图。
+ *
+ * 返回的是面板**里面**的那截（标题行 + 柱子），外面那层 `satu-panel` 由调用方包。
+ */
+function dailyBarChart(daily, title, empty) {
+  if (!daily.length) {
+    return `<span class="satu-panel-title">${esc(title)}</span>
+          ${emptyBox(empty)}`
+  }
+  // 金额只在柱子够宽时画在柱顶：「近 30 天」三十根柱子每根二十来像素，`$0.212` 塞不下，
+  // 挤着画只会糊成一条；那时金额留在悬停里，标题行照样给合计。
+  const showAmounts = daily.length <= 14
+  const peak = Math.max(...daily.map((d) => Number(d.value) || 0), 0)
+  const spentMicros = daily.reduce((n, d) => n + (Number(d.amountMicros) || 0), 0)
+  const hasAmounts = daily.some((d) => d.amount != null)
+  // 柱子多了日期也得抽稀：三十个「09/01」并排只会叠成一条。从最后一根（今天）往回数，
+  // 每隔 step 根标一个，今天那根一定有字。
+  const step = Math.max(1, Math.ceil(daily.length / 10))
+  const cols = daily
+    .map((d, i) => {
+      const v = Number(d.value) || 0
+      const labelled = (daily.length - 1 - i) % step === 0
+      const h = peak ? Math.round((v / peak) * 100) : 0
+      const amount = d.amount || '—'
+      const tip = hasAmounts
+        ? t(`${d.label} · ${v} 次 · ${amount}`, `${d.label} · ${v} calls · ${amount}`)
+        : t(`${d.label} · ${v} 次`, `${d.label} · ${v} calls`)
+      return `<div class="satu-barcol" title="${esc(tip)}">
+          ${showAmounts && hasAmounts ? `<span class="satu-baramt"${Number(d.amountMicros) ? '' : ' data-zero="true"'}>${esc(amount)}</span>` : ''}
+          <div class="satu-barstack">
+            <div class="satu-barfill" style="height: ${h}%;"></div>
+          </div>
+          <span class="satu-barlabel"${labelled ? '' : ' style="visibility: hidden;"'}>${esc(d.label)}</span>
+        </div>`
+    })
+    .join('')
+  // 合计按微元加总再格式化，不去把每根柱子上四舍五入过的字符串相加。
+  const total = hasAmounts ? ` · ${t('合计', 'total')} ${fmtUsdMicros(spentMicros)}` : ''
+  return `<div style="display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;">
+      <span class="satu-panel-title">${esc(title)}</span>
+      <span style="font-size: 12px; color: var(--muted-foreground);">${t(`峰值 ${peak} 次`, `peak ${peak} calls`)}${esc(total)}</span>
+    </div>
+    <div class="satu-bars">${cols}</div>`
+}
+
 function usagePage() {
   const data = state.usage || {
     stats: [
@@ -1732,45 +1780,7 @@ function usagePage() {
       </div>`,
     )
     .join('')
-  // 金额只在柱子够宽时画在柱顶：「近 30 天」三十根柱子每根二十来像素，`$0.212` 塞不下，
-  // 挤着画只会糊成一条；那时金额留在悬停里，标题行照样给合计。
-  const showAmounts = daily.length > 0 && daily.length <= 14
-  const dailyBody = daily.length
-    ? (() => {
-        const peak = Math.max(...daily.map((d) => Number(d.value) || 0), 0)
-        const spentMicros = daily.reduce((n, d) => n + (Number(d.amountMicros) || 0), 0)
-        const hasAmounts = daily.some((d) => d.amount != null)
-        // 柱子多了日期也得抽稀：三十个「09/01」并排只会叠成一条。从最后一根（今天）往回数，
-        // 每隔 step 根标一个，今天那根一定有字。
-        const step = Math.max(1, Math.ceil(daily.length / 10))
-        const cols = daily
-          .map((d, i) => {
-            const v = Number(d.value) || 0
-            const labelled = (daily.length - 1 - i) % step === 0
-            const h = peak ? Math.round((v / peak) * 100) : 0
-            const amount = d.amount || '—'
-            const tip = hasAmounts
-              ? t(`${d.label} · ${v} 次 · ${amount}`, `${d.label} · ${v} calls · ${amount}`)
-              : t(`${d.label} · ${v} 次`, `${d.label} · ${v} calls`)
-            return `<div class="satu-barcol" title="${esc(tip)}">
-                ${showAmounts && hasAmounts ? `<span class="satu-baramt"${Number(d.amountMicros) ? '' : ' data-zero="true"'}>${esc(amount)}</span>` : ''}
-                <div class="satu-barstack">
-                  <div class="satu-barfill" style="height: ${h}%;"></div>
-                </div>
-                <span class="satu-barlabel"${labelled ? '' : ' style="visibility: hidden;"'}>${esc(d.label)}</span>
-              </div>`
-          })
-          .join('')
-        // 合计按微元加总再格式化，不去把每根柱子上四舍五入过的字符串相加。
-        const total = hasAmounts ? ` · ${t('合计', 'total')} ${fmtUsdMicros(spentMicros)}` : ''
-        return `<div style="display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;">
-            <span class="satu-panel-title">${t('每日任务执行量')}</span>
-            <span style="font-size: 12px; color: var(--muted-foreground);">${t(`峰值 ${peak} 次`, `peak ${peak} calls`)}${esc(total)}</span>
-          </div>
-          <div class="satu-bars">${cols}</div>`
-      })()
-    : `<span class="satu-panel-title">${t('每日任务执行量')}</span>
-          ${emptyBox(t('这个时间段里还没有调用。'))}`
+  const dailyBody = dailyBarChart(daily, t('每日任务执行量'), t('这个时间段里还没有调用。'))
   // 今日用量：服务端按看的人所在时区的零点算，不跟着上面选的范围走。老 Gateway 不带
   // `today`，这一块就不画，而不是画一排 0——0 会被读成「今天没用」。
   const today = data.today && typeof data.today === 'object' ? data.today : null

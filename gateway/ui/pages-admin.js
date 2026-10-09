@@ -836,12 +836,13 @@ function chargeTable(scope, forOrg) {
         <span style="font-size: 13px;">${who}</span>
         <div style="min-width: 0;">
           <div style="font-size: 13px; font-weight: 600; overflow-wrap: anywhere;">${esc(c.subject)}</div>
-          <div style="font-size: 11.5px; color: var(--muted-foreground);">${esc(kindLabel(c.kind))}${c.status !== 'ok' ? ` · ${esc(statusLabel(c.status))}` : ''}${c.unpriced ? ` · <span title="${esc(t('这次没查到单价，金额不是 0 而是算不出来', 'No price found; the 0 means unknown, not free'))}">${t('无单价', 'unpriced')}</span>` : ''}</div>
+          <div style="font-size: 11.5px; color: var(--muted-foreground);">${esc(kindLabel(c.kind))}${c.status !== 'ok' ? ` · ${esc(statusLabel(c.status))}` : ''}${c.unpriced ? ` · <span title="${esc(t('这次没查到单价，金额不是 0 而是算不出来', 'No price found; the 0 means unknown, not free'))}">${t('无单价', 'unpriced')}</span>` : ''}${c.estimated ? ` · <span title="${esc(t('上游没报用量（流在用量那一帧之前断了），按同模型上一次调用推算', 'Upstream reported no usage (stream broke before the usage frame); estimated from the previous call on this model'))}">${t('估算', 'estimated')}</span>` : ''}${adjustedTag(c)}</div>
         </div>
         <div style="min-width: 0; font-size: 11.5px; color: var(--muted-foreground);">${chargeQuantity(c, withPrice)}</div>
         <div style="text-align: right;">
           <div style="font-size: 13px; font-weight: 600;">${esc(usageMicros$(c.amountMicros))}</div>
           ${c.amountMicros > 0 ? `<div style="font-size: 11px; color: var(--muted-foreground);">${t('赠送', 'bonus')} ${esc(usageMicros$(c.bonusMicros))}</div>` : ''}
+          ${scope === 'platform' && withPrice ? `<button type="button" class="satu-linkbtn" style="font-size: 11px;" data-act="charge-adjust" data-id="${esc(c.id)}">${t('改金额', 'Adjust')}</button>` : ''}
         </div>
       </div>`
     })
@@ -852,7 +853,16 @@ function chargeTable(scope, forOrg) {
     <div style="display: flex; flex-direction: column; gap: var(--space-3);">
       <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;">
         <h2 style="font-size: 18px; margin: 0;">${t('计费明细')}</h2>
-        <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${kinds}</div>
+        <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
+          ${kinds}
+          ${
+            // 重算按的是这一屏现在的筛选：上面选的公司、时间段，和这一行的类型胶囊。
+            // 先预览再应用，在弹层里看清会改多少、改多少钱。
+            scope === 'platform' && withPrice
+              ? `<button type="button" class="btn btn-ghost" style="padding: 4px 12px;" data-act="charges-recalc" ${state.chargesLoading ? 'disabled' : ''} title="${esc(t('按现在的公司、时间段和类型筛出来的所有行，用当前单价重新算一遍；先预览，确认后才改', 'Re-price every row matching the current company, period and kind at today’s unit prices; preview first, nothing changes until you confirm'))}">${t('按当前筛选重算', 'Recalculate filtered')}</button>`
+              : ''
+          }
+        </div>
       </div>
       <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
         <div class="satu-billhead" style="grid-template-columns: ${cols};" data-tt-title="${scope === 'platform' ? 3 : 2}">${head}</div>
@@ -900,6 +910,99 @@ function statusLabel(status) {
  * `withPrice` 为假时只画消耗（token 数、条数、次数）：公司那边看到的是自己被扣了多少，
  * 单价和倍率是平台怎么定价的，不摊在客户面前。金额那一列照画——那是真扣掉的钱。
  */
+/** 平台人工改过 / 重算过的行：标出来，并带上原来的金额。 */
+function adjustedTag(c) {
+  if (c.originalAmountMicros == null) return ''
+  const why = c.adjustNote ? `：${c.adjustNote}` : ''
+  return ` · <span title="${esc(t(`平台改过这一笔，原金额 ${usageMicros$(c.originalAmountMicros)}${why}`, `Adjusted by the platform; was ${usageMicros$(c.originalAmountMicros)}${why}`))}">${t('已调整', 'adjusted')} (${esc(t('原', 'was'))} ${esc(usageMicros$(c.originalAmountMicros))})</span>`
+}
+
+/**
+ * 改一行金额的弹层。金额按美元填（人看账单是美元），发出去的是微元——权威值是整数，
+ * 换算在保存那一刻做一次。
+ */
+function chargeAdjustModal() {
+  const d = state.chargeEdit
+  if (!d) return ''
+  return `
+    <div class="gw-modal-backdrop" data-act="charge-adjust-close">
+      <div class="gw-modal" data-stop role="dialog" aria-modal="true" style="max-width: 480px;">
+        <div>
+          <h2 style="font-size: 20px; margin: 0 0 4px;">${t('改金额', 'Adjust amount')} · ${esc(d.subject)}</h2>
+          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${esc(fmtTime(d.createdAt))} · ${t('现在', 'now')} ${esc(usageMicros$(d.amountMicros))}${d.originalAmountMicros != null ? ` · ${t('原', 'was')} ${esc(usageMicros$(d.originalAmountMicros))}` : ''}</p>
+        </div>
+        ${state.chargeEditError ? `<div class="gw-flash gw-flash-err">${esc(state.chargeEditError)}</div>` : ''}
+        <div class="field">
+          <label>${t('金额（美元）', 'Amount (USD)')}</label>
+          <input class="input" type="number" min="0" step="0.000001" data-act="charge-field" data-field="amount" value="${esc(d.amount)}">
+        </div>
+        <div class="field">
+          <label>${t('备注', 'Note')}</label>
+          <input class="input" type="text" maxlength="200" data-act="charge-field" data-field="note" value="${esc(d.note)}" placeholder="${esc(t('为什么改，查账的人要看', 'Why — whoever audits this will read it'))}">
+        </div>
+        <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('改完立刻影响这家公司的余额。改小时赠送那一份跟着压下去；改大时多出来的全算充值。原金额会留在行上，谁改的记在审计里。', 'Takes effect on the company balance immediately. Lowering it also lowers the bonus share; raising it books the extra against top-ups. The original amount stays on the row and the change is audited.')}</p>
+        <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
+          <button type="button" class="btn btn-ghost" data-act="charge-adjust-close">${t('取消')}</button>
+          <button type="button" class="btn btn-primary" data-act="charge-adjust-save" ${state.busy ? 'disabled' : ''}>${t('保存')}</button>
+        </div>
+      </div>
+    </div>`
+}
+
+/** 按筛选重算的预览 / 确认弹层。接口先算一遍回预览，确认后再带 apply 来一次。 */
+function recalcModal() {
+  const r = state.recalc
+  if (!r) return ''
+  const p = r.preview
+  const delta = p ? p.deltaMicros : 0
+  const sign = delta > 0 ? '+' : delta < 0 ? '−' : ''
+  const rows = (p?.rows || [])
+    .map(
+      (x) => `<div class="satu-billrow" style="grid-template-columns: 150px 1fr 110px 110px; font-variant-numeric: tabular-nums;">
+        <span style="font-size: 12.5px; color: var(--muted-foreground);">${esc(fmtTime(x.createdAt))}</span>
+        <span style="font-size: 13px; overflow-wrap: anywhere;">${esc(x.subject)}</span>
+        <span style="font-size: 13px; text-align: right; color: var(--muted-foreground);">${esc(usageMicros$(x.beforeMicros))}</span>
+        <span style="font-size: 13px; text-align: right; font-weight: 600;">${esc(usageMicros$(x.afterMicros))}</span>
+      </div>`,
+    )
+    .join('')
+  return `
+    <div class="gw-modal-backdrop" data-act="recalc-close">
+      <div class="gw-modal" data-stop role="dialog" aria-modal="true" style="max-width: 720px; max-height: 88vh; overflow-y: auto;">
+        <div>
+          <h2 style="font-size: 20px; margin: 0 0 4px;">${t('按当前筛选重算', 'Recalculate filtered rows')}</h2>
+          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${esc(r.label)}</p>
+        </div>
+        ${r.error ? `<div class="gw-flash gw-flash-err">${esc(r.error)}</div>` : ''}
+        ${
+          p
+            ? `<div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--space-3);">
+                ${statCard(t('扫了', 'Scanned'), String(p.scanned))}
+                ${statCard(t('会改', 'Will change'), String(p.changed))}
+                ${statCard(t('手工改过', 'Manual'), String(p.manual || 0))}
+                ${statCard(t('算不出', 'Skipped'), String(p.skipped))}
+                ${statCard(t('金额变化', 'Delta'), `${sign}${usageMicros$(Math.abs(delta))}`)}
+              </div>
+              <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t(`原价合计 ${usageMicros$(p.beforeMicros)} → ${usageMicros$(p.afterMicros)}。单价用现在的（含长上下文档位），倍率用每一行当时的。「手工改过」的行不碰；「算不出」是目录里查不到价、或没成交过的连接器调用，原样不动。`, `Totals ${usageMicros$(p.beforeMicros)} → ${usageMicros$(p.afterMicros)}. Today’s unit prices (incl. long-context tiers) with each row’s own multiplier. Manually adjusted rows are left alone; “skipped” rows have no catalog price (or are connector calls that never ran) and stay as they are.`)}</p>
+              ${
+                rows
+                  ? `<div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
+                      <div class="satu-billhead" style="grid-template-columns: 150px 1fr 110px 110px;"><span>${t('时间')}</span><span>${t('对象')}</span><span style="text-align: right;">${t('现在', 'Now')}</span><span style="text-align: right;">${t('重算后', 'After')}</span></div>
+                      ${rows}
+                      ${p.more ? `<div style="padding: var(--space-3); font-size: 12px; color: var(--muted-foreground); text-align: center;">${t(`还有 ${p.more} 行没列出来`, `${p.more} more rows not shown`)}</div>` : ''}
+                    </div>`
+                  : `<div style="padding: var(--space-4); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('这个范围里没有一行会变。', 'Nothing in this range would change.')}</div>`
+              }`
+            : `<div style="padding: var(--space-4); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('算着…', 'Calculating…')}</div>`
+        }
+        <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
+          <button type="button" class="btn btn-ghost" data-act="recalc-close">${t('取消')}</button>
+          <button type="button" class="btn btn-primary" data-act="recalc-apply" ${!p || !p.changed || r.applying ? 'disabled' : ''}>${r.applying ? t('应用中…', 'Applying…') : t(`应用到 ${p ? p.changed : 0} 行`, `Apply to ${p ? p.changed : 0} rows`)}</button>
+        </div>
+      </div>
+    </div>`
+}
+
 function chargeQuantity(c, withPrice) {
   const q = c.quantity || {}
   const p = c.unitPrice || {}
@@ -1168,6 +1271,20 @@ function statsPage() {
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-3);">
           ${cards}
         </div>
+        ${
+          /**
+           * 日线只在跨天的窗口画：「今日」只有一根柱子，画出来是一块空白加一根长条，
+           * 说不了任何事。样式和公司用量屏那张一样（同一个 dailyBarChart），柱高是模型
+           * 调用次数，柱顶是那天三条路合计扣的钱——跟上面的金额卡同一个口径。
+           */
+          state.statsRange === 'today'
+            ? ''
+            : `<div class="satu-dailyrow">
+          <div class="satu-panel">
+            ${dailyBarChart(Array.isArray(d?.daily) ? d.daily : [], t('每日调用量'), state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。'))}
+          </div>
+        </div>`
+        }
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">
           <h2 style="font-size: 18px; margin: 0;">${t('按公司')}</h2>
           <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
@@ -1216,7 +1333,9 @@ function statsPage() {
         </div>
         ${chargeTable('platform')}
       </div>
-    </div>`
+    </div>
+    ${chargeAdjustModal()}
+    ${recalcModal()}`
 }
 
 /**

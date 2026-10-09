@@ -134,6 +134,52 @@ export function migrateDatabaseUrl(): string {
  * （崩在写调用和记账之间随后重算、或者一条被重放的上报）。直接 join 会把业务表那一行
  * 复制一份——calls 翻倍、token 和金额跟着翻倍。先收再 join，扇出这件事就不存在了。
  */
+/**
+ * 明细与重算共用的筛选。companyId 为 null 的是 owner 自己的调用：传了 companyId 就只看这一家，
+ * 不传就是全平台（含平台自己那些）。
+ */
+function chargeFilterSql(filter: {
+  companyId?: string
+  accountId?: string
+  botId?: string
+  kind?: ChargeKind
+  status?: ChargeStatus
+  from?: number
+  to?: number
+}): { sql: string; args: unknown[] } {
+  let sql = ''
+  const args: unknown[] = []
+  if (filter.companyId) {
+    sql += ' and "companyId" = ?'
+    args.push(filter.companyId)
+  }
+  if (filter.accountId) {
+    sql += ' and "accountId" = ?'
+    args.push(filter.accountId)
+  }
+  if (filter.botId) {
+    sql += ' and "botId" = ?'
+    args.push(filter.botId)
+  }
+  if (filter.kind) {
+    sql += ' and kind = ?'
+    args.push(filter.kind)
+  }
+  if (filter.status) {
+    sql += ' and status = ?'
+    args.push(filter.status)
+  }
+  if (filter.from != null) {
+    sql += ' and "createdAt" >= ?'
+    args.push(filter.from)
+  }
+  if (filter.to != null) {
+    sql += ' and "createdAt" <= ?'
+    args.push(filter.to)
+  }
+  return { sql, args }
+}
+
 const LEDGER_BY_REF = '(select "refId", sum("amountMicros") as micros from usage_charges group by "refId")'
 
 /** Bot 删除请求失败后自动重试的上限。每次隔一分钟，试满就停在 failed 上，等管理员处理。 */
@@ -1000,6 +1046,36 @@ export class Db {
   }
 
   /**
+   * 同一账号、同一模型、`since` 之后、`before` 之前**最近一次真结算过**的调用用量。
+   * 没拿到 usage 的那次要靠它估（lib/llm-billing.ts 的 estimateUsage）。
+   *
+   * 只认账本上 `ok`、不是估的、而且真有输入的那行：估的推估的会把误差滚起来，0 token
+   * 的占位行推出来的还是 0。`before` 是这次调用自己登记的时刻——比它晚的调用是别的轮次，
+   * 不是「上一次」。
+   */
+  async lastSettledLlmCall(
+    accountId: string,
+    provider: string,
+    model: string,
+    range: { since: number; before: number },
+  ): Promise<{ promptTokens: number; completionTokens: number; cachedTokens: number; createdAt: number } | undefined> {
+    const r = await this.one(
+      `select c."promptTokens", c."completionTokens", c."cachedTokens", c."createdAt" from llm_calls c
+         join usage_charges u on u."refId" = c.id and u.kind = 'llm' and u.status = 'ok' and u.estimated = false
+        where c."accountId" = ? and c.provider = ? and c.model = ? and c."createdAt" >= ? and c."createdAt" < ? and c."promptTokens" > 0
+        order by c."createdAt" desc limit 1`,
+      [accountId, provider, model, range.since, range.before],
+    )
+    if (!r) return undefined
+    return {
+      promptTokens: Number(r.promptTokens) || 0,
+      completionTokens: Number(r.completionTokens) || 0,
+      cachedTokens: Number(r.cachedTokens) || 0,
+      createdAt: Number(r.createdAt) || 0,
+    }
+  }
+
+  /**
    * 这一次调用落过账没有。管家中继的结算接口靠它做幂等：管家重试、或者清扫和结算
    * 撞在一起时，第二笔只能是「已经记过了」，不能再挂一行。
    */
@@ -1181,12 +1257,29 @@ export class Db {
     range?: { from?: number; to?: number },
     offsetMs = 0,
   ): Promise<{ bucket: number; calls: number }[]> {
+    return this.llmDaily({ column, value }, range, offsetMs)
+  }
+
+  /**
+   * 平台视角的每日调用数：全部公司一起数，或者只数某一家。owner 自己那些
+   * `companyId` 为空的调用也在里面——统计页的合计就是这么算的，日线不能少它一截。
+   */
+  llmDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string): Promise<{ bucket: number; calls: number }[]> {
+    return this.llmDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs)
+  }
+
+  private async llmDaily(
+    scope: { column: 'companyId' | 'accountId'; value: string } | null,
+    range?: { from?: number; to?: number },
+    offsetMs = 0,
+  ): Promise<{ bucket: number; calls: number }[]> {
     const r = this.llmRangeSql(range)
+    const w = this.dailyScopeSql(scope)
     const rows = await this.many(
       `select floor(("createdAt" + ?) / 86400000.0)::bigint as bucket, count(*) as calls
-       from llm_calls where "${column}" = ?${r.sql}
+       from llm_calls where ${w.sql}${r.sql}
        group by bucket order by bucket`,
-      [offsetMs, value, ...r.args],
+      [offsetMs, ...w.args, ...r.args],
     )
     return rows.map((row) => ({ bucket: num(row.bucket), calls: num(row.calls) }))
   }
@@ -1202,14 +1295,33 @@ export class Db {
     range?: { from?: number; to?: number },
     offsetMs = 0,
   ): Promise<{ bucket: number; amountMicros: number }[]> {
+    return this.chargeDaily({ column, value }, range, offsetMs)
+  }
+
+  /** 平台视角的每日扣费，和 `llmDailyAll` 配对：全部公司一起算，或者只算某一家。 */
+  chargeDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string): Promise<{ bucket: number; amountMicros: number }[]> {
+    return this.chargeDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs)
+  }
+
+  private async chargeDaily(
+    scope: { column: 'companyId' | 'accountId'; value: string } | null,
+    range?: { from?: number; to?: number },
+    offsetMs = 0,
+  ): Promise<{ bucket: number; amountMicros: number }[]> {
     const r = this.llmRangeSql(range)
+    const w = this.dailyScopeSql(scope)
     const rows = await this.many(
       `select floor(("createdAt" + ?) / 86400000.0)::bigint as bucket, coalesce(sum("amountMicros"), 0) as "amountMicros"
-       from usage_charges where "${column}" = ?${r.sql}
+       from usage_charges where ${w.sql}${r.sql}
        group by bucket order by bucket`,
-      [offsetMs, value, ...r.args],
+      [offsetMs, ...w.args, ...r.args],
     )
     return rows.map((row) => ({ bucket: num(row.bucket), amountMicros: num(row.amountMicros) }))
+  }
+
+  /** 日线的范围子句：按公司 / 按人，或者（平台视角）不限。列名是白名单里的两个，不是外面传进来的字符串。 */
+  private dailyScopeSql(scope: { column: 'companyId' | 'accountId'; value: string } | null): { sql: string; args: string[] } {
+    return scope ? { sql: `"${scope.column}" = ?`, args: [scope.value] } : { sql: '1=1', args: [] }
   }
 
   llmUsageOfCompany(companyId: string, range?: { from?: number; to?: number }): Promise<LlmUsage> {
@@ -1654,6 +1766,8 @@ export class Db {
     amountMicros?: number
     bonusMicros?: number
     unpriced?: boolean
+    /** 用量是估的。只是落个标记，金额和桶的算法一字不改。 */
+    estimated?: boolean
     refId?: string | null
     /**
      * 赠送桶的上限：本账期一共送了多少微元、账期从哪一刻起。给了它，`bonusMicros` 就
@@ -1681,6 +1795,11 @@ export class Db {
       // 赠送承担的不可能超过总额——脏数据也不能算出负的「充值承担」（同 0005 的处理）。
       bonusMicros: Math.min(Math.max(0, Math.trunc(input.bonusMicros ?? 0)), amount),
       unpriced: input.unpriced === true,
+      estimated: input.estimated === true,
+      originalAmountMicros: null,
+      adjustedAt: null,
+      adjustedBy: null,
+      adjustNote: '',
       refId: input.refId ?? null,
       createdAt: Date.now(),
     }
@@ -1692,8 +1811,8 @@ export class Db {
       ? [amount, Math.max(0, Math.trunc(cap.grantMicros)), row.companyId, cap.since]
       : [row.bonusMicros]
     const r = await this.one(
-      `insert into usage_charges (id, "companyId", "accountId", "botId", "sessionId", kind, subject, status, quantity, "unitPrice", multiplier, "amountMicros", "bonusMicros", unpriced, "refId", "createdAt")
-       values (?,?,?,?,?,?,?,?,?,?,?,?,${bonusSql},?,?,?) returning "bonusMicros"`,
+      `insert into usage_charges (id, "companyId", "accountId", "botId", "sessionId", kind, subject, status, quantity, "unitPrice", multiplier, "amountMicros", "bonusMicros", unpriced, estimated, "refId", "createdAt")
+       values (?,?,?,?,?,?,?,?,?,?,?,?,${bonusSql},?,?,?,?) returning "bonusMicros"`,
       [
         row.id,
         row.companyId,
@@ -1709,6 +1828,7 @@ export class Db {
         row.amountMicros,
         ...bonusArgs,
         row.unpriced,
+        row.estimated,
         row.refId,
         row.createdAt,
       ],
@@ -1891,38 +2011,8 @@ export class Db {
     limit?: number
     before?: { createdAt: number; id: string }
   }): Promise<UsageCharge[]> {
-    let sql = 'select * from usage_charges where 1=1'
-    const args: unknown[] = []
-    // companyId 为 null 的是 owner 自己的调用。传了 companyId 就只看这一家，
-    // 不传就是全平台（含平台自己那些）。
-    if (filter.companyId) {
-      sql += ' and "companyId" = ?'
-      args.push(filter.companyId)
-    }
-    if (filter.accountId) {
-      sql += ' and "accountId" = ?'
-      args.push(filter.accountId)
-    }
-    if (filter.botId) {
-      sql += ' and "botId" = ?'
-      args.push(filter.botId)
-    }
-    if (filter.kind) {
-      sql += ' and kind = ?'
-      args.push(filter.kind)
-    }
-    if (filter.status) {
-      sql += ' and status = ?'
-      args.push(filter.status)
-    }
-    if (filter.from != null) {
-      sql += ' and "createdAt" >= ?'
-      args.push(filter.from)
-    }
-    if (filter.to != null) {
-      sql += ' and "createdAt" <= ?'
-      args.push(filter.to)
-    }
+    const { sql: where, args } = chargeFilterSql(filter)
+    let sql = 'select * from usage_charges where 1=1' + where
     if (filter.before) {
       // 同一毫秒里可能有好几行，光比时间会漏掉或重复。带上 id 当第二把钥匙。
       sql += ' and ("createdAt", id) < (?, ?)'
@@ -1933,6 +2023,95 @@ export class Db {
     args.push(limit)
     return (await this.many(sql, args)).map(usageChargeOf)
   }
+
+  /**
+   * 重算要的那一批行：同一套筛选，不分页，**多取一行**好让调用方知道截断了没有。
+   * 截断了就该让人把范围缩小，而不是悄悄只算前面一截——那样「应用」按下去改了一半。
+   */
+  async usageChargesForRecalc(
+    filter: { companyId?: string; kind?: ChargeKind; from?: number; to?: number },
+    limit: number,
+  ): Promise<{ rows: UsageCharge[]; truncated: boolean }> {
+    const { sql: where, args } = chargeFilterSql(filter)
+    const rows = await this.many(`select * from usage_charges where 1=1${where} order by "createdAt" desc, id desc limit ?`, [...args, limit + 1])
+    const truncated = rows.length > limit
+    return { rows: (truncated ? rows.slice(0, limit) : rows).map(usageChargeOf), truncated }
+  }
+
+  /**
+   * **人工改一行的金额**（docs/billing.md §2.2）。owner 在明细页上显式操作，或者按当前单价重算。
+   *
+   * 赠送那一份怎么跟着动：**只减不加**。金额改小，`bonusMicros` 跟着压到不超过新金额；金额
+   * 改大，多出来的那截全记充值桶，`bonusMicros` 原地不动。往赠送桶里加要重新算当期的上限
+   * （insertUsageCharge 的 bonusCap），而那个上限是「此刻」的，不是这一行落账那一刻的——
+   * 补进去的 bonus 可能把早就用光的赠送桶扣穿。多出来的记充值桶永远不会扣穿谁。
+   *
+   * `originalAmountMicros` 只在第一次改时记下：`coalesce(原值, 当前金额)`。单价快照和倍率
+   * 只有重算那条路会给（它换了单价，快照得跟着换，不然四项乘出来对不上金额）；人工改金额
+   * 不动它们——那一行的「单价 × 计量 ≠ 金额」正是人工改过的痕迹。
+   *
+   * 要在 db.tx 里调，外面先拿这家公司的账本锁：余额判定是按公司 sum 的，改金额和落账
+   * 得排队。
+   */
+  async adjustUsageCharge(
+    id: string,
+    input: { amountMicros: number; by: string | null; note: string; unitPrice?: Record<string, number>; multiplier?: number; unpriced?: boolean },
+  ): Promise<UsageCharge | undefined> {
+    const amount = Math.max(0, Math.trunc(input.amountMicros))
+    const sets = ['"amountMicros" = ?', '"bonusMicros" = least("bonusMicros", ?)', '"originalAmountMicros" = coalesce("originalAmountMicros", "amountMicros")', '"adjustedAt" = ?', '"adjustedBy" = ?', '"adjustNote" = ?']
+    const args: unknown[] = [amount, amount, Date.now(), input.by, input.note.slice(0, 500)]
+    if (input.unitPrice) {
+      sets.push('"unitPrice" = ?')
+      args.push(JSON.stringify(input.unitPrice))
+    }
+    if (input.multiplier != null) {
+      sets.push('multiplier = ?')
+      args.push(input.multiplier)
+    }
+    if (input.unpriced != null) {
+      sets.push('unpriced = ?')
+      args.push(input.unpriced)
+    }
+    args.push(id)
+    const r = await this.one(`update usage_charges set ${sets.join(', ')} where id = ? returning *`, args)
+    return r ? usageChargeOf(r) : undefined
+  }
+
+  /**
+   * 重算落账：一批行一条 UPDATE（同 adjustUsageCharge 的规矩：赠送只减不加、原金额只记第一次、
+   * 单价快照和倍率换成重算出来的）。一行一条事务的话，几千行就是几千次锁和往返，在 Vercel 上
+   * 一次请求跑不完还会停在半截。调用方按公司分组、拿着账本锁调它；这里只管 SQL。
+   *
+   * VALUES 里的参数要显式转型：PG 推不出一列 `?` 的类型，`jsonb` 和 `bigint` 那两列尤其。
+   */
+  async adjustUsageChargesBulk(
+    items: { id: string; amountMicros: number; unitPrice: Record<string, number>; multiplier: number }[],
+    meta: { by: string | null; note: string },
+  ): Promise<number> {
+    let n = 0
+    const CHUNK = 500
+    for (let i = 0; i < items.length; i += CHUNK) {
+      const chunk = items.slice(i, i + CHUNK)
+      const values = chunk.map(() => '(?::text, ?::bigint, ?::jsonb, ?::real)').join(', ')
+      const args: unknown[] = [Date.now(), meta.by, meta.note.slice(0, 500)]
+      for (const it of chunk) args.push(it.id, Math.max(0, Math.trunc(it.amountMicros)), JSON.stringify(it.unitPrice), it.multiplier)
+      n += await this.run(
+        `update usage_charges u set
+           "amountMicros" = v.amount,
+           "bonusMicros" = least(u."bonusMicros", v.amount),
+           "originalAmountMicros" = coalesce(u."originalAmountMicros", u."amountMicros"),
+           "unitPrice" = v.unit,
+           multiplier = v.mult,
+           unpriced = false,
+           "adjustedAt" = ?, "adjustedBy" = ?, "adjustNote" = ?
+         from (values ${values}) as v(id, amount, unit, mult)
+         where u.id = v.id`,
+        args,
+      )
+    }
+    return n
+  }
+
 
   /**
    * 账本汇总：按公司 × 类型。统计屏用它。

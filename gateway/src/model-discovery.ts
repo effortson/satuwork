@@ -20,6 +20,7 @@
  *    我们这边没有那份实测知识，所以留一张 denylist 让人把发现错的按下去。
  */
 import type { Api, Model, Provider } from '@earendil-works/pi-ai'
+import { type ModelRate, parseModelRate } from './db/types.ts'
 
 /** pi 的 `scripts/generate-models.ts` 读的就是这个地址。 */
 export const MODELS_DEV_URL = 'https://models.dev/api.json'
@@ -42,8 +43,17 @@ export interface DiscoveredEntry {
   image: boolean
   contextWindow: number
   maxTokens: number
-  cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
+  /**
+   * 四项单价，外加可选的长上下文档位（和 pi-ai 目录的 `cost.tiers` 同形）。models.dev 的
+   * `tiers[]` 里 `tier.type === 'context'` 的那几条就是：过了 `tier.size` 整次按那一档收。
+   * 不带上它，自动发现的模型（gpt-6.1-sol 这一批上线时 pi-ai 还没收录）过了 272k 就按
+   * 半价记账——那正是 10 月对账时少掉的那三成。
+   */
+  cost: DiscoveredCost
 }
+
+/** 和账本那边同一个形状、同一个解析器（db/types.ts 的 parseModelRate）。 */
+export type DiscoveredCost = ModelRate
 
 export interface DiscoverySnapshot {
   /** 上一次成功拉到数据的时刻。拉失败不动它——失败不该让旧快照看起来更新了。 */
@@ -89,12 +99,7 @@ export function parseDiscoverySnapshot(raw: unknown): DiscoverySnapshot {
       image: e.image === true,
       contextWindow: numOr(e.contextWindow, 4096),
       maxTokens: numOr(e.maxTokens, 4096),
-      cost: {
-        input: numOr(e.cost?.input, 0),
-        output: numOr(e.cost?.output, 0),
-        cacheRead: numOr(e.cost?.cacheRead, 0),
-        cacheWrite: numOr(e.cost?.cacheWrite, 0),
-      },
+      cost: parseModelRate(e.cost),
     })
   }
   const deny = (Array.isArray(o.deny) ? o.deny : [])
@@ -175,16 +180,30 @@ export function parseModelsDev(raw: unknown): DiscoveredEntry[] {
         image: Array.isArray(m.modalities?.input) && m.modalities.input.includes('image'),
         contextWindow: numOr(m.limit?.context, 4096),
         maxTokens: numOr(m.limit?.output, 4096),
-        cost: {
-          input: numOr(m.cost?.input, 0),
-          output: numOr(m.cost?.output, 0),
-          cacheRead: numOr(m.cost?.cache_read, 0),
-          cacheWrite: numOr(m.cost?.cache_write, 0),
-        },
+        cost: parseModelRate(modelsDevCost(m.cost)),
       })
     }
   }
   return out
+}
+
+/**
+ * models.dev 的 cost 翻成目录的形状，解析交给 parseModelRate：键是蛇形（cache_read），档位
+ * 的门槛裹在 `tier: { type, size }` 里。只认 `type === 'context'` 的档——别的类型（比如按
+ * 批量）不是按输入量切的，门槛给 0 让解析器丢掉它。
+ */
+function modelsDevCost(raw: any): unknown {
+  if (!raw || typeof raw !== 'object') return undefined
+  const tiers = Array.isArray(raw.tiers)
+    ? raw.tiers.map((t: any) => ({
+        inputTokensAbove: t?.tier?.type === 'context' ? t.tier.size : 0,
+        input: t?.input,
+        output: t?.output,
+        cacheRead: t?.cache_read,
+        cacheWrite: t?.cache_write,
+      }))
+    : undefined
+  return { input: raw.input, output: raw.output, cacheRead: raw.cache_read, cacheWrite: raw.cache_write, tiers }
 }
 
 export async function fetchModelsDev(signal?: AbortSignal): Promise<DiscoveredEntry[]> {
