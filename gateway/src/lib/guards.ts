@@ -191,10 +191,73 @@ export function rangeQuery(req: Req): { from?: number; to?: number } {
 }
 
 /**
+ * 时区偏移（毫秒）。前端传的是 `Date.getTimezoneOffset()` 的**相反数**（东八区 +480 分）。
+ * 缺省 0 = UTC 切天：老前端不带这个参数时，日线仍然画得出来，只是边界按 UTC。
+ *
+ * 公司用量屏和平台统计屏共用：两边的日线都按**看的人所在时区**切天，服务端不知道那是
+ * 哪个时区（同 `rangeQuery` 的 from/to 由前端算好是一个道理）。
+ */
+export function tzOffsetMs(req: Req): number {
+  const raw = (req.query.get('tz') || '').trim()
+  if (!raw) return 0
+  const n = Number(raw)
+  if (!Number.isFinite(n)) throw new HttpError(400, 'tz 必须是分钟数')
+  // 谁也不在 ±16 小时之外。越界的值当没传，而不是让日线整体飘走。
+  if (Math.abs(n) > 16 * 60) return 0
+  return n * 60000
+}
+
+/**
  * 日线上的一根柱子。`label` 是给人看的日期，怎么写由算它的那一层决定。`value` 是模型调用
  * 次数（柱高），`amount` 是那一天账本上扣的钱（三条计费路都算）。
  */
 export type UsageBar = { label: string; value: number; amount?: string; amountMicros?: number }
+
+const DAY_MS = 86400000
+
+/** 桶号（按看的人所在时区平移后的天序号，见 `db.llmDailyBy`）→ `MM/DD`。 */
+export function dayLabelOf(bucket: number): string {
+  const d = new Date(bucket * DAY_MS)
+  return `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`
+}
+
+/** 某一时刻落在哪个桶里。平移 `offsetMs` 之后按天切，和 SQL 里那句 `floor((createdAt + ?) / 86400000)` 一致。 */
+export function dayBucketOf(at: number, offsetMs: number): number {
+  return Math.floor((at + offsetMs) / DAY_MS)
+}
+
+/**
+ * 把库里按桶聚合出来的两串数（调用次数、扣费）铺成一根根柱子。
+ *
+ * **没有调用的那天也要画出来**：只画有数的那几天，横轴会被悄悄压缩，「周末没人用」看上去
+ * 和「天天都在用」长得一样。窗口两端按 from/to 算；没传的那头退回有数的第一 / 最后一天。
+ *
+ * **右端不越过今天**：「本月」那种窗口 to 是月底最后一刻，月中看的时候后半个月还没发生，
+ * 画成一排 0 会被读成「下半月没人用」。
+ *
+ * 92 根柱子已经挤不下了；手搓一个三年的 from/to 不该把这一屏拖垮。
+ */
+export function dailyBars(
+  buckets: { bucket: number; calls: number }[],
+  spentBuckets: { bucket: number; amountMicros: number }[],
+  range: { from?: number; to?: number },
+  offsetMs: number,
+): UsageBar[] {
+  const today = dayBucketOf(Date.now(), offsetMs)
+  const first = range.from != null ? dayBucketOf(range.from, offsetMs) : buckets[0]?.bucket
+  const rawLast = range.to != null ? dayBucketOf(range.to, offsetMs) : buckets[buckets.length - 1]?.bucket
+  const last = rawLast != null ? Math.min(rawLast, today) : undefined
+  const daily: UsageBar[] = []
+  if (first == null || last == null || last < first) return daily
+  const counts = new Map(buckets.map((b) => [b.bucket, b.calls]))
+  const spent = new Map(spentBuckets.map((b) => [b.bucket, b.amountMicros]))
+  const start = Math.max(first, last - 91)
+  for (let b = start; b <= last; b += 1) {
+    const micros = spent.get(b) ?? 0
+    daily.push({ label: dayLabelOf(b), value: counts.get(b) ?? 0, amount: usdMicros(micros), amountMicros: micros })
+  }
+  return daily
+}
 /** 看的人所在时区的「今天」：零点到现在。不跟着界面上选的范围走。 */
 export type UsageToday = {
   label: string

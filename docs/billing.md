@@ -517,6 +517,10 @@ requireUser → gate（402）→ recordLlmCall（拿 callId）→ 打上游
   - `connector.byConnector` / `connector.totals`：连接器那一块，和 `web` 同形。
     库里是按 (连接器, 连接名) 分的，这里把连接名合并掉——平台视角看的是哪个连接器
     花了钱，谁用的哪一把连接在连接器页和计费明细里。
+  - `daily`：每天一根柱子，和 `/orgs/:id/usage` 的那条同形同口径（`lib/guards.ts` 的
+    `dailyBars`）：柱高是模型调用次数，金额是那天三条路合计扣的钱。按 `tz` 切天；没调用
+    的那天也给 0 柱；右端不越过今天（「本月」的 `to` 是月底，后半个月还没发生）。
+    界面只在「近 7 天」「月」画它——「今日」只有一根。
 - `GET /orgs/:id/usage` / `GET /me/stats`：`daily` / `byAgent` / `byModel` 三块以前是写死的
   空数组（界面上四块永远写着「还没有用量」，而同一屏底下的计费明细一屏都是），现在都从
   已有的两张表来：次数和 token 在 `llm_calls`，钱在账本。另外多一块 `byKind`（模型 /

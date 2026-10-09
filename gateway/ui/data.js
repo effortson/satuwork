@@ -367,7 +367,8 @@ function statsWindow() {
 
 async function loadStats() {
   const { from, to } = statsWindow()
-  const q = new URLSearchParams({ from: String(from), to: String(to) })
+  // 日线按看的人所在时区切天，和 loadUsage 传的是同一个数（getTimezoneOffset 的相反数）。
+  const q = new URLSearchParams({ from: String(from), to: String(to), tz: String(-new Date().getTimezoneOffset()) })
   if (state.statsCompany) q.set('companyId', state.statsCompany)
   state.statsLoading = true
   render()

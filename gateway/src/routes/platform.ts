@@ -11,7 +11,7 @@ import { IMAGE_TIERS, imageEstimateTokens, imageModelDef } from '../image-models
 import { refreshDiscovered, REFRESH_MS } from '../model-discovery.ts'
 import { isVendor } from '../connectors/index.ts'
 import { pruneDailyAlternates } from '../lib/alternates.ts'
-import { rangeQuery, requireOwnerUser } from '../lib/guards.ts'
+import { dailyBars, rangeQuery, requireOwnerUser, tzOffsetMs } from '../lib/guards.ts'
 import { DAILY_ALTERNATES_MAX, WEB_BACKENDS, WEB_DOCUMENT, type PlatformSettings, modelKey, emptyWebTools, parseBilling, parseConnectorPricing, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseWebTools } from '../db.ts'
 import { WebToolError, canExtract, canSearch, needsSecret } from '../web-tools.ts'
 import { parseBotVersion } from '../releases.ts'
@@ -395,10 +395,27 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     const companyId = (req.query.get('companyId') || '').trim()
     if (companyId && !(await db.company(companyId))) throw new HttpError(404, '公司不存在')
 
-    const rows = await db.llmUsageByCompanyModel(range, companyId || undefined)
-    const webRows = await db.webUsageByCompanyBackend(range, companyId || undefined)
-    const connectorRows = await db.connectorUsage({ companyId: companyId || undefined }, range)
-    const multiplier = parsePriceMultiplier((await db.platformSettings()).priceMultiplier)
+    /**
+     * 日线按**看的人所在时区**切天，偏移由前端用 `tz`（分钟）传上来——和 from/to 由前端
+     * 算好是一个道理。老前端不带它就按 UTC 切，日线照样画，只是边界差几个小时。
+     */
+    const offsetMs = tzOffsetMs(req)
+
+    const [rows, webRows, connectorRows, settings, dailyCalls, dailySpent] = await Promise.all([
+      db.llmUsageByCompanyModel(range, companyId || undefined),
+      db.webUsageByCompanyBackend(range, companyId || undefined),
+      db.connectorUsage({ companyId: companyId || undefined }, range),
+      db.platformSettings(),
+      db.llmDailyAll(range, offsetMs, companyId || undefined),
+      db.chargeDailyAll(range, offsetMs, companyId || undefined),
+    ])
+    const multiplier = parsePriceMultiplier(settings.priceMultiplier)
+    /**
+     * 日线：柱高是模型调用次数，金额是那一天三条路一共扣的钱（和上面两张金额卡同一个
+     * 口径，不只是模型那一份）。窗口里没调用的那天也给一根 0 柱，右端不越过今天——
+     * 规矩在 dailyBars 里，公司用量屏那条日线也是它画的。
+     */
+    const daily = dailyBars(dailyCalls, dailySpent, range, offsetMs)
 
     /** 账本里模型那一类的钱，按 (公司, 模型) 摊开。key 和下面 token 那份对齐。 */
     const charged = new Map<string, { amountMicros: number; costMicros: number; unpricedCalls: number; unmeteredCalls: number }>()
@@ -586,6 +603,8 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       // 当前倍率，只给界面上那句「现在按几倍报价」用。历史金额里的倍率是各行自己的。
       multiplier,
       companies: [...companies.values()].map((c) => ({ id: c.id, name: c.name })),
+      // 每天一根柱子：`value` 是模型调用次数，`amountMicros` 是那天三条路合计扣的钱。
+      daily,
       byCompany: list,
       byModel: [...byModel.values()].sort((a, b) => b.promptTokens + b.completionTokens - (a.promptTokens + a.completionTokens)),
       totals,

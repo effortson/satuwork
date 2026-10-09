@@ -1168,6 +1168,20 @@ function statsPage() {
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-3);">
           ${cards}
         </div>
+        ${
+          /**
+           * 日线只在跨天的窗口画：「今日」只有一根柱子，画出来是一块空白加一根长条，
+           * 说不了任何事。样式和公司用量屏那张一样（同一个 dailyBarChart），柱高是模型
+           * 调用次数，柱顶是那天三条路合计扣的钱——跟上面的金额卡同一个口径。
+           */
+          state.statsRange === 'today'
+            ? ''
+            : `<div class="satu-dailyrow">
+          <div class="satu-panel">
+            ${dailyBarChart(Array.isArray(d?.daily) ? d.daily : [], t('每日调用量'), state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。'))}
+          </div>
+        </div>`
+        }
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">
           <h2 style="font-size: 18px; margin: 0;">${t('按公司')}</h2>
           <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
