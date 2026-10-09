@@ -7,7 +7,7 @@
  */
 
 /** 落盘格式版本。任何破坏性结构变更都要 +1，并同时给出迁移。 */
-export const SESSION_FORMAT_VERSION = 5
+export const SESSION_FORMAT_VERSION = 6
 
 /** 会话根上的 Bot 来源。M1 只有 local；company / global 是物化预留。 */
 export type SessionOrigin = 'local' | 'company' | 'global'
@@ -54,6 +54,36 @@ export type ContentBlock =
    * 一个块，历史会话里就会长出三种彼此不兼容的提及。
    */
   | { type: 'mention'; kind: 'connector' | 'bot' | 'routine'; id: string; label: string }
+  /**
+   * 用户指着说话的一个东西（v6 起，见 docs/chat-references.md）：一条消息，或一个工作区文件。
+   *
+   * **存结构，不存一句话。** 道理和 mention 块一字不差。另一条理由是这里独有的：
+   * 被引用的回复**全文不落在这里**——它已经在同一份 JSONL 里了，组模型请求时按 seq
+   * 回去读；这里只留一段摘录，给界面画卡、以及 seq 找不到时当退路。
+   *
+   * `seq` 可空：外部渠道（Telegram 的 reply_to）接进来时只有原文、没有会话里的位置。
+   */
+  | {
+      type: 'ref'
+      kind: 'message'
+      /** 被引用那条 user/message 或 assistant/message 事件的 seq。 */
+      seq?: number
+      role: 'user' | 'assistant'
+      /** 原文开头，≤ 300 字。 */
+      excerpt: string
+      /** 原消息的时间（Unix 毫秒），渲染给模型时写进去。 */
+      time: number
+    }
+  | {
+      type: 'ref'
+      kind: 'file'
+      /** 相对工作区根目录。 */
+      path: string
+      name: string
+    }
+
+/** 引用块。请求体里的 `refs` 就是它去掉 `type` 的样子。 */
+export type RefBlock = Extract<ContentBlock, { type: 'ref' }>
 
 export interface Message {
   id: string
