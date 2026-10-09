@@ -337,6 +337,29 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(r.json.queued !== true, '点名全被剔掉了还排队，那用户就白等一轮')
     })
 
+    await test('引用：Gateway 只认形状——截到 10 条、不认识的 kind 丢掉，席位回 refs 条数', async () => {
+      /**
+       * docs/chat-references.md §5.1：引用指的是这条会话自己的消息和工作区自己的文件，
+       * 归属已经由 seatTargetForSession 定了，Gateway 不校验内容，只把形状收拾干净。
+       * 十二项里一项 kind 不认识、十一个文件：席位该收到十个。
+       */
+      const refs = [{ kind: 'tool', id: 'x' }].concat(
+        Array.from({ length: 11 }, (_, i) => ({ kind: 'file', path: `uploads/ref-${i}.txt`, name: `ref-${i}.txt`, extra: 'dropped' })),
+      )
+      const r = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/messages`, {
+        token: adminTok,
+        body: { text: `refs ${MARKER}`, refs },
+      })
+      assert(r.status === 200, `message ${r.status} ${r.text}`)
+      assert(r.json.refs === 10, `席位该收到 10 条引用并回 refs:10，实际：${r.text}`)
+      // 越界的路径由席位挡（Gateway 不做工作区边界）：整条消息 400，草稿退回给人。
+      const bad = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/messages`, {
+        token: adminTok,
+        body: { text: `refs-bad ${MARKER}`, refs: [{ kind: 'file', path: '../../etc/passwd' }] },
+      })
+      assert(bad.status === 400, `越界的引用路径该 400，实际 ${bad.status} ${bad.text}`)
+    })
+
     // ── 附件。上传不再经 Gateway（浏览器直连席位机器的管家，见 e2e/manager.mjs 的
     //    「直连上传」），这里直打 bot 落一份文件；下载 / 预览 / 列目录仍是 Gateway 的
     //    proxyDownload——字节从席位流回浏览器，只有这里能验「Gateway 中间那段没把它弄坏」。

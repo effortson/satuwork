@@ -460,6 +460,31 @@ function messageMentions(msg) {
 }
 
 /**
+ * 这条消息引用了什么（`ref` 块，见 docs/chat-references.md）。形状和输入框上那排
+ * `state.chatRefs` 一致：发出去前后长得一样。
+ */
+function messageRefs(msg) {
+  const content = msg && msg.content
+  if (!Array.isArray(content)) return []
+  const out = []
+  for (const b of content) {
+    if (!b || b.type !== 'ref') continue
+    if (b.kind === 'file' && b.path) {
+      out.push({ kind: 'file', path: String(b.path), name: String(b.name || b.path.split('/').pop() || b.path) })
+    } else if (b.kind === 'message') {
+      out.push({
+        kind: 'message',
+        seq: Number.isFinite(Number(b.seq)) ? Number(b.seq) : null,
+        role: b.role === 'user' ? 'user' : 'assistant',
+        excerpt: String(b.excerpt || ''),
+        time: Number(b.time) || 0,
+      })
+    }
+  }
+  return out
+}
+
+/**
  * 每条会话「此刻在不在跑」——**bot 亲口说的那一份**，不是扫事件扫出来的。
  *
  * 扫出来的那个（fold 里的 status）有个前提：手上这份历史是完整的。而它经常不成立，
@@ -653,6 +678,8 @@ function fold(events, live, channelBot = false) {
         // 不是输入框上一个发完就没的装饰。丢掉的话翻上去看昨天那条，「@ 了谁」就消失了，
         // 而那正是「它为什么去读了我的邮箱」的唯一答案。
         mentions: messageMentions(data.message),
+        // 引用同理：它是这条消息的一部分，翻上去要看得出「当时指的是哪条、哪个文件」。
+        refs: messageRefs(data.message),
         // **这行话从哪来。** Web / Telegram / 代理任务都画在气泡上的角标。
         via,
         // **raw 不能省。** mergePending 靠「文字一模一样」认回执，而它手上那份是
@@ -670,6 +697,13 @@ function fold(events, live, channelBot = false) {
         blocks.push(assistant)
       }
       if (text) assistant.text = text
+      /**
+       * **引用要指这一条，不是块的 seq。** 块的 seq 是它第一条事件的（常常是一条
+       * assistant/chunk 或 tool/call），拿它去引用，席位会说「引用的消息不存在」——它只认
+       * user/message 和 assistant/message。一轮里多条助手消息（工具中间穿插的）取最后
+       * 一条，和上面 text 的取法一致。
+       */
+      assistant.msgSeq = ev.seq
       assistant.endTime = at
     } else if (type === 'assistant/chunk') {
       const chunk = data.chunk || {}
@@ -1515,7 +1549,10 @@ function applyDraft(kept) {
   state.chatDraft = kept.text
   state.chatFiles = kept.files
   if (Array.isArray(kept.mentions) && kept.mentions.length) state.chatMentions = kept.mentions
+  // 引用跟附件一样随草稿走：人引用了一条、切去别的 Bot 查个东西再回来，那张卡还在。
+  state.chatRefs = Array.isArray(kept.refs) ? kept.refs : []
   paintChatFiles()
+  paintChatRefs()
 }
 
 /**
@@ -1539,7 +1576,7 @@ async function ensureChatSession(botId, attempt = 0) {
   // 这个 Bot 的流一直开着（切走时没掐）——把正文接回去就行，不用重新拉一遍会话。
   const warm = botStreams.get(botId)
   if (warm && warm.ac && warm.sessionId && state.chatBotId !== botId) {
-    if (state.chatBotId) state.chatDrafts[state.chatBotId] = { text: state.chatDraft, files: state.chatFiles }
+    if (state.chatBotId) state.chatDrafts[state.chatBotId] = { text: state.chatDraft, files: state.chatFiles, refs: state.chatRefs }
     const kept = state.chatDrafts[botId] || { text: '', files: [] }
     state.chatBotId = botId
     state.chatSessionId = warm.sessionId
@@ -1567,7 +1604,7 @@ async function ensureChatSession(botId, attempt = 0) {
     // 挂着的那条「等会话到了就发」同样作废：它指的是上一个 Bot 的那条草稿，而草稿这会儿
     // 已经收进 chatDrafts 了——补发只会把它发到新这位的对话里去。
     clearHeldSend()
-    if (state.chatBotId) state.chatDrafts[state.chatBotId] = { text: state.chatDraft, files: state.chatFiles }
+    if (state.chatBotId) state.chatDrafts[state.chatBotId] = { text: state.chatDraft, files: state.chatFiles, refs: state.chatRefs }
     const kept = state.chatDrafts[botId] || { text: '', files: [] }
     state.chatBotId = botId
     state.chatSessionId = ''
@@ -1632,6 +1669,8 @@ async function loadChatPage() {
   state.chatModelOpen = false
   // 换了会话，上一条还没发出去的 `@` 不该跟过来——它指的是「这一条消息带谁」。
   state.chatMentions = []
+  // 引用指的是**那条会话里**的某条消息、某个文件，换了会话更不该跟过来。
+  state.chatRefs = []
   state.mentionPick = null
   // 命令选单和「正在压缩」那句提示都是**上一页**的事，跟着走会挂在一条不相干的会话上。
   state.cmdPick = null
@@ -3142,6 +3181,8 @@ function knownFiles(blocks) {
   }
   for (const b of blocks || []) {
     for (const f of b.files || []) add(f)
+    // 人引用过的文件也算露过面：正文里再出现它的名字就该能点。
+    for (const r of b.refs || []) if (r && r.kind === 'file') add(r)
     for (const x of b.tools || []) {
       for (const f of x.files || []) add(f)
       for (const f of x.refs || []) add(f)
@@ -3679,12 +3720,42 @@ function rowShell(b, key) {
   // 内容留空，交给 updateRow：助手那条**还在输出时是读秒**、输出完了才换成时刻，
   // 而 rowShell 只在节点新建时跑一次，盯不住这个变化。
   const time = '<time class="sw-time" hidden></time>'
+  /**
+   * 悬停才出现的那排动作，第一版只有「引用」（见 docs/chat-references.md §7.2）。
+   *
+   * 壳里**总是**画上，显不显示由 updateRow 定：正在流式输出的那条还没有
+   * `assistant/message`，seq 指的是第一条 chunk，发出去席位会判「引用的消息不存在」；
+   * 回执没回来的那条（pending）同理。那两种情况 updateRow 把它藏起来。
+   */
+  const qseq = quoteSeqOf(b)
   return (
-    `<div class="sw-msg" data-role="${b.kind}" data-key="${key}"${b.via ? ` data-via="${esc(b.via)}"` : ''}${b.pending ? ' data-pending="1"' : ''}>` +
+    `<div class="sw-msg" data-role="${b.kind}" data-key="${key}"${qseq != null ? ` data-seq="${esc(String(qseq))}"` : ''}${b.via ? ` data-via="${esc(b.via)}"` : ''}${b.pending ? ' data-pending="1"' : ''}>` +
     `<div class="sw-msg-avatar" aria-hidden="true">${avatar}</div>` +
     `<div class="sw-msg-col">` +
     `<div class="sw-bubble" data-role="${b.kind}"><div class="sw-md"></div><div class="sw-chips" hidden></div></div>` +
-    `${time}</div></div>`
+    `${time}${msgActsHtml(b)}</div></div>`
+  )
+}
+
+/**
+ * 引用这一块时该指的 seq：那条 user/message / assistant/message 事件，**不是块的 seq**
+ * （助手块的 seq 是它第一条事件的，常常是一条 chunk，见 fold 里 msgSeq 那段）。
+ * 还在流式输出的助手块没有它——那条 assistant/message 还没写下来。
+ */
+function quoteSeqOf(b) {
+  if (!b) return null
+  if (b.kind === 'user') return b.seq != null ? b.seq : null
+  return b.msgSeq != null ? b.msgSeq : null
+}
+
+/** 悬停才出现的那排动作（见 rowShell 的说明）。没有可引用的 seq 就是空串。 */
+function msgActsHtml(b) {
+  const qseq = quoteSeqOf(b)
+  if (qseq == null) return ''
+  return (
+    `<div class="sw-msg-acts" hidden><button type="button" class="sw-msg-act" data-act="chat-ref-msg" ` +
+    `data-seq="${esc(String(qseq))}" data-role="${b.kind}" title="${esc(t('引用这条', 'Quote this'))}" ` +
+    `aria-label="${esc(t('引用这条', 'Quote this'))}">${ICON_QUOTE}<span>${esc(t('引用', 'Quote'))}</span></button></div>`
   )
 }
 
@@ -3767,13 +3838,57 @@ function updateRow(el, b, streaming, since) {
    *
    * 和附件缩略图一条路子：签名没变就不重画，否则流式那几帧会把它反复换掉。
    */
+  /**
+   * 这条消息引用了什么。画在气泡最顶上——它是这句话的前提（「按这条改」里的「这条」），
+   * 要先于正文被看到。卡和输入框上那排是同一种（refCardHtml），发出去前后长得一样。
+   */
+  const refs = b.refs || []
+  const refSig = refs.map((r) => (r.kind === 'file' ? 'f:' + r.path : 'm:' + r.seq + ':' + r.excerpt)).join('|')
+  let refBox = bubble.querySelector('.sw-refs-in')
+  if (refs.length && !refBox) {
+    refBox = document.createElement('div')
+    refBox.className = 'sw-refs-in'
+    bubble.insertBefore(refBox, bubble.firstChild)
+  }
+  if (refBox && refBox.getAttribute('data-sig') !== refSig) {
+    refBox.setAttribute('data-sig', refSig)
+    refBox.innerHTML = refs.map((r) => refCardHtml(r, '')).join('')
+    refBox.hidden = !refs.length
+  }
+
+  /**
+   * 悬停动作（引用这条）：流式输出中和回执没回来的不给，理由见 rowShell。
+   *
+   * 壳是节点新建时画的，而一条看着它流式输出完的回复，那时候还没有 assistant/message——
+   * 壳里就没有这排动作。所以这里要**补**：seq 到了、壳里还没有，就现画一个；seq 变了
+   * （一轮里多条助手消息）也跟着改。
+   */
+  const qseq = quoteSeqOf(b)
+  let acts = el.querySelector('.sw-msg-acts')
+  if (qseq != null) {
+    const want = String(qseq)
+    if (el.getAttribute('data-seq') !== want) el.setAttribute('data-seq', want)
+    if (!acts) {
+      const col = el.querySelector('.sw-msg-col')
+      const box = document.createElement('div')
+      box.innerHTML = msgActsHtml(b)
+      acts = box.firstElementChild
+      if (col && acts) col.appendChild(acts)
+    } else {
+      const btn = acts.querySelector('[data-act="chat-ref-msg"]')
+      if (btn && btn.getAttribute('data-seq') !== want) btn.setAttribute('data-seq', want)
+    }
+  }
+  if (acts) acts.hidden = qseq == null || Boolean(streaming) || Boolean(b.pending)
+
   const ments = b.mentions || []
   const mentSig = ments.map((m) => m.label).join('|')
   let mentBox = bubble.querySelector('.sw-mentions-in')
   if (ments.length && !mentBox) {
     mentBox = document.createElement('div')
     mentBox.className = 'sw-mentions-in'
-    bubble.insertBefore(mentBox, bubble.firstChild)
+    // 引用卡在最顶上，点名那排排它后面。
+    bubble.insertBefore(mentBox, refBox ? refBox.nextSibling : bubble.firstChild)
   }
   if (mentBox && mentBox.getAttribute('data-sig') !== mentSig) {
     mentBox.setAttribute('data-sig', mentSig)
@@ -4554,6 +4669,7 @@ function mergePending(folded, sessionId) {
       raw: p.text,
       images: p.images || [],
       mentions: p.mentions || [],
+      refs: p.refs || [],
       via: folded.channelVia ? 'web' : '',
       time: p.at,
       pending: true,
@@ -5278,6 +5394,12 @@ function chatExportText() {
       continue
     }
     out.push('## ' + (b.kind === 'user' ? me : title) + (b.time ? ' · ' + fmtTime(b.time) : ''), '')
+    // 引用：回复写成一段引文，文件写成一行路径。导出的这份是事后复盘用的，「当时指的是哪条」要看得出来。
+    for (const r of b.refs || []) {
+      if (r.kind === 'file') out.push('- ' + t('引用', 'Quoted') + ' `' + r.path + '`')
+      else out.push('> ' + t('引用', 'Quoted') + ' ' + (r.role === 'user' ? me : title) + (r.time ? ' · ' + fmtTime(r.time) : '') + '：' + r.excerpt)
+    }
+    if ((b.refs || []).length) out.push('')
     for (const x of b.tools || []) {
       out.push('- ' + t('工具') + ' `' + x.name + '` · ' + (x.result == null ? t('调用中') : x.failed ? t('失败') : t('完成')))
       for (const f of x.files || []) out.push('  - ' + t('产出') + ' `' + f.path + '`')
@@ -7317,6 +7439,9 @@ function previewPanel() {
       <div class="sw-preview-acts">
         ${previewTabs(p)}
         ${paintActs(p)}
+        ${/* 「引用这个文件」：把它挂到输入框上，下一句话就指着它说（docs/chat-references.md §7.2）。
+              药丸、正文里的行内路径、右栏「工作区文件」点开走的都是这同一个预览，一个按钮三处都覆盖到。 */ ''}
+        <button type="button" class="btn" data-act="chat-ref-file" data-path="${esc(p.path)}" data-name="${esc(p.name)}">${t('引用这个文件', 'Quote this file')}</button>
         <button type="button" class="btn" data-act="preview-download" data-path="${esc(p.path)}" data-name="${esc(p.name)}">${t('下载')}</button>
       </div>
       <div class="sw-preview-slot" id="sw-preview-slot"></div>
@@ -7801,6 +7926,9 @@ function chatPage() {
           <form id="chat-form" class="sw-composer-box">
             <div class="sw-pickbox" id="chat-cmdpick" hidden></div>
             <div class="sw-pickbox" id="chat-mentionpick" hidden></div>
+            ${/* 引用条：这一条还没发出去的消息指着谁（一条回复、一个文件）。摆在 @ 那排上面，
+                  内容由 paintChatRefs 就地填（见 docs/chat-references.md §7.1）。 */ ''}
+            <div class="sw-files sw-refs" id="chat-refs" hidden></div>
             <div class="sw-files" id="chat-mentions" hidden></div>
             <div class="sw-files" id="chat-files" hidden></div>
             <textarea id="chat-input" class="satu-prompt satu-grow" rows="1"
@@ -8120,6 +8248,136 @@ function paintChatMentions() {
     .join('')
 }
 
+// ── 引用（docs/chat-references.md）────────────────────────────────────────────
+
+const ICON_QUOTE = svg(['M9 7H5a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h2l-1 4h2l2-4V9a2 2 0 0 0-2-2z', 'M20 7h-4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h2l-1 4h2l2-4V9a2 2 0 0 0-2-2z'], 14)
+
+/** 一条消息最多带几个引用。和图片、`@` 同一个上限，席位那边也截到这个数。 */
+const MAX_REFS = 10
+/** 卡上摘录的上限（字符）。席位会按 seq 重算，这份只是回执那几秒和卡上画的那份。 */
+const REF_EXCERPT_CHARS = 300
+
+/** 两个引用是不是同一个东西：同一条消息、同一个文件。 */
+function sameRef(a, b) {
+  if (!a || !b || a.kind !== b.kind) return false
+  return a.kind === 'file' ? a.path === b.path : a.seq != null && a.seq === b.seq
+}
+
+/** 发给席位的形状：§5.1 那张表，就是卡上那份去掉界面用的字段。 */
+function refPayload(r) {
+  if (r.kind === 'file') return { kind: 'file', path: r.path, name: r.name }
+  return { kind: 'message', seq: r.seq, role: r.role, excerpt: r.excerpt, time: r.time }
+}
+
+/** 按扩展名猜图片的 mime。只用来判「模型看不看得了」，跟 pickImages 那张表是一对。 */
+function imageMimeOf(path) {
+  const ext = String(path || '').split('.').pop().toLowerCase()
+  return ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : ''
+}
+
+/** 一条消息的摘录：空白折成一个空格，截到上限。 */
+function refExcerptOf(text) {
+  return String(text == null ? '' : text).replace(/\s+/g, ' ').trim().slice(0, REF_EXCERPT_CHARS)
+}
+
+/**
+ * 一张引用卡。输入框上那排（带 ×）和发出去之后气泡里那排（可点、跳回原消息）是同一个
+ * 函数画的——发出去前后长得一样，人才认得出这就是刚才点的那个。
+ *
+ * 文件引用就是那颗产出药丸（fileChipHtml）：同一个东西，点开走同一个预览。
+ */
+function refCardHtml(r, x) {
+  if (r.kind === 'file') return `<span class="sw-ref sw-ref-file">${fileChipHtml(r)}${x}</span>`
+  const who = r.role === 'user' ? t('我', 'Me') : t('Bot')
+  const when = r.time ? chatClock(r.time) : ''
+  const body =
+    `<span class="sw-ref-head">${esc(who)}${when ? ' · ' + esc(when) : ''}</span>` +
+    `<span class="sw-ref-text">${esc(r.excerpt || t('（无正文）', '(no text)'))}</span>`
+  const inner =
+    r.seq != null
+      ? `<button type="button" class="sw-ref-card" data-act="chat-ref-jump" data-seq="${esc(String(r.seq))}" title="${esc(t('跳到这条', 'Jump to this message'))}">${body}</button>`
+      : `<span class="sw-ref-card">${body}</span>`
+  return `<span class="sw-ref sw-ref-msg">${inner}${x}</span>`
+}
+
+/** 输入框上方那排引用卡。 */
+function paintChatRefs() {
+  const box = document.getElementById('chat-refs')
+  if (!box) return
+  const picked = state.chatRefs || []
+  box.hidden = !picked.length
+  box.innerHTML = picked
+    .map((r, i) =>
+      refCardHtml(
+        r,
+        `<button type="button" class="sw-file-x" data-act="chat-ref-drop" data-i="${i}" ` +
+          `aria-label="${esc(t('移除', 'Remove'))}">${ICON_X}</button>`,
+      ),
+    )
+    .join('')
+}
+
+/** 挂一个引用到输入框上。重复的不挂；满了说一声。 */
+function addChatRef(r) {
+  const picked = state.chatRefs || []
+  if (picked.some((x) => sameRef(x, r))) return false
+  if (picked.length >= MAX_REFS) {
+    flash('err', t(`一条消息最多引用 ${MAX_REFS} 个`, `At most ${MAX_REFS} quotes per message`))
+    return false
+  }
+  state.chatRefs = picked.concat(r)
+  paintChatRefs()
+  const input = document.getElementById('chat-input')
+  if (input) input.focus()
+  return true
+}
+
+/** 气泡上点了「引用」：按 seq 在折好的块里找回那条，摘录从它的正文来。 */
+function takeRefMessage(seq) {
+  const n = Number(seq)
+  if (!Number.isFinite(n)) return
+  const folded = fold(state.chatEvents, chatLive.get(state.chatSessionId), currentBotHasChannelLabels())
+  const b = (folded.blocks || []).find((x) => (x.kind === 'user' || x.kind === 'assistant') && quoteSeqOf(x) === n)
+  if (!b) return
+  addChatRef({ kind: 'message', seq: n, role: b.kind, excerpt: refExcerptOf(b.text), time: b.time || 0 })
+}
+
+/** 预览面板上点了「引用这个文件」：挂上、关掉预览。 */
+function takeRefFile(path, name) {
+  if (!path) return
+  const ok = addChatRef({ kind: 'file', path, name: name || path.split('/').pop() || path })
+  if (ok) closePreview()
+}
+
+function dropChatRef(i) {
+  state.chatRefs = (state.chatRefs || []).filter((_, idx) => idx !== i)
+  paintChatRefs()
+}
+
+/**
+ * 跳到某条消息。已经加载的直接滚过去并亮一下；没加载到就往前翻（最多几页），还没有
+ * 就说一声——`/clear` 过的、太久远的，就是不在这里了。
+ */
+async function jumpToMessage(seq) {
+  // 按壳上的 data-seq 找（那是 quoteSeqOf 给的），不按 data-key：助手块的 key 是它第一条
+  // 事件的 seq，而引用指的是 assistant/message 那条。
+  const find = () => document.querySelector(`#chat-thread .sw-msg[data-seq="${esc(String(seq))}"]`)
+  let node = find()
+  for (let i = 0; !node && i < 5; i++) {
+    const page = chatPages.get(state.chatSessionId)
+    if (!page || !page.hasMore) break
+    await loadOlderChat(state.chatSessionId)
+    node = find()
+  }
+  if (!node) {
+    flash('err', t('那条消息不在这里了', 'That message is no longer here'))
+    return
+  }
+  node.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  node.setAttribute('data-flash', '1')
+  setTimeout(() => node.removeAttribute('data-flash'), 1200)
+}
+
 /** `@` 选单。候选来自 /mentions（现在只有连接器；Bot 和 Routine 以后往里加）。 */
 function paintMentionPick() {
   const box = document.getElementById('chat-mentionpick')
@@ -8359,7 +8617,7 @@ function flushHeldSend(botId) {
   if (!held || held.botId !== botId || state.chatBotId !== botId) return
   clearHeldSend()
   if (Date.now() - held.at > HELD_SEND_MAX_MS) return
-  if (!(state.chatDraft || '').trim() && !(state.chatFiles || []).length && !(state.chatMentions || []).length) return
+  if (!(state.chatDraft || '').trim() && !(state.chatFiles || []).length && !(state.chatMentions || []).length && !(state.chatRefs || []).length) return
   void sendChat()
 }
 
@@ -8369,17 +8627,20 @@ function flushHeldSend(botId) {
  * 人还停在那个 Bot 上就还进输入框；已经切走了就写进 chatDrafts，切回去时 applyDraft
  * 摆出来。等的这几秒里人可能又打了几个字、又挑了附件：都留着，退回来的排在前面。
  */
-function returnDraft(botId, text, files, mentions) {
+function returnDraft(botId, text, files, mentions, refs = []) {
   const here = chatBotIdNow() === botId
   const cur = here
-    ? { text: state.chatDraft || '', files: state.chatFiles || [], mentions: state.chatMentions || [] }
+    ? { text: state.chatDraft || '', files: state.chatFiles || [], mentions: state.chatMentions || [], refs: state.chatRefs || [] }
     : state.chatDrafts[botId] || { text: '', files: [] }
   const curText = String(cur.text || '')
   const curMentions = Array.isArray(cur.mentions) ? cur.mentions : []
+  const curRefs = Array.isArray(cur.refs) ? cur.refs : []
   const next = {
     text: curText.trim() ? text + '\n' + curText : text,
     files: files.concat(cur.files || []),
     mentions: mentions.concat(curMentions.filter((m) => !mentions.some((x) => x.id === m.id))),
+    // 引用也要还：只还正文的话，人按重发时「按这条改」就没了「这条」。
+    refs: refs.concat(curRefs.filter((r) => !refs.some((x) => sameRef(x, r)))),
   }
   if (!here) {
     state.chatDrafts[botId] = next
@@ -8388,16 +8649,19 @@ function returnDraft(botId, text, files, mentions) {
   state.chatDraft = next.text
   state.chatFiles = next.files
   state.chatMentions = next.mentions
+  state.chatRefs = next.refs
   const input = document.getElementById('chat-input')
   if (input) input.value = next.text
   paintChatFiles()
   paintChatMentions()
+  paintChatRefs()
 }
 
 async function sendChat() {
   const text = (state.chatDraft || '').trim()
   const files = state.chatFiles || []
   const mentions = state.chatMentions || []
+  const refs = state.chatRefs || []
   const sessionId = state.chatSessionId
   /**
    * 发这条消息时人停在哪个 Bot 上。
@@ -8407,7 +8671,7 @@ async function sendChat() {
    * 还给 A——不管人这会儿停在谁身上。
    */
   const forBot = chatBotIdNow()
-  if (!text && !files.length && !mentions.length) return
+  if (!text && !files.length && !mentions.length && !refs.length) return
   if (chatUploads.has(forBot)) {
     // 同一个 Bot 上一条的附件还在传：这一条抢在前面发，顺序就反了。别的 Bot 不受影响。
     flash('err', t('上一条的附件还在传，传完再发这一条', 'Still uploading the previous attachments — send this once they finish'))
@@ -8501,8 +8765,10 @@ async function sendChat() {
   state.chatDraft = ''
   state.chatMentions = []
   state.chatFiles = []
+  state.chatRefs = []
   closeMentionPick()
   paintChatMentions()
+  paintChatRefs()
   const input = document.getElementById('chat-input')
   if (input) {
     input.value = ''
@@ -8520,7 +8786,7 @@ async function sendChat() {
     } catch (err) {
       // 传失败就把草稿、附件和点名原样还回去，别让人重新选一遍文件、重新 @ 一遍。
       chatUploads.delete(forBot)
-      returnDraft(forBot, text, files, mentions)
+      returnDraft(forBot, text, files, mentions, refs)
       flash('err', t('附件没传上去：') + err.message)
       render()
       return
@@ -8529,7 +8795,19 @@ async function sendChat() {
   }
   paintChatFiles()
 
+  /**
+   * 引用的图片**同时**走 `images`（docs/chat-references.md §5.2）：这样它既有「这是用户
+   * 指着的那张图」这一行字，又是真正的视觉输入。按路径去重——同一张图既上传又引用的
+   * 不送两遍。
+   */
+  const refImages = refs
+    .filter((r) => r.kind === 'file' && OUT_IMAGE_RE.test(r.path))
+    .map((r) => ({ path: r.path, mime: imageMimeOf(r.path) }))
+    .filter((x) => MODEL_IMAGE.has(x.mime))
+  const seenImg = new Set()
   const images = pickImages(uploaded)
+    .concat(refImages)
+    .filter((x) => (seenImg.has(x.path) ? false : (seenImg.add(x.path), true)))
   const body = composeChatBody(uploaded, text)
   /**
    * 先画上，再发。**这一条是给人看的回执**：POST 出去到席位把 user/message 经 SSE 送
@@ -8541,7 +8819,7 @@ async function sendChat() {
   const afterSeq = (state.chatEvents || []).reduce((m, ev) => (ev.seq > m ? ev.seq : m), -1)
   // mentions 也带上：回执那几秒里那条消息要长成最终的样子，否则药丸会先没有、
   // 等席位把事件送回来才突然冒出来——同一条消息在屏幕上跳两次。
-  const pending = { sessionId, text: body, images, mentions, at: Date.now(), afterSeq }
+  const pending = { sessionId, text: body, images, mentions, refs, at: Date.now(), afterSeq }
   state.chatPending = (state.chatPending || []).concat(pending)
   paintChat()
   try {
@@ -8549,7 +8827,17 @@ async function sendChat() {
       text: body,
       ...(images.length ? { images } : {}),
       ...(mentions.length ? { mentions: mentions.map((m) => ({ kind: m.kind, id: m.id, label: m.label })) } : {}),
+      ...(refs.length ? { refs: refs.map(refPayload) } : {}),
     })
+    /**
+     * 席位认不认 `refs`：认的话响应里回 `refs: n`。老席位的响应没有它——那条消息已经
+     * **不带引用地**发出去了，人要知道，不然「按这条改」发出去 Bot 却问「哪条」，像是它傻。
+     * 不挡消息：用户那句话没有错。
+     */
+    if (r && refs.length && r.refs == null) {
+      flash('err', t('这个席位还不认引用，这条没带上它们（要更新 Bot 版本）', 'This seat does not support quotes yet; sent without them (update the bot)'))
+      render()
+    }
     /**
      * 排队了：把刚画上的那条气泡撤掉，改画成输入框顶上的一行。
      *
@@ -8559,7 +8847,7 @@ async function sendChat() {
     if (r && r.queued) {
       state.chatPending = (state.chatPending || []).filter((p) => p !== pending)
       const rows = chatQueues.get(sessionId) || []
-      chatQueues.set(sessionId, rows.concat({ id: r.queueId, text: body, mentions, createdAt: Date.now() }))
+      chatQueues.set(sessionId, rows.concat({ id: r.queueId, text: body, mentions, refs, createdAt: Date.now() }))
       paintChat()
       paintChatQueue()
     }
@@ -8579,7 +8867,7 @@ async function sendChat() {
      * `mentionOnly` 的连接（比如个人邮箱）这一轮根本不在工具表里，Bot 会回一句
      * 「没有可用的邮箱」，用户却以为自己点过名了。
      */
-    returnDraft(forBot, text, [], mentions)
+    returnDraft(forBot, text, [], mentions, refs)
     if (uploaded.length) flash('err', t('附件已经在工作区里了，但这条消息没发出去。'))
     if (String(err.message || '').includes('实例还没上线')) state.runtimeError = '实例还没上线'
     else if (!uploaded.length) flash('err', err.message)

@@ -9,7 +9,7 @@ import { Readable } from 'node:stream'
 import { WorkspaceError } from '../workspace/index.ts'
 import { docKindOf, extractDocument } from '../workspace/extract.ts'
 import { RenderError, renderToPdf, renderableOf } from '../workspace/render.ts'
-import { CommandError, QUIET_MESSAGE, type ImageRef, type Mention, type MessageSource } from '../agent/index.ts'
+import { CommandError, QUIET_MESSAGE, type ImageRef, type Mention, type MessageSource, type RefBlock } from '../agent/index.ts'
 import { expiredMessage, returnMessage, type Disposition, type HandoffActor } from '../policy/handoff.ts'
 import { clearSettledTodos, readTodos } from '../tools/todo.ts'
 import {
@@ -744,6 +744,8 @@ export function apply(ctx: Context, _config: Config = {}) {
       text?: string
       images?: unknown
       mentions?: unknown
+      /** 引用的消息 / 文件，形状见 session/types.ts 的 ref 块去掉 type。 */
+      refs?: unknown
       /**
        * 这一轮钉到平台的哪个模型角色上（现在只有日常任务会给：见 docs/routines.md）。
        *
@@ -774,8 +776,21 @@ export function apply(ctx: Context, _config: Config = {}) {
       return
     }
     const mentions = mentionList(body.mentions)
+    /**
+     * 引用（docs/chat-references.md §5.1）。和图片一样在这一层校验：文件路径是浏览器
+     * 传上来的，工作区边界不在这里做就等于没有；消息 seq 是界面从事件上抄的，对不上
+     * 就是界面的 bug 或别的会话的 seq，收下只会落一条指向错处的记录。
+     */
+    let refs: RefBlock[]
+    try {
+      refs = await refList(ctx, req.params.id, body.refs)
+    } catch (e) {
+      res.status = 400
+      res.json({ error: (e as Error).message })
+      return
+    }
     // 带图的消息可以没有正文——「这张图什么意思」本来就常常只有一张图。
-    if (!body.text?.trim() && !images.length && !mentions.length) {
+    if (!body.text?.trim() && !images.length && !mentions.length && !refs.length) {
       res.status = 400
       res.json({ error: 'text 不能为空' })
       return
@@ -800,8 +815,8 @@ export function apply(ctx: Context, _config: Config = {}) {
     if (ctx.agents.isRunning(req.params.id)) {
       if (mentions.length) {
         try {
-          const row = ctx.agents.enqueue(req.params.id, body.text ?? '', images, mentions)
-          res.json({ queued: true, queueId: row.id })
+          const row = ctx.agents.enqueue(req.params.id, body.text ?? '', images, mentions, refs)
+          res.json({ queued: true, queueId: row.id, refs: refs.length })
         } catch (e) {
           // 队满。**明说**，不静默丢——用户以为发出去了才是最糟的。
           res.status = 429
@@ -816,8 +831,8 @@ export function apply(ctx: Context, _config: Config = {}) {
        * 不为它另开一轮：一条会话里两轮抢着说话，出来的东西谁也不认（见 routines.ts），
        * 而这个开关是省钱，不是正确性。
        */
-      if (await ctx.agents.steer(req.params.id, body.text ?? '', images, source)) {
-        res.json({ steered: true })
+      if (await ctx.agents.steer(req.params.id, body.text ?? '', images, source, refs)) {
+        res.json({ steered: true, refs: refs.length })
         return
       }
       // 刚好在这几毫秒里跑完了：落回下面开新一轮，别把这条丢掉。
@@ -837,11 +852,13 @@ export function apply(ctx: Context, _config: Config = {}) {
       return
     }
     // 不等 turn 跑完就返回：结果通过 SSE 推，HTTP 只负责「收到了」。
-    void ctx.agents.send(req.params.id, body.text ?? '', images, mentions, source, modelRole).catch((e: Error) => {
+    void ctx.agents.send(req.params.id, body.text ?? '', images, mentions, source, modelRole, refs).catch((e: Error) => {
       console.error(`satuwork: agents.send 失败：${e.message}`)
       ctx.logger?.warn?.(`agents.send 失败：${e.message}`)
     })
-    res.json({ accepted: true })
+    // `refs` 回几条：界面靠它分辨「席位认不认这个字段」——老席位的响应里没有它，
+    // 那条消息已经不带引用地发出去了，界面要提示人更新 Bot 版本。
+    res.json({ accepted: true, refs: refs.length })
   })
 
   /** 排着的消息。刷新页面之后 dock 靠它恢复。 */
@@ -1457,6 +1474,78 @@ async function imageRefs(ctx: Context, raw: unknown): Promise<ImageRef[]> {
     const info = await stat(file).catch(() => null)
     if (!info?.isFile()) throw new Error(`图片不存在：${path}`)
     out.push({ path: ctx.workspace.show(file), mime })
+  }
+  return out
+}
+
+/** 引用里摘录的上限（字符）。给界面画卡用的，不是给模型的——模型看全文（agent 的 refTextOf）。 */
+const REF_EXCERPT_CHARS = 300
+
+/** 一条消息的摘录：只要 text 块，空白折成一个空格，截到上限。 */
+export function refExcerptOf(message: { content: { type: string; text?: string }[] }): string {
+  const text = message.content
+    .filter((c) => c.type === 'text')
+    .map((c) => String(c.text ?? ''))
+    .join('\n')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return (text || '（无正文）').slice(0, REF_EXCERPT_CHARS)
+}
+
+/**
+ * 请求里的引用 → 校验过的块（docs/chat-references.md §5.1）。
+ *
+ * 文件：路径必须落在工作区内（`resolve` 越界即抛）。**在不在不查**——落盘时查了也挡
+ * 不住之后被删，文件在不在是组模型请求那一刻的事。
+ *
+ * 消息：给了 seq 就必须在本会话里、且是一条 user/message 或 assistant/message；对上了
+ * 就从那条事件**重算** excerpt / role / time，不信浏览器那份。没给 seq 的（外部渠道只有
+ * 原文）才用请求里的 excerpt，而且不能为空。
+ */
+export async function refList(ctx: Context, sessionId: string, raw: unknown): Promise<RefBlock[]> {
+  if (raw == null) return []
+  if (!Array.isArray(raw)) throw new Error('refs 必须是数组')
+  if (raw.length > 10) throw new Error('一条消息最多带 10 个引用')
+  const out: RefBlock[] = []
+  let events: SessionEvent[] | null = null
+  for (const item of raw) {
+    const o = (item ?? {}) as Record<string, unknown>
+    const kind = String(o.kind ?? '')
+    if (kind === 'file') {
+      const path = typeof o.path === 'string' ? o.path.trim() : ''
+      if (!path) throw new Error('refs 里有一个文件引用缺 path')
+      const shown = ctx.workspace.show(ctx.workspace.resolve(path))
+      if (out.some((r) => r.kind === 'file' && r.path === shown)) continue
+      const name = (typeof o.name === 'string' && o.name.trim()) || basename(shown)
+      out.push({ type: 'ref', kind: 'file', path: shown, name: name.slice(0, 255) })
+    } else if (kind === 'message') {
+      if (o.seq != null) {
+        const seq = Number(o.seq)
+        if (!Number.isSafeInteger(seq) || seq <= 0) throw new Error('引用的消息 seq 不对')
+        events ??= await ctx.sessions.events(sessionId)
+        const hit = events.find((e) => e.seq === seq)
+        if (!hit || (hit.type !== 'user/message' && hit.type !== 'assistant/message')) {
+          throw new Error('引用的消息不存在')
+        }
+        if (out.some((r) => r.kind === 'message' && r.seq === seq)) continue
+        out.push({
+          type: 'ref',
+          kind: 'message',
+          seq,
+          role: hit.data.message.role,
+          excerpt: refExcerptOf(hit.data.message),
+          time: hit.time,
+        })
+      } else {
+        const excerpt = String(o.excerpt ?? '').replace(/\s+/g, ' ').trim().slice(0, REF_EXCERPT_CHARS)
+        if (!excerpt) throw new Error('引用的消息既没有 seq 也没有 excerpt')
+        const role = o.role === 'user' ? 'user' : 'assistant'
+        const time = Number(o.time) || Date.now()
+        out.push({ type: 'ref', kind: 'message', role, excerpt, time })
+      }
+    } else {
+      throw new Error(`refs 里有一项 kind 不认识：${kind || '(空)'}`)
+    }
   }
   return out
 }

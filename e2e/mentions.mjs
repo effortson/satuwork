@@ -44,7 +44,7 @@ export async function runMentions({ root, test, assert, log }) {
     assert(r.jsonl.正文另存一块, '正文没有独立成块')
     assert(r.jsonl.没把那句话写进正文, '把 [本轮指定：…] 写进了正文——那是给模型的渲染，不是原始记录')
     assert(r.jsonl.版本号 === r.jsonl.当前版本, `会话版本号该是 v${r.jsonl.当前版本}，实为 v${r.jsonl.版本号}`)
-    assert(r.jsonl.当前版本 === 5, `加了 mention 块就该升到 v5，实为 v${r.jsonl.当前版本}`)
+    assert(r.jsonl.当前版本 === 6, `加了 mention 块升到 v5、加了 ref 块升到 v6，实为 v${r.jsonl.当前版本}`)
   })
 
   await test('席位忙不忙只认在跑的轮次——孤儿排队行不许把它永远钉住', () => {

@@ -5,13 +5,15 @@ import type {
   ContentBlock,
   Message,
   MessageSource,
+  RefBlock,
+  SessionEvent,
   SessionEventMap,
   SessionOrigin,
   StreamChunk,
   Usage,
 } from '../session/types.ts'
 // web/index.ts 那条 /messages 也要给来源打标，从这儿转一手，别让它反过来依赖 session/types。
-export type { MessageSource }
+export type { MessageSource, RefBlock }
 import type { ReassignedItem, WorkspaceFile } from '../tools/index.ts'
 import { budgetToolText } from '../tools/result-budget.ts'
 import { browserOf, desktopOf, memoryOf, type BotRecord } from '../registry/index.ts'
@@ -1080,7 +1082,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     return Math.max(1, Math.trunc(Number(process.env.SATUWORK_QUEUE_MAX) || 5))
   }
 
-  enqueue(sessionId: string, text: string, images: ImageRef[], mentions: Mention[]): QueuedMessage {
+  enqueue(sessionId: string, text: string, images: ImageRef[], mentions: Mention[], refs: RefBlock[] = []): QueuedMessage {
     if (this.queued(sessionId).length >= this.queueMax) {
       throw new Error(`最多排 ${this.queueMax} 条，等这一轮跑完再发`)
     }
@@ -1090,6 +1092,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       text,
       images,
       mentions,
+      ...(refs.length ? { refs } : {}),
       createdAt: Date.now(),
     }
     this.queueCol().put(row.id, row)
@@ -1143,7 +1146,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         // **必须走 runGuarded。** 直接调 runTurn 的话，它走到 live.set 之前的那几个
         // await 期间既不在 live 也不在 starting 里，isRunning() 是 false——这时进来的
         // 消息会开出第二轮并发 turn，两轮交错写同一份 JSONL。
-        await this.runGuarded(sessionId, next.text, next.images, next.mentions)
+        await this.runGuarded(sessionId, next.text, next.images, next.mentions, undefined, undefined, next.refs ?? [])
       } catch (e) {
         // **接着跑下一条，不是就此收工。** 一条失败就 return 的话，后面几条既不跑也不
         // 清，dock 上一直挂着，而没有任何东西会再来叫醒队列——只能等用户手动再发一条。
@@ -1167,13 +1170,14 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     mentions: Mention[],
     source: MessageSource = { kind: 'user' },
     modelRole?: TurnModelRole,
+    refs: RefBlock[] = [],
   ): Promise<void> {
     this.starting.add(sessionId)
     const stop = new AbortController()
     this.startingAbort.set(sessionId, stop)
     this.turnMentions.set(sessionId, new Set(mentions.filter((m) => m.kind === 'connector').map((m) => m.id)))
     try {
-      await this.runTurn(sessionId, text, images, mentions, source, modelRole, stop.signal)
+      await this.runTurn(sessionId, text, images, mentions, source, modelRole, stop.signal, refs)
     } finally {
       this.starting.delete(sessionId)
       if (this.startingAbort.get(sessionId) === stop) this.startingAbort.delete(sessionId)
@@ -1195,12 +1199,21 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     text: string,
     images: ImageRef[] = [],
     source: MessageSource = { kind: 'user' },
+    refs: RefBlock[] = [],
   ): Promise<boolean> {
     // 先探一下，省得为一个根本没在跑的会话白读一遍图。
     if (!this.live.has(sessionId)) return false
-    const content = images.length
-      ? await userContentFor({ id: '', role: 'user', content: userBlocks(text, images) }, this.ctx)
-      : text
+    // 带引用的要读一遍日志：被引用的回复全文从那里来（见 refTextOf）。和读图一样，
+    // 排在取 agent 之前。
+    const content =
+      images.length || refs.length
+        ? await userContentFor(
+            { id: '', role: 'user', content: userBlocks(text, images, [], refs) },
+            this.ctx,
+            undefined,
+            refs.length ? await this.ctx.sessions.events(sessionId) : undefined,
+          )
+        : text
     const agent = this.live.get(sessionId)
     if (!agent) return false
     const at = Date.now()
@@ -1218,7 +1231,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 会留下一条「说过但没人听见」的记录。
      */
     await this.ctx.sessions.append(sessionId, 'user/message', {
-      message: { id: randomUUID(), role: 'user', content: userBlocks(text, images) },
+      message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, [], refs) },
       source,
     })
     return true
@@ -1386,6 +1399,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     mentions: Mention[] = [],
     source: MessageSource = { kind: 'user' },
     modelRole?: TurnModelRole,
+    refs: RefBlock[] = [],
   ): Promise<void> {
     /**
      * 静默期里不开新的一轮（见上面那段）。
@@ -1413,7 +1427,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * send 才会顺手带走它们——而那时新消息已经先跑了，顺序也倒了。
      */
     try {
-      await this.runGuarded(sessionId, text, images, mentions, source, modelRole)
+      await this.runGuarded(sessionId, text, images, mentions, source, modelRole, refs)
     } finally {
       // 这一轮收口了（无论成败），接上排在后面的。
       await this.drainQueue(sessionId).catch((e) => {
@@ -1457,11 +1471,12 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     e: Error,
     mentions: Mention[] = [],
     source: MessageSource = { kind: 'user' },
+    refs: RefBlock[] = [],
   ): Promise<void> {
     const { sessions } = this.ctx
     const turn = history.filter((ev) => ev.type === 'turn/start').length + 1
     await sessions.append(sessionId, 'user/message', {
-      message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, mentions) },
+      message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, mentions, refs) },
       source,
     })
     await sessions.append(sessionId, 'turn/start', { turn })
@@ -1476,6 +1491,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     source: MessageSource = { kind: 'user' },
     modelRole?: TurnModelRole,
     signal?: AbortSignal,
+    refs: RefBlock[] = [],
   ): Promise<void> {
     const { sessions, llm } = this.ctx
     let history = await sessions.events(sessionId)
@@ -1489,7 +1505,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       if (!signal?.aborted) return false
       const turn = history.filter((e) => e.type === 'turn/start').length + 1
       await sessions.append(sessionId, 'user/message', {
-        message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, mentions) },
+        message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, mentions, refs) },
         source,
       })
       await sessions.append(sessionId, 'turn/start', { turn })
@@ -1557,8 +1573,10 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         this.ctx.logger?.warn?.(`agents: 点名的连接没有可用工具：${gaps.map((m) => m.label).join('、')}`)
         system = { ...system, text: `${system.text}\n\n${mentionGapBlock(gaps)}` }
       }
+      // 「用户引用的东西」那一段只在这一轮真带了引用时才加（条件加载，理由同 fileOutBlock）。
+      if (refs.length) system = { ...system, text: `${system.text}\n\n${refBlock()}` }
     } catch (e) {
-      await this.failBeforeTurn(sessionId, history, text, images, e as Error, mentions, source)
+      await this.failBeforeTurn(sessionId, history, text, images, e as Error, mentions, source, refs)
       throw e
     }
     if (await stoppedBeforeTurn()) return
@@ -1649,7 +1667,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     const reasoningEffort = this.roleReasoningEffort(provider, modelId, modelRole)
 
     await sessions.append(sessionId, 'user/message', {
-      message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, mentions) },
+      message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, mentions, refs) },
       source,
     })
     await sessions.append(sessionId, 'turn/start', { turn })
@@ -1735,16 +1753,21 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       // prompt() 送进去的。只传文本的话，图就要等到下一轮重建历史时才被读出来，
       // 表现成「问第一遍它没看见，再问一句就看见了」。
       const now = Date.now()
-      if (images.length || mentions.length) {
+      if (images.length || mentions.length || refs.length) {
         // 走 userContentFor 而不是自己拼：base64 缓存、单张大小上限、读不到时降级成
         // 一句说明，这些都在那儿，重写一遍迟早会漂。时间戳也复用 stampContent，
         // 跟 steer 那条路盖成同一个形状。
         //
         // **点名也走这条**：它要被渲染成一行 `[本轮指定：…]` 送进模型（textFrom 干的
         // 活）。只有纯文本才走下面那条快路——那条直接拿 text，看不见任何块。
+        //
+        // **引用也走这条**，而且要把 `history` 递进去：被引用的回复全文按 seq 从那里读。
+        // history 是 append 这条用户消息之前的快照，而引用只会指向更早的消息，够用。
         const content = await userContentFor(
-          { id: '', role: 'user', content: userBlocks(text, images, mentions) },
+          { id: '', role: 'user', content: userBlocks(text, images, mentions, refs) },
           this.ctx,
+          undefined,
+          refs.length ? history : undefined,
         )
         await agent.prompt({ role: 'user', content: stampContent(content, now), timestamp: now } as AgentMessage)
       } else {
@@ -2980,6 +3003,9 @@ export async function toAgentMessages(
   // 这段时间的新对话」再压一次，所以后一条必然覆盖前一条；而 /new 打下的重置点更是
   // 明说了前面的不要了。压缩点还要换成一条摘要消息（见文件末尾那一段），重置点不换。
   const boundary = contextBoundary(events)
+  // 边界之前的事件不逐条回传，但**引用要能指到它们**：被压缩掉的那条回复，全文正是
+  // 从这份全量里读出来的（见 refTextOf）。所以切之前留一份。
+  const allEvents = events
   if (boundary) events = events.filter((e) => e.seq > boundary.data.throughSeq)
 
   // 先找出每个 step 的助手消息落在哪个 seq，工具结果据此排到它后面。
@@ -3135,7 +3161,7 @@ export async function toAgentMessages(
         message: {
           role: 'user',
           content: stampContent(
-            await userContentFor(e.data.message, ctx, (i) => liveImages.has(`${e.seq}:${i}`)),
+            await userContentFor(e.data.message, ctx, (i) => liveImages.has(`${e.seq}:${i}`), allEvents),
             e.time,
           ),
           timestamp: e.time,
@@ -3487,11 +3513,113 @@ function summaryText(d: SessionEventMap['session/compact']): string {
  * （谁被点名了、id 是什么），进模型的是话；两边分开，重放才和当时一致（不变量 7），
  * 而模型也不用认识一种它没见过的块。
  */
-const textFrom = (m: Message) =>
+const textFrom = (m: Message, refText: (c: RefBlock) => string = refFallback) =>
   m.content
-    .map((c) => (c.type === 'text' ? c.text : c.type === 'mention' ? `[本轮指定：${c.label}]` : ''))
+    .map((c) =>
+      c.type === 'text' ? c.text : c.type === 'mention' ? `[本轮指定：${c.label}]` : c.type === 'ref' ? refText(c) : '',
+    )
     .filter(Boolean)
     .join('\n')
+
+/**
+ * 引用的回复渲染给模型时的全文上限（字符）。
+ *
+ * 引用的意义是**消除歧义**，所以给全文而不是摘录——摘录只能让模型去历史里找，而历史
+ * 可能已经压缩了。被引用的那条还在上下文里时全文会重复一遍，4 KB 以内的重复不值一提；
+ * 再长就截断，并告诉模型去 history_read 取。
+ */
+const MAX_REF_CHARS = 4_000
+
+/** 一条消息里给人读的那部分：只要 text 块。助手消息里的 reasoning / tool-call 不算。 */
+function plainTextOf(m: Message): string {
+  return m.content
+    .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
+    .map((c) => c.text)
+    .join('\n')
+    .trim()
+}
+
+/** `[引用你 … 的回复]` 那一行的称呼。 */
+function refHead(role: 'user' | 'assistant', when: string): string {
+  return role === 'assistant' ? `[引用你${when}的回复]` : `[引用用户${when}的消息]`
+}
+
+/**
+ * 没有日志可查时的渲染（估 token、离线重放、seq 缺失）：只有摘录。
+ *
+ * **翻译只在 textFrom 这一处**的规矩在引用上也成立——这里和 refTextOf 产出的是同一个
+ * 形状，区别只是正文从哪来。
+ */
+function refFallback(c: RefBlock): string {
+  if (c.kind === 'file') return `[引用文件：\`${c.path}\`]`
+  return `${refHead(c.role, '之前')}（只有开头）\n${c.excerpt}\n[引用结束]`
+}
+
+/**
+ * 一个引用块渲染给模型的那段话。
+ *
+ * 消息：按 seq 在**全量**日志里找到那条，取全文（上限 MAX_REF_CHARS）。找不到（渠道
+ * 接进来的只有原文、或 `/clear` 之后硬发的）退回摘录。
+ *
+ * 文件：只给路径，不读内容——模型有 read_file / office_unpack / look，让它自己决定读
+ * 多少。文件已经不在工作区就写明，模型才不会去找。**在不在是渲染那一刻的事**：下一轮
+ * 文件回来了，渲染就变了，这是对的，模型要看的是现在。
+ */
+async function refTextOf(
+  c: RefBlock,
+  events: readonly SessionEvent[] | undefined,
+  ctx: Context | undefined,
+): Promise<string> {
+  if (c.kind === 'file') {
+    const gone = await fileGone(c.path, ctx)
+    return `[引用文件：\`${c.path}\`${gone ? '（已不在工作区）' : ''}]`
+  }
+  const hit =
+    c.seq != null && events
+      ? events.find((e) => e.seq === c.seq && (e.type === 'user/message' || e.type === 'assistant/message'))
+      : undefined
+  if (!hit || (hit.type !== 'user/message' && hit.type !== 'assistant/message')) return refFallback(c)
+  const when = ` ${humanTime(hit.time)} `
+  const role = hit.data.message.role
+  const full = plainTextOf(hit.data.message)
+  const body =
+    full.length > MAX_REF_CHARS
+      ? `${full.slice(0, MAX_REF_CHARS)}\n（全文 ${full.length} 字，这里只有开头；要看全可以 history_read ${humanTime(hit.time)} 前后）`
+      : full || c.excerpt
+  return `${refHead(role, when)}\n${body}\n[引用结束]`
+}
+
+/** 引用的文件还在不在。拿不到工作区（测试里的裸 ctx）就当在——不为这件事抛。 */
+async function fileGone(path: string, ctx: Context | undefined): Promise<boolean> {
+  if (!ctx) return false
+  try {
+    const ws = ctx.workspace
+    if (!ws) return false
+    const { stat } = await import('node:fs/promises')
+    const info = await stat(ws.resolve(path)).catch(() => null)
+    return !info?.isFile()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 把一条消息里所有引用块先解析好，交给 textFrom 用。
+ *
+ * 解析是异步的（读日志、stat 文件），textFrom 是同步的；分开之后 estTokens 那种只要
+ * 估个数的调用方不必为引用去读盘。
+ */
+async function refResolver(
+  m: Message,
+  ctx: Context | undefined,
+  events: readonly SessionEvent[] | undefined,
+): Promise<(c: RefBlock) => string> {
+  const refs = m.content.filter((c): c is RefBlock => c.type === 'ref')
+  if (!refs.length) return refFallback
+  const rendered = new Map<RefBlock, string>()
+  for (const c of refs) rendered.set(c, await refTextOf(c, events, ctx))
+  return (c) => rendered.get(c) ?? refFallback(c)
+}
 
 /** 一张要给模型看的图。路径相对工作区。 */
 export interface ImageRef {
@@ -3519,6 +3647,8 @@ export interface QueuedMessage {
   text: string
   images: ImageRef[]
   mentions: Mention[]
+  /** 这条带的引用。老的排队行没有这个字段，按空读。 */
+  refs?: RefBlock[]
   createdAt: number
 }
 
@@ -3531,9 +3661,15 @@ export interface QueuedMessage {
  */
 const MAX_IMAGE_BYTES = 3.5 * 1024 * 1024
 
-/** 用户这一条消息的内容块：图片排在正文前面，先给材料再给指令。 */
-function userBlocks(text: string, images: ImageRef[], mentions: Mention[] = []): ContentBlock[] {
+/**
+ * 用户这一条消息的内容块：点名 → 引用 → 图片 → 正文，先给材料再给指令。
+ *
+ * 引用排在图片前面：引用的图片文件会同时以 image 块进来（界面把它并进 `images`），
+ * 两块挨着，渲染出来是「[引用文件：x.png]」紧跟那张图。
+ */
+function userBlocks(text: string, images: ImageRef[], mentions: Mention[] = [], refs: RefBlock[] = []): ContentBlock[] {
   const blocks: ContentBlock[] = mentions.map((m) => ({ type: 'mention' as const, kind: m.kind, id: m.id, label: m.label }))
+  for (const r of refs) blocks.push({ ...r, type: 'ref' as const })
   for (const img of images) blocks.push({ type: 'image' as const, path: img.path, mime: img.mime })
   // 只有图（或只有点名）的消息也成立：「这张图什么意思」本来就常常没有正文。
   if (text || !blocks.length) blocks.push({ type: 'text', text })
@@ -3584,11 +3720,18 @@ function imageCachePut(key: string, data: string) {
  * `isLive` 决定这一张要不要真的带字节（见 MAX_LIVE_IMAGES）。不给就全带——steer
  * 那条路只有当下这一条消息，没有「太靠前」可言。
  */
-async function userContentFor(m: Message, ctx?: Context, isLive?: (index: number) => boolean): Promise<any> {
+async function userContentFor(
+  m: Message,
+  ctx?: Context,
+  isLive?: (index: number) => boolean,
+  /** 引用要查的那份日志（全量，不是切过边界的）。不给就只渲染摘录。 */
+  events?: readonly SessionEvent[],
+): Promise<any> {
+  const refText = await refResolver(m, ctx, events)
   const picked = m.content
     .map((c, i) => ({ c, i }))
     .filter(({ c }) => c.type === 'image') as { c: { type: 'image'; path: string; mime: string }; i: number }[]
-  if (!picked.length) return textFrom(m)
+  if (!picked.length) return textFrom(m, refText)
   const out: any[] = []
   for (const { c, i } of picked) {
     const part = isLive && !isLive(i) ? stale(c) : await loadImage(c, ctx)
@@ -3600,7 +3743,7 @@ async function userContentFor(m: Message, ctx?: Context, isLive?: (index: number
      */
     if (part.type === 'image') out.push({ type: 'text', text: `[附图 ${c.path}]` })
   }
-  const text = textFrom(m)
+  const text = textFrom(m, refText)
   if (text) out.push({ type: 'text', text })
   return out
 }
@@ -3859,6 +4002,23 @@ function fileOutBlock(): string {
     '**不要教用户去文件系统里找它**：「在工作区根目录」「双击打开」「用浏览器打开这个文件」「路径是 /home/…」这类话一句都不要写。',
     '用户面前是网页上的这段对话，那边没有这台席位机器的文件管理器，也没有可以双击的桌面——那样说等于「东西做好了，但你拿不到」。',
     '同样也不要把整份文件的内容贴进回答来代替它：一份长报告贴进对话只会把回答本身埋掉，而预览就在那颗药丸上。',
+  ].join('\n')
+}
+
+/**
+ * 「用户引用的东西」。只在这一轮的消息真带了 `ref` 块时才加（见 runTurn）。
+ *
+ * 方括号那几行是 textFrom 渲染出来的，模型没见过这种块，所以要讲清三件事：那是用户
+ * 指着的对象；引用的回复是它自己说过的话，要在那上面改而不是另起炉灶；引用的文件按
+ * 路径直接读，别回头问「哪个文件」。
+ */
+function refBlock(): string {
+  return [
+    '## 用户引用的东西',
+    '用户这条消息里「[引用你 … 的回复] … [引用结束]」和「[引用文件：…]」这几段是**用户指着说话的对象**，不是用户自己打的字。',
+    '- 引用的回复是你自己之前说过的话：在它的基础上改、补、重做，不要重新发明一个新版本，也不要把它整段复述回去。',
+    '- 引用的文件按那个路径直接去读（read_file / office_unpack / look 等），不要再问「哪个文件」；标了「已不在工作区」的，如实说它已经不在，不要去找。',
+    '- 标了「只有开头」的引用，正文被截过；需要全文就按旁边写的时间用 history_read 取。',
   ].join('\n')
 }
 
