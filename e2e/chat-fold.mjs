@@ -131,6 +131,61 @@ export async function runChatFold({ root, test, assert, log }) {
     assert(owner && owner.text === '答二', `工具药丸和它那一轮的回答被劈到了两个气泡里：${JSON.stringify(owner?.text)}`)
   })
 
+  await test('引用：ref 块折进用户块的 refs，气泡的壳带 seq，流式那条不给「引用」', async () => {
+    // docs/chat-references.md §7.3：翻上去要看得出「当时指的是哪条、哪个文件」。
+    const quoted = {
+      id: 'u6',
+      role: 'user',
+      content: [
+        { type: 'ref', kind: 'message', seq: 4, role: 'assistant', excerpt: '答一', time: T + 4000 },
+        { type: 'ref', kind: 'file', path: '报表/二季度.xlsx', name: '二季度.xlsx' },
+        { type: 'text', text: '这条按季度重写' },
+      ],
+    }
+    const events = twoTurns().concat([
+      ev(6, 'user/message', { message: quoted, source: { kind: 'user' } }),
+      ev(7, 'turn/start', { turn: 2 }),
+      ev(8, 'assistant/chunk', { turn: 2, step: 1, chunk: { type: 'text-delta', index: 0, text: '改' } }),
+    ])
+    const folded = fold(events)
+    const c = loadChat(root)
+    /**
+     * 助手块的 seq 是它**第一条**事件的（这里第 1 轮没有 chunk，所以就是 4）；要是先来
+     * 一串 chunk 再来 assistant/message，块的 seq 指的就是 chunk。引用必须指
+     * assistant/message 那条（msgSeq / quoteSeqOf），否则席位会说「引用的消息不存在」。
+     */
+    const streamed = fold(
+      twoTurns().concat([
+        ev(6, 'user/message', { message: um('问二'), source: { kind: 'user' } }),
+        ev(7, 'turn/start', { turn: 2 }),
+        ev(8, 'assistant/chunk', { turn: 2, step: 1, chunk: { type: 'text-delta', index: 0, text: '答' } }),
+        ev(9, 'assistant/message', { turn: 2, step: 1, message: am('答二'), usage }),
+        ev(10, 'turn/end', { turn: 2, reason: 'completed' }),
+      ]),
+    ).blocks
+    const a2 = streamed.find((b) => b.kind === 'assistant' && b.text === '答二')
+    assert(a2 && a2.seq === 8 && a2.msgSeq === 9, `助手块该 seq=8（第一条 chunk）、msgSeq=9（assistant/message）：${JSON.stringify({ seq: a2?.seq, msgSeq: a2?.msgSeq })}`)
+    assert(c.quoteSeqOf(a2) === 9, '引用助手块该指 assistant/message 那条')
+    assert(c.rowShell(a2, 'm8').includes('data-seq="9"') && c.rowShell(a2, 'm8').includes('data-key="m8"'), '壳上 data-seq 该是 9、data-key 照旧 m8')
+    // 还在流式输出的那块（只有 chunk）：没有可引用的 seq，壳里不画那排动作。
+    const live = folded.blocks[folded.blocks.length - 1]
+    assert(live.kind === 'assistant' && live.text === '改' && c.quoteSeqOf(live) == null, `流式中的助手块不该能引用：${JSON.stringify(live)}`)
+    assert(!c.rowShell(live, 'm-live').includes('chat-ref-msg'), '流式中的助手块壳里不该有「引用」')
+    const user = folded.blocks.find((b) => b.kind === 'user' && b.seq === 6)
+    assert(user, '没折出那条带引用的用户块')
+    assert(user.text === '这条按季度重写', `正文该只剩人打的那句：${JSON.stringify(user.text)}`)
+    assert(Array.isArray(user.refs) && user.refs.length === 2, `refs 该有两条：${JSON.stringify(user.refs)}`)
+    assert(user.refs[0].kind === 'message' && user.refs[0].seq === 4 && user.refs[0].role === 'assistant' && user.refs[0].excerpt === '答一', `消息引用没认对：${JSON.stringify(user.refs[0])}`)
+    assert(user.refs[1].kind === 'file' && user.refs[1].path === '报表/二季度.xlsx' && user.refs[1].name === '二季度.xlsx', `文件引用没认对：${JSON.stringify(user.refs[1])}`)
+    // 引用过的文件进名册：正文里再出现它的名字就该能点。
+    assert(c.knownFiles(folded.blocks).has('报表/二季度.xlsx'), '引用过的文件没进 knownFiles')
+    // 用户块：壳上带 seq（跳回去靠它）和「引用」那颗按钮。
+    const shell = c.rowShell(user, 'm6')
+    assert(shell.includes('data-seq="6"'), `壳上没带 seq：${shell.slice(0, 200)}`)
+    assert(shell.includes('data-act="chat-ref-msg"'), '壳上没有「引用」那颗按钮')
+    assert(threadRows(folded, 's1').some((r) => r.kind === 'msg' && r.key === 'm6'), '行的 key 照旧按块的 seq')
+  })
+
   await test('两轮之间的边界：自己成块，下一轮另起气泡', async () => {
     const events = twoTurns().concat([
       ev(6, 'session/compact', { throughSeq: 5, ...COMPACT }),

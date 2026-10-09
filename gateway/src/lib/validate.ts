@@ -168,3 +168,42 @@ export function payStatusOf(v: unknown, fallback: PayStatus = 'unpaid'): PayStat
   if (v !== 'paid' && v !== 'unpaid') throw new HttpError(400, '付款状态只能是 paid 或 unpaid')
   return v
 }
+
+/** 引用里摘录的上限（字符），和席位那边 refExcerptOf 的上限一致。 */
+const REF_EXCERPT_CHARS = 300
+
+/**
+ * 请求体里的 `refs` → 只剩认识的字段、截到 10 条（docs/chat-references.md §5.1）。
+ *
+ * **只认形状。** 文件路径越不越界、消息 seq 在不在，都是席位那头的事——那里才有工作区
+ * 和会话日志。这里把不认识的 kind 丢掉、不认识的字段剥掉，席位收到的就永远是一个它
+ * 认得的形状。
+ */
+export function refShapes(raw: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(raw)) return []
+  const out: Record<string, unknown>[] = []
+  for (const item of raw) {
+    const o = (item ?? {}) as Record<string, unknown>
+    const kind = String(o.kind ?? '')
+    if (kind === 'file') {
+      const path = typeof o.path === 'string' ? o.path.trim() : ''
+      if (!path) continue
+      const name = typeof o.name === 'string' ? o.name.trim().slice(0, 255) : ''
+      out.push({ kind, path, ...(name ? { name } : {}) })
+    } else if (kind === 'message') {
+      const seq = Number(o.seq)
+      const excerpt = typeof o.excerpt === 'string' ? o.excerpt.trim().slice(0, REF_EXCERPT_CHARS) : ''
+      const role = o.role === 'user' ? 'user' : o.role === 'assistant' ? 'assistant' : ''
+      const time = Number(o.time)
+      out.push({
+        kind,
+        ...(Number.isSafeInteger(seq) && seq > 0 ? { seq } : {}),
+        ...(excerpt ? { excerpt } : {}),
+        ...(role ? { role } : {}),
+        ...(Number.isFinite(time) && time > 0 ? { time } : {}),
+      })
+    }
+    if (out.length >= 10) break
+  }
+  return out
+}

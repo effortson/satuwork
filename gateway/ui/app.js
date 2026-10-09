@@ -498,6 +498,24 @@ document.getElementById('app').addEventListener('click', async (e) => {
     paintChatMentions()
     return
   }
+  // 引用（docs/chat-references.md §7）：气泡上的「引用」、预览里的「引用这个文件」、
+  // 输入框上那排的 ×、发出去之后卡上的「跳回去」。
+  if (act === 'chat-ref-msg') {
+    takeRefMessage(btn.getAttribute('data-seq'))
+    return
+  }
+  if (act === 'chat-ref-file') {
+    takeRefFile(btn.getAttribute('data-path') || '', btn.getAttribute('data-name') || '')
+    return
+  }
+  if (act === 'chat-ref-drop') {
+    dropChatRef(Number(btn.getAttribute('data-i')))
+    return
+  }
+  if (act === 'chat-ref-jump') {
+    await jumpToMessage(btn.getAttribute('data-seq'))
+    return
+  }
   if (act === 'chat-approve') {
     await decideApproval(btn.getAttribute('data-call'), 'approve', btn.getAttribute('data-scope') || 'once')
     return
