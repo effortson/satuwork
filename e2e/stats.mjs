@@ -136,6 +136,48 @@ export async function runStats({ gwRoot, test, req, start, waitHttp, assert, log
       assert(wide.json.totals.amountMicros === 96_000_000, `30 天已扣 ${wide.json.totals.amountMicros}，应当是 96000000`)
     })
 
+    await test('日线：窗口里每天一根，按看的人所在时区切，右端不越过今天', async () => {
+      /**
+       * 和公司用量屏那条日线同一套（lib/guards.ts 的 dailyBars）：柱高是模型调用次数，
+       * 金额是那天三条路合计扣的钱。tz 传的是 getTimezoneOffset 的相反数，和前端一样——
+       * 这样「今天」那根才和上面 startOfToday 的切法对得上。
+       */
+      const tz = -d.getTimezoneOffset()
+      const label = (at) => {
+        const x = new Date(at)
+        return `${String(x.getMonth() + 1).padStart(2, '0')}/${String(x.getDate()).padStart(2, '0')}`
+      }
+      const seven = await req(base, 'GET', `${q(startOfToday - 6 * DAY, now)}&tz=${tz}`, { token })
+      assert(seven.status === 200, `${seven.status} ${seven.text}`)
+      const daily = seven.json.daily
+      assert(Array.isArray(daily) && daily.length === 7, `近 7 天该是 7 根，实际 ${JSON.stringify(daily)}`)
+      assert(daily.at(-1).label === label(now), `最后一根该是今天 ${label(now)}，实际 ${daily.at(-1).label}`)
+      assert(daily.at(-1).value === 2, `今天该有 2 次，实际 ${daily.at(-1).value}`)
+      assert(daily.at(-1).amountMicros === 6_000_000, `今天该扣 6000000 微元，实际 ${daily.at(-1).amountMicros}`)
+      assert(daily.slice(0, -1).every((x) => x.value === 0 && x.amountMicros === 0), `前六天该全是 0：${JSON.stringify(daily)}`)
+      assert(daily.every((x) => typeof x.amount === 'string' && x.amount.startsWith('$')), `柱顶金额缺了：${JSON.stringify(daily[0])}`)
+
+      // 30 天窗口里，10 天前那根要有 1 次、$90。
+      const wide = await req(base, 'GET', `${q(now - 30 * DAY, now)}&tz=${tz}`, { token })
+      const tenAgo = wide.json.daily.find((x) => x.label === label(now - 10 * DAY))
+      assert(tenAgo && tenAgo.value === 1 && tenAgo.amountMicros === 90_000_000, `10 天前那根不对：${JSON.stringify(tenAgo)}`)
+      assert(wide.json.daily.reduce((n, x) => n + x.value, 0) === 3, `30 天日线加起来该是 3 次`)
+
+      // 「月」的窗口 to 是月底最后一刻：后半个月还没发生，不能画成一排 0。
+      const monthFrom = new Date(d.getFullYear(), d.getMonth(), 1).getTime()
+      const monthTo = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime() - 1
+      const month = await req(base, 'GET', `${q(monthFrom, monthTo)}&tz=${tz}`, { token })
+      assert(month.json.daily.length === d.getDate(), `本月该画到今天为止 ${d.getDate()} 根，实际 ${month.json.daily.length}`)
+      assert(month.json.daily.at(-1).label === label(now), `本月最后一根该是今天`)
+
+      // 过滤到别家公司，日线也跟着空——柱子不能是全平台的、表却是一家的。
+      const filtered = await req(base, 'GET', `${q(startOfToday - 6 * DAY, now, orgId)}&tz=${tz}`, { token })
+      assert(filtered.json.daily.at(-1).value === 2, `按公司过滤后今天该还是 2 次`)
+
+      const badTz = await req(base, 'GET', `${q(startOfToday, now)}&tz=东八区`, { token })
+      assert(badTz.status === 400, `坏 tz ${badTz.status}`)
+    })
+
     await test('没单价的模型不按 $0 混进金额，要单独标出来', async () => {
       const r = await req(base, 'GET', q(startOfToday, now), { token })
       assert(r.json.unpricedModels.includes('noprice/free-model'), `没标出来：${JSON.stringify(r.json.unpricedModels)}`)

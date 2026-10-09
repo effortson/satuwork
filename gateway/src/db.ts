@@ -1181,12 +1181,29 @@ export class Db {
     range?: { from?: number; to?: number },
     offsetMs = 0,
   ): Promise<{ bucket: number; calls: number }[]> {
+    return this.llmDaily({ column, value }, range, offsetMs)
+  }
+
+  /**
+   * 平台视角的每日调用数：全部公司一起数，或者只数某一家。owner 自己那些
+   * `companyId` 为空的调用也在里面——统计页的合计就是这么算的，日线不能少它一截。
+   */
+  llmDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string): Promise<{ bucket: number; calls: number }[]> {
+    return this.llmDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs)
+  }
+
+  private async llmDaily(
+    scope: { column: 'companyId' | 'accountId'; value: string } | null,
+    range?: { from?: number; to?: number },
+    offsetMs = 0,
+  ): Promise<{ bucket: number; calls: number }[]> {
     const r = this.llmRangeSql(range)
+    const w = this.dailyScopeSql(scope)
     const rows = await this.many(
       `select floor(("createdAt" + ?) / 86400000.0)::bigint as bucket, count(*) as calls
-       from llm_calls where "${column}" = ?${r.sql}
+       from llm_calls where ${w.sql}${r.sql}
        group by bucket order by bucket`,
-      [offsetMs, value, ...r.args],
+      [offsetMs, ...w.args, ...r.args],
     )
     return rows.map((row) => ({ bucket: num(row.bucket), calls: num(row.calls) }))
   }
@@ -1202,14 +1219,33 @@ export class Db {
     range?: { from?: number; to?: number },
     offsetMs = 0,
   ): Promise<{ bucket: number; amountMicros: number }[]> {
+    return this.chargeDaily({ column, value }, range, offsetMs)
+  }
+
+  /** 平台视角的每日扣费，和 `llmDailyAll` 配对：全部公司一起算，或者只算某一家。 */
+  chargeDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string): Promise<{ bucket: number; amountMicros: number }[]> {
+    return this.chargeDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs)
+  }
+
+  private async chargeDaily(
+    scope: { column: 'companyId' | 'accountId'; value: string } | null,
+    range?: { from?: number; to?: number },
+    offsetMs = 0,
+  ): Promise<{ bucket: number; amountMicros: number }[]> {
     const r = this.llmRangeSql(range)
+    const w = this.dailyScopeSql(scope)
     const rows = await this.many(
       `select floor(("createdAt" + ?) / 86400000.0)::bigint as bucket, coalesce(sum("amountMicros"), 0) as "amountMicros"
-       from usage_charges where "${column}" = ?${r.sql}
+       from usage_charges where ${w.sql}${r.sql}
        group by bucket order by bucket`,
-      [offsetMs, value, ...r.args],
+      [offsetMs, ...w.args, ...r.args],
     )
     return rows.map((row) => ({ bucket: num(row.bucket), amountMicros: num(row.amountMicros) }))
+  }
+
+  /** 日线的范围子句：按公司 / 按人，或者（平台视角）不限。列名是白名单里的两个，不是外面传进来的字符串。 */
+  private dailyScopeSql(scope: { column: 'companyId' | 'accountId'; value: string } | null): { sql: string; args: string[] } {
+    return scope ? { sql: `"${scope.column}" = ?`, args: [scope.value] } : { sql: '1=1', args: [] }
   }
 
   llmUsageOfCompany(companyId: string, range?: { from?: number; to?: number }): Promise<LlmUsage> {
