@@ -592,6 +592,7 @@ export async function sweepUnsettledLlmCalls(
        */
       const settled = await withSettleLock(db, call.id, async () => {
         if (await db.chargeExistsForRef(call.id)) return false
+        // 不传 estimate：占位行要留着那个「全 0」的形状等管家回来补（docs/billing.md §2.1）。
         await settle(db, meter, account, { provider: call.provider, id: call.model, cost: found?.cost }, call.id, undefined, 'failed')
         return true
       })

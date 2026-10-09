@@ -46,6 +46,8 @@ export type Billable =
       /** 目录里那份 `cost`（pi-ai 内置 / 自定义供应商 / 公司目录）。平台覆盖压在它上面。 */
       cost: unknown
       refId?: string | null
+      /** `tokens` 是估的，不是上游报的（lib/llm-billing.ts 的 estimateUsage）。落账时标在行上。 */
+      estimated?: boolean
     }
   | {
       kind: 'connector'
@@ -253,6 +255,65 @@ export class Meter {
    * 单价在这里取，算法在 `lib/pricing.ts`（纯函数，单独可测）。取到的单价会跟着账本
    * 行存下来——**「为什么收这么多」唯一说得清的地方**，也是敢说「金额不重算」的前提。
    */
+  /**
+   * **按当前单价给一行已经落账的行重新报价**（docs/billing.md §2.2 的「重算」）。
+   *
+   * 单价用现在的（覆盖 → 目录 → 兜底，含长上下文档位），**倍率用行上存的那份**：重算修的是
+   * 单价记错了（档位没算、目录补了价），不是倍率；「改倍率不追溯」是账本的一条硬规矩，这里
+   * 不能顺手把它破了。计量照行上的 `quantity`。
+   *
+   * 报不出来（模型查不到价、kind 不认识、subject 拆不开）回 undefined，调用方跳过那一行并
+   * 数一笔「没算」——别把它按 0 收。
+   *
+   * **连接器只重算成交过的行。** 被拒的、没跑成的、超时的连接器调用落账时是 `free`（0 元），
+   * 而那个标记不在行上——按单价表重报就会把一批故意免费的行算成全价。llm / web / kb 的
+   * 计量在行上（0 token、0 次），重报出来还是 0，不用另判。
+   *
+   * `settings` 由批量重算的调用方传进来，一批几千行只读一次；不传就自己读。
+   */
+  async requote(row: UsageCharge, cost: unknown, settings?: PlatformSettings): Promise<Quote | undefined> {
+    const s = settings ?? (await this.db.platformSettings())
+    const multiplier = row.multiplier > 0 ? row.multiplier : parsePriceMultiplier(s.priceMultiplier)
+    const q = row.quantity
+    if (row.kind === 'llm') {
+      const override: ModelRate | undefined = parseModelPricing(s.modelPricing)[row.subject]
+      const rate = rateOf(cost, override, parseModelRate(s.defaultModelRate))
+      if (!rate) return undefined
+      const tokens: LlmTokens = {
+        promptTokens: q.promptTokens ?? 0,
+        completionTokens: q.completionTokens ?? 0,
+        cachedTokens: q.cachedTokens ?? 0,
+        cacheWriteTokens: q.cacheWriteTokens ?? 0,
+      }
+      return { amountMicros: llmMicros(rate, tokens, multiplier), unitPrice: rateSnapshot(rate, tokens.promptTokens), multiplier, unpriced: false }
+    }
+    const sep = row.subject.indexOf(':')
+    if (sep <= 0) return undefined
+    const head = row.subject.slice(0, sep)
+    const tail = row.subject.slice(sep + 1)
+    if (row.kind === 'connector') {
+      if (row.status !== 'ok') return undefined
+      // 连接器没有倍率，单价也不按次变——重算对它只有「单价表改了」这一种意义。
+      const unit = connectorMicros(s.connectorPricing, head)
+      return { amountMicros: unit, unitPrice: { unit }, multiplier: 1, unpriced: false }
+    }
+    const units = q.units ?? 0
+    if (row.kind === 'kb') {
+      if (tail !== 'query' && tail !== 'ingest') return undefined
+      const unitMils = kbUnitMils(s, tail)
+      return {
+        amountMicros: unitMils && units > 0 ? Math.max(0, Math.round(unitMils * 1000 * units * multiplier)) : 0,
+        unitPrice: { unit: Math.round(unitMils * 1000) },
+        multiplier,
+        unpriced: false,
+      }
+    }
+    if (tail !== 'search' && tail !== 'extract') return undefined
+    const web = s.webTools ?? emptyWebTools()
+    const unitMils = web.pricing?.[head]?.[tail] ?? 0
+    return { amountMicros: webMicros(web, head, tail, units, multiplier), unitPrice: { unit: Math.round(unitMils * 1000) }, multiplier, unpriced: false }
+  }
+
   async quote(b: Billable): Promise<Quote> {
     const s = await this.db.platformSettings()
     const multiplier = parsePriceMultiplier(s.priceMultiplier)
@@ -272,7 +333,7 @@ export class Meter {
       if (!rate) return { amountMicros: 0, unitPrice: {}, multiplier, unpriced: true }
       return {
         amountMicros: llmMicros(rate, b.tokens, multiplier),
-        unitPrice: rateSnapshot(rate),
+        unitPrice: rateSnapshot(rate, b.tokens.promptTokens),
         multiplier,
         unpriced: false,
       }
@@ -325,6 +386,7 @@ export class Meter {
       multiplier: quote.multiplier,
       amountMicros: quote.amountMicros,
       unpriced: quote.unpriced,
+      estimated: b.kind === 'llm' && b.estimated === true,
       refId: b.refId ?? null,
     }
     if (!companyId || quote.amountMicros <= 0) return this.db.insertUsageCharge(input)

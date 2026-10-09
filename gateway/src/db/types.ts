@@ -1202,6 +1202,24 @@ export interface ModelRate {
   cacheRead: number
   /** 这次写进缓存的那一截。Anthropic 是输入价的 1.25 倍——**比普通输入贵**。 */
   cacheWrite: number
+  /**
+   * **长上下文档位**：一次调用的输入超过 `inputTokensAbove` 时，**整次**按这一档的四项收，
+   * 不是只对超出的部分加价。OpenAI 的 gpt-5.4 / 5.5 / 6.x 过 272k 翻倍就是这个形状
+   * （pi-ai 目录和 models.dev 都带着它，叫 `tiers`）。
+   *
+   * 没有这个字段 = 只有一档。曾经 parseModelRate 只认四项，这个字段一路被丢掉：一天里
+   * 七十多次超过 272k 的调用全按基础价收，账本比 OpenAI 后台少了三成多。
+   */
+  tiers?: ModelRateTier[]
+}
+
+/** 一档：门槛加四项。档里缺的项（0）回落到基础价，见 lib/pricing.ts 的 rateOf。 */
+export interface ModelRateTier {
+  inputTokensAbove: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
 }
 
 /** 键是 `provider/model`（和 `enabledModels`、`/v1/models` 里的 id 一致）。 */
@@ -1218,7 +1236,32 @@ export function parseModelRate(raw: unknown): ModelRate {
     const n = Number(v)
     return Number.isFinite(n) && n >= 0 ? n : 0
   }
-  return { input: one(o.input), output: one(o.output), cacheRead: one(o.cacheRead), cacheWrite: one(o.cacheWrite) }
+  const rate: ModelRate = { input: one(o.input), output: one(o.output), cacheRead: one(o.cacheRead), cacheWrite: one(o.cacheWrite) }
+  const tiers = parseModelRateTiers(o.tiers)
+  if (tiers.length) rate.tiers = tiers
+  return rate
+}
+
+/**
+ * 档位表。门槛不是正数的那一档丢掉（没有门槛就不是一档）；按门槛升序排，同门槛的只留
+ * 后一条。**没有 `tiers` 键时不加这个字段**：界面上改价表单、覆盖表的「四项全 0 就是没
+ * 覆盖」判断，都只看四项，多一个空数组会让它们误判。
+ */
+export function parseModelRateTiers(raw: unknown): ModelRateTier[] {
+  if (!Array.isArray(raw)) return []
+  const one = (v: unknown) => {
+    const n = Number(v)
+    return Number.isFinite(n) && n >= 0 ? n : 0
+  }
+  const byThreshold = new Map<number, ModelRateTier>()
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const t = item as Record<string, unknown>
+    const above = Math.floor(one(t.inputTokensAbove))
+    if (above <= 0) continue
+    byThreshold.set(above, { inputTokensAbove: above, input: one(t.input), output: one(t.output), cacheRead: one(t.cacheRead), cacheWrite: one(t.cacheWrite) })
+  }
+  return [...byThreshold.values()].sort((a, b) => a.inputTokensAbove - b.inputTokensAbove)
 }
 
 /**
@@ -1298,6 +1341,22 @@ export interface UsageCharge {
   bonusMicros: number
   /** 查不到单价。金额 0，但不是免费——界面要说出来。 */
   unpriced: boolean
+  /**
+   * 用量是**估的**，不是上游报的：流在 usage 那一帧之前断了，按同一账号同一模型十分钟内
+   * 上一次结算过的调用推出来（lib/llm-billing.ts 的 estimateUsage）。金额照常算、照常扣，
+   * 但界面要说出来——估的数和报的数在账上不能长得一样。
+   */
+  estimated: boolean
+  /**
+   * 平台人工改过金额 / 重算过：第一次改之前的金额。null = 没改过。改几次都只留最初那份——
+   * 「原来是多少」只有一个答案，中间改过几次看审计。见 docs/billing.md §2.2。
+   */
+  originalAmountMicros: number | null
+  adjustedAt: number | null
+  /** 改的人（accountId）。 */
+  adjustedBy: string | null
+  /** 为什么改。重算写的是「按当前单价重算」。 */
+  adjustNote: string
   refId: string | null
   createdAt: number
 }

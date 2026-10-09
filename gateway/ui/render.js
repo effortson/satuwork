@@ -713,8 +713,10 @@ async function saveModelPrice(clear = false) {
   }
   const table = { ...(state.settings?.modelPricing || {}) }
   const empty = clear || !Object.values(next).some((n) => n > 0)
+  // 覆盖上可能带着从接口写进去的长上下文档位（tiers），这个弹层只编四项，别把它抹掉。
+  const tiers = table[d.key]?.tiers
   if (empty) delete table[d.key]
-  else table[d.key] = next
+  else table[d.key] = Array.isArray(tiers) && tiers.length ? { ...next, tiers } : next
   state.busy = true
   state.priceError = ''
   render()
