@@ -192,8 +192,10 @@ agent.prompt(…)                            这一轮那句话，单独送（�
 （`sessions.events()` 返回的是 `state.events.slice()`）。所以**这一轮的消息不在 messages
 里**，它靠 `agent.prompt()` 单独送。
 
-- 有图或有 `@` → 走 `userContentFor` 拼内容块（图在前、正文在后、点名渲染成一行
-  `[本轮指定：…]`），再 `stampContent` 盖时间；
+- 有图、有 `@` 或有引用 → 走 `userContentFor` 拼内容块（图在前、正文在后、点名渲染成一行
+  `[本轮指定：…]`、引用渲染成 `[引用你 … 的回复] 全文 [引用结束]` / `[引用文件：…]`，见
+  [chat-references.md](./chat-references.md) §6），再 `stampContent` 盖时间。引用要把 `history`
+  一起递进去：被引用的回复全文按 seq 从那里读，而引用只会指向更早的消息，这份快照够用；
 - 纯文本 → `stampUser` 那条快路，直接是字符串。
 
 这一轮的图**必须从这里进去**。只传文本的话，图要等到下一轮重建历史时才被读出来,
@@ -328,6 +330,8 @@ chip 报的是实测总量，会明显比"该压了没压"的判断更早见红�
 3. **压缩边界只落在 `turn/end` 上**，且**单调向前**。
 4. **落盘是结构，进模型是话。** `mention` 块存 `{kind,id,label}`，渲染成 `[本轮指定：…]` 只发生在
    `textFrom` 这一处；`mentionGapBlock` 只进这一轮的提示词、不落盘。两边分开，重放才和当时一致。
+   `ref` 块同理：存 seq / 路径，全文在渲染那一刻按 seq 从**全量**日志里读（压缩边界之前的也读得到），
+   文件在不在也是那一刻查的；`refBlock` 只进这一轮的提示词。
 5. **估算失败不能连累这一轮。**
 
 ---
@@ -346,7 +350,7 @@ chip 报的是实测总量，会明显比"该压了没压"的判断更早见红�
 | 干什么 | 在哪 |
 |---|---|
 | 一轮的总装配 | `runTurn`（[agent/index.ts](../bot/src/agent/index.ts)） |
-| 系统提示词 | `composeSystem` / `runtimeBlock` / `webContentBlock` / `escalateBlock` / `linkOutBlock` / `fileOutBlock` / `mentionGapBlock` |
+| 系统提示词 | `composeSystem` / `runtimeBlock` / `webContentBlock` / `escalateBlock` / `linkOutBlock` / `fileOutBlock` / `mentionGapBlock` / `refBlock` |
 | 工具表 | `toolSchemasFor`，执行期包装在 `bridgeTools` |
 | 事件 → 消息 | `toAgentMessages`（导出，e2e 直接测它） |
 | 图片 | `userContentFor` / `loadImage` / `stale` / `IMAGE_CACHE` / `MAX_LIVE_IMAGES` |

@@ -496,6 +496,7 @@ function render() {
     // 输入框上下那三块（排队 dock、已选的 @ 药丸、选单）同样是空壳 + 增量填。
     paintChatQueue()
     paintChatMentions()
+    paintChatRefs()
     // 附件那一栏同理。漏了它，发送时那次 render 一换壳，「正在传」的附件就从眼前消失了。
     paintChatFiles()
     paintMentionPick()

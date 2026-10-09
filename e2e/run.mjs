@@ -50,6 +50,7 @@ import { runModelChoice } from './model-choice.mjs'
 import { runRoutineTools } from './routine-tools.mjs'
 import { runHistoryTime } from './history-time.mjs'
 import { runCompact } from './compact.mjs'
+import { runReferences } from './references.mjs'
 import { runGatewayUrl } from './gateway-url.mjs'
 import { runSeatSecrets } from './seat-secrets.mjs'
 import { runMaxSteps } from './max-steps.mjs'
@@ -3706,6 +3707,7 @@ async function main() {
     await suite('routine-tools', () => runRoutineTools({ root, test, assert, log }))
     await suite('history-time', () => runHistoryTime({ root, test, assert, log }))
     await suite('compact', () => runCompact({ root, test, assert, log }))
+    await suite('references', () => runReferences({ root, test, assert, log }))
     await suite('gateway-url', () => runGatewayUrl({ root, test, assert, log }))
     await suite('seat-secrets', () => runSeatSecrets({ root, test, assert, log }))
     await suite('max-steps', () => runMaxSteps({ root, test, assert, log }))

@@ -6,7 +6,7 @@ import type { RouteCtx } from './ctx.ts'
 import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { IMAGE_MODELS } from '../image-models.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
-import { KIND, bodyOf, deployOptsOf, strField } from '../lib/validate.ts'
+import { KIND, bodyOf, deployOptsOf, refShapes, strField } from '../lib/validate.ts'
 import type { Account, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
@@ -1787,14 +1787,25 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       }
     }
 
+    /**
+     * 引用（docs/chat-references.md §5.1）。**只认形状，不校验内容。**
+     *
+     * `@` 要在这里逐个校验，是因为「这把连接属不属于这个账号」只有 Gateway 知道；而
+     * 引用指的是这条会话自己的消息和这个工作区自己的文件，归属已经由
+     * seatTargetForSession 定了。真正的校验（路径越界、seq 在不在）在席位那头。
+     * 这里做的是：截到 10 条、每项只透传认识的字段、摘录截到 300 字——和 images 同一个待遇。
+     */
+    const refs = refShapes(body.refs)
+
     await proxyJson(
       res,
       'POST',
       `${target.host}/api/sessions/${encodeURIComponent(req.params.id)}/messages`,
       {
-        text: strField(body, 'text', images?.length || mentions.length ? false : true),
+        text: strField(body, 'text', images?.length || mentions.length || refs.length ? false : true),
         ...(images?.length ? { images } : {}),
         ...(mentions.length ? { mentions } : {}),
+        ...(refs.length ? { refs } : {}),
       },
       await seatBearer(db, account.id),
       target.machineToken,
