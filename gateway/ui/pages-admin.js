@@ -1236,7 +1236,7 @@ function statsPage() {
           ${pill('today', t('今日'))}
           ${pill('7d', t('近 7 天'))}
           ${pill('month', t('月'))}
-          ${state.statsRange === 'month' ? `<input class="input" type="month" style="width: 170px; flex: none;" value="${esc(month)}" data-act="stats-month">` : ''}
+          ${state.statsRange === 'month' ? monthPicker(month, 'stats-month', t('选择月份', 'Pick a month')) : ''}
           <select class="input" style="width: 200px; flex: none;" data-act="stats-company">
             <option value="">${t('全部公司')}</option>
             ${(d?.companies || []).map((c) => `<option value="${esc(c.id)}" ${c.id === state.statsCompany ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}

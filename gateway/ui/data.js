@@ -342,6 +342,37 @@ function thisMonth() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
+/** `2026-10` → 「2026 年 10 月」/ "Oct 2026"。给月份选择器的选项和副标题用。 */
+function monthLabel(ym) {
+  const [y, m] = String(ym || '').split('-').map(Number)
+  if (!y || !m) return String(ym || '')
+  const en = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  return t(`${y} 年 ${m} 月`, `${en[m - 1]} ${y}`)
+}
+
+/** 月份选择器一共列多少个月：当月往回 24 个月，再往前的月份照旧能选（见 monthPicker）。 */
+const MONTH_PICKER_SPAN = 24
+
+/**
+ * 月份选择器：一个 `<select>`，当月在最上面、往回列两年。
+ *
+ * 不用 `<input type="month">`——桌面端跑在 WebKit 里，它不认这个类型，退化成一个要人
+ * 手敲「2026-10」的文本框；Firefox 同样。下拉在哪儿都是下拉。`value` 不在这两年里
+ * （比如从别处带进来一个更早的月）就补在最前面，选中的那一项不能凭空消失。
+ */
+function monthPicker(value, act, label) {
+  const cur = value || thisMonth()
+  const [y0, m0] = thisMonth().split('-').map(Number)
+  const months = []
+  for (let i = 0; i < MONTH_PICKER_SPAN; i += 1) {
+    const d = new Date(y0, m0 - 1 - i, 1)
+    months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
+  }
+  if (!months.includes(cur)) months.unshift(cur)
+  const options = months.map((ym) => `<option value="${esc(ym)}"${ym === cur ? ' selected' : ''}>${esc(monthLabel(ym))}</option>`).join('')
+  return `<select class="input" style="width: 150px; flex: none;" aria-label="${esc(label)}" data-act="${esc(act)}">${options}</select>`
+}
+
 /**
  * 统计窗口 → [from, to]（unix 毫秒）。
  *

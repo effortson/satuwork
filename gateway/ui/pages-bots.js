@@ -1771,7 +1771,7 @@ function usagePage() {
   // 明细窗口）都认这个键。选中别的月份时，副标题写那个月，不写「本月」。
   const month = state.usageMonth || thisMonth()
   const pillLabel = (r) => (r === '本月' ? t('月') : t(r))
-  const rangeLabel = range === '本月' ? month : t(range)
+  const rangeLabel = range === '本月' ? monthLabel(month) : t(range)
   const pills =
     ranges
       .map(
@@ -1779,9 +1779,7 @@ function usagePage() {
           `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(range === r)}" data-act="usage-range" data-range="${esc(r)}">${esc(pillLabel(r))}</button>`,
       )
       .join('') +
-    (range === '本月'
-      ? `<input class="input" type="month" style="width: 170px; flex: none;" value="${esc(month)}" aria-label="${esc(t('选择月份', 'Pick a month'))}" data-act="usage-month">`
-      : '')
+    (range === '本月' ? monthPicker(month, 'usage-month', t('选择月份', 'Pick a month')) : '')
   // 两张 token 卡片服务端给的是精确整数，几千万一长串没法一眼读，按 M 画、悬停看精确值。
   const tokenStats = new Set(['输入 Tokens', '输出 Tokens'])
   const statCards = stats
