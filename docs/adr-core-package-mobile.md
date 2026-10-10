@@ -1,6 +1,6 @@
 # ADR：逻辑层抽成 `core` 包，移动端用 Expo 只做对话
 
-- 状态：**已接受**（2026-10-10），**实施中**：第 1–3 步已落地（见 §5）
+- 状态：**已接受**（2026-10-10），**实施中**：第 1–4 步已落地（见 §5）
 - 影响范围：gateway/ui、gateway/src/http.ts、gateway/scripts、e2e/ui-dom.mjs、desktop/（间接）、新增 core/ 与 mobile/
 - 前置阅读：[gateway-runtime.md](gateway-runtime.md)；[adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) §4、§7；[session-event-field-map.md](session-event-field-map.md)；[chat-references.md](chat-references.md)
 
@@ -68,7 +68,7 @@ React Web 写的是 `div` + CSS，React Native 写的是 `View` / `Text` / `Styl
 | prefs.js | `t()` / `errText()` / `localeMode` | 进 | 语言的读写注入；`t()` 的查表逻辑原样 |
 | prefs.js | 主题、`matchMedia`、侧栏宽度、图标 SVG、导航表 | 不进 | 纯 Web |
 | i18n.js | `window.SATU_I18N` 字典 | 进 | 变成模块导出；Web 侧由 core.js 继续挂到 `window.SATU_I18N`，调用点不动 |
-| markdown.js | 文本 → HTML 的解析（前半部分） | 进，**待验证** | 要先确认 parse 和「挂 script、`document.createElement`、复制下载」那一半能分开。分不开就不进，见 §7 |
+| markdown.js | 文本 → HTML 的解析（前半部分） | 进（已验证能拆） | 第 28–739 行只碰字符串，唯一的外部依赖是 `window.t` 和「人点过加载的站外图片」那张表，两样都由宿主注入（`createMarkdown({ t })` 返回的 `loadedImages`） |
 | markdown.js | KaTeX / hljs / Mermaid 按需加载、复制、下载、图片兜底 | 不进 | 纯 Web |
 | chat.js | `sseEvents`、`fold`、`noteBotEvent` 的归并部分、`refreshSum`、`mergePending`、`chatCursor`、`noteRosterFrame`、`CHAT_BACKOFF` / `ROSTER_BACKOFF` / `CHAT_ALIVE_MS`、`maxSeqOf` | 进 | 这是手机端最需要的一层，也是最容易搬坏的一层。`fold` 里有 Telegram 来源、渠道标签等细节，靠 e2e 的 chat-fold.mjs 兜底 |
 | chat.js | `startChatStream` / `retryChatStream` / `startRosterStream` 的开流、退避、503 与 401/403/404 分治 | 进，改形 | 改写成不碰 `state` 的 `openEventStream({ fetch, url, token, after, signal, onEvent, onStatus })` 和 `openRosterStream(...)`。状态码分治的规则原样（503 与 5xx 退避重试、401/403/404 认输、活够 10 秒档位归零）。Web 的 `startChatStream` 只剩「拿事件写 `botStreams`、画」 |
@@ -145,7 +145,7 @@ Gateway 无状态、不经手对话流。要做推送需要四件事：
 | gateway/ui/state.js | 动 | 纯函数转接；`token()` 那段改成 `SatuCore.tokens`（Web 实现）；`state` 不动 |
 | gateway/ui/data.js | 动 | `api` / `swFetch` / `localRoute` / `registerLocalBot` 转接；`load*` 不动 |
 | gateway/ui/chat.js | 动 | 事件层和开流转接到 core；paint* 不动 |
-| gateway/ui/markdown.js | 看 §7 | parse 能拆就转接 |
+| gateway/ui/markdown.js | 动 | 解析半边转接到 `SatuCore.createMarkdown`，DOM 半边原样 |
 | gateway/ui/core.js | 新 | 打包产物，提交 |
 | gateway/scripts/build-core.mjs | 新 | esbuild IIFE |
 | gateway/src/http.ts | 动 | `ROOT_FILES` 加 `core.js` |
@@ -176,7 +176,7 @@ core/
       t.ts              t()、errText()、locale 读写注入
     format.ts           原 state.js 的纯函数（esc、时区、金额；usd 的语言由调用方传入）
     paths.ts            原 state.js 里从地址取 id 的那几个
-    markdown/parse.ts   （待验证）
+    markdown/render.ts  createMarkdown({ t })：healStream、splitBlocks、render、safeUrl、esc、loadedImages
     chat/
       events.ts         messageText 等读法、splitUploads、isShot、maxSeqOf、insertEvent、cursorOf
       fold.ts           fold（原样）
@@ -230,7 +230,11 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
    ——规则改一处两边一起变，循环本身各走各的。名单流同理，`rosterRetryDelay` 共用，循环不动。
    另一个教训：chat.js 里的转接要写成**函数声明**而不是 `const x = SatuCore.x`——chat-fold.mjs
    把文件装进 vm 上下文按属性读名字，顶层 const 不挂到全局对象上。
-4. **Markdown**：先验证 parse 能不能拆；能拆就搬，不能就记到 §7 并关掉这一步。
+4. **Markdown**（已落地）：能拆。原文件第 28–739 行整段搬到 `core/src/markdown/render.ts`，包在
+   `createMarkdown({ t })` 里（`t` 是「复制」「下载」这几个按钮的文案；`loadedImages` 那张表由
+   core 持有、DOM 半边往里加）。Web 的 markdown.js 只剩 DOM 半边加一行装配；e2e 的 markdown.mjs
+   加载器先装 core.js。手机端可以拿 healStream / splitBlocks 喂自己的渲染器，也可以拿 render 的
+   HTML 喂 react-native-render-html——`data-md` 标记都在。
 5. **mobile 脚手架**：登录、Bot 名单、对话的只读部分（历史 + SSE 渲染）。
 6. **mobile 可写**：发消息、中止、审批、名单流、图片附件。
 7. **推送**：§2.5 的四件事。
@@ -250,7 +254,7 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
 
 ## 7. 明知的风险
 
-- **markdown.js 可能拆不开。** 它一千一百行里 parse 和 DOM 操作交错。退路：core 不含 markdown，手机端用现成的 RN Markdown 库，两边渲染结果允许不一样。
+- ~~markdown.js 可能拆不开~~ 已验证能拆（第 4 步）。手机端渲染器的选择留到第 5 步。
 - **`fold` 搬动改行为。** 它有 Telegram 来源、渠道标签、模型切换、状态这些细节，而且只有 e2e chat-fold.mjs 一道兜底。搬之前先给它补 node 单测，用真实事件日志当夹具。
 - **直连约束。** 「手机上能用」取决于机器的 `directUrl` 公网可达。本地开发那台 `192.168.64.1` 只在同一 Wi-Fi 下可用。
 - **产物 diff 噪音。** 每个改 core 的 PR 带一份压缩后的 core.js。接受。

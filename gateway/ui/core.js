@@ -37,6 +37,7 @@ var SatuCore = (() => {
     companyIdOfPath: () => companyIdOfPath,
     connectorIdOfPath: () => connectorIdOfPath,
     createGatewayClient: () => createGatewayClient,
+    createMarkdown: () => createMarkdown,
     cursorOf: () => cursorOf,
     dayEnd: () => dayEnd,
     dayStart: () => dayStart,
@@ -2251,6 +2252,458 @@ var SatuCore = (() => {
       },
       done
     };
+  }
+
+  // core/src/markdown/render.ts
+  function createMarkdown(opts = {}) {
+    function L(zh) {
+      return opts.t ? opts.t(zh) : zh;
+    }
+    const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+    function esc2(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESCAPES[c]);
+    }
+    const MARK = "";
+    const RE_HOLE = /\uE000(\d+)\uE000/g;
+    function hold(store, html) {
+      store.push(html);
+      return MARK + (store.length - 1) + MARK;
+    }
+    function unhold(html, store) {
+      let out = html;
+      for (let i = 0; i < 8 && out.indexOf(MARK) >= 0; i++) {
+        out = out.replace(RE_HOLE, (m, n) => store[Number(n)] == null ? "" : store[Number(n)]);
+      }
+      return out.split(MARK).join("");
+    }
+    const loadedImages = /* @__PURE__ */ new Set();
+    const RELATIVE_BASE = "https://satu.invalid/";
+    const RELATIVE_ORIGIN = "https://satu.invalid";
+    function safeUrl(raw, kind) {
+      const s = String(raw || "").trim().replace(/^<|>$/g, "");
+      if (!s) return "";
+      if (/^(https?:\/\/|mailto:|tel:)/i.test(s)) return s;
+      if (kind === "img" && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(s)) return s;
+      if (!/^(\/|\.{1,2}\/|#)/.test(s)) return "";
+      try {
+        if (new URL(s, RELATIVE_BASE).origin === RELATIVE_ORIGIN) return s;
+      } catch {
+      }
+      return "";
+    }
+    function healStream(src) {
+      let s = String(src == null ? "" : src);
+      const fences = s.match(/^[ \t]{0,3}(?:`{3,}|~{3,})/gm);
+      if (fences && fences.length % 2 === 1) {
+        const open = fences[fences.length - 1].trim();
+        return s + (s.endsWith("\n") ? "" : "\n") + open[0].repeat(Math.max(3, open.length));
+      }
+      s = s.replace(/!?\[[^\]\n]*\](?:\([^)\n]*)?$/, "");
+      s = s.replace(/!?\[[^\]\n]*$/, "");
+      if ((s.match(/\$\$/g) || []).length % 2 === 1) s += "$$";
+      const lastLine = s.slice(s.lastIndexOf("\n") + 1);
+      if ((lastLine.match(/`/g) || []).length % 2 === 1) s += "`";
+      const plain = s.split("\n").filter(
+        /* @__PURE__ */ (() => {
+          let fence = "";
+          return (line) => {
+            const m = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line);
+            if (m && !fence) {
+              fence = m[1];
+              return false;
+            }
+            if (m && fence && m[1][0] === fence[0] && m[1].length >= fence.length) {
+              fence = "";
+              return false;
+            }
+            return !fence;
+          };
+        })()
+      ).join("\n").replace(/`[^`\n]*`/g, "");
+      for (const mk of ["***", "~~", "**", "__"]) {
+        if ((plain.split(mk).length - 1) % 2 === 1) s += mk;
+      }
+      const bare = plain.replace(/\*\*\*|\*\*|__/g, "");
+      if ((bare.split("*").length - 1) % 2 === 1) s += "*";
+      return s;
+    }
+    function splitBlocks(src) {
+      const lines = String(src == null ? "" : src).replace(/\r\n?/g, "\n").split("\n");
+      const out = [];
+      let buf = [];
+      let fence = "";
+      let inMath = false;
+      const flush = () => {
+        if (buf.length && buf.join("").trim()) out.push(buf.join("\n"));
+        buf = [];
+      };
+      for (const line of lines) {
+        if (fence) {
+          buf.push(line);
+          if (new RegExp("^[ \\t]{0,3}" + fence[0] + "{" + fence.length + ",}[ \\t]*$").test(line)) {
+            fence = "";
+            flush();
+          }
+          continue;
+        }
+        const open = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line);
+        if (open) {
+          flush();
+          fence = open[1];
+          buf.push(line);
+          continue;
+        }
+        if (/^[ \t]{0,3}\$\$/.test(line)) {
+          if (inMath) {
+            buf.push(line);
+            inMath = false;
+            flush();
+            continue;
+          }
+          flush();
+          buf.push(line);
+          if (/^[ \t]{0,3}\$\$[\s\S]*\$\$[ \t]*$/.test(line)) flush();
+          else inMath = true;
+          continue;
+        }
+        if (inMath) {
+          buf.push(line);
+          continue;
+        }
+        if (!line.trim()) {
+          flush();
+          continue;
+        }
+        buf.push(line);
+      }
+      flush();
+      return out;
+    }
+    const RE_INLINE_CODE = /(`+)([\s\S]*?[^`])\1(?!`)/g;
+    const RE_TEX_PAREN = /\\\(([\s\S]+?)\\\)/g;
+    const RE_TEX_BRACKET = /\\\[([\s\S]+?)\\\]/g;
+    const RE_TEX_DOLLAR = /\$(?!\s)((?:\\.|[^$\n\\])+?)\$/g;
+    const RE_IMG = /!\[([^\]]*)\]\(\s*(<[^>]*>|[^\s)]+)(?:\s+["']([^"']*)["'])?\s*\)/g;
+    const RE_LINK = /\[([^\]]*)\]\(\s*(<[^>]*>|[^\s)]*)(?:\s+["']([^"']*)["'])?\s*\)/g;
+    const RE_AUTOLINK = /<((?:https?:\/\/|mailto:)[^\s<>]+)>/g;
+    const RE_BARE_URL = /(^|[\s(（【「])(https?:\/\/[^\s<>()（）【】「」]+[^\s<>()（）【】「」.,;:!?，。；：！？])/g;
+    function mathNode(tex, display) {
+      const tag = display ? "div" : "span";
+      return "<" + tag + ' class="sw-math' + (display ? " sw-math-block" : "") + '" data-md="math" data-display="' + (display ? "1" : "0") + '" data-tex="' + esc2(tex) + '">' + // 兜底文字里**不带 $ 记号**。KaTeX 是异步拉的，带记号的话每个公式在渲染完成前都
+      // 会先闪一下 `$$…$$`；不带的话看到的就是一行 TeX，CSS 已经把它标成等宽淡色，
+      // 一眼就知道是「还没排版的公式」而不是正文写坏了。
+      esc2(tex) + "</" + tag + ">";
+    }
+    function inline(src, ctx) {
+      const store = ctx.store;
+      const depth = ctx.depth || 0;
+      let s = String(src == null ? "" : src);
+      s = s.replace(
+        RE_INLINE_CODE,
+        (m, ticks, body) => hold(store, '<code data-md="inline-code">' + esc2(body.replace(/^ ([\s\S]*) $/, "$1")) + "</code>")
+      );
+      s = s.replace(RE_TEX_PAREN, (m, tex) => hold(store, mathNode(tex, false)));
+      s = s.replace(RE_TEX_BRACKET, (m, tex) => hold(store, mathNode(tex, true)));
+      s = s.replace(RE_TEX_DOLLAR, (m, tex) => {
+        if (/\s$/.test(tex) || /^[\d.,\s]*$/.test(tex)) return m;
+        return hold(store, mathNode(tex, false));
+      });
+      s = s.replace(RE_IMG, (m, alt, url, title) => {
+        const href = safeUrl(url, "img");
+        if (!href) return hold(store, esc2(alt));
+        if (/^https?:\/\//i.test(href) && !loadedImages.has(href)) {
+          let host = "";
+          try {
+            host = new URL(href).host;
+          } catch {
+          }
+          return hold(
+            store,
+            '<button type="button" class="sw-md-remote-img" data-md="remote-image" data-md-act="load-image" data-src="' + esc2(href) + '" data-alt="' + esc2(alt) + '" title="' + esc2(href) + '">' + esc2(L("点击加载图片")) + (host ? "（" + esc2(host) + "）" : "") + (alt ? "：" + esc2(alt) : "") + "</button>"
+          );
+        }
+        return hold(
+          store,
+          '<img data-md="image" src="' + esc2(href) + '" alt="' + esc2(alt) + '"' + (title ? ' title="' + esc2(title) + '"' : "") + ' loading="lazy">'
+        );
+      });
+      s = s.replace(RE_LINK, (m, text, url, title) => {
+        const href = safeUrl(url, "a");
+        const label = depth > 3 ? esc2(text) : inline(text, { store, depth: depth + 1 });
+        if (!href) return hold(store, label);
+        return hold(
+          store,
+          '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow"' + (title ? ' title="' + esc2(title) + '"' : "") + ">" + label + "</a>"
+        );
+      });
+      s = s.replace(RE_AUTOLINK, (m, url) => {
+        const href = safeUrl(url, "a");
+        if (!href) return m;
+        return hold(store, '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc2(url) + "</a>");
+      });
+      s = s.replace(RE_BARE_URL, (m, pre, url) => {
+        const href = safeUrl(url, "a");
+        if (!href) return m;
+        return pre + hold(store, '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc2(url) + "</a>");
+      });
+      s = esc2(s);
+      s = s.replace(/\*\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*\*/g, '<strong data-md="strong"><em>$1</em></strong>');
+      s = s.replace(/(\*\*|__)(?!\s)([\s\S]+?)(?<!\s)\1/g, '<strong data-md="strong">$2</strong>');
+      s = s.replace(/~~(?!\s)([\s\S]+?)(?<!\s)~~/g, '<del data-md="strike">$1</del>');
+      s = s.replace(/\*(?!\s)([\s\S]+?)(?<!\s)\*/g, '<em data-md="emphasis">$1</em>');
+      s = s.replace(
+        /(^|[\s(（【「>])_(?!\s)([\s\S]+?)(?<!\s)_(?=$|[\s)）】」<,.，。!！?？;；:：])/g,
+        '$1<em data-md="emphasis">$2</em>'
+      );
+      s = s.replace(/ {2,}\n/g, "<br>").replace(/\n/g, "<br>");
+      return unhold(s, store);
+    }
+    const RE_FENCE = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*([^\n`]*)$/;
+    const RE_ATX = /^[ \t]{0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$/;
+    const RE_HR = /^[ \t]{0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
+    const RE_BULLET = /^([ \t]*)([-*+])[ \t]+([\s\S]*)$/;
+    const RE_ORDERED = /^([ \t]*)(\d{1,9})([.)])[ \t]+([\s\S]*)$/;
+    const RE_QUOTE = /^[ \t]{0,3}>[ \t]?(.*)$/;
+    const RE_TABLE_DELIM = /^[ \t]{0,3}\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
+    const RE_SETEXT = /^[ \t]{0,3}(=+|-+)[ \t]*$/;
+    const HEAD_TAG = ["h1", "h2", "h3", "h4", "h5", "h6"];
+    function startsBlock(l) {
+      return RE_FENCE.test(l) || RE_ATX.test(l) || RE_HR.test(l) || RE_QUOTE.test(l) || RE_BULLET.test(l) || RE_ORDERED.test(l) || /^[ \t]{0,3}\$\$/.test(l);
+    }
+    function indentOf(line) {
+      let n = 0;
+      for (const ch of line) {
+        if (ch === " ") n += 1;
+        else if (ch === "	") n += 4;
+        else break;
+      }
+      return n;
+    }
+    function toolBtn(act, label) {
+      return '<button type="button" class="sw-tool" data-md-act="' + act + '" title="' + esc2(label) + '">' + esc2(label) + "</button>";
+    }
+    function codeFigure(lang, code, ctx) {
+      const label = String(lang || "").trim().toLowerCase().split(/\s+/)[0];
+      if (label === "mermaid") return mermaidFigure(code);
+      if (label === "math" || label === "latex" || label === "tex") return mathNode(code.trim(), true);
+      const shown = label || "text";
+      return '<figure class="sw-code" data-md="code-block" data-lang="' + esc2(shown) + '"><figcaption class="sw-code-head"><span class="sw-code-lang">' + esc2(shown) + '</span><span class="sw-code-tools">' + toolBtn("copy", L("复制")) + toolBtn("download", L("下载")) + '</span></figcaption><pre class="sw-code-body"><code class="language-' + esc2(shown) + '">' + esc2(code.replace(/\n$/, "")) + "</code></pre></figure>";
+    }
+    function mermaidFigure(code) {
+      return '<figure class="sw-mermaid" data-md="mermaid" data-view="diagram"><figcaption class="sw-code-head"><span class="sw-code-lang">mermaid</span><span class="sw-code-tools">' + toolBtn("mermaid-view", L("源码")) + toolBtn("copy", L("复制")) + toolBtn("mermaid-svg", L("下载")) + '</span></figcaption><div class="sw-mermaid-canvas" data-state="pending"><span class="sw-mermaid-wait">' + esc2(L("正在画图…")) + '</span></div><pre class="sw-mermaid-src"><code class="language-mermaid">' + esc2(code.replace(/\n$/, "")) + "</code></pre></figure>";
+    }
+    function splitRow(line) {
+      const trimmed = line.trim().replace(/^\|/, "").replace(/\|[ \t]*$/, "");
+      const cells = [];
+      let cur = "";
+      for (let i = 0; i < trimmed.length; i++) {
+        const ch = trimmed[i];
+        if (ch === "\\" && trimmed[i + 1] === "|") {
+          cur += "|";
+          i++;
+          continue;
+        }
+        if (ch === "|") {
+          cells.push(cur.trim());
+          cur = "";
+          continue;
+        }
+        cur += ch;
+      }
+      cells.push(cur.trim());
+      return cells;
+    }
+    function tableHtml(head, align, rows, ctx) {
+      const cell = (text, i, tag) => "<" + tag + (align[i] ? ' style="text-align:' + align[i] + '"' : "") + ">" + inline(text, ctx) + "</" + tag + ">";
+      return '<div class="sw-table" data-md="table"><div class="sw-table-tools">' + toolBtn("copy-table", L("复制表格")) + '</div><div class="sw-table-scroll"><table><thead><tr>' + head.map((c, i) => cell(c, i, "th")).join("") + "</tr></thead><tbody>" + rows.map((r) => "<tr>" + head.map((_, i) => cell(r[i] == null ? "" : r[i], i, "td")).join("") + "</tr>").join("") + "</tbody></table></div></div>";
+    }
+    function blocks(lines, ctx) {
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        if (!line.trim()) {
+          i++;
+          continue;
+        }
+        const fence = RE_FENCE.exec(line);
+        if (fence) {
+          const marker = fence[1];
+          const close = new RegExp("^[ \\t]{0,3}" + marker[0] + "{" + marker.length + ",}[ \\t]*$");
+          const body = [];
+          i++;
+          while (i < lines.length && !close.test(lines[i])) {
+            body.push(lines[i]);
+            i++;
+          }
+          i++;
+          out.push(codeFigure(fence[2], body.join("\n"), ctx));
+          continue;
+        }
+        if (/^[ \t]{0,3}\$\$/.test(line)) {
+          const same = /^[ \t]{0,3}\$\$([\s\S]*?)\$\$[ \t]*$/.exec(line);
+          if (same) {
+            out.push(mathNode(same[1].trim(), true));
+            i++;
+            continue;
+          }
+          const body = [line.replace(/^[ \t]{0,3}\$\$/, "")];
+          i++;
+          while (i < lines.length && lines[i].indexOf("$$") < 0) {
+            body.push(lines[i]);
+            i++;
+          }
+          if (i < lines.length) body.push(lines[i].slice(0, lines[i].indexOf("$$")));
+          i++;
+          out.push(mathNode(body.join("\n").trim(), true));
+          continue;
+        }
+        const atx = RE_ATX.exec(line);
+        if (atx) {
+          const tag = HEAD_TAG[atx[1].length - 1];
+          out.push("<" + tag + ' data-md="heading-' + atx[1].length + '">' + inline(atx[2], ctx) + "</" + tag + ">");
+          i++;
+          continue;
+        }
+        if (RE_HR.test(line)) {
+          out.push('<hr data-md="rule">');
+          i++;
+          continue;
+        }
+        if (RE_QUOTE.test(line)) {
+          const body = [];
+          while (i < lines.length) {
+            const m = RE_QUOTE.exec(lines[i]);
+            if (m) {
+              body.push(m[1]);
+              i++;
+              continue;
+            }
+            if (lines[i].trim() && !startsBlock(lines[i])) {
+              body.push(lines[i].trim());
+              i++;
+              continue;
+            }
+            break;
+          }
+          out.push('<blockquote data-md="blockquote">' + blocks(body, ctx) + "</blockquote>");
+          continue;
+        }
+        if (RE_BULLET.test(line) || RE_ORDERED.test(line)) {
+          const res = listAt(lines, i, ctx);
+          out.push(res.html);
+          i = res.next;
+          continue;
+        }
+        if (line.indexOf("|") >= 0 && i + 1 < lines.length && RE_TABLE_DELIM.test(lines[i + 1]) && lines[i + 1].indexOf("-") >= 0) {
+          const head = splitRow(line);
+          const align = splitRow(lines[i + 1]).map((c) => {
+            const l = c.startsWith(":");
+            const r = c.endsWith(":");
+            return l && r ? "center" : r ? "right" : l ? "left" : "";
+          });
+          i += 2;
+          const rows = [];
+          while (i < lines.length && lines[i].trim() && lines[i].indexOf("|") >= 0) {
+            rows.push(splitRow(lines[i]));
+            i++;
+          }
+          out.push(tableHtml(head, align, rows, ctx));
+          continue;
+        }
+        const para = [];
+        while (i < lines.length && lines[i].trim()) {
+          if (para.length && startsBlock(lines[i])) break;
+          if (para.length === 1 && RE_SETEXT.test(lines[i])) {
+            const level = lines[i].trim()[0] === "=" ? 1 : 2;
+            out.push("<h" + level + ' data-md="heading-' + level + '">' + inline(para[0], ctx) + "</h" + level + ">");
+            para.length = 0;
+            i++;
+            break;
+          }
+          para.push(lines[i].trim());
+          i++;
+        }
+        if (para.length) out.push('<p data-md="paragraph">' + inline(para.join("\n"), ctx) + "</p>");
+      }
+      return out.join("");
+    }
+    function listAt(lines, start, ctx) {
+      const firstNum = RE_ORDERED.exec(lines[start]);
+      const ordered = !!firstNum;
+      const baseIndent = indentOf(lines[start]);
+      const startNo = ordered ? Number(firstNum[2]) : 1;
+      const items = [];
+      let i = start;
+      let cur = null;
+      let loose = false;
+      let blank = false;
+      while (i < lines.length) {
+        const line = lines[i];
+        if (!line.trim()) {
+          blank = true;
+          if (cur) cur.push("");
+          i++;
+          continue;
+        }
+        const ind = indentOf(line);
+        const bullet = RE_BULLET.exec(line);
+        const num = RE_ORDERED.exec(line);
+        const isItem = !!(bullet || num) && ind <= baseIndent + 1;
+        if (isItem) {
+          if (items.length && ordered !== !!num) break;
+          if (blank && cur) loose = true;
+          blank = false;
+          cur = [bullet ? bullet[3] : num[4]];
+          items.push(cur);
+          i++;
+          continue;
+        }
+        if (ind > baseIndent && cur) {
+          cur.push(line.slice(Math.min(ind, baseIndent + (ordered ? 3 : 2))));
+          blank = false;
+          i++;
+          continue;
+        }
+        if (blank || !cur || startsBlock(line)) break;
+        cur.push(line.trim());
+        i++;
+      }
+      const html = items.map((body) => {
+        let text = body.join("\n").replace(/\n+$/, "");
+        let task = "";
+        const check = /^\[([ xX])\][ \t]+/.exec(text);
+        if (check) {
+          text = text.slice(check[0].length);
+          task = '<input type="checkbox" disabled' + (check[1] === " " ? "" : " checked") + ">";
+        }
+        const rows = text.split("\n");
+        let inner;
+        if (loose) {
+          inner = blocks(rows, ctx);
+        } else {
+          let k = 0;
+          while (k < rows.length && rows[k].trim() && !startsBlock(rows[k])) k++;
+          const lead = rows.slice(0, k).map((r) => r.trim()).join("\n");
+          inner = (lead ? inline(lead, ctx) : "") + (k < rows.length ? blocks(rows.slice(k), ctx) : "");
+        }
+        return '<li data-md="list-item"' + (task ? ' class="sw-task"' : "") + ">" + task + inner + "</li>";
+      }).join("");
+      const tag = ordered ? "ol" : "ul";
+      return {
+        html: "<" + tag + ' data-md="' + (ordered ? "ordered-list" : "unordered-list") + '"' + (ordered && startNo !== 1 ? ' start="' + startNo + '"' : "") + ">" + html + "</" + tag + ">",
+        next: i
+      };
+    }
+    function render(src, opts2) {
+      const streaming = !!(opts2 && opts2.streaming);
+      const raw = String(src == null ? "" : src).split(MARK).join("");
+      const text = streaming ? healStream(raw) : raw;
+      if (!text.trim()) return "";
+      const ctx = { store: [], depth: 0 };
+      return blocks(text.replace(/\r\n?/g, "\n").split("\n"), ctx);
+    }
+    return { render, splitBlocks, healStream, esc: esc2, safeUrl, loadedImages };
   }
   return __toCommonJS(index_exports);
 })();

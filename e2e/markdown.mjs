@@ -38,6 +38,9 @@ function loadMd(root) {
   ctx.window = ctx
   ctx.globalThis = ctx
   createContext(ctx)
+  // 解析半边现在住在 core（经 core.js 的 SatuCore.createMarkdown 转接回来），先把 core.js 装进
+  // 同一个上下文——线上它也是 index.html 里第一个脚本。
+  runInContext(readFileSync(join(root, 'gateway/ui/core.js'), 'utf8'), ctx, { filename: 'core.js' })
   runInContext(readFileSync(join(root, 'gateway/ui/markdown.js'), 'utf8'), ctx, { filename: 'markdown.js' })
   return ctx.satuMd
 }
