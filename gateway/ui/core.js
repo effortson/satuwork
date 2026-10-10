@@ -22,12 +22,22 @@ var SatuCore = (() => {
   // core/src/index.ts
   var index_exports = {};
   __export(index_exports, {
+    CHAT_ALIVE_MS: () => CHAT_ALIVE_MS,
+    CHAT_IDLE_RETRY_MS: () => CHAT_IDLE_RETRY_MS,
+    CHAT_RETRY_MAX: () => CHAT_RETRY_MAX,
+    ROSTER_BACKOFF: () => ROSTER_BACKOFF,
     SATU_TZ: () => SATU_TZ,
+    UPLOAD_LEADS: () => UPLOAD_LEADS,
+    aliveLongEnough: () => aliveLongEnough,
+    applyRosterEvent: () => applyRosterEvent,
     auditItemIdOfPath: () => auditItemIdOfPath,
     botIdOfPath: () => botIdOfPath,
+    chatRetryDelay: () => chatRetryDelay,
+    classifyStreamStatus: () => classifyStreamStatus,
     companyIdOfPath: () => companyIdOfPath,
     connectorIdOfPath: () => connectorIdOfPath,
     createGatewayClient: () => createGatewayClient,
+    cursorOf: () => cursorOf,
     dayEnd: () => dayEnd,
     dayStart: () => dayStart,
     dict: () => dict,
@@ -35,9 +45,26 @@ var SatuCore = (() => {
     esc: () => esc,
     fmtTime: () => fmtTime,
     fmtTokens: () => fmtTokens,
+    fold: () => fold,
+    insertEvent: () => insertEvent,
+    isShot: () => isShot,
     machineIdOfPath: () => machineIdOfPath,
+    maxSeqOf: () => maxSeqOf,
+    mergeChatPage: () => mergeChatPage,
+    mergePending: () => mergePending,
+    messageImages: () => messageImages,
+    messageMentions: () => messageMentions,
+    messageRefs: () => messageRefs,
+    messageText: () => messageText,
     money: () => money,
+    newSum: () => newSum,
+    refreshSum: () => refreshSum,
+    rosterRetryDelay: () => rosterRetryDelay,
+    runEventStream: () => runEventStream,
     sessionIdOfPath: () => sessionIdOfPath,
+    settleDot: () => settleDot,
+    splitUploads: () => splitUploads,
+    sseEvents: () => sseEvents,
     t: () => t,
     tzDayKey: () => tzDayKey,
     tzDayStart: () => tzDayStart,
@@ -1639,6 +1666,589 @@ var SatuCore = (() => {
       return json;
     }
     return { gatewayBase, gatewayAbs, localBots, localSessions, registerLocalBot, localBotOf, localRoute, swFetch, renewLocalTicket, api };
+  }
+
+  // core/src/chat/events.ts
+  function messageImages(msg) {
+    const content = msg && msg.content;
+    if (!Array.isArray(content)) return [];
+    return content.filter((b) => b && b.type === "image" && b.path).map((b) => ({ path: b.path, mime: b.mime || "" }));
+  }
+  function messageText(msg) {
+    if (!msg) return "";
+    if (typeof msg === "string") return msg;
+    const content = msg.content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content.map((b) => b && (b.type === "text" || b.type === "reasoning") ? b.text || "" : "").join("");
+  }
+  function messageMentions(msg) {
+    const content = msg && msg.content;
+    if (!Array.isArray(content)) return [];
+    return content.filter((b) => b && b.type === "mention" && b.label).map((b) => ({ kind: b.kind || "connector", id: b.id || "", label: String(b.label) }));
+  }
+  function messageRefs(msg) {
+    const content = msg && msg.content;
+    if (!Array.isArray(content)) return [];
+    const out = [];
+    for (const b of content) {
+      if (!b || b.type !== "ref") continue;
+      if (b.kind === "file" && b.path) {
+        out.push({ kind: "file", path: String(b.path), name: String(b.name || b.path.split("/").pop() || b.path) });
+      } else if (b.kind === "message") {
+        out.push({
+          kind: "message",
+          seq: Number.isFinite(Number(b.seq)) ? Number(b.seq) : null,
+          role: b.role === "user" ? "user" : "assistant",
+          excerpt: String(b.excerpt || ""),
+          time: Number(b.time) || 0
+        });
+      }
+    }
+    return out;
+  }
+  var UPLOAD_LEADS = ["我上传了文件，在工作区里：", "I uploaded some files. They are in the workspace at:"];
+  function splitUploads(text) {
+    const src = String(text == null ? "" : text);
+    const lead = UPLOAD_LEADS.find((x) => src.startsWith(x + "\n"));
+    if (!lead) return { text: src, files: [] };
+    const lines = src.slice(lead.length + 1).split("\n");
+    const files = [];
+    let i = 0;
+    for (; i < lines.length; i++) {
+      const m = /^- `(uploads\/[^`]+)`$/.exec(lines[i]);
+      if (!m) break;
+      files.push({ path: m[1], name: m[1].split("/").pop() || m[1] });
+    }
+    if (!files.length) return { text: src, files: [] };
+    return { text: lines.slice(i).join("\n").trim(), files };
+  }
+  function isShot(x) {
+    return Boolean(x && typeof x.path === "string" && x.path);
+  }
+  function maxSeqOf(events) {
+    let max = 0;
+    for (const ev of events || []) {
+      const seq = Number(ev && ev.seq);
+      if (Number.isFinite(seq) && seq > max) max = seq;
+    }
+    return max;
+  }
+  function insertEvent(list, ev) {
+    const seq = Number(ev && ev.seq);
+    if (Number.isFinite(seq)) {
+      let at = list.length;
+      for (let i = list.length - 1; i >= 0; i--) {
+        const seen = Number(list[i] && list[i].seq);
+        if (!Number.isFinite(seen)) continue;
+        if (seq === seen) return false;
+        if (seq > seen) {
+          at = i + 1;
+          break;
+        }
+        at = i;
+      }
+      list.splice(at, 0, ev);
+      return true;
+    }
+    list.push(ev);
+    return true;
+  }
+  function cursorOf(list) {
+    if (!list) return null;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const n = Number(list[i] && list[i].seq);
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  }
+
+  // core/src/chat/fold.ts
+  function fold(events, live, channelBot = false) {
+    const blocks = [];
+    const showChannelVia = channelBot || (events || []).some((ev) => {
+      const source = ev?.type === "user/message" ? ev?.data?.source : null;
+      return source?.kind === "plugin" && source.plugin === "channel" && source.channel === "telegram";
+    });
+    let assistant = null;
+    let tools = [];
+    let turnVia = "";
+    let status = "";
+    let modelSeq = 0;
+    let statusAt = 0;
+    const phantoms = /* @__PURE__ */ new Set();
+    const toolByCall = /* @__PURE__ */ new Map();
+    let todos = null;
+    const handoffSeen = /* @__PURE__ */ new Map();
+    const handoffOf = (id) => id ? handoffSeen.get(id) : void 0;
+    for (const ev of events || []) {
+      const type = ev.type;
+      const data = ev.data || {};
+      const at = Number(ev.time) || 0;
+      if (type === "user/message") {
+        const src = data.source || {};
+        const via = src.kind === "plugin" && src.plugin === "channel" ? src.channel === "telegram" ? "telegram" : String(src.channel || "channel") : src.kind === "plugin" && (src.plugin === "kanban" || src.plugin === "routine" || src.plugin === "handoff") ? src.plugin : !src.kind || src.kind === "user" ? showChannelVia ? "web" : "" : "";
+        if (src.kind && src.kind !== "user" && !via) continue;
+        turnVia = via;
+        assistant = null;
+        tools = [];
+        const raw = messageText(data.message) || data.text || "";
+        const up = splitUploads(raw);
+        blocks.push({
+          kind: "user",
+          text: up.text,
+          // 附件列表拆出来单独画成药丸；正文只留人真正打的那句话。
+          files: up.files,
+          // **点名要跟着消息留下来。** 它是这条消息的一部分（决定了这一轮的工具表），
+          // 不是输入框上一个发完就没的装饰。丢掉的话翻上去看昨天那条，「@ 了谁」就消失了，
+          // 而那正是「它为什么去读了我的邮箱」的唯一答案。
+          mentions: messageMentions(data.message),
+          // 引用同理：它是这条消息的一部分，翻上去要看得出「当时指的是哪条、哪个文件」。
+          refs: messageRefs(data.message),
+          // **这行话从哪来。** Web / Telegram / 代理任务都画在气泡上的角标。
+          via,
+          // **raw 不能省。** mergePending 靠「文字一模一样」认回执，而它手上那份是
+          // 拼好的完整正文。只留拆过的 text，带附件的消息就永远认不回来——那条 pending
+          // 销不掉，界面会一直挂着「正在思考」。
+          raw,
+          images: messageImages(data.message),
+          time: at,
+          seq: ev.seq
+        });
+      } else if (type === "assistant/message") {
+        const text = messageText(data.message);
+        if (!assistant) {
+          assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
+          blocks.push(assistant);
+        }
+        if (text) assistant.text = text;
+        assistant.msgSeq = ev.seq;
+        assistant.endTime = at;
+      } else if (type === "assistant/chunk") {
+        const chunk = data.chunk || {};
+        if (chunk.type === "text-delta" && chunk.text) {
+          if (!assistant) {
+            assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
+            blocks.push(assistant);
+          }
+          assistant.text += chunk.text;
+          assistant.endTime = at;
+        }
+      } else if (type === "tool/call") {
+        if (!assistant) {
+          assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
+          blocks.push(assistant);
+        }
+        if (!String(data.name || "").trim()) {
+          phantoms.add(data.callId);
+          continue;
+        }
+        const call = {
+          callId: data.callId,
+          name: data.name,
+          args: typeof data.arguments === "string" ? data.arguments : "",
+          result: null,
+          failed: false
+        };
+        tools.push(call);
+        if (data.callId) toolByCall.set(data.callId, call);
+        assistant.tools = tools;
+        assistant.endTime = at;
+      } else if (type === "tool/result") {
+        if (phantoms.has(data.callId)) continue;
+        const hit = tools.find((x) => x.callId && x.callId === data.callId && x.result == null) || tools.find((x) => x.result == null) || tools[tools.length - 1];
+        if (hit) {
+          hit.result = data.text || "";
+          hit.failed = Boolean(data.failed);
+          hit.files = Array.isArray(data.files) ? data.files : null;
+          hit.refs = Array.isArray(data.refs) ? data.refs : null;
+          hit.shot = isShot(data.shot) ? data.shot : hit.shot || null;
+        }
+        if (assistant) assistant.endTime = at;
+      } else if (type === "tool/shot") {
+        const hit = toolByCall.get(data.callId);
+        if (hit && isShot(data.shot)) hit.shot = data.shot;
+      } else if (type === "agent/task") {
+        if (!assistant) {
+          assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
+          blocks.push(assistant);
+        }
+        const list = assistant.tasks || (assistant.tasks = []);
+        const prev = list.find((x) => x.id === data.id);
+        if (prev) Object.assign(prev, data);
+        else list.push({ ...data });
+        assistant.endTime = at;
+      } else if (type === "skill/saved") {
+        if (!assistant) {
+          assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
+          blocks.push(assistant);
+        }
+        const notes = assistant.skillNotes || (assistant.skillNotes = []);
+        const seen = notes.find((x) => x.callId === data.callId);
+        if (seen) Object.assign(seen, data);
+        else notes.push({ ...data });
+        assistant.endTime = at;
+      } else if (type === "memory/saved") {
+        if (!assistant) {
+          assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
+          blocks.push(assistant);
+        }
+        const mem = assistant.memNotes || (assistant.memNotes = []);
+        const had = mem.find((x) => x.callId === data.callId);
+        if (had) Object.assign(had, data);
+        else mem.push({ ...data });
+        assistant.endTime = at;
+      } else if (type === "tool/approval") {
+        if (!assistant) {
+          assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
+          blocks.push(assistant);
+        }
+        const list = assistant.approvals || (assistant.approvals = []);
+        const cur = list.find((a) => a.callId === data.callId);
+        if (cur) {
+          cur.state = data.state || cur.state;
+          if (data.scope) cur.scope = data.scope;
+          if (typeof data.arguments === "string") cur.args = data.arguments;
+          if (data.form && Array.isArray(data.form.fields)) cur.form = data.form;
+          if (Array.isArray(data.edited)) cur.edited = data.edited;
+        } else {
+          list.push({
+            callId: data.callId,
+            name: data.name || "",
+            args: typeof data.arguments === "string" ? data.arguments : "",
+            reason: data.reason || "",
+            // 这次用哪张卡、卡上哪几格。**席位算好的**，界面照着画（见 policy/forms.ts）。
+            form: data.form && Array.isArray(data.form.fields) ? data.form : null,
+            edited: Array.isArray(data.edited) ? data.edited : null,
+            state: data.state || "pending",
+            expiresAt: Number(data.expiresAt) || 0,
+            // 这条 pending 落在日志的第几行。核对现况时拿它跟快照的水位比——
+            // **不拿时间比**，那是两台机器各自的钟（见 approvalDead）。
+            seq: ev.seq
+          });
+        }
+        assistant.endTime = at;
+      } else if (type === "human/handoff") {
+        const seen = handoffOf(data.id);
+        if (seen) {
+          seen.state = data.state || seen.state;
+          if (data.claimedBy) seen.claimedBy = data.claimedBy;
+          if (data.result) seen.result = data.result;
+          if (data.repeats) seen.repeats = data.repeats;
+          continue;
+        }
+        if (!assistant) {
+          assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
+          blocks.push(assistant);
+        }
+        const hs = assistant.handoffs || (assistant.handoffs = []);
+        const fresh = {
+          id: data.id,
+          callId: data.callId || "",
+          state: data.state || "open",
+          reason: data.reason || "",
+          ask: data.ask || "",
+          summary: data.summary || "",
+          blocking: data.blocking !== false,
+          claimedBy: data.claimedBy || null,
+          result: data.result || null,
+          repeats: Number(data.repeats) || 0,
+          seq: ev.seq
+        };
+        hs.push(fresh);
+        handoffSeen.set(data.id, fresh);
+        assistant.endTime = at;
+      } else if (type === "session/compact" || type === "session/reset") {
+        if (type === "session/reset" && data.clear) {
+          blocks.length = 0;
+          assistant = null;
+          tools = [];
+          todos = null;
+          toolByCall.clear();
+          handoffSeen.clear();
+        }
+        blocks.push({
+          kind: "mark",
+          mark: type === "session/reset" ? data.clear ? "clear" : "reset" : "compact",
+          // 老日志没有 by（那时只有自动压缩），按 auto 读。
+          by: data.by || (type === "session/reset" ? "user" : "auto"),
+          from: Number(data.from) || 0,
+          to: Number(data.to) || 0,
+          tokensBefore: Number(data.tokensBefore) || 0,
+          tokensAfter: Number(data.tokensAfter) || 0,
+          dropped: Number(data.droppedMessages) || 0,
+          time: at,
+          seq: ev.seq
+        });
+      } else if (type === "session/model") {
+        modelSeq = Number(ev.seq) || modelSeq;
+        blocks.push({
+          kind: "mark",
+          mark: "model",
+          key: data.key || null,
+          label: String(data.label || data.key || ""),
+          reason: data.reason || "",
+          from: String(data.from || ""),
+          time: at,
+          seq: ev.seq
+        });
+      } else if (type === "todo/list") {
+        todos = { items: Array.isArray(data.items) ? data.items : [], seq: ev.seq };
+      } else if (type === "turn/start") {
+        status = "running";
+        statusAt = at;
+      } else if (type === "turn/end") {
+        status = "";
+        statusAt = 0;
+        if (assistant) assistant.endTime = at;
+      }
+    }
+    if (typeof live === "boolean") status = live ? "running" : "";
+    if (status && !statusAt) {
+      const tail = blocks[blocks.length - 1];
+      statusAt = tail && (tail.endTime || tail.time) || 0;
+    }
+    return { blocks, status, statusAt, todos, channelVia: showChannelVia, modelSeq };
+  }
+
+  // core/src/chat/roster.ts
+  function newSum() {
+    return { state: "idle", lastAt: 0, lastText: "" };
+  }
+  function settleDot(sum) {
+    const waiting = (sum.openIds ? sum.openIds.size : 0) + (sum.snapIds ? sum.snapIds.size : 0);
+    const asking = sum.asks ? sum.asks.size : 0;
+    sum.state = asking || waiting ? "review" : sum.busy ? "busy" : "idle";
+    sum.need = asking ? "approval" : waiting ? "handoff" : "";
+  }
+  function applyRosterEvent(sum, ev) {
+    const before = sum.state + "|" + sum.lastAt + "|" + sum.lastText;
+    if (ev.type === "turn/start") {
+      sum.busy = true;
+      settleDot(sum);
+    } else if (ev.type === "turn/end") {
+      sum.busy = false;
+      settleDot(sum);
+    } else if (ev.type === "human/handoff") {
+      const d = ev.data || {};
+      const set = sum.openIds || (sum.openIds = /* @__PURE__ */ new Set());
+      if (d.state === "open" || d.state === "claimed") set.add(d.id);
+      else {
+        set.delete(d.id);
+        if (sum.snapIds) sum.snapIds.delete(d.id);
+      }
+      settleDot(sum);
+    } else if (ev.type === "tool/approval") {
+      const d = ev.data || {};
+      const asks = sum.asks || (sum.asks = /* @__PURE__ */ new Map());
+      if (!d.callId) {
+      } else if (d.state === "pending") {
+        asks.set(d.callId, {
+          callId: d.callId,
+          name: d.name || "",
+          reason: d.reason || "",
+          at: Number(ev.time) || 0,
+          seq: Number(ev.seq) || 0
+        });
+      } else asks.delete(d.callId);
+      settleDot(sum);
+    } else if (ev.type === "user/message" || ev.type === "assistant/message") {
+      const text = messageText((ev.data || {}).message) || (ev.data || {}).text || "";
+      if (text) {
+        sum.lastText = text.replace(/\s+/g, " ").trim().slice(0, 120);
+        sum.lastAt = Number(ev.time) || sum.lastAt;
+      }
+    } else if (ev.type === "assistant/chunk") {
+      sum.lastAt = Number(ev.time) || sum.lastAt;
+    }
+    return before !== sum.state + "|" + sum.lastAt + "|" + sum.lastText;
+  }
+  function refreshSum(sum, events) {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i] || {};
+      if (ev.type !== "user/message" && ev.type !== "assistant/message") continue;
+      const text = messageText((ev.data || {}).message) || (ev.data || {}).text || "";
+      if (!text) continue;
+      const at = Number(ev.time) || 0;
+      if (at < sum.lastAt) return false;
+      sum.lastText = text.replace(/\s+/g, " ").trim().slice(0, 120);
+      sum.lastAt = at || sum.lastAt;
+      return true;
+    }
+    return false;
+  }
+
+  // core/src/chat/pending.ts
+  function mergePending(folded, mine) {
+    if (!mine.length) return [];
+    const fresh = folded.blocks.filter((b) => b.kind === "user" && b.seq != null);
+    const left = [];
+    for (const p of mine) {
+      const hit = fresh.findIndex((b) => b.seq > p.afterSeq && (b.raw != null ? b.raw : b.text) === p.text);
+      if (hit >= 0) fresh.splice(hit, 1);
+      else left.push(p);
+    }
+    if (!left.length) return left;
+    for (const p of left) {
+      const up = splitUploads(p.text);
+      folded.blocks.push({
+        kind: "user",
+        text: up.text,
+        files: up.files,
+        raw: p.text,
+        images: p.images || [],
+        mentions: p.mentions || [],
+        refs: p.refs || [],
+        via: folded.channelVia ? "web" : "",
+        time: p.at,
+        pending: true
+      });
+    }
+    if (!folded.status) {
+      folded.status = "sending";
+      folded.statusAt = left.reduce((min, p) => p.at && (!min || p.at < min) ? p.at : min, 0);
+    }
+    return left;
+  }
+
+  // core/src/chat/pages.ts
+  function mergeChatPage(cur, next) {
+    const c = cur || {};
+    const known = typeof c.firstSeq === "number" ? c.firstSeq : null;
+    const first = typeof next.firstSeq === "number" ? next.firstSeq : null;
+    const wins = first != null ? known == null || first < known : known == null;
+    return {
+      ...c,
+      firstSeq: wins && first != null ? first : c.firstSeq,
+      hasMore: wins && typeof next.hasMore === "boolean" ? next.hasMore : c.hasMore,
+      loading: next.loading !== void 0 ? next.loading : Boolean(c.loading)
+    };
+  }
+
+  // core/src/chat/sse.ts
+  async function* sseEvents(reader, stop = () => false) {
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (!stop()) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of frame.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          let ev;
+          try {
+            ev = JSON.parse(line.slice(6));
+          } catch {
+            continue;
+          }
+          yield ev;
+        }
+      }
+    }
+  }
+
+  // core/src/chat/backoff.ts
+  var CHAT_RETRY_MAX = 40;
+  var CHAT_ALIVE_MS = 1e4;
+  var CHAT_IDLE_RETRY_MS = 3e4;
+  function chatRetryDelay(attempt) {
+    return Math.min(500 * 2 ** attempt, 8e3);
+  }
+  var ROSTER_BACKOFF = [500, 1e3, 2e3, 4e3, 8e3, 15e3, 3e4];
+  function rosterRetryDelay(attempt) {
+    return ROSTER_BACKOFF[Math.min(attempt, ROSTER_BACKOFF.length - 1)];
+  }
+  function aliveLongEnough(openedAt, now = Date.now()) {
+    return now - openedAt >= CHAT_ALIVE_MS;
+  }
+  function classifyStreamStatus(status, hasBody) {
+    if (status === 401 || status === 403 || status === 404) return "dead";
+    if (status >= 200 && status < 300 && hasBody) return "open";
+    return "warming";
+  }
+
+  // core/src/chat/stream.ts
+  function defaultSleep(ms, signal) {
+    return new Promise((resolve) => {
+      if (signal.aborted) return resolve();
+      const t2 = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(t2);
+        resolve();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+  function runEventStream(opts) {
+    const ac = new AbortController();
+    const now = opts.now || (() => Date.now());
+    const sleep = opts.sleep || defaultSleep;
+    const status = (s) => {
+      if (!ac.signal.aborted || s.kind === "closed") opts.onStatus?.(s);
+    };
+    async function loop() {
+      let attempt = 0;
+      while (!ac.signal.aborted) {
+        const tok = opts.token();
+        let res;
+        try {
+          res = await opts.fetch(opts.url(opts.cursor()), {
+            headers: { accept: "text/event-stream", ...tok ? { authorization: "Bearer " + tok } : {} },
+            signal: ac.signal
+          });
+        } catch {
+          if (ac.signal.aborted) break;
+          attempt = await backoff(attempt);
+          continue;
+        }
+        const verdict = classifyStreamStatus(res.status, Boolean(res.body));
+        if (verdict === "dead") {
+          const message = await res.text().catch(() => "") || "实例还没上线";
+          status({ kind: "dead", status: res.status, message });
+          return;
+        }
+        if (verdict === "warming") {
+          attempt = await backoff(attempt);
+          continue;
+        }
+        status({ kind: "open" });
+        const openedAt = now();
+        try {
+          for await (const ev of sseEvents(res.body.getReader(), () => ac.signal.aborted)) {
+            if (ac.signal.aborted) break;
+            opts.onEvent(ev);
+          }
+        } catch {
+        }
+        if (ac.signal.aborted) break;
+        attempt = await backoff(aliveLongEnough(openedAt, now()) ? 0 : attempt);
+      }
+      status({ kind: "closed" });
+    }
+    async function backoff(attempt) {
+      if (attempt >= CHAT_RETRY_MAX) {
+        status({ kind: "idle", attempt });
+        await sleep(CHAT_IDLE_RETRY_MS, ac.signal);
+        return attempt;
+      }
+      status({ kind: "warming", attempt });
+      await sleep(chatRetryDelay(attempt), ac.signal);
+      return attempt + 1;
+    }
+    const done = loop().catch(() => void 0);
+    return {
+      close() {
+        if (!ac.signal.aborted) ac.abort();
+      },
+      done
+    };
   }
   return __toCommonJS(index_exports);
 })();

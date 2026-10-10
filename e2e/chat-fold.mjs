@@ -78,6 +78,9 @@ function loadChat(root) {
   ctx.window = ctx
   ctx.globalThis = ctx
   createContext(ctx)
+  // fold 那一组现在住在 core（经 core.js 的 SatuCore 转接回来），所以先把 core.js 装进同一个
+  // 上下文——线上它也是 index.html 里第一个脚本。
+  runInContext(readFileSync(join(root, 'gateway/ui/core.js'), 'utf8'), ctx, { filename: 'core.js' })
   runInContext(readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8'), ctx, { filename: 'chat.js' })
   return ctx
 }

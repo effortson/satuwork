@@ -1,6 +1,6 @@
 # ADR：逻辑层抽成 `core` 包，移动端用 Expo 只做对话
 
-- 状态：**已接受**（2026-10-10），**实施中**：第 1、2 步已落地（见 §5）
+- 状态：**已接受**（2026-10-10），**实施中**：第 1–3 步已落地（见 §5）
 - 影响范围：gateway/ui、gateway/src/http.ts、gateway/scripts、e2e/ui-dom.mjs、desktop/（间接）、新增 core/ 与 mobile/
 - 前置阅读：[gateway-runtime.md](gateway-runtime.md)；[adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) §4、§7；[session-event-field-map.md](session-event-field-map.md)；[chat-references.md](chat-references.md)
 
@@ -165,7 +165,7 @@ core/
   tsconfig.json         erasableSyntaxOnly：Node 24 直接跑 .ts 做单测，不能用 enum / 参数属性
   src/
     protocol/
-      events.ts         session / user/message / assistant/* / tool/* 等的 TS 类型（照 session-event-field-map.md）
+      events.ts         SessionEvent 信封、折出来的块（UserBlock / AssistantBlock / MarkBlock / Folded）、RosterSum、PendingMessage、ChatPage
       runtime.ts        /runtime/bots 的 bot 行、runtime、session、history 响应
     api.ts              createApi()：gatewayAbs、swFetch、api()、401 分治
     local-route.ts      localBots / localSessions / localRoute
@@ -178,13 +178,14 @@ core/
     paths.ts            原 state.js 里从地址取 id 的那几个
     markdown/parse.ts   （待验证）
     chat/
-      sse.ts            sseEvents
-      fold.ts           fold、refreshSum、maxSeqOf
+      events.ts         messageText 等读法、splitUploads、isShot、maxSeqOf、insertEvent、cursorOf
+      fold.ts           fold（原样）
+      roster.ts         newSum、settleDot、applyRosterEvent、refreshSum
       pending.ts        mergePending
-      cursor.ts         chatCursor
-      backoff.ts        CHAT_BACKOFF / ROSTER_BACKOFF / CHAT_ALIVE_MS
-      stream.ts         openEventStream
-      roster.ts         openRosterStream、noteRosterFrame
+      pages.ts          mergeChatPage
+      sse.ts            sseEvents
+      backoff.ts        CHAT_RETRY_MAX / CHAT_ALIVE_MS / CHAT_IDLE_RETRY_MS / ROSTER_BACKOFF、chatRetryDelay、rosterRetryDelay、aliveLongEnough、classifyStreamStatus
+      stream.ts         runEventStream（移动端的对话流循环；Web 的循环留在 chat.js，见 §5 第 3 步）
     index.ts
   test/                 node:test：fold、sseEvents、localRoute、api 的 401 两支、mergePending
 
@@ -217,7 +218,18 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
    落地形态：`createGatewayClient({ fetch, baseUrl, tokens, locale, onUnauthorized, renewLocalBot })`，
    data.js 开头一次装配、解构回原来的名字。`TokenStore` 只是接口，Web 的存取代码本来就是
    浏览器存储，留在 state.js。`t` / `errText` 的语言成了第一个入参，prefs.js 包一层传 `localeMode`。
-3. **事件层**：搬 `sseEvents` / `fold` / `mergePending` / `chatCursor` / 退避表，补单测；`openEventStream` / `openRosterStream` 成形，chat.js 的开流函数改成薄壳。风险最高的一步。
+3. **事件层**（已落地，有一处偏离）：搬 `sseEvents` / `fold` / `mergePending` / `chatCursor` / 退避表，补单测。
+   `fold` 一字不改地搬（只加类型），e2e 的 chat-fold 与 ui-smoke 继续经 Web 那层喂它。名单摘要
+   （`settleDot` / `applyRosterEvent` / `refreshSum`）、桶的插入去重（`insertEvent`）、翻页合并
+   （`mergeChatPage`）、本地回显（`mergePending`）都改成「返回 changed / left，由宿主决定画不画、
+   写不写 state」的形态。
+   **偏离**：chat.js 的 `startChatStream` **没有**改成薄壳。它那 340 行和重放闸、脉搏看门狗、
+   `runtime/hello` 换进程、整页重绘缠在一起，改写的收益只有「移动端能复用」，而风险是整条对话流。
+   所以 core 另给了一条给移动端的 `runEventStream`，和 Web 共用的是分帧（`sseEvents`）、状态码
+   分治（`classifyStreamStatus`）、退避（`chatRetryDelay` / `aliveLongEnough` / `CHAT_RETRY_MAX`）
+   ——规则改一处两边一起变，循环本身各走各的。名单流同理，`rosterRetryDelay` 共用，循环不动。
+   另一个教训：chat.js 里的转接要写成**函数声明**而不是 `const x = SatuCore.x`——chat-fold.mjs
+   把文件装进 vm 上下文按属性读名字，顶层 const 不挂到全局对象上。
 4. **Markdown**：先验证 parse 能不能拆；能拆就搬，不能就记到 §7 并关掉这一步。
 5. **mobile 脚手架**：登录、Bot 名单、对话的只读部分（历史 + SSE 渲染）。
 6. **mobile 可写**：发消息、中止、审批、名单流、图片附件。
