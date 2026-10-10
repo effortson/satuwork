@@ -27,15 +27,18 @@ var SatuCore = (() => {
     botIdOfPath: () => botIdOfPath,
     companyIdOfPath: () => companyIdOfPath,
     connectorIdOfPath: () => connectorIdOfPath,
+    createGatewayClient: () => createGatewayClient,
     dayEnd: () => dayEnd,
     dayStart: () => dayStart,
     dict: () => dict,
+    errText: () => errText,
     esc: () => esc,
     fmtTime: () => fmtTime,
     fmtTokens: () => fmtTokens,
     machineIdOfPath: () => machineIdOfPath,
     money: () => money,
     sessionIdOfPath: () => sessionIdOfPath,
+    t: () => t,
     tzDayKey: () => tzDayKey,
     tzDayStart: () => tzDayStart,
     tzOffsetMs: () => tzOffsetMs,
@@ -1399,6 +1402,37 @@ var SatuCore = (() => {
     供应商密钥由系统管理员配置: "Provider keys are configured by the system owner"
   };
 
+  // core/src/i18n/t.ts
+  function t(locale, zh, en) {
+    if (locale !== "en") return zh;
+    if (en != null) return en;
+    if (dict[zh] != null) return dict[zh];
+    const trimmed = String(zh).trim();
+    const hit = dict[trimmed];
+    if (hit == null) return zh;
+    const lead = zh.slice(0, zh.indexOf(trimmed[0]));
+    const tail = zh.slice(zh.indexOf(trimmed[0]) + trimmed.length);
+    return `${lead}${hit}${tail}`;
+  }
+  function errText(locale, msg) {
+    if (locale !== "en" || !msg || typeof msg !== "string") return msg;
+    if (dict[msg]) return dict[msg];
+    const pw = msg.match(/^口令至少 (\d+) 位$/);
+    if (pw) return `Password must be at least ${pw[1]} characters`;
+    const queued = msg.match(/^还有 (\d+) 条消息排着队，先取消它们再开新对话$/);
+    if (queued) return `${queued[1]} message(s) are still queued — cancel them before starting a new conversation.`;
+    const queuedClear = msg.match(/^还有 (\d+) 条消息排着队，先取消它们再清空$/);
+    if (queuedClear) return `${queuedClear[1]} message(s) are still queued — cancel them before clearing.`;
+    const handoffs = msg.match(/^还有 (\d+) 张转人工的单子没结，先处理掉、或等它交回来再(开新对话|清空)$/);
+    if (handoffs) {
+      const what = handoffs[2] === "清空" ? "clearing" : "starting a new conversation";
+      return `${handoffs[1]} human handoff(s) are still open — resolve them or wait for them to come back before ${what}.`;
+    }
+    const throttled = msg.match(/^尝试次数太多，请 (\d+) (秒|分钟)后再试$/);
+    if (throttled) return `Too many attempts — try again in ${throttled[1]} ${throttled[2] === "秒" ? "seconds" : "minutes"}.`;
+    return msg;
+  }
+
   // core/src/format.ts
   function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -1443,13 +1477,13 @@ var SatuCore = (() => {
   }
   function dayStart(dateStr) {
     if (!dateStr) return "";
-    const t = tzDayStart(dateStr);
-    return Number.isFinite(t) ? t : "";
+    const t2 = tzDayStart(dateStr);
+    return Number.isFinite(t2) ? t2 : "";
   }
   function dayEnd(dateStr) {
     if (!dateStr) return "";
-    const t = tzDayStart(dateStr, 1) - 1;
-    return Number.isFinite(t) ? t : "";
+    const t2 = tzDayStart(dateStr, 1) - 1;
+    return Number.isFinite(t2) ? t2 : "";
   }
   function money(n) {
     if (n === void 0 || n === null || n === "") return "—";
@@ -1500,6 +1534,111 @@ var SatuCore = (() => {
   }
   function auditItemIdOfPath(p) {
     return segAfter(p, "/audit/summary/");
+  }
+
+  // core/src/api.ts
+  function createGatewayClient(opts) {
+    const { fetch, tokens, locale, onUnauthorized, renewLocalBot } = opts;
+    function gatewayBase() {
+      const raw = typeof opts.baseUrl === "function" ? opts.baseUrl() : opts.baseUrl;
+      return String(raw || "").replace(/\/$/, "");
+    }
+    function gatewayAbs(url) {
+      return typeof url === "string" && url.startsWith("/") ? gatewayBase() + url : url;
+    }
+    const localBots = /* @__PURE__ */ new Map();
+    const localSessions = /* @__PURE__ */ new Map();
+    function registerLocalBot(botId, port, tok) {
+      if (!botId || !port) return;
+      const prev = localBots.get(botId);
+      localBots.set(botId, {
+        base: "http://127.0.0.1:" + port,
+        token: tok || prev?.token || "",
+        login: tok ? tokens.get() : prev?.login
+      });
+    }
+    function localBotOf(botId) {
+      const lb = botId ? localBots.get(botId) : null;
+      return lb && lb.token ? lb : null;
+    }
+    function localRoute(path, method) {
+      if (typeof path !== "string" || !path.startsWith("/runtime/")) return null;
+      let m = /^\/runtime\/bots\/([^/?]+)\/session(\?.*)?$/.exec(path);
+      if (m) {
+        const botId2 = decodeURIComponent(m[1]);
+        const lb2 = localBotOf(botId2);
+        return lb2 ? { url: lb2.base + "/api/bots/" + m[1] + "/session" + (m[2] || ""), token: lb2.token, botId: botId2 } : null;
+      }
+      m = /^\/runtime\/sessions\/([^/?]+)(\/[^?]*)?(\?.*)?$/.exec(path);
+      if (!m) return null;
+      const botId = localSessions.get(decodeURIComponent(m[1]));
+      const lb = localBotOf(botId);
+      if (!lb || !botId) return null;
+      const rest = m[2] || "";
+      const q = m[3] || "";
+      const verb = String(method || "GET").toUpperCase();
+      let target;
+      if (rest === "/files" && q && verb === "GET") target = "/api/workspace/file" + q;
+      else if (rest === "/workspace") target = (verb === "DELETE" ? "/api/workspace/file" : "/api/workspace/list") + q;
+      else target = "/api/sessions/" + m[1] + rest + q;
+      return { url: lb.base + target, token: lb.token, botId };
+    }
+    function swFetch(path, init) {
+      const route = localRoute(path, init && init.method);
+      if (!route) return fetch(gatewayAbs(path), init);
+      const headers = { ...init && init.headers || {} };
+      for (const k of Object.keys(headers)) if (k.toLowerCase() === "authorization") delete headers[k];
+      headers.authorization = "Bearer " + route.token;
+      return fetch(route.url, { ...init || {}, headers });
+    }
+    const localTicketRenewals = /* @__PURE__ */ new Map();
+    function renewLocalTicket(botId) {
+      let p = localTicketRenewals.get(botId);
+      if (!p) {
+        p = Promise.resolve().then(() => renewLocalBot ? renewLocalBot(botId) : Promise.reject(new Error("no renewLocalBot"))).finally(() => localTicketRenewals.delete(botId));
+        localTicketRenewals.set(botId, p);
+      }
+      return p;
+    }
+    async function api(method, path, body, localRetried = false) {
+      const headers = { accept: "application/json" };
+      const tok = tokens.get();
+      if (tok) headers.authorization = "Bearer " + tok;
+      if (body !== void 0) headers["content-type"] = "application/json";
+      const local = localRoute(path, method);
+      const res = await swFetch(path, {
+        method,
+        headers,
+        body: body !== void 0 ? JSON.stringify(body) : void 0
+      });
+      const text = await res.text();
+      let json = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+      }
+      if (res.status === 401 && local) {
+        if (!localRetried) {
+          const cur = localBotOf(local.botId);
+          const renewed = cur && cur.token !== local.token ? true : await renewLocalTicket(local.botId).then(() => true, () => false);
+          if (renewed) return api(method, path, body, true);
+        }
+        const err = new Error(errText(locale(), json && json.error || t(locale(), "本地 Bot 拒绝了这次请求", "The local bot rejected this request")));
+        err.status = res.status;
+        throw err;
+      }
+      if (res.status === 401 && tok && tok === tokens.get() && path !== "/auth/login" && !path.startsWith("/invites/")) {
+        onUnauthorized();
+        throw new Error(json && json.error || t(locale(), "需要登录"));
+      }
+      if (!res.ok) {
+        const err = new Error(errText(locale(), json && json.error || text || "HTTP " + res.status));
+        err.status = res.status;
+        throw err;
+      }
+      return json;
+    }
+    return { gatewayBase, gatewayAbs, localBots, localSessions, registerLocalBot, localBotOf, localRoute, swFetch, renewLocalTicket, api };
   }
   return __toCommonJS(index_exports);
 })();
