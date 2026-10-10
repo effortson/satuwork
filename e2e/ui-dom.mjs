@@ -180,7 +180,13 @@ export function uiSource(uiDir) {
   const html = readFileSync(join(uiDir, 'index.html'), 'utf8')
   const parts = [...html.matchAll(/<script src="\/([^"]+)"[^>]*\bdata-app-part\b/g)].map((m) => m[1])
   if (!parts.length) throw new Error(`在 ${uiDir}/index.html 里找不到 data-app-part 脚本`)
-  return parts.map((f) => readFileSync(join(uiDir, f), 'utf8')).join('\n')
+  /**
+   * core.js 排在最前面：它不是分片（不带 data-app-part，是 core/src 打出来的产物），但
+   * state.js / i18n.js 里的转接（`const esc = SatuCore.esc` 这类）一跑就要它在。线上它也是
+   * index.html 里第一个普通脚本。它是 `var SatuCore = (() => …)()`，塞进同一个函数体里照样
+   * 是个局部变量，后面的分片都看得见。
+   */
+  return ['core.js', ...parts].map((f) => readFileSync(join(uiDir, f), 'utf8')).join('\n')
 }
 
 /**

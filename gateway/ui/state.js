@@ -378,7 +378,6 @@ const state = {
   chatCtxOpen: false,
 }
 
-
 /**
  * 浏览器里的票只活在当前标签页；桌面壳没有「标签页」这个边界，关窗口再打开仍是同一
  * 个应用，所以由壳注入标记后改存 localStorage。这样不会顺手把网页版也变成长期登录。
@@ -431,90 +430,35 @@ function emptyBox(msg) {
   return `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${esc(msg)}</div>`
 }
 
-function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
-}
+/* ══ 转接到 core.js ═══════════════════════════════════════════════════
+   下面这些以前就写在这个文件里，都是纯函数（转义、时区、金额、从地址里取 id）。现在住在
+   core/src/format.ts 与 core/src/paths.ts，经 gateway/scripts/build-core.mjs 打进 core.js，
+   这里一行一个接回原来的名字——调用点一个没改。要改实现去 core/src，改完重打 core.js。
 
-/**
- * 全站时间戳按这个时区读：fmtTime、对话页的时钟和「今天/昨天」（chat.js）、日期筛选
- * 的零点（dayStart/dayEnd、pages-machines.js 的 loadRangeOf）都用它。**只在这里定义**，
- * 以前 chat.js 另有一份 CHAT_TZ、筛选按浏览器本地零点算——同一屏上列表按此时区显示
- * 日期、筛选却按本地日历圈，差八小时的人会看到「筛了今天却有昨天的」。
- */
-const SATU_TZ = 'Asia/Kuching'
-
-/** 某一刻在 SATU_TZ 下的墙钟偏移（毫秒）：墙钟当作 UTC 读出来的值减去真实 epoch。 */
-function tzOffsetMs(ms) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: SATU_TZ,
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(new Date(ms))
-  const n = (type) => Number(parts.find((x) => x.type === type)?.value)
-  const wall = Date.UTC(n('year'), n('month') - 1, n('day'), n('hour') % 24, n('minute'), n('second'))
-  return wall - Math.floor(ms / 1000) * 1000
-}
-
-/**
- * SATU_TZ 下某一天（YYYY-MM-DD）的零点 epoch 毫秒。`dayOffset` 为 1 是「下一天零点」。
- * 先当 UTC 算，再按该时区当时的偏移修正；修两轮是为了跨夏令时切换那两天也稳。
- */
-function tzDayStart(dateStr, dayOffset = 0) {
-  const [y, m, d] = String(dateStr || '').split('-').map(Number)
-  if (!y || !m || !d) return NaN
-  const wall = Date.UTC(y, m - 1, d + dayOffset)
-  let guess = wall - tzOffsetMs(wall)
-  guess = wall - tzOffsetMs(guess)
-  return guess
-}
-
-/** SATU_TZ 下的 YYYY-MM-DD。 */
-function tzDayKey(ms) {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: SATU_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms))
-}
-
-function fmtTime(ms) {
-  if (!ms) return '—'
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: SATU_TZ,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(ms))
-}
-
-function money(n) {
-  if (n === undefined || n === null || n === '') return '—'
-  const x = Number(n)
-  if (!Number.isFinite(x)) return '—'
-  return x >= 1 ? `$${x.toFixed(2)}` : `$${x.toFixed(3)}`
-}
-
-/** 套餐金额，美元。跟上面的 money() 分开：那个是 token 成本，不足 $1 要看到第三位小数。 */
-/**
- * 套餐金额。入参是**厘**（整数，千分之一美元），不是元——从整数格式化，
- * 免得 amount/1000 的浮点误差跑到界面上。
- * 常规价显示两位小数；带厘位的价（$0.005 这种）才显示第三位，不然满屏都是多余的 0。
- */
+   `usd` 和 `tokens` 两个有点不同：usd 的千分位按语言分，以前直接读 prefs.js 的
+   localeMode，core 不认那个全局，所以在这儿传进去；tokens 在 core 里叫 fmtTokens，
+   是为了不和下一步要搬进去的「票」（TokenStore）撞名。
+   ══════════════════════════════════════════════════════════════════ */
+const esc = SatuCore.esc
+const SATU_TZ = SatuCore.SATU_TZ
+const tzOffsetMs = SatuCore.tzOffsetMs
+const tzDayStart = SatuCore.tzDayStart
+const tzDayKey = SatuCore.tzDayKey
+const fmtTime = SatuCore.fmtTime
+const dayStart = SatuCore.dayStart
+const dayEnd = SatuCore.dayEnd
+const money = SatuCore.money
 function usd(mils) {
-  const m = Number(mils)
-  if (!Number.isFinite(m)) return '—'
-  if (m === 0) return '$0.00'
-  const neg = m < 0
-  const a = Math.round(Math.abs(m))
-  const whole = Math.floor(a / 1000)
-  const frac = a % 1000
-  const dec = frac % 10 === 0 ? String(frac / 10).padStart(2, '0') : String(frac).padStart(3, '0')
-  const loc = localeMode === 'en' ? 'en-US' : 'zh-CN'
-  return `${neg ? '-' : ''}$${whole.toLocaleString(loc)}.${dec}`
+  return SatuCore.usd(mils, localeMode)
 }
+const tokens = SatuCore.fmtTokens
+const connectorIdOfPath = SatuCore.connectorIdOfPath
+const botIdOfPath = SatuCore.botIdOfPath
+const companyIdOfPath = SatuCore.companyIdOfPath
+const machineIdOfPath = SatuCore.machineIdOfPath
+const userIdOfPath = SatuCore.userIdOfPath
+const sessionIdOfPath = SatuCore.sessionIdOfPath
+const auditItemIdOfPath = SatuCore.auditItemIdOfPath
 
 function capTags(m) {
   const input = Array.isArray(m.input) ? m.input : []
@@ -528,11 +472,6 @@ function capTags(m) {
   // 就在这一行做决定，让他当场看见比藏进详情页有用。
   if (m.source === 'discovered') tags.push(`<span class="tag tag-warn" title="${t('目录里没有、运行时从 models.dev 发现的。参数按同供应商同协议的模型推导，建议先做一次连通性测试。', 'Not in the built-in catalog; discovered from models.dev at runtime. Its settings are inferred from a sibling model on the same provider and protocol, so probe it before relying on it.')}">${t('自动发现', 'discovered')}</span>`)
   return tags.join('')
-}
-
-function tokens(n) {
-  if (!n) return '—'
-  return n >= 1000000 ? `${(n / 1000000).toFixed(n % 1000000 ? 1 : 0)}M` : `${Math.round(n / 1000)}K`
 }
 
 function orgId() {
@@ -651,11 +590,6 @@ function isChatPath(p) {
   return p === '/chat' || p.startsWith('/a/') || (p === '/' && memberChatHome())
 }
 
-function connectorIdOfPath(p) {
-  if (!p || !p.startsWith('/connectors/')) return ''
-  return decodeURIComponent(p.slice('/connectors/'.length).split('/')[0] || '')
-}
-
 function chatBotIdOf(p) {
   // `/` 上没有 Bot id，它就是「上次看的那个」——和 chatPage / chatBotIdNow 的回落一致。
   if (p === '/' && memberChatHome()) return state.chatBotId || ''
@@ -691,11 +625,6 @@ function pathAllowed(p) {
   return false
 }
 
-function botIdOfPath(p) {
-  if (!p.startsWith('/bots/')) return ''
-  return decodeURIComponent(p.slice('/bots/'.length).split('/')[0] || '')
-}
-
 /**
  * `/bots/:id` 指的是不是**我自己那个 Bot**。
  *
@@ -723,31 +652,6 @@ function ownBotPath(p) {
 function routeBot() {
   const id = botIdOfPath(state.path)
   return id && state.bot && state.bot.id === id ? state.bot : null
-}
-
-function companyIdOfPath(p) {
-  if (!p.startsWith('/companies/')) return ''
-  return decodeURIComponent(p.slice('/companies/'.length).split('/')[0] || '')
-}
-
-function machineIdOfPath(p) {
-  if (!p.startsWith('/machines/')) return ''
-  return decodeURIComponent(p.slice('/machines/'.length).split('/')[0] || '')
-}
-
-function userIdOfPath(p) {
-  if (!p.startsWith('/users/')) return ''
-  return decodeURIComponent(p.slice('/users/'.length).split('/')[0] || '')
-}
-
-function sessionIdOfPath(p) {
-  if (!p.startsWith('/audit/') || p.startsWith('/audit/summary/')) return ''
-  return decodeURIComponent(p.slice('/audit/'.length).split('/')[0] || '')
-}
-
-function auditItemIdOfPath(p) {
-  if (!p.startsWith('/audit/summary/')) return ''
-  return decodeURIComponent(p.slice('/audit/summary/'.length).split('/')[0] || '')
 }
 
 /** 一级页面头上那个标题。二级页面走 crumbsOf()，不经过这里。 */
@@ -808,19 +712,6 @@ function crumbsOf(path) {
     return { href: '/audit', parent: t('审计'), current: one?.taskSummary || t('审计总结') }
   }
   return null
-}
-
-/** 筛选框里那一天的起止，按 SATU_TZ 算零点（列表里的时间也是按它显示的，见 fmtTime）。 */
-function dayStart(dateStr) {
-  if (!dateStr) return ''
-  const t = tzDayStart(dateStr)
-  return Number.isFinite(t) ? t : ''
-}
-
-function dayEnd(dateStr) {
-  if (!dateStr) return ''
-  const t = tzDayStart(dateStr, 1) - 1
-  return Number.isFinite(t) ? t : ''
 }
 
 /** Bot 详情页的图标格里那份草稿还没落库，层级要从当前页面的角色推。 */

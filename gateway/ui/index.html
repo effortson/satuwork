@@ -16,6 +16,9 @@
 <!-- 这一页里**没有内联脚本**，因为 CSP 的 script-src 不带 'unsafe-inline'（见
      gateway/src/http.ts 的 CSP）。挂 window.satuUnzip 这件事搬进了 unzip.js 自己的末尾。 -->
 <script type="module" src="/unzip.js"></script>
+<!-- core.js 是 core/src 打出来的（gateway/scripts/build-core.mjs），挂全局 SatuCore：译表、格式化、
+     路径解析都从它来。必须在下面所有脚本之前——i18n.js 和 state.js 里是一行行的转接。 -->
+<script src="/core.js"></script>
 <!-- 译表必须在下面那串之前：prefs.js 里的 t() 直接查它。 -->
 <script src="/i18n.js"></script>
 <!-- markdown.js 也要在下面那串之前：chat.js 的 paintChat 直接调 window.satuMd。 -->

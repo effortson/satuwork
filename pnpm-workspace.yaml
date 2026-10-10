@@ -3,6 +3,7 @@ packages:
   - gateway
   - manager
   - desktop
+  - core
 
 # 放行一个 build script 等于允许它在安装时执行代码，所以逐个表态。
 # pnpm 遇到新的带脚本依赖会写成 "set this to true or false" 占位符，那不算表态——

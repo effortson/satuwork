@@ -62,6 +62,7 @@ Browser / desktop app ──► Gateway (control plane + the only chat UI)
 | [`bot/`](bot) | Runtime: the headless AI coworker runtime (built on Cordis). One process is exactly one bot, deployed per (account, botId); serves no UI |
 | [`manager/`](manager) | Machine manager: a root service on each seat machine. Once paired with Gateway it deploys and upgrades bots, and it's the only port exposed |
 | [`desktop/`](desktop) | Tauri desktop app: UI bundled in the package, connects to a remote Gateway, and can run a local bot on this computer |
+| [`core/`](core) | The DOM-free layer of the UI (translations, formatting; request and chat-event layers to follow). Bundled into `gateway/ui/core.js` for the web UI; the mobile app imports it directly. See [docs/adr-core-package-mobile.md](docs/adr-core-package-mobile.md) |
 | [`e2e/`](e2e) | End-to-end tests |
 | [`docs/`](docs) | Design docs; the master spec is [docs/gateway-runtime.md](docs/gateway-runtime.md) |
 | [`searxng/`](searxng) | Optional self-hosted search |
