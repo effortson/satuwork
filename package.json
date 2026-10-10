@@ -10,7 +10,8 @@
     "e2e": "node e2e/run.mjs",
     "test:core": "pnpm --filter @satuwork/core test",
     "build:core": "node gateway/scripts/build-core.mjs",
-    "typecheck": "pnpm --filter @satuwork/core typecheck && pnpm --filter satuwork-gateway typecheck && pnpm --filter satuwork-manager typecheck && pnpm --filter satuwork typecheck",
-    "typecheck:bot": "pnpm --filter satuwork typecheck"
+    "typecheck": "pnpm --filter @satuwork/core typecheck && pnpm --filter satuwork-gateway typecheck && pnpm --filter satuwork-manager typecheck && pnpm --filter satuwork typecheck && pnpm --filter satuwork-mobile typecheck",
+    "typecheck:bot": "pnpm --filter satuwork typecheck",
+    "dev:mobile": "pnpm --filter satuwork-mobile start"
   }
 }

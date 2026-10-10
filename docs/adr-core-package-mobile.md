@@ -1,6 +1,6 @@
 # ADR：逻辑层抽成 `core` 包，移动端用 Expo 只做对话
 
-- 状态：**已接受**（2026-10-10），**实施中**：第 1–4 步已落地（见 §5）
+- 状态：**已接受**（2026-10-10），**实施中**：第 1–5 步已落地（见 §5）
 - 影响范围：gateway/ui、gateway/src/http.ts、gateway/scripts、e2e/ui-dom.mjs、desktop/（间接）、新增 core/ 与 mobile/
 - 前置阅读：[gateway-runtime.md](gateway-runtime.md)；[adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) §4、§7；[session-event-field-map.md](session-event-field-map.md)；[chat-references.md](chat-references.md)
 
@@ -191,17 +191,17 @@ core/
 
 mobile/
   package.json          satuwork-mobile
-  app.json              Expo 配置（scheme、bundle id、EAS projectId）
-  app/
-    _layout.tsx
+  app.json              Expo 配置（scheme satuwork、bundle id；EAS projectId 到第 8 步再填）
+  src/app/
+    _layout.tsx         登录门 + Stack
     login.tsx
-    (tabs)/bots.tsx
+    bots.tsx
     chat/[botId].tsx
     settings.tsx
-  src/
-    gateway.ts          用 core 的 createApi 装配：expo/fetch、SecureStore 的 TokenStore、地址
-    store/              React 状态（bots、每个 bot 的事件、pending）
-    components/         MessageRow、ToolStep、ApprovalCard、Composer
+  src/gateway.ts        用 core 的 createGatewayClient 装配：expo/fetch、SecureStore 里的票与地址
+  src/store.tsx         React 登录态
+  src/chat/useChat.ts   取会话 → 拉历史 → runEventStream → fold
+  src/components/       MessageList（第一期纯文本气泡；Markdown 渲染器下一步选）
 ```
 
 Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依赖 React。
@@ -235,7 +235,13 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
    core 持有、DOM 半边往里加）。Web 的 markdown.js 只剩 DOM 半边加一行装配；e2e 的 markdown.mjs
    加载器先装 core.js。手机端可以拿 healStream / splitBlocks 喂自己的渲染器，也可以拿 render 的
    HTML 喂 react-native-render-html——`data-md` 标记都在。
-5. **mobile 脚手架**：登录、Bot 名单、对话的只读部分（历史 + SSE 渲染）。
+5. **mobile 脚手架**（已落地）：登录、Bot 名单、对话的只读部分（历史 + SSE 渲染）、设置。
+   Expo SDK 57 + Expo Router，`create-expo-app` 的 default 模板削到只剩路由骨架；pnpm workspace 里
+   直接依赖 `@satuwork/core`（Metro 吃 TS 源码，1300 个模块 3 秒打完）。票、Gateway 地址、语言落
+   SecureStore；对话流用 `runEventStream` 直连 `runtime.streamUrl`。在 iPhone 17 Pro 模拟器 + Expo Go
+   上对着本机临时 Gateway 走通了登录 → 名单 → 对话屏（没有席位机器，验到「实例还没上线」为止）。
+   两个落地时的小决定：输入框**非受控**（受控的 value 回写会在 JS 线程慢时丢字）；
+   `EXPO_PUBLIC_DEV_EMAIL/PASSWORD` 只在 `__DEV__` 下预填登录屏，模拟器的文字注入靠不住。
 6. **mobile 可写**：发消息、中止、审批、名单流、图片附件。
 7. **推送**：§2.5 的四件事。
 8. **发布**：EAS Build；iOS 走 TestFlight，Android 出 APK 内测。
