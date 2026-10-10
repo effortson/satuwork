@@ -2,8 +2,8 @@
   "name": "@satuwork/core",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "description": "界面里不碰 DOM 的那一层：译表、格式化、路径解析（后续加请求层与对话事件层）。Web 经 gateway/ui/core.js 用它，移动端直接 import。",
+  "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
   },
