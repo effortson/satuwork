@@ -1273,15 +1273,13 @@ function statsPage() {
         </div>
         ${
           /**
-           * 日线只在跨天的窗口画：「今日」只有一根柱子，画出来是一块空白加一根长条，
-           * 说不了任何事。样式和公司用量屏那张一样（同一个 dailyBarChart），柱高和柱顶
-           * 都是那天三条路合计扣的钱——跟上面的金额卡同一个口径；调用次数在悬停里。
+           * 样式和公司用量屏那张一样（同一个 dailyBarChart），柱高和柱顶都是那一格三条路
+           * 合计扣的钱——跟上面的金额卡同一个口径；调用次数在悬停里。「今日」一档服务端
+           * 按小时切柱子（loadStats 传 step=hour），一天只有一根柱子说不了任何事。
            */
-          state.statsRange === 'today'
-            ? ''
-            : `<div class="satu-dailyrow">
+          `<div class="satu-dailyrow">
           <div class="satu-panel">
-            ${dailyBarChart(Array.isArray(d?.daily) ? d.daily : [], t('每日调用量'), state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。'))}
+            ${dailyBarChart(Array.isArray(d?.daily) ? d.daily : [], t(state.statsRange === 'today' ? '今日调用量' : '每日调用量'), state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。'))}
           </div>
         </div>`
         }

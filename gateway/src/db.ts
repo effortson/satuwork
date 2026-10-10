@@ -193,6 +193,17 @@ export class RoutineBusyError extends Error {
   }
 }
 
+const DAY_MS = 86400000
+const HOUR_MS = 3600000
+/**
+ * 日线 / 小时线切桶用的除数，**拼进 SQL 的字面量**，不走参数：bigint 除以一个绑定参数会按
+ * 整数除，floor 在负数上就错了；写成 `86400000.0` 这种带小数点的字面量才是真除法。
+ * 只认这两个值，别的都当按天——这里不接受外面传进来的任意数字。
+ */
+function bucketSql(bucketMs: number): string {
+  return bucketMs === HOUR_MS ? `${HOUR_MS}.0` : `${DAY_MS}.0`
+}
+
 export class Db {
   private pool: pg.Pool
   private schema: string
@@ -1256,27 +1267,29 @@ export class Db {
     value: string,
     range?: { from?: number; to?: number },
     offsetMs = 0,
+    bucketMs = DAY_MS,
   ): Promise<{ bucket: number; calls: number }[]> {
-    return this.llmDaily({ column, value }, range, offsetMs)
+    return this.llmDaily({ column, value }, range, offsetMs, bucketMs)
   }
 
   /**
    * 平台视角的每日调用数：全部公司一起数，或者只数某一家。owner 自己那些
    * `companyId` 为空的调用也在里面——统计页的合计就是这么算的，日线不能少它一截。
    */
-  llmDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string): Promise<{ bucket: number; calls: number }[]> {
-    return this.llmDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs)
+  llmDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string, bucketMs = DAY_MS): Promise<{ bucket: number; calls: number }[]> {
+    return this.llmDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs, bucketMs)
   }
 
   private async llmDaily(
     scope: { column: 'companyId' | 'accountId'; value: string } | null,
     range?: { from?: number; to?: number },
     offsetMs = 0,
+    bucketMs = DAY_MS,
   ): Promise<{ bucket: number; calls: number }[]> {
     const r = this.llmRangeSql(range)
     const w = this.dailyScopeSql(scope)
     const rows = await this.many(
-      `select floor(("createdAt" + ?) / 86400000.0)::bigint as bucket, count(*) as calls
+      `select floor(("createdAt" + ?) / ${bucketSql(bucketMs)})::bigint as bucket, count(*) as calls
        from llm_calls where ${w.sql}${r.sql}
        group by bucket order by bucket`,
       [offsetMs, ...w.args, ...r.args],
@@ -1294,24 +1307,26 @@ export class Db {
     value: string,
     range?: { from?: number; to?: number },
     offsetMs = 0,
+    bucketMs = DAY_MS,
   ): Promise<{ bucket: number; amountMicros: number }[]> {
-    return this.chargeDaily({ column, value }, range, offsetMs)
+    return this.chargeDaily({ column, value }, range, offsetMs, bucketMs)
   }
 
   /** 平台视角的每日扣费，和 `llmDailyAll` 配对：全部公司一起算，或者只算某一家。 */
-  chargeDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string): Promise<{ bucket: number; amountMicros: number }[]> {
-    return this.chargeDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs)
+  chargeDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string, bucketMs = DAY_MS): Promise<{ bucket: number; amountMicros: number }[]> {
+    return this.chargeDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs, bucketMs)
   }
 
   private async chargeDaily(
     scope: { column: 'companyId' | 'accountId'; value: string } | null,
     range?: { from?: number; to?: number },
     offsetMs = 0,
+    bucketMs = DAY_MS,
   ): Promise<{ bucket: number; amountMicros: number }[]> {
     const r = this.llmRangeSql(range)
     const w = this.dailyScopeSql(scope)
     const rows = await this.many(
-      `select floor(("createdAt" + ?) / 86400000.0)::bigint as bucket, coalesce(sum("amountMicros"), 0) as "amountMicros"
+      `select floor(("createdAt" + ?) / ${bucketSql(bucketMs)})::bigint as bucket, coalesce(sum("amountMicros"), 0) as "amountMicros"
        from usage_charges where ${w.sql}${r.sql}
        group by bucket order by bucket`,
       [offsetMs, ...w.args, ...r.args],

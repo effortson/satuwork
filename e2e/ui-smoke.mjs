@@ -1936,6 +1936,14 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(usageFeb.from === new Date(2026, 1, 1).getTime() && usageFeb.to === new Date(2026, 2, 1).getTime() - 1, `用量屏换月之后窗口不对：${JSON.stringify(usageFeb)}`)
       sameWindow(ui.chargesWindow('org'), usageFeb, '用量屏的明细没跟着月份选择器')
       ui.state.usageMonth = null
+      // 「今日」从本地零点起；这一档的图按小时画，用量页标题换成「今日任务执行量」。
+      ui.state.usageRange = '今日'
+      const usageToday = ui.usageRangeMs('今日')
+      const t0 = new Date()
+      assert(usageToday.from === new Date(t0.getFullYear(), t0.getMonth(), t0.getDate()).getTime(), '用量屏的「今日」没从本地零点开始')
+      sameWindow(ui.chargesWindow('org'), usageToday, '用量屏的明细没跟着「今日」')
+      const todayHtml = ui.usagePage()
+      assert(todayHtml.includes('data-range="今日"') && todayHtml.includes('今日任务执行量'), '用量页没画「今日」胶囊或小时线标题')
 
       // 账单页和平台的公司详情没有范围控件，那里就是全时段。
       ui.state.path = '/billing'

@@ -710,6 +710,12 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
       assert(r.json.daily.length === 7, `日线该是 7 根，实际 ${r.json.daily.length}`)
       assert(r.json.daily.every((d) => /^\d{2}\/\d{2}$/.test(d.label)), `日期格式不对：${JSON.stringify(r.json.daily[0])}`)
       assert(r.json.daily.reduce((n, d) => n + d.value, 0) > 0, '这家公司这几天有调用，日线却全是 0')
+      // 「今日」一档传 step=hour：按小时一根、HH:00 标签，公司这条路和平台那条同一套。
+      const t0 = new Date()
+      const dayStart = new Date(t0.getFullYear(), t0.getMonth(), t0.getDate()).getTime()
+      const hourly = await req(base, 'GET', `/orgs/${orgA}/usage?from=${dayStart}&to=${Date.now()}&tz=${-t0.getTimezoneOffset()}&step=hour`, { token: tokenA })
+      assert(hourly.status === 200, `hourly ${hourly.status} ${hourly.text}`)
+      assert(hourly.json.daily.length >= 1 && hourly.json.daily.length <= t0.getHours() + 2 && hourly.json.daily.every((d) => /^\d{2}:00$/.test(d.label)), `小时线不对：${JSON.stringify(hourly.json.daily)}`)
       // 每根柱子带那一天扣的钱（账本，三条路都算）；加起来就是顶上「费用」那张卡。
       assert(r.json.daily.every((d) => typeof d.amount === 'string' && d.amount.startsWith('$') && Number.isFinite(d.amountMicros)), `日线缺金额：${JSON.stringify(r.json.daily[0])}`)
       const dailyMicros = r.json.daily.reduce((n, d) => n + d.amountMicros, 0)
