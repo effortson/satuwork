@@ -1,6 +1,6 @@
 # ADR：逻辑层抽成 `core` 包，移动端用 Expo 只做对话
 
-- 状态：**已接受**（2026-10-10），**实施中**：第 1–5 步已落地（见 §5）
+- 状态：**已接受**（2026-10-10），**部分实施**：第 1–4 步（Web 侧，core 包）已落地；第 5–6 步的 Expo 移动端做过、同日**回滚**（见 §2.3 与 §5），移动端框架待定
 - 影响范围：gateway/ui、gateway/src/http.ts、gateway/scripts、e2e/ui-dom.mjs、desktop/（间接）、新增 core/ 与 mobile/
 - 前置阅读：[gateway-runtime.md](gateway-runtime.md)；[adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) §4、§7；[session-event-field-map.md](session-event-field-map.md)；[chat-references.md](chat-references.md)
 
@@ -89,9 +89,16 @@ gateway/ui 保持「无构建、普通脚本」。`core` 用 esbuild 打成一�
 e2e 四处各加一次构建，漏一处就是一处 404。代价是每个改 core 的 PR 带一坨压缩后的 diff。
 在 check.yml 加一步「重新打一遍，`git diff --exit-code gateway/ui/core.js`」防止源码和产物漂开。
 
-### 2.3 决定三：移动端是独立的 Expo app，范围只有对话
+### 2.3 决定三：移动端是独立的 app，范围只有对话
 
-目录 `mobile/`，进 pnpm workspace。Expo（当前 SDK）+ Expo Router + TypeScript。
+> **2026-10-10 更正**：这一节原本定的是 Expo + Expo Router。第 5、6 步按它做完并在模拟器里验过
+> （#325 已合、#326 未合），当日决定**不用 Expo**：#325 用 revert 撤回，#326 关闭。移动端用什么
+> 框架**待定**；下面「范围只有对话」「只直连有 directUrl 的 Bot」这些约束不随框架变，仍然成立。
+> 那两步验出来的几条经验，换框架时还用得上：core 在 Metro 下直接吃 TS 源码没有问题（`exports`
+> 指 TS 源）；对话流、上传、审批、名单流的协议细节见 §2.3 的表和 Web 的 chat.js；受控输入框在
+> JS 线程慢时会丢字。
+
+目录 `mobile/`，进 pnpm workspace。框架待定（原定 Expo + Expo Router + TypeScript）。
 
 要做的四屏：
 
@@ -191,17 +198,17 @@ core/
 
 mobile/
   package.json          satuwork-mobile
-  app.json              Expo 配置（scheme satuwork、bundle id；EAS projectId 到第 8 步再填）
-  src/app/
-    _layout.tsx         登录门 + Stack
+  app.json              Expo 配置（scheme、bundle id、EAS projectId）
+  app/
+    _layout.tsx
     login.tsx
-    bots.tsx
+    (tabs)/bots.tsx
     chat/[botId].tsx
     settings.tsx
-  src/gateway.ts        用 core 的 createGatewayClient 装配：expo/fetch、SecureStore 里的票与地址
-  src/store.tsx         React 登录态
-  src/chat/useChat.ts   取会话 → 拉历史 → runEventStream → fold
-  src/components/       MessageList（第一期纯文本气泡；Markdown 渲染器下一步选）
+  src/
+    gateway.ts          用 core 的 createApi 装配：expo/fetch、SecureStore 的 TokenStore、地址
+    store/              React 状态（bots、每个 bot 的事件、pending）
+    components/         MessageRow、ToolStep、ApprovalCard、Composer
 ```
 
 Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依赖 React。
@@ -235,14 +242,8 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
    core 持有、DOM 半边往里加）。Web 的 markdown.js 只剩 DOM 半边加一行装配；e2e 的 markdown.mjs
    加载器先装 core.js。手机端可以拿 healStream / splitBlocks 喂自己的渲染器，也可以拿 render 的
    HTML 喂 react-native-render-html——`data-md` 标记都在。
-5. **mobile 脚手架**（已落地）：登录、Bot 名单、对话的只读部分（历史 + SSE 渲染）、设置。
-   Expo SDK 57 + Expo Router，`create-expo-app` 的 default 模板削到只剩路由骨架；pnpm workspace 里
-   直接依赖 `@satuwork/core`（Metro 吃 TS 源码，1300 个模块 3 秒打完）。票、Gateway 地址、语言落
-   SecureStore；对话流用 `runEventStream` 直连 `runtime.streamUrl`。在 iPhone 17 Pro 模拟器 + Expo Go
-   上对着本机临时 Gateway 走通了登录 → 名单 → 对话屏（没有席位机器，验到「实例还没上线」为止）。
-   两个落地时的小决定：输入框**非受控**（受控的 value 回写会在 JS 线程慢时丢字）；
-   `EXPO_PUBLIC_DEV_EMAIL/PASSWORD` 只在 `__DEV__` 下预填登录屏，模拟器的文字注入靠不住。
-6. **mobile 可写**：发消息、中止、审批、名单流、图片附件。
+5. **mobile 脚手架**（Expo 版做过、**已回滚**：#325 合进 develop 后当日决定不用 Expo，用 revert 撤回）：登录、Bot 名单、对话的只读部分（历史 + SSE 渲染）。
+6. **mobile 可写**（Expo 版做过、**未合并即关闭**：#326，理由同上）：发消息、中止、审批、名单流、图片附件。
 7. **推送**：§2.5 的四件事。
 8. **发布**：EAS Build；iOS 走 TestFlight，Android 出 APK 内测。
 
