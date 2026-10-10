@@ -119,26 +119,9 @@ function resetBotStream(row) {
   row.hydrated = false
 }
 
-/**
- * 那颗点现在算哪一态。三样东西合成一个：**在等人 > 正在跑 > 空闲**。
- *
- * 分成三个计数而不是直接写 `sum.state`，是因为它们会交错：点了停止那一下，
- * `agent.abort()` 不等已经开跑的工具（见 bot 的 bridgeTools），`turn/end` 完全可能排在
- * 确认的终态**前面**到达——照着「最后一条事件」写的话，那颗点会从「空闲」被翻回
- * 「正在执行」然后一直停在那儿。各自记数、每次重算，就没有这个先后问题。
- */
+/** 那颗点现在算哪一态（在等人 > 正在跑 > 空闲）。实现在 core/src/chat/roster.ts。 */
 function settleDot(sum) {
-  const waiting = (sum.openIds ? sum.openIds.size : 0) + (sum.snapIds ? sum.snapIds.size : 0)
-  const asking = sum.asks ? sum.asks.size : 0
-  sum.state = asking || waiting ? 'review' : sum.busy ? 'busy' : 'idle'
-  /**
-   * **「在等你」还要分得出是哪一种。** 一颗点只说得出「有事」，而这两件事人要做的
-   * 动作完全不同：拍板是当场点一下（那一轮真的停在席位上等着，5 分钟就超时按拒绝
-   * 收口），接手是领一张能挂几天的单。名单上那个图标照这一格画。
-   *
-   * 两样都有时报拍板：它有钟在走，另一张单不会因为晚看十分钟就作废。
-   */
-  sum.need = asking ? 'approval' : waiting ? 'handoff' : ''
+  return SatuCore.settleDot(sum)
 }
 
 /**
@@ -192,142 +175,30 @@ function applyHandoffSnapshot(list) {
   if (changed) scheduleRosterPaint()
 }
 
-/** 事件到了就地更新摘要。O(1)，不 fold。 */
+/**
+ * 事件到了就地更新摘要。O(1)，不 fold。归并规则在 core/src/chat/roster.ts 的 applyRosterEvent，
+ * 这里只负责「变了就重画名单」。
+ */
 function noteBotEvent(botId, ev) {
   const row = botStreams.get(botId)
   if (!row) return
-  const sum = row.sum
-  const before = sum.state + '|' + sum.lastAt + '|' + sum.lastText
-  if (ev.type === 'turn/start') {
-    sum.busy = true
-    settleDot(sum)
-  } else if (ev.type === 'turn/end') {
-    sum.busy = false
-    settleDot(sum)
-  } else if (ev.type === 'human/handoff') {
-    /**
-     * **「待人工处理」的第二个数据源。**
-     *
-     * 确认那一路（下面那条）只在一轮**正在跑**的时候出现，人多半就坐在这一屏。转人工
-     * 不是：单子开出来之后那一轮就收口了，会话回到空闲，而这件事可能是半夜的日常任务
-     * 开出来的。少了这一条，名单上那颗点会安安静静地写着「空闲」，而那台 Bot 其实卡着
-     * 一件等人的事。
-     */
-    const d = ev.data || {}
-    // **按单号记，不是计数。** 同一张单会来好几条（open → claimed → …），加加减减
-    // 迟早会漂成一个永远归不了零的数，而那颗点就永远亮着「待人工处理」。
-    const set = sum.openIds || (sum.openIds = new Set())
-    if (d.state === 'open' || d.state === 'claimed') set.add(d.id)
-    else {
-      set.delete(d.id)
-      // 快照那一份也要销掉，否则这颗点会亮到下一次轮询才灭——而人刚点完交还，
-      // 正盯着它看。
-      if (sum.snapIds) sum.snapIds.delete(d.id)
-    }
-    settleDot(sum)
-  }
-  // **「待人工处理」现在有数据源了。** 高风险确认会让那次工具调用真的停在席位上等人
-  // 拍板（policy/approvals.ts），席位为此发一条 `tool/approval`。名单上那颗点因此有了
-  // 第三态：不是在跑，也不是跑完了，而是**在等你**——而人多半正在别的 Bot 那一屏，
-  // 名单是他唯一会瞥到的地方。
-  else if (ev.type === 'tool/approval') {
-    /**
-     * **按 callId 记，不是计数**（同上面 openIds 那条）。原来这里是 `asking++/--`，
-     * 而加加减减迟早会漂：重放段和实时段重叠一条 pending 就多加一次，那颗点从此
-     * 永远亮着「在等你」，人点完了也灭不掉。
-     *
-     * 终态只删这一条，别的状态不碰——点了停止那一下，`agent.abort()` 不等已经开跑的
-     * 工具（见 bot 的 bridgeTools），`turn/end` 完全可能排在终态**前面**到达；
-     * 状态由 settleDot 从几个计数现算，就没有这个先后问题。
-     */
-    const d = ev.data || {}
-    const asks = sum.asks || (sum.asks = new Map())
-    if (!d.callId) {
-      /* 老日志里可能没有 callId：认不回来的一条宁可不记，也不要记成一个销不掉的。 */
-    } else if (d.state === 'pending') {
-      asks.set(d.callId, {
-        callId: d.callId,
-        name: d.name || '',
-        reason: d.reason || '',
-        at: Number(ev.time) || 0,
-        seq: Number(ev.seq) || 0,
-      })
-    } else asks.delete(d.callId)
-    settleDot(sum)
-  } else if (ev.type === 'user/message' || ev.type === 'assistant/message') {
-    const text = messageText((ev.data || {}).message) || (ev.data || {}).text || ''
-    if (text) {
-      sum.lastText = text.replace(/\s+/g, ' ').trim().slice(0, 120)
-      sum.lastAt = Number(ev.time) || sum.lastAt
-    }
-  } else if (ev.type === 'assistant/chunk') {
-    // 流式期间也把时间往前推，否则「最近回复」会停在上一轮，看着像卡住了。
-    sum.lastAt = Number(ev.time) || sum.lastAt
-  }
-  if (before !== sum.state + '|' + sum.lastAt + '|' + sum.lastText) scheduleRosterPaint()
+  if (SatuCore.applyRosterEvent(row.sum, ev)) scheduleRosterPaint()
 }
 
 /**
- * 从桶里重新认一遍「最近一条消息」。
- *
- * `hydrateChat` 往桶的**开头**塞一段历史，这些事件不能走 noteBotEvent——那一个是按
- * 「刚到的就是最新的」写的，会把名单上的摘要改成二十轮之前那句话。所以补完历史之后
- * 走这里：从后往前找第一条有正文的消息，**比手上这条新才认**。
+ * 从桶里重新认一遍「最近一条消息」（补完历史之后走这里，不走 noteBotEvent——理由见
+ * core/src/chat/roster.ts 的 refreshSum）。
  */
 function refreshSum(row) {
-  const sum = row.sum
-  for (let i = row.events.length - 1; i >= 0; i--) {
-    const ev = row.events[i] || {}
-    if (ev.type !== 'user/message' && ev.type !== 'assistant/message') continue
-    const text = messageText((ev.data || {}).message) || (ev.data || {}).text || ''
-    if (!text) continue
-    const at = Number(ev.time) || 0
-    if (at < sum.lastAt) return
-    sum.lastText = text.replace(/\s+/g, ' ').trim().slice(0, 120)
-    sum.lastAt = at || sum.lastAt
-    scheduleRosterPaint()
-    return
-  }
+  if (SatuCore.refreshSum(row.sum, row.events)) scheduleRosterPaint()
 }
 
 /**
- * 往桶里追一条事件，**已经有的就不追**。返回它是不是新的。
- *
- * 桶按 seq 有序；但**到达顺序不保证有序**。席位给事件拿号之后才异步落盘、落完才广播，
- * 两次并发 append 完全可能让 seq=42 先于 seq=41 到浏览器。尤其 `todo/list` 正好夹在
- * 工具调用的流式事件之间：把「不比尾巴大」当成「重复」会在新建清单时偶发地把它丢掉，
- * 输入框上面的任务 dock 就一直不出现。
- *
- * 所以这里按 seq **插入并去重**，不是只和尾巴比。桶不大（冷桶另有上限），一次从后往前
- * 找位置的成本远小于让所有 fold 都各自防乱序。
- *
- * 这道闸是给两条路准备的：历史走 HTTP、实时走 SSE，而流上还垫了一轮
- * （STREAM_TAIL_TURNS）用来给名单和第一帧兜底。那一轮和 hydrateChat 拉回来的最后
- * 一轮**必然重叠**——HTTP 先到的话，流的重放段就是一段桶里全有的事件，照追不误的
- * 结果是最后一问一答在屏幕上出现两遍。
- *
- * 反方向由 hydrateChat 那边的「比头还小才收」挡着。两头都挡上，谁先到就无所谓了。
+ * 往桶里追一条事件，**已经有的就不追**。返回它是不是新的。按 seq 插入并去重（到达顺序不保证
+ * 有序），规则见 core/src/chat/events.ts 的 insertEvent。
  */
 function pushBotEvent(botId, ev) {
-  const list = botStreamOf(botId).events
-  const seq = Number(ev && ev.seq)
-  if (Number.isFinite(seq)) {
-    let at = list.length
-    for (let i = list.length - 1; i >= 0; i--) {
-      const seen = Number(list[i] && list[i].seq)
-      if (!Number.isFinite(seen)) continue
-      if (seq === seen) return false
-      if (seq > seen) {
-        at = i + 1
-        break
-      }
-      at = i
-    }
-    list.splice(at, 0, ev)
-    return true
-  }
-  list.push(ev)
-  return true
+  return SatuCore.insertEvent(botStreamOf(botId).events, ev)
 }
 
 /** 关掉一个 Bot 的流。事件留着——切回去时就不用再重放一遍历史。 */
@@ -402,27 +273,15 @@ function trimBotStreams(keepId) {
   }
 }
 
-/**
- * 用户消息里的图片块（会话格式 v4 起）。
- *
- * 日志里存的是**路径**不是字节（见 bot 的 session/types.ts），所以这里拿到的也是路径，
- * 要显示还得走一趟预览接口——和点开产出文件是同一条路。
- */
+/* ══ 转接到 core.js：消息正文的几个读法，实现在 core/src/chat/events.ts ══
+   写成函数声明而不是 `const x = SatuCore.x`：e2e 的 chat-fold.mjs 把这个文件装进 vm 上下文、按
+   属性读这些名字，顶层 const 不会挂到全局对象上，函数声明才会。下面几处同理。 */
 function messageImages(msg) {
-  const content = msg && msg.content
-  if (!Array.isArray(content)) return []
-  return content.filter((b) => b && b.type === 'image' && b.path).map((b) => ({ path: b.path, mime: b.mime || '' }))
+  return SatuCore.messageImages(msg)
 }
 
 function messageText(msg) {
-  if (!msg) return ''
-  if (typeof msg === 'string') return msg
-  const content = msg.content
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
-  return content
-    .map((b) => (b && (b.type === 'text' || b.type === 'reasoning') ? b.text || '' : ''))
-    .join('')
+  return SatuCore.messageText(msg)
 }
 
 /**
@@ -452,36 +311,11 @@ function mentionPill(m) {
 }
 
 function messageMentions(msg) {
-  const content = msg && msg.content
-  if (!Array.isArray(content)) return []
-  return content
-    .filter((b) => b && b.type === 'mention' && b.label)
-    .map((b) => ({ kind: b.kind || 'connector', id: b.id || '', label: String(b.label) }))
+  return SatuCore.messageMentions(msg)
 }
 
-/**
- * 这条消息引用了什么（`ref` 块，见 docs/chat-references.md）。形状和输入框上那排
- * `state.chatRefs` 一致：发出去前后长得一样。
- */
 function messageRefs(msg) {
-  const content = msg && msg.content
-  if (!Array.isArray(content)) return []
-  const out = []
-  for (const b of content) {
-    if (!b || b.type !== 'ref') continue
-    if (b.kind === 'file' && b.path) {
-      out.push({ kind: 'file', path: String(b.path), name: String(b.name || b.path.split('/').pop() || b.path) })
-    } else if (b.kind === 'message') {
-      out.push({
-        kind: 'message',
-        seq: Number.isFinite(Number(b.seq)) ? Number(b.seq) : null,
-        role: b.role === 'user' ? 'user' : 'assistant',
-        excerpt: String(b.excerpt || ''),
-        time: Number(b.time) || 0,
-      })
-    }
-  }
-  return out
+  return SatuCore.messageRefs(msg)
 }
 
 /**
@@ -516,35 +350,11 @@ const chatLive = new Map()
 const chatPages = new Map()
 
 /**
- * 记下「手上最靠前那条是谁」和「它前面还有没有」。
- *
- * 规矩只有一条：**谁知道得更早，谁说了算。**
- *
- * 三个写入方看到的窗口不一样大——流上只垫一轮（STREAM_TAIL_TURNS），HTTP 一次二十
- * 轮，往前翻又是另一页——而谁先落地取决于网络。窄窗口晚到时如果照写，游标就被推回
- * 「最后一轮的开头」，于是「加载更早的对话」去取的是一页手上全有的事件：归并那两道
- * 闸（进桶比尾巴大、补历史比头小）会把它们全滤掉，按钮点了没反应。
- *
- * `hasMore` 必须跟着 `firstSeq` 一起走——那句「前面还有没有」问的是**这一条**之前。
- * 拆开取会配出一对互相矛盾的值。
- *
- * `loading` 只有 loadOlderChat 说了算（它是唯一会把按钮置灰的人），别人不传就保持
- * 原样：顺手写一个 `loading: false` 会把正在飞的那次翻页从界面上「解灰」，人一点就
- * 又发一次。
+ * 记下「手上最靠前那条是谁」和「它前面还有没有」。合并规则（谁知道得更早谁说了算）在
+ * core/src/chat/pages.ts 的 mergeChatPage；三个写入方都走这里，别各写各的。
  */
 function noteChatPage(sessionId, next) {
-  const cur = chatPages.get(sessionId) || {}
-  const known = typeof cur.firstSeq === 'number' ? cur.firstSeq : null
-  const first = typeof next.firstSeq === 'number' ? next.firstSeq : null
-  // 带来了更早的游标就是它赢；一条游标都没带（空会话、续传）时，只有在我们本来也
-  // 什么都不知道的情况下才认它那句 hasMore。
-  const wins = first != null ? known == null || first < known : known == null
-  chatPages.set(sessionId, {
-    ...cur,
-    firstSeq: wins && first != null ? first : cur.firstSeq,
-    hasMore: wins && typeof next.hasMore === 'boolean' ? next.hasMore : cur.hasMore,
-    loading: next.loading !== undefined ? next.loading : Boolean(cur.loading),
-  })
+  chatPages.set(sessionId, SatuCore.mergeChatPage(chatPages.get(sessionId), next))
   scheduleLoadMorePaint()
 }
 
@@ -578,453 +388,20 @@ const CHAT_TAIL_TURNS = 20
  */
 const STREAM_TAIL_TURNS = 1
 
-/**
- * 用户消息开头那段「我上传了文件，在工作区里：」是 composeChatBody 自己拼的
- * （同一个文件里，往下找）。这里把它认回来。
- *
- * **为什么值得认**：不认的话，附件在气泡里就是一行不能点的路径文本，而 Bot 生成的
- * 文件早就是可以点开预览的药丸了——同一个东西，自己传上去的反而看不了，这说不通。
- *
- * 敢按文本认，是因为这段文本**是我们自己生成的**，格式由 composeChatBody 定死；
- * 而且判据卡得很紧：首行必须整句相等（中英两版都列在下面，一条消息可能在另一种
- * 语言下被打开），随后必须是连续的 `- \`uploads/…\`` 行。这和「拿正则去扫模型写的
- * 散文猜路径」是两回事——那种一改措辞就散架，这种不会。
- */
-const UPLOAD_LEADS = ['我上传了文件，在工作区里：', 'I uploaded some files. They are in the workspace at:']
+/** 用户消息开头那段「我上传了文件，在工作区里：」是 composeChatBody 拼的；认回来的实现在 core/src/chat/events.ts。 */
+const UPLOAD_LEADS = SatuCore.UPLOAD_LEADS
 
 function splitUploads(text) {
-  const src = String(text == null ? '' : text)
-  const lead = UPLOAD_LEADS.find((x) => src.startsWith(x + '\n'))
-  if (!lead) return { text: src, files: [] }
-  const lines = src.slice(lead.length + 1).split('\n')
-  const files = []
-  let i = 0
-  for (; i < lines.length; i++) {
-    const m = /^- `(uploads\/[^`]+)`$/.exec(lines[i])
-    if (!m) break
-    files.push({ path: m[1], name: m[1].split('/').pop() || m[1] })
-  }
-  if (!files.length) return { text: src, files: [] }
-  return { text: lines.slice(i).join('\n').trim(), files }
+  return SatuCore.splitUploads(text)
 }
 
+/**
+ * 把一串会话事件折成气泡。**实现在 core/src/chat/fold.ts**——一字没改地搬过去的（Telegram 来源、
+ * 空壳工具、压缩落在轮中间、/clear……每一条都有线上事故在后面）。改它去那边，改完重打 core.js，
+ * e2e 的 chat-fold.mjs 和 ui-smoke 仍经这里喂它。
+ */
 function fold(events, live, channelBot = false) {
-  const blocks = []
-  // 名册标记负责首条 Telegram 消息之前的 Web 轮次；历史里的渠道来源兼容旧响应。
-  const showChannelVia = channelBot || (events || []).some((ev) => {
-    const source = ev?.type === 'user/message' ? ev?.data?.source : null
-    return source?.kind === 'plugin' && source.plugin === 'channel' && source.channel === 'telegram'
-  })
-  let assistant = null
-  let tools = []
-  // 同一条主会话可以同时收 Web 和 Telegram；助手回复继承本轮用户消息的来源。
-  let turnVia = ''
-  let status = ''
-  let modelSeq = 0
-  /**
-   * 正在跑的这一轮是**什么时候开始的**（turn/start 那条事件的时间）。
-   *
-   * 读秒要的是「我已经等了多久」，那个起点只能是这一轮开始的时刻——不是第一个字
-   * 落地的时刻。按后者算，一轮里模型先想十秒再开口，屏幕上的秒表会在第一个字冒出来
-   * 的瞬间从头开始数，而人明明已经等了十秒。
-   */
-  let statusAt = 0
-  // 空壳工具调用的 callId（见下面 tool/call）。它们的结果也要一起跳过。
-  const phantoms = new Set()
-  /**
-   * callId → 那颗工具药丸，跨块认。给 `tool/shot` 用：它晚于 `tool/result` 到，中间可能
-   * 隔着后面几步，`tools` 这时候未必还是那次调用所在的那一份。
-   */
-  const toolByCall = new Map()
-  /** 最后一条 `todo/list` 快照。见下面那一支。 */
-  let todos = null
-  /** 单号 → 已经画在某一块上的那张交接卡。跨块认，见下面 human/handoff。 */
-  const handoffSeen = new Map()
-  const handoffOf = (id) => (id ? handoffSeen.get(id) : undefined)
-  for (const ev of events || []) {
-    const type = ev.type
-    const data = ev.data || {}
-    // 事件自带 time（bot 那边 append 时打的）。界面上要按天分隔、每条标时刻，
-    // 所以 fold 得把它带出来——只有块的**第一条**事件的时间算数，流式续写的那些
-    // chunk 不该让一条消息的时间一直往后跳。
-    const at = Number(ev.time) || 0
-    if (type === 'user/message') {
-      /**
-       * 不是人打进来的那些一律不画，但外部渠道和明确的代理入口要画。
-       *
-       * 那一条 `source` 是 `plugin: 'handoff'`（席位替接手的人发的，见 policy/handoff.ts），
-       * 但它就是一个人做完事之后说的话，是这一轮的起因。滤掉的话，界面上会看到 Bot
-       * 突然自己开口接着干活，而上一句是几小时前它说"等人接手"。
-       */
-      const src = data.source || {}
-      // Telegram / Web 在同一主会话里按 via 分辨；看板、日常任务和交还继续用原来的代理标签。
-      const via = src.kind === 'plugin' && src.plugin === 'channel'
-        ? (src.channel === 'telegram' ? 'telegram' : String(src.channel || 'channel'))
-        : src.kind === 'plugin' && (src.plugin === 'kanban' || src.plugin === 'routine' || src.plugin === 'handoff')
-          ? src.plugin
-          : (!src.kind || src.kind === 'user') ? (showChannelVia ? 'web' : '') : ''
-      if (src.kind && src.kind !== 'user' && !via) continue
-      turnVia = via
-      assistant = null
-      tools = []
-      const raw = messageText(data.message) || data.text || ''
-      const up = splitUploads(raw)
-      blocks.push({
-        kind: 'user',
-        text: up.text,
-        // 附件列表拆出来单独画成药丸；正文只留人真正打的那句话。
-        files: up.files,
-        // **点名要跟着消息留下来。** 它是这条消息的一部分（决定了这一轮的工具表），
-        // 不是输入框上一个发完就没的装饰。丢掉的话翻上去看昨天那条，「@ 了谁」就消失了，
-        // 而那正是「它为什么去读了我的邮箱」的唯一答案。
-        mentions: messageMentions(data.message),
-        // 引用同理：它是这条消息的一部分，翻上去要看得出「当时指的是哪条、哪个文件」。
-        refs: messageRefs(data.message),
-        // **这行话从哪来。** Web / Telegram / 代理任务都画在气泡上的角标。
-        via,
-        // **raw 不能省。** mergePending 靠「文字一模一样」认回执，而它手上那份是
-        // 拼好的完整正文。只留拆过的 text，带附件的消息就永远认不回来——那条 pending
-        // 销不掉，界面会一直挂着「正在思考」。
-        raw,
-        images: messageImages(data.message),
-        time: at,
-        seq: ev.seq,
-      })
-    } else if (type === 'assistant/message') {
-      const text = messageText(data.message)
-      if (!assistant) {
-        assistant = { kind: 'assistant', text: '', tools, via: turnVia, time: at, seq: ev.seq }
-        blocks.push(assistant)
-      }
-      if (text) assistant.text = text
-      /**
-       * **引用要指这一条，不是块的 seq。** 块的 seq 是它第一条事件的（常常是一条
-       * assistant/chunk 或 tool/call），拿它去引用，席位会说「引用的消息不存在」——它只认
-       * user/message 和 assistant/message。一轮里多条助手消息（工具中间穿插的）取最后
-       * 一条，和上面 text 的取法一致。
-       */
-      assistant.msgSeq = ev.seq
-      assistant.endTime = at
-    } else if (type === 'assistant/chunk') {
-      const chunk = data.chunk || {}
-      if (chunk.type === 'text-delta' && chunk.text) {
-        if (!assistant) {
-          assistant = { kind: 'assistant', text: '', tools, via: turnVia, time: at, seq: ev.seq }
-          blocks.push(assistant)
-        }
-        assistant.text += chunk.text
-        assistant.endTime = at
-      }
-    } else if (type === 'tool/call') {
-      // 工具常常在助手吐出第一个字**之前**就开始跑（先查订单再回话）。以前只在已经有
-      // 助手块时才把工具挂上去，于是这一段时间里工具痕迹无处可去，等回答开始才突然
-      // 冒出来——正好是最想知道「它在干什么」的那几秒什么都看不到。这里补一条：工具
-      // 一开跑就把助手块建出来，正文留空，界面上就是一个带工具痕迹的「正在想」气泡。
-      if (!assistant) {
-        assistant = { kind: 'assistant', text: '', tools, via: turnVia, time: at, seq: ev.seq }
-        blocks.push(assistant)
-      }
-      // **没有名字的不画。** 那是 bot 那边一个已经修掉的下标错位留下的空壳（见
-      // llm/gateway.ts 的 toolSlot），它从来没跑过、也跑不起来，pi 一句「找不到叫「」
-      // 的工具」就把它判失败了。可**已经写下的日志里还留着**，翻上去看昨天那轮，
-      // 每一轮开头都挂一颗红色的「tool · 失败」，点开里面什么都没有。
-      // 结果也一起跳过（见下面 tool/result）：不跳的话它会按「第一条还没有结果的」
-      // 认过去，把一次成功的调用标成失败。
-      if (!String(data.name || '').trim()) {
-        phantoms.add(data.callId)
-        continue
-      }
-      // arguments 要留着：工具药丸的悬浮窗全靠它回答「这次到底拿什么跑的」。存的是
-      // bot 那边 JSON.stringify 过的原串，展示时再 parse 一次做缩进（见 toolPopBody）。
-      const call = {
-        callId: data.callId,
-        name: data.name,
-        args: typeof data.arguments === 'string' ? data.arguments : '',
-        result: null,
-        failed: false,
-      }
-      tools.push(call)
-      if (data.callId) toolByCall.set(data.callId, call)
-      assistant.tools = tools
-      assistant.endTime = at
-    } else if (type === 'tool/result') {
-      if (phantoms.has(data.callId)) continue
-      const hit =
-        tools.find((x) => x.callId && x.callId === data.callId && x.result == null) ||
-        tools.find((x) => x.result == null) ||
-        tools[tools.length - 1]
-      if (hit) {
-        hit.result = data.text || ''
-        hit.failed = Boolean(data.failed)
-        // 工具自己报出来的产出文件。老日志没有这个字段，也**不去扫 text 猜路径**——
-        // 那段文本是写给模型的散文，措辞一改就扫不出来了。
-        hit.files = Array.isArray(data.files) ? data.files : null
-        // 这次调用**看到**的文件（ls 列的、grep 命中的、read 读的那一个）。正文里
-        // 出现的文件名靠它接成能点开的链接——同样是工具报出来的，不是扫文本猜的。
-        hit.refs = Array.isArray(data.refs) ? data.refs : null
-        // 浏览器工具拍的那张页面截图。老日志把它放在这儿；新日志另来一条 tool/shot（见下）。
-        // 两样都没有就是没有——**不去猜**。
-        hit.shot = isShot(data.shot) ? data.shot : hit.shot || null
-      }
-      if (assistant) assistant.endTime = at
-    } else if (type === 'tool/shot') {
-      /**
-       * 工具结果交出去之后才拍完的那张截图（bot 的 ToolResult.pendingShot）。
-       *
-       * **只按 callId 认，认不到就丢。** 不像 tool/result 那样退回「最后一颗」：
-       * 贴错一张图比少一张更坏——人会拿它去判断那一步到底点到了什么。
-       */
-      const hit = toolByCall.get(data.callId)
-      if (hit && isShot(data.shot)) hit.shot = data.shot
-    } else if (type === 'agent/task') {
-      /**
-       * 一次委派（见 docs/delegation.md）。**挂在助手那一块上**，理由和确认卡一字不差：
-       * 另起一块会把卡片插进正在跑的这一轮中间，而 `tool/result` 按 callId 认药丸，
-       * 认不回去就会把一次成功的调用标成失败。
-       *
-       * 同一个 id 会来多条（running → 终态），**取最后一条**。读法和 tool/approval、
-       * human/handoff 是同一套。
-       */
-      if (!assistant) {
-        assistant = { kind: 'assistant', text: '', tools, via: turnVia, time: at, seq: ev.seq }
-        blocks.push(assistant)
-      }
-      const list = assistant.tasks || (assistant.tasks = [])
-      const prev = list.find((x) => x.id === data.id)
-      if (prev) Object.assign(prev, data)
-      else list.push({ ...data })
-      assistant.endTime = at
-    } else if (type === 'skill/saved') {
-      /**
-       * Bot 给自己记下了一条 Skill（docs/skills.md §13）。**挂在助手那一块上**，理由
-       * 和委派卡、确认卡一字不差：另起一块会把它插进正在跑的这一轮中间，而
-       * `tool/result` 按 callId 认药丸，认不回去就会把一次成功的调用标成失败。
-       *
-       * 这是员工唯一一次**在事情发生的当下**看见它改了自己——事后去 Skill 页面翻，
-       * 那一屏没人会没事去看。
-       */
-      if (!assistant) {
-        assistant = { kind: 'assistant', text: '', tools, via: turnVia, time: at, seq: ev.seq }
-        blocks.push(assistant)
-      }
-      const notes = assistant.skillNotes || (assistant.skillNotes = [])
-      const seen = notes.find((x) => x.callId === data.callId)
-      if (seen) Object.assign(seen, data)
-      else notes.push({ ...data })
-      assistant.endTime = at
-    } else if (type === 'memory/saved') {
-      /**
-       * Bot 记下（改掉、删掉）了一条事实（docs/memory.md §9）。**挂在助手那一块上**，
-       * 理由和上面那张 Skill 卡一字不差。
-       *
-       * 比 Skill 那张更要紧一档：一条记忆此后**每一轮**都摆在提示词里影响回答，
-       * 而事后去 Bot 设置里翻，那一屏没人会没事去看。
-       */
-      if (!assistant) {
-        assistant = { kind: 'assistant', text: '', tools, via: turnVia, time: at, seq: ev.seq }
-        blocks.push(assistant)
-      }
-      const mem = assistant.memNotes || (assistant.memNotes = [])
-      const had = mem.find((x) => x.callId === data.callId)
-      if (had) Object.assign(had, data)
-      else mem.push({ ...data })
-      assistant.endTime = at
-    } else if (type === 'tool/approval') {
-      /**
-       * 高风险确认。**挂在助手那一块上，不另起一块。**
-       *
-       * 另起一块的话，卡片会插在正在跑的这一轮中间：上面是已经吐出来的正文、下面是
-       * 后续的正文，而工具药丸和它的结果分属两块——`tool/result` 按 callId 认药丸，
-       * 认不回去就会把一次成功的调用标成失败。挂在块上，位置就在那颗药丸底下，
-       * 也正是人要找它的地方。
-       */
-      if (!assistant) {
-        assistant = { kind: 'assistant', text: '', tools, via: turnVia, time: at, seq: ev.seq }
-        blocks.push(assistant)
-      }
-      const list = assistant.approvals || (assistant.approvals = [])
-      const cur = list.find((a) => a.callId === data.callId)
-      if (cur) {
-        // 同一个 callId 会来两条：先 pending，人点了之后再来终态。取最后一条。
-        cur.state = data.state || cur.state
-        if (data.scope) cur.scope = data.scope
-        // 终态那条带的是**最终**那一份（人改过的话就是改后的），覆盖掉起草时那份。
-        if (typeof data.arguments === 'string') cur.args = data.arguments
-        if (data.form && Array.isArray(data.form.fields)) cur.form = data.form
-        if (Array.isArray(data.edited)) cur.edited = data.edited
-      } else {
-        list.push({
-          callId: data.callId,
-          name: data.name || '',
-          args: typeof data.arguments === 'string' ? data.arguments : '',
-          reason: data.reason || '',
-          // 这次用哪张卡、卡上哪几格。**席位算好的**，界面照着画（见 policy/forms.ts）。
-          form: data.form && Array.isArray(data.form.fields) ? data.form : null,
-          edited: Array.isArray(data.edited) ? data.edited : null,
-          state: data.state || 'pending',
-          expiresAt: Number(data.expiresAt) || 0,
-          // 这条 pending 落在日志的第几行。核对现况时拿它跟快照的水位比——
-          // **不拿时间比**，那是两台机器各自的钟（见 approvalDead）。
-          seq: ev.seq,
-        })
-      }
-      assistant.endTime = at
-    } else if (type === 'human/handoff') {
-      /**
-       * 转人工的交接单（见 docs/handoff.md）。挂在开单那一块上，和确认卡同一个理由。
-       *
-       * **同一张单会来好几条**（open → claimed → returned → closed），而且后面那几条
-       * 常常隔了几小时——中间人多半又跟 Bot 说过话，于是「当前这一块」早就不是开单
-       * 那一块了。所以按单号在**整条会话**里认（handoffOf），认回开单时那一条就地改。
-       *
-       * 只在当前块里找的话，claimed 会被当成一张新单推进新块：同一张单画出两张卡，
-       * 上面那张还写着「等人接手」、按钮还能点——点下去换回一句 409，而人在下面那张
-       * 卡里写的结论也读不到（取的是第一个匹配的输入框）。
-       */
-      const seen = handoffOf(data.id)
-      if (seen) {
-        seen.state = data.state || seen.state
-        if (data.claimedBy) seen.claimedBy = data.claimedBy
-        if (data.result) seen.result = data.result
-        if (data.repeats) seen.repeats = data.repeats
-        // **不动任何一块的 endTime**：这条事件属于开单那一块，而它早就收口了；
-        // 拿它去推当前块的时间，气泡下面那行会跳到几小时之后。
-        continue
-      }
-      if (!assistant) {
-        assistant = { kind: 'assistant', text: '', tools, via: turnVia, time: at, seq: ev.seq }
-        blocks.push(assistant)
-      }
-      const hs = assistant.handoffs || (assistant.handoffs = [])
-      const fresh = {
-        id: data.id,
-        callId: data.callId || '',
-        state: data.state || 'open',
-        reason: data.reason || '',
-        ask: data.ask || '',
-        summary: data.summary || '',
-        blocking: data.blocking !== false,
-        claimedBy: data.claimedBy || null,
-        result: data.result || null,
-        repeats: Number(data.repeats) || 0,
-        seq: ev.seq,
-      }
-      hs.push(fresh)
-      handoffSeen.set(data.id, fresh)
-      assistant.endTime = at
-    } else if (type === 'session/compact' || type === 'session/reset') {
-      /**
-       * 上下文边界。画成一条横穿的分割线，不是气泡。
-       *
-       * 自动压缩画的是同一条线，这是顺带修好的一件事：在这之前自动压缩在界面上完全
-       * 不可见，人只看到 Bot 从某一刻起开始忘事，没有任何解释。
-       *
-       * **这里绝不能顺手 `assistant = null; tools = []`。**
-       *
-       * 直觉上该断：不断的话下一条助手消息会续写到分割线之前那一块上。但那个担心是空的
-       * ——两轮之间紧跟着边界的必然是 `user/message`，而那一支自己就会断（见上面）。
-       *
-       * 而断了会咬人：压缩事件**完全可能落在一个正在跑的轮次中间**（轮末那次是
-       * `void maybeCompact`，不 await，还要跑一次摘要模型调用，几秒到十几秒；这期间人
-       * 早就发了下一句、下一轮的工具也开跑了）。这时把 `tools` 换成新的空数组，该轮后
-       * 到的 `tool/result` 三次 find 全落空、结果被丢掉，而那颗药丸挂在上一块里、
-       * `result` 永远是 null——界面上就是一颗**永远停在「调用中」的工具药丸**，刷新也
-       * 回不来（重放同一串事件，结果一样）。同一个原因还会把正在流式输出的回答从中间
-       * 劈成两个气泡。
-       *
-       * 不断的话，落在轮中间时这条线就画在那一块的后面，位置诚实，别的什么都不影响。
-       */
-      /**
-       * `/clear`：之前画出来的全部扔掉，只剩这条线（docs/chat-commands.md §15）。
-       *
-       * 席位那头已经不再给清除点之前的事件了（historySlice），这里管的是**正开着的这一页**：
-       * 手上的事件桶里还躺着之前那些，不扔的话点完 `/clear` 屏幕上纹丝不动。
-       *
-       * 这一支可以断 assistant / tools——和上面那条「绝不能断」不矛盾：`/clear` 只在没在跑
-       * 时才收（席位那道闸），不会落在一轮中间。留着它们反倒会让一条迟到的 chunk 续写进
-       * 一个已经不在 blocks 里的块，凭空丢字。
-       */
-      if (type === 'session/reset' && data.clear) {
-        blocks.length = 0
-        assistant = null
-        tools = []
-        todos = null
-        toolByCall.clear()
-        handoffSeen.clear()
-      }
-      blocks.push({
-        kind: 'mark',
-        mark: type === 'session/reset' ? (data.clear ? 'clear' : 'reset') : 'compact',
-        // 老日志没有 by（那时只有自动压缩），按 auto 读。
-        by: data.by || (type === 'session/reset' ? 'user' : 'auto'),
-        from: Number(data.from) || 0,
-        to: Number(data.to) || 0,
-        tokensBefore: Number(data.tokensBefore) || 0,
-        tokensAfter: Number(data.tokensAfter) || 0,
-        dropped: Number(data.droppedMessages) || 0,
-        time: at,
-        seq: ev.seq,
-      })
-    } else if (type === 'session/model') {
-      /**
-       * 换日常模型（对话框里的选择器、`/model`、或者选的那个被下架了席位自己退回默认）。
-       * 同上面那条边界一样画成分割线，不打断正在拼的那一块：换模型也可能落在一轮中间
-       * （跑着的时候照样收，下一轮起生效），理由和压缩那条一字不差。
-       */
-      modelSeq = Number(ev.seq) || modelSeq
-      blocks.push({
-        kind: 'mark',
-        mark: 'model',
-        key: data.key || null,
-        label: String(data.label || data.key || ''),
-        reason: data.reason || '',
-        from: String(data.from || ''),
-        time: at,
-        seq: ev.seq,
-      })
-    } else if (type === 'todo/list') {
-      /**
-       * 待办清单的一张全量快照。**不画进消息流**——它是一份状态，不是一句话；每改一次
-       * 就在对话里推一条的话，一次十步的活会把人真正在读的内容挤没。折出来给 dock 用。
-       *
-       * 后一条盖前一条，seq 一起带上：dock 还有第二个数据源（打开这一页时拉的那次快照），
-       * 两边谁新按**日志行号**比，不按时间比（理由见 approvalDead）。
-       */
-      todos = { items: Array.isArray(data.items) ? data.items : [], seq: ev.seq }
-    } else if (type === 'turn/start') {
-      status = 'running'
-      statusAt = at
-    } else if (type === 'turn/end') {
-      status = ''
-      /**
-       * **起点也要跟着清掉。**
-       *
-       * `status` 还有第二个来源：席位的 live 旗子会整个盖掉这里扫出来的结论（见下面
-       * 那一句）。留着上一轮的起点，「live 说在跑、而手上这段事件的最后一条是
-       * turn/end」时，秒表就从上一轮开始数——早上跑完一轮、晚上那条日常任务起来的
-       * 那一帧，气泡下面直接是个「720:00」。清成 0，兜底那句才接得住。
-       */
-      statusAt = 0
-      // **这一轮真正收口的时刻。** 气泡下面那个时间要的是「输出完毕」而不是「开始
-      // 输出」，靠的就是它：比最后一条 chunk 准，也覆盖「只调工具、一个字没吐」的
-      // 那种轮次（那种轮里根本没有 chunk 可以取时间）。
-      if (assistant) assistant.endTime = at
-    }
-  }
-  // bot 说过话就听它的：这份历史可能是截断的，而扫描对截断毫无抵抗力（见 chatLive）。
-  if (typeof live === 'boolean') status = live ? 'running' : ''
-  /**
-   * 席位说「在跑」，可这段历史里根本没有那条 turn/start（截断了，或者只垫了一轮）。
-   * 退到手上最后一条事件的时间：秒表会少数一截，但**它至少在走**——而 0 会让这一行
-   * 整个消失（见 paintRowTime）。
-   */
-  if (status && !statusAt) {
-    const tail = blocks[blocks.length - 1]
-    statusAt = (tail && (tail.endTime || tail.time)) || 0
-  }
-  // modelSeq：最后一条 session/model 的 seq。选择器拿它判「快照旧了没有」，fold 本来就
-  // 逐条走一遍，顺手记下，省得每一帧再从头扫一遍事件。
-  return { blocks, status, statusAt, todos, channelVia: showChannelVia, modelSeq }
+  return SatuCore.fold(events, live, channelBot)
 }
 
 /** 只有绑定了 Telegram 渠道的 Bot 才显示 Web / Telegram 来源角标。 */
@@ -1330,28 +707,8 @@ async function hydrateChat(botId, sessionId) {
   return job
 }
 
-/**
- * 核对一遍「哪几条确认还真的等着」。
- *
- * 卡片本身是从会话事件折出来的，可日志只说「那时候它在等」。**等待方是席位进程里的
- * 一个 Promise**：席位重启过、或者那条早就超时而这台浏览器当时没连着，日志上那条
- * pending 就永远停在那儿——人点下去什么都不会发生，只换回一句 409。
- *
- * 所以拉一次现况，比它早的 pending 只要不在清单里就画成失效。**「比它早」按 seq 算，
- * 不按时间算**：事件上的 time 是席位盖的，而「现在几点」是浏览器这边的——两台机器的
- * 钟差几十秒是常态（虚拟机漂移），席位慢一点的话，拉取之后新冒出来的确认会显得比快照
- * 还早，于是一张真的在等的卡片被画成失效、按钮消失，人只能眼看着它五分钟后超时。
- * seq 是会话日志的行号，两边看到的是同一个数，没有这个问题。
- *
- * 水位取在**发请求之前**：那之后落下的事件，席位的回执里可能来不及包含。
- */
 function maxSeqOf(events) {
-  let max = 0
-  for (const ev of events || []) {
-    const seq = Number(ev && ev.seq)
-    if (Number.isFinite(seq) && seq > max) max = seq
-  }
-  return max
+  return SatuCore.maxSeqOf(events)
 }
 
 /**
@@ -1742,8 +1099,7 @@ async function loadChatPage() {
    看到一段缺了正文的历史。正文照旧由 ensureChatSession 在人点进去时另开一条。
    ══════════════════════════════════════════════════════════════════ */
 
-/** 断了之后的退避档位（毫秒）。到顶就一直用最后那一档——名单这条不认输，理由见下。 */
-const ROSTER_BACKOFF = [500, 1000, 2000, 4000, 8000, 15_000, 30_000]
+const ROSTER_BACKOFF = SatuCore.ROSTER_BACKOFF
 let rosterAbort = null
 let rosterTimer = null
 /**
@@ -1836,7 +1192,7 @@ async function startRosterStream(attempt = 0) {
 function retryRosterStream(ac, attempt) {
   if (rosterAbort !== ac) return
   rosterAbort = null
-  const wait = ROSTER_BACKOFF[Math.min(attempt, ROSTER_BACKOFF.length - 1)]
+  const wait = SatuCore.rosterRetryDelay(attempt)
   clearTimeout(rosterTimer)
   rosterTimer = setTimeout(() => void startRosterStream(attempt), wait)
 }
@@ -1889,18 +1245,10 @@ function noteRosterFrame(msg) {
 }
 
 /**
- * 事件流游标。断线重连时带上它，服务端从这一条之后继续发。
- *
- * 事件里的 `seq` 是会话日志的行号，天然单调，所以「续传」就是把最后见到的那个数
- * 回传过去——不需要去重，也不会重放已经画出来的内容。
+ * 事件流游标。断线重连时带上它，服务端从这一条之后继续发（见 core/src/chat/events.ts 的 cursorOf）。
  */
 function chatCursor(botId) {
-  const list = botId ? botStreamOf(botId).events : state.chatEvents
-  for (let i = list.length - 1; i >= 0; i--) {
-    const n = Number(list[i] && list[i].seq)
-    if (Number.isFinite(n)) return n
-  }
-  return null
+  return SatuCore.cursorOf(botId ? botStreamOf(botId).events : state.chatEvents)
 }
 
 /** 这条会话归哪个 Bot。事件回来时要知道记到谁头上。 */
@@ -1909,27 +1257,8 @@ function botIdOfSession(sessionId) {
   return ''
 }
 
-/**
- * 断了自己接回来。
- *
- * 以前是「流断了就停，下次打开会话才重连」——网络抖一下、或者机器管家换版重启一
- * 次，正在看的对话就无声地卡住了，人还以为 bot 在想。退避重试到这个档位为止，
- * 之后才把「连接断开」摆到界面上。
- *
- * **6 档（约 24 秒）不够。** 它挡得住网络抖一下，挡不住一次换版：重铺一个席位要拉
- * 发布包、解包、rsync 一份 app、重启两个单元，两个端口还各自自证 30 秒——几分钟是
- * 常态。24 秒之后这条流就认输了，而认输之后消息照发照跑：POST 走的是另一条请求，
- * 回答经 SSE 送出来时没人在听，屏幕上那句「正在思考」于是一直挂着，bot 日志里那一轮
- * 明明写着 completed。刷新一下就好，因为那会重开一条流——「更新完运行时，回复卡在
- * 界面上不动，刷新才看得见」说的就是这件事。
- *
- * 40 档 ≈ 5 分钟（前 5 档退避到 8 秒，之后每档 8 秒），够一次换版走完。真的一直不
- * 回来才认输，而认输也不再是死局：见 reviveChatStream——发消息、切回这个标签页、
- * 点那句话里的「重新连接」，任意一样都会当场再开一条。
- */
-const CHAT_RETRY_MAX = 40
-/** 连接活够这么久，就算「真的连上过」，退避档位归零。 */
-const CHAT_ALIVE_MS = 10_000
+const CHAT_RETRY_MAX = SatuCore.CHAT_RETRY_MAX
+const CHAT_ALIVE_MS = SatuCore.CHAT_ALIVE_MS
 
 /**
  * 对话流**只直连席位机器**。
@@ -2372,7 +1701,7 @@ function retryChatStream(sessionId, ac, attempt) {
     noteStreamDown(sessionId, '连接断开')
     return
   }
-  const delay = Math.min(500 * 2 ** attempt, 8000)
+  const delay = SatuCore.chatRetryDelay(attempt)
   setTimeout(() => {
     // 判据要和上面那一条一样。后台流不在 chatAbort 名下，拿当前会话那把闩去认它，
     // 它就永远等不到这次重连——名单上的时间和摘要从此停在断线那一刻。
@@ -2420,16 +1749,7 @@ function noteStreamWarming(sessionId) {
   if (isChatPath(state.path)) paintChat()
 }
 
-/**
- * 认输之后的慢速长跑。每 30 秒试一次，只要这一页还开着就不停。
- *
- * **和退避重连不是一回事**：那一段是「刚断，赶紧接回来」，节奏以秒计；这一段是「已经
- * 断了很久」，节奏以半分钟计，为的是不放弃。标签页在后台时浏览器会把它节流甚至冻住
- * ——那没关系，回到前台时 visibilitychange 那一路会立刻补一次（见文件末尾）。
- *
- * 同一个 Bot 只留一根：重复排会让请求成倍增长，而它们全都在等同一件事。
- */
-const CHAT_IDLE_RETRY_MS = 30_000
+const CHAT_IDLE_RETRY_MS = SatuCore.CHAT_IDLE_RETRY_MS
 const idleTimers = new Map()
 
 function idleRetry(sessionId, botId) {
@@ -2966,9 +2286,9 @@ function shotHtml(img) {
  */
 const MAX_STEP_SHOTS = 12
 
-/** 一张像样的截图记录：至少有个路径。老日志、坏数据一律当没有。 */
+/** 一张像样的截图记录：至少有个路径。 */
 function isShot(x) {
-  return Boolean(x && typeof x.path === 'string' && x.path)
+  return SatuCore.isShot(x)
 }
 
 /**
@@ -4631,55 +3951,16 @@ function threadRows(folded, sessionId) {
 }
 
 /**
- * 本地回显。**发出去的那一刻就画上，不等流把它送回来。**
- *
- * 消息流是单向的：POST 出去，等席位那边把 `user/message` 事件经 SSE 回传，界面才画。
- * Bot 一忙，这中间就是几秒到几十秒的**纯空白**——输入框清空了，屏幕上什么都没多，人
- * 完全看不出自己那一下有没有生效，只好再按一次。
- *
- * 回执一到就撤掉本地这条，换成流里的真货（它带 seq 和服务端时间）。
- *
- * **只认「发出去之后」的那些**：拿 afterSeq 卡住。不卡的话，历史里任何一条同样文字的
- * 消息都会把它抵消掉——发第二遍「好的」时，本地这条会在流还没回来时就凭空消失。
+ * 本地回显：发出去的那一刻就画上，回执一到就撤掉本地这条。认领规则在 core/src/chat/pending.ts；
+ * 这里只负责从 state.chatPending 里挑出这条会话的、再把没收到回执的写回去。
  */
 function mergePending(folded, sessionId) {
   const all = state.chatPending || []
   const mine = all.filter((p) => p.sessionId === sessionId)
   if (!mine.length) return folded
-  const fresh = folded.blocks.filter((b) => b.kind === 'user' && b.seq != null)
-  const left = []
-  for (const p of mine) {
-    // 比的是 raw（拼好的完整正文），不是显示用的 text——后者已经把附件那段拆走了。
-    const hit = fresh.findIndex((b) => b.seq > p.afterSeq && (b.raw != null ? b.raw : b.text) === p.text)
-    if (hit >= 0) fresh.splice(hit, 1)
-    else left.push(p)
-  }
+  const left = SatuCore.mergePending(folded, mine)
   if (left.length !== mine.length) {
     state.chatPending = all.filter((p) => p.sessionId !== sessionId || left.includes(p))
-  }
-  if (!left.length) return folded
-  for (const p of left) {
-    // 回执还没回来的那几秒也要长成最终的样子，否则附件会先以一行路径文本出现、
-    // 再突然变成药丸——同一条消息在屏幕上跳两次。
-    const up = splitUploads(p.text)
-    folded.blocks.push({
-      kind: 'user',
-      text: up.text,
-      files: up.files,
-      raw: p.text,
-      images: p.images || [],
-      mentions: p.mentions || [],
-      refs: p.refs || [],
-      via: folded.channelVia ? 'web' : '',
-      time: p.at,
-      pending: true,
-    })
-  }
-  // 没回执之前也要有「正在想」：那一行是人按下回车之后唯一的进度反馈。
-  if (!folded.status) {
-    folded.status = 'sending'
-    // 秒表从**按下发送**那一刻起算：回执还没回来的这几秒同样是在等（见 fold 的 statusAt）。
-    folded.statusAt = left.reduce((min, p) => (p.at && (!min || p.at < min) ? p.at : min), 0)
   }
   return folded
 }
@@ -9464,7 +8745,6 @@ async function deployMyRuntime(botId, opts = {}) {
     render()
   }
 }
-
 
 /* ── `@` 点名 ──────────────────────────────────────────────────────────
    输入框里打 `@` 弹选单，选中之后变成输入框上方的一颗药丸——**不是**往正文里塞一串
