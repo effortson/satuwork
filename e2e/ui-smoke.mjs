@@ -86,7 +86,11 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
       const parts = [...html.matchAll(/<script src="\/([^"]+)"[^>]*\bdata-app-part\b/g)].map((m) => m[1])
       assert(parts.length > 1, `index.html 里没找到 data-app-part 脚本`)
-      for (const f of parts) {
+      // **每个 <script src>**，不只是分片：core.js（core/src 打出来的）、i18n.js、markdown.js、
+      // unzip.js 都不带 data-app-part，漏进 ROOT_FILES 的后果一样是整页白屏。
+      const scripts = [...html.matchAll(/<script[^>]*\ssrc="\/([^"]+)"/g)].map((m) => m[1])
+      assert(scripts.includes('core.js'), `index.html 里没有 core.js：${scripts.join(', ')}`)
+      for (const f of scripts) {
         const r = await req(gwBase, 'GET', '/' + f)
         assert(r.status === 200, `GET /${f} → ${r.status}，八成是 ROOT_FILES 白名单漏了它`)
       }

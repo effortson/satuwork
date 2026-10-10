@@ -70,6 +70,16 @@ jobs:
       - name: typecheck
         run: pnpm typecheck
 
+      - name: core 单测
+        run: pnpm test:core
+
+      # gateway/ui/core.js 是 core/src 打出来的产物，提交进仓库。改了源码忘了重打，表现是
+      # 单测全绿、浏览器里跑的还是旧逻辑——所以这里重打一遍，和提交的那份必须一字不差。
+      - name: core.js 没漂
+        run: |
+          pnpm build:core
+          git diff --exit-code -- gateway/ui/core.js
+
       - name: e2e
         run: node e2e/run.mjs
 
