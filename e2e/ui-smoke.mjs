@@ -1925,10 +1925,41 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       ui.state.path = '/usage'
       ui.state.usageRange = '近 7 天'
       sameWindow(ui.chargesWindow('org'), ui.usageRangeMs('近 7 天'), '用量屏的明细没跟着范围胶囊')
+      // 「月」胶囊跟着月份选择器走：选了 2 月，汇总和明细都该是 2 月整月。
+      ui.state.usageRange = '本月'
+      ui.state.usageMonth = '2026-02'
+      const usageFeb = ui.usageRangeMs('本月')
+      assert(usageFeb.from === new Date(2026, 1, 1).getTime() && usageFeb.to === new Date(2026, 2, 1).getTime() - 1, `用量屏换月之后窗口不对：${JSON.stringify(usageFeb)}`)
+      sameWindow(ui.chargesWindow('org'), usageFeb, '用量屏的明细没跟着月份选择器')
+      ui.state.usageMonth = null
 
       // 账单页和平台的公司详情没有范围控件，那里就是全时段。
       ui.state.path = '/billing'
       assert(ui.chargesWindow('org') === null, '账单页凭空造了一个时间窗')
+    })
+
+    await test('日线柱高按钱画，不按次数', async () => {
+      /**
+       * 一天 92 次小调用花 $0.03、另一天 3 次长上下文花 $0.53：这张图挂在费用卡底下，
+       * 人要看的是哪天烧得多。按次数画，贵的那天会被画成一条线。次数退到悬停里。
+       */
+      const ui = await boot(ownerToken)
+      const html = ui.dailyBarChart(
+        [
+          { label: '10/01', value: 92, amount: '$0.03', amountMicros: 30_000 },
+          { label: '10/02', value: 3, amount: '$0.53', amountMicros: 530_000 },
+        ],
+        '每日任务执行量',
+        '空',
+      )
+      const heights = [...html.matchAll(/height: (\d+)%/g)].map((m) => Number(m[1]))
+      assert(heights.length === 2 && heights[1] === 100 && heights[0] === Math.round((30_000 / 530_000) * 100), `柱高没按金额画：${heights}`)
+      assert(html.includes('峰值 $0.53'), `标题行的峰值该是钱：${html.slice(0, 400)}`)
+      assert(html.includes('92 次'), '次数该还留在悬停里')
+      // 老接口不带金额：退回按次数画，峰值也报次数。
+      const legacy = ui.dailyBarChart([{ label: '10/01', value: 92 }, { label: '10/02', value: 46 }], '每日调用量', '空')
+      const lh = [...legacy.matchAll(/height: (\d+)%/g)].map((m) => Number(m[1]))
+      assert(lh[0] === 100 && lh[1] === 50 && legacy.includes('峰值 92 次'), `没金额时该按次数画：${lh}`)
     })
 
     await test('计费明细：倍率对所有种类都画出来，不只是模型', async () => {

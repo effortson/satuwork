@@ -138,8 +138,8 @@ export async function runStats({ gwRoot, test, req, start, waitHttp, assert, log
 
     await test('日线：窗口里每天一根，按看的人所在时区切，右端不越过今天', async () => {
       /**
-       * 和公司用量屏那条日线同一套（lib/guards.ts 的 dailyBars）：柱高是模型调用次数，
-       * 金额是那天三条路合计扣的钱。tz 传的是 getTimezoneOffset 的相反数，和前端一样——
+       * 和公司用量屏那条日线同一套（lib/guards.ts 的 dailyBars）：value 是模型调用次数，
+       * amount 是那天三条路合计扣的钱（界面柱高按钱画，次数进悬停）。tz 传的是 getTimezoneOffset 的相反数，和前端一样——
        * 这样「今天」那根才和上面 startOfToday 的切法对得上。
        */
       const tz = -d.getTimezoneOffset()
