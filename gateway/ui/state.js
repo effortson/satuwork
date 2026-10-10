@@ -398,7 +398,12 @@ function desktopShell() {
  * 票落持久存储、`/` 不是首页而是登录屏、不给「下载桌面端」这些，两种壳一样。
  */
 function appShell() {
-  return desktopShell() || window.__SATUWORK_MOBILE__ === true
+  return desktopShell() || mobileShell()
+}
+
+/** 手机壳（mobile/）：一扇窗、有软键盘和安全区、没有本地 Bot。 */
+function mobileShell() {
+  return window.__SATUWORK_MOBILE__ === true
 }
 
 function token() {
