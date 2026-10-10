@@ -388,12 +388,21 @@ const state = {
  * 时，当前窗口里的旧票会无感迁过去，不必平白再登录一次。显式退出则两边都清，不能让
  * 迁移留下的副本把人自动登回来。
  */
+/** 桌面壳：有本地 Bot 那组桥、有自升级。 */
 function desktopShell() {
   return window.__SATUWORK_DESKTOP__ === true
 }
 
+/**
+ * 随便哪个壳（桌面壳或手机壳 mobile/）：界面是包里自带的、不是 Gateway 发的。
+ * 票落持久存储、`/` 不是首页而是登录屏、不给「下载桌面端」这些，两种壳一样。
+ */
+function appShell() {
+  return desktopShell() || window.__SATUWORK_MOBILE__ === true
+}
+
 function token() {
-  if (!desktopShell()) return sessionStorage.getItem(TOKEN_KEY)
+  if (!appShell()) return sessionStorage.getItem(TOKEN_KEY)
   try {
     const saved = localStorage.getItem(TOKEN_KEY)
     if (saved) return saved
@@ -409,7 +418,7 @@ function token() {
 }
 
 function setToken(t) {
-  if (desktopShell()) {
+  if (appShell()) {
     try {
       localStorage.setItem(TOKEN_KEY, t)
       sessionStorage.removeItem(TOKEN_KEY)
@@ -421,7 +430,7 @@ function setToken(t) {
 
 function clearToken() {
   sessionStorage.removeItem(TOKEN_KEY)
-  if (!desktopShell()) return
+  if (!appShell()) return
   try {
     localStorage.removeItem(TOKEN_KEY)
   } catch {}

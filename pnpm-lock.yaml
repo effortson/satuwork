@@ -145,6 +145,12 @@ importers:
         specifier: ^5.7.2
         version: 5.9.3
 
+  mobile:
+    devDependencies:
+      '@tauri-apps/cli':
+        specifier: ^2.2.0
+        version: 2.11.4
+
 packages:
 
   '@anthropic-ai/sdk@0.91.1':

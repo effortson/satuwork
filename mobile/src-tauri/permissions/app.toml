@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "seat-desktop-commands"
+description = "允许主窗口在挂内嵌桌面前把席位机器的源报给导航守卫。"
+commands.allow = ["allow_seat_desktop"]
+
+[[permission]]
+identifier = "debug-log"
+description = "debug 构建里页面把 console.error / 未捕获异常抄给壳子落文件（正式包里这条命令是空操作）。"
+commands.allow = ["debug_log"]

@@ -760,9 +760,9 @@ function profilePage() {
           </p>
         </div>
 
-        ${/* 登录之后唯一的下载入口：首页那一段只给没登录的人看。桌面壳里换成当前版本和「检查更新」。 */ ''}
+        ${/* 登录之后唯一的下载入口：首页那一段只给没登录的人看。桌面壳里换成当前版本和「检查更新」；手机壳里两样都没有。 */ ''}
         ${
-          desktopShell()
+          appShell()
             ? desktopUpdateBridge()
               ? `<div class="satu-panel" data-desktop-update="profile">${desktopUpdateInner('profile')}</div>`
               : ''

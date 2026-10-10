@@ -1,0 +1,15 @@
+{
+  "name": "satuwork-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "dev:ios": "tauri ios dev --no-dev-server",
+    "prepare:ui": "node scripts/prepare-ui.mjs",
+    "build:ios": "pnpm prepare:ui && tauri ios build",
+    "icon": "tauri icon ../gateway/ui/assets/satuwork-logo.svg"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.0"
+  }
+}

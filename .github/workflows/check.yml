@@ -116,6 +116,33 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo check --locked
 
+  # 手机壳（mobile/，Tauri 2 mobile）单独一档：在 macOS 上 `cargo test`（lib.rs 的那几条纯函数单测，
+  # 导航守卫、路径逃逸都在里面），再 `cargo check` 一遍 iOS 模拟器目标——lib.rs 改坏了、或者用了
+  # 只在桌面上有的 Tauri API，当场知道。不出包：真正的 IPA 是发版流水线的事。
+  mobile:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 分支，2026-09-03
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios-sim
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: './mobile/src-tauri -> target'
+
+      - name: cargo test
+        working-directory: mobile/src-tauri
+        run: cargo test --locked
+
+      - name: cargo check（iOS 模拟器目标）
+        working-directory: mobile/src-tauri
+        run: cargo check --locked --target aarch64-apple-ios-sim
+
   # Windows 单独一档，**跑 cargo test 而不只是 check**：main.rs 里有一整段只在 Windows 编译的
   # 代码（本地 Bot 运行时解包时的 junction / 硬链接降级，见 unpack_links_windows），上面那档
   # 在 Linux 上一行都编译不到。以前它要等发版流水线打 Windows 包才第一次被编译，坏了就是发版
