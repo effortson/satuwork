@@ -72,6 +72,7 @@ import { runBrowser } from './browser.mjs'
 import { runMounted } from './mounted.mjs'
 import { runSetup } from './setup.mjs'
 import { runAuthThrottle } from './auth-throttle.mjs'
+import { runPush } from './push.mjs'
 import { runUiSmoke } from './ui-smoke.mjs'
 import { runUiFiles } from './ui-files.mjs'
 import { uiSource } from './ui-dom.mjs'
@@ -3653,6 +3654,7 @@ async function main() {
       }))
     await suite('setup', () => runSetup({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('auth-throttle', () => runAuthThrottle({ gwRoot, test, req, start, waitHttp, assert, log }))
+    await suite('push', () => runPush({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('custom-provider', () => runCustomProvider({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('stats', () => runStats({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('web-tools', () => runWebTools({ gwRoot, test, req, start, waitHttp, assert, log }))

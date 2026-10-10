@@ -15,6 +15,7 @@ import { resolveAssignee } from '../lib/handoff.ts'
 import { notify } from '../handoff-sweep.ts'
 import { auditResultHash } from '../conversation-audit.ts'
 import { afterResponse } from '../lib/background.ts'
+import { PUSH_KINDS, pushMessage, pushToAccount, type PushKind } from '../lib/push.ts'
 
 /**
  * 席位报上来的 guard / outcome 只认这两张表里的值。
@@ -586,6 +587,37 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
   })
 
   /**
+   * 席位说「这颗 Bot 有事要人看」：一轮跑完了（turn-end），或者停在一张审批卡上等人点
+   * （approval）。Gateway 给这个账号登记过的手机各推一条（lib/push.ts）。
+   *
+   * **只收「哪颗 Bot、什么事」，不收正文。** 标题是 Bot 的名字（这边从目录里查，不采信
+   * body），正文是一句固定的话。对话内容在席位机器上，Gateway 不经手，推送也不该夹带。
+   *
+   * 鉴权和审计事件那条一样：席位票只能报自己，机器票只能报本机席位。Bot 必须是这家公司
+   * 看得见的——不查的话，一台被拿下的席位能拿任意 botId 让别家 Bot 的名字出现在锁屏上。
+   *
+   * 推送失败不让上报失败：席位那头不该为一条没发出去的通知重试；发没发出去记在返回里。
+   */
+  router.post('/internal/push', async (req, res) => {
+    const caller = await requireInternalCaller(req, db)
+    const body = bodyOf(req)
+    const accountId = callerAccountId(caller, () => strField(body, 'accountId'))
+    const account = await db.account(accountId)
+    if (!account || account.companyId !== caller.companyId) throw new HttpError(403, '账号不属于这家公司')
+    await requireSeatOnCaller(db, caller, accountId)
+
+    const kind = strField(body, 'kind')
+    if (!PUSH_KINDS.has(kind)) throw new HttpError(400, 'kind 不认识')
+    const botId = strField(body, 'botId')
+    const bot = await db.catalog(botId)
+    if (!bot || bot.kind !== 'bot' || (bot.companyId && bot.companyId !== caller.companyId)) {
+      throw new HttpError(404, '没有这颗 Bot')
+    }
+    const result = await pushToAccount(db, accountId, pushMessage(kind as PushKind, bot.name, botId, account.locale))
+    json(res, 200, result)
+  })
+
+  /**
    * 席位报一张交接单，或者它的一次状态流转（见 docs/handoff.md）。
    *
    * **id 由席位给。** 单号在会话日志里已经写下了，Gateway 再发一个自己的号，两边就
@@ -673,6 +705,20 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
      * 让实例撑到它发完。
      */
     if (!known && handoff.state === 'open') afterResponse(`转人工 ${handoff.id} 的新单通知`, notify(db, handoff, 'new'))
+    /**
+     * 同一个时刻给接手人的手机推一条。指派给「管理员」的（assignee 为 null）不推：那是一群人，
+     * 谁都推等于谁都不当回事，留给待办页和公司 webhook。
+     */
+    if (!known && handoff.state === 'open' && handoff.assignee) {
+      const assignee = await db.account(handoff.assignee)
+      const bot = handoff.botId ? await db.catalog(handoff.botId) : undefined
+      if (assignee) {
+        afterResponse(
+          `转人工 ${handoff.id} 的手机推送`,
+          pushToAccount(db, assignee.id, pushMessage('handoff', bot?.name || '', handoff.botId || '', assignee.locale)),
+        )
+      }
+    }
     /**
      * 状态流转进审计。
      *
