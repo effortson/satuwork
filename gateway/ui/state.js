@@ -193,6 +193,8 @@ const state = {
   billingAutoRenew: null,
   usage: null,
   usageRange: null,
+  /** 用量屏「月」胶囊选的是哪个月（YYYY-MM）。null = 当月。 */
+  usageMonth: null,
   runtimeBots: [],
   /**
    * 公司名下有没有配对好的运行机器（GET /runtime/bots 的 hasMachine）。`null` = 还没拉到，

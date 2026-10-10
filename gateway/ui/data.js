@@ -1167,10 +1167,12 @@ function usageRangeMs(range) {
   const now = Date.now()
   if (range === '近 7 天') return { from: now - 7 * 24 * 3600 * 1000, to: now }
   if (range === '本月') {
-    // 本地日历的 1 号零点，和 statsWindow() 一个算法：这一屏的日线也是按看的人的
-    // 时区切的（见 loadUsage 传的 tz），月初按 UTC 算的话东八区月初那八小时会算到上个月。
-    const d = new Date()
-    return { from: new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0).getTime(), to: now }
+    // 「月」这颗胶囊配一个月份选择器（state.usageMonth，YYYY-MM），没选过就是当月。
+    // 本地日历的 1 号零点到下月 1 号前一毫秒，和 statsWindow() 一个算法：这一屏的日线
+    // 也是按看的人的时区切的（见 loadUsage 传的 tz），月初按 UTC 算的话东八区月初那
+    // 八小时会算到上个月。to 落在未来也没关系——日线的右端服务端会收到今天。
+    const [y, m] = (state.usageMonth || thisMonth()).split('-').map(Number)
+    return { from: new Date(y, m - 1, 1, 0, 0, 0, 0).getTime(), to: new Date(y, m, 1, 0, 0, 0, 0).getTime() - 1 }
   }
   return { from: now - 30 * 24 * 3600 * 1000, to: now }
 }

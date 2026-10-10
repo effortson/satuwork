@@ -1703,9 +1703,14 @@ function dailyBarChart(daily, title, empty) {
   // 金额只在柱子够宽时画在柱顶：「近 30 天」三十根柱子每根二十来像素，`$0.212` 塞不下，
   // 挤着画只会糊成一条；那时金额留在悬停里，标题行照样给合计。
   const showAmounts = daily.length <= 14
-  const peak = Math.max(...daily.map((d) => Number(d.value) || 0), 0)
   const spentMicros = daily.reduce((n, d) => n + (Number(d.amountMicros) || 0), 0)
   const hasAmounts = daily.some((d) => d.amount != null)
+  // 柱高按**钱**算，不按次数：这张图挂在费用卡底下，人要看的是「哪天烧得多」——
+  // 一天 92 次小调用花 $0.03、另一天 3 次长上下文花 $0.5，按次数画会把贵的那天画成
+  // 一条线。次数留在悬停里。只有服务端没给金额（老接口）时才退回按次数画。
+  const peakMicros = Math.max(...daily.map((d) => Number(d.amountMicros) || 0), 0)
+  const peakCalls = Math.max(...daily.map((d) => Number(d.value) || 0), 0)
+  const peak = hasAmounts ? peakMicros : peakCalls
   // 柱子多了日期也得抽稀：三十个「09/01」并排只会叠成一条。从最后一根（今天）往回数，
   // 每隔 step 根标一个，今天那根一定有字。
   const step = Math.max(1, Math.ceil(daily.length / 10))
@@ -1713,7 +1718,8 @@ function dailyBarChart(daily, title, empty) {
     .map((d, i) => {
       const v = Number(d.value) || 0
       const labelled = (daily.length - 1 - i) % step === 0
-      const h = peak ? Math.round((v / peak) * 100) : 0
+      const size = hasAmounts ? Number(d.amountMicros) || 0 : v
+      const h = peak ? Math.round((size / peak) * 100) : 0
       const amount = d.amount || '—'
       const tip = hasAmounts
         ? t(`${d.label} · ${v} 次 · ${amount}`, `${d.label} · ${v} calls · ${amount}`)
@@ -1731,7 +1737,7 @@ function dailyBarChart(daily, title, empty) {
   const total = hasAmounts ? ` · ${t('合计', 'total')} ${fmtUsdMicros(spentMicros)}` : ''
   return `<div style="display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;">
       <span class="satu-panel-title">${esc(title)}</span>
-      <span style="font-size: 12px; color: var(--muted-foreground);">${t(`峰值 ${peak} 次`, `peak ${peak} calls`)}${esc(total)}</span>
+      <span style="font-size: 12px; color: var(--muted-foreground);">${hasAmounts ? `${t('峰值', 'peak')} ${esc(fmtUsdMicros(peakMicros))}` : t(`峰值 ${peakCalls} 次`, `peak ${peakCalls} calls`)}${esc(total)}</span>
     </div>
     <div class="satu-bars">${cols}</div>`
 }
@@ -1761,12 +1767,21 @@ function usagePage() {
   const byKind = Array.isArray(data.byKind) ? data.byKind : []
   const byMember = Array.isArray(data.byMember) ? data.byMember : []
   const seats = Number(data.seats) || 0
-  const pills = ranges
-    .map(
-      (r) =>
-        `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(range === r)}" data-act="usage-range" data-range="${esc(r)}">${esc(r)}</button>`,
-    )
-    .join('')
+  // 「本月」那颗胶囊写成「月」，旁边配月份选择器——键还是 '本月'，别处（usageRangeMs、
+  // 明细窗口）都认这个键。选中别的月份时，副标题写那个月，不写「本月」。
+  const month = state.usageMonth || thisMonth()
+  const pillLabel = (r) => (r === '本月' ? t('月') : t(r))
+  const rangeLabel = range === '本月' ? month : t(range)
+  const pills =
+    ranges
+      .map(
+        (r) =>
+          `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(range === r)}" data-act="usage-range" data-range="${esc(r)}">${esc(pillLabel(r))}</button>`,
+      )
+      .join('') +
+    (range === '本月'
+      ? `<input class="input" type="month" style="width: 170px; flex: none;" value="${esc(month)}" aria-label="${esc(t('选择月份', 'Pick a month'))}" data-act="usage-month">`
+      : '')
   // 两张 token 卡片服务端给的是精确整数，几千万一长串没法一眼读，按 M 画、悬停看精确值。
   const tokenStats = new Set(['输入 Tokens', '输出 Tokens'])
   const statCards = stats
@@ -1839,7 +1854,7 @@ function usagePage() {
             ${/* label 是服务端原样发过来的中文（见 lib/guards.ts 那份 usagePayload），
                  拿 t() 翻过再比就永远配不上——英文界面下这句会一直说「还没有调用」，
                  而下面明明列着几千次。翻译只用在给人看的那半句上。 */ ''}
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${esc(range)} · ${esc((Number((stats.find((x) => x.label === '任务执行') || {}).value) || 0) > 0 ? t('已记录调用') : t('还没有调用'))}</p>
+            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${esc(rangeLabel)} · ${esc((Number((stats.find((x) => x.label === '任务执行') || {}).value) || 0) > 0 ? t('已记录调用') : t('还没有调用'))}</p>
           </div>
           <div style="display: flex; align-items: center; gap: var(--space-2); flex: none;">
             ${pills}

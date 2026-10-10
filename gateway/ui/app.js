@@ -2154,6 +2154,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'usage-range') {
     state.usageRange = btn.getAttribute('data-range') || '近 30 天'
+    if (state.usageRange === '本月' && !state.usageMonth) state.usageMonth = thisMonth()
     // 明细也跟着换窗口——胶囊写着「近 7 天」而底下列着全时段，是两张表在互相拆台。
     reloadUsagePage()
       .then(() => render())
@@ -2848,6 +2849,18 @@ document.getElementById('app').addEventListener('change', async (e) => {
   if (el.getAttribute?.('data-act') === 'stats-company') {
     state.statsCompany = el.value
     await reloadStatsPage()
+    return
+  }
+  // 用量屏的月份选择器：和统计屏那只一样，换月就连明细一起重拉。
+  if (el.getAttribute?.('data-act') === 'usage-month') {
+    state.usageMonth = el.value || thisMonth()
+    state.usageRange = '本月'
+    try {
+      await reloadUsagePage()
+    } catch (err) {
+      flash('err', err.message)
+    }
+    render()
     return
   }
   // select 和 checkbox 只发 change，草稿字段在这里也收一次。
