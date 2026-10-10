@@ -1,6 +1,6 @@
 # ADR：逻辑层抽成 `core` 包，移动端用 Expo 只做对话
 
-- 状态：**已接受**（2026-10-10），**实施中**：第 1–5 步已落地（见 §5）
+- 状态：**已接受**（2026-10-10），**实施中**：第 1–6 步已落地（见 §5）
 - 影响范围：gateway/ui、gateway/src/http.ts、gateway/scripts、e2e/ui-dom.mjs、desktop/（间接）、新增 core/ 与 mobile/
 - 前置阅读：[gateway-runtime.md](gateway-runtime.md)；[adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) §4、§7；[session-event-field-map.md](session-event-field-map.md)；[chat-references.md](chat-references.md)
 
@@ -201,7 +201,7 @@ mobile/
   src/gateway.ts        用 core 的 createGatewayClient 装配：expo/fetch、SecureStore 里的票与地址
   src/store.tsx         React 登录态
   src/chat/useChat.ts   取会话 → 拉历史 → runEventStream → fold
-  src/components/       MessageList（第一期纯文本气泡；Markdown 渲染器下一步选）
+  src/components/       MessageList（纯文本气泡、工具药丸、审批卡、交接卡）、Composer（正文、选图、发送 / 停止）
 ```
 
 Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依赖 React。
@@ -242,7 +242,13 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
    上对着本机临时 Gateway 走通了登录 → 名单 → 对话屏（没有席位机器，验到「实例还没上线」为止）。
    两个落地时的小决定：输入框**非受控**（受控的 value 回写会在 JS 线程慢时丢字）；
    `EXPO_PUBLIC_DEV_EMAIL/PASSWORD` 只在 `__DEV__` 下预填登录屏，模拟器的文字注入靠不住。
-6. **mobile 可写**：发消息、中止、审批、名单流、图片附件。
+6. **mobile 可写**（已落地）：发消息（本地回显走 core 的 `mergePending`，排队回执画成输入框顶上一行，
+   失败撤回显并把草稿还回去）、中止（先改界面再发请求）、审批卡（同意 / 拒绝，`{decision, scope:'once'}`）、
+   名单流（`rosterStreamUrl` 一条管所有 Bot，`roster/ev` / `roster/live` 两种帧，归并走 core 的
+   `applyRosterEvent` / `settleDot`）、图片（expo-image-picker 选图，裸字节加 `x-filename` 头直打
+   `uploadUrl`，路径列进正文、图片另走 `images`）。模拟器里验到：发送失败的回滚与弹窗、会话未就绪
+   禁发送、没有 uploadUrl 时不出「＋」。真实发送 / 审批 / 名单流要有席位机器才能验。
+   小坑：`setNativeProps({ text })` 在新架构上不生效，草稿还原改成换 key 重挂 TextInput。
 7. **推送**：§2.5 的四件事。
 8. **发布**：EAS Build；iOS 走 TestFlight，Android 出 APK 内测。
 
