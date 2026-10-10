@@ -1,6 +1,6 @@
 # ADR：逻辑层抽成 `core` 包，移动端用 Expo 只做对话
 
-- 状态：**已接受**（2026-10-10），**实施中**：第 1 步已落地（见 §5）
+- 状态：**已接受**（2026-10-10），**实施中**：第 1、2 步已落地（见 §5）
 - 影响范围：gateway/ui、gateway/src/http.ts、gateway/scripts、e2e/ui-dom.mjs、desktop/（间接）、新增 core/ 与 mobile/
 - 前置阅读：[gateway-runtime.md](gateway-runtime.md)；[adr-gateway-vercel-neon.md](adr-gateway-vercel-neon.md) §4、§7；[session-event-field-map.md](session-event-field-map.md)；[chat-references.md](chat-references.md)
 
@@ -213,7 +213,10 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
    落地时的几个具体选择：core.js **不压缩**（要进 PR diff）、`charset: 'utf8'`（中文键不转义）；
    译表搬过去时 TS 查出一条重复键（`只读`），删了后面那条；`usd` 的千分位语言改成入参，
    state.js 里包一层传 `localeMode`；`tokens` 在 core 里叫 `fmtTokens`，给后面的 TokenStore 让名。
-2. **请求层**：搬 `api()` / `swFetch` / `localRoute` / `t()` / `errText()` 和 `TokenStore`；data.js、prefs.js、state.js 转接。
+2. **请求层**（已落地）：搬 `api()` / `swFetch` / `localRoute` / `t()` / `errText()` 和 `TokenStore`；data.js、prefs.js 转接。
+   落地形态：`createGatewayClient({ fetch, baseUrl, tokens, locale, onUnauthorized, renewLocalBot })`，
+   data.js 开头一次装配、解构回原来的名字。`TokenStore` 只是接口，Web 的存取代码本来就是
+   浏览器存储，留在 state.js。`t` / `errText` 的语言成了第一个入参，prefs.js 包一层传 `localeMode`。
 3. **事件层**：搬 `sseEvents` / `fold` / `mergePending` / `chatCursor` / 退避表，补单测；`openEventStream` / `openRosterStream` 成形，chat.js 的开流函数改成薄壳。风险最高的一步。
 4. **Markdown**：先验证 parse 能不能拆；能拆就搬，不能就记到 §7 并关掉这一步。
 5. **mobile 脚手架**：登录、Bot 名单、对话的只读部分（历史 + SSE 渲染）。
