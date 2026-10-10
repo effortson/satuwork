@@ -214,6 +214,20 @@ export function tzOffsetMs(req: Req): number {
 export type UsageBar = { label: string; value: number; amount?: string; amountMicros?: number }
 
 const DAY_MS = 86400000
+const HOUR_MS = 3600000
+
+/** 柱子按什么粒度切：按天（默认）还是按小时（「今日」那一屏）。 */
+export type BarStep = 'day' | 'hour'
+
+/** `step=hour` → 按小时切柱子；没传、传别的都按天——老前端不带这个参数，日线照旧。 */
+export function stepQuery(req: Req): BarStep {
+  return (req.query.get('step') || '').trim() === 'hour' ? 'hour' : 'day'
+}
+
+/** 一根柱子盖多长时间（毫秒）。SQL 里切桶和这里铺柱子用同一个数。 */
+export function stepMs(step: BarStep): number {
+  return step === 'hour' ? HOUR_MS : DAY_MS
+}
 
 /** 桶号（按看的人所在时区平移后的天序号，见 `db.llmDailyBy`）→ `MM/DD`。 */
 export function dayLabelOf(bucket: number): string {
@@ -243,20 +257,63 @@ export function dailyBars(
   range: { from?: number; to?: number },
   offsetMs: number,
 ): UsageBar[] {
-  const today = dayBucketOf(Date.now(), offsetMs)
-  const first = range.from != null ? dayBucketOf(range.from, offsetMs) : buckets[0]?.bucket
-  const rawLast = range.to != null ? dayBucketOf(range.to, offsetMs) : buckets[buckets.length - 1]?.bucket
-  const last = rawLast != null ? Math.min(rawLast, today) : undefined
-  const daily: UsageBar[] = []
-  if (first == null || last == null || last < first) return daily
+  return barsOf(buckets, spentBuckets, range, offsetMs, DAY_MS, dayLabelOf, 92)
+}
+
+/** 桶号（平移后的小时序号）→ `HH:00`。 */
+export function hourLabelOf(bucket: number): string {
+  return `${String(new Date(bucket * HOUR_MS).getUTCHours()).padStart(2, '0')}:00`
+}
+
+/**
+ * 按小时铺柱子，给「今日」那一屏用。规矩和 dailyBars 一样：窗口里没调用的那个小时也画
+ * 一根 0 柱；右端不越过**现在这个小时**——下午三点看「今日」，后面九个小时还没发生，
+ * 画成一排 0 会被读成「晚上没人用」。最多 48 根（手搓一个跨天的窗口也不该拖垮这一屏）。
+ */
+export function hourlyBars(
+  buckets: { bucket: number; calls: number }[],
+  spentBuckets: { bucket: number; amountMicros: number }[],
+  range: { from?: number; to?: number },
+  offsetMs: number,
+): UsageBar[] {
+  return barsOf(buckets, spentBuckets, range, offsetMs, HOUR_MS, hourLabelOf, 48)
+}
+
+/** 按粒度分派：`day` → dailyBars，`hour` → hourlyBars。路由那边拿 stepQuery 的结果直接调。 */
+export function usageBars(
+  step: BarStep,
+  buckets: { bucket: number; calls: number }[],
+  spentBuckets: { bucket: number; amountMicros: number }[],
+  range: { from?: number; to?: number },
+  offsetMs: number,
+): UsageBar[] {
+  return step === 'hour' ? hourlyBars(buckets, spentBuckets, range, offsetMs) : dailyBars(buckets, spentBuckets, range, offsetMs)
+}
+
+function barsOf(
+  buckets: { bucket: number; calls: number }[],
+  spentBuckets: { bucket: number; amountMicros: number }[],
+  range: { from?: number; to?: number },
+  offsetMs: number,
+  sizeMs: number,
+  labelOf: (bucket: number) => string,
+  maxBars: number,
+): UsageBar[] {
+  const bucketOf = (at: number) => Math.floor((at + offsetMs) / sizeMs)
+  const nowBucket = bucketOf(Date.now())
+  const first = range.from != null ? bucketOf(range.from) : buckets[0]?.bucket
+  const rawLast = range.to != null ? bucketOf(range.to) : buckets[buckets.length - 1]?.bucket
+  const last = rawLast != null ? Math.min(rawLast, nowBucket) : undefined
+  const bars: UsageBar[] = []
+  if (first == null || last == null || last < first) return bars
   const counts = new Map(buckets.map((b) => [b.bucket, b.calls]))
   const spent = new Map(spentBuckets.map((b) => [b.bucket, b.amountMicros]))
-  const start = Math.max(first, last - 91)
+  const start = Math.max(first, last - (maxBars - 1))
   for (let b = start; b <= last; b += 1) {
     const micros = spent.get(b) ?? 0
-    daily.push({ label: dayLabelOf(b), value: counts.get(b) ?? 0, amount: usdMicros(micros), amountMicros: micros })
+    bars.push({ label: labelOf(b), value: counts.get(b) ?? 0, amount: usdMicros(micros), amountMicros: micros })
   }
-  return daily
+  return bars
 }
 /** 看的人所在时区的「今天」：零点到现在。不跟着界面上选的范围走。 */
 export type UsageToday = {

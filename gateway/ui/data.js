@@ -256,6 +256,8 @@ async function loadStats() {
   const { from, to } = statsWindow()
   // 日线按看的人所在时区切天，和 loadUsage 传的是同一个数（getTimezoneOffset 的相反数）。
   const q = new URLSearchParams({ from: String(from), to: String(to), tz: String(-new Date().getTimezoneOffset()) })
+  // 「今日」柱子按小时切（见 lib/guards.ts 的 stepQuery）；别的档按天。
+  if (state.statsRange === 'today') q.set('step', 'hour')
   if (state.statsCompany) q.set('companyId', state.statsCompany)
   state.statsLoading = true
   render()
@@ -1052,6 +1054,11 @@ async function reloadUsagePage() {
 
 function usageRangeMs(range) {
   const now = Date.now()
+  if (range === '今日') {
+    // 本地零点到现在，和 statsWindow() 的「今日」一个算法。这一档的柱子按小时画（见 loadUsage 的 step）。
+    const d = new Date()
+    return { from: new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime(), to: now }
+  }
   if (range === '近 7 天') return { from: now - 7 * 24 * 3600 * 1000, to: now }
   if (range === '本月') {
     // 「月」这颗胶囊配一个月份选择器（state.usageMonth，YYYY-MM），没选过就是当月。
@@ -1070,7 +1077,9 @@ async function loadUsage() {
   // 日线要按**看的人所在时区**切天，服务端不知道那是哪个时区。传的是
   // getTimezoneOffset() 的相反数（东八区 +480），跟 from/to 由前端算好是同一个道理。
   const tz = -new Date().getTimezoneOffset()
-  const q = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&tz=${encodeURIComponent(tz)}`
+  // 「今日」一档柱子按小时切：一天只有一根柱子说不了任何事。老 Gateway 不认 step，照旧按天。
+  const step = range === '今日' ? '&step=hour' : ''
+  const q = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&tz=${encodeURIComponent(tz)}${step}`
   if (isAdmin() || isOwner()) {
     const id = orgId()
     if (!id) return

@@ -178,6 +178,27 @@ export async function runStats({ gwRoot, test, req, start, waitHttp, assert, log
       assert(badTz.status === 400, `坏 tz ${badTz.status}`)
     })
 
+    await test('小时线：step=hour 时「今日」按小时一根，右端不越过现在这个小时', async () => {
+      /**
+       * 「今日」那一屏一天只有一根柱子说不了任何事，前端传 step=hour，服务端按小时切。
+       * 规矩和日线一样：没调用的小时也画 0 柱；右端停在现在这个小时，后面的还没发生。
+       */
+      const tz = -d.getTimezoneOffset()
+      const r = await req(base, 'GET', `${q(startOfToday, Date.now())}&tz=${tz}&step=hour`, { token })
+      assert(r.status === 200, `${r.status} ${r.text}`)
+      const bars = r.json.daily
+      const hourNow = new Date().getHours()
+      // 请求前后可能跨过整点，允许差一根。
+      assert(Array.isArray(bars) && (bars.length === hourNow + 1 || bars.length === hourNow), `今天到现在该有 ${hourNow + 1} 根小时柱，实际 ${bars.length}`)
+      assert(bars[0].label === '00:00', `第一根该是 00:00，实际 ${bars[0].label}`)
+      assert(bars.every((x) => /^\d{2}:00$/.test(x.label)), `小时标签不对：${JSON.stringify(bars.map((x) => x.label))}`)
+      assert(bars.reduce((n, x) => n + x.value, 0) === 2, `今天的两次调用该都落在小时柱里：${JSON.stringify(bars)}`)
+      assert(bars.reduce((n, x) => n + (x.amountMicros || 0), 0) === 6_000_000, `今天扣的 $6 该都落在小时柱里`)
+      // 不带 step 或者带别的值，照旧按天。
+      const day = await req(base, 'GET', `${q(startOfToday, Date.now())}&tz=${tz}&step=minute`, { token })
+      assert(day.json.daily.length === 1 && /^\d{2}\/\d{2}$/.test(day.json.daily[0].label), `step 不是 hour 时该按天：${JSON.stringify(day.json.daily)}`)
+    })
+
     await test('没单价的模型不按 $0 混进金额，要单独标出来', async () => {
       const r = await req(base, 'GET', q(startOfToday, now), { token })
       assert(r.json.unpricedModels.includes('noprice/free-model'), `没标出来：${JSON.stringify(r.json.unpricedModels)}`)

@@ -1758,7 +1758,7 @@ function usagePage() {
     seats: 0,
     byMember: [],
   }
-  const ranges = ['近 7 天', '近 30 天', '本月']
+  const ranges = ['今日', '近 7 天', '近 30 天', '本月']
   const range = state.usageRange || '近 30 天'
   const stats = Array.isArray(data.stats) ? data.stats : []
   const daily = Array.isArray(data.daily) ? data.daily : []
@@ -1793,7 +1793,8 @@ function usagePage() {
       </div>`,
     )
     .join('')
-  const dailyBody = dailyBarChart(daily, t('每日任务执行量'), t('这个时间段里还没有调用。'))
+  // 「今日」一档服务端按小时切柱子（loadUsage 传 step=hour），标题跟着换；画法还是同一张图。
+  const dailyBody = dailyBarChart(daily, t(range === '今日' ? '今日任务执行量' : '每日任务执行量'), t('这个时间段里还没有调用。'))
   // 今日用量：服务端按看的人所在时区的零点算，不跟着上面选的范围走。老 Gateway 不带
   // `today`，这一块就不画，而不是画一排 0——0 会被读成「今天没用」。
   const today = data.today && typeof data.today === 'object' ? data.today : null

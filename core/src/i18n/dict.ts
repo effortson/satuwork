@@ -602,6 +602,8 @@ export const dict: Record<string, string> = {
   接上之后才知道: 'Unknown until wired up',
   每日任务执行量: 'Daily task runs',
   每日调用量: 'Daily calls',
+  今日任务执行量: "Today's task runs by hour",
+  今日调用量: "Today's calls by hour",
   '删除这个分组？': 'Delete this group?',
   '删除这名成员？': 'Delete this member?',
   升级人工的条件: 'When to escalate',
