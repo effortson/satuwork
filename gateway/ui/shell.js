@@ -517,6 +517,45 @@ function desktopUpdateBusy(u) {
 }
 
 /** boot() 里调一次。先取一眼状态（当前版本号要给个人设置页用），过几秒再真去问。 */
+/**
+ * 手机壳（mobile/）里软键盘弹起时把外壳缩到可视高度。
+ *
+ * 外壳是 `height: 100dvh; overflow: hidden`、各栏自己滚的应用布局（appView）。iOS 的 WebKit
+ * 弹键盘时**不改布局视口**，只缩可视视口（visualViewport），再把整页往上滚去露出输入框——
+ * 结果是顶栏连同汉堡被推到刘海底下、输入框压在键盘上沿，而对话正文一点没缩。
+ *
+ * 这里在可视视口变矮时把高度写进 `--satu-vvh`（app.css 里 `html.satu-mobile .gw-shell` 读它），
+ * 外壳随键盘缩短，正文自己让出位置；再把页面滚回顶上，WebKit 那一下就白滚了。写在
+ * documentElement 上是因为 render() 整页换 innerHTML，挂在 .gw-shell 上的内联样式活不过一次重绘。
+ *
+ * **只在手机壳里跑**：浏览器里（含手机 Safari）照旧，这一步不改网页版的行为。
+ */
+function startMobileShellFit() {
+  if (!mobileShell()) return
+  document.documentElement.classList.add('satu-mobile')
+  const vv = window.visualViewport
+  if (!vv) return
+  const apply = () => {
+    const full = window.innerHeight || 0
+    const h = Math.round(vv.height)
+    const root = document.documentElement
+    // 80：比键盘矮得多的差值（地址栏、转屏抖动）不算键盘，不折腾布局。
+    if (full - h > 80) {
+      root.style.setProperty('--satu-vvh', h + 'px')
+      // 键盘压着 Home 条那一截，底下的安全区不用再让（app.css 的 html.satu-kbd）。
+      root.classList.add('satu-kbd')
+      // 只在应用布局里把页面钉回顶上。登录那一屏是普通的可滚页面，WebKit 滚去露出输入框
+      // 是对的——钉住它，口令框就藏在键盘底下了（实测）。
+      if (document.querySelector('.gw-shell')) window.scrollTo(0, 0)
+    } else {
+      root.style.removeProperty('--satu-vvh')
+      root.classList.remove('satu-kbd')
+    }
+  }
+  vv.addEventListener('resize', apply)
+  vv.addEventListener('scroll', apply)
+}
+
 function startDesktopUpdateWatch() {
   const bridge = desktopUpdateBridge()
   if (!bridge || desktopUpdateTimer) return

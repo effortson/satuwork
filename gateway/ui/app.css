@@ -1474,3 +1474,37 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 @media (max-width: 760px) and (prefers-reduced-motion: reduce) {
   .gw-side { transition: none; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   手机壳（mobile/）那几条。
+
+   index.html 的 viewport 带 viewport-fit=cover：页面铺到刘海和 Home 条底下，
+   env(safe-area-inset-*) 才有值。浏览器里这几个值都是 0，下面等于没写——所以不按
+   壳子分支，照 ≤760px 那一档写。
+
+   - 外壳把安全区让出来（上面那段把 padding 写成 0 !important，这里要再盖一次）。
+     让出来的那一圈是外壳自己的底色，刘海两侧看着就是页面的一部分。
+   - 抽屉是 fixed 的、顶到底，自己也要让；弹窗的蒙版同理。
+   - 登录那一屏不走外壳。
+   ══════════════════════════════════════════════════════════════════════ */
+@media (max-width: 760px) {
+  .gw-shell { padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom) !important; }
+  .gw-side {
+    padding-top: calc(var(--space-4) + env(safe-area-inset-top)) !important;
+    padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom)) !important;
+  }
+  .gw-login { box-sizing: border-box; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+  .gw-modal-backdrop {
+    padding-top: calc(var(--space-4) + env(safe-area-inset-top));
+    padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
+  }
+}
+
+/* 软键盘：shell.js 的 startMobileShellFit 在键盘弹起时把可视高度写进 --satu-vvh，外壳跟着缩，
+   正文自己让位。没写（键盘收了）就回到 100dvh。html.satu-mobile 只有手机壳会加。
+   外壳的高度是 appView 内联写的，所以 !important。页面本身不该再弹（overscroll）：
+   应用布局里能滚的是各栏，整页一弹就是一截底色露出来。 */
+html.satu-mobile .gw-shell { height: var(--satu-vvh, 100dvh) !important; }
+/* 键盘弹着时 Home 条那一截被键盘盖着，底下的安全区不用再让；不去掉就是键盘上沿一道底色（实测）。 */
+html.satu-kbd .gw-shell { padding-bottom: 0 !important; }
+html.satu-mobile, html.satu-mobile body { overscroll-behavior: none; }
