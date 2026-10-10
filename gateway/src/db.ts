@@ -3296,6 +3296,37 @@ export class Db {
     )
   }
 
+  // ── 手机推送的设备登记（0055，lib/push.ts）。令牌是主键：换账号登录就改姓。──
+
+  async upsertPushDevice(d: { token: string; accountId: string; platform: string; environment: string }, now: number): Promise<void> {
+    await this.run(
+      `insert into push_devices (token, "accountId", platform, environment, "createdAt", "updatedAt")
+       values (?, ?, ?, ?, ?, ?)
+       on conflict (token) do update set
+         "accountId" = excluded."accountId", platform = excluded.platform,
+         environment = excluded.environment, "updatedAt" = excluded."updatedAt"`,
+      [d.token, d.accountId, d.platform, d.environment, now, now],
+    )
+  }
+
+  /** 只删自己名下的那一行：令牌是客户端报的，别人的令牌不该能被这条路摘掉。 */
+  async deletePushDevice(accountId: string, token: string): Promise<boolean> {
+    return (await this.run(`delete from push_devices where token = ? and "accountId" = ?`, [token, accountId])) > 0
+  }
+
+  /** APNs 说这个令牌已经作废（410 / BadDeviceToken）：不问是谁的，直接摘。 */
+  async dropPushDevice(token: string): Promise<void> {
+    await this.run(`delete from push_devices where token = ?`, [token])
+  }
+
+  async pushDevicesOf(accountId: string): Promise<{ token: string; platform: string; environment: string; updatedAt: number }[]> {
+    const rows = await this.many(
+      `select token, platform, environment, "updatedAt" from push_devices where "accountId" = ? order by "updatedAt" desc`,
+      [accountId],
+    )
+    return rows.map((r) => ({ token: String(r.token), platform: String(r.platform), environment: String(r.environment), updatedAt: Number(r.updatedAt) }))
+  }
+
   // ── 配对码。一次性、30 分钟过期，装管家时拿它换这台机器的 smt_。──
 
   async insertMachinePairing(row: MachinePairing): Promise<MachinePairing> {

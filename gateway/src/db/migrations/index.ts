@@ -52,6 +52,7 @@ import { SQL as m0051 } from './0051-knowledge.ts'
 import { SQL as m0052 } from './0052-usage-charge-kb.ts'
 import { SQL as m0053 } from './0053-usage-charge-estimated.ts'
 import { SQL as m0054 } from './0054-usage-charge-adjust.ts'
+import { SQL as m0055 } from './0055-push-devices.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -170,6 +171,7 @@ export const MIGRATIONS: Migration[] = [
   { id: '0052-usage-charge-kb', name: '账本 kind 多一种 kb', sql: m0052 },
   { id: '0053-usage-charge-estimated', name: '账本行标记用量是估的', sql: m0053 },
   { id: '0054-usage-charge-adjust', name: '账本行人工调整留痕', sql: m0054 },
+  { id: '0055-push-devices', name: '手机推送的设备登记（APNs 设备令牌）', sql: m0055 },
 ]
 
 /**

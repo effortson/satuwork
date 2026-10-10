@@ -9,6 +9,7 @@ import { emailOf, orgSettings, orgSummary, publicAccount, publicCompany, publicP
 import { headerOf, inviteeOf, issue, noteLogin, requireSeatOrUser, requireUser } from '../lib/guards.ts'
 import { type Account } from '../db.ts'
 import { enterThrottle, throttleKeys } from '../lib/auth-throttle.ts'
+import { PUSH_ENVIRONMENTS, PUSH_PLATFORMS, validPushToken } from '../lib/push.ts'
 
 /**
  * 建系统管理员那把事务级锁的号。
@@ -276,6 +277,34 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
     }
     const next = Object.keys(patch).length ? await db.updateAccount(account.id, patch) : account
     json(res, 200, { account: publicAccount(next) })
+  })
+
+  /**
+   * 手机壳登记 / 注销自己这台设备的推送令牌（lib/push.ts）。
+   *
+   * 只收登录 JWT：席位票是 bot 进程的，它没有「这台手机」。客户端**每次启动、每次登录都报一次**
+   * ——幂等，而且 updatedAt 就是「这次登录的时刻」：改了口令之后旧登记会被发送那头跳过，
+   * 重新登录再报一次就恢复。退出登录时 `DELETE /me/push-device/:token`，别让下一个拿起手机的人收到上一个人的通知。
+   */
+  router.put('/me/push-device', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    const body = bodyOf(req)
+    const token = strField(body, 'token')
+    const platform = strField(body, 'platform')
+    const environment = strField(body, 'environment')
+    if (!validPushToken(token)) throw new HttpError(400, 'token 不是设备令牌')
+    if (!PUSH_PLATFORMS.includes(platform)) throw new HttpError(400, 'platform 只认 ios')
+    if (!PUSH_ENVIRONMENTS.includes(environment)) throw new HttpError(400, 'environment 只能是 sandbox 或 production')
+    await db.upsertPushDevice({ token: token.toLowerCase(), accountId: account.id, platform, environment }, Date.now())
+    json(res, 200, { ok: true })
+  })
+
+  // 令牌放在路径里：这套路由器对 DELETE 不读请求体（http.ts 的 skipBody）。
+  router.delete('/me/push-device/:token', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    const token = String(req.params.token || '')
+    const removed = validPushToken(token) ? await db.deletePushDevice(account.id, token.toLowerCase()) : false
+    json(res, 200, { ok: true, removed })
   })
 
   /**

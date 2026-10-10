@@ -165,6 +165,29 @@ Gateway 无状态、不经手对话流。要做推送需要四件事：
 
 这四件事都是独立 PR，不阻塞前两阶段。
 
+**落地情况**：第 1、2、3 件已落地（一个 PR，Gateway 和 bot 两边）——
+
+- 表是 `push_devices`（迁移 0055），**令牌做主键**：同一台手机换账号登录就改姓。删除是
+  `DELETE /me/push-device/:token`（这套路由器对 DELETE 不读请求体），只删得掉自己名下的。
+- 登记只收登录 JWT、只收 iOS。客户端每次启动和登录都报一次：`updatedAt` 兼作「这次登录的
+  时刻」，早于账号 `tokenRevokedAt` 的登记不推——改了口令之后旧手机自动收不到。
+- 席位上报是 `POST /internal/push { kind: turn-end | approval, botId }`，鉴权同审计事件那条
+  （席位票只报自己、机器票只报本机席位）；转人工新单不用另报，`/internal/handoffs` 顺手推给
+  接手人（指派给管理员那种不推）。
+- **推送不带对话正文**：标题是 Bot 名字（Gateway 从目录查，不采信上报），正文是一句固定的话。
+  正文在席位机器上，Gateway 不经手；推送还要过 Apple 的服务器、躺在锁屏上。
+- APNs 用 HTTP/2 + .p8 签的 ES256 token，40 分钟换一次；410 / BadDeviceToken 当场摘掉令牌。
+  没配钥匙就不发。e2e 的 push 套件起一个明文 HTTP/2 的假 APNs 验签名、头和 payload。
+
+- bot 那头在 session/gateway.ts 的 `reportPush`：一轮跑完（人自己点中止的不算）和审批卡
+  进入 pending 时报一条。**不进 outbox、不重试**——推送是「现在」的事，三小时后补到的「回复好了」
+  只会骗人回去看一条早就看过的消息。只报主会话；本地 Bot 不报。Gateway 回「没有登记设备」或
+  404（老 Gateway）时两分钟内不再问，没装手机端的人不必每一轮都白打一次函数调用。
+- e2e：push 套件验 Gateway 这半；gateway-chat 套件给它的 Gateway 也接上假 APNs，真 bot 跑完
+  一轮后假 APNs 要收到那条 turn-end，且不带正文。
+
+第 4 件（手机壳拿令牌、点通知跳到对话）还没做。
+
 ## 3. 逐项去向
 
 | 文件 | 动不动 | 怎么动 |
