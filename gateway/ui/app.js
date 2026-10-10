@@ -3194,7 +3194,7 @@ window.addEventListener('popstate', () => {
 function foldDownload() {
   const asked = state.path === '/download' || (state.path === '/' && location.hash === '#download')
   if (!asked) return
-  const shell = desktopShell()
+  const shell = appShell()
   const to = state.me && !shell ? '/download' : shell ? '/' : '/#download'
   if (location.pathname + location.hash !== to) history.replaceState({}, '', to)
   state.path = to === '/download' ? '/download' : '/'

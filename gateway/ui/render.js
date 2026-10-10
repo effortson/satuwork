@@ -377,7 +377,7 @@ function appView() {
  *   去的——那时该问的是「你是谁」，不是「要不要了解一下」。
  */
 function anonView() {
-  if (state.path === '/' && !desktopShell()) return landingView()
+  if (state.path === '/' && !appShell()) return landingView()
   return loginView()
 }
 

@@ -44,3 +44,11 @@ desktop/src-tauri/ui/*
 
 # gateway/scripts/build-vercel.mjs 打出来的 Build Output（vercel.json 的 buildCommand 现场生成）
 .vercel/
+
+# 手机壳（mobile/，Tauri 2 mobile）：同桌面壳；gen/apple 是 Xcode 工程要进版本库（它自带 .gitignore 挡构建产物），只挡 schemas
+mobile/src-tauri/target/
+mobile/src-tauri/gen/schemas/
+mobile/src-tauri/ui/*
+!mobile/src-tauri/ui/README.txt
+# debug 构建连哪台 Gateway（lib.rs 的 gateway_url），本机各写各的
+mobile/src-tauri/dev-server.txt

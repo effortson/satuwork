@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "main-window",
+  "description": "唯一那扇窗里包内那份界面（satu:// 自注册协议，Android 上是 http://satu.localhost，Tauri 判为本地源）只能调一条命令：挂内嵌桌面前把席位机器的源报给导航守卫。不开放给任何远端页面。",
+  "windows": ["main"],
+  "permissions": ["core:default", "seat-desktop-commands", "debug-log"]
+}
