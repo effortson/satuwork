@@ -1942,6 +1942,30 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(ui.chargesWindow('org') === null, '账单页凭空造了一个时间窗')
     })
 
+    await test('月份选择器是下拉，不是 type=month 的输入框', async () => {
+      /**
+       * 桌面端跑在 WebKit 里，`<input type="month">` 退化成要人手敲「2026-10」的文本框。
+       * 两处（公司用量页、平台统计页）都走同一个 monthPicker：当月在最上面、往回两年，
+       * 选中的月份不在这两年里也得在列表里。
+       */
+      const ui = await boot(ownerToken)
+      // 按本地日历取当月，别用 toISOString（UTC 月底那几个小时会差一个月）。
+      const now = new Date()
+      const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      const html = ui.monthPicker('', 'usage-month', '选择月份')
+      assert(html.startsWith('<select') && !html.includes('type="month"'), `该是 select：${html.slice(0, 120)}`)
+      assert(html.includes(`<option value="${ym}" selected>`), `没选过时该选中当月 ${ym}`)
+      assert((html.match(/<option /g) || []).length === 24, '该列当月往回 24 个月')
+      const old = ui.monthPicker('2019-02', 'stats-month', '选择月份')
+      assert(old.includes('<option value="2019-02" selected>2019 年 2 月</option>') && (old.match(/<option /g) || []).length === 25, '更早的月份该补在最前面并选中')
+      assert(ui.monthLabel('2026-10') === '2026 年 10 月', `月份文案：${ui.monthLabel('2026-10')}`)
+      // 两页都用它。
+      ui.state.path = '/usage'
+      ui.state.usageRange = '本月'
+      ui.state.usageMonth = '2026-02'
+      assert(ui.usagePage().includes('data-act="usage-month"') && ui.usagePage().includes('2026 年 2 月'), '用量页没画月份选择器')
+    })
+
     await test('日线柱高按钱画，不按次数', async () => {
       /**
        * 一天 92 次小调用花 $0.03、另一天 3 次长上下文花 $0.53：这张图挂在费用卡底下，
