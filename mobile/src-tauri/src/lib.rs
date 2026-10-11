@@ -95,6 +95,11 @@ fn same_origin(a: &Url, b: &Url) -> bool {
  * （`__SATUWORK_MOBILE__`，state.js 据此把登录票落到 localStorage）、告诉它 Gateway 在哪、
  * 把 `target="_blank"` 和 `window.open()` 翻译成一次到 OPEN_PATH 的导航（裸 webview 里它们是
  * 空操作）。没有本地 Bot 那组桥，页面上对应的入口就不出现。
+ *
+ * 桌面壳没有的一条：`a[download]`（页面里所有的「下载」）交给系统分享面板（mobile/share-plugin）。
+ * WebView 里这种点击什么都不发生——WKWebView 没挂下载处理就直接取消，Android 的 WebView 没有
+ * DownloadListener。blob: / data: 的在这儿读成字节交给壳子；http(s) 的交给系统浏览器去下。
+ * **fetch 要在点击这一下里同步发出**：页面点完一秒就 revokeObjectURL，晚了 blob 地址就读不到了。
  */
 const LINK_SCRIPT: &str = r#"
 (function () {
@@ -117,6 +122,24 @@ const LINK_SCRIPT: &str = r#"
       location.href = location.origin + __OPEN_PATH__ + '?u=' + encodeURIComponent(abs)
     } catch (e) {}
   }
+  function save(a) {
+    var href = a.href
+    if (!/^(blob|data):/i.test(href)) {
+      hand(href)
+      return
+    }
+    var name = a.getAttribute('download') || ''
+    fetch(href)
+      .then(function (r) { return r.blob() })
+      .then(function (b) {
+        return b.arrayBuffer().then(function (buf) {
+          return window.__TAURI_INTERNALS__.invoke('plugin:satu-share|share', buf, {
+            headers: { 'x-satu-name': encodeURIComponent(name), 'x-satu-type': encodeURIComponent(b.type || '') }
+          })
+        })
+      })
+      .catch(function (e) { console.warn('satuwork: 交给分享面板失败：' + (e && e.message ? e.message : e)) })
+  }
   var open0 = window.open
   window.open = function (u) {
     if (u) hand(String(u))
@@ -127,6 +150,12 @@ const LINK_SCRIPT: &str = r#"
     function (e) {
       if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey) return
       var el = e.target
+      var d = el && el.closest ? el.closest('a[download]') : null
+      if (d && d.href) {
+        e.preventDefault()
+        save(d)
+        return
+      }
       var a = el && el.closest ? el.closest('a[target="_blank"]') : null
       if (!a || !a.href) return
       e.preventDefault()
@@ -330,6 +359,8 @@ macro_rules! ui_cdn {
 }
 
 /// 界面的 CSP，挂在 serve_ui 发出的每个 html 上。内容和为什么这么写见桌面壳的 UI_CSP。
+/// 只比桌面壳多一处：connect-src 认 `blob:` / `data:`——LINK_SCRIPT 的 save 要 fetch 页面的 blob 下载地址
+/// 读出字节交给分享面板，不放的话 fetch 被 CSP 挡掉（实测，Android 上报 Refused to connect）。
 const UI_CSP: &str = concat!(
     "default-src 'self' satu: http://satu.localhost https://satu.localhost; ",
     "base-uri 'none'; ",
@@ -339,7 +370,7 @@ const UI_CSP: &str = concat!(
     "font-src 'self' satu: http://satu.localhost https://satu.localhost data: ", ui_cdn!(), " https://fonts.gstatic.com; ",
     "img-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; ",
     "media-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; ",
-    "connect-src 'self' satu: http://satu.localhost https://satu.localhost ipc: http://ipc.localhost https: http: wss: ws:; ",
+    "connect-src 'self' satu: http://satu.localhost https://satu.localhost ipc: http://ipc.localhost https: http: wss: ws: blob: data:; ",
     "frame-src 'self' satu: http://satu.localhost https://satu.localhost blob: https: http:; ",
     "worker-src 'self' satu: http://satu.localhost https://satu.localhost blob:"
 );
@@ -461,6 +492,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_satu_push::init())
+        .plugin(tauri_plugin_satu_share::init())
         .register_uri_scheme_protocol(UI_SCHEME, |ctx, request| serve_ui(&ctx.app_handle().clone(), &request))
         .manage(SeatOrigins::default())
         .invoke_handler(tauri::generate_handler![allow_seat_desktop, debug_log])

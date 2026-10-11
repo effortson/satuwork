@@ -3247,6 +3247,9 @@ async function boot() {
   }
   foldDownload()
   render()
+  // 手机壳：冷启动是点通知拉起来的话，这时跳到那颗 Bot 的对话（shell.js 的 takeMobilePushTap）。
+  // 放在最后：上面按地址栏换页、画完之后再跳，才不会被盖回去；没登录时它不取，留到回前台再说。
+  if (typeof takeMobilePushTap === 'function') void takeMobilePushTap()
 }
 
 boot()

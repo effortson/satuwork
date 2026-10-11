@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "main-window",
-  "description": "唯一那扇窗里包内那份界面（satu:// 自注册协议，Android 上是 http://satu.localhost，Tauri 判为本地源）能调的只有：挂内嵌桌面前把席位机器的源报给导航守卫、要推送令牌和取点开的通知（satu-push）。不开放给任何远端页面。",
+  "description": "唯一那扇窗里包内那份界面（satu:// 自注册协议，Android 上是 http://satu.localhost，Tauri 判为本地源）能调的只有：挂内嵌桌面前把席位机器的源报给导航守卫、要推送令牌和取点开的通知（satu-push）、把要下载的文件交给系统分享面板（satu-share）。不开放给任何远端页面。",
   "windows": ["main"],
-  "permissions": ["core:default", "seat-desktop-commands", "debug-log", "satu-push:default"]
+  "permissions": ["core:default", "seat-desktop-commands", "debug-log", "satu-push:default", "satu-share:default"]
 }

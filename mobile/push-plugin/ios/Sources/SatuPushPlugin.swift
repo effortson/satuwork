@@ -31,6 +31,38 @@ private func hex(_ data: Data) -> String {
   data.map { String(format: "%02x", $0) }.joined()
 }
 
+/**
+ APNs 的哪一头认这台设备的令牌。**看签名时写进包里的 aps-environment，不看编译开关**：本机
+ `build:ios` 出的 release 包用的是开发描述文件（ExportOptions.plist 的 debugging），令牌只在 sandbox
+ 认；按「release 就是 production」报，Gateway 发到 production 那头，APNs 回 BadDeviceToken，
+ 令牌当场被摘掉，推送就此没了。
+
+ - 模拟器：sandbox（Xcode 14 起 Apple 芯片上的模拟器拿的是 sandbox 的真令牌）。
+ - 包里有 embedded.mobileprovision（开发包、Ad Hoc 包）：读它的 Entitlements。它是一段 CMS 签名
+   包着的 XML plist，把 `<?xml` 到 `</plist>` 那段截出来解析即可。
+ - 没有描述文件：App Store / TestFlight 的包（Apple 重签时去掉了），一律 production。
+ */
+private func apsEnvironment() -> String {
+  #if targetEnvironment(simulator)
+    return "sandbox"
+  #else
+    guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+      let data = try? Data(contentsOf: url)
+    else { return "production" }
+    guard let start = data.range(of: Data("<?xml".utf8)),
+      let end = data.range(of: Data("</plist>".utf8), in: start.lowerBound..<data.endIndex),
+      let plist = try? PropertyListSerialization.propertyList(
+        from: data.subdata(in: start.lowerBound..<end.upperBound), format: nil) as? [String: Any],
+      let entitlements = plist["Entitlements"] as? [String: Any],
+      let env = entitlements["aps-environment"] as? String
+    else {
+      NSLog("[satu-push] 读不出描述文件里的 aps-environment，按 production 报")
+      return "production"
+    }
+    return env == "development" ? "sandbox" : "production"
+  #endif
+}
+
 private func resolveAll(_ payload: JsonObject) {
   let waiting = pendingRegister
   pendingRegister = []
@@ -49,7 +81,7 @@ private func injectAppDelegate() {
   let ok: @convention(block) (AnyObject, UIApplication, NSData) -> Void = { _, _, data in
     let token = hex(data as Data)
     lastToken = token
-    resolveAll(["granted": true, "token": token])
+    resolveAll(["granted": true, "token": token, "environment": apsEnvironment()])
   }
   if !class_addMethod(
     cls, sel_registerName("application:didRegisterForRemoteNotificationsWithDeviceToken:"),
