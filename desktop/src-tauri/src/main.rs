@@ -409,9 +409,11 @@ const LINK_SCRIPT: &str = r#"
  * 要挡的**只有一件事**：把唯一的窗口导航到站外。这个壳没有地址栏也没有后退，页面
  * 一旦跳出去，人就被关在一个回不来的地方了（只剩菜单里那条「切换服务器…」）。
  *
- * 所以按 scheme 分流：**不是 http/https 的一律放行**。第一版是「白名单 + 同源」，
+ * 所以按 scheme 分流：**hand_to_system 那几种之外的一律放行**。第一版是「白名单 + 同源」，
  * 而白名单永远漏得掉——`blob:`（附件预览喂给 iframe 的那个）漏了就是预览白屏，
  * `ws:` 漏了就是桌面没画面，而同源比较里 `ws` 和 `http` 本来就不是同一个字。
+ * `mailto:` / `tel:` / `sms:` 以前也在放行里，可 WebView 自己打不开它们：WKWebView 上
+ * 点了什么都不发生，所以和站外网页一样交给系统。
  *
  * 拦这些也拦不住什么：页面里的 JS 想连哪儿就能连哪儿，这条回调不是它的边界。
  * 它是「窗口跑没跑掉」的边界，仅此而已。
@@ -427,9 +429,8 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
     if is_ui_origin(url) {
         return true;
     }
-    match url.scheme() {
-        "http" | "https" => {}
-        _ => return true,
+    if !hand_to_system(url) {
+        return true;
     }
     // 内嵌桌面那块 iframe 也是一次 http(s) 导航，不能跟着往系统浏览器送。
     let seats = app.state::<SeatOrigins>();
@@ -439,8 +440,20 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
     }
     // 界面在自己的源上，任何 http(s) 导航都是往外走（OAuth 跳转、外链）：交给系统浏览器，
     // 窗口留在原地。以前界面在 Gateway 的源上时同源导航是页面自己的路由，现在没有这一类了。
+    // mailto: / tel: / sms: 同样交出去，由系统挑邮件、电话、短信应用。
     let _ = app.opener().open_url(url.as_str(), None::<&str>);
     false
+}
+
+/**
+ * 交给系统处理、窗口不动的那几种地址：站外网页给浏览器，`mailto:` / `tel:` / `sms:` 给邮件、电话、
+ * 短信。后三种 WebView 自己打不开——放行的话点了什么都不发生，而 markdown 里的邮箱、电话正是
+ * 对话里常点的链接。别的协议（blob:、data:、ws: 这些页面内部用的）不归这里管。
+ *
+ * 和 mobile/src-tauri/src/lib.rs 的同名函数一起改。
+ */
+fn hand_to_system(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "mailto" | "tel" | "sms")
 }
 
 /**
@@ -517,22 +530,26 @@ fn allow_seat_desktop(app: AppHandle, url: String) -> Result<(), String> {
     Ok(())
 }
 
-/** 暗号里带的那个地址：同源的另开一扇应用窗口，站外的交给系统浏览器。 */
+/**
+ * 暗号里带的那个地址该不该交给系统。暗号是页面递过来的，页面上的内容不全是我们写的
+ * （markdown 里的链接来自模型和用户），只认 hand_to_system 那几种，别的协议（javascript: 这些）
+ * 一律当没发生。markdown 渲染的链接都带 `target="_blank"`，邮箱、电话链接走的正是这条路。
+ */
+fn open_target(raw: &str) -> Option<Url> {
+    let parsed = Url::parse(raw).ok()?;
+    hand_to_system(&parsed).then_some(parsed)
+}
+
+/** 暗号里带的那个地址：交给系统（浏览器，或者邮件、电话、短信应用）。 */
 fn route_open(app: &AppHandle, base: &Url, url: &Url) {
     let target = url
         .query_pairs()
         .find(|(k, _)| k == "u")
         .map(|(_, v)| v.to_string())
         .unwrap_or_default();
-    let Ok(parsed) = Url::parse(&target) else {
+    let Some(parsed) = open_target(&target) else {
         return;
     };
-    match parsed.scheme() {
-        "http" | "https" => {}
-        // 暗号是页面递过来的，页面上的内容不全是我们写的（markdown 里的链接来自模型
-        // 和用户）。只有 http/https 往下走，别的一律当没发生。
-        _ => return,
-    }
     // 界面不再在 Gateway 的源上，「另开一扇应用窗口装 Gateway 页面」这条路没有了：
     // 同源与否都交给系统浏览器。`base` 留着是给将来「同源另开窗」用的判据。
     let _ = same_origin(&parsed, base);
@@ -2188,7 +2205,8 @@ fn install_menu(app: &AppHandle) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        desktop_version_supports, is_seat_desktop, is_ui_origin, list_approved, open_path_allowed,
+        desktop_version_supports, hand_to_system, is_seat_desktop, is_ui_origin, list_approved,
+        open_path_allowed, open_target,
         origin_key, pick_server, revoke_approved, runtime_older, safe_runtime_version, safe_ui_segment,
         seat_desktop_allowed, unpack_runtime, link_target_in_root, plan_links, safe_entry_path, LinkDest,
     };
@@ -2247,6 +2265,31 @@ mod tests {
         for s in no {
             assert!(!open_path_allowed(&u(s), &gw), "不该认：{s}");
         }
+    }
+
+    /// 邮箱、电话、短信和站外网页交给系统；页面内部用的协议留在 WebView 里（见 hand_to_system）。
+    #[test]
+    fn mail_phone_and_web_go_to_the_system() {
+        for s in ["https://a.com/p", "http://a.com", "mailto:a@b.com", "tel:+6512345678", "sms:+6512345678"] {
+            assert!(hand_to_system(&u(s)), "{s}");
+        }
+        for s in [
+            "blob:satu://localhost/abc",
+            "data:text/plain,hi",
+            "about:blank",
+            "javascript:alert(1)",
+            "ws://gw.example.com/x",
+            "satu://localhost/a",
+        ] {
+            assert!(!hand_to_system(&u(s)), "{s}");
+        }
+        // target="_blank" 走暗号那条路，同一套规则。
+        assert_eq!(open_target("mailto:a@b.com?subject=hi").unwrap().as_str(), "mailto:a@b.com?subject=hi");
+        assert_eq!(open_target("tel:+6512345678").unwrap().as_str(), "tel:+6512345678");
+        assert_eq!(open_target("https://a.com/p").unwrap().as_str(), "https://a.com/p");
+        assert!(open_target("javascript:alert(1)").is_none());
+        assert!(open_target("satu://localhost/d/bot-1").is_none());
+        assert!(open_target("not a url").is_none());
     }
 
     /// 内嵌桌面只放行 Gateway 源和界面报过的机器源（见 seat_desktop_allowed）。
