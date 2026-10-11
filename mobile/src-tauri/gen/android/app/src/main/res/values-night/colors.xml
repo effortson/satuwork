@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 和 gateway/ui/theme.css 里的 background 变量 一致（深色）。 -->
+    <color name="page_bg">#FF17161A</color>
+</resources>

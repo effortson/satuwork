@@ -86,7 +86,11 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
       const parts = [...html.matchAll(/<script src="\/([^"]+)"[^>]*\bdata-app-part\b/g)].map((m) => m[1])
       assert(parts.length > 1, `index.html 里没找到 data-app-part 脚本`)
-      for (const f of parts) {
+      // **每个 <script src>**，不只是分片：core.js（core/src 打出来的）、i18n.js、markdown.js、
+      // unzip.js 都不带 data-app-part，漏进 ROOT_FILES 的后果一样是整页白屏。
+      const scripts = [...html.matchAll(/<script[^>]*\ssrc="\/([^"]+)"/g)].map((m) => m[1])
+      assert(scripts.includes('core.js'), `index.html 里没有 core.js：${scripts.join(', ')}`)
+      for (const f of scripts) {
         const r = await req(gwBase, 'GET', '/' + f)
         assert(r.status === 200, `GET /${f} → ${r.status}，八成是 ROOT_FILES 白名单漏了它`)
       }
@@ -1925,10 +1929,73 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       ui.state.path = '/usage'
       ui.state.usageRange = '近 7 天'
       sameWindow(ui.chargesWindow('org'), ui.usageRangeMs('近 7 天'), '用量屏的明细没跟着范围胶囊')
+      // 「月」胶囊跟着月份选择器走：选了 2 月，汇总和明细都该是 2 月整月。
+      ui.state.usageRange = '本月'
+      ui.state.usageMonth = '2026-02'
+      const usageFeb = ui.usageRangeMs('本月')
+      assert(usageFeb.from === new Date(2026, 1, 1).getTime() && usageFeb.to === new Date(2026, 2, 1).getTime() - 1, `用量屏换月之后窗口不对：${JSON.stringify(usageFeb)}`)
+      sameWindow(ui.chargesWindow('org'), usageFeb, '用量屏的明细没跟着月份选择器')
+      ui.state.usageMonth = null
+      // 「今日」从本地零点起；这一档的图按小时画，用量页标题换成「今日任务执行量」。
+      ui.state.usageRange = '今日'
+      const usageToday = ui.usageRangeMs('今日')
+      const t0 = new Date()
+      assert(usageToday.from === new Date(t0.getFullYear(), t0.getMonth(), t0.getDate()).getTime(), '用量屏的「今日」没从本地零点开始')
+      sameWindow(ui.chargesWindow('org'), usageToday, '用量屏的明细没跟着「今日」')
+      const todayHtml = ui.usagePage()
+      assert(todayHtml.includes('data-range="今日"') && todayHtml.includes('今日任务执行量'), '用量页没画「今日」胶囊或小时线标题')
 
       // 账单页和平台的公司详情没有范围控件，那里就是全时段。
       ui.state.path = '/billing'
       assert(ui.chargesWindow('org') === null, '账单页凭空造了一个时间窗')
+    })
+
+    await test('月份选择器是下拉，不是 type=month 的输入框', async () => {
+      /**
+       * 桌面端跑在 WebKit 里，`<input type="month">` 退化成要人手敲「2026-10」的文本框。
+       * 两处（公司用量页、平台统计页）都走同一个 monthPicker：当月在最上面、往回两年，
+       * 选中的月份不在这两年里也得在列表里。
+       */
+      const ui = await boot(ownerToken)
+      // 按本地日历取当月，别用 toISOString（UTC 月底那几个小时会差一个月）。
+      const now = new Date()
+      const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      const html = ui.monthPicker('', 'usage-month', '选择月份')
+      assert(html.startsWith('<select') && !html.includes('type="month"'), `该是 select：${html.slice(0, 120)}`)
+      assert(html.includes(`<option value="${ym}" selected>`), `没选过时该选中当月 ${ym}`)
+      assert((html.match(/<option /g) || []).length === 24, '该列当月往回 24 个月')
+      const old = ui.monthPicker('2019-02', 'stats-month', '选择月份')
+      assert(old.includes('<option value="2019-02" selected>2019 年 2 月</option>') && (old.match(/<option /g) || []).length === 25, '更早的月份该补在最前面并选中')
+      assert(ui.monthLabel('2026-10') === '2026 年 10 月', `月份文案：${ui.monthLabel('2026-10')}`)
+      // 两页都用它。
+      ui.state.path = '/usage'
+      ui.state.usageRange = '本月'
+      ui.state.usageMonth = '2026-02'
+      assert(ui.usagePage().includes('data-act="usage-month"') && ui.usagePage().includes('2026 年 2 月'), '用量页没画月份选择器')
+    })
+
+    await test('日线柱高按钱画，不按次数', async () => {
+      /**
+       * 一天 92 次小调用花 $0.03、另一天 3 次长上下文花 $0.53：这张图挂在费用卡底下，
+       * 人要看的是哪天烧得多。按次数画，贵的那天会被画成一条线。次数退到悬停里。
+       */
+      const ui = await boot(ownerToken)
+      const html = ui.dailyBarChart(
+        [
+          { label: '10/01', value: 92, amount: '$0.03', amountMicros: 30_000 },
+          { label: '10/02', value: 3, amount: '$0.53', amountMicros: 530_000 },
+        ],
+        '每日任务执行量',
+        '空',
+      )
+      const heights = [...html.matchAll(/height: (\d+)%/g)].map((m) => Number(m[1]))
+      assert(heights.length === 2 && heights[1] === 100 && heights[0] === Math.round((30_000 / 530_000) * 100), `柱高没按金额画：${heights}`)
+      assert(html.includes('峰值 $0.53'), `标题行的峰值该是钱：${html.slice(0, 400)}`)
+      assert(html.includes('92 次'), '次数该还留在悬停里')
+      // 老接口不带金额：退回按次数画，峰值也报次数。
+      const legacy = ui.dailyBarChart([{ label: '10/01', value: 92 }, { label: '10/02', value: 46 }], '每日调用量', '空')
+      const lh = [...legacy.matchAll(/height: (\d+)%/g)].map((m) => Number(m[1]))
+      assert(lh[0] === 100 && lh[1] === 50 && legacy.includes('峰值 92 次'), `没金额时该按次数画：${lh}`)
     })
 
     await test('计费明细：倍率对所有种类都画出来，不只是模型', async () => {

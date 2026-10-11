@@ -27,6 +27,8 @@ function sitesOf(text) {
  * 只拆不走：跳到哪一页、要不要留一句话，由调用方各自决定。
  */
 function endSignedIn() {
+  // 手机壳：先拿着这张票把设备从推送名单里摘掉，下一行票就清了（shell.js 的 forgetMobilePush）。
+  if (typeof forgetMobilePush === 'function') forgetMobilePush()
   clearToken()
   // 先掐流再清数据：SSE 还连着的话，下一个人登进来之前就会有上一个人的事件继续往
   // state.chatEvents 里落，然后被画出来。聊天正文、草稿、名册都是上一个账号的东西，
@@ -2154,6 +2156,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'usage-range') {
     state.usageRange = btn.getAttribute('data-range') || '近 30 天'
+    if (state.usageRange === '本月' && !state.usageMonth) state.usageMonth = thisMonth()
     // 明细也跟着换窗口——胶囊写着「近 7 天」而底下列着全时段，是两张表在互相拆台。
     reloadUsagePage()
       .then(() => render())
@@ -2850,6 +2853,18 @@ document.getElementById('app').addEventListener('change', async (e) => {
     await reloadStatsPage()
     return
   }
+  // 用量屏的月份选择器：和统计屏那只一样，换月就连明细一起重拉。
+  if (el.getAttribute?.('data-act') === 'usage-month') {
+    state.usageMonth = el.value || thisMonth()
+    state.usageRange = '本月'
+    try {
+      await reloadUsagePage()
+    } catch (err) {
+      flash('err', err.message)
+    }
+    render()
+    return
+  }
   // select 和 checkbox 只发 change，草稿字段在这里也收一次。
   if (el.getAttribute?.('data-act') === 'prov-field' && state.providerDraft) {
     state.providerDraft[el.getAttribute('data-field')] = el.value
@@ -3181,7 +3196,7 @@ window.addEventListener('popstate', () => {
 function foldDownload() {
   const asked = state.path === '/download' || (state.path === '/' && location.hash === '#download')
   if (!asked) return
-  const shell = desktopShell()
+  const shell = appShell()
   const to = state.me && !shell ? '/download' : shell ? '/' : '/#download'
   if (location.pathname + location.hash !== to) history.replaceState({}, '', to)
   state.path = to === '/download' ? '/download' : '/'
@@ -3191,6 +3206,8 @@ function foldDownload() {
 async function boot() {
   // 桌面壳的升级跟谁登录无关，登录页上也要能提示（见 shell.js 的 startDesktopUpdateWatch）。
   startDesktopUpdateWatch()
+  // 手机壳的软键盘适配，同样跟登录无关（登录表单就要用）。
+  startMobileShellFit()
   if (location.pathname === '/costs') history.replaceState({}, '', '/billing')
   state.path = pathOf()
   if (state.path.startsWith('/join/')) {
@@ -3230,6 +3247,9 @@ async function boot() {
   }
   foldDownload()
   render()
+  // 手机壳：冷启动是点通知拉起来的话，这时跳到那颗 Bot 的对话（shell.js 的 takeMobilePushTap）。
+  // 放在最后：上面按地址栏换页、画完之后再跳，才不会被盖回去；没登录时它不取，留到回前台再说。
+  if (typeof takeMobilePushTap === 'function') void takeMobilePushTap()
 }
 
 boot()

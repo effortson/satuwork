@@ -1604,8 +1604,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 钉的模型自己装不装得下，是另一件事，在下面单独判：那一头的答案是**退回 Bot
      * 自己的模型跑这一轮**，不是把会话压到它的尺寸。
      */
-    const hard = (this.windowOf(homeProvider, homeModel) ?? this.config.contextWindowFallback ?? 128_000) *
-      (this.config.compactHard ?? 0.9)
+    const hard = this.compactWindowOf(homeProvider, homeModel) * (this.config.compactHard ?? 0.9)
     try {
       if (estMessages(await toAgentMessages(history, model, this.ctx)) > hard) {
         this.ctx.logger?.warn?.(`agents: ${sessionId} 已顶到上下文硬顶，先同步压一次`)
@@ -1913,7 +1912,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     force: boolean,
     opts: { keepBudget?: number; by?: 'auto' | 'user'; atLeast?: number } = {},
   ): Promise<CompactOutcome> {
-    const window = this.windowOf(provider, modelId) ?? this.config.contextWindowFallback ?? 128_000
+    const window = this.compactWindowOf(provider, modelId)
     const at = this.config.compactAt ?? 0.6
     const keep = this.config.compactKeep ?? 0.3
     const resetsAtStart = this.resets.get(sessionId) ?? 0
@@ -2495,6 +2494,15 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     }
     // 会话换成了某个备选：备选各带各的档位，管理员在备选那一行上配的。
     return match(roles?.daily) ?? roles?.dailyAlternates?.map(match).find(Boolean) ?? 'off'
+  }
+
+  /** 压缩按的窗口：上下文窗口压到价格门槛以下，理由见 compactionWindow。 */
+  private compactWindowOf(provider: string, model: string): number {
+    const found = this.ctx.llm
+      .catalog()
+      .find((p) => p.provider === provider)
+      ?.models.find((m) => m.id === model)
+    return compactionWindow(this.windowOf(provider, model) ?? this.config.contextWindowFallback ?? 128_000, found?.cost)
   }
 
   /** 模型的上下文窗口，来自 Gateway 目录。拉不到就没有——界面那条占比会自己让位。 */
@@ -3393,6 +3401,35 @@ export function scopeAfterBoundary(
 ): Awaited<ReturnType<Context['sessions']['events']>> {
   const prior = contextBoundary(events)
   return prior ? events.filter((e) => e.seq > prior.data.throughSeq) : events
+}
+
+/**
+ * 压缩按多大的「窗口」算：上下文窗口和**最低一道价格门槛**取小。
+ *
+ * 门槛是目录里 `cost.tiers[].inputTokensAbove`（pi-ai 内置和 models.dev 自动发现都带，
+ * 和 Gateway 计价认的是同一张表，见 gateway/src/lib/pricing.ts 的 tierFor）。OpenAI 的
+ * gpt-5.4 / 5.5 / 6.x 输入过 272k **整次**翻倍收，而这批模型的窗口在一百万上下——
+ * 只按窗口算的话要到 63 万（× compactAt）才压，27 万到 63 万之间的每一次调用都是两倍价。
+ * 2026-10-11 一条 gpt-6.1-sol 的调用输入 75.6 万、缓存零命中，一次就记了 $3.51。
+ *
+ * 门槛当窗口用，compactAt / compactKeep / compactHard 三个比例**原样套上去**：照旧在
+ * 六成时压、留三成原文，过门槛之前留出的余量和窗口那边是同一个道理（这一轮之后还要长
+ * 的工具结果和输出）。代价是这类模型压得勤一些，摘要多花一点——一次摘要调用远比一路
+ * 两倍价的几十次调用便宜。
+ *
+ * 不碰的两处：界面上的上下文占比（那是「还装得下多少」，门槛不是装不下）和钉的模型
+ * 装不装得下（同理）。窗口未知时照旧回落到 fallback；没有档位就是窗口本身。
+ */
+export function compactionWindow(window: number, cost: unknown): number {
+  const tiers = (cost as { tiers?: unknown } | null | undefined)?.tiers
+  let cliff = Infinity
+  if (Array.isArray(tiers)) {
+    for (const t of tiers) {
+      const above = Number((t as { inputTokensAbove?: unknown } | null)?.inputTokensAbove)
+      if (Number.isFinite(above) && above > 0 && above < cliff) cliff = above
+    }
+  }
+  return Math.min(window, cliff)
 }
 
 /**

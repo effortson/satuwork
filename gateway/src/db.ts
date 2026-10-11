@@ -193,6 +193,17 @@ export class RoutineBusyError extends Error {
   }
 }
 
+const DAY_MS = 86400000
+const HOUR_MS = 3600000
+/**
+ * 日线 / 小时线切桶用的除数，**拼进 SQL 的字面量**，不走参数：bigint 除以一个绑定参数会按
+ * 整数除，floor 在负数上就错了；写成 `86400000.0` 这种带小数点的字面量才是真除法。
+ * 只认这两个值，别的都当按天——这里不接受外面传进来的任意数字。
+ */
+function bucketSql(bucketMs: number): string {
+  return bucketMs === HOUR_MS ? `${HOUR_MS}.0` : `${DAY_MS}.0`
+}
+
 export class Db {
   private pool: pg.Pool
   private schema: string
@@ -1256,27 +1267,29 @@ export class Db {
     value: string,
     range?: { from?: number; to?: number },
     offsetMs = 0,
+    bucketMs = DAY_MS,
   ): Promise<{ bucket: number; calls: number }[]> {
-    return this.llmDaily({ column, value }, range, offsetMs)
+    return this.llmDaily({ column, value }, range, offsetMs, bucketMs)
   }
 
   /**
    * 平台视角的每日调用数：全部公司一起数，或者只数某一家。owner 自己那些
    * `companyId` 为空的调用也在里面——统计页的合计就是这么算的，日线不能少它一截。
    */
-  llmDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string): Promise<{ bucket: number; calls: number }[]> {
-    return this.llmDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs)
+  llmDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string, bucketMs = DAY_MS): Promise<{ bucket: number; calls: number }[]> {
+    return this.llmDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs, bucketMs)
   }
 
   private async llmDaily(
     scope: { column: 'companyId' | 'accountId'; value: string } | null,
     range?: { from?: number; to?: number },
     offsetMs = 0,
+    bucketMs = DAY_MS,
   ): Promise<{ bucket: number; calls: number }[]> {
     const r = this.llmRangeSql(range)
     const w = this.dailyScopeSql(scope)
     const rows = await this.many(
-      `select floor(("createdAt" + ?) / 86400000.0)::bigint as bucket, count(*) as calls
+      `select floor(("createdAt" + ?) / ${bucketSql(bucketMs)})::bigint as bucket, count(*) as calls
        from llm_calls where ${w.sql}${r.sql}
        group by bucket order by bucket`,
       [offsetMs, ...w.args, ...r.args],
@@ -1294,24 +1307,26 @@ export class Db {
     value: string,
     range?: { from?: number; to?: number },
     offsetMs = 0,
+    bucketMs = DAY_MS,
   ): Promise<{ bucket: number; amountMicros: number }[]> {
-    return this.chargeDaily({ column, value }, range, offsetMs)
+    return this.chargeDaily({ column, value }, range, offsetMs, bucketMs)
   }
 
   /** 平台视角的每日扣费，和 `llmDailyAll` 配对：全部公司一起算，或者只算某一家。 */
-  chargeDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string): Promise<{ bucket: number; amountMicros: number }[]> {
-    return this.chargeDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs)
+  chargeDailyAll(range?: { from?: number; to?: number }, offsetMs = 0, companyId?: string, bucketMs = DAY_MS): Promise<{ bucket: number; amountMicros: number }[]> {
+    return this.chargeDaily(companyId ? { column: 'companyId', value: companyId } : null, range, offsetMs, bucketMs)
   }
 
   private async chargeDaily(
     scope: { column: 'companyId' | 'accountId'; value: string } | null,
     range?: { from?: number; to?: number },
     offsetMs = 0,
+    bucketMs = DAY_MS,
   ): Promise<{ bucket: number; amountMicros: number }[]> {
     const r = this.llmRangeSql(range)
     const w = this.dailyScopeSql(scope)
     const rows = await this.many(
-      `select floor(("createdAt" + ?) / 86400000.0)::bigint as bucket, coalesce(sum("amountMicros"), 0) as "amountMicros"
+      `select floor(("createdAt" + ?) / ${bucketSql(bucketMs)})::bigint as bucket, coalesce(sum("amountMicros"), 0) as "amountMicros"
        from usage_charges where ${w.sql}${r.sql}
        group by bucket order by bucket`,
       [offsetMs, ...w.args, ...r.args],
@@ -3279,6 +3294,37 @@ export class Db {
        where t.key = l.key`,
       [now],
     )
+  }
+
+  // ── 手机推送的设备登记（0055，lib/push.ts）。令牌是主键：换账号登录就改姓。──
+
+  async upsertPushDevice(d: { token: string; accountId: string; platform: string; environment: string }, now: number): Promise<void> {
+    await this.run(
+      `insert into push_devices (token, "accountId", platform, environment, "createdAt", "updatedAt")
+       values (?, ?, ?, ?, ?, ?)
+       on conflict (token) do update set
+         "accountId" = excluded."accountId", platform = excluded.platform,
+         environment = excluded.environment, "updatedAt" = excluded."updatedAt"`,
+      [d.token, d.accountId, d.platform, d.environment, now, now],
+    )
+  }
+
+  /** 只删自己名下的那一行：令牌是客户端报的，别人的令牌不该能被这条路摘掉。 */
+  async deletePushDevice(accountId: string, token: string): Promise<boolean> {
+    return (await this.run(`delete from push_devices where token = ? and "accountId" = ?`, [token, accountId])) > 0
+  }
+
+  /** APNs 说这个令牌已经作废（410 / BadDeviceToken）：不问是谁的，直接摘。 */
+  async dropPushDevice(token: string): Promise<void> {
+    await this.run(`delete from push_devices where token = ?`, [token])
+  }
+
+  async pushDevicesOf(accountId: string): Promise<{ token: string; platform: string; environment: string; updatedAt: number }[]> {
+    const rows = await this.many(
+      `select token, platform, environment, "updatedAt" from push_devices where "accountId" = ? order by "updatedAt" desc`,
+      [accountId],
+    )
+    return rows.map((r) => ({ token: String(r.token), platform: String(r.platform), environment: String(r.environment), updatedAt: Number(r.updatedAt) }))
   }
 
   // ── 配对码。一次性、30 分钟过期，装管家时拿它换这台机器的 smt_。──

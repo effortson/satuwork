@@ -1,0 +1,180 @@
+# 构建手机壳（mobile/，Tauri 2 mobile）的 iOS 包，传 TestFlight。
+#
+# 打 `mobile-v0.1.0` 这样的 tag 触发。**tag 里的版本必须等于 mobile/src-tauri/tauri.conf.json 的 version**，
+# 先断言（理由同 desktop-release.yml：两边对不上的话 CI 是绿的，TestFlight 上的版本号却不是 tag 说的那个）。
+# 手动触发可以填 tag；留空则只出 IPA artifact、不上传。填了 tag 就按那个 tag 的代码构建。
+#
+# **签名走 Xcode 的自动签名**（docs: tauri distribute/sign/ios），不在仓库里放证书和描述文件：
+# 用 App Store Connect API 密钥让 Xcode 现场申请 Apple Distribution 证书和 App Store 描述文件。复用
+# 桌面发版那三个 secret：APPLE_API_ISSUER、APPLE_API_KEY、APPLE_API_KEY_P8（.p8 全文）。前提：
+#
+# - 那把密钥的角色是 **Admin**：自动签名要能建证书和描述文件。桌面那边只拿它公证，App Manager 也够；
+#   不够的话这一步会报 "No Accounts" / 无权创建证书。
+# - App Store Connect 里已经建好 bundle id 为 sg.dami.satuwork.mobile 的 App 记录，App ID 开了
+#   Push Notifications 能力（mobile/push-plugin 要）。没有 App 记录，altool 上传会被拒。
+#
+# **Runner 要 Xcode 26 及以上**：2026-04-28 起，上传到 App Store Connect 的包必须用 iOS 26 SDK 构建，
+# 旧 SDK 在上传校验那一步就被硬拒。check.yml 里 mobile 那档用 macos-15（Xcode 16.4）只做编译检查，
+# 出不了能上传的包。下面「校验 Xcode」那步把这条钉住。
+#
+# 版本：CFBundleShortVersionString 是 tauri.conf.json 的 version，CFBundleVersion 末尾接上
+# GITHUB_RUN_NUMBER（--build-number）。同一个版本号重传一次，build 号也是新的，TestFlight 不会拒。
+name: mobile-release
+
+on:
+  push:
+    tags: ['mobile-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 上传到 TestFlight 的 tag（例如 mobile-v0.1.0；留空则只出 IPA artifact）
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  # 定下这次发的 tag 和要构建的提交，写法同 desktop-release.yml 的 resolve。
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      sha: ${{ steps.r.outputs.sha }}
+      ref: ${{ steps.r.outputs.ref }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${TAG_INPUT:-}"
+          if [ -z "$tag" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          fi
+          if [ -z "$tag" ]; then
+            echo "没有目标 tag：按 $GITHUB_REF 构建，只出 artifact"
+            { echo "tag="; echo "sha=$GITHUB_SHA"; echo "ref=$GITHUB_SHA"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          re='^mobile-v[0-9]+\.[0-9]+\.[0-9]+$'
+          [[ "$tag" =~ $re ]] || { echo "tag 格式不对：要 mobile-vX.Y.Z（App Store 的版本号只认三段数字）" >&2; exit 1; }
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$tag" --jq .sha 2>/dev/null) || sha=""
+          [ -n "$sha" ] || { echo "仓库里没有 tag $tag：先打 tag 推上去，手动触发不会新建 tag" >&2; exit 1; }
+          echo "目标 tag：$tag（$sha）"
+          { echo "tag=$tag"; echo "sha=$sha"; echo "ref=refs/tags/$tag"; } >> "$GITHUB_OUTPUT"
+
+  ios:
+    needs: resolve
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - name: 校验 checkout 的提交
+        env:
+          WANT_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          got=$(git rev-parse HEAD)
+          [ "$got" = "$WANT_SHA" ] || { echo "checkout 出来是 $got，要构建的却是 $WANT_SHA" >&2; exit 1; }
+
+      - name: 校验 Xcode（上传要 iOS 26 SDK）
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          major=$(xcodebuild -version | awk '/^Xcode/ { split($2, v, "."); print v[1] }')
+          [ "$major" -ge 26 ] || { echo "Xcode $major 太旧：App Store Connect 只收 Xcode 26 以上构建的包" >&2; exit 1; }
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: 校验 tag 与 tauri.conf.json 版本一致
+        if: needs.resolve.outputs.tag != ''
+        env:
+          TARGET_TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          want="${TARGET_TAG#mobile-v}"
+          got=$(node -p "require('./mobile/src-tauri/tauri.conf.json').version")
+          [ "$got" = "$want" ] || { echo "tag 是 $want，tauri.conf.json 却是 $got" >&2; exit 1; }
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 分支，2026-09-03
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: './mobile/src-tauri -> target'
+
+      # tauri ios build 会按 gen/apple/project.yml 同步 Xcode 工程，要 xcodegen。
+      - name: 装 xcodegen
+        run: brew install xcodegen
+
+      # App Store Connect 私钥只能以文件给：Tauri 的自动签名认 APPLE_API_KEY_PATH，altool 认
+      # ~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8。两处放同一份，跑完 runner 就销毁。
+      - name: 写 App Store Connect 私钥
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          for k in APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_P8; do
+            [ -n "${!k:-}" ] || { echo "没有 $k：签不了名、也传不上去" >&2; exit 1; }
+          done
+          dir="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$dir"
+          p="$dir/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$p"
+          chmod 600 "$p"
+          echo "APPLE_API_KEY_PATH=$p" >> "$GITHUB_ENV"
+
+      - name: 界面拷进包
+        run: pnpm --filter satuwork-mobile prepare:ui
+
+      - name: tauri ios build
+        working-directory: mobile
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          IPHONEOS_DEPLOYMENT_TARGET: '15.0'
+        run: pnpm exec tauri ios build --ci --export-method app-store-connect --build-number "$GITHUB_RUN_NUMBER"
+
+      - name: 找 IPA
+        id: ipa
+        run: |
+          set -euo pipefail
+          ipa=$(find mobile/src-tauri/gen/apple/build -name '*.ipa' -print -quit)
+          [ -n "$ipa" ] || { echo "没找到 IPA" >&2; exit 1; }
+          ls -la "$ipa"
+          echo "path=$ipa" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: satuwork-ios-${{ github.run_number }}
+          path: ${{ steps.ipa.outputs.path }}
+          if-no-files-found: error
+
+      # 只在有 tag 时传。传上去之后 Apple 那边还要处理十几分钟才在 TestFlight 里出现，
+      # 第一次传还要在 App Store Connect 里答一遍出口合规（Info.plist 已声明不含非豁免加密）。
+      - name: 传 TestFlight
+        if: needs.resolve.outputs.tag != ''
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          IPA: ${{ steps.ipa.outputs.path }}
+        run: |
+          xcrun altool --upload-app --type ios --file "$IPA" \
+            --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"

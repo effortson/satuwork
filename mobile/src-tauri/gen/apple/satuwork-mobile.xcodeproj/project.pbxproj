@@ -1,0 +1,465 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0440B344932EF191E86A7A99 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = EB59E459AEAC2920D03E9F6E /* assets */; };
+		262B20BFEA3A048FBDE4FFF1 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 0E3C1BB2FC9248D187FAAC82 /* LaunchScreen.storyboard */; };
+		36354171C18561B5FEF5D870 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F76BE657EF7B0E350FE8F9F4 /* Metal.framework */; };
+		5762393DCCD2CE75E7B750D3 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31F06AAFC1431359FB7BA222 /* WebKit.framework */; };
+		589E547168EA0E53E7A5223E /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 571F72BF7858F503E95484CF /* Security.framework */; };
+		677CA7ED410719AD520CE020 /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 989E2514A38B7CB285ED17B9 /* QuartzCore.framework */; };
+		6A43714ADD6CCEC6CA0214CD /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 167C6B9C43A650E18CFD8AED /* UIKit.framework */; };
+		78E69291FBF30D726D86A81D /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 86B9690603AC68CE34A5110D /* CoreGraphics.framework */; };
+		BA83DFA644675559270D5A09 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C6B541E691B5DA45162F72F5 /* Assets.xcassets */; };
+		CB883456AE38FC1721749C81 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 107A203E1B5D1FA2CC186881 /* MetalKit.framework */; };
+		D43960353D855B28C2EF3127 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C0A775FF80DD863C20A367C8 /* libapp.a */; };
+		E1A5B916DE9082746C4F27EE /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = F0B6CB8A6BE3624AC76FA508 /* main.mm */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0E3C1BB2FC9248D187FAAC82 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		107A203E1B5D1FA2CC186881 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		167C6B9C43A650E18CFD8AED /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		2BE3D65EAFD5E4D157A59E16 /* satuwork-mobile_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "satuwork-mobile_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		30B3BB61F6AED7D0CED5519B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		31F06AAFC1431359FB7BA222 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		571F72BF7858F503E95484CF /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		6BF55AD03ABE214DD995F8CA /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		86B9690603AC68CE34A5110D /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		89A17F9CB614F4DC46B40E57 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
+		8D8991C37AD4A2AF5CE51A0D /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		989E2514A38B7CB285ED17B9 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		C03699DD1446F923A314C155 /* satuwork-mobile_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "satuwork-mobile_iOS.entitlements"; sourceTree = "<group>"; };
+		C0A775FF80DD863C20A367C8 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		C6B541E691B5DA45162F72F5 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		EB59E459AEAC2920D03E9F6E /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+		F0B6CB8A6BE3624AC76FA508 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		F76BE657EF7B0E350FE8F9F4 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		D056F01C99DA9874BC925310 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D43960353D855B28C2EF3127 /* libapp.a in Frameworks */,
+				78E69291FBF30D726D86A81D /* CoreGraphics.framework in Frameworks */,
+				36354171C18561B5FEF5D870 /* Metal.framework in Frameworks */,
+				CB883456AE38FC1721749C81 /* MetalKit.framework in Frameworks */,
+				677CA7ED410719AD520CE020 /* QuartzCore.framework in Frameworks */,
+				589E547168EA0E53E7A5223E /* Security.framework in Frameworks */,
+				6A43714ADD6CCEC6CA0214CD /* UIKit.framework in Frameworks */,
+				5762393DCCD2CE75E7B750D3 /* WebKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		185597B407B7327EBBC16FBA /* Externals */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Externals;
+			sourceTree = "<group>";
+		};
+		1CB7B7870889CEF669AAAE3C /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				2BE3D65EAFD5E4D157A59E16 /* satuwork-mobile_iOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		1F1969F9D1D3C1BDFC3A6120 /* satuwork-mobile_iOS */ = {
+			isa = PBXGroup;
+			children = (
+				30B3BB61F6AED7D0CED5519B /* Info.plist */,
+				C03699DD1446F923A314C155 /* satuwork-mobile_iOS.entitlements */,
+			);
+			path = "satuwork-mobile_iOS";
+			sourceTree = "<group>";
+		};
+		27DF70270EA0C4C48D0F54FB /* bindings */ = {
+			isa = PBXGroup;
+			children = (
+				8D8991C37AD4A2AF5CE51A0D /* bindings.h */,
+			);
+			path = bindings;
+			sourceTree = "<group>";
+		};
+		5648F655CA4DE5E06D6DE704 /* src */ = {
+			isa = PBXGroup;
+			children = (
+				89A17F9CB614F4DC46B40E57 /* lib.rs */,
+				6BF55AD03ABE214DD995F8CA /* main.rs */,
+			);
+			name = src;
+			path = ../../src;
+			sourceTree = "<group>";
+		};
+		6EA5508ADA8E8E0230930700 /* satuwork-mobile */ = {
+			isa = PBXGroup;
+			children = (
+				F0B6CB8A6BE3624AC76FA508 /* main.mm */,
+				27DF70270EA0C4C48D0F54FB /* bindings */,
+			);
+			path = "satuwork-mobile";
+			sourceTree = "<group>";
+		};
+		6ED6BBFD6CECDCDF398031D3 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				86B9690603AC68CE34A5110D /* CoreGraphics.framework */,
+				C0A775FF80DD863C20A367C8 /* libapp.a */,
+				F76BE657EF7B0E350FE8F9F4 /* Metal.framework */,
+				107A203E1B5D1FA2CC186881 /* MetalKit.framework */,
+				989E2514A38B7CB285ED17B9 /* QuartzCore.framework */,
+				571F72BF7858F503E95484CF /* Security.framework */,
+				167C6B9C43A650E18CFD8AED /* UIKit.framework */,
+				31F06AAFC1431359FB7BA222 /* WebKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		CEA9DD472CC8483902312D63 = {
+			isa = PBXGroup;
+			children = (
+				EB59E459AEAC2920D03E9F6E /* assets */,
+				C6B541E691B5DA45162F72F5 /* Assets.xcassets */,
+				0E3C1BB2FC9248D187FAAC82 /* LaunchScreen.storyboard */,
+				185597B407B7327EBBC16FBA /* Externals */,
+				1F1969F9D1D3C1BDFC3A6120 /* satuwork-mobile_iOS */,
+				E679546ED5F453159AFB8494 /* Sources */,
+				5648F655CA4DE5E06D6DE704 /* src */,
+				6ED6BBFD6CECDCDF398031D3 /* Frameworks */,
+				1CB7B7870889CEF669AAAE3C /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		E679546ED5F453159AFB8494 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				6EA5508ADA8E8E0230930700 /* satuwork-mobile */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		6ED2F939413BCC190BA54D9D /* satuwork-mobile_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2EE2C58BD98D613CC7B9F7D6 /* Build configuration list for PBXNativeTarget "satuwork-mobile_iOS" */;
+			buildPhases = (
+				20C0452859CF182034AEA884 /* Build Rust Code */,
+				5A1CE0111DF8DE23B5DD5B7F /* Sources */,
+				616B736DF7B9DEA9120A20CB /* Resources */,
+				D056F01C99DA9874BC925310 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "satuwork-mobile_iOS";
+			packageProductDependencies = (
+			);
+			productName = "satuwork-mobile_iOS";
+			productReference = 2BE3D65EAFD5E4D157A59E16 /* satuwork-mobile_iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		C23777CEE395D3445C5C181A /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					6ED2F939413BCC190BA54D9D = {
+						DevelopmentTeam = 37TR7L5SSP;
+					};
+				};
+			};
+			buildConfigurationList = BDEB6A63C049A430BA46D886 /* Build configuration list for PBXProject "satuwork-mobile" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = CEA9DD472CC8483902312D63;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				6ED2F939413BCC190BA54D9D /* satuwork-mobile_iOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		616B736DF7B9DEA9120A20CB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BA83DFA644675559270D5A09 /* Assets.xcassets in Resources */,
+				262B20BFEA3A048FBDE4FFF1 /* LaunchScreen.storyboard in Resources */,
+				0440B344932EF191E86A7A99 /* assets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		20C0452859CF182034AEA884 /* Build Rust Code */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Code";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a",
+				"$(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "pnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5A1CE0111DF8DE23B5DD5B7F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1A5B916DE9082746C4F27EE /* main.mm in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		35859E5FAFE49F1060F60E35 /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = debug;
+		};
+		3BA3E2CF20274C221B343C8F /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "satuwork-mobile_iOS/satuwork-mobile_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = "37TR7L5SSP";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "satuwork-mobile_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = sg.dami.satuwork.mobile;
+				PRODUCT_NAME = "Satuwork";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = release;
+		};
+		4332AA805E3A2A09A70A9B12 /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "satuwork-mobile_iOS/satuwork-mobile_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = "37TR7L5SSP";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "satuwork-mobile_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = sg.dami.satuwork.mobile;
+				PRODUCT_NAME = "Satuwork";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = debug;
+		};
+		47DA1369BDB6E3CF71D52B6A /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2EE2C58BD98D613CC7B9F7D6 /* Build configuration list for PBXNativeTarget "satuwork-mobile_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4332AA805E3A2A09A70A9B12 /* debug */,
+				3BA3E2CF20274C221B343C8F /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		BDEB6A63C049A430BA46D886 /* Build configuration list for PBXProject "satuwork-mobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				35859E5FAFE49F1060F60E35 /* debug */,
+				47DA1369BDB6E3CF71D52B6A /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = C23777CEE395D3445C5C181A /* Project object */;
+}

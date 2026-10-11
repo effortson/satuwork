@@ -14,6 +14,8 @@ import { publishRelease } from './release.mjs'
 import { pairMachine } from './pair.mjs'
 import { freePorts } from './ports.mjs'
 import { closeServer } from './probe.mjs'
+import { generateKeyPairSync } from 'node:crypto'
+import { GOOD as PUSH_TOKEN, fakeApns } from './push.mjs'
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
@@ -75,7 +77,11 @@ async function readSse(url, { token, timeout = 8000, until } = {}) {
 export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHttp, assert, log, treeHas }) {
   const GW_HOME = tmpOf('satuwork-e2e-chat-gw')
   const BOT_HOME = tmpOf('satuwork-e2e-chat-bot')
-  const [GW_PORT, BOT_PORT, STUB_PORT] = await freePorts(3)
+  const [GW_PORT, BOT_PORT, STUB_PORT, APNS_PORT] = await freePorts(4)
+  // 假 APNs：验「席位一轮跑完 → Gateway 推到手机」这一整条（gateway/src/lib/push.ts、bot 的 reportPush）。
+  const apnsKeys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+  const apns = fakeApns(apnsKeys.publicKey)
+  await new Promise((r) => apns.server.listen(APNS_PORT, '127.0.0.1', r))
   const MACHINE_TOK = 'e2e-chat-machine'
   const PLATFORM_TOK = 'e2e-chat-platform'
   const gwBase = `http://127.0.0.1:${GW_PORT}`
@@ -106,6 +112,10 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
         GATEWAY_OWNER_EMAIL: 'owner@chat.test',
         GATEWAY_OWNER_PASSWORD: 'test-owner-chat',
         SATUWORK_DEPLOY_STUB: '1',
+        GATEWAY_APNS_KEY: apnsKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }),
+        GATEWAY_APNS_KEY_ID: 'KEY1234567',
+        GATEWAY_APNS_TEAM_ID: 'TEAM123456',
+        GATEWAY_APNS_ENDPOINT: `http://127.0.0.1:${APNS_PORT}`,
       },
     })
     // 带上 child：起不来时有用的是它的输出，不是三十秒后那句「等不到」。
@@ -267,6 +277,15 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(false, `ready 未到 ${last?.status} ${last?.text}`)
     })
 
+    await test('手机登记一台设备（推送那条在一轮跑完后验）', async () => {
+      const r = await req(gwBase, 'PUT', '/me/push-device', {
+        token: adminTok,
+        body: { token: PUSH_TOKEN, platform: 'ios', environment: 'sandbox' },
+      })
+      assert(r.status === 200, `push-device ${r.status} ${r.text}`)
+      apns.seen.length = 0
+    })
+
     await test('POST /runtime/sessions/:id/messages ping → accepted/steered', async () => {
       const r = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/messages`, {
         token: adminTok,
@@ -274,6 +293,16 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       })
       assert(r.status === 200, `message ${r.status} ${r.text}`)
       assert(r.json.accepted === true || r.json.steered === true, 'accepted/steered')
+    })
+
+    await test('这一轮跑完，席位报 turn-end，Gateway 推到登记的手机上（不带正文）', async () => {
+      // 假模型一上来就回错，这一轮以 error 收场——也算「跑完了、该回去看看」。
+      const deadline = Date.now() + 15000
+      while (Date.now() < deadline && !apns.seen.some((s) => s.payload?.kind === 'turn-end')) await sleep(100)
+      const hit = apns.seen.find((s) => s.payload?.kind === 'turn-end')
+      assert(hit, `没收到 turn-end 推送：${JSON.stringify(apns.seen.map((s) => s.payload))}`)
+      assert(hit.token === PUSH_TOKEN && hit.payload.botId === botId, `推错了：${JSON.stringify(hit)}`)
+      assert(!JSON.stringify(hit.payload).includes(MARKER), '推送里带了对话正文')
     })
 
     await test('斜杠命令那两条经 Gateway 转得到席位，拒绝的原话原样透回', async () => {
@@ -454,6 +483,36 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       const direct = await req(gwBase, 'GET', `/runtime/logs/direct?botId=${encodeURIComponent(botId)}`, { token: adminTok })
       assert(direct.status === 409, `没配 directUrl 该 409，实际 ${direct.status} ${direct.text}`)
       assert((await req(gwBase, 'GET', `/runtime/logs/direct?botId=${encodeURIComponent(botId)}`)).status === 401, '无票该 401')
+    })
+
+    await test('人正看着（连着流、这一轮不到半分钟）就不推', async () => {
+      // bot/src/session/watchers.ts：有客户端连着这条会话的流、这一轮又很短，人多半就在屏幕前。
+      // 假模型一上来就回错，这一轮瞬间收场——正是「短轮次」。
+      apns.seen.length = 0
+      // 只认「这一句之后」的那个 turn/end：前面几条用例发的消息，那几轮可能还没收完。
+      const said = `watched ${MARKER}`
+      const live = (events) => {
+        const at = events.findIndex((e) => e.type === 'user/message' && JSON.stringify(e).includes(said))
+        return at >= 0 && events.slice(at + 1).some((e) => e.type === 'turn/end')
+      }
+      const watching = readSse(`${botBase}/api/sessions/${encodeURIComponent(sessionId)}/events`, {
+        token: seatAccess,
+        timeout: 15000,
+        until: live,
+      })
+      // 等流先接上，再发这一句；否则 turn/end 可能早于开流。
+      await sleep(500)
+      const r = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/messages`, {
+        token: adminTok,
+        body: { text: said },
+      })
+      assert(r.status === 200, `message ${r.status} ${r.text}`)
+      const sse = await watching
+      assert(live(sse.events), `流上没等到这一轮的 turn/end：${sse.events.map((e) => e.type).join(',')}`)
+      // reportPush 若是发了，假 APNs 一两百毫秒内就收到；多等一会儿再判「没有」。
+      await sleep(1500)
+      const hit = apns.seen.find((s) => s.payload?.kind === 'turn-end')
+      assert(!hit, `人连着流、这一轮又短，还是推了：${JSON.stringify(hit?.payload)}`)
     })
 
     await test('Gateway 上那条会话流已经没了：/runtime/sessions/:id/events → 404', async () => {
@@ -904,6 +963,7 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
     })
 
   } finally {
+    await new Promise((r) => apns.server.close(r))
     if (botChild && !botChild._exited) {
       try {
         botChild.kill('SIGTERM')

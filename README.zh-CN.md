@@ -52,6 +52,7 @@
 | [`bot/`](bot) | 运行面：无头的 AI 员工运行时（基于 Cordis）。一个进程恰好一个 Bot，按 (账号, botId) 部署，不发界面 |
 | [`manager/`](manager) | 机器管家：席位机器上的 root 常驻服务，和 Gateway 配对后负责部署、升级 Bot，对外只开它一个端口 |
 | [`desktop/`](desktop) | Tauri 桌面端：界面打在包里，连远程 Gateway，也能在本机跑本地 Bot |
+| [`core/`](core) | 界面里不碰 DOM 的那一层（译表、格式化，后续加请求层与对话事件层）；打成 `gateway/ui/core.js` 给 Web 用，移动端直接 import。见 [docs/adr-core-package-mobile.md](docs/adr-core-package-mobile.md) |
 | [`e2e/`](e2e) | 端到端测试 |
 | [`docs/`](docs) | 设计文档；总规范是 [docs/gateway-runtime.md](docs/gateway-runtime.md) |
 | [`searxng/`](searxng) | 可选的自托管搜索 |

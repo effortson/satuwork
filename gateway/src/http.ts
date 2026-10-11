@@ -179,7 +179,7 @@ const SPA_PATHS = new Set(['/', '/login', '/privacy', '/terms', '/download', '/i
 // 前端脚本拆成了一串（见 gateway/ui/index.html 里那组 data-app-part），
 // 加一个新的分片就要在这里也加一行，否则线上直接 404，而本地跑 index.html 是好的。
 const UI_PARTS = ['prefs.js', 'state.js', 'data.js', 'shell.js', 'pages-landing.js', 'pages-legal.js', 'pages-admin.js', 'pages-audit.js', 'pages-machines.js', 'pages-account.js', 'pages-bots.js', 'pages-tools.js', 'pages-connectors.js', 'pages-routines.js', 'pages-handoffs.js', 'pages-channels.js', 'pages-knowledge.js', 'chat.js', 'render.js', 'app.js']
-const ROOT_FILES = new Set(['theme.css', 'shell.css', 'app.css', 'chat.css', ...UI_PARTS, 'i18n.js', 'markdown.js', 'channel-preview.js', 'index.html', 'unzip.js', 'analytics.js', 'blob-client.js'])
+const ROOT_FILES = new Set(['theme.css', 'shell.css', 'app.css', 'chat.css', ...UI_PARTS, 'core.js', 'i18n.js', 'markdown.js', 'channel-preview.js', 'index.html', 'unzip.js', 'analytics.js', 'blob-client.js'])
 
 /**
  * Vercel Web Analytics 与 Speed Insights：**只在 Vercel 上开**（平台注入 `VERCEL=1`）。

@@ -108,7 +108,7 @@ function authAside(
                 ——桌面端要不要装、去哪儿装，除了这儿没别处说得着。和那两条一样开新标签页，
                 理由见上面那段。**桌面壳里不给**：人已经在桌面端里了，而且壳里的 `/` 就是
                 这一屏，没有首页可指（见 render.js 的 anonView）。 */ ''}
-          ${desktopShell() ? '' : `<a href="/#download" target="_blank" rel="noopener noreferrer">${t('下载桌面端', 'Desktop app')}</a>`}
+          ${appShell() ? '' : `<a href="/#download" target="_blank" rel="noopener noreferrer">${t('下载桌面端', 'Desktop app')}</a>`}
           <a href="/privacy" target="_blank" rel="noopener noreferrer">${t('隐私政策', 'Privacy Policy')}</a>
           <a href="/terms" target="_blank" rel="noopener noreferrer">${t('服务条款', 'Terms of Service')}</a>
         </span>
@@ -193,7 +193,7 @@ function loginView() {
         ${/* 回首页。**只在网页上有**——桌面壳里 `/` 就是这一屏（见 render.js 的
              anonView），那颗按钮会把人送回原地，是一颗点了没反应的按钮。 */ ''}
         ${
-          desktopShell()
+          appShell()
             ? ''
             : `<button type="button" class="btn btn-ghost" style="align-self: flex-start; padding: 4px 10px; margin: 0 0 calc(var(--space-4) * -1); font-size: 13px;" data-act="go" data-href="/">${svg(BACK_ARROW, 14)}${t('返回首页', 'Back to home')}</button>`
         }
@@ -514,6 +514,141 @@ function desktopUpdateBridge() {
 
 function desktopUpdateBusy(u) {
   return Boolean(u && (u.phase === 'downloading' || u.phase === 'installing'))
+}
+
+/**
+ * 手机壳（mobile/）里软键盘弹起时把外壳缩到可视高度。
+ *
+ * 外壳是 `height: 100dvh; overflow: hidden`、各栏自己滚的应用布局（appView）。iOS 的 WebKit
+ * 弹键盘时**不改布局视口**，只缩可视视口（visualViewport），再把整页往上滚去露出输入框——
+ * 结果是顶栏连同汉堡被推到刘海底下、输入框压在键盘上沿，而对话正文一点没缩。
+ *
+ * 这里在可视视口变矮时把高度写进 `--satu-vvh`（app.css 里 `html.satu-mobile .gw-shell` 读它），
+ * 外壳随键盘缩短，正文自己让出位置；再把页面滚回顶上，WebKit 那一下就白滚了。写在
+ * documentElement 上是因为 render() 整页换 innerHTML，挂在 .gw-shell 上的内联样式活不过一次重绘。
+ *
+ * **只在手机壳里跑**：浏览器里（含手机 Safari）照旧，这一步不改网页版的行为。
+ */
+function startMobileShellFit() {
+  if (!mobileShell()) return
+  document.documentElement.classList.add('satu-mobile')
+  const vv = window.visualViewport
+  if (!vv) return
+  const apply = () => {
+    const full = window.innerHeight || 0
+    const h = Math.round(vv.height)
+    const root = document.documentElement
+    // 80：比键盘矮得多的差值（地址栏、转屏抖动）不算键盘，不折腾布局。
+    if (full - h > 80) {
+      root.style.setProperty('--satu-vvh', h + 'px')
+      // 键盘压着 Home 条那一截，底下的安全区不用再让（app.css 的 html.satu-kbd）。
+      root.classList.add('satu-kbd')
+      // 只在应用布局里把页面钉回顶上。登录那一屏是普通的可滚页面，WebKit 滚去露出输入框
+      // 是对的——钉住它，口令框就藏在键盘底下了（实测）。
+      if (document.querySelector('.gw-shell')) window.scrollTo(0, 0)
+    } else {
+      root.style.removeProperty('--satu-vvh')
+      root.classList.remove('satu-kbd')
+    }
+  }
+  vv.addEventListener('resize', apply)
+  vv.addEventListener('scroll', apply)
+}
+
+/**
+ * 手机壳的远程推送（docs/adr-core-package-mobile.md §2.5 第 4 件）。
+ *
+ * 壳子（mobile/push-plugin）只管两件原生的事：向 APNs 要设备令牌、记下用户点开的那条通知。
+ * 登记到 Gateway 在这里做，和别的 API 请求走同一张登录票：
+ *
+ * - **每次登录状态确认之后都登记一次**（data.js 的 loadMe 末尾调 syncMobilePush）。幂等，而且
+ *   Gateway 拿登记时刻当「这次登录的时刻」：改了口令之后旧登记不推，重新登录这一下就补上。
+ *   同一张票只登记一次，免得每次刷新资料都去问一遍 APNs。
+ * - **退出登录先注销**（app.js 的 endSignedIn 开头，清票之前）：同一台手机下一个登录的人
+ *   不该收到上一个人的通知。登记换人时 Gateway 也会改姓，这一步是让「退出了没人登录」那段
+ *   时间里也收不到。
+ * - **点开通知**：启动时、每次回到前台时、壳子叫一声（`__SATUWORK_PUSH_TAPPED__`）时各取一次
+ *   （take_tap），取到就跳到那颗 Bot 的对话。取一次就清，几路撞在一起也只跳一次。
+ *   启动时那一次在 boot() 收尾、页面画好之后（app.js），**不挂在登记后面**：登记要等系统的
+ *   权限框和 APNs（没网时要等满 15 秒超时），没拿到令牌还会提前返回——冷启动点的那条通知
+ *   要么丢、要么十几秒后才把人拽走。也不能早于 boot 收尾：boot 自己还要按地址栏换一次页，
+ *   早跳了会被它盖回去。
+ *
+ * 平台账号（owner）不登记：推送只给公司里的人，没必要让平台的人点一次通知权限。
+ * 浏览器和桌面壳里 `__SATUWORK_PUSH__` 不存在，这几个函数都是空转。
+ */
+const PUSH_TOKEN_KEY = 'satu.pushToken'
+let pushRegisteredFor = ''
+
+function pushBridge() {
+  const b = window.__SATUWORK_PUSH__
+  return mobileShell() && b && typeof b.register === 'function' ? b : null
+}
+
+async function syncMobilePush() {
+  const bridge = pushBridge()
+  if (!bridge || !state.me || state.me.account?.role === 'owner') return
+  const ticket = token()
+  if (!ticket || pushRegisteredFor === ticket) return
+  pushRegisteredFor = ticket
+  try {
+    const r = await bridge.register()
+    if (!r || !r.granted || !r.token) {
+      if (r && r.error) console.warn('satuwork: 没拿到推送令牌：' + r.error)
+      return
+    }
+    await api('PUT', '/me/push-device', {
+      token: r.token,
+      platform: r.platform || 'ios',
+      environment: r.environment || 'production',
+    })
+    try {
+      localStorage.setItem(PUSH_TOKEN_KEY, r.token)
+    } catch {}
+  } catch (e) {
+    // 下次登录状态确认时再试；推送登记失败不该打扰正在用的人。
+    pushRegisteredFor = ''
+    console.warn('satuwork: 推送登记没做成：' + (e && e.message ? e.message : e))
+  }
+}
+
+/**
+ * 退出登录时注销这台设备。**必须在清票之前同步发出**：endSignedIn 下一行就 clearToken，
+ * 走 api() 的话请求里带的就是空票了。不等回执——退出不该被网络卡住；没注销掉的那一条，
+ * 下一个登录的人一登记就改姓。
+ */
+function forgetMobilePush() {
+  pushRegisteredFor = ''
+  if (!pushBridge()) return
+  let pushToken = ''
+  try {
+    pushToken = localStorage.getItem(PUSH_TOKEN_KEY) || ''
+  } catch {}
+  const ticket = token()
+  const base = String(window.__SATUWORK_GATEWAY__ || '')
+  if (!pushToken || !ticket || !base) return
+  void fetch(base + '/me/push-device/' + encodeURIComponent(pushToken), {
+    method: 'DELETE',
+    headers: { authorization: 'Bearer ' + ticket },
+  }).catch(() => {})
+}
+
+async function takeMobilePushTap() {
+  const bridge = pushBridge()
+  if (!bridge || !state.me || typeof bridge.takeTap !== 'function') return
+  try {
+    const tap = await bridge.takeTap()
+    if (tap && tap.botId) go('/a/' + encodeURIComponent(tap.botId))
+  } catch {}
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void takeMobilePushTap()
+  })
+  // 壳子原生那半记下一次点通知后叫这一声（mobile/push-plugin 的 SatuPushPlugin.swift / .kt）：
+  // 回前台那一下和点通知谁先到没有保证，应用开着时从通知中心点进来也不会有回前台。
+  globalThis.__SATUWORK_PUSH_TAPPED__ = () => void takeMobilePushTap()
 }
 
 /** boot() 里调一次。先取一眼状态（当前版本号要给个人设置页用），过几秒再真去问。 */

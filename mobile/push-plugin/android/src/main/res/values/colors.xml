@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 通知的强调色：logo 的陶土色（satuwork-logo.svg 渐变的深端）。 -->
+    <color name="satu_notification">#C7654E</color>
+</resources>

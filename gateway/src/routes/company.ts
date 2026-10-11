@@ -13,7 +13,7 @@ import { bodyOf, deployOptsOf, strField, usd, usdMicros } from '../lib/validate.
 import { companyMachineOf, deploySeatBriefly, listSeatRuntime, publicMachine, publicSeatRuntime, releaseSeats } from '../deploy.ts'
 import { companyStatusOf, emailOf, groupRoleOf, membersInCompany, orgSettings, patchAccount, phoneOf, publicAccount, publicCompany, publicGroup, publicPlan, publicSettings, roleOf, slugOf, stringIds, websiteOf } from '../lib/org.ts'
 import { desktopTicketFor, machineHostOf, machineResolver } from '../lib/machines.ts'
-import { dailyBars, dayBucketOf, dayLabelOf, inviteLinkOf, issueInvite, rangeQuery, requireOrgUser, requireOwner, requireUser, tzOffsetMs, usagePayload } from '../lib/guards.ts'
+import { type BarStep, dayBucketOf, dayLabelOf, inviteLinkOf, issueInvite, rangeQuery, requireOrgUser, requireOwner, requireUser, stepMs, stepQuery, tzOffsetMs, usageBars, usagePayload } from '../lib/guards.ts'
 import { randomUUID } from 'node:crypto'
 import { afterResponse } from '../lib/background.ts'
 import { cleanupKnowledgeBase } from '../lib/knowledge.ts'
@@ -688,11 +688,13 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
    * 写着「还没有用量」，而底下的计费明细一屏都是——两个说法互相打脸。
    *
    * `offsetMs` 是看的人所在时区的偏移，只有日线用得上（见 `db.llmDailyBy`）。
+   * `step` 是柱子的粒度：「今日」那一屏按小时，别的按天。
    */
   async function usageDims(
     scope: { companyId?: string; accountId?: string },
     range: { from?: number; to?: number },
     offsetMs: number,
+    step: BarStep = 'day',
   ) {
     const column = scope.companyId ? 'companyId' : 'accountId'
     const value = scope.companyId ?? scope.accountId ?? ''
@@ -705,16 +707,17 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     const todayBucket = dayBucketOf(now, offsetMs)
     const todayRange = { from: todayBucket * 86400000 - offsetMs, to: now }
     const [buckets, spentBuckets, models, charges, todayUsage, todayCharges] = await Promise.all([
-      db.llmDailyBy(column, value, range, offsetMs),
-      db.chargeDailyBy(column, value, range, offsetMs),
+      db.llmDailyBy(column, value, range, offsetMs, stepMs(step)),
+      db.chargeDailyBy(column, value, range, offsetMs, stepMs(step)),
       db.llmUsageByCompanyModel(range, scope.companyId, scope.accountId),
       db.chargeUsageBy(['botId', 'kind', 'subject'], range, scope),
       scope.companyId ? db.llmUsageOfCompany(scope.companyId, todayRange) : db.llmUsageOfAccount(value, todayRange),
       db.chargeUsageBy(['kind'], todayRange, scope),
     ])
 
-    // 没有调用的那天也画一根 0 柱、右端不越过今天——规矩在 dailyBars 里，平台统计那一屏同一套。
-    const daily = dailyBars(buckets, spentBuckets, range, offsetMs)
+    // 没有调用的那天（那个小时）也画一根 0 柱、右端不越过现在——规矩在 dailyBars / hourlyBars 里，
+    // 平台统计那一屏同一套。
+    const daily = usageBars(step, buckets, spentBuckets, range, offsetMs)
 
     /** 账本上这一段的钱，按对象（模型是 `provider/model`、连接器是 `连接器:工具`）摊开。 */
     const spentBySubject = new Map<string, number>()
@@ -822,7 +825,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
       spentByAccount.set(row.accountId, (spentByAccount.get(row.accountId) ?? 0) + row.amountMicros)
       spentMicros += row.amountMicros
     }
-    const dims = await usageDims({ companyId: company.id }, range, tzOffsetMs(req))
+    const dims = await usageDims({ companyId: company.id }, range, tzOffsetMs(req), stepQuery(req))
     json(res, 200, usagePayload(usage, { seats, members, includeMembers: true, spentByAccount, spentMicros, dims }))
   })
 
@@ -831,7 +834,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     const range = rangeQuery(req)
     const usage = await db.llmUsageOfAccount(account.id, range)
     const mine = await db.chargeUsageBy(['accountId'], range, { accountId: account.id })
-    const dims = await usageDims({ accountId: account.id }, range, tzOffsetMs(req))
+    const dims = await usageDims({ accountId: account.id }, range, tzOffsetMs(req), stepQuery(req))
     json(res, 200, usagePayload(usage, {
       seats: 0,
       members: [account],
