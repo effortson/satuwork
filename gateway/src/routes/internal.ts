@@ -17,6 +17,9 @@ import { auditResultHash } from '../conversation-audit.ts'
 import { afterResponse } from '../lib/background.ts'
 import { PUSH_KINDS, pushMessage, pushToAccount, type PushKind } from '../lib/push.ts'
 
+/** `/internal/push` 当场等推送发完的上限，见那条路由。比席位那头的八秒超时短得多。 */
+const PUSH_WAIT_MS = 5_000
+
 /**
  * 席位报上来的 guard / outcome 只认这两张表里的值。
  *
@@ -597,6 +600,10 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
    * 看得见的——不查的话，一台被拿下的席位能拿任意 botId 让别家 Bot 的名字出现在锁屏上。
    *
    * 推送失败不让上报失败：席位那头不该为一条没发出去的通知重试；发没发出去记在返回里。
+   *
+   * **最多等 PUSH_WAIT_MS**：平时 APNs / FCM 一两百毫秒就回，回执带着 sent / dropped（e2e 靠它核对）。
+   * 那两家慢的时候一台设备最坏要等十秒，席位那头八秒就放弃了，Gateway 还在这儿干等。超了就把
+   * 剩下的交给 afterResponse 接着发，先回 202 `{ pending: true }`。
    */
   router.post('/internal/push', async (req, res) => {
     const caller = await requireInternalCaller(req, db)
@@ -613,7 +620,17 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     if (!bot || bot.kind !== 'bot' || (bot.companyId && bot.companyId !== caller.companyId)) {
       throw new HttpError(404, '没有这颗 Bot')
     }
-    const result = await pushToAccount(db, accountId, pushMessage(kind as PushKind, bot.name, botId, account.locale))
+    const sending = pushToAccount(db, accountId, pushMessage(kind as PushKind, bot.name, botId, account.locale))
+    let timer: NodeJS.Timeout | undefined
+    const late = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), PUSH_WAIT_MS)
+    })
+    const result = await Promise.race([sending, late]).finally(() => clearTimeout(timer))
+    if (!result) {
+      afterResponse(`给 ${accountId} 的手机推送`, sending)
+      json(res, 202, { pending: true })
+      return
+    }
     json(res, 200, result)
   })
 

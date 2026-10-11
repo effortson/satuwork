@@ -75,7 +75,9 @@ pnpm --filter satuwork-mobile dev:android satuwork-36
 - **设备名用 AVD 名**（`emulator -list-avds` 列出来的），不是 `adb devices` 里的 `emulator-5554`：
   后者认不出，它会退回去打开 Android Studio，没装的话就停在那儿还拿着构建锁。
 - **Gateway 地址**：Android 模拟器是一台虚拟机，读不到本机的 `dev-server.txt`，由 build.rs 在构建时
-  烤进去；改了文件要重编。模拟器里的 127.0.0.1 是它自己，要先 `adb reverse` 把端口转回本机。
+  烤进去；改了文件要重编。**头一回新建**这个文件时 cargo 察觉不到（build.rs 只在文件存在时才盯它，
+  免得没有它的 checkout 每次都重编），先 `touch mobile/src-tauri/build.rs` 再编。模拟器里的 127.0.0.1
+  是它自己，要先 `adb reverse` 把端口转回本机。
 - **界面**：同理读不到仓库里的 `gateway/ui`，debug 构建也走包里那份——先 `pnpm prepare:ui`，
   改了界面要重拷、重编。
 - debug 构建把导航和页面报错打进 logcat（标签 `RustStdoutStderr`，前缀 `[satuwork]`）：
@@ -136,10 +138,15 @@ pnpm --filter satuwork-mobile build:ios
 
 ## 和桌面壳共用的代码
 
-`serve_ui`、UI_CSP（除了上面说的 `connect-src`）、导航守卫（`allow_navigation` / `is_seat_desktop` / `open_path_allowed`）
-是从 desktop/src-tauri/src/main.rs 抄过来的，**两边要一起改**。差别只有一处：同源的
-`target="_blank"`（「打开桌面」）桌面上另开一扇应用窗口，手机只有一扇窗，换成 Gateway 的
-源交给 Safari——Gateway 发的是同一份界面，在 Safari 里登录一次就能看（`open_target`）。
+`serve_ui`、UI_CSP、导航守卫（`allow_navigation` / `open_path_allowed`）是从
+desktop/src-tauri/src/main.rs 抄过来的，**两边要一起改**。手机上有意不同的几处：
+
+- 同源的 `target="_blank"`（「打开桌面」）桌面上另开一扇应用窗口，手机只有一扇窗，换成 Gateway 的
+  源交给 Safari——Gateway 发的是同一份界面，在 Safari 里登录一次就能看（`open_target`）。
+- 没有内嵌桌面那块 iframe 的放行（桌面壳的 `allow_seat_desktop` / `is_seat_desktop`）：手机上不嵌桌面
+  （gateway/ui/chat.js 的 `deskEmbeddable`），那条命令和那座桥也就不开。
+- `mailto:` / `tel:` / `sms:` 交给系统（`hand_to_system`）：WebView 自己打不开它们，放行等于点了没反应。
+- CSP 的 `connect-src` 多认 `blob:` / `data:`，见上面「下载」。
 
 ## 推送
 
@@ -153,7 +160,8 @@ xcrun simctl push booted sg.dami.satuwork.mobile payload.apns
 ```
 
 payload 照 Gateway 发的形状写：`{"aps":{"alert":{"title":"…","body":"…"}},"botId":"…","kind":"turn-end"}`。
-应用在后台时点横幅，应该跳到那颗 Bot 的对话。
+应用在后台时点横幅，应该跳到那颗 Bot 的对话。点通知有三路会去取：页面启动完（冷启动）、回到前台、
+原生那半记下之后叫页面一声（`__SATUWORK_PUSH_TAPPED__`）；取一次就清，撞在一起也只跳一次。
 
 真推送要三样都齐：Gateway 配了 `GATEWAY_APNS_*`（docs/vercel-deploy.md）、App ID 开了 Push
 Notifications 能力、手机上允许了通知。
@@ -165,6 +173,5 @@ BadDeviceToken，Gateway 会把令牌当作废摘掉。
 
 ## 还没做的事
 
-- 安全区（刘海、Home 条）、软键盘顶起输入框——ADR §5 第 6 步。
 - Android 正式包和 Play 上架：签名 keystore、AAB、CI 里写入 google-services.json。
 - 票换 stronghold / Keychain：现在和桌面壳一样落 localStorage，iOS 的应用容器本身静态加密。

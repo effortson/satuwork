@@ -516,7 +516,6 @@ function desktopUpdateBusy(u) {
   return Boolean(u && (u.phase === 'downloading' || u.phase === 'installing'))
 }
 
-/** boot() 里调一次。先取一眼状态（当前版本号要给个人设置页用），过几秒再真去问。 */
 /**
  * 手机壳（mobile/）里软键盘弹起时把外壳缩到可视高度。
  *
@@ -568,7 +567,8 @@ function startMobileShellFit() {
  * - **退出登录先注销**（app.js 的 endSignedIn 开头，清票之前）：同一台手机下一个登录的人
  *   不该收到上一个人的通知。登记换人时 Gateway 也会改姓，这一步是让「退出了没人登录」那段
  *   时间里也收不到。
- * - **点开通知**：启动时和每次回到前台时取一次（take_tap），取到就跳到那颗 Bot 的对话。
+ * - **点开通知**：启动时、每次回到前台时、壳子叫一声（`__SATUWORK_PUSH_TAPPED__`）时各取一次
+ *   （take_tap），取到就跳到那颗 Bot 的对话。取一次就清，几路撞在一起也只跳一次。
  *   启动时那一次在 boot() 收尾、页面画好之后（app.js），**不挂在登记后面**：登记要等系统的
  *   权限框和 APNs（没网时要等满 15 秒超时），没拿到令牌还会提前返回——冷启动点的那条通知
  *   要么丢、要么十几秒后才把人拽走。也不能早于 boot 收尾：boot 自己还要按地址栏换一次页，
@@ -646,8 +646,12 @@ if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') void takeMobilePushTap()
   })
+  // 壳子原生那半记下一次点通知后叫这一声（mobile/push-plugin 的 SatuPushPlugin.swift / .kt）：
+  // 回前台那一下和点通知谁先到没有保证，应用开着时从通知中心点进来也不会有回前台。
+  globalThis.__SATUWORK_PUSH_TAPPED__ = () => void takeMobilePushTap()
 }
 
+/** boot() 里调一次。先取一眼状态（当前版本号要给个人设置页用），过几秒再真去问。 */
 function startDesktopUpdateWatch() {
   const bridge = desktopUpdateBridge()
   if (!bridge || desktopUpdateTimer) return

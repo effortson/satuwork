@@ -225,6 +225,9 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       assert(hit.headers['apns-topic'] === 'sg.dami.satuwork.mobile', `topic ${hit.headers['apns-topic']}`)
       assert(hit.headers['apns-push-type'] === 'alert', 'push-type')
       assert(hit.headers['apns-collapse-id'] === `turn-end:${botId}`, `collapse ${hit.headers['apns-collapse-id']}`)
+      // 过期时刻：一小时后（push.ts 的 PUSH_TTL_SECONDS）。手机离线再久，过了这个点 APNs 就不补发了。
+      const exp = Number(hit.headers['apns-expiration']) - Math.floor(Date.now() / 1000)
+      assert(exp > 3500 && exp <= 3600, `apns-expiration 不是一小时后：${hit.headers['apns-expiration']}`)
       assert(hit.payload.aps.alert.title === '推送 Bot', `title ${hit.payload.aps.alert.title}`)
       assert(hit.payload.aps.alert.body === '回复好了', `body ${hit.payload.aps.alert.body}`)
       assert(hit.payload.botId === botId && hit.payload.kind === 'turn-end', `data ${JSON.stringify(hit.payload)}`)
@@ -250,6 +253,8 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       assert((await put(memberTok, { token: GOOD, platform: 'ios', environment: 'production' })).status === 200, '成员登记')
       const r = await report({ kind: 'turn-end', botId })
       assert(r.json.sent === 0 && r.json.skipped === '没有登记设备', `admin 还收到：${r.text}`)
+      // bot 认的是 quiet，不是 skipped 的中文原文。
+      assert(r.json.quiet === true, `没有登记设备时该带 quiet：${r.text}`)
       const notMine = await req(base, 'DELETE', `/me/push-device/${GOOD}`, { token: adminTok })
       assert(notMine.status === 200 && notMine.json.removed === false, `admin 删得动成员的：${notMine.text}`)
       const mine = await req(base, 'DELETE', `/me/push-device/${GOOD}`, { token: memberTok })
@@ -288,6 +293,7 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
     await test('Android：FCM 令牌原样登记；一条推送 APNs 和 FCM 各发，换票一次，UNREGISTERED 当场摘掉', async () => {
       assert((await put(adminTok, { token: 'has space:APA91b' + 'x'.repeat(40), platform: 'android', environment: 'production' })).status === 400, '带空格的令牌该 400')
       assert((await put(adminTok, { token: FCM_GOOD, platform: 'ios', environment: 'production' })).status === 400, 'FCM 令牌报成 ios 该 400')
+      assert((await put(adminTok, { token: GOOD, platform: 'android', environment: 'production' })).status === 400, 'APNs 令牌报成 android 该 400')
       // environment 报错了也收：FCM 不分环境，存成 production。
       assert((await put(adminTok, { token: FCM_GOOD, platform: 'android', environment: 'sandbox' })).status === 200, '登记 FCM_GOOD')
       assert((await put(adminTok, { token: FCM_DEAD, platform: 'android', environment: 'production' })).status === 200, '登记 FCM_DEAD')
@@ -311,6 +317,7 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       assert(m.notification.title === '推送 Bot' && m.notification.body === '回复好了', `notification ${JSON.stringify(m.notification)}`)
       assert(JSON.stringify(m.data) === JSON.stringify({ kind: 'turn-end', botId }), `data ${JSON.stringify(m.data)}`)
       assert(m.android.collapse_key === `turn-end:${botId}` && m.android.notification.tag === `turn-end:${botId}`, `android ${JSON.stringify(m.android)}`)
+      assert(m.android.ttl === '3600s', `android.ttl ${m.android.ttl}`)
       assert(Object.keys(m).sort().join(',') === 'android,data,notification,token', `message 多了东西：${JSON.stringify(m)}`)
 
       google.seen.sends.length = 0

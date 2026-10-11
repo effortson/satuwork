@@ -12,6 +12,7 @@ import { RenderError, renderToPdf, renderableOf } from '../workspace/render.ts'
 import { CommandError, QUIET_MESSAGE, type ImageRef, type Mention, type MessageSource, type RefBlock } from '../agent/index.ts'
 import { expiredMessage, returnMessage, type Disposition, type HandoffActor } from '../policy/handoff.ts'
 import { clearSettledTodos, readTodos } from '../tools/todo.ts'
+import { watchClose, watchOpen } from '../session/watchers.ts'
 import {
   channelCommand, channelMentionHelp, channelModelCommand, channelModelHelp, parseChannelMentions, pickModelArg, withChannelTodos,
   type ChannelMentionCandidate,
@@ -1622,9 +1623,12 @@ export function sse(
          * （和 replay/done、queue/change 一样按 type 分流）。
          */
         let beat: NodeJS.Timeout | undefined
+        // 有人连着这条会话：手机推送据此省掉短轮次的那一条（session/watchers.ts）。cleanup 幂等，只减一次。
+        watchOpen(sessionId)
         cleanup = () => {
           if (closed) return
           closed = true
+          watchClose(sessionId)
           if (beat) clearInterval(beat)
           off()
           offQueue()

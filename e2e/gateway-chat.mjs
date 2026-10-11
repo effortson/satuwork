@@ -485,6 +485,36 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert((await req(gwBase, 'GET', `/runtime/logs/direct?botId=${encodeURIComponent(botId)}`)).status === 401, '无票该 401')
     })
 
+    await test('人正看着（连着流、这一轮不到半分钟）就不推', async () => {
+      // bot/src/session/watchers.ts：有客户端连着这条会话的流、这一轮又很短，人多半就在屏幕前。
+      // 假模型一上来就回错，这一轮瞬间收场——正是「短轮次」。
+      apns.seen.length = 0
+      // 只认「这一句之后」的那个 turn/end：前面几条用例发的消息，那几轮可能还没收完。
+      const said = `watched ${MARKER}`
+      const live = (events) => {
+        const at = events.findIndex((e) => e.type === 'user/message' && JSON.stringify(e).includes(said))
+        return at >= 0 && events.slice(at + 1).some((e) => e.type === 'turn/end')
+      }
+      const watching = readSse(`${botBase}/api/sessions/${encodeURIComponent(sessionId)}/events`, {
+        token: seatAccess,
+        timeout: 15000,
+        until: live,
+      })
+      // 等流先接上，再发这一句；否则 turn/end 可能早于开流。
+      await sleep(500)
+      const r = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/messages`, {
+        token: adminTok,
+        body: { text: said },
+      })
+      assert(r.status === 200, `message ${r.status} ${r.text}`)
+      const sse = await watching
+      assert(live(sse.events), `流上没等到这一轮的 turn/end：${sse.events.map((e) => e.type).join(',')}`)
+      // reportPush 若是发了，假 APNs 一两百毫秒内就收到；多等一会儿再判「没有」。
+      await sleep(1500)
+      const hit = apns.seen.find((s) => s.payload?.kind === 'turn-end')
+      assert(!hit, `人连着流、这一轮又短，还是推了：${JSON.stringify(hit?.payload)}`)
+    })
+
     await test('Gateway 上那条会话流已经没了：/runtime/sessions/:id/events → 404', async () => {
       // 三条长连接反代（会话流、名单流、桌面）一起从 Gateway 撤掉了：它跑在 Vercel 那种
       // 有时限的函数里，挂一条永不结束的响应就是在赌超时。路由要**真的没了**——留着
