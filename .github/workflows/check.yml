@@ -139,8 +139,13 @@ jobs:
         working-directory: mobile/src-tauri
         run: cargo test --locked
 
+      # 部署目标和应用一致（tauri.conf.json 的 minimumSystemVersion）。真出包时 Xcode 会把它传给构建脚本；
+      # 裸 cargo 不传，tauri-utils 就按 13.0 编插件的 Swift，用到 iOS 14+ 的 API 会在这一步报错，
+      # 而本机的新版 Xcode 会自动把太低的目标抬上去、复现不出来（push-plugin 那次就是）。
       - name: cargo check（iOS 模拟器目标）
         working-directory: mobile/src-tauri
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: 15.0
         run: cargo check --locked --target aarch64-apple-ios-sim
 
   # Windows 单独一档，**跑 cargo test 而不只是 check**：main.rs 里有一整段只在 Windows 编译的

@@ -78,7 +78,13 @@ private class CenterDelegate: NSObject, UNUserNotificationCenterDelegate {
     _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
-    completionHandler([.list])
+    // .list 是 iOS 14 起才有的。应用本身最低 15，但这个包单独编译时（cargo check、CI）
+    // swift-rs 按更低的部署目标编，不判断就编不过。更老的系统上前台到达的通知直接不显示。
+    if #available(iOS 14.0, *) {
+      completionHandler([.list])
+    } else {
+      completionHandler([])
+    }
   }
 
   func userNotificationCenter(
