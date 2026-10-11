@@ -314,8 +314,12 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
    窄屏抽屉、右栏盖在对话上、表格卡片化这些**本来就有**（≤760px 那一档），没动。
    （Expo 版的第 6 步**未合并即关闭**：#326。）
 7. **推送**：§2.5 的四件事。
-8. **发布**：`tauri ios build` 出 IPA，CI 上签名、传 TestFlight（照 desktop-release.yml 的做法，
-   证书和 App Store Connect 密钥已经在 secret 里）；Android 之后再开（`tauri android init`）。
+8. **发布**（流水线已落地，还没真跑过）：`.github/workflows/mobile-release.yml`，打 `mobile-vX.Y.Z`
+   触发。不放证书和描述文件，复用桌面那三把 App Store Connect 密钥 secret 让 Xcode 自动签名；
+   runner 用 `macos-26`（2026-04-28 起上传必须是 Xcode 26 / iOS 26 SDK 构建的）；`altool` 传
+   TestFlight。前提在 Apple 那边：那把密钥要 Admin 角色、App Store Connect 里建好 App 记录、App ID
+   开推送能力。顺带修了一处只在正式包里出现的问题：`asset_resolver` 找不到文件会回落到
+   index.html，壳子要先查文件在不在包里再取（见 mobile/README.md）。Android 之后再开（`tauri android init`）。
 
 步骤 1–4 是 Web 侧的，步骤 5–8 是手机侧的；5 依赖 3，其余各步之间可以并行。
 

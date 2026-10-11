@@ -353,18 +353,39 @@ fn ui_candidates(rel: &str) -> Vec<String> {
     list
 }
 
+/**
+ * 正式包里打进去的界面文件有哪些（键是 `/index.html` 这种，带前导斜杠）。只建一次。
+ *
+ * **为什么要先问「在不在」再取。** Tauri 的 `asset_resolver().get` 找不到文件时会自己回落到
+ * index.html（tauri 的 manager/mod.rs 的 get_asset），而 MIME 是按请求的路径定的——不先判断的话，
+ * 刷新 `/a/<botId>` 或者少了一个脚本，拿到的都是 index.html 的字节、却标成别的类型：页面
+ * 白屏、脚本报语法错。debug 构建读仓库目录，看不出这个问题。
+ */
+fn embedded_ui(app: &AppHandle) -> &'static HashSet<String> {
+    static KEYS: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+    KEYS.get_or_init(|| app.asset_resolver().iter().map(|(k, _)| k.into_owned()).collect())
+}
+
+/// 第一个真在包里（或仓库目录里）的候选，候选次序见 ui_candidates。
+fn pick_ui_file(rel: &str, exists: impl Fn(&str) -> bool) -> Option<String> {
+    ui_candidates(rel).into_iter().find(|c| exists(c))
+}
+
 fn read_ui_file(app: &AppHandle, rel: &str) -> Option<(Vec<u8>, &'static str)> {
     if let Some(dir) = ui_dir() {
-        let mut file = dir;
-        for seg in rel.split('/') {
-            file.push(seg);
-        }
-        if file.is_file() {
-            return fs::read(&file).ok().map(|b| (b, mime_of(rel)));
-        }
-        return None;
+        let path_of = |c: &str| {
+            let mut file = dir.clone();
+            for seg in c.split('/') {
+                file.push(seg);
+            }
+            file
+        };
+        let hit = pick_ui_file(rel, |c| path_of(c).is_file())?;
+        return fs::read(path_of(&hit)).ok().map(|b| (b, mime_of(&hit)));
     }
-    app.asset_resolver().get(format!("/{rel}")).map(|a| (a.bytes().to_vec(), mime_of(rel)))
+    let keys = embedded_ui(app);
+    let hit = pick_ui_file(rel, |c| keys.contains(&format!("/{c}")))?;
+    app.asset_resolver().get(format!("/{hit}")).map(|a| (a.bytes().to_vec(), mime_of(&hit)))
 }
 
 /// `satu://localhost/…`：从包里发界面。规矩和桌面壳 / Gateway 的 serveUi 一样。
@@ -377,7 +398,7 @@ fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>) -> tauri::
             .unwrap()
     };
     let Some(rel) = ui_rel_path(request.uri().path()) else { return not_found() };
-    let Some((bytes, mime)) = ui_candidates(&rel).iter().find_map(|c| read_ui_file(app, c)) else {
+    let Some((bytes, mime)) = read_ui_file(app, &rel) else {
         return not_found();
     };
     let mut response = tauri::http::Response::builder()
@@ -491,5 +512,13 @@ mod tests {
         assert!(ui_rel_path("/c:/x").is_none());
         assert_eq!(ui_candidates("ui/chat.js"), vec!["ui/chat.js", "chat.js", "index.html"]);
         assert_eq!(ui_candidates(""), vec!["index.html"]);
+        // 先问在不在再取：不存在的路径（单页路由）落到 index.html，MIME 按 index.html 定。
+        let have: HashSet<&str> = ["index.html", "chat.js"].into_iter().collect();
+        let exists = |c: &str| have.contains(c);
+        assert_eq!(pick_ui_file("chat.js", exists).as_deref(), Some("chat.js"));
+        assert_eq!(pick_ui_file("ui/chat.js", exists).as_deref(), Some("chat.js"));
+        assert_eq!(pick_ui_file("a/bot-1", exists).as_deref(), Some("index.html"));
+        assert_eq!(mime_of(&pick_ui_file("a/bot-1", exists).unwrap()), "text/html; charset=utf-8");
+        assert_eq!(pick_ui_file("x.js", |_| false), None);
     }
 }

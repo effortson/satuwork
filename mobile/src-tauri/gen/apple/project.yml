@@ -42,6 +42,7 @@ targets:
       properties:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        ITSAppUsesNonExemptEncryption: false
         LSRequiresIPhoneOS: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]

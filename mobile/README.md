@@ -61,9 +61,19 @@ xcrun simctl get_app_container booted sg.dami.satuwork.mobile data
 pnpm --filter satuwork-mobile build:ios
 ```
 
-签名、TestFlight 走 CI（ADR §5 第 8 步，还没接）。`gen/apple/` 是 `tauri ios init` 生成的
-Xcode 工程，**进版本库**：开发团队、ATS、能力声明都改在里面；重新 `tauri ios init` 会把它
-盖掉，改完要回看一遍 diff。
+本机出的是自己签名的包。发 TestFlight 走 CI：打 `mobile-vX.Y.Z` 的 tag
+（版本要等于 `src-tauri/tauri.conf.json` 的 version），[mobile-release.yml](../.github/workflows/mobile-release.yml)
+在 Xcode 26 的 runner 上用 App Store Connect 密钥自动签名、出 IPA、传 TestFlight。手动触发不填 tag
+就只出 IPA artifact，不上传。前提（Apple 开发者后台，代码之外）写在那份流水线的文件头。
+
+`gen/apple/` 是 `tauri ios init` 生成的 Xcode 工程，**进版本库**：开发团队、ATS、推送能力、出口
+合规声明都改在里面；重新 `tauri ios init` 会把它盖掉，改完要回看一遍 diff。
+
+**正式包从包里发界面**（release 下 `ui_dir()` 是 None，走 `asset_resolver`）。Tauri 的
+`asset_resolver` 找不到文件会自己回落到 index.html，所以 lib.rs 先查文件在不在包里再取，
+否则单页路由和缺的脚本会拿到 index.html 的字节、却标成别的 MIME。模拟器的 release 路不好走
+（`tauri ios build` 要和 Xcode 配套的模拟器运行时），验正式包发界面可以在 Mac 上
+`cargo build --release` 跑这份壳：发界面的代码是同一份。
 
 ## 和桌面壳共用的代码
 
