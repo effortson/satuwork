@@ -161,6 +161,9 @@ async function loadMe() {
   state.me = await api('GET', '/me')
   if (state.me?.settings) state.settings = state.me.settings
   adoptAccountPrefs(state.me?.account)
+  // 手机壳里把这台设备的推送令牌登记到这张票名下（shell.js；浏览器和桌面壳里空转）。不等：
+  // 第一次会弹系统的通知权限框，登录不该被它挡住。
+  if (typeof syncMobilePush === 'function') void syncMobilePush()
 }
 
 async function loadCatalog() {

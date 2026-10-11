@@ -186,7 +186,21 @@ Gateway 无状态、不经手对话流。要做推送需要四件事：
 - e2e：push 套件验 Gateway 这半；gateway-chat 套件给它的 Gateway 也接上假 APNs，真 bot 跑完
   一轮后假 APNs 要收到那条 turn-end，且不带正文。
 
-第 4 件（手机壳拿令牌、点通知跳到对话）还没做。
+第 4 件也已落地（手机壳，另一个 PR）——
+
+- 仓库内的小插件 `mobile/push-plugin`（`tauri-plugin-satu-push`），不用社区插件。Tauri 的
+  AppDelegate 是 tao 动态生成的类，插件拥有不了它，所以第一次要令牌时用 `class_addMethod` 把
+  两个 APNs 回调补上去；`UNUserNotificationCenter` 的代理在插件初始化时接管，冷启动那一下点击
+  才不会丢。两条命令：`register`（要权限、要令牌，环境由构建定：debug 是 sandbox）、
+  `take_tap`（点开的那条，取一次就清）。
+- 登记和注销在页面那层（gateway/ui/shell.js 的 syncMobilePush / forgetMobilePush），和别的
+  API 请求走同一张票；loadMe 之后登记，同一张票只登记一次；退出登录在清票之前注销。
+- 点通知：启动和回到前台时取一次，取到就跳 `/a/<botId>`。前台到达的通知只进通知中心、不弹横幅。
+- entitlements 加了 `aps-environment: development`（导出 TestFlight 包时 Xcode 改成 production）。
+  **真机签名要求 App ID 在 Apple 开发者后台开了 Push Notifications 能力。**
+- 模拟器（iOS 26.5，Apple 芯片）能拿到真的 sandbox 令牌，是 160 位十六进制，比真机的 64 位长，
+  Gateway 的校验放到 200 位接得住。验过：权限框 → 令牌登记进库 → `simctl push` 投一条同形
+  推送，点横幅跳到那颗 Bot 的对话 → 退出登录后库里那一行被摘掉。没验的是真 APNs 发到真机。
 
 ## 3. 逐项去向
 

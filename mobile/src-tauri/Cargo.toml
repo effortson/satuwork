@@ -17,6 +17,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 # 站外链接交给系统浏览器——壳子里没有地址栏，跳出去就回不来了。手机上它只开得了 URL，够用。
 tauri-plugin-opener = "2"
+# 远程推送：iOS 上要 APNs 设备令牌、记下点开的通知（仓库内的小插件，见 mobile/push-plugin）。
+tauri-plugin-satu-push = { path = "../push-plugin" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

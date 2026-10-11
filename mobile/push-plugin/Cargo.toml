@@ -1,0 +1,16 @@
+[package]
+name = "tauri-plugin-satu-push"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77.2"
+publish = false
+description = "手机壳的远程推送：iOS 上向 APNs 要设备令牌、记下用户点开的那条通知。"
+# tauri-plugin 的构建脚本要求 links 和包名一致。
+links = "tauri-plugin-satu-push"
+
+[dependencies]
+tauri = { version = "2" }
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

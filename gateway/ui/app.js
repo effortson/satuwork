@@ -27,6 +27,8 @@ function sitesOf(text) {
  * 只拆不走：跳到哪一页、要不要留一句话，由调用方各自决定。
  */
 function endSignedIn() {
+  // 手机壳：先拿着这张票把设备从推送名单里摘掉，下一行票就清了（shell.js 的 forgetMobilePush）。
+  if (typeof forgetMobilePush === 'function') forgetMobilePush()
   clearToken()
   // 先掐流再清数据：SSE 还连着的话，下一个人登进来之前就会有上一个人的事件继续往
   // state.chatEvents 里落，然后被画出来。聊天正文、草稿、名册都是上一个账号的东西，
