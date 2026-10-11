@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict/>
+<dict>
+	<!-- 远程推送（mobile/push-plugin）。development 对应 APNs 的 sandbox；导出 App Store / TestFlight 包时
+	     Xcode 按描述文件改成 production。App ID 要在 Apple 开发者后台开 Push Notifications 能力，
+	     否则真机签名会失败。 -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
 </plist>

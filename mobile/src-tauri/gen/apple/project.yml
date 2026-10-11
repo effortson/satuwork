@@ -58,6 +58,8 @@ targets:
         CFBundleVersion: "0.1.0"
     entitlements:
       path: satuwork-mobile_iOS/satuwork-mobile_iOS.entitlements
+      properties:
+        aps-environment: development
     scheme:
       environmentVariables:
         RUST_BACKTRACE: full

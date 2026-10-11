@@ -100,6 +100,12 @@ const LINK_SCRIPT: &str = r#"
   window.__SATUWORK_SEAT_DESKTOP__ = {
     allow: function (url) { return window.__TAURI_INTERNALS__.invoke('allow_seat_desktop', { url: url }) }
   }
+  // 远程推送（mobile/push-plugin）：要设备令牌、取用户点开的那条通知。登记到 Gateway 由页面做
+  // （gateway/ui/shell.js 的 startMobilePush），壳子不碰登录票。
+  window.__SATUWORK_PUSH__ = {
+    register: function () { return window.__TAURI_INTERNALS__.invoke('plugin:satu-push|register') },
+    takeTap: function () { return window.__TAURI_INTERNALS__.invoke('plugin:satu-push|take_tap') }
+  }
   if (window.__satuLinkPatched) return
   window.__satuLinkPatched = true
   function hand(raw) {
@@ -409,6 +415,7 @@ fn build_window(app: &AppHandle, gateway: Url) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_satu_push::init())
         .register_uri_scheme_protocol(UI_SCHEME, |ctx, request| serve_ui(&ctx.app_handle().clone(), &request))
         .manage(SeatOrigins::default())
         .invoke_handler(tauri::generate_handler![allow_seat_desktop, debug_log])

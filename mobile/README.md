@@ -72,9 +72,25 @@ Xcode 工程，**进版本库**：开发团队、ATS、能力声明都改在里�
 `target="_blank"`（「打开桌面」）桌面上另开一扇应用窗口，手机只有一扇窗，换成 Gateway 的
 源交给 Safari——Gateway 发的是同一份界面，在 Safari 里登录一次就能看（`open_target`）。
 
+## 推送
+
+原生那一半在 [push-plugin/](push-plugin/)（Swift 在 `push-plugin/ios/Sources/SatuPushPlugin.swift`），
+登记到 Gateway 在 gateway/ui/shell.js 的 `syncMobilePush`。设计见 ADR §2.5。
+
+模拟器里测点通知，不需要 APNs 钥匙：
+
+```bash
+xcrun simctl push booted sg.dami.satuwork.mobile payload.apns
+```
+
+payload 照 Gateway 发的形状写：`{"aps":{"alert":{"title":"…","body":"…"}},"botId":"…","kind":"turn-end"}`。
+应用在后台时点横幅，应该跳到那颗 Bot 的对话。
+
+真推送要三样都齐：Gateway 配了 `GATEWAY_APNS_*`（docs/vercel-deploy.md）、App ID 开了 Push
+Notifications 能力、手机上允许了通知。debug 构建拿的是 sandbox 令牌，只有 sandbox 那头认。
+
 ## 还没做的事
 
 - 安全区（刘海、Home 条）、软键盘顶起输入框——ADR §5 第 6 步。
-- 推送——§2.5；Tauri 官方 notification 插件只做本地通知，远程推送要几十行 Swift。
 - Android：`tauri android init`；代码已经不依赖 iOS，差的是工程和 CI。
 - 票换 stronghold / Keychain：现在和桌面壳一样落 localStorage，iOS 的应用容器本身静态加密。
