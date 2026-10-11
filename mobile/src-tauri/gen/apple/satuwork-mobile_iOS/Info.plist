@@ -23,6 +23,9 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<!-- 出口合规：只用系统自带的 HTTPS（豁免类加密），不自带加密算法。声明了 TestFlight 上传后就不用每次答一遍。 -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
