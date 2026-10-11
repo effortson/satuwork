@@ -463,7 +463,62 @@ export function apply(ctx: Context) {
     return side
   }
 
+  /**
+   * 「这颗 Bot 有事要人看」：报给 Gateway，由它推到这个人登记过的手机上（gateway/src/lib/push.ts）。
+   *
+   * 两种事：一轮跑完（turn/end，**人自己点了中止的不算**——他正看着），一张审批卡开始等人点
+   * （tool/approval 的 pending）。转人工不在这儿报：/internal/handoffs 那条已经顺手推了。
+   *
+   * **不进 outbox、不重试**：推送是「现在」的事，三小时后补到的「回复好了」只会骗人回去看一条
+   * 早就看过的消息。发不出去就算了，打一行 debug。
+   *
+   * 只报主会话（旁支是工具调用的内部过程）；本地 Bot 不报（人就坐在那台电脑前，而且它的票不走
+   * 这条路）。Gateway 回「没有登记设备」时**两分钟内不再问**：没装手机端的人每一轮都白打一次
+   * Gateway，在 Vercel 上就是一次白花的函数调用。
+   */
+  let pushQuietUntil = 0
+  const PUSH_QUIET_MS = 2 * 60_000
+  const sessionBot = new Map<string, string>()
+  async function botOfSession(sessionId: string): Promise<string> {
+    const known = sessionBot.get(sessionId)
+    if (known !== undefined) return known
+    const root = (await ctx.sessions.events(sessionId)).find((e) => e.type === 'session')
+    const id = String((root?.data as { botId?: string } | undefined)?.botId || pinnedBotId() || '')
+    sessionBot.set(sessionId, id)
+    return id
+  }
+  async function reportPush(sessionId: string, kind: 'turn-end' | 'approval') {
+    if (!configured() || Date.now() < pushQuietUntil) return
+    if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local') return
+    if (await isSideSession(sessionId)) return
+    const botId = await botOfSession(sessionId)
+    if (!botId) return
+    const base = gatewayUrl()
+    const r = await fetch(base + '/internal/push', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${gatewayToken()}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ kind, botId }),
+      signal: AbortSignal.timeout(8000),
+    })
+    // 老 Gateway 没有这条路由（404）：也安静下来，别每一轮都问一次。
+    if (r.status === 404) {
+      pushQuietUntil = Date.now() + PUSH_QUIET_MS
+      return
+    }
+    const body = (await r.json().catch(() => ({}))) as { skipped?: string }
+    if (body.skipped === '没有登记设备') pushQuietUntil = Date.now() + PUSH_QUIET_MS
+  }
+
   ctx.on('session/event', (sessionId: string, event: SessionEvent) => {
+    const pushKind =
+      event.type === 'turn/end' && (event.data as { reason?: string }).reason !== 'aborted'
+        ? 'turn-end'
+        : event.type === 'tool/approval' && (event.data as { state?: string }).state === 'pending'
+          ? 'approval'
+          : null
+    if (pushKind) {
+      void reportPush(sessionId, pushKind).catch((e: Error) => ctx.logger?.debug?.(`推送上报没发出去：${e.message}`))
+    }
     if (
       event.type === 'session' ||
       event.type === 'user/message' ||

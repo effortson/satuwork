@@ -66,6 +66,7 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob 库的读写 token | 发布包不落盘、边收边传到 Blob（私有），下发时带 token 取。Debian 上也可以配，两边的包就在同一个地方。见 gateway/src/releases.ts |
 | `UPSTASH_VECTOR_REST_URL` / `UPSTASH_VECTOR_REST_TOKEN` | Upstash Vector 索引的 REST 地址和 token | 公司知识库的向量库（docs/knowledge-base.md）。索引要选**内置 embedding 模型**（推荐 bge-m3）。没配 = 知识库整个关着：写接口 501，界面画「未开通」 |
 | `KB_DIR` | 不用配 | 没配 Blob 时知识库原文件落盘的目录，默认 `<data>/knowledge/`。配了 `BLOB_READ_WRITE_TOKEN` 走 Blob，浏览器直传 |
+| `GATEWAY_APNS_KEY` / `GATEWAY_APNS_KEY_ID` / `GATEWAY_APNS_TEAM_ID` | App Store Connect 的 .p8 全文（或整段 base64）、它的 Key ID、团队 ID | 手机推送（gateway/src/lib/push.ts）。三个缺一个就不推，只打一行日志。`GATEWAY_APNS_TOPIC` 默认 `sg.dami.satuwork.mobile`，和手机壳的 bundle id 一致 |
 | `GATEWAY_ACCESS_HOST`、`GATEWAY_PLATFORM_TOKEN`、各家模型 key | 同 Debian | 见 docker-compose.yml |
 
 ### 用 Neon 的 Vercel 集成时那两条串可以不配
