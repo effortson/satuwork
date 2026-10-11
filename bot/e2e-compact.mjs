@@ -16,6 +16,7 @@ import {
   clampTranscript,
   contentDigest,
   observedPromptHighWater,
+  compactionWindow,
 } from './src/agent/index.ts'
 import { parseAt, rowsOf } from './src/tools/history.ts'
 import { historySlice } from './src/session/replay.ts'
@@ -370,6 +371,20 @@ out.rows = {
       (publicTool?.data?.text?.length ?? Infinity) <= MODEL_TOOL_RESULT_MAX_CHARS && old[1].data.text === raw,
     highWaterAfterCompact,
     highWaterNext,
+  }
+}
+
+// 压缩窗口压到价格门槛以下：gpt-6.1-sol 窗口 105 万、过 272k 整次翻倍
+{
+  const tier = (above) => ({ inputTokensAbove: above, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 0 })
+  const base = { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0 }
+  out.priceCliff = {
+    tiered: compactionWindow(1_050_000, { ...base, tiers: [tier(272_000)] }),
+    lowestOfMany: compactionWindow(1_050_000, { ...base, tiers: [tier(500_000), tier(272_000)] }),
+    noTiers: compactionWindow(1_050_000, base),
+    noCost: compactionWindow(128_000, undefined),
+    cliffAboveWindow: compactionWindow(200_000, { ...base, tiers: [tier(272_000)] }),
+    junk: compactionWindow(400_000, { tiers: [null, { inputTokensAbove: 0 }, { inputTokensAbove: 'x' }] }),
   }
 }
 

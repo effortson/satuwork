@@ -120,4 +120,14 @@ export async function runCompact({ root, test, assert, log }) {
     assert(r.resultBudget.highWaterAfterCompact === 0, `压缩边界之前的高水位漏到了新上下文：${r.resultBudget.highWaterAfterCompact}`)
     assert(r.resultBudget.highWaterNext === 2_100, `边界之后的新 usage 没算上：${r.resultBudget.highWaterNext}`)
   })
+
+  await test('带长上下文档位的模型按价格门槛压，不按窗口', () => {
+    // 只按窗口的话 gpt-6.1-sol 要到 63 万才压，27 万以上每一次调用都是两倍价。
+    assert(r.priceCliff.tiered === 272_000, `有档位时压缩窗口应是门槛 272000，实际 ${r.priceCliff.tiered}`)
+    assert(r.priceCliff.lowestOfMany === 272_000, `多档时应取最低门槛，实际 ${r.priceCliff.lowestOfMany}`)
+    assert(r.priceCliff.noTiers === 1_050_000, `没有档位应是窗口本身，实际 ${r.priceCliff.noTiers}`)
+    assert(r.priceCliff.noCost === 128_000, `目录没给 cost 应是窗口本身，实际 ${r.priceCliff.noCost}`)
+    assert(r.priceCliff.cliffAboveWindow === 200_000, `门槛比窗口大时应是窗口，实际 ${r.priceCliff.cliffAboveWindow}`)
+    assert(r.priceCliff.junk === 400_000, `脏档位应被忽略，实际 ${r.priceCliff.junk}`)
+  })
 }
