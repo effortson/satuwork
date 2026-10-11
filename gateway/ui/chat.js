@@ -5575,6 +5575,9 @@ function deskCaption() {
  */
 function deskEmbeddable(url) {
   if (!url) return false
+  // 手机壳里不嵌：右栏盖在对话上、只有三百多像素宽，一块缩成邮票的桌面谁也用不了，
+  // 还一直挂着一条 VNC。退回下面那颗「打开桌面」——交给系统浏览器全屏开。
+  if (mobileShell()) return false
   return !(location.protocol === 'https:' && /^http:/i.test(url))
 }
 

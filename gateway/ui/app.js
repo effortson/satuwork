@@ -3204,6 +3204,8 @@ function foldDownload() {
 async function boot() {
   // 桌面壳的升级跟谁登录无关，登录页上也要能提示（见 shell.js 的 startDesktopUpdateWatch）。
   startDesktopUpdateWatch()
+  // 手机壳的软键盘适配，同样跟登录无关（登录表单就要用）。
+  startMobileShellFit()
   if (location.pathname === '/costs') history.replaceState({}, '', '/billing')
   state.path = pathOf()
   if (state.path.startsWith('/join/')) {

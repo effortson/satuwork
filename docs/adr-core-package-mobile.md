@@ -268,8 +268,13 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
 5. **手机壳（iOS）**：`mobile/` 的 Tauri 2 工程——serve_ui、注入、导航守卫、iOS 工程、
    图标；state.js 加 `appShell()`。合入条件：模拟器里登录、名单、对话流跑通。
    （Expo 版的第 5 步做过、**已回滚**：#325 合进 develop 后当日决定不用 Expo，用 revert 撤回。）
-6. **手机适配**：安全区（刘海、Home 条）、软键盘顶起输入框、窄屏下右栏和内嵌桌面怎么收、
-   「在浏览器里打开」。都是 gateway/ui 里的 CSS / 小改，网页版行为不变。
+6. **手机适配**（已落地）：index.html 的 viewport 加 `viewport-fit=cover`，app.css 末尾按 ≤760px
+   那一档把安全区让出来（外壳、抽屉、登录屏、弹窗蒙版；浏览器里 env() 都是 0，等于没写）；
+   shell.js 的 `startMobileShellFit` 在软键盘弹起时把可视视口高度写进 `--satu-vvh`、外壳跟着缩、
+   页面钉回顶上（**只在手机壳里跑**，登录那种普通可滚页面不钉——钉了口令框会藏在键盘底下）；
+   `deskEmbeddable` 在手机壳里一律 false，右栏退回「打开桌面」那颗按钮交给系统浏览器；个人设置
+   里桌面端那块换成「在浏览器里打开」（同源 `_blank`，壳子换成 Gateway 的源）。
+   窄屏抽屉、右栏盖在对话上、表格卡片化这些**本来就有**（≤760px 那一档），没动。
    （Expo 版的第 6 步**未合并即关闭**：#326。）
 7. **推送**：§2.5 的四件事。
 8. **发布**：`tauri ios build` 出 IPA，CI 上签名、传 TestFlight（照 desktop-release.yml 的做法，

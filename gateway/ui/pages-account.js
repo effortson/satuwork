@@ -760,12 +760,24 @@ function profilePage() {
           </p>
         </div>
 
-        ${/* 登录之后唯一的下载入口：首页那一段只给没登录的人看。桌面壳里换成当前版本和「检查更新」；手机壳里两样都没有。 */ ''}
+        ${/* 登录之后唯一的下载入口：首页那一段只给没登录的人看。桌面壳里换成当前版本和「检查更新」；
+              手机壳里换成「在浏览器里打开」——管理页在手机上能看但不好用，网页版是同一份界面，
+              `target="_blank"` 由壳子换成 Gateway 的源交给系统浏览器（mobile/src-tauri/src/lib.rs 的 open_target）。 */ ''}
         ${
           appShell()
             ? desktopUpdateBridge()
               ? `<div class="satu-panel" data-desktop-update="profile">${desktopUpdateInner('profile')}</div>`
-              : ''
+              : mobileShell()
+                ? `<div class="satu-panel">
+          <span class="satu-panel-title">${t('网页版', 'Web version')}</span>
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
+            <p style="margin: 0; font-size: 13px; color: var(--muted-foreground); flex: 1; min-width: 220px;">
+              ${t('管理页、文件和桌面在手机上不好用；在浏览器里打开的是同一份界面，登录一次就行。', 'Admin pages, files and the desktop are cramped on a phone. The web version is the same app; sign in once.')}
+            </p>
+            <a class="btn btn-secondary" style="flex: none;" href="/" target="_blank" rel="noopener noreferrer">${t('在浏览器里打开', 'Open in browser')}</a>
+          </div>
+        </div>`
+                : ''
             : `<div class="satu-panel">
           <span class="satu-panel-title">${t('桌面端', 'Desktop app')}</span>
           <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
