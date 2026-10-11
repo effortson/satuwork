@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Android 13 起发通知要运行时权限（SatuPushPlugin 的 register 里请求）。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+</manifest>

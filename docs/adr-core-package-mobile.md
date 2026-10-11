@@ -325,7 +325,14 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
    MainActivity 按系统栏 + 键盘的 inset 让位（Android 15 起强制全屏、窗口不随键盘缩短）；外链交给
    系统浏览器要另起线程（导航回调在界面线程，同步调 opener 会卡住）。Debug 构建的 Gateway 地址由
    build.rs 构建时烤入（模拟器读不到本机文件）。check.yml 加了 Android 目标的 cargo check。
-   **还没做**：FCM 推送（要 Firebase 项目，Gateway 侧加一个 FCM 发送器）、Play 上架流水线。
+   **还没做**：Play 上架流水线。
+10. **Android 推送（FCM）**（已落地）：Firebase 项目 `satuwork-993fa`。Gateway 的 lib/push.ts 加 FCM HTTP v1
+   发送器（服务账号私钥签 RS256 的 JWT 换 OAuth2 access token，缓存到过期前一分钟；404 / UNREGISTERED
+   当场摘令牌），登记接口收 `platform: android`，FCM 令牌区分大小写、原样存。插件加 Kotlin 那半：
+   Android 13+ 的通知权限、FirebaseMessaging 拿令牌、点通知的 intent（冷启动读启动 intent，热启动走
+   onNewIntent）。前台到达的通知消息不注册 FirebaseMessagingService，系统不显示，和 iOS 一致。
+   `google-services.json` 不进版本库（仓库公开），没有它就不套 google-services 插件、推送自动关掉。
+   Gateway 要配 `GATEWAY_FCM_SERVICE_ACCOUNT`。
 
 步骤 1–4 是 Web 侧的，步骤 5–8 是手机侧的；5 依赖 3，其余各步之间可以并行。
 

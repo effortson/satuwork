@@ -6,6 +6,15 @@ plugins {
     id("rust")
 }
 
+/*
+ * FCM 推送要 google-services.json（Firebase 控制台下载）。仓库是公开的，它不进版本库（.gitignore）：
+ * 本机放在这个目录，出包的 CI 从 secret 写进来。没有它就不套 google-services 插件——照样编得过，
+ * 只是推送插件（mobile/push-plugin）发现 Firebase 没初始化，回「没配 Firebase」，页面不登记。
+ */
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 val tauriProperties = Properties().apply {
     val propFile = file("tauri.properties")
     if (propFile.exists()) {

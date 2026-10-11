@@ -9,7 +9,7 @@ import { emailOf, orgSettings, orgSummary, publicAccount, publicCompany, publicP
 import { headerOf, inviteeOf, issue, noteLogin, requireSeatOrUser, requireUser } from '../lib/guards.ts'
 import { type Account } from '../db.ts'
 import { enterThrottle, throttleKeys } from '../lib/auth-throttle.ts'
-import { PUSH_ENVIRONMENTS, PUSH_PLATFORMS, validPushToken } from '../lib/push.ts'
+import { PUSH_ENVIRONMENTS, PUSH_PLATFORMS, normalizePushToken, validPushToken } from '../lib/push.ts'
 
 /**
  * 建系统管理员那把事务级锁的号。
@@ -292,10 +292,12 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
     const token = strField(body, 'token')
     const platform = strField(body, 'platform')
     const environment = strField(body, 'environment')
-    if (!validPushToken(token)) throw new HttpError(400, 'token 不是设备令牌')
-    if (!PUSH_PLATFORMS.includes(platform)) throw new HttpError(400, 'platform 只认 ios')
+    if (!PUSH_PLATFORMS.includes(platform)) throw new HttpError(400, 'platform 只认 ios 或 android')
+    if (!validPushToken(token, platform)) throw new HttpError(400, 'token 不是设备令牌')
     if (!PUSH_ENVIRONMENTS.includes(environment)) throw new HttpError(400, 'environment 只能是 sandbox 或 production')
-    await db.upsertPushDevice({ token: token.toLowerCase(), accountId: account.id, platform, environment }, Date.now())
+    // FCM 不分环境，登记时一律记 production，免得客户端报错了这一格就把它挡在门外。
+    const env = platform === 'android' ? 'production' : environment
+    await db.upsertPushDevice({ token: normalizePushToken(token), accountId: account.id, platform, environment: env }, Date.now())
     json(res, 200, { ok: true })
   })
 
@@ -303,7 +305,7 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
   router.delete('/me/push-device/:token', async (req, res) => {
     const account = await requireUser(req, db, keys)
     const token = String(req.params.token || '')
-    const removed = validPushToken(token) ? await db.deletePushDevice(account.id, token.toLowerCase()) : false
+    const removed = validPushToken(token) ? await db.deletePushDevice(account.id, normalizePushToken(token)) : false
     json(res, 200, { ok: true, removed })
   })
 

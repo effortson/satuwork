@@ -14,6 +14,7 @@
 import { generateKeyPairSync, verify } from 'node:crypto'
 import { rmSync } from 'node:fs'
 import { createServer } from 'node:http2'
+import { createServer as createHttpServer } from 'node:http'
 import { join } from 'node:path'
 import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
@@ -64,9 +65,73 @@ export function fakeApns(publicKey) {
   return { server, seen }
 }
 
+// FCM 令牌区分大小写、带冒号：原样存、原样发（gateway/src/lib/push.ts 的 normalizePushToken）。
+const FCM_GOOD = 'cAbC123_-xyz:APA91b' + 'Qx'.repeat(70)
+const FCM_DEAD = 'dEaD456_-xyz:APA91b' + 'Zz'.repeat(70)
+const FCM_PROJECT = 'satuwork-e2e'
+const FCM_EMAIL = 'push@satuwork-e2e.iam.gserviceaccount.com'
+
+/**
+ * 假的 Google：`/token` 是 OAuth2 换票（验服务账号私钥签的 RS256 JWT），`/v1/projects/<项目>/messages:send`
+ * 是 FCM HTTP v1。FCM_DEAD 回 404 UNREGISTERED（卸载了的手机就是这么回的）。
+ */
+function fakeGoogle(publicKey, port) {
+  const seen = { tokens: [], sends: [] }
+  const server = createHttpServer((req, res) => {
+    let raw = ''
+    req.setEncoding('utf8')
+    req.on('data', (c) => (raw += c))
+    req.on('end', () => {
+      if (req.url === '/token') {
+        const form = new URLSearchParams(raw)
+        let ok = false
+        let claims = null
+        try {
+          const [h, c, sig] = String(form.get('assertion') || '').split('.')
+          ok = verify('sha256', Buffer.from(`${h}.${c}`), publicKey, Buffer.from(sig, 'base64url'))
+          claims = JSON.parse(Buffer.from(c, 'base64url').toString())
+        } catch {}
+        seen.tokens.push({ grant: form.get('grant_type'), ok, claims })
+        if (!ok) {
+          res.writeHead(401, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'invalid_grant' }))
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ access_token: 'fcm-access-1', expires_in: 3600, token_type: 'Bearer' }))
+        return
+      }
+      let body = null
+      try {
+        body = JSON.parse(raw)
+      } catch {}
+      seen.sends.push({ url: req.url, auth: req.headers.authorization, body })
+      if (body?.message?.token === FCM_DEAD) {
+        res.writeHead(404, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: { code: 404, status: 'NOT_FOUND', message: 'Requested entity was not found.', details: [{ '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError', errorCode: 'UNREGISTERED' }] } }))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ name: `projects/${FCM_PROJECT}/messages/1` }))
+    })
+  })
+  return {
+    server,
+    seen,
+    serviceAccount: (privatePem) =>
+      JSON.stringify({
+        type: 'service_account',
+        project_id: FCM_PROJECT,
+        client_email: FCM_EMAIL,
+        private_key: privatePem,
+        token_uri: `http://127.0.0.1:${port}/token`,
+      }),
+  }
+}
+
 export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log }) {
   const GW_HOME = tmpOf('satuwork-e2e-push-gw')
-  const [GW_PORT, APNS_PORT] = await freePorts(2)
+  const [GW_PORT, APNS_PORT, FCM_PORT] = await freePorts(3)
   const base = `http://127.0.0.1:${GW_PORT}`
   rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# push')
@@ -74,6 +139,9 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
   const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
   const apns = fakeApns(publicKey)
   await new Promise((r) => apns.server.listen(APNS_PORT, '127.0.0.1', r))
+  const fcmKeys = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const google = fakeGoogle(fcmKeys.publicKey, FCM_PORT)
+  await new Promise((r) => google.server.listen(FCM_PORT, '127.0.0.1', r))
 
   const gw = start('push-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
     cwd: gwRoot,
@@ -93,6 +161,9 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       GATEWAY_APNS_KEY_ID: KID,
       GATEWAY_APNS_TEAM_ID: TEAM,
       GATEWAY_APNS_ENDPOINT: `http://127.0.0.1:${APNS_PORT}`,
+      // 服务账号 JSON 原文（不是 base64）：验另一种读法。
+      GATEWAY_FCM_SERVICE_ACCOUNT: google.serviceAccount(fcmKeys.privateKey.export({ type: 'pkcs8', format: 'pem' })),
+      GATEWAY_FCM_ENDPOINT: `http://127.0.0.1:${FCM_PORT}`,
     },
   })
 
@@ -125,12 +196,12 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
     const put = (tok, body) => req(base, 'PUT', '/me/push-device', { token: tok, body })
     const report = (body, tok = seatTok) => req(base, 'POST', '/internal/push', { token: tok, body })
 
-    await test('登记：没登录 401、席位票 401、坏令牌 / 非 iOS / 坏环境 400', async () => {
+    await test('登记：没登录 401、席位票 401、坏令牌 / 不认识的平台 / 坏环境 400', async () => {
       assert((await put('', { token: GOOD, platform: 'ios', environment: 'production' })).status === 401, '没登录')
       assert((await put(seatTok, { token: GOOD, platform: 'ios', environment: 'production' })).status === 401, '席位票不该能登记设备')
       for (const body of [
         { token: 'not-hex', platform: 'ios', environment: 'production' },
-        { token: GOOD, platform: 'android', environment: 'production' },
+        { token: GOOD, platform: 'windows', environment: 'production' },
         { token: GOOD, platform: 'ios', environment: 'staging' },
       ]) {
         const r = await put(adminTok, body)
@@ -213,9 +284,48 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       assert(hit && hit.payload.kind === 'handoff', `没收到转人工推送：${JSON.stringify(apns.seen)}`)
       assert(!JSON.stringify(hit.payload).includes('帮我确认一下'), '转人工的推送带上了 ask 原文')
     })
+
+    await test('Android：FCM 令牌原样登记；一条推送 APNs 和 FCM 各发，换票一次，UNREGISTERED 当场摘掉', async () => {
+      assert((await put(adminTok, { token: 'has space:APA91b' + 'x'.repeat(40), platform: 'android', environment: 'production' })).status === 400, '带空格的令牌该 400')
+      assert((await put(adminTok, { token: FCM_GOOD, platform: 'ios', environment: 'production' })).status === 400, 'FCM 令牌报成 ios 该 400')
+      // environment 报错了也收：FCM 不分环境，存成 production。
+      assert((await put(adminTok, { token: FCM_GOOD, platform: 'android', environment: 'sandbox' })).status === 200, '登记 FCM_GOOD')
+      assert((await put(adminTok, { token: FCM_DEAD, platform: 'android', environment: 'production' })).status === 200, '登记 FCM_DEAD')
+      apns.seen.length = 0
+      google.seen.sends.length = 0
+      const r = await report({ kind: 'turn-end', botId })
+      assert(r.status === 200, `push ${r.status} ${r.text}`)
+      // admin 还登记着一台 iOS（改口令那条最后重新登记的 GOOD）。
+      assert(r.json.sent === 2 && r.json.dropped === 1 && r.json.failed === 0, `结果 ${r.text}`)
+      assert(apns.seen.length === 1, `APNs 收到 ${apns.seen.length} 条`)
+      assert(google.seen.tokens.length === 1, `换票 ${google.seen.tokens.length} 次`)
+      const t = google.seen.tokens[0]
+      assert(t.ok && t.grant === 'urn:ietf:params:oauth:grant-type:jwt-bearer', `换票 ${JSON.stringify(t)}`)
+      assert(t.claims.iss === FCM_EMAIL && t.claims.scope === 'https://www.googleapis.com/auth/firebase.messaging', `claims ${JSON.stringify(t.claims)}`)
+      assert(google.seen.sends.length === 2, `FCM 收到 ${google.seen.sends.length} 条`)
+      const hit = google.seen.sends.find((x) => x.body?.message?.token === FCM_GOOD)
+      assert(hit, `FCM 没收到原样的令牌：${JSON.stringify(google.seen.sends.map((x) => x.body?.message?.token))}`)
+      assert(hit.url === `/v1/projects/${FCM_PROJECT}/messages:send`, `url ${hit.url}`)
+      assert(hit.auth === 'Bearer fcm-access-1', `auth ${hit.auth}`)
+      const m = hit.body.message
+      assert(m.notification.title === '推送 Bot' && m.notification.body === '回复好了', `notification ${JSON.stringify(m.notification)}`)
+      assert(JSON.stringify(m.data) === JSON.stringify({ kind: 'turn-end', botId }), `data ${JSON.stringify(m.data)}`)
+      assert(m.android.collapse_key === `turn-end:${botId}` && m.android.notification.tag === `turn-end:${botId}`, `android ${JSON.stringify(m.android)}`)
+      assert(Object.keys(m).sort().join(',') === 'android,data,notification,token', `message 多了东西：${JSON.stringify(m)}`)
+
+      google.seen.sends.length = 0
+      const again = await report({ kind: 'turn-end', botId })
+      assert(again.json.sent === 2 && again.json.dropped === 0, `摘掉之后 ${again.text}`)
+      assert(google.seen.sends.length === 1, `FCM 第二轮收到 ${google.seen.sends.length} 条`)
+      assert(google.seen.tokens.length === 1, `access token 没缓存：换了 ${google.seen.tokens.length} 次`)
+
+      const del = await req(base, 'DELETE', `/me/push-device/${encodeURIComponent(FCM_GOOD)}`, { token: adminTok })
+      assert(del.json.removed === true, `FCM 令牌按原样删不掉：${del.text}`)
+    })
   } finally {
     gw.kill()
     await new Promise((r) => apns.server.close(r))
+    await new Promise((r) => google.server.close(r))
     try {
       rmSync(GW_HOME, { recursive: true, force: true })
     } catch {}

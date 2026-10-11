@@ -4,3 +4,6 @@
 /tauri.build.gradle.kts
 /proguard-tauri.pro
 /tauri.properties
+
+# Firebase 配置（FCM）。仓库是公开的，不进版本库；本机放这儿，出包的 CI 从 secret 写进来。
+/google-services.json

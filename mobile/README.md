@@ -92,7 +92,17 @@ adb logcat | grep "\[satuwork\]"
 - **外链**：导航回调在 Android 上跑在界面线程，在那儿同步调 opener 插件会卡住、浏览器起不来。
   lib.rs 的 `open_external` 另起线程调。
 
-推送（FCM）还没接：`__SATUWORK_PUSH__` 在 Android 上回 `granted: false`，页面不登记。
+推送走 FCM：插件的 Kotlin 那半在 `push-plugin/android/`。它要 `google-services.json`（Firebase 项目
+`satuwork-993fa`）放在 `src-tauri/gen/android/app/`——**仓库是公开的，这个文件不进版本库**（那一层的
+.gitignore 挡着）。没有它也编得过，只是不套 google-services 插件，`register` 回「没配 Firebase」，
+页面不登记。本机从 Firebase 控制台下载一份放进去；以后出 Android 正式包的 CI 从 secret 写进来。
+
+模拟器里测点通知不需要 FCM 真发：系统在用户点开 FCM 通知时给应用的就是带这几个 extra 的 intent，
+照样发一个即可（应用在后台时走 onNewIntent，强停后再发走冷启动）：
+
+```bash
+adb shell am start -n sg.dami.satuwork.mobile/.MainActivity --es google.message_id 0:1 --es botId <botId> --es kind turn-end
+```
 
 ## 出包
 
@@ -141,5 +151,5 @@ Notifications 能力、手机上允许了通知。debug 构建拿的是 sandbox 
 ## 还没做的事
 
 - 安全区（刘海、Home 条）、软键盘顶起输入框——ADR §5 第 6 步。
-- Android 推送（FCM）：要一个 Firebase 项目。
+- Android 正式包和 Play 上架：签名 keystore、AAB、CI 里写入 google-services.json。
 - 票换 stronghold / Keychain：现在和桌面壳一样落 localStorage，iOS 的应用容器本身静态加密。
