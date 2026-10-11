@@ -1,0 +1,6 @@
+# tauri-plugin 的构建脚本拷进来的 Tauri Swift API（Package.swift 指着它），每次构建重拷
+/ios/.tauri/
+/.tauri/
+/target/
+/android/.tauri/
+/android/build/

@@ -569,6 +569,10 @@ function startMobileShellFit() {
  *   不该收到上一个人的通知。登记换人时 Gateway 也会改姓，这一步是让「退出了没人登录」那段
  *   时间里也收不到。
  * - **点开通知**：启动时和每次回到前台时取一次（take_tap），取到就跳到那颗 Bot 的对话。
+ *   启动时那一次在 boot() 收尾、页面画好之后（app.js），**不挂在登记后面**：登记要等系统的
+ *   权限框和 APNs（没网时要等满 15 秒超时），没拿到令牌还会提前返回——冷启动点的那条通知
+ *   要么丢、要么十几秒后才把人拽走。也不能早于 boot 收尾：boot 自己还要按地址栏换一次页，
+ *   早跳了会被它盖回去。
  *
  * 平台账号（owner）不登记：推送只给公司里的人，没必要让平台的人点一次通知权限。
  * 浏览器和桌面壳里 `__SATUWORK_PUSH__` 不存在，这几个函数都是空转。
@@ -606,7 +610,6 @@ async function syncMobilePush() {
     pushRegisteredFor = ''
     console.warn('satuwork: 推送登记没做成：' + (e && e.message ? e.message : e))
   }
-  void takeMobilePushTap()
 }
 
 /**

@@ -104,6 +104,16 @@ adb logcat | grep "\[satuwork\]"
 adb shell am start -n sg.dami.satuwork.mobile/.MainActivity --es google.message_id 0:1 --es botId <botId> --es kind turn-end
 ```
 
+## 下载
+
+页面里的「下载」（导出对话、存工作区文件、知识库文件、代码块和图）都是 `<a download href="blob:…">`
+点一下。WebView 里这种点击什么都不发生：WKWebView 没挂下载处理就直接取消，Android 的 WebView 没有
+DownloadListener。所以 lib.rs 的注入脚本拦下 `a[download]`，把 blob 读成字节交给
+[share-plugin/](share-plugin/)：Rust 写进应用缓存目录，原生那半弹系统的分享面板（iOS 的「存储到文件」、
+AirDrop，Android 的分享选择器）。http(s) 的下载链接交给系统浏览器。
+
+壳子的 CSP 因此比桌面壳多一处：`connect-src` 认 `blob:` / `data:`，不然注入脚本读不到 blob。
+
 ## 出包
 
 ```bash
@@ -126,7 +136,7 @@ pnpm --filter satuwork-mobile build:ios
 
 ## 和桌面壳共用的代码
 
-`serve_ui`、UI_CSP、导航守卫（`allow_navigation` / `is_seat_desktop` / `open_path_allowed`）
+`serve_ui`、UI_CSP（除了上面说的 `connect-src`）、导航守卫（`allow_navigation` / `is_seat_desktop` / `open_path_allowed`）
 是从 desktop/src-tauri/src/main.rs 抄过来的，**两边要一起改**。差别只有一处：同源的
 `target="_blank"`（「打开桌面」）桌面上另开一扇应用窗口，手机只有一扇窗，换成 Gateway 的
 源交给 Safari——Gateway 发的是同一份界面，在 Safari 里登录一次就能看（`open_target`）。
@@ -146,7 +156,12 @@ payload 照 Gateway 发的形状写：`{"aps":{"alert":{"title":"…","body":"�
 应用在后台时点横幅，应该跳到那颗 Bot 的对话。
 
 真推送要三样都齐：Gateway 配了 `GATEWAY_APNS_*`（docs/vercel-deploy.md）、App ID 开了 Push
-Notifications 能力、手机上允许了通知。debug 构建拿的是 sandbox 令牌，只有 sandbox 那头认。
+Notifications 能力、手机上允许了通知。
+
+令牌认哪一头由**签名**定，不由编译开关定：开发签名的包（debug 构建、本机 `build:ios` 出的 release 包）
+拿的是 sandbox 令牌，App Store / TestFlight 的包是 production。iOS 那半读包里描述文件的
+`aps-environment` 如实报给 Gateway（SatuPushPlugin.swift 的 `apsEnvironment`），报错了 APNs 回
+BadDeviceToken，Gateway 会把令牌当作废摘掉。
 
 ## 还没做的事
 

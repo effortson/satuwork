@@ -35,8 +35,8 @@ pub struct Registered {
     /// `ios` / `android`，原样交给 Gateway 的 `PUT /me/push-device`，它据此决定走 APNs 还是 FCM。
     #[serde(default)]
     pub platform: Option<String>,
-    /// iOS：APNs 的哪一头认这个令牌，由**构建**决定（debug 构建签的是 `aps-environment: development`，
-    /// 令牌只在 sandbox 认；发布包是 production）。Android：FCM 不分环境，一律 production。
+    /// iOS：APNs 的哪一头认这个令牌，由**签名**决定（包里的 aps-environment），原生那半读描述文件报上来
+    /// （SatuPushPlugin.swift 的 apsEnvironment）；没报的话才按编译开关猜。Android：FCM 不分环境，一律 production。
     #[serde(default)]
     pub environment: Option<String>,
     /// 要令牌失败的原因（没开推送能力、没配 Firebase、模拟器没联网……）。
@@ -53,6 +53,24 @@ pub struct Tap {
     pub kind: Option<String>,
 }
 
+/**
+ * 报给 Gateway 的环境。iOS 以原生那半从描述文件读到的为准：本机 `build:ios` 出的 release 包是开发签名，
+ * 令牌只在 sandbox 认，按编译开关报 production 会让 Gateway 发错地方、把令牌当作废摘掉。原生那半
+ * 没报（或报了不认识的）才退回按编译开关猜。
+ */
+#[cfg_attr(not(any(target_os = "ios", target_os = "android", test)), allow(dead_code))]
+fn environment_of(ios: bool, native: Option<&str>, debug: bool) -> &'static str {
+    if !ios {
+        return "production";
+    }
+    match native {
+        Some("sandbox") => "sandbox",
+        Some("production") => "production",
+        _ if debug => "sandbox",
+        _ => "production",
+    }
+}
+
 #[tauri::command]
 async fn register<R: Runtime>(app: tauri::AppHandle<R>) -> Result<Registered, String> {
     #[cfg(any(target_os = "ios", target_os = "android"))]
@@ -62,8 +80,7 @@ async fn register<R: Runtime>(app: tauri::AppHandle<R>) -> Result<Registered, St
         if out.token.is_some() {
             let ios = cfg!(target_os = "ios");
             out.platform = Some(if ios { "ios" } else { "android" }.into());
-            let sandbox = ios && cfg!(debug_assertions);
-            out.environment = Some(if sandbox { "sandbox" } else { "production" }.into());
+            out.environment = Some(environment_of(ios, out.environment.as_deref(), cfg!(debug_assertions)).into());
         }
         Ok(out)
     }
@@ -101,4 +118,20 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             Ok(())
         })
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ios_environment_follows_the_signature() {
+        // 本机 release 包是开发签名：原生报 sandbox，就得是 sandbox，不能因为是 release 就报 production。
+        assert_eq!(environment_of(true, Some("sandbox"), false), "sandbox");
+        assert_eq!(environment_of(true, Some("production"), true), "production");
+        assert_eq!(environment_of(true, None, true), "sandbox");
+        assert_eq!(environment_of(true, None, false), "production");
+        assert_eq!(environment_of(true, Some("weird"), false), "production");
+        assert_eq!(environment_of(false, Some("sandbox"), true), "production");
+    }
 }

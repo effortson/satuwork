@@ -117,7 +117,7 @@ jobs:
         run: cargo check --locked
 
   # 手机壳（mobile/，Tauri 2 mobile）单独一档：在 macOS 上 `cargo test`（lib.rs 的那几条纯函数单测，
-  # 导航守卫、路径逃逸都在里面），再 `cargo check` 一遍 iOS 模拟器目标——lib.rs 改坏了、或者用了
+  # 导航守卫、路径逃逸都在里面；两个插件是路径依赖，不点名 -p 它们的单测不跑），再 `cargo check` 一遍 iOS 模拟器目标——lib.rs 改坏了、或者用了
   # 只在桌面上有的 Tauri API，当场知道。不出包：真正的 IPA 是发版流水线的事。
   mobile:
     runs-on: macos-15
@@ -137,7 +137,7 @@ jobs:
 
       - name: cargo test
         working-directory: mobile/src-tauri
-        run: cargo test --locked
+        run: cargo test --locked -p satuwork-mobile -p tauri-plugin-satu-push -p tauri-plugin-satu-share
 
       # 部署目标和应用一致（tauri.conf.json 的 minimumSystemVersion）。真出包时 Xcode 会把它传给构建脚本；
       # 裸 cargo 不传，tauri-utils 就按 13.0 编插件的 Swift，用到 iOS 14+ 的 API 会在这一步报错，

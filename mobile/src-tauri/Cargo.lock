@@ -2843,6 +2843,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tauri-plugin-satu-push",
+ "tauri-plugin-satu-share",
 ]
 
 [[package]]
@@ -3524,6 +3525,17 @@ name = "tauri-plugin-satu-push"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
+name = "tauri-plugin-satu-share"
+version = "0.1.0"
+dependencies = [
+ "percent-encoding",
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-plugin",
 ]
