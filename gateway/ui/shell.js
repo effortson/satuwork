@@ -593,7 +593,11 @@ async function syncMobilePush() {
       if (r && r.error) console.warn('satuwork: 没拿到推送令牌：' + r.error)
       return
     }
-    await api('PUT', '/me/push-device', { token: r.token, platform: 'ios', environment: r.environment || 'production' })
+    await api('PUT', '/me/push-device', {
+      token: r.token,
+      platform: r.platform || 'ios',
+      environment: r.environment || 'production',
+    })
     try {
       localStorage.setItem(PUSH_TOKEN_KEY, r.token)
     } catch {}

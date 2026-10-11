@@ -6,6 +6,8 @@ buildscript {
     dependencies {
         classpath("com.android.tools.build:gradle:8.11.0")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.25")
+        // FCM 推送：把 app/google-services.json 编进包（app/build.gradle.kts 里有那个文件才套用）。
+        classpath("com.google.gms:google-services:4.5.0")
     }
 }
 

@@ -2,3 +2,5 @@
 /ios/.tauri/
 /.tauri/
 /target/
+/android/.tauri/
+/android/build/

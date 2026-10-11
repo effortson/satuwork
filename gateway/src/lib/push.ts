@@ -1,5 +1,5 @@
 /**
- * 手机推送：Gateway 直连 APNs（docs/adr-core-package-mobile.md §2.5）。
+ * 手机推送：Gateway 直连 APNs（iOS）和 FCM（Android）（docs/adr-core-package-mobile.md §2.5）。
  *
  * **谁触发**：席位在一轮跑完、审批进入等待时报一条 `POST /internal/push`（routes/internal.ts）；
  * 转人工的新单由 `/internal/handoffs` 那条顺手推给接手人。Gateway 不经手对话流，它知道
@@ -9,28 +9,48 @@
  * 不该看到；推送内容还会过 Apple 的服务器、躺在锁屏上。人点开通知，进的是对话页，正文在
  * 那儿从席位直连取。
  *
- * **怎么发**：APNs 的 HTTP/2 接口 + token 认证（.p8 钥匙签 ES256 的 JWT）。没用第三方推送
- * 服务——原定经 Expo push service，不用 Expo 之后就是直连。Android（FCM）还没做，登记只收 ios。
+ * **怎么发**：iOS 走 APNs 的 HTTP/2 接口 + token 认证（.p8 钥匙签 ES256 的 JWT）；Android 走 FCM 的
+ * HTTP v1 接口，服务账号私钥签 RS256 的 JWT 换 OAuth2 access token。没用第三方推送服务——原定经
+ * Expo push service，不用 Expo 之后就是直连两家。
  *
- * 环境变量（缺任何一个就不发，只记一行日志；功能在没配的环境里等于关着）：
+ * 环境变量（缺了哪一家就不发那一家，只记一行日志；功能在没配的环境里等于关着）：
  *
  * - `GATEWAY_APNS_KEY`：App Store Connect 下载的 .p8 全文（PEM）；放不下换行的平台可以整段 base64。
  * - `GATEWAY_APNS_KEY_ID`、`GATEWAY_APNS_TEAM_ID`：那把钥匙的 Key ID 与开发团队 ID。
  * - `GATEWAY_APNS_TOPIC`：应用的 bundle id，默认 `sg.dami.satuwork.mobile`（mobile/src-tauri/tauri.conf.json）。
  * - `GATEWAY_APNS_ENDPOINT`：只给 e2e 用，把 sandbox / production 两头都指到一个本地假 APNs（h2c）。
+ * - `GATEWAY_FCM_SERVICE_ACCOUNT`：Firebase 控制台「项目设置 → 服务账号」生成的私钥 JSON 全文，
+ *   或整段 base64。项目 ID、client_email、私钥、换票地址（token_uri）都从里面读。
+ * - `GATEWAY_FCM_ENDPOINT`：只给 e2e 用，把 fcm.googleapis.com 换成本地假 FCM。
  */
 import { connect, constants, type ClientHttp2Session } from 'node:http2'
 import { createPrivateKey, sign, type KeyObject } from 'node:crypto'
 import type { Db } from '../db.ts'
 
-export type PushPlatform = 'ios'
+export type PushPlatform = 'ios' | 'android'
 export type PushEnvironment = 'sandbox' | 'production'
-export const PUSH_PLATFORMS: readonly string[] = ['ios']
+export const PUSH_PLATFORMS: readonly string[] = ['ios', 'android']
 export const PUSH_ENVIRONMENTS: readonly string[] = ['sandbox', 'production']
 
-/** APNs 设备令牌：十六进制，现在是 64 位，Apple 说过会变长，留到 200。 */
-export function validPushToken(t: string): boolean {
-  return /^[0-9a-fA-F]{32,200}$/.test(t)
+/**
+ * 设备令牌长得像不像。
+ *
+ * - APNs：十六进制。真机现在是 64 位，模拟器给的是 160 位，Apple 说过会变长，留到 200。
+ * - FCM：`<实例 id>:<一长串 base64url>`，一百多到两百多个字符，留到 4096。
+ *
+ * 不认平台的老调用（DELETE 那条只拿得到令牌）两种都试。
+ */
+export function validPushToken(t: string, platform?: string): boolean {
+  const apns = /^[0-9a-fA-F]{32,200}$/.test(t)
+  const fcm = /^[A-Za-z0-9_:-]{20,4096}$/.test(t)
+  if (platform === 'ios') return apns
+  if (platform === 'android') return fcm
+  return apns || fcm
+}
+
+/** 落库前的统一写法：APNs 令牌大小写不敏感，一律小写；FCM 令牌区分大小写，原样存。 */
+export function normalizePushToken(t: string): string {
+  return /^[0-9a-fA-F]+$/.test(t) ? t.toLowerCase() : t
 }
 
 export interface PushMessage {
@@ -200,25 +220,44 @@ function postOne(
   })
 }
 
+type DeviceRow = { token: string; platform: string; environment: string; updatedAt: number }
+
 /**
- * 给一个账号登记过的所有 iOS 设备各发一条。
+ * 给一个账号登记过的所有设备各发一条：iOS 的走 APNs，Android 的走 FCM。
  *
  * **只发给还活着的登录**：登记时刻早于账号的 tokenRevokedAt（改了口令、被重置）的那些跳过——
  * 那台手机上的票已经作废了，通知不该还往那儿送。停用的账号一条不发。
- *
- * 每次调用开一条 HTTP/2 连接、发完关掉。不留常驻连接：Vercel 上实例随时会被冻住，
- * 挂着的连接下次醒来多半是死的；一个人手里也就一两台设备，握手那点开销不值得为它管连接池。
  */
 export async function pushToAccount(db: Db, accountId: string, msg: PushMessage): Promise<PushResult> {
   const result: PushResult = { sent: 0, dropped: 0, failed: 0 }
   const account = await db.account(accountId)
   if (!account || account.status !== 'active') return { ...result, skipped: '账号不可用' }
   const revokedAt = Number(account.tokenRevokedAt || 0)
-  const devices = (await db.pushDevicesOf(accountId)).filter((d) => d.platform === 'ios' && d.updatedAt > revokedAt)
-  if (!devices.length) return { ...result, skipped: '没有登记设备' }
-  const cfg = apnsConfig()
-  if (!cfg) return { ...result, skipped: 'APNs 没配' }
+  const devices = (await db.pushDevicesOf(accountId)).filter((d) => d.updatedAt > revokedAt)
+  const ios = devices.filter((d) => d.platform === 'ios')
+  const android = devices.filter((d) => d.platform === 'android')
+  if (!ios.length && !android.length) return { ...result, skipped: '没有登记设备' }
 
+  const skipped: string[] = []
+  if (ios.length) {
+    const cfg = apnsConfig()
+    if (cfg) await sendApns(db, cfg, ios, msg, result)
+    else skipped.push('APNs 没配')
+  }
+  if (android.length) {
+    const cfg = fcmConfig()
+    if (cfg) await sendFcm(db, cfg, android, msg, result)
+    else skipped.push('FCM 没配')
+  }
+  if (skipped.length && !result.sent && !result.dropped && !result.failed) result.skipped = skipped.join('；')
+  return result
+}
+
+/**
+ * iOS：每次调用开一条 HTTP/2 连接、发完关掉。不留常驻连接：Vercel 上实例随时会被冻住，
+ * 挂着的连接下次醒来多半是死的；一个人手里也就一两台设备，握手那点开销不值得为它管连接池。
+ */
+async function sendApns(db: Db, cfg: ApnsConfig, devices: DeviceRow[], msg: PushMessage, result: PushResult): Promise<void> {
   const payload = JSON.stringify({
     ...msg.data,
     aps: {
@@ -271,5 +310,139 @@ export async function pushToAccount(db: Db, accountId: string, msg: PushMessage)
       session.close()
     }
   }
-  return result
+}
+
+// ── FCM（Android）────────────────────────────────────────────────────────
+
+interface FcmConfig {
+  projectId: string
+  clientEmail: string
+  key: KeyObject
+  tokenUri: string
+  endpoint: string
+}
+
+let warnedFcmUnconfigured = false
+
+function fcmConfig(): FcmConfig | null {
+  const raw = (process.env.GATEWAY_FCM_SERVICE_ACCOUNT || '').trim()
+  if (!raw) {
+    if (!warnedFcmUnconfigured) {
+      warnedFcmUnconfigured = true
+      console.warn('satuwork-gateway: FCM 没配（GATEWAY_FCM_SERVICE_ACCOUNT），Android 推送不发')
+    }
+    return null
+  }
+  try {
+    const text = raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8')
+    const sa = JSON.parse(text) as { project_id?: string; client_email?: string; private_key?: string; token_uri?: string }
+    if (!sa.project_id || !sa.client_email || !sa.private_key) throw new Error('缺 project_id / client_email / private_key')
+    return {
+      projectId: sa.project_id,
+      clientEmail: sa.client_email,
+      key: createPrivateKey(sa.private_key),
+      tokenUri: sa.token_uri || 'https://oauth2.googleapis.com/token',
+      endpoint: ((process.env.GATEWAY_FCM_ENDPOINT || '').trim() || 'https://fcm.googleapis.com').replace(/\/$/, ''),
+    }
+  } catch (e) {
+    console.warn(`satuwork-gateway: GATEWAY_FCM_SERVICE_ACCOUNT 读不出来：${(e as Error).message}`)
+    return null
+  }
+}
+
+/** OAuth2 access token，Google 给一小时，提前一分钟换。按服务账号认，换了账号不串。 */
+let fcmTokenCache: { clientEmail: string; token: string; expiresAt: number } | null = null
+
+async function fcmAccessToken(cfg: FcmConfig, now = Date.now()): Promise<string> {
+  if (fcmTokenCache && fcmTokenCache.clientEmail === cfg.clientEmail && fcmTokenCache.expiresAt - 60_000 > now) {
+    return fcmTokenCache.token
+  }
+  const iat = Math.floor(now / 1000)
+  const head = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
+  const claims = b64url(
+    JSON.stringify({
+      iss: cfg.clientEmail,
+      scope: 'https://www.googleapis.com/auth/firebase.messaging',
+      aud: cfg.tokenUri,
+      iat,
+      exp: iat + 3600,
+    }),
+  )
+  const input = `${head}.${claims}`
+  const assertion = `${input}.${b64url(sign('sha256', Buffer.from(input), cfg.key))}`
+  const r = await fetch(cfg.tokenUri, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }).toString(),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+  const body = (await r.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error?: string }
+  if (!r.ok || !body.access_token) throw new Error(`换 FCM 访问令牌失败（${r.status} ${body.error || ''}）`)
+  fcmTokenCache = { clientEmail: cfg.clientEmail, token: body.access_token, expiresAt: now + (Number(body.expires_in) || 3600) * 1000 }
+  return body.access_token
+}
+
+/**
+ * Android：一台设备一个请求（FCM v1 没有批量接口）。通知消息（notification 那一块）在后台由系统
+ * 直接显示，点开带着 data 拉起应用（mobile/push-plugin 的 Kotlin 那半认它）；前台到达时应用没注册
+ * FirebaseMessagingService，系统不显示——和 iOS 的「前台不弹」一致。
+ *
+ * collapse_key + notification.tag：同一颗 Bot 同一种事，后到的覆盖先到的，和 APNs 的 collapse id 一样。
+ */
+async function sendFcm(db: Db, cfg: FcmConfig, devices: DeviceRow[], msg: PushMessage, result: PushResult): Promise<void> {
+  let access: string
+  try {
+    access = await fcmAccessToken(cfg)
+  } catch (e) {
+    console.warn(`satuwork-gateway: ${(e as Error).message}`)
+    result.failed += devices.length
+    return
+  }
+  const url = `${cfg.endpoint}/v1/projects/${encodeURIComponent(cfg.projectId)}/messages:send`
+  for (const d of devices) {
+    const message = {
+      token: d.token,
+      notification: { title: msg.title.slice(0, 120), body: msg.body.slice(0, 240) },
+      data: msg.data,
+      android: {
+        priority: 'HIGH',
+        ...(msg.collapseId ? { collapse_key: msg.collapseId.slice(0, 64) } : {}),
+        notification: { sound: 'default', ...(msg.collapseId ? { tag: msg.collapseId.slice(0, 64) } : {}) },
+      },
+    }
+    let status = 0
+    let errorCode = ''
+    let errorText = ''
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ message }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      })
+      status = r.status
+      if (!r.ok) {
+        const body = (await r.json().catch(() => ({}))) as {
+          error?: { status?: string; message?: string; details?: { errorCode?: string }[] }
+        }
+        errorCode = body.error?.details?.find((x) => x.errorCode)?.errorCode || body.error?.status || ''
+        errorText = body.error?.message || ''
+      } else {
+        await r.body?.cancel().catch(() => {})
+      }
+    } catch (e) {
+      errorText = (e as Error).message
+    }
+    if (status === 200) {
+      result.sent++
+    } else if (status === 404 || errorCode === 'UNREGISTERED' || (status === 400 && /registration token/i.test(errorText))) {
+      // 卸载了、清了数据、令牌换了：这个令牌不用再试了。
+      await db.dropPushDevice(d.token)
+      result.dropped++
+    } else {
+      if (status === 401 || status === 403) fcmTokenCache = null
+      console.warn(`satuwork-gateway: FCM 拒了一条推送（${status} ${errorCode || errorText || '无原因'}）`)
+      result.failed++
+    }
+  }
 }
