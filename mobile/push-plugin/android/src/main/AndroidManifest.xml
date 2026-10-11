@@ -2,4 +2,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Android 13 起发通知要运行时权限（SatuPushPlugin 的 register 里请求）。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        <!-- 应用在后台时 FCM 的通知消息由系统直接画，小图标和强调色从这两条读。不写的话 FCM 拿彩色的
+             启动图标当小图标，状态栏里是一块白方块。 -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_satu_notification" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/satu_notification" />
+    </application>
 </manifest>

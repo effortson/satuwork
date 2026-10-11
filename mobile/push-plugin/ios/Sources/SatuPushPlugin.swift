@@ -15,7 +15,10 @@ import WebKit
 
  **点通知。** `UNUserNotificationCenter` 的代理在插件初始化时就接管：Apple 要求在应用启动完成前设好，
  否则冷启动（从锁屏点通知把应用拉起来）的那一下点击会丢。点到的那条记在 `pendingTap`，页面来取
- （take_tap）；不主动推给页面，因为点的那一刻页面可能还没起来。
+ （take_tap）。记下之后再**叫页面一声**（`__SATUWORK_PUSH_TAPPED__`，gateway/ui/shell.js）：页面原本
+ 只在回到前台时取一次，而回前台的 visibilitychange 和这里的 didReceive 谁先到没有保证——页面先取、
+ 这边后记，那一下就落空了；应用开着时从通知中心点进来，根本没有回前台这一步。冷启动时页面还没起来，
+ 叫了也没人应，由页面启动完自己取。
 
  **前台时不弹横幅**（ADR §2.5）：人就在应用里，对话页自己会更新。只进通知中心（.list），不打断。
 
@@ -25,7 +28,8 @@ import WebKit
 private var injected = false
 private var pendingRegister: [Invoke] = []
 private var pendingTap: [String: String]? = nil
-private var lastToken: String? = nil
+/// 插件 load 时拿到的那扇 WebView，点通知后叫页面来取。弱引用：WebView 的生死不归插件管。
+private weak var pageView: WKWebView?
 
 private func hex(_ data: Data) -> String {
   data.map { String(format: "%02x", $0) }.joined()
@@ -80,7 +84,6 @@ private func injectAppDelegate() {
 
   let ok: @convention(block) (AnyObject, UIApplication, NSData) -> Void = { _, _, data in
     let token = hex(data as Data)
-    lastToken = token
     resolveAll(["granted": true, "token": token, "environment": apsEnvironment()])
   }
   if !class_addMethod(
@@ -129,13 +132,21 @@ private class CenterDelegate: NSObject, UNUserNotificationCenterDelegate {
     for key in ["botId", "kind"] {
       if let v = info[key] as? String { tap[key] = v }
     }
-    DispatchQueue.main.async { pendingTap = tap }
+    DispatchQueue.main.async {
+      pendingTap = tap
+      pageView?.evaluateJavaScript(
+        "window.__SATUWORK_PUSH_TAPPED__ && window.__SATUWORK_PUSH_TAPPED__()", completionHandler: nil)
+    }
     completionHandler()
   }
 }
 
 @objc(SatuPushPlugin)
 class SatuPushPlugin: Plugin {
+  @objc public override func load(webview: WKWebView) {
+    pageView = webview
+  }
+
   /// 要通知权限，再向 APNs 要令牌。用户拒了就回 granted: false。15 秒没回音按失败回。
   @objc public func register(_ invoke: Invoke) {
     UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) {

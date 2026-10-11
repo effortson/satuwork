@@ -2,9 +2,8 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
-use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
 /**
@@ -105,11 +104,8 @@ const LINK_SCRIPT: &str = r#"
 (function () {
   window.__SATUWORK_MOBILE__ = true
   window.__SATUWORK_GATEWAY__ = __GATEWAY_URL__
-  window.__SATUWORK_SEAT_DESKTOP__ = {
-    allow: function (url) { return window.__TAURI_INTERNALS__.invoke('allow_seat_desktop', { url: url }) }
-  }
   // 远程推送（mobile/push-plugin）：要设备令牌、取用户点开的那条通知。登记到 Gateway 由页面做
-  // （gateway/ui/shell.js 的 startMobilePush），壳子不碰登录票。
+  // （gateway/ui/shell.js 的 syncMobilePush），壳子不碰登录票。
   window.__SATUWORK_PUSH__ = {
     register: function () { return window.__TAURI_INTERNALS__.invoke('plugin:satu-push|register') },
     takeTap: function () { return window.__TAURI_INTERNALS__.invoke('plugin:satu-push|take_tap') }
@@ -209,44 +205,18 @@ fn debug_log(line: String) {
     let _ = line;
 }
 
-/// 界面报上来的席位机器源，见 allow_seat_desktop。
-#[derive(Default)]
-struct SeatOrigins(Mutex<HashSet<String>>);
-
-fn origin_key(url: &Url) -> String {
-    url.origin().ascii_serialization()
-}
-
-/// `/seats/<席位>/vnc[/…]`：右栏那块内嵌桌面在加载席位机器的 noVNC。
-fn is_seat_desktop(url: &Url) -> bool {
-    let mut seg = match url.path_segments() {
-        Some(it) => it,
-        None => return false,
-    };
-    seg.next() == Some("seats") && seg.next().is_some_and(|s| !s.is_empty()) && seg.next() == Some("vnc")
-}
-
-fn seat_desktop_allowed(url: &Url, gateway: &Url, seats: &HashSet<String>) -> bool {
-    matches!(url.scheme(), "http" | "https")
-        && is_seat_desktop(url)
-        && (same_origin(url, gateway) || seats.contains(&origin_key(url)))
+/**
+ * 交给系统处理、窗口不动的那几种地址：站外网页给浏览器，`mailto:` / `tel:` / `sms:` 给邮件、电话、
+ * 短信。后三种 WebView 自己打不开——放行的话点了什么都不发生，而 markdown 里的邮箱、电话正是
+ * 手机上最常点的链接。别的协议（blob:、data:、about: 这些页面内部用的）不归这里管。
+ */
+fn hand_to_system(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "mailto" | "tel" | "sms")
 }
 
 /// 暗号只在界面自己的源或 Gateway 的源上认，理由见桌面壳的同名函数。
 fn open_path_allowed(url: &Url, gateway: &Url) -> bool {
     url.path() == OPEN_PATH && (is_ui_origin(url) || same_origin(url, gateway))
-}
-
-#[tauri::command]
-fn allow_seat_desktop(app: AppHandle, url: String) -> Result<(), String> {
-    let parsed = Url::parse(&url).map_err(|e| format!("桌面地址解析不了：{e}"))?;
-    if !matches!(parsed.scheme(), "http" | "https") || !is_seat_desktop(&parsed) {
-        return Err("不是席位桌面地址".into());
-    }
-    let state = app.state::<SeatOrigins>();
-    let mut seats = state.0.lock().map_err(|_| "放行名单锁坏了".to_string())?;
-    seats.insert(origin_key(&parsed));
-    Ok(())
 }
 
 /**
@@ -263,11 +233,9 @@ fn open_target(base: &Url, raw: &str) -> Option<Url> {
         out.set_fragment(parsed.fragment());
         return Some(out);
     }
-    match parsed.scheme() {
-        "http" | "https" => Some(parsed),
-        // 页面上的内容不全是我们写的（markdown 里的链接来自模型和用户），别的协议一律当没发生。
-        _ => None,
-    }
+    // 页面上的内容不全是我们写的（markdown 里的链接来自模型和用户），只认 hand_to_system 那几种，
+    // 别的协议（javascript: 这些）一律当没发生。
+    hand_to_system(&parsed).then_some(parsed)
 }
 
 /**
@@ -296,8 +264,11 @@ fn route_open(app: &AppHandle, base: &Url, url: &Url) {
 
 /**
  * 每一次导航都过这里，要挡的只有一件事：把唯一的窗口导航到站外（这里没有地址栏也没有
- * 后退）。规则照桌面壳：暗号先认；界面自己的源放行；不是 http(s) 的放行（blob:、ws: 这些）；
- * 内嵌桌面的 iframe 放行；剩下的 http(s) 都是往外走，交给系统浏览器、窗口留在原地。
+ * 后退）。规则照桌面壳：暗号先认；界面自己的源放行；hand_to_system 那几种交给系统、窗口留在
+ * 原地；剩下的（blob:、data: 这些页面内部用的）放行。
+ *
+ * 和桌面壳差两处：`mailto:` / `tel:` / `sms:` 交给系统（见 hand_to_system）；**没有**内嵌桌面那块
+ * iframe 的放行——手机上不嵌桌面（gateway/ui/chat.js 的 deskEmbeddable），「打开桌面」走系统浏览器。
  */
 fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
     #[cfg(debug_assertions)]
@@ -309,13 +280,7 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
     if is_ui_origin(url) {
         return true;
     }
-    match url.scheme() {
-        "http" | "https" => {}
-        _ => return true,
-    }
-    let seats = app.state::<SeatOrigins>();
-    let allowed = seats.0.lock().map(|s| seat_desktop_allowed(url, base, &s)).unwrap_or(false);
-    if allowed {
+    if !hand_to_system(url) {
         return true;
     }
     open_external(app, url.as_str());
@@ -494,8 +459,7 @@ pub fn run() {
         .plugin(tauri_plugin_satu_push::init())
         .plugin(tauri_plugin_satu_share::init())
         .register_uri_scheme_protocol(UI_SCHEME, |ctx, request| serve_ui(&ctx.app_handle().clone(), &request))
-        .manage(SeatOrigins::default())
-        .invoke_handler(tauri::generate_handler![allow_seat_desktop, debug_log])
+        .invoke_handler(tauri::generate_handler![debug_log])
         .setup(|app| {
             let gateway = gateway_url().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             build_window(&app.handle().clone(), gateway)?;
@@ -549,14 +513,16 @@ mod tests {
     }
 
     #[test]
-    fn seat_desktop_only_on_known_origins() {
+    fn mail_phone_and_web_go_to_the_system() {
+        for s in ["https://a.com/p", "http://a.com", "mailto:a@b.com", "tel:+6512345678", "sms:+6512345678"] {
+            assert!(hand_to_system(&u(s)), "{s}");
+        }
+        for s in ["blob:satu://localhost/abc", "data:text/plain,hi", "about:blank", "javascript:alert(1)", "satu://localhost/a"] {
+            assert!(!hand_to_system(&u(s)), "{s}");
+        }
         let gw = u("https://gw.example.com");
-        let mut seats = HashSet::new();
-        seats.insert(origin_key(&u("https://m001.example.com")));
-        assert!(seat_desktop_allowed(&u("https://m001.example.com/seats/s1/vnc/"), &gw, &seats));
-        assert!(seat_desktop_allowed(&u("https://gw.example.com/seats/s1/vnc/vnc.html?a=1"), &gw, &seats));
-        assert!(!seat_desktop_allowed(&u("https://evil.com/seats/s1/vnc/"), &gw, &seats));
-        assert!(!seat_desktop_allowed(&u("https://m001.example.com/other"), &gw, &seats));
+        assert_eq!(open_target(&gw, "mailto:a@b.com?subject=hi").unwrap().as_str(), "mailto:a@b.com?subject=hi");
+        assert_eq!(open_target(&gw, "tel:+6512345678").unwrap().as_str(), "tel:+6512345678");
     }
 
     #[test]

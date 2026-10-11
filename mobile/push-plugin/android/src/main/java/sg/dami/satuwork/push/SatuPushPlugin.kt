@@ -37,23 +37,36 @@ import com.google.firebase.messaging.FirebaseMessaging
 )
 class SatuPushPlugin(private val activity: Activity) : Plugin(activity) {
     private var pendingTap: JSObject? = null
+    private var page: WebView? = null
 
     override fun load(webView: WebView) {
+        page = webView
         takeIntent(activity.intent)
     }
 
+    /**
+     * 应用在后台时点通知走这里。记下之后叫页面一声来取（和 iOS 那半一样，见 SatuPushPlugin.swift
+     * 的文件头）：页面本来就会在回前台时取，这一声让它不必赌谁先到。冷启动走 load，那时页面还没起来，
+     * 由页面启动完自己取。
+     */
     override fun onNewIntent(intent: Intent) {
-        takeIntent(intent)
+        if (takeIntent(intent)) {
+            page?.post {
+                page?.evaluateJavascript("window.__SATUWORK_PUSH_TAPPED__ && window.__SATUWORK_PUSH_TAPPED__()", null)
+            }
+        }
     }
 
-    private fun takeIntent(intent: Intent?) {
-        val extras = intent?.extras ?: return
-        if (extras.getString("google.message_id") == null) return
+    /** 是不是一次点通知；是的话记进 pendingTap。 */
+    private fun takeIntent(intent: Intent?): Boolean {
+        val extras = intent?.extras ?: return false
+        if (extras.getString("google.message_id") == null) return false
         val tap = JSObject()
         extras.getString("botId")?.let { tap.put("botId", it) }
         extras.getString("kind")?.let { tap.put("kind", it) }
         pendingTap = tap
         for (key in listOf("google.message_id", "botId", "kind")) intent.removeExtra(key)
+        return true
     }
 
     @Command

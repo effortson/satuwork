@@ -26,6 +26,7 @@
 import { connect, constants, type ClientHttp2Session } from 'node:http2'
 import { createPrivateKey, sign, type KeyObject } from 'node:crypto'
 import type { Db } from '../db.ts'
+import { JWT_TTL } from './validate.ts'
 
 export type PushPlatform = 'ios' | 'android'
 export type PushEnvironment = 'sandbox' | 'production'
@@ -38,11 +39,12 @@ export const PUSH_ENVIRONMENTS: readonly string[] = ['sandbox', 'production']
  * - APNs：十六进制。真机现在是 64 位，模拟器给的是 160 位，Apple 说过会变长，留到 200。
  * - FCM：`<实例 id>:<一长串 base64url>`，一百多到两百多个字符，留到 4096。
  *
- * 不认平台的老调用（DELETE 那条只拿得到令牌）两种都试。
+ * 不认平台的老调用（DELETE 那条只拿得到令牌）两种都试。两种互斥：纯十六进制的只算 APNs。
  */
 export function validPushToken(t: string, platform?: string): boolean {
   const apns = /^[0-9a-fA-F]{32,200}$/.test(t)
-  const fcm = /^[A-Za-z0-9_:-]{20,4096}$/.test(t)
+  // 纯十六进制的不算 FCM 令牌：那是 APNs 令牌报成了 android，收下来只会让 FCM 回一句 400。
+  const fcm = /^[A-Za-z0-9_:-]{20,4096}$/.test(t) && !apns
   if (platform === 'ios') return apns
   if (platform === 'android') return fcm
   return apns || fcm
@@ -98,8 +100,13 @@ export interface PushResult {
   /** APNs 说令牌作废、已经从库里摘掉的。 */
   dropped: number
   failed: number
-  /** 一条都没发的原因（没配、账号停用、没登记设备）。 */
+  /** 一条都没发的原因（没配、账号停用、没登记设备）。给人看的，会改措辞，程序别比对它。 */
   skipped?: string
+  /**
+   * 这个账号眼下收不到推送（停用了、没登记设备），席位可以先别再问——bot 那头据此安静两分钟
+   * （bot/src/session/gateway.ts 的 reportPush）。以前它比对 skipped 的中文原文，改一个字就悄悄失效。
+   */
+  quiet?: boolean
 }
 
 interface ApnsConfig {
@@ -175,6 +182,13 @@ const DEAD_TOKEN_REASONS = new Set(['BadDeviceToken', 'Unregistered', 'DeviceTok
 
 const REQUEST_TIMEOUT_MS = 10_000
 
+/**
+ * 推送在 APNs / FCM 那边最多存多久。手机离线时两家都会替我们存着、上线再补发，不设的话 APNs 至少
+ * 投一次、FCM 默认存四周——三小时后补到的「回复好了」只会骗人回去看一条早就看过的消息（bot 那头
+ * 不重试也是这个理由）。一小时：地铁里断网一阵回来还收得到，隔夜的就不要了。
+ */
+export const PUSH_TTL_SECONDS = 3600
+
 function postOne(
   session: ClientHttp2Session,
   path: string,
@@ -222,21 +236,32 @@ function postOne(
 
 type DeviceRow = { token: string; platform: string; environment: string; updatedAt: number }
 
+/** 这一条登记背后的登录还活着吗。理由见 pushToAccount。 */
+export function liveRegistration(updatedAt: number, revokedAt: number, now: number, ttlSeconds = JWT_TTL): boolean {
+  return updatedAt > revokedAt && now - updatedAt < ttlSeconds * 1000
+}
+
 /**
  * 给一个账号登记过的所有设备各发一条：iOS 的走 APNs，Android 的走 FCM。
  *
- * **只发给还活着的登录**：登记时刻早于账号的 tokenRevokedAt（改了口令、被重置）的那些跳过——
- * 那台手机上的票已经作废了，通知不该还往那儿送。停用的账号一条不发。
+ * **只发给还活着的登录**，两种死法都跳过：
+ *
+ * - 登记时刻早于账号的 tokenRevokedAt（改了口令、被重置）：那台手机上的票已经作废了。
+ * - 最近一次登记已经是一张票的寿命（JWT_TTL）以前：票不续期，过期了就得重新登录，而重新登录
+ *   一定会再登记一次（gateway/ui/shell.js 的 syncMobilePush）。所以这么久没再登记过，名下那张票
+ *   必然已经过期。退出登录时的注销（DELETE）偏偏就在票过期的那次 401 里发不出去，靠这一条兜住。
+ *
+ * 停用的账号一条不发。
  */
-export async function pushToAccount(db: Db, accountId: string, msg: PushMessage): Promise<PushResult> {
+export async function pushToAccount(db: Db, accountId: string, msg: PushMessage, now = Date.now()): Promise<PushResult> {
   const result: PushResult = { sent: 0, dropped: 0, failed: 0 }
   const account = await db.account(accountId)
-  if (!account || account.status !== 'active') return { ...result, skipped: '账号不可用' }
+  if (!account || account.status !== 'active') return { ...result, skipped: '账号不可用', quiet: true }
   const revokedAt = Number(account.tokenRevokedAt || 0)
-  const devices = (await db.pushDevicesOf(accountId)).filter((d) => d.updatedAt > revokedAt)
+  const devices = (await db.pushDevicesOf(accountId)).filter((d) => liveRegistration(d.updatedAt, revokedAt, now))
   const ios = devices.filter((d) => d.platform === 'ios')
   const android = devices.filter((d) => d.platform === 'android')
-  if (!ios.length && !android.length) return { ...result, skipped: '没有登记设备' }
+  if (!ios.length && !android.length) return { ...result, skipped: '没有登记设备', quiet: true }
 
   const skipped: string[] = []
   if (ios.length) {
@@ -290,6 +315,8 @@ async function sendApns(db: Db, cfg: ApnsConfig, devices: DeviceRow[], msg: Push
           'apns-topic': cfg.topic,
           'apns-push-type': 'alert',
           'apns-priority': '10',
+          // 绝对时刻（Unix 秒），过了 APNs 就丢掉不再投。
+          'apns-expiration': String(Math.floor(Date.now() / 1000) + PUSH_TTL_SECONDS),
           'content-type': 'application/json',
         }
         if (msg.collapseId) headers['apns-collapse-id'] = msg.collapseId.slice(0, 64)
@@ -406,6 +433,8 @@ async function sendFcm(db: Db, cfg: FcmConfig, devices: DeviceRow[], msg: PushMe
       data: msg.data,
       android: {
         priority: 'HIGH',
+        // FCM 认的是时长字符串（秒，带 s）。
+        ttl: `${PUSH_TTL_SECONDS}s`,
         ...(msg.collapseId ? { collapse_key: msg.collapseId.slice(0, 64) } : {}),
         notification: { sound: 'default', ...(msg.collapseId ? { tag: msg.collapseId.slice(0, 64) } : {}) },
       },

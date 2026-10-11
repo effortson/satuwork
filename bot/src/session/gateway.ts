@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
 import type { SessionEvent, SessionOrigin } from './types.ts'
 import type { Handoff } from '../policy/handoff.ts'
+import { pushSuppressed, watched } from './watchers.ts'
 
 export const name = 'satu-session-gateway'
 export const inject = ['server', 'sessions', 'catalog', 'storage']
@@ -473,11 +474,17 @@ export function apply(ctx: Context) {
    * 早就看过的消息。发不出去就算了，打一行 debug。
    *
    * 只报主会话（旁支是工具调用的内部过程）；本地 Bot 不报（人就坐在那台电脑前，而且它的票不走
-   * 这条路）。Gateway 回「没有登记设备」时**两分钟内不再问**：没装手机端的人每一轮都白打一次
-   * Gateway，在 Vercel 上就是一次白花的函数调用。
+   * 这条路）。Gateway 回 `quiet`（停用了、没登记设备）时**两分钟内不再问**：没装手机端的人每一轮
+   * 都白打一次 Gateway，在 Vercel 上就是一次白花的函数调用。老 Gateway 没有 quiet，认它的中文原文。
+   *
+   * **人正看着的不推**：这一轮不到半分钟、而且有客户端连着这条会话的流，人多半就在屏幕前
+   * （判据和为什么不能只看「连着流」见 session/watchers.ts）。在事件到达的那一刻同步判，
+   * 不等 reportPush 里那几步异步——流可能恰好在这期间断开。
    */
   let pushQuietUntil = 0
   const PUSH_QUIET_MS = 2 * 60_000
+  /** 每条会话当前这一轮从什么时候开始（turn/start 的时刻），turn/end 时摘掉。 */
+  const turnStartedAt = new Map<string, number>()
   const sessionBot = new Map<string, string>()
   async function botOfSession(sessionId: string): Promise<string> {
     const known = sessionBot.get(sessionId)
@@ -505,8 +512,8 @@ export function apply(ctx: Context) {
       pushQuietUntil = Date.now() + PUSH_QUIET_MS
       return
     }
-    const body = (await r.json().catch(() => ({}))) as { skipped?: string }
-    if (body.skipped === '没有登记设备') pushQuietUntil = Date.now() + PUSH_QUIET_MS
+    const body = (await r.json().catch(() => ({}))) as { skipped?: string; quiet?: boolean }
+    if (body.quiet === true || body.skipped === '没有登记设备') pushQuietUntil = Date.now() + PUSH_QUIET_MS
   }
 
   ctx.on('session/event', (sessionId: string, event: SessionEvent) => {
@@ -516,9 +523,11 @@ export function apply(ctx: Context) {
         : event.type === 'tool/approval' && (event.data as { state?: string }).state === 'pending'
           ? 'approval'
           : null
-    if (pushKind) {
+    if (event.type === 'turn/start') turnStartedAt.set(sessionId, event.time)
+    if (pushKind && !pushSuppressed(watched(sessionId), turnStartedAt.get(sessionId), event.time)) {
       void reportPush(sessionId, pushKind).catch((e: Error) => ctx.logger?.debug?.(`推送上报没发出去：${e.message}`))
     }
+    if (event.type === 'turn/end') turnStartedAt.delete(sessionId)
     if (
       event.type === 'session' ||
       event.type === 'user/message' ||
