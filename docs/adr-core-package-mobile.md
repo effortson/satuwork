@@ -319,7 +319,13 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
    runner 用 `macos-26`（2026-04-28 起上传必须是 Xcode 26 / iOS 26 SDK 构建的）；`altool` 传
    TestFlight。前提在 Apple 那边：那把密钥要 Admin 角色、App Store Connect 里建好 App 记录、App ID
    开推送能力。顺带修了一处只在正式包里出现的问题：`asset_resolver` 找不到文件会回落到
-   index.html，壳子要先查文件在不在包里再取（见 mobile/README.md）。Android 之后再开（`tauri android init`）。
+   index.html，壳子要先查文件在不在包里再取（见 mobile/README.md）。
+9. **Android 壳**（已落地，推送和上架未做）：`tauri android init` 生成的 `gen/android` 进版本库；
+   同一份 lib.rs，页面源是 `http://satu.localhost`（CORS 白名单早就有）。Android 特有的两处在原生层：
+   MainActivity 按系统栏 + 键盘的 inset 让位（Android 15 起强制全屏、窗口不随键盘缩短）；外链交给
+   系统浏览器要另起线程（导航回调在界面线程，同步调 opener 会卡住）。Debug 构建的 Gateway 地址由
+   build.rs 构建时烤入（模拟器读不到本机文件）。check.yml 加了 Android 目标的 cargo check。
+   **还没做**：FCM 推送（要 Firebase 项目，Gateway 侧加一个 FCM 发送器）、Play 上架流水线。
 
 步骤 1–4 是 Web 侧的，步骤 5–8 是手机侧的；5 依赖 3，其余各步之间可以并行。
 

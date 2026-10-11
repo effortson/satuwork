@@ -55,6 +55,45 @@ xcrun simctl get_app_container booted sg.dami.satuwork.mobile data
 （`gen/apple/satuwork-mobile_iOS/Info.plist`），本机和内网地址都过，公网明文不过——正式包
 连的是 https，不用放 `NSAllowsArbitraryLoads`。
 
+## 跑（Android 模拟器）
+
+前置：JDK 17、Android SDK（platform 36、build-tools、platform-tools、emulator、arm64 系统镜像）、
+NDK、Rust 的 Android 目标。没装 Android Studio 也行，命令行工具 `sdkmanager` / `avdmanager` 就够。
+
+```bash
+export JAVA_HOME=$(/usr/libexec/java_home -v 17) ANDROID_HOME=~/Library/Android/sdk NDK_HOME=~/Library/Android/sdk/ndk/29.0.14206865
+```
+
+```bash
+adb reverse tcp:3080 tcp:3080
+```
+
+```bash
+pnpm --filter satuwork-mobile dev:android satuwork-36
+```
+
+- **设备名用 AVD 名**（`emulator -list-avds` 列出来的），不是 `adb devices` 里的 `emulator-5554`：
+  后者认不出，它会退回去打开 Android Studio，没装的话就停在那儿还拿着构建锁。
+- **Gateway 地址**：Android 模拟器是一台虚拟机，读不到本机的 `dev-server.txt`，由 build.rs 在构建时
+  烤进去；改了文件要重编。模拟器里的 127.0.0.1 是它自己，要先 `adb reverse` 把端口转回本机。
+- **界面**：同理读不到仓库里的 `gateway/ui`，debug 构建也走包里那份——先 `pnpm prepare:ui`，
+  改了界面要重拷、重编。
+- debug 构建把导航和页面报错打进 logcat（标签 `RustStdoutStderr`，前缀 `[satuwork]`）：
+
+```bash
+adb logcat | grep "\[satuwork\]"
+```
+
+两处 Android 特有的处理，都在原生层：
+
+- **键盘和系统栏**：Android 15（targetSdk 35+）起应用强制全屏、窗口不再随键盘缩短，登录按钮和
+  对话输入框会压在键盘底下。`gen/android/.../MainActivity.kt` 按系统栏、刘海、键盘的 inset 给内容
+  视图加内边距，WebView 跟着变矮；让出来的那一圈用页面底色（`res/values*/colors.xml`）。
+- **外链**：导航回调在 Android 上跑在界面线程，在那儿同步调 opener 插件会卡住、浏览器起不来。
+  lib.rs 的 `open_external` 另起线程调。
+
+推送（FCM）还没接：`__SATUWORK_PUSH__` 在 Android 上回 `granted: false`，页面不登记。
+
 ## 出包
 
 ```bash
@@ -102,5 +141,5 @@ Notifications 能力、手机上允许了通知。debug 构建拿的是 sandbox 
 ## 还没做的事
 
 - 安全区（刘海、Home 条）、软键盘顶起输入框——ADR §5 第 6 步。
-- Android：`tauri android init`；代码已经不依赖 iOS，差的是工程和 CI。
+- Android 推送（FCM）：要一个 Firebase 项目。
 - 票换 stronghold / Keychain：现在和桌面壳一样落 localStorage，iOS 的应用容器本身静态加密。

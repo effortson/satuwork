@@ -42,9 +42,12 @@ fn is_ui_origin(url: &Url) -> bool {
 
 /**
  * 这次连哪儿。手机上没有设置屏也没有菜单：正式包锁死 DEFAULT_SERVER；debug 构建先看
- * 仓库里的 `mobile/src-tauri/dev-server.txt`（不进版本库；模拟器里的进程就是本机进程，读得到），
- * 再看编译期的 `SATUWORK_SERVER`。文件优先是因为 `tauri ios dev` 经 Xcode 起 cargo，shell 里的
- * 环境变量传不进去（实测）；文件改完重开应用就生效，不用重编。
+ * 仓库里的 `mobile/src-tauri/dev-server.txt`（不进版本库），再看编译期的 `SATUWORK_SERVER`。
+ *
+ * - iOS 模拟器的进程就是本机进程，运行时读得到那个文件：改完重开应用就生效，不用重编。
+ *   不靠环境变量是因为 `tauri ios dev` 经 Xcode 起 cargo，shell 里的变量传不进去（实测）。
+ * - Android 模拟器是一台虚拟机，读不到本机文件，靠 build.rs 在构建时把文件内容烤成
+ *   `SATUWORK_SERVER`。本机的 127.0.0.1 在 Android 模拟器里要先 `adb reverse`（mobile/README.md）。
  */
 fn pick_server<'a>(debug: bool, from_file: Option<&'a str>, baked: Option<&'a str>) -> &'a str {
     if debug {
@@ -170,6 +173,8 @@ fn debug_log(line: String) {
         if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(f, "{line}");
         }
+        // Android 上应用的临时目录 adb 看不到，Rust 的 stderr 会进 logcat（标签 RustStdoutStderr）。
+        eprintln!("[satuwork] {line}");
     }
     #[cfg(not(debug_assertions))]
     let _ = line;
@@ -236,10 +241,27 @@ fn open_target(base: &Url, raw: &str) -> Option<Url> {
     }
 }
 
+/**
+ * 交给系统浏览器。
+ *
+ * **另起一个线程调**：导航回调在 Android 上跑在界面线程，而 opener 插件在移动端要同步等原生那半
+ * 回话，原生那半又要在界面线程上执行——在回调里直接调，浏览器就是起不来（实测，什么都不发生）。
+ * 失败照实打一行：链接点了没反应是最难查的那种毛病。
+ */
+fn open_external(app: &AppHandle, url: &str) {
+    let app = app.clone();
+    let url = url.to_string();
+    std::thread::spawn(move || {
+        if let Err(e) = app.opener().open_url(url.as_str(), None::<&str>) {
+            eprintln!("[satuwork] 交给系统浏览器失败：{e}");
+        }
+    });
+}
+
 fn route_open(app: &AppHandle, base: &Url, url: &Url) {
     let target = url.query_pairs().find(|(k, _)| k == "u").map(|(_, v)| v.to_string()).unwrap_or_default();
     if let Some(dest) = open_target(base, &target) {
-        let _ = app.opener().open_url(dest.as_str(), None::<&str>);
+        open_external(app, dest.as_str());
     }
 }
 
@@ -249,6 +271,8 @@ fn route_open(app: &AppHandle, base: &Url, url: &Url) {
  * 内嵌桌面的 iframe 放行；剩下的 http(s) 都是往外走，交给系统浏览器、窗口留在原地。
  */
 fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
+    #[cfg(debug_assertions)]
+    eprintln!("[satuwork] navigation {url}");
     if open_path_allowed(url, base) {
         route_open(app, base, url);
         return false;
@@ -265,7 +289,7 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
     if allowed {
         return true;
     }
-    let _ = app.opener().open_url(url.as_str(), None::<&str>);
+    open_external(app, url.as_str());
     false
 }
 
