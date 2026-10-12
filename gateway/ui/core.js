@@ -1535,7 +1535,7 @@ var SatuCore = (() => {
   }
   function fmtTokens(n) {
     if (!n) return "—";
-    return n >= 1e6 ? `${Math.round(n / 1e6)}M` : `${Math.round(n / 1e3)}K`;
+    return n >= 1e6 ? `${Math.floor(n / 1e6)}M` : `${Math.round(n / 1e3)}K`;
   }
 
   // core/src/paths.ts

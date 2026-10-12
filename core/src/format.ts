@@ -110,7 +110,7 @@ export function usd(mils: unknown, locale: Locale = 'zh'): string {
 /** token 数：1M / 340K。Web 里叫 tokens()，这儿改名是为了不和「票」撞。 */
 export function fmtTokens(n: number | null | undefined): string {
   if (!n) return '—'
-  // 百万档只给整数：gpt-6.1-sol 的窗口是 1,050,000，带一位小数会进位成「1.1M」，
-  // 看着像窗口比实际大了五万。目录里要的是「几百万的量级」，不是精确值。
-  return n >= 1000000 ? `${Math.round(n / 1000000)}M` : `${Math.round(n / 1000)}K`
+  // 百万档只给整数，**向下取**：gpt-6.1-sol 的窗口是 1,050,000，带一位小数会进位成
+  // 「1.1M」，四舍五入也会把 1.5M 写成 2M——都是把窗口往大了说。宁可说小，不说大。
+  return n >= 1000000 ? `${Math.floor(n / 1000000)}M` : `${Math.round(n / 1000)}K`
 }

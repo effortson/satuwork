@@ -4285,11 +4285,12 @@ const CTX_COLORS = {
  * 不用上面那个 tokens()——它是给模型目录用的，会把 98,800 写成 99K。这一行要让人看出
  * 「还剩多少」，那一档精度正好是有用的那一档。
  *
- * 百万档不带小数：1,050,000 的窗口带一位小数会进位成「1.1M」，看着比实际大。
+ * 百万档不带小数、向下取：1,050,000 的窗口带一位小数会进位成「1.1M」，四舍五入也会
+ * 把 1.5M 写成 2M——都比实际大。宁可说小，不说大。
  */
 function ctxNum(n) {
   const v = Math.max(0, Math.round(Number(n) || 0))
-  if (v >= 1000000) return Math.round(v / 1000000) + 'M'
+  if (v >= 1000000) return Math.floor(v / 1000000) + 'M'
   if (v >= 1000) return (v / 1000).toFixed(v >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'k'
   return String(v)
 }
