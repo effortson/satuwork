@@ -21,6 +21,7 @@ import {
 import { parseAt, rowsOf } from './src/tools/history.ts'
 import { historySlice } from './src/session/replay.ts'
 import { budgetToolText, MODEL_TOOL_RESULT_MAX_CHARS } from './src/tools/result-budget.ts'
+import { turnContextGuard, inputLimit } from './src/agent/context-guard.ts'
 
 let seq = 0
 const ev = (type, time, data) => ({ seq: ++seq, time, type, data })
@@ -385,6 +386,105 @@ out.rows = {
     noCost: compactionWindow(128_000, undefined),
     cliffAboveWindow: compactionWindow(200_000, { ...base, tiers: [tier(272_000)] }),
     junk: compactionWindow(400_000, { tiers: [null, { inputTokensAbove: 0 }, { inputTokensAbove: 'x' }] }),
+  }
+}
+
+// 轮内护栏：一轮之内工具结果堆到逼近窗口，把模型看过的早先大块结果换成占位
+{
+  // 和 estMessages 同一把尺子的简化版：ASCII 按 3.6 字符一 token
+  const estimate = (ms) => ms.reduce((n, m) => {
+    const body = typeof m.content === 'string' ? m.content : m.content.map((c) => c.text ?? '').join('')
+    return n + Math.round(body.length / 3.6) + 4
+  }, 0)
+  const big = (tokens, tag) => tag + 'x'.repeat(Math.round(tokens * 3.6))
+  const user = (text) => ({ role: 'user', content: [{ type: 'text', text }], timestamp: 0 })
+  const asst = (id, input) => ({
+    role: 'assistant',
+    content: [{ type: 'toolCall', id, name: 'read_file', arguments: {} }],
+    usage: { input, output: 200, cacheRead: 0, cacheWrite: 0, totalTokens: input + 200 },
+    timestamp: 0,
+  })
+  const result = (id, tokens) => ({ role: 'toolResult', toolCallId: id, toolName: 'read_file', content: [{ type: 'text', text: big(tokens, `<${id}>`) }], isError: false, timestamp: 0 })
+  const textOf = (m) => m.content.map((c) => c.text ?? '').join('')
+  const isPlaceholder = (m) => textOf(m).startsWith('[这条工具结果原有约')
+
+  const elides = []
+  const exhausted = []
+  // gpt-6.1-sol 量级：窗口 110 万、最大输出 12.8 万 → 输入上限 97.2 万，85% 触发，省到 65%
+  const guard = turnContextGuard({
+    window: 1_100_000,
+    maxOutput: 128_000,
+    overhead: 5_000,
+    base: 0,
+    estimate,
+    onElide: (i) => elides.push(i),
+    onExhausted: (i) => exhausted.push(i),
+  })
+  const turn = [
+    user('改报价单'),
+    asst('c1', 30_000),
+    result('c1', 100_000),
+    asst('c2', 600_000),
+    result('c2', 100_000),
+    asst('c3', 900_000), // 实测：上一步送进去 90 万
+    result('c3', 40_000), // 刚回来，模型一次都还没看过
+  ]
+  const snapshot = JSON.stringify(turn)
+  const first = await guard(turn)
+  // 第二步：模型又调了一次，实测已经反映了上面的省略；这次总量在触发线以下
+  const turn2 = [...turn, asst('c4', 760_000), result('c4', 1_000)]
+  const second = await guard(turn2)
+
+  // 一开始就没到线：原样放行
+  const quiet = turnContextGuard({ window: 1_100_000, maxOutput: 128_000, overhead: 5_000, base: 0, estimate })
+  const small = [user('hi'), asst('s1', 10_000), result('s1', 50_000), asst('s2', 70_000), result('s2', 1_000)]
+  const quietOut = await quiet(small)
+
+  // base 之前的 usage 是旧轮次的（可能在压缩之前），不算实测
+  // 同一份消息，base 落在旧助手消息之后就不该被它的 19 万吓到；base 为 0 时作对照
+  const staleMsgs = [user('旧'), asst('o1', 1_000), result('o1', 3_000), asst('o2', 190_000), user('新')]
+  const staleOut = await turnContextGuard({ window: 200_000, overhead: 1_000, base: 4, estimate })(staleMsgs)
+  const freshOut = await turnContextGuard({ window: 200_000, overhead: 1_000, base: 0, estimate })(staleMsgs)
+
+  // 上一轮撞了窗口：本地估算只有十几万，但 provider 报过 95 万——第一次调用就该动手
+  const priorMsgs = [user('旧'), asst('p1', 1_000), result('p1', 60_000), asst('p2', 2_000), result('p2', 60_000), asst('p3', 0), user('新')]
+  const priorOut = await turnContextGuard({ window: 1_100_000, maxOutput: 128_000, overhead: 5_000, base: 6, prior: 950_000, estimate })(priorMsgs)
+  const noPriorOut = await turnContextGuard({ window: 1_100_000, maxOutput: 128_000, overhead: 5_000, base: 6, estimate })(priorMsgs)
+
+  // 小结果不值得省；全省完仍超就报一声
+  const ex = []
+  const tight = turnContextGuard({ window: 100_000, overhead: 1_000, base: 0, estimate, onExhausted: (i) => ex.push(i) })
+  const tightOut = await tight([user('q'), asst('t1', 1_000), result('t1', 1_500), asst('t2', 5_000), result('t2', 120_000)])
+
+  // 契约：不许抛
+  const broken = turnContextGuard({ window: 100_000, overhead: 0, base: 0, estimate: () => { throw new Error('boom') } })
+  const brokenIn = [user('q')]
+  let brokenOut
+  try {
+    brokenOut = await broken(brokenIn)
+  } catch {
+    brokenOut = 'threw'
+  }
+
+  out.turnGuard = {
+    limits: [inputLimit(1_100_000, 128_000), inputLimit(200_000), inputLimit(100_000, 300_000)],
+    firstElided: first.map((m, i) => (m.role === 'toolResult' && isPlaceholder(m) ? i : -1)).filter((i) => i >= 0),
+    freshKept: textOf(first[6]) === textOf(turn[6]),
+    placeholderHasHead: textOf(first[2]).includes('<c1>'),
+    othersUntouched: first[0] === turn[0] && first[1] === turn[1] && first[5] === turn[5],
+    notMutated: JSON.stringify(turn) === snapshot,
+    elideCalls: elides.length,
+    elideFirst: elides[0],
+    secondElided: second.map((m, i) => (m.role === 'toolResult' && isPlaceholder(m) ? i : -1)).filter((i) => i >= 0),
+    quietSame: quietOut.every((m, i) => m === small[i]),
+    priorElided: priorOut.filter(isPlaceholder).length,
+    noPriorQuiet: !noPriorOut.some(isPlaceholder),
+    staleIgnored: !staleOut.some(isPlaceholder),
+    freshCounted: isPlaceholder(freshOut[2]),
+    tightSmallKept: !isPlaceholder(tightOut[2]),
+    tightFreshKept: !isPlaceholder(tightOut[4]),
+    tightExhausted: ex.length,
+    brokenPassThrough: brokenOut === brokenIn,
   }
 }
 
