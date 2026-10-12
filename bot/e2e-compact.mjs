@@ -17,11 +17,13 @@ import {
   contentDigest,
   observedPromptHighWater,
   compactionWindow,
+  runSummary,
 } from './src/agent/index.ts'
 import { parseAt, rowsOf } from './src/tools/history.ts'
 import { historySlice } from './src/session/replay.ts'
 import { budgetToolText, MODEL_TOOL_RESULT_MAX_CHARS } from './src/tools/result-budget.ts'
 import { turnContextGuard, inputLimit } from './src/agent/context-guard.ts'
+import { AssistantMessageEventStream, stubModel, emptyAssistant } from './src/llm/stream.ts'
 
 let seq = 0
 const ev = (type, time, data) => ({ seq: ++seq, time, type, data })
@@ -485,6 +487,45 @@ out.rows = {
     tightFreshKept: !isPlaceholder(tightOut[4]),
     tightExhausted: ex.length,
     brokenPassThrough: brokenOut === brokenIn,
+  }
+}
+
+// 摘要模型那一跳：streamFn 在生产上返回 Promise。少一个 await，压缩在生产上一次都成不了
+{
+  const model = stubModel('openai', 'probe')
+  const streamOf = (text) => {
+    const stream = new AssistantMessageEventStream()
+    const partial = emptyAssistant(model)
+    queueMicrotask(() => {
+      stream.push({ type: 'start', partial })
+      partial.content.push({ type: 'text', text })
+      partial.stopReason = 'stop'
+      stream.push({ type: 'done', reason: 'stop', message: partial })
+    })
+    return stream
+  }
+  let sent
+  const asyncFn = async (_m, context) => ((sent = context), streamOf('  摘要正文  '))
+  const errorFn = async () => {
+    const stream = new AssistantMessageEventStream()
+    queueMicrotask(() => {
+      stream.push({ type: 'error', reason: 'error', error: emptyAssistant(model, 'boom') })
+      stream.end()
+    })
+    return stream
+  }
+  let asyncText
+  try {
+    asyncText = await runSummary(asyncFn, model, '旧对话')
+  } catch (e) {
+    asyncText = 'threw: ' + e.message
+  }
+  out.summaryCall = {
+    asyncText,
+    syncText: await runSummary((_m) => streamOf('同步也行'), model, 'x'),
+    errorText: await runSummary(errorFn, model, 'x'),
+    sentTranscript: sent?.messages?.[0]?.content,
+    sentNoTools: Array.isArray(sent?.tools) && sent.tools.length === 0,
   }
 }
 
