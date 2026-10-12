@@ -16,6 +16,7 @@ import type {
 export type { MessageSource, RefBlock }
 import type { ReassignedItem, WorkspaceFile } from '../tools/index.ts'
 import { budgetToolText } from '../tools/result-budget.ts'
+import { turnContextGuard } from './context-guard.ts'
 import { browserOf, desktopOf, memoryOf, type BotRecord } from '../registry/index.ts'
 import { cachedMemories, cachedSkill, cachedSkills, type CachedMemory, type CachedSkill, type ReasoningEffort } from '../catalog/index.ts'
 
@@ -804,6 +805,8 @@ export class AgentService extends Service {
         steeringMode: 'one-at-a-time',
         followUpMode: 'one-at-a-time',
         sessionId: child,
+        // 子任务同样是一轮跑到底、中途没有压缩，见 contextGuardFor。
+        transformContext: this.contextGuardFor(child, provider, modelId, model, system.text, this.forModel(toolSchemas, model), 0),
         shouldStopAfterTurn: ({ toolResults }: { toolResults: unknown[] }) => {
           if (!toolResults.length) return false
           steps += 1
@@ -1722,6 +1725,15 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       steeringMode: 'one-at-a-time',
       followUpMode: 'one-at-a-time',
       sessionId,
+      // 轮内护栏：一轮之内工具结果越堆越多、逼近窗口时，把早先的大块结果在送出去的那份里
+      // 换成占位。轮首的硬顶和轮末的压缩都管不到一轮中间，见 context-guard.ts。
+      //
+      // base 是 messages.length：这一轮的用户消息由 prompt() 推进去，正好落在这个下标，
+      // 之前那些助手消息上的 usage 属于更早的轮次（可能在压缩之前），不能拿来当实测。
+      //
+      // prior：上一轮撞了窗口的会话，这一轮第一次调用时本地估算可能远低于实际，拿 provider
+      // 回报过的高水位兜底。history 在轮首硬顶那里压过的话已经重读，边界之前的不算。
+      transformContext: this.contextGuardFor(sessionId, provider, modelId, model, system.text, this.forModel(toolSchemas, model), messages.length, observedPromptHighWater(history)),
       // pi 唯一的刹车口。返回 true 它就发 agent_end 收工——干净退出，不是抛异常，
       // 所以 tool/result 那些事件都已经落盘，历史是完整的。
       shouldStopAfterTurn: ({ toolResults }: { toolResults: unknown[] }) => {
@@ -2503,6 +2515,43 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       .find((p) => p.provider === provider)
       ?.models.find((m) => m.id === model)
     return compactionWindow(this.windowOf(provider, model) ?? this.config.contextWindowFallback ?? 128_000, found?.cost)
+  }
+
+  /**
+   * 一个 Agent 的轮内护栏（pi 的 transformContext）。
+   *
+   * 窗口取目录里的真实窗口，**不是** compactWindowOf 那个压到价格门槛的数：这道闸防的是
+   * provider 拒收，不是贵——一轮中间越过价格门槛只是这一轮贵，撞上窗口是这一轮作废，
+   * 而且之后每一轮都作废。
+   */
+  private contextGuardFor(
+    sessionId: string,
+    provider: string,
+    modelId: string,
+    model: any,
+    systemText: string,
+    tools: { name: string; description: string; parameters?: unknown }[],
+    base: number,
+    prior = 0,
+  ) {
+    const window = this.windowOf(provider, modelId) ?? model?.contextWindow ?? this.config.contextWindowFallback ?? 128_000
+    return turnContextGuard({
+      window,
+      maxOutput: typeof model?.maxTokens === 'number' ? model.maxTokens : undefined,
+      overhead: estTokens(systemText) + estTokens(toolsText(tools)),
+      base,
+      prior,
+      estimate: estMessages,
+      onElide: ({ count, freed, projected, limit, total }) =>
+        this.ctx.logger?.warn?.(
+          `agents: ${sessionId} 轮内上下文逼近窗口，省去 ${count} 条早先的工具结果（约 ${freed} token，本轮累计 ${total} 条），` +
+            `预计 ${Math.round(projected)} / 上限 ${Math.round(limit)}`,
+        ),
+      onExhausted: ({ projected, limit }) =>
+        this.ctx.logger?.warn?.(
+          `agents: ${sessionId} 工具结果都省完了仍然超窗口（预计 ${Math.round(projected)} / 上限 ${Math.round(limit)}），这次调用多半会被拒`,
+        ),
+    })
   }
 
   /** 模型的上下文窗口，来自 Gateway 目录。拉不到就没有——界面那条占比会自己让位。 */

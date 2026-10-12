@@ -130,4 +130,28 @@ export async function runCompact({ root, test, assert, log }) {
     assert(r.priceCliff.cliffAboveWindow === 200_000, `门槛比窗口大时应是窗口，实际 ${r.priceCliff.cliffAboveWindow}`)
     assert(r.priceCliff.junk === 400_000, `脏档位应被忽略，实际 ${r.priceCliff.junk}`)
   })
+
+  await test('轮内护栏：逼近窗口时省掉模型看过的早先工具结果，刚回来的不动', () => {
+    const g = r.turnGuard
+    // 输入上限 = 窗口 − 最大输出；目录把最大输出写得离谱时最多扣一半
+    assert(JSON.stringify(g.limits) === JSON.stringify([972_000, 200_000, 50_000]), `输入上限算错：${JSON.stringify(g.limits)}`)
+    assert(JSON.stringify(g.firstElided) === JSON.stringify([2, 4]), `应省掉第 2、4 条（c1、c2），实际 ${JSON.stringify(g.firstElided)}`)
+    assert(g.freshKept, '刚回来、模型还没看过的工具结果被省了——这次调用等于白做')
+    assert(g.placeholderHasHead, '占位里没留原文开头，模型认不出省掉的是哪次调用')
+    assert(g.othersUntouched, '用户/助手消息被动了')
+    assert(g.notMutated, '护栏改了传进来的消息——会话状态和日志会跟着变')
+    assert(g.elideCalls === 1 && g.elideFirst.projected <= g.elideFirst.limit * 0.85, `省完仍在触发线以上：${JSON.stringify(g.elideFirst)}`)
+    // 省过的要一直省：每次从零挑的话，请求前缀来回变，提示词缓存一次也命中不了
+    assert(JSON.stringify(g.secondElided) === JSON.stringify([2, 4]), `第二步没沿用已省的那两条：${JSON.stringify(g.secondElided)}`)
+    assert(g.quietSame, '没到触发线也动了消息')
+    // 19:35 那种：上一轮撞了窗口，这一轮一上来本地估算偏低，没有 prior 就会再撞一次
+    assert(g.priorElided === 2, `有 provider 高水位兜底时第一次调用就该省，实际省了 ${g.priorElided} 条`)
+    assert(g.noPriorQuiet, '对照组：没有高水位时本地估算不到线，不该动')
+    assert(g.staleIgnored, '把本轮之前（可能在压缩之前）的 usage 当成了实测')
+    assert(g.freshCounted, '对照组：本轮的实测应该触发省略')
+    assert(g.tightSmallKept, '小结果不值得省，却被省了')
+    assert(g.tightFreshKept, '唯一的大结果是刚回来的，不该省')
+    assert(g.tightExhausted === 1, `全省完仍超时应报一次，实际 ${g.tightExhausted}`)
+    assert(g.brokenPassThrough, '估算抛错时护栏应原样放行，不能把这一轮带崩')
+  })
 }
