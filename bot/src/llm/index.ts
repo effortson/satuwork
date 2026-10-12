@@ -65,8 +65,15 @@ export class LlmService extends Service {
     return llmBaseUrl()
   }
 
-  /** 发给 pi-agent-core 的 streamFn。失败编码进流，不抛。 */
-  streamFn = (model: any, context: any, options?: any) => {
+  /**
+   * 发给 pi-agent-core 的 streamFn。失败编码进流，不抛。
+   *
+   * **返回的是 Promise，两条路都是。** 真的那条（streamViaGateway）本来就是 async；
+   * 假的那条以前同步返回流，于是「调用方忘了 await」在 e2e 里一律能跑、上线一律炸——
+   * summarize 就这样从压缩上线那天起在生产上一次都没成功过（`stream is not async
+   * iterable`），会话一路涨到撞窗口。两条路同形，漏了 await 在 e2e 里就现形。
+   */
+  streamFn = async (model: any, context: any, options?: any) => {
     if (process.env.E2E_STUB_LLM === '1') return stubLlmStream(model)
     return streamViaGateway(model, context, options)
   }
