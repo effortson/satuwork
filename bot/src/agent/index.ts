@@ -2037,25 +2037,12 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         .map((m: any) => `${m.role}: ${typeof m.content === 'string' ? m.content : contentDigest(m.content)}`)
         .join('\n'),
     )
-    const stream = this.ctx.llm.streamFn(
+    return runSummary(
+      this.ctx.llm.streamFn,
       this.ctx.llm.modelOf(provider, modelId),
-      {
-        systemPrompt: SUMMARY_SYSTEM,
-        messages: [{ role: 'user', content: transcript, timestamp: Date.now() }],
-        tools: [],
-      },
+      transcript,
       { reasoning: this.roleReasoningEffort(provider, modelId) },
     )
-    for await (const event of stream as AsyncIterable<any>) {
-      if (event.type !== 'done') continue
-      const text = (event.message?.content ?? [])
-        .filter((c: any) => c.type === 'text')
-        .map((c: any) => c.text)
-        .join('')
-        .trim()
-      return text
-    }
-    return ''
   }
 
   /**
@@ -3374,6 +3361,40 @@ const SUMMARY_SYSTEM = [
  * 两种形状都要收：pi 的 `toolCall` 和我们日志里的 `tool-call`。估算走的是日志事件、
  * 摘要走的是重建后的消息，漏掉一种就会把带工具的那些轮次估成 0。
  */
+/**
+ * 跑一次摘要模型，取出它写的文字。没写出来（出错、空回）就是空串，由调用方当「没压成」。
+ *
+ * 单独拎出来是为了能测：streamFn 在生产上返回 **Promise**（streamViaGateway 是 async），
+ * 而 e2e 的假模型只会回错误、到不了这一步。以前这里少一个 await，`for await` 对着
+ * Promise 抛「stream is not async iterable」——压缩从上线起在生产上一次都没成功过，
+ * 测试却一直是绿的。e2e-compact 拿一个返回 Promise 的假 streamFn 钉住它。
+ */
+export async function runSummary(
+  streamFn: (model: any, context: any, options?: any) => unknown,
+  model: any,
+  transcript: string,
+  options?: Record<string, unknown>,
+): Promise<string> {
+  const stream = await streamFn(
+    model,
+    {
+      systemPrompt: SUMMARY_SYSTEM,
+      messages: [{ role: 'user', content: transcript, timestamp: Date.now() }],
+      tools: [],
+    },
+    options,
+  )
+  for await (const event of stream as AsyncIterable<any>) {
+    if (event.type !== 'done') continue
+    return (event.message?.content ?? [])
+      .filter((c: any) => c.type === 'text')
+      .map((c: any) => c.text)
+      .join('')
+      .trim()
+  }
+  return ''
+}
+
 export function contentDigest(content: any): string {
   if (!Array.isArray(content)) return String(content ?? '')
   return content

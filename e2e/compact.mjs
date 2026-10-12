@@ -154,4 +154,14 @@ export async function runCompact({ root, test, assert, log }) {
     assert(g.tightExhausted === 1, `全省完仍超时应报一次，实际 ${g.tightExhausted}`)
     assert(g.brokenPassThrough, '估算抛错时护栏应原样放行，不能把这一轮带崩')
   })
+
+  await test('摘要模型返回 Promise 时也读得出摘要（生产上的形状）', () => {
+    const s = r.summaryCall
+    // 这条挂了 = 生产上每次压缩都报「stream is not async iterable」，会话一路涨到撞窗口
+    assert(s.asyncText === '摘要正文', `streamFn 返回 Promise 时没读出摘要：${s.asyncText}`)
+    assert(s.syncText === '同步也行', `同步返回流时没读出摘要：${s.syncText}`)
+    assert(s.errorText === '', `模型出错时应返回空串当「没压成」，实际 ${s.errorText}`)
+    assert(s.sentTranscript === '旧对话', `送去摘要的不是那段对话：${s.sentTranscript}`)
+    assert(s.sentNoTools, '摘要调用不该带工具表')
+  })
 }
