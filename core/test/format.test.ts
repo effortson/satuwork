@@ -59,6 +59,8 @@ test('fmtTokens：K 与 M', () => {
   assert.equal(fmtTokens(0), '—')
   assert.equal(fmtTokens(999), '1K')
   assert.equal(fmtTokens(340000), '340K')
-  assert.equal(fmtTokens(1200000), '1.2M')
+  assert.equal(fmtTokens(1200000), '1M')
   assert.equal(fmtTokens(2000000), '2M')
+  // gpt-6.1-sol：带小数时进位成 1.1M，看着比实际窗口大
+  assert.equal(fmtTokens(1050000), '1M')
 })
