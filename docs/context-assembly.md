@@ -219,7 +219,7 @@ agent.prompt(…)                            这一轮那句话，单独送（�
 
 | 闸 | 在哪 | 判据 | 动作 |
 |---|---|---|---|
-| 软压缩 | 轮末，**不 await** | 本地估算或 provider prompt token 高水位 > 窗口 × `compactAt` (0.6) | 跑一次总结，写 `session/compact` |
+| 软压缩 | 轮末，**不 await** | 本地估算或 provider prompt token 高水位 > 窗口 × `compactAt` (0.8) | 跑一次总结，写 `session/compact` |
 | 硬顶 | 轮首，**同步等** | 估算 > 窗口 × `compactHard` (0.9) | 先压一次再发，这一轮多等几秒 |
 | 图片窗口 | 重建时 | 最近 4 张 | 更早的换成一句说明 |
 

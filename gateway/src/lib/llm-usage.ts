@@ -30,7 +30,8 @@ export function openaiUsage(u: any) {
   const cached_tokens = nonNegInt(isPi ? u.cacheRead : u.prompt_tokens_details?.cached_tokens)
   // 写进缓存的那一截也是**这次真发出去的提示词**，和缓存读一样要加回总量。
   // 只加缓存读的话，`fresh = prompt − cached − written` 会把一部分未命中的输入
-  // 当成缓存写来计价——而缓存写比输入还贵。OpenAI 那一侧没有这个概念，也不需要加。
+  // 当成缓存写来计价——而缓存写比输入还贵。OpenAI 形状的 `prompt_tokens` 本来就含
+  // 这一截（details 里的 `cache_write_tokens` 是它的子集），不用再加。
   const cache_write = isPi ? nonNegInt(u.cacheWrite) : 0
   const prompt = isPi ? u.input : u.prompt_tokens
   const completion = isPi ? u.output : u.completion_tokens
@@ -52,9 +53,10 @@ export type TokenUsage = {
   /**
    * prompt_tokens 里**这次写进缓存**的那一截。
    *
-   * 不上线（`openaiUsage` 不返回它）：OpenAI 的 usage 里没有这个字段，往响应里塞一个
-   * 自造的键，下游按 OpenAI 口径解析的东西会看到一个它不认识的数。它只走内部——
-   * 落库、计价。缓存写比普通输入还贵（Anthropic 1.25 倍），漏掉它就是每次都少收。
+   * 不上线（`openaiUsage` 不返回它）：Chat Completions 的 usage 里不一定有这个字段，往
+   * 响应里塞一个键，下游按老口径解析的东西会看到一个它不认识的数。它只走内部——
+   * 落库、计价。缓存写比普通输入还贵（Anthropic 和 GPT-5.6 起的 OpenAI 都是 1.25 倍），
+   * 漏掉它就是每次都少收。
    */
   cache_write_tokens: number
 }
@@ -68,14 +70,18 @@ export type PartialUsage = {
 }
 
 /**
- * pi / Anthropic 的 usage 里那一截「写进缓存」的 token。
+ * pi / Anthropic / OpenAI 的 usage 里那一截「写进缓存」的 token。
  *
  * 单独一个函数，是因为它**不能**跟着 `openaiUsage` 上线（见 TokenUsage 的注释），
- * 所以取原始 usage 再捞一次。OpenAI 没有这个概念，取不到就是 0。
+ * 所以取原始 usage 再捞一次。OpenAI 从 GPT-5.6 起也按 1.25 倍收缓存写，字段在
+ * `input_tokens_details.cache_write_tokens`（Responses）或 `prompt_tokens_details.cache_write_tokens`
+ * （Chat）；老模型不报这个字段，取不到就是 0。
  */
 export function cacheWriteOf(u: any): number {
   if (!u) return 0
-  return nonNegInt(u.cacheWrite ?? u.cache_creation_input_tokens)
+  return nonNegInt(
+    u.cacheWrite ?? u.cache_creation_input_tokens ?? u.input_tokens_details?.cache_write_tokens ?? u.prompt_tokens_details?.cache_write_tokens,
+  )
 }
 
 export function tokensOf(u: ReturnType<typeof openaiUsage>, raw?: unknown): TokenUsage | undefined {
@@ -141,6 +147,11 @@ export function usageFromPayload(obj: unknown): PartialUsage | undefined {
      * - Anthropic：`input_tokens` + `cache_read_input_tokens` / `cache_creation_input_tokens`，
      *   `input_tokens` **不含**缓存，要加回去。
      *
+     * OpenAI 两种形状从 GPT-5.6 起在同一个 details 里多报一个 `cache_write_tokens`：也是
+     * 总数的子集，按 1.25 倍收（官方价目表上 gpt-6.1-sol 输入 $2、缓存写 $2.5）。以前这里
+     * 当 OpenAI 没有缓存写、一律不取，这一截就按普通输入价记了，每次少收两成半；
+     * 老模型不报这个字段，取不到仍是 0，账不变。
+     *
      * 以前只按「有没有 prompt_tokens」二分，Responses 走进了 Anthropic 分支：读的是
      * 不存在的 `cache_read_input_tokens`，命中缓存的那截就按全价记了。
      * 判据是 `input_tokens_details` 这个对象在不在——Anthropic 的 usage 里没有它。
@@ -149,7 +160,7 @@ export function usageFromPayload(obj: unknown): PartialUsage | undefined {
     const responsesDetails = objectAt(raw, 'input_tokens_details')
     const openaiShape = openaiPrompt != null || responsesDetails != null
     const readRaw = openaiPrompt != null ? chatDetails?.cached_tokens : responsesDetails != null ? responsesDetails.cached_tokens : raw.cache_read_input_tokens
-    const writeRaw = openaiShape ? undefined : raw.cache_creation_input_tokens
+    const writeRaw = openaiPrompt != null ? chatDetails?.cache_write_tokens : responsesDetails != null ? responsesDetails.cache_write_tokens : raw.cache_creation_input_tokens
     const cacheRead = nonNegInt(readRaw)
     // 写缓存的那部分也是这次真发出去的提示词，算进总量；但它不是「读到的缓存」，
     // 不进 cached_tokens——两者单价不同，而且缓存写**比普通输入还贵**。

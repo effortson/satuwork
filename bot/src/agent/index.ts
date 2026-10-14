@@ -1925,7 +1925,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     opts: { keepBudget?: number; by?: 'auto' | 'user'; atLeast?: number } = {},
   ): Promise<CompactOutcome> {
     const window = this.compactWindowOf(provider, modelId)
-    const at = this.config.compactAt ?? 0.6
+    const at = this.config.compactAt ?? 0.8
     const keep = this.config.compactKeep ?? 0.3
     const resetsAtStart = this.resets.get(sessionId) ?? 0
     const events = await this.ctx.sessions.events(sessionId)
@@ -3479,11 +3479,11 @@ export function scopeAfterBoundary(
  * 门槛是目录里 `cost.tiers[].inputTokensAbove`（pi-ai 内置和 models.dev 自动发现都带，
  * 和 Gateway 计价认的是同一张表，见 gateway/src/lib/pricing.ts 的 tierFor）。OpenAI 的
  * gpt-5.4 / 5.5 / 6.x 输入过 272k **整次**翻倍收，而这批模型的窗口在一百万上下——
- * 只按窗口算的话要到 63 万（× compactAt）才压，27 万到 63 万之间的每一次调用都是两倍价。
+ * 只按窗口算的话要到 84 万（× compactAt）才压，27 万到 84 万之间的每一次调用都是两倍价。
  * 2026-10-11 一条 gpt-6.1-sol 的调用输入 75.6 万、缓存零命中，一次就记了 $3.51。
  *
  * 门槛当窗口用，compactAt / compactKeep / compactHard 三个比例**原样套上去**：照旧在
- * 六成时压、留三成原文，过门槛之前留出的余量和窗口那边是同一个道理（这一轮之后还要长
+ * 八成时压、留三成原文，过门槛之前留出的余量和窗口那边是同一个道理（这一轮之后还要长
  * 的工具结果和输出）。代价是这类模型压得勤一些，摘要多花一点——一次摘要调用远比一路
  * 两倍价的几十次调用便宜。
  *
