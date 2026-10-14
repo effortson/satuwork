@@ -1723,6 +1723,29 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   })
 
   /**
+   * 在一条会话里搜消息和文件（docs/chat-search.md）。授权和历史那条一样走会话索引；
+   * 参数原样递给席位，上限也由席位卡（session/search.ts）。
+   */
+  router.get('/runtime/sessions/:id/search', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    const target = await seatTargetForSession(db, account, req.params.id)
+    const qs = new URLSearchParams()
+    qs.set('q', (req.query.get('q') || '').slice(0, 200))
+    const limit = Math.trunc(Number(req.query.get('limit')) || 0)
+    const before = Math.trunc(Number(req.query.get('before')) || 0)
+    if (limit > 0) qs.set('limit', String(limit))
+    if (before > 0) qs.set('before', String(before))
+    await proxyJson(
+      res,
+      'GET',
+      `${target.host}/api/sessions/${encodeURIComponent(req.params.id)}/search?${qs.toString()}`,
+      undefined,
+      await seatBearer(db, account.id),
+      target.machineToken,
+    )
+  })
+
+  /**
    * 一次委派的子会话全文（见 docs/delegation.md §13 的「看过程」）。
    *
    * **授权走主会话。** 子会话不进会话索引，而 `seatTargetForSession` 查的正是那张索引

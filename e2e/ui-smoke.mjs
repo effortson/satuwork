@@ -2631,6 +2631,32 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(html.includes('satu-botdot'), '状态点没画')
     })
 
+    await test('对话内查找：顶栏有入口、消息流上有查找条，命中按消息合并、新的在前', async () => {
+      // 查找条跟着整页重绘换节点，所以它的存在只能由 state 决定、内容由 paintChatFind 就地填。
+      // 这里钉的是三件静态的事：入口在、条在、以及把席位回来的正文命中和文件命中并成一条
+      // 跳转序列的规则（同一条消息一站、新的在前）。
+      const ui = loadApp({ appPath, base: gwBase, token: adminToken })
+      await ui.boot()
+      assert(ui.findToggleHtml().includes('data-act="chat-find-toggle"'), '顶栏没有查找入口')
+      const bar = ui.chatFindHtml()
+      assert(bar.includes('id="chat-find"') && bar.includes('id="chat-find-input"') && bar.includes(' hidden'), '查找条没画、或者默认没藏起来')
+      assert(bar.includes('data-act="chat-find-prev"') && bar.includes('data-act="chat-find-next"'), '上一个 / 下一个不在')
+      const merged = ui.mergeFindHits({
+        hits: [
+          { seq: 10, anchor: 12, role: 'assistant', time: 3, snippet: 'a 报价 b' },
+          { seq: 2, anchor: 2, role: 'user', time: 1, snippet: '报价' },
+        ],
+        files: [
+          { path: 'out/报价单.xlsx', name: '报价单.xlsx', anchor: 12, role: 'assistant', time: 3 },
+          { path: 'uploads/s/报价.pdf', name: '报价.pdf', anchor: 7, role: 'user', time: 2 },
+        ],
+      })
+      assert(merged.map((h) => h.anchor).join(',') === '12,7,2', `顺序该是 12,7,2，实为 ${merged.map((h) => h.anchor).join(',')}`)
+      assert(merged[0].files.length === 1 && merged[0].snippet.includes('报价'), '同一条消息的正文命中和文件命中没并成一站')
+      assert(merged[1].files[0].name === '报价.pdf' && !merged[1].snippet, '只有文件命中的那站该没有摘录')
+      assert(ui.markTerms('<b>报价</b>', ['报价']) === '&lt;b&gt;<mark>报价</mark>&lt;/b&gt;', `高亮要先转义：${ui.markTerms('<b>报价</b>', ['报价'])}`)
+    })
+
     await test('公司分类默认折叠，点一下展开，再点一下收回', async () => {
       /**
        * **默认是折叠的**（state.js 的 navGroupOpen）：那八条是偶尔才去一趟的后台，
