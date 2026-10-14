@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionEvent } from '../session/types.ts'
 import { historySlice, publicSessionEvents, visibleEvents } from '../session/replay.ts'
+import { searchSession } from '../session/search.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
@@ -688,6 +689,23 @@ export function apply(ctx: Context, _config: Config = {}) {
     try {
       const all = await ctx.sessions.events(req.params.id)
       res.json(historySlice(all, { turns, before: before > 0 ? before : undefined }))
+    } catch (e) {
+      res.status = 404
+      res.json({ error: (e as Error).message })
+    }
+  })
+
+  /**
+   * 在这条会话里按关键词找消息和文件（docs/chat-search.md）。语义在 session/search.ts；
+   * 这里只收参数。`q` 空就是空结果，不是 400——界面上人把搜索框清空的那一下也会打过来。
+   */
+  ctx.server.get('/api/sessions/:id/search', async (req, res) => {
+    const q = String(req.query.get('q') ?? '')
+    const limit = Number(req.query.get('limit') ?? 0)
+    const before = Number(req.query.get('before') ?? 0)
+    try {
+      const all = await ctx.sessions.events(req.params.id)
+      res.json(searchSession(all, { q, limit: limit > 0 ? limit : undefined, before: before > 0 ? before : undefined }))
     } catch (e) {
       res.status = 404
       res.json({ error: (e as Error).message })

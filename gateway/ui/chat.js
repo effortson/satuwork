@@ -1024,6 +1024,8 @@ async function ensureChatSession(botId, attempt = 0) {
 async function loadChatPage() {
   state.chatCtxOpen = false
   state.chatModelOpen = false
+  // 查找条是**这一条会话**里的：命中的 seq 换了会话就指不到东西，连条一起收掉。
+  if (state.chatFind && state.chatFind.open) closeChatFind()
   // 换了会话，上一条还没发出去的 `@` 不该跟过来——它指的是「这一条消息带谁」。
   state.chatMentions = []
   // 引用指的是**那条会话里**的某条消息、某个文件，换了会话更不该跟过来。
@@ -4069,6 +4071,8 @@ function paintChat() {
   } else if (stick) thread.scrollTop = thread.scrollHeight
   paintChatChrome(folded)
   ensureClockTick()
+  // 查找条开着的话，新画出来的消息里命中的词也要上色（chat-find.js；没开就什么都不做）。
+  if (state.chatFind && state.chatFind.open) scheduleFindMarks()
 }
 
 /**
@@ -7157,6 +7161,9 @@ function chatHeadInline() {
       <p class="sw-convo-meta" id="chat-meta"></p>
     </div>
     <div class="sw-convo-actions">
+      ${/* 对话内查找（chat-find.js）。摆在「更多」左边：它是这一屏里最常要按的那颗，
+            不该收进菜单里。 */ ''}
+      ${findToggleHtml()}
       <button type="button" class="btn btn-ghost btn-icon" data-menu-toggle data-act="chat-menu"
         aria-label="${esc(t('更多操作'))}">${svg(['M12 6h.01', 'M12 12h.01', 'M12 18h.01'], 16)}</button>
       ${menu}
@@ -7200,6 +7207,8 @@ function chatPage() {
       <section class="gw-chat-main">
         ${banner}
         <div class="sw-threadwrap">
+          ${/* 查找条浮在消息流右上角（chat-find.js）。内容由 paintChatFind 就地填。 */ ''}
+          ${chatFindHtml()}
           <div class="sw-thread" id="chat-thread"></div>
           <button type="button" class="sw-jump" id="chat-jump" data-act="chat-jump" hidden>${ICON_DOWN}${t('回到底部')}</button>
         </div>
@@ -7645,12 +7654,15 @@ function dropChatRef(i) {
  * 跳到某条消息。已经加载的直接滚过去并亮一下；没加载到就往前翻（最多几页），还没有
  * 就说一声——`/clear` 过的、太久远的，就是不在这里了。
  */
-async function jumpToMessage(seq) {
+async function jumpToMessage(seq, opts = {}) {
   // 按壳上的 data-seq 找（那是 quoteSeqOf 给的），不按 data-key：助手块的 key 是它第一条
   // 事件的 seq，而引用指的是 assistant/message 那条。
   const find = () => document.querySelector(`#chat-thread .sw-msg[data-seq="${esc(String(seq))}"]`)
+  // 往前补几页为止。引用卡默认 5 页（引用的多半是眼前这几轮）；对话内查找（chat-find.js）
+  // 的命中可能在几百轮之前，它自己给一个大得多的数。
+  const pages = Math.max(0, Math.trunc(opts.pages ?? 5))
   let node = find()
-  for (let i = 0; !node && i < 5; i++) {
+  for (let i = 0; !node && i < pages; i++) {
     const page = chatPages.get(state.chatSessionId)
     if (!page || !page.hasMore) break
     await loadOlderChat(state.chatSessionId)
@@ -7658,11 +7670,12 @@ async function jumpToMessage(seq) {
   }
   if (!node) {
     flash('err', t('那条消息不在这里了', 'That message is no longer here'))
-    return
+    return false
   }
   node.scrollIntoView({ block: 'center', behavior: 'smooth' })
   node.setAttribute('data-flash', '1')
   setTimeout(() => node.removeAttribute('data-flash'), 1200)
+  return true
 }
 
 /** `@` 选单。候选来自 /mentions（现在只有连接器；Bot 和 Routine 以后往里加）。 */

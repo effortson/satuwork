@@ -598,6 +598,30 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(r.status !== 200, `成员把管理员的历史拉走了：${r.status} ${JSON.stringify(r.json).slice(0, 200)}`)
     })
 
+    await test('对话内查找经 Gateway 反代：命中带 anchor，和历史里那条是同一条', async () => {
+      // 查找的语义由 search 套件钉；这里钉的是它经 Gateway 那一路：路径、鉴权、参数、
+      // 以及 anchor 真的对得上历史里 user/message 的 seq——界面就是拿它去找 data-seq 的。
+      const r = await req(gwBase, 'GET', `/runtime/sessions/${encodeURIComponent(sessionId)}/search?q=${encodeURIComponent(MARKER)}&limit=5`, {
+        token: adminTok,
+      })
+      assert(r.status === 200, `search ${r.status} ${JSON.stringify(r.json)}`)
+      const hits = (r.json && r.json.hits) || []
+      assert(hits.length > 0, `没搜到这一轮的 ping：${JSON.stringify(r.json).slice(0, 300)}`)
+      assert(Array.isArray(r.json.terms) && r.json.terms.length === 1, `terms 没回来：${JSON.stringify(r.json.terms)}`)
+      assert(typeof r.json.total === 'number' && typeof r.json.hasMore === 'boolean', '缺 total / hasMore')
+      const hist = await req(gwBase, 'GET', `/runtime/sessions/${encodeURIComponent(sessionId)}/history?turns=50`, { token: adminTok })
+      const seqs = new Set(((hist.json && hist.json.events) || []).filter((e) => e.type === 'user/message').map((e) => e.seq))
+      const mine = hits.find((h) => h.role === 'user')
+      assert(mine, `用户那条没命中：${JSON.stringify(hits).slice(0, 300)}`)
+      assert(seqs.has(mine.anchor), `anchor ${mine.anchor} 不是历史里任何一条 user/message 的 seq`)
+      assert(String(mine.snippet || '').includes(MARKER), `摘录里没有命中词：${mine.snippet}`)
+    })
+
+    await test('对话内查找也认账号：别人的会话搜不了', async () => {
+      const r = await req(gwBase, 'GET', `/runtime/sessions/${encodeURIComponent(sessionId)}/search?q=ping`, { token: memberTok })
+      assert(r.status !== 200, `成员把管理员的会话搜了：${r.status} ${JSON.stringify(r.json).slice(0, 200)}`)
+    })
+
     await test('bot 真的会写日志——那 16 处 ?.warn?.() 不能又是空转', async () => {
       // 挂上 logger 服务之前，cordis.yml 里没有任何 logger 插件，ctx.logger 是
       // undefined，代码里那 16 处可选链一条都没输出过。席位的 journal 里除了 systemd
