@@ -115,7 +115,16 @@ function startFakeUpstream() {
         ]
       : [
           { type: 'response.output_text.delta', delta: OPENAI_TEXT },
-          { type: 'response.completed', response: { id: 'r1', usage: { input_tokens: 700, output_tokens: 25 } } },
+          // OpenAI 的 input_tokens **已含**缓存那两截，details 里的 cached_tokens / cache_write_tokens
+          // 都是它的子集。GPT-5.6 起缓存写按 1.25 倍收，记账要把这两截分别落下来，
+          // 而不是把 700 全按普通输入价记。
+          {
+            type: 'response.completed',
+            response: {
+              id: 'r1',
+              usage: { input_tokens: 700, output_tokens: 25, input_tokens_details: { cached_tokens: 200, cache_write_tokens: 100 } },
+            },
+          },
         ]
     for (const c of sseChunks(frames)) {
       res.write(c)
@@ -232,6 +241,19 @@ export async function runLlmUsage({ gwRoot, test, req, start, waitHttp, assert, 
       const u = await readUsage()
       assert(u.prompt === 2100, `累计输入 tokens ${u.prompt}，应为 2100`)
       assert(u.completion === 40, `累计输出 tokens ${u.completion}，应为 40`)
+      // 缓存那两截要分别落到这一笔的 quantity 里：700 = 400 未命中 + 200 命中 + 100 写缓存。
+      // 以前对 OpenAI 一律不取 cache_write_tokens，那 100 就按普通输入价收了。
+      let q
+      for (let i = 0; i < 30 && !q; i++) {
+        const charges = await req(gwBase, 'GET', `/orgs/${orgId}/charges?kind=llm&limit=1`, { token })
+        assert(charges.status === 200, `charges ${charges.status} ${charges.text}`)
+        const last = charges.json.charges[0]
+        if (last?.quantity?.promptTokens === 700) q = last.quantity
+        else await new Promise((r) => setTimeout(r, 100))
+      }
+      assert(q, '没等到 /v1/responses 这一笔的账')
+      assert(q.cachedTokens === 200, `缓存读应记 200，实际 ${q.cachedTokens}`)
+      assert(q.cacheWriteTokens === 100, `缓存写应记 100，实际 ${q.cacheWriteTokens}`)
     })
 
     await test('有用量记录的公司删不掉——用量也要留档', async () => {
