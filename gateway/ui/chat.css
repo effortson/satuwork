@@ -2147,3 +2147,67 @@ button.sw-ref-card:hover { background: color-mix(in srgb, var(--secondary) 70%, 
 /* 从引用卡跳回原消息时亮一下。 */
 @keyframes sw-ref-flash { 0% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 45%, transparent); } 100% { box-shadow: 0 0 0 0 transparent; } }
 .sw-msg[data-flash='1'] .sw-bubble { animation: sw-ref-flash 1.2s ease-out; }
+
+/* ── 对话内查找（chat-find.js）──────────────────────────────────────────
+   浮在消息流右上角的一条，像浏览器的页内查找。不挤占消息流的高度：开着它的时候人正
+   要看的是命中的那条消息，条本身越不占地方越好。 */
+.sw-find {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 5;
+  width: min(440px, calc(100% - 28px));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--popover);
+  box-shadow: var(--shadow-lg);
+  font-size: 12.5px;
+}
+.sw-find[hidden] { display: none; }
+.sw-find-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sw-find-icon { flex: none; display: inline-flex; color: var(--muted-foreground); padding-left: 2px; }
+/* 输入框是条里的主体，不走 .input 的药丸：那套边框和圆角在这一条小盒子里是双层框。 */
+.sw-find-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.sw-find-input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.sw-find-count { flex: none; font-variant-numeric: tabular-nums; color: var(--muted-foreground); white-space: nowrap; }
+.sw-find-count[data-empty='true'] { color: var(--color-accent-700); }
+.sw-find .btn-icon { padding: 4px; }
+.sw-find .btn-icon:disabled { opacity: 0.35; cursor: default; }
+/* 第二行：当前这一站是谁、什么时候说的、命中处那一小段、带着的文件。 */
+.sw-find-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 2px 6px 4px;
+  border-top: 1px solid var(--border);
+  color: var(--muted-foreground);
+  line-height: 1.5;
+}
+.sw-find-hint[hidden] { display: none; }
+.sw-find-who { font-weight: 600; color: var(--foreground); }
+.sw-find-when { font-size: 11px; }
+.sw-find-snip { flex-basis: 100%; color: var(--foreground); overflow-wrap: anywhere; }
+.sw-find-files { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px; }
+.sw-find-err { color: var(--color-accent-700); }
+.sw-find mark, ::highlight(satu-find) {
+  background: color-mix(in srgb, var(--primary) 28%, transparent);
+  color: inherit;
+}
+/* 当前那一站：常亮一圈（引用卡跳过去的那下闪一次就灭，查找要站着看，得一直亮着）。 */
+.sw-msg[data-find='1'] .sw-bubble { box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 55%, transparent); }
+.sw-find-toggle[aria-pressed='true'] { background: var(--color-accent-100); color: var(--color-accent-800); }
