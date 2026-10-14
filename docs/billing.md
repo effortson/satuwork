@@ -157,8 +157,8 @@ micros  = round( (fresh × input
 不写的话下一个人会补一个 `/ 1_000_000`，然后所有模型账单变成零。
 
 `promptTokens` 含缓存读和缓存写（`v1.ts` 的 `usageFromPayload` 对 Anthropic 是
-`input + cacheRead + cacheWrite`，对 OpenAI 本来就含缓存读、且没有缓存写），
-所以 `fresh` 要把两截都减掉。三个 `max(0, …)` 是防脏数据的，不是防逻辑错。
+`input + cacheRead + cacheWrite`，对 OpenAI 本来就含缓存读和缓存写两截——details 里的
+`cached_tokens` / `cache_write_tokens` 都是总数的子集），所以 `fresh` 要把两截都减掉。三个 `max(0, …)` 是防脏数据的，不是防逻辑错。
 
 **四项单价先按这次的输入量选档。** OpenAI 的 gpt-5.4 / 5.5 / 6.x 对输入超过 272k 的
 调用**整次**翻倍收（input / cacheRead / output 都翻），不是只对超出的部分加价；门槛看的是
@@ -249,8 +249,11 @@ micros  = 用 tier 的四项套上面的公式
   各多一项缓存写。**`openaiUsage` 把它加进 `prompt_tokens`**——它和缓存读一样是这次
   真发出去的提示词；只加缓存读的话，`fresh = prompt − cached − written` 会把一部分
   未命中的输入当成缓存写来计价，而缓存写比输入还贵。
-  但它**不上线**（不出现在响应体里）：OpenAI 的 usage 里没有这个字段，塞一个自造的键
-  进去，下游按 OpenAI 口径解析的东西会看到一个它不认识的数。
+  但它**不上线**（不出现在响应体里）：Chat Completions 的 usage 里不一定有这个字段，塞一个
+  键进去，下游按老口径解析的东西会看到一个它不认识的数。
+- OpenAI 从 GPT-5.6 起也收缓存写（1.25 倍），报在 `input_tokens_details.cache_write_tokens`
+  （Responses）/ `prompt_tokens_details.cache_write_tokens`（Chat）。`usageFromPayload` 和
+  `cacheWriteOf` 都读它；以前当 OpenAI 没有缓存写，这一截按普通输入价记，每次少收两成半。
 - `ui/render.js` 那份自定义模型表单不再把 `cacheRead` / `cacheWrite` 写死成 0。
 - `ui/pages-admin.js`：单价那两列从两个数变成四个（缓存那截画成第二行），**回落来的价
   画成虚下划线 + 悬浮说明**——看不出是回落的话，一个高估十倍的价会一直收下去；
