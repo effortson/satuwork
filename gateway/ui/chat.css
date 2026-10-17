@@ -2161,6 +2161,10 @@ button.sw-ref-card:hover { background: color-mix(in srgb, var(--secondary) 70%, 
   top: 10px;
   right: 14px;
   z-index: 5;
+  /* 宽度**连内边距和边框一起算**（border-box）：这条是 content-box 的话，`100% - 28px`
+     之外还要再加 16px 内边距和 2px 边框，在 375 宽的手机上左边就探出屏幕 4px——右边
+     钉在 14px，多出来的全往左长。桌面上 440 那一档看不出来，手机壳里一眼就是。 */
+  box-sizing: border-box;
   width: min(440px, calc(100% - 28px));
   display: flex;
   flex-direction: column;
