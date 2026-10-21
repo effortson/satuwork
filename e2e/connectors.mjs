@@ -30,6 +30,10 @@ const TOOLS = {
         type: 'object',
         properties: {
           to: { type: 'string' },
+          // 多收件人照 Composio 的形状：第一个在 recipient_email，其余在 extra_recipients。
+          // 供应商的说明里有，但模型看漏过（只填一个、其余写进正文），下发前要补一句醒目的。
+          recipient_email: { type: 'string', description: 'Primary recipient' },
+          extra_recipients: { type: 'array', items: { type: 'string' } },
           // 文件参数照 Composio 的形状：`file_uploadable: true` + 三个字符串。模型只看得到
           // 三个字符串，不告诉它 s3key 从哪来，它就会把本地路径填进去（线上真发生过）。
           attachment: {
@@ -574,6 +578,22 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       // 没有文件参数的工具一个字节都不动。
       const fetch_ = list.json.result.tools.find((x) => x.name === 'FETCH_EMAILS')
       assert(JSON.stringify(fetch_.inputSchema) === JSON.stringify({ type: 'object', properties: {} }), `别的 schema 不该动：${JSON.stringify(fetch_.inputSchema)}`)
+    })
+
+    await test('多收件人：recipient_email 和 extra_recipients 的说明里写明怎么分', async () => {
+      const cat = await req(base, 'GET', '/runtime/catalog', { token: seatTok })
+      const path = new URL(cat.json.servers.find((x) => x.connector === 'gmail').endpoint).pathname
+      const list = await req(base, 'POST', path, { token: seatTok, body: { jsonrpc: '2.0', id: 41, method: 'tools/list' } })
+      const send = list.json.result.tools.find((x) => x.name === 'SEND_EMAIL')
+      const to = send?.inputSchema?.properties?.recipient_email
+      const extra = send?.inputSchema?.properties?.extra_recipients
+      assert(to && extra, `字段不见了：${JSON.stringify(send?.inputSchema)}`)
+      // 形状原样，原说明留着，提示补在后面。
+      assert(to.type === 'string' && extra.type === 'array' && extra.items.type === 'string', `形状被改了：${JSON.stringify({ to, extra })}`)
+      assert(to.description.startsWith('Primary recipient'), `原来的说明要留着：${to.description}`)
+      assert(to.description.includes('extra_recipients') && to.description.includes('【多个收件人】'), `没告诉模型其余收件人放哪：${to.description}`)
+      assert(extra.description.includes('【多个收件人】'), `extra_recipients 没补说明：${JSON.stringify(extra)}`)
+      // 没有 extra_recipients 的工具一个字节都不动（上一条已验 FETCH_EMAILS）。
     })
 
     await test('附件：席位要上传位，Gateway 只转交供应商，字节由席位自己 PUT，不计费', async () => {

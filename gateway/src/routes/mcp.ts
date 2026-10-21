@@ -11,7 +11,7 @@ import type { ServerResponse } from 'node:http'
 import { HttpError, json, type Req, type Router } from '../http.ts'
 import type { RouteCtx } from './ctx.ts'
 import { ProviderError, providerFor, type ToolDef } from '../connectors/index.ts'
-import { MAX_TOOLS, annotateFileParams, blockMapOf, connectorDefOf, matchTools, toolsOf } from '../lib/connectors.ts'
+import { MAX_TOOLS, annotateToolParams, blockMapOf, connectorDefOf, matchTools, toolsOf } from '../lib/connectors.ts'
 import {
   SEARCH_LIMIT,
   metaToolDefs,
@@ -266,8 +266,8 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
         tools: kept.map((tl) => ({
           name: shortToolName(g.toolkit, tl.slug),
           description: tl.description || tl.name,
-          // 文件参数的说明里要写明「先上传」（见 annotateFileParams）。形状原样。
-          inputSchema: annotateFileParams(
+          // 文件参数的说明里要写明「先上传」、多收件人要写明用 extra_recipients（见 annotateToolParams）。形状原样。
+          inputSchema: annotateToolParams(
             tl.inputSchema && Object.keys(tl.inputSchema).length ? tl.inputSchema : { type: 'object', properties: {} },
           ),
         })),
@@ -370,7 +370,7 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
       rpcOk(
         res,
         id,
-        toolResult(`${hit.slug} — ${hit.description || hit.name}\n\n参数（JSON Schema）：\n${JSON.stringify(annotateFileParams(hit.inputSchema ?? {}), null, 2)}`),
+        toolResult(`${hit.slug} — ${hit.description || hit.name}\n\n参数（JSON Schema）：\n${JSON.stringify(annotateToolParams(hit.inputSchema ?? {}), null, 2)}`),
       )
       return
     }
