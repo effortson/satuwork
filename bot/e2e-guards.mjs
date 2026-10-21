@@ -577,6 +577,15 @@ out.record = {
     查邮件不算发信: isEmailSend('GMAIL_FETCH_EMAILS'),
     发信算: isEmailSend('GMAIL_SEND_EMAIL'),
     不是邮件的退回通用卡: formOf({ name: 'mcp_a_send_mail', arguments: '{"foo":1}' }).kind,
+    // Composio 的 Gmail 把第二个起的收件人放在 extra_recipients：要合进「收件人」那格，不能只认第一个。
+    多个收件人合在一格: (() => {
+      const f = formOf({
+        name: 'mcp_a_send_email',
+        arguments: JSON.stringify({ recipient_email: 'a@b.c', extra_recipients: ['d@e.f', 'g@h.i'], cc: ['x@y.z'], subject: 's', body: 'b' }),
+      })
+      const to = f.fields.find((x) => x.label === '收件人')
+      return to?.value === 'a@b.c, d@e.f, g@h.i' && !f.fields.some((x) => x.label === 'extra_recipients') && f.fields.find((x) => x.label === '抄送')?.value === 'x@y.z'
+    })(),
   }
 
   // 真跑一遍：在卡片上把正文改掉，看工具收到的是哪一份。
