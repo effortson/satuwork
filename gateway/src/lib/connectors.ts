@@ -107,6 +107,48 @@ function hintFileParam(raw: unknown): unknown {
   return raw
 }
 
+/**
+ * 多收件人的提示。
+ *
+ * Composio 的 Gmail 发信类工具（SEND_EMAIL / CREATE_EMAIL_DRAFT / REPLY_TO_THREAD）把第一个
+ * 收件人放在 `recipient_email`（单个字符串），第二个起放在 `extra_recipients` 数组里。
+ * 供应商的说明里写了这条，但埋在一长段英文中间，模型常常看漏：只填一个 `recipient_email`，
+ * 把其余的收件人写进正文的列表里——确认卡上「收件人」只有一个，人以为是卡坏了，而实际
+ * 发出去的也真的只有一个（线上和本地都发生过，MiniMax 尤其如此）。
+ *
+ * 做法和 annotateFileParams 一样：**只改说明，不改形状**，在这两格的说明末尾各补一句
+ * 中文、带「【】」的提示，让它在一屏 schema 里跳出来。只认 `extra_recipients` 这个名字——
+ * 别的供应商把多收件人做成一个数组字段，模型不会看漏，不用提示。
+ */
+const TO_HINT = '【多个收件人】这一格只放第一个收件人；第二个起的收件人放到 extra_recipients 数组里，不要只写在正文里。'
+const EXTRA_HINT = '【多个收件人】第二个起的收件人都放这里，一人一项；只写在正文里不算收件人。'
+
+export function annotateRecipientParams(schema: Record<string, unknown>): Record<string, unknown> {
+  const props = schema.properties
+  if (!props || typeof props !== 'object' || Array.isArray(props)) return schema
+  const p = props as Record<string, unknown>
+  if (!isObj(p.extra_recipients)) return schema
+  const next: Record<string, unknown> = { ...p, extra_recipients: withHint(p.extra_recipients, EXTRA_HINT) }
+  for (const key of ['recipient_email', 'to']) {
+    if (isObj(p[key])) next[key] = withHint(p[key], TO_HINT)
+  }
+  return { ...schema, properties: next }
+}
+
+function isObj(v: unknown): v is Record<string, unknown> {
+  return Boolean(v) && typeof v === 'object' && !Array.isArray(v)
+}
+
+function withHint(raw: Record<string, unknown>, hint: string): Record<string, unknown> {
+  const desc = typeof raw.description === 'string' && raw.description.trim() ? `${raw.description.trim()}\n` : ''
+  return { ...raw, description: `${desc}${hint}` }
+}
+
+/** `tools/list` 和 `SW_DESCRIBE` 下发前过的那一遍：文件参数 + 多收件人，两处说明都补上。 */
+export function annotateToolParams(schema: Record<string, unknown>): Record<string, unknown> {
+  return annotateRecipientParams(annotateFileParams(schema))
+}
+
 /** toolkit slug 会进工具名和流水表，不收怪字符。 */
 export const TOOLKIT_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 

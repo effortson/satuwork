@@ -506,10 +506,12 @@ append 一条 `user/message`，和别的消息没有区别。
    （policy 按参数里那把 `mcp_*` 的连接判，判据就是那把的判据），但不弹确认卡——文件到了
    暂存区还没到任何人手里，真正发出去的是下一把工具，而那一把自己有卡。同一封邮件两张卡，
    人学到的是闭眼点批准。工具表里一把连接器工具都没有时它也不进表
-3. **schema 里说出来**：`tools/list` 和 `SW_DESCRIBE` 下发前过一遍 `annotateFileParams()`
+3. **schema 里说出来**：`tools/list` 和 `SW_DESCRIBE` 下发前过一遍 `annotateToolParams()`（里面是 `annotateFileParams()`）
    （`gateway/src/lib/connectors.ts`），给每个文件参数的说明补一句「先调 `connector_upload_file`，
    把返回的 `{ name, mimetype, s3key }` 原样填这里，不要自己编 s3key」。**只改说明，不改形状。**
-   不补的话模型只看得到三个字符串，不知道 `s3key` 从哪来
+   不补的话模型只看得到三个字符串，不知道 `s3key` 从哪来。同一遍里 `annotateRecipientParams()`
+   给带 `extra_recipients` 的发信工具补一句「第二个起的收件人放 extra_recipients，不要只写在正文里」：
+   供应商说明里有，但模型看漏过——只填一个 `recipient_email`，确认卡上收件人只剩一个，发出去的也只有一个
 
 **字节为什么不经 Gateway。** 第一版是席位把字节 POST 到 Gateway、Gateway 再 PUT 给供应商。
 Gateway 跑在 Vercel 函数里，请求体有 4.5 MB 的硬顶：一份 11.5 MB 的手册被 Vercel 的 413 挡在
