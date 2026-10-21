@@ -99,9 +99,15 @@ type Alias = { keys: string[]; label: string; editable?: boolean; multiline?: bo
  * 比在确认卡上改地址安全：重发会再走一遍这张卡。
  */
 const EMAIL_FIELDS: Alias[] = [
-  { keys: ['recipient_email', 'to', 'to_email', 'toRecipients', 'recipients', 'email'], label: '收件人' },
-  { keys: ['cc', 'cc_email', 'ccRecipients'], label: '抄送' },
-  { keys: ['bcc', 'bcc_email', 'bccRecipients'], label: '密送' },
+  /**
+   * 收件人这几格**把对得上的参数全部合在一起**，不是取第一个就停：Composio 的 Gmail
+   * 工具把第一个收件人放在 `recipient_email`、其余的放在 `extra_recipients` 里，只认
+   * 第一个的话，卡上写着「发给 A」，实际发出去的是 A、B、C——人批的和发的对不上，
+   * 这张卡就失去了意义。
+   */
+  { keys: ['recipient_email', 'to', 'to_email', 'to_emails', 'toRecipients', 'recipients', 'email', 'extra_recipients'], label: '收件人' },
+  { keys: ['cc', 'cc_email', 'cc_emails', 'ccRecipients'], label: '抄送' },
+  { keys: ['bcc', 'bcc_email', 'bcc_emails', 'bccRecipients'], label: '密送' },
   { keys: ['subject', 'title'], label: '主题', editable: true },
   { keys: ['body', 'message_body', 'html_body', 'text_body', 'message', 'content', 'text'], label: '正文', editable: true, multiline: true },
 ]
@@ -124,14 +130,28 @@ export function isEmailSend(tool: string): boolean {
   return true
 }
 
-function pick(args: Record<string, unknown>, alias: Alias): { key: string; value: string } | null {
+function showValue(v: unknown): string {
+  return typeof v === 'string' ? v : Array.isArray(v) ? v.map(String).join(', ') : JSON.stringify(v)
+}
+
+/**
+ * 从参数里找出这一格的值。
+ *
+ * **可改的格只取第一个对上的**：它的 key 是写回路径，一格只能写回一个参数。
+ * **只读的格把对上的全部合起来**（收件人 = `recipient_email` + `extra_recipients`）：
+ * 它们不写回，key 只用来标记「这几个参数已经摆出来了」，所以把用到的 key 一起交出去。
+ */
+function pick(args: Record<string, unknown>, alias: Alias): { key: string; keys: string[]; value: string } | null {
+  const hits: { key: string; value: string }[] = []
   for (const key of alias.keys) {
     const v = args[key]
     if (v === undefined || v === null || v === '') continue
-    const value = typeof v === 'string' ? v : Array.isArray(v) ? v.map(String).join(', ') : JSON.stringify(v)
-    return { key, value }
+    // 空数组（`cc: []`）也算认过：不然它会以原始参数的样子跑到卡片底下去。
+    hits.push({ key, value: Array.isArray(v) && v.length === 0 ? '' : showValue(v) })
+    if (alias.editable) break
   }
-  return null
+  if (!hits.length) return null
+  return { key: hits[0].key, keys: hits.map((h) => h.key), value: hits.map((h) => h.value).filter(Boolean).join(', ') }
 }
 
 /** 一格的路径：套了壳的要带上前缀，写回时才落到真正那份参数上。 */
@@ -175,7 +195,7 @@ export function formOf(call: { name: string; arguments: string }): ApprovalForm 
     // 而不是只能拒绝然后去跟它解释。收件人那几格没有就不摆——空的收件人不是能补的东西。
     if (!hit && !alias.editable) continue
     const key = hit?.key ?? alias.keys[0]
-    used.add(key)
+    for (const k of hit?.keys ?? [key]) used.add(k)
     fields.push({
       key: pathOf(un.prefix, key),
       label: alias.label,
