@@ -252,6 +252,7 @@ export async function runGuards({ root, test, assert, log }) {
     assert(f.其它参数也摆出来, '别的参数被藏起来了——人会以为自己看到了这封信的全部')
     assert(!f.查邮件不算发信 && f.发信算, '发信的判据只看名字里有没有 mail')
     assert(f.不是邮件的退回通用卡 === 'generic', '认不出的没退回通用卡')
+    assert(f.多个收件人合在一格 === true, 'extra_recipients 没合进收件人那格')
   })
 
   await test('子代理的高风险确认：卡片开在主会话上，人点得动，批过的这一轮不再问', () => {
