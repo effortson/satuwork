@@ -51,6 +51,10 @@ fi
 export XDG_CONFIG_HOME="$SEAT_DIR/config"
 export XDG_DATA_HOME="$SEAT_DIR/share"
 export XDG_CACHE_HOME="$SEAT_DIR/cache"
+# 席位用户自己装的 npm 全局包（~/.npmrc 里 prefix=~/.npm-global，deploy-seat.sh step 5）和
+# pip --user 的命令。dock 上点开的终端继承这份环境，人在里面 `npm i -g` 装的东西下一条命令
+# 就找得到。接在最后，理由同 bot.env 里那一行。
+export PATH="$PATH:$HOME/.npm-global/bin:$HOME/.local/bin"
 mkdir -p "$XDG_CONFIG_HOME/picom" "$XDG_CONFIG_HOME/plank/dock1/launchers" \
   "$XDG_DATA_HOME/applications" "$XDG_CACHE_HOME" "$SEAT_DIR/bin" "$SEAT_DIR/chrome"
 

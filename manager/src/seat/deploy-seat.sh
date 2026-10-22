@@ -278,6 +278,19 @@ as_user mkdir -p "$WORK_DIR" "$HOME_DIR/.satuwork" \
   "$SEAT_DIR" "$SEAT_DIR/bin" "$SEAT_DIR/chrome" "$SEAT_DIR/cache" \
   "$SEAT_DIR/config/picom" "$SEAT_DIR/config/plank/dock1/launchers" "$SEAT_DIR/share/applications"
 
+# ── 席位用户自己装得了 npm 全局包 ────────────────────────────────────────
+# npm 的全局目录默认是 /usr/lib/node_modules，归 root；席位用户没有 sudo，`npm i -g` 一律
+# EACCES——而外面那些安装向导（`npx @larksuite/cli install` 之类）第一步干的就是它，于是
+# bot 在自己的 terminal 里装不完环境，人在 VNC 桌面的终端里也装不完。把前缀指到家目录：
+# ~/.npmrc 里一行 prefix=，-g 从此落在 ~/.npm-global；它的 bin 目录和 pip --user 那个
+# ~/.local/bin 接进 bot.env（step 6）和桌面会话（slim-desktop.sh）的 PATH，都接在**最后**，
+# 系统命令不会被家目录里的同名文件抢走。
+#
+# 账号级，不按席位分：同一员工的席位共用一个 $HOME，装一次大家都有。文件归席位用户，
+# 由他自己写（as_user，env -i）；已经有 prefix= 的不动——那是他自己配的。
+as_user mkdir -p "$HOME_DIR/.npm-global/bin" "$HOME_DIR/.local/bin"
+as_user sh -c 'f="$HOME/.npmrc"; grep -qs "^prefix *=" "$f" || printf "prefix=%s\n" "$HOME/.npm-global" >> "$f"'
+
 install -m 755 "$SEAT_ASSETS/slim-desktop.sh" /usr/local/bin/slim-desktop.sh
 install -m 755 "$SEAT_ASSETS/satuwork-bot.sh" /usr/local/bin/satuwork-bot.sh
 install -m 755 "$SEAT_ASSETS/seat-cdp-guard.sh" /usr/local/bin/seat-cdp-guard.sh
@@ -466,6 +479,10 @@ XDG_CACHE_HOME=$SEAT_DIR/cache
 XDG_RUNTIME_DIR=/run/satuwork/$SEAT_ID
 GDK_BACKEND=x11
 HOME=$HOME_DIR
+# 前六个是 systemd 给服务的默认 PATH，照抄；后两个是席位用户自己装的东西——npm 的全局
+# 前缀（~/.npmrc 里 prefix=~/.npm-global，step 5 写的）和 pip --user。接在最后：bot 和它
+# terminal 里跑的命令先找系统的，家目录里放一个同名的 bash / node 抢不到前面去。
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME_DIR/.npm-global/bin:$HOME_DIR/.local/bin
 EOF_ENV
 
 # 文件本来就是席位用户建的，不用再 chown。chmod 补的是「文件早就在」的情况：
