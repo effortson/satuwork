@@ -242,7 +242,7 @@ CPU 占用和出网速率允许是 `null`（第一次采样只存基准、计数
 - 每个席位：一块屏（Xvfb `1280x800x24` + x11vnc `localhost`+密码 + noVNC 内网）、一个 Bot HTTP、一份私有目录
 - systemd：`slim-desktop@{seatId}`、`satuwork-bot@{seatId}`。**实例名不再是用户名**——一个员工有多个席位，用户名不唯一了。`User=` 由部署时写的 drop-in 提供：`/etc/systemd/system/{unit}@{seatId}.service.d/seat.conf`
 - 机器上常驻 **机器管家**（`satuwork-manager`，root systemd 服务），Gateway 通过它下发部署；**Gateway 不持有任何能登录这台机器的凭据**
-- 席位用户无 sudo
+- 席位用户无 sudo。npm 的全局前缀因此指到家目录：铺席位时以席位用户写 `~/.npmrc` 的 `prefix=~/.npm-global`，`~/.npm-global/bin` 和 `~/.local/bin` 接在 bot.env 与桌面会话 PATH 的末尾——`npm i -g` 和那些自己跑 `npm i -g` 的安装向导不需要任何权限就装得完；要动系统的（apt）仍只能由管理员做
 - 员工能看见：桌面地址、linuxUser、seatId、共享目录、botVersion。看不见 CDP、sudo、LLM 密钥。**VNC 密码不再显示在对话页右栏**——票里已经带着它自动填进 noVNC，界面上留一行等于把随时可用的凭据摆在屏幕上；接口仍然返回，管理员在公司详情的席位卡里看得到
 - Bot 环境必有 `SATUWORK_BOT_ID`。目录 `GET /runtime/catalog?botId=`，只钉那一颗，不种本地 `default`
 - Bot 运行包在 Gateway 按版本发布；部署指定版本。公司可批量更新已部署的 pair：`POST /platform/orgs/:id/runtime/update`
