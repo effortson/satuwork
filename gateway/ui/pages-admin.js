@@ -378,7 +378,7 @@ function alternateCandidates() {
  * 日常模型的备选。人在对话框里能把自己和某颗 Bot 的对话换成这里的任意一个；
  * 一个都不配，对话框里就不画选择器（只有默认那一个，没得选）。
  *
- * 不塞进上面那两块 sticky 的角色面板里：那一栏是吸顶的，列表一长就把下面的模型表盖住。
+ * 不塞进上面那两块角色面板里：那两块是「当前用哪个」，备选是另一张表，一长就把面板撑得老高。
  */
 function alternatesPanel() {
   const list = dailyAlternates()
