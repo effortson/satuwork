@@ -39,12 +39,12 @@ export function publicCatalog(item: { id: string; kind: string; scope: string; c
 }
 
 /**
- * Bot 头像。两个层级各八个，**两套不重合**——凭头像就能看出这是全局的还是公司自己的。
+ * Bot 头像。公司十个、全局八个，**两套不重合**——凭头像就能看出这是全局的还是公司自己的。
  *
  * 光靠界面上色是不够的：那样公司随手把头像改成全局那一款，列表里就分不出来了。
  * 所以哪一套能用是跟 scope 绑死的，服务端校验，前端只是照着画。
  */
-export const COMPANY_BOT_ICONS = ['c-bot', 'c-chat', 'c-chart', 'c-pen', 'c-deal', 'c-code', 'c-flow', 'c-book'] as const
+export const COMPANY_BOT_ICONS = ['c-bot', 'c-chat', 'c-chart', 'c-pen', 'c-deal', 'c-code', 'c-flow', 'c-book', 'c-design', 'c-finance'] as const
 export const GLOBAL_BOT_ICONS = ['g-core', 'g-relay', 'g-shield', 'g-globe', 'g-spark', 'g-grid', 'g-beacon', 'g-vault'] as const
 
 export const COMPANY_ICON_SET: ReadonlySet<string> = new Set(COMPANY_BOT_ICONS)

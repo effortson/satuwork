@@ -211,7 +211,7 @@ const ICONS = {
 }
 
 /**
- * Bot 头像。两个层级各八个，两套不重合。
+ * Bot 头像。公司十个、全局八个，两套不重合。
  *
  * 公司 Bot 是有表情和配饰的小角色；全局 Bot 仍用六边牌 + 内环表示平台能力。
  * 键沿用旧值，已经选过头像的 Bot 会直接看到新版插画。
@@ -297,6 +297,31 @@ const COMPANY_AVATAR_ART = {
     <circle cx="16" cy="21" r="2" fill="#4E4544"/><circle cx="24" cy="21" r="2" fill="#4E4544"/>
     <path d="m18 25 2 2 2-2z" fill="#E7A063"/>
     <path d="M14 34c3-1 5 0 6 2 1-2 3-3 6-2v4c-3-1-5 0-6 1-1-1-3-2-6-1z" fill="#FFF9ED" stroke="#8E6D61" stroke-width="1"/>`,
+  // 设计：贝雷帽 + 右下角一块调色盘。配色往玫瑰那头走，和「文案」的紫、「销售」的橘红都分得开。
+  'c-design': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#FBE3EA"/>
+    <path d="M10 38c0-6 4-9 10-9s10 3 10 9" fill="#D97A9A"/>
+    <path d="M9 19c0-7 5-11 11-11s11 4 11 11v4c0 6-5 10-11 10S9 29 9 23z" fill="#FFE9D3"/>
+    <path d="M8 19c0-8 6-12 13-12 5 0 9 3 10 8-4 1-8 0-11-3-3 3-7 5-12 7z" fill="#6B4A6E"/>
+    <path d="M7 14c2-6 8-9 15-8 5 1 8 4 9 8-8-3-15-3-24 0z" fill="#E0637F"/>
+    <circle cx="20" cy="6.2" r="1.5" fill="#E0637F"/>
+    <circle cx="16" cy="22" r="1.5" fill="#4A3B45"/><circle cx="24" cy="22" r="1.5" fill="#4A3B45"/>
+    <circle cx="12.5" cy="25" r="1.8" fill="#FFB5B5"/><circle cx="27.5" cy="25" r="1.8" fill="#FFB5B5"/>
+    <path d="M18 27q2 2 4 0" fill="none" stroke="#9B5B66" stroke-width="1.5" stroke-linecap="round"/>
+    <ellipse cx="30.5" cy="34" rx="5" ry="3.6" fill="#FFF7EC" stroke="#6B4A6E" stroke-width="1"/>
+    <circle cx="28.3" cy="33.2" r="1" fill="#E0637F"/><circle cx="30.8" cy="32.3" r="1" fill="#F5B85A"/><circle cx="33" cy="33.8" r="1" fill="#76B8C7"/>`,
+  // 财务：圆眼镜、领带、右下角一枚硬币。眼镜和「分析」那只熊是一个意思，但这是个人，底色是橄榄绿。
+  'c-finance': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#EAF2D9"/>
+    <path d="M10 38c0-6 4-9 10-9s10 3 10 9" fill="#8FAE6A"/>
+    <path d="M20 30l-1.8 2.6L20 37.5l1.8-4.9z" fill="#F5B85A"/>
+    <path d="M9 19c0-7 5-11 11-11s11 4 11 11v4c0 6-5 10-11 10S9 29 9 23z" fill="#F4D4B6"/>
+    <path d="M9 18c0-8 5-11 11-11s11 3 11 11c-3-1-6-3-8-6-2 3-7 6-14 6z" fill="#4E3F3A"/>
+    <circle cx="15.5" cy="22" r="3.6" fill="#FFFDF5" stroke="#4E3F3A" stroke-width="1.4"/>
+    <circle cx="24.5" cy="22" r="3.6" fill="#FFFDF5" stroke="#4E3F3A" stroke-width="1.4"/>
+    <path d="M19.1 22h1.8" stroke="#4E3F3A" stroke-width="1.4"/>
+    <circle cx="15.5" cy="22" r="1.2" fill="#3B332F"/><circle cx="24.5" cy="22" r="1.2" fill="#3B332F"/>
+    <path d="M18 27.5q2 1.5 4 0" fill="none" stroke="#8C5F4E" stroke-width="1.4" stroke-linecap="round"/>
+    <circle cx="31" cy="34" r="3.8" fill="#F7C65C" stroke="#8C6A2E" stroke-width="1"/>
+    <path d="M29.4 31.8 31 33.8l1.6-2M31 33.8v2.6M29.6 34.6h2.8M29.6 35.7h2.8" fill="none" stroke="#8C6A2E" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/>`,
 }
 
 const BOT_AVATARS = {
@@ -309,6 +334,8 @@ const BOT_AVATARS = {
   'c-code': { family: 'company', label: '研发' },
   'c-flow': { family: 'company', label: '调度' },
   'c-book': { family: 'company', label: '知识' },
+  'c-design': { family: 'company', label: '设计' },
+  'c-finance': { family: 'company', label: '财务' },
 
   // ── 全局：平台级能力。──────────────────────────────────────────
   'g-core': { family: 'global', label: '核心', glyph: ['M20 15.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z', 'M20 11v3', 'M20 26v3', 'M14.3 14.3l2.1 2.1', 'M23.6 23.6l2.1 2.1', 'M25.7 14.3l-2.1 2.1', 'M16.4 23.6l-2.1 2.1'] },
@@ -321,7 +348,7 @@ const BOT_AVATARS = {
   'g-vault': { family: 'global', label: '归档', glyph: ['M12.5 13h15v14h-15z', 'M12.5 18.5h15', 'M18 15.7h4', 'M18 23h4'] },
 }
 
-const COMPANY_AVATAR_KEYS = ['c-bot', 'c-chat', 'c-chart', 'c-pen', 'c-deal', 'c-code', 'c-flow', 'c-book']
+const COMPANY_AVATAR_KEYS = ['c-bot', 'c-chat', 'c-chart', 'c-pen', 'c-deal', 'c-code', 'c-flow', 'c-book', 'c-design', 'c-finance']
 const GLOBAL_AVATAR_KEYS = ['g-core', 'g-relay', 'g-shield', 'g-globe', 'g-spark', 'g-beacon', 'g-grid', 'g-vault']
 
 /** 改版前存的那六个键，画之前先落到新的一套上。 */

@@ -195,6 +195,8 @@ var SatuCore = (() => {
     显示: "Show",
     详情: "Details",
     销售: "Sales",
+    设计: "Design",
+    财务: "Finance",
     姓名: "Name",
     修改: "Edit",
     选填: "Optional",
