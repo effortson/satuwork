@@ -1955,10 +1955,27 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       const conns = new Map(
         (await db.connectionsFor(account.id, companyId)).filter((c) => c.status === 'active').map((c) => [c.id, c]),
       )
+      /**
+       * @ 一颗 Bot（docs/bot-tasks.md）：只在**主 Bot 的会话**里认，目标得在名单上、不能是自己。
+       * 别的会话里点了别的 Bot 一律剔掉——那颗 Bot 没有 assign_task，透传过去它只会自己把活做了。
+       */
+      const wantsBot = wanted.some((raw) => String(((raw ?? {}) as Record<string, unknown>).kind ?? '') === 'bot')
+      const sessionBot = wantsBot ? ((await db.sessionIndex(req.params.id))?.botId || '').trim() : ''
+      const mainBot = wantsBot ? await db.mainBotOf(account.id) : null
+      const roster = wantsBot && mainBot && mainBot === sessionBot ? await db.botsFor(companyId, account.id) : []
       for (const raw of wanted) {
         const o = (raw ?? {}) as Record<string, unknown>
         const id = String(o.id ?? '').trim()
         const kind = String(o.kind ?? 'connector')
+        if (kind === 'bot') {
+          const bot = roster.find((b) => b.id === id && b.id !== sessionBot)
+          if (!bot) {
+            if (id) dropped.push(id)
+            continue
+          }
+          mentions.push({ kind: 'bot', id, label: bot.name })
+          continue
+        }
         const conn = kind === 'connector' ? conns.get(id) : undefined
         const def = conn ? defs.get(conn.connectorId) : undefined
         if (!conn || !def || !def.enabled || blocks.get(conn.connectorId)?.blocked) {

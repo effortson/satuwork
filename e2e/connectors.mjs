@@ -501,6 +501,26 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(filtered.json.mentions.length === 0, '搜索没生效')
     })
 
+    await test('/mentions：设了主 Bot 之后名单上别的 Bot 也进选单，带 mainBotId', async () => {
+      const before = await req(base, 'GET', '/mentions', { token: memberTok })
+      assert(!before.json.mentions.some((m) => m.kind === 'bot') && !before.json.mainBotId, '没设主 Bot 就不该列 Bot')
+      const a = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '助手' } })
+      const b = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '财务' } })
+      assert(a.status === 201 && b.status === 201, `建 Bot ${a.status} ${b.status}`)
+      const set = await req(base, 'PUT', '/runtime/main-bot', { token: memberTok, body: { botId: a.json.bot.id } })
+      assert(set.status === 200, `设主 Bot ${set.status} ${set.text}`)
+      const r = await req(base, 'GET', '/mentions', { token: memberTok })
+      assert(r.json.mainBotId === a.json.bot.id, `mainBotId 不对：${r.json.mainBotId}`)
+      const fin = r.json.mentions.find((m) => m.kind === 'bot' && m.id === b.json.bot.id)
+      assert(fin && fin.label === '财务' && fin.icon && fin.origin === 'company', `别的 Bot 该在选单里：${JSON.stringify(fin)}`)
+      assert(!r.json.mentions.some((m) => m.kind === 'bot' && m.id === a.json.bot.id), '主 Bot 自己不该在选单里')
+      // 连接器那部分照旧在。
+      assert(r.json.mentions.some((m) => m.id === firstConnId), '加了 Bot 之后连接器不见了')
+      const q = await req(base, 'GET', '/mentions?q=财', { token: memberTok })
+      assert(q.json.mentions.some((m) => m.id === b.json.bot.id) && !q.json.mentions.some((m) => m.id === firstConnId), '搜索对 Bot 没生效')
+      await req(base, 'PUT', '/runtime/main-bot', { token: memberTok, body: { botId: null } })
+    })
+
     await test('指纹跟着连接走：装了、连了、改了开关都要变', async () => {
       const before = (await req(base, 'GET', '/runtime/catalog/version', { token: seatTok })).json.stamp
       await req(base, 'PATCH', `/me/connectors/${connectorId}/connections/${firstConnId}`, {

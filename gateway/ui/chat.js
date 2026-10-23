@@ -305,7 +305,14 @@ function messageText(msg) {
  * 会逼着 CSP 放开 script-src 的 'unsafe-inline'，见 mediaFallback）。
  */
 function mentionPill(m) {
-  const logo = m.logo || (state.mentionOptions || []).find((x) => x.id === m.id)?.logo || ''
+  const known = (state.mentionOptions || []).find((x) => x.id === m.id)
+  // @ 的是一颗 Bot：药丸上画它的头像（历史那条只有 {kind,id,label}，头像按 id 回候选或名单里查）。
+  if (m.kind === 'bot') {
+    const bot = known || (state.runtimeBots || []).find((b) => b.id === m.id)
+    const head = bot ? `<span class="sw-mention-bot">${botAvatar(bot.icon, 14, bot.origin)}</span>` : '@'
+    return `<span class="sw-mention">${head}<span>${esc(m.label)}</span>`
+  }
+  const logo = m.logo || known?.logo || ''
   const head = logo ? `<img src="${esc(logo)}" alt="" data-onerror="at">` : '@'
   return `<span class="sw-mention">${head}<span>${esc(m.label)}</span>`
 }
@@ -7732,7 +7739,15 @@ async function jumpToMessage(seq, opts = {}) {
   return true
 }
 
-/** `@` 选单。候选来自 /mentions（现在只有连接器；Bot 和 Routine 以后往里加）。 */
+/**
+ * 这条对话里能不能 @ 别的 Bot：只有**主 Bot 的对话**可以（docs/bot-tasks.md）——只有它有
+ * assign_task，别的 Bot 点了也派不出去。候选接口不知道人开着哪条对话，所以这一步在界面判。
+ */
+function botMentionsHere() {
+  return Boolean(state.mainBotId && state.mainBotId === chatBotIdNow())
+}
+
+/** `@` 选单。候选来自 /mentions：连接器，加上名单上别的 Bot（只在主 Bot 的对话里画）。 */
 function paintMentionPick() {
   const box = document.getElementById('chat-mentionpick')
   if (!box) return
@@ -7744,8 +7759,10 @@ function paintMentionPick() {
   }
   const q = (pick.q || '').toLowerCase()
   const taken = new Set((state.chatMentions || []).map((m) => m.id))
+  const botsHere = botMentionsHere()
   const list = (state.mentionOptions || [])
     .filter((m) => !taken.has(m.id))
+    .filter((m) => m.kind !== 'bot' || botsHere)
     .filter((m) => !q || m.label.toLowerCase().includes(q) || (m.toolkit || '').includes(q))
     .slice(0, 8)
   box.hidden = false
@@ -7754,13 +7771,13 @@ function paintMentionPick() {
         .map(
           (m, i) => `<button type="button" class="sw-pick${i === (pick.index || 0) ? ' is-on' : ''}"
         data-act="chat-mention-pick" data-id="${esc(m.id)}">
-        ${m.logo ? `<img class="sw-pick-logo" src="${esc(m.logo)}" alt="" data-onerror="drop">` : ''}
+        ${m.kind === 'bot' ? `<span class="sw-pick-logo sw-pick-bot">${botAvatar(m.icon, 16, m.origin)}</span>` : m.logo ? `<img class="sw-pick-logo" src="${esc(m.logo)}" alt="" data-onerror="drop">` : ''}
         <span>${esc(m.label)}</span>
-        ${m.mentionOnly ? `<small>${esc(t('仅 @ 时可用'))}</small>` : ''}
+        ${m.kind === 'bot' ? `<small>${esc(t('派活给它', 'Assign to it'))}</small>` : m.mentionOnly ? `<small>${esc(t('仅 @ 时可用'))}</small>` : ''}
       </button>`,
         )
         .join('')
-    : `<div class="sw-pick-empty">${esc(t('没有可用的连接。去「连接器」装一个再连上。'))}</div>`
+    : `<div class="sw-pick-empty">${esc(botsHere ? t('没有可 @ 的连接或 Bot。', 'Nothing to mention: no connections, no other bots.') : t('没有可用的连接。去「连接器」装一个再连上。'))}</div>`
 }
 
 /**

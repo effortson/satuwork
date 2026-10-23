@@ -364,6 +364,24 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(r.json.accepted === true || r.json.steered === true || r.json.queued === true, `这条消息本身该照发：${r.text}`)
       // 剔干净了就等于没点名，所以走的是 steering / 新一轮，不是排队。
       assert(r.json.queued !== true, '点名全被剔掉了还排队，那用户就白等一轮')
+      // @ 一颗 Bot（docs/bot-tasks.md）：只在主 Bot 的会话里认，目标得在名单上、不能是自己。
+      const other = await req(gwBase, 'POST', '/runtime/bots', { token: adminTok, body: { name: '财务' } })
+      assert(other.status === 201, `建 Bot ${other.status} ${other.text}`)
+      const at = (botId) => req(gwBase, 'POST', `/runtime/sessions/${sessionId}/messages`, {
+        token: adminTok,
+        body: { text: `mention ${MARKER}`, mentions: [{ kind: 'bot', id: botId, label: '财务' }] },
+      })
+      const notMain = await at(other.json.bot.id)
+      assert(notMain.status === 200 && (notMain.json.droppedMentions || []).includes(other.json.bot.id), `没设主 Bot 时 @Bot 该剔掉：${notMain.text}`)
+      const main = await req(gwBase, 'PUT', '/runtime/main-bot', { token: adminTok, body: { botId: catalogBotId } })
+      assert(main.status === 200, `设主 Bot ${main.status} ${main.text}`)
+      const ok = await at(other.json.bot.id)
+      assert(ok.status === 200 && !(ok.json.droppedMentions || []).includes(other.json.bot.id), `主 Bot 会话里 @ 别的 Bot 该放行：${ok.text}`)
+      const self = await at(catalogBotId)
+      assert((self.json.droppedMentions || []).includes(catalogBotId), `@ 自己该剔掉：${self.text}`)
+      const fake = await at('bot-not-mine')
+      assert((fake.json.droppedMentions || []).includes('bot-not-mine'), `编的 Bot id 该剔掉：${fake.text}`)
+      await req(gwBase, 'PUT', '/runtime/main-bot', { token: adminTok, body: { botId: null } })
     })
 
     await test('引用：Gateway 只认形状——截到 10 条、不认识的 kind 丢掉，席位回 refs 条数', async () => {

@@ -1576,6 +1576,11 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         this.ctx.logger?.warn?.(`agents: 点名的连接没有可用工具：${gaps.map((m) => m.label).join('、')}`)
         system = { ...system, text: `${system.text}\n\n${mentionGapBlock(gaps)}` }
       }
+      // @ 了别的 Bot：这一轮要派活（docs/bot-tasks.md §5）。不是主 Bot 的话也要说清楚，别让它自己替人家做。
+      const named = mentions.filter((m) => m.kind === 'bot')
+      if (named.length) {
+        system = { ...system, text: `${system.text}\n\n${mentionBotBlock(named, toolSchemas.some((t) => t.name === 'assign_task'))}` }
+      }
       // 「用户引用的东西」那一段只在这一轮真带了引用时才加（条件加载，理由同 fileOutBlock）。
       if (refs.length) system = { ...system, text: `${system.text}\n\n${refBlock()}` }
     } catch (e) {
@@ -2656,9 +2661,12 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         (!memoryOff || !t.name.startsWith('memory_')) &&
         skillTool(t.name),
     )
-    if (!mentioned.length) return picked
+    // @ 了一颗 Bot = 要派活：assign_task 也顶到最前（docs/bot-tasks.md）。不是主 Bot 时没这把工具，顶也顶不出来。
+    const botNamed = assignOn && mentions.some((m) => m.kind === 'bot')
+    if (!mentioned.length && !botNamed) return picked
     // 顶到最前。工具表越长，模型越容易在前几个里选——点名了却排在第 40 位，等于没点。
     const front = new Set(catalog.toolNamesFor(mentioned, mentioned))
+    if (botNamed) front.add('assign_task')
     return [...picked.filter((t) => front.has(t.name)), ...picked.filter((t) => !front.has(t.name))]
   }
 
@@ -3635,7 +3643,7 @@ function summaryText(d: SessionEventMap['session/compact']): string {
 const textFrom = (m: Message, refText: (c: RefBlock) => string = refFallback) =>
   m.content
     .map((c) =>
-      c.type === 'text' ? c.text : c.type === 'mention' ? `[本轮指定：${c.label}]` : c.type === 'ref' ? refText(c) : '',
+      c.type === 'text' ? c.text : c.type === 'mention' ? (c.kind === 'bot' ? `[@${c.label}：把这件事派给它]` : `[本轮指定：${c.label}]`) : c.type === 'ref' ? refText(c) : '',
     )
     .filter(Boolean)
     .join('\n')
@@ -4012,6 +4020,27 @@ function escalateBlock(rule: string): string {
     '调用时 `ask` 要写清楚**要人做什么**（一句祈使句）——接手的人打开就看这一行，写不清楚他就得回来问你，而那时你已经停了。',
     '这不是一句话说完就完的动作：它会开出一张交接单，人处理完会带着结果交回来，你到时候在他做完的基础上接着往下做，不要重做。',
     '同一件事只交一次。已经交出去还没回音的，不要换个措辞再调一遍。',
+  ].join('\n')
+}
+
+/**
+ * 用户 `@` 了一颗 Bot 时加在这一轮系统提示末尾的那段话（docs/bot-tasks.md）。
+ *
+ * 点名块进模型只是一行 `[@财务：把这件事派给它]`，不说这一段的话模型会把它当成「顺便提一下财务」，
+ * 然后自己把活做了。不是主 Bot 时同样要说：它没有 assign_task，不说清楚它会去编一个替代办法。
+ */
+function mentionBotBlock(named: Mention[], canAssign: boolean): string {
+  const names = named.map((m) => m.label).join('、')
+  if (!canAssign) {
+    return [
+      '## 本轮点名的 Bot',
+      `用户 @ 了：${names}，但你不是主 Bot，派不了活。如实告诉用户：只有主 Bot 能把事派给别的 Bot，请到主 Bot 的对话里 @ 它。不要自己替它做。`,
+    ].join('\n')
+  }
+  return [
+    '## 本轮点名的 Bot',
+    `用户 @ 了：${names}。这是在让你把这件事**派给它**——用 assign_task，bot 填它的名字，instruction 写得自足（对方看不见这条对话）。`,
+    '派完先回复用户已经派给谁了，不要自己替它做，也不要在这儿等结果。名单上没有它的话如实说明。',
   ].join('\n')
 }
 

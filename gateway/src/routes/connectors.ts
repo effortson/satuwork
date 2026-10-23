@@ -15,6 +15,7 @@ import { originOf, rangeQuery, requireOrgUser, requireOwnerUser, requireUser } f
 import { COMPANY_CONNECTION_LABEL, CONNECTION_LABEL_RE, DEFAULT_CONNECTION_LABEL, type Account, type ConnectorConnection, type ConnectorDef, externalUserIdOf } from '../db.ts'
 import { publicConnection, publicInstall } from '../lib/connectors.ts'
 import { publicPlatformCred } from '../lib/org.ts'
+import { botIconOf } from '../lib/catalog.ts'
 
 /** 授权回来之后那一页要说的三种话。见 authDonePage。 */
 type AuthDone = 'ok' | 'pending' | 'failed'
@@ -802,7 +803,24 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
       })
       .filter((x): x is NonNullable<typeof x> => x !== null)
       .filter((x) => !q || x.label.toLowerCase().includes(q) || x.toolkit.includes(q))
-    json(res, 200, { mentions })
+    /**
+     * 名单上别的 Bot 也能 @（docs/bot-tasks.md）：@ 一颗 Bot = 让主 Bot 把这件事派给它。
+     *
+     * **只有设了主 Bot 的人才给**，而且只在主 Bot 的对话里有意义——别的 Bot 没有 assign_task。
+     * 这条接口不知道人开着哪条对话，所以把 mainBotId 一起给出来，由界面按当前 Bot 决定画不画；
+     * 发消息那一跳再按会话的 Bot 校验一次（routes/runtime.ts），界面漏了也进不去。
+     */
+    const mainBotId = account.role === 'owner' ? null : await db.mainBotOf(account.id)
+    const bots = mainBotId
+      ? (await db.botsFor(companyId, account.id))
+          .filter((b) => b.id !== mainBotId)
+          .map((b) => {
+            const origin = b.scope === 'global' ? 'global' : 'company'
+            return { kind: 'bot' as const, id: b.id, label: b.name, icon: botIconOf((b.definition as { icon?: unknown } | undefined)?.icon, origin), origin }
+          })
+          .filter((b) => !q || b.label.toLowerCase().includes(q))
+      : []
+    json(res, 200, { mentions: [...mentions, ...bots], mainBotId })
   })
 
   // ── 统计（三个范围）───────────────────────────────────────────────
