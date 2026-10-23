@@ -54,6 +54,7 @@ import { SQL as m0053 } from './0053-usage-charge-estimated.ts'
 import { SQL as m0054 } from './0054-usage-charge-adjust.ts'
 import { SQL as m0055 } from './0055-push-devices.ts'
 import { SQL as m0056 } from './0056-bot-folders.ts'
+import { SQL as m0057 } from './0057-main-bot.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -174,6 +175,7 @@ export const MIGRATIONS: Migration[] = [
   { id: '0054-usage-charge-adjust', name: '账本行人工调整留痕', sql: m0054 },
   { id: '0055-push-devices', name: '手机推送的设备登记（APNs 设备令牌）', sql: m0055 },
   { id: '0056-bot-folders', name: '侧栏 Bot 名单的个人分类', sql: m0056 },
+  { id: '0057-main-bot', name: '每个人的主 Bot', sql: m0057 },
 ]
 
 /**

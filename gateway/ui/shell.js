@@ -344,8 +344,10 @@ function chatRosterNav() {
 function rosterGroups(bots) {
   const folders = (state.botFolders || []).slice().sort((a, b) => a.position - b.position)
   const known = new Set(folders.map((f) => f.id))
-  const loose = bots.filter((b) => !b.folderId || !known.has(b.folderId))
-  return { loose, folders: folders.map((f) => ({ ...f, bots: bots.filter((b) => b.folderId === f.id) })) }
+  // 主 Bot 在它所在的那一组里排最前面：戴着皇冠还排在中间，看着像排错了。别的顺序不动。
+  const mainFirst = (list) => list.slice().sort((a, b) => Number(b.id === state.mainBotId) - Number(a.id === state.mainBotId))
+  const loose = mainFirst(bots.filter((b) => !b.folderId || !known.has(b.folderId)))
+  return { loose, folders: folders.map((f) => ({ ...f, bots: mainFirst(bots.filter((b) => b.folderId === f.id)) })) }
 }
 
 /** 名单上的一行。`draggable`：拖到某个分类的标题上就归进去（见下面那组 drag 监听）。 */
@@ -354,7 +356,7 @@ function rosterRowHtml(b, selected) {
   return `<button type="button" class="satu-botrow" draggable="true" data-act="chat-open" data-id="${esc(b.id)}" data-bot-row="${esc(b.id)}" aria-current="${b.id === selected}">
         ${/* 头像占满两行：名字和摘要并排在它右边，整行才像一条会话，而不是一个
              带小图标的菜单项。34 是 botAvatar 的默认尺寸，也正好等于两行的高度。 */ ''}
-        <span class="satu-botavatar">${botAvatar(b.icon, 34, b.origin)}</span>
+        <span class="satu-botavatar">${botAvatarOf(b, 34)}</span>
         <span class="satu-botmain">
           <span class="satu-botline">
             ${/* 状态点在名字**前面**：一列对齐的点，扫一眼就知道哪几个在动，
@@ -453,6 +455,40 @@ async function moveBotToFolder(botId, folderId) {
     await api('PUT', `/runtime/bots/${encodeURIComponent(botId)}/folder`, { folderId: next })
   } catch (err) {
     bot.folderId = prev
+    flash('err', err.message)
+    render()
+  }
+}
+
+/**
+ * 对话顶栏菜单里那一条：没设的说「设为主 Bot」，已经是的说「取消主 Bot」。
+ * 一人只有一颗，所以在另一颗上点「设为」就是换过去，不用先取消。
+ */
+function mainBotMenuItem(bot) {
+  const on = bot.id === state.mainBotId
+  return `<button type="button" class="satu-menuitem" data-act="main-bot-set" data-id="${esc(bot.id)}" data-on="${String(!on)}">${on ? t('取消主 Bot', 'Unset main bot') : t('设为主 Bot', 'Set as main bot')}</button>`
+}
+
+/** Bot 设置页头部那一枚：是主 Bot 就一枚标签加「取消」，不是就一颗「设为主 Bot」。 */
+function mainBotToggle(bot) {
+  const on = bot.id === state.mainBotId
+  return on
+    ? `<span class="tag tag-accent">${t('主 Bot', 'Main bot')}</span><button type="button" class="satu-linkbtn" data-act="main-bot-set" data-id="${esc(bot.id)}" data-on="false">${t('取消', 'Unset')}</button>`
+    : `<button type="button" class="satu-linkbtn" data-act="main-bot-set" data-id="${esc(bot.id)}" data-on="true">${t('设为主 Bot', 'Set as main bot')}</button>`
+}
+
+/** 先改本地再发请求，失败退回去并说一声——和拖进分类一个做法。 */
+async function setMainBot(botId, on) {
+  const prev = state.mainBotId
+  const next = on ? botId : ''
+  if (prev === next) return
+  state.mainBotId = next
+  state.menu = null
+  render()
+  try {
+    await api('PUT', '/runtime/main-bot', { botId: next || null })
+  } catch (err) {
+    state.mainBotId = prev
     flash('err', err.message)
     render()
   }

@@ -1302,6 +1302,10 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'main-bot-set') {
+    await setMainBot(btn.getAttribute('data-id') || '', btn.getAttribute('data-on') === 'true')
+    return
+  }
   if (act === 'bot-folder-close') {
     state.botFolderEdit = null
     render()

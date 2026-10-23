@@ -3967,6 +3967,26 @@ export class Db {
     )
   }
 
+  // ── 主 Bot（迁移 0057）。一人一颗，个人视图。──────────────────────────
+
+  async mainBotOf(accountId: string): Promise<string | null> {
+    const r = await this.one('select "botId" from main_bots where "accountId" = ?', [accountId])
+    return r ? String(r.botId) : null
+  }
+
+  /** botId 为 null 就是取消。 */
+  async setMainBot(accountId: string, botId: string | null, now: number): Promise<void> {
+    if (!botId) {
+      await this.run('delete from main_bots where "accountId" = ?', [accountId])
+      return
+    }
+    await this.run(
+      `insert into main_bots ("accountId", "botId", "updatedAt") values (?, ?, ?)
+       on conflict ("accountId") do update set "botId" = excluded."botId", "updatedAt" = excluded."updatedAt"`,
+      [accountId, botId, now],
+    )
+  }
+
   /** 某个员工自己建了几个。配额挡在建之前，见 routes/runtime.ts。 */
   async countUserBots(accountId: string): Promise<number> {
     const r = await this.one(

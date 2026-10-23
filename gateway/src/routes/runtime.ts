@@ -1370,13 +1370,14 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const { pinned, tpl } = await botContext(db, account.companyId)
     // 渠道归属与 Bot 定义分表保存。给名册带稳定标记，前端才能只给渠道 Bot 画来源标签，
     // 不能拿固定名称 `telegram bot` 猜：名称能改，也可能有普通 Bot 恰好同名。
-    const [bindings, seatRows, items, machines, folders, folderOf] = await Promise.all([
+    const [bindings, seatRows, items, machines, folders, folderOf, mainBotId] = await Promise.all([
       db.channelBindings(account.id),
       db.seatRuntimesOfAccount(account.id),
       db.botsFor(account.companyId, account.id),
       account.companyId ? db.machinesOfCompany(account.companyId) : [],
       db.botFolders(account.id),
       db.botFolderItems(account.id),
+      db.mainBotOf(account.id),
     ])
     const channelByBot = new Map(bindings.map((row) => [row.botId, row.kind]))
     const seats = new Map(seatRows.map((rt) => [rt.botId, rt]))
@@ -1393,6 +1394,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     json(res, 200, {
       bots,
       folders: folders.map(publicBotFolder),
+      // 这个人的主 Bot；没设、或设的那颗已经不在名单上，都是 null（界面不画皇冠）。
+      mainBotId: mainBotId && items.some((b) => b.id === mainBotId) ? mainBotId : null,
       quota: { used: await db.countUserBots(account.id), max: MAX_USER_BOTS },
       rosterStreamUrl: (await rosterStreamUrlFor(seats, machineOf, bots)) || null,
       /**
@@ -1448,6 +1451,21 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     if (folderId && !(await db.botFolder(account.id, folderId))) throw new HttpError(404, '分类不存在')
     await db.setBotFolder(account.id, req.params.botId, folderId)
     json(res, 200, { ok: true, folderId })
+  })
+
+  /**
+   * 设 / 取消自己的主 Bot（`botId: null` 取消）。Bot 得是这个人名单上的；一人一颗，
+   * 再设一次就是换。
+   */
+  router.put('/runtime/main-bot', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    requireSeat(account)
+    const body = bodyOf(req)
+    const raw = body.botId
+    const botId = raw == null || raw === '' ? null : strField(body, 'botId')
+    if (botId && !(await db.botsFor(account.companyId, account.id)).some((b) => b.id === botId)) throw new HttpError(404, 'Bot 不存在')
+    await db.setMainBot(account.id, botId, Date.now())
+    json(res, 200, { ok: true, mainBotId: botId })
   })
 
   /**

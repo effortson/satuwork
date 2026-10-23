@@ -808,6 +808,26 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!plain.includes('satu-botfolder-head') && !plain.includes('satu-botfolder-empty'), '没分类时多画了东西')
     })
 
+    await test('主 Bot 戴皇冠，并且在它那一组里排最前面', async () => {
+      const ui = await boot()
+      ui.state.me = { account: { id: 'u1', companyId: 'c1', role: 'member', email: 'u@x' }, company: { id: 'c1' } }
+      ui.state.path = '/a/b1'
+      ui.state.chatBotId = 'b1'
+      ui.state.botFolders = []
+      ui.state.runtimeBots = [
+        { id: 'b1', name: '小满', folderId: null },
+        { id: 'b2', name: '小满二号', folderId: null },
+      ]
+      ui.state.mainBotId = ''
+      assert(!ui.chatRosterNav().includes('satu-crown'), '没设主 Bot 却有皇冠')
+      ui.state.mainBotId = 'b2'
+      const html = ui.chatRosterNav()
+      assert((html.match(/satu-crown/g) || []).length === 1, '皇冠要有且只有一枚')
+      assert(html.indexOf('data-bot-row="b2"') < html.indexOf('data-bot-row="b1"'), '主 Bot 没排到最前面')
+      const crownAt = html.indexOf('satu-crown')
+      assert(crownAt > html.indexOf('data-bot-row="b2"') && crownAt < html.indexOf('data-bot-row="b1"'), '皇冠戴错了头')
+    })
+
     await test('消息里的 @ 点名要留在气泡上，别发完就没', async () => {
       // 点名是消息的一部分（它决定了这一轮的工具表），不是输入框上一个发完就没的装饰。
       // 丢掉的话翻上去看昨天那条，「@ 了谁」就消失了——而那正是「它为什么去读了我的

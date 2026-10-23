@@ -382,6 +382,21 @@ function botAvatar(key, size = 34, origin) {
   </svg>`
 }
 
+/**
+ * 一颗 Bot 的头像，**主 Bot 戴皇冠**：右下角一枚金色小徽章，压在头像上。
+ *
+ * 皇冠是「这个人的主 Bot」这件事唯一的视觉表达，所以凡是画 Bot 头像的地方（名单、对话
+ * 顶栏、设置页）都该走这里，而不是直接 botAvatar——否则同一颗 Bot 在这儿戴、在那儿不戴。
+ * 头像选择器那种「挑一个图」的场合不算，它画的不是某颗 Bot。
+ */
+const CROWN_PATH = 'M3 8l4.5 4L12 5l4.5 7L21 8l-2 10H5z'
+function botAvatarOf(bot, size = 34) {
+  const art = botAvatar(bot && bot.icon, size, bot && bot.origin)
+  if (!bot || !bot.id || bot.id !== state.mainBotId) return art
+  const badge = Math.max(12, Math.round(size * 0.42))
+  return `<span class="satu-avatarwrap" data-main="true" style="width: ${size}px; height: ${size}px;">${art}<span class="satu-crown" style="width: ${badge}px; height: ${badge}px;" title="${esc(t('主 Bot', 'Main bot'))}" aria-label="${esc(t('主 Bot', 'Main bot'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${CROWN_PATH}"/></svg></span></span>`
+}
+
 const MEMORY_SCOPES = ['仅本人', '所属分组', '全公司']
 const MEMORY_KINDS = ['偏好', '事实', '流程', '联系人']
 const MEMORY_TTLS = ['30 天', '90 天', '180 天', '永久保留']

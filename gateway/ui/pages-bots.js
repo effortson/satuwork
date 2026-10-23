@@ -746,12 +746,13 @@ function myBotPage(bot, a) {
         <div class="satu-panel">
           <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
             <div style="display: flex; align-items: flex-start; gap: var(--space-3); min-width: 0; flex: 1;">
-              ${botAvatar(a.icon, 42, 'company')}
+              ${botAvatarOf({ ...bot, icon: a.icon, origin: 'company' }, 42)}
               <div style="min-width: 0; flex: 1; display: flex; flex-direction: column; gap: var(--space-2);">
                 <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
                   <input class="input" style="max-width: 280px; font-family: var(--font-heading); font-size: 16px; font-weight: 600;" data-bot="name" value="${esc(a.name)}" placeholder="${esc(t('助理名字'))}">
                   <span class="tag ${a.enabled ? 'tag-accent-2' : 'tag-neutral'}">${a.enabled ? t('已上线') : t('未上线')}</span>
                   <span class="tag tag-neutral">${bot.runtimeKind === 'local' ? t('本地 Bot', 'Local bot') : t('远程 Bot', 'Remote bot')}</span>
+                  ${mainBotToggle(bot)}
                 </div>
                 <input class="input" data-bot="description" value="${esc(a.description)}" placeholder="${esc(t('简介'))}">
                 <div style="font-size: 12.5px; color: var(--muted-foreground);">${t(`模型 ${esc(a.model || '—')}（平台指定）`, `model ${esc(a.model || '—')} (set by the platform)`)}</div>
@@ -843,12 +844,14 @@ function fullBotPage(bot, a) {
         <div class="satu-panel">
           <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
             <div style="display: flex; align-items: flex-start; gap: var(--space-3); min-width: 0; flex: 1;">
-              ${botAvatar(a.icon, 42, bot.origin)}
+              ${botAvatarOf({ ...bot, icon: a.icon }, 42)}
               <div style="min-width: 0; flex: 1; display: flex; flex-direction: column; gap: var(--space-2);">
                 <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
                   <input class="input" style="max-width: 280px; font-family: var(--font-heading); font-size: 16px; font-weight: 600;" data-bot="name" value="${esc(a.name)}" placeholder="${esc(t('助理名字'))}" ${ro ? 'disabled' : ''}>
                   <span class="tag ${a.enabled ? 'tag-accent-2' : 'tag-neutral'}">${a.enabled ? t('已上线') : t('未上线')}</span>
                   ${bot.legacy ? `<span class="tag tag-neutral">${t('已停用')}</span>` : ''}
+                  ${/* 主 Bot 是个人视图，只读的全局 Bot 也能设：它是「我最常用的那颗」，不是在改它。 */ ''}
+                  ${isOwner() ? '' : mainBotToggle(bot)}
                 </div>
                 <input class="input" data-bot="description" value="${esc(a.description)}" placeholder="${esc(t('简介'))}" ${ro ? 'disabled' : ''}>
                 ${/* 模型不给挑：平台在「模型配置」里定的那一个，所有 Bot 都用它。 */ ''}

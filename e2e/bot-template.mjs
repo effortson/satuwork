@@ -251,11 +251,40 @@ export async function runBotTemplate({ gwRoot, test, req, start, waitHttp, asser
       assert(bot && bot.folderId === null, '删分类把 Bot 也带走了，或者归属没清')
     })
 
+    await test('主 Bot：一人一颗，设了就换，删了 Bot 就没了', async () => {
+      const none = await req(base, 'GET', '/runtime/bots', { token: alice })
+      assert(none.json.mainBotId === null, `一开始就有主 Bot：${none.json.mainBotId}`)
+      const set = await req(base, 'PUT', '/runtime/main-bot', { token: alice, body: { botId: aliceBot } })
+      assert(set.status === 200 && set.json.mainBotId === aliceBot, `设主 Bot ${set.status} ${set.text}`)
+      const got = await req(base, 'GET', '/runtime/bots', { token: alice })
+      assert(got.json.mainBotId === aliceBot, '名单上没带出主 Bot')
+      // Bob 看不到 Alice 的主 Bot，也设不了不在自己名单上的那颗。
+      const bobs = await req(base, 'GET', '/runtime/bots', { token: bob })
+      assert(bobs.json.mainBotId === null, 'Bob 看到了 Alice 的主 Bot')
+      const steal = await req(base, 'PUT', '/runtime/main-bot', { token: bob, body: { botId: aliceBot } })
+      assert(steal.status === 404, `设别人的 Bot 拿到 ${steal.status}`)
+      // 在另一颗上再设一次就是换过去，不用先取消。
+      const second = got.json.bots.find((b) => b.scope === 'user' && b.id !== aliceBot)
+      const swap = await req(base, 'PUT', '/runtime/main-bot', { token: alice, body: { botId: second.id } })
+      assert(swap.status === 200, `换主 Bot ${swap.status} ${swap.text}`)
+      const after = await req(base, 'GET', '/runtime/bots', { token: alice })
+      assert(after.json.mainBotId === second.id, '没换过去')
+      // 取消。
+      const off = await req(base, 'PUT', '/runtime/main-bot', { token: alice, body: { botId: null } })
+      assert(off.status === 200, `取消 ${off.status} ${off.text}`)
+      assert((await req(base, 'GET', '/runtime/bots', { token: alice })).json.mainBotId === null, '取消没生效')
+      // 再设回 aliceBot，下一条删掉它之后主 Bot 该跟着没了。
+      await req(base, 'PUT', '/runtime/main-bot', { token: alice, body: { botId: aliceBot } })
+    })
+
     await test('删掉自己的 Bot（没席位的那种直接删干净）', async () => {
       const del = await req(base, 'DELETE', `/runtime/bots/${aliceBot}`, { token: alice })
       assert(del.status === 200, `删 ${del.status} ${del.text}`)
       const gone = await req(base, 'GET', `/runtime/bots/${aliceBot}`, { token: alice })
       assert(gone.status === 404, `删完还在：${gone.status}`)
+      // 它刚才是主 Bot：删了之后名单上不能还指着一颗不存在的。
+      const list = await req(base, 'GET', '/runtime/bots', { token: alice })
+      assert(list.json.mainBotId === null, `删掉的 Bot 还挂着主 Bot：${list.json.mainBotId}`)
     })
 
     await test('没有席位的公司，「立即下发」是个空操作而不是报错', async () => {

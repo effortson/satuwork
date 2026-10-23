@@ -202,6 +202,8 @@ const state = {
   botFolderEdit: null,
   /** 哪些分类收着。只是这台机器上的习惯，存 localStorage；没写的一律当展开。 */
   botFolderOpen: readBotFolderOpen(),
+  /** 这个人的主 Bot 的 id（/runtime/bots 的 mainBotId）；空串 = 没设。头像上戴皇冠的就是它。 */
+  mainBotId: '',
   /**
    * 公司名下有没有配对好的运行机器（GET /runtime/bots 的 hasMachine）。`null` = 还没拉到，
    * 那时一律按「有」对待——拿不准的时候不藏东西、不改默认。

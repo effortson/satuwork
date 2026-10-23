@@ -492,6 +492,7 @@ async function loadRuntimeBots() {
      */
     state.runtimeBots = (data.bots || []).filter((bot) => state.runtimeHasMachine !== false || bot.scope === 'user')
     state.botFolders = Array.isArray(data.folders) ? data.folders : []
+    state.mainBotId = typeof data.mainBotId === 'string' ? data.mainBotId : ''
     // 本地 Bot 在不在跑、听哪个口，Gateway 不知道（隧道拆了），只有壳子知道。
     await overlayLocalRuntime(state.runtimeBots)
     // 名单流的直连地址（机器够新、配了公网地址、这个人没有本地 Bot 时才有），没有就是 null。
@@ -7199,11 +7200,12 @@ function chatHeadInline() {
       ? `<div class="satu-menu" data-flip="${String(Boolean(state.menuFlip))}">
           ${/* 自己建的那种才给设置入口：别人的、全局的，这一页上没有可改的东西。 */ ''}
           ${isMyBot(bot) ? `<button type="button" class="satu-menuitem" data-act="go" data-href="/bots/${esc(bot.id)}">${t('Bot 设置')}</button>` : ''}
+          ${bot ? mainBotMenuItem(bot) : ''}
           <button type="button" class="satu-menuitem" data-act="chat-copy-all">${t('复制全文')}</button>
           <button type="button" class="satu-menuitem" data-act="chat-export">${t('导出 Markdown')}</button>
         </div>`
       : ''
-  return `<div class="sw-convo-avatar" data-bot="${bot ? '1' : '0'}" aria-hidden="true">${bot ? botAvatar(bot.icon, 34, bot.origin) : ICON_BOT}</div>
+  return `<div class="sw-convo-avatar" data-bot="${bot ? '1' : '0'}" aria-hidden="true">${bot ? botAvatarOf(bot, 34) : ICON_BOT}</div>
     <div class="sw-convo-id">
       <div class="sw-convo-title">
         <span class="sw-convo-name">${esc(name)}</span>
