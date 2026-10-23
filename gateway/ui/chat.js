@@ -2809,6 +2809,50 @@ function emailPreviewDoc(html) {
   )
 }
 
+/**
+ * 发信卡上的正文要**整封摊开**，不是一个固定高度的小窗。
+ *
+ * 人在这儿批的是「写了什么」——看不完整封就点批准，和没看是一样的。卡片是 innerHTML
+ * 换出来的，节点每次重画都是新的，所以挂上去之后要补一遍：纯文本那格按内容把 textarea
+ * 撑到刚好装下；HTML 那格等 iframe 载入完再按文档高度撑（load 不冒泡，用捕获期在
+ * document 上接）。
+ */
+function fitMailText(el) {
+  // 还没排到版（面板藏着、宽度为 0）时量出来的是每个字一行的天文数字，等下一帧再量。
+  if (!el.clientWidth) return
+  el.style.height = '0'
+  el.style.height = el.scrollHeight + 2 + 'px'
+}
+function fitMailPreview(frame) {
+  try {
+    const doc = frame.contentDocument
+    // 量 body 不量 html：html 的高度就是 iframe 的视口，一旦撑高过就再也缩不回去。
+    const h = doc && doc.body ? doc.body.scrollHeight : 0
+    if (h) frame.style.height = h + 2 + 'px'
+  } catch {
+    // 拿不到文档（同源被挡）就留着 CSS 的最小高度，预览本身照样能看。
+  }
+}
+function fitMailCards(root) {
+  const fit = () => {
+    for (const el of root.querySelectorAll('textarea[data-autosize]')) fitMailText(el)
+    for (const frame of root.querySelectorAll('iframe[data-mail-preview]')) fitMailPreview(frame)
+  }
+  fit()
+  // 刚塞进 DOM 那一刻气泡可能还没撑到最终宽度（父级在同一帧里也在重排），下一帧补量一次。
+  requestAnimationFrame(fit)
+}
+// 窗口一变宽，折行就变，整封信的高度也跟着变。
+window.addEventListener('resize', () => fitMailCards(document))
+document.addEventListener(
+  'load',
+  (e) => {
+    const el = e.target
+    if (el instanceof HTMLIFrameElement && el.hasAttribute('data-mail-preview')) fitMailPreview(el)
+  },
+  true,
+)
+
 /** 卡片底下那排按钮。发信那张的第一个按钮说「批准并发送」——它就是要干这件事。 */
 function approvalActs(a, okLabel) {
   const touched = approvalTouched(a)
@@ -2885,7 +2929,10 @@ function approvalEmailHtml(a) {
       if (htmlBody) {
         return (
           `<div class="sw-mail-body sw-mail-html"><span class="sw-mail-k">${esc(f.label)}</span>` +
-          `<iframe class="sw-mail-preview" sandbox="" referrerpolicy="no-referrer" loading="lazy"` +
+          // sandbox 里只放 allow-same-origin，**不放 allow-scripts**：没有脚本，同源的那头什么也
+          // 拿不到；而只有同源，外面才读得到它的 scrollHeight，把整封信按实际高度撑开
+          // （见 fitMailPreview）——不然就是一个 240px 的小窗，长信得在里面再滚一遍。
+          `<iframe class="sw-mail-preview" sandbox="allow-same-origin" referrerpolicy="no-referrer"` +
           ` title="${esc(t('HTML 邮件正文预览', 'HTML email body preview'))}" data-mail-preview` +
           ` data-call="${esc(a.callId)}" data-preview-for="${esc(f.key)}" srcdoc="${esc(emailPreviewDoc(value))}"></iframe>` +
           `<details class="sw-mail-source"><summary>${esc(t('查看或编辑 HTML 源码', 'View or edit HTML source'))}</summary>` +
@@ -2893,9 +2940,12 @@ function approvalEmailHtml(a) {
           `</details></div>`
         )
       }
+      // 纯文本正文：按收件人那边看到的样子排——白底、正文字号、保留换行；而且**整封摊开**，
+      // 高度跟着内容走（rows 先按行数给个近似，挂上去之后 fitMailText 再按真实高度收一遍），
+      // 不做成一个八行的小窗让人在里面滚。改了字它照样长高（input 事件那头）。
       return f.multiline
         ? `<div class="sw-mail-body"><span class="sw-mail-k">${esc(f.label)}</span>` +
-            `<textarea class="input sw-mail-text" rows="8" ${attrs}>${esc(value)}</textarea></div>`
+            `<textarea class="input sw-mail-text sw-mail-plain" rows="${Math.min(60, String(value).split('\n').length + 1)}" data-autosize ${attrs}>${esc(value)}</textarea></div>`
         : `<div class="sw-mail-row"><span class="sw-mail-k">${esc(f.label)}</span>` +
             `<input class="input sw-mail-input" type="text" value="${esc(value)}" ${attrs}></div>`
     })
@@ -3374,6 +3424,7 @@ function updateRow(el, b, streaming, since) {
       apbox.setAttribute('data-sig', apSig)
       apbox.innerHTML = waiting.map(approvalHtml).join('')
       apbox.hidden = !waiting.length
+      fitMailCards(apbox)
     }
   }
 
@@ -9263,6 +9314,7 @@ document.addEventListener('input', (e) => {
   if (!key) return
   const callId = el.getAttribute('data-call') || ''
   approvalDrafts.set(draftKey(callId, key), el.value)
+  if (el.hasAttribute('data-autosize')) fitMailText(el)
   // HTML 源码藏在折叠区里；一旦展开修改，预览必须马上跟上，否则人批准的是源码 A，
   // 眼睛最后检查的却还是旧预览 B。按 callId + 字段 key 精确找到这一格，避免同页几封
   // 待批邮件互相串内容。

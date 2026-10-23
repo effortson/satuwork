@@ -764,7 +764,10 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         callId: 'call_html_mail', name: 'mcp_gmail_default_sw_run', args: '{}', reason: 'send', state: 'pending', form: htmlForm,
       })
       assert(htmlCard.includes('class="sw-mail-preview"'), 'HTML 正文没有显示预览')
-      assert(htmlCard.includes('sandbox=""') && htmlCard.includes('referrerpolicy="no-referrer"'), 'HTML 预览没有隔离')
+      // sandbox 里可以有 allow-same-origin（外面要量它的高度），但**绝不能有 allow-scripts**：
+      // 两样一起给，里面的脚本就摸得到批准页。
+      const sandbox = (htmlCard.match(/sandbox="([^"]*)"/) || [])[1]
+      assert(sandbox !== undefined && !/allow-scripts|allow-top-navigation|allow-forms|allow-popups/.test(sandbox) && htmlCard.includes('referrerpolicy="no-referrer"'), 'HTML 预览没有隔离')
       assert(htmlCard.includes('Content-Security-Policy') && htmlCard.includes('default-src'), 'HTML 预览没有阻断远程资源')
       assert(htmlCard.includes('<details class="sw-mail-source">'), 'HTML 源码没有保留可编辑入口')
       assert(htmlCard.includes('data-edit="args.body"'), 'HTML 源码编辑框没有沿用批准参数')

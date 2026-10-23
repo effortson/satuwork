@@ -685,6 +685,11 @@
    排得像一封信：左边一列标签，右边是内容；主题一行、正文一块。**不做成表单控件的
    堆叠**——那看着像「填一张表」，而人在这儿干的事是「读一遍再改两句」。 */
 .sw-mail { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+/* 装着发信卡的那条气泡**放开 72% 的宽度上限**，占满对话那条 920px 的轴。普通气泡收窄是为了
+   读段落不串行；而这张卡要摆的是一封信——收件人、主题、整段正文——挤在七成宽里，正文一行
+   二十几个字，和收件人那边看到的完全不是一个样子。 */
+.sw-msg:has(.sw-approval-mail) .sw-msg-col { max-width: 100%; flex: 1 1 auto; }
+.sw-approval-mail { padding: 12px 14px; }
 /* 标签和内容按**首行基线**对齐，不按居中：收件人、抄送一多就折成好几行，居中的话标签
    会掉到中间去；单行的输入框按基线对齐和居中看起来是一样的。 */
 .sw-mail-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
@@ -728,6 +733,20 @@
   resize: vertical;
   line-height: 1.6;
 }
+/* 纯文本正文照着收件人那边的阅读面排：白底、14px 正文字号、系统字体——和下面 HTML 预览
+   （emailPreviewDoc）同一套，深色主题下也不反转，因为对方收到的就是白底的。高度由
+   fitMailText 按内容撑开，所以滚动条和拖拽把手都关掉：它不是一个窗口，就是那封信。 */
+.sw-mail-plain {
+  box-sizing: border-box;
+  min-height: 120px;
+  padding: 14px;
+  overflow: hidden;
+  resize: none;
+  background: #fff;
+  color: #171717;
+  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.sw-mail-plain:focus { background: #fff; color: #171717; }
 /* HTML 正文默认给人看邮件效果，源码折进下面。预览固定白底，因为绝大多数邮件模板按
    白色阅读面设计；外层即使是深色主题，也不反转邮件自身的颜色。iframe 不接收点击，
    避免批准时误点模板里的链接；真正的隔离与断网约束仍由 sandbox + CSP 承担。 */
