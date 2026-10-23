@@ -1,0 +1,270 @@
+/**
+ * 主 Bot 派活（docs/bot-tasks.md）：Gateway 这一层的全部规矩。
+ *
+ * 机器上的工人和席位都是假的——这里验的是「记、租、收」：只有主 Bot 能派；目标席位领到带
+ * 指令的 run 活、回报结论之后主席位领到带结论的 deliver 活；目标砸了也要送回去；租约到期放回
+ * 去再领；管家太旧当场记成没跑起来。
+ */
+import { rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { PG_URL } from './pg.mjs'
+import { schemaOf, tmpOf } from './isolate.mjs'
+import { createCompany } from './org.mjs'
+import { publishRelease } from './release.mjs'
+import { pairMachine } from './pair.mjs'
+import { freePort } from './ports.mjs'
+
+const SCHEMA = schemaOf('e2e_bot_tasks')
+const LEASE_MS = 1500
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, log }) {
+  log('\n# bot-tasks')
+
+  const GW_HOME = tmpOf('satuwork-e2e-bot-tasks')
+  const GW_PORT = await freePort()
+  const gwBase = `http://127.0.0.1:${GW_PORT}`
+  rmSync(GW_HOME, { recursive: true, force: true })
+
+  const gw = start('bot-tasks-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
+    cwd: gwRoot,
+    env: {
+      SATUWORK_GATEWAY_HOME: GW_HOME,
+      GATEWAY_DATABASE_URL: PG_URL,
+      GATEWAY_PG_SCHEMA: SCHEMA,
+      GATEWAY_PG_RESET: '1',
+      GATEWAY_HOST: '127.0.0.1',
+      GATEWAY_PORT: String(GW_PORT),
+      GATEWAY_ACCESS_HOST: 'satuwork.com',
+      GATEWAY_SEED_OWNER: '1',
+      GATEWAY_OWNER_EMAIL: 'owner@tasks.test',
+      GATEWAY_OWNER_PASSWORD: 'test-owner-tasks',
+      SATUWORK_DEPLOY_STUB: '1',
+      GATEWAY_ROUTINE_TICK_MS: '500',
+      GATEWAY_ROUTINE_LEASE_MS: String(LEASE_MS),
+    },
+  })
+
+  try {
+    await waitHttp(gwBase + '/health', { child: gw, what: 'bot-tasks gateway' })
+
+    const reg = await createCompany(req, gwBase, {
+      ownerEmail: 'owner@tasks.test',
+      ownerPassword: 'test-owner-tasks',
+      email: 'admin@tasks.test',
+      password: 'correct-horse',
+      companyName: 'TasksCo',
+      slug: 'tasksco',
+      seats: 3,
+    })
+    const adminTok = reg.token
+    const ownerTok = reg.ownerToken
+    const orgId = reg.company.id
+    const me = await req(gwBase, 'GET', '/me', { token: adminTok })
+    const accountId = me.json.account.id
+    const secrets = await req(gwBase, 'GET', `/platform/accounts/${accountId}`, { token: ownerTok })
+    const seatTok = secrets.json.accessToken
+
+    const mk = async (name, description) => {
+      const r = await req(gwBase, 'POST', '/runtime/bots', { token: adminTok, body: { name, description } })
+      assert(r.status === 201, `建 Bot ${name} ${r.status} ${r.text}`)
+      return r.json.bot.id
+    }
+    const mainBot = await mk('助手', '统筹')
+    const finBot = await mk('财务', '做报表、对账')
+
+    const machine = await pairMachine({ req, gwBase, ownerTok, orgId })
+    const machineTok = machine.token
+    await publishRelease({ req, gwBase, token: ownerTok, version: '0.1.0', note: 'e2e-bot-tasks' })
+    for (const botId of [mainBot, finBot]) {
+      const dep = await req(gwBase, 'POST', '/runtime/deploy', { token: adminTok, body: { botId } })
+      assert(dep.status === 200, `deploy ${dep.status} ${dep.text}`)
+    }
+    const heartbeat = (protocol) =>
+      req(gwBase, 'POST', `/internal/machines/${machine.machineId}/heartbeat`, { token: machineTok, body: { protocol, managerVersion: 'e2e' } })
+    const due = () => req(gwBase, 'GET', '/worker/tasks/due', { token: machineTok })
+    const post = (taskId, act, body = {}) => req(gwBase, 'POST', `/worker/tasks/${taskId}/${act}`, { token: machineTok, body })
+    const assign = (body, token = seatTok) => req(gwBase, 'POST', '/runtime/tasks', { token, body })
+    const tasksOf = async (sessionId) => {
+      const r = await req(gwBase, 'GET', `/runtime/tasks?sessionId=${encodeURIComponent(sessionId)}`, { token: adminTok })
+      assert(r.status === 200, `列任务 ${r.status} ${r.text}`)
+      return r.json.tasks
+    }
+    const taskById = async (id, sessionId = 's-main') => {
+      const t = (await tasksOf(sessionId)).find((x) => x.id === id)
+      assert(t, `任务 ${id} 不在列表里`)
+      return t
+    }
+    const until = async (id, status, what, ms = 8000) => {
+      const deadline = Date.now() + ms
+      for (;;) {
+        const t = await taskById(id)
+        if (t.status === status) return t
+        assert(Date.now() < deadline, `${what}：一直是 ${t.status}，没等到 ${status}（${t.error || ''}）`)
+        await sleep(100)
+      }
+    }
+
+    await test('只有主 Bot 能派；目标得在名单上、不能是自己', async () => {
+      assert((await heartbeat(12)).status === 200, '心跳')
+      // 还没设主 Bot：谁都派不了。
+      const none = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '做一份月报', sessionId: 's-main' })
+      assert(none.status === 403, `没设主 Bot 该 403：${none.status} ${none.text}`)
+      const set = await req(gwBase, 'PUT', '/runtime/main-bot', { token: adminTok, body: { botId: mainBot } })
+      assert(set.status === 200, `设主 Bot ${set.status} ${set.text}`)
+      const notMain = await assign({ fromBotId: finBot, toBot: '助手', instruction: '你来', sessionId: 's-fin' })
+      assert(notMain.status === 403, `不是主 Bot 该 403：${notMain.status}`)
+      const self = await assign({ fromBotId: mainBot, toBot: '助手', instruction: '自己做', sessionId: 's-main' })
+      assert(self.status === 400, `派给自己该 400：${self.status}`)
+      const nobody = await assign({ fromBotId: mainBot, toBot: '法务', instruction: '看合同', sessionId: 's-main' })
+      assert(nobody.status === 404, `不在名单上该 404：${nobody.status}`)
+      const empty = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '  ', sessionId: 's-main' })
+      assert(empty.status === 400, `空指令该 400：${empty.status}`)
+      const anon = await req(gwBase, 'POST', '/runtime/tasks', { token: adminTok, body: { fromBotId: mainBot, toBot: '财务', instruction: 'x' } })
+      assert(anon.status === 401, `登录票不能派（要席位票）：${anon.status}`)
+    })
+
+    let taskId = ''
+    await test('派出去：目标席位领到带指令的 run 活，回报结论后主席位领到带结论的 deliver 活', async () => {
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '做一份本月的费用月报，按部门分列', sessionId: 's-main', callId: 'call-1' })
+      assert(made.status === 201, `派 ${made.status} ${made.text}`)
+      taskId = made.json.task.id
+      assert(made.json.task.status === 'queued' && made.json.toName === '财务', `形状不对：${made.text}`)
+      // 同一颗上一件没交回来，不许再派；反过来派也不许。
+      const again = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '再来一份', sessionId: 's-main' })
+      assert(again.status === 409, `重复派该 409：${again.status} ${again.text}`)
+
+      const anon = await req(gwBase, 'GET', '/worker/tasks/due')
+      assert(anon.status === 401, `无票 ${anon.status}`)
+      const got = await due()
+      assert(got.status === 200, `due ${got.status} ${got.text}`)
+      assert(got.json.jobs.length === 1, `该领到 1 条，领到 ${got.json.jobs.length}：${got.text}`)
+      const job = got.json.jobs[0]
+      assert(job.taskId === taskId && job.phase === 'run' && job.botId === finBot, `活不对：${JSON.stringify(job)}`)
+      assert(job.instruction.includes('【主 Bot「助手」派来的任务】') && job.instruction.includes('做一份本月的费用月报'), `指令全文不对：${job.instruction}`)
+      assert(job.task.phase === 'instruction' && job.task.from.name === '助手' && job.task.id === taskId, `身份不对：${JSON.stringify(job.task)}`)
+      assert(job.seatId && job.leaseMs === LEASE_MS && job.timeoutMs > 0, `活上缺字段：${JSON.stringify(job)}`)
+      assert((await due()).json.jobs.length === 0, '同一条不该领两次')
+      assert((await taskById(taskId)).status === 'running', '领走了该是 running')
+
+      const started = await post(taskId, 'started', { sessionId: 's-fin' })
+      assert(started.status === 200 && started.json.blocked === null, `started ${started.status} ${started.text}`)
+      assert((await post(taskId, 'renew')).status === 200, 'renew')
+      const fin = await post(taskId, 'finish', { kind: 'completed', result: '月报做好了：研发 12 万、销售 8 万，合计 20 万。', sessionId: 's-fin' })
+      assert(fin.status === 200, `finish ${fin.status} ${fin.text}`)
+      const reporting = await taskById(taskId)
+      assert(reporting.status === 'reporting' && reporting.result.includes('合计 20 万'), `该是 reporting 且带结论：${JSON.stringify(reporting)}`)
+      assert((await post(taskId, 'renew')).status === 404, 'run 那一步收场后再续该 404')
+
+      const got2 = await due()
+      assert(got2.json.jobs.length === 1, `该领到送回去的那一步：${got2.text}`)
+      const deliver = got2.json.jobs[0]
+      assert(deliver.taskId === taskId && deliver.phase === 'deliver' && deliver.botId === mainBot, `deliver 活不对：${JSON.stringify(deliver)}`)
+      assert(deliver.instruction.startsWith('【任务结果】@财务 做完了') && deliver.instruction.includes('合计 20 万') && deliver.instruction.includes('做一份本月的费用月报'), `结论全文不对：${deliver.instruction}`)
+      assert(deliver.task.phase === 'result' && deliver.task.from.name === '财务', `结论身份不对：${JSON.stringify(deliver.task)}`)
+      assert((await post(taskId, 'started', { sessionId: 's-main' })).status === 200, 'deliver started')
+      const done = await post(taskId, 'finish', { kind: 'delivered' })
+      assert(done.status === 200, `deliver finish ${done.status} ${done.text}`)
+      const final = await taskById(taskId)
+      assert(final.status === 'done' && final.deliveredAt > 0, `该是 done：${JSON.stringify(final)}`)
+      // 做完了就能再派。
+      assert((await due()).json.jobs.length === 0, '收场后不该还有活')
+    })
+
+    await test('目标那边砸了也要送回去：结论写成「没做成」', async () => {
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '对一下上季度的账', sessionId: 's-main' })
+      assert(made.status === 201, `派 ${made.status} ${made.text}`)
+      const id = made.json.task.id
+      const job = (await due()).json.jobs[0]
+      assert(job && job.taskId === id && job.phase === 'run', '没领到')
+      await post(id, 'started', { sessionId: 's-fin' })
+      assert((await post(id, 'finish', { kind: 'failed', error: '席位那头报错了' })).status === 200, 'finish failed')
+      const t = await taskById(id)
+      assert(t.status === 'reporting' && t.result.startsWith('没做成：席位那头报错了'), `砸了也该进 reporting：${JSON.stringify(t)}`)
+      const deliver = (await due()).json.jobs[0]
+      assert(deliver && deliver.phase === 'deliver' && deliver.instruction.startsWith('【任务结果】@财务 没做成'), `送回去的话不对：${deliver && deliver.instruction}`)
+      await post(id, 'started', { sessionId: 's-main' })
+      await post(id, 'finish', { kind: 'delivered' })
+      assert((await taskById(id)).status === 'done', '送到了该是 done')
+    })
+
+    await test('转人工挡着：started 直接当没做成送回去，工人收到 blocked', async () => {
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '报销单审一下', sessionId: 's-main' })
+      const id = made.json.task.id
+      const job = (await due()).json.jobs[0]
+      assert(job && job.taskId === id, '没领到')
+      // 目标会话上挂一张挡路的交接单。
+      const h = await req(gwBase, 'POST', '/internal/handoffs', {
+        token: seatTok,
+        body: { companyId: orgId, accountId, id: 'h-block', sessionId: 's-fin', botId: finBot, state: 'open', claimedBy: '', blocking: true, repeats: 0, reason: '卡住了', ask: '要人批', createdAt: Date.now(), updatedAt: Date.now() },
+      })
+      assert(h.status === 200 || h.status === 201, `挂交接单 ${h.status} ${h.text}`)
+      const started = await post(id, 'started', { sessionId: 's-fin' })
+      assert(started.status === 200 && started.json.blocked, `该被挡：${started.text}`)
+      const t = await taskById(id)
+      assert(t.status === 'reporting' && t.result.includes('转人工'), `挡住该送回去：${JSON.stringify(t)}`)
+      const deliver = (await due()).json.jobs[0]
+      assert(deliver && deliver.phase === 'deliver', '该领到送回去的那一步')
+      await post(id, 'started', { sessionId: 's-main' })
+      await post(id, 'finish', { kind: 'delivered' })
+      // 单子关掉，别挡后面的测试。
+      await req(gwBase, 'POST', '/internal/handoffs', {
+        token: seatTok,
+        body: { companyId: orgId, accountId, id: 'h-block', sessionId: 's-fin', botId: finBot, state: 'returned', claimedBy: '', blocking: true, repeats: 0, reason: '卡住了', ask: '要人批', createdAt: Date.now(), updatedAt: Date.now() },
+      })
+    })
+
+    await test('领走了没回报：租约到期放回去再领，第三次还不回报就送回「机器没回报」', async () => {
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '算一下年终奖', sessionId: 's-main' })
+      const id = made.json.task.id
+      for (let n = 1; n <= 3; n++) {
+        const deadline = Date.now() + 8000
+        let job = null
+        while (!job && Date.now() < deadline) {
+          job = (await due()).json.jobs.find((j) => j.taskId === id) || null
+          if (!job) await sleep(150)
+        }
+        assert(job && job.phase === 'run', `第 ${n} 次该又领到 run 那一步`)
+        await sleep(LEASE_MS + 1500)
+      }
+      const t = await until(id, 'reporting', '三次没回报')
+      assert(t.result.includes('机器没回报'), `该写明机器没回报：${JSON.stringify(t)}`)
+      const deliver = (await due()).json.jobs.find((j) => j.taskId === id)
+      assert(deliver && deliver.phase === 'deliver', '该领到送回去的那一步')
+      await post(id, 'started', { sessionId: 's-main' })
+      await post(id, 'finish', { kind: 'delivered' })
+    })
+
+    await test('管家太旧：当场记成没跑起来；主 Bot 那头也领不了就是 failed', async () => {
+      assert((await heartbeat(11)).status === 200, '心跳')
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '随便做点什么', sessionId: 's-main' })
+      assert(made.status === 201, `派 ${made.status} ${made.text}`)
+      const t = made.json.task
+      assert(t.status === 'failed' && /管家太旧/.test(t.error || ''), `该当场 failed 并说明管家太旧：${JSON.stringify(t)}`)
+      assert((await due()).json.jobs.length === 0, 'failed 的不该再有活')
+      assert((await heartbeat(12)).status === 200, '心跳回 12')
+    })
+
+    await test('别的机器领不到、也回报不了这台机器的活', async () => {
+      const other = await pairMachine({ req, gwBase, ownerTok, orgId, managerPort: 18997 })
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '查一下发票', sessionId: 's-main' })
+      assert(made.status === 201, `派 ${made.status} ${made.text}`)
+      const id = made.json.task.id
+      const theirs = await req(gwBase, 'GET', '/worker/tasks/due', { token: other.token })
+      assert(theirs.status === 200 && theirs.json.jobs.length === 0, `别的机器不该领到活：${theirs.text}`)
+      const mine = (await due()).json.jobs.find((j) => j.taskId === id)
+      assert(mine, '自己该领到')
+      const steal = await req(gwBase, 'POST', `/worker/tasks/${id}/finish`, { token: other.token, body: { kind: 'completed', result: '偷的' } })
+      assert(steal.status === 404, `别的机器回报该 404：${steal.status}`)
+      await post(id, 'started', { sessionId: 's-fin' })
+      assert((await post(id, 'finish', { kind: 'completed', result: '发票齐了' })).status === 200, '自己回报')
+      const list = await tasksOf('s-main')
+      assert(list.length >= 5 && list[0].id === id, `列表该按新的在前：${list.map((t) => t.id).join(',')}`)
+    })
+  } finally {
+    gw.kill('SIGTERM')
+  }
+}

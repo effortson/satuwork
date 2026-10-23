@@ -64,6 +64,12 @@ export const MIN_WORKER_PROTOCOL = 7
 export const MIN_CHANNEL_WORKER_PROTOCOL = 8
 
 /**
+ * 席位工人接管**主 Bot 派活**（docs/bot-tasks.md）要求的管家协议号。12 号工人才有那条循环
+ * （manager/src/worker/tasks.ts）；低于它的机器上派活当场记成「没跑起来：管家太旧」，不排队等。
+ */
+export const MIN_TASK_WORKER_PROTOCOL = 12
+
+/**
  * 日志跟随直连要求的管家协议号。
  *
  * 9 号管家的 `/logs` 和 `/seats/:id/logs` 才认 `Authorization: Bearer` 里那张 Gateway 签的

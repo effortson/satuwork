@@ -64,8 +64,11 @@ import { fileURLToPath } from 'node:url'
  * 11：部署规格认 `botUrl` + `botSha256`：bot 包直接去外部地址（GitHub Release）取，不带机器票，
  * 按规格里的 sha256 核对（src/releases.ts）；没有这两个字段仍从 Gateway 转发拉。Gateway 不按
  * 这个号分流——字段是可选的，老管家不认就原样忽略，照旧走转发。
+ *
+ * 12：工人多一条循环，领主 Bot 派的活（`/worker/tasks/*`，src/worker/tasks.ts，docs/bot-tasks.md）。
+ * Gateway 按它分流：低于 12 的机器上派活当场记成「管家太旧」，不排队等。
  */
-export const PROTOCOL = 11
+export const PROTOCOL = 12
 
 export interface ManagerState {
   machineId: string

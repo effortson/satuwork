@@ -2231,7 +2231,13 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      */
     const kbs = this.ctx.tools.has('knowledge_search') ? (this.ctx.catalog?.knowledge ?? []) : []
     const knowledge = kbs.length ? `\n\n${knowledgeBlock(kbs)}` : ''
-    const base = `${bot?.prompt?.trim() || this.system}\n\n${runtimeBlock()}\n\n${schedulingBlock()}${web}${escalate}${cite}${outFiles}${todo}${knowledge}`
+    /**
+     * 主 Bot 那一段：能派给谁、派出去之后该怎么说话（docs/bot-tasks.md §5）。只有名单非空时出现
+     * ——名单是 Gateway 只给主 Bot 下发的，别的 Bot 这里永远是空串。
+     */
+    const crew = this.ctx.tools.has('assign_task') ? (this.ctx.catalog?.assignable ?? []) : []
+    const assign = crew.length ? `\n\n${assignBlock(crew)}` : ''
+    const base = `${bot?.prompt?.trim() || this.system}\n\n${runtimeBlock()}\n\n${schedulingBlock()}${web}${escalate}${cite}${outFiles}${todo}${knowledge}${assign}`
     const { resident, index } = this.skillsOf(bot)
     const parts = [
       ...resident.map((s) => `## Skill: ${s.displayName}\n${s.body}`),
@@ -2628,6 +2634,11 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      */
     const knowledgeOn = (catalog.knowledge?.length ?? 0) > 0
     /**
+     * 不是主 Bot 就没有 assign_task（docs/bot-tasks.md §3）：目录里的派活名单只给主 Bot 下发，
+     * 名单空就不进表。同样只是遮掩——接口那头不是主 Bot 一律 403。
+     */
+    const assignOn = (catalog.assignable?.length ?? 0) > 0
+    /**
      * 工具表里一把连接器工具都没有时，`connector_upload_file` 也不进表。它只为那些工具
      * 服务；单独摆着，模型会拿它去给公司自配的 MCP 传文件，然后收一句「不是连接器的工具」。
      * 同样只是遮掩：直接报名字照样调得到，工具自己会拒。
@@ -2638,6 +2649,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         (!t.name.startsWith('mcp_') || mcpNames.has(t.name)) &&
         (imageOn || t.name !== 'generate_image') &&
         (knowledgeOn || t.name !== 'knowledge_search') &&
+        (assignOn || t.name !== 'assign_task') &&
         (uploadOn || t.name !== 'connector_upload_file') &&
         (browserOn || !t.name.startsWith('browser_')) &&
         (desktopOn || !t.name.startsWith('desktop_')) &&
@@ -4150,6 +4162,19 @@ function todoBlock(): string {
     '',
     '这张表跨轮、跨重启都在，前面的对话被摘要压掉之后它也还在：拿不准做到哪儿了，不带参数调一次 `todo` 就能读回来。',
     '清单是你自己的工作台，不是交付物——不用在回复里把它抄一遍，用户要的是事情做完。',
+  ].join('\n')
+}
+
+/** 主 Bot 能派活给谁、派完怎么说话。只有主 Bot 的提示词里有这一段（docs/bot-tasks.md §5）。 */
+function assignBlock(list: Array<{ name: string; desc: string }>): string {
+  const names = list.map((b) => (b.desc ? `${b.name}（${b.desc}）` : b.name)).join('、')
+  return [
+    '## 你是主 Bot',
+    `你可以用 assign_task 把一件事派给这些 Bot 去做：${names}。它们各自有自己的人设、能力和连接，适合它们的事交给它们，不要自己硬做。`,
+    '派出去的活**不会当场有结果**：对方做完会以一条「任务结果」消息回到这条对话，到时候你再汇总、追问或继续派。',
+    '所以派完之后先回复用户「已经派给谁、派了什么」，然后结束这一轮，不要空等、不要一遍遍问用户要不要等。',
+    '收到「任务结果」时，它是对方交回来的结论：按它回答用户，或据此派下一步；它没做成就换个做法或如实告诉用户。',
+    '指令要写得自足——对方看不见这条对话。',
   ].join('\n')
 }
 

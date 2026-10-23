@@ -56,11 +56,14 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
        */
       const src = data.source || {}
       // Telegram / Web 在同一主会话里按 via 分辨；看板、日常任务和交还继续用原来的代理标签。
+      // 主 Bot 派活（docs/bot-tasks.md §4）：目标那边是「派来的任务」，主这边是「任务结果」，两档角标。
       const via = src.kind === 'plugin' && src.plugin === 'channel'
         ? (src.channel === 'telegram' ? 'telegram' : String(src.channel || 'channel'))
         : src.kind === 'plugin' && (src.plugin === 'kanban' || src.plugin === 'routine' || src.plugin === 'handoff')
           ? src.plugin
-          : (!src.kind || src.kind === 'user') ? (showChannelVia ? 'web' : '') : ''
+          : src.kind === 'plugin' && src.plugin === 'task'
+            ? (src.phase === 'result' ? 'task-result' : 'task')
+            : (!src.kind || src.kind === 'user') ? (showChannelVia ? 'web' : '') : ''
       if (src.kind && src.kind !== 'user' && !via) continue
       turnVia = via
       assistant = null

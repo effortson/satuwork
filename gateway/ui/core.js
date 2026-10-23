@@ -19,7 +19,7 @@ var SatuCore = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // core/src/index.ts
+  // ../core/src/index.ts
   var index_exports = {};
   __export(index_exports, {
     CHAT_ALIVE_MS: () => CHAT_ALIVE_MS,
@@ -74,7 +74,7 @@ var SatuCore = (() => {
     userIdOfPath: () => userIdOfPath
   });
 
-  // core/src/i18n/dict.ts
+  // ../core/src/i18n/dict.ts
   var dict = {
     // ── 导航与页面标题 ──────────────────────────────────────────────────
     概览: "Overview",
@@ -195,8 +195,6 @@ var SatuCore = (() => {
     显示: "Show",
     详情: "Details",
     销售: "Sales",
-    设计: "Design",
-    财务: "Finance",
     姓名: "Name",
     修改: "Edit",
     选填: "Optional",
@@ -1434,7 +1432,7 @@ var SatuCore = (() => {
     供应商密钥由系统管理员配置: "Provider keys are configured by the system owner"
   };
 
-  // core/src/i18n/t.ts
+  // ../core/src/i18n/t.ts
   function t(locale, zh, en) {
     if (locale !== "en") return zh;
     if (en != null) return en;
@@ -1465,7 +1463,7 @@ var SatuCore = (() => {
     return msg;
   }
 
-  // core/src/format.ts
+  // ../core/src/format.ts
   function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   }
@@ -1540,7 +1538,7 @@ var SatuCore = (() => {
     return n >= 1e6 ? `${Math.floor(n / 1e6)}M` : `${Math.round(n / 1e3)}K`;
   }
 
-  // core/src/paths.ts
+  // ../core/src/paths.ts
   function segAfter(p, prefix) {
     if (typeof p !== "string" || !p.startsWith(prefix)) return "";
     return decodeURIComponent(p.slice(prefix.length).split("/")[0] || "");
@@ -1568,7 +1566,7 @@ var SatuCore = (() => {
     return segAfter(p, "/audit/summary/");
   }
 
-  // core/src/api.ts
+  // ../core/src/api.ts
   function createGatewayClient(opts) {
     const { fetch, tokens, locale, onUnauthorized, renewLocalBot } = opts;
     function gatewayBase() {
@@ -1673,7 +1671,7 @@ var SatuCore = (() => {
     return { gatewayBase, gatewayAbs, localBots, localSessions, registerLocalBot, localBotOf, localRoute, swFetch, renewLocalTicket, api };
   }
 
-  // core/src/chat/events.ts
+  // ../core/src/chat/events.ts
   function messageImages(msg) {
     const content = msg && msg.content;
     if (!Array.isArray(content)) return [];
@@ -1768,7 +1766,7 @@ var SatuCore = (() => {
     return null;
   }
 
-  // core/src/chat/fold.ts
+  // ../core/src/chat/fold.ts
   function fold(events, live, channelBot = false) {
     const blocks = [];
     const showChannelVia = channelBot || (events || []).some((ev) => {
@@ -1792,7 +1790,7 @@ var SatuCore = (() => {
       const at = Number(ev.time) || 0;
       if (type === "user/message") {
         const src = data.source || {};
-        const via = src.kind === "plugin" && src.plugin === "channel" ? src.channel === "telegram" ? "telegram" : String(src.channel || "channel") : src.kind === "plugin" && (src.plugin === "kanban" || src.plugin === "routine" || src.plugin === "handoff") ? src.plugin : !src.kind || src.kind === "user" ? showChannelVia ? "web" : "" : "";
+        const via = src.kind === "plugin" && src.plugin === "channel" ? src.channel === "telegram" ? "telegram" : String(src.channel || "channel") : src.kind === "plugin" && (src.plugin === "kanban" || src.plugin === "routine" || src.plugin === "handoff") ? src.plugin : src.kind === "plugin" && src.plugin === "task" ? src.phase === "result" ? "task-result" : "task" : !src.kind || src.kind === "user" ? showChannelVia ? "web" : "" : "";
         if (src.kind && src.kind !== "user" && !via) continue;
         turnVia = via;
         assistant = null;
@@ -2016,7 +2014,7 @@ var SatuCore = (() => {
     return { blocks, status, statusAt, todos, channelVia: showChannelVia, modelSeq };
   }
 
-  // core/src/chat/roster.ts
+  // ../core/src/chat/roster.ts
   function newSum() {
     return { state: "idle", lastAt: 0, lastText: "" };
   }
@@ -2083,7 +2081,7 @@ var SatuCore = (() => {
     return false;
   }
 
-  // core/src/chat/pending.ts
+  // ../core/src/chat/pending.ts
   function mergePending(folded, mine) {
     if (!mine.length) return [];
     const fresh = folded.blocks.filter((b) => b.kind === "user" && b.seq != null);
@@ -2116,7 +2114,7 @@ var SatuCore = (() => {
     return left;
   }
 
-  // core/src/chat/pages.ts
+  // ../core/src/chat/pages.ts
   function mergeChatPage(cur, next) {
     const c = cur || {};
     const known = typeof c.firstSeq === "number" ? c.firstSeq : null;
@@ -2130,7 +2128,7 @@ var SatuCore = (() => {
     };
   }
 
-  // core/src/chat/sse.ts
+  // ../core/src/chat/sse.ts
   async function* sseEvents(reader, stop = () => false) {
     const decoder = new TextDecoder();
     let buf = "";
@@ -2156,7 +2154,7 @@ var SatuCore = (() => {
     }
   }
 
-  // core/src/chat/backoff.ts
+  // ../core/src/chat/backoff.ts
   var CHAT_RETRY_MAX = 40;
   var CHAT_ALIVE_MS = 1e4;
   var CHAT_IDLE_RETRY_MS = 3e4;
@@ -2176,7 +2174,7 @@ var SatuCore = (() => {
     return "warming";
   }
 
-  // core/src/chat/stream.ts
+  // ../core/src/chat/stream.ts
   function defaultSleep(ms, signal) {
     return new Promise((resolve) => {
       if (signal.aborted) return resolve();
@@ -2256,7 +2254,7 @@ var SatuCore = (() => {
     };
   }
 
-  // core/src/markdown/render.ts
+  // ../core/src/markdown/render.ts
   function createMarkdown(opts = {}) {
     function L(zh) {
       return opts.t ? opts.t(zh) : zh;

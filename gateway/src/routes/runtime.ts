@@ -10,6 +10,7 @@ import { KIND, bodyOf, deployOptsOf, refShapes, strField } from '../lib/validate
 import type { Account, BotFolder, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
+import { TASK_INSTRUCTION_MAX, createBotTask, publicBotTask } from '../lib/bot-tasks.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, botTemplateOf, defaultBotModel, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
@@ -128,6 +129,27 @@ const SEAT_MEMORY_LOCK = 0x4d454d
  * 我们要先拿到结果再回答，否则席位那边已经断了，这一次调用记不到结果，钱也说不清。
  */
 const CONNECTOR_TIMEOUT_MS = 60_000
+
+/**
+ * 这颗 Bot 能派活给谁（docs/bot-tasks.md §5）。只有这个账号的主 Bot 有名单：名单上的别的 Bot
+ * 不是主 Bot，自然没有 assign_task，派活天然只有一层。没带 botId 的（脚本）也没有。
+ */
+async function assignableFor(db: RouteCtx['db'], account: Account, botId: string, bots: CatalogItem[]) {
+  if (!botId || account.role === 'owner') return [] as { id: string; name: string; desc: string }[]
+  const main = await db.mainBotOf(account.id)
+  if (!main || main !== botId) return []
+  return bots
+    .filter((b) => b.id !== botId)
+    .map((b) => {
+      const def = b.definition as { description?: unknown } | undefined
+      return { id: b.id, name: b.name, desc: typeof def?.description === 'string' ? def.description.trim() : '' }
+    })
+}
+
+/** 派活名单压进指纹：空名单一个字都不加，老席位的指纹和以前一模一样。 */
+function assignStamp(list: { id: string; name: string }[]): string {
+  return list.length ? `|assign:${list.map((b) => `${b.id}:${b.name}`).join(',')}` : ''
+}
 
 function catalogStamp(
   version: number,
@@ -355,6 +377,11 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     // 席位要知道 utility 是谁：网页提取的摘要走它。挑模型是平台的事，所以是下发的，
     // 不是席位自己在 cordis.yml 里配的——那等于给了一条绕过平台配置的暗路。
     const settings = await db.platformSettings()
+    /**
+     * 主 Bot 派活（docs/bot-tasks.md §5）：**只有这个账号的主 Bot** 的目录里有可派的名单，
+     * 席位凭它决定 assign_task 进不进工具表。名单变了（新建、删掉、改名、换主 Bot）指纹跟着变。
+     */
+    const assignable = await assignableFor(db, account, botId, bots)
 
     json(res, 200, {
       // 实例照着这个数字判断「底座换了没有」。和下面那条探针给的是同一个值。
@@ -380,7 +407,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
         [...skills, ...servers],
         await connectorStampOf(db, account.id, companyId),
         modelStamp(settings),
-        memoryStamp(memories) + knowledgeStamp(knowledge),
+        memoryStamp(memories) + knowledgeStamp(knowledge) + assignStamp(assignable),
       ),
       /**
        * 连接器绑账号、不绑 Bot：合成出来的那几条挂到**每一颗** Bot 的 `mcps` 上。
@@ -403,6 +430,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       memories: memories.map(publicMemory),
       // 知识库：名字和一句话进工具描述，fileCount 给界面。只有这几项，正文不下发。
       knowledge: knowledge.map((k) => ({ id: k.id, name: k.name, desc: k.desc, fileCount: k.fileCount })),
+      // 主 Bot 能派活给谁。不是主 Bot 时一律空数组——席位按空不空决定那把工具进不进表。
+      assignable,
     })
   })
 
@@ -459,6 +488,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const memories = companyId ? await db.memoriesFor(companyId, account.id, botId || null) : []
     /** 知识库同理：建了库、传完第一份文件、改了共享范围，席位下一次探针就把工具表换掉。 */
     const knowledge = companyId ? (await knowledgeUsableByBot(db, companyId, bot)).filter((k) => k.chunkCount > 0) : []
+    /** 派活名单同理：换了主 Bot、名单上多了一颗，席位下一次探针就把 assign_task 加进 / 拿出工具表。 */
+    const assignable = await assignableFor(db, account, botId, bots)
     json(res, 200, {
       templateVersion: version,
       stamp: catalogStamp(
@@ -467,7 +498,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
         tools,
         await connectorStampOf(db, account.id, companyId),
         modelStamp(await db.platformSettings()),
-        memoryStamp(memories) + knowledgeStamp(knowledge),
+        memoryStamp(memories) + knowledgeStamp(knowledge) + assignStamp(assignable),
       ),
     })
   })
@@ -1466,6 +1497,50 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     if (botId && !(await db.botsFor(account.companyId, account.id)).some((b) => b.id === botId)) throw new HttpError(404, 'Bot 不存在')
     await db.setMainBot(account.id, botId, Date.now())
     json(res, 200, { ok: true, mainBotId: botId })
+  })
+
+  // ── 主 Bot 派活（docs/bot-tasks.md）。──────────────────────────────────
+
+  /**
+   * 主 Bot 的席位派一件活给名单上另一颗 Bot。席位票只认账号，`fromBotId` 由席位自报——
+   * 一个账号的几颗席位是同一个人的，冒名没有意义；真正的门是「它得是这个账号的主 Bot」。
+   */
+  router.post('/runtime/tasks', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    requireSeat(account)
+    const body = bodyOf(req)
+    const fromBotId = strField(body, 'fromBotId')
+    const main = await db.mainBotOf(account.id)
+    if (!main || main !== fromBotId) throw new HttpError(403, '只有主 Bot 能派活')
+    const bots = await db.botsFor(account.companyId, account.id)
+    const from = bots.find((b) => b.id === fromBotId)
+    if (!from) throw new HttpError(404, '没有这个 Bot')
+    const want = strField(body, 'toBot').trim()
+    const lower = want.toLowerCase()
+    const to = bots.find((b) => b.id === want) || bots.find((b) => b.name.trim().toLowerCase() === lower)
+    if (!to) throw new HttpError(404, `名单上没有「${want}」这颗 Bot`)
+    if (to.id === from.id) throw new HttpError(400, '不能派给自己')
+    const instruction = strField(body, 'instruction').trim()
+    if (!instruction) throw new HttpError(400, '指令不能为空')
+    if ([...instruction].length > TASK_INSTRUCTION_MAX) throw new HttpError(400, `指令最多 ${TASK_INSTRUCTION_MAX} 字`)
+    // 同一件事还没收场就别再派一遍；对方正等着你的结果时也别反过来派给它（转圈）。
+    if (await db.openBotTaskBetween(account.id, from.id, to.id)) throw new HttpError(409, `「${to.name}」上一件活还没做完，等它交回来再派`)
+    if (await db.openBotTaskBetween(account.id, to.id, from.id)) throw new HttpError(409, `「${to.name}」正等着你的结果，不能反过来派给它`)
+    const task = await createBotTask(db, account, from, to, {
+      instruction,
+      sessionId: body.sessionId == null ? null : strField(body, 'sessionId', false) || null,
+      callId: body.callId == null ? null : strField(body, 'callId', false) || null,
+    })
+    json(res, 201, { task: publicBotTask(task), toName: to.name })
+  })
+
+  /** 这条会话派出去的那些。登录票：界面画状态用。 */
+  router.get('/runtime/tasks', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    requireSeat(account)
+    const sessionId = (req.query.get('sessionId') || '').trim()
+    if (!sessionId) throw new HttpError(400, 'sessionId 不能为空')
+    json(res, 200, { tasks: (await db.botTasksOfSession(account.id, sessionId)).map(publicBotTask) })
   })
 
   /**

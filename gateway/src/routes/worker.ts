@@ -20,6 +20,8 @@ import { HttpError, json, type Req, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import { requireMachine, requireSeatOnly } from '../lib/guards.ts'
 import { claimDue, RUN_TIMEOUT_MS, settleRun, turnFailure } from '../routines.ts'
+import { TASK_LEASE_MS, leaseDueTasks, taskFinish, taskStarted } from '../lib/bot-tasks.ts'
+import type { BotTask } from '../db.ts'
 import type { ChannelEvent, ChargeStatus, Machine, Routine, RoutineRun } from '../db.ts'
 import { accountByApiKey, fillSweptCharge, gateOr402, recordLlmCall, recordUsageOnly, settle, withSettleLock } from '../lib/llm-billing.ts'
 import type { TokenUsage } from '../lib/llm-usage.ts'
@@ -235,6 +237,73 @@ export function attachWorker(router: Router, ctx: RouteCtx) {
     const account = await requireSeatOnly(req, db)
     const run = await claimedRun(db, req.params.runId, `desktop:${account.id}`)
     await routineFinish(db, run, bodyOf(req))
+    json(res, 200, { ok: true })
+  })
+
+  // ── 主 Bot 派活（docs/bot-tasks.md）。两套门和日常任务一样：机器凭 smt_，本地 Bot 凭 sat_。──
+  //
+  // 一条任务两步（run / deliver），每一步各自领、各自续、各自回报；规矩全在 lib/bot-tasks.ts。
+  // run 那一步比日常任务多带回一样东西：目标那一轮的回复正文（finish 的 `result`）。
+
+  /** 这位领走、还在干的那一条；不是就 404，不区分「别人的」和「收场了」。 */
+  async function claimedTask(taskId: string, owner: string): Promise<BotTask> {
+    const task = await db.botTaskOfOwner(taskId, owner)
+    if (!task) throw new HttpError(404, '这一步不归你，或者已经收场了')
+    return task
+  }
+  function taskFinishBody(req: Req) {
+    const body = bodyOf(req)
+    return {
+      kind: strField(body, 'kind', true),
+      result: body.result == null ? undefined : strField(body, 'result', false),
+      error: body.error == null ? undefined : strField(body, 'error', false),
+      sessionId: body.sessionId == null ? undefined : strField(body, 'sessionId', false) || null,
+    }
+  }
+
+  router.get('/worker/tasks/due', async (req, res) => {
+    const machine = await requireMachine(req, db)
+    json(res, 200, await leaseDueTasks(db, machine.id, async (task, botId) => {
+      const rt = await db.seatRuntime(task.accountId, botId)
+      return rt && rt.machineId === machine.id ? rt.seatId : null
+    }))
+  })
+  router.post('/worker/tasks/:taskId/started', async (req, res) => {
+    const machine = await requireMachine(req, db)
+    const task = await claimedTask(req.params.taskId, machine.id)
+    json(res, 200, await taskStarted(db, task, machine.id, strField(bodyOf(req), 'sessionId', true)))
+  })
+  router.post('/worker/tasks/:taskId/renew', async (req, res) => {
+    const machine = await requireMachine(req, db)
+    if (!(await db.renewBotTask(req.params.taskId, machine.id, Date.now() + TASK_LEASE_MS))) throw new HttpError(404, '这一步不归这台机器，或者已经收场了')
+    json(res, 200, { leaseMs: TASK_LEASE_MS })
+  })
+  router.post('/worker/tasks/:taskId/finish', async (req, res) => {
+    const machine = await requireMachine(req, db)
+    const task = await claimedTask(req.params.taskId, machine.id)
+    await taskFinish(db, task, taskFinishBody(req))
+    json(res, 200, { ok: true })
+  })
+
+  router.get('/runtime/local-tasks/due', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    json(res, 200, await leaseDueTasks(db, `desktop:${account.id}`, async () => 'desktop'))
+  })
+  router.post('/runtime/local-tasks/:taskId/started', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    const owner = `desktop:${account.id}`
+    const task = await claimedTask(req.params.taskId, owner)
+    json(res, 200, await taskStarted(db, task, owner, strField(bodyOf(req), 'sessionId', true)))
+  })
+  router.post('/runtime/local-tasks/:taskId/renew', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    if (!(await db.renewBotTask(req.params.taskId, `desktop:${account.id}`, Date.now() + TASK_LEASE_MS))) throw new HttpError(404, '这一步不归你，或者已经收场了')
+    json(res, 200, { leaseMs: TASK_LEASE_MS })
+  })
+  router.post('/runtime/local-tasks/:taskId/finish', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    const task = await claimedTask(req.params.taskId, `desktop:${account.id}`)
+    await taskFinish(db, task, taskFinishBody(req))
     json(res, 200, { ok: true })
   })
 }

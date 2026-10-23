@@ -779,13 +779,27 @@ export function apply(ctx: Context, _config: Config = {}) {
        * 人打的一句话。看板卡不走 /messages——它有自己的一条路，标识在席位那头打。
        */
       routine?: unknown
+      /**
+       * 主 Bot 派活（docs/bot-tasks.md §4）：工人替主 Bot 发进目标会话的指令（phase=instruction），
+       * 或替目标 Bot 发回主会话的结论（phase=result）。身份只让界面画角标；正文自带那行标题。
+       */
+      task?: unknown
     }
     const modelRole = body.modelRole === 'utility' || body.modelRole === 'daily' ? body.modelRole : undefined
     const routine = body.routine && typeof body.routine === 'object' ? (body.routine as { id?: unknown; name?: unknown }) : null
+    const task = body.task && typeof body.task === 'object' ? (body.task as { id?: unknown; phase?: unknown; from?: unknown }) : null
     // 谁在说话。kind 认得出「不是人打的」——界面照 source.plugin 画角标（见 chat.js 的 fold）。
     const source = routine
       ? ({ kind: 'plugin', plugin: 'routine', form: String(routine.id ?? '') } as MessageSource)
-      : ({ kind: 'user' } as MessageSource)
+      : task
+        ? ({
+            kind: 'plugin',
+            plugin: 'task',
+            form: String(task.id ?? ''),
+            phase: task.phase === 'result' ? 'result' : 'instruction',
+            from: task.from && typeof task.from === 'object' ? task.from : null,
+          } as MessageSource)
+        : ({ kind: 'user' } as MessageSource)
     let images: ImageRef[]
     try {
       images = await imageRefs(ctx, body.images)

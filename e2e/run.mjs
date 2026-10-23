@@ -64,10 +64,13 @@ import { runGuards } from './guards.mjs'
 import { runHandoff } from './handoff.mjs'
 import { runRoutineRetry } from './routine-retry.mjs'
 import { runRoutineWorker } from './routine-worker.mjs'
+import { runBotTasks } from './bot-tasks.mjs'
 import { runWorker } from './worker.mjs'
 import { runChannelWebhook } from './channel-webhook.mjs'
 import { runServerless } from './serverless.mjs'
 import { runLocalRoutines } from './local-routines.mjs'
+import { runLocalTasks } from './local-tasks.mjs'
+import { runAssign } from './assign.mjs'
 import { runReleaseBlob } from './release-blob.mjs'
 import { runBrowser } from './browser.mjs'
 import { runMounted } from './mounted.mjs'
@@ -3723,9 +3726,12 @@ async function main() {
     await suite('handoff', () => runHandoff({ root, gwRoot, test, req, start, waitHttp, assert, log, skip }))
     await suite('routine-retry', () => runRoutineRetry({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('routine-worker', () => runRoutineWorker({ gwRoot, test, req, start, waitHttp, assert, log }))
+    await suite('bot-tasks', () => runBotTasks({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('worker', () => runWorker({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('serverless', () => runServerless({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('local-routines', () => runLocalRoutines({ root, test, assert, log }))
+    await suite('local-tasks', () => runLocalTasks({ root, test, assert, log }))
+    await suite('assign', () => runAssign({ root, test, assert, log }))
     await suite('local-bootstrap', () => runLocalBootstrap({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('release-blob', () => runReleaseBlob({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('browser', () => runBrowser({ root, test, assert, log }))

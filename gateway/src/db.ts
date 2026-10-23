@@ -5,8 +5,8 @@ import { randomAccessToken, randomApiKey, randomMachineToken } from './crypto.ts
 import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
-import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotFolder, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type KnowledgeBase, type KnowledgeChunk, type KnowledgeFile, type KnowledgeFileStatus, type KnowledgeShare, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
-import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botFolderOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, knowledgeBaseOf, knowledgeChunkOf, knowledgeFileOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
+import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotFolder, type BotRelease, type BotTask, type BotTaskStatus, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type KnowledgeBase, type KnowledgeChunk, type KnowledgeFile, type KnowledgeFileStatus, type KnowledgeShare, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
+import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botFolderOf, botReleaseOf, botTaskOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, knowledgeBaseOf, knowledgeChunkOf, knowledgeFileOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
  * 类型、常量和行解析都在 `db/` 底下；这里原样再导出，调用点仍然
@@ -3985,6 +3985,128 @@ export class Db {
        on conflict ("accountId") do update set "botId" = excluded."botId", "updatedAt" = excluded."updatedAt"`,
       [accountId, botId, now],
     )
+  }
+
+  // ── 主 Bot 派活（迁移 0058，docs/bot-tasks.md）。────────────────────────
+
+  async insertBotTask(input: {
+    accountId: string
+    companyId: string
+    fromBotId: string
+    toBotId: string
+    fromSessionId: string | null
+    callId: string | null
+    instruction: string
+    status: BotTaskStatus
+    owner: string | null
+    result?: string | null
+    error?: string | null
+  }): Promise<BotTask> {
+    const id = randomUUID()
+    const now = Date.now()
+    await this.run(
+      `insert into bot_tasks (id, "accountId", "companyId", "fromBotId", "toBotId", "fromSessionId", "callId", instruction, status, owner, "leaseUntil", attempts, result, error, "createdAt")
+       values (?,?,?,?,?,?,?,?,?,?,null,0,?,?,?)`,
+      [id, input.accountId, input.companyId, input.fromBotId, input.toBotId, input.fromSessionId, input.callId, input.instruction, input.status, input.owner, input.result ?? null, input.error ?? null, now],
+    )
+    return (await this.botTask(id))!
+  }
+
+  async botTask(id: string): Promise<BotTask | undefined> {
+    const r = await this.one('select * from bot_tasks where id = ?', [id])
+    return r ? botTaskOf(r) : undefined
+  }
+
+  /** 这条会话派出去的那些，新的在前。界面画状态用。 */
+  async botTasksOfSession(accountId: string, sessionId: string, limit = 20): Promise<BotTask[]> {
+    const rows = await this.many(
+      'select * from bot_tasks where "accountId" = ? and "fromSessionId" = ? order by "createdAt" desc limit ?',
+      [accountId, sessionId, Math.max(1, Math.trunc(limit))],
+    )
+    return rows.map(botTaskOf)
+  }
+
+  /** 还没收场、从 from 派给 to 的。防 A 派 B、B 派 A 转圈，也防同一件事派两遍。 */
+  async openBotTaskBetween(accountId: string, fromBotId: string, toBotId: string): Promise<BotTask | undefined> {
+    const r = await this.one(
+      `select * from bot_tasks where "accountId" = ? and "fromBotId" = ? and "toBotId" = ? and status not in ('done', 'failed') order by "createdAt" desc limit 1`,
+      [accountId, fromBotId, toBotId],
+    )
+    return r ? botTaskOf(r) : undefined
+  }
+
+  /**
+   * 领活：owner 归我、还没人领的那些，**原子地**填上租约并推进状态（queued → running、
+   * reporting → delivering）。同一条两个工人同时来领，只有一个拿得到。
+   */
+  async claimBotTasks(owner: string, leaseUntil: number, limit = 20): Promise<BotTask[]> {
+    const rows = await this.many(
+      `update bot_tasks set "leaseUntil" = ?, attempts = attempts + 1,
+         status = case status when 'queued' then 'running' when 'reporting' then 'delivering' else status end,
+         "startedAt" = case when status = 'queued' then coalesce("startedAt", ?) else "startedAt" end
+       where id in (
+         select id from bot_tasks where owner = ? and "leaseUntil" is null and status in ('queued', 'reporting')
+          order by "createdAt" limit ?
+       )
+       returning *`,
+      [leaseUntil, Date.now(), owner, Math.max(1, Math.trunc(limit))],
+    )
+    return rows.map(botTaskOf)
+  }
+
+  /** 这位领走、还在干的那一条；不是就没有，不区分「别人的」和「收场了」。 */
+  async botTaskOfOwner(id: string, owner: string): Promise<BotTask | undefined> {
+    const r = await this.one(
+      `select * from bot_tasks where id = ? and owner = ? and "leaseUntil" is not null and status in ('running', 'delivering')`,
+      [id, owner],
+    )
+    return r ? botTaskOf(r) : undefined
+  }
+
+  async renewBotTask(id: string, owner: string, leaseUntil: number): Promise<boolean> {
+    return (
+      (await this.run(
+        `update bot_tasks set "leaseUntil" = ? where id = ? and owner = ? and "leaseUntil" is not null and status in ('running', 'delivering')`,
+        [leaseUntil, id, owner],
+      )) > 0
+    )
+  }
+
+  /** 改几格。只改给了的那几格；null 也是一个值（清掉租约就是把它设成 null）。 */
+  async updateBotTask(
+    id: string,
+    patch: Partial<Pick<BotTask, 'status' | 'owner' | 'leaseUntil' | 'attempts' | 'runSessionId' | 'runKind' | 'result' | 'error' | 'endedAt' | 'deliveredAt'>>,
+  ): Promise<boolean> {
+    const sets: string[] = []
+    const args: unknown[] = []
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) continue
+      sets.push(`"${k}" = ?`)
+      args.push(v)
+    }
+    if (!sets.length) return false
+    args.push(id)
+    return (await this.run(`update bot_tasks set ${sets.join(', ')} where id = ?`, args)) > 0
+  }
+
+  /** 领走了却到期没续的。 */
+  async expiredBotTasks(nowMs: number): Promise<BotTask[]> {
+    const rows = await this.many(
+      `select * from bot_tasks where status in ('running', 'delivering') and "leaseUntil" is not null and "leaseUntil" < ?`,
+      [nowMs],
+    )
+    return rows.map(botTaskOf)
+  }
+
+  /** 排着队一直没人来领的：queued 看 createdAt，reporting 看 endedAt（目标那一步收场的时刻）。 */
+  async unclaimedBotTasksBefore(beforeMs: number): Promise<BotTask[]> {
+    const rows = await this.many(
+      `select * from bot_tasks where "leaseUntil" is null and (
+         (status = 'queued' and "createdAt" < ?) or (status = 'reporting' and coalesce("endedAt", "createdAt") < ?)
+       )`,
+      [beforeMs, beforeMs],
+    )
+    return rows.map(botTaskOf)
   }
 
   /** 某个员工自己建了几个。配额挡在建之前，见 routes/runtime.ts。 */

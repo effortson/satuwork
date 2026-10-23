@@ -224,6 +224,29 @@ export async function runChatFold({ root, test, assert, log }) {
     assert(blocks.map((b) => b.via).join(',') === 'web,web,telegram,telegram', `来源继承不对：${blocks.map((b) => b.via)}`)
   })
 
+  await test('主 Bot 派活：目标那边是「派来的任务」，主这边是「任务结果」，两档角标', async () => {
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'fin', createdAt: T }),
+      ev(2, 'user/message', {
+        message: um('【主 Bot「助手」派来的任务】\n做月报'),
+        source: { kind: 'plugin', plugin: 'task', form: 't1', phase: 'instruction', from: { id: 'main', name: '助手' } },
+      }),
+      ev(3, 'turn/start', { turn: 1 }),
+      ev(4, 'assistant/message', { turn: 1, message: am('月报做好了'), usage }),
+      ev(5, 'turn/end', { turn: 1, reason: 'completed' }),
+      ev(6, 'user/message', {
+        message: um('【任务结果】@财务 做完了（任务：做月报）\n月报做好了'),
+        source: { kind: 'plugin', plugin: 'task', form: 't1', phase: 'result', from: { id: 'fin', name: '财务' } },
+      }),
+      ev(7, 'turn/start', { turn: 2 }),
+      ev(8, 'assistant/message', { turn: 2, message: am('收到，我来汇总'), usage }),
+      ev(9, 'turn/end', { turn: 2, reason: 'completed' }),
+    ]
+    const blocks = fold(events).blocks.filter((b) => b.kind === 'user' || b.kind === 'assistant')
+    assert(blocks.length === 4, `派来的任务和结果都该画出来：${blocks.length}`)
+    assert(blocks.map((b) => b.via).join(',') === 'task,task,task-result,task-result', `角标不对：${blocks.map((b) => b.via)}`)
+  })
+
   await test('普通 Bot 的 Web 对话不显示 channel 标签', async () => {
     const events = [
       ev(1, 'session', { version: 5, id: 's1', botId: 'ordinary-bot', createdAt: T }),

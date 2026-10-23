@@ -2084,15 +2084,17 @@
 .sw-msg[data-via="kanban"] .sw-bubble::before { content: '看板任务'; }
 .sw-msg[data-via="routine"] .sw-bubble::before { content: '日常任务'; }
 .sw-msg[data-via="handoff"] .sw-bubble::before { content: '人工交还'; }
+.sw-msg[data-via="task"] .sw-bubble::before { content: '主 Bot 派来的任务'; }
+.sw-msg[data-via="task-result"] .sw-bubble::before { content: '任务结果'; }
 .sw-msg[data-via="web"] .sw-bubble::before { content: 'Web'; }
 .sw-msg[data-via="telegram"] .sw-bubble::before { content: 'Telegram'; }
 /* 派来的活那条正文是**机器拼的简报**（cardBrief / 日常任务的交底），一路 `#`、`##`
    排下来。照 .sw-md 的层级画，一个气泡里就出现 20px、18px、14.5px 三种字号，
    而这些标题只是「这张卡要做什么」这类栏目名，不是文章的章节。字号收成正文一档，
    靠字重和上下留白分栏目——层级还在，字体统一了。 */
-.sw-msg:is([data-via="kanban"], [data-via="routine"], [data-via="handoff"]) .sw-bubble .sw-md h1,
-.sw-msg:is([data-via="kanban"], [data-via="routine"], [data-via="handoff"]) .sw-bubble .sw-md h2,
-.sw-msg:is([data-via="kanban"], [data-via="routine"], [data-via="handoff"]) .sw-bubble .sw-md h3,
+.sw-msg:is([data-via="kanban"], [data-via="routine"], [data-via="handoff"], [data-via="task"], [data-via="task-result"]) .sw-bubble .sw-md h1,
+.sw-msg:is([data-via="kanban"], [data-via="routine"], [data-via="handoff"], [data-via="task"], [data-via="task-result"]) .sw-bubble .sw-md h2,
+.sw-msg:is([data-via="kanban"], [data-via="routine"], [data-via="handoff"], [data-via="task"], [data-via="task-result"]) .sw-bubble .sw-md h3,
 .sw-msg:is([data-via="kanban"], [data-via="routine"], [data-via="handoff"]) .sw-bubble .sw-md h4,
 .sw-msg:is([data-via="kanban"], [data-via="routine"], [data-via="handoff"]) .sw-bubble .sw-md h5,
 .sw-msg:is([data-via="kanban"], [data-via="routine"], [data-via="handoff"]) .sw-bubble .sw-md h6 {

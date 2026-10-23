@@ -1629,6 +1629,45 @@ export interface BotFolder {
   updatedAt: number
 }
 
+/**
+ * 主 Bot 派活的一条（迁移 0058，docs/bot-tasks.md）。状态只往前走：
+ * queued → running → reporting → delivering → done；只有「送不回主 Bot」才是 failed。
+ */
+export type BotTaskStatus = 'queued' | 'running' | 'reporting' | 'delivering' | 'done' | 'failed'
+
+export interface BotTask {
+  id: string
+  accountId: string
+  companyId: string
+  /** 主 Bot（派的那颗）。 */
+  fromBotId: string
+  /** 目标 Bot。 */
+  toBotId: string
+  /** 主 Bot 派活时所在的会话，界面点回去用。 */
+  fromSessionId: string | null
+  /** 派活的那次工具调用。 */
+  callId: string | null
+  instruction: string
+  status: BotTaskStatus
+  /** 这一步该谁来领：机器 id，或本地 Bot 的 `desktop:<accountId>`。null = 没人能领。 */
+  owner: string | null
+  /** 领走的那一方的租约；null = 还没人领。 */
+  leaseUntil: number | null
+  /** 这一步被领过几次（到期没回报会放回去再领）。 */
+  attempts: number
+  /** 目标 Bot 那边跑在哪条会话。 */
+  runSessionId: string | null
+  /** 目标那一轮怎么收的场（completed / timeout / failed / error…）。 */
+  runKind: string | null
+  /** 目标 Bot 的回复正文，或没做成的说明。 */
+  result: string | null
+  error: string | null
+  createdAt: number
+  startedAt: number | null
+  endedAt: number | null
+  deliveredAt: number | null
+}
+
 export interface Memory {
   id: string
   layer: MemoryLayer
