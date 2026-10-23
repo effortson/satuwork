@@ -1616,6 +1616,19 @@ export type MemoryLayer = 'bot' | 'self' | 'group' | 'company'
 export const MEMORY_ITEM_KINDS = ['偏好', '事实', '联系人'] as const
 export type MemoryKind = (typeof MEMORY_ITEM_KINDS)[number]
 
+/**
+ * 侧栏 Bot 名单的一个分类（迁移 0056）。**按账号存**：同一颗 Bot 在不同人的名单上可以在
+ * 不同分类里。`position` 决定名单上的先后，新建的排在最后。
+ */
+export interface BotFolder {
+  id: string
+  accountId: string
+  name: string
+  position: number
+  createdAt: number
+  updatedAt: number
+}
+
 export interface Memory {
   id: string
   layer: MemoryLayer

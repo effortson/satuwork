@@ -196,6 +196,12 @@ const state = {
   /** 用量屏「月」胶囊选的是哪个月（YYYY-MM）。null = 当月。 */
   usageMonth: null,
   runtimeBots: [],
+  /** 名单的分类（/runtime/bots 的 folders）；每颗 Bot 的归属在 bot.folderId 上。每个人自己的视图。 */
+  botFolders: [],
+  /** 正在新建 / 重命名的分类：{ id, name, error }。null = 弹窗没开。 */
+  botFolderEdit: null,
+  /** 哪些分类收着。只是这台机器上的习惯，存 localStorage；没写的一律当展开。 */
+  botFolderOpen: readBotFolderOpen(),
   /**
    * 公司名下有没有配对好的运行机器（GET /runtime/bots 的 hasMachine）。`null` = 还没拉到，
    * 那时一律按「有」对待——拿不准的时候不藏东西、不改默认。
@@ -831,4 +837,22 @@ function enterPath() {
   load.then(() => {
     if (seq === navSeq) render()
   })
+}
+
+/** 侧栏分类的开合，记在本机：和 navGroupOpen 不同，分类是人自己建的，收起来的那几个刷新后该还收着。 */
+const BOT_FOLDER_OPEN_KEY = 'satuwork.botFolderOpen'
+function readBotFolderOpen() {
+  try {
+    const v = JSON.parse(localStorage.getItem(BOT_FOLDER_OPEN_KEY) || '{}')
+    return v && typeof v === 'object' ? v : {}
+  } catch {
+    return {}
+  }
+}
+function saveBotFolderOpen(v) {
+  try {
+    localStorage.setItem(BOT_FOLDER_OPEN_KEY, JSON.stringify(v))
+  } catch {
+    // 隐私窗口、禁了存储：记不住就记不住，开合照样能用。
+  }
 }

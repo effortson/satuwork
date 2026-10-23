@@ -298,6 +298,9 @@ function appView() {
               <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="go" data-href="/channels" aria-current="${state.path === '/channels'}">${svg(['M4 12a8 8 0 0 1 16 0', 'M12 4v4', 'M8 12h8', 'M6 18h12'], 15)}<span>${t('渠道', 'Channels')}</span></button>
               ${/* 知识库排在渠道后面（docs/knowledge-base.md §11.1）：书本。 */ ''}
               <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="go" data-href="/knowledge" aria-current="${state.path === '/knowledge' || state.path.startsWith('/knowledge/')}">${svg(['M4 4h7a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H4z', 'M20 4h-7a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h7z'], 15)}<span>${t('知识库')}</span></button>
+              ${/* 名单的分类：建一个，然后把 Bot 拖进去。它管的是上面那份名单，所以和「新建 Bot」
+                    收在同一颗菜单里，而不是另起一个设置页。 */ ''}
+              <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="bot-folder-new">${svg(FOLDER, 15)}<span>${t('新建分类', 'New folder')}</span></button>
             </div>`
               : ''
           }
@@ -312,6 +315,8 @@ function appView() {
           <button type="button" class="satu-newbot satu-newbot-rail" data-act="go" data-href="/knowledge"
             aria-current="${state.path === '/knowledge' || state.path.startsWith('/knowledge/')}"
             aria-label="${esc(t('知识库'))}" title="${esc(t('知识库'))}">${svg(['M4 4h7a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H4z', 'M20 4h-7a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h7z'], 15)}</button>
+          <button type="button" class="satu-newbot satu-newbot-rail" data-act="bot-folder-new"
+            aria-label="${esc(t('新建分类', 'New folder'))}" title="${esc(t('新建分类', 'New folder'))}">${svg(FOLDER, 15)}</button>
         </div>`
         }
         ${
@@ -358,6 +363,7 @@ function appView() {
     </main>
     ${confirmModal()}
     ${newBotModal()}
+    ${botFolderModal()}
     ${pluginsModal()}
     ${logsModal()}
   </div>`

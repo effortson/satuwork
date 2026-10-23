@@ -291,10 +291,67 @@ function chatRosterNav() {
    * 的都是它，三处共用一个判断才不会各自漂移。
    */
   const selected = onChatPage() ? chatBotIdOf(state.path) || state.chatBotId : ''
-  return bots
-    .map((b) => {
-      const sum = (botStreams.get(b.id) || {}).sum || { state: 'idle', lastAt: 0, lastText: '' }
-      return `<button type="button" class="satu-botrow" data-act="chat-open" data-id="${esc(b.id)}" data-bot-row="${esc(b.id)}" aria-current="${b.id === selected}">
+  const { loose, folders } = rosterGroups(bots)
+  /**
+   * 没分类的排最前面、不带标题——「默认没有分类」：一个人一个分类都没建时，名单和
+   * 以前一模一样。它同时是一块放回区：从分类里拖出来的 Bot 丢到这儿就回到没分类；
+   * 这一块空着的时候只在拖动中才画出来（CSS 按 .satu-botlist[data-dragging] 开）。
+   */
+  const looseHtml =
+    `<div class="satu-botfolder satu-botfolder-loose" data-drop-folder="">` +
+    loose.map((b) => rosterRowHtml(b, selected)).join('') +
+    (folders.length && !loose.length
+      ? `<div class="satu-botfolder-empty">${esc(t('拖到这里取消分类', 'Drop here to remove from its folder'))}</div>`
+      : '') +
+    `</div>`
+  const folderHtml = folders
+    .map((f) => {
+      const open = state.botFolderOpen[f.id] !== false
+      const menuId = 'folder:' + f.id
+      return `<div class="satu-botfolder" data-folder="${esc(f.id)}" data-open="${String(open)}">
+        ${/* 标题整条都是放入区：拖着一颗 Bot 悬在上面就亮，松手就进这个分类（收着的也能放）。 */ ''}
+        <div class="satu-botfolder-head" data-drop-folder="${esc(f.id)}">
+          <button type="button" class="satu-group satu-group-toggle satu-botfolder-toggle" data-act="bot-folder-toggle" data-id="${esc(f.id)}" aria-expanded="${String(open)}">
+            <span class="satu-groupchev" aria-hidden="true">${svg(open ? CHEVRON_SMALL_DOWN : CHEVRON_SMALL_RIGHT, 12)}</span>
+            <span class="satu-botfolder-name">${esc(f.name)}</span>
+            <span class="satu-botfolder-count">${f.bots.length}</span>
+          </button>
+          <button type="button" class="satu-botfolder-more" data-menu-toggle data-act="menu-toggle" data-id="${esc(menuId)}"
+            aria-haspopup="true" aria-expanded="${String(state.menu === menuId)}"
+            aria-label="${esc(t('分类操作', 'Folder actions'))}" title="${esc(t('分类操作', 'Folder actions'))}">${svg(['M12 6h.01', 'M12 12h.01', 'M12 18h.01'], 14)}</button>
+          ${
+            state.menu === menuId
+              ? `<div class="satu-menu" data-flip="${String(Boolean(state.menuFlip))}">
+              <button type="button" class="satu-menuitem" data-act="bot-folder-rename" data-id="${esc(f.id)}">${t('重命名', 'Rename')}</button>
+              <button type="button" class="satu-menuitem" data-danger="true" data-act="bot-folder-delete" data-id="${esc(f.id)}">${t('删除分类', 'Delete folder')}</button>
+            </div>`
+              : ''
+          }
+        </div>
+        ${open ? f.bots.map((b) => rosterRowHtml(b, selected)).join('') : ''}
+      </div>`
+    })
+    .join('')
+  return looseHtml + folderHtml
+}
+
+/**
+ * 名单按分类分组：没分类的一组，再按分类的先后各一组。
+ *
+ * 归属指向一个已经不存在的分类（刚在另一个标签页里删掉）时当没分类——名单上不能
+ * 凭空少一颗 Bot。
+ */
+function rosterGroups(bots) {
+  const folders = (state.botFolders || []).slice().sort((a, b) => a.position - b.position)
+  const known = new Set(folders.map((f) => f.id))
+  const loose = bots.filter((b) => !b.folderId || !known.has(b.folderId))
+  return { loose, folders: folders.map((f) => ({ ...f, bots: bots.filter((b) => b.folderId === f.id) })) }
+}
+
+/** 名单上的一行。`draggable`：拖到某个分类的标题上就归进去（见下面那组 drag 监听）。 */
+function rosterRowHtml(b, selected) {
+  const sum = (botStreams.get(b.id) || {}).sum || { state: 'idle', lastAt: 0, lastText: '' }
+  return `<button type="button" class="satu-botrow" draggable="true" data-act="chat-open" data-id="${esc(b.id)}" data-bot-row="${esc(b.id)}" aria-current="${b.id === selected}">
         ${/* 头像占满两行：名字和摘要并排在它右边，整行才像一条会话，而不是一个
              带小图标的菜单项。34 是 botAvatar 的默认尺寸，也正好等于两行的高度。 */ ''}
         <span class="satu-botavatar">${botAvatar(b.icon, 34, b.origin)}</span>
@@ -317,9 +374,141 @@ function chatRosterNav() {
           <span class="satu-botsnip"${installingOf(b) || sum.lastText ? '' : ' hidden'}>${esc(installingOf(b) ? t('正在安装…', 'Installing…') : sum.lastText)}</span>
         </span>
       </button>`
-    })
-    .join('')
 }
+
+/**
+ * 新建 / 重命名分类的弹窗。只有一格名字——分类就是一个名字加一群 Bot，没有别的。
+ */
+function botFolderModal() {
+  const f = state.botFolderEdit
+  if (!f) return ''
+  return `<div class="gw-modal-backdrop" data-act="bot-folder-close">
+    <div class="gw-modal" data-stop style="max-width: 400px;">
+      <div>
+        <h2 style="font-size: 20px; margin: 0 0 4px;">${f.id ? t('重命名分类', 'Rename folder') : t('新建分类', 'New folder')}</h2>
+        <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('分类只是你自己名单上的分法，把 Bot 拖到分类名上就归进去。', 'Folders only organize your own list; drag a bot onto a folder name to file it.')}</p>
+      </div>
+      <div class="field">
+        <label for="bf-name">${t('名字')}</label>
+        <input class="input" id="bf-name" data-folderedit="name" value="${esc(f.name)}" maxlength="24" placeholder="${esc(t('例如：客户跟进', 'e.g. Customers'))}" autofocus>
+      </div>
+      ${f.error ? `<p style="margin: 0; font-size: 13px; color: var(--color-danger, #d33);">${esc(f.error)}</p>` : ''}
+      <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
+        <button type="button" class="btn btn-secondary" data-act="bot-folder-close">${t('取消')}</button>
+        <button type="button" class="btn btn-primary" data-act="bot-folder-save" ${state.busy ? 'disabled' : ''}>${f.id ? t('保存') : t('创建', 'Create')}</button>
+      </div>
+    </div>
+  </div>`
+}
+
+async function saveBotFolder() {
+  const f = state.botFolderEdit
+  if (!f || state.busy) return
+  const name = String(f.name || '').trim()
+  if (!name) {
+    f.error = t('分类要有名字', 'Give the folder a name')
+    render()
+    return
+  }
+  state.busy = true
+  f.error = ''
+  render()
+  try {
+    if (f.id) {
+      const data = await api('PATCH', `/runtime/bot-folders/${encodeURIComponent(f.id)}`, { name })
+      state.botFolders = (state.botFolders || []).map((x) => (x.id === f.id ? data.folder : x))
+    } else {
+      const data = await api('POST', '/runtime/bot-folders', { name })
+      state.botFolders = [...(state.botFolders || []), data.folder]
+    }
+    state.botFolderEdit = null
+  } catch (err) {
+    f.error = err.message
+  } finally {
+    state.busy = false
+    render()
+  }
+}
+
+/**
+ * 把一颗 Bot 放进某个分类（folderId 为空就是拿出来）。
+ *
+ * 先改本地再发请求：松手那一下名单就该变，等接口回来再动会让人以为没拖上。失败了
+ * 退回去并说一声。
+ */
+async function moveBotToFolder(botId, folderId) {
+  const bot = (state.runtimeBots || []).find((b) => b.id === botId)
+  if (!bot) return
+  const next = folderId || null
+  const prev = bot.folderId || null
+  if (prev === next) return
+  bot.folderId = next
+  // 放进一个收着的分类里，顺手展开它：不然松手之后那颗 Bot 就「不见了」。
+  if (next && state.botFolderOpen[next] === false) {
+    state.botFolderOpen = { ...state.botFolderOpen, [next]: true }
+    saveBotFolderOpen(state.botFolderOpen)
+  }
+  render()
+  try {
+    await api('PUT', `/runtime/bots/${encodeURIComponent(botId)}/folder`, { folderId: next })
+  } catch (err) {
+    bot.folderId = prev
+    flash('err', err.message)
+    render()
+  }
+}
+
+/**
+ * 名单上的拖动。原生 HTML5 拖放：行上 `draggable`，放入区是 `[data-drop-folder]`
+ * （每个分类的标题，和最上面那块没分类区）。
+ *
+ * 拖动过程中**只改属性不重画**：render() 会把正在拖的那个节点换掉，拖动当场中断。
+ * 真正改数据的只有 drop 那一下（moveBotToFolder）。
+ */
+let rosterDragId = ''
+function rosterDragClear() {
+  rosterDragId = ''
+  for (const el of document.querySelectorAll('[data-drop-folder][data-dragover]')) el.removeAttribute('data-dragover')
+  for (const el of document.querySelectorAll('.satu-botlist[data-dragging], .satu-botrow[data-dragging]')) el.removeAttribute('data-dragging')
+}
+document.addEventListener('dragstart', (e) => {
+  const row = e.target instanceof Element ? e.target.closest('[data-bot-row]') : null
+  if (!row) return
+  rosterDragId = row.getAttribute('data-bot-row') || ''
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', rosterDragId)
+  }
+  row.setAttribute('data-dragging', 'true')
+  const list = row.closest('.satu-botlist')
+  if (list) list.setAttribute('data-dragging', 'true')
+})
+document.addEventListener('dragend', () => rosterDragClear())
+document.addEventListener('dragover', (e) => {
+  if (!rosterDragId) return
+  const zone = e.target instanceof Element ? e.target.closest('[data-drop-folder]') : null
+  if (!zone) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  for (const el of document.querySelectorAll('[data-drop-folder][data-dragover]')) if (el !== zone) el.removeAttribute('data-dragover')
+  zone.setAttribute('data-dragover', 'true')
+})
+document.addEventListener('dragleave', (e) => {
+  if (!rosterDragId) return
+  const zone = e.target instanceof Element ? e.target.closest('[data-drop-folder]') : null
+  // 从标题挪到它自己的子节点上也会发 dragleave，真离开才灭。
+  if (zone && !(e.relatedTarget instanceof Node && zone.contains(e.relatedTarget))) zone.removeAttribute('data-dragover')
+})
+document.addEventListener('drop', (e) => {
+  if (!rosterDragId) return
+  const zone = e.target instanceof Element ? e.target.closest('[data-drop-folder]') : null
+  if (!zone) return
+  e.preventDefault()
+  const botId = rosterDragId
+  const folderId = zone.getAttribute('data-drop-folder') || ''
+  rosterDragClear()
+  void moveBotToFolder(botId, folderId)
+})
 
 let rosterPaintQueued = false
 

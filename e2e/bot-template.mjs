@@ -203,6 +203,54 @@ export async function runBotTemplate({ gwRoot, test, req, start, waitHttp, asser
       assert(his.status === 201, `Bob 建 ${his.status} ${his.text}`)
     })
 
+    await test('名单分类：建、放、改名、删，都是自己的视图', async () => {
+      // 默认没有分类：名单上 folders 是空的，每颗 Bot 的 folderId 是 null。
+      const before = await req(base, 'GET', '/runtime/bots', { token: alice })
+      assert(before.status === 200, `名单 ${before.status} ${before.text}`)
+      assert(Array.isArray(before.json.folders) && before.json.folders.length === 0, '一开始就有分类')
+      assert(before.json.bots.every((b) => b.folderId === null), '一开始就有归属')
+
+      const empty = await req(base, 'POST', '/runtime/bot-folders', { token: alice, body: { name: '  ' } })
+      assert(empty.status === 400, `空名字拿到 ${empty.status}`)
+      const made = await req(base, 'POST', '/runtime/bot-folders', { token: alice, body: { name: '客户跟进' } })
+      assert(made.status === 201, `建分类 ${made.status} ${made.text}`)
+      const folderId = made.json.folder.id
+
+      // 放进去：名单上这颗 Bot 的 folderId 跟着变。
+      const put = await req(base, 'PUT', `/runtime/bots/${aliceBot}/folder`, { token: alice, body: { folderId } })
+      assert(put.status === 200, `放入 ${put.status} ${put.text}`)
+      const mid = await req(base, 'GET', '/runtime/bots', { token: alice })
+      assert(mid.json.folders.length === 1 && mid.json.folders[0].name === '客户跟进', '名单上没带出分类')
+      assert(mid.json.bots.find((b) => b.id === aliceBot).folderId === folderId, '归属没写上')
+
+      // 分类是 alice 自己的：bob 的名单上看不到，也放不进去。
+      const bobs = await req(base, 'GET', '/runtime/bots', { token: bob })
+      assert(bobs.json.folders.length === 0, 'Bob 看到了 Alice 的分类')
+      const bobBot = bobs.json.bots.find((b) => b.scope === 'user')
+      const steal = await req(base, 'PUT', `/runtime/bots/${bobBot.id}/folder`, { token: bob, body: { folderId } })
+      assert(steal.status === 404, `放进别人的分类拿到 ${steal.status}`)
+      // 也放不了不在自己名单上的 Bot。
+      const other = await req(base, 'PUT', `/runtime/bots/${aliceBot}/folder`, { token: bob, body: { folderId: null } })
+      assert(other.status === 404, `动别人的 Bot 拿到 ${other.status}`)
+
+      const renamed = await req(base, 'PATCH', `/runtime/bot-folders/${folderId}`, { token: alice, body: { name: '客户' } })
+      assert(renamed.status === 200 && renamed.json.folder.name === '客户', `改名 ${renamed.status} ${renamed.text}`)
+
+      // 拿出来：folderId 传 null。
+      const out = await req(base, 'PUT', `/runtime/bots/${aliceBot}/folder`, { token: alice, body: { folderId: null } })
+      assert(out.status === 200, `拿出 ${out.status} ${out.text}`)
+      const back = await req(base, 'PUT', `/runtime/bots/${aliceBot}/folder`, { token: alice, body: { folderId } })
+      assert(back.status === 200, `再放回去 ${back.status}`)
+
+      // 删分类不删 Bot：Bot 还在名单上，只是回到没分类。
+      const del = await req(base, 'DELETE', `/runtime/bot-folders/${folderId}`, { token: alice })
+      assert(del.status === 200, `删分类 ${del.status} ${del.text}`)
+      const after = await req(base, 'GET', '/runtime/bots', { token: alice })
+      assert(after.json.folders.length === 0, '删完分类还在')
+      const bot = after.json.bots.find((b) => b.id === aliceBot)
+      assert(bot && bot.folderId === null, '删分类把 Bot 也带走了，或者归属没清')
+    })
+
     await test('删掉自己的 Bot（没席位的那种直接删干净）', async () => {
       const del = await req(base, 'DELETE', `/runtime/bots/${aliceBot}`, { token: alice })
       assert(del.status === 200, `删 ${del.status} ${del.text}`)

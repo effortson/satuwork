@@ -5,8 +5,8 @@ import { randomAccessToken, randomApiKey, randomMachineToken } from './crypto.ts
 import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
-import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type KnowledgeBase, type KnowledgeChunk, type KnowledgeFile, type KnowledgeFileStatus, type KnowledgeShare, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
-import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, knowledgeBaseOf, knowledgeChunkOf, knowledgeFileOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
+import { type Handoff, type HandoffState, HANDOFF_LIVE, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotFolder, type BotRelease, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type KnowledgeBase, type KnowledgeChunk, type KnowledgeFile, type KnowledgeFileStatus, type KnowledgeShare, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
+import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botFolderOf, botReleaseOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorCallOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, credOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, knowledgeBaseOf, knowledgeChunkOf, knowledgeFileOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
  * 类型、常量和行解析都在 `db/` 底下；这里原样再导出，调用点仍然
@@ -3908,6 +3908,63 @@ export class Db {
       [companyId],
     )
     return rows.map(catalogOf)
+  }
+
+  // ── 侧栏名单的个人分类（迁移 0056）。─────────────────────────────────
+
+  async botFolders(accountId: string): Promise<BotFolder[]> {
+    const rows = await this.many('select * from bot_folders where "accountId" = ? order by position, "createdAt"', [accountId])
+    return rows.map(botFolderOf)
+  }
+
+  async botFolder(accountId: string, id: string): Promise<BotFolder | undefined> {
+    const row = await this.one('select * from bot_folders where id = ? and "accountId" = ?', [id, accountId])
+    return row ? botFolderOf(row) : undefined
+  }
+
+  async countBotFolders(accountId: string): Promise<number> {
+    const r = await this.one('select count(*)::int as n from bot_folders where "accountId" = ?', [accountId])
+    return Number((r as { n?: number } | undefined)?.n ?? 0)
+  }
+
+  /** 新分类排在最后：position 取当前最大值加一。 */
+  async createBotFolder(accountId: string, name: string, now: number): Promise<BotFolder> {
+    const id = randomUUID()
+    await this.run(
+      `insert into bot_folders (id, "accountId", name, position, "createdAt", "updatedAt")
+       values (?, ?, ?, (select coalesce(max(position), 0) + 1 from bot_folders where "accountId" = ?), ?, ?)`,
+      [id, accountId, name, accountId, now, now],
+    )
+    return (await this.botFolder(accountId, id))!
+  }
+
+  async renameBotFolder(accountId: string, id: string, name: string, now: number): Promise<BotFolder | undefined> {
+    await this.run('update bot_folders set name = ?, "updatedAt" = ? where id = ? and "accountId" = ?', [name, now, id, accountId])
+    return this.botFolder(accountId, id)
+  }
+
+  /** 删分类：归属行级联掉，里面的 Bot 回到没分类。只删自己名下的。 */
+  async deleteBotFolder(accountId: string, id: string): Promise<boolean> {
+    return (await this.run('delete from bot_folders where id = ? and "accountId" = ?', [id, accountId])) > 0
+  }
+
+  /** 这个人把哪些 Bot 放进了哪个分类：botId → folderId。没放的不在表里。 */
+  async botFolderItems(accountId: string): Promise<Map<string, string>> {
+    const rows = await this.many('select "botId", "folderId" from bot_folder_items where "accountId" = ?', [accountId])
+    return new Map(rows.map((r) => [String(r.botId), String(r.folderId)]))
+  }
+
+  /** 把一颗 Bot 放进某个分类；folderId 为 null 就是拿出来（回到没分类）。 */
+  async setBotFolder(accountId: string, botId: string, folderId: string | null): Promise<void> {
+    if (!folderId) {
+      await this.run('delete from bot_folder_items where "accountId" = ? and "botId" = ?', [accountId, botId])
+      return
+    }
+    await this.run(
+      `insert into bot_folder_items ("accountId", "botId", "folderId") values (?, ?, ?)
+       on conflict ("accountId", "botId") do update set "folderId" = excluded."folderId"`,
+      [accountId, botId, folderId],
+    )
   }
 
   /** 某个员工自己建了几个。配额挡在建之前，见 routes/runtime.ts。 */

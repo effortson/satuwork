@@ -492,8 +492,30 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   white-space: nowrap;
 }
 .satu-botsnip[hidden] { display: none; }
-/* 收起侧栏时只剩头像，名字、时间、摘要一起收掉。 */
+/* ── 名单的分类（shell.js 的 chatRosterNav）─────────────────────────────
+   分类标题是一行小字加个三角，和侧栏下面那组导航的分组标题一个样（.satu-group）。
+   整条标题都是放入区：拖着 Bot 悬在上面就描一圈品牌色。 */
+.satu-botfolder { display: flex; flex-direction: column; gap: 2px; }
+.satu-botfolder-head { position: relative; display: flex; align-items: center; gap: 2px; margin-top: 6px; border-radius: var(--radius-sm); }
+.satu-botfolder-loose + .satu-botfolder .satu-botfolder-head { margin-top: 4px; }
+.satu-botfolder-toggle { flex: 1; min-width: 0; justify-content: flex-start; gap: 6px; padding: 6px var(--space-2) 6px var(--space-3); border-radius: var(--radius-sm); }
+.satu-botfolder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.satu-botfolder-count { flex: none; font-variant-numeric: tabular-nums; opacity: 0.7; }
+/* 那颗「…」平时淡着，鼠标到这一行才亮；菜单开着时也亮，不然看不出是哪个分类的菜单。 */
+.satu-botfolder-more { flex: none; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-right: 4px; padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: color-mix(in srgb, var(--color-text) 45%, transparent); cursor: pointer; opacity: 0; }
+.satu-botfolder-head:hover .satu-botfolder-more, .satu-botfolder-more:focus-visible, .satu-botfolder-more[aria-expanded="true"] { opacity: 1; }
+.satu-botfolder-more:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
+.satu-botfolder-head .satu-menu { right: 4px; }
+/* 拖动中：被拖的那行淡掉；悬停的放入区描一圈；没分类那块空着时画出一道虚线框，好有地方放回去。 */
+.satu-botrow[data-dragging="true"] { opacity: 0.4; }
+[data-drop-folder][data-dragover="true"] { box-shadow: inset 0 0 0 2px var(--color-accent); background: var(--color-accent-100); }
+.satu-botfolder-empty { display: none; margin: 2px 0; padding: 10px var(--space-3); border: 1px dashed var(--border); border-radius: var(--radius-sm); font-size: 12px; text-align: center; color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+.satu-botlist[data-dragging="true"] .satu-botfolder-empty { display: block; }
+.satu-botlist[data-dragging="true"] .satu-botfolder-loose { min-height: 12px; }
+/* 收起侧栏时只剩头像，名字、时间、摘要一起收掉。分类标题也收掉——62px 宽放不下一个名字。 */
 .satu-rail .satu-botrow { justify-content: center; padding: 8px 0; }
+.satu-rail .satu-botfolder-head { display: none; }
+.satu-rail .satu-botfolder-empty { padding: 8px 0; font-size: 0; }
 .satu-rail .satu-botmain { display: none; }
 .gw-chat-main > .gw-flash { margin: var(--space-3) var(--space-6) 0; }
 

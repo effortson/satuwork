@@ -194,6 +194,13 @@ async function runConfirm() {
       flashDeletedBot(data)
       go('/bots')
       return
+    } else if (c.kind === 'delete-bot-folder') {
+      await api('DELETE', `/runtime/bot-folders/${encodeURIComponent(c.id)}`)
+      state.botFolders = (state.botFolders || []).filter((f) => f.id !== c.id)
+      // 里面的回到没分类，和服务端的级联一致；不重拉名单，免得正在聊的那条流抖一下。
+      for (const b of state.runtimeBots || []) if (b.folderId === c.id) b.folderId = null
+      render()
+      return
     } else if (c.kind === 'delete-my-bot') {
       // 席位在服务端一起拆（见 routes/runtime.ts）。名册要重拉：侧栏那一行得当场消失。
       const data = await api('DELETE', `/runtime/bots/${encodeURIComponent(c.id)}`)
@@ -1277,6 +1284,52 @@ document.getElementById('app').addEventListener('click', async (e) => {
     const localFirst = state.runtimeHasMachine === false && !!window.__SATUWORK_DESKTOP__
     state.newBot = { name: '', description: '', extraPrompt: '', icon: 'c-bot', runtimeKind: localFirst ? 'local' : 'remote' }
     state.newBotError = ''
+    render()
+    return
+  }
+  // ── 名单的分类（shell.js 的 chatRosterNav / botFolderModal）。──────────
+  if (act === 'bot-folder-new') {
+    state.menu = null
+    state.botFolderEdit = { id: '', name: '', error: '' }
+    render()
+    return
+  }
+  if (act === 'bot-folder-rename') {
+    const f = (state.botFolders || []).find((x) => x.id === btn.getAttribute('data-id'))
+    if (!f) return
+    state.menu = null
+    state.botFolderEdit = { id: f.id, name: f.name, error: '' }
+    render()
+    return
+  }
+  if (act === 'bot-folder-close') {
+    state.botFolderEdit = null
+    render()
+    return
+  }
+  if (act === 'bot-folder-save') {
+    await saveBotFolder()
+    return
+  }
+  if (act === 'bot-folder-toggle') {
+    const id = btn.getAttribute('data-id')
+    if (!id) return
+    state.botFolderOpen = { ...state.botFolderOpen, [id]: state.botFolderOpen[id] === false }
+    saveBotFolderOpen(state.botFolderOpen)
+    render()
+    return
+  }
+  if (act === 'bot-folder-delete') {
+    const f = (state.botFolders || []).find((x) => x.id === btn.getAttribute('data-id'))
+    if (!f) return
+    state.confirm = {
+      title: t('删除这个分类？', 'Delete this folder?'),
+      body: t(`「${f.name}」里的 Bot 不会被删，只是回到没有分类。`, `Bots in “${f.name}” are not deleted; they just go back to the unfiled list.`),
+      label: '删除',
+      kind: 'delete-bot-folder',
+      id: f.id,
+    }
+    state.menu = null
     render()
     return
   }
@@ -2632,6 +2685,12 @@ document.getElementById('app').addEventListener('click', async (e) => {
 
 document.getElementById('app').addEventListener('keydown', (e) => {
   const el = e.target
+  // 分类名那一格：回车就保存，和点「创建」一样。
+  if (el instanceof HTMLInputElement && el.id === 'bf-name' && e.key === 'Enter') {
+    e.preventDefault()
+    void saveBotFolder()
+    return
+  }
   if (!(el instanceof HTMLInputElement) || el.id !== 'sk-tag-draft') return
   if (e.key === 'Enter') {
     e.preventDefault()
@@ -2682,6 +2741,11 @@ document.getElementById('app').addEventListener('input', (e) => {
   }
   if (el.getAttribute('data-act') === 'charge-field' && state.chargeEdit) {
     state.chargeEdit[el.getAttribute('data-field')] = el.value
+    return
+  }
+  const bf = el.getAttribute('data-folderedit')
+  if (bf && state.botFolderEdit) {
+    state.botFolderEdit = { ...state.botFolderEdit, [bf]: el.value }
     return
   }
   const nb = el.getAttribute('data-newbot')

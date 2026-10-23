@@ -777,6 +777,37 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!card.includes('sw-mail-preview'), '纯文本邮件被误判成 HTML')
     })
 
+    await test('名单按分类分组：没分类的在前面不带标题，分类里的跟在标题后面', async () => {
+      const ui = await boot()
+      ui.state.me = { account: { id: 'u1', companyId: 'c1', role: 'member', email: 'u@x' }, company: { id: 'c1' } }
+      ui.state.path = '/a/b1'
+      ui.state.chatBotId = 'b1'
+      ui.state.botFolders = [{ id: 'f2', name: '报表', position: 2 }, { id: 'f1', name: '客户', position: 1 }]
+      ui.state.botFolderOpen = {}
+      ui.state.runtimeBots = [
+        { id: 'b1', name: '小满', folderId: null },
+        { id: 'b2', name: '小满二号', folderId: 'f1' },
+        { id: 'b3', name: '小满三号', folderId: 'gone' },
+      ]
+      const html = ui.chatRosterNav()
+      const at = (needle) => html.indexOf(needle)
+      assert(at('客户') > 0 && at('报表') > 0, '分类标题没画出来')
+      assert(at('客户') < at('报表'), '分类没按 position 排')
+      // 没分类的（以及归属指向一个已经不存在的分类的）排在所有分类前面。
+      assert(at('data-bot-row="b1"') < at('客户') && at('data-bot-row="b3"') < at('客户'), '没分类的 Bot 没排在前面')
+      assert(at('data-bot-row="b2"') > at('客户') && at('data-bot-row="b2"') < at('报表'), '分类里的 Bot 没跟在它的标题后面')
+      assert(html.includes('draggable="true"'), '名单的行不能拖')
+      assert(html.includes('data-drop-folder="f1"') && html.includes('data-drop-folder=""'), '放入区没画')
+      // 收起来的分类不画里面的行，但标题还在（还能往里放）。
+      ui.state.botFolderOpen = { f1: false }
+      const folded = ui.chatRosterNav()
+      assert(!folded.includes('data-bot-row="b2"') && folded.includes('data-drop-folder="f1"'), '收起的分类没收住')
+      // 一个分类都没有：和从前一模一样，没有任何标题和空放入提示。
+      ui.state.botFolders = []
+      const plain = ui.chatRosterNav()
+      assert(!plain.includes('satu-botfolder-head') && !plain.includes('satu-botfolder-empty'), '没分类时多画了东西')
+    })
+
     await test('消息里的 @ 点名要留在气泡上，别发完就没', async () => {
       // 点名是消息的一部分（它决定了这一轮的工具表），不是输入框上一个发完就没的装饰。
       // 丢掉的话翻上去看昨天那条，「@ 了谁」就消失了——而那正是「它为什么去读了我的

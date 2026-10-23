@@ -7,7 +7,7 @@ import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { IMAGE_MODELS } from '../image-models.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, refShapes, strField } from '../lib/validate.ts'
-import type { Account, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
+import type { Account, BotFolder, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, botTemplateOf, defaultBotModel, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
@@ -27,6 +27,21 @@ import { DEFAULT_MIN_DESKTOP_VERSION, desktopSupports, directReleaseUrl, localBo
  * 屏、一个端口），不是一行配置。默认 10 够一个人分工用，真不够就调环境变量，不必改码。
  */
 export const MAX_USER_BOTS = Math.max(1, Math.trunc(Number(process.env.GATEWAY_MAX_USER_BOTS) || 10))
+
+/** 一个人最多几个分类；名字最长几个字。侧栏就那么高，再多就不是在分类了。 */
+const BOT_FOLDERS_MAX = 20
+const BOT_FOLDER_NAME_MAX = 24
+
+function botFolderNameOf(body: Record<string, unknown>): string {
+  const name = strField(body, 'name').trim()
+  if (!name) throw new HttpError(400, '分类名不能为空')
+  if ([...name].length > BOT_FOLDER_NAME_MAX) throw new HttpError(400, `分类名最多 ${BOT_FOLDER_NAME_MAX} 个字`)
+  return name
+}
+
+function publicBotFolder(f: BotFolder) {
+  return { id: f.id, name: f.name, position: f.position }
+}
 
 /**
  * 名单流的直连地址；空串 = 没有名单流。
@@ -1355,11 +1370,13 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const { pinned, tpl } = await botContext(db, account.companyId)
     // 渠道归属与 Bot 定义分表保存。给名册带稳定标记，前端才能只给渠道 Bot 画来源标签，
     // 不能拿固定名称 `telegram bot` 猜：名称能改，也可能有普通 Bot 恰好同名。
-    const [bindings, seatRows, items, machines] = await Promise.all([
+    const [bindings, seatRows, items, machines, folders, folderOf] = await Promise.all([
       db.channelBindings(account.id),
       db.seatRuntimesOfAccount(account.id),
       db.botsFor(account.companyId, account.id),
       account.companyId ? db.machinesOfCompany(account.companyId) : [],
+      db.botFolders(account.id),
+      db.botFolderItems(account.id),
     ])
     const channelByBot = new Map(bindings.map((row) => [row.botId, row.kind]))
     const seats = new Map(seatRows.map((rt) => [rt.botId, rt]))
@@ -1369,10 +1386,13 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
         ...publicBot(item, pinned, tpl),
         channel: channelByBot.get(item.id) ?? null,
         runtime: await botRuntime(async (id) => seats.get(id), machineOf, item),
+        // 这个人把它放在哪个分类里；没放就是 null。分类是他自己的视图，见迁移 0056。
+        folderId: folderOf.get(item.id) ?? null,
       })),
     )
     json(res, 200, {
       bots,
+      folders: folders.map(publicBotFolder),
       quota: { used: await db.countUserBots(account.id), max: MAX_USER_BOTS },
       rosterStreamUrl: (await rosterStreamUrlFor(seats, machineOf, bots)) || null,
       /**
@@ -1382,6 +1402,52 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
        */
       hasMachine: machines.some(machinePaired),
     })
+  })
+
+  // ── 名单的分类。每个人自己的视图（迁移 0056）。─────────────────────
+
+  router.post('/runtime/bot-folders', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    requireSeat(account)
+    const name = botFolderNameOf(bodyOf(req))
+    if ((await db.countBotFolders(account.id)) >= BOT_FOLDERS_MAX) throw new HttpError(409, `最多 ${BOT_FOLDERS_MAX} 个分类`)
+    json(res, 201, { folder: publicBotFolder(await db.createBotFolder(account.id, name, Date.now())) })
+  })
+
+  router.patch('/runtime/bot-folders/:folderId', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    requireSeat(account)
+    const name = botFolderNameOf(bodyOf(req))
+    const folder = await db.renameBotFolder(account.id, req.params.folderId, name, Date.now())
+    if (!folder) throw new HttpError(404, '分类不存在')
+    json(res, 200, { folder: publicBotFolder(folder) })
+  })
+
+  /** 删分类不删 Bot：里面的回到没分类（归属行级联掉）。 */
+  router.delete('/runtime/bot-folders/:folderId', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    requireSeat(account)
+    if (!(await db.deleteBotFolder(account.id, req.params.folderId))) throw new HttpError(404, '分类不存在')
+    json(res, 200, { ok: true })
+  })
+
+  /**
+   * 把一颗 Bot 放进某个分类（`folderId: null` 拿出来）。
+   *
+   * Bot 得是这个人名单上的（botsFor 那条线），分类得是他自己的——两头都只认本人，
+   * 别人的分类 id 猜中了也放不进去。
+   */
+  router.put('/runtime/bots/:botId/folder', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    requireSeat(account)
+    const body = bodyOf(req)
+    const raw = body.folderId
+    const folderId = raw == null || raw === '' ? null : strField(body, 'folderId')
+    const visible = (await db.botsFor(account.companyId, account.id)).some((b) => b.id === req.params.botId)
+    if (!visible) throw new HttpError(404, 'Bot 不存在')
+    if (folderId && !(await db.botFolder(account.id, folderId))) throw new HttpError(404, '分类不存在')
+    await db.setBotFolder(account.id, req.params.botId, folderId)
+    json(res, 200, { ok: true, folderId })
   })
 
   /**

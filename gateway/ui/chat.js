@@ -491,6 +491,7 @@ async function loadRuntimeBots() {
      * 自己建过的远程 Bot 也留着，那是本人的东西，删不删由本人定。
      */
     state.runtimeBots = (data.bots || []).filter((bot) => state.runtimeHasMachine !== false || bot.scope === 'user')
+    state.botFolders = Array.isArray(data.folders) ? data.folders : []
     // 本地 Bot 在不在跑、听哪个口，Gateway 不知道（隧道拆了），只有壳子知道。
     await overlayLocalRuntime(state.runtimeBots)
     // 名单流的直连地址（机器够新、配了公网地址、这个人没有本地 Bot 时才有），没有就是 null。
