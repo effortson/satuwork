@@ -303,6 +303,15 @@ textarea.satu-code { background: var(--popover); color: var(--color-text); borde
 .satu-iconpick:disabled { cursor: default; opacity: 0.55; }
 .satu-iconpick:hover { background: var(--secondary); color: var(--color-text); }
 .satu-iconpick[aria-pressed="true"] { border-color: var(--color-accent-400); background: var(--color-accent-100); color: var(--color-accent-800); }
+/* Bot 头像那一行：电脑上**十个排一行**，手机上**五个一行排两行**。做成等分栅格而不是 flex 换行——
+   新建 Bot 弹窗的内容区只有 472px，十个 44px 的格子加间距要 494px，flex 换行就成了「八个加两个」，
+   看着像两组。格子最大 44px，地方不够就一起缩，里面的头像按格子的比例跟着缩。 */
+.satu-iconrow { display: grid; grid-template-columns: repeat(10, minmax(0, 44px)); gap: 6px; }
+.satu-iconrow .satu-iconpick { width: auto; height: auto; aspect-ratio: 1; }
+.satu-iconrow .satu-iconpick > svg { width: 78%; height: 78%; }
+@media (max-width: 600px) {
+  .satu-iconrow { grid-template-columns: repeat(5, minmax(0, 44px)); }
+}
 .satu-themecard { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--popover); font-family: var(--font-body); color: var(--color-text); cursor: pointer; }
 .satu-themecard:hover { background: var(--secondary); }
 .satu-themecard[aria-pressed="true"] { border-color: var(--color-accent-400); background: var(--color-accent-100); }

@@ -756,7 +756,7 @@ function myBotPage(bot, a) {
                 <input class="input" data-bot="description" value="${esc(a.description)}" placeholder="${esc(t('简介'))}">
                 <div style="font-size: 12.5px; color: var(--muted-foreground);">${t(`模型 ${esc(a.model || '—')}（平台指定）`, `model ${esc(a.model || '—')} (set by the platform)`)}</div>
                 ${botVersionLine(bot)}
-                <div style="display: flex; flex-wrap: wrap; gap: 6px;">${iconPick}</div>
+                <div class="satu-iconrow">${iconPick}</div>
               </div>
             </div>
             <div style="display: flex; align-items: center; gap: var(--space-2); flex: none;">
@@ -853,7 +853,7 @@ function fullBotPage(bot, a) {
                 <input class="input" data-bot="description" value="${esc(a.description)}" placeholder="${esc(t('简介'))}" ${ro ? 'disabled' : ''}>
                 ${/* 模型不给挑：平台在「模型配置」里定的那一个，所有 Bot 都用它。 */ ''}
                 <div style="font-size: 12.5px; color: var(--muted-foreground);">${t(`本月执行 ${esc(bot.usage || '—')}`, `${esc(bot.usage || '—')} this month`)} · ${t(`模型 ${esc(a.model || '—')}（平台指定）`, `model ${esc(a.model || '—')} (set by the platform)`)}</div>
-                <div style="display: flex; flex-wrap: wrap; gap: 6px;">${iconPick}</div>
+                <div class="satu-iconrow">${iconPick}</div>
               </div>
             </div>
             <div style="display: flex; align-items: center; gap: var(--space-2); flex: none;">
@@ -951,7 +951,7 @@ function newBotModal() {
       </div>
       <div class="field">
         <label>${t('头像')}</label>
-        <div style="display: flex; flex-wrap: wrap; gap: 6px;">${icons}</div>
+        <div class="satu-iconrow">${icons}</div>
       </div>
       <div class="field">
         <label for="nb-extra">${t('补充说明')}</label>
