@@ -221,7 +221,7 @@ progress      领活方随续租报的进度（0060，JSON 文本），只给界
 | `GET /runtime/tasks/:id` | 席位票 | 取状态并续租；`answered` 的当场记成 `done` 交出结论；带 `runSessionId`、`progress` |
 | `POST /runtime/tasks/:id/cancel` | 席位票 | 人按了停止 |
 | `GET /runtime/tasks?sessionId=` | 登录票 | 这条会话派出去的那些 |
-| `/worker/tasks/*`、`/runtime/local-tasks/*` | 机器票 / 本地 Bot 的席位票 | 领活、started、renew（可带 `progress`，形状不对的当没报）、finish（run 带回结论；deliver 只在兜底时出现）。本地 Bot 共用一个领活身份 `desktop:<账号>`，桌面端却是一颗一个进程：领活带 `?botId=`，只交这一步要敲它的（run 看目标、deliver 看主 Bot）；领到了不是自己的（老 Gateway）不碰，租约到期放回去 |
+| `/worker/tasks/*`、`/runtime/local-tasks/*` | 机器票 / 本地 Bot 的席位票 | 领活、started、renew（可带 `progress`，形状不对的当没报）、finish（run 带回结论；deliver 只在兜底时出现）。本地 Bot 共用一个领活身份 `desktop:<账号>`，桌面端却是一颗一个进程：领活带 `?botId=`，只交这一步要敲它的（run 看目标、deliver 看主 Bot）；领到了不是自己的（老 Gateway）不碰，租约到期放回去。领活顺手记一笔「这颗在线」（`local_bot_polls`，迁移 0063）：派给一颗一分钟内没来领过的本地 Bot（桌面端没开、它没在跑），当场记成没跑起来，不让主 Bot 干等十分钟 |
 
 ### 5.3 `bot/assign` 事件（主 Bot 的会话）
 

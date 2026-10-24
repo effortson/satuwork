@@ -26,6 +26,10 @@ export const TASK_CANCEL_POLL_MS = Math.max(200, Math.trunc(Number(process.env.G
 export const TASK_LEASE_MS = Math.max(1_000, Math.trunc(Number(process.env.GATEWAY_ROUTINE_LEASE_MS ?? 60_000)))
 export const TASK_TIMEOUT_MS = Math.max(60_000, Math.trunc(Number(process.env.GATEWAY_ROUTINE_TIMEOUT_MS ?? 20 * 60_000)))
 const TASK_PICKUP_MS = Math.max(1_000, Math.trunc(Number(process.env.GATEWAY_TASK_PICKUP_MS ?? 10 * 60_000)))
+/**
+ * 本地 Bot 多久没来领活就算不在线。桌面端每 5 秒领一次、Gateway 最多 20 秒记一回，一分钟足够宽。
+ */
+const LOCAL_ALIVE_MS = Math.max(5_000, Math.trunc(Number(process.env.GATEWAY_LOCAL_ALIVE_MS ?? 60_000)))
 /** 一步最多被领几次（到期没回报就放回去再领）。 */
 const MAX_ATTEMPTS = 3
 /** 指令最长。再长就不是一句派活，是一份文档——让它写进工作区再派。 */
@@ -113,8 +117,23 @@ export function publicBotTask(t: BotTask) {
  * 要敲这颗 Bot，该谁来领。本地 Bot 归桌面端那颗进程；远程的归它席位所在的机器——机器得配好、
  * 管家得够新。判不出来就回一句原因，调用方写进任务里，别让它排着队等一个永远不会来的人。
  */
-export async function ownerFor(db: Db, account: Account, bot: CatalogItem): Promise<{ owner: string; seatId: string } | { error: string }> {
-  if (runtimeKindOf(bot) === 'local') return { owner: `desktop:${account.id}`, seatId: 'desktop' }
+export async function ownerFor(
+  db: Db,
+  account: Account,
+  bot: CatalogItem,
+  opts: { live?: boolean } = {},
+): Promise<{ owner: string; seatId: string } | { error: string }> {
+  if (runtimeKindOf(bot) === 'local') {
+    /**
+     * 本地 Bot 跑在人自己的桌面端里。派活时（`live`）看它最近来领过活没有：桌面端没开、或者这颗没在跑，
+     * 当场记成没跑起来，别让主 Bot 干等十分钟才拿到「一直没人来领」。送回主 Bot 那一步不看——主 Bot
+     * 那颗晚点上线照样领得走，等着它就是了。
+     */
+    if (opts.live && !(await db.localPolledSince(account.id, bot.id, Date.now() - LOCAL_ALIVE_MS))) {
+      return { error: `「${bot.name}」是本地 Bot，现在不在线（桌面端没开，或者它没在跑）` }
+    }
+    return { owner: `desktop:${account.id}`, seatId: 'desktop' }
+  }
   const rt = await db.seatRuntime(account.id, bot.id)
   if (!rt) return { error: `「${bot.name}」还没部署` }
   const machine = await db.machine(rt.machineId)
@@ -148,7 +167,7 @@ export async function createBotTask(
     // 主 Bot 的席位在这一轮里等着（同步派活）：建的那一刻就挂上等待租约。
     waiterUntil: input.wait ? Date.now() + TASK_WAIT_LEASE_MS : null,
   }
-  const target = await ownerFor(db, account, to)
+  const target = await ownerFor(db, account, to, { live: true })
   if ('owner' in target) return db.insertBotTask({ ...base, status: 'queued', owner: target.owner })
   // 有人在等：没跑起来的原因当场交给它，不必绕兜底送回那一圈。
   if (input.wait) {

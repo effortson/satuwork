@@ -290,6 +290,8 @@ export function attachWorker(router: Router, ctx: RouteCtx) {
     const account = await requireSeatOnly(req, db)
     // 桌面端一颗本地 Bot 一个进程，各带自己的 botId 来领：只交要敲它的那几步。老版本不带，照旧全领。
     const botId = (req.query.get('botId') || '').trim() || undefined
+    // 顺手记一笔「这颗在线」：派活时据此判本地 Bot 在不在（lib/bot-tasks.ts 的 ownerFor）。
+    await db.noteLocalPoll(account.id, botId ?? '*', Date.now())
     json(res, 200, await leaseDueTasks(db, `desktop:${account.id}`, async () => 'desktop', botId))
   })
   router.post('/runtime/local-tasks/:taskId/started', async (req, res) => {

@@ -4124,6 +4124,28 @@ export class Db {
     return rows.map(botTaskOf)
   }
 
+  /**
+   * 本地 Bot 来领了一次派活（迁移 0063）。每几秒一次，**最多二十秒写一回**：在不在线只要分钟级的准头，
+   * 不必每拍都改一行。`botId` 是 `*` = 老桌面端，领活不带 botId。
+   */
+  async noteLocalPoll(accountId: string, botId: string, now: number): Promise<void> {
+    await this.run(
+      `insert into local_bot_polls ("accountId", "botId", "seenAt") values (?, ?, ?)
+       on conflict ("accountId", "botId") do update set "seenAt" = excluded."seenAt"
+       where local_bot_polls."seenAt" < excluded."seenAt" - 20000`,
+      [accountId, botId, now],
+    )
+  }
+
+  /** 这颗本地 Bot（或者这个账号上的老桌面端）在 since 之后来领过活没有。 */
+  async localPolledSince(accountId: string, botId: string, since: number): Promise<boolean> {
+    const r = await this.one(
+      `select 1 as ok from local_bot_polls where "accountId" = ? and "botId" in (?, '*') and "seenAt" >= ? limit 1`,
+      [accountId, botId, since],
+    )
+    return Boolean(r)
+  }
+
   /** 领走了却到期没续的。 */
   async expiredBotTasks(nowMs: number): Promise<BotTask[]> {
     const rows = await this.many(

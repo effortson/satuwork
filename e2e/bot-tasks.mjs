@@ -495,8 +495,25 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       }
       const jia = await local('本地甲')
       const yi = await local('本地乙')
+      const bing = await local('本地丙')
       const localDue = (botId) =>
         req(gwBase, 'GET', `/runtime/local-tasks/due${botId ? `?botId=${encodeURIComponent(botId)}` : ''}`, { token: seatTok })
+
+      // 一次都没来领过的本地 Bot（桌面端没开、或者它没在跑）：当场记成没跑起来，不让主 Bot 干等十分钟。
+      const off = await assign({ fromBotId: mainBot, toBot: '本地丙', instruction: '它不在线', sessionId: 's-main', wait: true })
+      assert(off.status === 201, `派 ${off.status} ${off.text}`)
+      const offTask = (await req(gwBase, 'GET', `/runtime/tasks/${off.json.task.id}`, { token: seatTok })).json.task
+      assert(['answered', 'done'].includes(offTask.status) && String(offTask.result || '').includes('不在线'), `不在线的本地 Bot 该当场记成没跑起来：${JSON.stringify(offTask)}`)
+      // 来领过一次就算在线：再派就排队等它领。
+      await localDue(bing)
+      const on = await assign({ fromBotId: mainBot, toBot: '本地丙', instruction: '它在线了', sessionId: 's-main' })
+      assert(on.status === 201 && on.json.task.status === 'queued', `来领过之后该排队：${on.text}`)
+      assert((await localDue(bing)).json.jobs.some((j) => j.taskId === on.json.task.id), '丙该领到')
+      await req(gwBase, 'POST', `/runtime/local-tasks/${on.json.task.id}/started`, { token: seatTok, body: { sessionId: 's-local' } })
+      await req(gwBase, 'POST', `/runtime/local-tasks/${on.json.task.id}/finish`, { token: seatTok, body: { kind: 'completed', result: '好了' } })
+
+      await localDue(jia)
+      await localDue(yi)
       const toYi = await assign({ fromBotId: mainBot, toBot: '本地乙', instruction: '本地乙的活', sessionId: 's-main' })
       assert(toYi.status === 201, `派给本地乙 ${toYi.status} ${toYi.text}`)
       const yiId = toYi.json.task.id
