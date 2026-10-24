@@ -61,11 +61,29 @@ export async function runLocalTasks({ root, test, assert, log }) {
   })
 
   await test('排在对方队列里时被停：撤掉队列里那条，不去中止人自己正跑着的那一轮', async () => {
-    const del = result.own.find((x) => x.method === 'DELETE')
+    const del = result.own.find((x) => x.method === 'DELETE' && x.path.endsWith('/q-4'))
     assert(del && del.path === '/api/sessions/s-local/queue/q-4', `没撤队列里那条：${JSON.stringify(del)}`)
     const aborts = result.own.filter((x) => x.path.endsWith('/abort'))
     assert(aborts.length === 1, `只有第三件该调中止，第四件排着时不该砍人那一轮：${aborts.length} 次`)
     const fin = seen.find((s) => s.path === '/runtime/local-tasks/tk-4/finish')
+    assert(fin && fin.body.kind === 'aborted', `撤掉了该报 aborted：${JSON.stringify(fin && fin.body)}`)
+  })
+
+  await test('拿到会话 id 之后、指令发出去之前被停：不调中止（对方跑着的是人自己那一轮），指令不发，报 aborted', async () => {
+    const msg = result.own.find((x) => x.path.endsWith('/messages') && x.body?.task?.id === 'tk-5')
+    assert(!msg, `被停了还把指令发了进去：${JSON.stringify(msg && msg.body)}`)
+    const aborts = result.own.filter((x) => x.path.endsWith('/abort'))
+    assert(aborts.length === 1, `只有第三件该调中止，第五件还没发指令就不该砍人那一轮：${aborts.length} 次`)
+    const fin = seen.find((s) => s.path === '/runtime/local-tasks/tk-5/finish')
+    assert(fin && fin.body.kind === 'aborted', `该报 aborted：${JSON.stringify(fin && fin.body)}`)
+  })
+
+  await test('排着时被停、第一次撤队列席位没应：下一拍再撤，不退回去中止当前那一轮', async () => {
+    const dels = result.own.filter((x) => x.method === 'DELETE' && x.path.endsWith('/q-6'))
+    assert(dels.length === 2, `该撤两次（第一次 500）：${dels.length} 次`)
+    const aborts = result.own.filter((x) => x.path.endsWith('/abort'))
+    assert(aborts.length === 1, `撤不掉时不该去中止当前那一轮：${aborts.length} 次`)
+    const fin = seen.find((s) => s.path === '/runtime/local-tasks/tk-6/finish')
     assert(fin && fin.body.kind === 'aborted', `撤掉了该报 aborted：${JSON.stringify(fin && fin.body)}`)
   })
 }

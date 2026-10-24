@@ -185,6 +185,8 @@ export function apply(ctx: Context) {
     let queueId = ''
     /** 指令正在发：这一下还不知道它是开轮、排队还是插话，停止要等发完再按结果办。 */
     let posting = false
+    /** 指令已经发进去了。没发之前那一轮不是我们的，停止不去砍它（同 manager/src/worker/tasks.ts）。 */
+    let sent = false
     /** 主 Bot 那边按了停止（续租的回复里带 cancelled）。 */
     let stopped = false
     let stopTimer: ReturnType<typeof setTimeout> | null = null
@@ -198,19 +200,33 @@ export function apply(ctx: Context) {
     const stopTarget = () => {
       if (stopped) return
       stopped = true
-      if (job.phase !== 'run' || !sessionId || steered || posting) return
-      // 还在对方队列里排着：撤掉就完了，一个字都没进它的对话。撤不掉（刚好开跑了）再中止那一轮。
+      if (job.phase !== 'run' || !sessionId || !sent || steered || posting) return
+      // 还在对方队列里排着：撤掉就完了，一个字都没进它的对话。
       if (queueId) {
         const qid = queueId
         queueId = ''
-        void selfJson(`/api/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(qid)}`, { method: 'DELETE' })
-          .then(() => ac.abort())
+        void fetch(`${self()}/api/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(qid)}`, {
+          method: 'DELETE',
+          headers: selfHeaders(),
+          signal: AbortSignal.timeout(20_000),
+        })
+          .then(({ status }) => {
+            // 撤掉了；或者队列里已经没有这一条（人撤了）——它不会再跑，也别去砍人那一轮。
+            if ((status >= 200 && status < 300) || status === 404) ac.abort()
+            // 刚好开跑了：现在跑着的就是我们那一轮，中止它。
+            else if (status === 409) abortTurn()
+            else throw new Error(`HTTP ${status}`)
+          })
           .catch(() => {
+            // 没撤成：下一拍续租再撤。不退回去中止「当前那一轮」——那多半是人的。
+            queueId = qid
             stopped = false
-            stopTarget()
           })
         return
       }
+      abortTurn()
+    }
+    const abortTurn = () => {
       void selfJson(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
       stopTimer = setTimeout(() => ac.abort(), 15_000)
     }
@@ -274,6 +290,7 @@ export function apply(ctx: Context) {
       steered = Boolean(posted?.steered)
       queueId = String(posted?.queueId || '')
       posting = false
+      sent = true
       // 发消息的那一下刚好撞上停止：按发的结果补办（排着的撤掉，开了轮的中止）。
       if (stopped && !steered) {
         stopped = false

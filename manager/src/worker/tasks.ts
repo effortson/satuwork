@@ -9,7 +9,7 @@
  * run 那一步和日常任务（index.ts 的 runJob）一字不差，只多收了一样东西：自己那一轮的
  * `assistant/message`。怎么解释结果、送不送回去，全在 Gateway（lib/bot-tasks.ts），这里只如实报。
  */
-import { LostError, gw, headers, seatEventsUrl, seatJson } from './relay-client.ts'
+import { LostError, gw, headers, seatEventsUrl, seatJson, seatRaw } from './relay-client.ts'
 
 export interface TaskJob {
   taskId: string
@@ -197,11 +197,21 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
   let queueId = ''
   /** 指令正在发：这一下还不知道它是开轮、排队还是插话，停止要等发完再按结果办。 */
   let posting = false
+  /**
+   * 指令已经发进去了。没发之前那一轮压根不是我们的——拿到会话 id 之后还要问 started、读历史、挂流，
+   * 这几步之间人按了停止，去调「中止」砍掉的是人自己正在跑的那一轮。没发就只记下停了，发之前那道
+   * 检查会直接收场。
+   */
+  let sent = false
   /** 主 Bot 那边按了停止（续租的回复里带 cancelled）。 */
   let stopped = false
   let stopTimer: ReturnType<typeof setTimeout> | null = null
   const tracker = new ProgressTracker()
   let moved = false
+  const abortTurn = () => {
+    void seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
+    stopTimer = setTimeout(() => ac.abort(), 15_000)
+  }
   /**
    * 停掉目标那一轮（docs/bot-tasks.md §1.2）。调席位的「中止」接口，那一轮以 aborted 收口，下面照常
    * 读到 turn/end 报上去；中止请求发出去 15 秒还没收口就不等了，照样报 aborted。
@@ -209,21 +219,27 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
   const stopTarget = () => {
     if (stopped) return
     stopped = true
-    if (job.phase !== 'run' || !sessionId || steered || posting) return
-    // 还在对方队列里排着：撤掉就完了，一个字都没进它的对话。撤不掉（刚好开跑了）再中止那一轮。
+    if (job.phase !== 'run' || !sessionId || !sent || steered || posting) return
+    // 还在对方队列里排着：撤掉就完了，一个字都没进它的对话。
     if (queueId) {
       const qid = queueId
       queueId = ''
-      void seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(qid)}`, { method: 'DELETE' })
-        .then(() => ac.abort())
+      void seatRaw(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(qid)}`, { method: 'DELETE' })
+        .then(({ status }) => {
+          // 撤掉了；或者队列里已经没有这一条（人在对方那边撤了）——它不会再跑，也别去砍人那一轮。
+          if ((status >= 200 && status < 300) || status === 404) ac.abort()
+          // 刚好开跑了：现在跑着的就是我们那一轮，中止它。
+          else if (status === 409) abortTurn()
+          else throw new Error(`HTTP ${status}`)
+        })
         .catch(() => {
+          // 没撤成（网络、席位一时不应）：下一拍续租再撤。不退回去中止「当前那一轮」——那多半是人的。
+          queueId = qid
           stopped = false
-          stopTarget()
         })
       return
     }
-    void seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
-    stopTimer = setTimeout(() => ac.abort(), 15_000)
+    abortTurn()
   }
   const renew = setInterval(() => {
     const body = moved ? { progress: tracker.snapshot() } : {}
@@ -279,6 +295,7 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
     steered = Boolean(posted?.steered)
     queueId = String(posted?.queueId || '')
     posting = false
+    sent = true
     // 发消息的那一下刚好撞上停止：按发的结果补办（排着的撤掉，开了轮的中止）。
     if (stopped && !steered) {
       stopped = false
