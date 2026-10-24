@@ -2999,7 +2999,8 @@ function taskDetailHtml(v, tone) {
     ? `<div class="sw-ti-reason" data-tone="${esc(tone)}"><b>${esc(tone === 'bad' ? t('失败原因', 'Why it failed') : t('说明', 'Note'))}</b><span>${esc(v.reason)}</span></div>`
     : ''
   const body = v.body
-    ? `<div class="sw-task-summary sw-md">${window.satuMd ? window.satuMd.render(v.body) : esc(v.body)}</div>`
+    ? // 包一层 .sw-mdblock：inlineMentionPills 只认这一层（syncMd 画的正文都有），不包的话结论里的 @某某 永远不会变成药丸。
+      `<div class="sw-task-summary sw-md"><div class="sw-mdblock">${window.satuMd ? window.satuMd.render(v.body) : esc(v.body)}</div></div>`
     : taskLive(v.state)
       ? ''
       : v.reason
@@ -3710,8 +3711,13 @@ function msgActsHtml(b) {
 
 /* ── 触屏：长按消息弹菜单 ────────────────────────────────────────────────
    触屏没有悬停，气泡外侧那排动作只能常显，挂在每条消息边上是噪音（chat.css 在 hover:none 下把它藏了）。
-   改成长按一条消息约半秒，弹一个小菜单：能引用的给「引用」，都给「复制」。长按本来会触发系统选字，
-   chat.css 把它关了，「复制」就是顶它的。 */
+   改成长按一条消息约半秒，弹一个小菜单：能引用的给「引用」，都给「复制」「选字」。长按本来会触发系统选字，
+   chat.css 把它关了，「复制」顶整条、「选字」把这一条放回系统选字（只要一段、一行代码时用）。
+   链接、图片、代码、输入框不归长按菜单：长按照旧是系统的（复制链接、存图、选一段代码），确认卡里
+   的输入框照旧能选字、能编辑。 */
+
+/** 长按菜单不接管的那些：交给系统的长按（复制链接、存图、选字、编辑）。 */
+const PRESS_NATIVE = 'a, img, pre, code, input, textarea, select, [contenteditable="true"], .sw-approvals, .sw-handoffs'
 
 const LONGPRESS_MS = 480
 let pressTimer = null
@@ -3728,7 +3734,10 @@ function openMsgMenu(row, x, y) {
   const md = row.querySelector('.sw-bubble .sw-md')
   const items = []
   if (seq) items.push(`<button type="button" class="sw-msgmenu-item" data-act="chat-ref-msg" data-seq="${esc(seq)}">${ICON_QUOTE}<span>${esc(t('引用', 'Quote'))}</span></button>`)
-  if (md && md.innerText.trim()) items.push(`<button type="button" class="sw-msgmenu-item" data-act="msg-copy" data-key="${esc(row.getAttribute('data-key') || '')}">${svg(['M9 9h10v12H9z', 'M5 15V3h10'], 15)}<span>${esc(t('复制', 'Copy'))}</span></button>`)
+  if (md && md.innerText.trim()) {
+    items.push(`<button type="button" class="sw-msgmenu-item" data-act="msg-copy" data-key="${esc(row.getAttribute('data-key') || '')}">${svg(['M9 9h10v12H9z', 'M5 15V3h10'], 15)}<span>${esc(t('复制', 'Copy'))}</span></button>`)
+    items.push(`<button type="button" class="sw-msgmenu-item" data-act="msg-select" data-key="${esc(row.getAttribute('data-key') || '')}">${svg(['M4 7V4h3', 'M20 7V4h-3', 'M4 17v3h3', 'M20 17v3h-3', 'M9 12h6'], 15)}<span>${esc(t('选字', 'Select'))}</span></button>`)
+  }
   if (!items.length) return
   const box = document.createElement('div')
   box.id = 'sw-msgmenu'
@@ -3749,13 +3758,23 @@ function openMsgMenu(row, x, y) {
   if (navigator.vibrate) navigator.vibrate(10)
 }
 
+/** 「选字」打开的那一条：这一条放回系统选字，点到别处就收回。 */
+function selectMsgText(key) {
+  for (const el of document.querySelectorAll('#chat-thread .sw-msg[data-selecting]')) el.removeAttribute('data-selecting')
+  const row = key ? document.querySelector(`#chat-thread .sw-msg[data-key="${CSS.escape(key)}"]`) : null
+  if (row) row.setAttribute('data-selecting', '1')
+}
+
 document.addEventListener('pointerdown', (e) => {
   if (e.pointerType !== 'touch') return
   if (e.target instanceof Element && e.target.closest('#sw-msgmenu')) return
   closeMsgMenu()
   const row = e.target instanceof Element ? e.target.closest('#chat-thread .sw-msg[data-key]') : null
-  // 气泡里的按钮、链接、药丸照常点，不抢。
-  if (!row || (e.target instanceof Element && e.target.closest('a, button, input, textarea, .sw-chip, .sw-filechip'))) return
+  // 点到别的地方：上一条「选字」收回来。
+  for (const el of document.querySelectorAll('#chat-thread .sw-msg[data-selecting]')) if (el !== row) el.removeAttribute('data-selecting')
+  // 正在选字的那一条、气泡里的按钮、药丸，以及交给系统长按的那些（PRESS_NATIVE），都不抢。
+  if (!row || row.hasAttribute('data-selecting')) return
+  if (e.target instanceof Element && e.target.closest(`button, .sw-chip, .sw-filechip, ${PRESS_NATIVE}`)) return
   pressAt = { x: e.clientX, y: e.clientY }
   clearTimeout(pressTimer)
   pressTimer = setTimeout(() => {
@@ -3775,7 +3794,11 @@ document.addEventListener('pointerup', cancelPress)
 document.addEventListener('pointercancel', cancelPress)
 // 系统的长按菜单（iOS 的「拷贝 / 查询」、安卓的上下文菜单）不要冒出来和我们的打架。
 document.addEventListener('contextmenu', (e) => {
-  if (e.target instanceof Element && e.target.closest('#chat-thread .sw-msg') && matchMedia('(hover: none)').matches) e.preventDefault()
+  if (!(e.target instanceof Element) || !matchMedia('(hover: none)').matches) return
+  const row = e.target.closest('#chat-thread .sw-msg')
+  // 链接、图片、代码、输入框，和正在选字的那一条：系统的长按菜单照旧出来。
+  if (!row || row.hasAttribute('data-selecting') || e.target.closest(PRESS_NATIVE)) return
+  e.preventDefault()
 })
 document.addEventListener('scroll', closeMsgMenu, true)
 

@@ -2260,6 +2260,14 @@ button.sw-ref-card:hover { background: color-mix(in srgb, var(--secondary) 70%, 
   .sw-msg-acts { display: none !important; }
   /* 长按归我们的菜单：关掉系统的选字和长按预览，「复制」在菜单里。 */
   #chat-thread .sw-bubble { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  /* 交给系统长按的那些（chat.js 的 PRESS_NATIVE）放回来：复制链接、存图、选一段代码，确认卡里的输入框
+     能选能改；长按菜单里点了「选字」的那一条整条放回来。-webkit-user-select 会继承，得逐个写回 text。 */
+  #chat-thread .sw-bubble :is(a, img, pre, code, input, textarea, select, [contenteditable='true'], .sw-approvals, .sw-handoffs),
+  #chat-thread .sw-msg[data-selecting='1'] .sw-bubble {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
 }
 /* 长按弹出的那个小菜单。按下的那条消息轻轻缩一下，告诉人「按住了」。 */
 .sw-msg[data-pressed='1'] .sw-bubble { transform: scale(0.98); transition: transform 0.12s; }

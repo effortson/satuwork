@@ -508,6 +508,12 @@ document.getElementById('app').addEventListener('click', async (e) => {
     takeRefMessage(btn.getAttribute('data-seq'))
     return
   }
+  if (act === 'msg-select') {
+    // 长按菜单里的「选字」：把这一条放回系统选字（chat.js 的 selectMsgText）。
+    closeMsgMenu()
+    selectMsgText(btn.getAttribute('data-key') || '')
+    return
+  }
   if (act === 'msg-copy') {
     closeMsgMenu()
     await copyMsgText(btn.getAttribute('data-key') || '')

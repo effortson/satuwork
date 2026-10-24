@@ -68,9 +68,17 @@ function loadChat(root) {
       new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuching', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(n)),
     document: {
       getElementById: (id) => (id === 'chat-todock' ? todock : null),
-      addEventListener() {},
+      // 记下 document 上挂的监听（长按菜单那几个），测里直接喂假事件。
+      addEventListener(type, fn) {
+        ;(ctx.docListeners[type] = ctx.docListeners[type] || []).push(fn)
+      },
       createElement: () => noNode,
+      querySelectorAll: () => [],
     },
+    docListeners: {},
+    // 长按那几个监听用 instanceof Element 判 target；测里的假元素继承它。
+    Element: class Element {},
+    matchMedia: () => ({ matches: true }),
     // 顶层挂的那几个监听（resize、keydown）：收下就扔。
     addEventListener() {},
     removeEventListener() {},
@@ -339,6 +347,55 @@ export async function runChatFold({ root, test, assert, log }) {
     assert(card && (card.block.approvals || []).some((a) => a.callId === 'm1' && a.state === 'pending'), `确认卡所在的那一块该画出来：${JSON.stringify(rows.map((r) => r.block.kind))}`)
     const done = threadRows(fold([...base, ev(6, 'tool/approval', { turn: 1, callId: 'm1', state: 'approved' })]), 's1').filter((r) => r.kind === 'msg')
     assert(!done[0].block.open && !done[0].block.waits && done.length === 1, `批完该照常折回去：${JSON.stringify(done.map((r) => r.block.kind))}`)
+  })
+
+  await test('手机长按：链接、代码、输入框、确认卡、正在选字的那一条交给系统长按；普通正文归我们的菜单', async () => {
+    const Base = chatCtx.Element
+    const row = new (class extends Base {
+      constructor() {
+        super()
+        this.attrs = {}
+      }
+      hasAttribute(k) {
+        return k in this.attrs
+      }
+      closest(sel) {
+        return sel.includes('.sw-msg') ? this : null
+      }
+    })()
+    /** 假元素：自己是 tag 这种东西，往上是 row。closest 只认「选择器列表里有没有它这个 tag」。 */
+    const node = (tag) =>
+      new (class extends Base {
+        closest(sel) {
+          if (sel.includes('#chat-thread .sw-msg')) return row
+          if (sel === '#sw-msgmenu') return null
+          return sel.split(',').map((x) => x.trim()).includes(tag) ? this : null
+        }
+      })()
+    const menu = (target) => {
+      let prevented = false
+      for (const fn of chatCtx.docListeners.contextmenu || []) fn({ target, preventDefault: () => (prevented = true) })
+      return prevented
+    }
+    assert(menu(node('span')) === true, '普通正文的系统长按菜单该关掉（长按归我们的菜单）')
+    for (const tag of ['a', 'img', 'code', 'pre', 'textarea', 'input', '.sw-approvals']) assert(menu(node(tag)) === false, `${tag} 的系统长按菜单不该被关掉`)
+    row.attrs['data-selecting'] = '1'
+    assert(menu(node('span')) === false, '点了「选字」的那一条，系统长按要放回来')
+    delete row.attrs['data-selecting']
+    // 按在链接上：不起我们的长按计时。
+    const press = (target) => {
+      for (const fn of chatCtx.docListeners.pointerdown || []) fn({ target, pointerType: 'touch', clientX: 1, clientY: 1 })
+      const armed = runInContext('pressTimer !== null', chatCtx)
+      runInContext('clearTimeout(pressTimer); pressTimer = null', chatCtx)
+      return armed
+    }
+    assert(press(node('span')) === true, '普通正文该起长按计时')
+    assert(press(node('a')) === false, '按在链接上不该起我们的长按')
+  })
+
+  await test('派活卡的结论包一层 .sw-mdblock：里面的 @某某 才认得出、画得成药丸', async () => {
+    const html = runInContext(`taskDetailHtml({ body: '交给 @财务 处理', state: 'done', files: [] }, 'ok')`, chatCtx)
+    assert(/class="sw-task-summary sw-md"><div class="sw-mdblock">/.test(html), `结论没包 .sw-mdblock：${html}`)
   })
 
   await test('混排的点名：正文里留着 @名字，点名带 inline（就地画药丸，不另起一排）', async () => {
