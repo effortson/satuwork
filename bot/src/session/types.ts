@@ -57,7 +57,7 @@ export type ContentBlock =
    * `inline`：这一块就落在正文里它被打出来的位置上（「打开 @Gmail 邮件，让 @客户经理 处理」），
    * 前后是 text 块。缺省（老日志、找不到位置的）是一排点名摆在最前、正文里没有它。
    */
-  | { type: 'mention'; kind: 'connector' | 'bot' | 'routine'; id: string; label: string; inline?: boolean }
+  | { type: 'mention'; kind: 'connector' | 'bot' | 'routine'; id: string; label: string; inline?: boolean; logo?: string }
   /**
    * 用户指着说话的一个东西（v6 起，见 docs/chat-references.md）：一条消息，或一个工作区文件。
    *

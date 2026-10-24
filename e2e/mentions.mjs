@@ -44,6 +44,7 @@ export async function runMentions({ root, test, assert, log }) {
     assert(r.inline.进模型还是原句, '模型看到的不是原句——指代关系丢了')
     assert(r.inline.没有本轮指定那一行, '混排的点名还被当成老格式单独成行')
     assert(r.inline.点名的连接照样进工具表, '混排之后点名不再顶工具表')
+    assert(r.inline.图标存进了点名块, '连接器图标没存进点名块——候选里查不到时药丸就只剩一个 @')
   })
 
   await test('落盘是结构，不是那句话', () => {

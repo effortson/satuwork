@@ -1969,7 +1969,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * 不是让整条消息失败：用户那句话没有错，错的是一个已经失效的点名。
      */
     const wanted = Array.isArray(body.mentions) ? body.mentions.slice(0, 10) : []
-    const mentions: { kind: string; id: string; label: string }[] = []
+    const mentions: { kind: string; id: string; label: string; logo?: string }[] = []
     const dropped: string[] = []
     if (wanted.length) {
       const companyId = account.role === 'owner' ? null : account.companyId
@@ -2006,7 +2006,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
           if (id) dropped.push(id)
           continue
         }
-        mentions.push({ kind: 'connector', id, label: `${def.name} (${conn.label})` })
+        // 图标一起存进消息：翻历史时候选里可能已经没有这条连接了（删了、改了），药丸照样画得出图标。
+        mentions.push({ kind: 'connector', id, label: `${def.name} (${conn.label})`, ...(def.logo ? { logo: def.logo } : {}) })
       }
     }
 

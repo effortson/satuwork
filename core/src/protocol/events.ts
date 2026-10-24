@@ -23,6 +23,7 @@ export interface MessageBlock {
   id?: string
   label?: string
   inline?: boolean
+  logo?: string
   name?: string
   seq?: number
   role?: string
@@ -42,6 +43,8 @@ export interface Mention {
   label: string
   /** 落在正文里它被打出来的位置上（会话里的 mention 块带 inline）。界面就地画成药丸，不另起一排。 */
   inline?: boolean
+  /** 连接器的图标地址，点名时存进消息的。候选里查不到这条连接时照样画得出图标。 */
+  logo?: string
 }
 
 export type Ref =

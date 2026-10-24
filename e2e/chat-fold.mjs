@@ -255,7 +255,7 @@ export async function runChatFold({ root, test, assert, log }) {
           role: 'user',
           content: [
             { type: 'text', text: '打开 ' },
-            { type: 'mention', kind: 'connector', id: 'c1', label: 'Gmail (personal)', inline: true },
+            { type: 'mention', kind: 'connector', id: 'c1', label: 'Gmail (personal)', inline: true, logo: 'https://logos.composio.dev/api/gmail' },
             { type: 'text', text: ' 邮件，让 ' },
             { type: 'mention', kind: 'bot', id: 'b2', label: '客户经理', inline: true },
             { type: 'text', text: ' 处理' },
@@ -267,6 +267,7 @@ export async function runChatFold({ root, test, assert, log }) {
     const u = fold(events).blocks.find((b) => b.kind === 'user')
     assert(u.text === '打开 @Gmail (personal) 邮件，让 @客户经理 处理', `正文不对：${u.text}`)
     assert(u.mentions.length === 2 && u.mentions.every((m) => m.inline), `点名要带 inline：${JSON.stringify(u.mentions)}`)
+    assert(u.mentions[0].logo === 'https://logos.composio.dev/api/gmail', '存在消息里的图标没带出来')
   })
 
   await test('主 Bot 派活：派活前一个气泡，任务卡排在中间，拿到结论之后另起一个气泡', async () => {

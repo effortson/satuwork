@@ -1688,7 +1688,7 @@ var SatuCore = (() => {
   function messageMentions(msg) {
     const content = msg && msg.content;
     if (!Array.isArray(content)) return [];
-    return content.filter((b) => b && b.type === "mention" && b.label).map((b) => ({ kind: b.kind || "connector", id: b.id || "", label: String(b.label), ...b.inline ? { inline: true } : {} }));
+    return content.filter((b) => b && b.type === "mention" && b.label).map((b) => ({ kind: b.kind || "connector", id: b.id || "", label: String(b.label), ...b.inline ? { inline: true } : {}, ...b.logo ? { logo: String(b.logo) } : {} }));
   }
   function messageRefs(msg) {
     const content = msg && msg.content;

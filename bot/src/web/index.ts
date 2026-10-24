@@ -1851,7 +1851,9 @@ function mentionList(raw: unknown): Mention[] {
     const kind = String(o.kind ?? 'connector')
     if (!id) continue
     if (kind !== 'connector' && kind !== 'bot' && kind !== 'routine') continue
-    out.push({ kind, id, label: String(o.label ?? '').slice(0, 64) })
+    // 图标地址只认 https、只留一个长度：它会落进会话日志，也会被界面拿去当 <img src>。
+    const logo = typeof o.logo === 'string' && /^https:\/\/\S{1,400}$/.test(o.logo) ? o.logo : ''
+    out.push({ kind, id, label: String(o.label ?? '').slice(0, 64), ...(logo ? { logo } : {}) })
   }
   return out
 }

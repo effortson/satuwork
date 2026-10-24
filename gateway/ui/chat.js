@@ -2720,10 +2720,26 @@ function decorateFiles(md, outs) {
 function inlineMentionPills(md, mentions) {
   if (!mentions.length) return
   const byLabel = [...mentions].sort((a, b) => b.label.length - a.label.length)
-  const stamp = byLabel.map((m) => m.id).join('|')
+  /**
+   * 记号里要带上「候选和名单到了没有」。图标和头像是按 id 回这两份里查的，而打开对话时消息先按
+   * 历史画出来、候选是异步拉的——只按 id 记的话，先画成「@」的那几颗药丸，候选到了也不会再换。
+   */
+  const stamp = byLabel.map((m) => m.id).join('|') + '#' + (state.mentionOptions ? state.mentionOptions.length : -1) + '#' + (state.runtimeBots || []).length
   for (const block of md.querySelectorAll('.sw-mdblock')) {
     if (block.getAttribute('data-mn') === stamp) continue
     block.setAttribute('data-mn', stamp)
+    // 已经画好的药丸就地换一遍：候选刚到，图标 / 头像这下查得到了。
+    for (const old of block.querySelectorAll('.sw-mention-inline[data-mid]')) {
+      const m = byLabel.find((x) => x.id === old.getAttribute('data-mid'))
+      if (!m) continue
+      const box = document.createElement('span')
+      box.innerHTML = mentionPill(m) + '</span>'
+      const fresh = box.firstElementChild
+      if (!fresh) continue
+      fresh.classList.add('sw-mention-inline')
+      fresh.setAttribute('data-mid', m.id)
+      old.replaceWith(fresh)
+    }
     const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT)
     const nodes = []
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
@@ -2747,6 +2763,7 @@ function inlineMentionPills(md, mentions) {
         const pill = box.firstElementChild
         if (!pill) break
         pill.classList.add('sw-mention-inline')
+        pill.setAttribute('data-mid', best.m.id)
         tail.replaceWith(pill)
         rest = after
       }

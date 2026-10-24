@@ -165,7 +165,7 @@ captured = null
 await ctx.agents
   .send(sessionId, '打开 @Gmail (personal) 邮件，让 @客户经理 处理', [], [
     { kind: 'bot', id: 'bot-crm', label: '客户经理' },
-    { kind: 'connector', id: 'conn-personal', label: 'Gmail (personal)' },
+    { kind: 'connector', id: 'conn-personal', label: 'Gmail (personal)', logo: 'https://logos.composio.dev/api/gmail' },
   ])
   .catch(() => {})
 {
@@ -180,6 +180,7 @@ await ctx.agents
     进模型还是原句: sent.some((c) => c.type === 'text' && c.text.includes('打开 @Gmail (personal) 邮件，让 @客户经理 处理')),
     没有本轮指定那一行: !sent.some((c) => c.type === 'text' && c.text.includes('[本轮指定：Gmail (personal)]')),
     点名的连接照样进工具表: toolNames()[0] === 'mcp_gmail_person_send_email',
+    图标存进了点名块: blocks.some((c) => c.type === 'mention' && c.id === 'conn-personal' && c.logo === 'https://logos.composio.dev/api/gmail'),
   }
 }
 

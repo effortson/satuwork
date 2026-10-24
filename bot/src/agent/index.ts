@@ -3768,6 +3768,8 @@ export interface Mention {
   kind: 'connector' | 'bot' | 'routine'
   id: string
   label: string
+  /** 连接器的图标地址（Gateway 校验时附上的）。只给界面画药丸用，不进模型。 */
+  logo?: string
 }
 
 /**
@@ -3805,7 +3807,7 @@ const MAX_IMAGE_BYTES = 3.5 * 1024 * 1024
  */
 function userBlocks(text: string, images: ImageRef[], mentions: Mention[] = [], refs: RefBlock[] = []): ContentBlock[] {
   const { body, leading } = interleaveMentions(text, mentions)
-  const blocks: ContentBlock[] = leading.map((m) => ({ type: 'mention' as const, kind: m.kind, id: m.id, label: m.label }))
+  const blocks: ContentBlock[] = leading.map((m) => ({ type: 'mention' as const, kind: m.kind, id: m.id, label: m.label, ...(m.logo ? { logo: m.logo } : {}) }))
   for (const r of refs) blocks.push({ ...r, type: 'ref' as const })
   for (const img of images) blocks.push({ type: 'image' as const, path: img.path, mime: img.mime })
   // 只有图（或只有点名）的消息也成立：「这张图什么意思」本来就常常没有正文。
@@ -3848,7 +3850,7 @@ export function interleaveMentions(text: string, mentions: Mention[]): { body: C
   let cur = 0
   for (const h of hits) {
     if (h.at > cur) body.push({ type: 'text', text: text.slice(cur, h.at) })
-    body.push({ type: 'mention', kind: h.m.kind, id: h.m.id, label: h.m.label, inline: true })
+    body.push({ type: 'mention', kind: h.m.kind, id: h.m.id, label: h.m.label, inline: true, ...(h.m.logo ? { logo: h.m.logo } : {}) })
     cur = h.end
   }
   if (cur < text.length) body.push({ type: 'text', text: text.slice(cur) })
