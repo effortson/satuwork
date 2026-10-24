@@ -248,6 +248,19 @@ export async function runChatFold({ root, test, assert, log }) {
     assert(blocks.map((b) => b.via).join(',') === 'task,task,task-result,task-result', `角标不对：${blocks.map((b) => b.via)}`)
   })
 
+  await test('直连管家失败：页面地址和管家认的 Gateway 地址不一致时直说该换哪个，一致或桌面端照旧', async () => {
+    const say = (origin, protocol, gatewayOrigin) => {
+      chatCtx.location = { origin, protocol }
+      return chatCtx.directFailText(gatewayOrigin)
+    }
+    const off = say('http://localhost:3080', 'http:', 'http://192.168.64.1:3080')
+    assert(off.includes('http://192.168.64.1:3080') && off.includes('http://localhost:3080'), `不一致时该点出两个地址：${off}`)
+    assert(say('http://192.168.64.1:3080', 'http:', 'http://192.168.64.1:3080') === '连不上机器管家', '一致时照旧')
+    assert(say('satu://localhost', 'satu:', 'http://192.168.64.1:3080') === '连不上机器管家', '桌面端的源管家另外认，不算不一致')
+    assert(say('http://localhost:3080', 'http:', undefined) === '连不上机器管家', '没给 Gateway 源（老 Gateway / 没配公开地址）照旧')
+    delete chatCtx.location
+  })
+
   await test('目标那边派来的任务：画成主 Bot 发来的消息（左侧、主 Bot 名字），正文去掉标题和末尾交代', async () => {
     const events = [
       ev(1, 'session', { version: 5, id: 's1', botId: 'fin', createdAt: T }),

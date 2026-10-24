@@ -1228,6 +1228,8 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         assert(direct.status === 200, `签席位日志票 ${direct.status} ${direct.text}`)
         assert(direct.json.url === `${DIRECT}/seats/seat-1/logs`, `席位日志的直连地址不对：${direct.json.url}`)
         const seatTicket = direct.json.ticket
+        // 管家只放行配对时的 Gateway 源：票里一起给出去，浏览器直连失败时前端拿它和页面的源比。
+        assert(direct.json.gatewayOrigin === new URL(gwBase).origin, `票里该带 Gateway 的源：${direct.text}`)
         assert(typeof seatTicket === 'string' && seatTicket.split('.').length === 3, `票不像 JWT：${seatTicket}`)
         // 签票就是「看别人的日志」，和经 Gateway 看一样要留痕。
         assert((await auditCount()) === audits0 + 1, '签日志票没留审计')

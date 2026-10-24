@@ -285,10 +285,29 @@ export function logsDirectPayload(
   keys: JwtKeys,
   machine: Pick<Machine, 'directUrl' | 'protocol'> | null,
   seatId: string | null,
-): { url: string; ticket: string } {
+): { url: string; ticket: string; gatewayOrigin?: string } {
   const url = logsUrlOf(machine, seatId)
   if (!url) throw new HttpError(409, LOGS_NO_DIRECT)
-  return { url, ticket: signLogsTicket(keys, seatId ? { seatId } : { manager: true }) }
+  return { url, ticket: signLogsTicket(keys, seatId ? { seatId } : { manager: true }), ...gatewayOriginField() }
+}
+
+/**
+ * 管家放行跨源请求的那个源（manager/src/proxy.ts 的 corsFor：**只认配对时的 Gateway 地址**）。
+ *
+ * 浏览器直连管家（日志跟随这类）失败时分不出是网络不通还是跨源被拦——两种都是 fetch 抛错。
+ * 后一种在本地很常见：管家按 `http://192.168.64.1:3080` 配的对，人却从 `http://localhost:3080`
+ * 打开了页面，请求被浏览器拦下，界面只能说一句「连不上机器管家」。把这个源一起给出去，前端拿它
+ * 和当前页面的源比，不一样就直接说清楚。只认明确配过的 GATEWAY_PUBLIC_URL：没配时那个回落值
+ * 本来就是猜的，拿猜的去指点人只会更糊涂。
+ */
+export function gatewayOriginField(): { gatewayOrigin?: string } {
+  const explicit = gatewayPublicUrlExplicit()
+  if (!explicit) return {}
+  try {
+    return { gatewayOrigin: new URL(explicit).origin }
+  } catch {
+    return {}
+  }
 }
 
 /**

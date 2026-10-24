@@ -6633,6 +6633,24 @@ function stopLogStream() {
  * 一条都不适用。机器没配 directUrl、或管家太旧，领票那一步就会 409 带中文原因，
  * 原样摆进面板——和以前「连不上」摆在同一个位置。
  */
+/**
+ * 浏览器直连管家失败时说什么。fetch 抛错分不出是网络不通还是跨源被拦，可后一种有个一眼就能认出的
+ * 形状：管家只放行它配对时的 Gateway 地址（`gatewayOrigin`，领票时 Gateway 给的），而这一页是从
+ * 别的地址打开的（本地最常见的是 localhost 对 192.168.64.1）。对得上这个形状就直说该换哪个地址。
+ * 桌面端的页面源（satu://、tauri:// 之类）管家另外认，不算不一致。
+ */
+function directFailText(gatewayOrigin) {
+  const here = location.origin
+  const web = location.protocol === 'http:' || location.protocol === 'https:'
+  if (gatewayOrigin && web && here !== gatewayOrigin) {
+    return t(
+      `连不上机器管家：这台机器只放行从 ${gatewayOrigin} 打开的页面，你现在是从 ${here} 打开的。换成 ${gatewayOrigin} 再看。`,
+      `Cannot reach the machine manager: it only accepts pages opened from ${gatewayOrigin}, but this page is on ${here}. Open it from ${gatewayOrigin} instead.`,
+    )
+  }
+  return t('连不上机器管家')
+}
+
 async function startLogStream(source) {
   stopLogStream()
   const ac = new AbortController()
@@ -6666,7 +6684,7 @@ async function startLogStream(source) {
     })
   } catch {
     if (!ac.signal.aborted) {
-      state.logError = t('连不上机器管家')
+      state.logError = directFailText(ticket.gatewayOrigin)
       paintLogs()
     }
     return
