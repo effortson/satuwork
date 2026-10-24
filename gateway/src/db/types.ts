@@ -1648,6 +1648,8 @@ export interface BotTask {
   /** 派活的那次工具调用。 */
   callId: string | null
   instruction: string
+  /** 前置任务交回的结论（串行派活），和指令分开存、分开限长。null = 没有前置。 */
+  context: string | null
   status: BotTaskStatus
   /** 这一步该谁来领：机器 id，或本地 Bot 的 `desktop:<accountId>`。null = 没人能领。 */
   owner: string | null

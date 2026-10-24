@@ -30,6 +30,11 @@ const TASK_PICKUP_MS = Math.max(1_000, Math.trunc(Number(process.env.GATEWAY_TAS
 const MAX_ATTEMPTS = 3
 /** 指令最长。再长就不是一句派活，是一份文档——让它写进工作区再派。 */
 export const TASK_INSTRUCTION_MAX = 4000
+/**
+ * 前置任务交回的结论（串行派活）最长。和指令分开算：结论是对方写的，长短由不得主 Bot，
+ * 共用一个上限的话前置交回稍长一点，后一件就派不出去。席位那边每条前置已截到 6000 字。
+ */
+export const TASK_CONTEXT_MAX = 16_000
 
 export type TaskPhase = 'run' | 'deliver'
 
@@ -129,7 +134,7 @@ export async function createBotTask(
   account: Account,
   from: CatalogItem,
   to: CatalogItem,
-  input: { instruction: string; sessionId: string | null; callId: string | null; wait?: boolean },
+  input: { instruction: string; context?: string | null; sessionId: string | null; callId: string | null; wait?: boolean },
 ): Promise<BotTask> {
   const base = {
     accountId: account.id,
@@ -139,6 +144,7 @@ export async function createBotTask(
     fromSessionId: input.sessionId,
     callId: input.callId,
     instruction: input.instruction,
+    context: input.context || null,
     // 主 Bot 的席位在这一轮里等着（同步派活）：建的那一刻就挂上等待租约。
     waiterUntil: input.wait ? Date.now() + TASK_WAIT_LEASE_MS : null,
   }
@@ -157,8 +163,10 @@ export async function createBotTask(
 
 /** 发进目标 Bot 的全文。要自足：对方看不见主 Bot 的对话。 */
 export function instructionText(task: BotTask, fromName: string): string {
+  const context = (task.context || '').trim()
   return (
     `【主 Bot「${fromName}」派来的任务】\n${task.instruction}\n\n` +
+    (context ? `—— 前置任务交回的结论 ——\n${context}\n\n` : '') +
     '（做完把结果直接写在回复里，回复会原样交回主 Bot；需要人拍板的事写进结论，不要在这儿等。）'
   )
 }

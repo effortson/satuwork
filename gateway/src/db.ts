@@ -3997,6 +3997,7 @@ export class Db {
     fromSessionId: string | null
     callId: string | null
     instruction: string
+    context?: string | null
     status: BotTaskStatus
     owner: string | null
     result?: string | null
@@ -4007,9 +4008,9 @@ export class Db {
     const id = randomUUID()
     const now = Date.now()
     await this.run(
-      `insert into bot_tasks (id, "accountId", "companyId", "fromBotId", "toBotId", "fromSessionId", "callId", instruction, status, owner, "leaseUntil", attempts, result, error, "runKind", "waiterUntil", "createdAt")
-       values (?,?,?,?,?,?,?,?,?,?,null,0,?,?,?,?,?)`,
-      [id, input.accountId, input.companyId, input.fromBotId, input.toBotId, input.fromSessionId, input.callId, input.instruction, input.status, input.owner, input.result ?? null, input.error ?? null, input.runKind ?? null, input.waiterUntil ?? null, now],
+      `insert into bot_tasks (id, "accountId", "companyId", "fromBotId", "toBotId", "fromSessionId", "callId", instruction, context, status, owner, "leaseUntil", attempts, result, error, "runKind", "waiterUntil", "createdAt")
+       values (?,?,?,?,?,?,?,?,?,?,?,null,0,?,?,?,?,?)`,
+      [id, input.accountId, input.companyId, input.fromBotId, input.toBotId, input.fromSessionId, input.callId, input.instruction, input.context ?? null, input.status, input.owner, input.result ?? null, input.error ?? null, input.runKind ?? null, input.waiterUntil ?? null, now],
     )
     return (await this.botTask(id))!
   }

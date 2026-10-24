@@ -26,8 +26,12 @@ const MAX_TASKS = 6
 const POLL_MS = Math.max(200, Math.trunc(Number(process.env.SATUWORK_ASSIGN_POLL_MS ?? 2_000)))
 /** 最多等多久。到点不再等，没收场的结论之后以「任务结果」消息送回（§1.1 的兜底）。 */
 const WAIT_MS = Math.max(10_000, Math.trunc(Number(process.env.SATUWORK_ASSIGN_WAIT_MS ?? 30 * 60_000)))
-/** 附在后一件指令末尾的前置结论，每条最多多长。 */
+/**
+ * 交给后一件的前置结论，每条最多多长；几条加起来再压在 DEP_CONTEXT_MAX 以内（Gateway 那边
+ * 前置结论单独限 16000 字，留出标题的余量）。和指令分开传：指令自己就有 4000 字的上限。
+ */
 const DEP_RESULT_MAX = 6_000
+const DEP_CONTEXT_MAX = 15_000
 /** 回给模型的每条结论最多多长。 */
 const RESULT_MAX = 12_000
 
@@ -265,17 +269,23 @@ export function apply(ctx: Context) {
       for (const it of items) await emit(it)
 
       const start = async (it: Item) => {
-        // 前置交回的结论附在指令末尾：对方看不见主 Bot 的对话，不附的话「按邮件里提到的账单」它无从下手。
+        // 前置交回的结论一起交过去：对方看不见主 Bot 的对话，不附的话「按邮件里提到的账单」它无从下手。
+        // 单独放进 context，不拼进指令——指令有 4000 字的上限，前置一长后一件就派不出去。
         const deps = it.after.map((k) => byKey.get(k)!).filter((d) => d.state === 'done')
-        const full = deps.length
-          ? `${it.instruction}\n\n—— 前置任务交回的结论 ——\n${deps
-              .map((d) => `【${d.key} · @${d.bot.name}】\n${clip(d.result || '', DEP_RESULT_MAX)}`)
-              .join('\n\n')}`
-          : it.instruction
+        const each = deps.length ? Math.min(DEP_RESULT_MAX, Math.floor(DEP_CONTEXT_MAX / deps.length) - 80) : 0
+        const context = deps.map((d) => `【${d.key} · @${d.bot.name}】\n${clip(d.result || '', each)}`).join('\n\n')
         it.startedAt = Date.now()
         let r
         try {
-          r = await gateway('POST', '/runtime/tasks', { fromBotId, toBot: it.bot.id, instruction: full, sessionId, callId: call.callId, wait: true })
+          r = await gateway('POST', '/runtime/tasks', {
+            fromBotId,
+            toBot: it.bot.id,
+            instruction: it.instruction,
+            ...(context ? { context } : {}),
+            sessionId,
+            callId: call.callId,
+            wait: true,
+          })
         } catch (e) {
           await settle(it, 'failed', `没派出去：${(e as Error).message}`)
           return

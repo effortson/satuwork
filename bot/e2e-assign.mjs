@@ -133,7 +133,9 @@ out.schema = { 在表里: Boolean(def), 描述里有名单: Boolean(def && /财�
     带席位票和wait: posted.every((p) => p.auth === 'Bearer sat_assign_probe' && p.body.wait === true && p.body.fromBotId === 'bot-main' && p.body.sessionId === 's-main'),
     并行的一起派: Math.abs(at('扫邮箱').at - at('看合同').at) < 150,
     串行的等前置: at('核账单').at > at('扫邮箱').at + 150,
-    前置结论附在指令末尾: at('核账单').body.instruction.includes('前置任务交回的结论') && at('核账单').body.instruction.includes('【sales】做完了：扫邮箱'),
+    // 单独放进 context，不拼进指令：指令有 4000 字的上限，前置一长后一件就派不出去。
+    前置结论单独交过去: at('核账单').body.instruction === '核账单' && String(at('核账单').body.context || '').includes('【sales】做完了：扫邮箱'),
+    没前置的不带context: !('context' in at('扫邮箱').body),
     同一颗Bot自动排队: at('出月报').at > at('核账单').at + 150,
     前置没做成就跳过: !at('跟进合同') && last.get('c-dag:law2')?.state === 'skipped',
     结论都回给模型: /\[1\/5 done · @销售/.test(r.text) && /\[2\/5 failed · @法务/.test(r.text) && r.text.includes('【fin】做完了：出月报'),

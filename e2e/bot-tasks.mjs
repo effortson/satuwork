@@ -422,6 +422,20 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       assert(list.length >= 5 && list[0].id === id, `列表该按新的在前：${list.map((t) => t.id).join(',')}`)
     })
 
+    await test('前置结论单独限长：指令 4000 字之外再带一万多字的前置结论也派得出去，发进目标的全文里有它', async () => {
+      // 上一条用例那件还等着送回：先送完，不然「上一件还没做完」409。
+      for (const j of (await due()).json.jobs) if (j.phase === 'deliver') await post(j.taskId, 'finish', { kind: 'delivered' })
+      const long = '对账明细：' + '甲'.repeat(9000)
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '按前置结论核账单' + '乙'.repeat(3900), context: long, sessionId: 's-main' })
+      assert(made.status === 201, `带长前置结论该派得出去：${made.status} ${made.text}`)
+      const job = (await due()).json.jobs.find((j) => j.taskId === made.json.task.id)
+      assert(job && job.instruction.includes('前置任务交回的结论') && job.instruction.includes(long), `发进目标的全文里没有前置结论：${String(job?.instruction).slice(0, 200)}`)
+      const tooLong = await assign({ fromBotId: mainBot, toBot: '财务', instruction: 'x', context: '丙'.repeat(16_001), sessionId: 's-other' })
+      assert(tooLong.status === 400 && tooLong.text.includes('前置结论'), `超长的前置结论该 400：${tooLong.status} ${tooLong.text}`)
+      await post(made.json.task.id, 'started', { sessionId: 's-fin' })
+      await post(made.json.task.id, 'finish', { kind: 'completed', result: '对上了' })
+    })
+
     await test('本地 Bot 好几颗：各带 botId 来领只领到要敲自己的；同时来领一条只有一个拿得到', async () => {
       const local = async (name) => {
         const r = await req(gwBase, 'POST', '/runtime/bots', { token: adminTok, body: { name, runtimeKind: 'local' } })
