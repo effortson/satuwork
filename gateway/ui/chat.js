@@ -2866,6 +2866,51 @@ function updateTaskRow(node, b) {
   tickTaskElapsed()
 }
 
+/* ── 目标 Bot 这边收到的派活 ─────────────────────────────────────────────
+   和主 Bot 那边的派活卡对称：画成「主 Bot 发来的一条消息」——左侧、主 Bot 的头像和名字，
+   不是右边人打的那种气泡。那条 user/message 是工人替主 Bot 发的，人一个字也没说过。
+   正文去掉首行标题和末尾那句给模型看的交代：名字那一行已经说了是谁派的。 */
+
+const TASK_IN_HEAD = /^【主 Bot「([^」]*)」派来的任务】\n?/
+const TASK_IN_TAIL = /\s*（做完把结果直接写在回复里[^）]*）\s*$/
+
+function taskInBlock(b) {
+  const ev = (state.chatEvents || []).find((e) => e.seq === b.seq && e.type === 'user/message')
+  const from = (ev && ev.data && ev.data.source && ev.data.source.from) || {}
+  const raw = String(b.text || '')
+  const head = raw.match(TASK_IN_HEAD)
+  return { ...b, text: raw.replace(TASK_IN_HEAD, '').replace(TASK_IN_TAIL, ''), taskFrom: { id: from.id || '', name: from.name || (head && head[1]) || '' } }
+}
+
+function taskInBotOf(b) {
+  const bots = state.runtimeBots || []
+  return bots.find((x) => b.taskFrom.id && x.id === b.taskFrom.id) || bots.find((x) => b.taskFrom.name && x.name === b.taskFrom.name)
+}
+
+function taskInRowShell(b, key) {
+  const bot = taskInBotOf(b)
+  const qseq = quoteSeqOf(b)
+  return (
+    `<div class="sw-msg sw-taskin" data-role="assistant" data-key="${esc(key)}"${qseq != null ? ` data-seq="${esc(String(qseq))}"` : ''} data-via="task">` +
+    `<div class="sw-msg-avatar" aria-hidden="true"${bot ? ' data-bot="1"' : ''}>${bot ? botAvatar(bot.icon, 36, bot.origin) : ICON_BOT}</div>` +
+    `<div class="sw-msg-col">` +
+    `<div class="sw-taskname"><span class="sw-taskname-bot">${esc((bot && bot.name) || b.taskFrom.name)}</span><span class="sw-taskname-tag">${esc(t('派来的任务', 'Assigned a task'))}</span></div>` +
+    `<div class="sw-bubble" data-role="assistant"><div class="sw-md"></div><div class="sw-chips" hidden></div></div>` +
+    `<time class="sw-time" hidden></time>${msgActsHtml(b)}</div></div>`
+  )
+}
+
+/** 名单晚到：通用图标换成主 Bot 自己的头像，名字也换成名单上的（可能改过名）。 */
+function updateTaskInHead(el, b) {
+  const av = el.querySelector(':scope > .sw-msg-avatar')
+  if (!av || av.hasAttribute('data-bot')) return
+  const bot = taskInBotOf(b)
+  if (!bot) return
+  av.innerHTML = botAvatar(bot.icon, 36, bot.origin)
+  av.setAttribute('data-bot', '1')
+  el.querySelector('.sw-taskname-bot').textContent = bot.name || b.taskFrom.name
+}
+
 /** 「正在执行」后面那个读秒。只在页面上有在跑的派活卡时转。 */
 let taskTicker = null
 function tickTaskElapsed() {
@@ -3274,6 +3319,7 @@ function assistantAvatar() {
 }
 
 function rowShell(b, key) {
+  if (b.taskFrom) return taskInRowShell(b, key)
   const account = (state.me && state.me.account) || {}
   const mine = b.kind === 'user' ? null : assistantAvatar()
   const avatar = b.kind === 'user' ? esc(initialOf(account)) : mine.html
@@ -3436,7 +3482,8 @@ function syncMd(host, text, streaming) {
  */
 function updateRow(el, b, streaming, since) {
   // 先画的是通用图标（名单那会儿还没到）：名单到了就换成这颗 Bot 自己的头像。
-  if (b.kind !== 'user') {
+  if (b.taskFrom) updateTaskInHead(el, b)
+  else if (b.kind !== 'user') {
     const av = el.querySelector(':scope > .sw-msg-avatar')
     if (av && !av.hasAttribute('data-bot')) {
       const mine = assistantAvatar()
@@ -4259,7 +4306,7 @@ function threadRows(folded, sessionId) {
     }
     // key 必须**跟着这一块自己**走，不能用下标：往前翻加载旧消息会让所有下标移位，
     // 于是整棵 DOM 重建——Markdown 全部重渲染，滚动位置也跟着没了。
-    rows.push({ kind: 'msg', key: 'm' + (b.seq != null ? b.seq : 'i' + i), block: b })
+    rows.push({ kind: 'msg', key: 'm' + (b.seq != null ? b.seq : 'i' + i), block: b.kind === 'user' && b.via === 'task' ? taskInBlock(b) : b })
   })
   // 轮次开着但助手那条还没建出来（工具先跑、或者刚发出去）——补一条空的，
   // 让「正在想」有地方待着，而不是让输入框上面挂一行状态文字。

@@ -104,7 +104,7 @@ function twoTurns() {
 }
 
 export async function runChatFold({ root, test, assert, log }) {
-  const { fold, threadRows, parseCommand, commandQueryAt, ctxDivText, state } = loadChat(root)
+  const { fold, threadRows, rowShell, parseCommand, commandQueryAt, ctxDivText, state } = loadChat(root)
   log('\n# chat-fold')
 
   await test('压缩事件落在轮次中间：工具结果照样认得回它的药丸', async () => {
@@ -245,6 +245,23 @@ export async function runChatFold({ root, test, assert, log }) {
     const blocks = fold(events).blocks.filter((b) => b.kind === 'user' || b.kind === 'assistant')
     assert(blocks.length === 4, `派来的任务和结果都该画出来：${blocks.length}`)
     assert(blocks.map((b) => b.via).join(',') === 'task,task,task-result,task-result', `角标不对：${blocks.map((b) => b.via)}`)
+  })
+
+  await test('目标那边派来的任务：画成主 Bot 发来的消息（左侧、主 Bot 名字），正文去掉标题和末尾交代', async () => {
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'fin', createdAt: T }),
+      ev(2, 'user/message', {
+        message: um('【主 Bot「助手」派来的任务】\n做月报\n\n（做完把结果直接写在回复里，回复会原样交回主 Bot；需要人拍板的事写进结论，不要在这儿等。）'),
+        source: { kind: 'plugin', plugin: 'task', form: 't1', phase: 'instruction', from: { id: 'main', name: '助手' } },
+      }),
+    ]
+    state.chatEvents = events
+    const row = threadRows(fold(events), 's1').find((r) => r.kind === 'msg')
+    state.chatEvents = []
+    assert(row && row.block.taskFrom && row.block.taskFrom.id === 'main' && row.block.taskFrom.name === '助手', `主 Bot 身份没带出来：${JSON.stringify(row && row.block.taskFrom)}`)
+    assert(row.block.text === '做月报', `正文没剥干净：${JSON.stringify(row.block.text)}`)
+    const html = rowShell(row.block, row.key)
+    assert(html.includes('sw-taskin') && html.includes('data-role="assistant"') && html.includes('>助手<'), `外壳不对：${html}`)
   })
 
   await test('混排的点名：正文里留着 @名字，点名带 inline（就地画药丸，不另起一排）', async () => {
