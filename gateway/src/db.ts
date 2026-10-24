@@ -4008,9 +4008,9 @@ export class Db {
     const id = randomUUID()
     const now = Date.now()
     await this.run(
-      `insert into bot_tasks (id, "accountId", "companyId", "fromBotId", "toBotId", "fromSessionId", "callId", instruction, context, status, owner, "leaseUntil", attempts, result, error, "runKind", "waiterUntil", "createdAt")
-       values (?,?,?,?,?,?,?,?,?,?,?,null,0,?,?,?,?,?)`,
-      [id, input.accountId, input.companyId, input.fromBotId, input.toBotId, input.fromSessionId, input.callId, input.instruction, input.context ?? null, input.status, input.owner, input.result ?? null, input.error ?? null, input.runKind ?? null, input.waiterUntil ?? null, now],
+      `insert into bot_tasks (id, "accountId", "companyId", "fromBotId", "toBotId", "fromSessionId", "callId", instruction, context, status, owner, "leaseUntil", attempts, result, error, "runKind", "waiterUntil", "createdAt", "readyAt")
+       values (?,?,?,?,?,?,?,?,?,?,?,null,0,?,?,?,?,?,?)`,
+      [id, input.accountId, input.companyId, input.fromBotId, input.toBotId, input.fromSessionId, input.callId, input.instruction, input.context ?? null, input.status, input.owner, input.result ?? null, input.error ?? null, input.runKind ?? null, input.waiterUntil ?? null, now, now],
     )
     return (await this.botTask(id))!
   }
@@ -4089,7 +4089,7 @@ export class Db {
   /** 改几格。只改给了的那几格；null 也是一个值（清掉租约就是把它设成 null）。 */
   async updateBotTask(
     id: string,
-    patch: Partial<Pick<BotTask, 'status' | 'owner' | 'leaseUntil' | 'attempts' | 'runSessionId' | 'runKind' | 'result' | 'error' | 'endedAt' | 'deliveredAt' | 'waiterUntil' | 'cancelledAt'>>,
+    patch: Partial<Pick<BotTask, 'status' | 'owner' | 'leaseUntil' | 'attempts' | 'runSessionId' | 'runKind' | 'result' | 'error' | 'endedAt' | 'deliveredAt' | 'waiterUntil' | 'cancelledAt' | 'readyAt'>>,
   ): Promise<boolean> {
     const sets: string[] = []
     const args: unknown[] = []
@@ -4133,13 +4133,17 @@ export class Db {
     return rows.map(botTaskOf)
   }
 
-  /** 排着队一直没人来领的：queued 看 createdAt，reporting 看 endedAt（目标那一步收场的时刻）。 */
+  /**
+   * 排着队一直没人来领的：从这一步最近一次放出来（readyAt）算——租约到期放回去的那一条要重新计时，
+   * 不能拿最初建的时刻，否则一放回去就在同一次清扫里被判成没人领。旧行没有 readyAt：queued 看
+   * createdAt，reporting 看 endedAt（目标那一步收场的时刻）。
+   */
   async unclaimedBotTasksBefore(beforeMs: number): Promise<BotTask[]> {
     const rows = await this.many(
-      `select * from bot_tasks where "leaseUntil" is null and (
-         (status = 'queued' and "createdAt" < ?) or (status = 'reporting' and coalesce("endedAt", "createdAt") < ?)
-       )`,
-      [beforeMs, beforeMs],
+      `select * from bot_tasks where "leaseUntil" is null and status in ('queued', 'reporting') and coalesce(
+         "readyAt", case when status = 'reporting' then coalesce("endedAt", "createdAt") else "createdAt" end
+       ) < ?`,
+      [beforeMs],
     )
     return rows.map(botTaskOf)
   }

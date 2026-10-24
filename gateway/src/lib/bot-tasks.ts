@@ -252,7 +252,7 @@ async function toReporting(db: Db, task: BotTask, input: { result: string; runKi
     ...(input.sessionId !== undefined ? { runSessionId: input.sessionId } : {}),
   }
   if ('owner' in back) {
-    await db.updateBotTask(task.id, { ...common, status: 'reporting', owner: back.owner, leaseUntil: null, attempts: 0 })
+    await db.updateBotTask(task.id, { ...common, status: 'reporting', owner: back.owner, leaseUntil: null, attempts: 0, readyAt: Date.now() })
   } else {
     await db.updateBotTask(task.id, { ...common, status: 'failed', owner: null, leaseUntil: null, error: `${input.error ? `${input.error}；` : ''}送不回主 Bot：${back.error}` })
   }
@@ -356,7 +356,7 @@ export async function taskFinish(db: Db, task: BotTask, body: { kind: string; re
     if (body.kind === 'completed' || body.kind === 'delivered') {
       await db.updateBotTask(task.id, { status: 'done', leaseUntil: null, deliveredAt: Date.now() })
     } else if (task.attempts < MAX_ATTEMPTS) {
-      await db.updateBotTask(task.id, { status: 'reporting', leaseUntil: null, error: (body.error || body.kind).slice(0, 300) })
+      await db.updateBotTask(task.id, { status: 'reporting', leaseUntil: null, readyAt: Date.now(), error: (body.error || body.kind).slice(0, 300) })
     } else {
       await stepLost(db, task, (body.error || body.kind).slice(0, 300))
     }
@@ -407,7 +407,8 @@ export async function sweepBotTasks(db: Db): Promise<void> {
       continue
     }
     if (task.attempts < MAX_ATTEMPTS) {
-      await db.updateBotTask(task.id, { status: phase === 'run' ? 'queued' : 'reporting', leaseUntil: null })
+      // 放回去重新计时：「一直没人来领」从这一刻算，不从最初建的时刻算。
+      await db.updateBotTask(task.id, { status: phase === 'run' ? 'queued' : 'reporting', leaseUntil: null, readyAt: now })
     } else {
       await stepLost(db, task, '机器没回报（工人的租约到期了：机器离线、工人没起来、或者中途被杀）')
     }
@@ -417,7 +418,7 @@ export async function sweepBotTasks(db: Db): Promise<void> {
     const account = await db.account(task.accountId)
     const from = await db.catalog(task.fromBotId)
     const back = account && from ? await ownerFor(db, account, from) : { error: '主 Bot 已经不在了' }
-    if ('owner' in back) await db.updateBotTask(task.id, { status: 'reporting', owner: back.owner, leaseUntil: null, attempts: 0, waiterUntil: null })
+    if ('owner' in back) await db.updateBotTask(task.id, { status: 'reporting', owner: back.owner, leaseUntil: null, attempts: 0, waiterUntil: null, readyAt: now })
     else await db.updateBotTask(task.id, { status: 'failed', owner: null, waiterUntil: null, error: `${task.error ? `${task.error}；` : ''}送不回主 Bot：${back.error}` })
   }
   for (const task of await db.unclaimedBotTasksBefore(now - TASK_PICKUP_MS)) {

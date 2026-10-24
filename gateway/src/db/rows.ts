@@ -654,6 +654,7 @@ export function botTaskOf(r: Row): BotTask {
     callId: strOrNull(r.callId),
     instruction: str(r.instruction),
     context: strOrNull(r.context),
+    readyAt: numOrNull(r.readyAt),
     status: str(r.status) as BotTaskStatus,
     owner: strOrNull(r.owner),
     leaseUntil: numOrNull(r.leaseUntil),

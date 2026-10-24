@@ -16,6 +16,7 @@ import { freePort } from './ports.mjs'
 
 const SCHEMA = schemaOf('e2e_bot_tasks')
 const LEASE_MS = 1500
+const PICKUP_MS = 6000
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
@@ -46,6 +47,8 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       GATEWAY_ROUTINE_TICK_MS: '500',
       GATEWAY_ROUTINE_LEASE_MS: String(LEASE_MS),
       GATEWAY_TASK_WAIT_LEASE_MS: '5000',
+      // 「一直没人来领」的时限压短：好验一件跑得比它久的活放回去之后还能重领。
+      GATEWAY_TASK_PICKUP_MS: String(PICKUP_MS),
     },
   })
 
@@ -276,6 +279,33 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       const deliver = (await due()).json.jobs.find((j) => j.taskId === id)
       assert(deliver && deliver.phase === 'deliver', '该领到送回去的那一步')
       await post(id, 'started', { sessionId: 's-main' })
+      await post(id, 'finish', { kind: 'delivered' })
+    })
+
+    await test('跑得比「没人来领」的时限还久、然后工人没了：放回去重新计时，还能再领，不是当场判成没人领', async () => {
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '跑很久的盘点', sessionId: 's-main' })
+      const id = made.json.task.id
+      assert((await due()).json.jobs.some((j) => j.taskId === id), '没领到')
+      await post(id, 'started', { sessionId: 's-fin' })
+      // 一直续着租，跑过 PICKUP_MS；然后工人「被杀」，不再续。
+      const until0 = Date.now() + PICKUP_MS + 1000
+      while (Date.now() < until0) {
+        assert((await post(id, 'renew')).status === 200, '续租')
+        await sleep(500)
+      }
+      let again = null
+      const deadline = Date.now() + LEASE_MS + 6000
+      while (!again && Date.now() < deadline) {
+        const t = await taskById(id)
+        assert(t.status !== 'reporting' && t.status !== 'answered', `放回去就被判成没人领了：${t.status} ${t.result || ''}`)
+        again = (await due()).json.jobs.find((j) => j.taskId === id) || null
+        if (!again) await sleep(200)
+      }
+      assert(again && again.phase === 'run', '租约到期放回去之后该能再领到')
+      await post(id, 'started', { sessionId: 's-fin' })
+      await post(id, 'finish', { kind: 'completed', result: '盘完了' })
+      const back = (await due()).json.jobs.find((j) => j.taskId === id && j.phase === 'deliver')
+      assert(back, '该领到送回去的那一步')
       await post(id, 'finish', { kind: 'delivered' })
     })
 

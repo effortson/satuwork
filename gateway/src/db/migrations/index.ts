@@ -59,6 +59,7 @@ import { SQL as m0058 } from './0058-bot-tasks.ts'
 import { SQL as m0059 } from './0059-bot-task-wait.ts'
 import { SQL as m0060 } from './0060-bot-task-progress.ts'
 import { SQL as m0061 } from './0061-bot-task-context.ts'
+import { SQL as m0062 } from './0062-bot-task-ready.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -184,6 +185,7 @@ export const MIGRATIONS: Migration[] = [
   { id: '0059-bot-task-wait', name: '主 Bot 派活改成同步等待（等待租约、停止）', sql: m0059 },
   { id: '0060-bot-task-progress', name: '派活跑着时的进度', sql: m0060 },
   { id: '0061-bot-task-context', name: '派活附带的前置结论', sql: m0061 },
+  { id: '0062-bot-task-ready', name: '派活这一步最近一次放出来等人领的时刻', sql: m0062 },
 ]
 
 /**
