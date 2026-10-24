@@ -44,13 +44,20 @@ function startFakeAnthropic() {
   /**
    * noUsage：替身一个 usage 都不报——模拟流在 usage 那一帧之前断掉的那种答复。
    * fail：回一页 500 错误——模拟上游压根没接（429 / 503 那一类），一分钱没花。
+   * errorFrame：先回 200 的事件流、开头一帧就是 overloaded 的 error——Anthropic 过载时真会这样，
+   *   也是一分钱没花；席位认出「还没出内容」会退避重发。
    */
-  const flags = { noUsage: false, fail: false }
+  const flags = { noUsage: false, fail: false, errorFrame: false }
   const server = createServer(async (req, res) => {
     for await (const _ of req) void _
     if (flags.fail) {
       res.writeHead(500, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }))
+      return
+    }
+    if (flags.errorFrame) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } })}\n\n`)
       return
     }
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -972,6 +979,29 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
       await settled(orgA, before + 1)
       const row = (await charges(orgA))[0]
       assert(row.amount === 0 && row.unpriced === true && row.estimated === false, `没打到上游的调用不该估：${JSON.stringify(row)}`)
+    })
+
+    await test('上游回 200 但开头一帧就是报错（过载）：不算开了流、不估，席位重发几次也不叠出幽灵账', async () => {
+      const before = (await charges(orgA)).length
+      upstream.flags.errorFrame = true
+      try {
+        for (let i = 0; i < 3; i++) {
+          await req(base, 'POST', '/v1/messages', {
+            token: tokenA,
+            body: { model: MODEL, max_tokens: 64, stream: true, messages: [{ role: 'user', content: BIG }] },
+          })
+        }
+        // 走 pi-ai 转译那条路（/v1/chat/completions 流式）：pi-ai 不发 start、直接推一帧 error。
+        await req(base, 'POST', '/v1/chat/completions', {
+          token: tokenA,
+          body: { model: MODEL, max_tokens: 64, stream: true, messages: [{ role: 'user', content: BIG }] },
+        })
+      } finally {
+        upstream.flags.errorFrame = false
+      }
+      await settled(orgA, before + 4)
+      const rows = (await charges(orgA)).slice(0, 4)
+      assert(rows.length === 4 && rows.every((r) => r.amount === 0 && r.estimated === false), `报错帧不该估出钱来：${JSON.stringify(rows.map((r) => ({ amount: r.amount, estimated: r.estimated, status: r.status })))}`)
     })
 
     /**
