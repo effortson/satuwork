@@ -264,9 +264,9 @@ async function stepLost(db: Db, task: BotTask, reason: string): Promise<void> {
  * 领活。`seatIdOf` 回这一步要敲的那颗 Bot 在领活方手里的席位 id；回 null 就是「这颗不在我这儿」
  * （席位刚被挪走、或本地 Bot 没在跑），当场按没做成处理，别让它占着租约。
  */
-export async function leaseDueTasks(db: Db, owner: string, seatIdOf: (task: BotTask, botId: string) => Promise<string | null>) {
+export async function leaseDueTasks(db: Db, owner: string, seatIdOf: (task: BotTask, botId: string) => Promise<string | null>, botId?: string) {
   const jobs: TaskJob[] = []
-  for (const task of await db.claimBotTasks(owner, Date.now() + TASK_LEASE_MS)) {
+  for (const task of await db.claimBotTasks(owner, Date.now() + TASK_LEASE_MS, 20, botId)) {
     const phase = phaseOf(task)
     if (!phase) continue
     const seatId = await seatIdOf(task, botOfPhase(task, phase))

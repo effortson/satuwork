@@ -236,10 +236,13 @@ export function apply(ctx: Context) {
       })
     try {
       /**
-       * 同一个账号的几颗本地 Bot 各自领：这条活要敲的不是自己就放着（别的进程会领走——它们
-       * 共用一个 owner，谁先来谁领；领到了不是自己的只能退回去）。
+       * 同一个账号的几颗本地 Bot 各自领（/due 带 botId，Gateway 只交要敲自己的）。还是领到了别人的
+       * ——老 Gateway 不认 botId——就不碰它：不回报，租约到期放回去，由那颗自己的进程再领。
        */
-      if (botId && job.botId !== botId) throw new Error(`这一步要敲的是别的 Bot（${job.botId}），不是本进程`)
+      if (botId && job.botId !== botId) {
+        ctx.logger?.warn?.(`local tasks: ${job.taskId} 要敲的是别的 Bot（${job.botId}），不是本进程，放着等它到期`)
+        return
+      }
       const got = (await selfJson(`/api/bots/${encodeURIComponent(job.botId)}/session`)) as { sessionId?: string } | null
       if (!got?.sessionId) throw new Error('没有会话 id')
       sessionId = got.sessionId
@@ -297,7 +300,8 @@ export function apply(ctx: Context) {
   async function tick(): Promise<void> {
     let got: { jobs?: Job[] }
     try {
-      got = (await gw('/due')) as { jobs?: Job[] }
+      // 带上自己是哪颗：同一个账号的几颗本地 Bot 共用一个领活身份，不带就会领到别人的活。
+      got = (await gw(botId ? `/due?botId=${encodeURIComponent(botId)}` : '/due')) as { jobs?: Job[] }
     } catch (e) {
       // 老 Gateway 没这条路（404）就安静地过；断网也别刷屏。
       if (!(e instanceof LostError)) ctx.logger?.warn?.(`local tasks: 领不到活：${(e as Error).message}`)

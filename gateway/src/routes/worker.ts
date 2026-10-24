@@ -288,7 +288,9 @@ export function attachWorker(router: Router, ctx: RouteCtx) {
 
   router.get('/runtime/local-tasks/due', async (req, res) => {
     const account = await requireSeatOnly(req, db)
-    json(res, 200, await leaseDueTasks(db, `desktop:${account.id}`, async () => 'desktop'))
+    // 桌面端一颗本地 Bot 一个进程，各带自己的 botId 来领：只交要敲它的那几步。老版本不带，照旧全领。
+    const botId = (req.query.get('botId') || '').trim() || undefined
+    json(res, 200, await leaseDueTasks(db, `desktop:${account.id}`, async () => 'desktop', botId))
   })
   router.post('/runtime/local-tasks/:taskId/started', async (req, res) => {
     const account = await requireSeatOnly(req, db)

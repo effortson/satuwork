@@ -421,6 +421,38 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       const list = await tasksOf('s-main')
       assert(list.length >= 5 && list[0].id === id, `列表该按新的在前：${list.map((t) => t.id).join(',')}`)
     })
+
+    await test('本地 Bot 好几颗：各带 botId 来领只领到要敲自己的；同时来领一条只有一个拿得到', async () => {
+      const local = async (name) => {
+        const r = await req(gwBase, 'POST', '/runtime/bots', { token: adminTok, body: { name, runtimeKind: 'local' } })
+        assert(r.status === 201, `建本地 Bot ${name} ${r.status} ${r.text}`)
+        return r.json.bot.id
+      }
+      const jia = await local('本地甲')
+      const yi = await local('本地乙')
+      const localDue = (botId) =>
+        req(gwBase, 'GET', `/runtime/local-tasks/due${botId ? `?botId=${encodeURIComponent(botId)}` : ''}`, { token: seatTok })
+      const toYi = await assign({ fromBotId: mainBot, toBot: '本地乙', instruction: '本地乙的活', sessionId: 's-main' })
+      assert(toYi.status === 201, `派给本地乙 ${toYi.status} ${toYi.text}`)
+      const yiId = toYi.json.task.id
+      const wrong = await localDue(jia)
+      assert(wrong.status === 200 && !wrong.json.jobs.some((j) => j.taskId === yiId), `甲的进程不该领到乙的活：${wrong.text}`)
+      const right = (await localDue(yi)).json.jobs.find((j) => j.taskId === yiId)
+      assert(right && right.botId === yi && right.phase === 'run', `乙的进程该领到：${JSON.stringify(right)}`)
+
+      // 老桌面端不带 botId、几个进程同一拍来领：一条只交给一个。
+      const toJia = await assign({ fromBotId: mainBot, toBot: '本地甲', instruction: '只能领一次', sessionId: 's-main' })
+      const jiaId = toJia.json.task.id
+      const all = await Promise.all([1, 2, 3, 4, 5, 6].map(() => localDue()))
+      const hits = all.filter((r) => r.json.jobs.some((j) => j.taskId === jiaId)).length
+      assert(hits === 1, `同一条该只领到一次：${hits} 次`)
+
+      for (const id of [yiId, jiaId]) {
+        await req(gwBase, 'POST', `/runtime/local-tasks/${id}/started`, { token: seatTok, body: { sessionId: 's-local' } })
+        const fin = await req(gwBase, 'POST', `/runtime/local-tasks/${id}/finish`, { token: seatTok, body: { kind: 'completed', result: '好了' } })
+        assert(fin.status === 200, `回报 ${fin.status} ${fin.text}`)
+      }
+    })
   } finally {
     gw.kill('SIGTERM')
   }

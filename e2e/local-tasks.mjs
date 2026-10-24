@@ -9,6 +9,8 @@ export async function runLocalTasks({ root, test, assert, log }) {
   await test('run 那一步：凭席位票领活，指令发进自己的会话带 task 身份，finish 带回自己那一轮的正文', async () => {
     const due = seen.filter((s) => s.path === '/runtime/local-tasks/due')
     assert(due.length >= 1 && due.every((s) => s.auth === 'Bearer sat_local_probe'), `领活的票不对：${JSON.stringify(due)}`)
+    // 同一个账号的几颗本地 Bot 共用一个领活身份：领活要带上自己是哪颗，Gateway 只交要敲它的。
+    assert(due.every((s) => s.query === '?botId=bot-local'), `领活没带 botId：${JSON.stringify(due.map((s) => s.query))}`)
     const started = seen.find((s) => s.path === '/runtime/local-tasks/tk-1/started')
     assert(started && started.body.sessionId === 's-local', `started 没带会话 id：${JSON.stringify(started)}`)
     const msg = result.own.find((x) => x.path.endsWith('/messages') && x.body.task?.phase === 'instruction')
@@ -20,6 +22,13 @@ export async function runLocalTasks({ root, test, assert, log }) {
     assert(finish && finish.body.kind === 'completed' && finish.body.sessionId === 's-local', `finish 不对：${JSON.stringify(finish)}`)
     // 只认自己那一轮，而且只取最后一条：「我先查一下」这种过程话不是结论（docs/bot-tasks.md §2）。
     assert(finish.body.result === '月报做好了：合计 20 万。', `带回的正文不对：${JSON.stringify(finish.body.result)}`)
+  })
+
+  await test('领到别的本地 Bot 的活（老 Gateway）：不碰、不回报失败，等租约到期由它自己的进程领', async () => {
+    const touched = seen.filter((s) => s.path.startsWith('/runtime/local-tasks/tk-other/'))
+    assert(!touched.length, `不该动别人的活：${JSON.stringify(touched)}`)
+    const wrongSession = result.own.filter((x) => x.path.includes('bot-other'))
+    assert(!wrongSession.length, `不该去问别的 Bot 的会话：${JSON.stringify(wrongSession)}`)
   })
 
   await test('deliver 那一步：结论发进主 Bot 的会话（带 result 身份），发进去就报 delivered', async () => {

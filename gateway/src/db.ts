@@ -4039,20 +4039,27 @@ export class Db {
 
   /**
    * 领活：owner 归我、还没人领的那些，**原子地**填上租约并推进状态（queued → running、
-   * reporting → delivering）。同一条两个工人同时来领，只有一个拿得到。
+   * reporting → delivering）。同一条两个工人同时来领，只有一个拿得到：子查询 skip locked 跳过
+   * 别人正领着的行，外层再判一次「还没人领」——光靠 `id in (…)`，后到的那一笔等前一笔提交之后
+   * 只重查 id 对不对得上，照样改、照样交回去。
+   *
+   * `botId`：只领这一步要敲这颗 Bot 的（run 看目标，deliver 看主 Bot）。本地 Bot 共用一个
+   * owner（desktop:<账号>），桌面端却是一颗 Bot 一个进程，不分开领就会领到别人的活。
    */
-  async claimBotTasks(owner: string, leaseUntil: number, limit = 20): Promise<BotTask[]> {
+  async claimBotTasks(owner: string, leaseUntil: number, limit = 20, botId?: string): Promise<BotTask[]> {
+    const due = `owner = ? and "leaseUntil" is null and status in ('queued', 'reporting')
+            and ("cancelledAt" is null or status = 'reporting')`
+    const mine = botId ? ` and (case status when 'queued' then "toBotId" else "fromBotId" end) = ?` : ''
     const rows = await this.many(
       `update bot_tasks set "leaseUntil" = ?, attempts = attempts + 1,
          status = case status when 'queued' then 'running' when 'reporting' then 'delivering' else status end,
          "startedAt" = case when status = 'queued' then coalesce("startedAt", ?) else "startedAt" end
-       where id in (
-         select id from bot_tasks where owner = ? and "leaseUntil" is null and status in ('queued', 'reporting')
-            and ("cancelledAt" is null or status = 'reporting')
-          order by "createdAt" limit ?
+       where ${due}${mine} and id in (
+         select id from bot_tasks where ${due}${mine}
+          order by "createdAt" limit ? for update skip locked
        )
        returning *`,
-      [leaseUntil, Date.now(), owner, Math.max(1, Math.trunc(limit))],
+      [leaseUntil, Date.now(), owner, ...(botId ? [botId] : []), owner, ...(botId ? [botId] : []), Math.max(1, Math.trunc(limit))],
     )
     return rows.map(botTaskOf)
   }

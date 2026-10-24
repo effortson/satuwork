@@ -18,7 +18,7 @@ const gateway = createServer((req, res) => {
   req.on('end', () => {
     const url = new URL(req.url, 'http://probe')
     const body = raw ? JSON.parse(raw) : undefined
-    seen.push({ method: req.method, path: url.pathname, auth: req.headers.authorization, body })
+    seen.push({ method: req.method, path: url.pathname, query: url.search, auth: req.headers.authorization, body })
     const send = (code, value) => {
       res.writeHead(code, { 'content-type': 'application/json' })
       res.end(JSON.stringify(value))
@@ -27,7 +27,11 @@ const gateway = createServer((req, res) => {
       handed++
       if (handed === 1) {
         return send(200, {
-          jobs: [{ taskId: 'tk-1', phase: 'run', botId: 'bot-local', accountId: 'acc', seatId: 'desktop', instruction: '【主 Bot「助手」派来的任务】\n做月报', task: { id: 'tk-1', phase: 'instruction', from: { id: 'bot-main', name: '助手' } }, leaseMs: 60000, timeoutMs: 120000 }],
+          jobs: [
+            { taskId: 'tk-1', phase: 'run', botId: 'bot-local', accountId: 'acc', seatId: 'desktop', instruction: '【主 Bot「助手」派来的任务】\n做月报', task: { id: 'tk-1', phase: 'instruction', from: { id: 'bot-main', name: '助手' } }, leaseMs: 60000, timeoutMs: 120000 },
+            // 老 Gateway 不认 botId，把别的本地 Bot 的活也交过来了：不该碰它，更不该报失败。
+            { taskId: 'tk-other', phase: 'run', botId: 'bot-other', accountId: 'acc', seatId: 'desktop', instruction: '【主 Bot「助手」派来的任务】\n别人的活', task: { id: 'tk-other', phase: 'instruction', from: { id: 'bot-main', name: '助手' } }, leaseMs: 60000, timeoutMs: 120000 },
+          ],
           leaseMs: 60000,
         })
       }
