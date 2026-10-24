@@ -3211,7 +3211,8 @@ function taskInRowShell(b, key) {
 /** 派来的活现在怎样了：fold 从它那一轮的 turn/start、turn/end 填的。 */
 function taskInState(b) {
   const st = (b.assigned && b.assigned.state) || ''
-  if (st === 'running' && !b.live) return 'lost'
+  // 重放还没收尾时 live 还没到（折出来的 status 是空的）：这时说「没收口」是误报，照旧说在跑。
+  if (st === 'running' && !b.live && !state.chatReplaying) return 'lost'
   return st
 }
 

@@ -317,6 +317,18 @@ export async function runChatFold({ root, test, assert, log }) {
     assert(JSON.stringify(other) === JSON.stringify(['搜 6 轮', '你好', '你好！']), `别的会话同一个 seq 不该跟着开：${JSON.stringify(other)}`)
   })
 
+  await test('重放还没收尾时 live 还没到：在跑的派来的活不误报「没收口」', async () => {
+    const st = (replaying, live) => {
+      state.chatReplaying = replaying
+      const out = runInContext(`taskInState(${JSON.stringify({ assigned: { state: 'running' }, live })})`, chatCtx)
+      state.chatReplaying = false
+      return out
+    }
+    assert(st(true, false) === 'running', `重放中不该说没收口：${st(true, false)}`)
+    assert(st(false, false) === 'lost', '重放完了还没在跑，才是没收口')
+    assert(st(false, true) === 'running', '在跑就是在跑')
+  })
+
   await test('派来的活正跑着、卡片折着：不补「正在回答」的空气泡，卡片自己说在跑', async () => {
     const task = { kind: 'plugin', plugin: 'task', form: 't2', phase: 'instruction', from: { id: 'main', name: '助手' } }
     const events = [

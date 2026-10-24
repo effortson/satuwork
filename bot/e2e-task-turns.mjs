@@ -90,9 +90,23 @@ const twoTasks = [
 ]
 const secondTask = await toAgentMessages(twoTasks, { api: 'openai-completions', provider: 'p', id: 'm' })
 
+// 六、上一轮只有 turn/start 没有 turn/end（进程死在半路的老日志），之后派来的指令紧挨着开了自己的一轮：
+// 那一轮还是派来的活，不进后续上下文；不能因为「有轮开着」就当成插话留下。
+seq = 0
+const dangling = [
+  ev('user/message', { message: um('人：上次那句'), source: { kind: 'user' } }),
+  ev('turn/start', { turn: 1 }),
+  ev('user/message', { message: um('【主 Bot「我的助手」派来的任务】\n半截之后的活'), source: TASK }),
+  ev('turn/start', { turn: 2 }),
+  ev('assistant/message', am(2, 1, [{ type: 'text', text: '半截之后那件做完了' }])),
+  ev('turn/end', { turn: 2, reason: 'completed' }),
+]
+const danglingKept = withoutTaskTurns(dangling).map((e) => e.seq)
+
 console.log(
   '__RESULT__' +
     JSON.stringify({
+      danglingKept,
       afterStop: { count: afterStop.length, text: textOf(afterStop) },
       steeredKept,
       compactKept,

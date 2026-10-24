@@ -28,6 +28,10 @@ export async function runTaskTurns({ root, test, assert, log }) {
     assert(r.resultKept === 4, `任务结果那一轮被误当成派活去掉了：留下 ${r.resultKept} 条`)
   })
 
+  await test('上一轮没收口（只有 turn/start）之后派来的活：紧挨着开了自己的一轮，照样不进上下文', () => {
+    assert(JSON.stringify(r.danglingKept) === JSON.stringify([1, 2]), `派来的那一轮漏进来了：${JSON.stringify(r.danglingKept)}`)
+  })
+
   await test('下一件派来的活看不见上一件，但看得见人前面聊的', () => {
     assert(r.secondTask.includes('这周主推蓝色'), `人前面聊的丢了：${r.secondTask}`)
     assert(!r.secondTask.includes('第一件'), `上一件活漏进来了：${r.secondTask}`)

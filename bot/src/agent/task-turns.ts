@@ -34,21 +34,30 @@ export function withoutTaskTurns<T extends SessionEvent>(events: readonly T[]): 
   let open: number | null = null
   let pending = false
   let inTask = false
+  /**
+   * 上一条就是派来的指令。上一轮只有 turn/start、没有 turn/end（进程死在半路的老日志）时 open 一直
+   * 不是 null，pending 永远立不起来，之后派来的活全被当成插话、进了后续上下文。插话后面跟的是人那一轮
+   * 的助手、工具事件；指令紧挨着一个 turn/start，就是它开了自己的一轮（同 core 的 fold）。
+   */
+  let justTask = false
   const taskTurns = new Set<number>()
   const drop = new Set<number>()
   for (const e of events) {
     const turnOf = (e.data as { turn?: unknown } | undefined)?.turn
+    const afterTask = justTask
+    justTask = false
     if (e.type === 'user/message') {
       if (isTaskInstruction((e.data as { source?: MessageSource }).source)) {
         drop.add(e.seq)
         if (open === null) pending = true
+        justTask = true
         continue
       }
       // 指令之后没开成轮（落盘半截的老日志），接下来人说的那句开的是人自己的一轮。
       if (open === null) pending = false
     } else if (e.type === 'turn/start') {
       open = Number(turnOf)
-      inTask = pending
+      inTask = pending || afterTask
       pending = false
       if (inTask) taskTurns.add(open)
     } else if (e.type === 'turn/end') {

@@ -116,3 +116,31 @@ test('todo/list 不进消息流，后一条盖前一条', () => {
   assert.equal(f.blocks.length, 0)
   assert.deepEqual(f.todos, { items: [1, 2], seq: 2 })
 })
+
+test('上一轮没收口（只有 turn/start）之后派来的指令紧挨着开了自己的一轮：是派来的活，不是插话', () => {
+  const task = { kind: 'plugin', plugin: 'task', form: 't9', phase: 'instruction', from: { id: 'main', name: '助手' } }
+  const f = fold([
+    ev(1, 'user/message', { message: um('人那句'), source: { kind: 'user' } }),
+    ev(2, 'turn/start', { turn: 1 }),
+    ev(3, 'user/message', { message: um('【主 Bot「助手」派来的任务】\n活'), source: task }),
+    ev(4, 'turn/start', { turn: 2 }),
+    ev(5, 'assistant/message', { turn: 2, step: 1, message: am('做完了'), usage }),
+    ev(6, 'turn/end', { turn: 2, reason: 'completed' }),
+  ])
+  const card: any = f.blocks.find((b: any) => b.kind === 'user' && b.assigned)
+  assert.equal(card.assigned.state, 'completed')
+  assert.equal(card.assigned.turn, 2)
+})
+
+test('真插话（指令后面跟的是人那一轮的助手事件）照旧是 steered', () => {
+  const task = { kind: 'plugin', plugin: 'task', form: 't8', phase: 'instruction', from: { id: 'main', name: '助手' } }
+  const f = fold([
+    ev(1, 'user/message', { message: um('人那句'), source: { kind: 'user' } }),
+    ev(2, 'turn/start', { turn: 1 }),
+    ev(3, 'user/message', { message: um('【主 Bot「助手」派来的任务】\n插进来的'), source: task }),
+    ev(4, 'assistant/message', { turn: 1, step: 1, message: am('人那件的回答'), usage }),
+    ev(5, 'turn/end', { turn: 1, reason: 'completed' }),
+  ])
+  const card: any = f.blocks.find((b: any) => b.kind === 'user' && b.assigned)
+  assert.equal(card.assigned.state, 'steered')
+})
