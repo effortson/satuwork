@@ -21,6 +21,8 @@ const assignPlugin = await import('./src/tools/assign.ts')
 /** 每件任务：建出来之后被问到第 2 次就 done；派给「法务」的做不成。 */
 const tasks = new Map()
 const posted = []
+/** 主 Bot 这边发出去的停止（POST /runtime/tasks/:id/cancel）。 */
+const cancels = []
 let seq = 0
 const gateway = createServer((req, res) => {
   let raw = ''
@@ -38,12 +40,19 @@ const gateway = createServer((req, res) => {
       tasks.set(id, { id, body, polls: 0 })
       return send(201, { task: { id, status: 'queued' } })
     }
+    const cm = req.url.match(/^\/runtime\/tasks\/([^/]+)\/cancel$/)
+    if (req.method === 'POST' && cm) {
+      cancels.push(cm[1])
+      return send(200, { task: { id: cm[1], status: 'running' } })
+    }
     const m = req.url.match(/^\/runtime\/tasks\/([^/]+)$/)
     if (req.method === 'GET' && m) {
       const t = tasks.get(m[1])
       if (!t) return send(404, { error: 'no' })
       t.polls++
       // 跑着的那一拍带上领活方报的进度和对方的会话 id（真 Gateway 的 publicBotTask 就是这个形状）。
+      // 运营那件一直跑着：看它会不会跟着被停。
+      if (t.body.toBot === 'ops') return send(200, { task: { id: t.id, status: 'running' } })
       if (t.polls < 2) return send(200, { task: { id: t.id, status: 'running', runSessionId: `s-${t.body.toBot}`, progress: { steps: 2, tool: { name: 'web_search', detail: t.body.toBot } } } })
       if (t.body.toBot === 'legal') return send(200, { task: { id: t.id, status: 'done', runKind: 'failed', error: '它那边报错了', result: '没做成：它那边报错了' } })
       // 设计师那边有人按了停止（真 Gateway 的 taskFinish：kind=aborted、主 Bot 这边没停）。
@@ -64,6 +73,7 @@ class FakeCatalog extends Service {
       { id: 'sales', name: '销售', desc: '' },
       { id: 'legal', name: '法务', desc: '' },
       { id: 'design', name: '设计师', desc: '' },
+      { id: 'ops', name: '运营', desc: '' },
     ]
   }
   get servers() {
@@ -135,7 +145,7 @@ out.schema = { 在表里: Boolean(def), 描述里有名单: Boolean(def && /财�
   }
 }
 
-// ── 对方那边被人停了（docs/bot-tasks.md §1.3）：这一件标成已停止、依赖它的跳过，别的照跑 ──
+// ── 对方那边被人停了（docs/bot-tasks.md §1.3）：这一件标成已停止，同一批整批跟着停，做完的留着 ──
 {
   const r = await run(
     {
@@ -143,19 +153,23 @@ out.schema = { 在表里: Boolean(def), 描述里有名单: Boolean(def && /财�
         { id: 'draw', bot: '设计师', instruction: '画三版首页' },
         { id: 'quote', bot: '财务', instruction: '按首页出报价', after: ['draw'] },
         { id: 'leads', bot: '销售', instruction: '列本周线索' },
+        { id: 'promo', bot: '运营', instruction: '排一周推广' },
       ],
     },
     'c-stop',
   )
+  const promoId = [...tasks.values()].find((t) => t.body.instruction.startsWith('排一周推广'))?.id
   const last = new Map()
   for (const e of events.filter((e) => e.type === 'bot/assign' && e.data.callId === 'c-stop')) last.set(e.data.id, e.data)
   out.stopThere = {
     text: r.text,
     这一件标成已停止: last.get('c-stop:draw')?.state === 'cancelled' && (last.get('c-stop:draw')?.result || '').includes('有人在 @设计师 的对话里把它停了'),
-    依赖它的跳过且说清是被停: last.get('c-stop:quote')?.state === 'skipped' && (last.get('c-stop:quote')?.result || '').includes('被人停止了'),
-    依赖它的没派出去: !posted.some((p) => p.body.instruction.startsWith('按首页出报价')),
-    别的照跑: last.get('c-stop:leads')?.state === 'done',
-    告诉模型别重派: r.text.includes('1 件被人在对方那边停止') && r.text.includes('不要重派') && /\[1\/3 cancelled · @设计师/.test(r.text),
+    等着的跟着停: last.get('c-stop:quote')?.state === 'cancelled' && (last.get('c-stop:quote')?.result || '').includes('跟着停了'),
+    等着的没派出去: !posted.some((p) => p.body.instruction.startsWith('按首页出报价')),
+    在跑的跟着停: last.get('c-stop:promo')?.state === 'cancelled' && (last.get('c-stop:promo')?.result || '').includes('@设计师 那边有人按了停止'),
+    在跑的发了停止: Boolean(promoId) && cancels.includes(promoId),
+    做完的结论留着: last.get('c-stop:leads')?.state === 'done',
+    告诉模型整批停了别重派: r.text.includes('整批跟着停了') && r.text.includes('不要重派') && /\[1\/4 cancelled · @设计师/.test(r.text),
   }
 }
 

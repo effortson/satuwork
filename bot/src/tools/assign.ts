@@ -180,7 +180,7 @@ export function apply(ctx: Context) {
         '对方跑在自己的席位上，有自己的人设、能力和连接，看不见这条对话——每件的 instruction 要写得自足：背景、要求、交付形式都写进去。' +
         '一次可以派好几件，用 tasks 列出来，并用 after 安排顺序：没有 after 的一起跑（并行）；after 写了谁，就等谁做完再跑（串行），' +
         '前置任务交回的结论会自动附在它的指令末尾。同一颗 Bot 的几件会自动排队。前置没做成，依赖它的会跳过。' +
-        '某一件在对方那边被人停止了，就是人不要它做了：不要重派，也不要自己接着做。' +
+        '某一件在对方那边被人停止了，就是人不要这件事了：同一批的整批跟着停，停掉的都不要重派，也不要自己接着做。' +
         '这次调用会一直等到所有任务收场才返回，返回的是每一件的结论；拿到之后汇总、核对或决定下一步，不要再问用户要不要等。'
       )
     },
@@ -366,14 +366,37 @@ export function apply(ctx: Context) {
           }
           await sleep(POLL_MS, signal)
           for (const it of items) if (it.state === 'running' && it.taskId) await poll(it)
+          /**
+           * 有一件在对方那边被人停了（§1.3）：**整批跟着停**。人按停止是在说「这件事别做了」，而同一次
+           * 派出去的几件是同一件事拆开的——剩下的接着跑，做出来的是一件被人叫停的事的其余部分。
+           * 在跑的走和主 Bot 这边按停止同一条路（cancel → 领走的一方中止对方那一轮），等着的直接作废；
+           * 已经做完的结论留着。
+           */
+          const halt = items.find((it) => it.stoppedThere)
+          if (halt) {
+            for (const it of items) {
+              if (terminal(it.state)) continue
+              if (it.state === 'running' && it.taskId) await gateway('POST', `/runtime/tasks/${encodeURIComponent(it.taskId)}/cancel`, {}).catch(() => {})
+              await settle(it, 'cancelled', `跟着停了：同一批里 @${halt.bot.name} 那边有人按了停止，整批不再往下做。`)
+            }
+            break
+          }
         }
       } catch (e) {
         if (e instanceof AssignFailure) return { text: e.message }
         throw e
       }
       const done = items.filter((it) => it.state === 'done').length
-      const stopped = items.filter((it) => it.stoppedThere).length
-      return { text: `派出去的 ${total} 件收场了（做完 ${done} 件${stopped ? `，${stopped} 件被人在对方那边停止` : ''}）。\n\n${render(items)}` }
+      const halt = items.find((it) => it.stoppedThere)
+      if (halt) {
+        return {
+          text:
+            `@${halt.bot.name} 那边有人按了停止，同一批派出去的 ${total} 件整批跟着停了（停之前做完 ${done} 件）。` +
+            '停掉的这几件都作废：不要重派，也不要自己接着做；做完的结论照常可用。如实告诉人哪件被停、哪些跟着停了，要不要重新做由人决定。' +
+            `\n\n${render(items)}`,
+        }
+      }
+      return { text: `派出去的 ${total} 件收场了（做完 ${done} 件）。\n\n${render(items)}` }
     },
   })
 }

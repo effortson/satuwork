@@ -25,7 +25,7 @@ export async function runAssign({ root, test, assert, log }) {
     assert(r.dag.结论都回给模型, `回给模型的那段不对：\n${r.dag.text}`)
   })
 
-  await test('对方那边被人停了：这一件标成已停止（不是失败），依赖它的跳过，别的照跑，告诉模型别重派', async () => {
+  await test('对方那边被人停了：这一件标成已停止（不是失败），同一批整批跟着停，做完的留着，告诉模型别重派', async () => {
     const s = r.stopThere
     assert(s, '探针没跑到这一段')
     for (const [k, v] of Object.entries(s)) if (k !== 'text') assert(v === true, `${k} 不成立：\n${s.text}`)
