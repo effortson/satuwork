@@ -9,12 +9,16 @@
  *  - 每一件的状态变化都写进会话（bot/assign）。
  */
 import { createServer } from 'node:http'
+import { getEventListeners } from 'node:events'
 import { Context, Service } from '@deepseek-ai/cordis'
 
 // 环境变量要在**导入工具模块之前**设好：轮询间隔是模块加载时读的，静态 import 会抢在这几行前面执行。
 process.env.SATUWORK_BOT_ID = 'bot-main'
 process.env.GATEWAY_TOKEN = 'sat_assign_probe'
 process.env.SATUWORK_ASSIGN_POLL_MS = '200'
+// 建任务那一下等多久算没回来、隔多久重发：压短，好验「慢响应重发不建第二条」。
+process.env.SATUWORK_ASSIGN_HTTP_TIMEOUT_MS = '600'
+process.env.SATUWORK_ASSIGN_RETRY_MS = '100'
 const toolsPlugin = await import('./src/tools/index.ts')
 const assignPlugin = await import('./src/tools/assign.ts')
 
@@ -36,7 +40,15 @@ const gateway = createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/runtime/tasks') {
       posted.push({ auth: req.headers.authorization, body, at: Date.now() })
       if (body.toBot === 'busy') return send(409, { error: '「忙人」上一件活还没做完' })
+      // 真 Gateway 按 callId + 目标 + 指令认回还没收场的那一条（重发不建第二条）。
+      const same = [...tasks.values()].find((t) => t.body.callId === body.callId && t.body.toBot === body.toBot && t.body.instruction === body.instruction)
+      if (same) return send(201, { task: { id: same.id, status: 'queued' } })
       const id = `t-${++seq}`
+      // 「慢响应」：第一次建好了，响应却拖过了席位的超时。
+      if (body.instruction === '慢响应的那件') {
+        tasks.set(id, { id, body, polls: 0 })
+        return void setTimeout(() => send(201, { task: { id, status: 'queued' } }), 1500)
+      }
       tasks.set(id, { id, body, polls: 0 })
       return send(201, { task: { id, status: 'queued' } })
     }
@@ -196,6 +208,22 @@ out.schema = { 在表里: Boolean(def), 描述里有名单: Boolean(def && /财�
     先做的先派: Boolean(at('先做的盘点') && at('后做的盘点') && at('后做的盘点').at > at('先做的盘点').at),
     前一件失败后一件照样派: Boolean(at('审章程')) && r2.get('c-law:l2')?.state === 'failed' && r2.get('c-law:l1')?.state === 'failed',
     还是排着队派: Boolean(at('审章程') && at('审合同') && at('审章程').at > at('审合同').at),
+  }
+}
+
+// ── 建任务的请求超时了其实建成了：重发认回同一条，不判「没派出去」；一轮里等了很多拍也不攒 abort 监听 ──
+{
+  const ac = new AbortController()
+  const r = await ctx.tools.execute({ callId: 'c-slow', name: 'assign_task', sessionId: 's-main', arguments: JSON.stringify({ tasks: [{ id: 'slow', bot: '财务', instruction: '慢响应的那件' }] }), signal: ac.signal })
+  const mine = [...tasks.values()].filter((t) => t.body.instruction === '慢响应的那件')
+  const last = new Map()
+  for (const e of events.filter((e) => e.type === 'bot/assign' && e.data.callId === 'c-slow')) last.set(e.data.id, e.data)
+  out.slowCreate = {
+    text: r.text,
+    只建了一条: mine.length === 1,
+    重发了: posted.filter((p) => p.body.instruction === '慢响应的那件').length >= 2,
+    没判没派出去: last.get('c-slow:slow')?.state === 'done',
+    监听没攒下来: getEventListeners(ac.signal, 'abort').length <= 1,
   }
 }
 

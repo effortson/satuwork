@@ -7,7 +7,7 @@ export async function runTaskWorker({ root, test, assert, log }) {
   const finishOf = (id) => seen.find((s) => s.path === `/w-local/gateway/worker/tasks/${id}/finish`)
   const aborts = seen.filter((s) => s.path.endsWith('/abort'))
 
-  await test('三件都收得了场，没卡住', async () => {
+  await test('四件都收得了场，没卡住', async () => {
     assert(!Object.keys(out).length, `有的卡住或抛错了：${JSON.stringify(out)}`)
   })
 
@@ -28,7 +28,13 @@ export async function runTaskWorker({ root, test, assert, log }) {
     assert(finishOf('tk-c')?.body?.kind === 'aborted', `该报 aborted：${JSON.stringify(finishOf('tk-c'))}`)
   })
 
-  await test('三件里一次「中止」都不该调', async () => {
+  await test('没人按停止、人在对方那边把排着的这条撤了：不等二十分钟超时，报 aborted，不去撤也不中止', async () => {
+    const fin = finishOf('tk-d')
+    assert(fin?.body?.kind === 'aborted', `该报 aborted：${JSON.stringify(fin)}`)
+    assert(!seen.some((s) => s.method === 'DELETE' && s.path.endsWith('/queue/q-d')), '人已经撤了，不该再去撤')
+  })
+
+  await test('四件里一次「中止」都不该调', async () => {
     assert(!aborts.length, `不该中止任何一轮：${aborts.length} 次`)
   })
 }

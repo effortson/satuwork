@@ -32,6 +32,11 @@ const WAIT_MS = Math.max(10_000, Math.trunc(Number(process.env.SATUWORK_ASSIGN_W
  */
 const DEP_RESULT_MAX = 6_000
 const DEP_CONTEXT_MAX = 15_000
+/** 问 Gateway 的一次请求最多等多久。 */
+const HTTP_TIMEOUT_MS = Math.max(200, Math.trunc(Number(process.env.SATUWORK_ASSIGN_HTTP_TIMEOUT_MS ?? 20_000)))
+/** 建任务的请求没回来（超时、断网）时重发几次、每次隔多久（第 n 次隔 n 倍）。 */
+const CREATE_RETRIES = 2
+const CREATE_RETRY_MS = Math.max(50, Math.trunc(Number(process.env.SATUWORK_ASSIGN_RETRY_MS ?? 1_000)))
 /** 回给模型的每条结论最多多长。 */
 const RESULT_MAX = 12_000
 
@@ -72,10 +77,16 @@ function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}\n…（已截断，共 ${text.length} 字）`
 }
 
+/** 等一拍。到点了要把挂在 signal 上的监听摘掉：一轮里每 2 秒等一拍，三十分钟能攒下九百个。 */
 const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, ms)
-    signal?.addEventListener('abort', () => (clearTimeout(t), resolve()), { once: true })
+    const done = () => {
+      clearTimeout(t)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    const t = setTimeout(done, ms)
+    signal?.addEventListener('abort', done, { once: true })
   })
 
 async function gateway(method: string, path: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> | null; text: string }> {
@@ -88,7 +99,7 @@ async function gateway(method: string, path: string, body?: unknown): Promise<{ 
       method,
       headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     })
   } catch (e) {
     throw new Error(`连不上 Gateway：${(e as Error).message}`)
@@ -291,19 +302,31 @@ export function apply(ctx: Context) {
         const context = deps.map((d) => `【${d.key} · @${d.bot.name}】\n${clip(d.result || '', each)}`).join('\n\n')
         it.startedAt = Date.now()
         let r
-        try {
-          r = await gateway('POST', '/runtime/tasks', {
-            fromBotId,
-            toBot: it.bot.id,
-            instruction: it.instruction,
-            ...(context ? { context } : {}),
-            sessionId,
-            callId: call.callId,
-            wait: true,
-          })
-        } catch (e) {
-          await settle(it, 'failed', `没派出去：${(e as Error).message}`)
-          return
+        /**
+         * 请求没回来（超时、断网）不等于没建成：Gateway 可能已经建好、只是响应慢了。重发同一份——
+         * Gateway 按 callId + 目标 + 指令认回还没收场的那一条，不会建出第二条（POST /runtime/tasks）。
+         * 当场判「没派出去」的话，对方照跑，结论之后以「任务结果」兜底送回，主 Bot 还可能再派一遍。
+         */
+        const body = {
+          fromBotId,
+          toBot: it.bot.id,
+          instruction: it.instruction,
+          ...(context ? { context } : {}),
+          sessionId,
+          callId: call.callId,
+          wait: true,
+        }
+        for (let n = 0; ; n++) {
+          try {
+            r = await gateway('POST', '/runtime/tasks', body)
+            break
+          } catch (e) {
+            if (e instanceof AssignFailure || n >= CREATE_RETRIES || signal?.aborted) {
+              await settle(it, 'failed', `没派出去：${(e as Error).message}`)
+              return
+            }
+            await sleep(CREATE_RETRY_MS * (n + 1), signal)
+          }
         }
         const task = (r.json?.task ?? null) as { id?: unknown } | null
         if (r.status !== 201 || typeof task?.id !== 'string') {

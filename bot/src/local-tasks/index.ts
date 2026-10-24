@@ -100,6 +100,8 @@ async function readTurnResult(
   ownTurn: boolean,
   instruction: string,
   track?: (ev: { type?: string; data?: unknown }) => void,
+  /** 席位推的队列快照（`queue/change`），和「见到了自己那条指令」。认对方那边撤掉排队用，见 runTaskJob。 */
+  watch?: { queue?: (ids: string[]) => void; mine?: () => void },
 ): Promise<{ kind: string; text: string }> {
   let turn: number | null = ownTurn ? null : -1
   let mine = false
@@ -110,10 +112,17 @@ async function readTurnResult(
   for await (const ev of sseEvents<Ev>(reader)) {
     // 自己那一轮的事件喂给进度（docs/bot-tasks.md §4）。todo/list 不带轮号，进了自己那一轮就算。
     if (track && turn !== null && (turn === -1 ? foreign === 0 : ev.type === 'todo/list' || Number(ev.data?.turn ?? -1) === turn)) track(ev)
+    if (ev.type === 'queue/change') {
+      const queued = (ev as { queued?: { id?: unknown }[] }).queued
+      watch?.queue?.(Array.isArray(queued) ? queued.map((q) => String(q?.id ?? '')) : [])
+      continue
+    }
     if (ev.type === 'user/message') {
       if (!mine) {
-        if (textOfMessage(ev.data).trim() === instruction.trim()) mine = true
-        else if (turn === -1) foreign++
+        if (textOfMessage(ev.data).trim() === instruction.trim()) {
+          mine = true
+          watch?.mine?.()
+        } else if (turn === -1) foreign++
       }
       continue
     }
@@ -146,6 +155,9 @@ async function readTurnResult(
   }
   throw new Error('事件流断了')
 }
+
+/** 排着的那条离队多久还没开轮，就算对方那边有人把它撤了（见 runTaskJob 的 leftQueueAt）。 */
+const QUEUE_GONE_MS = Math.max(500, Math.trunc(Number(process.env.SATUWORK_TASK_QUEUE_GONE_MS ?? 5_000)))
 
 export function apply(ctx: Context) {
   if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return
@@ -189,6 +201,14 @@ export function apply(ctx: Context) {
     let sent = false
     /** 主 Bot 那边按了停止（续租的回复里带 cancelled）。 */
     let stopped = false
+    /**
+     * 排着队的那条从对方队列里没了、自己那条指令却一直没出现：人在对方那边把它撤了（DELETE 队列那一下
+     * 不经我们）。不认出来的话要等到二十分钟超时，主 Bot 也跟着干等、最后报「等结果超时」。离队到开轮
+     * 之间本来就有一小段（先出队、再写那条 user/message），所以等 QUEUE_GONE_MS 还没见到才算撤了。
+     */
+    let leftQueueAt = 0
+    let mineSeen = false
+    let goneThere = false
     let stopTimer: ReturnType<typeof setTimeout> | null = null
     /** 目标那一轮做到哪了：随续租报上去，主 Bot 那张卡画「正在：…」。 */
     const tracker = new ProgressTracker()
@@ -231,6 +251,11 @@ export function apply(ctx: Context) {
       stopTimer = setTimeout(() => ac.abort(), 15_000)
     }
     const renew = setInterval(() => {
+      if (queueId && leftQueueAt && !mineSeen && Date.now() - leftQueueAt > QUEUE_GONE_MS) {
+        goneThere = true
+        ac.abort()
+        return
+      }
       const body = moved ? { progress: tracker.snapshot() } : {}
       moved = false
       void gw(`/${encodeURIComponent(job.taskId)}/renew`, body)
@@ -296,14 +321,27 @@ export function apply(ctx: Context) {
         stopped = false
         stopTarget()
       }
-      const out = await readTurnResult(reader, !posted?.steered, job.instruction, (ev) => {
-        if (tracker.feed(ev)) moved = true
-      })
+      const out = await readTurnResult(
+        reader,
+        !posted?.steered,
+        job.instruction,
+        (ev) => {
+          if (tracker.feed(ev)) moved = true
+        },
+        {
+          queue: (ids) => {
+            if (queueId && !ids.includes(queueId) && !leftQueueAt) leftQueueAt = Date.now()
+          },
+          mine: () => {
+            mineSeen = true
+          },
+        },
+      )
       await finish({ kind: out.kind, result: out.text })
       ctx.logger?.info?.(`local tasks: ${job.taskId} 目标那一轮跑完：${out.kind}`)
     } catch (e) {
       if (lost) return
-      if (stopped) await finish({ kind: 'aborted' })
+      if (stopped || goneThere) await finish({ kind: 'aborted' })
       else if (ac.signal.aborted) await finish({ kind: 'timeout' })
       else await finish({ kind: 'failed', error: String((e as Error).message || e).slice(0, 300) })
     } finally {

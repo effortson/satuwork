@@ -4032,6 +4032,19 @@ export class Db {
     return rows.map(botTaskOf)
   }
 
+  /**
+   * 同一次工具调用（callId）里、同一句指令派给同一颗、还没收场的那一条。席位那边建任务的请求超时
+   * 重发时据此认回第一次建好的，不再建出第二条（见 POST /runtime/tasks）。
+   */
+  async openBotTaskOfCall(accountId: string, fromBotId: string, toBotId: string, callId: string, instruction: string): Promise<BotTask | undefined> {
+    const r = await this.one(
+      `select * from bot_tasks where "accountId" = ? and "fromBotId" = ? and "toBotId" = ? and "callId" = ? and instruction = ?
+          and status not in ('done', 'failed', 'cancelled') order by "createdAt" desc limit 1`,
+      [accountId, fromBotId, toBotId, callId, instruction],
+    )
+    return r ? botTaskOf(r) : undefined
+  }
+
   /** 还没收场、从 from 派给 to 的。防 A 派 B、B 派 A 转圈，也防同一件事派两遍。 */
   async openBotTaskBetween(accountId: string, fromBotId: string, toBotId: string): Promise<BotTask | undefined> {
     const r = await this.one(

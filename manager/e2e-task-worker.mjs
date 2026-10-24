@@ -7,10 +7,13 @@
  *   A. 拿到会话 id 之后、指令发出去之前就被停：对方跑着的是人自己那一轮，不调中止，指令不发。
  *   B. 排在对方队列里被停，第一次撤队列席位没应（500）：下一拍再撤，不退回去中止当前那一轮。
  *   C. 排在对方队列里被停，队列里已经没有这一条（404，人在对方那边撤了）：不调中止，报 aborted。
+ *   D. 没人按停止，人在对方那边直接把排着的这条撤了（席位推一帧 queue/change，里面没有它）：
+ *      不等到二十分钟超时，报 aborted；不去撤、也不中止。
  */
 import { createServer } from 'node:http'
 
 const seen = []
+const streams = []
 const server = createServer((req, res) => {
   let raw = ''
   req.on('data', (d) => (raw += d))
@@ -31,7 +34,7 @@ const server = createServer((req, res) => {
       }
       if (path.endsWith('/renew')) {
         const n = seen.filter((s) => s.path === path).length
-        return send(200, { leaseMs: 60000, cancelled: task === 'tk-a' || n >= 2 })
+        return send(200, { leaseMs: 60000, cancelled: task === 'tk-a' || (task !== 'tk-d' && n >= 2) })
       }
       if (path.endsWith('/finish')) return send(200, { ok: true })
     }
@@ -40,10 +43,18 @@ const server = createServer((req, res) => {
     if (path.endsWith('/events')) {
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       res.write(': hi\n\n')
+      streams.push(res)
       return
     }
     if (path.endsWith('/messages')) {
       const id = body?.task?.id
+      if (id === 'tk-d') {
+        // 排进去了；过一会儿人在对方那边把它撤了：席位推一帧没有它的队列快照。
+        setTimeout(() => {
+          for (const s of streams) s.write(`data: ${JSON.stringify({ type: 'queue/change', queued: [{ id: 'q-other' }] })}\n\n`)
+        }, 300)
+        return send(200, { queued: true, queueId: 'q-d' })
+      }
       return send(200, { queued: true, queueId: id === 'tk-b' ? 'q-b' : 'q-c' })
     }
     if (req.method === 'DELETE' && path.endsWith('/queue/q-b')) {
@@ -58,6 +69,7 @@ const server = createServer((req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r))
 process.env.SATUWORK_MANAGER_LOCAL = `http://127.0.0.1:${server.address().port}`
 process.env.SATUWORK_WORKER_TOKEN = 'wkr_probe'
+process.env.SATUWORK_TASK_QUEUE_GONE_MS = '800'
 
 const { runTaskJob } = await import('./src/worker/tasks.ts')
 const job = (taskId) => ({
@@ -75,7 +87,7 @@ const job = (taskId) => ({
 const quiet = () => {}
 const withDeadline = (p) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('卡住了')), 20000))])
 const out = {}
-for (const id of ['tk-a', 'tk-b', 'tk-c']) {
+for (const id of ['tk-a', 'tk-b', 'tk-c', 'tk-d']) {
   try {
     await withDeadline(runTaskJob(job(id), quiet))
   } catch (e) {

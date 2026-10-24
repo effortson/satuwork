@@ -1540,15 +1540,19 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * 先查后插要锁住：主 Bot 两条会话同一刻各派一件给同一颗，READ COMMITTED 下两边都查到「没有」、
      * 各插一行。锁按「这个人 × 这一对 Bot」取，两个方向排在同一条队上，转圈那条也拦得住。
      */
+    const callId = body.callId == null ? null : strField(body, 'callId', false) || null
     const task = await db.tx(async () => {
       await db.lockExclusive(BOT_TASK_PAIR_LOCK, `${account.id}:${[from.id, to.id].sort().join(':')}`)
+      // 席位那边建任务的请求超时重发了：第一次其实建成了，认回那一条，别再建一条、也别 409。
+      const same = callId ? await db.openBotTaskOfCall(account.id, from.id, to.id, callId, instruction) : undefined
+      if (same) return same
       if (await db.openBotTaskBetween(account.id, from.id, to.id)) throw new HttpError(409, `「${to.name}」上一件活还没做完，等它交回来再派`)
       if (await db.openBotTaskBetween(account.id, to.id, from.id)) throw new HttpError(409, `「${to.name}」正等着你的结果，不能反过来派给它`)
       return createBotTask(db, account, from, to, {
         instruction,
         context: context || null,
         sessionId: body.sessionId == null ? null : strField(body, 'sessionId', false) || null,
-        callId: body.callId == null ? null : strField(body, 'callId', false) || null,
+        callId,
         // 新席位的 assign_task 在这一轮里等着结论（docs/bot-tasks.md §1）；老席位不带，走兜底送回。
         wait: body.wait === true,
       })

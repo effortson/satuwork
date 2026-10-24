@@ -503,6 +503,21 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       for (const j of (await due()).json.jobs) if (j.phase === 'deliver') await post(j.taskId, 'finish', { kind: 'delivered' })
     })
 
+    await test('建任务的请求重发了（席位那边超时）：同一次调用、同一句派给同一颗，认回第一次那条，不 409、不建第二条', async () => {
+      const body = { fromBotId: mainBot, toBot: '财务', instruction: '重发的那件', sessionId: 's-main', callId: 'call-retry' }
+      const a = await assign(body)
+      const b = await assign(body)
+      assert(a.status === 201 && b.status === 201 && a.json.task.id === b.json.task.id, `该认回同一条：${a.status} ${b.status} ${a.text} ${b.text}`)
+      // 换一句话就是另一件活：照旧 409（上一件还没做完）。
+      const c = await assign({ ...body, instruction: '另一件' })
+      assert(c.status === 409, `不同的指令该 409：${c.status}`)
+      const id = a.json.task.id
+      assert((await due()).json.jobs.some((j) => j.taskId === id), '没领到')
+      await post(id, 'started', { sessionId: 's-fin' })
+      await post(id, 'finish', { kind: 'completed', result: '好' })
+      for (const j of (await due()).json.jobs) if (j.phase === 'deliver') await post(j.taskId, 'finish', { kind: 'delivered' })
+    })
+
     await test('答了却被停了、等的一方又没来取：清扫收成已停止，不走兜底送回', async () => {
       const require = createRequire(join(gwRoot, 'package.json'))
       const pg = require('pg')

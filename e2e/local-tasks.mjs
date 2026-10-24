@@ -78,6 +78,12 @@ export async function runLocalTasks({ root, test, assert, log }) {
     assert(fin && fin.body.kind === 'aborted', `该报 aborted：${JSON.stringify(fin && fin.body)}`)
   })
 
+  await test('没人按停止、人在对方那边把排着的这条撤了：不等二十分钟超时，报 aborted，不去撤也不中止', async () => {
+    const fin = seen.find((s) => s.path === '/runtime/local-tasks/tk-7/finish')
+    assert(fin && fin.body.kind === 'aborted', `该报 aborted：${JSON.stringify(fin && fin.body)}`)
+    assert(!result.own.some((x) => x.method === 'DELETE' && x.path.endsWith('/q-7')), '人已经撤了，不该再去撤')
+  })
+
   await test('排着时被停、第一次撤队列席位没应：下一拍再撤，不退回去中止当前那一轮', async () => {
     const dels = result.own.filter((x) => x.method === 'DELETE' && x.path.endsWith('/q-6'))
     assert(dels.length === 2, `该撤两次（第一次 500）：${dels.length} 次`)

@@ -46,6 +46,12 @@ export async function runAssign({ root, test, assert, log }) {
     for (const [k, v] of Object.entries(s)) if (k !== 'text') assert(v === true, `${k} 不成立：\n${s.text}`)
   })
 
+  await test('建任务的请求超时了其实建成了：重发认回同一条、照常等到结论；等了很多拍也不攒 abort 监听', async () => {
+    const s = r.slowCreate
+    assert(s, '探针没跑到这一段')
+    for (const [k, v] of Object.entries(s)) if (k !== 'text') assert(v === true, `${k} 不成立：\n${s.text}`)
+  })
+
   await test('名单上没有的、环、重复 id 整次不发生；单条简写照旧认；不是主 Bot 派不了', async () => {
     assert(r.bad.没有这颗.includes('名单上没有「行政」'), `没有的 Bot：${r.bad.没有这颗}`)
     assert(r.bad.有环.includes('绕成了一个圈'), `环：${r.bad.有环}`)
