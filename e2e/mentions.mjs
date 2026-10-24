@@ -89,6 +89,8 @@ export async function runMentions({ root, test, assert, log }) {
     // 派活（docs/bot-tasks.md §7）：指令排队时身份要跟着，否则跑起来就成了「人说的话」，
     // 界面不折、上下文也认不出它；派活那一轮跑着时人说的话要排队，靠的是 runningTask。
     assert(r.taskQueue && Object.values(r.taskQueue).every((v) => v === true), `派活排队不对：${JSON.stringify(r.taskQueue)}`)
+    // todo 参数没认出来要明说（不能当「读」），数组写成字符串照认，坏掉的 JSON 带着原文回给模型。
+    assert(r.todoArgs && Object.values(r.todoArgs).every((v) => v === true), `todo 参数处理不对：${JSON.stringify(r.todoArgs)}`)
   })
 
   await test('出队之后、agent 建出来之前，这条会话仍然算在跑', () => {

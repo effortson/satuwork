@@ -1,5 +1,62 @@
 import { AssistantMessageEventStream, EMPTY_USAGE, emptyAssistant, stubModel } from './stream.ts'
 
+
+/**
+ * 解析不了的工具参数原文挂在这个键上（见 settleArgs）。工具层认它，原样把原文交给 tools.execute，
+ * 由那里回模型一句「参数不是合法 JSON」。
+ */
+export const BAD_TOOL_ARGS = '__satuworkBadArguments'
+
+/**
+ * 原文里第一个完整的 JSON 对象。流里常见的两种毛病都是「前面是对的、后面多了东西」：整段参数
+ * 被重发了一遍（`{…}{…}`），或者对象后面跟了几个多余的字符。字符串里的括号不算。
+ */
+function firstJsonObject(raw: string): unknown {
+  const start = raw.indexOf('{')
+  if (start < 0) return undefined
+  let depth = 0
+  let inStr = false
+  let esc = false
+  for (let i = start; i < raw.length; i++) {
+    const c = raw[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (c === '\\') esc = true
+      else if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') inStr = true
+    else if (c === '{') depth++
+    else if (c === '}' && --depth === 0) {
+      try {
+        return JSON.parse(raw.slice(start, i + 1))
+      } catch {
+        return undefined
+      }
+    }
+  }
+  return undefined
+}
+
+/**
+ * 一次工具调用收口时把参数定下来。
+ *
+ * 流里每来一段都试着解析一次，解析不了就先记成 `{}`——没收完的 JSON 本来就解析不了，这没问题。
+ * 可**收口时还解析不了**，以前也就停在 `{}` 上：工具拿到一份空参数，当成「没带参数」照常执行。
+ * `todo` 不带参数是「读清单」，于是模型每次想写都变成读、读到空清单、再写一次——一轮里连调
+ * 几十次 todo 原地打转。收口时认真解析一次；救不回来就把原文带下去，让工具层明说参数坏了。
+ */
+function settleArgs(block: any): void {
+  const raw = typeof block?._raw === 'string' ? block._raw.trim() : ''
+  if (!raw) return
+  try {
+    block.arguments = JSON.parse(raw)
+    return
+  } catch {}
+  const first = firstJsonObject(raw)
+  block.arguments = first && typeof first === 'object' ? first : { [BAD_TOOL_ARGS]: raw }
+}
+
 export function gatewayUrl(): string {
   return (process.env.GATEWAY_URL || '').replace(/\/$/, '')
 }
@@ -661,6 +718,7 @@ async function consumeOpenAI(
       }
       for (let i = 0; i < partial.content.length; i++) {
         if (partial.content[i].type === 'toolCall') {
+          settleArgs(partial.content[i])
           delete partial.content[i]._raw
           stream.push({ type: 'toolcall_end', contentIndex: i, toolCall: partial.content[i], partial })
         }
@@ -778,6 +836,7 @@ async function consumeResponses(
       for (let i = 0; i < partial.content.length; i++) {
         const block = partial.content[i]
         if (block.type !== 'toolCall' || !('_raw' in block)) continue
+        settleArgs(block)
         delete block._raw
         stream.push({ type: 'toolcall_end', contentIndex: i, toolCall: block, partial })
       }
@@ -825,6 +884,7 @@ async function consumeResponses(
         if (item.call_id) block.id = item.call_id
         if (item.name) block.name = item.name
         if (typeof item.arguments === 'string') setArgs(block, item.arguments)
+        settleArgs(block)
         delete block._raw
         stream.push({ type: 'toolcall_end', contentIndex: idx, toolCall: block, partial })
       }
@@ -954,6 +1014,7 @@ async function consumeAnthropic(
       if (block?.type === 'text') stream.push({ type: 'text_end', contentIndex: index, content: block.text, partial })
       else if (block?.type === 'thinking') stream.push({ type: 'thinking_end', contentIndex: index, content: block.thinking, partial })
       else if (block?.type === 'toolCall') {
+        settleArgs(block)
         delete block._raw
         stream.push({ type: 'toolcall_end', contentIndex: index, toolCall: block, partial })
       }

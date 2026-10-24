@@ -2171,6 +2171,8 @@
 /* 目标 Bot 这边收到的派活（docs/bot-tasks.md §7）：主 Bot 发来的一条消息，它那一轮默认折在卡里。
    名字那行已经说了是派来的，气泡上沿的角标不再挂；状态签跟着那一轮走。 */
 .sw-msg.sw-taskin[data-via] .sw-bubble::before { content: none; display: none; }
+/* 那一轮里 Bot 自己的回复（展开过程时看得见）是它说的话，不是派来的任务：不挂这个角标。 */
+.sw-msg[data-role='assistant'][data-via="task"] .sw-bubble::before { content: none; display: none; }
 .sw-taskin .sw-taskname-tag { background: var(--secondary); color: var(--muted-foreground); }
 .sw-taskin:is([data-state="running"], [data-state="queued"]) .sw-taskname-tag { background: var(--color-accent-100); color: var(--color-accent-800); }
 .sw-taskin[data-state="completed"] .sw-taskname-tag { background: color-mix(in srgb, var(--color-accent-2-500, #3c9a6b) 16%, transparent); color: var(--color-accent-2-800, #23623f); }

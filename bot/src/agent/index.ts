@@ -20,6 +20,7 @@ import { turnContextGuard } from './context-guard.ts'
 import { ProgressTracker } from './progress.ts'
 import { isTaskInstruction, withoutTaskTurns } from './task-turns.ts'
 import { readTodos, restoreTodos } from '../tools/todo.ts'
+import { BAD_TOOL_ARGS } from '../llm/gateway.ts'
 import { browserOf, desktopOf, memoryOf, type BotRecord } from '../registry/index.ts'
 import { cachedMemories, cachedSkill, cachedSkills, type CachedMemory, type CachedSkill, type ReasoningEffort } from '../catalog/index.ts'
 
@@ -2193,7 +2194,11 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         const result = await this.ctx.tools.execute({
           callId: toolCallId,
           name: schema.name,
-          arguments: JSON.stringify(params ?? {}),
+          // 收口时解析不了的参数（llm/gateway.ts 的 settleArgs）原样交下去，tools.execute 会回模型「参数不是合法 JSON」。
+          arguments:
+            params && typeof params === 'object' && BAD_TOOL_ARGS in params
+              ? String((params as Record<string, unknown>)[BAD_TOOL_ARGS])
+              : JSON.stringify(params ?? {}),
           sessionId,
           // **这一条不能省。** pi-agent 的文档写得明白：钩子拿到中止信号，要自己负责
           // 响应它。不往下传的话，agent.abort() 只掐得掉模型那条流，已经开跑的 terminal

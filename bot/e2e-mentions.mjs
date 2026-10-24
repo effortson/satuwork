@@ -492,6 +492,24 @@ await ctx.agents
 
 hold = null
 
+// ── todo 的参数：没认出 todos 要明说，不能当成「读」（否则模型一轮里原地连调几十次）──
+{
+  // 这个探针前面几段要的是「工具表里有什么」，todo 放到这里才装，别搅了它们。
+  ctx.plugin(await import('./src/tools/todo.ts'))
+  for (let i = 0; i < 50 && !ctx.tools.has('todo'); i++) await new Promise((r) => setTimeout(r, 20))
+  const sid = await ctx.sessions.create({ title: 'todo 参数', botId: 'default' })
+  const call = (args, raw) => ctx.tools.execute({ callId: 'c-' + Math.random(), name: 'todo', sessionId: sid, arguments: raw ?? JSON.stringify(args) })
+  const wrongKey = await call({ tasks: [{ task: '写页面' }] })
+  const asString = await call({ todos: JSON.stringify([{ task: '写页面', status: 'in_progress' }]) })
+  const broken = await call(null, '{"todos":[{"task":"写一半')
+  out.todoArgs = {
+    写错字段名会明说: wrongKey.text.includes('没认出 todos'),
+    写错之后清单没被动: (ctx.storage.collection('todos').get(sid) ?? []).length === 1,
+    数组写成字符串也认: !asString.failed && asString.text.includes('写页面'),
+    坏掉的参数会明说: broken.text.includes('参数不是合法 JSON') && broken.text.includes('写一半'),
+  }
+}
+
 // ── 派活排队（docs/bot-tasks.md §7）：排着时身份跟着走，跑起来算「派活在跑」 ─────
 {
   const sid = await ctx.sessions.create({ title: '派活', botId: 'default' })

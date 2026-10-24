@@ -302,9 +302,26 @@ export function apply(ctx: Context) {
       const col = ctx.storage.collection<TodoItem[]>(COLLECTION)
       const current = col.get(call.sessionId) ?? []
 
+      /**
+       * **只有真的什么都没带才是「读」。** 带了别的键却没有 todos（字段名写错了、参数没解析出来），
+       * 照「读」处理的话它拿到一句「清单是空的，带 todos 再调一次」，再调一次还是一样——一轮里
+       * 原地连调几十次。明说没认出 todos，它才知道是参数的事。
+       */
       if (args.todos === undefined) {
+        const keys = Object.keys(args ?? {}).filter((k) => k !== 'merge')
+        if (keys.length) {
+          fail(`没认出 todos 参数（收到的是：${keys.join('、')}）。写清单要用 todos 数组；只想读当前清单就什么参数都不带。`)
+        }
         if (!current.length) return '清单是空的。要列一张就带 todos 数组再调一次；一两步能做完的活不用列。'
         return render(current)
+      }
+      // 有的模型把数组写成了一段 JSON 字符串。意思没有歧义，照数组认。
+      if (typeof args.todos === 'string') {
+        try {
+          args = { ...args, todos: JSON.parse(args.todos) }
+        } catch {
+          fail('todos 要是一个数组，这次给的是一段解析不了的字符串。')
+        }
       }
       if (!Array.isArray(args.todos)) {
         fail('todos 要是一个数组。只想看当前清单的话，不要带任何参数调用。')

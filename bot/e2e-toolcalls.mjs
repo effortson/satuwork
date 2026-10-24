@@ -15,7 +15,7 @@
  * 由 e2e/toolcalls.mjs 另起一个进程跑。
  */
 import { createServer } from 'node:http'
-import { streamViaGateway } from './src/llm/gateway.ts'
+import { BAD_TOOL_ARGS, streamViaGateway } from './src/llm/gateway.ts'
 import { toAgentMessages } from './src/agent/index.ts'
 import { stubModel } from './src/llm/stream.ts'
 
@@ -86,6 +86,20 @@ frames = [
   delta({}, 'tool_calls'),
 ]
 out.plain = await drain()
+
+/**
+ * ⑥ 参数收口时解析不了：以前悄悄变成 `{}`，`todo` 把它当「读清单」，模型一轮里连调几十次原地打转。
+ * 整段被重发一遍（`{…}{…}`）救得回来；真坏了（截断）就把原文带下去，工具层明说参数坏了。
+ */
+frames = [
+  delta({ role: 'assistant' }),
+  delta({ tool_calls: [{ index: 0, id: 'call_f', type: 'function', function: { name: 'todo', arguments: '{"todos":[{"task":"写页面"}]}' } }] }),
+  delta({ tool_calls: [{ index: 0, function: { arguments: '{"todos":[{"task":"写页面"}]}' } }] }),
+  delta({ tool_calls: [{ index: 1, id: 'call_g', type: 'function', function: { name: 'todo', arguments: '{"todos":[{"task":"写一半' } }] }),
+  delta({}, 'tool_calls'),
+]
+out.badArgs = await drain()
+out.badKey = BAD_TOOL_ARGS
 
 /**
  * ④ 已经写下的日志里那些空壳：重建历史时连它的结果一起丢掉。
