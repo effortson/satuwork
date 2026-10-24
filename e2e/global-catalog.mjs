@@ -167,12 +167,13 @@ export async function runGlobalCatalog({ gwRoot, test, req, start, waitHttp, ass
       assert(no.json.bot.icon === 'c-flow', `跨层级改成功了：${no.json.bot.icon}`)
     })
 
-    await test('两套头像各八个，由 options 下发', async () => {
+    await test('全局一套八个、公司一套十个，由 options 下发', async () => {
       const g = await req(base, 'GET', '/platform/bots/options', { token: owner })
       assert(g.json.icons?.length === 8, `全局 ${g.json.icons?.length} 个`)
       assert(g.json.icons.every((k) => k.startsWith('g-')), `全局那套混了别的：${g.json.icons}`)
       const c = await req(base, 'GET', `/orgs/${orgA}/bots/options`, { token: adminA })
-      assert(c.json.icons?.length === 8, `公司 ${c.json.icons?.length} 个`)
+      // 公司那套后来补了「设计」「财务」两个（6db31e2）。
+      assert(c.json.icons?.length === 10, `公司 ${c.json.icons?.length} 个`)
       assert(c.json.icons.every((k) => k.startsWith('c-')), `公司那套混了别的：${c.json.icons}`)
       // 两套不能有交集，否则「凭头像分辨层级」就不成立了。
       const overlap = g.json.icons.filter((k) => c.json.icons.includes(k))
