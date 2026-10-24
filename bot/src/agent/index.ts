@@ -17,6 +17,7 @@ export type { MessageSource, RefBlock }
 import type { ReassignedItem, WorkspaceFile } from '../tools/index.ts'
 import { budgetToolText } from '../tools/result-budget.ts'
 import { turnContextGuard } from './context-guard.ts'
+import { ProgressTracker } from './progress.ts'
 import { browserOf, desktopOf, memoryOf, type BotRecord } from '../registry/index.ts'
 import { cachedMemories, cachedSkill, cachedSkills, type CachedMemory, type CachedSkill, type ReasoningEffort } from '../catalog/index.ts'
 
@@ -84,6 +85,8 @@ export interface TaskOutcome {
   toolCalls: number
   usage: Usage
   model: { role: TurnModelRole; provider: string; id: string; reason?: string; downgraded?: boolean }
+  /** 没做成的原因（模型报的错、没跑起来的原因）。和 summary 分开，见 session/types.ts 的 agent/task。 */
+  error?: string
   /** 交接给主代理的、还活着的东西（今天只有后台进程）。见 docs/delegation.md §7.3。 */
   handedOver: ReassignedItem[]
   ms: number
@@ -392,6 +395,11 @@ const DEFAULT_MAX_STEPS = 120
  * 几千条永远查不到头的映射。
  */
 const TASK_MEMO_TTL_MS = 5 * 60_000
+/**
+ * 委派跑着时，两条进度之间至少隔多久（runTask 里那个限频）。一步一条足够让人看见它在动，
+ * 再密就只是往主会话里刷行。
+ */
+const TASK_PROGRESS_MIN_MS = Math.max(200, Math.trunc(Number(process.env.SATUWORK_TASK_PROGRESS_MS ?? 1_500)))
 /**
  * 静默期里回绝新一轮时说的那句话。
  *
@@ -765,7 +773,51 @@ export class AgentService extends Service {
       goal: spec.goal,
       state: 'running',
       model: usedModel,
+      startedAt,
       at: startedAt,
+    })
+
+    /**
+     * 跑着的进度（docs/delegation.md §13「跑着的那几分钟」）。听子会话自己的事件、数出来，变了就在
+     * 主会话上再写一条 running——界面按 id 取最后一条，卡上那行「正在：web_extract …」就是它。
+     *
+     * **限频**：一批三条并行、每条每步一两次工具调用，不限的话主会话 JSONL 会被这些行刷满。
+     * **写入串成一条链**，终态那条等链排空再写：一条晚到的 running 盖在终态后面，卡片会永远转圈。
+     */
+    const tracker = new ProgressTracker()
+    let progressChain: Promise<void> = Promise.resolve()
+    let progressTimer: ReturnType<typeof setTimeout> | null = null
+    let progressAt = 0
+    let settled = false
+    const writeProgress = () => {
+      progressTimer = null
+      if (settled) return
+      progressAt = Date.now()
+      const progress = tracker.snapshot()
+      progressChain = progressChain
+        .then(() =>
+          sessions.append(parentSessionId, 'agent/task', {
+            id: taskId,
+            callId,
+            child,
+            index: spec.index,
+            goal: spec.goal,
+            state: 'running',
+            steps: progress.steps,
+            progress,
+            model: usedModel,
+            startedAt,
+            at: Date.now(),
+          }),
+        )
+        .then(
+          () => {},
+          () => {},
+        )
+    }
+    const offProgress = this.ctx.on('session/event', (sessionId: string, event: { type?: string; data?: unknown }) => {
+      if (sessionId !== child || settled || !tracker.feed(event)) return
+      if (!progressTimer) progressTimer = setTimeout(writeProgress, Math.max(0, TASK_PROGRESS_MIN_MS - (Date.now() - progressAt)))
     })
 
     let steps = 0
@@ -890,6 +942,9 @@ export class AgentService extends Service {
       state = 'failed'
       failure = failure || '子任务跑完了但没有留下结论'
     }
+    // 超时、被停也是「没做成」，原因要说出来；被停不算错，不写。
+    if (state === 'timeout' && !failure) failure = `超过 ${Math.round(spec.timeoutMs / 1000)} 秒，收口了`
+    const error = state === 'failed' || state === 'timeout' ? failure.slice(0, 1000) : ''
 
     const outcome: TaskOutcome = {
       index: spec.index,
@@ -897,7 +952,8 @@ export class AgentService extends Service {
       child,
       goal: spec.goal,
       state,
-      summary: summary || (failure ? `没有结论。${failure}` : '没有结论。'),
+      summary: summary || '没有结论。',
+      ...(error ? { error } : {}),
       files,
       steps,
       toolCalls,
@@ -907,6 +963,10 @@ export class AgentService extends Service {
       ms: Date.now() - startedAt,
     }
 
+    settled = true
+    if (progressTimer) clearTimeout(progressTimer)
+    offProgress()
+    await progressChain
     await sessions.append(parentSessionId, 'agent/task', {
       id: taskId,
       callId,
@@ -915,11 +975,14 @@ export class AgentService extends Service {
       goal: spec.goal,
       state,
       summary: outcome.summary,
+      ...(error ? { error } : {}),
       ...(files.length ? { files } : {}),
       steps,
       toolCalls,
       usage,
+      progress: tracker.snapshot(),
       model: usedModel,
+      startedAt,
       at: Date.now(),
     })
     this.ctx.logger?.info?.(`agents: 子任务 ${taskId} 收口（${state}，${steps} 步，${outcome.ms}ms）`)

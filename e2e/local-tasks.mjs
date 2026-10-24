@@ -43,4 +43,11 @@ export async function runLocalTasks({ root, test, assert, log }) {
     const fin = seen.find((s) => s.path === '/runtime/local-tasks/tk-3/finish')
     assert(fin && fin.body.kind === 'aborted', `停了该报 aborted：${JSON.stringify(fin && fin.body)}`)
   })
+
+  await test('跑着的时候：自己那一轮做到哪了随续租报上去（主 Bot 那张卡画「正在：…」）', async () => {
+    const p = seen.filter((s) => s.path === '/runtime/local-tasks/tk-3/renew').map((s) => s.body?.progress).find(Boolean)
+    assert(p, '续租里一次进度都没报')
+    assert(p.steps === 1 && p.tool?.name === 'web_search' && p.tool?.detail === 'eth etf', `工具那一格不对：${JSON.stringify(p)}`)
+    assert(p.todo?.done === 0 && p.todo?.total === 2 && p.todo?.now === '查数据', `清单那一格不对：${JSON.stringify(p.todo)}`)
+  })
 }

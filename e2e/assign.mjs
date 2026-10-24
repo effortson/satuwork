@@ -28,6 +28,9 @@ export async function runAssign({ root, test, assert, log }) {
   await test('每一件的状态都写进会话：先全部画成「等」，再一件件更新到收场，带结论', async () => {
     assert(r.dag.事件先画全部再更新, 'bot/assign 事件的顺序不对')
     assert(r.dag.事件带结论, 'bot/assign 收场那条没带结论')
+    // 界面那行「正在：…」和「看过程」靠这两样（docs/bot-tasks.md §4）。
+    assert(r.dag.进度写进了事件, '跑着时 Gateway 给了进度，bot/assign 里却没有')
+    assert(r.dag.收场也带着对方会话, '收场那条丢了对方的会话 id 或进度——界面就取不到过程')
   })
 
   await test('名单上没有的、环、重复 id 整次不发生；单条简写照旧认；不是主 Bot 派不了', async () => {

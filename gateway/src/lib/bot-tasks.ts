@@ -9,7 +9,7 @@
  *  2. **目标那边砸了也要送回去。** 主 Bot 要知道「财务那颗没做成，因为席位掉线了」才能换人或
  *     告诉用户；静静地 failed 等于让它永远在等。只有送不回主 Bot 那一种才是 failed。
  */
-import type { Account, BotTask, CatalogItem, Db } from '../db.ts'
+import type { Account, BotTask, BotTaskProgress, CatalogItem, Db } from '../db.ts'
 import { MIN_TASK_WORKER_PROTOCOL, machinePaired } from '../deploy.ts'
 import { runtimeKindOf } from './catalog.ts'
 
@@ -48,8 +48,8 @@ export function phaseOf(task: BotTask): TaskPhase | null {
  * 续租。回复里带上「已经被停了没有」：人在主 Bot 那边按了停止，领走 run 那一步的一方据此立刻停掉
  * 目标那一轮（docs/bot-tasks.md §1.2）。续不上（不归你、收场了）回 null，路由回 404。
  */
-export async function renewTask(db: Db, taskId: string, owner: string): Promise<{ leaseMs: number; cancelled: boolean } | null> {
-  if (!(await db.renewBotTask(taskId, owner, Date.now() + TASK_LEASE_MS))) return null
+export async function renewTask(db: Db, taskId: string, owner: string, progress?: BotTaskProgress | null): Promise<{ leaseMs: number; cancelled: boolean } | null> {
+  if (!(await db.renewBotTask(taskId, owner, Date.now() + TASK_LEASE_MS, progress ?? undefined))) return null
   const task = await db.botTask(taskId)
   return { leaseMs: TASK_LEASE_MS, cancelled: Boolean(task?.cancelledAt) && phaseOf(task!) === 'run' }
 }
@@ -59,12 +59,39 @@ export function botOfPhase(task: BotTask, phase: TaskPhase): string {
   return phase === 'run' ? task.toBotId : task.fromBotId
 }
 
+/**
+ * 续租时带上来的进度。**逐字段收、逐字段截**：这段是领活那一方报的，原样存进库、再原样画到
+ * 主 Bot 的对话里，形状不对的一律当没报（回 null，不是 400——续租本身不能因为它失败）。
+ */
+export function taskProgressOf(v: unknown): BotTaskProgress | null {
+  if (!v || typeof v !== 'object') return null
+  const o = v as Record<string, any>
+  const steps = Math.trunc(Number(o.steps))
+  if (!Number.isFinite(steps) || steps < 0) return null
+  const line = (x: unknown, n: number) => (typeof x === 'string' && x.trim() ? x.trim().slice(0, n) : undefined)
+  const out: BotTaskProgress = { steps: Math.min(steps, 100_000) }
+  const name = line(o.tool?.name, 80)
+  if (name) {
+    const detail = line(o.tool?.detail, 160)
+    out.tool = { name, ...(detail ? { detail } : {}) }
+  }
+  const done = Math.trunc(Number(o.todo?.done))
+  const total = Math.trunc(Number(o.todo?.total))
+  if (Number.isFinite(done) && Number.isFinite(total) && total > 0 && done >= 0 && done <= total && total <= 1000) {
+    const now = line(o.todo?.now, 160)
+    out.todo = { done, total, ...(now ? { now } : {}) }
+  }
+  return out
+}
+
 export function publicBotTask(t: BotTask) {
   return {
     id: t.id,
     fromBotId: t.fromBotId,
     toBotId: t.toBotId,
     fromSessionId: t.fromSessionId,
+    runSessionId: t.runSessionId,
+    progress: t.progress,
     instruction: t.instruction,
     status: t.status,
     runKind: t.runKind,

@@ -272,7 +272,21 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       const job = (await due()).json.jobs.find((j) => j.taskId === id)
       assert(job && job.phase === 'run', '目标席位该领到 run 那一步')
       await post(id, 'started', { sessionId: 's-fin' })
-      assert((await poll()).json.task.status === 'running', '领走了该是 running')
+      const running = (await poll()).json.task
+      assert(running.status === 'running', '领走了该是 running')
+      // 对方那条会话要交给界面：「看过程」去那里取。
+      assert(running.runSessionId === 's-fin', `该带上对方的会话 id：${JSON.stringify(running)}`)
+      assert(running.progress === null, `还没报过进度该是 null：${JSON.stringify(running.progress)}`)
+      // 进度随续租报上来，逐字段截；形状不对的当没报，续租本身照样成功。
+      const long = 'x'.repeat(500)
+      const renewed = await post(id, 'renew', { progress: { steps: 3, tool: { name: 'web_search', detail: long }, todo: { done: 1, total: 4, now: '核对 AUM' } } })
+      assert(renewed.status === 200, `带进度续租 ${renewed.status} ${renewed.text}`)
+      const p = (await poll()).json.task.progress
+      assert(p && p.steps === 3 && p.tool.name === 'web_search' && p.tool.detail.length === 160, `进度没记上或没截：${JSON.stringify(p)}`)
+      assert(p.todo.done === 1 && p.todo.total === 4 && p.todo.now === '核对 AUM', `清单进度不对：${JSON.stringify(p.todo)}`)
+      assert((await post(id, 'renew', { progress: { steps: 'x' } })).status === 200, '进度形状不对也不该让续租失败')
+      assert((await post(id, 'renew')).status === 200, '老领活方不带进度照旧能续')
+      assert((await poll()).json.task.progress.steps === 3, '不带进度的续租不该把进度清掉')
       await post(id, 'finish', { kind: 'completed', result: '差旅合计 3.2 万', sessionId: 's-fin' })
       // 有人在等：不进 reporting，也就没有 deliver 那一步。
       assert((await due()).json.jobs.every((j) => j.taskId !== id), '有人在等时不该再派送回的活')

@@ -116,6 +116,9 @@ ctx.server.post('/api/sessions/:id/messages', async (req) => {
           c.enqueue(line('user/message', 30, { message: { content: body.text } }))
           c.enqueue(line('turn/start', 31, { turn: 20 }))
           c.enqueue(line('assistant/message', 32, { turn: 20, message: { content: [{ type: 'text', text: '我开始做了，要很久。' }] } }))
+          // 自己那一轮里调了一次工具、列了一张清单：续租时要报上去。
+          c.enqueue(line('tool/call', 33, { turn: 20, step: 1, callId: 'k1', name: 'web_search', arguments: JSON.stringify({ query: 'eth etf' }) }))
+          c.enqueue(line('todo/list', 34, { callId: 'k2', items: [{ id: '1', task: '查数据', status: 'in_progress' }, { id: '2', task: '写结论', status: 'pending' }] }))
         } catch {}
       }
     }, 30)

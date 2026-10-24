@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
-import type { SessionEventMap } from '../session/types.ts'
+import type { SessionEventMap, TaskProgress } from '../session/types.ts'
 
 /**
  * 主 Bot 派活：assign_task（docs/bot-tasks.md）。
@@ -47,6 +47,10 @@ interface Item extends Spec {
   state: State
   taskId?: string
   result?: string
+  /** 对方那一轮跑在哪条会话（Gateway 给的 runSessionId），界面「看过程」去那里取。 */
+  runSessionId?: string
+  /** 领活的一方随续租报上来的进度。 */
+  progress?: TaskProgress
   startedAt?: number
   endedAt?: number
 }
@@ -235,6 +239,8 @@ export function apply(ctx: Context) {
             ...(it.after.length ? { after: it.after } : {}),
             state: it.state,
             ...(it.result ? { result: it.result } : {}),
+            ...(it.runSessionId ? { runSessionId: it.runSessionId } : {}),
+            ...(it.progress ? { progress: it.progress } : {}),
             ...(it.startedAt ? { startedAt: it.startedAt } : {}),
             ...(it.endedAt ? { endedAt: it.endedAt } : {}),
             at: Date.now(),
@@ -290,8 +296,21 @@ export function apply(ctx: Context) {
           await settle(it, 'failed', '没做成：Gateway 上找不到这件任务了')
           return
         }
-        const t = (r.json?.task ?? null) as { status?: string; result?: string | null; error?: string | null; runKind?: string | null } | null
+        const t = (r.json?.task ?? null) as {
+          status?: string
+          result?: string | null
+          error?: string | null
+          runKind?: string | null
+          runSessionId?: string | null
+          progress?: TaskProgress | null
+        } | null
         if (!t) return
+        // 进度和对方会话 id 先收下：收场那条事件也要带着它们（界面靠 runSessionId 取过程）。
+        const runSessionId = t.runSessionId || it.runSessionId
+        const progress = t.progress || it.progress
+        const moved = runSessionId !== it.runSessionId || JSON.stringify(progress) !== JSON.stringify(it.progress)
+        it.runSessionId = runSessionId || undefined
+        it.progress = progress || undefined
         if (t.status === 'done' || t.status === 'answered') {
           const ok = t.runKind === 'completed' && !t.error
           await settle(it, ok ? 'done' : 'failed', ok ? String(t.result || '').trim() : String(t.result || t.error || '没做成').trim())
@@ -300,6 +319,9 @@ export function apply(ctx: Context) {
         } else if (t.status === 'reporting' || t.status === 'delivering') {
           // 租约断过一次，Gateway 已经转了兜底送回：结论会以消息送回这条对话。
           await settle(it, 'detached', '等的过程中断过一次，结论会以「任务结果」消息送回这条对话。')
+        } else if (moved) {
+          // 还在跑、进度变了：再写一条 running，界面那行「正在：…」跟着动。没变就不写，省得每 2 秒刷一行。
+          await emit(it)
         }
       }
 

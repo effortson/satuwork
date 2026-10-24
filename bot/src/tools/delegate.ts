@@ -71,6 +71,8 @@ function render(outcomes: TaskOutcome[]): string {
       const head =
         `[${o.index + 1}/${total} ${STATE_WORD[o.state]} · ${o.model.role} · ${o.steps} 步 · ${human(o.ms)}] ${o.goal}`
       const lines = [head, `  结论：${o.summary.split('\n').join('\n  ')}`]
+      // 原因单独一行：结论那句多半是它停下前说的「我再核对一下」，不点出原因，下一步是重派还是换做法只能猜。
+      if (o.error) lines.push(`  失败原因：${o.error.split('\n').join(' ')}`)
       if (o.files.length) {
         const shown = o.files.slice(0, 8).map((f) => f.path).join('、')
         lines.push(`  产出：${shown}${o.files.length > 8 ? ` 等 ${o.files.length} 个` : ''}`)
@@ -89,7 +91,8 @@ function render(outcomes: TaskOutcome[]): string {
  * 都可能没建出来。原因原样交给模型——它下一步要决定是重派一次还是换个做法。
  */
 function crashed(spec: TaskSpec, reason: unknown): TaskOutcome {
-  return blankOutcome(spec, 'failed', `没跑起来：${(reason as Error)?.message ?? String(reason)}`)
+  const why = (reason as Error)?.message ?? String(reason)
+  return { ...blankOutcome(spec, 'failed', '没跑起来。'), error: why }
 }
 
 export function apply(ctx: Context) {

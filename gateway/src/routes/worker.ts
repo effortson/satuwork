@@ -20,7 +20,7 @@ import { HttpError, json, type Req, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import { requireMachine, requireSeatOnly } from '../lib/guards.ts'
 import { claimDue, RUN_TIMEOUT_MS, settleRun, turnFailure } from '../routines.ts'
-import { leaseDueTasks, renewTask, taskFinish, taskStarted } from '../lib/bot-tasks.ts'
+import { leaseDueTasks, renewTask, taskFinish, taskProgressOf, taskStarted } from '../lib/bot-tasks.ts'
 import type { BotTask } from '../db.ts'
 import type { ChannelEvent, ChargeStatus, Machine, Routine, RoutineRun } from '../db.ts'
 import { accountByApiKey, fillSweptCharge, gateOr402, recordLlmCall, recordUsageOnly, settle, withSettleLock } from '../lib/llm-billing.ts'
@@ -275,7 +275,7 @@ export function attachWorker(router: Router, ctx: RouteCtx) {
   })
   router.post('/worker/tasks/:taskId/renew', async (req, res) => {
     const machine = await requireMachine(req, db)
-    const out = await renewTask(db, req.params.taskId, machine.id)
+    const out = await renewTask(db, req.params.taskId, machine.id, taskProgressOf(bodyOf(req).progress))
     if (!out) throw new HttpError(404, '这一步不归这台机器，或者已经收场了')
     json(res, 200, out)
   })
@@ -298,7 +298,7 @@ export function attachWorker(router: Router, ctx: RouteCtx) {
   })
   router.post('/runtime/local-tasks/:taskId/renew', async (req, res) => {
     const account = await requireSeatOnly(req, db)
-    const out = await renewTask(db, req.params.taskId, `desktop:${account.id}`)
+    const out = await renewTask(db, req.params.taskId, `desktop:${account.id}`, taskProgressOf(bodyOf(req).progress))
     if (!out) throw new HttpError(404, '这一步不归你，或者已经收场了')
     json(res, 200, out)
   })

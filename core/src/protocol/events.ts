@@ -116,6 +116,10 @@ export interface TaskBlock {
   after?: string[]
   state: 'waiting' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled' | 'detached'
   result?: string
+  /** 对方那一轮跑在它的哪条会话上。「看过程」去那里取（core/src/chat/task.ts 的 assignSlice）。 */
+  runSessionId?: string
+  /** 跑着时领活的一方报上来的进度。 */
+  progress?: import('../chat/task.ts').TaskProgress
   startedAt?: number
   endedAt?: number
   time: number

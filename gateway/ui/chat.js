@@ -2781,22 +2781,330 @@ function mentionCands() {
   return bots.concat(conns)
 }
 
-/* ── 主 Bot 派出去的活（docs/bot-tasks.md §4）──────────────────────────────
-   画成「那颗 Bot 发的一条消息」：头像和名字是它的，内容随状态变——等前置、正在执行（动画）、
-   交回的结论、没做成的原因。插在主 Bot 派活那段话和它拿到结论之后那段话之间（fold 断开气泡）。 */
+/* ── 派出去的活：委派（agent/task）和派活（bot/assign）共用一套画法 ──────────────
+   两种活跑在不同的地方（子代理在本席位的子会话里，派活在另一颗 Bot 自己的会话里），人要问的却是
+   同一组问题：它在干什么、做到哪了、卡在哪、交回了什么。所以每一件先收成同一个形状
+   （delegateView / assignView），再用同一个 taskItemHtml 画：
 
-const TASK_STATE_LABEL = {
-  waiting: () => t('等前置', 'Waiting'),
-  running: () => t('正在执行', 'Working'),
-  done: () => t('交回结论', 'Reported back'),
-  failed: () => t('没做成', 'Failed'),
-  skipped: () => t('跳过', 'Skipped'),
-  cancelled: () => t('已停止', 'Stopped'),
-  detached: () => t('还在跑', 'Still running'),
+     第一行  状态点 · 任务一句话 · 状态 · 读秒 / 步数 / 花费
+     第二行  跑着：正在调什么 + 清单进度；等着：等谁；收场：结论第一句，没做成就是原因
+     点开    失败原因、结论全文、产出文件、过程（一步一行，调用和结果按 callId 配对，见 core/src/chat/task.ts）
+
+   位置不一样：派活画成「那颗 Bot 发的一条消息」（头像、名字是它的，fold 在这里把主 Bot 的气泡断开），
+   委派挂在主 Bot 自己的气泡里——里面那一块是同一个东西。 */
+
+const TASK_STATE_TEXT = {
+  waiting: ['等前置', 'waiting'],
+  running: ['进行中', 'running'],
+  done: ['完成', 'done'],
+  capped: ['到步数上限', 'step cap'],
+  timeout: ['超时', 'timed out'],
+  failed: ['失败', 'failed'],
+  aborted: ['已停止', 'stopped'],
+  cancelled: ['已停止', 'stopped'],
+  skipped: ['跳过', 'skipped'],
+  detached: ['转到后台', 'detached'],
+  lost: ['状态未知', 'unknown'],
+}
+
+/** 颜色只分几种：跑着、等着、做成、要留意（撞顶 / 超时 / 转后台 / 不知死活）、没做成；停止和跳过是灰的。 */
+const TASK_TONE = { waiting: 'wait', running: 'run', done: 'ok', capped: 'warn', timeout: 'warn', detached: 'warn', lost: 'warn', failed: 'bad', aborted: 'off', cancelled: 'off', skipped: 'off' }
+
+const taskLive = (s) => !s || s === 'running' || s === 'waiting'
+
+/** 「看过程」去哪取：key → { child } 或 { session, taskId }。画卡片时登记，点按钮时按 key 查。 */
+const taskTraceSrc = {}
+
+/** 跑着的时候，摊开的过程隔多久重取一次。重取挂在重画上（进度一变就重画），不另起定时器。 */
+const TRACE_REFRESH_MS = 3000
+
+function humanMs(ms) {
+  const s = Math.max(0, Math.round(ms / 1000))
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
 }
 
 function taskBotOf(b) {
   return (state.runtimeBots || []).find((x) => x.id === (b.bot && b.bot.id))
+}
+
+/** 前置任务的名字：「等 @客户经理 做完」。after 里写的是 tasks 的 id，回同一批里找它派给了谁。 */
+function taskWaitText(b) {
+  const peers = (state.chatEvents || []).filter((e) => e.type === 'bot/assign' && e.data && e.data.callId === b.callId).map((e) => e.data)
+  const names = [...new Set((b.after || []).map((k) => peers.find((p) => String(p.id).endsWith(':' + k))?.bot?.name).filter(Boolean))]
+  return names.length ? t(`等 ${names.map((n) => '@' + n).join('、')} 做完`, `Waiting for ${names.map((n) => '@' + n).join(', ')}`) : t('等前面那件做完', 'Waiting for the previous task')
+}
+
+/** 一件委派（agent/task 的最后一条）收成统一的形状。 */
+function delegateView(task) {
+  const m = task.model || {}
+  const trace = task.child ? { key: 'c:' + task.child, child: task.child } : null
+  if (trace) taskTraceSrc[trace.key] = trace
+  return {
+    id: task.id,
+    kind: 'delegate',
+    state: task.state || 'running',
+    title: task.goal || '',
+    since: task.startedAt || 0,
+    until: taskLive(task.state) ? 0 : task.at || 0,
+    steps: task.steps || (task.progress && task.progress.steps) || 0,
+    cost: task.usage && task.usage.cost ? Number(task.usage.cost) : 0,
+    tier: m.role ? m : null,
+    progress: task.progress || null,
+    body: task.summary || '',
+    reason: task.error || '',
+    files: task.files || [],
+    trace,
+  }
+}
+
+/**
+ * 一件派活（bot/assign 的最后一条）收成统一的形状。
+ *
+ * `result` 一字两用（bot/src/tools/assign.ts）：做完了是对方交回的结论，别的态是原因。这里拆开：
+ * 结论进 body，原因进 reason——卡片上「没做成」那一行要的是原因，不是一段像结论的话。
+ */
+function assignView(b) {
+  const text = taskLive(b.state) ? '' : String(b.result || '')
+  const trace = b.taskId && b.runSessionId ? { key: 'a:' + b.taskId, session: b.runSessionId, taskId: b.taskId } : null
+  if (trace) taskTraceSrc[trace.key] = trace
+  return {
+    id: b.id,
+    kind: 'assign',
+    state: b.state || 'waiting',
+    title: String(b.instruction || '').replace(/\s+/g, ' '),
+    since: b.startedAt || 0,
+    until: b.endedAt || 0,
+    steps: (b.progress && b.progress.steps) || 0,
+    cost: 0,
+    tier: null,
+    progress: b.progress || null,
+    body: b.state === 'done' ? text : '',
+    reason: b.state === 'done' ? '' : text,
+    files: [],
+    waitText: b.state === 'waiting' ? taskWaitText(b) : '',
+    trace,
+  }
+}
+
+/** 重画用的签名：状态、进度、开合、过程取到哪了，任何一样变了才重画。 */
+function taskSig(v) {
+  const key = v.trace && v.trace.key
+  const tr = key ? state.taskTrace?.[key] : null
+  const steps = key ? Object.keys(state.traceOpen || {}).filter((k) => k.startsWith(key + '|')).join(',') : ''
+  return [
+    v.id,
+    v.state,
+    v.steps,
+    JSON.stringify(v.progress || ''),
+    v.body.length,
+    v.reason.length,
+    state.taskOpen?.[v.id] ? 1 : 0,
+    !tr ? '-' : (tr.loading ? 'l' : '') + (tr.error ? 'e' : '') + (tr.at || 0),
+    steps,
+  ].join(':')
+}
+
+/** 第一行右侧那几个小字：读秒（跑着时由 tickTaskElapsed 每秒刷）、步数、花费。 */
+function taskMetaHtml(v) {
+  const parts = []
+  if (v.since && taskLive(v.state) && v.state !== 'waiting') parts.push(`<span class="sw-taskelapsed" data-since="${esc(String(v.since))}"></span>`)
+  else if (v.since && v.until) parts.push(esc(humanMs(v.until - v.since)))
+  if (v.steps) parts.push(esc(t(`${v.steps} 步`, `${v.steps} steps`)))
+  if (v.cost) parts.push(esc('$' + v.cost.toFixed(4)))
+  return parts.length ? `<span class="sw-task-meta">${parts.join(' · ')}</span>` : ''
+}
+
+/** 结论的第一句。标题行（「## 结论」）跳过、Markdown 的标记去掉，只要那句话。 */
+function firstLine(text) {
+  const lines = String(text || '').split('\n')
+  const clean = (l) => l.replace(/^[\s#>*\-+|]+/, '').replace(/[*_`]/g, '').trim()
+  return clean(lines.find((l) => clean(l) && !/^\s*#/.test(l)) || lines.find((l) => clean(l)) || '')
+}
+
+/**
+ * 第二行。**跑着的时候说「正在干什么」，收场了说「结果如何」**——不用点开就知道这一件怎么样了。
+ *
+ * 没有进度（老席位、老管家不报；刚开跑还没调过工具）就只说「正在做」，不编一个数出来。
+ */
+function taskSubHtml(v, tone) {
+  if (v.state === 'waiting') return `<span class="sw-taskwait" aria-hidden="true"></span><span>${esc(v.waitText || t('等前置', 'Waiting'))}</span>`
+  if (taskLive(v.state)) {
+    const p = v.progress || {}
+    const now = p.tool
+      ? `<span class="sw-ti-now">${esc(t('正在：', 'Now: '))}<b>${esc(p.tool.name)}</b>${p.tool.detail ? ' ' + esc(p.tool.detail) : ''}</span>`
+      : `<span class="sw-ti-now">${esc(t('正在做', 'Working'))}<span class="sw-taskdots" aria-hidden="true"><i></i><i></i><i></i></span></span>`
+    const todo = p.todo
+      ? `<span class="sw-ti-todo">${esc(`${p.todo.done}/${p.todo.total}`)}${p.todo.now ? ' · ' + esc(p.todo.now) : ''}</span>`
+      : ''
+    return `<span class="sw-taskspin" aria-hidden="true"></span>${now}${todo}`
+  }
+  if (v.reason) {
+    const lead = tone === 'bad' ? t('原因：', 'Why: ') : ''
+    return `<span class="sw-ti-why" data-tone="${esc(tone)}">${esc(lead + firstLine(v.reason))}</span>`
+  }
+  const line = firstLine(v.body)
+  return `<span class="sw-ti-out">${esc(line || t('没有写结论', 'No conclusion'))}</span>`
+}
+
+/** 一件活，委派和派活都用它（见本段开头）。 */
+function taskItemHtml(v) {
+  const st = TASK_STATE_TEXT[v.state] || TASK_STATE_TEXT.running
+  const tone = TASK_TONE[v.state] || 'run'
+  const open = Boolean(state.taskOpen?.[v.id])
+  /**
+   * 档位后面跟着那句理由。**这是档位可不可审的全部**：光一个 utility，人判不出选得对
+   * 不对，只能等它跑砸；配上「格式定死、漏一行一眼能看见」，当场就判得出来。
+   *
+   * 降过级的要标出来（写了 utility 却没给理由，或者平台没钉 utility）——不标的话，人会
+   * 以为那一档是主代理自己选的。
+   */
+  const m = v.tier
+  const tier = m
+    ? `<div class="sw-task-tier-row"><span class="sw-task-tier" data-role="${esc(m.role)}">${esc(m.role)}</span>` +
+      (m.downgraded ? `<span class="sw-task-down">${esc(t('已降档', 'downgraded'))}</span>` : '') +
+      (m.reason ? `<span class="sw-task-why">${esc(m.reason)}</span>` : '') +
+      '</div>'
+    : ''
+  return (
+    `<div class="sw-ti" data-state="${esc(v.state)}" data-tone="${esc(tone)}"${open ? ' data-open="1"' : ''}>` +
+    `<button type="button" class="sw-task-line" data-act="chat-task-toggle" data-id="${esc(v.id)}" aria-expanded="${open ? 'true' : 'false'}">` +
+    `<span class="sw-task-dot" data-tone="${esc(tone)}" aria-hidden="true"></span>` +
+    `<span class="sw-task-goal" title="${esc(v.title)}">${esc(v.title)}</span>` +
+    `<span class="sw-task-state">${esc(t(st[0], st[1]))}</span>` +
+    taskMetaHtml(v) +
+    `<span class="sw-ti-chev" aria-hidden="true"></span>` +
+    '</button>' +
+    tier +
+    `<div class="sw-ti-sub">${taskSubHtml(v, tone)}</div>` +
+    (open ? taskDetailHtml(v, tone) : '') +
+    '</div>'
+  )
+}
+
+function taskDetailHtml(v, tone) {
+  const why = v.reason
+    ? `<div class="sw-ti-reason" data-tone="${esc(tone)}"><b>${esc(tone === 'bad' ? t('失败原因', 'Why it failed') : t('说明', 'Note'))}</b><span>${esc(v.reason)}</span></div>`
+    : ''
+  const body = v.body
+    ? `<div class="sw-task-summary sw-md">${window.satuMd ? window.satuMd.render(v.body) : esc(v.body)}</div>`
+    : taskLive(v.state)
+      ? ''
+      : v.reason
+        ? ''
+        : `<p class="sw-task-empty">${esc(t('还没有结论', 'No conclusion yet'))}</p>`
+  const files = (v.files || []).length ? `<div class="sw-task-files">${v.files.map(fileChipHtml).join('')}</div>` : ''
+  return `<div class="sw-task-detail">${why}${body}${files}${taskTraceHtml(v, tone)}</div>`
+}
+
+/**
+ * 「看过程」。委派取的是子会话全文（**经主会话授权**：子会话不进控制面的会话索引，按 id 直取
+ * 会换回一个 503，见 gateway 那条 tasks 路由）；派活取的是对方那条会话里这件活的那一段
+ * （core 的 assignSlice：从带着任务 id 的那条指令起，到它那一轮收口）。
+ *
+ * 跑着的时候过程会接着长：摊开着、又过了 TRACE_REFRESH_MS，就在这次重画之后再取一次。
+ */
+function taskTraceHtml(v, tone) {
+  if (!v.trace) return ''
+  const key = v.trace.key
+  const tr = state.taskTrace?.[key]
+  const btn = (label) =>
+    `<button type="button" class="satu-linkbtn sw-task-trace-btn" data-act="chat-task-trace" data-key="${esc(key)}">${esc(label)}</button>`
+  if (!tr) return btn(t('看过程', 'View the run'))
+  if (!tr.rows) {
+    if (tr.loading) return `<p class="sw-task-empty">${esc(t('正在取…', 'Loading…'))}</p>`
+    /**
+     * 取失败要**留一条退路**。席位重启那几秒里点一下就会走到这儿，而按钮已经被这行字换掉
+     * ——不把它摆回来的话，除了刷新整页没有第二条路。
+     */
+    return `<p class="sw-task-empty sw-task-err">${esc(tr.error || '')}</p>` + btn(t('重试', 'Retry'))
+  }
+  const live = taskLive(v.state)
+  if (live && !tr.loading && Date.now() - (tr.at || 0) > TRACE_REFRESH_MS) setTimeout(() => loadTaskTrace(key, true), 0)
+  const rows = tr.rows.map((r) => traceRowHtml(r, key))
+  if (!live) {
+    const st = TASK_STATE_TEXT[v.state] || TASK_STATE_TEXT.running
+    const bits = [t(st[0], st[1]), v.steps ? t(`${v.steps} 步`, `${v.steps} steps`) : '', v.since && v.until ? humanMs(v.until - v.since) : '']
+    if (v.reason && tone === 'bad') bits.push(firstLine(v.reason))
+    rows.push(`<div class="sw-tr-end" data-tone="${esc(tone)}">${esc(bits.filter(Boolean).join(' · '))}</div>`)
+  }
+  if (!tr.rows.length && live) rows.unshift(`<p class="sw-task-empty">${esc(t('还没有动作', 'Nothing yet'))}</p>`)
+  return `<div class="sw-task-trace" data-key="${esc(key)}"${live ? ' data-follow="1"' : ''}>${rows.join('')}</div>`
+}
+
+const TRACE_BADGE = { running: ['进行中', 'running'], blocked: ['被拦', 'blocked'], error: ['出错', 'error'] }
+
+/**
+ * 过程里的一行。它说的话一行；一次调用一行——工具名、关键参数、结果第一句，被拦 / 出错标出来。
+ * 结果原文点开那一行才摊开（截到 4000 字）：工具结果动辄几万字，默认全摊开就没法往下看了。
+ */
+function traceRowHtml(r, key) {
+  if (r.kind === 'say') return `<div class="sw-tr-say">${esc(r.text)}</div>`
+  const okey = key + '|' + r.callId
+  const open = Boolean(state.traceOpen?.[okey])
+  const badge = TRACE_BADGE[r.status]
+  return (
+    `<div class="sw-tr-step" data-status="${esc(r.status)}">` +
+    `<button type="button" class="sw-tr-head" data-act="chat-trace-step" data-key="${esc(okey)}"${r.full ? '' : ' disabled'}>` +
+    `<span class="sw-tr-ico" aria-hidden="true"></span><b>${esc(r.name)}</b>` +
+    (r.detail ? `<span class="sw-tr-arg">${esc(r.detail)}</span>` : '') +
+    (badge ? `<span class="sw-tr-badge">${esc(t(badge[0], badge[1]))}</span>` : '') +
+    '</button>' +
+    (r.out ? `<div class="sw-tr-out">${esc(r.out)}</div>` : '') +
+    (open && r.full ? `<pre class="sw-tr-full">${esc(r.full.length > 4000 ? r.full.slice(0, 4000) + '\n…' : r.full)}</pre>` : '') +
+    '</div>'
+  )
+}
+
+/**
+ * 把一块派出去的活重新画进 host。过程框各自有滚动条：重画前记下滚到哪，画完摆回去；
+ * 还在跑的那一框跟着最底下走（新的一步长在最后）。
+ */
+function paintTaskHtml(host, html) {
+  const keep = {}
+  for (const el of host.querySelectorAll('.sw-task-trace[data-key]')) {
+    keep[el.getAttribute('data-key')] = { top: el.scrollTop, bottom: el.scrollHeight - el.scrollTop - el.clientHeight < 8 }
+  }
+  host.innerHTML = html
+  for (const el of host.querySelectorAll('.sw-task-trace[data-key]')) {
+    const k = keep[el.getAttribute('data-key')]
+    if (el.hasAttribute('data-follow') && (!k || k.bottom)) el.scrollTop = el.scrollHeight
+    else if (k) el.scrollTop = k.top
+  }
+  tickTaskElapsed()
+}
+
+/**
+ * 取一次过程，存进 state 之后由 render 自己画。`again` = 跑着时的重取：取到之前旧的那份照画，
+ * 失败了也留着旧的——一跳没取到，不该让已经摊开的过程消失。
+ */
+async function loadTaskTrace(key, again) {
+  const src = taskTraceSrc[key]
+  if (!src) return
+  state.taskTrace = state.taskTrace || {}
+  const had = state.taskTrace[key]
+  if (had && had.loading) return
+  if (had && had.rows && !again) return
+  state.taskTrace[key] = { ...(had || {}), loading: true }
+  if (!had || !had.rows) render()
+  try {
+    let events
+    if (src.child) {
+      const sessionId = state.chatSessionId
+      if (!sessionId) throw new Error(t('这条对话还没打开', 'This conversation is not open'))
+      const data = await api(
+        'GET',
+        `/runtime/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(src.child)}/history?turns=50`,
+      )
+      events = data.events || []
+    } else {
+      const data = await api('GET', `/runtime/sessions/${encodeURIComponent(src.session)}/history?turns=20`)
+      events = SatuCore.assignSlice(data.events || [], src.taskId)
+    }
+    state.taskTrace[key] = { loading: false, rows: SatuCore.traceRows(events), at: Date.now(), error: '' }
+  } catch (e) {
+    state.taskTrace[key] = { ...(had || {}), loading: false, at: Date.now(), error: e.message || String(e) }
+  }
+  render()
 }
 
 function taskRowShell(b, key) {
@@ -2807,63 +3115,30 @@ function taskRowShell(b, key) {
     `<div class="sw-msg-avatar" data-bot="1" aria-hidden="true">${avatar}</div>` +
     `<div class="sw-msg-col">` +
     `<div class="sw-taskname"><span class="sw-taskname-bot"></span><span class="sw-taskname-tag"></span></div>` +
-    `<div class="sw-bubble sw-taskbubble" data-role="assistant">` +
-    `<div class="sw-taskask"></div><div class="sw-taskrun"></div><div class="sw-md"></div>` +
-    `<button type="button" class="sw-taskmore" data-act="task-expand" hidden>${esc(t('展开全部', 'Show all'))}</button>` +
-    `</div><time class="sw-time" hidden></time></div></div>`
+    `<div class="sw-bubble sw-taskbubble" data-role="assistant"><div class="sw-taskbody"></div></div>` +
+    `<time class="sw-time" hidden></time></div></div>`
   )
 }
 
-/** 前置任务的名字：「等 @客户经理 做完」。after 里写的是 tasks 的 id，回同一批里找它派给了谁。 */
-function taskWaitText(b) {
-  const peers = (state.chatEvents || []).filter((e) => e.type === 'bot/assign' && e.data && e.data.callId === b.callId).map((e) => e.data)
-  const names = [...new Set((b.after || []).map((k) => peers.find((p) => String(p.id).endsWith(':' + k))?.bot?.name).filter(Boolean))]
-  return names.length ? t(`等 ${names.map((n) => '@' + n).join('、')} 做完`, `Waiting for ${names.map((n) => '@' + n).join(', ')}`) : t('等前面那件做完', 'Waiting for the previous task')
-}
-
 function updateTaskRow(node, b) {
-  const sig = [b.state, (b.result || '').length, b.endedAt || 0].join('|')
+  const v = assignView(b)
+  const sig = taskSig(v)
   if (node.getAttribute('data-sig') === sig) return
   node.setAttribute('data-sig', sig)
   node.setAttribute('data-state', b.state)
   const bot = taskBotOf(b)
-  const name = (bot && bot.name) || (b.bot && b.bot.name) || ''
-  node.querySelector('.sw-taskname-bot').textContent = name
-  node.querySelector('.sw-taskname-tag').textContent = (TASK_STATE_LABEL[b.state] || (() => b.state))()
-  const ask = node.querySelector('.sw-taskask')
-  ask.textContent = t('任务：', 'Task: ') + String(b.instruction || '').replace(/\s+/g, ' ')
-  ask.title = b.instruction || ''
-  const run = node.querySelector('.sw-taskrun')
-  if (b.state === 'running') {
-    run.hidden = false
-    run.innerHTML =
-      `<span class="sw-taskspin" aria-hidden="true"></span><span>${esc(t(`${name} 正在执行`, `${name} is working on it`))}</span>` +
-      `<span class="sw-taskdots" aria-hidden="true"><i></i><i></i><i></i></span>` +
-      `<span class="sw-taskelapsed" data-since="${esc(String(b.startedAt || b.time || Date.now()))}"></span>`
-  } else if (b.state === 'waiting') {
-    run.hidden = false
-    run.innerHTML = `<span class="sw-taskwait" aria-hidden="true"></span><span>${esc(taskWaitText(b))}</span>`
-  } else {
-    run.hidden = true
-    run.innerHTML = ''
-  }
-  const md = node.querySelector('.sw-md')
-  const body = b.state === 'done' || b.state === 'failed' || b.state === 'skipped' || b.state === 'cancelled' || b.state === 'detached' ? String(b.result || '') : ''
-  if (body) {
-    syncMd(md, body, false)
-    inlineMentionPills(md, mentionCands())
-  } else md.innerHTML = ''
-  const more = node.querySelector('.sw-taskmore')
-  // 结论长了先折起来：主 Bot 接下来那段话才是给人看的整理版，原话展开再看。
-  requestAnimationFrame(() => {
-    more.hidden = !(b.state === 'done' && md.scrollHeight > 380 && node.getAttribute('data-open') !== '1')
-  })
+  node.querySelector('.sw-taskname-bot').textContent = (bot && bot.name) || (b.bot && b.bot.name) || ''
+  const st = TASK_STATE_TEXT[b.state] || TASK_STATE_TEXT.running
+  node.querySelector('.sw-taskname-tag').textContent = t(st[0], st[1])
+  const body = node.querySelector('.sw-taskbody')
+  paintTaskHtml(body, taskItemHtml(v))
+  // 对方交回的结论里常有 `@某某`：和对话正文一样就地画成点名药丸。
+  for (const md of body.querySelectorAll('.sw-task-summary')) inlineMentionPills(md, mentionCands())
   const time = node.querySelector('.sw-time')
   if (b.endedAt) {
     time.hidden = false
     time.textContent = chatClock(b.endedAt)
   } else time.hidden = true
-  tickTaskElapsed()
 }
 
 /* ── 目标 Bot 这边收到的派活 ─────────────────────────────────────────────
@@ -3823,12 +4098,10 @@ function updateRow(el, b, streaming, since) {
     bubble.appendChild(tkbox)
   }
   if (tkbox) {
-    const tSig = tks
-      .map((x) => x.id + ':' + x.state + ':' + (x.steps || 0) + ':' + (state.taskOpen?.[x.id] ? '1' : '0') + ':' + traceSig(x.child))
-      .join('|')
+    const tSig = tks.map((x) => taskSig(delegateView(x))).join('|')
     if (tkbox.getAttribute('data-sig') !== tSig) {
       tkbox.setAttribute('data-sig', tSig)
-      tkbox.innerHTML = groups.map((g) => taskGroupHtml(g.rows)).join('')
+      paintTaskHtml(tkbox, groups.map((g) => taskGroupHtml(g.rows)).join(''))
       tkbox.hidden = !tks.length
     }
   }
@@ -3930,149 +4203,23 @@ function skillNoteHtml(note) {
   </div>`
 }
 
-/** 子会话全文取到哪一步了。进签名，否则「加载中 → 有内容」那一下不会重画。 */
-function traceSig(child) {
-  const tr = state.taskTrace?.[child]
-  return !tr ? '-' : tr.loading ? 'l' : tr.error ? 'e' : String((tr.events || []).length)
-}
-
-const TASK_STATE_TEXT = {
-  running: ['进行中', 'running'],
-  done: ['完成', 'done'],
-  capped: ['到步数上限', 'step cap'],
-  timeout: ['超时', 'timed out'],
-  failed: ['失败', 'failed'],
-  aborted: ['已停止', 'stopped'],
-  lost: ['状态未知', 'unknown'],
-}
-
-/** 一批委派画成一张卡，每条一行。 */
+/**
+ * 一批委派画成一张卡，每条一行（taskItemHtml，和派活同一套）。卡头把这一批的状况数出来：
+ * 「派出去 3 件 · 1 进行中 · 2 失败」——三条都摊着的时候不用一条条看就知道大局。
+ */
 function taskGroupHtml(tasks) {
-  const head =
-    tasks.length > 1
-      ? `<div class="sw-task-head">${esc(t(`派出去 ${tasks.length} 件事`, `${tasks.length} delegated tasks`))}</div>`
-      : ''
-  return `<div class="sw-task-card">${head}${tasks.map(taskRowHtml).join('')}</div>`
-}
-
-function taskRowHtml(task) {
-  const st = TASK_STATE_TEXT[task.state] || TASK_STATE_TEXT.running
-  const open = Boolean(state.taskOpen?.[task.id])
-  const m = task.model || {}
-  /**
-   * 档位后面跟着那句理由。**这是档位可不可审的全部**：光一个 utility，人判不出选得对
-   * 不对，只能等它跑砸；配上「格式定死、漏一行一眼能看见」，当场就判得出来。
-   *
-   * 降过级的要标出来（写了 utility 却没给理由，或者平台没钉 utility）——不标的话，人会
-   * 以为那一档是主代理自己选的。
-   */
-  const tier = m.role
-    ? `<span class="sw-task-tier" data-role="${esc(m.role)}">${esc(m.role)}</span>` +
-      (m.downgraded ? `<span class="sw-task-down">${esc(t('已降档', 'downgraded'))}</span>` : '') +
-      (m.reason ? `<span class="sw-task-why">${esc(m.reason)}</span>` : '')
-    : ''
-  const meta = [
-    task.steps ? t(`${task.steps} 步`, `${task.steps} steps`) : '',
-    task.usage && task.usage.cost ? '$' + Number(task.usage.cost).toFixed(4) : '',
+  const views = tasks.map(delegateView)
+  const n = (pred) => views.filter(pred).length
+  const counts = [
+    [n((v) => taskLive(v.state)), '进行中', 'running'],
+    [n((v) => v.state === 'done'), '完成', 'done'],
+    [n((v) => TASK_TONE[v.state] === 'bad' || TASK_TONE[v.state] === 'warn'), '没做成', 'not done'],
+    [n((v) => TASK_TONE[v.state] === 'off'), '已停止', 'stopped'],
   ]
-    .filter(Boolean)
-    .join(' · ')
-  return (
-    `<div class="sw-task-row" data-state="${esc(task.state)}">` +
-    `<button type="button" class="sw-task-line" data-act="chat-task-toggle" data-id="${esc(task.id)}" data-child="${esc(task.child || '')}">` +
-    `<span class="sw-task-dot" data-state="${esc(task.state)}" aria-hidden="true"></span>` +
-    `<span class="sw-task-goal">${esc(task.goal || '')}</span>` +
-    `<span class="sw-task-state">${esc(t(st[0], st[1]))}</span>` +
-    (meta ? `<span class="sw-task-meta">${esc(meta)}</span>` : '') +
-    '</button>' +
-    `<div class="sw-task-tier-row">${tier}</div>` +
-    (open ? taskDetailHtml(task) : '') +
-    '</div>'
-  )
-}
-
-function taskDetailHtml(task) {
-  const summary = task.summary
-    ? `<div class="sw-task-summary sw-md">${window.satuMd ? window.satuMd.render(task.summary) : esc(task.summary)}</div>`
-    : `<p class="sw-task-empty">${esc(t('还没有结论', 'No conclusion yet'))}</p>`
-  const files = (task.files || []).length
-    ? `<div class="sw-task-files">${task.files.map(fileChipHtml).join('')}</div>`
-    : ''
-  return `<div class="sw-task-detail">${summary}${files}${taskTraceHtml(task)}</div>`
-}
-
-/**
- * 「看过程」。**取的是子会话的全文，而它经主会话授权**——子会话不进控制面的会话索引
- * （它不是「这个人的一条对话」），按 id 直取会换回一个 503（见 gateway 那条 tasks 路由）。
- */
-function taskTraceHtml(task) {
-  const tr = state.taskTrace?.[task.child]
-  if (!tr) {
-    return (
-      `<button type="button" class="satu-linkbtn sw-task-trace-btn" data-act="chat-task-trace" data-child="${esc(task.child || '')}">` +
-      `${esc(t('看过程', 'View the run'))}</button>`
-    )
-  }
-  if (tr.loading) return `<p class="sw-task-empty">${esc(t('正在取…', 'Loading…'))}</p>`
-  /**
-   * 取失败要**留一条退路**。席位重启那几秒里点一下就会走到这儿，而按钮已经被这行字换掉
-   * ——不把它摆回来的话，除了刷新整页没有第二条路。
-   */
-  if (tr.error) {
-    return (
-      `<p class="sw-task-empty sw-task-err">${esc(tr.error)}</p>` +
-      `<button type="button" class="satu-linkbtn sw-task-trace-btn" data-act="chat-task-trace" data-child="${esc(task.child || '')}">` +
-      `${esc(t('重试', 'Retry'))}</button>`
-    )
-  }
-  const rows = (tr.events || []).map(traceLineHtml).filter(Boolean)
-  if (!rows.length) return `<p class="sw-task-empty">${esc(t('没有留下过程', 'Nothing recorded'))}</p>`
-  return `<div class="sw-task-trace">${rows.join('')}</div>`
-}
-
-/** 过程里的一行。**只画三种**：它说的话、它调的工具、工具回了什么（截断）。 */
-function traceLineHtml(ev) {
-  const d = ev.data || {}
-  if (ev.type === 'assistant/message') {
-    const text = messageText(d.message)
-    return text ? `<div class="sw-trace-say">${esc(text)}</div>` : ''
-  }
-  if (ev.type === 'tool/call') {
-    return `<div class="sw-trace-tool"><b>${esc(d.name || '')}</b> <span>${esc(String(d.arguments || '').slice(0, 160))}</span></div>`
-  }
-  if (ev.type === 'tool/result') {
-    const text = String(d.text || '').slice(0, 240)
-    return `<div class="sw-trace-out"${d.failed ? ' data-failed="1"' : ''}>${esc(text)}</div>`
-  }
-  return ''
-}
-
-/**
- * 取一次子会话全文。存进 state 之后由 render 自己画。
- *
- * 只取一次：过程是**已经结束**的东西（委派是同步的，卡片摊开时那一条早收口了），
- * 没有「刷新一下看看新的」这回事。
- */
-async function loadTaskTrace(child) {
-  if (!child) return
-  const sessionId = state.chatSessionId
-  if (!sessionId) return
-  state.taskTrace = state.taskTrace || {}
-  // 取过一次就不再取——过程是**已经结束**的东西。但失败那次不算「取过」，见上面那颗重试。
-  const had = state.taskTrace[child]
-  if (had && !had.error) return
-  state.taskTrace[child] = { loading: true, events: [], error: '' }
-  render()
-  try {
-    const data = await api(
-      'GET',
-      `/runtime/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(child)}/history?turns=50`,
-    )
-    state.taskTrace[child] = { loading: false, events: data.events || [], error: '' }
-  } catch (e) {
-    state.taskTrace[child] = { loading: false, events: [], error: e.message || String(e) }
-  }
-  render()
+    .filter(([k]) => k > 0)
+    .map(([k, zh, en]) => t(`${k} ${zh}`, `${k} ${en}`))
+  const head = `<div class="sw-task-head">${esc([t(`派出去 ${views.length} 件`, `${views.length} delegated`), ...counts].join(' · '))}</div>`
+  return `<div class="sw-task-card">${head}${views.map((v) => `<div class="sw-task-row">${taskItemHtml(v)}</div>`).join('')}</div>`
 }
 
 /**

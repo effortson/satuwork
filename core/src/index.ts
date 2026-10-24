@@ -16,6 +16,8 @@ export type { TokenStore, FetchLike, GatewayClientOptions, GatewayClient, LocalB
 // ── 对话事件层 ──
 export { messageText, messageImages, messageMentions, messageRefs, UPLOAD_LEADS, splitUploads, isShot, maxSeqOf, insertEvent, cursorOf } from './chat/events.ts'
 export { fold } from './chat/fold.ts'
+export { traceRows, progressOf, assignSlice, callDetail, resultLine } from './chat/task.ts'
+export type { TaskProgress, TraceRow } from './chat/task.ts'
 export { newSum, settleDot, applyRosterEvent, refreshSum } from './chat/roster.ts'
 export { mergePending } from './chat/pending.ts'
 export { mergeChatPage } from './chat/pages.ts'

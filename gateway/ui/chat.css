@@ -1895,35 +1895,149 @@
 .sw-preview-note > .sw-preview-spin { width: 14px; height: 14px; border-width: 2px; }
 @keyframes sw-spin { to { transform: rotate(360deg); } }
 
-/* ── 主 Bot 派出去的活（docs/bot-tasks.md §4）─────────────────────────────
-   一条「那颗 Bot 发的消息」：名字一行（带状态小签），气泡里是任务一句话 + 动画 / 结论。 */
+/* ── 派出去的活：委派卡和派活卡共用一套（chat.js 的 taskItemHtml）─────────────
+   派活：一条「那颗 Bot 发的消息」，名字一行带状态小签，气泡里是那一件活。
+   委派：主 Bot 气泡里的一张卡，一批 N 条一张卡 N 行。
+   每一件：第一行状态点 + 任务 + 状态 + 读秒/步数/花费；第二行正在干什么或结果如何；点开是详情和过程。
+   颜色按 data-tone 分：run 跑着、wait 等着、ok 做成、warn 要留意、bad 没做成、off 停了。 */
 .sw-taskname { display: flex; align-items: center; gap: 6px; margin: 0 0 2px 2px; font-size: 12px; color: var(--muted-foreground); }
 .sw-taskname-bot { font-weight: 600; color: var(--color-text); }
 .sw-taskname-tag { padding: 0 7px; border-radius: 999px; background: var(--secondary); font-size: 11px; line-height: 1.7; }
 .sw-taskmsg[data-state="running"] .sw-taskname-tag { background: var(--color-accent-100); color: var(--color-accent-800); }
 .sw-taskmsg[data-state="done"] .sw-taskname-tag { background: color-mix(in srgb, var(--color-accent-2-500, #3c9a6b) 16%, transparent); color: var(--color-accent-2-800, #23623f); }
-.sw-taskmsg:is([data-state="failed"], [data-state="skipped"], [data-state="cancelled"]) .sw-taskname-tag { background: var(--color-accent-100); color: var(--color-accent-800); }
-.sw-taskask { font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.sw-taskrun { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: var(--color-text); }
-.sw-taskrun[hidden] { display: none; }
-.sw-taskspin { width: 14px; height: 14px; flex: none; box-sizing: border-box; border: 2px solid var(--color-accent-200, #f3cdbf); border-top-color: var(--color-accent-600, #c4643f); border-radius: 50%; animation: sw-spin 0.9s linear infinite; }
-.sw-taskwait { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--muted-foreground); opacity: 0.5; }
-.sw-taskdots { display: inline-flex; gap: 3px; }
-.sw-taskdots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: 0.25; animation: sw-pulse 1.2s ease-in-out infinite; }
-.sw-taskdots i:nth-child(2) { animation-delay: 0.2s; }
-.sw-taskdots i:nth-child(3) { animation-delay: 0.4s; }
-.sw-taskelapsed { margin-left: auto; font-size: 12px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.sw-taskmsg[data-state="failed"] .sw-taskname-tag { background: color-mix(in srgb, var(--color-accent-800) 14%, transparent); color: var(--color-accent-800); }
+/* 派活那条气泡里只有一件活：气泡自己就是框，那一件不再套一层边。 */
+.sw-taskbubble { padding: 0; overflow: hidden; }
+.sw-taskbubble .sw-ti > .sw-task-line { padding-top: var(--space-2); }
 /* 正在执行的那张：边框换成强调色、外面一圈慢慢呼吸——一眼看得出「还在等它」。 */
 .sw-taskmsg[data-state="running"] .sw-taskbubble { border-color: var(--color-accent-300, #eaa98f); animation: sw-taskglow 2s ease-in-out infinite; }
 @keyframes sw-taskglow { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent-500, #d9774f) 0%, transparent); } 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent-500, #d9774f) 14%, transparent); } }
-.sw-taskmsg .sw-md:not(:empty) { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
-.sw-taskmsg:is([data-state="failed"], [data-state="skipped"], [data-state="cancelled"], [data-state="detached"]) .sw-md { color: var(--muted-foreground); }
-/* 结论长了先折起来：主 Bot 接下来那段话才是整理过的版本。 */
-.sw-taskmsg[data-state="done"]:not([data-open="1"]) .sw-md { max-height: 360px; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 80%, transparent); mask-image: linear-gradient(to bottom, #000 80%, transparent); }
-.sw-taskmore { margin-top: 6px; padding: 0; border: 0; background: transparent; color: var(--color-accent-700); font-size: 12.5px; cursor: pointer; }
-.sw-taskmore[hidden] { display: none; }
+
+.sw-task-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--muted); overflow: hidden; }
+.sw-task-head { padding: var(--space-2) var(--space-3); font-size: 12px; color: var(--muted-foreground); border-bottom: 1px solid var(--border); }
+.sw-task-row + .sw-task-row { border-top: 1px solid var(--border); }
+.sw-task-line {
+  display: flex; align-items: center; gap: var(--space-2); width: 100%;
+  padding: var(--space-2) var(--space-3) 2px; background: none; border: 0; text-align: left; cursor: pointer;
+  color: var(--foreground); font: inherit;
+}
+.sw-task-line:hover { background: var(--accent); }
+.sw-task-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted-foreground); }
+.sw-task-dot[data-tone='run'] { background: var(--color-accent-600); animation: sw-task-pulse 1.4s ease-in-out infinite; }
+.sw-task-dot[data-tone='wait'] { background: transparent; box-shadow: inset 0 0 0 2px var(--muted-foreground); }
+.sw-task-dot[data-tone='ok'] { background: #16a34a; }
+.sw-task-dot[data-tone='warn'] { background: #d97706; }
+.sw-task-dot[data-tone='bad'] { background: var(--color-accent-800); }
+.sw-task-dot[data-tone='off'] { opacity: 0.5; }
+@keyframes sw-task-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.sw-task-goal { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-task-state, .sw-task-meta { flex: none; font-size: 12px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.sw-ti[data-tone='bad'] .sw-task-state { color: var(--color-accent-800); }
+.sw-ti[data-tone='warn'] .sw-task-state { color: #b45309; }
+.sw-ti[data-tone='ok'] .sw-task-state { color: #15803d; }
+.sw-ti-chev { flex: none; width: 6px; height: 6px; margin: 0 2px 0 2px; border-right: 1.5px solid var(--muted-foreground); border-bottom: 1.5px solid var(--muted-foreground); transform: rotate(-45deg); transition: transform .15s ease; }
+.sw-ti[data-open='1'] .sw-ti-chev { transform: rotate(45deg); }
+.sw-task-tier-row {
+  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+  padding: 2px var(--space-3) 0 calc(var(--space-3) + 16px); font-size: 12px;
+}
+.sw-task-tier {
+  padding: 0 6px; border-radius: 4px; background: var(--background); border: 1px solid var(--border);
+  color: var(--muted-foreground); font-family: var(--font-mono, monospace);
+}
+/* 降过级的要看得出来：不标的话人会以为那一档是主代理自己选的。 */
+.sw-task-down { color: var(--color-accent-800); }
+.sw-task-why { color: var(--muted-foreground); overflow-wrap: anywhere; }
+/* 第二行：跑着时「正在：工具 参数 · 清单 3/7」，收场后结论第一句或原因。一行，截断。 */
+.sw-ti-sub {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 2px var(--space-3) var(--space-2) calc(var(--space-3) + 16px); font-size: 12.5px; color: var(--muted-foreground);
+}
+/* 收场的那件摊开了：下面就是结论全文 / 失败原因，第二行那句摘要不再重复一遍。跑着的照留（那是进度）。 */
+.sw-ti[data-open='1']:not([data-tone='run']):not([data-tone='wait']) > .sw-ti-sub { display: none; }
+.sw-ti-sub > span:not(.sw-taskspin):not(.sw-taskwait) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-ti-now { flex: 1; color: var(--color-text); }
+.sw-ti-now b { font-family: var(--font-mono, monospace); font-weight: 600; margin-right: 4px; }
+.sw-ti-todo { flex: none; max-width: 45%; padding: 0 7px; border-radius: 999px; background: var(--background); border: 1px solid var(--border); font-size: 11.5px; }
+.sw-ti-out { flex: 1; }
+.sw-ti-why { flex: 1; }
+.sw-ti-why[data-tone='bad'] { color: var(--color-accent-800); }
+.sw-ti-why[data-tone='warn'] { color: #b45309; }
+.sw-taskspin { width: 12px; height: 12px; flex: none; box-sizing: border-box; border: 2px solid var(--color-accent-200, #f3cdbf); border-top-color: var(--color-accent-600, #c4643f); border-radius: 50%; animation: sw-spin 0.9s linear infinite; }
+.sw-taskwait { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--muted-foreground); opacity: 0.5; }
+.sw-taskdots { display: inline-flex; gap: 3px; margin-left: 4px; vertical-align: middle; }
+.sw-taskdots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: 0.25; animation: sw-pulse 1.2s ease-in-out infinite; }
+.sw-taskdots i:nth-child(2) { animation-delay: 0.2s; }
+.sw-taskdots i:nth-child(3) { animation-delay: 0.4s; }
+
+.sw-task-detail {
+  padding: 0 var(--space-3) var(--space-3) calc(var(--space-3) + 16px);
+  display: flex; flex-direction: column; gap: var(--space-2);
+}
+.sw-ti-reason {
+  display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; border-radius: var(--radius);
+  font-size: 12.5px; overflow-wrap: anywhere; white-space: pre-wrap;
+  background: var(--background); border: 1px solid var(--border);
+}
+.sw-ti-reason[data-tone='bad'] { border-color: color-mix(in srgb, var(--color-accent-800) 40%, var(--border)); background: color-mix(in srgb, var(--color-accent-800) 6%, var(--background)); }
+.sw-ti-reason[data-tone='bad'] b { color: var(--color-accent-800); }
+.sw-ti-reason b { font-size: 11.5px; }
+.sw-task-summary { overflow-wrap: anywhere; }
+.sw-task-files { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.sw-task-empty { margin: 0; font-size: 12px; color: var(--muted-foreground); }
+.sw-task-err { color: var(--color-accent-800); }
+.sw-task-trace-btn { align-self: flex-start; font-size: 12px; }
+
+/* 过程：一步一行。过程可能很长，给它自己的滚动条，别把对话顶下去。 */
+.sw-task-trace {
+  max-height: 360px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--background); padding: var(--space-2); font-size: 12px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+/* 滚动框里的每一行都别被压扁：flex 容器到了 max-height 会先收缩子项，-webkit-box 那行会被压成 0 高。 */
+.sw-task-trace > * { flex: none; }
+.sw-tr-say { color: var(--color-text); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; padding: 2px 0; }
+.sw-tr-step { border-left: 2px solid var(--border); padding-left: var(--space-2); }
+.sw-tr-step[data-status='running'] { border-left-color: var(--color-accent-400, #e08a66); }
+.sw-tr-step[data-status='blocked'] { border-left-color: #d97706; }
+.sw-tr-step[data-status='error'] { border-left-color: var(--color-accent-800); }
+.sw-tr-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 0; border: 0; background: none;
+  text-align: left; font: inherit; color: var(--muted-foreground); cursor: pointer;
+}
+.sw-tr-head:disabled { cursor: default; }
+.sw-tr-head b { flex: none; font-family: var(--font-mono, monospace); font-weight: 600; color: var(--color-text); }
+.sw-tr-arg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-tr-ico { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #16a34a; }
+.sw-tr-step[data-status='running'] .sw-tr-ico { background: var(--color-accent-600); animation: sw-task-pulse 1.4s ease-in-out infinite; }
+.sw-tr-step[data-status='blocked'] .sw-tr-ico { background: #d97706; }
+.sw-tr-step[data-status='error'] .sw-tr-ico { background: var(--color-accent-800); }
+.sw-tr-badge { flex: none; padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 1.6; background: var(--secondary); }
+.sw-tr-step[data-status='blocked'] .sw-tr-badge { background: color-mix(in srgb, #d97706 16%, transparent); color: #b45309; }
+.sw-tr-step[data-status='error'] .sw-tr-badge { background: color-mix(in srgb, var(--color-accent-800) 14%, transparent); color: var(--color-accent-800); }
+.sw-tr-out { color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-tr-step:is([data-status='blocked'], [data-status='error']) .sw-tr-out { white-space: normal; overflow-wrap: anywhere; color: var(--color-text); }
+.sw-tr-full {
+  margin: 4px 0 2px; padding: 6px 8px; max-height: 240px; overflow: auto; border-radius: 4px;
+  background: var(--muted); font-family: var(--font-mono, monospace); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.sw-tr-end { margin-top: 4px; padding-top: 6px; border-top: 1px dashed var(--border); color: var(--muted-foreground); }
+.sw-tr-end[data-tone='bad'] { color: var(--color-accent-800); }
+.sw-tr-end[data-tone='ok'] { color: #15803d; }
+/* 窄屏：任务那句话单独占一行（最多两行），状态和读秒换到下一行；进度那一行也允许折行。
+   不折的话右边那串小字先占位，标题被挤成「收…」，人根本认不出是哪一件。 */
+@media (max-width: 560px) {
+  .sw-task-line { flex-wrap: wrap; row-gap: 2px; }
+  .sw-task-goal { flex: 1 1 calc(100% - 24px); white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .sw-task-state { margin-left: 16px; }
+  .sw-ti-chev { margin-left: auto; }
+  .sw-ti-sub { flex-wrap: wrap; }
+  .sw-ti-todo { max-width: 100%; margin-left: 20px; }
+  .sw-ti-now + .sw-ti-todo { flex-basis: auto; }
+  .sw-ti-now { flex: 1 0 calc(100% - 24px); }
+}
 @media (prefers-reduced-motion: reduce) {
-  .sw-taskspin, .sw-taskdots i, .sw-taskmsg[data-state="running"] .sw-taskbubble { animation: none; }
+  .sw-taskspin, .sw-taskdots i, .sw-task-dot, .sw-tr-ico, .sw-taskmsg[data-state="running"] .sw-taskbubble { animation: none; }
 }
 /* 动效敏感的人不该被一个转不停的圈晃。留一个静止的环，位置和含义都还在。 */
 @media (prefers-reduced-motion: reduce) {
@@ -2034,102 +2148,6 @@
   font: inherit; color: var(--color-accent-800);
 }
 .sw-skillnote-act + .sw-skillnote-act { margin-left: 0; }
-.sw-task-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--muted);
-  overflow: hidden;
-}
-.sw-task-head {
-  padding: var(--space-2) var(--space-3);
-  font-size: 12px;
-  color: var(--muted-foreground);
-  border-bottom: 1px solid var(--border);
-}
-.sw-task-row + .sw-task-row { border-top: 1px solid var(--border); }
-.sw-task-line {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: none;
-  border: 0;
-  text-align: left;
-  cursor: pointer;
-  color: var(--foreground);
-  font: inherit;
-}
-.sw-task-line:hover { background: var(--accent); }
-.sw-task-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: none;
-  background: var(--muted-foreground);
-}
-.sw-task-dot[data-state='running'] { background: var(--color-accent-600); animation: sw-task-pulse 1.4s ease-in-out infinite; }
-.sw-task-dot[data-state='done'] { background: #16a34a; }
-.sw-task-dot[data-state='failed'],
-.sw-task-dot[data-state='timeout'] { background: var(--color-accent-800); }
-.sw-task-dot[data-state='lost'] { background: transparent; box-shadow: inset 0 0 0 2px var(--muted-foreground); }
-@keyframes sw-task-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-.sw-task-goal { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sw-task-state,
-.sw-task-meta { flex: none; font-size: 12px; color: var(--muted-foreground); }
-.sw-task-tier-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0 var(--space-3) var(--space-2) calc(var(--space-3) + 16px);
-  font-size: 12px;
-  flex-wrap: wrap;
-}
-.sw-task-tier {
-  padding: 0 6px;
-  border-radius: 4px;
-  background: var(--background);
-  border: 1px solid var(--border);
-  color: var(--muted-foreground);
-  font-family: var(--font-mono, monospace);
-}
-/* 降过级的要看得出来：不标的话人会以为那一档是主代理自己选的。 */
-.sw-task-down { color: var(--color-accent-800); }
-.sw-task-why { color: var(--muted-foreground); overflow-wrap: anywhere; }
-.sw-task-detail {
-  padding: 0 var(--space-3) var(--space-3) calc(var(--space-3) + 16px);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.sw-task-summary { overflow-wrap: anywhere; }
-.sw-task-files { display: flex; flex-wrap: wrap; gap: var(--space-1); }
-.sw-task-empty { margin: 0; font-size: 12px; color: var(--muted-foreground); }
-.sw-task-err { color: var(--color-accent-800); }
-.sw-task-trace-btn { align-self: flex-start; font-size: 12px; }
-/* 过程是一屏可能很长的东西：给它自己的滚动条，别把对话顶下去。 */
-.sw-task-trace {
-  max-height: 320px;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--background);
-  padding: var(--space-2);
-  font-size: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.sw-trace-say { overflow-wrap: anywhere; }
-.sw-trace-tool { font-family: var(--font-mono, monospace); color: var(--muted-foreground); overflow-wrap: anywhere; }
-.sw-trace-out {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--muted-foreground);
-  border-left: 2px solid var(--border);
-  padding-left: var(--space-2);
-}
-.sw-trace-out[data-failed='1'] { border-left-color: var(--color-accent-800); }
 /* 替人发话的那条消息：看板卡 / 日常任务落在主会话里的任务交底。角标挂在气泡上沿，
    CSS 画（rowShell 只跑一次，updateRow 不用管它）。 */
 .sw-msg[data-via] .sw-bubble::before {

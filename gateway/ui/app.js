@@ -493,12 +493,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
     if (picker) picker.click()
     return
   }
-  if (act === 'task-expand') {
-    const row = btn.closest('.sw-taskmsg')
-    if (row) row.setAttribute('data-open', '1')
-    btn.hidden = true
-    return
-  }
   if (act === 'chat-mention-pick') {
     takeMention(btn.getAttribute('data-id'))
     return
@@ -677,7 +671,16 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'chat-task-trace') {
     // 摊开时**不**顺带把过程也拉下来：那是一跳打到席位的请求，而多数时候人只想看结论。
-    await loadTaskTrace(btn.getAttribute('data-child'))
+    await loadTaskTrace(btn.getAttribute('data-key'))
+    return
+  }
+  if (act === 'chat-trace-step') {
+    // 过程里的一步：点开看结果原文，再点收起。
+    const key = btn.getAttribute('data-key') || ''
+    state.traceOpen = state.traceOpen || {}
+    if (state.traceOpen[key]) delete state.traceOpen[key]
+    else state.traceOpen[key] = true
+    render()
     return
   }
   if (act === 'chat-handoff-claim') {

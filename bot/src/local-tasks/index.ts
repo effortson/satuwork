@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { ProgressTracker } from '../agent/progress.ts'
 
 /**
  * 本地 Bot（桌面端）自己领主 Bot 派的活（docs/bot-tasks.md §2.2）。
@@ -94,7 +95,12 @@ function textOfMessage(data: unknown): string {
 }
 
 /** 同 local-routines 的 readTurnEnd，多收自己那一轮**最后一条** assistant/message 的正文作为结论。 */
-async function readTurnResult(reader: ReadableStreamDefaultReader<Uint8Array>, ownTurn: boolean, instruction: string): Promise<{ kind: string; text: string }> {
+async function readTurnResult(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  ownTurn: boolean,
+  instruction: string,
+  track?: (ev: { type?: string; data?: unknown }) => void,
+): Promise<{ kind: string; text: string }> {
   let turn: number | null = ownTurn ? null : -1
   let mine = false
   let foreign = 0
@@ -102,6 +108,8 @@ async function readTurnResult(reader: ReadableStreamDefaultReader<Uint8Array>, o
   let last = ''
   type Ev = { type?: string; data?: { turn?: number; reason?: string | { kind?: string } } }
   for await (const ev of sseEvents<Ev>(reader)) {
+    // 自己那一轮的事件喂给进度（docs/bot-tasks.md §4）。todo/list 不带轮号，进了自己那一轮就算。
+    if (track && turn !== null && (turn === -1 ? foreign === 0 : ev.type === 'todo/list' || Number(ev.data?.turn ?? -1) === turn)) track(ev)
     if (ev.type === 'user/message') {
       if (!mine) {
         if (textOfMessage(ev.data).trim() === instruction.trim()) mine = true
@@ -174,6 +182,9 @@ export function apply(ctx: Context) {
     /** 主 Bot 那边按了停止（续租的回复里带 cancelled）。 */
     let stopped = false
     let stopTimer: ReturnType<typeof setTimeout> | null = null
+    /** 目标那一轮做到哪了：随续租报上去，主 Bot 那张卡画「正在：…」。 */
+    const tracker = new ProgressTracker()
+    let moved = false
     /**
      * 停掉目标那一轮（docs/bot-tasks.md §1.2）。调席位的「中止」接口，那一轮以 aborted 收口，下面照常
      * 读到 turn/end 报上去；中止请求发出去 15 秒还没收口就不等了，照样报 aborted。
@@ -186,11 +197,15 @@ export function apply(ctx: Context) {
       stopTimer = setTimeout(() => ac.abort(), 15_000)
     }
     const renew = setInterval(() => {
-      void gw(`/${encodeURIComponent(job.taskId)}/renew`, {})
+      const body = moved ? { progress: tracker.snapshot() } : {}
+      moved = false
+      void gw(`/${encodeURIComponent(job.taskId)}/renew`, body)
         .then((r) => {
           if ((r as { cancelled?: boolean } | null)?.cancelled) stopTarget()
         })
         .catch((e) => {
+          // 这一拍没报上去：下一拍补报。
+          if ('progress' in body) moved = true
           if (e instanceof LostError) {
             lost = true
             ac.abort()
@@ -237,7 +252,9 @@ export function apply(ctx: Context) {
       steered = Boolean(posted?.steered)
       // 发消息的那一下刚好撞上停止：补一次中止。
       if (stopped && !steered) void selfJson(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
-      const out = await readTurnResult(reader, !posted?.steered, job.instruction)
+      const out = await readTurnResult(reader, !posted?.steered, job.instruction, (ev) => {
+        if (tracker.feed(ev)) moved = true
+      })
       await finish({ kind: out.kind, result: out.text })
       ctx.logger?.info?.(`local tasks: ${job.taskId} 目标那一轮跑完：${out.kind}`)
     } catch (e) {

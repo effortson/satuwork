@@ -92,6 +92,32 @@ ctx.llm.streamFn = (model, context) => {
   const brief = JSON.stringify(context?.messages ?? [])
   seen.push({ provider: model.provider, model: model.id, system, brief })
   const stream = new AssistantMessageEventStream()
+  /**
+   * 「进度探针」「报错探针」那两条：第一步说一句、调一次 fake_probe；第二步一个说「查完了」收口，
+   * 一个当场报模型错——后者正是线上那种「说了句我再核对一下就失败了」。
+   */
+  const scripted = brief.includes('进度探针') ? 'progress' : brief.includes('报错探针') ? 'error' : ''
+  if (scripted) {
+    const second = (context?.messages ?? []).some((m) => m.role === 'toolResult')
+    const partial = emptyAssistant(model, second && scripted === 'error' ? 'upstream 529 overloaded' : undefined)
+    setTimeout(() => {
+      stream.push({ type: 'start', partial })
+      if (!second) {
+        partial.content.push({ type: 'text', text: '我再核对一下' })
+        partial.content.push({ type: 'toolCall', id: `call_${seen.length}`, name: 'fake_probe', arguments: { url: 'https://example.com/a' } })
+        partial.stopReason = 'toolUse'
+        stream.push({ type: 'done', reason: 'toolUse', message: partial })
+      } else if (scripted === 'error') {
+        stream.push({ type: 'error', reason: 'error', error: partial })
+      } else {
+        partial.content.push({ type: 'text', text: '查完了' })
+        partial.stopReason = 'stop'
+        stream.push({ type: 'done', reason: 'stop', message: partial })
+      }
+      stream.end()
+    }, 5)
+    return stream
+  }
   setTimeout(() => {
     const partial = emptyAssistant(model)
     partial.content.push({ type: 'text', text: `做完了：${model.id}` })
@@ -116,6 +142,15 @@ ctx.tools.register({
     return [{ id: 'bg-probe', label: 'sleep 999' }]
   },
   execute: () => ({ text: 'ok' }),
+})
+
+ctx.tools.register({
+  name: 'fake_probe',
+  description: '探针用',
+  parameters: { type: 'object', properties: { url: { type: 'string' } } },
+  risk: ['read'],
+  delegation: {},
+  execute: () => ({ text: '抓到了' }),
 })
 
 const out = {}
@@ -255,6 +290,43 @@ out.badRole = {
   out.badTools = {
     点名了是哪个: bad.text.includes('grep'),
     整次没发生: (await ctx.sessions.list({ tasks: true })).length === before,
+  }
+}
+
+// ── 跑着的进度、没做成的原因 ──────────────────────────────────────
+//
+// 线上那次：三条都「失败」，点开只看得到它停下前那句「我再核对一下」，原因被那句话顶掉了。
+{
+  const r = await ctx.tools.execute({
+    callId: 'c-5',
+    name: 'delegate_task',
+    sessionId,
+    arguments: JSON.stringify({
+      tasks: [
+        { goal: '进度那条', context: '进度探针', model_reason: '要判断', model_role: 'daily' },
+        { goal: '报错那条', context: '报错探针', model_reason: '要判断', model_role: 'daily' },
+      ],
+    }),
+  })
+  const evs = (await ctx.sessions.events(sessionId)).filter((e) => e.type === 'agent/task' && e.data.callId === 'c-5')
+  const ofGoal = (g) => evs.filter((e) => e.data.goal === g).map((e) => e.data)
+  const ok = ofGoal('进度那条')
+  const bad = ofGoal('报错那条')
+  const okLast = ok[ok.length - 1]
+  const badLast = bad[bad.length - 1]
+  const mid = ok.find((d) => d.state === 'running' && d.progress)
+  out.progress = {
+    跑着时报了进度: Boolean(mid) && mid.progress.tool?.name === 'fake_probe',
+    进度带关键参数: mid?.progress.tool?.detail === 'https://example.com/a',
+    进度数了步数: mid?.progress.steps === 1,
+    终态排在最后: okLast?.state === 'done' && badLast?.state === 'failed',
+    带开跑时刻: typeof okLast?.startedAt === 'number' && okLast.startedAt === ok[0].startedAt,
+  }
+  out.failure = {
+    原因单独记了: String(badLast?.error || '').includes('upstream 529'),
+    结论还是它最后那句: badLast?.summary === '我再核对一下',
+    原因进了给模型的文本: r.text.includes('失败原因：') && r.text.includes('upstream 529'),
+    做成的那条没有原因: !okLast?.error,
   }
 }
 

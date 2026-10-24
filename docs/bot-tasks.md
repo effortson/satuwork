@@ -137,12 +137,23 @@ assign_task({
 **派出去的每一条，在主 Bot 的对话里画成一条「那颗 Bot 发的消息」**，插在主 Bot 派活那段话
 和它接下来那段话之间：头像、名字是被派的那颗 Bot 的，内容随状态变：
 
-| 状态 | 画什么 |
+气泡里那一件和委派卡的一行**是同一个东西**（gateway/ui/chat.js 的 `taskItemHtml`，见 docs/delegation.md §13）：
+第一行任务一句话 + 状态 + 读秒 / 步数，第二行随状态变，点开是结论全文和过程。
+
+| 状态 | 第二行画什么 |
 |---|---|
 | 等前置 | 「等 @客户经理 做完」 |
-| 正在执行 | 任务一句话 + 动画（这就是「哪个 Bot 正在执行哪个任务」） |
-| 做完 | 它交回的结论，按 Markdown 画，长的折起来 |
-| 没做成 / 跳过 / 已停止 | 一句原因 |
+| 正在执行 | 「正在：web_extract https://…」+ 清单进度（领活方报的，没报就只说「正在做」） |
+| 做完 | 结论第一句；点开是全文（Markdown） |
+| 没做成 / 跳过 / 已停止 | 原因 |
+
+**进度从哪来**：领走 run 那一步的一方（机器上的工人、本地 Bot）本来就读着目标那一轮的事件流，顺手
+数出「第几步、正在调什么、清单做到哪」，随续租报给 Gateway（`bot_tasks.progress`）；主 Bot 的席位
+每 2 秒轮询时取走，变了就再写一条 running 的 `bot/assign`。
+
+**过程从哪来**：Gateway 交出对方跑在哪条会话（`runSessionId`），界面摊开时去那条会话取最近几轮，
+只留这件活的那一段（core 的 `assignSlice`：从带着任务 id 的那条指令起，到它那一轮收口）——对方
+是一颗有自己对话的 Bot，整段拿来，人会以为它和别人的来往也是这件活的一部分。
 
 数据来自主会话里的 `bot/assign` 事件（同一个 id 会来多条，取最后一条）。界面折叠时遇到它就
 **把主 Bot 的气泡断开**：派活前那段话一个气泡，任务卡一条条排在中间，主 Bot 拿到结论之后说的话
@@ -164,6 +175,7 @@ status        queued → running → answered → done          正常路径
               cancelled（人按了停止）  failed（送不回主 Bot）
 waiterUntil   等的一方的租约，每次轮询续 60 秒
 cancelledAt   人按了停止的时刻；对方交回结论时据此不再送回
+progress      领活方随续租报的进度（0060，JSON 文本），只给界面看
 ```
 
 ### 5.2 Gateway
@@ -171,10 +183,10 @@ cancelledAt   人按了停止的时刻；对方交回结论时据此不再送回
 | 接口 | 谁 | 做什么 |
 |---|---|---|
 | `POST /runtime/tasks` | 席位票（主 Bot） | 建一条，带上等待租约；403 不是主 Bot，404 目标不在名单，409 同一颗上一件没收场 |
-| `GET /runtime/tasks/:id` | 席位票 | 取状态并续租；`answered` 的当场记成 `done` 交出结论 |
+| `GET /runtime/tasks/:id` | 席位票 | 取状态并续租；`answered` 的当场记成 `done` 交出结论；带 `runSessionId`、`progress` |
 | `POST /runtime/tasks/:id/cancel` | 席位票 | 人按了停止 |
 | `GET /runtime/tasks?sessionId=` | 登录票 | 这条会话派出去的那些 |
-| `/worker/tasks/*`、`/runtime/local-tasks/*` | 机器票 / 本地 Bot 的席位票 | 领活、started、renew、finish（run 带回结论；deliver 只在兜底时出现） |
+| `/worker/tasks/*`、`/runtime/local-tasks/*` | 机器票 / 本地 Bot 的席位票 | 领活、started、renew（可带 `progress`，形状不对的当没报）、finish（run 带回结论；deliver 只在兜底时出现） |
 
 ### 5.3 `bot/assign` 事件（主 Bot 的会话）
 
@@ -189,6 +201,8 @@ cancelledAt   人按了停止的时刻；对方交回结论时据此不再送回
   after?: string[]
   state: 'waiting' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled' | 'detached'
   result?: string            // done：对方最后一条回复；别的态：原因
+  runSessionId?: string      // 对方那一轮跑在哪条会话，界面「看过程」去那里取
+  progress?: { steps: number; tool?: { name: string; detail?: string }; todo?: { done: number; total: number; now?: string } }
   startedAt?: number; endedAt?: number
   at: number
 }

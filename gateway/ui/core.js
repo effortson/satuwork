@@ -19,7 +19,7 @@ var SatuCore = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // ../core/src/index.ts
+  // core/src/index.ts
   var index_exports = {};
   __export(index_exports, {
     CHAT_ALIVE_MS: () => CHAT_ALIVE_MS,
@@ -30,8 +30,10 @@ var SatuCore = (() => {
     UPLOAD_LEADS: () => UPLOAD_LEADS,
     aliveLongEnough: () => aliveLongEnough,
     applyRosterEvent: () => applyRosterEvent,
+    assignSlice: () => assignSlice,
     auditItemIdOfPath: () => auditItemIdOfPath,
     botIdOfPath: () => botIdOfPath,
+    callDetail: () => callDetail,
     chatRetryDelay: () => chatRetryDelay,
     classifyStreamStatus: () => classifyStreamStatus,
     companyIdOfPath: () => companyIdOfPath,
@@ -59,7 +61,9 @@ var SatuCore = (() => {
     messageText: () => messageText,
     money: () => money,
     newSum: () => newSum,
+    progressOf: () => progressOf,
     refreshSum: () => refreshSum,
+    resultLine: () => resultLine,
     rosterRetryDelay: () => rosterRetryDelay,
     runEventStream: () => runEventStream,
     sessionIdOfPath: () => sessionIdOfPath,
@@ -67,6 +71,7 @@ var SatuCore = (() => {
     splitUploads: () => splitUploads,
     sseEvents: () => sseEvents,
     t: () => t,
+    traceRows: () => traceRows,
     tzDayKey: () => tzDayKey,
     tzDayStart: () => tzDayStart,
     tzOffsetMs: () => tzOffsetMs,
@@ -74,7 +79,7 @@ var SatuCore = (() => {
     userIdOfPath: () => userIdOfPath
   });
 
-  // ../core/src/i18n/dict.ts
+  // core/src/i18n/dict.ts
   var dict = {
     // ── 导航与页面标题 ──────────────────────────────────────────────────
     概览: "Overview",
@@ -1432,7 +1437,7 @@ var SatuCore = (() => {
     供应商密钥由系统管理员配置: "Provider keys are configured by the system owner"
   };
 
-  // ../core/src/i18n/t.ts
+  // core/src/i18n/t.ts
   function t(locale, zh, en) {
     if (locale !== "en") return zh;
     if (en != null) return en;
@@ -1463,7 +1468,7 @@ var SatuCore = (() => {
     return msg;
   }
 
-  // ../core/src/format.ts
+  // core/src/format.ts
   function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   }
@@ -1538,7 +1543,7 @@ var SatuCore = (() => {
     return n >= 1e6 ? `${Math.floor(n / 1e6)}M` : `${Math.round(n / 1e3)}K`;
   }
 
-  // ../core/src/paths.ts
+  // core/src/paths.ts
   function segAfter(p, prefix) {
     if (typeof p !== "string" || !p.startsWith(prefix)) return "";
     return decodeURIComponent(p.slice(prefix.length).split("/")[0] || "");
@@ -1566,7 +1571,7 @@ var SatuCore = (() => {
     return segAfter(p, "/audit/summary/");
   }
 
-  // ../core/src/api.ts
+  // core/src/api.ts
   function createGatewayClient(opts) {
     const { fetch, tokens, locale, onUnauthorized, renewLocalBot } = opts;
     function gatewayBase() {
@@ -1671,7 +1676,7 @@ var SatuCore = (() => {
     return { gatewayBase, gatewayAbs, localBots, localSessions, registerLocalBot, localBotOf, localRoute, swFetch, renewLocalTicket, api };
   }
 
-  // ../core/src/chat/events.ts
+  // core/src/chat/events.ts
   function messageImages(msg) {
     const content = msg && msg.content;
     if (!Array.isArray(content)) return [];
@@ -1766,7 +1771,7 @@ var SatuCore = (() => {
     return null;
   }
 
-  // ../core/src/chat/fold.ts
+  // core/src/chat/fold.ts
   function fold(events, live, channelBot = false) {
     const blocks = [];
     const showChannelVia = channelBot || (events || []).some((ev) => {
@@ -2027,7 +2032,129 @@ var SatuCore = (() => {
     return { blocks, status, statusAt, todos, channelVia: showChannelVia, modelSeq };
   }
 
-  // ../core/src/chat/roster.ts
+  // core/src/chat/task.ts
+  var DETAIL_KEYS = ["url", "urls", "query", "q", "command", "cmd", "path", "file", "paths", "goal", "instruction", "task", "name", "id", "text"];
+  function clip(s, n) {
+    const one = s.replace(/\s+/g, " ").trim();
+    return one.length <= n ? one : one.slice(0, n - 1) + "…";
+  }
+  function callDetail(args) {
+    let o = args;
+    if (typeof args === "string") {
+      try {
+        o = args ? JSON.parse(args) : {};
+      } catch {
+        return clip(args, 120);
+      }
+    }
+    if (!o || typeof o !== "object") return "";
+    const rec = o;
+    for (const k of DETAIL_KEYS) {
+      const v = rec[k];
+      if (typeof v === "string" && v.trim()) return clip(v, 120);
+      if (Array.isArray(v) && v.length) {
+        const first = v.find((x) => typeof x === "string" && x.trim());
+        if (typeof first === "string") return clip(first + (v.length > 1 ? ` 等 ${v.length} 个` : ""), 120);
+      }
+    }
+    if (Array.isArray(rec.todos)) return `${rec.todos.length} 条`;
+    const raw = JSON.stringify(rec);
+    return raw === "{}" ? "" : clip(raw, 120);
+  }
+  function resultLine(text) {
+    for (const raw of String(text || "").split("\n")) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (/^──.*──$/.test(line)) continue;
+      if (line.startsWith("<")) continue;
+      return clip(line, 160);
+    }
+    return "";
+  }
+  function todoOf(items) {
+    if (!Array.isArray(items)) return void 0;
+    const live = items.filter((i) => i && i.status !== "cancelled");
+    if (!live.length) return void 0;
+    const now = live.find((i) => i.status === "in_progress");
+    return {
+      done: live.filter((i) => i.status === "completed").length,
+      total: live.length,
+      ...now && now.task ? { now: clip(String(now.task), 120) } : {}
+    };
+  }
+  function traceRows(events) {
+    const rows = [];
+    const byCall = /* @__PURE__ */ new Map();
+    const blocked = /* @__PURE__ */ new Set();
+    for (const ev of events || []) {
+      const d = ev.data || {};
+      if (ev.type === "tool/policy" && d.callId && (d.outcome === "blocked" || d.outcome === "denied" || d.outcome === "timeout")) {
+        blocked.add(d.callId);
+        const hit = byCall.get(d.callId);
+        if (hit && hit.status === "error") hit.status = "blocked";
+      }
+    }
+    for (const ev of events || []) {
+      const d = ev.data || {};
+      if (ev.type === "assistant/message") {
+        const content = d.message && d.message.content;
+        const text = Array.isArray(content) ? content.map((b) => b && b.type === "text" ? b.text || "" : "").join("") : typeof content === "string" ? content : "";
+        if (text.trim()) rows.push({ kind: "say", text: text.trim() });
+      } else if (ev.type === "tool/call") {
+        const row = {
+          kind: "tool",
+          callId: String(d.callId || ""),
+          name: String(d.name || ""),
+          detail: callDetail(d.arguments),
+          status: "running",
+          out: "",
+          full: ""
+        };
+        rows.push(row);
+        if (row.callId) byCall.set(row.callId, row);
+      } else if (ev.type === "tool/result") {
+        const hit = d.callId ? byCall.get(d.callId) : void 0;
+        if (!hit) continue;
+        hit.full = String(d.text || "");
+        hit.out = resultLine(hit.full);
+        hit.status = d.failed ? blocked.has(hit.callId) ? "blocked" : "error" : "ok";
+      }
+    }
+    return rows;
+  }
+  function progressOf(events) {
+    const steps = /* @__PURE__ */ new Set();
+    let tool;
+    let todo;
+    for (const ev of events || []) {
+      const d = ev.data || {};
+      if (ev.type === "tool/call") {
+        steps.add(`${d.turn ?? ""}:${d.step ?? ""}`);
+        tool = { name: String(d.name || ""), detail: callDetail(d.arguments) };
+      } else if (ev.type === "todo/list") {
+        todo = todoOf(d.items);
+      }
+    }
+    return { steps: steps.size, ...tool ? { tool } : {}, ...todo ? { todo } : {} };
+  }
+  function assignSlice(events, taskId) {
+    const list = events || [];
+    const at = list.findIndex(
+      (ev) => ev.type === "user/message" && ev.data?.source?.plugin === "task" && ev.data?.source?.form === taskId && ev.data?.source?.phase !== "result"
+    );
+    if (at < 0) return [];
+    const out = [];
+    let turn = null;
+    for (let i = at + 1; i < list.length; i++) {
+      const ev = list[i];
+      if (ev.type === "turn/start" && turn === null) turn = Number(ev.data?.turn);
+      out.push(ev);
+      if (ev.type === "turn/end" && (turn === null || Number(ev.data?.turn) === turn)) break;
+    }
+    return out;
+  }
+
+  // core/src/chat/roster.ts
   function newSum() {
     return { state: "idle", lastAt: 0, lastText: "" };
   }
@@ -2094,7 +2221,7 @@ var SatuCore = (() => {
     return false;
   }
 
-  // ../core/src/chat/pending.ts
+  // core/src/chat/pending.ts
   function mergePending(folded, mine) {
     if (!mine.length) return [];
     const fresh = folded.blocks.filter((b) => b.kind === "user" && b.seq != null);
@@ -2127,7 +2254,7 @@ var SatuCore = (() => {
     return left;
   }
 
-  // ../core/src/chat/pages.ts
+  // core/src/chat/pages.ts
   function mergeChatPage(cur, next) {
     const c = cur || {};
     const known = typeof c.firstSeq === "number" ? c.firstSeq : null;
@@ -2141,7 +2268,7 @@ var SatuCore = (() => {
     };
   }
 
-  // ../core/src/chat/sse.ts
+  // core/src/chat/sse.ts
   async function* sseEvents(reader, stop = () => false) {
     const decoder = new TextDecoder();
     let buf = "";
@@ -2167,7 +2294,7 @@ var SatuCore = (() => {
     }
   }
 
-  // ../core/src/chat/backoff.ts
+  // core/src/chat/backoff.ts
   var CHAT_RETRY_MAX = 40;
   var CHAT_ALIVE_MS = 1e4;
   var CHAT_IDLE_RETRY_MS = 3e4;
@@ -2187,7 +2314,7 @@ var SatuCore = (() => {
     return "warming";
   }
 
-  // ../core/src/chat/stream.ts
+  // core/src/chat/stream.ts
   function defaultSleep(ms, signal) {
     return new Promise((resolve) => {
       if (signal.aborted) return resolve();
@@ -2267,7 +2394,7 @@ var SatuCore = (() => {
     };
   }
 
-  // ../core/src/markdown/render.ts
+  // core/src/markdown/render.ts
   function createMarkdown(opts = {}) {
     function L(zh) {
       return opts.t ? opts.t(zh) : zh;

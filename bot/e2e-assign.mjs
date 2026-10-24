@@ -43,7 +43,8 @@ const gateway = createServer((req, res) => {
       const t = tasks.get(m[1])
       if (!t) return send(404, { error: 'no' })
       t.polls++
-      if (t.polls < 2) return send(200, { task: { id: t.id, status: 'running' } })
+      // 跑着的那一拍带上领活方报的进度和对方的会话 id（真 Gateway 的 publicBotTask 就是这个形状）。
+      if (t.polls < 2) return send(200, { task: { id: t.id, status: 'running', runSessionId: `s-${t.body.toBot}`, progress: { steps: 2, tool: { name: 'web_search', detail: t.body.toBot } } } })
       if (t.body.toBot === 'legal') return send(200, { task: { id: t.id, status: 'done', runKind: 'failed', error: '它那边报错了', result: '没做成：它那边报错了' } })
       return send(200, { task: { id: t.id, status: 'done', runKind: 'completed', result: `【${t.body.toBot}】做完了：${t.body.instruction.split('\n')[0]}` } })
     }
@@ -125,6 +126,8 @@ out.schema = { 在表里: Boolean(def), 描述里有名单: Boolean(def && /财�
     结论都回给模型: /\[1\/5 done · @销售/.test(r.text) && /\[2\/5 failed · @法务/.test(r.text) && r.text.includes('【fin】做完了：出月报'),
     事件先画全部再更新: mine.slice(0, 5).every((e) => e.data.state === 'waiting') && last.get('c-dag:mail')?.state === 'done',
     事件带结论: (last.get('c-dag:bill')?.result || '').includes('【fin】做完了：核账单'),
+    进度写进了事件: mine.some((e) => e.data.id === 'c-dag:mail' && e.data.state === 'running' && e.data.progress?.tool?.detail === 'sales'),
+    收场也带着对方会话: last.get('c-dag:mail')?.runSessionId === 's-sales' && last.get('c-dag:mail')?.progress?.steps === 2,
     总耗时合理: Date.now() - t0 < 10_000,
   }
 }

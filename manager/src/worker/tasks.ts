@@ -48,6 +48,79 @@ async function* sseEvents<T>(reader: ReadableStreamDefaultReader<Uint8Array>): A
   }
 }
 
+/**
+ * 目标那一轮做到哪了，随续租报给 Gateway，主 Bot 那张卡据此画「正在：…」（docs/bot-tasks.md §4）。
+ *
+ * 和 bot/src/agent/progress.ts、core/src/chat/task.ts 是**同一个口径的三份**——管家不依赖那两个包。
+ * 改字段、改「关键参数取哪个」要三处一起改。
+ */
+const DETAIL_KEYS = ['url', 'urls', 'query', 'q', 'command', 'cmd', 'path', 'file', 'paths', 'goal', 'instruction', 'task', 'name', 'id', 'text']
+
+function clip(s: string, n: number): string {
+  const one = s.replace(/\s+/g, ' ').trim()
+  return one.length <= n ? one : one.slice(0, n - 1) + '…'
+}
+
+function callDetail(args: unknown): string {
+  let o: unknown = args
+  if (typeof args === 'string') {
+    try {
+      o = args ? JSON.parse(args) : {}
+    } catch {
+      return clip(args, 120)
+    }
+  }
+  if (!o || typeof o !== 'object') return ''
+  const rec = o as Record<string, unknown>
+  for (const k of DETAIL_KEYS) {
+    const v = rec[k]
+    if (typeof v === 'string' && v.trim()) return clip(v, 120)
+    if (Array.isArray(v) && v.length) {
+      const first = v.find((x) => typeof x === 'string' && x.trim())
+      if (typeof first === 'string') return clip(first + (v.length > 1 ? ` 等 ${v.length} 个` : ''), 120)
+    }
+  }
+  if (Array.isArray(rec.todos)) return `${rec.todos.length} 条`
+  const raw = JSON.stringify(rec)
+  return raw === '{}' ? '' : clip(raw, 120)
+}
+
+interface TaskProgress {
+  steps: number
+  tool?: { name: string; detail?: string }
+  todo?: { done: number; total: number; now?: string }
+}
+
+class ProgressTracker {
+  private steps = new Set<string>()
+  private tool: TaskProgress['tool']
+  private todo: TaskProgress['todo']
+  private sig = ''
+
+  /** 喂一条事件。进度变了回 true。 */
+  feed(ev: { type?: string; data?: any }): boolean {
+    const d = ev.data || {}
+    if (ev.type === 'tool/call') {
+      this.steps.add(`${d.turn ?? ''}:${d.step ?? ''}`)
+      this.tool = { name: String(d.name || ''), detail: callDetail(d.arguments) }
+    } else if (ev.type === 'todo/list' && Array.isArray(d.items)) {
+      const live = d.items.filter((i: any) => i && i.status !== 'cancelled')
+      const now = live.find((i: any) => i.status === 'in_progress')
+      this.todo = live.length
+        ? { done: live.filter((i: any) => i.status === 'completed').length, total: live.length, ...(now?.task ? { now: clip(String(now.task), 120) } : {}) }
+        : undefined
+    } else return false
+    const sig = JSON.stringify(this.snapshot())
+    if (sig === this.sig) return false
+    this.sig = sig
+    return true
+  }
+
+  snapshot(): TaskProgress {
+    return { steps: this.steps.size, ...(this.tool ? { tool: this.tool } : {}), ...(this.todo ? { todo: this.todo } : {}) }
+  }
+}
+
 function textOfMessage(data: unknown): string {
   const content = (data as { message?: { content?: unknown } } | undefined)?.message?.content
   if (typeof content === 'string') return content
@@ -61,7 +134,12 @@ function textOfMessage(data: unknown): string {
  * 同 index.ts 的 readTurnEnd（别人的消息各自带走一轮、steered 不比轮号、reason 有两种形状），
  * 多收一样：自己那一轮里**最后一条** assistant/message 的正文，收口时作为结论。
  */
-async function readTurnResult(reader: ReadableStreamDefaultReader<Uint8Array>, ownTurn: boolean, instruction: string): Promise<{ kind: string; text: string }> {
+async function readTurnResult(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  ownTurn: boolean,
+  instruction: string,
+  track?: (ev: { type?: string; data?: unknown }) => void,
+): Promise<{ kind: string; text: string }> {
   let turn: number | null = ownTurn ? null : -1
   let mine = false
   let foreign = 0
@@ -69,6 +147,8 @@ async function readTurnResult(reader: ReadableStreamDefaultReader<Uint8Array>, o
   let last = ''
   type Ev = { type?: string; data?: { turn?: number; reason?: string | { kind?: string } } }
   for await (const ev of sseEvents<Ev>(reader)) {
+    // 自己那一轮的事件喂给进度。todo/list 不带轮号，进了自己那一轮就算。
+    if (track && turn !== null && (turn === -1 ? foreign === 0 : ev.type === 'todo/list' || Number(ev.data?.turn ?? -1) === turn)) track(ev)
     if (ev.type === 'user/message') {
       if (!mine) {
         if (textOfMessage(ev.data).trim() === instruction.trim()) mine = true
@@ -114,6 +194,8 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
   /** 主 Bot 那边按了停止（续租的回复里带 cancelled）。 */
   let stopped = false
   let stopTimer: ReturnType<typeof setTimeout> | null = null
+  const tracker = new ProgressTracker()
+  let moved = false
   /**
    * 停掉目标那一轮（docs/bot-tasks.md §1.2）。调席位的「中止」接口，那一轮以 aborted 收口，下面照常
    * 读到 turn/end 报上去；中止请求发出去 15 秒还没收口就不等了，照样报 aborted。
@@ -126,11 +208,15 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
     stopTimer = setTimeout(() => ac.abort(), 15_000)
   }
   const renew = setInterval(() => {
-    void gw(`/tasks/${encodeURIComponent(job.taskId)}/renew`, {})
+    const body = moved ? { progress: tracker.snapshot() } : {}
+    moved = false
+    void gw(`/tasks/${encodeURIComponent(job.taskId)}/renew`, body)
       .then((r) => {
         if ((r as { cancelled?: boolean } | null)?.cancelled) stopTarget()
       })
       .catch((e) => {
+        // 这一拍没报上去：下一拍补报。
+        if ('progress' in body) moved = true
         if (e instanceof LostError) {
           lost = true
           ac.abort()
@@ -174,7 +260,9 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
     steered = Boolean(posted?.steered)
     // 发消息的那一下刚好撞上停止：补一次中止。
     if (stopped && !steered) void seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
-    const out = await readTurnResult(reader, !posted?.steered, job.instruction)
+    const out = await readTurnResult(reader, !posted?.steered, job.instruction, (ev) => {
+      if (tracker.feed(ev)) moved = true
+    })
     await finish({ kind: out.kind, result: out.text })
     log(`satuwork-worker: 派活 ${job.taskId} 目标那一轮跑完：${out.kind}`)
   } catch (e) {

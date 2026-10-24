@@ -1670,6 +1670,15 @@ export interface BotTask {
   waiterUntil: number | null
   /** 人按了停止的时刻。对方交回结论时据此不再送回。 */
   cancelledAt: number | null
+  /** 跑着时领活的一方随续租报上来的进度（0060）。只给界面看，不参与判断。 */
+  progress: BotTaskProgress | null
+}
+
+/** 同 bot/src/session/types.ts 的 TaskProgress。 */
+export interface BotTaskProgress {
+  steps: number
+  tool?: { name: string; detail?: string }
+  todo?: { done: number; total: number; now?: string }
 }
 
 export interface Memory {
