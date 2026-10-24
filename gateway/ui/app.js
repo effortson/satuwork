@@ -516,7 +516,14 @@ document.getElementById('app').addEventListener('click', async (e) => {
   // 引用（docs/chat-references.md §7）：气泡上的「引用」、预览里的「引用这个文件」、
   // 输入框上那排的 ×、发出去之后卡上的「跳回去」。
   if (act === 'chat-ref-msg') {
+    closeMsgMenu()
     takeRefMessage(btn.getAttribute('data-seq'))
+    return
+  }
+  if (act === 'msg-copy') {
+    closeMsgMenu()
+    await copyMsgText(btn.getAttribute('data-key') || '')
+    render()
     return
   }
   if (act === 'chat-ref-file') {
@@ -3029,6 +3036,8 @@ document.getElementById('app').addEventListener('input', (e) => {
   const cmd = commandQueryAt(el)
   if (cmd) openCmdPick(cmd.q)
   else if (state.cmdPick) closeCmdPick()
+  // 打成了一条命令，发送键就该是「发送」（哪怕 Bot 在跑），见 paintSendFace。
+  paintSendFace()
 })
 
 /**
@@ -3096,14 +3105,8 @@ document.getElementById('app').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229 && items.length) {
       const hit = items[state.cmdPick.index || 0]
       /**
-       * **标灰的那条不接，也不吞回车**——让它穿到下面的 sendChat 去。
-       *
-       * 那儿会 parseCommand 认出这条命令、再撞上 `idleOnly && state.chatStatus`，
-       * 弹一句「这一轮还在跑，等它跑完再试」。选单右边那行小字容易被忽略，那句 flash
-       * 才是人真正会看到的解释。
-       *
-       * 原来这里是先 preventDefault 再判 disabled：命令不跑、消息不发、一句提示也没有,
-       * 人按下回车，屏幕上什么都不会变。
+       * 选单里的项现在都能执行（跑着的时候 runChatCommand 会先停下这一轮）。disabled 这一道判断
+       * 留着当保险：真有标灰的，回车穿到下面的 sendChat，由它给一句解释，而不是吞掉回车什么都不发生。
        */
       if (hit && !hit.disabled) {
         e.preventDefault()

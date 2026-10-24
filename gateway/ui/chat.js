@@ -3264,9 +3264,19 @@ function handoffDoneHtml(h) {
 }
 
 /** 一条消息的外壳。正文和工具条留空，交给 updateRow 填——它俩每帧都可能变。 */
+/**
+ * 助手那一行的头像：**这颗 Bot 自己的**（和侧栏、顶栏、派活卡上同一个），不是通用的机器人图标。
+ * 名单还没到时先画通用图标，到了由 updateRow 补换（rowShell 只在节点新建时跑一次）。
+ */
+function assistantAvatar() {
+  const bot = chatBotOf()
+  return bot ? { html: botAvatar(bot.icon, 36, bot.origin), own: true } : { html: ICON_BOT, own: false }
+}
+
 function rowShell(b, key) {
   const account = (state.me && state.me.account) || {}
-  const avatar = b.kind === 'user' ? esc(initialOf(account)) : ICON_BOT
+  const mine = b.kind === 'user' ? null : assistantAvatar()
+  const avatar = b.kind === 'user' ? esc(initialOf(account)) : mine.html
   // 时间戳两侧一致，都挂在气泡外面（见 chat.css 里 .sw-time 的说明）。
   //
   // 内容留空，交给 updateRow：助手那条**还在输出时是读秒**、输出完了才换成时刻，
@@ -3282,7 +3292,7 @@ function rowShell(b, key) {
   const qseq = quoteSeqOf(b)
   return (
     `<div class="sw-msg" data-role="${b.kind}" data-key="${key}"${qseq != null ? ` data-seq="${esc(String(qseq))}"` : ''}${b.via ? ` data-via="${esc(b.via)}"` : ''}${b.pending ? ' data-pending="1"' : ''}>` +
-    `<div class="sw-msg-avatar" aria-hidden="true">${avatar}</div>` +
+    `<div class="sw-msg-avatar" aria-hidden="true"${mine && mine.own ? ' data-bot="1"' : ''}>${avatar}</div>` +
     `<div class="sw-msg-col">` +
     `<div class="sw-bubble" data-role="${b.kind}"><div class="sw-md"></div><div class="sw-chips" hidden></div></div>` +
     `${time}${msgActsHtml(b)}</div></div>`
@@ -3309,6 +3319,85 @@ function msgActsHtml(b) {
     `data-seq="${esc(String(qseq))}" data-role="${b.kind}" title="${esc(t('引用这条', 'Quote this'))}" ` +
     `aria-label="${esc(t('引用这条', 'Quote this'))}">${ICON_QUOTE}<span>${esc(t('引用', 'Quote'))}</span></button></div>`
   )
+}
+
+/* ── 触屏：长按消息弹菜单 ────────────────────────────────────────────────
+   触屏没有悬停，气泡外侧那排动作只能常显，挂在每条消息边上是噪音（chat.css 在 hover:none 下把它藏了）。
+   改成长按一条消息约半秒，弹一个小菜单：能引用的给「引用」，都给「复制」。长按本来会触发系统选字，
+   chat.css 把它关了，「复制」就是顶它的。 */
+
+const LONGPRESS_MS = 480
+let pressTimer = null
+let pressAt = null
+
+function closeMsgMenu() {
+  const box = document.getElementById('sw-msgmenu')
+  if (box) box.remove()
+}
+
+function openMsgMenu(row, x, y) {
+  closeMsgMenu()
+  const seq = row.getAttribute('data-seq')
+  const md = row.querySelector('.sw-bubble .sw-md')
+  const items = []
+  if (seq) items.push(`<button type="button" class="sw-msgmenu-item" data-act="chat-ref-msg" data-seq="${esc(seq)}">${ICON_QUOTE}<span>${esc(t('引用', 'Quote'))}</span></button>`)
+  if (md && md.innerText.trim()) items.push(`<button type="button" class="sw-msgmenu-item" data-act="msg-copy" data-key="${esc(row.getAttribute('data-key') || '')}">${svg(['M9 9h10v12H9z', 'M5 15V3h10'], 15)}<span>${esc(t('复制', 'Copy'))}</span></button>`)
+  if (!items.length) return
+  const box = document.createElement('div')
+  box.id = 'sw-msgmenu'
+  box.className = 'sw-msgmenu'
+  box.setAttribute('role', 'menu')
+  box.innerHTML = items.join('')
+  // 挂在 #app 里：页面的点击分发（app.js）只听 #app，挂到 body 上菜单就点不动。
+  ;(document.getElementById('app') || document.body).appendChild(box)
+  // 摆在手指上方一点；挨着屏幕边就往里收，不让菜单出屏。
+  const w = box.offsetWidth
+  const h = box.offsetHeight
+  const left = Math.max(8, Math.min(x - w / 2, innerWidth - w - 8))
+  const top = y - h - 14 < 8 ? y + 14 : y - h - 14
+  box.style.left = `${left}px`
+  box.style.top = `${Math.min(top, innerHeight - h - 8)}px`
+  row.setAttribute('data-pressed', '1')
+  setTimeout(() => row.removeAttribute('data-pressed'), 300)
+  if (navigator.vibrate) navigator.vibrate(10)
+}
+
+document.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch') return
+  if (e.target instanceof Element && e.target.closest('#sw-msgmenu')) return
+  closeMsgMenu()
+  const row = e.target instanceof Element ? e.target.closest('#chat-thread .sw-msg[data-key]') : null
+  // 气泡里的按钮、链接、药丸照常点，不抢。
+  if (!row || (e.target instanceof Element && e.target.closest('a, button, input, textarea, .sw-chip, .sw-filechip'))) return
+  pressAt = { x: e.clientX, y: e.clientY }
+  clearTimeout(pressTimer)
+  pressTimer = setTimeout(() => {
+    pressTimer = null
+    openMsgMenu(row, pressAt.x, pressAt.y)
+  }, LONGPRESS_MS)
+})
+const cancelPress = () => {
+  clearTimeout(pressTimer)
+  pressTimer = null
+}
+document.addEventListener('pointermove', (e) => {
+  // 手指挪了就是在滚，不是长按。
+  if (pressTimer && pressAt && Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y) > 10) cancelPress()
+})
+document.addEventListener('pointerup', cancelPress)
+document.addEventListener('pointercancel', cancelPress)
+// 系统的长按菜单（iOS 的「拷贝 / 查询」、安卓的上下文菜单）不要冒出来和我们的打架。
+document.addEventListener('contextmenu', (e) => {
+  if (e.target instanceof Element && e.target.closest('#chat-thread .sw-msg') && matchMedia('(hover: none)').matches) e.preventDefault()
+})
+document.addEventListener('scroll', closeMsgMenu, true)
+
+/** 长按菜单里的「复制」：复制这条消息渲染出来的正文。 */
+async function copyMsgText(key) {
+  const row = key ? document.querySelector(`#chat-thread .sw-msg[data-key="${CSS.escape(key)}"]`) : null
+  const md = row && row.querySelector('.sw-bubble .sw-md')
+  const ok = md ? await copyText(md.innerText.trim()) : false
+  flash(ok ? 'ok' : 'err', ok ? t('已复制', 'Copied') : t('复制失败，浏览器不允许', 'Copy failed'))
 }
 
 /**
@@ -3346,6 +3435,17 @@ function syncMd(host, text, streaming) {
  * `since` 是这一轮开始的时刻（fold 的 statusAt），读秒从它起算。
  */
 function updateRow(el, b, streaming, since) {
+  // 先画的是通用图标（名单那会儿还没到）：名单到了就换成这颗 Bot 自己的头像。
+  if (b.kind !== 'user') {
+    const av = el.querySelector(':scope > .sw-msg-avatar')
+    if (av && !av.hasAttribute('data-bot')) {
+      const mine = assistantAvatar()
+      if (mine.own) {
+        av.innerHTML = mine.html
+        av.setAttribute('data-bot', '1')
+      }
+    }
+  }
   /**
    * 头像会不会动。**这一行是「它还在干活」在屏幕上唯一常驻的信号。**
    *
@@ -4463,25 +4563,16 @@ function paintChatChrome(folded) {
   if (meta) meta.textContent = chatMetaText(folded)
   paintChatTodos(folded)
   paintChatTip(busy)
-  const send = document.getElementById('chat-send')
-  // 三副面孔：发送 / 停止 / 正在停止。前两副是同一颗按钮的开与关，第三副是「这一下
-  // 已经收到了，正在下发」——它必须和「停止」长得不一样，不然人只能靠反复点来确认。
-  const face = stopping ? 'stopping' : busy ? 'stop' : 'send'
-  if (send && send.getAttribute('data-state') !== face) {
-    // 停止态改成 type=button 并挂上 chat-abort：留着 submit 的话，点它会走发送。
-    // 回车不受影响——那条路径仍是提交表单，也就是「边跑边补一句」，本来就该照发。
-    send.setAttribute('data-state', face)
-    send.type = busy ? 'button' : 'submit'
-    send.innerHTML = busy ? ICON_STOP : ICON_SEND
-    const label = stopping ? t('正在停止…', 'Stopping…') : busy ? t('停止') : t('发送')
-    send.setAttribute('aria-label', label)
-    send.title = label
-    // 正在停的时候禁掉：第二下什么也做不成（席位已经收到了），但按得下去就会让人
-    // 以为第一下没算数。转圈画在按钮外沿，见 chat.css 的 [data-state='stopping']。
-    send.disabled = stopping
-    if (busy) send.setAttribute('data-act', 'chat-abort')
-    else send.removeAttribute('data-act')
-  }
+  paintSendFace(busy)
+  /**
+   * 页面整体重绘（render）会把输入框上面那两个选单的框换成新的、默认 hidden 的，而选单状态还挂着：
+   * Bot 在跑时重绘很勤，人打了 `/clear` 选单一闪就没了（手机上尤其明显，没有回车去兜底）。
+   * 框是隐藏的、状态却开着，就补画一次；开着的不重画——每帧重画会把人正要点的那一项换掉。
+   */
+  const cmdBox = document.getElementById('chat-cmdpick')
+  if (state.cmdPick && cmdBox && (cmdBox.hidden || cmdBox.getAttribute('data-busy') !== String(busy))) paintCmdPick()
+  const mentBox = document.getElementById('chat-mentionpick')
+  if (state.mentionPick && state.mentionPick.open && mentBox && mentBox.hidden) paintMentionPick()
   // 名单上的时间/摘要/转圈由 paintRoster 管——它认每个 Bot 自己那条流，
   // 不再只看当前这一条。
   paintRoster()
@@ -8454,6 +8545,36 @@ async function sendChat() {
  * 这一段以前界面上完全没有痕迹，于是它长得跟「点了没反应」一模一样。现在按下去当场
  * 进 `chatStopping`：按钮转圈并禁掉，输入框底下那行字改口读秒（见 stopTipText）。
  */
+/**
+ * 发送键的三副面孔：发送 / 停止 / 正在停止。前两副是同一颗按钮的开与关，第三副是「这一下已经收到了，
+ * 正在下发」——它必须和「停止」长得不一样，不然人只能靠反复点来确认。
+ *
+ * **输入框里是一条命令时，跑着也给「发送」**：`/clear` 打好了，按下去就该执行它（runChatCommand 会先
+ * 停下这一轮），而不是停掉这一轮、命令原样躺在框里。手机上没有回车键兜底，这一条尤其要紧。
+ */
+function paintSendFace(busy = Boolean(state.chatStatus)) {
+  const send = document.getElementById('chat-send')
+  if (!send) return
+  const stopping = stopElapsed() !== null
+  const parsed = parseCommand(state.chatDraft || '')
+  const asStop = busy && !(parsed && !parsed.unknown)
+  const face = stopping ? 'stopping' : asStop ? 'stop' : 'send'
+  if (send.getAttribute('data-state') === face) return
+  // 停止态改成 type=button 并挂上 chat-abort：留着 submit 的话，点它会走发送。
+  // 回车不受影响——那条路径仍是提交表单，也就是「边跑边补一句」，本来就该照发。
+  send.setAttribute('data-state', face)
+  send.type = asStop || stopping ? 'button' : 'submit'
+  send.innerHTML = asStop || stopping ? ICON_STOP : ICON_SEND
+  const label = stopping ? t('正在停止…', 'Stopping…') : asStop ? t('停止') : t('发送')
+  send.setAttribute('aria-label', label)
+  send.title = label
+  // 正在停的时候禁掉：第二下什么也做不成（席位已经收到了），但按得下去就会让人
+  // 以为第一下没算数。转圈画在按钮外沿，见 chat.css 的 [data-state='stopping']。
+  send.disabled = stopping
+  if (asStop) send.setAttribute('data-act', 'chat-abort')
+  else send.removeAttribute('data-act')
+}
+
 async function abortChat() {
   const sessionId = state.chatSessionId
   if (!sessionId) return
@@ -9202,13 +9323,19 @@ function paintCmdPick() {
   const busy = Boolean(state.chatStatus)
   const i = Math.min(pick.index || 0, list.length - 1)
   box.hidden = false
+  box.setAttribute('data-busy', String(busy))
+  /**
+   * 这一轮在跑时，要等它跑完的那几条（/clear、/new、/compact）**不再灰掉**：点了就先停下这一轮、
+   * 等它收口再执行（runChatCommand）。原来是灰的、点了没反应，手机上又没有回车去触发那句解释，
+   * 人看到的就是「命令用不了」。
+   */
   box.innerHTML = list
     .map((c, n) => {
-      const off = busy && c.idleOnly
-      return `<button type="button" class="sw-pick${n === i ? ' is-on' : ''}${off ? ' is-off' : ''}"
-        data-act="chat-cmd-pick" data-name="${esc(c.name)}"${off ? ' disabled' : ''}>
+      const first = busy && c.idleOnly
+      return `<button type="button" class="sw-pick${n === i ? ' is-on' : ''}"
+        data-act="chat-cmd-pick" data-name="${esc(c.name)}">
         <span class="sw-pick-name">/${esc(c.name)} · ${esc(t(c.title))}</span>
-        <small>${esc(off ? t('等这一轮跑完') : t(c.hint))}</small>
+        <small>${esc(first ? t('会先停下正在跑的这一轮', 'Stops the running turn first') : t(c.hint))}</small>
       </button>`
     })
     .join('')
@@ -9261,16 +9388,29 @@ async function runChatCommand(cmd, arg = '') {
     render()
     return
   }
-  if (cmd.idleOnly && state.chatStatus) {
-    flash('err', t('这一轮还在跑，等它跑完再试'))
-    render()
-    return
-  }
   /**
    * 唯一要先问一句的是 `/clear`：别的几条点错了都有退路（压缩后翻得到原文、/new 之后
-   * 往上翻还在、换模型再换回来），它点完界面上就回不来了。
+   * 往上翻还在、换模型再换回来），它点完界面上就回不来了。**问在停之前**：人点了取消，正在跑的
+   * 那一轮也不该被停掉。
    */
   if (cmd.confirm && !confirm(t(cmd.confirm))) return
+  /**
+   * 这一轮还在跑：先停下它、等它收口，再执行。原来是一句「等它跑完再试」就回去了——手机上没有
+   * 回车去触发这句话，选单里那几项又是灰的，人看到的就是「命令用不了」。等收口最多 20 秒，
+   * 停不下来才如实说。
+   */
+  if (cmd.idleOnly && state.chatStatus) {
+    flash('ok', t(`先停下正在跑的这一轮，再执行 /${cmd.name}…`, `Stopping the running turn before /${cmd.name}…`))
+    render()
+    await abortChat()
+    const until = Date.now() + 20_000
+    while (state.chatStatus && Date.now() < until) await new Promise((r) => setTimeout(r, 300))
+    if (state.chatStatus) {
+      flash('err', t('这一轮没停下来，等它停了再试', 'The turn did not stop; try again once it has'))
+      render()
+      return
+    }
+  }
   // 失败要把命令还回去（下面的 catch）。清空之前先留一份——同 sendChat 那条约定：
   // 一次 409 / 换版 404 不该让人重新把命令打一遍。
   const draft = state.chatDraft || '/' + cmd.name

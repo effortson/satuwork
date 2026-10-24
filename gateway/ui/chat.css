@@ -203,6 +203,12 @@
   animation: sw-pulse 1.9s ease-in-out infinite;
   animation-delay: 0.35s;
 }
+/* 助手那一行画的是这颗 Bot 自己的头像（一整张插画，自带底板）：不再垫灰底；在跑时只留外圈那道
+   呼吸光晕——脸跟着淡下去再亮起来看着像在闪。 */
+.sw-msg-avatar[data-bot='1'] { background: transparent; }
+.sw-msg-avatar[data-bot='1'] svg { width: 36px; height: 36px; }
+.sw-msg[data-live='1'] .sw-msg-avatar[data-bot='1'] { background: transparent; }
+.sw-msg[data-live='1'] .sw-msg-avatar[data-bot='1'] svg { animation: none; }
 @keyframes sw-avatar-live {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent-500) 34%, transparent); }
   60% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-accent-500) 0%, transparent); }
@@ -2222,9 +2228,41 @@ button.sw-ref-card:hover { background: color-mix(in srgb, var(--secondary) 70%, 
 .sw-msg-act:hover { color: var(--color-text); background: var(--secondary); }
 .sw-msg-act > span { display: none; }
 @media (hover: none) {
-  /* 触屏没有悬停：动作常显，但只留图标。 */
-  .sw-msg-acts { opacity: 0.7; }
+  /* 触屏没有悬停：这排动作不常显，改成长按消息弹菜单（chat.js 的 openMsgMenu）。 */
+  .sw-msg-acts { display: none !important; }
+  /* 长按归我们的菜单：关掉系统的选字和长按预览，「复制」在菜单里。 */
+  #chat-thread .sw-bubble { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 }
+/* 长按弹出的那个小菜单。按下的那条消息轻轻缩一下，告诉人「按住了」。 */
+.sw-msg[data-pressed='1'] .sw-bubble { transform: scale(0.98); transition: transform 0.12s; }
+.sw-msgmenu {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--popover);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.16));
+}
+.sw-msgmenu-item {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 56px;
+  padding: 8px 10px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sw-msgmenu-item:active { background: var(--secondary); }
+.sw-msgmenu-item svg { width: 16px; height: 16px; }
 
 /* 从引用卡跳回原消息时亮一下。 */
 @keyframes sw-ref-flash { 0% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 45%, transparent); } 100% { box-shadow: 0 0 0 0 transparent; } }
