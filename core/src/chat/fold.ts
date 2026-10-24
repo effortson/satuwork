@@ -39,6 +39,8 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
   /** 单号 → 已经画在某一块上的那张交接卡。跨块认，见下面 human/handoff。 */
   const handoffSeen = new Map<string, any>()
   const handoffOf = (id: string) => (id ? handoffSeen.get(id) : undefined)
+  /** 派活卡：id → 已经画出来的那一块。同一个 id 来多条（等 → 跑 → 收场），取最后一条。 */
+  const taskSeen = new Map<string, any>()
   for (const ev of events || []) {
     const type = ev.type
     const data: any = ev.data || {}
@@ -150,7 +152,14 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
       assistant.endTime = at
     } else if (type === 'tool/result') {
       if (phantoms.has(data.callId)) continue
+      /**
+       * **先按 callId 跨块认。** 派活会把主 Bot 的气泡断开（见下面 bot/assign），assign_task 的
+       * 结果到的时候 `tools` 已经是后一个气泡的那一份了——只在 `tools` 里找，就会把它的结果
+       * 安到别的药丸上。
+       */
+      const byCall = data.callId ? toolByCall.get(data.callId) : undefined
       const hit =
+        (byCall && byCall.result == null ? byCall : undefined) ||
         tools.find((x) => x.callId && x.callId === data.callId && x.result == null) ||
         tools.find((x) => x.result == null) ||
         tools[tools.length - 1]
@@ -177,6 +186,25 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
        */
       const hit = toolByCall.get(data.callId)
       if (hit && isShot(data.shot)) hit.shot = data.shot
+    } else if (type === 'bot/assign') {
+      /**
+       * 主 Bot 派出去的一件活（docs/bot-tasks.md §4）。**另起一块，并把主 Bot 的气泡断开**：
+       * 派活前那段话一个气泡，任务卡一条条排在中间，拿到结论之后说的话另起一个气泡——看着就是
+       * 「我派给你 → 你交回来 → 我接着说」。这里和委派卡（挂在助手块上）不一样，委派的子代理
+       * 是它自己，派活的对方是另一颗 Bot，就该画成它说的话。
+       *
+       * 工具药丸按 callId 认（见上面 tool/result），不受断开影响。
+       */
+      const prev = taskSeen.get(data.id)
+      if (prev) {
+        Object.assign(prev, data)
+        continue
+      }
+      const task = { kind: 'task', ...data, time: at, seq: ev.seq }
+      taskSeen.set(data.id, task)
+      blocks.push(task)
+      assistant = null
+      tools = []
     } else if (type === 'agent/task') {
       /**
        * 一次委派（见 docs/delegation.md）。**挂在助手那一块上**，理由和确认卡一字不差：

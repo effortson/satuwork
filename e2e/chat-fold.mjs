@@ -269,6 +269,33 @@ export async function runChatFold({ root, test, assert, log }) {
     assert(u.mentions.length === 2 && u.mentions.every((m) => m.inline), `点名要带 inline：${JSON.stringify(u.mentions)}`)
   })
 
+  await test('主 Bot 派活：派活前一个气泡，任务卡排在中间，拿到结论之后另起一个气泡', async () => {
+    const assign = (seq, state, extra = {}) =>
+      ev(seq, 'bot/assign', { id: 'c9:mail', callId: 'c9', index: 0, total: 1, bot: { id: 'b-crm', name: '客户经理' }, instruction: '扫邮箱', state, at: T + seq, ...extra })
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'main', createdAt: T }),
+      ev(2, 'user/message', { message: um('让 @客户经理 扫一下邮箱'), source: { kind: 'user' } }),
+      ev(3, 'turn/start', { turn: 1 }),
+      ev(4, 'assistant/message', { turn: 1, step: 1, message: am('好，派给客户经理。'), usage }),
+      ev(5, 'tool/call', { callId: 'c9', name: 'assign_task', arguments: '{}' }),
+      assign(6, 'waiting'),
+      assign(7, 'running', { taskId: 't1', startedAt: T + 7 }),
+      assign(8, 'done', { taskId: 't1', result: '有 1 封要处理', endedAt: T + 8 }),
+      ev(9, 'tool/result', { callId: 'c9', text: '派出去的 1 件收场了' }),
+      ev(10, 'assistant/message', { turn: 1, step: 2, message: am('客户经理交回来了：有 1 封要处理。'), usage }),
+      ev(11, 'turn/end', { turn: 1, reason: 'completed' }),
+    ]
+    const blocks = fold(events).blocks
+    const kinds = blocks.map((b) => b.kind).join(',')
+    assert(kinds === 'user,assistant,task,assistant', `块的顺序不对：${kinds}`)
+    assert(blocks[1].text === '好，派给客户经理。' && blocks[3].text === '客户经理交回来了：有 1 封要处理。', '前后两段话该各自一个气泡')
+    const task = blocks[2]
+    assert(task.state === 'done' && task.result === '有 1 封要处理' && task.bot.name === '客户经理', `任务卡取最后一条：${JSON.stringify(task)}`)
+    const chip = blocks[1].tools.find((x) => x.callId === 'c9')
+    assert(chip && chip.result === '派出去的 1 件收场了', 'assign_task 的结果没安回它自己那颗药丸')
+    assert(!blocks[3].tools.some((x) => x.callId === 'c9'), '后一个气泡不该再挂那颗药丸')
+  })
+
   await test('普通 Bot 的 Web 对话不显示 channel 标签', async () => {
     const events = [
       ev(1, 'session', { version: 5, id: 's1', botId: 'ordinary-bot', createdAt: T }),

@@ -1603,18 +1603,27 @@
 .sw-pick-bot, .sw-mention-bot { display: inline-flex; align-items: center; justify-content: center; }
 .sw-mention-bot svg { width: 14px; height: 14px; }
 /* 混排在正文里的点名：和文字同一行，药丸压低一点、左右留缝，不撑高行距。 */
-/* 混排在正文里的点名：和文字同一行。高度定死，有图标的、只有 @ 的、Bot 头像的三种一样高，
-   不撑高行距；居中对齐到这一行文字。 */
+/* Bot 头像那一格**不许被压**：`.sw-mention > span` 那条规则给名字用的 overflow:hidden 也落在了它身上，
+   flex 一挤就把头像压扁（截图里那颗变形的头像就是它）。 */
+.sw-mention > .sw-mention-bot { flex: none; overflow: visible; width: 14px; height: 14px; }
+.sw-mention > img { object-fit: contain; }
+/* 混排在正文里的点名：和文字同一行。高度按字号走（1.55em），有图标的、只有 @ 的、Bot 头像的三种一样高。
+   对齐是量出来的：baseline 再往下挪 0.15em，药丸里的字和外面的字垂直中心差在 0.1px 以内（用户气泡、
+   助手气泡两种底都量过）；用 middle 会高出 2px 左右。 */
 .sw-mention.sw-mention-inline {
   box-sizing: border-box;
-  height: 20px;
+  height: 1.55em;
   gap: 4px;
-  margin: 0 2px;
-  padding: 0 8px;
-  vertical-align: middle;
-  font-size: 12.5px;
-  line-height: 20px;
+  margin: 0 3px;
+  padding: 0 0.6em;
+  vertical-align: baseline;
+  font-size: 0.86em;
+  line-height: 1;
+  position: relative;
+  top: 0.15em;
 }
+/* 正文里的图片规则（.sw-md img 的边框和上下外边距）不许落到药丸的图标上：吃到了就是 16px、还往下顶。 */
+.sw-md .sw-mention > img { width: 14px; height: 14px; margin: 0; border: 0; border-radius: 3px; }
 
 /* 排队 dock。**一条一行、纯文字、不展开附件**——它是「等会儿要说的话」的提醒，
    不是消息气泡的预演。把气泡那一套搬上来，输入框会被顶掉半屏。 */
@@ -1879,6 +1888,37 @@
 }
 .sw-preview-note > .sw-preview-spin { width: 14px; height: 14px; border-width: 2px; }
 @keyframes sw-spin { to { transform: rotate(360deg); } }
+
+/* ── 主 Bot 派出去的活（docs/bot-tasks.md §4）─────────────────────────────
+   一条「那颗 Bot 发的消息」：名字一行（带状态小签），气泡里是任务一句话 + 动画 / 结论。 */
+.sw-taskname { display: flex; align-items: center; gap: 6px; margin: 0 0 2px 2px; font-size: 12px; color: var(--muted-foreground); }
+.sw-taskname-bot { font-weight: 600; color: var(--color-text); }
+.sw-taskname-tag { padding: 0 7px; border-radius: 999px; background: var(--secondary); font-size: 11px; line-height: 1.7; }
+.sw-taskmsg[data-state="running"] .sw-taskname-tag { background: var(--color-accent-100); color: var(--color-accent-800); }
+.sw-taskmsg[data-state="done"] .sw-taskname-tag { background: color-mix(in srgb, var(--color-accent-2-500, #3c9a6b) 16%, transparent); color: var(--color-accent-2-800, #23623f); }
+.sw-taskmsg:is([data-state="failed"], [data-state="skipped"], [data-state="cancelled"]) .sw-taskname-tag { background: var(--color-accent-100); color: var(--color-accent-800); }
+.sw-taskask { font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sw-taskrun { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: var(--color-text); }
+.sw-taskrun[hidden] { display: none; }
+.sw-taskspin { width: 14px; height: 14px; flex: none; box-sizing: border-box; border: 2px solid var(--color-accent-200, #f3cdbf); border-top-color: var(--color-accent-600, #c4643f); border-radius: 50%; animation: sw-spin 0.9s linear infinite; }
+.sw-taskwait { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--muted-foreground); opacity: 0.5; }
+.sw-taskdots { display: inline-flex; gap: 3px; }
+.sw-taskdots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: 0.25; animation: sw-pulse 1.2s ease-in-out infinite; }
+.sw-taskdots i:nth-child(2) { animation-delay: 0.2s; }
+.sw-taskdots i:nth-child(3) { animation-delay: 0.4s; }
+.sw-taskelapsed { margin-left: auto; font-size: 12px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+/* 正在执行的那张：边框换成强调色、外面一圈慢慢呼吸——一眼看得出「还在等它」。 */
+.sw-taskmsg[data-state="running"] .sw-taskbubble { border-color: var(--color-accent-300, #eaa98f); animation: sw-taskglow 2s ease-in-out infinite; }
+@keyframes sw-taskglow { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent-500, #d9774f) 0%, transparent); } 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent-500, #d9774f) 14%, transparent); } }
+.sw-taskmsg .sw-md:not(:empty) { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.sw-taskmsg:is([data-state="failed"], [data-state="skipped"], [data-state="cancelled"], [data-state="detached"]) .sw-md { color: var(--muted-foreground); }
+/* 结论长了先折起来：主 Bot 接下来那段话才是整理过的版本。 */
+.sw-taskmsg[data-state="done"]:not([data-open="1"]) .sw-md { max-height: 360px; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 80%, transparent); mask-image: linear-gradient(to bottom, #000 80%, transparent); }
+.sw-taskmore { margin-top: 6px; padding: 0; border: 0; background: transparent; color: var(--color-accent-700); font-size: 12.5px; cursor: pointer; }
+.sw-taskmore[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .sw-taskspin, .sw-taskdots i, .sw-taskmsg[data-state="running"] .sw-taskbubble { animation: none; }
+}
 /* 动效敏感的人不该被一个转不停的圈晃。留一个静止的环，位置和含义都还在。 */
 @media (prefers-reduced-motion: reduce) {
   .sw-preview-spin { animation: none; }

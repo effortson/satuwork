@@ -524,6 +524,29 @@ export interface SessionEventMap {
    * SESSION_FORMAT_VERSION。退化方向：老席位读到它当没看见，那次委派在界面上只剩一次
    * 普通的工具调用——**少一张卡，不丢正文**（结论在 tool/result 里）。
    */
+  /**
+   * 主 Bot 派出去的一件活（docs/bot-tasks.md §5.3）。同一个 `id` 会来多条（waiting → running →
+   * 终态），界面按 id 认、取最后一条，并在这里把主 Bot 的气泡断开：派活前一个气泡，任务卡排在中间，
+   * 拿到结论之后说的话另起一个气泡。不进模型——结论在 assign_task 的 tool/result 里。
+   */
+  'bot/assign': {
+    id: string
+    callId: string
+    index: number
+    total: number
+    /** Gateway 那一条。没发出去的（跳过、校验失败）没有。 */
+    taskId?: string
+    bot: { id: string; name: string }
+    /** 主 Bot 写的原话（不含附上的前置结论）。 */
+    instruction: string
+    after?: string[]
+    state: 'waiting' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled' | 'detached'
+    /** done：对方那一轮最后一条回复；别的态：原因。 */
+    result?: string
+    startedAt?: number
+    endedAt?: number
+    at: number
+  }
   'agent/task': {
     /** 这一条委派。同一个 id 会来多条，取最后一条。 */
     id: string

@@ -91,12 +91,13 @@ function textOfMessage(data: unknown): string {
     .join('')
 }
 
-/** 同 local-routines 的 readTurnEnd，多收自己那一轮的 assistant/message 正文。 */
+/** 同 local-routines 的 readTurnEnd，多收自己那一轮**最后一条** assistant/message 的正文作为结论。 */
 async function readTurnResult(reader: ReadableStreamDefaultReader<Uint8Array>, ownTurn: boolean, instruction: string): Promise<{ kind: string; text: string }> {
   let turn: number | null = ownTurn ? null : -1
   let mine = false
   let foreign = 0
-  const texts: string[] = []
+  /** 只留最后一条：模型每调一次工具前常先说一句「我先读一下收件箱」，那些不是结论（docs/bot-tasks.md §2）。 */
+  let last = ''
   type Ev = { type?: string; data?: { turn?: number; reason?: string | { kind?: string } } }
   for await (const ev of sseEvents<Ev>(reader)) {
     if (ev.type === 'user/message') {
@@ -117,7 +118,7 @@ async function readTurnResult(reader: ReadableStreamDefaultReader<Uint8Array>, o
       if (turn === null) continue
       if (turn === -1 ? foreign === 0 : Number(ev.data?.turn ?? -1) === turn) {
         const t = textOfMessage(ev.data).trim()
-        if (t) texts.push(t)
+        if (t) last = t
       }
       continue
     }
@@ -129,7 +130,7 @@ async function readTurnResult(reader: ReadableStreamDefaultReader<Uint8Array>, o
     }
     if (turn !== -1 && Number(ev.data?.turn ?? -1) !== turn) continue
     const reason = ev.data?.reason
-    return { kind: String((typeof reason === 'string' ? reason : reason?.kind) || 'completed'), text: texts.join('\n\n') }
+    return { kind: String((typeof reason === 'string' ? reason : reason?.kind) || 'completed'), text: last }
   }
   throw new Error('事件流断了')
 }

@@ -1633,7 +1633,7 @@ export interface BotFolder {
  * 主 Bot 派活的一条（迁移 0058，docs/bot-tasks.md）。状态只往前走：
  * queued → running → reporting → delivering → done；只有「送不回主 Bot」才是 failed。
  */
-export type BotTaskStatus = 'queued' | 'running' | 'reporting' | 'delivering' | 'done' | 'failed'
+export type BotTaskStatus = 'queued' | 'running' | 'answered' | 'reporting' | 'delivering' | 'done' | 'failed' | 'cancelled'
 
 export interface BotTask {
   id: string
@@ -1666,6 +1666,10 @@ export interface BotTask {
   startedAt: number | null
   endedAt: number | null
   deliveredAt: number | null
+  /** 主 Bot 的席位在等（docs/bot-tasks.md §1.1）：每次轮询续租。null = 没人在等，结论走兜底送回。 */
+  waiterUntil: number | null
+  /** 人按了停止的时刻。对方交回结论时据此不再送回。 */
+  cancelledAt: number | null
 }
 
 export interface Memory {

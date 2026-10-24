@@ -18,8 +18,8 @@ export async function runLocalTasks({ root, test, assert, log }) {
     assert(order.indexOf('events') < order.indexOf('messages'), `要先挂流再发消息：${order.join(',')}`)
     const finish = seen.find((s) => s.path === '/runtime/local-tasks/tk-1/finish')
     assert(finish && finish.body.kind === 'completed' && finish.body.sessionId === 's-local', `finish 不对：${JSON.stringify(finish)}`)
-    // 只认自己那一轮：别人的回复不进结论，自己那一轮的几段拼在一起。
-    assert(finish.body.result === '我先查一下。\n\n月报做好了：合计 20 万。', `带回的正文不对：${JSON.stringify(finish.body.result)}`)
+    // 只认自己那一轮，而且只取最后一条：「我先查一下」这种过程话不是结论（docs/bot-tasks.md §2）。
+    assert(finish.body.result === '月报做好了：合计 20 万。', `带回的正文不对：${JSON.stringify(finish.body.result)}`)
   })
 
   await test('deliver 那一步：结论发进主 Bot 的会话（带 result 身份），发进去就报 delivered', async () => {

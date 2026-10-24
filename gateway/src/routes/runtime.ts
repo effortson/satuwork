@@ -10,7 +10,7 @@ import { KIND, bodyOf, deployOptsOf, refShapes, strField } from '../lib/validate
 import type { Account, BotFolder, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
-import { TASK_INSTRUCTION_MAX, createBotTask, publicBotTask } from '../lib/bot-tasks.ts'
+import { TASK_INSTRUCTION_MAX, cancelBotTask, createBotTask, pollBotTask, publicBotTask } from '../lib/bot-tasks.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, botTemplateOf, defaultBotModel, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
@@ -1536,8 +1536,26 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       instruction,
       sessionId: body.sessionId == null ? null : strField(body, 'sessionId', false) || null,
       callId: body.callId == null ? null : strField(body, 'callId', false) || null,
+      // 新席位的 assign_task 在这一轮里等着结论（docs/bot-tasks.md §1）；老席位不带，走兜底送回。
+      wait: body.wait === true,
     })
-    json(res, 201, { task: publicBotTask(task), toName: to.name })
+    json(res, 201, { task: publicBotTask(task), toName: to.name, toId: to.id })
+  })
+
+  /** 主 Bot 的席位等结论：取状态、续等待租约；答了的当场交出（docs/bot-tasks.md §1.1）。 */
+  router.get('/runtime/tasks/:taskId', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    const task = await db.botTask(req.params.taskId)
+    if (!task || task.accountId !== account.id) throw new HttpError(404, '没有这个任务')
+    json(res, 200, { task: publicBotTask(await pollBotTask(db, task)) })
+  })
+
+  /** 人按了停止（docs/bot-tasks.md §1.2）。 */
+  router.post('/runtime/tasks/:taskId/cancel', async (req, res) => {
+    const account = await requireSeatOnly(req, db)
+    const task = await db.botTask(req.params.taskId)
+    if (!task || task.accountId !== account.id) throw new HttpError(404, '没有这个任务')
+    json(res, 200, { task: publicBotTask(await cancelBotTask(db, task)) })
   })
 
   /** 这条会话派出去的那些。登录票：界面画状态用。 */

@@ -2754,6 +2754,116 @@ function inlineMentionPills(md, mentions) {
   }
 }
 
+/**
+ * 回复里能认成点名药丸的 `@名字`：名单上的 Bot（用头像）加上能点名的连接器（用图标）。
+ * 主 Bot 说「派出去了 —— @客户经理」，那个 `@客户经理` 和人打的点名长得一样。
+ */
+function mentionCands() {
+  const bots = (state.runtimeBots || []).filter((b) => String(b.name || '').length >= 2).map((b) => ({ kind: 'bot', id: b.id, label: b.name, icon: b.icon, origin: b.origin }))
+  const conns = (state.mentionOptions || []).filter((m) => m.kind === 'connector')
+  return bots.concat(conns)
+}
+
+/* ── 主 Bot 派出去的活（docs/bot-tasks.md §4）──────────────────────────────
+   画成「那颗 Bot 发的一条消息」：头像和名字是它的，内容随状态变——等前置、正在执行（动画）、
+   交回的结论、没做成的原因。插在主 Bot 派活那段话和它拿到结论之后那段话之间（fold 断开气泡）。 */
+
+const TASK_STATE_LABEL = {
+  waiting: () => t('等前置', 'Waiting'),
+  running: () => t('正在执行', 'Working'),
+  done: () => t('交回结论', 'Reported back'),
+  failed: () => t('没做成', 'Failed'),
+  skipped: () => t('跳过', 'Skipped'),
+  cancelled: () => t('已停止', 'Stopped'),
+  detached: () => t('还在跑', 'Still running'),
+}
+
+function taskBotOf(b) {
+  return (state.runtimeBots || []).find((x) => x.id === (b.bot && b.bot.id))
+}
+
+function taskRowShell(b, key) {
+  const bot = taskBotOf(b)
+  const avatar = bot ? botAvatar(bot.icon, 36, bot.origin) : ICON_BOT
+  return (
+    `<div class="sw-msg sw-taskmsg" data-role="assistant" data-key="${esc(key)}">` +
+    `<div class="sw-msg-avatar" data-bot="1" aria-hidden="true">${avatar}</div>` +
+    `<div class="sw-msg-col">` +
+    `<div class="sw-taskname"><span class="sw-taskname-bot"></span><span class="sw-taskname-tag"></span></div>` +
+    `<div class="sw-bubble sw-taskbubble" data-role="assistant">` +
+    `<div class="sw-taskask"></div><div class="sw-taskrun"></div><div class="sw-md"></div>` +
+    `<button type="button" class="sw-taskmore" data-act="task-expand" hidden>${esc(t('展开全部', 'Show all'))}</button>` +
+    `</div><time class="sw-time" hidden></time></div></div>`
+  )
+}
+
+/** 前置任务的名字：「等 @客户经理 做完」。after 里写的是 tasks 的 id，回同一批里找它派给了谁。 */
+function taskWaitText(b) {
+  const peers = (state.chatEvents || []).filter((e) => e.type === 'bot/assign' && e.data && e.data.callId === b.callId).map((e) => e.data)
+  const names = [...new Set((b.after || []).map((k) => peers.find((p) => String(p.id).endsWith(':' + k))?.bot?.name).filter(Boolean))]
+  return names.length ? t(`等 ${names.map((n) => '@' + n).join('、')} 做完`, `Waiting for ${names.map((n) => '@' + n).join(', ')}`) : t('等前面那件做完', 'Waiting for the previous task')
+}
+
+function updateTaskRow(node, b) {
+  const sig = [b.state, (b.result || '').length, b.endedAt || 0].join('|')
+  if (node.getAttribute('data-sig') === sig) return
+  node.setAttribute('data-sig', sig)
+  node.setAttribute('data-state', b.state)
+  const bot = taskBotOf(b)
+  const name = (bot && bot.name) || (b.bot && b.bot.name) || ''
+  node.querySelector('.sw-taskname-bot').textContent = name
+  node.querySelector('.sw-taskname-tag').textContent = (TASK_STATE_LABEL[b.state] || (() => b.state))()
+  const ask = node.querySelector('.sw-taskask')
+  ask.textContent = t('任务：', 'Task: ') + String(b.instruction || '').replace(/\s+/g, ' ')
+  ask.title = b.instruction || ''
+  const run = node.querySelector('.sw-taskrun')
+  if (b.state === 'running') {
+    run.hidden = false
+    run.innerHTML =
+      `<span class="sw-taskspin" aria-hidden="true"></span><span>${esc(t(`${name} 正在执行`, `${name} is working on it`))}</span>` +
+      `<span class="sw-taskdots" aria-hidden="true"><i></i><i></i><i></i></span>` +
+      `<span class="sw-taskelapsed" data-since="${esc(String(b.startedAt || b.time || Date.now()))}"></span>`
+  } else if (b.state === 'waiting') {
+    run.hidden = false
+    run.innerHTML = `<span class="sw-taskwait" aria-hidden="true"></span><span>${esc(taskWaitText(b))}</span>`
+  } else {
+    run.hidden = true
+    run.innerHTML = ''
+  }
+  const md = node.querySelector('.sw-md')
+  const body = b.state === 'done' || b.state === 'failed' || b.state === 'skipped' || b.state === 'cancelled' || b.state === 'detached' ? String(b.result || '') : ''
+  if (body) {
+    syncMd(md, body, false)
+    inlineMentionPills(md, mentionCands())
+  } else md.innerHTML = ''
+  const more = node.querySelector('.sw-taskmore')
+  // 结论长了先折起来：主 Bot 接下来那段话才是给人看的整理版，原话展开再看。
+  requestAnimationFrame(() => {
+    more.hidden = !(b.state === 'done' && md.scrollHeight > 380 && node.getAttribute('data-open') !== '1')
+  })
+  const time = node.querySelector('.sw-time')
+  if (b.endedAt) {
+    time.hidden = false
+    time.textContent = chatClock(b.endedAt)
+  } else time.hidden = true
+  tickTaskElapsed()
+}
+
+/** 「正在执行」后面那个读秒。只在页面上有在跑的派活卡时转。 */
+let taskTicker = null
+function tickTaskElapsed() {
+  const els = document.querySelectorAll('.sw-taskelapsed[data-since]')
+  for (const el of els) {
+    const s = Math.max(0, Math.round((Date.now() - Number(el.getAttribute('data-since'))) / 1000))
+    el.textContent = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
+  }
+  if (els.length && !taskTicker) taskTicker = setInterval(tickTaskElapsed, 1000)
+  if (!els.length && taskTicker) {
+    clearInterval(taskTicker)
+    taskTicker = null
+  }
+}
+
 /** 药丸上那几个字。比卡片上那句话短——药丸要一眼扫过，长了就换行。 */
 const APPROVAL_CHIP_LABEL = {
   approved: () => t('已批准', 'approved'),
@@ -3338,7 +3448,9 @@ function updateRow(el, b, streaming, since) {
     if (md.querySelector('.sw-typing')) md.innerHTML = ''
     syncMd(md, b.text, streaming)
     decorateFiles(md, outs)
+    // 人打的只认这条消息真点了名的；主 Bot 回复里写的「@客户经理」按名单和连接认（见 mentionCands）。
     if (b.kind === 'user') inlineMentionPills(md, (b.mentions || []).filter((m) => m.inline))
+    else inlineMentionPills(md, mentionCands())
   }
 
   /**
@@ -4023,6 +4135,11 @@ function threadRows(folded, sessionId) {
       rows.push({ kind: 'mark', key: 'k' + b.seq, html: ctxDivHtml(b) })
       return
     }
+    // 主 Bot 派出去的一件活（docs/bot-tasks.md §4）：画成那颗 Bot 发的一条消息，状态会变，单独一种行。
+    if (b.kind === 'task') {
+      rows.push({ kind: 'task', key: 't' + b.id, block: b })
+      return
+    }
     // key 必须**跟着这一块自己**走，不能用下标：往前翻加载旧消息会让所有下标移位，
     // 于是整棵 DOM 重建——Markdown 全部重渲染，滚动位置也跟着没了。
     rows.push({ kind: 'msg', key: 'm' + (b.seq != null ? b.seq : 'i' + i), block: b })
@@ -4045,7 +4162,12 @@ function threadRows(folded, sessionId) {
    * 屏幕上看着像已经答完，而这一轮其实还在跑。
    */
   const last = blocks[blocks.length - 1]
-  if (folded.status && (!last || last.kind === 'user' || last.kind === 'mark')) {
+  /**
+   * 末尾是派活卡：还有在跑 / 在等的，就让卡片自己的动画说「在等谁」，不再补一个空气泡；
+   * 全收场了说明主 Bot 正拿着结论在想，补上占位。
+   */
+  const tasksBusy = blocks.some((x) => x.kind === 'task' && (x.state === 'running' || x.state === 'waiting'))
+  if (folded.status && (!last || last.kind === 'user' || last.kind === 'mark' || (last.kind === 'task' && !tasksBusy))) {
     /**
      * **`time` 要给这一轮的起点，不能留 0。**
      *
@@ -4110,13 +4232,14 @@ function syncThread(thread, folded, sessionId) {
     if (node) byKey.delete(row.key)
     else {
       const box = document.createElement('div')
-      box.innerHTML = row.html ? row.html : rowShell(row.block, row.key)
+      box.innerHTML = row.html ? row.html : row.kind === 'task' ? taskRowShell(row.block, row.key) : rowShell(row.block, row.key)
       node = box.firstElementChild
       if (row.html) node.setAttribute('data-key', row.key)
     }
     const want = prev ? prev.nextSibling : thread.firstChild
     if (node !== want) thread.insertBefore(node, want)
     if (row.kind === 'msg') updateRow(node, row.block, folded.status ? i === rows.length - 1 : false, folded.statusAt)
+    else if (row.kind === 'task') updateTaskRow(node, row.block)
     prev = node
   }
   for (const stale of byKey.values()) {

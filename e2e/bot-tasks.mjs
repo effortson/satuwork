@@ -45,6 +45,7 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       SATUWORK_DEPLOY_STUB: '1',
       GATEWAY_ROUTINE_TICK_MS: '500',
       GATEWAY_ROUTINE_LEASE_MS: String(LEASE_MS),
+      GATEWAY_TASK_WAIT_LEASE_MS: '5000',
     },
   })
 
@@ -260,6 +261,70 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       assert(t.status === 'failed' && /管家太旧/.test(t.error || ''), `该当场 failed 并说明管家太旧：${JSON.stringify(t)}`)
       assert((await due()).json.jobs.length === 0, 'failed 的不该再有活')
       assert((await heartbeat(12)).status === 200, '心跳回 12')
+    })
+
+    await test('同步等待：主 Bot 的席位带着等待租约派活，结论答给它而不是走送回', async () => {
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '算一下本月差旅', sessionId: 's-main', wait: true })
+      assert(made.status === 201, `派 ${made.status} ${made.text}`)
+      const id = made.json.task.id
+      const poll = () => req(gwBase, 'GET', `/runtime/tasks/${id}`, { token: seatTok })
+      assert((await poll()).json.task.status === 'queued', '还没人领，该是 queued')
+      const job = (await due()).json.jobs.find((j) => j.taskId === id)
+      assert(job && job.phase === 'run', '目标席位该领到 run 那一步')
+      await post(id, 'started', { sessionId: 's-fin' })
+      assert((await poll()).json.task.status === 'running', '领走了该是 running')
+      await post(id, 'finish', { kind: 'completed', result: '差旅合计 3.2 万', sessionId: 's-fin' })
+      // 有人在等：不进 reporting，也就没有 deliver 那一步。
+      assert((await due()).json.jobs.every((j) => j.taskId !== id), '有人在等时不该再派送回的活')
+      const got = await poll()
+      assert(got.json.task.status === 'done' && got.json.task.result === '差旅合计 3.2 万' && got.json.task.runKind === 'completed', `该当场交出结论：${got.text}`)
+      // 别的账号拿不到。
+      const anon = await req(gwBase, 'GET', `/runtime/tasks/${id}`, { token: adminTok })
+      assert(anon.status === 401, `登录票不能取（要席位票）：${anon.status}`)
+    })
+
+    await test('同步等待：目标起不来时结论当场交给等的一方，不绕送回', async () => {
+      assert((await heartbeat(11)).status === 200, '心跳')
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '随便做点什么', sessionId: 's-main', wait: true })
+      assert(made.status === 201 && made.json.task.status === 'answered', `该当场 answered：${made.text}`)
+      const got = await req(gwBase, 'GET', `/runtime/tasks/${made.json.task.id}`, { token: seatTok })
+      assert(got.json.task.status === 'done' && /管家太旧/.test(got.json.task.result), `结论该说明管家太旧：${got.text}`)
+      assert((await heartbeat(12)).status === 200, '心跳回 12')
+    })
+
+    await test('同步等待：等的一方没了（租约过期），结论走兜底送回，不丢', async () => {
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '对一下发票', sessionId: 's-main', wait: true })
+      const id = made.json.task.id
+      const job = (await due()).json.jobs.find((j) => j.taskId === id)
+      assert(job, '没领到')
+      await post(id, 'started', { sessionId: 's-fin' })
+      // 不再轮询：等待租约（5 秒）过期之后再交结论。领活的那一方照常续它自己的租约。
+      for (let i = 0; i < 11; i++) {
+        await post(id, 'renew')
+        await sleep(500)
+      }
+      await post(id, 'finish', { kind: 'completed', result: '发票都对得上', sessionId: 's-fin' })
+      const deliver = (await due()).json.jobs.find((j) => j.taskId === id)
+      assert(deliver && deliver.phase === 'deliver' && deliver.instruction.includes('发票都对得上'), `该转兜底送回：${JSON.stringify(deliver)}`)
+      await post(id, 'started', { sessionId: 's-main' })
+      await post(id, 'finish', { kind: 'delivered' })
+    })
+
+    await test('停止：没被领走的直接作废；在跑的交回结论也不再送回', async () => {
+      const a = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '先不用做了', sessionId: 's-main', wait: true })
+      const c1 = await req(gwBase, 'POST', `/runtime/tasks/${a.json.task.id}/cancel`, { token: seatTok, body: {} })
+      assert(c1.status === 200 && c1.json.task.status === 'cancelled', `没领走的该直接作废：${c1.text}`)
+      assert((await due()).json.jobs.every((j) => j.taskId !== a.json.task.id), '作废的不该再被领走')
+      const b = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '跑一半停', sessionId: 's-main', wait: true })
+      const id = b.json.task.id
+      const job = (await due()).json.jobs.find((j) => j.taskId === id)
+      assert(job, '没领到')
+      await post(id, 'started', { sessionId: 's-fin' })
+      await req(gwBase, 'POST', `/runtime/tasks/${id}/cancel`, { token: seatTok, body: {} })
+      await post(id, 'finish', { kind: 'completed', result: '其实做完了' })
+      const got = await req(gwBase, 'GET', `/runtime/tasks/${id}`, { token: seatTok })
+      assert(got.json.task.status === 'cancelled', `停了的交回来也不该送回：${got.text}`)
+      assert((await due()).json.jobs.every((j) => j.taskId !== id), '停了的不该有送回那一步')
     })
 
     await test('别的机器领不到、也回报不了这台机器的活', async () => {

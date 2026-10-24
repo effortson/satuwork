@@ -56,6 +56,7 @@ import { SQL as m0055 } from './0055-push-devices.ts'
 import { SQL as m0056 } from './0056-bot-folders.ts'
 import { SQL as m0057 } from './0057-main-bot.ts'
 import { SQL as m0058 } from './0058-bot-tasks.ts'
+import { SQL as m0059 } from './0059-bot-task-wait.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -178,6 +179,7 @@ export const MIGRATIONS: Migration[] = [
   { id: '0056-bot-folders', name: '侧栏 Bot 名单的个人分类', sql: m0056 },
   { id: '0057-main-bot', name: '每个人的主 Bot', sql: m0057 },
   { id: '0058-bot-tasks', name: '主 Bot 派活给别的 Bot', sql: m0058 },
+  { id: '0059-bot-task-wait', name: '主 Bot 派活改成同步等待（等待租约、停止）', sql: m0059 },
 ]
 
 /**

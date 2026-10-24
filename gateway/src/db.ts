@@ -4001,13 +4001,15 @@ export class Db {
     owner: string | null
     result?: string | null
     error?: string | null
+    runKind?: string | null
+    waiterUntil?: number | null
   }): Promise<BotTask> {
     const id = randomUUID()
     const now = Date.now()
     await this.run(
-      `insert into bot_tasks (id, "accountId", "companyId", "fromBotId", "toBotId", "fromSessionId", "callId", instruction, status, owner, "leaseUntil", attempts, result, error, "createdAt")
-       values (?,?,?,?,?,?,?,?,?,?,null,0,?,?,?)`,
-      [id, input.accountId, input.companyId, input.fromBotId, input.toBotId, input.fromSessionId, input.callId, input.instruction, input.status, input.owner, input.result ?? null, input.error ?? null, now],
+      `insert into bot_tasks (id, "accountId", "companyId", "fromBotId", "toBotId", "fromSessionId", "callId", instruction, status, owner, "leaseUntil", attempts, result, error, "runKind", "waiterUntil", "createdAt")
+       values (?,?,?,?,?,?,?,?,?,?,null,0,?,?,?,?,?)`,
+      [id, input.accountId, input.companyId, input.fromBotId, input.toBotId, input.fromSessionId, input.callId, input.instruction, input.status, input.owner, input.result ?? null, input.error ?? null, input.runKind ?? null, input.waiterUntil ?? null, now],
     )
     return (await this.botTask(id))!
   }
@@ -4029,7 +4031,7 @@ export class Db {
   /** 还没收场、从 from 派给 to 的。防 A 派 B、B 派 A 转圈，也防同一件事派两遍。 */
   async openBotTaskBetween(accountId: string, fromBotId: string, toBotId: string): Promise<BotTask | undefined> {
     const r = await this.one(
-      `select * from bot_tasks where "accountId" = ? and "fromBotId" = ? and "toBotId" = ? and status not in ('done', 'failed') order by "createdAt" desc limit 1`,
+      `select * from bot_tasks where "accountId" = ? and "fromBotId" = ? and "toBotId" = ? and status not in ('done', 'failed', 'cancelled') order by "createdAt" desc limit 1`,
       [accountId, fromBotId, toBotId],
     )
     return r ? botTaskOf(r) : undefined
@@ -4046,6 +4048,7 @@ export class Db {
          "startedAt" = case when status = 'queued' then coalesce("startedAt", ?) else "startedAt" end
        where id in (
          select id from bot_tasks where owner = ? and "leaseUntil" is null and status in ('queued', 'reporting')
+            and ("cancelledAt" is null or status = 'reporting')
           order by "createdAt" limit ?
        )
        returning *`,
@@ -4075,7 +4078,7 @@ export class Db {
   /** 改几格。只改给了的那几格；null 也是一个值（清掉租约就是把它设成 null）。 */
   async updateBotTask(
     id: string,
-    patch: Partial<Pick<BotTask, 'status' | 'owner' | 'leaseUntil' | 'attempts' | 'runSessionId' | 'runKind' | 'result' | 'error' | 'endedAt' | 'deliveredAt'>>,
+    patch: Partial<Pick<BotTask, 'status' | 'owner' | 'leaseUntil' | 'attempts' | 'runSessionId' | 'runKind' | 'result' | 'error' | 'endedAt' | 'deliveredAt' | 'waiterUntil' | 'cancelledAt'>>,
   ): Promise<boolean> {
     const sets: string[] = []
     const args: unknown[] = []
@@ -4087,6 +4090,27 @@ export class Db {
     if (!sets.length) return false
     args.push(id)
     return (await this.run(`update bot_tasks set ${sets.join(', ')} where id = ?`, args)) > 0
+  }
+
+  /**
+   * 等的一方取结论（docs/bot-tasks.md §1.1）：**原子地**把 answered 记成 done 并交出这一行。
+   * 两次轮询撞在一起只有一次拿得到——另一次看到的是 done，照样有结论，只是不再改状态。
+   */
+  async takeAnsweredBotTask(id: string, now: number): Promise<BotTask | undefined> {
+    const r = await this.one(
+      `update bot_tasks set status = 'done', "deliveredAt" = ?, "waiterUntil" = null where id = ? and status = 'answered' returning *`,
+      [now, id],
+    )
+    return r ? botTaskOf(r) : undefined
+  }
+
+  /** 已经答了、等的一方却没来取（租过期了）。维护节拍把它们转成兜底送回。 */
+  async orphanedAnsweredBotTasks(nowMs: number): Promise<BotTask[]> {
+    const rows = await this.many(
+      `select * from bot_tasks where status = 'answered' and ("waiterUntil" is null or "waiterUntil" < ?)`,
+      [nowMs],
+    )
+    return rows.map(botTaskOf)
   }
 
   /** 领走了却到期没续的。 */

@@ -1784,6 +1784,7 @@ var SatuCore = (() => {
     let todos = null;
     const handoffSeen = /* @__PURE__ */ new Map();
     const handoffOf = (id) => id ? handoffSeen.get(id) : void 0;
+    const taskSeen = /* @__PURE__ */ new Map();
     for (const ev of events || []) {
       const type = ev.type;
       const data = ev.data || {};
@@ -1859,7 +1860,8 @@ var SatuCore = (() => {
         assistant.endTime = at;
       } else if (type === "tool/result") {
         if (phantoms.has(data.callId)) continue;
-        const hit = tools.find((x) => x.callId && x.callId === data.callId && x.result == null) || tools.find((x) => x.result == null) || tools[tools.length - 1];
+        const byCall = data.callId ? toolByCall.get(data.callId) : void 0;
+        const hit = (byCall && byCall.result == null ? byCall : void 0) || tools.find((x) => x.callId && x.callId === data.callId && x.result == null) || tools.find((x) => x.result == null) || tools[tools.length - 1];
         if (hit) {
           hit.result = data.text || "";
           hit.failed = Boolean(data.failed);
@@ -1871,6 +1873,17 @@ var SatuCore = (() => {
       } else if (type === "tool/shot") {
         const hit = toolByCall.get(data.callId);
         if (hit && isShot(data.shot)) hit.shot = data.shot;
+      } else if (type === "bot/assign") {
+        const prev = taskSeen.get(data.id);
+        if (prev) {
+          Object.assign(prev, data);
+          continue;
+        }
+        const task = { kind: "task", ...data, time: at, seq: ev.seq };
+        taskSeen.set(data.id, task);
+        blocks.push(task);
+        assistant = null;
+        tools = [];
       } else if (type === "agent/task") {
         if (!assistant) {
           assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };

@@ -665,6 +665,8 @@ export function botTaskOf(r: Row): BotTask {
     startedAt: numOrNull(r.startedAt),
     endedAt: numOrNull(r.endedAt),
     deliveredAt: numOrNull(r.deliveredAt),
+    waiterUntil: numOrNull(r.waiterUntil),
+    cancelledAt: numOrNull(r.cancelledAt),
   }
 }
 

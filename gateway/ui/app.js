@@ -493,6 +493,12 @@ document.getElementById('app').addEventListener('click', async (e) => {
     if (picker) picker.click()
     return
   }
+  if (act === 'task-expand') {
+    const row = btn.closest('.sw-taskmsg')
+    if (row) row.setAttribute('data-open', '1')
+    btn.hidden = true
+    return
+  }
   if (act === 'chat-mention-pick') {
     takeMention(btn.getAttribute('data-id'))
     return
