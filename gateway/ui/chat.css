@@ -1896,22 +1896,12 @@
 @keyframes sw-spin { to { transform: rotate(360deg); } }
 
 /* ── 派出去的活：委派卡和派活卡共用一套（chat.js 的 taskItemHtml）─────────────
-   派活：一条「那颗 Bot 发的消息」，名字一行带状态小签，气泡里是那一件活。
-   委派：主 Bot 气泡里的一张卡，一批 N 条一张卡 N 行。
+   都是主 Bot 气泡里的一张卡，一批 N 条一张卡 N 行；派活那一行前面多一个对方的头像和名字。
    每一件：第一行状态点 + 任务 + 状态 + 读秒/步数/花费；第二行正在干什么或结果如何；点开是详情和过程。
    颜色按 data-tone 分：run 跑着、wait 等着、ok 做成、warn 要留意、bad 没做成、off 停了。 */
 .sw-taskname { display: flex; align-items: center; gap: 6px; margin: 0 0 2px 2px; font-size: 12px; color: var(--muted-foreground); }
 .sw-taskname-bot { font-weight: 600; color: var(--color-text); }
 .sw-taskname-tag { padding: 0 7px; border-radius: 999px; background: var(--secondary); font-size: 11px; line-height: 1.7; }
-.sw-taskmsg[data-state="running"] .sw-taskname-tag { background: var(--color-accent-100); color: var(--color-accent-800); }
-.sw-taskmsg[data-state="done"] .sw-taskname-tag { background: color-mix(in srgb, var(--color-accent-2-500, #3c9a6b) 16%, transparent); color: var(--color-accent-2-800, #23623f); }
-.sw-taskmsg[data-state="failed"] .sw-taskname-tag { background: color-mix(in srgb, var(--color-accent-800) 14%, transparent); color: var(--color-accent-800); }
-/* 派活那条气泡里只有一件活：气泡自己就是框，那一件不再套一层边。 */
-.sw-taskbubble { padding: 0; overflow: hidden; }
-.sw-taskbubble .sw-ti > .sw-task-line { padding-top: var(--space-2); }
-/* 正在执行的那张：边框换成强调色、外面一圈慢慢呼吸——一眼看得出「还在等它」。 */
-.sw-taskmsg[data-state="running"] .sw-taskbubble { border-color: var(--color-accent-300, #eaa98f); animation: sw-taskglow 2s ease-in-out infinite; }
-@keyframes sw-taskglow { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent-500, #d9774f) 0%, transparent); } 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent-500, #d9774f) 14%, transparent); } }
 
 .sw-task-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--muted); overflow: hidden; }
 .sw-task-head { padding: var(--space-2) var(--space-3); font-size: 12px; color: var(--muted-foreground); border-bottom: 1px solid var(--border); }
@@ -1930,6 +1920,9 @@
 .sw-task-dot[data-tone='bad'] { background: var(--color-accent-800); }
 .sw-task-dot[data-tone='off'] { opacity: 0.5; }
 @keyframes sw-task-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.sw-task-who { flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 30%; font-weight: 600; font-size: 12.5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sw-task-who-av { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; overflow: hidden; }
+.sw-task-who-av > * { width: 18px; height: 18px; }
 .sw-task-goal { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sw-task-state, .sw-task-meta { flex: none; font-size: 12px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .sw-ti[data-tone='bad'] .sw-task-state { color: var(--color-accent-800); }
@@ -2037,7 +2030,7 @@
   .sw-ti-now { flex: 1 0 calc(100% - 24px); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .sw-taskspin, .sw-taskdots i, .sw-task-dot, .sw-tr-ico, .sw-taskmsg[data-state="running"] .sw-taskbubble { animation: none; }
+  .sw-taskspin, .sw-taskdots i, .sw-task-dot, .sw-tr-ico { animation: none; }
 }
 /* 动效敏感的人不该被一个转不停的圈晃。留一个静止的环，位置和含义都还在。 */
 @media (prefers-reduced-motion: reduce) {

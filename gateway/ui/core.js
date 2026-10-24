@@ -1889,11 +1889,14 @@ var SatuCore = (() => {
           Object.assign(prev, data);
           continue;
         }
-        const task = { kind: "task", ...data, time: at, seq: ev.seq };
+        if (!assistant) {
+          assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
+          blocks.push(assistant);
+        }
+        const task = { ...data, time: at, seq: ev.seq };
         taskSeen.set(data.id, task);
-        blocks.push(task);
-        assistant = null;
-        tools = [];
+        (assistant.assigns || (assistant.assigns = [])).push(task);
+        assistant.endTime = at;
       } else if (type === "agent/task") {
         if (!assistant) {
           assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
@@ -1992,6 +1995,7 @@ var SatuCore = (() => {
           todos = null;
           toolByCall.clear();
           handoffSeen.clear();
+          taskSeen.clear();
         }
         blocks.push({
           kind: "mark",

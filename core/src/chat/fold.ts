@@ -43,7 +43,7 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
   let openTurn = false
   /** 正在等自己那一轮起来、或者那一轮正跑着的派活指令（目标 Bot 这边，docs/bot-tasks.md §7）。 */
   let assigned: any = null
-  /** 派活卡：id → 已经画出来的那一块。同一个 id 来多条（等 → 跑 → 收场），取最后一条。 */
+  /** 派活卡：id → 已经挂在某个助手块上的那一件。同一个 id 来多条（等 → 跑 → 收场），取最后一条。 */
   const taskSeen = new Map<string, any>()
   for (const ev of events || []) {
     const type = ev.type
@@ -161,9 +161,8 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
     } else if (type === 'tool/result') {
       if (phantoms.has(data.callId)) continue
       /**
-       * **先按 callId 跨块认。** 派活会把主 Bot 的气泡断开（见下面 bot/assign），assign_task 的
-       * 结果到的时候 `tools` 已经是后一个气泡的那一份了——只在 `tools` 里找，就会把它的结果
-       * 安到别的药丸上。
+       * **先按 callId 跨块认。** 中间要是隔了一条边界或别的块，结果到的时候 `tools` 未必还是那次
+       * 调用所在的那一份——只在 `tools` 里找，就会把它的结果安到别的药丸上。
        */
       const byCall = data.callId ? toolByCall.get(data.callId) : undefined
       const hit =
@@ -196,23 +195,27 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
       if (hit && isShot(data.shot)) hit.shot = data.shot
     } else if (type === 'bot/assign') {
       /**
-       * 主 Bot 派出去的一件活（docs/bot-tasks.md §4）。**另起一块，并把主 Bot 的气泡断开**：
-       * 派活前那段话一个气泡，任务卡一条条排在中间，拿到结论之后说的话另起一个气泡——看着就是
-       * 「我派给你 → 你交回来 → 我接着说」。这里和委派卡（挂在助手块上）不一样，委派的子代理
-       * 是它自己，派活的对方是另一颗 Bot，就该画成它说的话。
+       * 主 Bot 派出去的一件活（docs/bot-tasks.md §4）。**挂在派活那一轮的助手块上**，和委派卡一样：
+       * 对方那一轮就是这一轮里的一段执行，人要看的是「主 Bot 这一轮派了谁、做到哪、交回了什么」。
        *
-       * 工具药丸按 callId 认（见上面 tool/result），不受断开影响。
+       * 以前另起一块、把主 Bot 的气泡断开，画成「那颗 Bot 发的一条消息」。主 Bot 被停掉时那一轮
+       * 收口落在断开后的空块上，屏幕上就剩一张孤零零的「已停止」卡加一个空气泡，前后对不上。
+       *
+       * 同一个 id 来多条（等 → 跑 → 收场），跨块按 id 认回第一次挂上的那一条就地改。
        */
       const prev = taskSeen.get(data.id)
       if (prev) {
         Object.assign(prev, data)
         continue
       }
-      const task = { kind: 'task', ...data, time: at, seq: ev.seq }
+      if (!assistant) {
+        assistant = { kind: 'assistant', text: '', tools, via: turnVia, time: at, seq: ev.seq }
+        blocks.push(assistant)
+      }
+      const task = { ...data, time: at, seq: ev.seq }
       taskSeen.set(data.id, task)
-      blocks.push(task)
-      assistant = null
-      tools = []
+      ;(assistant.assigns || (assistant.assigns = [])).push(task)
+      assistant.endTime = at
     } else if (type === 'agent/task') {
       /**
        * 一次委派（见 docs/delegation.md）。**挂在助手那一块上**，理由和确认卡一字不差：
@@ -388,6 +391,7 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
         todos = null
         toolByCall.clear()
         handoffSeen.clear()
+        taskSeen.clear()
       }
       blocks.push({
         kind: 'mark',

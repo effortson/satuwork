@@ -2790,8 +2790,8 @@ function mentionCands() {
      第二行  跑着：正在调什么 + 清单进度；等着：等谁；收场：结论第一句，没做成就是原因
      点开    失败原因、结论全文、产出文件、过程（一步一行，调用和结果按 callId 配对，见 core/src/chat/task.ts）
 
-   位置不一样：派活画成「那颗 Bot 发的一条消息」（头像、名字是它的，fold 在这里把主 Bot 的气泡断开），
-   委派挂在主 Bot 自己的气泡里——里面那一块是同一个东西。 */
+   位置也一样：都挂在主 Bot 派活那一轮的气泡里，一批一张卡（taskGroupHtml）。派活那一行前面多一个
+   对方的头像和名字——对方那一轮就是主 Bot 这一轮里的一段执行，和子代理是同一回事。 */
 
 const TASK_STATE_TEXT = {
   waiting: ['等前置', 'waiting'],
@@ -2882,8 +2882,16 @@ function assignView(b) {
     reason: b.state === 'done' ? '' : text,
     files: [],
     waitText: b.state === 'waiting' ? taskWaitText(b) : '',
+    who: taskWho(b),
     trace,
   }
+}
+
+/** 派给了谁：头像加名字，摆在那一行任务前面。名单上找不到（Bot 删了）就只留派活时记下的名字。 */
+function taskWho(b) {
+  const bot = taskBotOf(b)
+  const name = (bot && bot.name) || (b.bot && b.bot.name) || ''
+  return { name, avatar: bot ? botAvatar(bot.icon, 18, bot.origin) : ICON_BOT }
 }
 
 /** 重画用的签名：状态、进度、开合、过程取到哪了，任何一样变了才重画。 */
@@ -2969,6 +2977,7 @@ function taskItemHtml(v) {
     `<div class="sw-ti" data-state="${esc(v.state)}" data-tone="${esc(tone)}"${open ? ' data-open="1"' : ''}>` +
     `<button type="button" class="sw-task-line" data-act="chat-task-toggle" data-id="${esc(v.id)}" aria-expanded="${open ? 'true' : 'false'}">` +
     `<span class="sw-task-dot" data-tone="${esc(tone)}" aria-hidden="true"></span>` +
+    (v.who ? `<span class="sw-task-who"><span class="sw-task-who-av" aria-hidden="true">${v.who.avatar}</span>${esc(v.who.name)}</span>` : '') +
     `<span class="sw-task-goal" title="${esc(v.title)}">${esc(v.title)}</span>` +
     `<span class="sw-task-state">${esc(t(st[0], st[1]))}</span>` +
     taskMetaHtml(v) +
@@ -3105,40 +3114,6 @@ async function loadTaskTrace(key, again) {
     state.taskTrace[key] = { ...(had || {}), loading: false, at: Date.now(), error: e.message || String(e) }
   }
   render()
-}
-
-function taskRowShell(b, key) {
-  const bot = taskBotOf(b)
-  const avatar = bot ? botAvatar(bot.icon, 36, bot.origin) : ICON_BOT
-  return (
-    `<div class="sw-msg sw-taskmsg" data-role="assistant" data-key="${esc(key)}">` +
-    `<div class="sw-msg-avatar" data-bot="1" aria-hidden="true">${avatar}</div>` +
-    `<div class="sw-msg-col">` +
-    `<div class="sw-taskname"><span class="sw-taskname-bot"></span><span class="sw-taskname-tag"></span></div>` +
-    `<div class="sw-bubble sw-taskbubble" data-role="assistant"><div class="sw-taskbody"></div></div>` +
-    `<time class="sw-time" hidden></time></div></div>`
-  )
-}
-
-function updateTaskRow(node, b) {
-  const v = assignView(b)
-  const sig = taskSig(v)
-  if (node.getAttribute('data-sig') === sig) return
-  node.setAttribute('data-sig', sig)
-  node.setAttribute('data-state', b.state)
-  const bot = taskBotOf(b)
-  node.querySelector('.sw-taskname-bot').textContent = (bot && bot.name) || (b.bot && b.bot.name) || ''
-  const st = TASK_STATE_TEXT[b.state] || TASK_STATE_TEXT.running
-  node.querySelector('.sw-taskname-tag').textContent = t(st[0], st[1])
-  const body = node.querySelector('.sw-taskbody')
-  paintTaskHtml(body, taskItemHtml(v))
-  // 对方交回的结论里常有 `@某某`：和对话正文一样就地画成点名药丸。
-  for (const md of body.querySelectorAll('.sw-task-summary')) inlineMentionPills(md, mentionCands())
-  const time = node.querySelector('.sw-time')
-  if (b.endedAt) {
-    time.hidden = false
-    time.textContent = chatClock(b.endedAt)
-  } else time.hidden = true
 }
 
 /* ── 目标 Bot 这边收到的派活（docs/bot-tasks.md §7）──────────────────────
@@ -4128,10 +4103,10 @@ function updateRow(el, b, streaming, since) {
     }
   }
   /**
-   * 委派卡。摆在最底下——它是这一轮里最重的一块，而它上面那颗 delegate_task 药丸只说
-   * 得出「调用中」。
+   * 派出去的活：委派卡和派活卡。摆在最底下——它是这一轮里最重的一块，而它上面那颗
+   * delegate_task / assign_task 药丸只说得出「调用中」。
    *
-   * 签名里**必须带状态和步数**：一次委派从 running 到 done 是同一个 id，只按 id 比的话
+   * 签名里**必须带状态和步数**：一件活从 running 到 done 是同一个 id，只按 id 比的话
    * 卡片不会重画，人盯着的那几分钟里它一动不动——而这正是同步委派最难受的那几分钟
    * （见 docs/delegation.md §13）。
    */
@@ -4140,29 +4115,36 @@ function updateRow(el, b, streaming, since) {
    *
    * 同一轮里派两批不是边角情况——§8.6 推荐的就是「撞顶了就原样再派一次」。全丢进一个数组
    * 按 index 排的话，两批会交错成 0,0,1,1,2，每行的位置也不再对得上模型手上那个
-   * `[n/总数]` 的编号。
+   * `[n/总数]` 的编号。委派和派活各是各的调用，callId 不会撞，按出场先后排。
    */
   const groups = []
-  for (const task of b.tasks || []) {
-    const key = task.callId || task.id
-    let g = groups.find((x) => x.key === key)
-    if (!g) groups.push((g = { key, rows: [] }))
-    g.rows.push(task)
+  for (const [list, view] of [
+    [b.tasks, delegateView],
+    [b.assigns, assignView],
+  ]) {
+    for (const task of list || []) {
+      const key = task.callId || task.id
+      let g = groups.find((x) => x.key === key)
+      if (!g) groups.push((g = { key, rows: [], view }))
+      g.rows.push(task)
+    }
   }
   for (const g of groups) g.rows.sort((x, y) => (x.index || 0) - (y.index || 0))
-  const tks = groups.flatMap((g) => g.rows)
   let tkbox = bubble.querySelector('.sw-tasks')
-  if (tks.length && !tkbox) {
+  if (groups.length && !tkbox) {
     tkbox = document.createElement('div')
     tkbox.className = 'sw-tasks'
     bubble.appendChild(tkbox)
   }
   if (tkbox) {
-    const tSig = tks.map((x) => taskSig(delegateView(x))).join('|')
+    const views = groups.map((g) => g.rows.map(g.view))
+    const tSig = views.flat().map(taskSig).join('|')
     if (tkbox.getAttribute('data-sig') !== tSig) {
       tkbox.setAttribute('data-sig', tSig)
-      paintTaskHtml(tkbox, groups.map((g) => taskGroupHtml(g.rows)).join(''))
-      tkbox.hidden = !tks.length
+      paintTaskHtml(tkbox, views.map(taskGroupHtml).join(''))
+      // 对方交回的结论里常有 `@某某`：和对话正文一样就地画成点名药丸。
+      for (const md of tkbox.querySelectorAll('.sw-task-summary')) inlineMentionPills(md, mentionCands())
+      tkbox.hidden = !groups.length
     }
   }
 
@@ -4264,11 +4246,10 @@ function skillNoteHtml(note) {
 }
 
 /**
- * 一批委派画成一张卡，每条一行（taskItemHtml，和派活同一套）。卡头把这一批的状况数出来：
+ * 一批委派或派活画成一张卡，每条一行（taskItemHtml）。卡头把这一批的状况数出来：
  * 「派出去 3 件 · 1 进行中 · 2 失败」——三条都摊着的时候不用一条条看就知道大局。
  */
-function taskGroupHtml(tasks) {
-  const views = tasks.map(delegateView)
+function taskGroupHtml(views) {
   const n = (pred) => views.filter(pred).length
   const counts = [
     [n((v) => taskLive(v.state)), '进行中', 'running'],
@@ -4516,11 +4497,6 @@ function threadRows(folded, sessionId) {
       rows.push({ kind: 'mark', key: 'k' + b.seq, html: ctxDivHtml(b) })
       return
     }
-    // 主 Bot 派出去的一件活（docs/bot-tasks.md §4）：画成那颗 Bot 发的一条消息，状态会变，单独一种行。
-    if (b.kind === 'task') {
-      rows.push({ kind: 'task', key: 't' + b.id, block: b })
-      return
-    }
     // key 必须**跟着这一块自己**走，不能用下标：往前翻加载旧消息会让所有下标移位，
     // 于是整棵 DOM 重建——Markdown 全部重渲染，滚动位置也跟着没了。
     const block = b.kind === 'user' && b.via === 'task' ? taskInBlock(b, blocks, i, folded.status) : b
@@ -4548,12 +4524,7 @@ function threadRows(folded, sessionId) {
    * 屏幕上看着像已经答完，而这一轮其实还在跑。
    */
   const last = blocks[blocks.length - 1]
-  /**
-   * 末尾是派活卡：还有在跑 / 在等的，就让卡片自己的动画说「在等谁」，不再补一个空气泡；
-   * 全收场了说明主 Bot 正拿着结论在想，补上占位。
-   */
-  const tasksBusy = blocks.some((x) => x.kind === 'task' && (x.state === 'running' || x.state === 'waiting'))
-  if (folded.status && !tailFolded && (!last || last.kind === 'user' || last.kind === 'mark' || (last.kind === 'task' && !tasksBusy))) {
+  if (folded.status && !tailFolded && (!last || last.kind === 'user' || last.kind === 'mark')) {
     /**
      * **`time` 要给这一轮的起点，不能留 0。**
      *
@@ -4618,14 +4589,13 @@ function syncThread(thread, folded, sessionId) {
     if (node) byKey.delete(row.key)
     else {
       const box = document.createElement('div')
-      box.innerHTML = row.html ? row.html : row.kind === 'task' ? taskRowShell(row.block, row.key) : rowShell(row.block, row.key)
+      box.innerHTML = row.html ? row.html : rowShell(row.block, row.key)
       node = box.firstElementChild
       if (row.html) node.setAttribute('data-key', row.key)
     }
     const want = prev ? prev.nextSibling : thread.firstChild
     if (node !== want) thread.insertBefore(node, want)
     if (row.kind === 'msg') updateRow(node, row.block, folded.status ? i === rows.length - 1 : false, folded.statusAt)
-    else if (row.kind === 'task') updateTaskRow(node, row.block)
     prev = node
   }
   for (const stale of byKey.values()) {

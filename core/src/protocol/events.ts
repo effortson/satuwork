@@ -103,6 +103,8 @@ export interface AssistantBlock {
   msgSeq?: number
   endTime?: number
   tasks?: any[]
+  /** 这一轮派出去的活（bot/assign），和委派卡一样挂在气泡里。 */
+  assigns?: AssignTask[]
   skillNotes?: any[]
   memNotes?: any[]
   approvals?: any[]
@@ -118,11 +120,10 @@ export interface MarkBlock {
 }
 
 /**
- * 主 Bot 派出去的一件活（会话里的 `bot/assign`，docs/bot-tasks.md §4）。画成一条「那颗 Bot 发的
- * 消息」，插在主 Bot 派活那段话和它拿到结论之后那段话之间。同一个 id 来多条，取最后一条。
+ * 主 Bot 派出去的一件活（会话里的 `bot/assign`，docs/bot-tasks.md §4）。挂在派活那一轮的助手块上
+ * （`assigns`），和委派卡画在同一处、同一套样子。同一个 id 来多条，取最后一条。
  */
-export interface TaskBlock {
-  kind: 'task'
+export interface AssignTask {
   id: string
   callId: string
   index: number
@@ -143,7 +144,7 @@ export interface TaskBlock {
   seq: number
 }
 
-export type Block = UserBlock | AssistantBlock | MarkBlock | TaskBlock
+export type Block = UserBlock | AssistantBlock | MarkBlock
 
 export interface Folded {
   blocks: Block[]
