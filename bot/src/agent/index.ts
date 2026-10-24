@@ -3650,20 +3650,31 @@ export function compactionWindow(window: number, cost: unknown): number {
  *
  * 最近那次之后又长出来的部分，护栏和压缩各自另有本地估算兜着；最近那次要是派活那一轮里的
  * （之后不进上下文），只是往高估了一轮，下一次调用就量回来了。用量为 0 的（出错补的那条、老日志）跳过。
+ *
+ * **「最近一次」按轮算：取最近那一轮里的最大值，不取它的最后一步。** 一轮之内上下文只涨不跌，
+ * 唯一的例外是轮内护栏（context-guard.ts）省掉了早先的工具结果——它只改送出去的那份，日志里原文
+ * 一个字不少，下一轮重建时全部回来。逼近窗口的那一轮，最后几步量到的是省过之后的（比如 0.65），
+ * 拿它当下一轮的 prior、当轮末压缩的依据，压缩不动手（没到 0.8），下一轮一开口就是 0.9 以上，
+ * 撞窗口被拒——正是 prior 要拦的那种。同一轮里省之前那一步量到的才是重建之后的真实大小。
  */
 export function observedPromptTokens(
   events: Awaited<ReturnType<Context['sessions']['events']>>,
 ): number {
   const boundary = contextBoundary(events)
+  let turn: number | undefined
+  let high = 0
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i]
     if (boundary && event.seq <= boundary.seq) break
     if (event.type !== 'assistant/message') continue
     const usage = event.data.usage
     const seen = (usage?.inputTokens ?? 0) + (usage?.cacheReadTokens ?? 0)
-    if (seen) return seen
+    if (!seen) continue
+    if (turn === undefined) turn = event.data.turn
+    else if (event.data.turn !== turn) break
+    high = Math.max(high, seen)
   }
-  return 0
+  return high
 }
 
 export function compactionPoint(

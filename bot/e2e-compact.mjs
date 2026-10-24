@@ -382,6 +382,26 @@ out.rows = {
     }),
   ]
   const latestAfterShrink = observedPromptTokens(shrunk)
+  /**
+   * 最近那一轮逼近了窗口、轮内护栏省掉了早先的工具结果：省之后那几步量到的偏小（只改送出去的那份，
+   * 下一轮重建时原文全部回来）。要的是那一轮里省之前的那一步，不是它的最后一步；更早的轮照旧不算。
+   */
+  const guarded = [
+    ...shrunk,
+    ev('assistant/message', T0 + 7, {
+      turn: 4,
+      step: 1,
+      message: { id: 'e', role: 'assistant', content: [{ type: 'text', text: '读了一大块' }] },
+      usage: { inputTokens: 10_000, outputTokens: 1, cacheReadTokens: 890_000, reasoningTokens: 0 },
+    }),
+    ev('assistant/message', T0 + 8, {
+      turn: 4,
+      step: 2,
+      message: { id: 'f', role: 'assistant', content: [{ type: 'text', text: '省过之后' }] },
+      usage: { inputTokens: 5_000, outputTokens: 1, cacheReadTokens: 645_000, reasoningTokens: 0 },
+    }),
+  ]
+  const lastTurnPeak = observedPromptTokens(guarded)
   out.resultBudget = {
     rawChars: raw.length,
     modelChars: budgeted.text.length,
@@ -397,6 +417,7 @@ out.rows = {
     highWaterAfterCompact,
     highWaterNext,
     latestAfterShrink,
+    lastTurnPeak,
   }
 }
 

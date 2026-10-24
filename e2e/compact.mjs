@@ -123,6 +123,10 @@ export async function runCompact({ root, test, assert, log }) {
       `上下文变小之后该取最近一次实测（55000），不是早先的最大值：${r.resultBudget.latestAfterShrink}`,
     )
     assert(r.resultBudget.highWaterNext === 2_100, `边界之后的新 usage 没算上：${r.resultBudget.highWaterNext}`)
+    assert(
+      r.resultBudget.lastTurnPeak === 900_000,
+      `最近那一轮护栏省过工具结果：该取那一轮里省之前的 900000，不是省过之后的最后一步：${r.resultBudget.lastTurnPeak}`,
+    )
   })
 
   await test('带长上下文档位的模型按价格门槛压，不按窗口', () => {
