@@ -175,6 +175,30 @@ out.schema = { 在表里: Boolean(def), 描述里有名单: Boolean(def && /财�
   }
 }
 
+// ── 同一颗 Bot 的隐含排队：按 after 排出来的先后排，不按书写顺序；只管先后、不管成败 ──
+{
+  const t0 = Date.now()
+  // 写在前面的 a 等写在后面的 b，又同是财务：按书写顺序排会 b 等 a、a 等 b，互等到超时。
+  const rev = await run({ tasks: [{ id: 'a', bot: '财务', instruction: '后做的盘点', after: ['b'] }, { id: 'b', bot: '财务', instruction: '先做的盘点' }] }, 'c-rev')
+  const at = (name) => posted.find((p) => p.body.instruction.startsWith(name))
+  const lastOf = (callId) => {
+    const m = new Map()
+    for (const e of events.filter((e) => e.type === 'bot/assign' && e.data.callId === callId)) m.set(e.data.id, e.data)
+    return m
+  }
+  const r1 = lastOf('c-rev')
+  // 法务那边一律报错：两件互不相干、只是同一颗 Bot，前一件没做成后一件照样派。
+  const law = await run({ tasks: [{ id: 'l1', bot: '法务', instruction: '审合同' }, { id: 'l2', bot: '法务', instruction: '审章程' }] }, 'c-law')
+  const r2 = lastOf('c-law')
+  out.implicit = {
+    text: `${rev.text}\n---\n${law.text}`,
+    反着写也不互等: r1.get('c-rev:a')?.state === 'done' && r1.get('c-rev:b')?.state === 'done' && Date.now() - t0 < 10_000,
+    先做的先派: Boolean(at('先做的盘点') && at('后做的盘点') && at('后做的盘点').at > at('先做的盘点').at),
+    前一件失败后一件照样派: Boolean(at('审章程')) && r2.get('c-law:l2')?.state === 'failed' && r2.get('c-law:l1')?.state === 'failed',
+    还是排着队派: Boolean(at('审章程') && at('审合同') && at('审章程').at > at('审合同').at),
+  }
+}
+
 // ── 校验：整次不发生 ──
 {
   const before = posted.length

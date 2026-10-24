@@ -226,14 +226,29 @@ export function apply(ctx: Context) {
       const byKey = new Map(items.map((it) => [it.key, it]))
       /**
        * 同一颗 Bot 的几件自动排队：一颗 Bot 一条主会话，两件同时发进去就是两轮抢着说话。
-       * 排法是「它在 tasks 里前面那件同 Bot 的」做隐含前置。
+       *
+       * 排法是「按显式 after 排出来的先后里，前面那件同 Bot 的」做隐含前置——**不能按 tasks 里写的
+       * 顺序**：`[{a, X, after:[b]}, {b, X}]` 按书写顺序排是 b 等 a、a 又等 b，两件互等到超时。
+       * 先按 after 拓扑排一遍（parse 已经保证没有环，同一层按书写顺序），隐含前置只往前指，和显式的
+       * 合起来也成不了环。
+       *
+       * 隐含前置只管**先后**，不管**成败**：前一件没做成，后一件照样跑——它俩本来互不相干，只是
+       * 恰好派给了同一颗 Bot。跳过只看显式 after。
        */
+      const order: Item[] = []
+      {
+        const placed = new Set<string>()
+        while (order.length < items.length) {
+          const next = items.find((it) => !placed.has(it.key) && it.after.every((d) => placed.has(d)))!
+          placed.add(next.key)
+          order.push(next)
+        }
+      }
       const implicit = new Map<string, string[]>()
-      items.forEach((it, i) => {
-        const prev = items.slice(0, i).filter((x) => x.bot.id === it.bot.id).map((x) => x.key)
-        implicit.set(it.key, prev.length ? [prev[prev.length - 1]] : [])
+      order.forEach((it, i) => {
+        const prev = order.slice(0, i).filter((x) => x.bot.id === it.bot.id)
+        implicit.set(it.key, prev.length ? [prev[prev.length - 1].key] : [])
       })
-      const depsOf = (it: Item) => [...new Set([...it.after, ...(implicit.get(it.key) ?? [])])]
 
       const emit = async (it: Item) => {
         try {
@@ -355,16 +370,18 @@ export function apply(ctx: Context) {
             }
             return { text: `已停止。\n\n${render(items)}` }
           }
-          // 能开跑的开跑；前置没做成的跳过。
+          // 能开跑的开跑；显式前置没做成的跳过。隐含前置（同一颗 Bot 排队）只等它收场，不看成败。
           for (const it of items) {
             if (it.state !== 'waiting') continue
-            const deps = depsOf(it).map((k) => byKey.get(k)!)
+            const deps = it.after.map((k) => byKey.get(k)!)
             const bad = deps.find((d) => terminal(d.state) && d.state !== 'done')
             if (bad) {
-              await settle(it, 'skipped', `跳过：前置「${bad.key} · @${bad.bot.name}」${bad.stoppedThere ? '被人停止了' : '没做成'}。`)
+              const why = bad.stoppedThere ? '被人停止了' : bad.state === 'detached' ? '还没做完（等太久先不等了）' : '没做成'
+              await settle(it, 'skipped', `跳过：前置「${bad.key} · @${bad.bot.name}」${why}。`)
               continue
             }
-            if (deps.every((d) => d.state === 'done')) await start(it)
+            const queued = (implicit.get(it.key) ?? []).map((k) => byKey.get(k)!)
+            if (deps.every((d) => d.state === 'done') && queued.every((d) => terminal(d.state))) await start(it)
           }
           if (items.every((it) => terminal(it.state))) break
           if (Date.now() > deadline) {

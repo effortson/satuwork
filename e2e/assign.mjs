@@ -40,6 +40,12 @@ export async function runAssign({ root, test, assert, log }) {
     assert(r.dag.收场也带着对方会话, '收场那条丢了对方的会话 id 或进度——界面就取不到过程')
   })
 
+  await test('同一颗 Bot 的隐含排队：按 after 排出的先后排（反着写也不互等），前一件没做成后一件照样跑', async () => {
+    const s = r.implicit
+    assert(s, '探针没跑到这一段')
+    for (const [k, v] of Object.entries(s)) if (k !== 'text') assert(v === true, `${k} 不成立：\n${s.text}`)
+  })
+
   await test('名单上没有的、环、重复 id 整次不发生；单条简写照旧认；不是主 Bot 派不了', async () => {
     assert(r.bad.没有这颗.includes('名单上没有「行政」'), `没有的 Bot：${r.bad.没有这颗}`)
     assert(r.bad.有环.includes('绕成了一个圈'), `环：${r.bad.有环}`)
