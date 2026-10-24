@@ -255,11 +255,23 @@ async function namesOf(db: Db, task: BotTask): Promise<{ from: string; to: strin
   return { from: from?.name || task.fromBotId, to: to?.name || task.toBotId }
 }
 
+/** 调用方读到的这一行的样子（status、租约）。清扫拿的是旧快照，写之前要对一遍，见 updateBotTaskIf。 */
+type Expect = { status?: BotTask['status']; leaseUntil?: number | null }
+
 /**
  * 目标那一步收了场：把结论写上，交给主席位去送。送回去的那一方领不了（主 Bot 没部署了）就
  * failed——那时没有任何一轮能消化它。
+ *
+ * 每一笔都带「还没被停」的条件写（`expect` 再加上调用方读到的状态）：现读那一下和写之间，人可能
+ * 刚好按了停止——不带条件的话 answered 把停止盖掉，作废的结论照样送回主 Bot。条件没对上、而这一行
+ * 确实被停了，就收成 cancelled；是别的写在前头（清扫的旧快照撞上了工人刚回报的），什么都不做。
  */
-async function toReporting(db: Db, task: BotTask, input: { result: string; runKind: string; error?: string | null; sessionId?: string | null }): Promise<void> {
+async function toReporting(
+  db: Db,
+  task: BotTask,
+  input: { result: string; runKind: string; error?: string | null; sessionId?: string | null },
+  expect: Expect = {},
+): Promise<void> {
   const common0 = {
     result: input.result,
     runKind: input.runKind,
@@ -270,14 +282,19 @@ async function toReporting(db: Db, task: BotTask, input: { result: string; runKi
   }
   // 现读一次：等待租约、停止标记都是别的请求在写，手上这一行是领活时的快照。
   const fresh = (await db.botTask(task.id)) ?? task
+  const cancel = () => db.updateBotTaskIf(task.id, expect, { ...common0, status: 'cancelled', owner: null })
+  const write = async (patch: Parameters<Db['updateBotTask']>[1]) => {
+    if (await db.updateBotTaskIf(task.id, { ...expect, notCancelled: true }, patch)) return
+    if ((await db.botTask(task.id))?.cancelledAt) await cancel()
+  }
   // 人按了停止：结论不再送回主 Bot（docs/bot-tasks.md §1.2）。
   if (fresh.cancelledAt) {
-    await db.updateBotTask(task.id, { ...common0, status: 'cancelled', owner: null })
+    await cancel()
     return
   }
   // 主 Bot 的席位还在等：结论交给它，下一次轮询取走（§1.1）。
   if (waiting(fresh)) {
-    await db.updateBotTask(task.id, { ...common0, status: 'answered', owner: null })
+    await write({ ...common0, status: 'answered', owner: null })
     return
   }
   const account = await db.account(task.accountId)
@@ -291,19 +308,19 @@ async function toReporting(db: Db, task: BotTask, input: { result: string; runKi
     ...(input.sessionId !== undefined ? { runSessionId: input.sessionId } : {}),
   }
   if ('owner' in back) {
-    await db.updateBotTask(task.id, { ...common, status: 'reporting', owner: back.owner, leaseUntil: null, attempts: 0, readyAt: Date.now() })
+    await write({ ...common, status: 'reporting', owner: back.owner, leaseUntil: null, attempts: 0, readyAt: Date.now() })
   } else {
-    await db.updateBotTask(task.id, { ...common, status: 'failed', owner: null, leaseUntil: null, error: `${input.error ? `${input.error}；` : ''}送不回主 Bot：${back.error}` })
+    await write({ ...common, status: 'failed', owner: null, leaseUntil: null, error: `${input.error ? `${input.error}；` : ''}送不回主 Bot：${back.error}` })
   }
 }
 
-/** 这一步彻底没做成：run 进 reporting（告诉主 Bot），deliver 收成 failed。 */
-async function stepLost(db: Db, task: BotTask, reason: string): Promise<void> {
+/** 这一步彻底没做成：run 进 reporting（告诉主 Bot），deliver 收成 failed。`expect` 同 toReporting。 */
+async function stepLost(db: Db, task: BotTask, reason: string, expect: Expect = {}): Promise<void> {
   const phase = phaseOf(task)
   if (phase === 'run') {
-    await toReporting(db, task, { result: `没做成：${reason}`, runKind: 'failed', error: reason })
+    await toReporting(db, task, { result: `没做成：${reason}`, runKind: 'failed', error: reason }, expect)
   } else {
-    await db.updateBotTask(task.id, { status: 'failed', owner: null, leaseUntil: null, error: `结论送不回主 Bot：${reason}`, deliveredAt: null })
+    await db.updateBotTaskIf(task.id, expect, { status: 'failed', owner: null, leaseUntil: null, error: `结论送不回主 Bot：${reason}`, deliveredAt: null })
   }
 }
 
@@ -437,30 +454,41 @@ export async function cancelBotTask(db: Db, task: BotTask): Promise<BotTask> {
  */
 export async function sweepBotTasks(db: Db): Promise<void> {
   const now = Date.now()
+  // 清扫手上的都是快照：每一笔都带「还是我读到的那个样子」的条件写，撞上工人刚回报的就让给它。
   for (const task of await db.expiredBotTasks(now)) {
     const phase = phaseOf(task)
     if (!phase) continue
+    const expect = { status: task.status, leaseUntil: task.leaseUntil }
     // 人已经按了停止：领走它的那一方没回报，就别再放回去让人领了。
     if (task.cancelledAt && phase === 'run') {
-      await db.updateBotTask(task.id, { status: 'cancelled', owner: null, leaseUntil: null, endedAt: now })
+      await db.updateBotTaskIf(task.id, expect, { status: 'cancelled', owner: null, leaseUntil: null, endedAt: now })
       continue
     }
     if (task.attempts < MAX_ATTEMPTS) {
       // 放回去重新计时：「一直没人来领」从这一刻算，不从最初建的时刻算。
-      await db.updateBotTask(task.id, { status: phase === 'run' ? 'queued' : 'reporting', leaseUntil: null, readyAt: now })
+      await db.updateBotTaskIf(task.id, expect, { status: phase === 'run' ? 'queued' : 'reporting', leaseUntil: null, readyAt: now })
     } else {
-      await stepLost(db, task, '机器没回报（工人的租约到期了：机器离线、工人没起来、或者中途被杀）')
+      await stepLost(db, task, '机器没回报（工人的租约到期了：机器离线、工人没起来、或者中途被杀）', expect)
     }
   }
-  // 已经答了、等的一方却没来取：它多半被重启了，结论走兜底送回，不能丢。
+  // 已经答了、等的一方却没来取：它多半被重启了，结论走兜底送回，不能丢。人已经按了停止的不送。
   for (const task of await db.orphanedAnsweredBotTasks(now)) {
+    const expect = { status: 'answered' as const }
+    if (task.cancelledAt) {
+      await db.updateBotTaskIf(task.id, expect, { status: 'cancelled', owner: null, waiterUntil: null })
+      continue
+    }
     const account = await db.account(task.accountId)
     const from = await db.catalog(task.fromBotId)
     const back = account && from ? await ownerFor(db, account, from) : { error: '主 Bot 已经不在了' }
-    if ('owner' in back) await db.updateBotTask(task.id, { status: 'reporting', owner: back.owner, leaseUntil: null, attempts: 0, waiterUntil: null, readyAt: now })
-    else await db.updateBotTask(task.id, { status: 'failed', owner: null, waiterUntil: null, error: `${task.error ? `${task.error}；` : ''}送不回主 Bot：${back.error}` })
+    const cond = { ...expect, notCancelled: true }
+    if ('owner' in back) await db.updateBotTaskIf(task.id, cond, { status: 'reporting', owner: back.owner, leaseUntil: null, attempts: 0, waiterUntil: null, readyAt: now })
+    else await db.updateBotTaskIf(task.id, cond, { status: 'failed', owner: null, waiterUntil: null, error: `${task.error ? `${task.error}；` : ''}送不回主 Bot：${back.error}` })
   }
   for (const task of await db.unclaimedBotTasksBefore(now - TASK_PICKUP_MS)) {
-    await stepLost(db, task, phaseOf(task) === 'run' ? '一直没人来领：目标 Bot 的席位没在跑' : '一直没人来领：主 Bot 的席位没在跑')
+    await stepLost(db, task, phaseOf(task) === 'run' ? '一直没人来领：目标 Bot 的席位没在跑' : '一直没人来领：主 Bot 的席位没在跑', {
+      status: task.status,
+      leaseUntil: null,
+    })
   }
 }

@@ -6,6 +6,7 @@
  * 去再领；管家太旧当场记成没跑起来。
  */
 import { rmSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
@@ -485,6 +486,43 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       await post(id, 'started', { sessionId: 's-fin' })
       await post(id, 'finish', { kind: 'completed', result: '对完了' })
       for (const j of (await due()).json.jobs) if (j.phase === 'deliver') await post(j.taskId, 'finish', { kind: 'delivered' })
+    })
+
+    await test('同一刻派两件给同一颗：只建得成一件，另一件 409（先查后插锁住了）', async () => {
+      for (const j of (await due()).json.jobs) if (j.phase === 'deliver') await post(j.taskId, 'finish', { kind: 'delivered' })
+      const both = await Promise.all([
+        assign({ fromBotId: mainBot, toBot: '财务', instruction: '并发甲', sessionId: 's-a' }),
+        assign({ fromBotId: mainBot, toBot: '财务', instruction: '并发乙', sessionId: 's-b' }),
+      ])
+      const codes = both.map((r) => r.status).sort()
+      assert(JSON.stringify(codes) === '[201,409]', `该一成一 409：${codes.join(',')}`)
+      const made = both.find((r) => r.status === 201).json.task.id
+      assert((await due()).json.jobs.some((j) => j.taskId === made), '没领到')
+      await post(made, 'started', { sessionId: 's-fin' })
+      await post(made, 'finish', { kind: 'completed', result: '好' })
+      for (const j of (await due()).json.jobs) if (j.phase === 'deliver') await post(j.taskId, 'finish', { kind: 'delivered' })
+    })
+
+    await test('答了却被停了、等的一方又没来取：清扫收成已停止，不走兜底送回', async () => {
+      const require = createRequire(join(gwRoot, 'package.json'))
+      const pg = require('pg')
+      const client = new pg.Client({ connectionString: PG_URL })
+      await client.connect()
+      try {
+        await client.query(`set search_path to ${SCHEMA}`)
+        const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '撞车的那件', sessionId: 's-main', wait: true })
+        const id = made.json.task.id
+        assert((await due()).json.jobs.some((j) => j.taskId === id), '没领到')
+        await post(id, 'started', { sessionId: 's-fin' })
+        await post(id, 'finish', { kind: 'completed', result: '作废的结论' })
+        // 交回结论和停止撞在一起留下的那种行：answered、带着 cancelledAt、等的一方的租约过期了。
+        await client.query(`update bot_tasks set "cancelledAt" = $1, "waiterUntil" = 1 where id = $2 and status = 'answered'`, [Date.now(), id])
+        const t = await until(id, 'cancelled', '被停了的答案', 8000)
+        assert(t.status === 'cancelled', `该收成已停止：${JSON.stringify(t)}`)
+        assert(!(await due()).json.jobs.some((j) => j.taskId === id), '被停了的结论不该再送回主 Bot')
+      } finally {
+        await client.end()
+      }
     })
 
     await test('本地 Bot 好几颗：各带 botId 来领只领到要敲自己的；同时来领一条只有一个拿得到', async () => {

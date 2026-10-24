@@ -114,6 +114,9 @@ export function databaseUrl(): string {
   return pinSslMode(url)
 }
 
+/** 派活清扫每一拍每一类最多收多少条。积压了也一拍拍收完，不让一次清扫拖成一条慢查询。 */
+const SWEEP_BATCH = 200
+
 /** 迁移要**直连**串：迁移锁是会话级 advisory lock，过 PgBouncer 的事务池会漂（ADR §5.2）。 */
 export function migrateDatabaseUrl(): string {
   const url = (process.env.GATEWAY_MIGRATE_DATABASE_URL || '').trim() || neonFallback('DATABASE_URL_UNPOOLED')
@@ -4104,6 +4107,35 @@ export class Db {
   }
 
   /**
+   * 带条件的 updateBotTask：只有这一行**还是**调用方读到的那个样子才改，改没改成回 true / false。
+   *
+   * 派活的状态有好几方在写（工人回报、主 Bot 那边按停止、清扫），各自都是先读一行、算好、再写。
+   * 不带条件的话，后写的拿着旧快照把先写的盖掉：清扫把工人刚写的 answered 盖回 queued（结论再送
+   * 一遍），交回结论把刚按的停止盖成 answered（作废的结论照样送回主 Bot）。
+   */
+  async updateBotTaskIf(
+    id: string,
+    cond: { status?: BotTaskStatus; leaseUntil?: number | null; notCancelled?: boolean },
+    patch: Parameters<Db['updateBotTask']>[1],
+  ): Promise<boolean> {
+    const sets: string[] = []
+    const args: unknown[] = []
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) continue
+      sets.push(`"${k}" = ?`)
+      args.push(v)
+    }
+    if (!sets.length) return false
+    const where = ['id = ?']
+    args.push(id)
+    if (cond.status !== undefined) (where.push('status = ?'), args.push(cond.status))
+    if (cond.leaseUntil === null) where.push('"leaseUntil" is null')
+    else if (cond.leaseUntil !== undefined) (where.push('"leaseUntil" = ?'), args.push(cond.leaseUntil))
+    if (cond.notCancelled) where.push('"cancelledAt" is null')
+    return (await this.run(`update bot_tasks set ${sets.join(', ')} where ${where.join(' and ')}`, args)) > 0
+  }
+
+  /**
    * 等的一方取结论（docs/bot-tasks.md §1.1）：**原子地**把 answered 记成 done 并交出这一行。
    * 两次轮询撞在一起只有一次拿得到——另一次看到的是 done，照样有结论，只是不再改状态。
    */
@@ -4118,8 +4150,8 @@ export class Db {
   /** 已经答了、等的一方却没来取（租过期了）。维护节拍把它们转成兜底送回。 */
   async orphanedAnsweredBotTasks(nowMs: number): Promise<BotTask[]> {
     const rows = await this.many(
-      `select * from bot_tasks where status = 'answered' and ("waiterUntil" is null or "waiterUntil" < ?)`,
-      [nowMs],
+      `select * from bot_tasks where status = 'answered' and ("waiterUntil" is null or "waiterUntil" < ?) order by "createdAt" limit ?`,
+      [nowMs, SWEEP_BATCH],
     )
     return rows.map(botTaskOf)
   }
@@ -4149,8 +4181,8 @@ export class Db {
   /** 领走了却到期没续的。 */
   async expiredBotTasks(nowMs: number): Promise<BotTask[]> {
     const rows = await this.many(
-      `select * from bot_tasks where status in ('running', 'delivering') and "leaseUntil" is not null and "leaseUntil" < ?`,
-      [nowMs],
+      `select * from bot_tasks where status in ('running', 'delivering') and "leaseUntil" is not null and "leaseUntil" < ? order by "leaseUntil" limit ?`,
+      [nowMs, SWEEP_BATCH],
     )
     return rows.map(botTaskOf)
   }
@@ -4164,8 +4196,8 @@ export class Db {
     const rows = await this.many(
       `select * from bot_tasks where "leaseUntil" is null and status in ('queued', 'reporting') and coalesce(
          "readyAt", case when status = 'reporting' then coalesce("endedAt", "createdAt") else "createdAt" end
-       ) < ?`,
-      [beforeMs],
+       ) < ? order by "createdAt" limit ?`,
+      [beforeMs, SWEEP_BATCH],
     )
     return rows.map(botTaskOf)
   }
