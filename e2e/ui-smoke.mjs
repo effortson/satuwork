@@ -808,6 +808,57 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!plain.includes('satu-botfolder-head') && !plain.includes('satu-botfolder-empty'), '没分类时多画了东西')
     })
 
+    await test('跑着时执行 /clear：等它停的时候切去了别的 Bot，命令不执行、不动那颗 Bot 的输入框', async () => {
+      const ui = await boot(undefined, { fetchImpl: async () => ({ ok: true, status: 200, text: async () => '{}' }) })
+      ui.state.chatSessionId = 's-a'
+      ui.state.chatStatus = 'running'
+      let ran = false
+      const job = ui.runChatCommand({ name: 'clear', idleOnly: true, run: async () => ((ran = true), { cleared: true, throughSeq: 1 }) })
+      // 停止那一下还在路上，人就切到了 B（runChatCommand 第一个 await 之后）：B 是空闲的，草稿里有自己的话。
+      ui.state.chatSessionId = 's-b'
+      ui.state.chatStatus = ''
+      ui.state.chatDraft = 'B 的草稿'
+      await job
+      assert(!ran, '切走了还对旧会话执行了命令')
+      assert(ui.state.chatDraft === 'B 的草稿', `B 的输入框被动了：${JSON.stringify(ui.state.chatDraft)}`)
+    })
+
+    await test('看过程：委派那条按登记时的会话取；派活那条在对方会话里往前翻到那件活为止', async () => {
+      const calls = []
+      const page = (events, firstSeq, hasMore) => ({ ok: true, status: 200, text: async () => JSON.stringify({ events, firstSeq, hasMore }) })
+      const ev = (seq, type, data) => ({ seq, type, time: seq, data })
+      const ui = await boot(undefined, {
+        fetchImpl: async (path) => {
+          calls.push(path)
+          if (path.includes('/tasks/child-1/history')) return page([], null, false)
+          if (path.includes('/sessions/s-target/history')) {
+            if (!path.includes('before=')) return page([ev(100, 'turn/start', { turn: 30 }), ev(101, 'turn/end', { turn: 30 })], 100, true)
+            return page(
+              [
+                ev(5, 'user/message', { message: { content: '派来的' }, source: { kind: 'plugin', plugin: 'task', form: 'tk-1', phase: 'instruction' } }),
+                ev(6, 'turn/start', { turn: 2 }),
+                ev(7, 'tool/call', { turn: 2, step: 1, callId: 'k1', name: 'web_search', arguments: '{}' }),
+                ev(8, 'tool/result', { turn: 2, step: 1, callId: 'k1', text: 'ok' }),
+                ev(9, 'turn/end', { turn: 2, reason: 'completed' }),
+              ],
+              5,
+              true,
+            )
+          }
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.taskTraceSrc['c:child-1'] = { key: 'c:child-1', child: 'child-1', session: 's-old' }
+      ui.state.chatSessionId = 's-new'
+      await ui.loadTaskTrace('c:child-1')
+      assert(calls.some((p) => p.includes('/runtime/sessions/s-old/tasks/child-1/history')), `该按登记时的会话取：${JSON.stringify(calls)}`)
+      ui.taskTraceSrc['a:tk-1'] = { key: 'a:tk-1', session: 's-target', taskId: 'tk-1' }
+      await ui.loadTaskTrace('a:tk-1')
+      assert(calls.some((p) => p.includes('/sessions/s-target/history') && p.includes('before=100')), `该往前翻一页：${JSON.stringify(calls)}`)
+      const tr = ui.state.taskTrace['a:tk-1']
+      assert(tr && tr.rows && tr.rows.length >= 1, `翻到之后该有过程：${JSON.stringify(tr)}`)
+    })
+
     await test('收起的分类刷新后还收着：开合状态从本机读得回来（state 初始化时键已经声明）', async () => {
       const kept = new Map([['satuwork.botFolderOpen', JSON.stringify({ f1: false })]])
       const storage = {

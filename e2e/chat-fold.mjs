@@ -299,10 +299,14 @@ export async function runChatFold({ root, test, assert, log }) {
     assert(JSON.stringify(shut) === JSON.stringify(['搜 6 轮', '你好', '你好！']), `折着时那一轮的回复不该画出来：${JSON.stringify(shut)}`)
     const head = threadRows(folded, 's1').find((r) => r.kind === 'msg').block
     assert(head.foldable && !head.open && head.calls === 1, `卡片该能开合、数出 1 次工具调用：${JSON.stringify({ foldable: head.foldable, open: head.open, calls: head.calls })}`)
-    runInContext(`taskInOpen.add('2')`, chatCtx)
+    assert(head.openKey === 's1:2', `开合的键该带上会话：${head.openKey}`)
+    runInContext(`taskInOpen.add('s1:2')`, chatCtx)
     const open = threadRows(folded, 's1').filter((r) => r.kind === 'msg').map((r) => r.block.text)
+    // 另一颗 Bot 的会话里同一个 seq 的那件不跟着开：每条会话的 seq 都从 1 起。
+    const other = threadRows(folded, 's2').filter((r) => r.kind === 'msg').map((r) => r.block.text)
     runInContext(`taskInOpen.clear()`, chatCtx)
     assert(JSON.stringify(open) === JSON.stringify(['搜 6 轮', '第 1 轮搜完', '你好', '你好！']), `点开之后该露出那一轮：${JSON.stringify(open)}`)
+    assert(JSON.stringify(other) === JSON.stringify(['搜 6 轮', '你好', '你好！']), `别的会话同一个 seq 不该跟着开：${JSON.stringify(other)}`)
   })
 
   await test('派来的活正跑着、卡片折着：不补「正在回答」的空气泡，卡片自己说在跑', async () => {

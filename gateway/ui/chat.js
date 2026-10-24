@@ -2815,6 +2815,9 @@ const taskLive = (s) => !s || s === 'running' || s === 'waiting'
 /** 「看过程」去哪取：key → { child } 或 { session, taskId }。画卡片时登记，点按钮时按 key 查。 */
 const taskTraceSrc = {}
 
+/** 派活的过程在对方会话里往前最多翻几页（每页 50 轮）找它那条指令。 */
+const TRACE_PAGES = 6
+
 /** 跑着的时候，摊开的过程隔多久重取一次。重取挂在重画上（进度一变就重画），不另起定时器。 */
 const TRACE_REFRESH_MS = 3000
 
@@ -2837,7 +2840,8 @@ function taskWaitText(b) {
 /** 一件委派（agent/task 的最后一条）收成统一的形状。 */
 function delegateView(task) {
   const m = task.model || {}
-  const trace = task.child ? { key: 'c:' + task.child, child: task.child } : null
+  // 登记时就记下是哪条会话的：跑着时那次延后重取落在人切走之后，现读 state.chatSessionId 会打到别的会话。
+  const trace = task.child ? { key: 'c:' + task.child, child: task.child, session: state.chatSessionId } : null
   if (trace) taskTraceSrc[trace.key] = trace
   return {
     id: task.id,
@@ -3098,7 +3102,7 @@ async function loadTaskTrace(key, again) {
   try {
     let events
     if (src.child) {
-      const sessionId = state.chatSessionId
+      const sessionId = src.session || state.chatSessionId
       if (!sessionId) throw new Error(t('这条对话还没打开', 'This conversation is not open'))
       const data = await api(
         'GET',
@@ -3106,8 +3110,20 @@ async function loadTaskTrace(key, again) {
       )
       events = data.events || []
     } else {
-      const data = await api('GET', `/runtime/sessions/${encodeURIComponent(src.session)}/history?turns=20`)
-      events = SatuCore.assignSlice(data.events || [], src.taskId)
+      /**
+       * 对方那边之后又聊了很多轮，那件活就不在最近一页里了：往前翻着找，找到它那条指令为止（最多几页）。
+       * 只取最近二十轮的话，收场的卡上过程只剩一行结尾，看着像什么都没做。
+       */
+      let all = []
+      let before = 0
+      events = []
+      for (let page = 0; page < TRACE_PAGES; page++) {
+        const data = await api('GET', `/runtime/sessions/${encodeURIComponent(src.session)}/history?turns=50${before ? `&before=${before}` : ''}`)
+        all = [...(data.events || []), ...all]
+        events = SatuCore.assignSlice(all, src.taskId)
+        if (events.length || !data.hasMore || !data.firstSeq) break
+        before = data.firstSeq
+      }
     }
     state.taskTrace[key] = { loading: false, rows: SatuCore.traceRows(events), at: Date.now(), error: '' }
   } catch (e) {
@@ -3128,14 +3144,18 @@ async function loadTaskTrace(key, again) {
 const TASK_IN_HEAD = /^【主 Bot「([^」]*)」派来的任务】\n?/
 const TASK_IN_TAIL = /\s*（做完把结果直接写在回复里[^）]*）\s*$/
 
-/** 展开过的那几件：指令那条 user/message 的 seq → true。只在这一页里记着，刷新就回到折起来。 */
+/**
+ * 展开过的那几件：`<会话>:<指令那条 user/message 的 seq>`。只在这一页里记着，刷新就回到折起来。
+ * 带上会话：每条会话的 seq 都从 1 起，只记 seq 的话在一颗 Bot 上展开了 42，切到另一颗它的 42 也是开的。
+ */
 const taskInOpen = new Set()
+const taskInKey = (sessionId, seq) => `${sessionId || ''}:${seq ?? ''}`
 
 /**
  * 指令那一块，加上卡片要的几样：谁派的、开没开、那一轮调了几次工具。`blocks[i]` 是它自己，
  * 后面紧跟着的 via=task 的助手块就是它那一轮的（fold 给助手块标的是这一轮开头那条消息的来源）。
  */
-function taskInBlock(b, blocks, i, live) {
+function taskInBlock(b, blocks, i, live, sessionId) {
   const a = b.assigned || null
   const raw = String(b.text || '')
   const head = raw.match(TASK_IN_HEAD)
@@ -3159,7 +3179,8 @@ function taskInBlock(b, blocks, i, live) {
     taskFrom: { id: from.id || '', name: from.name || (head && head[1]) || '' },
     // 老席位插进人那一轮的（steered）没有自己的轮次，没什么可折的。
     foldable: Boolean(a && a.state !== 'steered'),
-    open: waits > 0 || taskInOpen.has(String(b.seq)),
+    openKey: taskInKey(sessionId, b.seq),
+    open: waits > 0 || taskInOpen.has(taskInKey(sessionId, b.seq)),
     calls,
     waits,
     // 这条会话还在跑没有（fold 的 status）。一轮只有 turn/start 没有 turn/end、而席位说没在跑：上一条命死在半路了。
@@ -3181,7 +3202,7 @@ function taskInRowShell(b, key) {
     `<div class="sw-msg-col">` +
     `<div class="sw-taskname"><span class="sw-taskname-bot">${esc((bot && bot.name) || b.taskFrom.name)}</span><span class="sw-taskname-tag"></span></div>` +
     `<div class="sw-bubble" data-role="assistant"><div class="sw-md"></div><div class="sw-chips" hidden></div>` +
-    `<button type="button" class="sw-taskin-toggle" data-act="chat-taskin-toggle" data-seq="${esc(String(b.seq ?? ''))}" hidden></button></div>` +
+    `<button type="button" class="sw-taskin-toggle" data-act="chat-taskin-toggle" data-seq="${esc(b.openKey || '')}" hidden></button></div>` +
     `<time class="sw-time" hidden></time>${msgActsHtml(b)}</div></div>`
   )
 }
@@ -4512,7 +4533,7 @@ function threadRows(folded, sessionId) {
     }
     // key 必须**跟着这一块自己**走，不能用下标：往前翻加载旧消息会让所有下标移位，
     // 于是整棵 DOM 重建——Markdown 全部重渲染，滚动位置也跟着没了。
-    const block = b.kind === 'user' && b.via === 'task' ? taskInBlock(b, blocks, i, folded.status) : b
+    const block = b.kind === 'user' && b.via === 'task' ? taskInBlock(b, blocks, i, folded.status, sessionId) : b
     if (block.foldable && !block.open) {
       folding = true
       tailFolded = i === blocks.length - 1
@@ -9683,7 +9704,16 @@ async function runChatCommand(cmd, arg = '') {
     render()
     await abortChat()
     const until = Date.now() + 20_000
-    while (state.chatStatus && Date.now() < until) await new Promise((r) => setTimeout(r, 300))
+    // state.chatStatus 说的是**当前开着的那条**。等的这几秒里人切去了别的 Bot，它就不再是这条的状态：
+    // 切到空闲的会立刻放行、对旧会话发命令（那一轮还没停，409，命令还进了新 Bot 的输入框），切到
+    // 在跑的会白等二十秒。人走了就不执行，说一声。
+    const here = () => state.chatSessionId === sessionId
+    while (here() && state.chatStatus && Date.now() < until) await new Promise((r) => setTimeout(r, 300))
+    if (!here()) {
+      flash('err', t(`切到了别的对话，/${cmd.name} 没有执行`, `Switched to another conversation; /${cmd.name} was not run`))
+      render()
+      return
+    }
     if (state.chatStatus) {
       flash('err', t('这一轮没停下来，等它停了再试', 'The turn did not stop; try again once it has'))
       render()
@@ -9728,7 +9758,8 @@ async function runChatCommand(cmd, arg = '') {
   } catch (err) {
     // **把命令还回输入框。** 换版期间的 404、正跑着的 409、断线——这些都是过几秒
     // 再按一次就好的事，没道理让人重打一遍（finally 里的 render 会把它填回去）。
-    state.chatDraft = draft
+    // 人已经切去了别的对话就不还：那是另一颗 Bot 的输入框。
+    if (state.chatSessionId === sessionId) state.chatDraft = draft
     // 席位那边每一种拒绝都带着一句能直接给人看的原话（正在跑、太短、排着队），
     // 原样显示，别翻成一句「操作失败」。
     flash('err', err.status === 404 ? t('这台席位的版本还不支持这条命令，升级后可用') : err.message)
