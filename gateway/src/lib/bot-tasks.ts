@@ -167,7 +167,13 @@ export function instructionText(task: BotTask, fromName: string): string {
 export function resultText(task: BotTask, toName: string): string {
   const brief = task.instruction.replace(/\s+/g, ' ').slice(0, 60) + (task.instruction.length > 60 ? '…' : '')
   const ok = task.runKind === 'completed' && !task.error
-  const head = ok ? `【任务结果】@${toName} 做完了（任务：${brief}）` : `【任务结果】@${toName} 没做成（任务：${brief}）`
+  // 对方那边被人停了（§1.3）：不是没做成，是人不要它做了。
+  const stopped = task.runKind === 'aborted'
+  const head = ok
+    ? `【任务结果】@${toName} 做完了（任务：${brief}）`
+    : stopped
+      ? `【任务结果】@${toName} 那边停止了（任务：${brief}）`
+      : `【任务结果】@${toName} 没做成（任务：${brief}）`
   return `${head}\n${(task.result || '').trim() || (ok ? '（对方没有写结论）' : task.error || '原因不明')}`
 }
 
@@ -312,8 +318,16 @@ export async function taskFinish(db: Db, task: BotTask, body: { kind: string; re
     } else if (body.kind === 'failed') {
       const why = (body.error || '没跑起来').slice(0, 300)
       await toReporting(db, task, { result: `没做成：${why}`, runKind: 'failed', error: why, sessionId })
+    } else if (body.kind === 'aborted') {
+      /**
+       * 那一轮被中止了。主 Bot 那边按的停止在 toReporting 里认（cancelledAt），走到那儿记成 cancelled；
+       * 剩下的就是**有人在目标 Bot 的对话里按了停止**（docs/bot-tasks.md §1.3）。那是人明说不要它做了，
+       * 不是没做成：话要说成「已停止、作废」，主 Bot 才不会把它当失败去重派或自己接着做。
+       */
+      const why = '有人在它的对话里把这一轮停了'
+      await toReporting(db, task, { result: `已停止：${why}，这件活作废（别重派、别自己接着做；要不要重新做问人）。`, runKind: 'aborted', error: why, sessionId })
     } else {
-      const why = body.kind === 'aborted' ? '它那一轮被中止了' : body.kind === 'error' ? '它那一轮出错了，经过在它的对话里' : `它那一轮以 ${body.kind} 结束`
+      const why = body.kind === 'error' ? '它那一轮出错了，经过在它的对话里' : `它那一轮以 ${body.kind} 结束`
       await toReporting(db, task, { result: `没做成：${why}`, runKind: body.kind, error: why, sessionId })
     }
     return

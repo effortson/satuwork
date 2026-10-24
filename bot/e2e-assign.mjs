@@ -46,6 +46,8 @@ const gateway = createServer((req, res) => {
       // 跑着的那一拍带上领活方报的进度和对方的会话 id（真 Gateway 的 publicBotTask 就是这个形状）。
       if (t.polls < 2) return send(200, { task: { id: t.id, status: 'running', runSessionId: `s-${t.body.toBot}`, progress: { steps: 2, tool: { name: 'web_search', detail: t.body.toBot } } } })
       if (t.body.toBot === 'legal') return send(200, { task: { id: t.id, status: 'done', runKind: 'failed', error: '它那边报错了', result: '没做成：它那边报错了' } })
+      // 设计师那边有人按了停止（真 Gateway 的 taskFinish：kind=aborted、主 Bot 这边没停）。
+      if (t.body.toBot === 'design') return send(200, { task: { id: t.id, status: 'done', runKind: 'aborted', error: '有人在它的对话里把这一轮停了', result: '已停止：有人在它的对话里把这一轮停了，这件活作废。' } })
       return send(200, { task: { id: t.id, status: 'done', runKind: 'completed', result: `【${t.body.toBot}】做完了：${t.body.instruction.split('\n')[0]}` } })
     }
     send(404, { error: 'no route' })
@@ -61,6 +63,7 @@ class FakeCatalog extends Service {
       { id: 'fin', name: '财务', desc: '做报表、对账' },
       { id: 'sales', name: '销售', desc: '' },
       { id: 'legal', name: '法务', desc: '' },
+      { id: 'design', name: '设计师', desc: '' },
     ]
   }
   get servers() {
@@ -129,6 +132,30 @@ out.schema = { 在表里: Boolean(def), 描述里有名单: Boolean(def && /财�
     进度写进了事件: mine.some((e) => e.data.id === 'c-dag:mail' && e.data.state === 'running' && e.data.progress?.tool?.detail === 'sales'),
     收场也带着对方会话: last.get('c-dag:mail')?.runSessionId === 's-sales' && last.get('c-dag:mail')?.progress?.steps === 2,
     总耗时合理: Date.now() - t0 < 10_000,
+  }
+}
+
+// ── 对方那边被人停了（docs/bot-tasks.md §1.3）：这一件标成已停止、依赖它的跳过，别的照跑 ──
+{
+  const r = await run(
+    {
+      tasks: [
+        { id: 'draw', bot: '设计师', instruction: '画三版首页' },
+        { id: 'quote', bot: '财务', instruction: '按首页出报价', after: ['draw'] },
+        { id: 'leads', bot: '销售', instruction: '列本周线索' },
+      ],
+    },
+    'c-stop',
+  )
+  const last = new Map()
+  for (const e of events.filter((e) => e.type === 'bot/assign' && e.data.callId === 'c-stop')) last.set(e.data.id, e.data)
+  out.stopThere = {
+    text: r.text,
+    这一件标成已停止: last.get('c-stop:draw')?.state === 'cancelled' && (last.get('c-stop:draw')?.result || '').includes('有人在 @设计师 的对话里把它停了'),
+    依赖它的跳过且说清是被停: last.get('c-stop:quote')?.state === 'skipped' && (last.get('c-stop:quote')?.result || '').includes('被人停止了'),
+    依赖它的没派出去: !posted.some((p) => p.body.instruction.startsWith('按首页出报价')),
+    别的照跑: last.get('c-stop:leads')?.state === 'done',
+    告诉模型别重派: r.text.includes('1 件被人在对方那边停止') && r.text.includes('不要重派') && /\[1\/3 cancelled · @设计师/.test(r.text),
   }
 }
 

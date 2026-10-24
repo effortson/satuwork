@@ -53,6 +53,8 @@ interface Item extends Spec {
   progress?: TaskProgress
   startedAt?: number
   endedAt?: number
+  /** 有人在对方的对话里按了停止（§1.3）。状态记 cancelled，和主 Bot 这边停的分开说。 */
+  stoppedThere?: boolean
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
@@ -149,7 +151,9 @@ function render(items: Item[]): string {
       const body =
         it.state === 'done'
           ? `  结论：${clip(it.result || '（对方没有写结论）', RESULT_MAX).split('\n').join('\n  ')}`
-          : it.state === 'detached'
+          : it.stoppedThere
+            ? `  已停止：有人在 @${it.bot.name} 的对话里把它停了，这件活作废。不要重派，也不要自己接着做；如实告诉人它被停了，要不要重新做由人决定。`
+            : it.state === 'detached'
             ? '  还在跑：等太久先不等了，它做完会以「任务结果」消息送回这条对话。'
             : `  ${it.result || '没做成'}`
       return `${head}\n${body}`
@@ -176,6 +180,7 @@ export function apply(ctx: Context) {
         '对方跑在自己的席位上，有自己的人设、能力和连接，看不见这条对话——每件的 instruction 要写得自足：背景、要求、交付形式都写进去。' +
         '一次可以派好几件，用 tasks 列出来，并用 after 安排顺序：没有 after 的一起跑（并行）；after 写了谁，就等谁做完再跑（串行），' +
         '前置任务交回的结论会自动附在它的指令末尾。同一颗 Bot 的几件会自动排队。前置没做成，依赖它的会跳过。' +
+        '某一件在对方那边被人停止了，就是人不要它做了：不要重派，也不要自己接着做。' +
         '这次调用会一直等到所有任务收场才返回，返回的是每一件的结论；拿到之后汇总、核对或决定下一步，不要再问用户要不要等。'
       )
     },
@@ -311,7 +316,11 @@ export function apply(ctx: Context) {
         const moved = runSessionId !== it.runSessionId || JSON.stringify(progress) !== JSON.stringify(it.progress)
         it.runSessionId = runSessionId || undefined
         it.progress = progress || undefined
-        if (t.status === 'done' || t.status === 'answered') {
+        if ((t.status === 'done' || t.status === 'answered') && t.runKind === 'aborted') {
+          // 对方那边有人按了停止（§1.3）：这一件停下、作废，不当失败。
+          it.stoppedThere = true
+          await settle(it, 'cancelled', `有人在 @${it.bot.name} 的对话里把它停了。`)
+        } else if (t.status === 'done' || t.status === 'answered') {
           const ok = t.runKind === 'completed' && !t.error
           await settle(it, ok ? 'done' : 'failed', ok ? String(t.result || '').trim() : String(t.result || t.error || '没做成').trim())
         } else if (t.status === 'failed' || t.status === 'cancelled') {
@@ -342,7 +351,7 @@ export function apply(ctx: Context) {
             const deps = depsOf(it).map((k) => byKey.get(k)!)
             const bad = deps.find((d) => terminal(d.state) && d.state !== 'done')
             if (bad) {
-              await settle(it, 'skipped', `跳过：前置「${bad.key} · @${bad.bot.name}」没做成。`)
+              await settle(it, 'skipped', `跳过：前置「${bad.key} · @${bad.bot.name}」${bad.stoppedThere ? '被人停止了' : '没做成'}。`)
               continue
             }
             if (deps.every((d) => d.state === 'done')) await start(it)
@@ -363,7 +372,8 @@ export function apply(ctx: Context) {
         throw e
       }
       const done = items.filter((it) => it.state === 'done').length
-      return { text: `派出去的 ${total} 件收场了（做完 ${done} 件）。\n\n${render(items)}` }
+      const stopped = items.filter((it) => it.stoppedThere).length
+      return { text: `派出去的 ${total} 件收场了（做完 ${done} 件${stopped ? `，${stopped} 件被人在对方那边停止` : ''}）。\n\n${render(items)}` }
     },
   })
 }

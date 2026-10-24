@@ -25,6 +25,12 @@ export async function runAssign({ root, test, assert, log }) {
     assert(r.dag.结论都回给模型, `回给模型的那段不对：\n${r.dag.text}`)
   })
 
+  await test('对方那边被人停了：这一件标成已停止（不是失败），依赖它的跳过，别的照跑，告诉模型别重派', async () => {
+    const s = r.stopThere
+    assert(s, '探针没跑到这一段')
+    for (const [k, v] of Object.entries(s)) if (k !== 'text') assert(v === true, `${k} 不成立：\n${s.text}`)
+  })
+
   await test('每一件的状态都写进会话：先全部画成「等」，再一件件更新到收场，带结论', async () => {
     assert(r.dag.事件先画全部再更新, 'bot/assign 事件的顺序不对')
     assert(r.dag.事件带结论, 'bot/assign 收场那条没带结论')

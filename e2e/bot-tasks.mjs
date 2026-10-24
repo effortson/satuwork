@@ -357,6 +357,28 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       assert(gone.json.task.status === 'cancelled', `该记成已停止：${gone.text}`)
     })
 
+    await test('目标 Bot 那边有人按了停止：记成已停止、作废，不是没做成；主 Bot 没在等时送回的也这么说', async () => {
+      // 主 Bot 在等：结论交给它，runKind 留着 aborted，话说成「已停止、作废」。
+      const a = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '那边会被人停', sessionId: 's-main', wait: true })
+      const id = a.json.task.id
+      assert((await due()).json.jobs.some((j) => j.taskId === id), '没领到')
+      await post(id, 'started', { sessionId: 's-fin' })
+      await post(id, 'finish', { kind: 'aborted' })
+      const got = await req(gwBase, 'GET', `/runtime/tasks/${id}`, { token: seatTok })
+      assert(got.json.task.runKind === 'aborted', `runKind 该是 aborted：${got.text}`)
+      assert(String(got.json.task.result || '').startsWith('已停止') && !String(got.json.task.result || '').includes('没做成'), `该说成已停止、作废：${got.text}`)
+
+      // 主 Bot 没在等（等太久先回去了）：兜底送回那条的标题说「那边停止了」，并叮嘱别重派。
+      const b = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '没人等着的那件', sessionId: 's-main' })
+      const bid = b.json.task.id
+      assert((await due()).json.jobs.some((j) => j.taskId === bid), '没领到')
+      await post(bid, 'started', { sessionId: 's-fin' })
+      await post(bid, 'finish', { kind: 'aborted' })
+      const back = (await due()).json.jobs.find((j) => j.taskId === bid && j.phase === 'deliver')
+      assert(back && back.instruction.includes('那边停止了') && back.instruction.includes('别重派'), `送回的话不对：${JSON.stringify(back)}`)
+      await post(bid, 'finish', { kind: 'delivered' })
+    })
+
     await test('别的机器领不到、也回报不了这台机器的活', async () => {
       const other = await pairMachine({ req, gwBase, ownerTok, orgId, managerPort: 18997 })
       const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '查一下发票', sessionId: 's-main' })
