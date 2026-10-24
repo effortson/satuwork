@@ -16,8 +16,9 @@ import type { ToolCall, WorkspaceFile } from './index.ts'
  * （见 docs/file-terminal-tools.md），因为模型见过——描述与参数名越接近它熟悉的约定，
  * 调用就越准。跑命令的那把在 tools/terminal.ts。
  *
- * **根目录**：`$SATUWORK_WORK_DIR`——部署时注入的 `/home/{linuxUser}/work`，同一个员工
- * 的所有席位共用的那个共享工作区。没有这个变量（本地跑）时回落 `$SATUWORK_HOME/work`。
+ * **根目录**：`$SATUWORK_WORK_DIR`——部署时注入的 `/home/{linuxUser}/work/bots/{seatId}`，
+ * 一个 Bot 一个；同一个员工的席位共用的是挂在里面的 `shared/`（见 workspace/index.ts）。
+ * 没有这个变量（本地跑）时回落 `$SATUWORK_HOME/work`。
  * **不用 `$SATUWORK_HOME`**：那底下是会话日志和 SQLite，让模型的手伸进自己的记忆里，
  * 一条命令就能把历史抹了。
  *
@@ -284,7 +285,8 @@ export function apply(ctx: Context) {
     },
     async ({ path, offset, limit }: { path?: string; offset?: number; limit?: number }, call: ToolCall) => {
       if (!path) fail('缺少 path 参数')
-      const target = resolveIn(path)
+      // 只读，老路径可以到共享区去找（见 workspace 的 locate）。写和编辑不兜。
+      const target = ctx.workspace.locate(path)
       const info = await stat(target)
       if (info.isDirectory()) fail(`${show(target)} 是目录，用 search_files 列它的内容。`)
       assertRegular(info, show(target))

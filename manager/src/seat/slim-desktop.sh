@@ -6,8 +6,8 @@
 # XDG_RUNTIME_DIR、同一份 Chrome profile、同一份 plank 配置。分法是把 XDG 三件套
 # 整体指进席位目录：plank、dconf、picom、.desktop 全都跟着走，不用逐个改。
 #
-# 共享的只有 $HOME/work——同一员工的所有席位都看得见，这是「bot 之间共享资料」的
-# 唯一入口。$HOME 下别的东西都不该被两个席位同时写。
+# 共享的只有 $HOME/work/shared——同一员工的所有席位都看得见，这是「bot 之间共享资料」的
+# 唯一入口。$HOME 下别的东西都不该被两个席位同时写，$HOME/work/bots/<席位> 也一样。
 set -euo pipefail
 SEAT_ID="${1:-}"
 [ -n "$SEAT_ID" ] || { echo "usage: slim-desktop.sh <seatId>" >&2; exit 1; }
@@ -23,9 +23,10 @@ DISPLAY_NUM="${DISPLAY_NUM:-10}"
 RFB="${RFB:-5910}"
 HTTP="${HTTP:-6081}"
 CDP="${CDP:-9222}"
-# 共享工作区。**这是这块屏上一切的默认落点**：文件管理器和终端都从这里开始，
-# 因为同一个员工名下所有 bot 的产物都堆在这儿，而 $HOME 下别的东西是逐席位私有的，
+# 这个席位的工作区（$HOME/work/bots/<席位>，里面有条 shared 链接通向共享区）。**这是这块屏
+# 上一切的默认落点**：文件管理器和终端都从这里开始，因为这颗 bot 的产物都在这儿，而
 # 开在 $HOME 等于把人放在一堆 .satuwork/、.cache/ 中间，还得自己找路进 work。
+# 老部署写的 desktop.env 里没有分席位的路径，回落到老的 $HOME/work。
 WORK_DIR="${WORK_DIR:-$HOME/work}"
 
 export DISPLAY=":${DISPLAY_NUM}"

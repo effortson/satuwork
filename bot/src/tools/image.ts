@@ -463,7 +463,7 @@ export function apply(ctx: Context) {
       let file: string
       let size: number
       try {
-        file = ctx.workspace.resolve(path)
+        file = ctx.workspace.locate(path)
         size = (await stat(file)).size
       } catch (e) {
         // 不存在的时候别把 stat 那句带着绝对路径的原话甩给模型——它只需要知道换一张。

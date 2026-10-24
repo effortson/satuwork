@@ -1342,7 +1342,7 @@ export function apply(ctx: Context, _config: Config = {}) {
         return
       }
       try {
-        const out = await extractDocument(ctx.workspace.resolve(path), kind)
+        const out = await extractDocument(ctx.workspace.locate(path), kind)
         res.json({ text: out.text, note: out.truncated ? `内容较长，只提取了前 ${out.parts} ${out.unit}。` : '' })
       } catch (e) {
         const err = e as NodeJS.ErrnoException
@@ -1370,7 +1370,7 @@ export function apply(ctx: Context, _config: Config = {}) {
       }
       let pdf: string
       try {
-        pdf = await renderToPdf(ctx.workspace.resolve(path))
+        pdf = await renderToPdf(ctx.workspace.locate(path))
       } catch (e) {
         const err = e as NodeJS.ErrnoException
         if (e instanceof RenderError) {
@@ -1512,7 +1512,7 @@ async function imageRefs(ctx: Context, raw: unknown): Promise<ImageRef[]> {
     const mime = typeof item?.mime === 'string' ? item.mime.trim().toLowerCase() : ''
     if (!path) throw new Error('images 里有一项缺 path')
     if (!MODEL_IMAGE_MIME.has(mime)) throw new Error(`这种图片格式模型看不了：${mime || '(空)'}`)
-    const file = ctx.workspace.resolve(path)
+    const file = ctx.workspace.locate(path)
     const info = await stat(file).catch(() => null)
     if (!info?.isFile()) throw new Error(`图片不存在：${path}`)
     out.push({ path: ctx.workspace.show(file), mime })
@@ -1556,7 +1556,7 @@ export async function refList(ctx: Context, sessionId: string, raw: unknown): Pr
     if (kind === 'file') {
       const path = typeof o.path === 'string' ? o.path.trim() : ''
       if (!path) throw new Error('refs 里有一个文件引用缺 path')
-      const shown = ctx.workspace.show(ctx.workspace.resolve(path))
+      const shown = ctx.workspace.show(ctx.workspace.locate(path))
       if (out.some((r) => r.kind === 'file' && r.path === shown)) continue
       const name = (typeof o.name === 'string' && o.name.trim()) || basename(shown)
       out.push({ type: 'ref', kind: 'file', path: shown, name: name.slice(0, 255) })

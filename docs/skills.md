@@ -262,7 +262,7 @@ Gateway 那侧的写接口和 policy 上。
 | 落点 | 活多久 | 谁看得见 | 问题 |
 |---|---|---|---|
 | 席位私有目录 `~/.satuwork/<seatId>/` | 到这个席位被回收为止（[manager/src/reclaim.ts:95](../manager/src/reclaim.ts:95)） | 没人 | 换版重启活着，回收就没了；管理员看不见 Bot 给自己写了什么 |
-| 共享工作区 `/home/<user>/work` | 长 | 员工自己 | 模型的 `terminal` 能 `rm -rf` 它；它是资料区，不是记忆区 |
+| 工作区 `/home/<user>/work`（各 Bot 的 `bots/<席位>` + 共用的 `shared/`） | 长 | 员工自己 | 模型的 `terminal` 能 `rm -rf` 它；它是资料区，不是记忆区 |
 | **Gateway，私有档** | **和公司数据一样长** | **员工 + 管理员** | 要加写接口 |
 
 **选第三个。** 理由按份量排：
