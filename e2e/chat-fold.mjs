@@ -104,7 +104,8 @@ function twoTurns() {
 }
 
 export async function runChatFold({ root, test, assert, log }) {
-  const { fold, threadRows, rowShell, parseCommand, commandQueryAt, ctxDivText, state } = loadChat(root)
+  const chatCtx = loadChat(root)
+  const { fold, threadRows, rowShell, parseCommand, commandQueryAt, ctxDivText, state } = chatCtx
   log('\n# chat-fold')
 
   await test('压缩事件落在轮次中间：工具结果照样认得回它的药丸', async () => {
@@ -255,13 +256,54 @@ export async function runChatFold({ root, test, assert, log }) {
         source: { kind: 'plugin', plugin: 'task', form: 't1', phase: 'instruction', from: { id: 'main', name: '助手' } },
       }),
     ]
-    state.chatEvents = events
     const row = threadRows(fold(events), 's1').find((r) => r.kind === 'msg')
-    state.chatEvents = []
     assert(row && row.block.taskFrom && row.block.taskFrom.id === 'main' && row.block.taskFrom.name === '助手', `主 Bot 身份没带出来：${JSON.stringify(row && row.block.taskFrom)}`)
     assert(row.block.text === '做月报', `正文没剥干净：${JSON.stringify(row.block.text)}`)
     const html = rowShell(row.block, row.key)
     assert(html.includes('sw-taskin') && html.includes('data-role="assistant"') && html.includes('>助手<'), `外壳不对：${html}`)
+  })
+
+  await test('目标那边派来的活：它那一轮默认折进卡里，状态跟着 turn/end 走，点开才露出过程', async () => {
+    const task = { kind: 'plugin', plugin: 'task', form: 't1', phase: 'instruction', from: { id: 'main', name: '助手' } }
+    const tc = (callId) => ({ callId, name: 'web_search', arguments: '{}' })
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'ds', createdAt: T }),
+      ev(2, 'user/message', { message: um('【主 Bot「助手」派来的任务】\n搜 6 轮'), source: task }),
+      ev(3, 'turn/start', { turn: 1 }),
+      ev(4, 'tool/call', { turn: 1, step: 1, ...tc('c1') }),
+      ev(5, 'tool/result', { turn: 1, step: 1, callId: 'c1', text: 'ok' }),
+      ev(6, 'assistant/message', { turn: 1, step: 1, message: am('第 1 轮搜完'), usage }),
+      ev(7, 'turn/end', { turn: 1, reason: 'aborted' }),
+      ev(8, 'user/message', { message: um('你好'), source: { kind: 'user' } }),
+      ev(9, 'turn/start', { turn: 2 }),
+      ev(10, 'assistant/message', { turn: 2, step: 1, message: am('你好！'), usage }),
+      ev(11, 'turn/end', { turn: 2, reason: 'completed' }),
+    ]
+    const folded = fold(events)
+    const card = folded.blocks.find((b) => b.kind === 'user' && b.assigned)
+    assert(card && card.assigned.state === 'aborted' && card.assigned.turn === 1, `收场状态没记上：${JSON.stringify(card && card.assigned)}`)
+    const shut = threadRows(folded, 's1').filter((r) => r.kind === 'msg').map((r) => r.block.text)
+    assert(JSON.stringify(shut) === JSON.stringify(['搜 6 轮', '你好', '你好！']), `折着时那一轮的回复不该画出来：${JSON.stringify(shut)}`)
+    const head = threadRows(folded, 's1').find((r) => r.kind === 'msg').block
+    assert(head.foldable && !head.open && head.calls === 1, `卡片该能开合、数出 1 次工具调用：${JSON.stringify({ foldable: head.foldable, open: head.open, calls: head.calls })}`)
+    runInContext(`taskInOpen.add('2')`, chatCtx)
+    const open = threadRows(folded, 's1').filter((r) => r.kind === 'msg').map((r) => r.block.text)
+    runInContext(`taskInOpen.clear()`, chatCtx)
+    assert(JSON.stringify(open) === JSON.stringify(['搜 6 轮', '第 1 轮搜完', '你好', '你好！']), `点开之后该露出那一轮：${JSON.stringify(open)}`)
+  })
+
+  await test('派来的活正跑着、卡片折着：不补「正在回答」的空气泡，卡片自己说在跑', async () => {
+    const task = { kind: 'plugin', plugin: 'task', form: 't2', phase: 'instruction', from: { id: 'main', name: '助手' } }
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'ds', createdAt: T }),
+      ev(2, 'user/message', { message: um('【主 Bot「助手」派来的任务】\n做月报'), source: task }),
+      ev(3, 'turn/start', { turn: 1 }),
+    ]
+    const folded = fold(events)
+    const rows = threadRows(folded, 's1')
+    assert(!rows.some((r) => r.key === 'm-live'), `折着的派活不该再补占位：${JSON.stringify(rows.map((r) => r.key))}`)
+    const head = rows.find((r) => r.kind === 'msg').block
+    assert(head.assigned.state === 'running' && head.live, `该是正在跑：${JSON.stringify(head.assigned)} live=${head.live}`)
   })
 
   await test('混排的点名：正文里留着 @名字，点名带 inline（就地画药丸，不另起一排）', async () => {

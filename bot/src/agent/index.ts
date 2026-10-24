@@ -18,6 +18,7 @@ import type { ReassignedItem, WorkspaceFile } from '../tools/index.ts'
 import { budgetToolText } from '../tools/result-budget.ts'
 import { turnContextGuard } from './context-guard.ts'
 import { ProgressTracker } from './progress.ts'
+import { isTaskInstruction, withoutTaskTurns } from './task-turns.ts'
 import { browserOf, desktopOf, memoryOf, type BotRecord } from '../registry/index.ts'
 import { cachedMemories, cachedSkill, cachedSkills, type CachedMemory, type CachedSkill, type ReasoningEffort } from '../catalog/index.ts'
 
@@ -441,6 +442,11 @@ export class AgentService extends Service {
    */
   private starting = new Set<string>()
   /**
+   * 正在跑的那一轮是主 Bot 派来的活（docs/bot-tasks.md §7）。这时候进来的话不插进去——插进去
+   * 就成了那件活的一部分，跟着它一起被折叠、一起不进后面的上下文；排到它后面另开一轮。
+   */
+  private taskTurns = new Set<string>()
+  /**
    * 还在「开轮」那一段的会话各自的中止开关。
    *
    * 停止按钮以前只看 `live`：轮首那次同步压缩要跑一次模型、点名缺工具要重拉目录，
@@ -497,6 +503,11 @@ export class AgentService extends Service {
 
   isRunning(sessionId: string) {
     return this.live.has(sessionId) || this.starting.has(sessionId)
+  }
+
+  /** 正在跑的是不是主 Bot 派来的活。见 taskTurns。 */
+  runningTask(sessionId: string): boolean {
+    return this.taskTurns.has(sessionId) && this.isRunning(sessionId)
   }
 
   // ── 换版前的静默期 ────────────────────────────────────────────────
@@ -1125,6 +1136,17 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
    * 就不排，留在队列里，人再发一条时照旧会带走。
    */
   async drainAtBoot(opts: { waitMs?: number; pollMs?: number } = {}): Promise<number> {
+    /**
+     * **排着的派活不接着跑。** 等它结论的那一方（机器上的工人 / 桌面端的本地派活）跟着上一条命的
+     * 事件流一起断了，已经按失败报回主 Bot；这时再跑一遍，做出来的东西没人收，而人看到的是 Bot
+     * 自己开始干一件早就作废的活。**先丢再等目录**：等的这段时间里人发一句，那一轮收口时就会排空队列。
+     */
+    for (const row of this.queueCol().list().map((r) => r.value)) {
+      if (!isTaskInstruction(row.source)) continue
+      this.queueCol().delete(row.id)
+      this.emitQueue(row.sessionId)
+      this.ctx.logger?.info?.(`agents: 丢掉上个进程里排着的派活 ${row.id}（会话 ${row.sessionId}）`)
+    }
     const until = Date.now() + (opts.waitMs ?? 5 * 60_000)
     while (!this.ctx.catalog?.pulledAt) {
       if (Date.now() >= until) return 0
@@ -1148,7 +1170,15 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     return Math.max(1, Math.trunc(Number(process.env.SATUWORK_QUEUE_MAX) || 5))
   }
 
-  enqueue(sessionId: string, text: string, images: ImageRef[], mentions: Mention[], refs: RefBlock[] = []): QueuedMessage {
+  enqueue(
+    sessionId: string,
+    text: string,
+    images: ImageRef[],
+    mentions: Mention[],
+    refs: RefBlock[] = [],
+    source?: MessageSource,
+    modelRole?: TurnModelRole,
+  ): QueuedMessage {
     if (this.queued(sessionId).length >= this.queueMax) {
       throw new Error(`最多排 ${this.queueMax} 条，等这一轮跑完再发`)
     }
@@ -1159,6 +1189,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       images,
       mentions,
       ...(refs.length ? { refs } : {}),
+      ...(source && source.kind !== 'user' ? { source } : {}),
+      ...(modelRole ? { modelRole } : {}),
       createdAt: Date.now(),
     }
     this.queueCol().put(row.id, row)
@@ -1212,7 +1244,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         // **必须走 runGuarded。** 直接调 runTurn 的话，它走到 live.set 之前的那几个
         // await 期间既不在 live 也不在 starting 里，isRunning() 是 false——这时进来的
         // 消息会开出第二轮并发 turn，两轮交错写同一份 JSONL。
-        await this.runGuarded(sessionId, next.text, next.images, next.mentions, undefined, undefined, next.refs ?? [])
+        await this.runGuarded(sessionId, next.text, next.images, next.mentions, next.source, next.modelRole, next.refs ?? [])
       } catch (e) {
         // **接着跑下一条，不是就此收工。** 一条失败就 return 的话，后面几条既不跑也不
         // 清，dock 上一直挂着，而没有任何东西会再来叫醒队列——只能等用户手动再发一条。
@@ -1242,9 +1274,11 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     const stop = new AbortController()
     this.startingAbort.set(sessionId, stop)
     this.turnMentions.set(sessionId, new Set(mentions.filter((m) => m.kind === 'connector').map((m) => m.id)))
+    if (isTaskInstruction(source)) this.taskTurns.add(sessionId)
     try {
       await this.runTurn(sessionId, text, images, mentions, source, modelRole, stop.signal, refs)
     } finally {
+      this.taskTurns.delete(sessionId)
       this.starting.delete(sessionId)
       if (this.startingAbort.get(sessionId) === stop) this.startingAbort.delete(sessionId)
       this.turnMentions.delete(sessionId)
@@ -3134,6 +3168,8 @@ export async function toAgentMessages(
   // 从这份全量里读出来的（见 refTextOf）。所以切之前留一份。
   const allEvents = events
   if (boundary) events = events.filter((e) => e.seq > boundary.data.throughSeq)
+  // 主 Bot 派来的活那几轮不进上下文（见 task-turns.ts）。压缩的摘要也走这里，所以不会从摘要里漏回来。
+  events = withoutTaskTurns(events)
 
   // 先找出每个 step 的助手消息落在哪个 seq，工具结果据此排到它后面。
   const assistantSeq = new Map<string, number>()
@@ -3850,6 +3886,13 @@ export interface QueuedMessage {
   mentions: Mention[]
   /** 这条带的引用。老的排队行没有这个字段，按空读。 */
   refs?: RefBlock[]
+  /**
+   * 谁在说话。人打的不写（老的排队行也没有），按人读。派活的指令和派活跑着时进来的日常任务
+   * 也走排队（docs/bot-tasks.md §7），身份得跟着，界面靠它画角标、上下文靠它认派活那几轮。
+   */
+  source?: MessageSource
+  /** 日常任务钉的模型档位，同 send 的 modelRole。 */
+  modelRole?: TurnModelRole
   createdAt: number
 }
 

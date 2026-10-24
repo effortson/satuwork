@@ -39,6 +39,10 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
   /** 单号 → 已经画在某一块上的那张交接卡。跨块认，见下面 human/handoff。 */
   const handoffSeen = new Map<string, any>()
   const handoffOf = (id: string) => (id ? handoffSeen.get(id) : undefined)
+  /** 有没有轮次开着。派来的指令落下时没开着，紧接着的 turn/start 才是它自己的那一轮。 */
+  let openTurn = false
+  /** 正在等自己那一轮起来、或者那一轮正跑着的派活指令（目标 Bot 这边，docs/bot-tasks.md §7）。 */
+  let assigned: any = null
   /** 派活卡：id → 已经画出来的那一块。同一个 id 来多条（等 → 跑 → 收场），取最后一条。 */
   const taskSeen = new Map<string, any>()
   for (const ev of events || []) {
@@ -72,7 +76,11 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
       tools = []
       const raw = messageText(data.message) || data.text || ''
       const up = splitUploads(raw)
+      // 派来的指令：记下它，等它开的那一轮把状态填上。插进别人那一轮的（老席位）没有自己的轮次。
+      const task = via === 'task' ? { id: String(src.form || ''), from: src.from && typeof src.from === 'object' ? src.from : null, state: openTurn ? 'steered' : 'queued' } : undefined
+      if (!openTurn) assigned = task || null
       blocks.push({
+        ...(task ? { assigned: task } : {}),
         kind: 'user',
         text: up.text,
         // 附件列表拆出来单独画成药丸；正文只留人真正打的那句话。
@@ -423,8 +431,20 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
     } else if (type === 'turn/start') {
       status = 'running'
       statusAt = at
+      openTurn = true
+      if (assigned && assigned.turn == null) {
+        assigned.turn = Number(data.turn)
+        assigned.state = 'running'
+      }
     } else if (type === 'turn/end') {
       status = ''
+      openTurn = false
+      if (assigned && assigned.turn === Number(data.turn)) {
+        const reason = data.reason
+        assigned.state = String((typeof reason === 'string' ? reason : reason && reason.kind) || 'completed')
+        assigned.endedAt = at
+        assigned = null
+      }
       /**
        * **起点也要跟着清掉。**
        *

@@ -74,6 +74,23 @@ export interface UserBlock {
   time: number
   seq?: number
   pending?: boolean
+  /** 主 Bot 派来的指令（目标 Bot 这边）。界面把它和它开的那一轮折成一张卡，见 AssignedTurn。 */
+  assigned?: AssignedTurn
+}
+
+/**
+ * 目标 Bot 会话里，主 Bot 派来的一件活占的那一轮（docs/bot-tasks.md §7）。
+ *
+ * 状态从这一轮自己的 turn/start、turn/end 来：没开轮是 queued（只在指令落下、轮次还没起来的
+ * 那一瞬），跑着是 running，收口时是 turn/end 的 reason（completed / aborted / error …）。
+ * 老席位会把指令插进人正在跑的那一轮，那种没有自己的轮次，`turn` 为空，状态停在 steered。
+ */
+export interface AssignedTurn {
+  id: string
+  from: { id: string; name: string } | null
+  turn?: number
+  state: string
+  endedAt?: number
 }
 
 export interface AssistantBlock {

@@ -3141,20 +3141,45 @@ function updateTaskRow(node, b) {
   } else time.hidden = true
 }
 
-/* ── 目标 Bot 这边收到的派活 ─────────────────────────────────────────────
+/* ── 目标 Bot 这边收到的派活（docs/bot-tasks.md §7）──────────────────────
    和主 Bot 那边的派活卡对称：画成「主 Bot 发来的一条消息」——左侧、主 Bot 的头像和名字，
    不是右边人打的那种气泡。那条 user/message 是工人替主 Bot 发的，人一个字也没说过。
-   正文去掉首行标题和末尾那句给模型看的交代：名字那一行已经说了是谁派的。 */
+   正文去掉首行标题和末尾那句给模型看的交代：名字那一行已经说了是谁派的。
+
+   **它开的那一轮默认折起来。** 那是替主 Bot 跑的一次性差事，结论已经交回主 Bot；摊开的话
+   一件活几十次工具调用，把人和这颗 Bot 自己的对话挤得找不着。卡上只留任务、状态和一个
+   「展开过程」，点开才露出那一轮的回复和工具。 */
 
 const TASK_IN_HEAD = /^【主 Bot「([^」]*)」派来的任务】\n?/
 const TASK_IN_TAIL = /\s*（做完把结果直接写在回复里[^）]*）\s*$/
 
-function taskInBlock(b) {
-  const ev = (state.chatEvents || []).find((e) => e.seq === b.seq && e.type === 'user/message')
-  const from = (ev && ev.data && ev.data.source && ev.data.source.from) || {}
+/** 展开过的那几件：指令那条 user/message 的 seq → true。只在这一页里记着，刷新就回到折起来。 */
+const taskInOpen = new Set()
+
+/**
+ * 指令那一块，加上卡片要的几样：谁派的、开没开、那一轮调了几次工具。`blocks[i]` 是它自己，
+ * 后面紧跟着的 via=task 的助手块就是它那一轮的（fold 给助手块标的是这一轮开头那条消息的来源）。
+ */
+function taskInBlock(b, blocks, i, live) {
+  const a = b.assigned || null
   const raw = String(b.text || '')
   const head = raw.match(TASK_IN_HEAD)
-  return { ...b, text: raw.replace(TASK_IN_HEAD, '').replace(TASK_IN_TAIL, ''), taskFrom: { id: from.id || '', name: from.name || (head && head[1]) || '' } }
+  const from = (a && a.from) || {}
+  let calls = 0
+  if (a && a.state !== 'steered') {
+    for (let j = i + 1; j < blocks.length && blocks[j].kind === 'assistant' && blocks[j].via === 'task'; j++) calls += (blocks[j].tools || []).length
+  }
+  return {
+    ...b,
+    text: raw.replace(TASK_IN_HEAD, '').replace(TASK_IN_TAIL, ''),
+    taskFrom: { id: from.id || '', name: from.name || (head && head[1]) || '' },
+    // 老席位插进人那一轮的（steered）没有自己的轮次，没什么可折的。
+    foldable: Boolean(a && a.state !== 'steered'),
+    open: taskInOpen.has(String(b.seq)),
+    calls,
+    // 这条会话还在跑没有（fold 的 status）。一轮只有 turn/start 没有 turn/end、而席位说没在跑：上一条命死在半路了。
+    live: Boolean(live),
+  }
 }
 
 function taskInBotOf(b) {
@@ -3169,21 +3194,53 @@ function taskInRowShell(b, key) {
     `<div class="sw-msg sw-taskin" data-role="assistant" data-key="${esc(key)}"${qseq != null ? ` data-seq="${esc(String(qseq))}"` : ''} data-via="task">` +
     `<div class="sw-msg-avatar" aria-hidden="true"${bot ? ' data-bot="1"' : ''}>${bot ? botAvatar(bot.icon, 36, bot.origin) : ICON_BOT}</div>` +
     `<div class="sw-msg-col">` +
-    `<div class="sw-taskname"><span class="sw-taskname-bot">${esc((bot && bot.name) || b.taskFrom.name)}</span><span class="sw-taskname-tag">${esc(t('派来的任务', 'Assigned a task'))}</span></div>` +
-    `<div class="sw-bubble" data-role="assistant"><div class="sw-md"></div><div class="sw-chips" hidden></div></div>` +
+    `<div class="sw-taskname"><span class="sw-taskname-bot">${esc((bot && bot.name) || b.taskFrom.name)}</span><span class="sw-taskname-tag"></span></div>` +
+    `<div class="sw-bubble" data-role="assistant"><div class="sw-md"></div><div class="sw-chips" hidden></div>` +
+    `<button type="button" class="sw-taskin-toggle" data-act="chat-taskin-toggle" data-seq="${esc(String(b.seq ?? ''))}" hidden></button></div>` +
     `<time class="sw-time" hidden></time>${msgActsHtml(b)}</div></div>`
   )
 }
 
-/** 名单晚到：通用图标换成主 Bot 自己的头像，名字也换成名单上的（可能改过名）。 */
-function updateTaskInHead(el, b) {
+/** 派来的活现在怎样了：fold 从它那一轮的 turn/start、turn/end 填的。 */
+function taskInState(b) {
+  const st = (b.assigned && b.assigned.state) || ''
+  if (st === 'running' && !b.live) return 'lost'
+  return st
+}
+
+const TASK_IN_LABEL = {
+  queued: () => t('派来的任务 · 排队中', 'Assigned · Queued'),
+  running: () => t('派来的任务 · 正在执行', 'Assigned · Working'),
+  completed: () => t('派来的任务 · 已完成', 'Assigned · Done'),
+  aborted: () => t('派来的任务 · 已停止', 'Assigned · Stopped'),
+  lost: () => t('派来的任务 · 没收口', 'Assigned · Interrupted'),
+  steered: () => t('派来的任务', 'Assigned a task'),
+}
+
+/** 名字那一行的状态签、底下那颗开合按钮，以及名单晚到时补换主 Bot 的头像。每帧跑，变了才写。 */
+function updateTaskIn(el, b) {
   const av = el.querySelector(':scope > .sw-msg-avatar')
-  if (!av || av.hasAttribute('data-bot')) return
-  const bot = taskInBotOf(b)
-  if (!bot) return
-  av.innerHTML = botAvatar(bot.icon, 36, bot.origin)
-  av.setAttribute('data-bot', '1')
-  el.querySelector('.sw-taskname-bot').textContent = bot.name || b.taskFrom.name
+  if (av && !av.hasAttribute('data-bot')) {
+    const bot = taskInBotOf(b)
+    if (bot) {
+      av.innerHTML = botAvatar(bot.icon, 36, bot.origin)
+      av.setAttribute('data-bot', '1')
+      el.querySelector('.sw-taskname-bot').textContent = bot.name || b.taskFrom.name
+    }
+  }
+  const st = taskInState(b)
+  const sig = [st, b.foldable ? 1 : 0, b.open ? 1 : 0, b.calls].join('|')
+  if (el.getAttribute('data-sig') === sig) return
+  el.setAttribute('data-sig', sig)
+  el.setAttribute('data-state', st)
+  if (b.foldable) el.setAttribute('data-open', b.open ? '1' : '0')
+  else el.removeAttribute('data-open')
+  el.querySelector('.sw-taskname-tag').textContent = (TASK_IN_LABEL[st] || (() => t('派来的任务 · 出错了', 'Assigned · Failed')))()
+  const btn = el.querySelector('.sw-taskin-toggle')
+  btn.hidden = !b.foldable
+  btn.setAttribute('aria-expanded', b.open ? 'true' : 'false')
+  const n = b.calls ? t(`${b.calls} 次工具调用`, `${b.calls} tool calls`) : ''
+  btn.textContent = b.open ? t('收起过程', 'Hide the work') : n ? t(`展开过程 · ${n}`, `Show the work · ${n}`) : t('展开过程', 'Show the work')
 }
 
 /** 「正在执行」后面那个读秒。只在页面上有在跑的派活卡时转。 */
@@ -3757,8 +3814,11 @@ function syncMd(host, text, streaming) {
  */
 function updateRow(el, b, streaming, since) {
   // 先画的是通用图标（名单那会儿还没到）：名单到了就换成这颗 Bot 自己的头像。
-  if (b.taskFrom) updateTaskInHead(el, b)
-  else if (b.kind !== 'user') {
+  if (b.taskFrom) {
+    updateTaskIn(el, b)
+    // 卡片本身不是在流式输出的那条：指令早就写全了，跑着的那一轮在它下面（或者折在它里面）。
+    streaming = false
+  } else if (b.kind !== 'user') {
     const av = el.querySelector(':scope > .sw-msg-avatar')
     if (av && !av.hasAttribute('data-bot')) {
       const mine = assistantAvatar()
@@ -4434,7 +4494,17 @@ function threadRows(folded, sessionId) {
   const more = sessionId ? loadMoreRow(sessionId) : null
   if (more) rows.push(more)
   let lastDay = ''
+  /** 正折着的那件派来的活：它那一轮的助手块不画（见 taskInBlock）。 */
+  let folding = false
+  /** 末尾那一块被折进卡里了：这一轮还在跑也不补「正在回答」的空气泡，卡片自己的状态签说着呢。 */
+  let tailFolded = false
   blocks.forEach((b, i) => {
+    if (folding && b.kind === 'assistant' && b.via === 'task') {
+      tailFolded = i === blocks.length - 1
+      return
+    }
+    folding = false
+    tailFolded = false
     const day = chatDayKey(b.time)
     if (day && day !== lastDay) {
       lastDay = day
@@ -4453,7 +4523,12 @@ function threadRows(folded, sessionId) {
     }
     // key 必须**跟着这一块自己**走，不能用下标：往前翻加载旧消息会让所有下标移位，
     // 于是整棵 DOM 重建——Markdown 全部重渲染，滚动位置也跟着没了。
-    rows.push({ kind: 'msg', key: 'm' + (b.seq != null ? b.seq : 'i' + i), block: b.kind === 'user' && b.via === 'task' ? taskInBlock(b) : b })
+    const block = b.kind === 'user' && b.via === 'task' ? taskInBlock(b, blocks, i, folded.status) : b
+    if (block.foldable && !block.open) {
+      folding = true
+      tailFolded = i === blocks.length - 1
+    }
+    rows.push({ kind: 'msg', key: 'm' + (b.seq != null ? b.seq : 'i' + i), block })
   })
   // 轮次开着但助手那条还没建出来（工具先跑、或者刚发出去）——补一条空的，
   // 让「正在想」有地方待着，而不是让输入框上面挂一行状态文字。
@@ -4478,7 +4553,7 @@ function threadRows(folded, sessionId) {
    * 全收场了说明主 Bot 正拿着结论在想，补上占位。
    */
   const tasksBusy = blocks.some((x) => x.kind === 'task' && (x.state === 'running' || x.state === 'waiting'))
-  if (folded.status && (!last || last.kind === 'user' || last.kind === 'mark' || (last.kind === 'task' && !tasksBusy))) {
+  if (folded.status && !tailFolded && (!last || last.kind === 'user' || last.kind === 'mark' || (last.kind === 'task' && !tasksBusy))) {
     /**
      * **`time` 要给这一轮的起点，不能留 0。**
      *
@@ -7835,12 +7910,20 @@ function paintChatQueue() {
     (hidden ? `<div class="sw-queue-more">${esc(t(`还有 ${hidden} 条`))}</div>` : '') +
     shown
       .map((r) => {
-        const line = (r.text || '').replace(/\s+/g, ' ').trim() || t('（只有附件）')
+        /**
+         * 主 Bot 派来、排在这儿的活（docs/bot-tasks.md §7）。**这里不给取消**：等它结论的是主 Bot
+         * 那一轮，这边悄悄撤掉的话那边要干等到超时。要停去主 Bot 那边按停止，排着的这条会跟着撤掉。
+         */
+        const src = r.source || {}
+        const task = src.kind === 'plugin' && src.plugin === 'task' && src.phase !== 'result'
+        const body = task ? String(r.text || '').replace(TASK_IN_HEAD, '').replace(TASK_IN_TAIL, '') : r.text || ''
+        const line = body.replace(/\s+/g, ' ').trim() || t('（只有附件）')
+        const who = task ? t(`${(src.from && src.from.name) || '主 Bot'} 派来的任务：`, `Assigned by ${(src.from && src.from.name) || 'the main bot'}: `) : ''
         return `<div class="sw-queue-row">
           <span class="sw-queue-dot" aria-hidden="true"></span>
-          <span class="sw-queue-text">${esc(line)}</span>
-          <button type="button" class="sw-file-x" data-act="chat-queue-cancel" data-id="${esc(r.id)}"
-            aria-label="${esc(t('取消'))}">${ICON_X}</button>
+          <span class="sw-queue-text">${esc(who + line)}</span>
+          ${task ? '' : `<button type="button" class="sw-file-x" data-act="chat-queue-cancel" data-id="${esc(r.id)}"
+            aria-label="${esc(t('取消'))}">${ICON_X}</button>`}
         </div>`
       })
       .join('')

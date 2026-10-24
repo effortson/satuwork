@@ -11,6 +11,7 @@ import { WorkspaceError } from '../workspace/index.ts'
 import { docKindOf, extractDocument } from '../workspace/extract.ts'
 import { RenderError, renderToPdf, renderableOf } from '../workspace/render.ts'
 import { CommandError, QUIET_MESSAGE, type ImageRef, type Mention, type MessageSource, type RefBlock } from '../agent/index.ts'
+import { isTaskInstruction } from '../agent/task-turns.ts'
 import { expiredMessage, returnMessage, type Disposition, type HandoffActor } from '../policy/handoff.ts'
 import { clearSettledTodos, readTodos } from '../tools/todo.ts'
 import { watchClose, watchOpen } from '../session/watchers.ts'
@@ -841,14 +842,22 @@ export function apply(ctx: Context, _config: Config = {}) {
      * drainQueue 停手、紧接着进程就被换掉了——收下它等于开一张不会兑现的空头支票，
      * 那条消息会一直躺在队列里，直到某天另一轮跑完才被想起来。
      */
-    if (ctx.agents.quiesced() && mentions.length) {
+    /**
+     * **派活不插话，派活跑着的时候也不插话**（docs/bot-tasks.md §7）。
+     *
+     * 派活那几轮是替主 Bot 跑的一次性差事，折起来画、不进后面的上下文。主 Bot 派来的指令
+     * 插进人正在跑的那一轮，就成了人那一轮的一部分，既拆不出来也停不掉；人在派活跑着时说的话
+     * 插进去，就跟着那件活一起被折叠、一起从上下文里消失。两种都排到当前这一轮后面，各开一轮。
+     */
+    const queueIt = mentions.length > 0 || isTaskInstruction(source) || ctx.agents.runningTask(req.params.id)
+    if (ctx.agents.quiesced() && queueIt) {
       refuseQuiet(res)
       return
     }
     if (ctx.agents.isRunning(req.params.id)) {
-      if (mentions.length) {
+      if (queueIt) {
         try {
-          const row = ctx.agents.enqueue(req.params.id, body.text ?? '', images, mentions, refs)
+          const row = ctx.agents.enqueue(req.params.id, body.text ?? '', images, mentions, refs, source, modelRole)
           res.json({ queued: true, queueId: row.id, refs: refs.length })
         } catch (e) {
           // 队满。**明说**，不静默丢——用户以为发出去了才是最糟的。

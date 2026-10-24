@@ -541,6 +541,14 @@ document.getElementById('app').addEventListener('click', async (e) => {
     await decideApproval(btn.getAttribute('data-call'), 'deny', btn.getAttribute('data-scope') || 'once')
     return
   }
+  if (act === 'chat-taskin-toggle') {
+    // 目标 Bot 里那件派来的活：摊开 / 折起它那一轮（chat.js 的 taskInBlock）。
+    const seq = btn.getAttribute('data-seq') || ''
+    if (taskInOpen.has(seq)) taskInOpen.delete(seq)
+    else taskInOpen.add(seq)
+    render()
+    return
+  }
   if (act === 'chat-task-toggle') {
     // 再点一次收起。一批委派里每条各自开合——三条同时摊开，卡片会长到看不见对话。
     const id = btn.getAttribute('data-id') || ''

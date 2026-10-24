@@ -492,6 +492,38 @@ await ctx.agents
 
 hold = null
 
+// ── 派活排队（docs/bot-tasks.md §7）：排着时身份跟着走，跑起来算「派活在跑」 ─────
+{
+  const sid = await ctx.sessions.create({ title: '派活', botId: 'default' })
+  const TASK = { kind: 'plugin', plugin: 'task', form: 'tk-q', phase: 'instruction', from: { id: 'main', name: '助手' } }
+  let release
+  hold = new Promise((r) => (release = r))
+  captured = null
+  const running = ctx.agents.send(sid, '人这一轮').catch(() => {})
+  // 等到模型真被调到（收口已经挂在这个 hold 上），再换下一道闸。
+  for (let i = 0; i < 100 && !captured; i++) await new Promise((r) => setTimeout(r, 20))
+  const humanTurnIsTask = ctx.agents.runningTask(sid)
+  ctx.agents.enqueue(sid, '【主 Bot「助手」派来的任务】\n做月报', [], [], [], TASK)
+  // 派活那一轮也卡住，好看它跑着时算不算「派活在跑」。第一轮的收口已经挂在旧的 hold 上了。
+  let release2
+  hold = new Promise((r) => (release2 = r))
+  release()
+  // 不等 running：排着的那条是在上一轮的收尾里接上的，send 要等它也跑完才回来。
+  for (let i = 0; i < 100 && !ctx.agents.runningTask(sid); i++) await new Promise((r) => setTimeout(r, 20))
+  const taskRunning = ctx.agents.runningTask(sid)
+  release2()
+  await running
+  for (let i = 0; i < 100 && ctx.agents.isRunning(sid); i++) await new Promise((r) => setTimeout(r, 20))
+  const taskMsg = (await ctx.sessions.events(sid)).find((e) => e.type === 'user/message' && e.data.source?.plugin === 'task')
+  out.taskQueue = {
+    人那一轮不算派活: !humanTurnIsTask,
+    派活那一轮算派活在跑: taskRunning,
+    排队时身份跟着走: taskMsg?.data?.source?.form === 'tk-q' && taskMsg?.data?.source?.from?.name === '助手',
+    收口之后不再算: !ctx.agents.runningTask(sid),
+  }
+  hold = null
+}
+
 /**
  * 开机排空：上一条命留下的队列，等目录拉下来就接着跑。**放在最后**：后台那次开机排空一直在
  * 等 pulledAt，这里一设，它会把当时所有排着的消息都跑掉，放前面会搅了别的段。
@@ -502,9 +534,13 @@ hold = null
   // 这里挂一个占位的，不然 Node 会以「顶层 await 永远等不到」直接退出。
   const keepAlive = setInterval(() => {}, 1_000)
   ctx.agents.enqueue(sid, '换版重启之前排进来的', [], [])
+  // 排着的派活：等它结论的那一方跟着上一条命断了，开机不再跑（docs/bot-tasks.md §7）。
+  const sidTask = 's-boot-task'
+  ctx.agents.enqueue(sidTask, '【主 Bot「助手」派来的任务】\n上一条命排着的', [], [], [], { kind: 'plugin', plugin: 'task', form: 'tk-b', phase: 'instruction' })
   // 目录还没拉下来：等满就放弃，一条都不动——这时开跑会以「没有模型」失败，消息白丢。
   const notYet = await ctx.agents.drainAtBoot({ waitMs: 100, pollMs: 20 })
   const keptWhileNotReady = ctx.agents.queued(sid).length === 1
+  const taskDropped = ctx.agents.queued(sidTask).length === 0
   ctx.catalog.pulledAt = Date.now()
   const ran = await ctx.agents.drainAtBoot({ waitMs: 100, pollMs: 20 })
   await new Promise((r) => setTimeout(r, 50))
@@ -514,6 +550,7 @@ hold = null
   out.bootDrain = {
     目录没好时一条不动: notYet === 0 && keptWhileNotReady,
     目录好了就接着跑: ran >= 1 && drained,
+    排着的派活开机就丢掉: taskDropped,
   }
 }
 

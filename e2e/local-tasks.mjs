@@ -50,4 +50,13 @@ export async function runLocalTasks({ root, test, assert, log }) {
     assert(p.steps === 1 && p.tool?.name === 'web_search' && p.tool?.detail === 'eth etf', `工具那一格不对：${JSON.stringify(p)}`)
     assert(p.todo?.done === 0 && p.todo?.total === 2 && p.todo?.now === '查数据', `清单那一格不对：${JSON.stringify(p.todo)}`)
   })
+
+  await test('排在对方队列里时被停：撤掉队列里那条，不去中止人自己正跑着的那一轮', async () => {
+    const del = result.own.find((x) => x.method === 'DELETE')
+    assert(del && del.path === '/api/sessions/s-local/queue/q-4', `没撤队列里那条：${JSON.stringify(del)}`)
+    const aborts = result.own.filter((x) => x.path.endsWith('/abort'))
+    assert(aborts.length === 1, `只有第三件该调中止，第四件排着时不该砍人那一轮：${aborts.length} 次`)
+    const fin = seen.find((s) => s.path === '/runtime/local-tasks/tk-4/finish')
+    assert(fin && fin.body.kind === 'aborted', `撤掉了该报 aborted：${JSON.stringify(fin && fin.body)}`)
+  })
 }

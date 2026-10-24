@@ -152,15 +152,17 @@ async function readTurnResult(
     if (ev.type === 'user/message') {
       if (!mine) {
         if (textOfMessage(ev.data).trim() === instruction.trim()) mine = true
-        else foreign++
+        else if (turn === -1) foreign++
       }
       continue
     }
+    /**
+     * 自己那一轮：**见到自己那条指令之后的第一个 turn/start**。派活的指令不插话，忙着就排队
+     * （docs/bot-tasks.md §7），开轮时 user/message 和 turn/start 是紧挨着写的。以前数「前面
+     * 还有几条别人的消息」——人在这期间插的话不占一轮，一数就把自己那一轮让给了别人。
+     */
     if (ev.type === 'turn/start') {
-      if (turn === null) {
-        if (foreign > 0) foreign--
-        else turn = Number(ev.data?.turn ?? -1)
-      }
+      if (turn === null && mine) turn = Number(ev.data?.turn ?? -1)
       continue
     }
     if (ev.type === 'assistant/message') {
@@ -191,6 +193,10 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
   let sessionId = ''
   /** 这一轮是不是插进别人正在跑的那一轮里的（steered）。是的话停止时不砍它：那一轮是人自己的。 */
   let steered = false
+  /** 对方正忙、指令排在它的队列里：队列里那一条的 id。停止时先撤它（docs/bot-tasks.md §7）。 */
+  let queueId = ''
+  /** 指令正在发：这一下还不知道它是开轮、排队还是插话，停止要等发完再按结果办。 */
+  let posting = false
   /** 主 Bot 那边按了停止（续租的回复里带 cancelled）。 */
   let stopped = false
   let stopTimer: ReturnType<typeof setTimeout> | null = null
@@ -203,7 +209,19 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
   const stopTarget = () => {
     if (stopped) return
     stopped = true
-    if (job.phase !== 'run' || !sessionId || steered) return
+    if (job.phase !== 'run' || !sessionId || steered || posting) return
+    // 还在对方队列里排着：撤掉就完了，一个字都没进它的对话。撤不掉（刚好开跑了）再中止那一轮。
+    if (queueId) {
+      const qid = queueId
+      queueId = ''
+      void seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(qid)}`, { method: 'DELETE' })
+        .then(() => ac.abort())
+        .catch(() => {
+          stopped = false
+          stopTarget()
+        })
+      return
+    }
     void seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
     stopTimer = setTimeout(() => ac.abort(), 15_000)
   }
@@ -256,10 +274,16 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
       await finish({ kind: 'aborted' })
       return
     }
-    const posted = (await seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/messages`, { method: 'POST', body: message })) as { steered?: boolean } | null
+    posting = true
+    const posted = (await seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/messages`, { method: 'POST', body: message })) as { steered?: boolean; queueId?: string } | null
     steered = Boolean(posted?.steered)
-    // 发消息的那一下刚好撞上停止：补一次中止。
-    if (stopped && !steered) void seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
+    queueId = String(posted?.queueId || '')
+    posting = false
+    // 发消息的那一下刚好撞上停止：按发的结果补办（排着的撤掉，开了轮的中止）。
+    if (stopped && !steered) {
+      stopped = false
+      stopTarget()
+    }
     const out = await readTurnResult(reader, !posted?.steered, job.instruction, (ev) => {
       if (tracker.feed(ev)) moved = true
     })

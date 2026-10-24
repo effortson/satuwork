@@ -86,6 +86,9 @@ export async function runMentions({ root, test, assert, log }) {
     assert(r.queue.队列清空了, '上一轮收口之后队列没接上')
     assert(r.queue.排队那条真的跑了, '排队的消息最后没跑')
     assert(r.queue.排队那条带着点名, '排队的那条跑起来时，它带的 @ 丢了')
+    // 派活（docs/bot-tasks.md §7）：指令排队时身份要跟着，否则跑起来就成了「人说的话」，
+    // 界面不折、上下文也认不出它；派活那一轮跑着时人说的话要排队，靠的是 runningTask。
+    assert(r.taskQueue && Object.values(r.taskQueue).every((v) => v === true), `派活排队不对：${JSON.stringify(r.taskQueue)}`)
   })
 
   await test('出队之后、agent 建出来之前，这条会话仍然算在跑', () => {

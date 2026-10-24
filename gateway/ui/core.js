@@ -1789,6 +1789,8 @@ var SatuCore = (() => {
     let todos = null;
     const handoffSeen = /* @__PURE__ */ new Map();
     const handoffOf = (id) => id ? handoffSeen.get(id) : void 0;
+    let openTurn = false;
+    let assigned = null;
     const taskSeen = /* @__PURE__ */ new Map();
     for (const ev of events || []) {
       const type = ev.type;
@@ -1803,7 +1805,10 @@ var SatuCore = (() => {
         tools = [];
         const raw = messageText(data.message) || data.text || "";
         const up = splitUploads(raw);
+        const task = via === "task" ? { id: String(src.form || ""), from: src.from && typeof src.from === "object" ? src.from : null, state: openTurn ? "steered" : "queued" } : void 0;
+        if (!openTurn) assigned = task || null;
         blocks.push({
+          ...task ? { assigned: task } : {},
           kind: "user",
           text: up.text,
           // 附件列表拆出来单独画成药丸；正文只留人真正打的那句话。
@@ -2018,8 +2023,20 @@ var SatuCore = (() => {
       } else if (type === "turn/start") {
         status = "running";
         statusAt = at;
+        openTurn = true;
+        if (assigned && assigned.turn == null) {
+          assigned.turn = Number(data.turn);
+          assigned.state = "running";
+        }
       } else if (type === "turn/end") {
         status = "";
+        openTurn = false;
+        if (assigned && assigned.turn === Number(data.turn)) {
+          const reason = data.reason;
+          assigned.state = String((typeof reason === "string" ? reason : reason && reason.kind) || "completed");
+          assigned.endedAt = at;
+          assigned = null;
+        }
         statusAt = 0;
         if (assistant) assistant.endTime = at;
       }

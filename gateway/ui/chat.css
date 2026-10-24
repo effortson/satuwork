@@ -2168,9 +2168,19 @@
 .sw-msg[data-via="task-result"] .sw-bubble::before { content: '任务结果'; }
 .sw-msg[data-via="web"] .sw-bubble::before { content: 'Web'; }
 .sw-msg[data-via="telegram"] .sw-bubble::before { content: 'Telegram'; }
-/* 目标 Bot 这边收到的派活：主 Bot 发来的一条消息。名字那行已经说了是派来的，气泡上沿的角标不再挂。 */
-.sw-taskin .sw-taskname-tag { background: var(--color-accent-100); color: var(--color-accent-800); }
+/* 目标 Bot 这边收到的派活（docs/bot-tasks.md §7）：主 Bot 发来的一条消息，它那一轮默认折在卡里。
+   名字那行已经说了是派来的，气泡上沿的角标不再挂；状态签跟着那一轮走。 */
 .sw-msg.sw-taskin[data-via] .sw-bubble::before { content: none; display: none; }
+.sw-taskin .sw-taskname-tag { background: var(--secondary); color: var(--muted-foreground); }
+.sw-taskin:is([data-state="running"], [data-state="queued"]) .sw-taskname-tag { background: var(--color-accent-100); color: var(--color-accent-800); }
+.sw-taskin[data-state="completed"] .sw-taskname-tag { background: color-mix(in srgb, var(--color-accent-2-500, #3c9a6b) 16%, transparent); color: var(--color-accent-2-800, #23623f); }
+.sw-taskin[data-state="running"] .sw-bubble { border-color: var(--color-accent-300, #eaa98f); }
+/* 折着的时候任务原文只露三行：它是这张卡的标题，不是要读的正文。点开过程再看全。 */
+.sw-taskin[data-open="0"] .sw-md { max-height: calc(1.75em * 3); overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent); mask-image: linear-gradient(to bottom, #000 60%, transparent); }
+.sw-taskin-toggle { display: block; margin-top: 6px; padding: 0; border: 0; background: transparent; color: var(--color-accent-700); font-size: 12.5px; line-height: 1.6; cursor: pointer; }
+.sw-taskin-toggle[hidden] { display: none; }
+.sw-taskin-toggle::after { content: ' ▾'; }
+.sw-taskin-toggle[aria-expanded="true"]::after { content: ' ▴'; }
 /* 派来的活那条正文是**机器拼的简报**（cardBrief / 日常任务的交底），一路 `#`、`##`
    排下来。照 .sw-md 的层级画，一个气泡里就出现 20px、18px、14.5px 三种字号，
    而这些标题只是「这张卡要做什么」这类栏目名，不是文章的章节。字号收成正文一档，

@@ -70,6 +70,7 @@ import { runChannelWebhook } from './channel-webhook.mjs'
 import { runServerless } from './serverless.mjs'
 import { runLocalRoutines } from './local-routines.mjs'
 import { runLocalTasks } from './local-tasks.mjs'
+import { runTaskTurns } from './task-turns.mjs'
 import { runAssign } from './assign.mjs'
 import { runReleaseBlob } from './release-blob.mjs'
 import { runBrowser } from './browser.mjs'
@@ -3731,6 +3732,7 @@ async function main() {
     await suite('serverless', () => runServerless({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('local-routines', () => runLocalRoutines({ root, test, assert, log }))
     await suite('local-tasks', () => runLocalTasks({ root, test, assert, log }))
+    await suite('task-turns', () => runTaskTurns({ root, test, assert, log }))
     await suite('assign', () => runAssign({ root, test, assert, log }))
     await suite('local-bootstrap', () => runLocalBootstrap({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('release-blob', () => runReleaseBlob({ gwRoot, test, req, start, waitHttp, assert, log }))
