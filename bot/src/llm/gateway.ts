@@ -463,6 +463,23 @@ export interface CompletionResult {
   ok: boolean
   status: number
   text: string
+  /**
+   * 没成的时候，对方为什么拒（Gateway 的 `error`，比如「没有 opencode-go 的密钥」）。只有状态码的话，
+   * 402 是没配密钥还是余额不够、得去翻 Gateway 的日志才知道。
+   */
+  error?: string
+}
+
+/** 一页错误响应里那句话：Gateway / 上游都是 `{ error: string | { message } }`，认不出就截原文。 */
+async function errorOf(r: Response): Promise<string> {
+  const raw = await r.text().catch(() => '')
+  try {
+    const j = JSON.parse(raw) as { error?: unknown; message?: unknown }
+    const e = j?.error
+    const msg = typeof e === 'string' ? e : e && typeof e === 'object' ? (e as { message?: unknown }).message : j?.message
+    if (typeof msg === 'string' && msg.trim()) return msg.trim().slice(0, 300)
+  } catch {}
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 300)
 }
 
 /**
@@ -538,7 +555,7 @@ export async function completeOnce(spec: {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(spec.timeoutMs),
   })
-  if (!r.ok) return { ok: false, status: r.status, text: '' }
+  if (!r.ok) return { ok: false, status: r.status, text: '', error: await errorOf(r) }
   const data = (await r.json()) as any
   // 正文在哪三家不一样：chat 在 choices[0].message.content，messages 在顶层 content[]，
   // responses 在 output[] 里 type 为 message 的那几条的 content[]（推理条目也在 output 里，跳过）。

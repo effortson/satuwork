@@ -13,7 +13,7 @@ import { METRIC_RETENTION_MS, MINUTE_MS, egressDelta, telemetryOf } from '../lib
 import { HANDOFF_STATES, type Db, type HandoffState, type Machine } from '../db.ts'
 import { resolveAssignee } from '../lib/handoff.ts'
 import { notify } from '../handoff-sweep.ts'
-import { auditResultHash } from '../conversation-audit.ts'
+import { auditResultHash, failConversationAuditBatch } from '../conversation-audit.ts'
 import { afterResponse } from '../lib/background.ts'
 import { PUSH_KINDS, pushMessage, pushToAccount, type PushKind } from '../lib/push.ts'
 
@@ -424,6 +424,28 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
       updatedAt: intField(body, 'updatedAt'),
     })
     json(res, 200, { session })
+  })
+
+  /**
+   * 席位没跑成一个审计批次（模型拒了、超时、回的不是 JSON……），把原因报回来。Gateway 把它
+   * 转成 retry、按退避排下一次（conversation-audit.ts 的 failConversationAuditBatch）。鉴权和
+   * 结果那条一样：只能报自己账号、自己 Bot 的批次。
+   */
+  router.put('/internal/conversation-audits/:jobId/failure', async (req, res) => {
+    const caller = await requireInternalCaller(req, db)
+    const batch = await db.conversationAuditBatch(req.params.jobId)
+    if (!batch) throw new HttpError(404, '审计批次不存在')
+    if (caller.companyId !== batch.companyId) throw new HttpError(403, '批次不属于这家公司')
+    const body = bodyOf(req)
+    const accountId = callerAccountId(caller, () => strField(body, 'accountId'))
+    if (accountId !== batch.accountId) throw new HttpError(403, '席位票只能上报自己的审计')
+    await requireSeatOnCaller(db, caller, accountId)
+    if (strField(body, 'botId') !== batch.botId || strField(body, 'sessionId') !== batch.sessionId) {
+      throw new HttpError(403, '审计目标与批次不一致')
+    }
+    const error = String(body.error ?? '').trim().slice(0, 400) || '原因不明'
+    const retried = await failConversationAuditBatch(db, batch, error)
+    json(res, 200, { retried })
   })
 
   /**

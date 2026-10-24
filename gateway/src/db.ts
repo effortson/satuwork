@@ -4863,6 +4863,22 @@ export class Db {
     )
   }
 
+  /**
+   * 换掉批次上记的模型（派发前换成公司当前配的那个，见 conversation-audit.ts 的 withCurrentModel）。
+   * 已经收口的不动：结果落了库，模型那几格是它当时真用的。
+   */
+  async updateConversationAuditBatchModel(
+    id: string,
+    m: { modelRole: string; provider: string; model: string; reasoningEffort?: string },
+  ): Promise<ConversationAuditBatch | undefined> {
+    const r = await this.one(
+      `update conversation_audit_batches set "modelRole"=?, provider=?, model=?, "reasoningEffort"=?
+       where id=? and status not in ('succeeded','empty','dead') returning *`,
+      [m.modelRole, m.provider, m.model, parseReasoningEffort(m.reasoningEffort), id],
+    )
+    return r ? conversationAuditBatchOf(r) : undefined
+  }
+
   async retryConversationAuditBatch(id: string, error: string, nextTryAt: number, dead = false): Promise<void> {
     await this.run(
       `update conversation_audit_batches set status=?, "lastError"=?, "nextTryAt"=?, "leaseUntil"=null

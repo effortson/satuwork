@@ -1,12 +1,13 @@
 /** 自动对话审计的数据库与窗口探针。由 e2e/conversation-audit.mjs 调用。 */
+import { createServer } from 'node:http'
 import { Db } from './src/db.ts'
-import { auditResultHash, closedAuditWindows, requestBotDeletion, tickBotDeletions, tickConversationAudits } from './src/conversation-audit.ts'
+import { auditResultHash, closedAuditWindows, failConversationAuditBatch, requestBotDeletion, tickBotDeletions, tickConversationAudits } from './src/conversation-audit.ts'
 import { partsIn } from './src/lib/schedule.ts'
 
 const url = process.env.E2E_DATABASE_URL || 'postgres://satuwork:satuwork@127.0.0.1:5434/satuwork'
 const schema = process.env.E2E_AUDIT_SCHEMA || 'e2e_conversation_audit'
 const db = new Db({ url, schema })
-const out = { 窗口: {}, 配置: {}, 开关: {}, 空时段: {}, 筛选: {}, 翻页: {}, 评分理由: {}, 结果指纹: {}, 删除终审: {}, 删除并发: {} }
+const out = { 窗口: {}, 配置: {}, 开关: {}, 空时段: {}, 筛选: {}, 翻页: {}, 评分理由: {}, 结果指纹: {}, 删除终审: {}, 删除并发: {}, 失败重试: {} }
 
 try {
   await db.init()
@@ -256,6 +257,74 @@ try {
     只完成一次: raceReady && raceFinal?.status === 'completed' && raceFinal.attempts === 1,
     完成审计只记一条: raceAudits.length === 1,
     旧快照认领不到: staleClaim === undefined && (await db.botDeletion(raceReq.id))?.status === 'completed',
+  }
+
+  /**
+   * 失败重试：席位报上来没跑成就转成退避重试；重试派发前把批次的模型换成公司当前配的。
+   * 2026-10-24 本地一条 9 月 9 日的批次拿着当时的 opencode-go/deepseek-v4-flash 被 Gateway 402 了
+   * 六周多：席位失败不报、续租又把同一个任务发回去，attempts 一直是 1。
+   */
+  const staleBot = await db.insertCatalog({ kind: 'bot', scope: 'user', companyId: company.id, accountId: account.id, name: '旧模型 Bot' })
+  const stale = await db.insertConversationAuditBatch({
+    companyId: company.id, accountId: account.id, botId: staleBot.id, sessionId: 'audit-stale-session', kind: 'scheduled',
+    windowStart: now - 40 * 60 * 60_000, windowEnd: now - 32 * 60 * 60_000, timezone: 'UTC',
+    modelRole: 'daily', provider: 'opencode-go', model: 'deepseek-v4-flash',
+  })
+  // 这颗 Bot 没上线：派发在 POST 席位那一步失败、转成重试——模型那一步已经换过了。
+  await tickConversationAudits(db)
+  const afterDispatch = await db.conversationAuditBatch(stale.id)
+  const failedAt = Date.now()
+  const failed = await failConversationAuditBatch(db, { ...afterDispatch, status: 'processing', attempts: 2 }, '审计模型 probe/probe 返回 HTTP 402：没有 probe 的密钥')
+  const afterFail = await db.conversationAuditBatch(stale.id)
+  const ignored = await failConversationAuditBatch(db, { ...afterFail, status: 'succeeded' }, '不该生效')
+  out.失败重试 = {
+    派发前换成当前模型: afterDispatch?.provider === 'probe' && afterDispatch?.model === 'probe' && afterDispatch?.modelRole === 'daily',
+    席位报失败转成重试: failed === true && afterFail?.status === 'retry',
+    原因记在批次上: String(afterFail?.lastError || '').includes('没有 probe 的密钥'),
+    按退避排下一次: afterFail?.nextTryAt >= failedAt + 5 * 60_000 - 1000 && afterFail?.nextTryAt <= Date.now() + 5 * 60_000 + 1000,
+    已收口的不动: ignored === false && (await db.conversationAuditBatch(stale.id))?.lastError === afterFail?.lastError,
+  }
+
+  /**
+   * 续租：席位回 `accepted`＝它手上没有这一批了（上一次没跑完也没报原因，老席位就是这样）——当失败
+   * 转成重试，别再续；回 `running` 才是真的还在跑，照常续。假席位按批次 id 决定回哪个。
+   */
+  const seatSays = new Map()
+  const seat = createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      const id = decodeURIComponent(String(req.url).split('/').pop() || '')
+      res.writeHead(202, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ accepted: true, state: seatSays.get(id) || 'accepted' }))
+    })
+  })
+  await new Promise((r) => seat.listen(0, '127.0.0.1', r))
+  try {
+    await db.issueAccountSecrets(account.id)
+    const renewBot = await db.insertCatalog({ kind: 'bot', scope: 'user', companyId: company.id, accountId: account.id, name: '续租 Bot' })
+    await db.upsertInstance({ accountId: account.id, botId: renewBot.id, companyId: company.id, host: `http://127.0.0.1:${seat.address().port}` })
+    const mk = (hours) => db.insertConversationAuditBatch({
+      companyId: company.id, accountId: account.id, botId: renewBot.id, sessionId: 'audit-renew-session', kind: 'scheduled',
+      windowStart: now - hours * 60 * 60_000, windowEnd: now - (hours - 8) * 60 * 60_000, timezone: 'UTC',
+      modelRole: 'daily', provider: 'probe', model: 'probe',
+    })
+    const gone = await mk(80)
+    const alive = await mk(72)
+    // 先派出去（席位都回 accepted，新接下），两批都进 processing。
+    await tickConversationAudits(db)
+    const dispatched = [await db.conversationAuditBatch(gone.id), await db.conversationAuditBatch(alive.id)].every((b) => b?.status === 'processing')
+    // 租约拨到快到期，下一拍就该续：gone 那批席位说「新接下」（手上没了），alive 那批说「还在跑」。
+    seatSays.set(alive.id, 'running')
+    await db.markConversationAuditProcessing(gone.id, Date.now() + 1000)
+    await db.markConversationAuditProcessing(alive.id, Date.now() + 1000)
+    await tickConversationAudits(db)
+    const goneAfter = await db.conversationAuditBatch(gone.id)
+    const aliveAfter = await db.conversationAuditBatch(alive.id)
+    out.失败重试.先派了出去 = dispatched
+    out.失败重试.续租时席位手上没了就转重试 = goneAfter?.status === 'retry' && String(goneAfter?.lastError || '').includes('没跑完') && goneAfter?.nextTryAt > Date.now()
+    out.失败重试.还在跑的照常续租 = aliveAfter?.status === 'processing' && aliveAfter?.leaseUntil > Date.now() + 60_000
+  } finally {
+    seat.close()
   }
 
   console.log('__RESULT__' + JSON.stringify(out))

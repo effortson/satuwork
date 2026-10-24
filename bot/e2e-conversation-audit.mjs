@@ -1,5 +1,24 @@
 /** 席位侧审计切轮、工具证据和出站脱敏的纯函数探针。 */
+import { createServer } from 'node:http'
 import { SCORE_ITEMS, auditSystem, chunksOf, completedTurns, redactValue, turnText } from './src/conversation-audit/index.ts'
+import { completeOnce } from './src/llm/gateway.ts'
+
+/**
+ * 模型那一跳被拒时，原因要带出来：只剩一个 402，分不出是没配密钥还是余额不够
+ * （2026-10-24 本地一条审计 402 了六周多，日志里只有状态码）。
+ */
+const refuse = createServer((req, res) => {
+  req.resume()
+  req.on('end', () => {
+    res.writeHead(402, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ error: '没有 opencode-go 的密钥', provider: 'opencode-go' }))
+  })
+})
+await new Promise((r) => refuse.listen(0, '127.0.0.1', r))
+process.env.GATEWAY_URL = `http://127.0.0.1:${refuse.address().port}`
+process.env.GATEWAY_API_KEY = 'probe'
+const refused = await completeOnce({ provider: 'opencode-go', model: 'deepseek-v4-flash', system: 's', user: 'u', timeoutMs: 5000 })
+refuse.close()
 
 const ev = (seq, time, type, data) => ({ seq, time, type, data })
 const events = [
@@ -48,6 +67,10 @@ console.log('__RESULT__' + JSON.stringify({
     输入电话已脱敏: !prompt.includes('13800138000'),
     输出字符串再脱敏: !sanitized.answer.includes('bob@example.com'),
     时间数字不被误伤: sanitized.at === 1_772_508_600_000,
+  },
+  模型被拒: {
+    带着状态码: refused.ok === false && refused.status === 402,
+    带着原因: refused.error === '没有 opencode-go 的密钥',
   },
   分块: {
     超长输入会分块: chunks.length > 1,

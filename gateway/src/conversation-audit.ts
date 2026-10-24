@@ -221,7 +221,7 @@ async function targetHeaders(db: Db, batch: ConversationAuditBatch) {
  * （还在跑）/ `cached`（已经跑完，重放结果），都不会再花一次模型费——所以派发和续租
  * 用的是同一个请求。
  */
-async function postAuditJob(db: Db, batch: ConversationAuditBatch): Promise<void> {
+async function postAuditJob(db: Db, batch: ConversationAuditBatch): Promise<string> {
   const target = await targetHeaders(db, batch)
   const deletion = batch.deletionRequestId ? await db.botDeletion(batch.deletionRequestId) : undefined
   /**
@@ -257,11 +257,61 @@ async function postAuditJob(db: Db, batch: ConversationAuditBatch): Promise<void
     const body = await r.text().catch(() => '')
     throw new Error(`席位返回 HTTP ${r.status}${body ? ` ${body.slice(0, 160)}` : ''}`)
   }
+  // 席位怎么接的：accepted（新接下）/ running（还在跑）/ cached（跑完了，重放结果）。续租要看它。
+  const got = (await r.json().catch(() => null)) as { state?: unknown } | null
+  return typeof got?.state === 'string' ? got.state : ''
+}
+
+/**
+ * 派发前把批次上的模型换成公司**当前**配的审计模型。
+ *
+ * 模型是建批次时记下的。批次一失败就要排队重试，而重试可能在几小时、几天之后——那时平台的
+ * utility / daily 多半已经换过，旧的那家密钥也可能早撤了。照旧拿记下的去打，Gateway 每次都回
+ * 402「没有 X 的密钥」，这一批永远审不完（2026-10-24 本地一条 9 月 9 日的批次还拿着
+ * opencode-go/deepseek-v4-flash 重试了六周多）。审计要的是「把这段对话审了」，用哪个模型是
+ * 公司当下的配置说了算。当前没配（或者配置解析不出来）就照旧用记下的。
+ */
+async function withCurrentModel(db: Db, batch: ConversationAuditBatch): Promise<ConversationAuditBatch> {
+  const settings = (await db.settings(batch.companyId)).conversationAudit
+  const now = pickedModel(await db.platformSettings(), settings)
+  if (!now) return batch
+  if (now.role === batch.modelRole && now.provider === batch.provider && now.model === batch.model && (now.reasoningEffort ?? '') === (batch.reasoningEffort ?? '')) {
+    return batch
+  }
+  return (
+    (await db.updateConversationAuditBatchModel(batch.id, {
+      modelRole: now.role,
+      provider: now.provider,
+      model: now.model,
+      reasoningEffort: now.reasoningEffort,
+    })) ?? batch
+  )
 }
 
 async function dispatchBatch(db: Db, batch: ConversationAuditBatch): Promise<void> {
-  await postAuditJob(db, batch)
+  await postAuditJob(db, await withCurrentModel(db, batch))
   await db.markConversationAuditProcessing(batch.id, Date.now() + LEASE_MS)
+}
+
+/** 第 n 次没成之后等多久再试：1 分钟、5 分钟、15 分钟，之后每小时一次。 */
+function retryDelay(attempts: number): number {
+  return RETRIES[Math.min(Math.max(0, attempts - 1), RETRIES.length - 1)]!
+}
+
+/**
+ * 席位报上来「这一批没跑成」（PUT /internal/conversation-audits/:jobId/failure）。
+ *
+ * 以前席位失败了只打一行日志，Gateway 这边批次一直是 processing，续租时又把同一个任务发过去，
+ * 席位一看没在跑就重跑一遍、再失败——每 5 分钟一次，attempts 永远是 1，永远进不了退避，也就
+ * 永远换不到新模型。现在失败当场转成 retry，按退避排下一次，下一次派发会先换成当前的模型。
+ *
+ * 只认还在席位上的那两种状态：已经被别的路径收走（成功、终审接管、已经排了重试）的不动。
+ */
+export async function failConversationAuditBatch(db: Db, batch: ConversationAuditBatch, error: string): Promise<boolean> {
+  if (batch.status !== 'leased' && batch.status !== 'processing') return false
+  const message = `席位没跑成：${error}`.slice(0, 500)
+  await db.retryConversationAuditBatch(batch.id, message, Date.now() + retryDelay(batch.attempts), false)
+  return true
 }
 
 /**
@@ -277,7 +327,17 @@ async function renewProcessingLeases(db: Db, now = Date.now()): Promise<number> 
   let renewed = 0
   for (const batch of await db.processingConversationAuditBatches(now + LEASE_MS / 2, DISPATCH_LIMIT)) {
     try {
-      await postAuditJob(db, batch)
+      const state = await postAuditJob(db, batch)
+      /**
+       * 席位回 `accepted`：它手上**没有**这一批了——上一次已经结束，却既没报结果也没报失败（老席位
+       * 失败了只打日志；或者席位重启过）。续租就成了「失败一次、重跑一次」的死循环，attempts 永远是
+       * 1、模型永远是建批次时那个。当失败处理：转成重试、按退避排下一次，下一次派发先换成当前的模型。
+       * 席位这一下已经又开跑了：跑成了照样报结果（结果那条不看 retry），跑不成也不会再被续租拉起来。
+       */
+      if (state === 'accepted') {
+        await db.retryConversationAuditBatch(batch.id, '席位上一次没跑完，也没报原因（重启过，或者模型调用失败）', Date.now() + retryDelay(batch.attempts), false)
+        continue
+      }
       await db.markConversationAuditProcessing(batch.id, Date.now() + LEASE_MS)
       renewed++
     } catch {
@@ -297,10 +357,9 @@ async function dispatchDueBatches(db: Db): Promise<number> {
       dispatched++
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
-      const retry = RETRIES[Math.min(batch.attempts - 1, RETRIES.length - 1)]!
       // 自动审计不能在第八次失败后永久静默；封顶为每小时重试，直到席位或模型恢复。
       // dead 只留给“删除终审已经接管了这个普通批次”的明确终止情形。
-      await db.retryConversationAuditBatch(batch.id, message, Date.now() + retry, false)
+      await db.retryConversationAuditBatch(batch.id, message, Date.now() + retryDelay(batch.attempts), false)
     }
   }
   return dispatched
