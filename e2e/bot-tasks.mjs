@@ -127,6 +127,20 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       assert(anon.status === 401, `登录票不能派（要席位票）：${anon.status}`)
     })
 
+    await test('主 Bot 的席位拉目录：可派名单里有别的 Bot，指纹和探针一致（不会每分钟白拉一遍）', async () => {
+      const cat = await req(gwBase, 'GET', `/runtime/catalog?botId=${mainBot}`, { token: seatTok })
+      assert(cat.status === 200, `目录 ${cat.status} ${cat.text}`)
+      const names = (cat.json.assignable || []).map((b) => b.name)
+      assert(names.includes('财务') && !names.includes('助手'), `主 Bot 的可派名单不对：${JSON.stringify(cat.json.assignable)}`)
+      const probe = await req(gwBase, 'GET', `/runtime/catalog/version?botId=${mainBot}`, { token: seatTok })
+      assert(probe.json.stamp === cat.json.stamp, `目录和探针的指纹对不上，席位会每分钟重拉：\n${cat.json.stamp}\n${probe.json.stamp}`)
+      // 别的 Bot 拿到的永远是空名单：只有主 Bot 有 assign_task。
+      const other = await req(gwBase, 'GET', `/runtime/catalog?botId=${finBot}`, { token: seatTok })
+      assert((other.json.assignable || []).length === 0, `非主 Bot 也拿到了名单：${JSON.stringify(other.json.assignable)}`)
+      const otherProbe = await req(gwBase, 'GET', `/runtime/catalog/version?botId=${finBot}`, { token: seatTok })
+      assert(otherProbe.json.stamp === other.json.stamp, '非主 Bot 的指纹也对不上')
+    })
+
     let taskId = ''
     await test('派出去：目标席位领到带指令的 run 活，回报结论后主席位领到带结论的 deliver 活', async () => {
       const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '做一份本月的费用月报，按部门分列', sessionId: 's-main', callId: 'call-1' })

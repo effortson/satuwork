@@ -309,7 +309,13 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const account = await requireSeatOnly(req, db)
     const companyId = account.role === 'owner' ? null : account.companyId
     const botId = (req.query.get('botId') || '').trim()
-    let bots = await db.botsFor(companyId, account.id)
+    /**
+     * 完整名单留一份：派活名单（assignableFor）要的是「这颗之外的别的 Bot」，拿收窄之后的
+     * `[hit]` 去算永远是空的——而探针那条路用的是完整名单，两边指纹对不上，席位每分钟白拉一遍
+     * 目录、拉回来的名单还是空的，主 Bot 就以为自己不是主 Bot。
+     */
+    const roster = await db.botsFor(companyId, account.id)
+    let bots = roster
     if (botId) {
       const hit = bots.find((b) => b.id === botId)
       if (!hit) throw new HttpError(404, '没有这个 Bot')
@@ -381,7 +387,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * 主 Bot 派活（docs/bot-tasks.md §5）：**只有这个账号的主 Bot** 的目录里有可派的名单，
      * 席位凭它决定 assign_task 进不进工具表。名单变了（新建、删掉、改名、换主 Bot）指纹跟着变。
      */
-    const assignable = await assignableFor(db, account, botId, bots)
+    const assignable = await assignableFor(db, account, botId, roster)
 
     json(res, 200, {
       // 实例照着这个数字判断「底座换了没有」。和下面那条探针给的是同一个值。
