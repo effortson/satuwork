@@ -1683,12 +1683,12 @@ var SatuCore = (() => {
     const content = msg.content;
     if (typeof content === "string") return content;
     if (!Array.isArray(content)) return "";
-    return content.map((b) => b && (b.type === "text" || b.type === "reasoning") ? b.text || "" : "").join("");
+    return content.map((b) => b && (b.type === "text" || b.type === "reasoning") ? b.text || "" : b && b.type === "mention" && b.inline && b.label ? `@${b.label}` : "").join("");
   }
   function messageMentions(msg) {
     const content = msg && msg.content;
     if (!Array.isArray(content)) return [];
-    return content.filter((b) => b && b.type === "mention" && b.label).map((b) => ({ kind: b.kind || "connector", id: b.id || "", label: String(b.label) }));
+    return content.filter((b) => b && b.type === "mention" && b.label).map((b) => ({ kind: b.kind || "connector", id: b.id || "", label: String(b.label), ...b.inline ? { inline: true } : {} }));
   }
   function messageRefs(msg) {
     const content = msg && msg.content;

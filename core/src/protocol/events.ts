@@ -22,6 +22,7 @@ export interface MessageBlock {
   kind?: string
   id?: string
   label?: string
+  inline?: boolean
   name?: string
   seq?: number
   role?: string
@@ -39,6 +40,8 @@ export interface Mention {
   kind: string
   id: string
   label: string
+  /** 落在正文里它被打出来的位置上（会话里的 mention 块带 inline）。界面就地画成药丸，不另起一排。 */
+  inline?: boolean
 }
 
 export type Ref =

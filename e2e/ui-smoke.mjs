@@ -5368,7 +5368,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       })
       try {
         const mention = { kind: 'connector', id: 'm-race', label: '邮箱' }
-        ui.state.chatDraft = 'A 的那句'
+        // 点名混排在正文里（选中候选会把 `@名字` 插进光标处），只带正文里还留着的那些。
+        ui.state.chatDraft = 'A 的那句 @邮箱'
         ui.state.chatFiles = [{ name: 'a.txt', size: 3, file: {} }]
         ui.state.chatMentions = [mention]
         const job = ui.sendChat()
@@ -5387,7 +5388,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         assert(ui.state.chatDraft === '' && !ui.state.chatFiles.length, `A 的东西塞进了 B 的输入框：${JSON.stringify([ui.state.chatDraft, ui.state.chatFiles])}`)
 
         await ui.ensureChatSession('bot-ra')
-        assert(ui.state.chatDraft === 'A 的那句\n又补的一句', `A 的正文没还回来：${JSON.stringify(ui.state.chatDraft)}`)
+        assert(ui.state.chatDraft === 'A 的那句 @邮箱\n又补的一句', `A 的正文没还回来：${JSON.stringify(ui.state.chatDraft)}`)
         assert(ui.state.chatFiles.length === 1 && ui.state.chatFiles[0].name === 'a.txt', `A 的附件没还回来：${JSON.stringify(ui.state.chatFiles)}`)
         assert(ui.state.chatMentions.some((m) => m.id === 'm-race'), `A 的 @ 没还回来：${JSON.stringify(ui.state.chatMentions)}`)
       } finally {

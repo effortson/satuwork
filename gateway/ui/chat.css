@@ -1602,6 +1602,8 @@
 /* @ 的是一颗 Bot：候选行和药丸上画它的头像，尺寸和连接器的 logo 一样。 */
 .sw-pick-bot, .sw-mention-bot { display: inline-flex; align-items: center; justify-content: center; }
 .sw-mention-bot svg { width: 14px; height: 14px; }
+/* 混排在正文里的点名：和文字同一行，药丸压低一点、左右留缝，不撑高行距。 */
+.sw-mention.sw-mention-inline { display: inline-flex; vertical-align: baseline; margin: 0 2px; padding-top: 0; padding-bottom: 0; line-height: 1.5; }
 
 /* 排队 dock。**一条一行、纯文字、不展开附件**——它是「等会儿要说的话」的提醒，
    不是消息气泡的预演。把气泡那一套搬上来，输入框会被顶掉半屏。 */

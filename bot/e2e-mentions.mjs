@@ -160,6 +160,29 @@ await ctx.agents
   }
 }
 
+// ── 3b. 混排：`@名字` 落在正文里，按位置切成 text / mention 交错的块 ──────────
+captured = null
+await ctx.agents
+  .send(sessionId, '打开 @Gmail (personal) 邮件，让 @客户经理 处理', [], [
+    { kind: 'bot', id: 'bot-crm', label: '客户经理' },
+    { kind: 'connector', id: 'conn-personal', label: 'Gmail (personal)' },
+  ])
+  .catch(() => {})
+{
+  const events = await ctx.sessions.events(sessionId)
+  const users = events.filter((e) => e.type === 'user/message')
+  const blocks = users[users.length - 1].data.message.content
+  const shape = blocks.map((c) => (c.type === 'mention' ? `@${c.label}${c.inline ? '' : '(!inline)'}` : c.type === 'text' ? c.text : c.type)).join('|')
+  const sent = lastUser()
+  out.inline = {
+    shape,
+    按位置切块: shape === '打开 |@Gmail (personal)| 邮件，让 |@客户经理| 处理',
+    进模型还是原句: sent.some((c) => c.type === 'text' && c.text.includes('打开 @Gmail (personal) 邮件，让 @客户经理 处理')),
+    没有本轮指定那一行: !sent.some((c) => c.type === 'text' && c.text.includes('[本轮指定：Gmail (personal)]')),
+    点名的连接照样进工具表: toolNames()[0] === 'mcp_gmail_person_send_email',
+  }
+}
+
 // ── 4. 上一轮还在跑：带 @ 的排队，不插话 ──────────────────────────────
 {
   let release

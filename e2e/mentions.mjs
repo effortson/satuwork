@@ -38,6 +38,14 @@ export async function runMentions({ root, test, assert, log }) {
     assert(r.mentioned.正文还在, '点名把正文挤掉了')
   })
 
+  await test('混排：@名字 落在原位，切成 text / mention 交错的块，进模型仍是原句', () => {
+    assert(r.inline, '探针没跑到混排那一段')
+    assert(r.inline.按位置切块, `块的顺序不对：${r.inline.shape}`)
+    assert(r.inline.进模型还是原句, '模型看到的不是原句——指代关系丢了')
+    assert(r.inline.没有本轮指定那一行, '混排的点名还被当成老格式单独成行')
+    assert(r.inline.点名的连接照样进工具表, '混排之后点名不再顶工具表')
+  })
+
   await test('落盘是结构，不是那句话', () => {
     assert(r.jsonl['有 mention 块'], 'JSONL 里没有 mention 块')
     assert(r.jsonl['块里带 label'], 'mention 块没带 label，界面翻历史时药丸就是空的')

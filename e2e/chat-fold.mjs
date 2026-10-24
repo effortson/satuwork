@@ -247,6 +247,28 @@ export async function runChatFold({ root, test, assert, log }) {
     assert(blocks.map((b) => b.via).join(',') === 'task,task,task-result,task-result', `角标不对：${blocks.map((b) => b.via)}`)
   })
 
+  await test('混排的点名：正文里留着 @名字，点名带 inline（就地画药丸，不另起一排）', async () => {
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'b', createdAt: T }),
+      ev(2, 'user/message', {
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: '打开 ' },
+            { type: 'mention', kind: 'connector', id: 'c1', label: 'Gmail (personal)', inline: true },
+            { type: 'text', text: ' 邮件，让 ' },
+            { type: 'mention', kind: 'bot', id: 'b2', label: '客户经理', inline: true },
+            { type: 'text', text: ' 处理' },
+          ],
+        },
+        source: { kind: 'user' },
+      }),
+    ]
+    const u = fold(events).blocks.find((b) => b.kind === 'user')
+    assert(u.text === '打开 @Gmail (personal) 邮件，让 @客户经理 处理', `正文不对：${u.text}`)
+    assert(u.mentions.length === 2 && u.mentions.every((m) => m.inline), `点名要带 inline：${JSON.stringify(u.mentions)}`)
+  })
+
   await test('普通 Bot 的 Web 对话不显示 channel 标签', async () => {
     const events = [
       ev(1, 'session', { version: 5, id: 's1', botId: 'ordinary-bot', createdAt: T }),

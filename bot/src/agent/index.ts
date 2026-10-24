@@ -3643,10 +3643,19 @@ function summaryText(d: SessionEventMap['session/compact']): string {
 const textFrom = (m: Message, refText: (c: RefBlock) => string = refFallback) =>
   m.content
     .map((c) =>
-      c.type === 'text' ? c.text : c.type === 'mention' ? (c.kind === 'bot' ? `[@${c.label}：把这件事派给它]` : `[本轮指定：${c.label}]`) : c.type === 'ref' ? refText(c) : '',
+      c.type === 'text'
+        ? c.text
+        : c.type === 'mention'
+          ? // 混排的点名（inline）就是原句里那个 `@名字`，前后文字原样接上；老格式那一排照旧单独成行。
+            c.inline ? `\u0000@${c.label}\u0000` : c.kind === 'bot' ? `[@${c.label}：把这件事派给它]` : `[本轮指定：${c.label}]`
+          : c.type === 'ref'
+            ? refText(c)
+            : '',
     )
     .filter(Boolean)
     .join('\n')
+    // 混排的点名两边不能插换行：「打开 @Gmail 邮件」得还是一句话。
+    .replace(/\n?\u0000\n?/g, '')
 
 /**
  * 引用的回复渲染给模型时的全文上限（字符）。
@@ -3795,12 +3804,55 @@ const MAX_IMAGE_BYTES = 3.5 * 1024 * 1024
  * 两块挨着，渲染出来是「[引用文件：x.png]」紧跟那张图。
  */
 function userBlocks(text: string, images: ImageRef[], mentions: Mention[] = [], refs: RefBlock[] = []): ContentBlock[] {
-  const blocks: ContentBlock[] = mentions.map((m) => ({ type: 'mention' as const, kind: m.kind, id: m.id, label: m.label }))
+  const { body, leading } = interleaveMentions(text, mentions)
+  const blocks: ContentBlock[] = leading.map((m) => ({ type: 'mention' as const, kind: m.kind, id: m.id, label: m.label }))
   for (const r of refs) blocks.push({ ...r, type: 'ref' as const })
   for (const img of images) blocks.push({ type: 'image' as const, path: img.path, mime: img.mime })
   // 只有图（或只有点名）的消息也成立：「这张图什么意思」本来就常常没有正文。
-  if (text || !blocks.length) blocks.push({ type: 'text', text })
+  if (body.length) blocks.push(...body)
+  else if (text || !blocks.length) blocks.push({ type: 'text', text })
   return blocks
+}
+
+/**
+ * 点名和正文混排：按 `@名字` 在正文里的位置把正文切开，点名块落在它原来的位置上
+ * （「打开 @Gmail 邮件，让 @客户经理 处理」= text · mention · text · mention · text）。
+ *
+ * 这一句话的意思全在位置里——谁去打开、谁来处理。只在最前面摆一排点名的话，模型看到的
+ * 是「Gmail、客户经理，打开邮件，让处理」，指代关系丢了。
+ *
+ * 正文里找不到 `@名字` 的（Telegram 那条路、老界面发来的）照旧放在最前（`leading`），
+ * 老格式。名字长的先认：「客户经理」和「客户经理助理」同时点了，不能把后者认成前者。
+ */
+export function interleaveMentions(text: string, mentions: Mention[]): { body: ContentBlock[]; leading: Mention[] } {
+  if (!mentions.length || !text) return { body: [], leading: mentions }
+  const hits: { at: number; end: number; m: Mention }[] = []
+  const placed = new Set<Mention>()
+  const byLength = [...mentions].sort((a, b) => b.label.length - a.label.length)
+  for (const m of byLength) {
+    const needle = `@${m.label}`
+    let from = 0
+    for (;;) {
+      const at = text.indexOf(needle, from)
+      if (at < 0) break
+      const end = at + needle.length
+      from = end
+      if (hits.some((h) => at < h.end && end > h.at)) continue
+      hits.push({ at, end, m })
+      placed.add(m)
+    }
+  }
+  if (!hits.length) return { body: [], leading: mentions }
+  hits.sort((a, b) => a.at - b.at)
+  const body: ContentBlock[] = []
+  let cur = 0
+  for (const h of hits) {
+    if (h.at > cur) body.push({ type: 'text', text: text.slice(cur, h.at) })
+    body.push({ type: 'mention', kind: h.m.kind, id: h.m.id, label: h.m.label, inline: true })
+    cur = h.end
+  }
+  if (cur < text.length) body.push({ type: 'text', text: text.slice(cur) })
+  return { body, leading: mentions.filter((m) => !placed.has(m)) }
 }
 
 /**

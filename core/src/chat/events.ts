@@ -22,7 +22,10 @@ export function messageText(msg: Message | string | null | undefined): string {
   const content = msg.content
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
-  return content.map((b) => (b && (b.type === 'text' || b.type === 'reasoning') ? b.text || '' : '')).join('')
+  // 混排的点名（inline）是这句话的一部分：「打开 @Gmail 邮件」里的 `@Gmail` 得留在正文里。
+  return content
+    .map((b) => (b && (b.type === 'text' || b.type === 'reasoning') ? b.text || '' : b && b.type === 'mention' && b.inline && b.label ? `@${b.label}` : ''))
+    .join('')
 }
 
 /**
@@ -34,7 +37,9 @@ export function messageText(msg: Message | string | null | undefined): string {
 export function messageMentions(msg: Message | null | undefined): Mention[] {
   const content = msg && msg.content
   if (!Array.isArray(content)) return []
-  return content.filter((b) => b && b.type === 'mention' && b.label).map((b) => ({ kind: b.kind || 'connector', id: b.id || '', label: String(b.label) }))
+  return content
+    .filter((b) => b && b.type === 'mention' && b.label)
+    .map((b) => ({ kind: b.kind || 'connector', id: b.id || '', label: String(b.label), ...(b.inline ? { inline: true } : {}) }))
 }
 
 /**

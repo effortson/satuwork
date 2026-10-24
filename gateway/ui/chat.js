@@ -2710,6 +2710,50 @@ function decorateFiles(md, outs) {
   }
 }
 
+/**
+ * 正文里的 `@名字` 就地换成点名药丸（「打开 @Gmail 邮件，让 @客户经理 处理」）。
+ *
+ * 只换这条消息真点了名的那几个——人随手打的 `@某某` 不是点名，不该长成药丸。名字长的
+ * 先认，理由同席位的 interleaveMentions。代码块里的不碰。按 Markdown 块留记号，和
+ * decorateFiles 一个做法：syncMd 只重画变了的块，已经换过的不再走一遍。
+ */
+function inlineMentionPills(md, mentions) {
+  if (!mentions.length) return
+  const byLabel = [...mentions].sort((a, b) => b.label.length - a.label.length)
+  const stamp = byLabel.map((m) => m.id).join('|')
+  for (const block of md.querySelectorAll('.sw-mdblock')) {
+    if (block.getAttribute('data-mn') === stamp) continue
+    block.setAttribute('data-mn', stamp)
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT)
+    const nodes = []
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (n.parentElement && n.parentElement.closest('code, pre, .sw-mention')) continue
+      if (n.nodeValue.includes('@')) nodes.push(n)
+    }
+    for (const node of nodes) {
+      let rest = node
+      for (;;) {
+        const v = rest.nodeValue
+        let best = null
+        for (const m of byLabel) {
+          const at = v.indexOf('@' + m.label)
+          if (at >= 0 && (!best || at < best.at)) best = { at, m }
+        }
+        if (!best) break
+        const tail = rest.splitText(best.at)
+        const after = tail.splitText(best.m.label.length + 1)
+        const box = document.createElement('span')
+        box.innerHTML = mentionPill(best.m) + '</span>'
+        const pill = box.firstElementChild
+        if (!pill) break
+        pill.classList.add('sw-mention-inline')
+        tail.replaceWith(pill)
+        rest = after
+      }
+    }
+  }
+}
+
 /** 药丸上那几个字。比卡片上那句话短——药丸要一眼扫过，长了就换行。 */
 const APPROVAL_CHIP_LABEL = {
   approved: () => t('已批准', 'approved'),
@@ -3262,7 +3306,8 @@ function updateRow(el, b, streaming, since) {
   }
   if (acts) acts.hidden = qseq == null || Boolean(streaming) || Boolean(b.pending)
 
-  const ments = b.mentions || []
+  // 混排的点名（inline）就地画在正文里（见 inlineMentionPills），这一排只留老格式的那些。
+  const ments = (b.mentions || []).filter((m) => !m.inline)
   const mentSig = ments.map((m) => m.label).join('|')
   let mentBox = bubble.querySelector('.sw-mentions-in')
   if (ments.length && !mentBox) {
@@ -3293,6 +3338,7 @@ function updateRow(el, b, streaming, since) {
     if (md.querySelector('.sw-typing')) md.innerHTML = ''
     syncMd(md, b.text, streaming)
     decorateFiles(md, outs)
+    if (b.kind === 'user') inlineMentionPills(md, (b.mentions || []).filter((m) => m.inline))
   }
 
   /**
@@ -7593,7 +7639,10 @@ function hideChatTodos() {
 function paintChatMentions() {
   const box = document.getElementById('chat-mentions')
   if (!box) return
-  const picked = state.chatMentions || []
+  // 点名已经混排进正文了（takeMention 把 `@名字` 插在光标处），上面这一排只留给
+  // 正文里没有它的那些——一般是草稿还回来、正文被改过的情形。
+  const text = state.chatDraft || ''
+  const picked = (state.chatMentions || []).filter((m) => !text.includes('@' + m.label))
   box.hidden = !picked.length
   box.innerHTML = picked
     .map(
@@ -8031,7 +8080,11 @@ function returnDraft(botId, text, files, mentions, refs = []) {
 async function sendChat() {
   const text = (state.chatDraft || '').trim()
   const files = state.chatFiles || []
-  const mentions = state.chatMentions || []
+  /**
+   * 只带正文里还留着 `@名字` 的点名：人把那几个字删了，就是不点了。带 inline 是给回执用的
+   * ——那几秒里气泡就该把药丸画在原位，和席位送回来的那条长得一样。
+   */
+  const mentions = (state.chatMentions || []).filter((m) => text.includes('@' + m.label)).map((m) => ({ ...m, inline: true }))
   const refs = state.chatRefs || []
   const sessionId = state.chatSessionId
   /**
@@ -8837,9 +8890,10 @@ async function deployMyRuntime(botId, opts = {}) {
 }
 
 /* ── `@` 点名 ──────────────────────────────────────────────────────────
-   输入框里打 `@` 弹选单，选中之后变成输入框上方的一颗药丸——**不是**往正文里塞一串
-   字。点名是结构化的东西：它决定这一轮的工具表（`mentionOnly` 的连接只有被点名才
-   出现），而一句「我提到了 Gmail」和「用户点名了这把连接」在进程那边是两回事。 */
+   输入框里打 `@` 弹选单，选中之后 `@名字` 落在正文里光标处，和文字混排——点名的意思在
+   位置里（「打开 @Gmail 邮件，让 @客户经理 处理」）。它仍然是结构化的：发送时 mentions
+   单独带上 id，席位按 `@名字` 的位置切成 text / mention 交错的块，决定这一轮的工具表
+   （`mentionOnly` 的连接只有被点名才出现），不是靠模型从一串字里猜。 */
 
 /** 光标前面刚打出来的 `@xxx`。不在词首（前面挨着字母）不算，邮箱地址不该触发选单。 */
 function mentionQueryAt(el) {
@@ -8886,12 +8940,19 @@ async function openMentionPick(q) {
 function takeMention(id) {
   const one = (state.mentionOptions || []).find((m) => m.id === id)
   if (!one) return
+  /**
+   * **插进正文，不另摆一排。** 点名的意思在位置里：「打开 @Gmail 邮件，让 @客户经理 处理」，
+   * 谁去打开、谁来处理全靠它落在哪儿。选中的那一刻把刚打的 `@xx` 换成 `@名字 `，光标停在
+   * 后面接着打；发送时按 `@名字` 的位置切块（见 sendChat 和席位的 interleaveMentions）。
+   */
   const el = document.getElementById('chat-input')
   const hit = mentionQueryAt(el)
-  if (el && hit) {
+  const token = '@' + one.label + ' '
+  if (el) {
     const pos = el.selectionStart ?? el.value.length
-    el.value = el.value.slice(0, hit.at) + el.value.slice(pos)
-    el.selectionStart = el.selectionEnd = hit.at
+    const from = hit ? hit.at : pos
+    el.value = el.value.slice(0, from) + token + el.value.slice(pos)
+    el.selectionStart = el.selectionEnd = from + token.length
     state.chatDraft = el.value
   }
   const picked = state.chatMentions || []
