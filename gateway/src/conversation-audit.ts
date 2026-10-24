@@ -305,11 +305,18 @@ function retryDelay(attempts: number): number {
  * 席位一看没在跑就重跑一遍、再失败——每 5 分钟一次，attempts 永远是 1，永远进不了退避，也就
  * 永远换不到新模型。现在失败当场转成 retry，按退避排下一次，下一次派发会先换成当前的模型。
  *
- * 只认还在席位上的那两种状态：已经被别的路径收走（成功、终审接管、已经排了重试）的不动。
+ * 还在席位上的（leased / processing）转成重试；**已经排了重试的只换原因**、下一次的时间不动——
+ * 续租那一步会先把它转成 retry（「席位上一次没跑完，也没报原因」），而席位那一下又跑了一遍、
+ * 这才报上真正的原因（「没有 opencode-go 的密钥」）。不记下来的话，批次上只剩那句含糊的话。
+ * 已经收口的（成功、空、终审接管）不动。
  */
 export async function failConversationAuditBatch(db: Db, batch: ConversationAuditBatch, error: string): Promise<boolean> {
-  if (batch.status !== 'leased' && batch.status !== 'processing') return false
   const message = `席位没跑成：${error}`.slice(0, 500)
+  if (batch.status === 'retry') {
+    await db.retryConversationAuditBatch(batch.id, message, batch.nextTryAt ?? Date.now() + retryDelay(batch.attempts), false)
+    return true
+  }
+  if (batch.status !== 'leased' && batch.status !== 'processing') return false
   await db.retryConversationAuditBatch(batch.id, message, Date.now() + retryDelay(batch.attempts), false)
   return true
 }

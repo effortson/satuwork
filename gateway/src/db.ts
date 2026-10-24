@@ -4848,8 +4848,15 @@ export class Db {
   /** 还在席位上跑、租约将在 `leaseEndsBefore` 之前到期的批次——续租用（见 conversation-audit.ts）。 */
   async processingConversationAuditBatches(leaseEndsBefore: number, limit = 20): Promise<ConversationAuditBatch[]> {
     const rows = await this.many(
-      `select * from conversation_audit_batches where status='processing' and "leaseUntil" <= ?
-       order by "leaseUntil" asc limit ?`,
+      `select * from conversation_audit_batches b where b.status='processing' and b."leaseUntil" <= ?
+         -- 和领活那条同一道闸：公司关了自动审计，定时批次不续租。续租就是把任务再发给席位，席位手上
+         -- 没有就重跑一遍、调一次模型——关着审计还在花钱（本地一条批次就这样被拉着跑了六周多）。
+         -- 租约到期后原地停着（领活那条也跳过它），重新打开后从那里接着审。删除终审不受影响。
+         and (b.kind <> 'scheduled' or exists (
+           select 1 from settings s where s."companyId" = b."companyId"
+           and s.payload->'conversationAudit'->>'enabled' = 'true'
+         ))
+       order by b."leaseUntil" asc limit ?`,
       [leaseEndsBefore, Math.max(1, limit)],
     )
     return rows.map(conversationAuditBatchOf)
