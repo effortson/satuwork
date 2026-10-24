@@ -866,6 +866,65 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(tr && tr.rows && tr.rows.length >= 1, `翻到之后该有过程：${JSON.stringify(tr)}`)
     })
 
+    await test('拖动中整页重画、dragend 没收到：之后从桌面拖文件丢到分类上，不会悄悄把上一次那颗挪过去', async () => {
+      const puts = []
+      const ui = await boot(undefined, {
+        fetchImpl: async (path, init) => {
+          if (init?.method === 'PUT') puts.push(path)
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.state.botFolders = [{ id: 'f1', name: '客户', position: 1 }]
+      ui.state.runtimeBots = [{ id: 'b1', name: '小满', folderId: null }]
+      const row = el('div', { 'data-bot-row': 'b1' })
+      row.closest = (sel) => (sel === '[data-bot-row]' ? row : null)
+      const zone = el('div', { 'data-drop-folder': 'f1' })
+      zone.closest = (sel) => (sel === '[data-drop-folder]' ? zone : null)
+      const carry = new Map()
+      ui.fireDoc('dragstart', { target: row, dataTransfer: { setData: (k, v) => carry.set(k, v), types: ['text/plain'] } })
+      // 整页重画了，dragend 没到 document。接着拖进来的是一个文件。
+      ui.fireDoc('drop', { target: zone, dataTransfer: { types: ['Files'], getData: () => '' } })
+      await new Promise((r) => setTimeout(r, 20))
+      assert(ui.state.runtimeBots[0].folderId === null && !puts.length, `拖文件不该挪 Bot：${JSON.stringify(ui.state.runtimeBots[0])} ${JSON.stringify(puts)}`)
+      // 正常的一次拖放照样能用。
+      ui.fireDoc('dragstart', { target: row, dataTransfer: { setData: (k, v) => carry.set(k, v), types: ['text/plain'] } })
+      ui.fireDoc('drop', { target: zone, dataTransfer: { types: ['text/plain'], getData: (k) => carry.get(k) || '' } })
+      await new Promise((r) => setTimeout(r, 20))
+      assert(ui.state.runtimeBots[0].folderId === 'f1' && puts.length === 1, `正常拖放该挪进去：${JSON.stringify(ui.state.runtimeBots[0])}`)
+    })
+
+    await test('连着挪两次、前一次失败：不把后一次退掉；挪的途中名单重拉回来也不盖掉刚放进去的', async () => {
+      let failFirst
+      const gate = new Promise((r) => (failFirst = r))
+      let n = 0
+      const ui = await boot(undefined, {
+        fetchImpl: async (path, init) => {
+          if (init?.method === 'PUT') {
+            n++
+            if (n === 1) {
+              await gate
+              return { ok: false, status: 500, text: async () => JSON.stringify({ error: '一时失败' }) }
+            }
+            return { ok: true, status: 200, text: async () => '{}' }
+          }
+          if (path === '/runtime/bots') return { ok: true, status: 200, text: async () => JSON.stringify({ bots: [{ id: 'b1', name: '小满', scope: 'user', folderId: null }], folders: [{ id: 'f1', name: '客户', position: 1 }, { id: 'f2', name: '报表', position: 2 }] }) }
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.state.botFolders = [{ id: 'f1', name: '客户', position: 1 }, { id: 'f2', name: '报表', position: 2 }]
+      ui.state.runtimeBots = [{ id: 'b1', name: '小满', scope: 'user', folderId: null }]
+      // 第一笔（放进 f1）还在路上，名单重拉回来了：服务端那份还是没分类，不能把本地的盖掉。
+      const first = ui.moveBotToFolder('b1', 'f1')
+      await new Promise((r) => setTimeout(r, 10))
+      await ui.loadRuntimeBots()
+      assert(ui.state.runtimeBots[0].folderId === 'f1', `重拉回来的旧名单盖掉了还在路上的那一笔：${JSON.stringify(ui.state.runtimeBots[0])}`)
+      // 接着又挪到 f2（成了）；之后第一笔才失败回来：不能把 f2 退回去。
+      await ui.moveBotToFolder('b1', 'f2')
+      failFirst()
+      await first
+      assert(ui.state.runtimeBots[0].folderId === 'f2', `前一次失败的回滚把后一次退掉了：${JSON.stringify(ui.state.runtimeBots[0])}`)
+    })
+
     await test('收起的分类刷新后还收着：开合状态从本机读得回来（state 初始化时键已经声明）', async () => {
       const kept = new Map([['satuwork.botFolderOpen', JSON.stringify({ f1: false })]])
       const storage = {

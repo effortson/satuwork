@@ -497,7 +497,8 @@ async function loadRuntimeBots() {
      * 是一排「公司的运行机器还没配好」。这时候名册里只留本人建的——本地 Bot 用得了，
      * 自己建过的远程 Bot 也留着，那是本人的东西，删不删由本人定。
      */
-    state.runtimeBots = (data.bots || []).filter((bot) => state.runtimeHasMachine !== false || bot.scope === 'user')
+    // 还在路上的「移到分类」盖回去：服务端那份这时还是旧的（shell.js 的 applyPendingFolders）。
+    state.runtimeBots = applyPendingFolders((data.bots || []).filter((bot) => state.runtimeHasMachine !== false || bot.scope === 'user'))
     state.botFolders = Array.isArray(data.folders) ? data.folders : []
     state.mainBotId = typeof data.mainBotId === 'string' ? data.mainBotId : ''
     // 本地 Bot 在不在跑、听哪个口，Gateway 不知道（隧道拆了），只有壳子知道。

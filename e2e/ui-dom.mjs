@@ -106,6 +106,7 @@ function countingStub() {
 function makeDom(stubIds = [], copied = []) {
   // app.js 给 'input' 挂了不止一个处理器，Map 存单个会把先挂的那个吞掉。
   const listeners = new Map()
+  const docListeners = new Map()
   // 内容区那个滚动容器。app.js 重绘时会读它、再把位置贴回去。
   const page = { scrollTop: 0 }
   const app = {
@@ -164,9 +165,13 @@ function makeDom(stubIds = [], copied = []) {
       copied.push(String(selected.value ?? ''))
       return true
     },
-    addEventListener() {},
+    // document 上挂的监听（拖放、长按那几个）记下来，测里用 fireDoc 喂假事件。
+    addEventListener: (type, fn) => {
+      if (!docListeners.has(type)) docListeners.set(type, [])
+      docListeners.get(type).push(fn)
+    },
   }
-  return { document, app, page, listeners, stubs, body }
+  return { document, app, page, listeners, docListeners, stubs, body }
 }
 
 /**
@@ -201,7 +206,7 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
   const src = raw.replace(/\nboot\(\)\s*$/, '\n')
   // 复制过的东西都落这儿，两条路（navigator.clipboard 和 execCommand）都记。
   const copied = []
-  const { document, app, page, listeners, stubs, body } = makeDom(stubIds, copied)
+  const { document, app, page, listeners, docListeners, stubs, body } = makeDom(stubIds, copied)
   const sessionStorage = makeStorage()
   // desktop 重开窗口时 sessionStorage 是一份新的，localStorage 仍是同一份。测试把上一
   // 次的 persistentStorage 递回来，才能真的覆盖「关掉再打开」而不只是同页 reload。
@@ -249,7 +254,7 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
     'HTMLSelectElement',
     'HTMLTextAreaElement',
     'HTMLFormElement',
-    `${src}\n;return { boot, render, state, api, loadPage, enterPath, auditTranscript, messageText, setToken, clearToken, token, onSetup, testLlm, saveSettings, savePriceMultiplier, saveCustomProvider, saveCustomModel, loadCustomProviders, runConfirm, statsWindow, chargesWindow, usageRangeMs, dailyBarChart, monthPicker, monthLabel, usagePage, loadStats, loadCharges, loadConversationAudits, catalogBase, pathAllowed, machineHead, readOnlyItem, startChatStream, stopChatStream, paintChat, ensureChatSession, sendChat, fold, threadRows, paintRowTime, refreshRoutine, refreshRoutineList, routineShot, loadOlderChat, hydrateChat, pushBotEvent, botStreamOf, resetBotStream, trimBotStreams, BOT_BUCKET_MAX, startRosterStream, stopRosterStream, noteRosterFrame, openBotStreams, BOT_STREAM_MAX, chatPages, CHAT_TAIL_TURNS, STREAM_TAIL_TURNS, CHAT_RETRY_MAX, sweepSilentStreams, STREAM_SILENT_MS, streamPulse, loadWebTools, saveWebTools, saveWebPrice, testWebBackend, mentionQueryAt, paintChatMentions, paintChatQueue, paintMentionPick, takeMention, chatQueues, idleTimers, flushHeldSend, clearHeldSend, seatRestarted, retryChatSession, SESSION_RETRY_MAX, approvalState, approvalChipHtml, loadLocalDirs, localDirsHtml, decideApproval, toolFoldHtml, TOOLFOLD_ROWS, approvalPop, approvalDead, approvalHtml, toolPopBody, handoffHtml, handoffDoneHtml, handoffsPage, handoffsAside, paintAsideHandoffs, handoffBell, asideToggle, pageAside, applyHandoffSnapshot, settleDot, handoffDead, handoffRow, stepShots, stepMoreHtml, MAX_STEP_SHOTS, outputFiles, outputImages, MAX_OUT_IMAGES, knownFiles, fileCands, fileHits, readFiles, workspacePanel, maybeLivePreview, openPreview, previewBody, previewPanel, shownPreview, asidePref, asideColumns, syncPreview, leavePreview, setPreviewMode, onOfficeViewMessage, liveLamp, composerTip, stopTipText, abortChat, seatLink, seatLinkOf, linkDown, machineDownBanner, myBotPage, botVersionLine, storedMemories, seatStage, chatDeployPrompt, installProgressBody, ensureDeployWatch, pollDeployProgress, uploadTargetOf, uploadChatFile, overlayLocalRuntime, loadRuntimeBots, localRoute, startHandoffPoll, startSeatWatch, endSignedIn, loginView, syncChatModel, paintChatModel, chatModelSnap, CHAT_MODEL_TTL_MS, desktopUpdateSlot, desktopUpdateInner, checkDesktopUpdate, installDesktopUpdate, chatFind, chatFindHtml, findToggleHtml, mergeFindHits, markTerms, onChatFindInput, runChatFind, findStep, gotoFindHit, openChatFind, closeChatFind, jumpToMessage, chatHeadInline, chatPage, chatRosterNav, rosterGroups, runChatCommand, loadTaskTrace, taskTraceSrc, liveHandles: () => ({ rosterAbort, handoffTimer, seatWatchTimer }) }`,
+    `${src}\n;return { boot, render, state, api, loadPage, enterPath, auditTranscript, messageText, setToken, clearToken, token, onSetup, testLlm, saveSettings, savePriceMultiplier, saveCustomProvider, saveCustomModel, loadCustomProviders, runConfirm, statsWindow, chargesWindow, usageRangeMs, dailyBarChart, monthPicker, monthLabel, usagePage, loadStats, loadCharges, loadConversationAudits, catalogBase, pathAllowed, machineHead, readOnlyItem, startChatStream, stopChatStream, paintChat, ensureChatSession, sendChat, fold, threadRows, paintRowTime, refreshRoutine, refreshRoutineList, routineShot, loadOlderChat, hydrateChat, pushBotEvent, botStreamOf, resetBotStream, trimBotStreams, BOT_BUCKET_MAX, startRosterStream, stopRosterStream, noteRosterFrame, openBotStreams, BOT_STREAM_MAX, chatPages, CHAT_TAIL_TURNS, STREAM_TAIL_TURNS, CHAT_RETRY_MAX, sweepSilentStreams, STREAM_SILENT_MS, streamPulse, loadWebTools, saveWebTools, saveWebPrice, testWebBackend, mentionQueryAt, paintChatMentions, paintChatQueue, paintMentionPick, takeMention, chatQueues, idleTimers, flushHeldSend, clearHeldSend, seatRestarted, retryChatSession, SESSION_RETRY_MAX, approvalState, approvalChipHtml, loadLocalDirs, localDirsHtml, decideApproval, toolFoldHtml, TOOLFOLD_ROWS, approvalPop, approvalDead, approvalHtml, toolPopBody, handoffHtml, handoffDoneHtml, handoffsPage, handoffsAside, paintAsideHandoffs, handoffBell, asideToggle, pageAside, applyHandoffSnapshot, settleDot, handoffDead, handoffRow, stepShots, stepMoreHtml, MAX_STEP_SHOTS, outputFiles, outputImages, MAX_OUT_IMAGES, knownFiles, fileCands, fileHits, readFiles, workspacePanel, maybeLivePreview, openPreview, previewBody, previewPanel, shownPreview, asidePref, asideColumns, syncPreview, leavePreview, setPreviewMode, onOfficeViewMessage, liveLamp, composerTip, stopTipText, abortChat, seatLink, seatLinkOf, linkDown, machineDownBanner, myBotPage, botVersionLine, storedMemories, seatStage, chatDeployPrompt, installProgressBody, ensureDeployWatch, pollDeployProgress, uploadTargetOf, uploadChatFile, overlayLocalRuntime, loadRuntimeBots, localRoute, startHandoffPoll, startSeatWatch, endSignedIn, loginView, syncChatModel, paintChatModel, chatModelSnap, CHAT_MODEL_TTL_MS, desktopUpdateSlot, desktopUpdateInner, checkDesktopUpdate, installDesktopUpdate, chatFind, chatFindHtml, findToggleHtml, mergeFindHits, markTerms, onChatFindInput, runChatFind, findStep, gotoFindHit, openChatFind, closeChatFind, jumpToMessage, chatHeadInline, chatPage, chatRosterNav, rosterGroups, moveBotToFolder, runChatCommand, loadTaskTrace, taskTraceSrc, liveHandles: () => ({ rosterAbort, handoffTimer, seatWatchTimer }) }`,
   )
 
   /**
@@ -313,7 +318,12 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
     }
   }
 
-  return { ...api, app, page, listeners, stubs, fire, sessionStorage, localStorage, location, windowOpens, copied, body, document, html: () => app.innerHTML }
+  /** 喂 document 上的监听。event 原样交过去（带 dataTransfer、target 那些由测试给）。 */
+  const fireDoc = (type, event) => {
+    for (const fn of docListeners.get(type) || []) fn({ type, preventDefault() {}, stopPropagation() {}, ...event })
+  }
+
+  return { ...api, app, page, listeners, fireDoc, stubs, fire, sessionStorage, localStorage, location, windowOpens, copied, body, document, html: () => app.innerHTML }
 }
 
 /**
