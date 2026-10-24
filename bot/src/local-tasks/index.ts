@@ -31,6 +31,8 @@ interface Job {
   task: { id: string; phase: 'instruction' | 'result'; from: { id: string; name: string } }
   leaseMs: number
   timeoutMs: number
+  /** 续租的节拍（Gateway 给）。续租的回复里带 cancelled：主 Bot 那边停了，这边立刻停。 */
+  cancelPollMs?: number
 }
 
 class LostError extends Error {}
@@ -166,15 +168,35 @@ export function apply(ctx: Context) {
     const ac = new AbortController()
     const timeout = setTimeout(() => ac.abort(), Math.max(60_000, num(job.timeoutMs, DEFAULT_TIMEOUT_MS)))
     let lost = false
-    const renew = setInterval(() => {
-      void gw(`/${encodeURIComponent(job.taskId)}/renew`, {}).catch((e) => {
-        if (e instanceof LostError) {
-          lost = true
-          ac.abort()
-        }
-      })
-    }, Math.max(1000, Math.trunc(num(job.leaseMs, DEFAULT_LEASE_MS) / 3)))
     let sessionId = ''
+    /** 这一轮是不是插进别人正在跑的那一轮里的（steered）。是的话停止时不砍它：那一轮是人自己的。 */
+    let steered = false
+    /** 主 Bot 那边按了停止（续租的回复里带 cancelled）。 */
+    let stopped = false
+    let stopTimer: ReturnType<typeof setTimeout> | null = null
+    /**
+     * 停掉目标那一轮（docs/bot-tasks.md §1.2）。调席位的「中止」接口，那一轮以 aborted 收口，下面照常
+     * 读到 turn/end 报上去；中止请求发出去 15 秒还没收口就不等了，照样报 aborted。
+     */
+    const stopTarget = () => {
+      if (stopped) return
+      stopped = true
+      if (job.phase !== 'run' || !sessionId || steered) return
+      void selfJson(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
+      stopTimer = setTimeout(() => ac.abort(), 15_000)
+    }
+    const renew = setInterval(() => {
+      void gw(`/${encodeURIComponent(job.taskId)}/renew`, {})
+        .then((r) => {
+          if ((r as { cancelled?: boolean } | null)?.cancelled) stopTarget()
+        })
+        .catch((e) => {
+          if (e instanceof LostError) {
+            lost = true
+            ac.abort()
+          }
+        })
+    }, Math.max(200, Math.min(Number(job.cancelPollMs) || Infinity, Math.trunc(num(job.leaseMs, DEFAULT_LEASE_MS) / 3))))
     const finish = (body: Record<string, unknown>) =>
       gw(`/${encodeURIComponent(job.taskId)}/finish`, { ...body, ...(sessionId ? { sessionId } : {}) }).catch((e) => {
         if (!(e instanceof LostError)) ctx.logger?.warn?.(`local tasks: 回报 ${job.taskId} 失败：${(e as Error).message}`)
@@ -206,17 +228,27 @@ export function apply(ctx: Context) {
       })
       if (!r.ok || !r.body) throw new Error(`事件流打不开：HTTP ${r.status}`)
       const reader = r.body.getReader()
+      // 开跑之前就被停了：指令别发进去。
+      if (stopped) {
+        await finish({ kind: 'aborted' })
+        return
+      }
       const posted = (await selfJson(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, { method: 'POST', body: message })) as { steered?: boolean } | null
+      steered = Boolean(posted?.steered)
+      // 发消息的那一下刚好撞上停止：补一次中止。
+      if (stopped && !steered) void selfJson(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
       const out = await readTurnResult(reader, !posted?.steered, job.instruction)
       await finish({ kind: out.kind, result: out.text })
       ctx.logger?.info?.(`local tasks: ${job.taskId} 目标那一轮跑完：${out.kind}`)
     } catch (e) {
       if (lost) return
-      if (ac.signal.aborted) await finish({ kind: 'timeout' })
+      if (stopped) await finish({ kind: 'aborted' })
+      else if (ac.signal.aborted) await finish({ kind: 'timeout' })
       else await finish({ kind: 'failed', error: String((e as Error).message || e).slice(0, 300) })
     } finally {
       clearTimeout(timeout)
       clearInterval(renew)
+      if (stopTimer) clearTimeout(stopTimer)
       ac.abort()
     }
   }

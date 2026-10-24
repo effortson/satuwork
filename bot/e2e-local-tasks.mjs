@@ -38,8 +38,21 @@ const gateway = createServer((req, res) => {
           leaseMs: 60000,
         })
       }
+      // 前两件收场之后发第三件：它跑到一半，主 Bot 那边按了停止。
+      if (seen.some((s) => s.path === '/runtime/local-tasks/tk-2/finish') && !seen.some((s) => s.path === '/runtime/local-tasks/tk-3/started')) {
+        return send(200, {
+          jobs: [{ taskId: 'tk-3', phase: 'run', botId: 'bot-local', accountId: 'acc', seatId: 'desktop', instruction: '【主 Bot「助手」派来的任务】\n做一件很久的事', task: { id: 'tk-3', phase: 'instruction', from: { id: 'bot-main', name: '助手' } }, leaseMs: 60000, timeoutMs: 120000, cancelPollMs: 200 }],
+          leaseMs: 60000,
+        })
+      }
       return send(200, { jobs: [], leaseMs: 60000 })
     }
+    if (req.method === 'POST' && url.pathname === '/runtime/local-tasks/tk-3/renew') {
+      // 开跑后第二次续租起说「停了」。
+      const n = seen.filter((s) => s.path === '/runtime/local-tasks/tk-3/renew').length
+      return send(200, { leaseMs: 60000, cancelled: n >= 2 })
+    }
+    if (req.method === 'POST' && /^\/runtime\/local-tasks\/tk-3\/(started|finish)$/.test(url.pathname)) return send(200, url.pathname.endsWith('started') ? { blocked: null } : { ok: true })
     if (req.method === 'POST' && /^\/runtime\/local-tasks\/tk-[12]\/started$/.test(url.pathname)) return send(200, { blocked: null })
     if (req.method === 'POST' && /^\/runtime\/local-tasks\/tk-[12]\/renew$/.test(url.pathname)) return send(200, { leaseMs: 60000 })
     if (req.method === 'POST' && /^\/runtime\/local-tasks\/tk-[12]\/finish$/.test(url.pathname)) return send(200, { ok: true })
@@ -79,9 +92,35 @@ ctx.server.get('/api/sessions/:id/events', async (req) => {
     { headers: { 'content-type': 'text/event-stream' } },
   )
 })
+// 中止：第三件被停时工人来调它。收到就让那一轮以 aborted 收口。
+ctx.server.post('/api/sessions/:id/abort', async (req) => {
+  own.push({ path: req.path, auth: req.headers.get('authorization') })
+  const enc = new TextEncoder()
+  for (const c of streams) {
+    try {
+      c.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'turn/end', seq: 99, data: { turn: 20, reason: 'aborted' } })}\n\n`))
+    } catch {}
+  }
+  return Response.json({ aborted: true })
+})
 ctx.server.post('/api/sessions/:id/messages', async (req) => {
   const body = await req.json()
   own.push({ path: req.path, auth: req.headers.get('authorization'), body })
+  // 第三件：开一轮、说一句，就一直跑着不收口——等着被停。
+  if (body.task?.id === 'tk-3') {
+    setTimeout(() => {
+      const enc = new TextEncoder()
+      const line = (type, seq, data) => enc.encode(`data: ${JSON.stringify({ type, seq, data })}\n\n`)
+      for (const c of streams) {
+        try {
+          c.enqueue(line('user/message', 30, { message: { content: body.text } }))
+          c.enqueue(line('turn/start', 31, { turn: 20 }))
+          c.enqueue(line('assistant/message', 32, { turn: 20, message: { content: [{ type: 'text', text: '我开始做了，要很久。' }] } }))
+        } catch {}
+      }
+    }, 30)
+    return Response.json({ accepted: true })
+  }
   if (body.task?.phase === 'instruction') {
     setTimeout(() => {
       const enc = new TextEncoder()
@@ -105,8 +144,8 @@ ctx.server.post('/api/sessions/:id/messages', async (req) => {
 
 await ctx.plugin(await import('./src/local-tasks/index.ts'))
 
-const deadline = Date.now() + 20000
-while (Date.now() < deadline && !seen.some((s) => s.path === '/runtime/local-tasks/tk-2/finish')) await new Promise((r) => setTimeout(r, 50))
+const deadline = Date.now() + 30000
+while (Date.now() < deadline && !seen.some((s) => s.path === '/runtime/local-tasks/tk-3/finish')) await new Promise((r) => setTimeout(r, 50))
 for (const c of streams) try { c.close() } catch {}
 gateway.close()
 console.log('__RESULT__' + JSON.stringify({ seen, own }))

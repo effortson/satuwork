@@ -16,6 +16,12 @@ import { runtimeKindOf } from './catalog.ts'
 /** 等的一方（主 Bot 的席位）每次轮询续多久。轮询是 2 秒一次，60 秒够它挺过几次网络抖动。 */
 export const TASK_WAIT_LEASE_MS = Math.max(5_000, Math.trunc(Number(process.env.GATEWAY_TASK_WAIT_LEASE_MS ?? 60_000)))
 
+/**
+ * 领走派活的那一方多久续一次租。比日常任务（租约的三分之一，约 20 秒）勤得多：续租的回复里带着
+ * 「已经被停了没有」，人在主 Bot 那边按了停止，目标那一轮要**立刻**跟着停（docs/bot-tasks.md §1.2）。
+ */
+export const TASK_CANCEL_POLL_MS = Math.max(200, Math.trunc(Number(process.env.GATEWAY_TASK_CANCEL_POLL_MS ?? 2_000)))
+
 /** 租约、一轮最多等多久、没人领多久算没人领。和日常任务同一组环境变量，节拍一致。 */
 export const TASK_LEASE_MS = Math.max(1_000, Math.trunc(Number(process.env.GATEWAY_ROUTINE_LEASE_MS ?? 60_000)))
 export const TASK_TIMEOUT_MS = Math.max(60_000, Math.trunc(Number(process.env.GATEWAY_ROUTINE_TIMEOUT_MS ?? 20 * 60_000)))
@@ -36,6 +42,16 @@ export function phaseOf(task: BotTask): TaskPhase | null {
   if (task.status === 'queued' || task.status === 'running') return 'run'
   if (task.status === 'reporting' || task.status === 'delivering') return 'deliver'
   return null
+}
+
+/**
+ * 续租。回复里带上「已经被停了没有」：人在主 Bot 那边按了停止，领走 run 那一步的一方据此立刻停掉
+ * 目标那一轮（docs/bot-tasks.md §1.2）。续不上（不归你、收场了）回 null，路由回 404。
+ */
+export async function renewTask(db: Db, taskId: string, owner: string): Promise<{ leaseMs: number; cancelled: boolean } | null> {
+  if (!(await db.renewBotTask(taskId, owner, Date.now() + TASK_LEASE_MS))) return null
+  const task = await db.botTask(taskId)
+  return { leaseMs: TASK_LEASE_MS, cancelled: Boolean(task?.cancelledAt) && phaseOf(task!) === 'run' }
 }
 
 /** 这一步要敲哪颗 Bot 的会话：run 是目标，deliver 是主 Bot。 */
@@ -146,6 +162,8 @@ export function jobOf(task: BotTask, phase: TaskPhase, seatId: string, names: { 
     },
     leaseMs: TASK_LEASE_MS,
     timeoutMs: TASK_TIMEOUT_MS,
+    /** 续租的节拍。续租的回复里带 `cancelled`，工人据此立刻停掉目标那一轮。 */
+    cancelPollMs: TASK_CANCEL_POLL_MS,
   }
 }
 
@@ -232,8 +250,13 @@ export async function leaseDueTasks(db: Db, owner: string, seatIdOf: (task: BotT
  * 工人拿到了会话 id，问一句「能跑吗」。只有 run 那一步看转人工：目标 Bot 的会话上有一张挡路的
  * 交接单就不发——发了也是排在人后面没人理。挡住的直接当没做成送回主 Bot，工人收到 blocked 就停手。
  */
-export async function taskStarted(db: Db, task: BotTask, owner: string, sessionId: string): Promise<{ blocked: string | null }> {
+export async function taskStarted(db: Db, task: BotTask, owner: string, sessionId: string): Promise<{ blocked: string | null; cancelled?: boolean }> {
   const phase = phaseOf(task)
+  // 领走之后、开跑之前人就按了停止：指令一个字都别发进去。
+  if (phase === 'run' && task.cancelledAt) {
+    await db.updateBotTask(task.id, { status: 'cancelled', owner: null, leaseUntil: null, endedAt: Date.now(), runSessionId: sessionId })
+    return { blocked: '主 Bot 那边停止了', cancelled: true }
+  }
   if (phase === 'run') {
     const blocking = (await db.handoffsOfSession(sessionId)).find((h) => h.blocking && (h.state === 'open' || h.state === 'claimed'))
     if (blocking) {

@@ -320,11 +320,27 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       const job = (await due()).json.jobs.find((j) => j.taskId === id)
       assert(job, '没领到')
       await post(id, 'started', { sessionId: 's-fin' })
+      const before = await post(id, 'renew')
+      assert(before.status === 200 && before.json.cancelled === false, `没停时续租该说没停：${before.text}`)
       await req(gwBase, 'POST', `/runtime/tasks/${id}/cancel`, { token: seatTok, body: {} })
-      await post(id, 'finish', { kind: 'completed', result: '其实做完了' })
+      // 续租的回复要立刻告诉工人「停了」，它才去中止目标那一轮。
+      const after = await post(id, 'renew')
+      assert(after.status === 200 && after.json.cancelled === true, `停了之后续租该说停了：${after.text}`)
+      assert(job.cancelPollMs > 0 && job.cancelPollMs <= 5000, `续租节拍该很勤：${job.cancelPollMs}`)
+      await post(id, 'finish', { kind: 'aborted' })
       const got = await req(gwBase, 'GET', `/runtime/tasks/${id}`, { token: seatTok })
       assert(got.json.task.status === 'cancelled', `停了的交回来也不该送回：${got.text}`)
       assert((await due()).json.jobs.every((j) => j.taskId !== id), '停了的不该有送回那一步')
+
+      // 领走了、还没开跑就被停：started 直接挡下，指令一个字都不发进去。
+      const c = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '刚领走就停', sessionId: 's-main', wait: true })
+      const cid = c.json.task.id
+      assert((await due()).json.jobs.some((j) => j.taskId === cid), '没领到')
+      await req(gwBase, 'POST', `/runtime/tasks/${cid}/cancel`, { token: seatTok, body: {} })
+      const st = await post(cid, 'started', { sessionId: 's-fin' })
+      assert(st.status === 200 && st.json.blocked && st.json.cancelled === true, `开跑前被停该挡下：${st.text}`)
+      const gone = await req(gwBase, 'GET', `/runtime/tasks/${cid}`, { token: seatTok })
+      assert(gone.json.task.status === 'cancelled', `该记成已停止：${gone.text}`)
     })
 
     await test('别的机器领不到、也回报不了这台机器的活', async () => {

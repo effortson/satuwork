@@ -28,7 +28,19 @@ export async function runLocalTasks({ root, test, assert, log }) {
     const finish = seen.find((s) => s.path === '/runtime/local-tasks/tk-2/finish')
     assert(finish && finish.body.kind === 'delivered', `deliver 的 finish 不对：${JSON.stringify(finish)}`)
     // deliver 不挂流、不读历史：只发消息。
+    // 只看送回那条消息到下一件任务开头（它自己问会话 id）之间：后面那件 run 当然要挂流。
     const after = result.own.indexOf(msg)
-    assert(!result.own.slice(after + 1).some((x) => x.path.endsWith('/events')), 'deliver 那一步不该再挂流')
+    const nextJob = result.own.findIndex((x, i) => i > after && x.path.endsWith('/session'))
+    const between = result.own.slice(after + 1, nextJob < 0 ? undefined : nextJob)
+    assert(!between.some((x) => x.path.endsWith('/events')), 'deliver 那一步不该再挂流')
+  })
+
+  await test('主 Bot 那边停了：续租一说停，就立刻调中止停掉目标那一轮，报 aborted', async () => {
+    const renews = seen.filter((s) => s.path === '/runtime/local-tasks/tk-3/renew')
+    assert(renews.length >= 2, `第三件该勤快地续租（cancelPollMs 200ms）：${renews.length} 次`)
+    const abort = result.own.find((x) => x.path.endsWith('/abort'))
+    assert(abort && abort.auth === 'Bearer sat_local_probe', `没调中止，或者票不对：${JSON.stringify(abort)}`)
+    const fin = seen.find((s) => s.path === '/runtime/local-tasks/tk-3/finish')
+    assert(fin && fin.body.kind === 'aborted', `停了该报 aborted：${JSON.stringify(fin && fin.body)}`)
   })
 }
