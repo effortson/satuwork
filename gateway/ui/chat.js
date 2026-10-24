@@ -3141,8 +3141,17 @@ function taskInBlock(b, blocks, i, live) {
   const head = raw.match(TASK_IN_HEAD)
   const from = (a && a.from) || {}
   let calls = 0
+  /**
+   * 那一轮里有没有等人的东西：没批的高风险确认、没人接的交接单。有就**不许折**——确认卡挂在
+   * 助手块上，折起来人就看不见，主 Bot 只能干等到超时、记成没做成。批完、接完再照常折回去。
+   */
+  let waits = 0
   if (a && a.state !== 'steered') {
-    for (let j = i + 1; j < blocks.length && blocks[j].kind === 'assistant' && blocks[j].via === 'task'; j++) calls += (blocks[j].tools || []).length
+    for (let j = i + 1; j < blocks.length && blocks[j].kind === 'assistant' && blocks[j].via === 'task'; j++) {
+      calls += (blocks[j].tools || []).length
+      waits += (blocks[j].approvals || []).filter((x) => x.state === 'pending' && !approvalDead(x)).length
+      waits += (blocks[j].handoffs || []).filter((h) => h.state === 'open' && !handoffDead(h)).length
+    }
   }
   return {
     ...b,
@@ -3150,8 +3159,9 @@ function taskInBlock(b, blocks, i, live) {
     taskFrom: { id: from.id || '', name: from.name || (head && head[1]) || '' },
     // 老席位插进人那一轮的（steered）没有自己的轮次，没什么可折的。
     foldable: Boolean(a && a.state !== 'steered'),
-    open: taskInOpen.has(String(b.seq)),
+    open: waits > 0 || taskInOpen.has(String(b.seq)),
     calls,
+    waits,
     // 这条会话还在跑没有（fold 的 status）。一轮只有 turn/start 没有 turn/end、而席位说没在跑：上一条命死在半路了。
     live: Boolean(live),
   }
@@ -3204,15 +3214,18 @@ function updateTaskIn(el, b) {
     }
   }
   const st = taskInState(b)
-  const sig = [st, b.foldable ? 1 : 0, b.open ? 1 : 0, b.calls].join('|')
+  const sig = [st, b.foldable ? 1 : 0, b.open ? 1 : 0, b.calls, b.waits ? 1 : 0].join('|')
   if (el.getAttribute('data-sig') === sig) return
   el.setAttribute('data-sig', sig)
   el.setAttribute('data-state', st)
   if (b.foldable) el.setAttribute('data-open', b.open ? '1' : '0')
   else el.removeAttribute('data-open')
-  el.querySelector('.sw-taskname-tag').textContent = (TASK_IN_LABEL[st] || (() => t('派来的任务 · 出错了', 'Assigned · Failed')))()
+  el.querySelector('.sw-taskname-tag').textContent = b.waits
+    ? t('派来的任务 · 等你确认', 'Assigned · Needs you')
+    : (TASK_IN_LABEL[st] || (() => t('派来的任务 · 出错了', 'Assigned · Failed')))()
   const btn = el.querySelector('.sw-taskin-toggle')
-  btn.hidden = !b.foldable
+  // 有等人的东西时强制摊开（见 taskInBlock），「收起」点了也收不起来，干脆不摆。
+  btn.hidden = !b.foldable || Boolean(b.waits)
   btn.setAttribute('aria-expanded', b.open ? 'true' : 'false')
   const n = b.calls ? t(`${b.calls} 次工具调用`, `${b.calls} tool calls`) : ''
   btn.textContent = b.open ? t('收起过程', 'Hide the work') : n ? t(`展开过程 · ${n}`, `Show the work · ${n}`) : t('展开过程', 'Show the work')

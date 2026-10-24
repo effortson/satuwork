@@ -319,6 +319,24 @@ export async function runChatFold({ root, test, assert, log }) {
     assert(head.assigned.state === 'running' && head.live, `该是正在跑：${JSON.stringify(head.assigned)} live=${head.live}`)
   })
 
+  await test('派来的活那一轮在等人批：确认卡不许折进卡里，批完再折回去', async () => {
+    const task = { kind: 'plugin', plugin: 'task', form: 't3', phase: 'instruction', from: { id: 'main', name: '助手' } }
+    const base = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'ds', createdAt: T }),
+      ev(2, 'user/message', { message: um('【主 Bot「助手」派来的任务】\n给客户发封邮件'), source: task }),
+      ev(3, 'turn/start', { turn: 1 }),
+      ev(4, 'tool/call', { turn: 1, step: 1, callId: 'm1', name: 'send_email', arguments: '{}' }),
+      ev(5, 'tool/approval', { turn: 1, callId: 'm1', name: 'send_email', arguments: '{}', state: 'pending', reason: '外发邮件' }),
+    ]
+    const rows = threadRows(fold(base), 's1').filter((r) => r.kind === 'msg')
+    const head = rows[0].block
+    assert(head.waits === 1 && head.open, `有没批的确认时该强制摊开：${JSON.stringify({ waits: head.waits, open: head.open })}`)
+    const card = rows.find((r) => r.block.kind === 'assistant')
+    assert(card && (card.block.approvals || []).some((a) => a.callId === 'm1' && a.state === 'pending'), `确认卡所在的那一块该画出来：${JSON.stringify(rows.map((r) => r.block.kind))}`)
+    const done = threadRows(fold([...base, ev(6, 'tool/approval', { turn: 1, callId: 'm1', state: 'approved' })]), 's1').filter((r) => r.kind === 'msg')
+    assert(!done[0].block.open && !done[0].block.waits && done.length === 1, `批完该照常折回去：${JSON.stringify(done.map((r) => r.block.kind))}`)
+  })
+
   await test('混排的点名：正文里留着 @名字，点名带 inline（就地画药丸，不另起一排）', async () => {
     const events = [
       ev(1, 'session', { version: 5, id: 's1', botId: 'b', createdAt: T }),
