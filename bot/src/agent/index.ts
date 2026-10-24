@@ -101,7 +101,7 @@ export interface Config {
   system?: string
   /**
    * 提示词占到上下文窗口这个比例时，轮次结束后压缩一次。优先采用 provider 回报的
-   * input + cache read 高水位；还没有 usage 时才完全依赖本地估算。
+   * input + cache read（边界之后最近一次）；还没有 usage 时才完全依赖本地估算。
    *
    * 留 30% 给「这一轮之后还要长的东西」：工具结果、模型的输出、以及压缩本身
    * 落地之前的那一两轮。压得太早白花摘要的钱，压得太晚就直接撞墙了。
@@ -1844,8 +1844,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       // 之前那些助手消息上的 usage 属于更早的轮次（可能在压缩之前），不能拿来当实测。
       //
       // prior：上一轮撞了窗口的会话，这一轮第一次调用时本地估算可能远低于实际，拿 provider
-      // 回报过的高水位兜底。history 在轮首硬顶那里压过的话已经重读，边界之前的不算。
-      transformContext: this.contextGuardFor(sessionId, provider, modelId, model, system.text, this.forModel(toolSchemas, model), messages.length, observedPromptHighWater(history)),
+      // 最近一次回报的输入兜底。history 在轮首硬顶那里压过的话已经重读，边界之前的不算。
+      transformContext: this.contextGuardFor(sessionId, provider, modelId, model, system.text, this.forModel(toolSchemas, model), messages.length, observedPromptTokens(history)),
       // pi 唯一的刹车口。返回 true 它就发 agent_end 收工——干净退出，不是抛异常，
       // 所以 tool/result 那些事件都已经落盘，历史是完整的。
       shouldStopAfterTurn: ({ toolResults }: { toolResults: unknown[] }) => {
@@ -2046,10 +2046,10 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     const model = this.ctx.llm.modelOf(provider, modelId)
     // 本地估算看不到 system prompt、工具 schema、provider 特殊 token，也很难准确估 CJK。
     // provider 已经回报过的 prompt 用量才是真值：input + cache read 都是本次提示词的一部分。
-    // 取边界之后的高水位，避免压缩前的 usage 让新摘要反复触发压缩。
+    // 取边界之后最近那一次（见 observedPromptTokens），避免压缩前的 usage 让新摘要反复触发压缩。
     const before = Math.max(
       estMessages(await toAgentMessages(events, model, this.ctx)),
-      observedPromptHighWater(events),
+      observedPromptTokens(events),
     )
     if (!force && before < window * at) return { compacted: false, reason: 'below-threshold' }
     /**
@@ -3125,7 +3125,7 @@ function toUsage(u: any): Usage {
   return {
     /**
      * 写缓存的那截也是这次真发出去的提示词，算进输入。Anthropic 的 input 不含它（也不含
-     * 缓存命中），首轮建缓存时它往往占了提示词的大头——不算的话 observedPromptHighWater
+     * 缓存命中），首轮建缓存时它往往占了提示词的大头——不算的话 observedPromptTokens
      * 低估一大截，压缩触发得晚。我们的 Usage 没有单独的写缓存一格，并进 inputTokens。
      */
     inputTokens: (u.input ?? 0) + (u.cacheWrite ?? 0),
@@ -3636,24 +3636,34 @@ export function compactionWindow(window: number, cost: unknown): number {
 }
 
 /**
- * 最后一条上下文边界真正落盘之后，provider 回报过的 prompt token 高水位。
+ * 最后一条上下文边界真正落盘之后，provider **最近一次**回报的 prompt token 数（input + cache read）。
  *
  * 用 boundary.seq，不用 throughSeq：compact 事件会保留几轮原文，而这些原文上的 usage
  * 仍描述“压缩前的整份请求”。只有 compact/reset 事件之后新写的 assistant/message，
  * 才代表当前上下文形状。
+ *
+ * **取最近一次，不取最大值。** 以前取的是高水位，默认上下文在两条边界之间只涨不跌——可它会跌：
+ * 重建历史的规则一变（2026-09 起超大工具结果重放时瘦身、派活那几轮不进后续上下文、只有最后几张
+ * 图带字节），同一段日志重建出来就小得多，而边界一条都没新增。线上编程大师那条会话：8 月 29 日
+ * 一次读了一大块工具结果，那次调用报了 67 万；之后每次实际只有五六万，高水位却一直是 67 万，
+ * 轮内护栏每轮开头都喊「超窗口、多半会被拒」，而压缩又因为 67 万没到窗口的八成，永远不压、永远清不掉。
+ *
+ * 最近那次之后又长出来的部分，护栏和压缩各自另有本地估算兜着；最近那次要是派活那一轮里的
+ * （之后不进上下文），只是往高估了一轮，下一次调用就量回来了。用量为 0 的（出错补的那条、老日志）跳过。
  */
-export function observedPromptHighWater(
+export function observedPromptTokens(
   events: Awaited<ReturnType<Context['sessions']['events']>>,
 ): number {
   const boundary = contextBoundary(events)
-  let high = 0
-  for (const event of events) {
-    if (boundary && event.seq <= boundary.seq) continue
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (boundary && event.seq <= boundary.seq) break
     if (event.type !== 'assistant/message') continue
     const usage = event.data.usage
-    high = Math.max(high, (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0))
+    const seen = (usage?.inputTokens ?? 0) + (usage?.cacheReadTokens ?? 0)
+    if (seen) return seen
   }
-  return high
+  return 0
 }
 
 export function compactionPoint(
