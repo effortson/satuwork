@@ -299,7 +299,8 @@ export function apply(ctx: Context) {
     },
     async ({ path }: { path?: string }) => {
       if (!path) fail('缺少 path 参数')
-      const source = resolveIn(path)
+      // 拆包只读源文件，老路径可以到共享区去找（见 workspace 的 locate）。
+      const source = ctx.workspace.locate(path)
       const kind = KINDS[extname(source).toLowerCase()]
       if (!kind) {
         fail(

@@ -2374,7 +2374,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 插在前面等于每批一次就把整段 Skill 的前缀缓存作废一次。
      */
     const folders = localFoldersBlock(this.ctx.workspace?.approvedMounts?.() ?? null, this.ctx.tools.has('request_folder_access'))
-    const tail = [skills, memory, folders].filter(Boolean).join('\n\n')
+    // 共享区那段一颗 Bot 一辈子不变，排在最前面，不跟着记忆、批准文件夹一起作废缓存。
+    const shared = sharedFolderBlock(Boolean(this.ctx.workspace?.shared))
+    const tail = [shared, skills, memory, folders].filter(Boolean).join('\n\n')
     return { text: tail ? `${base}\n\n${tail}` : base, base, skills, memory }
   }
 
@@ -3855,7 +3857,7 @@ async function fileGone(path: string, ctx: Context | undefined): Promise<boolean
     const ws = ctx.workspace
     if (!ws) return false
     const { stat } = await import('node:fs/promises')
-    const info = await stat(ws.resolve(path)).catch(() => null)
+    const info = await stat(ws.locate(path)).catch(() => null)
     return !info?.isFile()
   } catch {
     return false
@@ -4083,7 +4085,7 @@ async function loadImage(img: { path: string; mime: string }, ctx?: Context) {
     // `Cannot read properties of undefined (reading 'resolve')` 冒充「读不出来」。
     const ws = ctx.workspace
     if (!ws) return miss('这个运行时读不到工作区')
-    const file = ws.resolve(img.path)
+    const file = ws.locate(img.path)
     const { readFile, stat } = await import('node:fs/promises')
     const info = await stat(file)
     if (info.size > MAX_IMAGE_BYTES) {
@@ -4275,6 +4277,26 @@ function linkOutBlock(): string {
     '地址原样抄，一个字符都不要改、不要缩短。**手上没有地址的那一条就只写文字**，不要照着规律拼一个看起来对的：',
     '拼出来的地址点下去是 404，而人会以为是自己这边的问题，比不给链接更坏。',
     '正文里已经写成链接的东西，末尾不必再列一遍「参考链接」。',
+  ].join('\n')
+}
+
+/**
+ * 远程席位上的共享区。
+ *
+ * **不说这一段的代价**：工作区改成一个 Bot 一个目录之后，模型并不知道还有个 `shared/`——
+ * 派活时它会让对方去处理「工作区里的 报表.xlsx」，而对方的工作区里根本没有这个文件；人问起
+ * 以前的文件，它在自己的目录里找不到就说「文件不存在」，其实都收在 `shared/` 底下。
+ * 没有共享区（本地 Bot、老部署）时整段不出现。
+ */
+export function sharedFolderBlock(hasShared: boolean): string {
+  if (!hasShared) return ''
+  return [
+    '## 共享文件夹',
+    '你的工作区是你自己的；工作区里的 `shared/` 是共享文件夹，这位员工名下的所有 Bot 都能读写。',
+    '- 要交给别的 Bot 的文件（派活的材料、给对方接着改的成品）放进 `shared/`，在话里写 `shared/…` 这个路径——对方用同一个路径就能打开。',
+    '- 用户说「共享文件夹」「放到共享里」「别的 Bot 放的文件」，说的就是 `shared/`。',
+    '- 工作区分开之前的老文件都收在 `shared/` 底下，相对路径不变：以前的 `报表/二季度.html` 现在是 `shared/报表/二季度.html`。',
+    '- 自己的草稿、中间产物留在自己的工作区，不要往 `shared/` 里堆。',
   ].join('\n')
 }
 
@@ -4506,7 +4528,7 @@ function taskBlock(spec: TaskSpec): string {
     '你说的话除了最后那段结论之外没有任何人会看到。',
     '',
     '- **卡住了不要停在半路装作做完了。** 把卡在哪儿、已经排除了什么写进结论交回去，由主代理去问人',
-    '- **工作区和主代理共享**（同一个 ~/work）。草稿和中间产物写 `tasks/` 下自己的目录，成品才写',
+    '- **工作区和主代理共享**（同一个目录）。草稿和中间产物写 `tasks/` 下自己的目录，成品才写',
     '  正常位置；并发跑的几条子任务各有各的文件范围，别越界',
     '- **你起的后台进程会在你收口时交给主代理**，所以起了什么要在结论里点名（session_id + 命令）',
     `- 最多 ${spec.maxSteps} 步。到顶会被收口，那时已经做到的照样交回去——所以边做边把结论攒出来`,

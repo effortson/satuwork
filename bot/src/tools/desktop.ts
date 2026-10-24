@@ -206,7 +206,7 @@ export function apply(ctx: Context) {
     },
     async (args: { path?: string }) => {
       display()
-      let dir = ctx.workspace.resolve(args.path)
+      let dir = ctx.workspace.locate(args.path)
       const info = await stat(dir).catch(() => fail(`路径不存在：${show(dir)}`))
       if (!info.isDirectory()) dir = dirname(dir)
       const err = await launch('thunar', [dir], childEnv(), dir)

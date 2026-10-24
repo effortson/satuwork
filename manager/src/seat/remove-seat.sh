@@ -1,8 +1,9 @@
 #!/bin/bash
 # 拆掉一个席位。停单元、删 drop-in、删席位私有目录。
 #
-# **不删 Linux 账号，也不碰 $HOME_DIR/work**：同一个员工的别的席位还在用这个账号，
-# 而 work/ 里是人的资料，不是这个席位的运行态。账号的回收是另一件事，要单独做。
+# **不删 Linux 账号，也不删 $HOME_DIR/work 里的任何东西**：同一个员工的别的席位还在用这个
+# 账号，而 work/ 里是人的资料，不是这个席位的运行态。这个席位自己那一格（work/bots/<席位>）
+# 只是挪进共享区，见下面的 archive_bot_work。账号的回收是另一件事，要单独做。
 #
 # **这条脚本的成败只由一件事决定：那两个 systemd 单元还在不在。** 它们背后是一组
 # 端口（3200+N / 6081+N）和一块屏，槽位能不能重新分出去看的就是它。删 drop-in、删
@@ -177,6 +178,25 @@ remove_seat_dir() {
 case "$SEAT_DIR" in
   /home/"$LINUX_USER"/.satuwork/"$SEAT_ID") remove_seat_dir || warn "席位目录没删干净：$SEAT_DIR" ;;
   *) warn "席位目录 $SEAT_DIR 不在它该在的位置，跳过删除" ;;
+esac
+
+# 席位的工作区（~/work/bots/<席位>）**不删**：那是这颗 bot 做出来的东西，是人的资料，不是
+# 运行态。挪进共享区的「已删除的 Bot/」底下，同一个员工的别的 bot 和人都还拿得到；真不要了
+# 由人自己删。空的（只剩那条 shared 链接）就直接收掉，不留一个空壳。
+# 和删席位目录同一个理由，以席位用户的身份做；账号已经没了就不动，留给账号回收那一步。
+archive_bot_work() {
+  runuser -u "$LINUX_USER" -- env -i -C / PATH=/usr/bin:/bin sh -c '
+    src="$1/work/bots/$2"
+    { [ -d "$src" ] && [ ! -L "$src" ]; } || exit 0
+    if [ -L "$src/shared" ]; then rm -f "$src/shared"; fi
+    rmdir "$src" 2>/dev/null && exit 0
+    dir="$1/work/shared/已删除的 Bot"
+    mkdir -p "$dir" && mv -- "$src" "$dir/$2-$(date +%Y%m%d%H%M%S)"
+  ' sh "/home/$LINUX_USER" "$SEAT_ID"
+}
+case "$SEAT_ID" in
+  *[!A-Za-z0-9_-]* | '') ;;
+  *) if id "$LINUX_USER" >/dev/null 2>&1; then archive_bot_work || warn "席位工作区没能挪进共享区：/home/$LINUX_USER/work/bots/$SEAT_ID"; fi ;;
 esac
 # 运行时目录：/run/satuwork/<席位> 是 systemd 建的（RuntimeDirectoryPreserve=yes，单元停了也
 # 不删），/tmp/xdg-runtime-<席位> 是老部署留下的。/run 下只有 root 写得动；/tmp 那个就算被人

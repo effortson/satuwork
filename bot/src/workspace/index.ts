@@ -1,6 +1,6 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { createReadStream, createWriteStream, lstatSync, readdirSync, readFileSync, realpathSync, statSync, type WriteStream } from 'node:fs'
-import { lstat, mkdir, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
@@ -17,7 +17,12 @@ export interface Config {
   root?: string
   /** 单个上传文件的上限（字节）。默认 100 MB，`SATUWORK_UPLOAD_MAX` 可覆盖。 */
   uploadMax?: number
+  /** 共享区。默认 `$SATUWORK_SHARED_DIR`；没有就没有共享区（本地 Bot、老部署）。 */
+  shared?: string
 }
+
+/** 共享区在工作区里的入口名：`<根>/shared` 是一条指向共享区的符号链接。 */
+export const SHARED_LINK = 'shared'
 
 /** 越界、参数不对、文件不存在这类**业务**失败。不是管道故障。 */
 export class WorkspaceError extends Error {}
@@ -34,8 +39,17 @@ const DEFAULT_UPLOAD_MAX = 100 * 1024 * 1024
  * 有三条路——模型的工具（tools/file.ts）、浏览器传进来的附件、浏览器要看的
  * 预览（都在 web/index.ts）——三条路各写一份 resolve，迟早会有一条写松。
  *
- * **根目录**：`$SATUWORK_WORK_DIR`，部署时注入的 `/home/{linuxUser}/work`，同一个员工
- * 的所有席位共用。没有这个变量（本地跑）时回落 `$SATUWORK_HOME/work`。
+ * **根目录**：`$SATUWORK_WORK_DIR`。远程席位上是部署时注入的 `/home/{linuxUser}/work/bots/{seatId}`，
+ * **每个 Bot 一个**；没有这个变量（本地跑）时回落 `$SATUWORK_HOME/work`。
+ *
+ * **共享区**：`$SATUWORK_SHARED_DIR`，同一个员工所有席位共用的 `/home/{linuxUser}/work/shared`。
+ * 它在根目录下挂成一条 `shared` 符号链接（部署时建，这里缺了就补），所以模型、终端、
+ * 界面看到的都是 `shared/…` 这一个路径——派活时主 Bot 写 `shared/报表.xlsx`，对方拿到的是
+ * 同一个相对路径。以前 `~/work` 整个是共享的，几个 Bot 的产出、上传、缓存搅在一起；
+ * 部署时把老文件整体收进了共享区，所以历史里的老路径要靠 `locate` 去那边找。
+ *
+ * 分开的只是**目录**，不是权限：同一个员工的席位还是同一个 uid，终端 `cd ../别的席位`
+ * 照样进得去。这里管的是「各写各的、不互相误伤」，不是「互相看不见」。
  * **不用 `$SATUWORK_HOME`**：那底下是会话日志和 SQLite，让模型的手伸进自己的记忆里，
  * 一条 `terminal rm -rf` 就能把历史抹了。
  *
@@ -47,6 +61,8 @@ export class WorkspaceService extends Service {
   /** 绝对路径，末尾不带分隔符。 */
   readonly root: string
   readonly uploadMax: number
+  /** 共享区的绝对路径。没有共享区时是 undefined。 */
+  readonly shared?: string
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'workspace')
@@ -54,9 +70,28 @@ export class WorkspaceService extends Service {
     this.root = raw ? resolve(raw) : satuworkHome('work')
     const fromEnv = Number(process.env.SATUWORK_UPLOAD_MAX)
     this.uploadMax = config.uploadMax ?? (Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_UPLOAD_MAX)
+    const shared = config.shared?.trim() || process.env.SATUWORK_SHARED_DIR?.trim()
+    if (shared) this.shared = resolve(shared)
     // 工作区不存在时先建出来。缺了它，第一次 ls 会以「路径不存在」收场，
     // 而那其实不是模型的错。
-    void mkdir(this.root, { recursive: true }).catch(() => {})
+    void mkdir(this.root, { recursive: true })
+      .then(() => this.linkShared())
+      .catch(() => {})
+  }
+
+  /**
+   * 根目录下那条 `shared` 链接，缺了就补上。
+   *
+   * 部署时已经建过一次；这里再补，是因为人在桌面上随手就能把它删了，而删了之后 Bot 对
+   * 共享区就成了瞎子——`shared/…` 全报不存在，它也不知道为什么。**只补「没有」**：那个名字
+   * 上已经有东西（人自己建了个 shared 目录）就不动，宁可这颗 Bot 没有共享区，也不替人删东西。
+   */
+  private async linkShared() {
+    if (!this.shared) return
+    await mkdir(this.shared, { recursive: true })
+    const link = join(this.root, SHARED_LINK)
+    if (await lstat(link).then(() => true, () => false)) return
+    await symlink(relative(this.root, this.shared), link)
   }
 
   /**
@@ -147,6 +182,7 @@ export class WorkspaceService extends Service {
   }
 
   private isApprovedPath(path: string): boolean {
+    if (this.inShared(path)) return true
     if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return false
     const manifest = (process.env.SATUWORK_APPROVED_DIRS || '').trim()
     if (!manifest) return false
@@ -170,10 +206,53 @@ export class WorkspaceService extends Service {
     })
   }
 
-  /** 只认 Desktop 创建的 `External/<名字>` 第一层挂载；批准目录里的其他链接不跟。 */
+  /** 这条路径（解开链接之后）落不落在共享区里。没有共享区就一律不算。 */
+  private inShared(path: string): boolean {
+    if (!this.shared) return false
+    try {
+      const real = realpathSync(path)
+      const shared = realpathSync(this.shared)
+      return real === shared || real.startsWith(shared + sep)
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 遍历时可以跟进去的符号链接，只有两种：Desktop 创建的 `External/<名字>` 第一层挂载，
+   * 和根目录下指向共享区的那条 `shared`。批准目录里、共享区里的其他链接都不跟。
+   */
   isApprovedLink(path: string): boolean {
     const parts = relative(this.root, path).split(sep)
+    if (parts.length === 1 && parts[0] === SHARED_LINK) {
+      return lstatSync(path).isSymbolicLink() && this.inShared(path)
+    }
     return parts.length === 2 && parts[0] === 'External' && lstatSync(path).isSymbolicLink() && this.isApprovedPath(path)
+  }
+
+  /**
+   * 给**读**用的 resolve：自己的工作区里没有这个文件，而共享区里同一个相对路径上有，就用
+   * 共享区那份。
+   *
+   * 为的是老路径。改成一个 Bot 一个目录之前，`~/work` 整个是共享的，部署时把那些老文件原样
+   * 收进了共享区——于是历史消息里的 `uploads/s-…/合同.pdf`、模型以前写下的 `报表/二季度.html`
+   * 在新根目录下都不存在了，但 `shared/` 底下同一个相对路径上还在。
+   *
+   * **只给读用，写一律走 resolve。** 写也这么兜的话，模型新建一个 `报表.xlsx`，碰巧共享区里
+   * 有一份同名的（别的 Bot 刚放的），就会把人家那份盖掉。
+   */
+  locate(path?: string): string {
+    const target = this.resolve(path)
+    if (!this.shared || lstatSync(target, { throwIfNoEntry: false })) return target
+    const raw = (path ?? '').trim().replace(/\\/g, '/')
+    if (!raw || isAbsolute(raw) || raw === SHARED_LINK || raw.startsWith(SHARED_LINK + '/')) return target
+    let legacy: string
+    try {
+      legacy = this.resolve(`${SHARED_LINK}/${raw}`)
+    } catch {
+      return target
+    }
+    return lstatSync(legacy, { throwIfNoEntry: false }) ? legacy : target
   }
 
   /** 展示用相对路径。根目录本身显示成 `.`。 */
@@ -256,7 +335,7 @@ export class WorkspaceService extends Service {
   /**
    * 列一个目录，给界面那棵文件树用。
    *
-   * **只列这一层**，不递归：工作区是同一个员工所有席位共用的那个目录，跑过几周之后
+   * **只列这一层**，不递归：工作区（连同挂在里面的共享区）跑过几周之后
    * 底下是几千个文件，一次拉整棵树既慢又没人看得完。展开哪一层就取哪一层，和资源
    * 管理器一样。
    *
@@ -339,7 +418,7 @@ export class WorkspaceService extends Service {
 
   /** 读一个文件用来预览。返回 Web 流，不进内存。 */
   async open(path: string) {
-    const target = this.resolve(path)
+    const target = this.locate(path)
     const info = await stat(target)
     if (info.isDirectory()) throw new WorkspaceError(`${this.show(target)} 是目录，不能预览。`)
     return {

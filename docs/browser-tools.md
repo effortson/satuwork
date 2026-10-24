@@ -251,8 +251,8 @@ browser_tabs 切过去」。
 
 ### 下载
 
-用 `Browser.setDownloadBehavior` 把落点钉在 `$HOME/work`（共享工作区，同一员工名下所有
-Bot 都看得见——这是[产品定的唯一共享入口](../manager/src/seat/slim-desktop.sh)）。下载完
+用 `Browser.setDownloadBehavior` 把落点钉在这颗 Bot 的工作区（远程席位上是
+`~/work/bots/{seatId}`；同一员工共用的是里面那条 `shared/`，见[席位桌面脚本](../manager/src/seat/slim-desktop.sh)）。下载完
 通过 `ToolResult.files` 报出来，界面上才有那张文件卡片；不报的话用户只能靠正则去扫工具
 结果的散文找路径。
 

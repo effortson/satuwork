@@ -1162,6 +1162,7 @@ function seatEnvModal() {
         <div class="satu-kv"><span>linuxUser</span><span>${esc(rt.linuxUser || '—')}</span></div>
         <div class="satu-kv"><span>seatId</span><span style="word-break: break-all;">${esc(rt.seatId || '—')}</span></div>
         <div class="satu-kv"><span>${t('共享目录')}</span><span style="word-break: break-all;">${esc(rt.sharedDir || '—')}</span></div>
+        ${rt.workDir ? `<div class="satu-kv"><span>${t('Bot 工作目录')}</span><span style="word-break: break-all;">${esc(rt.workDir)}</span></div>` : ''}
         <div class="satu-kv"><span>DISPLAY</span><span>${esc(rt.display != null ? ':' + rt.display : '—')}</span></div>
         <div class="satu-kv"><span>noVNC</span><span style="word-break: break-all;">${esc(rt.novncUrl || '—')}</span></div>
         <div class="satu-kv"><span>${t('VNC 密码')}</span><span>${esc(pw)} <button type="button" class="satu-linkbtn" data-act="seat-reveal">${state.seatReveal ? t('隐藏') : t('显示')}</button></span></div>

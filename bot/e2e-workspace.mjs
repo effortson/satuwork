@@ -5,7 +5,7 @@
  * 哪些类型允许浏览器内联。这类错不会在日常使用里露面——它要等到有人专门去试才发作，
  * 所以只能靠断言守着。
  */
-import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, mkdirSync, existsSync, lstatSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -511,6 +511,74 @@ out.paging = {
     else process.env[k] = v
   }
   rmSync(home, { recursive: true, force: true })
+}
+
+// ── 14. 远程席位：一个 Bot 一格，共享区挂在 shared/ ─────────────────────
+/**
+ * 布局照 deploy-seat.sh：`work/bots/<席位>` 是 Bot 的根，`work/shared` 是共享区，根下一条
+ * `shared` 链接通过去。钉的是三件事：共享区真的进得去（读、写、搜、列、删）；老路径在自己
+ * 那格里找不到时读得到共享区那份，**写不兜**；人自己在 `shared` 那个名字上放了东西就不替他换。
+ */
+{
+  const base = mkdtempSync(join(tmpdir(), 'satu-split-'))
+  const shared = join(base, 'work/shared')
+  const botA = join(base, 'work/bots/a')
+  const botC = join(base, 'work/bots/c')
+  mkdirSync(join(shared, 'uploads/s-old'), { recursive: true })
+  mkdirSync(join(botC, 'shared'), { recursive: true })
+  writeFileSync(join(shared, 'uploads/s-old/合同.txt'), '老合同\n')
+  writeFileSync(join(shared, '报表.txt'), '共享区那份\n')
+  writeFileSync(join(shared, 'mark.txt'), 'MARK-SHARED\n')
+  writeFileSync(join(shared, 'gone.txt'), 'x\n')
+
+  const ctxA = new Context()
+  ctxA.plugin(WorkspaceService, { root: botA, shared })
+  ctxA.plugin(ToolService)
+  await new Promise((r) => setTimeout(r, 50))
+  ctxA.plugin(fileTools)
+  await new Promise((r) => setTimeout(r, 100))
+  const a = ctxA.workspace
+  const callA = (name, args) => ctxA.tools.execute({ callId: 'c1', name, arguments: JSON.stringify(args), sessionId: 's-1' })
+  const ctxB = new Context()
+  ctxB.plugin(WorkspaceService, { root: join(base, 'work/bots/b'), shared })
+  const ctxC = new Context()
+  ctxC.plugin(WorkspaceService, { root: botC, shared })
+  await new Promise((r) => setTimeout(r, 100))
+
+  const readLegacy = await callA('read_file', { path: 'uploads/s-old/合同.txt' })
+  const wroteSame = await callA('write_file', { path: '报表.txt', content: '自己那份\n' })
+  const readOwn = await callA('read_file', { path: '报表.txt' })
+  const wroteShared = await callA('write_file', { path: 'shared/交接.txt', content: '给 C 的\n' })
+  const searched = await callA('search_files', { pattern: 'MARK-SHARED' })
+  const listed = await a.list('.')
+  const removed = await a.remove('shared/gone.txt').then(() => true, () => false)
+  const removeLink = await a.remove('shared').then(() => false, (e) => /符号链接/.test(e.message))
+  const opened = await a.open('uploads/s-old/合同.txt').then((f) => f.name, () => '')
+
+  out.split = {
+    根下建出了链接: lstatSync(join(botA, 'shared')).isSymbolicLink() && realpathSync(join(botA, 'shared')) === realpathSync(shared),
+    老路径读得到: /老合同/.test(readLegacy.text || ''),
+    老路径报的是共享区的路径: (readLegacy.refs || []).map((f) => f.path).join() === 'shared/uploads/s-old/合同.txt',
+    locate落到共享区: a.show(a.locate('uploads/s-old/合同.txt')) === 'shared/uploads/s-old/合同.txt',
+    预览也认老路径: opened === '合同.txt',
+    都没有时还是自己那格: a.locate('没有的.txt') === a.resolve('没有的.txt'),
+    写不往共享区兜: !wroteSame.isError && readFileSync(join(shared, '报表.txt'), 'utf8') === '共享区那份\n' && readFileSync(join(botA, '报表.txt'), 'utf8') === '自己那份\n',
+    自己有就读自己的: /自己那份/.test(readOwn.text || ''),
+    写得进共享区: !wroteShared.isError && readFileSync(join(shared, '交接.txt'), 'utf8') === '给 C 的\n',
+    别的Bot看得见: readFileSync(ctxB.workspace.resolve('shared/交接.txt'), 'utf8') === '给 C 的\n',
+    别的Bot自己那格看不见: !existsSync(ctxB.workspace.resolve('报表.txt')),
+    搜得进共享区: /shared\/mark\.txt/.test(searched.text || ''),
+    列目录列出共享区: listed.entries.some((e) => e.name === 'shared' && e.dir),
+    删得了共享区里的文件: removed && !existsSync(join(shared, 'gone.txt')),
+    删不了那条链接: removeLink,
+    人建的同名目录不替换: !lstatSync(join(botC, 'shared')).isSymbolicLink(),
+    同名目录不当共享区: !ctxC.workspace.isApprovedLink(join(botC, 'shared')),
+    越界照样拦: throws(() => a.resolve('shared/../../../etc/passwd')) && throws(() => a.locate('../c/x')),
+    没共享区不兜底: ws.locate('没有的.txt') === ws.resolve('没有的.txt') && ws.shared === undefined,
+  }
+  const { sharedFolderBlock } = await import('./src/agent/index.ts')
+  out.split.提示词讲共享区 = sharedFolderBlock(true).includes('`shared/`') && sharedFolderBlock(false) === ''
+  rmSync(base, { recursive: true, force: true })
 }
 
 console.log('__RESULT__' + JSON.stringify(out))

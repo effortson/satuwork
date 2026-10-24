@@ -107,7 +107,7 @@ export function apply(ctx: Context) {
     },
     async ({ path, pages }: { path?: string; pages?: unknown }, call: ToolCall) => {
       if (!path) fail('缺少 path 参数')
-      const file = ctx.workspace.resolve(path)
+      const file = ctx.workspace.locate(path)
       if (!renderableOf(file) && extname(file).toLowerCase() !== '.pdf') {
         fail(`${show(file)} 不是 Word / Excel / PPT / PDF，这把工具画不了它。`)
       }
