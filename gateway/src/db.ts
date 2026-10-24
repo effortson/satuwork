@@ -2934,6 +2934,8 @@ export class Db {
       telemetry: null as Machine['telemetry'],
       telemetryAt: null as number | null,
       logCapMb: null as number | null,
+      // 管家认的 Gateway 源也等第一次心跳报上来。
+      gatewayOrigin: null as string | null,
       // 新登记的机器当然在册。墓碑只由 markMachineRemoved 立。
       removedAt: null as number | null,
     }
@@ -3125,6 +3127,7 @@ export class Db {
         | 'telemetry'
         | 'telemetryAt'
         | 'logCapMb'
+        | 'gatewayOrigin'
       >
     >,
   ): Promise<Machine> {
@@ -3149,9 +3152,10 @@ export class Db {
       telemetry: patch.telemetry === undefined ? cur.telemetry : patch.telemetry,
       telemetryAt: patch.telemetryAt === undefined ? cur.telemetryAt : patch.telemetryAt,
       logCapMb: patch.logCapMb === undefined ? cur.logCapMb : patch.logCapMb,
+      gatewayOrigin: patch.gatewayOrigin === undefined ? cur.gatewayOrigin : patch.gatewayOrigin,
     }
     await this.run(
-      'update machines set host=?, "directUrl"=?, "companyId"=?, "lastHeartbeatAt"=?, "pairedAt"=?, "managerVersion"=?, protocol=?, "lastError"=?, arch=?, "desiredManagerVersion"=?, "maxAccounts"=?, timezone=?, "currentTimezone"=?, telemetry=?, "telemetryAt"=?, "logCapMb"=? where id=?',
+      'update machines set host=?, "directUrl"=?, "companyId"=?, "lastHeartbeatAt"=?, "pairedAt"=?, "managerVersion"=?, protocol=?, "lastError"=?, arch=?, "desiredManagerVersion"=?, "maxAccounts"=?, timezone=?, "currentTimezone"=?, telemetry=?, "telemetryAt"=?, "logCapMb"=?, "gatewayOrigin"=? where id=?',
       [
         next.host,
         next.directUrl,
@@ -3170,6 +3174,7 @@ export class Db {
         next.telemetry == null ? null : JSON.stringify(next.telemetry),
         next.telemetryAt,
         next.logCapMb,
+        next.gatewayOrigin,
         id,
       ],
     )

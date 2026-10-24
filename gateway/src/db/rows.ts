@@ -436,6 +436,7 @@ export function machineOf(r: Row): Machine {
     telemetry: r.telemetry == null ? null : (jsonOf(r.telemetry) as Machine['telemetry']),
     telemetryAt: numOrNull(r.telemetryAt),
     logCapMb: numOrNull(r.logCapMb),
+    gatewayOrigin: strOrNull(r.gatewayOrigin),
     removedAt: numOrNull(r.removedAt),
     token: str(r.token || ''),
   }

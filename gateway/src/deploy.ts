@@ -283,12 +283,14 @@ export const LOGS_NO_DIRECT = '这台机器没有配直连地址（或管家太�
  */
 export function logsDirectPayload(
   keys: JwtKeys,
-  machine: Pick<Machine, 'directUrl' | 'protocol'> | null,
+  machine: (Pick<Machine, 'directUrl' | 'protocol'> & Partial<Pick<Machine, 'gatewayOrigin'>>) | null,
   seatId: string | null,
 ): { url: string; ticket: string; gatewayOrigin?: string } {
   const url = logsUrlOf(machine, seatId)
   if (!url) throw new HttpError(409, LOGS_NO_DIRECT)
-  return { url, ticket: signLogsTicket(keys, seatId ? { seatId } : { manager: true }), ...gatewayOriginField() }
+  // 管家心跳自报的那个源最准（它就是按那个放行的）；老管家没报过才退回 Gateway 自己的公开地址。
+  const origin = machine?.gatewayOrigin ? { gatewayOrigin: machine.gatewayOrigin } : gatewayOriginField()
+  return { url, ticket: signLogsTicket(keys, seatId ? { seatId } : { manager: true }), ...origin }
 }
 
 /**
