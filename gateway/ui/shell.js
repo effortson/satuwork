@@ -461,6 +461,27 @@ async function moveBotToFolder(botId, folderId) {
 }
 
 /**
+ * 对话顶栏菜单里的「移到分类」。拖放之外的入口：触屏（手机浏览器起不了 HTML5 拖放）、拦了拖放的
+ * WebView、Firefox 里拖不动的 `<button draggable>`，都只能从这儿把 Bot 放进分类。一个分类都没建、
+ * 或者这颗不在自己名单上（别人的、全局的）就不摆。
+ */
+function folderMenuItems(bot) {
+  const folders = (state.botFolders || []).slice().sort((a, b) => a.position - b.position)
+  const mine = (state.runtimeBots || []).find((b) => b.id === bot.id)
+  if (!folders.length || !mine) return ''
+  const known = new Set(folders.map((f) => f.id))
+  const cur = mine.folderId && known.has(mine.folderId) ? mine.folderId : ''
+  const item = (folderId, label) =>
+    `<button type="button" class="satu-menuitem satu-menuitem-check" data-act="bot-folder-move" data-id="${esc(bot.id)}" data-folder="${esc(folderId)}" aria-checked="${String(cur === folderId)}" role="menuitemradio">${esc(label)}</button>`
+  return (
+    `<div class="satu-menulabel">${t('移到分类', 'Move to folder')}</div>` +
+    folders.map((f) => item(f.id, f.name)).join('') +
+    item('', t('不分类', 'No folder')) +
+    `<div class="satu-menusep" role="separator"></div>`
+  )
+}
+
+/**
  * 对话顶栏菜单里那一条：没设的说「设为主 Bot」，已经是的说「取消主 Bot」。
  * 一人只有一颗，所以在另一颗上点「设为」就是换过去，不用先取消。
  */

@@ -7755,6 +7755,7 @@ function chatHeadInline() {
           ${/* 自己建的那种才给设置入口：别人的、全局的，这一页上没有可改的东西。 */ ''}
           ${isMyBot(bot) ? `<button type="button" class="satu-menuitem" data-act="go" data-href="/bots/${esc(bot.id)}">${t('Bot 设置')}</button>` : ''}
           ${bot ? mainBotMenuItem(bot) : ''}
+          ${bot ? folderMenuItems(bot) : ''}
           <button type="button" class="satu-menuitem" data-act="chat-copy-all">${t('复制全文')}</button>
           <button type="button" class="satu-menuitem" data-act="chat-export">${t('导出 Markdown')}</button>
         </div>`

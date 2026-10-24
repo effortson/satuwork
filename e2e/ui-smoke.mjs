@@ -808,6 +808,49 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!plain.includes('satu-botfolder-head') && !plain.includes('satu-botfolder-empty'), '没分类时多画了东西')
     })
 
+    await test('收起的分类刷新后还收着：开合状态从本机读得回来（state 初始化时键已经声明）', async () => {
+      const kept = new Map([['satuwork.botFolderOpen', JSON.stringify({ f1: false })]])
+      const storage = {
+        getItem: (k) => (kept.has(k) ? kept.get(k) : null),
+        setItem: (k, v) => kept.set(k, String(v)),
+        removeItem: (k) => kept.delete(k),
+        clear: () => kept.clear(),
+      }
+      const ui = await boot(undefined, { persistentStorage: storage })
+      assert(ui.state.botFolderOpen.f1 === false, `刷新后收起的分类又展开了：${JSON.stringify(ui.state.botFolderOpen)}`)
+      // 点开另一个分类：存回去的是在原来那份上改的，不是拿空对象盖掉。
+      await ui.fire('click', el('button', { 'data-act': 'bot-folder-toggle', 'data-id': 'f2' }))
+      const saved = JSON.parse(kept.get('satuwork.botFolderOpen') || '{}')
+      assert(saved.f1 === false && saved.f2 === false, `存回去的把原来的盖掉了：${JSON.stringify(saved)}`)
+    })
+
+    await test('不靠拖放也能把 Bot 放进分类：对话顶栏「…」里有「移到分类」，点了就存', async () => {
+      const puts = []
+      const ui = await boot(undefined, {
+        fetchImpl: async (path, init) => {
+          if (init?.method === 'PUT') puts.push({ path, body: JSON.parse(init.body || '{}') })
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.state.me = { account: { id: 'u1', companyId: 'c1', role: 'member', email: 'u@x' }, company: { id: 'c1' } }
+      ui.state.path = '/a/b1'
+      ui.state.chatBotId = 'b1'
+      ui.state.botFolders = [{ id: 'f1', name: '客户', position: 1 }]
+      ui.state.runtimeBots = [{ id: 'b1', name: '小满', folderId: null }]
+      ui.state.menu = 'chat'
+      const head = ui.chatHeadInline()
+      assert(head.includes('移到分类') && head.includes('data-act="bot-folder-move"') && head.includes('data-folder="f1"'), `菜单里没有「移到分类」：${head}`)
+      assert(/data-folder=""[^>]*aria-checked="true"/.test(head), '没分类时「不分类」该打勾')
+      await ui.fire('click', el('button', { 'data-act': 'bot-folder-move', 'data-id': 'b1', 'data-folder': 'f1' }))
+      assert(ui.state.runtimeBots[0].folderId === 'f1', `没放进分类：${JSON.stringify(ui.state.runtimeBots[0])}`)
+      assert(puts.some((p) => p.path === '/runtime/bots/b1/folder' && p.body.folderId === 'f1'), `没存到服务端：${JSON.stringify(puts)}`)
+      assert(ui.state.menu === null, '点完菜单该收起来')
+      // 一个分类都没建：不摆这一段。
+      ui.state.botFolders = []
+      ui.state.menu = 'chat'
+      assert(!ui.chatHeadInline().includes('移到分类'), '没有分类时不该摆「移到分类」')
+    })
+
     await test('主 Bot 戴皇冠，并且在它那一组里排最前面', async () => {
       const ui = await boot()
       ui.state.me = { account: { id: 'u1', companyId: 'c1', role: 'member', email: 'u@x' }, company: { id: 'c1' } }

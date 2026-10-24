@@ -1320,6 +1320,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'bot-folder-move') {
+    // 顶栏菜单里的「移到分类」：拖放之外的入口（触屏、拦了拖放的 WebView）。
+    state.menu = null
+    render()
+    await moveBotToFolder(btn.getAttribute('data-id') || '', btn.getAttribute('data-folder') || '')
+    return
+  }
   if (act === 'main-bot-set') {
     await setMainBot(btn.getAttribute('data-id') || '', btn.getAttribute('data-on') === 'true')
     return

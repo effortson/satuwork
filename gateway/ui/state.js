@@ -3,6 +3,13 @@
  *
  * 都是纯函数，不发请求、不碰 DOM——发请求的在 data.js，画东西的在 pages-*.js。
  */
+/**
+ * 侧栏分类开合在本机存的键。**必须在 `state` 之前声明**：`state` 初始化时就调 readBotFolderOpen，
+ * 放在后面的话它还在暂时性死区里，读的那一下抛 ReferenceError、被 catch 吞成 `{}`——收起的分类
+ * 刷新后全部展开，下一次点开合又拿 `{}` 把存着的盖掉。
+ */
+const BOT_FOLDER_OPEN_KEY = 'satuwork.botFolderOpen'
+
 const state = {
   me: null,
   path: '/',
@@ -842,7 +849,6 @@ function enterPath() {
 }
 
 /** 侧栏分类的开合，记在本机：和 navGroupOpen 不同，分类是人自己建的，收起来的那几个刷新后该还收着。 */
-const BOT_FOLDER_OPEN_KEY = 'satuwork.botFolderOpen'
 function readBotFolderOpen() {
   try {
     const v = JSON.parse(localStorage.getItem(BOT_FOLDER_OPEN_KEY) || '{}')
