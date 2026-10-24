@@ -206,6 +206,32 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       assert((await taskById(id)).status === 'done', '送到了该是 done')
     })
 
+    await test('目标那一轮出错：原因带上它对话里那句「模型调用失败：…」，不只说「出错了」', async () => {
+      const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '核一下发票号', sessionId: 's-main' })
+      const id = made.json.task.id
+      assert((await due()).json.jobs[0]?.taskId === id, '没领到')
+      await post(id, 'started', { sessionId: 's-fin' })
+      await post(id, 'finish', { kind: 'error', result: '模型调用失败：fetch failed', sessionId: 's-fin' })
+      const t = await taskById(id)
+      assert(t.runKind === 'error' && t.error === '它那一轮出错了（模型调用失败：fetch failed）', `原因没带上：${JSON.stringify(t)}`)
+      assert(t.result === '没做成：它那一轮出错了（模型调用失败：fetch failed）', `结论不对：${t.result}`)
+      assert((await due()).json.jobs[0]?.phase === 'deliver', '该轮到送回')
+      await post(id, 'started', { sessionId: 's-main' })
+      await post(id, 'finish', { kind: 'delivered' })
+
+      // 最后一条不是那种报错（进程死在半路，补的 turn/end 前面是一段正常的话）：不拿它当原因。
+      const m2 = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '再核一遍', sessionId: 's-main' })
+      const id2 = m2.json.task.id
+      assert((await due()).json.jobs[0]?.taskId === id2, '没领到')
+      await post(id2, 'started', { sessionId: 's-fin' })
+      await post(id2, 'finish', { kind: 'error', result: '我先读一下发票目录', sessionId: 's-fin' })
+      const t2 = await taskById(id2)
+      assert(t2.error === '它那一轮出错了，经过在它的对话里', `不该拿正常的话当原因：${t2.error}`)
+      assert((await due()).json.jobs[0]?.phase === 'deliver', '该轮到送回')
+      await post(id2, 'started', { sessionId: 's-main' })
+      await post(id2, 'finish', { kind: 'delivered' })
+    })
+
     await test('转人工挡着：started 直接当没做成送回去，工人收到 blocked', async () => {
       const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '报销单审一下', sessionId: 's-main' })
       const id = made.json.task.id

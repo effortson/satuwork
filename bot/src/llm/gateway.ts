@@ -1078,6 +1078,24 @@ async function consumeAnthropic(
  */
 const LLM_IDLE_MS = Math.max(1_000, Number(process.env.SATUWORK_LLM_IDLE_MS) || 120_000)
 
+/**
+ * 一次模型调用**还没收到任何内容就失败**、而且失败像是一时的（网络断了一下、限流、上游 5xx），
+ * 退避之后原样再发一次，最多 LLM_RETRIES 次。
+ *
+ * 线上见过的：派给编程大师的活，它写完文件、准备回话的那一次调用撞上「fetch failed」（Gateway
+ * 去上游那一跳断了一下），整轮以 error 收口，活就算没做成——而隔一秒再发一次就好了。
+ *
+ * **只重发「一个事件都还没交出去」的那种。** 开始吐字或调工具之后再断，前面那截已经交给 pi 了，
+ * 重发会把同一段话、同一把工具再来一遍；那种照旧报错，由这一轮的收口去说。
+ */
+const LLM_RETRIES = Math.max(0, Math.trunc(Number(process.env.SATUWORK_LLM_RETRIES ?? 2)))
+const LLM_RETRY_MS = Math.max(0, Number(process.env.SATUWORK_LLM_RETRY_MS ?? 1_000))
+/** HTTP 层直接回错误页时，按状态码认「一时的」。 */
+const RETRY_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 529])
+/** 流里的错误帧没有状态码，按措辞认。Gateway 打上游失败、管家中继断开、供应商过载，都在这里。 */
+const TRANSIENT =
+  /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|UND_ERR|socket hang up|other side closed|terminated|connection error|network error|overloaded|rate.?limit|too many requests|bad gateway|service unavailable|gateway timeout|upstream unreachable|temporarily unavailable/i
+
 export async function streamViaGateway(model: any, context: any, options?: GatewayStreamOptions) {
   const stream = new AssistantMessageEventStream()
   // 计时从**建连之前**就开始：连不上、或者连上了迟迟不给响应头，一样得有人叫停。
@@ -1128,16 +1146,16 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
       : prefix + (e as Error).message
   kick()
   const signal = options?.signal ? AbortSignal.any([options.signal, idle.signal]) : idle.signal
-  const run = async () => {
+  const run = async (sink: AssistantMessageEventStream): Promise<number> => {
     const base = llmBaseUrl()
     if (!base) {
-      fail(stream, model, '未配置 GATEWAY_LLM_URL / GATEWAY_URL')
-      return
+      fail(sink, model, '未配置 GATEWAY_LLM_URL / GATEWAY_URL')
+      return 0
     }
     const apiKey = gatewayApiKey()
     if (!apiKey) {
-      fail(stream, model, '未配置 GATEWAY_API_KEY')
-      return
+      fail(sink, model, '未配置 GATEWAY_API_KEY')
+      return 0
     }
     // 选路、请求体、版本头、收流的解析器，四处必须是同一个判断，改一处就得跟着改四处。
     const path = apiFor(model)
@@ -1161,8 +1179,8 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
         signal,
       })
     } catch (e) {
-      fail(stream, model, reasonOf(e, 'Gateway 不可达：'))
-      return
+      fail(sink, model, reasonOf(e, 'Gateway 不可达：'))
+      return 0
     }
     const ctype = res.headers.get('content-type') || ''
     if (!res.ok && !ctype.includes('text/event-stream')) {
@@ -1172,15 +1190,67 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
         const j = JSON.parse(text)
         msg = j.error?.message || j.error || text
       } catch {}
-      fail(stream, model, typeof msg === 'string' ? msg : JSON.stringify(msg))
-      return
+      fail(sink, model, typeof msg === 'string' ? msg : JSON.stringify(msg))
+      return res.status
     }
-    if (path === '/v1/messages') await consumeAnthropic(res, stream, model, kick)
-    else if (path === '/v1/responses') await consumeResponses(res, stream, model, kick)
-    else await consumeOpenAI(res, stream, model, kick)
+    if (path === '/v1/messages') await consumeAnthropic(res, sink, model, kick)
+    else if (path === '/v1/responses') await consumeResponses(res, sink, model, kick)
+    else await consumeOpenAI(res, sink, model, kick)
     console.log(`[INFO] llm: ${model?.provider}/${model?.id} 收流结束（${bytes} 字节，${Date.now() - at}ms）`)
+    return 0
   }
-  void run()
+  /**
+   * 每一次尝试的事件先过这一道：**头一条就是错误**的扣下来，由下面决定重发还是交出去；
+   * 见过一条正经事件就整条放行，之后的错误也照常交出去（见 LLM_RETRIES 那段）。
+   */
+  const attempt = async (): Promise<{ held: any; status: number }> => {
+    let held: any = null
+    let open = false
+    const sink = {
+      push(ev: any) {
+        if (!open && ev?.type === 'error') {
+          held = ev
+          return
+        }
+        open = true
+        stream.push(ev)
+      },
+    } as unknown as AssistantMessageEventStream
+    let status = 0
+    try {
+      status = await run(sink)
+    } catch (e) {
+      if (open) throw e
+      held = { type: 'error', reason: 'error', error: emptyAssistant(model, reasonOf(e)) }
+    }
+    return { held: open ? null : held, status }
+  }
+  const pause = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, ms)
+      signal.addEventListener('abort', () => (clearTimeout(t), resolve()), { once: true })
+    })
+  const loop = async () => {
+    for (let n = 0; ; n++) {
+      kick()
+      const { held, status } = await attempt()
+      if (!held) return
+      const why = String(held.error?.errorMessage || '')
+      const transient = status ? RETRY_STATUS.has(status) : TRANSIENT.test(why)
+      if (!transient || n >= LLM_RETRIES || closed || signal.aborted) {
+        stream.push(held)
+        return
+      }
+      const wait = LLM_RETRY_MS * 2 ** n
+      console.error(`[WARN] llm: ${model?.provider}/${model?.id} 还没出内容就失败（${status || why.slice(0, 120)}），${wait}ms 后第 ${n + 1} 次重发`)
+      await pause(wait)
+      if (closed || signal.aborted) {
+        stream.push(held)
+        return
+      }
+    }
+  }
+  void loop()
     .catch((e) => fail(stream, model, reasonOf(e)))
     .finally(() => {
       clearTimeout(timer)

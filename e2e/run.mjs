@@ -30,6 +30,7 @@ import { runChatModelRefresh } from './chat-model-refresh.mjs'
 import { runToolNames } from './tool-names.mjs'
 import { runSessionStore } from './session-store.mjs'
 import { runLlmIdle } from './llm-idle.mjs'
+import { runLlmRetry } from './llm-retry.mjs'
 import { runReplaySlice } from './replay-slice.mjs'
 import { runSearch } from './search.mjs'
 import { runRosterStream } from './roster-stream.mjs'
@@ -3694,6 +3695,7 @@ async function main() {
     await suite('tool-names', () => runToolNames({ root, test, assert, log }))
     await suite('session-store', () => runSessionStore({ root, test, assert, log }))
     await suite('llm-idle', () => runLlmIdle({ root, test, assert, log }))
+    await suite('llm-retry', () => runLlmRetry({ root, test, assert, log }))
     await suite('replay-slice', () => runReplaySlice({ root, test, assert, log }))
     await suite('search', () => runSearch({ root, test, assert, log }))
     await suite('roster-stream', () => runRosterStream({ test, assert, log }))

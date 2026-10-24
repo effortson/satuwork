@@ -327,7 +327,19 @@ export async function taskFinish(db: Db, task: BotTask, body: { kind: string; re
       const why = '有人在它的对话里把这一轮停了'
       await toReporting(db, task, { result: `已停止：${why}，这件活作废（别重派、别自己接着做；要不要重新做问人）。`, runKind: 'aborted', error: why, sessionId })
     } else {
-      const why = body.kind === 'error' ? '它那一轮出错了，经过在它的对话里' : `它那一轮以 ${body.kind} 结束`
+      /**
+       * 出错的那一轮，席位会在对话里补一句「模型调用失败：…」/「出错了：…」，领活的一方当结论原样送上来。
+       * 把它带上：光说「出错了」，主 Bot 和人都分不清是网络断了一下（再派一次就好）还是每次都会撞的错。
+       * 只认这两种开头——进程死在半路时补的 turn/end 前面没有这句，最后一条可能是一段正常的话。
+       */
+      const said = (body.result || '').trim()
+      const cause = /^(模型调用失败|出错了)[：:]/.test(said) ? said.split('\n')[0].slice(0, 300) : ''
+      const why =
+        body.kind === 'error'
+          ? cause
+            ? `它那一轮出错了（${cause}）`
+            : '它那一轮出错了，经过在它的对话里'
+          : `它那一轮以 ${body.kind} 结束`
       await toReporting(db, task, { result: `没做成：${why}`, runKind: body.kind, error: why, sessionId })
     }
     return
