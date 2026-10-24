@@ -315,8 +315,7 @@ function appView() {
           <button type="button" class="satu-newbot satu-newbot-rail" data-act="go" data-href="/knowledge"
             aria-current="${state.path === '/knowledge' || state.path.startsWith('/knowledge/')}"
             aria-label="${esc(t('知识库'))}" title="${esc(t('知识库'))}">${svg(['M4 4h7a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H4z', 'M20 4h-7a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h7z'], 15)}</button>
-          <button type="button" class="satu-newbot satu-newbot-rail" data-act="bot-folder-new"
-            aria-label="${esc(t('新建分类', 'New folder'))}" title="${esc(t('新建分类', 'New folder'))}">${svg(FOLDER, 15)}</button>
+          ${/* 窄栏不摆「新建分类」：那一档分类标题本来就收掉了，建出来人也看不见它。 */ ''}
         </div>`
         }
         ${

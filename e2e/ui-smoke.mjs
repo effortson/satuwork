@@ -798,10 +798,17 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(at('data-bot-row="b2"') > at('客户') && at('data-bot-row="b2"') < at('报表'), '分类里的 Bot 没跟在它的标题后面')
       assert(html.includes('draggable="true"'), '名单的行不能拖')
       assert(html.includes('data-drop-folder="f1"') && html.includes('data-drop-folder=""'), '放入区没画')
-      // 收起来的分类不画里面的行，但标题还在（还能往里放）。
+      // 收起来的分类：标题还在（还能往里放），行照画、由 CSS 按 data-open 藏——侧栏收成窄栏时没有标题可点，
+      // 不画的话那几颗在窄栏里整个看不见。
       ui.state.botFolderOpen = { f1: false }
       const folded = ui.chatRosterNav()
-      assert(!folded.includes('data-bot-row="b2"') && folded.includes('data-drop-folder="f1"'), '收起的分类没收住')
+      assert(/data-folder="f1" data-open="false"/.test(folded) && folded.includes('data-bot-row="b2"') && folded.includes('data-drop-folder="f1"'), '收起的分类没收住，或者行没画')
+      // 收着的分类里有 Bot 在等确认：标题上挂「有事等你」。
+      assert(/satu-botfolder-need"[^>]*hidden/.test(folded), '没人等时标题上不该挂')
+      ui.botStreamOf('b2').sum = { state: 'idle', lastAt: 0, lastText: '', need: 'approval' }
+      const waiting = ui.chatRosterNav()
+      assert(/satu-botfolder-need" data-need="approval"/.test(waiting) && !/satu-botfolder-need" data-need="approval"[^>]*hidden/.test(waiting), `收着的分类里有人在等，标题上该挂出来：${waiting.match(/satu-botfolder-need[^>]*>/)?.[0]}`)
+      ui.botStreamOf('b2').sum = { state: 'idle', lastAt: 0, lastText: '' }
       // 一个分类都没有：和从前一模一样，没有任何标题和空放入提示。
       ui.state.botFolders = []
       const plain = ui.chatRosterNav()

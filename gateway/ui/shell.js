@@ -314,6 +314,8 @@ function chatRosterNav() {
           <button type="button" class="satu-group satu-group-toggle satu-botfolder-toggle" data-act="bot-folder-toggle" data-id="${esc(f.id)}" aria-expanded="${String(open)}">
             <span class="satu-groupchev" aria-hidden="true">${svg(open ? CHEVRON_SMALL_DOWN : CHEVRON_SMALL_RIGHT, 12)}</span>
             <span class="satu-botfolder-name">${esc(f.name)}</span>
+            ${/* 收着的分类里有 Bot 在等人：标题上挂同一枚「有事等你」，不然只能靠顶栏那个计数发现（paintRoster 跟着改）。 */ ''}
+            <span class="satu-botneed satu-botfolder-need" data-need="${esc(open ? '' : folderNeed(f.bots))}" title="${esc(botNeedLabel(open ? '' : folderNeed(f.bots)))}"${open || !folderNeed(f.bots) ? ' hidden' : ''}>${open ? '' : botNeedIcon(folderNeed(f.bots))}</span>
             <span class="satu-botfolder-count">${f.bots.length}</span>
           </button>
           <button type="button" class="satu-botfolder-more" data-menu-toggle data-act="menu-toggle" data-id="${esc(menuId)}"
@@ -328,7 +330,9 @@ function chatRosterNav() {
               : ''
           }
         </div>
-        ${open ? f.bots.map((b) => rosterRowHtml(b, selected)).join('') : ''}
+        ${/* 收着的也把行画出来，由 CSS 藏（.satu-botfolder[data-open=false]）：侧栏收成窄栏时没有分类标题可点，
+              不画的话那几颗 Bot 在窄栏里整个看不见、也没地方展开。窄栏那一档照常摊开。 */ ''}
+        ${f.bots.map((b) => rosterRowHtml(b, selected)).join('')}
       </div>`
     })
     .join('')
@@ -607,8 +611,26 @@ function botNeedIcon(need) {
   return ''
 }
 
+/** 一组 Bot 里有没有在等人的：有就回最要紧的那一种（确认先于交接），给收着的分类标题挂。 */
+function folderNeed(bots) {
+  const needs = bots.map((b) => ((botStreams.get(b.id) || {}).sum || {}).need).filter(Boolean)
+  return needs.includes('approval') ? 'approval' : needs[0] || ''
+}
+
 /** 就地更新名单的状态点/时间/摘要。不重绘整页——那会把正在打字的输入框一起换掉。 */
 function paintRoster() {
+  // 收着的分类标题上那枚「有事等你」：跟着里面几颗 Bot 的状态走。
+  for (const box of document.querySelectorAll('.satu-botfolder[data-folder]')) {
+    const el = box.querySelector('.satu-botfolder-need')
+    if (!el) continue
+    const fid = box.getAttribute('data-folder')
+    const need = box.getAttribute('data-open') === 'false' ? folderNeed((state.runtimeBots || []).filter((b) => b.folderId === fid)) : ''
+    if (el.getAttribute('data-need') === need) continue
+    el.setAttribute('data-need', need)
+    el.innerHTML = botNeedIcon(need)
+    el.hidden = !need
+    el.title = botNeedLabel(need)
+  }
   for (const row of document.querySelectorAll('[data-bot-row]')) {
     const id = row.getAttribute('data-bot-row')
     /**

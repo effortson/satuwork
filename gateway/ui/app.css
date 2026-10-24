@@ -510,6 +510,11 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 /* 那颗「…」平时淡着，鼠标到这一行才亮；菜单开着时也亮，不然看不出是哪个分类的菜单。 */
 .satu-botfolder-more { flex: none; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-right: 4px; padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: color-mix(in srgb, var(--color-text) 45%, transparent); cursor: pointer; opacity: 0; }
 .satu-botfolder-head:hover .satu-botfolder-more, .satu-botfolder-more:focus-visible, .satu-botfolder-more[aria-expanded="true"] { opacity: 1; }
+/* 触屏没有悬停：那颗「…」常亮，不然要重命名、删除分类只能盲点一块透明的地方。 */
+@media (hover: none) { .satu-botfolder-more { opacity: 1; } }
+/* 收着的分类：行照画（窄栏要用），宽栏里藏起来。 */
+.satu-botfolder[data-open="false"] > .satu-botrow { display: none; }
+.satu-botfolder-need { flex: none; }
 .satu-botfolder-more:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
 .satu-botfolder-head .satu-menu { right: 4px; }
 /* 拖动中：被拖的那行淡掉；悬停的放入区描一圈；没分类那块空着时画出一道虚线框，好有地方放回去。 */
@@ -521,6 +526,9 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 /* 收起侧栏时只剩头像，名字、时间、摘要一起收掉。分类标题也收掉——62px 宽放不下一个名字。 */
 .satu-rail .satu-botrow { justify-content: center; padding: 8px 0; }
 .satu-rail .satu-botfolder-head { display: none; }
+/* 窄栏没有分类标题：收着的分类里的 Bot 照样摊开（不然整个看不见、也没处展开），分类之间画一道细线隔开。 */
+.satu-rail .satu-botfolder[data-open="false"] > .satu-botrow { display: flex; }
+.satu-rail .satu-botfolder + .satu-botfolder { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
 .satu-rail .satu-botfolder-empty { padding: 8px 0; font-size: 0; }
 .satu-rail .satu-botmain { display: none; }
 .gw-chat-main > .gw-flash { margin: var(--space-3) var(--space-6) 0; }
