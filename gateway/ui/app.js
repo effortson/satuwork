@@ -501,12 +501,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
     await takeCommand(btn.getAttribute('data-name'))
     return
   }
-  if (act === 'chat-mention-drop') {
-    const i = Number(btn.getAttribute('data-i'))
-    state.chatMentions = (state.chatMentions || []).filter((_, idx) => idx !== i)
-    paintChatMentions()
-    return
-  }
   // 引用（docs/chat-references.md §7）：气泡上的「引用」、预览里的「引用这个文件」、
   // 输入框上那排的 ×、发出去之后卡上的「跳回去」。
   if (act === 'chat-ref-msg') {
@@ -3035,6 +3029,8 @@ document.getElementById('app').addEventListener('input', (e) => {
   const el = e.target
   if (!(el instanceof HTMLTextAreaElement) || el.id !== 'chat-input') return
   state.chatDraft = el.value
+  // 正文里删掉了 `@名字` 就是不点了（见 syncChatMentions）：不然选单里再也选不到它。
+  syncChatMentions()
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 200) + 'px'
   // 光标前面刚打出来的那截 `@xxx` 决定选单开不开。**不 render**：整页重绘会把输入框

@@ -1316,11 +1316,24 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       })
       await ui.boot()
 
-      ui.state.chatMentions = [{ kind: 'connector', id: 'c1', label: 'Gmail (personal)' }]
+      // 点名以正文为准：正文里留着 `@名字` 的留下，删掉的就是不点了——上面那排不再摆「发不出去的」药丸。
+      const gmail = { kind: 'connector', id: 'c1', label: 'Gmail (personal)' }
+      const slack = { kind: 'connector', id: 'c2', label: 'Slack' }
+      ui.state.chatDraft = '用 @Gmail (personal) 查一下'
+      ui.state.chatMentions = [gmail, slack]
       ui.paintChatMentions()
-      const pills = ui.stubs.get('chat-mentions').innerHTML
-      assert(pills.includes('Gmail (personal)'), `药丸没画出来：${pills}`)
-      assert(pills.includes('chat-mention-drop'), '药丸上没有移除按钮')
+      assert(ui.stubs.get('chat-mentions').hidden === true, '上面那排该收着')
+      assert(JSON.stringify(ui.state.chatMentions.map((m) => m.id)) === '["c1"]', `正文里没有的该拿掉，留着的不能动：${JSON.stringify(ui.state.chatMentions)}`)
+      // 删掉的能再选回来：选单不再把它当「已选」滤掉。
+      ui.state.mentionOptions = [gmail, slack]
+      ui.state.mentionPick = { open: true, q: '', index: 0 }
+      ui.paintMentionPick()
+      const pick = ui.stubs.get('chat-mentionpick').innerHTML
+      assert(pick.includes('Slack') && !pick.includes('Gmail (personal)'), `选单该能再选 Slack、不再给已点的 Gmail：${pick}`)
+      ui.state.chatDraft = '不点了'
+      ui.paintMentionPick()
+      assert(ui.stubs.get('chat-mentionpick').innerHTML.includes('Gmail (personal)'), '正文里删掉 @Gmail 之后选单里该能再选它')
+      ui.state.mentionPick = null
 
       ui.state.chatSessionId = 's1'
       ui.chatQueues.set('s1', [

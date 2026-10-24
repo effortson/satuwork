@@ -8140,27 +8140,26 @@ function hideChatTodos() {
 }
 
 /**
- * 已经选中的 `@`：输入框上方那排药丸。
- *
- * 和 dock 不是一回事——这排是**这一条还没发出去的**消息带着谁，dock 是**已经发出去、
- * 排着队**的那几条。
+ * 点名以正文为准：正文里还留着 `@名字` 的才算点了，人把那几个字删了就是不点了（sendChat 也只带
+ * 这些）。删掉的从 chatMentions 里拿掉——留着的话 `@` 选单把它当「已选」滤掉，人想再点一次也选不到。
+ */
+function syncChatMentions() {
+  const text = state.chatDraft || ''
+  const kept = (state.chatMentions || []).filter((m) => text.includes('@' + m.label))
+  if (kept.length !== (state.chatMentions || []).length) state.chatMentions = kept
+}
+
+/**
+ * 已经选中的 `@`。点名混排进了正文（takeMention 把 `@名字` 插在光标处），药丸就画在正文里；
+ * 输入框上方原来那排只剩「正文里已经没有它」的——那些发送时本来就不带，摆着像是还会发，× 也按
+ * 过滤后的下标删、删错人。所以这里只做一件事：把正文里没有的拿掉，那一排一直收着。
  */
 function paintChatMentions() {
+  syncChatMentions()
   const box = document.getElementById('chat-mentions')
   if (!box) return
-  // 点名已经混排进正文了（takeMention 把 `@名字` 插在光标处），上面这一排只留给
-  // 正文里没有它的那些——一般是草稿还回来、正文被改过的情形。
-  const text = state.chatDraft || ''
-  const picked = (state.chatMentions || []).filter((m) => !text.includes('@' + m.label))
-  box.hidden = !picked.length
-  box.innerHTML = picked
-    .map(
-      (m, i) => `${mentionPill(m)}
-        <button type="button" class="sw-file-x" data-act="chat-mention-drop" data-i="${i}"
-          aria-label="${esc(t('移除'))} ${esc(m.label)}">${ICON_X}</button>
-      </span>`,
-    )
-    .join('')
+  box.hidden = true
+  box.innerHTML = ''
 }
 
 // ── 引用（docs/chat-references.md）────────────────────────────────────────────
@@ -8316,6 +8315,7 @@ function paintMentionPick() {
     return
   }
   const q = (pick.q || '').toLowerCase()
+  syncChatMentions()
   const taken = new Set((state.chatMentions || []).map((m) => m.id))
   const botsHere = botMentionsHere()
   const list = (state.mentionOptions || [])
