@@ -91,6 +91,27 @@ export async function clearSettledTodos(ctx: Context, sessionId: string, callId:
 }
 
 /**
+ * 主 Bot 派来的活收口时，把清单放回它开跑之前的样子（docs/bot-tasks.md §7）。
+ *
+ * 清单是整条会话一份，派活那一轮列的步骤会留在这里：活被停了，输入框上面还挂着「正在执行 0/4」，
+ * 而提示词又叫模型「拿不准做到哪儿了就读一次 todo」——上下文里去掉了那一轮，它照样从清单里把
+ * 作废的活读回来接着做。派活那一轮的清单只属于那一轮。没变过就不动。
+ */
+export async function restoreTodos(ctx: Context, sessionId: string, before: TodoItem[], callId: string): Promise<boolean> {
+  const col = ctx.storage.collection<TodoItem[]>(COLLECTION)
+  const now = col.get(sessionId) ?? []
+  if (JSON.stringify(now) === JSON.stringify(before)) return false
+  if (before.length) col.put(sessionId, before)
+  else col.delete(sessionId)
+  try {
+    await ctx.sessions.append(sessionId, 'todo/list', { callId, items: before })
+  } catch (e) {
+    ctx.logger?.warn?.(`todo: 派活收口放回清单之后，快照事件没写进去 ${(e as Error).message}`)
+  }
+  return true
+}
+
+/**
  * 状态别名。
  *
  * 通常的口径是「模型写错了参数就告诉它，让它改」（见 tools/common.ts），但这几个

@@ -19,6 +19,7 @@ import { budgetToolText } from '../tools/result-budget.ts'
 import { turnContextGuard } from './context-guard.ts'
 import { ProgressTracker } from './progress.ts'
 import { isTaskInstruction, withoutTaskTurns } from './task-turns.ts'
+import { readTodos, restoreTodos } from '../tools/todo.ts'
 import { browserOf, desktopOf, memoryOf, type BotRecord } from '../registry/index.ts'
 import { cachedMemories, cachedSkill, cachedSkills, type CachedMemory, type CachedSkill, type ReasoningEffort } from '../catalog/index.ts'
 
@@ -1274,10 +1275,18 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     const stop = new AbortController()
     this.startingAbort.set(sessionId, stop)
     this.turnMentions.set(sessionId, new Set(mentions.filter((m) => m.kind === 'connector').map((m) => m.id)))
-    if (isTaskInstruction(source)) this.taskTurns.add(sessionId)
+    // 派活那一轮动过的清单，收口时放回开跑之前的样子（见 restoreTodos）。
+    const task = isTaskInstruction(source)
+    const todosBefore = task ? readTodos(this.ctx, sessionId) : null
+    if (task) this.taskTurns.add(sessionId)
     try {
       await this.runTurn(sessionId, text, images, mentions, source, modelRole, stop.signal, refs)
     } finally {
+      if (todosBefore) {
+        await restoreTodos(this.ctx, sessionId, todosBefore, `task:${String((source as { form?: unknown }).form ?? '')}`).catch((e) => {
+          this.ctx.logger?.warn?.(`agents: 派活收口放回清单失败：${(e as Error).message}`)
+        })
+      }
       this.taskTurns.delete(sessionId)
       this.starting.delete(sessionId)
       if (this.startingAbort.get(sessionId) === stop) this.startingAbort.delete(sessionId)

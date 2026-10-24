@@ -511,6 +511,8 @@ hold = null
   // 不等 running：排着的那条是在上一轮的收尾里接上的，send 要等它也跑完才回来。
   for (let i = 0; i < 100 && !ctx.agents.runningTask(sid); i++) await new Promise((r) => setTimeout(r, 20))
   const taskRunning = ctx.agents.runningTask(sid)
+  // 派活那一轮里列了一张清单（模型调 todo 落的就是这一份）：收口之后不该留在会话上。
+  ctx.storage.collection('todos').put(sid, [{ id: '1', task: '编写 calculator.html', status: 'in_progress' }])
   release2()
   await running
   for (let i = 0; i < 100 && ctx.agents.isRunning(sid); i++) await new Promise((r) => setTimeout(r, 20))
@@ -520,6 +522,8 @@ hold = null
     派活那一轮算派活在跑: taskRunning,
     排队时身份跟着走: taskMsg?.data?.source?.form === 'tk-q' && taskMsg?.data?.source?.from?.name === '助手',
     收口之后不再算: !ctx.agents.runningTask(sid),
+    派活列的清单收口就清掉: (ctx.storage.collection('todos').get(sid) ?? []).length === 0,
+    清单的空快照写进了会话: (await ctx.sessions.events(sid)).some((e) => e.type === 'todo/list' && e.data.items.length === 0),
   }
   hold = null
 }
