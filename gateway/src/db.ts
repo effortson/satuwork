@@ -4965,12 +4965,18 @@ export class Db {
     return r ? conversationAuditBatchOf(r) : undefined
   }
 
-  async retryConversationAuditBatch(id: string, error: string, nextTryAt: number, dead = false): Promise<void> {
-    await this.run(
+  /**
+   * 转成重试（或 dead）。`expectStatus`：只有批次**还是**这个状态才改，改没改成回 true / false。
+   * 席位报失败那条路是先读后写：读到 retry 之后、写之前，派发那一拍可能刚把它领成 leased 发了出去——
+   * 不带条件的话这一笔把它改回 retry、租约清空，下一拍再领一次、同一批派两遍。
+   */
+  async retryConversationAuditBatch(id: string, error: string, nextTryAt: number, dead = false, expectStatus?: string): Promise<boolean> {
+    const n = await this.run(
       `update conversation_audit_batches set status=?, "lastError"=?, "nextTryAt"=?, "leaseUntil"=null
-       where id=? and status not in ('succeeded','empty')`,
-      [dead ? 'dead' : 'retry', error.slice(0, 500), dead ? null : nextTryAt, id],
+       where id=? and status not in ('succeeded','empty')${expectStatus ? ' and status=?' : ''}`,
+      [dead ? 'dead' : 'retry', error.slice(0, 500), dead ? null : nextTryAt, id, ...(expectStatus ? [expectStatus] : [])],
     )
+    return n > 0
   }
 
   async completeConversationAuditBatch(input: {

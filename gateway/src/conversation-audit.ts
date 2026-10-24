@@ -288,6 +288,26 @@ async function withCurrentModel(db: Db, batch: ConversationAuditBatch): Promise<
   )
 }
 
+/**
+ * 席位回报结果时带上它**真用的**那个模型（`model`，新席位才带），批次上记的不一样就改回来。
+ *
+ * 批次上的那几格可能已经被换掉了：续租时席位回 accepted、批次转成 retry，可席位那一下已经用旧模型
+ * 开跑；下一次派发前 withCurrentModel 把批次改成了新模型——旧的那次跑成了报上来，不改回去的话就
+ * 记成了一个没用过的模型（db.ts 的注释说那几格是它当时真用的）。已经收口的不动。
+ */
+export async function recordUsedAuditModel(db: Db, batch: ConversationAuditBatch, raw: unknown): Promise<void> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+  if (batch.status === 'succeeded' || batch.status === 'empty') return
+  const used = raw as Record<string, unknown>
+  const role = used.modelRole === 'utility' ? 'utility' : used.modelRole === 'daily' ? 'daily' : ''
+  const provider = typeof used.provider === 'string' ? used.provider.trim().slice(0, 100) : ''
+  const model = typeof used.model === 'string' ? used.model.trim().slice(0, 200) : ''
+  const effort = typeof used.reasoningEffort === 'string' ? used.reasoningEffort : undefined
+  if (!role || !provider || !model) return
+  if (role === batch.modelRole && provider === batch.provider && model === batch.model && (effort ?? '') === (batch.reasoningEffort ?? '')) return
+  await db.updateConversationAuditBatchModel(batch.id, { modelRole: role, provider, model, reasoningEffort: effort })
+}
+
 async function dispatchBatch(db: Db, batch: ConversationAuditBatch): Promise<void> {
   await postAuditJob(db, await withCurrentModel(db, batch))
   await db.markConversationAuditProcessing(batch.id, Date.now() + LEASE_MS)
@@ -310,15 +330,26 @@ function retryDelay(attempts: number): number {
  * 这才报上真正的原因（「没有 opencode-go 的密钥」）。不记下来的话，批次上只剩那句含糊的话。
  * 已经收口的（成功、空、终审接管）不动。
  */
-export async function failConversationAuditBatch(db: Db, batch: ConversationAuditBatch, error: string): Promise<boolean> {
+export async function failConversationAuditBatch(db: Db, batch: ConversationAuditBatch, error: string, again = 1): Promise<boolean> {
   const message = `席位没跑成：${error}`.slice(0, 500)
+  // 每一笔都带「还是读到的那个状态」的条件：读和写之间派发那一拍可能刚把它领走发了出去（见
+  // retryConversationAuditBatch）。没对上就按新状态重来一次。
+  let ok: boolean
   if (batch.status === 'retry') {
-    await db.retryConversationAuditBatch(batch.id, message, batch.nextTryAt ?? Date.now() + retryDelay(batch.attempts), false)
-    return true
+    ok = await db.retryConversationAuditBatch(batch.id, message, batch.nextTryAt ?? Date.now() + retryDelay(batch.attempts), false, 'retry')
+  } else if (batch.status === 'leased' || batch.status === 'processing') {
+    ok = await db.retryConversationAuditBatch(batch.id, message, Date.now() + retryDelay(batch.attempts), false, batch.status)
+  } else {
+    return false
   }
-  if (batch.status !== 'leased' && batch.status !== 'processing') return false
-  await db.retryConversationAuditBatch(batch.id, message, Date.now() + retryDelay(batch.attempts), false)
-  return true
+  if (ok) return true
+  /**
+   * 没对上：读和写之间状态变了。变成了 retry（续租那一步先转了）就照「只换原因」再来一次；变成了
+   * leased / processing，是**下一次**已经派出去了——这句失败说的是上一次，别把正在跑的这次拉回重试。
+   */
+  const fresh = again > 0 ? await db.conversationAuditBatch(batch.id) : undefined
+  if (fresh?.status === 'retry') return failConversationAuditBatch(db, fresh, error, again - 1)
+  return Boolean(fresh && (fresh.status === 'leased' || fresh.status === 'processing'))
 }
 
 /**
@@ -342,7 +373,7 @@ async function renewProcessingLeases(db: Db, now = Date.now()): Promise<number> 
        * 席位这一下已经又开跑了：跑成了照样报结果（结果那条不看 retry），跑不成也不会再被续租拉起来。
        */
       if (state === 'accepted') {
-        await db.retryConversationAuditBatch(batch.id, '席位上一次没跑完，也没报原因（重启过，或者模型调用失败）', Date.now() + retryDelay(batch.attempts), false)
+        await db.retryConversationAuditBatch(batch.id, '席位上一次没跑完，也没报原因（重启过，或者模型调用失败）', Date.now() + retryDelay(batch.attempts), false, 'processing')
         continue
       }
       await db.markConversationAuditProcessing(batch.id, Date.now() + LEASE_MS)

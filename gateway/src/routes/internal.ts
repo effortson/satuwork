@@ -13,7 +13,7 @@ import { METRIC_RETENTION_MS, MINUTE_MS, egressDelta, telemetryOf } from '../lib
 import { HANDOFF_STATES, type Db, type HandoffState, type Machine } from '../db.ts'
 import { resolveAssignee } from '../lib/handoff.ts'
 import { notify } from '../handoff-sweep.ts'
-import { auditResultHash, failConversationAuditBatch } from '../conversation-audit.ts'
+import { auditResultHash, failConversationAuditBatch, recordUsedAuditModel } from '../conversation-audit.ts'
 import { afterResponse } from '../lib/background.ts'
 import { PUSH_KINDS, pushMessage, pushToAccount, type PushKind } from '../lib/push.ts'
 
@@ -548,6 +548,8 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     if ((batch.status === 'succeeded' || batch.status === 'empty') && batch.resultHash !== resultHash) {
       throw new HttpError(409, '这个批次已经提交过不同的结果')
     }
+    // 席位报上它真用的那个模型（新席位才带）：批次上的那几格可能在这期间被换掉了，改回来。
+    await recordUsedAuditModel(db, batch, body.model)
     const account = await db.account(batch.accountId)
     const bot = await db.catalog(batch.botId)
     const settings = (await db.settings(batch.companyId)).conversationAudit

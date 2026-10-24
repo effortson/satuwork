@@ -1,7 +1,7 @@
 /** 自动对话审计的数据库与窗口探针。由 e2e/conversation-audit.mjs 调用。 */
 import { createServer } from 'node:http'
 import { Db } from './src/db.ts'
-import { auditResultHash, closedAuditWindows, failConversationAuditBatch, requestBotDeletion, tickBotDeletions, tickConversationAudits } from './src/conversation-audit.ts'
+import { auditResultHash, closedAuditWindows, failConversationAuditBatch, recordUsedAuditModel, requestBotDeletion, tickBotDeletions, tickConversationAudits } from './src/conversation-audit.ts'
 import { partsIn } from './src/lib/schedule.ts'
 
 const url = process.env.E2E_DATABASE_URL || 'postgres://satuwork:satuwork@127.0.0.1:5434/satuwork'
@@ -273,6 +273,8 @@ try {
   // 这颗 Bot 没上线：派发在 POST 席位那一步失败、转成重试——模型那一步已经换过了。
   await tickConversationAudits(db)
   const afterDispatch = await db.conversationAuditBatch(stale.id)
+  // 摆成「派出去了、席位上正跑着」（第二次）：失败上报只认库里真是这个状态的那一行（带条件写）。
+  await db.run(`update conversation_audit_batches set status='processing', attempts=2, "leaseUntil"=? where id=?`, [Date.now() + 60_000, stale.id])
   const failedAt = Date.now()
   const failed = await failConversationAuditBatch(db, { ...afterDispatch, status: 'processing', attempts: 2 }, '审计模型 probe/probe 返回 HTTP 402：没有 probe 的密钥')
   const afterFail = await db.conversationAuditBatch(stale.id)
@@ -289,6 +291,28 @@ try {
   const afterRelabel = await db.conversationAuditBatch(stale.id)
   out.失败重试.重试中也记下真正的原因 = relabeled === true && afterRelabel?.status === 'retry' && String(afterRelabel?.lastError || '').includes('没有 opencode-go 的密钥')
   out.失败重试.重试时间不动 = afterRelabel?.nextTryAt === afterFail?.nextTryAt
+
+  /**
+   * 先读后写撞上了派发：路由读到 retry，派发那一拍随后把它领成 leased 发了出去，这时失败上报才写——
+   * 说的是上一次。不该把正在跑的这次拉回 retry、清掉租约（下一拍会再领一次、同一批派两遍）。
+   */
+  const leaseUntil = Date.now() + 60_000
+  await db.run(`update conversation_audit_batches set status='leased', "leaseUntil"=? where id=?`, [leaseUntil, stale.id])
+  const late = await failConversationAuditBatch(db, { ...afterRelabel, status: 'retry' }, '上一次的失败，晚到了')
+  const afterLate = await db.conversationAuditBatch(stale.id)
+  out.失败重试.晚到的失败不把新派出去的拉回重试 = late === true && afterLate?.status === 'leased' && afterLate?.leaseUntil === leaseUntil
+
+  /**
+   * 席位报结果时带上真用的模型：批次在这期间被换成了新模型（重试前 withCurrentModel 会换），改回来。
+   * 已经收口的不动；格式不对的不动。
+   */
+  const used = await db.conversationAuditBatch(stale.id)
+  await recordUsedAuditModel(db, used, { modelRole: 'utility', provider: 'opencode-go', model: 'deepseek-v4-flash', reasoningEffort: 'off' })
+  const afterUsed = await db.conversationAuditBatch(stale.id)
+  await recordUsedAuditModel(db, afterUsed, { provider: '', model: 'x' })
+  const afterBad = await db.conversationAuditBatch(stale.id)
+  out.失败重试.结果带回真用的模型 = afterUsed?.provider === 'opencode-go' && afterUsed?.model === 'deepseek-v4-flash' && afterUsed?.modelRole === 'utility'
+  out.失败重试.格式不对的不改 = afterBad?.provider === 'opencode-go' && afterBad?.model === 'deepseek-v4-flash'
 
   /**
    * 续租：席位回 `accepted`＝它手上没有这一批了（上一次没跑完也没报原因，老席位就是这样）——当失败
