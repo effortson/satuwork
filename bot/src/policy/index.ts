@@ -428,6 +428,13 @@ export class PolicyService extends Service {
      */
     if (name === 'generate_image') return { ok: true }
     /**
+     * 主 Bot 派活：**放行**，理由同上（docs/bot-tasks.md §3）。它只往 Gateway 自己的控制面
+     * 记一条（`/runtime/tasks`），不碰任何业务系统；真去干活的是对方那颗 Bot，它每一次调用
+     * 照样过它自己这条外发闸。拦在这儿等于开着「禁止访问未授权的外部系统」的公司一次都派不了活，
+     * 而拒绝话术还会把人引去模版里加授权——那儿根本没有它（delegate_task 踩过同一个坑）。
+     */
+    if (name === 'assign_task') return { ok: true }
+    /**
      * 浏览器：**这里放行，真正的判在 checkBrowser 里**。
      *
      * 它有一半（能力开关、硬黑名单）不受这条开关控制，所以整块挪到钩子里更前面的位置

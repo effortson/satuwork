@@ -168,6 +168,8 @@ const tool = (name, risk, delegation = {}) => {
 tool('read_local', ['read'])
 tool('write_local', ['write'])
 tool('web_search', ['external', 'read'])
+// risk 照抄 tools/assign.ts。
+tool('assign_task', ['external'])
 tool('terminal', ['write', 'destructive', 'external'])
 // 席位桌面那两把，risk 照抄 tools/desktop.ts。desktop_terminal 带命令时要和 terminal 一个待遇。
 // 委派标注也照抄（`exclusive: 'desktop'`），同浏览器那几把：不照抄的话「没租到就调不了」测的是另一把工具。
@@ -225,6 +227,7 @@ out.onGuards = {
   只读放行: (await call('s1', 'read_local')).failed !== true,
   本地写放行: (await call('s1', 'write_local')).failed !== true,
   网页搜索放行: (await call('s1', 'web_search')).failed !== true,
+  主Bot派活放行: (await call('s1', 'assign_task', { bot: '财务', instruction: '做月报' })).failed !== true,
   已授权的MCP放行: (await call('s1', 'mcp_a_send_mail')).failed !== true,
   没授权的MCP被拦: (await call('s1', 'mcp_b_send_mail')).failed === true,
   不认识的工具被拦: (await call('s1', 'mystery')).failed === true,
