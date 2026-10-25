@@ -26,10 +26,22 @@ export async function gateCompany(db: Db, account: Account): Promise<Account> {
   return account
 }
 
-export async function accountFromJwt(req: Req, db: Db, keys: JwtKeys): Promise<Account> {
-  const token = bearer(req)
-  if (!token) throw new HttpError(401, '需要登录')
-  if (token.startsWith('sk_sw_') || token.startsWith('sat_')) throw new HttpError(401, '需要登录')
+/**
+ * 账号本身能不能用：停用 / 还没接受邀请 / 公司被停用。控制台、席位票、API Key、/v1 的
+ * 登录 JWT 全走这一句，文案要能直接给调用方看——bot 会把它原样变成一条失败消息。
+ *
+ * 只此一份：「/v1 的规矩」和「控制台的规矩」一旦分成两份，下次改其中一句的人不会知道
+ * 还有另一份。
+ */
+export async function assertUsable(db: Db, account: Account | undefined): Promise<Account> {
+  return await gateCompany(db, gateAccount(account))
+}
+
+/**
+ * 登录 JWT → 账号：验签、账号还在、票没被作废、账号能用。前缀判断（sat_ / sk_sw_ 能不能
+ * 走这条）由调用方各自做，控制台和 /v1 的口径不一样。
+ */
+export async function accountFromJwtToken(db: Db, keys: JwtKeys, token: string): Promise<Account> {
   let payload: JwtPayload
   try {
     payload = verifyJwt(keys, token)
@@ -38,15 +50,19 @@ export async function accountFromJwt(req: Req, db: Db, keys: JwtKeys): Promise<A
   }
   const account = await db.account(payload.accountId)
   if (!account) throw new HttpError(401, '账号不存在')
+  // 新票按毫秒 iatMs 比，老票退回按秒（见 ticketRevoked）。
   if (ticketRevoked(account.tokenRevokedAt, payload)) {
     throw new HttpError(401, '登录已失效，请重新登录')
   }
-  return gateCompany(db, gateAccount(account))
+  return assertUsable(db, account)
 }
 
 /** 控制台写操作：只要登录 JWT。sat_ / sk_sw_ 都不行。 */
 export async function requireUser(req: Req, db: Db, keys: JwtKeys): Promise<Account> {
-  return await accountFromJwt(req, db, keys)
+  const token = bearer(req)
+  if (!token) throw new HttpError(401, '需要登录')
+  if (token.startsWith('sk_sw_') || token.startsWith('sat_')) throw new HttpError(401, '需要登录')
+  return accountFromJwtToken(db, keys, token)
 }
 
 /** Bot 拉目录：登录 JWT 或席位 sat_。sk_sw_ 不行。 */
@@ -54,8 +70,8 @@ export async function requireSeatOrUser(req: Req, db: Db, keys: JwtKeys): Promis
   const token = bearer(req)
   if (!token) throw new HttpError(401, '需要登录')
   if (token.startsWith('sk_sw_')) throw new HttpError(401, '需要登录')
-  if (token.startsWith('sat_')) return gateCompany(db, gateAccount(await db.accountByAccessToken(token)))
-  return await accountFromJwt(req, db, keys)
+  if (token.startsWith('sat_')) return assertUsable(db, await db.accountByAccessToken(token))
+  return await requireUser(req, db, keys)
 }
 
 /**
@@ -65,7 +81,7 @@ export async function requireSeatOrUser(req: Req, db: Db, keys: JwtKeys): Promis
 export async function requireSeatOnly(req: Req, db: Db): Promise<Account> {
   const token = bearer(req)
   if (!token || !token.startsWith('sat_')) throw new HttpError(401, '需要席位凭证')
-  return gateCompany(db, gateAccount(await db.accountByAccessToken(token)))
+  return assertUsable(db, await db.accountByAccessToken(token))
 }
 
 export function headerOf(req: Req, name: string): string | undefined {
@@ -470,7 +486,7 @@ export type InternalCaller =
 export async function requireInternalCaller(req: Req, db: Db): Promise<InternalCaller> {
   const token = bearer(req)
   if (token && token.startsWith('sat_')) {
-    const account = await gateCompany(db, gateAccount(await db.accountByAccessToken(token)))
+    const account = await assertUsable(db, await db.accountByAccessToken(token))
     if (!account.companyId) throw new HttpError(403, '没有公司席位')
     return { kind: 'seat', account, companyId: account.companyId }
   }

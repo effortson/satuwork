@@ -2,13 +2,13 @@ import type { ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import type { Account, ChargeStatus, Db } from './db.ts'
 import type { JwtKeys } from './crypto.ts'
-import { ticketRevoked, verifyJwt } from './crypto.ts'
 import { HttpError, bearer, json, watchClient, type Req, type Router } from './http.ts'
 import { EMPTY_USAGE, applyBodyPatch, openaiModelId, redact, rejectsTemperature, type CatalogModel, type Llm, type UpstreamRoute, type UpstreamTarget } from './llm.ts'
 import { isImageModel } from './image-models.ts'
 import type { Meter } from './lib/meter.ts'
 import { mergeUsage, openaiUsage, sseUsage, tokensOf, usageFromPayload, type TokenUsage } from './lib/llm-usage.ts'
-import { accountByApiKey, assertUsable, gateOr402, recordLlmCall, withSettle, type RunOutcome } from './lib/llm-billing.ts'
+import { accountFromJwtToken } from './lib/guards.ts'
+import { accountByApiKey, gateOr402, recordLlmCall, withSettle, type RunOutcome } from './lib/llm-billing.ts'
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v)
@@ -35,19 +35,8 @@ async function requireUser(req: Req, db: Db, keys: JwtKeys): Promise<Account> {
   if (token.startsWith('sat_')) throw new HttpError(401, '需要登录')
   // API Key 那条路和管家中继的授权接口是同一份（lib/llm-billing.ts）。
   if (token.startsWith('sk_sw_')) return accountByApiKey(db, token)
-  let payload
-  try {
-    payload = verifyJwt(keys, token)
-  } catch (e) {
-    throw new HttpError(401, (e as Error).message)
-  }
-  const account = await db.account(payload.accountId)
-  if (!account) throw new HttpError(401, '账号不存在')
-  // 新票按毫秒 iatMs 比，老票退回按秒（见 ticketRevoked）。
-  if (ticketRevoked(account.tokenRevokedAt, payload)) {
-    throw new HttpError(401, '登录已失效，请重新登录')
-  }
-  return assertUsable(db, account)
+  // 剩下的当登录 JWT，验法和控制台同一份（lib/guards.ts）。
+  return accountFromJwtToken(db, keys, token)
 }
 
 function bodyOf(req: Req): Record<string, unknown> {
