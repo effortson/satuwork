@@ -6,7 +6,7 @@
  * 会把当时的语言冻住，之后切语言不再变。字典让调用点只写 t(label)，在渲染时才查。
  *
  * 以前它是 gateway/ui/i18n.js 里挂在 window.SATU_I18N 上的一个对象字面量；现在从这里
- * 打进 core.js，Web 端由 i18n.js 一行转接回 window.SATU_I18N，移动端直接 import。
+ * 打进 core.js，Web 端经 prefs.js 的 t() 转接（SatuCore.t），不再挂全局。
  * 查不到的键由 t() 原样返回中文：宁可露出一句没翻的，也不要显示空白。
  */
 export const dict: Record<string, string> = {
@@ -300,7 +300,7 @@ export const dict: Record<string, string> = {
   员工环境: 'Member environments',
   运行机器: 'Runtime machine',
   运行环境: 'Runtime',
-  // 右栏的另一屏：席位工作区里的文件树（见 chat.js 的 workspacePanel）。
+  // 右栏的另一屏：席位工作区里的文件树（见 chat-workspace.js 的 workspacePanel）。
   工作区文件: 'Workspace files',
   收起右栏: 'Collapse panel',
   列不出来: 'Could not list it',
@@ -1033,12 +1033,12 @@ export const dict: Record<string, string> = {
   '实例还在上线，接上之后就能发消息…': 'The instance is still starting — you can send once it connects…',
   '实例还在上线，这条还发不出去；等它接上再发': 'The instance is still starting, so this message cannot be sent yet — try again once it connects',
   // 按下发送时还没拿到会话：那一下同时把「重新拿会话」和「重连那条流」都叫醒了，
-  // 所以话是「正在接回来」，不是让人干等（见 chat.js 的 sendChat）。
+  // 所以话是「正在接回来」，不是让人干等（见 chat-composer.js 的 sendChat）。
   '还没接上席位，这条先挂着——接上就自动发出去':
     'Not connected to the seat yet — this message is held and will be sent automatically once the connection is back',
   '实例还没接上，这会儿发不出去': 'The instance is not connected — messages cannot be sent right now',
   '实例还没接上，等一会儿再试，或者重新部署一次': 'Still cannot reach the instance — try again in a moment, or redeploy',
-  // 退避认输之后那一句。旁边跟着一颗「重新连接」按钮（见 chat.js 的
+  // 退避认输之后那一句。旁边跟着一颗「重新连接」按钮（见 chat-page.js 的
   // runtimeDownBanner），所以话里不再叫人去刷新整页——刷新会把草稿和附件一起丢掉。
   // 席位换版那几秒回绝新消息时，bot 原样送回来的那一句（见 bot/src/agent/index.ts 的
   // QUIET_MESSAGE）。服务端只发中文，这里翻一次，英文界面才不会突然冒出一句中文。

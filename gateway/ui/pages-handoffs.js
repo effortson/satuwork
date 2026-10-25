@@ -188,7 +188,7 @@ function handoffRow(h) {
  * 就地处理的那张卡（别人名下的 Bot，对话打不开）。
  *
  * 长得和会话里那张一样（同一套 `.sw-approval` / `.sw-handoff` 样式、同一个
- * `.sw-handoff-note`），所以接手 / 交还走的是同一条代码路（chat.js 的 actOnHandoff /
+ * `.sw-handoff-note`），所以接手 / 交还走的是同一条代码路（chat-decide.js 的 actOnHandoff /
  * returnHandoff），不另写一套。
  *
  * **正文要现拉**：Gateway 那张表只留了 reason / ask 各一段，而接手的人真正要看的是
@@ -397,7 +397,7 @@ function needCount() {
 
 /**
  * 就地改，不走 render()：整页重绘会把正在打字的输入框换掉，而这个数每 30 秒就要动
- * 一次（见 chat.js 的 loadHandoffs），确认那一路更是随时会动（paintRoster 每帧来一次）。
+ * 一次（见 chat-decide.js 的 loadHandoffs），确认那一路更是随时会动（paintRoster 每帧来一次）。
  */
 function paintHandoffBadge() {
   const node = document.querySelector('.satu-handoffcount')

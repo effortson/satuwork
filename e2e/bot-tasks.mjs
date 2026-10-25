@@ -5,23 +5,18 @@
  * 指令的 run 活、回报结论之后主席位领到带结论的 deliver 活；目标砸了也要送回去；租约到期放回
  * 去再领；管家太旧当场记成没跑起来。
  */
-import { rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
+import { pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
 import { publishRelease } from './release.mjs'
 import { pairMachine } from './pair.mjs'
 import { freePort } from './ports.mjs'
+import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 const SCHEMA = schemaOf('e2e_bot_tasks')
 const LEASE_MS = 1500
 const PICKUP_MS = 6000
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, log }) {
   log('\n# bot-tasks')
@@ -29,17 +24,14 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
   const GW_HOME = tmpOf('satuwork-e2e-bot-tasks')
   const GW_PORT = await freePort()
   const gwBase = `http://127.0.0.1:${GW_PORT}`
-  rmSync(GW_HOME, { recursive: true, force: true })
 
-  const gw = start('bot-tasks-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'bot-tasks-gw',
+    what: 'bot-tasks gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '1',
       GATEWAY_OWNER_EMAIL: 'owner@tasks.test',
@@ -54,8 +46,6 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
   })
 
   try {
-    await waitHttp(gwBase + '/health', { child: gw, what: 'bot-tasks gateway' })
-
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@tasks.test',
       ownerPassword: 'test-owner-tasks',
@@ -519,12 +509,8 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
     })
 
     await test('答了却被停了、等的一方又没来取：清扫收成已停止，不走兜底送回', async () => {
-      const require = createRequire(join(gwRoot, 'package.json'))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       try {
-        await client.query(`set search_path to ${SCHEMA}`)
         const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '撞车的那件', sessionId: 's-main', wait: true })
         const id = made.json.task.id
         assert((await due()).json.jobs.some((j) => j.taskId === id), '没领到')

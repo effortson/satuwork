@@ -10,9 +10,9 @@
  */
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
+import { startGateway } from './gateway.mjs'
 
 const PLATFORM_TOK = 'e2e-platform-skills'
 
@@ -21,18 +21,15 @@ export async function runSkills({ root, gwRoot, test, req, start, waitHttp, asse
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# skills')
 
-  const gw = start('skills-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'skills-gw',
+    what: 'skills gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_skills'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_skills'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
       GATEWAY_PLATFORM_TOKEN: PLATFORM_TOK,
@@ -40,7 +37,6 @@ export async function runSkills({ root, gwRoot, test, req, start, waitHttp, asse
       GATEWAY_SEAT_SKILL_MAX: '3',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'skills gateway' })
 
   let owner = ''
   let adminTok = ''

@@ -27,3 +27,34 @@ test('尾巴没有空行的那一帧不算（流还没完）；stop 在下一次
   const out = await collect(readerOf(['data: {"a":1}\n\n', 'data: {"b":2}\n\n']), () => n++ >= 1)
   assert.deepEqual(out, [{ a: 1 }])
 })
+
+test('CRLF 被切在两块之间也归一', async () => {
+  assert.deepEqual(await collect(readerOf(['data: {"a":1}\r', '\n\r\n'])), [{ a: 1 }])
+})
+
+test('hooks：每块一次 onChunk（ping 也算），onBatch 报这一块有没有 data 行；onChunk 回 false 就收摊', async () => {
+  const seen: string[] = []
+  const out: any[] = []
+  const hooks = {
+    onChunk: () => {
+      seen.push('chunk')
+    },
+    onBatch: (sawData: boolean) => {
+      seen.push(sawData ? 'data' : 'none')
+    },
+  }
+  for await (const ev of sseEvents(readerOf([': ping\n\n', 'data: x\n\n', 'data: {"a":1}\n\ndata: {"b"', ':2}\n\n']), undefined, hooks)) {
+    seen.push('ev')
+    out.push(ev)
+  }
+  assert.deepEqual(out, [{ a: 1 }, { b: 2 }])
+  // 认不出 JSON 的 data 行也算「有 data」；半截的帧那一块不算。onBatch 在这一块的事件都交完之后。
+  assert.deepEqual(seen, ['chunk', 'none', 'chunk', 'data', 'chunk', 'ev', 'data', 'chunk', 'ev', 'data'])
+  let n = 0
+  const cut = await (async () => {
+    const got: any[] = []
+    for await (const ev of sseEvents(readerOf(['data: {"a":1}\n\n', 'data: {"b":2}\n\n']), undefined, { onChunk: () => n++ < 1 })) got.push(ev)
+    return got
+  })()
+  assert.deepEqual(cut, [{ a: 1 }])
+})

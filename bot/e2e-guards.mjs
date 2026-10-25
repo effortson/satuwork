@@ -6,10 +6,10 @@
  * 一封已经发出去的邮件面前差得很远。
  */
 import { Context } from '@deepseek-ai/cordis'
-import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ToolService } from './src/tools/index.ts'
+import { tempDir } from './e2e-lib.mjs'
 
 // **必须在 import policy 之前设。** 确认的等待时长是模块加载那一刻读的环境变量，
 // 静态 import 会被提升到文件最前面，那时候这一行还没跑，测超时就要真等五分钟。
@@ -191,10 +191,7 @@ tool('browser_type', ['external', 'write'])
 tool('browser_press', ['external', 'write'])
 tool('browser_dialog', ['external', 'write'])
 
-const storeDir = mkdtempSync(join(tmpdir(), 'satuwork-guards-'))
-// 退出时收掉临时目录（和 e2e-memory / e2e-skills 那几个探针同一个写法）：探针是顶层 await 的
-// 脚本，没有一个能包 finally 的函数体；exit 钩子在 process.exit、正常结束和未捕获异常三条路上都会跑。
-process.on('exit', () => { try { rmSync(storeDir, { recursive: true, force: true }) } catch {} })
+const storeDir = tempDir('satuwork-guards-')
 ctx.plugin(StorageService, { path: join(storeDir, 'probe.db') })
 await new Promise((r) => setTimeout(r, 50))
 ctx.plugin(handoff)

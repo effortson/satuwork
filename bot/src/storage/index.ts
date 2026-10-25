@@ -66,11 +66,6 @@ export class StorageService extends Service {
     ctx.effect(() => () => this.db.close())
   }
 
-  /** 直接拿库句柄。需要真正的 SQL（按下次运行时间查、全文检索）时用它，别硬套文档接口。 */
-  get database(): DatabaseSync {
-    return this.db
-  }
-
   // ── 运行时配置 ────────────────────────────────────────────────────────
   //
   // namespace 按插件划分（'agent'、'llm'…），避免一个扁平命名空间里撞名。
@@ -80,14 +75,6 @@ export class StorageService extends Service {
       .prepare('select value from settings where namespace = ? and key = ?')
       .get(namespace, key) as { value: string } | undefined
     return row ? (JSON.parse(row.value) as T) : undefined
-  }
-
-  /** 一个命名空间下的全部设置。插件启动时读一次，之后靠事件增量更新。 */
-  allSettings(namespace: string): Record<string, unknown> {
-    const rows = this.db
-      .prepare('select key, value from settings where namespace = ?')
-      .all(namespace) as { key: string; value: string }[]
-    return Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.value)]))
   }
 
   /** 写入并广播。**先落库再广播**，监听者看到通知时值已经是持久的。 */

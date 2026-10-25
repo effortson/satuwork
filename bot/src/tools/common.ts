@@ -2,6 +2,7 @@ import type { Dirent } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import { gatewayJson } from '../gateway-api.ts'
 import { WorkspaceError } from '../workspace/index.ts'
 import type { ReassignedItem, ToolCall, ToolDelegation, ToolRisk, WorkspaceFile } from './index.ts'
 
@@ -20,9 +21,39 @@ export function fail(message: string): never {
   throw new ToolFailure(message)
 }
 
-/** 截断并说清楚截了多少。悄悄截掉会让模型以为它看到的就是全部。 */
-export function clip(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}\n…（已截断，共 ${text.length} 字符）`
+/**
+ * 打 Gateway 的 runtime 面（memory / skill / routine 共用），`unconfigured` 是没配 Gateway 时那句话。
+ *
+ * 连不上是**管道故障**（模型改什么都没用），HTTP 4xx 里带的那句话是**业务失败**——
+ * 它是 Gateway 判出来的、能照着改的东西（名字撞了、写满了、改不动别人的），原话直接
+ * 给模型看。两者混成一种，模型要么白重试、要么把一次可修复的拒绝当成系统坏了。
+ */
+export function runtimeGateway(unconfigured: string) {
+  return <T>(method: string, path: string, body?: unknown): Promise<T> =>
+    gatewayJson<T>(method, path, body, {
+      timeoutMs: 30_000,
+      unconfigured: () => new ToolFailure(unconfigured),
+      rejected: (message) => new ToolFailure(message),
+    })
+}
+
+/** 截断并说清楚截了多少。悄悄截掉会让模型以为它看到的就是全部。`unit` 是那句话里的量词。 */
+export function clip(text: string, max: number, unit = '字符'): string {
+  return text.length <= max ? text : `${text.slice(0, max)}\n…（已截断，共 ${text.length} ${unit}）`
+}
+
+/** 压成一行：换行和连续空白都变成一个空格。 */
+export function oneLine(s: string): string {
+  return s.replace(/\s+/g, ' ').trim()
+}
+
+/** 参数里的字符串（去掉首尾空白）；不是字符串就当没给。 */
+export const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
+
+/** `42s` / `3m05s`。`clampZero` 把负数（时钟回拨）收成 0s。 */
+export function human(ms: number, clampZero = false): string {
+  const s = clampZero ? Math.max(0, Math.round(ms / 1000)) : Math.round(ms / 1000)
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
 }
 
 /** 工具返回的东西：一段文本，外加它落地的（files）与看到的（refs）文件。 */

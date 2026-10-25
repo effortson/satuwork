@@ -13,12 +13,12 @@
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { createCompany } from './org.mjs'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { el, fakeSse } from './ui-dom.mjs'
 import { catchUpFrames, newCatchUp, remember } from '../manager/src/roster-filter.ts'
 import { readdirSync, readFileSync } from 'node:fs'
 import { freePort } from './ports.mjs'
+import { startGateway } from './gateway.mjs'
 
 const APP = 'gateway/ui/app.js'
 
@@ -28,23 +28,19 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
   const gwBase = `http://127.0.0.1:${GW_PORT}`
   const appPath = join(root, APP)
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# ui-smoke')
 
-  const gw = start('ui-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'ui-gw',
+    what: 'ui gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_ui'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_ui'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
     },
   })
-  await waitHttp(`${gwBase}/health`, { child: gw, what: 'ui gateway' })
 
   const { loadApp } = await import('./ui-dom.mjs')
   const boot = async (token, opts) => {
@@ -86,7 +82,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
       const parts = [...html.matchAll(/<script src="\/([^"]+)"[^>]*\bdata-app-part\b/g)].map((m) => m[1])
       assert(parts.length > 1, `index.html 里没找到 data-app-part 脚本`)
-      // **每个 <script src>**，不只是分片：core.js（core/src 打出来的）、i18n.js、markdown.js、
+      // **每个 <script src>**，不只是分片：core.js（core/src 打出来的）、markdown.js、
       // unzip.js 都不带 data-app-part，漏进 ROOT_FILES 的后果一样是整页白屏。
       const scripts = [...html.matchAll(/<script[^>]*\ssrc="\/([^"]+)"/g)].map((m) => m[1])
       assert(scripts.includes('core.js'), `index.html 里没有 core.js：${scripts.join(', ')}`)
@@ -1015,7 +1011,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert((b.mentions || []).length === 1, `点名没跟着消息留下来：${JSON.stringify(b.mentions)}`)
       assert(b.mentions[0].label === 'Gmail (default)', `药丸上的名字不对：${b.mentions[0].label}`)
       // 气泡那一层是真 DOM（垫片里画不出来），这里只钉住它确实画了这排药丸。
-      const src = readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8')
+      const src = readFileSync(join(root, 'gateway/ui/chat-thread.js'), 'utf8')
       assert(src.includes('sw-mentions-in'), '气泡里没有画点名药丸的那一排')
     })
 
@@ -1023,8 +1019,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 这一条只验源码。滚动收浮层挂在 window 的**捕获阶段**，垫片里 window 是个空壳，
       // 事件根本发不出去——但错法就藏在那一行里：不看事件源头，滚浮层自己的结果区
       // （`.sw-toolpop pre`，最高 220px）也照收，手一动窗口就没了，长输出永远看不完。
-      const src = readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8')
-      // chat.js 里不止一个捕获阶段的 scroll 监听，认收浮层的那一个。
+      const src = readFileSync(join(root, 'gateway/ui/chat-toolpop.js'), 'utf8')
+      // 捕获阶段的 scroll 监听不止一个（长按菜单、内嵌桌面也挂了），认收浮层的那一个。
       const handler = [...src.matchAll(/addEventListener\(\s*'scroll',([\s\S]*?),\s*true,?\s*\)/g)]
         .map((m) => m[1])
         .find((h) => h.includes('hideToolPop'))
@@ -1636,11 +1632,11 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!shell.includes('#download'), '桌面壳的登录页上还挂着下载桌面端')
     })
 
-    await test('gateway/ui 下每个脚本都解析得过，包括 i18n.js', async () => {
+    await test('gateway/ui 下每个脚本都解析得过，包括不带 data-app-part 的那几个', async () => {
       /**
-       * 这套冒烟只把界面分片装进来跑，**不装 i18n.js**，而前端读翻译又是
-       * `window.SATU_I18N || {}` 兜着的——于是那份文件语法错了，这里一条都不会红，浏览器里
-       * 英文界面却整片退回中文。就这么漏过：两个带全角逗号的键没加引号。
+       * 这套冒烟只把界面分片装进来跑，**不装 markdown.js 这类分片之外的脚本**——那些文件
+       * 语法错了，这里一条都不会红，浏览器里却是整片坏掉。以前的 i18n.js 就这么漏过：两个
+       * 带全角逗号的键没加引号。
        *
        * 只解析不执行（`node --check`），所以不需要 window。用它而不是 vm.Script：分片里有
        * ES 模块（unzip.js），按普通脚本解析会在 export 上报错；node --check 按 gateway 的
@@ -1649,7 +1645,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const { spawnSync } = await import('node:child_process')
       const dir = join(root, 'gateway/ui')
       const files = readdirSync(dir).filter((f) => f.endsWith('.js'))
-      assert(files.includes('i18n.js'), `没找到 i18n.js：${files.join(', ')}`)
+      assert(files.includes('markdown.js'), `没找到 markdown.js：${files.join(', ')}`)
       const bad = []
       for (const f of files) {
         const out = spawnSync(process.execPath, ['--check', join(dir, f)], { encoding: 'utf8' })
@@ -1672,6 +1668,18 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         assert(part.status === 200, `${file} → ${part.status}`)
         assert(String(part.headers.get('content-type')).includes('javascript'), `${file} 的 content-type 是 ${part.headers.get('content-type')}`)
       }
+    })
+
+    await test('http.ts 的 UI_PARTS 和 index.html 那串分片一模一样，连顺序', async () => {
+      // 上面那条只验「每个都取得到」。两份名单各写各的，漏了、多了、顺序抄错都没人报——
+      // 加分片时两处要一起改，这一条替人对一遍。
+      const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
+      const parts = [...html.matchAll(/<script src="\/([^"]+)"[^>]*\bdata-app-part\b/g)].map((m) => m[1])
+      const ts = readFileSync(join(root, 'gateway/src/http.ts'), 'utf8')
+      const m = ts.match(/const UI_PARTS = \[([^\]]*)\]/)
+      assert(m, 'http.ts 里找不到 UI_PARTS')
+      const listed = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+      assert(JSON.stringify(listed) === JSON.stringify(parts), `两份对不上：\n  index.html：${parts.join(', ')}\n  UI_PARTS：  ${listed.join(', ')}`)
     })
 
     await test('首页上点「登录」进得了登录页', async () => {
@@ -4068,7 +4076,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
        * 在：半死的流 ac 还在，谁都以为它好着，没有任何东西会去碰它。这正是「回答其实
        * 出了、界面上看不见、刷新才好」修了几轮都没除根的那一种：每一轮修的都是「断了
        * 之后接不回来」，而这一种压根没有断。判据只能是字节本身：bot 每 15 秒一条
-       * `: ping`，三个心跳没等到就当死的拆掉重连（见 chat.js 的 sweepSilentStreams）。
+       * `: ping`，三个心跳没等到就当死的拆掉重连（见 chat-stream.js 的 sweepSilentStreams）。
        */
       const streams = []
       const ui = loadApp({
@@ -4303,6 +4311,75 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       sse.close()
       await run
       ui.stopChatStream()
+    })
+
+    await test('同一块里的几帧：流半路被换掉，后面的帧不再进事件', async () => {
+      /**
+       * 分帧走 core 的 sseEvents（异步生成器），同一块里的几帧是一个微任务交一个。中间
+       * 排着的回调换了 Bot（stopChatStream）之后，这一块剩下的帧不能再落进来——只在块头
+       * 问一次「还是不是当前那条」的话，它们照样进事件数组，画出来就是两个 Bot 串在一起。
+       *
+       * 换流的时机不靠数微任务（生成器里多一个 await 就错位，测试会悄悄变成只测块头）：
+       * 第一帧**真的进了事件数组**的那一刻当场 stopChatStream，再看同一块里的第二帧。
+       */
+      const enc = new TextEncoder()
+      const frame = (seq) => `data: ${JSON.stringify({ type: 'assistant/chunk', seq, data: { text: 'x' } })}\n\n`
+      let ui
+      let served = false
+      const response = {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        body: {
+          getReader: () => ({
+            read: () => {
+              if (served) return Promise.resolve({ done: true, value: undefined })
+              served = true
+              return Promise.resolve({ done: false, value: enc.encode(frame(1) + frame(2)) })
+            },
+          }),
+        },
+      }
+      ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: adminToken,
+        fetchImpl: async (path, init) => (path.includes('/events') ? response : fetch(gwBase + path, init)),
+      })
+      await ui.boot()
+      // 盯住事件数组的每一次 push（数组会被整个换掉，所以挂在 state 的 setter 上，换进来的也包一层）。
+      const landed = []
+      let stopped = false
+      const watch = (arr) => {
+        const push = arr.push.bind(arr)
+        arr.push = (...items) => {
+          const n = push(...items)
+          for (const ev of items) {
+            if (ev?.type !== 'assistant/chunk') continue
+            landed.push({ seq: ev.seq, afterStop: stopped })
+            if (!stopped) {
+              stopped = true
+              ui.stopChatStream()
+            }
+          }
+          return n
+        }
+        return arr
+      }
+      let events = watch(ui.state.chatEvents || [])
+      Object.defineProperty(ui.state, 'chatEvents', {
+        configurable: true,
+        enumerable: true,
+        get: () => events,
+        set: (v) => {
+          events = Array.isArray(v) ? watch(v) : v
+        },
+      })
+      ui.state.chatSessionId = 's-mid'
+      await ui.startChatStream('s-mid')
+      assert(landed.some((x) => x.seq === 1 && !x.afterStop), `第一帧都没进来，测不到「半路换流」：${JSON.stringify(landed)}`)
+      const late = landed.filter((x) => x.afterStop).map((x) => x.seq)
+      assert(!late.length, `换流之后这一块剩下的帧还是进来了：seq ${late.join(', ')}`)
     })
 
     await test('重放历史时不闪「正在处理」，但也不留一片空白', async () => {
@@ -5436,7 +5513,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
     })
 
     /**
-     * 附件那几秒里的草稿归属（chat.js 的 chatUploads / returnDraft）。
+     * 附件那几秒里的草稿归属（chat-composer.js 的 chatUploads / returnDraft）。
      *
      * 两个 Bot 各有各的会话和直连上传地址；A 的上传被一道闸卡住，什么时候放行由测试说了算。
      */

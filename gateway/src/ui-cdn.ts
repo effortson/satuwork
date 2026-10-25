@@ -8,8 +8,8 @@
  * 按前缀匹配，所以 `…/npm/mermaid@11.4.1/` 连它运行时再 import 的那些 chunk 一起放行。
  *
  * 这张表和 `gateway/ui/markdown.js` 的 `LIBS`（外加 `pages-landing.js` 的 `LP_THREE`、`office-view.js` 的 `LIBS`）是一对：那边的每条路径都得落在这里某一项
- * 底下，这里的每一项那边都得用到；桌面端 `desktop/src-tauri/src/main.rs` 的 `UI_CSP` 是照
- * 这张表手抄的。三处由 e2e 的 markdown 那一组按源码核对，**改版本号三处一起改**（markdown.js
+ * 底下，这里的每一项那边都得用到；桌面端 `desktop/src-tauri/src/ui.rs` 和手机端 `mobile/src-tauri/src/lib.rs` 的 `UI_CSP` 是照
+ * 这张表手抄的。几处由 e2e 的 markdown 那一组按源码核对，**改版本号三处一起改**（markdown.js
  * 那边还要换 SRI 摘要）。
  */
 export const UI_CDN_PACKAGES = [

@@ -8,8 +8,6 @@
  *   3. 点名不是过滤：别的工具一个都没少，被点的排最前；
  *   4. 上一轮还在跑时，带 `@` 的消息**排队**而不是插话，跑完自动接上，也能取消。
  */
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import * as storagePlugin from './src/storage/index.ts'
@@ -21,12 +19,10 @@ import * as agentPlugin from './src/agent/index.ts'
 import { AssistantMessageEventStream, emptyAssistant } from './src/llm/stream.ts'
 import { viaMentionOf } from './src/catalog/index.ts'
 import { SESSION_FORMAT_VERSION } from './src/session/types.ts'
+import { tempDir } from './e2e-lib.mjs'
 
-const home = mkdtempSync(join(tmpdir(), 'satu-mention-'))
-const work = mkdtempSync(join(tmpdir(), 'satu-mention-work-'))
-// 退出时收掉临时目录（和 e2e-memory / e2e-skills 那几个探针同一个写法）：探针是顶层 await 的
-// 脚本，没有一个能包 finally 的函数体；exit 钩子在 process.exit、正常结束和未捕获异常三条路上都会跑。
-process.on('exit', () => { try { rmSync(home, { recursive: true, force: true }) } catch {} try { rmSync(work, { recursive: true, force: true }) } catch {} })
+const home = tempDir('satu-mention-')
+const work = tempDir('satu-mention-work-')
 
 /**
  * 假目录：两台「服务器」，personal 那台是「仅 @ 时可用」。

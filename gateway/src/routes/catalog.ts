@@ -8,6 +8,7 @@ import { bodyOf, strField } from '../lib/validate.ts'
 import { kindOf, requireOrgUser, requireOwner, requireOwnerUser, requireUser } from '../lib/guards.ts'
 import { type Account, type CatalogItem, type CatalogKind } from '../db.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
+import { companyOr404 } from '../lib/org.ts'
 
 export function attachCatalog(router: Router, ctx: RouteCtx) {
   const { db, keys, llm } = ctx
@@ -239,7 +240,7 @@ export function attachCatalog(router: Router, ctx: RouteCtx) {
       return { account, owner: companyOwner(req.params.id) }
     },
     async ensure(req) {
-      if (!(await db.company(req.params.id))) throw new HttpError(404, '公司不存在')
+      await companyOr404(db, req.params.id)
     },
     icons: COMPANY_BOT_ICONS,
     async groups(owner) {
@@ -585,7 +586,7 @@ export function attachCatalog(router: Router, ctx: RouteCtx) {
     })
     router.post(`/orgs/:id/${name}`, async (req, res) => {
       const account = await requireOrgUser(req, db, keys, req.params.id, true)
-      if (!await db.company(req.params.id)) throw new HttpError(404, '公司不存在')
+      await companyOr404(db, req.params.id)
       const body = bodyOf(req)
       const name = strField(body, 'name')
       const item = await db.insertCatalog({

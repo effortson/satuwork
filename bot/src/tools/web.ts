@@ -8,6 +8,7 @@ import {
   search,
   type ExtractedPage,
 } from '../web-search/index.ts'
+import { clip, oneLine } from './common.ts'
 import type { WorkspaceFile } from './index.ts'
 
 /**
@@ -28,14 +29,6 @@ export const inject = ['tools', 'websearch']
 /** 单条搜索结果的摘要上限，和整体上限。喂回模型的东西必须有界。 */
 const SNIPPET_MAX = 300
 const SEARCH_MAX = 6_000
-
-function clip(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}\n…（已截断，共 ${text.length} 字符）`
-}
-
-function oneLine(s: string): string {
-  return s.replace(/\s+/g, ' ').trim()
-}
 
 /**
  * 网页正文一律包进这个标签。

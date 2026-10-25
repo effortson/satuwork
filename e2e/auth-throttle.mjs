@@ -5,10 +5,9 @@
  * 所有请求都从 127.0.0.1 来，所以 IP 桶在这里是一个桶——最后一条专门验它。
  */
 import { rmSync } from 'node:fs'
-import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
+import { startGateway } from './gateway.mjs'
 
 const WINDOW_MS = 10000
 const MAX_ACCOUNT = 5
@@ -22,18 +21,15 @@ export async function runAuthThrottle({ gwRoot, test, req, start, waitHttp, asse
   const GW_HOME = tmpOf('satuwork-e2e-auth-throttle-gw')
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# auth-throttle')
 
-  const gw = start('auth-throttle-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'auth-throttle-gw',
+    what: 'auth-throttle gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_auth_throttle'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_auth_throttle'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
       GATEWAY_AUTH_WINDOW_MS: String(WINDOW_MS),
@@ -41,7 +37,6 @@ export async function runAuthThrottle({ gwRoot, test, req, start, waitHttp, asse
       GATEWAY_AUTH_MAX_IP_FAILS: String(MAX_IP),
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'auth-throttle gateway' })
 
   const email = 'owner@throttle.test'
   const password = 'correct-horse-9'

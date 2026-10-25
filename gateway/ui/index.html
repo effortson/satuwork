@@ -19,23 +19,26 @@
      gateway/src/http.ts 的 CSP）。挂 window.satuUnzip 这件事搬进了 unzip.js 自己的末尾。 -->
 <script type="module" src="/unzip.js"></script>
 <!-- core.js 是 core/src 打出来的（gateway/scripts/build-core.mjs），挂全局 SatuCore：译表、格式化、
-     路径解析都从它来。必须在下面所有脚本之前——i18n.js 和 state.js 里是一行行的转接。 -->
+     路径解析都从它来。必须在下面所有脚本之前——prefs.js 和 state.js 里是一行行的转接。 -->
 <script src="/core.js"></script>
-<!-- 译表必须在下面那串之前：prefs.js 里的 t() 直接查它。 -->
-<script src="/i18n.js"></script>
-<!-- markdown.js 也要在下面那串之前：chat.js 的 paintChat 直接调 window.satuMd。 -->
+<!-- dom-util.js：复制、存文件这几样，markdown.js 和下面的分片都用，渠道预览页也装它（不是分片）。 -->
+<script src="/dom-util.js"></script>
+<!-- markdown.js 也要在下面那串之前：chat-thread.js 的 paintChat 直接调 window.satuMd。 -->
 <script src="/markdown.js"></script>
 <!-- 前端就是这一串普通脚本，同一个全局作用域，按顺序拼起来等于原来那个 app.js。
      data-app-part 是给 e2e 垫片认的：它照着这里的顺序拼源码，顺序永远不会和线上漂开。
      prefs.js 必须第一个（唯一一段加载即执行的代码在它那儿），app.js 必须最后一个（boot()）。 -->
 <script src="/prefs.js" data-app-part></script>
 <script src="/state.js" data-app-part></script>
+<script src="/ui-kit.js" data-app-part></script>
 <script src="/data.js" data-app-part></script>
 <script src="/shell.js" data-app-part></script>
 <script src="/pages-landing.js" data-app-part></script>
 <script src="/pages-legal.js" data-app-part></script>
 <script src="/pages-admin.js" data-app-part></script>
 <script src="/pages-audit.js" data-app-part></script>
+<script src="/pages-releases.js" data-app-part></script>
+<script src="/pages-companies.js" data-app-part></script>
 <script src="/pages-machines.js" data-app-part></script>
 <script src="/pages-account.js" data-app-part></script>
 <script src="/pages-bots.js" data-app-part></script>
@@ -46,8 +49,21 @@
 <script src="/pages-channels.js" data-app-part></script>
 <script src="/pages-knowledge.js" data-app-part></script>
 <script src="/chat.js" data-app-part></script>
+<script src="/chat-stream.js" data-app-part></script>
+<script src="/chat-bubble.js" data-app-part></script>
+<script src="/chat-thread.js" data-app-part></script>
+<script src="/chat-meta.js" data-app-part></script>
+<script src="/chat-seat.js" data-app-part></script>
+<script src="/chat-workspace.js" data-app-part></script>
+<script src="/chat-desktop.js" data-app-part></script>
+<script src="/chat-preview.js" data-app-part></script>
+<script src="/chat-page.js" data-app-part></script>
+<script src="/chat-composer.js" data-app-part></script>
+<script src="/chat-decide.js" data-app-part></script>
+<script src="/chat-toolpop.js" data-app-part></script>
 <script src="/chat-find.js" data-app-part></script>
 <script src="/render.js" data-app-part></script>
+<script src="/actions.js" data-app-part></script>
 <script src="/app.js" data-app-part></script>
 </body>
 </html>

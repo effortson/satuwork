@@ -9,9 +9,8 @@
  * 就是负收益——它要解决的正是这个场景。
  */
 import { readFileSync, rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
+import { PG_URL, pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { runProbe as sharedProbe } from './probe.mjs'
@@ -76,10 +75,7 @@ export async function runMigrate({ gwRoot, test, start, waitHttp, assert, log })
   rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# migrate')
 
-  const require = createRequire(`${gwRoot}/package.json`)
-  const pg = require('pg')
-  const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
+  const client = await pgClient()
 
   const fresh = async () => {
     await client.query(`drop schema if exists ${SCHEMA} cascade`)

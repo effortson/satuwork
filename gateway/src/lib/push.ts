@@ -28,8 +28,6 @@ import { createPrivateKey, sign, type KeyObject } from 'node:crypto'
 import type { Db } from '../db.ts'
 import { JWT_TTL } from './validate.ts'
 
-export type PushPlatform = 'ios' | 'android'
-export type PushEnvironment = 'sandbox' | 'production'
 export const PUSH_PLATFORMS: readonly string[] = ['ios', 'android']
 export const PUSH_ENVIRONMENTS: readonly string[] = ['sandbox', 'production']
 

@@ -26,46 +26,20 @@ import { del, put } from '@vercel/blob'
 import { releaseArch, type BotRelease, type Db, type ReleaseKind } from './db.ts'
 import { gatewayHome } from './home.ts'
 import { HttpError } from './http.ts'
+import { blobToken, isOurBlobUrl } from './lib/blob.ts'
 
 /**
  * 对象存储（Vercel Blob）。**配了 `BLOB_READ_WRITE_TOKEN` 就走它，不再落盘**——函数环境没有可写
  * 磁盘，Debian 上也可以配，好让两边的包在同一个地方。私有库：包里是我们的代码和依赖，不该
- * 挂在一个公开地址上；拉的时候带 token（Blob 的私有地址就是 GET + Bearer）。
- *
- * `VERCEL_BLOB_API_URL` 是 SDK 自己认的覆盖项，e2e 用它把上传指到一个假的 Blob。
+ * 挂在一个公开地址上；拉的时候带 token（Blob 的私有地址就是 GET + Bearer），带之前先认地址，
+ * 见 lib/blob.ts。
  */
-function blobToken(): string {
-  return (process.env.BLOB_READ_WRITE_TOKEN || '').trim()
-}
-
-function blobApiUrl(): string {
-  return (process.env.VERCEL_BLOB_API_URL || '').trim().replace(/\/$/, '')
-}
-
-/** 这个地址是不是我们自己 Blob 库里的包：拉它要带 token。别的地址（GitHub Release）什么都不带。 */
-function isBlobUrl(url: string): boolean {
-  try {
-    const u = new URL(url)
-    if (u.protocol === 'https:' && u.hostname.endsWith('.blob.vercel-storage.com')) return true
-    const raw = blobApiUrl()
-    if (!raw) return false
-    // **按解析后的 origin 比，不按字符串前缀。** `https://blob.example` 是
-    // `https://blob.example.evil.com/x.tgz` 的前缀——登记一个这样的远端包，拉的时候
-    // 就把 BLOB_READ_WRITE_TOKEN 送到别人家去了。路径前缀也按段比，/api 不认 /api-x。
-    const api = new URL(raw)
-    if (u.origin !== api.origin) return false
-    const base = api.pathname.replace(/\/$/, '')
-    return !base || u.pathname === base || u.pathname.startsWith(base + '/')
-  } catch {
-    return false
-  }
-}
 
 /** 取一个远端包。私有 Blob 带 Bearer，其余裸取。verifyRemote 和 openRelease 共用，别各写一遍。 */
 function fetchRelease(url: string): Promise<Response> {
   const token = blobToken()
   return fetch(url, {
-    ...(token && isBlobUrl(url) ? { headers: { authorization: `Bearer ${token}` } } : {}),
+    ...(token && isOurBlobUrl(url) ? { headers: { authorization: `Bearer ${token}` } } : {}),
     signal: AbortSignal.timeout(300_000),
   })
 }
@@ -102,7 +76,7 @@ export const DEFAULT_MIN_DESKTOP_VERSION = '0.1.0'
 const DESKTOP_VERSION_RE = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/
 
 /**
- * 登记时收的最低 Desktop 版本。只收严格的 `x.y.z`：Desktop 那头（main.rs 的
+ * 登记时收的最低 Desktop 版本。只收严格的 `x.y.z`：Desktop 那头（runtime/update.rs 的
  * version_numbers）认不出的值一律当「不满足」，登记一个它读不懂的值等于把这个包锁死。
  */
 export function parseMinDesktopVersion(raw: unknown): string {
@@ -118,7 +92,7 @@ function minDesktopFor(kind: ReleaseKind, raw: unknown): string | null {
 }
 
 function desktopVersionNumbers(raw: string): [number, number, number] | undefined {
-  // 和 main.rs 的 version_numbers 同一个读法：去掉 v 前缀，`-` / `+` 之后的不看，缺的段当 0。
+  // 和桌面壳 runtime/update.rs 的 version_numbers 同一个读法：去掉 v 前缀，`-` / `+` 之后的不看，缺的段当 0。
   const core = String(raw || '').trim().replace(/^v/, '').split(/[-+]/)[0]
   const parts = core.split('.')
   if (!parts[0] || parts.length > 3 || !parts.every((p) => /^\d+$/.test(p))) return undefined
@@ -215,7 +189,7 @@ export function botReleaseFile(version: string, kind: ReleaseKind = 'bot'): stri
  * 机器票的通道发下去，机器取完自己比对（管家侧见 manager/src/releases.ts、upgrade.ts）。
  */
 export function directReleaseUrl(row: BotRelease): string | null {
-  return row.url && !isBlobUrl(row.url) ? row.url : null
+  return row.url && !isOurBlobUrl(row.url) ? row.url : null
 }
 
 export function publicBotRelease(row: BotRelease, base = '') {

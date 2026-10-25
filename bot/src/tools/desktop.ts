@@ -6,6 +6,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { childEnv } from '../workspace/index.ts'
 import { fail, registerTool } from './common.ts'
 import { RUN_TAG, killTree, tagChild } from './terminal.ts'
+import { isLocalRuntime } from '../env.ts'
 
 /**
  * 席位桌面上的两把手：开一个终端窗口（`desktop_terminal`）、开文件管理器
@@ -90,7 +91,7 @@ function launch(
 }
 
 export function apply(ctx: Context) {
-  if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local') return
+  if (isLocalRuntime()) return
   if (!(process.env.DISPLAY || '').trim()) {
     ctx.logger?.info?.('desktop: 没有 DISPLAY，席位桌面工具不注册')
     return

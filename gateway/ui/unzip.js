@@ -107,7 +107,7 @@ export function toPayload(entries) {
  * 一行内联脚本都没有——CSP 的 `script-src` 不带 `'unsafe-inline'`（见
  * gateway/src/http.ts 的 CSP），留着那一段的话整页脚本会被浏览器拒载。
  *
- * 用它的是 render.js 的 Skill 上传那一屏（`window.satuUnzip`）；那边是普通脚本，
+ * 用它的是 actions.js 的 Skill 上传那一屏（`window.satuUnzip`）；那边是普通脚本，
  * import 不进来，所以这条全局是两种脚本之间唯一的桥。
  */
 window.satuUnzip = { unzip, stripTopDir, toPayload }

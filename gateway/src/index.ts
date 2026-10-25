@@ -3,7 +3,7 @@ import { Db, SchemaBusyError, databaseUrl } from './db.ts'
 import { hashPassword, loadChannelKey, loadKeys } from './crypto.ts'
 import { Router, listen } from './http.ts'
 import { gatewayHome } from './home.ts'
-import { attach } from './routes.ts'
+import { attach } from './routes/index.ts'
 import { startRoutineScheduler } from './routines.ts'
 import { startChannelDispatcher } from './channels.ts'
 

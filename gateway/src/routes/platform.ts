@@ -6,12 +6,13 @@ import { vectorInfo } from '../lib/knowledge-vector.ts'
 import { CUSTOM_APIS, type CustomProviderDef, DefError, parseProviderDef } from '../providers.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
-import { billingOf, dailyAlternatesOf, defaultModelRateOf, enabledModelsOf, imageRoleOf, modelPricingOf, modelProviderCreds, modelRoleOf, priceMultiplierOf, publicPlatformCred, publicSettings } from '../lib/org.ts'
+import { billingOf, companyOr404, dailyAlternatesOf, defaultModelRateOf, enabledModelsOf, imageRoleOf, modelPricingOf, modelProviderCreds, modelRoleOf, priceMultiplierOf, publicPlatformCred, publicSettings } from '../lib/org.ts'
 import { IMAGE_TIERS, imageEstimateTokens, imageModelDef } from '../image-models.ts'
 import { refreshDiscovered, REFRESH_MS } from '../model-discovery.ts'
 import { isVendor } from '../connectors/index.ts'
 import { pruneDailyAlternates } from '../lib/alternates.ts'
-import { rangeQuery, requireOwnerUser, stepMs, stepQuery, tzOffsetMs, usageBars } from '../lib/guards.ts'
+import { requireOwnerUser } from '../lib/guards.ts'
+import { rangeQuery, stepMs, stepQuery, tzOffsetMs, usageBars } from '../lib/usage.ts'
 import { DAILY_ALTERNATES_MAX, WEB_BACKENDS, WEB_DOCUMENT, type PlatformSettings, modelKey, emptyWebTools, parseBilling, parseConnectorPricing, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseWebTools } from '../db.ts'
 import { WebToolError, canExtract, canSearch, needsSecret } from '../web-tools.ts'
 import { parseBotVersion } from '../releases.ts'
@@ -393,7 +394,7 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     await requireOwnerUser(req, db, keys)
     const range = rangeQuery(req)
     const companyId = (req.query.get('companyId') || '').trim()
-    if (companyId && !(await db.company(companyId))) throw new HttpError(404, '公司不存在')
+    if (companyId) await companyOr404(db, companyId)
 
     /**
      * 日线按**看的人所在时区**切天，偏移由前端用 `tz`（分钟）传上来——和 from/to 由前端

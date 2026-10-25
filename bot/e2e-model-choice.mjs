@@ -15,8 +15,6 @@
  *
  * 探针要 tsx 才 import 得了 .ts，所以由 e2e/model-choice.mjs 另起一个进程跑。
  */
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import * as storagePlugin from './src/storage/index.ts'
@@ -27,10 +25,10 @@ import * as llmPlugin from './src/llm/index.ts'
 import * as agentPlugin from './src/agent/index.ts'
 import { channelModelCommand, channelModelHelp, pickModelArg } from './src/web/channel.ts'
 import { AssistantMessageEventStream, emptyAssistant } from './src/llm/stream.ts'
+import { tempDir } from './e2e-lib.mjs'
 
-const home = mkdtempSync(join(tmpdir(), 'satu-mchoice-'))
-const work = mkdtempSync(join(tmpdir(), 'satu-mchoice-work-'))
-process.on('exit', () => { try { rmSync(home, { recursive: true, force: true }) } catch {} try { rmSync(work, { recursive: true, force: true }) } catch {} })
+const home = tempDir('satu-mchoice-')
+const work = tempDir('satu-mchoice-work-')
 
 /** 假目录：两个角色、两个备选（其中一个和默认重复，名单里不该出现第二次）。 */
 class FakeCatalog extends Service {

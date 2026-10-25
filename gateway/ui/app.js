@@ -154,14 +154,6 @@ async function runConfirm() {
       flash('ok', t('已推给全公司', 'Shared company-wide'))
       render()
       return
-    } else if (c.kind === 'redeploy-bot') {
-      render()
-      // force 而不是 update：这个按钮的意思是「把席位重铺一遍」，不是「升到新版本」。
-      // 两者眼下都能穿过 deploy.ts 里那道「已经 ready 就跳过」的门，但借 update 的名义
-      // 是在赌它将来不会变成「只在有新版本时才做」——真那样，重新部署会静悄悄失效，
-      // 而它恰恰是机器上出了问题时唯一的自助手段。
-      await deployMyRuntime(c.id, { force: true })
-      return
     } else if (c.kind === 'machine-seat-redeploy') {
       await redeploySeat(c.org, c.account, c.id)
       return
@@ -235,7 +227,7 @@ async function runConfirm() {
       render()
       return
     } else if (c.kind === 'ws-del') {
-      // 自己管提示与重取（见 chat.js 的 deleteWorkspaceEntry）：删完只重取上一层，
+      // 自己管提示与重取（见 chat-workspace.js 的 deleteWorkspaceEntry）：删完只重取上一层，
       // 而这里的兜底是整页 render——两者一起做的话，那一屏会先闪一次旧内容。
       await deleteWorkspaceEntry(c.path, c.name)
       return
@@ -467,18 +459,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
     sec.focus({ preventScroll: true })
     return
   }
-  if (act === 'sessions-more') {
-    if (state.sessionsLoadingMore || !state.sessionsHasMore) return
-    state.sessionsLoadingMore = true
-    render()
-    loadSessions(true)
-      .catch((err) => flash('err', err.message))
-      .finally(() => {
-        state.sessionsLoadingMore = false
-        render()
-      })
-    return
-  }
   if (act === 'chat-open') {
     const id = btn.getAttribute('data-id')
     if (id) go('/a/' + id)
@@ -509,7 +489,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'msg-select') {
-    // 长按菜单里的「选字」：把这一条放回系统选字（chat.js 的 selectMsgText）。
+    // 长按菜单里的「选字」：把这一条放回系统选字（chat-thread.js 的 selectMsgText）。
     closeMsgMenu()
     selectMsgText(btn.getAttribute('data-key') || '')
     return
@@ -537,12 +517,12 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-deny') {
-    // 拒绝也有范围：`once` 是只拒这一次，`turn` 是这一轮别再试（见 chat.js 的 approvalActs）。
+    // 拒绝也有范围：`once` 是只拒这一次，`turn` 是这一轮别再试（见 chat-bubble.js 的 approvalActs）。
     await decideApproval(btn.getAttribute('data-call'), 'deny', btn.getAttribute('data-scope') || 'once')
     return
   }
   if (act === 'chat-taskin-toggle') {
-    // 目标 Bot 里那件派来的活：摊开 / 折起它那一轮（chat.js 的 taskInBlock）。
+    // 目标 Bot 里那件派来的活：摊开 / 折起它那一轮（chat-bubble.js 的 taskInBlock）。
     const seq = btn.getAttribute('data-seq') || ''
     if (taskInOpen.has(seq)) taskInOpen.delete(seq)
     else taskInOpen.add(seq)
@@ -739,7 +719,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-todo-hide') {
-    // 关掉这一张。清单一变它自己回来（见 chat.js 的 chatTodoHidden）。
+    // 关掉这一张。清单一变它自己回来（见 chat-composer.js 的 chatTodoHidden）。
     hideChatTodos()
     return
   }
@@ -803,7 +783,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'chat-copy-all') {
     // 走 copyText 而不是直接 navigator.clipboard：内网 http 页面上那个对象整个不存在，
-    // 裸调必失败。copyText 会退到 execCommand 那条路（见 render.js）。
+    // 裸调必失败。copyText 会退到 execCommand 那条路（见 dom-util.js）。
     const ok = await copyText(chatExportText())
     flash(ok ? 'ok' : 'err', ok ? '已复制全文' : '复制失败，浏览器不允许')
     state.menu = null
@@ -870,7 +850,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     asidePref.tab = tab === 'files' || tab === 'handoffs' ? tab : 'env'
     setAsideOpen(true)
     saveAside()
-    // 目录内容不在这儿取：重绘那一趟自己会补（见 chat.js 的 ensureWorkspaceTree）。
+    // 目录内容不在这儿取：重绘那一趟自己会补（见 chat-workspace.js 的 ensureWorkspaceTree）。
     render()
     return
   }
@@ -908,22 +888,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
       kind: 'ws-del',
       path,
       name,
-    }
-    render()
-    return
-  }
-  if (act === 'runtime-redeploy') {
-    const id = btn.getAttribute('data-bot') || ''
-    const bot = (state.runtimeBots || []).find((b) => b.id === id)
-    state.confirm = {
-      title: '重新部署这个 Bot？',
-      body: t(
-        `会把「${(bot && bot.name) || id}」的席位重装一遍并重启。正在进行的对话会断，开着的桌面会掉线；${'\u007e'}/work 里的文件和会话记录不受影响。`,
-        `The seat for "${(bot && bot.name) || id}" is reinstalled and restarted. Ongoing conversations drop and any open desktop disconnects; files in ~/work and session history are unaffected.`,
-      ),
-      label: '重新部署',
-      kind: 'redeploy-bot',
-      id,
     }
     render()
     return
@@ -1106,14 +1070,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
     void loadOlderChat(state.chatSessionId)
     return
   }
-  if (act === 'logs-open') {
-    const id = btn.getAttribute('data-bot') || ''
-    const bot = (state.runtimeBots || []).find((b) => b.id === id)
-    openLogs(`${(bot && bot.name) || id} · ${t('席位上的 bot 服务，跟着滚')}`, [
-      { key: 'bot', label: t('Bot 运行时'), direct: '/runtime/logs/direct?botId=' + encodeURIComponent(id) },
-    ])
-    return
-  }
   if (act === 'clean-seat') {
     const machineId = btn.getAttribute('data-machine') || ''
     const seatId = btn.getAttribute('data-seat') || ''
@@ -1146,7 +1102,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         ? state.machineDetail
         : (state.machines || []).find((m) => m.machine && m.machine.id === s.machineId)
     // 这里拿的不是日志本身，是「去哪儿领票」：面板先问 Gateway 要一张 5 分钟的票和
-    // 机器地址，再直接打那台机器（见 chat.js 的 startLogStream）。
+    // 机器地址，再直接打那台机器（见 chat-desktop.js 的 startLogStream）。
     const base = `${s.base}/logs/direct`
     // 拆过的席位（status=none）机器上已经没有那个单元了，日志只会是空的，别列进来。
     const seatList = ((card && card.seatList) || []).filter((x) => x.status !== 'none')
@@ -1425,7 +1381,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         }
       }
       await loadRuntimeBots().catch(() => {})
-      // 直接进它的对话页：装好之后那一页会自己变成对话（见 chat.js 的 ensureDeployWatch）。
+      // 直接进它的对话页：装好之后那一页会自己变成对话（见 chat-seat.js 的 ensureDeployWatch）。
       go('/a/' + data.bot.id)
     } catch (err) {
       state.newBotError = err.message
@@ -1621,9 +1577,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     if (!bot || !a) return
     // 自己建的那种：只发身份那几个字段。人设、边界、能力在公司模版里，服务端也不收。
     if (isMyBot(bot)) {
-      state.busy = true
-      render()
-      try {
+      await withBusy(async () => {
         const data = await api('PATCH', `/runtime/bots/${encodeURIComponent(bot.id)}`, {
           name: a.name,
           description: a.description,
@@ -1637,18 +1591,11 @@ document.getElementById('app').addEventListener('click', async (e) => {
         state.botDraft = { ...draftFromBot(data.bot), extraPrompt: data.bot.extraPrompt || '' }
         await loadRuntimeBots().catch(() => {})
         flash('ok', '已保存')
-      } catch (err) {
-        flash('err', err.message)
-      } finally {
-        state.busy = false
-        render()
-      }
+      })
       return
     }
     if (!base) return
-    state.busy = true
-    render()
-    try {
+    await withBusy(async () => {
       // model / provider 不发：模型由平台指定，这里没得挑。
       const data = await api('PATCH', `${base}/bots/${encodeURIComponent(bot.id)}`, {
         name: a.name,
@@ -1671,12 +1618,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
       // groups / kbs 还没有落点，先留住手上这份，别一保存就空掉。
       state.botDraft = { ...draftFromBot(data.bot), groups: a.groups, kbs: a.kbs, memories: a.memories }
       flash('ok', '已保存')
-    } catch (err) {
-      flash('err', err.message)
-    } finally {
-      state.busy = false
-      render()
-    }
+    })
     return
   }
   if (act === 'bot-delete') {
@@ -2171,11 +2113,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
-  if (act === 'org-open') {
-    const id = btn.getAttribute('data-id')
-    if (id) go('/companies/' + id)
-    return
-  }
   if (act === 'accounts-tab') {
     state.accountsTab = btn.getAttribute('data-tab') === 'groups' ? 'groups' : 'members'
     render()
@@ -2202,32 +2139,18 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'audit-enabled') {
     const enabled = state.auditSettings?.settings?.enabled !== true
-    state.busy = true
-    render()
-    try {
+    await withBusy(async () => {
       await saveConversationAuditEnabled(enabled)
       flash('ok', enabled ? '已开启自动审计' : '已关闭自动审计')
-    } catch (err) {
-      flash('err', err.message)
-    } finally {
-      state.busy = false
-      render()
-    }
+    })
     return
   }
   if (act === 'audit-model-role') {
     const role = btn.getAttribute('data-role') === 'utility' ? 'utility' : 'daily'
-    state.busy = true
-    render()
-    try {
+    await withBusy(async () => {
       await saveConversationAuditRole(role)
       flash('ok', role === 'utility' ? '后续审计将使用 UTILITY 模型' : '后续审计将使用任务模型')
-    } catch (err) {
-      flash('err', err.message)
-    } finally {
-      state.busy = false
-      render()
-    }
+    })
     return
   }
   if (act === 'billing-tab') {

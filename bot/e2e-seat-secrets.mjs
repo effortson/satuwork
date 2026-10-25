@@ -11,10 +11,10 @@
  * 4. 开关开着却没读到票还照常起来：界面上只会是一串莫名其妙的 401。
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { fstatSync, mkdtempSync, openSync, closeSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { fstatSync, openSync, closeSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { tempDir } from './e2e-lib.mjs'
 
 const self = fileURLToPath(import.meta.url)
 
@@ -70,12 +70,7 @@ if (process.argv[2] === '--child') {
 }
 
 // ── 外层 ──
-const dir = mkdtempSync(join(tmpdir(), 'satu-secrets-'))
-process.on('exit', () => {
-  try {
-    rmSync(dir, { recursive: true, force: true })
-  } catch {}
-})
+const dir = tempDir('satu-secrets-')
 
 /** 起一个子进程，fd 0 接到 `body` 那份文件上（`body === null` 时接一条管道）。 */
 function child(body, env) {

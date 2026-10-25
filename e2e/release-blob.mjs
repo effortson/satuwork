@@ -5,23 +5,26 @@
  * 没有文件、管家来拉拿到的字节和 sha256 头对得上、sha256 对不上时把刚传的 blob 删掉。
  */
 import { createServer } from 'node:http'
-import { existsSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { createCompany } from './org.mjs'
 import { pairMachine } from './pair.mjs'
 import { publishRelease, sha256Of, tarGz } from './release.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
+import { withPg } from './pg.mjs'
 
 const TOKEN = 'vercel_blob_rw_e2estore0001_' + 'x'.repeat(24)
 
 function fakeBlob() {
   const store = new Map()
-  const seen = { puts: [], gets: [], deletes: [] }
+  // any：不分接口、来过多少次请求（知识库那条要验「别家地址连 Blob API 都不该去问」）。
+  const seen = { puts: [], gets: [], deletes: [], any: 0 }
   const server = createServer((req, res) => {
+    seen.any++
     const chunks = []
     req.on('data', (c) => chunks.push(c))
     req.on('end', () => {
@@ -107,7 +110,6 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
   const GW_HOME = tmpOf('satuwork-e2e-release-blob')
   const GW_PORT = await freePort()
   const gwBase = `http://127.0.0.1:${GW_PORT}`
-  rmSync(GW_HOME, { recursive: true, force: true })
   const blob = fakeBlob()
   // 冒充者：谁来拉都给一个能过校验的包，记下来的人带没带 authorization。
   const fakeTgz = tarGz([{ name: './bin/satuwork.mjs', data: '#!/usr/bin/env node\n' }, { name: './VERSION', data: '0.9.2\n' }])
@@ -136,26 +138,29 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
   const { port: blobPort, fakePort } = await listenWithLookalike(blob.server, fake)
   const blobBase = `http://127.0.0.1:${blobPort}`
 
-  const gw = start('release-blob-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
-    env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_release_blob'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
-      GATEWAY_ACCESS_HOST: 'satuwork.com',
-      GATEWAY_SEED_OWNER: '1',
-      GATEWAY_OWNER_EMAIL: 'owner@blob.test',
-      GATEWAY_OWNER_PASSWORD: 'test-owner-blob',
-      SATUWORK_DEPLOY_STUB: '1',
-      BLOB_READ_WRITE_TOKEN: TOKEN,
-      VERCEL_BLOB_API_URL: blobBase,
-    },
-  })
+  const SCHEMA = schemaOf('e2e_release_blob')
+  /** 放进 try 里起：起不来时下面的 finally 照样收掉这一套自己开的假服务。 */
+  let gw
   try {
-    await waitHttp(`${gwBase}/health`, { child: gw, what: 'release-blob gateway' })
+    gw = (await startGateway({
+      name: 'release-blob-gw',
+      what: 'release-blob gateway',
+      home: GW_HOME,
+      schema: SCHEMA,
+      port: GW_PORT,
+      env: {
+        GATEWAY_ACCESS_HOST: 'satuwork.com',
+        GATEWAY_SEED_OWNER: '1',
+        GATEWAY_OWNER_EMAIL: 'owner@blob.test',
+        GATEWAY_OWNER_PASSWORD: 'test-owner-blob',
+        SATUWORK_DEPLOY_STUB: '1',
+        BLOB_READ_WRITE_TOKEN: TOKEN,
+        VERCEL_BLOB_API_URL: blobBase,
+        // 知识库那几条路先看「向量库配了没有」。这一套只走到登记和 /done，不真去打它。
+        UPSTASH_VECTOR_REST_URL: 'http://127.0.0.1:9',
+        UPSTASH_VECTOR_REST_TOKEN: 'e2e-unused',
+      },
+    })).gw
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@blob.test', ownerPassword: 'test-owner-blob',
       email: 'admin@blob.test', password: 'correct-horse', companyName: 'BlobCo', slug: 'blobco', seats: 1,
@@ -224,8 +229,64 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
       assert(r.status === 201, `登记 ${r.status} ${r.text}`)
       assert(Date.now() - t < 15000, `登记花了 ${Date.now() - t} ms，扫包那一步多半又卡住了`)
     })
+
+    /**
+     * 知识库直传完了，浏览器报上来的地址进库，之后后台入库和下载都带着 BLOB_READ_WRITE_TOKEN 去
+     * GET 它。@vercel/blob 的 head() 只把地址当查询参数交给 Blob API、自己不访问，挡不住别家
+     * 主机名——这道闸在我们这边，登记时（/done）和取的时候（库里已有的行）各一道。
+     */
+    await test('知识库直传报上来的地址：不是本站 Blob 的一律不收，也不带 token 去取', async () => {
+      const { isOurBlobUrl } = await import('../gateway/src/lib/blob.ts')
+      assert(isOurBlobUrl('https://abc.private.blob.vercel-storage.com/kb/c/k/f-x1'), '真 Blob 地址没认出来')
+      for (const bad of [
+        'https://attacker.example/kb/c/k/f-x1',
+        'https://abc.private.blob.vercel-storage.com.attacker.example/kb/c/k/f-x1',
+        'http://abc.private.blob.vercel-storage.com/kb/c/k/f-x1',
+      ]) {
+        assert(!isOurBlobUrl(bad), `${bad} 被当成了本站 Blob`)
+      }
+
+      // 走真的那几步：套餐带一个知识库 → 建库 → 登记一份文件（拿到 blob 直传的 pathname）。
+      const orgId = reg.company.id
+      const admin = reg.token
+      const sku = await req(gwBase, 'POST', '/platform/plans', {
+        token: ownerTok,
+        body: { name: '知识版', amount: 1, seats: 1, period: 'month', bonusTokens: 0, knowledgeBases: 1 },
+      })
+      assert(sku.status === 201, `sku ${sku.status} ${sku.text}`)
+      const order = await req(gwBase, 'POST', '/platform/orders', {
+        token: ownerTok,
+        body: { companyId: orgId, kind: 'plan', planId: sku.json.plan.id, payStatus: 'paid' },
+      })
+      assert(order.status === 201, `order ${order.status} ${order.text}`)
+      const kb = await req(gwBase, 'POST', `/orgs/${orgId}/knowledge`, { token: admin, body: { name: '资料' } })
+      assert(kb.status === 201, `建库 ${kb.status} ${kb.text}`)
+      const kbId = kb.json.knowledge.id
+      const reg1 = await req(gwBase, 'POST', `/orgs/${orgId}/knowledge/${kbId}/files`, { token: admin, body: { name: 'a.pdf', bytes: 10 } })
+      assert(reg1.status === 201 && reg1.json.upload?.mode === 'blob-client', `登记 ${reg1.status} ${reg1.text}`)
+      const fileId = reg1.json.file.id
+      const pathname = reg1.json.upload.pathname
+
+      const fakeBefore = fakeSeen.length
+      const blobBefore = blob.seen.any
+      // 长得像 Blob API（字符串前缀相同、origin 不同）和干脆别家主机，两种都不收。
+      for (const url of [`http://127.0.0.1:${fakePort}/${pathname}-x1`, `https://attacker.example/${pathname}-x1`]) {
+        const done = await req(gwBase, 'POST', `/orgs/${orgId}/knowledge/${kbId}/files/${fileId}/done`, { token: admin, body: { url } })
+        assert(done.status === 400, `${url} 应当 400，实际 ${done.status} ${done.text}`)
+      }
+      const detail = await req(gwBase, 'GET', `/orgs/${orgId}/knowledge/${kbId}`, { token: admin })
+      assert(detail.json.files.find((f) => f.id === fileId)?.status === 'uploading', `拒收之后文件不该往下走：${detail.text}`)
+
+      // 库里已经存着别家地址的行（闸加上之前进来的）：下载那一下也不能带 token 去打它。
+      await withPg(SCHEMA, (c) => c.query('update knowledge_files set storage = $1 where id = $2', [`http://127.0.0.1:${fakePort}/${pathname}-old`, fileId]))
+      const dl = await fetch(`${gwBase}/orgs/${orgId}/knowledge/${kbId}/files/${fileId}/download`, { headers: { authorization: `Bearer ${admin}` } })
+      assert(dl.status === 502, `库里是别家地址时下载应当 502，实际 ${dl.status} ${await dl.text()}`)
+
+      assert(fakeSeen.length === fakeBefore, `别家主机被打了：${JSON.stringify(fakeSeen.slice(fakeBefore))}`)
+      assert(blob.seen.any === blobBefore, '别家地址还被拿去问了 Blob API')
+    })
   } finally {
-    gw.kill('SIGTERM')
+    gw?.kill('SIGTERM')
     await closeServer(blob.server)
     await closeServer(fake)
   }

@@ -15,20 +15,16 @@ import { generateKeyPairSync, verify } from 'node:crypto'
 import { rmSync } from 'node:fs'
 import { createServer } from 'node:http2'
 import { createServer as createHttpServer } from 'node:http'
-import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePorts } from './ports.mjs'
 import { createCompany } from './org.mjs'
+import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 export const GOOD = 'a'.repeat(64)
 export const DEAD = 'b'.repeat(64)
 const TEAM = 'TEAM123456'
 const KID = 'KEY1234567'
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 export function fakeApns(publicKey) {
   const seen = []
@@ -133,7 +129,6 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
   const GW_HOME = tmpOf('satuwork-e2e-push-gw')
   const [GW_PORT, APNS_PORT, FCM_PORT] = await freePorts(3)
   const base = `http://127.0.0.1:${GW_PORT}`
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# push')
 
   const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
@@ -143,32 +138,31 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
   const google = fakeGoogle(fcmKeys.publicKey, FCM_PORT)
   await new Promise((r) => google.server.listen(FCM_PORT, '127.0.0.1', r))
 
-  const gw = start('push-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
-    env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_push'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
-      GATEWAY_ACCESS_HOST: 'satuwork.com',
-      GATEWAY_SEED_OWNER: '1',
-      GATEWAY_OWNER_EMAIL: 'owner@push.test',
-      GATEWAY_OWNER_PASSWORD: 'test-owner-push',
-      // 整段 base64：验「放不下换行的平台」那条读法。
-      GATEWAY_APNS_KEY: Buffer.from(privateKey.export({ type: 'pkcs8', format: 'pem' })).toString('base64'),
-      GATEWAY_APNS_KEY_ID: KID,
-      GATEWAY_APNS_TEAM_ID: TEAM,
-      GATEWAY_APNS_ENDPOINT: `http://127.0.0.1:${APNS_PORT}`,
-      // 服务账号 JSON 原文（不是 base64）：验另一种读法。
-      GATEWAY_FCM_SERVICE_ACCOUNT: google.serviceAccount(fcmKeys.privateKey.export({ type: 'pkcs8', format: 'pem' })),
-      GATEWAY_FCM_ENDPOINT: `http://127.0.0.1:${FCM_PORT}`,
-    },
-  })
+  /** 放进 try 里起：起不来时下面的 finally 照样收掉这一套自己开的假服务。 */
+  let gw
 
   try {
-    await waitHttp(`${base}/health`, { child: gw, what: 'push gateway' })
+    gw = (await startGateway({
+      name: 'push-gw',
+      what: 'push gateway',
+      home: GW_HOME,
+      schema: schemaOf('e2e_push'),
+      port: GW_PORT,
+      env: {
+        GATEWAY_ACCESS_HOST: 'satuwork.com',
+        GATEWAY_SEED_OWNER: '1',
+        GATEWAY_OWNER_EMAIL: 'owner@push.test',
+        GATEWAY_OWNER_PASSWORD: 'test-owner-push',
+        // 整段 base64：验「放不下换行的平台」那条读法。
+        GATEWAY_APNS_KEY: Buffer.from(privateKey.export({ type: 'pkcs8', format: 'pem' })).toString('base64'),
+        GATEWAY_APNS_KEY_ID: KID,
+        GATEWAY_APNS_TEAM_ID: TEAM,
+        GATEWAY_APNS_ENDPOINT: `http://127.0.0.1:${APNS_PORT}`,
+        // 服务账号 JSON 原文（不是 base64）：验另一种读法。
+        GATEWAY_FCM_SERVICE_ACCOUNT: google.serviceAccount(fcmKeys.privateKey.export({ type: 'pkcs8', format: 'pem' })),
+        GATEWAY_FCM_ENDPOINT: `http://127.0.0.1:${FCM_PORT}`,
+      },
+    })).gw
     const reg = await createCompany(req, base, {
       ownerEmail: 'owner@push.test',
       ownerPassword: 'test-owner-push',
@@ -330,7 +324,7 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       assert(del.json.removed === true, `FCM 令牌按原样删不掉：${del.text}`)
     })
   } finally {
-    gw.kill()
+    gw?.kill()
     await new Promise((r) => apns.server.close(r))
     await new Promise((r) => google.server.close(r))
     try {

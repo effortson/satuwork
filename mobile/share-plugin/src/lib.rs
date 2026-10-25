@@ -1,7 +1,7 @@
 //! 手机壳的「下载」：把页面要存的文件交给系统的分享面板。
 //!
-//! **为什么要它。** 页面里的下载都是建一个 `<a download href="blob:…">` 点一下（chat.js 的 downloadFile、
-//! downloadWorkspaceFile，markdown.js、pages-knowledge.js 各一处）。WKWebView 没挂下载处理时，这种导航
+//! **为什么要它。** 页面里的下载都是建一个 `<a download href="blob:…">` 点一下（全都走 dom-util.js 的
+//! saveBlob：对话里存文件、工作区下载、markdown 的代码块、知识库原文件）。WKWebView 没挂下载处理时，这种导航
 //! 直接被取消（wry 的 navigation_policy：shouldPerformDownload 且没有 download handler → Cancel）；
 //! Android 的 WebView 没装 DownloadListener，同样什么都不发生——点了没反应，也没有报错。手机上也没有
 //! 「下载文件夹」这回事，存到哪儿、发给谁本来就该交给系统：iOS 的面板里有「存储到文件」、AirDrop、

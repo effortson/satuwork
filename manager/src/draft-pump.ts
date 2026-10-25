@@ -1,6 +1,6 @@
 /**
- * **这是 gateway/src/channels/draft-pump.ts 的逐字副本**（理由同 roster-filter.ts：管家包 import
- * 不到 gateway 的源）。渠道那一轮下沉到工人之后，Telegram 草稿的节流在工人这头做——它离
+ * **这是 gateway/src/channels/draft-pump.ts 的逐字副本**（管家包 import 不到 gateway 的源，
+ * 见 http.ts 文件头）。渠道那一轮下沉到工人之后，Telegram 草稿的节流在工人这头做——它离
  * 席位的模型流最近。e2e 按字节比对两份文件，改 gateway 那份然后整个覆盖过来。
  */
 export interface DraftPumpErrorAction {

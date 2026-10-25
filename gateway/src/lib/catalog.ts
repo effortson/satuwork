@@ -5,6 +5,7 @@
  */
 import { HttpError } from '../http.ts'
 import { type CatalogItem, type Db, type Scope } from '../db.ts'
+import { objOf } from './util.ts'
 
 /**
  * 这颗 Bot 跑在哪：`local` = 桌面端里跑在员工电脑上（Gateway 连不到它），其余都是机器上的席位。
@@ -256,10 +257,6 @@ export const DEFAULT_BOT_MEMORY: BotMemory = {
   cap: 20,
   confirm: true,
   pii: true,
-}
-
-export function objOf(v: unknown): Record<string, unknown> {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
 }
 
 /** 只认识这三个开关，其余键丢掉；没传的沿用 base，所以改一个不会把另外两个带回默认。 */

@@ -1,6 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { pinnedBotId } from '../env.ts'
+import { gatewayRaw } from '../gateway-api.ts'
 import type { SessionEventMap, TaskProgress } from '../session/types.ts'
+import { clip, human, str } from './common.ts'
 
 /**
  * 主 Bot 派活：assign_task（docs/bot-tasks.md）。
@@ -66,17 +68,6 @@ interface Item extends Spec {
   stoppedThere?: boolean
 }
 
-const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
-
-function human(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000))
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
-}
-
-function clip(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}\n…（已截断，共 ${text.length} 字）`
-}
-
 /** 等一拍。到点了要把挂在 signal 上的监听摘掉：一轮里每 2 秒等一拍，三十分钟能攒下九百个。 */
 const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve) => {
@@ -89,27 +80,11 @@ const sleep = (ms: number, signal?: AbortSignal) =>
     signal?.addEventListener('abort', done, { once: true })
   })
 
-async function gateway(method: string, path: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> | null; text: string }> {
-  const base = gatewayUrl()
-  const token = gatewayToken()
-  if (!base || !token) throw new AssignFailure('这台机器没有配 Gateway，派不了活。')
-  let r: Response
-  try {
-    r = await fetch(`${base}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-    })
-  } catch (e) {
-    throw new Error(`连不上 Gateway：${(e as Error).message}`)
-  }
-  const text = await r.text().catch(() => '')
-  let json: Record<string, unknown> | null = null
-  try {
-    json = text ? JSON.parse(text) : null
-  } catch {}
-  return { status: r.status, json, text }
+function gateway(method: string, path: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> | null; text: string }> {
+  return gatewayRaw(method, path, body, {
+    timeoutMs: HTTP_TIMEOUT_MS,
+    unconfigured: () => new AssignFailure('这台机器没有配 Gateway，派不了活。'),
+  })
 }
 
 /**
@@ -161,11 +136,11 @@ function render(items: Item[]): string {
   const total = items.length
   return items
     .map((it) => {
-      const took = it.startedAt && it.endedAt ? human(it.endedAt - it.startedAt) : '-'
+      const took = it.startedAt && it.endedAt ? human(it.endedAt - it.startedAt, true) : '-'
       const head = `[${it.index + 1}/${total} ${it.state} · @${it.bot.name} · ${took}] ${it.instruction.replace(/\s+/g, ' ').slice(0, 80)}`
       const body =
         it.state === 'done'
-          ? `  结论：${clip(it.result || '（对方没有写结论）', RESULT_MAX).split('\n').join('\n  ')}`
+          ? `  结论：${clip(it.result || '（对方没有写结论）', RESULT_MAX, '字').split('\n').join('\n  ')}`
           : it.stoppedThere
             ? `  已停止：有人在 @${it.bot.name} 的对话里把它停了，这件活作废。不要重派，也不要自己接着做；如实告诉人它被停了，要不要重新做由人决定。`
             : it.state === 'detached'
@@ -235,7 +210,7 @@ export function apply(ctx: Context) {
         if (e instanceof AssignFailure) return { text: e.message }
         throw e
       }
-      const fromBotId = (process.env.SATUWORK_BOT_ID || '').trim()
+      const fromBotId = pinnedBotId()
       const sessionId = call.sessionId
       const signal = call.signal
       const total = specs.length
@@ -305,7 +280,7 @@ export function apply(ctx: Context) {
         // 单独放进 context，不拼进指令——指令有 4000 字的上限，前置一长后一件就派不出去。
         const deps = it.after.map((k) => byKey.get(k)!).filter((d) => d.state === 'done')
         const each = deps.length ? Math.min(DEP_RESULT_MAX, Math.floor(DEP_CONTEXT_MAX / deps.length) - 80) : 0
-        const context = deps.map((d) => `【${d.key} · @${d.bot.name}】\n${clip(d.result || '', each)}`).join('\n\n')
+        const context = deps.map((d) => `【${d.key} · @${d.bot.name}】\n${clip(d.result || '', each, '字')}`).join('\n\n')
         it.startedAt = Date.now()
         let r
         /**

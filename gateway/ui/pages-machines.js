@@ -7,7 +7,7 @@
  * 落单的）在按公司列的那条路上**永远列不出来**，而它们恰恰最需要被人看见。
  *
  * 灯、时区、版本这些的口径跟公司侧完全一致（`machineHead` / `LINK_TEXT` / `sinceMs`
- * 都是直接借 pages-audit.js 那份），不重造一套——同一台机器在两个页面上说两种话，
+ * 都是直接借 pages-companies.js 那份），不重造一套——同一台机器在两个页面上说两种话，
  * 比少一个页面糟得多。
  */
 
@@ -49,7 +49,7 @@ function machineLinkCell(m) {
  * 没报过的给「—」，**不给 0%**：一台失联机器的 0% 和一台空闲机器的 0% 看着一样，
  * 而结论完全相反。
  *
- * **调用方在 pages-audit.js**（公司详情页机器卡片里的 machineLoadRow）。机器列表页
+ * **调用方在 pages-companies.js**（公司详情页机器卡片里的 machineLoadRow）。机器列表页
  * 曾经也用它，那一列在 e116054 里被砍掉了，函数跟着删——但那次漏看了这个调用方，于是
  * 只要那台机器报过负载，公司详情页就整页抛 ReferenceError、一个字都画不出来。删一个
  * 渲染函数之前先全仓搜一遍名字：这一层没有类型检查兜着。
@@ -130,10 +130,7 @@ function machinesPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('机器管理')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('连到这台 Gateway 上的所有运行机器，包括还没派给公司的那些。点进去看详情、改配置、下指令。')}</p>
-        </div>
+        ${pageHead(t('机器管理'), t('连到这台 Gateway 上的所有运行机器，包括还没派给公司的那些。点进去看详情、改配置、下指令。'))}
         ${flashes()}
         <div class="satu-panel" style="flex-direction: row; flex-wrap: wrap; gap: var(--space-6); align-items: baseline;">
           ${machineStat(t('在线'), `${totals.online} / ${totals.machines}`, t('台'))}
@@ -146,7 +143,7 @@ function machinesPage() {
           <div class="satu-memberhead" data-tt-title="1" style="grid-template-columns: ${cols};">
             <span>${t('状态')}</span><span>${t('机器')}</span><span>${t('归属公司')}</span><span>${t('账号位')}</span><span>${t('已部署 Bot')}</span><span>${t('版本')}</span><span>${t('最近心跳')}</span>
           </div>
-          ${body || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${all.length ? t('这一档下没有机器') : t('还没有机器配对进来。到某家公司的详情页生成配对码，在那台 Debian 上跑一条命令即可。')}</div>`}
+          ${body || emptyBox(all.length ? t('这一档下没有机器') : t('还没有机器配对进来。到某家公司的详情页生成配对码，在那台 Debian 上跑一条命令即可。'))}
           ${listPager('machines', view, '台')}
         </div>
         <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('机器是在公司名下配对进来的：新增一台请到公司详情页生成配对码。这里管的是已经进来的那些。')}</p>
@@ -837,7 +834,7 @@ function machineVersionPanel(card) {
       ${managerPinForm(card)}
     </span></div>
     <div class="satu-kv"><span>${t('Bot 运行时')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${botText}${card.botOutdated ? ` · ${t('目标版本')} ${esc(card.botDesired || card.botLatest || state.botLatest || '')}` : ''}${botBtn}</span></div>
-    ${/* 装的是哪个包、跑的是哪一版公司模版，两件事各自会落后。渲染函数在 pages-audit.js，
+    ${/* 装的是哪个包、跑的是哪一版公司模版，两件事各自会落后。渲染函数在 pages-companies.js，
          那一页的机器卡片画的是同一行——同一台机器不该在两个页面上说两种话。 */ ''}
     ${botTemplateRow(card)}
     ${seatGatewayRow(card)}
@@ -952,7 +949,7 @@ function machineSeatsPanel(card) {
       <div class="satu-memberhead" style="grid-template-columns: ${cols};">
         <span>${t('成员 / 实例 ID')}</span><span>Bot</span><span>${t('状态')}</span><span>${t('槽位')}</span><span>${t('版本 / 错误')}</span><span>${t('模版')}</span><span></span>
       </div>
-      ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('这台机器上还没有部署 Bot')}</div>`}
+      ${rows || emptyBox(t('这台机器上还没有部署 Bot'))}
     </div>
   </div>`
 }

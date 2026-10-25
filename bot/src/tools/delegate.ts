@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { blankOutcome, type TaskOutcome, type TaskSpec, type TurnModelRole } from '../agent/index.ts'
-import { fail, registerTool } from './common.ts'
+import { fail, human, registerTool, str } from './common.ts'
 
 /**
  * 委派：把一件事整个交给一个新开的、干净的自己。
@@ -39,13 +39,6 @@ interface RawTask {
   model_reason?: unknown
   model_role?: unknown
   max_steps?: unknown
-}
-
-const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
-
-function human(ms: number): string {
-  const s = Math.round(ms / 1000)
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
 }
 
 const STATE_WORD: Record<TaskOutcome['state'], string> = {

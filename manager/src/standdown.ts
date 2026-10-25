@@ -1,5 +1,6 @@
 import { rmSync } from 'node:fs'
 import { seatsPath, statePath, type ManagerState } from './config.ts'
+import { gatewayPost } from './http.ts'
 import { run } from './run.ts'
 import { removeSeat, seats } from './seats.ts'
 
@@ -40,11 +41,8 @@ export async function standDown(state: ManagerState, dryRun: boolean): Promise<v
 
   // 回执。Gateway 收到就当场把那行删了；发不出去也不要紧，墓碑有 TTL 会自己过期。
   try {
-    await fetch(`${state.gatewayUrl}/internal/machines/${encodeURIComponent(state.machineId)}/removed`, {
-      method: 'POST',
-      headers: { authorization: 'Bearer ' + state.token, 'content-type': 'application/json' },
-      body: '{}',
-      signal: AbortSignal.timeout(15_000),
+    await gatewayPost(`${state.gatewayUrl}/internal/machines/${encodeURIComponent(state.machineId)}/removed`, state.token, '{}', {
+      timeoutMs: 15_000,
     })
   } catch {
     /* 送不到就算了：Gateway 那边到点自己会收。 */

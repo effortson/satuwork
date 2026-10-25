@@ -10,9 +10,10 @@
  */
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Req, type Router } from '../http.ts'
-import { rangeQuery, requireOrgUser, requireOwnerUser, requireUser } from '../lib/guards.ts'
+import { requireOrgUser, requireOwnerUser, requireUser } from '../lib/guards.ts'
+import { rangeQuery } from '../lib/usage.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
-import { chargeCursorOf } from '../lib/org.ts'
+import { chargeCursorOf, companyOr404 } from '../lib/org.ts'
 import { CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type Account, type ChargeKind, type ChargeStatus, type Company, type UsageCharge } from '../db.ts'
 
 const KINDS: ChargeKind[] = ['llm', 'connector', 'web', 'kb']
@@ -121,7 +122,7 @@ export function attachCharges(router: Router, ctx: RouteCtx) {
   router.get('/platform/charges', async (req, res) => {
     await requireOwnerUser(req, db, keys)
     const companyId = (req.query.get('companyId') || '').trim()
-    if (companyId && !(await db.company(companyId))) throw new HttpError(404, '公司不存在')
+    if (companyId) await companyOr404(db, companyId)
     const range = rangeQuery(req)
     const p = await page(req, {
       companyId: companyId || undefined,
@@ -190,7 +191,7 @@ export function attachCharges(router: Router, ctx: RouteCtx) {
     const account = await requireOwnerUser(req, db, keys)
     const body = bodyOf(req)
     const companyId = strField(body, 'companyId', false)
-    if (companyId && !(await db.company(companyId))) throw new HttpError(404, '公司不存在')
+    if (companyId) await companyOr404(db, companyId)
     const kind = kindOf(typeof body.kind === 'string' ? body.kind : null)
     if ((body.from == null || body.from === '') && (body.to == null || body.to === '')) throw new HttpError(400, '重算要给出 from / to，不能全时段')
     const from = requiredInt(body, 'from', 'unix 毫秒')
@@ -289,8 +290,7 @@ export function attachCharges(router: Router, ctx: RouteCtx) {
 
   router.get('/orgs/:id/charges', async (req, res) => {
     const account = await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const range = rangeQuery(req)
     const p = await page(req, {
       companyId: company.id,

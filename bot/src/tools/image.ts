@@ -1,9 +1,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { readFile, stat } from 'node:fs/promises'
 import { extname } from 'node:path'
-import { gatewayApiKey, llmBaseUrl } from '../llm/gateway.ts'
+import { gatewayApiKey, llmBaseUrl } from '../env.ts'
 import type { WorkspaceFile } from './index.ts'
 import { type Alpha, decodeAlpha, encodeAlphaMask, encodeGray, jpegOrientation, jpegSegments, pngInfo, unorient } from './png.ts'
+import { ssePayloads } from '../sse.ts'
 
 /**
  * `generate_image`：按一段描述画一张图，或者拿工作区里已有的图改，落进工作区 `images/`。
@@ -97,7 +98,7 @@ export type ImageRequest = { body: Record<string, unknown>; format: Format; edit
  * 模型给的参数（加上读好的原图）→ 这颗模型的原生请求体。**纯函数**，e2e 探针直接打它。
  *
  * 默认格式是 JPEG：同样一张 1024² 的图，PNG 两三 MB，JPEG 几百 KB——界面上缩略图只自动
- * 拉 2 MB 以内的（chat.js 的 SHOT_AUTO_MAX），PNG 多半显示成一个占位。要透明背景就只能是
+ * 拉 2 MB 以内的（chat-bubble.js 的 SHOT_AUTO_MAX），PNG 多半显示成一个占位。要透明背景就只能是
  * PNG / WebP（JPEG 没有透明通道，上游会直接 400），所以 `transparent` 时默认换成 PNG。
  * Gemini 选不了格式（它自己定，多半是 PNG），`format` 对它不起作用；它也画不了透明背景。
  *
@@ -280,19 +281,7 @@ function payloadsOf(text: string): { list: Record<string, unknown>[] } | { error
       return { error: '答复不是合法的 JSON' }
     }
   }
-  const list: Record<string, unknown>[] = []
-  for (const frame of text.split(/\r?\n\r?\n/)) {
-    for (const line of frame.split(/\r?\n/)) {
-      if (!line.startsWith('data:')) continue
-      const payload = line.slice(5).trim()
-      if (!payload || payload === '[DONE]') continue
-      try {
-        const o: unknown = JSON.parse(payload)
-        if (o && typeof o === 'object') list.push(o as Record<string, unknown>)
-      } catch {}
-    }
-  }
-  return { list }
+  return { list: ssePayloads(text).filter((o): o is Record<string, unknown> => !!o && typeof o === 'object') }
 }
 
 function errorOf(o: Record<string, unknown>): string | undefined {

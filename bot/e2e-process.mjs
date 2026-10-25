@@ -6,21 +6,18 @@
  * 用 `kill(pid, 0)` 去问操作系统，不看我们自己那本账。
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { WorkspaceService } from './src/workspace/index.ts'
 import { ToolService } from './src/tools/index.ts'
 import * as terminalTools from './src/tools/terminal.ts'
+import { tempDir } from './e2e-lib.mjs'
 
-const home = mkdtempSync(join(tmpdir(), 'satu-proc-home-'))
+const home = tempDir('satu-proc-home-')
 process.env.SATUWORK_HOME = home
-const root = mkdtempSync(join(tmpdir(), 'satu-proc-'))
-// 退出时收掉临时目录（和 e2e-memory / e2e-skills 那几个探针同一个写法）：探针是顶层 await 的
-// 脚本，没有一个能包 finally 的函数体；exit 钩子在 process.exit、正常结束和未捕获异常三条路上都会跑。
-process.on('exit', () => { try { rmSync(home, { recursive: true, force: true }) } catch {} try { rmSync(root, { recursive: true, force: true }) } catch {} })
+const root = tempDir('satu-proc-')
 
 const ctx = new Context()
 ctx.provide('logger', { warn() {}, info() {}, error() {} })
