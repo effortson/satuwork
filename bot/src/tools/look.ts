@@ -1,5 +1,5 @@
 import { copyFile, link, mkdir, readdir, rm } from 'node:fs/promises'
-import { basename, extname, join, sep } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { safeSegment } from '../workspace/index.ts'
 import { RenderError, renderPages, renderableOf, type PageImage } from '../workspace/render.ts'
@@ -82,7 +82,7 @@ async function keepForSession(root: string, sessionId: string, source: string, i
 }
 
 export function apply(ctx: Context) {
-  const show = (path: string) => ctx.workspace.show(path).split(sep).join('/')
+  const show = (path: string) => ctx.workspace.showSlash(path)
 
   registerTool(
     ctx,

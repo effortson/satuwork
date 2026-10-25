@@ -267,7 +267,7 @@ const hasShell = () => !isLocalRuntime()
 
 export function apply(ctx: Context) {
   const resolveIn = (path?: string) => ctx.workspace.resolve(path)
-  const show = (path: string) => ctx.workspace.show(path).split(sep).join('/')
+  const show = (path: string) => ctx.workspace.showSlash(path)
   /** 解包的落点。按原文件的绝对路径取短哈希：同一个文件再解，落在同一个地方。 */
   const workRoot = () => join(ctx.workspace.root, '.satuwork', 'office')
   const workDirOf = (source: string) => {
