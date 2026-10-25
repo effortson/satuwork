@@ -5312,14 +5312,7 @@ function chatExportText() {
 }
 
 function downloadFile(name, text, type) {
-  const url = URL.createObjectURL(new Blob([text], { type: type || 'text/plain;charset=utf-8' }))
-  const a = document.createElement('a')
-  a.href = url
-  a.download = name
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  saveBlob(new Blob([text], { type: type || 'text/plain;charset=utf-8' }), name)
 }
 
 function deployBotButton(botId, label) {
@@ -7203,15 +7196,7 @@ async function downloadWorkspaceFile(path, name) {
   try {
     const res = await swFetch(url, { headers: authHeaders() })
     if (!res.ok) throw new Error('HTTP ' + res.status)
-    const blob = await res.blob()
-    const href = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = href
-    a.download = name || path.split('/').pop() || 'file'
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(href), 1000)
+    saveBlob(await res.blob(), name || path.split('/').pop() || 'file')
   } catch (err) {
     flash('err', t('下载失败：') + err.message)
   }

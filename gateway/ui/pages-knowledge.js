@@ -480,14 +480,7 @@ async function knowledgeDownload(kbId, fileId, name) {
     try { msg = (await r.json()).error || msg } catch {}
     throw new Error(msg)
   }
-  const url = URL.createObjectURL(await r.blob())
-  const a = document.createElement('a')
-  a.href = url
-  a.download = name || 'file'
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  saveBlob(await r.blob(), name || 'file', 60_000)
 }
 
 // ── 上传 ────────────────────────────────────────────────────────────────

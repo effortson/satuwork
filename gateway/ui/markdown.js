@@ -371,14 +371,7 @@
   }
 
   function download(name, text, type) {
-    const url = URL.createObjectURL(new Blob([text], { type: type || 'text/plain;charset=utf-8' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = name
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    saveBlob(new Blob([text], { type: type || 'text/plain;charset=utf-8' }), name)
   }
 
   const EXT = { javascript: 'js', typescript: 'ts', python: 'py', bash: 'sh', shell: 'sh', markdown: 'md', yaml: 'yml', text: 'txt' }

@@ -1,8 +1,8 @@
 /**
- * 几样 DOM 小工具。眼下是复制到剪贴板。
+ * 几样 DOM 小工具：复制到剪贴板、把一个 Blob 存成文件。
  *
  * 普通脚本，挂全局。**不是分片**：渠道预览页（gateway/src/routes/channels.ts 那一页）不装
- * 那一串分片，却也要用到这里的东西；markdown.js 的复制也用它。所以它单独加载，
+ * 那一串分片，却也要存文件；markdown.js 的复制和下载也用它。所以它单独加载，
  * 排在 markdown.js 前面——index.html 和渠道预览页都是这个顺序。
  */
 
@@ -52,5 +52,22 @@ function copyTextFallback(text) {
   } finally {
     if (ta && ta.remove) ta.remove()
   }
+}
+
+/**
+ * 把一个 Blob 存成文件：临时挂一个 `<a download>` 点一下就撤。
+ *
+ * blob: 地址过一会儿再撤销——点下去之后浏览器才开始读它，当场撤掉的话下载会落空。
+ * 一般一秒够了；知识库那份文件可能很大、存盘慢，给的是一分钟。
+ */
+function saveBlob(blob, name, revokeMs = 1000) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), revokeMs)
 }
 

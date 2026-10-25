@@ -299,14 +299,7 @@
         if (!response.ok) throw new Error('HTTP ' + response.status)
         return response.blob()
       })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = name
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      saveBlob(blob, name)
     } catch (error) {
       note('下载失败：' + (error && error.message ? error.message : '未知错误'), true)
     } finally {
