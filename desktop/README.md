@@ -240,4 +240,4 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
   `desktop-latest` Release——总是对齐到现有 `desktop-v*` 里最新的正式版（纯 `X.Y.Z`，预发布不算）。首页的下载那一段
   （[gateway/ui/pages-landing.js](../gateway/ui/pages-landing.js) 的 `dlBase` / `dlBuilds`）只认
   `desktop-latest`，所以**发新版不用改页面**，打 tag 就完了。Linux 暂未开包。
-- **图标**。源文件是 [gateway/ui/assets/satuwork-logo.svg](../gateway/ui/assets/satuwork-logo.svg)。改标志后用 `pnpm --filter satuwork-desktop icon` 重新生成桌面端各尺寸；脚本会给 macOS 的 `icon.icns` 单独加透明边距，使 Dock 图标和其他 app 看起来一样大。网页用的 `gateway/ui/assets/satuwork-logo.png` 不加边距，需要时从 `desktop/src-tauri/icons/128x128@2x.png` 复制。
+- **图标**。网页和应用图标共用原图 [gateway/ui/assets/satuwork-logo.png](../gateway/ui/assets/satuwork-logo.png)。改标志后用 `pnpm --filter satuwork-desktop icon` 和 `pnpm --filter satuwork-mobile icon` 重新生成桌面端、手机端各尺寸；桌面脚本会给 macOS 的 `icon.icns` 单独加透明边距，手机脚本会去掉 iOS 图标的 alpha 通道并同步资源目录。网页直接使用原图，不要用生成的小尺寸图标覆盖它。Android 通知栏使用独立的单色头像 `mobile/push-plugin/android/src/main/res/drawable/ic_satu_notification.xml`，换形象时也需要同步更新。

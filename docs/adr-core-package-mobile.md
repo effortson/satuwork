@@ -266,7 +266,7 @@ mobile/                 Tauri 2 mobile 的壳，结构照 desktop/
     src/lib.rs          serve_ui（satu://）、LINK_SCRIPT 注入、导航守卫、allow_seat_desktop
     capabilities/       主窗口只放一条命令
     gen/apple/          tauri ios init 生成的 Xcode 工程，进版本库（Info.plist 的 ATS 在这儿）
-    icons/              tauri icon 从 gateway/ui/assets/satuwork-logo.svg 生成
+    icons/              tauri icon 从 gateway/ui/assets/satuwork-logo.png 生成
 ```
 
 手机壳**不依赖** `@satuwork/core` 的源码——它装的是 gateway/ui，core.js 已经在里面。

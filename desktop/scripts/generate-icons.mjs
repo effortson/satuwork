@@ -5,12 +5,13 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const desktop = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const source = resolve(desktop, '../gateway/ui/assets/satuwork-logo.svg')
+const source = resolve(desktop, '../gateway/ui/assets/satuwork-logo.png')
 const icons = join(desktop, 'src-tauri/icons')
 const tauri = join(desktop, 'node_modules/.bin', process.platform === 'win32' ? 'tauri.cmd' : 'tauri')
-const svg = readFileSync(source, 'utf8')
+// PNG 是选定方案的原图；嵌入 SVG 只用于给 macOS 图标添加透明边距。
+const png = readFileSync(source).toString('base64')
 const viewBox = 'viewBox="0 0 512 512"'
-if (!svg.includes(viewBox)) throw new Error('Satuwork logo viewBox changed; update the macOS icon padding')
+const svg = `<svg xmlns="http://www.w3.org/2000/svg" ${viewBox}><image width="512" height="512" href="data:image/png;base64,${png}"/></svg>`
 
 const temp = mkdtempSync(join(tmpdir(), 'satuwork-icons-'))
 try {
