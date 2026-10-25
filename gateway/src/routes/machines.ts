@@ -2,7 +2,7 @@
  * 运行机器：公司侧绑定与配对码，平台侧的机器管理、发布包、装机脚本、批量升级。
  */
 import type { RouteCtx } from './ctx.ts'
-import { HttpError, json, type Router } from '../http.ts'
+import { type Handler, HttpError, json, type Req, type Router } from '../http.ts'
 import { INSTANCE_DOWN, MIN_MANAGER_NODE, PAIRING_TTL, desiredManagerRelease, directUrlOf, gatewayBaseFor, installCommandFor, machineBase, machineCard, machineOfOrg, machineResolver, managerHostOf, retargetManager, normalizePairingCode, randomPairingCode, registerFromBody, sendReleaseFile } from '../lib/machines.ts'
 import { LOGS_FOLLOW_GONE, MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, gatewayPublicUrl, gatewayPublicUrlExplicit, logsDirectPayload, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, queueSeatUpdates, rehostSeatInstances, releaseSeats } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
@@ -61,45 +61,14 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    * **`follow=1` 不在这里了**：跟着滚改成浏览器直连管家（下面那条 `/logs/direct` 签票），
    * Gateway 不再扛这条小时级的 SSE。老界面还传的话回 410，不静默降级成最近 N 行。
    */
-  router.get('/platform/orgs/:id/machines/:machineId/logs', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    if (req.query.get('follow') === '1') throw new HttpError(410, LOGS_FOLLOW_GONE)
-    const company = await companyOr404(db, req.params.id)
-    const machine = await machineOfOrg(db, company.id, req.params.machineId)
-    if (!machine?.host) throw new HttpError(503, INSTANCE_DOWN)
-    const seatId = await seatOnMachine(machine, req.query.get('seatId'))
-    const lines = Math.min(2000, Math.max(1, Math.trunc(Number(req.query.get('lines')) || 200)))
-    const base = machineBase(machine.host)
-    const path = seatId ? `/seats/${encodeURIComponent(seatId)}/logs` : '/logs'
-    await db.audit({
-      companyId: company.id,
-      accountId: account.id,
-      action: 'machine.logs',
-      detail: { machineId: machine.id, seatId: seatId || null, follow: false },
-    })
-    const url = `${base}${path}?lines=${lines}`
-    await proxyJson(res, 'GET', url, undefined, undefined, machine.token || undefined)
-  })
+  router.get('/platform/orgs/:id/machines/:machineId/logs', machineLogs(orgScope(true)))
 
   /**
    * 日志跟随的直连入口（公司侧）：鉴权、席位归属检查、审计和上面那条逐字一样，只是不
    * 转字节，而是回 `{ url, ticket }` 让浏览器自己去打管家。带 seatId 签席位票，不带签
    * **管家自己**的票（`unit: 'manager'`）——这一种只有 owner 拿得到。
    */
-  router.get('/platform/orgs/:id/machines/:machineId/logs/direct', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    const company = await companyOr404(db, req.params.id)
-    const machine = await machineOfOrg(db, company.id, req.params.machineId)
-    if (!machine?.host) throw new HttpError(503, INSTANCE_DOWN)
-    const seatId = await seatOnMachine(machine, req.query.get('seatId'))
-    await db.audit({
-      companyId: company.id,
-      accountId: account.id,
-      action: 'machine.logs',
-      detail: { machineId: machine.id, seatId: seatId || null, follow: true, direct: true },
-    })
-    json(res, 200, logsDirectPayload(keys, machine, seatId || null))
-  })
+  router.get('/platform/orgs/:id/machines/:machineId/logs/direct', machineLogsDirect(orgScope(true)))
 
   /**
    * 移除一台机器的登记。
@@ -129,47 +98,14 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
   })
 
   /** 改一台机器的账号容量。调小到低于当前占用不拦——已经在上面的账号不会被赶走。 */
-  router.put('/platform/orgs/:id/machines/:machineId/capacity', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    const machine = await machineOfOrg(db, req.params.id, req.params.machineId)
-    const maxAccounts = intField(bodyOf(req), 'maxAccounts')
-    if (maxAccounts == null || maxAccounts < 1 || maxAccounts > 1000) {
-      throw new HttpError(400, 'maxAccounts 须为 1–1000')
-    }
-    const next = await db.updateMachine(machine.id, { maxAccounts })
-    await db.audit({
-      companyId: req.params.id,
-      accountId: account.id,
-      action: 'machine.capacity',
-      detail: { machineId: machine.id, maxAccounts },
-    })
-    json(res, 200, { machine: ownerMachine(next) })
-  })
+  router.put('/platform/orgs/:id/machines/:machineId/capacity', machineCapacity(orgScope(false)))
 
   /**
    * 设这台机器的桌面直连地址（公司侧入口）。平台侧那条是
    * `PUT /platform/machines/:id/direct-url`，两条同义——机器的配置在公司详情页和
    * 平台机器页都改得了，容量和时区也是这么成对的。
    */
-  router.put('/platform/orgs/:id/machines/:machineId/direct-url', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    const machine = await machineOfOrg(db, req.params.id, req.params.machineId)
-    const directUrl = directUrlOf(strField(bodyOf(req), 'directUrl', false) || '')
-    const next = await db.updateMachine(machine.id, { directUrl })
-    await db.audit({
-      companyId: req.params.id,
-      accountId: account.id,
-      action: 'machine.direct-url',
-      detail: { machineId: machine.id, directUrl },
-    })
-    // **探活不带机器票**，理由见 probeDirectUrl：这个地址是手输的公网域名。
-    const probe = directUrl ? await probeDirectUrl(directUrl) : null
-    json(res, 200, {
-      machine: ownerMachine(next),
-      reachedManager: probe ? probe.ok : null,
-      error: probe && !probe.ok ? probe.error : null,
-    })
-  })
+  router.put('/platform/orgs/:id/machines/:machineId/direct-url', machineDirectUrl(orgScope(false)))
 
   /**
    * 设这台机器的时区。
@@ -181,24 +117,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    *
    * 传空串 = 不再管这台机器的时区（不会把机器改回去，只是不再下发）。
    */
-  router.put('/platform/orgs/:id/machines/:machineId/timezone', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    const machine = await machineOfOrg(db, req.params.id, req.params.machineId)
-    const timezone = normalizeTimezone(strField(bodyOf(req), 'timezone', false))
-    if (timezone === undefined) throw new HttpError(400, '不认识这个时区，要填 IANA 名，例如 Asia/Shanghai')
-    const next = await db.updateMachine(machine.id, { timezone })
-    await db.audit({
-      companyId: req.params.id,
-      accountId: account.id,
-      action: 'machine.timezone',
-      detail: { machineId: machine.id, timezone },
-    })
-    json(res, 200, {
-      machine: ownerMachine(next),
-      // 说清楚这一步只是下了指令：机器还没心跳回来之前，界面别显示成「已生效」。
-      pending: Boolean(timezone) && next.currentTimezone !== timezone,
-    })
-  })
+  router.put('/platform/orgs/:id/machines/:machineId/timezone', machineTimezone(orgScope(false)))
 
   /**
    * 把这台机器（或这家公司的席位）升到某个版本。
@@ -209,20 +128,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    *   下一轮心跳里做——它要挑不忙的时候、要自检、失败要回滚，这些只有机器上做得了。
    * - `kind: 'bot'` 走已有的批量重部署，逐个席位推过去。
    */
-  router.post('/platform/orgs/:id/machines/:machineId/upgrade', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    const company = await companyOr404(db, req.params.id)
-    const machine = await machineOfOrg(db, company.id, req.params.machineId)
-    if (!machinePaired(machine)) throw new HttpError(409, '这台机器还没有配对')
-    const { next, version, pinned, pending } = await retargetManager(db, machine, strField(bodyOf(req), 'version', false))
-    await db.audit({
-      companyId: company.id,
-      accountId: account.id,
-      action: 'machine.upgrade',
-      detail: { machineId: machine.id, version, pinned },
-    })
-    json(res, 200, { machine: ownerMachine(next), version, pinned, pending })
-  })
+  router.post('/platform/orgs/:id/machines/:machineId/upgrade', machineUpgrade(orgScope(true)))
 
   /**
    * 改机器地址。**只改地址，没有任何凭据字段**——机器的身份是配对时签发的 `smt_`，
@@ -353,6 +259,117 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     const rows = await db.seatRuntimesOfMachine(machine.id)
     if (!rows.some((r) => r.seatId === seatId)) throw new HttpError(404, '这台机器上没有这个席位')
     return seatId
+  }
+
+  // ── 公司侧 / 平台侧成对的机器操作 ────────────────────────────────────────
+  //
+  // 日志、直连日志、容量、直连地址、时区、升级这六件事两侧各有一条路，**只差两处**：
+  // 机器怎么找（公司侧要归这家公司，平台侧不问归属），审计记到哪家公司（公司侧记路径
+  // 上那家，平台侧记机器所属的那家、没归属就不记）。动作本身只写这一遍，两侧把「怎么
+  // 找机器」当参数传进来——各写一份的话，迟早一边改了另一边没改。
+
+  type MachineAudit = (machine: Machine, accountId: string, action: string, detail: unknown) => Promise<void>
+  type MachineScope = (req: Req) => Promise<{ machine: Machine; audit: MachineAudit }>
+
+  /**
+   * 公司侧：机器必须是 `:id` 这家公司的。`checkOrg` 为真的那几条（日志、直连日志、升级）
+   * 先确认公司本身还在，公司不在回「公司不存在」而不是「没有这台机器」——老行为，照留。
+   */
+  function orgScope(checkOrg: boolean): MachineScope {
+    return async (req) => {
+      const orgId = checkOrg ? (await companyOr404(db, req.params.id)).id : req.params.id
+      const machine = await machineOfOrg(db, orgId, req.params.machineId)
+      return { machine, audit: async (_m, accountId, action, detail) => { await db.audit({ companyId: orgId, accountId, action, detail }) } }
+    }
+  }
+
+  /** 平台侧：按 `:id` 取机器，不问归属；审计按机器所属公司记（见 auditMachine）。 */
+  async function platformScope(req: Req) {
+    return { machine: await machineOr404(req.params.id), audit: auditMachine }
+  }
+
+  function machineLogs(scope: MachineScope): Handler {
+    return async (req, res) => {
+      const account = await requireOwnerUser(req, db, keys)
+      if (req.query.get('follow') === '1') throw new HttpError(410, LOGS_FOLLOW_GONE)
+      const { machine, audit } = await scope(req)
+      if (!machine.host) throw new HttpError(503, INSTANCE_DOWN)
+      const seatId = await seatOnMachine(machine, req.query.get('seatId'))
+      const lines = Math.min(2000, Math.max(1, Math.trunc(Number(req.query.get('lines')) || 200)))
+      const path = seatId ? `/seats/${encodeURIComponent(seatId)}/logs` : '/logs'
+      await audit(machine, account.id, 'machine.logs', { machineId: machine.id, seatId: seatId || null, follow: false })
+      const url = `${machineBase(machine.host)}${path}?lines=${lines}`
+      await proxyJson(res, 'GET', url, undefined, undefined, machine.token || undefined)
+    }
+  }
+
+  function machineLogsDirect(scope: MachineScope): Handler {
+    return async (req, res) => {
+      const account = await requireOwnerUser(req, db, keys)
+      const { machine, audit } = await scope(req)
+      if (!machine.host) throw new HttpError(503, INSTANCE_DOWN)
+      const seatId = await seatOnMachine(machine, req.query.get('seatId'))
+      await audit(machine, account.id, 'machine.logs', { machineId: machine.id, seatId: seatId || null, follow: true, direct: true })
+      json(res, 200, logsDirectPayload(keys, machine, seatId || null))
+    }
+  }
+
+  function machineCapacity(scope: MachineScope): Handler {
+    return async (req, res) => {
+      const account = await requireOwnerUser(req, db, keys)
+      const { machine, audit } = await scope(req)
+      const maxAccounts = intField(bodyOf(req), 'maxAccounts')
+      if (maxAccounts == null || maxAccounts < 1 || maxAccounts > 1000) {
+        throw new HttpError(400, 'maxAccounts 须为 1–1000')
+      }
+      const next = await db.updateMachine(machine.id, { maxAccounts })
+      await audit(next, account.id, 'machine.capacity', { machineId: next.id, maxAccounts })
+      json(res, 200, { machine: ownerMachine(next) })
+    }
+  }
+
+  function machineDirectUrl(scope: MachineScope): Handler {
+    return async (req, res) => {
+      const account = await requireOwnerUser(req, db, keys)
+      const { machine, audit } = await scope(req)
+      const directUrl = directUrlOf(strField(bodyOf(req), 'directUrl', false) || '')
+      const next = await db.updateMachine(machine.id, { directUrl })
+      await audit(next, account.id, 'machine.direct-url', { machineId: next.id, directUrl })
+      // **探活不带机器票**，理由见 probeDirectUrl：这个地址是手输的公网域名。
+      const probe = directUrl ? await probeDirectUrl(directUrl) : null
+      json(res, 200, {
+        machine: ownerMachine(next),
+        reachedManager: probe ? probe.ok : null,
+        error: probe && !probe.ok ? probe.error : null,
+      })
+    }
+  }
+
+  function machineTimezone(scope: MachineScope): Handler {
+    return async (req, res) => {
+      const account = await requireOwnerUser(req, db, keys)
+      const { machine, audit } = await scope(req)
+      const timezone = normalizeTimezone(strField(bodyOf(req), 'timezone', false))
+      if (timezone === undefined) throw new HttpError(400, '不认识这个时区，要填 IANA 名，例如 Asia/Shanghai')
+      const next = await db.updateMachine(machine.id, { timezone })
+      await audit(next, account.id, 'machine.timezone', { machineId: next.id, timezone })
+      json(res, 200, {
+        machine: ownerMachine(next),
+        // 说清楚这一步只是下了指令：机器还没心跳回来之前，界面别显示成「已生效」。
+        pending: Boolean(timezone) && next.currentTimezone !== timezone,
+      })
+    }
+  }
+
+  function machineUpgrade(scope: MachineScope): Handler {
+    return async (req, res) => {
+      const account = await requireOwnerUser(req, db, keys)
+      const { machine, audit } = await scope(req)
+      if (!machinePaired(machine)) throw new HttpError(409, '这台机器还没有配对')
+      const { next, version, pinned, pending } = await retargetManager(db, machine, strField(bodyOf(req), 'version', false))
+      await audit(next, account.id, 'machine.upgrade', { machineId: next.id, version, pinned })
+      json(res, 200, { machine: ownerMachine(next), version, pinned, pending })
+    }
   }
 
   /**
@@ -517,44 +534,13 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    * 回包那个字段只说明**Gateway 摸到的是一台管家**，不说明员工的浏览器连得上（证书、
    * 解析、防火墙都可能只对其中一边成立）。别在界面上写成「已验证」。
    */
-  router.put('/platform/machines/:id/direct-url', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    const machine = await machineOr404(req.params.id)
-    const directUrl = directUrlOf(strField(bodyOf(req), 'directUrl', false) || '')
-    const next = await db.updateMachine(machine.id, { directUrl })
-    await auditMachine(next, account.id, 'machine.direct-url', { machineId: next.id, directUrl })
-    // **探活不带机器票**，理由见 probeDirectUrl：这个地址是手输的公网域名。
-    const probe = directUrl ? await probeDirectUrl(directUrl) : null
-    json(res, 200, {
-      machine: ownerMachine(next),
-      reachedManager: probe ? probe.ok : null,
-      error: probe && !probe.ok ? probe.error : null,
-    })
-  })
+  router.put('/platform/machines/:id/direct-url', machineDirectUrl(platformScope))
 
   /** 改账号容量。调小到低于当前占用不拦——已经在上面的账号不会被赶走。 */
-  router.put('/platform/machines/:id/capacity', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    const machine = await machineOr404(req.params.id)
-    const maxAccounts = intField(bodyOf(req), 'maxAccounts')
-    if (maxAccounts == null || maxAccounts < 1 || maxAccounts > 1000) {
-      throw new HttpError(400, 'maxAccounts 须为 1–1000')
-    }
-    const next = await db.updateMachine(machine.id, { maxAccounts })
-    await auditMachine(next, account.id, 'machine.capacity', { machineId: next.id, maxAccounts })
-    json(res, 200, { machine: ownerMachine(next) })
-  })
+  router.put('/platform/machines/:id/capacity', machineCapacity(platformScope))
 
   /** 设时区。只是把期望值钉在这里，真正改的是机器上的管家，下一轮心跳才知道成没成。 */
-  router.put('/platform/machines/:id/timezone', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    const machine = await machineOr404(req.params.id)
-    const timezone = normalizeTimezone(strField(bodyOf(req), 'timezone', false))
-    if (timezone === undefined) throw new HttpError(400, '不认识这个时区，要填 IANA 名，例如 Asia/Shanghai')
-    const next = await db.updateMachine(machine.id, { timezone })
-    await auditMachine(next, account.id, 'machine.timezone', { machineId: next.id, timezone })
-    json(res, 200, { machine: ownerMachine(next), pending: Boolean(timezone) && next.currentTimezone !== timezone })
-  })
+  router.put('/platform/machines/:id/timezone', machineTimezone(platformScope))
 
   /**
    * 这台机器一段时间里的负载归档，**按分钟**。日视图吃它。
@@ -693,14 +679,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    * 改管家目标版本：不带版本 = 摘掉单机钉、跟平台走；带版本 = 单机钉到那一版。
    * 换版、自检、失败回滚都在机器上做，这里只下指令。见 lib/machines.ts 的 retargetManager。
    */
-  router.post('/platform/machines/:id/upgrade', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    const machine = await machineOr404(req.params.id)
-    if (!machinePaired(machine)) throw new HttpError(409, '这台机器还没有配对')
-    const { next, version, pinned, pending } = await retargetManager(db, machine, strField(bodyOf(req), 'version', false))
-    await auditMachine(next, account.id, 'machine.upgrade', { machineId: next.id, version, pinned })
-    json(res, 200, { machine: ownerMachine(next), version, pinned, pending })
-  })
+  router.post('/platform/machines/:id/upgrade', machineUpgrade(platformScope))
 
   /**
    * 把**这台机器上**的席位统统重铺到某个 bot 版本。
@@ -854,28 +833,10 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    *
    * 走审计，理由和公司侧那条一样：席位的日志里有员工的对话正文和 bot 执行过的命令。
    */
-  router.get('/platform/machines/:id/logs', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    if (req.query.get('follow') === '1') throw new HttpError(410, LOGS_FOLLOW_GONE)
-    const machine = await machineOr404(req.params.id)
-    if (!machine.host) throw new HttpError(503, INSTANCE_DOWN)
-    const seatId = await seatOnMachine(machine, req.query.get('seatId'))
-    const lines = Math.min(2000, Math.max(1, Math.trunc(Number(req.query.get('lines')) || 200)))
-    const path = seatId ? `/seats/${encodeURIComponent(seatId)}/logs` : '/logs'
-    await auditMachine(machine, account.id, 'machine.logs', { machineId: machine.id, seatId: seatId || null, follow: false })
-    const url = `${machineBase(machine.host)}${path}?lines=${lines}`
-    await proxyJson(res, 'GET', url, undefined, undefined, machine.token || undefined)
-  })
+  router.get('/platform/machines/:id/logs', machineLogs(platformScope))
 
   /** 日志跟随的直连入口（平台侧）。同上面公司侧那条，只是机器按 id 找、审计按机器所属公司记。 */
-  router.get('/platform/machines/:id/logs/direct', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
-    const machine = await machineOr404(req.params.id)
-    if (!machine.host) throw new HttpError(503, INSTANCE_DOWN)
-    const seatId = await seatOnMachine(machine, req.query.get('seatId'))
-    await auditMachine(machine, account.id, 'machine.logs', { machineId: machine.id, seatId: seatId || null, follow: true, direct: true })
-    json(res, 200, logsDirectPayload(keys, machine, seatId || null))
-  })
+  router.get('/platform/machines/:id/logs/direct', machineLogsDirect(platformScope))
 
   /**
    * 移除一台机器的登记。
