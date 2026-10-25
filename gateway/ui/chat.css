@@ -1941,21 +1941,17 @@
 /* 降过级的要看得出来：不标的话人会以为那一档是主代理自己选的。 */
 .sw-task-down { color: var(--color-accent-800); }
 .sw-task-why { color: var(--muted-foreground); overflow-wrap: anywhere; }
-/* 第二行：跑着时「正在：工具 参数 · 清单 3/7」，收场后结论第一句或原因。一行，截断。 */
+/* 第二行：跑着时「正在：工具 参数 · 清单 3/7」，等着时等谁。收场了没有这一行。一行，截断。 */
 .sw-ti-sub {
   display: flex; align-items: center; gap: 8px; min-width: 0;
   padding: 2px var(--space-3) var(--space-2) calc(var(--space-3) + 16px); font-size: 12.5px; color: var(--muted-foreground);
 }
-/* 收场的那件摊开了：下面就是结论全文 / 失败原因，第二行那句摘要不再重复一遍。跑着的照留（那是进度）。 */
-.sw-ti[data-open='1']:not([data-tone='run']):not([data-tone='wait']) > .sw-ti-sub { display: none; }
+/* 收场了、没摊开：只剩第一行，底下补回第二行原本占着的那点空。 */
+.sw-ti > .sw-task-line:only-child { padding-bottom: var(--space-2); }
 .sw-ti-sub > span:not(.sw-taskspin):not(.sw-taskwait) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sw-ti-now { flex: 1; color: var(--color-text); }
 .sw-ti-now b { font-family: var(--font-mono, monospace); font-weight: 600; margin-right: 4px; }
 .sw-ti-todo { flex: none; max-width: 45%; padding: 0 7px; border-radius: 999px; background: var(--background); border: 1px solid var(--border); font-size: 11.5px; }
-.sw-ti-out { flex: 1; }
-.sw-ti-why { flex: 1; }
-.sw-ti-why[data-tone='bad'] { color: var(--color-accent-800); }
-.sw-ti-why[data-tone='warn'] { color: #b45309; }
 .sw-taskspin { width: 12px; height: 12px; flex: none; box-sizing: border-box; border: 2px solid var(--color-accent-200, #f3cdbf); border-top-color: var(--color-accent-600, #c4643f); border-radius: 50%; animation: sw-spin 0.9s linear infinite; }
 .sw-taskwait { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--muted-foreground); opacity: 0.5; }
 .sw-taskdots { display: inline-flex; gap: 3px; margin-left: 4px; vertical-align: middle; }

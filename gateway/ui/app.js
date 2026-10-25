@@ -526,7 +526,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     const seq = btn.getAttribute('data-seq') || ''
     if (taskInOpen.has(seq)) taskInOpen.delete(seq)
     else taskInOpen.add(seq)
-    render()
+    paintChatInPlace(btn, 'data-seq')
     return
   }
   if (act === 'chat-task-toggle') {
@@ -535,7 +535,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     state.taskOpen = state.taskOpen || {}
     if (state.taskOpen[id]) delete state.taskOpen[id]
     else state.taskOpen[id] = true
-    render()
+    paintChatInPlace(btn, 'data-id')
     return
   }
   if (act === 'chat-skill-delete') {
@@ -668,7 +668,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     state.traceOpen = state.traceOpen || {}
     if (state.traceOpen[key]) delete state.traceOpen[key]
     else state.traceOpen[key] = true
-    render()
+    paintChatInPlace(btn, 'data-key')
     return
   }
   if (act === 'chat-handoff-claim') {

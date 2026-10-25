@@ -617,7 +617,7 @@ function mentionCands() {
    （delegateView / assignView），再用同一个 taskItemHtml 画：
 
      第一行  状态点 · 任务一句话 · 状态 · 读秒 / 步数 / 花费
-     第二行  跑着：正在调什么 + 清单进度；等着：等谁；收场：结论第一句，没做成就是原因
+     第二行  跑着：正在调什么 + 清单进度；等着：等谁。收场了（做成、没做成、停了）就没有这一行，一件一行
      点开    失败原因、结论全文、产出文件、过程（一步一行，调用和结果按 callId 配对，见 core/src/chat/task.ts）
 
    位置也一样：都挂在主 Bot 派活那一轮的气泡里，一批一张卡（taskGroupHtml）。派活那一行前面多一个
@@ -764,28 +764,20 @@ function firstLine(text) {
 }
 
 /**
- * 第二行。**跑着的时候说「正在干什么」，收场了说「结果如何」**——不用点开就知道这一件怎么样了。
+ * 第二行，只有跑着、等着的才有：说「正在干什么」——不用点开就知道它做到哪了。
  *
  * 没有进度（老席位、老管家不报；刚开跑还没调过工具）就只说「正在做」，不编一个数出来。
  */
-function taskSubHtml(v, tone) {
+function taskSubHtml(v) {
   if (v.state === 'waiting') return `<span class="sw-taskwait" aria-hidden="true"></span><span>${esc(v.waitText || t('等前置', 'Waiting'))}</span>`
-  if (taskLive(v.state)) {
-    const p = v.progress || {}
-    const now = p.tool
-      ? `<span class="sw-ti-now">${esc(t('正在：', 'Now: '))}<b>${esc(p.tool.name)}</b>${p.tool.detail ? ' ' + esc(p.tool.detail) : ''}</span>`
-      : `<span class="sw-ti-now">${esc(t('正在做', 'Working'))}<span class="sw-taskdots" aria-hidden="true"><i></i><i></i><i></i></span></span>`
-    const todo = p.todo
-      ? `<span class="sw-ti-todo">${esc(`${p.todo.done}/${p.todo.total}`)}${p.todo.now ? ' · ' + esc(p.todo.now) : ''}</span>`
-      : ''
-    return `<span class="sw-taskspin" aria-hidden="true"></span>${now}${todo}`
-  }
-  if (v.reason) {
-    const lead = tone === 'bad' ? t('原因：', 'Why: ') : ''
-    return `<span class="sw-ti-why" data-tone="${esc(tone)}">${esc(lead + firstLine(v.reason))}</span>`
-  }
-  const line = firstLine(v.body)
-  return `<span class="sw-ti-out">${esc(line || t('没有写结论', 'No conclusion'))}</span>`
+  const p = v.progress || {}
+  const now = p.tool
+    ? `<span class="sw-ti-now">${esc(t('正在：', 'Now: '))}<b>${esc(p.tool.name)}</b>${p.tool.detail ? ' ' + esc(p.tool.detail) : ''}</span>`
+    : `<span class="sw-ti-now">${esc(t('正在做', 'Working'))}<span class="sw-taskdots" aria-hidden="true"><i></i><i></i><i></i></span></span>`
+  const todo = p.todo
+    ? `<span class="sw-ti-todo">${esc(`${p.todo.done}/${p.todo.total}`)}${p.todo.now ? ' · ' + esc(p.todo.now) : ''}</span>`
+    : ''
+  return `<span class="sw-taskspin" aria-hidden="true"></span>${now}${todo}`
 }
 
 /** 一件活，委派和派活都用它（见本段开头）。 */
@@ -794,6 +786,11 @@ function taskItemHtml(v) {
   const tone = TASK_TONE[v.state] || 'run'
   const open = Boolean(state.taskOpen?.[v.id])
   /**
+   * 收场了就折成一行：一批派出去七八件，每件再挂一行结论摘要，卡片比对话还长。
+   * 结论、原因、档位都在点开之后（taskDetailHtml）。
+   */
+  const live = taskLive(v.state)
+  /**
    * 档位后面跟着那句理由。**这是档位可不可审的全部**：光一个 utility，人判不出选得对
    * 不对，只能等它跑砸；配上「格式定死、漏一行一眼能看见」，当场就判得出来。
    *
@@ -801,7 +798,7 @@ function taskItemHtml(v) {
    * 以为那一档是主代理自己选的。
    */
   const m = v.tier
-  const tier = m
+  const tier = m && (live || open)
     ? `<div class="sw-task-tier-row"><span class="sw-task-tier" data-role="${esc(m.role)}">${esc(m.role)}</span>` +
       (m.downgraded ? `<span class="sw-task-down">${esc(t('已降档', 'downgraded'))}</span>` : '') +
       (m.reason ? `<span class="sw-task-why">${esc(m.reason)}</span>` : '') +
@@ -818,7 +815,7 @@ function taskItemHtml(v) {
     `<span class="sw-ti-chev" aria-hidden="true"></span>` +
     '</button>' +
     tier +
-    `<div class="sw-ti-sub">${taskSubHtml(v, tone)}</div>` +
+    (live ? `<div class="sw-ti-sub">${taskSubHtml(v)}</div>` : '') +
     (open ? taskDetailHtml(v, tone) : '') +
     '</div>'
   )
@@ -918,7 +915,27 @@ function paintTaskHtml(host, html) {
 }
 
 /**
- * 取一次过程，存进 state 之后由 render 自己画。`again` = 跑着时的重取：取到之前旧的那份照画，
+ * 在对话里原地开合一块（派出去的活、过程里的一步、派来的那一轮）。
+ *
+ * **不走 render()。** 整页重绘会把 #chat-thread 整个换掉，新的那个没被滚过、scrollTop 是 0，
+ * paintChat 按「从没滚过」一律贴底——人点开中间一张卡，视线被甩到页底。这里只增量重画
+ * 对话，再把点的那颗按钮摆回它原来在屏幕上的高度：往下摊开的东西长在它下面，它自己不动。
+ */
+function paintChatInPlace(btn, attr) {
+  const thread = document.getElementById('chat-thread')
+  if (!thread || !thread.contains(btn)) return render()
+  const sel = `[data-act="${CSS.escape(btn.getAttribute('data-act') || '')}"][${attr}="${CSS.escape(btn.getAttribute(attr) || '')}"]`
+  const top = btn.getBoundingClientRect().top
+  // 人在这一屏里点了东西，就当摸过滚动条：不然 paintChat 照「从没滚过」贴底。
+  thread.setAttribute('data-touched', '1')
+  paintChat()
+  const again = thread.querySelector(sel)
+  if (again) thread.scrollTop += again.getBoundingClientRect().top - top
+}
+
+/**
+ * 取一次过程，存进 state 之后由 paintChat 画（理由同 paintChatInPlace：render 会把人甩到页底，
+ * 跑着时每 TRACE_REFRESH_MS 重取一次，就是每几秒甩一次）。`again` = 跑着时的重取：取到之前旧的那份照画，
  * 失败了也留着旧的——一跳没取到，不该让已经摊开的过程消失。
  */
 async function loadTaskTrace(key, again) {
@@ -929,7 +946,7 @@ async function loadTaskTrace(key, again) {
   if (had && had.loading) return
   if (had && had.rows && !again) return
   state.taskTrace[key] = { ...(had || {}), loading: true }
-  if (!had || !had.rows) render()
+  if (!had || !had.rows) paintChat()
   try {
     let events
     if (src.child) {
@@ -960,7 +977,7 @@ async function loadTaskTrace(key, again) {
   } catch (e) {
     state.taskTrace[key] = { ...(had || {}), loading: false, at: Date.now(), error: e.message || String(e) }
   }
-  render()
+  paintChat()
 }
 
 /* ── 目标 Bot 这边收到的派活（docs/bot-tasks.md §7）──────────────────────
