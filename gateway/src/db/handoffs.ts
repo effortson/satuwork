@@ -3,9 +3,9 @@
  */
 import type { Handoff, HandoffState, Role } from './types.ts'
 import { handoffOf, num } from './rows.ts'
-import { RoutinesDb } from './routines.ts'
+import { DbCore } from './core.ts'
 
-export class HandoffsDb extends RoutinesDb {
+export class HandoffsDb extends DbCore {
   // ── 转人工的交接单（见 docs/handoff.md）────────────────────────────────
 
   async handoff(id: string): Promise<Handoff | undefined> {

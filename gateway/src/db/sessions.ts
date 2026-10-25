@@ -4,12 +4,12 @@
 import { randomUUID } from 'node:crypto'
 import { type BotDeletionRequest, type BotDeletionStatus, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, parseReasoningEffort, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type SessionIndex } from './types.ts'
 import { botDeletionRequestOf, conversationAuditBatchOf, conversationAuditItemOf, num, sessionIndexOf, str } from './rows.ts'
-import { ChannelsDb } from './channels.ts'
+import { DbCore } from './core.ts'
 
 /** Bot 删除请求失败后自动重试的上限。每次隔一分钟，试满就停在 failed 上，等管理员处理。 */
 export const MAX_BOT_DELETION_ATTEMPTS = 20
 
-export class SessionsDb extends ChannelsDb {
+export class SessionsDb extends DbCore {
   // ── 会话索引。只存指针，不存 user/message 或 assistant/message 正文。──
 
   /**

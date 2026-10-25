@@ -1,14 +1,15 @@
 /**
  * 库的底座：连接池、语句、事务、锁、迁移和 schema 认领。
  *
- * 业务方法不放这里。它们按领域分在同一目录下的十来个文件里，一层层 extends 上来
- * （顺序就是 db.ts 里列的那条链），最后在 db.ts 收成唯一的 `Db`。
+ * 业务方法不放这里。它们按领域分在同一目录下的十来个文件里，每个领域一个类、都只 extends
+ * DbCore，最后在 db.ts 拼成唯一的 `Db`；跨领域调用走 `this.db`。
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
 import pg from 'pg'
 import { migrate, type MigrateResult, migrationState } from './migrate.ts'
 import { type Row, toPgCounted } from './rows.ts'
+import type { Db } from '../db.ts'
 
 const { Pool } = pg
 type PoolClient = pg.PoolClient
@@ -100,6 +101,15 @@ export class DbCore {
   protected txClient = new AsyncLocalStorage<PoolClient>()
   /** 保存点起名用，见 savepoint。 */
   protected savepointSeq = 0
+
+  /**
+   * 跨领域调用走这里：`this.db.groupsOf(...)`。每个领域文件只 extends DbCore、互相不知道，
+   * 实例上的方法是 db.ts 把各领域拼到 Db 上的；类型上 `this` 只看得见自己这一域，所以借这个
+   * 口子拿到整个 Db。同一域里的调用照旧 `this.xxx`。
+   */
+  protected get db(): Db {
+    return this as unknown as Db
+  }
 
   constructor(opts: DbOptions | string) {
     const o = typeof opts === 'string' ? { url: opts } : opts

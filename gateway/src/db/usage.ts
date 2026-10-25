@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto'
 import { bucketSql, DAY_MS, filterSql, LEDGER_BY_REF } from './sql.ts'
 import { CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type ChargeKind, type ChargeStatus, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type LlmCall, type LlmUsage, type UsageCharge, type WebCall, type WebCallKind } from './types.ts'
 import { connectorConnectionOf, connectorInstallOf, isUniqueViolation, llmCallOf, num, numOrNull, str, strOrNull, usageChargeOf } from './rows.ts'
-import { OrgDb } from './org.ts'
+import { DbCore } from './core.ts'
 
 /**
  * 明细与重算共用的筛选。companyId 为 null 的是 owner 自己的调用：传了 companyId 就只看这一家，
@@ -29,7 +29,7 @@ function chargeFilterSql(filter: {
   )
 }
 
-export class UsageDb extends OrgDb {
+export class UsageDb extends DbCore {
   /**
    * 登记一次模型调用。
    *

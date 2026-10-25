@@ -4,9 +4,9 @@
 import { randomUUID } from 'node:crypto'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './types.ts'
 import { channelBindingOf, channelEventOf, channelIdentityOf } from './rows.ts'
-import { SettingsDb } from './settings.ts'
+import { DbCore } from './core.ts'
 
-export class ChannelsDb extends SettingsDb {
+export class ChannelsDb extends DbCore {
   // ── 外部渠道。凭据只存密文；Webhook 事件按远端 id 去重。──────────
 
   async channelBindings(accountId: string): Promise<ChannelBinding[]> {

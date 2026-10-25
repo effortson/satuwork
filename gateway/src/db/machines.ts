@@ -5,9 +5,9 @@ import { randomUUID } from 'node:crypto'
 import { randomMachineToken } from '../crypto.ts'
 import { DEFAULT_MAX_ACCOUNTS, type Machine, type MachineMetricMinute, type MachinePairing } from './types.ts'
 import { isUniqueViolation, machineMetricMinuteOf, machineOf, machinePairingOf } from './rows.ts'
-import { PlansDb } from './plans.ts'
+import { DbCore } from './core.ts'
 
-export class MachinesDb extends PlansDb {
+export class MachinesDb extends DbCore {
   // ── 机器 ──────────────────────────────────────────────────────────────
 
   async insertMachine(input: {

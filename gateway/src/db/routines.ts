@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto'
 import { type Memory, type MemoryKind, type MemoryLayer, type Routine, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineRun, type RoutineRunStatus, type RoutineRunTrigger, type RoutineTrigger } from './types.ts'
 import { isUniqueViolation, memoryOf, routineOf, routineRunOf } from './rows.ts'
-import { SessionsDb } from './sessions.ts'
+import { DbCore } from './core.ts'
 
 /** 同一条日常任务已有一条 running 流水（见迁移 0035）。路由把它翻成 409。 */
 export class RoutineBusyError extends Error {
@@ -14,7 +14,7 @@ export class RoutineBusyError extends Error {
   }
 }
 
-export class RoutinesDb extends SessionsDb {
+export class RoutinesDb extends DbCore {
   // ── 长期记忆（docs/memory.md）────────────────────────────────────────
 
   /**
@@ -37,7 +37,7 @@ export class RoutinesDb extends SessionsDb {
    * `company` 层的记忆正在影响这颗 Bot，藏起来的话「它怎么知道这件事的」就没有出处。
    */
   async memoriesFor(companyId: string, accountId: string, botId: string | null): Promise<Memory[]> {
-    const groups = (await this.groupsOf(companyId)).filter((g) => g.members.includes(accountId))
+    const groups = (await this.db.groupsOf(companyId)).filter((g) => g.members.includes(accountId))
     const where: string[] = ['(layer = \'self\' and "accountId" = ?)', '(layer = \'company\' and "companyId" = ?)']
     const args: (string | number)[] = [accountId, companyId]
     if (botId) {

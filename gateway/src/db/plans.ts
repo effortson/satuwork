@@ -1,15 +1,15 @@
 /**
  * 套餐、价目表、订单、单独充值、账单。
  *
- * 订单要按当期套餐回写公司的席位和知识库上限（syncPlanFromOrders），所以排在账号和
- * 知识库后面。
+ * 订单要按当期套餐回写公司的席位和知识库上限（syncPlanFromOrders），那几处数公司、账号、
+ * 知识库的走 `this.db`（见 DbCore.db）。
  */
 import { randomUUID } from 'node:crypto'
 import type { Invoice, Plan, PlanOrder, PlanPeriod, PlanSku, Topup } from './types.ts'
 import { invoiceOf, num, planOf, planOrderOf, planSkuOf, topupOf } from './rows.ts'
-import { KnowledgeDb } from './knowledge.ts'
+import { DbCore } from './core.ts'
 
-export class PlansDb extends KnowledgeDb {
+export class PlansDb extends DbCore {
   // ── 套餐 ──────────────────────────────────────────────────────────────
 
   /** 套餐、到期时间、知识库个数是可选补丁：不传就保持原样，传 null 才是清空。 */
@@ -183,10 +183,10 @@ export class PlansDb extends KnowledgeDb {
    */
   async syncPlanFromOrders(companyId: string): Promise<void> {
     const active = await this.activePaidOrder(companyId)
-    const used = await this.accountCount(companyId)
+    const used = await this.db.accountCount(companyId)
     // 知识库和席位同一条规矩：订单给的个数不缩到已有库数以下——已经建好的库不能因为
     // 一张单子少给了就凭空超额，先按现有个数保住（docs/knowledge-base.md §4.2）。
-    const kbUsed = await this.countKnowledgeBases(companyId)
+    const kbUsed = await this.db.countKnowledgeBases(companyId)
     const cur = await this.plan(companyId)
     if (!active) {
       if (cur?.skuId == null && cur?.expiresAt == null && cur) return
@@ -205,7 +205,7 @@ export class PlansDb extends KnowledgeDb {
   /** 起进程时对一遍所有公司的订阅。返回被改动的公司数，只为在日志里说一声。 */
   async syncAllPlansFromOrders(): Promise<number> {
     let changed = 0
-    for (const c of await this.companies()) {
+    for (const c of await this.db.companies()) {
       const before = await this.plan(c.id)
       await this.syncPlanFromOrders(c.id)
       const after = await this.plan(c.id)

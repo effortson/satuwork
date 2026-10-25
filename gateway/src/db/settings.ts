@@ -4,9 +4,9 @@
 import { randomUUID } from 'node:crypto'
 import { type AuditEvent, type CompanySettings, type Credential, type DiscoverySnapshot, emptyPlatformSettings, emptySettings, emptySnapshot, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseDiscoverySnapshot, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, type PlatformSettings } from './types.ts'
 import { auditOf, jsonOf, parseDailyAlternates, parseImageRole, parsePlatformPayload, platformCredOf } from './rows.ts'
-import { CatalogDb } from './catalog.ts'
+import { DbCore } from './core.ts'
 
-export class SettingsDb extends CatalogDb {
+export class SettingsDb extends DbCore {
   // ── 密钥 ──────────────────────────────────────────────────────────────
 
   /**

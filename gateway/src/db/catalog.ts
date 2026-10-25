@@ -5,9 +5,9 @@ import { randomUUID } from 'node:crypto'
 import { SWEEP_BATCH } from './sql.ts'
 import type { BotFolder, BotTask, BotTaskPatch, BotTaskProgress, BotTaskStatus, CatalogItem, CatalogKind, Scope } from './types.ts'
 import { botFolderOf, botTaskOf, catalogOf, str } from './rows.ts'
-import { SeatsDb } from './seats.ts'
+import { DbCore } from './core.ts'
 
-export class CatalogDb extends SeatsDb {
+export class CatalogDb extends DbCore {
   // ── 目录 ──────────────────────────────────────────────────────────────
 
   async insertCatalog(input: {

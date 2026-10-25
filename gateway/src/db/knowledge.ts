@@ -4,9 +4,9 @@
 import { randomUUID } from 'node:crypto'
 import type { KnowledgeBase, KnowledgeChunk, KnowledgeFile, KnowledgeFileStatus, KnowledgeShare } from './types.ts'
 import { knowledgeBaseOf, knowledgeChunkOf, knowledgeFileOf, num, str } from './rows.ts'
-import { UsageDb } from './usage.ts'
+import { DbCore } from './core.ts'
 
-export class KnowledgeDb extends UsageDb {
+export class KnowledgeDb extends DbCore {
   // ── 知识库（docs/knowledge-base.md）────────────────────────────────────
 
   /** 这家公司没在删除中的全部库。管理员看的就是这一份。 */

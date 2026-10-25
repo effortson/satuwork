@@ -3,9 +3,9 @@
  */
 import { type BotRelease, type Instance, releaseArch, type ReleaseKind, type SeatDeployRequest, type SeatRuntime } from './types.ts'
 import { botReleaseOf, groupOf, instanceOf, seatDeployRequestOf, seatRuntimeOf } from './rows.ts'
-import { MachinesDb } from './machines.ts'
+import { DbCore } from './core.ts'
 
-export class SeatsDb extends MachinesDb {
+export class SeatsDb extends DbCore {
   // ── 实例。(账号, botId) 一对一台 Bot 运行时。只存 host，不存聊天正文。──
 
   async instance(accountId: string, botId: string): Promise<Instance | undefined> {
@@ -273,7 +273,7 @@ export class SeatsDb extends MachinesDb {
       // 只扫它自己那家会把别家的引用留成一个指向不存在 Bot 的 id。
       const rows = await this.many('select * from groups where agents @> ?::jsonb', [JSON.stringify([botId])])
       for (const g of rows.map(groupOf)) {
-        await this.updateGroup(g.id, { agents: g.agents.filter((a) => a !== botId) })
+        await this.db.updateGroup(g.id, { agents: g.agents.filter((a) => a !== botId) })
       }
       /**
        * **它自己攒下的那些 Skill 跟着走。**
