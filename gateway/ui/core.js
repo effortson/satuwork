@@ -65,7 +65,6 @@ var SatuCore = (() => {
     refreshSum: () => refreshSum,
     resultLine: () => resultLine,
     rosterRetryDelay: () => rosterRetryDelay,
-    runEventStream: () => runEventStream,
     settleDot: () => settleDot,
     splitUploads: () => splitUploads,
     sseEvents: () => sseEvents,
@@ -2337,86 +2336,6 @@ var SatuCore = (() => {
     if (status === 401 || status === 403 || status === 404) return "dead";
     if (status >= 200 && status < 300 && hasBody) return "open";
     return "warming";
-  }
-
-  // core/src/chat/stream.ts
-  function defaultSleep(ms, signal) {
-    return new Promise((resolve) => {
-      if (signal.aborted) return resolve();
-      const t2 = setTimeout(() => {
-        signal.removeEventListener("abort", onAbort);
-        resolve();
-      }, ms);
-      const onAbort = () => {
-        clearTimeout(t2);
-        resolve();
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-  function runEventStream(opts) {
-    const ac = new AbortController();
-    const now = opts.now || (() => Date.now());
-    const sleep = opts.sleep || defaultSleep;
-    const status = (s) => {
-      if (!ac.signal.aborted || s.kind === "closed") opts.onStatus?.(s);
-    };
-    async function loop() {
-      let attempt = 0;
-      while (!ac.signal.aborted) {
-        const tok = opts.token();
-        let res;
-        try {
-          res = await opts.fetch(opts.url(opts.cursor()), {
-            headers: { accept: "text/event-stream", ...tok ? { authorization: "Bearer " + tok } : {} },
-            signal: ac.signal
-          });
-        } catch {
-          if (ac.signal.aborted) break;
-          attempt = await backoff(attempt);
-          continue;
-        }
-        const verdict = classifyStreamStatus(res.status, Boolean(res.body));
-        if (verdict === "dead") {
-          const message = await res.text().catch(() => "") || "实例还没上线";
-          status({ kind: "dead", status: res.status, message });
-          return;
-        }
-        if (verdict === "warming") {
-          attempt = await backoff(attempt);
-          continue;
-        }
-        status({ kind: "open" });
-        const openedAt = now();
-        try {
-          for await (const ev of sseEvents(res.body.getReader(), () => ac.signal.aborted)) {
-            if (ac.signal.aborted) break;
-            opts.onEvent(ev);
-          }
-        } catch {
-        }
-        if (ac.signal.aborted) break;
-        attempt = await backoff(aliveLongEnough(openedAt, now()) ? 0 : attempt);
-      }
-      status({ kind: "closed" });
-    }
-    async function backoff(attempt) {
-      if (attempt >= CHAT_RETRY_MAX) {
-        status({ kind: "idle", attempt });
-        await sleep(CHAT_IDLE_RETRY_MS, ac.signal);
-        return attempt;
-      }
-      status({ kind: "warming", attempt });
-      await sleep(chatRetryDelay(attempt), ac.signal);
-      return attempt + 1;
-    }
-    const done = loop().catch(() => void 0);
-    return {
-      close() {
-        if (!ac.signal.aborted) ac.abort();
-      },
-      done
-    };
   }
 
   // core/src/markdown/render.ts
