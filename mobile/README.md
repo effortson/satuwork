@@ -139,7 +139,7 @@ pnpm --filter satuwork-mobile build:ios
 ## 和桌面壳共用的代码
 
 `serve_ui`、UI_CSP、导航守卫（`allow_navigation` / `open_path_allowed`）是从
-desktop/src-tauri/src/main.rs 抄过来的，**两边要一起改**。手机上有意不同的几处：
+desktop/src-tauri/src/ 的 ui.rs / nav.rs 抄过来的，**两边要一起改**。手机上有意不同的几处：
 
 - 同源的 `target="_blank"`（「打开桌面」）桌面上另开一扇应用窗口，手机只有一扇窗，换成 Gateway 的
   源交给 Safari——Gateway 发的是同一份界面，在 Safari 里登录一次就能看（`open_target`）。

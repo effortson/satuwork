@@ -22,7 +22,7 @@ mobile 的壳**，和桌面端一样把 gateway/ui 原样装进包里（§2.3 �
 | 加载方式 | 20 个 classic script 按顺序共享一个全局作用域（[index.html](../gateway/ui/index.html)，顺序同 http.ts 的 `UI_PARTS`） |
 | 构建 | 没有。esbuild 只用来打 `blob-client.js` 和 Vercel 产物 |
 | 渲染 | `render()` 整页换 `innerHTML`（[render.js](../gateway/ui/render.js)）；对话正文是 `paintChat` 增量 DOM（[chat.js](../gateway/ui/chat.js)，一万行） |
-| 周边绑定 | e2e 的 [ui-dom.mjs](../e2e/ui-dom.mjs) 按 `data-app-part` 顺序把源码拼起来塞进 `new Function`；桌面端 [prepare-ui.mjs](../desktop/scripts/prepare-ui.mjs) 原样拷 gateway/ui；CSP 的 `script-src 'self'` 不带 `'unsafe-inline'` |
+| 周边绑定 | e2e 的 [ui-dom.mjs](../e2e/ui-dom.mjs) 按 `data-app-part` 顺序把源码拼起来塞进 `new Function`；桌面端 [copy-ui.mjs](../scripts/copy-ui.mjs) 原样拷 gateway/ui；CSP 的 `script-src 'self'` 不带 `'unsafe-inline'` |
 | 桌面端 | 界面跟安装包走，gateway/ui 一改就要发桌面版 |
 
 ### 1.2 React 化等于重写
@@ -108,7 +108,7 @@ e2e 四处各加一次构建，漏一处就是一处 404。代价是每个改 co
 > chat.js；受控输入框在 JS 线程慢时会丢字（Web 那份 chat.js 没有这个问题）。
 
 目录 `mobile/`，进 pnpm workspace，结构照 desktop/：`src-tauri/` 是 Rust 壳（lib.rs 一个文件：
-serve_ui、注入、导航守卫），`scripts/prepare-ui.mjs` 把 gateway/ui 拷进包，`src-tauri/gen/apple/`
+serve_ui、注入、导航守卫），`prepare:ui`（仓库根 scripts/copy-ui.mjs，和桌面端共用）把 gateway/ui 拷进包，`src-tauri/gen/apple/`
 是 `tauri ios init` 生成的 Xcode 工程（**进版本库**，签名、ATS 这些改在里面）。
 
 手机壳和桌面壳的差别（都是「少」）：
@@ -259,7 +259,7 @@ core/
 mobile/                 Tauri 2 mobile 的壳，结构照 desktop/
   package.json          satuwork-mobile：dev:ios / build:ios / prepare:ui / icon
   README.md
-  scripts/prepare-ui.mjs  把 gateway/ui 拷进 src-tauri/ui/（frontendDist，打进包）
+  （prepare:ui 走仓库根的 scripts/copy-ui.mjs：把 gateway/ui 拷进 src-tauri/ui/，frontendDist，打进包）
   src-tauri/
     Cargo.toml          [lib] staticlib + cdylib（手机上 Tauri 把应用编成库）
     tauri.conf.json     identifier sg.dami.satuwork.mobile；windows 为空，窗口在 lib.rs 里建

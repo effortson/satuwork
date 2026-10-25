@@ -1,5 +1,5 @@
 /**
- * Desktop 壳自己的升级（和本地 Bot 运行时那条是两件事，见 main.rs 的 stage_runtime_update）。
+ * Desktop 壳自己的升级（和本地 Bot 运行时那条是两件事，见 runtime/update.rs 的 stage_runtime_update）。
  *
  * 本地 Bot 运行时只是一包 JS，壳子自己解、自己切指针就行；而 Rust 壳、内置 Node、系统权限声明
  * 变了，只能换整个安装包。这里用 tauri-plugin-updater 干这件事：
@@ -265,7 +265,7 @@ async fn download_and_install(app: &AppHandle, update: &Update) -> Result<(), St
     // 换壳前先把本地 Bot 停干净。Windows 上 install 会直接 process::exit，RunEvent::Exit 不会来；
     // macOS 上 restart 同样不走那条。不停的话 Bot 进程要等看门狗发现壳子的 PID 没了才退，
     // 这期间新壳起来的那一份会跟它抢同一个工作区。
-    let stopped = crate::stop_all_local_bots(app);
+    let stopped = crate::local_bot::stop_all_local_bots(app);
     // install 是同步的，Windows 上还会在里面起安装器、退出进程；放到阻塞线程池里，
     // 别卡住 async 运行时。
     let installer = update.clone();
@@ -278,7 +278,7 @@ async fn download_and_install(app: &AppHandle, update: &Update) -> Result<(), St
         // 壳没换成（macOS 上管理员授权点了取消、Windows 上安装器没起来）：为换壳停掉的本地 Bot
         // 按原样拉回来。不拉的话人手上的活就这么断了，还得到 Bot 页一颗颗重开。
         let again = app.clone();
-        let failed = tauri::async_runtime::spawn_blocking(move || crate::restart_local_bots(&again, stopped))
+        let failed = tauri::async_runtime::spawn_blocking(move || crate::local_bot::restart_local_bots(&again, stopped))
             .await
             .unwrap_or_default();
         return Err(if failed.is_empty() {

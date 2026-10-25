@@ -1,18 +1,14 @@
 /**
- * **这是 gateway/src/lib/roster-filter.ts 的逐字副本。** 管家包 import 不到 gateway 的
- * 源（那个包没有 exports，见 manager/src/http.ts 文件头），而名单流下沉到这台机器之后，
- * 过滤规则在两边都要跑。规则本身是纯的、不 import 任何东西，抄一份的代价只是「会漂」——
- * e2e/roster-stream.mjs 里有一条用例按字节比对两份文件，漂了当场就红。改规则请改 gateway
- * 那一份，然后把这一份整个覆盖掉。
- */
-/**
  * 名单通道的过滤规则：一条席位事件 → 要不要往浏览器转、转成什么。
+ *
+ * 原先 Gateway 也有一份（gateway/src/lib/roster-filter.ts），名单流整条下沉到管家之后那份
+ * 拆掉了（d4ad661），规则只剩这里这一份。
  *
  * **单独一个文件、不 import 任何东西**，为的是能被 e2e 直接 import 跑（node 的
  * strip-only 模式带不动 db.ts 那种带参数属性的 TS）。规则本身也确实是纯的——它是这条
  * 通道的全部要点，值得能一条条钉住（见 e2e/roster-stream.mjs）。
  *
- * 通道为什么存在、边界在哪儿，见同目录的 roster-stream.ts 开头。
+ * 通道为什么存在、边界在哪儿，见同目录的 roster.ts 开头。
  */
 
 /**

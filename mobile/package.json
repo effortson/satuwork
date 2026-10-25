@@ -6,7 +6,7 @@
     "tauri": "tauri",
     "dev:ios": "tauri ios dev --no-dev-server",
     "dev:android": "tauri android dev --no-dev-server",
-    "prepare:ui": "node scripts/prepare-ui.mjs",
+    "prepare:ui": "node ../scripts/copy-ui.mjs mobile",
     "build:ios": "pnpm prepare:ui && tauri ios build",
     "icon": "tauri icon ../gateway/ui/assets/satuwork-logo.svg"
   },

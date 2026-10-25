@@ -5,13 +5,13 @@ import { type CatchUp, type Frame, type Upstream, catchUpFrames, newCatchUp, rem
 /**
  * 名单那一条实时通道，**这台机器上的那一半**。
  *
- * 它原来整个在 Gateway 里（gateway/src/lib/roster-stream.ts，为什么要有它、边界在哪儿都
- * 写在那儿）。Gateway 要变成无状态的（docs/adr-gateway-vercel-neon.md），而这条通道是
- * 「按账号在进程内共享一套上游、留 30 秒宽限」——进程内状态，正是无状态的反面。好在它
+ * 它原来整个在 Gateway 里（gateway/src/lib/roster-stream.ts，d4ad661 拆掉了；过滤规则也只剩
+ * 同目录 roster-filter.ts 这一份）。Gateway 要变成无状态的（docs/adr-gateway-vercel-neon.md），
+ * 而这条通道是「按账号在进程内共享一套上游、留 30 秒宽限」——进程内状态，正是无状态的反面。好在它
  * 天然按机器切：一个账号的所有席位 Bot 都在同一台机器上（gateway-runtime.md §3.0），
  * 所以「这个人的所有 Bot 现在什么样」在这台机器上就能答全，不必经过任何人。
  *
- * 和 Gateway 那份的差别只有三处，其余逐字照搬：
+ * 和原来 Gateway 那份的差别只有三处，其余逐字照搬：
  *
  *   · 键是 linuxUser 而不是 accountId——名册里只有前者，而它就是 sha256(accountId) 的前缀；
  *   · 上游是 127.0.0.1:<botPort>，票是名册里存的 `sat_`，不再有机器票那一层；

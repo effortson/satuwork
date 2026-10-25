@@ -37,6 +37,13 @@ const unknownKids = new Map<string, number>()
 /** 同一时刻只让一路去抓 JWKS：一屏 noVNC 起来是一串并发请求，不该变成一串并发外呼。 */
 let jwksInflight: Promise<{ keys: Record<string, unknown>[] } | undefined> | null = null
 
+/** 现抓一份 Gateway 的 JWKS。回不了 2xx 给 undefined；网络失败照抛，调用方自己吞。配对时也用它。 */
+export async function fetchJwks(gatewayUrl: string): Promise<{ keys: Record<string, unknown>[] } | undefined> {
+  const res = await fetch(`${gatewayUrl}/.well-known/jwks.json`, { signal: AbortSignal.timeout(8000) })
+  if (!res.ok) return
+  return (await res.json()) as { keys: Record<string, unknown>[] }
+}
+
 async function jwksOf(gatewayUrl: string, kid: string): Promise<Record<string, unknown> | undefined> {
   const state = readState()
   const find = (set: { keys: Record<string, unknown>[] } | null) =>
@@ -50,11 +57,7 @@ async function jwksOf(gatewayUrl: string, kid: string): Promise<Record<string, u
   for (const [k, at] of unknownKids) if (Date.now() - at >= UNKNOWN_KID_TTL_MS) unknownKids.delete(k)
   // kid 对不上就再抓一次：Gateway 轮换密钥之后不该要求管家重装。
   try {
-    jwksInflight ??= (async () => {
-      const res = await fetch(`${gatewayUrl}/.well-known/jwks.json`, { signal: AbortSignal.timeout(8000) })
-      if (!res.ok) return
-      return (await res.json()) as { keys: Record<string, unknown>[] }
-    })().finally(() => {
+    jwksInflight ??= fetchJwks(gatewayUrl).finally(() => {
       jwksInflight = null
     })
     const fresh = await jwksInflight

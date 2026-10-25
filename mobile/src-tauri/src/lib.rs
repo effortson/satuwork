@@ -10,13 +10,13 @@ use tauri_plugin_opener::OpenerExt;
  * Satuwork 手机壳（Tauri 2 mobile）。
  *
  * **和桌面壳同一个思路，少掉一切「本机」的东西。** gateway/ui 那批分片原样打进包
- * （mobile/scripts/prepare-ui.mjs），由这里自注册的 `satu://` 协议发出去（serve_ui；Android 上
+ * （scripts/copy-ui.mjs），由这里自注册的 `satu://` 协议发出去（serve_ui；Android 上
  * Tauri 把它映射成 http://satu.localhost）。页面源因此和桌面端一样是 `satu://localhost`——
  * Gateway、席位机器的管家、本地 Bot 的守卫三处的 CORS 白名单早就认它，手机端一行不用加。
  * 壳子把 Gateway 地址注入给页面（LINK_SCRIPT 的 `__SATUWORK_GATEWAY__`），所有请求都是跨源的，
  * 凭据走 Authorization 头。
  *
- * 桌面壳（desktop/src-tauri/src/main.rs）里的本地 Bot、运行时下载、自升级、菜单、设置屏在
+ * 桌面壳（desktop/src-tauri/src/）里的本地 Bot、运行时下载、自升级、菜单、设置屏在
  * 手机上都不存在：手机只有一扇窗、一个 Gateway 地址（正式包锁死 satuwork.com，debug 构建
  * 认编译期的 SATUWORK_SERVER），所以这份文件只剩三件事：发界面、注入、把往外走的导航
  * 交给系统浏览器。serve_ui / 导航守卫那几段是从桌面壳抄过来的，两边要一起改
@@ -287,7 +287,7 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
     false
 }
 
-/// 包里那份界面在哪：发布包里是打进二进制的 frontendDist（prepare-ui.mjs 拷到 src-tauri/ui/）；
+/// 包里那份界面在哪：发布包里是打进二进制的 frontendDist（scripts/copy-ui.mjs 拷到 src-tauri/ui/）；
 /// debug 构建直接读仓库里的 gateway/ui——模拟器里的进程就是本机进程，读得到。
 fn ui_dir() -> Option<PathBuf> {
     #[cfg(debug_assertions)]
@@ -316,7 +316,7 @@ fn mime_of(path: &str) -> &'static str {
     }
 }
 
-// UI_CSP 里 CDN 那几条路径源，照桌面壳抄；版本要和 gateway/src/ui-cdn.ts 的 UI_CDN_PACKAGES 一起改。
+// UI_CSP 里 CDN 那几条路径源，照桌面壳抄；版本要和 gateway/src/ui-cdn.ts 的 UI_CDN_PACKAGES 一起改（e2e 的 markdown 那一组两个壳都核）。
 macro_rules! ui_cdn {
     () => {
         "https://cdn.jsdelivr.net/npm/katex@0.16.11/ https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/ https://cdn.jsdelivr.net/npm/mermaid@11.4.1/ https://cdn.jsdelivr.net/npm/three@0.170.0/ https://cdn.jsdelivr.net/npm/jszip@3.10.1/ https://cdn.jsdelivr.net/npm/docx-preview@0.4.1/ https://cdn.jsdelivr.net/npm/exceljs@4.4.0/ https://cdn.jsdelivr.net/npm/@aiden0z/pptx-renderer@1.3.0/"

@@ -1,7 +1,7 @@
 # satuwork-desktop
 
 桌面壳。**界面打在包里**——`gateway/ui` 那批分片原样拷进包（`pnpm prepare:ui`），由壳子用自己的
-`satu://` 协议发出来（main.rs 的 `serve_ui`，找不到的路径回 index.html，单页路由刷新也不丢）。
+`satu://` 协议发出来（src-tauri/src/ui.rs 的 `serve_ui`，找不到的路径回 index.html，单页路由刷新也不丢）。
 壳子记住「连哪台 Gateway」，注入 `window.__SATUWORK_GATEWAY__`，页面里所有打 Gateway 的请求在
 `ui/data.js` 的 `swFetch` 那一层接上这个前缀。
 
