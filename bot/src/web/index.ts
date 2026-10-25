@@ -16,9 +16,13 @@ import { expiredMessage, returnMessage, type Disposition, type HandoffActor } fr
 import { clearSettledTodos, readTodos } from '../tools/todo.ts'
 import { watchClose, watchOpen } from '../session/watchers.ts'
 import {
-  channelCommand, channelMentionHelp, channelModelCommand, channelModelHelp, parseChannelMentions, pickModelArg, withChannelTodos,
-  type ChannelMentionCandidate,
+  channelCommand, channelDraft, channelFiles, channelHandoffs, channelMentionHelp, channelModelCommand, channelModelHelp, channelReply,
+  isChannelMessage, parseChannelMentions, pickModelArg, withChannelTodos,
+  type ChannelFile, type ChannelHandoff, type ChannelMentionCandidate,
 } from './channel.ts'
+
+// 渠道那几个纯函数搬去了 channel.ts；探针（e2e-telegram-channel.mjs）仍从这里拿。
+export { channelDraft, channelFiles, channelHandoffs, type ChannelFile, type ChannelHandoff } from './channel.ts'
 
 /**
  * Satuwork 的 HTTP API。无头运行时：不发 SPA，未知路径 JSON 404。
@@ -32,189 +36,19 @@ export const inject = ['server', 'sessions', 'agents', 'llm', 'storage', 'roster
 export interface Config {
 }
 
-/**
- * 渠道这一轮目前已经写到哪儿——给 Telegram 的 sendMessageDraft 用。
- *
- * **只往后长，不回头改。** Telegram 客户端给同一个 draft_id 的草稿做打字动画：新的一帧以
- * 上一帧开头，它只播长出来的那一截；不是的话从分叉处（常常就是开头）重播。以前这里把
- * 「🔧 工具调用」那张状态表固定压在末尾——于是工具一出现，下一步的正文插在它**前面**、
- * ⏳ 改成 ✓ 改的是已经发出去的那几行，每一帧都在中间变，用户看到的就是「前面那段一遍
- * 遍重打，直到最后才完整」。
- *
- * 所以按事件**发生的顺序**拼：正文的 text-delta 一路往后接；工具调用在它发生的位置接一行
- * 「🔧 名字」，之后不再回头改它的状态（完成与否看最终回复，Web 上有完整痕迹），参数和
- * 结果一概不进草稿。一步收口时那条 assistant/message 和前面的 delta 是同一句话：只拿它
- * 补齐 delta 缺掉的尾巴（比如不流式、只落一条完整消息的模型），以已接上的 delta 开头才补，
- * 否则不动——宁可草稿少几个字，也不能把已经发出去的改掉。正式回复发出后 Telegram 自动清掉
- * 草稿，工具过程不会留在记录里。
- */
-export function channelDraft(events: SessionEvent[], eventId: string): string {
-  const start = events.findIndex((event) => {
-    if (event.type !== 'user/message') return false
-    const source = (event.data as { source?: MessageSource }).source
-    return source?.kind === 'plugin' && source.plugin === 'channel' && source.form === eventId
-  })
-  if (start < 0) return ''
-  const turnStart = events.slice(start + 1).find((event) => event.type === 'turn/start')
-  const turn = Number((turnStart?.data as { turn?: unknown } | undefined)?.turn)
-  if (!Number.isFinite(turn)) return ''
+type JsonRes = { status: number; json: (v: unknown) => void }
 
-  let draft = ''
-  // 上一段接的是什么：换一种（正文 ↔ 工具）或者换了一步，先空一行再接；连着几个工具各占
-  // 一行。分隔符只加在**新内容之前**，草稿末尾永远不挂着等下一段的空行——那样的空行会被
-  // 两头的 trim 吃掉又长回来，同样破坏「以上一帧开头」。
-  let last: { kind: 'text' | 'tool'; step: number } | null = null
-  const stepText = new Map<number, string>()
-  const put = (kind: 'text' | 'tool', step: number, piece: string) => {
-    if (!piece) return
-    if (draft && last) {
-      // 先收掉末尾的空白再接分隔：正文自己带的换行加上这里的空行会叠成两三行。发出去的
-      // 每一帧本来就是 trim 过的（草稿泵），收掉之后仍以上一帧开头。
-      if (last.kind === 'tool' && kind === 'tool') draft = draft.trimEnd() + '\n'
-      else if (last.kind !== kind || last.step !== step) draft = draft.trimEnd() + '\n\n'
-    }
-    draft += piece
-    last = { kind, step }
-  }
-  for (const event of events.slice(start + 1)) {
-    const data = event.data as {
-      turn?: unknown
-      step?: unknown
-      name?: unknown
-      chunk?: { type?: string; text?: unknown }
-      message?: { content?: unknown }
-    }
-    if (Number(data.turn) !== turn) continue
-    const step = Number(data.step)
-    if (!Number.isFinite(step)) continue
-    if (event.type === 'assistant/chunk' && data.chunk?.type === 'text-delta' && typeof data.chunk.text === 'string') {
-      const have = stepText.get(step) ?? ''
-      // 一步的第一段 delta 前面的空白不要：它会变成两段之间多出来的空行。
-      const piece = have ? data.chunk.text : data.chunk.text.replace(/^\s+/, '')
-      stepText.set(step, have + piece)
-      put('text', step, piece)
-    } else if (event.type === 'assistant/message') {
-      const content = data.message?.content
-      const settled = Array.isArray(content)
-        ? content
-          .filter((block): block is { type: 'text'; text: string } =>
-            block?.type === 'text' && typeof block.text === 'string')
-          .map((block) => block.text)
-          .join('')
-          .replace(/^\s+/, '')
-        : ''
-      const have = stepText.get(step) ?? ''
-      // 只补尾巴：完整消息以已经接上的 delta 开头才补；收口时改了措辞的不动。
-      if (settled.length > have.length && settled.startsWith(have)) {
-        stepText.set(step, settled)
-        put('text', step, settled.slice(have.length))
-      }
-    } else if (event.type === 'tool/call') {
-      const name = Array.from(String(data.name ?? '').replace(/\s+/g, ' ').trim()).slice(0, 80).join('')
-      if (name) put('tool', step, `🔧 ${name}`)
-    }
-  }
-  return draft.trimEnd()
+/** 命令被拒（CommandError）带着自己的状态码和那句原话；别的一律 500。 */
+function replyCommandError(res: JsonRes, e: unknown): void {
+  res.status = e instanceof CommandError ? e.status : 500
+  res.json({ error: (e as Error).message })
 }
 
-export interface ChannelFile {
-  path: string
-  name: string
-}
-
-/** Telegram 要画的转人工卡，只带交接所需的公开字段。 */
-export interface ChannelHandoff {
-  id: string
-  state: 'open' | 'claimed'
-  reason: string
-  ask: string
-  summary?: string
-  blocking: boolean
-  repeats: number
-  createdAt: number
-  updatedAt: number
-}
-
-/**
- * 这一条渠道消息对应的工具产出。
- *
- * Web 端直接从事件流里的 `tool/result.files` 画文件药丸；Telegram 没有那条事件流，
- * 所以在轮次收口时把同一份旁路元数据带回 Gateway。只认明确的 files，不从模型正文
- * 猜路径——正文措辞会变，也可能提到一个根本没写出来的文件。
- */
-export function channelFiles(events: SessionEvent[], eventId: string): ChannelFile[] {
-  const start = events.findIndex((event) => {
-    if (event.type !== 'user/message') return false
-    const source = (event.data as { source?: MessageSource }).source
-    return source?.kind === 'plugin' && source.plugin === 'channel' && source.form === eventId
-  })
-  if (start < 0) return []
-  const turnStart = events.slice(start + 1).find((event) => event.type === 'turn/start')
-  const turn = Number((turnStart?.data as { turn?: unknown } | undefined)?.turn)
-  if (!Number.isFinite(turn)) return []
-
-  const out = new Map<string, ChannelFile>()
-  for (const event of events.slice(start + 1)) {
-    if (event.type !== 'tool/result') continue
-    const data = event.data as { turn?: unknown; files?: unknown }
-    if (Number(data.turn) !== turn || !Array.isArray(data.files)) continue
-    for (const raw of data.files) {
-      if (!raw || typeof raw !== 'object') continue
-      const path = String((raw as { path?: unknown }).path ?? '').trim()
-      const name = String((raw as { name?: unknown }).name ?? '').trim()
-      if (!path || !name || path.length > 2048 || name.length > 512) continue
-      out.set(path, { path, name })
-    }
-  }
-  return [...out.values()]
-}
-
-/**
- * 这一轮新开的转人工单。
- *
- * 不能直接回 `ctx.handoffs.of(sessionId)`：会话上几天前尚未闭合的旧单也在里面，每发一
- * 条 Telegram 消息就会把旧卡再发一次。`human/handoff` 与开单工具调用落在同一轮的
- * turn/start 和 turn/end 之间，所以只取这一段，并按 id 取最后状态。
- */
-export function channelHandoffs(events: SessionEvent[], eventId: string): ChannelHandoff[] {
-  const messageIndex = events.findIndex((event) => {
-    if (event.type !== 'user/message') return false
-    const source = (event.data as { source?: MessageSource }).source
-    return source?.kind === 'plugin' && source.plugin === 'channel' && source.form === eventId
-  })
-  if (messageIndex < 0) return []
-  const startOffset = events.slice(messageIndex + 1).findIndex((event) => event.type === 'turn/start')
-  if (startOffset < 0) return []
-  const start = messageIndex + 1 + startOffset
-  const turn = Number((events[start].data as { turn?: unknown }).turn)
-  if (!Number.isFinite(turn)) return []
-  const endOffset = events.slice(start + 1).findIndex((event) =>
-    event.type === 'turn/end' && Number((event.data as { turn?: unknown }).turn) === turn)
-  if (endOffset < 0) return []
-  const end = start + 1 + endOffset
-  const latest = new Map<string, ChannelHandoff | null>()
-  for (const event of events.slice(start + 1, end + 1)) {
-    if (event.type !== 'human/handoff') continue
-    const data = event.data
-    const id = String(data.id ?? '').trim()
-    if (!id) continue
-    if (data.state !== 'open' && data.state !== 'claimed') {
-      latest.set(id, null)
-      continue
-    }
-    latest.set(id, {
-      id,
-      state: data.state,
-      reason: String(data.reason ?? '').trim(),
-      ask: String(data.ask ?? '').trim(),
-      ...(data.summary ? { summary: String(data.summary).trim() } : {}),
-      blocking: data.blocking !== false,
-      repeats: Math.max(0, Number(data.repeats) || 0),
-      createdAt: Number(data.at) || Number(event.time) || Date.now(),
-      updatedAt: Number(data.at) || Number(event.time) || Date.now(),
-    })
-  }
-  return [...latest.values()].filter((row): row is ChannelHandoff => Boolean(row))
+/** 工作区路径上的错：越界 400 带原话，不存在 404 回 `missing`，其余 500 回 `other`。 */
+function replyFileError(res: JsonRes, e: unknown, missing: string, other: string): void {
+  const err = e as NodeJS.ErrnoException
+  res.status = e instanceof WorkspaceError ? 400 : err?.code === 'ENOENT' ? 404 : 500
+  res.json({ error: e instanceof WorkspaceError ? e.message : err?.code === 'ENOENT' ? missing : other })
 }
 
 export function apply(ctx: Context, _config: Config = {}) {
@@ -242,14 +76,15 @@ export function apply(ctx: Context, _config: Config = {}) {
     for (const active of channelInflight.values()) {
       if (active.sessionId !== sessionId) continue
       if (!active.collecting) {
-        if (event.type !== 'user/message') continue
-        const source = (event.data as { source?: MessageSource }).source
-        if (source?.kind !== 'plugin' || source.plugin !== 'channel' || source.form !== active.eventId) continue
+        if (!isChannelMessage(event, active.eventId)) continue
         active.collecting = true
       }
       active.events.push(event)
     }
   })
+
+  /** 还开着的转人工单：open / claimed。`of()` 里还有已交还（returned）的，不算。 */
+  const openHandoffs = (sessionId: string) => ctx.handoffs.of(sessionId).filter((h) => h.state === 'open' || h.state === 'claimed')
 
   const channelKey = (bindingId: string, conversationId: string) => `${bindingId}\u0000${conversationId}`
 
@@ -275,30 +110,6 @@ export function apply(ctx: Context, _config: Config = {}) {
     // list() 按 updatedAt 倒序，尾巴上就是最老的。
     for (const row of channelResults.list().slice(CHANNEL_RESULTS_MAX)) channelResults.delete(row.id)
     return result
-  }
-
-  function channelReply(events: SessionEvent[], eventId: string): string | null {
-    const start = events.findIndex((e) => {
-      if (e.type !== 'user/message') return false
-      const source = (e.data as { source?: MessageSource }).source
-      return source?.kind === 'plugin' && source.plugin === 'channel' && source.form === eventId
-    })
-    if (start < 0) return null
-    const turnStart = events.slice(start + 1).find((e) => e.type === 'turn/start')
-    const turn = Number((turnStart?.data as { turn?: unknown } | undefined)?.turn)
-    if (!Number.isFinite(turn)) return null
-    const ended = events.some((e) => e.type === 'turn/end' && Number((e.data as { turn?: unknown }).turn) === turn)
-    if (!ended) return null
-    return events
-      .filter((e) => e.type === 'assistant/message' && Number((e.data as { turn?: unknown }).turn) === turn)
-      .flatMap((e) => {
-        const content = (e.data as { message?: { content?: unknown } }).message?.content
-        return Array.isArray(content)
-          ? content.filter((b): b is { type: 'text'; text: string } => b?.type === 'text' && typeof b.text === 'string').map((b) => b.text)
-          : []
-      })
-      .join('\n')
-      .trim()
   }
 
   async function runChannelMessage(input: {
@@ -365,7 +176,7 @@ export function apply(ctx: Context, _config: Config = {}) {
         if (!channelMentionCandidates().length) await ctx.catalog.pull().catch(() => false)
         reply = channelMentionHelp(channelMentionCandidates())
       } else {
-        const open = ctx.handoffs.of(mapped.sessionId).filter((h) => h.state === 'open' || h.state === 'claimed')
+        const open = openHandoffs(mapped.sessionId)
         if (open.length) reply = `还有 ${open.length} 张转人工的单子没结，先处理掉、或等它交回来再开新对话。`
         else {
           try {
@@ -1143,8 +954,7 @@ export function apply(ctx: Context, _config: Config = {}) {
         tokensAfter: r.tokensAfter,
       })
     } catch (e) {
-      res.status = e instanceof CommandError ? e.status : 500
-      res.json({ error: (e as Error).message })
+      replyCommandError(res, e)
     }
   })
 
@@ -1153,7 +963,7 @@ export function apply(ctx: Context, _config: Config = {}) {
    * 返回 true；放行返回 false。
    */
   const openHandoffsBlock = (sessionId: string, res: { status: number; json: (v: unknown) => void }, what: string) => {
-    const open = ctx.handoffs.of(sessionId).filter((h) => h.state === 'open' || h.state === 'claimed')
+    const open = openHandoffs(sessionId)
     if (!open.length) return false
     res.status = 409
     res.json({ error: `还有 ${open.length} 张转人工的单子没结，先处理掉、或等它交回来再${what}` })
@@ -1180,8 +990,7 @@ export function apply(ctx: Context, _config: Config = {}) {
       const r = await ctx.agents.resetContext(req.params.id)
       res.json({ reset: true, throughSeq: r.throughSeq, droppedMessages: r.droppedMessages })
     } catch (e) {
-      res.status = e instanceof CommandError ? e.status : 500
-      res.json({ error: (e as Error).message })
+      replyCommandError(res, e)
     }
   })
 
@@ -1198,8 +1007,7 @@ export function apply(ctx: Context, _config: Config = {}) {
       const r = await ctx.agents.resetContext(req.params.id, { clear: true })
       res.json({ cleared: true, throughSeq: r.throughSeq, droppedMessages: r.droppedMessages })
     } catch (e) {
-      res.status = e instanceof CommandError ? e.status : 500
-      res.json({ error: (e as Error).message })
+      replyCommandError(res, e)
     }
   })
 
@@ -1215,8 +1023,7 @@ export function apply(ctx: Context, _config: Config = {}) {
     try {
       res.json(await ctx.agents.freshModelState(await ctx.agents.sessionHistoryOr404(req.params.id)))
     } catch (e) {
-      res.status = e instanceof CommandError ? e.status : 500
-      res.json({ error: (e as Error).message })
+      replyCommandError(res, e)
     }
   })
 
@@ -1246,8 +1053,7 @@ export function apply(ctx: Context, _config: Config = {}) {
       }
       res.json(await ctx.agents.setSessionModel(req.params.id, key))
     } catch (e) {
-      res.status = e instanceof CommandError ? e.status : 500
-      res.json({ error: (e as Error).message })
+      replyCommandError(res, e)
     }
   })
 
@@ -1302,11 +1108,7 @@ export function apply(ctx: Context, _config: Config = {}) {
     try {
       res.json(await ctx.workspace.list(req.query.get('path') ?? ''))
     } catch (e) {
-      const err = e as NodeJS.ErrnoException
-      res.status = e instanceof WorkspaceError ? 400 : err?.code === 'ENOENT' ? 404 : 500
-      res.json({
-        error: e instanceof WorkspaceError ? e.message : err?.code === 'ENOENT' ? '目录不存在' : '列不出来',
-      })
+      replyFileError(res, e, '目录不存在', '列不出来')
     }
   })
 
@@ -1345,12 +1147,7 @@ export function apply(ctx: Context, _config: Config = {}) {
         const out = await extractDocument(ctx.workspace.resolve(path), kind)
         res.json({ text: out.text, note: out.truncated ? `内容较长，只提取了前 ${out.parts} ${out.unit}。` : '' })
       } catch (e) {
-        const err = e as NodeJS.ErrnoException
-        res.status = e instanceof WorkspaceError ? 400 : err?.code === 'ENOENT' ? 404 : 500
-        res.json({
-          error:
-            e instanceof WorkspaceError ? e.message : err?.code === 'ENOENT' ? '文件不存在' : `提取失败：${(e as Error).message}`,
-        })
+        replyFileError(res, e, '文件不存在', `提取失败：${(e as Error).message}`)
       }
       return
     }
@@ -1378,10 +1175,7 @@ export function apply(ctx: Context, _config: Config = {}) {
           res.json({ error: e.message, reason: e.reason })
           return
         }
-        res.status = e instanceof WorkspaceError ? 400 : err?.code === 'ENOENT' ? 404 : 500
-        res.json({
-          error: e instanceof WorkspaceError ? e.message : err?.code === 'ENOENT' ? '文件不存在' : `渲染失败：${err.message}`,
-        })
+        replyFileError(res, e, '文件不存在', `渲染失败：${err.message}`)
         return
       }
       const info = await stat(pdf)
@@ -1401,9 +1195,7 @@ export function apply(ctx: Context, _config: Config = {}) {
     try {
       file = await ctx.workspace.open(path)
     } catch (e) {
-      const err = e as NodeJS.ErrnoException
-      res.status = e instanceof WorkspaceError ? 400 : err?.code === 'ENOENT' ? 404 : 500
-      res.json({ error: e instanceof WorkspaceError ? e.message : err?.code === 'ENOENT' ? '文件不存在' : '读不出来' })
+      replyFileError(res, e, '文件不存在', '读不出来')
       return
     }
     const inline = file.inline && req.query.get('download') !== '1'
@@ -1442,11 +1234,7 @@ export function apply(ctx: Context, _config: Config = {}) {
       ctx.logger?.info?.(`delete: ${gone.path}${gone.dir ? '/（整个目录）' : ''}`)
       res.json(gone)
     } catch (e) {
-      const err = e as NodeJS.ErrnoException
-      res.status = e instanceof WorkspaceError ? 400 : err?.code === 'ENOENT' ? 404 : 500
-      res.json({
-        error: e instanceof WorkspaceError ? e.message : err?.code === 'ENOENT' ? '文件不存在' : '删不掉',
-      })
+      replyFileError(res, e, '文件不存在', '删不掉')
     }
   })
 
