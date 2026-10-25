@@ -2281,17 +2281,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       // 都会自己升，唯一能拦住的开关看着能设、其实存不进去。
       // 钉住的版本必须真有对应的包：desiredManagerRelease 查不到就会静悄悄回落到
       // 「最新」，那样这条用例即使在坏代码下也可能碰巧过。先传一个真包上去。
-      const { tarGz, sha256Of } = await import('./release.mjs')
-      const pinnedPkg = tarGz([
-        { name: './bin/satuwork-manager.mjs', data: '#!/usr/bin/env node\n' },
-        { name: './VERSION', data: 'pinned-9.9.9\n' },
-      ])
-      const up = await req(gwBase, 'PUT', '/platform/manager-releases/pinned-9.9.9', {
-        token: ownerTok,
-        raw: pinnedPkg,
-        headers: { 'content-type': 'application/gzip', 'x-bot-sha256': sha256Of(pinnedPkg) },
-      })
-      assert(up.status === 200, `传包 ${up.status} ${up.text}`)
+      await publishRelease({ req, gwBase, token: ownerTok, version: 'pinned-9.9.9', kind: 'manager' })
 
       const before = (await req(gwBase, 'GET', '/platform/settings', { token: ownerTok })).json
       try {
@@ -2332,17 +2322,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
        *
        * 要两个包才分得出「钉的」和「跟的」：上一条用例传的 pinned-9.9.9，再传一个更新的。
        */
-      const { tarGz, sha256Of } = await import('./release.mjs')
-      const pkg = tarGz([
-        { name: './bin/satuwork-manager.mjs', data: '#!/usr/bin/env node\n' },
-        { name: './VERSION', data: 'follow-9.9.10\n' },
-      ])
-      const up = await req(gwBase, 'PUT', '/platform/manager-releases/follow-9.9.10', {
-        token: ownerTok,
-        raw: pkg,
-        headers: { 'content-type': 'application/gzip', 'x-bot-sha256': sha256Of(pkg) },
-      })
-      assert(up.status === 200, `传包 ${up.status} ${up.text}`)
+      await publishRelease({ req, gwBase, token: ownerTok, version: 'follow-9.9.10', kind: 'manager' })
 
       const id = await machineIdOf(req, gwBase, ownerTok, orgId)
       const beat = async () =>
