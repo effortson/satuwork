@@ -2374,7 +2374,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 插在前面等于每批一次就把整段 Skill 的前缀缓存作废一次。
      */
     const folders = localFoldersBlock(this.ctx.workspace?.approvedMounts?.() ?? null, this.ctx.tools.has('request_folder_access'))
-    const tail = [skills, memory, folders].filter(Boolean).join('\n\n')
+    // 共享区那段一颗 Bot 一辈子不变，排在最前面，不跟着记忆、批准文件夹一起作废缓存。
+    const shared = sharedFolderBlock(Boolean(this.ctx.workspace?.shared), Boolean(this.ctx.workspace?.legacy))
+    const tail = [shared, skills, memory, folders].filter(Boolean).join('\n\n')
     return { text: tail ? `${base}\n\n${tail}` : base, base, skills, memory }
   }
 
@@ -4290,6 +4292,31 @@ function linkOutBlock(): string {
 }
 
 /**
+ * 远程席位上的共享区。
+ *
+ * **不说这一段的代价**：工作区改成一个 Bot 一个目录之后，模型并不知道还有个 `shared/`——
+ * 派活时它会让对方去处理「工作区里的 报表.xlsx」，而对方的工作区里根本没有这个文件；人问起
+ * 以前的文件，列自己的工作区看不见，就说「文件不存在」——其实还在老工作区里，按原路径就读得到。
+ * 没有共享区（本地 Bot、老部署）时整段不出现；没有老工作区时不说老文件那一条。
+ */
+export function sharedFolderBlock(hasShared: boolean, hasLegacy = false): string {
+  if (!hasShared) return ''
+  return [
+    '## 共享文件夹',
+    '你的工作区是你自己的；工作区里的 `shared/` 是共享文件夹，这位员工名下的所有 Bot 都能读写。',
+    '- 要交给别的 Bot 的文件（派活的材料、给对方接着改的成品）放进 `shared/`，在话里写 `shared/…` 这个路径——对方用同一个路径就能打开。',
+    '- 用户说「共享文件夹」「放到共享里」「别的 Bot 放的文件」，说的就是 `shared/`。',
+    ...(hasLegacy
+      ? [
+          '- 工作区分开之前的老文件还在原处：历史里提到的路径（比如 `报表/二季度.html`）照样能读能改，不要加前缀。' +
+            '它们不在你的工作区列表里，要看有哪些，在终端里 `ls ~/work`（`bots/`、`shared/` 以外的就是）。',
+        ]
+      : []),
+    '- 自己的草稿、中间产物留在自己的工作区，不要往 `shared/` 里堆。',
+  ].join('\n')
+}
+
+/**
  * 本地 Bot 能碰到工作区之外的哪些文件夹。
  *
  * **不说这一段的代价**：用户在右栏批准了 ~/Downloads，回头问「看看下载目录」，模型却回
@@ -4517,7 +4544,7 @@ function taskBlock(spec: TaskSpec): string {
     '你说的话除了最后那段结论之外没有任何人会看到。',
     '',
     '- **卡住了不要停在半路装作做完了。** 把卡在哪儿、已经排除了什么写进结论交回去，由主代理去问人',
-    '- **工作区和主代理共享**（同一个 ~/work）。草稿和中间产物写 `tasks/` 下自己的目录，成品才写',
+    '- **工作区和主代理共享**（同一个目录）。草稿和中间产物写 `tasks/` 下自己的目录，成品才写',
     '  正常位置；并发跑的几条子任务各有各的文件范围，别越界',
     '- **你起的后台进程会在你收口时交给主代理**，所以起了什么要在结论里点名（session_id + 命令）',
     `- 最多 ${spec.maxSteps} 步。到顶会被收口，那时已经做到的照样交回去——所以边做边把结论攒出来`,

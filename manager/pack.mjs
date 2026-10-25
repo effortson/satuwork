@@ -117,6 +117,8 @@ try {
     'seat-cdp-guard.sh',
     // deploy-seat.sh / remove-seat.sh 都 source 它（「这个进程是哪个席位的」）。少了它两条脚本当场失败。
     'seat-owner.sh',
+    // deploy-seat.sh 以席位用户的身份调它铺 ~/work 底下那一格。
+    'seat-workdir.sh',
     'manager-confirm.sh',
     'purge-machine.sh',
   ]) {

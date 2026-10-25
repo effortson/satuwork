@@ -17,8 +17,8 @@ import type { ReassignedItem, ToolCall, WorkspaceFile } from './index.ts'
  *
  * 看文件、改文件、找文件那四把在 tools/file.ts（file 工具集）。
  *
- * **根目录**：`$SATUWORK_WORK_DIR`——部署时注入的 `/home/{linuxUser}/work`。没有这个
- * 变量（本地跑）时回落 `$SATUWORK_HOME/work`。**不用 `$SATUWORK_HOME`**：那底下是会话
+ * **根目录**：`$SATUWORK_WORK_DIR`——部署时注入的 `/home/{linuxUser}/work/bots/{seatId}`。
+ * 没有这个变量（本地跑）时回落 `$SATUWORK_HOME/work`。**不用 `$SATUWORK_HOME`**：那底下是会话
  * 日志和 SQLite，让模型的手伸进自己的记忆里，一条 `rm -rf` 就能把历史抹了。
  *
  * 但要把话说清楚：**这不是沙箱**。`terminal` 拿到的是一个真 shell，它 `cd /` 就出去了，
@@ -174,8 +174,8 @@ async function scanFloor(root: string): Promise<number> {
  *
  * **这不是一条能做到精确的判据，做不到的那部分要说清楚。** 文件系统只回答「这个文件
  * 什么时候被改的」，不回答「谁改的」。同一个工作区在这段时间里还可能有别的写入方：
- * 上一条 `background=true` 起的进程、同一个员工另一个席位上的 Bot（`/home/{用户}/work`
- * 是共用的）。`FOREIGN_DIRS` 把**成系统的**那几个写入方（用户上传、网页抓取、浏览器
+ * 上一条 `background=true` 起的进程、往这里硬写东西的别的 Bot。共享区（`shared/` 那条
+ * 链接）本来就不扫——扫描不跟符号链接——所以后者只剩它们 `cd` 进来写这一种。`FOREIGN_DIRS` 把**成系统的**那几个写入方（用户上传、网页抓取、浏览器
  * 下载）整个排除掉了，剩下的两种在这一层拿不到任何信号——真要分得清，得是 fanotify /
  * ptrace 那个层面的东西，不是一次 stat 能给的。
  *
@@ -795,7 +795,7 @@ export function apply(ctx: Context, config: Config = {}) {
    * 后台进程的日志落在 `$SATUWORK_HOME/proc/`，**不在工作区**。
    *
    * 和前台那份截断全文（OUT_DIR）正相反：那一份是模型要自己 `read_file` 的，这一份
-   * 由 `process(action='log')` 替它读。会话侧的运行数据不该出现在员工的共享 `~/work` 里。
+   * 由 `process(action='log')` 替它读。会话侧的运行数据不该出现在员工看得见的工作区里。
    */
   const procDir = satuworkHome('proc')
 
@@ -1177,7 +1177,7 @@ export function apply(ctx: Context, config: Config = {}) {
       call: ToolCall,
     ) => {
       if (!command?.trim()) fail('缺少 command 参数')
-      const dir = resolveIn(workdir)
+      const dir = ctx.workspace.resolve(workdir, { dir: true })
       const info = await stat(dir).catch(() => fail(`工作目录不存在：${show(dir)}`))
       if (!info.isDirectory()) fail(`${show(dir)} 不是目录。`)
 

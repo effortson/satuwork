@@ -241,6 +241,8 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       assert(r.json.linuxUser === expectedUser, `linuxUser ${r.json.linuxUser} != ${expectedUser}`)
       assert(r.json.seatId === seatIdOf(memberId, botA), `seatId ${r.json.seatId}`)
       assert(r.json.sharedDir === `/home/${expectedUser}/work`, `sharedDir ${r.json.sharedDir}`)
+      // 1 号管家不分格：整个 ~/work 就是共享的，没有这个席位自己的那一格（MIN_SPLIT_WORKDIR_PROTOCOL）。
+      assert(r.json.workDir === null, `workDir ${r.json.workDir}`)
       assert(r.json.status === 'ready', `status ${r.json.status}`)
       assert(r.json.botVersion === '0.1.0', `botVersion ${r.json.botVersion}`)
       assert(typeof r.json.vncPassword === 'string' && r.json.vncPassword.length === 16, 'vncPassword 16')

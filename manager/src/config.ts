@@ -67,8 +67,14 @@ import { fileURLToPath } from 'node:url'
  *
  * 12：工人多一条循环，领主 Bot 派的活（`/worker/tasks/*`，src/worker/tasks.ts，docs/bot-tasks.md）。
  * Gateway 按它分流：低于 12 的机器上派活当场记成「管家太旧」，不排队等。
+ *
+ * 13：席位工作区一个 bot 一格（`~/work/bots/<席位>`），同一个员工共用的是 `~/work/shared`，
+ * 老布局堆在 `~/work` 根下的文件**原地不动**，Bot 按老路径读写时落回那里（src/seat/seat-workdir.sh、
+ * bot.env 的 `SATUWORK_LEGACY_DIR`）。规格里多一个可选的 `botName`，只用来写那一格的名牌。部署规格的路径**不变**：
+ * `workDir` 仍是账号级的 `~/work`，两格都由 deploy-seat.sh 自己推出来，所以新旧 Gateway、新旧
+ * 管家怎么搭都铺得出去。Gateway 只拿这个号决定界面上把目录说成哪样（MIN_SPLIT_WORKDIR_PROTOCOL）。
  */
-export const PROTOCOL = 12
+export const PROTOCOL = 13
 
 export interface ManagerState {
   machineId: string

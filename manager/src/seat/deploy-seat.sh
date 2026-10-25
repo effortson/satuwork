@@ -9,7 +9,10 @@
 # 粒度：**一个员工一个 Linux 账号**（$LINUX_USER），账号下**一个 bot 一个席位**
 # （$SEAT_ID）。所以对账号的部分是幂等复用的，对席位的部分才是新建。
 #
-#   $HOME_DIR/work                 共享工作区。同员工的所有席位都看得见，这是共享入口。
+#   $HOME_DIR/work                 账号级。分格之前的老文件原地留在根下，Bot 按老路径还读写得到
+#   $HOME_DIR/work/shared          共享区。同员工的所有席位都看得见，这是共享入口
+#   $HOME_DIR/work/bots/$SEAT_ID   这个席位的工作区（Bot 的 SATUWORK_WORK_DIR），里面一条
+#                                  shared -> ../../shared 链接通向共享区（见 seat-workdir.sh）
 #   $HOME_DIR/.satuwork/$SEAT_ID   席位私有：$SATUWORK_HOME、Chrome profile、XDG 各目录
 #   /etc/satuwork/seats/$SEAT_ID   root 的：bot 单元读的 bot.env 和凭据
 #   /opt/satuwork/seats/$SEAT_ID   root 的：这个席位的 bot 程序（app/），席位用户只读
@@ -48,6 +51,8 @@ trap 'rc=$?; echo "deploy-seat.sh 第 $LINENO 行失败（退出码 $rc）" >&2;
 : "${GATEWAY_TOKEN:?}"
 : "${GATEWAY_API_KEY:?}"
 : "${SATUWORK_BOT_ID:?}"
+# Bot 的名字，只用来写那一格的名牌（seat-workdir.sh）。可选：老 Gateway 不带。
+BOT_NAME="${BOT_NAME:-}"
 
 # 以 root 跑，下面这些值会变成 mkdir/chown 的目标和 systemd 单元里的字段。管家的
 # specOf 已经按形状校过一遍并且**自己推导路径**；这里再兜一层，理由和
@@ -69,6 +74,11 @@ esac
 [ "$HOME_DIR" = "/home/$LINUX_USER" ] || { echo "refusing: HOME_DIR $HOME_DIR" >&2; exit 1; }
 [ "$WORK_DIR" = "$HOME_DIR/work" ] || { echo "refusing: WORK_DIR $WORK_DIR" >&2; exit 1; }
 [ "$SEAT_DIR" = "$HOME_DIR/.satuwork/$SEAT_ID" ] || { echo "refusing: SEAT_DIR $SEAT_DIR" >&2; exit 1; }
+# 工作区按席位分开之后，WORK_DIR 仍是账号级的 ~/work（Gateway 和管家之间传的就是它，
+# 两边各自升级，字段不动就不用对版本）；席位自己的那一格和共享区都从它推出来。
+# 两个路径要和 seat-workdir.sh 里建的对上。
+SHARED_DIR="$WORK_DIR/shared"
+BOT_WORK_DIR="$WORK_DIR/bots/$SEAT_ID"
 
 DISPLAY_VAR=":${DISPLAY_NUM}"
 # bot 单元要 root（systemd）读的文件都放这儿：$HOME 之外、root 的 0700 目录。
@@ -272,11 +282,17 @@ env PATH=/usr/sbin:/usr/bin:/sbin:/bin find -P "$HOME_DIR" -xdev \
   \( -path "$HOME_DIR/*" ! -path "$HOME_DIR/.satuwork" ! -path "$SEAT_DIR" ! -path "$SEAT_DIR/*" -prune \) -o \
   \( \( -path "$SEAT_DIR" -o -path "$SEAT_DIR/*" \) ! -user "$LINUX_USER" \
      -execdir chown -h "$LINUX_USER:$LINUX_USER" {} + \)
-# 账号级：共享工作区。已存在就别动，里面是员工和 bot 的资料。
+# 账号级：~/work。已存在就别动，里面是员工和 bot 的资料。
 # 席位级：整棵子树都归这个席位。
 as_user mkdir -p "$WORK_DIR" "$HOME_DIR/.satuwork" \
   "$SEAT_DIR" "$SEAT_DIR/bin" "$SEAT_DIR/chrome" "$SEAT_DIR/cache" \
   "$SEAT_DIR/config/picom" "$SEAT_DIR/config/plank/dock1/launchers" "$SEAT_DIR/share/applications"
+
+# 这个席位在 ~/work 底下的那一格、共享区、通向共享区的链接、名牌。逻辑在 seat-workdir.sh 里
+# （e2e 直接跑它），这里只负责以席位用户的身份调它。**~/work 根下的老文件不动**，见那个脚本开头。
+# 装到 /usr/local/bin 再调：$SEAT_ASSETS 在管家自己的目录里，席位用户未必读得到。
+install -m 755 "$SEAT_ASSETS/seat-workdir.sh" /usr/local/bin/seat-workdir.sh
+as_user /usr/local/bin/seat-workdir.sh "$WORK_DIR" "$SEAT_ID" "$SATUWORK_BOT_ID" "$BOT_NAME"
 
 # ── 席位用户自己装得了 npm 全局包 ────────────────────────────────────────
 # npm 的全局目录默认是 /usr/lib/node_modules，归 root；席位用户没有 sudo，`npm i -g` 一律
@@ -404,7 +420,7 @@ DISPLAY=$DISPLAY_VAR
 RFB=$RFB
 HTTP=$HTTP
 CDP=$CDP
-WORK_DIR=$WORK_DIR
+WORK_DIR=$BOT_WORK_DIR
 EOF_ENV
 # 口令**直接写文件**，不再经 `x11vnc -storepasswd <口令> <文件>`：那样口令挂在命令行上，
 # 这台机器上任何用户 `ps` 一下都看得见（虽然只有一瞬）。x11vnc 的 -storepasswd 没有
@@ -462,7 +478,10 @@ GATEWAY_LLM_URL=$MANAGER_LLM_URL
 SATUWORK_BOT_ID=$SATUWORK_BOT_ID
 SATUWORK_HOME=$SEAT_DIR
 SATUWORK_PORT=$BOT_PORT
-SATUWORK_WORK_DIR=$WORK_DIR
+SATUWORK_WORK_DIR=$BOT_WORK_DIR
+SATUWORK_SHARED_DIR=$SHARED_DIR
+# 分格之前的老工作区：Bot 按老路径找不到时落回这里（bot 的 workspace.legacyOf）。
+SATUWORK_LEGACY_DIR=$WORK_DIR
 # 桌面上那个 Chrome 的 CDP 口。**bot.env 也要有一份**：它原先只写进 desktop.env，
 # 而 bot 单元的 EnvironmentFile 是 bot.env——于是 Bot 进程看不见这个端口，浏览器
 # 那几把工具连不上自己席位的浏览器。两份写的是同一个值，来源都是 $CDP。

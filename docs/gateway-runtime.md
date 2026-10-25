@@ -46,7 +46,8 @@
                                           公司运行机器（Debian，v1 一台）
                                           ├─ 机器管家 :8443（唯一入站口，root）
                                           ├─ Linux 账号 A（一个员工一个）
-                                          │   ├─ ~/work                共享工作区
+                                          │   ├─ ~/work/shared         共享区（同一员工的席位共用）
+                                          │   ├─ ~/work/bots/{seatId}  每个席位自己的工作区
                                           │   ├─ 席位 (A, botX)  seatId / slim-desktop@ / satuwork-bot@
                                           │   └─ 席位 (A, botY)  同一个 uid，另一块屏
                                           └─ Linux 账号 B
@@ -249,7 +250,7 @@ CPU 占用和出网速率允许是 `null`（第一次采样只存基准、计数
 - **「Gateway 在哪」在机器上冻着两份**：管家的 `/etc/satuwork/manager.json`（配对那天写的，心跳用它）和每个席位的 `bot.env`（部署那一刻写的，值来自 Gateway 进程的 `GATEWAY_PUBLIC_URL`）。Gateway 换了对外地址之后两份都是旧的，而且**都不报错**——管家表现成一盏「失联」灯，席位表现成每次模型调用都 `fetch failed`。两份现在都由 Gateway 每次入站调用捎的 `x-satuwork-gateway-url` 自动纠正：管家在 `requireMachine` 之后认（见 manager/README.md），席位在席位票验过之后认（见 bot/README.md 与 `bot/src/gateway-url.ts`），各自先落盘再改内存。**只在明确配过 `GATEWAY_PUBLIC_URL` 时才发这个头**，免得拿一个按 Host 猜出来的地址教坏机器
 - `$SATUWORK_HOME` 是 `/home/{linuxUser}/.satuwork/{seatId}`，席位之间不共用
 
-**共享的只有 `/home/{linuxUser}/work`。** 这是同一员工的多个 bot 看见同一批资料的唯一入口，靠 uid 相同实现，没有任何代码。其余一切按席位隔离——Chrome profile（同一个 `--user-data-dir` 起第二个 Chrome 会把网页开到别的席位屏上）、`XDG_RUNTIME_DIR`（logind 给的 `/run/user/{uid}` 是按 uid 的，会撞）、`XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME`（plank、dconf、picom、`.desktop` 跟着一起隔离）、`satuwork.db` 与 `sessions/`（`settings/change` 事件只在进程内广播，共用一份库会让另一个进程一直读到内存里的旧值）。
+**共享的只有 `/home/{linuxUser}/work/shared`。** 这是同一员工的多个 bot 看见同一批资料的唯一入口，靠 uid 相同实现。每个席位的工作区是 `~/work/bots/{seatId}`，里面一条 `shared -> ../../shared` 链接通向共享区（部署时建，Bot 起来时缺了会补）；分格之前堆在 `~/work` 根下的老文件**原地不动**（没重铺的席位照旧往那儿写），Bot 按相对路径找文件时自己那格没有、`~/work` 同一相对路径上有文件的，读写都落到那一份（`workspace.legacyOf`，`SATUWORK_LEGACY_DIR`），和分格之前一样原地改。每一格里有个 `.bot-name` 名牌，写着是哪颗 Bot 的；拆席位不碰 `~/work`，同一颗 Bot 重新部署接着用原来那一格。分格只是目录，不是权限：同一个 uid，终端照样 `cd` 得过去。其余一切按席位隔离——Chrome profile（同一个 `--user-data-dir` 起第二个 Chrome 会把网页开到别的席位屏上）、`XDG_RUNTIME_DIR`（logind 给的 `/run/user/{uid}` 是按 uid 的，会撞）、`XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME`（plank、dconf、picom、`.desktop` 跟着一起隔离）、`satuwork.db` 与 `sessions/`（`settings/change` 事件只在进程内广播，共用一份库会让另一个进程一直读到内存里的旧值）。
 
 ### 3.1a 换版之前先等会话跑完
 
@@ -850,7 +851,11 @@ GitHub Actions 的接线在 `.github/workflows/bot-release.yml`：推 `bot-v*` t
 
 ```
 /home/{linuxUser}/
-  work/                        共享工作区。同一员工的所有席位都看得见
+  work/
+    shared/                    共享区。同一员工的所有席位都看得见
+    bots/{seatId}/             = 这个席位的 SATUWORK_WORK_DIR，里面 shared -> ../../shared
+                               .bot-name 名牌；拆席位时原样留着，重新部署接着用
+    <老文件>                   分格之前的，原地不动；Bot 按老路径读写落回这里
   .satuwork/{seatId}/          = $SATUWORK_HOME，席位之间不共用
     satuwork.db                设置、本机钉住的 Bot、队列（待上报的索引/用量）
     sessions/<id>.jsonl        工作副本，唯一全文
@@ -1062,7 +1067,7 @@ Bot 的 ready、索引等上报使用 `sat_`，部署绝不把 `smt_` 写入 `bo
 12. 上报失败不得丢本地 JSONL，也不得阻断发消息
 13. 每个 Bot 有自己的 `provider` + `model`；发消息用这一对
 14. 席位按账号计；多部署几个 Bot 不多占席位
-15. `linuxUser` 只由 `accountId` 派生；席位靠 `seatId` 区分。同一员工的多个 bot 共用 uid 与 `~/work`，其余（`$SATUWORK_HOME`、Chrome profile、XDG 各目录、`XDG_RUNTIME_DIR`）一律按 `seatId` 隔离
+15. `linuxUser` 只由 `accountId` 派生；席位靠 `seatId` 区分。同一员工的多个 bot 共用 uid 与 `~/work/shared`，各自的工作区是 `~/work/bots/{seatId}`，其余（`$SATUWORK_HOME`、Chrome profile、XDG 各目录、`XDG_RUNTIME_DIR`）一律按 `seatId` 隔离
 16. Bot 物理删除必须存在已完成的 `pre_delete` 批次；无会话也要有一笔 `empty` 终审
 
 ---
@@ -1116,7 +1121,7 @@ Bot 的 ready、索引等上报使用 `sat_`，部署绝不把 `smt_` 写入 `bo
 **M3**
 
 - ~~3 席公司在一台机器上正好 3 个进程、3 份数据目录~~ **已取代**：3 席 × N 个已部署 Bot = 3N 个进程、3N 份 `$SATUWORK_HOME`，但只有 **3 个 Linux 账号**（一员工一个）
-- 账号 A 看不到账号 B 的会话文件；同一账号的不同 Bot 不共用 `$SATUWORK_HOME`，但**共用 `~/work`**——这是有意的
+- 账号 A 看不到账号 B 的会话文件；同一账号的不同 Bot 不共用 `$SATUWORK_HOME`，但**共用 `~/work/shared`**——这是有意的；各自的工作区 `~/work/bots/{seatId}` 分开
 - 未派到本 pair 的票被实例拒绝
 
 **M5**

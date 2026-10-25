@@ -160,7 +160,7 @@ export function apply(ctx: Context) {
     },
     async (args: { workdir?: string; command?: string }) => {
       display()
-      const dir = ctx.workspace.resolve(args.workdir)
+      const dir = ctx.workspace.resolve(args.workdir, { dir: true })
       const info = await stat(dir).catch(() => fail(`目录不存在：${show(dir)}`))
       if (!info.isDirectory()) fail(`${show(dir)} 不是目录。`)
       const command = String(args.command || '').trim()
@@ -206,7 +206,7 @@ export function apply(ctx: Context) {
     },
     async (args: { path?: string }) => {
       display()
-      let dir = ctx.workspace.resolve(args.path)
+      let dir = ctx.workspace.resolve(args.path, { dir: true })
       const info = await stat(dir).catch(() => fail(`路径不存在：${show(dir)}`))
       if (!info.isDirectory()) dir = dirname(dir)
       const err = await launch('thunar', [dir], childEnv(), dir)

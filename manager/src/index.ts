@@ -267,6 +267,9 @@ function specOf(rawSeatId: string, body: unknown): SeatSpec {
     workDir,
     seatDir,
     botId: shaped(line(b, 'botId', 64), BOT_ID_RE, 'botId'),
+    // 只进那一格的名牌（seat-workdir.sh），不进任何路径和单元字段，所以不校形状、只截长度。
+    // 老 Gateway 不带。
+    ...(typeof b.botName === 'string' && b.botName.trim() ? { botName: b.botName.trim().slice(0, 100) } : {}),
     botVersion: shaped(line(b, 'botVersion', 64), VERSION_RE, 'botVersion'),
     ...directPackageOf(b),
     vncPassword: line(b, 'vncPassword', 256),

@@ -499,6 +499,7 @@ var SatuCore = (() => {
     "Bot 详情": "Bot detail",
     "VNC 密码": "VNC password",
     共享目录: "Shared folder",
+    "Bot 工作目录": "Bot workspace",
     配对码: "Pairing code",
     下载地址: "Download URL",
     升级: "Upgrade",

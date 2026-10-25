@@ -70,6 +70,16 @@ export const MIN_CHANNEL_WORKER_PROTOCOL = 8
 export const MIN_TASK_WORKER_PROTOCOL = 12
 
 /**
+ * 席位工作区按 bot 分格（`~/work/bots/<席位>` + 共享的 `~/work/shared`）的管家协议号。
+ * **只管界面上怎么说**，不分流：部署规格里的 `workDir` 两边都还是 `~/work`，分格是管家的
+ * deploy-seat.sh 自己做的。低于它的机器上照旧说「共享目录 ~/work」。
+ *
+ * 号数是机器的，格子是席位的：管家升到 13 之后、某个席位重铺之前，那个席位其实还是老布局。
+ * 这一段只在审计页上当参考，差这一拍可以接受；要精确得让席位自己报，不值当。
+ */
+export const MIN_SPLIT_WORKDIR_PROTOCOL = 13
+
+/**
  * 日志跟随直连要求的管家协议号。
  *
  * 9 号管家的 `/logs` 和 `/seats/:id/logs` 才认 `Authorization: Bearer` 里那张 Gateway 签的
@@ -144,9 +154,23 @@ export function homeDirOf(linuxUser: string): string {
   return '/home/' + linuxUser
 }
 
-/** 共享工作区。同一员工的所有席位都挂着它——放共享资料的地方。 */
+/**
+ * 账号级的 `~/work`。部署规格里的 `workDir` 就是它，管家照它推出两格：
+ * `~/work/shared`（同一员工的所有席位共用）和 `~/work/bots/<席位>`（这个席位自己的）。
+ * 见 sharedDirOf / botWorkDirOf，和管家的 deploy-seat.sh。
+ */
 export function workDirOf(linuxUser: string): string {
   return homeDirOf(linuxUser) + '/work'
+}
+
+/** 共享区。同一员工的所有席位都挂着它——放共享资料的地方。 */
+export function sharedDirOf(linuxUser: string): string {
+  return workDirOf(linuxUser) + '/shared'
+}
+
+/** 这个席位自己的工作区，也就是它那颗 Bot 的 `SATUWORK_WORK_DIR`。 */
+export function botWorkDirOf(linuxUser: string, seatId: string): string {
+  return workDirOf(linuxUser) + '/bots/' + seatId
 }
 
 /** 席位私有目录。`$SATUWORK_HOME`、Chrome profile、XDG 各目录全在这底下。 */
@@ -561,8 +585,11 @@ export function publicSeatRuntime(
     companyId: row.companyId,
     linuxUser: row.linuxUser,
     seatId: row.seatId,
-    // 员工要知道往哪儿放共享文件：同一个账号下的所有 bot 都看得见这个目录。
-    sharedDir: workDirOf(row.linuxUser),
+    // 员工要知道往哪儿放共享文件：同一个账号下的所有 bot 都看得见这个目录。老管家上整个
+    // ~/work 就是共享的，也没有分到这个席位的那一格（见 MIN_SPLIT_WORKDIR_PROTOCOL）。
+    ...((machine?.protocol ?? 0) >= MIN_SPLIT_WORKDIR_PROTOCOL
+      ? { sharedDir: sharedDirOf(row.linuxUser), workDir: botWorkDirOf(row.linuxUser, row.seatId) }
+      : { sharedDir: workDirOf(row.linuxUser), workDir: null }),
     display: row.display,
     vncPort: row.vncPort,
     novncPort: row.novncPort,
@@ -1321,6 +1348,8 @@ async function installSeatOnce(db: Db, plan: DeployPlan): Promise<DeployOutcome>
 
   const secrets = await db.ensureAccountSecrets(account.id)
   if (!secrets) return await failSeat(db, plan, 500, '没有席位密钥')
+  // 只用来写工作区那一格的名牌，查不到就不带，不为它挡部署。
+  const botName = (await db.catalog(botId).catch(() => undefined))?.name?.trim()
 
   const spec: SeatSpec = {
     seatId: row.seatId,
@@ -1329,6 +1358,8 @@ async function installSeatOnce(db: Db, plan: DeployPlan): Promise<DeployOutcome>
     workDir: workDirOf(row.linuxUser),
     seatDir: seatDirOf(row.linuxUser, row.seatId),
     botId,
+    // 13 号管家写进 ~/work/bots/<席位>/.bot-name，人在桌面上认得出这一格是谁的；老管家不认，忽略。
+    ...(botName ? { botName } : {}),
     botVersion: version,
     // 能直连就把外部地址和校验值一起给：11 号起的管家直接去取、不带机器票、按 botSha256
     // 比对（manager/src/releases.ts）。老管家不认这两个字段，照旧从 Gateway 转发拉。
@@ -1790,6 +1821,8 @@ export interface SeatSpec {
   workDir: string
   seatDir: string
   botId: string
+  /** Bot 的名字，管家只拿它写工作区那一格的名牌。可选：查不到就不带。 */
+  botName?: string
   botVersion: string
   /**
    * bot 包的外部地址（GitHub Release）和它的 sha256。**成对出现或都不出现**：包只在
