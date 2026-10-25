@@ -42,6 +42,14 @@ const gatewayClient = SatuCore.createGatewayClient({
 const { gatewayBase, gatewayAbs, localBots, localSessions, registerLocalBot, localBotOf, localRoute, swFetch, api } = gatewayClient
 
 /**
+ * 当前公司名下的接口：`/orgs/<当前公司>` 后面接 `sub`。**没有公司时不替调用方拦**——拦下之后
+ * 各处要不要动 state 不一样，所以那一句 `if (!orgId()) return` 留在调用方。
+ */
+function orgApi(method, sub, body) {
+  return api(method, `/orgs/${encodeURIComponent(orgId())}${sub}`, body)
+}
+
+/**
  * 提示条自己走人的时限。
  *
  * 它说的都是**刚刚那一下的回执**：已下发停止、已压缩、已开始新对话、这条没发出去。
@@ -325,10 +333,9 @@ async function loadConnectorToolkits() {
 }
 
 async function loadOrgConnectors() {
-  const id = orgId()
   const [list, stats] = await Promise.all([
-    api('GET', `/orgs/${encodeURIComponent(id)}/connectors`),
-    api('GET', `/orgs/${encodeURIComponent(id)}/connector-stats`).catch(() => null),
+    orgApi('GET', '/connectors'),
+    orgApi('GET', '/connector-stats').catch(() => null),
   ])
   state.orgConnectors = list.connectors || []
   state.connectorStats = stats
@@ -444,17 +451,15 @@ async function loadUserDetail(id) {
 }
 
 async function loadOrg() {
-  const id = orgId()
-  if (!id) return
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}`)
+  if (!orgId()) return
+  const data = await orgApi('GET', '')
   state.org = data.company
   state.plan = data.plan
 }
 
 async function loadAccounts() {
-  const id = orgId()
-  if (!id) return
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/accounts`)
+  if (!orgId()) return
+  const data = await orgApi('GET', '/accounts')
   state.accounts = data.members || data.accounts || []
   state.groups = data.groups || []
   state.seats = data.seats || { total: 0, used: 0 }
@@ -806,8 +811,7 @@ const AUDIT_PAGE_SIZE = 20
  * 拿去接着翻会从一个不相干的位置开始。
  */
 async function loadConversationAudits(fromStart = false) {
-  const id = orgId()
-  if (!id) return
+  if (!orgId()) return
   if (fromStart || !Array.isArray(state.auditCursors) || !state.auditCursors.length) state.auditCursors = [null]
   const q = new URLSearchParams()
   q.set('limit', String(AUDIT_PAGE_SIZE))
@@ -822,7 +826,7 @@ async function loadConversationAudits(fromStart = false) {
   const qs = q.toString()
   state.auditLoading = true
   try {
-    const data = await api('GET', `/orgs/${encodeURIComponent(id)}/conversation-audits${qs ? '?' + qs : ''}`)
+    const data = await orgApi('GET', `/conversation-audits${qs ? '?' + qs : ''}`)
     state.auditItems = data.items || []
     // 老 Gateway 不回这一格：当成没有下一页，界面上就只有一页，和从前一样。
     state.auditNextCursor = data.hasMore && data.nextCursor ? data.nextCursor : null
@@ -833,43 +837,34 @@ async function loadConversationAudits(fromStart = false) {
 }
 
 async function loadConversationAuditCoverage() {
-  const id = orgId()
-  if (!id) return
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/conversation-audit-coverage`)
+  if (!orgId()) return
+  const data = await orgApi('GET', '/conversation-audit-coverage')
   state.auditCoverage = data.coverage || []
 }
 
 async function loadConversationAuditSettings() {
-  const id = orgId()
-  if (!id) return
-  state.auditSettings = await api('GET', `/orgs/${encodeURIComponent(id)}/conversation-audit-settings`)
+  if (!orgId()) return
+  state.auditSettings = await orgApi('GET', '/conversation-audit-settings')
 }
 
 async function saveConversationAuditRole(modelRole) {
-  const id = orgId()
-  if (!id) return
-  state.auditSettings = await api('PATCH', `/orgs/${encodeURIComponent(id)}/conversation-audit-settings`, { modelRole })
+  if (!orgId()) return
+  state.auditSettings = await orgApi('PATCH', '/conversation-audit-settings', { modelRole })
 }
 
 async function saveConversationAuditEnabled(enabled) {
-  const id = orgId()
-  if (!id) return
-  state.auditSettings = await api('PATCH', `/orgs/${encodeURIComponent(id)}/conversation-audit-settings`, { enabled })
+  if (!orgId()) return
+  state.auditSettings = await orgApi('PATCH', '/conversation-audit-settings', { enabled })
 }
 
 async function loadConversationAuditItem(itemId) {
-  const id = orgId()
-  if (!id || !itemId) return
-  state.auditItemDetail = await api(
-    'GET',
-    `/orgs/${encodeURIComponent(id)}/conversation-audits/${encodeURIComponent(itemId)}`,
-  )
+  if (!orgId() || !itemId) return
+  state.auditItemDetail = await orgApi('GET', `/conversation-audits/${encodeURIComponent(itemId)}`)
 }
 
 async function loadBilling() {
-  const id = orgId()
-  if (!id) return
-  state.billing = await api('GET', `/orgs/${encodeURIComponent(id)}/billing`)
+  if (!orgId()) return
+  state.billing = await orgApi('GET', '/billing')
 }
 
 /**
@@ -1046,9 +1041,8 @@ async function loadUsage() {
   const step = range === '今日' ? '&step=hour' : ''
   const q = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&tz=${encodeURIComponent(tz)}${step}`
   if (isAdmin() || isOwner()) {
-    const id = orgId()
-    if (!id) return
-    state.usage = await api('GET', `/orgs/${encodeURIComponent(id)}/usage?${q}`)
+    if (!orgId()) return
+    state.usage = await orgApi('GET', `/usage?${q}`)
     return
   }
   state.usage = await api('GET', `/me/stats?${q}`)
