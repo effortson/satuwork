@@ -66,24 +66,26 @@ export async function runRoutineRetry({ gwRoot, test, req, start, waitHttp, asse
   const seat = seatSpy()
   const seatUrl = await listen(seat.server)
 
-  const { gw } = await startGateway({
-    name: 'routine-retry-gw',
-    what: 'routine-retry gateway',
-    home: GW_HOME,
-    schema: SCHEMA,
-    port: GW_PORT,
-    env: {
-      GATEWAY_ACCESS_HOST: 'satuwork.com',
-      GATEWAY_SEED_OWNER: '1',
-      GATEWAY_OWNER_EMAIL: 'owner@retry.test',
-      GATEWAY_OWNER_PASSWORD: 'test-owner-retry',
-      SATUWORK_DEPLOY_STUB: '1',
-      GATEWAY_ROUTINE_TICK_MS: '1000',
-      GATEWAY_ROUTINE_RETRY_MS: RETRY_MS.join(','),
-    },
-  })
+  /** 放进 try 里起：起不来时下面的 finally 照样收掉这一套自己开的假服务。 */
+  let gw
 
   try {
+    gw = (await startGateway({
+      name: 'routine-retry-gw',
+      what: 'routine-retry gateway',
+      home: GW_HOME,
+      schema: SCHEMA,
+      port: GW_PORT,
+      env: {
+        GATEWAY_ACCESS_HOST: 'satuwork.com',
+        GATEWAY_SEED_OWNER: '1',
+        GATEWAY_OWNER_EMAIL: 'owner@retry.test',
+        GATEWAY_OWNER_PASSWORD: 'test-owner-retry',
+        SATUWORK_DEPLOY_STUB: '1',
+        GATEWAY_ROUTINE_TICK_MS: '1000',
+        GATEWAY_ROUTINE_RETRY_MS: RETRY_MS.join(','),
+      },
+    })).gw
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@retry.test',
       ownerPassword: 'test-owner-retry',
@@ -303,7 +305,7 @@ export async function runRoutineRetry({ gwRoot, test, req, start, waitHttp, asse
      * tick 一次、占着 PG 连接、日志混进后面每一个套件的输出里——而它的数据目录已经在
      * 下面这一行里被删掉了。
      */
-    gw.kill()
+    gw?.kill()
     await closeServer(seat.server, '席位替身')
     try {
       rmSync(GW_HOME, { recursive: true, force: true })

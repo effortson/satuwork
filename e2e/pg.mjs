@@ -26,18 +26,22 @@ function loadPg() {
 export async function pgClient(schema) {
   const pg = loadPg()
   const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
-  if (schema) await client.query(`set search_path to ${schema}`)
+  // 连上之后、交出去之前出的错（schema 名不对、库不在）由这里关：调用方还没拿到 client，
+  // 它的 finally 关不了这一条，连接就一直挂到进程退出。
+  try {
+    await client.connect()
+    if (schema) await client.query(`set search_path to ${schema}`)
+  } catch (e) {
+    await client.end().catch(() => {})
+    throw e
+  }
   return client
 }
 
 /** 连一次、跑 fn、关掉。关的时候出的错不盖住 fn 自己的。 */
 export async function withPg(schema, fn) {
-  const pg = loadPg()
-  const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
+  const client = await pgClient(schema)
   try {
-    if (schema) await client.query(`set search_path to ${schema}`)
     return await fn(client)
   } finally {
     await client.end().catch(() => {})

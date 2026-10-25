@@ -62,23 +62,8 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
     GATEWAY_CHANNEL_POLL_SCAN_MS: '600000',
   }
 
-  const { gw } = await startGateway({
-    name: 'channel-queue-gw',
-    what: 'channel-queue gateway',
-    home: GW_HOME,
-    schema: SCHEMA,
-    port: GW_PORT,
-    env: {
-      ...shared,
-      GATEWAY_SEED_OWNER: '1',
-      GATEWAY_OWNER_EMAIL: 'owner@queue.test',
-      GATEWAY_OWNER_PASSWORD: 'test-owner-queue',
-      SATUWORK_DEPLOY_STUB: '1',
-      GATEWAY_CHANNEL_TICK_MS: '300',
-      // 租约取下限，「发得比租约还久」那条用例才不用等太久。
-      GATEWAY_CHANNEL_EVENT_LEASE_MS: '15000',
-    },
-  })
+  /** 放进 try 里起：起不来时下面的 finally 照样收掉这一套自己开的假服务。 */
+  let gw
   let fn = null
 
   /** 一条已经有回复、投递失败过一次、到点该重试的事件。 */
@@ -97,6 +82,23 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
   const textOf = (s) => String(s?.text || s?.rich_message?.markdown || '')
 
   try {
+    gw = (await startGateway({
+      name: 'channel-queue-gw',
+      what: 'channel-queue gateway',
+      home: GW_HOME,
+      schema: SCHEMA,
+      port: GW_PORT,
+      env: {
+        ...shared,
+        GATEWAY_SEED_OWNER: '1',
+        GATEWAY_OWNER_EMAIL: 'owner@queue.test',
+        GATEWAY_OWNER_PASSWORD: 'test-owner-queue',
+        SATUWORK_DEPLOY_STUB: '1',
+        GATEWAY_CHANNEL_TICK_MS: '300',
+        // 租约取下限，「发得比租约还久」那条用例才不用等太久。
+        GATEWAY_CHANNEL_EVENT_LEASE_MS: '15000',
+      },
+    })).gw
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@queue.test',
       ownerPassword: 'test-owner-queue',
@@ -296,7 +298,7 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
     })
   } finally {
     fn?.kill('SIGTERM')
-    if (!gw._exited) gw.kill('SIGTERM')
+    if (gw && !gw._exited) gw.kill('SIGTERM')
     await closeServer(telegram.server).catch(() => {})
     try {
       rmSync(GW_HOME, { recursive: true, force: true })

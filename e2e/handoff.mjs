@@ -212,30 +212,32 @@ export async function runHandoff({ root, gwRoot, test, req, start, waitHttp, ass
   const seatUrl = await listen(seat.server)
   const hookUrl = (hook.secure ? 'https' : 'http') + '://' + (await listen(hook.server)).split('://')[1]
 
-  const { gw } = await startGateway({
-    name: 'handoff-gw',
-    what: 'handoff gateway',
-    home: GW_HOME,
-    schema: SCHEMA,
-    port: GW_PORT,
-    env: {
-      GATEWAY_ACCESS_HOST: 'satuwork.com',
-      GATEWAY_SEED_OWNER: '1',
-      GATEWAY_OWNER_EMAIL: 'owner@handoff.test',
-      GATEWAY_OWNER_PASSWORD: 'test-owner-handoff',
-      SATUWORK_DEPLOY_STUB: '1',
-      // 自签证书只对这一个子进程放开。测 https 那条分支的代价就是这一行。
-      ...(hook.secure ? { NODE_TLS_REJECT_UNAUTHORIZED: '0' } : {}),
-      // 假群机器人听在本机：SSRF 闸对这一个子进程放开，生产没有这个变量。
-      GATEWAY_HANDOFF_WEBHOOK_ALLOW_PRIVATE: '1',
-      // 催办那两档压到秒级，否则这一段要等半小时。下限是 1 秒（见 handoff-sweep.ts）。
-      GATEWAY_ROUTINE_TICK_MS: '1000',
-      GATEWAY_HANDOFF_NUDGE_MS: '1000',
-      GATEWAY_HANDOFF_EXPIRE_MS: '2000',
-    },
-  })
+  /** 放进 try 里起：起不来时下面的 finally 照样收掉这一套自己开的假服务。 */
+  let gw
 
   try {
+    gw = (await startGateway({
+      name: 'handoff-gw',
+      what: 'handoff gateway',
+      home: GW_HOME,
+      schema: SCHEMA,
+      port: GW_PORT,
+      env: {
+        GATEWAY_ACCESS_HOST: 'satuwork.com',
+        GATEWAY_SEED_OWNER: '1',
+        GATEWAY_OWNER_EMAIL: 'owner@handoff.test',
+        GATEWAY_OWNER_PASSWORD: 'test-owner-handoff',
+        SATUWORK_DEPLOY_STUB: '1',
+        // 自签证书只对这一个子进程放开。测 https 那条分支的代价就是这一行。
+        ...(hook.secure ? { NODE_TLS_REJECT_UNAUTHORIZED: '0' } : {}),
+        // 假群机器人听在本机：SSRF 闸对这一个子进程放开，生产没有这个变量。
+        GATEWAY_HANDOFF_WEBHOOK_ALLOW_PRIVATE: '1',
+        // 催办那两档压到秒级，否则这一段要等半小时。下限是 1 秒（见 handoff-sweep.ts）。
+        GATEWAY_ROUTINE_TICK_MS: '1000',
+        GATEWAY_HANDOFF_NUDGE_MS: '1000',
+        GATEWAY_HANDOFF_EXPIRE_MS: '2000',
+      },
+    })).gw
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@handoff.test',
       ownerPassword: 'test-owner-handoff',
@@ -531,7 +533,7 @@ export async function runHandoff({ root, gwRoot, test, req, start, waitHttp, ass
       assert(r.status === 503, `席位掉线时 ${r.status} ${r.text}`)
     })
   } finally {
-    gw.kill()
+    gw?.kill()
     await closeServer(seat.server, '席位替身')
     await closeServer(hook.server, '催办回调替身')
     if (tls) rmSync(tls.dir, { recursive: true, force: true })

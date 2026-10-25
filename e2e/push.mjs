@@ -138,29 +138,31 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
   const google = fakeGoogle(fcmKeys.publicKey, FCM_PORT)
   await new Promise((r) => google.server.listen(FCM_PORT, '127.0.0.1', r))
 
-  const { gw } = await startGateway({
-    name: 'push-gw',
-    what: 'push gateway',
-    home: GW_HOME,
-    schema: schemaOf('e2e_push'),
-    port: GW_PORT,
-    env: {
-      GATEWAY_ACCESS_HOST: 'satuwork.com',
-      GATEWAY_SEED_OWNER: '1',
-      GATEWAY_OWNER_EMAIL: 'owner@push.test',
-      GATEWAY_OWNER_PASSWORD: 'test-owner-push',
-      // 整段 base64：验「放不下换行的平台」那条读法。
-      GATEWAY_APNS_KEY: Buffer.from(privateKey.export({ type: 'pkcs8', format: 'pem' })).toString('base64'),
-      GATEWAY_APNS_KEY_ID: KID,
-      GATEWAY_APNS_TEAM_ID: TEAM,
-      GATEWAY_APNS_ENDPOINT: `http://127.0.0.1:${APNS_PORT}`,
-      // 服务账号 JSON 原文（不是 base64）：验另一种读法。
-      GATEWAY_FCM_SERVICE_ACCOUNT: google.serviceAccount(fcmKeys.privateKey.export({ type: 'pkcs8', format: 'pem' })),
-      GATEWAY_FCM_ENDPOINT: `http://127.0.0.1:${FCM_PORT}`,
-    },
-  })
+  /** 放进 try 里起：起不来时下面的 finally 照样收掉这一套自己开的假服务。 */
+  let gw
 
   try {
+    gw = (await startGateway({
+      name: 'push-gw',
+      what: 'push gateway',
+      home: GW_HOME,
+      schema: schemaOf('e2e_push'),
+      port: GW_PORT,
+      env: {
+        GATEWAY_ACCESS_HOST: 'satuwork.com',
+        GATEWAY_SEED_OWNER: '1',
+        GATEWAY_OWNER_EMAIL: 'owner@push.test',
+        GATEWAY_OWNER_PASSWORD: 'test-owner-push',
+        // 整段 base64：验「放不下换行的平台」那条读法。
+        GATEWAY_APNS_KEY: Buffer.from(privateKey.export({ type: 'pkcs8', format: 'pem' })).toString('base64'),
+        GATEWAY_APNS_KEY_ID: KID,
+        GATEWAY_APNS_TEAM_ID: TEAM,
+        GATEWAY_APNS_ENDPOINT: `http://127.0.0.1:${APNS_PORT}`,
+        // 服务账号 JSON 原文（不是 base64）：验另一种读法。
+        GATEWAY_FCM_SERVICE_ACCOUNT: google.serviceAccount(fcmKeys.privateKey.export({ type: 'pkcs8', format: 'pem' })),
+        GATEWAY_FCM_ENDPOINT: `http://127.0.0.1:${FCM_PORT}`,
+      },
+    })).gw
     const reg = await createCompany(req, base, {
       ownerEmail: 'owner@push.test',
       ownerPassword: 'test-owner-push',
@@ -322,7 +324,7 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       assert(del.json.removed === true, `FCM 令牌按原样删不掉：${del.text}`)
     })
   } finally {
-    gw.kill()
+    gw?.kill()
     await new Promise((r) => apns.server.close(r))
     await new Promise((r) => google.server.close(r))
     try {

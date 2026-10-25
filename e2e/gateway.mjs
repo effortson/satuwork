@@ -43,6 +43,14 @@ export async function startGateway({ name, what, home, schema, port, host = '127
   }
   const gw = start(name, ['--import', 'tsx', join(gwRoot, 'src/index.ts')], { cwd: gwRoot, env: full })
   // 带上 child：起不来时有用的是它的输出，不是三十秒后那句「等不到」。
-  await waitHttp(`${base}/health`, { child: gw, what, ...(timeout ? { timeout } : {}) })
+  try {
+    await waitHttp(`${base}/health`, { child: gw, what, ...(timeout ? { timeout } : {}) })
+  } catch (e) {
+    // 起不来就自己收拾：调用方拿不到 gw，杀不了它、也不知道该删哪个目录。调用方自己开的
+    // 别的东西（假服务、证书目录）由它的 finally 管——所以 startGateway 要放进 try 里调。
+    gw.kill('SIGTERM')
+    rmSync(home, { recursive: true, force: true })
+    throw e
+  }
   return { gw, base, port, home, schema, env: full }
 }

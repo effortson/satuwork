@@ -56,26 +56,28 @@ export async function runRoutineWorker({ gwRoot, test, req, start, waitHttp, ass
   const seat = seatSpy()
   const seatUrl = await listen(seat.server)
 
-  const { gw } = await startGateway({
-    name: 'routine-worker-gw',
-    what: 'routine-worker gateway',
-    home: GW_HOME,
-    schema: SCHEMA,
-    port: GW_PORT,
-    env: {
-      GATEWAY_ACCESS_HOST: 'satuwork.com',
-      GATEWAY_SEED_OWNER: '1',
-      GATEWAY_OWNER_EMAIL: 'owner@worker.test',
-      GATEWAY_OWNER_PASSWORD: 'test-owner-worker',
-      SATUWORK_DEPLOY_STUB: '1',
-      GATEWAY_ROUTINE_TICK_MS: '1000',
-      GATEWAY_ROUTINE_LEASE_MS: String(LEASE_MS),
-      GATEWAY_ROUTINE_RETRY_MS: RETRY_MS.join(','),
-      GATEWAY_ROUTINE_PICKUP_MS: String(PICKUP_MS),
-    },
-  })
+  /** 放进 try 里起：起不来时下面的 finally 照样收掉这一套自己开的假服务。 */
+  let gw
 
   try {
+    gw = (await startGateway({
+      name: 'routine-worker-gw',
+      what: 'routine-worker gateway',
+      home: GW_HOME,
+      schema: SCHEMA,
+      port: GW_PORT,
+      env: {
+        GATEWAY_ACCESS_HOST: 'satuwork.com',
+        GATEWAY_SEED_OWNER: '1',
+        GATEWAY_OWNER_EMAIL: 'owner@worker.test',
+        GATEWAY_OWNER_PASSWORD: 'test-owner-worker',
+        SATUWORK_DEPLOY_STUB: '1',
+        GATEWAY_ROUTINE_TICK_MS: '1000',
+        GATEWAY_ROUTINE_LEASE_MS: String(LEASE_MS),
+        GATEWAY_ROUTINE_RETRY_MS: RETRY_MS.join(','),
+        GATEWAY_ROUTINE_PICKUP_MS: String(PICKUP_MS),
+      },
+    })).gw
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@worker.test',
       ownerPassword: 'test-owner-worker',
@@ -311,7 +313,7 @@ export async function runRoutineWorker({ gwRoot, test, req, start, waitHttp, ass
       assert(fin.status === 200, `自己回报 ${fin.status}`)
     })
   } finally {
-    gw.kill('SIGTERM')
+    gw?.kill('SIGTERM')
     await closeServer(seat.server)
   }
 }

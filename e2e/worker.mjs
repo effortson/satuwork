@@ -112,30 +112,32 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
   await listen(bot.server, BOT_PORT)
   const telegram = await mockTelegram()
 
-  const { gw } = await startGateway({
-    name: 'worker-gw',
-    what: 'worker gateway',
-    home: GW_HOME,
-    schema: SCHEMA,
-    port: GW_PORT,
-    env: {
-      GATEWAY_ACCESS_HOST: 'satuwork.com',
-      GATEWAY_SEED_OWNER: '1',
-      GATEWAY_OWNER_EMAIL: 'owner@wk.test',
-      GATEWAY_OWNER_PASSWORD: 'test-owner-wk',
-      SATUWORK_DEPLOY_STUB: '1',
-      GATEWAY_ROUTINE_TICK_MS: '1000',
-      GATEWAY_ROUTINE_LEASE_MS: '3000',
-      TELEGRAM_API_BASE: telegram.url,
-      // 渠道扫描调快：归工人的事件 Gateway 不碰，但要它快点把「已跑完只差投递」的和别的收掉。
-      GATEWAY_CHANNEL_TICK_MS: '500',
-      GATEWAY_CHANNEL_POLL_SCAN_MS: '600000',
-    },
-  })
+  /** 放进 try 里起：起不来时下面的 finally 照样收掉这一套自己开的假服务。 */
+  let gw
   let mgr = null
   let worker = null
 
   try {
+    gw = (await startGateway({
+      name: 'worker-gw',
+      what: 'worker gateway',
+      home: GW_HOME,
+      schema: SCHEMA,
+      port: GW_PORT,
+      env: {
+        GATEWAY_ACCESS_HOST: 'satuwork.com',
+        GATEWAY_SEED_OWNER: '1',
+        GATEWAY_OWNER_EMAIL: 'owner@wk.test',
+        GATEWAY_OWNER_PASSWORD: 'test-owner-wk',
+        SATUWORK_DEPLOY_STUB: '1',
+        GATEWAY_ROUTINE_TICK_MS: '1000',
+        GATEWAY_ROUTINE_LEASE_MS: '3000',
+        TELEGRAM_API_BASE: telegram.url,
+        // 渠道扫描调快：归工人的事件 Gateway 不碰，但要它快点把「已跑完只差投递」的和别的收掉。
+        GATEWAY_CHANNEL_TICK_MS: '500',
+        GATEWAY_CHANNEL_POLL_SCAN_MS: '600000',
+      },
+    })).gw
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@wk.test',
       ownerPassword: 'test-owner-wk',
@@ -333,7 +335,7 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
     }
     worker?.kill('SIGTERM')
     mgr?.kill('SIGTERM')
-    gw.kill('SIGTERM')
+    gw?.kill('SIGTERM')
     await closeServer(bot.server)
   }
 }

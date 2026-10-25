@@ -135,23 +135,25 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
   const { port: blobPort, fakePort } = await listenWithLookalike(blob.server, fake)
   const blobBase = `http://127.0.0.1:${blobPort}`
 
-  const { gw } = await startGateway({
-    name: 'release-blob-gw',
-    what: 'release-blob gateway',
-    home: GW_HOME,
-    schema: schemaOf('e2e_release_blob'),
-    port: GW_PORT,
-    env: {
-      GATEWAY_ACCESS_HOST: 'satuwork.com',
-      GATEWAY_SEED_OWNER: '1',
-      GATEWAY_OWNER_EMAIL: 'owner@blob.test',
-      GATEWAY_OWNER_PASSWORD: 'test-owner-blob',
-      SATUWORK_DEPLOY_STUB: '1',
-      BLOB_READ_WRITE_TOKEN: TOKEN,
-      VERCEL_BLOB_API_URL: blobBase,
-    },
-  })
+  /** 放进 try 里起：起不来时下面的 finally 照样收掉这一套自己开的假服务。 */
+  let gw
   try {
+    gw = (await startGateway({
+      name: 'release-blob-gw',
+      what: 'release-blob gateway',
+      home: GW_HOME,
+      schema: schemaOf('e2e_release_blob'),
+      port: GW_PORT,
+      env: {
+        GATEWAY_ACCESS_HOST: 'satuwork.com',
+        GATEWAY_SEED_OWNER: '1',
+        GATEWAY_OWNER_EMAIL: 'owner@blob.test',
+        GATEWAY_OWNER_PASSWORD: 'test-owner-blob',
+        SATUWORK_DEPLOY_STUB: '1',
+        BLOB_READ_WRITE_TOKEN: TOKEN,
+        VERCEL_BLOB_API_URL: blobBase,
+      },
+    })).gw
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@blob.test', ownerPassword: 'test-owner-blob',
       email: 'admin@blob.test', password: 'correct-horse', companyName: 'BlobCo', slug: 'blobco', seats: 1,
@@ -243,7 +245,7 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
       }
     })
   } finally {
-    gw.kill('SIGTERM')
+    gw?.kill('SIGTERM')
     await closeServer(blob.server)
     await closeServer(fake)
   }
