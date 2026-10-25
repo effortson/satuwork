@@ -215,14 +215,25 @@ function connAddModal(c) {
   if (!a || a.id !== c.id) return ''
   const name = a.name || c.name
   if (a.phase === 'waiting') {
+    // 桌面端的授权页开在系统浏览器里，不是「新标签页」（见 pages-connectors.js 的 startAddAccount）。
+    const desktop = Boolean(window.__SATUWORK_DESKTOP__)
     return `<div class="gw-modal-backdrop" data-act="conn-add-close">
       <div class="gw-modal" style="max-width: 460px;" data-stop role="dialog" aria-modal="true">
         <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${t('在新页面里完成授权', 'Finish in the new tab')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t(
-            `已经在新标签页里打开了 ${name} 的授权页。在那里登录并同意，完成后关掉那一页，回到这里就会自动刷新。`,
-            `${name} authorization is open in a new tab. Sign in and approve there, then close it — this page refreshes when you come back.`,
-          )}</p>
+          <h2 style="font-size: 20px; margin: 0 0 4px;">${
+            desktop ? t('在浏览器里完成授权', 'Finish in your browser') : t('在新页面里完成授权', 'Finish in the new tab')
+          }</h2>
+          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${
+            desktop
+              ? t(
+                  `已经在浏览器里打开了 ${name} 的授权页。在那里登录并同意，完成后回到这里就会自动刷新；没刷新就点「我已完成授权」。`,
+                  `${name} authorization is open in your browser. Sign in and approve there, then come back — this window refreshes, or click "I have finished".`,
+                )
+              : t(
+                  `已经在新标签页里打开了 ${name} 的授权页。在那里登录并同意，完成后关掉那一页，回到这里就会自动刷新。`,
+                  `${name} authorization is open in a new tab. Sign in and approve there, then close it — this page refreshes when you come back.`,
+                )
+          }</p>
         </div>
         <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
           <button type="button" class="btn btn-ghost" data-act="conn-add-close">${t('关闭')}</button>

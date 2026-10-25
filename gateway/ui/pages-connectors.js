@@ -507,14 +507,22 @@ window.addEventListener('focus', () => {
  *
  * 不用 `noopener` 这个 feature：带上它 `window.open` 直接返回 null，就没有句柄可以
  * 送地址了。改成拿到句柄后手动断开 `opener`，防的是同一件事（反向标签劫持）。
+ *
+ * **桌面端不开空页。** 壳把 `window.open` 换成了「地址交给系统浏览器、返回 null」
+ * （desktop/src-tauri/src/nav.rs 的 LINK_SCRIPT），没有句柄可拿，也没有手势要占：
+ * 拿到地址再 `window.open` 一次，照样进「等你授权」。以前这里落进整页跳转那条兜底，
+ * 跳转被壳拦下送进浏览器、窗口原地不动，按钮就一直停在「打开中…」。
  */
 async function startAddAccount(id, label) {
+  const desktop = Boolean(window.__SATUWORK_DESKTOP__)
   let tab = null
-  try {
-    tab = window.open('', '_blank')
-    if (tab) tab.opener = null
-  } catch {
-    tab = null
+  if (!desktop) {
+    try {
+      tab = window.open('', '_blank')
+      if (tab) tab.opener = null
+    } catch {
+      tab = null
+    }
   }
   if (state.connAdd) Object.assign(state.connAdd, { error: '', busy: true })
   render()
@@ -522,9 +530,10 @@ async function startAddAccount(id, label) {
     const r = await api('POST', `/me/connectors/${encodeURIComponent(id)}/connections`, label ? { label } : {})
     // 被拦截器挡下来（tab 是 null）就还是整页跳走：把人卡在原地、什么都不发生，
     // 比换一页更糟——那时他只会以为按钮坏了。
-    if (tab && !tab.closed) {
+    if (desktop || (tab && !tab.closed)) {
       authReturn = id
-      tab.location.href = r.redirectUrl
+      if (desktop) window.open(r.redirectUrl, '_blank')
+      else tab.location.href = r.redirectUrl
       if (state.connAdd) Object.assign(state.connAdd, { phase: 'waiting', busy: false })
       // 新建的那一行（pending）先画出来：人回来时看得见「未完成」，而不是什么都没有。
       await loadConnectorDetail(id).catch(() => {})
