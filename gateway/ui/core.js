@@ -2293,19 +2293,22 @@ var SatuCore = (() => {
   }
 
   // core/src/chat/sse.ts
-  async function* sseEvents(reader, stop = () => false) {
+  async function* sseEvents(reader, stop = () => false, hooks = {}) {
     const decoder = new TextDecoder();
     let buf = "";
     while (!stop()) {
       const { done, value } = await reader.read();
       if (done) return;
-      buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      if (hooks.onChunk && hooks.onChunk() === false) return;
+      buf = (buf + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+      let sawData = false;
       let idx;
       while ((idx = buf.indexOf("\n\n")) >= 0) {
         const frame = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
         for (const line of frame.split("\n")) {
           if (!line.startsWith("data: ")) continue;
+          sawData = true;
           let ev;
           try {
             ev = JSON.parse(line.slice(6));
@@ -2315,6 +2318,7 @@ var SatuCore = (() => {
           yield ev;
         }
       }
+      if (hooks.onBatch) hooks.onBatch(sawData);
     }
   }
 

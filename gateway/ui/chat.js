@@ -1486,10 +1486,9 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
    * 活够 CHAT_ALIVE_MS 才算一次真连接，归零；没活够就沿用当前档位继续退避（core 的 aliveLongEnough）。
    */
   const nextAttempt = () => (SatuCore.aliveLongEnough(openedAt) ? 0 : attempt)
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
+  // 分帧走 core 的 sseEvents；这条流多要的两样（脉搏、重放看门狗）经它的 hooks 接上。
+  const hooks = {
+    onChunk: () => {
       // 这条流已经不是「当前那条」了就收摊。切 Bot 的一瞬间，旧流手上可能还攥着一段
       // 已经收到、还没解析的数据；不在这里拦住，它会落进新会话的事件数组里，画出来
       // 就是两个 Bot 的消息串在一起。
@@ -1497,158 +1496,145 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
       // 判据以 chatStreamId 为准（换 Bot 必经 stopChatStream，它就是那把闩）。
       // chatSessionId 只在**已经认定了某条会话**时才参与——低层直接调 startChatStream
       // 的路径（重连、测试）还没来得及认领，不该被当成「串台」拦掉。
-      if (ac.signal.aborted) break
+      if (ac.signal.aborted) return false
       // **不再因为「不是当前会话」就收摊**：后台那几条流正是名单上时间、摘要和转圈的
       // 唯一来源。只有当前这条要盯 chatStreamId（重连时它会被换掉）。
-      if (isActive() && chatStreamId !== sessionId) break
-      // 任何字节都算脉搏——`: ping` 不是事件、下面的解析会跳过它，但它证明这条链活着。
-      // **看门狗不在这里续命**（见下面的 sawData）：「这条链活着」和「重放在推进」是
+      if (isActive() && chatStreamId !== sessionId) return false
+      // 任何字节都算脉搏——`: ping` 不是事件、解析会跳过它，但它证明这条链活着。
+      // **看门狗不在这里续命**（见 onBatch）：「这条链活着」和「重放在推进」是
       // 两件事，混成一件的后果写在 REPLAY_STALL_MS 上面。
       notePulse(ac, sessionId, owner)
-      buf += decoder.decode(value, { stream: true })
-      buf = buf.replace(/\r\n/g, '\n')
-      let idx
-      /** 这一批字节里有没有真事件。**只有它给看门狗续命**，`: ping` 不算。 */
-      let sawData = false
-      while ((idx = buf.indexOf('\n\n')) >= 0) {
-        const frame = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        for (const line of frame.split('\n')) {
-          if (!line.startsWith('data: ')) continue
-          sawData = true
-          let ev
-          try {
-            ev = JSON.parse(line.slice(6))
-          } catch {
-            continue
-          }
-          if (!ev || typeof ev !== 'object') continue
+    },
+    // 这一批字节里有真的 data 行，就是重放在推进，把看门狗往后推一格——**只有它给看门狗
+    // 续命**，`: ping` 不算。在这一批的事件都处理完之后才调：里面要是有 replay/done，
+    // sawDone 已经置位，armStall 自己会空转。
+    onBatch: (sawData) => {
+      if (sawData) armStall()
+    },
+  }
+  try {
+    for await (const ev of sseEvents(reader, undefined, hooks)) {
+      if (!ev || typeof ev !== 'object') continue
+      /**
+       * 席位自报家门：**这是不是上次那个进程**。
+       *
+       * 换版就是把 bot 换一个进程，而浏览器这头只看得见「流断了」——和网络抖一下
+       * 长得一模一样。于是它会拿着换版前的游标续传、接着用手上那些从旧进程攒下来
+       * 的状态（正在跑的那一轮、排队的 dock、目录里的工具），而没有任何东西会来
+       * 纠正它。席位每条流的第一帧都会说一句自己是谁（见 bot/src/web/index.ts 的
+       * runtime/hello），认出换了进程就整条会话重来。
+       *
+       * **头一次见到不算重启**：那是页面刚开、或者这个 Bot 第一次连上，什么都不用做。
+       */
+      if (ev.type === 'runtime/hello') {
+        const seat = String(ev.instanceId || '')
+        const row = owner ? botStreamOf(owner) : null
+        const known = row ? row.instanceId : ''
+        if (row) row.instanceId = seat
+        if (seat && known && known !== seat) {
+          // 席位换过进程了。这条流上后面那些事件按新会话处理：先把旧的一律作废
+          // （事件桶、摘要、「历史补过了」），再回去重新拿一次会话——会话 id 多半
+          // 没变（它在席位的盘上），但**目录、队列、在不在跑全得重新问一遍**，
+          // 而且那条 hydrate 也要重跑，否则界面停在换版前那一刻。
+          seatRestarted(owner, sessionId)
           /**
-           * 席位自报家门：**这是不是上次那个进程**。
+           * **当场 `return`，这条流上后面的一帧都不再收。**
            *
-           * 换版就是把 bot 换一个进程，而浏览器这头只看得见「流断了」——和网络抖一下
-           * 长得一模一样。于是它会拿着换版前的游标续传、接着用手上那些从旧进程攒下来
-           * 的状态（正在跑的那一轮、排队的 dock、目录里的工具），而没有任何东西会来
-           * 纠正它。席位每条流的第一帧都会说一句自己是谁（见 bot/src/web/index.ts 的
-           * runtime/hello），认出换了进程就整条会话重来。
-           *
-           * **头一次见到不算重启**：那是页面刚开、或者这个 Bot 第一次连上，什么都不用做。
+           * hello 帧和新流的回放帧常常挤在同一个网络分片里。接着往下收的话，刚被
+           * resetBotStream 清空的事件桶会被紧随其后的那些帧立刻填回去，而这时
+           * `row.sessionId` 已经被置成空串——等 ensureChatSession 认下新会话时，
+           * 那道 `if (row.sessionId && row.sessionId !== sessionId) reset` 因为空串
+           * 而不成立，这批本该作废的事件就留在了新会话里，seq 还会把
+           * chatCursor/hydrateChat 的合并判据一起带歪。
            */
-          if (ev.type === 'runtime/hello') {
-            const seat = String(ev.instanceId || '')
-            const row = owner ? botStreamOf(owner) : null
-            const known = row ? row.instanceId : ''
-            if (row) row.instanceId = seat
-            if (seat && known && known !== seat) {
-              // 席位换过进程了。这条流上后面那些事件按新会话处理：先把旧的一律作废
-              // （事件桶、摘要、「历史补过了」），再回去重新拿一次会话——会话 id 多半
-              // 没变（它在席位的盘上），但**目录、队列、在不在跑全得重新问一遍**，
-              // 而且那条 hydrate 也要重跑，否则界面停在换版前那一刻。
-              seatRestarted(owner, sessionId)
-              /**
-               * **`return`，不是 `break`。**
-               *
-               * break 只跳出「这一帧里的各行」，外面按 `\n\n` 切帧的 while 还在转，
-               * 而 hello 帧和新流的回放帧常常挤在同一个网络分片里。于是刚被
-               * resetBotStream 清空的事件桶会被紧随其后的那些帧立刻填回去，而这时
-               * `row.sessionId` 已经被置成空串——等 ensureChatSession 认下新会话时，
-               * 那道 `if (row.sessionId && row.sessionId !== sessionId) reset` 因为空串
-               * 而不成立，这批本该作废的事件就留在了新会话里，seq 还会把
-               * chatCursor/hydrateChat 的合并判据一起带歪。
-               */
-              disarmStall()
-              endReplay()
-              return
-            }
-            continue
-          }
+          disarmStall()
+          endReplay()
+          return
+        }
+        continue
+      }
+      /**
+       * 排队的消息有变。**不是会话事件**，不进事件桶——它还没发生，进了桶就会被
+       * 当成历史画成气泡。它只画在输入框顶上那一行 dock 里。
+       */
+      if (ev.type === 'queue/change') {
+        chatQueues.set(sessionId, Array.isArray(ev.queued) ? ev.queued : [])
+        if (isActive()) paintChatQueue()
+        continue
+      }
+      if (ev.type === 'replay/done') {
+        disarmStall()
+        // 刷新页面之后 dock 要能原样回来：队列在席位那边，这里只是接住它。
+        if (Array.isArray(ev.queued)) {
+          chatQueues.set(sessionId, ev.queued)
+          if (isActive()) paintChatQueue()
+        }
+        // bot 明说历史放完了。它不是会话事件，不进事件桶。
+        // 顺带说了这条会话此刻在不在跑——这句是权威，压过扫出来的那个结论。
+        // 续传（after>0）那次 bot 不给这两个值；流垫的又只有一轮，比 hydrateChat
+        // 那二十轮窄。两种情况都由 noteChatPage 挡住，别把已经知道的覆盖掉。
+        if (typeof ev.firstSeq === 'number' || typeof ev.hasMore === 'boolean') {
+          noteChatPage(sessionId, { firstSeq: ev.firstSeq, hasMore: ev.hasMore })
+        }
+        if (typeof ev.live === 'boolean') {
+          chatLive.set(sessionId, ev.live)
           /**
-           * 排队的消息有变。**不是会话事件**，不进事件桶——它还没发生，进了桶就会被
-           * 当成历史画成气泡。它只画在输入框顶上那一行 dock 里。
+           * 名单上那颗点也是扫出来的，同样会挂在「正在执行」上下不来。
+           *
+           * **改 `busy` 再让 settleDot 去算，不能直接写 `state`。** 全场只有这一处
+           * 曾经直接写 state，而 state 是派生量：30 秒一次的 applyHandoffSnapshot
+           * 会对每一行调 settleDot，按 `busy`/`asking`/openIds 重算一遍。busy 还留
+           * 着旧的 true（席位崩在半路，日志里有 turn/start 没 turn/end），那颗点就
+           * 在下一次轮询时被翻回「正在执行」，而且再也下不来——正是这面权威旗子要
+           * 治的病，换个地方又长了出来。顺带 `review`（等审批/转人工）也不该被这一
+           * 下抹掉，交给 settleDot 就都对了。
            */
-          if (ev.type === 'queue/change') {
-            chatQueues.set(sessionId, Array.isArray(ev.queued) ? ev.queued : [])
-            if (isActive()) paintChatQueue()
-            continue
-          }
-          if (ev.type === 'replay/done') {
-            disarmStall()
-            // 刷新页面之后 dock 要能原样回来：队列在席位那边，这里只是接住它。
-            if (Array.isArray(ev.queued)) {
-              chatQueues.set(sessionId, ev.queued)
-              if (isActive()) paintChatQueue()
-            }
-            // bot 明说历史放完了。它不是会话事件，不进事件桶。
-            // 顺带说了这条会话此刻在不在跑——这句是权威，压过扫出来的那个结论。
-            // 续传（after>0）那次 bot 不给这两个值；流垫的又只有一轮，比 hydrateChat
-            // 那二十轮窄。两种情况都由 noteChatPage 挡住，别把已经知道的覆盖掉。
-            if (typeof ev.firstSeq === 'number' || typeof ev.hasMore === 'boolean') {
-              noteChatPage(sessionId, { firstSeq: ev.firstSeq, hasMore: ev.hasMore })
-            }
-            if (typeof ev.live === 'boolean') {
-              chatLive.set(sessionId, ev.live)
-              /**
-               * 名单上那颗点也是扫出来的，同样会挂在「正在执行」上下不来。
-               *
-               * **改 `busy` 再让 settleDot 去算，不能直接写 `state`。** 全场只有这一处
-               * 曾经直接写 state，而 state 是派生量：30 秒一次的 applyHandoffSnapshot
-               * 会对每一行调 settleDot，按 `busy`/`asking`/openIds 重算一遍。busy 还留
-               * 着旧的 true（席位崩在半路，日志里有 turn/start 没 turn/end），那颗点就
-               * 在下一次轮询时被翻回「正在执行」，而且再也下不来——正是这面权威旗子要
-               * 治的病，换个地方又长了出来。顺带 `review`（等审批/转人工）也不该被这一
-               * 下抹掉，交给 settleDot 就都对了。
-               */
-              if (owner) {
-                const sum = botStreamOf(owner).sum
-                sum.busy = ev.live
-                settleDot(sum)
-                scheduleRosterPaint()
-              }
-            }
-            if (isActive()) {
-              endReplay()
-              // **必须无条件重画。** endReplay 的第一行是「闸已经开过了就 return」，
-              // 而重放一段长历史（实测 988 条）必然撞上 4 秒硬上限或 120ms 静默兜底，
-              // 闸早就自己开了。于是走到这儿时 endReplay 直接返回——bot 刚给的结论
-              // 存进了 chatLive，却一帧都没画出来。而这之后没有任何事件会再来触发重绘
-              // （正因为它说的就是「没在跑」），界面就永远停在开闸那一刻的样子：
-              // 一个悬着的 turn/start，一句「正在处理」，等多久都不变。
-              schedulePaintChat()
-            }
-            continue
-          }
-          // bot 表过态之后，这个结论就由实时的 turn 事件接着维护。表态之前不碰它——
-          // 那会儿来的是重放的历史，正是不能拿来下结论的那一批。
-          if (chatLive.has(sessionId) && (ev.type === 'turn/start' || ev.type === 'turn/end')) {
-            chatLive.set(sessionId, ev.type === 'turn/start')
-          }
           if (owner) {
-            if (!pushBotEvent(owner, ev)) {
-              // 重复的——历史那条路已经收过这一条了。不进桶、不改摘要，但它证明流还
-              // 活着，重放的静默判定要跟着往后推，否则一段全是重复的重放会让闸提前开。
-              if (isActive() && state.chatReplaying) bumpReplayQuiet()
-              continue
-            }
-            noteBotEvent(owner, ev)
-          } else if (isActive()) {
-            // 没有归属又不是当前会话的流，事件无处可放——**绝不能倒进 chatEvents**，
-            // 那正是「切走了，旧流剩下的半截落进新会话」的老毛病。
-            state.chatEvents.push(ev)
+            const sum = botStreamOf(owner).sum
+            sum.busy = ev.live
+            settleDot(sum)
+            scheduleRosterPaint()
           }
-          if (!isActive()) continue
-          // replay/done 之前都是历史，不能因为翻到昨天生成过一个网页就突然弹预览。
-          // 只有真正的实时 tool/result 才触发自动打开/刷新。
-          if (sawDone) maybeLivePreview(ev)
-          // 重放还在继续：把「静默」判定往后推。**但照画**——合并重绘由 rAF 管，
-          // 状态由 paintChat 摁着不会说假话（两处都见重放闸那段说明）。以前这里是
-          // 「重放期间一帧都不画」，代价是刷新之后最长四秒屏幕上什么都没有。
-          if (state.chatReplaying) bumpReplayQuiet()
+        }
+        if (isActive()) {
+          endReplay()
+          // **必须无条件重画。** endReplay 的第一行是「闸已经开过了就 return」，
+          // 而重放一段长历史（实测 988 条）必然撞上 4 秒硬上限或 120ms 静默兜底，
+          // 闸早就自己开了。于是走到这儿时 endReplay 直接返回——bot 刚给的结论
+          // 存进了 chatLive，却一帧都没画出来。而这之后没有任何事件会再来触发重绘
+          // （正因为它说的就是「没在跑」），界面就永远停在开闸那一刻的样子：
+          // 一个悬着的 turn/start，一句「正在处理」，等多久都不变。
           schedulePaintChat()
         }
+        continue
       }
-      // 重放在推进，就把看门狗往后推一格。**放在解析之后**：这一批里要是有
-      // replay/done，sawDone 已经置位，armStall 自己会空转。
-      if (sawData) armStall()
+      // bot 表过态之后，这个结论就由实时的 turn 事件接着维护。表态之前不碰它——
+      // 那会儿来的是重放的历史，正是不能拿来下结论的那一批。
+      if (chatLive.has(sessionId) && (ev.type === 'turn/start' || ev.type === 'turn/end')) {
+        chatLive.set(sessionId, ev.type === 'turn/start')
+      }
+      if (owner) {
+        if (!pushBotEvent(owner, ev)) {
+          // 重复的——历史那条路已经收过这一条了。不进桶、不改摘要，但它证明流还
+          // 活着，重放的静默判定要跟着往后推，否则一段全是重复的重放会让闸提前开。
+          if (isActive() && state.chatReplaying) bumpReplayQuiet()
+          continue
+        }
+        noteBotEvent(owner, ev)
+      } else if (isActive()) {
+        // 没有归属又不是当前会话的流，事件无处可放——**绝不能倒进 chatEvents**，
+        // 那正是「切走了，旧流剩下的半截落进新会话」的老毛病。
+        state.chatEvents.push(ev)
+      }
+      if (!isActive()) continue
+      // replay/done 之前都是历史，不能因为翻到昨天生成过一个网页就突然弹预览。
+      // 只有真正的实时 tool/result 才触发自动打开/刷新。
+      if (sawDone) maybeLivePreview(ev)
+      // 重放还在继续：把「静默」判定往后推。**但照画**——合并重绘由 rAF 管，
+      // 状态由 paintChat 摁着不会说假话（两处都见重放闸那段说明）。以前这里是
+      // 「重放期间一帧都不画」，代价是刷新之后最长四秒屏幕上什么都没有。
+      if (state.chatReplaying) bumpReplayQuiet()
+      schedulePaintChat()
     }
   } catch (err) {
     disarmStall()
