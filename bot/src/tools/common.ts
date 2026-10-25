@@ -2,6 +2,7 @@ import type { Dirent } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import { gatewayJson } from '../gateway-api.ts'
 import { WorkspaceError } from '../workspace/index.ts'
 import type { ReassignedItem, ToolCall, ToolDelegation, ToolRisk, WorkspaceFile } from './index.ts'
 
@@ -18,6 +19,22 @@ export class ToolFailure extends Error {}
 
 export function fail(message: string): never {
   throw new ToolFailure(message)
+}
+
+/**
+ * 打 Gateway 的 runtime 面（memory / skill / routine 共用），`unconfigured` 是没配 Gateway 时那句话。
+ *
+ * 连不上是**管道故障**（模型改什么都没用），HTTP 4xx 里带的那句话是**业务失败**——
+ * 它是 Gateway 判出来的、能照着改的东西（名字撞了、写满了、改不动别人的），原话直接
+ * 给模型看。两者混成一种，模型要么白重试、要么把一次可修复的拒绝当成系统坏了。
+ */
+export function runtimeGateway(unconfigured: string) {
+  return <T>(method: string, path: string, body?: unknown): Promise<T> =>
+    gatewayJson<T>(method, path, body, {
+      timeoutMs: 30_000,
+      unconfigured: () => new ToolFailure(unconfigured),
+      rejected: (message) => new ToolFailure(message),
+    })
 }
 
 /** 截断并说清楚截了多少。悄悄截掉会让模型以为它看到的就是全部。 */

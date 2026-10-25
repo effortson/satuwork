@@ -1,7 +1,8 @@
 import { lstatSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { Service, type Context } from '@deepseek-ai/cordis'
-import { gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl, pinnedBotId } from '../env.ts'
+import { gatewayApiKey, llmBaseUrl, pinnedBotId } from '../env.ts'
+import { gatewayOk } from '../gateway-api.ts'
 import { completeOnce } from '../llm/gateway.ts'
 import { docKindOf, extractDocument } from '../workspace/extract.ts'
 
@@ -75,29 +76,12 @@ export interface ExtractOut {
 export class WebFailure extends Error {}
 
 async function callGateway<T>(path: string, body: unknown): Promise<T> {
-  const base = gatewayUrl()
-  const token = gatewayToken()
-  if (!base || !token) throw new WebFailure('这台机器没有配 Gateway，网页工具用不了。')
-  let r: Response
-  try {
-    r = await fetch(base + path, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(90_000),
-    })
-  } catch (e) {
-    // 连不上 Gateway 是**管道故障**，不是业务失败——模型改什么都没用。
-    throw new Error(`连不上 Gateway：${(e as Error).message}`)
-  }
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    throw new Error(`Gateway 返回 HTTP ${r.status}${text ? ` ${text.slice(0, 200)}` : ''}`)
-  }
-  const data = (await r.json()) as { ok?: boolean; error?: string } & T
-  // ok:false 是 Gateway 那头判出来的业务失败，原话直接给模型。
-  if (data?.ok === false) throw new WebFailure(data.error || '网页工具失败了')
-  return data
+  // 连不上 Gateway 是**管道故障**，不是业务失败；ok:false 是 Gateway 那头判出来的业务失败，原话直接给模型。
+  return gatewayOk<T>(path, body, {
+    timeoutMs: 90_000,
+    unconfigured: () => new WebFailure('这台机器没有配 Gateway，网页工具用不了。'),
+    failure: (error) => new WebFailure(error || '网页工具失败了'),
+  })
 }
 
 export async function search(args: {

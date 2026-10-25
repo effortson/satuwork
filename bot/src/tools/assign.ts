@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
+import { pinnedBotId } from '../env.ts'
+import { gatewayRaw } from '../gateway-api.ts'
 import type { SessionEventMap, TaskProgress } from '../session/types.ts'
 
 /**
@@ -89,27 +90,11 @@ const sleep = (ms: number, signal?: AbortSignal) =>
     signal?.addEventListener('abort', done, { once: true })
   })
 
-async function gateway(method: string, path: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> | null; text: string }> {
-  const base = gatewayUrl()
-  const token = gatewayToken()
-  if (!base || !token) throw new AssignFailure('这台机器没有配 Gateway，派不了活。')
-  let r: Response
-  try {
-    r = await fetch(`${base}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-    })
-  } catch (e) {
-    throw new Error(`连不上 Gateway：${(e as Error).message}`)
-  }
-  const text = await r.text().catch(() => '')
-  let json: Record<string, unknown> | null = null
-  try {
-    json = text ? JSON.parse(text) : null
-  } catch {}
-  return { status: r.status, json, text }
+function gateway(method: string, path: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> | null; text: string }> {
+  return gatewayRaw(method, path, body, {
+    timeoutMs: HTTP_TIMEOUT_MS,
+    unconfigured: () => new AssignFailure('这台机器没有配 Gateway，派不了活。'),
+  })
 }
 
 /**

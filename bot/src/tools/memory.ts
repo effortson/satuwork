@@ -1,9 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { cachedMemories, type CachedMemory } from '../catalog/index.ts'
-import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
+import { pinnedBotId } from '../env.ts'
 import { memoryOf } from '../registry/index.ts'
 import { scanPii } from '../policy/pii.ts'
-import { fail, registerTool } from './common.ts'
+import { fail, registerTool, runtimeGateway } from './common.ts'
 
 /**
  * 长期记忆：`memory_write` / `memory_list`（见 docs/memory.md）。
@@ -39,39 +39,9 @@ const LIST_MAX = 100
  *
  * 连不上是**管道故障**（模型改什么都没用），4xx 里那句话是**业务失败**——它是 Gateway
  * 判出来的、能照着改的东西（写满了、类别没开、改不动别人的），原话直接给模型看。
- * 两者混成一种，模型要么白重试、要么把一次可修复的拒绝当成系统坏了。（同 tools/skill.ts）
+ * 两者混成一种，模型要么白重试、要么把一次可修复的拒绝当成系统坏了。（口径在 common.ts 的 runtimeGateway）
  */
-async function callGateway<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const base = gatewayUrl()
-  const token = gatewayToken()
-  if (!base || !token) fail('这台机器没有配 Gateway，记忆这条路走不通。')
-  let r: Response
-  try {
-    r = await fetch(base + path, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(30_000),
-    })
-  } catch (e) {
-    throw new Error(`连不上 Gateway：${(e as Error).message}`)
-  }
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    let hint = ''
-    try {
-      hint = String((JSON.parse(text) as { error?: unknown })?.error ?? '')
-    } catch {
-      hint = ''
-    }
-    if (r.status >= 400 && r.status < 500) fail(hint || `Gateway 拒绝了这次操作（HTTP ${r.status}）`)
-    throw new Error(`Gateway 返回 HTTP ${r.status}${text ? ` ${text.slice(0, 200)}` : ''}`)
-  }
-  return (await r.json()) as T
-}
+const callGateway = runtimeGateway('这台机器没有配 Gateway，记忆这条路走不通。')
 
 /** 这条记忆是模型自己写得动的那两层吗。上面两层读得到、改不动。 */
 export function ownLayer(m: CachedMemory): boolean {

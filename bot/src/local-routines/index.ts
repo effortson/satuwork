@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { gatewayToken, gatewayUrl, isLocalRuntime, pinnedBotId } from '../env.ts'
+import { gatewayFetch } from '../gateway-api.ts'
 
 /**
  * 本地 Bot（桌面端）的日常任务：**自己领、自己跑、自己回报。**
@@ -45,16 +46,7 @@ function num(v: unknown, fallback: number): number {
 }
 
 async function gw(path: string, body?: unknown): Promise<unknown> {
-  const r = await fetch(`${gatewayUrl()}/runtime/local-routines${path}`, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: {
-      authorization: `Bearer ${gatewayToken()}`,
-      accept: 'application/json',
-      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(20_000),
-  })
+  const r = await gatewayFetch(body === undefined ? 'GET' : 'POST', `/runtime/local-routines${path}`, body, 20_000, { accept: 'application/json' })
   const text = await r.text()
   let json: unknown = null
   try {

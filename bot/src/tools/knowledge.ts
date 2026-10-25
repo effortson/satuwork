@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
+import { pinnedBotId } from '../env.ts'
+import { gatewayOk } from '../gateway-api.ts'
 
 /**
  * 一把工具：`knowledge_search`，在公司知识库里按语义搜（docs/knowledge-base.md §8）。
@@ -39,27 +40,16 @@ interface Hit {
 class KnowledgeFailure extends Error {}
 
 async function callGateway(body: unknown): Promise<{ hits: Hit[]; searched: number; elapsedMs: number }> {
-  const base = gatewayUrl()
-  const token = gatewayToken()
-  if (!base || !token) throw new KnowledgeFailure('这台机器没有配 Gateway，知识库用不了。')
   const botId = pinnedBotId()
-  let r: Response
-  try {
-    r = await fetch(`${base}/runtime/knowledge/search?botId=${encodeURIComponent(botId)}`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
-    })
-  } catch (e) {
-    throw new Error(`连不上 Gateway：${(e as Error).message}`)
-  }
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    throw new Error(`Gateway 返回 HTTP ${r.status}${text ? ` ${text.slice(0, 200)}` : ''}`)
-  }
-  const data = (await r.json()) as { ok?: boolean; error?: string; hits?: Hit[]; searched?: number; elapsedMs?: number }
-  if (data?.ok === false) throw new KnowledgeFailure(data.error || '知识库查询失败了')
+  const data = await gatewayOk<{ hits?: Hit[]; searched?: number; elapsedMs?: number }>(
+    `/runtime/knowledge/search?botId=${encodeURIComponent(botId)}`,
+    body,
+    {
+      timeoutMs: 30_000,
+      unconfigured: () => new KnowledgeFailure('这台机器没有配 Gateway，知识库用不了。'),
+      failure: (error) => new KnowledgeFailure(error || '知识库查询失败了'),
+    },
+  )
   return { hits: Array.isArray(data.hits) ? data.hits : [], searched: Number(data.searched) || 0, elapsedMs: Number(data.elapsedMs) || 0 }
 }
 
