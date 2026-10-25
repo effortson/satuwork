@@ -9,12 +9,16 @@
  *  - 每一件的状态变化都写进会话（bot/assign）。
  */
 import { createServer } from 'node:http'
+import { getEventListeners } from 'node:events'
 import { Context, Service } from '@deepseek-ai/cordis'
 
 // 环境变量要在**导入工具模块之前**设好：轮询间隔是模块加载时读的，静态 import 会抢在这几行前面执行。
 process.env.SATUWORK_BOT_ID = 'bot-main'
 process.env.GATEWAY_TOKEN = 'sat_assign_probe'
 process.env.SATUWORK_ASSIGN_POLL_MS = '200'
+// 建任务那一下等多久算没回来、隔多久重发：压短，好验「慢响应重发不建第二条」。
+process.env.SATUWORK_ASSIGN_HTTP_TIMEOUT_MS = '600'
+process.env.SATUWORK_ASSIGN_RETRY_MS = '100'
 const toolsPlugin = await import('./src/tools/index.ts')
 const assignPlugin = await import('./src/tools/assign.ts')
 
@@ -36,7 +40,15 @@ const gateway = createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/runtime/tasks') {
       posted.push({ auth: req.headers.authorization, body, at: Date.now() })
       if (body.toBot === 'busy') return send(409, { error: '「忙人」上一件活还没做完' })
+      // 真 Gateway 按 callId + 目标 + 指令认回还没收场的那一条（重发不建第二条）。
+      const same = [...tasks.values()].find((t) => t.body.callId === body.callId && t.body.toBot === body.toBot && t.body.instruction === body.instruction)
+      if (same) return send(201, { task: { id: same.id, status: 'queued' } })
       const id = `t-${++seq}`
+      // 「慢响应」：第一次建好了，响应却拖过了席位的超时。
+      if (body.instruction === '慢响应的那件') {
+        tasks.set(id, { id, body, polls: 0 })
+        return void setTimeout(() => send(201, { task: { id, status: 'queued' } }), 1500)
+      }
       tasks.set(id, { id, body, polls: 0 })
       return send(201, { task: { id, status: 'queued' } })
     }
@@ -133,7 +145,9 @@ out.schema = { 在表里: Boolean(def), 描述里有名单: Boolean(def && /财�
     带席位票和wait: posted.every((p) => p.auth === 'Bearer sat_assign_probe' && p.body.wait === true && p.body.fromBotId === 'bot-main' && p.body.sessionId === 's-main'),
     并行的一起派: Math.abs(at('扫邮箱').at - at('看合同').at) < 150,
     串行的等前置: at('核账单').at > at('扫邮箱').at + 150,
-    前置结论附在指令末尾: at('核账单').body.instruction.includes('前置任务交回的结论') && at('核账单').body.instruction.includes('【sales】做完了：扫邮箱'),
+    // 单独放进 context，不拼进指令：指令有 4000 字的上限，前置一长后一件就派不出去。
+    前置结论单独交过去: at('核账单').body.instruction === '核账单' && String(at('核账单').body.context || '').includes('【sales】做完了：扫邮箱'),
+    没前置的不带context: !('context' in at('扫邮箱').body),
     同一颗Bot自动排队: at('出月报').at > at('核账单').at + 150,
     前置没做成就跳过: !at('跟进合同') && last.get('c-dag:law2')?.state === 'skipped',
     结论都回给模型: /\[1\/5 done · @销售/.test(r.text) && /\[2\/5 failed · @法务/.test(r.text) && r.text.includes('【fin】做完了：出月报'),
@@ -170,6 +184,46 @@ out.schema = { 在表里: Boolean(def), 描述里有名单: Boolean(def && /财�
     在跑的发了停止: Boolean(promoId) && cancels.includes(promoId),
     做完的结论留着: last.get('c-stop:leads')?.state === 'done',
     告诉模型整批停了别重派: r.text.includes('整批跟着停了') && r.text.includes('不要重派') && /\[1\/4 cancelled · @设计师/.test(r.text),
+  }
+}
+
+// ── 同一颗 Bot 的隐含排队：按 after 排出来的先后排，不按书写顺序；只管先后、不管成败 ──
+{
+  const t0 = Date.now()
+  // 写在前面的 a 等写在后面的 b，又同是财务：按书写顺序排会 b 等 a、a 等 b，互等到超时。
+  const rev = await run({ tasks: [{ id: 'a', bot: '财务', instruction: '后做的盘点', after: ['b'] }, { id: 'b', bot: '财务', instruction: '先做的盘点' }] }, 'c-rev')
+  const at = (name) => posted.find((p) => p.body.instruction.startsWith(name))
+  const lastOf = (callId) => {
+    const m = new Map()
+    for (const e of events.filter((e) => e.type === 'bot/assign' && e.data.callId === callId)) m.set(e.data.id, e.data)
+    return m
+  }
+  const r1 = lastOf('c-rev')
+  // 法务那边一律报错：两件互不相干、只是同一颗 Bot，前一件没做成后一件照样派。
+  const law = await run({ tasks: [{ id: 'l1', bot: '法务', instruction: '审合同' }, { id: 'l2', bot: '法务', instruction: '审章程' }] }, 'c-law')
+  const r2 = lastOf('c-law')
+  out.implicit = {
+    text: `${rev.text}\n---\n${law.text}`,
+    反着写也不互等: r1.get('c-rev:a')?.state === 'done' && r1.get('c-rev:b')?.state === 'done' && Date.now() - t0 < 10_000,
+    先做的先派: Boolean(at('先做的盘点') && at('后做的盘点') && at('后做的盘点').at > at('先做的盘点').at),
+    前一件失败后一件照样派: Boolean(at('审章程')) && r2.get('c-law:l2')?.state === 'failed' && r2.get('c-law:l1')?.state === 'failed',
+    还是排着队派: Boolean(at('审章程') && at('审合同') && at('审章程').at > at('审合同').at),
+  }
+}
+
+// ── 建任务的请求超时了其实建成了：重发认回同一条，不判「没派出去」；一轮里等了很多拍也不攒 abort 监听 ──
+{
+  const ac = new AbortController()
+  const r = await ctx.tools.execute({ callId: 'c-slow', name: 'assign_task', sessionId: 's-main', arguments: JSON.stringify({ tasks: [{ id: 'slow', bot: '财务', instruction: '慢响应的那件' }] }), signal: ac.signal })
+  const mine = [...tasks.values()].filter((t) => t.body.instruction === '慢响应的那件')
+  const last = new Map()
+  for (const e of events.filter((e) => e.type === 'bot/assign' && e.data.callId === 'c-slow')) last.set(e.data.id, e.data)
+  out.slowCreate = {
+    text: r.text,
+    只建了一条: mine.length === 1,
+    重发了: posted.filter((p) => p.body.instruction === '慢响应的那件').length >= 2,
+    没判没派出去: last.get('c-slow:slow')?.state === 'done',
+    监听没攒下来: getEventListeners(ac.signal, 'abort').length <= 1,
   }
 }
 

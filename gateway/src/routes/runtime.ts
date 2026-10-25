@@ -10,7 +10,7 @@ import { KIND, bodyOf, deployOptsOf, refShapes, strField } from '../lib/validate
 import type { Account, BotFolder, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
-import { TASK_INSTRUCTION_MAX, cancelBotTask, createBotTask, pollBotTask, publicBotTask } from '../lib/bot-tasks.ts'
+import { TASK_CONTEXT_MAX, TASK_INSTRUCTION_MAX, cancelBotTask, createBotTask, pollBotTask, publicBotTask } from '../lib/bot-tasks.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, botTemplateOf, defaultBotModel, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
@@ -110,6 +110,8 @@ export const USER_BOT_QUOTA_LOCK = 0x43484e
  */
 const SEAT_SKILL_LOCK = 0x534b4c
 const SEAT_MEMORY_LOCK = 0x4d454d
+/** 主 Bot 派活：同一个人、同一对 Bot 的「先查有没有没收场的、再建」排队（见 POST /runtime/tasks）。 */
+const BOT_TASK_PAIR_LOCK = 0x54534b
 
 /**
  * 「这份目录变了没有」的指纹。
@@ -1529,15 +1531,31 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const instruction = strField(body, 'instruction').trim()
     if (!instruction) throw new HttpError(400, '指令不能为空')
     if ([...instruction].length > TASK_INSTRUCTION_MAX) throw new HttpError(400, `指令最多 ${TASK_INSTRUCTION_MAX} 字`)
-    // 同一件事还没收场就别再派一遍；对方正等着你的结果时也别反过来派给它（转圈）。
-    if (await db.openBotTaskBetween(account.id, from.id, to.id)) throw new HttpError(409, `「${to.name}」上一件活还没做完，等它交回来再派`)
-    if (await db.openBotTaskBetween(account.id, to.id, from.id)) throw new HttpError(409, `「${to.name}」正等着你的结果，不能反过来派给它`)
-    const task = await createBotTask(db, account, from, to, {
-      instruction,
-      sessionId: body.sessionId == null ? null : strField(body, 'sessionId', false) || null,
-      callId: body.callId == null ? null : strField(body, 'callId', false) || null,
-      // 新席位的 assign_task 在这一轮里等着结论（docs/bot-tasks.md §1）；老席位不带，走兜底送回。
-      wait: body.wait === true,
+    // 前置任务交回的结论（串行派活）：和指令分开限长，见 TASK_CONTEXT_MAX。
+    const context = body.context == null ? '' : strField(body, 'context', false).trim()
+    if ([...context].length > TASK_CONTEXT_MAX) throw new HttpError(400, `前置结论最多 ${TASK_CONTEXT_MAX} 字`)
+    /**
+     * 同一件事还没收场就别再派一遍；对方正等着你的结果时也别反过来派给它（转圈）。
+     *
+     * 先查后插要锁住：主 Bot 两条会话同一刻各派一件给同一颗，READ COMMITTED 下两边都查到「没有」、
+     * 各插一行。锁按「这个人 × 这一对 Bot」取，两个方向排在同一条队上，转圈那条也拦得住。
+     */
+    const callId = body.callId == null ? null : strField(body, 'callId', false) || null
+    const task = await db.tx(async () => {
+      await db.lockExclusive(BOT_TASK_PAIR_LOCK, `${account.id}:${[from.id, to.id].sort().join(':')}`)
+      // 席位那边建任务的请求超时重发了：第一次其实建成了，认回那一条，别再建一条、也别 409。
+      const same = callId ? await db.openBotTaskOfCall(account.id, from.id, to.id, callId, instruction) : undefined
+      if (same) return same
+      if (await db.openBotTaskBetween(account.id, from.id, to.id)) throw new HttpError(409, `「${to.name}」上一件活还没做完，等它交回来再派`)
+      if (await db.openBotTaskBetween(account.id, to.id, from.id)) throw new HttpError(409, `「${to.name}」正等着你的结果，不能反过来派给它`)
+      return createBotTask(db, account, from, to, {
+        instruction,
+        context: context || null,
+        sessionId: body.sessionId == null ? null : strField(body, 'sessionId', false) || null,
+        callId,
+        // 新席位的 assign_task 在这一轮里等着结论（docs/bot-tasks.md §1）；老席位不带，走兜底送回。
+        wait: body.wait === true,
+      })
     })
     json(res, 201, { task: publicBotTask(task), toName: to.name, toId: to.id })
   })

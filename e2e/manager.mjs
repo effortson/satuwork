@@ -1233,6 +1233,21 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         assert(typeof seatTicket === 'string' && seatTicket.split('.').length === 3, `票不像 JWT：${seatTicket}`)
         // 签票就是「看别人的日志」，和经 Gateway 看一样要留痕。
         assert((await auditCount()) === audits0 + 1, '签日志票没留审计')
+        // 管家心跳自报了它认的源（它是按别的地址配的对）：票里给的是管家认的那个，不是 Gateway 自己的公开地址。
+        // 不规整的（带路径、非 http）不收。
+        const hb2 = await req(gwBase, 'POST', `/internal/machines/${machineId}/heartbeat`, {
+          token: machineTok,
+          body: { managerVersion: 'e2e-9', protocol: 9, node: process.versions.node, seats: [], gatewayOrigin: 'http://10.0.0.5:3080' },
+        })
+        assert(hb2.status === 200, `heartbeat ${hb2.status} ${hb2.text}`)
+        const direct2 = await req(gwBase, 'GET', `/platform/machines/${machineId}/logs/direct?seatId=seat-1`, { token: ownerTok })
+        assert(direct2.json.gatewayOrigin === 'http://10.0.0.5:3080', `票里该带管家自报的源：${direct2.text}`)
+        await req(gwBase, 'POST', `/internal/machines/${machineId}/heartbeat`, {
+          token: machineTok,
+          body: { managerVersion: 'e2e-9', protocol: 9, node: process.versions.node, seats: [], gatewayOrigin: 'javascript:alert(1)' },
+        })
+        const direct3 = await req(gwBase, 'GET', `/platform/machines/${machineId}/logs/direct?seatId=seat-1`, { token: ownerTok })
+        assert(direct3.json.gatewayOrigin === 'http://10.0.0.5:3080', `不规整的源不该收：${direct3.text}`)
         // 外来 seatId 照旧挡：票上会写死席位，签给一个不在这台机器上的席位就是给单元名开口子。
         const badSeat = await req(gwBase, 'GET', `/platform/machines/${machineId}/logs/direct?seatId=seat-not-here`, { token: ownerTok })
         assert(badSeat.status === 404, `外来 seatId 该 404，实际 ${badSeat.status} ${badSeat.text}`)

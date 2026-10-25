@@ -58,6 +58,15 @@ export async function runToolCalls({ root, test, assert, log }) {
     assert(cut.args && cut.args[r.badKey] === '{"todos":[{"task":"写一半', `截断的该带着原文：${JSON.stringify(cut.args)}`)
   })
 
+  await test('流在工具参数中途断了、没等到收口帧：截断的把原文带下去，不停在空参数上；完整的照常定下来', () => {
+    const [ok, cut] = r.eofArgs.tools
+    assert(ok && ok.name === 'now' && JSON.stringify(ok.args) === '{}', `完整的那把被改坏了：${JSON.stringify(ok)}`)
+    assert(cut && cut.args && cut.args[r.badKey] === '{"todos":[{"task":"写一', `OpenAI 那条路截断的该带着原文：${JSON.stringify(cut && cut.args)}`)
+    assert(!('_raw' in (cut || {})), '收口后不该留着 _raw')
+    const [a] = r.eofArgsAnthropic.tools
+    assert(a && a.args && a.args[r.badKey] === '{"todos":[{"task":"写一', `Anthropic 那条路截断的该带着原文：${JSON.stringify(a && a.args)}`)
+  })
+
   await test('老老实实从 0 起、没有正文的那种，一个字都不许变', () => {
     assert(r.plain.tools.length === 1 && r.plain.tools[0].name === 'now', `常规那条被改坏了：${JSON.stringify(r.plain.tools)}`)
     assert(r.plain.starts.join(',') === '0', `toolcall_start 的下标不对：${r.plain.starts.join(',')}`)

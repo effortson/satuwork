@@ -314,6 +314,8 @@ function chatRosterNav() {
           <button type="button" class="satu-group satu-group-toggle satu-botfolder-toggle" data-act="bot-folder-toggle" data-id="${esc(f.id)}" aria-expanded="${String(open)}">
             <span class="satu-groupchev" aria-hidden="true">${svg(open ? CHEVRON_SMALL_DOWN : CHEVRON_SMALL_RIGHT, 12)}</span>
             <span class="satu-botfolder-name">${esc(f.name)}</span>
+            ${/* 收着的分类里有 Bot 在等人：标题上挂同一枚「有事等你」，不然只能靠顶栏那个计数发现（paintRoster 跟着改）。 */ ''}
+            <span class="satu-botneed satu-botfolder-need" data-need="${esc(open ? '' : folderNeed(f.bots))}" title="${esc(botNeedLabel(open ? '' : folderNeed(f.bots)))}"${open || !folderNeed(f.bots) ? ' hidden' : ''}>${open ? '' : botNeedIcon(folderNeed(f.bots))}</span>
             <span class="satu-botfolder-count">${f.bots.length}</span>
           </button>
           <button type="button" class="satu-botfolder-more" data-menu-toggle data-act="menu-toggle" data-id="${esc(menuId)}"
@@ -328,7 +330,9 @@ function chatRosterNav() {
               : ''
           }
         </div>
-        ${open ? f.bots.map((b) => rosterRowHtml(b, selected)).join('') : ''}
+        ${/* 收着的也把行画出来，由 CSS 藏（.satu-botfolder[data-open=false]）：侧栏收成窄栏时没有分类标题可点，
+              不画的话那几颗 Bot 在窄栏里整个看不见、也没地方展开。窄栏那一档照常摊开。 */ ''}
+        ${f.bots.map((b) => rosterRowHtml(b, selected)).join('')}
       </div>`
     })
     .join('')
@@ -438,12 +442,32 @@ async function saveBotFolder() {
  * 先改本地再发请求：松手那一下名单就该变，等接口回来再动会让人以为没拖上。失败了
  * 退回去并说一声。
  */
+/**
+ * 还在路上的「移到分类」：botId → { folderId, seq }。
+ *
+ * 两件事要它：名单这时候刚好重拉回来（loadRuntimeBots），服务端那份还是旧的，不能把刚放进去的盖掉
+ * （见 applyPendingFolders）；连着拖两次、前一次失败，回滚只能退本次自己那一步，不能把后一次也退掉。
+ */
+const pendingFolderMoves = new Map()
+let folderMoveSeq = 0
+
+/** 重拉回来的名单上，把还在路上的那几笔盖回去。 */
+function applyPendingFolders(bots) {
+  for (const b of bots || []) {
+    const p = pendingFolderMoves.get(b.id)
+    if (p) b.folderId = p.folderId
+  }
+  return bots
+}
+
 async function moveBotToFolder(botId, folderId) {
   const bot = (state.runtimeBots || []).find((b) => b.id === botId)
   if (!bot) return
   const next = folderId || null
   const prev = bot.folderId || null
   if (prev === next) return
+  const seq = ++folderMoveSeq
+  pendingFolderMoves.set(botId, { folderId: next, seq })
   bot.folderId = next
   // 放进一个收着的分类里，顺手展开它：不然松手之后那颗 Bot 就「不见了」。
   if (next && state.botFolderOpen[next] === false) {
@@ -454,10 +478,37 @@ async function moveBotToFolder(botId, folderId) {
   try {
     await api('PUT', `/runtime/bots/${encodeURIComponent(botId)}/folder`, { folderId: next })
   } catch (err) {
-    bot.folderId = prev
+    // 这一步之后又挪过一次：后一次才是人要的，别退。没再挪过，就退回这一步之前那一格。
+    if (pendingFolderMoves.get(botId)?.seq === seq) {
+      const cur = (state.runtimeBots || []).find((b) => b.id === botId)
+      if (cur) cur.folderId = prev
+    }
     flash('err', err.message)
     render()
+  } finally {
+    if (pendingFolderMoves.get(botId)?.seq === seq) pendingFolderMoves.delete(botId)
   }
+}
+
+/**
+ * 对话顶栏菜单里的「移到分类」。拖放之外的入口：触屏（手机浏览器起不了 HTML5 拖放）、拦了拖放的
+ * WebView、Firefox 里拖不动的 `<button draggable>`，都只能从这儿把 Bot 放进分类。一个分类都没建、
+ * 或者这颗不在自己名单上（别人的、全局的）就不摆。
+ */
+function folderMenuItems(bot) {
+  const folders = (state.botFolders || []).slice().sort((a, b) => a.position - b.position)
+  const mine = (state.runtimeBots || []).find((b) => b.id === bot.id)
+  if (!folders.length || !mine) return ''
+  const known = new Set(folders.map((f) => f.id))
+  const cur = mine.folderId && known.has(mine.folderId) ? mine.folderId : ''
+  const item = (folderId, label) =>
+    `<button type="button" class="satu-menuitem satu-menuitem-check" data-act="bot-folder-move" data-id="${esc(bot.id)}" data-folder="${esc(folderId)}" aria-checked="${String(cur === folderId)}" role="menuitemradio">${esc(label)}</button>`
+  return (
+    `<div class="satu-menulabel">${t('移到分类', 'Move to folder')}</div>` +
+    folders.map((f) => item(f.id, f.name)).join('') +
+    item('', t('不分类', 'No folder')) +
+    `<div class="satu-menusep" role="separator"></div>`
+  )
 }
 
 /**
@@ -509,7 +560,12 @@ function rosterDragClear() {
 }
 document.addEventListener('dragstart', (e) => {
   const row = e.target instanceof Element ? e.target.closest('[data-bot-row]') : null
-  if (!row) return
+  // 拖的不是名单上的一行：上一次没收干净的 id（拖到一半整页重画，dragend 发在脱离了文档的旧节点上，
+  // 冒不到 document）在这儿清掉。
+  if (!row) {
+    rosterDragId = ''
+    return
+  }
   rosterDragId = row.getAttribute('data-bot-row') || ''
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = 'move'
@@ -521,7 +577,7 @@ document.addEventListener('dragstart', (e) => {
 })
 document.addEventListener('dragend', () => rosterDragClear())
 document.addEventListener('dragover', (e) => {
-  if (!rosterDragId) return
+  if (!rosterDragLive(e)) return
   const zone = e.target instanceof Element ? e.target.closest('[data-drop-folder]') : null
   if (!zone) return
   e.preventDefault()
@@ -535,11 +591,31 @@ document.addEventListener('dragleave', (e) => {
   // 从标题挪到它自己的子节点上也会发 dragleave，真离开才灭。
   if (zone && !(e.relatedTarget instanceof Node && zone.contains(e.relatedTarget))) zone.removeAttribute('data-dragover')
 })
+/**
+ * 这一下拖的是不是名单上那一行。rosterDragId 可能是过期的：拖到一半整页重画，dragend 冒不到 document，
+ * 它就一直留着——之后从桌面拖一个文件丢到分类标题上，会悄悄把上一次那颗挪过去。拖的东西里带着那颗的
+ * id 才算（dragstart 时塞进 text/plain 的）；拖进来的文件没有它。
+ */
+function rosterDragLive(e) {
+  if (!rosterDragId) return false
+  const dt = e.dataTransfer
+  if (dt && dt.types && !Array.from(dt.types).includes('text/plain')) {
+    rosterDragClear()
+    return false
+  }
+  return true
+}
 document.addEventListener('drop', (e) => {
-  if (!rosterDragId) return
+  if (!rosterDragLive(e)) return
   const zone = e.target instanceof Element ? e.target.closest('[data-drop-folder]') : null
   if (!zone) return
   e.preventDefault()
+  // drop 时才读得到内容：和记着的那颗对不上（过期的 id）就不挪。
+  const carried = e.dataTransfer ? e.dataTransfer.getData('text/plain') : rosterDragId
+  if (carried !== rosterDragId) {
+    rosterDragClear()
+    return
+  }
   const botId = rosterDragId
   const folderId = zone.getAttribute('data-drop-folder') || ''
   rosterDragClear()
@@ -586,8 +662,26 @@ function botNeedIcon(need) {
   return ''
 }
 
+/** 一组 Bot 里有没有在等人的：有就回最要紧的那一种（确认先于交接），给收着的分类标题挂。 */
+function folderNeed(bots) {
+  const needs = bots.map((b) => ((botStreams.get(b.id) || {}).sum || {}).need).filter(Boolean)
+  return needs.includes('approval') ? 'approval' : needs[0] || ''
+}
+
 /** 就地更新名单的状态点/时间/摘要。不重绘整页——那会把正在打字的输入框一起换掉。 */
 function paintRoster() {
+  // 收着的分类标题上那枚「有事等你」：跟着里面几颗 Bot 的状态走。
+  for (const box of document.querySelectorAll('.satu-botfolder[data-folder]')) {
+    const el = box.querySelector('.satu-botfolder-need')
+    if (!el) continue
+    const fid = box.getAttribute('data-folder')
+    const need = box.getAttribute('data-open') === 'false' ? folderNeed((state.runtimeBots || []).filter((b) => b.folderId === fid)) : ''
+    if (el.getAttribute('data-need') === need) continue
+    el.setAttribute('data-need', need)
+    el.innerHTML = botNeedIcon(need)
+    el.hidden = !need
+    el.title = botNeedLabel(need)
+  }
   for (const row of document.querySelectorAll('[data-bot-row]')) {
     const id = row.getAttribute('data-bot-row')
     /**

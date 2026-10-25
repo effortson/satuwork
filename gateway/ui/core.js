@@ -1793,7 +1793,10 @@ var SatuCore = (() => {
     let openTurn = false;
     let assigned = null;
     const taskSeen = /* @__PURE__ */ new Map();
+    let lastSeq;
     for (const ev of events || []) {
+      const prevSeq = lastSeq;
+      lastSeq = ev.seq;
       const type = ev.type;
       const data = ev.data || {};
       const at = Number(ev.time) || 0;
@@ -2028,6 +2031,11 @@ var SatuCore = (() => {
       } else if (type === "turn/start") {
         status = "running";
         statusAt = at;
+        const last = blocks[blocks.length - 1];
+        if (!assigned && last && last.kind === "user" && last.assigned && last.assigned.state === "steered" && prevSeq !== void 0 && last.seq === prevSeq) {
+          last.assigned.state = "queued";
+          assigned = last.assigned;
+        }
         openTurn = true;
         if (assigned && assigned.turn == null) {
           assigned.turn = Number(data.turn);

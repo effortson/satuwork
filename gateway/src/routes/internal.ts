@@ -13,7 +13,7 @@ import { METRIC_RETENTION_MS, MINUTE_MS, egressDelta, telemetryOf } from '../lib
 import { HANDOFF_STATES, type Db, type HandoffState, type Machine } from '../db.ts'
 import { resolveAssignee } from '../lib/handoff.ts'
 import { notify } from '../handoff-sweep.ts'
-import { auditResultHash, failConversationAuditBatch } from '../conversation-audit.ts'
+import { auditResultHash, failConversationAuditBatch, recordUsedAuditModel } from '../conversation-audit.ts'
 import { afterResponse } from '../lib/background.ts'
 import { PUSH_KINDS, pushMessage, pushToAccount, type PushKind } from '../lib/push.ts'
 
@@ -264,6 +264,8 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     // 界面上；不认识的名字宁可当成「没报」，也不要存一个假的实际值进去，那会让
     // 「改上了没有」这个判断永远错。老管家不报，那时保持原样。
     const reportedTz = typeof body.timezone === 'string' ? normalizeTimezone(body.timezone) : undefined
+    // 管家认的 Gateway 源（它只放行这个源的跨源请求，见迁移 0064）。只收规整的 http(s) 源。
+    const gatewayOrigin = originOf(body.gatewayOrigin)
     // 负载与日志占用。**整份按形状收**（见 lib/telemetry.ts）——它来自网络，会原样
     // 存进 jsonb 再画进浏览器。两份都没有（老管家）时 telemetryOf 给 undefined，
     // 那一格就不动：写一份空的进去会把上一轮好好的数据抹掉。
@@ -279,6 +281,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
       ...(Number.isInteger(protocol) && protocol >= 0 && protocol <= 2_147_483_647 ? { protocol } : {}),
       ...(arch ? { arch } : {}),
       ...(reportedTz === undefined ? {} : { currentTimezone: reportedTz }),
+      ...(gatewayOrigin ? { gatewayOrigin } : {}),
       lastError: upgradeError,
     })
     // 把这一轮累进它所属的那一分钟。日视图从这张表来——`machines.telemetry` 只有
@@ -548,6 +551,8 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     if ((batch.status === 'succeeded' || batch.status === 'empty') && batch.resultHash !== resultHash) {
       throw new HttpError(409, '这个批次已经提交过不同的结果')
     }
+    // 席位报上它真用的那个模型（新席位才带）：批次上的那几格可能在这期间被换掉了，改回来。
+    await recordUsedAuditModel(db, batch, body.model)
     const account = await db.account(batch.accountId)
     const bot = await db.catalog(batch.botId)
     const settings = (await db.settings(batch.companyId)).conversationAudit
@@ -795,4 +800,15 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
    * 新版 bot 早就不发了（见 bot/src/session/gateway.ts），端点留着只是为了不让
    * 旧席位的本地重试队列卡死。旧版已经清理，这条一并拆掉。
    */
+}
+
+/** 规整的 http(s) 源（`协议://主机[:端口]`），不是就 undefined。来自网络，会原样画进界面。 */
+function originOf(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || raw.length > 300) return undefined
+  try {
+    const u = new URL(raw)
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.origin === raw ? u.origin : undefined
+  } catch {
+    return undefined
+  }
 }

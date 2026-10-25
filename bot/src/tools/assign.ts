@@ -26,8 +26,17 @@ const MAX_TASKS = 6
 const POLL_MS = Math.max(200, Math.trunc(Number(process.env.SATUWORK_ASSIGN_POLL_MS ?? 2_000)))
 /** 最多等多久。到点不再等，没收场的结论之后以「任务结果」消息送回（§1.1 的兜底）。 */
 const WAIT_MS = Math.max(10_000, Math.trunc(Number(process.env.SATUWORK_ASSIGN_WAIT_MS ?? 30 * 60_000)))
-/** 附在后一件指令末尾的前置结论，每条最多多长。 */
+/**
+ * 交给后一件的前置结论，每条最多多长；几条加起来再压在 DEP_CONTEXT_MAX 以内（Gateway 那边
+ * 前置结论单独限 16000 字，留出标题的余量）。和指令分开传：指令自己就有 4000 字的上限。
+ */
 const DEP_RESULT_MAX = 6_000
+const DEP_CONTEXT_MAX = 15_000
+/** 问 Gateway 的一次请求最多等多久。 */
+const HTTP_TIMEOUT_MS = Math.max(200, Math.trunc(Number(process.env.SATUWORK_ASSIGN_HTTP_TIMEOUT_MS ?? 20_000)))
+/** 建任务的请求没回来（超时、断网）时重发几次、每次隔多久（第 n 次隔 n 倍）。 */
+const CREATE_RETRIES = 2
+const CREATE_RETRY_MS = Math.max(50, Math.trunc(Number(process.env.SATUWORK_ASSIGN_RETRY_MS ?? 1_000)))
 /** 回给模型的每条结论最多多长。 */
 const RESULT_MAX = 12_000
 
@@ -68,10 +77,16 @@ function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}\n…（已截断，共 ${text.length} 字）`
 }
 
+/** 等一拍。到点了要把挂在 signal 上的监听摘掉：一轮里每 2 秒等一拍，三十分钟能攒下九百个。 */
 const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, ms)
-    signal?.addEventListener('abort', () => (clearTimeout(t), resolve()), { once: true })
+    const done = () => {
+      clearTimeout(t)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    const t = setTimeout(done, ms)
+    signal?.addEventListener('abort', done, { once: true })
   })
 
 async function gateway(method: string, path: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> | null; text: string }> {
@@ -84,7 +99,7 @@ async function gateway(method: string, path: string, body?: unknown): Promise<{ 
       method,
       headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     })
   } catch (e) {
     throw new Error(`连不上 Gateway：${(e as Error).message}`)
@@ -228,14 +243,29 @@ export function apply(ctx: Context) {
       const byKey = new Map(items.map((it) => [it.key, it]))
       /**
        * 同一颗 Bot 的几件自动排队：一颗 Bot 一条主会话，两件同时发进去就是两轮抢着说话。
-       * 排法是「它在 tasks 里前面那件同 Bot 的」做隐含前置。
+       *
+       * 排法是「按显式 after 排出来的先后里，前面那件同 Bot 的」做隐含前置——**不能按 tasks 里写的
+       * 顺序**：`[{a, X, after:[b]}, {b, X}]` 按书写顺序排是 b 等 a、a 又等 b，两件互等到超时。
+       * 先按 after 拓扑排一遍（parse 已经保证没有环，同一层按书写顺序），隐含前置只往前指，和显式的
+       * 合起来也成不了环。
+       *
+       * 隐含前置只管**先后**，不管**成败**：前一件没做成，后一件照样跑——它俩本来互不相干，只是
+       * 恰好派给了同一颗 Bot。跳过只看显式 after。
        */
+      const order: Item[] = []
+      {
+        const placed = new Set<string>()
+        while (order.length < items.length) {
+          const next = items.find((it) => !placed.has(it.key) && it.after.every((d) => placed.has(d)))!
+          placed.add(next.key)
+          order.push(next)
+        }
+      }
       const implicit = new Map<string, string[]>()
-      items.forEach((it, i) => {
-        const prev = items.slice(0, i).filter((x) => x.bot.id === it.bot.id).map((x) => x.key)
-        implicit.set(it.key, prev.length ? [prev[prev.length - 1]] : [])
+      order.forEach((it, i) => {
+        const prev = order.slice(0, i).filter((x) => x.bot.id === it.bot.id)
+        implicit.set(it.key, prev.length ? [prev[prev.length - 1].key] : [])
       })
-      const depsOf = (it: Item) => [...new Set([...it.after, ...(implicit.get(it.key) ?? [])])]
 
       const emit = async (it: Item) => {
         try {
@@ -271,20 +301,38 @@ export function apply(ctx: Context) {
       for (const it of items) await emit(it)
 
       const start = async (it: Item) => {
-        // 前置交回的结论附在指令末尾：对方看不见主 Bot 的对话，不附的话「按邮件里提到的账单」它无从下手。
+        // 前置交回的结论一起交过去：对方看不见主 Bot 的对话，不附的话「按邮件里提到的账单」它无从下手。
+        // 单独放进 context，不拼进指令——指令有 4000 字的上限，前置一长后一件就派不出去。
         const deps = it.after.map((k) => byKey.get(k)!).filter((d) => d.state === 'done')
-        const full = deps.length
-          ? `${it.instruction}\n\n—— 前置任务交回的结论 ——\n${deps
-              .map((d) => `【${d.key} · @${d.bot.name}】\n${clip(d.result || '', DEP_RESULT_MAX)}`)
-              .join('\n\n')}`
-          : it.instruction
+        const each = deps.length ? Math.min(DEP_RESULT_MAX, Math.floor(DEP_CONTEXT_MAX / deps.length) - 80) : 0
+        const context = deps.map((d) => `【${d.key} · @${d.bot.name}】\n${clip(d.result || '', each)}`).join('\n\n')
         it.startedAt = Date.now()
         let r
-        try {
-          r = await gateway('POST', '/runtime/tasks', { fromBotId, toBot: it.bot.id, instruction: full, sessionId, callId: call.callId, wait: true })
-        } catch (e) {
-          await settle(it, 'failed', `没派出去：${(e as Error).message}`)
-          return
+        /**
+         * 请求没回来（超时、断网）不等于没建成：Gateway 可能已经建好、只是响应慢了。重发同一份——
+         * Gateway 按 callId + 目标 + 指令认回还没收场的那一条，不会建出第二条（POST /runtime/tasks）。
+         * 当场判「没派出去」的话，对方照跑，结论之后以「任务结果」兜底送回，主 Bot 还可能再派一遍。
+         */
+        const body = {
+          fromBotId,
+          toBot: it.bot.id,
+          instruction: it.instruction,
+          ...(context ? { context } : {}),
+          sessionId,
+          callId: call.callId,
+          wait: true,
+        }
+        for (let n = 0; ; n++) {
+          try {
+            r = await gateway('POST', '/runtime/tasks', body)
+            break
+          } catch (e) {
+            if (e instanceof AssignFailure || n >= CREATE_RETRIES || signal?.aborted) {
+              await settle(it, 'failed', `没派出去：${(e as Error).message}`)
+              return
+            }
+            await sleep(CREATE_RETRY_MS * (n + 1), signal)
+          }
         }
         const task = (r.json?.task ?? null) as { id?: unknown } | null
         if (r.status !== 201 || typeof task?.id !== 'string') {
@@ -351,16 +399,18 @@ export function apply(ctx: Context) {
             }
             return { text: `已停止。\n\n${render(items)}` }
           }
-          // 能开跑的开跑；前置没做成的跳过。
+          // 能开跑的开跑；显式前置没做成的跳过。隐含前置（同一颗 Bot 排队）只等它收场，不看成败。
           for (const it of items) {
             if (it.state !== 'waiting') continue
-            const deps = depsOf(it).map((k) => byKey.get(k)!)
+            const deps = it.after.map((k) => byKey.get(k)!)
             const bad = deps.find((d) => terminal(d.state) && d.state !== 'done')
             if (bad) {
-              await settle(it, 'skipped', `跳过：前置「${bad.key} · @${bad.bot.name}」${bad.stoppedThere ? '被人停止了' : '没做成'}。`)
+              const why = bad.stoppedThere ? '被人停止了' : bad.state === 'detached' ? '还没做完（等太久先不等了）' : '没做成'
+              await settle(it, 'skipped', `跳过：前置「${bad.key} · @${bad.bot.name}」${why}。`)
               continue
             }
-            if (deps.every((d) => d.state === 'done')) await start(it)
+            const queued = (implicit.get(it.key) ?? []).map((k) => byKey.get(k)!)
+            if (deps.every((d) => d.state === 'done') && queued.every((d) => terminal(d.state))) await start(it)
           }
           if (items.every((it) => terminal(it.state))) break
           if (Date.now() > deadline) {

@@ -497,7 +497,8 @@ async function loadRuntimeBots() {
      * 是一排「公司的运行机器还没配好」。这时候名册里只留本人建的——本地 Bot 用得了，
      * 自己建过的远程 Bot 也留着，那是本人的东西，删不删由本人定。
      */
-    state.runtimeBots = (data.bots || []).filter((bot) => state.runtimeHasMachine !== false || bot.scope === 'user')
+    // 还在路上的「移到分类」盖回去：服务端那份这时还是旧的（shell.js 的 applyPendingFolders）。
+    state.runtimeBots = applyPendingFolders((data.bots || []).filter((bot) => state.runtimeHasMachine !== false || bot.scope === 'user'))
     state.botFolders = Array.isArray(data.folders) ? data.folders : []
     state.mainBotId = typeof data.mainBotId === 'string' ? data.mainBotId : ''
     // 本地 Bot 在不在跑、听哪个口，Gateway 不知道（隧道拆了），只有壳子知道。
@@ -2815,6 +2816,9 @@ const taskLive = (s) => !s || s === 'running' || s === 'waiting'
 /** 「看过程」去哪取：key → { child } 或 { session, taskId }。画卡片时登记，点按钮时按 key 查。 */
 const taskTraceSrc = {}
 
+/** 派活的过程在对方会话里往前最多翻几页（每页 50 轮）找它那条指令。 */
+const TRACE_PAGES = 6
+
 /** 跑着的时候，摊开的过程隔多久重取一次。重取挂在重画上（进度一变就重画），不另起定时器。 */
 const TRACE_REFRESH_MS = 3000
 
@@ -2837,7 +2841,8 @@ function taskWaitText(b) {
 /** 一件委派（agent/task 的最后一条）收成统一的形状。 */
 function delegateView(task) {
   const m = task.model || {}
-  const trace = task.child ? { key: 'c:' + task.child, child: task.child } : null
+  // 登记时就记下是哪条会话的：跑着时那次延后重取落在人切走之后，现读 state.chatSessionId 会打到别的会话。
+  const trace = task.child ? { key: 'c:' + task.child, child: task.child, session: state.chatSessionId } : null
   if (trace) taskTraceSrc[trace.key] = trace
   return {
     id: task.id,
@@ -2995,7 +3000,8 @@ function taskDetailHtml(v, tone) {
     ? `<div class="sw-ti-reason" data-tone="${esc(tone)}"><b>${esc(tone === 'bad' ? t('失败原因', 'Why it failed') : t('说明', 'Note'))}</b><span>${esc(v.reason)}</span></div>`
     : ''
   const body = v.body
-    ? `<div class="sw-task-summary sw-md">${window.satuMd ? window.satuMd.render(v.body) : esc(v.body)}</div>`
+    ? // 包一层 .sw-mdblock：inlineMentionPills 只认这一层（syncMd 画的正文都有），不包的话结论里的 @某某 永远不会变成药丸。
+      `<div class="sw-task-summary sw-md"><div class="sw-mdblock">${window.satuMd ? window.satuMd.render(v.body) : esc(v.body)}</div></div>`
     : taskLive(v.state)
       ? ''
       : v.reason
@@ -3098,7 +3104,7 @@ async function loadTaskTrace(key, again) {
   try {
     let events
     if (src.child) {
-      const sessionId = state.chatSessionId
+      const sessionId = src.session || state.chatSessionId
       if (!sessionId) throw new Error(t('这条对话还没打开', 'This conversation is not open'))
       const data = await api(
         'GET',
@@ -3106,8 +3112,20 @@ async function loadTaskTrace(key, again) {
       )
       events = data.events || []
     } else {
-      const data = await api('GET', `/runtime/sessions/${encodeURIComponent(src.session)}/history?turns=20`)
-      events = SatuCore.assignSlice(data.events || [], src.taskId)
+      /**
+       * 对方那边之后又聊了很多轮，那件活就不在最近一页里了：往前翻着找，找到它那条指令为止（最多几页）。
+       * 只取最近二十轮的话，收场的卡上过程只剩一行结尾，看着像什么都没做。
+       */
+      let all = []
+      let before = 0
+      events = []
+      for (let page = 0; page < TRACE_PAGES; page++) {
+        const data = await api('GET', `/runtime/sessions/${encodeURIComponent(src.session)}/history?turns=50${before ? `&before=${before}` : ''}`)
+        all = [...(data.events || []), ...all]
+        events = SatuCore.assignSlice(all, src.taskId)
+        if (events.length || !data.hasMore || !data.firstSeq) break
+        before = data.firstSeq
+      }
     }
     state.taskTrace[key] = { loading: false, rows: SatuCore.traceRows(events), at: Date.now(), error: '' }
   } catch (e) {
@@ -3128,21 +3146,34 @@ async function loadTaskTrace(key, again) {
 const TASK_IN_HEAD = /^【主 Bot「([^」]*)」派来的任务】\n?/
 const TASK_IN_TAIL = /\s*（做完把结果直接写在回复里[^）]*）\s*$/
 
-/** 展开过的那几件：指令那条 user/message 的 seq → true。只在这一页里记着，刷新就回到折起来。 */
+/**
+ * 展开过的那几件：`<会话>:<指令那条 user/message 的 seq>`。只在这一页里记着，刷新就回到折起来。
+ * 带上会话：每条会话的 seq 都从 1 起，只记 seq 的话在一颗 Bot 上展开了 42，切到另一颗它的 42 也是开的。
+ */
 const taskInOpen = new Set()
+const taskInKey = (sessionId, seq) => `${sessionId || ''}:${seq ?? ''}`
 
 /**
  * 指令那一块，加上卡片要的几样：谁派的、开没开、那一轮调了几次工具。`blocks[i]` 是它自己，
  * 后面紧跟着的 via=task 的助手块就是它那一轮的（fold 给助手块标的是这一轮开头那条消息的来源）。
  */
-function taskInBlock(b, blocks, i, live) {
+function taskInBlock(b, blocks, i, live, sessionId) {
   const a = b.assigned || null
   const raw = String(b.text || '')
   const head = raw.match(TASK_IN_HEAD)
   const from = (a && a.from) || {}
   let calls = 0
+  /**
+   * 那一轮里有没有等人的东西：没批的高风险确认、没人接的交接单。有就**不许折**——确认卡挂在
+   * 助手块上，折起来人就看不见，主 Bot 只能干等到超时、记成没做成。批完、接完再照常折回去。
+   */
+  let waits = 0
   if (a && a.state !== 'steered') {
-    for (let j = i + 1; j < blocks.length && blocks[j].kind === 'assistant' && blocks[j].via === 'task'; j++) calls += (blocks[j].tools || []).length
+    for (let j = i + 1; j < blocks.length && blocks[j].kind === 'assistant' && blocks[j].via === 'task'; j++) {
+      calls += (blocks[j].tools || []).length
+      waits += (blocks[j].approvals || []).filter((x) => x.state === 'pending' && !approvalDead(x)).length
+      waits += (blocks[j].handoffs || []).filter((h) => h.state === 'open' && !handoffDead(h)).length
+    }
   }
   return {
     ...b,
@@ -3150,8 +3181,10 @@ function taskInBlock(b, blocks, i, live) {
     taskFrom: { id: from.id || '', name: from.name || (head && head[1]) || '' },
     // 老席位插进人那一轮的（steered）没有自己的轮次，没什么可折的。
     foldable: Boolean(a && a.state !== 'steered'),
-    open: taskInOpen.has(String(b.seq)),
+    openKey: taskInKey(sessionId, b.seq),
+    open: waits > 0 || taskInOpen.has(taskInKey(sessionId, b.seq)),
     calls,
+    waits,
     // 这条会话还在跑没有（fold 的 status）。一轮只有 turn/start 没有 turn/end、而席位说没在跑：上一条命死在半路了。
     live: Boolean(live),
   }
@@ -3171,7 +3204,7 @@ function taskInRowShell(b, key) {
     `<div class="sw-msg-col">` +
     `<div class="sw-taskname"><span class="sw-taskname-bot">${esc((bot && bot.name) || b.taskFrom.name)}</span><span class="sw-taskname-tag"></span></div>` +
     `<div class="sw-bubble" data-role="assistant"><div class="sw-md"></div><div class="sw-chips" hidden></div>` +
-    `<button type="button" class="sw-taskin-toggle" data-act="chat-taskin-toggle" data-seq="${esc(String(b.seq ?? ''))}" hidden></button></div>` +
+    `<button type="button" class="sw-taskin-toggle" data-act="chat-taskin-toggle" data-seq="${esc(b.openKey || '')}" hidden></button></div>` +
     `<time class="sw-time" hidden></time>${msgActsHtml(b)}</div></div>`
   )
 }
@@ -3179,7 +3212,8 @@ function taskInRowShell(b, key) {
 /** 派来的活现在怎样了：fold 从它那一轮的 turn/start、turn/end 填的。 */
 function taskInState(b) {
   const st = (b.assigned && b.assigned.state) || ''
-  if (st === 'running' && !b.live) return 'lost'
+  // 重放还没收尾时 live 还没到（折出来的 status 是空的）：这时说「没收口」是误报，照旧说在跑。
+  if (st === 'running' && !b.live && !state.chatReplaying) return 'lost'
   return st
 }
 
@@ -3204,15 +3238,18 @@ function updateTaskIn(el, b) {
     }
   }
   const st = taskInState(b)
-  const sig = [st, b.foldable ? 1 : 0, b.open ? 1 : 0, b.calls].join('|')
+  const sig = [st, b.foldable ? 1 : 0, b.open ? 1 : 0, b.calls, b.waits ? 1 : 0].join('|')
   if (el.getAttribute('data-sig') === sig) return
   el.setAttribute('data-sig', sig)
   el.setAttribute('data-state', st)
   if (b.foldable) el.setAttribute('data-open', b.open ? '1' : '0')
   else el.removeAttribute('data-open')
-  el.querySelector('.sw-taskname-tag').textContent = (TASK_IN_LABEL[st] || (() => t('派来的任务 · 出错了', 'Assigned · Failed')))()
+  el.querySelector('.sw-taskname-tag').textContent = b.waits
+    ? t('派来的任务 · 等你确认', 'Assigned · Needs you')
+    : (TASK_IN_LABEL[st] || (() => t('派来的任务 · 出错了', 'Assigned · Failed')))()
   const btn = el.querySelector('.sw-taskin-toggle')
-  btn.hidden = !b.foldable
+  // 有等人的东西时强制摊开（见 taskInBlock），「收起」点了也收不起来，干脆不摆。
+  btn.hidden = !b.foldable || Boolean(b.waits)
   btn.setAttribute('aria-expanded', b.open ? 'true' : 'false')
   const n = b.calls ? t(`${b.calls} 次工具调用`, `${b.calls} tool calls`) : ''
   btn.textContent = b.open ? t('收起过程', 'Hide the work') : n ? t(`展开过程 · ${n}`, `Show the work · ${n}`) : t('展开过程', 'Show the work')
@@ -3676,8 +3713,13 @@ function msgActsHtml(b) {
 
 /* ── 触屏：长按消息弹菜单 ────────────────────────────────────────────────
    触屏没有悬停，气泡外侧那排动作只能常显，挂在每条消息边上是噪音（chat.css 在 hover:none 下把它藏了）。
-   改成长按一条消息约半秒，弹一个小菜单：能引用的给「引用」，都给「复制」。长按本来会触发系统选字，
-   chat.css 把它关了，「复制」就是顶它的。 */
+   改成长按一条消息约半秒，弹一个小菜单：能引用的给「引用」，都给「复制」「选字」。长按本来会触发系统选字，
+   chat.css 把它关了，「复制」顶整条、「选字」把这一条放回系统选字（只要一段、一行代码时用）。
+   链接、图片、代码、输入框不归长按菜单：长按照旧是系统的（复制链接、存图、选一段代码），确认卡里
+   的输入框照旧能选字、能编辑。 */
+
+/** 长按菜单不接管的那些：交给系统的长按（复制链接、存图、选字、编辑）。 */
+const PRESS_NATIVE = 'a, img, pre, code, input, textarea, select, [contenteditable="true"], .sw-approvals, .sw-handoffs'
 
 const LONGPRESS_MS = 480
 let pressTimer = null
@@ -3694,7 +3736,10 @@ function openMsgMenu(row, x, y) {
   const md = row.querySelector('.sw-bubble .sw-md')
   const items = []
   if (seq) items.push(`<button type="button" class="sw-msgmenu-item" data-act="chat-ref-msg" data-seq="${esc(seq)}">${ICON_QUOTE}<span>${esc(t('引用', 'Quote'))}</span></button>`)
-  if (md && md.innerText.trim()) items.push(`<button type="button" class="sw-msgmenu-item" data-act="msg-copy" data-key="${esc(row.getAttribute('data-key') || '')}">${svg(['M9 9h10v12H9z', 'M5 15V3h10'], 15)}<span>${esc(t('复制', 'Copy'))}</span></button>`)
+  if (md && md.innerText.trim()) {
+    items.push(`<button type="button" class="sw-msgmenu-item" data-act="msg-copy" data-key="${esc(row.getAttribute('data-key') || '')}">${svg(['M9 9h10v12H9z', 'M5 15V3h10'], 15)}<span>${esc(t('复制', 'Copy'))}</span></button>`)
+    items.push(`<button type="button" class="sw-msgmenu-item" data-act="msg-select" data-key="${esc(row.getAttribute('data-key') || '')}">${svg(['M4 7V4h3', 'M20 7V4h-3', 'M4 17v3h3', 'M20 17v3h-3', 'M9 12h6'], 15)}<span>${esc(t('选字', 'Select'))}</span></button>`)
+  }
   if (!items.length) return
   const box = document.createElement('div')
   box.id = 'sw-msgmenu'
@@ -3715,13 +3760,23 @@ function openMsgMenu(row, x, y) {
   if (navigator.vibrate) navigator.vibrate(10)
 }
 
+/** 「选字」打开的那一条：这一条放回系统选字，点到别处就收回。 */
+function selectMsgText(key) {
+  for (const el of document.querySelectorAll('#chat-thread .sw-msg[data-selecting]')) el.removeAttribute('data-selecting')
+  const row = key ? document.querySelector(`#chat-thread .sw-msg[data-key="${CSS.escape(key)}"]`) : null
+  if (row) row.setAttribute('data-selecting', '1')
+}
+
 document.addEventListener('pointerdown', (e) => {
   if (e.pointerType !== 'touch') return
   if (e.target instanceof Element && e.target.closest('#sw-msgmenu')) return
   closeMsgMenu()
   const row = e.target instanceof Element ? e.target.closest('#chat-thread .sw-msg[data-key]') : null
-  // 气泡里的按钮、链接、药丸照常点，不抢。
-  if (!row || (e.target instanceof Element && e.target.closest('a, button, input, textarea, .sw-chip, .sw-filechip'))) return
+  // 点到别的地方：上一条「选字」收回来。
+  for (const el of document.querySelectorAll('#chat-thread .sw-msg[data-selecting]')) if (el !== row) el.removeAttribute('data-selecting')
+  // 正在选字的那一条、气泡里的按钮、药丸，以及交给系统长按的那些（PRESS_NATIVE），都不抢。
+  if (!row || row.hasAttribute('data-selecting')) return
+  if (e.target instanceof Element && e.target.closest(`button, .sw-chip, .sw-filechip, ${PRESS_NATIVE}`)) return
   pressAt = { x: e.clientX, y: e.clientY }
   clearTimeout(pressTimer)
   pressTimer = setTimeout(() => {
@@ -3741,7 +3796,11 @@ document.addEventListener('pointerup', cancelPress)
 document.addEventListener('pointercancel', cancelPress)
 // 系统的长按菜单（iOS 的「拷贝 / 查询」、安卓的上下文菜单）不要冒出来和我们的打架。
 document.addEventListener('contextmenu', (e) => {
-  if (e.target instanceof Element && e.target.closest('#chat-thread .sw-msg') && matchMedia('(hover: none)').matches) e.preventDefault()
+  if (!(e.target instanceof Element) || !matchMedia('(hover: none)').matches) return
+  const row = e.target.closest('#chat-thread .sw-msg')
+  // 链接、图片、代码、输入框，和正在选字的那一条：系统的长按菜单照旧出来。
+  if (!row || row.hasAttribute('data-selecting') || e.target.closest(PRESS_NATIVE)) return
+  e.preventDefault()
 })
 document.addEventListener('scroll', closeMsgMenu, true)
 
@@ -4499,7 +4558,7 @@ function threadRows(folded, sessionId) {
     }
     // key 必须**跟着这一块自己**走，不能用下标：往前翻加载旧消息会让所有下标移位，
     // 于是整棵 DOM 重建——Markdown 全部重渲染，滚动位置也跟着没了。
-    const block = b.kind === 'user' && b.via === 'task' ? taskInBlock(b, blocks, i, folded.status) : b
+    const block = b.kind === 'user' && b.via === 'task' ? taskInBlock(b, blocks, i, folded.status, sessionId) : b
     if (block.foldable && !block.open) {
       folding = true
       tailFolded = i === blocks.length - 1
@@ -7742,6 +7801,7 @@ function chatHeadInline() {
           ${/* 自己建的那种才给设置入口：别人的、全局的，这一页上没有可改的东西。 */ ''}
           ${isMyBot(bot) ? `<button type="button" class="satu-menuitem" data-act="go" data-href="/bots/${esc(bot.id)}">${t('Bot 设置')}</button>` : ''}
           ${bot ? mainBotMenuItem(bot) : ''}
+          ${bot ? folderMenuItems(bot) : ''}
           <button type="button" class="satu-menuitem" data-act="chat-copy-all">${t('复制全文')}</button>
           <button type="button" class="satu-menuitem" data-act="chat-export">${t('导出 Markdown')}</button>
         </div>`
@@ -8127,27 +8187,26 @@ function hideChatTodos() {
 }
 
 /**
- * 已经选中的 `@`：输入框上方那排药丸。
- *
- * 和 dock 不是一回事——这排是**这一条还没发出去的**消息带着谁，dock 是**已经发出去、
- * 排着队**的那几条。
+ * 点名以正文为准：正文里还留着 `@名字` 的才算点了，人把那几个字删了就是不点了（sendChat 也只带
+ * 这些）。删掉的从 chatMentions 里拿掉——留着的话 `@` 选单把它当「已选」滤掉，人想再点一次也选不到。
+ */
+function syncChatMentions() {
+  const text = state.chatDraft || ''
+  const kept = (state.chatMentions || []).filter((m) => text.includes('@' + m.label))
+  if (kept.length !== (state.chatMentions || []).length) state.chatMentions = kept
+}
+
+/**
+ * 已经选中的 `@`。点名混排进了正文（takeMention 把 `@名字` 插在光标处），药丸就画在正文里；
+ * 输入框上方原来那排只剩「正文里已经没有它」的——那些发送时本来就不带，摆着像是还会发，× 也按
+ * 过滤后的下标删、删错人。所以这里只做一件事：把正文里没有的拿掉，那一排一直收着。
  */
 function paintChatMentions() {
+  syncChatMentions()
   const box = document.getElementById('chat-mentions')
   if (!box) return
-  // 点名已经混排进正文了（takeMention 把 `@名字` 插在光标处），上面这一排只留给
-  // 正文里没有它的那些——一般是草稿还回来、正文被改过的情形。
-  const text = state.chatDraft || ''
-  const picked = (state.chatMentions || []).filter((m) => !text.includes('@' + m.label))
-  box.hidden = !picked.length
-  box.innerHTML = picked
-    .map(
-      (m, i) => `${mentionPill(m)}
-        <button type="button" class="sw-file-x" data-act="chat-mention-drop" data-i="${i}"
-          aria-label="${esc(t('移除'))} ${esc(m.label)}">${ICON_X}</button>
-      </span>`,
-    )
-    .join('')
+  box.hidden = true
+  box.innerHTML = ''
 }
 
 // ── 引用（docs/chat-references.md）────────────────────────────────────────────
@@ -8303,6 +8362,7 @@ function paintMentionPick() {
     return
   }
   const q = (pick.q || '').toLowerCase()
+  syncChatMentions()
   const taken = new Set((state.chatMentions || []).map((m) => m.id))
   const botsHere = botMentionsHere()
   const list = (state.mentionOptions || [])
@@ -9669,7 +9729,16 @@ async function runChatCommand(cmd, arg = '') {
     render()
     await abortChat()
     const until = Date.now() + 20_000
-    while (state.chatStatus && Date.now() < until) await new Promise((r) => setTimeout(r, 300))
+    // state.chatStatus 说的是**当前开着的那条**。等的这几秒里人切去了别的 Bot，它就不再是这条的状态：
+    // 切到空闲的会立刻放行、对旧会话发命令（那一轮还没停，409，命令还进了新 Bot 的输入框），切到
+    // 在跑的会白等二十秒。人走了就不执行，说一声。
+    const here = () => state.chatSessionId === sessionId
+    while (here() && state.chatStatus && Date.now() < until) await new Promise((r) => setTimeout(r, 300))
+    if (!here()) {
+      flash('err', t(`切到了别的对话，/${cmd.name} 没有执行`, `Switched to another conversation; /${cmd.name} was not run`))
+      render()
+      return
+    }
     if (state.chatStatus) {
       flash('err', t('这一轮没停下来，等它停了再试', 'The turn did not stop; try again once it has'))
       render()
@@ -9714,7 +9783,8 @@ async function runChatCommand(cmd, arg = '') {
   } catch (err) {
     // **把命令还回输入框。** 换版期间的 404、正跑着的 409、断线——这些都是过几秒
     // 再按一次就好的事，没道理让人重打一遍（finally 里的 render 会把它填回去）。
-    state.chatDraft = draft
+    // 人已经切去了别的对话就不还：那是另一颗 Bot 的输入框。
+    if (state.chatSessionId === sessionId) state.chatDraft = draft
     // 席位那边每一种拒绝都带着一句能直接给人看的原话（正在跑、太短、排着队），
     // 原样显示，别翻成一句「操作失败」。
     flash('err', err.status === 404 ? t('这台席位的版本还不支持这条命令，升级后可用') : err.message)

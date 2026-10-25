@@ -9,6 +9,8 @@ export async function runLocalTasks({ root, test, assert, log }) {
   await test('run 那一步：凭席位票领活，指令发进自己的会话带 task 身份，finish 带回自己那一轮的正文', async () => {
     const due = seen.filter((s) => s.path === '/runtime/local-tasks/due')
     assert(due.length >= 1 && due.every((s) => s.auth === 'Bearer sat_local_probe'), `领活的票不对：${JSON.stringify(due)}`)
+    // 同一个账号的几颗本地 Bot 共用一个领活身份：领活要带上自己是哪颗，Gateway 只交要敲它的。
+    assert(due.every((s) => s.query === '?botId=bot-local'), `领活没带 botId：${JSON.stringify(due.map((s) => s.query))}`)
     const started = seen.find((s) => s.path === '/runtime/local-tasks/tk-1/started')
     assert(started && started.body.sessionId === 's-local', `started 没带会话 id：${JSON.stringify(started)}`)
     const msg = result.own.find((x) => x.path.endsWith('/messages') && x.body.task?.phase === 'instruction')
@@ -20,6 +22,13 @@ export async function runLocalTasks({ root, test, assert, log }) {
     assert(finish && finish.body.kind === 'completed' && finish.body.sessionId === 's-local', `finish 不对：${JSON.stringify(finish)}`)
     // 只认自己那一轮，而且只取最后一条：「我先查一下」这种过程话不是结论（docs/bot-tasks.md §2）。
     assert(finish.body.result === '月报做好了：合计 20 万。', `带回的正文不对：${JSON.stringify(finish.body.result)}`)
+  })
+
+  await test('领到别的本地 Bot 的活（老 Gateway）：不碰、不回报失败，等租约到期由它自己的进程领', async () => {
+    const touched = seen.filter((s) => s.path.startsWith('/runtime/local-tasks/tk-other/'))
+    assert(!touched.length, `不该动别人的活：${JSON.stringify(touched)}`)
+    const wrongSession = result.own.filter((x) => x.path.includes('bot-other'))
+    assert(!wrongSession.length, `不该去问别的 Bot 的会话：${JSON.stringify(wrongSession)}`)
   })
 
   await test('deliver 那一步：结论发进主 Bot 的会话（带 result 身份），发进去就报 delivered', async () => {
@@ -52,11 +61,35 @@ export async function runLocalTasks({ root, test, assert, log }) {
   })
 
   await test('排在对方队列里时被停：撤掉队列里那条，不去中止人自己正跑着的那一轮', async () => {
-    const del = result.own.find((x) => x.method === 'DELETE')
+    const del = result.own.find((x) => x.method === 'DELETE' && x.path.endsWith('/q-4'))
     assert(del && del.path === '/api/sessions/s-local/queue/q-4', `没撤队列里那条：${JSON.stringify(del)}`)
     const aborts = result.own.filter((x) => x.path.endsWith('/abort'))
     assert(aborts.length === 1, `只有第三件该调中止，第四件排着时不该砍人那一轮：${aborts.length} 次`)
     const fin = seen.find((s) => s.path === '/runtime/local-tasks/tk-4/finish')
+    assert(fin && fin.body.kind === 'aborted', `撤掉了该报 aborted：${JSON.stringify(fin && fin.body)}`)
+  })
+
+  await test('拿到会话 id 之后、指令发出去之前被停：不调中止（对方跑着的是人自己那一轮），指令不发，报 aborted', async () => {
+    const msg = result.own.find((x) => x.path.endsWith('/messages') && x.body?.task?.id === 'tk-5')
+    assert(!msg, `被停了还把指令发了进去：${JSON.stringify(msg && msg.body)}`)
+    const aborts = result.own.filter((x) => x.path.endsWith('/abort'))
+    assert(aborts.length === 1, `只有第三件该调中止，第五件还没发指令就不该砍人那一轮：${aborts.length} 次`)
+    const fin = seen.find((s) => s.path === '/runtime/local-tasks/tk-5/finish')
+    assert(fin && fin.body.kind === 'aborted', `该报 aborted：${JSON.stringify(fin && fin.body)}`)
+  })
+
+  await test('没人按停止、人在对方那边把排着的这条撤了：不等二十分钟超时，报 aborted，不去撤也不中止', async () => {
+    const fin = seen.find((s) => s.path === '/runtime/local-tasks/tk-7/finish')
+    assert(fin && fin.body.kind === 'aborted', `该报 aborted：${JSON.stringify(fin && fin.body)}`)
+    assert(!result.own.some((x) => x.method === 'DELETE' && x.path.endsWith('/q-7')), '人已经撤了，不该再去撤')
+  })
+
+  await test('排着时被停、第一次撤队列席位没应：下一拍再撤，不退回去中止当前那一轮', async () => {
+    const dels = result.own.filter((x) => x.method === 'DELETE' && x.path.endsWith('/q-6'))
+    assert(dels.length === 2, `该撤两次（第一次 500）：${dels.length} 次`)
+    const aborts = result.own.filter((x) => x.path.endsWith('/abort'))
+    assert(aborts.length === 1, `撤不掉时不该去中止当前那一轮：${aborts.length} 次`)
+    const fin = seen.find((s) => s.path === '/runtime/local-tasks/tk-6/finish')
     assert(fin && fin.body.kind === 'aborted', `撤掉了该报 aborted：${JSON.stringify(fin && fin.body)}`)
   })
 }

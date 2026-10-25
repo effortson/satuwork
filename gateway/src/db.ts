@@ -114,6 +114,9 @@ export function databaseUrl(): string {
   return pinSslMode(url)
 }
 
+/** 派活清扫每一拍每一类最多收多少条。积压了也一拍拍收完，不让一次清扫拖成一条慢查询。 */
+const SWEEP_BATCH = 200
+
 /** 迁移要**直连**串：迁移锁是会话级 advisory lock，过 PgBouncer 的事务池会漂（ADR §5.2）。 */
 export function migrateDatabaseUrl(): string {
   const url = (process.env.GATEWAY_MIGRATE_DATABASE_URL || '').trim() || neonFallback('DATABASE_URL_UNPOOLED')
@@ -2931,6 +2934,8 @@ export class Db {
       telemetry: null as Machine['telemetry'],
       telemetryAt: null as number | null,
       logCapMb: null as number | null,
+      // 管家认的 Gateway 源也等第一次心跳报上来。
+      gatewayOrigin: null as string | null,
       // 新登记的机器当然在册。墓碑只由 markMachineRemoved 立。
       removedAt: null as number | null,
     }
@@ -3122,6 +3127,7 @@ export class Db {
         | 'telemetry'
         | 'telemetryAt'
         | 'logCapMb'
+        | 'gatewayOrigin'
       >
     >,
   ): Promise<Machine> {
@@ -3146,9 +3152,10 @@ export class Db {
       telemetry: patch.telemetry === undefined ? cur.telemetry : patch.telemetry,
       telemetryAt: patch.telemetryAt === undefined ? cur.telemetryAt : patch.telemetryAt,
       logCapMb: patch.logCapMb === undefined ? cur.logCapMb : patch.logCapMb,
+      gatewayOrigin: patch.gatewayOrigin === undefined ? cur.gatewayOrigin : patch.gatewayOrigin,
     }
     await this.run(
-      'update machines set host=?, "directUrl"=?, "companyId"=?, "lastHeartbeatAt"=?, "pairedAt"=?, "managerVersion"=?, protocol=?, "lastError"=?, arch=?, "desiredManagerVersion"=?, "maxAccounts"=?, timezone=?, "currentTimezone"=?, telemetry=?, "telemetryAt"=?, "logCapMb"=? where id=?',
+      'update machines set host=?, "directUrl"=?, "companyId"=?, "lastHeartbeatAt"=?, "pairedAt"=?, "managerVersion"=?, protocol=?, "lastError"=?, arch=?, "desiredManagerVersion"=?, "maxAccounts"=?, timezone=?, "currentTimezone"=?, telemetry=?, "telemetryAt"=?, "logCapMb"=?, "gatewayOrigin"=? where id=?',
       [
         next.host,
         next.directUrl,
@@ -3167,6 +3174,7 @@ export class Db {
         next.telemetry == null ? null : JSON.stringify(next.telemetry),
         next.telemetryAt,
         next.logCapMb,
+        next.gatewayOrigin,
         id,
       ],
     )
@@ -3997,6 +4005,7 @@ export class Db {
     fromSessionId: string | null
     callId: string | null
     instruction: string
+    context?: string | null
     status: BotTaskStatus
     owner: string | null
     result?: string | null
@@ -4007,9 +4016,9 @@ export class Db {
     const id = randomUUID()
     const now = Date.now()
     await this.run(
-      `insert into bot_tasks (id, "accountId", "companyId", "fromBotId", "toBotId", "fromSessionId", "callId", instruction, status, owner, "leaseUntil", attempts, result, error, "runKind", "waiterUntil", "createdAt")
-       values (?,?,?,?,?,?,?,?,?,?,null,0,?,?,?,?,?)`,
-      [id, input.accountId, input.companyId, input.fromBotId, input.toBotId, input.fromSessionId, input.callId, input.instruction, input.status, input.owner, input.result ?? null, input.error ?? null, input.runKind ?? null, input.waiterUntil ?? null, now],
+      `insert into bot_tasks (id, "accountId", "companyId", "fromBotId", "toBotId", "fromSessionId", "callId", instruction, context, status, owner, "leaseUntil", attempts, result, error, "runKind", "waiterUntil", "createdAt", "readyAt")
+       values (?,?,?,?,?,?,?,?,?,?,?,null,0,?,?,?,?,?,?)`,
+      [id, input.accountId, input.companyId, input.fromBotId, input.toBotId, input.fromSessionId, input.callId, input.instruction, input.context ?? null, input.status, input.owner, input.result ?? null, input.error ?? null, input.runKind ?? null, input.waiterUntil ?? null, now, now],
     )
     return (await this.botTask(id))!
   }
@@ -4028,6 +4037,19 @@ export class Db {
     return rows.map(botTaskOf)
   }
 
+  /**
+   * 同一次工具调用（callId）里、同一句指令派给同一颗、还没收场的那一条。席位那边建任务的请求超时
+   * 重发时据此认回第一次建好的，不再建出第二条（见 POST /runtime/tasks）。
+   */
+  async openBotTaskOfCall(accountId: string, fromBotId: string, toBotId: string, callId: string, instruction: string): Promise<BotTask | undefined> {
+    const r = await this.one(
+      `select * from bot_tasks where "accountId" = ? and "fromBotId" = ? and "toBotId" = ? and "callId" = ? and instruction = ?
+          and status not in ('done', 'failed', 'cancelled') order by "createdAt" desc limit 1`,
+      [accountId, fromBotId, toBotId, callId, instruction],
+    )
+    return r ? botTaskOf(r) : undefined
+  }
+
   /** 还没收场、从 from 派给 to 的。防 A 派 B、B 派 A 转圈，也防同一件事派两遍。 */
   async openBotTaskBetween(accountId: string, fromBotId: string, toBotId: string): Promise<BotTask | undefined> {
     const r = await this.one(
@@ -4039,20 +4061,27 @@ export class Db {
 
   /**
    * 领活：owner 归我、还没人领的那些，**原子地**填上租约并推进状态（queued → running、
-   * reporting → delivering）。同一条两个工人同时来领，只有一个拿得到。
+   * reporting → delivering）。同一条两个工人同时来领，只有一个拿得到：子查询 skip locked 跳过
+   * 别人正领着的行，外层再判一次「还没人领」——光靠 `id in (…)`，后到的那一笔等前一笔提交之后
+   * 只重查 id 对不对得上，照样改、照样交回去。
+   *
+   * `botId`：只领这一步要敲这颗 Bot 的（run 看目标，deliver 看主 Bot）。本地 Bot 共用一个
+   * owner（desktop:<账号>），桌面端却是一颗 Bot 一个进程，不分开领就会领到别人的活。
    */
-  async claimBotTasks(owner: string, leaseUntil: number, limit = 20): Promise<BotTask[]> {
+  async claimBotTasks(owner: string, leaseUntil: number, limit = 20, botId?: string): Promise<BotTask[]> {
+    const due = `owner = ? and "leaseUntil" is null and status in ('queued', 'reporting')
+            and ("cancelledAt" is null or status = 'reporting')`
+    const mine = botId ? ` and (case status when 'queued' then "toBotId" else "fromBotId" end) = ?` : ''
     const rows = await this.many(
       `update bot_tasks set "leaseUntil" = ?, attempts = attempts + 1,
          status = case status when 'queued' then 'running' when 'reporting' then 'delivering' else status end,
          "startedAt" = case when status = 'queued' then coalesce("startedAt", ?) else "startedAt" end
-       where id in (
-         select id from bot_tasks where owner = ? and "leaseUntil" is null and status in ('queued', 'reporting')
-            and ("cancelledAt" is null or status = 'reporting')
-          order by "createdAt" limit ?
+       where ${due}${mine} and id in (
+         select id from bot_tasks where ${due}${mine}
+          order by "createdAt" limit ? for update skip locked
        )
        returning *`,
-      [leaseUntil, Date.now(), owner, Math.max(1, Math.trunc(limit))],
+      [leaseUntil, Date.now(), owner, ...(botId ? [botId] : []), owner, ...(botId ? [botId] : []), Math.max(1, Math.trunc(limit))],
     )
     return rows.map(botTaskOf)
   }
@@ -4081,7 +4110,7 @@ export class Db {
   /** 改几格。只改给了的那几格；null 也是一个值（清掉租约就是把它设成 null）。 */
   async updateBotTask(
     id: string,
-    patch: Partial<Pick<BotTask, 'status' | 'owner' | 'leaseUntil' | 'attempts' | 'runSessionId' | 'runKind' | 'result' | 'error' | 'endedAt' | 'deliveredAt' | 'waiterUntil' | 'cancelledAt'>>,
+    patch: Partial<Pick<BotTask, 'status' | 'owner' | 'leaseUntil' | 'attempts' | 'runSessionId' | 'runKind' | 'result' | 'error' | 'endedAt' | 'deliveredAt' | 'waiterUntil' | 'cancelledAt' | 'readyAt'>>,
   ): Promise<boolean> {
     const sets: string[] = []
     const args: unknown[] = []
@@ -4093,6 +4122,35 @@ export class Db {
     if (!sets.length) return false
     args.push(id)
     return (await this.run(`update bot_tasks set ${sets.join(', ')} where id = ?`, args)) > 0
+  }
+
+  /**
+   * 带条件的 updateBotTask：只有这一行**还是**调用方读到的那个样子才改，改没改成回 true / false。
+   *
+   * 派活的状态有好几方在写（工人回报、主 Bot 那边按停止、清扫），各自都是先读一行、算好、再写。
+   * 不带条件的话，后写的拿着旧快照把先写的盖掉：清扫把工人刚写的 answered 盖回 queued（结论再送
+   * 一遍），交回结论把刚按的停止盖成 answered（作废的结论照样送回主 Bot）。
+   */
+  async updateBotTaskIf(
+    id: string,
+    cond: { status?: BotTaskStatus; leaseUntil?: number | null; notCancelled?: boolean },
+    patch: Parameters<Db['updateBotTask']>[1],
+  ): Promise<boolean> {
+    const sets: string[] = []
+    const args: unknown[] = []
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) continue
+      sets.push(`"${k}" = ?`)
+      args.push(v)
+    }
+    if (!sets.length) return false
+    const where = ['id = ?']
+    args.push(id)
+    if (cond.status !== undefined) (where.push('status = ?'), args.push(cond.status))
+    if (cond.leaseUntil === null) where.push('"leaseUntil" is null')
+    else if (cond.leaseUntil !== undefined) (where.push('"leaseUntil" = ?'), args.push(cond.leaseUntil))
+    if (cond.notCancelled) where.push('"cancelledAt" is null')
+    return (await this.run(`update bot_tasks set ${sets.join(', ')} where ${where.join(' and ')}`, args)) > 0
   }
 
   /**
@@ -4110,28 +4168,54 @@ export class Db {
   /** 已经答了、等的一方却没来取（租过期了）。维护节拍把它们转成兜底送回。 */
   async orphanedAnsweredBotTasks(nowMs: number): Promise<BotTask[]> {
     const rows = await this.many(
-      `select * from bot_tasks where status = 'answered' and ("waiterUntil" is null or "waiterUntil" < ?)`,
-      [nowMs],
+      `select * from bot_tasks where status = 'answered' and ("waiterUntil" is null or "waiterUntil" < ?) order by "createdAt" limit ?`,
+      [nowMs, SWEEP_BATCH],
     )
     return rows.map(botTaskOf)
+  }
+
+  /**
+   * 本地 Bot 来领了一次派活（迁移 0063）。每几秒一次，**最多二十秒写一回**：在不在线只要分钟级的准头，
+   * 不必每拍都改一行。`botId` 是 `*` = 老桌面端，领活不带 botId。
+   */
+  async noteLocalPoll(accountId: string, botId: string, now: number): Promise<void> {
+    await this.run(
+      `insert into local_bot_polls ("accountId", "botId", "seenAt") values (?, ?, ?)
+       on conflict ("accountId", "botId") do update set "seenAt" = excluded."seenAt"
+       where local_bot_polls."seenAt" < excluded."seenAt" - 20000`,
+      [accountId, botId, now],
+    )
+  }
+
+  /** 这颗本地 Bot（或者这个账号上的老桌面端）在 since 之后来领过活没有。 */
+  async localPolledSince(accountId: string, botId: string, since: number): Promise<boolean> {
+    const r = await this.one(
+      `select 1 as ok from local_bot_polls where "accountId" = ? and "botId" in (?, '*') and "seenAt" >= ? limit 1`,
+      [accountId, botId, since],
+    )
+    return Boolean(r)
   }
 
   /** 领走了却到期没续的。 */
   async expiredBotTasks(nowMs: number): Promise<BotTask[]> {
     const rows = await this.many(
-      `select * from bot_tasks where status in ('running', 'delivering') and "leaseUntil" is not null and "leaseUntil" < ?`,
-      [nowMs],
+      `select * from bot_tasks where status in ('running', 'delivering') and "leaseUntil" is not null and "leaseUntil" < ? order by "leaseUntil" limit ?`,
+      [nowMs, SWEEP_BATCH],
     )
     return rows.map(botTaskOf)
   }
 
-  /** 排着队一直没人来领的：queued 看 createdAt，reporting 看 endedAt（目标那一步收场的时刻）。 */
+  /**
+   * 排着队一直没人来领的：从这一步最近一次放出来（readyAt）算——租约到期放回去的那一条要重新计时，
+   * 不能拿最初建的时刻，否则一放回去就在同一次清扫里被判成没人领。旧行没有 readyAt：queued 看
+   * createdAt，reporting 看 endedAt（目标那一步收场的时刻）。
+   */
   async unclaimedBotTasksBefore(beforeMs: number): Promise<BotTask[]> {
     const rows = await this.many(
-      `select * from bot_tasks where "leaseUntil" is null and (
-         (status = 'queued' and "createdAt" < ?) or (status = 'reporting' and coalesce("endedAt", "createdAt") < ?)
-       )`,
-      [beforeMs, beforeMs],
+      `select * from bot_tasks where "leaseUntil" is null and status in ('queued', 'reporting') and coalesce(
+         "readyAt", case when status = 'reporting' then coalesce("endedAt", "createdAt") else "createdAt" end
+       ) < ? order by "createdAt" limit ?`,
+      [beforeMs, SWEEP_BATCH],
     )
     return rows.map(botTaskOf)
   }
@@ -4886,12 +4970,18 @@ export class Db {
     return r ? conversationAuditBatchOf(r) : undefined
   }
 
-  async retryConversationAuditBatch(id: string, error: string, nextTryAt: number, dead = false): Promise<void> {
-    await this.run(
+  /**
+   * 转成重试（或 dead）。`expectStatus`：只有批次**还是**这个状态才改，改没改成回 true / false。
+   * 席位报失败那条路是先读后写：读到 retry 之后、写之前，派发那一拍可能刚把它领成 leased 发了出去——
+   * 不带条件的话这一笔把它改回 retry、租约清空，下一拍再领一次、同一批派两遍。
+   */
+  async retryConversationAuditBatch(id: string, error: string, nextTryAt: number, dead = false, expectStatus?: string): Promise<boolean> {
+    const n = await this.run(
       `update conversation_audit_batches set status=?, "lastError"=?, "nextTryAt"=?, "leaseUntil"=null
-       where id=? and status not in ('succeeded','empty')`,
-      [dead ? 'dead' : 'retry', error.slice(0, 500), dead ? null : nextTryAt, id],
+       where id=? and status not in ('succeeded','empty')${expectStatus ? ' and status=?' : ''}`,
+      [dead ? 'dead' : 'retry', error.slice(0, 500), dead ? null : nextTryAt, id, ...(expectStatus ? [expectStatus] : [])],
     )
+    return n > 0
   }
 
   async completeConversationAuditBatch(input: {

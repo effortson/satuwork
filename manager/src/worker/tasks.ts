@@ -9,7 +9,7 @@
  * run 那一步和日常任务（index.ts 的 runJob）一字不差，只多收了一样东西：自己那一轮的
  * `assistant/message`。怎么解释结果、送不送回去，全在 Gateway（lib/bot-tasks.ts），这里只如实报。
  */
-import { LostError, gw, headers, seatEventsUrl, seatJson } from './relay-client.ts'
+import { LostError, gw, headers, seatEventsUrl, seatJson, seatRaw } from './relay-client.ts'
 
 export interface TaskJob {
   taskId: string
@@ -139,6 +139,8 @@ async function readTurnResult(
   ownTurn: boolean,
   instruction: string,
   track?: (ev: { type?: string; data?: unknown }) => void,
+  /** 席位推的队列快照（`queue/change`），和「见到了自己那条指令」。认对方那边撤掉排队用，见 runTaskJob。 */
+  watch?: { queue?: (ids: string[]) => void; mine?: () => void },
 ): Promise<{ kind: string; text: string }> {
   let turn: number | null = ownTurn ? null : -1
   let mine = false
@@ -149,10 +151,17 @@ async function readTurnResult(
   for await (const ev of sseEvents<Ev>(reader)) {
     // 自己那一轮的事件喂给进度。todo/list 不带轮号，进了自己那一轮就算。
     if (track && turn !== null && (turn === -1 ? foreign === 0 : ev.type === 'todo/list' || Number(ev.data?.turn ?? -1) === turn)) track(ev)
+    if (ev.type === 'queue/change') {
+      const queued = (ev as { queued?: { id?: unknown }[] }).queued
+      watch?.queue?.(Array.isArray(queued) ? queued.map((q) => String(q?.id ?? '')) : [])
+      continue
+    }
     if (ev.type === 'user/message') {
       if (!mine) {
-        if (textOfMessage(ev.data).trim() === instruction.trim()) mine = true
-        else if (turn === -1) foreign++
+        if (textOfMessage(ev.data).trim() === instruction.trim()) {
+          mine = true
+          watch?.mine?.()
+        } else if (turn === -1) foreign++
       }
       continue
     }
@@ -186,6 +195,9 @@ async function readTurnResult(
   throw new Error('事件流断了')
 }
 
+/** 排着的那条离队多久还没开轮，就算对方那边有人把它撤了（见 runTaskJob 的 leftQueueAt）。 */
+const QUEUE_GONE_MS = Math.max(500, Math.trunc(Number(process.env.SATUWORK_TASK_QUEUE_GONE_MS ?? 5_000)))
+
 export async function runTaskJob(job: TaskJob, log: (line: string) => void = console.log): Promise<void> {
   const ac = new AbortController()
   const timeout = setTimeout(() => ac.abort(), Math.max(60_000, job.timeoutMs))
@@ -197,11 +209,29 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
   let queueId = ''
   /** 指令正在发：这一下还不知道它是开轮、排队还是插话，停止要等发完再按结果办。 */
   let posting = false
+  /**
+   * 指令已经发进去了。没发之前那一轮压根不是我们的——拿到会话 id 之后还要问 started、读历史、挂流，
+   * 这几步之间人按了停止，去调「中止」砍掉的是人自己正在跑的那一轮。没发就只记下停了，发之前那道
+   * 检查会直接收场。
+   */
+  let sent = false
   /** 主 Bot 那边按了停止（续租的回复里带 cancelled）。 */
   let stopped = false
+  /**
+   * 排着队的那条从对方队列里没了、自己那条指令却一直没出现：人在对方那边把它撤了（DELETE 队列那一下
+   * 不经我们）。不认出来的话要等到二十分钟超时，主 Bot 也跟着干等、最后报「等结果超时」。离队到开轮
+   * 之间本来就有一小段（先出队、再写那条 user/message），所以等 QUEUE_GONE_MS 还没见到才算撤了。
+   */
+  let leftQueueAt = 0
+  let mineSeen = false
+  let goneThere = false
   let stopTimer: ReturnType<typeof setTimeout> | null = null
   const tracker = new ProgressTracker()
   let moved = false
+  const abortTurn = () => {
+    void seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
+    stopTimer = setTimeout(() => ac.abort(), 15_000)
+  }
   /**
    * 停掉目标那一轮（docs/bot-tasks.md §1.2）。调席位的「中止」接口，那一轮以 aborted 收口，下面照常
    * 读到 turn/end 报上去；中止请求发出去 15 秒还没收口就不等了，照样报 aborted。
@@ -209,23 +239,34 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
   const stopTarget = () => {
     if (stopped) return
     stopped = true
-    if (job.phase !== 'run' || !sessionId || steered || posting) return
-    // 还在对方队列里排着：撤掉就完了，一个字都没进它的对话。撤不掉（刚好开跑了）再中止那一轮。
+    if (job.phase !== 'run' || !sessionId || !sent || steered || posting) return
+    // 还在对方队列里排着：撤掉就完了，一个字都没进它的对话。
     if (queueId) {
       const qid = queueId
       queueId = ''
-      void seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(qid)}`, { method: 'DELETE' })
-        .then(() => ac.abort())
+      void seatRaw(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(qid)}`, { method: 'DELETE' })
+        .then(({ status }) => {
+          // 撤掉了；或者队列里已经没有这一条（人在对方那边撤了）——它不会再跑，也别去砍人那一轮。
+          if ((status >= 200 && status < 300) || status === 404) ac.abort()
+          // 刚好开跑了：现在跑着的就是我们那一轮，中止它。
+          else if (status === 409) abortTurn()
+          else throw new Error(`HTTP ${status}`)
+        })
         .catch(() => {
+          // 没撤成（网络、席位一时不应）：下一拍续租再撤。不退回去中止「当前那一轮」——那多半是人的。
+          queueId = qid
           stopped = false
-          stopTarget()
         })
       return
     }
-    void seatJson(job.seatId, `/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
-    stopTimer = setTimeout(() => ac.abort(), 15_000)
+    abortTurn()
   }
   const renew = setInterval(() => {
+    if (queueId && leftQueueAt && !mineSeen && Date.now() - leftQueueAt > QUEUE_GONE_MS) {
+      goneThere = true
+      ac.abort()
+      return
+    }
     const body = moved ? { progress: tracker.snapshot() } : {}
     moved = false
     void gw(`/tasks/${encodeURIComponent(job.taskId)}/renew`, body)
@@ -279,19 +320,33 @@ export async function runTaskJob(job: TaskJob, log: (line: string) => void = con
     steered = Boolean(posted?.steered)
     queueId = String(posted?.queueId || '')
     posting = false
+    sent = true
     // 发消息的那一下刚好撞上停止：按发的结果补办（排着的撤掉，开了轮的中止）。
     if (stopped && !steered) {
       stopped = false
       stopTarget()
     }
-    const out = await readTurnResult(reader, !posted?.steered, job.instruction, (ev) => {
-      if (tracker.feed(ev)) moved = true
-    })
+    const out = await readTurnResult(
+      reader,
+      !posted?.steered,
+      job.instruction,
+      (ev) => {
+        if (tracker.feed(ev)) moved = true
+      },
+      {
+        queue: (ids) => {
+          if (queueId && !ids.includes(queueId) && !leftQueueAt) leftQueueAt = Date.now()
+        },
+        mine: () => {
+          mineSeen = true
+        },
+      },
+    )
     await finish({ kind: out.kind, result: out.text })
     log(`satuwork-worker: 派活 ${job.taskId} 目标那一轮跑完：${out.kind}`)
   } catch (e) {
     if (lost) return
-    if (stopped) await finish({ kind: 'aborted' })
+    if (stopped || goneThere) await finish({ kind: 'aborted' })
     else if (ac.signal.aborted) await finish({ kind: 'timeout' })
     else await finish({ kind: 'failed', error: String((e as Error).message || e).slice(0, 300) })
   } finally {

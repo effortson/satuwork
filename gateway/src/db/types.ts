@@ -372,6 +372,11 @@ export interface Machine {
    */
   logCapMb: number | null
   /**
+   * 管家认的 Gateway 源（心跳自报，形如 `http://192.168.64.1:3080`）：它只放行这个源的跨源请求。
+   * 空 = 老管家没报过。浏览器直连失败时前端拿它和页面的源比（见迁移 0064）。
+   */
+  gatewayOrigin: string | null
+  /**
    * 这台机器要追的管家版本。空 = 跟平台的全局期望版本走。
    *
    * 存在的理由是灰度：先把一台机器钉到新版本看几天，再改全局。没有它，「升级这台
@@ -1648,6 +1653,13 @@ export interface BotTask {
   /** 派活的那次工具调用。 */
   callId: string | null
   instruction: string
+  /** 前置任务交回的结论（串行派活），和指令分开存、分开限长。null = 没有前置。 */
+  context: string | null
+  /**
+   * 这一步最近一次放出来等人领的时刻（建好、目标收场转送回、租约到期放回去）。「一直没人来领」
+   * 从这儿算。null = 迁移 0062 之前的行，退回 createdAt / endedAt。
+   */
+  readyAt: number | null
   status: BotTaskStatus
   /** 这一步该谁来领：机器 id，或本地 Bot 的 `desktop:<accountId>`。null = 没人能领。 */
   owner: string | null

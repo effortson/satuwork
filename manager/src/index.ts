@@ -560,6 +560,9 @@ async function heartbeat(): Promise<void> {
         // 自报**实际**时区。Gateway 拿它和期望时区比，界面上才分得出「已经改上了」
         // 和「指令下了、还没改上」。
         timezone: currentTimezone() || null,
+        // 自己认的 Gateway 源：只放行它的跨源请求（proxy.ts 的 corsFor）。浏览器直连失败时，
+        // 界面拿它和页面的源比，不一致就直说该换哪个地址。
+        gatewayOrigin: originOrNull(state.gatewayUrl),
         // 升级和改时区都可能失败，而 Gateway 只有一格 lastError。升级失败更要命
         // （机器版本会卡住），所以它优先；两者都好的时候这里是 null。
         upgradeError: upgradeError() || timezoneError() || null,
@@ -659,3 +662,12 @@ function shutdown() {
 }
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
+
+/** 地址的源（`协议://主机[:端口]`）；解析不了就 null。 */
+function originOrNull(url: string): string | null {
+  try {
+    return new URL(url).origin
+  } catch {
+    return null
+  }
+}

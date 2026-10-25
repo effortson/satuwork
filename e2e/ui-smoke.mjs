@@ -798,14 +798,174 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(at('data-bot-row="b2"') > at('客户') && at('data-bot-row="b2"') < at('报表'), '分类里的 Bot 没跟在它的标题后面')
       assert(html.includes('draggable="true"'), '名单的行不能拖')
       assert(html.includes('data-drop-folder="f1"') && html.includes('data-drop-folder=""'), '放入区没画')
-      // 收起来的分类不画里面的行，但标题还在（还能往里放）。
+      // 收起来的分类：标题还在（还能往里放），行照画、由 CSS 按 data-open 藏——侧栏收成窄栏时没有标题可点，
+      // 不画的话那几颗在窄栏里整个看不见。
       ui.state.botFolderOpen = { f1: false }
       const folded = ui.chatRosterNav()
-      assert(!folded.includes('data-bot-row="b2"') && folded.includes('data-drop-folder="f1"'), '收起的分类没收住')
+      assert(/data-folder="f1" data-open="false"/.test(folded) && folded.includes('data-bot-row="b2"') && folded.includes('data-drop-folder="f1"'), '收起的分类没收住，或者行没画')
+      // 收着的分类里有 Bot 在等确认：标题上挂「有事等你」。
+      assert(/satu-botfolder-need"[^>]*hidden/.test(folded), '没人等时标题上不该挂')
+      ui.botStreamOf('b2').sum = { state: 'idle', lastAt: 0, lastText: '', need: 'approval' }
+      const waiting = ui.chatRosterNav()
+      assert(/satu-botfolder-need" data-need="approval"/.test(waiting) && !/satu-botfolder-need" data-need="approval"[^>]*hidden/.test(waiting), `收着的分类里有人在等，标题上该挂出来：${waiting.match(/satu-botfolder-need[^>]*>/)?.[0]}`)
+      ui.botStreamOf('b2').sum = { state: 'idle', lastAt: 0, lastText: '' }
       // 一个分类都没有：和从前一模一样，没有任何标题和空放入提示。
       ui.state.botFolders = []
       const plain = ui.chatRosterNav()
       assert(!plain.includes('satu-botfolder-head') && !plain.includes('satu-botfolder-empty'), '没分类时多画了东西')
+    })
+
+    await test('跑着时执行 /clear：等它停的时候切去了别的 Bot，命令不执行、不动那颗 Bot 的输入框', async () => {
+      const ui = await boot(undefined, { fetchImpl: async () => ({ ok: true, status: 200, text: async () => '{}' }) })
+      ui.state.chatSessionId = 's-a'
+      ui.state.chatStatus = 'running'
+      let ran = false
+      const job = ui.runChatCommand({ name: 'clear', idleOnly: true, run: async () => ((ran = true), { cleared: true, throughSeq: 1 }) })
+      // 停止那一下还在路上，人就切到了 B（runChatCommand 第一个 await 之后）：B 是空闲的，草稿里有自己的话。
+      ui.state.chatSessionId = 's-b'
+      ui.state.chatStatus = ''
+      ui.state.chatDraft = 'B 的草稿'
+      await job
+      assert(!ran, '切走了还对旧会话执行了命令')
+      assert(ui.state.chatDraft === 'B 的草稿', `B 的输入框被动了：${JSON.stringify(ui.state.chatDraft)}`)
+    })
+
+    await test('看过程：委派那条按登记时的会话取；派活那条在对方会话里往前翻到那件活为止', async () => {
+      const calls = []
+      const page = (events, firstSeq, hasMore) => ({ ok: true, status: 200, text: async () => JSON.stringify({ events, firstSeq, hasMore }) })
+      const ev = (seq, type, data) => ({ seq, type, time: seq, data })
+      const ui = await boot(undefined, {
+        fetchImpl: async (path) => {
+          calls.push(path)
+          if (path.includes('/tasks/child-1/history')) return page([], null, false)
+          if (path.includes('/sessions/s-target/history')) {
+            if (!path.includes('before=')) return page([ev(100, 'turn/start', { turn: 30 }), ev(101, 'turn/end', { turn: 30 })], 100, true)
+            return page(
+              [
+                ev(5, 'user/message', { message: { content: '派来的' }, source: { kind: 'plugin', plugin: 'task', form: 'tk-1', phase: 'instruction' } }),
+                ev(6, 'turn/start', { turn: 2 }),
+                ev(7, 'tool/call', { turn: 2, step: 1, callId: 'k1', name: 'web_search', arguments: '{}' }),
+                ev(8, 'tool/result', { turn: 2, step: 1, callId: 'k1', text: 'ok' }),
+                ev(9, 'turn/end', { turn: 2, reason: 'completed' }),
+              ],
+              5,
+              true,
+            )
+          }
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.taskTraceSrc['c:child-1'] = { key: 'c:child-1', child: 'child-1', session: 's-old' }
+      ui.state.chatSessionId = 's-new'
+      await ui.loadTaskTrace('c:child-1')
+      assert(calls.some((p) => p.includes('/runtime/sessions/s-old/tasks/child-1/history')), `该按登记时的会话取：${JSON.stringify(calls)}`)
+      ui.taskTraceSrc['a:tk-1'] = { key: 'a:tk-1', session: 's-target', taskId: 'tk-1' }
+      await ui.loadTaskTrace('a:tk-1')
+      assert(calls.some((p) => p.includes('/sessions/s-target/history') && p.includes('before=100')), `该往前翻一页：${JSON.stringify(calls)}`)
+      const tr = ui.state.taskTrace['a:tk-1']
+      assert(tr && tr.rows && tr.rows.length >= 1, `翻到之后该有过程：${JSON.stringify(tr)}`)
+    })
+
+    await test('拖动中整页重画、dragend 没收到：之后从桌面拖文件丢到分类上，不会悄悄把上一次那颗挪过去', async () => {
+      const puts = []
+      const ui = await boot(undefined, {
+        fetchImpl: async (path, init) => {
+          if (init?.method === 'PUT') puts.push(path)
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.state.botFolders = [{ id: 'f1', name: '客户', position: 1 }]
+      ui.state.runtimeBots = [{ id: 'b1', name: '小满', folderId: null }]
+      const row = el('div', { 'data-bot-row': 'b1' })
+      row.closest = (sel) => (sel === '[data-bot-row]' ? row : null)
+      const zone = el('div', { 'data-drop-folder': 'f1' })
+      zone.closest = (sel) => (sel === '[data-drop-folder]' ? zone : null)
+      const carry = new Map()
+      ui.fireDoc('dragstart', { target: row, dataTransfer: { setData: (k, v) => carry.set(k, v), types: ['text/plain'] } })
+      // 整页重画了，dragend 没到 document。接着拖进来的是一个文件。
+      ui.fireDoc('drop', { target: zone, dataTransfer: { types: ['Files'], getData: () => '' } })
+      await new Promise((r) => setTimeout(r, 20))
+      assert(ui.state.runtimeBots[0].folderId === null && !puts.length, `拖文件不该挪 Bot：${JSON.stringify(ui.state.runtimeBots[0])} ${JSON.stringify(puts)}`)
+      // 正常的一次拖放照样能用。
+      ui.fireDoc('dragstart', { target: row, dataTransfer: { setData: (k, v) => carry.set(k, v), types: ['text/plain'] } })
+      ui.fireDoc('drop', { target: zone, dataTransfer: { types: ['text/plain'], getData: (k) => carry.get(k) || '' } })
+      await new Promise((r) => setTimeout(r, 20))
+      assert(ui.state.runtimeBots[0].folderId === 'f1' && puts.length === 1, `正常拖放该挪进去：${JSON.stringify(ui.state.runtimeBots[0])}`)
+    })
+
+    await test('连着挪两次、前一次失败：不把后一次退掉；挪的途中名单重拉回来也不盖掉刚放进去的', async () => {
+      let failFirst
+      const gate = new Promise((r) => (failFirst = r))
+      let n = 0
+      const ui = await boot(undefined, {
+        fetchImpl: async (path, init) => {
+          if (init?.method === 'PUT') {
+            n++
+            if (n === 1) {
+              await gate
+              return { ok: false, status: 500, text: async () => JSON.stringify({ error: '一时失败' }) }
+            }
+            return { ok: true, status: 200, text: async () => '{}' }
+          }
+          if (path === '/runtime/bots') return { ok: true, status: 200, text: async () => JSON.stringify({ bots: [{ id: 'b1', name: '小满', scope: 'user', folderId: null }], folders: [{ id: 'f1', name: '客户', position: 1 }, { id: 'f2', name: '报表', position: 2 }] }) }
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.state.botFolders = [{ id: 'f1', name: '客户', position: 1 }, { id: 'f2', name: '报表', position: 2 }]
+      ui.state.runtimeBots = [{ id: 'b1', name: '小满', scope: 'user', folderId: null }]
+      // 第一笔（放进 f1）还在路上，名单重拉回来了：服务端那份还是没分类，不能把本地的盖掉。
+      const first = ui.moveBotToFolder('b1', 'f1')
+      await new Promise((r) => setTimeout(r, 10))
+      await ui.loadRuntimeBots()
+      assert(ui.state.runtimeBots[0].folderId === 'f1', `重拉回来的旧名单盖掉了还在路上的那一笔：${JSON.stringify(ui.state.runtimeBots[0])}`)
+      // 接着又挪到 f2（成了）；之后第一笔才失败回来：不能把 f2 退回去。
+      await ui.moveBotToFolder('b1', 'f2')
+      failFirst()
+      await first
+      assert(ui.state.runtimeBots[0].folderId === 'f2', `前一次失败的回滚把后一次退掉了：${JSON.stringify(ui.state.runtimeBots[0])}`)
+    })
+
+    await test('收起的分类刷新后还收着：开合状态从本机读得回来（state 初始化时键已经声明）', async () => {
+      const kept = new Map([['satuwork.botFolderOpen', JSON.stringify({ f1: false })]])
+      const storage = {
+        getItem: (k) => (kept.has(k) ? kept.get(k) : null),
+        setItem: (k, v) => kept.set(k, String(v)),
+        removeItem: (k) => kept.delete(k),
+        clear: () => kept.clear(),
+      }
+      const ui = await boot(undefined, { persistentStorage: storage })
+      assert(ui.state.botFolderOpen.f1 === false, `刷新后收起的分类又展开了：${JSON.stringify(ui.state.botFolderOpen)}`)
+      // 点开另一个分类：存回去的是在原来那份上改的，不是拿空对象盖掉。
+      await ui.fire('click', el('button', { 'data-act': 'bot-folder-toggle', 'data-id': 'f2' }))
+      const saved = JSON.parse(kept.get('satuwork.botFolderOpen') || '{}')
+      assert(saved.f1 === false && saved.f2 === false, `存回去的把原来的盖掉了：${JSON.stringify(saved)}`)
+    })
+
+    await test('不靠拖放也能把 Bot 放进分类：对话顶栏「…」里有「移到分类」，点了就存', async () => {
+      const puts = []
+      const ui = await boot(undefined, {
+        fetchImpl: async (path, init) => {
+          if (init?.method === 'PUT') puts.push({ path, body: JSON.parse(init.body || '{}') })
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.state.me = { account: { id: 'u1', companyId: 'c1', role: 'member', email: 'u@x' }, company: { id: 'c1' } }
+      ui.state.path = '/a/b1'
+      ui.state.chatBotId = 'b1'
+      ui.state.botFolders = [{ id: 'f1', name: '客户', position: 1 }]
+      ui.state.runtimeBots = [{ id: 'b1', name: '小满', folderId: null }]
+      ui.state.menu = 'chat'
+      const head = ui.chatHeadInline()
+      assert(head.includes('移到分类') && head.includes('data-act="bot-folder-move"') && head.includes('data-folder="f1"'), `菜单里没有「移到分类」：${head}`)
+      assert(/data-folder=""[^>]*aria-checked="true"/.test(head), '没分类时「不分类」该打勾')
+      await ui.fire('click', el('button', { 'data-act': 'bot-folder-move', 'data-id': 'b1', 'data-folder': 'f1' }))
+      assert(ui.state.runtimeBots[0].folderId === 'f1', `没放进分类：${JSON.stringify(ui.state.runtimeBots[0])}`)
+      assert(puts.some((p) => p.path === '/runtime/bots/b1/folder' && p.body.folderId === 'f1'), `没存到服务端：${JSON.stringify(puts)}`)
+      assert(ui.state.menu === null, '点完菜单该收起来')
+      // 一个分类都没建：不摆这一段。
+      ui.state.botFolders = []
+      ui.state.menu = 'chat'
+      assert(!ui.chatHeadInline().includes('移到分类'), '没有分类时不该摆「移到分类」')
     })
 
     await test('主 Bot 戴皇冠，并且在它那一组里排最前面', async () => {

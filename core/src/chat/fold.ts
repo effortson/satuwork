@@ -45,7 +45,11 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
   let assigned: any = null
   /** 派活卡：id → 已经挂在某个助手块上的那一件。同一个 id 来多条（等 → 跑 → 收场），取最后一条。 */
   const taskSeen = new Map<string, any>()
+  /** 上一条事件的 seq（见 turn/start 那一支：认「指令紧挨着开了自己的一轮」）。 */
+  let lastSeq: number | undefined
   for (const ev of events || []) {
+    const prevSeq = lastSeq
+    lastSeq = ev.seq
     const type = ev.type
     const data: any = ev.data || {}
     // 事件自带 time（bot 那边 append 时打的）。界面上要按天分隔、每条标时刻，
@@ -435,6 +439,17 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
     } else if (type === 'turn/start') {
       status = 'running'
       statusAt = at
+      /**
+       * 上一轮只有 turn/start、没有 turn/end（进程死在半路的老日志）：openTurn 一直是真，之后派来的
+       * 指令全被当成插话（steered）——不折、状态不再更新。可插话不会紧跟着一个 turn/start：它是插在
+       * 人那一轮中间，后面跟的是那一轮的助手、工具事件。紧挨着的下一条就是 turn/start，说明这条指令
+       * 开了自己的一轮，是派来的活，不是插话。席位的 withoutTaskTurns 用的是同一条认法。
+       */
+      const last: any = blocks[blocks.length - 1]
+      if (!assigned && last && last.kind === 'user' && last.assigned && last.assigned.state === 'steered' && prevSeq !== undefined && last.seq === prevSeq) {
+        last.assigned.state = 'queued'
+        assigned = last.assigned
+      }
       openTurn = true
       if (assigned && assigned.turn == null) {
         assigned.turn = Number(data.turn)

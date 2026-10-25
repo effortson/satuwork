@@ -294,7 +294,12 @@ async function streamChatCompletions(
    * 半天不来一帧的流，「等下一帧」就等于白付那一段。
    */
   const watch = watchClient(res)
-  /** 至少收到过一帧 = 上游开了流。没拿到 usage 时只有这种才允许 settle 去估。 */
+  /**
+   * 至少收到过一帧**不是报错的** = 上游开了流。没拿到 usage 时只有这种才允许 settle 去估。
+   *
+   * 报错帧不算：上游一建连就失败（pi-ai 不发 start、直接推一帧 error），席位那边会认出「还没出内容」
+   * 退避重发——每次失败都按上一次的用量估一笔，一次抖动就记成三笔幽灵账。
+   */
   let started = false
   const stream = llm.models.streamSimple(piModel as any, context as any, {
     apiKey: secret,
@@ -318,7 +323,7 @@ async function streamChatCompletions(
   }
   try {
     for await (const event of stream) {
-      started = true
+      if (event.type !== 'error') started = true
       // 先记用量，再看人走没走：中止收尾的那一帧（`error`，reason 是 aborted）带着的正是
       // 到此为止已经问上游要过的那些 token。
       if ('partial' in event) noteUsage(event.partial?.usage)
@@ -473,6 +478,22 @@ async function completeChatCompletions(
   return tokensOf(openaiUsage(message?.usage), message?.usage)
 }
 
+/**
+ * 这几行 SSE 里有没有一帧不是报错的。`data: [DONE]`、注释行、解析不了的都不算；Anthropic 的
+ * `{"type":"error"}`、OpenAI 的 `{"error":{…}}` 不算。
+ */
+function sawContent(lines: string): boolean {
+  for (const line of lines.split('\n')) {
+    const t = line.trim()
+    if (!t.startsWith('data:')) continue
+    try {
+      const o = JSON.parse(t.slice(5).trim())
+      if (o && typeof o === 'object' && o.type !== 'error' && !o.error) return true
+    } catch {}
+  }
+  return false
+}
+
 async function proxyUpstream(
   res: ServerResponse,
   opts: { url: string; headers: Record<string, string>; body: unknown; secret: string },
@@ -529,7 +550,6 @@ async function proxyUpstream(
     throw new HttpError(503, redact((e as Error).message || 'upstream unreachable', opts.secret))
   }
   clearHeaderTimer()
-  started = upstream.ok
   const ctype = upstream.headers.get('content-type') || 'application/json; charset=utf-8'
   /**
    * **只有 2xx 才边收边转。**
@@ -539,6 +559,9 @@ async function proxyUpstream(
    * 以前只按类型判，这种错误页会走流式那一支，一个字节都不抹，密钥就原样交给了调用方。
    */
   const streaming = upstream.ok && (ctype.includes('text/event-stream') || ctype.includes('text/plain'))
+  // 整页回答：2xx 就是上游接了。流式的要等见到第一帧不是报错的（见 sawContent）——Anthropic 过载时
+  // 先回 200、开头一帧就是 overloaded 的 error，那一次一分钱没花，席位还会重发。
+  started = upstream.ok && !streaming
   if (streaming) {
     res.writeHead(upstream.status, {
       'content-type': ctype,
@@ -550,10 +573,20 @@ async function proxyUpstream(
     // 一个解码器从头用到尾：多字节字符会被切在两个 chunk 之间，每次新建解码器会把
     // 它解成替换字符，那一帧的 JSON 就 parse 不动，用量记录跟着丢。
     const decoder = new TextDecoder()
+    let lines = ''
     const take = (piece: string | Buffer) => {
       const bytes = typeof piece === 'string' ? piece : Buffer.from(piece)
       res.write(bytes)
-      buf += typeof piece === 'string' ? piece : decoder.decode(piece, { stream: true })
+      const text = typeof piece === 'string' ? piece : decoder.decode(piece, { stream: true })
+      if (!started) {
+        lines += text
+        const cut = lines.lastIndexOf('\n')
+        if (cut >= 0) {
+          started = sawContent(lines.slice(0, cut))
+          lines = lines.slice(cut + 1)
+        }
+      }
+      buf += text
       const next = sseUsage(buf, usage)
       buf = next.rest
       usage = next.usage

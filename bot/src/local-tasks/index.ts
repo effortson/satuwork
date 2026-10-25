@@ -100,6 +100,8 @@ async function readTurnResult(
   ownTurn: boolean,
   instruction: string,
   track?: (ev: { type?: string; data?: unknown }) => void,
+  /** 席位推的队列快照（`queue/change`），和「见到了自己那条指令」。认对方那边撤掉排队用，见 runTaskJob。 */
+  watch?: { queue?: (ids: string[]) => void; mine?: () => void },
 ): Promise<{ kind: string; text: string }> {
   let turn: number | null = ownTurn ? null : -1
   let mine = false
@@ -110,10 +112,17 @@ async function readTurnResult(
   for await (const ev of sseEvents<Ev>(reader)) {
     // 自己那一轮的事件喂给进度（docs/bot-tasks.md §4）。todo/list 不带轮号，进了自己那一轮就算。
     if (track && turn !== null && (turn === -1 ? foreign === 0 : ev.type === 'todo/list' || Number(ev.data?.turn ?? -1) === turn)) track(ev)
+    if (ev.type === 'queue/change') {
+      const queued = (ev as { queued?: { id?: unknown }[] }).queued
+      watch?.queue?.(Array.isArray(queued) ? queued.map((q) => String(q?.id ?? '')) : [])
+      continue
+    }
     if (ev.type === 'user/message') {
       if (!mine) {
-        if (textOfMessage(ev.data).trim() === instruction.trim()) mine = true
-        else if (turn === -1) foreign++
+        if (textOfMessage(ev.data).trim() === instruction.trim()) {
+          mine = true
+          watch?.mine?.()
+        } else if (turn === -1) foreign++
       }
       continue
     }
@@ -146,6 +155,9 @@ async function readTurnResult(
   }
   throw new Error('事件流断了')
 }
+
+/** 排着的那条离队多久还没开轮，就算对方那边有人把它撤了（见 runTaskJob 的 leftQueueAt）。 */
+const QUEUE_GONE_MS = Math.max(500, Math.trunc(Number(process.env.SATUWORK_TASK_QUEUE_GONE_MS ?? 5_000)))
 
 export function apply(ctx: Context) {
   if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return
@@ -185,8 +197,18 @@ export function apply(ctx: Context) {
     let queueId = ''
     /** 指令正在发：这一下还不知道它是开轮、排队还是插话，停止要等发完再按结果办。 */
     let posting = false
+    /** 指令已经发进去了。没发之前那一轮不是我们的，停止不去砍它（同 manager/src/worker/tasks.ts）。 */
+    let sent = false
     /** 主 Bot 那边按了停止（续租的回复里带 cancelled）。 */
     let stopped = false
+    /**
+     * 排着队的那条从对方队列里没了、自己那条指令却一直没出现：人在对方那边把它撤了（DELETE 队列那一下
+     * 不经我们）。不认出来的话要等到二十分钟超时，主 Bot 也跟着干等、最后报「等结果超时」。离队到开轮
+     * 之间本来就有一小段（先出队、再写那条 user/message），所以等 QUEUE_GONE_MS 还没见到才算撤了。
+     */
+    let leftQueueAt = 0
+    let mineSeen = false
+    let goneThere = false
     let stopTimer: ReturnType<typeof setTimeout> | null = null
     /** 目标那一轮做到哪了：随续租报上去，主 Bot 那张卡画「正在：…」。 */
     const tracker = new ProgressTracker()
@@ -198,23 +220,42 @@ export function apply(ctx: Context) {
     const stopTarget = () => {
       if (stopped) return
       stopped = true
-      if (job.phase !== 'run' || !sessionId || steered || posting) return
-      // 还在对方队列里排着：撤掉就完了，一个字都没进它的对话。撤不掉（刚好开跑了）再中止那一轮。
+      if (job.phase !== 'run' || !sessionId || !sent || steered || posting) return
+      // 还在对方队列里排着：撤掉就完了，一个字都没进它的对话。
       if (queueId) {
         const qid = queueId
         queueId = ''
-        void selfJson(`/api/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(qid)}`, { method: 'DELETE' })
-          .then(() => ac.abort())
+        void fetch(`${self()}/api/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(qid)}`, {
+          method: 'DELETE',
+          headers: selfHeaders(),
+          signal: AbortSignal.timeout(20_000),
+        })
+          .then(({ status }) => {
+            // 撤掉了；或者队列里已经没有这一条（人撤了）——它不会再跑，也别去砍人那一轮。
+            if ((status >= 200 && status < 300) || status === 404) ac.abort()
+            // 刚好开跑了：现在跑着的就是我们那一轮，中止它。
+            else if (status === 409) abortTurn()
+            else throw new Error(`HTTP ${status}`)
+          })
           .catch(() => {
+            // 没撤成：下一拍续租再撤。不退回去中止「当前那一轮」——那多半是人的。
+            queueId = qid
             stopped = false
-            stopTarget()
           })
         return
       }
+      abortTurn()
+    }
+    const abortTurn = () => {
       void selfJson(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: {} }).catch(() => {})
       stopTimer = setTimeout(() => ac.abort(), 15_000)
     }
     const renew = setInterval(() => {
+      if (queueId && leftQueueAt && !mineSeen && Date.now() - leftQueueAt > QUEUE_GONE_MS) {
+        goneThere = true
+        ac.abort()
+        return
+      }
       const body = moved ? { progress: tracker.snapshot() } : {}
       moved = false
       void gw(`/${encodeURIComponent(job.taskId)}/renew`, body)
@@ -236,10 +277,13 @@ export function apply(ctx: Context) {
       })
     try {
       /**
-       * 同一个账号的几颗本地 Bot 各自领：这条活要敲的不是自己就放着（别的进程会领走——它们
-       * 共用一个 owner，谁先来谁领；领到了不是自己的只能退回去）。
+       * 同一个账号的几颗本地 Bot 各自领（/due 带 botId，Gateway 只交要敲自己的）。还是领到了别人的
+       * ——老 Gateway 不认 botId——就不碰它：不回报，租约到期放回去，由那颗自己的进程再领。
        */
-      if (botId && job.botId !== botId) throw new Error(`这一步要敲的是别的 Bot（${job.botId}），不是本进程`)
+      if (botId && job.botId !== botId) {
+        ctx.logger?.warn?.(`local tasks: ${job.taskId} 要敲的是别的 Bot（${job.botId}），不是本进程，放着等它到期`)
+        return
+      }
       const got = (await selfJson(`/api/bots/${encodeURIComponent(job.botId)}/session`)) as { sessionId?: string } | null
       if (!got?.sessionId) throw new Error('没有会话 id')
       sessionId = got.sessionId
@@ -271,19 +315,33 @@ export function apply(ctx: Context) {
       steered = Boolean(posted?.steered)
       queueId = String(posted?.queueId || '')
       posting = false
+      sent = true
       // 发消息的那一下刚好撞上停止：按发的结果补办（排着的撤掉，开了轮的中止）。
       if (stopped && !steered) {
         stopped = false
         stopTarget()
       }
-      const out = await readTurnResult(reader, !posted?.steered, job.instruction, (ev) => {
-        if (tracker.feed(ev)) moved = true
-      })
+      const out = await readTurnResult(
+        reader,
+        !posted?.steered,
+        job.instruction,
+        (ev) => {
+          if (tracker.feed(ev)) moved = true
+        },
+        {
+          queue: (ids) => {
+            if (queueId && !ids.includes(queueId) && !leftQueueAt) leftQueueAt = Date.now()
+          },
+          mine: () => {
+            mineSeen = true
+          },
+        },
+      )
       await finish({ kind: out.kind, result: out.text })
       ctx.logger?.info?.(`local tasks: ${job.taskId} 目标那一轮跑完：${out.kind}`)
     } catch (e) {
       if (lost) return
-      if (stopped) await finish({ kind: 'aborted' })
+      if (stopped || goneThere) await finish({ kind: 'aborted' })
       else if (ac.signal.aborted) await finish({ kind: 'timeout' })
       else await finish({ kind: 'failed', error: String((e as Error).message || e).slice(0, 300) })
     } finally {
@@ -297,7 +355,8 @@ export function apply(ctx: Context) {
   async function tick(): Promise<void> {
     let got: { jobs?: Job[] }
     try {
-      got = (await gw('/due')) as { jobs?: Job[] }
+      // 带上自己是哪颗：同一个账号的几颗本地 Bot 共用一个领活身份，不带就会领到别人的活。
+      got = (await gw(botId ? `/due?botId=${encodeURIComponent(botId)}` : '/due')) as { jobs?: Job[] }
     } catch (e) {
       // 老 Gateway 没这条路（404）就安静地过；断网也别刷屏。
       if (!(e instanceof LostError)) ctx.logger?.warn?.(`local tasks: 领不到活：${(e as Error).message}`)

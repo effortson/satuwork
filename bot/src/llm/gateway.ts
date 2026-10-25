@@ -57,6 +57,24 @@ function settleArgs(block: any): void {
   block.arguments = first && typeof first === 'object' ? first : { [BAD_TOOL_ARGS]: raw }
 }
 
+/**
+ * 流读到头却没等到收口帧（finish_reason / response.completed / content_block_stop）：那几把还没定参数的
+ * 工具在这儿定下来，再交出 done。
+ *
+ * 不定的话参数就停在「增量解析失败」留下的 `{}` 上——中间那一跳吞了读错误、照常结束响应，这边看到的是
+ * 一个干净的 EOF，pi 只看 content 里有没有 toolCall，照样拿空参数去执行（`todo` 当成读清单）。
+ * 收口时救不回来的照 settleArgs 的规矩把原文带下去，工具层明说参数坏了。
+ */
+function settleDangling(stream: AssistantMessageEventStream, partial: any): void {
+  for (let i = 0; i < partial.content.length; i++) {
+    const block = partial.content[i]
+    if (block?.type !== 'toolCall' || !('_raw' in block)) continue
+    settleArgs(block)
+    delete block._raw
+    stream.push({ type: 'toolcall_end', contentIndex: i, toolCall: block, partial })
+  }
+}
+
 export function gatewayUrl(): string {
   return (process.env.GATEWAY_URL || '').replace(/\/$/, '')
 }
@@ -756,6 +774,7 @@ async function consumeOpenAI(
     fail(stream, model, 'empty stream')
     return
   }
+  settleDangling(stream, partial)
   stream.push({ type: 'done', reason: 'stop', message: partial })
 }
 
@@ -915,6 +934,7 @@ async function consumeResponses(
     fail(stream, model, 'empty stream')
     return
   }
+  settleDangling(stream, partial)
   stream.push({ type: 'done', reason: 'stop', message: partial })
 }
 
@@ -1056,7 +1076,10 @@ async function consumeAnthropic(
     }
   }
   if (!started) fail(stream, model, 'empty stream')
-  else stream.push({ type: 'done', reason: 'stop', message: partial })
+  else {
+    settleDangling(stream, partial)
+    stream.push({ type: 'done', reason: 'stop', message: partial })
+  }
 }
 
 /**

@@ -42,6 +42,8 @@ interface AuditResult {
   /** 回报这批条目是用哪种语言写的，Gateway 记在每一条上。 */
   locale: 'zh' | 'en'
   items: unknown[]
+  /** 这一批真用的模型。Gateway 那边的批次可能在这期间换成了新模型（重试前会换），据此改回来。 */
+  model?: { modelRole: string; provider: string; model: string; reasoningEffort: string }
 }
 
 interface StoredResult { job: AuditJob; result: AuditResult }
@@ -281,6 +283,7 @@ export class ConversationAuditService extends Service {
       sourceHash,
       locale: job.locale,
       items,
+      model: { modelRole: job.modelRole, provider: job.provider, model: job.model, reasoningEffort: job.reasoningEffort },
     }
     this.results().put(job.id, { job, result })
     if (job.kind === 'pre_delete') this.ctx.agents.quiesce(job.quiesceMs)
