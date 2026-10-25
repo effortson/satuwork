@@ -48,15 +48,19 @@ Telegram 客户端渲染。消息开头支持
 ```
 src/index.ts        起进程：连库、种 owner、装路由、监听
 src/http.ts         很小的路由器 + 静态文件
-src/routes.ts       只做组装：把下面九组路由按顺序挂上去
+src/routes/index.ts 只做组装：把下面九组路由按顺序挂上去
 src/routes/         按边界分的九组路由，每组收一个 RouteCtx { db, keys, llm }
 src/lib/            路由用的帮手：校验、序列化、鉴权守卫、四个反代、目录定义
-src/db.ts           Db 类（连接、事务、查询）；类型和行解析原样再导出
+src/db.ts           对外唯一的 Db 类；类型和行解析原样再导出
+src/db/core.ts      连接、事务、查询原语（DbCore）
+src/db/<领域>.ts    按领域分的方法，一层层 extends 到 Db（顺序见 db.ts 的注释）
+src/db/sql.ts       几处共用的 SQL 片段；locks.ts 是全仓 advisory lock 号的登记表
 src/db/types.ts     库里那些行长什么样，以及跟着走的常量
 src/db/rows.ts      裸行 → 类型
 src/db/migrate.ts   编号迁移的执行器（advisory lock、一条一个事务、校验和）
 src/db/migrations/  一条迁移一个文件，index.ts 是那张有序表
-src/deploy.ts       席位：槽位、端口、下发给管家、拆席位
+src/deploy.ts       席位部署的对外入口（桶），实现分在 src/deploy/：路径与协议号、序列化、
+                    机器调度、席位部署状态机、管家 HTTP 客户端
 src/v1.ts           /v1/* 模型代理
 src/llm.ts          pi-ai 目录与上游调用
 ```

@@ -280,7 +280,7 @@ Bot 侧照旧缓存这份目录，摘要时用 `models.utility` 那一对打 Gat
 - `ui/pages-tools.js`：新分片
 - `ui/index.html`：加对应的 `data-app-part`
 - `gateway/src/http.ts`：`SPA_PATHS` 加 `/tools`，`UI_PARTS` 加 `pages-tools.js`
-- `gateway/src/routes.ts`：`GET/PUT /platform/tools/web`（`requireOwner`）
+- `gateway/src/routes/index.ts`：`GET/PUT /platform/tools/web`（`requireOwner`）
 
 ---
 
@@ -360,7 +360,7 @@ bot/src/catalog/index.ts         接住 /runtime/catalog 下发的 models.{daily
 bot/cordis.yml                   两行插件，排在 workspace 之后（web_extract 的 save 要写工作区）
 gateway/src/web-tools.ts         后端适配层 + SSRF 闸 + 文档取字节
 gateway/src/web-service.ts       配置取用、后端派发、缓存、配额、计量计价
-gateway/src/routes.ts            /runtime/web/*、/platform/tools/web*、catalog 加 models、stats 加 web
+gateway/src/routes/index.ts      /runtime/web/*、/platform/tools/web*、catalog 加 models、stats 加 web
 gateway/src/db.ts                web_calls 表、platform_settings.webTools、汇总与计数查询
 gateway/src/http.ts              SPA_PATHS 加 /tools，UI_PARTS 加 pages-tools.js
 gateway/ui/pages-tools.js        「工具配置」屏与「网页与搜索」tab

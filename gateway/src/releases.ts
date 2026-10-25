@@ -102,7 +102,7 @@ export const DEFAULT_MIN_DESKTOP_VERSION = '0.1.0'
 const DESKTOP_VERSION_RE = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/
 
 /**
- * 登记时收的最低 Desktop 版本。只收严格的 `x.y.z`：Desktop 那头（main.rs 的
+ * 登记时收的最低 Desktop 版本。只收严格的 `x.y.z`：Desktop 那头（runtime/update.rs 的
  * version_numbers）认不出的值一律当「不满足」，登记一个它读不懂的值等于把这个包锁死。
  */
 export function parseMinDesktopVersion(raw: unknown): string {
@@ -118,7 +118,7 @@ function minDesktopFor(kind: ReleaseKind, raw: unknown): string | null {
 }
 
 function desktopVersionNumbers(raw: string): [number, number, number] | undefined {
-  // 和 main.rs 的 version_numbers 同一个读法：去掉 v 前缀，`-` / `+` 之后的不看，缺的段当 0。
+  // 和桌面壳 runtime/update.rs 的 version_numbers 同一个读法：去掉 v 前缀，`-` / `+` 之后的不看，缺的段当 0。
   const core = String(raw || '').trim().replace(/^v/, '').split(/[-+]/)[0]
   const parts = core.split('.')
   if (!parts[0] || parts.length > 3 || !parts.every((p) => /^\d+$/.test(p))) return undefined
