@@ -3303,7 +3303,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
            *
            * 留下的判据是**协议**。这条钉的就是它：两家都配了平台密钥，所以真的走得到那道
            * 闸（没密钥的话先撞上 402，协议这句话根本轮不到），措辞也一并钉住。
-           * e2e/run.mjs 那条「无密钥 provider → 402」钉的是取密钥那一步，两条各管一段。
+           * e2e/gateway-core.mjs 那条「无密钥 provider → 402」钉的是取密钥那一步，两条各管一段。
            */
           const wrongMessages = await req(gwBase, 'POST', '/v1/messages', {
             token: ownerTok,
