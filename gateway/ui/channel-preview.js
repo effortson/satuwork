@@ -18,10 +18,11 @@
   let fileBlob = null
   let frameUrl = ''
   /**
-   * 浏览器里能渲染的那几种 Office（office-view.html，和对话页 chat-preview.js 的 PREVIEW_WEB_KIND 同一张表）。
-   * 席位没装 LibreOffice、要不到 PDF 时走这条；老格式（doc / xls / ppt）只能看提取出来的文字。
+   * 浏览器里能渲染的那几种 Office（office-view.html）。和对话页同一张表，在 core 里（这一页也先
+   * 装 core.js，见 routes/channels.ts）。席位没装 LibreOffice、要不到 PDF 时走这条；老格式
+   * （doc / xls / ppt）只能看提取出来的文字。
    */
-  const WEB_KIND = { docx: 'docx', xlsx: 'xlsx', xlsm: 'xlsx', pptx: 'pptx' }
+  const WEB_KIND = SatuCore.PREVIEW_WEB_KIND
   const ext = (String(name).split('.').pop() || '').toLowerCase()
   /** 正在等哪一个 office-view 框说话；换了看法、出了错就作废。 */
   let officeView = null

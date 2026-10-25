@@ -1,6 +1,7 @@
 /**
  * 渠道绑定：用本地 Telegram API 验完整控制面，不依赖公网或真实 token。
  */
+import { createContext, runInContext } from 'node:vm'
 import { createServer } from 'node:http'
 import { rmSync } from 'node:fs'
 import { PG_URL, pgClient } from './pg.mjs'
@@ -489,6 +490,32 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
         assert(String(preview.headers.get('content-security-policy')).includes("frame-src 'self' blob:;"), `${filename} 没有限制预览 frame 来源`)
         assert(!/https:\/\/cdn\.jsdelivr\.net[\s;]/.test(String(preview.headers.get('content-security-policy'))), `${filename} 的 CSP 放行了整个 jsdelivr`)
         previews.set(filename, { url: previewUrl, html: previewHtml })
+      }
+
+      {
+        /**
+         * 预览页上的脚本按页面里写的顺序真装一遍：markdown.js 一加载就要 SatuCore（core.js）和
+         * dom-util.js。这一页曾经漏装 core.js——markdown.js 当场 ReferenceError、satuMd 从来没挂上，
+         * Telegram 里点开的 .md 一直是纯文本，而上面那几条只看「有没有 markdown.js」的断言照样过。
+         */
+        const scripts = [...previews.get('eth-report.md').html.matchAll(/<script src="\/([^"]+)"><\/script>/g)].map((m) => m[1])
+        assert(scripts.at(-1) === 'channel-preview.js', `预览运行时应当最后装：${scripts.join(', ')}`)
+        const node = () => ({ style: {}, setAttribute() {}, appendChild() {}, querySelector: () => null, querySelectorAll: () => [] })
+        const ctx = {
+          console, setTimeout, clearTimeout, WeakMap, URL, navigator: {}, Blob: function Blob() {},
+          getComputedStyle: () => ({ getPropertyValue: () => '' }),
+          document: { createElement: node, head: node(), body: node(), addEventListener() {}, documentElement: { getAttribute: () => null }, querySelector: () => null, querySelectorAll: () => [] },
+        }
+        ctx.window = ctx
+        ctx.globalThis = ctx
+        createContext(ctx)
+        for (const src of scripts.slice(0, -1)) {
+          const r = await fetch(`${base}/${src}`)
+          assert(r.status === 200, `预览页要的 /${src} 拿不到：${r.status}`)
+          runInContext(await r.text(), ctx, { filename: src })
+        }
+        assert(ctx.satuMd && typeof ctx.satuMd.render === 'function', `预览页上 markdown.js 没装起来（satuMd 不在），脚本：${scripts.join(', ')}`)
+        assert(ctx.SatuCore?.PREVIEW_WEB_KIND?.pptx === 'pptx', 'channel-preview.js 要用的 PREVIEW_WEB_KIND 不在 SatuCore 上')
       }
 
       assert(previews.get('eth-report.html')?.html.includes('data-kind="html"'), 'HTML 预览类型不对')
