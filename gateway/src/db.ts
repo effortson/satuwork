@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { randomAccessToken, randomApiKey, randomMachineToken } from './crypto.ts'
 import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
+import { filterSql } from './db/sql.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
 import { type Handoff, type HandoffState, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotFolder, type BotRelease, type BotTask, type BotTaskPatch, type BotTaskProgress, type BotTaskStatus, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type KnowledgeBase, type KnowledgeChunk, type KnowledgeFile, type KnowledgeFileStatus, type KnowledgeShare, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
@@ -150,37 +151,10 @@ function chargeFilterSql(filter: {
   from?: number
   to?: number
 }): { sql: string; args: unknown[] } {
-  let sql = ''
-  const args: unknown[] = []
-  if (filter.companyId) {
-    sql += ' and "companyId" = ?'
-    args.push(filter.companyId)
-  }
-  if (filter.accountId) {
-    sql += ' and "accountId" = ?'
-    args.push(filter.accountId)
-  }
-  if (filter.botId) {
-    sql += ' and "botId" = ?'
-    args.push(filter.botId)
-  }
-  if (filter.kind) {
-    sql += ' and kind = ?'
-    args.push(filter.kind)
-  }
-  if (filter.status) {
-    sql += ' and status = ?'
-    args.push(filter.status)
-  }
-  if (filter.from != null) {
-    sql += ' and "createdAt" >= ?'
-    args.push(filter.from)
-  }
-  if (filter.to != null) {
-    sql += ' and "createdAt" <= ?'
-    args.push(filter.to)
-  }
-  return { sql, args }
+  return filterSql(
+    [['"companyId"', filter.companyId], ['"accountId"', filter.accountId], ['"botId"', filter.botId], ['kind', filter.kind], ['status', filter.status]],
+    filter,
+  )
 }
 
 const LEDGER_BY_REF = '(select "refId", sum("amountMicros") as micros from usage_charges group by "refId")'
@@ -1209,18 +1183,8 @@ export class Db {
     return num(r?.n ?? 0)
   }
 
-  private llmRangeSql(range?: { from?: number; to?: number }): { sql: string; args: number[] } {
-    let sql = ''
-    const args: number[] = []
-    if (range?.from != null) {
-      sql += ' and "createdAt" >= ?'
-      args.push(range.from)
-    }
-    if (range?.to != null) {
-      sql += ' and "createdAt" <= ?'
-      args.push(range.to)
-    }
-    return { sql, args }
+  private llmRangeSql(range?: { from?: number; to?: number }): { sql: string; args: (string | number)[] } {
+    return filterSql([], range)
   }
 
   private async llmUsageBy(
@@ -1670,26 +1634,10 @@ export class Db {
     byConnector: { connector: string; label: string; calls: number; amountMicros: number }[]
     byTool: { connector: string; tool: string; calls: number; amountMicros: number }[]
   }> {
-    const where: string[] = ['1=1']
-    const args: (string | number)[] = []
-    if (scope.accountId) {
-      where.push('"accountId" = ?')
-      args.push(scope.accountId)
-    }
-    if (scope.companyId) {
-      where.push('"companyId" = ?')
-      args.push(scope.companyId)
-    }
-    if (range?.from != null) {
-      where.push('"createdAt" >= ?')
-      args.push(range.from)
-    }
-    if (range?.to != null) {
-      where.push('"createdAt" <= ?')
-      args.push(range.to)
-    }
+    const f = filterSql([['"accountId"', scope.accountId], ['"companyId"', scope.companyId]], range)
+    const args = f.args
     // 维度在 connector_calls（label / tool / 状态），钱在账本，按 refId 接起来。
-    const w = where.join(' and ').replace(/"(accountId|companyId|createdAt)"/g, 'c."$1"')
+    const w = ('1=1' + f.sql).replace(/"(accountId|companyId|createdAt)"/g, 'c."$1"')
     // 账本先收成一行：refId 不是唯一键，同一次调用挂两行账会让 calls 和金额一起翻倍。
     const from =
       'from connector_calls c left join ' + LEDGER_BY_REF + ' u on u."refId" = c.id'
@@ -1735,23 +1683,14 @@ export class Db {
   async connectorUsageByCompany(range?: { from?: number; to?: number }): Promise<
     { companyId: string | null; connector: string; calls: number; amountMicros: number; lastAt: number | null }[]
   > {
-    const where: string[] = ['1=1']
-    const args: number[] = []
-    if (range?.from != null) {
-      where.push('"createdAt" >= ?')
-      args.push(range.from)
-    }
-    if (range?.to != null) {
-      where.push('"createdAt" <= ?')
-      args.push(range.to)
-    }
+    const { sql: where, args } = filterSql([], range)
     // 同文件别处一样先按 refId 汇总再 join：直接 join 账本的话，一次调用落了两行账
     // （被拒一行 + 成功一行）会把 count(*) 也算成两次调用。
     const rows = await this.many(
       `select c."companyId", c.connector, count(*) as calls,
               coalesce(sum(u.micros), 0) as micros, max(c."createdAt") as "lastAt"
        from connector_calls c left join ${LEDGER_BY_REF} u on u."refId" = c.id
-       where ${where.join(' and ').replace(/"createdAt"/g, 'c."createdAt"')}
+       where ${('1=1' + where).replace(/"createdAt"/g, 'c."createdAt"')}
        group by c."companyId", c.connector order by c."companyId", c.connector`,
       args,
     )
