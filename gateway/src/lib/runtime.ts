@@ -238,20 +238,12 @@ export async function seatBearer(db: Db, accountId: string): Promise<string> {
   return secrets?.accessToken ?? ''
 }
 
-/**
- * 两层鉴权，两个头。
- *
- * `authorization` 是给 **bot** 的席位票（`sat_`），管家原样透传不看；
- * `x-satuwork-machine` 是给 **管家** 的机器票（`smt_`），管家验完就摘掉。
- * 分开是为了让 bot 那边一行都不用改。
- *
- * 真正拼头的是 deploy.ts 的 `managerHeaders`——它还会捎上「Gateway 现在在哪」，
- * 而那一句必须每条发往管家的调用都带着才有意义（见那边的长注释）。这里保留这个名字，
- * 是因为它有十几个调用点，而它们要的正是「发给管家的那套头」。
+/*
+ * 两层鉴权，两个头：`authorization` 是给 **bot** 的席位票（`sat_`），管家原样透传不看；
+ * `x-satuwork-machine` 是给 **管家** 的机器票（`smt_`），管家验完就摘掉。分开是为了让
+ * bot 那边一行都不用改。机器那个头一律由 deploy.ts 的 `managerHeaders` 拼——它还会捎上
+ * 「Gateway 现在在哪」，那一句必须每条发往管家的调用都带着才有意义（见那边的长注释）。
  */
-export function machineHeader(machineToken?: string): Record<string, string> {
-  return managerHeaders(machineToken)
-}
 
 /**
  * 打席位/管家的一条 JSON 接口：两层票、超时、正文认不出 JSON 时兜一句。
@@ -277,7 +269,7 @@ export async function seatFetchJson(
       headers: {
         authorization: bearerTok ? `Bearer ${bearerTok}` : '',
         accept: 'application/json',
-        ...machineHeader(machineToken),
+        ...managerHeaders(machineToken),
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -377,7 +369,7 @@ export async function proxyDownload(
     r = await fetch(url, {
       headers: {
         authorization: token ? `Bearer ${token}` : '',
-        ...machineHeader(machineToken),
+        ...managerHeaders(machineToken),
       },
       signal: ac.signal,
     })

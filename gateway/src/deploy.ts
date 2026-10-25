@@ -723,6 +723,20 @@ export function managerHeaders(machineToken?: string): Record<string, string> {
   }
 }
 
+/**
+ * 打管家自己的一条控制接口（名册、部署、拆席位、装机进度）。调用方得先确认机器配对过
+ * （machinePaired），这里不再查 host。
+ *
+ * 机器票两种写法都带：`x-satuwork-machine` 是反代那条路径上用来和 bot 的 `authorization`
+ * 区分开的；控制类调用没有这个冲突，带上 `authorization` 让 curl 和旧版管家也认。
+ */
+function managerControlFetch(machine: Machine, path: string, init: Omit<RequestInit, 'headers'> & { headers?: Record<string, string> } = {}): Promise<Response> {
+  return fetch(`${machine.host!.replace(/\/$/, '')}${path}`, {
+    ...init,
+    headers: { ...init.headers, ...managerHeaders(machine.token), authorization: 'Bearer ' + machine.token },
+  })
+}
+
 /** 槽位**按机器**分配，不是按公司：端口从槽位算出来，两台机器上的 slot 0 互不冲突。 */
 async function allocateSlot(db: Db, machineId: string, keep?: number): Promise<number> {
   if (keep != null && keep >= 0) return keep
@@ -1477,10 +1491,7 @@ interface ManagerSeat {
 async function managerSeatsOf(machine: Machine, timeoutMs = 5000): Promise<ManagerSeat[] | undefined> {
   if (!machinePaired(machine)) return undefined
   try {
-    const res = await fetch(`${machine.host!.replace(/\/$/, '')}/seats`, {
-      headers: { ...managerHeaders(machine.token), authorization: 'Bearer ' + machine.token },
-      signal: AbortSignal.timeout(timeoutMs),
-    })
+    const res = await managerControlFetch(machine, '/seats', { signal: AbortSignal.timeout(timeoutMs) })
     if (!res.ok) return undefined
     const body = (await res.json()) as { seats?: unknown }
     return Array.isArray(body?.seats) ? (body.seats as ManagerSeat[]) : undefined
@@ -1880,18 +1891,11 @@ export class ManagerTimeoutError extends Error {
  * ready，桌面栈早装好了，不该让一台卡住的机器把整条请求拖到十五分钟。
  */
 async function managerDeploy(machine: Machine, spec: SeatSpec, timeoutMs = DEPLOY_TIMEOUT_MS): Promise<void> {
-  const url = `${machine.host!.replace(/\/$/, '')}/seats/${encodeURIComponent(spec.seatId)}`
   let res: Response
   try {
-    res = await fetch(url, {
+    res = await managerControlFetch(machine, `/seats/${encodeURIComponent(spec.seatId)}`, {
       method: 'PUT',
-      // 两个头都带：`x-satuwork-machine` 是反代那条路径上用来和 bot 的 `authorization`
-      // 区分开的；控制类调用没有这个冲突，带上 `authorization` 让 curl 和旧版管家也认。
-      headers: {
-        'content-type': 'application/json',
-        ...managerHeaders(machine.token),
-        authorization: 'Bearer ' + machine.token,
-      },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify(spec),
       signal: AbortSignal.timeout(timeoutMs),
     })
@@ -1927,10 +1931,8 @@ async function managerDeploy(machine: Machine, spec: SeatSpec, timeoutMs = DEPLO
 /** 拆席位：停单元、删 drop-in、删席位目录。账号和 ~/work 留着，别的席位还在用。 */
 export async function managerRemoveSeat(machine: Machine, seatId: string): Promise<void> {
   if (!machinePaired(machine)) return
-  const url = `${machine.host!.replace(/\/$/, '')}/seats/${encodeURIComponent(seatId)}`
-  const res = await fetch(url, {
+  const res = await managerControlFetch(machine, `/seats/${encodeURIComponent(seatId)}`, {
     method: 'DELETE',
-    headers: { ...managerHeaders(machine.token), authorization: 'Bearer ' + machine.token },
     signal: AbortSignal.timeout(120_000),
   })
   if (!res.ok && res.status !== 404) throw new Error(`管家拆席位失败 ${res.status}`)
@@ -2097,8 +2099,7 @@ export interface SeatStep {
 export async function seatStepOf(machine: Machine, seatId: string, timeoutMs = 3000): Promise<SeatStep | undefined> {
   if (!machinePaired(machine) || machine.protocol < MIN_PROGRESS_PROTOCOL) return undefined
   try {
-    const res = await fetch(`${machine.host!.replace(/\/$/, '')}/seats/${encodeURIComponent(seatId)}/progress`, {
-      headers: { ...managerHeaders(machine.token), authorization: 'Bearer ' + machine.token },
+    const res = await managerControlFetch(machine, `/seats/${encodeURIComponent(seatId)}/progress`, {
       signal: AbortSignal.timeout(timeoutMs),
     })
     if (!res.ok) return undefined
