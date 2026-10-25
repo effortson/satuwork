@@ -693,21 +693,6 @@ export class AgentService extends Service {
    */
   private tasks = new Map<string, { taskId: string; goal: string; leases: string[] }>()
 
-  /**
-   * 那块屏现在有没有人在驱动。
-   *
-   * 浏览器是**席位单例**（一个实例、一个 attach 上去的页面、一块员工正看着的屏），
-   * 而委派那边的 `leases` 只是一次委派批次**内部**的分配——主会话从来不持有任何租约。
-   * 所以这里按「有没有别的会话正在跑」来判：粗，但它拦住的正是那个真问题（两只手抢
-   * 同一个鼠标），而且不会误伤——席位闲着的时候它一定是 true。
-   *
-   * 精确到「这一轮碰没碰过浏览器」要在 policy 那侧记一笔租约，那是另一件事；在那之前
-   * 宁可保守，因为反过来的错（派进去然后两边抢屏）是人眼看得见的那种。
-   */
-  browserFree(): boolean {
-    return this.live.size === 0
-  }
-
   taskOf(sessionId: string): { taskId: string; goal: string; leases: string[] } | undefined {
     return this.tasks.get(sessionId)
   }

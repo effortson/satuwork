@@ -252,18 +252,6 @@ export class AgentRegistry extends Service {
     return agent
   }
 
-  defaultId(): string {
-    if (this.col.get(DEFAULT_BOT_ID)) return DEFAULT_BOT_ID
-    const rows = this.col.list()
-    if (rows.length) return (rows.find((r) => r.value.enabled) ?? rows[0]).id
-    const pin = pinnedBotId()
-    if (pin) return pin
-    if (gatewayUrl()) {
-      throw new Error('已配置 GATEWAY_URL 但未设 SATUWORK_BOT_ID，不种默认助理')
-    }
-    return this.seed().id
-  }
-
   list(): BotRecord[] {
     if (!this.col.list().length && !pinnedBotId() && !gatewayUrl()) this.seed()
     return this.col.list().map((r) => r.value)
