@@ -252,6 +252,94 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-botrow[aria-current="true"]:hover { background: var(--color-accent-600); }
 .satu-botrow:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .satu-botavatar { flex: none; display: flex; align-items: center; }
+/* 十个岗位的运行动作。只动 SVG 内部的局部，外框和布局占位稳定；皇冠也不会跟着晃。
+   data-running 由名单实时摘要 / 当前流式回复启停，头像选择器与历史回复始终静止。 */
+.satu-bot-art .satu-bot-body,
+.satu-bot-art .satu-bot-eyes,
+.satu-bot-art .satu-bot-face-detail,
+.satu-bot-art .satu-bot-accessory,
+.satu-bot-art .satu-bot-page { transform-box: view-box; }
+.satu-bot-art .satu-bot-page { opacity: 0; }
+.satu-bot-art[data-running="true"] .satu-bot-chin { fill: #3B3438; }
+/* 助理：视线左右巡视，间歇眨眼。 */
+.satu-bot-art[data-avatar="c-bot"][data-running="true"] .satu-bot-eyes {
+  transform-origin: 20px 21.5px;
+  animation: satu-bot-look 3s ease-in-out infinite;
+}
+/* 客服：耳机轻轻收放，像在专注接听。 */
+.satu-bot-art[data-avatar="c-chat"][data-running="true"] .satu-bot-accessory {
+  transform-origin: 20px 22px;
+  animation: satu-bot-listen 1.6s ease-in-out infinite;
+}
+/* 分析：三根柱形图错开起伏。 */
+.satu-bot-art[data-avatar="c-chart"][data-running="true"] .satu-bot-face-detail rect {
+  transform-box: fill-box; transform-origin: center bottom;
+  animation: satu-bot-chart 1.6s ease-in-out infinite;
+}
+.satu-bot-art[data-avatar="c-chart"] .satu-bot-face-detail rect:nth-child(2) { animation-delay: -0.5s; }
+.satu-bot-art[data-avatar="c-chart"] .satu-bot-face-detail rect:nth-child(3) { animation-delay: -1s; }
+/* 文案：笔尖以很小的幅度来回书写。 */
+.satu-bot-art[data-avatar="c-pen"][data-running="true"] .satu-bot-accessory {
+  transform-origin: 28px 15px;
+  animation: satu-bot-write 1.4s ease-in-out infinite;
+}
+/* 销售：星光温和地转亮。 */
+.satu-bot-art[data-avatar="c-deal"][data-running="true"] .satu-bot-accessory {
+  transform-origin: 30.5px 11px;
+  animation: satu-bot-spark 2s ease-in-out infinite;
+}
+/* 研发：括号眼逐段扫描，上方终端条同步明暗。 */
+.satu-bot-art[data-avatar="c-code"][data-running="true"] .satu-bot-eyes {
+  animation: satu-bot-scan 1.8s ease-in-out infinite;
+}
+.satu-bot-art[data-avatar="c-code"][data-running="true"] .satu-bot-accessory {
+  animation: satu-bot-terminal 1.8s ease-in-out infinite;
+}
+/* 调度：信号按节点依次传递。 */
+.satu-bot-art[data-avatar="c-flow"][data-running="true"] .satu-bot-face-detail circle {
+  transform-box: fill-box; transform-origin: center;
+  animation: satu-bot-route 1.8s ease-in-out infinite;
+}
+.satu-bot-art[data-avatar="c-flow"] .satu-bot-face-detail circle:nth-child(2) { animation-delay: -0.6s; }
+.satu-bot-art[data-avatar="c-flow"] .satu-bot-face-detail circle:nth-child(3) { animation-delay: -1.2s; }
+/* 知识：书页沿书脊左右翻动，不遮五官。 */
+.satu-bot-art[data-avatar="c-book"][data-running="true"] .satu-bot-page {
+  opacity: 1; transform-origin: 20px 34px;
+  animation: satu-bot-read 2.2s ease-in-out infinite;
+}
+/* 设计：三颗色点按节拍交替点亮。 */
+.satu-bot-art[data-avatar="c-design"][data-running="true"] .satu-bot-accessory circle {
+  transform-box: fill-box; transform-origin: center;
+  animation: satu-bot-colors 1.8s ease-in-out infinite;
+}
+.satu-bot-art[data-avatar="c-design"] .satu-bot-accessory circle:nth-of-type(2) { animation-delay: -0.6s; }
+.satu-bot-art[data-avatar="c-design"] .satu-bot-accessory circle:nth-of-type(3) { animation-delay: -1.2s; }
+/* 财务：金币翻转，眼镜保持稳固。 */
+.satu-bot-art[data-avatar="c-finance"][data-running="true"] .satu-bot-face-detail {
+  transform-origin: 20px 12px;
+  animation: satu-bot-coin 2.4s ease-in-out infinite;
+}
+@keyframes satu-bot-look {
+  0%, 100% { transform: translateX(0) scaleY(1); }
+  20%, 38% { transform: translateX(-1.2px) scaleY(1); }
+  58%, 76% { transform: translateX(1.2px) scaleY(1); }
+  86%, 94% { transform: translateX(0) scaleY(1); }
+  90% { transform: translateX(0) scaleY(0.12); }
+}
+@keyframes satu-bot-listen { 0%, 100% { transform: scaleX(1); } 50% { transform: scaleX(0.94) translateY(-0.5px); } }
+@keyframes satu-bot-chart { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(0.35); } }
+@keyframes satu-bot-write { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-12deg); } 50% { transform: rotate(5deg); } 75% { transform: rotate(-8deg); } }
+@keyframes satu-bot-spark { 0%, 100% { transform: scale(0.82) rotate(-8deg); opacity: 0.65; } 50% { transform: scale(1.08) rotate(12deg); opacity: 1; } }
+@keyframes satu-bot-scan { 0%, 100% { transform: translateX(-1px); } 35%, 65% { transform: translateX(1px); } }
+@keyframes satu-bot-terminal { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes satu-bot-route { 0%, 65%, 100% { opacity: 0.45; transform: scale(0.8); } 25% { opacity: 1; transform: scale(1.2); } }
+@keyframes satu-bot-read { 0%, 15% { transform: scaleX(1); } 45%, 60% { transform: scaleX(-1); } 90%, 100% { transform: scaleX(1); } }
+@keyframes satu-bot-colors { 0%, 65%, 100% { opacity: 0.6; transform: scale(0.85); } 25% { opacity: 1; transform: scale(1.3); } }
+@keyframes satu-bot-coin { 0%, 15%, 85%, 100% { transform: scaleX(1); } 50% { transform: scaleX(0.12); } }
+@media (prefers-reduced-motion: reduce) {
+  .satu-bot-art[data-running="true"] * { animation: none !important; }
+  .satu-bot-art .satu-bot-page { opacity: 0 !important; }
+}
 /* 主 Bot 的皇冠（prefs.js 的 botAvatarOf）：金色小圆徽章压在头像右下角，描一圈底色和头像分开。
    皇冠本身是实心的，12px 下也看得出是顶冠；大小跟着头像走（约 0.42 倍）。 */
 .satu-avatarwrap { position: relative; display: inline-flex; flex: none; }

@@ -64,7 +64,7 @@ function chatHeadInline() {
           <button type="button" class="satu-menuitem" data-act="chat-export">${t('导出 Markdown')}</button>
         </div>`
       : ''
-  return `<div class="sw-convo-avatar" data-bot="${bot ? '1' : '0'}" aria-hidden="true">${bot ? botAvatarOf(bot, 34) : ICON_BOT}</div>
+  return `<div class="sw-convo-avatar" id="chat-avatar" data-bot="${bot ? '1' : '0'}" aria-hidden="true">${bot ? botAvatarOf(bot, 34, botIsWorking(bot)) : ICON_BOT}</div>
     <div class="sw-convo-id">
       <div class="sw-convo-title">
         <span class="sw-convo-name">${esc(name)}</span>

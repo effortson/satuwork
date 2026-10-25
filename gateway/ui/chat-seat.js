@@ -27,6 +27,18 @@ function seatLinkOf(bot) {
   return (rt && rt.machineLink) || ''
 }
 
+/** 运行头像与名单使用同一份实时状态；失联、安装中和待人工时保持静止。 */
+function botIsWorking(bot, busy) {
+  if (!bot || installingOf(bot)) return false
+  const link = seatLinkOf(bot)
+  if (linkDown(link) || link === 'unpaired') return false
+  if (bot.runtimeKind === 'local' && (bot.runtime?.status !== 'ready' || link !== 'online')) return false
+  if (bot.runtime?.status && bot.runtime.status !== 'ready') return false
+  const sum = (botStreams.get(bot.id) || {}).sum
+  if (sum?.state === 'review') return false
+  return busy == null ? sum?.state === 'busy' : Boolean(busy)
+}
+
 function seatLink() {
   return seatLinkOf(chatBotOf())
 }

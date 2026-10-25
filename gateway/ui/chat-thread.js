@@ -156,16 +156,18 @@ function updateRow(el, b, streaming, since) {
    * 三点省略号只在**还没吐字**的那一段有（一开口就地变成正文），气泡下面的读秒是一行
    * 小灰字。可一轮真正花时间的活（读十几个网页、跑几条命令）恰恰是**已经写了几段字、
    * 后面还在接着跑**的那种——那时候屏幕上除了那个每秒 +1 的数字，没有任何东西在动，
-   * 人分不出「它还在跑」和「它答完了就这样」。头像是这条消息的身份，一直在，让它呼吸。
+   * 人分不出「它还在跑」和「它答完了就这样」。头像按角色播放运行动作，停下后回到静态。
    *
    * 属性变了才写：updateRow 每帧都跑，无条件 setAttribute 会让 CSS 动画从头开始，
    * 呼吸变成一顿一顿的抽搐。
    */
-  const working = Boolean(streaming) && b.kind === 'assistant'
+  const bot = chatBotOf()
+  const working = Boolean(streaming) && b.kind === 'assistant' && (!bot || botIsWorking(bot, true))
   if (working !== (el.getAttribute('data-live') === '1')) {
     if (working) el.setAttribute('data-live', '1')
     else el.removeAttribute('data-live')
   }
+  setBotAvatarRunning(el.querySelector(':scope > .sw-msg-avatar'), working)
 
   const bubble = el.querySelector('.sw-bubble')
   const md = bubble.querySelector('.sw-md')

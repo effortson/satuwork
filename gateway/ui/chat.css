@@ -203,8 +203,8 @@
   animation: sw-pulse 1.9s ease-in-out infinite;
   animation-delay: 0.35s;
 }
-/* 助手那一行画的是这颗 Bot 自己的头像（一整张插画，自带底板）：不再垫灰底；在跑时只留外圈那道
-   呼吸光晕——脸跟着淡下去再亮起来看着像在闪。 */
+/* 岗位头像的局部运行动作由 app.css 控制，这里保留轻微外圈，但禁用整个 SVG 的闪烁。
+   内部的眼睛、配饰、书页各自运动，不把整张脸一起淡掉。 */
 .sw-msg-avatar[data-bot='1'] { background: transparent; }
 .sw-msg-avatar[data-bot='1'] svg { width: 36px; height: 36px; }
 .sw-msg[data-live='1'] .sw-msg-avatar[data-bot='1'] { background: transparent; }

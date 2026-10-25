@@ -360,7 +360,7 @@ function rosterRowHtml(b, selected) {
   return `<button type="button" class="satu-botrow" draggable="true" data-act="chat-open" data-id="${esc(b.id)}" data-bot-row="${esc(b.id)}" aria-current="${b.id === selected}">
         ${/* 头像占满两行：名字和摘要并排在它右边，整行才像一条会话，而不是一个
              带小图标的菜单项。34 是 botAvatar 的默认尺寸，也正好等于两行的高度。 */ ''}
-        <span class="satu-botavatar">${botAvatarOf(b, 34)}</span>
+        <span class="satu-botavatar">${botAvatarOf(b, 34, botIsWorking(b))}</span>
         <span class="satu-botmain">
           <span class="satu-botline">
             ${/* 状态点在名字**前面**：一列对齐的点，扫一眼就知道哪几个在动，
@@ -683,13 +683,15 @@ function paintRoster() {
   }
   for (const row of document.querySelectorAll('[data-bot-row]')) {
     const id = row.getAttribute('data-bot-row')
+    const bot = (state.runtimeBots || []).find((b) => b.id === id)
+    setBotAvatarRunning(row.querySelector('.satu-botavatar'), botIsWorking(bot))
     /**
      * 正在装的那一颗，这一行由名单自己写死（「正在安装…」），**这里不许覆盖**。
      *
      * 席位还没起来，它那条流开不起来，摘要永远是空的——照常走下去就是把那句话擦掉，
      * 于是名单上它和一颗没消息的旧 Bot 一模一样，而它此刻恰恰是最需要说明的那一个。
      */
-    if (installingOf((state.runtimeBots || []).find((b) => b.id === id))) continue
+    if (installingOf(bot)) continue
     const sum = (botStreams.get(id) || {}).sum
     if (!sum) continue
     const dot = row.querySelector('.satu-botdot')
