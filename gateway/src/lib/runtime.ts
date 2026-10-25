@@ -253,32 +253,20 @@ export function machineHeader(machineToken?: string): Record<string, string> {
   return managerHeaders(machineToken)
 }
 
-export async function proxyJson(
-  res: ServerResponse,
+/**
+ * 打席位/管家的一条 JSON 接口：两层票、超时、正文认不出 JSON 时兜一句。
+ *
+ * proxyJson 拿到就原样转出去；要先看一眼正文再决定回什么的（会话那条要登记会话索引、
+ * 把 404 折成 503）直接用这个，不再自己抄一遍 fetch + 解析。
+ */
+export async function seatFetchJson(
   method: string,
   url: string,
-  body?: unknown,
-  token?: string,
-  machineToken?: string,
-  /**
-   * 拼进席位响应里的附加字段。
-   *
-   * 给「Gateway 这一跳做了什么」用——比如剔掉了几个失效的 `@`。席位不知道这件事，
-   * 而界面需要知道，所以由这一跳补上去，**不覆盖**席位已有的字段。
-   */
-  extra?: Record<string, unknown>,
-  /**
-   * 等席位/管家多久，毫秒。默认 15 秒——够任何一条「取一份状态」的接口。
-   *
-   * **有一类调用必须自己给一个更大的数**：那一头做的是真活儿（清 journal 要先
-   * rotate 再删文件），而不是查一份现成的数据。用默认值的后果不是「慢」，是**假的
-   * 失败**：Gateway 在 15 秒掐断连接、回一句「实例还没上线」，而机器上那件事正干得
-   * 好好的，人看着报错就会再点一次。
-   */
+  body: unknown,
+  token: string | undefined,
+  machineToken: string | undefined,
   timeoutMs = 15000,
-  /** 转出去之前改一下正文（摘掉不该到浏览器的字段）。只在正文是 JSON 时调用。 */
-  scrub?: (parsed: unknown) => unknown,
-) {
+): Promise<{ status: number; ok: boolean; parsed: unknown }> {
   // authorization 上只能是席位票。bot 不认机器票了，回落到 smt_ 只会换回 401，
   // 而且会让人以为「票带了但没生效」，比空着更难查。
   const bearerTok = token || ''
@@ -305,12 +293,42 @@ export async function proxyJson(
   } catch {
     parsed = { error: text.slice(0, 200) || INSTANCE_DOWN }
   }
-  if (scrub) parsed = scrub(parsed)
+  return { status: r.status, ok: r.ok, parsed }
+}
+
+export async function proxyJson(
+  res: ServerResponse,
+  method: string,
+  url: string,
+  body?: unknown,
+  token?: string,
+  machineToken?: string,
+  /**
+   * 拼进席位响应里的附加字段。
+   *
+   * 给「Gateway 这一跳做了什么」用——比如剔掉了几个失效的 `@`。席位不知道这件事，
+   * 而界面需要知道，所以由这一跳补上去，**不覆盖**席位已有的字段。
+   */
+  extra?: Record<string, unknown>,
+  /**
+   * 等席位/管家多久，毫秒。默认 15 秒——够任何一条「取一份状态」的接口。
+   *
+   * **有一类调用必须自己给一个更大的数**：那一头做的是真活儿（清 journal 要先
+   * rotate 再删文件），而不是查一份现成的数据。用默认值的后果不是「慢」，是**假的
+   * 失败**：Gateway 在 15 秒掐断连接、回一句「实例还没上线」，而机器上那件事正干得
+   * 好好的，人看着报错就会再点一次。
+   */
+  timeoutMs = 15000,
+  /** 转出去之前改一下正文（摘掉不该到浏览器的字段）。只在正文是 JSON 时调用。 */
+  scrub?: (parsed: unknown) => unknown,
+) {
+  const { status, parsed: raw } = await seatFetchJson(method, url, body, token, machineToken, timeoutMs)
+  const parsed = scrub ? scrub(raw) : raw
   if (extra && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    json(res, r.status, { ...(parsed as Record<string, unknown>), ...extra })
+    json(res, status, { ...(parsed as Record<string, unknown>), ...extra })
     return
   }
-  json(res, r.status, parsed)
+  json(res, status, parsed)
 }
 
 /**

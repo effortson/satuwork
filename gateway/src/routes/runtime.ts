@@ -17,7 +17,7 @@ import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKind
 import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
 import { knowledgeOffOf, knowledgeUsableByBot, publicKnowledgeBase, searchKnowledge } from '../lib/knowledge.ts'
-import { machineHeader, managerTargetFor, proxyDownload, proxyJson, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
+import { managerTargetFor, proxyDownload, proxyJson, requireSeat, seatBearer, seatFetchJson, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
 import { DEFAULT_MIN_DESKTOP_VERSION, desktopSupports, directReleaseUrl, localBotReleaseTarget } from '../releases.ts'
 
@@ -1843,27 +1843,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const bot = await visibleBotOf(db, account, req.params.id)
     const target = await seatTargetFor(db, account, bot.id)
     const url = `${target.host}/api/bots/${encodeURIComponent(bot.id)}/session`
-    const bearerTok = await seatBearer(db, account.id)
-    let r: Response
-    try {
-      r = await fetch(url, {
-        headers: {
-          authorization: bearerTok ? `Bearer ${bearerTok}` : '',
-          accept: 'application/json',
-          ...machineHeader(target.machineToken),
-        },
-        signal: AbortSignal.timeout(15000),
-      })
-    } catch {
-      throw new HttpError(503, INSTANCE_DOWN)
-    }
-    const text = await r.text()
-    let parsed: unknown
-    try {
-      parsed = text ? JSON.parse(text) : null
-    } catch {
-      parsed = { error: text.slice(0, 200) || INSTANCE_DOWN }
-    }
+    const r = await seatFetchJson('GET', url, undefined, await seatBearer(db, account.id), target.machineToken)
+    const parsed = r.parsed
     if (r.ok && parsed && typeof parsed === 'object' && account.companyId) {
       const sessionId = (parsed as { sessionId?: unknown }).sessionId
       if (typeof sessionId === 'string' && sessionId) {
