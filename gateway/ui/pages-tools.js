@@ -19,6 +19,7 @@ const WEB_BACKEND_NAMES = {
   searxng: 'SearXNG',
   duckduckgo: 'DuckDuckGo',
   firecrawl: 'Firecrawl',
+  anysearch: 'AnySearch',
   document: '文档直取（PDF / Word / Excel）',
 }
 
@@ -27,6 +28,7 @@ const WEB_BACKEND_NOTES = {
   searxng: '自托管，查询词不出自己的网。只有搜索；实例的 settings.yml 里要开 json 输出。',
   duckduckgo: '无密钥、零配置的兜底。没有商务约定，会限流也可能封 IP，别当主力用。',
   firecrawl: '托管服务，搜索和提取都有。提取那头是真渲染的浏览器——SPA 页面 Tavily 拿不到正文时用它。',
+  anysearch: '托管服务，搜索和提取都有，按查询意图自己挑数据源。不支持按时间过滤。',
   document: 'PDF / Word / Excel 由 Gateway 自己下载，提取后端一次都不会被调用，所以单独一档价。填 0 就是不额外收费。',
 }
 

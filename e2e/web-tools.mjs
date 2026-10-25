@@ -149,10 +149,11 @@ export async function runWebTools({ gwRoot, test, req, start, waitHttp, assert, 
       const tav = saved.json.backends.find((b) => b.id === 'tavily')
       assert(tav.configured === true, 'tavily 应当显示已配置')
       assert(!JSON.stringify(saved.json).includes('tvly-e2e-never-leak'), '配置接口把密钥回显了')
-      // 四家后端都要列出来，各自的能力如实报——界面那两个下拉是照这个画的。
+      // 五家后端都要列出来，各自的能力如实报——界面那两个下拉是照这个画的。
       const by = Object.fromEntries(saved.json.backends.map((b) => [b.id, b]))
       assert(by.tavily.search && by.tavily.extract, 'tavily 该是搜索+提取')
       assert(by.firecrawl.search && by.firecrawl.extract, 'firecrawl 该是搜索+提取')
+      assert(by.anysearch.search && by.anysearch.extract && by.anysearch.needsSecret, 'anysearch 该是搜索+提取、要密钥')
       assert(by.searxng.search && !by.searxng.extract, 'searxng 只有搜索')
       assert(by.duckduckgo.search && !by.duckduckgo.extract, 'duckduckgo 只有搜索')
       assert(Object.values(by).every((b) => b.implemented), '有后端还没接入')
@@ -481,9 +482,9 @@ export async function runWebTools({ gwRoot, test, req, start, waitHttp, assert, 
       assert(r.json.totals.amountMicros === 0, '网页那几笔混进了模型合计')
     })
 
-    await test('闸与限流：SSRF、跳转不带凭据、文档边读边数、压缩响应卡住会超时、DDG 排队、Firecrawl 自托管', async () => {
+    await test('闸与限流：SSRF、跳转不带凭据、文档边读边数、压缩响应卡住会超时、DDG 排队、Firecrawl 自托管、AnySearch 解析', async () => {
       const g = await runGuardProbe(gwRoot)
-      for (const group of ['scheme', 'private', 'specialRanges', 'publicOk', 'redirect', 'redirectCreds', 'docLimit', 'stalledBody', 'ddgThrottle', 'firecrawl']) {
+      for (const group of ['scheme', 'private', 'specialRanges', 'publicOk', 'redirect', 'redirectCreds', 'docLimit', 'stalledBody', 'ddgThrottle', 'firecrawl', 'anysearch']) {
         for (const [k, v] of Object.entries(g[group])) assert(v === true, `${group}.${k} 不成立`)
       }
     })

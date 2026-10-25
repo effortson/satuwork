@@ -1366,8 +1366,8 @@ export interface UsageCharge {
   createdAt: number
 }
 
-/** 能挂网页工具的后端。`firecrawl` 只占位，还没接。 */
-export const WEB_BACKENDS = ['tavily', 'searxng', 'duckduckgo', 'firecrawl'] as const
+/** 能挂网页工具的后端。 */
+export const WEB_BACKENDS = ['tavily', 'searxng', 'duckduckgo', 'firecrawl', 'anysearch'] as const
 export type WebBackendId = (typeof WEB_BACKENDS)[number]
 
 /**

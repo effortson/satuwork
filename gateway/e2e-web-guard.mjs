@@ -315,6 +315,49 @@ out.firecrawl = {
 fc.close()
 delete process.env.FIRECRAWL_API_URL
 
+// ── 8. AnySearch：200 里的 code != 0、摘要退到正文开头、不支持的时间过滤不发请求 ─
+//
+// 地址写死在公网，这里不打网络，只钉解析和「发请求之前就拒」的那几条。
+const { anysearchData, anysearchHits } = await import('./src/web-tools.ts')
+const asBackend = liveBackendOf('anysearch')
+const asRefused = (() => {
+  try {
+    anysearchData({ code: -1, message: 'Query is required.' })
+    return ''
+  } catch (e) {
+    return e.hint || e.message
+  }
+})()
+const asHits = anysearchHits(
+  {
+    results: [
+      { title: ' 有摘要 ', url: 'https://a.test/1', snippet: '一句摘要', content: '整段正文' },
+      { title: '只有正文', url: 'https://a.test/2', content: '正'.repeat(1000) },
+      { title: '没有地址', url: '' },
+    ],
+  },
+  10,
+)
+const asFresh = await asBackend
+  .search({ query: 'x', count: 3, domains: [], exclude: [], freshness: 'week' }, { secret: 'as-test' })
+  .then(() => '')
+  .catch((e) => e.hint || e.message)
+const asNoKey = await asBackend
+  .extract('https://a.test/1', {})
+  .then(() => '')
+  .catch((e) => e.hint || e.message)
+
+out.anysearch = {
+  搜索提取都有: Boolean(asBackend?.search && asBackend?.extract),
+  拒绝被认出来: /拒绝了这次请求：Query is required/.test(asRefused),
+  成功照常取数据: anysearchData({ code: 0, data: { results: [] } })?.results?.length === 0,
+  摘要优先: asHits[0]?.snippet === '一句摘要' && asHits[0]?.title === '有摘要',
+  没摘要退到正文开头: asHits[1]?.snippet.length === 300,
+  没地址的丢掉: asHits.length === 2,
+  时间过滤直说不支持: /不支持按时间过滤/.test(asFresh),
+  没密钥直说: /还没有配置 AnySearch 的密钥/.test(asNoKey),
+}
+
 hopper.close()
 server.close()
 console.log('__RESULT__' + JSON.stringify(out))
