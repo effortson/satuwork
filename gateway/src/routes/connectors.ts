@@ -14,7 +14,7 @@ import { isUniqueViolation } from '../db.ts'
 import { originOf, requireOrgUser, requireOwnerUser, requireUser } from '../lib/guards.ts'
 import { rangeQuery } from '../lib/usage.ts'
 import { COMPANY_CONNECTION_LABEL, CONNECTION_LABEL_RE, DEFAULT_CONNECTION_LABEL, type Account, type ConnectorConnection, type ConnectorDef, externalUserIdOf } from '../db.ts'
-import { publicConnection, publicInstall } from '../lib/connectors.ts'
+import { lookupAccountName, publicConnection, publicInstall } from '../lib/connectors.ts'
 import { publicPlatformCred } from '../lib/org.ts'
 import { botIconOf } from '../lib/catalog.ts'
 
@@ -219,6 +219,10 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
     return { item, def, blocked: block?.blocked === true, blockedReason: block?.reason ?? '', companyId: account.companyId }
   }
 
+  /** 认不出是谁的连接上次问的时刻（见 nameOf）。只在内存里：重启或换实例就重新问一次，不要紧。 */
+  const nameTried = new Map<string, number>()
+  const NAME_RETRY_MS = 6 * 60 * 60 * 1000
+
   /**
    * 刷新还在 `pending` 的那几把。
    *
@@ -227,32 +231,54 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
    * 给供应商刷请求，而撤销授权那条路走的是别的信号。
    */
   async function refreshPending(rows: ConnectorConnection[], def: ConnectorDef): Promise<ConnectorConnection[]> {
-    const out: ConnectorConnection[] = []
-    for (const row of rows) {
-      if (row.status !== 'pending' || !row.externalId) {
-        out.push(row)
-        continue
-      }
+    // 一把一把各问各的，并起来跑：连了三个账号就等三趟串行往返没有道理。
+    return Promise.all(rows.map((row) => refreshOne(row, def)))
+  }
+
+  async function refreshOne(row: ConnectorConnection, def: ConnectorDef): Promise<ConnectorConnection> {
+    let cur = row
+    let fromStatus = ''
+    if (cur.status === 'pending' && cur.externalId) {
       try {
         const provider = await providerFor(db, def.vendor)
-        const st = await provider.status(row.externalId)
-        if (st.status === 'pending') {
-          out.push(row)
-          continue
-        }
-        out.push(
-          (await db.updateConnectorConnection(row.id, {
+        const st = await provider.status(cur.externalId)
+        if (st.status === 'pending') return cur
+        fromStatus = st.accountName ?? ''
+        cur =
+          (await db.updateConnectorConnection(cur.id, {
             status: st.status === 'active' ? 'active' : 'failed',
             lastError: st.error ?? null,
             connectedAt: st.status === 'active' ? Date.now() : null,
-          })) ?? row,
-        )
+            ...(fromStatus ? { accountName: fromStatus } : {}),
+          })) ?? cur
       } catch {
         // 供应商暂时不可达：状态原样留着，下次进页面再问。这一步失败不该让整屏 500。
-        out.push(row)
+        return cur
       }
     }
-    return out
+    return nameOf(cur, def)
+  }
+
+  /**
+   * 补上「连的是谁」（connector_connections."accountName"，迁移 0065）。
+   *
+   * 只补**连上了、还不知道是谁**的那几把；认出来就存下，之后不再问。认不出的不存空串
+   * ——认人的规则会改进，存了就再也轮不到它——而是在这个实例里节流：同一把几个小时内
+   * 不重问，免得每次打开详情页都给供应商打两三趟。
+   */
+  async function nameOf(row: ConnectorConnection, def: ConnectorDef): Promise<ConnectorConnection> {
+    if (row.status !== 'active' || row.accountName || !row.externalId) return row
+    const last = nameTried.get(row.id)
+    if (last && Date.now() - last < NAME_RETRY_MS) return row
+    nameTried.set(row.id, Date.now())
+    try {
+      const name = await lookupAccountName(db, def, row)
+      if (!name) return row
+      nameTried.delete(row.id)
+      return (await db.updateConnectorConnection(row.id, { accountName: name })) ?? row
+    } catch {
+      return row
+    }
   }
 
   /**
@@ -344,7 +370,7 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
      *
      * 授权是在**新开的那一页**里做的（见 `gateway/ui/pages-connectors.js` 的
      * `conn-add-account`），原来那一页原封不动地在旁边等着。这一页的使命到授权完成
-     * 为止，302 回 `/connectors/:id` 只会在旁边多开一个应用副本——人正看着的那一页
+     * 为止，302 回 `/plugins/:id` 只会在旁边多开一个应用副本——人正看着的那一页
      * 还在另一个标签里，两份状态从此各走各的。
      *
      * 关掉之后原来那一页拿回焦点，会自己重取一次账号列表（`authReturn`），新连上的
@@ -353,7 +379,7 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
      * 早先这里跳回去是对的：那时是整页跳走的，不跳回来人就留在供应商的域名上。
      */
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-    res.end(authDonePage(done, row ? `/connectors/${encodeURIComponent(row.connectorId)}` : '/'))
+    res.end(authDonePage(done, row ? `/plugins/${encodeURIComponent(row.connectorId)}` : '/'))
   })
 
   /**

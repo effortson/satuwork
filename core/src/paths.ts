@@ -13,6 +13,11 @@ export function connectorIdOfPath(p: unknown): string {
   return segAfter(p, '/connectors/')
 }
 
+/** 员工那一侧的插件详情（`/plugins/:id`）。id 和 `/connectors/:id` 是同一个连接器 id。 */
+export function pluginIdOfPath(p: unknown): string {
+  return segAfter(p, '/plugins/')
+}
+
 export function botIdOfPath(p: unknown): string {
   return segAfter(p, '/bots/')
 }

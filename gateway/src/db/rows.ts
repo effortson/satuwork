@@ -570,6 +570,7 @@ export function connectorConnectionOf(r: Row): ConnectorConnection {
     mentionOnly: r.mentionOnly === true,
     lastError: strOrNull(r.lastError),
     connectedAt: numOrNull(r.connectedAt),
+    accountName: r.accountName == null ? null : str(r.accountName),
     createdAt: num(r.createdAt),
     updatedAt: num(r.updatedAt),
   }

@@ -172,6 +172,7 @@ const PATHS = {
   '/chat': { title: '对话' },
   '/handoffs': { title: '转人工待办' },
   '/channels': { title: '渠道' },
+  '/plugins': { title: '插件' },
   '/knowledge': { title: '知识库' },
 }
 
@@ -543,12 +544,12 @@ const ADMIN_NAV = [
 /**
  * 员工侧栏又空了。
  *
- * 连接器曾经是这里唯一一行，现在它的入口是名单底下那颗「插件」按钮（render.js 的
- * appView + pluginsModal）——装插件是为了把话说完，入口就该挨着 Bot，而不是在一条
- * 菜单里。同一件事留两个并排的入口，只会让人问「这两个有什么不一样」。
+ * 连接器曾经是这里唯一一行，现在它是名单底下那颗「更多」里的「插件」（/plugins，
+ * pages-plugins.js）——装插件是为了让 Bot 用上，入口就该挨着 Bot，而不是在一条菜单里。
+ * 同一件事留两个并排的入口，只会让人问「这两个有什么不一样」。
  *
- * **页面没有撤**：`/connectors` 和 `/connectors/:id` 还在，OAuth 回调就落在那儿
- * （`gateway/src/routes/connectors.ts` 的 302），所以 allowedHrefs() 里单独放行。
+ * 员工的老地址 `/connectors`、`/connectors/:id`（以前发出去的深链、OAuth 授权完那一页
+ * 上的兜底链接）由 data.js 的 pluginAlias 折到 `/plugins` 上，allowedHrefs() 放行的是后者。
  */
 const MEMBER_NAV = []
 

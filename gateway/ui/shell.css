@@ -409,3 +409,50 @@ textarea.satu-code { background: var(--popover); color: var(--color-text); borde
   border-bottom-left-radius: calc(var(--radius-lg) - 1px);
   border-bottom-right-radius: calc(var(--radius-lg) - 1px);
 }
+
+/* ── 插件页（pages-plugins.js）────────────────────────────────────────
+   和渠道页同一副骨架（gw-page / gw-page-inner / satu-panel），这里只补卡片和两步式详情。 */
+.satu-plugpage { max-width: 920px; }
+.satu-plughead { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
+.satu-plugsearch { width: 260px; max-width: 100%; }
+.satu-plugbody { display: flex; flex-direction: column; gap: var(--space-6); }
+.satu-plughdr { display: flex; align-items: baseline; gap: var(--space-2); margin: 0 0 var(--space-3); }
+.satu-plughdr h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.satu-plughdr span { font-size: 12.5px; color: var(--muted-foreground); }
+.satu-plugchips { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0 0 var(--space-4); }
+.satu-plugchips .satu-chip2[aria-pressed="true"] { border-color: var(--color-accent-400); background: var(--color-accent-100); color: var(--color-accent-800); font-weight: 600; }
+.satu-pluggroup + .satu-pluggroup { margin-top: var(--space-4); }
+.satu-plugcat { margin: 0 0 var(--space-2); font-size: 12px; font-weight: 600; color: var(--muted-foreground); }
+.satu-pluggrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-3); }
+.satu-plugcard { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); transition: border-color 0.15s; }
+.satu-plugcard:hover { border-color: var(--color-accent-400); }
+.satu-plugcard.is-blocked { opacity: 0.55; }
+/* 卡片左边整块是「进详情」的按钮，右边那颗是动作——两颗并排，不嵌套。 */
+.satu-plugmain { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-3); padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: var(--radius); }
+.satu-plugmain:focus-visible { outline: 2px solid var(--color-accent-400); outline-offset: 2px; }
+.satu-plugmeta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.satu-plugname { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.satu-plugdesc { font-size: 12px; color: var(--muted-foreground); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.satu-plugstate { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted-foreground); }
+.satu-plugstate::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: currentColor; flex: none; }
+.satu-plugstate.is-on { color: var(--color-accent-2-800); }
+.satu-plugstate.is-warn { color: var(--color-warn-800); }
+.satu-plugempty { padding: var(--space-4); border: 1px dashed var(--border); border-radius: var(--radius-lg); font-size: 13px; color: var(--muted-foreground); text-align: center; }
+.satu-plugtop { display: flex; align-items: flex-start; gap: var(--space-3); flex-wrap: wrap; }
+.satu-pluglogo { flex: none; display: grid; place-items: center; width: 52px; height: 52px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); }
+.satu-plugstep { display: flex; align-items: flex-start; gap: var(--space-3); }
+.satu-plugstep h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.satu-plugstep p { margin: 2px 0 0; font-size: 12.5px; color: var(--muted-foreground); }
+.satu-plugnum { flex: none; width: 24px; height: 24px; border-radius: 999px; display: grid; place-items: center; font-size: 12px; font-weight: 700; background: var(--secondary); color: var(--secondary-foreground); }
+.satu-plugnum.is-done { background: var(--color-accent-2-100); color: var(--color-accent-2-800); }
+.satu-plugconns { border: 1px solid var(--border); border-radius: var(--radius); padding: 0 var(--space-4); }
+.satu-connwho { min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.satu-plughint { margin: 0; font-size: 12px; color: var(--muted-foreground); }
+.satu-plugh2 { margin: 0; font-size: 15px; font-weight: 600; }
+.satu-plugsteps { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.satu-plugtools { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-1) var(--space-4); max-height: 360px; overflow: auto; font-size: 13px; }
+.satu-plugtool { padding: 6px 0; border-bottom: 1px solid var(--border); min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .satu-plugsearch { width: 100%; }
+  .satu-pluggrid { grid-template-columns: minmax(0, 1fr); }
+}

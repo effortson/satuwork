@@ -972,6 +972,10 @@ export interface ConnectorConnection {
   mentionOnly: boolean
   lastError: string | null
   connectedAt: number | null
+  /**
+   * 供应商那边认出来的账号（邮箱、登录名），只用于显示。null 或空串 = 还不知道（见迁移 0065）。
+   */
+  accountName: string | null
   createdAt: number
   updatedAt: number
 }

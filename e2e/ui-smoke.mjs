@@ -2943,7 +2943,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 浮层，所以那一档摊成两行，靠 CSS 分辨，见 app.css 的 .satu-newbot-rail）。
       // 少了这个类名，它们就又是名单底下两行一样宽的虚线框——正是这次要去掉的东西。
       const railBtns = html.match(/<button[^>]*satu-newbot-rail[^>]*>/g) || []
-      assert(railBtns.some((b) => b.includes('data-act="plugins-open"')), '「插件」没收进「更多」，仍然单独占一行')
+      assert(railBtns.some((b) => b.includes('data-href="/plugins"')), '「插件」没收进「更多」，仍然单独占一行')
       assert(railBtns.some((b) => b.includes('data-href="/channels"')), '「渠道」没收进「更多」，仍然单独占一行')
 
       await ui.fire('click', el('button', { 'data-act': 'menu-toggle', 'data-id': 'botmore' }))
@@ -2951,7 +2951,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const menuAt = html.indexOf('class="satu-menu"')
       assert(menuAt >= 0, '点了「更多」菜单没出来')
       const menu = html.slice(menuAt, html.indexOf('</div>', menuAt))
-      assert(menu.includes('data-act="plugins-open"'), '菜单里没有「插件」')
+      assert(menu.includes('data-href="/plugins"'), '菜单里没有「插件」')
       assert(menu.includes('data-href="/channels"'), '菜单里没有「渠道」')
 
       await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/channels' }))

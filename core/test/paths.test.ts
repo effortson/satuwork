@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { auditItemIdOfPath, botIdOfPath, companyIdOfPath, connectorIdOfPath, machineIdOfPath, userIdOfPath } from '../src/paths.ts'
+import { auditItemIdOfPath, botIdOfPath, companyIdOfPath, connectorIdOfPath, machineIdOfPath, pluginIdOfPath, userIdOfPath } from '../src/paths.ts'
 
 test('各种 /xxx/:id 只取第一段，并解码', () => {
   assert.equal(botIdOfPath('/bots/abc/memory'), 'abc')
@@ -8,6 +8,8 @@ test('各种 /xxx/:id 只取第一段，并解码', () => {
   assert.equal(botIdOfPath('/bots'), '')
   assert.equal(botIdOfPath('/x/bots/1'), '')
   assert.equal(connectorIdOfPath('/connectors/gmail'), 'gmail')
+  assert.equal(pluginIdOfPath('/plugins/gmail'), 'gmail')
+  assert.equal(pluginIdOfPath('/plugins'), '')
   assert.equal(companyIdOfPath('/companies/c1/billing'), 'c1')
   assert.equal(machineIdOfPath('/machines/m1'), 'm1')
   assert.equal(userIdOfPath('/users/u1'), 'u1')

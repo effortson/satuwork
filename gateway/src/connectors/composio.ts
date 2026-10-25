@@ -10,6 +10,7 @@
  */
 import { ProviderError, type ConnectorProvider, type ExecuteInput, type ExecuteResult, type InitiateInput, type InitiateResult, type ProviderCaps, type PrepareUploadInput, type UploadTicket, type StatusResult, type ToolDef, type Toolkit } from './types.ts'
 import { objOf, str } from '../lib/util.ts'
+import { accountNameIn, accountNameOfConnection } from './identity.ts'
 
 const DEFAULT_BASE = 'https://backend.composio.dev/api/v3'
 /** 列目录这类只读请求的超时。慢过这个数，界面上等着也没意义。 */
@@ -170,11 +171,40 @@ export class ComposioProvider implements ConnectorProvider {
   async status(externalId: string): Promise<StatusResult> {
     const body = objOf(await this.call('GET', `/connected_accounts/${encodeURIComponent(externalId)}`))
     const raw = str(body.status || objOf(body.connectedAccount).status).toUpperCase()
-    if (raw === 'ACTIVE') return { status: 'active' }
+    if (raw === 'ACTIVE') {
+      const accountName = accountNameOfConnection(body)
+      return accountName ? { status: 'active', accountName } : { status: 'active' }
+    }
     // INITIATED / INITIALIZING 都是「还在走」。别的一律当失败，并把原文带出去——
     // 供应商将来加一个新状态时，界面上要能看见它叫什么，而不是永远转圈。
     if (raw === 'INITIATED' || raw === 'INITIALIZING' || raw === 'PENDING' || !raw) return { status: 'pending' }
     return { status: 'failed', error: str(body.status_reason || body.error) || raw }
+  }
+
+  /**
+   * 连接记录先看一眼（店铺域名之类，见 accountNameOfConnection），说不出再把记录里的
+   * `test_request_endpoint` 经代理打一次。
+   *
+   * 那条地址是 Composio 拿来验「这把授权还能不能用」的，几乎都是各家的「我是谁」接口：
+   * Gmail 是 `users/me/profile`，Drive 是 `about?fields=user`。走代理，令牌由上游注入，
+   * 我们这边一个字节都不碰；代理只放行同域地址，打不到别处去。
+   *
+   * 记录里那份 `id_token` 上游是打了码的（不是 JWT），所以 Google 系靠的是这一步。
+   */
+  async identify(externalId: string): Promise<string> {
+    const body = objOf(await this.call('GET', `/connected_accounts/${encodeURIComponent(externalId)}`))
+    const own = accountNameOfConnection(body)
+    if (own) return own
+    const endpoint = str(body.test_request_endpoint)
+    if (!/^https:\/\//.test(endpoint)) return ''
+    const r = objOf(
+      await this.call('POST', '/tools/execute/proxy', {
+        body: { connected_account_id: externalId, endpoint, method: 'GET' },
+      }),
+    )
+    const code = Number(r.status)
+    if (Number.isFinite(code) && (code < 200 || code >= 300)) return ''
+    return accountNameIn(r.data)
   }
 
   async disconnect(externalId: string): Promise<void> {

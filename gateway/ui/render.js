@@ -5,7 +5,7 @@
  */
 function pageView() {
   if (state.path.startsWith('/bots/')) return botDetailPage()
-  if (state.path.startsWith('/connectors/')) return connectorDetailPage()
+  if (state.path.startsWith('/plugins/')) return pluginDetailPage()
   if (state.path.startsWith('/knowledge/')) return knowledgeDetailPage()
   if (state.path.startsWith('/companies/') && state.path !== '/companies') return companyDetailPage()
   if (state.path.startsWith('/users/') && state.path !== '/users') return userDetailPage()
@@ -33,6 +33,8 @@ function pageView() {
       return handoffsPage()
     case '/channels':
       return channelsPage()
+    case '/plugins':
+      return pluginsPage()
     case '/knowledge':
       return knowledgePage()
     case '/audit':
@@ -279,8 +281,8 @@ function appView() {
               却和每天都要点的「新建 Bot」长得一模一样，谁也不比谁显眼。收进菜单之后
               这里只剩一行，名单多出两行。
 
-              两条都还在原来的动作上：插件开弹窗（pluginsModal，不跳页——跳走一整页，
-              回来时草稿和滚动位置都没了），渠道跳 /channels。 */ ''}
+              插件跳 /plugins、渠道跳 /channels，都是内置页（插件以前是弹窗，为什么改成页面
+              见 pages-plugins.js 开头那段）。 */ ''}
         ${
           isOwner()
             ? ''
@@ -294,7 +296,7 @@ function appView() {
           ${
             state.menu === 'botmore'
               ? `<div class="satu-menu" data-flip="${String(Boolean(state.menuFlip))}">
-              <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="plugins-open">${svg(ICONS.plugins, 15)}<span>${t('插件', 'Plugins')}</span></button>
+              <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="go" data-href="/plugins" aria-current="${state.path === '/plugins' || state.path.startsWith('/plugins/')}">${svg(ICONS.plugins, 15)}<span>${t('插件', 'Plugins')}</span></button>
               <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="go" data-href="/channels" aria-current="${state.path === '/channels'}">${svg(['M4 12a8 8 0 0 1 16 0', 'M12 4v4', 'M8 12h8', 'M6 18h12'], 15)}<span>${t('渠道', 'Channels')}</span></button>
               ${/* 知识库排在渠道后面（docs/knowledge-base.md §11.1）：书本。 */ ''}
               <button type="button" class="satu-menuitem satu-menuitem-icon" data-act="go" data-href="/knowledge" aria-current="${state.path === '/knowledge' || state.path.startsWith('/knowledge/')}">${svg(['M4 4h7a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H4z', 'M20 4h-7a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h7z'], 15)}<span>${t('知识库')}</span></button>
@@ -307,7 +309,8 @@ function appView() {
           ${/* 收窄成导轨时**不走这颗菜单**：浮层最窄 168px，而那一档侧栏只有 62px 宽，
                 aside 又是 overflow:hidden，弹出来会被整块裁掉。所以那一档照旧把两条
                 摊成两行，只剩图标——反正那一档整条侧栏本来就只有图标。 */ ''}
-          <button type="button" class="satu-newbot satu-newbot-rail" data-act="plugins-open"
+          <button type="button" class="satu-newbot satu-newbot-rail" data-act="go" data-href="/plugins"
+            aria-current="${state.path === '/plugins' || state.path.startsWith('/plugins/')}"
             aria-label="${esc(t('插件', 'Plugins'))}" title="${esc(t('插件', 'Plugins'))}">${svg(ICONS.plugins, 15)}</button>
           <button type="button" class="satu-newbot satu-newbot-rail" data-act="go" data-href="/channels"
             aria-current="${state.path === '/channels'}"
@@ -363,7 +366,6 @@ function appView() {
     ${confirmModal()}
     ${newBotModal()}
     ${botFolderModal()}
-    ${pluginsModal()}
     ${logsModal()}
   </div>`
 }

@@ -570,6 +570,7 @@ export class UsageDb extends DbCore {
       mentionOnly: input.mentionOnly ?? false,
       lastError: null,
       connectedAt: null,
+      accountName: null,
       createdAt: now,
       updatedAt: now,
     }
@@ -605,14 +606,15 @@ export class UsageDb extends DbCore {
       mentionOnly?: boolean
       lastError?: string | null
       connectedAt?: number | null
+      accountName?: string | null
     },
   ): Promise<ConnectorConnection | undefined> {
     const cur = await this.connectorConnection(id)
     if (!cur) return undefined
     const next = { ...cur, ...patch, updatedAt: Date.now() }
     await this.run(
-      'update connector_connections set label=?, "externalId"=?, status=?, "mentionOnly"=?, "lastError"=?, "connectedAt"=?, "updatedAt"=? where id=?',
-      [next.label, next.externalId, next.status, next.mentionOnly, next.lastError, next.connectedAt, next.updatedAt, id],
+      'update connector_connections set label=?, "externalId"=?, status=?, "mentionOnly"=?, "lastError"=?, "connectedAt"=?, "accountName"=?, "updatedAt"=? where id=?',
+      [next.label, next.externalId, next.status, next.mentionOnly, next.lastError, next.connectedAt, next.accountName, next.updatedAt, id],
     )
     return next
   }

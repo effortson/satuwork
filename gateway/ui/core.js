@@ -75,6 +75,7 @@ var SatuCore = (() => {
     money: () => money,
     newSum: () => newSum,
     parseCommand: () => parseCommand,
+    pluginIdOfPath: () => pluginIdOfPath,
     previewKindOf: () => previewKindOf,
     progressOf: () => progressOf,
     refreshSum: () => refreshSum,
@@ -1582,6 +1583,9 @@ var SatuCore = (() => {
   }
   function connectorIdOfPath(p) {
     return segAfter(p, "/connectors/");
+  }
+  function pluginIdOfPath(p) {
+    return segAfter(p, "/plugins/");
   }
   function botIdOfPath(p) {
     return segAfter(p, "/bots/");

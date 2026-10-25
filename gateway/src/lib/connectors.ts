@@ -5,6 +5,7 @@
  */
 import { HttpError } from '../http.ts'
 import { DEFAULT_VENDOR, isVendor, providerFor, type ToolDef } from '../connectors/index.ts'
+import { accountNameIn, wantsFields, whoamiTools } from '../connectors/identity.ts'
 import type { Db } from '../db.ts'
 import { MCP_PERMS, asDef, trimStr } from './catalog.ts'
 import { strListOf } from '../db/rows.ts'
@@ -41,6 +42,49 @@ export async function toolsOf(db: Db, vendor: string, toolkit: string): Promise<
   return tools
 }
 
+/**
+ * 这一把连接连的是谁。三步，前一步说得出就不往下走：
+ *
+ * 1. 供应商自己问（provider.identify：连接记录、记录里那条验证用的地址）
+ * 2. 这个 toolkit 自己那把「我是谁」工具（connectors/identity.ts 的 whoamiTools）
+ *
+ * **不是用户的工具调用**：不落流水、不计费，和拉工具清单同一档——它只为界面上多写一个
+ * 邮箱。每一步的超时都压得很短：慢的话宁可这次不显示，详情页不能为它卡住。
+ *
+ * 返回空串 = 这次没认出来。**不记成「问过了」**：认人的规则会改进，存一个空串就把
+ * 以后的改进都挡在门外。调用方按时间节流（routes/connectors.ts 的 nameTried）。
+ */
+export async function lookupAccountName(db: Db, def: ConnectorDef, row: ConnectorConnection): Promise<string> {
+  if (!row.externalId) return ''
+  const provider = await providerFor(db, def.vendor)
+  if (provider.identify) {
+    try {
+      const own = await provider.identify(row.externalId)
+      if (own) return own
+    } catch {
+      // 代理那一步不通不要紧，下面还有工具那条路。
+    }
+  }
+  for (const tool of whoamiTools(await toolsOf(db, def.vendor, def.toolkit))) {
+    const tries: Record<string, unknown>[] = wantsFields(tool) ? [{}, { fields: '*' }] : [{}]
+    for (const args of tries) {
+      try {
+        const r = await provider.execute({
+          tool: tool.slug,
+          externalUserId: row.externalUserId,
+          externalId: row.externalId,
+          args,
+          signal: AbortSignal.timeout(6000),
+        })
+        const name = r.ok ? accountNameIn(JSON.parse(r.text)) : ''
+        if (name) return name
+      } catch {
+        // 这一把不行就试下一把。
+      }
+    }
+  }
+  return ''
+}
 
 /**
  * 席位侧那把上传工具的名字。写在 schema 的说明里，模型照着它去找。
@@ -344,6 +388,7 @@ export function publicConnection(v: ConnectorConnection) {
     mentionOnly: v.mentionOnly,
     error: v.lastError,
     connectedAt: v.connectedAt,
+    accountName: v.accountName || '',
     createdAt: v.createdAt,
     updatedAt: v.updatedAt,
   }

@@ -374,18 +374,15 @@ async function loadConnectorDetail(id) {
 }
 
 /**
- * 插件弹窗那一份详情。**和页面那份分开存**：弹窗能盖在 `/connectors/:id` 上面，共用
- * 一个字段的话，在弹窗里翻了别的插件，关掉之后底下那页画的是别人的账号。
+ * 员工的老地址折到插件页上：`/connectors/:id` → `/plugins/:id`，员工的 `/connectors` →
+ * `/plugins`。管理员和 owner 的 `/connectors` 是他们自己的那一屏（禁用、上架），不动。
  *
- * **晚到的那一份不落盘。** 在弹窗里翻得快时两次请求会乱序回来（进 A、退出来、再进 B，
- * A 的响应后到），而渲染那边是按 id 认的——盖错了就永远停在「加载中…」，且已经没有
- * 请求在飞，只能退出去重进。弹窗中途被关掉也走这一条：state.plugins 没了，就别再往
- * 一个已经不存在的屏上写数据。
+ * 要等知道了角色才折得了，所以在 loadPage 里做，不在 pathOf 里。返回空串 = 不用折。
  */
-async function loadPluginDetail(id) {
-  const detail = await api('GET', `/me/connectors/${encodeURIComponent(id)}`)
-  if (state.plugins?.id !== id) return
-  state.pluginDetail = detail
+function pluginAlias(p) {
+  if (p.startsWith('/connectors/')) return isOwner() ? '/connectors' : `/plugins/${encodeURIComponent(connectorIdOfPath(p))}`
+  if (p === '/connectors' && !isOwner() && !isAdmin()) return '/plugins'
+  return ''
 }
 
 async function loadSettings() {
@@ -1078,6 +1075,11 @@ async function loadPage() {
   // 那两个链接在登录之后点了没反应。
   if (state.path === '/privacy' || state.path === '/terms') return
   if (!state.me) return
+  const alias = pluginAlias(state.path)
+  if (alias) {
+    state.path = alias
+    history.replaceState({}, '', alias)
+  }
   if (!pathAllowed(state.path)) {
     state.path = '/'
     history.replaceState({}, '', '/')
@@ -1107,6 +1109,14 @@ async function loadPage() {
   try {
     if (state.path === '/channels') {
       await loadChannels().catch(() => { state.channels = state.channels || [] })
+      return
+    }
+    if (state.path === '/plugins') {
+      await loadMarket()
+      return
+    }
+    if (state.path.startsWith('/plugins/')) {
+      await loadConnectorDetail(pluginIdOfPath(state.path))
       return
     }
     if (state.path === '/knowledge') {
@@ -1158,8 +1168,6 @@ async function loadPage() {
       await reloadStatsPage()
     } else if (state.path === '/tools') {
       await Promise.all([loadWebTools(), loadSettings().catch(() => {}), loadKnowledgeStatus().catch(() => { state.kbStatus = null })])
-    } else if (state.path.startsWith('/connectors/')) {
-      await loadConnectorDetail(connectorIdOfPath(state.path))
     } else if (state.path === '/connectors') {
       if (isOwner()) {
         // 上架清单、供应商状态、单价一起要：没有密钥时那颗「上架」按钮是灰的。

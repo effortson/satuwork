@@ -318,6 +318,7 @@ document.getElementById('app').addEventListener('submit', (e) => {
   if (form.id === 'order-form') return saveOrder(e)
   if (form.id === 'audit-filter-form') return submitAuditFilter(e)
   if (form.id === 'channel-bind-form') return submitChannelBinding(e)
+  if (form.id === 'conn-add-form') return submitConnAdd(e)
   if (form.id === 'kb-create-form') return submitKnowledgeCreate(e)
   if (form.id === 'kb-edit-form') return submitKnowledgeEdit(e)
   if (form.id === 'kb-share-form') return submitKnowledgeShare(e)
@@ -2678,10 +2679,15 @@ document.getElementById('app').addEventListener('input', (e) => {
     if (el.getAttribute('data-field') === 'q') paintConnectorPicks()
     return
   }
-  // 插件弹窗的搜索框。同样只重画清单那一块，不整页 render。
-  if (el.getAttribute('data-act') === 'plugins-field' && state.plugins) {
-    state.plugins.q = el.value
-    paintPluginList()
+  // 插件页的搜索框。同样只重画清单那一块，不整页 render。
+  if (el.getAttribute('data-act') === 'plugins-q') {
+    state.pluginQ = el.value
+    paintPluginsBody()
+    return
+  }
+  // 插件详情里的工具筛选：只藏行，不重画——没保存的勾选在 DOM 里。
+  if (el.getAttribute('data-act') === 'conn-tool-q') {
+    filterToolRows(el.value)
     return
   }
   if (el.getAttribute('data-act') === 'prov-field' && state.providerDraft) {

@@ -359,6 +359,11 @@ const state = {
   handoffs: [],
   /** 外部消息渠道。第一版一个账号至多一条 Telegram 绑定。 */
   channels: [],
+  // 插件页的搜索词和分组筛选（pages-plugins.js）。跨页留着：点进详情再退回来，筛到的还在。
+  pluginQ: '',
+  pluginCat: '',
+  // 「添加账号」弹窗：{ id, name, phase: 'form' | 'waiting', error, busy }，见 pages-plugins.js 的 connAddModal。
+  connAdd: null,
   channelBindOpen: false,
   channelBindError: '',
   handoffCount: 0,
@@ -471,6 +476,7 @@ function usd(mils) {
 }
 const tokens = SatuCore.fmtTokens
 const connectorIdOfPath = SatuCore.connectorIdOfPath
+const pluginIdOfPath = SatuCore.pluginIdOfPath
 const botIdOfPath = SatuCore.botIdOfPath
 const companyIdOfPath = SatuCore.companyIdOfPath
 const machineIdOfPath = SatuCore.machineIdOfPath
@@ -582,9 +588,9 @@ function allowedHrefs() {
   // 不是功能。少了这一行，owner 直接输 /bots 会被 pathAllowed 踢回首页，全局 Bot
   // 目录就此没人改得动了——而他是唯一改得动的人。
   if (isOwner()) set.add('/bots')
-  // 员工菜单里没有连接器了（入口是名单底下那颗「插件」，见 MEMBER_NAV），但那两个页面
-  // 必须还进得去：OAuth 授权完，供应商把浏览器送回 /connectors/:id，落地就在这儿。
-  if (!isOwner()) set.add('/connectors')
+  // 插件（员工自己的连接器）：入口在名单底下那颗「更多」里，不在侧栏菜单里（见 MEMBER_NAV）。
+  // 员工以前的 /connectors 和 /connectors/:id 由 data.js 的 pluginAlias 折到这儿。
+  if (!isOwner()) set.add('/plugins')
   // 转人工待办的入口在**顶栏**那颗按钮上，不在侧栏菜单里（员工那份菜单是空的，
   // 见 MEMBER_NAV）。所以这里单独放行，否则点那颗按钮会被 pathAllowed 踢回首页。
   if (!isOwner()) set.add('/handoffs')
@@ -631,8 +637,8 @@ function pathAllowed(p) {
   // /bots/:id 跟 /profile 一样不在侧栏，但管理员能进。
   // 员工进不了 /bots（那是管理员的模版页），但进得了自己那个 Bot 的详情页。
   if (p.startsWith('/bots/') && (allowedHrefs().has('/bots') || !isOwner())) return true
-  // 连接器详情不在侧栏，但装了连接器的人都要进得去。
-  if (p.startsWith('/connectors/') && allowedHrefs().has('/connectors')) return true
+  // 插件详情不在侧栏，但装了插件的人都要进得去。
+  if (p.startsWith('/plugins/') && allowedHrefs().has('/plugins')) return true
   if (p.startsWith('/knowledge/') && allowedHrefs().has('/knowledge')) return true
   if (p.startsWith('/companies/') && allowedHrefs().has('/companies')) return true
   if (p.startsWith('/users/') && allowedHrefs().has('/users')) return true
@@ -697,10 +703,10 @@ function crumbsOf(path) {
     if ((!isOwner() && !isAdmin()) || ownBotPath(path)) return { href: '/', parent: t('对话'), current: bot?.name || t('Bot 详情') }
     return { href: '/bots', parent: isOwner() ? t('全局 Bot') : t('Bot 模版'), current: bot?.name || t('Bot 详情') }
   }
-  if (path.startsWith('/connectors/') && path !== '/connectors') {
+  if (path.startsWith('/plugins/')) {
     const d = state.connectorDetail?.connector
-    const one = d && d.id === connectorIdOfPath(path) ? d : null
-    return { href: '/connectors', parent: t('连接器'), current: one?.name || t('连接器详情') }
+    const one = d && d.id === pluginIdOfPath(path) ? d : null
+    return { href: '/plugins', parent: t('插件', 'Plugins'), current: one?.name || t('插件详情', 'Plugin') }
   }
   if (path.startsWith('/knowledge/')) {
     const d = state.kbDetail && state.kbDetail.id === kbIdOfPath(path) ? state.kbDetail : null
@@ -785,6 +791,8 @@ function pathOf() {
   if (p === '/users' || p.startsWith('/users/')) return p
   if (p === '/audit' || p.startsWith('/audit/summary/')) return p
   if (p === '/chat' || p.startsWith('/a/')) return p
+  // /connectors/:id 原样留着，等 loadPage 知道了角色再折到 /plugins/:id（见 data.js 的 pluginAlias）。
+  if (p.startsWith('/plugins/') || p.startsWith('/connectors/')) return p
   if (p === '/costs') return '/billing'
   return PATHS[p] ? p : '/'
 }

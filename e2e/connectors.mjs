@@ -53,7 +53,7 @@ const TOOLS = {
 }
 
 function mockComposio() {
-  const seen = { keys: new Set(), initiated: [], deleted: [], executed: [], staged: [], puts: [] }
+  const seen = { keys: new Set(), initiated: [], deleted: [], executed: [], staged: [], puts: [], proxied: [] }
   // 授权状态由测试说了算：默认 INITIATED，测试调 seen.activate(id) 之后才 ACTIVE。
   const accounts = new Map()
   let n = 0
@@ -118,6 +118,19 @@ function mockComposio() {
       })
       return
     }
+    // 代理：上游替我们带上令牌去打那条地址。只认验证用的那一条，别的一律 403（真上游
+    // 也不放行跨域）。**不是工具执行**，不进 seen.executed。
+    if (url.pathname === '/tools/execute/proxy' && req.method === 'POST') {
+      let raw = ''
+      req.on('data', (d) => { raw += d })
+      req.on('end', () => {
+        const body = JSON.parse(raw || '{}')
+        seen.proxied.push(body)
+        if (!accounts.has(body.connected_account_id) || !String(body.endpoint).endsWith('/users/me/profile')) return send(200, { status: 403, data: {} })
+        send(200, { status: 200, headers: {}, data: { emailAddress: `${body.connected_account_id}@gmail.test`, messagesTotal: 3 } })
+      })
+      return
+    }
     const ex = /^\/tools\/execute\/(.+)$/.exec(url.pathname)
     if (ex && req.method === 'POST') {
       let raw = ''
@@ -136,7 +149,16 @@ function mockComposio() {
     const m = /^\/connected_accounts\/(.+)$/.exec(url.pathname)
     if (m && req.method === 'GET') {
       const st = accounts.get(m[1])
-      return st ? send(200, { id: m[1], status: st }) : send(404, { error: { message: 'no such account' } })
+      if (!st) return send(404, { error: { message: 'no such account' } })
+      // 连上之后的记录照上游真实的样子：令牌挨着一份**打了码的** id_token（认不出人），
+      // 外加一条验证用的地址。是谁要经代理打那条地址才知道；令牌一个字都不能漏出去。
+      const live = st === 'ACTIVE'
+        ? {
+            state: { authScheme: 'OAUTH2', val: { status: 'ACTIVE', access_token: 'ya29.secret-access', id_token: 'REDACTED' } },
+            test_request_endpoint: 'https://www.googleapis.com/gmail/v1/users/me/profile',
+          }
+        : {}
+      return send(200, { id: m[1], status: st, ...live })
     }
     if (m && req.method === 'DELETE') {
       seen.deleted.push(m[1])
@@ -412,6 +434,15 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       const one = detail.json.connections.find((c) => c.id === firstConnId)
       assert(one.status === 'active', `应该转正了，实际 ${one.status}`)
       assert(one.connectedAt > 0, '没记连接时间')
+      // 账号名是人起的，连的是哪个邮箱要从上游认出来（迁移 0065）；令牌绝不能跟着出来。
+      assert(one.accountName === `${firstExternal}@gmail.test`, `没认出连的是哪个账号：${JSON.stringify(one.accountName)}`)
+      assert(!detail.text.includes('secret-access'), '上游的令牌漏进了详情')
+      const probe = mock.seen.proxied.find((p) => p.connected_account_id === firstExternal)
+      assert(probe?.method === 'GET', `该经代理 GET 记录里那条验证地址：${JSON.stringify(mock.seen.proxied)}`)
+      // 认出来就存下：再进一次详情页不再去问。
+      const n = mock.seen.proxied.length
+      await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok })
+      assert(mock.seen.proxied.length === n, '认出来之后每次进详情页还在重问')
       assert(detail.json.tools.length === 3, `详情该带工具清单，实际 ${detail.json.tools.length}`)
       assert(detail.json.install, '详情该带安装记录')
     })
@@ -1059,12 +1090,12 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(ui.pathAllowed('/connectors'), 'owner 应该进得了 /connectors')
     })
 
-    await test('界面：员工那一屏是市场卡片，禁用的写明原因', async () => {
+    await test('界面：员工的插件页是市场卡片，禁用的写明原因', async () => {
       const { loadApp } = await import('./ui-dom.mjs')
       // 用**员工**的票：管理员那一屏是禁令和账，不是市场（两屏分开是有意的）。
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      ui.state.path = '/connectors'
+      ui.state.path = '/plugins'
       ui.state.market = [
         { id: 'c1', toolkit: 'gmail', name: 'Gmail', description: '收发邮件', category: 'productivity', blocked: false },
         { id: 'c2', toolkit: 'notion', name: 'Notion', description: '知识库', category: 'productivity', blocked: true, blockedReason: '合规未过' },
@@ -1074,7 +1105,7 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(html.includes('Gmail') && html.includes('Notion'), '市场卡片没画出来')
       assert(html.includes('合规未过'), '被禁的没写出原因')
       assert(!html.includes('conn-publish-open'), '员工不该看到「上架」')
-      assert(ui.pathAllowed('/connectors'), '员工应该进得了 /connectors')
+      assert(ui.pathAllowed('/plugins'), '员工应该进得了 /plugins')
     })
 
     await test('界面：取不到 logo 时的兜底缩写不会漏成正文', async () => {
@@ -1087,7 +1118,7 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       const { loadApp } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      ui.state.path = '/connectors'
+      ui.state.path = '/plugins'
       ui.state.market = [{ id: 'c1', toolkit: 'github', name: 'GitHub "Inc"', description: '代码托管', logo: 'https://x/gh.png', blocked: false }]
       ui.render()
       const html = ui.html()
@@ -1124,31 +1155,42 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(bad.length === 0, `这些地方 CSP 会挡掉：\n  ${bad.join('\n  ')}`)
     })
 
-    await test('界面：插件弹窗——按钮在名单底下，点 Add 就装上，装完不跳页', async () => {
+    await test('界面：插件是内置页——「更多」里跳 /plugins，点「添加」装上后落到详情', async () => {
       const { loadApp, el } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      assert(ui.html().includes('data-act="plugins-open"'), '侧栏没有「插件」按钮')
-      assert(!/data-href="\/connectors"/.test(ui.html()), '菜单里还留着「连接器」那一行，和插件按钮重了')
+      // go() 换页之后的取数是在后台跑的（enterPath 不返回那个 promise），点完要等它画完再看。
+      const settle = async () => {
+        await ui.loadPage()
+        ui.render()
+      }
+      assert(ui.html().includes('data-href="/plugins"'), '侧栏没有「插件」入口')
+      assert(!ui.html().includes('plugins-open'), '还留着开弹窗的老动作')
+      assert(!/data-href="\/connectors"/.test(ui.html()), '菜单里还留着「连接器」那一行，和插件入口重了')
 
-      await ui.fire('click', el('button', { 'data-act': 'plugins-open' }))
+      await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/plugins' }))
+      await settle()
+      assert(ui.state.path === '/plugins', `没跳到插件页，现在在 ${ui.state.path}`)
       let html = ui.html()
-      assert(html.includes('gw-plugins'), '弹窗没开')
-      assert(html.includes('Gmail'), '弹窗里没有市场清单')
+      assert(!html.includes('gw-modal'), '插件页不该再是弹窗')
+      assert(html.includes('Gmail'), '插件页里没有市场清单')
       assert(html.includes(`data-act="conn-install" data-id="${connectorId}"`), '没装的应该给「添加」')
 
       await ui.fire('click', el('button', { 'data-act': 'conn-install', 'data-id': connectorId }))
+      await settle()
       html = ui.html()
-      assert(ui.state.path === '/', `装完不该跳页，现在在 ${ui.state.path}`)
-      assert(html.includes('gw-plugins'), '装完弹窗被关掉了')
-      assert(ui.state.plugins.id === connectorId, '装完没落到详情上')
-      assert(html.includes('data-act="conn-add-account"'), '详情里没有「添加账号」——装完就该能连')
+      assert(ui.state.path === `/plugins/${connectorId}`, `装完该落到详情页，现在在 ${ui.state.path}`)
+      assert(ui.location.pathname === `/plugins/${connectorId}`, `地址栏没跟上：${ui.location.pathname}`)
+      assert(html.includes('data-act="conn-add-open"'), '详情里没有「添加账号」——装完就该能连')
       assert(html.includes('GMAIL_SEND_EMAIL'), '详情里没有工具开关')
-      // 弹窗和 /connectors/:id 两份详情分开存，否则关掉弹窗后底下那页画的是别人的账号。
-      assert(ui.state.connectorDetail == null, '弹窗把页面那份详情盖掉了')
+      assert(html.includes('还没连上账号'), '没连账号时该明说 Bot 用不了')
 
-      await ui.fire('click', el('button', { 'data-act': 'plugins-close' }))
-      assert(!ui.html().includes('gw-plugins'), '关不掉')
+      // 退回清单：刚装的那个在「已安装」里，标着还没连账号，按钮直接写「去连接」。
+      await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/plugins' }))
+      await settle()
+      html = ui.html()
+      assert(html.includes('还没连账号') && html.includes('去连接'), '装了没连的那一个没标出来')
+      assert(!html.includes(`data-act="conn-install" data-id="${connectorId}"`), '装过的还在给「添加」')
 
       // 装回去的这一笔要还原：下面还有测试在数装机量。
       const del = await req(base, 'DELETE', `/me/connectors/${connectorId}/install`, { token: memberTok })
@@ -1159,20 +1201,33 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       const { loadApp, el } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      await ui.fire('click', el('button', { 'data-act': 'plugins-open' }))
+      await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/plugins' }))
+      await ui.loadPage()
       await ui.fire('click', el('button', { 'data-act': 'conn-install', 'data-id': connectorId }))
+      await ui.loadPage()
+      ui.render()
       const before = ui.location.href
 
-      await ui.fire('click', el('button', { 'data-act': 'conn-add-account', 'data-id': connectorId }))
+      // 「添加账号」先开弹窗，账号名在弹窗里填；去授权是那张表单的 submit。
+      await ui.fire('click', el('button', { 'data-act': 'conn-add-open', 'data-id': connectorId }))
+      assert(ui.html().includes('id="conn-add-form"'), '「添加账号」没开出弹窗')
+      assert(ui.windowOpens.length === 0, '还没点「去授权」就开了新页')
+      const form = el('form', { 'data-id': connectorId })
+      form.id = 'conn-add-form'
+      await ui.fire('submit', form)
+      // 授权是在后台那一趟里发起的（submit 不等它），等它落定。
+      for (let i = 0; i < 50 && ui.state.connAdd?.phase !== 'waiting'; i++) await new Promise((r) => setTimeout(r, 20))
       assert(ui.windowOpens.length === 1, `该开一个新标签页，实际开了 ${ui.windowOpens.length} 个`)
       const tab = ui.windowOpens[0]
       assert(tab.location.href.startsWith('https://accounts.example.com/'), `新页没送到授权地址：${tab.location.href}`)
       assert(!tab.closed, '新页被关掉了')
       // 反向标签劫持：授权页拿着 opener 就能把我们这一页换成钓鱼页。
       assert(tab.opener === null, 'opener 没断')
-      // 这一边必须原封不动——弹窗多半盖在对话上，顶掉就等于把草稿和滚动位置一起扔了。
+      // 这一边必须原封不动——顶掉的话，勾到一半的工具和填好的账号名都没了。
       assert(ui.location.href === before, `当前这一页被顶掉了：${ui.location.href}`)
-      assert(ui.html().includes('gw-plugins'), '弹窗被关掉了')
+      assert(ui.state.path === `/plugins/${connectorId}`, `人被带离了详情页：${ui.state.path}`)
+      assert(ui.state.connAdd?.phase === 'waiting', `开出新页之后弹窗该停在「等你授权」：${JSON.stringify(ui.state.connAdd)}`)
+      assert(ui.html().includes('conn-add-done'), '等授权那一屏没有「我已完成授权」')
 
       // 复原：断掉刚发起的那把，再卸载。下面还有测试在数装机量和连接数。
       const detail = await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok })
@@ -1183,47 +1238,34 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(del.status === 200, `复原卸载 ${del.status}`)
     })
 
-    await test('界面：关掉弹窗要把底下那页刷新；晚到的详情不许落盘', async () => {
-      const { loadApp, el } = await import('./ui-dom.mjs')
-      // 只把「取这个连接器的详情」这一条拖慢，其余照打真 Gateway。
-      let hold = 0
-      const fetchImpl = (path, init) => {
-        const go = () => fetch(base + path, init)
-        if (hold && path === `/me/connectors/${connectorId}`) return new Promise((r) => setTimeout(() => r(go()), hold))
-        return go()
-      }
-      const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok, fetchImpl })
-      await ui.boot()
+    await test('界面：老地址折到插件页——员工的 /connectors 和 /connectors/:id，管理员的不动', async () => {
+      // /connectors/:id 是以前发出去的深链，也是 OAuth 授权完那一页上的兜底链接（老版本）。
+      const { loadApp } = await import('./ui-dom.mjs')
+      const member = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
+      await member.boot()
+      member.state.path = `/connectors/${connectorId}`
+      await member.loadPage()
+      assert(member.state.path === `/plugins/${connectorId}`, `详情的老地址没折过去：${member.state.path}`)
+      assert(member.location.pathname === `/plugins/${connectorId}`, `地址栏没跟上：${member.location.pathname}`)
+      assert(member.state.connectorDetail?.connector?.id === connectorId, '折过去之后详情没取')
+      member.state.path = '/connectors'
+      await member.loadPage()
+      assert(member.state.path === '/plugins', `员工的 /connectors 没折到 /plugins：${member.state.path}`)
 
-      // 弹窗盖在这个连接器的详情页上，而页面手上那份是过期的（多一把已经断掉的连接）。
-      // 弹窗里的改动只落在它自己那一份上，关掉时不补一次，那一行就会一直画着。
-      ui.state.path = `/connectors/${connectorId}`
-      ui.state.connectorDetail = {
-        connector: { id: connectorId, name: 'Gmail', toolkit: 'gmail', description: '', blocked: false },
-        install: { id: 'i1', enabledTools: [] },
-        connections: [{ id: 'ghost', label: '已经断掉的', scope: 'user', status: 'active', mentionOnly: false }],
-        tools: [],
-      }
-      await ui.fire('click', el('button', { 'data-act': 'plugins-open' }))
-      await ui.fire('click', el('button', { 'data-act': 'plugins-close' }))
-      assert(!ui.html().includes('已经断掉的'), '关掉弹窗之后，底下那页还画着弹窗里已经改掉的东西')
-
-      // 详情还在飞的时候退回清单：晚到的那一份不许写进来。写了就和 p.id 对不上，
-      // 弹窗永远停在「加载中…」，而且已经没有请求在飞，只能退出去重进。
-      hold = 300
-      await ui.fire('click', el('button', { 'data-act': 'plugins-open' }))
-      const inflight = ui.fire('click', el('button', { 'data-act': 'plugins-detail', 'data-id': connectorId }))
-      await ui.fire('click', el('button', { 'data-act': 'plugins-back' }))
-      await inflight
-      assert(ui.state.pluginDetail == null, '晚到的详情盖进来了')
-      assert(ui.html().includes('gw-plugins') && !ui.html().includes('加载中'), '弹窗停在「加载中…」')
+      // 管理员的 /connectors 是禁令和账那一屏，不是他自己的插件。
+      const admin = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: adminTok })
+      await admin.boot()
+      admin.state.path = '/connectors'
+      await admin.loadPage()
+      assert(admin.state.path === '/connectors', `管理员的 /connectors 被折走了：${admin.state.path}`)
+      assert(admin.pathAllowed('/plugins'), '管理员也有席位，插件页该进得去')
     })
 
     await test('界面：员工的详情页画得出账号行、工具开关与「仅 @ 时可用」', async () => {
       const { loadApp } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      ui.state.path = `/connectors/${connectorId}`
+      ui.state.path = `/plugins/${connectorId}`
       ui.state.connectorDetail = {
         connector: { id: connectorId, name: 'Gmail', description: '收发邮件', toolkit: 'gmail', blocked: false },
         install: { id: 'i1', enabledTools: ['GMAIL_SEND_EMAIL'] },
@@ -1246,7 +1288,7 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       // 公司共用那把不给员工断，也不给他改 mentionOnly。
       const companyRow = html.slice(html.indexOf('company'))
       assert(!companyRow.includes('conn-disconnect" data-id="x3"'), '公司共用那把不该有断开按钮')
-      assert(ui.pathAllowed(`/connectors/${connectorId}`), '详情页应该进得去')
+      assert(ui.pathAllowed(`/plugins/${connectorId}`), '详情页应该进得去')
     })
 
     await test('界面：admin 那一屏是禁令 + 谁装了什么，不是市场', async () => {
@@ -1349,7 +1391,7 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       const { loadApp } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      ui.state.path = `/connectors/${connectorId}`
+      ui.state.path = `/plugins/${connectorId}`
       ui.state.connectorDetail = {
         connector: { id: connectorId, name: 'Gmail', toolkit: 'gmail', blocked: false },
         install: { id: 'i1', enabledTools: ['A', 'B', 'C'] },
