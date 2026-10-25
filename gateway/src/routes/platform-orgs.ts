@@ -406,7 +406,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
    */
   /** 某家公司的充值明细 + 两笔余额。公司管理员看得到自己家的。 */
   router.get('/orgs/:id/topups', async (req, res) => {
-    const account = await requireOrgUser(req, db, keys, req.params.id, true)
+    await requireOrgUser(req, db, keys, req.params.id, true)
     const company = await db.company(req.params.id)
     if (!company) throw new HttpError(404, '公司不存在')
     const rows = await db.topupsOfCompany(company.id)

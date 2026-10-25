@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type { ContentBlock, Message, SessionEvent } from '../session/types.ts'
+import type { ContentBlock, SessionEvent } from '../session/types.ts'
 import type { ToolRisk } from './index.ts'
 import { historyEvents } from '../session/replay.ts'
 
@@ -96,8 +96,6 @@ export function parseAt(raw: string | undefined, key: string, endOfDay: boolean)
   const rendered = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second'))
   return guess - (rendered - guess)
 }
-
-const textOf = (m: Message) => m.content.map((c) => (c.type === 'text' ? c.text : '')).join('')
 
 function blockDigest(content: ContentBlock[]): string {
   return content

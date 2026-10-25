@@ -9,7 +9,7 @@ import type { RouteCtx } from './ctx.ts'
 import { HttpError, type Router, json } from '../http.ts'
 import { applyTemplatePatch, botTemplateOf, defaultBotModel, ensureBotTemplate, publicTemplate } from '../lib/catalog.ts'
 import { bodyOf } from '../lib/validate.ts'
-import { requireOrg, requireOrgUser } from '../lib/guards.ts'
+import { requireOrgUser } from '../lib/guards.ts'
 import { deploySeat } from '../deploy.ts'
 
 /** 一次「立刻下发」最多重铺多少个席位。超过的留给轮询自己跟上。 */

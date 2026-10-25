@@ -1,5 +1,3 @@
-import type { ToolCall } from '../tools/index.ts'
-
 /**
  * 确认卡上的一格。
  *

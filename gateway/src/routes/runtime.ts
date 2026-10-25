@@ -11,7 +11,7 @@ import type { Account, BotFolder, BotRelease, CatalogItem, Memory, MemoryKind, S
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
 import { TASK_CONTEXT_MAX, TASK_INSTRUCTION_MAX, cancelBotTask, createBotTask, pollBotTask, publicBotTask } from '../lib/bot-tasks.ts'
-import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, botTemplateOf, defaultBotModel, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
+import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, botTemplateOf, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
 import { WebToolError } from '../web-tools.ts'

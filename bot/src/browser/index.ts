@@ -9,7 +9,7 @@ import { findExecutable } from '../executable.ts'
 import { satuworkHome } from '../home.ts'
 import { childEnv } from '../workspace/index.ts'
 import { blockedHost, hostOf, privateAddress, siteAllowed, type ActionContext } from '../policy/browser.ts'
-import type { ToolCall, ToolResult, WorkspaceFile } from '../tools/index.ts'
+import type { ToolCall, WorkspaceFile } from '../tools/index.ts'
 import { Cdp, CdpError } from './cdp.ts'
 import { callExpr } from './page.ts'
 

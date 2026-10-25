@@ -22,7 +22,7 @@ import {
   toolModeOf,
 } from '../lib/tool-search.ts'
 import { requireSeatOnly } from '../lib/guards.ts'
-import type { Account, ConnectorCallStatus, ConnectorConnection, Db } from '../db.ts'
+import type { Account, ConnectorCallStatus, ConnectorConnection,} from '../db.ts'
 
 /**
  * 上游调用的时限。

@@ -7,7 +7,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { Account, CatalogItem, Db, KnowledgeBase, KnowledgeFile } from '../db.ts'
-import { KB_FAIL_STREAK_DEFAULT, parseKnowledgeSettings } from '../db.ts'
+import { KB_FAIL_STREAK_DEFAULT, KB_FILE_NAME_MAX, parseKnowledgeSettings } from '../db.ts'
 import { HttpError } from '../http.ts'
 import { chunkPages } from './knowledge-chunk.ts'
 import { ExtractError, extOf, extractText } from './knowledge-extract.ts'
@@ -28,10 +28,6 @@ export const KB_SEARCH_COUNT_MAX = 12
 /** 回给模型的整段封顶。超了从分数最低的那条开始砍——不是截尾，截尾会把一段话砍成半句。 */
 export const KB_RESULT_MAX = 12_000
 
-export function knowledgeEnabled(): boolean {
-  return vectorConfigured()
-}
-
 /**
  * 这颗 Bot 自己关掉的库（docs/knowledge-base.md §8.4）。存在 Bot 定义的 `knowledgeOff` 里：
  * 记的是「关掉哪几个」而不是「开着哪几个」，这样管理员新共享过来的库默认就是开的。
@@ -48,7 +44,7 @@ export async function knowledgeUsableByBot(db: Db, companyId: string, bot: Catal
 }
 
 /** 展示用的文件名：去路径分隔符和控制字符，截到 200 字符。 */
-export function cleanFileName(raw: string, max = 200): string {
+export function cleanFileName(raw: string, max = KB_FILE_NAME_MAX): string {
   const name = String(raw ?? '')
     .replace(/[\\/]+/g, '_')
     .replace(/[\u0000-\u001F\u007F]/g, '')

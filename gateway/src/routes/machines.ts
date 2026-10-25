@@ -1240,7 +1240,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
   })
 
   router.get('/platform/orgs/:id/accounts/:accountId/runtime', async (req, res) => {
-    const account = await requireOwnerUser(req, db, keys)
+    await requireOwnerUser(req, db, keys)
     const company = await db.company(req.params.id)
     if (!company) throw new HttpError(404, '公司不存在')
     const row = await db.account(req.params.accountId)

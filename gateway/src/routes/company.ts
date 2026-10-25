@@ -70,7 +70,7 @@ export function handoffWebhookOf(raw: string): string {
 }
 
 export function attachCompany(router: Router, ctx: RouteCtx) {
-  const { db, keys, llm, meter } = ctx
+  const { db, keys, meter } = ctx
 
   // ── 公司 ────────────────────────────────────────────────────────────
 
