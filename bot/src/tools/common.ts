@@ -113,6 +113,9 @@ export async function* walkFiles(dir: string, budget: WalkBudget, hidden: boolea
   } catch {
     return
   }
+  // 挂进来的链接（共享区、本地 Bot 批准的文件夹）排到这一层最后再走：它们底下可能比自己的
+  // 工作区大得多，先走进去会把 budget 吃光，自己的文件反倒一个都没搜到。
+  const mounts: string[] = []
   for (const entry of entries) {
     if (budget.left <= 0) {
       budget.truncated = true
@@ -121,7 +124,7 @@ export async function* walkFiles(dir: string, budget: WalkBudget, hidden: boolea
     if (!hidden && entry.name.startsWith('.')) continue
     const full = join(dir, entry.name)
     if (entry.isSymbolicLink()) {
-      if (approvedLink?.(full)) yield* walkFiles(full, budget, hidden, approvedLink)
+      if (approvedLink?.(full)) mounts.push(full)
       continue
     }
     if (entry.isDirectory()) {
@@ -131,5 +134,12 @@ export async function* walkFiles(dir: string, budget: WalkBudget, hidden: boolea
       budget.left -= 1
       yield full
     }
+  }
+  for (const full of mounts) {
+    if (budget.left <= 0) {
+      budget.truncated = true
+      return
+    }
+    yield* walkFiles(full, budget, hidden, approvedLink)
   }
 }

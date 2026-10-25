@@ -35,6 +35,7 @@ import { runReplaySlice } from './replay-slice.mjs'
 import { runSearch } from './search.mjs'
 import { runRosterStream } from './roster-stream.mjs'
 import { runManagerDownload } from './manager-download.mjs'
+import { runSeatWorkdir } from './seat-workdir.mjs'
 import { runWorkspaceFiles } from './workspace-files.mjs'
 import { runPatch } from './patch.mjs'
 import { runProcess } from './process.mjs'
@@ -3700,6 +3701,7 @@ async function main() {
     await suite('search', () => runSearch({ root, test, assert, log }))
     await suite('roster-stream', () => runRosterStream({ test, assert, log }))
     await suite('manager-download', () => runManagerDownload({ test, assert, log }))
+    await suite('seat-workdir', () => runSeatWorkdir({ test, assert, log }))
     await suite('workspace-files', () => runWorkspaceFiles({ root, test, assert, log }))
     await suite('patch', () => runPatch({ root, test, assert, log }))
     await suite('process', () => runProcess({ root, test, assert, log }))

@@ -19,10 +19,18 @@ export interface Config {
   uploadMax?: number
   /** 共享区。默认 `$SATUWORK_SHARED_DIR`；没有就没有共享区（本地 Bot、老部署）。 */
   shared?: string
+  /** 分格之前的老工作区（`~/work`）。默认 `$SATUWORK_LEGACY_DIR`；没有就不兜底。 */
+  legacy?: string
 }
 
 /** 共享区在工作区里的入口名：`<根>/shared` 是一条指向共享区的符号链接。 */
 export const SHARED_LINK = 'shared'
+
+/**
+ * 老工作区底下**不兜**的第一段：`bots/` 是各个席位自己的格子，`shared/` 是共享区。
+ * 兜进去的话，`bots/<别的席位>/x` 在自己格子里找不到，就会落到人家的格子里。
+ */
+const LEGACY_SKIP = new Set(['bots', SHARED_LINK])
 
 /** 越界、参数不对、文件不存在这类**业务**失败。不是管道故障。 */
 export class WorkspaceError extends Error {}
@@ -45,8 +53,12 @@ const DEFAULT_UPLOAD_MAX = 100 * 1024 * 1024
  * **共享区**：`$SATUWORK_SHARED_DIR`，同一个员工所有席位共用的 `/home/{linuxUser}/work/shared`。
  * 它在根目录下挂成一条 `shared` 符号链接（部署时建，这里缺了就补），所以模型、终端、
  * 界面看到的都是 `shared/…` 这一个路径——派活时主 Bot 写 `shared/报表.xlsx`，对方拿到的是
- * 同一个相对路径。以前 `~/work` 整个是共享的，几个 Bot 的产出、上传、缓存搅在一起；
- * 部署时把老文件整体收进了共享区，所以历史里的老路径要靠 `locate` 去那边找。
+ * 同一个相对路径。
+ *
+ * **老工作区**：`$SATUWORK_LEGACY_DIR`，也就是分格之前整个共享的 `~/work`。老文件**原地不动**
+ * ——部署时不挪任何东西，还没重铺的席位照旧往那儿写。历史消息里的 `uploads/s-…/合同.pdf`、
+ * `报表/二季度.html` 在新根下不存在，resolve 就落到老工作区同一个相对路径上（见 legacyOf），
+ * 读写都是那一份，和分格之前一模一样。
  *
  * 分开的只是**目录**，不是权限：同一个员工的席位还是同一个 uid，终端 `cd ../别的席位`
  * 照样进得去。这里管的是「各写各的、不互相误伤」，不是「互相看不见」。
@@ -63,6 +75,10 @@ export class WorkspaceService extends Service {
   readonly uploadMax: number
   /** 共享区的绝对路径。没有共享区时是 undefined。 */
   readonly shared?: string
+  /** 老工作区的绝对路径。没有时是 undefined，resolve 不兜底。 */
+  readonly legacy?: string
+  /** 共享区的真实路径，第一次用到时解析一次（见 inShared）。 */
+  private sharedReal?: string
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'workspace')
@@ -72,6 +88,8 @@ export class WorkspaceService extends Service {
     this.uploadMax = config.uploadMax ?? (Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_UPLOAD_MAX)
     const shared = config.shared?.trim() || process.env.SATUWORK_SHARED_DIR?.trim()
     if (shared) this.shared = resolve(shared)
+    const legacy = config.legacy?.trim() || process.env.SATUWORK_LEGACY_DIR?.trim()
+    if (legacy) this.legacy = resolve(legacy)
     // 工作区不存在时先建出来。缺了它，第一次 ls 会以「路径不存在」收场，
     // 而那其实不是模型的错。
     void mkdir(this.root, { recursive: true })
@@ -99,8 +117,12 @@ export class WorkspaceService extends Service {
    *
    * 这里不 realpath：解析一条还不存在的写入路径会失败，而 write 要能创建新文件。
    * 也就是说符号链接绕得过去——见类注释，这层挡的是手滑，不是恶意。
+   *
+   * 自己的根下没有、老工作区同一个相对路径上有的，落到老工作区那一份（见 legacyOf）。
+   * `dir: true` 是调用方要**读**一个目录（列目录、在里面搜、当工作目录）：只有这种时候
+   * 老工作区的目录才算数。
    */
-  resolve(path?: string): string {
+  resolve(path?: string, opts: { dir?: boolean } = {}): string {
     const target = this.mapApproved(path) ?? resolve(this.root, path?.trim() || '.')
     if (target !== this.root && !target.startsWith(this.root + sep)) {
       throw new WorkspaceError(`路径越界：${path}。只能访问工作区 ${this.root} 以内的文件。`)
@@ -122,7 +144,31 @@ export class WorkspaceService extends Service {
         }
       }
     }
-    return target
+    return this.legacyOf(path, target, opts.dir === true) ?? target
+  }
+
+  /**
+   * 老路径落到老工作区。
+   *
+   * 条件：给的是相对路径、自己的根下没有它、老工作区同一个相对路径上**有一个文件**。读和写
+   * 都落过去——那就是分格之前的样子：以前改这个文件就是原地改。只兜读、写落回自己格子的话，
+   * 模型按历史里的路径读完再写回去，就会在自己格子里新长出一份，老的那份原样不动，悄悄分成两份。
+   *
+   * **目录默认不兜**：`images/`、`web/`、`tasks/` 这些是系统往里落新文件的目录，老工作区里
+   * 多半也有一个同名的；兜过去的话，这颗 Bot 往后的产出就全落回了老工作区。只有调用方说明是
+   * 来读目录的（`dir`）才认。新文件永远落在自己的格子里。
+   */
+  private legacyOf(path: string | undefined, target: string, dirOk: boolean): string | undefined {
+    if (!this.legacy) return undefined
+    const raw = path?.trim()
+    if (!raw || isAbsolute(raw) || raw.startsWith('~')) return undefined
+    const rel = relative(this.root, target)
+    if (!rel || LEGACY_SKIP.has(rel.split(sep)[0])) return undefined
+    if (lstatSync(target, { throwIfNoEntry: false })) return undefined
+    const old = join(this.legacy, rel)
+    const info = statSync(old, { throwIfNoEntry: false })
+    if (!info) return undefined
+    return info.isFile() || (dirOk && info.isDirectory()) ? old : undefined
   }
 
   /**
@@ -182,7 +228,7 @@ export class WorkspaceService extends Service {
   }
 
   private isApprovedPath(path: string): boolean {
-    if (this.inShared(path)) return true
+    if (this.inShared(path) || this.inLegacy(path, true)) return true
     if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return false
     const manifest = (process.env.SATUWORK_APPROVED_DIRS || '').trim()
     if (!manifest) return false
@@ -206,16 +252,39 @@ export class WorkspaceService extends Service {
     })
   }
 
-  /** 这条路径（解开链接之后）落不落在共享区里。没有共享区就一律不算。 */
+  /**
+   * 这条路径（解开链接之后）落不落在共享区里。没有共享区就一律不算。
+   *
+   * 共享区自己的真实路径只解析一次：遍历时每碰到一条链接都要问这一句，而那个答案不会变。
+   * 解析失败（目录还没建出来）就不记，下次再试。
+   */
   private inShared(path: string): boolean {
     if (!this.shared) return false
     try {
+      this.sharedReal ??= realpathSync(this.shared)
       const real = realpathSync(path)
-      const shared = realpathSync(this.shared)
-      return real === shared || real.startsWith(shared + sep)
+      return real === this.sharedReal || real.startsWith(this.sharedReal + sep)
     } catch {
       return false
     }
+  }
+
+  /**
+   * 这条路径落不落在老工作区里、又不在 `bots/`、`shared/` 底下。
+   *
+   * `real` 为真时两头都先解开链接再比——删除要用这个：老工作区里一条指向外面的目录链接，
+   * 按字面它在里面，删下去删的却是外面的东西。展示用的那一路按字面比就够了。
+   */
+  private inLegacy(path: string, real = false): boolean {
+    if (!this.legacy) return false
+    let rel: string
+    try {
+      rel = real ? relative(realpathSync(this.legacy), realpathSync(path)) : relative(this.legacy, path)
+    } catch {
+      return false
+    }
+    // 空串是老工作区的根自己：删根下的老文件时，问的是它的父目录，也就是这个根。
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel) && !LEGACY_SKIP.has(rel.split(sep)[0]))
   }
 
   /**
@@ -231,32 +300,14 @@ export class WorkspaceService extends Service {
   }
 
   /**
-   * 给**读**用的 resolve：自己的工作区里没有这个文件，而共享区里同一个相对路径上有，就用
-   * 共享区那份。
+   * 展示用相对路径。根目录本身显示成 `.`。
    *
-   * 为的是老路径。改成一个 Bot 一个目录之前，`~/work` 整个是共享的，部署时把那些老文件原样
-   * 收进了共享区——于是历史消息里的 `uploads/s-…/合同.pdf`、模型以前写下的 `报表/二季度.html`
-   * 在新根目录下都不存在了，但 `shared/` 底下同一个相对路径上还在。
-   *
-   * **只给读用，写一律走 resolve。** 写也这么兜的话，模型新建一个 `报表.xlsx`，碰巧共享区里
-   * 有一份同名的（别的 Bot 刚放的），就会把人家那份盖掉。
+   * 老工作区里的文件显示成它**在老工作区里的**相对路径——也就是历史里写的那个。拿它再来
+   * resolve 会落回同一个文件（见 legacyOf）；照字面相对根目录算的话是 `../../报表/x`，
+   * 界面上点开预览就是一句越界。
    */
-  locate(path?: string): string {
-    const target = this.resolve(path)
-    if (!this.shared || lstatSync(target, { throwIfNoEntry: false })) return target
-    const raw = (path ?? '').trim().replace(/\\/g, '/')
-    if (!raw || isAbsolute(raw) || raw === SHARED_LINK || raw.startsWith(SHARED_LINK + '/')) return target
-    let legacy: string
-    try {
-      legacy = this.resolve(`${SHARED_LINK}/${raw}`)
-    } catch {
-      return target
-    }
-    return lstatSync(legacy, { throwIfNoEntry: false }) ? legacy : target
-  }
-
-  /** 展示用相对路径。根目录本身显示成 `.`。 */
   show(path: string): string {
+    if (this.inLegacy(path)) return relative(this.legacy!, path)
     return relative(this.root, path) || '.'
   }
 
@@ -343,7 +394,7 @@ export class WorkspaceService extends Service {
    * 工作区，而这一屏是给人点开预览用的，没有理由把出口开在这儿。
    */
   async list(path?: string) {
-    const target = this.resolve(path)
+    const target = this.resolve(path, { dir: true })
     const info = await stat(target)
     if (!info.isDirectory()) throw new WorkspaceError(`${this.show(target)} 不是目录。`)
     const here = this.show(target)
@@ -418,7 +469,7 @@ export class WorkspaceService extends Service {
 
   /** 读一个文件用来预览。返回 Web 流，不进内存。 */
   async open(path: string) {
-    const target = this.locate(path)
+    const target = this.resolve(path)
     const info = await stat(target)
     if (info.isDirectory()) throw new WorkspaceError(`${this.show(target)} 是目录，不能预览。`)
     return {

@@ -1346,6 +1346,8 @@ async function installSeatOnce(db: Db, plan: DeployPlan): Promise<DeployOutcome>
 
   const secrets = await db.ensureAccountSecrets(account.id)
   if (!secrets) return await failSeat(db, plan, 500, '没有席位密钥')
+  // 只用来写工作区那一格的名牌，查不到就不带，不为它挡部署。
+  const botName = (await db.catalog(botId).catch(() => undefined))?.name?.trim()
 
   const spec: SeatSpec = {
     seatId: row.seatId,
@@ -1354,6 +1356,8 @@ async function installSeatOnce(db: Db, plan: DeployPlan): Promise<DeployOutcome>
     workDir: workDirOf(row.linuxUser),
     seatDir: seatDirOf(row.linuxUser, row.seatId),
     botId,
+    // 13 号管家写进 ~/work/bots/<席位>/.bot-name，人在桌面上认得出这一格是谁的；老管家不认，忽略。
+    ...(botName ? { botName } : {}),
     botVersion: version,
     // 能直连就把外部地址和校验值一起给：11 号起的管家直接去取、不带机器票、按 botSha256
     // 比对（manager/src/releases.ts）。老管家不认这两个字段，照旧从 Gateway 转发拉。
@@ -1815,6 +1819,8 @@ export interface SeatSpec {
   workDir: string
   seatDir: string
   botId: string
+  /** Bot 的名字，管家只拿它写工作区那一格的名牌。可选：查不到就不带。 */
+  botName?: string
   botVersion: string
   /**
    * bot 包的外部地址（GitHub Release）和它的 sha256。**成对出现或都不出现**：包只在

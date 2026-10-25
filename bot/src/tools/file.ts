@@ -285,8 +285,7 @@ export function apply(ctx: Context) {
     },
     async ({ path, offset, limit }: { path?: string; offset?: number; limit?: number }, call: ToolCall) => {
       if (!path) fail('缺少 path 参数')
-      // 只读，老路径可以到共享区去找（见 workspace 的 locate）。写和编辑不兜。
-      const target = ctx.workspace.locate(path)
+      const target = resolveIn(path)
       const info = await stat(target)
       if (info.isDirectory()) fail(`${show(target)} 是目录，用 search_files 列它的内容。`)
       assertRegular(info, show(target))
@@ -530,7 +529,7 @@ export function apply(ctx: Context) {
     }, call: ToolCall): Promise<ToolOut | string> => {
       if (!pattern) fail('缺少 pattern 参数')
       const mode = target === 'files' ? 'files' : 'content'
-      const base = resolveIn(path)
+      const base = ctx.workspace.resolve(path, { dir: true })
       const cap = Math.max(1, Math.min(Math.floor(limit ?? DEFAULT_RESULTS), MAX_RESULTS))
       const skip = Math.max(0, Math.floor(offset ?? 0))
 

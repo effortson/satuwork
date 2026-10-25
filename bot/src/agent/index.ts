@@ -2375,7 +2375,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      */
     const folders = localFoldersBlock(this.ctx.workspace?.approvedMounts?.() ?? null, this.ctx.tools.has('request_folder_access'))
     // 共享区那段一颗 Bot 一辈子不变，排在最前面，不跟着记忆、批准文件夹一起作废缓存。
-    const shared = sharedFolderBlock(Boolean(this.ctx.workspace?.shared))
+    const shared = sharedFolderBlock(Boolean(this.ctx.workspace?.shared), Boolean(this.ctx.workspace?.legacy))
     const tail = [shared, skills, memory, folders].filter(Boolean).join('\n\n')
     return { text: tail ? `${base}\n\n${tail}` : base, base, skills, memory }
   }
@@ -3857,7 +3857,7 @@ async function fileGone(path: string, ctx: Context | undefined): Promise<boolean
     const ws = ctx.workspace
     if (!ws) return false
     const { stat } = await import('node:fs/promises')
-    const info = await stat(ws.locate(path)).catch(() => null)
+    const info = await stat(ws.resolve(path)).catch(() => null)
     return !info?.isFile()
   } catch {
     return false
@@ -4085,7 +4085,7 @@ async function loadImage(img: { path: string; mime: string }, ctx?: Context) {
     // `Cannot read properties of undefined (reading 'resolve')` 冒充「读不出来」。
     const ws = ctx.workspace
     if (!ws) return miss('这个运行时读不到工作区')
-    const file = ws.locate(img.path)
+    const file = ws.resolve(img.path)
     const { readFile, stat } = await import('node:fs/promises')
     const info = await stat(file)
     if (info.size > MAX_IMAGE_BYTES) {
@@ -4285,17 +4285,22 @@ function linkOutBlock(): string {
  *
  * **不说这一段的代价**：工作区改成一个 Bot 一个目录之后，模型并不知道还有个 `shared/`——
  * 派活时它会让对方去处理「工作区里的 报表.xlsx」，而对方的工作区里根本没有这个文件；人问起
- * 以前的文件，它在自己的目录里找不到就说「文件不存在」，其实都收在 `shared/` 底下。
- * 没有共享区（本地 Bot、老部署）时整段不出现。
+ * 以前的文件，列自己的工作区看不见，就说「文件不存在」——其实还在老工作区里，按原路径就读得到。
+ * 没有共享区（本地 Bot、老部署）时整段不出现；没有老工作区时不说老文件那一条。
  */
-export function sharedFolderBlock(hasShared: boolean): string {
+export function sharedFolderBlock(hasShared: boolean, hasLegacy = false): string {
   if (!hasShared) return ''
   return [
     '## 共享文件夹',
     '你的工作区是你自己的；工作区里的 `shared/` 是共享文件夹，这位员工名下的所有 Bot 都能读写。',
     '- 要交给别的 Bot 的文件（派活的材料、给对方接着改的成品）放进 `shared/`，在话里写 `shared/…` 这个路径——对方用同一个路径就能打开。',
     '- 用户说「共享文件夹」「放到共享里」「别的 Bot 放的文件」，说的就是 `shared/`。',
-    '- 工作区分开之前的老文件都收在 `shared/` 底下，相对路径不变：以前的 `报表/二季度.html` 现在是 `shared/报表/二季度.html`。',
+    ...(hasLegacy
+      ? [
+          '- 工作区分开之前的老文件还在原处：历史里提到的路径（比如 `报表/二季度.html`）照样能读能改，不要加前缀。' +
+            '它们不在你的工作区列表里，要看有哪些，在终端里 `ls ~/work`（`bots/`、`shared/` 以外的就是）。',
+        ]
+      : []),
     '- 自己的草稿、中间产物留在自己的工作区，不要往 `shared/` 里堆。',
   ].join('\n')
 }

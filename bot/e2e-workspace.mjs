@@ -513,26 +513,36 @@ out.paging = {
   rmSync(home, { recursive: true, force: true })
 }
 
-// ── 14. 远程席位：一个 Bot 一格，共享区挂在 shared/ ─────────────────────
+// ── 14. 远程席位：一个 Bot 一格，共享区挂在 shared/，老文件原地不动 ──────────
 /**
- * 布局照 deploy-seat.sh：`work/bots/<席位>` 是 Bot 的根，`work/shared` 是共享区，根下一条
- * `shared` 链接通过去。钉的是三件事：共享区真的进得去（读、写、搜、列、删）；老路径在自己
- * 那格里找不到时读得到共享区那份，**写不兜**；人自己在 `shared` 那个名字上放了东西就不替他换。
+ * 布局照 seat-workdir.sh：`work/bots/<席位>` 是 Bot 的根，`work/shared` 是共享区，根下一条
+ * `shared` 链接通过去；`work` 根下是分格之前的老文件。钉的是：共享区真的进得去；老路径在
+ * 自己那格找不到时**读写都落到老文件那一份**（不分叉），目录只在读的时候才兜，`bots/`、
+ * `shared/` 不能借老路径绕进去；搜索先走自己的文件。
  */
 {
   const base = mkdtempSync(join(tmpdir(), 'satu-split-'))
-  const shared = join(base, 'work/shared')
-  const botA = join(base, 'work/bots/a')
-  const botC = join(base, 'work/bots/c')
-  mkdirSync(join(shared, 'uploads/s-old'), { recursive: true })
+  const work = join(base, 'work')
+  const shared = join(work, 'shared')
+  const botA = join(work, 'bots/a')
+  const botC = join(work, 'bots/c')
+  mkdirSync(join(work, 'uploads/s-old'), { recursive: true })
+  mkdirSync(join(work, '报表'), { recursive: true })
+  mkdirSync(join(work, 'images'), { recursive: true })
+  mkdirSync(join(work, 'bots/b'), { recursive: true })
+  mkdirSync(shared, { recursive: true })
   mkdirSync(join(botC, 'shared'), { recursive: true })
-  writeFileSync(join(shared, 'uploads/s-old/合同.txt'), '老合同\n')
-  writeFileSync(join(shared, '报表.txt'), '共享区那份\n')
+  writeFileSync(join(work, 'uploads/s-old/合同.txt'), '老合同\n')
+  writeFileSync(join(work, '报表/二季度.html'), 'v1\n')
+  writeFileSync(join(work, 'images/old.png'), 'x')
+  writeFileSync(join(work, 'dup.txt'), '老的\n')
+  writeFileSync(join(work, 'gone-legacy.txt'), 'x\n')
+  writeFileSync(join(work, 'bots/b/secret.txt'), 'B 的\n')
   writeFileSync(join(shared, 'mark.txt'), 'MARK-SHARED\n')
   writeFileSync(join(shared, 'gone.txt'), 'x\n')
 
   const ctxA = new Context()
-  ctxA.plugin(WorkspaceService, { root: botA, shared })
+  ctxA.plugin(WorkspaceService, { root: botA, shared, legacy: work })
   ctxA.plugin(ToolService)
   await new Promise((r) => setTimeout(r, 50))
   ctxA.plugin(fileTools)
@@ -540,44 +550,68 @@ out.paging = {
   const a = ctxA.workspace
   const callA = (name, args) => ctxA.tools.execute({ callId: 'c1', name, arguments: JSON.stringify(args), sessionId: 's-1' })
   const ctxB = new Context()
-  ctxB.plugin(WorkspaceService, { root: join(base, 'work/bots/b'), shared })
+  ctxB.plugin(WorkspaceService, { root: join(work, 'bots/b'), shared, legacy: work })
   const ctxC = new Context()
-  ctxC.plugin(WorkspaceService, { root: botC, shared })
+  ctxC.plugin(WorkspaceService, { root: botC, shared, legacy: work })
   await new Promise((r) => setTimeout(r, 100))
 
+  writeFileSync(join(botA, 'dup.txt'), '自己的\n')
+  // 列老目录要排在往 报表/ 里写新文件之前：自己格子里一旦有了同名目录，列的就是自己那个。
+  const listedOld = await a.list('报表').catch(() => ({ path: '', entries: [] }))
   const readLegacy = await callA('read_file', { path: 'uploads/s-old/合同.txt' })
-  const wroteSame = await callA('write_file', { path: '报表.txt', content: '自己那份\n' })
-  const readOwn = await callA('read_file', { path: '报表.txt' })
-  const wroteShared = await callA('write_file', { path: 'shared/交接.txt', content: '给 C 的\n' })
+  const opened = await a.open('uploads/s-old/合同.txt').then((f) => f.name, () => '')
+  const wroteLegacy = await callA('write_file', { path: '报表/二季度.html', content: 'v2\n' })
+  const patchedLegacy = await callA('patch', { path: '报表/二季度.html', old_string: 'v2', new_string: 'v3' })
+  const wroteNew = await callA('write_file', { path: '报表/新.html', content: '新的\n' })
+  const readDup = await callA('read_file', { path: 'dup.txt' })
+  const savedImage = await a.saveBytes('images', 'x.png', Buffer.from('png'))
+  const searchedOld = await callA('search_files', { pattern: '老合同', path: 'uploads/s-old' })
+  const listedOwn = await a.list('报表').catch(() => ({ path: '', entries: [] }))
+  const readOther = await callA('read_file', { path: 'bots/b/secret.txt' })
+  const wroteShared = await callA('write_file', { path: 'shared/交接.txt', content: '给 B 的\n' })
   const searched = await callA('search_files', { pattern: 'MARK-SHARED' })
   const listed = await a.list('.')
   const removed = await a.remove('shared/gone.txt').then(() => true, () => false)
+  const removedLegacy = await a.remove('gone-legacy.txt').then(() => true, () => false)
   const removeLink = await a.remove('shared').then(() => false, (e) => /符号链接/.test(e.message))
-  const opened = await a.open('uploads/s-old/合同.txt').then((f) => f.name, () => '')
+  // 搜索先走自己的：budget 只够一个文件时，拿到的必须是自己格子里的，不是共享区的。
+  const firstWalked = []
+  for await (const f of walkFiles(botA, { left: 1 }, false, (p) => a.isApprovedLink(p))) firstWalked.push(f)
 
   out.split = {
     根下建出了链接: lstatSync(join(botA, 'shared')).isSymbolicLink() && realpathSync(join(botA, 'shared')) === realpathSync(shared),
     老路径读得到: /老合同/.test(readLegacy.text || ''),
-    老路径报的是共享区的路径: (readLegacy.refs || []).map((f) => f.path).join() === 'shared/uploads/s-old/合同.txt',
-    locate落到共享区: a.show(a.locate('uploads/s-old/合同.txt')) === 'shared/uploads/s-old/合同.txt',
+    老路径报的还是原路径: (readLegacy.refs || []).map((f) => f.path).join() === 'uploads/s-old/合同.txt',
     预览也认老路径: opened === '合同.txt',
-    都没有时还是自己那格: a.locate('没有的.txt') === a.resolve('没有的.txt'),
-    写不往共享区兜: !wroteSame.isError && readFileSync(join(shared, '报表.txt'), 'utf8') === '共享区那份\n' && readFileSync(join(botA, '报表.txt'), 'utf8') === '自己那份\n',
-    自己有就读自己的: /自己那份/.test(readOwn.text || ''),
-    写得进共享区: !wroteShared.isError && readFileSync(join(shared, '交接.txt'), 'utf8') === '给 C 的\n',
-    别的Bot看得见: readFileSync(ctxB.workspace.resolve('shared/交接.txt'), 'utf8') === '给 C 的\n',
-    别的Bot自己那格看不见: !existsSync(ctxB.workspace.resolve('报表.txt')),
+    老文件原地写: !wroteLegacy.isError && !existsSync(join(botA, '报表/二季度.html')),
+    patch改得了老文件: !patchedLegacy.isError && readFileSync(join(work, '报表/二季度.html'), 'utf8') === 'v3\n',
+    写老文件报的是原路径: (wroteLegacy.files || []).map((f) => f.path).join() === '报表/二季度.html',
+    新文件落自己格子: !wroteNew.isError && existsSync(join(botA, '报表/新.html')) && !existsSync(join(work, '报表/新.html')),
+    自己有就用自己的: /自己的/.test(readDup.text || ''),
+    系统目录不兜: savedImage.path === 'images/x.png' && existsSync(join(botA, 'images/x.png')) && !existsSync(join(work, 'images/x.png')),
+    写目录不兜: a.resolve('images') === join(botA, 'images'),
+    读目录才兜: a.resolve('uploads/s-old', { dir: true }) === join(work, 'uploads/s-old'),
+    搜得进老目录: /合同\.txt/.test(searchedOld.text || ''),
+    列得出老目录: listedOld.path === '报表' && listedOld.entries.some((e) => e.path === '报表/二季度.html'),
+    自己有同名目录就列自己的: listedOwn.entries.map((e) => e.name).join() === '新.html',
+    bots不借道: a.resolve('bots/b/secret.txt') === join(botA, 'bots/b/secret.txt') && !/B 的/.test(readOther.text || ''),
+    shared不借道: a.resolve('shared/没有的.txt') === join(botA, 'shared/没有的.txt'),
+    写得进共享区: !wroteShared.isError && readFileSync(join(shared, '交接.txt'), 'utf8') === '给 B 的\n',
+    别的Bot看得见: readFileSync(ctxB.workspace.resolve('shared/交接.txt'), 'utf8') === '给 B 的\n',
     搜得进共享区: /shared\/mark\.txt/.test(searched.text || ''),
+    搜索先走自己的: firstWalked.length === 1 && !firstWalked[0].includes(`${join(botA, 'shared')}`),
     列目录列出共享区: listed.entries.some((e) => e.name === 'shared' && e.dir),
     删得了共享区里的文件: removed && !existsSync(join(shared, 'gone.txt')),
+    删得了老文件: removedLegacy && !existsSync(join(work, 'gone-legacy.txt')),
     删不了那条链接: removeLink,
     人建的同名目录不替换: !lstatSync(join(botC, 'shared')).isSymbolicLink(),
     同名目录不当共享区: !ctxC.workspace.isApprovedLink(join(botC, 'shared')),
-    越界照样拦: throws(() => a.resolve('shared/../../../etc/passwd')) && throws(() => a.locate('../c/x')),
-    没共享区不兜底: ws.locate('没有的.txt') === ws.resolve('没有的.txt') && ws.shared === undefined,
+    越界照样拦: throws(() => a.resolve('shared/../../../etc/passwd')) && throws(() => a.resolve('../b/secret.txt')),
+    没老工作区不兜底: ws.legacy === undefined && ws.resolve('没有的.txt') === join(root, '没有的.txt'),
   }
   const { sharedFolderBlock } = await import('./src/agent/index.ts')
   out.split.提示词讲共享区 = sharedFolderBlock(true).includes('`shared/`') && sharedFolderBlock(false) === ''
+  out.split.提示词讲老文件 = sharedFolderBlock(true, true).includes('ls ~/work') && !sharedFolderBlock(true, false).includes('ls ~/work')
   rmSync(base, { recursive: true, force: true })
 }
 

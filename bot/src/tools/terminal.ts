@@ -1177,7 +1177,7 @@ export function apply(ctx: Context, config: Config = {}) {
       call: ToolCall,
     ) => {
       if (!command?.trim()) fail('缺少 command 参数')
-      const dir = resolveIn(workdir)
+      const dir = ctx.workspace.resolve(workdir, { dir: true })
       const info = await stat(dir).catch(() => fail(`工作目录不存在：${show(dir)}`))
       if (!info.isDirectory()) fail(`${show(dir)} 不是目录。`)
 

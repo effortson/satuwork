@@ -172,7 +172,7 @@ export function apply(ctx: Context) {
       }
       if (!remoteTool) fail(`认不出 ${toolName} 对应的远端工具名，先重新拉一次目录再试。`)
 
-      const abs = ctx.workspace.locate(path)
+      const abs = ctx.workspace.resolve(path)
       const shown = ctx.workspace.show(abs)
       const st = await stat(abs)
       if (!st.isFile()) fail(`${shown} 不是一个文件。`)
