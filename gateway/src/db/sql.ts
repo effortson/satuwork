@@ -34,3 +34,24 @@ export function filterSql(
   }
   return { sql, args }
 }
+
+/** 派活清扫每一拍每一类最多收多少条。积压了也一拍拍收完，不让一次清扫拖成一条慢查询。 */
+export const SWEEP_BATCH = 200
+
+/**
+ * 账本按 refId 收成一行，用于所有「维度在业务表、金额在账本」的汇总。
+ *
+ * `usage_charges."refId"` 上只有普通索引，不是唯一约束，同一次调用完全可能挂上两行账
+ * （崩在写调用和记账之间随后重算、或者一条被重放的上报）。直接 join 会把业务表那一行
+ * 复制一份——calls 翻倍、token 和金额跟着翻倍。先收再 join，扇出这件事就不存在了。
+ */
+export const LEDGER_BY_REF = '(select "refId", sum("amountMicros") as micros from usage_charges group by "refId")'
+
+/**
+ * 日线 / 小时线切桶用的除数，**拼进 SQL 的字面量**，不走参数：bigint 除以一个绑定参数会按
+ * 整数除，floor 在负数上就错了；写成 `86400000.0` 这种带小数点的字面量才是真除法。
+ * 只认这两个值，别的都当按天——这里不接受外面传进来的任意数字。
+ */
+export function bucketSql(bucketMs: number): string {
+  return bucketMs === HOUR_MS ? `${HOUR_MS}.0` : `${DAY_MS}.0`
+}

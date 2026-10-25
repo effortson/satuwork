@@ -1998,3 +1998,30 @@ export function usableModelId(id: string): boolean {
   if (id.startsWith('/')) return false
   return !/[\s\u0000-\u001f\u007f]/.test(id)
 }
+
+// ── 账号改动的形状（db/org.ts 的 updateAccount / updateAccountIf）。──
+
+/** updateAccount 能改的那几列。 */
+export type AccountPatch = Partial<
+  Pick<
+    Account,
+    | 'name'
+    | 'title'
+    | 'phone'
+    | 'theme'
+    | 'locale'
+    | 'role'
+    | 'status'
+    | 'lastSeenAt'
+    | 'passwordHash'
+    | 'passwordChangedAt'
+    | 'tokenRevokedAt'
+  >
+>
+
+/** updateAccountIf 的前提：写了的项都得和库里当前值对上，才落这次改动。 */
+export interface AccountExpect {
+  status?: AccountStatus[]
+  passwordHash?: string
+  tokenRevokedAt?: number | null
+}

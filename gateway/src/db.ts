@@ -1,12 +1,8 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
-import { createHash, randomUUID } from 'node:crypto'
-import pg from 'pg'
+import { randomUUID } from 'node:crypto'
 import { randomAccessToken, randomApiKey, randomMachineToken } from './crypto.ts'
-import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
-import { DAY_MS, HOUR_MS, filterSql } from './db/sql.ts'
-import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
-import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot, type Handoff, type HandoffState, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotFolder, type BotRelease, type BotTask, type BotTaskPatch, type BotTaskProgress, type BotTaskStatus, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type KnowledgeBase, type KnowledgeChunk, type KnowledgeFile, type KnowledgeFileStatus, type KnowledgeShare, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
-import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botFolderOf, botReleaseOf, botTaskOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, knowledgeBaseOf, knowledgeChunkOf, knowledgeFileOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, platformCredOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
+import { bucketSql, DAY_MS, filterSql, LEDGER_BY_REF, SWEEP_BATCH } from './db/sql.ts'
+import { type Account, type AccountExpect, type AccountPatch, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotFolder, type BotRelease, type BotTask, type BotTaskPatch, type BotTaskProgress, type BotTaskStatus, type CatalogItem, type CatalogKind, type ChannelBinding, type ChannelBindingStatus, type ChannelEvent, type ChannelEventStatus, type ChannelIdentity, type ChannelKind, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type ChargeKind, type ChargeStatus, type Company, type CompanyModelUsage, type CompanySettings, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type Credential, DEFAULT_MAX_ACCOUNTS, type DiscoverySnapshot, type DueChannelScope, emptyPlatformSettings, emptySettings, emptySnapshot, type Group, type Handoff, type HandoffState, type Instance, type Invite, type Invoice, type KnowledgeBase, type KnowledgeChunk, type KnowledgeFile, type KnowledgeFileStatus, type KnowledgeShare, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseDiscoverySnapshot, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, releaseArch, type ReleaseKind, type Role, type Routine, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineRun, type RoutineRunStatus, type RoutineRunTrigger, type RoutineTrigger, type Scope, type SeatDeployRequest, type SeatRuntime, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type SessionIndex, type Topup, type UsageCharge, type WebCall, type WebCallKind } from './db/types.ts'
+import { accountOf, auditOf, botDeletionRequestOf, botFolderOf, botReleaseOf, botTaskOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, groupOf, handoffOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, knowledgeBaseOf, knowledgeChunkOf, knowledgeFileOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, platformCredOf, routineOf, routineRunOf, type Row, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
  * 类型、常量和行解析都在 `db/` 底下；这里原样再导出，调用点仍然
@@ -14,129 +10,9 @@ import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botFolde
  */
 export * from './db/types.ts'
 export * from './db/rows.ts'
+export { type DbOptions, SchemaBusyError, databaseUrl, migrateDatabaseUrl, safeSchema } from './db/core.ts'
+import { DbCore } from './db/core.ts'
 
-const { Pool } = pg
-type PoolClient = pg.PoolClient
-
-/**
- * 「这个 schema 归谁用」的 advisory lock 键。
- *
- * 和 db/migrate.ts 里那把**不是同一把**：那把只护住迁移那几秒，拿完就放；这把是
- * 占用标记，进程活多久握多久。盐不同，两者不会互相阻塞。
- */
-function claimKey(schema: string): number {
-  const h = createHash('sha256').update('satuwork-schema-claim:' + schema).digest()
-  // 同 migrate.ts：只取 31 位，省得跨语言对不上符号位。
-  return h.readUInt32BE(0) & 0x7fffffff
-}
-
-/**
- * 「这个 schema 上还有别人在跑」。单拎一个类型出来，是为了让 index.ts 分得清它和
- * 真正的迁移失败——那条路会先打一句「库停在哪一号」，对这个错来说是句误导。
- */
-export class SchemaBusyError extends Error {}
-
-/** schema 名只允许普通标识符：它要拼进 SQL，不能走参数。 */
-export function safeSchema(name: string): string {
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) throw new Error(`不合法的 schema 名：${name}`)
-  return name
-}
-
-/** updateAccount 能改的那几列。 */
-export type AccountPatch = Partial<
-  Pick<
-    Account,
-    | 'name'
-    | 'title'
-    | 'phone'
-    | 'theme'
-    | 'locale'
-    | 'role'
-    | 'status'
-    | 'lastSeenAt'
-    | 'passwordHash'
-    | 'passwordChangedAt'
-    | 'tokenRevokedAt'
-  >
->
-
-/** updateAccountIf 的前提：写了的项都得和库里当前值对上，才落这次改动。 */
-export interface AccountExpect {
-  status?: AccountStatus[]
-  passwordHash?: string
-  tokenRevokedAt?: number | null
-}
-
-export interface DbOptions {
-  url: string
-  schema?: string
-}
-
-/**
- * 函数环境（Vercel）里才认的回落名。
- *
- * Neon 的 Vercel 集成往项目里注入的是它自己那套名字（DATABASE_URL 池化、
- * DATABASE_URL_UNPOOLED 直连），一个都不叫 GATEWAY_*。不认它们的话，每加一个环境就要
- * 手抄一遍连接串，而 Neon 轮换密码之后抄的那份就成了过期的死串。
- *
- * **只在 Vercel 上回落**（process.env.VERCEL）。`DATABASE_URL` 是个太常见的名字，开发机上
- * 十有八九指着别的项目的库；无条件回落等于把「忘了配 GATEWAY_DATABASE_URL」从一条说得很
- * 清楚的报错，变成静默连上另一个库——而 scripts/migrate.ts 是会往里写 schema 的。
- */
-function neonFallback(...names: string[]): string {
-  if (!process.env.VERCEL) return ''
-  for (const name of names) {
-    const v = (process.env[name] || '').trim()
-    if (v) return v
-  }
-  return ''
-}
-
-/**
- * 把连接串里的 `sslmode=prefer|require|verify-ca` 钉成 `verify-full`。
- *
- * pg 8 本来就把这三个当 verify-full 用，但每次解析都往 stderr 打一条 SECURITY WARNING
- * （pg 9 要改回 libpq 语义）。Vercel 按 stderr 把它记成 error，每次冷启动日志里就多一条假报错。
- * Neon 注入的串带的是 `sslmode=require`，环境变量又归集成管、会被它重新同步，所以在这儿改，
- * 不去改变量本身。写死 verify-full 就是现在的行为，pg 升到 9 也不会悄悄降成「不验证书」。
- */
-function pinSslMode(url: string): string {
-  return url.replace(/([?&]sslmode=)(prefer|require|verify-ca)(?=&|$)/, '$1verify-full')
-}
-
-export function databaseUrl(): string {
-  const url = (process.env.GATEWAY_DATABASE_URL || '').trim() || neonFallback('DATABASE_URL')
-  if (!url) {
-    throw new Error(
-      '未配置 GATEWAY_DATABASE_URL。示例：postgres://satuwork:satuwork@127.0.0.1:5434/satuwork（docker compose up -d postgres）',
-    )
-  }
-  return pinSslMode(url)
-}
-
-/** 派活清扫每一拍每一类最多收多少条。积压了也一拍拍收完，不让一次清扫拖成一条慢查询。 */
-const SWEEP_BATCH = 200
-
-/** 迁移要**直连**串：迁移锁是会话级 advisory lock，过 PgBouncer 的事务池会漂（ADR §5.2）。 */
-export function migrateDatabaseUrl(): string {
-  const url = (process.env.GATEWAY_MIGRATE_DATABASE_URL || '').trim() || neonFallback('DATABASE_URL_UNPOOLED')
-  return url ? pinSslMode(url) : databaseUrl()
-}
-
-/**
- * Gateway 自己的库（PostgreSQL）。跟 Bot 的 satuwork.db 不是同一份——
- * 聊天正文永远不该出现在这里。
- *
- * 驼峰列名一律加引号：PG 不加引号会折成小写，而 `select *` 的结果直接喂给上面那些
- * mapper。加了引号，写漏的那一刻 PG 就报 column does not exist，不会静默变 undefined。
- */
-/**
- * 账本按 refId 收成一行，用于所有「维度在业务表、金额在账本」的汇总。
- *
- * `usage_charges."refId"` 上只有普通索引，不是唯一约束，同一次调用完全可能挂上两行账
- * （崩在写调用和记账之间随后重算、或者一条被重放的上报）。直接 join 会把业务表那一行
- * 复制一份——calls 翻倍、token 和金额跟着翻倍。先收再 join，扇出这件事就不存在了。
- */
 /**
  * 明细与重算共用的筛选。companyId 为 null 的是 owner 自己的调用：传了 companyId 就只看这一家，
  * 不传就是全平台（含平台自己那些）。
@@ -156,8 +32,6 @@ function chargeFilterSql(filter: {
   )
 }
 
-const LEDGER_BY_REF = '(select "refId", sum("amountMicros") as micros from usage_charges group by "refId")'
-
 /** Bot 删除请求失败后自动重试的上限。每次隔一分钟，试满就停在 failed 上，等管理员处理。 */
 export const MAX_BOT_DELETION_ATTEMPTS = 20
 
@@ -170,279 +44,21 @@ export class RoutineBusyError extends Error {
 }
 
 /**
- * 日线 / 小时线切桶用的除数，**拼进 SQL 的字面量**，不走参数：bigint 除以一个绑定参数会按
- * 整数除，floor 在负数上就错了；写成 `86400000.0` 这种带小数点的字面量才是真除法。
- * 只认这两个值，别的都当按天——这里不接受外面传进来的任意数字。
+ * Gateway 自己的库（PostgreSQL）。跟 Bot 的 satuwork.db 不是同一份——
+ * 聊天正文永远不该出现在这里。
+ *
+ * 驼峰列名一律加引号：PG 不加引号会折成小写，而 `select *` 的结果直接喂给 db/rows.ts 那些
+ * mapper。加了引号，写漏的那一刻 PG 就报 column does not exist，不会静默变 undefined。
+ *
+ * **对外只有这一个类。** 方法按领域分在 db/ 底下，一层层 extends 成一条链（后面的可以调
+ * 前面的，反过来不行）：
+ *
+ *   DbCore       db/core.ts
+ *
+ * 调用点照旧 `import { Db } from './db.ts'`、`new Db({ url, schema })`，不用知道这条链。
+ * 加方法时放进它所属的那个领域文件；要调后面那层的方法，说明它该往后挪。
  */
-function bucketSql(bucketMs: number): string {
-  return bucketMs === HOUR_MS ? `${HOUR_MS}.0` : `${DAY_MS}.0`
-}
-
-export class Db {
-  private pool: pg.Pool
-  private schema: string
-  private url: string
-  /** 认领这个 schema 的那条连接。只有清库模式才有，见 claimSchema。 */
-  private claim: pg.Client | null = null
-  /** 事务期间把 client 放这儿，`db.tx(() => db.xxx())` 里的每条语句才走同一个连接。 */
-  private txClient = new AsyncLocalStorage<PoolClient>()
-  /** 保存点起名用，见 savepoint。 */
-  private savepointSeq = 0
-
-  constructor(opts: DbOptions | string) {
-    const o = typeof opts === 'string' ? { url: opts } : opts
-    this.schema = safeSchema(o.schema || process.env.GATEWAY_PG_SCHEMA || 'public')
-    this.url = o.url
-    // search_path 走连接启动参数，不走 connect 事件里补一条 `set`——后者不等它跑完
-    // 就可能先发业务查询，是条竞态。
-    //
-    // **但池化连接收不了 `options`**：Neon 的 pooler（pgbouncer）见到启动包里有
-    // `-c search_path=…` 就拒掉整条连接（unsupported startup parameter），函数形态下
-    // 每条走库的请求都成 500。而 public 本来就在默认 search_path 里，这一条压根不用发；
-    // 只有换了 schema（e2e 的隔离库）才需要，那时用的是直连串，带得动。
-    const startup = this.schema === 'public' ? {} : { options: `-c search_path=${this.schema}` }
-    this.pool = new Pool({
-      connectionString: o.url,
-      // 函数环境里实例多、每个都开 10 条会把 Neon 的连接数打满；那儿走池化串、每实例 2 条够用。
-      max: Math.max(1, Math.trunc(Number(process.env.GATEWAY_PG_POOL_MAX) || 10)),
-      ...startup,
-      // 库那侧看得见是谁连的。撞车时报错要指名道姓，靠的就是它（见 claimSchema）。
-      application_name: `satuwork-gateway[${this.schema}]`,
-    })
-    this.pool.on('error', (e) => {
-      console.error(`satuwork-gateway: 连接池错误 ${e.message}`)
-    })
-  }
-
-  private async query(text: string, params: unknown[] = []): Promise<pg.QueryResult> {
-    const { sql, count } = toPgCounted(text)
-    /**
-     * 占位符个数和参数个数对不上，**在这儿就说清楚**。
-     *
-     * PG 自己也会报（`bind message supplies 3 parameters, but prepared statement
-     * requires 2`），但那句话不带 SQL，而这套代码里一半的 where 是拼出来的——真出错时
-     * 人拿着那句话只能一条条去数 args。这里把语句头带上，省掉那一轮。
-     */
-    if (count !== params.length) {
-      throw new Error(`SQL 占位符 ${count} 个，给了 ${params.length} 个参数：${text.trim().slice(0, 160)}`)
-    }
-    const client = this.txClient.getStore()
-    if (client) return client.query(sql, params)
-    return this.pool.query(sql, params)
-  }
-
-  private async one(text: string, params: unknown[] = []): Promise<Row | undefined> {
-    const r = await this.query(text, params)
-    return r.rows[0] as Row | undefined
-  }
-
-  private async many(text: string, params: unknown[] = []): Promise<Row[]> {
-    const r = await this.query(text, params)
-    return r.rows as Row[]
-  }
-
-  private async run(text: string, params: unknown[] = []): Promise<number> {
-    const r = await this.query(text, params)
-    return r.rowCount ?? 0
-  }
-
-  /**
-   * 把库升到最新。**每次起进程都跑一遍**，跑完才对外服务。
-   *
-   * 空库从 0001 建全套；存量库第一次带着这套代码起来时，0001 是幂等的、跑起来等于
-   * 空转，然后记一行 `schema_migrations`——不需要任何人工基线（见 db/migrate.ts）。
-   * 返回这一轮真正跑掉的编号，由 index.ts 打进日志。
-   */
-  async init(): Promise<MigrateResult> {
-    if (this.schema !== 'public') {
-      // e2e 每轮要干净的库。**只对非 public schema 生效**——生产跑在 public 上，
-      // 这个开关碰不到它。
-      if (process.env.GATEWAY_PG_RESET === '1') {
-        await this.claimSchema()
-        await this.pool.query(`drop schema if exists "${this.schema}" cascade`)
-      }
-      await this.pool.query(`create schema if not exists "${this.schema}"`)
-    }
-    // 独占一条连接：advisory lock 是会话级的，拿和放必须在同一条上。
-    const client = await this.pool.connect()
-    try {
-      return await migrate(client, this.schema)
-    } finally {
-      client.release()
-    }
-  }
-
-  /**
-   * 清库之前先认领这个 schema：**别的 Gateway 正用着的，一个字都不许动。**
-   *
-   * 出过一次，查了七轮才找出来。两份 e2e 同时在跑（两个 worktree、或者上一轮被
-   * Ctrl-C 掉之后残留的进程），套件的 schema 名是写死的，于是后起的那个进程一句
-   * `drop schema cascade` 把前一个正在服务的库端了。前一个进程活得好好的，只是从
-   * 那一刻起：
-   *
-   * - 表在**重建的窗口里**查不到 → `relation "xxx" does not exist`；
-   * - 重建完了，行是新的、id 是新的 → 手上那张 JWT 对应的账号「不存在」，此后每一
-   *   条请求 401，而日志里没有任何一句提到有人清过库。
-   *
-   * 两种表现都指不回真正的原因，人只会去怀疑连接池、search_path、OID 缓存。所以这
-   * 里换成一把**会话级 advisory lock，握到进程结束**：拿不到就说明有人在用，当场
-   * 停机并且报出对面是谁（pid / application_name / 起始时间），而不是把它的数据抹掉。
-   *
-   * 只在清库模式下拿。生产（public schema）根本走不到这条路，不设 `GATEWAY_PG_RESET`
-   * 的 e2e 套件（migrate）也不受影响——那些进程本来就不做破坏性动作。
-   *
-   * 短暂重试几秒：同一个 schema 上「杀掉旧的、立刻起新的」是 e2e 每一轮的常态，
-   * 而 PG 回收上一条连接的锁需要一点时间，不等这几秒会把正常的重启也报成撞车。
-   */
-  private async claimSchema(): Promise<void> {
-    const key = claimKey(this.schema)
-    const client = new pg.Client({
-      connectionString: this.url,
-      application_name: `satuwork-gateway[${this.schema}]`,
-    })
-    await client.connect()
-    try {
-      const deadline = Date.now() + 5000
-      for (;;) {
-        const got = await client.query<{ ok: boolean }>('select pg_try_advisory_lock($1) as ok', [key])
-        if (got.rows[0]?.ok) {
-          // 拿到了就一直握着——这条连接在 close() 里才断（进程被杀时由 PG 自己回收）。
-          this.claim = client
-          return
-        }
-        if (Date.now() >= deadline) break
-        await new Promise((r) => setTimeout(r, 200))
-      }
-      // classid/objid 是那个 bigint 的高低 32 位；claimKey 只有 31 位，所以 classid 恒为 0。
-      const who = await client.query<{ pid: number; application_name: string; client_addr: string | null; backend_start: Date }>(
-        `select a.pid, a.application_name, host(a.client_addr) as client_addr, a.backend_start
-           from pg_locks l join pg_stat_activity a on a.pid = l.pid
-          where l.locktype = 'advisory' and l.classid = 0 and l.objid = $1 and l.granted`,
-        [key],
-      )
-      const holders = who.rows
-        .map((r) => `pid ${r.pid}（${r.application_name || '未署名'}${r.client_addr ? ` @ ${r.client_addr}` : ''}，起于 ${r.backend_start.toISOString()}）`)
-        .join('；')
-      throw new SchemaBusyError(
-        `schema ${this.schema} 上还有 Gateway 在跑，拒绝 GATEWAY_PG_RESET 清库：${holders || '（对面已经不在 pg_stat_activity 里了）'}。\n` +
-          '多半是两份 e2e 同时在跑（两个 worktree），或者上一轮被 Ctrl-C 之后残留了进程。' +
-          '先把对面停掉，或者用 GATEWAY_PG_SCHEMA 换一个 schema 名。',
-      )
-    } finally {
-      if (this.claim !== client) await client.end().catch(() => {})
-    }
-  }
-
-  /** 库停在哪一号、代码里最新是哪一号、还差哪几条。给排查和 `/health` 用。 */
-  migrations(): Promise<{ current: string | null; latest: string | null; pending: string[] }> {
-    return migrationState(this.pool)
-  }
-
-  /** e2e 用：把本 schema 整个丢掉重建。生产不会走到。 */
-  async dropSchema(): Promise<void> {
-    if (this.schema === 'public') throw new Error('拒绝 drop public schema')
-    await this.pool.query(`drop schema if exists "${this.schema}" cascade`)
-  }
-
-  async close(): Promise<void> {
-    // 认领连接先断：它不像池子那样空闲就回收，留着会吊住事件循环，进程停在
-    // 「端口不听了、人还没退出」那个最坏的状态上（见 index.ts 的 shutdown）。
-    const claim = this.claim
-    this.claim = null
-    if (claim) await claim.end().catch(() => {})
-    await this.pool.end()
-  }
-
-  /**
-   * 事务级排他锁。**「先查一遍，没有再插」那一类要它。**
-   *
-   * `db.tx` 跑在 PG 默认的 READ COMMITTED 上：两条并发事务各自 `select` 到「还没有」，
-   * 然后各插一行，两边都提交成功——「抢在事务里再查一遍」这句话在这个隔离级别下根本
-   * 不成立，它只是把窗口缩小到看起来不会发生。CI 上那次「并发点两次创建也只成一个」
-   * 报 201/201，就是窗口没缩住。
-   *
-   * 锁跟着事务走（commit / rollback 自动放），所以调用方不用记得解锁；**但它必须在
-   * `db.tx` 里调**，事务外的 xact 锁当场就放了，等于没锁。
-   *
-   * 每一处各取一个常数，别复用同一个数：两件不相干的事排在一条队上，是最难查的那种慢。
-   * 号统一登记在 db/locks.ts，加新的去那儿挑。
-   *
-   * **锁是整个库的，不分 schema。** e2e 那几十套共用一个 Postgres（各占一个 schema），
-   * 两份并行的 e2e 会在同一个号上互相等一下——等的是一次 insert 的工夫，可以接受；要是
-   * 哪天有一处锁里带上了慢活，那时再把 schema 名折进第二个参数。
-   */
-  /**
-   * 带 `sub` 时锁的是「这一处 × 这一个对象」（两参数形式的 advisory lock，第二个数取
-   * `hashtext(sub)`）：同一颗 Bot 的并发写互相排队，不同 Bot 之间不必等。哈希撞了只是
-   * 两颗不相干的 Bot 偶尔排一次队，不影响对错。
-   */
-  async lockExclusive(key: number, sub?: string): Promise<void> {
-    this.requireTx('lockExclusive')
-    if (sub === undefined) await this.one('select pg_advisory_xact_lock(?)', [key])
-    else await this.one('select pg_advisory_xact_lock(?::int, hashtext(?))', [key, sub])
-  }
-
-  /** 事务外拿事务级锁是写错了代码：锁当场就放了，什么都没护住。宁可当场炸。 */
-  protected requireTx(who: string, msg = `${who} 必须在 db.tx 里调——事务外的锁当场就放了`): void {
-    if (!this.txClient.getStore()) throw new Error(msg)
-  }
-
-  /**
-   * 按名字散列的事务级咨询锁（公司管理员、账本、结算、部署、渠道对齐那几把）。键本身就是
-   * `用途:对象`，不同用途天然撞不上；数字号的那一组见 db/locks.ts + lockExclusive。
-   */
-  protected async xactLock(who: string, key: string, msg?: string): Promise<void> {
-    this.requireTx(who, msg)
-    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [key])
-  }
-
-  async tx<T>(fn: () => Promise<T> | T): Promise<T> {
-    const existing = this.txClient.getStore()
-    // 已经在事务里就直接跑，不开嵌套事务。
-    if (existing) return fn()
-    const client = await this.pool.connect()
-    // rollback 本身失败时，这条连接停在什么状态没人说得清（事务可能还开着、连接可能半断），
-    // 不能原样还回池子给下一个请求用——带着错误 release，pg 会直接销毁它。
-    let broken: Error | undefined
-    try {
-      await client.query('begin')
-      const out = await this.txClient.run(client, async () => fn())
-      await client.query('commit')
-      return out
-    } catch (e) {
-      try {
-        await client.query('rollback')
-      } catch (re) {
-        broken = re instanceof Error ? re : new Error(String(re))
-      }
-      throw e
-    } finally {
-      client.release(broken)
-    }
-  }
-
-  /**
-   * 「撞了唯一约束就换一串再插」那一类用它包住**那一条会撞的语句**。
-   *
-   * 事务里任何一条语句报错，PG 就把整个事务标成 aborted，之后每条语句都是
-   * `current transaction is aborted`——catch 住 23505 再重试在事务里根本走不通。
-   * 在事务里时这里套一层 SAVEPOINT：出错回滚到保存点，事务照常可用；不在事务里就直接跑。
-   */
-  private async savepoint<T>(fn: () => Promise<T>): Promise<T> {
-    const client = this.txClient.getStore()
-    if (!client) return fn()
-    const name = `sp_${++this.savepointSeq}`
-    await client.query(`savepoint ${name}`)
-    try {
-      const out = await fn()
-      await client.query(`release savepoint ${name}`)
-      return out
-    } catch (e) {
-      await client.query(`rollback to savepoint ${name}`)
-      throw e
-    }
-  }
-
+export class Db extends DbCore {
   // ── 公司 ──────────────────────────────────────────────────────────────
 
   async insertCompany(
@@ -961,6 +577,118 @@ export class Db {
         [token],
       ))
     return r ? this.account(str(r.accountId)) : undefined
+  }
+
+  // ── 分组。全体成员是算出来的，不进这张表。──────────────────────────
+
+  async groupsOf(companyId: string): Promise<Group[]> {
+    const rows = await this.many('select * from groups where "companyId" = ? order by "createdAt"', [companyId])
+    return rows.map(groupOf)
+  }
+
+  async group(id: string): Promise<Group | undefined> {
+    const r = await this.one('select * from groups where id = ?', [id])
+    return r ? groupOf(r) : undefined
+  }
+
+  async insertGroup(input: {
+    companyId: string
+    name: string
+    desc?: string
+    icon?: string
+    role: 'admin' | 'member'
+    members?: string[]
+    agents?: string[]
+  }): Promise<Group> {
+    const row: Group = {
+      id: randomUUID(),
+      companyId: input.companyId,
+      name: input.name,
+      desc: input.desc ?? '',
+      icon: input.icon || 'chat',
+      role: input.role,
+      members: input.members ?? [],
+      agents: input.agents ?? [],
+      createdAt: Date.now(),
+    }
+    await this.run(
+      'insert into groups (id, "companyId", name, "desc", icon, role, members, agents, "createdAt") values (?,?,?,?,?,?,?,?,?)',
+      [
+        row.id,
+        row.companyId,
+        row.name,
+        row.desc,
+        row.icon,
+        row.role,
+        JSON.stringify(row.members),
+        JSON.stringify(row.agents),
+        row.createdAt,
+      ],
+    )
+    return row
+  }
+
+  async updateGroup(
+    id: string,
+    patch: Partial<Pick<Group, 'name' | 'desc' | 'icon' | 'role' | 'members' | 'agents'>>,
+  ): Promise<Group> {
+    const cur = await this.group(id)
+    if (!cur) throw new Error('分组不存在')
+    const next: Group = {
+      ...cur,
+      name: patch.name !== undefined ? patch.name : cur.name,
+      desc: patch.desc !== undefined ? patch.desc : cur.desc,
+      icon: patch.icon !== undefined ? patch.icon : cur.icon,
+      role: patch.role ?? cur.role,
+      members: patch.members !== undefined ? patch.members : cur.members,
+      agents: patch.agents !== undefined ? patch.agents : cur.agents,
+    }
+    await this.run('update groups set name=?, "desc"=?, icon=?, role=?, members=?, agents=? where id=?', [
+      next.name,
+      next.desc,
+      next.icon,
+      next.role,
+      JSON.stringify(next.members),
+      JSON.stringify(next.agents),
+      id,
+    ])
+    return next
+  }
+
+  async deleteGroup(id: string): Promise<boolean> {
+    return (await this.run('delete from groups where id = ?', [id])) > 0
+  }
+
+  // ── 邀请 ──────────────────────────────────────────────────────────────
+
+  async putInvite(row: Invite): Promise<Invite> {
+    await this.run(
+      'insert into invites (id, "userId", "companyId", "createdBy", "createdAt", "expiresAt") values (?,?,?,?,?,?)',
+      [row.id, row.userId, row.companyId, row.createdBy, row.createdAt, row.expiresAt],
+    )
+    return row
+  }
+
+  async invite(id: string): Promise<Invite | undefined> {
+    const r = await this.one('select * from invites where id = ?', [id])
+    return r ? inviteOf(r) : undefined
+  }
+
+  async deleteInvitesForUser(userId: string): Promise<void> {
+    await this.run('delete from invites where "userId" = ?', [userId])
+  }
+
+  async deleteInvite(id: string): Promise<void> {
+    await this.run('delete from invites where id = ?', [id])
+  }
+
+  /**
+   * 把一条邀请**领走**：还没过期就删掉并交回这一行，删不到（不存在、过期、被别人先领了）
+   * 就是 undefined。两个人同时拿同一条链接去接受，只有一个能领到。
+   */
+  async takeInvite(id: string, now: number): Promise<Invite | undefined> {
+    const r = await this.one('delete from invites where id = ? and "expiresAt" >= ? returning *', [id, now])
+    return r ? inviteOf(r) : undefined
   }
 
   /**
@@ -2060,7 +1788,6 @@ export class Db {
     return n
   }
 
-
   /**
    * 账本汇总：按公司 × 类型。统计屏用它。
    *
@@ -2122,322 +1849,6 @@ export class Db {
       unmeteredCalls: num(row.unmeteredCalls),
       lastAt: numOrNull(row.lastAt),
     }))
-  }
-
-  // ── 分组。全体成员是算出来的，不进这张表。──────────────────────────
-
-  async groupsOf(companyId: string): Promise<Group[]> {
-    const rows = await this.many('select * from groups where "companyId" = ? order by "createdAt"', [companyId])
-    return rows.map(groupOf)
-  }
-
-  async group(id: string): Promise<Group | undefined> {
-    const r = await this.one('select * from groups where id = ?', [id])
-    return r ? groupOf(r) : undefined
-  }
-
-  async insertGroup(input: {
-    companyId: string
-    name: string
-    desc?: string
-    icon?: string
-    role: 'admin' | 'member'
-    members?: string[]
-    agents?: string[]
-  }): Promise<Group> {
-    const row: Group = {
-      id: randomUUID(),
-      companyId: input.companyId,
-      name: input.name,
-      desc: input.desc ?? '',
-      icon: input.icon || 'chat',
-      role: input.role,
-      members: input.members ?? [],
-      agents: input.agents ?? [],
-      createdAt: Date.now(),
-    }
-    await this.run(
-      'insert into groups (id, "companyId", name, "desc", icon, role, members, agents, "createdAt") values (?,?,?,?,?,?,?,?,?)',
-      [
-        row.id,
-        row.companyId,
-        row.name,
-        row.desc,
-        row.icon,
-        row.role,
-        JSON.stringify(row.members),
-        JSON.stringify(row.agents),
-        row.createdAt,
-      ],
-    )
-    return row
-  }
-
-  async updateGroup(
-    id: string,
-    patch: Partial<Pick<Group, 'name' | 'desc' | 'icon' | 'role' | 'members' | 'agents'>>,
-  ): Promise<Group> {
-    const cur = await this.group(id)
-    if (!cur) throw new Error('分组不存在')
-    const next: Group = {
-      ...cur,
-      name: patch.name !== undefined ? patch.name : cur.name,
-      desc: patch.desc !== undefined ? patch.desc : cur.desc,
-      icon: patch.icon !== undefined ? patch.icon : cur.icon,
-      role: patch.role ?? cur.role,
-      members: patch.members !== undefined ? patch.members : cur.members,
-      agents: patch.agents !== undefined ? patch.agents : cur.agents,
-    }
-    await this.run('update groups set name=?, "desc"=?, icon=?, role=?, members=?, agents=? where id=?', [
-      next.name,
-      next.desc,
-      next.icon,
-      next.role,
-      JSON.stringify(next.members),
-      JSON.stringify(next.agents),
-      id,
-    ])
-    return next
-  }
-
-  async deleteGroup(id: string): Promise<boolean> {
-    return (await this.run('delete from groups where id = ?', [id])) > 0
-  }
-
-  // ── 邀请 ──────────────────────────────────────────────────────────────
-
-  async putInvite(row: Invite): Promise<Invite> {
-    await this.run(
-      'insert into invites (id, "userId", "companyId", "createdBy", "createdAt", "expiresAt") values (?,?,?,?,?,?)',
-      [row.id, row.userId, row.companyId, row.createdBy, row.createdAt, row.expiresAt],
-    )
-    return row
-  }
-
-  async invite(id: string): Promise<Invite | undefined> {
-    const r = await this.one('select * from invites where id = ?', [id])
-    return r ? inviteOf(r) : undefined
-  }
-
-  async deleteInvitesForUser(userId: string): Promise<void> {
-    await this.run('delete from invites where "userId" = ?', [userId])
-  }
-
-  async deleteInvite(id: string): Promise<void> {
-    await this.run('delete from invites where id = ?', [id])
-  }
-
-  /**
-   * 把一条邀请**领走**：还没过期就删掉并交回这一行，删不到（不存在、过期、被别人先领了）
-   * 就是 undefined。两个人同时拿同一条链接去接受，只有一个能领到。
-   */
-  async takeInvite(id: string, now: number): Promise<Invite | undefined> {
-    const r = await this.one('delete from invites where id = ? and "expiresAt" >= ? returning *', [id, now])
-    return r ? inviteOf(r) : undefined
-  }
-
-  // ── 套餐 ──────────────────────────────────────────────────────────────
-
-  /** 套餐、到期时间、知识库个数是可选补丁：不传就保持原样，传 null 才是清空。 */
-  async upsertPlan(
-    companyId: string,
-    seats: number,
-    patch: { skuId?: string | null; expiresAt?: number | null; knowledgeBases?: number } = {},
-  ): Promise<Plan> {
-    const now = Date.now()
-    const cur = await this.plan(companyId)
-    const next: Plan = {
-      companyId,
-      seats,
-      knowledgeBases: patch.knowledgeBases === undefined ? (cur?.knowledgeBases ?? 0) : patch.knowledgeBases,
-      skuId: patch.skuId === undefined ? (cur?.skuId ?? null) : patch.skuId,
-      expiresAt: patch.expiresAt === undefined ? (cur?.expiresAt ?? null) : patch.expiresAt,
-      updatedAt: now,
-    }
-    await this.run(
-      'insert into plans ("companyId", seats, "knowledgeBases", "skuId", "expiresAt", "updatedAt") values (?,?,?,?,?,?) on conflict ("companyId") do update set seats=excluded.seats, "knowledgeBases"=excluded."knowledgeBases", "skuId"=excluded."skuId", "expiresAt"=excluded."expiresAt", "updatedAt"=excluded."updatedAt"',
-      [companyId, next.seats, next.knowledgeBases, next.skuId, next.expiresAt, next.updatedAt],
-    )
-    return next
-  }
-
-  async plan(companyId: string): Promise<Plan | undefined> {
-    const r = await this.one('select * from plans where "companyId" = ?', [companyId])
-    return r ? planOf(r) : undefined
-  }
-
-  // ── 套餐 SKU（价目表）────────────────────────────────────────────────
-
-  async planSkus(): Promise<PlanSku[]> {
-    const rows = await this.many('select * from plan_skus order by "amountMils", "createdAt"')
-    return rows.map(planSkuOf)
-  }
-
-  async planSku(id: string): Promise<PlanSku | undefined> {
-    const r = await this.one('select * from plan_skus where id = ?', [id])
-    return r ? planSkuOf(r) : undefined
-  }
-
-  /** 按名字找。中英两列都查——重名要挡的是「界面上看着一样」，不分哪一列。 */
-  async planSkuByName(name: string): Promise<PlanSku | undefined> {
-    const r = await this.one('select * from plan_skus where name = ? or ("nameEn" <> \'\' and "nameEn" = ?)', [name, name])
-    return r ? planSkuOf(r) : undefined
-  }
-
-  async insertPlanSku(input: {
-    name: string
-    nameEn?: string
-    amountMils: number
-    seats: number
-    period?: PlanPeriod
-    bonusMils?: number
-    knowledgeBases?: number
-  }): Promise<PlanSku> {
-    const now = Date.now()
-    const row: PlanSku = {
-      id: randomUUID(),
-      name: input.name,
-      nameEn: input.nameEn ?? '',
-      amountMils: input.amountMils,
-      seats: input.seats,
-      period: input.period ?? 'month',
-      bonusMils: input.bonusMils ?? 0,
-      knowledgeBases: input.knowledgeBases ?? 0,
-      createdAt: now,
-      updatedAt: now,
-    }
-    await this.run(
-      'insert into plan_skus (id, name, "nameEn", "amountMils", seats, period, "bonusMils", "knowledgeBases", "createdAt", "updatedAt") values (?,?,?,?,?,?,?,?,?,?)',
-      [row.id, row.name, row.nameEn, row.amountMils, row.seats, row.period, row.bonusMils, row.knowledgeBases, row.createdAt, row.updatedAt],
-    )
-    return row
-  }
-
-  /** 只改传进来的字段。套餐不存在返回 undefined，由上层决定报 404 还是别的。 */
-  async updatePlanSku(
-    id: string,
-    patch: { name?: string; nameEn?: string; amountMils?: number; seats?: number; period?: PlanPeriod; bonusMils?: number; knowledgeBases?: number },
-  ): Promise<PlanSku | undefined> {
-    const cur = await this.planSku(id)
-    if (!cur) return undefined
-    const r = await this.one(
-      'update plan_skus set name=?, "nameEn"=?, "amountMils"=?, seats=?, period=?, "bonusMils"=?, "knowledgeBases"=?, "updatedAt"=? where id=? returning *',
-      [
-        patch.name ?? cur.name,
-        patch.nameEn ?? cur.nameEn,
-        patch.amountMils ?? cur.amountMils,
-        patch.seats ?? cur.seats,
-        patch.period ?? cur.period,
-        patch.bonusMils ?? cur.bonusMils,
-        patch.knowledgeBases ?? cur.knowledgeBases,
-        Date.now(),
-        id,
-      ],
-    )
-    return r ? planSkuOf(r) : undefined
-  }
-
-  // ── 订单 ──────────────────────────────────────────────────────────────
-
-  async planOrders(): Promise<PlanOrder[]> {
-    const rows = await this.many('select * from plan_orders order by "startAt" desc, "createdAt" desc')
-    return rows.map(planOrderOf)
-  }
-
-  async planOrder(id: string): Promise<PlanOrder | undefined> {
-    const r = await this.one('select * from plan_orders where id = ?', [id])
-    return r ? planOrderOf(r) : undefined
-  }
-
-  async insertPlanOrder(input: Omit<PlanOrder, 'id' | 'createdAt' | 'updatedAt'>): Promise<PlanOrder> {
-    const now = Date.now()
-    const row: PlanOrder = { ...input, id: randomUUID(), createdAt: now, updatedAt: now }
-    await this.run(
-      `insert into plan_orders
-       (id, "companyId", kind, note, "planId", "planName", "planNameEn", period, seats, "knowledgeBases", "amountMils", "bonusMils", "startAt", "endAt", "payStatus", "createdAt", "updatedAt")
-       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [
-        row.id, row.companyId, row.kind, row.note, row.planId, row.planName, row.planNameEn, row.period,
-        row.seats, row.knowledgeBases, row.amountMils, row.bonusMils, row.startAt, row.endAt, row.payStatus, row.createdAt, row.updatedAt,
-      ],
-    )
-    return row
-  }
-
-  /** 只改传进来的字段。订单不存在返回 undefined。 */
-  async updatePlanOrder(id: string, patch: Partial<Omit<PlanOrder, 'id' | 'createdAt'>>): Promise<PlanOrder | undefined> {
-    const cur = await this.planOrder(id)
-    if (!cur) return undefined
-    const next = { ...cur, ...patch, updatedAt: Date.now() }
-    const r = await this.one(
-      `update plan_orders set "companyId"=?, kind=?, note=?, "planId"=?, "planName"=?, "planNameEn"=?, period=?,
-       seats=?, "knowledgeBases"=?, "amountMils"=?, "bonusMils"=?, "startAt"=?, "endAt"=?, "payStatus"=?, "updatedAt"=? where id=? returning *`,
-      [
-        next.companyId, next.kind, next.note, next.planId, next.planName, next.planNameEn, next.period,
-        next.seats, next.knowledgeBases, next.amountMils, next.bonusMils, next.startAt, next.endAt, next.payStatus, next.updatedAt, id,
-      ],
-    )
-    return r ? planOrderOf(r) : undefined
-  }
-
-  /**
-   * 此刻生效的那条**套餐**订单：已付款、开始时间已到、结束时间未过。充值单不参与订阅。
-   * 未付款的订单只是一张待收的账单，不算订阅——钱没到就别开服务。
-   * 有重叠就取开始得最晚的一条——续约提前下单时，新订单一生效就顶掉旧的。
-   */
-  async activePaidOrder(companyId: string, at = Date.now()): Promise<PlanOrder | undefined> {
-    const r = await this.one(
-      `select * from plan_orders
-       where "companyId" = ? and kind = 'plan' and "payStatus" = 'paid' and "startAt" <= ? and "endAt" > ?
-       order by "startAt" desc limit 1`,
-      [companyId, at, at],
-    )
-    return r ? planOrderOf(r) : undefined
-  }
-
-  /**
-   * 把公司的订阅拉齐到订单：**已付款且在期内**的那条订单说了算，没有就把套餐清掉。
-   * 未付款的订单只是一张待收的账单，不写订阅。
-   * 席位不缩到已有账号数以下——订单少给了席位也不能把人挤掉，先按现有人数保住。
-   *
-   * 「清掉」也包括席位：订单给的席位跟订单一起走，到期后只按现有人数保住，不能让一份
-   * 过期订阅把席位永远留在那里。但平台管理员可以不经订单直接给席位（skuId 本来就是空），
-   * 那不是订单算出来的，这里不动。
-   *
-   * 下单/改单之后调它；起进程时也对一遍全量，把「订单到期了没人碰」和历史规则留下的
-   * 脏值收干净——plans 里那几列是订单算出来的结果，不是另一份可以自己漂的真相。
-   */
-  async syncPlanFromOrders(companyId: string): Promise<void> {
-    const active = await this.activePaidOrder(companyId)
-    const used = await this.accountCount(companyId)
-    // 知识库和席位同一条规矩：订单给的个数不缩到已有库数以下——已经建好的库不能因为
-    // 一张单子少给了就凭空超额，先按现有个数保住（docs/knowledge-base.md §4.2）。
-    const kbUsed = await this.countKnowledgeBases(companyId)
-    const cur = await this.plan(companyId)
-    if (!active) {
-      if (cur?.skuId == null && cur?.expiresAt == null && cur) return
-      const seats = cur?.skuId != null ? Math.max(used, 1) : (cur?.seats ?? Math.max(used, 1))
-      const knowledgeBases = cur?.skuId != null ? kbUsed : (cur?.knowledgeBases ?? kbUsed)
-      await this.upsertPlan(companyId, seats, { skuId: null, expiresAt: null, knowledgeBases })
-      return
-    }
-    await this.upsertPlan(companyId, Math.max(active.seats, used), {
-      skuId: active.planId,
-      expiresAt: active.endAt,
-      knowledgeBases: Math.max(active.knowledgeBases, kbUsed),
-    })
-  }
-
-  /** 起进程时对一遍所有公司的订阅。返回被改动的公司数，只为在日志里说一声。 */
-  async syncAllPlansFromOrders(): Promise<number> {
-    let changed = 0
-    for (const c of await this.companies()) {
-      const before = await this.plan(c.id)
-      await this.syncPlanFromOrders(c.id)
-      const after = await this.plan(c.id)
-      if (before?.skuId !== after?.skuId || before?.expiresAt !== after?.expiresAt || before?.seats !== after?.seats || before?.knowledgeBases !== after?.knowledgeBases) changed++
-    }
-    return changed
   }
 
   // ── 知识库（docs/knowledge-base.md）────────────────────────────────────
@@ -2713,6 +2124,210 @@ export class Db {
 
   async deleteKnowledgeChunks(fileId: string): Promise<void> {
     await this.run('delete from knowledge_chunks where "fileId" = ?', [fileId])
+  }
+
+  // ── 套餐 ──────────────────────────────────────────────────────────────
+
+  /** 套餐、到期时间、知识库个数是可选补丁：不传就保持原样，传 null 才是清空。 */
+  async upsertPlan(
+    companyId: string,
+    seats: number,
+    patch: { skuId?: string | null; expiresAt?: number | null; knowledgeBases?: number } = {},
+  ): Promise<Plan> {
+    const now = Date.now()
+    const cur = await this.plan(companyId)
+    const next: Plan = {
+      companyId,
+      seats,
+      knowledgeBases: patch.knowledgeBases === undefined ? (cur?.knowledgeBases ?? 0) : patch.knowledgeBases,
+      skuId: patch.skuId === undefined ? (cur?.skuId ?? null) : patch.skuId,
+      expiresAt: patch.expiresAt === undefined ? (cur?.expiresAt ?? null) : patch.expiresAt,
+      updatedAt: now,
+    }
+    await this.run(
+      'insert into plans ("companyId", seats, "knowledgeBases", "skuId", "expiresAt", "updatedAt") values (?,?,?,?,?,?) on conflict ("companyId") do update set seats=excluded.seats, "knowledgeBases"=excluded."knowledgeBases", "skuId"=excluded."skuId", "expiresAt"=excluded."expiresAt", "updatedAt"=excluded."updatedAt"',
+      [companyId, next.seats, next.knowledgeBases, next.skuId, next.expiresAt, next.updatedAt],
+    )
+    return next
+  }
+
+  async plan(companyId: string): Promise<Plan | undefined> {
+    const r = await this.one('select * from plans where "companyId" = ?', [companyId])
+    return r ? planOf(r) : undefined
+  }
+
+  // ── 套餐 SKU（价目表）────────────────────────────────────────────────
+
+  async planSkus(): Promise<PlanSku[]> {
+    const rows = await this.many('select * from plan_skus order by "amountMils", "createdAt"')
+    return rows.map(planSkuOf)
+  }
+
+  async planSku(id: string): Promise<PlanSku | undefined> {
+    const r = await this.one('select * from plan_skus where id = ?', [id])
+    return r ? planSkuOf(r) : undefined
+  }
+
+  /** 按名字找。中英两列都查——重名要挡的是「界面上看着一样」，不分哪一列。 */
+  async planSkuByName(name: string): Promise<PlanSku | undefined> {
+    const r = await this.one('select * from plan_skus where name = ? or ("nameEn" <> \'\' and "nameEn" = ?)', [name, name])
+    return r ? planSkuOf(r) : undefined
+  }
+
+  async insertPlanSku(input: {
+    name: string
+    nameEn?: string
+    amountMils: number
+    seats: number
+    period?: PlanPeriod
+    bonusMils?: number
+    knowledgeBases?: number
+  }): Promise<PlanSku> {
+    const now = Date.now()
+    const row: PlanSku = {
+      id: randomUUID(),
+      name: input.name,
+      nameEn: input.nameEn ?? '',
+      amountMils: input.amountMils,
+      seats: input.seats,
+      period: input.period ?? 'month',
+      bonusMils: input.bonusMils ?? 0,
+      knowledgeBases: input.knowledgeBases ?? 0,
+      createdAt: now,
+      updatedAt: now,
+    }
+    await this.run(
+      'insert into plan_skus (id, name, "nameEn", "amountMils", seats, period, "bonusMils", "knowledgeBases", "createdAt", "updatedAt") values (?,?,?,?,?,?,?,?,?,?)',
+      [row.id, row.name, row.nameEn, row.amountMils, row.seats, row.period, row.bonusMils, row.knowledgeBases, row.createdAt, row.updatedAt],
+    )
+    return row
+  }
+
+  /** 只改传进来的字段。套餐不存在返回 undefined，由上层决定报 404 还是别的。 */
+  async updatePlanSku(
+    id: string,
+    patch: { name?: string; nameEn?: string; amountMils?: number; seats?: number; period?: PlanPeriod; bonusMils?: number; knowledgeBases?: number },
+  ): Promise<PlanSku | undefined> {
+    const cur = await this.planSku(id)
+    if (!cur) return undefined
+    const r = await this.one(
+      'update plan_skus set name=?, "nameEn"=?, "amountMils"=?, seats=?, period=?, "bonusMils"=?, "knowledgeBases"=?, "updatedAt"=? where id=? returning *',
+      [
+        patch.name ?? cur.name,
+        patch.nameEn ?? cur.nameEn,
+        patch.amountMils ?? cur.amountMils,
+        patch.seats ?? cur.seats,
+        patch.period ?? cur.period,
+        patch.bonusMils ?? cur.bonusMils,
+        patch.knowledgeBases ?? cur.knowledgeBases,
+        Date.now(),
+        id,
+      ],
+    )
+    return r ? planSkuOf(r) : undefined
+  }
+
+  // ── 订单 ──────────────────────────────────────────────────────────────
+
+  async planOrders(): Promise<PlanOrder[]> {
+    const rows = await this.many('select * from plan_orders order by "startAt" desc, "createdAt" desc')
+    return rows.map(planOrderOf)
+  }
+
+  async planOrder(id: string): Promise<PlanOrder | undefined> {
+    const r = await this.one('select * from plan_orders where id = ?', [id])
+    return r ? planOrderOf(r) : undefined
+  }
+
+  async insertPlanOrder(input: Omit<PlanOrder, 'id' | 'createdAt' | 'updatedAt'>): Promise<PlanOrder> {
+    const now = Date.now()
+    const row: PlanOrder = { ...input, id: randomUUID(), createdAt: now, updatedAt: now }
+    await this.run(
+      `insert into plan_orders
+       (id, "companyId", kind, note, "planId", "planName", "planNameEn", period, seats, "knowledgeBases", "amountMils", "bonusMils", "startAt", "endAt", "payStatus", "createdAt", "updatedAt")
+       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        row.id, row.companyId, row.kind, row.note, row.planId, row.planName, row.planNameEn, row.period,
+        row.seats, row.knowledgeBases, row.amountMils, row.bonusMils, row.startAt, row.endAt, row.payStatus, row.createdAt, row.updatedAt,
+      ],
+    )
+    return row
+  }
+
+  /** 只改传进来的字段。订单不存在返回 undefined。 */
+  async updatePlanOrder(id: string, patch: Partial<Omit<PlanOrder, 'id' | 'createdAt'>>): Promise<PlanOrder | undefined> {
+    const cur = await this.planOrder(id)
+    if (!cur) return undefined
+    const next = { ...cur, ...patch, updatedAt: Date.now() }
+    const r = await this.one(
+      `update plan_orders set "companyId"=?, kind=?, note=?, "planId"=?, "planName"=?, "planNameEn"=?, period=?,
+       seats=?, "knowledgeBases"=?, "amountMils"=?, "bonusMils"=?, "startAt"=?, "endAt"=?, "payStatus"=?, "updatedAt"=? where id=? returning *`,
+      [
+        next.companyId, next.kind, next.note, next.planId, next.planName, next.planNameEn, next.period,
+        next.seats, next.knowledgeBases, next.amountMils, next.bonusMils, next.startAt, next.endAt, next.payStatus, next.updatedAt, id,
+      ],
+    )
+    return r ? planOrderOf(r) : undefined
+  }
+
+  /**
+   * 此刻生效的那条**套餐**订单：已付款、开始时间已到、结束时间未过。充值单不参与订阅。
+   * 未付款的订单只是一张待收的账单，不算订阅——钱没到就别开服务。
+   * 有重叠就取开始得最晚的一条——续约提前下单时，新订单一生效就顶掉旧的。
+   */
+  async activePaidOrder(companyId: string, at = Date.now()): Promise<PlanOrder | undefined> {
+    const r = await this.one(
+      `select * from plan_orders
+       where "companyId" = ? and kind = 'plan' and "payStatus" = 'paid' and "startAt" <= ? and "endAt" > ?
+       order by "startAt" desc limit 1`,
+      [companyId, at, at],
+    )
+    return r ? planOrderOf(r) : undefined
+  }
+
+  /**
+   * 把公司的订阅拉齐到订单：**已付款且在期内**的那条订单说了算，没有就把套餐清掉。
+   * 未付款的订单只是一张待收的账单，不写订阅。
+   * 席位不缩到已有账号数以下——订单少给了席位也不能把人挤掉，先按现有人数保住。
+   *
+   * 「清掉」也包括席位：订单给的席位跟订单一起走，到期后只按现有人数保住，不能让一份
+   * 过期订阅把席位永远留在那里。但平台管理员可以不经订单直接给席位（skuId 本来就是空），
+   * 那不是订单算出来的，这里不动。
+   *
+   * 下单/改单之后调它；起进程时也对一遍全量，把「订单到期了没人碰」和历史规则留下的
+   * 脏值收干净——plans 里那几列是订单算出来的结果，不是另一份可以自己漂的真相。
+   */
+  async syncPlanFromOrders(companyId: string): Promise<void> {
+    const active = await this.activePaidOrder(companyId)
+    const used = await this.accountCount(companyId)
+    // 知识库和席位同一条规矩：订单给的个数不缩到已有库数以下——已经建好的库不能因为
+    // 一张单子少给了就凭空超额，先按现有个数保住（docs/knowledge-base.md §4.2）。
+    const kbUsed = await this.countKnowledgeBases(companyId)
+    const cur = await this.plan(companyId)
+    if (!active) {
+      if (cur?.skuId == null && cur?.expiresAt == null && cur) return
+      const seats = cur?.skuId != null ? Math.max(used, 1) : (cur?.seats ?? Math.max(used, 1))
+      const knowledgeBases = cur?.skuId != null ? kbUsed : (cur?.knowledgeBases ?? kbUsed)
+      await this.upsertPlan(companyId, seats, { skuId: null, expiresAt: null, knowledgeBases })
+      return
+    }
+    await this.upsertPlan(companyId, Math.max(active.seats, used), {
+      skuId: active.planId,
+      expiresAt: active.endAt,
+      knowledgeBases: Math.max(active.knowledgeBases, kbUsed),
+    })
+  }
+
+  /** 起进程时对一遍所有公司的订阅。返回被改动的公司数，只为在日志里说一声。 */
+  async syncAllPlansFromOrders(): Promise<number> {
+    let changed = 0
+    for (const c of await this.companies()) {
+      const before = await this.plan(c.id)
+      await this.syncPlanFromOrders(c.id)
+      const after = await this.plan(c.id)
+      if (before?.skuId !== after?.skuId || before?.expiresAt !== after?.expiresAt || before?.seats !== after?.seats || before?.knowledgeBases !== after?.knowledgeBases) changed++
+    }
+    return changed
   }
 
   // ── 单独充值 ──────────────────────────────────────────────────────────
@@ -4131,6 +3746,21 @@ export class Db {
     await this.run('delete from catalog_items where id = ?', [id])
   }
 
+  // ── Skill 标签。稿子上那八个是初值，建了新的就进这张表。──────────────
+
+  async skillTags(companyId: string): Promise<string[]> {
+    const rows = await this.many('select tag from skill_tags where "companyId" = ? order by seq', [companyId])
+    return rows.map((r) => str(r.tag))
+  }
+
+  async insertSkillTag(companyId: string, tag: string): Promise<void> {
+    await this.run('insert into skill_tags ("companyId", tag) values (?, ?) on conflict do nothing', [companyId, tag])
+  }
+
+  async deleteSkillTag(companyId: string, tag: string): Promise<boolean> {
+    return (await this.run('delete from skill_tags where "companyId" = ? and tag = ?', [companyId, tag])) > 0
+  }
+
   // ── 密钥 ──────────────────────────────────────────────────────────────
 
   /**
@@ -4195,6 +3825,147 @@ export class Db {
       limit,
     ])
     return rows.map(auditOf)
+  }
+
+  // ── 公司模型角色（日常 / utility）。不存密钥。────────────────────────
+
+  async settings(companyId: string): Promise<CompanySettings> {
+    const r = await this.one('select payload from settings where "companyId" = ?', [companyId])
+    if (!r) return emptySettings()
+    const raw = (jsonOf(r.payload) ?? {}) as Partial<CompanySettings>
+    return {
+      daily: { provider: String(raw.daily?.provider ?? ''), model: String(raw.daily?.model ?? ''), reasoningEffort: parseReasoningEffort(raw.daily?.reasoningEffort) },
+      utility: { provider: String(raw.utility?.provider ?? ''), model: String(raw.utility?.model ?? ''), reasoningEffort: parseReasoningEffort(raw.utility?.reasoningEffort) },
+      conversationAudit: parseConversationAuditSettings(raw.conversationAudit),
+    }
+  }
+
+  async putSettings(companyId: string, next: CompanySettings): Promise<CompanySettings> {
+    const now = Date.now()
+    const payload = JSON.stringify({
+      daily: { provider: next.daily.provider, model: next.daily.model, reasoningEffort: parseReasoningEffort(next.daily.reasoningEffort) },
+      utility: { provider: next.utility.provider, model: next.utility.model, reasoningEffort: parseReasoningEffort(next.utility.reasoningEffort) },
+      conversationAudit: parseConversationAuditSettings(next.conversationAudit),
+    })
+    await this.run(
+      'insert into settings ("companyId", payload, "updatedAt") values (?,?,?) on conflict ("companyId") do update set payload=excluded.payload, "updatedAt"=excluded."updatedAt"',
+      [companyId, payload, now],
+    )
+    return this.settings(companyId)
+  }
+
+  async platformSettings(): Promise<PlatformSettings> {
+    const r = await this.one("select payload from platform_settings where id = 'platform'")
+    if (!r) return emptyPlatformSettings()
+    return parsePlatformPayload(r.payload)
+  }
+
+  async putPlatformSettings(next: PlatformSettings): Promise<PlatformSettings> {
+    const now = Date.now()
+    const enabled = Array.isArray(next.enabledModels) ? next.enabledModels.map((x) => String(x)).filter(Boolean) : []
+    const payload = JSON.stringify({
+      daily: { provider: next.daily.provider, model: next.daily.model, reasoningEffort: parseReasoningEffort(next.daily.reasoningEffort) },
+      utility: { provider: next.utility.provider, model: next.utility.model, reasoningEffort: parseReasoningEffort(next.utility.reasoningEffort) },
+      // 同下面那一串「不能漏」：整份重写，漏了它备选就是能填、回 200、读出来永远是空。
+      dailyAlternates: parseDailyAlternates(next.dailyAlternates, next.daily),
+      // 同上：生图模型也是整份重写里的一格，漏了就是「能选、回 200、席位上永远没有那把工具」。
+      image: parseImageRole(next.image),
+      enabledModels: enabled,
+      priceMultiplier: parsePriceMultiplier(next.priceMultiplier),
+      connectorPricing: parseConnectorPricing(next.connectorPricing),
+      // **不能漏。** 这一行漏了整整一版：类型上有、路由层收得好好的、界面也能填，
+      // 只有这里拼 payload 时把它丢了——于是 PUT 回 200、读出来永远是空。
+      // 后果是「全机队钉版本」这一级完全失效：传一个包上去，所有没有逐台钉过的机器
+      // 都会在下一次心跳自己升上去，而唯一能拦住它的开关，看起来能设、其实存不进去。
+      managerVersion: String(next.managerVersion ?? '').trim(),
+      // 同上，Bot 的那一档。漏了它，钉 Bot 版本就是「能填、回 200、席位照样跟最新走」。
+      botVersion: String(next.botVersion ?? '').trim(),
+      // 同上：这一行漏了，工具配置那一屏就是「能填、回 200、读出来永远是空」。
+      webTools: parseWebTools(next.webTools),
+      // 同上第三次。这两项漏了的后果更重：单价覆盖存不进去，缺价的模型就永远缺价；
+      // 熔断开关存不进去，`enforce` 就成了一个改不动的常量。
+      modelPricing: parseModelPricing(next.modelPricing),
+      // 同上第四次。漏了它的表现是：兜底单价能填、PUT 回 200、读出来永远是全 0，
+      // 于是缺价的模型继续按 0 收——正是加这一项要堵的那个洞。
+      defaultModelRate: parseModelRate(next.defaultModelRate),
+      billing: parseBilling(next.billing),
+      // 同上第五次：知识库的单价和门槛。漏了就是「工具配置那一屏能填、回 200、读出来永远是 0」。
+      knowledge: parseKnowledgeSettings(next.knowledge),
+    })
+    await this.run(
+      "insert into platform_settings (id, payload, \"updatedAt\") values ('platform', ?, ?) on conflict (id) do update set payload=excluded.payload, \"updatedAt\"=excluded.\"updatedAt\"",
+      [payload, now],
+    )
+    return this.platformSettings()
+  }
+
+  /**
+   * 自动发现的模型快照。
+   *
+   * 借 platform_settings 那张表另开一行（id='discovered'），不新建表也就不用加迁移：
+   * 那张表本来就是 `(id, payload jsonb, updatedAt)` 的通用键值，platform 只是它的
+   * 一个键。**不能塞进 platform 那一行**——putPlatformSettings 是整条 payload 重写的，
+   * 它已经漏掉过三次字段（见那个函数里的注释），再往里加一个由后台任务写、由页面
+   * 顺手覆盖的字段，就是给同一个坑再挖一遍。
+   */
+  async discoveredModels(): Promise<DiscoverySnapshot> {
+    const r = await this.one("select payload from platform_settings where id = 'discovered'")
+    if (!r) return emptySnapshot()
+    return parseDiscoverySnapshot(r.payload)
+  }
+
+  async putDiscoveredModels(next: DiscoverySnapshot): Promise<DiscoverySnapshot> {
+    const clean = parseDiscoverySnapshot(next)
+    await this.run(
+      "insert into platform_settings (id, payload, \"updatedAt\") values ('discovered', ?, ?) on conflict (id) do update set payload=excluded.payload, \"updatedAt\"=excluded.\"updatedAt\"",
+      [JSON.stringify(clean), Date.now()],
+    )
+    return clean
+  }
+
+  /**
+   * 一次性：公司日常/utility 升到平台设置（平台还空时）。开机时跑一遍（index.ts）。
+   *
+   * **这里曾经还把公司密钥升成平台密钥，已经删掉，不要再加回来。**
+   *
+   * 那半段是 `select provider, secret from credentials` —— 整张表、**不带公司过滤**，
+   * 挑到谁算谁，upsert 进 platform_credentials。当初写它时 `credentials` 没有任何写入
+   * 口，整张表就是单租户时代留下的那几行，「升成平台的」和「搬个家」是一回事。
+   *
+   * 后来那张表成了每家公司自己配密钥的地方，那半段就变成了一个跨租户漏密钥的开机
+   * 自动化：任意一个公司管理员填进去的 key，重启之后成了全平台的兜底密钥。
+   *
+   * **现在公司那条路又撤了**（供应商只由平台配，见上面 platformCredential 前面那段），
+   * 可这张表里**还躺着各家当初存进去的行**——正因为没有写入口了，那批数据反而是死的，
+   * 谁也管不着、谁也改不了。把它们升成平台密钥，等于拿一家公司几个月前的 key 去给
+   * 全平台供货。这道禁令因此比以前更该留着。
+   *
+   * 平台密钥只能由平台管理员在平台那一屏显式配置。
+   */
+  async liftCompanySettingsToPlatform(): Promise<{ settings: boolean }> {
+    const lifted = { settings: false }
+    const cur = await this.platformSettings()
+    const empty = !cur.daily.provider && !cur.daily.model && !cur.utility.provider && !cur.utility.model
+    if (empty) {
+      const rows = await this.many('select payload from settings order by "updatedAt" desc')
+      for (const row of rows) {
+        const s = parsePlatformPayload(row.payload)
+        if (s.daily.provider || s.daily.model || s.utility.provider || s.utility.model) {
+          /**
+           * **原样带上 cur 的全部字段，只覆盖要迁的那两项。**
+           *
+           * putPlatformSettings 是「整份重写」：漏给一项，它就按空值序列化下去。
+           * 这里原先漏了 managerVersion / modelPricing / billing 三项——只要平台的
+           * daily/utility 还空着（上面 `empty` 只看这四个字符串），一次开机迁移就会把
+           * 钉好的机队版本、全部单价覆盖和熔断开关一起清成默认值。
+           */
+          await this.putPlatformSettings({ ...cur, daily: s.daily, utility: s.utility })
+          lifted.settings = true
+          break
+        }
+      }
+    }
+    return lifted
   }
 
   // ── 外部渠道。凭据只存密文；Webhook 事件按远端 id 去重。──────────
@@ -5105,148 +4876,6 @@ export class Db {
     return rows.map(botDeletionRequestOf)
   }
 
-  // ── 公司模型角色（日常 / utility）。不存密钥。────────────────────────
-
-  async settings(companyId: string): Promise<CompanySettings> {
-    const r = await this.one('select payload from settings where "companyId" = ?', [companyId])
-    if (!r) return emptySettings()
-    const raw = (jsonOf(r.payload) ?? {}) as Partial<CompanySettings>
-    return {
-      daily: { provider: String(raw.daily?.provider ?? ''), model: String(raw.daily?.model ?? ''), reasoningEffort: parseReasoningEffort(raw.daily?.reasoningEffort) },
-      utility: { provider: String(raw.utility?.provider ?? ''), model: String(raw.utility?.model ?? ''), reasoningEffort: parseReasoningEffort(raw.utility?.reasoningEffort) },
-      conversationAudit: parseConversationAuditSettings(raw.conversationAudit),
-    }
-  }
-
-  async putSettings(companyId: string, next: CompanySettings): Promise<CompanySettings> {
-    const now = Date.now()
-    const payload = JSON.stringify({
-      daily: { provider: next.daily.provider, model: next.daily.model, reasoningEffort: parseReasoningEffort(next.daily.reasoningEffort) },
-      utility: { provider: next.utility.provider, model: next.utility.model, reasoningEffort: parseReasoningEffort(next.utility.reasoningEffort) },
-      conversationAudit: parseConversationAuditSettings(next.conversationAudit),
-    })
-    await this.run(
-      'insert into settings ("companyId", payload, "updatedAt") values (?,?,?) on conflict ("companyId") do update set payload=excluded.payload, "updatedAt"=excluded."updatedAt"',
-      [companyId, payload, now],
-    )
-    return this.settings(companyId)
-  }
-
-  async platformSettings(): Promise<PlatformSettings> {
-    const r = await this.one("select payload from platform_settings where id = 'platform'")
-    if (!r) return emptyPlatformSettings()
-    return parsePlatformPayload(r.payload)
-  }
-
-  async putPlatformSettings(next: PlatformSettings): Promise<PlatformSettings> {
-    const now = Date.now()
-    const enabled = Array.isArray(next.enabledModels) ? next.enabledModels.map((x) => String(x)).filter(Boolean) : []
-    const payload = JSON.stringify({
-      daily: { provider: next.daily.provider, model: next.daily.model, reasoningEffort: parseReasoningEffort(next.daily.reasoningEffort) },
-      utility: { provider: next.utility.provider, model: next.utility.model, reasoningEffort: parseReasoningEffort(next.utility.reasoningEffort) },
-      // 同下面那一串「不能漏」：整份重写，漏了它备选就是能填、回 200、读出来永远是空。
-      dailyAlternates: parseDailyAlternates(next.dailyAlternates, next.daily),
-      // 同上：生图模型也是整份重写里的一格，漏了就是「能选、回 200、席位上永远没有那把工具」。
-      image: parseImageRole(next.image),
-      enabledModels: enabled,
-      priceMultiplier: parsePriceMultiplier(next.priceMultiplier),
-      connectorPricing: parseConnectorPricing(next.connectorPricing),
-      // **不能漏。** 这一行漏了整整一版：类型上有、路由层收得好好的、界面也能填，
-      // 只有这里拼 payload 时把它丢了——于是 PUT 回 200、读出来永远是空。
-      // 后果是「全机队钉版本」这一级完全失效：传一个包上去，所有没有逐台钉过的机器
-      // 都会在下一次心跳自己升上去，而唯一能拦住它的开关，看起来能设、其实存不进去。
-      managerVersion: String(next.managerVersion ?? '').trim(),
-      // 同上，Bot 的那一档。漏了它，钉 Bot 版本就是「能填、回 200、席位照样跟最新走」。
-      botVersion: String(next.botVersion ?? '').trim(),
-      // 同上：这一行漏了，工具配置那一屏就是「能填、回 200、读出来永远是空」。
-      webTools: parseWebTools(next.webTools),
-      // 同上第三次。这两项漏了的后果更重：单价覆盖存不进去，缺价的模型就永远缺价；
-      // 熔断开关存不进去，`enforce` 就成了一个改不动的常量。
-      modelPricing: parseModelPricing(next.modelPricing),
-      // 同上第四次。漏了它的表现是：兜底单价能填、PUT 回 200、读出来永远是全 0，
-      // 于是缺价的模型继续按 0 收——正是加这一项要堵的那个洞。
-      defaultModelRate: parseModelRate(next.defaultModelRate),
-      billing: parseBilling(next.billing),
-      // 同上第五次：知识库的单价和门槛。漏了就是「工具配置那一屏能填、回 200、读出来永远是 0」。
-      knowledge: parseKnowledgeSettings(next.knowledge),
-    })
-    await this.run(
-      "insert into platform_settings (id, payload, \"updatedAt\") values ('platform', ?, ?) on conflict (id) do update set payload=excluded.payload, \"updatedAt\"=excluded.\"updatedAt\"",
-      [payload, now],
-    )
-    return this.platformSettings()
-  }
-
-  /**
-   * 自动发现的模型快照。
-   *
-   * 借 platform_settings 那张表另开一行（id='discovered'），不新建表也就不用加迁移：
-   * 那张表本来就是 `(id, payload jsonb, updatedAt)` 的通用键值，platform 只是它的
-   * 一个键。**不能塞进 platform 那一行**——putPlatformSettings 是整条 payload 重写的，
-   * 它已经漏掉过三次字段（见那个函数里的注释），再往里加一个由后台任务写、由页面
-   * 顺手覆盖的字段，就是给同一个坑再挖一遍。
-   */
-  async discoveredModels(): Promise<DiscoverySnapshot> {
-    const r = await this.one("select payload from platform_settings where id = 'discovered'")
-    if (!r) return emptySnapshot()
-    return parseDiscoverySnapshot(r.payload)
-  }
-
-  async putDiscoveredModels(next: DiscoverySnapshot): Promise<DiscoverySnapshot> {
-    const clean = parseDiscoverySnapshot(next)
-    await this.run(
-      "insert into platform_settings (id, payload, \"updatedAt\") values ('discovered', ?, ?) on conflict (id) do update set payload=excluded.payload, \"updatedAt\"=excluded.\"updatedAt\"",
-      [JSON.stringify(clean), Date.now()],
-    )
-    return clean
-  }
-
-  /**
-   * 一次性：公司日常/utility 升到平台设置（平台还空时）。开机时跑一遍（index.ts）。
-   *
-   * **这里曾经还把公司密钥升成平台密钥，已经删掉，不要再加回来。**
-   *
-   * 那半段是 `select provider, secret from credentials` —— 整张表、**不带公司过滤**，
-   * 挑到谁算谁，upsert 进 platform_credentials。当初写它时 `credentials` 没有任何写入
-   * 口，整张表就是单租户时代留下的那几行，「升成平台的」和「搬个家」是一回事。
-   *
-   * 后来那张表成了每家公司自己配密钥的地方，那半段就变成了一个跨租户漏密钥的开机
-   * 自动化：任意一个公司管理员填进去的 key，重启之后成了全平台的兜底密钥。
-   *
-   * **现在公司那条路又撤了**（供应商只由平台配，见上面 platformCredential 前面那段），
-   * 可这张表里**还躺着各家当初存进去的行**——正因为没有写入口了，那批数据反而是死的，
-   * 谁也管不着、谁也改不了。把它们升成平台密钥，等于拿一家公司几个月前的 key 去给
-   * 全平台供货。这道禁令因此比以前更该留着。
-   *
-   * 平台密钥只能由平台管理员在平台那一屏显式配置。
-   */
-  async liftCompanySettingsToPlatform(): Promise<{ settings: boolean }> {
-    const lifted = { settings: false }
-    const cur = await this.platformSettings()
-    const empty = !cur.daily.provider && !cur.daily.model && !cur.utility.provider && !cur.utility.model
-    if (empty) {
-      const rows = await this.many('select payload from settings order by "updatedAt" desc')
-      for (const row of rows) {
-        const s = parsePlatformPayload(row.payload)
-        if (s.daily.provider || s.daily.model || s.utility.provider || s.utility.model) {
-          /**
-           * **原样带上 cur 的全部字段，只覆盖要迁的那两项。**
-           *
-           * putPlatformSettings 是「整份重写」：漏给一项，它就按空值序列化下去。
-           * 这里原先漏了 managerVersion / modelPricing / billing 三项——只要平台的
-           * daily/utility 还空着（上面 `empty` 只看这四个字符串），一次开机迁移就会把
-           * 钉好的机队版本、全部单价覆盖和熔断开关一起清成默认值。
-           */
-          await this.putPlatformSettings({ ...cur, daily: s.daily, utility: s.utility })
-          lifted.settings = true
-          break
-        }
-      }
-    }
-    return lifted
-  }
-
-
   // ── 长期记忆（docs/memory.md）────────────────────────────────────────
 
   /**
@@ -6023,20 +5652,4 @@ export class Db {
     )
     return n > 0
   }
-
-  // ── Skill 标签。稿子上那八个是初值，建了新的就进这张表。──────────────
-
-  async skillTags(companyId: string): Promise<string[]> {
-    const rows = await this.many('select tag from skill_tags where "companyId" = ? order by seq', [companyId])
-    return rows.map((r) => str(r.tag))
-  }
-
-  async insertSkillTag(companyId: string, tag: string): Promise<void> {
-    await this.run('insert into skill_tags ("companyId", tag) values (?, ?) on conflict do nothing', [companyId, tag])
-  }
-
-  async deleteSkillTag(companyId: string, tag: string): Promise<boolean> {
-    return (await this.run('delete from skill_tags where "companyId" = ? and tag = ?', [companyId, tag])) > 0
-  }
-
 }
