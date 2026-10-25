@@ -16,7 +16,7 @@ use tauri_plugin_opener::OpenerExt;
  * 壳子把 Gateway 地址注入给页面（LINK_SCRIPT 的 `__SATUWORK_GATEWAY__`），所有请求都是跨源的，
  * 凭据走 Authorization 头。
  *
- * 桌面壳（desktop/src-tauri/src/main.rs）里的本地 Bot、运行时下载、自升级、菜单、设置屏在
+ * 桌面壳（desktop/src-tauri/src/）里的本地 Bot、运行时下载、自升级、菜单、设置屏在
  * 手机上都不存在：手机只有一扇窗、一个 Gateway 地址（正式包锁死 satuwork.com，debug 构建
  * 认编译期的 SATUWORK_SERVER），所以这份文件只剩三件事：发界面、注入、把往外走的导航
  * 交给系统浏览器。serve_ui / 导航守卫那几段是从桌面壳抄过来的，两边要一起改

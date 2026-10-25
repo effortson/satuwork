@@ -2,7 +2,7 @@
 /**
  * 把 gateway/ui 拷进 <壳>/src-tauri/ui/，打进包。桌面端和手机端的 `prepare:ui` 都走这一份：
  *
- *   node ../scripts/copy-ui.mjs desktop   # 壳子用 satu:// 协议从这儿发界面（desktop main.rs 的 serve_ui）
+ *   node ../scripts/copy-ui.mjs desktop   # 壳子用 satu:// 协议从这儿发界面（desktop ui.rs 的 serve_ui）
  *   node ../scripts/copy-ui.mjs mobile    # 作为 frontendDist 打进手机包（mobile lib.rs 的 serve_ui 从 asset_resolver 里发）
  *
  * 开发时（tauri dev / tauri ios dev）不用拷——壳子直接读仓库里的 gateway/ui。

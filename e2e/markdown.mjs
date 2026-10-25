@@ -195,7 +195,7 @@ export async function runMarkdown({ root, test, assert, log }) {
     // 桌面壳和手机壳各有一份 ui_cdn! / UI_CSP（两个 crate，共用不了），两份都钉住。
     const want = pkgs.map((pkg) => `https://cdn.jsdelivr.net/npm/${pkg}/`).join(' ')
     for (const [label, file] of [
-      ['桌面', 'desktop/src-tauri/src/main.rs'],
+      ['桌面', 'desktop/src-tauri/src/ui.rs'],
       ['手机', 'mobile/src-tauri/src/lib.rs'],
     ]) {
       const rs = readFileSync(join(root, file), 'utf8')
