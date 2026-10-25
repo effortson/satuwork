@@ -5,7 +5,7 @@
  * 没有文件、管家来拉拿到的字节和 sha256 头对得上、sha256 对不上时把刚传的 blob 删掉。
  */
 import { createServer } from 'node:http'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { schemaOf, tmpOf } from './isolate.mjs'
@@ -219,6 +219,28 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
       })
       assert(r.status === 201, `登记 ${r.status} ${r.text}`)
       assert(Date.now() - t < 15000, `登记花了 ${Date.now() - t} ms，扫包那一步多半又卡住了`)
+    })
+
+    /**
+     * 知识库直传完了，浏览器报上来的地址进库，之后取原文件要带着 token 去打它。@vercel/blob 的
+     * head() 只把地址当查询参数交给 Blob API、自己不访问，挡不住别家主机名——这道闸在我们这边。
+     */
+    await test('知识库直传报上来的地址：不是本站 Blob 的一律不收，也不带 token 去取', async () => {
+      const { isOurBlobUrl } = await import('../gateway/src/lib/blob.ts')
+      assert(isOurBlobUrl('https://abc.private.blob.vercel-storage.com/kb/c/k/f-x1'), '真 Blob 地址没认出来')
+      for (const bad of [
+        'https://attacker.example/kb/c/k/f-x1',
+        'https://abc.private.blob.vercel-storage.com.attacker.example/kb/c/k/f-x1',
+        'http://abc.private.blob.vercel-storage.com/kb/c/k/f-x1',
+      ]) {
+        assert(!isOurBlobUrl(bad), `${bad} 被当成了本站 Blob`)
+      }
+      // knowledge-store.ts 连着 http.ts（参数属性），这里的裸 node 载不动；按源码钉住两处入口都过这道闸。
+      const src = readFileSync(join(gwRoot, 'src/lib/knowledge-store.ts'), 'utf8')
+      for (const fn of ['verifyBlobUpload', 'fetchBlob']) {
+        const body = src.slice(src.indexOf(`function ${fn}(`), src.indexOf('\n}\n', src.indexOf(`function ${fn}(`)))
+        assert(/if \(!isOurBlobUrl\(url\)\) throw/.test(body), `${fn} 没先认地址就往下走了`)
+      }
     })
   } finally {
     gw.kill('SIGTERM')
