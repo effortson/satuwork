@@ -1406,12 +1406,15 @@ function skillsPage() {
   const isSkill = tab === 'Skill'
   const skills = state.skills || []
   const servers = state.mcpServers || []
-  const tabs = ['Skill', 'MCP 与工具']
-    .map(
-      (name) =>
-        `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(tab === name)}" data-act="skills-tab" data-tab="${esc(name)}">${esc(name === 'Skill' ? name : t(name))}</button>`,
-    )
-    .join('')
+  // 「Skill」是专名，译表里没有它，t() 原样还回来。
+  const tabs = tabPills(
+    [
+      { key: 'Skill', label: 'Skill' },
+      { key: 'MCP 与工具', label: 'MCP 与工具' },
+    ],
+    tab,
+    'skills-tab',
+  )
   const failure = state.skillFailure
     ? `<div style="font-size: 13px; color: var(--color-accent-800); background: var(--color-accent-100); border-radius: var(--radius-md); padding: 10px var(--space-4); display: flex; justify-content: space-between; gap: var(--space-3);">
         <span>${esc(state.skillFailure)}</span>
@@ -1530,16 +1533,15 @@ function billingPage() {
   const invoices = Array.isArray(data.invoices) ? data.invoices : []
   const topups = Array.isArray(data.topups) ? data.topups : []
   const balance = data.balance || { amount: '—', spentThisPeriod: '—', alertAt: '—' }
-  const tabs = [
-    { key: 'sub', label: '订阅' },
-    { key: 'topup', label: '充值' },
-    { key: 'usage', label: '用量明细' },
-  ]
-    .map(
-      (item) =>
-        `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(tab === item.key)}" data-act="billing-tab" data-tab="${item.key}">${t(item.label)}</button>`,
-    )
-    .join('')
+  const tabs = tabPills(
+    [
+      { key: 'sub', label: '订阅' },
+      { key: 'topup', label: '充值' },
+      { key: 'usage', label: '用量明细' },
+    ],
+    tab,
+    'billing-tab',
+  )
   const invoiceTail = `<div style="display: flex; align-items: center; gap: var(--space-3); justify-content: flex-end;">
       <button type="button" class="satu-linkbtn" disabled title="${esc(t('发票开具还没做'))}">${t('发票')}</button>
     </div>`

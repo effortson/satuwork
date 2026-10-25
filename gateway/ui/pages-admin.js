@@ -2013,15 +2013,14 @@ function accountsPage() {
   const tab = state.accountsTab === 'groups' ? 'groups' : 'members'
   const headerAct = tab === 'members' ? 'invite-open' : 'group-open'
   const headerLabel = tab === 'members' ? t('邀请成员') : t('新建分组')
-  const tabs = [
-    { key: 'members', label: '成员' },
-    { key: 'groups', label: '分组' },
-  ]
-    .map(
-      (item) =>
-        `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(tab === item.key)}" data-act="accounts-tab" data-tab="${item.key}">${t(item.label)}</button>`,
-    )
-    .join('')
+  const tabs = tabPills(
+    [
+      { key: 'members', label: '成员' },
+      { key: 'groups', label: '分组' },
+    ],
+    tab,
+    'accounts-tab',
+  )
   const membersBody = `
         <div style="display: flex; flex-direction: column; gap: var(--space-6);">
           <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-3);">

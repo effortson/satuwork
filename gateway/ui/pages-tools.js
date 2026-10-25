@@ -195,10 +195,7 @@ function webToolsPanel() {
 
 function toolsPage() {
   const tab = state.toolsTab || 'web'
-  const tabs = TOOL_TABS.map(
-    (x) =>
-      `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(tab === x.key)}" data-act="tools-tab" data-tab="${esc(x.key)}">${t(x.label)}</button>`,
-  ).join('')
+  const tabs = tabPills(TOOL_TABS, tab, 'tools-tab')
   return `
     <div class="gw-page">
       <div class="gw-page-inner">

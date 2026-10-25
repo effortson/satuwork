@@ -1,5 +1,5 @@
 /**
- * 页面上反复出现的几块壳子：弹窗、页头。
+ * 页面上反复出现的几块壳子：弹窗、页头、页内切 tab 的那排按钮。
  *
  * 只收「各处逐字一样」的那部分。调用点各自的差别（弹窗本体的属性、页头右边那几颗按钮）原样
  * 由调用方给，拼出来的 HTML 和以前一字不差。长得像但有出入的（标题 18px、没有 data-stop、
@@ -54,4 +54,17 @@ function pageHead(title, sub, acts) {
           </div>
           ${acts}
         </div>`
+}
+
+/**
+ * 页内切 tab 的那一排按钮。`items` 是 `{ key, label }`，label 写中文原文，这里翻译、转义；
+ * 按下的是 key 等于 `current` 的那一颗。每颗都发同一个 `act`，带着 data-tab。
+ */
+function tabPills(items, current, act) {
+  return items
+    .map(
+      (it) =>
+        `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(current === it.key)}" data-act="${act}" data-tab="${esc(it.key)}">${esc(t(it.label))}</button>`,
+    )
+    .join('')
 }
