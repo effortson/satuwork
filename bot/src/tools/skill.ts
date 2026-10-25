@@ -1,11 +1,12 @@
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, join, sep } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { cachedSkills, type CachedSkill } from '../catalog/index.ts'
 import { satuworkHome } from '../home.ts'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { pinnedBotId } from '../env.ts'
 import { scanPii } from '../policy/pii.ts'
-import { ToolFailure, clip, fail, registerTool } from './common.ts'
+import { clip, fail, registerTool, runtimeGateway, ToolFailure } from './common.ts'
+import { isWithin } from '../workspace/index.ts'
 
 /**
  * Skill 工具集：`skill_view` / `skills_list` / `skill_manage`。
@@ -49,49 +50,8 @@ interface RemoteFile {
   bytes: number
 }
 
-function botId(): string {
-  return (process.env.SATUWORK_BOT_ID || '').trim()
-}
-
-/**
- * 打 Gateway 的 runtime 面。
- *
- * 连不上是**管道故障**（模型改什么都没用），HTTP 4xx 里带的那句话是**业务失败**——
- * 它是 Gateway 判出来的、能照着改的东西（名字撞了、写满了、改不动别人的），原话直接
- * 给模型看。两者混成一种，模型要么白重试、要么把一次可修复的拒绝当成系统坏了。
- */
-async function callGateway<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const base = gatewayUrl()
-  const token = gatewayToken()
-  if (!base || !token) fail('这台机器没有配 Gateway，Skill 的这条路走不通。')
-  let r: Response
-  try {
-    r = await fetch(base + path, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(30_000),
-    })
-  } catch (e) {
-    throw new Error(`连不上 Gateway：${(e as Error).message}`)
-  }
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    let hint = ''
-    try {
-      hint = String((JSON.parse(text) as { error?: unknown })?.error ?? '')
-    } catch {
-      hint = ''
-    }
-    // 4xx 是「这次请求不对」，说得清；5xx 是那头出事了，模型改不动。
-    if (r.status >= 400 && r.status < 500) fail(hint || `Gateway 拒绝了这次操作（HTTP ${r.status}）`)
-    throw new Error(`Gateway 返回 HTTP ${r.status}${text ? ` ${text.slice(0, 200)}` : ''}`)
-  }
-  return (await r.json()) as T
-}
+/** 打 Gateway 的 runtime 面。业务失败和管道故障怎么分见 common.ts 的 runtimeGateway。 */
+const callGateway = runtimeGateway('这台机器没有配 Gateway，Skill 的这条路走不通。')
 
 export function apply(ctx: Context) {
   // 换版之后缓存里可能是上一版写下的行（缺 displayName / description 这些键），
@@ -240,7 +200,7 @@ export function apply(ctx: Context) {
     }
     const out = await callGateway<{ files?: RemoteFile[] }>(
       'GET',
-      `/runtime/skills/${encodeURIComponent(s.id)}/files?botId=${encodeURIComponent(botId())}`,
+      `/runtime/skills/${encodeURIComponent(s.id)}/files?botId=${encodeURIComponent(pinnedBotId())}`,
     )
     const files = Array.isArray(out.files) ? out.files : []
     await mkdir(dirname(listFile), { recursive: true })
@@ -252,8 +212,8 @@ export function apply(ctx: Context) {
   const fetchFile = async (s: CachedSkill, path: string): Promise<{ text: string; abs: string }> => {
     const filesDir = join(cacheDir(s), 'files')
     const abs = join(filesDir, path)
-    // 比较要带分隔符：不带的话 `files-evil/x` 也以 `files` 开头，越界检查形同虚设。
-    if (abs !== filesDir && !abs.startsWith(filesDir + sep)) fail(`路径越界：${path}`)
+    // 比较要带分隔符（isWithin）：不带的话 `files-evil/x` 也以 `files` 开头，越界检查形同虚设。
+    if (!isWithin(filesDir, abs)) fail(`路径越界：${path}`)
     try {
       return { text: await readFile(abs, 'utf8'), abs }
     } catch {
@@ -261,7 +221,7 @@ export function apply(ctx: Context) {
     }
     const out = await callGateway<{ text?: string }>(
       'GET',
-      `/runtime/skills/${encodeURIComponent(s.id)}/file?botId=${encodeURIComponent(botId())}&path=${encodeURIComponent(path)}`,
+      `/runtime/skills/${encodeURIComponent(s.id)}/file?botId=${encodeURIComponent(pinnedBotId())}&path=${encodeURIComponent(path)}`,
     )
     const text = typeof out.text === 'string' ? out.text : ''
     await mkdir(dirname(abs), { recursive: true })
@@ -458,8 +418,8 @@ export function apply(ctx: Context) {
       },
       call,
     ) => {
-      if (!botId()) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），写不了 Skill。')
-      const q = `?botId=${encodeURIComponent(botId())}`
+      if (!pinnedBotId()) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），写不了 Skill。')
+      const q = `?botId=${encodeURIComponent(pinnedBotId())}`
 
       if (action === 'create') {
         const nm = (newName ?? '').trim()

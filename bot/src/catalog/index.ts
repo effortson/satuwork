@@ -1,5 +1,5 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
 import { browserOf, desktopOf, guardsOf, type BotRecord } from '../registry/index.ts'
 import { mcpToolName, mcpToolRisk, McpHttpClient, type JsonRpcTool } from './mcp.ts'
 
@@ -520,7 +520,7 @@ export class CatalogService extends Service {
 
   /** SATUWORK_BOT_ID 对应的那一颗已经钉进名册。 */
   get pinSucceeded(): boolean {
-    const id = (process.env.SATUWORK_BOT_ID || '').trim()
+    const id = pinnedBotId()
     if (!id) return false
     return Boolean(this.pulledAt && this.ctx.roster.get(id))
   }
@@ -553,7 +553,7 @@ export class CatalogService extends Service {
     }
     // **发车时刻要在 fetch 之前取**：豁免的判据就是「这份响应比那次写入更旧」。
     const startedAt = Date.now()
-    const pinId = (process.env.SATUWORK_BOT_ID || '').trim()
+    const pinId = pinnedBotId()
     const catalogUrl = pinId
       ? `${base}/runtime/catalog?botId=${encodeURIComponent(pinId)}`
       : base + '/runtime/catalog'
@@ -705,7 +705,7 @@ export class CatalogService extends Service {
    * 两者在界面上不是一回事。
    */
   private probeUrl(): string {
-    const pinId = (process.env.SATUWORK_BOT_ID || '').trim()
+    const pinId = pinnedBotId()
     const q = new URLSearchParams()
     if (pinId) q.set('botId', pinId)
     if (this.templateVersion > 0) q.set('have', String(this.templateVersion))
@@ -889,7 +889,7 @@ export class CatalogService extends Service {
   }
 
   private pinBots(items: RemoteBot[]): boolean {
-    const only = (process.env.SATUWORK_BOT_ID || '').trim()
+    const only = pinnedBotId()
     if (!only) {
       // GATEWAY_URL 已设才会走到这里。没有钉 id 就不钉整份目录，也不种 default。
       this.lastError = '未设 SATUWORK_BOT_ID，不钉目录'
@@ -1152,7 +1152,7 @@ export function apply(ctx: Context) {
     })
 
     ctx.server.post('/api/bots/pin', async (req, res) => {
-      if ((process.env.SATUWORK_BOT_ID || '').trim()) {
+      if (pinnedBotId()) {
         res.status = 410
         res.json({ error: 'Bot 配置在 Gateway' })
         return

@@ -252,7 +252,7 @@ export function apply(ctx: Context) {
   // 根目录和越界检查都在 workspace 服务上——上传和预览走的是同一份，
   // 各写一份 resolve 迟早会有一条写松。
   const resolveIn = (path?: string) => ctx.workspace.resolve(path)
-  const show = (path: string) => ctx.workspace.show(path).split(sep).join('/')
+  const show = (path: string) => ctx.workspace.showSlash(path)
   /** 把一串「相对工作区根」的路径收成 refs（见 tools/index.ts 的 `ToolResult.refs`）。 */
   const refsOf = (paths: string[]): WorkspaceFile[] =>
     paths.slice(0, MAX_REF_FILES).map((path) => ({ path, name: path.split('/').pop() || path }))

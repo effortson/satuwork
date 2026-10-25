@@ -2,6 +2,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ContentBlock, SessionEvent } from '../session/types.ts'
 import type { ToolRisk } from './index.ts'
 import { historyEvents } from '../session/replay.ts'
+import { fail, ToolFailure } from './common.ts'
+import { timeZone } from '../time.ts'
 
 /**
  * 翻自己的历史：`history_read` 按时间区间读原文，`history_search` 按关键词找。
@@ -30,20 +32,6 @@ const MAX_ROWS = 200
 const DEFAULT_ROWS = 50
 /** 单条消息在列表里的展示上限。要看全文就缩小时间区间再读一次。 */
 const MAX_ROW_CHARS = 600
-
-class ToolFailure extends Error {}
-function fail(message: string): never {
-  throw new ToolFailure(message)
-}
-
-function timeZone(): string {
-  return (
-    process.env.SATUWORK_TZ?.trim() ||
-    process.env.TZ?.trim() ||
-    Intl.DateTimeFormat().resolvedOptions().timeZone ||
-    'UTC'
-  )
-}
 
 function stamp(at: number): string {
   return new Intl.DateTimeFormat('zh-CN', {

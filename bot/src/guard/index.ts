@@ -1,10 +1,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { timingSafeEqual } from 'node:crypto'
 import { adoptGatewayUrl } from '../gateway-url.ts'
-import { gatewayUrl } from '../llm/gateway.ts'
+import { gatewayToken, gatewayUrl, isLocalRuntime } from '../env.ts'
 
 /** 桌面端的本地 Bot。只有它需要 CORS：远程席位前面有管家反代，浏览器不直接打 bot。 */
-const LOCAL_MODE = (process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local'
+const LOCAL_MODE = isLocalRuntime()
 const DESKTOP_ORIGINS = new Set(['satu://localhost', 'http://satu.localhost', 'tauri://localhost', 'http://tauri.localhost'])
 
 function gatewayOrigin(): string {
@@ -40,9 +40,7 @@ export const inject = ['server']
  * root；而这个进程的内存、它起的子进程，都在席位那个普通 Linux 用户名下。席位票本身也
  * 不走 env / bot.env 了，从 fd 0 读（见 seat-secrets.ts）。
  */
-function seatToken(): string {
-  return (process.env.GATEWAY_TOKEN || '').trim()
-}
+const seatToken = gatewayToken
 
 /**
  * 守卫用的路径归一。

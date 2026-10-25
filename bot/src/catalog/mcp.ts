@@ -2,6 +2,7 @@
  * 最小 HTTP JSON-RPC MCP 客户端。不引 @modelcontextprotocol/sdk。
  * stdio 不在这里处理。
  */
+import { ssePayloads } from '../sse.ts'
 import type { ToolRisk } from '../tools/index.ts'
 
 export interface JsonRpcTool {
@@ -32,21 +33,9 @@ async function readBody(res: Response): Promise<unknown> {
   const text = await res.text()
   if (!text.trim()) return undefined
   if (ctype.includes('text/event-stream')) {
-    let last: unknown
-    for (const block of text.replace(/\r\n/g, '\n').split('\n\n')) {
-      for (const line of block.split('\n')) {
-        if (!line.startsWith('data:')) continue
-        const data = line.slice(5).trim()
-        if (!data || data === '[DONE]') continue
-        try {
-          last = JSON.parse(data)
-        } catch {
-          /* 不是 JSON 的 data 行丢掉 */
-        }
-      }
-    }
-    if (last === undefined) throw new McpHttpError('SSE 里没有 JSON-RPC 响应')
-    return last
+    const all = ssePayloads(text)
+    if (!all.length) throw new McpHttpError('SSE 里没有 JSON-RPC 响应')
+    return all[all.length - 1]
   }
   try {
     return JSON.parse(text)

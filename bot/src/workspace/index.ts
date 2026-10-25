@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { satuworkHome } from '../home.ts'
+import { isLocalRuntime } from '../env.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -33,6 +34,15 @@ export const SHARED_LINK = 'shared'
 const LEGACY_SKIP = new Set(['bots', SHARED_LINK])
 
 /** 越界、参数不对、文件不存在这类**业务**失败。不是管道故障。 */
+/**
+ * `child` 是不是 `parent` 本身或在它里面。两个都得是已经 resolve 过的绝对路径。
+ *
+ * 比较要带分隔符：不带的话 `/work-evil/x` 也以 `/work` 开头，越界检查形同虚设。
+ */
+export function isWithin(parent: string, child: string): boolean {
+  return child === parent || child.startsWith(parent + sep)
+}
+
 export class WorkspaceError extends Error {}
 
 /** 一层最多列多少条。再多就不是「看一眼」了，而那一屏也摆不下。 */
@@ -124,10 +134,10 @@ export class WorkspaceService extends Service {
    */
   resolve(path?: string, opts: { dir?: boolean } = {}): string {
     const target = this.mapApproved(path) ?? resolve(this.root, path?.trim() || '.')
-    if (target !== this.root && !target.startsWith(this.root + sep)) {
+    if (!isWithin(this.root, target)) {
       throw new WorkspaceError(`路径越界：${path}。只能访问工作区 ${this.root} 以内的文件。`)
     }
-    if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local') {
+    if (isLocalRuntime()) {
       // 本地 Bot 没有 OS 级专用用户可兜底，所以现存路径的每一段都拒绝符号链接。
       // 写新文件时末段可以不存在，但它前面的目录必须已经通过这道检查。
       const rel = relative(this.root, target)
@@ -182,7 +192,7 @@ export class WorkspaceService extends Service {
    * 远程席位上永远是空的：那边没有批准这回事，工作区就是边界。
    */
   approvedMounts(): { mount: string; path: string }[] {
-    if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return []
+    if (!isLocalRuntime()) return []
     const external = join(this.root, 'External')
     let names: string[]
     try {
@@ -215,21 +225,21 @@ export class WorkspaceService extends Service {
     const expanded = raw === '~' ? homedir() : raw.startsWith('~/') ? join(homedir(), raw.slice(2)) : raw
     if (!isAbsolute(expanded)) return undefined
     const plain = resolve(expanded)
-    if (plain === this.root || plain.startsWith(this.root + sep)) return undefined
+    if (isWithin(this.root, plain)) return undefined
     const mounts = this.approvedMounts()
     if (!mounts.length) return undefined
     // 清单里记的是真实路径（Desktop 批准时 canonicalize 过）。模型写的路径可能经过符号链接
     // （macOS 的 /var → /private/var、挪过位置的家目录），不先落到真实路径就对不上前缀。
     const abs = realish(plain)
     for (const m of mounts) {
-      if (abs === m.path || abs.startsWith(m.path + sep)) return join(this.root, m.mount, relative(m.path, abs))
+      if (isWithin(m.path, abs)) return join(this.root, m.mount, relative(m.path, abs))
     }
     return undefined
   }
 
   private isApprovedPath(path: string): boolean {
     if (this.inShared(path) || this.inLegacy(path, true)) return true
-    if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return false
+    if (!isLocalRuntime()) return false
     const manifest = (process.env.SATUWORK_APPROVED_DIRS || '').trim()
     if (!manifest) return false
     let roots: string[] = []
@@ -248,7 +258,7 @@ export class WorkspaceService extends Service {
     return roots.some((root) => {
       let approved = root
       try { approved = realpathSync(root) } catch {}
-      return real === approved || real.startsWith(approved + sep)
+      return isWithin(approved, real)
     })
   }
 
@@ -263,7 +273,7 @@ export class WorkspaceService extends Service {
     try {
       this.sharedReal ??= realpathSync(this.shared)
       const real = realpathSync(path)
-      return real === this.sharedReal || real.startsWith(this.sharedReal + sep)
+      return isWithin(this.sharedReal, real)
     } catch {
       return false
     }
@@ -309,6 +319,11 @@ export class WorkspaceService extends Service {
   show(path: string): string {
     if (this.inLegacy(path)) return relative(this.legacy!, path)
     return relative(this.root, path) || '.'
+  }
+
+  /** 给模型看的 show()：分隔符一律写成 `/`。 */
+  showSlash(path: string): string {
+    return this.show(path).split(sep).join('/')
   }
 
   /**
@@ -377,7 +392,7 @@ export class WorkspaceService extends Service {
    */
   async adopt(src: string, filename: string) {
     const from = resolve(src)
-    if (from !== this.root && !from.startsWith(this.root + sep)) throw new WorkspaceError('文件不在工作区里')
+    if (!isWithin(this.root, from)) throw new WorkspaceError('文件不在工作区里')
     const file = await freshPath(this.root, safeName(filename))
     await rename(from, file)
     return { path: this.show(file), name: basename(file) }
@@ -458,7 +473,7 @@ export class WorkspaceService extends Service {
     const info = await lstat(target)
     if (info.isSymbolicLink()) throw new WorkspaceError(`${this.show(target)} 是符号链接，不能删。`)
     const [rootReal, parentReal] = await Promise.all([realpath(this.root), realpath(dirname(target))])
-    if (parentReal !== rootReal && !parentReal.startsWith(rootReal + sep) && !this.isApprovedPath(dirname(target))) {
+    if (!isWithin(rootReal, parentReal) && !this.isApprovedPath(dirname(target))) {
       throw new WorkspaceError(`路径越界：${path}。它经过一条指向工作区外面的符号链接。`)
     }
     // force 不给：文件在这一趟之前被别人删掉了，那是「已经不在了」，得让上面回 404，
@@ -539,7 +554,7 @@ async function freshPath(dir: string, name: string): Promise<string> {
   for (let i = 0; i < 1000; i++) {
     const candidate = resolve(dir, i ? `${stem}-${i}${ext}` : name)
     // 落在 dir 之外说明清洗漏了东西，宁可整个拒掉。
-    if (candidate !== dir && !candidate.startsWith(dir + sep)) throw new WorkspaceError('文件名不合法')
+    if (!isWithin(dir, candidate)) throw new WorkspaceError('文件名不合法')
     // lstat 而不是 stat：悬空的符号链接 stat 会报不存在，这里就会把它当成空位交出去，
     // createWriteStream 再顺着链接写到别处。链接本身占着这个名字，就算有人。
     try {

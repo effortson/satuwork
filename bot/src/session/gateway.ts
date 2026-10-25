@@ -1,16 +1,12 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayToken, gatewayUrl, isLocalRuntime, pinnedBotId } from '../env.ts'
 import type { SessionEvent, SessionOrigin } from './types.ts'
 import type { Handoff } from '../policy/handoff.ts'
 import { pushSuppressed, watched } from './watchers.ts'
 
 export const name = 'satu-session-gateway'
 export const inject = ['server', 'sessions', 'catalog', 'storage']
-
-function pinnedBotId(): string {
-  return (process.env.SATUWORK_BOT_ID || '').trim()
-}
 
 function bearer(header: string | null): string | undefined {
   if (!header?.startsWith('Bearer ')) return
@@ -496,7 +492,7 @@ export function apply(ctx: Context) {
   }
   async function reportPush(sessionId: string, kind: 'turn-end' | 'approval') {
     if (!configured() || Date.now() < pushQuietUntil) return
-    if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local') return
+    if (isLocalRuntime()) return
     if (await isSideSession(sessionId)) return
     const botId = await botOfSession(sessionId)
     if (!botId) return
@@ -576,7 +572,7 @@ export function apply(ctx: Context) {
 
   // 本地 Bot 由反向通道登记虚拟 host。把 127.0.0.1 上报给 Gateway 会覆盖那条路由，
   // Gateway 随后只会连到它自己机器的 loopback。
-  if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local') return
+  if (isLocalRuntime()) return
 
   const started = Date.now()
   let delay = 0

@@ -1,6 +1,7 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
-import { completeOnce, gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../llm/gateway.ts'
+import { gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../env.ts'
+import { completeOnce } from '../llm/gateway.ts'
 import type { SessionEvent } from '../session/types.ts'
 
 export const name = 'satu-conversation-audit'

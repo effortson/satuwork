@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { pinnedBotId } from '../env.ts'
+import { DEFAULT_LEASE_MS, DEFAULT_TIMEOUT_MS, LostError, localGateway, localReady, num, selfClient, sseEvents } from '../local-runtime.ts'
 import { ProgressTracker } from '../agent/progress.ts'
 
 /**
@@ -20,8 +21,6 @@ export const name = 'satu-local-tasks'
 export const inject = ['server']
 
 const TICK_MS = Math.max(1000, Math.trunc(Number(process.env.SATUWORK_LOCAL_TASK_TICK_MS ?? 5_000)))
-const DEFAULT_TIMEOUT_MS = 20 * 60_000
-const DEFAULT_LEASE_MS = 60_000
 
 interface Job {
   taskId: string
@@ -36,54 +35,7 @@ interface Job {
   cancelPollMs?: number
 }
 
-class LostError extends Error {}
-
-function num(v: unknown, fallback: number): number {
-  const n = Number(v)
-  return Number.isFinite(n) && n > 0 ? n : fallback
-}
-
-async function gw(path: string, body?: unknown): Promise<unknown> {
-  const r = await fetch(`${gatewayUrl()}/runtime/local-tasks${path}`, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: {
-      authorization: `Bearer ${gatewayToken()}`,
-      accept: 'application/json',
-      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(20_000),
-  })
-  const text = await r.text()
-  let json: unknown = null
-  try {
-    json = text ? JSON.parse(text) : null
-  } catch {}
-  if (r.status === 404) throw new LostError('这一步已不归本机')
-  if (!r.ok) throw new Error(`Gateway ${r.status}：${(json as { error?: string } | null)?.error ?? ''}`)
-  return json
-}
-
-async function* sseEvents<T>(reader: ReadableStreamDefaultReader<Uint8Array>): AsyncGenerator<T> {
-  const decoder = new TextDecoder()
-  let buf = ''
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) return
-    buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
-    let idx: number
-    while ((idx = buf.indexOf('\n\n')) >= 0) {
-      const frame = buf.slice(0, idx)
-      buf = buf.slice(idx + 2)
-      for (const line of frame.split('\n')) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          yield JSON.parse(line.slice(6)) as T
-        } catch {}
-      }
-    }
-  }
-}
+const gw = localGateway('/runtime/local-tasks', '这一步已不归本机')
 
 function textOfMessage(data: unknown): string {
   const content = (data as { message?: { content?: unknown } } | undefined)?.message?.content
@@ -160,31 +112,11 @@ async function readTurnResult(
 const QUEUE_GONE_MS = Math.max(500, Math.trunc(Number(process.env.SATUWORK_TASK_QUEUE_GONE_MS ?? 5_000)))
 
 export function apply(ctx: Context) {
-  if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return
-  if (!gatewayUrl() || !gatewayToken()) {
-    ctx.logger?.warn?.('local tasks: 缺 GATEWAY_URL / GATEWAY_TOKEN，不领派活')
-    return
-  }
-  const botId = (process.env.SATUWORK_BOT_ID || '').trim()
+  if (!localReady(ctx, 'local tasks: 缺 GATEWAY_URL / GATEWAY_TOKEN，不领派活')) return
+  const botId = pinnedBotId()
   const running = new Set<string>()
 
-  const self = () => String(ctx.server.baseUrl || `http://127.0.0.1:${ctx.server.port}`).replace(/\/$/, '')
-  const selfHeaders = () => ({ authorization: `Bearer ${gatewayToken()}`, accept: 'application/json' })
-  async function selfJson(path: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
-    const r = await fetch(`${self()}${path}`, {
-      method: init?.method ?? 'GET',
-      headers: { ...selfHeaders(), ...(init?.body !== undefined ? { 'content-type': 'application/json' } : {}) },
-      body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
-      signal: AbortSignal.timeout(20_000),
-    })
-    const text = await r.text()
-    let json: unknown = null
-    try {
-      json = text ? JSON.parse(text) : null
-    } catch {}
-    if (!r.ok) throw new Error((json as { error?: string } | null)?.error || `HTTP ${r.status}`)
-    return json
-  }
+  const { self, selfHeaders, selfJson } = selfClient(ctx)
 
   async function runJob(job: Job): Promise<void> {
     const ac = new AbortController()

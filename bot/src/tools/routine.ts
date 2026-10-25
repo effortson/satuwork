@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
-import { clip, fail, registerTool } from './common.ts'
+import { pinnedBotId } from '../env.ts'
+import { clip, fail, registerTool, runtimeGateway } from './common.ts'
 
 /**
  * 日常任务：让主代理查看、创建、修改和立即触发自己的定时任务。
@@ -48,40 +48,8 @@ type Routine = {
   updatedAt: number
 }
 
-function botId(): string {
-  return (process.env.SATUWORK_BOT_ID || '').trim()
-}
-
 /** Gateway 的 4xx 是参数或权限问题，原话给模型；5xx / 断网才是管道故障。 */
-async function callGateway<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const base = gatewayUrl()
-  const token = gatewayToken()
-  if (!base || !token) fail('这台机器没有配 Gateway，日常任务这条路走不通。')
-  let res: Response
-  try {
-    res = await fetch(base + path, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(30_000),
-    })
-  } catch (e) {
-    throw new Error(`连不上 Gateway：${(e as Error).message}`)
-  }
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    let hint = ''
-    try {
-      hint = String((JSON.parse(text) as { error?: unknown })?.error ?? '')
-    } catch {}
-    if (res.status >= 400 && res.status < 500) fail(hint || `Gateway 拒绝了这次操作（HTTP ${res.status}）`)
-    throw new Error(`Gateway 返回 HTTP ${res.status}${text ? ` ${text.slice(0, 200)}` : ''}`)
-  }
-  return (await res.json()) as T
-}
+const callGateway = runtimeGateway('这台机器没有配 Gateway，日常任务这条路走不通。')
 
 function triggerText(t: Trigger): string {
   const when =
@@ -181,7 +149,7 @@ export function apply(ctx: Context) {
       },
     },
     async ({ routine }: { routine?: string }) => {
-      const bot = botId()
+      const bot = pinnedBotId()
       if (!bot) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），看不了日常任务。')
       if (routine?.trim()) {
         const hit = await findRoutine(bot, routine)
@@ -244,7 +212,7 @@ export function apply(ctx: Context) {
         model_role?: 'utility' | 'daily'
       },
     ) => {
-      const bot = botId()
+      const bot = pinnedBotId()
       if (!bot) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），改不了日常任务。')
       const action = String(args.action ?? '')
 
