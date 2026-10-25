@@ -486,12 +486,17 @@ export function publicCompany(c: Company) {
   }
 }
 
-/**
- * 一行会话索引对外的样子。
- *
- * `names` 是可选的预取表：列表接口一次性把本公司的账号和 Bot 拉齐再传进来，省掉每行
- * 两次查库——一页 200 行就是 400 次往返。单条详情接口不传，照旧现查。
- */
+/** `时刻:id` 那种翻页游标：冒号前是毫秒，冒号后是第二把钥匙，缺一样就 400。 */
+function pairCursorOf(raw: string | null): { at: number; key: string } | undefined {
+  const text = (raw || '').trim()
+  if (!text) return undefined
+  const i = text.indexOf(':')
+  const at = Number(text.slice(0, i))
+  const key = i < 0 ? '' : text.slice(i + 1)
+  if (i < 0 || !Number.isFinite(at) || !key) throw new HttpError(400, 'cursor 不合法')
+  return { at, key }
+}
+
 /**
  * 会话列表的翻页游标：`updatedAt:sessionId`。
  *
@@ -499,13 +504,8 @@ export function publicCompany(c: Company) {
  * 的话，同一毫秒上报的两条会话在翻页边界上要么漏要么重。
  */
 export function sessionCursorOf(raw: string | null): { updatedAt: number; sessionId: string } | undefined {
-  const text = (raw || '').trim()
-  if (!text) return undefined
-  const i = text.indexOf(':')
-  const updatedAt = Number(text.slice(0, i))
-  const sessionId = i < 0 ? '' : text.slice(i + 1)
-  if (i < 0 || !Number.isFinite(updatedAt) || !sessionId) throw new HttpError(400, 'cursor 不合法')
-  return { updatedAt, sessionId }
+  const c = pairCursorOf(raw)
+  return c && { updatedAt: c.at, sessionId: c.key }
 }
 
 /**
@@ -515,15 +515,16 @@ export function sessionCursorOf(raw: string | null): { updatedAt: number; sessio
  * 只比时间的话翻页边界上要么漏要么重。
  */
 export function chargeCursorOf(raw: string | null): { createdAt: number; id: string } | undefined {
-  const text = (raw || '').trim()
-  if (!text) return undefined
-  const i = text.indexOf(':')
-  const createdAt = Number(text.slice(0, i))
-  const id = i < 0 ? '' : text.slice(i + 1)
-  if (i < 0 || !Number.isFinite(createdAt) || !id) throw new HttpError(400, 'cursor 不合法')
-  return { createdAt, id }
+  const c = pairCursorOf(raw)
+  return c && { createdAt: c.at, id: c.key }
 }
 
+/**
+ * 一行会话索引对外的样子。
+ *
+ * `names` 是可选的预取表：列表接口一次性把本公司的账号和 Bot 拉齐再传进来，省掉每行
+ * 两次查库——一页 200 行就是 400 次往返。单条详情接口不传，照旧现查。
+ */
 export async function publicSessionIndex(
   db: Db,
   row: SessionIndex,

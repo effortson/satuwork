@@ -6,7 +6,7 @@ import type { RouteCtx } from './ctx.ts'
 import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { IMAGE_MODELS } from '../image-models.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
-import { KIND, bodyOf, deployOptsOf, refShapes, strField } from '../lib/validate.ts'
+import { KIND, bodyOf, deployOptsOf, logLinesOf, refShapes, strField } from '../lib/validate.ts'
 import type { Account, BotFolder, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
@@ -1266,7 +1266,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const account = await requireUser(req, db, keys)
     if (req.query.get('follow') === '1') throw new HttpError(410, LOGS_FOLLOW_GONE)
     const t = await managerTargetFor(db, account, (req.query.get('botId') || '').trim())
-    const lines = Math.min(2000, Math.max(1, Math.trunc(Number(req.query.get('lines')) || 200)))
+    const lines = logLinesOf(req)
     const url = `${t.base}/seats/${encodeURIComponent(t.seatId)}/logs?lines=${lines}`
     await proxyJson(res, 'GET', url, undefined, undefined, t.machineToken)
   })

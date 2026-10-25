@@ -9,10 +9,8 @@ import type { Meter } from './lib/meter.ts'
 import { mergeUsage, openaiUsage, sseUsage, tokensOf, usageFromPayload, type TokenUsage } from './lib/llm-usage.ts'
 import { accountFromJwtToken } from './lib/guards.ts'
 import { accountByApiKey, gateOr402, recordLlmCall, withSettle, type RunOutcome } from './lib/llm-billing.ts'
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : v == null ? '' : String(v)
-}
+import { str } from './lib/util.ts'
+import { bodyOf } from './lib/validate.ts'
 
 /**
  * `Authorization: Bearer` 或 `x-api-key`。后者是 Anthropic SDK 的写法，
@@ -37,12 +35,6 @@ async function requireUser(req: Req, db: Db, keys: JwtKeys): Promise<Account> {
   if (token.startsWith('sk_sw_')) return accountByApiKey(db, token)
   // 剩下的当登录 JWT，验法和控制台同一份（lib/guards.ts）。
   return accountFromJwtToken(db, keys, token)
-}
-
-function bodyOf(req: Req): Record<string, unknown> {
-  if (req.body == null) return {}
-  if (typeof req.body !== 'object' || Array.isArray(req.body)) throw new HttpError(400, '请求体必须是对象')
-  return req.body as Record<string, unknown>
 }
 
 async function publicModels(llm: Llm, companyId: string | null) {

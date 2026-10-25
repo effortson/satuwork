@@ -7,7 +7,7 @@ import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { PULL_ERROR, pullSessionEvents } from '../lib/machines.ts'
 import { companyMachineOf } from '../deploy.ts'
-import { bodyOf, intField,} from '../lib/validate.ts'
+import { bodyOf, dailyOrUtilityOf, intField } from '../lib/validate.ts'
 import { companyOr404, publicSessionIndex, sessionCursorOf } from '../lib/org.ts'
 import { requireOrgUser } from '../lib/guards.ts'
 import { rangeQuery } from '../lib/usage.ts'
@@ -139,8 +139,8 @@ export function attachSessions(router: Router, ctx: RouteCtx) {
     const platform = await db.platformSettings()
     const cur = await db.settings(req.params.id)
     const before = cur.conversationAudit
-    const role = body.modelRole === undefined ? before.modelRole : String(body.modelRole)
-    if (role !== 'daily' && role !== 'utility') throw new HttpError(400, 'modelRole 只能是 daily 或 utility')
+    // 库里那份已经由 parseConversationAuditSettings 收成 daily / utility，只有新传的要验。
+    const role = dailyOrUtilityOf(body.modelRole) ?? before.modelRole
     const enabled = body.enabled === undefined ? before.enabled : body.enabled as boolean
     // 只在真要用到模型的时候拦：换模型，或者正要打开。关掉不需要模型。
     if ((body.modelRole !== undefined || (enabled && !before.enabled)) && (!platform[role].provider || !platform[role].model)) {

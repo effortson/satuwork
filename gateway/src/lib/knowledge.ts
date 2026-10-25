@@ -14,6 +14,7 @@ import { ExtractError, extOf, extractText } from './knowledge-extract.ts'
 import { readStored, removeStored } from './knowledge-store.ts'
 import { KB_UPSERT_BATCH, type KbHit, deleteFileVectors, deleteKbNamespace, queryNamespace, upsertChunks, vectorConfigured } from './knowledge-vector.ts'
 import type { Meter } from './meter.ts'
+import { oneLine } from './util.ts'
 
 /** 入库租约。过了还没推进就当上一拍死了，下一拍重领。 */
 export const KB_LEASE_MS = 90_000
@@ -345,10 +346,4 @@ async function ingestOne(db: Db, meter: Meter, now: number): Promise<number> {
     console.warn(`satuwork-gateway: 知识库文件 ${file.id} 入库出错（第 ${attempts} 次）：${oneLine(e)}`)
     return 1
   }
-}
-
-function oneLine(e: unknown): string {
-  return String((e as Error)?.message ?? e)
-    .replace(/\s+/g, ' ')
-    .slice(0, 200)
 }

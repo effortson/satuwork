@@ -6,7 +6,7 @@ import { type Handler, HttpError, json, type Req, type Router } from '../http.ts
 import { INSTANCE_DOWN, MIN_MANAGER_NODE, PAIRING_TTL, desiredManagerRelease, directUrlOf, gatewayBaseFor, installCommandFor, machineBase, machineCard, machineOfOrg, machineResolver, managerHostOf, retargetManager, normalizePairingCode, randomPairingCode, registerFromBody, sendReleaseFile } from '../lib/machines.ts'
 import { LOGS_FOLLOW_GONE, MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, gatewayPublicUrl, gatewayPublicUrlExplicit, logsDirectPayload, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, queueSeatUpdates, rehostSeatInstances, releaseSeats } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
-import { bodyOf, intField, strField } from '../lib/validate.ts'
+import { bodyOf, intField, logLinesOf, strField } from '../lib/validate.ts'
 import { installScript } from '../install.ts'
 import { proxyJson } from '../lib/runtime.ts'
 import { desiredBotRelease, directReleaseUrl, localBotReleaseTarget, parseBotVersion, publicBotRelease, storeUploadedRelease } from '../releases.ts'
@@ -295,7 +295,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
       const { machine, audit } = await scope(req)
       if (!machine.host) throw new HttpError(503, INSTANCE_DOWN)
       const seatId = await seatOnMachine(machine, req.query.get('seatId'))
-      const lines = Math.min(2000, Math.max(1, Math.trunc(Number(req.query.get('lines')) || 200)))
+      const lines = logLinesOf(req)
       const path = seatId ? `/seats/${encodeURIComponent(seatId)}/logs` : '/logs'
       await audit(machine, account.id, 'machine.logs', { machineId: machine.id, seatId: seatId || null, follow: false })
       const url = `${machineBase(machine.host)}${path}?lines=${lines}`

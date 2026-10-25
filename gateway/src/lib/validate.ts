@@ -207,3 +207,22 @@ export function refShapes(raw: unknown): Record<string, unknown>[] {
   }
   return out
 }
+
+/** 取日志的 `?lines=`：缺省 200 行，夹在 1–2000。席位日志、机器日志两侧同一个口径。 */
+export function logLinesOf(req: Req): number {
+  return Math.min(2000, Math.max(1, Math.trunc(Number(req.query.get('lines')) || 200)))
+}
+
+/**
+ * 人在界面上挑「用哪个模型跑」：**只认 `daily` 和 `utility`，别的一律 400**，没传回 undefined。
+ *
+ * 库里读出来的那一路（parseRoutineModelRole 之类）认不出来就当 daily——读库那一路没人接得住
+ * 异常，一条脏数据不该让整个列表打不开。而人刚选的那一下不能这么办：把一个拼错的值静静地
+ * 存成 daily，接口回 200、界面上写着「Utility」，跑起来却是另一个。
+ */
+export function dailyOrUtilityOf(raw: unknown): 'daily' | 'utility' | undefined {
+  if (raw === undefined) return undefined
+  const v = String(raw ?? '')
+  if (v !== 'daily' && v !== 'utility') throw new HttpError(400, 'modelRole 只能是 daily 或 utility')
+  return v
+}
