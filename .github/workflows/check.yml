@@ -61,7 +61,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          # 席位机器上的下限也是 24（gateway/src/routes.ts 的 MIN_MANAGER_NODE）。
+          # 席位机器上的下限也是 24（gateway/src/lib/machines.ts 的 MIN_MANAGER_NODE）。
           node-version: 24
           cache: pnpm
 
