@@ -1670,11 +1670,8 @@ function billingPage() {
  * 日线的合计和各卡片里服务端格式化好的金额摆在一起，写法不一样会像两套数。
  */
 function fmtUsdMicros(micros) {
-  const mils = Math.round((Number(micros) || 0) / 1000)
-  const a = Math.abs(mils)
-  const frac = a % 1000
-  const dec = frac % 10 === 0 ? String(frac / 10).padStart(2, '0') : String(frac).padStart(3, '0')
-  return `${mils < 0 ? '-' : ''}$${Math.floor(a / 1000).toLocaleString('en-US')}.${dec}`
+  // 千分位固定按 en-US，和服务端一样，不跟界面语言走。
+  return SatuCore.usd(Math.round((Number(micros) || 0) / 1000), 'en')
 }
 
 function usageMeter(name, value, pct, alt, mono) {
