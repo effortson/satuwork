@@ -922,9 +922,7 @@ async function saveWebSecret(provider, secret) {
     render()
     return
   }
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     const exists = webBackend(provider)?.configured
     if (exists) await api('PUT', `/platform/credentials/${encodeURIComponent(provider)}`, { secret })
     else await api('POST', '/platform/credentials', { provider, secret })
@@ -932,12 +930,7 @@ async function saveWebSecret(provider, secret) {
     delete state.tests['web:search']
     delete state.tests['web:extract']
     flash('ok', '已保存密钥')
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 /** 自检。失败是这一屏的正常结果，所以红字写在按钮旁边，而不是抛出去。 */
@@ -1059,9 +1052,7 @@ async function deleteCustomModel(modelId) {
 }
 
 async function saveCred(provider, secret, credId) {
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     // 只有平台这一条路了：公司那一档（`/orgs/:id/credentials`）连同整页一起撤了，
     // 密钥全平台共用。走到这儿的只可能是 owner——别的角色进不了这一页。
     if (!isOwner()) throw new Error('供应商密钥由系统管理员配置')
@@ -1076,12 +1067,7 @@ async function saveCred(provider, secret, credId) {
     }
     state.addOpen = false
     flash('ok', '已配置')
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 /**
@@ -1108,9 +1094,7 @@ async function saveCompany(e) {
   const fd = new FormData(e.target)
   const id = orgId()
   const accessUrl = String(fd.get('accessUrl') || '').trim()
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     await api('PATCH', `/orgs/${encodeURIComponent(id)}`, {
       ...orgProfileFields(fd),
       accessUrl: accessUrl || null,
@@ -1119,12 +1103,7 @@ async function saveCompany(e) {
     await loadOrg()
     await loadMe()
     flash('ok', '已保存')
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 async function submitAuditFilter(e) {
@@ -1211,9 +1190,7 @@ async function saveMachine(e) {
   const form = e.target
   const s = machineScope(form)
   const host = String(new FormData(form).get('host') || '').trim()
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     // 公司侧那条老接口收的是 `{host, machineId}`（它还兼着「把这台设成公司默认机器」），
     // 平台侧是纯粹的改地址。两者的响应形状一样，下面这段共用。
     const data =
@@ -1223,12 +1200,7 @@ async function saveMachine(e) {
     await s.reload()
     // 存下来还不够——地址写错了要当场知道，不能等到第一次部署。
     flash(data.reachable ? 'ok' : 'err', data.reachable ? '已保存，管家可达' : `已保存，但打不到管家：${data.error || '无响应'}`)
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 /**
@@ -1254,20 +1226,13 @@ async function saveMachineDirectUrl(e) {
   // 前缀和「改完刷新谁」只有 machineTarget 一份，别在这儿自己拼——见它上面那段注释。
   const s = machineScope(form)
   const directUrl = String(new FormData(form).get('directUrl') || '').trim()
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     const data = await api('PUT', `${s.base}/direct-url`, { directUrl })
     await s.reload()
     if (!directUrl) flash('ok', '已清空，桌面回到从 Gateway 反代')
     else if (data.reachedManager) flash('ok', '已保存。这个地址后面确实是一台席位机器的管家；员工的浏览器能不能连上，要在对话页上真开一次桌面才算数')
     else flash('err', `已保存，但这个地址看着不像席位机器：${data.error || '无响应'}`)
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 async function saveMachineCompany(e) {
@@ -1275,18 +1240,11 @@ async function saveMachineCompany(e) {
   const form = e.target
   const machineId = form.getAttribute('data-machine') || ''
   const companyId = String(new FormData(form).get('companyId') || '')
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     await api('PUT', `/platform/machines/${encodeURIComponent(machineId)}/company`, { companyId })
     await loadMachineDetail(machineId)
     flash('ok', companyId ? '已改归属' : '已收回，这台机器现在待分配')
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 /**
@@ -1461,18 +1419,11 @@ async function saveDesiredVersion(e) {
   e.preventDefault()
   const field = e.target.getAttribute('data-kind') === 'bot' ? 'botVersion' : 'managerVersion'
   const version = String(new FormData(e.target).get('version') || '').trim()
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     await api('PUT', '/platform/settings', { [field]: version })
     await loadReleases()
     flash('ok', version ? `期望版本已设为 ${version}` : '期望版本已清空，跟最新发布走')
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 /**
@@ -1492,18 +1443,11 @@ async function saveDesiredVersion(e) {
  */
 async function refreshMachine(id, scope) {
   if (!id) return
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     if (scope === 'platform') await loadMachineDetail(id)
     else await loadMachines(id)
     flash('ok', t('已刷新'))
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 /** 手上那张卡片。确认框要按它说话：几个席位、机器在不在线。 */
@@ -1559,9 +1503,7 @@ function removeMachine(el) {
 
 /** 真去删。确认框和「空机器直接删」两条路都走它。 */
 async function doRemoveMachine(s) {
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     const data = await api('DELETE', s.base)
     // 平台侧删的就是当前这一页——它已经不存在了，留在原地会去拉一条 404。回列表。
     if (s.scope === 'platform') {
@@ -1585,12 +1527,7 @@ async function doRemoveMachine(s) {
             `Machine registration removed${seats ? ` along with ${seats} seat registrations` : ''}. It is offline, so nothing on the box stops by itself — stop it there.`,
           ),
     )
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 async function saveCapacity(e) {
@@ -1598,18 +1535,11 @@ async function saveCapacity(e) {
   const form = e.target
   const s = machineScope(form)
   const maxAccounts = Number(new FormData(form).get('maxAccounts'))
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     await api('PUT', `${s.base}/capacity`, { maxAccounts })
     await s.reload()
     flash('ok', `容量改为 ${maxAccounts} 个账号`)
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 async function saveTimezone(e) {
@@ -1617,19 +1547,12 @@ async function saveTimezone(e) {
   const form = e.target
   const s = machineScope(form)
   const timezone = String(new FormData(form).get('timezone') || '').trim()
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     const data = await api('PUT', `${s.base}/timezone`, { timezone })
     await s.reload()
     // 「已下指令」而不是「已改好」：真正改的是机器，下一轮心跳才知道成没成。
     flash('ok', !timezone ? '不再管这台机器的时区' : data.pending ? `已下指令：${timezone}，等机器改` : `时区改为 ${timezone}`)
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 /**
@@ -1646,19 +1569,12 @@ async function pinManagerVersion(e) {
     render()
     return
   }
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     const data = await api('POST', `${s.base}/upgrade`, { version })
     await s.reload()
     // 「已下指令」而不是「已换好」：换版由机器在下一轮心跳里自己做。
     flash('ok', data.pending ? `已单独钉到 ${data.version}，等机器下一轮心跳换版` : `已单独钉到 ${data.version}（已经是这一版）`)
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 /**
@@ -1782,9 +1698,7 @@ function vacuumLogs(el) {
 
 /** 真去清。慢是正常的：journalctl 要先轮转再删文件，接口那头等得比别处久。 */
 async function doVacuumLogs(s) {
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     const data = await api('POST', `${s.base}/logs/vacuum`, {})
     await s.reload()
     // **把管家刚量的那份贴上去。** reload 拿回来的是 Gateway 手上那份，它来自上一轮
@@ -1806,12 +1720,7 @@ async function doVacuumLogs(s) {
         ),
       )
     } else flash('ok', t('已清理'))
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 /**
@@ -1822,9 +1731,7 @@ async function doVacuumLogs(s) {
 async function upgradeManager(el) {
   const s = machineScope(el)
   if (!s.machineId || (s.scope === 'org' && !s.orgId)) return
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     // 不带版本 = 摘掉单机钉、跟平台走（见 gateway/src/lib/machines.ts 的 retargetManager）。
     const data = await api('POST', `${s.base}/upgrade`, {})
     await s.reload()
@@ -1834,26 +1741,14 @@ async function upgradeManager(el) {
         ? `已恢复自动升级，目标 ${data.version}，等机器下一轮心跳换版`
         : `已恢复自动升级，已经是 ${data.version}`,
     )
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 async function makePairingCode(id) {
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     state.pairingCode = await api('POST', `/platform/orgs/${encodeURIComponent(id)}/pairing-code`)
     flash('ok', '配对码已生成，30 分钟内有效')
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 
@@ -1923,9 +1818,7 @@ async function saveOrgProfile(e) {
   const id = form.getAttribute('data-id')
   const fd = new FormData(form)
   const accessUrl = String(fd.get('accessUrl') || '').trim()
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     // 状态不在这张表单里：它单独一条 PATCH，改完立刻生效。
     await api('PATCH', `/orgs/${encodeURIComponent(id)}`, {
       ...orgProfileFields(fd),
@@ -1934,12 +1827,7 @@ async function saveOrgProfile(e) {
     await loadOrgs()
     await loadCompanyDetail(id)
     flash('ok', '已保存')
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 async function savePlanSku(e) {

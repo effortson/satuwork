@@ -1577,9 +1577,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     if (!bot || !a) return
     // 自己建的那种：只发身份那几个字段。人设、边界、能力在公司模版里，服务端也不收。
     if (isMyBot(bot)) {
-      state.busy = true
-      render()
-      try {
+      await withBusy(async () => {
         const data = await api('PATCH', `/runtime/bots/${encodeURIComponent(bot.id)}`, {
           name: a.name,
           description: a.description,
@@ -1593,18 +1591,11 @@ document.getElementById('app').addEventListener('click', async (e) => {
         state.botDraft = { ...draftFromBot(data.bot), extraPrompt: data.bot.extraPrompt || '' }
         await loadRuntimeBots().catch(() => {})
         flash('ok', '已保存')
-      } catch (err) {
-        flash('err', err.message)
-      } finally {
-        state.busy = false
-        render()
-      }
+      })
       return
     }
     if (!base) return
-    state.busy = true
-    render()
-    try {
+    await withBusy(async () => {
       // model / provider 不发：模型由平台指定，这里没得挑。
       const data = await api('PATCH', `${base}/bots/${encodeURIComponent(bot.id)}`, {
         name: a.name,
@@ -1627,12 +1618,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
       // groups / kbs 还没有落点，先留住手上这份，别一保存就空掉。
       state.botDraft = { ...draftFromBot(data.bot), groups: a.groups, kbs: a.kbs, memories: a.memories }
       flash('ok', '已保存')
-    } catch (err) {
-      flash('err', err.message)
-    } finally {
-      state.busy = false
-      render()
-    }
+    })
     return
   }
   if (act === 'bot-delete') {
@@ -2153,32 +2139,18 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'audit-enabled') {
     const enabled = state.auditSettings?.settings?.enabled !== true
-    state.busy = true
-    render()
-    try {
+    await withBusy(async () => {
       await saveConversationAuditEnabled(enabled)
       flash('ok', enabled ? '已开启自动审计' : '已关闭自动审计')
-    } catch (err) {
-      flash('err', err.message)
-    } finally {
-      state.busy = false
-      render()
-    }
+    })
     return
   }
   if (act === 'audit-model-role') {
     const role = btn.getAttribute('data-role') === 'utility' ? 'utility' : 'daily'
-    state.busy = true
-    render()
-    try {
+    await withBusy(async () => {
       await saveConversationAuditRole(role)
       flash('ok', role === 'utility' ? '后续审计将使用 UTILITY 模型' : '后续审计将使用任务模型')
-    } catch (err) {
-      flash('err', err.message)
-    } finally {
-      state.busy = false
-      render()
-    }
+    })
     return
   }
   if (act === 'billing-tab') {

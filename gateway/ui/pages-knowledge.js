@@ -418,19 +418,12 @@ async function submitKnowledgeEdit(e) {
   e.preventDefault()
   const d = state.kbDetail
   const fd = new FormData(e.target)
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     await api('PATCH', kbBase(`/${encodeURIComponent(d.id)}`), { name: String(fd.get('name') || '').trim(), desc: String(fd.get('desc') || '').trim() })
     state.kbEdit = null
     await loadKnowledgeDetail(d.id)
     flash('ok', '已保存')
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 async function submitKnowledgeShare(e) {
@@ -439,19 +432,12 @@ async function submitKnowledgeShare(e) {
   const fd = new FormData(e.target)
   const share = String(fd.get('kb-share') || 'all')
   const botIds = fd.getAll('botIds').map(String)
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     await api('PUT', kbBase(`/${encodeURIComponent(d.id)}/share`), { share, botIds })
     state.kbShareDraft = null
     await loadKnowledgeDetail(d.id)
     flash('ok', t('共享范围已保存', 'Sharing saved'))
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 async function submitKnowledgeSearch(e) {

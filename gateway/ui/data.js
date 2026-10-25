@@ -118,6 +118,24 @@ function flashDeletedBot(data) {
   )
 }
 
+/**
+ * 一次「点了就转圈」的操作：按钮先灰掉、画一帧，跑完（成没成都算）再放开、再画一帧；出错就把
+ * 那句话摆成提示条。几十处一模一样的 busy / try / finally 收在这儿——**只收逐字一样的**，
+ * 出错要另说一句、成功要跳页、不画第二帧的，各自留着。
+ */
+async function withBusy(fn) {
+  state.busy = true
+  render()
+  try {
+    await fn()
+  } catch (err) {
+    flash('err', err.message)
+  } finally {
+    state.busy = false
+    render()
+  }
+}
+
 function groupCatalog(rows) {
   const map = new Map()
   for (const m of rows || []) {
