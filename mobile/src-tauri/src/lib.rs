@@ -10,7 +10,7 @@ use tauri_plugin_opener::OpenerExt;
  * Satuwork 手机壳（Tauri 2 mobile）。
  *
  * **和桌面壳同一个思路，少掉一切「本机」的东西。** gateway/ui 那批分片原样打进包
- * （mobile/scripts/prepare-ui.mjs），由这里自注册的 `satu://` 协议发出去（serve_ui；Android 上
+ * （scripts/copy-ui.mjs），由这里自注册的 `satu://` 协议发出去（serve_ui；Android 上
  * Tauri 把它映射成 http://satu.localhost）。页面源因此和桌面端一样是 `satu://localhost`——
  * Gateway、席位机器的管家、本地 Bot 的守卫三处的 CORS 白名单早就认它，手机端一行不用加。
  * 壳子把 Gateway 地址注入给页面（LINK_SCRIPT 的 `__SATUWORK_GATEWAY__`），所有请求都是跨源的，
@@ -287,7 +287,7 @@ fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
     false
 }
 
-/// 包里那份界面在哪：发布包里是打进二进制的 frontendDist（prepare-ui.mjs 拷到 src-tauri/ui/）；
+/// 包里那份界面在哪：发布包里是打进二进制的 frontendDist（scripts/copy-ui.mjs 拷到 src-tauri/ui/）；
 /// debug 构建直接读仓库里的 gateway/ui——模拟器里的进程就是本机进程，读得到。
 fn ui_dir() -> Option<PathBuf> {
     #[cfg(debug_assertions)]

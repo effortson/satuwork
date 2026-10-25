@@ -25,7 +25,7 @@ mod self_update;
 /**
  * Satuwork 桌面壳。
  *
- * **界面打在包里。** gateway/ui 那批分片原样拷进包（desktop/scripts/prepare-ui.mjs），由这个
+ * **界面打在包里。** gateway/ui 那批分片原样拷进包（scripts/copy-ui.mjs），由这个
  * 壳子自注册的 `satu://` 协议发出来（serve_ui；Windows 上 Tauri 把它映射成
  * http://satu.localhost）。壳子记住「连哪台 Gateway」，把地址注入给页面（LINK_SCRIPT 里的
  * `__SATUWORK_GATEWAY__`），所以页面打 Gateway 的每一条请求都是跨源的：Gateway 按这几个源开
@@ -594,7 +594,7 @@ fn build_window(
     Ok(())
 }
 
-/// 包里那份界面在哪：发布包里是资源目录下的 ui/（prepare-ui.mjs 拷进去的），开发时直接读仓库里的 gateway/ui。
+/// 包里那份界面在哪：发布包里是资源目录下的 ui/（scripts/copy-ui.mjs 拷进去的），开发时直接读仓库里的 gateway/ui。
 fn ui_dir(app: &AppHandle) -> Option<PathBuf> {
     #[cfg(debug_assertions)]
     {
