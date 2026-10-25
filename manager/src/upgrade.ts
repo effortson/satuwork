@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { installRoot, managerVersion, patchState, readState, releaseRoot, seatAssets } from './config.ts'
-import { sameOrigin } from './releases.ts'
+import { fetchVerified, sameOrigin, untarInto } from './releases.ts'
 import { run } from './run.ts'
 import { busy, busySeats } from './seats.ts'
 
@@ -248,31 +247,21 @@ export async function maybeUpgrade(offer: UpgradeOffer, token: string): Promise<
 
     // 机器票只交给 Gateway 自己：包地址是心跳回包里给的，origin 和配对的 gatewayUrl
     // 对不上就裸拉——票是这台机器的身份，不能因为一行回包就寄到别处去。
-    const res = await fetch(offer.url, {
+    const bytes = await fetchVerified({
+      url: offer.url,
       headers: sameOrigin(offer.url, state?.gatewayUrl) ? { authorization: 'Bearer ' + token } : {},
-      signal: AbortSignal.timeout(300_000),
+      failed: (res) => `downloading the manager package failed: ${res.status}`,
+      // **没有校验和就不装。** 这个包解开之后是以 root 跑的，而自检只证明它起得来、
+      // 证明不了它是我们发的那一个。Gateway 侧 sha256 是入库时自己算的（见
+      // gateway/src/releases.ts），一条正常的升级要约必然带着它——空的意味着这一跳上
+      // 有人把它拿掉了，或者上游根本不是我们以为的那个。
+      want: () => offer.sha256 || '',
+      noChecksum: 'the manager package came without a checksum, refusing to install',
+      mismatch: () => 'manager package checksum mismatch',
     })
-    if (!res.ok) throw new Error(`downloading the manager package failed: ${res.status}`)
-    const bytes = Buffer.from(await res.arrayBuffer())
-    // **没有校验和就不装。** 这个包解开之后是以 root 跑的，而自检只证明它起得来、
-    // 证明不了它是我们发的那一个。Gateway 侧 sha256 是入库时自己算的（见
-    // gateway/src/releases.ts），一条正常的升级要约必然带着它——空的意味着这一跳上
-    // 有人把它拿掉了，或者上游根本不是我们以为的那个。
-    if (!offer.sha256) throw new Error('the manager package came without a checksum, refusing to install')
-    const got = createHash('sha256').update(bytes).digest('hex')
-    if (got !== offer.sha256) throw new Error('manager package checksum mismatch')
 
-    rmSync(dir, { recursive: true, force: true })
-    mkdirSync(dir, { recursive: true })
-    const tgz = join(root, `.${want}.tgz`)
-    writeFileSync(tgz, bytes)
-    try {
-      // --no-same-owner：解出来一律归 root。见 releases.ts 的 unpackRelease 那条注释。
-      const untar = await run('tar', ['--no-same-owner', '-xzf', tgz, '-C', dir], { timeout: 300_000 })
-      if (untar.code !== 0) throw new Error('cannot untar the manager package')
-    } finally {
-      rmSync(tgz, { force: true })
-    }
+    // --no-same-owner 在 untarInto 里：解出来一律归 root，理由见那条注释。
+    await untarInto(bytes, dir, join(root, `.${want}.tgz`), () => 'cannot untar the manager package')
 
     const entry = join(dir, 'bin', 'satuwork-manager.mjs')
     if (!existsSync(entry)) throw new Error('manager package has no bin/satuwork-manager.mjs')
