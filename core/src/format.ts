@@ -114,3 +114,18 @@ export function fmtTokens(n: number | null | undefined): string {
   // 「1.1M」，四舍五入也会把 1.5M 写成 2M——都是把窗口往大了说。宁可说小，不说大。
   return n >= 1000000 ? `${Math.floor(n / 1000000)}M` : `${Math.round(n / 1000)}K`
 }
+
+/**
+ * 字节数 → `512 B` / `1.5 KB` / `3.2 MB`：固定一位小数，最大到 MB。不是有限数时回 `fallback`——
+ * 几个调用点要的兜底不一样（空串、`—`），所以由它们给。
+ *
+ * 和「按大小挑单位、小数位跟着变」的那一种（pages-machines.js 的 fmtBytes）不是一回事，别并。
+ */
+export function fmtFileSize(n: unknown, fallback = ''): string {
+  const x = Number(n)
+  if (!Number.isFinite(x)) return fallback
+  if (x < 1024) return x + ' B'
+  if (x < 1024 * 1024) return (x / 1024).toFixed(1) + ' KB'
+  return (x / 1024 / 1024).toFixed(1) + ' MB'
+}
+

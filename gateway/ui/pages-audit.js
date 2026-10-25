@@ -456,12 +456,9 @@ function companiesPage() {
     </div>`
 }
 
+/** 发布包大小。负数（不该有）和认不出的一样画成 —。 */
 function fmtSize(n) {
-  const x = Number(n)
-  if (!Number.isFinite(x) || x < 0) return '—'
-  if (x < 1024) return x + ' B'
-  if (x < 1024 * 1024) return (x / 1024).toFixed(1) + ' KB'
-  return (x / (1024 * 1024)).toFixed(1) + ' MB'
+  return Number(n) < 0 ? '—' : SatuCore.fmtFileSize(n, '—')
 }
 
 function shaShort(h) {

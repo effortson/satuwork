@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { esc, tzDayStart, tzDayKey, fmtTime, dayStart, dayEnd, money, usd, fmtTokens } from '../src/format.ts'
+import { esc, tzDayStart, tzDayKey, fmtTime, dayStart, dayEnd, money, usd, fmtTokens, fmtFileSize } from '../src/format.ts'
 
 test('esc：五个字符都转，null/undefined 当空串', () => {
   assert.equal(esc(`<a href="x">&'</a>`), '&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;')
@@ -66,3 +66,15 @@ test('fmtTokens：K 与 M', () => {
   assert.equal(fmtTokens(1500000), '1M')
   assert.equal(fmtTokens(1999999), '1M')
 })
+
+test('fmtFileSize：一位小数到 MB，非有限数回调用方给的兜底', () => {
+  assert.equal(fmtFileSize(0), '0 B')
+  assert.equal(fmtFileSize(1023), '1023 B')
+  assert.equal(fmtFileSize(1536), '1.5 KB')
+  assert.equal(fmtFileSize(5 * 1024 * 1024), '5.0 MB')
+  assert.equal(fmtFileSize(3 * 1024 * 1024 * 1024), '3072.0 MB')
+  assert.equal(fmtFileSize('2048'), '2.0 KB')
+  assert.equal(fmtFileSize(undefined), '')
+  assert.equal(fmtFileSize('x', '—'), '—')
+})
+

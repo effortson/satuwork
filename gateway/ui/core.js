@@ -46,6 +46,7 @@ var SatuCore = (() => {
     dict: () => dict,
     errText: () => errText,
     esc: () => esc,
+    fmtFileSize: () => fmtFileSize,
     fmtTime: () => fmtTime,
     fmtTokens: () => fmtTokens,
     fold: () => fold,
@@ -1540,6 +1541,13 @@ var SatuCore = (() => {
   function fmtTokens(n) {
     if (!n) return "—";
     return n >= 1e6 ? `${Math.floor(n / 1e6)}M` : `${Math.round(n / 1e3)}K`;
+  }
+  function fmtFileSize(n, fallback = "") {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return fallback;
+    if (x < 1024) return x + " B";
+    if (x < 1024 * 1024) return (x / 1024).toFixed(1) + " KB";
+    return (x / 1024 / 1024).toFixed(1) + " MB";
   }
 
   // core/src/paths.ts

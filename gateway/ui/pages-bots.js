@@ -977,8 +977,7 @@ function dayISO(ts) {
 }
 
 function kbOf(n) {
-  const x = Number(n) || 0
-  return x < 1024 ? `${x} B` : x < 1024 * 1024 ? `${(x / 1024).toFixed(1)} KB` : `${(x / 1024 / 1024).toFixed(1)} MB`
+  return SatuCore.fmtFileSize(Number(n) || 0)
 }
 
 function stepsOfBody(body) {
