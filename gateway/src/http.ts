@@ -196,7 +196,7 @@ const VERCEL_ANALYTICS = process.env.VERCEL === '1'
 /**
  * 按需加载的那三个库（KaTeX / highlight.js / Mermaid）从哪儿来、CSP 放到哪一层，见
  * `ui-cdn.ts`。`GATEWAY_UI_CDN` 换了镜像时，同一个地址经 `<meta name="satu-cdn">` 交给
- * markdown.js（UI_CDN_META），两边读的是同一个值，不会一边换了一边没换。
+ * 前端（dom-util.js 的 uiCdn，UI_CDN_META），两边读的是同一个值，不会一边换了一边没换。
  */
 const UI_CDN_SRC = uiCdnSources()
 const UI_CDN_META = uiCdnMeta()

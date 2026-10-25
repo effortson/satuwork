@@ -12,7 +12,7 @@
 /* 预览方式按扩展名分（文本 / 文档 / 浏览器里能渲染的 Office），表和判法在 core/src/chat/preview.ts。 */
 const PREVIEW_WEB_KIND = SatuCore.PREVIEW_WEB_KIND
 
-/** 浏览器里渲染 Office 的那一页。Gateway 和桌面壳都认 `/ui/` 前缀（http.ts 的 serveUi、main.rs 的 serve_ui）。 */
+/** 浏览器里渲染 Office 的那一页。Gateway 和桌面壳都认 `/ui/` 前缀（http.ts 的 serveUi、桌面壳 ui.rs 的 serve_ui）。 */
 const OFFICE_VIEW_SRC = '/ui/office-view.html'
 
 function extOf(name) {

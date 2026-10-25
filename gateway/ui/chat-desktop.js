@@ -177,7 +177,7 @@ function mountDesktop(url, seatId) {
   document.body.appendChild(layer)
   // src 最后给：DOM 先进树，iframe 才只加载一次。
   const frame = layer.querySelector('.sw-deskl-frame')
-  // 桌面壳的导航守卫只放行报过的席位机器（desktop main.rs 的 allow_seat_desktop），
+  // 桌面壳的导航守卫只放行报过的席位机器（desktop nav.rs 的 allow_seat_desktop），
   // 先报再给 src；报失败也照给，最坏是这块屏被守卫送去系统浏览器，和以前一样。
   const seatGate = window.__SATUWORK_SEAT_DESKTOP__
   if (seatGate?.allow) {

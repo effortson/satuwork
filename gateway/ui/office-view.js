@@ -18,7 +18,7 @@
  *  - Excel：exceljs 读，表格自己画（带行号列号、合并单元格、字体颜色填充边框、列宽）
  *  - PPT：@aiden0z/pptx-renderer（开源、按 PowerPoint 截图做视觉回归；带 zip 解压上限）
  *
- * 版本和路径要和 gateway/src/ui-cdn.ts 的 UI_CDN_PACKAGES、桌面端 main.rs 的 ui_cdn! 对上
+ * 版本和路径要和 gateway/src/ui-cdn.ts 的 UI_CDN_PACKAGES、桌面端 ui.rs 的 ui_cdn! 对上
  * （e2e 的 markdown 那一组核对），**改版本号三处一起改，SRI 一起换**。
  */
 ;(function () {
