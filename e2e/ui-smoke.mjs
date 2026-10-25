@@ -4319,8 +4319,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
        * 排着的回调换了 Bot（stopChatStream）之后，这一块剩下的帧不能再落进来——只在块头
        * 问一次「还是不是当前那条」的话，它们照样进事件数组，画出来就是两个 Bot 串在一起。
        *
-       * 这里让换流正好落在「这一块已经开始拆、第一帧还没交出去」那一拍上：read 交出整块的
-       * 同时排一个微任务去 stopChatStream。
+       * 换流的时机不靠数微任务（生成器里多一个 await 就错位，测试会悄悄变成只测块头）：
+       * 第一帧**真的进了事件数组**的那一刻当场 stopChatStream，再看同一块里的第二帧。
        */
       const enc = new TextEncoder()
       const frame = (seq) => `data: ${JSON.stringify({ type: 'assistant/chunk', seq, data: { text: 'x' } })}\n\n`
@@ -4335,9 +4335,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
             read: () => {
               if (served) return Promise.resolve({ done: true, value: undefined })
               served = true
-              const p = Promise.resolve({ done: false, value: enc.encode(frame(1) + frame(2)) })
-              p.then(() => queueMicrotask(() => ui.stopChatStream()))
-              return p
+              return Promise.resolve({ done: false, value: enc.encode(frame(1) + frame(2)) })
             },
           }),
         },
@@ -4349,10 +4347,39 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         fetchImpl: async (path, init) => (path.includes('/events') ? response : fetch(gwBase + path, init)),
       })
       await ui.boot()
+      // 盯住事件数组的每一次 push（数组会被整个换掉，所以挂在 state 的 setter 上，换进来的也包一层）。
+      const landed = []
+      let stopped = false
+      const watch = (arr) => {
+        const push = arr.push.bind(arr)
+        arr.push = (...items) => {
+          const n = push(...items)
+          for (const ev of items) {
+            if (ev?.type !== 'assistant/chunk') continue
+            landed.push({ seq: ev.seq, afterStop: stopped })
+            if (!stopped) {
+              stopped = true
+              ui.stopChatStream()
+            }
+          }
+          return n
+        }
+        return arr
+      }
+      let events = watch(ui.state.chatEvents || [])
+      Object.defineProperty(ui.state, 'chatEvents', {
+        configurable: true,
+        enumerable: true,
+        get: () => events,
+        set: (v) => {
+          events = Array.isArray(v) ? watch(v) : v
+        },
+      })
       ui.state.chatSessionId = 's-mid'
       await ui.startChatStream('s-mid')
-      const landed = ui.state.chatEvents.filter((e) => e.type === 'assistant/chunk').map((e) => e.seq)
-      assert(!landed.length, `换流之后这一块剩下的帧还是进来了：seq ${landed.join(', ')}`)
+      assert(landed.some((x) => x.seq === 1 && !x.afterStop), `第一帧都没进来，测不到「半路换流」：${JSON.stringify(landed)}`)
+      const late = landed.filter((x) => x.afterStop).map((x) => x.seq)
+      assert(!late.length, `换流之后这一块剩下的帧还是进来了：seq ${late.join(', ')}`)
     })
 
     await test('重放历史时不闪「正在处理」，但也不留一片空白', async () => {
