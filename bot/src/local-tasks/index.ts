@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { pinnedBotId } from '../env.ts'
-import { DEFAULT_LEASE_MS, DEFAULT_TIMEOUT_MS, LostError, localGateway, localReady, num, selfClient, sseEvents } from '../local-runtime.ts'
+import { DEFAULT_LEASE_MS, DEFAULT_TIMEOUT_MS, LostError, localGateway, localReady, num, selfClient } from '../local-runtime.ts'
+import { sseEvents } from '../sse.ts'
 import { ProgressTracker } from '../agent/progress.ts'
 
 /**

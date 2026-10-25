@@ -1,9 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { gatewayToken, gatewayUrl, isLocalRuntime } from './env.ts'
-import { gatewayFetch } from './gateway-api.ts'
+import { gatewayFetch, jsonOrNull } from './gateway-api.ts'
 
 /**
- * local-routines 和 local-tasks 共用的管道：打 Gateway、打自己的 HTTP 口、读 SSE。
+ * local-routines 和 local-tasks 共用的管道：打 Gateway、打自己的 HTTP 口（读 SSE 在 sse.ts）。
  *
  * 只收管道。两条循环本身**故意是两份**（见 local-tasks 的文件头）：领的是两张表、回报的是两套接口。
  */
@@ -35,11 +35,7 @@ export function localReady(ctx: Context, missing: string): boolean {
 export function localGateway(base: string, lost: string) {
   return async (path: string, body?: unknown): Promise<unknown> => {
     const r = await gatewayFetch(body === undefined ? 'GET' : 'POST', `${base}${path}`, body, 20_000, { accept: 'application/json' })
-    const text = await r.text()
-    let json: unknown = null
-    try {
-      json = text ? JSON.parse(text) : null
-    } catch {}
+    const json = jsonOrNull(await r.text())
     if (r.status === 404) throw new LostError(lost)
     if (!r.ok) throw new Error(`Gateway ${r.status}：${(json as { error?: string } | null)?.error ?? ''}`)
     return json
@@ -57,34 +53,9 @@ export function selfClient(ctx: Context) {
       body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
       signal: AbortSignal.timeout(20_000),
     })
-    const text = await r.text()
-    let json: unknown = null
-    try {
-      json = text ? JSON.parse(text) : null
-    } catch {}
+    const json = jsonOrNull(await r.text())
     if (!r.ok) throw new Error((json as { error?: string } | null)?.error || `HTTP ${r.status}`)
     return json
   }
   return { self, selfHeaders, selfJson }
-}
-
-export async function* sseEvents<T>(reader: ReadableStreamDefaultReader<Uint8Array>): AsyncGenerator<T> {
-  const decoder = new TextDecoder()
-  let buf = ''
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) return
-    buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
-    let idx: number
-    while ((idx = buf.indexOf('\n\n')) >= 0) {
-      const frame = buf.slice(0, idx)
-      buf = buf.slice(idx + 2)
-      for (const line of frame.split('\n')) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          yield JSON.parse(line.slice(6)) as T
-        } catch {}
-      }
-    }
-  }
 }

@@ -63,12 +63,7 @@ export async function gatewayJson<T>(
   const r = await reach(method, path, body, opt)
   if (!r.ok) {
     const text = await r.text().catch(() => '')
-    let hint = ''
-    try {
-      hint = String((JSON.parse(text) as { error?: unknown })?.error ?? '')
-    } catch {
-      hint = ''
-    }
+    const hint = String((jsonOrNull(text) as { error?: unknown } | null)?.error ?? '')
     // 4xx 是「这次请求不对」，说得清；5xx 是那头出事了，模型改不动。
     if (r.status >= 400 && r.status < 500) throw opt.rejected(hint || `Gateway 拒绝了这次操作（HTTP ${r.status}）`)
     throw httpError(r.status, text)
@@ -101,9 +96,15 @@ export async function gatewayRaw(
 ): Promise<{ status: number; json: Record<string, unknown> | null; text: string }> {
   const r = await reach(method, path, body, opt)
   const text = await r.text().catch(() => '')
-  let json: Record<string, unknown> | null = null
+  return { status: r.status, json: jsonOrNull(text) as Record<string, unknown> | null, text }
+}
+
+/** 正文 → JSON；空的、不是 JSON 的都给 null。读正文那一步各处口径不同（要不要吞错），由调用方自己做。 */
+export function jsonOrNull(text: string): unknown {
+  if (!text) return null
   try {
-    json = text ? JSON.parse(text) : null
-  } catch {}
-  return { status: r.status, json, text }
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
 }
