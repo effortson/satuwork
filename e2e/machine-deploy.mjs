@@ -15,6 +15,7 @@ import { createCompany } from './org.mjs'
 import { publishRelease, sha256Of, tarGz } from './release.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 /** 一个员工一个 Linux 账号——名下所有 bot 共用它。和 gateway/src/deploy.ts 保持一致。 */
 function linuxUserOf(accountId) {
@@ -45,18 +46,15 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
   const gwBase = `http://127.0.0.1:${GW_PORT}`
   let machineTok = ''
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# machine-deploy')
 
-  const gw = start('machine-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'machine-gw',
+    what: 'machine-deploy gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_MACHINE_TOKEN: MACHINE_TOK,
       GATEWAY_PLATFORM_TOKEN: PLATFORM_TOK,
       GATEWAY_ACCESS_HOST: 'satuwork.com',
@@ -66,8 +64,6 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       SATUWORK_DEPLOY_STUB: '1',
     },
   })
-  // 带上 child：起不来时有用的是它的输出，不是三十秒后那句「等不到」。
-  await waitHttp(gwBase + '/health', { child: gw, what: 'machine-deploy gateway' })
 
   try {
     const ownerLogin = await req(gwBase, 'POST', '/auth/login', {

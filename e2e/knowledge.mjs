@@ -6,12 +6,11 @@
  * 查不到无关的。
  */
 import { createServer } from 'node:http'
-import { rmSync } from 'node:fs'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { createCompany } from './org.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 function bigrams(s) {
   const t = String(s || '').replace(/\s+/g, '')
@@ -107,19 +106,16 @@ export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert,
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
   const schema = schemaOf('e2e_knowledge')
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# knowledge')
 
   const upstash = await mockUpstash()
-  const gw = start('knowledge-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'knowledge-gw',
+    what: 'knowledge gateway',
+    home: GW_HOME,
+    schema,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schema,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
       // 入库跑在维护节拍上：跑快点，用例不用等半分钟。
@@ -128,7 +124,6 @@ export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert,
       UPSTASH_VECTOR_REST_TOKEN: 'e2e-token',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'knowledge gateway' })
 
   let owner = ''
   let orgId = ''

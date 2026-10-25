@@ -5,7 +5,6 @@
  * 指令的 run 活、回报结论之后主席位领到带结论的 deliver 活；目标砸了也要送回去；租约到期放回
  * 去再领；管家太旧当场记成没跑起来。
  */
-import { rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { PG_URL } from './pg.mjs'
@@ -14,6 +13,7 @@ import { createCompany } from './org.mjs'
 import { publishRelease } from './release.mjs'
 import { pairMachine } from './pair.mjs'
 import { freePort } from './ports.mjs'
+import { startGateway } from './gateway.mjs'
 
 const SCHEMA = schemaOf('e2e_bot_tasks')
 const LEASE_MS = 1500
@@ -29,17 +29,14 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
   const GW_HOME = tmpOf('satuwork-e2e-bot-tasks')
   const GW_PORT = await freePort()
   const gwBase = `http://127.0.0.1:${GW_PORT}`
-  rmSync(GW_HOME, { recursive: true, force: true })
 
-  const gw = start('bot-tasks-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'bot-tasks-gw',
+    what: 'bot-tasks gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '1',
       GATEWAY_OWNER_EMAIL: 'owner@tasks.test',
@@ -54,8 +51,6 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
   })
 
   try {
-    await waitHttp(gwBase + '/health', { child: gw, what: 'bot-tasks gateway' })
-
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@tasks.test',
       ownerPassword: 'test-owner-tasks',

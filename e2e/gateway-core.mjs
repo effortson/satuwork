@@ -2,31 +2,28 @@
  * 主 Gateway 套件（从 run.mjs 搬出来的 runGateway）：起一个带种子 owner 的 Gateway，
  * 把账号、组织、Bot、审计这些主干接口挨个过一遍。
  */
-import { readFileSync, rmSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
 import { schemaOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
 import { closeServer } from './probe.mjs'
 import { uiSource } from './ui-dom.mjs'
 import { dumpHas, listenMock, treeHas } from './harness.mjs'
+import { startGateway } from './gateway.mjs'
 
 const MACHINE_TOK = 'e2e-machine-token'
 const PLATFORM_TOK = 'e2e-platform-token'
 
 export async function runGateway({ gwRoot, botRoot, gwHome: GW_HOME, gwPort: GW_PORT, test, req, start, waitHttp, assert, log }) {
   log('\n# gateway')
-  rmSync(GW_HOME, { recursive: true, force: true })
   const base = `http://127.0.0.1:${GW_PORT}`
-  const child = start('gateway', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw: child } = await startGateway({
+    name: 'gateway',
+    what: 'gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_main'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_main'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_MACHINE_TOKEN: MACHINE_TOK,
       GATEWAY_PLATFORM_TOKEN: PLATFORM_TOK,
       GATEWAY_ACCESS_HOST: 'satuwork.com',
@@ -35,8 +32,6 @@ export async function runGateway({ gwRoot, botRoot, gwHome: GW_HOME, gwPort: GW_
       GATEWAY_OWNER_PASSWORD: 'test-owner-3080',
     },
   })
-  // 带上 child：起不来时有用的是它的输出，不是三十秒后那句「等不到」。
-  await waitHttp(base + '/health', { child, what: 'gateway' })
 
   let token
   let orgId

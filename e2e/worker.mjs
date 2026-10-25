@@ -15,6 +15,7 @@ import { publishRelease } from './release.mjs'
 import { freePorts } from './ports.mjs'
 import { closeServer } from './probe.mjs'
 import { TOKEN as TG_TOKEN, mockTelegram } from './channels.mjs'
+import { startGateway } from './gateway.mjs'
 
 const SCHEMA = schemaOf('e2e_worker')
 
@@ -108,22 +109,19 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
   const [GW_PORT, MGR_PORT, BOT_PORT] = await freePorts(3)
   const gwBase = `http://127.0.0.1:${GW_PORT}`
   const mgrBase = `http://127.0.0.1:${MGR_PORT}`
-  rmSync(GW_HOME, { recursive: true, force: true })
   rmSync(MGR_HOME, { recursive: true, force: true })
 
   const bot = liveBot()
   await listen(bot.server, BOT_PORT)
   const telegram = await mockTelegram()
 
-  const gw = start('worker-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'worker-gw',
+    what: 'worker gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '1',
       GATEWAY_OWNER_EMAIL: 'owner@wk.test',
@@ -155,7 +153,6 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
   }
 
   try {
-    await waitHttp(gwBase + '/health', { child: gw, what: 'worker gateway' })
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@wk.test',
       ownerPassword: 'test-owner-wk',

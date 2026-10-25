@@ -18,6 +18,7 @@ import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { runProbe as sharedProbe } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 const SCHEMA = schemaOf('e2e_imagegen')
 
@@ -148,7 +149,6 @@ export async function runImageGen({ root, gwRoot, test, req, start, waitHttp, as
 
   // ── Gateway 这一侧：自己起一个，上游是假的 OpenAI Images ─────────────
   const GW_HOME = tmpOf('satuwork-e2e-imagegen')
-  rmSync(GW_HOME, { recursive: true, force: true })
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
 
@@ -197,15 +197,13 @@ export async function runImageGen({ root, gwRoot, test, req, start, waitHttp, as
   await new Promise((r) => upstream.listen(0, '127.0.0.1', r))
   const UP_PORT = upstream.address().port
 
-  const gw = start('imagegen-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'imagegen-gw',
+    what: 'image-gen gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
       OPENAI_BASE_URL: `http://127.0.0.1:${UP_PORT}`,
@@ -217,7 +215,6 @@ export async function runImageGen({ root, gwRoot, test, req, start, waitHttp, as
       SATUWORK_IMAGE_BASELINE_CACHE_MS: '0',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'image-gen gateway' })
 
   const require = createRequire(`${gwRoot}/package.json`)
   const pg = require('pg')

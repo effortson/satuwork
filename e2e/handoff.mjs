@@ -28,6 +28,7 @@ import { publishRelease } from './release.mjs'
 import { pairMachine } from './pair.mjs'
 import { freePort } from './ports.mjs'
 import { runProbe as sharedProbe, closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
@@ -207,7 +208,6 @@ export async function runHandoff({ root, gwRoot, test, req, start, waitHttp, ass
   const GW_HOME = tmpOf('satuwork-e2e-handoff')
   const GW_PORT = await freePort()
   const gwBase = `http://127.0.0.1:${GW_PORT}`
-  rmSync(GW_HOME, { recursive: true, force: true })
 
   const seat = fakeSeat()
   const tls = selfSigned()
@@ -215,15 +215,13 @@ export async function runHandoff({ root, gwRoot, test, req, start, waitHttp, ass
   const seatUrl = await listen(seat.server)
   const hookUrl = (hook.secure ? 'https' : 'http') + '://' + (await listen(hook.server)).split('://')[1]
 
-  const gw = start('handoff-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'handoff-gw',
+    what: 'handoff gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '1',
       GATEWAY_OWNER_EMAIL: 'owner@handoff.test',
@@ -241,8 +239,6 @@ export async function runHandoff({ root, gwRoot, test, req, start, waitHttp, ass
   })
 
   try {
-    await waitHttp(gwBase + '/health', { child: gw, what: 'handoff gateway' })
-
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@handoff.test',
       ownerPassword: 'test-owner-handoff',

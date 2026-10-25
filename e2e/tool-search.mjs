@@ -11,10 +11,10 @@
 import { createServer } from 'node:http'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 const TOOLKITS = {
   items: [
@@ -127,19 +127,16 @@ export async function runToolSearch({ root, gwRoot, test, req, start, waitHttp, 
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# tool-search')
 
   const mock = await mockComposio()
-  const gw = start('tool-search-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'tool-search-gw',
+    what: 'tool-search gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_tool_search'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_tool_search'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
       COMPOSIO_BASE_URL: mock.url,
@@ -147,8 +144,6 @@ export async function runToolSearch({ root, gwRoot, test, req, start, waitHttp, 
       CONNECTOR_TOOL_TTL_MS: '1',
     },
   })
-  // 带上 child：起不来时有用的是它的输出，不是三十秒后那句「等不到」。
-  await waitHttp(`${base}/health`, { child: gw, what: 'tool-search gateway' })
 
   let owner = ''
   let adminTok = ''

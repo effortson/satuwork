@@ -26,6 +26,7 @@ import { pairMachine } from './pair.mjs'
 import { freePorts } from './ports.mjs'
 import { closeServer } from './probe.mjs'
 import { TOKEN as TG_TOKEN, mockTelegram } from './channels.mjs'
+import { startGateway } from './gateway.mjs'
 
 const SCHEMA = schemaOf('e2e_channel_queue')
 /** 挂掉的那台机器上堆着多少个会话。比两边的名额（工人 20、Gateway 10）都多。 */
@@ -40,7 +41,6 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
   log('\n# channel-queue')
 
   const GW_HOME = tmpOf('satuwork-e2e-channel-queue')
-  rmSync(GW_HOME, { recursive: true, force: true })
   const [GW_PORT, FN_PORT] = await freePorts(2)
   const gwBase = `http://127.0.0.1:${GW_PORT}`
   const fnBase = `http://127.0.0.1:${FN_PORT}`
@@ -65,13 +65,14 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
     GATEWAY_CHANNEL_POLL_SCAN_MS: '600000',
   }
 
-  const gw = start('channel-queue-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'channel-queue-gw',
+    what: 'channel-queue gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
       ...shared,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_SEED_OWNER: '1',
       GATEWAY_OWNER_EMAIL: 'owner@queue.test',
       GATEWAY_OWNER_PASSWORD: 'test-owner-queue',
@@ -113,7 +114,6 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
   const textOf = (s) => String(s?.text || s?.rich_message?.markdown || '')
 
   try {
-    await waitHttp(`${gwBase}/health`, { child: gw, what: 'channel-queue gateway' })
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@queue.test',
       ownerPassword: 'test-owner-queue',

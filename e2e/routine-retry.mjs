@@ -21,7 +21,6 @@
  */
 import { createServer } from 'node:http'
 import { rmSync } from 'node:fs'
-import { join } from 'node:path'
 import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
@@ -29,6 +28,7 @@ import { publishRelease } from './release.mjs'
 import { pairMachine } from './pair.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 /** 这一套自己的 schema。写死名字会被别的 worktree 的 e2e 清掉（见 pg.mjs 的 schemaOf）。 */
 const SCHEMA = schemaOf('e2e_routine_retry')
@@ -65,20 +65,17 @@ export async function runRoutineRetry({ gwRoot, test, req, start, waitHttp, asse
   const GW_HOME = tmpOf('satuwork-e2e-routine-retry')
   const GW_PORT = await freePort()
   const gwBase = `http://127.0.0.1:${GW_PORT}`
-  rmSync(GW_HOME, { recursive: true, force: true })
 
   const seat = seatSpy()
   const seatUrl = await listen(seat.server)
 
-  const gw = start('routine-retry-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'routine-retry-gw',
+    what: 'routine-retry gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '1',
       GATEWAY_OWNER_EMAIL: 'owner@retry.test',
@@ -105,8 +102,6 @@ export async function runRoutineRetry({ gwRoot, test, req, start, waitHttp, asse
   }
 
   try {
-    await waitHttp(gwBase + '/health', { child: gw, what: 'routine-retry gateway' })
-
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@retry.test',
       ownerPassword: 'test-owner-retry',

@@ -23,6 +23,7 @@ const CRON_SECRET = 'manager-e2e-cron-secret'
 import { freePorts } from './ports.mjs'
 import { publishRelease } from './release.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 /**
  * 起一个假 bot。记下每次请求的头和路径，供断言。
@@ -166,7 +167,6 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
   const mgrBase = `http://127.0.0.1:${MGR_PORT}`
   const managerRoot = join(root, 'manager')
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   rmSync(MGR_HOME, { recursive: true, force: true })
   log('\n# manager')
 
@@ -177,14 +177,15 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
   await listenOn(bot.server, BOT_PORT)
   await listenOn(novnc.server, NOVNC_PORT)
 
-  const gw = start('manager-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  // 不设 GATEWAY_HOST：这一套一直是按 Gateway 自己的默认监听地址起的。
+  const { gw } = await startGateway({
+    name: 'manager-gw',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
+    host: null,
+    timeout: 40000,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_PUBLIC_URL: gwBase,
       GATEWAY_OWNER_EMAIL: 'owner@manager.test',
       GATEWAY_OWNER_PASSWORD: 'manager-owner-1234',
@@ -199,7 +200,6 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       GEMINI_BASE_URL: `http://127.0.0.1:${UP_PORT}`,
     },
   })
-  await waitHttp(`${gwBase}/health`, { timeout: 40000 })
 
   try {
     const login = await req(gwBase, 'POST', '/auth/login', {

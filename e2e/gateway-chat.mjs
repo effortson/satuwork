@@ -4,10 +4,9 @@
  * `/api/sessions/:id/events`，拿席位票进门——验的是 bot 那头吐的帧，不是中间那一跳。
  * 独立 home / 端口，不碰 live 3080，不碰 run.mjs 那套 /tmp/satuwork-e2e-gw。
  */
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
 import { publishRelease } from './release.mjs'
@@ -16,6 +15,7 @@ import { freePorts } from './ports.mjs'
 import { closeServer } from './probe.mjs'
 import { generateKeyPairSync } from 'node:crypto'
 import { GOOD as PUSH_TOKEN, fakeApns } from './push.mjs'
+import { startGateway } from './gateway.mjs'
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
@@ -88,7 +88,6 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
   const botBase = `http://127.0.0.1:${BOT_PORT}`
   const MARKER = 'CHAT-BODY-MUST-NOT-LAND-ON-GATEWAY-7F3A'
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   rmSync(BOT_HOME, { recursive: true, force: true })
 
   let gw
@@ -96,15 +95,13 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
   log('\n# gateway-chat')
 
   try {
-    gw = start('chat-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-      cwd: gwRoot,
+    gw = (await startGateway({
+      name: 'chat-gw',
+      what: 'chat gateway',
+      home: GW_HOME,
+      schema: schemaOf('e2e_chat'),
+      port: GW_PORT,
       env: {
-        SATUWORK_GATEWAY_HOME: GW_HOME,
-        GATEWAY_DATABASE_URL: PG_URL,
-        GATEWAY_PG_SCHEMA: schemaOf('e2e_chat'),
-        GATEWAY_PG_RESET: '1',
-        GATEWAY_HOST: '127.0.0.1',
-        GATEWAY_PORT: String(GW_PORT),
         GATEWAY_MACHINE_TOKEN: MACHINE_TOK,
         GATEWAY_PLATFORM_TOKEN: PLATFORM_TOK,
         GATEWAY_ACCESS_HOST: 'satuwork.com',
@@ -117,9 +114,7 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
         GATEWAY_APNS_TEAM_ID: 'TEAM123456',
         GATEWAY_APNS_ENDPOINT: `http://127.0.0.1:${APNS_PORT}`,
       },
-    })
-    // 带上 child：起不来时有用的是它的输出，不是三十秒后那句「等不到」。
-    await waitHttp(gwBase + '/health', { child: gw, what: 'chat gateway' })
+    })).gw
 
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@chat.test',

@@ -6,7 +6,6 @@
  * 同一条（配对、入队、去重）；模式切换双向自愈。
  */
 import { createHash } from 'node:crypto'
-import { rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
@@ -14,6 +13,7 @@ import { freePort } from './ports.mjs'
 import { createCompany } from './org.mjs'
 import { closeServer } from './probe.mjs'
 import { TOKEN, mockTelegram } from './channels.mjs'
+import { startGateway } from './gateway.mjs'
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
@@ -25,28 +25,27 @@ export async function runChannelWebhook({ gwRoot, test, req, start, waitHttp, as
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
   const schema = schemaOf('e2e_channel_webhook')
-  rmSync(GW_HOME, { recursive: true, force: true })
 
   const telegram = await mockTelegram()
-  const env = {
-    SATUWORK_GATEWAY_HOME: GW_HOME,
-    GATEWAY_DATABASE_URL: PG_URL,
-    GATEWAY_PG_SCHEMA: schema,
-    GATEWAY_PG_RESET: '1',
-    GATEWAY_HOST: '127.0.0.1',
-    GATEWAY_PORT: String(GW_PORT),
-    GATEWAY_ACCESS_HOST: 'satuwork.com',
-    GATEWAY_SEED_OWNER: '1',
-    GATEWAY_OWNER_EMAIL: 'owner@hook.test',
-    GATEWAY_OWNER_PASSWORD: 'test-owner-hook',
-    TELEGRAM_API_BASE: telegram.url,
-    GATEWAY_CHANNEL_TICK_MS: '600000',
-    GATEWAY_CHANNEL_POLL_SCAN_MS: '250',
-    GATEWAY_CHANNEL_POLL_TIMEOUT_SECONDS: '1',
-    GATEWAY_TELEGRAM_WEBHOOK_BASE: base,
-  }
-  let gw = start('channel-webhook-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], { cwd: gwRoot, env })
-  await waitHttp(`${base}/health`, { child: gw, what: 'channel-webhook gateway' })
+  // env 要留着：后面那条用例拿它去掉两项再起一遍。
+  let { gw, env } = await startGateway({
+    name: 'channel-webhook-gw',
+    what: 'channel-webhook gateway',
+    home: GW_HOME,
+    schema,
+    port: GW_PORT,
+    env: {
+      GATEWAY_ACCESS_HOST: 'satuwork.com',
+      GATEWAY_SEED_OWNER: '1',
+      GATEWAY_OWNER_EMAIL: 'owner@hook.test',
+      GATEWAY_OWNER_PASSWORD: 'test-owner-hook',
+      TELEGRAM_API_BASE: telegram.url,
+      GATEWAY_CHANNEL_TICK_MS: '600000',
+      GATEWAY_CHANNEL_POLL_SCAN_MS: '250',
+      GATEWAY_CHANNEL_POLL_TIMEOUT_SECONDS: '1',
+      GATEWAY_TELEGRAM_WEBHOOK_BASE: base,
+    },
+  })
 
   const require = createRequire(new URL('../gateway/package.json', import.meta.url))
   const pg = require('pg')

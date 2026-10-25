@@ -10,6 +10,7 @@ import { freePort } from './ports.mjs'
 import { createCompany } from './org.mjs'
 import { closeServer } from './probe.mjs'
 import { runProbe } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 export const TOKEN = '123456789:telegram-e2e-token-never-store-plain'
 const APPROVAL_KEY = 'AbCdEfGhIjKlMnOpQrStUv'
@@ -275,20 +276,17 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
   const schema = schemaOf('e2e_channels')
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# channels')
 
   const telegram = await mockTelegram()
   const seat = await mockSeat()
-  const gw = start('channels-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'channels-gw',
+    what: 'channels gateway',
+    home: GW_HOME,
+    schema,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schema,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
       TELEGRAM_API_BASE: telegram.url,
@@ -297,7 +295,6 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       GATEWAY_CHANNEL_POLL_TIMEOUT_SECONDS: '1',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'channels gateway' })
 
   let token = ''
   let pairingCode = ''
