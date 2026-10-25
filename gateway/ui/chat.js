@@ -7119,13 +7119,6 @@ function officeViewFallback(path, name) {
   render()
 }
 
-/** 这台 Gateway 配的 CDN 根（内网镜像时由 index.html 的 meta 带过来，同 markdown.js）。 */
-function officeViewCdn() {
-  const meta = typeof document !== 'undefined' ? document.querySelector('meta[name="satu-cdn"]') : null
-  const base = meta && meta.getAttribute('content')
-  return base && /^https?:\/\//.test(base) ? base.replace(/\/+$/, '') : 'https://cdn.jsdelivr.net/npm'
-}
-
 /**
  * 和浏览器渲染那一页（office-view.js）的交接。
  *
@@ -7144,7 +7137,7 @@ function onOfficeViewMessage(e) {
   if (!p || !p.web || !frame || e.source !== frame.contentWindow || msg.nonce !== p.web.nonce) return
   if (msg.event === 'ready') {
     frame.contentWindow.postMessage(
-      { type: 'satu-office-view', event: 'render', kind: p.web.kind, name: p.name, cdn: officeViewCdn(), data: p.web.data },
+      { type: 'satu-office-view', event: 'render', kind: p.web.kind, name: p.name, cdn: uiCdn(), data: p.web.data },
       '*',
     )
   } else if (msg.event === 'error') {

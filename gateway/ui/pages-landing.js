@@ -656,9 +656,7 @@ function lpFilmMount() {
 let lpThreeLoad = null
 function lpThree() {
   if (!lpThreeLoad) {
-    const meta = document.querySelector('meta[name="satu-cdn"]')
-    const base = (meta?.getAttribute('content') || 'https://cdn.jsdelivr.net/npm').replace(/\/+$/, '')
-    const src = base + LP_THREE.path
+    const src = uiCdn() + LP_THREE.path
     const pre = document.createElement('link')
     pre.rel = 'modulepreload'
     pre.href = src

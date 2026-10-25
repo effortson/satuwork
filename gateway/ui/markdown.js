@@ -18,7 +18,7 @@
  * SRI 摘要，内容对不上一律当拉不到（见 LIBS）。
  *
  * CDN 地址跟着 Gateway 的 `GATEWAY_UI_CDN` 走（内网部署时指到自己的镜像）：Gateway 换了
- * 镜像就在页面里插一条 `<meta name="satu-cdn">`，这里读它；没有就用 jsdelivr。CSP 的
+ * 镜像就在页面里插一条 `<meta name="satu-cdn">`，dom-util.js 的 uiCdn() 读它；没有就用 jsdelivr。CSP 的
  * script-src 只放行 LIBS 里那几个「包@版本/」目录（见 gateway/src/ui-cdn.ts），**在这里
  * 加库或改版本要同时改那张表**，否则浏览器把脚本挡掉，表现和「CDN 拉不到」一模一样。
  */
@@ -42,11 +42,7 @@
     return typeof window.t === 'function' ? window.t(zh) : zh
   }
 
-  const CDN = (function () {
-    const meta = document.querySelector && document.querySelector('meta[name="satu-cdn"]')
-    const v = meta && meta.getAttribute('content')
-    return v ? v.replace(/\/+$/, '') : 'https://cdn.jsdelivr.net/npm'
-  })()
+  // CDN 根由 dom-util.js 的 uiCdn() 读 meta。用到时才问：e2e 的 markdown.mjs 只装这一个文件。
   const loaded = {}
 
   /**
@@ -85,7 +81,7 @@
 
   /** `crossorigin` 是 SRI 的前提：跨源的响应不按 CORS 取，浏览器读不到正文也就核不了。 */
   function loadScript(lib) {
-    const src = CDN + lib.path
+    const src = uiCdn() + lib.path
     if (!loaded[src]) {
       loaded[src] = new Promise((ok, no) => {
         const el = document.createElement('script')
@@ -102,7 +98,7 @@
   }
 
   function loadStyle(lib) {
-    const href = CDN + lib.path
+    const href = uiCdn() + lib.path
     if (loaded[href]) return
     const el = document.createElement('link')
     el.rel = 'stylesheet'
@@ -130,7 +126,7 @@
 
   function mermaidLib() {
     if (!loaded.__mermaid) {
-      const src = CDN + LIBS.mermaid.path
+      const src = uiCdn() + LIBS.mermaid.path
       /**
        * **动态 `import()` 挂不上 integrity**——语法里没有这一格。
        *

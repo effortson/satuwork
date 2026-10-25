@@ -1,8 +1,8 @@
 /**
- * 几样 DOM 小工具：复制到剪贴板、把一个 Blob 存成文件。
+ * 几样 DOM 小工具：复制到剪贴板、把一个 Blob 存成文件、这台 Gateway 配的 CDN 根。
  *
  * 普通脚本，挂全局。**不是分片**：渠道预览页（gateway/src/routes/channels.ts 那一页）不装
- * 那一串分片，却也要存文件；markdown.js 的复制和下载也用它。所以它单独加载，
+ * 那一串分片，却也要存文件、读 CDN 根；markdown.js 的复制和下载也用它。所以它单独加载，
  * 排在 markdown.js 前面——index.html 和渠道预览页都是这个顺序。
  */
 
@@ -71,3 +71,15 @@ function saveBlob(blob, name, revokeMs = 1000) {
   setTimeout(() => URL.revokeObjectURL(url), revokeMs)
 }
 
+/**
+ * 按需加载的那几个库（KaTeX / highlight.js / Mermaid / three.js / Office 渲染库）从哪个 CDN 根拉。
+ *
+ * Gateway 配了内网镜像（`GATEWAY_UI_CDN`）就在页面里插一条 `<meta name="satu-cdn">`（见
+ * gateway/src/ui-cdn.ts，那边已经只放行 http(s)），这里读它；没有就用 jsdelivr。不是 http(s)
+ * 的一律不认——这个值要拼进脚本地址。
+ */
+function uiCdn() {
+  const meta = typeof document !== 'undefined' && document.querySelector ? document.querySelector('meta[name="satu-cdn"]') : null
+  const base = meta && meta.getAttribute('content')
+  return base && /^https?:\/\//.test(base) ? base.replace(/\/+$/, '') : 'https://cdn.jsdelivr.net/npm'
+}

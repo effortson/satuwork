@@ -205,12 +205,6 @@
     return true
   }
 
-  function officeViewCdn() {
-    const meta = document.querySelector('meta[name="satu-cdn"]')
-    const base = meta && meta.getAttribute('content')
-    return base && /^https?:\/\//.test(base) ? base.replace(/\/+$/, '') : 'https://cdn.jsdelivr.net/npm'
-  }
-
   window.addEventListener('message', (e) => {
     const msg = e && e.data
     const view = officeView
@@ -218,7 +212,7 @@
     if (e.source !== view.iframe.contentWindow || msg.nonce !== view.nonce) return
     if (msg.event === 'ready') {
       view.iframe.contentWindow.postMessage(
-        { type: 'satu-office-view', event: 'render', kind: WEB_KIND[ext], name, cdn: officeViewCdn(), data: view.data },
+        { type: 'satu-office-view', event: 'render', kind: WEB_KIND[ext], name, cdn: uiCdn(), data: view.data },
         '*',
       )
     } else if (msg.event === 'error') {
