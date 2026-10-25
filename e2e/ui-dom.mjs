@@ -130,7 +130,7 @@ function makeDom(stubIds = [], copied = []) {
   const stub = { innerHTML: '', value: '', textContent: '', classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, getAttribute: () => null, focus() {}, style: {} }
   const stubs = new Map(stubIds.map((id) => [id, countingStub()]))
   // execCommand('copy') 复制的是「当前选中的那个东西」，所以垫片得真的记住 select()
-  // 选中了谁。没有这一点，render.js 里那条兜底复制（非安全上下文下唯一能用的一条，
+  // 选中了谁。没有这一点，dom-util.js 里那条兜底复制（非安全上下文下唯一能用的一条，
   // 而内网 http 部署就是那个常态）在测里根本跑不起来，只能假装它还在。
   let selected = null
   const body = {

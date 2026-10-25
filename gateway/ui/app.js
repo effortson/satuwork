@@ -783,7 +783,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'chat-copy-all') {
     // 走 copyText 而不是直接 navigator.clipboard：内网 http 页面上那个对象整个不存在，
-    // 裸调必失败。copyText 会退到 execCommand 那条路（见 render.js）。
+    // 裸调必失败。copyText 会退到 execCommand 那条路（见 dom-util.js）。
     const ok = await copyText(chatExportText())
     flash(ok ? 'ok' : 'err', ok ? '已复制全文' : '复制失败，浏览器不允许')
     state.menu = null
