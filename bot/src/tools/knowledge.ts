@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { pinnedBotId } from '../env.ts'
 import { gatewayOk } from '../gateway-api.ts'
+import { clip, oneLine } from './common.ts'
 
 /**
  * 一把工具：`knowledge_search`，在公司知识库里按语义搜（docs/knowledge-base.md §8）。
@@ -19,14 +20,6 @@ export const name = 'satu-tools-knowledge'
 export const inject = ['tools', 'catalog']
 
 const RESULT_MAX = 12_000
-
-function clip(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}\n…（已截断，共 ${text.length} 字符）`
-}
-
-function oneLine(s: string): string {
-  return s.replace(/\s+/g, ' ').trim()
-}
 
 interface Hit {
   kbName: string

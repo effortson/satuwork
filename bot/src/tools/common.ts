@@ -37,9 +37,23 @@ export function runtimeGateway(unconfigured: string) {
     })
 }
 
-/** 截断并说清楚截了多少。悄悄截掉会让模型以为它看到的就是全部。 */
-export function clip(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}\n…（已截断，共 ${text.length} 字符）`
+/** 截断并说清楚截了多少。悄悄截掉会让模型以为它看到的就是全部。`unit` 是那句话里的量词。 */
+export function clip(text: string, max: number, unit = '字符'): string {
+  return text.length <= max ? text : `${text.slice(0, max)}\n…（已截断，共 ${text.length} ${unit}）`
+}
+
+/** 压成一行：换行和连续空白都变成一个空格。 */
+export function oneLine(s: string): string {
+  return s.replace(/\s+/g, ' ').trim()
+}
+
+/** 参数里的字符串（去掉首尾空白）；不是字符串就当没给。 */
+export const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
+
+/** `42s` / `3m05s`。`clampZero` 把负数（时钟回拨）收成 0s。 */
+export function human(ms: number, clampZero = false): string {
+  const s = clampZero ? Math.max(0, Math.round(ms / 1000)) : Math.round(ms / 1000)
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
 }
 
 /** 工具返回的东西：一段文本，外加它落地的（files）与看到的（refs）文件。 */
