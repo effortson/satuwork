@@ -1674,6 +1674,18 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       }
     })
 
+    await test('http.ts 的 UI_PARTS 和 index.html 那串分片一模一样，连顺序', async () => {
+      // 上面那条只验「每个都取得到」。两份名单各写各的，漏了、多了、顺序抄错都没人报——
+      // 加分片时两处要一起改，这一条替人对一遍。
+      const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
+      const parts = [...html.matchAll(/<script src="\/([^"]+)"[^>]*\bdata-app-part\b/g)].map((m) => m[1])
+      const ts = readFileSync(join(root, 'gateway/src/http.ts'), 'utf8')
+      const m = ts.match(/const UI_PARTS = \[([^\]]*)\]/)
+      assert(m, 'http.ts 里找不到 UI_PARTS')
+      const listed = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+      assert(JSON.stringify(listed) === JSON.stringify(parts), `两份对不上：\n  index.html：${parts.join(', ')}\n  UI_PARTS：  ${listed.join(', ')}`)
+    })
+
     await test('首页上点「登录」进得了登录页', async () => {
       const ui = await boot()
       await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/login' }))
