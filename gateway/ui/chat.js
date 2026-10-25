@@ -7354,7 +7354,7 @@ function previewPanel() {
           <h2>${esc(p.name)}</h2>
           <p><code>${esc(p.path)}</code>${meta ? ' · ' + esc(meta) : ''}</p>
         </div>
-        <button type="button" class="btn btn-ghost btn-icon" style="flex: none;" aria-label="${esc(t('关闭'))}" title="${esc(t('关闭'))}" data-act="preview-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+        <button type="button" class="btn btn-ghost btn-icon" style="flex: none;" aria-label="${esc(t('关闭'))}" title="${esc(t('关闭'))}" data-act="preview-close">${svg(CLOSE_ICON, 16)}</button>
       </div>
       <div class="sw-preview-acts">
         ${previewTabs(p)}
@@ -7734,7 +7734,7 @@ function logsModal() {
           <p style="margin: 0 0 var(--space-2); font-size: 13px; color: var(--muted-foreground);">${esc(title || '')}</p>
           ${picker}
         </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="logs-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="logs-close">${svg(CLOSE_ICON, 16)}</button>
       </div>
       <pre id="log-body" style="margin: var(--space-4) 0 0; max-height: 60vh; overflow: auto; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; background: var(--muted); border-radius: var(--radius); padding: var(--space-3);"></pre>
       <p style="margin: var(--space-2) 0 0; font-size: 11.5px; color: var(--muted-foreground);">${t('凭据已在机器那侧盖掉。日志里会有对话正文和执行过的命令。')}</p>
@@ -7796,7 +7796,7 @@ function chatHeadInline() {
             不该收进菜单里。 */ ''}
       ${findToggleHtml()}
       <button type="button" class="btn btn-ghost btn-icon" data-menu-toggle data-act="chat-menu"
-        aria-label="${esc(t('更多操作'))}">${svg(['M12 6h.01', 'M12 12h.01', 'M12 18h.01'], 16)}</button>
+        aria-label="${esc(t('更多操作'))}">${svg(KEBAB_ICON, 16)}</button>
       ${menu}
     </div>`
 }

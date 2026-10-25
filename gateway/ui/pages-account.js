@@ -136,7 +136,7 @@ function planSkuModal() {
           <h2 style="font-size: 20px; margin: 0 0 4px;">${esc(title)}</h2>
           <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('改价目表不会动已经开出去的公司席位。')}</p>
         </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="plan-sku-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="plan-sku-close">${svg(CLOSE_ICON, 16)}</button>
       </div>
       <div class="field">
         <label for="plan-sku-name">${t('名称（中文）')}</label>
@@ -278,7 +278,7 @@ function orderModal() {
           <h2 style="font-size: 20px; margin: 0 0 4px;">${cur ? t('修改订单') : topup ? t('新建充值单') : t('新建套餐单')}</h2>
           <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${topup ? t('充值单付款后才开充值记录，余额也是那时候才涨。') : t('下单时套餐内容会抄进订单，之后改价目表不影响它。')}</p>
         </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="order-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="order-close">${svg(CLOSE_ICON, 16)}</button>
       </div>
       <div class="field">
         <label for="order-kind">${t('单据类型')}</label>
@@ -610,7 +610,7 @@ function passwordModal() {
           <h2 style="font-size: 20px; margin: 0 0 4px;">${t('修改口令', 'Change password')}</h2>
           <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('改完之后，其他设备上的登录会立即失效。', 'Every other device is signed out immediately.')}</p>
         </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${t('关闭', 'Close')}" data-act="pw-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+        <button type="button" class="btn btn-ghost btn-icon" aria-label="${t('关闭', 'Close')}" data-act="pw-close">${svg(CLOSE_ICON, 16)}</button>
       </div>
       <div class="field">
         <label for="pw-old">${t('当前口令', 'Current password')}</label>

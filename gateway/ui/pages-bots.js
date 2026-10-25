@@ -79,7 +79,7 @@ function globalBotsPage() {
             <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('这里建的 Bot 所有公司都能用。公司自己的 Bot 由员工按本公司模版创建。', 'Bots created here are available to every company. Inside a company, members create their own from the company template.')}</p>
           </div>
           <button type="button" class="btn btn-primary" style="flex: none;" data-act="bot-create">
-            ${svg(['M12 5v14', 'M5 12h14'], 15)} ${t('新建 Bot', 'New bot')}
+            ${svg(PLUS_ICON, 15)} ${t('新建 Bot', 'New bot')}
           </button>
         </div>
         ${flashes()}
@@ -991,8 +991,6 @@ const EDIT_ICON = ['M12 20h9', 'M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z']
 const FILE_ICON = ['M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z', 'M14 2v6h6']
 const UPLOAD_ICON = ['M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4', 'm7 9 5-5 5 5', 'M12 4v12']
 const CHECK_ICON = ['m5 13 4 4L19 7']
-const PLUS_ICON = ['M12 5v14', 'M5 12h14']
-const CLOSE_ICON = ['M18 6 6 18', 'M6 6l12 12']
 const SKILL_SOURCES = [
   { key: '手动编写', label: '手动编写' },
   { key: '单文件 Skill', label: '单文件 Skill' },

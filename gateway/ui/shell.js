@@ -174,7 +174,7 @@ function setupView() {
           </div>
           <button type="submit" class="btn btn-primary btn-block" ${state.busy ? 'disabled' : ''}>
             ${state.busy ? t('创建中…') : t('创建并进入')}
-            ${state.busy ? '' : svg(['M5 12h14', 'm12 5 7 7-7 7'], 14)}
+            ${state.busy ? '' : svg(ARROW_RIGHT, 14)}
           </button>
           ${authConsent(t('创建并进入'), 'Create and continue')}
         </form>
@@ -218,7 +218,7 @@ function loginView() {
           </div>
           <button type="submit" class="btn btn-primary btn-block" ${state.busy ? 'disabled' : ''}>
             ${state.busy ? t('登录中…') : t('登录')}
-            ${state.busy ? '' : svg(['M5 12h14', 'm12 5 7 7-7 7'], 14)}
+            ${state.busy ? '' : svg(ARROW_RIGHT, 14)}
           </button>
         </form>
         <p style="text-align: center; margin: 0; font-size: 14px; color: color-mix(in srgb, var(--color-text) 60%, transparent);">${t('还没有账号？联系管理员开通。')}</p>
@@ -320,7 +320,7 @@ function chatRosterNav() {
           </button>
           <button type="button" class="satu-botfolder-more" data-menu-toggle data-act="menu-toggle" data-id="${esc(menuId)}"
             aria-haspopup="true" aria-expanded="${String(state.menu === menuId)}"
-            aria-label="${esc(t('分类操作', 'Folder actions'))}" title="${esc(t('分类操作', 'Folder actions'))}">${svg(['M12 6h.01', 'M12 12h.01', 'M12 18h.01'], 14)}</button>
+            aria-label="${esc(t('分类操作', 'Folder actions'))}" title="${esc(t('分类操作', 'Folder actions'))}">${svg(KEBAB_ICON, 14)}</button>
           ${
             state.menu === menuId
               ? `<div class="satu-menu" data-flip="${String(Boolean(state.menuFlip))}">
@@ -734,7 +734,7 @@ function paintRoster() {
 function flashRow(kind, text) {
   return `<div class="gw-flash gw-flash-${kind}" data-flash>
     <span class="gw-flash-text">${esc(text)}</span>
-    <button type="button" class="gw-flash-x" data-act="flash-close" aria-label="${esc(t('关闭'))}">${svg(['M18 6 6 18', 'M6 6l12 12'], 14)}</button>
+    <button type="button" class="gw-flash-x" data-act="flash-close" aria-label="${esc(t('关闭'))}">${svg(CLOSE_ICON, 14)}</button>
   </div>`
 }
 

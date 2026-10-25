@@ -285,12 +285,12 @@ function appView() {
           isOwner()
             ? ''
             : `<div class="satu-newbotrow">
-          <button type="button" class="satu-newbot" data-act="new-bot">${svg(['M12 5v14', 'M5 12h14'], 15)} <span>${t('新建 Bot', 'New bot')}</span></button>
+          <button type="button" class="satu-newbot" data-act="new-bot">${svg(PLUS_ICON, 15)} <span>${t('新建 Bot', 'New bot')}</span></button>
           ${/* 走全局那套菜单（app.js 的 menu-toggle / state.menu，和成员表、对话顶栏
                 同一套）：点外面自动收、翻不下去时自动向上弹，都是现成的。 */ ''}
           <button type="button" class="satu-newbot satu-newbot-more" data-menu-toggle data-act="menu-toggle" data-id="botmore"
             aria-haspopup="true" aria-expanded="${String(state.menu === 'botmore')}"
-            aria-label="${esc(t('更多', 'More'))}" title="${esc(t('更多', 'More'))}">${svg(['M12 6h.01', 'M12 12h.01', 'M12 18h.01'], 15)}</button>
+            aria-label="${esc(t('更多', 'More'))}" title="${esc(t('更多', 'More'))}">${svg(KEBAB_ICON, 15)}</button>
           ${
             state.menu === 'botmore'
               ? `<div class="satu-menu" data-flip="${String(Boolean(state.menuFlip))}">

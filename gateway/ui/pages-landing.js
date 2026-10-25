@@ -868,7 +868,7 @@ function lpSalesModal() {
               'Scan with your phone to talk on WhatsApp — provisioning, seats and plans.',
             )}</p>
           </div>
-          <button type="button" class="btn btn-ghost btn-icon" style="flex: none;" data-act="landing-sales-close" aria-label="${esc(t('关闭'))}">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+          <button type="button" class="btn btn-ghost btn-icon" style="flex: none;" data-act="landing-sales-close" aria-label="${esc(t('关闭'))}">${svg(CLOSE_ICON, 16)}</button>
         </div>
         <div class="satu-lp-qr">
           <img src="/assets/sales-whatsapp.svg" alt="${esc(t(`WhatsApp 二维码：${LP_SALES_SHOW}`, `WhatsApp QR code: ${LP_SALES_SHOW}`))}" width="180" height="180">
@@ -1228,9 +1228,6 @@ function paintDownload(os) {
 }
 
 
-/** 主 CTA 上那支箭。这一屏的按钮全是方的、字是大写的，箭头是它唯一的装饰。 */
-const LP_ARROW = ['M5 12h14', 'm12 5 7 7-7 7']
-
 /**
  * 首页本体。
  *
@@ -1248,7 +1245,7 @@ function landingView() {
   // 走 theme.css 那套药丸（.btn / .btn-primary），不另起一套方按钮：这颗点下去就是
   // /login，而那一屏上每一颗按钮都是圆头的。见 app.css 里 .satu-lp-ctas 那段。
   const cta = `<button type="button" class="btn btn-primary" data-act="go" data-href="/login">
-    ${t('登录 Satuwork', 'Sign in to Satuwork')}${svg(LP_ARROW, 14)}
+    ${t('登录 Satuwork', 'Sign in to Satuwork')}${svg(ARROW_RIGHT, 14)}
   </button>`
   return `
   <div class="satu-lp">

@@ -585,7 +585,7 @@ function pluginsHead(title, back) {
   return `<div style="display: flex; align-items: center; gap: var(--space-2);">
     ${back ? `<button type="button" class="btn btn-ghost btn-icon" style="flex: none;" data-act="plugins-back" aria-label="${esc(t('返回'))}">${svg(BACK_ARROW, 17)}</button>` : ''}
     <h2 style="flex: 1; min-width: 0; margin: 0; font-size: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(title)}</h2>
-    <button type="button" class="btn btn-ghost btn-icon" style="flex: none;" data-act="plugins-close" aria-label="${esc(t('关闭'))}">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+    <button type="button" class="btn btn-ghost btn-icon" style="flex: none;" data-act="plugins-close" aria-label="${esc(t('关闭'))}">${svg(CLOSE_ICON, 16)}</button>
   </div>`
 }
 

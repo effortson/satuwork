@@ -46,7 +46,7 @@ function joinView() {
           ${state.joinError ? `<div class="gw-flash gw-flash-err">${esc(state.joinError)}</div>` : ''}
           <button type="submit" class="btn btn-primary btn-block" ${state.busy ? 'disabled' : ''}>
             ${state.busy ? t('加入中…') : t('加入 Satuwork')}
-            ${state.busy ? '' : svg(['M5 12h14', 'm12 5 7 7-7 7'], 14)}
+            ${state.busy ? '' : svg(ARROW_RIGHT, 14)}
           </button>
           ${authConsent(t('加入 Satuwork'), 'Join Satuwork')}
         </form>
@@ -358,7 +358,7 @@ function orgCreateModal() {
           <h2 style="font-size: 20px; margin: 0 0 4px;">${t('新建公司')}</h2>
           <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('创建公司并指定一名管理员。')}</p>
         </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="org-create-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="org-create-close">${svg(CLOSE_ICON, 16)}</button>
       </div>
       ${state.orgCreateError ? `<div class="gw-flash gw-flash-err">${esc(state.orgCreateError)}</div>` : ''}
       <div class="field">
@@ -1132,7 +1132,7 @@ function seatEnvModal() {
           <h2 style="font-size: 20px; margin: 0 0 4px;">${t('员工环境')}</h2>
           <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${esc(m.name || m.email)} · ${esc(m.email)}</p>
         </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="seat-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="seat-close">${svg(CLOSE_ICON, 16)}</button>
       </div>
       ${body}
     </div>
