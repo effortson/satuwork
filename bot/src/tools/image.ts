@@ -4,6 +4,7 @@ import { extname } from 'node:path'
 import { gatewayApiKey, llmBaseUrl } from '../env.ts'
 import type { WorkspaceFile } from './index.ts'
 import { type Alpha, decodeAlpha, encodeAlphaMask, encodeGray, jpegOrientation, jpegSegments, pngInfo, unorient } from './png.ts'
+import { ssePayloads } from '../sse.ts'
 
 /**
  * `generate_image`：按一段描述画一张图，或者拿工作区里已有的图改，落进工作区 `images/`。
@@ -280,19 +281,7 @@ function payloadsOf(text: string): { list: Record<string, unknown>[] } | { error
       return { error: '答复不是合法的 JSON' }
     }
   }
-  const list: Record<string, unknown>[] = []
-  for (const frame of text.split(/\r?\n\r?\n/)) {
-    for (const line of frame.split(/\r?\n/)) {
-      if (!line.startsWith('data:')) continue
-      const payload = line.slice(5).trim()
-      if (!payload || payload === '[DONE]') continue
-      try {
-        const o: unknown = JSON.parse(payload)
-        if (o && typeof o === 'object') list.push(o as Record<string, unknown>)
-      } catch {}
-    }
-  }
-  return { list }
+  return { list: ssePayloads(text).filter((o): o is Record<string, unknown> => !!o && typeof o === 'object') }
 }
 
 function errorOf(o: Record<string, unknown>): string | undefined {
