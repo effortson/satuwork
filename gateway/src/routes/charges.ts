@@ -10,7 +10,8 @@
  */
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Req, type Router } from '../http.ts'
-import { rangeQuery, requireOrgUser, requireOwnerUser, requireUser } from '../lib/guards.ts'
+import { requireOrgUser, requireOwnerUser, requireUser } from '../lib/guards.ts'
+import { rangeQuery } from '../lib/usage.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { chargeCursorOf, companyOr404 } from '../lib/org.ts'
 import { CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type Account, type ChargeKind, type ChargeStatus, type Company, type UsageCharge } from '../db.ts'

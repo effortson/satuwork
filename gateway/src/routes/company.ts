@@ -13,7 +13,8 @@ import { bodyOf, deployOptsOf, strField, usd, usdMicros } from '../lib/validate.
 import { companyMachineOf, deploySeatBriefly, listSeatRuntime, publicMachine, publicSeatRuntime, releaseSeats } from '../deploy.ts'
 import { accountInOrg, companyOr404, companyStatusOf, emailOf, groupRoleOf, membersInCompany, orgSettings, patchAccount, phoneOf, publicAccount, publicCompany, publicGroup, publicPlan, publicSettings, roleOf, slugOf, stringIds, websiteOf } from '../lib/org.ts'
 import { desktopTicketFor, machineHostOf, machineResolver } from '../lib/machines.ts'
-import { type BarStep, dayBucketOf, dayLabelOf, inviteLinkOf, issueInvite, rangeQuery, requireOrgUser, requireOwner, requireUser, stepMs, stepQuery, tzOffsetMs, usageBars, usagePayload } from '../lib/guards.ts'
+import { inviteLinkOf, issueInvite, requireOrgUser, requireOwner, requireUser } from '../lib/guards.ts'
+import { rangeQuery, stepQuery, tzOffsetMs, usageDims, usagePayload } from '../lib/usage.ts'
 import { randomUUID } from 'node:crypto'
 import { afterResponse } from '../lib/background.ts'
 import { cleanupKnowledgeBase } from '../lib/knowledge.ts'
@@ -666,129 +667,6 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     })
   })
 
-  /**
-   * 用量屏那几块维度：日线、按 Bot、按模型、按类型。
-   *
-   * 都从已经有的两张表来——事实在 `llm_calls`，钱在账本——所以公司管理员这一屏和平台
-   * 那一屏是同一个口径，不是另算一份。以前这四个字段是写死的空数组，界面上四块永远
-   * 写着「还没有用量」，而底下的计费明细一屏都是——两个说法互相打脸。
-   *
-   * `offsetMs` 是看的人所在时区的偏移，只有日线用得上（见 `db.llmDailyBy`）。
-   * `step` 是柱子的粒度：「今日」那一屏按小时，别的按天。
-   */
-  async function usageDims(
-    scope: { companyId?: string; accountId?: string },
-    range: { from?: number; to?: number },
-    offsetMs: number,
-    step: BarStep = 'day',
-  ) {
-    const column = scope.companyId ? 'companyId' : 'accountId'
-    const value = scope.companyId ?? scope.accountId ?? ''
-    /**
-     * 「今日」= 看的人所在时区的零点到现在，**不跟着上面选的范围走**：选「近 30 天」
-     * 的时候想知道的也常常是「今天已经花了多少」，那一格从 30 根柱子里抠不准（最后一根
-     * 的时区、边界都得自己心算）。
-     */
-    const now = Date.now()
-    const todayBucket = dayBucketOf(now, offsetMs)
-    const todayRange = { from: todayBucket * 86400000 - offsetMs, to: now }
-    const [buckets, spentBuckets, models, charges, todayUsage, todayCharges] = await Promise.all([
-      db.llmDailyBy(column, value, range, offsetMs, stepMs(step)),
-      db.chargeDailyBy(column, value, range, offsetMs, stepMs(step)),
-      db.llmUsageByCompanyModel(range, scope.companyId, scope.accountId),
-      db.chargeUsageBy(['botId', 'kind', 'subject'], range, scope),
-      scope.companyId ? db.llmUsageOfCompany(scope.companyId, todayRange) : db.llmUsageOfAccount(value, todayRange),
-      db.chargeUsageBy(['kind'], todayRange, scope),
-    ])
-
-    // 没有调用的那天（那个小时）也画一根 0 柱、右端不越过现在——规矩在 dailyBars / hourlyBars 里，
-    // 平台统计那一屏同一套。
-    const daily = usageBars(step, buckets, spentBuckets, range, offsetMs)
-
-    /** 账本上这一段的钱，按对象（模型是 `provider/model`、连接器是 `连接器:工具`）摊开。 */
-    const spentBySubject = new Map<string, number>()
-    const byKindAcc = new Map<string, { calls: number; micros: number }>()
-    const byBotAcc = new Map<string, { calls: number; micros: number }>()
-    for (const c of charges) {
-      spentBySubject.set(c.subject, (spentBySubject.get(c.subject) ?? 0) + c.amountMicros)
-      const k = byKindAcc.get(c.kind) ?? { calls: 0, micros: 0 }
-      k.calls += c.calls
-      k.micros += c.amountMicros
-      byKindAcc.set(c.kind, k)
-      // botId 只有连接器那条路填得上（见 lib/meter.ts）。填不上的不兜成「未标记」——
-      // 那一行会一口气占掉九成，把真正带标识的几行压成看不见的细线。
-      if (!c.botId) continue
-      const b = byBotAcc.get(c.botId) ?? { calls: 0, micros: 0 }
-      b.calls += c.calls
-      b.micros += c.amountMicros
-      byBotAcc.set(c.botId, b)
-    }
-
-    const n = (x: number) => x.toLocaleString('en-US')
-    const pctOf = (x: number, top: number) => (top > 0 ? Math.round((x / top) * 100) : 0)
-
-    /** 同一个模型可能跨多家公司/多个人分了几行，这里按 `provider/model` 合回去。 */
-    const modelAcc = new Map<string, { tokens: number; calls: number }>()
-    for (const m of models) {
-      const key = `${m.provider}/${m.model}`
-      const cur = modelAcc.get(key) ?? { tokens: 0, calls: 0 }
-      cur.tokens += m.promptTokens + m.completionTokens
-      cur.calls += m.calls
-      modelAcc.set(key, cur)
-    }
-    /**
-     * 三块分布的条长都按**钱**算，不按次数或 token：这一页回答的是「钱花哪了」，
-     * 一次 gpt-5 的调用和一次连接器查询按次数等长，按钱差两个量级。排序跟着条长走，
-     * 不然最长的条会出现在第二行。
-     */
-    const modelRows = [...modelAcc.entries()]
-      .map(([name, m]) => ({ name, tokens: m.tokens, micros: spentBySubject.get(name) ?? 0 }))
-      .sort((a, b) => b.micros - a.micros || b.tokens - a.tokens)
-    const topModel = modelRows[0]?.micros ?? 0
-    const byModel = modelRows.map((m) => ({
-      name: m.name,
-      value: `${n(m.tokens)} token · ${usdMicros(m.micros)}`,
-      pct: pctOf(m.micros, topModel),
-    }))
-
-    const KINDS: [string, string][] = [['llm', '模型'], ['connector', '连接器'], ['web', '网页'], ['kb', '知识库']]
-    const topKind = Math.max(0, ...[...byKindAcc.values()].map((x) => x.micros))
-    const byKind = KINDS.filter(([k]) => byKindAcc.has(k)).map(([k, label]) => {
-      const x = byKindAcc.get(k) as { calls: number; micros: number }
-      return { name: label, value: `${n(x.calls)} 次 · ${usdMicros(x.micros)}`, pct: pctOf(x.micros, topKind) }
-    })
-
-    const bots = scope.companyId
-      ? await db.companyBots(scope.companyId)
-      : scope.accountId
-        ? await db.botsFor((await db.account(scope.accountId))?.companyId ?? null, scope.accountId)
-        : []
-    const botName = new Map(bots.map((b) => [b.id, b.name]))
-    const botRows = [...byBotAcc.entries()].sort((a, b) => b[1].micros - a[1].micros || b[1].calls - a[1].calls)
-    const topBot = botRows[0]?.[1].micros ?? 0
-    const byAgent = botRows.map(([id, x]) => ({
-      // 名字查不到就用 id：Bot 被删了，它花过的钱还在账上。
-      name: botName.get(id) ?? id,
-      value: `${n(x.calls)} 次 · ${usdMicros(x.micros)}`,
-      pct: pctOf(x.micros, topBot),
-    }))
-
-    const todayKind = new Map(todayCharges.map((c) => [c.kind, c]))
-    const today = {
-      label: dayLabelOf(todayBucket),
-      calls: todayUsage.calls,
-      promptTokens: todayUsage.promptTokens,
-      completionTokens: todayUsage.completionTokens,
-      amount: usdMicros(todayCharges.reduce((n, c) => n + c.amountMicros, 0)),
-      // 三条路各自的次数和钱，一条都没有的不列——和上面「按类型」同一个口径。
-      byKind: KINDS.filter(([k]) => todayKind.has(k)).map(([k, label]) => {
-        const x = todayKind.get(k) as { calls: number; amountMicros: number }
-        return { name: label, value: `${n(x.calls)} 次 · ${usdMicros(x.amountMicros)}` }
-      }),
-    }
-
-    return { daily, byAgent, byModel, byKind, today }
-  }
 
   /**
    * 公司用量。调用次数和 token 从 `llm_calls` 汇总，钱从账本汇总（三条路都算）。
@@ -810,7 +688,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
       spentByAccount.set(row.accountId, (spentByAccount.get(row.accountId) ?? 0) + row.amountMicros)
       spentMicros += row.amountMicros
     }
-    const dims = await usageDims({ companyId: company.id }, range, tzOffsetMs(req), stepQuery(req))
+    const dims = await usageDims(db, { companyId: company.id }, range, tzOffsetMs(req), stepQuery(req))
     json(res, 200, usagePayload(usage, { seats, members, includeMembers: true, spentByAccount, spentMicros, dims }))
   })
 
@@ -819,7 +697,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     const range = rangeQuery(req)
     const usage = await db.llmUsageOfAccount(account.id, range)
     const mine = await db.chargeUsageBy(['accountId'], range, { accountId: account.id })
-    const dims = await usageDims({ accountId: account.id }, range, tzOffsetMs(req), stepQuery(req))
+    const dims = await usageDims(db, { accountId: account.id }, range, tzOffsetMs(req), stepQuery(req))
     json(res, 200, usagePayload(usage, {
       seats: 0,
       members: [account],

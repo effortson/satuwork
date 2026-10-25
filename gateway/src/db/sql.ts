@@ -1,3 +1,7 @@
+/** 日线、小时线的桶宽。SQL 里切桶（db.ts 的 bucketSql）和界面上铺柱子（lib/usage.ts）用同一个数。 */
+export const DAY_MS = 86400000
+export const HOUR_MS = 3600000
+
 /**
  * 「几个等值条件 + createdAt 区间」那段 where，拼成 ` and …` 接在调用方自己的 `where 1=1` 后面。
  *
