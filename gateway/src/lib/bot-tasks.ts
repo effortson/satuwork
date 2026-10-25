@@ -9,7 +9,7 @@
  *  2. **目标那边砸了也要送回去。** 主 Bot 要知道「财务那颗没做成，因为席位掉线了」才能换人或
  *     告诉用户；静静地 failed 等于让它永远在等。只有送不回主 Bot 那一种才是 failed。
  */
-import type { Account, BotTask, BotTaskProgress, CatalogItem, Db } from '../db.ts'
+import type { Account, BotTask, BotTaskPatch, BotTaskProgress, CatalogItem, Db } from '../db.ts'
 import { MIN_TASK_WORKER_PROTOCOL, machinePaired } from '../deploy.ts'
 import { runtimeKindOf } from './catalog.ts'
 
@@ -283,7 +283,7 @@ async function toReporting(
   // 现读一次：等待租约、停止标记都是别的请求在写，手上这一行是领活时的快照。
   const fresh = (await db.botTask(task.id)) ?? task
   const cancel = () => db.updateBotTaskIf(task.id, expect, { ...common0, status: 'cancelled', owner: null })
-  const write = async (patch: Parameters<Db['updateBotTask']>[1]) => {
+  const write = async (patch: BotTaskPatch) => {
     if (await db.updateBotTaskIf(task.id, { ...expect, notCancelled: true }, patch)) return
     if ((await db.botTask(task.id))?.cancelledAt) await cancel()
   }

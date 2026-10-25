@@ -1686,6 +1686,9 @@ export interface BotTask {
   progress: BotTaskProgress | null
 }
 
+/** 派活那一行能改的几格。只改给了的那几格；null 也是一个值（清掉租约就是把它设成 null）。 */
+export type BotTaskPatch = Partial<Pick<BotTask, 'status' | 'owner' | 'leaseUntil' | 'attempts' | 'runSessionId' | 'runKind' | 'result' | 'error' | 'endedAt' | 'deliveredAt' | 'waiterUntil' | 'cancelledAt' | 'readyAt'>>
+
 /** 同 bot/src/session/types.ts 的 TaskProgress。 */
 export interface BotTaskProgress {
   steps: number

@@ -5,7 +5,7 @@ import { randomAccessToken, randomApiKey, randomMachineToken } from './crypto.ts
 import { migrate, migrationState, type MigrateResult } from './db/migrate.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
-import { type Handoff, type HandoffState, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotFolder, type BotRelease, type BotTask, type BotTaskProgress, type BotTaskStatus, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type KnowledgeBase, type KnowledgeChunk, type KnowledgeFile, type KnowledgeFileStatus, type KnowledgeShare, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
+import { type Handoff, type HandoffState, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotFolder, type BotRelease, type BotTask, type BotTaskPatch, type BotTaskProgress, type BotTaskStatus, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type KnowledgeBase, type KnowledgeChunk, type KnowledgeFile, type KnowledgeFileStatus, type KnowledgeShare, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
 import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botFolderOf, botReleaseOf, botTaskOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, knowledgeBaseOf, knowledgeChunkOf, knowledgeFileOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
@@ -4081,20 +4081,9 @@ export class Db {
   }
 
   /** 改几格。只改给了的那几格；null 也是一个值（清掉租约就是把它设成 null）。 */
-  async updateBotTask(
-    id: string,
-    patch: Partial<Pick<BotTask, 'status' | 'owner' | 'leaseUntil' | 'attempts' | 'runSessionId' | 'runKind' | 'result' | 'error' | 'endedAt' | 'deliveredAt' | 'waiterUntil' | 'cancelledAt' | 'readyAt'>>,
-  ): Promise<boolean> {
-    const sets: string[] = []
-    const args: unknown[] = []
-    for (const [k, v] of Object.entries(patch)) {
-      if (v === undefined) continue
-      sets.push(`"${k}" = ?`)
-      args.push(v)
-    }
-    if (!sets.length) return false
-    args.push(id)
-    return (await this.run(`update bot_tasks set ${sets.join(', ')} where id = ?`, args)) > 0
+  async updateBotTask(id: string, patch: BotTaskPatch): Promise<boolean> {
+    // 不带条件的那一种：where 只剩 id = ?，和下面那条拼出来的 SQL 一字不差。
+    return this.updateBotTaskIf(id, {}, patch)
   }
 
   /**
@@ -4107,7 +4096,7 @@ export class Db {
   async updateBotTaskIf(
     id: string,
     cond: { status?: BotTaskStatus; leaseUntil?: number | null; notCancelled?: boolean },
-    patch: Parameters<Db['updateBotTask']>[1],
+    patch: BotTaskPatch,
   ): Promise<boolean> {
     const sets: string[] = []
     const args: unknown[] = []
