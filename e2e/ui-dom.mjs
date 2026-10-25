@@ -189,9 +189,10 @@ export function uiSource(uiDir) {
    * core.js 排在最前面：它不是分片（不带 data-app-part，是 core/src 打出来的产物），但
    * prefs.js / state.js 里的转接（`const esc = SatuCore.esc` 这类）一跑就要它在。线上它也是
    * index.html 里第一个普通脚本。它是 `var SatuCore = (() => …)()`，塞进同一个函数体里照样
-   * 是个局部变量，后面的分片都看得见。
+   * 是个局部变量，后面的分片都看得见。dom-util.js 同理：也不是分片（渠道预览页也装它），
+   * 分片里的复制、存文件直接调它。markdown.js 不装——垫片里的对话一直是不走 Markdown 的那条路。
    */
-  return ['core.js', ...parts].map((f) => readFileSync(join(uiDir, f), 'utf8')).join('\n')
+  return ['core.js', 'dom-util.js', ...parts].map((f) => readFileSync(join(uiDir, f), 'utf8')).join('\n')
 }
 
 /**

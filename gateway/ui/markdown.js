@@ -352,7 +352,8 @@
   }
 
   // ── 代码块 / 表格 / Mermaid 上那几个按钮 ─────────────────────────────
-  function copyText(text, btn) {
+  /** 复制走 dom-util.js 的 copyText（带 execCommand 兜底）；复制成了按钮上闪一下「已复制」。 */
+  function copyAndMark(text, btn) {
     const done = () => {
       if (!btn) return
       const old = btn.getAttribute('data-label') || btn.textContent
@@ -364,20 +365,9 @@
         btn.removeAttribute('data-ok')
       }, 1400)
     }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, () => {})
-      return
-    }
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.cssText = 'position:fixed;opacity:0'
-    document.body.appendChild(ta)
-    ta.select()
-    try {
-      document.execCommand('copy')
-      done()
-    } catch {}
-    ta.remove()
+    void copyText(text).then((ok) => {
+      if (ok) done()
+    })
   }
 
   function download(name, text, type) {
@@ -419,7 +409,7 @@
 
       if (act === 'copy') {
         const code = fig.querySelector('.sw-mermaid-src code, pre code')
-        copyText(code ? code.textContent || '' : '', btn)
+        copyAndMark(code ? code.textContent || '' : '', btn)
         return
       }
       if (act === 'download') {
@@ -437,7 +427,7 @@
       if (act === 'mermaid-svg') {
         const svg = fig.querySelector('.sw-mermaid-canvas svg')
         if (svg) download('diagram.svg', svg.outerHTML, 'image/svg+xml;charset=utf-8')
-        else copyText((fig.querySelector('.sw-mermaid-src code') || {}).textContent || '', btn)
+        else copyAndMark((fig.querySelector('.sw-mermaid-src code') || {}).textContent || '', btn)
         return
       }
       if (act === 'copy-table') {
@@ -445,7 +435,7 @@
         for (const tr of fig.querySelectorAll('tr')) {
           rows.push(Array.from(tr.children, (td) => (td.textContent || '').trim()).join('\t'))
         }
-        copyText(rows.join('\n'), btn)
+        copyAndMark(rows.join('\n'), btn)
       }
     },
     true,
