@@ -1,4 +1,4 @@
-import { Account, AuditEvent, BotDeletionRequest, BotFolder, BotRelease, BotTask, BotTaskProgress, BotTaskStatus, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorCall, ConnectorCallStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, KNOWLEDGE_FILE_STATUSES, KNOWLEDGE_SHARES, KnowledgeBase, KnowledgeChunk, KnowledgeFile, KnowledgeFileStatus, KnowledgeShare, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, ImageModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatDeployRequest, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseKnowledgeSettings, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
+import { Account, AuditEvent, BotDeletionRequest, BotFolder, BotRelease, BotTask, BotTaskProgress, BotTaskStatus, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, KNOWLEDGE_FILE_STATUSES, KNOWLEDGE_SHARES, KnowledgeBase, KnowledgeChunk, KnowledgeFile, KnowledgeFileStatus, KnowledgeShare, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, ImageModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatDeployRequest, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseKnowledgeSettings, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
 
 /**
  * `select *` 回来的裸行 → 上面那些类型。
@@ -575,27 +575,6 @@ export function connectorConnectionOf(r: Row): ConnectorConnection {
   }
 }
 
-export function connectorCallOf(r: Row): ConnectorCall {
-  return {
-    id: str(r.id),
-    companyId: strOrNull(r.companyId),
-    accountId: str(r.accountId),
-    connectionId: strOrNull(r.connectionId),
-    botId: strOrNull(r.botId),
-    sessionId: strOrNull(r.sessionId),
-    vendor: str(r.vendor),
-    connector: str(r.connector),
-    label: str(r.label || ''),
-    tool: str(r.tool),
-    status: str(r.status) as ConnectorCallStatus,
-    amountMicros: num(r.amountMicros),
-    bonusMicros: num(r.bonusMicros),
-    latencyMs: num(r.latencyMs),
-    viaMention: r.viaMention === true,
-    createdAt: num(r.createdAt),
-  }
-}
-
 /** 账本行。jsonb 两列回来已经是对象，但早期写进去的字符串也兜一下（jsonOf）。 */
 export function usageChargeOf(r: Row): UsageCharge {
   const nums = (v: unknown): Record<string, number> => {
@@ -757,16 +736,6 @@ export function botDeletionRequestOf(r: Row): BotDeletionRequest {
     lastError: strOrNull(r.lastError),
     orphans: Array.isArray(orphans) ? orphans.map((x) => ({ seatId: str((x as any)?.seatId || ''), error: str((x as any)?.error || '') })) : [],
     requestedAt: num(r.requestedAt), auditCompletedAt: numOrNull(r.auditCompletedAt), deletedAt: numOrNull(r.deletedAt),
-  }
-}
-export function credOf(r: Row): Credential {
-  return {
-    id: str(r.id),
-    companyId: str(r.companyId),
-    provider: str(r.provider),
-    secret: str(r.secret),
-    createdAt: num(r.createdAt),
-    updatedAt: num(r.updatedAt),
   }
 }
 export function llmCallOf(r: Row): LlmCall {

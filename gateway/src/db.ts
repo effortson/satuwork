@@ -1194,25 +1194,6 @@ export class Db {
     return num(r?.n ?? 0)
   }
 
-  async webCallsOfCompany(companyId: string): Promise<WebCall[]> {
-    const rows = await this.many('select * from web_calls where "companyId" = ? order by "createdAt" desc', [companyId])
-    return rows.map((r) => ({
-      id: str(r.id),
-      accountId: str(r.accountId),
-      companyId: strOrNull(r.companyId),
-      kind: str(r.kind) as WebCallKind,
-      backend: str(r.backend),
-      units: num(r.units),
-      mils: num(r.mils),
-      createdAt: num(r.createdAt),
-    }))
-  }
-
-  async llmCallsOfCompany(companyId: string): Promise<LlmCall[]> {
-    const rows = await this.many('select * from llm_calls where "companyId" = ? order by "createdAt" desc', [companyId])
-    return rows.map(llmCallOf)
-  }
-
   private llmRangeSql(range?: { from?: number; to?: number }): { sql: string; args: number[] } {
     let sql = ''
     const args: number[] = []
@@ -2419,11 +2400,6 @@ export class Db {
     return r ? planOrderOf(r) : undefined
   }
 
-  async planOrdersOfCompany(companyId: string): Promise<PlanOrder[]> {
-    const rows = await this.many('select * from plan_orders where "companyId" = ? order by "startAt" desc', [companyId])
-    return rows.map(planOrderOf)
-  }
-
   async insertPlanOrder(input: Omit<PlanOrder, 'id' | 'createdAt' | 'updatedAt'>): Promise<PlanOrder> {
     const now = Date.now()
     const row: PlanOrder = { ...input, id: randomUUID(), createdAt: now, updatedAt: now }
@@ -2692,11 +2668,6 @@ export class Db {
   async knowledgeFile(id: string): Promise<KnowledgeFile | undefined> {
     const r = await this.one('select * from knowledge_files where id = ?', [id])
     return r ? knowledgeFileOf(r) : undefined
-  }
-
-  async countKnowledgeFiles(kbId: string): Promise<number> {
-    const r = await this.one('select count(*)::int as n from knowledge_files where "kbId" = ?', [kbId])
-    return Number((r as { n?: number } | undefined)?.n ?? 0)
   }
 
   async insertKnowledgeFile(input: { kbId: string; companyId: string; name: string; mime: string; bytes: number; createdBy: string | null; status?: KnowledgeFileStatus; storage?: string }): Promise<KnowledgeFile> {
@@ -3830,16 +3801,6 @@ export class Db {
     return rows.map(catalogOf)
   }
 
-  /** 这颗 Bot 的私有档，只有它自己那一档。界面上那一栏和条数上限都读它。 */
-  async seatSkills(accountId: string, botId: string): Promise<CatalogItem[]> {
-    const rows = await this.many(
-      `select * from catalog_items where kind = 'skill' and scope = 'user'
-         and "accountId" = ? and "botId" = ? order by "updatedAt" desc`,
-      [accountId, botId],
-    )
-    return rows.map(catalogOf)
-  }
-
   async companyCatalog(kind: CatalogKind, companyId: string): Promise<CatalogItem[]> {
     const rows = await this.many(
       "select * from catalog_items where kind = ? and scope = 'company' and \"companyId\" = ? order by name",
@@ -4229,40 +4190,15 @@ export class Db {
     return Number((r as { n?: number } | undefined)?.n ?? 0)
   }
 
-  async markBotDeleting(botId: string, deletingAt: number | null): Promise<CatalogItem | undefined> {
-    const r = await this.one(
-      'update catalog_items set "deletingAt" = ?, "updatedAt" = ? where id = ? and kind = \'bot\' returning *',
-      [deletingAt, Date.now(), botId],
-    )
-    return r ? catalogOf(r) : undefined
-  }
-
   async deleteCatalog(id: string): Promise<void> {
     await this.run('delete from catalog_items where id = ?', [id])
   }
 
   // ── 密钥 ──────────────────────────────────────────────────────────────
 
-  async insertCredential(input: { companyId: string; provider: string; secret: string }): Promise<Credential> {
-    const now = Date.now()
-    const row: Credential = {
-      id: randomUUID(),
-      companyId: input.companyId,
-      provider: input.provider,
-      secret: input.secret,
-      createdAt: now,
-      updatedAt: now,
-    }
-    await this.run(
-      'insert into credentials (id, "companyId", provider, secret, "createdAt", "updatedAt") values (?,?,?,?,?,?)',
-      [row.id, row.companyId, row.provider, row.secret, row.createdAt, row.updatedAt],
-    )
-    return row
-  }
-
   /**
    * 公司密钥那一组方法**全撤了**：按公司查的（credentialsOf / credentialByProvider）、
-   * 写的（upsertCredential）、删的（deleteCredentialByProvider），和按 id 走的那三个
+   * 写的（insertCredential / upsertCredential）、删的（deleteCredentialByProvider），和按 id 走的那三个
    * （credential / updateCredential / deleteCredential）。供应商只由平台配，没有任何
    * 一条路再读写 `credentials` 这张表。
    *
@@ -4681,30 +4617,6 @@ export class Db {
         keepLease ? leaseToken : '', next.sessionId, next.reply, JSON.stringify(next.files), JSON.stringify(next.handoffs), next.lastError, next.updatedAt,
         next.deliveredAt, id, leaseToken],
     )) === 1
-  }
-
-  async updateChannelEvent(id: string, patch: {
-    status: ChannelEventStatus
-    attempts?: number
-    nextTryAt?: number | null
-    leaseUntil?: number | null
-    sessionId?: string | null
-    reply?: string
-    files?: { path: string; name: string }[]
-    handoffs?: ChannelEvent['handoffs']
-    lastError?: string | null
-    deliveredAt?: number | null
-  }): Promise<void> {
-    const cur = await this.channelEvent(id)
-    if (!cur) return
-    const next = { ...cur, ...patch, updatedAt: Date.now() }
-    await this.run(
-      `update channel_events set status=?, attempts=?, "nextTryAt"=?, "leaseUntil"=?, "leaseToken"=?, "sessionId"=?, reply=?, files=?, handoffs=?,
-       "lastError"=?, "updatedAt"=?, "deliveredAt"=? where id=?`,
-      [next.status, next.attempts, next.nextTryAt, next.status === 'processing' ? next.leaseUntil : null,
-        next.status === 'processing' ? next.leaseToken : '', next.sessionId, next.reply,
-        JSON.stringify(next.files), JSON.stringify(next.handoffs), next.lastError, next.updatedAt, next.deliveredAt, id],
-    )
   }
 
   // ── 会话索引。只存指针，不存 user/message 或 assistant/message 正文。──
