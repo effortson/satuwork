@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
 import type { SessionEventMap, TaskProgress } from '../session/types.ts'
 
 /**
@@ -235,7 +235,7 @@ export function apply(ctx: Context) {
         if (e instanceof AssignFailure) return { text: e.message }
         throw e
       }
-      const fromBotId = (process.env.SATUWORK_BOT_ID || '').trim()
+      const fromBotId = pinnedBotId()
       const sessionId = call.sessionId
       const signal = call.signal
       const total = specs.length

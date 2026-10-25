@@ -1,7 +1,7 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { Collection } from '../storage/index.ts'
 import type { SessionOrigin } from '../session/types.ts'
-import { gatewayUrl } from '../llm/gateway.ts'
+import { gatewayUrl, pinnedBotId } from '../env.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -177,9 +177,6 @@ export function memoryOf(bot: { memory?: Partial<BotMemory> } | undefined): BotM
 
 const ICONS = new Set(['bot', 'chat', 'chart', 'pen', 'deal', 'code'])
 
-function pinnedBotId(): string {
-  return (process.env.SATUWORK_BOT_ID || '').trim()
-}
 export const DEFAULT_BOT_ID = 'default'
 export const DEFAULT_PROVIDER = 'deepseek'
 export const DEFAULT_MODEL = 'deepseek-v4-flash'

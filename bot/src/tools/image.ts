@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { readFile, stat } from 'node:fs/promises'
 import { extname } from 'node:path'
-import { gatewayApiKey, llmBaseUrl } from '../llm/gateway.ts'
+import { gatewayApiKey, llmBaseUrl } from '../env.ts'
 import type { WorkspaceFile } from './index.ts'
 import { type Alpha, decodeAlpha, encodeAlphaMask, encodeGray, jpegOrientation, jpegSegments, pngInfo, unorient } from './png.ts'
 

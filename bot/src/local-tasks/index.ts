@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayToken, gatewayUrl, isLocalRuntime, pinnedBotId } from '../env.ts'
 import { ProgressTracker } from '../agent/progress.ts'
 
 /**
@@ -160,12 +160,12 @@ async function readTurnResult(
 const QUEUE_GONE_MS = Math.max(500, Math.trunc(Number(process.env.SATUWORK_TASK_QUEUE_GONE_MS ?? 5_000)))
 
 export function apply(ctx: Context) {
-  if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return
+  if (!isLocalRuntime()) return
   if (!gatewayUrl() || !gatewayToken()) {
     ctx.logger?.warn?.('local tasks: 缺 GATEWAY_URL / GATEWAY_TOKEN，不领派活')
     return
   }
-  const botId = (process.env.SATUWORK_BOT_ID || '').trim()
+  const botId = pinnedBotId()
   const running = new Set<string>()
 
   const self = () => String(ctx.server.baseUrl || `http://127.0.0.1:${ctx.server.port}`).replace(/\/$/, '')

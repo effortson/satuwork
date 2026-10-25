@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
 import { clip, fail, registerTool } from './common.ts'
 
 /**
@@ -46,10 +46,6 @@ type Routine = {
   lastRun?: Run | null
   createdAt: number
   updatedAt: number
-}
-
-function botId(): string {
-  return (process.env.SATUWORK_BOT_ID || '').trim()
 }
 
 /** Gateway 的 4xx 是参数或权限问题，原话给模型；5xx / 断网才是管道故障。 */
@@ -181,7 +177,7 @@ export function apply(ctx: Context) {
       },
     },
     async ({ routine }: { routine?: string }) => {
-      const bot = botId()
+      const bot = pinnedBotId()
       if (!bot) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），看不了日常任务。')
       if (routine?.trim()) {
         const hit = await findRoutine(bot, routine)
@@ -244,7 +240,7 @@ export function apply(ctx: Context) {
         model_role?: 'utility' | 'daily'
       },
     ) => {
-      const bot = botId()
+      const bot = pinnedBotId()
       if (!bot) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），改不了日常任务。')
       const action = String(args.action ?? '')
 

@@ -11,6 +11,7 @@ import { satuworkHome } from '../home.ts'
 import { inspectOfficeFile } from '../workspace/ooxml.ts'
 import { fail, registerTool, SKIPPED_DIRS, walkFiles, type WalkBudget } from './common.ts'
 import type { ReassignedItem, ToolCall, WorkspaceFile } from './index.ts'
+import { isLocalRuntime } from '../env.ts'
 
 /**
  * terminal 工具集：`terminal` 跑命令，`process` 管它起在后台的那些。
@@ -757,7 +758,7 @@ function runForeground(command: string, cwd: string, timeoutMs: number, abort?: 
 export function apply(ctx: Context, config: Config = {}) {
   // 本地 Bot 的文件工具受 workspace.resolve() 约束；真 shell 可以 `cd /` 绕过它。
   // 在 OS 沙箱与“跨目录批准”代理完成前，本地模式不注册 terminal/process。
-  if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local') {
+  if (isLocalRuntime()) {
     ctx.logger?.info?.('terminal: 本地 Bot 已禁用 shell，只开放受工作区约束的文件工具')
     return
   }

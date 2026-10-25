@@ -3,7 +3,7 @@ import { dirname, join, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { cachedSkills, type CachedSkill } from '../catalog/index.ts'
 import { satuworkHome } from '../home.ts'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
 import { scanPii } from '../policy/pii.ts'
 import { ToolFailure, clip, fail, registerTool } from './common.ts'
 
@@ -47,10 +47,6 @@ const CACHE_ROOT = satuworkHome('skills')
 interface RemoteFile {
   path: string
   bytes: number
-}
-
-function botId(): string {
-  return (process.env.SATUWORK_BOT_ID || '').trim()
 }
 
 /**
@@ -240,7 +236,7 @@ export function apply(ctx: Context) {
     }
     const out = await callGateway<{ files?: RemoteFile[] }>(
       'GET',
-      `/runtime/skills/${encodeURIComponent(s.id)}/files?botId=${encodeURIComponent(botId())}`,
+      `/runtime/skills/${encodeURIComponent(s.id)}/files?botId=${encodeURIComponent(pinnedBotId())}`,
     )
     const files = Array.isArray(out.files) ? out.files : []
     await mkdir(dirname(listFile), { recursive: true })
@@ -261,7 +257,7 @@ export function apply(ctx: Context) {
     }
     const out = await callGateway<{ text?: string }>(
       'GET',
-      `/runtime/skills/${encodeURIComponent(s.id)}/file?botId=${encodeURIComponent(botId())}&path=${encodeURIComponent(path)}`,
+      `/runtime/skills/${encodeURIComponent(s.id)}/file?botId=${encodeURIComponent(pinnedBotId())}&path=${encodeURIComponent(path)}`,
     )
     const text = typeof out.text === 'string' ? out.text : ''
     await mkdir(dirname(abs), { recursive: true })
@@ -458,8 +454,8 @@ export function apply(ctx: Context) {
       },
       call,
     ) => {
-      if (!botId()) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），写不了 Skill。')
-      const q = `?botId=${encodeURIComponent(botId())}`
+      if (!pinnedBotId()) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），写不了 Skill。')
+      const q = `?botId=${encodeURIComponent(pinnedBotId())}`
 
       if (action === 'create') {
         const nm = (newName ?? '').trim()

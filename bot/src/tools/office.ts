@@ -8,6 +8,7 @@ import { attr, checkPackage, checkXml, condenseXml, prettyXml, relationships } f
 import { ToolFailure, fail, registerTool } from './common.ts'
 import { MAX_PATCH_BYTES } from './file.ts'
 import { newGuide, type NewKind } from './office-new.ts'
+import { isLocalRuntime } from '../env.ts'
 
 /**
  * Office 工具集：`office_unpack` / `office_pack`——改已有的 Word / Excel / PPT，**原格式不丢**。
@@ -262,7 +263,7 @@ async function listFiles(root: string, rel = ''): Promise<string[]> {
  * 新建文档整条路都靠 terminal 跑 .cjs 脚本（office_guide 给的就是脚本模板），本地 Bot 上照着做，
  * 模型会去调一把工具表里根本没有的 terminal。所以本地不注册 office_guide，说明里也不指路过去。
  */
-const hasShell = () => (process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local'
+const hasShell = () => !isLocalRuntime()
 
 export function apply(ctx: Context) {
   const resolveIn = (path?: string) => ctx.workspace.resolve(path)

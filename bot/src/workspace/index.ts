@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { satuworkHome } from '../home.ts'
+import { isLocalRuntime } from '../env.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -127,7 +128,7 @@ export class WorkspaceService extends Service {
     if (target !== this.root && !target.startsWith(this.root + sep)) {
       throw new WorkspaceError(`路径越界：${path}。只能访问工作区 ${this.root} 以内的文件。`)
     }
-    if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local') {
+    if (isLocalRuntime()) {
       // 本地 Bot 没有 OS 级专用用户可兜底，所以现存路径的每一段都拒绝符号链接。
       // 写新文件时末段可以不存在，但它前面的目录必须已经通过这道检查。
       const rel = relative(this.root, target)
@@ -182,7 +183,7 @@ export class WorkspaceService extends Service {
    * 远程席位上永远是空的：那边没有批准这回事，工作区就是边界。
    */
   approvedMounts(): { mount: string; path: string }[] {
-    if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return []
+    if (!isLocalRuntime()) return []
     const external = join(this.root, 'External')
     let names: string[]
     try {
@@ -229,7 +230,7 @@ export class WorkspaceService extends Service {
 
   private isApprovedPath(path: string): boolean {
     if (this.inShared(path) || this.inLegacy(path, true)) return true
-    if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return false
+    if (!isLocalRuntime()) return false
     const manifest = (process.env.SATUWORK_APPROVED_DIRS || '').trim()
     if (!manifest) return false
     let roots: string[] = []

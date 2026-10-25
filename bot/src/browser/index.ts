@@ -12,6 +12,7 @@ import { blockedHost, hostOf, privateAddress, siteAllowed, type ActionContext } 
 import type { ToolCall, WorkspaceFile } from '../tools/index.ts'
 import { Cdp, CdpError } from './cdp.ts'
 import { callExpr } from './page.ts'
+import { isLocalRuntime } from '../env.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -395,7 +396,7 @@ export class BrowserService extends Service {
 
   /** 拉起浏览器。本地 Bot 用本机 Chrome 和独立 profile；远程席位保持原来的 wrapper。 */
   private async launch(): Promise<void> {
-    if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local') {
+    if (isLocalRuntime()) {
       const executable = localBrowserExecutable()
       if (!executable) {
         const override = process.env.SATUWORK_CHROME?.trim()

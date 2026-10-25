@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
 
 /**
  * 一把工具：`knowledge_search`，在公司知识库里按语义搜（docs/knowledge-base.md §8）。
@@ -42,7 +42,7 @@ async function callGateway(body: unknown): Promise<{ hits: Hit[]; searched: numb
   const base = gatewayUrl()
   const token = gatewayToken()
   if (!base || !token) throw new KnowledgeFailure('这台机器没有配 Gateway，知识库用不了。')
-  const botId = (process.env.SATUWORK_BOT_ID || '').trim()
+  const botId = pinnedBotId()
   let r: Response
   try {
     r = await fetch(`${base}/runtime/knowledge/search?botId=${encodeURIComponent(botId)}`, {

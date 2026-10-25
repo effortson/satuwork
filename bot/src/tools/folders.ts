@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { registerTool } from './common.ts'
+import { isLocalRuntime } from '../env.ts'
 
 /**
  * 本地 Bot 向用户**申请访问一个文件夹**（`request_folder_access`）。
@@ -25,7 +26,7 @@ function describe(mounts: { mount: string; path: string }[]): string {
 }
 
 export function apply(ctx: Context) {
-  if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return
+  if (!isLocalRuntime()) return
   registerTool(
     ctx,
     {

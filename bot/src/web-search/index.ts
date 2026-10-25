@@ -1,7 +1,8 @@
 import { lstatSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { Service, type Context } from '@deepseek-ai/cordis'
-import { completeOnce, gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../llm/gateway.ts'
+import { gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl, pinnedBotId } from '../env.ts'
+import { completeOnce } from '../llm/gateway.ts'
 import { docKindOf, extractDocument } from '../workspace/extract.ts'
 
 /**
@@ -175,7 +176,7 @@ export class WebSearchService extends Service {
     for (const role of [roles?.utility, roles?.daily]) {
       if (role?.provider && role.model) return { provider: role.provider, model: role.model, reasoningEffort: role.reasoningEffort }
     }
-    const pin = (process.env.SATUWORK_BOT_ID || '').trim()
+    const pin = pinnedBotId()
     const bot = (pin ? this.ctx.roster?.get(pin) : null) ?? this.ctx.roster?.list()?.[0]
     if (bot?.provider && bot.model) return { provider: bot.provider, model: bot.model, reasoningEffort: 'off' }
     return null

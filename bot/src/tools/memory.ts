@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { cachedMemories, type CachedMemory } from '../catalog/index.ts'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
 import { memoryOf } from '../registry/index.ts'
 import { scanPii } from '../policy/pii.ts'
 import { fail, registerTool } from './common.ts'
@@ -33,10 +33,6 @@ const TEXT_MAX = Math.max(50, Math.trunc(Number(process.env.SATUWORK_MEMORY_TEXT
 
 /** `memory_list` 一次最多列几条。记忆总量本来就有硬顶，这道闸只防它把上下文冲掉。 */
 const LIST_MAX = 100
-
-function botId(): string {
-  return (process.env.SATUWORK_BOT_ID || '').trim()
-}
 
 /**
  * 打 Gateway 的 runtime 面。
@@ -135,7 +131,7 @@ export function apply(ctx: Context) {
   ) => registerTool(ctx, def, execute)
 
   /** 这颗席位钉的那颗 Bot 的记忆策略。取不到就按出厂默认（memoryOf 的口径）。 */
-  const policy = () => memoryOf(ctx.roster.get(botId()))
+  const policy = () => memoryOf(ctx.roster.get(pinnedBotId()))
 
   /**
    * 会话里那张卡（`memory/saved`）。
@@ -265,9 +261,9 @@ export function apply(ctx: Context) {
       { op, text, match, kind, layer }: { op?: string; text?: string; match?: string; kind?: string; layer?: string },
       call,
     ) => {
-      if (!botId()) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），写不了记忆。')
+      if (!pinnedBotId()) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），写不了记忆。')
       const mem = policy()
-      const q = `?botId=${encodeURIComponent(botId())}`
+      const q = `?botId=${encodeURIComponent(pinnedBotId())}`
       const all = cachedMemories(ctx)
 
       /** replace / remove 都要先认出是哪一条。**匹配到多条不许猜**，摆出来让它自己挑。 */
@@ -316,7 +312,7 @@ export function apply(ctx: Context) {
          * 那条原则要防的事（docs/memory.md §6）。
          */
         if (looksProcedural(raw)) {
-          const bot = ctx.roster.get(botId())
+          const bot = ctx.roster.get(pinnedBotId())
           const canSkill = bot?.selfSkills !== false && ctx.tools.has('skill_manage')
           if (!mem.kinds.includes('流程')) {
             fail('这个 Bot 不记流程。记忆放的是一句话说得完的事实，把结论挑一句出来再记。')

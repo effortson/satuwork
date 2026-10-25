@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayToken, gatewayUrl, isLocalRuntime, pinnedBotId } from '../env.ts'
 
 /**
  * 本地 Bot（桌面端）的日常任务：**自己领、自己跑、自己回报。**
@@ -128,12 +128,12 @@ async function readTurnEnd(reader: ReadableStreamDefaultReader<Uint8Array>, ownT
 }
 
 export function apply(ctx: Context) {
-  if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() !== 'local') return
+  if (!isLocalRuntime()) return
   if (!gatewayUrl() || !gatewayToken()) {
     ctx.logger?.warn?.('local routines: 缺 GATEWAY_URL / GATEWAY_TOKEN，不领日常任务')
     return
   }
-  const botId = (process.env.SATUWORK_BOT_ID || '').trim()
+  const botId = pinnedBotId()
   const running = new Set<string>()
 
   // 打自己的 HTTP 口，票就是自己那把（守卫认的正是它）。
