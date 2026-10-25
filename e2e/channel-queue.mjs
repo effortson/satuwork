@@ -27,15 +27,12 @@ import { freePorts } from './ports.mjs'
 import { closeServer } from './probe.mjs'
 import { TOKEN as TG_TOKEN, mockTelegram } from './channels.mjs'
 import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 const SCHEMA = schemaOf('e2e_channel_queue')
 /** 挂掉的那台机器上堆着多少个会话。比两边的名额（工人 20、Gateway 10）都多。 */
 const STUCK = 25
 const CRON_SECRET = 'cron-channel-queue'
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, assert, log }) {
   log('\n# channel-queue')

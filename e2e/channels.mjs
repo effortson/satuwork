@@ -10,6 +10,7 @@ import { createCompany } from './org.mjs'
 import { closeServer } from './probe.mjs'
 import { runProbe } from './probe.mjs'
 import { startGateway } from './gateway.mjs'
+import { until } from './harness.mjs'
 
 export const TOKEN = '123456789:telegram-e2e-token-never-store-plain'
 const APPROVAL_KEY = 'AbCdEfGhIjKlMnOpQrStUv'
@@ -260,14 +261,8 @@ export async function mockTelegram() {
   return { server, seen, url: `http://127.0.0.1:${server.address().port}` }
 }
 
-async function waitFor(check, label, timeout = 6000) {
-  const started = Date.now()
-  while (Date.now() - started < timeout) {
-    const value = await check()
-    if (value) return value
-    await new Promise((resolve) => setTimeout(resolve, 80))
-  }
-  throw new Error(`等不到：${label}`)
+function waitFor(check, label, timeout = 6000) {
+  return until(check, { timeout, every: 80, fail: `等不到：${label}` })
 }
 
 export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, log }) {

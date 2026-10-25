@@ -21,16 +21,13 @@ import { pairMachine } from './pair.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
 import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 const SCHEMA = schemaOf('e2e_routine_worker')
 const LEASE_MS = 1500
 const RETRY_MS = [400, 500, 600]
 /** 试跑登记之后多久没人来领就收掉。线上是三分钟；这里压到工人一两趟的量级。 */
 const PICKUP_MS = 1500
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 function listen(server) {
   return new Promise((resolve) => {

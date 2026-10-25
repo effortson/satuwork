@@ -19,15 +19,12 @@ import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePorts } from './ports.mjs'
 import { createCompany } from './org.mjs'
 import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 export const GOOD = 'a'.repeat(64)
 export const DEAD = 'b'.repeat(64)
 const TEAM = 'TEAM123456'
 const KID = 'KEY1234567'
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 export function fakeApns(publicKey) {
   const seen = []

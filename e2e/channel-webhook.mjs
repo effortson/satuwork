@@ -13,10 +13,7 @@ import { createCompany } from './org.mjs'
 import { closeServer } from './probe.mjs'
 import { TOKEN, mockTelegram } from './channels.mjs'
 import { startGateway } from './gateway.mjs'
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
+import { sleep } from './harness.mjs'
 
 export async function runChannelWebhook({ gwRoot, test, req, start, waitHttp, assert, log }) {
   log('\n# channel-webhook')

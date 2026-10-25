@@ -11,6 +11,7 @@ import { freePort } from './ports.mjs'
 import { createCompany } from './org.mjs'
 import { closeServer } from './probe.mjs'
 import { startGateway } from './gateway.mjs'
+import { until } from './harness.mjs'
 
 function bigrams(s) {
   const t = String(s || '').replace(/\s+/g, '')
@@ -89,16 +90,6 @@ async function mockUpstash() {
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   return { server, seen, spaces, url: `http://127.0.0.1:${server.address().port}` }
-}
-
-async function until(fn, { timeout = 20000, every = 300, what = '条件' } = {}) {
-  const t0 = Date.now()
-  while (Date.now() - t0 < timeout) {
-    const v = await fn()
-    if (v) return v
-    await new Promise((r) => setTimeout(r, every))
-  }
-  throw new Error(`${what} 在 ${timeout}ms 内没成`)
 }
 
 export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert, log }) {

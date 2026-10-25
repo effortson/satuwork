@@ -29,10 +29,7 @@ import { pairMachine } from './pair.mjs'
 import { freePort } from './ports.mjs'
 import { runProbe as sharedProbe, closeServer } from './probe.mjs'
 import { startGateway } from './gateway.mjs'
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
+import { sleep } from './harness.mjs'
 
 const runProbe = (root) => sharedProbe(root, 'bot/e2e-handoff.mjs', { timeout: 30_000 })
 

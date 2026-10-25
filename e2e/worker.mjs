@@ -16,12 +16,9 @@ import { freePorts } from './ports.mjs'
 import { closeServer } from './probe.mjs'
 import { TOKEN as TG_TOKEN, mockTelegram } from './channels.mjs'
 import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 const SCHEMA = schemaOf('e2e_worker')
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 /**
  * 假 bot：会话 id、一条历史、事件流、收消息。收到消息就往开着的事件流上吐

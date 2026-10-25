@@ -277,6 +277,25 @@ export function treeHas(dir, needle) {
   return false
 }
 
+export function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+/**
+ * 每 `every` 毫秒问一次 fn，等到它返回真值就把那个值交回来；`timeout` 之内等不到就抛。
+ * 报错默认是「{what} 在 {timeout}ms 内没成」，`fail` 给了就原样用它——各套原来的说法不一，
+ * 搬过来时照旧，日志里认得出是哪一处。
+ */
+export async function until(fn, { timeout = 20000, every = 300, what = '条件', fail } = {}) {
+  const t0 = Date.now()
+  while (Date.now() - t0 < timeout) {
+    const v = await fn()
+    if (v) return v
+    await sleep(every)
+  }
+  throw new Error(fail ?? `${what} 在 ${timeout}ms 内没成`)
+}
+
 export function listenMock(handler) {
   const server = createServer(handler)
   return new Promise((resolve) => {

@@ -11,6 +11,7 @@ import { publishRelease } from './release.mjs'
 import { pairMachine } from './pair.mjs'
 import { freePorts } from './ports.mjs'
 import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 /**
  * **一律用桩模型。** 以前这里会去读本机 live 库（一个写死的 sqlite 路径）把真实的
@@ -19,10 +20,6 @@ import { startGateway } from './gateway.mjs'
  * 也不该碰任何 live 数据。
  */
 const STUB_LLM = true
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 export async function runRuntimePath({ root, gwRoot, botRoot, test, req, start, waitHttp, assert, log }) {
   const GW_HOME = tmpOf('satuwork-e2e-runtime-gw')

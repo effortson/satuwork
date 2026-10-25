@@ -15,6 +15,7 @@ import { publishRelease, sha256Of, tarGz } from './release.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
 import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 /** 一个员工一个 Linux 账号——名下所有 bot 共用它。和 gateway/src/deploy.ts 保持一致。 */
 function linuxUserOf(accountId) {
@@ -24,10 +25,6 @@ function linuxUserOf(accountId) {
 /** 席位标识：systemd 实例名与席位私有目录名。一个 bot 一个。 */
 function seatIdOf(accountId, botId) {
   return linuxUserOf(accountId) + '-' + createHash('sha256').update(botId).digest('hex').slice(0, 12)
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
 }
 
 export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, assert, log }) {

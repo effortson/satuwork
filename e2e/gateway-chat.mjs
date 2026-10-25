@@ -16,10 +16,7 @@ import { closeServer } from './probe.mjs'
 import { generateKeyPairSync } from 'node:crypto'
 import { GOOD as PUSH_TOKEN, fakeApns } from './push.mjs'
 import { startGateway } from './gateway.mjs'
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
+import { sleep } from './harness.mjs'
 
 async function readSse(url, { token, timeout = 8000, until } = {}) {
   const ac = new AbortController()

@@ -12,14 +12,11 @@ import { publishRelease } from './release.mjs'
 import { pairMachine } from './pair.mjs'
 import { freePort } from './ports.mjs'
 import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 const SCHEMA = schemaOf('e2e_bot_tasks')
 const LEASE_MS = 1500
 const PICKUP_MS = 6000
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, log }) {
   log('\n# bot-tasks')

@@ -29,6 +29,7 @@ import { pairMachine } from './pair.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
 import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 /** 这一套自己的 schema。写死名字会被别的 worktree 的 e2e 清掉（见 pg.mjs 的 schemaOf）。 */
 const SCHEMA = schemaOf('e2e_routine_retry')
@@ -37,10 +38,6 @@ const SCHEMA = schemaOf('e2e_routine_retry')
 const RETRY_MS = [400, 500, 600]
 /** 一共补几次。就是上面那个表的长度——界面上「共 N 次」里的 N。 */
 const RETRY_MAX = RETRY_MS.length
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 function listen(server) {
   return new Promise((resolve) => {
