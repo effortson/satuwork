@@ -14,14 +14,14 @@ import { requireMachine, requireOrgUser, requireOwnerUser, requireReleaseAuthor 
 import { MANAGER_VACUUM_TIMEOUT_MS, MAX_LOG_CAP_MB, METRIC_RETENTION_MS, MINUTE_MS } from '../lib/telemetry.ts'
 import { signDesktopTicket } from '../crypto.ts'
 import { releaseArch, type Account, type CatalogItem, type Machine, type SeatRuntime } from '../db.ts'
+import { companyOr404 } from '../lib/org.ts'
 
 export function attachMachines(router: Router, ctx: RouteCtx) {
   const { db, keys } = ctx
 
   router.get('/platform/orgs/:id/machine', async (req, res) => {
     await requireOwnerUser(req, db, keys)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const loads = await machineLoads(db, company.id)
     const botLatest = (await db.latestBotRelease('bot'))?.version ?? null
     const managerLatest = (await db.latestBotRelease('manager'))?.version ?? null
@@ -64,8 +64,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
   router.get('/platform/orgs/:id/machines/:machineId/logs', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
     if (req.query.get('follow') === '1') throw new HttpError(410, LOGS_FOLLOW_GONE)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const machine = await machineOfOrg(db, company.id, req.params.machineId)
     if (!machine?.host) throw new HttpError(503, INSTANCE_DOWN)
     const seatId = await seatOnMachine(machine, req.query.get('seatId'))
@@ -89,8 +88,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    */
   router.get('/platform/orgs/:id/machines/:machineId/logs/direct', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const machine = await machineOfOrg(db, company.id, req.params.machineId)
     if (!machine?.host) throw new HttpError(503, INSTANCE_DOWN)
     const seatId = await seatOnMachine(machine, req.query.get('seatId'))
@@ -112,8 +110,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    */
   router.delete('/platform/orgs/:id/machines/:machineId', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const machine = await machineOfOrg(db, company.id, req.params.machineId)
     const seats = await db.seatRuntimesOfMachine(machine.id)
     if (seats.length) throw new HttpError(409, `这台机器上还有 ${seats.length} 个席位，先把它们拆掉`)
@@ -214,8 +211,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    */
   router.post('/platform/orgs/:id/machines/:machineId/upgrade', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const machine = await machineOfOrg(db, company.id, req.params.machineId)
     if (!machinePaired(machine)) throw new HttpError(409, '这台机器还没有配对')
     const { next, version, pinned, pending } = await retargetManager(db, machine, strField(bodyOf(req), 'version', false))
@@ -234,8 +230,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    */
   router.put('/platform/orgs/:id/machine', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const body = bodyOf(req)
     const raw = strField(body, 'host', false)
     const wanted = strField(body, 'machineId', false)
@@ -270,8 +265,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    */
   router.post('/platform/orgs/:id/pairing-code', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const now = Date.now()
     await db.expireMachinePairings(company.id, now)
     const row = await db.insertMachinePairing({
@@ -1207,8 +1201,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
 
   router.post('/platform/orgs/:id/runtime/update', async (req, res) => {
     const actor = await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const body = bodyOf(req)
     const requested = strField(body, 'version', false)
     let version: string
@@ -1241,8 +1234,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
 
   router.get('/platform/orgs/:id/accounts/:accountId/runtime', async (req, res) => {
     await requireOwnerUser(req, db, keys)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const row = await db.account(req.params.accountId)
     if (!row || row.companyId !== company.id) throw new HttpError(404, '账号不存在')
     const machineOf = machineResolver(db)

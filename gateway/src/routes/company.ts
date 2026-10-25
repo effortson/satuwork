@@ -11,7 +11,7 @@ import { parseBilling } from '../db.ts'
 import { isUniqueViolation } from '../db/rows.ts'
 import { bodyOf, deployOptsOf, strField, usd, usdMicros } from '../lib/validate.ts'
 import { companyMachineOf, deploySeatBriefly, listSeatRuntime, publicMachine, publicSeatRuntime, releaseSeats } from '../deploy.ts'
-import { companyStatusOf, emailOf, groupRoleOf, membersInCompany, orgSettings, patchAccount, phoneOf, publicAccount, publicCompany, publicGroup, publicPlan, publicSettings, roleOf, slugOf, stringIds, websiteOf } from '../lib/org.ts'
+import { accountInOrg, companyOr404, companyStatusOf, emailOf, groupRoleOf, membersInCompany, orgSettings, patchAccount, phoneOf, publicAccount, publicCompany, publicGroup, publicPlan, publicSettings, roleOf, slugOf, stringIds, websiteOf } from '../lib/org.ts'
 import { desktopTicketFor, machineHostOf, machineResolver } from '../lib/machines.ts'
 import { type BarStep, dayBucketOf, dayLabelOf, inviteLinkOf, issueInvite, rangeQuery, requireOrgUser, requireOwner, requireUser, stepMs, stepQuery, tzOffsetMs, usageBars, usagePayload } from '../lib/guards.ts'
 import { randomUUID } from 'node:crypto'
@@ -76,8 +76,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
 
   router.get('/orgs/:id', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const plan = (await db.plan(company.id))!
     json(res, 200, {
       company: publicCompany(company),
@@ -89,8 +88,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
 
   router.patch('/orgs/:id', async (req, res) => {
     const account = await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const body = bodyOf(req)
     const patch: {
       name?: string
@@ -191,8 +189,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     // 该有的权限——「停用」才是公司层面的动作，而且那条已经是 owner-only 了；删除比
     // 停用更不可逆，权限却更松，是说不通的。
     requireOwner(account)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     // 账单**和用量**都要留档，硬删和留档直接冲突：有过任何一条的公司只能停用，不能删。
     // 用量算进来的代价是「发过一条消息的公司就删不掉了」——这是留档要求的必然结果，
     // 不是遗漏。要清理这类公司，走「停用」；真要腾库存得先有一套留存期到期后的归档
@@ -255,7 +252,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
 
   router.get('/orgs/:id/settings', async (req, res) => {
     const account = await requireOrgUser(req, db, keys, req.params.id)
-    if (!await db.company(req.params.id)) throw new HttpError(404, '公司不存在')
+    await companyOr404(db, req.params.id)
     // requireOrgUser 放 owner 也放这家公司的任何人，所以这里要再按角色分一次：
     // owner 拿整份（他在公司详情页上要看定价），公司侧只拿模型角色那三样。
     const stored = await db.platformSettings()
@@ -280,8 +277,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
 
   router.get('/orgs/:id/accounts', async (req, res) => {
     const account = await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const plan = await db.plan(company.id)
     const runtimes = account.role === 'owner' ? await db.seatRuntimesOf(company.id) : []
     const byAccount = new Map<string, typeof runtimes>()
@@ -323,8 +319,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
 
   router.post('/orgs/:id/accounts', async (req, res) => {
     const actor = await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const body = bodyOf(req)
     const email = emailOf(strField(body, 'email'))
     const password = strField(body, 'password')
@@ -348,8 +343,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
    */
   router.post('/orgs/:id/accounts/members', async (req, res) => {
     const actor = await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const body = bodyOf(req)
     const email = emailOf(strField(body, 'email'))
     const name = strField(body, 'name', false)
@@ -391,8 +385,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
   async function editableGroup(req: Req) {
     const actor = await requireOrgUser(req, db, keys, req.params.id, true)
     if (req.params.groupId === 'all') throw new HttpError(400, '「全体成员」是系统固定分组')
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const cur = await db.group(req.params.groupId)
     if (!cur || cur.companyId !== company.id) throw new HttpError(404, '没有这个分组')
     return { actor, company, cur }
@@ -419,8 +412,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
    */
   router.post('/orgs/:id/accounts/groups', async (req, res) => {
     const actor = await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const body = bodyOf(req)
     const name = typeof body.name === 'string' ? body.name.trim() : ''
     if (!name) throw new HttpError(400, '分组要有名字')
@@ -462,15 +454,13 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
 
   router.get('/orgs/:id/accounts/:accountId', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id, true)
-    const row = await db.account(req.params.accountId)
-    if (!row || row.companyId !== req.params.id) throw new HttpError(404, '账号不存在')
+    const row = await accountInOrg(db, req.params.id, req.params.accountId)
     json(res, 200, { account: publicAccount(row) })
   })
 
   router.patch('/orgs/:id/accounts/:accountId', async (req, res) => {
     const actor = await requireOrgUser(req, db, keys, req.params.id, true)
-    const row = await db.account(req.params.accountId)
-    if (!row || row.companyId !== req.params.id) throw new HttpError(404, '账号不存在')
+    const row = await accountInOrg(db, req.params.id, req.params.accountId)
     // 规矩在 lib/org.ts 的 patchAccount 里，和平台那条路共用一份（见那儿的注释）。
     const { account: next, patch } = await patchAccount(db, actor, row, bodyOf(req))
     await db.audit({
@@ -493,8 +483,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
    */
   router.post('/orgs/:id/accounts/:accountId/reset', async (req, res) => {
     const actor = await requireOrgUser(req, db, keys, req.params.id, true)
-    const row = await db.account(req.params.accountId)
-    if (!row || row.companyId !== req.params.id) throw new HttpError(404, '没有这个成员')
+    const row = await accountInOrg(db, req.params.id, req.params.accountId, '没有这个成员')
     await db.updateAccount(row.id, { tokenRevokedAt: Date.now(), passwordHash: await hashPassword(randomUUID()) })
     const ttl = row.status === 'invited' ? INVITE_TTL : RESET_LINK_TTL
     const invite = await issueInvite(db, row, actor.id, ttl)
@@ -509,8 +498,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
 
   router.post('/orgs/:id/accounts/:accountId/deploy', async (req, res) => {
     const actor = await requireOrgUser(req, db, keys, req.params.id, true)
-    const row = await db.account(req.params.accountId)
-    if (!row || row.companyId !== req.params.id) throw new HttpError(404, '账号不存在')
+    const row = await accountInOrg(db, req.params.id, req.params.accountId)
     if (row.role === 'owner') throw new HttpError(403, '系统管理员没有席位')
     // 后台装、先等一小会儿，理由同 `/runtime/deploy`：首装挂在请求上必然 504。
     const out = await deploySeatBriefly(db, row, deployOptsOf(req))
@@ -553,8 +541,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
 
   router.delete('/orgs/:id/accounts/:accountId', async (req, res) => {
     const actor = await requireOrgUser(req, db, keys, req.params.id, true)
-    const row = await db.account(req.params.accountId)
-    if (!row || row.companyId !== req.params.id) throw new HttpError(404, '账号不存在')
+    const row = await accountInOrg(db, req.params.id, req.params.accountId)
     if (row.id === actor.id) throw new HttpError(400, '不能删除自己')
     /**
      * 「不能删掉最后一个管理员」要和改角色 / 停用排在同一把锁上（lib/org.ts 的 patchAccount）：
@@ -604,8 +591,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
    */
   router.get('/orgs/:id/billing', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const plan = await db.plan(company.id)
     if (!plan) throw new HttpError(404, '套餐不存在')
     const used = await db.accountCount(company.id)
@@ -810,8 +796,7 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
    */
   router.get('/orgs/:id/usage', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const range = rangeQuery(req)
     const plan = await db.plan(company.id)
     const seats = plan?.seats ?? 0
@@ -858,16 +843,14 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
 
   router.get('/orgs/:id/machine', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const machine = company.machineId ? await db.machine(company.machineId) : await companyMachineOf(db, company.id)
     json(res, 200, { machine: machine ? publicMachine(machine) : null, accessUrl: company.accessUrl })
   })
 
   router.post('/orgs/:id/machine', async (req, res) => {
     const account = await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const body = bodyOf(req)
     // 机器地址是平台的事：登记走 POST /internal/machines（引导票），改走
     // PUT /platform/orgs/:id/machine（owner）。公司管理员只能在本公司的机器里挑默认。

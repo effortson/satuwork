@@ -10,6 +10,20 @@ import { type Account, type AccountStatus, type CatalogItem, type Company, type 
 import { WEB_BACKENDS, WEB_DOCUMENT } from '../db/types.ts'
 import { VENDORS } from '../connectors/index.ts'
 
+/** 按 id 取公司，取不到就 404。三十几条路由开头都是这两行。 */
+export async function companyOr404(db: Db, id: string): Promise<Company> {
+  const company = await db.company(id)
+  if (!company) throw new HttpError(404, '公司不存在')
+  return company
+}
+
+/** 按 id 取账号，不是这家公司的也当不存在——别让人拿别家账号 id 探出「有这个人」。 */
+export async function accountInOrg(db: Db, orgId: string, id: string, msg = '账号不存在'): Promise<Account & { companyId: string }> {
+  const row = await db.account(id)
+  if (!row || row.companyId !== orgId) throw new HttpError(404, msg)
+  return row as Account & { companyId: string }
+}
+
 export function emailOf(raw: string): string {
   const email = raw.trim().toLowerCase()
   if (!EMAIL_RE.test(email)) throw new HttpError(400, 'email 格式不对')
