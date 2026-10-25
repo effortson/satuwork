@@ -59,7 +59,7 @@ function botStreamOf(botId) {
   let row = botStreams.get(botId)
   if (!row) {
     // instanceId = 上次连上时席位自报的那个进程身份（见 runtime/hello）。空 = 还没连过。
-    row = { sessionId: '', instanceId: '', ac: null, events: [], sum: { state: 'idle', lastAt: 0, lastText: '' }, hydrated: false, hydrating: null }
+    row = { sessionId: '', instanceId: '', ac: null, events: [], sum: SatuCore.newSum(), hydrated: false, hydrating: null }
     botStreams.set(botId, row)
   }
   return row
@@ -1155,19 +1155,20 @@ async function startRosterStream(attempt = 0) {
    * 404 也在内（管家太旧，还没有这条路由）——Gateway 只在管家够新时才给这个地址，
    * 真出现了说明两头对不上号，重试同样没有意义；下一次 /runtime/bots 会重新判一遍。
    */
-  if (res.status === 401 || res.status === 403 || res.status === 404) {
+  const kind = SatuCore.classifyStreamStatus(res.status, !!res.body)
+  if (kind === 'dead') {
     if (rosterAbort === ac) rosterAbort = null
     return
   }
-  if (!res.ok || !res.body) return retryRosterStream(ac, attempt + 1)
+  if (kind === 'warming') return retryRosterStream(ac, attempt + 1)
   /**
    * 下一次重连用哪个档位，判据是**这次连接活了多久**，不是「有没有连上」——和
-   * startChatStream 那套一字不差（见 CHAT_ALIVE_MS 上面那段）。不这么算的话，早期
+   * startChatStream 那套一字不差（见 core 的 aliveLongEnough）。不这么算的话，早期
    * 几次失败把档位推到顶之后，哪怕这条流健康地跑了几小时再断，下一次也要等满 30 秒
    * 才重连，而那半分钟里名单上每一颗点都是冻着的。
    */
   const openedAt = Date.now()
-  const nextAttempt = () => (Date.now() - openedAt >= CHAT_ALIVE_MS ? 0 : attempt + 1)
+  const nextAttempt = () => (SatuCore.aliveLongEnough(openedAt) ? 0 : attempt + 1)
   try {
     for await (const ev of sseEvents(res.body.getReader(), () => ac.signal.aborted || rosterAbort !== ac)) {
       // 中止是在 read() 里等着的时候发生的：那一刻已经在路上的这一块数据照样会到，
@@ -1265,7 +1266,6 @@ function botIdOfSession(sessionId) {
 }
 
 const CHAT_RETRY_MAX = SatuCore.CHAT_RETRY_MAX
-const CHAT_ALIVE_MS = SatuCore.CHAT_ALIVE_MS
 
 /**
  * 对话流**只直连席位机器**。
@@ -1419,14 +1419,8 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
    *
    * 退避重试到 CHAT_RETRY_MAX 为止（约 5 分钟，够一次换版走完）；真的一直不回来，
    * retryChatStream 会把「连接断开」摆到界面上。
-   */
-  if (res.status === 503) {
-    endReplay()
-    noteStreamWarming(sessionId)
-    return retryChatStream(sessionId, ac, attempt + 1)
-  }
-  /**
-   * 剩下的非 2xx 分两类，处置相反，所以必须分开。
+   *
+   * 剩下的非 2xx 分两类，处置相反，所以必须分开（判据在 core 的 classifyStreamStatus）。
    *
    * · **401 / 403 / 404 是「答案不会变」**：票过期了、这颗 Bot 不是你的、席位在那台
    *   机器上已经没了。重试只会白敲接口，再拿一句「实例还没上线」把真正的原因盖掉。
@@ -1437,7 +1431,8 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
    *   而换版那几分钟里它就是这个样子。以前这里一律认输，于是一次 502 和「席位永远
    *   没了」在界面上是同一件事。
    */
-  if (res.status === 401 || res.status === 403 || res.status === 404) {
+  const kind = SatuCore.classifyStreamStatus(res.status, !!res.body)
+  if (kind === 'dead') {
     releaseChatStream(ac, owner)
     endReplay()
     // **render，不是 paintChat**（见 noteStreamDown 与 retryChatStream 认输那一处的
@@ -1445,7 +1440,7 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
     noteStreamDown(sessionId, (await res.text().catch(() => '')) || '实例还没上线')
     return
   }
-  if (!res.ok || !res.body) {
+  if (kind === 'warming') {
     endReplay()
     noteStreamWarming(sessionId)
     return retryChatStream(sessionId, ac, attempt + 1)
@@ -1488,9 +1483,9 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
    * - 只看「一共重连过几次」：一个开着一整天的标签页，被中间那一跳定期掐断 6 次之后
    *   就再也接不回来了——可每一次它都是连上的。
    *
-   * 活够 CHAT_ALIVE_MS 才算一次真连接，归零；没活够就沿用当前档位继续退避。
+   * 活够 CHAT_ALIVE_MS 才算一次真连接，归零；没活够就沿用当前档位继续退避（core 的 aliveLongEnough）。
    */
-  const nextAttempt = () => (Date.now() - openedAt >= CHAT_ALIVE_MS ? 0 : attempt)
+  const nextAttempt = () => (SatuCore.aliveLongEnough(openedAt) ? 0 : attempt)
   try {
     while (true) {
       const { done, value } = await reader.read()

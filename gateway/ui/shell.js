@@ -356,7 +356,7 @@ function rosterGroups(bots) {
 
 /** 名单上的一行。`draggable`：拖到某个分类的标题上就归进去（见下面那组 drag 监听）。 */
 function rosterRowHtml(b, selected) {
-  const sum = (botStreams.get(b.id) || {}).sum || { state: 'idle', lastAt: 0, lastText: '' }
+  const sum = (botStreams.get(b.id) || {}).sum || SatuCore.newSum()
   return `<button type="button" class="satu-botrow" draggable="true" data-act="chat-open" data-id="${esc(b.id)}" data-bot-row="${esc(b.id)}" aria-current="${b.id === selected}">
         ${/* 头像占满两行：名字和摘要并排在它右边，整行才像一条会话，而不是一个
              带小图标的菜单项。34 是 botAvatar 的默认尺寸，也正好等于两行的高度。 */ ''}
