@@ -559,11 +559,7 @@ function dayOf(ts) {
 }
 
 function whenOf(ts) {
-  const m = Math.floor((Date.now() - ts) / 60000)
-  if (m < 1) return t('刚刚', 'just now')
-  if (m < 60) return t(`${m} 分钟前`, `${m} min ago`)
-  if (m < 60 * 24) return t(`${Math.floor(m / 60)} 小时前`, `${Math.floor(m / 60)} h ago`)
-  return t(`${Math.floor(m / 1440)} 天前`, `${Math.floor(m / 1440)} d ago`)
+  return SatuCore.agoText(localeMode, Date.now() - ts)
 }
 
 /** User-Agent → 一句人话。认不出来就说认不出来，别猜。 */

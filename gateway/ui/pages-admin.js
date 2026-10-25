@@ -1669,11 +1669,7 @@ const MEMBER_STATUS = {
 
 function ago(ts) {
   if (!ts) return t('从未登录')
-  const m = Math.floor((Date.now() - ts) / 60000)
-  if (m < 1) return t('刚刚')
-  if (m < 60) return t(`${m} 分钟前`, `${m} min ago`)
-  if (m < 60 * 24) return t(`${Math.floor(m / 60)} 小时前`, `${Math.floor(m / 60)} h ago`)
-  return t(`${Math.floor(m / 1440)} 天前`, `${Math.floor(m / 1440)} d ago`)
+  return SatuCore.agoText(localeMode, Date.now() - ts)
 }
 
 function canBeStatus(member, key) {

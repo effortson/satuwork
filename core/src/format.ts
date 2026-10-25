@@ -1,6 +1,7 @@
 /**
  * 转义、金额与时间。原先在 gateway/ui/state.js 里，都是纯函数：不发请求、不碰 DOM。
  */
+import { t } from './i18n/t.ts'
 
 /** HTML 转义。移动端用不上它（RN 没有 innerHTML），留在这儿是因为 Web 的每一页都在用。 */
 export function esc(s: unknown): string {
@@ -129,3 +130,18 @@ export function fmtFileSize(n: unknown, fallback = ''): string {
   return (x / 1024 / 1024).toFixed(1) + ' MB'
 }
 
+/**
+ * 「多久之前」：`ms` 是过去了多少毫秒。默认分钟起步（不到一分钟说「刚刚」）；`seconds` 为真时
+ * 一分钟以内报秒——心跳 30 秒一轮的地方，只报到分钟就看不出刚刚断没断。
+ */
+export function agoText(locale: Locale, ms: number, seconds = false): string {
+  if (seconds) {
+    const sec = Math.floor(ms / 1000)
+    if (sec < 60) return t(locale, `${sec} 秒前`, `${sec}s ago`)
+  }
+  const m = Math.floor(ms / 60000)
+  if (m < 1) return t(locale, '刚刚', 'just now')
+  if (m < 60) return t(locale, `${m} 分钟前`, `${m} min ago`)
+  if (m < 60 * 24) return t(locale, `${Math.floor(m / 60)} 小时前`, `${Math.floor(m / 60)} h ago`)
+  return t(locale, `${Math.floor(m / 1440)} 天前`, `${Math.floor(m / 1440)} d ago`)
+}

@@ -876,13 +876,7 @@ const LINK_TEXT = {
 /** 「多久之前」。秒级起步——心跳 30 秒一轮，只报到分钟就看不出刚刚断没断。 */
 function sinceMs(ms) {
   if (ms == null) return ''
-  const sec = Math.floor(ms / 1000)
-  if (sec < 60) return t(`${sec} 秒前`, `${sec}s ago`)
-  const min = Math.floor(sec / 60)
-  if (min < 60) return t(`${min} 分钟前`, `${min} min ago`)
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return t(`${hr} 小时前`, `${hr} h ago`)
-  return t(`${Math.floor(hr / 24)} 天前`, `${Math.floor(hr / 24)} d ago`)
+  return SatuCore.agoText(localeMode, ms, true)
 }
 
 /**

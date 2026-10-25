@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { esc, tzDayStart, tzDayKey, fmtTime, dayStart, dayEnd, money, usd, fmtTokens, fmtFileSize } from '../src/format.ts'
+import { esc, tzDayStart, tzDayKey, fmtTime, dayStart, dayEnd, money, usd, fmtTokens, fmtFileSize, agoText } from '../src/format.ts'
 
 test('esc：五个字符都转，null/undefined 当空串', () => {
   assert.equal(esc(`<a href="x">&'</a>`), '&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;')
@@ -76,5 +76,19 @@ test('fmtFileSize：一位小数到 MB，非有限数回调用方给的兜底', 
   assert.equal(fmtFileSize('2048'), '2.0 KB')
   assert.equal(fmtFileSize(undefined), '')
   assert.equal(fmtFileSize('x', '—'), '—')
+})
+
+test('agoText：分钟起步；seconds 时一分钟以内报秒', () => {
+  const min = 60_000
+  assert.equal(agoText('zh', 30_000), '刚刚')
+  assert.equal(agoText('en', 30_000), 'just now')
+  assert.equal(agoText('zh', 5 * min), '5 分钟前')
+  assert.equal(agoText('en', 5 * min), '5 min ago')
+  assert.equal(agoText('zh', 3 * 60 * min), '3 小时前')
+  assert.equal(agoText('en', 2 * 1440 * min), '2 d ago')
+  assert.equal(agoText('zh', 30_000, true), '30 秒前')
+  assert.equal(agoText('en', 59_999, true), '59s ago')
+  assert.equal(agoText('zh', 61_000, true), '1 分钟前')
+  assert.equal(agoText('zh', -5_000), '刚刚')
 })
 

@@ -28,6 +28,7 @@ var SatuCore = (() => {
     ROSTER_BACKOFF: () => ROSTER_BACKOFF,
     SATU_TZ: () => SATU_TZ,
     UPLOAD_LEADS: () => UPLOAD_LEADS,
+    agoText: () => agoText,
     aliveLongEnough: () => aliveLongEnough,
     applyRosterEvent: () => applyRosterEvent,
     assignSlice: () => assignSlice,
@@ -1548,6 +1549,17 @@ var SatuCore = (() => {
     if (x < 1024) return x + " B";
     if (x < 1024 * 1024) return (x / 1024).toFixed(1) + " KB";
     return (x / 1024 / 1024).toFixed(1) + " MB";
+  }
+  function agoText(locale, ms, seconds = false) {
+    if (seconds) {
+      const sec = Math.floor(ms / 1e3);
+      if (sec < 60) return t(locale, `${sec} 秒前`, `${sec}s ago`);
+    }
+    const m = Math.floor(ms / 6e4);
+    if (m < 1) return t(locale, "刚刚", "just now");
+    if (m < 60) return t(locale, `${m} 分钟前`, `${m} min ago`);
+    if (m < 60 * 24) return t(locale, `${Math.floor(m / 60)} 小时前`, `${Math.floor(m / 60)} h ago`);
+    return t(locale, `${Math.floor(m / 1440)} 天前`, `${Math.floor(m / 1440)} d ago`);
   }
 
   // core/src/paths.ts
