@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl, isLocalRuntime, pinnedBotId } from '../env.ts'
-import { gatewayFetch } from '../gateway-api.ts'
+import { pinnedBotId } from '../env.ts'
+import { DEFAULT_LEASE_MS, DEFAULT_TIMEOUT_MS, LostError, localGateway, localReady, num, selfClient, sseEvents } from '../local-runtime.ts'
 
 /**
  * 本地 Bot（桌面端）的日常任务：**自己领、自己跑、自己回报。**
@@ -33,50 +33,7 @@ interface Job {
   timeoutMs: number
 }
 
-class LostError extends Error {}
-
-/** 和 Gateway 那边的缺省一致（gateway/src/routines.ts）：一轮最多等 20 分钟，租约 60 秒。 */
-const DEFAULT_TIMEOUT_MS = 20 * 60_000
-const DEFAULT_LEASE_MS = 60_000
-
-/** 网上来的数字不可信：不是有限正数就用缺省，否则 NaN 会变成 1 毫秒的定时器。 */
-function num(v: unknown, fallback: number): number {
-  const n = Number(v)
-  return Number.isFinite(n) && n > 0 ? n : fallback
-}
-
-async function gw(path: string, body?: unknown): Promise<unknown> {
-  const r = await gatewayFetch(body === undefined ? 'GET' : 'POST', `/runtime/local-routines${path}`, body, 20_000, { accept: 'application/json' })
-  const text = await r.text()
-  let json: unknown = null
-  try {
-    json = text ? JSON.parse(text) : null
-  } catch {}
-  if (r.status === 404) throw new LostError('这一次已不归本机')
-  if (!r.ok) throw new Error(`Gateway ${r.status}：${(json as { error?: string } | null)?.error ?? ''}`)
-  return json
-}
-
-async function* sseEvents<T>(reader: ReadableStreamDefaultReader<Uint8Array>): AsyncGenerator<T> {
-  const decoder = new TextDecoder()
-  let buf = ''
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) return
-    buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
-    let idx: number
-    while ((idx = buf.indexOf('\n\n')) >= 0) {
-      const frame = buf.slice(0, idx)
-      buf = buf.slice(idx + 2)
-      for (const line of frame.split('\n')) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          yield JSON.parse(line.slice(6)) as T
-        } catch {}
-      }
-    }
-  }
-}
+const gw = localGateway('/runtime/local-routines', '这一次已不归本机')
 
 function textOfUserMessage(data: unknown): string {
   const content = (data as { message?: { content?: unknown } } | undefined)?.message?.content
@@ -120,32 +77,11 @@ async function readTurnEnd(reader: ReadableStreamDefaultReader<Uint8Array>, ownT
 }
 
 export function apply(ctx: Context) {
-  if (!isLocalRuntime()) return
-  if (!gatewayUrl() || !gatewayToken()) {
-    ctx.logger?.warn?.('local routines: 缺 GATEWAY_URL / GATEWAY_TOKEN，不领日常任务')
-    return
-  }
+  if (!localReady(ctx, 'local routines: 缺 GATEWAY_URL / GATEWAY_TOKEN，不领日常任务')) return
   const botId = pinnedBotId()
   const running = new Set<string>()
 
-  // 打自己的 HTTP 口，票就是自己那把（守卫认的正是它）。
-  const self = () => String(ctx.server.baseUrl || `http://127.0.0.1:${ctx.server.port}`).replace(/\/$/, '')
-  const selfHeaders = () => ({ authorization: `Bearer ${gatewayToken()}`, accept: 'application/json' })
-  async function selfJson(path: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
-    const r = await fetch(`${self()}${path}`, {
-      method: init?.method ?? 'GET',
-      headers: { ...selfHeaders(), ...(init?.body !== undefined ? { 'content-type': 'application/json' } : {}) },
-      body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
-      signal: AbortSignal.timeout(20_000),
-    })
-    const text = await r.text()
-    let json: unknown = null
-    try {
-      json = text ? JSON.parse(text) : null
-    } catch {}
-    if (!r.ok) throw new Error((json as { error?: string } | null)?.error || `HTTP ${r.status}`)
-    return json
-  }
+  const { self, selfHeaders, selfJson } = selfClient(ctx)
 
   async function runJob(job: Job): Promise<void> {
     const ac = new AbortController()
