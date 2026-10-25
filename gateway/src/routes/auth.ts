@@ -10,14 +10,7 @@ import { headerOf, inviteeOf, issue, noteLogin, requireSeatOrUser, requireUser }
 import { type Account } from '../db.ts'
 import { enterThrottle, throttleKeys } from '../lib/auth-throttle.ts'
 import { PUSH_ENVIRONMENTS, PUSH_PLATFORMS, normalizePushToken, validPushToken } from '../lib/push.ts'
-
-/**
- * 建系统管理员那把事务级锁的号。
- *
- * 一个随手取的常数，唯一的要求是**别和以后新加的那几处撞上**——两件不相干的事排在
- * 一条队上，是最难查的那种慢（见 db.lockExclusive）。
- */
-const SETUP_LOCK = 20260831
+import { SETUP_LOCK } from '../db/locks.ts'
 
 export function attachAuth(router: Router, ctx: RouteCtx) {
   const { db, keys } = ctx

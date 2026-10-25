@@ -12,11 +12,11 @@ import { newPairingCode, pairingCodeHash } from '../channels/pairing.ts'
 import { TelegramError, telegramGetMe, telegramSetMyCommands } from '../channels/telegram.ts'
 import { ensureTelegramInbound, telegramWebhookSecretOk } from '../channels/inbound.ts'
 import { processTelegramUpdate } from '../channels.ts'
-import { USER_BOT_QUOTA_LOCK } from './runtime.ts'
+import { USER_BOT_QUOTA_LOCK } from '../db/locks.ts'
 import { uiCdnMeta, uiCdnSources } from '../ui-cdn.ts'
 
 const MAX_USER_BOTS = Math.max(1, Math.trunc(Number(process.env.GATEWAY_MAX_USER_BOTS) || 10))
-// 绑渠道顺手建的那颗 Bot 和 POST /runtime/bots 数的是同一个配额，锁也得是同一把（键定义在那边）。
+// 绑渠道顺手建的那颗 Bot 和 POST /runtime/bots 数的是同一个配额，锁也得是同一把（号在 db/locks.ts）。
 const CHANNEL_BIND_LOCK = USER_BOT_QUOTA_LOCK
 
 interface StoredSecret { token: string; pairingCode: string }

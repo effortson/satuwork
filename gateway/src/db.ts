@@ -394,6 +394,7 @@ export class Db {
    * `db.tx` 里调**，事务外的 xact 锁当场就放了，等于没锁。
    *
    * 每一处各取一个常数，别复用同一个数：两件不相干的事排在一条队上，是最难查的那种慢。
+   * 号统一登记在 db/locks.ts，加新的去那儿挑。
    *
    * **锁是整个库的，不分 schema。** e2e 那几十套共用一个 Postgres（各占一个 schema），
    * 两份并行的 e2e 会在同一个号上互相等一下——等的是一次 insert 的工夫，可以接受；要是
@@ -405,9 +406,23 @@ export class Db {
    * 两颗不相干的 Bot 偶尔排一次队，不影响对错。
    */
   async lockExclusive(key: number, sub?: string): Promise<void> {
-    if (!this.txClient.getStore()) throw new Error('lockExclusive 必须在 db.tx 里调——事务外的锁当场就放了')
+    this.requireTx('lockExclusive')
     if (sub === undefined) await this.one('select pg_advisory_xact_lock(?)', [key])
     else await this.one('select pg_advisory_xact_lock(?::int, hashtext(?))', [key, sub])
+  }
+
+  /** 事务外拿事务级锁是写错了代码：锁当场就放了，什么都没护住。宁可当场炸。 */
+  protected requireTx(who: string, msg = `${who} 必须在 db.tx 里调——事务外的锁当场就放了`): void {
+    if (!this.txClient.getStore()) throw new Error(msg)
+  }
+
+  /**
+   * 按名字散列的事务级咨询锁（公司管理员、账本、结算、部署、渠道对齐那几把）。键本身就是
+   * `用途:对象`，不同用途天然撞不上；数字号的那一组见 db/locks.ts + lockExclusive。
+   */
+  protected async xactLock(who: string, key: string, msg?: string): Promise<void> {
+    this.requireTx(who, msg)
+    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [key])
   }
 
   async tx<T>(fn: () => Promise<T> | T): Promise<T> {
@@ -754,8 +769,7 @@ export class Db {
    * 放行，公司就一个管理员都不剩了。按公司散列，不同公司互不等。
    */
   async lockCompanyAdmins(companyId: string): Promise<void> {
-    if (!this.txClient.getStore()) throw new Error('lockCompanyAdmins 必须在 db.tx 里调——事务外的锁当场就放了')
-    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`company_admins:${companyId}`])
+    await this.xactLock('lockCompanyAdmins', `company_admins:${companyId}`)
   }
 
   /**
@@ -763,7 +777,8 @@ export class Db {
    * 一队，键里折进 schema 名，e2e 各套 schema 之间不互相排队。
    */
   async lockPlatformOwners(): Promise<void> {
-    if (!this.txClient.getStore()) throw new Error('lockPlatformOwners 必须在 db.tx 里调——事务外的锁当场就放了')
+    this.requireTx('lockPlatformOwners')
+    // 键在 SQL 那侧拼（要折进 current_schema()），所以不走 xactLock。
     await this.one("select pg_advisory_xact_lock(hashtext(current_schema() || ':platform_owners'))")
   }
 
@@ -1946,13 +1961,11 @@ export class Db {
    * **先拿它、再拿账本锁**（meter.charge 里那把），各处同一个顺序，不会互等。
    */
   async lockLlmSettle(callId: string): Promise<void> {
-    if (!this.txClient.getStore()) throw new Error('lockLlmSettle 必须在 db.tx 里调——事务外的锁当场就放了')
-    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`llm_settle:${callId}`])
+    await this.xactLock('lockLlmSettle', `llm_settle:${callId}`)
   }
 
   async lockCompanyLedger(companyId: string): Promise<void> {
-    if (!this.txClient.getStore()) throw new Error('lockCompanyLedger 必须在 db.tx 里调——事务外的锁当场就放了')
-    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`usage_charges:${companyId}`])
+    await this.xactLock('lockCompanyLedger', `usage_charges:${companyId}`)
   }
 
   /**
@@ -3467,8 +3480,7 @@ export class Db {
    * **必须在 db.tx 里调**。按席位散列，不同席位互不等。
    */
   async lockSeatDeploy(accountId: string, botId: string): Promise<void> {
-    if (!this.txClient.getStore()) throw new Error('lockSeatDeploy 必须在 db.tx 里调——事务外的锁当场就放了')
-    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`seat_deploy:${accountId}:${botId}`])
+    await this.xactLock('lockSeatDeploy', `seat_deploy:${accountId}:${botId}`)
   }
 
   /**
@@ -4379,8 +4391,7 @@ export class Db {
    * 入库、配对一起堵住。这把是咨询锁，只和另一次对齐互斥。**必须在 db.tx 里调**。
    */
   async lockChannelInbound(id: string): Promise<void> {
-    if (!this.txClient.getStore()) throw new Error('lockChannelInbound 必须在事务里调用')
-    await this.one('select pg_advisory_xact_lock(hashtext(?::text))', [`channel_inbound:${id}`])
+    await this.xactLock('lockChannelInbound', `channel_inbound:${id}`, 'lockChannelInbound 必须在事务里调用')
   }
 
   /**
