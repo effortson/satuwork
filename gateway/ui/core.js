@@ -25,6 +25,9 @@ var SatuCore = (() => {
     CHAT_ALIVE_MS: () => CHAT_ALIVE_MS,
     CHAT_IDLE_RETRY_MS: () => CHAT_IDLE_RETRY_MS,
     CHAT_RETRY_MAX: () => CHAT_RETRY_MAX,
+    PREVIEW_DOC_EXT: () => PREVIEW_DOC_EXT,
+    PREVIEW_TEXT_EXT: () => PREVIEW_TEXT_EXT,
+    PREVIEW_WEB_KIND: () => PREVIEW_WEB_KIND,
     ROSTER_BACKOFF: () => ROSTER_BACKOFF,
     SATU_TZ: () => SATU_TZ,
     UPLOAD_LEADS: () => UPLOAD_LEADS,
@@ -37,6 +40,8 @@ var SatuCore = (() => {
     callDetail: () => callDetail,
     chatRetryDelay: () => chatRetryDelay,
     classifyStreamStatus: () => classifyStreamStatus,
+    cmdMatches: () => cmdMatches,
+    commandQueryAt: () => commandQueryAt,
     companyIdOfPath: () => companyIdOfPath,
     connectorIdOfPath: () => connectorIdOfPath,
     createGatewayClient: () => createGatewayClient,
@@ -47,14 +52,20 @@ var SatuCore = (() => {
     dict: () => dict,
     errText: () => errText,
     esc: () => esc,
+    extOf: () => extOf,
+    fileCands: () => fileCands,
+    fileEdgeOk: () => fileEdgeOk,
+    fileHits: () => fileHits,
     fmtFileSize: () => fmtFileSize,
     fmtTime: () => fmtTime,
     fmtTokens: () => fmtTokens,
     fold: () => fold,
     insertEvent: () => insertEvent,
     isShot: () => isShot,
+    knownFiles: () => knownFiles,
     machineIdOfPath: () => machineIdOfPath,
     maxSeqOf: () => maxSeqOf,
+    mentionQueryAt: () => mentionQueryAt,
     mergeChatPage: () => mergeChatPage,
     mergePending: () => mergePending,
     messageImages: () => messageImages,
@@ -63,6 +74,8 @@ var SatuCore = (() => {
     messageText: () => messageText,
     money: () => money,
     newSum: () => newSum,
+    parseCommand: () => parseCommand,
+    previewKindOf: () => previewKindOf,
     progressOf: () => progressOf,
     refreshSum: () => refreshSum,
     resultLine: () => resultLine,
@@ -2340,6 +2353,147 @@ var SatuCore = (() => {
       }
       if (hooks.onBatch) hooks.onBatch(sawData);
     }
+  }
+
+  // core/src/chat/files.ts
+  function knownFiles(blocks) {
+    const map = /* @__PURE__ */ new Map();
+    const add = (f) => {
+      if (!f || !f.path || map.has(f.path)) return;
+      map.set(f.path, { path: f.path, name: f.name || f.path.split("/").pop() || f.path });
+    };
+    for (const b of blocks || []) {
+      for (const f of b.files || []) add(f);
+      for (const r of b.refs || []) if (r && r.kind === "file") add(r);
+      for (const x of b.tools || []) {
+        for (const f of x.files || []) add(f);
+        for (const f of x.refs || []) add(f);
+      }
+    }
+    return map;
+  }
+  var FILE_EXT_RE = /\.[A-Za-z0-9]{1,8}$/;
+  function fileCands(known) {
+    const byBase = /* @__PURE__ */ new Map();
+    for (const f of known.values()) {
+      const base = f.path.split("/").pop() || f.path;
+      byBase.set(base, byBase.has(base) ? null : f);
+    }
+    const out = [];
+    for (const f of known.values()) if (f.path.includes("/")) out.push({ needle: f.path, file: f });
+    for (const [base, f] of byBase) if (f && FILE_EXT_RE.test(base)) out.push({ needle: base, file: f });
+    return out.sort((a, b) => b.needle.length - a.needle.length);
+  }
+  function fileHits(text, cands) {
+    const src = String(text == null ? "" : text);
+    if (!src || !cands || !cands.length) return [];
+    const hits = [];
+    for (const c of cands) {
+      let from = 0;
+      for (; ; ) {
+        const at = src.indexOf(c.needle, from);
+        if (at < 0) break;
+        const end = at + c.needle.length;
+        from = end;
+        if (!fileEdgeOk(src, at, end)) continue;
+        if (hits.some((h) => at < h.end && h.start < end)) continue;
+        hits.push({ start: at, end, file: c.file });
+      }
+    }
+    return hits.sort((a, b) => a.start - b.start);
+  }
+  function fileEdgeOk(src, start, end) {
+    const before = start > 0 ? src[start - 1] : "";
+    const after = end < src.length ? src[end] : "";
+    if (before && /[\w./\\-]/.test(before)) return false;
+    if (after && /[\w/\\-]/.test(after)) return false;
+    if (after === "." && /[A-Za-z0-9]/.test(src[end + 1] || "")) return false;
+    return true;
+  }
+
+  // core/src/chat/commands.ts
+  function mentionQueryAt(value, pos) {
+    const before = value.slice(0, pos);
+    const at = before.lastIndexOf("@");
+    if (at < 0) return null;
+    const prev = at > 0 ? before[at - 1] : " ";
+    if (!/[\s(（]/.test(prev)) return null;
+    const word = before.slice(at + 1);
+    if (/[\s\n]/.test(word)) return null;
+    return { at, q: word };
+  }
+  function commandQueryAt(value, pos) {
+    const before = value.slice(0, pos);
+    if (!/^\/[a-zA-Z-]*$/.test(before)) return null;
+    return { q: before.slice(1).toLowerCase() };
+  }
+  function cmdMatches(q, commands) {
+    return commands.filter((c) => !q || c.name.startsWith(q));
+  }
+  function parseCommand(text, commands) {
+    const raw = String(text || "").trim();
+    const first = raw.split(/\s+/)[0];
+    if (!/^\/[a-zA-Z-]+$/.test(first)) return null;
+    const hit = commands.find((c) => c.name === first.slice(1).toLowerCase());
+    if (!hit) return { unknown: first };
+    if (raw !== first) return { cmd: hit, extra: true, arg: raw.slice(first.length).trim() };
+    return { cmd: hit };
+  }
+
+  // core/src/chat/preview.ts
+  var PREVIEW_TEXT_EXT = /* @__PURE__ */ new Set([
+    "txt",
+    "log",
+    "csv",
+    "tsv",
+    "json",
+    "yml",
+    "yaml",
+    "xml",
+    "ini",
+    "toml",
+    "conf",
+    "js",
+    "mjs",
+    "cjs",
+    "ts",
+    "tsx",
+    "jsx",
+    "css",
+    "scss",
+    "sh",
+    "bash",
+    "zsh",
+    "py",
+    "rb",
+    "go",
+    "rs",
+    "java",
+    "c",
+    "h",
+    "cpp",
+    "sql",
+    "env",
+    "gitignore",
+    "diff",
+    "patch"
+  ]);
+  var PREVIEW_DOC_EXT = /* @__PURE__ */ new Set(["docx", "xlsx", "xlsm", "pptx", "doc", "xls", "ppt", "rtf", "odt", "ods", "odp"]);
+  var PREVIEW_WEB_KIND = { docx: "docx", xlsx: "xlsx", xlsm: "xlsx", pptx: "pptx" };
+  function extOf(name) {
+    const base = String(name || "").split("/").pop() || "";
+    const i = base.lastIndexOf(".");
+    return i > 0 ? base.slice(i + 1).toLowerCase() : "";
+  }
+  function previewKindOf(name, type) {
+    const ext = extOf(name);
+    if (String(type || "").startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svg"].includes(ext)) return "image";
+    if (ext === "pdf") return "pdf";
+    if (ext === "md" || ext === "markdown") return "markdown";
+    if (ext === "html" || ext === "htm") return "html";
+    if (PREVIEW_TEXT_EXT.has(ext)) return "text";
+    if (PREVIEW_DOC_EXT.has(ext)) return "doc";
+    return "";
   }
 
   // core/src/chat/backoff.ts

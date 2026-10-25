@@ -2471,97 +2471,23 @@ if (window.satuMd && satuMd.onCodeReady) {
   })
 }
 
-/**
- * 这条会话里已经露过面的工作区文件：path → { path, name }。
- *
- * 三个来源，都是**报出来的、不是猜出来的**：人上传的附件、工具落地的产出（files）、
- * 工具看到的那些（refs，见 tools/index.ts）。有了这份名册，正文里出现的文件名才能
- * 接回一个真实存在的路径——没有它就只能拿正则去散文里认路径，措辞一改就散架。
- *
- * **按整条会话攒，不是按消息。** 模型常常上一条列了目录、下一条才说「那份 PDF 里
- * 写着…」，只看本条的话，人最想点的那一次恰好点不了。
- */
+/* ══ 转接到 core.js：正文里的文件名怎么接回工作区里的文件，实现在 core/src/chat/files.ts ══
+   名册按整条会话攒（knownFiles），摊成「要找的字串」（fileCands），再在一段文本里认出区间
+   （fileHits / fileEdgeOk）。函数声明的理由见上面 messageText 那一组。 */
 function knownFiles(blocks) {
-  const map = new Map()
-  const add = (f) => {
-    if (!f || !f.path || map.has(f.path)) return
-    map.set(f.path, { path: f.path, name: f.name || f.path.split('/').pop() || f.path })
-  }
-  for (const b of blocks || []) {
-    for (const f of b.files || []) add(f)
-    // 人引用过的文件也算露过面：正文里再出现它的名字就该能点。
-    for (const r of b.refs || []) if (r && r.kind === 'file') add(r)
-    for (const x of b.tools || []) {
-      for (const f of x.files || []) add(f)
-      for (const f of x.refs || []) add(f)
-    }
-  }
-  return map
+  return SatuCore.knownFiles(blocks)
 }
 
-/** 带扩展名才算文件名。没有它，一个叫「报告」的文件会把正文里每一个「报告」都点亮。 */
-const FILE_EXT_RE = /\.[A-Za-z0-9]{1,8}$/
-
-/**
- * 名册摊成一张「要在正文里找的字串」表，长的排前面。
- *
- * 两种字串：**完整路径**（模型写全的那种）和**文件名**。文件名这一类有两道闸——
- * 必须带扩展名、且在整条会话里不重名。重名的一律不认：`index.ts` 有三个的时候，
- * 猜中的那次不值得赔上另外两次指到错的文件。
- */
 function fileCands(known) {
-  const byBase = new Map()
-  for (const f of known.values()) {
-    const base = f.path.split('/').pop() || f.path
-    // 撞名的置空而不是删掉——后面再来一个同名的，也得继续认得出它撞过。
-    byBase.set(base, byBase.has(base) ? null : f)
-  }
-  const out = []
-  for (const f of known.values()) if (f.path.includes('/')) out.push({ needle: f.path, file: f })
-  for (const [base, f] of byBase) if (f && FILE_EXT_RE.test(base)) out.push({ needle: base, file: f })
-  return out.sort((a, b) => b.needle.length - a.needle.length)
+  return SatuCore.fileCands(known)
 }
 
-/**
- * 一段文本里出现的那些文件名，落在哪几段区间上。
- *
- * 纯函数，DOM 一点不碰：这条规则最容易出错的地方是边界（`报表.xlsx.bak` 不是
- * `报表.xlsx`、`src/a.ts` 里的 `a.ts` 不该单独再算一次），而那几条拿字符串就能钉死。
- * 长的先认、认过的区间不再让给短的，所以完整路径永远赢过它自己的文件名。
- */
 function fileHits(text, cands) {
-  const src = String(text == null ? '' : text)
-  if (!src || !cands || !cands.length) return []
-  const hits = []
-  for (const c of cands) {
-    let from = 0
-    for (;;) {
-      const at = src.indexOf(c.needle, from)
-      if (at < 0) break
-      const end = at + c.needle.length
-      from = end
-      if (!fileEdgeOk(src, at, end)) continue
-      if (hits.some((h) => at < h.end && h.start < end)) continue
-      hits.push({ start: at, end, file: c.file })
-    }
-  }
-  return hits.sort((a, b) => a.start - b.start)
+  return SatuCore.fileHits(text, cands)
 }
 
-/**
- * 这一段确实是「一个完整的名字」，不是从更长的东西里截出来的一半。
- *
- * 中日韩的字不算词字符（`\w` 不匹配），所以「已生成印尼山火报告2026-08.html，请查收」
- * 里那个文件名照样接得上——这恰恰是最常见的写法。
- */
 function fileEdgeOk(src, start, end) {
-  const before = start > 0 ? src[start - 1] : ''
-  const after = end < src.length ? src[end] : ''
-  if (before && /[\w./\\-]/.test(before)) return false
-  if (after && /[\w/\\-]/.test(after)) return false
-  // `报表.xlsx.bak` 不是 `报表.xlsx`。
-  if (after === '.' && /[A-Za-z0-9]/.test(src[end + 1] || '')) return false
-  return true
+  return SatuCore.fileEdgeOk(src, start, end)
 }
 
 /** 走文本节点时不进去的那些。链接和药丸里面已经是可点的了，再套一层只会打架。 */
@@ -6781,54 +6707,19 @@ function switchLogSource(key) {
  * 大文件不预览：整个读进内存只为看一眼不值当，给下载就行。判断用响应头里的
  * content-length，在读 body **之前**——否则「太大所以不看」的代价是先下完它。
  */
-/**
- * 文本类的扩展名。这几种取回来直接当文字看，比塞进 iframe 强——iframe 里的纯文本
- * 不会换行、没有主题色、也没法选中复制成一段。
- */
-const PREVIEW_TEXT_EXT = new Set([
-  'txt', 'log', 'csv', 'tsv', 'json', 'yml', 'yaml', 'xml', 'ini', 'toml', 'conf',
-  'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'css', 'scss', 'sh', 'bash', 'zsh', 'py',
-  'rb', 'go', 'rs', 'java', 'c', 'h', 'cpp', 'sql', 'env', 'gitignore', 'diff', 'patch',
-])
-
-/**
- * 这几种在浏览器里没有原生渲染，得靠席位那边：先要一份渲染好的 PDF（fetchDocPdf，
- * 席位上的 LibreOffice 转），要不到再退回提取文本（fetchDocText）。
- *
- * 老格式（.doc / .xls / .ppt）和 ODF 只有 PDF 那条路——文本提取那套库不认它们。
- */
-const PREVIEW_DOC_EXT = new Set(['docx', 'xlsx', 'xlsm', 'pptx', 'doc', 'xls', 'ppt', 'rtf', 'odt', 'ods', 'odp'])
-
-/**
- * 要不到 PDF 时（席位 / 这台电脑没装 LibreOffice——桌面端的本地 Bot 多半如此），这几种还能在
- * 浏览器里渲染（office-view.html / office-view.js）。老格式和 ODF 这几个前端库不认，只剩提取文本。
- */
-const PREVIEW_WEB_KIND = { docx: 'docx', xlsx: 'xlsx', xlsm: 'xlsx', pptx: 'pptx' }
+/* 预览方式按扩展名分（文本 / 文档 / 浏览器里能渲染的 Office），表和判法在 core/src/chat/preview.ts。 */
+const PREVIEW_WEB_KIND = SatuCore.PREVIEW_WEB_KIND
 
 /** 浏览器里渲染 Office 的那一页。Gateway 和桌面壳都认 `/ui/` 前缀（http.ts 的 serveUi、main.rs 的 serve_ui）。 */
 const OFFICE_VIEW_SRC = '/ui/office-view.html'
 
 function extOf(name) {
-  const base = String(name || '').split('/').pop() || ''
-  const i = base.lastIndexOf('.')
-  return i > 0 ? base.slice(i + 1).toLowerCase() : ''
+  return SatuCore.extOf(name)
 }
 
-/**
- * 这个文件用哪种方式看。
- *
- * **按扩展名判，不按 content-type**：席位那边对不在内联白名单里的一律回
- * `application/octet-stream`（HTML、docx 都是），光看类型什么都分不出来。
- */
+/** 这个文件用哪种方式看。**按扩展名判，不按 content-type**（理由见 core 那边）。 */
 function previewKindOf(name, type) {
-  const ext = extOf(name)
-  if (String(type || '').startsWith('image/') || ['png','jpg','jpeg','gif','webp','avif','bmp','ico','svg'].includes(ext)) return 'image'
-  if (ext === 'pdf') return 'pdf'
-  if (ext === 'md' || ext === 'markdown') return 'markdown'
-  if (ext === 'html' || ext === 'htm') return 'html'
-  if (PREVIEW_TEXT_EXT.has(ext)) return 'text'
-  if (PREVIEW_DOC_EXT.has(ext)) return 'doc'
-  return ''
+  return SatuCore.previewKindOf(name, type)
 }
 
 /** 文本类不该按图片那个尺度收：一份 2MB 的日志已经没人会在预览里读了。 */
@@ -9431,15 +9322,7 @@ async function deployMyRuntime(botId, opts = {}) {
 /** 光标前面刚打出来的 `@xxx`。不在词首（前面挨着字母）不算，邮箱地址不该触发选单。 */
 function mentionQueryAt(el) {
   if (!el) return null
-  const pos = el.selectionStart ?? el.value.length
-  const before = el.value.slice(0, pos)
-  const at = before.lastIndexOf('@')
-  if (at < 0) return null
-  const prev = at > 0 ? before[at - 1] : ' '
-  if (!/[\s(（]/.test(prev)) return null
-  const word = before.slice(at + 1)
-  if (/[\s\n]/.test(word)) return null
-  return { at, q: word }
+  return SatuCore.mentionQueryAt(el.value, el.selectionStart ?? el.value.length)
 }
 
 function closeMentionPick() {
@@ -9502,7 +9385,7 @@ function takeMention(id) {
  * 落各自的会话事件，界面上画成一条分割线（见 docs/chat-commands.md）。
  *
  * 命令表是**本地常量，不走接口**：这两条是界面对席位发起的两次调用，不是席位提供的
- * 能力清单，为它多一跳只会让第一屏更慢。
+ * 能力清单，为它多一跳只会让第一屏更慢。认命令的规则（parseCommand 那几个）在 core。
  */
 const CHAT_COMMANDS = [
   {
@@ -9544,18 +9427,11 @@ const CHAT_COMMANDS = [
 ]
 
 /**
- * 输入框开头那条 `/xxx`。
- *
- * 判据比 `@` 严一档：**必须在最开头，而且后面只跟命令名**。斜杠在正文里太常见——
- * `/etc/hosts`、「他说的 /compact 是什么意思」、贴一段路径——那些都不该弹选单，
- * 更不该被当成命令执行。而命令本来就占满整条消息，不和正文混着发。
+ * 输入框开头那条 `/xxx`。判据比 `@` 严一档：必须在最开头，而且后面只跟命令名（见 core/src/chat/commands.ts）。
  */
 function commandQueryAt(el) {
   if (!el) return null
-  const pos = el.selectionStart ?? el.value.length
-  const before = el.value.slice(0, pos)
-  if (!/^\/[a-zA-Z-]*$/.test(before)) return null
-  return { q: before.slice(1).toLowerCase() }
+  return SatuCore.commandQueryAt(el.value, el.selectionStart ?? el.value.length)
 }
 
 function closeCmdPick() {
@@ -9570,7 +9446,7 @@ function openCmdPick(q) {
 }
 
 function cmdMatches(q) {
-  return CHAT_COMMANDS.filter((c) => !q || c.name.startsWith(q))
+  return SatuCore.cmdMatches(q, CHAT_COMMANDS)
 }
 
 /** 命令选单。形状和 `@` 那个一样，共用 .sw-pickbox。 */
@@ -9621,29 +9497,11 @@ function takeCommand(name) {
 }
 
 /**
- * 这条草稿是不是一条命令。
- *
- * 三种结果：命中一条、`{ unknown }`（打了斜杠但不认识）、null（不是命令）。
- * **不认识的不能当普通消息发出去**——一个手滑的 `/copmact` 就发给模型了，它会礼貌地
- * 回一段「你是想…吗」，而人以为自己压缩过了。参数也一样不收：`/compact 只留三轮`
- * 当作不认识，不猜意图。
+ * 这条草稿是不是一条命令：命中一条、`{ unknown }`（打了斜杠但不认识）、null（不是命令）。
+ * 判法在 core/src/chat/commands.ts；表是这里的 CHAT_COMMANDS（每条带着自己的 run）。
  */
 function parseCommand(text) {
-  const raw = String(text || '').trim()
-  const first = raw.split(/\s+/)[0]
-  /**
-   * **命令名里不会有第二个斜杠。** 这一条把「整条消息就是一个路径」放行——
-   * `/etc/hosts`、`/var/log/syslog` 是人真的会单独发过来的一句话（「看下这个文件」的
-   * 省略说法），把它拦成「没有这条命令」纯属添乱。而 `/copmact` 这种仍然拦得住，
-   * 那才是这道闸要防的。
-   */
-  if (!/^\/[a-zA-Z-]+$/.test(first)) return null
-  const hit = CHAT_COMMANDS.find((c) => c.name === first.slice(1).toLowerCase())
-  if (!hit) return { unknown: first }
-  // 认得这条，但后面还跟着别的字。只有 `/model` 收参数，别的一律不收——**不猜意图**，
-  // 也不把多出来的那半句悄悄丢掉。
-  if (raw !== first) return { cmd: hit, extra: true, arg: raw.slice(first.length).trim() }
-  return { cmd: hit }
+  return SatuCore.parseCommand(text, CHAT_COMMANDS)
 }
 
 /**
