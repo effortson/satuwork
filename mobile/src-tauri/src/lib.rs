@@ -268,7 +268,7 @@ fn route_open(app: &AppHandle, base: &Url, url: &Url) {
  * 原地；剩下的（blob:、data: 这些页面内部用的）放行。
  *
  * 和桌面壳差两处：`mailto:` / `tel:` / `sms:` 交给系统（见 hand_to_system）；**没有**内嵌桌面那块
- * iframe 的放行——手机上不嵌桌面（gateway/ui/chat.js 的 deskEmbeddable），「打开桌面」走系统浏览器。
+ * iframe 的放行——手机上不嵌桌面（gateway/ui/chat-desktop.js 的 deskEmbeddable），「打开桌面」走系统浏览器。
  */
 fn allow_navigation(app: &AppHandle, base: &Url, url: &Url) -> bool {
     #[cfg(debug_assertions)]

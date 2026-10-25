@@ -4076,7 +4076,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
        * 在：半死的流 ac 还在，谁都以为它好着，没有任何东西会去碰它。这正是「回答其实
        * 出了、界面上看不见、刷新才好」修了几轮都没除根的那一种：每一轮修的都是「断了
        * 之后接不回来」，而这一种压根没有断。判据只能是字节本身：bot 每 15 秒一条
-       * `: ping`，三个心跳没等到就当死的拆掉重连（见 chat.js 的 sweepSilentStreams）。
+       * `: ping`，三个心跳没等到就当死的拆掉重连（见 chat-stream.js 的 sweepSilentStreams）。
        */
       const streams = []
       const ui = loadApp({
@@ -5486,7 +5486,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
     })
 
     /**
-     * 附件那几秒里的草稿归属（chat.js 的 chatUploads / returnDraft）。
+     * 附件那几秒里的草稿归属（chat-composer.js 的 chatUploads / returnDraft）。
      *
      * 两个 Bot 各有各的会话和直连上传地址；A 的上传被一道闸卡住，什么时候放行由测试说了算。
      */

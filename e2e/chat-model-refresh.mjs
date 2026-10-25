@@ -1,5 +1,5 @@
 /**
- * 对话框里那个日常模型选择器，名单要跟得上平台（gateway/ui/chat.js 的 chatModelSnap）。
+ * 对话框里那个日常模型选择器，名单要跟得上平台（gateway/ui/chat-meta.js 的 chatModelSnap）。
  *
  * 平台改了日常模型 / 备选，席位一分钟内就重拉了目录，但它不会往会话里发 `session/model`
  * 事件——那份名单不是这条会话的事。界面以前只在那种事件或取失败时才重取，于是网页刷新一下

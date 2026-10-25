@@ -9,7 +9,7 @@
  *    `**加粗` 或围栏里面。照直渲染的话，星号、反引号、`[标题](` 会在屏幕上闪一下再
  *    消失——很脏。所以渲染前先把「还没收口的记号」补上（见 healStream）。
  * 2. **按块记忆。** 一轮回答要重画几百次，每次整段重排是 O(n²)。splitBlocks 把正文切
- *    成顶层块，调用方只重画变了的那一块（app.js 的 paintChat 就这么用）。
+ *    成顶层块，调用方只重画变了的那一块（chat-thread.js 的 paintChat 就这么用）。
  * 3. **默认不信任正文。** 这里渲染的是模型输出和工具结果，等同于外部输入：原始 HTML
  *    一律转义不透传，链接和图片只放行白名单协议。
  *
@@ -37,7 +37,7 @@
   const md = SatuCore.createMarkdown({ t: (zh) => (typeof window.t === 'function' ? window.t(zh) : zh) })
   const { esc, render, splitBlocks, healStream, loadedImages } = md
 
-  /** 界面文案走 app.js 的 t()。markdown.js 先加载，所以只能运行时去拿。 */
+  /** 界面文案走 prefs.js 的 t()。markdown.js 先加载，所以只能运行时去拿。 */
   function L(zh) {
     return typeof window.t === 'function' ? window.t(zh) : zh
   }

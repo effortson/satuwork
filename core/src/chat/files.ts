@@ -1,6 +1,7 @@
 /**
  * 正文里的文件名怎么接回工作区里的文件。原先在 gateway/ui/chat.js（knownFiles / fileCands /
- * fileHits），只碰字符串；把命中的区间变成链接那一半（走 DOM 文本节点）还留在那边。
+ * fileHits），只碰字符串；把命中的区间变成链接那一半（走 DOM 文本节点）还留在前端，现在在
+ * chat-bubble.js。
  */
 
 export interface KnownFile {

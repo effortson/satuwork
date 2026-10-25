@@ -455,7 +455,7 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
     })
 
     await test('经 Gateway 列工作区：右栏那棵树看得见刚传上去的文件', async () => {
-      // 这一跳是右栏文件树的全部数据来源（见 chat.js 的 workspacePanel）。它和上面
+      // 这一跳是右栏文件树的全部数据来源（见 chat-workspace.js 的 workspacePanel）。它和上面
       // 那条预览必须给出**同一个 path**，否则树上点开就是 404。
       const dir = gwPath.split('/').slice(0, -1).join('/')
       const r = await req(gwBase, 'GET', `/runtime/sessions/${sessionId}/workspace?path=${encodeURIComponent(dir)}`, {

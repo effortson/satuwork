@@ -144,7 +144,7 @@ desktop/src-tauri/src/ 的 ui.rs / nav.rs 抄过来的，**两边要一起改**�
 - 同源的 `target="_blank"`（「打开桌面」）桌面上另开一扇应用窗口，手机只有一扇窗，换成 Gateway 的
   源交给 Safari——Gateway 发的是同一份界面，在 Safari 里登录一次就能看（`open_target`）。
 - 没有内嵌桌面那块 iframe 的放行（桌面壳的 `allow_seat_desktop` / `is_seat_desktop`）：手机上不嵌桌面
-  （gateway/ui/chat.js 的 `deskEmbeddable`），那条命令和那座桥也就不开。
+  （gateway/ui/chat-desktop.js 的 `deskEmbeddable`），那条命令和那座桥也就不开。
 - `mailto:` / `tel:` / `sms:` 交给系统（`hand_to_system`）：WebView 自己打不开它们，放行等于点了没反应。
 - CSP 的 `connect-src` 多认 `blob:` / `data:`，见上面「下载」。
 

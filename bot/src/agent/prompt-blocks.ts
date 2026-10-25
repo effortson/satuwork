@@ -194,7 +194,7 @@ export function localFoldersBlock(mounts: { mount: string; path: string }[] | nu
  * `openPreview`）。模型不知道这条路存在，于是绕过它去教用户操作文件系统。
  *
  * **「写成行内代码」不是排版讲究，是接口。** 界面只把正文里 `` `完整路径` `` 这种整段
- * 相等的行内代码换成药丸（chat.js 的 `mentionedFiles` / `inlineFileChips`），不做模糊
+ * 相等的行内代码换成药丸（chat-bubble.js 的 `mentionedFiles` / `inlineFileChips`），不做模糊
  * 匹配——拿正则扫散文猜路径措辞一改就散架。所以这句话必须写死到这个程度。
  */
 export function fileOutBlock(): string {

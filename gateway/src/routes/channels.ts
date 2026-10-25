@@ -42,7 +42,7 @@ function htmlAttr(value: string): string {
  * 渠道预览页认得的几种文件。
  *
  * `doc`（Word / Excel / PPT）和 `image` 是后补的：Office 预览当初只接在对话页那套预览上
- * （chat.js 的 openPreview），这一页漏了，Bot 在 Telegram 里发出来的 pptx / docx 点开只有
+ * （chat-preview.js 的 openPreview），这一页漏了，Bot 在 Telegram 里发出来的 pptx / docx 点开只有
  * 一句「暂不支持在线预览」。扩展名和对话页的 PREVIEW_DOC_EXT 保持一致。
  */
 const CHANNEL_DOC_EXT = /\.(?:docx|xlsx|xlsm|pptx|doc|xls|ppt|rtf|odt|ods|odp)$/i

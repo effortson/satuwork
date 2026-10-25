@@ -1,5 +1,5 @@
 /**
- * 正文里的文件名怎么接回工作区里的文件（chat.js 的 knownFiles / fileCands / fileHits），
+ * 正文里的文件名怎么接回工作区里的文件（chat-bubble.js 的 knownFiles / fileCands / fileHits），
  * 外加右栏那棵文件树画出来的 HTML。
  *
  * 不起服务、不连数据库：这几个是纯函数，装进 ui-dom.mjs 那层垫片就能跑。
@@ -299,7 +299,7 @@ export async function runUiFiles({ root, test, assert, log }) {
   const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
   /**
    * 右栏里看得见的那一份预览：头上那几行（previewPanel）加内容层里的东西（previewBody）。
-   * 内容不画在右栏里，挂在 body 上的常驻层上（见 chat.js 的 syncPreview），所以要拼起来看。
+   * 内容不画在右栏里，挂在 body 上的常驻层上（见 chat-preview.js 的 syncPreview），所以要拼起来看。
    */
   const previewShown = (app) => app.previewPanel() + app.previewBody(app.state.preview)
 

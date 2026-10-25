@@ -133,7 +133,7 @@ fn hand_to_system(url: &Url) -> bool {
  * **为什么需要这一条。** 上面那条回调想挡的是「唯一的窗口跑到站外」，可它分不出主框架
  * 和子框架——wry 的 navigation_policy 把 WKNavigationAction 里的 URL 取出来就交给上层，
  * `targetFrame.isMainFrame` 从头到尾没碰过。于是右栏那块屏（`{directUrl}/seats/<席位>/vnc/`，
- * 见 gateway/ui/chat.js 的 mountDesktop）一挂上去就被判成「往外走」：地址送进系统浏览器，
+ * 见 gateway/ui/chat-desktop.js 的 mountDesktop）一挂上去就被判成「往外走」：地址送进系统浏览器，
  * iframe 这边 Cancel。表现是桌面从窗口里跳到浏览器里打开，而配置上看不出任何毛病。
  *
  * **只认路径不够，还得认源。** 以前只看路径，于是 `http://evil.com/seats/x/vnc/` 也放行：

@@ -354,7 +354,7 @@ export function apply(ctx: Context, _config: Config = {}) {
      *
      * 收下的后果是最坏的那一种：界面上画着一条已经发出去的消息，几秒后进程没了，那一轮
      * 连 turn/end 都没写成——人只会以为「发出去了但它不理我」。回绝则明白得多，草稿也
-     * 原样退回去（见 ui/chat.js 的 sendChat 那个 catch），过几秒重发就是。
+     * 原样退回去（见 ui/chat-composer.js 的 sendChat 那个 catch），过几秒重发就是。
      *
      * **在跑的那一轮不受影响**：steering 照旧插得进去（静默只挡新一轮）。
      *

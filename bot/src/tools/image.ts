@@ -98,7 +98,7 @@ export type ImageRequest = { body: Record<string, unknown>; format: Format; edit
  * 模型给的参数（加上读好的原图）→ 这颗模型的原生请求体。**纯函数**，e2e 探针直接打它。
  *
  * 默认格式是 JPEG：同样一张 1024² 的图，PNG 两三 MB，JPEG 几百 KB——界面上缩略图只自动
- * 拉 2 MB 以内的（chat.js 的 SHOT_AUTO_MAX），PNG 多半显示成一个占位。要透明背景就只能是
+ * 拉 2 MB 以内的（chat-bubble.js 的 SHOT_AUTO_MAX），PNG 多半显示成一个占位。要透明背景就只能是
  * PNG / WebP（JPEG 没有透明通道，上游会直接 400），所以 `transparent` 时默认换成 PNG。
  * Gemini 选不了格式（它自己定，多半是 PNG），`format` 对它不起作用；它也画不了透明背景。
  *

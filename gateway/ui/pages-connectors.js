@@ -773,7 +773,7 @@ function refreshConnectorDetail(id) {
 /** 返回 true 表示这一下已经处理掉了，app.js 那条链不用再往下走。 */
 async function connectorAct(act, btn) {
   if (act === 'plugins-open') {
-    // 侧栏那颗「更多」是从菜单里点进来的，菜单得跟着收（理由同 app.js 的 `go`）。
+    // 侧栏那颗「更多」是从菜单里点进来的，菜单得跟着收（理由同 state.js 的 `go`）。
     state.menu = null
     state.plugins = { q: '', tab: 'market', id: '', loading: true, error: '' }
     state.pluginDetail = null

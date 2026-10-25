@@ -247,9 +247,9 @@ const DIRECT_SRC = gatewayPageIsHttp() ? 'https: http:' : 'https:'
  *   而内联样式换不出脚本执行。
  * - `img-src https: http:`：模型写得出任意图片地址，markdown 的 safeUrl 明确放行了
  *   `https?://`。收紧等于把「贴一张图」这件事废掉。
- * - `frame-src blob:`：文件预览把字节做成 blob 再喂给 iframe（chat.js 的 previewBody）。
+ * - `frame-src blob:`：文件预览把字节做成 blob 再喂给 iframe（chat-preview.js 的 previewBody）。
  * - `connect-src https:` 与 `frame-src https:`：席位机器配了 `directUrl` 之后，对话那条 SSE
- *   （chat.js 的 directStreamBase）和桌面那块 iframe（novncUrlOf）都直接打机器的域名，
+ *   （chat-stream.js 的 directStreamBase）和桌面那块 iframe（novncUrlOf）都直接打机器的域名，
  *   不再经 Gateway。机器地址按公司各不相同、随时会加，写不进一条静态的头；而直连的
  *   前提本来就是 https（见 docs/gateway-runtime.md §7），所以放的是整个 https:。**只有
  *   Gateway 自己跑在 http 上时才另外加 http:**（见 DIRECT_SRC）：那时页面本身就是 http，
