@@ -15,77 +15,15 @@
  * 上传要 GATEWAY_PLATFORM_TOKEN，进的是 /platform/manager-releases/:version。
  */
 import { spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { die, finish, foreignEsbuild, prepare, root } from '../scripts/pack-lib.mjs'
 
 const pkgRoot = dirname(fileURLToPath(import.meta.url))
-const root = dirname(pkgRoot)
-
-function arg(name) {
-  const i = process.argv.indexOf('--' + name)
-  return i === -1 ? undefined : process.argv[i + 1]
-}
-
-function die(msg) {
-  console.error('pack: ' + msg)
-  process.exit(1)
-}
-
-function git(...args) {
-  const r = spawnSync('git', args, { cwd: root, encoding: 'utf8' })
-  return r.status === 0 ? r.stdout.trim() : ''
-}
-
-function defaultVersion() {
-  const pkg = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'))
-  const base = String(pkg.version || '0.0.0')
-  const sha = git('rev-parse', '--short', 'HEAD')
-  if (!sha) return base
-  const dirty = git('status', '--porcelain') ? '-dirty' : ''
-  return `${base}+${sha}${dirty}`
-}
-
-/**
- * 平台闸。
- *
- * tsx 依赖 esbuild 的**原生二进制**，而 `pnpm deploy` 只会把当前平台那一份实体化
- * 进包里。在 Mac 上打的包带的是 `@esbuild/darwin-arm64`，解到 Debian 上 tsx 加载
- * 不了 esbuild，管家起不来——而那台机器上已经没有 SSH 可以救。
- *
- * 症状极难认（报的是 esbuild 找不到平台二进制，不是「包错了」），所以在这里拦住，
- * 而不是等它到现场爆炸。要在 Mac 上出包只能过 Docker，见 README。
- */
-function assertLinuxPack(stage) {
-  const dir = join(stage, 'node_modules', '.pnpm')
-  let entries = []
-  try {
-    entries = readdirSync(dir)
-  } catch {
-    return
-  }
-  const platforms = entries.filter((e) => e.startsWith('@esbuild+')).map((e) => e.slice('@esbuild+'.length).split('@')[0])
-  if (!platforms.length) return
-  if (platforms.some((p) => p.startsWith('linux-'))) return
-  die(
-    `这个包带的是 ${platforms.join(' / ')} 的 esbuild，拿到 Debian 上起不来。\n` +
-      '  在 Linux 上打包：CI 推 manager-v* tag，或者\n' +
-      "  docker run --rm -v \"$PWD\":/src -w /w node:24-bookworm-slim bash -c \\\n" +
-      "    'corepack enable && cp -r /src /w && cd /w && pnpm install --frozen-lockfile && node manager/pack.mjs --out /src/dist/manager-linux.tgz'\n" +
-      '  真要出一个只在本机跑的包，加 --allow-foreign-platform。',
-  )
-}
-
-const version = (arg('version') || defaultVersion()).trim()
-if (!/^[A-Za-z0-9._+-]{1,64}$/.test(version)) die(`版本号 ${version} 不合法（1–64 位字母数字或 . _ + -）`)
-const note = arg('note') || ''
-const outPath = resolve(arg('out') || join(root, 'dist', `manager-${version}.tgz`))
-const uploadTo = arg('upload')
-
-mkdirSync(dirname(outPath), { recursive: true })
-if (existsSync(outPath)) rmSync(outPath)
+const pack = prepare(pkgRoot, 'manager')
+const { version, outPath } = pack
 
 const tmp = mkdtempSync(join(tmpdir(), 'satuwork-manager-pack-'))
 const stage = join(tmp, 'manager')
@@ -103,7 +41,18 @@ try {
   // 而管家照旧报 7 号协议，Gateway 会以为任务归工人——没人领，只剩「机器没回报」。
   if (!existsSync(join(stage, 'bin', 'satuwork-worker.mjs'))) die('staging 里没有 bin/satuwork-worker.mjs')
   if (!existsSync(join(stage, 'node_modules', 'tsx'))) die('staging 里没有 tsx，包跑不起来')
-  if (!process.argv.includes('--allow-foreign-platform')) assertLinuxPack(stage)
+  // 平台闸（理由见 foreignEsbuild）。对管家更要紧：包坏了起不来，那台机器上已经没有 SSH 可以救。
+  // 要在 Mac 上出包只能过 Docker，见 README。
+  const foreign = foreignEsbuild(stage)
+  if (foreign) {
+    die(
+      `这个包带的是 ${foreign.join(' / ')} 的 esbuild，拿到 Debian 上起不来。\n` +
+        '  在 Linux 上打包：CI 推 manager-v* tag，或者\n' +
+        "  docker run --rm -v \"$PWD\":/src -w /w node:24-bookworm-slim bash -c \\\n" +
+        "    'corepack enable && cp -r /src /w && cd /w && pnpm install --frozen-lockfile && node manager/pack.mjs --out /src/dist/manager-linux.tgz'\n" +
+        '  真要出一个只在本机跑的包，加 --allow-foreign-platform。',
+    )
+  }
   // 席位脚本必须跟着走：管家靠它们建账号、起屏、起 bot。
   // manager-confirm.sh 也在这张单子里：它是自升级的兜底，装机脚本从包里拷它，管家每次
   // 启动也照包里这份刷新一遍。漏进包里的话，兜底会在下一次升级之后静悄悄消失。
@@ -138,30 +87,4 @@ try {
   rmSync(tmp, { recursive: true, force: true })
 }
 
-const bytes = readFileSync(outPath)
-const sha256 = createHash('sha256').update(bytes).digest('hex')
-const size = statSync(outPath).size
-console.log(`pack: ${outPath}`)
-console.log(`pack: ${size} 字节  sha256 ${sha256}`)
-
-if (process.env.GITHUB_OUTPUT) {
-  writeFileSync(process.env.GITHUB_OUTPUT, `version=${version}\nsha256=${sha256}\npath=${outPath}\nsize=${size}\n`, {
-    flag: 'a',
-  })
-}
-
-if (uploadTo) {
-  const token = process.env.GATEWAY_PLATFORM_TOKEN || ''
-  if (!token) die('要上传得给 GATEWAY_PLATFORM_TOKEN')
-  const base = uploadTo.replace(/\/$/, '')
-  const url = `${base}/platform/manager-releases/${encodeURIComponent(version)}${note ? '?note=' + encodeURIComponent(note) : ''}`
-  console.log(`pack: PUT ${base}/platform/manager-releases/${version}`)
-  const r = await fetch(url, {
-    method: 'PUT',
-    headers: { authorization: 'Bearer ' + token, 'content-type': 'application/gzip', 'x-bot-sha256': sha256 },
-    body: bytes,
-  })
-  const text = await r.text()
-  console.log(`pack: ${r.status} ${text.slice(0, 400)}`)
-  if (!r.ok) process.exit(1)
-}
+await finish(pack, 'manager-releases')
