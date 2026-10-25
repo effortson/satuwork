@@ -316,7 +316,7 @@ fn mime_of(path: &str) -> &'static str {
     }
 }
 
-// UI_CSP 里 CDN 那几条路径源，照桌面壳抄；版本要和 gateway/src/ui-cdn.ts 的 UI_CDN_PACKAGES 一起改。
+// UI_CSP 里 CDN 那几条路径源，照桌面壳抄；版本要和 gateway/src/ui-cdn.ts 的 UI_CDN_PACKAGES 一起改（e2e 的 markdown 那一组两个壳都核）。
 macro_rules! ui_cdn {
     () => {
         "https://cdn.jsdelivr.net/npm/katex@0.16.11/ https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/ https://cdn.jsdelivr.net/npm/mermaid@11.4.1/ https://cdn.jsdelivr.net/npm/three@0.170.0/ https://cdn.jsdelivr.net/npm/jszip@3.10.1/ https://cdn.jsdelivr.net/npm/docx-preview@0.4.1/ https://cdn.jsdelivr.net/npm/exceljs@4.4.0/ https://cdn.jsdelivr.net/npm/@aiden0z/pptx-renderer@1.3.0/"
