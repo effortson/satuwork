@@ -90,20 +90,6 @@ function auditTranscript(events) {
   return `<div style="display: flex; flex-direction: column; gap: var(--space-3);">${blocks.join('')}</div>`
 }
 
-function auditTabs(tab) {
-  const items = [
-    { key: 'summaries', label: '审计总结' },
-    { key: 'chats', label: '对话' },
-    { key: 'events', label: '操作记录' },
-  ]
-  return items
-    .map(
-      (item) =>
-        `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(tab === item.key)}" data-act="audit-tab" data-tab="${item.key}">${t(item.label)}</button>`,
-    )
-    .join('')
-}
-
 function auditOutcomeLabel(value) {
   const zh = ({ completed: '已完成', partial: '部分完成', failed: '失败', blocked: '受阻', answered: '已回答', unknown: '未知' })[value]
   return zh ? t(zh) : value || '—'
@@ -249,27 +235,6 @@ function auditPager() {
       <button type="button" class="btn btn-ghost" data-act="audit-prev" ${page > 1 && !busy ? '' : 'disabled'}>${t('上一页')}</button>
       <button type="button" class="btn btn-ghost" data-act="audit-next" ${more && !busy ? '' : 'disabled'}>${t('下一页')}</button>
     </div>`
-}
-
-function auditEventsTable() {
-  const rows = (state.events || [])
-    .map((e) => {
-      const detail = e.detail && typeof e.detail === 'object' ? JSON.stringify(e.detail) : String(e.detail ?? '')
-      return `<div class="satu-usagerow">
-        <span style="font-size: 13.5px; font-weight: 600;">${esc(e.action)}</span>
-        <span style="font-size: 12px; color: var(--muted-foreground);">${esc(fmtTime(e.createdAt))}</span>
-        <span style="font-size: 12px; color: var(--muted-foreground);">${esc(e.accountId || '—')}</span>
-        <span style="font-size: 12px; color: var(--muted-foreground);">${esc(detail)}</span>
-        <div></div>
-      </div>`
-    })
-    .join('')
-  return `<div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
-          <div class="satu-usagehead">
-            <span>${t('事件')}</span><span>${t('时间')}</span><span>${t('账号')}</span><span>${t('详情')}</span><span></span>
-          </div>
-          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有审计事件')}</div>`}
-        </div>`
 }
 
 function auditPage() {

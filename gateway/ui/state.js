@@ -53,11 +53,6 @@ const state = {
   selectedProvider: '',
   accounts: [],
   seats: { total: 0, used: 0 },
-  events: [],
-  sessions: [],
-  sessionDetail: null,
-  sessionEvents: null,
-  sessionPullError: '',
   auditItems: [],
   /**
    * 审计总结的翻页：游标栈，最后一个是当前页的起点（null = 第一页）。和计费明细同一种做法，
@@ -74,9 +69,6 @@ const state = {
   auditItemDetail: null,
   auditCoverage: [],
   auditSettings: null,
-  sessionAccountId: '',
-  sessionFrom: '',
-  sessionTo: '',
   org: null,
   plan: null,
   orgs: [],
@@ -304,10 +296,6 @@ const state = {
   releases: [],
   latestRelease: null,
   updatingRuntime: false,
-  sessionsHasMore: false,
-  sessionsLimit: 0,
-  sessionsCursor: '',
-  sessionsLoadingMore: false,
   chatBotId: '',
   chatSessionId: '',
   chatEvents: [],
@@ -488,7 +476,6 @@ const botIdOfPath = SatuCore.botIdOfPath
 const companyIdOfPath = SatuCore.companyIdOfPath
 const machineIdOfPath = SatuCore.machineIdOfPath
 const userIdOfPath = SatuCore.userIdOfPath
-const sessionIdOfPath = SatuCore.sessionIdOfPath
 const auditItemIdOfPath = SatuCore.auditItemIdOfPath
 
 function capTags(m) {

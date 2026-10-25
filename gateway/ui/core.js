@@ -66,7 +66,6 @@ var SatuCore = (() => {
     resultLine: () => resultLine,
     rosterRetryDelay: () => rosterRetryDelay,
     runEventStream: () => runEventStream,
-    sessionIdOfPath: () => sessionIdOfPath,
     settleDot: () => settleDot,
     splitUploads: () => splitUploads,
     sseEvents: () => sseEvents,
@@ -1563,10 +1562,6 @@ var SatuCore = (() => {
   }
   function userIdOfPath(p) {
     return segAfter(p, "/users/");
-  }
-  function sessionIdOfPath(p) {
-    if (typeof p === "string" && p.startsWith("/audit/summary/")) return "";
-    return segAfter(p, "/audit/");
   }
   function auditItemIdOfPath(p) {
     return segAfter(p, "/audit/summary/");

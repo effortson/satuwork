@@ -798,13 +798,6 @@ async function loadBotDetail(botId) {
   }
 }
 
-async function loadAudit() {
-  const id = orgId()
-  if (!id) return
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/audit`)
-  state.events = data.events || []
-}
-
 /** 审计总结一页几条。一屏放得下、又不至于翻个没完。 */
 const AUDIT_PAGE_SIZE = 20
 
@@ -871,37 +864,6 @@ async function loadConversationAuditItem(itemId) {
     'GET',
     `/orgs/${encodeURIComponent(id)}/conversation-audits/${encodeURIComponent(itemId)}`,
   )
-}
-
-async function loadSessions(append = false) {
-  const id = orgId()
-  if (!id) return
-  const q = new URLSearchParams()
-  if (state.sessionAccountId) q.set('accountId', state.sessionAccountId)
-  const from = dayStart(state.sessionFrom)
-  const to = dayEnd(state.sessionTo)
-  if (from !== '') q.set('from', String(from))
-  if (to !== '') q.set('to', String(to))
-  // 追加下一页时带上游标；不带就是从头拉第一页（筛选条件变了要从头来）。
-  if (append && state.sessionsCursor) q.set('cursor', state.sessionsCursor)
-  const qs = q.toString()
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/sessions${qs ? '?' + qs : ''}`)
-  const got = data.sessions || []
-  state.sessions = append ? (state.sessions || []).concat(got) : got
-  // 接口是分页的。不把这几个字段带出来，一份被截断的列表看起来和「就这么多」一模一样，
-  // 管理员会据此以为更早的会话不存在。
-  state.sessionsHasMore = Boolean(data.hasMore)
-  state.sessionsLimit = Number(data.limit) || state.sessions.length
-  state.sessionsCursor = data.nextCursor || ''
-}
-
-async function loadSessionDetail(sessionId) {
-  const id = orgId()
-  if (!id || !sessionId) return
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`)
-  state.sessionDetail = data.session || null
-  state.sessionEvents = data.events == null ? null : data.events
-  state.sessionPullError = data.pullError || ''
 }
 
 async function loadBilling() {

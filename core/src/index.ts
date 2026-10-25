@@ -9,7 +9,7 @@ export { dict } from './i18n/dict.ts'
 export { t, errText } from './i18n/t.ts'
 export { esc, SATU_TZ, tzOffsetMs, tzDayStart, tzDayKey, fmtTime, dayStart, dayEnd, money, usd, fmtTokens } from './format.ts'
 export type { Locale } from './format.ts'
-export { connectorIdOfPath, botIdOfPath, companyIdOfPath, machineIdOfPath, userIdOfPath, sessionIdOfPath, auditItemIdOfPath } from './paths.ts'
+export { connectorIdOfPath, botIdOfPath, companyIdOfPath, machineIdOfPath, userIdOfPath, auditItemIdOfPath } from './paths.ts'
 export { createGatewayClient } from './api.ts'
 export type { TokenStore, FetchLike, GatewayClientOptions, GatewayClient, LocalBot, LocalRoute, ApiError } from './api.ts'
 

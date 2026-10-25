@@ -467,18 +467,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
     sec.focus({ preventScroll: true })
     return
   }
-  if (act === 'sessions-more') {
-    if (state.sessionsLoadingMore || !state.sessionsHasMore) return
-    state.sessionsLoadingMore = true
-    render()
-    loadSessions(true)
-      .catch((err) => flash('err', err.message))
-      .finally(() => {
-        state.sessionsLoadingMore = false
-        render()
-      })
-    return
-  }
   if (act === 'chat-open') {
     const id = btn.getAttribute('data-id')
     if (id) go('/a/' + id)

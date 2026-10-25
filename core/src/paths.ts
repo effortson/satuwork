@@ -29,12 +29,6 @@ export function userIdOfPath(p: unknown): string {
   return segAfter(p, '/users/')
 }
 
-/** `/audit/:sessionId`；`/audit/summary/:id` 是另一页（auditItemIdOfPath），这里回空。 */
-export function sessionIdOfPath(p: unknown): string {
-  if (typeof p === 'string' && p.startsWith('/audit/summary/')) return ''
-  return segAfter(p, '/audit/')
-}
-
 export function auditItemIdOfPath(p: unknown): string {
   return segAfter(p, '/audit/summary/')
 }
