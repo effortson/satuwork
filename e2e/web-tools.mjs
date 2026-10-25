@@ -10,8 +10,7 @@
  * 3. **密钥不回显**，配置接口只报「配没配」。
  */
 import { rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { PG_URL } from './pg.mjs'
+import { pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { runProbe as sharedProbe } from './probe.mjs'
@@ -42,11 +41,7 @@ export async function runWebTools({ gwRoot, test, req, start, waitHttp, assert, 
     },
   })
 
-  const require = createRequire(`${gwRoot}/package.json`)
-  const pg = require('pg')
-  const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
-  await client.query(`set search_path to ${SCHEMA}`)
+  const client = await pgClient(SCHEMA)
 
   /**
    * 一次网页调用 = 一行 web_calls（事实）+ 一行 usage_charges（钱），按 refId 串。

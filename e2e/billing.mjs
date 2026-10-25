@@ -11,8 +11,7 @@
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { PG_URL } from './pg.mjs'
+import { PG_URL, pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
@@ -99,11 +98,7 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
     },
   })
 
-  const require = createRequire(`${gwRoot}/package.json`)
-  const pg = require('pg')
-  const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
-  await client.query(`set search_path to ${SCHEMA}`)
+  const client = await pgClient(SCHEMA)
 
   /** 账本行，最近的在前。计价断言全看它——`llm_calls` 那边只有 token。 */
   const charges = async (companyId) =>

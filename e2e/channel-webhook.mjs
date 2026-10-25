@@ -6,8 +6,7 @@
  * 同一条（配对、入队、去重）；模式切换双向自愈。
  */
 import { createHash } from 'node:crypto'
-import { createRequire } from 'node:module'
-import { PG_URL } from './pg.mjs'
+import { withPg } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { createCompany } from './org.mjs'
@@ -47,17 +46,6 @@ export async function runChannelWebhook({ gwRoot, test, req, start, waitHttp, as
     },
   })
 
-  const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-  const pg = require('pg')
-  const withPg = async (fn) => {
-    const client = new pg.Client({ connectionString: PG_URL })
-    await client.connect()
-    try {
-      return await fn(client)
-    } finally {
-      await client.end().catch(() => {})
-    }
-  }
   const hook = (publicId, secret, update) =>
     fetch(`${base}/channels/telegram/hook/${encodeURIComponent(publicId)}`, {
       method: 'POST',
@@ -88,7 +76,7 @@ export async function runChannelWebhook({ gwRoot, test, req, start, waitHttp, as
       assert(r.json.channel.status === 'active', `状态 ${r.json.channel.status} ${r.json.channel.lastError}`)
       assert(telegram.seen.webhook, '没有设 webhook')
       assert(telegram.seen.deleteWebhook === 0, '设了 webhook 又去删')
-      const row = await withPg((c) => c.query(`select "publicId","webhookSecretHash" from "${schema}".channel_bindings where id = $1`, [bindingId]))
+      const row = await withPg(schema, (c) => c.query(`select "publicId","webhookSecretHash" from "${schema}".channel_bindings where id = $1`, [bindingId]))
       publicId = row.rows[0].publicId
       assert(telegram.seen.webhook.url === `${base}/channels/telegram/hook/${encodeURIComponent(publicId)}`, `webhook 地址 ${telegram.seen.webhook.url}`)
       assert(telegram.seen.webhook.secret.length >= 20, 'secret 太短')
@@ -127,7 +115,7 @@ export async function runChannelWebhook({ gwRoot, test, req, start, waitHttp, as
       assert(first.status === 200, `入队 ${first.status}`)
       const again = await hook(publicId, secret, msg(4, '你好'))
       assert(again.status === 200, `重送 ${again.status}`)
-      const events = await withPg((c) => c.query(`select count(*)::int as n from "${schema}".channel_events where "bindingId" = $1`, [bindingId]))
+      const events = await withPg(schema, (c) => c.query(`select count(*)::int as n from "${schema}".channel_events where "bindingId" = $1`, [bindingId]))
       assert(events.rows[0].n === 1, `账本该只有 1 条，有 ${events.rows[0].n}`)
     })
 
@@ -146,7 +134,7 @@ export async function runChannelWebhook({ gwRoot, test, req, start, waitHttp, as
         telegram.seen.hook = null
       }
       assert(calls === 2, `该设两次 webhook，设了 ${calls} 次`)
-      const row = await withPg((c) => c.query(`select "webhookSecretHash" from "${schema}".channel_bindings where id = $1`, [bindingId]))
+      const row = await withPg(schema, (c) => c.query(`select "webhookSecretHash" from "${schema}".channel_bindings where id = $1`, [bindingId]))
       assert(row.rows[0].webhookSecretHash === createHash('sha256').update(telegram.seen.webhook.secret).digest('hex'),
         'Telegram 上的 secret 和库里的散列对不上，之后每条推送都会 404')
       const ok = await hook(publicId, telegram.seen.webhook.secret, { update_id: 20, message: { message_id: 20, chat: { id: 456, type: 'private' }, from: { id: 456, is_bot: false, first_name: 'Alice' }, text: '重连之后' } })
@@ -168,7 +156,7 @@ export async function runChannelWebhook({ gwRoot, test, req, start, waitHttp, as
       while (Date.now() < deadline && !(telegram.seen.deleteWebhook >= 1 && telegram.seen.polls.length > 0)) await sleep(100)
       assert(telegram.seen.deleteWebhook >= 1, '模式关掉后没有删 webhook')
       assert(telegram.seen.polls.length > 0, '模式关掉后没有恢复长轮询')
-      const row = await withPg((c) => c.query(`select "webhookSecretHash" from "${schema}".channel_bindings where id = $1`, [bindingId]))
+      const row = await withPg(schema, (c) => c.query(`select "webhookSecretHash" from "${schema}".channel_bindings where id = $1`, [bindingId]))
       assert(row.rows[0].webhookSecretHash === '', '散列没清掉')
       // 旧 secret 再来敲，不认。
       const stale = await hook(publicId, before, { update_id: 9, message: { message_id: 9, chat: { id: 456, type: 'private' }, from: { id: 456, is_bot: false, first_name: 'Alice' }, text: 'x' } })

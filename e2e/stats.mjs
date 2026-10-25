@@ -12,8 +12,7 @@
  * $0 混进金额——那会让报表少算钱还看不出来。
  */
 import { rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { PG_URL } from './pg.mjs'
+import { pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { startGateway } from './gateway.mjs'
@@ -39,11 +38,7 @@ export async function runStats({ gwRoot, test, req, start, waitHttp, assert, log
     },
   })
 
-  const require = createRequire(`${gwRoot}/package.json`)
-  const pg = require('pg')
-  const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
-  await client.query(`set search_path to ${SCHEMA}`)
+  const client = await pgClient(SCHEMA)
 
   const now = Date.now()
   const d = new Date()

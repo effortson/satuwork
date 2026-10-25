@@ -5,9 +5,7 @@
  * 指令的 run 活、回报结论之后主席位领到带结论的 deliver 活；目标砸了也要送回去；租约到期放回
  * 去再领；管家太旧当场记成没跑起来。
  */
-import { createRequire } from 'node:module'
-import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
+import { pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
 import { publishRelease } from './release.mjs'
@@ -514,12 +512,8 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
     })
 
     await test('答了却被停了、等的一方又没来取：清扫收成已停止，不走兜底送回', async () => {
-      const require = createRequire(join(gwRoot, 'package.json'))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       try {
-        await client.query(`set search_path to ${SCHEMA}`)
         const made = await assign({ fromBotId: mainBot, toBot: '财务', instruction: '撞车的那件', sessionId: 's-main', wait: true })
         const id = made.json.task.id
         assert((await due()).json.jobs.some((j) => j.taskId === id), '没领到')

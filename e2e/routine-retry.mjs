@@ -21,7 +21,7 @@
  */
 import { createServer } from 'node:http'
 import { rmSync } from 'node:fs'
-import { PG_URL } from './pg.mjs'
+import { withPg } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
 import { publishRelease } from './release.mjs'
@@ -86,21 +86,6 @@ export async function runRoutineRetry({ gwRoot, test, req, start, waitHttp, asse
     },
   })
 
-  /** 直接改库：把这条任务的「下一次」拨到刚刚过去，好让下一个 tick 当场抢到它。 */
-  const withPg = async (fn) => {
-    const { createRequire } = await import('node:module')
-    const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-    const pg = require('pg')
-    const client = new pg.Client({ connectionString: PG_URL })
-    await client.connect()
-    try {
-      await client.query(`set search_path to ${SCHEMA}`)
-      return await fn(client)
-    } finally {
-      await client.end().catch(() => {})
-    }
-  }
-
   try {
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@retry.test',
@@ -163,7 +148,7 @@ export async function runRoutineRetry({ gwRoot, test, req, start, waitHttp, asse
     }
     /** 把「下一次」拨到刚刚过去，等下一个 tick 把它抢走。 */
     const makeDue = async () => {
-      await withPg((c) => c.query('update routines set "nextRunAt" = $1 where id = $2', [Date.now() - 1000, routineId]))
+      await withPg(SCHEMA, (c) => c.query('update routines set "nextRunAt" = $1 where id = $2', [Date.now() - 1000, routineId]))
     }
     const runsOf = (d, trigger) => (d.runs || []).filter((x) => x.trigger === trigger)
 

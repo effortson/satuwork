@@ -13,8 +13,7 @@
  */
 import { rmSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { createRequire } from 'node:module'
-import { PG_URL } from './pg.mjs'
+import { pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { runProbe as sharedProbe } from './probe.mjs'
@@ -216,11 +215,7 @@ export async function runImageGen({ root, gwRoot, test, req, start, waitHttp, as
     },
   })
 
-  const require = createRequire(`${gwRoot}/package.json`)
-  const pg = require('pg')
-  const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
-  await client.query(`set search_path to ${SCHEMA}`)
+  const client = await pgClient(SCHEMA)
 
   try {
     let token = ''

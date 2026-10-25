@@ -19,7 +19,7 @@
 import { generateKeyPairSync, randomBytes } from 'node:crypto'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
+import { PG_URL, withPg } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
 import { pairMachine } from './pair.mjs'
@@ -84,23 +84,9 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
   })
   let fn = null
 
-  const withPg = async (fn) => {
-    const { createRequire } = await import('node:module')
-    const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-    const pg = require('pg')
-    const client = new pg.Client({ connectionString: PG_URL })
-    await client.connect()
-    try {
-      await client.query(`set search_path to ${SCHEMA}`)
-      return await fn(client)
-    } finally {
-      await client.end().catch(() => {})
-    }
-  }
-
   /** 一条已经有回复、投递失败过一次、到点该重试的事件。 */
   const retryEvent = (id, bindingId, conv, reply) =>
-    withPg((c) =>
+    withPg(SCHEMA, (c) =>
       c.query(
         `insert into channel_events (id,"bindingId","externalEventId","externalConversationId","remoteUserId","remoteDisplayName",title,text,status,attempts,"nextTryAt","leaseUntil","leaseToken","sessionId",reply,files,handoffs,"lastError","createdAt","updatedAt","deliveredAt")
          values ($1,$2,$3,$4,$4,'Yan','','你好','retry',1,$5,null,'','s-y',$6,'[]','[]','Telegram 429',$5,$5,null)`,
@@ -108,7 +94,7 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
       ),
     )
   const eventRow = async (id) =>
-    (await withPg((c) => c.query('select status, "lastError" from channel_events where id = $1', [id]))).rows[0]
+    (await withPg(SCHEMA, (c) => c.query('select status, "lastError" from channel_events where id = $1', [id]))).rows[0]
   const sentTo = (chat) =>
     telegram.seen.sent.find((s) => String(s.chat_id) === chat)
   const textOf = (s) => String(s?.text || s?.rich_message?.markdown || '')
@@ -130,18 +116,18 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
     // 经接口绑一个，拿到一份真的密文（解出来是假 Telegram 认的那个 token）。
     const bound = await req(gwBase, 'POST', '/channels/telegram', { token: adminTok, body: { token: TG_TOKEN } })
     assert(bound.status === 201, `绑定 ${bound.status} ${bound.text}`)
-    const cipher = (await withPg((c) => c.query('select "credentialCiphertext" from channel_bindings where id = $1', [bound.json.channel.id])))
+    const cipher = (await withPg(SCHEMA, (c) => c.query('select "credentialCiphertext" from channel_bindings where id = $1', [bound.json.channel.id])))
       .rows[0].credentialCiphertext
 
     // 两台机器，都够新到让工人跑渠道那一轮。A 的工人挂了（没人来领），B 的好好的。
     const machineA = await pairMachine({ req, gwBase, ownerTok, orgId, managerPort: 18991 })
     const machineB = await pairMachine({ req, gwBase, ownerTok, orgId, managerPort: 18992 })
     assert(machineA.machineId !== machineB.machineId, '两次配对落到了同一台机器上')
-    await withPg((c) => c.query('update machines set protocol = 10 where id = any($1)', [[machineA.machineId, machineB.machineId]]))
+    await withPg(SCHEMA, (c) => c.query('update machines set protocol = 10 where id = any($1)', [[machineA.machineId, machineB.machineId]]))
 
     const now = Date.now()
     const binding = async (id, accountId, botId, machineId, slot) => {
-      await withPg(async (c) => {
+      await withPg(SCHEMA, async (c) => {
         await c.query(
           `insert into channel_bindings (id,"companyId","accountId","botId",kind,status,"externalBotId","externalUsername","credentialCiphertext","webhookSecretHash","publicId","createdAt","updatedAt")
            values ($1,$2,$3,$4,'telegram','active',$5,'',$6,'',$7,$8,$8)`,
@@ -158,7 +144,7 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
     await binding('bind-b', 'acct-b', 'bot-b', machineB.machineId, 92)
 
     // A 上堆着的活：STUCK 个会话，每个会话一条，都比下面 B 的那条早，而且早就过了「没人来领」的线。
-    await withPg(async (c) => {
+    await withPg(SCHEMA, async (c) => {
       for (let i = 0; i < STUCK; i++) {
         const at = now - 10 * 60_000 + i
         await c.query(
@@ -200,12 +186,12 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
     await test('归工人却没人领的，照旧报到绑定上', async () => {
       let lastError = ''
       for (let i = 0; i < 50; i++) {
-        lastError = (await withPg((c) => c.query('select "lastError" from channel_bindings where id = $1', ['bind-a']))).rows[0].lastError || ''
+        lastError = (await withPg(SCHEMA, (c) => c.query('select "lastError" from channel_bindings where id = $1', ['bind-a']))).rows[0].lastError || ''
         if (lastError) break
         await sleep(100)
       }
       assert(lastError.includes('satuwork-worker'), `A 的绑定上该说清楚没人来领，实际 ${JSON.stringify(lastError)}`)
-      const b = (await withPg((c) => c.query('select "lastError" from channel_bindings where id = $1', ['bind-b']))).rows[0].lastError
+      const b = (await withPg(SCHEMA, (c) => c.query('select "lastError" from channel_bindings where id = $1', ['bind-b']))).rows[0].lastError
       assert(!String(b || '').includes('satuwork-worker'), `B 的工人在领活，不该被报：${b}`)
     })
 
@@ -222,10 +208,10 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
         return t.startsWith('甲：') ? '甲' : t.startsWith('乙：') ? '乙' : t.startsWith('丙：') ? '丙' : t.includes('转人工') ? '卡' : '?'
       })
     const deliveredParts = async (id) =>
-      (await withPg((c) => c.query('select "deliveredParts" from channel_events where id = $1', [id]))).rows[0]?.deliveredParts
+      (await withPg(SCHEMA, (c) => c.query('select "deliveredParts" from channel_events where id = $1', [id]))).rows[0]?.deliveredParts
 
     await test('投递第二段失败：重试只从第二段接着发，第一段不重发；短 retry_after 原地等', async () => {
-      await withPg((c) =>
+      await withPg(SCHEMA, (c) =>
         c.query(
           `insert into channel_events (id,"bindingId","externalEventId","externalConversationId","remoteUserId","remoteDisplayName",title,text,status,attempts,"nextTryAt","leaseUntil","leaseToken","sessionId",reply,files,handoffs,"lastError","createdAt","updatedAt","deliveredAt")
            values ('ev-parts','bind-b','tg:parts','conv-parts','conv-parts','Yan','','你好','retry',1,$1,null,'','s-y',$2,'[]',$3,'Telegram 429',$1,$1,null)`,
@@ -241,7 +227,7 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
         return { status: 429, retryAfter: 1, description: 'Too Many Requests: retry after 1' }
       }
       try {
-        await withPg((c) => c.query(`update channel_events set "nextTryAt" = $1 where id = 'ev-parts'`, [Date.now() - 1000]))
+        await withPg(SCHEMA, (c) => c.query(`update channel_events set "nextTryAt" = $1 where id = 'ev-parts'`, [Date.now() - 1000]))
         let row = null
         for (let i = 0; i < 150; i++) {
           row = await eventRow('ev-parts')
@@ -259,7 +245,7 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
     })
 
     await test('工人收场后投递得比租约还久：逐段续租，不会被 Gateway 的扫描接管重发', async () => {
-      await withPg((c) =>
+      await withPg(SCHEMA, (c) =>
         c.query(
           `insert into channel_events (id,"bindingId","externalEventId","externalConversationId","remoteUserId","remoteDisplayName",title,text,status,attempts,"nextTryAt","leaseUntil","leaseToken","sessionId",reply,files,handoffs,"lastError","createdAt","updatedAt","deliveredAt")
            values ('ev-slow','bind-b','tg:slow','conv-slow','conv-slow','Yan','','慢慢来','pending',0,$1,null,'',null,'','[]','[]',null,$1,$1,null)`,

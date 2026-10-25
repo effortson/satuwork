@@ -18,7 +18,7 @@ import { createServer as createTls } from 'node:https'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
+import { pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 
 /** 这一套自己的 schema。写死名字会被别的 worktree 的 e2e 清掉（见 pg.mjs 的 schemaOf）。 */
@@ -437,13 +437,8 @@ export async function runHandoff({ root, gwRoot, test, req, start, waitHttp, ass
        * 留了的话，「多久有人接」那个中位数会把它算成「24 小时才有人接」——恰恰是没人
        * 接的那些单子，把响应速度这个数字拖到最难看。直接查库，因为接口上看不见这一格。
        */
-      const { createRequire } = await import('node:module')
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       try {
-        await client.query(`set search_path to ${SCHEMA}`)
         const row = await client.query('select state, "claimedAt" from handoffs where id = $1', [stale])
         assert(row.rows[0]?.state === 'expired', `库里状态 ${row.rows[0]?.state}`)
         assert(row.rows[0]?.claimedAt === null, `没人接过却写了 claimedAt=${row.rows[0]?.claimedAt}`)

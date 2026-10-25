@@ -13,7 +13,7 @@
  * 时间全压到秒级：租约 1.5 秒、调度器一秒扫一次。
  */
 import { createServer } from 'node:http'
-import { PG_URL } from './pg.mjs'
+import { withPg } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
 import { publishRelease } from './release.mjs'
@@ -78,20 +78,6 @@ export async function runRoutineWorker({ gwRoot, test, req, start, waitHttp, ass
     },
   })
 
-  const withPg = async (fn) => {
-    const { createRequire } = await import('node:module')
-    const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-    const pg = require('pg')
-    const client = new pg.Client({ connectionString: PG_URL })
-    await client.connect()
-    try {
-      await client.query(`set search_path to ${SCHEMA}`)
-      return await fn(client)
-    } finally {
-      await client.end().catch(() => {})
-    }
-  }
-
   try {
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@worker.test',
@@ -142,7 +128,7 @@ export async function runRoutineWorker({ gwRoot, test, req, start, waitHttp, ass
       assert(r.status === 200, `详情 ${r.status} ${r.text}`)
       return r.json
     }
-    const makeDue = () => withPg((c) => c.query('update routines set "nextRunAt" = $1 where id = $2', [Date.now() - 1000, routineId]))
+    const makeDue = () => withPg(SCHEMA, (c) => c.query('update routines set "nextRunAt" = $1 where id = $2', [Date.now() - 1000, routineId]))
     const heartbeat = (protocol) =>
       req(gwBase, 'POST', `/internal/machines/${machine.machineId}/heartbeat`, { token: machineTok, body: { protocol, managerVersion: 'e2e' } })
     const due = () => req(gwBase, 'GET', '/worker/routines/due', { token: machineTok })
@@ -180,7 +166,7 @@ export async function runRoutineWorker({ gwRoot, test, req, start, waitHttp, ass
       const hb = await heartbeat(7)
       assert(hb.status === 200, `心跳 ${hb.status}`)
       // 先把上一条留下的补跑清掉，别混进这一条的计数里。
-      await withPg((c) => c.query('update routines set "retryAt" = null, "retryCount" = 0 where id = $1', [routineId]))
+      await withPg(SCHEMA, (c) => c.query('update routines set "retryAt" = null, "retryCount" = 0 where id = $1', [routineId]))
       const before = seat.hits.length
       await makeDue()
       await sleep(2500)
@@ -251,11 +237,11 @@ export async function runRoutineWorker({ gwRoot, test, req, start, waitHttp, ass
       assert(d.routine.retryAt !== null, '收掉之后该排补跑')
       const stale = await post(job.runId, 'finish', { kind: 'completed' })
       assert(stale.status === 404, `被收掉的活再回报该 404：${stale.status}`)
-      await withPg((c) => c.query('update routines set "retryAt" = null, "retryCount" = 0 where id = $1', [routineId]))
+      await withPg(SCHEMA, (c) => c.query('update routines set "retryAt" = null, "retryCount" = 0 where id = $1', [routineId]))
     })
 
     await test('转人工挡着：started 直接收成 error，不补', async () => {
-      await withPg((c) =>
+      await withPg(SCHEMA, (c) =>
         c.query(
           `insert into handoffs (id, "companyId", "accountId", "botId", "sessionId", ask, reason, blocking, state, "createdAt", "updatedAt")
            values ('h-block', $1, $2, $3, 's-worker-2', '要人签字', '没权限', true, 'open', $4, $4)`,
