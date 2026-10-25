@@ -470,19 +470,6 @@ function shaShort(h) {
 }
 
 /**
- * 上传示例。**先在 Linux 上打包**那一步不能省：包里带 esbuild 的原生二进制，在
- * Mac 上打的解到席位机器上 tsx 加载不了它，bot 起不来。pack.mjs 会拦，但示例里
- * 直接给对的做法，比让人先撞一次再看报错强。
- */
-const UPLOAD_SNIPPET = `# 打包（Linux，架构要和席位机器一致）
-node bot/pack.mjs --upload "$GATEWAY_URL"
-# 或者手动传已有的包
-curl -sf -X PUT "$GATEWAY_URL/platform/bot-releases/$VERSION" \\
-  -H "Authorization: Bearer $GATEWAY_PLATFORM_TOKEN" \\
-  -H "X-Bot-Sha256: $(shasum -a 256 bot.tgz | cut -d' ' -f1)" \\
-  --data-binary @bot.tgz`
-
-/**
  * 桌面端本地 Bot 的六个目标：Gateway 按版本号末尾的 `-<平台>-<架构>` 给每台桌面端挑包
  * （gateway/src 的 localBotReleaseTarget），一个目标一条独立的版本线。
  */

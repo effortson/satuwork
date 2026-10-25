@@ -6,7 +6,7 @@
  * 会把当时的语言冻住，之后切语言不再变。字典让调用点只写 t(label)，在渲染时才查。
  *
  * 以前它是 gateway/ui/i18n.js 里挂在 window.SATU_I18N 上的一个对象字面量；现在从这里
- * 打进 core.js，Web 端由 i18n.js 一行转接回 window.SATU_I18N，移动端直接 import。
+ * 打进 core.js，Web 端经 prefs.js 的 t() 转接（SatuCore.t），不再挂全局。
  * 查不到的键由 t() 原样返回中文：宁可露出一句没翻的，也不要显示空白。
  */
 export const dict: Record<string, string> = {

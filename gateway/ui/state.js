@@ -460,7 +460,6 @@ function emptyBox(msg) {
    ══════════════════════════════════════════════════════════════════ */
 const esc = SatuCore.esc
 const SATU_TZ = SatuCore.SATU_TZ
-const tzOffsetMs = SatuCore.tzOffsetMs
 const tzDayStart = SatuCore.tzDayStart
 const tzDayKey = SatuCore.tzDayKey
 const fmtTime = SatuCore.fmtTime

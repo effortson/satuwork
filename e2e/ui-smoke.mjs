@@ -86,7 +86,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
       const parts = [...html.matchAll(/<script src="\/([^"]+)"[^>]*\bdata-app-part\b/g)].map((m) => m[1])
       assert(parts.length > 1, `index.html 里没找到 data-app-part 脚本`)
-      // **每个 <script src>**，不只是分片：core.js（core/src 打出来的）、i18n.js、markdown.js、
+      // **每个 <script src>**，不只是分片：core.js（core/src 打出来的）、markdown.js、
       // unzip.js 都不带 data-app-part，漏进 ROOT_FILES 的后果一样是整页白屏。
       const scripts = [...html.matchAll(/<script[^>]*\ssrc="\/([^"]+)"/g)].map((m) => m[1])
       assert(scripts.includes('core.js'), `index.html 里没有 core.js：${scripts.join(', ')}`)
@@ -1636,11 +1636,11 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!shell.includes('#download'), '桌面壳的登录页上还挂着下载桌面端')
     })
 
-    await test('gateway/ui 下每个脚本都解析得过，包括 i18n.js', async () => {
+    await test('gateway/ui 下每个脚本都解析得过，包括不带 data-app-part 的那几个', async () => {
       /**
-       * 这套冒烟只把界面分片装进来跑，**不装 i18n.js**，而前端读翻译又是
-       * `window.SATU_I18N || {}` 兜着的——于是那份文件语法错了，这里一条都不会红，浏览器里
-       * 英文界面却整片退回中文。就这么漏过：两个带全角逗号的键没加引号。
+       * 这套冒烟只把界面分片装进来跑，**不装 markdown.js 这类分片之外的脚本**——那些文件
+       * 语法错了，这里一条都不会红，浏览器里却是整片坏掉。以前的 i18n.js 就这么漏过：两个
+       * 带全角逗号的键没加引号。
        *
        * 只解析不执行（`node --check`），所以不需要 window。用它而不是 vm.Script：分片里有
        * ES 模块（unzip.js），按普通脚本解析会在 export 上报错；node --check 按 gateway 的
@@ -1649,7 +1649,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const { spawnSync } = await import('node:child_process')
       const dir = join(root, 'gateway/ui')
       const files = readdirSync(dir).filter((f) => f.endsWith('.js'))
-      assert(files.includes('i18n.js'), `没找到 i18n.js：${files.join(', ')}`)
+      assert(files.includes('markdown.js'), `没找到 markdown.js：${files.join(', ')}`)
       const bad = []
       for (const f of files) {
         const out = spawnSync(process.execPath, ['--check', join(dir, f)], { encoding: 'utf8' })

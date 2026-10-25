@@ -2,8 +2,8 @@
  * @satuwork/core 的出口。
  *
  * gateway/scripts/build-core.mjs 把这个文件打成 gateway/ui/core.js，这里 export 的每一个名字
- * 就是浏览器里 `SatuCore.<名字>`。Web 端的转接写在 state.js / prefs.js / data.js / chat.js /
- * i18n.js 里，一行一个。
+ * 就是浏览器里 `SatuCore.<名字>`。Web 端的转接写在 state.js / prefs.js / data.js / chat.js
+ * 里，一行一个。
  */
 export { dict } from './i18n/dict.ts'
 export { t, errText } from './i18n/t.ts'

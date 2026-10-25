@@ -213,11 +213,6 @@ function closeBotStream(botId) {
   row.ac = null
 }
 
-function closeAllBotStreams() {
-  for (const id of botStreams.keys()) closeBotStream(id)
-  botStreams.clear()
-}
-
 /**
  * 开着的流有几条。
  *
