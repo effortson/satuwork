@@ -1686,6 +1686,9 @@ export interface BotTask {
   progress: BotTaskProgress | null
 }
 
+/** 派活那一行能改的几格。只改给了的那几格；null 也是一个值（清掉租约就是把它设成 null）。 */
+export type BotTaskPatch = Partial<Pick<BotTask, 'status' | 'owner' | 'leaseUntil' | 'attempts' | 'runSessionId' | 'runKind' | 'result' | 'error' | 'endedAt' | 'deliveredAt' | 'waiterUntil' | 'cancelledAt' | 'readyAt'>>
+
 /** 同 bot/src/session/types.ts 的 TaskProgress。 */
 export interface BotTaskProgress {
   steps: number
@@ -1882,4 +1885,143 @@ export function canonicalTimezone(raw: string): string {
   } catch {
     return ''
   }
+}
+
+// ── 模型自动发现的快照（model-discovery.ts）。db 读写 platform 那一行要用，所以住在这儿。──
+
+/**
+ * models.dev 那份 api.json 有 4MB 出头，而我们只用得上十来个字段。存库前先压成
+ * 这个形状：一来 jsonb 那一行不会失控，二来重启后能拿它**重新推导**一遍，而不是
+ * 把当时推导出来的结果冻在库里（见 model-discovery.ts 的 resolveOverlay）。
+ */
+export interface DiscoveredEntry {
+  provider: string
+  id: string
+  name: string
+  /** models.dev 的 `provider.npm`，决定这个模型走哪套 API 协议。 */
+  npm?: string
+  reasoning: boolean
+  image: boolean
+  contextWindow: number
+  maxTokens: number
+  /**
+   * 四项单价，外加可选的长上下文档位（和 pi-ai 目录的 `cost.tiers` 同形）。models.dev 的
+   * `tiers[]` 里 `tier.type === 'context'` 的那几条就是：过了 `tier.size` 整次按那一档收。
+   * 不带上它，自动发现的模型（gpt-6.1-sol 这一批上线时 pi-ai 还没收录）过了 272k 就按
+   * 半价记账——那正是 10 月对账时少掉的那三成。
+   */
+  cost: DiscoveredCost
+}
+
+/** 和账本那边同一个形状、同一个解析器（db/types.ts 的 parseModelRate）。 */
+export type DiscoveredCost = ModelRate
+
+export interface DiscoverySnapshot {
+  /** 上一次成功拉到数据的时刻。拉失败不动它——失败不该让旧快照看起来更新了。 */
+  fetchedAt: number
+  entries: DiscoveredEntry[]
+  /** `provider/id`。被按下去的模型不进目录。 */
+  deny: string[]
+  /** 上一次尝试刷新的时刻，成功失败都记。节流看的是它，否则一直失败就会一直重试。 */
+  attemptedAt?: number
+  lastError?: string
+}
+
+export function emptySnapshot(): DiscoverySnapshot {
+  return { fetchedAt: 0, entries: [], deny: [] }
+}
+
+function posInt(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0
+}
+
+/**
+ * 库里读出来的快照要重新体检一遍，不能直接信。
+ *
+ * 这一行是后台任务写的，而写它的进程可能是**另一个版本的网关**——滚动升级的那几
+ * 分钟里，新老进程共用同一个库。老版本写下的形状少字段、多字段都有可能，直接
+ * 铺开用就会在 catalog() 那条热路径上抛。
+ */
+export function parseDiscoverySnapshot(raw: unknown): DiscoverySnapshot {
+  const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const entries: DiscoveredEntry[] = []
+  for (const item of Array.isArray(o.entries) ? o.entries : []) {
+    if (!item || typeof item !== 'object') continue
+    const e = item as Record<string, any>
+    const provider = typeof e.provider === 'string' ? e.provider : ''
+    const id = typeof e.id === 'string' ? e.id : ''
+    if (!provider || !usableModelId(id)) continue
+    entries.push({
+      provider,
+      id,
+      name: typeof e.name === 'string' && e.name ? e.name : id,
+      npm: typeof e.npm === 'string' ? e.npm : undefined,
+      reasoning: e.reasoning === true,
+      image: e.image === true,
+      contextWindow: numOr(e.contextWindow, 4096),
+      maxTokens: numOr(e.maxTokens, 4096),
+      cost: parseModelRate(e.cost),
+    })
+  }
+  const deny = (Array.isArray(o.deny) ? o.deny : [])
+    .filter((x): x is string => typeof x === 'string' && !!x.trim())
+    .map((x) => x.trim())
+  const snap: DiscoverySnapshot = { fetchedAt: posInt(o.fetchedAt), entries, deny: [...new Set(deny)] }
+  const attemptedAt = posInt(o.attemptedAt)
+  if (attemptedAt) snap.attemptedAt = attemptedAt
+  if (typeof o.lastError === 'string' && o.lastError) snap.lastError = o.lastError.slice(0, 500)
+  return snap
+}
+
+/** 非负有限数原样给，否则用默认值。 */
+export function numOr(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback
+}
+
+/**
+ * 模型 id 的体检。
+ *
+ * **比 providers.ts 的 MODEL_ID_RE 松**，而且必须松：内置目录里就有 48 个 id 过不了
+ * 那条正则（cloudflare 的 `workers-ai/@cf/meta/llama-...`、vertex 的
+ * `claude-opus-4-5@20251101`），把它们判死等于把整个 provider 的新模型全丢掉。
+ *
+ * 那条严正则守的是**另一件事**：库里存的自定义定义，provider 字段会被拼成
+ * `<PROVIDER>_API_KEY` 去索引 process.env，形状不对就能骗网关拿错密钥。这里的
+ * provider 来自注册表本身，不是外部输入，那条风险不存在。
+ *
+ * 这里只需要保证两件事：不带空白或控制字符（会毁掉 URL 和日志），以及拼成
+ * `provider/id` 之后 parseModelRef 能原样切回来——provider 本身不含斜杠，所以
+ * 只要 id 不以斜杠开头就成立。
+ */
+export function usableModelId(id: string): boolean {
+  if (!id || id.length > 128) return false
+  if (id.startsWith('/')) return false
+  return !/[\s\u0000-\u001f\u007f]/.test(id)
+}
+
+// ── 账号改动的形状（db/org.ts 的 updateAccount / updateAccountIf）。──
+
+/** updateAccount 能改的那几列。 */
+export type AccountPatch = Partial<
+  Pick<
+    Account,
+    | 'name'
+    | 'title'
+    | 'phone'
+    | 'theme'
+    | 'locale'
+    | 'role'
+    | 'status'
+    | 'lastSeenAt'
+    | 'passwordHash'
+    | 'passwordChangedAt'
+    | 'tokenRevokedAt'
+  >
+>
+
+/** updateAccountIf 的前提：写了的项都得和库里当前值对上，才落这次改动。 */
+export interface AccountExpect {
+  status?: AccountStatus[]
+  passwordHash?: string
+  tokenRevokedAt?: number | null
 }

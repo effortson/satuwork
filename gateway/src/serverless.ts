@@ -3,7 +3,7 @@ import { Db, databaseUrl } from './db.ts'
 import { loadChannelKey, loadKeys } from './crypto.ts'
 import { Router } from './http.ts'
 import { gatewayHome } from './home.ts'
-import { attach } from './routes.ts'
+import { attach } from './routes/index.ts'
 
 /**
  * Gateway 的**函数形态**：只有路由，没有监听、没有定时器、没有迁移。

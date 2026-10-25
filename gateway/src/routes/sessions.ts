@@ -7,9 +7,10 @@ import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { PULL_ERROR, pullSessionEvents } from '../lib/machines.ts'
 import { companyMachineOf } from '../deploy.ts'
-import { bodyOf, intField,} from '../lib/validate.ts'
-import { publicSessionIndex, sessionCursorOf } from '../lib/org.ts'
-import { rangeQuery, requireOrgUser } from '../lib/guards.ts'
+import { bodyOf, dailyOrUtilityOf, intField } from '../lib/validate.ts'
+import { companyOr404, publicSessionIndex, sessionCursorOf } from '../lib/org.ts'
+import { requireOrgUser } from '../lib/guards.ts'
+import { rangeQuery } from '../lib/usage.ts'
 import { seatBearer, seatMachineOf } from '../lib/runtime.ts'
 import { sessionPageLimit } from '../db.ts'
 
@@ -36,8 +37,7 @@ export function attachSessions(router: Router, ctx: RouteCtx) {
 
   router.get('/orgs/:id/sessions', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const accountId = (req.query.get('accountId') || '').trim()
     const botId = (req.query.get('botId') || '').trim()
     const range = rangeQuery(req)
@@ -74,8 +74,7 @@ export function attachSessions(router: Router, ctx: RouteCtx) {
 
   router.get('/orgs/:id/sessions/:sessionId', async (req, res) => {
     const account = await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const row = await db.sessionIndex(req.params.sessionId)
     if (!row || row.companyId !== company.id) throw new HttpError(404, '会话不存在')
     const session = await publicSessionIndex(db, row)
@@ -125,7 +124,7 @@ export function attachSessions(router: Router, ctx: RouteCtx) {
 
   router.get('/orgs/:id/conversation-audit-settings', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id, true)
-    if (!await db.company(req.params.id)) throw new HttpError(404, '公司不存在')
+    await companyOr404(db, req.params.id)
     const settings = (await db.settings(req.params.id)).conversationAudit
     const platform = await db.platformSettings()
     json(res, 200, { settings, model: platform[settings.modelRole] })
@@ -133,15 +132,15 @@ export function attachSessions(router: Router, ctx: RouteCtx) {
 
   router.patch('/orgs/:id/conversation-audit-settings', async (req, res) => {
     const account = await requireOrgUser(req, db, keys, req.params.id, true)
-    if (!await db.company(req.params.id)) throw new HttpError(404, '公司不存在')
+    await companyOr404(db, req.params.id)
     const body = bodyOf(req)
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled 只能是 true 或 false')
     if (body.modelRole === undefined && body.enabled === undefined) throw new HttpError(400, '没有要改的设置')
     const platform = await db.platformSettings()
     const cur = await db.settings(req.params.id)
     const before = cur.conversationAudit
-    const role = body.modelRole === undefined ? before.modelRole : String(body.modelRole)
-    if (role !== 'daily' && role !== 'utility') throw new HttpError(400, 'modelRole 只能是 daily 或 utility')
+    // 库里那份已经由 parseConversationAuditSettings 收成 daily / utility，只有新传的要验。
+    const role = dailyOrUtilityOf(body.modelRole) ?? before.modelRole
     const enabled = body.enabled === undefined ? before.enabled : body.enabled as boolean
     // 只在真要用到模型的时候拦：换模型，或者正要打开。关掉不需要模型。
     if ((body.modelRole !== undefined || (enabled && !before.enabled)) && (!platform[role].provider || !platform[role].model)) {

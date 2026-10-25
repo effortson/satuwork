@@ -9,6 +9,7 @@
  * `successfull`），少一个字段不该让整条路挂掉。
  */
 import { ProviderError, type ConnectorProvider, type ExecuteInput, type ExecuteResult, type InitiateInput, type InitiateResult, type ProviderCaps, type PrepareUploadInput, type UploadTicket, type StatusResult, type ToolDef, type Toolkit } from './types.ts'
+import { objOf, str } from '../lib/util.ts'
 
 const DEFAULT_BASE = 'https://backend.composio.dev/api/v3'
 /** 列目录这类只读请求的超时。慢过这个数，界面上等着也没意义。 */
@@ -16,22 +17,14 @@ const LIST_TIMEOUT_MS = 20_000
 
 type Json = Record<string, unknown>
 
-function obj(v: unknown): Json {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {}
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : v == null ? '' : String(v)
-}
-
 /** 列表接口的外壳在不同版本里叫过 `items` 和 `data`，两个都认。 */
 function listOf(body: unknown): Json[] {
-  const o = obj(body)
+  const o = objOf(body)
   for (const key of ['items', 'data', 'results']) {
     const v = o[key]
-    if (Array.isArray(v)) return v.map(obj)
+    if (Array.isArray(v)) return v.map(objOf)
   }
-  return Array.isArray(body) ? (body as unknown[]).map(obj) : []
+  return Array.isArray(body) ? (body as unknown[]).map(objOf) : []
 }
 
 /**
@@ -41,7 +34,7 @@ function listOf(body: unknown): Json[] {
 function redirectOf(body: Json): string {
   const direct = str(body.redirect_url || body.redirectUrl || body.redirect_uri)
   if (direct) return direct
-  const nested = obj(obj(body.connectionData).val)
+  const nested = objOf(objOf(body.connectionData).val)
   return str(nested.redirectUrl || nested.redirect_url || nested.authUri)
 }
 
@@ -89,8 +82,8 @@ export class ComposioProvider implements ConnectorProvider {
       parsed = { raw: text }
     }
     if (!res.ok) {
-      const err = obj(obj(parsed).error)
-      const msg = str(err.message) || str(obj(parsed).message) || text.slice(0, 200) || `HTTP ${res.status}`
+      const err = objOf(objOf(parsed).error)
+      const msg = str(err.message) || str(objOf(parsed).message) || text.slice(0, 200) || `HTTP ${res.status}`
       throw new ProviderError(msg, res.status)
     }
     return parsed
@@ -109,12 +102,12 @@ export class ComposioProvider implements ConnectorProvider {
     const body = await this.call('GET', '/toolkits?limit=500')
     return listOf(body)
       .map((t) => {
-        const meta = obj(t.meta)
+        const meta = objOf(t.meta)
         const categories = Array.isArray(meta.categories)
-          ? (meta.categories as unknown[]).map((c) => str(obj(c).name || c)).filter(Boolean)
+          ? (meta.categories as unknown[]).map((c) => str(objOf(c).name || c)).filter(Boolean)
           : []
         const schemes = Array.isArray(t.auth_schemes)
-          ? (t.auth_schemes as unknown[]).map((x) => str(obj(x).mode || obj(x).auth_scheme || x)).filter(Boolean)
+          ? (t.auth_schemes as unknown[]).map((x) => str(objOf(x).mode || objOf(x).auth_scheme || x)).filter(Boolean)
           : []
         return {
           slug: str(t.slug || t.key || t.name).toLowerCase(),
@@ -136,7 +129,7 @@ export class ComposioProvider implements ConnectorProvider {
         slug: str(t.slug || t.name),
         name: str(t.name || t.slug),
         description: str(t.description),
-        inputSchema: obj(t.input_parameters || t.inputParameters || t.parameters),
+        inputSchema: objOf(t.input_parameters || t.inputParameters || t.parameters),
       }))
       .filter((t) => t.slug)
       .sort((a, b) => a.slug.localeCompare(b.slug))
@@ -157,7 +150,7 @@ export class ComposioProvider implements ConnectorProvider {
    * `routes/connectors.ts` 里的 `def.multiAccount`），走到这里就是已经准了。
    */
   async initiate(input: InitiateInput): Promise<InitiateResult> {
-    const body = obj(
+    const body = objOf(
       await this.call('POST', '/connected_accounts/link', {
         body: {
           auth_config_id: input.authConfigId,
@@ -167,7 +160,7 @@ export class ComposioProvider implements ConnectorProvider {
         },
       }),
     )
-    const externalId = str(body.connected_account_id || body.connectedAccountId || body.id || obj(body.connectedAccount).id)
+    const externalId = str(body.connected_account_id || body.connectedAccountId || body.id || objOf(body.connectedAccount).id)
     if (!externalId) throw new ProviderError('Composio 没有返回连接 id', 0)
     const redirectUrl = redirectOf(body)
     if (!redirectUrl) throw new ProviderError('Composio 没有返回授权地址', 0)
@@ -175,8 +168,8 @@ export class ComposioProvider implements ConnectorProvider {
   }
 
   async status(externalId: string): Promise<StatusResult> {
-    const body = obj(await this.call('GET', `/connected_accounts/${encodeURIComponent(externalId)}`))
-    const raw = str(body.status || obj(body.connectedAccount).status).toUpperCase()
+    const body = objOf(await this.call('GET', `/connected_accounts/${encodeURIComponent(externalId)}`))
+    const raw = str(body.status || objOf(body.connectedAccount).status).toUpperCase()
     if (raw === 'ACTIVE') return { status: 'active' }
     // INITIATED / INITIALIZING 都是「还在走」。别的一律当失败，并把原文带出去——
     // 供应商将来加一个新状态时，界面上要能看见它叫什么，而不是永远转圈。
@@ -203,7 +196,7 @@ export class ComposioProvider implements ConnectorProvider {
    * 手里那个 AbortSignal，不是错误文案，所以只能由调用方来做。
    */
   async execute(input: ExecuteInput): Promise<ExecuteResult> {
-    const body = obj(
+    const body = objOf(
       await this.call('POST', `/tools/execute/${encodeURIComponent(input.tool)}`, {
         body: {
           user_id: input.externalUserId,
@@ -238,7 +231,7 @@ export class ComposioProvider implements ConnectorProvider {
    * **这不是一次执行。** 上游不会因为它跑任何工具，所以调用方不计费、不落流水。
    */
   async prepareUpload(input: PrepareUploadInput): Promise<UploadTicket> {
-    const body = obj(
+    const body = objOf(
       await this.call('POST', '/files/upload/request', {
         body: {
           toolkit_slug: input.toolkit,
@@ -267,7 +260,7 @@ export class ComposioProvider implements ConnectorProvider {
       if (type === 'existing' || type === 'exists') return { file, upload: null }
       throw new ProviderError('Composio 没有返回上传地址', 0)
     }
-    const backend = str(obj(body.metadata).storage_backend || obj(body.metadata).storageBackend).toLowerCase()
+    const backend = str(objOf(body.metadata).storage_backend || objOf(body.metadata).storageBackend).toLowerCase()
     return {
       file,
       upload: {

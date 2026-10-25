@@ -6,7 +6,7 @@ import { HttpError, json, type Router } from '../http.ts'
 import { MIN_PASSWORD, hashPassword } from '../crypto.ts'
 import { amountMilsOf, bodyOf, bonusMilsOf, dateMsOf, endOfPeriod, knowledgeBasesOf, payStatusOf, periodOf, seatsOf, strField } from '../lib/validate.ts'
 import { balanceOf, orderKindOf, publicInvoice, publicPlanOrder, publicPlanSku, publicTopup, syncInvoiceOfOrder, syncTopupOfOrder } from '../lib/billing.ts'
-import { emailOf, expiresAtOf, orgSummary, patchAccount, phoneOf, publicAccount, publicCompany, publicPlan, slugOf, websiteOf } from '../lib/org.ts'
+import { companyOr404, emailOf, expiresAtOf, orgSummary, patchAccount, phoneOf, publicAccount, publicCompany, publicPlan, slugOf, websiteOf } from '../lib/org.ts'
 import { requireOrgUser, requireOwnerUser } from '../lib/guards.ts'
 import { type PlanSku } from '../db.ts'
 
@@ -107,7 +107,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
 
   router.put('/platform/orgs/:id/plan', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
-    if (!await db.company(req.params.id)) throw new HttpError(404, '公司不存在')
+    await companyOr404(db, req.params.id)
     const body = bodyOf(req)
     const cur = await db.plan(req.params.id)
     // 选了套餐但没写席位，就按套餐的席位数来——价目表里那个数就是卖出去的席位。
@@ -230,8 +230,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
   router.post('/platform/orders', async (req, res) => {
     const account = await requireOwnerUser(req, db, keys)
     const body = bodyOf(req)
-    const company = await db.company(strField(body, 'companyId'))
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, strField(body, 'companyId'))
     // 充值单：只有金额和备注。付了款才开充值记录，余额也是那时候才涨。
     if (orderKindOf(body.kind) === 'topup') {
       const amountMils = amountMilsOf(body.amount)
@@ -325,8 +324,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
     const cur = await db.planOrder(req.params.id)
     if (!cur) throw new HttpError(404, '订单不存在')
     const body = bodyOf(req)
-    const company = 'companyId' in body ? await db.company(strField(body, 'companyId')) : await db.company(cur.companyId)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, 'companyId' in body ? strField(body, 'companyId') : cur.companyId)
     // 单据类型不给改：套餐单背后挂着账单，充值单背后挂着充值记录，改类型等于换一张单子。
     if ('kind' in body && orderKindOf(body.kind) !== cur.kind) throw new HttpError(400, '订单类型不能改，请另开一单')
     if (cur.kind === 'topup') {
@@ -407,8 +405,7 @@ export function attachPlatformOrgs(router: Router, ctx: RouteCtx) {
   /** 某家公司的充值明细 + 两笔余额。公司管理员看得到自己家的。 */
   router.get('/orgs/:id/topups', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id, true)
-    const company = await db.company(req.params.id)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, req.params.id)
     const rows = await db.topupsOfCompany(company.id)
     // 操作人是平台这边的人，一条一条查太碎，先按 id 去重再一次取回来。
     const actors = new Map(

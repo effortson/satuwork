@@ -6,7 +6,7 @@ import type { RouteCtx } from './ctx.ts'
 import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { IMAGE_MODELS } from '../image-models.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
-import { KIND, bodyOf, deployOptsOf, refShapes, strField } from '../lib/validate.ts'
+import { KIND, bodyOf, deployOptsOf, logLinesOf, refShapes, strField } from '../lib/validate.ts'
 import type { Account, BotFolder, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
@@ -17,9 +17,10 @@ import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKind
 import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
 import { knowledgeOffOf, knowledgeUsableByBot, publicKnowledgeBase, searchKnowledge } from '../lib/knowledge.ts'
-import { machineHeader, managerTargetFor, proxyDownload, proxyJson, requireSeat, seatBearer, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
+import { managerTargetFor, proxyDownload, proxyJson, requireSeat, seatBearer, seatFetchJson, seatTargetFor, seatTargetForSession, visibleBotOf } from '../lib/runtime.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
 import { DEFAULT_MIN_DESKTOP_VERSION, desktopSupports, directReleaseUrl, localBotReleaseTarget } from '../releases.ts'
+import { BOT_TASK_PAIR_LOCK, SEAT_MEMORY_LOCK, SEAT_SKILL_LOCK, USER_BOT_QUOTA_LOCK } from '../db/locks.ts'
 
 /**
  * 一个人最多建几个 Bot。
@@ -98,20 +99,6 @@ async function botRuntime(
 function oneBotRuntime(db: RouteCtx['db'], account: Account, item: CatalogItem) {
   return botRuntime((botId) => db.seatRuntime(account.id, botId), machineResolver(db), item)
 }
-/**
- * 「数这个人有几个 Bot、再插一个」那一段的 advisory lock 键。两条建 Bot 的路（这里的
- * POST /runtime/bots 和 channels.ts 绑 Telegram 时顺手建的那颗）数的是同一个配额，
- * 所以**必须是同一把锁**——各用各的号，两边就能同时读到「还差一个」一起挤进来。
- */
-export const USER_BOT_QUOTA_LOCK = 0x43484e
-/**
- * 席位写私有档 Skill / 长期记忆时「查重名、数条数、再插」那一段的锁（第二个键是对象，见
- * db.lockExclusive）。不锁的话并发的两次写都读到「还差一条」「没有同名」，一起插进去。
- */
-const SEAT_SKILL_LOCK = 0x534b4c
-const SEAT_MEMORY_LOCK = 0x4d454d
-/** 主 Bot 派活：同一个人、同一对 Bot 的「先查有没有没收场的、再建」排队（见 POST /runtime/tasks）。 */
-const BOT_TASK_PAIR_LOCK = 0x54534b
 
 /**
  * 「这份目录变了没有」的指纹。
@@ -1279,7 +1266,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const account = await requireUser(req, db, keys)
     if (req.query.get('follow') === '1') throw new HttpError(410, LOGS_FOLLOW_GONE)
     const t = await managerTargetFor(db, account, (req.query.get('botId') || '').trim())
-    const lines = Math.min(2000, Math.max(1, Math.trunc(Number(req.query.get('lines')) || 200)))
+    const lines = logLinesOf(req)
     const url = `${t.base}/seats/${encodeURIComponent(t.seatId)}/logs?lines=${lines}`
     await proxyJson(res, 'GET', url, undefined, undefined, t.machineToken)
   })
@@ -1843,27 +1830,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const bot = await visibleBotOf(db, account, req.params.id)
     const target = await seatTargetFor(db, account, bot.id)
     const url = `${target.host}/api/bots/${encodeURIComponent(bot.id)}/session`
-    const bearerTok = await seatBearer(db, account.id)
-    let r: Response
-    try {
-      r = await fetch(url, {
-        headers: {
-          authorization: bearerTok ? `Bearer ${bearerTok}` : '',
-          accept: 'application/json',
-          ...machineHeader(target.machineToken),
-        },
-        signal: AbortSignal.timeout(15000),
-      })
-    } catch {
-      throw new HttpError(503, INSTANCE_DOWN)
-    }
-    const text = await r.text()
-    let parsed: unknown
-    try {
-      parsed = text ? JSON.parse(text) : null
-    } catch {
-      parsed = { error: text.slice(0, 200) || INSTANCE_DOWN }
-    }
+    const r = await seatFetchJson('GET', url, undefined, await seatBearer(db, account.id), target.machineToken)
+    const parsed = r.parsed
     if (r.ok && parsed && typeof parsed === 'object' && account.companyId) {
       const sessionId = (parsed as { sessionId?: unknown }).sessionId
       if (typeof sessionId === 'string' && sessionId) {

@@ -11,6 +11,7 @@ import { applyTemplatePatch, botTemplateOf, defaultBotModel, ensureBotTemplate, 
 import { bodyOf } from '../lib/validate.ts'
 import { requireOrgUser } from '../lib/guards.ts'
 import { deploySeat } from '../deploy.ts'
+import { companyOr404 } from '../lib/org.ts'
 
 /** 一次「立刻下发」最多重铺多少个席位。超过的留给轮询自己跟上。 */
 const REDEPLOY_LIMIT = 50
@@ -44,7 +45,7 @@ export function attachBotTemplate(router: Router, ctx: RouteCtx) {
    * 最后抛一个跟真正原因毫无关系的 500。catalog.ts 里同层级的建接口都先过这一关。
    */
   async function ensureCompany(id: string): Promise<void> {
-    if (!(await db.company(id))) throw new HttpError(404, '公司不存在')
+    await companyOr404(db, id)
   }
 
   /**

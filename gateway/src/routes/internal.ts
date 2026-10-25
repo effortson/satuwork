@@ -16,6 +16,7 @@ import { notify } from '../handoff-sweep.ts'
 import { auditResultHash, failConversationAuditBatch, recordUsedAuditModel } from '../conversation-audit.ts'
 import { afterResponse } from '../lib/background.ts'
 import { PUSH_KINDS, pushMessage, pushToAccount, type PushKind } from '../lib/push.ts'
+import { companyOr404 } from '../lib/org.ts'
 
 /** `/internal/push` 当场等推送发完的上限，见那条路由。比席位那头的八秒超时短得多。 */
 const PUSH_WAIT_MS = 5_000
@@ -84,8 +85,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     const pairing = await db.machinePairing(code)
     // 不存在 / 用过 / 过期一律同一句话：区分了就是在帮人猜码。
     if (!pairing || pairing.usedAt || pairing.expiresAt <= now) throw new HttpError(401, '配对码无效或已过期')
-    const company = await db.company(pairing.companyId)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, pairing.companyId)
 
     // 过了反代之后 socket 另一头是 127.0.0.1；sourceIpOf 只在 socket 源地址落在
     // GATEWAY_TRUSTED_PROXIES 名单里时才看 x-forwarded-for（见 lib/runtime.ts）。

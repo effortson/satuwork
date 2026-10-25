@@ -18,11 +18,7 @@ import { KB_FILE_TYPES, requireSupported } from '../lib/knowledge-extract.ts'
 import { STORE_NOT_WRITABLE, blobPathOf, openStored, saveStream, storeMode, storeWritable, verifyBlobUpload } from '../lib/knowledge-store.ts'
 import { VECTOR_NOT_CONFIGURED, vectorConfigured } from '../lib/knowledge-vector.ts'
 import { cleanFileName, deleteKnowledgeFileNow, publicKnowledgeBase, publicKnowledgeFile, retryKnowledgeFile, searchKnowledge, tickKnowledge } from '../lib/knowledge.ts'
-
-/** 配额那把锁（同 USER_BOT_QUOTA_LOCK 那套 advisory lock）：按公司排队数库。 */
-export const KB_QUOTA_LOCK = 0x4b4251
-/** 容量那把锁：按库排队扣字节。 */
-export const KB_BYTES_LOCK = 0x4b4242
+import { KB_BYTES_LOCK, KB_QUOTA_LOCK } from '../db/locks.ts'
 
 export function attachKnowledge(router: Router, ctx: RouteCtx) {
   const { db, keys, meter } = ctx

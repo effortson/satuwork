@@ -2,8 +2,8 @@
 import { MAX_BOT_DELETION_ATTEMPTS, type BotDeletionRequest, type BotDeletionStatus, type Db, type ConversationAuditBatch, type ConversationAuditSettings } from './db.ts'
 import { createHash } from 'node:crypto'
 import { fromZoned, partsIn } from './lib/schedule.ts'
-import { machineHeader, seatBearer } from './lib/runtime.ts'
-import { purgeBot } from './deploy.ts'
+import { seatBearer } from './lib/runtime.ts'
+import { managerHeaders, purgeBot } from './deploy.ts'
 
 const GRACE_MS = Math.max(0, Math.trunc(Number(process.env.GATEWAY_AUDIT_GRACE_MS ?? 5 * 60_000)))
 const LEASE_MS = Math.max(60_000, Math.trunc(Number(process.env.GATEWAY_AUDIT_LEASE_MS ?? 10 * 60_000)))
@@ -211,7 +211,7 @@ async function targetHeaders(db: Db, batch: ConversationAuditBatch) {
     headers: {
       authorization: `Bearer ${bearer}`,
       'content-type': 'application/json',
-      ...machineHeader(machine?.token || undefined),
+      ...managerHeaders(machine?.token || undefined),
     },
   }
 }
