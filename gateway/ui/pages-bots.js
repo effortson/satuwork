@@ -69,7 +69,7 @@ function globalBotsPage() {
       </div>`
     })
     .join('')
-  const body = rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有 Bot')}</div>`
+  const body = rows || emptyBox(t('还没有 Bot'))
   return `
     <div class="gw-page">
       <div class="gw-page-inner">

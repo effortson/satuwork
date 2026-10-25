@@ -579,7 +579,7 @@ function modelsPage() {
             <div class="satu-modelhead">
               <span>${t('模型')}</span><span>${t('供应商')}</span><span>${t('能力')}</span><span>${t('上下文 / 输出')}</span><span>${t('单价 / 1M tok', 'Price / 1M tok')}<br><span style="font-weight: 400; text-transform: none;">${t('输入 / 输出 · 缓存读 / 写', 'in / out · cache read / write')}</span></span><span>${t(`倍率单价 ×${mult}`, `Marked-up ×${mult}`)}</span><span></span>
             </div>
-            ${modelRows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('选择已配置的供应商查看模型。')}</div>`}
+            ${modelRows || emptyBox(t('选择已配置的供应商查看模型。'))}
           </div>
         </div>
       </div>
@@ -866,7 +866,7 @@ function chargeTable(scope, forOrg) {
       </div>
       <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
         <div class="satu-billhead" style="grid-template-columns: ${cols};" data-tt-title="${scope === 'platform' ? 3 : 2}">${head}</div>
-        ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.chargesLoading ? t('加载中…') : t('这个范围里还没有计费记录。')}</div>`}
+        ${rows || emptyBox(state.chargesLoading ? t('加载中…') : t('这个范围里还没有计费记录。'))}
       </div>
       ${
         // 只有真有第二页时才画翻页——不然就是两颗永远点不动的按钮（同公司那几张表）。
@@ -1289,7 +1289,7 @@ function statsPage() {
             <div class="satu-stathead">
               <span>${t('公司')}</span><span>${t('调用')}</span><span>${t('输入')}</span><span>${t('输出')}</span><span>${t('总计')}</span><span>${t('原价')}</span><span>${t('已扣')}</span>
             </div>
-            ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。')}</div>`}
+            ${rows || emptyBox(state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。'))}
           </div>
         </div>
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">
@@ -1303,7 +1303,7 @@ function statsPage() {
             <div class="satu-stathead" style="grid-template-columns: 2fr 1fr 1fr 1fr 1fr;">
               <span>${t('后端')}</span><span>${t('搜索')}</span><span>${t('提取')}</span><span>${t('计费条数')}</span><span>${t('报价')}</span>
             </div>
-            ${webRows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.statsLoading ? t('统计中…') : t('这个时间段里没有网页调用。')}</div>`}
+            ${webRows || emptyBox(state.statsLoading ? t('统计中…') : t('这个时间段里没有网页调用。'))}
           </div>
         </div>
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">
@@ -1317,7 +1317,7 @@ function statsPage() {
             <div class="satu-stathead" style="grid-template-columns: 2fr 1fr 1fr;">
               <span>${t('连接器')}</span><span>${t('调用')}</span><span>${t('已扣')}</span>
             </div>
-            ${connRows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.statsLoading ? t('统计中…') : t('这个时间段里没有连接器调用。')}</div>`}
+            ${connRows || emptyBox(state.statsLoading ? t('统计中…') : t('这个时间段里没有连接器调用。'))}
           </div>
         </div>
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">
@@ -1326,7 +1326,7 @@ function statsPage() {
             <div class="satu-stathead" style="grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr 1fr;">
               <span>${t('模型')}</span><span>${t('调用')}</span><span>${t('输入')}</span><span>${t('输出')}</span><span>${t('总计')}</span><span>${t('原价')}</span><span>${t('已扣')}</span>
             </div>
-            ${modelRows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。')}</div>`}
+            ${modelRows || emptyBox(state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。'))}
           </div>
         </div>
         ${chargeTable('platform')}
@@ -1410,9 +1410,7 @@ function providersPage() {
           <div class="satu-provhead">
             <span>${t('供应商')}</span><span>${t('模型')}</span><span>${t('状态')}</span><span>${t('密钥')}</span><span></span>
           </div>
-          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${
-            t('还没有配置供应商。点击「添加供应商」从目录里选一家并粘贴密钥，或者「添加自定义供应商」接一个自建端点。')
-          }</div>`}
+          ${rows || emptyBox(t('还没有配置供应商。点击「添加供应商」从目录里选一家并粘贴密钥，或者「添加自定义供应商」接一个自建端点。'))}
         </div>
       </div>
       ${addProviderModal()}
@@ -1494,7 +1492,7 @@ function providerModelsModal() {
         </div>
         ${state.providerError ? `<div class="gw-flash gw-flash-err">${esc(state.providerError)}</div>` : ''}
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg);">
-          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有模型。')}</div>`}
+          ${rows || emptyBox(t('还没有模型。'))}
         </div>
         ${
           d
@@ -2066,7 +2064,7 @@ function accountsPage() {
               <div class="satu-memberhead">
                 <span>${t('成员')}</span><span>${t('角色')}</span><span>${t('状态')}</span><span>${t('最近活跃')}</span><span></span>
               </div>
-              ${members.map(memberRow).join('') || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有成员')}</div>`}
+              ${members.map(memberRow).join('') || emptyBox(t('还没有成员'))}
             </div>
           </div>
         </div>`
@@ -2076,7 +2074,7 @@ function accountsPage() {
             <div class="satu-grouphead">
               <span>${t('分组')}</span><span>${t('成员')}</span><span>${t('默认角色')}</span><span>${t('创建时间')}</span><span></span>
             </div>
-            ${groups.map(groupRow).join('') || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有分组')}</div>`}
+            ${groups.map(groupRow).join('') || emptyBox(t('还没有分组'))}
           </div>
           <span style="font-size: 12px; color: var(--muted-foreground);">${t('「全体成员」为系统固定分组，新成员加入后自动进入，不可删除或移除成员。')}</span>
         </div>`

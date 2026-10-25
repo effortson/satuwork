@@ -146,7 +146,7 @@ function machinesPage() {
           <div class="satu-memberhead" data-tt-title="1" style="grid-template-columns: ${cols};">
             <span>${t('状态')}</span><span>${t('机器')}</span><span>${t('归属公司')}</span><span>${t('账号位')}</span><span>${t('已部署 Bot')}</span><span>${t('版本')}</span><span>${t('最近心跳')}</span>
           </div>
-          ${body || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${all.length ? t('这一档下没有机器') : t('还没有机器配对进来。到某家公司的详情页生成配对码，在那台 Debian 上跑一条命令即可。')}</div>`}
+          ${body || emptyBox(all.length ? t('这一档下没有机器') : t('还没有机器配对进来。到某家公司的详情页生成配对码，在那台 Debian 上跑一条命令即可。'))}
           ${listPager('machines', view, '台')}
         </div>
         <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('机器是在公司名下配对进来的：新增一台请到公司详情页生成配对码。这里管的是已经进来的那些。')}</p>
@@ -952,7 +952,7 @@ function machineSeatsPanel(card) {
       <div class="satu-memberhead" style="grid-template-columns: ${cols};">
         <span>${t('成员 / 实例 ID')}</span><span>Bot</span><span>${t('状态')}</span><span>${t('槽位')}</span><span>${t('版本 / 错误')}</span><span>${t('模版')}</span><span></span>
       </div>
-      ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('这台机器上还没有部署 Bot')}</div>`}
+      ${rows || emptyBox(t('这台机器上还没有部署 Bot'))}
     </div>
   </div>`
 }

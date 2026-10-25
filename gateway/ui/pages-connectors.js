@@ -276,7 +276,7 @@ function ownerConnectorsPage() {
           ${connectorVendorCard()}
           ${connectorPricingCard()}
           <div class="gw-credlist" style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
-            ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${ready ? t('还没上架任何连接器。点右上角从 Composio 的清单里选一个。') : t('先配好 Composio 密钥，才能拉到可上架的清单。')}</div>`}
+            ${rows || emptyBox(ready ? t('还没上架任何连接器。点右上角从 Composio 的清单里选一个。') : t('先配好 Composio 密钥，才能拉到可上架的清单。'))}
           </div>
         </div>
       </div>
@@ -536,7 +536,7 @@ function adminConnectorsPage() {
         <div style="margin-top: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4);">
           ${usage}
           <div class="gw-credlist" style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
-            ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('平台还没上架任何连接器。')}</div>`}
+            ${rows || emptyBox(t('平台还没上架任何连接器。'))}
           </div>
           ${
             who
@@ -623,7 +623,7 @@ function pluginMarketBody() {
 function pluginListRows() {
   const p = state.plugins
   if (!p) return ''
-  if (p.loading) return `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('加载中…')}</div>`
+  if (p.loading) return emptyBox(t('加载中…'))
   const q = (p.q || '').trim().toLowerCase()
   const list = (state.market || []).filter((c) => {
     if (p.tab === 'mine' && !c.installed) return false
@@ -636,7 +636,7 @@ function pluginListRows() {
       : p.tab === 'mine'
         ? t('还没装任何插件。到「市场」里挑一个。', 'Nothing installed yet — pick one from the marketplace.')
         : t('平台还没上架任何连接器。')
-    return `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${esc(empty)}</div>`
+    return emptyBox(empty)
   }
   return connectorGroups(list)
     .map(

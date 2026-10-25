@@ -57,7 +57,7 @@ function usersPage() {
           <div class="satu-memberhead">
             <span>${t('账号')}</span><span>${t('角色')}</span><span>${t('状态')}</span><span>${t('加入时间')}</span><span></span>
           </div>
-          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有用户')}</div>`}
+          ${rows || emptyBox(t('还没有用户'))}
           ${listPager('users', view, '个')}
         </div>
       </div>
@@ -412,7 +412,7 @@ function ordersPage() {
           <div class="satu-memberhead" style="grid-template-columns: ${ORDER_COLS};">
             <span>${t('公司')}</span><span>${t('类型')}</span><span>${t('内容')}</span><span>${t('金额')}</span><span>${t('赠送 Token')}</span><span>${t('席位')}</span><span>${t('账期')}</span><span>${t('付款状态')}</span><span></span>
           </div>
-          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有订单')}</div>`}
+          ${rows || emptyBox(t('还没有订单'))}
         </div>
       </div>
       ${orderModal()}
@@ -482,7 +482,7 @@ function topupRecordsPanel() {
       <div class="satu-memberhead" style="grid-template-columns: ${TOPUP_COLS};">
         <span>${t('时间')}</span><span>${t('金额')}</span><span>${t('备注')}</span><span>${t('操作人')}</span>
       </div>
-      ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有充值记录。已付款的充值单才会记在这里。')}</div>`}
+      ${rows || emptyBox(t('还没有充值记录。已付款的充值单才会记在这里。'))}
     </div>
   </div>`
 }
@@ -522,7 +522,7 @@ function plansPage() {
           <div class="satu-memberhead" style="grid-template-columns: ${PLAN_COLS};">
             <span>${t('套餐')}</span><span>${t('金额')}</span><span>${t('类型')}</span><span>${t('席位')}</span><span>${t('赠送 Token')}</span><span>${t('更新时间')}</span><span></span>
           </div>
-          ${skuRows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有套餐')}</div>`}
+          ${skuRows || emptyBox(t('还没有套餐'))}
         </div>
       </div>
       ${planSkuModal()}

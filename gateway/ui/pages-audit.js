@@ -216,7 +216,7 @@ function conversationAuditTable() {
     </form>
     <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
       <div class="satu-usagehead" style="${grid}"><span>${t('任务总结')}</span><span>${t('员工 / Bot')}</span><span>${t('结果 / 评分')}</span><span>${t('结束时间')}</span><span>${t('打开')}</span></div>
-      ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.auditLoading ? t('加载中…') : (state.auditCursors || []).length > 1 ? t('这一页没有内容了。', 'Nothing on this page.') : enabled ? t('还没有审计总结。完成首个 8 小时时段后会自动生成。') : t('还没有审计总结。打开上方的自动审计后，完成首个 8 小时时段会自动生成。')}</div>`}
+      ${rows || emptyBox(state.auditLoading ? t('加载中…') : (state.auditCursors || []).length > 1 ? t('这一页没有内容了。', 'Nothing on this page.') : enabled ? t('还没有审计总结。完成首个 8 小时时段后会自动生成。') : t('还没有审计总结。打开上方的自动审计后，完成首个 8 小时时段会自动生成。'))}
     </div>
     ${auditPager()}`
 }
@@ -448,7 +448,7 @@ function companiesPage() {
           <div class="satu-memberhead" style="grid-template-columns: ${cols};">
             <span>${t('公司')}</span><span>${t('状态')}</span><span>${t('联系人')}</span><span>${t('电话')}</span><span>${t('联系邮箱')}</span><span>${t('订阅套餐')}</span><span>${t('到期时间')}</span>
           </div>
-          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有公司')}</div>`}
+          ${rows || emptyBox(t('还没有公司'))}
           ${listPager('companies', view, '家')}
         </div>
       </div>
