@@ -7,7 +7,7 @@ import { filterSql } from './db/sql.ts'
 import { type DiscoverySnapshot, emptySnapshot, parseDiscoverySnapshot } from './model-discovery.ts'
 import type { ChannelBinding, ChannelBindingStatus, ChannelEvent, ChannelEventStatus, ChannelIdentity, ChannelKind, DueChannelScope } from './db/types.ts'
 import { type Handoff, type HandoffState, type Account, type AccountSecrets, type AccountStatus, type AuditEvent, type BotDeletionRequest, type BotDeletionStatus, type BotFolder, type BotRelease, type BotTask, type BotTaskPatch, type BotTaskProgress, type BotTaskStatus, type CatalogItem, type CatalogKind, type Company, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type ConversationAuditBatch, type ConversationAuditBatchKind, type ConversationAuditItem, type ConversationAuditModelRole, type ConversationAuditOutcome, type CompanySettings, type Credential, DEFAULT_MAX_ACCOUNTS, type Group, type Instance, type Invite, type Invoice, type KnowledgeBase, type KnowledgeChunk, type KnowledgeFile, type KnowledgeFileStatus, type KnowledgeShare, type LlmCall, type LlmUsage, type Machine, type MachineMetricMinute, type MachinePairing, type Memory, type MemoryKind, type MemoryLayer, type Plan, type PlanOrder, type PlanPeriod, type PlanSku, type PlatformSettings, type ReleaseKind, type Role, type Routine, type RoutineRun, type RoutineRunTrigger, type RoutineRunStatus, ROUTINE_RUNS_KEEP, type RoutineModelRole, type RoutineTrigger, SESSION_PAGE_DEFAULT, SESSION_PAGE_MAX, type Scope, type SeatDeployRequest, type SeatRuntime, type SessionIndex, type Topup, type UsageCharge, type ChargeKind, type ChargeStatus, CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type WebCall, type WebCallKind, emptyPlatformSettings, emptySettings, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, releaseArch } from './db/types.ts'
-import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botFolderOf, botReleaseOf, botTaskOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, knowledgeBaseOf, knowledgeChunkOf, knowledgeFileOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
+import { type Row, accountOf, auditOf, botDeletionRequestOf, handoffOf, botFolderOf, botReleaseOf, botTaskOf, catalogOf, channelBindingOf, channelEventOf, channelIdentityOf, companyOf, connectorConnectionOf, connectorInstallOf, conversationAuditBatchOf, conversationAuditItemOf, groupOf, instanceOf, inviteOf, invoiceOf, isUniqueViolation, jsonOf, knowledgeBaseOf, knowledgeChunkOf, knowledgeFileOf, llmCallOf, machineMetricMinuteOf, machineOf, machinePairingOf, memoryOf, nameFromEmail, num, numOrNull, parseDailyAlternates, parseImageRole, parsePlatformPayload, planOf, planOrderOf, planSkuOf, platformCredOf, routineOf, routineRunOf, seatDeployRequestOf, seatRuntimeOf, sessionIndexOf, str, strOrNull, toPgCounted, topupOf, usageChargeOf } from './db/rows.ts'
 
 /**
  * 类型、常量和行解析都在 `db/` 底下；这里原样再导出，调用点仍然
@@ -4148,15 +4148,7 @@ export class Db {
 
   async platformCredential(provider: string): Promise<Credential | undefined> {
     const r = await this.one('select * from platform_credentials where provider = ?', [provider])
-    if (!r) return undefined
-    return {
-      id: `platform:${str(r.provider)}`,
-      companyId: '',
-      provider: str(r.provider),
-      secret: str(r.secret),
-      createdAt: num(r.createdAt),
-      updatedAt: num(r.updatedAt),
-    }
+    return r ? platformCredOf(r) : undefined
   }
 
   async upsertPlatformCredential(provider: string, secret: string): Promise<Credential> {
@@ -4170,14 +4162,7 @@ export class Db {
 
   async platformCredentials(): Promise<Credential[]> {
     const rows = await this.many('select * from platform_credentials order by provider')
-    return rows.map((r) => ({
-      id: `platform:${str(r.provider)}`,
-      companyId: '',
-      provider: str(r.provider),
-      secret: str(r.secret),
-      createdAt: num(r.createdAt),
-      updatedAt: num(r.updatedAt),
-    }))
+    return rows.map(platformCredOf)
   }
 
   async deletePlatformCredential(provider: string): Promise<void> {
