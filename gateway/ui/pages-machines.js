@@ -7,7 +7,7 @@
  * 落单的）在按公司列的那条路上**永远列不出来**，而它们恰恰最需要被人看见。
  *
  * 灯、时区、版本这些的口径跟公司侧完全一致（`machineHead` / `LINK_TEXT` / `sinceMs`
- * 都是直接借 pages-audit.js 那份），不重造一套——同一台机器在两个页面上说两种话，
+ * 都是直接借 pages-companies.js 那份），不重造一套——同一台机器在两个页面上说两种话，
  * 比少一个页面糟得多。
  */
 
@@ -49,7 +49,7 @@ function machineLinkCell(m) {
  * 没报过的给「—」，**不给 0%**：一台失联机器的 0% 和一台空闲机器的 0% 看着一样，
  * 而结论完全相反。
  *
- * **调用方在 pages-audit.js**（公司详情页机器卡片里的 machineLoadRow）。机器列表页
+ * **调用方在 pages-companies.js**（公司详情页机器卡片里的 machineLoadRow）。机器列表页
  * 曾经也用它，那一列在 e116054 里被砍掉了，函数跟着删——但那次漏看了这个调用方，于是
  * 只要那台机器报过负载，公司详情页就整页抛 ReferenceError、一个字都画不出来。删一个
  * 渲染函数之前先全仓搜一遍名字：这一层没有类型检查兜着。
@@ -834,7 +834,7 @@ function machineVersionPanel(card) {
       ${managerPinForm(card)}
     </span></div>
     <div class="satu-kv"><span>${t('Bot 运行时')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${botText}${card.botOutdated ? ` · ${t('目标版本')} ${esc(card.botDesired || card.botLatest || state.botLatest || '')}` : ''}${botBtn}</span></div>
-    ${/* 装的是哪个包、跑的是哪一版公司模版，两件事各自会落后。渲染函数在 pages-audit.js，
+    ${/* 装的是哪个包、跑的是哪一版公司模版，两件事各自会落后。渲染函数在 pages-companies.js，
          那一页的机器卡片画的是同一行——同一台机器不该在两个页面上说两种话。 */ ''}
     ${botTemplateRow(card)}
     ${seatGatewayRow(card)}
