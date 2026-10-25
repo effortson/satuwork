@@ -396,20 +396,27 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
    * 活够 CHAT_ALIVE_MS 才算一次真连接，归零；没活够就沿用当前档位继续退避（core 的 aliveLongEnough）。
    */
   const nextAttempt = () => (SatuCore.aliveLongEnough(openedAt) ? 0 : attempt)
+  /**
+   * 这条流已经不是「当前那条」了就收摊。切 Bot 的一瞬间，旧流手上可能还攥着一段
+   * 已经收到、还没解析的数据；不拦住的话，它会落进新会话的事件数组里，画出来
+   * 就是两个 Bot 的消息串在一起。
+   *
+   * 判据以 chatStreamId 为准（换 Bot 必经 stopChatStream，它就是那把闩）。
+   * chatSessionId 只在**已经认定了某条会话**时才参与——低层直接调 startChatStream
+   * 的路径（重连、测试）还没来得及认领，不该被当成「串台」拦掉。
+   *
+   * **不再因为「不是当前会话」就收摊**：后台那几条流正是名单上时间、摘要和转圈的
+   * 唯一来源。只有当前这条要盯 chatStreamId（重连时它会被换掉）。
+   *
+   * **每块问一次、每个事件前再问一次。** sseEvents 是异步生成器，同一块里的几帧是一个
+   * 微任务交一个，中间排着的别的回调可能已经换了 Bot——只在块头问，这一块剩下的帧
+   * 照样会落进来。
+   */
+  const gone = () => ac.signal.aborted || (isActive() && chatStreamId !== sessionId)
   // 分帧走 core 的 sseEvents；这条流多要的两样（脉搏、重放看门狗）经它的 hooks 接上。
   const hooks = {
     onChunk: () => {
-      // 这条流已经不是「当前那条」了就收摊。切 Bot 的一瞬间，旧流手上可能还攥着一段
-      // 已经收到、还没解析的数据；不在这里拦住，它会落进新会话的事件数组里，画出来
-      // 就是两个 Bot 的消息串在一起。
-      //
-      // 判据以 chatStreamId 为准（换 Bot 必经 stopChatStream，它就是那把闩）。
-      // chatSessionId 只在**已经认定了某条会话**时才参与——低层直接调 startChatStream
-      // 的路径（重连、测试）还没来得及认领，不该被当成「串台」拦掉。
-      if (ac.signal.aborted) return false
-      // **不再因为「不是当前会话」就收摊**：后台那几条流正是名单上时间、摘要和转圈的
-      // 唯一来源。只有当前这条要盯 chatStreamId（重连时它会被换掉）。
-      if (isActive() && chatStreamId !== sessionId) return false
+      if (gone()) return false
       // 任何字节都算脉搏——`: ping` 不是事件、解析会跳过它，但它证明这条链活着。
       // **看门狗不在这里续命**（见 onBatch）：「这条链活着」和「重放在推进」是
       // 两件事，混成一件的后果写在 REPLAY_STALL_MS 上面。
@@ -424,6 +431,7 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
   }
   try {
     for await (const ev of sseEvents(reader, undefined, hooks)) {
+      if (gone()) break
       if (!ev || typeof ev !== 'object') continue
       /**
        * 席位自报家门：**这是不是上次那个进程**。

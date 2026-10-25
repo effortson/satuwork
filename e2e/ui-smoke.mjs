@@ -4313,6 +4313,48 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       ui.stopChatStream()
     })
 
+    await test('同一块里的几帧：流半路被换掉，后面的帧不再进事件', async () => {
+      /**
+       * 分帧走 core 的 sseEvents（异步生成器），同一块里的几帧是一个微任务交一个。中间
+       * 排着的回调换了 Bot（stopChatStream）之后，这一块剩下的帧不能再落进来——只在块头
+       * 问一次「还是不是当前那条」的话，它们照样进事件数组，画出来就是两个 Bot 串在一起。
+       *
+       * 这里让换流正好落在「这一块已经开始拆、第一帧还没交出去」那一拍上：read 交出整块的
+       * 同时排一个微任务去 stopChatStream。
+       */
+      const enc = new TextEncoder()
+      const frame = (seq) => `data: ${JSON.stringify({ type: 'assistant/chunk', seq, data: { text: 'x' } })}\n\n`
+      let ui
+      let served = false
+      const response = {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        body: {
+          getReader: () => ({
+            read: () => {
+              if (served) return Promise.resolve({ done: true, value: undefined })
+              served = true
+              const p = Promise.resolve({ done: false, value: enc.encode(frame(1) + frame(2)) })
+              p.then(() => queueMicrotask(() => ui.stopChatStream()))
+              return p
+            },
+          }),
+        },
+      }
+      ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: adminToken,
+        fetchImpl: async (path, init) => (path.includes('/events') ? response : fetch(gwBase + path, init)),
+      })
+      await ui.boot()
+      ui.state.chatSessionId = 's-mid'
+      await ui.startChatStream('s-mid')
+      const landed = ui.state.chatEvents.filter((e) => e.type === 'assistant/chunk').map((e) => e.seq)
+      assert(!landed.length, `换流之后这一块剩下的帧还是进来了：seq ${landed.join(', ')}`)
+    })
+
     await test('重放历史时不闪「正在处理」，但也不留一片空白', async () => {
       // 打开一条会话时，SSE 把**全部历史**从头推一遍，和实时事件走同一个通道。一条
       // 8 轮的真实对话是 789 条事件。最早每收到一条就重绘一次：
