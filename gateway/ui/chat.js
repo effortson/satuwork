@@ -9412,11 +9412,8 @@ async function deployMyRuntime(botId, opts = {}) {
   try {
     // `update` 不能省：席位已经是 ready 且版本没变时，服务端会直接把现状还回来，
     // 什么都不做——那样「重新部署」这个按钮就成了摆设。
-    // force：见 gateway/src/deploy.ts 里那道「已经 ready 就跳过」的门。不带它的话，
-    // 「重新部署」在最需要它的时候（版本对、状态 ready、但机器上不对）什么都不会做。
     const body = { botId: id }
     if (opts.update) body.update = true
-    if (opts.force) body.force = true
     const started = await api('POST', '/runtime/deploy', body)
     /**
      * **服务端等不到装完就先回了（202 + installing）。** 首装要 apt 十几分钟，那条请求以前

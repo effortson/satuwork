@@ -154,14 +154,6 @@ async function runConfirm() {
       flash('ok', t('已推给全公司', 'Shared company-wide'))
       render()
       return
-    } else if (c.kind === 'redeploy-bot') {
-      render()
-      // force 而不是 update：这个按钮的意思是「把席位重铺一遍」，不是「升到新版本」。
-      // 两者眼下都能穿过 deploy.ts 里那道「已经 ready 就跳过」的门，但借 update 的名义
-      // 是在赌它将来不会变成「只在有新版本时才做」——真那样，重新部署会静悄悄失效，
-      // 而它恰恰是机器上出了问题时唯一的自助手段。
-      await deployMyRuntime(c.id, { force: true })
-      return
     } else if (c.kind === 'machine-seat-redeploy') {
       await redeploySeat(c.org, c.account, c.id)
       return
@@ -900,22 +892,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
-  if (act === 'runtime-redeploy') {
-    const id = btn.getAttribute('data-bot') || ''
-    const bot = (state.runtimeBots || []).find((b) => b.id === id)
-    state.confirm = {
-      title: '重新部署这个 Bot？',
-      body: t(
-        `会把「${(bot && bot.name) || id}」的席位重装一遍并重启。正在进行的对话会断，开着的桌面会掉线；${'\u007e'}/work 里的文件和会话记录不受影响。`,
-        `The seat for "${(bot && bot.name) || id}" is reinstalled and restarted. Ongoing conversations drop and any open desktop disconnects; files in ~/work and session history are unaffected.`,
-      ),
-      label: '重新部署',
-      kind: 'redeploy-bot',
-      id,
-    }
-    render()
-    return
-  }
   if (act === 'runtime-deploy') {
     await deployMyRuntime(btn.getAttribute('data-bot') || '')
     return
@@ -1092,14 +1068,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'chat-older') {
     void loadOlderChat(state.chatSessionId)
-    return
-  }
-  if (act === 'logs-open') {
-    const id = btn.getAttribute('data-bot') || ''
-    const bot = (state.runtimeBots || []).find((b) => b.id === id)
-    openLogs(`${(bot && bot.name) || id} · ${t('席位上的 bot 服务，跟着滚')}`, [
-      { key: 'bot', label: t('Bot 运行时'), direct: '/runtime/logs/direct?botId=' + encodeURIComponent(id) },
-    ])
     return
   }
   if (act === 'clean-seat') {
@@ -2157,11 +2125,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
     state.planSkuEdit = null
     state.planSkuError = ''
     render()
-    return
-  }
-  if (act === 'org-open') {
-    const id = btn.getAttribute('data-id')
-    if (id) go('/companies/' + id)
     return
   }
   if (act === 'accounts-tab') {
