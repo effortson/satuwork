@@ -195,17 +195,11 @@ function webToolsPanel() {
 
 function toolsPage() {
   const tab = state.toolsTab || 'web'
-  const tabs = TOOL_TABS.map(
-    (x) =>
-      `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(tab === x.key)}" data-act="tools-tab" data-tab="${esc(x.key)}">${t(x.label)}</button>`,
-  ).join('')
+  const tabs = tabPills(TOOL_TABS, tab, 'tools-tab')
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('工具配置')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('Bot 能用的平台级工具。配一次，所有公司共用；按调用次数计价。')}</p>
-        </div>
+        ${pageHead(t('工具配置'), t('Bot 能用的平台级工具。配一次，所有公司共用；按调用次数计价。'))}
         ${flashes()}
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         ${tab === 'web' ? webToolsPanel() : ''}

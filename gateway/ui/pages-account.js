@@ -48,16 +48,13 @@ function usersPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('用户')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('平台账号与各公司管理员、员工。')}</p>
-        </div>
+        ${pageHead(t('用户'), t('平台账号与各公司管理员、员工。'))}
         ${flashes()}
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
           <div class="satu-memberhead">
             <span>${t('账号')}</span><span>${t('角色')}</span><span>${t('状态')}</span><span>${t('加入时间')}</span><span></span>
           </div>
-          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有用户')}</div>`}
+          ${rows || emptyBox(t('还没有用户'))}
           ${listPager('users', view, '个')}
         </div>
       </div>
@@ -89,10 +86,7 @@ function userDetailPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('账号详情')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${esc(a.email || '')}</p>
-        </div>
+        ${pageHead(t('账号详情'), esc(a.email || ''))}
         ${flashes()}
         <div class="satu-panel">
           <span class="satu-panel-title">${t('账号信息')}</span>
@@ -129,16 +123,13 @@ function planSkuModal() {
     bonus: cur ? milsOf(cur, 'bonus') / 1000 : 0,
     knowledgeBases: cur ? cur.knowledgeBases || 0 : 0,
   }
-  return `<div class="gw-modal-backdrop" data-act="plan-sku-close">
-    <form id="plan-sku-form" class="gw-modal" style="max-width: 460px;" data-id="${esc(cur?.id || '')}" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${esc(title)}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('改价目表不会动已经开出去的公司席位。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="plan-sku-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'plan-sku-close',
+    tag: 'form',
+    attrs: `id="plan-sku-form" class="gw-modal" style="max-width: 460px;" data-id="${esc(cur?.id || '')}" data-stop`,
+    title: esc(title),
+    sub: t('改价目表不会动已经开出去的公司席位。'),
+    body: `<div class="field">
         <label for="plan-sku-name">${t('名称（中文）')}</label>
         <input class="input" id="plan-sku-name" name="name" value="${esc(v.name)}" required>
       </div>
@@ -182,9 +173,8 @@ function planSkuModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="plan-sku-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 /**
@@ -271,16 +261,13 @@ function orderModal() {
   }
   // 一张表单两种单子：套餐单要选套餐、席位、账期，充值单只有金额和备注。
   const topup = v.kind === 'topup'
-  return `<div class="gw-modal-backdrop" data-act="order-close">
-    <form id="order-form" class="gw-modal" style="max-width: 480px; max-height: 88vh; overflow-y: auto;" data-id="${esc(cur?.id || '')}" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${cur ? t('修改订单') : topup ? t('新建充值单') : t('新建套餐单')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${topup ? t('充值单付款后才开充值记录，余额也是那时候才涨。') : t('下单时套餐内容会抄进订单，之后改价目表不影响它。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="order-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'order-close',
+    tag: 'form',
+    attrs: `id="order-form" class="gw-modal" style="max-width: 480px; max-height: 88vh; overflow-y: auto;" data-id="${esc(cur?.id || '')}" data-stop`,
+    title: cur ? t('修改订单') : topup ? t('新建充值单') : t('新建套餐单'),
+    sub: topup ? t('充值单付款后才开充值记录，余额也是那时候才涨。') : t('下单时套餐内容会抄进订单，之后改价目表不影响它。'),
+    body: `<div class="field">
         <label for="order-kind">${t('单据类型')}</label>
         <select class="input" id="order-kind" name="kind" data-act="order-kind-pick" ${cur ? 'disabled' : ''}>
           <option value="plan" ${!topup ? 'selected' : ''}>${t('套餐')}</option>
@@ -359,9 +346,8 @@ function orderModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="order-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 function ordersPage() {
@@ -397,22 +383,16 @@ function ordersPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('购买与充值')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('买套餐和充值走同一张单：付了款，套餐才生效、充值余额才到账。')}</p>
-          </div>
-          <div style="display: flex; gap: var(--space-2); flex: none;">
+        ${pageHead(t('购买与充值'), t('买套餐和充值走同一张单：付了款，套餐才生效、充值余额才到账。'), `<div style="display: flex; gap: var(--space-2); flex: none;">
             <button type="button" class="btn btn-secondary" data-act="order-new" data-kind="topup">${t('新建充值单')}</button>
             <button type="button" class="btn btn-primary" data-act="order-new" data-kind="plan">${t('新建套餐单')}</button>
-          </div>
-        </div>
+          </div>`)}
         ${flashes()}
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
           <div class="satu-memberhead" style="grid-template-columns: ${ORDER_COLS};">
             <span>${t('公司')}</span><span>${t('类型')}</span><span>${t('内容')}</span><span>${t('金额')}</span><span>${t('赠送 Token')}</span><span>${t('席位')}</span><span>${t('账期')}</span><span>${t('付款状态')}</span><span></span>
           </div>
-          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有订单')}</div>`}
+          ${rows || emptyBox(t('还没有订单'))}
         </div>
       </div>
       ${orderModal()}
@@ -482,7 +462,7 @@ function topupRecordsPanel() {
       <div class="satu-memberhead" style="grid-template-columns: ${TOPUP_COLS};">
         <span>${t('时间')}</span><span>${t('金额')}</span><span>${t('备注')}</span><span>${t('操作人')}</span>
       </div>
-      ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有充值记录。已付款的充值单才会记在这里。')}</div>`}
+      ${rows || emptyBox(t('还没有充值记录。已付款的充值单才会记在这里。'))}
     </div>
   </div>`
 }
@@ -510,19 +490,13 @@ function plansPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('套餐')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('价目表：一条套餐 = 一个金额 + 一个席位数。')}</p>
-          </div>
-          <button type="button" class="btn btn-primary" style="flex: none;" data-act="plan-sku-new">${t('新建套餐')}</button>
-        </div>
+        ${pageHead(t('套餐'), t('价目表：一条套餐 = 一个金额 + 一个席位数。'), `<button type="button" class="btn btn-primary" style="flex: none;" data-act="plan-sku-new">${t('新建套餐')}</button>`)}
         ${flashes()}
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
           <div class="satu-memberhead" style="grid-template-columns: ${PLAN_COLS};">
             <span>${t('套餐')}</span><span>${t('金额')}</span><span>${t('类型')}</span><span>${t('席位')}</span><span>${t('赠送 Token')}</span><span>${t('更新时间')}</span><span></span>
           </div>
-          ${skuRows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有套餐')}</div>`}
+          ${skuRows || emptyBox(t('还没有套餐'))}
         </div>
       </div>
       ${planSkuModal()}
@@ -559,11 +533,7 @@ function dayOf(ts) {
 }
 
 function whenOf(ts) {
-  const m = Math.floor((Date.now() - ts) / 60000)
-  if (m < 1) return t('刚刚', 'just now')
-  if (m < 60) return t(`${m} 分钟前`, `${m} min ago`)
-  if (m < 60 * 24) return t(`${Math.floor(m / 60)} 小时前`, `${Math.floor(m / 60)} h ago`)
-  return t(`${Math.floor(m / 1440)} 天前`, `${Math.floor(m / 1440)} d ago`)
+  return SatuCore.agoText(localeMode, Date.now() - ts)
 }
 
 /** User-Agent → 一句人话。认不出来就说认不出来，别猜。 */
@@ -614,7 +584,7 @@ function passwordModal() {
           <h2 style="font-size: 20px; margin: 0 0 4px;">${t('修改口令', 'Change password')}</h2>
           <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('改完之后，其他设备上的登录会立即失效。', 'Every other device is signed out immediately.')}</p>
         </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${t('关闭', 'Close')}" data-act="pw-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+        <button type="button" class="btn btn-ghost btn-icon" aria-label="${t('关闭', 'Close')}" data-act="pw-close">${svg(CLOSE_ICON, 16)}</button>
       </div>
       <div class="field">
         <label for="pw-old">${t('当前口令', 'Current password')}</label>
@@ -715,10 +685,7 @@ function profilePage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner gw-profile">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('个人设置', 'Preferences')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('管理你的账号信息、偏好与安全设置。', 'Manage your account details, preferences, and security.')}</p>
-        </div>
+        ${pageHead(t('个人设置', 'Preferences'), t('管理你的账号信息、偏好与安全设置。', 'Manage your account details, preferences, and security.'))}
 
         <div style="display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);">
           <div style="width: 56px; height: 56px; flex: none; border-radius: 999px; background: var(--color-accent-200); display: flex; align-items: center; justify-content: center; font-family: var(--font-heading); font-size: 22px; color: var(--color-accent-800);">${esc(initialOf(u))}</div>

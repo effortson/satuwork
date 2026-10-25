@@ -16,6 +16,8 @@
  * 两样东西由宿主给：界面文案的 `t`（「复制」「下载」这几个按钮），以及「人点过加载的站外图片」
  * 那张表（`loadedImages`，DOM 半边点一下就往里加，这边重画时据此不再变回按钮）。
  */
+import { esc } from '../format.ts'
+
 export interface MarkdownOptions {
   /** 界面文案。不给就原样用中文。 */
   t?: (zh: string) => string
@@ -30,11 +32,6 @@ export function createMarkdown(opts: MarkdownOptions = {}) {
   /** 界面文案走宿主的 t()。 */
   function L(zh: string): string {
     return opts.t ? opts.t(zh) : zh
-  }
-
-  const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
-  function esc(s: any) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (ESCAPES as Record<string, string>)[c])
   }
 
   /**

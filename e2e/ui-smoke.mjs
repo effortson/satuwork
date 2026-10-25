@@ -82,7 +82,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
       const parts = [...html.matchAll(/<script src="\/([^"]+)"[^>]*\bdata-app-part\b/g)].map((m) => m[1])
       assert(parts.length > 1, `index.html 里没找到 data-app-part 脚本`)
-      // **每个 <script src>**，不只是分片：core.js（core/src 打出来的）、i18n.js、markdown.js、
+      // **每个 <script src>**，不只是分片：core.js（core/src 打出来的）、markdown.js、
       // unzip.js 都不带 data-app-part，漏进 ROOT_FILES 的后果一样是整页白屏。
       const scripts = [...html.matchAll(/<script[^>]*\ssrc="\/([^"]+)"/g)].map((m) => m[1])
       assert(scripts.includes('core.js'), `index.html 里没有 core.js：${scripts.join(', ')}`)
@@ -1011,7 +1011,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert((b.mentions || []).length === 1, `点名没跟着消息留下来：${JSON.stringify(b.mentions)}`)
       assert(b.mentions[0].label === 'Gmail (default)', `药丸上的名字不对：${b.mentions[0].label}`)
       // 气泡那一层是真 DOM（垫片里画不出来），这里只钉住它确实画了这排药丸。
-      const src = readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8')
+      const src = readFileSync(join(root, 'gateway/ui/chat-thread.js'), 'utf8')
       assert(src.includes('sw-mentions-in'), '气泡里没有画点名药丸的那一排')
     })
 
@@ -1019,8 +1019,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 这一条只验源码。滚动收浮层挂在 window 的**捕获阶段**，垫片里 window 是个空壳，
       // 事件根本发不出去——但错法就藏在那一行里：不看事件源头，滚浮层自己的结果区
       // （`.sw-toolpop pre`，最高 220px）也照收，手一动窗口就没了，长输出永远看不完。
-      const src = readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8')
-      // chat.js 里不止一个捕获阶段的 scroll 监听，认收浮层的那一个。
+      const src = readFileSync(join(root, 'gateway/ui/chat-toolpop.js'), 'utf8')
+      // 捕获阶段的 scroll 监听不止一个（长按菜单、内嵌桌面也挂了），认收浮层的那一个。
       const handler = [...src.matchAll(/addEventListener\(\s*'scroll',([\s\S]*?),\s*true,?\s*\)/g)]
         .map((m) => m[1])
         .find((h) => h.includes('hideToolPop'))
@@ -1632,11 +1632,11 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!shell.includes('#download'), '桌面壳的登录页上还挂着下载桌面端')
     })
 
-    await test('gateway/ui 下每个脚本都解析得过，包括 i18n.js', async () => {
+    await test('gateway/ui 下每个脚本都解析得过，包括不带 data-app-part 的那几个', async () => {
       /**
-       * 这套冒烟只把界面分片装进来跑，**不装 i18n.js**，而前端读翻译又是
-       * `window.SATU_I18N || {}` 兜着的——于是那份文件语法错了，这里一条都不会红，浏览器里
-       * 英文界面却整片退回中文。就这么漏过：两个带全角逗号的键没加引号。
+       * 这套冒烟只把界面分片装进来跑，**不装 markdown.js 这类分片之外的脚本**——那些文件
+       * 语法错了，这里一条都不会红，浏览器里却是整片坏掉。以前的 i18n.js 就这么漏过：两个
+       * 带全角逗号的键没加引号。
        *
        * 只解析不执行（`node --check`），所以不需要 window。用它而不是 vm.Script：分片里有
        * ES 模块（unzip.js），按普通脚本解析会在 export 上报错；node --check 按 gateway 的
@@ -1645,7 +1645,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const { spawnSync } = await import('node:child_process')
       const dir = join(root, 'gateway/ui')
       const files = readdirSync(dir).filter((f) => f.endsWith('.js'))
-      assert(files.includes('i18n.js'), `没找到 i18n.js：${files.join(', ')}`)
+      assert(files.includes('markdown.js'), `没找到 markdown.js：${files.join(', ')}`)
       const bad = []
       for (const f of files) {
         const out = spawnSync(process.execPath, ['--check', join(dir, f)], { encoding: 'utf8' })
@@ -1668,6 +1668,18 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         assert(part.status === 200, `${file} → ${part.status}`)
         assert(String(part.headers.get('content-type')).includes('javascript'), `${file} 的 content-type 是 ${part.headers.get('content-type')}`)
       }
+    })
+
+    await test('http.ts 的 UI_PARTS 和 index.html 那串分片一模一样，连顺序', async () => {
+      // 上面那条只验「每个都取得到」。两份名单各写各的，漏了、多了、顺序抄错都没人报——
+      // 加分片时两处要一起改，这一条替人对一遍。
+      const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
+      const parts = [...html.matchAll(/<script src="\/([^"]+)"[^>]*\bdata-app-part\b/g)].map((m) => m[1])
+      const ts = readFileSync(join(root, 'gateway/src/http.ts'), 'utf8')
+      const m = ts.match(/const UI_PARTS = \[([^\]]*)\]/)
+      assert(m, 'http.ts 里找不到 UI_PARTS')
+      const listed = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+      assert(JSON.stringify(listed) === JSON.stringify(parts), `两份对不上：\n  index.html：${parts.join(', ')}\n  UI_PARTS：  ${listed.join(', ')}`)
     })
 
     await test('首页上点「登录」进得了登录页', async () => {

@@ -42,6 +42,14 @@ const gatewayClient = SatuCore.createGatewayClient({
 const { gatewayBase, gatewayAbs, localBots, localSessions, registerLocalBot, localBotOf, localRoute, swFetch, api } = gatewayClient
 
 /**
+ * 当前公司名下的接口：`/orgs/<当前公司>` 后面接 `sub`。**没有公司时不替调用方拦**——拦下之后
+ * 各处要不要动 state 不一样，所以那一句 `if (!orgId()) return` 留在调用方。
+ */
+function orgApi(method, sub, body) {
+  return api(method, `/orgs/${encodeURIComponent(orgId())}${sub}`, body)
+}
+
+/**
  * 提示条自己走人的时限。
  *
  * 它说的都是**刚刚那一下的回执**：已下发停止、已压缩、已开始新对话、这条没发出去。
@@ -108,6 +116,24 @@ function flashDeletedBot(data) {
       `The bot is deleted, but ${orphans.length} seat(s) could not be torn down: ${orphans[0].error || ''}`,
     ),
   )
+}
+
+/**
+ * 一次「点了就转圈」的操作：按钮先灰掉、画一帧，跑完（成没成都算）再放开、再画一帧；出错就把
+ * 那句话摆成提示条。几十处一模一样的 busy / try / finally 收在这儿——**只收逐字一样的**，
+ * 出错要另说一句、成功要跳页、不画第二帧的，各自留着。
+ */
+async function withBusy(fn) {
+  state.busy = true
+  render()
+  try {
+    await fn()
+  } catch (err) {
+    flash('err', err.message)
+  } finally {
+    state.busy = false
+    render()
+  }
 }
 
 function groupCatalog(rows) {
@@ -325,10 +351,9 @@ async function loadConnectorToolkits() {
 }
 
 async function loadOrgConnectors() {
-  const id = orgId()
   const [list, stats] = await Promise.all([
-    api('GET', `/orgs/${encodeURIComponent(id)}/connectors`),
-    api('GET', `/orgs/${encodeURIComponent(id)}/connector-stats`).catch(() => null),
+    orgApi('GET', '/connectors'),
+    orgApi('GET', '/connector-stats').catch(() => null),
   ])
   state.orgConnectors = list.connectors || []
   state.connectorStats = stats
@@ -444,17 +469,15 @@ async function loadUserDetail(id) {
 }
 
 async function loadOrg() {
-  const id = orgId()
-  if (!id) return
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}`)
+  if (!orgId()) return
+  const data = await orgApi('GET', '')
   state.org = data.company
   state.plan = data.plan
 }
 
 async function loadAccounts() {
-  const id = orgId()
-  if (!id) return
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/accounts`)
+  if (!orgId()) return
+  const data = await orgApi('GET', '/accounts')
   state.accounts = data.members || data.accounts || []
   state.groups = data.groups || []
   state.seats = data.seats || { total: 0, used: 0 }
@@ -798,13 +821,6 @@ async function loadBotDetail(botId) {
   }
 }
 
-async function loadAudit() {
-  const id = orgId()
-  if (!id) return
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/audit`)
-  state.events = data.events || []
-}
-
 /** 审计总结一页几条。一屏放得下、又不至于翻个没完。 */
 const AUDIT_PAGE_SIZE = 20
 
@@ -813,8 +829,7 @@ const AUDIT_PAGE_SIZE = 20
  * 拿去接着翻会从一个不相干的位置开始。
  */
 async function loadConversationAudits(fromStart = false) {
-  const id = orgId()
-  if (!id) return
+  if (!orgId()) return
   if (fromStart || !Array.isArray(state.auditCursors) || !state.auditCursors.length) state.auditCursors = [null]
   const q = new URLSearchParams()
   q.set('limit', String(AUDIT_PAGE_SIZE))
@@ -829,7 +844,7 @@ async function loadConversationAudits(fromStart = false) {
   const qs = q.toString()
   state.auditLoading = true
   try {
-    const data = await api('GET', `/orgs/${encodeURIComponent(id)}/conversation-audits${qs ? '?' + qs : ''}`)
+    const data = await orgApi('GET', `/conversation-audits${qs ? '?' + qs : ''}`)
     state.auditItems = data.items || []
     // 老 Gateway 不回这一格：当成没有下一页，界面上就只有一页，和从前一样。
     state.auditNextCursor = data.hasMore && data.nextCursor ? data.nextCursor : null
@@ -840,74 +855,34 @@ async function loadConversationAudits(fromStart = false) {
 }
 
 async function loadConversationAuditCoverage() {
-  const id = orgId()
-  if (!id) return
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/conversation-audit-coverage`)
+  if (!orgId()) return
+  const data = await orgApi('GET', '/conversation-audit-coverage')
   state.auditCoverage = data.coverage || []
 }
 
 async function loadConversationAuditSettings() {
-  const id = orgId()
-  if (!id) return
-  state.auditSettings = await api('GET', `/orgs/${encodeURIComponent(id)}/conversation-audit-settings`)
+  if (!orgId()) return
+  state.auditSettings = await orgApi('GET', '/conversation-audit-settings')
 }
 
 async function saveConversationAuditRole(modelRole) {
-  const id = orgId()
-  if (!id) return
-  state.auditSettings = await api('PATCH', `/orgs/${encodeURIComponent(id)}/conversation-audit-settings`, { modelRole })
+  if (!orgId()) return
+  state.auditSettings = await orgApi('PATCH', '/conversation-audit-settings', { modelRole })
 }
 
 async function saveConversationAuditEnabled(enabled) {
-  const id = orgId()
-  if (!id) return
-  state.auditSettings = await api('PATCH', `/orgs/${encodeURIComponent(id)}/conversation-audit-settings`, { enabled })
+  if (!orgId()) return
+  state.auditSettings = await orgApi('PATCH', '/conversation-audit-settings', { enabled })
 }
 
 async function loadConversationAuditItem(itemId) {
-  const id = orgId()
-  if (!id || !itemId) return
-  state.auditItemDetail = await api(
-    'GET',
-    `/orgs/${encodeURIComponent(id)}/conversation-audits/${encodeURIComponent(itemId)}`,
-  )
-}
-
-async function loadSessions(append = false) {
-  const id = orgId()
-  if (!id) return
-  const q = new URLSearchParams()
-  if (state.sessionAccountId) q.set('accountId', state.sessionAccountId)
-  const from = dayStart(state.sessionFrom)
-  const to = dayEnd(state.sessionTo)
-  if (from !== '') q.set('from', String(from))
-  if (to !== '') q.set('to', String(to))
-  // 追加下一页时带上游标；不带就是从头拉第一页（筛选条件变了要从头来）。
-  if (append && state.sessionsCursor) q.set('cursor', state.sessionsCursor)
-  const qs = q.toString()
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/sessions${qs ? '?' + qs : ''}`)
-  const got = data.sessions || []
-  state.sessions = append ? (state.sessions || []).concat(got) : got
-  // 接口是分页的。不把这几个字段带出来，一份被截断的列表看起来和「就这么多」一模一样，
-  // 管理员会据此以为更早的会话不存在。
-  state.sessionsHasMore = Boolean(data.hasMore)
-  state.sessionsLimit = Number(data.limit) || state.sessions.length
-  state.sessionsCursor = data.nextCursor || ''
-}
-
-async function loadSessionDetail(sessionId) {
-  const id = orgId()
-  if (!id || !sessionId) return
-  const data = await api('GET', `/orgs/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`)
-  state.sessionDetail = data.session || null
-  state.sessionEvents = data.events == null ? null : data.events
-  state.sessionPullError = data.pullError || ''
+  if (!orgId() || !itemId) return
+  state.auditItemDetail = await orgApi('GET', `/conversation-audits/${encodeURIComponent(itemId)}`)
 }
 
 async function loadBilling() {
-  const id = orgId()
-  if (!id) return
-  state.billing = await api('GET', `/orgs/${encodeURIComponent(id)}/billing`)
+  if (!orgId()) return
+  state.billing = await orgApi('GET', '/billing')
 }
 
 /**
@@ -1084,9 +1059,8 @@ async function loadUsage() {
   const step = range === '今日' ? '&step=hour' : ''
   const q = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&tz=${encodeURIComponent(tz)}${step}`
   if (isAdmin() || isOwner()) {
-    const id = orgId()
-    if (!id) return
-    state.usage = await api('GET', `/orgs/${encodeURIComponent(id)}/usage?${q}`)
+    if (!orgId()) return
+    state.usage = await orgApi('GET', `/usage?${q}`)
     return
   }
   state.usage = await api('GET', `/me/stats?${q}`)
@@ -1115,7 +1089,7 @@ async function loadPage() {
     await loadRuntimeBots().catch(() => {})
     // 状态点和摘要也不该只在对话页才有：人切到账单页等 Bot 干完活，正是要看着它。
     //
-    // **一条通道管所有 Bot**（见 chat.js 的 startRosterStream），所以在这儿起没有关系
+    // **一条通道管所有 Bot**（见 chat-stream.js 的 startRosterStream），所以在这儿起没有关系
     // ——它只占一个连接。这里以前是一个 Bot 一条流，十几条抢在正文前面开，画出消息的
     // 那条 `/runtime/sessions/:id/history` 只能排在后面干等，刷新一次十几秒才见到消息。
     void startRosterStream()

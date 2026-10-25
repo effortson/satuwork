@@ -30,7 +30,7 @@ function markNode(text, alt) {
 /**
  * 图片 / iframe 加载完或加载失败之后做什么。**内联 `onload=` / `onerror=` 的替代。**
  *
- * 原来那几处写成内联属性，理由写在 chat.js 的 DONE 上，而且那个理由是对的：整页是
+ * 原来那几处写成内联属性，理由写在 chat-preview.js 的 DONE 上，而且那个理由是对的：整页是
  * innerHTML 换掉的，挂在节点上的监听器每次重绘都会连同节点一起没，圈就永远转下去。
  *
  * 但内联事件处理器要求 CSP 的 `script-src` 带上 `'unsafe-inline'`，而那等于把整条 CSP
@@ -174,7 +174,7 @@ function setupView() {
           </div>
           <button type="submit" class="btn btn-primary btn-block" ${state.busy ? 'disabled' : ''}>
             ${state.busy ? t('创建中…') : t('创建并进入')}
-            ${state.busy ? '' : svg(['M5 12h14', 'm12 5 7 7-7 7'], 14)}
+            ${state.busy ? '' : svg(ARROW_RIGHT, 14)}
           </button>
           ${authConsent(t('创建并进入'), 'Create and continue')}
         </form>
@@ -218,7 +218,7 @@ function loginView() {
           </div>
           <button type="submit" class="btn btn-primary btn-block" ${state.busy ? 'disabled' : ''}>
             ${state.busy ? t('登录中…') : t('登录')}
-            ${state.busy ? '' : svg(['M5 12h14', 'm12 5 7 7-7 7'], 14)}
+            ${state.busy ? '' : svg(ARROW_RIGHT, 14)}
           </button>
         </form>
         <p style="text-align: center; margin: 0; font-size: 14px; color: color-mix(in srgb, var(--color-text) 60%, transparent);">${t('还没有账号？联系管理员开通。')}</p>
@@ -320,7 +320,7 @@ function chatRosterNav() {
           </button>
           <button type="button" class="satu-botfolder-more" data-menu-toggle data-act="menu-toggle" data-id="${esc(menuId)}"
             aria-haspopup="true" aria-expanded="${String(state.menu === menuId)}"
-            aria-label="${esc(t('分类操作', 'Folder actions'))}" title="${esc(t('分类操作', 'Folder actions'))}">${svg(['M12 6h.01', 'M12 12h.01', 'M12 18h.01'], 14)}</button>
+            aria-label="${esc(t('分类操作', 'Folder actions'))}" title="${esc(t('分类操作', 'Folder actions'))}">${svg(KEBAB_ICON, 14)}</button>
           ${
             state.menu === menuId
               ? `<div class="satu-menu" data-flip="${String(Boolean(state.menuFlip))}">
@@ -356,7 +356,7 @@ function rosterGroups(bots) {
 
 /** 名单上的一行。`draggable`：拖到某个分类的标题上就归进去（见下面那组 drag 监听）。 */
 function rosterRowHtml(b, selected) {
-  const sum = (botStreams.get(b.id) || {}).sum || { state: 'idle', lastAt: 0, lastText: '' }
+  const sum = (botStreams.get(b.id) || {}).sum || SatuCore.newSum()
   return `<button type="button" class="satu-botrow" draggable="true" data-act="chat-open" data-id="${esc(b.id)}" data-bot-row="${esc(b.id)}" aria-current="${b.id === selected}">
         ${/* 头像占满两行：名字和摘要并排在它右边，整行才像一条会话，而不是一个
              带小图标的菜单项。34 是 botAvatar 的默认尺寸，也正好等于两行的高度。 */ ''}
@@ -388,13 +388,13 @@ function rosterRowHtml(b, selected) {
 function botFolderModal() {
   const f = state.botFolderEdit
   if (!f) return ''
-  return `<div class="gw-modal-backdrop" data-act="bot-folder-close">
-    <div class="gw-modal" data-stop style="max-width: 400px;">
-      <div>
-        <h2 style="font-size: 20px; margin: 0 0 4px;">${f.id ? t('重命名分类', 'Rename folder') : t('新建分类', 'New folder')}</h2>
-        <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('分类只是你自己名单上的分法，把 Bot 拖到分类名上就归进去。', 'Folders only organize your own list; drag a bot onto a folder name to file it.')}</p>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'bot-folder-close',
+    attrs: 'class="gw-modal" data-stop style="max-width: 400px;"',
+    x: false,
+    title: f.id ? t('重命名分类', 'Rename folder') : t('新建分类', 'New folder'),
+    sub: t('分类只是你自己名单上的分法，把 Bot 拖到分类名上就归进去。', 'Folders only organize your own list; drag a bot onto a folder name to file it.'),
+    body: `<div class="field">
         <label for="bf-name">${t('名字')}</label>
         <input class="input" id="bf-name" data-folderedit="name" value="${esc(f.name)}" maxlength="24" placeholder="${esc(t('例如：客户跟进', 'e.g. Customers'))}" autofocus>
       </div>
@@ -402,9 +402,8 @@ function botFolderModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="bot-folder-close">${t('取消')}</button>
         <button type="button" class="btn btn-primary" data-act="bot-folder-save" ${state.busy ? 'disabled' : ''}>${f.id ? t('保存') : t('创建', 'Create')}</button>
-      </div>
-    </div>
-  </div>`
+      </div>`,
+  })
 }
 
 async function saveBotFolder() {
@@ -734,7 +733,7 @@ function paintRoster() {
 function flashRow(kind, text) {
   return `<div class="gw-flash gw-flash-${kind}" data-flash>
     <span class="gw-flash-text">${esc(text)}</span>
-    <button type="button" class="gw-flash-x" data-act="flash-close" aria-label="${esc(t('关闭'))}">${svg(['M18 6 6 18', 'M6 6l12 12'], 14)}</button>
+    <button type="button" class="gw-flash-x" data-act="flash-close" aria-label="${esc(t('关闭'))}">${svg(CLOSE_ICON, 14)}</button>
   </div>`
 }
 
@@ -801,10 +800,7 @@ function placeholderPage(title, body) {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${esc(title)}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${esc(body)}</p>
-        </div>
+        ${pageHead(esc(title), esc(body))}
         ${flashes()}
       </div>
     </div>`

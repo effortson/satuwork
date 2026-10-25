@@ -11,8 +11,8 @@
  *   /login   登录表单。桌面壳里 `/` 也直接给它——壳子是应用，不是网站，
  *            开机第一件事就是连回自己那台 Gateway，没有「先了解一下」这一步
  *
- * 文案就地给中英两版（`t('中文', 'English')`），不进 i18n.js 的译表：那份表是给
- * 「定义在模块级 const 里、加载时就求值」的标签用的（见 i18n.js 开头），而这一屏
+ * 文案就地给中英两版（`t('中文', 'English')`），不进 core 的译表：那份表是给
+ * 「定义在模块级 const 里、加载时就求值」的标签用的（见 core/src/i18n/dict.ts 开头），而这一屏
  * 整个是渲染时才拼的字符串，就地写反而看得见上下文。
  */
 
@@ -656,9 +656,7 @@ function lpFilmMount() {
 let lpThreeLoad = null
 function lpThree() {
   if (!lpThreeLoad) {
-    const meta = document.querySelector('meta[name="satu-cdn"]')
-    const base = (meta?.getAttribute('content') || 'https://cdn.jsdelivr.net/npm').replace(/\/+$/, '')
-    const src = base + LP_THREE.path
+    const src = uiCdn() + LP_THREE.path
     const pre = document.createElement('link')
     pre.rel = 'modulepreload'
     pre.href = src
@@ -868,7 +866,7 @@ function lpSalesModal() {
               'Scan with your phone to talk on WhatsApp — provisioning, seats and plans.',
             )}</p>
           </div>
-          <button type="button" class="btn btn-ghost btn-icon" style="flex: none;" data-act="landing-sales-close" aria-label="${esc(t('关闭'))}">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
+          <button type="button" class="btn btn-ghost btn-icon" style="flex: none;" data-act="landing-sales-close" aria-label="${esc(t('关闭'))}">${svg(CLOSE_ICON, 16)}</button>
         </div>
         <div class="satu-lp-qr">
           <img src="/assets/sales-whatsapp.svg" alt="${esc(t(`WhatsApp 二维码：${LP_SALES_SHOW}`, `WhatsApp QR code: ${LP_SALES_SHOW}`))}" width="180" height="180">
@@ -1228,9 +1226,6 @@ function paintDownload(os) {
 }
 
 
-/** 主 CTA 上那支箭。这一屏的按钮全是方的、字是大写的，箭头是它唯一的装饰。 */
-const LP_ARROW = ['M5 12h14', 'm12 5 7 7-7 7']
-
 /**
  * 首页本体。
  *
@@ -1248,7 +1243,7 @@ function landingView() {
   // 走 theme.css 那套药丸（.btn / .btn-primary），不另起一套方按钮：这颗点下去就是
   // /login，而那一屏上每一颗按钮都是圆头的。见 app.css 里 .satu-lp-ctas 那段。
   const cta = `<button type="button" class="btn btn-primary" data-act="go" data-href="/login">
-    ${t('登录 Satuwork', 'Sign in to Satuwork')}${svg(LP_ARROW, 14)}
+    ${t('登录 Satuwork', 'Sign in to Satuwork')}${svg(ARROW_RIGHT, 14)}
   </button>`
   return `
   <div class="satu-lp">

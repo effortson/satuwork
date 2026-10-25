@@ -88,7 +88,7 @@ ${uiCdnMeta()}</head><body class="sw-channel-preview-page" data-kind="${safeKind
   </div>
   <div class="sw-preview-body" id="preview-body" data-flow="center"><p class="sw-preview-note"><span class="sw-preview-spin" aria-hidden="true"></span>正在取文件…</p></div>
 </main>
-<script src="/markdown.js"></script><script src="/channel-preview.js"></script>
+<script src="/dom-util.js"></script><script src="/markdown.js"></script><script src="/channel-preview.js"></script>
 </body></html>`
 }
 

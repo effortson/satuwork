@@ -25,9 +25,13 @@ var SatuCore = (() => {
     CHAT_ALIVE_MS: () => CHAT_ALIVE_MS,
     CHAT_IDLE_RETRY_MS: () => CHAT_IDLE_RETRY_MS,
     CHAT_RETRY_MAX: () => CHAT_RETRY_MAX,
+    PREVIEW_DOC_EXT: () => PREVIEW_DOC_EXT,
+    PREVIEW_TEXT_EXT: () => PREVIEW_TEXT_EXT,
+    PREVIEW_WEB_KIND: () => PREVIEW_WEB_KIND,
     ROSTER_BACKOFF: () => ROSTER_BACKOFF,
     SATU_TZ: () => SATU_TZ,
     UPLOAD_LEADS: () => UPLOAD_LEADS,
+    agoText: () => agoText,
     aliveLongEnough: () => aliveLongEnough,
     applyRosterEvent: () => applyRosterEvent,
     assignSlice: () => assignSlice,
@@ -36,6 +40,8 @@ var SatuCore = (() => {
     callDetail: () => callDetail,
     chatRetryDelay: () => chatRetryDelay,
     classifyStreamStatus: () => classifyStreamStatus,
+    cmdMatches: () => cmdMatches,
+    commandQueryAt: () => commandQueryAt,
     companyIdOfPath: () => companyIdOfPath,
     connectorIdOfPath: () => connectorIdOfPath,
     createGatewayClient: () => createGatewayClient,
@@ -46,13 +52,20 @@ var SatuCore = (() => {
     dict: () => dict,
     errText: () => errText,
     esc: () => esc,
+    extOf: () => extOf,
+    fileCands: () => fileCands,
+    fileEdgeOk: () => fileEdgeOk,
+    fileHits: () => fileHits,
+    fmtFileSize: () => fmtFileSize,
     fmtTime: () => fmtTime,
     fmtTokens: () => fmtTokens,
     fold: () => fold,
     insertEvent: () => insertEvent,
     isShot: () => isShot,
+    knownFiles: () => knownFiles,
     machineIdOfPath: () => machineIdOfPath,
     maxSeqOf: () => maxSeqOf,
+    mentionQueryAt: () => mentionQueryAt,
     mergeChatPage: () => mergeChatPage,
     mergePending: () => mergePending,
     messageImages: () => messageImages,
@@ -61,12 +74,12 @@ var SatuCore = (() => {
     messageText: () => messageText,
     money: () => money,
     newSum: () => newSum,
+    parseCommand: () => parseCommand,
+    previewKindOf: () => previewKindOf,
     progressOf: () => progressOf,
     refreshSum: () => refreshSum,
     resultLine: () => resultLine,
     rosterRetryDelay: () => rosterRetryDelay,
-    runEventStream: () => runEventStream,
-    sessionIdOfPath: () => sessionIdOfPath,
     settleDot: () => settleDot,
     splitUploads: () => splitUploads,
     sseEvents: () => sseEvents,
@@ -370,7 +383,7 @@ var SatuCore = (() => {
     员工环境: "Member environments",
     运行机器: "Runtime machine",
     运行环境: "Runtime",
-    // 右栏的另一屏：席位工作区里的文件树（见 chat.js 的 workspacePanel）。
+    // 右栏的另一屏：席位工作区里的文件树（见 chat-workspace.js 的 workspacePanel）。
     工作区文件: "Workspace files",
     收起右栏: "Collapse panel",
     列不出来: "Could not list it",
@@ -1044,11 +1057,11 @@ var SatuCore = (() => {
     "实例还在上线，接上之后就能发消息…": "The instance is still starting — you can send once it connects…",
     "实例还在上线，这条还发不出去；等它接上再发": "The instance is still starting, so this message cannot be sent yet — try again once it connects",
     // 按下发送时还没拿到会话：那一下同时把「重新拿会话」和「重连那条流」都叫醒了，
-    // 所以话是「正在接回来」，不是让人干等（见 chat.js 的 sendChat）。
+    // 所以话是「正在接回来」，不是让人干等（见 chat-composer.js 的 sendChat）。
     "还没接上席位，这条先挂着——接上就自动发出去": "Not connected to the seat yet — this message is held and will be sent automatically once the connection is back",
     "实例还没接上，这会儿发不出去": "The instance is not connected — messages cannot be sent right now",
     "实例还没接上，等一会儿再试，或者重新部署一次": "Still cannot reach the instance — try again in a moment, or redeploy",
-    // 退避认输之后那一句。旁边跟着一颗「重新连接」按钮（见 chat.js 的
+    // 退避认输之后那一句。旁边跟着一颗「重新连接」按钮（见 chat-page.js 的
     // runtimeDownBanner），所以话里不再叫人去刷新整页——刷新会把草稿和附件一起丢掉。
     // 席位换版那几秒回绝新消息时，bot 原样送回来的那一句（见 bot/src/agent/index.ts 的
     // QUIET_MESSAGE）。服务端只发中文，这里翻一次，英文界面才不会突然冒出一句中文。
@@ -1543,6 +1556,24 @@ var SatuCore = (() => {
     if (!n) return "—";
     return n >= 1e6 ? `${Math.floor(n / 1e6)}M` : `${Math.round(n / 1e3)}K`;
   }
+  function fmtFileSize(n, fallback = "") {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return fallback;
+    if (x < 1024) return x + " B";
+    if (x < 1024 * 1024) return (x / 1024).toFixed(1) + " KB";
+    return (x / 1024 / 1024).toFixed(1) + " MB";
+  }
+  function agoText(locale, ms, seconds = false) {
+    if (seconds) {
+      const sec = Math.floor(ms / 1e3);
+      if (sec < 60) return t(locale, `${sec} 秒前`, `${sec}s ago`);
+    }
+    const m = Math.floor(ms / 6e4);
+    if (m < 1) return t(locale, "刚刚", "just now");
+    if (m < 60) return t(locale, `${m} 分钟前`, `${m} min ago`);
+    if (m < 60 * 24) return t(locale, `${Math.floor(m / 60)} 小时前`, `${Math.floor(m / 60)} h ago`);
+    return t(locale, `${Math.floor(m / 1440)} 天前`, `${Math.floor(m / 1440)} d ago`);
+  }
 
   // core/src/paths.ts
   function segAfter(p, prefix) {
@@ -1563,10 +1594,6 @@ var SatuCore = (() => {
   }
   function userIdOfPath(p) {
     return segAfter(p, "/users/");
-  }
-  function sessionIdOfPath(p) {
-    if (typeof p === "string" && p.startsWith("/audit/summary/")) return "";
-    return segAfter(p, "/audit/");
   }
   function auditItemIdOfPath(p) {
     return segAfter(p, "/audit/summary/");
@@ -2299,19 +2326,22 @@ var SatuCore = (() => {
   }
 
   // core/src/chat/sse.ts
-  async function* sseEvents(reader, stop = () => false) {
+  async function* sseEvents(reader, stop = () => false, hooks = {}) {
     const decoder = new TextDecoder();
     let buf = "";
     while (!stop()) {
       const { done, value } = await reader.read();
       if (done) return;
-      buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      if (hooks.onChunk && hooks.onChunk() === false) return;
+      buf = (buf + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+      let sawData = false;
       let idx;
       while ((idx = buf.indexOf("\n\n")) >= 0) {
         const frame = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
         for (const line of frame.split("\n")) {
           if (!line.startsWith("data: ")) continue;
+          sawData = true;
           let ev;
           try {
             ev = JSON.parse(line.slice(6));
@@ -2321,7 +2351,149 @@ var SatuCore = (() => {
           yield ev;
         }
       }
+      if (hooks.onBatch) hooks.onBatch(sawData);
     }
+  }
+
+  // core/src/chat/files.ts
+  function knownFiles(blocks) {
+    const map = /* @__PURE__ */ new Map();
+    const add = (f) => {
+      if (!f || !f.path || map.has(f.path)) return;
+      map.set(f.path, { path: f.path, name: f.name || f.path.split("/").pop() || f.path });
+    };
+    for (const b of blocks || []) {
+      for (const f of b.files || []) add(f);
+      for (const r of b.refs || []) if (r && r.kind === "file") add(r);
+      for (const x of b.tools || []) {
+        for (const f of x.files || []) add(f);
+        for (const f of x.refs || []) add(f);
+      }
+    }
+    return map;
+  }
+  var FILE_EXT_RE = /\.[A-Za-z0-9]{1,8}$/;
+  function fileCands(known) {
+    const byBase = /* @__PURE__ */ new Map();
+    for (const f of known.values()) {
+      const base = f.path.split("/").pop() || f.path;
+      byBase.set(base, byBase.has(base) ? null : f);
+    }
+    const out = [];
+    for (const f of known.values()) if (f.path.includes("/")) out.push({ needle: f.path, file: f });
+    for (const [base, f] of byBase) if (f && FILE_EXT_RE.test(base)) out.push({ needle: base, file: f });
+    return out.sort((a, b) => b.needle.length - a.needle.length);
+  }
+  function fileHits(text, cands) {
+    const src = String(text == null ? "" : text);
+    if (!src || !cands || !cands.length) return [];
+    const hits = [];
+    for (const c of cands) {
+      let from = 0;
+      for (; ; ) {
+        const at = src.indexOf(c.needle, from);
+        if (at < 0) break;
+        const end = at + c.needle.length;
+        from = end;
+        if (!fileEdgeOk(src, at, end)) continue;
+        if (hits.some((h) => at < h.end && h.start < end)) continue;
+        hits.push({ start: at, end, file: c.file });
+      }
+    }
+    return hits.sort((a, b) => a.start - b.start);
+  }
+  function fileEdgeOk(src, start, end) {
+    const before = start > 0 ? src[start - 1] : "";
+    const after = end < src.length ? src[end] : "";
+    if (before && /[\w./\\-]/.test(before)) return false;
+    if (after && /[\w/\\-]/.test(after)) return false;
+    if (after === "." && /[A-Za-z0-9]/.test(src[end + 1] || "")) return false;
+    return true;
+  }
+
+  // core/src/chat/commands.ts
+  function mentionQueryAt(value, pos) {
+    const before = value.slice(0, pos);
+    const at = before.lastIndexOf("@");
+    if (at < 0) return null;
+    const prev = at > 0 ? before[at - 1] : " ";
+    if (!/[\s(（]/.test(prev)) return null;
+    const word = before.slice(at + 1);
+    if (/[\s\n]/.test(word)) return null;
+    return { at, q: word };
+  }
+  function commandQueryAt(value, pos) {
+    const before = value.slice(0, pos);
+    if (!/^\/[a-zA-Z-]*$/.test(before)) return null;
+    return { q: before.slice(1).toLowerCase() };
+  }
+  function cmdMatches(q, commands) {
+    return commands.filter((c) => !q || c.name.startsWith(q));
+  }
+  function parseCommand(text, commands) {
+    const raw = String(text || "").trim();
+    const first = raw.split(/\s+/)[0];
+    if (!/^\/[a-zA-Z-]+$/.test(first)) return null;
+    const hit = commands.find((c) => c.name === first.slice(1).toLowerCase());
+    if (!hit) return { unknown: first };
+    if (raw !== first) return { cmd: hit, extra: true, arg: raw.slice(first.length).trim() };
+    return { cmd: hit };
+  }
+
+  // core/src/chat/preview.ts
+  var PREVIEW_TEXT_EXT = /* @__PURE__ */ new Set([
+    "txt",
+    "log",
+    "csv",
+    "tsv",
+    "json",
+    "yml",
+    "yaml",
+    "xml",
+    "ini",
+    "toml",
+    "conf",
+    "js",
+    "mjs",
+    "cjs",
+    "ts",
+    "tsx",
+    "jsx",
+    "css",
+    "scss",
+    "sh",
+    "bash",
+    "zsh",
+    "py",
+    "rb",
+    "go",
+    "rs",
+    "java",
+    "c",
+    "h",
+    "cpp",
+    "sql",
+    "env",
+    "gitignore",
+    "diff",
+    "patch"
+  ]);
+  var PREVIEW_DOC_EXT = /* @__PURE__ */ new Set(["docx", "xlsx", "xlsm", "pptx", "doc", "xls", "ppt", "rtf", "odt", "ods", "odp"]);
+  var PREVIEW_WEB_KIND = { docx: "docx", xlsx: "xlsx", xlsm: "xlsx", pptx: "pptx" };
+  function extOf(name) {
+    const base = String(name || "").split("/").pop() || "";
+    const i = base.lastIndexOf(".");
+    return i > 0 ? base.slice(i + 1).toLowerCase() : "";
+  }
+  function previewKindOf(name, type) {
+    const ext = extOf(name);
+    if (String(type || "").startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svg"].includes(ext)) return "image";
+    if (ext === "pdf") return "pdf";
+    if (ext === "md" || ext === "markdown") return "markdown";
+    if (ext === "html" || ext === "htm") return "html";
+    if (PREVIEW_TEXT_EXT.has(ext)) return "text";
+    if (PREVIEW_DOC_EXT.has(ext)) return "doc";
+    return "";
   }
 
   // core/src/chat/backoff.ts
@@ -2344,94 +2516,10 @@ var SatuCore = (() => {
     return "warming";
   }
 
-  // core/src/chat/stream.ts
-  function defaultSleep(ms, signal) {
-    return new Promise((resolve) => {
-      if (signal.aborted) return resolve();
-      const t2 = setTimeout(() => {
-        signal.removeEventListener("abort", onAbort);
-        resolve();
-      }, ms);
-      const onAbort = () => {
-        clearTimeout(t2);
-        resolve();
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-  function runEventStream(opts) {
-    const ac = new AbortController();
-    const now = opts.now || (() => Date.now());
-    const sleep = opts.sleep || defaultSleep;
-    const status = (s) => {
-      if (!ac.signal.aborted || s.kind === "closed") opts.onStatus?.(s);
-    };
-    async function loop() {
-      let attempt = 0;
-      while (!ac.signal.aborted) {
-        const tok = opts.token();
-        let res;
-        try {
-          res = await opts.fetch(opts.url(opts.cursor()), {
-            headers: { accept: "text/event-stream", ...tok ? { authorization: "Bearer " + tok } : {} },
-            signal: ac.signal
-          });
-        } catch {
-          if (ac.signal.aborted) break;
-          attempt = await backoff(attempt);
-          continue;
-        }
-        const verdict = classifyStreamStatus(res.status, Boolean(res.body));
-        if (verdict === "dead") {
-          const message = await res.text().catch(() => "") || "实例还没上线";
-          status({ kind: "dead", status: res.status, message });
-          return;
-        }
-        if (verdict === "warming") {
-          attempt = await backoff(attempt);
-          continue;
-        }
-        status({ kind: "open" });
-        const openedAt = now();
-        try {
-          for await (const ev of sseEvents(res.body.getReader(), () => ac.signal.aborted)) {
-            if (ac.signal.aborted) break;
-            opts.onEvent(ev);
-          }
-        } catch {
-        }
-        if (ac.signal.aborted) break;
-        attempt = await backoff(aliveLongEnough(openedAt, now()) ? 0 : attempt);
-      }
-      status({ kind: "closed" });
-    }
-    async function backoff(attempt) {
-      if (attempt >= CHAT_RETRY_MAX) {
-        status({ kind: "idle", attempt });
-        await sleep(CHAT_IDLE_RETRY_MS, ac.signal);
-        return attempt;
-      }
-      status({ kind: "warming", attempt });
-      await sleep(chatRetryDelay(attempt), ac.signal);
-      return attempt + 1;
-    }
-    const done = loop().catch(() => void 0);
-    return {
-      close() {
-        if (!ac.signal.aborted) ac.abort();
-      },
-      done
-    };
-  }
-
   // core/src/markdown/render.ts
   function createMarkdown(opts = {}) {
     function L(zh) {
       return opts.t ? opts.t(zh) : zh;
-    }
-    const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-    function esc2(s) {
-      return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESCAPES[c]);
     }
     const MARK = "";
     const RE_HOLE = /\uE000(\d+)\uE000/g;
@@ -2559,10 +2647,10 @@ var SatuCore = (() => {
     const RE_BARE_URL = /(^|[\s(（【「])(https?:\/\/[^\s<>()（）【】「」]+[^\s<>()（）【】「」.,;:!?，。；：！？])/g;
     function mathNode(tex, display) {
       const tag = display ? "div" : "span";
-      return "<" + tag + ' class="sw-math' + (display ? " sw-math-block" : "") + '" data-md="math" data-display="' + (display ? "1" : "0") + '" data-tex="' + esc2(tex) + '">' + // 兜底文字里**不带 $ 记号**。KaTeX 是异步拉的，带记号的话每个公式在渲染完成前都
+      return "<" + tag + ' class="sw-math' + (display ? " sw-math-block" : "") + '" data-md="math" data-display="' + (display ? "1" : "0") + '" data-tex="' + esc(tex) + '">' + // 兜底文字里**不带 $ 记号**。KaTeX 是异步拉的，带记号的话每个公式在渲染完成前都
       // 会先闪一下 `$$…$$`；不带的话看到的就是一行 TeX，CSS 已经把它标成等宽淡色，
       // 一眼就知道是「还没排版的公式」而不是正文写坏了。
-      esc2(tex) + "</" + tag + ">";
+      esc(tex) + "</" + tag + ">";
     }
     function inline(src, ctx) {
       const store = ctx.store;
@@ -2570,7 +2658,7 @@ var SatuCore = (() => {
       let s = String(src == null ? "" : src);
       s = s.replace(
         RE_INLINE_CODE,
-        (m, ticks, body) => hold(store, '<code data-md="inline-code">' + esc2(body.replace(/^ ([\s\S]*) $/, "$1")) + "</code>")
+        (m, ticks, body) => hold(store, '<code data-md="inline-code">' + esc(body.replace(/^ ([\s\S]*) $/, "$1")) + "</code>")
       );
       s = s.replace(RE_TEX_PAREN, (m, tex) => hold(store, mathNode(tex, false)));
       s = s.replace(RE_TEX_BRACKET, (m, tex) => hold(store, mathNode(tex, true)));
@@ -2580,7 +2668,7 @@ var SatuCore = (() => {
       });
       s = s.replace(RE_IMG, (m, alt, url, title) => {
         const href = safeUrl(url, "img");
-        if (!href) return hold(store, esc2(alt));
+        if (!href) return hold(store, esc(alt));
         if (/^https?:\/\//i.test(href) && !loadedImages.has(href)) {
           let host = "";
           try {
@@ -2589,34 +2677,34 @@ var SatuCore = (() => {
           }
           return hold(
             store,
-            '<button type="button" class="sw-md-remote-img" data-md="remote-image" data-md-act="load-image" data-src="' + esc2(href) + '" data-alt="' + esc2(alt) + '" title="' + esc2(href) + '">' + esc2(L("点击加载图片")) + (host ? "（" + esc2(host) + "）" : "") + (alt ? "：" + esc2(alt) : "") + "</button>"
+            '<button type="button" class="sw-md-remote-img" data-md="remote-image" data-md-act="load-image" data-src="' + esc(href) + '" data-alt="' + esc(alt) + '" title="' + esc(href) + '">' + esc(L("点击加载图片")) + (host ? "（" + esc(host) + "）" : "") + (alt ? "：" + esc(alt) : "") + "</button>"
           );
         }
         return hold(
           store,
-          '<img data-md="image" src="' + esc2(href) + '" alt="' + esc2(alt) + '"' + (title ? ' title="' + esc2(title) + '"' : "") + ' loading="lazy">'
+          '<img data-md="image" src="' + esc(href) + '" alt="' + esc(alt) + '"' + (title ? ' title="' + esc(title) + '"' : "") + ' loading="lazy">'
         );
       });
       s = s.replace(RE_LINK, (m, text, url, title) => {
         const href = safeUrl(url, "a");
-        const label = depth > 3 ? esc2(text) : inline(text, { store, depth: depth + 1 });
+        const label = depth > 3 ? esc(text) : inline(text, { store, depth: depth + 1 });
         if (!href) return hold(store, label);
         return hold(
           store,
-          '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow"' + (title ? ' title="' + esc2(title) + '"' : "") + ">" + label + "</a>"
+          '<a data-md="link" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow"' + (title ? ' title="' + esc(title) + '"' : "") + ">" + label + "</a>"
         );
       });
       s = s.replace(RE_AUTOLINK, (m, url) => {
         const href = safeUrl(url, "a");
         if (!href) return m;
-        return hold(store, '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc2(url) + "</a>");
+        return hold(store, '<a data-md="link" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc(url) + "</a>");
       });
       s = s.replace(RE_BARE_URL, (m, pre, url) => {
         const href = safeUrl(url, "a");
         if (!href) return m;
-        return pre + hold(store, '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc2(url) + "</a>");
+        return pre + hold(store, '<a data-md="link" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc(url) + "</a>");
       });
-      s = esc2(s);
+      s = esc(s);
       s = s.replace(/\*\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*\*/g, '<strong data-md="strong"><em>$1</em></strong>');
       s = s.replace(/(\*\*|__)(?!\s)([\s\S]+?)(?<!\s)\1/g, '<strong data-md="strong">$2</strong>');
       s = s.replace(/~~(?!\s)([\s\S]+?)(?<!\s)~~/g, '<del data-md="strike">$1</del>');
@@ -2650,17 +2738,17 @@ var SatuCore = (() => {
       return n;
     }
     function toolBtn(act, label) {
-      return '<button type="button" class="sw-tool" data-md-act="' + act + '" title="' + esc2(label) + '">' + esc2(label) + "</button>";
+      return '<button type="button" class="sw-tool" data-md-act="' + act + '" title="' + esc(label) + '">' + esc(label) + "</button>";
     }
     function codeFigure(lang, code, ctx) {
       const label = String(lang || "").trim().toLowerCase().split(/\s+/)[0];
       if (label === "mermaid") return mermaidFigure(code);
       if (label === "math" || label === "latex" || label === "tex") return mathNode(code.trim(), true);
       const shown = label || "text";
-      return '<figure class="sw-code" data-md="code-block" data-lang="' + esc2(shown) + '"><figcaption class="sw-code-head"><span class="sw-code-lang">' + esc2(shown) + '</span><span class="sw-code-tools">' + toolBtn("copy", L("复制")) + toolBtn("download", L("下载")) + '</span></figcaption><pre class="sw-code-body"><code class="language-' + esc2(shown) + '">' + esc2(code.replace(/\n$/, "")) + "</code></pre></figure>";
+      return '<figure class="sw-code" data-md="code-block" data-lang="' + esc(shown) + '"><figcaption class="sw-code-head"><span class="sw-code-lang">' + esc(shown) + '</span><span class="sw-code-tools">' + toolBtn("copy", L("复制")) + toolBtn("download", L("下载")) + '</span></figcaption><pre class="sw-code-body"><code class="language-' + esc(shown) + '">' + esc(code.replace(/\n$/, "")) + "</code></pre></figure>";
     }
     function mermaidFigure(code) {
-      return '<figure class="sw-mermaid" data-md="mermaid" data-view="diagram"><figcaption class="sw-code-head"><span class="sw-code-lang">mermaid</span><span class="sw-code-tools">' + toolBtn("mermaid-view", L("源码")) + toolBtn("copy", L("复制")) + toolBtn("mermaid-svg", L("下载")) + '</span></figcaption><div class="sw-mermaid-canvas" data-state="pending"><span class="sw-mermaid-wait">' + esc2(L("正在画图…")) + '</span></div><pre class="sw-mermaid-src"><code class="language-mermaid">' + esc2(code.replace(/\n$/, "")) + "</code></pre></figure>";
+      return '<figure class="sw-mermaid" data-md="mermaid" data-view="diagram"><figcaption class="sw-code-head"><span class="sw-code-lang">mermaid</span><span class="sw-code-tools">' + toolBtn("mermaid-view", L("源码")) + toolBtn("copy", L("复制")) + toolBtn("mermaid-svg", L("下载")) + '</span></figcaption><div class="sw-mermaid-canvas" data-state="pending"><span class="sw-mermaid-wait">' + esc(L("正在画图…")) + '</span></div><pre class="sw-mermaid-src"><code class="language-mermaid">' + esc(code.replace(/\n$/, "")) + "</code></pre></figure>";
     }
     function splitRow(line) {
       const trimmed = line.trim().replace(/^\|/, "").replace(/\|[ \t]*$/, "");
@@ -2873,7 +2961,7 @@ var SatuCore = (() => {
       const ctx = { store: [], depth: 0 };
       return blocks(text.replace(/\r\n?/g, "\n").split("\n"), ctx);
     }
-    return { render, splitBlocks, healStream, esc: esc2, safeUrl, loadedImages };
+    return { render, splitBlocks, healStream, esc, safeUrl, loadedImages };
   }
   return __toCommonJS(index_exports);
 })();

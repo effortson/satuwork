@@ -130,7 +130,7 @@ function makeDom(stubIds = [], copied = []) {
   const stub = { innerHTML: '', value: '', textContent: '', classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, getAttribute: () => null, focus() {}, style: {} }
   const stubs = new Map(stubIds.map((id) => [id, countingStub()]))
   // execCommand('copy') 复制的是「当前选中的那个东西」，所以垫片得真的记住 select()
-  // 选中了谁。没有这一点，render.js 里那条兜底复制（非安全上下文下唯一能用的一条，
+  // 选中了谁。没有这一点，dom-util.js 里那条兜底复制（非安全上下文下唯一能用的一条，
   // 而内网 http 部署就是那个常态）在测里根本跑不起来，只能假装它还在。
   let selected = null
   const body = {
@@ -187,11 +187,12 @@ export function uiSource(uiDir) {
   if (!parts.length) throw new Error(`在 ${uiDir}/index.html 里找不到 data-app-part 脚本`)
   /**
    * core.js 排在最前面：它不是分片（不带 data-app-part，是 core/src 打出来的产物），但
-   * state.js / i18n.js 里的转接（`const esc = SatuCore.esc` 这类）一跑就要它在。线上它也是
+   * prefs.js / state.js 里的转接（`const esc = SatuCore.esc` 这类）一跑就要它在。线上它也是
    * index.html 里第一个普通脚本。它是 `var SatuCore = (() => …)()`，塞进同一个函数体里照样
-   * 是个局部变量，后面的分片都看得见。
+   * 是个局部变量，后面的分片都看得见。dom-util.js 同理：也不是分片（渠道预览页也装它），
+   * 分片里的复制、存文件直接调它。markdown.js 不装——垫片里的对话一直是不走 Markdown 的那条路。
    */
-  return ['core.js', ...parts].map((f) => readFileSync(join(uiDir, f), 'utf8')).join('\n')
+  return ['core.js', 'dom-util.js', ...parts].map((f) => readFileSync(join(uiDir, f), 'utf8')).join('\n')
 }
 
 /**

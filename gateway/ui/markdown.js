@@ -18,7 +18,7 @@
  * SRI 摘要，内容对不上一律当拉不到（见 LIBS）。
  *
  * CDN 地址跟着 Gateway 的 `GATEWAY_UI_CDN` 走（内网部署时指到自己的镜像）：Gateway 换了
- * 镜像就在页面里插一条 `<meta name="satu-cdn">`，这里读它；没有就用 jsdelivr。CSP 的
+ * 镜像就在页面里插一条 `<meta name="satu-cdn">`，dom-util.js 的 uiCdn() 读它；没有就用 jsdelivr。CSP 的
  * script-src 只放行 LIBS 里那几个「包@版本/」目录（见 gateway/src/ui-cdn.ts），**在这里
  * 加库或改版本要同时改那张表**，否则浏览器把脚本挡掉，表现和「CDN 拉不到」一模一样。
  */
@@ -42,11 +42,7 @@
     return typeof window.t === 'function' ? window.t(zh) : zh
   }
 
-  const CDN = (function () {
-    const meta = document.querySelector && document.querySelector('meta[name="satu-cdn"]')
-    const v = meta && meta.getAttribute('content')
-    return v ? v.replace(/\/+$/, '') : 'https://cdn.jsdelivr.net/npm'
-  })()
+  // CDN 根由 dom-util.js 的 uiCdn() 读 meta。用到时才问：e2e 的 markdown.mjs 只装这一个文件。
   const loaded = {}
 
   /**
@@ -85,7 +81,7 @@
 
   /** `crossorigin` 是 SRI 的前提：跨源的响应不按 CORS 取，浏览器读不到正文也就核不了。 */
   function loadScript(lib) {
-    const src = CDN + lib.path
+    const src = uiCdn() + lib.path
     if (!loaded[src]) {
       loaded[src] = new Promise((ok, no) => {
         const el = document.createElement('script')
@@ -102,7 +98,7 @@
   }
 
   function loadStyle(lib) {
-    const href = CDN + lib.path
+    const href = uiCdn() + lib.path
     if (loaded[href]) return
     const el = document.createElement('link')
     el.rel = 'stylesheet'
@@ -130,7 +126,7 @@
 
   function mermaidLib() {
     if (!loaded.__mermaid) {
-      const src = CDN + LIBS.mermaid.path
+      const src = uiCdn() + LIBS.mermaid.path
       /**
        * **动态 `import()` 挂不上 integrity**——语法里没有这一格。
        *
@@ -352,7 +348,8 @@
   }
 
   // ── 代码块 / 表格 / Mermaid 上那几个按钮 ─────────────────────────────
-  function copyText(text, btn) {
+  /** 复制走 dom-util.js 的 copyText（带 execCommand 兜底）；复制成了按钮上闪一下「已复制」。 */
+  function copyAndMark(text, btn) {
     const done = () => {
       if (!btn) return
       const old = btn.getAttribute('data-label') || btn.textContent
@@ -364,31 +361,13 @@
         btn.removeAttribute('data-ok')
       }, 1400)
     }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, () => {})
-      return
-    }
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.cssText = 'position:fixed;opacity:0'
-    document.body.appendChild(ta)
-    ta.select()
-    try {
-      document.execCommand('copy')
-      done()
-    } catch {}
-    ta.remove()
+    void copyText(text).then((ok) => {
+      if (ok) done()
+    })
   }
 
   function download(name, text, type) {
-    const url = URL.createObjectURL(new Blob([text], { type: type || 'text/plain;charset=utf-8' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = name
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    saveBlob(new Blob([text], { type: type || 'text/plain;charset=utf-8' }), name)
   }
 
   const EXT = { javascript: 'js', typescript: 'ts', python: 'py', bash: 'sh', shell: 'sh', markdown: 'md', yaml: 'yml', text: 'txt' }
@@ -419,7 +398,7 @@
 
       if (act === 'copy') {
         const code = fig.querySelector('.sw-mermaid-src code, pre code')
-        copyText(code ? code.textContent || '' : '', btn)
+        copyAndMark(code ? code.textContent || '' : '', btn)
         return
       }
       if (act === 'download') {
@@ -437,7 +416,7 @@
       if (act === 'mermaid-svg') {
         const svg = fig.querySelector('.sw-mermaid-canvas svg')
         if (svg) download('diagram.svg', svg.outerHTML, 'image/svg+xml;charset=utf-8')
-        else copyText((fig.querySelector('.sw-mermaid-src code') || {}).textContent || '', btn)
+        else copyAndMark((fig.querySelector('.sw-mermaid-src code') || {}).textContent || '', btn)
         return
       }
       if (act === 'copy-table') {
@@ -445,7 +424,7 @@
         for (const tr of fig.querySelectorAll('tr')) {
           rows.push(Array.from(tr.children, (td) => (td.textContent || '').trim()).join('\t'))
         }
-        copyText(rows.join('\n'), btn)
+        copyAndMark(rows.join('\n'), btn)
       }
     },
     true,

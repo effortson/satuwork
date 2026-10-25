@@ -1,6 +1,7 @@
 /**
  * 转义、金额与时间。原先在 gateway/ui/state.js 里，都是纯函数：不发请求、不碰 DOM。
  */
+import { t } from './i18n/t.ts'
 
 /** HTML 转义。移动端用不上它（RN 没有 innerHTML），留在这儿是因为 Web 的每一页都在用。 */
 export function esc(s: unknown): string {
@@ -113,4 +114,34 @@ export function fmtTokens(n: number | null | undefined): string {
   // 百万档只给整数，**向下取**：gpt-6.1-sol 的窗口是 1,050,000，带一位小数会进位成
   // 「1.1M」，四舍五入也会把 1.5M 写成 2M——都是把窗口往大了说。宁可说小，不说大。
   return n >= 1000000 ? `${Math.floor(n / 1000000)}M` : `${Math.round(n / 1000)}K`
+}
+
+/**
+ * 字节数 → `512 B` / `1.5 KB` / `3.2 MB`：固定一位小数，最大到 MB。不是有限数时回 `fallback`——
+ * 几个调用点要的兜底不一样（空串、`—`），所以由它们给。
+ *
+ * 和「按大小挑单位、小数位跟着变」的那一种（pages-machines.js 的 fmtBytes）不是一回事，别并。
+ */
+export function fmtFileSize(n: unknown, fallback = ''): string {
+  const x = Number(n)
+  if (!Number.isFinite(x)) return fallback
+  if (x < 1024) return x + ' B'
+  if (x < 1024 * 1024) return (x / 1024).toFixed(1) + ' KB'
+  return (x / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+/**
+ * 「多久之前」：`ms` 是过去了多少毫秒。默认分钟起步（不到一分钟说「刚刚」）；`seconds` 为真时
+ * 一分钟以内报秒——心跳 30 秒一轮的地方，只报到分钟就看不出刚刚断没断。
+ */
+export function agoText(locale: Locale, ms: number, seconds = false): string {
+  if (seconds) {
+    const sec = Math.floor(ms / 1000)
+    if (sec < 60) return t(locale, `${sec} 秒前`, `${sec}s ago`)
+  }
+  const m = Math.floor(ms / 60000)
+  if (m < 1) return t(locale, '刚刚', 'just now')
+  if (m < 60) return t(locale, `${m} 分钟前`, `${m} min ago`)
+  if (m < 60 * 24) return t(locale, `${Math.floor(m / 60)} 小时前`, `${Math.floor(m / 60)} h ago`)
+  return t(locale, `${Math.floor(m / 1440)} 天前`, `${Math.floor(m / 1440)} d ago`)
 }

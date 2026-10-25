@@ -12,10 +12,7 @@ function ownerOverviewPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('概览')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('平台公司、用户、已配置供应商，以及日常 / utility 模型。')}</p>
-        </div>
+        ${pageHead(t('概览'), t('平台公司、用户、已配置供应商，以及日常 / utility 模型。'))}
         ${flashes()}
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--space-3);">
           <div class="satu-stat">
@@ -551,10 +548,7 @@ function modelsPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('模型配置')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('目录来自 pi-ai；密钥在供应商页配置。密钥留在 Gateway，不会出现在本机磁盘或环境。')}</p>
-        </div>
+        ${pageHead(t('模型配置'), t('目录来自 pi-ai；密钥在供应商页配置。密钥留在 Gateway，不会出现在本机磁盘或环境。'))}
         ${flashes()}
         <div class="gw-roles">
           ${rolePanel('daily', t('日常任务模型'), t('用于日常工作。'))}
@@ -579,7 +573,7 @@ function modelsPage() {
             <div class="satu-modelhead">
               <span>${t('模型')}</span><span>${t('供应商')}</span><span>${t('能力')}</span><span>${t('上下文 / 输出')}</span><span>${t('单价 / 1M tok', 'Price / 1M tok')}<br><span style="font-weight: 400; text-transform: none;">${t('输入 / 输出 · 缓存读 / 写', 'in / out · cache read / write')}</span></span><span>${t(`倍率单价 ×${mult}`, `Marked-up ×${mult}`)}</span><span></span>
             </div>
-            ${modelRows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('选择已配置的供应商查看模型。')}</div>`}
+            ${modelRows || emptyBox(t('选择已配置的供应商查看模型。'))}
           </div>
         </div>
       </div>
@@ -866,7 +860,7 @@ function chargeTable(scope, forOrg) {
       </div>
       <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
         <div class="satu-billhead" style="grid-template-columns: ${cols};" data-tt-title="${scope === 'platform' ? 3 : 2}">${head}</div>
-        ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.chargesLoading ? t('加载中…') : t('这个范围里还没有计费记录。')}</div>`}
+        ${rows || emptyBox(state.chargesLoading ? t('加载中…') : t('这个范围里还没有计费记录。'))}
       </div>
       ${
         // 只有真有第二页时才画翻页——不然就是两颗永远点不动的按钮（同公司那几张表）。
@@ -1227,10 +1221,7 @@ function statsPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('统计')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('各公司的 token 消耗。「已扣」是账本上真实扣掉的钱（写行那一刻定价，改价不追溯）；「原价」是它除以当时的倍率倒推的。上面那两张金额卡是模型、网页工具、连接器三条路的合计，下面几张表各只管自己那一条。', 'Token consumption per company. "Charged" is what the ledger actually deducted (priced when written; later price changes are not retroactive); "list" divides it back out by the multiplier of the day. The two amount cards sum all three paths — models, web tools and connectors — while each table below covers only its own.')}</p>
-        </div>
+        ${pageHead(t('统计'), t('各公司的 token 消耗。「已扣」是账本上真实扣掉的钱（写行那一刻定价，改价不追溯）；「原价」是它除以当时的倍率倒推的。上面那两张金额卡是模型、网页工具、连接器三条路的合计，下面几张表各只管自己那一条。', 'Token consumption per company. "Charged" is what the ledger actually deducted (priced when written; later price changes are not retroactive); "list" divides it back out by the multiplier of the day. The two amount cards sum all three paths — models, web tools and connectors — while each table below covers only its own.'))}
         ${flashes()}
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
           ${pill('today', t('今日'))}
@@ -1289,7 +1280,7 @@ function statsPage() {
             <div class="satu-stathead">
               <span>${t('公司')}</span><span>${t('调用')}</span><span>${t('输入')}</span><span>${t('输出')}</span><span>${t('总计')}</span><span>${t('原价')}</span><span>${t('已扣')}</span>
             </div>
-            ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。')}</div>`}
+            ${rows || emptyBox(state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。'))}
           </div>
         </div>
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">
@@ -1303,7 +1294,7 @@ function statsPage() {
             <div class="satu-stathead" style="grid-template-columns: 2fr 1fr 1fr 1fr 1fr;">
               <span>${t('后端')}</span><span>${t('搜索')}</span><span>${t('提取')}</span><span>${t('计费条数')}</span><span>${t('报价')}</span>
             </div>
-            ${webRows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.statsLoading ? t('统计中…') : t('这个时间段里没有网页调用。')}</div>`}
+            ${webRows || emptyBox(state.statsLoading ? t('统计中…') : t('这个时间段里没有网页调用。'))}
           </div>
         </div>
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">
@@ -1317,7 +1308,7 @@ function statsPage() {
             <div class="satu-stathead" style="grid-template-columns: 2fr 1fr 1fr;">
               <span>${t('连接器')}</span><span>${t('调用')}</span><span>${t('已扣')}</span>
             </div>
-            ${connRows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.statsLoading ? t('统计中…') : t('这个时间段里没有连接器调用。')}</div>`}
+            ${connRows || emptyBox(state.statsLoading ? t('统计中…') : t('这个时间段里没有连接器调用。'))}
           </div>
         </div>
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">
@@ -1326,7 +1317,7 @@ function statsPage() {
             <div class="satu-stathead" style="grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr 1fr;">
               <span>${t('模型')}</span><span>${t('调用')}</span><span>${t('输入')}</span><span>${t('输出')}</span><span>${t('总计')}</span><span>${t('原价')}</span><span>${t('已扣')}</span>
             </div>
-            ${modelRows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。')}</div>`}
+            ${modelRows || emptyBox(state.statsLoading ? t('统计中…') : t('这个时间段里没有调用。'))}
           </div>
         </div>
         ${chargeTable('platform')}
@@ -1410,9 +1401,7 @@ function providersPage() {
           <div class="satu-provhead">
             <span>${t('供应商')}</span><span>${t('模型')}</span><span>${t('状态')}</span><span>${t('密钥')}</span><span></span>
           </div>
-          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${
-            t('还没有配置供应商。点击「添加供应商」从目录里选一家并粘贴密钥，或者「添加自定义供应商」接一个自建端点。')
-          }</div>`}
+          ${rows || emptyBox(t('还没有配置供应商。点击「添加供应商」从目录里选一家并粘贴密钥，或者「添加自定义供应商」接一个自建端点。'))}
         </div>
       </div>
       ${addProviderModal()}
@@ -1494,7 +1483,7 @@ function providerModelsModal() {
         </div>
         ${state.providerError ? `<div class="gw-flash gw-flash-err">${esc(state.providerError)}</div>` : ''}
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg);">
-          ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有模型。')}</div>`}
+          ${rows || emptyBox(t('还没有模型。'))}
         </div>
         ${
           d
@@ -1539,10 +1528,7 @@ function companyPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner narrow">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('公司')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('名称、slug、联系人和访问地址。席位由系统管理员分配。')}</p>
-        </div>
+        ${pageHead(t('公司'), t('名称、slug、联系人和访问地址。席位由系统管理员分配。'))}
         ${flashes()}
         <form id="company-form" class="satu-panel" style="gap: var(--space-4);">
           <span class="satu-panel-title">${t('资料')}</span>
@@ -1669,11 +1655,7 @@ const MEMBER_STATUS = {
 
 function ago(ts) {
   if (!ts) return t('从未登录')
-  const m = Math.floor((Date.now() - ts) / 60000)
-  if (m < 1) return t('刚刚')
-  if (m < 60) return t(`${m} 分钟前`, `${m} min ago`)
-  if (m < 60 * 24) return t(`${Math.floor(m / 60)} 小时前`, `${Math.floor(m / 60)} h ago`)
-  return t(`${Math.floor(m / 1440)} 天前`, `${Math.floor(m / 1440)} d ago`)
+  return SatuCore.agoText(localeMode, Date.now() - ts)
 }
 
 function canBeStatus(member, key) {
@@ -1706,18 +1688,17 @@ function statCard(label, value) {
 function confirmModal() {
   const c = state.confirm
   if (!c) return ''
-  return `<div class="gw-modal-backdrop" data-act="confirm-cancel">
-    <div class="gw-modal" data-stop>
-      <div>
-        <h2 style="font-size: 20px; margin: 0 0 4px;">${esc(c.title)}</h2>
-        <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${esc(c.body)}</p>
-      </div>
-      <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
+  return modalBox({
+    close: 'confirm-cancel',
+    attrs: 'class="gw-modal" data-stop',
+    x: false,
+    title: esc(c.title),
+    sub: esc(c.body),
+    body: `<div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="confirm-cancel">${t('取消')}</button>
         <button type="button" class="btn btn-primary" data-act="confirm-ok">${esc(t(c.label))}</button>
-      </div>
-    </div>
-  </div>`
+      </div>`,
+  })
 }
 
 function secretModal() {
@@ -1756,16 +1737,13 @@ function inviteModal() {
         ? t('已复制')
         : t('再复制一次')
       : t('生成并复制链接')
-  return `<div class="gw-modal-backdrop" data-act="invite-close">
-    <form id="invite-form" class="gw-modal" style="max-width: 500px; max-height: 88vh; overflow-y: auto;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${t('邀请成员')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('生成一条一次性邀请链接，发给要加入的同事。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="invite-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
-      </div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
+  return modalBox({
+    close: 'invite-close',
+    tag: 'form',
+    attrs: 'id="invite-form" class="gw-modal" style="max-width: 500px; max-height: 88vh; overflow-y: auto;" data-stop',
+    title: t('邀请成员'),
+    sub: t('生成一条一次性邀请链接，发给要加入的同事。'),
+    body: `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
         <div class="field">
           <label for="iv-name">${t('姓名')}</label>
           <input class="input" id="iv-name" name="name" type="text" value="${esc(f.name)}" placeholder="${esc(t('受邀人姓名'))}" ${link ? 'disabled' : ''}>
@@ -1802,9 +1780,8 @@ function inviteModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="invite-close">${link ? t('完成') : t('取消')}</button>
         <button type="submit" class="btn btn-primary" style="min-width: 104px;" ${state.busy ? 'disabled' : ''}>${btn}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 function groupModal() {
@@ -1833,16 +1810,13 @@ function groupModal() {
       </button>`
     })
     .join('')
-  return `<div class="gw-modal-backdrop" data-act="group-close">
-    <form id="group-form" class="gw-modal" style="max-width: 460px; max-height: 88vh; overflow-y: auto;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${editing ? t('管理分组') : t('新建分组')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('分组用于批量授权与统计，成员可同时属于多个分组。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="group-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'group-close',
+    tag: 'form',
+    attrs: 'id="group-form" class="gw-modal" style="max-width: 460px; max-height: 88vh; overflow-y: auto;" data-stop',
+    title: editing ? t('管理分组') : t('新建分组'),
+    sub: t('分组用于批量授权与统计，成员可同时属于多个分组。'),
+    body: `<div class="field">
         <label for="gp-name">${t('分组名称')}</label>
         <input class="input" id="gp-name" name="name" type="text" required value="${esc(f.name)}" placeholder="${esc(t('例如：客服组'))}">
       </div>
@@ -1870,9 +1844,8 @@ function groupModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="group-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : editing ? t('保存') : t('创建分组')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 function editModal() {
@@ -1894,16 +1867,13 @@ function editModal() {
     )
     .join('')
   const hint = MEMBER_STATUS[f.status]?.hint || ''
-  return `<div class="gw-modal-backdrop" data-act="edit-close">
-    <form id="edit-member-form" class="gw-modal" style="max-width: 460px; max-height: 88vh; overflow-y: auto;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${t('编辑成员')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('修改角色与状态，或给 TA 发一条口令重置链接。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="edit-close">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
-      </div>
-      <div style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md);">
+  return modalBox({
+    close: 'edit-close',
+    tag: 'form',
+    attrs: 'id="edit-member-form" class="gw-modal" style="max-width: 460px; max-height: 88vh; overflow-y: auto;" data-stop',
+    title: t('编辑成员'),
+    sub: t('修改角色与状态，或给 TA 发一条口令重置链接。'),
+    body: `<div style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md);">
         <span class="satu-avatar" style="background: var(--color-accent-2-200); color: var(--color-accent-2-800);">${esc((member.name || member.email).slice(0, 1).toUpperCase())}</span>
         <div style="min-width: 0;">
           <div style="font-size: 14px; font-weight: 600;">${esc(member.name)}</div>
@@ -1945,9 +1915,8 @@ function editModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="edit-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 function memberRow(m) {
@@ -1995,7 +1964,7 @@ function memberRow(m) {
       }
       ${
         canManage && !isSelf
-          ? `<button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('更多操作'))}" data-menu-toggle data-act="menu-toggle" data-id="${esc(m.id)}">${svg(['M12 6h.01', 'M12 12h.01', 'M12 18h.01'], 16)}</button>`
+          ? `<button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('更多操作'))}" data-menu-toggle data-act="menu-toggle" data-id="${esc(m.id)}">${svg(KEBAB_ICON, 16)}</button>`
           : ''
       }
       ${menu}
@@ -2044,15 +2013,14 @@ function accountsPage() {
   const tab = state.accountsTab === 'groups' ? 'groups' : 'members'
   const headerAct = tab === 'members' ? 'invite-open' : 'group-open'
   const headerLabel = tab === 'members' ? t('邀请成员') : t('新建分组')
-  const tabs = [
-    { key: 'members', label: '成员' },
-    { key: 'groups', label: '分组' },
-  ]
-    .map(
-      (item) =>
-        `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(tab === item.key)}" data-act="accounts-tab" data-tab="${item.key}">${t(item.label)}</button>`,
-    )
-    .join('')
+  const tabs = tabPills(
+    [
+      { key: 'members', label: '成员' },
+      { key: 'groups', label: '分组' },
+    ],
+    tab,
+    'accounts-tab',
+  )
   const membersBody = `
         <div style="display: flex; flex-direction: column; gap: var(--space-6);">
           <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-3);">
@@ -2070,7 +2038,7 @@ function accountsPage() {
               <div class="satu-memberhead">
                 <span>${t('成员')}</span><span>${t('角色')}</span><span>${t('状态')}</span><span>${t('最近活跃')}</span><span></span>
               </div>
-              ${members.map(memberRow).join('') || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有成员')}</div>`}
+              ${members.map(memberRow).join('') || emptyBox(t('还没有成员'))}
             </div>
           </div>
         </div>`
@@ -2080,22 +2048,16 @@ function accountsPage() {
             <div class="satu-grouphead">
               <span>${t('分组')}</span><span>${t('成员')}</span><span>${t('默认角色')}</span><span>${t('创建时间')}</span><span></span>
             </div>
-            ${groups.map(groupRow).join('') || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有分组')}</div>`}
+            ${groups.map(groupRow).join('') || emptyBox(t('还没有分组'))}
           </div>
           <span style="font-size: 12px; color: var(--muted-foreground);">${t('「全体成员」为系统固定分组，新成员加入后自动进入，不可删除或移除成员。')}</span>
         </div>`
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('账号管理')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('邀请同事加入，并管理成员角色与权限。')}</p>
-          </div>
-          <button type="button" class="btn btn-primary" style="flex: none;" ${canManage ? '' : 'disabled'} title="${canManage ? '' : t('需要管理员权限')}" data-act="${headerAct}">
-            ${svg(['M12 5v14', 'M5 12h14'], 15)} ${headerLabel}
-          </button>
-        </div>
+        ${pageHead(t('账号管理'), t('邀请同事加入，并管理成员角色与权限。'), `<button type="button" class="btn btn-primary" style="flex: none;" ${canManage ? '' : 'disabled'} title="${canManage ? '' : t('需要管理员权限')}" data-act="${headerAct}">
+            ${svg(PLUS_ICON, 15)} ${headerLabel}
+          </button>`)}
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         ${flashes()}
         ${tab === 'members' ? membersBody : groupsBody}

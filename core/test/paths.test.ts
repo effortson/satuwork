@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { auditItemIdOfPath, botIdOfPath, companyIdOfPath, connectorIdOfPath, machineIdOfPath, sessionIdOfPath, userIdOfPath } from '../src/paths.ts'
+import { auditItemIdOfPath, botIdOfPath, companyIdOfPath, connectorIdOfPath, machineIdOfPath, userIdOfPath } from '../src/paths.ts'
 
 test('各种 /xxx/:id 只取第一段，并解码', () => {
   assert.equal(botIdOfPath('/bots/abc/memory'), 'abc')
@@ -13,9 +13,7 @@ test('各种 /xxx/:id 只取第一段，并解码', () => {
   assert.equal(userIdOfPath('/users/u1'), 'u1')
 })
 
-test('审计：/audit/:sid 与 /audit/summary/:id 是两页，互不认', () => {
-  assert.equal(sessionIdOfPath('/audit/s1'), 's1')
-  assert.equal(sessionIdOfPath('/audit/summary/i1'), '')
+test('审计总结：只认 /audit/summary/:id', () => {
   assert.equal(auditItemIdOfPath('/audit/summary/i1'), 'i1')
   assert.equal(auditItemIdOfPath('/audit/s1'), '')
 })

@@ -69,19 +69,13 @@ function globalBotsPage() {
       </div>`
     })
     .join('')
-  const body = rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('还没有 Bot')}</div>`
+  const body = rows || emptyBox(t('还没有 Bot'))
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('全局 Bot')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('这里建的 Bot 所有公司都能用。公司自己的 Bot 由员工按本公司模版创建。', 'Bots created here are available to every company. Inside a company, members create their own from the company template.')}</p>
-          </div>
-          <button type="button" class="btn btn-primary" style="flex: none;" data-act="bot-create">
-            ${svg(['M12 5v14', 'M5 12h14'], 15)} ${t('新建 Bot', 'New bot')}
-          </button>
-        </div>
+        ${pageHead(t('全局 Bot'), t('这里建的 Bot 所有公司都能用。公司自己的 Bot 由员工按本公司模版创建。', 'Bots created here are available to every company. Inside a company, members create their own from the company template.'), `<button type="button" class="btn btn-primary" style="flex: none;" data-act="bot-create">
+            ${svg(PLUS_ICON, 15)} ${t('新建 Bot', 'New bot')}
+          </button>`)}
         ${flashes()}
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
           <div class="satu-agenthead">
@@ -908,7 +902,7 @@ function fullBotPage(bot, a) {
 
 /**
  * 「新建 Bot」弹窗。员工自己建，**按下「创建」就开始装**——跳进去的那一页是安装进度，
- * 装好之后它自己变成对话（见 chat.js 的 chatDeployPrompt）。
+ * 装好之后它自己变成对话（见 chat-seat.js 的 chatDeployPrompt）。
  *
  * 只问身份：名字、头像、简介、一段补充说明。其余的来自公司模版，这里不问也不给改。
  */
@@ -977,8 +971,7 @@ function dayISO(ts) {
 }
 
 function kbOf(n) {
-  const x = Number(n) || 0
-  return x < 1024 ? `${x} B` : x < 1024 * 1024 ? `${(x / 1024).toFixed(1)} KB` : `${(x / 1024 / 1024).toFixed(1)} MB`
+  return SatuCore.fmtFileSize(Number(n) || 0)
 }
 
 function stepsOfBody(body) {
@@ -992,8 +985,6 @@ const EDIT_ICON = ['M12 20h9', 'M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z']
 const FILE_ICON = ['M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z', 'M14 2v6h6']
 const UPLOAD_ICON = ['M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4', 'm7 9 5-5 5 5', 'M12 4v12']
 const CHECK_ICON = ['m5 13 4 4L19 7']
-const PLUS_ICON = ['M12 5v14', 'M5 12h14']
-const CLOSE_ICON = ['M18 6 6 18', 'M6 6l12 12']
 const SKILL_SOURCES = [
   { key: '手动编写', label: '手动编写' },
   { key: '单文件 Skill', label: '单文件 Skill' },
@@ -1284,16 +1275,13 @@ function skillDialogView() {
   const del = skill
     ? `<button type="button" class="satu-linkbtn" style="margin-right: auto; color: var(--color-accent-800);" data-act="skill-delete">${t('删除这个 Skill')}</button>`
     : ''
-  return `<div class="gw-modal-backdrop" data-act="skill-close">
-    <form id="skill-form" class="gw-modal" style="max-width: 560px; max-height: 88vh; overflow-y: auto;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${skill ? t('编辑 Skill') : t('新建 Skill')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('Skill 把一组步骤和 MCP 工具打包成可复用的工作方法。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="skill-close">${svg(CLOSE_ICON, 16)}</button>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'skill-close',
+    tag: 'form',
+    attrs: 'id="skill-form" class="gw-modal" style="max-width: 560px; max-height: 88vh; overflow-y: auto;" data-stop',
+    title: skill ? t('编辑 Skill') : t('新建 Skill'),
+    sub: t('Skill 把一组步骤和 MCP 工具打包成可复用的工作方法。'),
+    body: `<div class="field">
         <label for="sk-name">${t('名称')}</label>
         <input class="input" id="sk-name" type="text" required value="${esc(f.name)}" placeholder="${esc(t('例如：工单归类与摘要'))}">
       </div>
@@ -1309,9 +1297,8 @@ function skillDialogView() {
         ${del}
         <button type="button" class="btn btn-secondary" data-act="skill-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : skill ? t('保存修改') : t('保存')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 function serverDialogView() {
@@ -1329,16 +1316,13 @@ function serverDialogView() {
   const tokenHint = f.hasToken
     ? t('已存了一把。留空表示不动它，填了就换成新的。')
     : t('存在本机库里，不会再从服务端发回浏览器。')
-  return `<div class="gw-modal-backdrop" data-act="skill-close">
-    <form id="server-form" class="gw-modal" style="max-width: 520px; max-height: 88vh; overflow-y: auto;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${server ? t('编辑 MCP 服务器') : t('接入 MCP 服务器')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('接入之后，它提供的工具即可被 Agent 调用。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="skill-close">${svg(CLOSE_ICON, 16)}</button>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'skill-close',
+    tag: 'form',
+    attrs: 'id="server-form" class="gw-modal" style="max-width: 520px; max-height: 88vh; overflow-y: auto;" data-stop',
+    title: server ? t('编辑 MCP 服务器') : t('接入 MCP 服务器'),
+    sub: t('接入之后，它提供的工具即可被 Agent 调用。'),
+    body: `<div class="field">
         <label for="tl-name">${t('名称')}</label>
         <input class="input" id="tl-name" name="name" type="text" required value="${esc(f.name)}" placeholder="${esc(t('例如：zendesk-mcp'))}">
       </div>
@@ -1364,9 +1348,8 @@ function serverDialogView() {
         ${del}
         <button type="button" class="btn btn-secondary" data-act="skill-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : server ? t('保存修改') : t('保存')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 
@@ -1423,12 +1406,15 @@ function skillsPage() {
   const isSkill = tab === 'Skill'
   const skills = state.skills || []
   const servers = state.mcpServers || []
-  const tabs = ['Skill', 'MCP 与工具']
-    .map(
-      (name) =>
-        `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(tab === name)}" data-act="skills-tab" data-tab="${esc(name)}">${esc(name === 'Skill' ? name : t(name))}</button>`,
-    )
-    .join('')
+  // 「Skill」是专名，译表里没有它，t() 原样还回来。
+  const tabs = tabPills(
+    [
+      { key: 'Skill', label: 'Skill' },
+      { key: 'MCP 与工具', label: 'MCP 与工具' },
+    ],
+    tab,
+    'skills-tab',
+  )
   const failure = state.skillFailure
     ? `<div style="font-size: 13px; color: var(--color-accent-800); background: var(--color-accent-100); border-radius: var(--radius-md); padding: 10px var(--space-4); display: flex; justify-content: space-between; gap: var(--space-3);">
         <span>${esc(state.skillFailure)}</span>
@@ -1491,15 +1477,9 @@ function skillsPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('Skill 与 MCP')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('Skill 是可复用的工作方法，MCP 服务器提供 AI 员工实际可调用的工具。')}</p>
-          </div>
-          <button type="button" class="btn btn-primary" style="flex: none;" data-act="${isSkill ? 'skill-create' : 'mcp-create'}">
+        ${pageHead(t('Skill 与 MCP'), t('Skill 是可复用的工作方法，MCP 服务器提供 AI 员工实际可调用的工具。'), `<button type="button" class="btn btn-primary" style="flex: none;" data-act="${isSkill ? 'skill-create' : 'mcp-create'}">
             ${svg(PLUS_ICON, 15)} ${isSkill ? t('新建 Skill') : t('接入 MCP')}
-          </button>
-        </div>
+          </button>`)}
         ${flashes()}
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
           <span style="font-size: 12px; color: var(--muted-foreground);">${t('分类')}</span>
@@ -1553,16 +1533,15 @@ function billingPage() {
   const invoices = Array.isArray(data.invoices) ? data.invoices : []
   const topups = Array.isArray(data.topups) ? data.topups : []
   const balance = data.balance || { amount: '—', spentThisPeriod: '—', alertAt: '—' }
-  const tabs = [
-    { key: 'sub', label: '订阅' },
-    { key: 'topup', label: '充值' },
-    { key: 'usage', label: '用量明细' },
-  ]
-    .map(
-      (item) =>
-        `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(tab === item.key)}" data-act="billing-tab" data-tab="${item.key}">${t(item.label)}</button>`,
-    )
-    .join('')
+  const tabs = tabPills(
+    [
+      { key: 'sub', label: '订阅' },
+      { key: 'topup', label: '充值' },
+      { key: 'usage', label: '用量明细' },
+    ],
+    tab,
+    'billing-tab',
+  )
   const invoiceTail = `<div style="display: flex; align-items: center; gap: var(--space-3); justify-content: flex-end;">
       <button type="button" class="satu-linkbtn" disabled title="${esc(t('发票开具还没做'))}">${t('发票')}</button>
     </div>`
@@ -1653,10 +1632,7 @@ function billingPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('账单')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('查看订阅状态、充值余额与历史账单。')}</p>
-        </div>
+        ${pageHead(t('账单'), t('查看订阅状态、充值余额与历史账单。'))}
         ${balanceCard}
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         ${flashes()}
@@ -1671,11 +1647,8 @@ function billingPage() {
  * 日线的合计和各卡片里服务端格式化好的金额摆在一起，写法不一样会像两套数。
  */
 function fmtUsdMicros(micros) {
-  const mils = Math.round((Number(micros) || 0) / 1000)
-  const a = Math.abs(mils)
-  const frac = a % 1000
-  const dec = frac % 10 === 0 ? String(frac / 10).padStart(2, '0') : String(frac).padStart(3, '0')
-  return `${mils < 0 ? '-' : ''}$${Math.floor(a / 1000).toLocaleString('en-US')}.${dec}`
+  // 千分位固定按 en-US，和服务端一样，不跟界面语言走。
+  return SatuCore.usd(Math.round((Number(micros) || 0) / 1000), 'en')
 }
 
 function usageMeter(name, value, pct, alt, mono) {

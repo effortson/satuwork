@@ -10,7 +10,7 @@
  * **只认「发出去之后」的那些**：拿 afterSeq 卡住。不卡的话，历史里任何一条同样文字的
  * 消息都会把它抵消掉——发第二遍「好的」时，本地这条会在流还没回来时就凭空消失。
  *
- * 原先是 gateway/ui/chat.js 的 mergePending，它自己去读写 state.chatPending；这里只收
+ * 原先是 gateway/ui/chat-thread.js 的 mergePending，它自己去读写 state.chatPending；这里只收
  * **这条会话的**那几条，就地改 folded，返回还没收到回执的那几条，由宿主写回去。
  */
 import type { Folded, PendingMessage, UserBlock } from '../protocol/events.ts'
