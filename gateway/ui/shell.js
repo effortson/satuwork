@@ -800,10 +800,7 @@ function placeholderPage(title, body) {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${esc(title)}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${esc(body)}</p>
-        </div>
+        ${pageHead(esc(title), esc(body))}
         ${flashes()}
       </div>
     </div>`

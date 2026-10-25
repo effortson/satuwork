@@ -73,15 +73,9 @@ function globalBotsPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('全局 Bot')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('这里建的 Bot 所有公司都能用。公司自己的 Bot 由员工按本公司模版创建。', 'Bots created here are available to every company. Inside a company, members create their own from the company template.')}</p>
-          </div>
-          <button type="button" class="btn btn-primary" style="flex: none;" data-act="bot-create">
+        ${pageHead(t('全局 Bot'), t('这里建的 Bot 所有公司都能用。公司自己的 Bot 由员工按本公司模版创建。', 'Bots created here are available to every company. Inside a company, members create their own from the company template.'), `<button type="button" class="btn btn-primary" style="flex: none;" data-act="bot-create">
             ${svg(PLUS_ICON, 15)} ${t('新建 Bot', 'New bot')}
-          </button>
-        </div>
+          </button>`)}
         ${flashes()}
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
           <div class="satu-agenthead">
@@ -1480,15 +1474,9 @@ function skillsPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('Skill 与 MCP')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('Skill 是可复用的工作方法，MCP 服务器提供 AI 员工实际可调用的工具。')}</p>
-          </div>
-          <button type="button" class="btn btn-primary" style="flex: none;" data-act="${isSkill ? 'skill-create' : 'mcp-create'}">
+        ${pageHead(t('Skill 与 MCP'), t('Skill 是可复用的工作方法，MCP 服务器提供 AI 员工实际可调用的工具。'), `<button type="button" class="btn btn-primary" style="flex: none;" data-act="${isSkill ? 'skill-create' : 'mcp-create'}">
             ${svg(PLUS_ICON, 15)} ${isSkill ? t('新建 Skill') : t('接入 MCP')}
-          </button>
-        </div>
+          </button>`)}
         ${flashes()}
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
           <span style="font-size: 12px; color: var(--muted-foreground);">${t('分类')}</span>
@@ -1642,10 +1630,7 @@ function billingPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('账单')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('查看订阅状态、充值余额与历史账单。')}</p>
-        </div>
+        ${pageHead(t('账单'), t('查看订阅状态、充值余额与历史账单。'))}
         ${balanceCard}
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         ${flashes()}

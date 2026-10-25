@@ -12,10 +12,7 @@ function ownerOverviewPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('概览')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('平台公司、用户、已配置供应商，以及日常 / utility 模型。')}</p>
-        </div>
+        ${pageHead(t('概览'), t('平台公司、用户、已配置供应商，以及日常 / utility 模型。'))}
         ${flashes()}
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--space-3);">
           <div class="satu-stat">
@@ -551,10 +548,7 @@ function modelsPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('模型配置')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('目录来自 pi-ai；密钥在供应商页配置。密钥留在 Gateway，不会出现在本机磁盘或环境。')}</p>
-        </div>
+        ${pageHead(t('模型配置'), t('目录来自 pi-ai；密钥在供应商页配置。密钥留在 Gateway，不会出现在本机磁盘或环境。'))}
         ${flashes()}
         <div class="gw-roles">
           ${rolePanel('daily', t('日常任务模型'), t('用于日常工作。'))}
@@ -1227,10 +1221,7 @@ function statsPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('统计')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('各公司的 token 消耗。「已扣」是账本上真实扣掉的钱（写行那一刻定价，改价不追溯）；「原价」是它除以当时的倍率倒推的。上面那两张金额卡是模型、网页工具、连接器三条路的合计，下面几张表各只管自己那一条。', 'Token consumption per company. "Charged" is what the ledger actually deducted (priced when written; later price changes are not retroactive); "list" divides it back out by the multiplier of the day. The two amount cards sum all three paths — models, web tools and connectors — while each table below covers only its own.')}</p>
-        </div>
+        ${pageHead(t('统计'), t('各公司的 token 消耗。「已扣」是账本上真实扣掉的钱（写行那一刻定价，改价不追溯）；「原价」是它除以当时的倍率倒推的。上面那两张金额卡是模型、网页工具、连接器三条路的合计，下面几张表各只管自己那一条。', 'Token consumption per company. "Charged" is what the ledger actually deducted (priced when written; later price changes are not retroactive); "list" divides it back out by the multiplier of the day. The two amount cards sum all three paths — models, web tools and connectors — while each table below covers only its own.'))}
         ${flashes()}
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
           ${pill('today', t('今日'))}
@@ -1537,10 +1528,7 @@ function companyPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner narrow">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('公司')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('名称、slug、联系人和访问地址。席位由系统管理员分配。')}</p>
-        </div>
+        ${pageHead(t('公司'), t('名称、slug、联系人和访问地址。席位由系统管理员分配。'))}
         ${flashes()}
         <form id="company-form" class="satu-panel" style="gap: var(--space-4);">
           <span class="satu-panel-title">${t('资料')}</span>
@@ -2068,15 +2056,9 @@ function accountsPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('账号管理')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('邀请同事加入，并管理成员角色与权限。')}</p>
-          </div>
-          <button type="button" class="btn btn-primary" style="flex: none;" ${canManage ? '' : 'disabled'} title="${canManage ? '' : t('需要管理员权限')}" data-act="${headerAct}">
+        ${pageHead(t('账号管理'), t('邀请同事加入，并管理成员角色与权限。'), `<button type="button" class="btn btn-primary" style="flex: none;" ${canManage ? '' : 'disabled'} title="${canManage ? '' : t('需要管理员权限')}" data-act="${headerAct}">
             ${svg(PLUS_ICON, 15)} ${headerLabel}
-          </button>
-        </div>
+          </button>`)}
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         ${flashes()}
         ${tab === 'members' ? membersBody : groupsBody}

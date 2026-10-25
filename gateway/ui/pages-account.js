@@ -48,10 +48,7 @@ function usersPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('用户')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('平台账号与各公司管理员、员工。')}</p>
-        </div>
+        ${pageHead(t('用户'), t('平台账号与各公司管理员、员工。'))}
         ${flashes()}
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
           <div class="satu-memberhead">
@@ -89,10 +86,7 @@ function userDetailPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('账号详情')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${esc(a.email || '')}</p>
-        </div>
+        ${pageHead(t('账号详情'), esc(a.email || ''))}
         ${flashes()}
         <div class="satu-panel">
           <span class="satu-panel-title">${t('账号信息')}</span>
@@ -389,16 +383,10 @@ function ordersPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('购买与充值')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('买套餐和充值走同一张单：付了款，套餐才生效、充值余额才到账。')}</p>
-          </div>
-          <div style="display: flex; gap: var(--space-2); flex: none;">
+        ${pageHead(t('购买与充值'), t('买套餐和充值走同一张单：付了款，套餐才生效、充值余额才到账。'), `<div style="display: flex; gap: var(--space-2); flex: none;">
             <button type="button" class="btn btn-secondary" data-act="order-new" data-kind="topup">${t('新建充值单')}</button>
             <button type="button" class="btn btn-primary" data-act="order-new" data-kind="plan">${t('新建套餐单')}</button>
-          </div>
-        </div>
+          </div>`)}
         ${flashes()}
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
           <div class="satu-memberhead" style="grid-template-columns: ${ORDER_COLS};">
@@ -502,13 +490,7 @@ function plansPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('套餐')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('价目表：一条套餐 = 一个金额 + 一个席位数。')}</p>
-          </div>
-          <button type="button" class="btn btn-primary" style="flex: none;" data-act="plan-sku-new">${t('新建套餐')}</button>
-        </div>
+        ${pageHead(t('套餐'), t('价目表：一条套餐 = 一个金额 + 一个席位数。'), `<button type="button" class="btn btn-primary" style="flex: none;" data-act="plan-sku-new">${t('新建套餐')}</button>`)}
         ${flashes()}
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
           <div class="satu-memberhead" style="grid-template-columns: ${PLAN_COLS};">
@@ -703,10 +685,7 @@ function profilePage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner gw-profile">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('个人设置', 'Preferences')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('管理你的账号信息、偏好与安全设置。', 'Manage your account details, preferences, and security.')}</p>
-        </div>
+        ${pageHead(t('个人设置', 'Preferences'), t('管理你的账号信息、偏好与安全设置。', 'Manage your account details, preferences, and security.'))}
 
         <div style="display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);">
           <div style="width: 56px; height: 56px; flex: none; border-radius: 999px; background: var(--color-accent-200); display: flex; align-items: center; justify-content: center; font-family: var(--font-heading); font-size: 22px; color: var(--color-accent-800);">${esc(initialOf(u))}</div>

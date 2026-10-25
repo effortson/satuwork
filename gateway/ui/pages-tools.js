@@ -202,10 +202,7 @@ function toolsPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('工具配置')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('Bot 能用的平台级工具。配一次，所有公司共用；按调用次数计价。')}</p>
-        </div>
+        ${pageHead(t('工具配置'), t('Bot 能用的平台级工具。配一次，所有公司共用；按调用次数计价。'))}
         ${flashes()}
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         ${tab === 'web' ? webToolsPanel() : ''}

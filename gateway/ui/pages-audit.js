@@ -241,10 +241,7 @@ function auditPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('审计')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('查看自动生成的任务审计总结；可按日期、员工和 Bot 筛选。')}</p>
-        </div>
+        ${pageHead(t('审计'), t('查看自动生成的任务审计总结；可按日期、员工和 Bot 筛选。'))}
         ${flashes()}
         ${conversationAuditTable()}
       </div>
@@ -432,13 +429,7 @@ function companiesPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('公司')}</h1>
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('所有注册公司。点进去改资料、定套餐、分席位。')}</p>
-          </div>
-          <button type="button" class="btn btn-primary" style="flex: none;" data-act="org-create-open">${t('新建公司')}</button>
-        </div>
+        ${pageHead(t('公司'), t('所有注册公司。点进去改资料、定套餐、分席位。'), `<button type="button" class="btn btn-primary" style="flex: none;" data-act="org-create-open">${t('新建公司')}</button>`)}
         ${flashes()}
         <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
           <div class="satu-memberhead" style="grid-template-columns: ${cols};">
@@ -726,10 +717,7 @@ function companyDetailPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${esc(c.name || t('公司详情'))}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${esc(c.slug || '')}</p>
-        </div>
+        ${pageHead(esc(c.name || t('公司详情')), esc(c.slug || ''))}
         ${flashes()}
         <form class="satu-panel" data-form="org-profile" data-id="${esc(c.id)}" style="gap: var(--space-4);">
           <span class="satu-panel-title">${t('公司信息')}</span>

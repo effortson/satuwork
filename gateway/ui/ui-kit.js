@@ -1,5 +1,5 @@
 /**
- * 页面上反复出现的几块壳子：弹窗、页头、分段按钮。
+ * 页面上反复出现的几块壳子：弹窗、页头。
  *
  * 只收「各处逐字一样」的那部分。调用点各自的差别（弹窗本体的属性、页头右边那几颗按钮）原样
  * 由调用方给，拼出来的 HTML 和以前一字不差。长得像但有出入的（标题 18px、没有 data-stop、
@@ -32,4 +32,26 @@ function modalBox({ close, tag = 'div', attrs, x = true, title, sub, body }) {
       ${body}
     </${tag}>
   </div>`
+}
+
+/**
+ * 页头：大标题、底下一句说明；给了 `acts` 就是右边再摆一组按钮（标题和按钮底边对齐）。
+ *
+ * `title` / `sub` / `acts` 都是现成的 HTML，转义由调用方管。缩进照着页里最常见的那一层
+ * （`.gw-page-inner` 的直接子级）写死，拼出来和原来逐字一样。
+ */
+function pageHead(title, sub, acts) {
+  if (acts == null) {
+    return `<div>
+          <h1 style="font-size: 24px; margin: 0 0 4px;">${title}</h1>
+          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${sub}</p>
+        </div>`
+  }
+  return `<div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4);">
+          <div>
+            <h1 style="font-size: 24px; margin: 0 0 4px;">${title}</h1>
+            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${sub}</p>
+          </div>
+          ${acts}
+        </div>`
 }
