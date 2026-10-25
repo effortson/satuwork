@@ -5,16 +5,16 @@
  * 没有文件、管家来拉拿到的字节和 sha256 头对得上、sha256 对不上时把刚传的 blob 删掉。
  */
 import { createServer } from 'node:http'
-import { existsSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { createCompany } from './org.mjs'
 import { pairMachine } from './pair.mjs'
 import { publishRelease, sha256Of, tarGz } from './release.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 const TOKEN = 'vercel_blob_rw_e2estore0001_' + 'x'.repeat(24)
 
@@ -107,7 +107,6 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
   const GW_HOME = tmpOf('satuwork-e2e-release-blob')
   const GW_PORT = await freePort()
   const gwBase = `http://127.0.0.1:${GW_PORT}`
-  rmSync(GW_HOME, { recursive: true, force: true })
   const blob = fakeBlob()
   // 冒充者：谁来拉都给一个能过校验的包，记下来的人带没带 authorization。
   const fakeTgz = tarGz([{ name: './bin/satuwork.mjs', data: '#!/usr/bin/env node\n' }, { name: './VERSION', data: '0.9.2\n' }])
@@ -136,15 +135,13 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
   const { port: blobPort, fakePort } = await listenWithLookalike(blob.server, fake)
   const blobBase = `http://127.0.0.1:${blobPort}`
 
-  const gw = start('release-blob-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'release-blob-gw',
+    what: 'release-blob gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_release_blob'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_release_blob'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '1',
       GATEWAY_OWNER_EMAIL: 'owner@blob.test',
@@ -155,7 +152,6 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
     },
   })
   try {
-    await waitHttp(`${gwBase}/health`, { child: gw, what: 'release-blob gateway' })
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@blob.test', ownerPassword: 'test-owner-blob',
       email: 'admin@blob.test', password: 'correct-horse', companyName: 'BlobCo', slug: 'blobco', seats: 1,

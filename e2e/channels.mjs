@@ -2,14 +2,15 @@
  * 渠道绑定：用本地 Telegram API 验完整控制面，不依赖公网或真实 token。
  */
 import { createServer } from 'node:http'
-import { createRequire } from 'node:module'
 import { rmSync } from 'node:fs'
-import { PG_URL } from './pg.mjs'
+import { PG_URL, pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { createCompany } from './org.mjs'
 import { closeServer } from './probe.mjs'
 import { runProbe } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
+import { until } from './harness.mjs'
 
 export const TOKEN = '123456789:telegram-e2e-token-never-store-plain'
 const APPROVAL_KEY = 'AbCdEfGhIjKlMnOpQrStUv'
@@ -260,14 +261,8 @@ export async function mockTelegram() {
   return { server, seen, url: `http://127.0.0.1:${server.address().port}` }
 }
 
-async function waitFor(check, label, timeout = 6000) {
-  const started = Date.now()
-  while (Date.now() - started < timeout) {
-    const value = await check()
-    if (value) return value
-    await new Promise((resolve) => setTimeout(resolve, 80))
-  }
-  throw new Error(`等不到：${label}`)
+function waitFor(check, label, timeout = 6000) {
+  return until(check, { timeout, every: 80, fail: `等不到：${label}` })
 }
 
 export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, log }) {
@@ -275,20 +270,17 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
   const schema = schemaOf('e2e_channels')
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# channels')
 
   const telegram = await mockTelegram()
   const seat = await mockSeat()
-  const gw = start('channels-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'channels-gw',
+    what: 'channels gateway',
+    home: GW_HOME,
+    schema,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schema,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
       TELEGRAM_API_BASE: telegram.url,
@@ -297,7 +289,6 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       GATEWAY_CHANNEL_POLL_TIMEOUT_SECONDS: '1',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'channels gateway' })
 
   let token = ''
   let pairingCode = ''
@@ -361,10 +352,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       assert(bots.json.bots.some((b) => b.id === botId && b.name === 'telegram bot'), '自动创建的 Bot 不在名册里')
       assert(bots.json.bots.find((b) => b.id === botId)?.channel === 'telegram', '名册没有标明 Telegram 渠道归属')
 
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient()
       try {
         const stored = await client.query(`select "credentialCiphertext","pairingCodeHash" from "${schema}".channel_bindings where id = $1`, [bindingId])
         assert(stored.rowCount === 1, '数据库里没有渠道绑定')
@@ -375,10 +363,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
     })
 
     await test('未配对消息不入队；私聊输入正确配对码后只接受该 Telegram 身份', async () => {
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient()
       const ownership = await client.query(`select "accountId","companyId" from "${schema}".channel_bindings where id = $1`, [bindingId])
       assert(ownership.rowCount === 1, '找不到渠道所属账号')
       await client.query(
@@ -473,10 +458,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       assert(previewMessages.some((m) => String(m.text).includes('eth-report.pptx')), 'PPTX 预览卡没有文件名')
 
       // 模拟 Bot 正常上报的会话索引，使签名链接能沿会话归属找到同一席位。
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient()
       try {
         const binding = await client.query(
           `select "accountId","companyId","botId" from "${schema}".channel_bindings where id=$1`,
@@ -584,10 +566,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       assert(previewLink, '上一条用例没拿到预览链接')
       const ok = await fetch(`${previewLink}?raw=1`)
       assert(ok.status === 200, `预览链接本来就打不开：${ok.status}`)
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient()
       try {
         const own = await client.query(`select "accountId","companyId" from "${schema}".channel_bindings where id = $1`, [bindingId])
         const { accountId, companyId } = own.rows[0]
@@ -626,10 +605,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       const cardMessageId = telegram.seen.sent.indexOf(card) + 1
 
       // 生产里这行由席位 handoff outbox 上报；mock 席位不会主动推，所以在此补齐事实索引。
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient()
       try {
         const binding = await client.query(
           `select "accountId","companyId","botId" from "${schema}".channel_bindings where id=$1`,
@@ -735,10 +711,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
       await waitFor(() => telegram.seen.callbackAnswerAttempts.some((a) => a.callback_query_id === 'callback-expired'), '过期审批回调被处理')
       await waitFor(() => seat.seen.messages.length > before, '过期回调之后的正常消息送到席位')
 
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient()
       try {
         const row = await waitFor(async () => {
           const result = await client.query(
@@ -760,10 +733,7 @@ export async function runChannels({ gwRoot, test, req, start, waitHttp, assert, 
      * 只是「机器人不理人」。这条钉住那句报出来的话。
      */
     await test('归工人却没人来领：绑定上要报出来，渠道页才看得见', async () => {
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient()
       try {
         const own = await client.query(`select "accountId","companyId" from "${schema}".channel_bindings where id = $1`, [bindingId])
         const { accountId, companyId } = own.rows[0]

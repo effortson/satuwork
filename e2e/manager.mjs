@@ -13,7 +13,7 @@ import { createServer } from 'node:http'
 import { connect } from 'node:net'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
+import { pgClient, withPg } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 
 /** 这一套自己的 schema。写死名字会被别的 worktree 的 e2e 清掉（见 pg.mjs 的 schemaOf）。 */
@@ -23,6 +23,7 @@ const CRON_SECRET = 'manager-e2e-cron-secret'
 import { freePorts } from './ports.mjs'
 import { publishRelease } from './release.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 /**
  * 起一个假 bot。记下每次请求的头和路径，供断言。
@@ -166,7 +167,6 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
   const mgrBase = `http://127.0.0.1:${MGR_PORT}`
   const managerRoot = join(root, 'manager')
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   rmSync(MGR_HOME, { recursive: true, force: true })
   log('\n# manager')
 
@@ -177,14 +177,15 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
   await listenOn(bot.server, BOT_PORT)
   await listenOn(novnc.server, NOVNC_PORT)
 
-  const gw = start('manager-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  // 不设 GATEWAY_HOST：这一套一直是按 Gateway 自己的默认监听地址起的。
+  const { gw } = await startGateway({
+    name: 'manager-gw',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
+    host: null,
+    timeout: 40000,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_PUBLIC_URL: gwBase,
       GATEWAY_OWNER_EMAIL: 'owner@manager.test',
       GATEWAY_OWNER_PASSWORD: 'manager-owner-1234',
@@ -199,7 +200,6 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       GEMINI_BASE_URL: `http://127.0.0.1:${UP_PORT}`,
     },
   })
-  await waitHttp(`${gwBase}/health`, { timeout: 40000 })
 
   try {
     const login = await req(gwBase, 'POST', '/auth/login', {
@@ -1210,13 +1210,8 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
 
       // seat-1 是管家侧登记的假席位；Gateway 只给**这台机器上**的席位签票（seatId 会进单元名），
       // 所以在 Gateway 库里补一行，结束时删掉——后面「Gateway 下发部署」那条要靠这台机器空着。
-      const { createRequire } = await import('node:module')
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       try {
-        await client.query(`set search_path to ${SCHEMA}`)
         await client.query(
           `insert into seat_runtimes ("accountId","botId","companyId","linuxUser","seatId","machineId",slot,display,"vncPort","novncPort","botPort","vncPassword",status,"deployedAt","updatedAt","botVersion")
            values ($1,'bot-1',$2,'sw-test','seat-1',$3,9,19,5919,6090,3209,'pw','ready',$4,$4,'0.0.0-e2e')`,
@@ -1593,12 +1588,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       const mid = await machineIdOf(req, gwBase, ownerTok, orgId)
       const point = (h) => req(gwBase, 'PUT', `/platform/orgs/${orgId}/machine`, { token: ownerTok, body: { host: h } })
 
-      const { createRequire } = await import('node:module')
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
-      await client.query(`set search_path to ${SCHEMA}`)
+      const client = await pgClient(SCHEMA)
       /** 把这一行拨回「装到一半、这个进程手上没有」，开始时刻在 startedAgo 毫秒之前。 */
       const stick = (startedAgo) =>
         client.query(
@@ -1738,11 +1728,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       //
       // 造一台**假机器**来测，不动真管家那台：真管家每 30 秒心跳一次，改它的
       // lastHeartbeatAt 会被下一轮覆盖，断言就成了掷骰子。
-      const { createRequire } = await import('node:module')
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient()
       const fake = '00000000-0000-4000-8000-0000000000ff'
       const linkOf = async () => {
         const r = await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })
@@ -1946,15 +1932,10 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       // 上报的是**网络数据**：它会原样进 jsonb、再原样画进浏览器。所以这条盯的不是
       // 「存没存下来」，而是「一台报疯了的机器能不能把这一页搞坏」——占用 340%、
       // 二十块盘、挂载点里带换行，这些都不该活着走到界面上。
-      const { createRequire } = await import('node:module')
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       const fake = '00000000-0000-4000-8000-0000000000fe'
       const fakeTok = 'smt_e2e-telemetry-probe'
       try {
-        await client.query(`set search_path to ${SCHEMA}`)
         await client.query(
           `insert into machines (id, host, "companyId", "lastHeartbeatAt", "createdAt", "pairedAt", protocol, "maxAccounts", token)
            values ($1, 'http://10.0.0.98:8443', $2, $3, $3, $3, 2, 10, $4)`,
@@ -2047,11 +2028,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       // 峰值有没有单独留住（均值会把冲顶那五分钟抹平）、以及出网记的是**增量**——
       // 机器自报的是开机以来的累计值，直接存快照的话，一天的曲线会是一条只涨不跌的
       // 斜线，而不是「每小时走了多少」。
-      const { createRequire } = await import('node:module')
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient()
       const fake = '00000000-0000-4000-8000-0000000000fd'
       const fakeTok = 'smt_e2e-rollup-probe'
       const beat = (over) => ({
@@ -2304,17 +2281,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       // 都会自己升，唯一能拦住的开关看着能设、其实存不进去。
       // 钉住的版本必须真有对应的包：desiredManagerRelease 查不到就会静悄悄回落到
       // 「最新」，那样这条用例即使在坏代码下也可能碰巧过。先传一个真包上去。
-      const { tarGz, sha256Of } = await import('./release.mjs')
-      const pinnedPkg = tarGz([
-        { name: './bin/satuwork-manager.mjs', data: '#!/usr/bin/env node\n' },
-        { name: './VERSION', data: 'pinned-9.9.9\n' },
-      ])
-      const up = await req(gwBase, 'PUT', '/platform/manager-releases/pinned-9.9.9', {
-        token: ownerTok,
-        raw: pinnedPkg,
-        headers: { 'content-type': 'application/gzip', 'x-bot-sha256': sha256Of(pinnedPkg) },
-      })
-      assert(up.status === 200, `传包 ${up.status} ${up.text}`)
+      await publishRelease({ req, gwBase, token: ownerTok, version: 'pinned-9.9.9', kind: 'manager' })
 
       const before = (await req(gwBase, 'GET', '/platform/settings', { token: ownerTok })).json
       try {
@@ -2355,17 +2322,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
        *
        * 要两个包才分得出「钉的」和「跟的」：上一条用例传的 pinned-9.9.9，再传一个更新的。
        */
-      const { tarGz, sha256Of } = await import('./release.mjs')
-      const pkg = tarGz([
-        { name: './bin/satuwork-manager.mjs', data: '#!/usr/bin/env node\n' },
-        { name: './VERSION', data: 'follow-9.9.10\n' },
-      ])
-      const up = await req(gwBase, 'PUT', '/platform/manager-releases/follow-9.9.10', {
-        token: ownerTok,
-        raw: pkg,
-        headers: { 'content-type': 'application/gzip', 'x-bot-sha256': sha256Of(pkg) },
-      })
-      assert(up.status === 200, `传包 ${up.status} ${up.text}`)
+      await publishRelease({ req, gwBase, token: ownerTok, version: 'follow-9.9.10', kind: 'manager' })
 
       const id = await machineIdOf(req, gwBase, ownerTok, orgId)
       const beat = async () =>
@@ -2641,14 +2598,9 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       // 那台后面还要用。**不能只删机器**：留下的席位行会指向一条不存在的机器记录，而
       // machineTokenFor 查不到就回落到这家公司的另一台，聊天请求会带着别的机器的票发出去。
       {
-        const { createRequire } = await import('node:module')
-        const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-        const pg = require('pg')
-        const client = new pg.Client({ connectionString: PG_URL })
-        await client.connect()
+        const client = await pgClient(SCHEMA)
         const doomed = '00000000-0000-4000-8000-0000000000de'
         try {
-          await client.query(`set search_path to ${SCHEMA}`)
           await client.query(
             `insert into machines (id, host, "companyId", "lastHeartbeatAt", "createdAt", "pairedAt", protocol, "maxAccounts", token)
              values ($1, 'http://10.0.0.77:8443', $2, $3, $3, $3, 1, 10, 'smt_e2e-doomed')`,
@@ -2871,20 +2823,6 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       await listenOn(upstream, UP_PORT)
       const upLast = () => upSeen[upSeen.length - 1]
 
-      const { createRequire } = await import('node:module')
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pgMod = require('pg')
-      /** 开一条连到本套件 schema 的连接跑一段，跑完关掉。 */
-      const withPg = async (fn) => {
-        const client = new pgMod.Client({ connectionString: PG_URL })
-        await client.connect()
-        try {
-          await client.query(`set search_path to ${SCHEMA}`)
-          return await fn(client)
-        } finally {
-          await client.end().catch(() => {})
-        }
-      }
       const statOf = (usage, label) => Number(usage.json.stats.find((s) => s.label === label)?.value ?? NaN)
       /** 这一组开始前公司已有的用量；下面的断言都按增量算，别把前面用例的账算进来。 */
       let usage0 = { prompt: 0, completion: 0 }
@@ -2967,7 +2905,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
 
           // 授权只发给**这台机器上有席位**的账号：给管理员在真管家这台机器上补一行席位。
           // 真管家的名册里没有这个席位也无妨——中继不问名册，问的是 Gateway。
-          await withPg((client) =>
+          await withPg(SCHEMA, (client) =>
             client.query(
               `insert into seat_runtimes ("accountId","botId","companyId","linuxUser","seatId","machineId",slot,display,"vncPort","novncPort","botPort","vncPassword",status,"deployedAt","updatedAt","botVersion")
                values ($1,'bot-llm',$2,'sw-llm','seat-llm',$3,8,18,5918,6089,3208,'pw','ready',$4,$4,'0.0.0-e2e')`,
@@ -3015,7 +2953,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           const u = await readUsage()
           assert(u.prompt === 5, `输入 tokens ${u.prompt}，应为 5`)
           assert(u.completion === 1, `输出 tokens ${u.completion}，应为 1`)
-          await withPg(async (client) => {
+          await withPg(SCHEMA, async (client) => {
             const calls = await client.query(
               'select id, "promptTokens", "completionTokens", provider, model from llm_calls where "companyId" = $1 and "accountId" = $2 order by "createdAt" desc',
               [orgId, adminId],
@@ -3146,7 +3084,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
             body: { usage: { prompt_tokens: 7, completion_tokens: 3, cached_tokens: 0, cache_write_tokens: 0 }, status: 'ok' },
           })
           assert(twice.status === 200 && twice.json.settled === false && twice.json.reason === 'already', `第二次 settle 该 settled:false/already，实际 ${twice.status} ${twice.text}`)
-          await withPg(async (client) => {
+          await withPg(SCHEMA, async (client) => {
             const row = await client.query('select "promptTokens", "completionTokens" from llm_calls where id = $1', [g.callId])
             assert(row.rowCount === 1, `llm_calls 少了这一行：${row.rowCount}`)
             assert(
@@ -3183,7 +3121,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(rs.every((r) => r.status === 200), `并发结算有非 200：${rs.map((r) => `${r.status} ${r.text.slice(0, 80)}`).join(' | ')}`)
           const firsts = rs.filter((r) => r.json.settled === true).length
           assert(firsts === 1, `该恰好有一次真结算，实际 ${firsts} 次：${rs.map((r) => r.text).join(' | ')}`)
-          await withPg(async (client) => {
+          await withPg(SCHEMA, async (client) => {
             const charges = await client.query('select count(*)::int as n from usage_charges where "refId" = $1', [callId])
             assert(charges.rows[0].n === 1, `并发结算挂了 ${charges.rows[0].n} 笔账——钱被重收了`)
           })
@@ -3407,7 +3345,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
            * 写死了「历史模型调用一行都不回填」。
            */
           const old = Date.now() - 6 * 3600_000
-          await withPg(async (client) => {
+          await withPg(SCHEMA, async (client) => {
             for (const [id, relay] of [['e2e-sweep-plain', null], ['e2e-sweep-relay', machineId]]) {
               await client.query(
                 `insert into llm_calls (id,"accountId","companyId",provider,model,"promptTokens","completionTokens","cachedTokens","cacheWriteTokens","createdAt","relayMachineId")
@@ -3419,7 +3357,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           const tick = await req(gwBase, 'GET', '/cron/tick', { token: CRON_SECRET })
           assert(tick.status === 200, `跑一拍 ${tick.status} ${tick.text}`)
 
-          await withPg(async (client) => {
+          await withPg(SCHEMA, async (client) => {
             const plain = await client.query('select id, status from usage_charges where "refId" = $1', ['e2e-sweep-plain'])
             assert(plain.rowCount === 0, `没经中继授权的老调用被回填了 ${plain.rowCount} 笔账——这就是「掉头刷历史」`)
             const relayed = await client.query('select status, "amountMicros", unpriced, "unitPrice" from usage_charges where "refId" = $1', ['e2e-sweep-relay'])
@@ -3454,7 +3392,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
            * 四件事一起钉：补得上（回 `filled`）、**不多挂一行账**、`createdAt` 不动（挪了
            * 这笔钱就换了账期）、以及补完之后**不许再被当成占位补第二遍**。
            */
-          const before = await withPg(async (client) => {
+          const before = await withPg(SCHEMA, async (client) => {
             const r = await client.query('select "amountMicros", unpriced, "createdAt" from usage_charges where "refId" = $1', ['e2e-sweep-relay'])
             assert(r.rowCount === 1, `上一条用例应当留下一行占位，实际 ${r.rowCount}`)
             return r.rows[0]
@@ -3468,7 +3406,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(filled.status === 200, `补录 ${filled.status} ${filled.text}`)
           assert(filled.json.settled === true && filled.json.reason === 'filled', `该回 filled，实际 ${filled.text}`)
 
-          await withPg(async (client) => {
+          await withPg(SCHEMA, async (client) => {
             const r = await client.query(
               'select status, "amountMicros", "bonusMicros", unpriced, quantity, "createdAt" from usage_charges where "refId" = $1',
               ['e2e-sweep-relay'],
@@ -3494,7 +3432,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
             body: { usage: { prompt_tokens: 9, completion_tokens: 9, cached_tokens: 0, cache_write_tokens: 0 }, status: 'ok' },
           })
           assert(twice.status === 200 && twice.json.settled === false && twice.json.reason === 'already', `第二次该是 already，实际 ${twice.text}`)
-          await withPg(async (client) => {
+          await withPg(SCHEMA, async (client) => {
             const r = await client.query('select "amountMicros" from usage_charges where "refId" = $1', ['e2e-sweep-relay'])
             assert(r.rowCount === 1 && Number(r.rows[0].amountMicros) === 3000, `真账被第二次结算动过了：${JSON.stringify(r.rows)}`)
           })
@@ -3537,7 +3475,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           await new Promise((res) => setTimeout(res, 400))
           const after = await rawUsage(adminTok)
           assert(after.prompt - before.prompt === 40 && after.completion - before.completion === 1000, `生图的用量没记上：${after.prompt - before.prompt}/${after.completion - before.completion}`)
-          await withPg(async (client) => {
+          await withPg(SCHEMA, async (client) => {
             const q = await client.query(
               `select u."amountMicros", c.provider, c.model from usage_charges u join llm_calls c on c.id = u."refId"
                where u.kind = 'llm' and c."companyId" = $1 and c.model = 'gpt-image-2'`,
@@ -3591,7 +3529,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       } finally {
         await closeServer(upstream, '模型中继假上游')
         // 补的那行席位删掉：后面「注销」那条要看真管家自己拆的是它名册里的席位。
-        await withPg((client) => client.query('delete from seat_runtimes where "machineId" = $1 and "seatId" = $2', [machineId, 'seat-llm'])).catch(() => {})
+        await withPg(SCHEMA, (client) => client.query('delete from seat_runtimes where "machineId" = $1 and "seatId" = $2', [machineId, 'seat-llm'])).catch(() => {})
       }
     }
 
@@ -3639,13 +3577,8 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
       assert(cleared, '管家没有清掉 manager.json——重启回来它还会去敲一个不认识它的 Gateway')
 
       // 回执到了，那一行才真的没。墓碑 TTL 是兜底，不该是常规路径。
-      const { createRequire } = await import('node:module')
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       try {
-        await client.query(`set search_path to ${SCHEMA}`)
         let rows = 1
         for (let i = 0; i < 20; i++) {
           rows = (await client.query('select 1 from machines where id = $1', [machineId])).rowCount

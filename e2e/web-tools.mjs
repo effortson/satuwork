@@ -10,11 +10,11 @@
  * 3. **密钥不回显**，配置接口只报「配没配」。
  */
 import { rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { PG_URL } from './pg.mjs'
+import { pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { runProbe as sharedProbe } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 /** SSRF 闸跑在 gateway/e2e-web-guard.mjs 里——那几个函数是纯的，起一整套服务没必要。 */
 const runGuardProbe = (gwRoot) => sharedProbe(gwRoot, 'e2e-web-guard.mjs')
@@ -26,30 +26,22 @@ export async function runWebTools({ gwRoot, test, req, start, waitHttp, assert, 
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# web-tools')
 
-  const gw = start('webtools-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'webtools-gw',
+    what: 'web-tools gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
       E2E_STUB_WEB: '1',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'web-tools gateway' })
 
-  const require = createRequire(`${gwRoot}/package.json`)
-  const pg = require('pg')
-  const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
-  await client.query(`set search_path to ${SCHEMA}`)
+  const client = await pgClient(SCHEMA)
 
   /**
    * 一次网页调用 = 一行 web_calls（事实）+ 一行 usage_charges（钱），按 refId 串。

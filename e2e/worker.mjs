@@ -8,19 +8,17 @@
 import { createServer } from 'node:http'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
+import { withPg } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
 import { publishRelease } from './release.mjs'
 import { freePorts } from './ports.mjs'
 import { closeServer } from './probe.mjs'
 import { TOKEN as TG_TOKEN, mockTelegram } from './channels.mjs'
+import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 const SCHEMA = schemaOf('e2e_worker')
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 /**
  * 假 bot：会话 id、一条历史、事件流、收消息。收到消息就往开着的事件流上吐
@@ -108,22 +106,19 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
   const [GW_PORT, MGR_PORT, BOT_PORT] = await freePorts(3)
   const gwBase = `http://127.0.0.1:${GW_PORT}`
   const mgrBase = `http://127.0.0.1:${MGR_PORT}`
-  rmSync(GW_HOME, { recursive: true, force: true })
   rmSync(MGR_HOME, { recursive: true, force: true })
 
   const bot = liveBot()
   await listen(bot.server, BOT_PORT)
   const telegram = await mockTelegram()
 
-  const gw = start('worker-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'worker-gw',
+    what: 'worker gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '1',
       GATEWAY_OWNER_EMAIL: 'owner@wk.test',
@@ -140,22 +135,7 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
   let mgr = null
   let worker = null
 
-  const withPg = async (fn) => {
-    const { createRequire } = await import('node:module')
-    const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-    const pg = require('pg')
-    const client = new pg.Client({ connectionString: PG_URL })
-    await client.connect()
-    try {
-      await client.query(`set search_path to ${SCHEMA}`)
-      return await fn(client)
-    } finally {
-      await client.end().catch(() => {})
-    }
-  }
-
   try {
-    await waitHttp(gwBase + '/health', { child: gw, what: 'worker gateway' })
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@wk.test',
       ownerPassword: 'test-owner-wk',
@@ -261,7 +241,7 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
         cwd: managerRoot,
         env: { SATUWORK_WORKER_TOKEN: env.SATUWORK_WORKER_TOKEN, SATUWORK_MANAGER_LOCAL: env.SATUWORK_MANAGER_LOCAL, SATUWORK_WORKER_TICK_MS: '1000' },
       })
-      await withPg((c) => c.query('update routines set "nextRunAt" = $1 where id = $2', [Date.now() - 1000, routineId]))
+      await withPg(SCHEMA, (c) => c.query('update routines set "nextRunAt" = $1 where id = $2', [Date.now() - 1000, routineId]))
       let run = null
       const deadline = Date.now() + 20000
       while (Date.now() < deadline) {
@@ -293,7 +273,7 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
       const bound = await req(gwBase, 'POST', '/channels/telegram', { token: adminTok, body: { token: TG_TOKEN } })
       assert(bound.status === 201, `绑定 ${bound.status} ${bound.text}`)
       const bindingId = bound.json.channel.id
-      const chBotId = bound.json.channel.botId || (await withPg((c) => c.query('select "botId" from channel_bindings where id = $1', [bindingId]))).rows[0].botId
+      const chBotId = bound.json.channel.botId || (await withPg(SCHEMA, (c) => c.query('select "botId" from channel_bindings where id = $1', [bindingId]))).rows[0].botId
       // 绑渠道顺手部署了那颗 Bot（stub）；把管家名册里对应的席位指到假 bot。
       const list = await req(gwBase, 'GET', '/runtime/bots', { token: adminTok })
       const chSeat = list.json.bots.find((b) => b.id === chBotId).runtime.seatId
@@ -311,14 +291,14 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
       assert(put.status === 200, `登记渠道席位 ${put.status} ${put.text}`)
       // 直接造一个已配对身份和一条待处理事件，省掉 Telegram 那几步往返（那些在 channels 套件里钉）。
       const now = Date.now()
-      await withPg((c) =>
+      await withPg(SCHEMA, (c) =>
         c.query(
           `insert into channel_identities (id,"bindingId","externalUserId","externalUsername","externalDisplayName","pairedEventId","pairedAt","lastSeenAt")
            values ('id-1',$1,'456','alice','Alice','tg:0',$2,$2)`,
           [bindingId, now],
         ),
       )
-      await withPg((c) =>
+      await withPg(SCHEMA, (c) =>
         c.query(
           `insert into channel_events (id,"bindingId","externalEventId","externalConversationId","remoteUserId","remoteDisplayName",title,text,status,attempts,"nextTryAt","leaseUntil","leaseToken","sessionId",reply,files,handoffs,"lastError","createdAt","updatedAt","deliveredAt")
            values ('ev-1',$1,'tg:100','456','456','Alice','', '帮我办件事','pending',0,$2,null,'',null,'','[]','[]',null,$2,$2,null)`,
@@ -328,7 +308,7 @@ export async function runWorker({ root, gwRoot, test, req, start, waitHttp, asse
       let row = null
       const deadline = Date.now() + 20000
       while (Date.now() < deadline) {
-        row = (await withPg((c) => c.query('select status, reply, "sessionId", "lastError" from channel_events where id = $1', ['ev-1']))).rows[0]
+        row = (await withPg(SCHEMA, (c) => c.query('select status, reply, "sessionId", "lastError" from channel_events where id = $1', ['ev-1']))).rows[0]
         if (row && (row.status === 'delivered' || row.status === 'dead')) break
         await sleep(250)
       }

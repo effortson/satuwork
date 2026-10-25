@@ -11,12 +11,11 @@
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
+import { PG_URL, pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 const SCHEMA = schemaOf('e2e_billing')
 const MODEL = 'anthropic/claude-haiku-4-5'
@@ -82,32 +81,24 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# billing')
 
   const upstream = await startFakeAnthropic()
-  const gw = start('billing-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'billing-gw',
+    what: 'billing gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_SEED_OWNER: '0',
       ANTHROPIC_BASE_URL: upstream.url,
       ANTHROPIC_API_KEY: 'fake-anthropic-key',
       E2E_STUB_WEB: '1',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'billing gateway' })
 
-  const require = createRequire(`${gwRoot}/package.json`)
-  const pg = require('pg')
-  const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
-  await client.query(`set search_path to ${SCHEMA}`)
+  const client = await pgClient(SCHEMA)
 
   /** 账本行，最近的在前。计价断言全看它——`llm_calls` 那边只有 token。 */
   const charges = async (companyId) =>

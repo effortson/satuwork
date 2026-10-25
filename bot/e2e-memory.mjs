@@ -12,11 +12,10 @@
  *    可执行的下一步。写成一句干巴巴的失败，模型就会转头告诉用户做不到。
  */
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { tempDir } from './e2e-lib.mjs'
 
-const home = mkdtempSync(join(tmpdir(), 'satu-memory-'))
+const home = tempDir('satu-memory-')
 process.env.SATUWORK_HOME = home
 process.env.SATUWORK_BOT_ID = 'bot-1'
 /**
@@ -25,11 +24,6 @@ process.env.SATUWORK_BOT_ID = 'bot-1'
  * 指不回是哪一条出的事。
  */
 process.env.SATUWORK_APPROVAL_TIMEOUT_MS = '2000'
-process.on('exit', () => {
-  try {
-    rmSync(home, { recursive: true, force: true })
-  } catch {}
-})
 
 const { Context } = await import('@deepseek-ai/cordis')
 const { cachedMemories, cachedMemoryOf } = await import('./src/catalog/index.ts')

@@ -5,34 +5,29 @@
  * **只在一个 owner 都没有时能建**，否则任何人都能再造一个 owner 出来。
  */
 import { rmSync } from 'node:fs'
-import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
+import { startGateway } from './gateway.mjs'
 
 export async function runSetup({ gwRoot, test, req, start, waitHttp, assert, log }) {
   const GW_HOME = tmpOf('satuwork-e2e-setup-gw')
   const GW_PORT = await freePort()
   const gwBase = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# setup')
 
-  const gw = start('setup-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'setup-gw',
+    what: 'setup gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_setup'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_setup'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       // 关键：不播种，模拟全新部署。
       GATEWAY_SEED_OWNER: '0',
     },
   })
-  await waitHttp(`${gwBase}/health`, { child: gw, what: 'setup gateway' })
 
   try {
     await test('空库：GET /auth/state → needsSetup true，且不泄漏任何账号信息', async () => {
@@ -95,25 +90,17 @@ export async function runSetup({ gwRoot, test, req, start, waitHttp, assert, log
       // **必须换一个干净的库。** 在当前这个 gateway 上跑，因为上面已经建过 owner，两条
       // 请求必然都 409——断言过得去，但那条「谁先谁赢」的竞态一次都没跑到。这个测试
       // 以前就是这么空过的。
-      const RACE_HOME = tmpOf('satuwork-e2e-setup-race')
-      const RACE_PORT = await freePort()
-      const raceBase = `http://127.0.0.1:${RACE_PORT}`
-      rmSync(RACE_HOME, { recursive: true, force: true })
-      const raceGw = start('setup-race-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-        cwd: gwRoot,
+      const { gw: raceGw, base: raceBase, home: RACE_HOME } = await startGateway({
+        name: 'setup-race-gw',
+        what: 'setup race gateway',
+        home: tmpOf('satuwork-e2e-setup-race'),
+        schema: schemaOf('e2e_setup_race'),
         env: {
-          SATUWORK_GATEWAY_HOME: RACE_HOME,
-          GATEWAY_DATABASE_URL: PG_URL,
-          GATEWAY_PG_SCHEMA: schemaOf('e2e_setup_race'),
-          GATEWAY_PG_RESET: '1',
-          GATEWAY_HOST: '127.0.0.1',
-          GATEWAY_PORT: String(RACE_PORT),
           GATEWAY_ACCESS_HOST: 'satuwork.com',
           GATEWAY_SEED_OWNER: '0',
         },
       })
       try {
-        await waitHttp(`${raceBase}/health`, { child: raceGw, what: 'setup race gateway' })
         const r = await Promise.all([
           req(raceBase, 'POST', '/auth/setup', { body: { email: 'race1@setup.test', password: 'correct-horse-3' } }),
           req(raceBase, 'POST', '/auth/setup', { body: { email: 'race2@setup.test', password: 'correct-horse-3' } }),

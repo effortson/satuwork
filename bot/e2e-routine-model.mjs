@@ -18,8 +18,6 @@
  *
  * 探针要 tsx 才 import 得了 .ts，所以由 e2e/routine-model.mjs 另起一个进程跑。
  */
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import * as storagePlugin from './src/storage/index.ts'
@@ -29,12 +27,10 @@ import * as toolsPlugin from './src/tools/index.ts'
 import * as llmPlugin from './src/llm/index.ts'
 import * as agentPlugin from './src/agent/index.ts'
 import { AssistantMessageEventStream, emptyAssistant } from './src/llm/stream.ts'
+import { tempDir } from './e2e-lib.mjs'
 
-const home = mkdtempSync(join(tmpdir(), 'satu-rtmodel-'))
-const work = mkdtempSync(join(tmpdir(), 'satu-rtmodel-work-'))
-// 退出时收掉临时目录（和 e2e-memory / e2e-skills 那几个探针同一个写法）：探针是顶层 await 的
-// 脚本，没有一个能包 finally 的函数体；exit 钩子在 process.exit、正常结束和未捕获异常三条路上都会跑。
-process.on('exit', () => { try { rmSync(home, { recursive: true, force: true }) } catch {} try { rmSync(work, { recursive: true, force: true }) } catch {} })
+const home = tempDir('satu-rtmodel-')
+const work = tempDir('satu-rtmodel-work-')
 
 /**
  * 假目录：只提供两个模型角色。真的 CatalogService 要连 Gateway，而这一层用到的

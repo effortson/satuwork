@@ -7,7 +7,7 @@
  */
 import { createServer } from 'node:http'
 import { rmSync } from 'node:fs'
-import { PG_URL } from './pg.mjs'
+import { PG_URL, pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePorts } from './ports.mjs'
 import { closeServer } from './probe.mjs'
@@ -387,13 +387,8 @@ export async function runCustomProvider({ gwRoot, test, req, start, waitHttp, as
       const before = await req(base, 'GET', '/platform/credentials', { token })
       assert(!(before.json.credentials || []).some((c) => c.provider === 'my-llm'), '平台密钥没删干净，这条就验不到东西了')
 
-      const { createRequire } = await import('node:module')
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       try {
-        await client.query(`set search_path to "${SCHEMA}"`)
         await client.query(
           'insert into credentials (id, "companyId", provider, secret, "createdAt", "updatedAt") values ($1,$2,$3,$4,$5,$5)',
           [`legacy-${Date.now()}`, kOrgId, 'my-llm', 'only-company-a-key', Date.now()],

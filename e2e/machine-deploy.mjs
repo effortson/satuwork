@@ -4,9 +4,8 @@
 import { createHash } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
+import { PG_URL, pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 
 /** 这一套自己的 schema。写死名字会被别的 worktree 的 e2e 清掉（见 pg.mjs 的 schemaOf）。 */
@@ -15,6 +14,8 @@ import { createCompany } from './org.mjs'
 import { publishRelease, sha256Of, tarGz } from './release.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 /** 一个员工一个 Linux 账号——名下所有 bot 共用它。和 gateway/src/deploy.ts 保持一致。 */
 function linuxUserOf(accountId) {
@@ -24,10 +25,6 @@ function linuxUserOf(accountId) {
 /** 席位标识：systemd 实例名与席位私有目录名。一个 bot 一个。 */
 function seatIdOf(accountId, botId) {
   return linuxUserOf(accountId) + '-' + createHash('sha256').update(botId).digest('hex').slice(0, 12)
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
 }
 
 export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, assert, log }) {
@@ -45,18 +42,15 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
   const gwBase = `http://127.0.0.1:${GW_PORT}`
   let machineTok = ''
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# machine-deploy')
 
-  const gw = start('machine-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'machine-gw',
+    what: 'machine-deploy gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_MACHINE_TOKEN: MACHINE_TOK,
       GATEWAY_PLATFORM_TOKEN: PLATFORM_TOK,
       GATEWAY_ACCESS_HOST: 'satuwork.com',
@@ -66,8 +60,6 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
       SATUWORK_DEPLOY_STUB: '1',
     },
   })
-  // 带上 child：起不来时有用的是它的输出，不是三十秒后那句「等不到」。
-  await waitHttp(gwBase + '/health', { child: gw, what: 'machine-deploy gateway' })
 
   try {
     const ownerLogin = await req(gwBase, 'POST', '/auth/login', {
@@ -717,12 +709,8 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
        *
        * 这时候的现场正好：机器自报 arm64，而平台上最新的是后传的 0.3.0-x64。
        */
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       try {
-        await client.query(`set search_path to ${SCHEMA}`)
         const seat = await client.query(
           'select "machineId" from seat_runtimes where "accountId" = $1 and "botId" = $2',
           [memberId, botA],
@@ -763,14 +751,10 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
        *
        * 现场：机器自报 arm64，本机架构的最新包是 0.3.0-arm64。
        */
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       let machineId = ''
       let heldB = null
       try {
-        await client.query(`set search_path to ${SCHEMA}`)
         machineId = (await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })).json.machine.id
         const where = 'where "accountId" = $1 and "botId" = $2'
         heldB = (await client.query(`select "machineId", status, "deployBeatAt" from seat_runtimes ${where}`, [memberId, botB])).rows[0]
@@ -891,12 +875,8 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
      * 而改地址的人当场点一下桌面看不出任何问题——所以这条必须有测试兜着。
      */
     await test('改机器地址会把席位的 instances.host 一起重铺，且不碰非管家形状的', async () => {
-      const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       try {
-        await client.query(`set search_path to ${SCHEMA}`)
         const machineId = (await req(gwBase, 'GET', `/platform/orgs/${orgId}/machine`, { token: ownerTok })).json
           .machine.id
         const oldHost = (await req(gwBase, 'GET', `/platform/machines/${machineId}`, { token: ownerTok })).json.machine
@@ -1364,12 +1344,8 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
        * 按的按钮都没有。判据是库里的在装心跳（`deployBeatAt`）断了、管家那边也没在装。这里
        * 直接把那一行改回 `deploying`（心跳是空的）来造这个现场。
        */
-      const require = createRequire(`${gwRoot}/package.json`)
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       try {
-        await client.query(`set search_path to ${SCHEMA}`)
         await client.query(
           'update seat_runtimes set status = $2, "deployPhase" = $3, "deployStartedAt" = $4 where "botId" = $1',
           [newBot, 'deploying', 'installing', Date.now() - 600_000],
@@ -1421,13 +1397,10 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
           GATEWAY_DEPLOY_WAIT_MS: '300',
         },
       })
-      const require = createRequire(`${gwRoot}/package.json`)
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
+      let client
       try {
         await waitHttp(gw2Base + '/health', { child: gw2, what: 'machine-deploy gateway #2' })
-        await client.connect()
-        await client.query(`set search_path to ${SCHEMA}`)
+        client = await pgClient(SCHEMA)
         const seatRow = async (accountId, botId) =>
           (await client.query('select * from seat_runtimes where "accountId" = $1 and "botId" = $2', [accountId, botId])).rows[0]
         const auditCount = async (action, since) =>
@@ -1519,7 +1492,7 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
           }
         })
       } finally {
-        await client.end().catch(() => {})
+        await client?.end().catch(() => {})
         try {
           gw2.kill('SIGTERM')
         } catch {}
@@ -1556,12 +1529,8 @@ export async function runMachineDeploy({ gwRoot, test, req, start, waitHttp, ass
      * 变成未配对」的入口（那是好事），但库里出现这种行是完全可能的。
      */
     await test('粘住的机器坏了要报出来，不能悄悄换一台', async () => {
-      const require = createRequire(`${gwRoot}/package.json`)
-      const pg = require('pg')
-      const client = new pg.Client({ connectionString: PG_URL })
-      await client.connect()
+      const client = await pgClient(SCHEMA)
       try {
-        await client.query(`set search_path to ${SCHEMA}`)
         const mine = await client.query(
           'select distinct "machineId" from seat_runtimes where "accountId" = (select id from accounts where email = $1)',
           ['member1@machine.test'],
