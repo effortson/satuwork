@@ -2343,10 +2343,6 @@ var SatuCore = (() => {
     function L(zh) {
       return opts.t ? opts.t(zh) : zh;
     }
-    const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-    function esc2(s) {
-      return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESCAPES[c]);
-    }
     const MARK = "";
     const RE_HOLE = /\uE000(\d+)\uE000/g;
     function hold(store, html) {
@@ -2473,10 +2469,10 @@ var SatuCore = (() => {
     const RE_BARE_URL = /(^|[\s(（【「])(https?:\/\/[^\s<>()（）【】「」]+[^\s<>()（）【】「」.,;:!?，。；：！？])/g;
     function mathNode(tex, display) {
       const tag = display ? "div" : "span";
-      return "<" + tag + ' class="sw-math' + (display ? " sw-math-block" : "") + '" data-md="math" data-display="' + (display ? "1" : "0") + '" data-tex="' + esc2(tex) + '">' + // 兜底文字里**不带 $ 记号**。KaTeX 是异步拉的，带记号的话每个公式在渲染完成前都
+      return "<" + tag + ' class="sw-math' + (display ? " sw-math-block" : "") + '" data-md="math" data-display="' + (display ? "1" : "0") + '" data-tex="' + esc(tex) + '">' + // 兜底文字里**不带 $ 记号**。KaTeX 是异步拉的，带记号的话每个公式在渲染完成前都
       // 会先闪一下 `$$…$$`；不带的话看到的就是一行 TeX，CSS 已经把它标成等宽淡色，
       // 一眼就知道是「还没排版的公式」而不是正文写坏了。
-      esc2(tex) + "</" + tag + ">";
+      esc(tex) + "</" + tag + ">";
     }
     function inline(src, ctx) {
       const store = ctx.store;
@@ -2484,7 +2480,7 @@ var SatuCore = (() => {
       let s = String(src == null ? "" : src);
       s = s.replace(
         RE_INLINE_CODE,
-        (m, ticks, body) => hold(store, '<code data-md="inline-code">' + esc2(body.replace(/^ ([\s\S]*) $/, "$1")) + "</code>")
+        (m, ticks, body) => hold(store, '<code data-md="inline-code">' + esc(body.replace(/^ ([\s\S]*) $/, "$1")) + "</code>")
       );
       s = s.replace(RE_TEX_PAREN, (m, tex) => hold(store, mathNode(tex, false)));
       s = s.replace(RE_TEX_BRACKET, (m, tex) => hold(store, mathNode(tex, true)));
@@ -2494,7 +2490,7 @@ var SatuCore = (() => {
       });
       s = s.replace(RE_IMG, (m, alt, url, title) => {
         const href = safeUrl(url, "img");
-        if (!href) return hold(store, esc2(alt));
+        if (!href) return hold(store, esc(alt));
         if (/^https?:\/\//i.test(href) && !loadedImages.has(href)) {
           let host = "";
           try {
@@ -2503,34 +2499,34 @@ var SatuCore = (() => {
           }
           return hold(
             store,
-            '<button type="button" class="sw-md-remote-img" data-md="remote-image" data-md-act="load-image" data-src="' + esc2(href) + '" data-alt="' + esc2(alt) + '" title="' + esc2(href) + '">' + esc2(L("点击加载图片")) + (host ? "（" + esc2(host) + "）" : "") + (alt ? "：" + esc2(alt) : "") + "</button>"
+            '<button type="button" class="sw-md-remote-img" data-md="remote-image" data-md-act="load-image" data-src="' + esc(href) + '" data-alt="' + esc(alt) + '" title="' + esc(href) + '">' + esc(L("点击加载图片")) + (host ? "（" + esc(host) + "）" : "") + (alt ? "：" + esc(alt) : "") + "</button>"
           );
         }
         return hold(
           store,
-          '<img data-md="image" src="' + esc2(href) + '" alt="' + esc2(alt) + '"' + (title ? ' title="' + esc2(title) + '"' : "") + ' loading="lazy">'
+          '<img data-md="image" src="' + esc(href) + '" alt="' + esc(alt) + '"' + (title ? ' title="' + esc(title) + '"' : "") + ' loading="lazy">'
         );
       });
       s = s.replace(RE_LINK, (m, text, url, title) => {
         const href = safeUrl(url, "a");
-        const label = depth > 3 ? esc2(text) : inline(text, { store, depth: depth + 1 });
+        const label = depth > 3 ? esc(text) : inline(text, { store, depth: depth + 1 });
         if (!href) return hold(store, label);
         return hold(
           store,
-          '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow"' + (title ? ' title="' + esc2(title) + '"' : "") + ">" + label + "</a>"
+          '<a data-md="link" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow"' + (title ? ' title="' + esc(title) + '"' : "") + ">" + label + "</a>"
         );
       });
       s = s.replace(RE_AUTOLINK, (m, url) => {
         const href = safeUrl(url, "a");
         if (!href) return m;
-        return hold(store, '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc2(url) + "</a>");
+        return hold(store, '<a data-md="link" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc(url) + "</a>");
       });
       s = s.replace(RE_BARE_URL, (m, pre, url) => {
         const href = safeUrl(url, "a");
         if (!href) return m;
-        return pre + hold(store, '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc2(url) + "</a>");
+        return pre + hold(store, '<a data-md="link" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc(url) + "</a>");
       });
-      s = esc2(s);
+      s = esc(s);
       s = s.replace(/\*\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*\*/g, '<strong data-md="strong"><em>$1</em></strong>');
       s = s.replace(/(\*\*|__)(?!\s)([\s\S]+?)(?<!\s)\1/g, '<strong data-md="strong">$2</strong>');
       s = s.replace(/~~(?!\s)([\s\S]+?)(?<!\s)~~/g, '<del data-md="strike">$1</del>');
@@ -2564,17 +2560,17 @@ var SatuCore = (() => {
       return n;
     }
     function toolBtn(act, label) {
-      return '<button type="button" class="sw-tool" data-md-act="' + act + '" title="' + esc2(label) + '">' + esc2(label) + "</button>";
+      return '<button type="button" class="sw-tool" data-md-act="' + act + '" title="' + esc(label) + '">' + esc(label) + "</button>";
     }
     function codeFigure(lang, code, ctx) {
       const label = String(lang || "").trim().toLowerCase().split(/\s+/)[0];
       if (label === "mermaid") return mermaidFigure(code);
       if (label === "math" || label === "latex" || label === "tex") return mathNode(code.trim(), true);
       const shown = label || "text";
-      return '<figure class="sw-code" data-md="code-block" data-lang="' + esc2(shown) + '"><figcaption class="sw-code-head"><span class="sw-code-lang">' + esc2(shown) + '</span><span class="sw-code-tools">' + toolBtn("copy", L("复制")) + toolBtn("download", L("下载")) + '</span></figcaption><pre class="sw-code-body"><code class="language-' + esc2(shown) + '">' + esc2(code.replace(/\n$/, "")) + "</code></pre></figure>";
+      return '<figure class="sw-code" data-md="code-block" data-lang="' + esc(shown) + '"><figcaption class="sw-code-head"><span class="sw-code-lang">' + esc(shown) + '</span><span class="sw-code-tools">' + toolBtn("copy", L("复制")) + toolBtn("download", L("下载")) + '</span></figcaption><pre class="sw-code-body"><code class="language-' + esc(shown) + '">' + esc(code.replace(/\n$/, "")) + "</code></pre></figure>";
     }
     function mermaidFigure(code) {
-      return '<figure class="sw-mermaid" data-md="mermaid" data-view="diagram"><figcaption class="sw-code-head"><span class="sw-code-lang">mermaid</span><span class="sw-code-tools">' + toolBtn("mermaid-view", L("源码")) + toolBtn("copy", L("复制")) + toolBtn("mermaid-svg", L("下载")) + '</span></figcaption><div class="sw-mermaid-canvas" data-state="pending"><span class="sw-mermaid-wait">' + esc2(L("正在画图…")) + '</span></div><pre class="sw-mermaid-src"><code class="language-mermaid">' + esc2(code.replace(/\n$/, "")) + "</code></pre></figure>";
+      return '<figure class="sw-mermaid" data-md="mermaid" data-view="diagram"><figcaption class="sw-code-head"><span class="sw-code-lang">mermaid</span><span class="sw-code-tools">' + toolBtn("mermaid-view", L("源码")) + toolBtn("copy", L("复制")) + toolBtn("mermaid-svg", L("下载")) + '</span></figcaption><div class="sw-mermaid-canvas" data-state="pending"><span class="sw-mermaid-wait">' + esc(L("正在画图…")) + '</span></div><pre class="sw-mermaid-src"><code class="language-mermaid">' + esc(code.replace(/\n$/, "")) + "</code></pre></figure>";
     }
     function splitRow(line) {
       const trimmed = line.trim().replace(/^\|/, "").replace(/\|[ \t]*$/, "");
@@ -2787,7 +2783,7 @@ var SatuCore = (() => {
       const ctx = { store: [], depth: 0 };
       return blocks(text.replace(/\r\n?/g, "\n").split("\n"), ctx);
     }
-    return { render, splitBlocks, healStream, esc: esc2, safeUrl, loadedImages };
+    return { render, splitBlocks, healStream, esc, safeUrl, loadedImages };
   }
   return __toCommonJS(index_exports);
 })();

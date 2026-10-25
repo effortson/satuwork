@@ -54,7 +54,6 @@ function loadChat(root) {
     // chat.js 从别的分片拿的那几个：只留这两组函数真正会走到的。
     state: { chatEvents: [], chatSessionId: 's1', chatPending: [], catalog: [], runtimeBots: [], me: {} },
     t: (s) => s,
-    esc: (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]),
     svg: () => '',
     api: async () => ({}),
     flash() {},
@@ -62,10 +61,6 @@ function loadChat(root) {
     initialOf: () => 'X',
     chatBotIdOf: () => 'b',
     fmtTime: (n) => new Date(n).toISOString(),
-    // 分割线按 SATU_TZ 切天，state.js 里的实现；这里照抄一份。
-    SATU_TZ: 'Asia/Kuching',
-    tzDayKey: (n) =>
-      new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuching', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(n)),
     document: {
       getElementById: (id) => (id === 'chat-todock' ? todock : null),
       // 记下 document 上挂的监听（长按菜单那几个），测里直接喂假事件。
@@ -89,6 +84,10 @@ function loadChat(root) {
   // fold 那一组现在住在 core（经 core.js 的 SatuCore 转接回来），所以先把 core.js 装进同一个
   // 上下文——线上它也是 index.html 里第一个脚本。
   runInContext(readFileSync(join(root, 'gateway/ui/core.js'), 'utf8'), ctx, { filename: 'core.js' })
+  // 转义和按 SATU_TZ 切天（分割线用）就是 state.js 转接的那几个，直接拿 core 的，不另抄一份。
+  ctx.esc = ctx.SatuCore.esc
+  ctx.SATU_TZ = ctx.SatuCore.SATU_TZ
+  ctx.tzDayKey = ctx.SatuCore.tzDayKey
   runInContext(readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8'), ctx, { filename: 'chat.js' })
   return ctx
 }
