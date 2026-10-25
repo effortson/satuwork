@@ -1700,18 +1700,17 @@ function statCard(label, value) {
 function confirmModal() {
   const c = state.confirm
   if (!c) return ''
-  return `<div class="gw-modal-backdrop" data-act="confirm-cancel">
-    <div class="gw-modal" data-stop>
-      <div>
-        <h2 style="font-size: 20px; margin: 0 0 4px;">${esc(c.title)}</h2>
-        <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${esc(c.body)}</p>
-      </div>
-      <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
+  return modalBox({
+    close: 'confirm-cancel',
+    attrs: 'class="gw-modal" data-stop',
+    x: false,
+    title: esc(c.title),
+    sub: esc(c.body),
+    body: `<div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="confirm-cancel">${t('取消')}</button>
         <button type="button" class="btn btn-primary" data-act="confirm-ok">${esc(t(c.label))}</button>
-      </div>
-    </div>
-  </div>`
+      </div>`,
+  })
 }
 
 function secretModal() {
@@ -1750,16 +1749,13 @@ function inviteModal() {
         ? t('已复制')
         : t('再复制一次')
       : t('生成并复制链接')
-  return `<div class="gw-modal-backdrop" data-act="invite-close">
-    <form id="invite-form" class="gw-modal" style="max-width: 500px; max-height: 88vh; overflow-y: auto;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${t('邀请成员')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('生成一条一次性邀请链接，发给要加入的同事。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="invite-close">${svg(CLOSE_ICON, 16)}</button>
-      </div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
+  return modalBox({
+    close: 'invite-close',
+    tag: 'form',
+    attrs: 'id="invite-form" class="gw-modal" style="max-width: 500px; max-height: 88vh; overflow-y: auto;" data-stop',
+    title: t('邀请成员'),
+    sub: t('生成一条一次性邀请链接，发给要加入的同事。'),
+    body: `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
         <div class="field">
           <label for="iv-name">${t('姓名')}</label>
           <input class="input" id="iv-name" name="name" type="text" value="${esc(f.name)}" placeholder="${esc(t('受邀人姓名'))}" ${link ? 'disabled' : ''}>
@@ -1796,9 +1792,8 @@ function inviteModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="invite-close">${link ? t('完成') : t('取消')}</button>
         <button type="submit" class="btn btn-primary" style="min-width: 104px;" ${state.busy ? 'disabled' : ''}>${btn}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 function groupModal() {
@@ -1827,16 +1822,13 @@ function groupModal() {
       </button>`
     })
     .join('')
-  return `<div class="gw-modal-backdrop" data-act="group-close">
-    <form id="group-form" class="gw-modal" style="max-width: 460px; max-height: 88vh; overflow-y: auto;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${editing ? t('管理分组') : t('新建分组')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('分组用于批量授权与统计，成员可同时属于多个分组。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="group-close">${svg(CLOSE_ICON, 16)}</button>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'group-close',
+    tag: 'form',
+    attrs: 'id="group-form" class="gw-modal" style="max-width: 460px; max-height: 88vh; overflow-y: auto;" data-stop',
+    title: editing ? t('管理分组') : t('新建分组'),
+    sub: t('分组用于批量授权与统计，成员可同时属于多个分组。'),
+    body: `<div class="field">
         <label for="gp-name">${t('分组名称')}</label>
         <input class="input" id="gp-name" name="name" type="text" required value="${esc(f.name)}" placeholder="${esc(t('例如：客服组'))}">
       </div>
@@ -1864,9 +1856,8 @@ function groupModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="group-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : editing ? t('保存') : t('创建分组')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 function editModal() {
@@ -1888,16 +1879,13 @@ function editModal() {
     )
     .join('')
   const hint = MEMBER_STATUS[f.status]?.hint || ''
-  return `<div class="gw-modal-backdrop" data-act="edit-close">
-    <form id="edit-member-form" class="gw-modal" style="max-width: 460px; max-height: 88vh; overflow-y: auto;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${t('编辑成员')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('修改角色与状态，或给 TA 发一条口令重置链接。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="edit-close">${svg(CLOSE_ICON, 16)}</button>
-      </div>
-      <div style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md);">
+  return modalBox({
+    close: 'edit-close',
+    tag: 'form',
+    attrs: 'id="edit-member-form" class="gw-modal" style="max-width: 460px; max-height: 88vh; overflow-y: auto;" data-stop',
+    title: t('编辑成员'),
+    sub: t('修改角色与状态，或给 TA 发一条口令重置链接。'),
+    body: `<div style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md);">
         <span class="satu-avatar" style="background: var(--color-accent-2-200); color: var(--color-accent-2-800);">${esc((member.name || member.email).slice(0, 1).toUpperCase())}</span>
         <div style="min-width: 0;">
           <div style="font-size: 14px; font-weight: 600;">${esc(member.name)}</div>
@@ -1939,9 +1927,8 @@ function editModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="edit-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 function memberRow(m) {

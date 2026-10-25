@@ -101,13 +101,14 @@ function kbCreateModal() {
   const m = state.kbCreate
   if (!m) return ''
   const v = m.draft || { name: '', desc: '', share: 'all' }
-  return `<div class="gw-modal-backdrop" data-act="kb-create-close">
-    <form id="kb-create-form" class="gw-modal" style="max-width: 480px;" data-stop>
-      <div>
-        <h2 style="font-size: 20px; margin: 0 0 4px;">${t('新建知识库', 'New knowledge base')}</h2>
-        <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('建好之后往里传文件。单个知识库最多 200 MB。', 'Create it, then upload files. Each knowledge base holds up to 200 MB.')}</p>
-      </div>
-      ${m.error ? `<div class="gw-flash gw-flash-err">${esc(m.error)}</div>` : ''}
+  return modalBox({
+    close: 'kb-create-close',
+    tag: 'form',
+    attrs: 'id="kb-create-form" class="gw-modal" style="max-width: 480px;" data-stop',
+    x: false,
+    title: t('新建知识库', 'New knowledge base'),
+    sub: t('建好之后往里传文件。单个知识库最多 200 MB。', 'Create it, then upload files. Each knowledge base holds up to 200 MB.'),
+    body: `${m.error ? `<div class="gw-flash gw-flash-err">${esc(m.error)}</div>` : ''}
       <div class="field">
         <label for="kb-name">${t('名称')}</label>
         <input class="input" id="kb-name" name="name" value="${esc(v.name)}" maxlength="60" required>
@@ -120,9 +121,8 @@ function kbCreateModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="kb-create-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('创建', 'Create')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 /** 共享范围三选一。名单那张勾选表只在详情页画（新建时先选范围，名单建完再勾）。 */

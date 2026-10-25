@@ -129,16 +129,13 @@ function planSkuModal() {
     bonus: cur ? milsOf(cur, 'bonus') / 1000 : 0,
     knowledgeBases: cur ? cur.knowledgeBases || 0 : 0,
   }
-  return `<div class="gw-modal-backdrop" data-act="plan-sku-close">
-    <form id="plan-sku-form" class="gw-modal" style="max-width: 460px;" data-id="${esc(cur?.id || '')}" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${esc(title)}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('改价目表不会动已经开出去的公司席位。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="plan-sku-close">${svg(CLOSE_ICON, 16)}</button>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'plan-sku-close',
+    tag: 'form',
+    attrs: `id="plan-sku-form" class="gw-modal" style="max-width: 460px;" data-id="${esc(cur?.id || '')}" data-stop`,
+    title: esc(title),
+    sub: t('改价目表不会动已经开出去的公司席位。'),
+    body: `<div class="field">
         <label for="plan-sku-name">${t('名称（中文）')}</label>
         <input class="input" id="plan-sku-name" name="name" value="${esc(v.name)}" required>
       </div>
@@ -182,9 +179,8 @@ function planSkuModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="plan-sku-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 /**
@@ -271,16 +267,13 @@ function orderModal() {
   }
   // 一张表单两种单子：套餐单要选套餐、席位、账期，充值单只有金额和备注。
   const topup = v.kind === 'topup'
-  return `<div class="gw-modal-backdrop" data-act="order-close">
-    <form id="order-form" class="gw-modal" style="max-width: 480px; max-height: 88vh; overflow-y: auto;" data-id="${esc(cur?.id || '')}" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${cur ? t('修改订单') : topup ? t('新建充值单') : t('新建套餐单')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${topup ? t('充值单付款后才开充值记录，余额也是那时候才涨。') : t('下单时套餐内容会抄进订单，之后改价目表不影响它。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="order-close">${svg(CLOSE_ICON, 16)}</button>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'order-close',
+    tag: 'form',
+    attrs: `id="order-form" class="gw-modal" style="max-width: 480px; max-height: 88vh; overflow-y: auto;" data-id="${esc(cur?.id || '')}" data-stop`,
+    title: cur ? t('修改订单') : topup ? t('新建充值单') : t('新建套餐单'),
+    sub: topup ? t('充值单付款后才开充值记录，余额也是那时候才涨。') : t('下单时套餐内容会抄进订单，之后改价目表不影响它。'),
+    body: `<div class="field">
         <label for="order-kind">${t('单据类型')}</label>
         <select class="input" id="order-kind" name="kind" data-act="order-kind-pick" ${cur ? 'disabled' : ''}>
           <option value="plan" ${!topup ? 'selected' : ''}>${t('套餐')}</option>
@@ -359,9 +352,8 @@ function orderModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="order-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 function ordersPage() {

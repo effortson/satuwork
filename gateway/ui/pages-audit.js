@@ -351,16 +351,13 @@ function phoneValue(fd) {
 
 function orgCreateModal() {
   if (!state.orgCreateOpen) return ''
-  return `<div class="gw-modal-backdrop" data-act="org-create-close">
-    <form id="create-org-form" class="gw-modal" style="max-width: 500px; max-height: 88vh; overflow-y: auto;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${t('新建公司')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('创建公司并指定一名管理员。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="org-create-close">${svg(CLOSE_ICON, 16)}</button>
-      </div>
-      ${state.orgCreateError ? `<div class="gw-flash gw-flash-err">${esc(state.orgCreateError)}</div>` : ''}
+  return modalBox({
+    close: 'org-create-close',
+    tag: 'form',
+    attrs: 'id="create-org-form" class="gw-modal" style="max-width: 500px; max-height: 88vh; overflow-y: auto;" data-stop',
+    title: t('新建公司'),
+    sub: t('创建公司并指定一名管理员。'),
+    body: `${state.orgCreateError ? `<div class="gw-flash gw-flash-err">${esc(state.orgCreateError)}</div>` : ''}
       <div class="field">
         <label for="org-name">${t('名称')}</label>
         <input class="input" id="org-name" name="name" required>
@@ -405,9 +402,8 @@ function orgCreateModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="org-create-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('创建中…') : t('创建')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 function companiesPage() {
@@ -1125,16 +1121,11 @@ function seatEnvModal() {
         .join('') +
       `<p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('x11vnc 只听 localhost；noVNC 走内网 HTTP。不要当成公网安全。')}</p>`
     : `<p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${state.seatError || t('还没有部署。员工自己建一颗 Bot，它就会自己装上。')}</p>`
-  return `<div class="gw-modal-backdrop" data-act="seat-close">
-    <div class="gw-modal" style="max-width: 520px;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${t('员工环境')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${esc(m.name || m.email)} · ${esc(m.email)}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="seat-close">${svg(CLOSE_ICON, 16)}</button>
-      </div>
-      ${body}
-    </div>
-  </div>`
+  return modalBox({
+    close: 'seat-close',
+    attrs: 'class="gw-modal" style="max-width: 520px;" data-stop',
+    title: t('员工环境'),
+    sub: `${esc(m.name || m.email)} · ${esc(m.email)}`,
+    body: `${body}`,
+  })
 }

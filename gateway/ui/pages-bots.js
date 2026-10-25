@@ -1281,16 +1281,13 @@ function skillDialogView() {
   const del = skill
     ? `<button type="button" class="satu-linkbtn" style="margin-right: auto; color: var(--color-accent-800);" data-act="skill-delete">${t('删除这个 Skill')}</button>`
     : ''
-  return `<div class="gw-modal-backdrop" data-act="skill-close">
-    <form id="skill-form" class="gw-modal" style="max-width: 560px; max-height: 88vh; overflow-y: auto;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${skill ? t('编辑 Skill') : t('新建 Skill')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('Skill 把一组步骤和 MCP 工具打包成可复用的工作方法。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="skill-close">${svg(CLOSE_ICON, 16)}</button>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'skill-close',
+    tag: 'form',
+    attrs: 'id="skill-form" class="gw-modal" style="max-width: 560px; max-height: 88vh; overflow-y: auto;" data-stop',
+    title: skill ? t('编辑 Skill') : t('新建 Skill'),
+    sub: t('Skill 把一组步骤和 MCP 工具打包成可复用的工作方法。'),
+    body: `<div class="field">
         <label for="sk-name">${t('名称')}</label>
         <input class="input" id="sk-name" type="text" required value="${esc(f.name)}" placeholder="${esc(t('例如：工单归类与摘要'))}">
       </div>
@@ -1306,9 +1303,8 @@ function skillDialogView() {
         ${del}
         <button type="button" class="btn btn-secondary" data-act="skill-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : skill ? t('保存修改') : t('保存')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 function serverDialogView() {
@@ -1326,16 +1322,13 @@ function serverDialogView() {
   const tokenHint = f.hasToken
     ? t('已存了一把。留空表示不动它，填了就换成新的。')
     : t('存在本机库里，不会再从服务端发回浏览器。')
-  return `<div class="gw-modal-backdrop" data-act="skill-close">
-    <form id="server-form" class="gw-modal" style="max-width: 520px; max-height: 88vh; overflow-y: auto;" data-stop>
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);">
-        <div>
-          <h2 style="font-size: 20px; margin: 0 0 4px;">${server ? t('编辑 MCP 服务器') : t('接入 MCP 服务器')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('接入之后，它提供的工具即可被 Agent 调用。')}</p>
-        </div>
-        <button type="button" class="btn btn-ghost btn-icon" aria-label="${esc(t('关闭'))}" data-act="skill-close">${svg(CLOSE_ICON, 16)}</button>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'skill-close',
+    tag: 'form',
+    attrs: 'id="server-form" class="gw-modal" style="max-width: 520px; max-height: 88vh; overflow-y: auto;" data-stop',
+    title: server ? t('编辑 MCP 服务器') : t('接入 MCP 服务器'),
+    sub: t('接入之后，它提供的工具即可被 Agent 调用。'),
+    body: `<div class="field">
         <label for="tl-name">${t('名称')}</label>
         <input class="input" id="tl-name" name="name" type="text" required value="${esc(f.name)}" placeholder="${esc(t('例如：zendesk-mcp'))}">
       </div>
@@ -1361,9 +1354,8 @@ function serverDialogView() {
         ${del}
         <button type="button" class="btn btn-secondary" data-act="skill-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : server ? t('保存修改') : t('保存')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 

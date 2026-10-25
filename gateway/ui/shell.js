@@ -388,13 +388,13 @@ function rosterRowHtml(b, selected) {
 function botFolderModal() {
   const f = state.botFolderEdit
   if (!f) return ''
-  return `<div class="gw-modal-backdrop" data-act="bot-folder-close">
-    <div class="gw-modal" data-stop style="max-width: 400px;">
-      <div>
-        <h2 style="font-size: 20px; margin: 0 0 4px;">${f.id ? t('重命名分类', 'Rename folder') : t('新建分类', 'New folder')}</h2>
-        <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('分类只是你自己名单上的分法，把 Bot 拖到分类名上就归进去。', 'Folders only organize your own list; drag a bot onto a folder name to file it.')}</p>
-      </div>
-      <div class="field">
+  return modalBox({
+    close: 'bot-folder-close',
+    attrs: 'class="gw-modal" data-stop style="max-width: 400px;"',
+    x: false,
+    title: f.id ? t('重命名分类', 'Rename folder') : t('新建分类', 'New folder'),
+    sub: t('分类只是你自己名单上的分法，把 Bot 拖到分类名上就归进去。', 'Folders only organize your own list; drag a bot onto a folder name to file it.'),
+    body: `<div class="field">
         <label for="bf-name">${t('名字')}</label>
         <input class="input" id="bf-name" data-folderedit="name" value="${esc(f.name)}" maxlength="24" placeholder="${esc(t('例如：客户跟进', 'e.g. Customers'))}" autofocus>
       </div>
@@ -402,9 +402,8 @@ function botFolderModal() {
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="bot-folder-close">${t('取消')}</button>
         <button type="button" class="btn btn-primary" data-act="bot-folder-save" ${state.busy ? 'disabled' : ''}>${f.id ? t('保存') : t('创建', 'Create')}</button>
-      </div>
-    </div>
-  </div>`
+      </div>`,
+  })
 }
 
 async function saveBotFolder() {
