@@ -30,7 +30,7 @@ function markNode(text, alt) {
 /**
  * 图片 / iframe 加载完或加载失败之后做什么。**内联 `onload=` / `onerror=` 的替代。**
  *
- * 原来那几处写成内联属性，理由写在 chat.js 的 DONE 上，而且那个理由是对的：整页是
+ * 原来那几处写成内联属性，理由写在 chat-preview.js 的 DONE 上，而且那个理由是对的：整页是
  * innerHTML 换掉的，挂在节点上的监听器每次重绘都会连同节点一起没，圈就永远转下去。
  *
  * 但内联事件处理器要求 CSP 的 `script-src` 带上 `'unsafe-inline'`，而那等于把整条 CSP

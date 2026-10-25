@@ -4,7 +4,7 @@
  * **什么时候用它**：席位 / 这台电脑上没有 LibreOffice，渲染不出 PDF 的时候（桌面端的本地 Bot
  * 多半是这样）。有 PDF 就看 PDF——LibreOffice 的还原度比这几个前端库高。
  *
- * **跑在哪儿**：一个 `sandbox="allow-scripts"`、不带 allow-same-origin 的 iframe（chat.js 的
+ * **跑在哪儿**：一个 `sandbox="allow-scripts"`、不带 allow-same-origin 的 iframe（chat-preview.js 的
  * previewBody）。文档内容等同外部输入：docx 里的超链接可以是 `javascript:`，pptx 里的图表
  * 数据会喂进 echarts——哪一个库有个没转义干净的地方，脚本就在渲染它的那个源里跑起来。所以
  * 这一页是个不透明源：拿不到 Gateway 的登录票（localStorage / sessionStorage）、摸不到父页面，
@@ -53,7 +53,7 @@
   let cdn = DEFAULT_CDN
   let busy = false
 
-  /** 父页面放在地址 # 后面的口令，每条消息都带回去：父页面只认它（见 chat.js 的 onOfficeViewMessage）。 */
+  /** 父页面放在地址 # 后面的口令，每条消息都带回去：父页面只认它（见 chat-preview.js 的 onOfficeViewMessage）。 */
   const nonce = location.hash.slice(1)
 
   function tell(event, extra) {

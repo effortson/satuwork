@@ -14,7 +14,7 @@ export const PREVIEW_TEXT_EXT = new Set([
 ])
 
 /**
- * 这几种在浏览器里没有原生渲染，得靠席位那边：先要一份渲染好的 PDF（chat.js 的 fetchDocPdf，
+ * 这几种在浏览器里没有原生渲染，得靠席位那边：先要一份渲染好的 PDF（chat-preview.js 的 fetchDocPdf，
  * 席位上的 LibreOffice 转），要不到再退回提取文本（fetchDocText）。
  *
  * 老格式（.doc / .xls / .ppt）和 ODF 只有 PDF 那条路——文本提取那套库不认它们。

@@ -18,7 +18,7 @@
   let fileBlob = null
   let frameUrl = ''
   /**
-   * 浏览器里能渲染的那几种 Office（office-view.html，和对话页 chat.js 的 PREVIEW_WEB_KIND 同一张表）。
+   * 浏览器里能渲染的那几种 Office（office-view.html，和对话页 chat-preview.js 的 PREVIEW_WEB_KIND 同一张表）。
    * 席位没装 LibreOffice、要不到 PDF 时走这条；老格式（doc / xls / ppt）只能看提取出来的文字。
    */
   const WEB_KIND = { docx: 'docx', xlsx: 'xlsx', xlsm: 'xlsx', pptx: 'pptx' }
@@ -135,7 +135,7 @@
   }
 
   /**
-   * Word / Excel / PPT：三条路依次试，和对话页（chat.js 的 fetchDocPdf / fetchDocWeb / fetchDocText）同一个顺序。
+   * Word / Excel / PPT：三条路依次试，和对话页（chat-preview.js 的 fetchDocPdf / fetchDocWeb / fetchDocText）同一个顺序。
    *
    * 1. 席位用 LibreOffice 渲染好的 PDF——还原度最高。**只认明确的 application/pdf**：老席位不认
    *    `as=pdf`，会把原文件字节原样回来，那塞进 PDF 阅读器只是一片解析失败。
@@ -165,7 +165,7 @@
 
   /**
    * 浏览器里渲染（office-view.html）。**只加 allow-scripts，绝不加 allow-same-origin**：渲染库要跑
-   * 脚本，但文档内容等同外部输入，让它待在不透明源里（理由见 chat.js 的 previewBody 那一支）。
+   * 脚本，但文档内容等同外部输入，让它待在不透明源里（理由见 chat-preview.js 的 previewBody 那一支）。
    *
    * 交接和对话页一样：那一页说 `ready`，这边把字节递进去；口令放在地址的 # 后面，只认带着
    * 这个口令、而且来自这个框的消息。渲染失败（`error`）就退回提取文字。

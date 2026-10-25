@@ -1015,7 +1015,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert((b.mentions || []).length === 1, `点名没跟着消息留下来：${JSON.stringify(b.mentions)}`)
       assert(b.mentions[0].label === 'Gmail (default)', `药丸上的名字不对：${b.mentions[0].label}`)
       // 气泡那一层是真 DOM（垫片里画不出来），这里只钉住它确实画了这排药丸。
-      const src = readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8')
+      const src = readFileSync(join(root, 'gateway/ui/chat-thread.js'), 'utf8')
       assert(src.includes('sw-mentions-in'), '气泡里没有画点名药丸的那一排')
     })
 
@@ -1023,8 +1023,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 这一条只验源码。滚动收浮层挂在 window 的**捕获阶段**，垫片里 window 是个空壳，
       // 事件根本发不出去——但错法就藏在那一行里：不看事件源头，滚浮层自己的结果区
       // （`.sw-toolpop pre`，最高 220px）也照收，手一动窗口就没了，长输出永远看不完。
-      const src = readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8')
-      // chat.js 里不止一个捕获阶段的 scroll 监听，认收浮层的那一个。
+      const src = readFileSync(join(root, 'gateway/ui/chat-toolpop.js'), 'utf8')
+      // 捕获阶段的 scroll 监听不止一个（长按菜单、内嵌桌面也挂了），认收浮层的那一个。
       const handler = [...src.matchAll(/addEventListener\(\s*'scroll',([\s\S]*?),\s*true,?\s*\)/g)]
         .map((m) => m[1])
         .find((h) => h.includes('hideToolPop'))

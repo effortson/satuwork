@@ -1,7 +1,7 @@
 /**
  * 页面骨架与重绘：pageView / appView / render()。各种表单的保存与提交在 actions.js。
  *
- * render() 是整页 innerHTML 换掉，所以对话正文不走它——那边是 paintChat 增量填（见 chat.js）。
+ * render() 是整页 innerHTML 换掉，所以对话正文不走它——那边是 paintChat 增量填（见 chat-thread.js）。
  */
 function pageView() {
   if (state.path.startsWith('/bots/')) return botDetailPage()
@@ -87,7 +87,7 @@ function pageAside() {
   /**
    * 点开一条日常任务时，整栏换成那一屏——但**上面那块屏只是藏起来，不是拿掉**。
    *
-   * 拿掉的代价是断一次 VNC（见 chat.js 的 syncDesktop：槽没了就卸载）。藏着的时候
+   * 拿掉的代价是断一次 VNC（见 chat-desktop.js 的 syncDesktop：槽没了就卸载）。藏着的时候
    * 它的 getBoundingClientRect 全是 0，常驻层自己会判成不可见，连接照旧活着；人点
    * 返回，槽一恢复尺寸，画面就在那儿。预览盖上来时同理。
    */
@@ -479,7 +479,7 @@ function render() {
     syncDesktop()
     return
   }
-  // 右栏待办 / 待办页里正写着的结论，换壳之前存一下（见 chat.js 的 stashHandoffNotes）。
+  // 右栏待办 / 待办页里正写着的结论，换壳之前存一下（见 chat-decide.js 的 stashHandoffNotes）。
   stashHandoffNotes(root)
   root.innerHTML = state.me ? appView() : anonView()
   fillHandoffNotes(root)
@@ -509,13 +509,13 @@ function render() {
     // 上下键选不动（一条候选都查不到），回车穿到发送那条路上去。
     paintCmdPick()
   }
-  // 右栏里的预览：内容在常驻层上，这里只对位置、内容变了才换（见 chat.js 的 syncPreview）。
+  // 右栏里的预览：内容在常驻层上，这里只对位置、内容变了才换（见 chat-preview.js 的 syncPreview）。
   // 笔刷滑杆在右栏的按钮行里，跟着整页换掉了，要重新接上。
   syncPreview()
   bindPaintBrush()
   // 日志面板同理：壳在 render 里，内容由 paintLogs 增量填。
   if (document.getElementById('log-body')) paintLogs()
-  // 右栏那棵工作区文件树：开着而这条会话还没取过的话，补一次（见 chat.js 的
+  // 右栏那棵工作区文件树：开着而这条会话还没取过的话，补一次（见 chat-workspace.js 的
   // ensureWorkspaceTree）。**挂在这儿而不是 paintChat 里**——paintChat 要先找得到
   // #chat-thread 才往下走，而那个节点在「还没部署」「一个 Bot 都没有」这两种形态下
   // 根本不画，右栏却照样开着，于是那一屏一次都不取，永远停在「载入中」。
@@ -523,7 +523,7 @@ function render() {
   // 内嵌桌面那块屏活在 #app 外面（重绘换不掉它），但它的位置是照着右栏里的空槽算
   // 的——壳换过一次就得重新对齐。
   syncDesktop()
-  // 正在装的那颗 Bot 要有人替它盯着（见 chat.js 的 ensureDeployWatch）：装好之后这一
+  // 正在装的那颗 Bot 要有人替它盯着（见 chat-seat.js 的 ensureDeployWatch）：装好之后这一
   // 页自己变成对话。挂在这儿是因为「要不要盯」由这一次画出来的那一屏决定——换页、
   // 换 Bot、装完，三件事都在 render 之后才成立。
   ensureDeployWatch()

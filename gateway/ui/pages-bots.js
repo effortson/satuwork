@@ -902,7 +902,7 @@ function fullBotPage(bot, a) {
 
 /**
  * 「新建 Bot」弹窗。员工自己建，**按下「创建」就开始装**——跳进去的那一页是安装进度，
- * 装好之后它自己变成对话（见 chat.js 的 chatDeployPrompt）。
+ * 装好之后它自己变成对话（见 chat-seat.js 的 chatDeployPrompt）。
  *
  * 只问身份：名字、头像、简介、一段补充说明。其余的来自公司模版，这里不问也不给改。
  */

@@ -1089,7 +1089,7 @@ async function loadPage() {
     await loadRuntimeBots().catch(() => {})
     // 状态点和摘要也不该只在对话页才有：人切到账单页等 Bot 干完活，正是要看着它。
     //
-    // **一条通道管所有 Bot**（见 chat.js 的 startRosterStream），所以在这儿起没有关系
+    // **一条通道管所有 Bot**（见 chat-stream.js 的 startRosterStream），所以在这儿起没有关系
     // ——它只占一个连接。这里以前是一个 Bot 一条流，十几条抢在正文前面开，画出消息的
     // 那条 `/runtime/sessions/:id/history` 只能排在后面干等，刷新一次十几秒才见到消息。
     void startRosterStream()

@@ -227,7 +227,7 @@ async function runConfirm() {
       render()
       return
     } else if (c.kind === 'ws-del') {
-      // 自己管提示与重取（见 chat.js 的 deleteWorkspaceEntry）：删完只重取上一层，
+      // 自己管提示与重取（见 chat-workspace.js 的 deleteWorkspaceEntry）：删完只重取上一层，
       // 而这里的兜底是整页 render——两者一起做的话，那一屏会先闪一次旧内容。
       await deleteWorkspaceEntry(c.path, c.name)
       return
@@ -489,7 +489,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'msg-select') {
-    // 长按菜单里的「选字」：把这一条放回系统选字（chat.js 的 selectMsgText）。
+    // 长按菜单里的「选字」：把这一条放回系统选字（chat-thread.js 的 selectMsgText）。
     closeMsgMenu()
     selectMsgText(btn.getAttribute('data-key') || '')
     return
@@ -517,12 +517,12 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-deny') {
-    // 拒绝也有范围：`once` 是只拒这一次，`turn` 是这一轮别再试（见 chat.js 的 approvalActs）。
+    // 拒绝也有范围：`once` 是只拒这一次，`turn` 是这一轮别再试（见 chat-bubble.js 的 approvalActs）。
     await decideApproval(btn.getAttribute('data-call'), 'deny', btn.getAttribute('data-scope') || 'once')
     return
   }
   if (act === 'chat-taskin-toggle') {
-    // 目标 Bot 里那件派来的活：摊开 / 折起它那一轮（chat.js 的 taskInBlock）。
+    // 目标 Bot 里那件派来的活：摊开 / 折起它那一轮（chat-bubble.js 的 taskInBlock）。
     const seq = btn.getAttribute('data-seq') || ''
     if (taskInOpen.has(seq)) taskInOpen.delete(seq)
     else taskInOpen.add(seq)
@@ -719,7 +719,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-todo-hide') {
-    // 关掉这一张。清单一变它自己回来（见 chat.js 的 chatTodoHidden）。
+    // 关掉这一张。清单一变它自己回来（见 chat-composer.js 的 chatTodoHidden）。
     hideChatTodos()
     return
   }
@@ -850,7 +850,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     asidePref.tab = tab === 'files' || tab === 'handoffs' ? tab : 'env'
     setAsideOpen(true)
     saveAside()
-    // 目录内容不在这儿取：重绘那一趟自己会补（见 chat.js 的 ensureWorkspaceTree）。
+    // 目录内容不在这儿取：重绘那一趟自己会补（见 chat-workspace.js 的 ensureWorkspaceTree）。
     render()
     return
   }
@@ -1102,7 +1102,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         ? state.machineDetail
         : (state.machines || []).find((m) => m.machine && m.machine.id === s.machineId)
     // 这里拿的不是日志本身，是「去哪儿领票」：面板先问 Gateway 要一张 5 分钟的票和
-    // 机器地址，再直接打那台机器（见 chat.js 的 startLogStream）。
+    // 机器地址，再直接打那台机器（见 chat-desktop.js 的 startLogStream）。
     const base = `${s.base}/logs/direct`
     // 拆过的席位（status=none）机器上已经没有那个单元了，日志只会是空的，别列进来。
     const seatList = ((card && card.seatList) || []).filter((x) => x.status !== 'none')
@@ -1381,7 +1381,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         }
       }
       await loadRuntimeBots().catch(() => {})
-      // 直接进它的对话页：装好之后那一页会自己变成对话（见 chat.js 的 ensureDeployWatch）。
+      // 直接进它的对话页：装好之后那一页会自己变成对话（见 chat-seat.js 的 ensureDeployWatch）。
       go('/a/' + data.bot.id)
     } catch (err) {
       state.newBotError = err.message

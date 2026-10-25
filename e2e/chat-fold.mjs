@@ -88,7 +88,11 @@ function loadChat(root) {
   ctx.esc = ctx.SatuCore.esc
   ctx.SATU_TZ = ctx.SatuCore.SATU_TZ
   ctx.tzDayKey = ctx.SatuCore.tzDayKey
-  runInContext(readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8'), ctx, { filename: 'chat.js' })
+  // chat.js 拆成了一串 chat-*.js，按 index.html 里的顺序一个脚本一段地装（和浏览器一样，顶层的
+  // 函数声明照旧挂在上下文上）。chat-find.js 是另一件事（对话内查找），这里用不着。
+  const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
+  const shards = [...html.matchAll(/<script src="\/(chat(?:-[a-z]+)?\.js)"[^>]*\bdata-app-part\b/g)].map((m) => m[1]).filter((f) => f !== 'chat-find.js')
+  for (const f of shards) runInContext(readFileSync(join(root, 'gateway/ui', f), 'utf8'), ctx, { filename: f })
   return ctx
 }
 

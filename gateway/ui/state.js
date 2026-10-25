@@ -276,7 +276,7 @@ const state = {
   deploying: false,
   /**
    * 运行日志面板。null 表示没开着；开着时是
-   * `{ title, active, sources: [{ key, label, url }] }`——见 chat.js 的 openLogs。
+   * `{ title, active, sources: [{ key, label, url }] }`——见 chat-desktop.js 的 openLogs。
    */
   logsOpen: null,
   logLines: [],
@@ -287,7 +287,7 @@ const state = {
    * `{ botId, status, phase, elapsedMs, since, lastError, stale, step: {…} | null }`。
    *
    * **带着 botId**：这一份是轮询回来的，人在两次回执之间换了 Bot 是常事，不认名字就会
-   * 把上一个 Bot 的进度画在这一页上（见 chat.js 的 deployProgressNow）。
+   * 把上一个 Bot 的进度画在这一页上（见 chat-seat.js 的 deployProgressNow）。
    *
    * `since` 是**本地**锚点（`Date.now() - elapsedMs`，收到那一刻算一次）。服务端给的是
    * 年龄不是时刻——两台钟差几分钟是常事，而读秒正是个时间问题（见 pollDeployProgress）。
@@ -320,13 +320,13 @@ const state = {
   /** 这一条还没发出去的消息引用了什么（docs/chat-references.md）。 */
   chatRefs: [],
   /** botId → 没发出去的草稿。切走再切回来，打了一半的话还在。 */
-  /** 已经发出去、还没从流里回来的那几条。见 chat.js 的 mergePending。 */
+  /** 已经发出去、还没从流里回来的那几条。见 chat-thread.js 的 mergePending。 */
   chatPending: [],
   chatDrafts: {},
   /** 正在重放历史。期间只收不画，见 startChatStream。 */
   chatReplaying: false,
   /**
-   * 右栏那棵工作区文件树（见 chat.js 的 workspacePanel）。
+   * 右栏那棵工作区文件树（见 chat-workspace.js 的 workspacePanel）。
    * `wsDirs` 是「路径 → 这一层的内容」，`wsOpen` 是「哪几层展开着」。根目录的 key 是空串。
    *
    * `wsSession` 记着**这棵树是给哪条会话取的**。空串也是一个值——「那会儿还没接上

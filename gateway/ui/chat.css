@@ -185,7 +185,7 @@
   color: var(--secondary-foreground);
   transition: background 0.25s ease, color 0.25s ease;
 }
-/* 这一条还在写：头像自己呼吸（data-live 由 chat.js 的 updateRow 挂上）。
+/* 这一条还在写：头像自己呼吸（data-live 由 chat-thread.js 的 updateRow 挂上）。
    为什么值得单独做一个动效：三点省略号只在还没吐字的那一段有，一开口就没了；而一轮
    真花时间的活恰恰是「已经写了几段、后面还在跑」的那种——那时候屏幕上除了读秒那个数字
    没有任何东西在动，人分不出它是在跑还是已经答完了。
@@ -290,7 +290,7 @@
   .sw-chip[data-state='running'] svg { animation: none; }
 }
 
-/* 工具痕迹的折叠框（chat.js 的 toolFoldHtml）。整行占满，产出 / 读过的文件药丸接在它下面。
+/* 工具痕迹的折叠框（chat-bubble.js 的 toolFoldHtml）。整行占满，产出 / 读过的文件药丸接在它下面。
    默认收着：标题一句话说正在执行什么，展开是原来那些药丸，一行一颗。 */
 .sw-toolfold {
   flex: 1 1 100%;
@@ -518,7 +518,7 @@
 /* 正在停止。
  *
  * **停止不是当场生效的**：按下去只是把中止下发出去，Bot 收到、把手上那一步收尾，
- * `turn/end` 才回来（见 chat.js 的 abortChat）。中间快则几百毫秒，撞上一个正跑着的
+ * `turn/end` 才回来（见 chat-composer.js 的 abortChat）。中间快则几百毫秒，撞上一个正跑着的
  * 工具就是十几秒——这一段以前按钮一点变化都没有，人只能靠反复点来确认自己点上了。
  *
  * 转圈画在按钮**外沿**（::after 一圈环），图标留在原地只是淡下去：动的是「这件事
@@ -553,7 +553,7 @@
   .sw-send[data-state='stopping'] svg { animation: none; opacity: 0.6; }
 }
 
-/* 工具痕迹的悬浮窗。挂在 body 上，位置由 placeToolPop 算（见 chat.js）。 */
+/* 工具痕迹的悬浮窗。挂在 body 上，位置由 placeToolPop 算（见 chat-toolpop.js）。 */
 .sw-toolpop {
   position: fixed;
   z-index: 60;
@@ -794,7 +794,7 @@
 .sw-composer-tip .sw-spacer { flex: 1; }
 /* 正在停止的那一句。这一行平时是灰的背景信息（「Enter 发送」之类），而这一句是人刚
    做的那个动作的回执——抬一档到正文色，加一个不晃眼的呼吸，人的余光才接得住它。
-   读秒本身就在动（见 chat.js 的 tickStop），所以这里不再加任何位移。 */
+   读秒本身就在动（见 chat-meta.js 的 tickStop），所以这里不再加任何位移。 */
 #chat-tip[data-hint='stopping'] {
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
@@ -1182,7 +1182,7 @@
 
 .sw-file > small { flex: none; color: var(--muted-foreground); font-size: 11px; }
 
-/* 预览。摆在对话页右栏里（见 chat.js 的 previewPanel），不再是盖住整屏的弹层。 */
+/* 预览。摆在对话页右栏里（见 chat-preview.js 的 previewPanel），不再是盖住整屏的弹层。 */
 .sw-preview { max-width: min(1040px, 94vw); width: 100%; }
 .sw-preview-side {
   flex: 1;
@@ -1199,7 +1199,7 @@
 /* 右栏窄：看法 / 涂抹 / 下载那一排单独一行，放不下就折行，别把文件名挤没了。 */
 .sw-preview-side .sw-preview-acts { flex-wrap: wrap; gap: var(--space-2); }
 /* 右栏里只留一个空槽，吃掉头上两行剩下的全部高度；真正的内容在 body 上的常驻层里
-   （.sw-previewl），照着这个槽的位置摆——见 chat.js 的 syncPreview。 */
+   （.sw-previewl），照着这个槽的位置摆——见 chat-preview.js 的 syncPreview。 */
 .sw-preview-slot { flex: 1; min-height: 0; border-radius: var(--radius); background: var(--muted); }
 /* 常驻层：样式和弹层时代的内容框是同一套（.sw-preview-body），只是位置由 placePreview
    按槽给。14 压在菜单（15）之下，弹层蒙版（25）和全屏桌面（61）更在它上面。 */
@@ -1373,7 +1373,7 @@
   text-align: left;
   cursor: pointer;
 }
-/* 行 + 行末那颗删除。整行本身是按钮，所以那一颗只能是它的兄弟（见 chat.js 的
+/* 行 + 行末那颗删除。整行本身是按钮，所以那一颗只能是它的兄弟（见 chat-workspace.js 的
    wsDelBtn），这一层是把两者摆回同一行的容器。 */
 .sw-ws-item { display: flex; align-items: center; min-width: 0; }
 .sw-ws-item .sw-ws-row { flex: 1; min-width: 0; }
@@ -1405,7 +1405,7 @@
 .sw-ws-err { color: var(--color-accent-700); }
 
 /* ── 右栏里的内嵌桌面 ─────────────────────────────────────────────────────
-   槽是占位，真正的 iframe 在 body 上的常驻层里（见 chat.js 的 syncDesktop）——
+   槽是占位，真正的 iframe 在 body 上的常驻层里（见 chat-desktop.js 的 syncDesktop）——
    整页重绘换不掉它，桌面才不会每重绘一次就断一次。两者的圆角要对得上。 */
 .sw-desk { display: flex; flex-direction: column; gap: 6px; }
 .sw-desk-slot {
@@ -1558,7 +1558,7 @@
 
 /* ── 安装进度 ─────────────────────────────────────────────────────────
    建完 Bot 之后那一屏。条子按**步数**走，不按时间：几步的时长差着一个数量级，
-   按时间摊出来的匀速条会在装桌面那一步停住不动（见 chat.js 的 installProgressBody）。
+   按时间摊出来的匀速条会在装桌面那一步停住不动（见 chat-seat.js 的 installProgressBody）。
    管家报不出第几步时整根条子不画——一根不动的条比没有条更像卡住了。 */
 .sw-install-bar {
   width: 100%;
@@ -1862,8 +1862,8 @@
   box-shadow: var(--shadow-2xs);
 }
 
-/* 内容自己加载完之前的转圈。iframe / img 一 load 就把 data-busy 摘掉（见 chat.js
-   的 DONE_JS），转圈跟着消失——CSS 只认这个属性，不需要再管一遍状态。 */
+/* 内容自己加载完之前的转圈。iframe / img 一 load 就把 data-busy 摘掉（见 chat-preview.js
+   的 DONE），转圈跟着消失——CSS 只认这个属性，不需要再管一遍状态。 */
 /* 居中同时兼顾两种内容：iframe 自己是 100%×100% 铺满，图片按比例缩在中间。 */
 .sw-preview-load {
   position: relative;
@@ -1895,7 +1895,7 @@
 .sw-preview-note > .sw-preview-spin { width: 14px; height: 14px; border-width: 2px; }
 @keyframes sw-spin { to { transform: rotate(360deg); } }
 
-/* ── 派出去的活：委派卡和派活卡共用一套（chat.js 的 taskItemHtml）─────────────
+/* ── 派出去的活：委派卡和派活卡共用一套（chat-bubble.js 的 taskItemHtml）─────────────
    都是主 Bot 气泡里的一张卡，一批 N 条一张卡 N 行；派活那一行前面多一个对方的头像和名字。
    每一件：第一行状态点 + 任务 + 状态 + 读秒/步数/花费；第二行正在干什么或结果如何；点开是详情和过程。
    颜色按 data-tone 分：run 跑着、wait 等着、ok 做成、warn 要留意、bad 没做成、off 停了。 */
@@ -2037,7 +2037,7 @@
   .sw-preview-spin { animation: none; }
 }
 
-/* 正文里就地替换出来的文件药丸（见 chat.js 的 inlineFileChips）。
+/* 正文里就地替换出来的文件药丸（见 chat-bubble.js 的 inlineFileChips）。
    它长在一行文字中间，所以要跟着基线走，也不能因为文件名长就把这一行撑开。 */
 .sw-filechip-inline {
   vertical-align: -3px;
@@ -2256,11 +2256,11 @@ button.sw-ref-card:hover { background: color-mix(in srgb, var(--secondary) 70%, 
 .sw-msg-act:hover { color: var(--color-text); background: var(--secondary); }
 .sw-msg-act > span { display: none; }
 @media (hover: none) {
-  /* 触屏没有悬停：这排动作不常显，改成长按消息弹菜单（chat.js 的 openMsgMenu）。 */
+  /* 触屏没有悬停：这排动作不常显，改成长按消息弹菜单（chat-thread.js 的 openMsgMenu）。 */
   .sw-msg-acts { display: none !important; }
   /* 长按归我们的菜单：关掉系统的选字和长按预览，「复制」在菜单里。 */
   #chat-thread .sw-bubble { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-  /* 交给系统长按的那些（chat.js 的 PRESS_NATIVE）放回来：复制链接、存图、选一段代码，确认卡里的输入框
+  /* 交给系统长按的那些（chat-thread.js 的 PRESS_NATIVE）放回来：复制链接、存图、选一段代码，确认卡里的输入框
      能选能改；长按菜单里点了「选字」的那一条整条放回来。-webkit-user-select 会继承，得逐个写回 text。 */
   #chat-thread .sw-bubble :is(a, img, pre, code, input, textarea, select, [contenteditable='true'], .sw-approvals, .sw-handoffs),
   #chat-thread .sw-msg[data-selecting='1'] .sw-bubble {
