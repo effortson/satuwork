@@ -9,18 +9,12 @@
  *    模型就会转头告诉用户做不到。空结果在它眼里等于「这件事不存在」。
  */
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { tempDir } from './e2e-lib.mjs'
 
-const home = mkdtempSync(join(tmpdir(), 'satu-skills-'))
+const home = tempDir('satu-skills-')
 process.env.SATUWORK_HOME = home
 process.env.SATUWORK_BOT_ID = 'bot-1'
-process.on('exit', () => {
-  try {
-    rmSync(home, { recursive: true, force: true })
-  } catch {}
-})
 
 const { Context } = await import('@deepseek-ai/cordis')
 const { skillSplit, skillTools } = await import('./src/agent/index.ts')

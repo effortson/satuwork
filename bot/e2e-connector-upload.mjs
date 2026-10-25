@@ -13,9 +13,9 @@
  */
 import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { tempDir } from './e2e-lib.mjs'
 
 // **要在 import 之前设**：上限是模块加载那一刻读的环境变量。
 process.env.SATUWORK_CONNECTOR_UPLOAD_MAX_BYTES = '2048'
@@ -26,8 +26,7 @@ const { WorkspaceService } = await import('./src/workspace/index.ts')
 const connectorTool = await import('./src/tools/connector.ts')
 const { mimeOf, uploadUrlOf } = connectorTool
 
-const root = mkdtempSync(join(tmpdir(), 'satu-upload-'))
-process.on('exit', () => { try { rmSync(root, { recursive: true, force: true }) } catch {} })
+const root = tempDir('satu-upload-')
 
 // ── 假 Gateway + 假对象存储（同一台）：记下收到的每一次，按参数决定回什么 ──────────
 const seen = []

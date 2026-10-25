@@ -7,20 +7,17 @@
  * `exec bash` 读到 EOF 就退），于是「命令真的在窗口里跑了」和「没把凭据带进窗口」
  * 都看得见。
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { WorkspaceService } from './src/workspace/index.ts'
 import { ToolService } from './src/tools/index.ts'
+import { tempDir } from './e2e-lib.mjs'
 
-const home = mkdtempSync(join(tmpdir(), 'satu-desk-home-'))
-const root = mkdtempSync(join(tmpdir(), 'satu-desk-'))
-const bin = mkdtempSync(join(tmpdir(), 'satu-desk-bin-'))
+const home = tempDir('satu-desk-home-')
+const root = tempDir('satu-desk-')
+const bin = tempDir('satu-desk-bin-')
 const rec = join(bin, 'rec')
-process.on('exit', () => {
-  for (const d of [home, root, bin]) try { rmSync(d, { recursive: true, force: true }) } catch {}
-})
 
 // 假终端：记参数、cwd、DISPLAY 和一条不该带进来的凭据；`-x` 之后的照跑。
 writeFileSync(

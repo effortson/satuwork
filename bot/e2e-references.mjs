@@ -8,8 +8,7 @@
  *   3. 太长的截断、不在的文件写明、越界的路径拒掉、对不上的 seq 拒掉；
  *   4. 排队、插话两条岔路都带着引用。
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import * as storagePlugin from './src/storage/index.ts'
@@ -21,10 +20,10 @@ import * as agentPlugin from './src/agent/index.ts'
 import { AssistantMessageEventStream, emptyAssistant } from './src/llm/stream.ts'
 import { refList } from './src/web/index.ts'
 import { SESSION_FORMAT_VERSION } from './src/session/types.ts'
+import { tempDir } from './e2e-lib.mjs'
 
-const home = mkdtempSync(join(tmpdir(), 'satu-refs-'))
-const work = mkdtempSync(join(tmpdir(), 'satu-refs-work-'))
-process.on('exit', () => { try { rmSync(home, { recursive: true, force: true }) } catch {} try { rmSync(work, { recursive: true, force: true }) } catch {} })
+const home = tempDir('satu-refs-')
+const work = tempDir('satu-refs-work-')
 
 /** 假目录：agent 插件 inject 了 catalog，这里只要它不抛。 */
 class FakeCatalog extends Service {

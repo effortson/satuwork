@@ -10,8 +10,7 @@
  *  C. 出图：LibreOffice 导出 PNG 只认第一页（7.4 上实测，PageRange 被无视），退路那条要真的
  *     画出第 2、3 页，而不是三张一样的第 1 页。
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { Document, Packer, Paragraph, PageBreak, TextRun } from 'docx'
@@ -26,14 +25,11 @@ import { parsePages } from './src/tools/look.ts'
 import { toAnthropic, toOpenAI, toOpenAIResponses } from './src/llm/gateway.ts'
 import { compactionPoint } from './src/agent/index.ts'
 import { AssistantMessageEventStream, emptyAssistant } from './src/llm/stream.ts'
+import { tempDir } from './e2e-lib.mjs'
 
-const home = mkdtempSync(join(tmpdir(), 'satu-look-'))
-const work = mkdtempSync(join(tmpdir(), 'satu-look-work-'))
+const home = tempDir('satu-look-')
+const work = tempDir('satu-look-work-')
 process.env.SATUWORK_HOME = home
-process.on('exit', () => {
-  try { rmSync(home, { recursive: true, force: true }) } catch {}
-  try { rmSync(work, { recursive: true, force: true }) } catch {}
-})
 const out = {}
 
 // ── A1. 页码 ──────────────────────────────────────────────────────────
