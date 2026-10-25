@@ -10,7 +10,7 @@ import {
   watchState,
   type ManagerState,
 } from './config.ts'
-import { HttpError, json, listen, Router, sameToken, type Req } from './http.ts'
+import { gatewayPost, HttpError, json, listen, Router, sameToken, type Req } from './http.ts'
 import { attachUpgrade, proxyIntercept } from './proxy.ts'
 import { bootChallenge, pairIfNeeded } from './pair.ts'
 import { diagnose } from './diag.ts'
@@ -548,10 +548,10 @@ async function heartbeat(): Promise<void> {
     return
   }
   try {
-    const res = await fetch(`${state.gatewayUrl}/internal/machines/${encodeURIComponent(state.machineId)}/heartbeat`, {
-      method: 'POST',
-      headers: { authorization: 'Bearer ' + state.token, 'content-type': 'application/json' },
-      body: JSON.stringify({
+    const res = await gatewayPost(
+      `${state.gatewayUrl}/internal/machines/${encodeURIComponent(state.machineId)}/heartbeat`,
+      state.token,
+      JSON.stringify({
         managerVersion: managerVersion(),
         protocol: PROTOCOL,
         node: process.versions.node,
@@ -572,8 +572,8 @@ async function heartbeat(): Promise<void> {
         logs: logUsage() ?? null,
         seats: await seatsWithLiveness(),
       }),
-      signal: AbortSignal.timeout(15_000),
-    })
+      { timeoutMs: 15_000 },
+    )
     if (!res.ok) {
       // 401/403 = Gateway 不认这把票了。别的状态码（5xx、502）是它自己的毛病，
       // 不该算在这个账上，否则一次 Gateway 重启就会把整队机器推进「失联」。

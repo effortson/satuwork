@@ -151,6 +151,29 @@ function match(parts: string[], path: string): Record<string, string> | null {
   return params
 }
 
+/**
+ * 带机器票往 Gateway POST 一段 JSON：心跳、下线回执、LLM 授权和结算都是这一种请求。
+ * 超时各自给；状态码、网络失败都交回调用方自己看（各处的处置不一样）。`accept` 只有
+ * LLM 那两条带——它们要读 Gateway 的 JSON 报错原样转给 Bot。
+ */
+export function gatewayPost(
+  url: string,
+  token: string,
+  body: string,
+  opts: { timeoutMs: number; accept?: boolean },
+): Promise<Response> {
+  return fetch(url, {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer ' + token,
+      'content-type': 'application/json',
+      ...(opts.accept ? { accept: 'application/json' } : {}),
+    },
+    body,
+    signal: AbortSignal.timeout(opts.timeoutMs),
+  })
+}
+
 export class Router {
   private routes: Route[] = []
   private intercepts: Intercept[] = []
