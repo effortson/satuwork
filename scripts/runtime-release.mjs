@@ -1,6 +1,6 @@
 // Generic regional runtime artifacts. Deployment addresses and credentials stay outside Git.
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, readdirSync, lstatSync, openSync, readSync, closeSync } from 'node:fs'
+import { readFileSync, writeFileSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, readdirSync, lstatSync, openSync, readSync, closeSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -58,7 +58,10 @@ function machOs(dir, files = []) {
 function inspectAndSign(archive, kind, version) {
   const temp = mkdtempSync(join(tmpdir(), 'satu-runtime-check-'))
   try {
-    command('tar', ['-xzf', archive, '-C', temp])
+    // Git Bash tar interprets D:/... as a remote archive; keep its input relative.
+    copyFileSync(archive, join(temp, '.runtime-input.tgz'))
+    command('tar', ['-xzf', '.runtime-input.tgz'], { cwd: temp })
+    rmSync(join(temp, '.runtime-input.tgz'))
     if (readFileSync(join(temp, 'VERSION'), 'utf8').trim() !== version) throw Error('Packed VERSION differs')
     const entry = kind === 'manager' ? 'bin/satuwork-manager.mjs' : 'bin/satuwork.mjs'
     readFileSync(join(temp, entry))
