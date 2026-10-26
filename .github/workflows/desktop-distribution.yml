@@ -28,12 +28,12 @@ jobs:
           - os: macos
             arch: arm64
             tauri_arch: aarch64
-            bundle: app,dmg
+            bundle: app
             runner: macos-14
           - os: macos
             arch: x64
             tauri_arch: x64
-            bundle: app,dmg
+            bundle: app
             runner: macos-15-intel
           - os: windows
             arch: x64
@@ -183,19 +183,14 @@ jobs:
 
       # Tauri 只公证 .app（钉好票据后再装进 dmg、打成升级包），dmg 本身没交过。不交的话，下载来的
       # dmg 在没联网的机器上打开时 Gatekeeper 查不到票据。这里补交一次、钉上。
-      - name: 公证 dmg
+      - name: Finalize ticketed macOS installers and updater archives
         if: matrix.os == 'macos'
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-        run: |
-          set -euo pipefail
-          v=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
-          dmg="desktop/src-tauri/target/release/bundle/dmg/${PRODUCT_NAME}_${v}_${{ matrix.tauri_arch }}.dmg"
-          codesign -dv "$dmg" 2>&1 || echo "（dmg 本身没签名，照样交公证）"
-          xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" \
-            --issuer "$APPLE_API_ISSUER" --wait --timeout 30m
-          xcrun stapler staple "$dmg"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.channel == 'stable' && secrets.CN_DESKTOP_STABLE_SIGNING_KEY || secrets.CN_DESKTOP_BETA_SIGNING_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.channel == 'stable' && secrets.CN_DESKTOP_STABLE_SIGNING_PASSWORD || secrets.CN_DESKTOP_BETA_SIGNING_PASSWORD }}
+        run: bash desktop/scripts/finalize-macos.sh ${{ matrix.tauri_arch }}
 
       # 签名、公证、票据都在，而且包里的 Node 真能跑起来（见文件头）。任何一条不过都失败。
       - name: 校验签名
