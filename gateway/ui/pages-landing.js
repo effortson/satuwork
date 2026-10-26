@@ -67,31 +67,10 @@ const LP_ICONS = {
 }
 
 /**
- * 一张能力卡：**上面是一块小样，下面一句话**。
- *
- * 原先是「图标 + 标题 + 两句说明」，八张排下去整页就是一片字，谁也不会读第三张。
- * 现在说明由那块小样自己承担——「他真的有一台机器」画一个带文件和终端的窗口，比
- * 写一句「一个席位一个 Linux 账号，自己的工作区、终端和浏览器」快得多。
- *
- * 小样是 `aria-hidden` 的装饰：标题和那一句已经把话说完，读屏的人不必再听一遍
- * 假的文件名。
- */
-function lpCard(shot, title, line) {
-  return `<div class="satu-lp-card">
-    ${/* 角上那颗十字是图纸上的定位记号，纯装饰——四张卡因此看着是「同一张图上的
-          四格」，而不是四个各自为政的方块。 */ ''}
-    <span class="satu-lp-tick" aria-hidden="true"></span>
-    <div class="satu-lp-cardshot" aria-hidden="true">${shot}</div>
-    <h3>${esc(title)}</h3>
-    <p>${esc(line)}</p>
-  </div>`
-}
-
-/**
  * 底下那条能力带：一个图标一个词，**没有说明**。
  *
- * 这几样单开一张卡不值当（说一句就完），可整个不提又缺一块。排成一条被竖线切成四格
- * 的窄带，人扫过去知道「还有这些」就够了。
+ * 这几样单开一张卡不值当（说一句就完），可整个不提又缺一块。排成一条
+ * 窄带，人扫过去知道「还有这些」就够了。
  */
 function lpChip(icon, label) {
   return `<div class="satu-lp-specitem">
@@ -101,100 +80,7 @@ function lpChip(icon, label) {
 }
 
 /**
- * 「怎么开始」里的一步。序号是排版的一部分，所以留在这儿而不是交给 <ol>。
- *
- * 补成两位（01/02/03）：这一格里序号是最大的那个字，一位数的「1」在 38px 上瘦成
- * 一根竖线，三格排过去像三条杠；补一位之后它才是一个**数**。
- */
-function lpStep(n, title) {
-  return `<li class="satu-lp-step">
-    <span class="satu-lp-tick" aria-hidden="true"></span>
-    <span class="satu-lp-stepnum">${String(n).padStart(2, '0')}</span>
-    <h3>${esc(title)}</h3>
-  </li>`
-}
-
-/** 小样窗口的标题栏：三颗灯 + 一行标题。四块小样共用。 */
-function lpWinBar(title) {
-  return `<div class="satu-lp-winbar"><i></i><i></i><i></i><span>${esc(title)}</span></div>`
-}
-
-/** 工作区：文件留在机器上，命令在机器上跑。 */
-function lpMockWork() {
-  const files = [
-    [t('refunds-2026-09.csv', 'refunds-2026-09.csv'), t('47 行', '47 rows')],
-    [t('对账结果.md', 'reconciliation.md'), t('刚写完', 'just now')],
-    [t('check-refunds.mjs', 'check-refunds.mjs'), '2.1 KB'],
-  ]
-  return `<div class="satu-lp-win">
-    ${lpWinBar('~/work')}
-    <div class="satu-lp-winbody">
-      ${files
-        .map(
-          ([name, meta]) => `<div class="satu-lp-file">
-        ${svg(['M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z', 'M14 3v4h4'], 13)}
-        <span>${esc(name)}</span><em>${esc(meta)}</em>
-      </div>`,
-        )
-        .join('')}
-      <div class="satu-lp-term"><b>$</b> node check-refunds.mjs<i class="satu-lp-caret"></i></div>
-    </div>
-  </div>`
-}
-
-/** 拍板：该你点头的那一步，他停在那儿。 */
-function lpMockApprove() {
-  return `<div class="satu-lp-appr">
-    <span class="satu-lp-apprtag">${ICON_SHIELD}${t('要你拍板', 'Needs your call')}</span>
-    <p>${esc(t('把这 3 单退款提交给财务？', 'Submit these 3 refunds to finance?'))}</p>
-    <div class="satu-lp-apprbtns">
-      <span data-yes>${t('批准', 'Approve')}</span>
-      <span>${t('先别', 'Hold')}</span>
-    </div>
-  </div>`
-}
-
-/** 日常任务：到点自己开工。 */
-function lpMockCron() {
-  const rows = [
-    [t('每天 08:30', 'Daily 08:30'), t('对一遍昨天的账', 'Reconcile yesterday'), 'ok'],
-    [t('每周一 09:00', 'Mon 09:00', ), t('出上周的周报', 'Weekly report'), 'ok'],
-    [t('每 2 小时', 'Every 2h'), t('巡一遍收件箱', 'Sweep the inbox'), 'run'],
-  ]
-  return `<div class="satu-lp-win">
-    ${lpWinBar(t('日常任务', 'Routines'))}
-    <div class="satu-lp-winbody">
-      ${rows
-        .map(
-          ([when, what, state]) => `<div class="satu-lp-cron">
-        <span class="satu-lp-cronwhen">${esc(when)}</span>
-        <span class="satu-lp-cronwhat">${esc(what)}</span>
-        <span class="satu-lp-shotdot" data-state="${state === 'run' ? 'busy' : 'idle'}"></span>
-      </div>`,
-        )
-        .join('')}
-    </div>
-  </div>`
-}
-
-/** 账本：钱花在哪儿了，一眼。 */
-function lpMockLedger() {
-  // 高度是排版数字，不是真数据——所以写死在这儿，别让人以为它连着什么。
-  const bars = [38, 52, 30, 66, 44, 78, 58]
-  return `<div class="satu-lp-win">
-    ${lpWinBar(t('本月花费', 'This month'))}
-    <div class="satu-lp-winbody satu-lp-ledger">
-      <div class="satu-lp-bars">${bars.map((h) => `<i style="height: ${h}%"></i>`).join('')}</div>
-      <div class="satu-lp-ledgerfoot">
-        <b>$1,284</b>
-        <span>${esc(t('模型 · 连接器 · 搜索', 'Models · connectors · search'))}</span>
-      </div>
-    </div>
-  </div>`
-}
-
-/**
- * 首屏下面那段「演示视频」：两个 AI 员工轮流干一件活。
+ * 首页的「演示视频」：两个 AI 员工轮流干一件活。
  *
  * **不是真视频，是一段排好的分镜**：一个 Bot 一套场景（左边对话、右边那台电脑的屏幕），
  * 屏幕上的每样东西都带着 `data-at`（第几步出现）/ `data-off`（第几步消失），播放就是
@@ -449,7 +335,7 @@ function lpFilmView() {
     <div class="satu-lp-sechead satu-lp-filmhead">
       <span class="satu-lp-kicker">${t('看它干活', 'See it work')}</span>
       ${/* 两句各占一行：交给浏览器自己折的话，英文会折成「One in the / cloud. One on / your desk.」，句子被拦腰切开。 */ ''}
-      <h2><span>${t('一个在云上，', 'One in the cloud.')}</span> <span>${t('一个在你桌上。', 'One on your desk.')}</span></h2>
+      <h1><span>${t('一个在云上，', 'One in the cloud.')}</span> <span>${t('一个在你桌上。', 'One on your desk.')}</span></h1>
     </div>
     <div class="satu-lp-filmtabs" role="group" aria-label="${esc(t('选一个 AI 员工看演示', 'Pick a coworker to watch'))}">
       ${all
@@ -466,7 +352,9 @@ function lpFilmView() {
         ${svg(['M8 5v14', 'M16 5v14'], 14)}${svg(['M7 4.5v15l12-7.5z'], 14)}
       </button>
     </div>
-    <div class="satu-lp-filmview">${lpFilmStage(b)}</div>
+    <div class="satu-lp-filmframe">
+      <div class="satu-lp-filmview">${lpFilmStage(b)}</div>
+    </div>
   </section>`
 }
 
@@ -586,18 +474,18 @@ function lpFilmToggle() {
   }
 }
 
-/** 按容器宽度缩放舞台；窄到放不下对话那一栏就收起它、露出字幕。 */
+/** 由可用区域决定是否收起对话栏，再按播放器实际宽度缩放舞台。 */
 function lpFilmFit() {
   const view = document.querySelector('#satu-lp-film .satu-lp-filmview')
   const stage = view?.querySelector('.satu-lpf-stage')
   if (!view || !stage) return
   const w = view.clientWidth
   if (!w) return
-  const narrow = w < 620
+  const narrow = (view.parentElement?.clientWidth || w) < 620
   const W = narrow ? LPF_W_NARROW : LPF_W
   view.toggleAttribute('data-narrow', narrow)
   stage.toggleAttribute('data-narrow', narrow)
-  stage.style.transform = `scale(${w / W})`
+  stage.style.transform = `scale(${view.clientWidth / W})`
 }
 
 /**
@@ -1087,7 +975,7 @@ function dlMeta() {
 }
 
 /**
- * 左边一张卡（当前平台的包）、右边一列说明。首页那一段（lpDownload）和应用内那一页
+ * 左边一张卡（当前平台的包）、右边一列说明。公开下载页（downloadView）和应用内那一页
  * （downloadPage）画的是同一个东西；切平台时只换这一块（见 paintDownload），所以带着 id。
  */
 function dlGrid(cur) {
@@ -1171,27 +1059,22 @@ function dlGrid(cur) {
   </div>`
 }
 
-/**
- * 下载桌面端那一段：**接在「怎么开始」那条深色带后面**，是首页正文的最后一段。
- *
- * 以前它是单独一页（`/download`）。现在并进首页：读完三步的人下一件事就是装客户端，
- * 放在同一页上往下一滚就到，不必再多开一页。老的 `/download` 地址还收着：没登录的人
- * 折到这一段，登录了的人进应用内那一页（见 app.js 的 foldDownload）。
- *
- * `tabindex="-1"`：首屏小字和页脚那两条点下去要把焦点挪过来（见 app.js 的 landing-download），
- * 不然键盘上的人看着页面滚到了底，下一下 Tab 却又回到页首。
- */
-function lpDownload() {
-  return `<section class="satu-lp-wrap satu-lp-rail satu-lp-sec satu-lp-dl" id="download" tabindex="-1">
-    <div class="satu-lp-sechead satu-lp-dlhead">
-      <span class="satu-lp-kicker">${t('桌面端', 'Desktop app')}</span>
-      <h2>${t('下载 Satuwork 桌面端', 'Download Satuwork for desktop')}</h2>
-      <p>${dlLead(false)}</p>
-      ${dlMeta()}
-    </div>
-
-    ${dlGrid(dlOs())}
-  </section>`
+/** 公开下载页，与首页共用导航和页脚；无需登录即可直接打开 /download。 */
+function downloadView() {
+  return `<div class="satu-lp satu-lp-compact">
+    ${lpHeader()}
+    <main class="satu-lp-wrap satu-lp-sec satu-lp-dl" id="download">
+      <div class="satu-lp-sechead satu-lp-dlhead">
+        <span class="satu-lp-kicker">${t('桌面端', 'Desktop app')}</span>
+        <h1>${t('下载 Satuwork 桌面端', 'Download Satuwork for desktop')}</h1>
+        <p>${dlLead(false)}</p>
+        ${dlMeta()}
+      </div>
+      ${dlGrid(dlOs())}
+    </main>
+    ${lpSalesModal()}
+    ${lpFooter()}
+  </div>`
 }
 
 /**
@@ -1226,30 +1109,10 @@ function paintDownload(os) {
 }
 
 
-/**
- * 首页本体。
- *
- * 版式是**一张图纸**（见 app.css 里 `.satu-lp` 那一段）：一条 1px 的栏线从顶栏画到
- * 页脚，每一块内容落在这条线圈出的格子里，格与格之间也只用一条线隔开。所以这里几乎
- * 每一段都带着 `satu-lp-rail`——那对左右边框接起来就是那两条竖线，少写一段，线就断
- * 在那儿。
- *
- * 「怎么开始」那块深色（`.satu-lp-band`）也收在栏线以内，深色不越过那两条线。
- *
- * 不套 `.gw-page`——那套是登录之后工作台里的内容区，外面有侧栏和顶栏兜着，滚动锁在
- * 它自己那一格里。这一屏没有外壳，滚的是文档本身（见 app.css 的 `.satu-lp`）。
- */
-function landingView() {
-  // 走 theme.css 那套药丸（.btn / .btn-primary），不另起一套方按钮：这颗点下去就是
-  // /login，而那一屏上每一颗按钮都是圆头的。见 app.css 里 .satu-lp-ctas 那段。
-  const cta = `<button type="button" class="btn btn-primary" data-act="go" data-href="/login">
-    ${t('登录 Satuwork', 'Sign in to Satuwork')}${svg(ARROW_RIGHT, 14)}
-  </button>`
-  return `
-  <div class="satu-lp">
-    <header class="satu-lp-top">
-      ${/* 这一条**不收在栏线里**：横梁要横过整个屏幕，末端那格实心的「登录」才顶
-            得到右沿（见 app.css 的 .satu-lp-topin）。 */ ''}
+/** 首页与公开下载页共用的导航。 */
+function lpHeader() {
+  return `    <header class="satu-lp-top">
+
       <div class="satu-lp-wrap satu-lp-topin">
         <button type="button" class="satu-lp-brand" data-act="go" data-href="/">
           <img class="satu-lp-home-logo" src="/assets/satuwork-logo.png" alt="Satuwork" width="40" height="40">
@@ -1277,88 +1140,16 @@ function landingView() {
             aria-label="${esc(t('联系销售', 'Contact sales'))}" title="${esc(t('联系销售', 'Contact sales'))}">
             ${svg(LP_ICONS.sales, 15)}<span>${t('联系销售', 'Contact sales')}</span>
           </button>
+          <button type="button" class="btn btn-secondary satu-lp-topdownload" data-act="go" data-href="/download">${t('下载桌面端', 'Desktop app')}</button>
           <button type="button" class="btn btn-primary satu-lp-topsign" data-act="go" data-href="/login">${t('登录', 'Sign in')}</button>
         </div>
       </div>
-    </header>
+    </header>`
+}
 
-    <section class="satu-lp-wrap satu-lp-rail satu-lp-hero">
-      <div class="satu-lp-heroleft">
-        <span class="satu-lp-kicker satu-lp-eyebrow">${t('给公司用的 AI 员工', 'AI coworkers for companies')}</span>
-        <h1>${t('把活交出去，像交给一个同事。', 'Hand off the work the way you would to a colleague.')}</h1>
-        <p class="satu-lp-lead">${t(
-          '给公司里的每个人配几个 AI 员工。他们有自己的机器，会用你们已经在用的系统，拿不准的那一步会停下来等你。',
-          'A few AI coworkers for everyone in your company. Each has its own machine, works your existing systems, and stops for you when it isn’t sure.',
-        )}</p>
-        <div class="satu-lp-ctas">
-          ${cta}
-          <button type="button" class="btn btn-secondary" data-act="landing-more">${t('先看看它能做什么', 'See what it does')}</button>
-        </div>
-        ${/* 这一行以前只有前半句。下载那一段在页面最底下，首屏上一个字都不提的话，
-              没人知道有这东西。所以补在这儿：一句话说清它多出来什么（本地那种 AI
-              员工），外加一条路——点下去滚到页面底下那一段（lpDownload）。 */ ''}
-        <p class="satu-lp-fine">${t('账号由公司管理员开通。', 'Accounts are created by your company admin.')}
-          ${t('想让 AI 员工直接在自己电脑上干活，', 'Want a coworker running on your own machine? ')}<button type="button" class="satu-lp-finelink" data-act="landing-download">${t('下载桌面端', 'Get the desktop app')}</button>${t('。', '.')}</p>
-      </div>
-    </section>
-
-    ${/* 演示：两个 AI 员工轮流干一件活（lpFilmView）。紧贴首屏——首屏只剩一段字，
-          「它到底长什么样」交给这一段。 */ ''}
-    ${lpFilmView()}
-
-    ${/* 能力带。四样单开一张卡不值当，排成一条被竖线切成四格的窄带就够了。它紧贴
-          首屏底下，是那两条栏线上的第一道横隔——图纸从这儿开始有「行」。 */ ''}
-    <section class="satu-lp-wrap satu-lp-rail satu-lp-spec" aria-label="${esc(t('还有这些', 'Also included'))}">
-      ${lpChip('skills', t('Skill 与 MCP 分两层', 'Skills and MCP, two layers'))}
-      ${lpChip('plug', t('连接器走 OAuth', 'Connectors over OAuth'))}
-      ${lpChip('channels', t('Telegram 渠道直连', 'Telegram channels'))}
-      ${lpChip('handoff', t('转人工待办', 'Human handoff queue'))}
-    </section>
-
-    <section class="satu-lp-wrap satu-lp-rail satu-lp-sec" id="satu-lp-features">
-      <div class="satu-lp-sechead">
-        <span class="satu-lp-kicker">${t('它能做什么', 'What it does')}</span>
-        <h2>${t('它不是一个聊天框', 'It isn’t just a chat box')}</h2>
-        <p>${t(
-          '四件事分别是一台机器、一次拍板、一张排期表和一本账——都是交给同事之后你本来就会关心的那几件。',
-          'A machine, a decision, a schedule and a ledger — the four things you’d ask about after handing work to anyone.',
-        )}</p>
-      </div>
-      <div class="satu-lp-cards">
-        ${lpCard(lpMockWork(), t('他真的有一台机器', 'It really has a machine'), t('自己的工作区、终端和浏览器', 'Its own workspace, terminal and browser'))}
-        ${lpCard(lpMockApprove(), t('拿不准就停下来', 'Unsure? It stops'), t('该你点头的那一步，他等着', 'It waits on the step that needs you'))}
-        ${lpCard(lpMockCron(), t('日常任务自己跑', 'Routines run themselves'), t('到点开工，半夜也在干活', 'On schedule, through the night'))}
-        ${lpCard(lpMockLedger(), t('钱花在哪儿一眼看得见', 'See where the money went'), t('模型、连接器、搜索按次落账', 'Models, connectors, search — per call'))}
-      </div>
-    </section>
-
-    ${/* 「怎么开始」那块深色。**整页唯一一块深色**：前面一路都是奶油底，读到这儿
-          忽然暗一档，人自然会停一下——而要他停的正是这一段。深色只铺在栏线以内。 */ ''}
-    <section class="satu-lp-band">
-      <div class="satu-lp-wrap satu-lp-rail satu-lp-bandin">
-        <div class="satu-lp-sechead">
-          <span class="satu-lp-kicker">${t('怎么开始', 'Getting started')}</span>
-          <h2>${t('三步就能用上。', 'Up and running in three steps.')}</h2>
-        </div>
-        <ol class="satu-lp-steps">
-          ${lpStep(1, t('管理员开通公司和席位', 'An admin provisions company and seats'))}
-          ${lpStep(2, t('在公司模版上建你的 Bot', 'You build your bot on the template'))}
-          ${lpStep(3, t('像跟同事说话一样交代', 'You talk to it like a colleague'))}
-        </ol>
-        <div class="satu-lp-tail">
-          ${cta}
-          <span>${t('还没有账号？找管理员开通。', 'No account? Ask your admin.')}</span>
-        </div>
-      </div>
-    </section>
-
-    ${/* 下载桌面端。**紧接在三步后面**：读到这儿的人已经决定要用了，而「本地那种 AI
-          员工」只有装了客户端才有——这是三步之后的第四件事。 */ ''}
-    ${lpDownload()}
-
-    ${lpSalesModal()}
-
-    <footer class="satu-lp-foot">
+/** 公开页面的页脚。 */
+function lpFooter() {
+  return `    <footer class="satu-lp-foot">
       <div class="satu-lp-wrap satu-lp-footin">
         <span class="satu-lp-brand" data-static>
           <img src="/assets/satuwork-logo.png" alt="" width="20" height="20">
@@ -1368,14 +1159,23 @@ function landingView() {
               和应用商店的上架表单都是先翻到页面最底下。两条都是站内跳转，所以和这一页
               别处一样走 data-act="go"，不是 `<a>`（那会整页重载）。 */ ''}
         <span class="satu-lg-links">
-          ${/* 下载那一段（lpDownload）就在页脚正上方，这一条仍留着：页脚是人找「下载」
-                「隐私」这类东西的地方，先翻到底的人一眼就看得见。 */ ''}
-          <button type="button" data-act="landing-download">${t('下载桌面端', 'Desktop app')}</button>
+
           <button type="button" data-act="go" data-href="/privacy">${t('隐私政策', 'Privacy Policy')}</button>
           <button type="button" data-act="go" data-href="/terms">${t('服务条款', 'Terms of Service')}</button>
           <span>© 2026 Satuwork</span>
         </span>
       </div>
-    </footer>
+    </footer>`
+}
+
+/** 首页用一屏展示员工演示与导航。 */
+function landingView() {
+  return `<div class="satu-lp satu-lp-compact satu-lp-home">
+    ${lpHeader()}
+    <main>
+      ${lpFilmView()}
+    </main>
+    ${lpSalesModal()}
+    ${lpFooter()}
   </div>`
 }

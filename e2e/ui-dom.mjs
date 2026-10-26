@@ -216,7 +216,7 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
 
   // 进来时地址栏上是什么。`/` 和 `/login` 在没登录时画的是两屏（见 render.js 的
   // anonView），所以这一条得能由测试指定。
-  // `#` 片段要拆出来：`/#download` 是首页上那一段，pathname 是 `/`、hash 才是 `#download`。
+  // `#` 片段要拆出来：旧的 `/#download` 需要兼容，pathname 是 `/`、hash 才是 `#download`。
   const location = { pathname: '/', search: '', hash: '', href: '' }
   const go = (url) => {
     const u = new URL(String(url), base + location.pathname)

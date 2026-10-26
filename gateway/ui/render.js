@@ -456,7 +456,11 @@ function render() {
   const keep = before && paintedPath === state.path ? before.scrollTop : 0
   // 窄屏的侧栏抽屉：换了页就收起。人从抽屉里点了一颗 Bot 或一页，要看的是那一页，
   // 抽屉还盖在上面等于这一下没点着。
-  if (paintedPath !== state.path) state.drawer = false
+  if (paintedPath !== state.path) {
+    state.drawer = false
+    // 公开页面滚的是文档，首页页脚进入下载页时也应从标题开始。
+    window.scrollTo?.(0, 0)
+  }
   paintedPath = state.path
   if (state.path.startsWith('/join/')) {
     root.innerHTML = joinView()
@@ -476,6 +480,11 @@ function render() {
     syncDesktop()
     return
   }
+  if (state.path === '/download' && !state.me && !appShell()) {
+    root.innerHTML = downloadView()
+    syncDesktop()
+    return
+  }
   if (!state.me && state.needsSetup) {
     root.innerHTML = setupView()
     syncDesktop()
@@ -485,15 +494,6 @@ function render() {
   stashHandoffNotes(root)
   root.innerHTML = state.me ? appView() : anonView()
   fillHandoffNotes(root)
-  // 进来时要落在首页哪一段（见 app.js 的 foldDownload：老的 /download 地址和 /#download）。
-  // 只在第一次画完时跳一次，不管这一帧画的是不是首页——否则登录进来、再登出回到首页
-  // 时它还挂着，会莫名其妙把人拽到页底。
-  if (state.lpJump) {
-    const at = document.getElementById(state.lpJump)
-    state.lpJump = ''
-    at?.scrollIntoView({ block: 'start' })
-    at?.focus?.({ preventScroll: true })
-  }
   // 首页那段演示：计时器、观察者和 three.js 背景都挂在 DOM 上，整页重绘之后要重新接上。
   if (document.getElementById('satu-lp-film')) lpFilmMount()
   // 对话页的正文不在 appView 里——chatPage 只搭空壳，消息由 paintChat 增量填。

@@ -436,28 +436,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'landing-sales-dialog') return
-  // ── 下载卡（pages-landing.js 的 dlGrid：首页那一段、应用内那一页）上那排平台切换 ──
+  // ── 下载卡（pages-landing.js 的 dlGrid：公开下载页、应用内下载页）上那排平台切换 ──
   if (act === 'download-os') {
     const os = btn.getAttribute('data-os')
     if (os !== 'windows' && os !== 'mac') return
     // 人点过就听他的，这一帧之后 dlOs() 不再去认系统（见 pages-landing.js 的 dlOs）。
     state.dlOs = os
     paintDownload(os)
-    return
-  }
-  if (act === 'landing-more') {
-    document.getElementById('satu-lp-features')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    return
-  }
-  if (act === 'landing-download') {
-    const sec = document.getElementById('download')
-    if (!sec) return
-    // 地址跟着换成 /#download：这一段能被复制出去，刷新也还落在这儿（见 foldDownload）。
-    history.replaceState({}, '', '/#download')
-    sec.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    // 焦点跟着挪过去（那一段带 tabindex="-1"）。只滚不挪的话，键盘上的人看着页面到了底，
-    // 下一下 Tab 却又回到首屏；读屏的人则什么都没听到。
-    sec.focus({ preventScroll: true })
     return
   }
   if (act === 'chat-open') {
@@ -3224,26 +3209,13 @@ window.addEventListener('popstate', () => {
   enterPath()
 })
 
-/**
- * 「下载桌面端」落在哪儿，要等知道登没登录才定得下来，所以 boot 在每次画之前都过一遍：
- *
- * - **没登录**：首页上那一段（pages-landing.js 的 lpDownload）。地址折成 `/#download`，
- *   第一次画完滚过去（见 render.js 的 `state.lpJump`）。
- * - **登录了**：应用内那一页 `/download`（downloadPage）。首页只给没登录的人看，折过去
- *   的话落在一张总览上，找不到下载在哪儿。
- * - **桌面壳**：两样都不给，回 `/`——人已经在桌面端里了。
- *
- * 进来的地址有两种：老的 `/download`（早被管理员发出去过）和 `/#download`（登录那三屏
- * 底下那条链接、首页上点过之后的地址）。反复调也没关系：已经在该在的地方就什么都不做。
- */
+/** 兼容旧的 /#download 链接；桌面壳仍回到应用首页。 */
 function foldDownload() {
   const asked = state.path === '/download' || (state.path === '/' && location.hash === '#download')
   if (!asked) return
-  const shell = appShell()
-  const to = state.me && !shell ? '/download' : shell ? '/' : '/#download'
+  const to = appShell() ? '/' : '/download'
   if (location.pathname + location.hash !== to) history.replaceState({}, '', to)
-  state.path = to === '/download' ? '/download' : '/'
-  state.lpJump = to === '/#download' ? 'download' : ''
+  state.path = to
 }
 
 async function boot() {

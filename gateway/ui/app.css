@@ -899,7 +899,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-filmhead { margin-bottom: clamp(24px, 3vw, 36px); }
 /* 标题两句各占一行（见 lpFilmView），不受 .satu-lp-sechead 那个 30ch 的宽度限制。 */
 .satu-lp-sechead.satu-lp-filmhead { max-width: none; }
-.satu-lp-filmhead h2 span { display: block; }
+.satu-lp-filmhead :is(h1, h2) span { display: block; }
 
 /* 两位的标签 + 播放键。每张标签底下一条进度，正在播的那位走着。 */
 .satu-lp-filmtabs {
@@ -1150,7 +1150,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-sec { padding-top: clamp(56px, 6vw, 88px); padding-bottom: clamp(56px, 6vw, 88px); border-top: 1px solid var(--lp-line); }
 .satu-lp-sechead { max-width: 30ch; margin: 0 auto clamp(36px, 4vw, 56px); text-align: center; }
 .satu-lp-sechead .satu-lp-kicker { margin-bottom: var(--space-4); }
-.satu-lp-sechead h2 { margin: 0 0 var(--space-3); font-size: clamp(27px, 3.4vw, 42px); font-weight: 300; line-height: 1.12; letter-spacing: -0.025em; word-break: keep-all; }
+.satu-lp-sechead :is(h1, h2) { margin: 0 0 var(--space-3); font-size: clamp(27px, 3.4vw, 42px); font-weight: 300; line-height: 1.12; letter-spacing: -0.025em; word-break: keep-all; }
 .satu-lp-sechead p { margin: 0; font-size: 15px; line-height: 1.7; color: var(--lp-dim); }
 
 /* 四张能力卡排成一行，**只靠竖线隔开**：不描框、不投影、不收圆角。原来是四张带
@@ -1329,6 +1329,114 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   .satu-lp-specitem + .satu-lp-specitem { border-top: 1px solid var(--lp-line); }
 }
 
+/* 首页采用白底和留白分区。限定在 .satu-lp 内，避免改变共用组件的其他页面；
+   放在响应式规则之后，窄屏也不恢复分隔线。演示内部的窗口与控件保留原样。 */
+.satu-lp {
+  color-scheme: light;
+  --color-bg: #ffffff;
+  --color-surface: #ffffff;
+  --color-text: #3d3929;
+  --popover: #ffffff;
+  --card: #ffffff;
+  --card-foreground: #141413;
+  --primary: #c96442;
+  --primary-foreground: #ffffff;
+  --secondary: #f5f4ef;
+  --secondary-foreground: #535146;
+  --muted: #ede9de;
+  --muted-foreground: #6e6d68;
+  --lp-tint: #ffffff;
+}
+.satu-lp :is(
+  .satu-lp-rail, .satu-lp-top, .satu-lp-topin, .satu-lp-lang,
+  .satu-lp-film, .satu-lp-filmtab, .satu-lp-filmplay, .satu-lp-filmview,
+  .satu-lp-spec, .satu-lp-specitem, .satu-lp-sec,
+  .satu-lp-cards, .satu-lp-card, .satu-lp-cardshot,
+  .satu-lp-steps, .satu-lp-step, .satu-lp-foot,
+  .satu-dl-card, .satu-dl-tabs, .satu-dl-note + .satu-dl-note,
+  .btn-secondary
+) {
+  border: 0;
+  box-shadow: none;
+}
+.satu-lp .satu-lp-tick, .satu-lp .satu-lp-kicker::before { display: none; }
+.satu-lp .satu-lp-top { background: #ffffff; }
+.satu-lp .satu-lp-filmtab { transition: background 160ms ease; }
+.satu-lp .satu-lp-filmtab:hover,
+.satu-lp .satu-lp-filmtab[aria-pressed='true'] { background: var(--secondary); }
+.satu-lp .satu-lp-bandin { background: #ffffff; }
+.satu-lp .satu-lp-band,
+.satu-lp .satu-lp-step h3 { color: var(--color-text); }
+.satu-lp .satu-lp-band .satu-lp-kicker,
+.satu-lp .satu-lp-stepnum { color: var(--color-accent-600); }
+.satu-lp .satu-lp-band .satu-lp-sechead p,
+.satu-lp .satu-lp-tail span { color: var(--muted-foreground); }
+.satu-lp-compact { display: flex; flex-direction: column; }
+.satu-lp-compact > main { flex: 1; }
+/* 首屏介绍移除后，窄屏也需要保留顶栏的登录入口。 */
+.satu-lp-compact .satu-lp-topsign { display: inline-flex; }
+.satu-lp-topdownload { flex: none; white-space: nowrap; }
+@media (max-width: 560px) {
+  .satu-lp-compact .satu-lp-topin { gap: 4px; }
+  .satu-lp-compact .satu-lp-topin .satu-lp-brand > span { display: none; }
+  .satu-lp-compact .satu-lp-topact { gap: 4px; }
+  .satu-lp-compact .satu-lp-ghlink { display: none; }
+  .satu-lp-compact .satu-lp-lang button { padding: 4px 7px; }
+  .satu-lp-compact .satu-lp-topdownload { padding: 8px 6px; font-size: 12px; }
+  .satu-lp-compact .satu-lp-topsign { padding: 8px 12px; }
+}
+
+/* 首页一屏展示：演示按剩余空间等比缩放，导航、摘要和页脚均占据自己的行。 */
+.satu-lp.satu-lp-home {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.satu-lp-home .satu-lp-topin { height: 56px; }
+.satu-lp-home > main { display: flex; flex-direction: column; min-height: 0; }
+.satu-lp-home .satu-lp-film {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: clamp(8px, 2vh, 20px);
+  padding-bottom: 8px;
+}
+.satu-lp-home .satu-lp-filmhead { flex: none; margin: 0 auto 12px; }
+.satu-lp-home .satu-lp-filmhead .satu-lp-kicker { margin-bottom: 4px; font-size: 10px; }
+.satu-lp-home .satu-lp-filmhead h1 { margin: 0; font-size: clamp(24px, 3.6vh, 36px); }
+.satu-lp-home .satu-lp-filmhead h1 span { display: inline; }
+.satu-lp-home .satu-lp-filmtabs { flex: none; width: 100%; max-width: 900px; margin: 0 auto 10px; }
+.satu-lp-home .satu-lp-filmtab { gap: 8px; padding: 8px 12px 10px; }
+.satu-lp-home .satu-lp-filmtext b { font-size: 13px; }
+.satu-lp-home .satu-lp-filmtext span { font-size: 11px; }
+.satu-lp-home .satu-lp-filmframe {
+  flex: 1;
+  min-height: 0;
+  container-type: size;
+  display: grid;
+  place-items: center;
+}
+.satu-lp-home .satu-lp-filmview { width: min(100cqw, 200cqh); max-width: 900px; margin: 0; }
+.satu-lp-home .satu-lp-filmview[data-narrow] { width: min(100cqw, 133.333333cqh); }
+.satu-lp-home .satu-lp-spec { flex: none; display: flex; justify-content: center; gap: clamp(8px, 2vw, 24px); padding: 8px 18px; }
+.satu-lp-home .satu-lp-specitem { gap: 6px; padding: 0; font-size: 11px; }
+.satu-lp-home .satu-lp-footin { gap: 6px; padding-top: 8px; padding-bottom: 8px; font-size: 10px; }
+.satu-lp-home .satu-lp-footin .satu-lp-brand { gap: 6px; font-size: 12px; }
+.satu-lp-home .satu-lg-links { gap: 12px; }
+@media (max-width: 700px) {
+  .satu-lp-home .satu-lp-filmhead { margin-bottom: 10px; }
+  .satu-lp-home .satu-lp-filmhead h1 { max-width: 24ch; font-size: clamp(22px, 4vw, 28px); }
+  .satu-lp-home .satu-lp-filmhead h1 span { display: block; }
+  .satu-lp-home .satu-lp-spec { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 8px; }
+  .satu-lp-home .satu-lp-specitem { font-size: 10px; line-height: 1.4; }
+}
+@media (max-width: 560px) {
+  .satu-lp-home .satu-lp-footin .satu-lp-brand > span { display: none; }
+}
+
 /* ── 隐私政策与服务条款（/privacy、/terms，见 ui/pages-legal.js）─────────
    外壳（顶栏、页脚、那条 wrap）借首页那一套，这里只管正文：一列目录 + 一列文本。
    两页共用，所以别往这儿写任何一页专有的东西。 */
@@ -1392,17 +1500,9 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lg-links button:focus-visible,
 .satu-lg-links a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
 
-/* ── 下载桌面端：首页那一段（lpDownload）和应用内那一页（downloadPage），见 ui/pages-landing.js ──
-   外框（栏线、上下留白、居中的标题块）借首页 .satu-lp-sec 那一套，这里只管里面：
-   左边一张卡装当前平台的包，右边一列说明。
-   scroll-margin 让出顶栏那一条：首屏那行小字、页脚和老的 /download 地址都是滚到这儿的，
-   不让的话标题正好被吸顶的顶栏盖住。 */
-.satu-lp-dl { scroll-margin-top: 64px; }
+/* ── 下载桌面端：公开页 downloadView 和应用内 downloadPage 共用下载卡与说明。 ── */
 /* 标题块比别的段宽：底下那句说明有三行长，塞进 30ch 会折成一根细柱子。 */
 .satu-lp-dlhead { max-width: 62ch; }
-/* 那一段带 tabindex="-1"，点首屏小字 / 页脚跳过来时焦点落在它身上（见 app.js 的
-   landing-download）。整段描一圈框没有意义，里面的按钮自己有焦点环。 */
-.satu-lp-dl:focus { outline: none; }
 /* 「总是最新版 · 历次版本」那行是 .satu-lg-meta（法律页那一行）本身，这里只补链接的样子。
    它是 <div> 不是 <p>，`.satu-lp-sechead p` 够不着它（见 pages-landing.js 的 dlMeta）。 */
 .satu-dl-meta a { color: var(--color-accent-700); text-decoration: underline; text-underline-offset: 3px; }
