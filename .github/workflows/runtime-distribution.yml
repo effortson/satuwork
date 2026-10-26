@@ -31,6 +31,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      - run: node --test scripts/runtime-release.test.mjs
       - id: targets
         env:
           RUNTIME_COMPONENT: ${{ inputs.component }}
@@ -101,6 +102,11 @@ jobs:
           echo "SATUWORK_CODESIGN_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
           echo "SATUWORK_CODESIGN_KEYCHAIN=$kc" >> "$GITHUB_ENV"
 
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.platform == 'win32'
+      - name: Build Windows client unpacker
+        if: matrix.platform == 'win32'
+        run: cargo build --locked --release --manifest-path scripts/runtime-smoke/Cargo.toml
       - name: Build and exercise native packages
         run: node scripts/runtime-release.mjs build
       - name: Sign regional provenance and package hashes
