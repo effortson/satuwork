@@ -356,6 +356,17 @@ function wsDelBtn(e) {
     aria-label="${esc(label)}" title="${esc(label)}">${svg(WS_TRASH, 14)}</button>`
 }
 
+/** 工作区文件行。公开演示和实际工作区使用同一份标记与样式。 */
+function workspaceFileRowHtml(e, depth = 0) {
+  return `<li><div class="sw-ws-item"><button type="button" class="sw-ws-row sw-ws-file" data-act="chat-preview"
+        data-path="${esc(e.path)}" data-name="${esc(e.name)}"
+        style="padding-left: ${8 + depth * 12}px" title="${esc(e.path)}">
+        <span class="sw-ws-caret">${ICON_FILE}</span>
+        <span class="sw-ws-name">${esc(e.name)}</span>
+        <small>${esc(fileSize(e.size))}</small>
+      </button>${wsDelBtn(e)}</div></li>`
+}
+
 /** 一层的行。展开的目录把下一层接在自己后面，靠左边距表示深度。 */
 function wsRows(key, depth) {
   const dir = wsDirs()[key] || {}
@@ -374,15 +385,7 @@ function wsRows(key, depth) {
       continue
     }
     // 文件点开走的是**和对话里那些药丸同一个预览**——同一个工作区、同一份字节。
-    out.push(
-      `<li><div class="sw-ws-item"><button type="button" class="sw-ws-row sw-ws-file" data-act="chat-preview"
-        data-path="${esc(e.path)}" data-name="${esc(e.name)}"
-        style="padding-left: ${8 + depth * 12}px" title="${esc(e.path)}">
-        <span class="sw-ws-caret">${ICON_FILE}</span>
-        <span class="sw-ws-name">${esc(e.name)}</span>
-        <small>${esc(fileSize(e.size))}</small>
-      </button>${wsDelBtn(e)}</div></li>`,
-    )
+    out.push(workspaceFileRowHtml(e, depth))
   }
   if (dir.loading && !out.length) out.push(`<li><p class="sw-ws-note" style="padding-left: ${8 + depth * 12}px">${t('载入中…')}</p></li>`)
   if (dir.error) out.push(`<li><p class="sw-ws-note sw-ws-err" style="padding-left: ${8 + depth * 12}px">${esc(dir.error)}</p></li>`)

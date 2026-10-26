@@ -1344,6 +1344,28 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(gh[0].includes('rel="noopener noreferrer"'), '开新标签页没带 noopener：' + gh[0])
     })
 
+    await test('首页只演示多 Bot，并复用真实产品组件与样式', async () => {
+      const ui = await boot()
+      const html = ui.html()
+      assert(html.includes('satu-ui-demo" data-mode="team"'), '没有展示多 Bot 工作台')
+      assert(!html.includes('单 Bot 执行') && !html.includes('data-i="0"'), '首页仍能切到单 Bot')
+      for (const component of ['satu-botrow', 'sw-task-card', 'sw-toolfold', 'sw-composer-box', 'sw-ws-file', 'sw-preview-side']) {
+        assert(html.includes(component), `没有复用真实 UI 组件：${component}`)
+      }
+      assert(html.includes('sandbox="allow-same-origin"'), '演示未限制脚本执行')
+      assert(html.includes('satu-crown'), '演示没有标识主 Bot')
+      assert(html.includes('satu-botfolder-name') && html.includes('研究分析') && html.includes('内容交付'), '演示缺少真实分类')
+      assert(html.includes('data-folder=&quot;lp-research&quot;') && html.includes('data-folder=&quot;lp-content&quot;'), '演示 Bot 没有按分类分组')
+      await ui.fire('click', el('button', { 'data-act': 'landing-film-step', 'data-step': '7' }))
+      await ui.fire('click', el('button', { 'data-act': 'landing-locale', 'data-locale': 'en' }))
+      assert(ui.html().includes('data-step="7"'), '切换语言后丢了演示进度')
+      assert(ui.html().includes('market-brief.md'), '英文演示缺少生成的文档')
+      await ui.fire('click', el('button', { 'data-act': 'landing-film-replay' }))
+      ui.render()
+      assert(ui.html().includes('satu-ui-demo" data-mode="team" data-step="0"'), '重播没有从多 Bot 输入任务开始')
+      assert(!ui.html().includes('data-mode="solo"'), '重播进入了单 Bot')
+    })
+
     await test('有管理员 + 没有票 + /login → 画登录页', async () => {
       const ui = await boot(undefined, { path: '/login' })
       const html = ui.html()

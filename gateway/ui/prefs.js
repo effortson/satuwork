@@ -362,9 +362,9 @@ function botAvatar(key, size = 34, origin, running = false) {
  * 头像选择器那种「挑一个图」的场合不算，它画的不是某颗 Bot。
  */
 const CROWN_PATH = 'M3 8l4.5 4L12 5l4.5 7L21 8l-2 10H5z'
-function botAvatarOf(bot, size = 34, running = false) {
+function botAvatarOf(bot, size = 34, running = false, mainBotId = state.mainBotId) {
   const art = botAvatar(bot && bot.icon, size, bot && bot.origin, running)
-  if (!bot || !bot.id || bot.id !== state.mainBotId) return art
+  if (!bot || !bot.id || bot.id !== mainBotId) return art
   const badge = Math.max(12, Math.round(size * 0.42))
   return `<span class="satu-avatarwrap" data-main="true" style="width: ${size}px; height: ${size}px;">${art}<span class="satu-crown" style="width: ${badge}px; height: ${badge}px;" title="${esc(t('主 Bot', 'Main bot'))}" aria-label="${esc(t('主 Bot', 'Main bot'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${CROWN_PATH}"/></svg></span></span>`
 }

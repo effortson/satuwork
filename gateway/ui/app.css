@@ -876,7 +876,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-shotdot[data-state="review"] { background: var(--color-warn-500); }
 
 /* ── 首屏下面那段演示 ──────────────────────────────────────────────────
-   两个 AI 员工轮流干一件活（pages-landing.js 的 lpFilmView）。背后一层 three.js 点阵，
+   单 Bot 执行和多 Bot 分工协作（pages-landing.js 的 lpFilmView）。背后一层 three.js 点阵，
    只铺在上半截、往下淡掉——播放器压在它淡掉的那一截上面，像是从里面浮出来的。 */
 .satu-lp-film {
   position: relative;
@@ -968,181 +968,28 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 }
 .satu-lp-filmview[data-narrow] { aspect-ratio: 640 / 480; }
 
-/* ── 舞台（960×480 的设计稿；窄屏 640×480，只剩屏幕） ── */
-.satu-lpf-stage {
-  position: absolute;
-  top: 0;
-  left: 0;
-  display: grid;
-  grid-template-columns: 320px 640px;
-  width: 960px;
-  height: 480px;
-  transform-origin: 0 0;
-  font-family: var(--font-body);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.satu-lpf-stage[data-narrow] { grid-template-columns: 640px; width: 640px; }
-.satu-lpf-stage[data-narrow] .satu-lpf-chat { display: none; }
-
-/* 出场 / 退场。默认是「会淡进淡出、占着位置」；对话、工具痕迹和终端那几行是往下长的，
-   没到那一步就不占地方。 */
-.satu-lpf-stage [data-at], .satu-lpf-stage [data-off] { transition: opacity 360ms ease, transform 360ms ease, visibility 360ms; }
-.satu-lpf-stage [data-at]:not([data-on]), .satu-lpf-stage [data-off]:not([data-on]) { opacity: 0; visibility: hidden; transform: translateY(6px) scale(0.98); }
-.satu-lpf-stage .satu-lpf-msg:not([data-on]),
-.satu-lpf-stage .satu-lpf-chip:not([data-on]),
-.satu-lpf-stage .satu-lpf-termbody > :not([data-on]) { display: none; }
-.satu-lpf-stage .satu-lpf-file[data-off]:not([data-on]) { transform: translateY(-14px) scale(0.6); }
-
-/* 左边：Satuwork 的对话。用的是界面自己的令牌，深浅主题跟着走。 */
-.satu-lpf-chat { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--lp-line); background: var(--color-surface); }
-.satu-lpf-chathead { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--lp-line); }
-.satu-lpf-chathead b { font-size: 13px; font-weight: 500; }
-.satu-lpf-face { display: flex; }
-.satu-lpf-badge { margin-left: auto; padding: 2px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 500; letter-spacing: 0.04em; background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
-.satu-lpf-badge[data-kind='local'] { background: var(--color-ok-100); color: var(--color-ok-800); }
-.satu-lpf-thread { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; gap: 10px; padding: 14px; }
-.satu-lpf-msg { display: flex; }
-.satu-lpf-msg[data-role='user'] { justify-content: flex-end; }
-.satu-lpf-bubble { max-width: 86%; padding: 8px 11px; border-radius: 12px; font-size: 12px; line-height: 1.6; }
-.satu-lpf-msg[data-role='user'] .satu-lpf-bubble { background: var(--primary); color: var(--primary-foreground); border-bottom-right-radius: 4px; }
-.satu-lpf-msg[data-role='assistant'] .satu-lpf-bubble { background: var(--card); color: var(--card-foreground); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
-.satu-lpf-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
-.satu-lpf-chip { display: inline-flex; align-items: center; gap: 3px; padding: 1px 8px; border-radius: 999px; background: var(--secondary); color: var(--secondary-foreground); font-size: 10.5px; white-space: nowrap; }
-.satu-lpf-compose { display: flex; align-items: center; justify-content: space-between; margin: 0 14px 14px; padding: 0 5px 0 14px; height: 38px; border: 1px solid var(--input-border, var(--border)); border-radius: 999px; color: var(--muted-foreground); font-size: 12px; }
-.satu-lpf-compose i { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); }
-.satu-lpf-compose svg { width: 14px; height: 14px; }
-
-/* 右边：那台电脑的屏幕。**颜色写死**——这是一张「屏幕截图」，不是这个站的界面，
-   不跟着主题翻。 */
-.satu-lpf-screen { position: relative; width: 640px; height: 480px; overflow: hidden; color: #1f1d1a; }
-.satu-lpf-os { position: absolute; inset: 0; }
-.satu-lpf-os[data-os='remote'] { background: radial-gradient(120% 90% at 20% 10%, #3a4f66 0%, #243140 55%, #1a222c 100%); }
-.satu-lpf-os[data-os='local'] { background: radial-gradient(120% 100% at 80% 0%, #f6dcc3 0%, #e0a882 50%, #b8704e 100%); }
-.satu-lpf-osbar { display: flex; align-items: center; gap: 10px; height: 26px; padding: 0 12px; font-size: 11px; color: #f5f2ec; background: rgba(12, 14, 18, 0.55); }
-.satu-lpf-os[data-os='local'] .satu-lpf-osbar { color: #2b2320; background: rgba(255, 255, 255, 0.55); }
-.satu-lpf-osbar b { font-weight: 600; }
-.satu-lpf-osbar span { opacity: 0.75; }
-.satu-lpf-osdot { width: 8px; height: 8px; border-radius: 999px; background: #e95420; opacity: 1 !important; }
-.satu-lpf-apple { width: 10px; height: 12px; border-radius: 5px 5px 4px 4px; background: #2b2320; opacity: 1 !important; }
-.satu-lpf-osconn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
-.satu-lpf-osconn::before { content: ''; width: 6px; height: 6px; border-radius: 999px; background: #3ecf8e; }
-
-.satu-lpf-win { position: absolute; display: flex; flex-direction: column; border-radius: 8px; background: #fbfaf8; box-shadow: 0 18px 40px -12px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.08); overflow: hidden; }
-.satu-lpf-winbar { display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; flex: none; background: #efece7; border-bottom: 1px solid #e0dcd5; font-size: 11px; color: #6b655c; }
-.satu-lpf-winbar > i { width: 9px; height: 9px; border-radius: 999px; background: #d9d4cc; }
-.satu-lpf-winbar > i:first-child { background: #ec6a5e; }
-.satu-lpf-winbar > i:nth-child(2) { background: #f4bf4f; }
-.satu-lpf-winbar > i:nth-child(3) { background: #61c554; }
-.satu-lpf-winbar > span { margin-left: 8px; }
-
-/* 远程：浏览器。 */
-.satu-lpf-url { flex: 1; height: 18px; margin-left: 10px !important; padding: 0 10px; border-radius: 999px; background: #fff; border: 1px solid #e0dcd5; display: flex; align-items: center; font-size: 10.5px; color: #3a352f; overflow: hidden; white-space: nowrap; }
-/* 地址一个字一个字打出来：宽度按字数走 steps。 */
-.satu-lpf-type { display: inline-block; overflow: hidden; white-space: nowrap; vertical-align: bottom; }
-.satu-lpf-type[data-on] { animation: satu-lpf-type 1.1s steps(28, end) both; transform: none !important; }
-@keyframes satu-lpf-type { from { max-width: 0; } to { max-width: 220px; } }
-.satu-lpf-page { position: relative; flex: 1; padding: 14px 16px; }
-.satu-lpf-skel { position: absolute; inset: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
-.satu-lpf-skel i { height: 12px; border-radius: 4px; background: #ece8e1; }
-.satu-lpf-skel i:first-child { width: 40%; height: 16px; }
-.satu-lpf-pagehead { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 13px; font-weight: 600; }
-.satu-lpf-pagehead span { font-weight: 400; color: #8a8378; }
-.satu-lpf-table { border: 1px solid #e6e2db; border-radius: 6px; overflow: hidden; }
-.satu-lpf-row { display: grid; grid-template-columns: 22px 56px 1fr 90px; align-items: center; height: 30px; padding: 0 10px; font-size: 11px; border-top: 1px solid #efebe5; font-variant-numeric: tabular-nums; }
-.satu-lpf-row:first-child { border-top: 0; }
-.satu-lpf-row span:last-child { text-align: right; }
-.satu-lpf-more { display: block; line-height: 30px; color: #8a8378; }
-.satu-lpf-check { width: 11px; height: 11px; border: 1.5px solid #b9b2a7; border-radius: 3px; }
-/* 第 3 步全选：勾都打上。 */
-.satu-lpf-os[data-os='remote'] .satu-lpf-browser .satu-lpf-page > [data-on] .satu-lpf-check { transition: background 200ms ease 900ms, border-color 200ms ease 900ms; background: #c2410c; border-color: #c2410c; }
-.satu-lpf-btn { position: absolute; right: 16px; bottom: 14px; padding: 6px 14px; border-radius: 6px; background: #c2410c; color: #fff; font-size: 11px; font-weight: 500; }
-.satu-lpf-toast { position: absolute; right: 12px; top: 40px; display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 8px; background: #26231f; color: #f5f2ec; font-size: 11px; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25); }
-
-/* 远程：文件管理器。 */
-.satu-lpf-list { padding: 6px 0; }
-.satu-lpf-li { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 14px; font-size: 11px; }
-.satu-lpf-li span { margin-left: auto; color: #8a8378; }
-.satu-lpf-li em { width: 26px; padding: 1px 0; border-radius: 3px; text-align: center; font-style: normal; font-size: 8.5px; font-weight: 700; color: #fff; background: #d64541; }
-.satu-lpf-li em[data-ext='xlsx'] { background: #1f8f4e; }
-.satu-lpf-dim { color: #8a8378; }
-.satu-lpf-new { margin: 2px 6px; border-radius: 6px; background: #fff3c4; font-weight: 600; }
-
-/* 本地：访达。 */
-.satu-lpf-folders { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 12px 14px 6px; min-height: 76px; border-bottom: 1px solid #eee9e2; }
-.satu-lpf-folder { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.satu-lpf-folder i { position: relative; width: 44px; height: 34px; border-radius: 4px; background: linear-gradient(#78b7f0, #4b95dc); }
-.satu-lpf-folder i::before { content: ''; position: absolute; left: 0; top: -5px; width: 18px; height: 8px; border-radius: 3px 3px 0 0; background: #5aa2e2; }
-.satu-lpf-folder em { font-style: normal; font-size: 10.5px; white-space: nowrap; }
-.satu-lpf-folder small { position: absolute; top: -6px; right: 14px; min-width: 18px; padding: 0 5px; border-radius: 999px; background: #c2410c; color: #fff; font-size: 9.5px; font-weight: 600; text-align: center; line-height: 16px; }
-.satu-lpf-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px 4px; padding: 12px 10px; }
-.satu-lpf-file { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
-.satu-lpf-file i { position: relative; width: 30px; height: 38px; border-radius: 3px; background: #fff; box-shadow: 0 0 0 1px #ddd6cc, 0 2px 4px rgba(0, 0, 0, 0.08); }
-.satu-lpf-file i::after { content: ''; position: absolute; top: 0; right: 0; border-style: solid; border-width: 0 9px 9px 0; border-color: #efe9e0 #f7f3ee; }
-.satu-lpf-file b { position: absolute; left: -4px; bottom: 6px; padding: 0 3px; border-radius: 2px; font-size: 7.5px; font-weight: 700; color: #fff; background: #8a8378; }
-.satu-lpf-file[data-ext='pdf'] b { background: #d64541; }
-.satu-lpf-file[data-ext='png'] b { background: #3b82c4; }
-.satu-lpf-file[data-ext='docx'] b { background: #2f5fb3; }
-.satu-lpf-file[data-ext='xlsx'] b { background: #1f8f4e; }
-.satu-lpf-file[data-ext='zip'] b { background: #9a7b3f; }
-.satu-lpf-file em { max-width: 100%; font-style: normal; font-size: 9.5px; color: #4a453e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* 本地：终端。 */
-.satu-lpf-term { background: #1c1b19; }
-.satu-lpf-term .satu-lpf-winbar { background: #2a2825; border-color: #37342f; color: #b9b2a7; }
-.satu-lpf-termbody { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: #e7e3da; white-space: nowrap; overflow: hidden; }
-.satu-lpf-termbody b { color: #e8845c; font-weight: 400; }
-.satu-lpf-out { color: #9fd49a; }
-.satu-lpf-note { position: absolute; top: 36px; right: 12px; display: flex; flex-direction: column; gap: 2px; width: 210px; padding: 10px 12px; border-radius: 12px; background: rgba(250, 248, 245, 0.92); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2); font-size: 11px; }
-.satu-lpf-note b { font-size: 11px; }
-.satu-lpf-localtag { position: absolute; left: 20px; bottom: 16px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px; background: rgba(28, 27, 25, 0.78); color: #f5f2ec; font-size: 10.5px; }
-
-/* 光标：走到下一步的位置要 0.7 秒；点一下是一圈扩开的涟漪。 */
-.satu-lpf-cursor { position: absolute; top: 0; left: 0; z-index: 5; width: 18px; height: 18px; transition: transform 700ms cubic-bezier(0.45, 0, 0.2, 1); filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.3)); }
-.satu-lpf-cursor::after { content: ''; position: absolute; left: -9px; top: -9px; width: 20px; height: 20px; border-radius: 999px; border: 2px solid #c2410c; opacity: 0; }
-.satu-lpf-cursor[data-click]::after { animation: satu-lpf-click 520ms ease-out; }
-@keyframes satu-lpf-click { from { opacity: 0.9; transform: scale(0.4); } to { opacity: 0; transform: scale(1.8); } }
-
-/* 字幕：只在窄屏（对话那一栏收起时）露出来，一次一句。 */
-.satu-lpf-caps { display: none; }
-.satu-lpf-stage[data-narrow] .satu-lpf-caps { position: absolute; left: 0; right: 0; bottom: 0; z-index: 6; display: block; height: 96px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.72)); }
-.satu-lpf-caps span { position: absolute; left: 24px; right: 24px; bottom: 20px; color: #fff; font-size: 24px; line-height: 1.35; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5); }
-
-@media (prefers-reduced-motion: reduce) {
-  .satu-lpf-stage *, .satu-lpf-stage *::after { transition: none !important; animation: none !important; }
-}
-
-@media (max-width: 760px) {
-  /* 两张标签叠起来，播放键缩到右上角。 */
-  .satu-lp-filmtabs { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .satu-lp-filmplay { display: none; }
-  .satu-lp-filmtext span { display: none; }
-  .satu-lp-filmtab { padding: 10px 12px 12px; }
-}
-
-/* ── 能力带 ────────────────────────────────────────────────────────────
-   四样单开一张卡不值当（说一句就完），可整个不提又缺一块。排成一条被竖线切成四
-   格的窄带，人扫过去知道「还有这些」就够了。 */
-.satu-lp-spec {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0;
-  padding-left: 0;
-  padding-right: 0;
-  border-top: 1px solid var(--lp-line);
-}
-.satu-lp-specitem {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  padding: 20px clamp(12px, 1.6vw, 22px);
-  font-size: 12.5px;
-  letter-spacing: 0.02em;
-  color: var(--secondary-foreground);
-}
-.satu-lp-specitem + .satu-lp-specitem { border-left: 1px solid var(--lp-line); }
-.satu-lp-chipicon { display: inline-flex; flex: none; color: var(--color-accent-600); }
+/* 真实工作台在无脚本的隔离文档内加载原样式，首页仅控制播放和等比缩放。 */
+.satu-ui-demo { position: absolute; inset: 0; border-radius: 12px; overflow: hidden; box-shadow: 0 18px 60px -24px rgba(45,38,25,0.22); }
+.lp-product-frame { position: absolute; left: 0; top: 0; width: 1440px; height: 720px; border: 0; display: block; transform-origin: 0 0; pointer-events: none; }
+.lp-product-cursor { position: absolute; z-index: 5; pointer-events: none; transition: left 500ms cubic-bezier(0.4,0,0.2,1), top 500ms cubic-bezier(0.4,0,0.2,1); filter: drop-shadow(0 2px 2px rgba(0,0,0,0.14)); }
+.lp-product-cursor > i { position: absolute; left: -8px; top: -8px; width: 22px; height: 22px; border-radius: 50%; background: rgba(197,119,79,0.2); opacity: 0; }
+.lp-product-cursor[data-click] > i { animation: lp-product-click 600ms ease-out both; }
+@keyframes lp-product-click { from { opacity: 1; transform: scale(0.2); } to { opacity: 0; transform: scale(1.8); } }
+.lp-demo-toolbar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; max-width: 1120px; margin: 0 auto 8px; }
+.lp-demo-toolbar > span { font-size: 10px; color: var(--muted-foreground); }
+.lp-demo-toolbar > div { display: flex; align-items: center; gap: 6px; }
+.lp-demo-replay { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--color-text); cursor: pointer; }
+.lp-demo-replay:hover { background: var(--secondary); }
+.lp-demo-replay:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.satu-bot-progress { flex: none; display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 8px 0 2px; }
+.satu-bot-caption { font-size: 11px; color: var(--secondary-foreground); }
+.satu-bot-phases { display: flex; gap: 18px; }
+.satu-bot-phases > button { display: inline-flex; align-items: center; gap: 6px; padding: 3px; border: 0; border-radius: 3px; background: transparent; font: inherit; font-size: 9px; color: #a29e94; cursor: pointer; transition: color 250ms ease; }
+.satu-bot-phases i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+.satu-bot-phases > [data-state='active'] { color: var(--primary); }
+.satu-bot-phases > [data-state='done'] { color: #6b806b; }
+.satu-bot-phases > button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .lp-product-cursor { transition: none; } .lp-product-cursor > i { animation: none !important; } }
 
 /* ── 分节 ──────────────────────────────────────────────────────────────
    节头**居中**（和 orderful 一样）：一句眉题、一行大标题、一句说明。大标题同样是
@@ -1296,10 +1143,6 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 
 @media (max-width: 900px) {
   .satu-lp-heroleft { padding: 32px clamp(20px, 4vw, 32px); }
-  /* 能力带收成 2×2：四格排一行到这儿每格只剩五六个字宽。 */
-  .satu-lp-spec { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .satu-lp-specitem:nth-child(odd) { border-left: 0; }
-  .satu-lp-specitem:nth-child(n + 3) { border-top: 1px solid var(--lp-line); }
   /* 三步竖着排。 */
   .satu-lp-steps { grid-template-columns: 1fr; }
   .satu-lp-step + .satu-lp-step { border-left: 0; border-top: 1px solid var(--lp-dark-line); }
@@ -1323,10 +1166,6 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
      900 到 560 之间不收：那一档「登录」已经让出了位置，四个字放得下。 */
   .satu-lp-sales { padding: 8px; border-radius: 999px; }
   .satu-lp-sales span { display: none; }
-  /* 能力带竖着排：两格一行到 375 宽时「Skill 与 MCP 分两层」也要折行。 */
-  .satu-lp-spec { grid-template-columns: 1fr; }
-  .satu-lp-specitem { border-left: 0; }
-  .satu-lp-specitem + .satu-lp-specitem { border-top: 1px solid var(--lp-line); }
 }
 
 /* 首页采用白底和留白分区。限定在 .satu-lp 内，避免改变共用组件的其他页面；
@@ -1350,7 +1189,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp :is(
   .satu-lp-rail, .satu-lp-top, .satu-lp-topin, .satu-lp-lang,
   .satu-lp-film, .satu-lp-filmtab, .satu-lp-filmplay, .satu-lp-filmview,
-  .satu-lp-spec, .satu-lp-specitem, .satu-lp-sec,
+  .satu-lp-sec,
   .satu-lp-cards, .satu-lp-card, .satu-lp-cardshot,
   .satu-lp-steps, .satu-lp-step, .satu-lp-foot,
   .satu-dl-card, .satu-dl-tabs, .satu-dl-note + .satu-dl-note,
@@ -1386,7 +1225,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   .satu-lp-compact .satu-lp-topsign { padding: 8px 12px; }
 }
 
-/* 首页一屏展示：演示按剩余空间等比缩放，导航、摘要和页脚均占据自己的行。 */
+/* 首页一屏展示：演示按剩余空间等比缩放，导航和页脚均占据自己的行。 */
 .satu-lp.satu-lp-home {
   height: 100vh;
   height: 100dvh;
@@ -1408,10 +1247,9 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-home .satu-lp-filmhead .satu-lp-kicker { margin-bottom: 4px; font-size: 10px; }
 .satu-lp-home .satu-lp-filmhead h1 { margin: 0; font-size: clamp(24px, 3.6vh, 36px); }
 .satu-lp-home .satu-lp-filmhead h1 span { display: inline; }
-.satu-lp-home .satu-lp-filmtabs { flex: none; width: 100%; max-width: 900px; margin: 0 auto 10px; }
-.satu-lp-home .satu-lp-filmtab { gap: 8px; padding: 8px 12px 10px; }
-.satu-lp-home .satu-lp-filmtext b { font-size: 13px; }
-.satu-lp-home .satu-lp-filmtext span { font-size: 11px; }
+.satu-lp-home .satu-bot-intro { margin-top: 8px; font-size: 12px; }
+.satu-lp-home .satu-lp-filmplay { display: inline-flex; width: 32px; height: 32px; }
+
 .satu-lp-home .satu-lp-filmframe {
   flex: 1;
   min-height: 0;
@@ -1419,10 +1257,8 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   display: grid;
   place-items: center;
 }
-.satu-lp-home .satu-lp-filmview { width: min(100cqw, 200cqh); max-width: 900px; margin: 0; }
-.satu-lp-home .satu-lp-filmview[data-narrow] { width: min(100cqw, 133.333333cqh); }
-.satu-lp-home .satu-lp-spec { flex: none; display: flex; justify-content: center; gap: clamp(8px, 2vw, 24px); padding: 8px 18px; }
-.satu-lp-home .satu-lp-specitem { gap: 6px; padding: 0; font-size: 11px; }
+.satu-lp-home .satu-lp-filmview { width: min(100cqw, 200cqh); max-width: 1120px; aspect-ratio: 1440 / 720; margin: 0; background: transparent; border-radius: 12px; overflow: visible; }
+.satu-lp-home .satu-lp-filmview[data-narrow] { width: min(100cqw, 67.241379cqh); aspect-ratio: 390 / 580; }
 .satu-lp-home .satu-lp-footin { gap: 6px; padding-top: 8px; padding-bottom: 8px; font-size: 10px; }
 .satu-lp-home .satu-lp-footin .satu-lp-brand { gap: 6px; font-size: 12px; }
 .satu-lp-home .satu-lg-links { gap: 12px; }
@@ -1430,11 +1266,26 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   .satu-lp-home .satu-lp-filmhead { margin-bottom: 10px; }
   .satu-lp-home .satu-lp-filmhead h1 { max-width: 24ch; font-size: clamp(22px, 4vw, 28px); }
   .satu-lp-home .satu-lp-filmhead h1 span { display: block; }
-  .satu-lp-home .satu-lp-spec { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 8px; }
-  .satu-lp-home .satu-lp-specitem { font-size: 10px; line-height: 1.4; }
 }
 @media (max-width: 560px) {
+  .satu-bot-caption { max-width: 100%; font-size: 10px; text-align: center; line-height: 1.5; }
+  .satu-bot-phases { gap: 8px; }
+  .satu-bot-phases > button { gap: 4px; font-size: 8px; }
+  .satu-lp-home .satu-lp-filmhead h1 { font-size: 22px; }
+  .satu-lp-home .satu-bot-intro { font-size: 10px; }
   .satu-lp-home .satu-lp-footin .satu-lp-brand > span { display: none; }
+}
+@media (max-height: 650px) {
+  .satu-lp-home .satu-lp-topin { height: 48px; }
+  .satu-lp-home .satu-lp-filmhead { margin-bottom: 8px; }
+  .satu-lp-home .satu-lp-filmhead .satu-lp-kicker,
+  .satu-lp-home .satu-bot-intro { display: none; }
+  .satu-bot-progress { gap: 4px; padding-top: 4px; }
+}
+@media (max-height: 450px) {
+  .satu-lp-home .satu-lp-film { padding-top: 4px; padding-bottom: 4px; }
+  .satu-lp-home .satu-lp-filmhead h1 { font-size: 20px; }
+  .satu-lp-home .satu-lp-filmtabs { margin-bottom: 4px; }
 }
 
 /* ── 隐私政策与服务条款（/privacy、/terms，见 ui/pages-legal.js）─────────

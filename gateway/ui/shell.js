@@ -277,8 +277,10 @@ function installingOf(bot) {
   return Boolean(bot && bot.runtime && bot.runtime.status === 'deploying')
 }
 
-function chatRosterNav() {
-  const bots = state.runtimeBots || []
+function chatRosterNav(options = {}) {
+  const bots = options.bots ?? state.runtimeBots ?? []
+  const mainBotId = options.mainBotId ?? state.mainBotId
+  const folderOpen = options.folderOpen ?? state.botFolderOpen
   if (!bots.length) return ''
   /**
    * **只有真的在对话页上，名单里才有「选中的那一行」。**
@@ -290,8 +292,8 @@ function chatRosterNav() {
    * 用 onChatPage() 而不是自己再判一次路径：顶栏换不换成会话身份行、右栏开不开，用
    * 的都是它，三处共用一个判断才不会各自漂移。
    */
-  const selected = onChatPage() ? chatBotIdOf(state.path) || state.chatBotId : ''
-  const { loose, folders } = rosterGroups(bots)
+  const selected = options.selected ?? (onChatPage() ? chatBotIdOf(state.path) || state.chatBotId : '')
+  const { loose, folders } = rosterGroups(bots, options.folders ?? state.botFolders ?? [], mainBotId)
   /**
    * 没分类的排最前面、不带标题——「默认没有分类」：一个人一个分类都没建时，名单和
    * 以前一模一样。它同时是一块放回区：从分类里拖出来的 Bot 丢到这儿就回到没分类；
@@ -299,14 +301,14 @@ function chatRosterNav() {
    */
   const looseHtml =
     `<div class="satu-botfolder satu-botfolder-loose" data-drop-folder="">` +
-    loose.map((b) => rosterRowHtml(b, selected)).join('') +
+    loose.map((b) => rosterRowHtml(b, selected, mainBotId)).join('') +
     (folders.length && !loose.length
       ? `<div class="satu-botfolder-empty">${esc(t('拖到这里取消分类', 'Drop here to remove from its folder'))}</div>`
       : '') +
     `</div>`
   const folderHtml = folders
     .map((f) => {
-      const open = state.botFolderOpen[f.id] !== false
+      const open = folderOpen[f.id] !== false
       const menuId = 'folder:' + f.id
       return `<div class="satu-botfolder" data-folder="${esc(f.id)}" data-open="${String(open)}">
         ${/* 标题整条都是放入区：拖着一颗 Bot 悬在上面就亮，松手就进这个分类（收着的也能放）。 */ ''}
@@ -332,7 +334,7 @@ function chatRosterNav() {
         </div>
         ${/* 收着的也把行画出来，由 CSS 藏（.satu-botfolder[data-open=false]）：侧栏收成窄栏时没有分类标题可点，
               不画的话那几颗 Bot 在窄栏里整个看不见、也没地方展开。窄栏那一档照常摊开。 */ ''}
-        ${f.bots.map((b) => rosterRowHtml(b, selected)).join('')}
+        ${f.bots.map((b) => rosterRowHtml(b, selected, mainBotId)).join('')}
       </div>`
     })
     .join('')
@@ -345,22 +347,22 @@ function chatRosterNav() {
  * 归属指向一个已经不存在的分类（刚在另一个标签页里删掉）时当没分类——名单上不能
  * 凭空少一颗 Bot。
  */
-function rosterGroups(bots) {
-  const folders = (state.botFolders || []).slice().sort((a, b) => a.position - b.position)
+function rosterGroups(bots, folderList = state.botFolders || [], mainBotId = state.mainBotId) {
+  const folders = folderList.slice().sort((a, b) => a.position - b.position)
   const known = new Set(folders.map((f) => f.id))
   // 主 Bot 在它所在的那一组里排最前面：戴着皇冠还排在中间，看着像排错了。别的顺序不动。
-  const mainFirst = (list) => list.slice().sort((a, b) => Number(b.id === state.mainBotId) - Number(a.id === state.mainBotId))
+  const mainFirst = (list) => list.slice().sort((a, b) => Number(b.id === mainBotId) - Number(a.id === mainBotId))
   const loose = mainFirst(bots.filter((b) => !b.folderId || !known.has(b.folderId)))
   return { loose, folders: folders.map((f) => ({ ...f, bots: mainFirst(bots.filter((b) => b.folderId === f.id)) })) }
 }
 
 /** 名单上的一行。`draggable`：拖到某个分类的标题上就归进去（见下面那组 drag 监听）。 */
-function rosterRowHtml(b, selected) {
+function rosterRowHtml(b, selected, mainBotId = state.mainBotId) {
   const sum = (botStreams.get(b.id) || {}).sum || SatuCore.newSum()
   return `<button type="button" class="satu-botrow" draggable="true" data-act="chat-open" data-id="${esc(b.id)}" data-bot-row="${esc(b.id)}" aria-current="${b.id === selected}">
         ${/* 头像占满两行：名字和摘要并排在它右边，整行才像一条会话，而不是一个
              带小图标的菜单项。34 是 botAvatar 的默认尺寸，也正好等于两行的高度。 */ ''}
-        <span class="satu-botavatar">${botAvatarOf(b, 34, botIsWorking(b))}</span>
+        <span class="satu-botavatar">${botAvatarOf(b, 34, botIsWorking(b), mainBotId)}</span>
         <span class="satu-botmain">
           <span class="satu-botline">
             ${/* 状态点在名字**前面**：一列对齐的点，扫一眼就知道哪几个在动，

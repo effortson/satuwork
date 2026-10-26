@@ -515,8 +515,7 @@ function previewBody(p) {
  * 右栏比弹层窄，所以头上分两行：上面是文件名和关闭，下面是那一排看法 / 涂抹 / 下载，
  * 窄的时候自己折行。
  */
-function previewPanel() {
-  const p = state.preview
+function previewPanel(p = state.preview, body = '') {
   if (!p) return ''
   const meta = p.size ? fileSize(p.size) : ''
   return `<section class="sw-preview sw-preview-side" aria-label="${esc(t('文件预览', 'File preview'))}">
@@ -535,7 +534,7 @@ function previewPanel() {
         <button type="button" class="btn" data-act="chat-ref-file" data-path="${esc(p.path)}" data-name="${esc(p.name)}">${t('引用这个文件', 'Quote this file')}</button>
         <button type="button" class="btn" data-act="preview-download" data-path="${esc(p.path)}" data-name="${esc(p.name)}">${t('下载')}</button>
       </div>
-      <div class="sw-preview-slot" id="sw-preview-slot"></div>
+      <div class="sw-preview-slot" id="sw-preview-slot">${body}</div>
     </section>`
 }
 

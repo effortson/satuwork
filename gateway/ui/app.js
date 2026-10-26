@@ -414,9 +414,12 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
-  if (act === 'landing-film') {
-    // 只换演示那块舞台（见 pages-landing.js 的 lpFilmGo），不走 render()。
-    lpFilmPick(Number(btn.getAttribute('data-i')) || 0)
+  if (act === 'landing-film-replay') {
+    lpFilmGo()
+    return
+  }
+  if (act === 'landing-film-step') {
+    lpFilmSeek(Number(btn.getAttribute('data-step')))
     return
   }
   if (act === 'landing-film-play') {

@@ -1826,8 +1826,52 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
-/* 渲染出来的 Markdown 借聊天气泡那一套排版（.sw-md），这里只管容器。 */
-.sw-preview-md { max-width: 78ch; margin: 0 auto; color: var(--foreground); }
+/* Markdown 预览保留语义排版，并提供独立文档页的留白。 */
+.sw-preview-body:has(> .sw-preview-md) {
+  display: block;
+  box-sizing: border-box;
+  padding: 20px;
+  background: var(--background);
+}
+/* Markdown 预览按文档页排版，与工具和任务卡的层次区分开。 */
+.sw-preview-md {
+  width: 100%;
+  max-width: 78ch;
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: 28px 32px;
+  border-radius: 8px;
+  background: var(--popover);
+  color: var(--foreground);
+  box-shadow: 0 5px 24px rgb(0 0 0 / 0.045);
+}
+.sw-preview-md h1 {
+  margin: 0 0 24px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+}
+.sw-preview-md h2 {
+  margin: 24px 0 10px;
+  padding-left: 10px;
+  border-left: 3px solid var(--primary);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.sw-preview-md h3 { margin: 22px 0 10px; font-size: 16px; line-height: 1.5; }
+.sw-preview-md p, .sw-preview-md li { font-size: 14.5px; line-height: 1.85; }
+.sw-preview-md li + li { margin-top: 6px; }
+@media (max-width: 760px) {
+  .sw-preview-body:has(> .sw-preview-md) { padding: 12px; }
+  .sw-preview-md { padding: 22px 20px; }
+  .sw-preview-md h1 { font-size: 25px; }
+  .sw-preview-md h2 { font-size: 17px; }
+  .sw-preview-md p, .sw-preview-md li { font-size: 14px; }
+}
 
 /* 「预览 / 原文」。做成一对连体的小段，而不是两颗独立按钮——它们是同一个东西的
    两种看法，不是两个操作。 */
@@ -1897,6 +1941,7 @@
 .sw-taskname-tag { padding: 0 7px; border-radius: 999px; background: var(--secondary); font-size: 11px; line-height: 1.7; }
 
 .sw-task-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--muted); overflow: hidden; }
+.sw-bubble .sw-toolfold, .sw-bubble .sw-task-card { margin-block: var(--space-3); }
 .sw-task-head { padding: var(--space-2) var(--space-3); font-size: 12px; color: var(--muted-foreground); border-bottom: 1px solid var(--border); }
 .sw-task-row + .sw-task-row { border-top: 1px solid var(--border); }
 .sw-task-line {
