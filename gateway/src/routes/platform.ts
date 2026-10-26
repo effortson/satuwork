@@ -197,7 +197,7 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
   /** 「工具配置 → 知识库」那一屏的状态行：配没配、索引里多少向量。 */
   router.get('/platform/knowledge/status', async (req, res) => {
     await requireOwnerUser(req, db, keys)
-    json(res, 200, await vectorInfo())
+    json(res, 200, await vectorInfo(db))
   })
 
   router.get('/platform/credentials', async (req, res) => {

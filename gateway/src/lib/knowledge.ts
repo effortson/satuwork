@@ -2,7 +2,7 @@
  * 知识库：检索、入库、删除收尾（docs/knowledge-base.md §6、§7、§9）。
  *
  * 入库跑在 `/cron/tick` 的一个维护步里：一拍领**一个**文件，在 50 秒的预算里解析、切片、
- * 分批灌进 Upstash，预算用完就放手，下一拍从 `chunkDone` 接着来。Vercel 函数默认 300 秒，
+ * 分批写入向量后端，预算用完就放手，下一拍从 `chunkDone` 接着来。Vercel 函数默认 300 秒，
  * 一拍里前面还有别的步，这一步不能把整拍吃光。
  */
 import { randomUUID } from 'node:crypto'
@@ -12,7 +12,7 @@ import { HttpError } from '../http.ts'
 import { chunkPages } from './knowledge-chunk.ts'
 import { ExtractError, extOf, extractText } from './knowledge-extract.ts'
 import { readStored, removeStored } from './knowledge-store.ts'
-import { KB_UPSERT_BATCH, type KbHit, deleteFileVectors, deleteKbNamespace, queryNamespace, upsertChunks, vectorConfigured } from './knowledge-vector.ts'
+import { KB_UPSERT_BATCH, type KbHit, deleteFileVectors, deleteKbNamespace, prepareVectorQuery, queryNamespace, upsertChunks, vectorBackend, vectorConfigured } from './knowledge-vector.ts'
 import type { Meter } from './meter.ts'
 import { oneLine } from './util.ts'
 
@@ -135,13 +135,20 @@ export async function searchKnowledge(
   const settings = parseKnowledgeSettings((await db.platformSettings()).knowledge)
   const byId = new Map(kbs.map((k) => [k.id, k]))
   const results: Array<{ kbId: string; hit: KbHit }> = []
+  let prepared: number[] | undefined
+  try {
+    prepared = await prepareVectorQuery(db, query, kbs[0].companyId)
+  } catch (error) {
+    await meter.charge({ kind: 'kb', account, botId: input.botId ?? null, status: 'failed', kbOp: 'query', units: 0, refId: randomUUID() })
+    throw error
+  }
   let failed = 0
-  // 一个库一次查询，并发封顶——Upstash 没有跨命名空间的一次查，而并发查几个库和查一个差不多快。
+  // 一个库一次查询，并发封顶；pgvector 复用前面生成的同一个查询向量。
   for (let i = 0; i < kbs.length; i += KB_QUERY_CONCURRENCY) {
     await Promise.all(
       kbs.slice(i, i + KB_QUERY_CONCURRENCY).map(async (kb) => {
         try {
-          for (const hit of await queryNamespace(kb.id, query, count)) results.push({ kbId: kb.id, hit })
+          for (const hit of await queryNamespace(db, kb, query, count, prepared)) results.push({ kbId: kb.id, hit })
         } catch (e) {
           failed++
           console.warn(`satuwork-gateway: 知识库 ${kb.id} 查询失败：${(e as Error).message}`)
@@ -228,11 +235,11 @@ async function sweepDeletingKnowledge(db: Db): Promise<number> {
 }
 
 /**
- * 真正删一个库：Upstash 命名空间 → 原文件 → 表里的行。任何一步失败下一拍重来；
+ * 真正删一个库：向量数据 → 原文件 → 表里的行。任何一步失败下一拍重来；
  * `deleteNamespace` 对不存在的命名空间回成功，所以重来是幂等的。
  */
 export async function cleanupKnowledgeBase(db: Db, kb: KnowledgeBase): Promise<void> {
-  if (vectorConfigured()) await deleteKbNamespace(kb.id)
+  if (vectorConfigured() || vectorBackend() === 'pgvector') await deleteKbNamespace(db, kb)
   for (const f of await db.knowledgeFiles(kb.id)) {
     await removeStored(f)
   }
@@ -245,7 +252,7 @@ export async function cleanupKnowledgeBase(db: Db, kb: KnowledgeBase): Promise<v
  */
 export async function deleteKnowledgeFileNow(db: Db, file: KnowledgeFile): Promise<void> {
   if (file.chunkDone > 0 || file.status === 'ready') {
-    if (vectorConfigured()) await deleteFileVectors(file.kbId, file.id)
+    if (vectorConfigured() || vectorBackend() === 'pgvector') await deleteFileVectors(db, { id: file.kbId, companyId: file.companyId }, file.id)
   }
   await removeStored(file)
   await db.deleteKnowledgeFile(file.id)
@@ -254,7 +261,7 @@ export async function deleteKnowledgeFileNow(db: Db, file: KnowledgeFile): Promi
 
 /** 失败重跑：改回排队、清掉已有分片和向量，从头来。 */
 export async function retryKnowledgeFile(db: Db, file: KnowledgeFile): Promise<KnowledgeFile> {
-  if (vectorConfigured() && file.chunkDone > 0) await deleteFileVectors(file.kbId, file.id)
+  if ((vectorConfigured() || vectorBackend() === 'pgvector') && file.chunkDone > 0) await deleteFileVectors(db, { id: file.kbId, companyId: file.companyId }, file.id)
   await db.deleteKnowledgeChunks(file.id)
   const next = await db.updateKnowledgeFile(file.id, { status: 'queued', error: '', chunkCount: 0, chunkDone: 0, attempts: 0, leaseUntil: null })
   await db.refreshKnowledgeCounters(file.kbId)
@@ -289,12 +296,13 @@ async function ingestOne(db: Db, meter: Meter, now: number): Promise<number> {
       const batch = await db.knowledgeChunks(cur.id, done, KB_UPSERT_BATCH)
       if (!batch.length) break
       await upsertChunks(
-        cur.kbId,
+        db, kb,
         batch.map((c) => ({
           id: c.id,
           data: c.text,
           metadata: { fileId: cur.id, fileName: cur.name, kbId: cur.kbId, no: c.no, page: c.page, text: c.text },
         })),
+        deadline,
       )
       done = batch[batch.length - 1].no + 1
       // 每批成功就推进，顺手续租：下一拍看到的是真实进度。
@@ -304,7 +312,7 @@ async function ingestOne(db: Db, meter: Meter, now: number): Promise<number> {
       await db.updateKnowledgeFile(cur.id, { status: 'ready', error: '', chunkDone: done, attempts: 0, leaseUntil: null })
       await db.refreshKnowledgeCounters(cur.kbId)
       const account = cur.createdBy ? await db.account(cur.createdBy) : undefined
-      // 入库完成落一行：计量是几次 upsert 请求（分片数 ÷ 100 向上取整）。没有操作人（账号删了）就不记。
+      // 入库完成落一行：计量是逻辑入库单位（分片数 ÷ 100 向上取整）。没有操作人（账号删了）就不记。
       if (account) {
         await meter.charge({
           kind: 'kb',

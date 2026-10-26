@@ -1,105 +1,88 @@
-/**
- * Upstash Vector 的那一层壳（docs/knowledge-base.md §3.2）。
- *
- * 一个索引、每个知识库一个命名空间、用索引**内置的 embedding**：这里只送文本（`data`），
- * 向量在 Upstash 那边算，Gateway 不碰任何 embedding 模型，也不需要额外的模型密钥。
- *
- * 两个环境变量交给 Gateway：`UPSTASH_VECTOR_REST_URL` / `UPSTASH_VECTOR_REST_TOKEN`。
- * 没配 = 没开：写接口和检索回 501（同 Blob 没配时发布包那条），读接口照常——界面要能
- * 画出「未开通」。
- *
- * 命名空间 `kb:{kbId}`：删库 = 删命名空间，删文件 = 按前缀 `{fileId}:` 删，各一条调用。
- * 元数据里不放 companyId——命名空间已经把它钉死了，再放一份只是多一个可能对不上的地方。
- */
-import { Index } from '@upstash/vector'
+/** Optional vector backends share the existing ingestion/deletion/search contract. */
+import type { Db } from '../db.ts'
 import { HttpError } from '../http.ts'
+import { embedTexts, embeddingConfig, embeddingMissing } from './knowledge-embedding.ts'
+import * as upstash from './knowledge-upstash.ts'
+export type { KbHit, KbVectorMeta } from './knowledge-upstash.ts'
+import type { KbHit, KbVectorMeta } from './knowledge-upstash.ts'
 
-export interface KbVectorMeta {
-  fileId: string
-  fileName: string
-  kbId: string
-  no: number
-  page: number | null
-  text: string
-  [key: string]: unknown
+export interface KbVectorScope { id: string; companyId: string }
+/** Billing units remain logical groups of 100 chunks, independent of provider request batches. */
+export const KB_UPSERT_BATCH = upstash.KB_UPSERT_BATCH
+export const VECTOR_NOT_CONFIGURED = '平台未配置知识库向量服务，请联系系统管理员检查工具配置'
+export const namespaceOf = upstash.namespaceOf
+
+export function vectorBackend(): string {
+  return (process.env.KB_VECTOR_BACKEND || 'upstash').trim()
 }
 
-export interface KbHit {
-  id: string
-  score: number
-  metadata: KbVectorMeta
-}
-
-/** 一批最多灌多少条。Upstash 免费档每批上限 1000，100 是留给 50 秒预算的步长。 */
-export const KB_UPSERT_BATCH = 100
-
-function restUrl(): string {
-  return (process.env.UPSTASH_VECTOR_REST_URL || '').trim()
-}
-
-function restToken(): string {
-  return (process.env.UPSTASH_VECTOR_REST_TOKEN || '').trim()
+function configuration() {
+  const backend = vectorBackend()
+  if (backend === 'upstash') return { backend, missing: [
+    ...((process.env.UPSTASH_VECTOR_REST_URL || '').trim() ? [] : ['UPSTASH_VECTOR_REST_URL']),
+    ...((process.env.UPSTASH_VECTOR_REST_TOKEN || '').trim() ? [] : ['UPSTASH_VECTOR_REST_TOKEN']),
+  ], error: '' }
+  if (backend === 'pgvector') return { backend, missing: embeddingMissing(), error: embeddingConfig().error }
+  return { backend, missing: [], error: 'KB_VECTOR_BACKEND 只能是 upstash 或 pgvector' }
 }
 
 export function vectorConfigured(): boolean {
-  return !!restUrl() && !!restToken()
+  const cfg = configuration()
+  return !cfg.error && !cfg.missing.length
 }
 
-export const VECTOR_NOT_CONFIGURED = '平台未配置向量库（UPSTASH_VECTOR_REST_URL / UPSTASH_VECTOR_REST_TOKEN）'
-
-let cached: { key: string; index: Index } | null = null
-
-/** 懒建、按配置键缓存：e2e 里同一进程会换假服务地址。 */
-function index(): Index {
-  if (!vectorConfigured()) throw new HttpError(501, VECTOR_NOT_CONFIGURED)
-  const key = `${restUrl()}|${restToken()}`
-  if (cached?.key === key) return cached.index
-  const idx = new Index({ url: restUrl(), token: restToken() })
-  cached = { key, index: idx }
-  return idx
+async function ready(db: Db): Promise<void> {
+  const cfg = configuration()
+  if (cfg.error || cfg.missing.length) throw new HttpError(503, cfg.error || VECTOR_NOT_CONFIGURED)
+  try { await db.assertKnowledgeVectorProfile(embeddingConfig().profile) } catch (error) {
+    const message = (error as Error).message
+    throw new HttpError(503, /模型或地址已变更/.test(message) ? message : 'pgvector 知识库尚未初始化或数据库不可用，请检查向量表和扩展')
+  }
 }
 
-export function namespaceOf(kbId: string): string {
-  return `kb:${kbId}`
+export async function prepareVectorQuery(db: Db, query: string, companyId: string): Promise<number[] | undefined> {
+  if (vectorBackend() === 'upstash') return undefined
+  await ready(db)
+  return (await embedTexts([query], undefined, (tokens, inputs) => db.recordKnowledgeEmbeddingUsage(companyId, embeddingConfig().profile, 'query', tokens, inputs)))[0]
 }
 
-export async function upsertChunks(kbId: string, rows: Array<{ id: string; data: string; metadata: KbVectorMeta }>): Promise<void> {
+export async function upsertChunks(db: Db, kb: KbVectorScope, rows: Array<{ id: string; data: string; metadata: KbVectorMeta }>, deadline?: number): Promise<void> {
   if (!rows.length) return
-  const idx = index()
-  for (let i = 0; i < rows.length; i += KB_UPSERT_BATCH) {
-    await idx.upsert(rows.slice(i, i + KB_UPSERT_BATCH), { namespace: namespaceOf(kbId) })
-  }
+  if (vectorBackend() === 'upstash') return upstash.upsertChunks(kb.id, rows)
+  await ready(db)
+  const vectors = await embedTexts(rows.map((row) => row.data), deadline, (tokens, inputs) => db.recordKnowledgeEmbeddingUsage(kb.companyId, embeddingConfig().profile, 'ingest', tokens, inputs))
+  await db.upsertKnowledgeVectors(kb, embeddingConfig().profile, rows.map((row, i) => ({ id: row.id, data: row.data, vector: vectors[i] })))
 }
 
-export async function queryNamespace(kbId: string, query: string, topK: number): Promise<KbHit[]> {
-  const out = await index().query<KbVectorMeta>({ data: query, topK, includeMetadata: true }, { namespace: namespaceOf(kbId) })
-  return out
-    .filter((r) => r.metadata && typeof r.metadata.text === 'string')
-    .map((r) => ({ id: String(r.id), score: Number(r.score) || 0, metadata: r.metadata as KbVectorMeta }))
+export async function queryNamespace(db: Db, kb: KbVectorScope, query: string, topK: number, prepared?: number[]): Promise<KbHit[]> {
+  if (vectorBackend() === 'upstash') return upstash.queryNamespace(kb.id, query, topK)
+  await ready(db)
+  const vector = prepared ?? (await embedTexts([query]))[0]
+  return db.queryKnowledgeVectors(kb, embeddingConfig().profile, vector, topK)
 }
 
-export async function deleteFileVectors(kbId: string, fileId: string): Promise<void> {
-  await index().delete({ prefix: `${fileId}:` }, { namespace: namespaceOf(kbId) })
+// Deletion must still work after an embedding key expires or the configured model changes.
+export async function deleteFileVectors(db: Db, kb: KbVectorScope, fileId: string): Promise<void> {
+  if (vectorBackend() === 'upstash') return upstash.deleteFileVectors(kb.id, fileId)
+  if (vectorBackend() !== 'pgvector') throw new HttpError(503, configuration().error)
+  await db.deleteKnowledgeVectors(kb, fileId)
 }
 
-/** 对不存在的命名空间 Upstash 回成功，所以 tick 重来是幂等的。 */
-export async function deleteKbNamespace(kbId: string): Promise<void> {
+export async function deleteKbNamespace(db: Db, kb: KbVectorScope): Promise<void> {
+  if (vectorBackend() === 'upstash') return upstash.deleteKbNamespace(kb.id)
+  if (vectorBackend() !== 'pgvector') throw new HttpError(503, configuration().error)
+  await db.deleteKnowledgeVectors(kb)
+}
+
+export async function vectorInfo(db: Db): Promise<{ configured: boolean; backend: string; model?: string; vectors?: number; dimension?: number; missing?: string[]; error?: string }> {
+  const cfg = configuration()
+  if (cfg.error || cfg.missing.length) return { configured: false, ...cfg }
+  if (cfg.backend === 'upstash') return { backend: cfg.backend, ...await upstash.vectorInfo() }
+  const embedding = embeddingConfig()
   try {
-    await index().deleteNamespace(namespaceOf(kbId))
+    await ready(db)
+    return { configured: true, backend: cfg.backend, model: embedding.model, dimension: embedding.dimension, vectors: await db.knowledgeVectorCount() }
   } catch (e) {
-    // 有的版本对「没有这个命名空间」回 4xx；那正是我们要的结果。
-    if (/not found|does not exist|404/i.test(String((e as Error).message))) return
-    throw e
-  }
-}
-
-/** 平台「工具配置」那一屏的状态行：配没配、索引里一共多少向量。 */
-export async function vectorInfo(): Promise<{ configured: boolean; vectors?: number; dimension?: number; error?: string }> {
-  if (!vectorConfigured()) return { configured: false }
-  try {
-    const info = await index().info()
-    return { configured: true, vectors: Number(info.vectorCount) || 0, dimension: Number(info.dimension) || 0 }
-  } catch (e) {
-    return { configured: true, error: (e as Error).message }
+    return { configured: true, backend: cfg.backend, model: embedding.model, dimension: embedding.dimension, error: (e as Error).message }
   }
 }

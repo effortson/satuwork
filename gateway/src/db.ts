@@ -11,6 +11,7 @@ import { DbCore } from './db/core.ts'
 import { OrgDb } from './db/org.ts'
 import { UsageDb } from './db/usage.ts'
 import { KnowledgeDb } from './db/knowledge.ts'
+import { KnowledgeVectorDb } from './db/knowledge-vector.ts'
 import { PlansDb } from './db/plans.ts'
 import { MachinesDb } from './db/machines.ts'
 import { SeatsDb } from './db/seats.ts'
@@ -49,14 +50,14 @@ import { HandoffsDb } from './db/handoffs.ts'
  */
 export class Db extends DbCore {}
 export interface Db
-  extends OrgDb, UsageDb, KnowledgeDb, PlansDb, MachinesDb, SeatsDb, CatalogDb,
+  extends OrgDb, UsageDb, KnowledgeDb, KnowledgeVectorDb, PlansDb, MachinesDb, SeatsDb, CatalogDb,
     SettingsDb, ChannelsDb, SessionsDb, RoutinesDb, HandoffsDb {}
 
 /**
  * 把各领域的方法挂到 Db.prototype 上。**撞名直接炸**：两个领域各写了一个同名方法，后挂的
  * 会悄悄盖掉先挂的——宁可启动时就报出来。
  */
-for (const domain of [OrgDb, UsageDb, KnowledgeDb, PlansDb, MachinesDb, SeatsDb, CatalogDb, SettingsDb, ChannelsDb, SessionsDb, RoutinesDb, HandoffsDb]) {
+for (const domain of [OrgDb, UsageDb, KnowledgeDb, KnowledgeVectorDb, PlansDb, MachinesDb, SeatsDb, CatalogDb, SettingsDb, ChannelsDb, SessionsDb, RoutinesDb, HandoffsDb]) {
   for (const name of Object.getOwnPropertyNames(domain.prototype)) {
     if (name === 'constructor') continue
     if (Object.prototype.hasOwnProperty.call(Db.prototype, name)) {

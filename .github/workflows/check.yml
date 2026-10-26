@@ -70,6 +70,9 @@ jobs:
       - name: typecheck
         run: pnpm typecheck
 
+      - name: Embedding 接口单测
+        run: pnpm --filter satuwork-gateway test:knowledge-embedding
+
       - name: core 单测
         run: pnpm test:core
 
@@ -82,6 +85,37 @@ jobs:
 
       - name: e2e
         run: node e2e/run.mjs
+
+  knowledge-pgvector:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg17
+        env:
+          POSTGRES_USER: satuwork
+          POSTGRES_PASSWORD: satuwork
+          POSTGRES_DB: satuwork
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U satuwork -d satuwork"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      E2E_DATABASE_URL: postgres://satuwork:satuwork@127.0.0.1:5432/satuwork
+      E2E_ONLY: knowledge
+      E2E_KNOWLEDGE_BACKEND: pgvector
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Enable the optional test extension
+        run: docker exec ${{ job.services.postgres.id }} psql -U satuwork -d satuwork -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION vector;'
+      - run: node e2e/run.mjs
 
   # 桌面壳单独一档：它是 Rust，和上面那档共用不了任何一步，串在一起只会让本来 3 分钟
   # 的 typecheck 等 Rust 编译。
