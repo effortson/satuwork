@@ -1168,7 +1168,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
   router.get('/manager/release', async (req, res) => {
     const code = normalizePairingCode(req.query.get('code') || '')
     const arch = req.query.get('arch') || undefined
-    if (arch && arch !== 'x64' && arch !== 'arm64') throw new HttpError(400, '不支持的机器架构')
+    if (arch !== undefined && arch !== 'x64' && arch !== 'arm64') throw new HttpError(400, '不支持的机器架构')
     /**
      * **认出是哪台机器就要把它带上**：`desiredManagerRelease` 靠 machine 认两件事——
      * 这台机器钉的版本（`desiredManagerVersion`），以及**架构**。少了它，取的是
