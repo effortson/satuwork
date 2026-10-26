@@ -97,7 +97,12 @@ fn enabled() -> bool {
  * 所以这条覆盖装不进没用正式私钥签过的包。
  */
 fn updater(app: &AppHandle) -> tauri_plugin_updater::Result<tauri_plugin_updater::Updater> {
-    match std::env::var("SATUWORK_UPDATE_ENDPOINT").ok().filter(|s| !s.trim().is_empty()) {
+    if crate::distribution::locked() {
+        return app.updater();
+    }
+    let endpoint = crate::distribution::update_url().map(str::to_string)
+        .or_else(|| std::env::var("SATUWORK_UPDATE_ENDPOINT").ok());
+    match endpoint.filter(|s| !s.trim().is_empty()) {
         Some(raw) => {
             let url = tauri::Url::parse(raw.trim())
                 .map_err(|e| tauri_plugin_updater::Error::Network(format!("SATUWORK_UPDATE_ENDPOINT 不是合法地址：{e}")))?;

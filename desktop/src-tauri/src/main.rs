@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod distribution;
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -232,7 +234,7 @@ fn server_file(app: &AppHandle) -> Option<PathBuf> {
 }
 
 /** 正式发布包连的 Gateway。 */
-const DEFAULT_SERVER: &str = "https://satuwork.com";
+const DEFAULT_SERVER: &str = crate::distribution::GATEWAY;
 
 /**
  * 服务器地址锁死：**正式发布包不让填、不让换**，固定连 DEFAULT_SERVER；只有 debug 构建
@@ -250,6 +252,7 @@ fn server_locked() -> bool {
  */
 fn pick_server(locked: bool, from_env: Option<&str>, saved: Option<&str>) -> Option<String> {
     let fallback = if locked { Some(DEFAULT_SERVER) } else { saved };
+    let from_env = if locked && crate::distribution::isolated() { None } else { from_env };
     [from_env, fallback]
         .into_iter()
         .flatten()
@@ -680,6 +683,9 @@ const UI_CSP: &str = concat!(
     "worker-src 'self' satu: http://satu.localhost https://satu.localhost blob:"
 );
 
+// Bundled regional builds load scripts, styles and fonts from their signed resources.
+const BUNDLED_UI_CSP: &str = "default-src 'self' satu: http://satu.localhost https://satu.localhost; base-uri 'none'; object-src 'none'; script-src 'self' satu: http://satu.localhost https://satu.localhost; style-src 'self' satu: http://satu.localhost https://satu.localhost 'unsafe-inline'; font-src 'self' satu: http://satu.localhost https://satu.localhost data:; img-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; media-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; connect-src 'self' satu: http://satu.localhost https://satu.localhost ipc: http://ipc.localhost https: http: wss: ws:; frame-src 'self' satu: http://satu.localhost https://satu.localhost blob: https: http:; worker-src 'self' satu: http://satu.localhost https://satu.localhost blob:";
+
 /**
  * 界面路径里的一段能不能拼到 ui 目录后面。`..` / `.` 逃目录；`\\` 在 Windows 上是分隔符；
  * `:` 挡的是 Windows 的盘符前缀（`C:foo` 被 PathBuf::push 当成另一个盘上的路径，整个替换掉
@@ -721,6 +727,7 @@ fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>) -> tauri::
         for seg in stripped.split('/').filter(|s| !s.is_empty()) {
             alt.push(seg);
         }
+        if stripped.starts_with("vendor/") && !alt.is_file() { return not_found(); }
         file = if alt.is_file() && !stripped.is_empty() { alt } else { dir.join("index.html") };
     }
     let Ok(bytes) = fs::read(&file) else { return not_found() };
@@ -728,10 +735,11 @@ fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>) -> tauri::
     let mut response = tauri::http::Response::builder()
         .status(tauri::http::StatusCode::OK)
         .header("content-type", mime)
-        .header("cache-control", "no-store");
+        .header("cache-control", "no-store")
+        .header("access-control-allow-origin", "*");
     // 和 Gateway 一样只挂在页面本身上：脚本、样式是被这一页加载的，约束它们的是这一页的策略。
     if mime.starts_with("text/html") {
-        response = response.header("content-security-policy", UI_CSP);
+        response = response.header("content-security-policy", if crate::distribution::isolated() { BUNDLED_UI_CSP } else { UI_CSP });
     }
     response.body(Cow::Owned(bytes)).unwrap()
 }
@@ -1457,7 +1465,8 @@ fn stage_runtime_update(
         // 过同一套 size + sha256 比对——sha256 来自上面那次带席位票的 manifest 请求，直连这条路
         // 本身不需要可信。
         let mut direct_error = None;
-        let fetched = match release.direct_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let direct = if crate::distribution::isolated() { None } else { release.direct_url.as_deref() };
+        let fetched = match direct.map(str::trim).filter(|s| !s.is_empty()) {
             Some(raw) => match download_direct(raw, &release, &archive) {
                 Ok(()) => true,
                 Err(error) => {
@@ -2220,13 +2229,13 @@ mod tests {
     /// 正式包固定连默认地址，存过的老地址不看；本地测试按 环境变量 > 存过的，没有就 None。
     #[test]
     fn server_locked_ignores_saved_address() {
-        let d = Some("https://satuwork.com");
+        let d = Some(DEFAULT_SERVER);
         assert_eq!(pick_server(true, None, Some("http://old")).as_deref(), d);
         assert_eq!(pick_server(true, None, None).as_deref(), d);
         assert_eq!(pick_server(true, Some("  "), None).as_deref(), d);
         assert_eq!(
             pick_server(true, Some("http://e"), Some("http://old")).as_deref(),
-            Some("http://e")
+            if crate::distribution::isolated() { d } else { Some("http://e") }
         );
         assert_eq!(
             pick_server(false, Some("http://e"), Some("http://s")).as_deref(),
