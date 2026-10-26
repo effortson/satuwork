@@ -5,17 +5,18 @@ import { fileURLToPath } from 'node:url'
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export function validateProfile(p) {
-  const keys = ['region', 'channel', 'productName', 'identifier', 'gatewayUrl', 'updateUrl', 'downloadBase']
+  const keys = ['region', 'channel', 'productName', 'identifier', 'gatewayUrl', 'updateUrl', 'downloadBase', 'updaterPublicKey']
   if (!p || typeof p !== 'object' || Object.keys(p).some(k => !keys.includes(k)) || keys.some(k => typeof p[k] !== 'string')) throw Error('Invalid public distribution profile')
   if (p.region !== 'cn' || !['stable', 'beta'].includes(p.channel)) throw Error('Unsupported distribution')
   const beta = p.channel === 'beta'
   if (p.productName !== (beta ? 'Satuwork-CN-Beta' : 'Satuwork-CN') || p.identifier !== (beta ? 'sg.dami.satuwork.cn.beta' : 'sg.dami.satuwork.cn')) throw Error('Distribution application identity must be isolated')
-  for (const k of ['gatewayUrl', 'updateUrl', 'downloadBase']) {
+  for (const k of ['gatewayUrl', 'updateUrl', 'downloadBase', 'updaterPublicKey']) {
     const u = new URL(p[k])
     if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash || u.href.replace(/\/$/, '') !== p[k].replace(/\/$/, '')) throw Error(`Invalid public HTTPS URL: ${k}`)
   }
   if (new URL(p.gatewayUrl).pathname !== '/') throw Error('Gateway must be an origin')
   if (new URL(p.updateUrl).origin !== new URL(p.downloadBase).origin || !p.updateUrl.startsWith(p.downloadBase + '/')) throw Error('Update manifest must be in the domestic download directory')
+  if (!/^[A-Za-z0-9+/=]+$/.test(p.updaterPublicKey) || p.updaterPublicKey.length < 60) throw Error('Missing regional updater public key')
   return p
 }
 export function validateVersion(v, channel) {
@@ -30,6 +31,7 @@ export function configure(profile, version, configPath = resolve(root, 'desktop/
   const config = JSON.parse(readFileSync(configPath, 'utf8'))
   Object.assign(config, { productName: p.productName, identifier: p.identifier, version })
   config.plugins.updater.endpoints = [p.updateUrl]
+  config.plugins.updater.pubkey = p.updaterPublicKey
   config.bundle.createUpdaterArtifacts = true
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
   const env = { SATUWORK_BUILD_REGION: p.region, SATUWORK_BUILD_CHANNEL: p.channel, SATUWORK_BUILD_GATEWAY_URL: p.gatewayUrl, SATUWORK_BUILD_UPDATE_URL: p.updateUrl, SATUWORK_BUNDLE_UI_LIBS: '1' }
