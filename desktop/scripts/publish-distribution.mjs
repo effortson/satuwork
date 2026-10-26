@@ -1,5 +1,5 @@
 // Run on the regional host. The platform token is read from its existing private environment.
-import { readFileSync, writeFileSync, copyFileSync, chmodSync, mkdirSync, renameSync, existsSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, copyFileSync, chmodSync, symlinkSync, mkdirSync, renameSync, existsSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { assemble } from './distribution-artifacts.mjs'
 import { validateProfile } from './distribution.mjs'
@@ -59,6 +59,13 @@ try {
   const atomic = (file, content) => { const temp = join(publicDir, `.${file}.${process.pid}`); writeFileSync(temp, content, { mode: 0o644 }); renameSync(temp, join(publicDir, file)) }
   const labels = { 'darwin-aarch64': 'macOS · Apple 芯片', 'darwin-x86_64': 'macOS · Intel', 'windows-x86_64': 'Windows · 64 位' }
   const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${p.productName} 下载</title><link rel="stylesheet" href="download.css"><main><h1>${p.productName}</h1><p>中国区${channel === 'beta' ? '测试版' : '正式版'} · ${version}</p><p>连接 ${new URL(p.gatewayUrl).hostname}</p><ul>${release.downloads.downloads.map(d => `<li><a href="${d.url}">${labels[d.target]}</a><small>${(d.size / 1048576).toFixed(1)} MB · SHA256 <code>${d.sha256}</code></small></li>`).join('')}</ul><p>首次使用中国区版本，请手动安装。中国区与国际版、正式版与测试版的数据各自独立。</p><p>macOS 安装包已签名并通过 Apple 公证。Windows 安装包目前没有代码签名，系统可能提示未知发布者；更新包仍会验证 Tauri 签名。</p><p><a href="downloads.json">下载信息与 SHA256</a> · <a href="${p.gatewayUrl}">打开中国区工作台</a></p></main></html>`
+  // Fixed installer links for the Gateway landing page; updater URLs remain immutable.
+  const aliases = { 'darwin-aarch64': 'Satuwork_aarch64.dmg', 'darwin-x86_64': 'Satuwork_x64.dmg', 'windows-x86_64': 'Satuwork_x64-setup.exe' }
+  for (const d of release.downloads.downloads) {
+    const temp = join(publicDir, `.installer-${d.target}-${process.pid}`)
+    symlinkSync(`releases/${version}/${d.file}`, temp)
+    renameSync(temp, join(publicDir, aliases[d.target]))
+  }
   atomic('download.css', 'body{font:16px/1.6 system-ui,sans-serif;background:#faf9f5;color:#292826;margin:0}main{max-width:760px;margin:8vh auto;padding:24px}li{margin:22px 0}a{color:#a84420}small{display:block;overflow-wrap:anywhere}code{font-size:11px}')
   atomic('index.html', html)
   atomic('downloads.json', JSON.stringify(release.downloads, null, 2) + '\n')

@@ -1,3 +1,4 @@
+import { desktopDownloadMeta } from './desktop-distribution.ts'
 import { createReadStream, readFileSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { extname, resolve, sep } from 'node:path'
@@ -200,6 +201,7 @@ const VERCEL_ANALYTICS = process.env.VERCEL === '1'
  */
 const UI_CDN_SRC = uiCdnSources()
 const UI_CDN_META = uiCdnMeta()
+const DESKTOP_DOWNLOAD_META = desktopDownloadMeta()
 
 /**
  * 界面字体（`gateway/ui/theme.css` 顶上那句 `@import`）。样式表从 googleapis 来，
@@ -333,8 +335,8 @@ function serveUi(pathname: string, res: ServerResponse): boolean {
     // CSP 只挂在网页本身上：脚本和样式是被这一页加载的，约束它们的是这一页的策略。
     ...(ext === '.html' ? { 'content-security-policy': CSP } : {}),
   })
-  if ((VERCEL_ANALYTICS || UI_CDN_META) && rel === 'index.html') {
-    res.end(readFileSync(file, 'utf8').replace('</head>', UI_CDN_META + '</head>').replace('</body>', VERCEL_ANALYTICS + '</body>'))
+  if ((VERCEL_ANALYTICS || UI_CDN_META || DESKTOP_DOWNLOAD_META) && rel === 'index.html') {
+    res.end(readFileSync(file, 'utf8').replace('</head>', UI_CDN_META + DESKTOP_DOWNLOAD_META + '</head>').replace('</body>', VERCEL_ANALYTICS + '</body>'))
     return true
   }
   createReadStream(file).pipe(res)

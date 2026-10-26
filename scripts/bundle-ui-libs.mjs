@@ -39,6 +39,10 @@ export async function bundleUiLibs(out) {
     // Keep the byte-for-byte upstream assets: the UI's SRI hashes still apply.
     const index = join(out, 'index.html')
     writeFileSync(index, readFileSync(index, 'utf8').replace('<head>', '<head>\n<meta name="satu-cdn" content="/vendor/npm">'))
+    const { desktopDownloadMeta } = await import('../gateway/src/desktop-distribution.ts')
+    const meta = desktopDownloadMeta(process.env.SATUWORK_DESKTOP_DOWNLOAD_BASE)
+    if (!meta) throw Error('Missing domestic desktop download address')
+    writeFileSync(index, readFileSync(index, 'utf8').replace('</head>', meta + '</head>'))
     const theme = join(out, 'theme.css')
     const localFonts = [200, 300, 400, 500, 600, 700].map(weight => `@import url("/vendor/npm/@fontsource/outfit@5.2.5/${weight}.css");`).join('\n')
     writeFileSync(theme, readFileSync(theme, 'utf8').replace(/@import url\("https:\/\/fonts\.googleapis\.com\/[^\n]+\n/, localFonts + '\n'))

@@ -57,6 +57,8 @@ export function assemble(input, p, publicKey, expectedSha) {
   const version = validateVersion(inventories[0].version, p.channel)
   for (const i of inventories) {
     if (i.schema !== 1 || JSON.stringify(i.profile) !== JSON.stringify(p) || i.version !== version || i.sourceSha !== expectedSha || !/^[a-f0-9]{40}$/.test(expectedSha) || !['darwin-aarch64', 'darwin-x86_64', 'windows-x86_64'].includes(i.target) || targets.has(i.target)) throw Error('Mixed distribution/source/target artifacts')
+    const suffix = { 'darwin-aarch64': 'darwin-arm64', 'darwin-x86_64': 'darwin-x64', 'windows-x86_64': 'windows-x64' }[i.target]
+    if (!/^[0-9]+\.[0-9]+\.[0-9]+\+[a-f0-9]{16}-(darwin|windows)-(arm64|x64)$/.test(i.botVersion || '') || !i.botVersion.endsWith('-' + suffix) || i.runtime !== `local-bot-${i.botVersion}.tgz` || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(i.minDesktopVersion || '')) throw Error('Invalid runtime target metadata')
     targets.add(i.target)
     for (const f of i.files) {
       if (!/^[A-Za-z0-9_+.-]+$/.test(f.file) || files.has(f.file)) throw Error('Unsafe or duplicate artifact')
