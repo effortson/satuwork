@@ -2229,7 +2229,7 @@ mod tests {
     /// 正式包固定连默认地址，存过的老地址不看；本地测试按 环境变量 > 存过的，没有就 None。
     #[test]
     fn server_locked_ignores_saved_address() {
-        let d = Some(DEFAULT_SERVER);
+        let d = Some(super::DEFAULT_SERVER);
         assert_eq!(pick_server(true, None, Some("http://old")).as_deref(), d);
         assert_eq!(pick_server(true, None, None).as_deref(), d);
         assert_eq!(pick_server(true, Some("  "), None).as_deref(), d);
