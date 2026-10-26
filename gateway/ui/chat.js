@@ -1055,7 +1055,7 @@ async function loadChatPage() {
   // 「正在停止」**不在这里清**。它记的是会话 id（见 state.js），换一页自然就不显示了；
   // 而换走的那一条可能还在停——切回来时该看到它还在转，不该看到一颗又能按的停止键。
   // 真停下来那一下由 paintChatChrome 收（turn/end 到了 status 就空了）。
-  // 候选清空：换 Bot 之后连接没变，但换公司/换人之后就变了，重开一页重拉一次不亏。
+  // 候选清空：换 Bot 之后能点的连接也会变（「可用 Bot」），换公司/换人之后更是，重开一页重拉一次不亏。
   state.mentionOptions = null
   /**
    * 候选**这一页就拉**，不等人打 `@`。
@@ -1064,7 +1064,7 @@ async function loadChatPage() {
    * 回这份候选里查。等打 `@` 才拉的话，刚进页面翻上去看昨天那条，药丸上是没有图标的，
    * 打一次 `@` 之后又突然有了。**不 await**：它只影响药丸上那个小图标，不该把整页拖住。
    */
-  void api('GET', '/mentions')
+  void api('GET', mentionsUrl())
     .then((r) => {
       state.mentionOptions = r.mentions || []
       paintChat()

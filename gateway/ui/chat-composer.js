@@ -1010,6 +1010,15 @@ function closeMentionPick() {
   paintMentionPick()
 }
 
+/**
+ * `@` 候选的地址：带上当前对话的 Bot，后端按「可用 Bot」筛（docs/connector-bot-scope.md）——
+ * 账号收窄到别的 Bot 时，在这颗 Bot 的对话里点不到它。
+ */
+function mentionsUrl() {
+  const botId = chatBotIdOf(state.path)
+  return botId ? `/mentions?botId=${encodeURIComponent(botId)}` : '/mentions'
+}
+
 async function openMentionPick(q) {
   /**
    * **只在选单从关到开的那一下重拉候选**，不是每敲一个字拉一次，也不是一整页只拉一次。
@@ -1023,7 +1032,7 @@ async function openMentionPick(q) {
   paintMentionPick()
   if (opening || !state.mentionOptions) {
     try {
-      state.mentionOptions = (await api('GET', '/mentions')).mentions || []
+      state.mentionOptions = (await api('GET', mentionsUrl())).mentions || []
     } catch {
       state.mentionOptions = state.mentionOptions || []
     }

@@ -302,8 +302,8 @@ function pluginSetup(detail, live) {
         live,
         t('连接账号', 'Connect an account'),
         t(
-          'Bot 用你授权的账号去操作它。可以连好几个，比如工作和个人各一个。',
-          'Bots act through the accounts you authorize. You can connect several — say, one for work and one personal.',
+          'Bot 用你授权的账号去操作它。可以连好几个，比如工作和个人各一个；每个账号默认所有 Bot 都能用，也可以只给指定的 Bot。',
+          'Bots act through the accounts you authorize. You can connect several — say, one for work and one personal. Every bot can use an account by default, or you can limit it to specific bots.',
         ),
       )}
       ${
@@ -325,8 +325,8 @@ function pluginSetup(detail, live) {
         false,
         t('选择工具', 'Choose tools'),
         t(
-          '开着的工具会进你每一个 Bot 的工具表。用不上的关掉——装得多了，工具表会把上下文撑满，模型也更容易选错。',
-          'Enabled tools go into every bot you own. Turn off what you do not need — a long tool list crowds the context and makes the model pick wrong.',
+          '开着的工具会进每一个能用这些账号的 Bot 的工具表（每个账号的「可用 Bot」里设）。用不上的关掉——装得多了，工具表会把上下文撑满，模型也更容易选错。',
+          'Enabled tools go into every bot that can use these accounts (set under each account’s “Bots”). Turn off what you do not need — a long tool list crowds the context and makes the model pick wrong.',
         ),
       )}
       ${connectorToolsBox(detail)}

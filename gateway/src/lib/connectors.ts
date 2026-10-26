@@ -9,7 +9,7 @@ import { accountNameIn, wantsFields, whoamiTools } from '../connectors/identity.
 import type { Db } from '../db.ts'
 import { MCP_PERMS, asDef, trimStr } from './catalog.ts'
 import { strListOf } from '../db/rows.ts'
-import { COMPANY_CONNECTION_LABEL as COMPANY_LABEL, type CatalogItem, type ConnectorBlockDef, type ConnectorConnection, type ConnectorDef, type ConnectorInstall } from '../db.ts'
+import { COMPANY_CONNECTION_LABEL as COMPANY_LABEL, type BotScope, type CatalogItem, type ConnectorBlockDef, type ConnectorConnection, type ConnectorDef, type ConnectorInstall } from '../db.ts'
 
 /**
  * 一把连接最多下发几个工具。
@@ -376,8 +376,32 @@ export function publicInstall(v: ConnectorInstall) {
   }
 }
 
+/**
+ * 这把连接对这颗 Bot 可不可见（docs/connector-bot-scope.md）。
+ *
+ * **口径只有这一份**：目录下发、`@` 选单、发消息时的 mentions 校验、MCP 端点那道门都调它。
+ * 四处各写一遍，迟早出现「目录里没有、却调得通」或者「选单里有、发出去被剔掉」。
+ *
+ * 没设过（undefined）= `all`。没有 botId（脚本、不按 Bot 拉目录的老路径）时只认 `all`：
+ * 那时不知道是谁在用，收窄过的一律不给。
+ */
+export function connectionVisibleTo(scope: BotScope | undefined, botId: string | null | undefined): boolean {
+  if (!scope || scope.mode === 'all') return true
+  return !!botId && scope.botIds.includes(botId)
+}
+
+/**
+ * 界面上那一格「可用 Bot」：范围，加上名单里已经不在他 Bot 名单上的有几颗（被删了）。
+ * `roster` 是 `botsFor` 的 id；名单只出交集，删掉的不往外给，只给个数让界面提醒。
+ */
+export function publicBotScope(scope: BotScope | undefined, roster: Set<string>) {
+  if (!scope || scope.mode === 'all') return { mode: 'all' as const, botIds: [] as string[], missing: 0 }
+  const botIds = scope.botIds.filter((id) => roster.has(id))
+  return { mode: 'bots' as const, botIds, missing: scope.botIds.length - botIds.length }
+}
+
 /** 连接的对外形状。`externalId` 和 `externalUserId` 是供应商侧的引用，不带出去。 */
-export function publicConnection(v: ConnectorConnection) {
+export function publicConnection(v: ConnectorConnection, bots?: ReturnType<typeof publicBotScope>) {
   return {
     id: v.id,
     connectorId: v.connectorId,
@@ -389,6 +413,8 @@ export function publicConnection(v: ConnectorConnection) {
     error: v.lastError,
     connectedAt: v.connectedAt,
     accountName: v.accountName || '',
+    // 只有员工自己那几条路给（详情、改范围）；admin 那一屏看的是公司那把本身，不是谁的范围。
+    ...(bots ? { bots } : {}),
     createdAt: v.createdAt,
     updatedAt: v.updatedAt,
   }

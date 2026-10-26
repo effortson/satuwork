@@ -13,8 +13,8 @@ import { bodyOf, strField } from '../lib/validate.ts'
 import { isUniqueViolation } from '../db.ts'
 import { originOf, requireOrgUser, requireOwnerUser, requireUser } from '../lib/guards.ts'
 import { rangeQuery } from '../lib/usage.ts'
-import { COMPANY_CONNECTION_LABEL, CONNECTION_LABEL_RE, DEFAULT_CONNECTION_LABEL, type Account, type ConnectorConnection, type ConnectorDef, externalUserIdOf } from '../db.ts'
-import { lookupAccountName, publicConnection, publicInstall } from '../lib/connectors.ts'
+import { COMPANY_CONNECTION_LABEL, CONNECTION_LABEL_RE, DEFAULT_CONNECTION_LABEL, type Account, type BotScope, type ConnectorConnection, type ConnectorDef, externalUserIdOf } from '../db.ts'
+import { connectionVisibleTo, lookupAccountName, publicBotScope, publicConnection, publicInstall } from '../lib/connectors.ts'
 import { publicPlatformCred } from '../lib/org.ts'
 import { botIconOf } from '../lib/catalog.ts'
 
@@ -394,6 +394,9 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
     const install = await db.connectorInstall(item.id, account.id)
     const mine = (await db.connectionsFor(account.id, account.companyId)).filter((c) => c.connectorId === item.id)
     const rows = await refreshPending(mine, def)
+    const scopes = await db.botScopesFor(account.id)
+    const bots = await db.botsFor(account.companyId, account.id)
+    const roster = new Set(bots.map((b) => b.id))
     let tools: ToolDef[] = []
     let toolsError = ''
     try {
@@ -424,7 +427,15 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
     json(res, 200, {
       connector: { ...publicConnector(item), blocked, blockedReason },
       install: install ? publicInstall(install) : null,
-      connections: rows.map(publicConnection),
+      connections: rows.map((c) => publicConnection(c, publicBotScope(scopes.get(c.id)?.scope, roster))),
+      /**
+       * 「可用 Bot」那一格的候选：这个人能用的全部 Bot（和改范围时的校验同一份名单）。
+       * 跟着详情一起给，不让界面去借侧栏那份名册——那份在没有席位机器时会藏掉公司的 Bot。
+       */
+      bots: bots.map((b) => {
+        const origin = b.scope === 'global' ? 'global' : 'company'
+        return { id: b.id, name: b.name, icon: botIconOf((b.definition as { icon?: unknown } | undefined)?.icon, origin), origin }
+      }),
       tools,
       toolCap: MAX_TOOLS,
       enabledCount,
@@ -605,7 +616,59 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
         detail: { connectionId: row.id, mentionOnly: patch.mentionOnly },
       })
     }
-    json(res, 200, { connection: publicConnection(next!) })
+    json(res, 200, { connection: publicConnection(next!, await botScopeView(account, row.id)) })
+  })
+
+  /** 这个人给这把连接设的范围，界面那一格的形状（详情页同一个口径）。 */
+  async function botScopeView(account: Account, connectionId: string) {
+    const roster = new Set((await db.botsFor(account.companyId, account.id)).map((b) => b.id))
+    return publicBotScope((await db.botScopeOf(connectionId, account.id))?.scope, roster)
+  }
+
+  /**
+   * 「可用 Bot」：这把账号哪些 Bot 用得上（docs/connector-bot-scope.md）。
+   *
+   * `{ mode: 'all' }` 或 `{ mode: 'bots', botIds }`。**公司共用那把也能设**——范围是每个人
+   * 对自己 Bot 的选择，存在 (连接, 账号) 上，不动那一行连接，所以不走上面那条只认个人
+   * 连接的 PATCH。
+   *
+   * 名单只收这个人 `botsFor` 里有的、至少一颗：「全都不给」那一档就是断开或「仅 @ 时
+   * 可用」，不另造第三种说法。
+   */
+  router.put('/me/connectors/:connectorId/connections/:connectionId/bots', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    const { item } = await seatConnector(account, req.params.connectorId)
+    const row = await db.connectorConnection((req.params.connectionId || '').trim())
+    const mine =
+      row &&
+      row.connectorId === item.id &&
+      (row.scope === 'company' ? row.companyId === account.companyId : row.accountId === account.id)
+    if (!row || !mine) throw new HttpError(404, '没有这个账号')
+    const body = bodyOf(req)
+    const mode = String(body.mode ?? '')
+    let scope: BotScope
+    if (mode === 'all') {
+      scope = { mode: 'all' }
+    } else if (mode === 'bots') {
+      if (!Array.isArray(body.botIds)) throw new HttpError(400, '要带 botIds（Bot id 的数组）')
+      const wanted = [...new Set(body.botIds.map((x) => String(x ?? '').trim()).filter(Boolean))]
+      if (!wanted.length) throw new HttpError(400, '至少选一个 Bot')
+      const roster = new Set((await db.botsFor(account.companyId, account.id)).map((b) => b.id))
+      const unknown = wanted.filter((id) => !roster.has(id))
+      if (unknown.length) throw new HttpError(400, `没有这个 Bot：${unknown.join('、')}`)
+      scope = { mode: 'bots', botIds: wanted }
+    } else {
+      throw new HttpError(400, "mode 只能是 'all' 或 'bots'")
+    }
+    const saved = await db.setBotScope(row.id, account.id, scope)
+    // 它决定这把账号会被哪颗 Bot 隐式调用，是权限边界，不是显示偏好——同 mentionOnly，要留档。
+    await db.audit({
+      companyId: account.companyId!,
+      accountId: account.id,
+      action: 'connector.connection.bots',
+      detail: { connectionId: row.id, mode: saved.scope.mode, botIds: saved.scope.mode === 'bots' ? saved.scope.botIds : [] },
+    })
+    json(res, 200, { connection: publicConnection(row, await botScopeView(account, row.id)) })
   })
 
   router.delete('/me/connectors/:connectorId/connections/:connectionId', async (req, res) => {
@@ -659,7 +722,7 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
           installs: mine.length,
           installedBy: mine.map((x) => x.accountId),
           connections: conns.filter((c) => c.status === 'active').length,
-          companyConnection: conns.filter((c) => c.scope === 'company').map(publicConnection)[0] ?? null,
+          companyConnection: conns.filter((c) => c.scope === 'company').map((c) => publicConnection(c))[0] ?? null,
         }
       })
     json(res, 200, { connectors })
@@ -808,11 +871,20 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
   router.get('/mentions', async (req, res) => {
     const account = await requireUser(req, db, keys)
     const q = (req.query.get('q') || '').trim().toLowerCase()
+    /**
+     * 当前对话的 Bot。带了就按 Bot 范围筛（docs/connector-bot-scope.md）：收窄到别的 Bot 的
+     * 账号不出现在这颗 Bot 的选单里。没带（老页面）就不筛——发消息那一跳按会话的 Bot 再判
+     * 一次（routes/runtime.ts），点了也进不去，只是选单里多几条。
+     */
+    const botId = (req.query.get('botId') || '').trim()
     const companyId = account.role === 'owner' ? null : account.companyId
     const items = await db.visibleCatalog('connector', companyId)
     const blocks = blockMapOf(items)
     const byId = new Map(items.filter((i) => i.scope === 'global').map((i) => [i.id, connectorDefOf(i)]))
-    const conns = (await db.connectionsFor(account.id, companyId)).filter((c) => c.status === 'active')
+    const scopes = botId ? await db.botScopesFor(account.id) : null
+    const conns = (await db.connectionsFor(account.id, companyId)).filter(
+      (c) => c.status === 'active' && (!scopes || connectionVisibleTo(scopes.get(c.id)?.scope, botId)),
+    )
     const mentions = conns
       .map((c) => {
         const def = byId.get(c.connectorId)

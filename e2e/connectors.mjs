@@ -548,6 +548,94 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       await req(base, 'PUT', '/runtime/main-bot', { token: memberTok, body: { botId: null } })
     })
 
+    await test('可用 Bot：收窄到指定 Bot 之后，别的 Bot 目录里没有、点不到、调不动；删光了是谁都不给', async () => {
+      // docs/connector-bot-scope.md。default 那把收窄到 A：B 的目录里不该有它。
+      const a = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '私人助理' } })
+      const b = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '客服' } })
+      assert(a.status === 201 && b.status === 201, `建 Bot ${a.status} ${b.status}`)
+      const A = a.json.bot.id
+      const B = b.json.bot.id
+      const bots = (body, token = memberTok) =>
+        req(base, 'PUT', `/me/connectors/${connectorId}/connections/${firstConnId}/bots`, { token, body })
+      const servedTo = async (botId) => {
+        const cat = await req(base, 'GET', `/runtime/catalog${botId ? `?botId=${botId}` : ''}`, { token: seatTok })
+        assert(cat.status === 200, `catalog ${cat.status} ${cat.text}`)
+        const server = cat.json.servers.find((x) => x.id === firstConnId)
+        const onBot = botId ? (cat.json.bots[0].mcps || []).includes(firstConnId) : null
+        return { server, onBot }
+      }
+
+      // 默认：所有 Bot 都有，没按 Bot 拉的也有。
+      const detail0 = await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok })
+      const row0 = detail0.json.connections.find((c) => c.id === firstConnId)
+      assert(row0.bots && row0.bots.mode === 'all', `默认该是所有 Bot：${JSON.stringify(row0.bots)}`)
+      assert(detail0.json.bots.some((x) => x.id === A && x.name === '私人助理'), `详情该带候选 Bot：${JSON.stringify(detail0.json.bots)}`)
+      assert((await servedTo(B)).onBot, '默认 B 就该用得上')
+
+      // 校验：空名单、别人的 Bot、乱写的 mode、别人的连接。
+      assert((await bots({ mode: 'bots', botIds: [] })).status === 400, '空名单该 400')
+      assert((await bots({ mode: 'bots', botIds: ['bot-not-mine'] })).status === 400, '不是自己的 Bot 该 400')
+      assert((await bots({ mode: 'some' })).status === 400, '认不出的 mode 该 400')
+      assert((await bots({ mode: 'all' }, adminTok)).status === 404, '别人的连接该 404')
+
+      const before = (await req(base, 'GET', `/runtime/catalog/version?botId=${B}`, { token: seatTok })).json.stamp
+      const put = await bots({ mode: 'bots', botIds: [A, A] })
+      assert(put.status === 200, `收窄 ${put.status} ${put.text}`)
+      assert(
+        put.json.connection.bots.mode === 'bots' && put.json.connection.bots.botIds.length === 1 && put.json.connection.bots.botIds[0] === A,
+        `重复的要去掉：${JSON.stringify(put.json.connection.bots)}`,
+      )
+      const after = (await req(base, 'GET', `/runtime/catalog/version?botId=${B}`, { token: seatTok })).json.stamp
+      assert(before !== after, '改了范围指纹没变，B 那边永远看不到这次改动')
+
+      // 目录：A 有、B 没有（整条不下发），不按 Bot 拉的也没有。
+      const forA = await servedTo(A)
+      assert(forA.server && forA.onBot, `A 该拿到这把：${JSON.stringify(forA)}`)
+      const forB = await servedTo(B)
+      assert(!forB.server && !forB.onBot, 'B 不在名单上，目录里却还有这把')
+      assert(!(await servedTo('')).server, '没按 Bot 拉目录的，收窄过的一律不给')
+
+      // @ 选单：带 botId 就按它筛；不带（老页面）照旧全列，发消息那一跳再剔。
+      const mB = await req(base, 'GET', `/mentions?botId=${B}`, { token: memberTok })
+      assert(!mB.json.mentions.some((m) => m.id === firstConnId), 'B 的选单里不该有这把')
+      const mA = await req(base, 'GET', `/mentions?botId=${A}`, { token: memberTok })
+      assert(mA.json.mentions.some((m) => m.id === firstConnId), 'A 的选单里该有这把')
+
+      // MCP 端点兜底：席位拿 B 的名义来打，列表是空的，调用是一句话，上游一次都不碰。
+      const path = new URL(forA.server.endpoint).pathname
+      const rpc = (botId, method, params, id = 1) =>
+        req(base, 'POST', `${path}?botId=${botId}`, { token: seatTok, body: { jsonrpc: '2.0', id, method, ...(params ? { params } : {}) } })
+      const list = await rpc(B, 'tools/list')
+      assert(list.json.result && list.json.result.tools.length === 0, `B 列工具该是空表：${list.text}`)
+      const ran = mock.seen.executed.length
+      const call = await rpc(B, 'tools/call', { name: 'SEND_EMAIL', arguments: {} }, 2)
+      assert(call.json.result?.isError && call.json.result.content[0].text.includes('没有开放给这颗 Bot'), `B 调用该被拦：${call.text}`)
+      assert(mock.seen.executed.length === ran, '被拦的调用打到了上游')
+      const noBot = await req(base, 'POST', path, { token: seatTok, body: { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'SEND_EMAIL', arguments: {} } } })
+      assert(noBot.json.result?.isError, `没带 botId 的也该拦：${noBot.text}`)
+      const files = await req(base, 'POST', `${path}/files?botId=${B}`, {
+        token: seatTok,
+        body: { tool: 'SEND_EMAIL', name: 'a.txt', mimetype: 'text/plain', md5: 'd41d8cd98f00b204e9800998ecf8427e', size: 1 },
+      })
+      assert(files.status === 403, `B 要附件上传位该 403，实际 ${files.status} ${files.text}`)
+      const okList = await rpc(A, 'tools/list')
+      assert(okList.json.result.tools.length > 0, `A 照常列得出工具：${okList.text}`)
+
+      // 名单里的 Bot 删光了：谁都不给，**不是**回到全部。
+      const del = await req(base, 'DELETE', `/runtime/bots/${A}`, { token: memberTok })
+      assert(del.status === 200 || del.status === 202, `删 Bot ${del.status} ${del.text}`)
+      const detail1 = await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok })
+      const row1 = detail1.json.connections.find((c) => c.id === firstConnId)
+      assert(row1.bots.mode === 'bots' && row1.bots.botIds.length === 0 && row1.bots.missing === 1, `删光之后该是空名单 + missing：${JSON.stringify(row1.bots)}`)
+      assert(!(await servedTo(B)).server, '名单删光之后变回了所有 Bot')
+
+      // 改回所有 Bot：B 又有了。后面的用例验的是默认行为，别让这条的副作用漏下去。
+      const back = await bots({ mode: 'all' })
+      assert(back.status === 200 && back.json.connection.bots.mode === 'all', `改回 ${back.status} ${back.text}`)
+      assert((await servedTo(B)).onBot, '改回所有 Bot 之后 B 还是没有')
+      await req(base, 'DELETE', `/runtime/bots/${B}`, { token: memberTok })
+    })
+
     await test('指纹跟着连接走：装了、连了、改了开关都要变', async () => {
       const before = (await req(base, 'GET', '/runtime/catalog/version', { token: seatTok })).json.stamp
       await req(base, 'PATCH', `/me/connectors/${connectorId}/connections/${firstConnId}`, {
@@ -1261,7 +1349,7 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(admin.pathAllowed('/plugins'), '管理员也有席位，插件页该进得去')
     })
 
-    await test('界面：员工的详情页画得出账号行、工具开关与「仅 @ 时可用」', async () => {
+    await test('界面：员工的详情页画得出账号行、工具开关、「仅 @ 时可用」与「可用 Bot」', async () => {
       const { loadApp } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
@@ -1270,9 +1358,13 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
         connector: { id: connectorId, name: 'Gmail', description: '收发邮件', toolkit: 'gmail', blocked: false },
         install: { id: 'i1', enabledTools: ['GMAIL_SEND_EMAIL'] },
         connections: [
-          { id: 'x1', label: 'default', scope: 'user', status: 'active', mentionOnly: false },
-          { id: 'x2', label: 'personal', scope: 'user', status: 'active', mentionOnly: true },
-          { id: 'x3', label: 'company', scope: 'company', status: 'active', mentionOnly: false },
+          { id: 'x1', label: 'default', scope: 'user', status: 'active', mentionOnly: false, bots: { mode: 'all', botIds: [], missing: 0 } },
+          { id: 'x2', label: 'personal', scope: 'user', status: 'active', mentionOnly: true, bots: { mode: 'bots', botIds: ['bA'], missing: 0 } },
+          { id: 'x3', label: 'company', scope: 'company', status: 'active', mentionOnly: false, bots: { mode: 'bots', botIds: [], missing: 1 } },
+        ],
+        bots: [
+          { id: 'bA', name: '私人助理', icon: '', origin: 'company' },
+          { id: 'bB', name: '客服', icon: '', origin: 'company' },
         ],
         tools: [
           { slug: 'GMAIL_SEND_EMAIL', description: '发一封邮件' },
@@ -1288,6 +1380,17 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       // 公司共用那把不给员工断，也不给他改 mentionOnly。
       const companyRow = html.slice(html.indexOf('company'))
       assert(!companyRow.includes('conn-disconnect" data-id="x3"'), '公司共用那把不该有断开按钮')
+      // 「可用 Bot」：三把各画一格，公司共用那把也有；名单删光了要红字说出来。
+      assert(html.includes('可用 Bot：所有 Bot'), '默认那把该写「所有 Bot」')
+      assert(html.includes('可用 Bot：私人助理'), '只给一颗的该写出它的名字')
+      assert(html.includes('可用 Bot：没有 Bot 可用'), '名单删光了该写「没有 Bot 可用」')
+      assert(html.includes('data-act="conn-bots-open" data-id="x3"'), '公司共用那把也该能设可用 Bot')
+      ui.state.connBotsOpen = 'x2'
+      ui.render()
+      const open = ui.html()
+      assert(open.includes('data-conn-bots="x2"') && open.includes('指定 Bot') && open.includes('客服'), '展开之后该画两档单选和 Bot 名单')
+      assert(/data-bot="bA" checked/.test(open) && !/data-bot="bB" checked/.test(open), '名单里的该勾上、别的不勾')
+      ui.state.connBotsOpen = null
       assert(ui.pathAllowed(`/plugins/${connectorId}`), '详情页应该进得去')
     })
 

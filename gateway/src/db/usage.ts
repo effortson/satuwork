@@ -6,8 +6,8 @@
  */
 import { randomUUID } from 'node:crypto'
 import { bucketSql, DAY_MS, filterSql, LEDGER_BY_REF } from './sql.ts'
-import { CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type ChargeKind, type ChargeStatus, type CompanyModelUsage, type ConnectionScope, type ConnectionStatus, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type LlmCall, type LlmUsage, type UsageCharge, type WebCall, type WebCallKind } from './types.ts'
-import { connectorConnectionOf, connectorInstallOf, isUniqueViolation, llmCallOf, num, numOrNull, str, strOrNull, usageChargeOf } from './rows.ts'
+import { CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type ChargeKind, type ChargeStatus, type CompanyModelUsage, type ConnectionScope, type BotScope, type ConnectionStatus, type ConnectorBotScope, type ConnectorCall, type ConnectorCallStatus, type ConnectorConnection, type ConnectorInstall, type LlmCall, type LlmUsage, type UsageCharge, type WebCall, type WebCallKind } from './types.ts'
+import { connectorBotScopeOf, connectorConnectionOf, connectorInstallOf, isUniqueViolation, llmCallOf, num, numOrNull, str, strOrNull, usageChargeOf } from './rows.ts'
 import { DbCore } from './core.ts'
 
 /**
@@ -621,6 +621,35 @@ export class UsageDb extends DbCore {
 
   async deleteConnectorConnection(id: string): Promise<void> {
     await this.run('delete from connector_connections where id = ?', [id])
+  }
+
+  /**
+   * 这个人给自己能用的连接设过的 Bot 范围，按 connectionId 取。没设过的不在里面——
+   * 那就是 `all`（见 lib/connectors.ts 的 connectionVisibleTo）。
+   */
+  async botScopesFor(accountId: string): Promise<Map<string, ConnectorBotScope>> {
+    const rows = await this.many('select * from connector_bot_scopes where "accountId" = ?', [accountId])
+    return new Map(rows.map((r) => [str(r.connectionId), connectorBotScopeOf(r)]))
+  }
+
+  async botScopeOf(connectionId: string, accountId: string): Promise<ConnectorBotScope | undefined> {
+    const r = await this.one('select * from connector_bot_scopes where "connectionId" = ? and "accountId" = ?', [connectionId, accountId])
+    return r ? connectorBotScopeOf(r) : undefined
+  }
+
+  /**
+   * 改成 `all` 不删行，留一行 `mode='all'`：删掉的话条数和 `max(updatedAt)` 都可能退回去，
+   * 目录指纹（routes/runtime.ts 的 connectorStampOf）就有机会和改之前撞上，席位判「没变」。
+   */
+  async setBotScope(connectionId: string, accountId: string, scope: BotScope): Promise<ConnectorBotScope> {
+    const now = Date.now()
+    const botIds = scope.mode === 'bots' ? [...new Set(scope.botIds)] : []
+    await this.run(
+      `insert into connector_bot_scopes ("connectionId", "accountId", mode, "botIds", "updatedAt") values (?,?,?,?,?)
+       on conflict ("connectionId", "accountId") do update set mode = excluded.mode, "botIds" = excluded."botIds", "updatedAt" = excluded."updatedAt"`,
+      [connectionId, accountId, scope.mode, JSON.stringify(botIds), now],
+    )
+    return { connectionId, accountId, scope: scope.mode === 'bots' ? { mode: 'bots', botIds } : { mode: 'all' }, updatedAt: now }
   }
 
   async insertConnectorCall(input: {

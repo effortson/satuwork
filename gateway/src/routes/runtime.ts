@@ -9,7 +9,7 @@ import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machine
 import { KIND, bodyOf, deployOptsOf, logLinesOf, refShapes, strField } from '../lib/validate.ts'
 import type { Account, BotFolder, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
-import { blockMapOf, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
+import { blockMapOf, connectionVisibleTo, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
 import { TASK_CONTEXT_MAX, TASK_INSTRUCTION_MAX, cancelBotTask, createBotTask, pollBotTask, publicBotTask } from '../lib/bot-tasks.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, botTemplateOf, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
@@ -208,12 +208,19 @@ function imageModelOf(s: { image?: { provider: string; model: string } }) {
   return def ? { provider: def.provider, model: def.id, api: def.api } : null
 }
 
-/** 这个账号的连接器状态指纹：安装和连接一起算，删一条也要能看出来。 */
+/**
+ * 这个账号的连接器状态指纹：安装和连接一起算，删一条也要能看出来。
+ *
+ * **Bot 范围也算进去**（docs/connector-bot-scope.md）：改了「哪些 Bot 用得上这把账号」，
+ * `connector_installs` 和 `connector_connections` 一个字节都不变，不算的话席位探针永远判
+ * 「没变」，收窄了的账号还挂在别的 Bot 上。
+ */
 async function connectorStampOf(db: RouteCtx['db'], accountId: string, companyId: string | null) {
   const installs = await db.connectorInstalls(accountId)
   const conns = await db.connectionsFor(accountId, companyId)
-  const updatedAt = [...installs, ...conns].reduce((n, r) => Math.max(n, r.updatedAt), 0)
-  return { updatedAt, count: installs.length + conns.length }
+  const scopes = [...(await db.botScopesFor(accountId)).values()]
+  const updatedAt = [...installs, ...conns, ...scopes].reduce((n, r) => Math.max(n, r.updatedAt), 0)
+  return { updatedAt, count: installs.length + conns.length + scopes.length }
 }
 
 /** 知识库那一截：哪几个、各自什么时候变的、各有多少片。 */
@@ -348,7 +355,16 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      */
     const connectorItems = await db.visibleCatalog('connector', companyId)
     const blocked = blockMapOf(connectorItems)
-    const conns = (await db.connectionsFor(account.id, companyId)).filter((c) => c.status === 'active')
+    /**
+     * **按这颗 Bot 筛**（docs/connector-bot-scope.md）：员工把这把账号收窄到别的 Bot 时，
+     * 整条不下发——不是下发了再藏。和 `mentionOnly` 不一样：那个要等被点名时立刻能用，
+     * 这个连 `@` 都点不到它（发消息时 Gateway 按会话的 Bot 剔掉）。没带 botId 的只拿到
+     * 没收窄的那些，同知识库。
+     */
+    const scopes = await db.botScopesFor(account.id)
+    const conns = (await db.connectionsFor(account.id, companyId)).filter(
+      (c) => c.status === 'active' && connectionVisibleTo(scopes.get(c.id)?.scope, botId || null),
+    )
     const synth = conns
       .map((c) => {
         const item = connectorItems.find((i) => i.id === c.connectorId && i.scope === 'global')
@@ -1962,15 +1978,23 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       const items = await db.visibleCatalog('connector', companyId)
       const blocks = blockMapOf(items)
       const defs = new Map(items.filter((i) => i.scope === 'global').map((i) => [i.id, connectorDefOf(i)]))
+      /**
+       * 会话是哪颗 Bot 的：点名连接和点名 Bot 都要它。连接那一侧按它筛 Bot 范围
+       * （docs/connector-bot-scope.md）——员工把这把账号收窄到别的 Bot 了，在这颗 Bot 的
+       * 对话里点它，和点一把已经断开的一样剔掉。界面的选单已经按 Bot 筛过，这里是兜底。
+       */
+      const sessionBot = ((await db.sessionIndex(req.params.id))?.botId || '').trim()
+      const scopes = await db.botScopesFor(account.id)
       const conns = new Map(
-        (await db.connectionsFor(account.id, companyId)).filter((c) => c.status === 'active').map((c) => [c.id, c]),
+        (await db.connectionsFor(account.id, companyId))
+          .filter((c) => c.status === 'active' && connectionVisibleTo(scopes.get(c.id)?.scope, sessionBot || null))
+          .map((c) => [c.id, c]),
       )
       /**
        * @ 一颗 Bot（docs/bot-tasks.md）：只在**主 Bot 的会话**里认，目标得在名单上、不能是自己。
        * 别的会话里点了别的 Bot 一律剔掉——那颗 Bot 没有 assign_task，透传过去它只会自己把活做了。
        */
       const wantsBot = wanted.some((raw) => String(((raw ?? {}) as Record<string, unknown>).kind ?? '') === 'bot')
-      const sessionBot = wantsBot ? ((await db.sessionIndex(req.params.id))?.botId || '').trim() : ''
       const mainBot = wantsBot ? await db.mainBotOf(account.id) : null
       const roster = wantsBot && mainBot && mainBot === sessionBot ? await db.botsFor(companyId, account.id) : []
       for (const raw of wanted) {

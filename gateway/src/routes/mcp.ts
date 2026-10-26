@@ -11,7 +11,7 @@ import type { ServerResponse } from 'node:http'
 import { HttpError, json, type Req, type Router } from '../http.ts'
 import type { RouteCtx } from './ctx.ts'
 import { ProviderError, providerFor, type ToolDef } from '../connectors/index.ts'
-import { MAX_TOOLS, annotateToolParams, blockMapOf, connectorDefOf, matchTools, toolsOf } from '../lib/connectors.ts'
+import { MAX_TOOLS, annotateToolParams, blockMapOf, connectionVisibleTo, connectorDefOf, matchTools, toolsOf } from '../lib/connectors.ts'
 import {
   SEARCH_LIMIT,
   metaToolDefs,
@@ -139,8 +139,9 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
    * 这一把连接现在能不能用，以及它属于谁。
    *
    * 判定顺序一步都不能省：票 → 归属 → active → 公司没禁 → 装了 → 工具在子集里。
-   * URL 上的 `botId` **只做统计归因，不参与鉴权**——它是席位自己填的，可以是假的，
-   * 但假也只能假成同一个账号名下的另一颗 Bot。账号才是边界。
+   * URL 上的 `botId` **不参与跨人的鉴权**——它是席位自己填的，可以是假的，
+   * 但假也只能假成同一个账号名下的另一颗 Bot。账号才是边界。它只管统计归因，以及
+   * 「可用 Bot」那道防误用的门（下面的 `visible`）。
    */
   async function gate(req: Req): Promise<{
     account: Account
@@ -149,6 +150,8 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
     vendor: string
     enabledTools: string[]
     botId: string
+    /** 这颗 Bot 在不在这把账号的 Bot 范围里（docs/connector-bot-scope.md）。不在的由各条路自己回话。 */
+    visible: boolean
   }> {
     const account = await requireSeatOnly(req, db)
     const conn = await db.connectorConnection(req.params.connectionId)
@@ -171,13 +174,24 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
       if (!install) throw new HttpError(409, '还没装这个连接器')
       enabledTools = install.enabledTools
     }
+    const botId = (req.query.get('botId') || '').trim()
+    /**
+     * **Bot 范围**：员工把这把账号收窄到了别的 Bot。目录里本来就不下发给这颗，这里是兜底。
+     *
+     * 和 mentionOnly 那道一样，**挡 bug，不挡攻击者**：botId 是席位自报的，假也只能假成
+     * 同一个人名下的另一颗 Bot，跨人的边界仍然是上面那几步。和它不一样的是缺 botId 时
+     * **拒**：端点地址是 Gateway 下发目录时自己拼的，按 Bot 拉的目录一定带着；没带的只
+     * 可能是不按 Bot 拉目录的路径，而那条路本来就只拿到没收窄的连接。
+     */
+    const visible = connectionVisibleTo((await db.botScopeOf(conn.id, account.id))?.scope, botId || null)
     return {
       account,
       conn,
       toolkit: def.toolkit,
       vendor: def.vendor,
       enabledTools,
-      botId: (req.query.get('botId') || '').trim(),
+      botId,
+      visible,
     }
   }
 
@@ -212,6 +226,11 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
     }
 
     if (method === 'tools/list') {
+      // 不在范围里就是一张空表，不回错：回错席位会把整台服务器标成连不上，而它只是不归这颗 Bot。
+      if (!g.visible) {
+        rpcOk(res, id, { tools: [] })
+        return
+      }
       let all: ToolDef[]
       try {
         all = await toolsOf(db, g.vendor, g.toolkit)
@@ -440,6 +459,11 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
       rpcOk(res, id, toolResult('没有指定工具名', true))
       return
     }
+    if (!g.visible) {
+      await record('denied', true)
+      rpcOk(res, id, toolResult('这个账号没有开放给这颗 Bot。要用的话，去「插件」里这个账号的「可用 Bot」把它加上', true))
+      return
+    }
     if (allow.size && !allow.has(slug)) {
       await record('denied', true)
       rpcOk(res, id, toolResult('这个工具没有开启，去连接器那一屏打开它', true))
@@ -539,6 +563,7 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
    */
   router.post('/mcp/connectors/:connectionId/files', async (req, res) => {
     const g = await gate(req)
+    if (!g.visible) throw new HttpError(403, '这个账号没有开放给这颗 Bot')
     const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}) as Record<string, unknown>
     const toolName = String(body.tool ?? '').trim()
     if (!toolName) throw new HttpError(400, '要说明这份文件是给哪个工具用的（tool）')
