@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import { registerTool } from './common.ts'
 import { isLocalRuntime } from '../env.ts'
@@ -69,6 +70,16 @@ export function apply(ctx: Context) {
       if (decision.verdict !== 'approved') return '用户拒绝了这次文件夹访问申请。不要再申请同一个文件夹；换个做法，或者问用户希望怎么处理。'
       const all = ctx.workspace.approvedMounts()
       const added = all.filter((m) => !before.has(m.mount))
+      /**
+       * 批的正是一个早就批过的文件夹（卡上「批准」直批 suggested，那个文件夹已经在名单里）。
+       * 照「没有选新的文件夹」说的话，模型会转述成一句含糊的「重新授权成功」，而其实什么都
+       * 没变——它该知道的是：那个入口一直都在，直接用。
+       */
+      const asked = suggested.replace(/^~(?=\/|$)/, homedir()).replace(/\/+$/, '')
+      const already = !added.length && asked ? all.find((m) => m.path === asked) : undefined
+      if (already) {
+        return `这个文件夹早就批准过了，入口一直在：\n${describe([already])}\n\n直接用这个 \`External/…\` 路径；如果刚才访问失败，原因不在批准上，把报错原样告诉用户。`
+      }
       if (!added.length) {
         return all.length
           ? `用户批准了，但这次没有选新的文件夹。现在能访问的是：\n${describe(all)}`

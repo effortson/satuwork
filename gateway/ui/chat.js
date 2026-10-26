@@ -807,6 +807,14 @@ async function syncApprovals(botId, sessionId) {
 }
 
 /**
+ * 点下去席位回了 409「这条确认已经结束了」的那几条。
+ *
+ * 这是最确定的一条判据：席位亲口说不在等了。不记下来的话卡片还亮着按钮，人会接着点，
+ * 一次次撞同一句话（席位重启后、终态事件又没补上的那种残局就是这样）。
+ */
+const goneApprovals = new Set()
+
+/**
  * 这张卡片还点得动吗。
  *
  * 只有一条判据，而且必须是「确定不在等了」：这条确认在核对那一刻之前就落了盘，
@@ -815,6 +823,7 @@ async function syncApprovals(botId, sessionId) {
  */
 function approvalDead(a) {
   if (a.state !== 'pending') return false
+  if (goneApprovals.has(a.callId)) return true
   const snap = state.chatApprovals
   if (!snap || snap.sessionId !== state.chatSessionId || !snap.upto) return false
   return Boolean(a.seq && a.seq <= snap.upto && !snap.ids.has(a.callId))

@@ -32,9 +32,20 @@ async function decideApproval(callId, decision, scope, feedback) {
     }
   } catch (err) {
     if (box) box.removeAttribute('data-busy')
-    // 409 是「这条早就结束了」——超时、被停止、或者另一个标签页先点了。它不是错误，
-    // 但必须说出来：人点了一下什么都没发生才是最糟的。
+    // 409 是「这条早就结束了」——超时、被停止、席位重启过、或者另一个标签页先点了。它不是
+    // 错误，但必须说出来：人点了一下什么都没发生才是最糟的。
     flash('err', err && err.message ? err.message : t('没能提交这次确认', 'Could not submit that decision'))
+    if (err && err.status === 409) {
+      // 席位说了不在等，卡片就收成「已失效」，右栏「等你拍板」里那一条也一起拿掉，
+      // 不然它们还亮着让人接着点。
+      goneApprovals.add(callId)
+      for (const row of botStreams.values()) {
+        if (row && row.sum && row.sum.asks && row.sum.asks.delete(callId)) settleDot(row.sum)
+      }
+      // 卡片按签名跳过重画（chat-thread.js 的 apSig），签名里只有还在等的 callId，所以
+      // 它少了一条签名就变了，这一下整块重画。
+      render()
+    }
   }
 }
 

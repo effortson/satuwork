@@ -51,6 +51,14 @@ export async function runSessionStore({ root, test, assert, log }) {
     assert(d.untouchedDone === 3, `已收口的会话不该被加东西，实际 ${d.untouchedDone} 条`)
   })
 
+  await test('收口时还挂着的确认补成作废：卡片和「等你拍板」才灭得掉', async () => {
+    const d = r.danglingTurn
+    // 不补的话卡片一直亮着「批准」，点下去席位回 409——等它的那次调用随上个进程没了。
+    assert(d.approvalTail === 'tool/approval:c-wait:aborted turn/end:error:', `末尾应是作废 c-wait 再收口，实际 ${d.approvalTail}`)
+    assert(d.approvalAbortedHasNoDeadline, '作废那条不该再带 expiresAt')
+    assert(d.approvalStableOnReload, '重读又补了一遍')
+  })
+
   await test('缓存被挤满时正跑着的子会话一轮：不补假的 turn/end', async () => {
     const d = r.liveTurnUnderChurn
     // 多出来的那条 reason:error 会让审计、界面、交接、审批各自当成这轮已经结束。

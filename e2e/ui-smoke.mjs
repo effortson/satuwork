@@ -2777,6 +2777,17 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const decided = posted.find((p) => p.path.includes('/approvals/call-folder'))
       assert(decided && decided.body.decision === 'approve' && decided.body.scope === 'once', `批准之后该提交一次「批准这一次」：${JSON.stringify(posted)}`)
 
+      // 席位回 409（重启过、那条 pending 没等到终态）：卡片当场收成已失效，不再亮着让人接着点
+      const gone = loadApp({
+        appPath, base: gwBase, token: 'jwt',
+        fetchImpl: async () => new Response(JSON.stringify({ error: '这条确认已经结束了' }), { status: 409, headers: { 'content-type': 'application/json' } }),
+      })
+      gone.state.chatSessionId = 's-local'
+      const stale = { ...folderApproval, callId: 'call-stale', seq: 3 }
+      assert(!gone.approvalDead(stale), '还没点之前不该判失效')
+      await gone.decideApproval('call-stale', 'approve', 'once')
+      assert(gone.approvalDead(stale), '席位说这条结束了，卡片还当它在等')
+
       // 右栏列表：默认收起，只露一行「已批准访问的文件夹 · 1」，不挤下面的日常任务；点开才列
       html = desk.localDirsHtml('l-1')
       assert(html.includes('已批准访问的文件夹 · 1') && html.includes('aria-expanded="false"'), `默认该收起、带条数：${html}`)
