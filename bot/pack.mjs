@@ -27,6 +27,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFile
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { removeWorkspaceSelfLink } from '../scripts/pack-lib.mjs'
 
 const botRoot = dirname(fileURLToPath(import.meta.url))
 const root = dirname(botRoot)
@@ -111,6 +112,7 @@ try {
   if (!existsSync(join(stage, 'node_modules', 'tsx'))) die('staging 里没有 tsx，包跑不起来')
   if (!process.argv.includes('--allow-foreign-platform')) assertLinuxPack(stage)
 
+  removeWorkspaceSelfLink(stage, 'satuwork')
   writeFileSync(join(stage, 'VERSION'), version + '\n')
 
   console.log('pack: tar 中…')
