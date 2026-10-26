@@ -73,8 +73,31 @@ mkdir -p "$XDG_CONFIG_HOME/picom" "$XDG_CONFIG_HOME/plank/dock1/launchers" \
 # 只清**自己这一轮**留下的：按 display 和端口找，它们是逐席位唯一分配的。
 # 按端口找持有者，不要去猜命令行长什么样——同一个东西可以写成 127.0.0.1:6081 也可以
 # 写成 0.0.0.0:6081，按模式匹配会漏，而漏掉的后果见下面 require_listener 那段。
+#
+# **TERM 不退就补 KILL。** 以前这里只是一句 `pkill`（TERM），发完就走。撞过一回：一个
+# 席位上一代的 x11vnc 的 Xvfb 已经没了，它自己卡死在那儿——不 accept（5911 上 Recv-Q
+# 堆着 6 个连接）、也不理 TERM，一直攥着 5911。于是每一轮新的 x11vnc 都绑不上口，下面
+# require_listener 判失败、exit 1，systemd 三秒后再来，一天转了一万多圈。中间 websockify
+# 每轮能活几秒，页面打得开、点「连接」就是连不上；而它是「本席位自己的进程」，管家的端口
+# 回收（reclaim.ts 判 ours）和部署自证（verify_seat_listener）都放它过去，席位一直 ready。
 kill_stale() {
-  pkill -u "$(id -u)" -f "$1" 2>/dev/null || true
+  local pids p
+  pids=$(pgrep -u "$(id -u)" -f "$1" 2>/dev/null || true)
+  [ -n "$pids" ] || return 0
+  # shellcheck disable=SC2086 # pids 是 pgrep 一行一个的数字，要拆开
+  kill $pids 2>/dev/null || true
+  # 给 5 秒体面退出（理由同 reclaim.ts 的 killPids：TERM 会自己关 socket 和 X 连接）。
+  for _ in $(seq 1 25); do
+    pids=$(for p in $pids; do kill -0 "$p" 2>/dev/null && echo "$p"; done || true)
+    [ -n "$pids" ] || return 0
+    sleep 0.2
+  done
+  echo "上一轮的「$1」收到 TERM 5 秒还没退，补 KILL：" >&2
+  # STAT / WCHAN 留给下次排查：T 是被停住了，D 是卡在内核里（那种 KILL 也要等它出来）。
+  # shellcheck disable=SC2086
+  ps -o pid,stat,wchan:32,lstart,cmd -p "$(echo $pids | tr ' ' ,)" >&2 2>/dev/null || true
+  # shellcheck disable=SC2086
+  kill -KILL $pids 2>/dev/null || true
 }
 kill_stale "Xvfb ${DISPLAY} "
 kill_stale "x11vnc .*-rfbport ${RFB}"
@@ -95,10 +118,30 @@ if [ -f "$DBUS_PIDFILE" ]; then
   rm -f "$DBUS_PIDFILE"
 fi
 # 等端口真的松手再往下走，否则新进程照样撞上「address already in use」。
+ports_busy() {
+  command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -qE ":(${RFB}|${HTTP})\b"
+}
 for _ in $(seq 1 25); do
-  if ! (command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -qE ":(${RFB}|${HTTP})\b"); then break; fi
+  if ! ports_busy; then break; fi
   sleep 0.2
 done
+# **等不空就在这里说清楚是谁占着，然后失败。** 以前等满 5 秒就默默往下走，新的 x11vnc
+# 绑不上，失败落在下面 require_listener 那句泛泛的「没能起来」上，看不出占口的其实是
+# 本席位上一代、KILL 过还没走的那个进程。这里报的是它的 STAT / WCHAN / 起于何时。
+# 别的账号占着的口 ss 看不到 pid，只能报出那一行——那种情况本来也不是这里能清的。
+if ports_busy; then
+  echo "端口 ${RFB}（x11vnc）/ ${HTTP}（websockify）清过残留之后还被占着，这一轮起不来：" >&2
+  ss -ltnpH 2>/dev/null | grep -E ":(${RFB}|${HTTP})\b" >&2 || true
+  holders=$(ss -ltnpH 2>/dev/null | grep -E ":(${RFB}|${HTTP})\b" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u | paste -sd, - || true)
+  if [ -n "$holders" ]; then
+    ps -o pid,user:32,stat,wchan:32,lstart,cmd -p "$holders" >&2 || true
+    echo "占口的是这个账号的进程：命令行里端口是本席位的，就是上一代 KILL 过还没走（STAT 是 D 的卡在" >&2
+    echo "内核里，等它出来或重启机器）；是同账号别的席位的，从管家重新部署一次，端口回收会先要回来。" >&2
+  else
+    echo "占口的不是这个账号的进程（看不到 pid）：这台机器上有别的 VNC 或别的席位在用这个口。" >&2
+  fi
+  exit 1
+fi
 rm -f "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}" 2>/dev/null || true
 
 # ── 每个席位一条**自己的** dbus 总线 ──────────────────────────────────
@@ -322,4 +365,23 @@ dconf write /net/launchpad/plank/docks/dock1/position "'bottom'" 2>/dev/null || 
 dconf write /net/launchpad/plank/docks/dock1/icon-size 48 2>/dev/null || true
 dconf write /net/launchpad/plank/docks/dock1/theme "'Transparent'" 2>/dev/null || true
 plank --name dock1 &
-wait "$XVFB_PID"
+
+# ── 三样里死了任何一样，整块屏重来 ──────────────────────────────────
+# 以前这里是 `wait "$XVFB_PID"`，只盯 Xvfb。x11vnc 或 websockify 中途死了，脚本照样挂
+# 在 wait 上，单元 active、部署 ready，Restart=on-failure 永远轮不到——这块屏就这么一直
+# 连不上，直到有人重新部署。现在三个一起等，谁先退就整体失败，交给 systemd 三秒后重拉。
+#
+# 退之前把剩下的两个带走：它们落在 logind 的 session scope 里（见开头「清掉上一轮的残留」），
+# 单元停了也杀不到，留着就是下一轮 kill_stale 的活。xfwm4 / picom / plank 是 X 客户端，
+# Xvfb 一走它们自己就退。
+# `wait -n` 带 pid 要 bash ≥ 5.1（Debian 11 起）。收到 stop 的 TERM 时上面的 trap 先 exit 143，
+# 走不到这里。
+status=0
+wait -n "$XVFB_PID" "$X11VNC_PID" "$WEBSOCKIFY_PID" || status=$?
+gone=""
+kill -0 "$XVFB_PID" 2>/dev/null || gone="$gone Xvfb"
+kill -0 "$X11VNC_PID" 2>/dev/null || gone="$gone x11vnc"
+kill -0 "$WEBSOCKIFY_PID" 2>/dev/null || gone="$gone websockify"
+echo "${gone# } 退出了（退出码 $status），整块屏重来" >&2
+kill "$XVFB_PID" "$X11VNC_PID" "$WEBSOCKIFY_PID" 2>/dev/null || true
+exit 1
