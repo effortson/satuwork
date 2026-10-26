@@ -17,12 +17,12 @@ export const TARGETS = [
   { target: 'windows-arm64', platform: 'win32', arch: 'arm64', runner: 'windows-11-arm' },
 ]
 export function validateSelection(branch, component, version = '') {
-  if (!['main', 'develop'].includes(branch) || !['all', 'manager', 'bot', 'local-bot'].includes(component)) throw Error('Unsupported source branch/component')
+  if (!['main', 'develop'].includes(branch) || !['all', 'bots', 'manager', 'bot', 'local-bot'].includes(component)) throw Error('Unsupported source branch/component')
   if (version && !/^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(version)) throw Error('Version must be X.Y.Z, or empty for package version')
 }
 export function selectedKinds(component, target) {
   if (!TARGETS.some(t => t.target === target)) throw Error('Unknown native target')
-  return ['manager', 'bot', 'local-bot'].filter(k => (component === 'all' || component === k) && (k === 'local-bot' || target.startsWith('linux-')))
+  return ['manager', 'bot', 'local-bot'].filter(k => (component === 'all' || component === k || (component === 'bots' && k !== 'manager')) && (k === 'local-bot' || target.startsWith('linux-')))
 }
 export function matrix(component) {
   validateSelection('main', component)
