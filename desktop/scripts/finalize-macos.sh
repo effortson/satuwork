@@ -37,7 +37,10 @@ dmg="$b/dmg/${product}_${version}_${arch}.dmg"
 hdiutil create -volname "$product" -srcfolder "$stage/disk" -ov -format UDZO "$dmg"
 codesign --force --sign "$SATUWORK_CODESIGN_IDENTITY" --keychain "$SATUWORK_CODESIGN_KEYCHAIN" --timestamp "$dmg"
 echo 'Submitting the signed installer for Apple notarization'
-retry xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait --timeout 30m --output-format json > "$stage/notary.json"
+notarize() {
+  xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait --timeout 30m --output-format json > "$stage/notary.json"
+}
+retry notarize
 node -e 'const r=require(process.argv[1]); if(r.status!=="Accepted") throw Error("Apple notarization status: "+r.status); console.log("Apple notarization: Accepted")' "$stage/notary.json"
 retry xcrun stapler staple "$dmg"
 retry xcrun stapler validate "$dmg"
