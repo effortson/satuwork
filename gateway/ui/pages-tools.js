@@ -220,10 +220,10 @@ function knowledgeToolsPanel() {
   const status = !st
     ? t('状态读取中…', 'Reading status…')
     : !st.configured
-      ? t('未配置。给 Gateway 配 UPSTASH_VECTOR_REST_URL / UPSTASH_VECTOR_REST_TOKEN 就开通了；索引要选内置 embedding 模型（推荐 bge-m3）。', 'Not configured. Set UPSTASH_VECTOR_REST_URL / UPSTASH_VECTOR_REST_TOKEN on the gateway; the index must use a built-in embedding model (bge-m3 recommended).')
+      ? t(`未配置 · ${st.backend || 'upstash'}：${st.error || (st.missing || []).join(' / ') || '请配置向量服务'}`, `Not configured · ${st.backend || 'upstash'}: ${st.error || (st.missing || []).join(' / ') || 'Configure the vector service'}`)
       : st.error
         ? t(`已配置，但连不上：${st.error}`, `Configured, but unreachable: ${st.error}`)
-        : t(`已连接 · 索引里 ${st.vectors} 个向量 · ${st.dimension} 维`, `Connected · ${st.vectors} vectors · ${st.dimension} dims`)
+        : t(`已连接 · ${st.backend || 'upstash'}${st.model ? ' · ' + st.model : ''} · ${st.vectors} 个向量 · ${st.dimension} 维`, `Connected · ${st.backend || 'upstash'}${st.model ? ' · ' + st.model : ''} · ${st.vectors} vectors · ${st.dimension} dims`)
   return `
     <div style="display: flex; flex-direction: column; gap: var(--space-5);">
       <div class="satu-panel">
@@ -235,7 +235,7 @@ function knowledgeToolsPanel() {
       <div class="satu-panel" style="gap: var(--space-3);">
         <div>
           <h2 style="font-size: 16px; margin: 0 0 4px;">${t('单价')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('按 Upstash 请求次数计：一次检索 = 查了几个库；一份文件入库 = 分片数 ÷ 100 向上取整。0 = 不收钱、不熔断。倍率沿用模型配置里的那一个。', 'Priced per Upstash request: one search = number of knowledge bases queried; one ingest = chunks ÷ 100 rounded up. 0 = free and never cut off. The multiplier from model settings applies.')}</p>
+          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('按知识库操作单位计：一次检索 = 成功查询的库数；一份文件入库 = 分片数 ÷ 100 向上取整。内部向量请求批次不影响该单位。0 = 不收钱、不熔断。倍率沿用模型配置里的那一个。', 'Priced per knowledge operation: one search = successfully queried knowledge bases; one ingest = chunks ÷ 100 rounded up. Internal embedding batches do not change these units. 0 = free and never cut off. The multiplier from model settings applies.')}</p>
         </div>
         <div class="satu-toggleRow">
           <div style="min-width: 0;"><div style="font-size: 13.5px; font-weight: 600;">${t('检索 / 次（美元）', 'Search / request (USD)')}</div></div>
@@ -249,7 +249,7 @@ function knowledgeToolsPanel() {
       <div class="satu-panel" style="gap: var(--space-3);">
         <div>
           <h2 style="font-size: 16px; margin: 0 0 4px;">${t('相似度门槛', 'Similarity threshold')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('低于这个分数的命中丢掉。太低模型会拿到一堆不相干的段落还当真话说，太高查不到东西。bge-m3 上 0.35 大致是「有点关系」的门槛。', 'Hits below this score are dropped. Too low and the model gets unrelated passages; too high and nothing is found. On bge-m3, 0.35 is roughly “somewhat related”.')}</p>
+          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('低于这个分数的命中丢掉。太低模型会拿到一堆不相干的段落还当真话说，太高查不到东西。不同模型和向量后端的分数分布不同，切换后请用实际样本校准门槛。', 'Hits below this score are dropped. Too low and the model gets unrelated passages; too high and nothing is found. Score distributions vary by model and backend; calibrate the threshold with real examples after switching.')}</p>
         </div>
         <div class="satu-toggleRow">
           <div style="min-width: 0;"><div style="font-size: 13.5px; font-weight: 600;">${t('最低分', 'Minimum score')}</div></div>

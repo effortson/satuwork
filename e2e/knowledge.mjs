@@ -6,12 +6,16 @@
  * 查不到无关的。
  */
 import { createServer } from 'node:http'
-import { rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { join } from 'node:path'
 import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { createCompany } from './org.mjs'
 import { closeServer } from './probe.mjs'
+import { rmSync } from 'node:fs'
+import { createRequire } from 'node:module'
+
 
 function bigrams(s) {
   const t = String(s || '').replace(/\s+/g, '')
@@ -92,14 +96,26 @@ async function mockUpstash() {
   return { server, seen, spaces, url: `http://127.0.0.1:${server.address().port}` }
 }
 
-async function until(fn, { timeout = 20000, every = 300, what = '条件' } = {}) {
-  const t0 = Date.now()
-  while (Date.now() - t0 < timeout) {
-    const v = await fn()
-    if (v) return v
-    await new Promise((r) => setTimeout(r, every))
-  }
-  throw new Error(`${what} 在 ${timeout}ms 内没成`)
+async function mockEmbeddings() {
+  const seen = { queries: 0 }
+  const server = createServer((req, res) => {
+    let raw = ''
+    req.on('data', c => raw += c)
+    req.on('end', () => {
+      const body = JSON.parse(raw)
+      seen.queries++
+      const data = body.input.map((text, index) => {
+        const embedding = Array(1024).fill(0)
+        for (const [i, topic] of ['年假', '病假', '报销', '考勤'].entries()) if (text.includes(topic)) embedding[i] = 1
+        if (!embedding.some(Boolean)) embedding[/^[a-z]+$/.test(text) ? 1023 : 10] = 1
+        return { index, embedding }
+      })
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: data.reverse(), usage: { prompt_tokens: 10, total_tokens: 10 } }))
+    })
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  return { server, seen, url: `http://127.0.0.1:${server.address().port}/v1` }
 }
 
 export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert, log }) {
@@ -107,10 +123,12 @@ export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert,
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
   const schema = schemaOf('e2e_knowledge')
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# knowledge')
 
-  const upstash = await mockUpstash()
+  const pgvector = process.env.E2E_KNOWLEDGE_BACKEND === 'pgvector'
+  const upstash = pgvector ? await mockEmbeddings() : await mockUpstash()
+  const vectorEnv = pgvector ? { KB_VECTOR_BACKEND: 'pgvector', KB_EMBEDDING_BASE_URL: upstash.url, KB_EMBEDDING_API_KEY: 'e2e-token' } : { KB_VECTOR_BACKEND: 'upstash', UPSTASH_VECTOR_REST_URL: upstash.url, UPSTASH_VECTOR_REST_TOKEN: 'e2e-token' }
+  rmSync(GW_HOME, { recursive: true, force: true })
   const gw = start('knowledge-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
     cwd: gwRoot,
     env: {
@@ -124,10 +142,10 @@ export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert,
       GATEWAY_SEED_OWNER: '0',
       // 入库跑在维护节拍上：跑快点，用例不用等半分钟。
       GATEWAY_ROUTINE_TICK_MS: '300',
-      UPSTASH_VECTOR_REST_URL: upstash.url,
-      UPSTASH_VECTOR_REST_TOKEN: 'e2e-token',
+      ...vectorEnv,
     },
   })
+
   await waitHttp(`${base}/health`, { child: gw, what: 'knowledge gateway' })
 
   let owner = ''
@@ -144,6 +162,7 @@ export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert,
   const orgPath = (extra) => `/orgs/${orgId}/knowledge${extra || ''}`
 
   try {
+    if (pgvector) execFileSync(process.execPath, ['--import', 'tsx', join(gwRoot, 'scripts/init-knowledge-vectors.ts')], { cwd: gwRoot, env: { ...process.env, GATEWAY_DATABASE_URL: PG_URL, GATEWAY_PG_SCHEMA: schema, ...vectorEnv }, stdio: 'pipe' })
     await test('套餐 SKU 带知识库个数，下单付款后落到公司的 plan 上', async () => {
       const setup = await req(base, 'POST', '/auth/setup', { body: { email: 'owner@kb.test', name: 'owner', password: 'correct-horse-1' } })
       assert(setup.status === 201, `setup ${setup.status} ${setup.text}`)
@@ -328,14 +347,46 @@ export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert,
       const f = ready.files.find((x) => x.id === fileId)
       assert(f.chunkCount >= 2 && f.chunkDone === f.chunkCount, `该切成至少两片：${JSON.stringify(f)}`)
       assert(ready.knowledge.chunkCount === f.chunkCount && ready.knowledge.fileCount === 1, `计数 ${JSON.stringify(ready.knowledge)}`)
-      assert(upstash.spaces.get(`kb:${kbA}`)?.size === f.chunkCount, `向量库里该有 ${f.chunkCount} 条`)
-      const one = [...upstash.spaces.get(`kb:${kbA}`).values()][0]
+      const stored = pgvector ? await withPg(schema, async c => (await c.query('select c.text,f.name from knowledge_chunk_vectors v join knowledge_chunks c on c.id=v."chunkId" join knowledge_files f on f.id=c."fileId" where c."kbId"=$1',[kbA])).rows.map(r => ({data:r.text,metadata:{text:r.text,fileName:r.name}}))) : [...upstash.spaces.get(`kb:${kbA}`).values()]
+      assert(stored.length === f.chunkCount, `向量库里该有 ${f.chunkCount} 条`)
+      const one = stored[0]
       assert(one.metadata.fileName === '员工手册 2025.md' && typeof one.metadata.text === 'string' && one.data.includes('《员工手册 2025》'), `元数据 ${JSON.stringify(one.metadata).slice(0, 200)}`)
       // 入库落了一行账（kind = kb），金额 0（单价默认 0）。
       const charges = await req(base, 'GET', `/orgs/${orgId}/charges?kind=kb`, { token: admin })
       assert(charges.status === 200, `charges ${charges.status} ${charges.text}`)
       const rows = (charges.json.charges || charges.json.items || []).filter((c) => c.kind === 'kb')
       assert(rows.some((c) => c.subject === 'kb:ingest'), `账本里该有 kb:ingest：${charges.text.slice(0, 300)}`)
+    })
+
+    if (pgvector) await test('pgvector：公司隔离、模型校验、幂等写入和重建', async () => {
+      const stored = await withPg(schema, async c => (await c.query('select v.embedding::text from knowledge_chunk_vectors v join knowledge_chunks c on c.id=v."chunkId" where c."fileId"=$1 order by c.no limit 1', [fileId])).rows[0].embedding)
+      const code = `
+        import assert from 'node:assert/strict';
+        import { Db } from './src/db.ts';
+        import { embeddingConfig } from './src/lib/knowledge-embedding.ts';
+        const db=new Db({url:process.env.GATEWAY_DATABASE_URL,schema:process.env.GATEWAY_PG_SCHEMA});
+        try {
+          const kb=await db.knowledgeBase(process.env.TEST_KB);
+          const chunk=(await db.knowledgeChunks(process.env.TEST_FILE,0,1))[0];
+          const cfg=embeddingConfig();
+          const rows=[{id:chunk.id,data:chunk.text,vector:JSON.parse(process.env.TEST_VECTOR)}];
+          const before=await db.knowledgeVectorCount();
+          await assert.rejects(db.upsertKnowledgeVectors({...kb,companyId:'wrong-company'},cfg.profile,rows),/不属于/);
+          await assert.rejects(db.upsertKnowledgeVectors(kb,'wrong-profile',rows),/已变更/);
+          await db.upsertKnowledgeVectors(kb,cfg.profile,rows);
+          assert.equal(await db.knowledgeVectorCount(),before);
+          assert.deepEqual(await db.queryKnowledgeVectors({...kb,companyId:'wrong-company'},cfg.profile,rows[0].vector,6),[]);
+          await db.deleteKnowledgeVectors({...kb,companyId:'wrong-company'});
+          assert.equal(await db.knowledgeVectorCount(),before);
+          await assert.rejects(db.initializeKnowledgeVectors('wrong-profile',cfg.model,1024),/变更/);
+          assert.ok(await db.reindexKnowledgeVectors(cfg.profile,cfg.model,1024)>=1);
+        } finally { await db.close(); }
+      `
+      execFileSync(process.execPath, ['--import','tsx','--input-type=module','-e',code], { cwd:gwRoot, env:{...process.env,GATEWAY_DATABASE_URL:PG_URL,GATEWAY_PG_SCHEMA:schema,...vectorEnv,TEST_KB:kbA,TEST_FILE:fileId,TEST_VECTOR:stored},stdio:'pipe' })
+      await until(async () => {
+        const r=await req(base,'GET',orgPath(`/${kbA}`),{token:admin})
+        return r.json.files.find(f=>f.id===fileId)?.status==='ready'
+      },{what:'重建后的入库完成'})
     })
 
     await test('试搜：相关的查得到、带文件名和标题路径；无关的查不到', async () => {
@@ -414,7 +465,10 @@ export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert,
     await test('删文件：向量按前缀删、容量释放；删库：列表当场消失，节拍删掉命名空间', async () => {
       const del = await req(base, 'DELETE', orgPath(`/${kbA}/files/${fileId}`), { token: admin })
       assert(del.status === 200, `del ${del.status} ${del.text}`)
-      assert(upstash.seen.deletes.some((d) => d.ns === `kb:${kbA}` && d.body.prefix === `${fileId}:`), `该按前缀删：${JSON.stringify(upstash.seen.deletes)}`)
+      if (pgvector) {
+        const count = await withPg(schema, async c => (await c.query('select count(*) as n from knowledge_chunk_vectors')).rows[0].n)
+        assert(Number(count) === 0, '删文件后向量应全部清理')
+      } else assert(upstash.seen.deletes.some((d) => d.ns === `kb:${kbA}` && d.body.prefix === `${fileId}:`), `该按前缀删：${JSON.stringify(upstash.seen.deletes)}`)
       const d = await req(base, 'GET', orgPath(`/${kbA}`), { token: admin })
       assert(d.json.knowledge.bytesUsed === 0 && d.json.knowledge.fileCount === 0 && d.json.knowledge.chunkCount === 0, `删后计数 ${JSON.stringify(d.json.knowledge)}`)
       const catAfter = await req(base, 'GET', `/runtime/catalog?botId=${botId}`, { token: seatTok })
@@ -424,7 +478,7 @@ export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert,
       assert(gone.status === 200, `delete kb ${gone.status} ${gone.text}`)
       const list = await req(base, 'GET', orgPath(), { token: admin })
       assert(list.json.knowledge.length === 1 && list.json.used === 1, `删后列表 ${list.text}`)
-      await until(() => upstash.seen.deletedNamespaces.includes(`kb:${kbB}`), { what: '删命名空间' })
+      await until(() => pgvector ? withPg(schema, async c => (await c.query('select count(*) as n from knowledge_bases where id=$1', [kbB])).rows[0].n === '0') : upstash.seen.deletedNamespaces.includes(`kb:${kbB}`), { what: '删除向量库' })
       // 名额腾出来了，再建一个能成。
       const c = await req(base, 'POST', orgPath(), { token: admin, body: { name: '产品手册', share: 'all' } })
       assert(c.status === 201, `腾位后再建 ${c.status} ${c.text}`)
@@ -441,4 +495,21 @@ export async function runKnowledge({ gwRoot, test, req, start, waitHttp, assert,
     gw.kill('SIGTERM')
     await closeServer(upstash.server, 'mock upstash')
   }
+}
+
+async function until(fn, {what, timeout=15000}) {
+  const end=Date.now()+timeout
+  while(Date.now()<end) {
+    const value=await fn()
+    if(value) return value
+    await new Promise(resolve=>setTimeout(resolve,30))
+  }
+  throw new Error('Timed out: '+what)
+}
+async function withPg(schema, fn) {
+  if(!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(schema)) throw new Error('Invalid test schema')
+  const pg=createRequire(new URL('../gateway/package.json',import.meta.url))('pg')
+  const client=new pg.Client({connectionString:PG_URL})
+  try { await client.connect(); await client.query('set search_path to '+schema); return await fn(client); }
+  finally { await client.end(); }
 }

@@ -230,10 +230,10 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
       afterResponse(
         '清理知识库',
         (async () => {
-          const { deleteKbNamespace, vectorConfigured } = await import('../lib/knowledge-vector.ts')
+          const { deleteKbNamespace, vectorBackend, vectorConfigured } = await import('../lib/knowledge-vector.ts')
           const { removeStored } = await import('../lib/knowledge-store.ts')
           for (const k of knowledge) {
-            if (vectorConfigured()) await deleteKbNamespace(k.id).catch(() => undefined)
+            if (vectorConfigured() || vectorBackend() === 'pgvector') await deleteKbNamespace(db, k).catch(() => undefined)
             for (const f of knowledgeFiles.get(k.id) ?? []) await removeStored(f).catch(() => undefined)
           }
         })(),
