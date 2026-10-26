@@ -218,8 +218,8 @@ export async function managerReleaseFor(db: Db, version: string, arch: string | 
  * 优先级：单机钉的 > 平台全局钉的 > 最新发布。单机那一层是灰度用的——先让一台机器
  * 追新版本，看几天再改全局。
  */
-export async function desiredManagerRelease(db: Db, machine?: Machine) {
-  const arch = machine?.arch ?? null
+export async function desiredManagerRelease(db: Db, machine?: Machine, bootstrapArch?: 'x64' | 'arm64') {
+  const arch = machine?.arch ?? bootstrapArch ?? null
   const pinned = machine?.desiredManagerVersion?.trim()
   if (pinned) {
     const row = await managerReleaseFor(db, pinned, arch)
