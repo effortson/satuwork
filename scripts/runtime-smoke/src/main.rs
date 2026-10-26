@@ -1,6 +1,7 @@
 // Exercise the exact unpacker installed Desktop clients use, including Windows junctions.
-#[path = "../../../desktop/src-tauri/src/runtime/unpack.rs"]
-mod unpack;
+mod unpack {
+    include!(concat!(env!("OUT_DIR"), "/unpack.rs"));
+}
 
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
