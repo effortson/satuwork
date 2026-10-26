@@ -58,13 +58,20 @@ function machOs(dir, files = []) {
 function inspectAndSign(archive, kind, version) {
   const temp = mkdtempSync(join(tmpdir(), 'satu-runtime-check-'))
   try {
-    // Git Bash tar interprets D:/... as a remote archive; keep its input relative.
-    copyFileSync(archive, join(temp, '.runtime-input.tgz'))
-    command('tar', ['-xzf', '.runtime-input.tgz'], { cwd: temp })
-    rmSync(join(temp, '.runtime-input.tgz'))
-    if (readFileSync(join(temp, 'VERSION'), 'utf8').trim() !== version) throw Error('Packed VERSION differs')
+    let stage = temp
+    if (process.platform === 'win32') {
+      // Git Bash tar materializes pnpm links differently. Use Desktop's real unpacker
+      // so the smoke test checks the junctions clients will actually run after rename.
+      command(join(root, 'scripts/runtime-smoke/target/release/runtime-unpack.exe'), [archive, join(temp, 'installed')])
+      stage = join(temp, 'installed/bot')
+    } else {
+      copyFileSync(archive, join(temp, '.runtime-input.tgz'))
+      command('tar', ['-xzf', '.runtime-input.tgz'], { cwd: temp })
+      rmSync(join(temp, '.runtime-input.tgz'))
+    }
+    if (readFileSync(join(stage, 'VERSION'), 'utf8').trim() !== version) throw Error('Packed VERSION differs')
     const entry = kind === 'manager' ? 'bin/satuwork-manager.mjs' : 'bin/satuwork.mjs'
-    readFileSync(join(temp, entry))
+    readFileSync(join(stage, entry))
     if (process.platform === 'darwin') {
       const identity = process.env.SATUWORK_CODESIGN_IDENTITY, keychain = process.env.SATUWORK_CODESIGN_KEYCHAIN
       if (!identity || !keychain) throw Error('Missing protected Apple signing identity')
@@ -79,7 +86,7 @@ function inspectAndSign(archive, kind, version) {
       } finally { rmSync(repacked, { force: true }) }
     }
     // Exercise the deployed dependency tree, not the workspace's node_modules.
-    command(process.execPath, ['--input-type=module', '-e', `import {createRequire} from 'node:module'; const r=createRequire(process.cwd()+'/package.json');const t=createRequire(r.resolve('tsx'));const e=t('esbuild');if(!e.transformSync('const a: number = 1',{loader:'ts'}).code)throw Error('esbuild failed');console.log('Native dependency smoke test passed',process.platform,process.arch)`], { cwd: temp, timeout: 60000 })
+    command(process.execPath, ['--input-type=module', '-e', `import {createRequire} from 'node:module'; const r=createRequire(process.cwd()+'/package.json');const t=createRequire(r.resolve('tsx'));const e=t('esbuild');if(!e.transformSync('const a: number = 1',{loader:'ts'}).code)throw Error('esbuild failed');console.log('Native dependency smoke test passed',process.platform,process.arch)`], { cwd: stage, timeout: 60000 })
     if (kind === 'manager') {
       command(process.execPath, ['--import', 'tsx', entry, '--selftest'], { cwd: temp, timeout: 60000, env: { ...process.env, SATUWORK_MANAGER_HOME: join(temp, '.smoke-state'), SATUWORK_MANAGER_PORT: '0' } })
     }
