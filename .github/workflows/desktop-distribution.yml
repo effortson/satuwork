@@ -1,5 +1,6 @@
 # Separate regional artifacts. Never creates or overwrites an international GitHub Release.
 name: desktop-distribution
+run-name: desktop-cn/${{ inputs.channel }}/${{ inputs.version }} ${{ github.sha }}
 on:
   workflow_dispatch:
     inputs:
@@ -161,8 +162,8 @@ jobs:
 
       - name: 打包
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.channel == 'stable' && secrets.CN_DESKTOP_STABLE_SIGNING_KEY || secrets.CN_DESKTOP_BETA_SIGNING_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.channel == 'stable' && secrets.CN_DESKTOP_STABLE_SIGNING_PASSWORD || secrets.CN_DESKTOP_BETA_SIGNING_PASSWORD }}
           # 只给 macOS 那两档；Windows 那档拿到也用不上。证书已经在「导入签名证书」那步进了
           # 钥匙串，这里**不再给 APPLE_CERTIFICATE**——给了 Tauri 会再建一个钥匙串重导一遍。
           APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos' && secrets.APPLE_SIGNING_IDENTITY || '' }}

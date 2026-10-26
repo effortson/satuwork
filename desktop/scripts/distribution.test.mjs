@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { validateProfile, validateVersion, configure } from './distribution.mjs'
 import { verifyUpdater, assemble, sha256 } from './distribution-artifacts.mjs'
 
-const p = { region: 'cn', channel: 'stable', productName: 'Satuwork-CN', identifier: 'sg.dami.satuwork.cn', gatewayUrl: 'https://gateway.example.cn', updateUrl: 'https://download.example.cn/desktop/latest.json', downloadBase: 'https://download.example.cn/desktop' }
+const p = { region: 'cn', channel: 'stable', productName: 'Satuwork-CN', identifier: 'sg.dami.satuwork.cn', gatewayUrl: 'https://gateway.example.cn', updateUrl: 'https://download.example.cn/desktop/latest.json', downloadBase: 'https://download.example.cn/desktop', updaterPublicKey: Buffer.from('test public key '.repeat(8)).toString('base64') }
 test('regional profiles isolate identity, HTTPS addresses and release channel', () => {
   assert.equal(validateProfile(p), p)
   for (const change of [{ apiKey: 'secret' }, { identifier: 'sg.dami.satuwork' }, { gatewayUrl: 'http://host' }, { gatewayUrl: 'https://user:password@host' }, { updateUrl: 'https://github.com/latest.json' }]) assert.throws(() => validateProfile({ ...p, ...change }))
@@ -23,7 +23,7 @@ test('configuration retains the signing public key and configures unique applica
     configure(p, '0.1.16', file, env)
     const config = JSON.parse(readFileSync(file))
     assert.equal(config.identifier, p.identifier)
-    assert.equal(config.plugins.updater.pubkey, 'unchanged')
+    assert.equal(config.plugins.updater.pubkey, p.updaterPublicKey)
     assert.deepEqual(config.plugins.updater.endpoints, [p.updateUrl])
     assert.match(readFileSync(env, 'utf8'), /SATUWORK_BUNDLE_UI_LIBS=1/)
   } finally { rmSync(temp, { recursive: true, force: true }) }
