@@ -34,7 +34,7 @@ export function configure(profile, version, configPath = resolve(root, 'desktop/
   config.plugins.updater.pubkey = p.updaterPublicKey
   config.bundle.createUpdaterArtifacts = true
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
-  const env = { SATUWORK_BUILD_REGION: p.region, SATUWORK_BUILD_CHANNEL: p.channel, SATUWORK_BUILD_GATEWAY_URL: p.gatewayUrl, SATUWORK_BUILD_UPDATE_URL: p.updateUrl, SATUWORK_BUNDLE_UI_LIBS: '1' }
+  const env = { SATUWORK_BUILD_REGION: p.region, SATUWORK_BUILD_CHANNEL: p.channel, SATUWORK_BUILD_GATEWAY_URL: p.gatewayUrl, SATUWORK_BUILD_UPDATE_URL: p.updateUrl, SATUWORK_BUNDLE_UI_LIBS: '1', SATUWORK_DESKTOP_DOWNLOAD_BASE: p.downloadBase }
   if (envPath) appendFileSync(envPath, Object.entries(env).map(([k, v]) => `${k}=${v}\n`).join(''))
   return env
 }

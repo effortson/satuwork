@@ -670,12 +670,22 @@ function lpSalesModal() {
  *
  * 写成函数而不是模块级常量，和 dlBuilds 一样在渲染时才拼。
  */
+function dlMirror() {
+  const raw = document.querySelector('meta[name="satu-desktop-download"]')?.getAttribute('content')
+  try {
+    const url = new URL(raw)
+    return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash ? url.href.replace(/\/+$/, '') : ''
+  } catch { return '' }
+}
+
 function dlBase() {
+  if (dlMirror()) return dlMirror()
   return `${LP_REPO}/releases/download/desktop-latest`
 }
 
 /** 历次桌面端版本。页面上不印版本号（它读不到 desktop-latest 里现在是哪一版），要旧版的走这条。 */
 function dlHistory() {
+  if (dlMirror()) return dlMirror() + '/'
   return `${LP_REPO}/releases?q=desktop-v&expanded=true`
 }
 
