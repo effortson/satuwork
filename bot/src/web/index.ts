@@ -481,6 +481,8 @@ export function apply(ctx: Context, _config: Config = {}) {
        * 的 applyEdits），这里只负责把原样送到那儿。
        */
       edits?: Record<string, unknown>
+      /** 「退回修改」时的修改意见，只跟着 deny 走（见 policy/approvals.ts 的 decide）。 */
+      feedback?: unknown
     }
     const decision = body.decision === 'approve' ? 'approve' : body.decision === 'deny' ? 'deny' : ''
     if (!decision) {
@@ -492,7 +494,8 @@ export function apply(ctx: Context, _config: Config = {}) {
     // 只是名字起错过一次。
     const scope = body.scope === 'turn' || body.scope === 'session' ? 'turn' : 'once'
     const edits = body.edits && typeof body.edits === 'object' && !Array.isArray(body.edits) ? body.edits : undefined
-    const r = ctx.policy.approvals.decide(req.params.id, req.params.callId, decision, scope, edits)
+    const feedback = typeof body.feedback === 'string' ? body.feedback : undefined
+    const r = ctx.policy.approvals.decide(req.params.id, req.params.callId, decision, scope, edits, feedback)
     if (r === 'ok') {
       res.json({ ok: true, decision, scope })
       return

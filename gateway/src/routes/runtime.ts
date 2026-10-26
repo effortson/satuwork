@@ -2096,6 +2096,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
          * 在这儿再判一次就是同一套规则的第二份，两份迟早会漂。这里只保证形状是个对象。
          */
         ...(body.edits && typeof body.edits === 'object' && !Array.isArray(body.edits) ? { edits: body.edits } : {}),
+        // 「退回修改」的意见，同样原样转发；长度由席位那边截（policy/approvals.ts 的 decide）。
+        ...(typeof body.feedback === 'string' && body.feedback.trim() ? { feedback: body.feedback } : {}),
       },
       await seatBearer(db, account.id),
       target.machineToken,

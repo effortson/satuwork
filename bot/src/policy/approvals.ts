@@ -73,7 +73,12 @@ export interface Decision {
   viaBlock?: boolean
   /** 人在卡片上改过哪几格（标签，给日志和审计看）。没改就没有这一项。 */
   edited?: string[]
+  /** 人没批这一版、写下的修改意见（「退回修改」）。模型照着改完再调一次。 */
+  feedback?: string
 }
+
+/** 修改意见最长收多少字。它原样进模型的上下文，一段话足够，再长就是另一件事了。 */
+const FEEDBACK_MAX = 2000
 
 /**
  * 等多久。到点按**拒绝**处理，不是按批准。
@@ -107,7 +112,7 @@ export class ApprovalGate {
        * 中间那一步迟早会漏，而漏掉的表现是：界面显示改过了，发出去的还是原文。
        */
       call: ToolCall
-      settle: (v: Verdict, scope?: 'once' | 'turn', edited?: string[]) => void
+      settle: (v: Verdict, scope?: 'once' | 'turn', edited?: string[], feedback?: string) => void
     }
   >()
   /**
@@ -222,13 +227,18 @@ export class ApprovalGate {
      */
     const settled = new Promise<Decision>((resolve) => {
       let done = false
-      const finish = (v: Verdict, scope?: 'once' | 'turn', edited?: string[]) => {
+      const finish = (v: Verdict, scope?: 'once' | 'turn', edited?: string[], feedback?: string) => {
         if (done) return
         done = true
         clearTimeout(timer)
         call.signal?.removeEventListener('abort', onAbort)
         this.waiting.delete(key)
-        resolve({ verdict: v, ...(scope ? { scope } : {}), ...(edited?.length ? { edited } : {}) })
+        resolve({
+          verdict: v,
+          ...(scope ? { scope } : {}),
+          ...(edited?.length ? { edited } : {}),
+          ...(feedback ? { feedback } : {}),
+        })
       }
       const onAbort = () => finish('aborted')
       const timer = setTimeout(() => finish('timeout'), TIMEOUT_MS)
@@ -264,6 +274,7 @@ export class ApprovalGate {
       reason,
       form: rec.form,
       ...(decision.edited?.length ? { edited: decision.edited } : {}),
+      ...(decision.feedback ? { feedback: decision.feedback } : {}),
       state: decision.verdict,
       // **范围要落进终态事件。** 少了它，「这次对话都批准」在日志里跟「只批这一次」
       // 长得一模一样，而后面那些不再弹卡片的调用就成了没有出处的放行。
@@ -285,9 +296,16 @@ export class ApprovalGate {
     decision: 'approve' | 'deny',
     scope: 'once' | 'turn' = 'once',
     edits?: Record<string, unknown>,
+    feedback?: string,
   ): 'ok' | 'gone' {
     const hit = this.waiting.get(`${sessionId}:${callId}`)
     if (!hit) return 'gone'
+    /**
+     * 「退回修改」：拒的是**这一版**，不是这件事。带着意见的拒绝只作用于这一次——
+     * 模型照着改完要再调同一把工具，这一轮要是把它挡掉，意见就落空了。
+     */
+    const note = decision === 'deny' ? String(feedback ?? '').trim().slice(0, FEEDBACK_MAX) : ''
+    if (note) scope = 'once'
     let edited: string[] = []
     if (decision === 'approve' && edits && typeof edits === 'object') {
       /**
@@ -326,7 +344,7 @@ export class ApprovalGate {
      * 以前拒绝一律不带 scope（那时它只有一种拒法）。现在「拒绝」和「这一轮别再试了」
      * 是两件事，日志上分不出来的话，事后就答不了「他是拒了这一次，还是把这条路关了」。
      */
-    hit.settle(decision === 'approve' ? 'approved' : 'denied', scope, edited)
+    hit.settle(decision === 'approve' ? 'approved' : 'denied', scope, edited, note || undefined)
     return 'ok'
   }
 
@@ -347,6 +365,7 @@ export class ApprovalGate {
     reason: string
     form?: ApprovalForm
     edited?: string[]
+    feedback?: string
     state: 'pending' | Verdict
     scope?: 'once' | 'turn'
     expiresAt?: number

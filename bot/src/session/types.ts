@@ -386,6 +386,8 @@ export interface SessionEventMap {
     }
     /** 人在卡片上改过哪几格（标签）。终态事件里的 arguments / form 已经是改后的那份。 */
     edited?: string[]
+    /** 「退回修改」时人写下的意见。只出现在 denied 的终态事件上。 */
+    feedback?: string
     /**
      * 批准的范围：只这一次，还是**这一轮里**同一把工具都放行。
      *

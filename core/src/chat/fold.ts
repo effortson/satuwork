@@ -296,6 +296,7 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
         if (typeof data.arguments === 'string') cur.args = data.arguments
         if (data.form && Array.isArray(data.form.fields)) cur.form = data.form
         if (Array.isArray(data.edited)) cur.edited = data.edited
+        if (typeof data.feedback === 'string') cur.feedback = data.feedback
       } else {
         list.push({
           callId: data.callId,
@@ -305,6 +306,8 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
           // 这次用哪张卡、卡上哪几格。**席位算好的**，界面照着画（见 policy/forms.ts）。
           form: data.form && Array.isArray(data.form.fields) ? data.form : null,
           edited: Array.isArray(data.edited) ? data.edited : null,
+          // 「退回修改」时人写的意见（终态事件才有）。药丸和悬浮窗靠它说「退回修改」而不是「已拒绝」。
+          feedback: typeof data.feedback === 'string' ? data.feedback : '',
           state: data.state || 'pending',
           expiresAt: Number(data.expiresAt) || 0,
           // 这条 pending 落在日志的第几行。核对现况时拿它跟快照的水位比——

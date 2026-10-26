@@ -1148,9 +1148,11 @@ function approvalChipHtml(a, i) {
   // 药丸上写**剥壳之后**那把工具的名字：`mcp_github_default_sw_run` 谁也看不出是什么。
   const name = (a.form && a.form.tool) || a.name
   const edited = (a.edited || []).length ? ' · ' + t('已改', 'edited') : ''
+  // 退回修改也是一次 denied，但它的意思是「照这个改了再来」，药丸上要说得出来。
+  const label2 = state === 'denied' && a.feedback ? t('退回修改', 'sent back') : label
   return (
     `<span class="sw-chip sw-toolchip sw-approvalchip" data-state="${tone}" data-i="${i}" tabindex="0">` +
-    `${mail ? ICON_MAIL : ICON_SHIELD}<span>${esc(name)} · ${esc(label)}${esc(edited)}</span></span>`
+    `${mail ? ICON_MAIL : ICON_SHIELD}<span>${esc(name)} · ${esc(label2)}${esc(edited)}</span></span>`
   )
 }
 
@@ -1162,16 +1164,17 @@ function approvalPop(a) {
     args: a.args,
     form: a.form || null,
     edited: a.edited || null,
+    feedback: a.feedback || '',
     reason: a.reason,
     state: approvalState(a),
   }
 }
 
 /**
- * 卡片上改到一半的内容：`callId::key` → 当前值。
+ * 卡片上写到一半的修改意见：`callId::key` → 当前值。
  *
  * **必须存在渲染之外。** 气泡会因为别的事重画（同一轮里又来了一条工具结果、另一条
- * 确认冒出来），而重画是 innerHTML 整体换掉——正在写的那段正文会跟着没。这张表在
+ * 确认冒出来），而重画是 innerHTML 整体换掉——正在写的那段意见会跟着没。这张表在
  * 重画之后把值填回去，人写到哪儿还是哪儿。
  */
 const approvalDrafts = new Map()
@@ -1180,17 +1183,8 @@ function draftKey(callId, key) {
   return callId + '::' + key
 }
 
-/** 这张卡现在这几格的值：人改过就用改过的，没改过就是模型起草的那份。 */
-function approvalValue(a, field) {
-  const draft = approvalDrafts.get(draftKey(a.callId, field.key))
-  return draft === undefined ? field.value || '' : draft
-}
-
-/** 这张卡被人动过没有。动过就不许再点「这次对话都批准」，见下面按钮上的说明。 */
-function approvalTouched(a) {
-  const fields = (a.form && a.form.fields) || []
-  return fields.some((f) => f.editable && approvalValue(a, f) !== (f.value || ''))
-}
+/** 修改意见那一格在草稿表里的 key。 */
+const FEEDBACK_KEY = 'feedback'
 
 /**
  * 这封信的正文是不是 HTML。
@@ -1204,7 +1198,7 @@ function approvalEmailIsHtml(a, fields) {
     const key = String(f.key || '').split('.').pop().toLowerCase()
     return key === 'is_html'
   })
-  if (flag) return /^(true|1|yes)$/i.test(String(approvalValue(a, flag)).trim())
+  if (flag) return /^(true|1|yes)$/i.test(String(flag.value || '').trim())
   return fields.some((f) => String(f.key || '').split('.').pop().toLowerCase() === 'html_body')
 }
 
@@ -1225,19 +1219,12 @@ function emailPreviewDoc(html) {
 }
 
 /**
- * 发信卡上的正文要**整封摊开**，不是一个固定高度的小窗。
+ * 发信卡上的 HTML 正文要**整封摊开**，不是一个固定高度的小窗。
  *
  * 人在这儿批的是「写了什么」——看不完整封就点批准，和没看是一样的。卡片是 innerHTML
- * 换出来的，节点每次重画都是新的，所以挂上去之后要补一遍：纯文本那格按内容把 textarea
- * 撑到刚好装下；HTML 那格等 iframe 载入完再按文档高度撑（load 不冒泡，用捕获期在
- * document 上接）。
+ * 换出来的，节点每次重画都是新的，所以挂上去之后要补一遍：等 iframe 载入完再按文档
+ * 高度撑（load 不冒泡，用捕获期在 document 上接）。纯文本正文是普通的块，自己就会长高。
  */
-function fitMailText(el) {
-  // 还没排到版（面板藏着、宽度为 0）时量出来的是每个字一行的天文数字，等下一帧再量。
-  if (!el.clientWidth) return
-  el.style.height = '0'
-  el.style.height = el.scrollHeight + 2 + 'px'
-}
 function fitMailPreview(frame) {
   try {
     const doc = frame.contentDocument
@@ -1250,7 +1237,6 @@ function fitMailPreview(frame) {
 }
 function fitMailCards(root) {
   const fit = () => {
-    for (const el of root.querySelectorAll('textarea[data-autosize]')) fitMailText(el)
     for (const frame of root.querySelectorAll('iframe[data-mail-preview]')) fitMailPreview(frame)
   }
   fit()
@@ -1270,7 +1256,6 @@ document.addEventListener(
 
 /** 卡片底下那排按钮。发信那张的第一个按钮说「批准并发送」——它就是要干这件事。 */
 function approvalActs(a, okLabel) {
-  const touched = approvalTouched(a)
   /**
    * terminal 的「这一轮都批准」只放行一字不差的同一条命令（席位那边 approvals.ts 的
    * grantKey）：它的风险在命令里，按工具放行等于批了一条删临时文件、放过一整轮的删目录。
@@ -1292,10 +1277,7 @@ function approvalActs(a, okLabel) {
      * 否则这颗按钮就是在替人做一个他没同意的决定。
      */
     `<button type="button" class="btn btn-secondary" data-act="chat-approve" data-call="${esc(a.callId)}" data-scope="turn"` +
-    (touched
-      ? // 改过的这一次不能顺带放行后面几次：后面那些带的是模型自己写的内容，不是人刚改的这份。
-        ` disabled title="${esc(t('这一次改过内容，只能批准这一次', 'You edited this one, so it can only be approved once'))}"`
-      : ` title="${esc(turnTip)}"`) +
+    ` title="${esc(turnTip)}"` +
     `>${esc(byCommand ? t('这一轮这条都批准', 'Approve this command for this turn') : t('这一轮都批准', 'Approve for this turn'))}</button>` +
     `<button type="button" class="btn btn-ghost" data-act="chat-deny" data-call="${esc(a.callId)}" data-scope="once">${esc(t('拒绝', 'Deny'))}</button>` +
     /**
@@ -1316,32 +1298,42 @@ function approvalActs(a, okLabel) {
 }
 
 /**
+ * 发信卡上不摆的那几格：`is_html` 已经体现在正文是按 HTML 预览还是按纯文本排，
+ * `user_id`（几乎总是 `me`）是连接器自己的寻址参数。两格对「发给谁、写了什么」
+ * 没有信息量，摆出来只会让人以为要核对它们。
+ */
+const MAIL_HIDDEN_KEYS = new Set(['is_html', 'user_id'])
+
+function mailFieldHidden(f) {
+  return MAIL_HIDDEN_KEYS.has(String(f.key || '').split('.').pop().toLowerCase())
+}
+
+/**
  * 发信那张卡。
  *
  * **为什么单独做一张**：通用卡把整份 JSON 摊出来，而人在批一封信的时候要看的是
- * 「发给谁、写了什么」，不是一段带转义符的 JSON。更要紧的是**得能改**——模型起草的
- * 正文十有八九要动一两句，只能「批准/拒绝」的话，人就得拒掉、再去跟它解释一遍，
- * 而它下一稿仍然是它写的。
+ * 「发给谁、写了什么」，不是一段带转义符的 JSON。
  *
- * 改动最终落在**真正要执行的那份参数**上（见 policy/approvals.ts 的 decide），
- * 不是这儿改个样子。哪几格能改由席位说了算，这里只负责画和收。
+ * **内容只读，要改就写修改意见退回去。** 人直接改正文，改出来的那一版模型不知道，
+ * 后面几封照旧按它自己的写法来；把意见写下来交回给它（「退回修改」，见 chat-decide.js），
+ * 它照着改完再提交一次，新的那一版重新弹卡——下一封它也就知道该怎么写了。
+ *
+ * 只读的那几格（收件人、抄送、附件…）**照样摆出来**：藏起来的话，人以为自己看到了
+ * 这封信的全部，而实际发出去的可能带着别的东西。藏的只有 MAIL_HIDDEN_KEYS 那两格。
  */
 function approvalEmailHtml(a) {
   const fields = (a.form && a.form.fields) || []
   const isHtml = approvalEmailIsHtml(a, fields)
   const rows = fields
+    .filter((f) => !mailFieldHidden(f))
     .map((f) => {
-      const value = approvalValue(a, f)
-      if (!f.editable) {
-        // 只读的那几格（收件人、抄送、附件…）**照样摆出来**：藏起来的话，人以为自己
-        // 看到了这封信的全部，而实际发出去的可能带着别的东西。
+      const value = f.value || ''
+      if (!f.multiline) {
         return value
           ? `<div class="sw-mail-row"><span class="sw-mail-k">${esc(f.label)}</span><span class="sw-mail-v">${esc(value)}</span></div>`
           : ''
       }
-      const attrs = `data-edit="${esc(f.key)}" data-call="${esc(a.callId)}"`
-      const htmlBody = f.multiline && (isHtml || String(f.key || '').split('.').pop().toLowerCase() === 'html_body')
-      if (htmlBody) {
+      if (isHtml || String(f.key || '').split('.').pop().toLowerCase() === 'html_body') {
         return (
           `<div class="sw-mail-body sw-mail-html"><span class="sw-mail-k">${esc(f.label)}</span>` +
           // sandbox 里只放 allow-same-origin，**不放 allow-scripts**：没有脚本，同源的那头什么也
@@ -1349,29 +1341,30 @@ function approvalEmailHtml(a) {
           // （见 fitMailPreview）——不然就是一个 240px 的小窗，长信得在里面再滚一遍。
           `<iframe class="sw-mail-preview" sandbox="allow-same-origin" referrerpolicy="no-referrer"` +
           ` title="${esc(t('HTML 邮件正文预览', 'HTML email body preview'))}" data-mail-preview` +
-          ` data-call="${esc(a.callId)}" data-preview-for="${esc(f.key)}" srcdoc="${esc(emailPreviewDoc(value))}"></iframe>` +
-          `<details class="sw-mail-source"><summary>${esc(t('查看或编辑 HTML 源码', 'View or edit HTML source'))}</summary>` +
-          `<textarea class="input sw-mail-text" rows="8" aria-label="${esc(t('HTML 邮件源码', 'HTML email source'))}" ${attrs}>${esc(value)}</textarea>` +
-          `</details></div>`
+          ` srcdoc="${esc(emailPreviewDoc(value))}"></iframe></div>`
         )
       }
-      // 纯文本正文：按收件人那边看到的样子排——白底、正文字号、保留换行；而且**整封摊开**，
-      // 高度跟着内容走（rows 先按行数给个近似，挂上去之后 fitMailText 再按真实高度收一遍），
-      // 不做成一个八行的小窗让人在里面滚。改了字它照样长高（input 事件那头）。
-      return f.multiline
-        ? `<div class="sw-mail-body"><span class="sw-mail-k">${esc(f.label)}</span>` +
-            `<textarea class="input sw-mail-text sw-mail-plain" rows="${Math.min(60, String(value).split('\n').length + 1)}" data-autosize ${attrs}>${esc(value)}</textarea></div>`
-        : `<div class="sw-mail-row"><span class="sw-mail-k">${esc(f.label)}</span>` +
-            `<input class="input sw-mail-input" type="text" value="${esc(value)}" ${attrs}></div>`
+      // 纯文本正文：按收件人那边看到的样子排——白底、正文字号、保留换行，整封摊开。
+      return `<div class="sw-mail-body"><span class="sw-mail-k">${esc(f.label)}</span>` +
+        `<div class="sw-mail-plain">${esc(value)}</div></div>`
     })
     .join('')
+  const note = approvalDrafts.get(draftKey(a.callId, FEEDBACK_KEY)) || ''
   return (
     `<div class="sw-approval sw-approval-mail" data-state="pending" data-call="${esc(a.callId)}">` +
     `<div class="sw-approval-head">${ICON_MAIL}<span>${esc(t('这封邮件要发出去了', 'This email is about to be sent'))}</span></div>` +
-    `<div class="sw-approval-why">${esc(isHtml
-      ? t('下面按邮件效果预览正文；需要修改时可以展开 HTML 源码，预览会同步更新。', 'The body is previewed as an email. Expand the HTML source to edit it; the preview updates as you type.')
-      : t('可以直接改主题和正文，改完发出去的就是你现在看到的这一份。', 'Edit the subject or body if you like — what you see is what gets sent.'))}</div>` +
+    `<div class="sw-approval-why">${esc(t(
+      '核对一遍再批准；哪里要改，在下面写修改意见，它会照着重写一版再给你看。',
+      'Check it before approving. If something needs changing, write it below and it will redo the draft for you to review.',
+    ))}</div>` +
     `<div class="sw-mail">${rows}</div>` +
+    `<div class="sw-mail-feedback">` +
+    `<label class="sw-mail-k" for="sw-fb-${esc(a.callId)}">${esc(t('修改意见', 'Changes'))}</label>` +
+    `<textarea class="input sw-mail-note" id="sw-fb-${esc(a.callId)}" rows="2" data-feedback data-call="${esc(a.callId)}"` +
+    ` placeholder="${esc(t('比如：语气正式一点，结尾加上我的签名', 'e.g. make it more formal and add my signature'))}">${esc(note)}</textarea>` +
+    `<div class="sw-mail-feedback-acts">` +
+    `<button type="button" class="btn btn-secondary" data-act="chat-revise" data-call="${esc(a.callId)}">${esc(t('按意见重写', 'Redo with changes'))}</button>` +
+    `</div></div>` +
     `<div class="sw-approval-tool"><code>${esc((a.form && a.form.tool) || a.name)}</code></div>` +
     approvalActs(a, t('批准并发送', 'Approve and send')) +
     `</div>`

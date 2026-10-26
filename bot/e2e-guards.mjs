@@ -619,6 +619,26 @@ out.record = {
     // 卡片上那句话说的是剥壳之后那把工具，不是 sw_run。
     理由说的是真工具: pending.data.reason.includes('GMAIL_SEND_EMAIL'),
   }
+
+  // 退回修改：带着意见拒掉这一版。模型拿到的是「照这个改了再来」，不是「别再试」。
+  const ranBefore = got.mcp_a_sw_run
+  const before2 = pendingOf('s6').length
+  const again = call('s6', 'mcp_a_sw_run', mail)
+  await untilPending('s6', before2 + 1, { until: again })
+  const p2 = pendingOf('s6').at(-1)
+  // 点的是带范围的那颗也一样：意见要它重来，这一轮不能把这把工具挡掉。
+  ctx.policy.approvals.decide('s6', p2.data.callId, 'deny', 'turn', undefined, '  语气正式一点，结尾署名  ')
+  const r2 = await again
+  const t2 = sessions.appended.filter((e) => e.type === 'tool/approval' && e.data.callId === p2.data.callId).at(-1)
+  out.feedback = {
+    这一版没发出去: r2.failed === true && got.mcp_a_sw_run === ranBefore,
+    意见原样交给了模型: r2.text.includes('语气正式一点，结尾署名') && r2.text.includes('再调用同一个工具'),
+    终态事件记了意见: t2?.data.state === 'denied' && t2?.data.feedback === '语气正式一点，结尾署名',
+    带意见的拒绝不挡这一轮: !ctx.policy.approvals.blockedIn('s6').includes('GMAIL_SEND_EMAIL'),
+    留痕的理由写了意见: sessions.appended.some(
+      (e) => e.type === 'tool/policy' && e.data.outcome === 'denied' && e.data.reason.includes('退回修改：语气正式一点'),
+    ),
+  }
 }
 
 // ── 9.5 浏览器：能力开关、硬黑名单、站点白名单、提交才弹卡 ─────────────

@@ -685,11 +685,10 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!ui.handoffDead(card), '没拿到现况就把一件真在等人的事画成了失效')
     })
 
-    await test('发信的确认走定制卡：能读、能改，别的参数也露着', async () => {
+    await test('发信的确认走定制卡：只读，要改就写修改意见退回去', async () => {
       /**
-       * 通用卡把整份 JSON 摊出来，而人在批一封信时要看的是「发给谁、写了什么」。更要紧
-       * 的是**得能改**：模型起草的正文十有八九要动一两句，只能批准/拒绝的话，人就得
-       * 拒掉再去跟它解释，而它下一稿仍然是它写的。
+       * 通用卡把整份 JSON 摊出来，而人在批一封信时要看的是「发给谁、写了什么」。
+       * 要改不在卡上直接改：写下修改意见退回去，模型照着重写一版再来一张卡。
        */
       const ui = await boot()
       const form = {
@@ -699,7 +698,9 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
           { key: 'args.recipient_email', label: '收件人', value: 'a@b.c' },
           { key: 'args.subject', label: '主题', value: '二季度报表', editable: true },
           { key: 'args.body', label: '正文', value: '你好，附件是报表。', editable: true, multiline: true },
+          { key: 'args.cc', label: '抄送', value: 'cc@b.c' },
           { key: 'args.is_html', label: 'is_html', value: 'false' },
+          { key: 'args.user_id', label: 'user_id', value: 'me' },
         ],
       }
       const card = ui.approvalHtml({
@@ -712,13 +713,13 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       })
       assert(card.includes('sw-approval-mail'), '发信没走定制卡')
       assert(card.includes('收件人') && card.includes('a@b.c'), '收件人没摆出来')
-      // 只读的那几格照样露着：藏起来的话，人以为自己看到了这封信的全部。
-      assert(card.includes('is_html'), '别的参数被藏起来了')
-      // 收件人不能改：那是「在这儿写封信」，不是「审一眼要发出去的东西」。
-      assert(!card.includes('data-edit="args.recipient_email"'), '收件人被做成可改的了')
-      assert(card.includes('data-edit="args.subject"'), '主题不让改')
-      assert(card.includes('<textarea') && card.includes('data-edit="args.body"'), '正文没做成可编辑的多行框')
-      assert(card.includes('你好，附件是报表。'), '正文没填进去')
+      // is_html / user_id 对「发给谁、写了什么」没有信息量，不摆；别的只读参数照样露着。
+      assert(!card.includes('is_html') && !card.includes('user_id'), 'is_html / user_id 还摆在卡上')
+      assert(card.includes('cc@b.c'), '别的只读参数被藏起来了')
+      // 内容一格都不能改：要改就写修改意见退回去，让它自己重写。
+      assert(!card.includes('data-edit='), '卡上还有可直接改的格子')
+      assert(card.includes('二季度报表') && card.includes('你好，附件是报表。'), '主题或正文没摆出来')
+      assert(card.includes('data-feedback') && card.includes('data-act="chat-revise" data-call="call_mail"'), '没有修改意见框和「按意见重写」')
       assert(card.includes('批准并发送'), `发信那张卡的按钮该说清楚它要干什么：${card.slice(-400)}`)
       /**
        * 第二颗按钮的范围是**一轮**，不是一条会话。
@@ -748,8 +749,12 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const pop = ui.toolPopBody(ui.approvalPop({ callId: 'call_mail', name: 'x', args: '{}', state: 'approved', form, edited: ['正文'] }))
       assert(pop.includes('批准时改过') && pop.includes('正文'), '悬浮窗没说这次改过哪几格')
       assert(pop.includes('你好，附件是报表。'), '悬浮窗里看不到最终发出去的内容')
+      // 退回修改也是 denied，但药丸和悬浮窗要说得出「退回修改」和那句意见。
+      const back = { callId: 'call_mail', name: 'x', args: '{}', state: 'denied', form, feedback: '语气正式一点' }
+      assert(ui.approvalChipHtml(back, 0).includes('退回修改'), '退回修改的药丸还写着已拒绝')
+      assert(ui.toolPopBody(ui.approvalPop(back)).includes('语气正式一点'), '悬浮窗里看不到修改意见')
 
-      // HTML 邮件默认看渲染后的效果，不把一屏标签原样糊到批准人脸上；源码仍能展开改。
+      // HTML 邮件看渲染后的效果，不把一屏标签原样糊到批准人脸上。
       const htmlForm = {
         ...form,
         fields: form.fields.map((field) => field.key === 'args.body'
@@ -765,11 +770,9 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const sandbox = (htmlCard.match(/sandbox="([^"]*)"/) || [])[1]
       assert(sandbox !== undefined && !/allow-scripts|allow-top-navigation|allow-forms|allow-popups/.test(sandbox) && htmlCard.includes('referrerpolicy="no-referrer"'), 'HTML 预览没有隔离')
       assert(htmlCard.includes('Content-Security-Policy') && htmlCard.includes('default-src'), 'HTML 预览没有阻断远程资源')
-      assert(htmlCard.includes('<details class="sw-mail-source">'), 'HTML 源码没有保留可编辑入口')
-      assert(htmlCard.includes('data-edit="args.body"'), 'HTML 源码编辑框没有沿用批准参数')
       assert(!htmlCard.includes('<script>parent.postMessage'), '邮件 HTML 被直接注入了批准页')
-      assert(htmlCard.includes('&lt;script&gt;parent.postMessage'), '邮件源码转义后丢了')
-      // is_html=false 的普通邮件仍是直接编辑正文，不能也被误画成 iframe。
+      assert(htmlCard.includes('&lt;script&gt;parent.postMessage'), '邮件 HTML 转义后丢了')
+      // is_html=false 的普通邮件按纯文本排，不能也被误画成 iframe。
       assert(!card.includes('sw-mail-preview'), '纯文本邮件被误判成 HTML')
     })
 

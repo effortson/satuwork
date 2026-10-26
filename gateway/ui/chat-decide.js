@@ -7,24 +7,11 @@
  * 409，界面上无端冒出一句「这条确认已经结束了」。
  *
  * 失败了要把它恢复回去：那次真的没送到，卡片得还能点。
- */
-/**
- * 卡片上这几格现在是什么值。
  *
- * **点下去那一刻从 DOM 里现读**，不用上面那张草稿表：草稿表是为了重画之后不丢字，
- * 而「要发出去的是哪一份」只能以人眼前看到的那一份为准。两者不一致时（重画的竞态），
- * 眼前的那份才是他刚才读过的。
+ * `feedback` 只跟着拒绝走：「退回修改」就是一次带意见的拒绝，席位把意见原样交给模型，
+ * 让它照着改完再提交一次（见 bot/src/policy/index.ts 的 blockedByUser）。
  */
-function approvalEdits(callId) {
-  const edits = {}
-  for (const el of document.querySelectorAll('[data-edit]')) {
-    if (el.getAttribute('data-call') !== callId) continue
-    edits[el.getAttribute('data-edit')] = el.value
-  }
-  return edits
-}
-
-async function decideApproval(callId, decision, scope) {
+async function decideApproval(callId, decision, scope, feedback) {
   const sessionId = state.chatSessionId
   if (!sessionId || !callId) return
   const box = [...document.querySelectorAll('.sw-approval')].find((el) => el.getAttribute('data-call') === callId)
@@ -33,11 +20,11 @@ async function decideApproval(callId, decision, scope) {
     box.setAttribute('data-busy', '1')
   }
   try {
-    const edits = decision === 'approve' ? approvalEdits(callId) : null
+    const note = decision === 'deny' ? String(feedback || '').trim() : ''
     await api(
       'POST',
       '/runtime/sessions/' + encodeURIComponent(sessionId) + '/approvals/' + encodeURIComponent(callId),
-      { decision, scope: scope || 'once', ...(edits && Object.keys(edits).length ? { edits } : {}) },
+      { decision, scope: scope || 'once', ...(note ? { feedback: note } : {}) },
     )
     // 这一条已经落定，草稿留着只会在下一次同名 callId 上冒出来（不会发生，但也没用了）。
     for (const key of [...approvalDrafts.keys()]) {

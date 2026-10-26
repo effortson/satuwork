@@ -95,6 +95,10 @@ function approvalPopBody(a) {
       `<div class="sw-toolpop-k">${esc(t('批准时改过', 'Edited before approving'))}</div><div>${esc(a.edited.join('、'))}</div>`,
     )
   }
+  // 退回修改时写的那句：下一版为什么长成那样，答案就在这儿。
+  if (a.feedback) {
+    rows.push(`<div class="sw-toolpop-k">${esc(t('修改意见', 'Changes requested'))}</div><div>${esc(a.feedback)}</div>`)
+  }
   const fields = (a.form && a.form.fields) || []
   if (fields.length) {
     // 有表单就按表单摆（收件人 / 主题 / 正文），比一段带转义符的 JSON 好读得多。
@@ -185,42 +189,15 @@ function refreshToolPop() {
 }
 
 /**
- * 卡片上打的字，随手记进草稿表。
+ * 发信卡上写的修改意见，随手记进草稿表。
  *
  * 挂在 document 上而不是每张卡上：卡片是 innerHTML 换出来的，节点每次重画都是新的，
  * 挂在节点上的监听会跟着没。
  */
 document.addEventListener('input', (e) => {
   const el = e.target instanceof Element ? e.target : null
-  const key = el && el.getAttribute && el.getAttribute('data-edit')
-  if (!key) return
-  const callId = el.getAttribute('data-call') || ''
-  approvalDrafts.set(draftKey(callId, key), el.value)
-  if (el.hasAttribute('data-autosize')) fitMailText(el)
-  // HTML 源码藏在折叠区里；一旦展开修改，预览必须马上跟上，否则人批准的是源码 A，
-  // 眼睛最后检查的却还是旧预览 B。按 callId + 字段 key 精确找到这一格，避免同页几封
-  // 待批邮件互相串内容。
-  const card = el.closest('.sw-approval')
-  const preview = card && [...card.querySelectorAll('[data-mail-preview]')].find((frame) =>
-    frame.getAttribute('data-call') === callId && frame.getAttribute('data-preview-for') === key)
-  if (preview) preview.setAttribute('srcdoc', emailPreviewDoc(el.value))
-  /**
-   * 改过之后「这次对话都批准」就不能点了。**当场变灰**，不等下一次重画——重画是别的
-   * 事件驱动的，可能一直不来；而这颗按钮亮着，人点下去就是「把之后所有没人看过的信
-   * 也一起放行」。席位那边也会把改过的这一次强制成 once（见 approvals.ts），
-   * 这里变灰是让人看得见，不是唯一的一道。
-   */
-  // 选择器要和 approvalActs 里真正渲染出来的那颗对上：那颗是 `data-scope="turn"`
-  // （范围早就从「这次对话」收成「这一轮」了），这里却一直在找 `session`——配不上，
-  // 于是这段 disabled 从来没生效过。而重画那条路也指望不上：updateRow 的比对签名只看
-  // waiting 的 callId 列表，改一个字段它不变，卡片不会重画。两道都空着的话，人改完
-  // 内容还能点「这一轮都批准」，而席位那边会把改过的这次强制成 once——按钮承诺的事
-  // 没发生，下一次同样的工具还会再问。
-  const wide = card && card.querySelector('[data-act="chat-approve"][data-scope="turn"]')
-  if (wide) {
-    wide.disabled = true
-    wide.title = t('这一次改过内容，只能批准这一次', 'You edited this one, so it can only be approved once')
-  }
+  if (!el || !el.hasAttribute('data-feedback')) return
+  approvalDrafts.set(draftKey(el.getAttribute('data-call') || '', FEEDBACK_KEY), el.value)
 })
 
 document.addEventListener('mouseover', (e) => {

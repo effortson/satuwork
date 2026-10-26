@@ -522,6 +522,21 @@ document.getElementById('app').addEventListener('click', async (e) => {
     await decideApproval(btn.getAttribute('data-call'), 'deny', btn.getAttribute('data-scope') || 'once')
     return
   }
+  if (act === 'chat-revise') {
+    // 「按意见重写」：带着修改意见拒掉这一版，模型照着改完会再弹一张卡（chat-bubble.js 的 approvalEmailHtml）。
+    const callId = btn.getAttribute('data-call') || ''
+    const box = btn.closest('.sw-approval')
+    const ta = box && box.querySelector('[data-feedback]')
+    const note = ta ? ta.value.trim() : ''
+    if (!note) {
+      // 空着点下去等于一次没有理由的拒绝——那颗按钮旁边就有。提醒一句，光标送回去。
+      flash('err', t('先写下要怎么改', 'Write what to change first'))
+      if (ta) ta.focus()
+      return
+    }
+    await decideApproval(callId, 'deny', 'once', note)
+    return
+  }
   if (act === 'chat-taskin-toggle') {
     // 目标 Bot 里那件派来的活：摊开 / 折起它那一轮（chat-bubble.js 的 taskInBlock）。
     const seq = btn.getAttribute('data-seq') || ''

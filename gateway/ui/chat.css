@@ -717,42 +717,20 @@
   font-size: 12.5px;
   line-height: 1.5;
 }
-.sw-mail-input, .sw-mail-text { font-size: 12.5px; }
-/* 单行那格保持药丸：`.input` 全站就是这个样子（主题、口令、名字都一样），
-   在这儿单独改成方角反而突兀。 */
-.sw-mail-input { flex: 1; min-width: 0; padding: 5px 12px; }
-/**
- * 正文那格**要把 .input 的药丸圆角换掉**。
- *
- * `.input` 的 `border-radius: 999px` 是给单行控件用的——高度一固定，999px 就是两头
- * 半圆。多行 textarea 高上去之后，同一个值会把边框摊成一个椭圆，正文从弧线里溢出来
- * （截图里就是那样）。textarea 要的是矩形圆角，和 `textarea.satu-code`（soul.md、
- * Skill 编辑器）同一个口径。
- *
- * 字体不跟 `.satu-code` 那条走等宽：那几处编辑的是代码和提示词，而这儿是一封要发出去
- * 的信——读的是话，不是字符对齐。
- */
-.sw-mail-text {
-  width: 100%;
-  border-radius: var(--radius-md);
-  padding: 8px 12px;
-  resize: vertical;
-  line-height: 1.6;
-}
 /* 纯文本正文照着收件人那边的阅读面排：白底、14px 正文字号、系统字体——和下面 HTML 预览
-   （emailPreviewDoc）同一套，深色主题下也不反转，因为对方收到的就是白底的。高度由
-   fitMailText 按内容撑开，所以滚动条和拖拽把手都关掉：它不是一个窗口，就是那封信。 */
+   （emailPreviewDoc）同一套，深色主题下也不反转，因为对方收到的就是白底的。它不是一个
+   输入框，是那封信本身：保留换行、整封摊开，不给滚动条。 */
 .sw-mail-plain {
   box-sizing: border-box;
-  min-height: 120px;
   padding: 14px;
-  overflow: hidden;
-  resize: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   background: #fff;
   color: #171717;
   font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
-.sw-mail-plain:focus { background: #fff; color: #171717; }
 /* HTML 正文默认给人看邮件效果，源码折进下面。预览固定白底，因为绝大多数邮件模板按
    白色阅读面设计；外层即使是深色主题，也不反转邮件自身的颜色。iframe 不接收点击，
    避免批准时误点模板里的链接；真正的隔离与断网约束仍由 sandbox + CSP 承担。 */
@@ -766,15 +744,30 @@
   background: #fff;
   pointer-events: none;
 }
-.sw-mail-source { margin-top: 2px; }
-.sw-mail-source > summary {
-  width: max-content;
-  color: var(--muted-foreground);
-  font-size: 11.5px;
-  cursor: pointer;
-  user-select: none;
+/* 修改意见：信的下面、按钮的上面——读完信、想好要怎么改，写下来交回去。
+   多行框不能用 .input 的药丸圆角（高上去会摊成椭圆），和正文同一个矩形口径。 */
+.sw-mail-feedback {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
-.sw-mail-source[open] > summary { margin-bottom: 5px; }
+/* 这里的标签单独占一行，不跟上面那条 44px 的标签列对齐，四个字放不下会折行。 */
+.sw-mail-feedback > .sw-mail-k { width: auto; }
+.sw-mail-note {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: vertical;
+}
+.sw-mail-feedback-acts { display: flex; justify-content: flex-end; }
+.sw-mail-feedback-acts .btn { padding: 5px 12px; font-size: 12px; }
+.sw-approval[data-busy='1'] .sw-mail-feedback-acts { pointer-events: none; opacity: 0.5; }
 /* 悬浮窗里按表单摆的那几格。 */
 .sw-toolpop-field { margin-top: 4px; }
 .sw-toolpop-field > span { font-size: 11px; color: var(--muted-foreground); }
