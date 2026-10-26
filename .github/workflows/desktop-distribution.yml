@@ -93,7 +93,7 @@ jobs:
       - name: Configure isolated distribution
         run: |
           node desktop/scripts/distribution.mjs
-          node -e 'const fs=require("fs");fs.appendFileSync(process.env.GITHUB_ENV,"PRODUCT_NAME="+require("./desktop/src-tauri/tauri.conf.json").productName+"\n")' 
+          node -e 'const fs=require("fs");fs.appendFileSync(process.env.GITHUB_ENV,"PRODUCT_NAME="+require("./desktop/src-tauri/tauri.conf.json").productName+"\n")'
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 分支，2026-09-03
         with:

@@ -6501,7 +6501,7 @@ function officeViewFallback(path, name) {
 function officeViewCdn() {
   const meta = typeof document !== 'undefined' ? document.querySelector('meta[name="satu-cdn"]') : null
   const base = meta && meta.getAttribute('content')
-  return base && /^https?:\/\//.test(base) ? base.replace(/\/+$/, '') : 'https://cdn.jsdelivr.net/npm'
+  return base === '/vendor/npm' ? base : base && /^https?:\/\//.test(base) ? base.replace(/\/+$/, '') : 'https://cdn.jsdelivr.net/npm'
 }
 
 /**
