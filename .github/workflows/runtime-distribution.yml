@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       component:
-        description: Runtime component
+        description: 'all: manager + both Bots; bots: server Bot + local Bot; or one component'
         type: choice
-        options: [all, manager, bot, local-bot]
+        options: [all, bots, manager, bot, local-bot]
         required: true
         default: all
       version:
