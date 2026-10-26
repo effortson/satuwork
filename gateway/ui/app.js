@@ -1460,14 +1460,16 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-folder-pick') {
-    // Bot 申请的那张卡：选中了才替人提交批准；选择框里点取消就什么都不交，卡片留着。
+    // Bot 申请的那张卡：带 data-path 的是「批准」，直接批卡上那个路径；不带的拉起选择框，
+    // 选中了才替人提交批准，选择框里点取消就什么都不交，卡片留着（chat-bubble.js 的 approvalFolderHtml）。
     const callId = btn.getAttribute('data-call') || ''
+    const path = btn.getAttribute('data-path') || ''
     const id = chatBotIdOf(state.path) || state.chatBotId
     const bridge = window.__SATUWORK_LOCAL_BOT__
     if (!callId || !id || !bridge || typeof bridge.approveDirectory !== 'function') return
     let approved = null
     try {
-      approved = await bridge.approveDirectory(id)
+      approved = await bridge.approveDirectory(id, path || undefined)
     } catch (err) {
       flash('err', err instanceof Error ? err.message : String(err || t('没有批准这个文件夹', 'The folder was not approved')))
       render()

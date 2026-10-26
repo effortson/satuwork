@@ -32,7 +32,7 @@ const LINK_SCRIPT: &str = r#"
     start: function (config) { return window.__TAURI_INTERNALS__.invoke('start_local_bot', { config: config }) },
     stop: function (botId) { return window.__TAURI_INTERNALS__.invoke('stop_local_bot', { botId: botId }) },
     status: function (botId) { return window.__TAURI_INTERNALS__.invoke('local_bot_status', { botId: botId }) },
-    approveDirectory: function (botId) { return window.__TAURI_INTERNALS__.invoke('approve_local_directory', { botId: botId }) },
+    approveDirectory: function (botId, path) { return window.__TAURI_INTERNALS__.invoke('approve_local_directory', { botId: botId, path: path || null }) },
     directories: function (botId) { return window.__TAURI_INTERNALS__.invoke('local_directories', { botId: botId }) },
     revokeDirectory: function (botId, path) { return window.__TAURI_INTERNALS__.invoke('revoke_local_directory', { botId: botId, path: path }) }
   }

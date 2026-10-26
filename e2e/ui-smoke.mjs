@@ -2724,7 +2724,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(/\.sw-toolfold-list \{[^}]*overflow-y: auto/.test(css), '超过 5 行该在框里滚')
     })
 
-    await test('本地 Bot 的文件夹：右栏列出已批准的、能撤销；Bot 申请时卡片拉起选择框，选中才批准', async () => {
+    await test('本地 Bot 的文件夹：右栏列出已批准的、能撤销；Bot 申请时「批准」直批卡上路径，另选才拉选择框', async () => {
       const folderApproval = {
         callId: 'call-folder', name: 'request_folder_access', reason: '整理发票', args: '{}', state: 'pending',
         form: { kind: 'folder', tool: 'request_folder_access', fields: [
@@ -2732,23 +2732,24 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
           { key: 'suggested', label: '建议的文件夹', value: '~/Downloads' },
         ] },
       }
-      // 普通浏览器：拉不起选择框，照实说，只留拒绝
+      // 普通浏览器：建不了入口，照实说，只留拒绝
       const web = loadApp({ appPath, base: gwBase, token: 'jwt' })
       let html = web.approvalHtml(folderApproval)
       assert(html.includes('Bot 想访问一个文件夹') && html.includes('整理下载目录里的发票') && html.includes('~/Downloads'), `文件夹卡没画对：${html}`)
       assert(!html.includes('chat-folder-pick') && html.includes('桌面端'), '浏览器里不该有「选择文件夹」，要说去桌面端')
-      assert(!html.includes('data-scope="turn"'), '文件夹卡不该有「这一轮都批准」——那等于跳过选文件夹')
+      assert(!html.includes('data-scope="turn"'), '文件夹卡不该有「这一轮都批准」——每个文件夹都该是人看过的那一个')
 
-      // 桌面端：选择框 → 选中才替人提交批准；取消什么都不交
+      // 桌面端：「批准」直接批卡上那个路径；「换一个文件夹…」拉选择框，选中才提交，取消什么都不交
       const posted = []
       let pick = { path: '/Users/me/Downloads', mount: 'External/Downloads' }
       let dirs = []
       const revoked = []
+      const asked = []
       const desk = loadApp({
         appPath, base: gwBase, token: 'jwt', desktop: true,
         localBotBridge: {
           status: async () => ({ running: true, port: 41009, workspace: '/w' }),
-          approveDirectory: async () => { if (pick) dirs = [pick]; return pick },
+          approveDirectory: async (_id, path) => { asked.push(path); if (pick) dirs = [pick]; return pick },
           directories: async () => dirs,
           revokeDirectory: async (_id, path) => { revoked.push(path); dirs = dirs.filter((d) => d.path !== path); return true },
         },
@@ -2758,17 +2759,23 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         },
       })
       html = desk.approvalHtml(folderApproval)
-      assert(html.includes('data-act="chat-folder-pick"') && html.includes('选择文件夹'), '桌面端该有「选择文件夹…」')
+      assert(html.includes('data-path="~/Downloads"') && html.includes('>批准<'), `桌面端该有直批卡上路径的「批准」：${html}`)
+      assert(html.includes('换一个文件夹') && !html.includes('以你选的为准'), '桌面端该能换一个文件夹')
+      // 没说要哪个：只有选择框那一条路
+      const blank = desk.approvalHtml({ ...folderApproval, form: { ...folderApproval.form, fields: folderApproval.form.fields.slice(0, 1) } })
+      assert(blank.includes('选择文件夹') && !blank.includes('data-path='), '没给路径时该只有「选择文件夹…」')
       desk.state.path = '/a/l-1'
       desk.state.chatBotId = 'l-1'
       desk.state.chatSessionId = 's-local'
       pick = null
       await desk.fire('click', el('button', { 'data-act': 'chat-folder-pick', 'data-call': 'call-folder' }))
+      assert(asked[0] === undefined, `「换一个文件夹…」不该带路径：${asked[0]}`)
       assert(!posted.some((p) => p.path.includes('/approvals/')), '选择框里点了取消，不该提交任何决定')
       pick = { path: '/Users/me/Downloads', mount: 'External/Downloads' }
-      await desk.fire('click', el('button', { 'data-act': 'chat-folder-pick', 'data-call': 'call-folder' }))
+      await desk.fire('click', el('button', { 'data-act': 'chat-folder-pick', 'data-call': 'call-folder', 'data-path': '~/Downloads' }))
+      assert(asked[1] === '~/Downloads', `「批准」没把卡上的路径交给壳子：${asked[1]}`)
       const decided = posted.find((p) => p.path.includes('/approvals/call-folder'))
-      assert(decided && decided.body.decision === 'approve' && decided.body.scope === 'once', `选中之后该提交一次「批准这一次」：${JSON.stringify(posted)}`)
+      assert(decided && decided.body.decision === 'approve' && decided.body.scope === 'once', `批准之后该提交一次「批准这一次」：${JSON.stringify(posted)}`)
 
       // 右栏列表：默认收起，只露一行「已批准访问的文件夹 · 1」，不挤下面的日常任务；点开才列
       html = desk.localDirsHtml('l-1')

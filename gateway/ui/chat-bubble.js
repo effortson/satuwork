@@ -1383,12 +1383,15 @@ function approvalEmailHtml(a) {
 /**
  * 本地 Bot 申请访问一个文件夹（席位那边的 request_folder_access）。
  *
- * **批准就是「选一个文件夹」**，不是点一下「同意」：按钮拉起 Desktop 的系统选择框
- * （approve_local_directory），人选中之后才替他提交批准；选择框里点取消就什么都不提交，
- * 卡片留着。所以这张卡没有「这一轮都批准」——放行后面几次申请，等于跳过了选文件夹这一步。
- * 卡上 Bot 建议的那个路径只是提示，批准的永远是人选的那个。
+ * **Bot 说了要哪个文件夹，「批准」就直接批那一个**：卡上写得清清楚楚，再让人在选择框里把
+ * 同一个文件夹找一遍是多此一举。路径交给 Desktop（approve_local_directory 带 path），
+ * 那边展开 `~`、核对是真实存在的文件夹，并挡掉整个磁盘和整个用户目录——那两种得人亲手选。
+ * 要的不是这个，点「换一个文件夹…」拉起系统选择框，选什么批什么；没说要哪个时只有这一颗。
+ * 选择框里点取消就什么都不提交，卡片留着。
  *
- * 普通浏览器里拉不起选择框，照实说，只留一颗拒绝。
+ * 这张卡没有「这一轮都批准」：每一个文件夹都该是人看过的那一个。
+ *
+ * 普通浏览器里批不了（入口链接要 Desktop 来建），照实说，只留一颗拒绝。
  */
 function approvalFolderHtml(a) {
   const fields = (a.form && a.form.fields) || []
@@ -1401,13 +1404,15 @@ function approvalFolderHtml(a) {
     `<div class="sw-approval-head">${ICON_SHIELD}<span>${esc(t('Bot 想访问一个文件夹', 'The bot wants to access a folder'))}</span></div>` +
     (reason ? `<div class="sw-approval-why">${esc(reason)}</div>` : '') +
     (suggested
-      ? `<div class="sw-approval-tool">${esc(t('它想要的是', 'It asked for'))} <code>${esc(suggested)}</code>` +
-        `<span style="color: var(--muted-foreground);"> · ${esc(t('以你选的为准', 'you decide which one'))}</span></div>`
+      ? `<div class="sw-approval-tool">${esc(t('它想要的是', 'It asked for'))} <code>${esc(suggested)}</code></div>`
       : '') +
     `<div class="sw-approval-acts">` +
-    (canPick
+    (canPick && suggested
+      ? `<button type="button" class="btn btn-primary" data-act="chat-folder-pick" data-call="${esc(a.callId)}" data-path="${esc(suggested)}">${esc(t('批准', 'Approve'))}</button>` +
+        `<button type="button" class="btn btn-ghost" data-act="chat-folder-pick" data-call="${esc(a.callId)}">${esc(t('换一个文件夹…', 'Choose another…'))}</button>`
+      : canPick
       ? `<button type="button" class="btn btn-primary" data-act="chat-folder-pick" data-call="${esc(a.callId)}">${esc(t('选择文件夹…', 'Choose a folder…'))}</button>`
-      : `<span style="font-size: 12.5px; color: var(--muted-foreground);">${esc(t('要在 Satuwork 桌面端里批准：那里才打得开系统的文件夹选择框。', 'Approve this in the Satuwork desktop app — only it can open the folder picker.'))}</span>`) +
+      : `<span style="font-size: 12.5px; color: var(--muted-foreground);">${esc(t('要在 Satuwork 桌面端里批准：文件夹的访问入口只有它建得了。', 'Approve this in the Satuwork desktop app — only it can grant folder access.'))}</span>`) +
     `<button type="button" class="btn btn-ghost" data-act="chat-deny" data-call="${esc(a.callId)}" data-scope="once">${esc(t('拒绝', 'Deny'))}</button>` +
     `</div></div>`
   )
