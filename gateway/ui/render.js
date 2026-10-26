@@ -220,7 +220,6 @@ function appView() {
   const account = state.me?.account || {}
   const email = account.email || ''
   const displayName = account.name || email || '…'
-  const initial = initialOf(account)
   const roster = chatRosterNav()
   // 侧栏按组画。组标题原来只有一条（「平台」/「公司」），说的是「你在哪一侧」——可
   // 平台管理员只有平台这一侧，那句话每次都在重复一件不会变的事。现在它换成了组名，
@@ -336,7 +335,7 @@ function appView() {
       ${/* box-sizing 必须写死：侧栏是 border-box，这一行不写就按 content-box 算，
             宽度比容器多出左右内边距，齿轮会顶出侧栏外沿。 */ ''}
       <div class="satu-userrow" style="display: flex; align-items: center; gap: var(--space-2); box-sizing: border-box; width: 100%; padding: var(--space-3); margin-top: var(--space-2); border-top: 1px solid var(--color-divider);">
-        <div style="width: 30px; height: 30px; flex: none; border-radius: 999px; background: var(--color-accent-200); display: flex; align-items: center; justify-content: center; font-family: var(--font-heading); font-size: 13px; color: var(--color-accent-800);">${esc(initial)}</div>
+        ${accountAvatar(account, 30)}
         <div class="satu-userinfo" style="line-height: 1.25; min-width: 0; flex: 1;">
           <div style="font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(displayName)}</div>
           <div style="font-size: 11px; color: color-mix(in srgb, var(--color-text) 50%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(email)}</div>
@@ -360,7 +359,7 @@ function appView() {
         ${handoffBell()}
         ${asideToggle()}
       </div>
-      <div class="gw-body">${pageView()}</div>
+      <div class="gw-body${state.path === '/profile' || (!isOwner() && /^\/(company|accounts|audit|billing|costs|usage|bots|skills|connectors)(\/|$)/.test(state.path)) ? ' gw-company' : ''}">${pageView()}</div>
       ${aside}
     </main>
     ${confirmModal()}

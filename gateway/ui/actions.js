@@ -3,13 +3,13 @@
  * 的后半截，拆出来只是搬家——加载顺序紧跟 render.js，拼起来和原来一样。
  */
 async function saveProfile() {
-  if (!profileDirty()) return
+  if (state.busy || state.profileAvatarBusy || !profileDirty()) return
   const form = profileForm()
   state.busy = true
   state.profileError = ''
   render()
   try {
-    await api('PATCH', '/me', { name: form.name, title: form.title, phone: form.phone })
+    await api('PATCH', '/me', { name: form.name, title: form.title, phone: form.phone, avatar: form.avatar })
     state.profileDraft = null
     state.profileSaved = true
     await loadMe()

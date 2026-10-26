@@ -72,6 +72,7 @@ export function accountOf(r: Row): Account {
     name: str(r.name || email.split('@')[0] || email),
     title: str(r.title || ''),
     phone: str(r.phone || ''),
+    avatar: str(r.avatar || ''),
     theme: themeOf(r.theme),
     locale: localeOf(r.locale),
     passwordHash: str(r.passwordHash),

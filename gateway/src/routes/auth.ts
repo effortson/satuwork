@@ -11,6 +11,7 @@ import { type Account } from '../db.ts'
 import { enterThrottle, throttleKeys } from '../lib/auth-throttle.ts'
 import { PUSH_ENVIRONMENTS, PUSH_PLATFORMS, normalizePushToken, validPushToken } from '../lib/push.ts'
 import { SETUP_LOCK } from '../db/locks.ts'
+import { accountAvatarOf } from '../lib/account-avatar.ts'
 
 export function attachAuth(router: Router, ctx: RouteCtx) {
   const { db, keys } = ctx
@@ -247,6 +248,7 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
       name?: string
       title?: string
       phone?: string
+      avatar?: string
       theme?: Account['theme']
       locale?: Account['locale']
     } = {}
@@ -256,6 +258,7 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
     }
     if (typeof body.title === 'string') patch.title = body.title.trim()
     if (typeof body.phone === 'string') patch.phone = body.phone.trim()
+    if (Object.hasOwn(body, 'avatar')) patch.avatar = accountAvatarOf(body.avatar)
     if (body.theme != null && body.theme !== '') {
       const theme = strField(body, 'theme')
       if (theme !== 'light' && theme !== 'dark' && theme !== 'system') {

@@ -169,6 +169,7 @@ const PATHS = {
   '/profile': { title: '个人设置' },
   '/bots': { title: 'Bot 模版', ownerTitle: '全局 Bot' },
   '/skills': { title: 'Skill 与 MCP', ownerTitle: '全局 Skill 与 MCP' },
+  '/connectors': { title: '连接器' },
   '/chat': { title: '对话' },
   '/handoffs': { title: '转人工待办' },
   '/channels': { title: '渠道' },

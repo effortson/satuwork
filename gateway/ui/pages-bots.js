@@ -259,22 +259,14 @@ function botTemplatePage() {
   const others = (state.bots || []).filter((b) => b.scope !== 'user')
   return `
     <div class="gw-page">
-      <div class="gw-page-inner" style="max-width: 820px; gap: var(--space-4);">
-        <div>
-          <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
-            <h1 style="font-size: 24px; margin: 0;">${t('Bot 模版')}</h1>
-            <span class="tag tag-accent-2">v${esc(String(tpl.version))}</span>
-          </div>
-          <p style="margin: 4px 0 0; font-size: 14px; color: var(--muted-foreground);">
-            ${t('公司里每个人自己建的 Bot 都长在这份底座上：人设、行为边界、记忆策略、能用哪些 Skill 和 MCP。保存即生效——版本号加一，各人的 Bot 一分钟内自己跟上，不用挨个改。', 'Every bot your members create sits on this base: persona, guardrails, memory policy, and which skills and MCP servers it may use. Saving takes effect immediately — the version bumps and each seat picks it up within a minute.')}
-          </p>
-        </div>
+      <div class="gw-page-inner mg-template">
+        ${pageHead(`${t('Bot 模版')} <span class="tag tag-neutral">v${esc(String(tpl.version))}</span>`, t('设置全公司 Bot 共用的身份、行为边界与能力。保存后，各席位会自动同步最新版本。', 'Set the identity, guardrails and capabilities shared by your company’s bots. Seats automatically sync after you save.'))}
         ${flashes()}
         ${templateSyncPanel()}
 
         <div class="satu-panel">
           <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);">
-            <span class="satu-panel-title" style="text-transform: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; letter-spacing: 0;">soul.md</span>
+            <span class="satu-panel-title">${t('身份与工作原则', 'Identity & working principles')}</span>
             <span style="font-size: 12px; color: var(--muted-foreground);" data-bot-prompt-len>${t(`${esc(String(a.prompt.length))} 字 · 每轮随上下文注入`, `${esc(String(a.prompt.length))} chars · injected each turn`)}</span>
           </div>
           <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('这份文件定义全公司 Bot 的身份、语气与工作原则。员工可以在自己的 Bot 上追加一段补充说明，接在这段后面，不会替掉它。', 'This defines the identity, tone and working principles shared by every bot in the company. Members can append their own note on their bot; it goes after this text and never replaces it.')}</p>
@@ -285,13 +277,14 @@ function botTemplatePage() {
         ${capabilityPanel(a, opts, false)}
         ${memoryPanel(a, false)}
 
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
-          <button type="button" class="satu-linkbtn" style="text-align: left;" data-act="template-redeploy" ${state.busy ? 'disabled' : ''}>${t('立即下发到全部席位')}</button>
-          <button type="button" class="btn btn-primary" data-act="template-save" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存模版')}</button>
-        </div>
-        <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">
-          ${t('「立即下发」会把公司已部署的席位挨个重铺一遍，正在进行的对话会断。平时不用按它：席位自己在盯着版本号。', 'Force-push reinstalls every deployed seat and drops ongoing conversations. You normally do not need it — seats watch the version themselves.')}
-        </p>
+        <details class="mg-disclosure">
+          <summary>${t('高级操作', 'Advanced actions')}</summary>
+          <div class="mg-disclosure-body">
+            <p class="mg-help">${t('强制下发会重新部署全部已部署席位，并中断进行中的对话。正常保存会自动同步，无需强制下发。', 'Force-push redeploys every deployed seat and interrupts active conversations. Normal saves sync automatically.')}</p>
+            <button type="button" class="btn btn-secondary" data-act="template-redeploy" ${state.busy ? 'disabled' : ''}>${t('立即下发到全部席位')}</button>
+          </div>
+        </details>
+        <div class="mg-savebar"><span class="mg-help">${t('更改会应用于全公司的 Bot。', 'Changes apply to bots across your company.')}</span><button type="button" class="btn btn-primary" data-act="template-save" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存模版')}</button></div>
 
         ${others.length ? `<div style="margin-top: var(--space-4);">
           <h2 style="font-size: 16px; margin: 0 0 4px;">${t('其它 Bot')}</h2>
@@ -1151,7 +1144,7 @@ function skillCard(skill) {
     </div>
     <div style="display: flex; gap: var(--space-2); margin-top: auto;">
       <button type="button" class="btn btn-secondary" style="flex: 1; justify-content: center;" data-act="skill-edit" data-id="${esc(skill.id)}" ${ro ? 'disabled title="' + esc(t('全局 Skill 由系统管理员维护')) + '"' : ''}>${ro ? t('查看') : t('编辑')}</button>
-      <button type="button" class="btn btn-secondary" style="flex: none;" disabled title="${esc(t('试运行要等 Skill 接进 Agent 循环'))}">${t('试运行')}</button>
+
     </div>
   </div>`
 }
@@ -1427,19 +1420,18 @@ function skillsPage() {
     const owned = skills.filter((x) => x.origin !== 'seat')
     const seat = skills.filter((x) => x.origin === 'seat')
     const grid = owned.length
-      ? `<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--space-4);">${owned.map(skillCard).join('')}</div>`
+      ? `<div class="mg-skill-grid">${owned.map(skillCard).join('')}</div>`
       : skillEmpty(t('还没有 Skill'), t('点右上角新建一个：手动写，或导入一份 SKILL.md。'))
     body = `<div style="display: flex; flex-direction: column; gap: var(--space-6);">${grid}${seatSkillsBlock(seat, state.bots)}</div>`
   } else {
     const rows = servers
       .map(
-        (s) => `<div class="satu-toolrow">
+        (s) => `<div class="satu-toolrow mg-mcp-row">
           <div style="min-width: 0; display: flex; flex-direction: column; gap: 2px;">
             <span style="font-weight: 600; font-size: 14px;">${esc(s.name)}${readOnlyItem(s) ? ` <span class="tag tag-accent-2" style="font-size: 11px;">${t('全局')}</span>` : ''}</span>
             <span style="font-size: 12px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(s.endpoint)}</span>
           </div>
           <span style="font-size: 13px;">${esc(s.kind)}</span>
-          <span style="font-size: 13px; color: var(--muted-foreground);" title="${esc(t('接上之后才知道'))}">—</span>
           <span class="tag ${permTag(s.perm)}">${esc(s.perm)}</span>
           <span style="font-size: 13px; color: var(--muted-foreground);">${esc(dayISO(s.updatedAt))}</span>
           <div class="satu-rowactions" style="display: flex; align-items: center; gap: var(--space-1); justify-content: flex-end;">
@@ -1450,27 +1442,22 @@ function skillsPage() {
       )
       .join('')
     const table = servers.length
-      ? `<div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
-          <div class="satu-toolhead">
-            <span>${t('MCP 服务器')}</span><span>${t('传输')}</span><span>${t('工具数')}</span><span>${t('权限')}</span><span>${t('更新时间')}</span><span></span>
+      ? `<div class="mg-table">
+          <div class="satu-toolhead mg-mcp-row">
+            <span>${t('MCP 服务器')}</span><span>${t('传输')}</span><span>${t('权限')}</span><span>${t('更新时间')}</span><span></span>
           </div>
           ${rows}
         </div>`
       : skillEmpty(t('还没接入 MCP 服务器'), t('点右上角接入一台：填地址与权限，先把配置登记下来。'))
     body = `<div style="display: flex; flex-direction: column; gap: var(--space-6);">
-      <div style="display: flex; flex-direction: column; gap: var(--space-3);">
-        <div style="display: flex; align-items: baseline; justify-content: space-between;">
-          <h2 style="font-size: 18px; margin: 0;">${t('内置工具')}</h2>
-        </div>
-        <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover); padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('内置工具在 Bot 运行时上，Gateway 这一屏不列。')}</div>
-      </div>
+      <p class="mg-notice">${t('内置工具由 Bot 运行环境提供，此处管理外部 MCP 服务器的连接配置。', 'Built-in tools are provided by the bot runtime. Manage external MCP server connections here.')}</p>
       <div style="display: flex; flex-direction: column; gap: var(--space-3);">
         <div style="display: flex; align-items: baseline; justify-content: space-between;">
           <h2 style="font-size: 18px; margin: 0;">${t('已接入 MCP 服务器')}</h2>
           <span style="font-size: 12px; color: var(--muted-foreground);">${t(`共 ${servers.length} 个`, `${servers.length} total`)}</span>
         </div>
         ${table}
-        <span style="font-size: 12px; color: var(--muted-foreground);">${t('这里存的是连接配置。MCP 客户端还没接上，所以「工具数」要等真握上手才知道，先空着。')}</span>
+        <span style="font-size: 12px; color: var(--muted-foreground);">${t('接入后，在 Bot 模版中选择允许使用的 MCP 服务器。', 'After adding a server, select it in the Bot template to make it available.')}</span>
       </div>
     </div>`
   }
@@ -1481,10 +1468,7 @@ function skillsPage() {
             ${svg(PLUS_ICON, 15)} ${isSkill ? t('新建 Skill') : t('接入 MCP')}
           </button>`)}
         ${flashes()}
-        <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
-          <span style="font-size: 12px; color: var(--muted-foreground);">${t('分类')}</span>
-          ${tabs}
-        </div>
+        <div class="mg-tabs">${tabs}</div>
         ${failure}
         ${body}
       </div>
@@ -1529,7 +1513,6 @@ function billingPage() {
   }
   const plan = data.plan || {}
   const tab = ['topup', 'usage'].includes(state.billingTab) ? state.billingTab : 'sub'
-  const renewing = state.billingAutoRenew ?? !!plan.autoRenew
   const invoices = Array.isArray(data.invoices) ? data.invoices : []
   const topups = Array.isArray(data.topups) ? data.topups : []
   const balance = data.balance || { amount: '—', spentThisPeriod: '—', alertAt: '—' }
@@ -1542,9 +1525,7 @@ function billingPage() {
     tab,
     'billing-tab',
   )
-  const invoiceTail = `<div style="display: flex; align-items: center; gap: var(--space-3); justify-content: flex-end;">
-      <button type="button" class="satu-linkbtn" disabled title="${esc(t('发票开具还没做'))}">${t('发票')}</button>
-    </div>`
+  const invoiceTail = `<span class="mg-help">${t('暂不支持开票', 'Invoices unavailable')}</span>`
   const invoiceRows = invoices.map((b) => invoiceRow(b, invoiceTail)).join('')
   const topupRows = topups
     .map(
@@ -1569,49 +1550,31 @@ function billingPage() {
                 </div>
                 <p style="margin: 6px 0 0; font-size: 13px; color: var(--muted-foreground);">${esc(plan.cycle || '—')} · ${esc(plan.seats || '—')}</p>
               </div>
-              <button type="button" class="btn btn-secondary" style="flex: none;" disabled title="${esc(t('订阅体系还没做'))}">${t('管理订阅')}</button>
+              <span class="mg-help">${t('续订请联系平台管理员', 'Contact your platform administrator to renew')}</span>
             </div>
             <div class="satu-kv"><span>${t('当前周期')}</span><span>${esc(plan.period || '—')}</span></div>
             <div class="satu-kv"><span>${t('下次续订')}</span><span>${esc(plan.renew || '—')}</span></div>
             <div class="satu-kv"><span>${t('周期费用')}</span><span>${esc(plan.amount || '—')}</span></div>
-            <div class="satu-toggleRow">
-              <div>
-                <div style="font-size: 13.5px; font-weight: 600;">${t('自动续订')}</div>
-                <div style="font-size: 12px; color: var(--muted-foreground);">${t('续订还没接，这个开关现在只是界面。')}</div>
-              </div>
-              <button type="button" class="satu-switch" aria-pressed="${String(renewing)}" aria-label="${esc(t('自动续订'))}" data-act="billing-autorenew"><span></span></button>
-            </div>
+            <p class="mg-notice">${t('自动续订暂未开放，续订与套餐变更请联系平台管理员。', 'Automatic renewal is not available. Contact your platform administrator to renew or change your plan.')}</p>
           </div>
           ${billTable(t('订阅账单'), [t('账期'), t('金额'), t('状态'), t('付款时间'), ''], invoiceRows, t('还没有订阅账单。支付接上之后，账期会列在这里。'))}
         </div>`
   // 余额跟两个 tab 都有关（订阅送的 + 自己充的），所以提到 tab 上面，切 tab 也不换走。
   //
-  // 两张卡并排：左边是会过期的那一笔，右边是账户合计。分开摆是因为这两笔的规矩不一样
+  // 两张卡并排：先看账户合计，再看会过期的套餐赠送余额。分开摆是因为这两笔的规矩不一样
   // ——赠送的跟着套餐到期清零，充的不过期。混在一张卡里只剩一个合计数，看不出该先花哪笔。
   const bonusExpiry = balance.planBonusExpires && balance.planBonusExpires !== '—'
     ? t(`${esc(balance.planBonusExpires)} 到期，没用完清零`, `expires ${esc(balance.planBonusExpires)}, unused amount is cleared`)
     : t('没有生效中的套餐')
   const balanceCard = `
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-4);">
-          <div class="satu-panel">
-            <span class="satu-panel-title">${t('套餐赠送余额')}</span>
-            <div style="display: flex; align-items: baseline; gap: var(--space-3); margin-top: 6px;">
-              <span style="font-family: var(--font-heading); font-size: 26px; line-height: 1;">${esc(balance.planBonusLeft || balance.planBonus || '—')}</span>
-              <span style="font-size: 13px; color: var(--muted-foreground);">${bonusExpiry}</span>
-            </div>
-            ${/* 发的和剩的是两个数。只报「发了多少」等于让人盯着一个永远不动的数猜自己还能用多久。 */ ''}
-            <div class="satu-kv"><span>${t('本期发放')}</span><span>${esc(balance.planBonus || '—')}</span></div>
-            <div class="satu-kv"><span>${t('来源')}</span><span>${esc(plan.name || t('席位套餐'))}</span></div>
-            <div class="satu-kv"><span>${t('当前周期')}</span><span>${esc(plan.period || '—')}</span></div>
-            <p style="margin: auto 0 0; font-size: 12px; color: var(--muted-foreground);">${t('跟着套餐走：续订会重新发一笔，到期不结转。')}</p>
-          </div>
-          <div class="satu-panel">
+        <div class="mg-balance-grid">
+          <div class="satu-panel mg-account-balance">
             <span class="satu-panel-title">${t('账户余额')}</span>
             <div style="display: flex; align-items: baseline; gap: var(--space-3); margin-top: 6px;">
               <span style="font-family: var(--font-heading); font-size: 26px; line-height: 1;">${esc(balance.left || balance.amount || '—')}</span>
               <span style="font-size: 13px; color: var(--muted-foreground);">${t(`本期已扣 ${esc(balance.spentThisPeriod || '—')}`, `${esc(balance.spentThisPeriod || '—')} charged this period`)}</span>
             </div>
-            ${/* 合计里含左边那一笔，所以这儿把两笔各自摊开，省得看着像两个不相干的数。 */ ''}
+            ${/* 合计里含旁边那一笔，所以这儿把两笔各自摊开，省得看着像两个不相干的数。 */ ''}
             <div class="satu-kv">
               <span>${t('充值余额')}<span style="color: var(--muted-foreground); font-weight: 400;"> · ${t('不过期')}</span></span>
               <span>${esc(balance.topupLeft || balance.topup || '—')}</span>
@@ -1623,6 +1586,18 @@ function billingPage() {
             <div class="satu-kv"><span>${t('扣费顺序')}</span><span>${t('先赠送，再充值', 'bonus first, then top-up')}</span></div>
             <p style="margin: auto 0 0; font-size: 12px; color: var(--muted-foreground);">${t('充值由平台代充：需要加额度请联系平台管理员。')}</p>
           </div>
+          <div class="satu-panel mg-bonus-balance">
+            <span class="satu-panel-title">${t('套餐赠送余额')}</span>
+            <div style="display: flex; align-items: baseline; gap: var(--space-3); margin-top: 6px;">
+              <span style="font-family: var(--font-heading); font-size: 26px; line-height: 1;">${esc(balance.planBonusLeft || balance.planBonus || '—')}</span>
+              <span style="font-size: 13px; color: var(--muted-foreground);">${bonusExpiry}</span>
+            </div>
+            ${/* 发的和剩的是两个数。只报「发了多少」等于让人盯着一个永远不动的数猜自己还能用多久。 */ ''}
+            <div class="satu-kv"><span>${t('本期发放')}</span><span>${esc(balance.planBonus || '—')}</span></div>
+            <div class="satu-kv"><span>${t('来源')}</span><span>${esc(plan.name || t('席位套餐'))}</span></div>
+            <div class="satu-kv"><span>${t('当前周期')}</span><span>${esc(plan.period || '—')}</span></div>
+            <p style="margin: auto 0 0; font-size: 12px; color: var(--muted-foreground);">${t('跟着套餐走：续订会重新发一笔，到期不结转。')}</p>
+          </div>
         </div>
         ${creditWarning(balance)}`
   const topupBody = `
@@ -1633,11 +1608,11 @@ function billingPage() {
     <div class="gw-page">
       <div class="gw-page-inner">
         ${pageHead(t('账单'), t('查看订阅状态、充值余额与历史账单。'))}
-        ${balanceCard}
-        <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         ${flashes()}
+        ${balanceCard}
+        <div class="mg-tabs">${tabs}</div>
         ${tab === 'sub' ? subBody : tab === 'topup' ? topupBody : chargeTable('org')}
-        <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('账单是公司产品层的事，不走 Bot 运行时。发票和在线支付还没接，那两处的数字空着，不编；余额和扣费是真的。')}</p>
+        <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('充值由平台管理员处理。余额与用量明细会随实际扣费更新。', 'Top-ups are handled by your platform administrator. Balance and usage details update as charges are recorded.')}</p>
       </div>
     </div>`
 }
@@ -1770,7 +1745,11 @@ function usagePage() {
     )
     .join('')
   // 「今日」一档服务端按小时切柱子（loadUsage 传 step=hour），标题跟着换；画法还是同一张图。
-  const dailyBody = dailyBarChart(daily, t(range === '今日' ? '今日任务执行量' : '每日任务执行量'), t('这个时间段里还没有调用。'))
+  const moneyTrend = daily.some((day) => day.amount != null)
+  const dailyTitle = moneyTrend
+    ? t(range === '今日' ? '今日费用趋势' : '每日费用趋势', range === '今日' ? 'Cost today' : 'Daily cost')
+    : t(range === '今日' ? '今日任务执行量' : '每日任务执行量')
+  const dailyBody = dailyBarChart(daily, dailyTitle, t('这个时间段里还没有调用。'))
   // 今日用量：服务端按看的人所在时区的零点算，不跟着上面选的范围走。老 Gateway 不带
   // `today`，这一块就不画，而不是画一排 0——0 会被读成「今天没用」。
   const today = data.today && typeof data.today === 'object' ? data.today : null
@@ -1794,7 +1773,7 @@ function usagePage() {
     ? byAgent.map((a) => usageMeter(a.name, a.value, a.pct, false, false)).join('')
     // 「没有数」和「这一维盖不全」是两件事。模型调用还带不上 Bot 标识（Gateway 收到的
     // 是一个 OpenAI 兼容请求，里面没有会话这个概念），所以这一块空着多半不是没用过。
-    : emptyBox(t('模型调用还没带上 Bot 标识，这里只数带得上的那些（连接器）。'))
+    : emptyBox(t('仅统计已关联 Bot 的调用。完整模型用量请查看「按模型」。', 'Only calls linked to a bot are included. See By model for complete model usage.'))
   const modelBody = byModel.length
     ? byModel.map((m) => usageMeter(m.name, m.value, m.pct, true, true)).join('')
     : emptyBox(t('这个时间段里还没有模型调用。'))
@@ -1823,21 +1802,9 @@ function usagePage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
-          <div>
-            <h1 style="font-size: 24px; margin: 0 0 4px;">${t('用量统计')}</h1>
-            ${/* label 是服务端原样发过来的中文（见 lib/guards.ts 那份 usagePayload），
-                 拿 t() 翻过再比就永远配不上——英文界面下这句会一直说「还没有调用」，
-                 而下面明明列着几千次。翻译只用在给人看的那半句上。 */ ''}
-            <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${esc(rangeLabel)} · ${esc((Number((stats.find((x) => x.label === '任务执行') || {}).value) || 0) > 0 ? t('已记录调用') : t('还没有调用'))}</p>
-          </div>
-          <div style="display: flex; align-items: center; gap: var(--space-2); flex: none;">
-            ${pills}
-            <button type="button" class="btn btn-secondary" disabled title="${esc(t('导出需要统计投影'))}">${t('导出 CSV')}</button>
-          </div>
-        </div>
+        ${pageHead(t('用量统计'), `${esc(rangeLabel)} · ${esc((Number((stats.find((x) => x.label === '任务执行') || {}).value) || 0) > 0 ? t('已记录调用') : t('还没有调用'))}`, `<div class="mg-range">${pills}</div>`)}
         ${flashes()}
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--space-3);">
+        <div class="mg-stats">
           ${statCards}
         </div>
         <div class="satu-dailyrow">
@@ -1862,15 +1829,10 @@ function usagePage() {
             ${agentBody}
           </div>
         </div>
-        <div class="satu-panel">
-          <div>
-            <span class="satu-panel-title">${t('套餐额度')}</span>
-            <p style="margin: 6px 0 0; font-size: 13px; color: var(--muted-foreground);">${t(`当前套餐只约束席位（${seats} 个），还没有任务次数和 token 额度。`, `The current plan only caps seats (${seats}); there is no task or token quota yet.`)}</p>
-          </div>
-        </div>
+        <p class="mg-notice">${t(`当前套餐包含 ${seats} 个席位，未设置任务次数或 Token 额度。`, `Your plan includes ${seats} seats. No task-count or token quota is configured.`)}</p>
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">
           <h2 style="font-size: 18px; margin: 0;">${t('成员用量')}</h2>
-          <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
+          <div class="mg-table">
             <div class="satu-usagehead">
               ${/* 「失败率」那一列永远是 —（从来没接过），换成真的能填上的东西。 */ ''}
               <span>${t('成员')}</span><span>${t('任务')}</span><span>Tokens</span><span>${t('金额')}</span><span>${t('最近使用')}</span>

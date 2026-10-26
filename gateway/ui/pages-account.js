@@ -509,14 +509,74 @@ function initialOf(user) {
 
 function profileForm() {
   const u = state.me?.account || {}
-  return state.profileDraft ?? { name: u.name || '', title: u.title || '', phone: u.phone || '' }
+  return { name: u.name || '', title: u.title || '', phone: u.phone || '', avatar: u.avatar || '', ...state.profileDraft }
 }
 
 function profileDirty() {
   const u = state.me?.account || {}
   const d = state.profileDraft
   if (!d) return false
-  return d.name !== (u.name || '') || d.title !== (u.title ?? '') || d.phone !== (u.phone ?? '')
+  return d.name !== (u.name || '') || d.title !== (u.title ?? '') || d.phone !== (u.phone ?? '') || (d.avatar ?? u.avatar ?? '') !== (u.avatar || '')
+}
+
+let profileAvatarReadId = 0
+function cancelProfileAvatarRead() {
+  profileAvatarReadId++
+  state.profileAvatarBusy = false
+}
+
+async function takeProfileAvatar(file) {
+  if (state.busy) return
+  const readId = ++profileAvatarReadId
+  const accountId = state.me?.account?.id
+  state.profileError = ''
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || !file.size || file.size > 5 * 1024 * 1024) {
+    state.profileError = t('请选择不超过 5 MB 的 JPG、PNG 或 WebP 图片。', 'Choose a JPG, PNG or WebP image up to 5 MB.')
+    state.profileAvatarBusy = false
+    render()
+    return
+  }
+  state.profileAvatarBusy = true
+  render()
+  let bitmap
+  let objectUrl
+  try {
+    if (typeof createImageBitmap === 'function') bitmap = await createImageBitmap(file)
+    else {
+      objectUrl = URL.createObjectURL(file)
+      bitmap = await new Promise((resolve, reject) => {
+        const img = new Image()
+        img.onload = () => resolve(img)
+        img.onerror = () => reject(new Error(t('无法读取这张图片，请选择另一张。', 'Unable to read this image. Please choose another.')))
+        img.src = objectUrl
+      })
+    }
+    const width = bitmap.width
+    const height = bitmap.height
+    if (!width || !height || width * height > 36_000_000) throw new Error(t('图片尺寸过大，请选择较小的图片。', 'Image dimensions are too large. Choose a smaller image.'))
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = 256
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error(t('浏览器无法处理图片，请重试。', 'The browser could not process the image. Please try again.'))
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, 256, 256)
+    const side = Math.min(width, height)
+    context.drawImage(bitmap, (width - side) / 2, (height - side) / 2, side, side, 0, 0, 256, 256)
+    const avatar = canvas.toDataURL('image/jpeg', .88)
+    if (!avatar.startsWith('data:image/jpeg;base64,') || avatar.length > 174790) throw new Error(t('图片处理失败，请选择另一张。', 'Unable to process this image. Please choose another.'))
+    if (readId !== profileAvatarReadId || state.me?.account?.id !== accountId || state.path !== '/profile') return
+    state.profileDraft = { ...profileForm(), avatar }
+    state.profileSaved = false
+  } catch (err) {
+    if (readId === profileAvatarReadId && state.me?.account?.id === accountId && state.path === '/profile') state.profileError = err.message || t('图片处理失败', 'Unable to process image')
+  } finally {
+    bitmap?.close?.()
+    if (objectUrl) URL.revokeObjectURL(objectUrl)
+    if (readId === profileAvatarReadId) {
+      state.profileAvatarBusy = false
+      if (state.me?.account?.id === accountId && state.path === '/profile') render()
+    }
+  }
 }
 
 function roleLabelOfAccount(role) {
@@ -568,8 +628,8 @@ function paintProfileActions() {
   const cancel = document.querySelector('[data-act="profile-cancel"]')
   const save = document.querySelector('[data-act="profile-save"]')
   const saved = document.querySelector('[data-profile-saved]')
-  if (cancel instanceof HTMLButtonElement) cancel.disabled = !dirty
-  if (save instanceof HTMLButtonElement) save.disabled = !dirty || state.busy
+  if (cancel instanceof HTMLButtonElement) cancel.disabled = state.busy || (!dirty && !state.profileAvatarBusy)
+  if (save instanceof HTMLButtonElement) save.disabled = !dirty || state.busy || state.profileAvatarBusy
   if (saved) saved.hidden = !state.profileSaved
 }
 
@@ -618,8 +678,8 @@ function passwordModal() {
  * 真的那些：基本资料（写回 /me）、修改口令（验旧口令、改完其他 JWT 全部作废）、
  * 外观与语言（本机立刻生效，并同步到账号）。
  *
- * 不真的那些，都在旁边写了缺什么：通知三项没有投递渠道，渠道配对码没有渠道。
- * 登录设备只有当前这一次——Gateway 用 JWT，没有会话表。
+ * 头像先裁剪压缩为草稿，和基本资料一起保存；外观与语言即时生效。
+ * 设备信息只标明当前浏览器，不假装列出了所有登录会话。
  */
 function profilePage() {
   const u = state.me?.account || {}
@@ -633,23 +693,6 @@ function profilePage() {
   const langs = [
     { key: 'zh', label: '中文' },
     { key: 'en', label: 'English' },
-  ]
-  const notices = [
-    {
-      key: 'digest',
-      title: t('每日工作摘要', 'Daily digest'),
-      desc: t('每天 09:00 汇总 AI 员工的执行结果发到邮箱', 'A 09:00 roundup of what your AI employees did, by email'),
-    },
-    {
-      key: 'review',
-      title: t('待复核提醒', 'Review requests'),
-      desc: t('有任务需要人工确认时立即通知我', 'Notify me the moment a task needs human confirmation'),
-    },
-    {
-      key: 'fail',
-      title: t('任务失败提醒', 'Failure alerts'),
-      desc: t('定时任务执行失败时发送站内通知', 'In-app notice when a scheduled task fails'),
-    },
   ]
   const themeCards = themes
     .map(
@@ -669,37 +712,22 @@ function profilePage() {
         `<button type="button" class="satu-assignee" style="padding: 5px 14px;" aria-pressed="${String(localeMode === l.key)}" data-act="profile-locale" data-locale="${l.key}">${esc(l.label)}</button>`,
     )
     .join('')
-  const noticeRows = notices
-    .map(
-      (n) => `<div class="satu-toggleRow">
-                <div style="min-width: 0;">
-                  <div style="font-size: 13.5px; font-weight: 600;">${esc(t(n.title))}</div>
-                  <div style="font-size: 12px; color: var(--muted-foreground);">${esc(t(n.desc))}</div>
-                </div>
-                <button type="button" class="satu-switch" aria-pressed="${String(!state.notifyOff.includes(n.key))}" aria-label="${esc(t(n.title))}" data-act="profile-notify" data-notify="${n.key}"><span></span></button>
-              </div>`,
-    )
-    .join('')
-  const sessionAt = u.lastSeenAt || Date.now()
-  const agent = navigator.userAgent
-  return `
-    <div class="gw-page">
-      <div class="gw-page-inner gw-profile">
-        ${pageHead(t('个人设置', 'Preferences'), t('管理你的账号信息、偏好与安全设置。', 'Manage your account details, preferences, and security.'))}
-
-        <div style="display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);">
-          <div style="width: 56px; height: 56px; flex: none; border-radius: 999px; background: var(--color-accent-200); display: flex; align-items: center; justify-content: center; font-family: var(--font-heading); font-size: 22px; color: var(--color-accent-800);">${esc(initialOf(u))}</div>
-          <div style="flex: 1; min-width: 0;">
-            <div style="font-size: 16px; font-weight: 600;">${esc(u.name || u.email || '')}</div>
-            <div style="font-size: 13px; color: var(--muted-foreground);">
-              ${esc(u.email || '')} · ${esc(roleLabelOfAccount(u.role))} · ${t('加入于', 'Joined')} ${esc(dayOf(u.createdAt))}
-            </div>
-          </div>
-        </div>
-
-        <div class="satu-panel">
+  return `<div class="gw-page"><div class="gw-page-inner gw-profile">
+    ${pageHead(t('个人设置', 'Preferences'), t('管理个人资料、头像、外观与账号安全。', 'Manage your profile, avatar, appearance and account security.'))}
+    ${state.profileError ? `<div class="gw-flash gw-flash-err" role="alert">${esc(state.profileError)}</div>` : ''}
+    <section class="satu-panel pf-overview">
+      ${accountAvatar({ ...u, avatar: form.avatar }, 72)}
+      <div class="pf-identity"><h2>${esc(u.name || u.email || '')}</h2><p>${esc(u.email || '')}</p><div class="pf-identity-meta"><span class="tag tag-neutral">${esc(roleLabelOfAccount(u.role))}</span><span class="mg-help">${t('加入于', 'Joined')} ${esc(dayOf(u.createdAt))}</span></div></div>
+      <div class="pf-avatar-actions">
+        <button type="button" class="btn btn-secondary" data-act="profile-avatar-pick" ${state.busy || state.profileAvatarBusy ? 'disabled' : ''}>${state.profileAvatarBusy ? t('处理图片中…', 'Processing image…') : form.avatar ? t('更换头像', 'Change avatar') : t('上传头像', 'Upload avatar')}</button>
+        ${form.avatar ? `<button type="button" class="satu-linkbtn" data-act="profile-avatar-remove" ${state.busy ? 'disabled' : ''}>${t('移除', 'Remove')}</button>` : ''}
+      </div>
+      <input type="file" id="profile-avatar-input" accept="image/jpeg,image/png,image/webp" hidden>
+      <p class="mg-help pf-avatar-help" role="status">${t('支持 JPG、PNG、WebP，最大 5 MB。自动居中裁剪为方形，保存更改后生效。', 'JPG, PNG or WebP up to 5 MB. Images are center-cropped to a square and applied when you save changes.')}</p>
+    </section>
+            <div class="satu-panel">
           <span class="satu-panel-title">${t('基本资料', 'Profile')}</span>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
+          <div class="mg-form-grid">
             <div class="field">
               <label for="pf-name">${t('姓名', 'Name')}</label>
               <input class="input" id="pf-name" data-profile="name" type="text" value="${esc(form.name)}">
@@ -711,7 +739,7 @@ function profilePage() {
             <div class="field">
               <label for="pf-email">${t('邮箱', 'Email')}</label>
               <input class="input" id="pf-email" type="email" value="${esc(u.email || '')}" readonly disabled>
-              <span style="font-size: 12px; color: var(--muted-foreground);">${t('邮箱是登录身份，改它要另一套验证流程，暂时不开放。', 'Email is your sign-in identity; changing it needs a verification flow we do not have yet.')}</span>
+              <span style="font-size: 12px; color: var(--muted-foreground);">${t('邮箱用于登录，暂不支持修改。', 'Your email is used to sign in and cannot be changed here.')}</span>
             </div>
             <div class="field">
               <label for="pf-phone">${t('手机号', 'Phone')}</label>
@@ -720,17 +748,22 @@ function profilePage() {
           </div>
         </div>
 
-        <div class="satu-panel">
-          <span class="satu-panel-title">${t('渠道配对码', 'Channel pairing code')}</span>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">
-            ${t('用于将 Telegram 私聊绑定到你的账号。请先在「渠道」页面绑定 Bot，再使用页面生成的一次性配对码。', 'Connect a private Telegram chat to your account. Bind a bot on the Channels page, then use the one-time pairing code shown there.')}
-          </p>
-        </div>
 
-        ${/* 登录之后唯一的下载入口：首页那一段只给没登录的人看。桌面壳里换成当前版本和「检查更新」；
-              手机壳里换成「在浏览器里打开」——管理页在手机上能看但不好用，网页版是同一份界面，
-              `target="_blank"` 由壳子换成 Gateway 的源交给系统浏览器（mobile/src-tauri/src/lib.rs 的 open_target）。 */ ''}
-        ${
+    <section class="satu-panel">
+      <div class="mg-sectionhead"><div><h2>${t('外观与语言', 'Appearance & language')}</h2><p>${t('更改即时生效，并同步到你的账号。', 'Changes apply immediately and sync to your account.')}</p></div></div>
+      <div class="field"><label>${t('界面外观', 'Appearance')}</label><div class="pf-theme-grid">${themeCards}</div></div>
+      <div class="field"><label>${t('界面语言', 'Language')}</label><div class="pf-language">${langPills}</div><span class="mg-help">${t('之后生成的审计总结也会使用这个语言。', 'Future audit summaries will also use this language.')}</span></div>
+    </section>
+    <section class="satu-panel">
+      <div class="mg-sectionhead"><h2>${t('账号安全', 'Account security')}</h2></div>
+      <div class="satu-toggleRow"><div><div class="pf-row-title">${t('登录口令', 'Password')}</div><p class="mg-help">${t('上次修改于', 'Last changed')} ${esc(dayOf(u.passwordChangedAt || u.createdAt))}</p></div><button type="button" class="btn btn-secondary" data-act="pw-open">${t('修改口令', 'Change password')}</button></div>
+      <div class="satu-kv"><span>${t('当前设备', 'Current device')}</span><span>${esc(deviceName(navigator.userAgent))}</span></div>
+      <p class="mg-help">${t('修改口令后，其他设备需要重新登录。', 'Other devices will need to sign in again after you change your password.')}</p>
+      <div class="pf-signout"><button type="button" class="satu-linkbtn" data-act="logout">${t('退出登录', 'Sign out')}</button></div>
+    </section>
+    <details class="mg-disclosure pf-more"><summary>${t('渠道与客户端', 'Channels & apps')}</summary><div class="mg-disclosure-body">
+      <div class="pf-channel"><div><h2>${t('渠道配对', 'Channel pairing')}</h2><p class="mg-help">${t('将 Telegram 私聊绑定到账号，请先在渠道页面绑定 Bot，再生成一次性配对码。', 'To link a Telegram private chat, bind a bot on the Channels page and generate a one-time pairing code.')}</p></div><button type="button" class="btn btn-secondary" data-act="go" data-href="/channels">${t('管理渠道', 'Manage channels')}</button></div>
+              ${
           appShell()
             ? desktopUpdateBridge()
               ? `<div class="satu-panel" data-desktop-update="profile">${desktopUpdateInner('profile')}</div>`
@@ -755,70 +788,7 @@ function profilePage() {
           </div>
         </div>`
         }
-
-        <div class="satu-panel">
-          <span class="satu-panel-title">${t('偏好', 'Preferences')}</span>
-          <div class="field">
-            <label>${t('界面外观', 'Appearance')}</label>
-            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3);">
-              ${themeCards}
-            </div>
-          </div>
-          <div class="field">
-            <label>${t('界面语言', 'Language')}</label>
-            <div style="display: flex; gap: var(--space-2); flex-wrap: wrap;">
-              ${langPills}
-            </div>
-            <span style="font-size: 12px; color: var(--muted-foreground);">${t('你和 Bot 的对话生成审计总结时，摘要和每一项的评分原因也按这个语言写（对之后生成的生效）。', 'Audit summaries of your conversations, including the reason behind each score, are written in this language (applies to summaries generated from now on).')}</span>
-          </div>
-          <span style="font-size: 12px; color: var(--muted-foreground);">
-            ${t('两项都存在这台机器上，并同步到你的账号——换台机器登录会自动跟过去。', 'Both are stored on this machine and synced to your account, so they follow you to another machine.')}
-          </span>
-          ${noticeRows}
-          <span style="font-size: 12px; color: var(--muted-foreground);">
-            ${t('这三项还没有落点：发通知要先有定时任务与通知渠道，两者都还没做。开关是真的，记不住。', 'These three have nowhere to land yet — notifications need the scheduler and a delivery channel, and neither exists. The switches move, but nothing is stored.')}
-          </span>
-        </div>
-
-        <div class="satu-panel">
-          <span class="satu-panel-title">${t('安全', 'Security')}</span>
-          <div class="satu-toggleRow">
-            <div>
-              <div style="font-size: 13.5px; font-weight: 600;">${t('登录口令', 'Password')}</div>
-              <div style="font-size: 12px; color: var(--muted-foreground);">${t('上次修改于', 'Last changed')} ${esc(dayOf(u.passwordChangedAt || u.createdAt))}</div>
-            </div>
-            <button type="button" class="btn btn-secondary" style="flex: none;" data-act="pw-open">${t('修改口令', 'Change password')}</button>
-          </div>
-        </div>
-
-        <div class="satu-panel">
-          <div style="display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3);">
-            <span class="satu-panel-title">${t('登录设备', 'Signed-in devices')}</span>
-            <span style="font-size: 12px; color: var(--muted-foreground);">${t('共 1 个会话', '1 session(s)')}</span>
-          </div>
-          <div class="satu-toggleRow">
-            <div style="min-width: 0;">
-              <div style="font-size: 13.5px; font-weight: 600;">${esc(deviceName(agent))}${t(' · 当前设备', ' · this device')}</div>
-              <div style="font-size: 12px; color: var(--muted-foreground);">${t('登录于', 'Signed in')} ${esc(whenOf(sessionAt))}</div>
-            </div>
-            <span class="tag tag-accent-2" style="flex: none;">${t('使用中', 'Active')}</span>
-          </div>
-          <span style="font-size: 12px; color: var(--muted-foreground);">
-            ${t('Gateway 用 JWT，没有会话表，列不出也注销不了其他设备。改口令会作废所有已签发的票；当前这次会发一张新票。', 'Gateway uses JWTs and has no session table, so other devices cannot be listed or revoked. Changing your password voids every issued ticket; this browser gets a new one.')}
-          </span>
-        </div>
-
-        ${state.profileError ? `<div style="font-size: 13px; color: var(--color-accent-800); background: var(--color-accent-100); border-radius: var(--radius-md); padding: 10px var(--space-4);">${esc(state.profileError)}</div>` : ''}
-
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-4);">
-          <button type="button" class="satu-linkbtn" style="text-align: left;" data-act="logout">${t('退出登录', 'Sign out')}</button>
-          <div style="display: flex; align-items: center; gap: var(--space-3);">
-            <span data-profile-saved style="font-size: 12.5px; color: var(--muted-foreground);" ${state.profileSaved ? '' : 'hidden'}>${t('已保存', 'Saved')}</span>
-            <button type="button" class="btn btn-secondary" data-act="profile-cancel" ${dirty ? '' : 'disabled'}>${t('取消', 'Cancel')}</button>
-            <button type="button" class="btn btn-primary" data-act="profile-save" ${dirty && !state.busy ? '' : 'disabled'}>${state.busy ? t('保存中…', 'Saving…') : t('保存更改', 'Save changes')}</button>
-          </div>
-        </div>
-      </div>
-    </div>
-    ${passwordModal()}`
+    </div></details>
+    <div class="mg-savebar pf-savebar"><span class="mg-help" data-profile-saved role="status" ${state.profileSaved ? '' : 'hidden'}>${t('已保存', 'Saved')}</span><span class="mg-help pf-draft-hint">${t('头像与基本资料在保存后更新。', 'Save to apply avatar and profile changes.')}</span><div class="pf-save-actions"><button type="button" class="btn btn-secondary" data-act="profile-cancel" ${!state.busy && (dirty || state.profileAvatarBusy) ? '' : 'disabled'}>${t('取消', 'Cancel')}</button><button type="button" class="btn btn-primary" data-act="profile-save" ${dirty && !state.busy && !state.profileAvatarBusy ? '' : 'disabled'}>${state.busy ? t('保存中…', 'Saving…') : t('保存更改', 'Save changes')}</button></div></div>
+  </div></div>${passwordModal()}`
 }

@@ -2442,7 +2442,59 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(ui.html().includes('Bot 详情'), '没退回泛称')
     })
 
-    await test('账单页两张余额卡并排：赠送的在前，账户合计在后', async () => {
+    await test('头像预览草稿可取消、移除与保存，侧栏使用持久化头像', async () => {
+      const ui = await boot(ownerToken)
+      ui.state.path = '/profile'
+      const avatar = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='
+      ui.state.me.account.avatar = avatar
+      ui.render()
+      assert(ui.html().includes('data-act="profile-avatar-pick"') && ui.html().includes('id="profile-avatar-input"'), '头像上传入口丢失')
+      assert((ui.html().match(/data:image\/png;base64,/g) || []).length >= 2, '侧栏与预览没有同时使用头像')
+      await ui.fire('click', el('button', { 'data-act': 'profile-avatar-remove' }))
+      assert(ui.state.profileDraft.avatar === '' && ui.state.me.account.avatar === avatar, '移除头像应先保留为草稿')
+      await ui.fire('click', el('button', { 'data-act': 'profile-cancel' }))
+      assert(ui.state.profileDraft === null && ui.state.me.account.avatar === avatar, '取消后没有恢复持久化头像')
+      await ui.fire('click', el('button', { 'data-act': 'profile-avatar-remove' }))
+      await ui.fire('click', el('button', { 'data-act': 'profile-save' }))
+      assert(ui.state.me.account.avatar === '' && ui.state.profileSaved, '头像移除没有保存到服务器')
+      assert(!ui.html().includes('data-act="profile-notify"'), '仍然展示没有生效渠道的通知开关')
+    })
+
+    await test('公司资料分区后仍保留全部提交字段，额度摘要在表单外', async () => {
+      const ui = await boot(ownerToken)
+      ui.state.me = { account: { id: 'a', role: 'admin' }, company: { id: 'c' } }
+      ui.state.path = '/company'
+      ui.render()
+      const html = ui.html()
+      const form = html.slice(html.indexOf('<form id="company-form"'), html.indexOf('</form>', html.indexOf('<form id="company-form"')))
+      for (const name of ['name', 'slug', 'accessUrl', 'website', 'address', 'contactName', 'contactEmail', 'handoffWebhook']) {
+        assert(form.includes(`name="${name}"`), `资料字段 ${name} 丢失`)
+      }
+      assert(form.includes('name="contactPhoneCode"') && form.includes('name="contactPhone"'), '电话区号或号码字段丢失')
+      assert(html.indexOf('mg-stats') < html.indexOf('company-form'), '额度摘要仍然混在编辑表单里')
+      assert(form.includes('type="submit"'), '保存按钮没有提交表单')
+    })
+
+    await test('审计设置默认折叠，筛选字段和自动审计操作仍可用', async () => {
+      const ui = await boot(ownerToken)
+      ui.state.path = '/audit'
+      ui.render()
+      const html = ui.html()
+      assert(html.includes('<details class="mg-disclosure">'), '审计设置未默认折叠')
+      assert(html.includes('data-act="audit-enabled"') && html.includes('data-act="audit-model-role"'), '审计设置操作丢失')
+      for (const name of ['accountId', 'botId', 'from', 'to']) assert(html.includes(`name="${name}"`), `审计筛选 ${name} 丢失`)
+      assert(html.includes('id="audit-filter-form"'), '审计筛选表单丢失')
+    })
+
+    await test('用量图标题对应实际指标：有金额画费用，没有金额画执行次数', async () => {
+      const ui = await boot(ownerToken)
+      ui.state.usage = { daily: [{ label: '10/26', value: 12, amount: '$0.50', amountMicros: 500000 }] }
+      assert(ui.usagePage().includes('每日费用趋势'), '费用柱图仍标成任务执行量')
+      ui.state.usage = { daily: [{ label: '10/26', value: 12 }] }
+      assert(ui.usagePage().includes('每日任务执行量'), '旧接口只有次数时标题不匹配')
+    })
+
+    await test('账单先显示账户余额，并保留赠送金额、扣费和到期信息', async () => {
       const ui = await boot(ownerToken)
       ui.state.path = '/billing'
       ui.state.billing = {
@@ -2458,18 +2510,17 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       }
       ui.render()
       const html = ui.html()
-      const bonus = html.indexOf('套餐赠送余额')
-      const account = html.indexOf('账户余额')
+      const bonus = html.indexOf('mg-bonus-balance')
+      const account = html.indexOf('mg-account-balance')
       assert(bonus > -1 && account > -1, '两张卡没都画出来')
-      assert(bonus < account, '赠送那张跑到账户余额后面去了')
+      assert(account < bonus, '账户可用余额没有优先显示')
       assert(html.includes('$310.00') && html.includes('$160.00') && html.includes('$150.00'), '剩余额没都画出来')
       assert(html.includes('本期已扣 $40.00'), '已扣没画出来')
       // 发放额也要在，但只能是小字——只报发放额的话那个数永远不动。
       assert(html.includes('$200.00'), '本期发放没画出来')
       assert(html.includes('2026-09-01 到期'), '到期日没画出来')
       assert(!html.includes('额度已用完'), '还有钱却报了熔断')
-      // 并排靠 auto-fit 网格，窄了自己叠成一列；写死两列会在窄屏上挤成一团。
-      assert(html.includes('repeat(auto-fit, minmax(280px, 1fr))'), '不是自适应两列')
+      assert(!html.includes('data-act="billing-autorenew"'), '仍然提供未接入续费服务的开关')
     })
 
     await test('没有生效中的套餐：赠送那张写清楚，不显示一个空的到期日', async () => {

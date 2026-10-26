@@ -62,6 +62,7 @@ export interface Account {
   name: string
   title: string
   phone: string
+  avatar: string
   theme: Theme
   locale: Locale
   passwordHash: string
@@ -2012,6 +2013,7 @@ export type AccountPatch = Partial<
     | 'name'
     | 'title'
     | 'phone'
+    | 'avatar'
     | 'theme'
     | 'locale'
     | 'role'

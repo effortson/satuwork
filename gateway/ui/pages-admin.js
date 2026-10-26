@@ -858,7 +858,7 @@ function chargeTable(scope, forOrg) {
           }
         </div>
       </div>
-      <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
+      <div class="mg-table">
         <div class="satu-billhead" style="grid-template-columns: ${cols};" data-tt-title="${scope === 'platform' ? 3 : 2}">${head}</div>
         ${rows || emptyBox(state.chargesLoading ? t('加载中…') : t('这个范围里还没有计费记录。'))}
       </div>
@@ -1525,76 +1525,43 @@ function providerModelsModal() {
 function companyPage() {
   const c = state.org || state.me?.company || {}
   const plan = state.plan || state.me?.plan || { seats: 1, used: 0 }
-  return `
-    <div class="gw-page">
-      <div class="gw-page-inner narrow">
-        ${pageHead(t('公司'), t('名称、slug、联系人和访问地址。席位由系统管理员分配。'))}
-        ${flashes()}
-        <form id="company-form" class="satu-panel" style="gap: var(--space-4);">
-          <span class="satu-panel-title">${t('资料')}</span>
-          <div class="field">
-            <label for="co-name">${t('名称')}</label>
-            <input class="input" id="co-name" name="name" value="${esc(c.name || '')}" required>
-          </div>
-          <div class="field">
-            <label for="co-slug">slug</label>
-            <input class="input" id="co-slug" name="slug" value="${esc(c.slug || '')}" required>
-          </div>
-          <div class="field">
-            <label for="co-url">${t('访问地址')}</label>
-            <input class="input" id="co-url" name="accessUrl" value="${esc(c.accessUrl || '')}" placeholder="https://acme.satuwork.com">
-          </div>
-          <div class="field">
-            <label for="co-contact-name">${t('联系人')}</label>
-            <input class="input" id="co-contact-name" name="contactName" value="${esc(c.contactName || '')}" required>
-          </div>
-          <div class="field">
-            <label for="co-contact-phone">${t('电话')}</label>
-            ${phoneField('co-contact-phone', c.contactPhone)}
-          </div>
-          <div class="field">
-            <label for="co-contact-email">${t('联系邮箱')}</label>
-            <input class="input" id="co-contact-email" name="contactEmail" type="email" value="${esc(c.contactEmail || '')}" required>
-          </div>
-          <div class="field">
-            <label for="co-address">${t('公司地址')}<span style="color: var(--muted-foreground); font-weight: 400;"> · ${t('选填')}</span></label>
-            <input class="input" id="co-address" name="address" value="${esc(c.address || '')}">
-          </div>
-          <div class="field">
-            <label for="co-website">${t('网站')}<span style="color: var(--muted-foreground); font-weight: 400;"> · ${t('选填')}</span></label>
-            <input class="input" id="co-website" name="website" value="${esc(c.website || '')}" placeholder="https://acme.com">
-          </div>
-          ${/* 转人工的对外通知（见 docs/handoff.md §6 第 3 层）。摆在公司资料里而不是
-                Bot 模版里：它是一家公司往哪儿发消息，跟某一颗 Bot 怎么干活无关。 */ ''}
-          <div class="field">
-            <label for="co-handoff-hook">${t('转人工通知地址', 'Handoff webhook')}<span style="color: var(--muted-foreground); font-weight: 400;"> · ${t('选填')}</span></label>
-            <input class="input" id="co-handoff-hook" name="handoffWebhook" value="${esc(c.handoffWebhook || '')}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…">
-            <span style="font-size: 12px; color: var(--muted-foreground);">${t(
-              '飞书 / 企业微信 / Slack 群机器人的 webhook。Bot 卡住、需要人处理时往这里发一条——浏览器关着的时候（比如半夜的日常任务），这是唯一叫得醒人的路。留空就只在站内提醒。',
-              'A Feishu / WeCom / Slack bot webhook. When a bot hands something over, a message goes here — with no browser open (a routine at 3am, say) this is the only way anyone finds out. Leave empty for in-app only.',
-            )}</span>
-          </div>
-          <div class="field">
-            <label>${t('席位')}</label>
-            <p style="margin: 0; font-size: 14px;">${t(`已用 ${esc(plan.used || 0)} / ${esc(plan.seats || 0)}`, `${esc(plan.used || 0)} / ${esc(plan.seats || 0)} used`)}</p>
-            <span style="font-size: 12px; color: var(--muted-foreground);">${t('席位由系统管理员分配')}</span>
-          </div>
-          <div class="field">
-            <label>${t('知识库')}</label>
-            <p style="margin: 0; font-size: 14px;">${t(`已建 ${esc(plan.knowledgeUsed || 0)} / ${esc(plan.knowledgeBases || 0)}`, `${esc(plan.knowledgeUsed || 0)} / ${esc(plan.knowledgeBases || 0)} created`)}</p>
-            <span style="font-size: 12px; color: var(--muted-foreground);">${t('能建几个由套餐决定')}</span>
-          </div>
-          <div class="field">
-            <label>${t('订阅套餐')}</label>
-            <p style="margin: 0; font-size: 14px;">${esc(planLabel(plan) || t('无套餐'))}</p>
-            <span style="font-size: 12px; color: var(--muted-foreground);">${t('到期时间')} ${esc(plan.expiresAt ? dayISO(plan.expiresAt) : t('不限期'))}</span>
-          </div>
-          <div style="display: flex; justify-content: flex-end;">
-            <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${t('保存')}</button>
-          </div>
-        </form>
-      </div>
-    </div>`
+  const field = (id, label, name, value, { type = 'text', required = false, placeholder = '' } = {}) => `<div class="field">
+    <label for="${id}">${esc(label)}</label><input class="input" id="${id}" name="${name}" type="${type}" value="${esc(value || '')}" ${required ? 'required' : ''} placeholder="${esc(placeholder)}">
+  </div>`
+  return `<div class="gw-page"><div class="gw-page-inner">
+    ${pageHead(t('公司与席位', 'Company & seats'), t('管理公司资料、联系信息与通知，查看当前套餐和可用额度。', 'Manage company details, contacts and notifications, and review your plan and capacity.'), `<button type="button" class="btn btn-secondary" data-act="go" data-href="/billing">${t('查看账单', 'View billing')}</button>`)}
+    ${flashes()}
+    ${managementStats([
+      { label: t('订阅套餐'), value: planLabel(plan) || t('无套餐'), note: `${t('到期时间')} ${plan.expiresAt ? dayISO(plan.expiresAt) : t('不限期')}` },
+      { label: t('席位使用', 'Seats used'), value: `${plan.used || 0} / ${plan.seats || 0}`, note: t('席位由系统管理员分配') },
+      { label: t('知识库'), value: `${plan.knowledgeUsed || 0} / ${plan.knowledgeBases || 0}`, note: t('可创建数量由套餐决定', 'Capacity is determined by your plan') },
+    ])}
+    <form id="company-form" class="mg-company-form">
+      <section class="satu-panel">
+        <div class="mg-sectionhead"><div><h2>${t('公司资料', 'Company details')}</h2><p>${t('用于识别公司与访问工作区。', 'Identify your company and workspace.')}</p></div></div>
+        <div class="mg-form-grid">
+          ${field('co-name', t('名称'), 'name', c.name, { required: true })}
+          ${field('co-slug', t('公司标识', 'Company slug'), 'slug', c.slug, { required: true })}
+          <div class="field mg-span-all"><label for="co-url">${t('访问地址')}</label><input class="input" id="co-url" name="accessUrl" value="${esc(c.accessUrl || '')}" placeholder="https://acme.satuwork.com"></div>
+          ${field('co-website', t('网站（选填）', 'Website (optional)'), 'website', c.website, { placeholder: 'https://acme.com' })}
+          ${field('co-address', t('公司地址（选填）', 'Address (optional)'), 'address', c.address)}
+        </div>
+      </section>
+      <section class="satu-panel">
+        <div class="mg-sectionhead"><div><h2>${t('联系信息', 'Contact information')}</h2><p>${t('公司对外联系人的资料。', 'Contact details for your company representative.')}</p></div></div>
+        <div class="mg-form-grid">
+          ${field('co-contact-name', t('联系人'), 'contactName', c.contactName, { required: true })}
+          ${field('co-contact-email', t('联系邮箱'), 'contactEmail', c.contactEmail, { type: 'email', required: true })}
+          <div class="field mg-span-all"><label for="co-contact-phone">${t('电话')}</label>${phoneField('co-contact-phone', c.contactPhone)}</div>
+        </div>
+      </section>
+      <section class="satu-panel">
+        <div class="mg-sectionhead"><div><h2>${t('转人工通知', 'Handoff notifications')}</h2><p>${t('Bot 需要人工处理时，通过群机器人发送提醒。', 'Notify your team when a bot needs human help.')}</p></div></div>
+        <div class="field"><label for="co-handoff-hook">${t('通知地址（选填）', 'Webhook URL (optional)')}</label><input class="input" id="co-handoff-hook" name="handoffWebhook" value="${esc(c.handoffWebhook || '')}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…"><span class="mg-help">${t('支持飞书、企业微信和 Slack 群机器人。留空时仅在站内提醒。', 'Supports Feishu, WeCom and Slack webhooks. Leave empty for in-app notifications only.')}</span></div>
+      </section>
+      <div class="mg-savebar"><span class="mg-help">${t('保存后更新公司资料与通知设置。', 'Save to update company details and notifications.')}</span><button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存更改', 'Save changes')}</button></div>
+    </form>
+  </div></div>`
 }
 
 function memberMeId() {
@@ -2023,7 +1990,7 @@ function accountsPage() {
   )
   const membersBody = `
         <div style="display: flex; flex-direction: column; gap: var(--space-6);">
-          <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-3);">
+          <div class="mg-stats">
             ${statCard(t('成员'), members.length)}
             ${statCard(t('管理员'), admins)}
             ${statCard(t('待接受邀请'), pending)}
@@ -2034,7 +2001,7 @@ function accountsPage() {
               <h2 style="font-size: 18px; margin: 0;">${t('成员')}</h2>
               <span style="font-size: 12px; color: var(--muted-foreground);">${t(`共 ${members.length} 人`, `${members.length} people`)}</span>
             </div>
-            <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
+            <div class="mg-table">
               <div class="satu-memberhead">
                 <span>${t('成员')}</span><span>${t('角色')}</span><span>${t('状态')}</span><span>${t('最近活跃')}</span><span></span>
               </div>
@@ -2044,7 +2011,7 @@ function accountsPage() {
         </div>`
   const groupsBody = `
         <div style="display: flex; flex-direction: column; gap: var(--space-3);">
-          <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
+          <div class="mg-table">
             <div class="satu-grouphead">
               <span>${t('分组')}</span><span>${t('成员')}</span><span>${t('默认角色')}</span><span>${t('创建时间')}</span><span></span>
             </div>
@@ -2055,13 +2022,13 @@ function accountsPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        ${pageHead(t('账号管理'), t('邀请同事加入，并管理成员角色与权限。'), `<button type="button" class="btn btn-primary" style="flex: none;" ${canManage ? '' : 'disabled'} title="${canManage ? '' : t('需要管理员权限')}" data-act="${headerAct}">
+        ${pageHead(t('员工'), t('邀请同事加入，并管理成员角色与权限。'), `<button type="button" class="btn btn-primary" style="flex: none;" ${canManage ? '' : 'disabled'} title="${canManage ? '' : t('需要管理员权限')}" data-act="${headerAct}">
             ${svg(PLUS_ICON, 15)} ${headerLabel}
           </button>`)}
-        <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
+        <div class="mg-tabs">${tabs}</div>
         ${flashes()}
         ${tab === 'members' ? membersBody : groupsBody}
-        <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('成员这一半是真的：停用会当场作废对方已签发的 JWT（签发早于作废时间的票会被拒），重置口令同样作废旧登录，旧口令也一并失效。角色与权限的判断在服务端，界面上的禁用只是提前告诉你结果。Gateway 没有会话表，未过期且签发于作废之后的 JWT 仍可用，直到过期；停用账号登录会被拒绝。')}</p>
+        <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('停用成员或重置口令会使其当前登录失效。权限变更由管理员管理。', 'Disabling a member or resetting their password invalidates their current login. Administrators manage access permissions.')}</p>
       </div>
     </div>
     ${inviteModal()}

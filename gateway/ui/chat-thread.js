@@ -601,14 +601,15 @@ function skillNoteHtml(note) {
 function taskGroupHtml(views) {
   const n = (pred) => views.filter(pred).length
   const counts = [
-    [n((v) => taskLive(v.state)), '进行中', 'running'],
-    [n((v) => v.state === 'done'), '完成', 'done'],
-    [n((v) => TASK_TONE[v.state] === 'bad' || TASK_TONE[v.state] === 'warn'), '没做成', 'not done'],
-    [n((v) => TASK_TONE[v.state] === 'off'), '已停止', 'stopped'],
+    [n((v) => taskLive(v.state) && v.state !== 'waiting'), '进行中', 'running', 'run'],
+    [n((v) => v.state === 'waiting'), '等待中', 'waiting', 'wait'],
+    [n((v) => v.state === 'done'), '完成', 'done', 'ok'],
+    [n((v) => TASK_TONE[v.state] === 'bad' || TASK_TONE[v.state] === 'warn'), '需留意', 'need attention', 'warn'],
+    [n((v) => TASK_TONE[v.state] === 'off'), '已停止', 'stopped', 'off'],
   ]
     .filter(([k]) => k > 0)
-    .map(([k, zh, en]) => t(`${k} ${zh}`, `${k} ${en}`))
-  const head = `<div class="sw-task-head">${esc([t(`派出去 ${views.length} 件`, `${views.length} delegated`), ...counts].join(' · '))}</div>`
+    .map(([k, zh, en, tone]) => `<span class="sw-task-count" data-tone="${tone}">${esc(t(`${k} ${zh}`, `${k} ${en}`))}</span>`)
+  const head = `<div class="sw-task-head"><span class="sw-task-head-title">${esc(t(`已派发 ${views.length} 项任务`, `${views.length} tasks delegated`))}</span><span class="sw-task-counts">${counts.join('')}</span></div>`
   return `<div class="sw-task-card">${head}${views.map((v) => `<div class="sw-task-row">${taskItemHtml(v)}</div>`).join('')}</div>`
 }
 

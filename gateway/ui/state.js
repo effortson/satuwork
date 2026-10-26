@@ -148,6 +148,7 @@ const state = {
   profileDraft: null,
   profileSaved: false,
   profileError: '',
+  profileAvatarBusy: false,
   pwOpen: false,
   pwForm: { current: '', next: '', confirm: '' },
   pwError: '',
@@ -752,7 +753,7 @@ function billTable(title, heads, rows, emptyMsg) {
   const cells = heads.map((h) => `<span>${esc(h)}</span>`).join('')
   return `<div style="display: flex; flex-direction: column; gap: var(--space-3);">
       <h2 style="font-size: 18px; margin: 0;">${esc(title)}</h2>
-      <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
+      <div class="mg-table">
         <div class="satu-billhead">${cells}</div>
         ${rows || emptyBox(emptyMsg)}
       </div>

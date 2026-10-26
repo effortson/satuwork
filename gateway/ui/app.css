@@ -245,11 +245,12 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   cursor: pointer;
   font-family: var(--font-body);
   text-align: left;
-  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  color: var(--color-text);
+  transition: background 120ms ease, color 120ms ease;
 }
 .satu-botrow:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
-.satu-botrow[aria-current="true"] { background: var(--color-accent); color: var(--color-bg); }
-.satu-botrow[aria-current="true"]:hover { background: var(--color-accent-600); }
+.satu-botrow[aria-current="true"] { background: var(--color-accent-100); color: var(--color-text); box-shadow: inset 3px 0 var(--color-accent); }
+.satu-botrow[aria-current="true"]:hover { background: color-mix(in srgb, var(--color-accent-100) 75%, var(--color-accent-200)); }
 .satu-botrow:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .satu-botavatar { flex: none; display: flex; align-items: center; }
 /* 十个岗位的运行动作。只动 SVG 内部的局部，外框和布局占位稳定；皇冠也不会跟着晃。
@@ -345,7 +346,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-avatarwrap { position: relative; display: inline-flex; flex: none; }
 .satu-crown { position: absolute; right: -3px; bottom: -3px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #F5B85A; color: #6B4A12; box-shadow: 0 0 0 1.5px var(--color-surface); pointer-events: none; }
 .satu-crown svg { width: 72%; height: 72%; fill: currentColor; }
-.satu-botrow[aria-current="true"] .satu-crown { box-shadow: 0 0 0 1.5px var(--color-accent); }
+.satu-botrow[aria-current="true"] .satu-crown { box-shadow: 0 0 0 1.5px var(--color-accent-100); }
 /* min-width: 0 是省略号能生效的前提——不写的话 flex 子项按内容宽度算，长名字会把
    时间挤出侧栏。 */
 .satu-botmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -369,16 +370,10 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   white-space: nowrap;
 }
 .satu-localtag[data-compact] { padding: 1px 5px; font-size: 9.5px; }
-.satu-botrow[aria-current="true"] .satu-localtag {
-  border-color: color-mix(in srgb, var(--color-bg) 58%, transparent);
-  background: color-mix(in srgb, var(--color-bg) 18%, transparent);
-  color: var(--color-bg);
-}
 
 /* ── 状态点 ────────────────────────────────────────────────────────
    三态靠**形状**分，不只靠颜色：空闲是空心圈、执行中是实心并闪、待人工是实心琥珀。
-   只用颜色的话，色觉障碍的人看到的是三个一模一样的点；而且侧栏选中行会整条染成
-   品牌色，压在上面的纯色差别更难分。 */
+   只用颜色的话，色觉障碍的人看到的是三个一模一样的点。 */
 .satu-botdot {
   flex: none;
   width: 8px;
@@ -530,8 +525,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
    的），所以 500 底 + 100 图形是唯一一组两个主题下都够对比的搭配——写死白色的话，
    深色主题里就是浅琥珀底压白图形。 */
 .satu-botneed {
-  /* 底色和图形色走两个变量：选中的那一行要整组换掉（见下面那条），而光晕的颜色
-     跟着底色走——写死 warn-500 的话，翻过来的那一行会甩出一圈琥珀光晕。 */
+  /* 图形和光晕共用状态色；浅色选中背景下也保留同一套警示语义。 */
   --need-ink: var(--color-warn-500);
   --need-glyph: var(--color-warn-100);
   flex: none;
@@ -545,17 +539,6 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   background: var(--need-ink);
   color: var(--need-glyph);
   animation: satu-need-pulse 1.5s ease-in-out infinite;
-}
-/**
- * **选中的那一行要翻过来。**
- *
- * 那一行整条染成品牌赭红（`[aria-current]`），琥珀压在上面几乎看不见——而人正看着的
- * 那颗 Bot 恰恰最可能是在等他的那一颗。翻成浅底 + 琥珀图形，两种底色下都立得住。
- * 这就是那颗状态点的注释里说的「压在品牌色上的纯色差别更难分」，同一个坑。
- */
-.satu-botrow[aria-current="true"] .satu-botneed {
-  --need-ink: var(--color-bg);
-  --need-glyph: var(--color-warn-500);
 }
 .satu-botneed[hidden] { display: none; }
 .satu-botneed svg { display: block; width: 10px; height: 10px; }
@@ -576,11 +559,12 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 }
 /* 侧栏收起来只剩头像，这个图标跟着收——挤在图标旁边只会让头像看着歪（同 botdot）。 */
 .satu-rail .satu-botneed { display: none; }
-.satu-bottime { flex: none; font-size: 11px; opacity: 0.6; font-variant-numeric: tabular-nums; }
+.satu-bottime { flex: none; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 /* 摘要只给一行。多行会让每一行的高度随内容跳，整份名单看着就散了。 */
 .satu-botsnip {
   font-size: 12px;
-  opacity: 0.62;
+  color: var(--muted-foreground);
+  line-height: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -593,6 +577,8 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-botfolder-head { position: relative; display: flex; align-items: center; gap: 2px; margin-top: 6px; border-radius: var(--radius-sm); }
 .satu-botfolder-loose + .satu-botfolder .satu-botfolder-head { margin-top: 4px; }
 .satu-botfolder-toggle { flex: 1; min-width: 0; justify-content: flex-start; gap: 6px; padding: 6px var(--space-2) 6px var(--space-3); border-radius: var(--radius-sm); }
+.satu-botfolder-head .satu-botfolder-toggle { color: var(--muted-foreground); font-weight: 500; }
+.satu-botfolder-head .satu-botfolder-toggle:hover { color: var(--color-text); }
 .satu-botfolder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .satu-botfolder-count { flex: none; font-variant-numeric: tabular-nums; opacity: 0.7; }
 /* 那颗「…」平时淡着，鼠标到这一行才亮；菜单开着时也亮，不然看不出是哪个分类的菜单。 */

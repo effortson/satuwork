@@ -82,6 +82,7 @@ function endSignedIn() {
   state.templateSync = null
   syncTemplatePoll()
   state.me = null
+  cancelProfileAvatarRead()
   state.profileDraft = null
   state.profileSaved = false
   state.profileError = ''
@@ -1669,6 +1670,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'profile-cancel') {
+    cancelProfileAvatarRead()
     state.profileDraft = null
     state.profileSaved = false
     state.profileError = ''
@@ -1677,6 +1679,19 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'profile-save') {
     await saveProfile()
+    return
+  }
+  if (act === 'profile-avatar-pick') {
+    if (!state.busy && !state.profileAvatarBusy) document.getElementById('profile-avatar-input')?.click()
+    return
+  }
+  if (act === 'profile-avatar-remove') {
+    if (state.busy) return
+    cancelProfileAvatarRead()
+    state.profileDraft = { ...profileForm(), avatar: '' }
+    state.profileSaved = false
+    state.profileError = ''
+    render()
     return
   }
   if (act === 'profile-theme') {
@@ -2744,8 +2759,7 @@ document.getElementById('app').addEventListener('input', (e) => {
   if (!(el instanceof HTMLInputElement)) return
   const field = el.getAttribute('data-profile')
   if (field === 'name' || field === 'title' || field === 'phone') {
-    const u = state.me?.account || {}
-    const cur = state.profileDraft ?? { name: u.name || '', title: u.title || '', phone: u.phone || '' }
+    const cur = profileForm()
     state.profileDraft = { ...cur, [field]: el.value }
     state.profileSaved = false
     paintProfileActions()
@@ -2759,6 +2773,12 @@ document.getElementById('app').addEventListener('input', (e) => {
 
 document.getElementById('app').addEventListener('change', async (e) => {
   const el = e.target
+  if (el instanceof HTMLInputElement && el.id === 'profile-avatar-input') {
+    const file = el.files?.[0]
+    el.value = ''
+    if (file) await takeProfileAvatar(file)
+    return
+  }
   /**
    * 日常任务的名字、指令与用哪个模型。**收在 change 而不是 input 上**：保存都要 render()
    * （列表里那一行、下一次的时间都跟着变），而 render 会把输入框换掉——边打边存

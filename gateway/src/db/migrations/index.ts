@@ -63,6 +63,7 @@ import { SQL as m0062 } from './0062-bot-task-ready.ts'
 import { SQL as m0063 } from './0063-local-bot-polls.ts'
 import { SQL as m0064 } from './0064-machine-gateway-origin.ts'
 import { SQL as m0065 } from './0065-connection-account-name.ts'
+import { SQL as m0066 } from './0066-account-avatar.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -192,6 +193,7 @@ export const MIGRATIONS: Migration[] = [
   { id: '0063-local-bot-polls', name: '本地 Bot 最近一次来领派活的时刻', sql: m0063 },
   { id: '0064-machine-gateway-origin', name: '管家认的 Gateway 源（心跳自报）', sql: m0064 },
   { id: '0065-connection-account-name', name: '连接上的账号是谁（只用于显示）', sql: m0065 },
+  { id: '0066-account-avatar', name: '账号头像缩略图', sql: m0066 },
 ]
 
 /**

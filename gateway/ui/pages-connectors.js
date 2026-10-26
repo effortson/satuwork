@@ -403,69 +403,27 @@ function toolModeNote(detail, on, cap) {
 function adminConnectorsPage() {
   const list = state.orgConnectors || []
   const stats = state.connectorStats
-  const rows = list
-    .map(
-      (c) =>
-        connectorRow(
-          c,
-          `${esc(c.toolkit)}${c.blocked && c.blockedReason ? ` · ${esc(c.blockedReason)}` : ''}`,
-          `<span style="font-size: 13px; color: var(--muted-foreground);">${t(`${c.installs} 人装了`)}</span>
-      <span style="font-size: 13px; color: var(--muted-foreground);">${t(`${c.connections} 个已连接`)}</span>
-      <div style="display: flex; gap: var(--space-2);">
-        ${
-          c.blocked
-            ? `<button type="button" class="btn btn-ghost" data-act="conn-unblock" data-id="${esc(c.id)}">${t('解禁')}</button>`
-            : `<button type="button" class="satu-linkbtn" data-act="conn-block" data-id="${esc(c.id)}">${t('禁用')}</button>`
-        }
-      </div>`,
-        ),
-    )
-    .join('')
-  const usage = stats
-    ? `<div style="display: flex; gap: var(--space-4); flex-wrap: wrap;">
-        ${[
-          [t('调用次数'), String(stats.total.calls)],
-          [t('费用'), `$${(stats.total.amount ?? 0).toFixed(4)}`],
-        ]
-          .map(
-            ([k, v]) => `<div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover); padding: var(--space-3) var(--space-4); min-width: 140px;">
-            <div style="font-size: 12px; color: var(--muted-foreground);">${esc(k)}</div>
-            <div style="font-size: 20px; font-weight: 600;">${esc(v)}</div>
-          </div>`,
-          )
-          .join('')}
-      </div>`
-    : ''
-  const who = (stats?.installs || [])
-    .map(
-      (x) => `<div style="display: flex; gap: var(--space-3); padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--border);">
-      <span style="flex: 1; min-width: 0;">${esc(x.accountName)}</span>
-      <span style="color: var(--muted-foreground);">${esc(x.name || x.connector)}</span>
-    </div>`,
-    )
-    .join('')
-  return `
-    <div class="gw-page">
-      <div class="gw-page-inner">
-        <h1 style="font-size: 24px; margin: 0 0 4px;">${t('连接器')}</h1>
-        <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('员工自己安装、自己授权。这里管的是「本公司哪几个不许用」，以及谁在用、花了多少。')}</p>
-        ${flashes()}
-        <div style="margin-top: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4);">
-          ${usage}
-          <div class="gw-credlist" style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
-            ${rows || emptyBox(t('平台还没上架任何连接器。'))}
-          </div>
-          ${
-            who
-              ? `<section>
-                  <h2 style="font-size: 13px; font-weight: 600; color: var(--muted-foreground); margin: 0 0 var(--space-2);">${t('谁装了什么')}</h2>
-                  <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover); padding: 0 var(--space-4);">${who}</div>
-                </section>`
-              : ''
-          }
-        </div>
-      </div>
-    </div>`
+  const blocked = list.filter((c) => c.blocked).length
+  const rows = list.map((c) => connectorRow(c,
+    `${esc(c.toolkit)}${c.blocked && c.blockedReason ? ` · ${esc(c.blockedReason)}` : ''}`,
+    `<span class="mg-connector-usage">${t(`${c.installs} 人安装`, `${c.installs} installed`)}</span>
+    <span class="tag ${c.blocked ? 'tag-neutral' : 'mg-status-ok'}">${c.blocked ? t('已禁用', 'Blocked') : t(`${c.connections} 个连接`, `${c.connections} connections`)}</span>
+    <div class="satu-rowactions"><button type="button" class="btn btn-ghost" data-act="${c.blocked ? 'conn-unblock' : 'conn-block'}" data-id="${esc(c.id)}">${c.blocked ? t('解禁') : t('禁用')}</button></div>`
+  )).join('')
+  const who = (stats?.installs || []).map((x) => `<div class="mg-install-row"><span>${esc(x.accountName)}</span><span class="mg-help">${esc(x.name || x.connector)}</span></div>`).join('')
+  return `<div class="gw-page"><div class="gw-page-inner">
+    ${pageHead(t('连接器'), t('管理公司可用的外部服务，查看员工连接情况与调用费用。', 'Manage external services available to your company and review connections and usage costs.'))}
+    ${flashes()}
+    ${managementStats([
+      { label: t('可用连接器', 'Available connectors'), value: list.length - blocked, note: t(`${blocked} 个已禁用`, `${blocked} blocked`) },
+      { label: t('已连接账号', 'Connected accounts'), value: list.reduce((sum, c) => sum + (Number(c.connections) || 0), 0), note: t('由员工自行授权', 'Authorized individually by members') },
+      { label: t('调用次数'), value: stats ? stats.total.calls : '—' },
+      { label: t('调用费用', 'Usage cost'), value: stats ? `$${(stats.total.amount ?? 0).toFixed(4)}` : '—' },
+    ])}
+    <div class="mg-sectionhead"><h2>${t('服务访问', 'Service access')}</h2><span class="mg-help">${t('禁用后，公司成员将无法使用该连接器。', 'Blocked connectors are unavailable to company members.')}</span></div>
+    <div class="mg-table mg-connector-table"><div class="satu-provhead"><span>${t('连接器')}</span><span>${t('安装情况', 'Installed')}</span><span>${t('状态')}</span><span></span></div>${rows || emptyBox(t('平台还没上架任何连接器。'))}</div>
+    <section class="satu-panel"><div class="mg-sectionhead"><div><h2>${t('员工安装记录', 'Member installations')}</h2><p>${t('员工自行安装并授权，这里展示公司内的使用情况。', 'Members install and authorize their accounts individually.')}</p></div></div>${who || emptyBox(t('还没有员工安装连接器。', 'No member installations yet.'))}</section>
+  </div></div>`
 }
 
 function connectorsPage() {

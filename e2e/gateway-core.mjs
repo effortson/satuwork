@@ -2070,6 +2070,37 @@ export async function runGateway({ gwRoot, botRoot, gwHome: GW_HOME, gwPort: GW_
     assert(me.json.account.title === '一线客服', 'member persisted')
   })
 
+  const avatarPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='
+  await test('头像随个人资料保存并可在重新读取账号后恢复，且不影响其他账号', async () => {
+    const put = await req(base, 'PATCH', '/me', { token: inviteAdminTok, body: { avatar: avatarPng } })
+    assert(put.status === 200 && put.json.account.avatar === avatarPng, `保存头像 ${put.status} ${put.text}`)
+    const mine = await req(base, 'GET', '/me', { token: inviteAdminTok })
+    assert(mine.json.account.avatar === avatarPng, '头像未落库')
+    const other = await req(base, 'GET', '/me', { token: ownerTok })
+    assert(other.json.account.avatar !== avatarPng, '修改了其他账号的头像')
+    const denied = await req(base, 'PATCH', '/me', { body: { avatar: avatarPng } })
+    assert(denied.status === 401, '未登录也能修改头像')
+  })
+
+  await test('头像拒绝 SVG、远程地址、伪造图片、超限尺寸和体积；失败不覆盖原头像', async () => {
+    const huge = Buffer.from(avatarPng.split(',')[1], 'base64')
+    huge.writeUInt32BE(10000, 16)
+    for (const avatar of [42, 'https://example.com/photo.png', 'data:image/svg+xml;base64,PHN2Zy8+', 'data:image/jpeg;base64,' + Buffer.alloc(100).toString('base64'), 'data:image/png;base64,' + huge.toString('base64'), 'data:image/png;base64,' + Buffer.alloc(128 * 1024 + 1).toString('base64')]) {
+      const put = await req(base, 'PATCH', '/me', { token: inviteAdminTok, body: { avatar, name: '不应保存' } })
+      assert(put.status === 400, `非法头像被接收 ${put.status}`)
+    }
+    const mine = await req(base, 'GET', '/me', { token: inviteAdminTok })
+    assert(mine.json.account.avatar === avatarPng && mine.json.account.name !== '不应保存', '失败请求覆盖了资料')
+  })
+
+  await test('移除头像后恢复空头像，并保留其他个人资料', async () => {
+    const before = await req(base, 'GET', '/me', { token: inviteAdminTok })
+    const put = await req(base, 'PATCH', '/me', { token: inviteAdminTok, body: { avatar: '' } })
+    assert(put.status === 200 && put.json.account.avatar === '', '无法移除头像')
+    const after = await req(base, 'GET', '/me', { token: inviteAdminTok })
+    assert(after.json.account.avatar === '' && after.json.account.name === before.json.account.name, '移除后数据不正确')
+  })
+
   await test('SPA GET /profile 返回 html', async () => {
     const r = await req(base, 'GET', '/profile')
     assert(r.status === 200, `spa ${r.status}`)

@@ -223,6 +223,7 @@ export class OrgDb extends DbCore {
       name: (input.name ?? '').trim() || nameFromEmail(email),
       title: '',
       phone: '',
+      avatar: '',
       theme: 'system',
       locale: 'zh',
       passwordHash: input.passwordHash,
@@ -370,7 +371,7 @@ export class OrgDb extends DbCore {
       sets.push(`"${col}"=?`)
       params.push(v)
     }
-    for (const k of ['name', 'title', 'phone', 'lastSeenAt', 'passwordChangedAt', 'tokenRevokedAt'] as const) {
+    for (const k of ['name', 'title', 'phone', 'avatar', 'lastSeenAt', 'passwordChangedAt', 'tokenRevokedAt'] as const) {
       if (patch[k] !== undefined) put(k, patch[k])
     }
     for (const k of ['theme', 'locale', 'role', 'status', 'passwordHash'] as const) {

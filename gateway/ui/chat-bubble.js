@@ -769,13 +769,14 @@ function firstLine(text) {
  * 没有进度（老席位、老管家不报；刚开跑还没调过工具）就只说「正在做」，不编一个数出来。
  */
 function taskSubHtml(v) {
-  if (v.state === 'waiting') return `<span class="sw-taskwait" aria-hidden="true"></span><span>${esc(v.waitText || t('等前置', 'Waiting'))}</span>`
+  if (v.state === 'waiting') return `<span class="sw-taskwait" aria-hidden="true"></span><span class="sw-ti-now">${esc(v.waitText || t('等前置', 'Waiting'))}</span>`
   const p = v.progress || {}
   const now = p.tool
-    ? `<span class="sw-ti-now">${esc(t('正在：', 'Now: '))}<b>${esc(p.tool.name)}</b>${p.tool.detail ? ' ' + esc(p.tool.detail) : ''}</span>`
-    : `<span class="sw-ti-now">${esc(t('正在做', 'Working'))}<span class="sw-taskdots" aria-hidden="true"><i></i><i></i><i></i></span></span>`
+    ? `<span class="sw-ti-now"><span class="sw-ti-label">${esc(t('正在执行', 'Running'))}</span><b>${esc(p.tool.name)}</b>` +
+      (p.tool.detail ? `<span class="sw-ti-command" title="${esc(p.tool.detail)}">${esc(p.tool.detail)}</span>` : '') + '</span>'
+    : `<span class="sw-ti-now"><span class="sw-ti-label">${esc(t('正在处理任务', 'Working on the task'))}</span></span>`
   const todo = p.todo
-    ? `<span class="sw-ti-todo">${esc(`${p.todo.done}/${p.todo.total}`)}${p.todo.now ? ' · ' + esc(p.todo.now) : ''}</span>`
+    ? `<span class="sw-ti-todo" title="${esc(p.todo.now || '')}">${esc(`${p.todo.done}/${p.todo.total}`)}${p.todo.now ? ' · ' + esc(p.todo.now) : ''}</span>`
     : ''
   return `<span class="sw-taskspin" aria-hidden="true"></span>${now}${todo}`
 }
@@ -806,16 +807,16 @@ function taskItemHtml(v) {
     : ''
   return (
     `<div class="sw-ti" data-state="${esc(v.state)}" data-tone="${esc(tone)}"${open ? ' data-open="1"' : ''}>` +
-    `<button type="button" class="sw-task-line" data-act="chat-task-toggle" data-id="${esc(v.id)}" aria-expanded="${open ? 'true' : 'false'}">` +
+    `<button type="button" class="sw-task-line${v.who && live ? ' sw-task-line-assigned' : ''}" data-act="chat-task-toggle" data-id="${esc(v.id)}" aria-expanded="${open ? 'true' : 'false'}">` +
     `<span class="sw-task-dot" data-tone="${esc(tone)}" aria-hidden="true"></span>` +
-    (v.who ? `<span class="sw-task-who"><span class="sw-task-who-av" aria-hidden="true">${v.who.avatar}</span>${esc(v.who.name)}</span>` : '') +
+    (v.who ? `<span class="sw-task-who" title="${esc(v.who.name)}"><span class="sw-task-who-av" aria-hidden="true">${v.who.avatar}</span><span class="sw-task-who-name">${esc(v.who.name)}</span></span>` : '') +
     `<span class="sw-task-goal" title="${esc(v.title)}">${esc(v.title)}</span>` +
     `<span class="sw-task-state">${esc(t(st[0], st[1]))}</span>` +
     taskMetaHtml(v) +
     `<span class="sw-ti-chev" aria-hidden="true"></span>` +
     '</button>' +
-    tier +
     (live ? `<div class="sw-ti-sub">${taskSubHtml(v)}</div>` : '') +
+    tier +
     (open ? taskDetailHtml(v, tone) : '') +
     '</div>'
   )
@@ -1510,7 +1511,7 @@ function rowShell(b, key) {
   if (b.taskFrom) return taskInRowShell(b, key)
   const account = (state.me && state.me.account) || {}
   const mine = b.kind === 'user' ? null : assistantAvatar()
-  const avatar = b.kind === 'user' ? esc(initialOf(account)) : mine.html
+  const avatar = b.kind === 'user' ? accountAvatar(account, 36) : mine.html
   // 时间戳两侧一致，都挂在气泡外面（见 chat.css 里 .sw-time 的说明）。
   //
   // 内容留空，交给 updateRow：助手那条**还在输出时是读秒**、输出完了才换成时刻，

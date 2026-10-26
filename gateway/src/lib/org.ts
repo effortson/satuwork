@@ -421,6 +421,7 @@ export function publicAccount(a: Account) {
     name: a.name,
     title: a.title,
     phone: a.phone,
+    avatar: a.avatar,
     theme: a.theme,
     locale: a.locale,
     role: a.role,

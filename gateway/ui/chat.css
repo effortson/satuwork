@@ -122,6 +122,8 @@
   max-width: var(--sw-chat-max);
   margin-inline: auto;
 }
+/* 历史消息保持自然高度，避免 flex 压缩行盒后，正文溢出并打乱消息间距。 */
+.sw-thread > * { flex-shrink: 0; }
 
 /* ── 消息流 ────────────────────────────────────────────────────────── */
 .sw-thread {
@@ -129,17 +131,18 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--space-4) var(--space-6) var(--space-2);
+  padding: var(--space-4) var(--space-6) var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: 20px;
 }
 /* 日期分隔。只有一行居中的淡字，不画线——消息流里已经有气泡的边界在分组了，
    再加一条横贯全宽的线，视觉重量比它要传达的信息（换了一天）重得多。 */
 .sw-daydiv {
   display: flex;
   justify-content: center;
-  margin-block: var(--space-1);
+  margin-block: 4px;
+  line-height: 20px;
   font-size: 12px;
   color: var(--muted-foreground);
 }
@@ -218,9 +221,9 @@
   .sw-msg[data-live='1'] .sw-msg-avatar,
   .sw-msg[data-live='1'] .sw-msg-avatar svg { animation: none; }
 }
-/* 气泡列最宽 72%：再宽长段落一行装太多字，眼睛回行会丢；再窄代码块和表格就挤了。 */
-.sw-msg-col { min-width: 0; max-width: 72%; display: flex; flex-direction: column; gap: 6px; }
-.sw-msg[data-role='user'] .sw-msg-col { align-items: flex-end; }
+/* 共用 920px 内容轴；为头像和悬停操作留位，长回复、任务和表格可以展开。 */
+.sw-msg-col { min-width: 0; max-width: calc(100% - 84px); display: flex; flex-direction: column; gap: 4px; }
+.sw-msg[data-role='user'] .sw-msg-col { max-width: 72%; align-items: flex-end; }
 
 .sw-bubble {
   position: relative;
@@ -255,7 +258,7 @@
 
 /* 时间戳。两侧一样，都在气泡**外面**——压进气泡里的话，同一条消息里就有了两种
    字号两种颜色，而时间只是旁注。列的对齐方向（sw-msg-col）自然把它推到各自那一边。 */
-.sw-time { font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.sw-time { font-size: 11.5px; line-height: 16px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 
 /* 工具痕迹 / 引用来源。靠间距和药丸本身的底色跟正文分开，不画分割线——
    气泡本来就是一个视觉容器，里面再切一刀是双重分组。 */
@@ -296,7 +299,7 @@
   flex: 1 1 100%;
   min-width: 0;
   border-radius: 10px;
-  background: var(--secondary);
+  background: color-mix(in srgb, var(--secondary) 40%, transparent);
   color: var(--secondary-foreground);
   font-size: 11.5px;
 }
@@ -408,17 +411,20 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-3) var(--space-2);
+  min-height: 96px;
+  padding: 12px 12px 10px;
   background: var(--popover);
-  border: 1px solid var(--input-border);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
+.sw-composer-box:hover { border-color: var(--input-border); }
+.sw-composer-box .satu-grow { min-height: 32px; padding: 2px; }
 /* 焦点环画在盒子上而不是 textarea 上：视觉上「输入框」是整个盒子，
    光标在里面时高亮的也该是整个盒子。 */
 .sw-composer-box:focus-within {
   border-color: var(--ring);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 12%, transparent);
 }
 .sw-composer-row { display: flex; align-items: center; gap: var(--space-2); }
 .sw-composer-row .sw-spacer { flex: 1; }
@@ -478,8 +484,8 @@
    方角的输入框和文字按钮里一眼可辨，也不用为「发送」两个字留一块随语言变宽的位置。 */
 .sw-send {
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -852,7 +858,8 @@
 .sw-model[hidden] { display: none; }
 .sw-model-chip {
   max-width: 220px;
-  padding: 3px 9px;
+  height: 28px;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: transparent;
@@ -906,7 +913,9 @@
   .sw-thread { padding: var(--space-3) var(--space-4) var(--space-2); }
   .sw-composer { padding: var(--space-2) var(--space-4) var(--space-3); }
   .sw-convo { padding: var(--space-3) var(--space-4); }
-  .sw-msg-col { max-width: 86%; }
+  .sw-msg { gap: 8px; }
+  .sw-msg-avatar, .sw-msg-avatar[data-bot='1'] svg { width: 32px; height: 32px; }
+  .sw-msg-col, .sw-msg[data-role='user'] .sw-msg-col { max-width: calc(100% - 68px); }
   .sw-composer-tip > span:first-child { display: none; }
   /* 浮层比窄屏还宽的话右边会被切掉，而被切掉的正好是百分比那一列。 */
   .sw-ctxpop { width: min(272px, calc(100vw - var(--space-8))); }
@@ -1940,66 +1949,101 @@
 .sw-taskname-bot { font-weight: 600; color: var(--color-text); }
 .sw-taskname-tag { padding: 0 7px; border-radius: 999px; background: var(--secondary); font-size: 11px; line-height: 1.7; }
 
-.sw-task-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--muted); overflow: hidden; }
-.sw-bubble .sw-toolfold, .sw-bubble .sw-task-card { margin-block: var(--space-3); }
-.sw-task-head { padding: var(--space-2) var(--space-3); font-size: 12px; color: var(--muted-foreground); border-bottom: 1px solid var(--border); }
+.sw-task-card { border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; overflow: hidden; }
+.sw-bubble .sw-toolfold, .sw-bubble .sw-task-card { margin-block: var(--space-2); }
+.sw-bubble .sw-task-card:last-child { margin-bottom: 0; }
+.sw-task-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; padding: 10px 4px; font-size: 12px; color: var(--muted-foreground); }
+.sw-task-head-title { font-weight: 500; }
+.sw-task-counts { display: flex; flex-wrap: wrap; gap: 5px; }
+.sw-task-count { padding: 1px 7px; border-radius: 999px; background: var(--secondary); font-size: 11px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.sw-task-count[data-tone='run'] { background: var(--color-accent-100); color: var(--color-accent-800); }
+.sw-task-count[data-tone='ok'] { background: var(--color-ok-100); color: var(--color-ok-800); }
+.sw-task-count[data-tone='warn'] { background: var(--color-warn-100); color: var(--color-warn-800); }
 .sw-task-row + .sw-task-row { border-top: 1px solid var(--border); }
+.sw-ti { padding-block: 4px; }
+/* 执行中的任务靠一条轻量色线定位，当前动作保持可见，避免再嵌一层大卡片。 */
+.sw-ti:is([data-tone='run'], [data-tone='wait']) {
+  margin: 4px 0 8px 4px;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--color-accent-300);
+}
+.sw-ti[data-tone='wait'] { border-left-color: var(--border); }
 .sw-task-line {
   display: flex; align-items: center; gap: var(--space-2); width: 100%;
-  padding: var(--space-2) var(--space-3) 2px; background: none; border: 0; text-align: left; cursor: pointer;
+  padding: 8px 4px; background: none; border: 0; border-radius: 6px; text-align: left; cursor: pointer;
   color: var(--foreground); font: inherit;
 }
-.sw-task-line:hover { background: var(--accent); }
+.sw-task-line:hover { background: color-mix(in srgb, var(--secondary) 45%, transparent); }
+.sw-task-line:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .sw-task-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted-foreground); }
-.sw-task-dot[data-tone='run'] { background: var(--color-accent-600); animation: sw-task-pulse 1.4s ease-in-out infinite; }
+.sw-task-dot[data-tone='run'] { background: var(--color-accent-600); box-shadow: 0 0 0 3px var(--color-accent-100); }
 .sw-task-dot[data-tone='wait'] { background: transparent; box-shadow: inset 0 0 0 2px var(--muted-foreground); }
-.sw-task-dot[data-tone='ok'] { background: #16a34a; }
-.sw-task-dot[data-tone='warn'] { background: #d97706; }
+.sw-task-dot[data-tone='ok'] { background: var(--color-ok-500); }
+.sw-task-dot[data-tone='warn'] { background: var(--color-warn-500); }
 .sw-task-dot[data-tone='bad'] { background: var(--color-accent-800); }
 .sw-task-dot[data-tone='off'] { opacity: 0.5; }
 @keyframes sw-task-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .sw-task-who { flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 30%; font-weight: 600; font-size: 12.5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sw-task-who-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sw-task-who-av { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; overflow: hidden; }
 .sw-task-who-av > * { width: 18px; height: 18px; }
-.sw-task-goal { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-task-goal { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-ti:is([data-tone='run'], [data-tone='wait']) .sw-task-goal {
+  font-weight: 600; line-height: 1.6; white-space: normal;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
 .sw-task-state, .sw-task-meta { flex: none; font-size: 12px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
-.sw-ti[data-tone='bad'] .sw-task-state { color: var(--color-accent-800); }
-.sw-ti[data-tone='warn'] .sw-task-state { color: #b45309; }
-.sw-ti[data-tone='ok'] .sw-task-state { color: #15803d; }
+.sw-task-state { padding: 1px 7px; border-radius: 999px; background: var(--secondary); font-size: 11.5px; line-height: 18px; }
+.sw-task-meta { font-size: 11px; }
+/* 派给其他 Bot 的运行任务：身份与状态一行，长指令另起一行，右侧元信息不挤占标题。 */
+.sw-task-line-assigned {
+  display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto 8px;
+  column-gap: 8px; row-gap: 6px;
+}
+.sw-task-line-assigned .sw-task-dot { grid-area: 1 / 1; }
+.sw-task-line-assigned .sw-task-who { grid-area: 1 / 2; min-width: 0; max-width: 100%; gap: 6px; }
+.sw-task-line-assigned .sw-task-state { grid-area: 1 / 3; margin-left: 0; }
+.sw-task-line-assigned .sw-task-meta { grid-area: 1 / 4; }
+.sw-task-line-assigned .sw-ti-chev { grid-area: 1 / 5; margin: 0; }
+.sw-ti .sw-task-line-assigned .sw-task-goal { grid-area: 2 / 2 / 3 / -1; font-weight: 400; }
+.sw-ti[data-open='1'] .sw-task-line-assigned .sw-task-goal { display: block; -webkit-line-clamp: unset; }
+.sw-ti:is([data-tone='run'], [data-tone='bad']) .sw-task-state { background: var(--color-accent-100); color: var(--color-accent-800); }
+.sw-ti[data-tone='warn'] .sw-task-state { background: var(--color-warn-100); color: var(--color-warn-800); }
+.sw-ti[data-tone='ok'] .sw-task-state { background: var(--color-ok-100); color: var(--color-ok-800); }
 .sw-ti-chev { flex: none; width: 6px; height: 6px; margin: 0 2px 0 2px; border-right: 1.5px solid var(--muted-foreground); border-bottom: 1.5px solid var(--muted-foreground); transform: rotate(-45deg); transition: transform .15s ease; }
 .sw-ti[data-open='1'] .sw-ti-chev { transform: rotate(45deg); }
 .sw-task-tier-row {
-  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
-  padding: 2px var(--space-3) 0 calc(var(--space-3) + 16px); font-size: 12px;
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  padding: 6px 4px 8px 20px; font-size: 11.5px; line-height: 1.6;
 }
 .sw-task-tier {
-  padding: 0 6px; border-radius: 4px; background: var(--background); border: 1px solid var(--border);
-  color: var(--muted-foreground); font-family: var(--font-mono, monospace);
+  flex: none; padding: 0 6px; border-radius: 4px; background: var(--secondary);
+  color: var(--secondary-foreground); font-family: var(--font-mono, monospace); font-size: 10.5px;
 }
 /* 降过级的要看得出来：不标的话人会以为那一档是主代理自己选的。 */
 .sw-task-down { color: var(--color-accent-800); }
-.sw-task-why { color: var(--muted-foreground); overflow-wrap: anywhere; }
-/* 第二行：跑着时「正在：工具 参数 · 清单 3/7」，等着时等谁。收场了没有这一行。一行，截断。 */
+.sw-task-why { flex: 1 1 180px; color: var(--muted-foreground); overflow-wrap: anywhere; }
+/* 当前动作独立一行；工具名和命令分开，长命令截断后仍可悬停读取全文。 */
 .sw-ti-sub {
   display: flex; align-items: center; gap: 8px; min-width: 0;
-  padding: 2px var(--space-3) var(--space-2) calc(var(--space-3) + 16px); font-size: 12.5px; color: var(--muted-foreground);
+  margin: 0 4px 4px 20px; padding: 7px 9px; border-radius: 6px;
+  background: color-mix(in srgb, var(--secondary) 35%, transparent);
+  font-size: 12px; line-height: 1.6; color: var(--muted-foreground);
 }
 /* 收场了、没摊开：只剩第一行，底下补回第二行原本占着的那点空。 */
 .sw-ti > .sw-task-line:only-child { padding-bottom: var(--space-2); }
 .sw-ti-sub > span:not(.sw-taskspin):not(.sw-taskwait) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sw-ti-now { flex: 1; color: var(--color-text); }
-.sw-ti-now b { font-family: var(--font-mono, monospace); font-weight: 600; margin-right: 4px; }
+.sw-ti-sub .sw-ti-now { flex: 1; display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--color-text); }
+.sw-ti-label { flex: none; color: var(--muted-foreground); font-size: 11.5px; }
+.sw-ti-now b { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono, monospace); font-size: 11.5px; font-weight: 500; }
+.sw-ti-command { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); font-family: var(--font-mono, monospace); font-size: 11.5px; }
 .sw-ti-todo { flex: none; max-width: 45%; padding: 0 7px; border-radius: 999px; background: var(--background); border: 1px solid var(--border); font-size: 11.5px; }
 .sw-taskspin { width: 12px; height: 12px; flex: none; box-sizing: border-box; border: 2px solid var(--color-accent-200, #f3cdbf); border-top-color: var(--color-accent-600, #c4643f); border-radius: 50%; animation: sw-spin 0.9s linear infinite; }
 .sw-taskwait { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--muted-foreground); opacity: 0.5; }
-.sw-taskdots { display: inline-flex; gap: 3px; margin-left: 4px; vertical-align: middle; }
-.sw-taskdots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: 0.25; animation: sw-pulse 1.2s ease-in-out infinite; }
-.sw-taskdots i:nth-child(2) { animation-delay: 0.2s; }
-.sw-taskdots i:nth-child(3) { animation-delay: 0.4s; }
 
 .sw-task-detail {
-  padding: 0 var(--space-3) var(--space-3) calc(var(--space-3) + 16px);
-  display: flex; flex-direction: column; gap: var(--space-2);
+  margin: 4px 4px 0 20px; padding: 10px 0 8px; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 10px;
 }
 .sw-ti-reason {
   display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; border-radius: var(--radius);
@@ -2017,30 +2061,30 @@
 
 /* 过程：一步一行。过程可能很长，给它自己的滚动条，别把对话顶下去。 */
 .sw-task-trace {
-  max-height: 360px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--background); padding: var(--space-2); font-size: 12px;
-  display: flex; flex-direction: column; gap: 4px;
+  max-height: 360px; overflow-y: auto; overscroll-behavior: contain;
+  padding: 2px 4px 2px 0; font-size: 12px; line-height: 1.65;
+  display: flex; flex-direction: column; gap: 10px;
 }
 /* 滚动框里的每一行都别被压扁：flex 容器到了 max-height 会先收缩子项，-webkit-box 那行会被压成 0 高。 */
 .sw-task-trace > * { flex: none; }
 .sw-tr-say { color: var(--color-text); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; padding: 2px 0; }
-.sw-tr-step { border-left: 2px solid var(--border); padding-left: var(--space-2); }
+.sw-tr-step { border-left: 2px solid var(--border); padding-left: 10px; }
 .sw-tr-step[data-status='running'] { border-left-color: var(--color-accent-400, #e08a66); }
-.sw-tr-step[data-status='blocked'] { border-left-color: #d97706; }
+.sw-tr-step[data-status='blocked'] { border-left-color: var(--color-warn-500); }
 .sw-tr-step[data-status='error'] { border-left-color: var(--color-accent-800); }
 .sw-tr-head {
   display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 0; border: 0; background: none;
   text-align: left; font: inherit; color: var(--muted-foreground); cursor: pointer;
 }
 .sw-tr-head:disabled { cursor: default; }
-.sw-tr-head b { flex: none; font-family: var(--font-mono, monospace); font-weight: 600; color: var(--color-text); }
+.sw-tr-head b { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono, monospace); font-weight: 500; color: var(--color-text); }
 .sw-tr-arg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sw-tr-ico { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #16a34a; }
+.sw-tr-ico { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--color-ok-500); }
 .sw-tr-step[data-status='running'] .sw-tr-ico { background: var(--color-accent-600); animation: sw-task-pulse 1.4s ease-in-out infinite; }
-.sw-tr-step[data-status='blocked'] .sw-tr-ico { background: #d97706; }
+.sw-tr-step[data-status='blocked'] .sw-tr-ico { background: var(--color-warn-500); }
 .sw-tr-step[data-status='error'] .sw-tr-ico { background: var(--color-accent-800); }
 .sw-tr-badge { flex: none; padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 1.6; background: var(--secondary); }
-.sw-tr-step[data-status='blocked'] .sw-tr-badge { background: color-mix(in srgb, #d97706 16%, transparent); color: #b45309; }
+.sw-tr-step[data-status='blocked'] .sw-tr-badge { background: var(--color-warn-100); color: var(--color-warn-800); }
 .sw-tr-step[data-status='error'] .sw-tr-badge { background: color-mix(in srgb, var(--color-accent-800) 14%, transparent); color: var(--color-accent-800); }
 .sw-tr-out { color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sw-tr-step:is([data-status='blocked'], [data-status='error']) .sw-tr-out { white-space: normal; overflow-wrap: anywhere; color: var(--color-text); }
@@ -2050,7 +2094,7 @@
 }
 .sw-tr-end { margin-top: 4px; padding-top: 6px; border-top: 1px dashed var(--border); color: var(--muted-foreground); }
 .sw-tr-end[data-tone='bad'] { color: var(--color-accent-800); }
-.sw-tr-end[data-tone='ok'] { color: #15803d; }
+.sw-tr-end[data-tone='ok'] { color: var(--color-ok-800); }
 /* 窄屏：任务那句话单独占一行（最多两行），状态和读秒换到下一行；进度那一行也允许折行。
    不折的话右边那串小字先占位，标题被挤成「收…」，人根本认不出是哪一件。 */
 @media (max-width: 560px) {
@@ -2059,12 +2103,17 @@
   .sw-task-state { margin-left: 16px; }
   .sw-ti-chev { margin-left: auto; }
   .sw-ti-sub { flex-wrap: wrap; }
-  .sw-ti-todo { max-width: 100%; margin-left: 20px; }
+  .sw-ti-sub .sw-ti-now { flex: 1 1 calc(100% - 24px); flex-wrap: wrap; row-gap: 2px; }
+  .sw-ti-command { flex-basis: 100%; }
+  .sw-ti-todo { max-width: calc(100% - 20px); margin-left: 20px; }
   .sw-ti-now + .sw-ti-todo { flex-basis: auto; }
-  .sw-ti-now { flex: 1 0 calc(100% - 24px); }
+  .sw-task-line-assigned { row-gap: 6px; }
+  .sw-task-line-assigned .sw-task-who { font-size: 12px; }
+  .sw-task-line-assigned .sw-task-meta { grid-area: 2 / 2 / 3 / -1; }
+  .sw-ti .sw-task-line-assigned .sw-task-goal { grid-row: 3; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .sw-taskspin, .sw-taskdots i, .sw-task-dot, .sw-tr-ico { animation: none; }
+  .sw-taskspin, .sw-task-dot, .sw-tr-ico { animation: none; }
 }
 /* 动效敏感的人不该被一个转不停的圈晃。留一个静止的环，位置和含义都还在。 */
 @media (prefers-reduced-motion: reduce) {
