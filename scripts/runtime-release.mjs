@@ -11,7 +11,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const TARGETS = [
   { target: 'linux-x64', platform: 'linux', arch: 'x64', runner: 'ubuntu-latest' },
   { target: 'linux-arm64', platform: 'linux', arch: 'arm64', runner: 'ubuntu-24.04-arm' },
-  { target: 'darwin-arm64', platform: 'darwin', arch: 'arm64', runner: 'macos-14' },
+  { target: 'darwin-arm64', platform: 'darwin', arch: 'arm64', runner: 'macos-15' },
   { target: 'darwin-x64', platform: 'darwin', arch: 'x64', runner: 'macos-15-intel' },
   { target: 'windows-x64', platform: 'win32', arch: 'x64', runner: 'windows-latest' },
   { target: 'windows-arm64', platform: 'win32', arch: 'arm64', runner: 'windows-11-arm' },
