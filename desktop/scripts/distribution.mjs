@@ -10,7 +10,7 @@ export function validateProfile(p) {
   if (p.region !== 'cn' || !['stable', 'beta'].includes(p.channel)) throw Error('Unsupported distribution')
   const beta = p.channel === 'beta'
   if (p.productName !== (beta ? 'Satuwork-CN-Beta' : 'Satuwork-CN') || p.identifier !== (beta ? 'sg.dami.satuwork.cn.beta' : 'sg.dami.satuwork.cn')) throw Error('Distribution application identity must be isolated')
-  for (const k of ['gatewayUrl', 'updateUrl', 'downloadBase', 'updaterPublicKey']) {
+  for (const k of ['gatewayUrl', 'updateUrl', 'downloadBase']) {
     const u = new URL(p[k])
     if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash || u.href.replace(/\/$/, '') !== p[k].replace(/\/$/, '')) throw Error(`Invalid public HTTPS URL: ${k}`)
   }
