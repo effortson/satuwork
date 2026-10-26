@@ -1,10 +1,11 @@
 // Run on the regional host. The platform token is read from its existing private environment.
 import { readFileSync, writeFileSync, copyFileSync, chmodSync, symlinkSync, mkdirSync, renameSync, existsSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { assemble } from './distribution-artifacts.mjs'
 import { validateProfile } from './distribution.mjs'
 
-const [input, profilePath, keyPath, output, channel, sourceSha] = process.argv.slice(2)
+export async function publishDistribution([input, profilePath, keyPath, output, channel, sourceSha], environment = process.env, fetcher = fetch) {
 const p = validateProfile(JSON.parse(readFileSync(profilePath))[channel])
 if (p.channel !== channel) throw Error('Channel mismatch')
 const release = assemble(resolve(input), p, JSON.parse(readFileSync(keyPath, 'utf8'))[channel], sourceSha)
@@ -25,13 +26,13 @@ if (existsSync(releaseDir)) {
     if (!readFileSync(join(releaseDir, f)).equals(readFileSync(join(input, f)))) throw Error('Immutable release already exists with different bytes')
   }
 }
-const token = process.env.GATEWAY_PLATFORM_TOKEN
-const gateway = process.env.DISTRIBUTION_LOCAL_GATEWAY
+const token = environment.GATEWAY_PLATFORM_TOKEN
+const gateway = environment.DISTRIBUTION_LOCAL_GATEWAY
 if (!token || !/^http:\/\/127\.0\.0\.1:(3080|3081)$/.test(gateway || '')) throw Error('Missing private local publishing configuration')
 if ((channel === 'stable' && !gateway.endsWith(':3080')) || (channel === 'beta' && !gateway.endsWith(':3081'))) throw Error('Gateway/channel mismatch')
 // Verify all desktop signatures and file hashes before updating any runtime records.
 const headers = { Authorization: `Bearer ${token}` }
-const response = await fetch(`${gateway}/platform/local-bot-releases`, { headers, redirect: 'error' })
+const response = await fetcher(`${gateway}/platform/local-bot-releases`, { headers, redirect: 'error' })
 if (!response.ok) throw Error(`Cannot read local runtime releases: HTTP ${response.status}`)
 const existing = (await response.json()).releases
 for (const i of release.inventories) {
@@ -43,7 +44,7 @@ for (const i of release.inventories) {
     continue
   }
   const url = `${gateway}/platform/local-bot-releases/${encodeURIComponent(i.botVersion)}?minDesktopVersion=${encodeURIComponent(i.minDesktopVersion)}&note=${encodeURIComponent(`${p.productName} ${version}`)}`
-  const uploaded = await fetch(url, { method: 'PUT', headers: { ...headers, 'Content-Type': 'application/gzip', 'x-bot-sha256': file.sha256 }, body: readFileSync(join(input, i.runtime)), redirect: 'error' })
+  const uploaded = await fetcher(url, { method: 'PUT', headers: { ...headers, 'Content-Type': 'application/gzip', 'x-bot-sha256': file.sha256 }, body: readFileSync(join(input, i.runtime)), redirect: 'error' })
   if (!uploaded.ok) throw Error(`Runtime upload failed: HTTP ${uploaded.status}`)
   console.log(`Registered runtime ${i.botVersion}`)
 }
@@ -73,3 +74,6 @@ try {
   atomic('latest.json', JSON.stringify(release.latest, null, 2) + '\n')
   console.log(`Published ${p.productName} ${version}: ${p.downloadBase}/`)
 } finally { rmSync(stage, { recursive: true, force: true }) }
+
+}
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await publishDistribution(process.argv.slice(2))

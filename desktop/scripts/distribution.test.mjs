@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { validateProfile, validateVersion, configure } from './distribution.mjs'
 import { verifyUpdater, assemble, sha256 } from './distribution-artifacts.mjs'
 import { desktopDownloadMeta } from '../../gateway/src/desktop-distribution.ts'
+import { publishDistribution } from './publish-distribution.mjs'
 
 const p = { region: 'cn', channel: 'stable', productName: 'Satuwork-CN', identifier: 'sg.dami.satuwork.cn', gatewayUrl: 'https://gateway.example.cn', updateUrl: 'https://download.example.cn/desktop/latest.json', downloadBase: 'https://download.example.cn/desktop', updaterPublicKey: Buffer.from('test public key '.repeat(8)).toString('base64') }
 test('download mirror metadata rejects credentials and insecure or executable URLs', () => {
@@ -48,7 +49,7 @@ test('updater verification rejects modified payloads and trusted comments', () =
   const changed = Buffer.from(Buffer.from(sig, 'base64').toString().replace('123456', '987654')).toString('base64')
   assert.throws(() => verifyUpdater(data, changed, pubkey))
 })
-test('publication requires a complete set from one source and verifies every file', () => {
+test('publication requires a complete set from one source, promotes complete files, and rejects mutations', async () => {
   const temp = mkdtempSync(join(tmpdir(), 'distribution-test-')), sha = 'a'.repeat(40)
   try {
     for (const [target, name] of [['darwin-aarch64', 'macos-arm64'], ['darwin-x86_64', 'macos-x64'], ['windows-x86_64', 'windows-x64']]) {
@@ -62,7 +63,24 @@ test('publication requires a complete set from one source and verifies every fil
     assert.equal(Object.keys(release.latest.platforms).length, 3)
     assert.ok(Object.values(release.latest.platforms).every(p => p.url.startsWith('https://download.example.cn/desktop/releases/0.1.16/')))
     assert.throws(() => assemble(temp, p, pubkey, 'b'.repeat(40)))
+    const profilePath = join(temp, 'profiles.json'), keyPath = join(temp, 'keys.json'), output = join(temp, 'public')
+    writeFileSync(profilePath, JSON.stringify({ stable: p }))
+    writeFileSync(keyPath, JSON.stringify({ stable: pubkey }))
+    const requests = []
+    const fetcher = async (url, options) => {
+      requests.push([url, options])
+      return new Response(JSON.stringify({ releases: [] }), { status: 200 })
+    }
+    const args = [temp, profilePath, keyPath, output, 'stable', sha]
+    await publishDistribution(args, { GATEWAY_PLATFORM_TOKEN: 'test-only', DISTRIBUTION_LOCAL_GATEWAY: 'http://127.0.0.1:3080' }, fetcher)
+    assert.equal(requests.length, 4)
+    const latestPath = join(output, 'stable/desktop/latest.json'), latest = readFileSync(latestPath, 'utf8')
+    assert.equal(JSON.parse(latest).version, '0.1.16')
+    assert.equal(readFileSync(join(output, 'stable/desktop/Satuwork_x64.dmg'), 'utf8'), 'macos-x64')
     writeFileSync(join(temp, 'macos-x64.tgz'), 'tampered')
     assert.throws(() => assemble(temp, p, pubkey, sha))
+    await assert.rejects(() => publishDistribution(args, { GATEWAY_PLATFORM_TOKEN: 'test-only', DISTRIBUTION_LOCAL_GATEWAY: 'http://127.0.0.1:3080' }, fetcher))
+    assert.equal(readFileSync(latestPath, 'utf8'), latest)
+    assert.equal(requests.length, 4, 'Rejected files must not change runtime records')
   } finally { rmSync(temp, { recursive: true, force: true }) }
 })
