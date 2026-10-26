@@ -19,7 +19,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { die, finish, foreignEsbuild, prepare, root } from '../scripts/pack-lib.mjs'
+import { die, finish, foreignEsbuild, prepare, removeWorkspaceSelfLink, root } from '../scripts/pack-lib.mjs'
 
 const pkgRoot = dirname(fileURLToPath(import.meta.url))
 const pack = prepare(pkgRoot, 'manager')
@@ -74,6 +74,7 @@ try {
     if (!existsSync(join(stage, 'src', 'seat', f))) die(`staging 里没有 src/seat/${f}`)
   }
 
+  removeWorkspaceSelfLink(stage, 'satuwork-manager')
   writeFileSync(join(stage, 'VERSION'), version + '\n')
 
   console.log('pack: tar 中…')

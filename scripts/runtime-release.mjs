@@ -109,7 +109,9 @@ export function build() {
     const bytes = readFileSync(path)
     const minimum = kind === 'local-bot' ? String(pkg.minDesktopVersion || '0.1.0') : null
     if (minimum !== null && !/^\d+\.\d+\.\d+$/.test(minimum)) throw Error('Invalid minDesktopVersion')
-    packages.push({ kind, target, version, file, size: bytes.length, sha256: sha256(bytes), minDesktopVersion: minimum })
+    const record = { kind, target, version, file, size: bytes.length, sha256: sha256(bytes), minDesktopVersion: minimum }
+    command(process.platform === 'win32' ? 'python' : 'python3', [join(root, 'scripts/check-runtime-archives.py'), out, JSON.stringify([record])])
+    packages.push(record)
   }
   writeFileSync(join(out, `runtime-${target}.json`), JSON.stringify({ schema: 1, region: 'cn', branch, component, sourceSha: sha, runId: String(runId), target, packages }, null, 2) + '\n')
 }

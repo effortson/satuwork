@@ -26,7 +26,7 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { die, finish, foreignEsbuild, prepare, root } from '../scripts/pack-lib.mjs'
+import { die, finish, foreignEsbuild, prepare, removeWorkspaceSelfLink, root } from '../scripts/pack-lib.mjs'
 
 const botRoot = dirname(fileURLToPath(import.meta.url))
 const pack = prepare(botRoot, 'bot')
@@ -61,6 +61,7 @@ try {
     )
   }
 
+  removeWorkspaceSelfLink(stage, 'satuwork')
   writeFileSync(join(stage, 'VERSION'), version + '\n')
 
   console.log('pack: tar 中…')

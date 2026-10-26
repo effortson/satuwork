@@ -5,11 +5,21 @@
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const root = dirname(dirname(fileURLToPath(import.meta.url)))
+
+/** pnpm legacy deploy leaves a self-alias pointing back to the CI checkout. It is
+ * not a runtime dependency and must not escape a self-contained release archive. */
+export function removeWorkspaceSelfLink(stage, name) {
+  if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name)) throw Error('Invalid package name')
+  const path = join(stage, 'node_modules', '.pnpm', 'node_modules', name)
+  try {
+    if (lstatSync(path).isSymbolicLink()) rmSync(path)
+  } catch (error) { if (error.code !== 'ENOENT') throw error }
+}
 
 export function arg(name) {
   const i = process.argv.indexOf('--' + name)

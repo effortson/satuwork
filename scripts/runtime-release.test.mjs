@@ -1,18 +1,33 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { generateKeyPairSync, sign, createHash } from 'node:crypto'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, symlinkSync, lstatSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { matrix, selectedKinds, runtimeVersion, verifySet, sha256, validateSelection } from './runtime-release.mjs'
 import { publishRuntimes } from './publish-runtimes.mjs'
 import { tarGz } from '../e2e/release.mjs'
+import { removeWorkspaceSelfLink } from './pack-lib.mjs'
 const { publicKey, privateKey } = generateKeyPairSync('ed25519'), id = Buffer.from('0102030405060708', 'hex')
 const key = Buffer.from(`untrusted comment: test\n${Buffer.concat([Buffer.from('Ed'), id, publicKey.export({ type: 'spki', format: 'der' }).subarray(-32)]).toString('base64')}\n`).toString('base64')
 function signed(data) {
   const sig = sign(null, createHash('blake2b512').update(data).digest(), privateKey), comment = 'timestamp:123456'
   return Buffer.from(`untrusted comment: test\n${Buffer.concat([Buffer.from('ED'), id, sig]).toString('base64')}\ntrusted comment: ${comment}\n${sign(null, Buffer.concat([sig, Buffer.from(comment)]), privateKey).toString('base64')}\n`).toString('base64')
 }
+test('packaging removes pnpm checkout self-links without touching their target', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'runtime-link-'))
+  try {
+    const stage = join(dir, 'stage'), external = join(dir, 'checkout')
+    mkdirSync(join(stage, 'node_modules/.pnpm/node_modules'), { recursive: true });mkdirSync(external)
+    writeFileSync(join(external, 'keep'), 'checkout')
+    const link = join(stage, 'node_modules/.pnpm/node_modules/satuwork')
+    symlinkSync(external, link, process.platform === 'win32' ? 'junction' : 'dir')
+    removeWorkspaceSelfLink(stage, 'satuwork')
+    assert.throws(() => lstatSync(link), /ENOENT/)
+    assert.equal(readFileSync(join(external, 'keep'), 'utf8'), 'checkout')
+    removeWorkspaceSelfLink(stage, 'satuwork')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
 test('component selection covers both server architectures and all six local Bot targets', () => {
   assert.equal(matrix('all').include.length, 6)
   for (const kind of ['manager', 'bot']) assert.deepEqual(matrix(kind).include.map(t => t.target), ['linux-x64', 'linux-arm64'])
