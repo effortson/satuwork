@@ -825,7 +825,7 @@ function dlRow(b, primary) {
 function dlServerHint() {
   const base = gatewayBase() || (typeof location === 'object' && location && typeof location.origin === 'string' ? location.origin : '')
   if (!base || !/^https?:\/\//i.test(base)) return ''
-  return `<p class="satu-dl-server">${t('第一次打开要填的服务器地址：', 'The server address it asks for on first launch:')}<code>${esc(base)}</code></p>`
+  return `<p class="satu-dl-server">${dlMirror() ? t('此安装包固定连接：', 'This installer connects to:') : t('第一次打开要填的服务器地址：', 'The server address it asks for on first launch:')}<code>${esc(base)}</code></p>`
 }
 
 /**
@@ -865,6 +865,58 @@ function dlMeta() {
  * 左边一张卡（当前平台的包）、右边一列说明。公开下载页（downloadView）和应用内那一页
  * （downloadPage）画的是同一个东西；切平台时只换这一块（见 paintDownload），所以带着 id。
  */
+function dlInternationalNotes(cur) {
+  return `
+      ${/* Mac 那条**不是「右键 → 打开」**：没签名的包下载下来带着隔离标记，系统报的是
+            「已损坏」，右键打开绕不过去，只能在终端里把那个标记摘掉。和发版 CI 写进
+            Release 说明里的是同一句（见 .github/workflows/desktop-release.yml）。 */ ''}
+      ${dlNote(
+        t('第一次打开会拦一下', 'The first launch gets blocked'),
+        cur === 'mac'
+          ? t(
+              '这个包还没做苹果签名，打开时系统会说「已损坏，无法打开」——包本身没有坏。先把 Satuwork 拖进「应用程序」，再打开「终端」执行下面这一行，之后就能正常打开。只需要做一次。',
+              'The build is not signed by Apple yet, so macOS says it is “damaged and can’t be opened” — it isn’t. Drag Satuwork into Applications, then run this line once in Terminal and it opens normally from then on.',
+            )
+          : t(
+              '这个包还没做代码签名，SmartScreen 会挡一下。在那个蓝框里点「更多信息」→「仍要运行」——只有第一次要这么做。',
+              'The build is not code-signed yet, so SmartScreen steps in. Click “More info” → “Run anyway” in that blue box. Only the first launch needs this.',
+            ),
+        cur === 'mac' ? 'xattr -dr com.apple.quarantine /Applications/Satuwork.app' : '',
+      )}
+      ${dlNote(
+        t('账号还是原来那个', 'Same account as the web'),
+        t(
+          '桌面端不另开账号：填完服务器地址，用管理员给你开的那个邮箱和口令登录即可。没有账号就找公司管理员开通。',
+          'The desktop app does not have its own accounts. After the server address, sign in with the email and password your admin gave you. No account yet? Ask your company admin.',
+        ),
+      )}
+      ${dlNote(
+        t('自己会升级的只有一半', 'Half of it updates itself'),
+        t(
+          '本地 Bot的运行时会自己在后台更新；外面这层应用还要手工换新版——所以升级的时候回这里再下一次。',
+          'The local Bot runtime updates itself in the background. The app shell around it still needs a new installer, so come back here to upgrade.',
+        ),
+      )}
+      ${dlNote(
+        t('Linux 暂时没有包', 'No Linux build yet'),
+        t(
+          'Linux 上的桌面端还没验过，暂时不发包。那边先用浏览器打开这台服务器，除了本地 Bot之外功能一样。',
+          'The Linux desktop build is not verified yet, so we don’t ship one. Open this server in a browser there — everything except local Bots is the same.',
+        ),
+      )}`
+}
+
+function dlRegionalNotes(cur) {
+  return [
+    dlNote(t('中国区安装包', 'China edition'), cur === 'mac'
+      ? t('macOS 安装包已签名并通过 Apple 公证，打开后拖入「应用程序」即可。', 'The macOS app is signed and notarized by Apple. Open the installer and drag it into Applications.')
+      : t('Windows 安装包目前没有代码签名，系统可能提示未知发布者；应用更新仍会验证更新签名。', 'The Windows installer does not yet have code signing and may show an unknown publisher warning. Application updates still verify their update signature.')),
+    dlNote(t('账号和数据按环境独立', 'Separate accounts and data'), t('安装包固定连接当前中国区环境，使用本环境管理员开通的账号登录。正式版、测试版和国际版分别安装，数据各自独立。', 'This installer connects to this China environment. Sign in with an account issued here. Stable, beta and international editions have separate application data.')),
+    dlNote(t('从中国区检查更新', 'Updates from China'), t('应用和本地 Bot 都通过本环境的更新入口获取新版并校验；应用有新版时会提示，确认后再安装。首次使用中国区版本请手动安装。', 'The app and local Bot check and verify updates through this environment. App updates prompt before installation. Install the China edition manually the first time.')),
+    dlNote(t('Linux 暂时没有包', 'No Linux build yet'), t('目前提供 macOS（Apple 芯片、Intel）和 Windows 64 位安装包；Linux 请先使用网页版。', 'Installers are available for Apple silicon and Intel Macs, and 64-bit Windows. Use the web version on Linux.')),
+  ].join('')
+}
+
 function dlGrid(cur) {
   const builds = dlBuilds().filter((b) => b.os === cur)
   const guessed = dlDetect()
@@ -905,43 +957,7 @@ function dlGrid(cur) {
     </div>
 
     <div class="satu-dl-side">
-      ${/* Mac 那条**不是「右键 → 打开」**：没签名的包下载下来带着隔离标记，系统报的是
-            「已损坏」，右键打开绕不过去，只能在终端里把那个标记摘掉。和发版 CI 写进
-            Release 说明里的是同一句（见 .github/workflows/desktop-release.yml）。 */ ''}
-      ${dlNote(
-        t('第一次打开会拦一下', 'The first launch gets blocked'),
-        cur === 'mac'
-          ? t(
-              '这个包还没做苹果签名，打开时系统会说「已损坏，无法打开」——包本身没有坏。先把 Satuwork 拖进「应用程序」，再打开「终端」执行下面这一行，之后就能正常打开。只需要做一次。',
-              'The build is not signed by Apple yet, so macOS says it is “damaged and can’t be opened” — it isn’t. Drag Satuwork into Applications, then run this line once in Terminal and it opens normally from then on.',
-            )
-          : t(
-              '这个包还没做代码签名，SmartScreen 会挡一下。在那个蓝框里点「更多信息」→「仍要运行」——只有第一次要这么做。',
-              'The build is not code-signed yet, so SmartScreen steps in. Click “More info” → “Run anyway” in that blue box. Only the first launch needs this.',
-            ),
-        cur === 'mac' ? 'xattr -dr com.apple.quarantine /Applications/Satuwork.app' : '',
-      )}
-      ${dlNote(
-        t('账号还是原来那个', 'Same account as the web'),
-        t(
-          '桌面端不另开账号：填完服务器地址，用管理员给你开的那个邮箱和口令登录即可。没有账号就找公司管理员开通。',
-          'The desktop app does not have its own accounts. After the server address, sign in with the email and password your admin gave you. No account yet? Ask your company admin.',
-        ),
-      )}
-      ${dlNote(
-        t('自己会升级的只有一半', 'Half of it updates itself'),
-        t(
-          '本地 Bot的运行时会自己在后台更新；外面这层应用还要手工换新版——所以升级的时候回这里再下一次。',
-          'The local Bot runtime updates itself in the background. The app shell around it still needs a new installer, so come back here to upgrade.',
-        ),
-      )}
-      ${dlNote(
-        t('Linux 暂时没有包', 'No Linux build yet'),
-        t(
-          'Linux 上的桌面端还没验过，暂时不发包。那边先用浏览器打开这台服务器，除了本地 Bot之外功能一样。',
-          'The Linux desktop build is not verified yet, so we don’t ship one. Open this server in a browser there — everything except local Bots is the same.',
-        ),
-      )}
+      ${dlMirror() ? dlRegionalNotes(cur) : dlInternationalNotes(cur)}
     </div>
   </div>`
 }
