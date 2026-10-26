@@ -3,6 +3,7 @@
 # 别的全挡掉：node_modules 几百兆一进上下文，每次 build 先传它几分钟；.env 里是平台
 # token 和数据库连接串，进了镜像层就等于发出去了。
 .git
+deploy/china
 node_modules
 **/node_modules
 .env
