@@ -1122,6 +1122,8 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    */
   router.get('/manager/release', async (req, res) => {
     const code = normalizePairingCode(req.query.get('code') || '')
+    const arch = req.query.get('arch') || undefined
+    if (arch && arch !== 'x64' && arch !== 'arm64') throw new HttpError(400, '不支持的机器架构')
     /**
      * **认出是哪台机器就要把它带上**：`desiredManagerRelease` 靠 machine 认两件事——
      * 这台机器钉的版本（`desiredManagerVersion`），以及**架构**。少了它，取的是
@@ -1130,7 +1132,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
      * 正是这条分支存在的理由。钉了版本的机器同样会被绕过去：装成最新之后，下一次
      * 心跳 Gateway 又按 pin 把它换回来，白重启一轮管家和工人。
      *
-     * 配对码那条路没有机器可带（记录还不存在、也不知道 arch），只能按平台默认给。
+     * 首次配对由装机脚本传 arch；修复已配对机器仍优先采用机器登记的架构和固定版本。
      */
     let machine: Machine | undefined
     if (code) {
@@ -1140,7 +1142,7 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
       // 没给码就必须拿得出机器票。两样都没有仍然是 401，和以前一样。
       machine = await requireMachine(req, db)
     }
-    const desired = await desiredManagerRelease(db, machine)
+    const desired = await desiredManagerRelease(db, machine, arch)
     if (!desired) throw new HttpError(409, '还没有发布机器管家版本')
     /**
      * 能直连的（GitHub Release，见 releases.ts 的 directReleaseUrl）**302 过去**，不经函数

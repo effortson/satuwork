@@ -73,6 +73,11 @@ fi
 if [ ! -x /usr/bin/node ]; then ln -sf "$(command -v node)" /usr/bin/node; fi
 
 echo "==> Downloading the manager"
+case "$(uname -m)" in
+  x86_64|amd64) ARCH=x64 ;;
+  aarch64|arm64) ARCH=arm64 ;;
+  *) echo "unsupported machine architecture: $(uname -m)" >&2; exit 2 ;;
+esac
 apt-get install -y curl tar >/dev/null 2>&1 || true
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -87,7 +92,7 @@ trap 'rm -rf "$TMP"' EXIT
 # headers so it survives the redirect. curl does not carry our Authorization header to
 # another host when following a redirect, so the machine token stays with the Gateway.
 if [ -n "$CODE" ]; then
-  curl -fsSL -D "$TMP/headers" "$GATEWAY_URL/manager/release?code=$CODE" -o "$TMP/manager.tgz"
+  curl -fsSL -D "$TMP/headers" "$GATEWAY_URL/manager/release?code=$CODE&arch=$ARCH" -o "$TMP/manager.tgz"
 else
   MT="$(node -p 'JSON.parse(require("fs").readFileSync("/etc/satuwork/manager.json","utf8")).token' 2>/dev/null || true)"
   if [ -z "$MT" ]; then
@@ -96,7 +101,7 @@ else
   fi
   # The Gateway reads the machine token from Authorization (lib/guards.ts requireMachine);
   # x-satuwork-machine is the manager's own convention and does not apply here.
-  curl -fsSL -D "$TMP/headers" -H "authorization: Bearer $MT" "$GATEWAY_URL/manager/release" -o "$TMP/manager.tgz"
+  curl -fsSL -D "$TMP/headers" -H "authorization: Bearer $MT" "$GATEWAY_URL/manager/release?arch=$ARCH" -o "$TMP/manager.tgz"
 fi
 # This package runs as root: no checksum, no install.
 WANT="$(awk -F': *' 'tolower($1) == "x-bot-sha256" { print $2; exit }' "$TMP/headers" | tr -d '[:space:]')"
