@@ -16,7 +16,7 @@ fn server_file(app: &AppHandle) -> Option<PathBuf> {
 }
 
 /** 正式发布包连的 Gateway。 */
-const DEFAULT_SERVER: &str = "https://satuwork.com";
+const DEFAULT_SERVER: &str = crate::distribution::GATEWAY;
 
 /**
  * 服务器地址锁死：**正式发布包不让填、不让换**，固定连 DEFAULT_SERVER；只有 debug 构建
@@ -27,13 +27,14 @@ pub(crate) fn server_locked() -> bool {
 }
 
 /**
- * 这次连哪儿。`SATUWORK_SERVER` 两种构建都认（排查用，不写盘）；再往下：
+ * 这次连哪儿。中国区发布包忽略运行时覆盖，避免跨区；其他构建认 `SATUWORK_SERVER`。再往下：
  * 锁死时是 DEFAULT_SERVER，存在磁盘上的老地址（0.1.2 及之前用户填过的）一律不看；
  * 没锁时是用户存过的，没有就是 None，交给设置屏去问。
  * 拆成纯函数是为了能不起应用就把这条规则钉住。
  */
 fn pick_server(locked: bool, from_env: Option<&str>, saved: Option<&str>) -> Option<String> {
     let fallback = if locked { Some(DEFAULT_SERVER) } else { saved };
+    let from_env = if locked && crate::distribution::isolated() { None } else { from_env };
     [from_env, fallback]
         .into_iter()
         .flatten()
@@ -129,13 +130,13 @@ mod tests {
     /// 正式包固定连默认地址，存过的老地址不看；本地测试按 环境变量 > 存过的，没有就 None。
     #[test]
     fn server_locked_ignores_saved_address() {
-        let d = Some("https://satuwork.com");
+        let d = Some(super::DEFAULT_SERVER);
         assert_eq!(pick_server(true, None, Some("http://old")).as_deref(), d);
         assert_eq!(pick_server(true, None, None).as_deref(), d);
         assert_eq!(pick_server(true, Some("  "), None).as_deref(), d);
         assert_eq!(
             pick_server(true, Some("http://e"), Some("http://old")).as_deref(),
-            Some("http://e")
+            if crate::distribution::isolated() { d } else { Some("http://e") }
         );
         assert_eq!(
             pick_server(false, Some("http://e"), Some("http://s")).as_deref(),

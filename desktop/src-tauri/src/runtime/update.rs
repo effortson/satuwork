@@ -341,7 +341,8 @@ pub(crate) fn stage_runtime_update(
         // 过同一套 size + sha256 比对——sha256 来自上面那次带席位票的 manifest 请求，直连这条路
         // 本身不需要可信。
         let mut direct_error = None;
-        let fetched = match release.direct_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let direct = if crate::distribution::isolated() { None } else { release.direct_url.as_deref() };
+        let fetched = match direct.map(str::trim).filter(|s| !s.is_empty()) {
             Some(raw) => match download_direct(raw, &release, &archive) {
                 Ok(()) => true,
                 Err(error) => {

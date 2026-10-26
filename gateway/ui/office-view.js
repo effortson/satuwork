@@ -344,7 +344,8 @@
       return
     }
     // CDN 根：父页面按它那边的配置给（内网镜像），只收 http(s)。真正的闸是这一页的 CSP。
-    if (typeof msg.cdn === 'string' && /^https?:\/\/[^\s"'<>]+$/.test(msg.cdn)) cdn = msg.cdn.replace(/\/+$/, '')
+    if (msg.cdn === '/vendor/npm') cdn = msg.cdn
+    else if (typeof msg.cdn === 'string' && /^https?:\/\/[^\s"'<>]+$/.test(msg.cdn)) cdn = msg.cdn.replace(/\/+$/, '')
     busy = true
     status('正在渲染' + (msg.name ? '「' + msg.name + '」' : '') + '…')
     try {

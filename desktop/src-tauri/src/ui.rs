@@ -92,6 +92,9 @@ const UI_CSP: &str = concat!(
     "worker-src 'self' satu: http://satu.localhost https://satu.localhost blob:"
 );
 
+// Bundled regional builds load scripts, styles and fonts from their signed resources.
+const BUNDLED_UI_CSP: &str = "default-src 'self' satu: http://satu.localhost https://satu.localhost; base-uri 'none'; object-src 'none'; script-src 'self' satu: http://satu.localhost https://satu.localhost; style-src 'self' satu: http://satu.localhost https://satu.localhost 'unsafe-inline'; font-src 'self' satu: http://satu.localhost https://satu.localhost data:; img-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; media-src 'self' satu: http://satu.localhost https://satu.localhost data: blob: https: http:; connect-src 'self' satu: http://satu.localhost https://satu.localhost ipc: http://ipc.localhost https: http: wss: ws:; frame-src 'self' satu: http://satu.localhost https://satu.localhost blob: https: http:; worker-src 'self' satu: http://satu.localhost https://satu.localhost blob:";
+
 /**
  * 界面路径里的一段能不能拼到 ui 目录后面。`..` / `.` 逃目录；`\\` 在 Windows 上是分隔符；
  * `:` 挡的是 Windows 的盘符前缀（`C:foo` 被 PathBuf::push 当成另一个盘上的路径，整个替换掉
@@ -133,6 +136,7 @@ pub(crate) fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>)
         for seg in stripped.split('/').filter(|s| !s.is_empty()) {
             alt.push(seg);
         }
+        if stripped.starts_with("vendor/") && !alt.is_file() { return not_found(); }
         file = if alt.is_file() && !stripped.is_empty() { alt } else { dir.join("index.html") };
     }
     let Ok(bytes) = fs::read(&file) else { return not_found() };
@@ -140,10 +144,11 @@ pub(crate) fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>)
     let mut response = tauri::http::Response::builder()
         .status(tauri::http::StatusCode::OK)
         .header("content-type", mime)
-        .header("cache-control", "no-store");
+        .header("cache-control", "no-store")
+        .header("access-control-allow-origin", "*");
     // 和 Gateway 一样只挂在页面本身上：脚本、样式是被这一页加载的，约束它们的是这一页的策略。
     if mime.starts_with("text/html") {
-        response = response.header("content-security-policy", UI_CSP);
+        response = response.header("content-security-policy", if crate::distribution::isolated() { BUNDLED_UI_CSP } else { UI_CSP });
     }
     response.body(Cow::Owned(bytes)).unwrap()
 }

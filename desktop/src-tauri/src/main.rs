@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod distribution;
+
 use std::collections::HashMap;
 use std::process::Child;
 use std::sync::atomic::AtomicBool;
