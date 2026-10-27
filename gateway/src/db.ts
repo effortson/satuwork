@@ -21,6 +21,7 @@ import { ChannelsDb } from './db/channels.ts'
 import { SessionsDb } from './db/sessions.ts'
 import { RoutinesDb } from './db/routines.ts'
 import { HandoffsDb } from './db/handoffs.ts'
+import { NotificationsDb } from './db/notifications.ts'
 
 /**
  * Gateway 自己的库（PostgreSQL）。跟 Bot 的 satuwork.db 不是同一份——
@@ -51,13 +52,13 @@ import { HandoffsDb } from './db/handoffs.ts'
 export class Db extends DbCore {}
 export interface Db
   extends OrgDb, UsageDb, KnowledgeDb, KnowledgeVectorDb, PlansDb, MachinesDb, SeatsDb, CatalogDb,
-    SettingsDb, ChannelsDb, SessionsDb, RoutinesDb, HandoffsDb {}
+    SettingsDb, ChannelsDb, SessionsDb, RoutinesDb, HandoffsDb, NotificationsDb {}
 
 /**
  * 把各领域的方法挂到 Db.prototype 上。**撞名直接炸**：两个领域各写了一个同名方法，后挂的
  * 会悄悄盖掉先挂的——宁可启动时就报出来。
  */
-for (const domain of [OrgDb, UsageDb, KnowledgeDb, KnowledgeVectorDb, PlansDb, MachinesDb, SeatsDb, CatalogDb, SettingsDb, ChannelsDb, SessionsDb, RoutinesDb, HandoffsDb]) {
+for (const domain of [OrgDb, UsageDb, KnowledgeDb, KnowledgeVectorDb, PlansDb, MachinesDb, SeatsDb, CatalogDb, SettingsDb, ChannelsDb, SessionsDb, RoutinesDb, HandoffsDb, NotificationsDb]) {
   for (const name of Object.getOwnPropertyNames(domain.prototype)) {
     if (name === 'constructor') continue
     if (Object.prototype.hasOwnProperty.call(Db.prototype, name)) {

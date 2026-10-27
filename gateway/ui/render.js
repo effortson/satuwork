@@ -359,7 +359,7 @@ function appView() {
         ${handoffBell()}
         ${asideToggle()}
       </div>
-      <div class="gw-body${state.path === '/profile' || (!isOwner() && /^\/(company|accounts|audit|billing|costs|usage|bots|skills|connectors|handoffs|plugins|channels|knowledge)(\/|$)/.test(state.path)) ? ' gw-company' : ''}">${pageView()}</div>
+      <div class="gw-body${state.path === '/profile' || (!isOwner() && /^\/(company|accounts|audit|billing|costs|usage|bots|skills|connectors|handoffs|plugins|channels|knowledge)(\/|$)/.test(state.path)) ? ' gw-company' : ''}"><div data-mobile-background="banner">${mobileBackgroundInner()}</div>${pageView()}</div>
       ${aside}
     </main>
     ${confirmModal()}
@@ -510,6 +510,7 @@ function render() {
     // 上下键选不动（一条候选都查不到），回车穿到发送那条路上去。
     paintCmdPick()
   }
+  syncWebNotifications()
   // 右栏里的预览：内容在常驻层上，这里只对位置、内容变了才换（见 chat-preview.js 的 syncPreview）。
   // 笔刷滑杆在右栏的按钮行里，跟着整页换掉了，要重新接上。
   syncPreview()

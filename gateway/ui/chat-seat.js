@@ -380,7 +380,8 @@ function chatMachinePanel() {
     )
   }
 
-  if (mine && mine.status === 'ready') {
+  // 手机端不提供远程桌面：预览、外部打开入口和桌面专用的配置提示一起省略。
+  if (!mobileShell() && mine && mine.status === 'ready') {
     if (!mine.novncUrl) {
       // 桌面地址只剩直连一种（Gateway 不再反代 `/desktop/…`）：机器没配 directUrl 或管家
       // 太旧时它是 null。不说这一句的话这一栏就是空的，人会以为桌面这一路坏了。

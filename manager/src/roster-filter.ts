@@ -41,13 +41,15 @@ export interface Upstream {
   after: number
   lastTick: number
   attempt: number
+  /** 每次上游重连先重放，replay/done 之后才是新事件。 */
+  replaying?: boolean
 }
 
 /** 一条上游事件 → 要不要往浏览器转，转成什么。顺带把游标和节流状态推进。 */
 export function rosterFrame(
   ev: { type?: string; seq?: number; time?: number; live?: unknown },
   up: Upstream,
-): { type: string; botId: string; ev?: unknown; live?: boolean } | null {
+): Frame | null {
   // 游标按**过滤前**的 seq 走：滤掉的那些也算「见过了」，否则每次重连都要把它们再拉
   // 一遍，而它们恰恰是最多的那一批（chunk）。
   if (typeof ev.seq === 'number' && ev.seq > up.after) up.after = ev.seq
@@ -58,6 +60,7 @@ export function rosterFrame(
    * （和 chat.js 里 chatLive 治的是同一个病）。
    */
   if (ev.type === 'replay/done') {
+    up.replaying = false
     return typeof ev.live === 'boolean' ? { type: 'roster/live', botId: up.botId, live: ev.live } : null
   }
   if (ev.type === 'assistant/chunk') {
@@ -66,13 +69,13 @@ export function rosterFrame(
     const at = Number(ev.time) || 0
     if (!at || at - up.lastTick < TICK_MS) return null
     up.lastTick = at
-    return { type: 'roster/ev', botId: up.botId, ev: { type: 'assistant/chunk', time: at } }
+    return { type: 'roster/ev', botId: up.botId, sessionId: up.sessionId, ev: { type: 'assistant/chunk', time: at } }
   }
   if (!ev.type || !ROSTER_TYPES.has(ev.type)) return null
-  return { type: 'roster/ev', botId: up.botId, ev }
+  return { type: 'roster/ev', botId: up.botId, sessionId: up.sessionId, replay: up.replaying !== false, ev }
 }
 
-export type Frame = { type: string; botId: string; ev?: unknown; live?: boolean }
+export type Frame = { type: string; botId: string; sessionId?: string; replay?: boolean; ev?: unknown; live?: boolean }
 
 /**
  * 一个 Bot 的「追平集」：**新接上的页面要先看到的那几帧**。

@@ -108,6 +108,12 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 .gw-head { grid-row: 1; grid-column: 1; display: flex; align-items: center; gap: var(--space-3);
   padding: var(--space-3) var(--space-6); border-bottom: 1px solid var(--color-divider); }
 .gw-body { grid-row: 2; grid-column: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+[data-mobile-background="banner"] { flex: none; }
+[data-mobile-background="profile"]:empty { display: none; }
+.gw-mobile-background { padding: 10px var(--space-4); background: var(--color-accent-100); color: var(--color-accent-800); border-bottom: 1px solid var(--color-divider); font-size: 12px; line-height: 1.5; }
+.gw-mobile-background-copy { min-width: 0; }
+.gw-mobile-background-copy p { margin: 4px 0 0; font-size: 12px; line-height: 1.5; }
+.gw-mobile-background-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-top: 8px; }
 .gw-aside { grid-row: 1 / span 2; grid-column: 2; position: relative; min-width: 0; overflow: hidden;
   border-left: 1px solid var(--color-divider); display: flex; flex-direction: column; }
 /* 右栏没有自己的 header：开关在对话 header 上，所以这里不会有一条和左边对不齐的
@@ -1631,3 +1637,24 @@ html.satu-window-windows body:not(:has(.gw-shell)) #app { padding-top: 36px; }
 html.satu-window-windows .gw-shell { height: calc(100vh - 36px) !important; height: calc(100dvh - 36px) !important; }
 html.satu-window-windows .gw-login { min-height: calc(100vh - 36px); min-height: calc(100dvh - 36px); }
 html.satu-window-windows body:not(:has(.gw-shell)) .satu-windowbar { background: var(--color-surface, var(--bg)); }
+.satu-web-unread {
+  flex: none; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box;
+  border-radius: 9px; background: #dc3545; color: #fff; font-size: 10px;
+  line-height: 18px; text-align: center; font-weight: 600;
+}
+#web-notifications {
+  position: fixed; right: max(24px, env(safe-area-inset-right));
+  bottom: max(24px, env(safe-area-inset-bottom)); z-index: 180;
+  width: min(360px, calc(100vw - 32px)); display: grid; gap: 10px;
+}
+.satu-web-notice {
+  display: flex; align-items: flex-start; border: 1px solid var(--border);
+  border-radius: 12px; background: var(--color-surface); color: var(--color-text);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 14%); overflow: hidden;
+}
+.satu-web-notice-open { flex: 1; min-width: 0; padding: 16px; text-align: left; }
+.satu-web-notice-open strong { display: block; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.satu-web-notice-open span { display: block; margin-top: 5px; font-size: 12px; color: var(--muted-foreground); }
+.satu-web-notice-close { flex: none; padding: 10px 14px; font-size: 20px; color: var(--muted-foreground); }
+.satu-web-notice button { margin: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font-family: inherit; line-height: 1.5; cursor: pointer; }
+.satu-web-notice button:hover { background: var(--muted); }

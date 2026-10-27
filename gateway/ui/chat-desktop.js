@@ -63,8 +63,7 @@ function deskCaption() {
  */
 function deskEmbeddable(url) {
   if (!url) return false
-  // 手机壳里不嵌：右栏盖在对话上、只有三百多像素宽，一块缩成邮票的桌面谁也用不了，
-  // 还一直挂着一条 VNC。退回下面那颗「打开桌面」——交给系统浏览器全屏开。
+  // 手机壳不提供远程桌面预览，也不提供交给系统浏览器打开的入口。
   if (mobileShell()) return false
   return !(location.protocol === 'https:' && /^http:/i.test(url))
 }
@@ -319,7 +318,7 @@ function syncDesktop() {
  * 所以人得有一个确定能把它救回来的动作。
  */
 async function remountDesktop(force = false) {
-  if (deskMounting) return
+  if (mobileShell() || deskMounting) return
   deskMounting = true
   try {
     const want = chatBotIdNow()

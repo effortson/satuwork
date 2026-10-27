@@ -382,9 +382,10 @@ async function downloadWorkspaceFile(path, name) {
   try {
     const res = await swFetch(url, { headers: authHeaders() })
     if (!res.ok) throw new Error('HTTP ' + res.status)
-    saveBlob(await res.blob(), name || path.split('/').pop() || 'file')
+    await saveBlob(await res.blob(), name || path.split('/').pop() || 'file')
   } catch (err) {
     flash('err', t('下载失败：') + err.message)
+    render()
   }
 }
 

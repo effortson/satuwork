@@ -28,6 +28,18 @@ const LINK_SCRIPT: &str = r#"
   // 可以落到持久存储；再告诉它 Gateway 在哪——页面源是 satu://localhost，相对路径打不到 Gateway。
   window.__SATUWORK_DESKTOP__ = true
   window.__SATUWORK_GATEWAY__ = __GATEWAY_URL__
+  window.__SATUWORK_DESKTOP_NOTIFICATIONS__ = {
+    session: function (accountId) { return window.__TAURI_INTERNALS__.invoke('desktop_notification_session', { accountId: accountId || null }) },
+    send: function (notice) { return window.__TAURI_INTERNALS__.invoke('desktop_notify', { notice: notice }) },
+    clear: function (ids, generation) { return window.__TAURI_INTERNALS__.invoke('desktop_clear_notifications', { ids: ids, generation: generation }) }
+  }
+  // blob: 的 <a download> 在 WebView 里可能静默失效，文件交给壳子的系统保存窗口。
+  // 字节走二进制 IPC，避免大文件转成 JSON 数组；文件名用编码后的头传递，支持中文。
+  window.__SATUWORK_SAVE_FILE__ = function (bytes, name) {
+    return window.__TAURI_INTERNALS__.invoke('save_download', bytes, {
+      headers: { 'x-satuwork-download-name': encodeURIComponent(name) }
+    })
+  }
   window.__SATUWORK_LOCAL_BOT__ = {
     start: function (config) { return window.__TAURI_INTERNALS__.invoke('start_local_bot', { config: config }) },
     stop: function (botId) { return window.__TAURI_INTERNALS__.invoke('stop_local_bot', { botId: botId }) },

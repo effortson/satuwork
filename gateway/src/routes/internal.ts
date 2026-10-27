@@ -15,11 +15,10 @@ import { resolveAssignee } from '../lib/handoff.ts'
 import { notify } from '../handoff-sweep.ts'
 import { auditResultHash, failConversationAuditBatch, recordUsedAuditModel } from '../conversation-audit.ts'
 import { afterResponse } from '../lib/background.ts'
-import { PUSH_KINDS, pushMessage, pushToAccount, type PushKind } from '../lib/push.ts'
+import { PUSH_KINDS, type PushKind } from '../lib/push.ts'
+import { wakeNotificationDispatcher } from '../lib/notifications.ts'
+import { notificationPosition } from './notifications.ts'
 import { companyOr404 } from '../lib/org.ts'
-
-/** `/internal/push` 当场等推送发完的上限，见那条路由。比席位那头的八秒超时短得多。 */
-const PUSH_WAIT_MS = 5_000
 
 /**
  * 席位报上来的 guard / outcome 只认这两张表里的值。
@@ -616,22 +615,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     json(res, 200, { event })
   })
 
-  /**
-   * 席位说「这颗 Bot 有事要人看」：一轮跑完了（turn-end），或者停在一张审批卡上等人点
-   * （approval）。Gateway 给这个账号登记过的手机各推一条（lib/push.ts）。
-   *
-   * **只收「哪颗 Bot、什么事」，不收正文。** 标题是 Bot 的名字（这边从目录里查，不采信
-   * body），正文是一句固定的话。对话内容在席位机器上，Gateway 不经手，推送也不该夹带。
-   *
-   * 鉴权和审计事件那条一样：席位票只能报自己，机器票只能报本机席位。Bot 必须是这家公司
-   * 看得见的——不查的话，一台被拿下的席位能拿任意 botId 让别家 Bot 的名字出现在锁屏上。
-   *
-   * 推送失败不让上报失败：席位那头不该为一条没发出去的通知重试；发没发出去记在返回里。
-   *
-   * **最多等 PUSH_WAIT_MS**：平时 APNs / FCM 一两百毫秒就回，回执带着 sent / dropped（e2e 靠它核对）。
-   * 那两家慢的时候一台设备最坏要等十秒，席位那头八秒就放弃了，Gateway 还在这儿干等。超了就把
-   * 剩下的交给 afterResponse 接着发，先回 202 `{ pending: true }`。
-   */
+  /** 席位上报稳定事件标识，落库后返回；三端共用已读游标和两秒通知缓冲。 */
   router.post('/internal/push', async (req, res) => {
     const caller = await requireInternalCaller(req, db)
     const body = bodyOf(req)
@@ -647,18 +631,13 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     if (!bot || bot.kind !== 'bot' || (bot.companyId && bot.companyId !== caller.companyId)) {
       throw new HttpError(404, '没有这颗 Bot')
     }
-    const sending = pushToAccount(db, accountId, pushMessage(kind as PushKind, bot.name, botId, account.locale))
-    let timer: NodeJS.Timeout | undefined
-    const late = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), PUSH_WAIT_MS)
-    })
-    const result = await Promise.race([sending, late]).finally(() => clearTimeout(timer))
-    if (!result) {
-      afterResponse(`给 ${accountId} 的手机推送`, sending)
-      json(res, 202, { pending: true })
-      return
-    }
-    json(res, 200, result)
+    const position = notificationPosition(body)
+    const actionId = strField(body, 'actionId', false).slice(0, 200)
+    const sourceTime = intField(body, 'time') ?? Date.now()
+    const event = await db.recordNotification({ ...position, accountId, kind: kind as PushKind,
+      actionId, occurredAt: sourceTime, resolvedAt: body.resolved === true ? Date.now() : undefined })
+    wakeNotificationDispatcher(db, accountId)
+    json(res, 202, { queued: true, id: event.id })
   })
 
   /**
@@ -749,18 +728,15 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
      * 让实例撑到它发完。
      */
     if (!known && handoff.state === 'open') afterResponse(`转人工 ${handoff.id} 的新单通知`, notify(db, handoff, 'new'))
-    /**
-     * 同一个时刻给接手人的手机推一条。指派给「管理员」的（assignee 为 null）不推：那是一群人，
-     * 谁都推等于谁都不当回事，留给待办页和公司 webhook。
-     */
-    if (!known && handoff.state === 'open' && handoff.assignee) {
-      const assignee = await db.account(handoff.assignee)
-      const bot = handoff.botId ? await db.catalog(handoff.botId) : undefined
-      if (assignee) {
-        afterResponse(
-          `转人工 ${handoff.id} 的手机推送`,
-          pushToAccount(db, assignee.id, pushMessage('handoff', bot?.name || '', handoff.botId || '', assignee.locale)),
-        )
+    // 转人工通知也进入同一调度队列。阅读只改变通知状态，不改变交接单状态。
+    const noticeSeq = intField(body, 'notificationSeq')
+    if (handoff.botId && noticeSeq && noticeSeq > 0) {
+      const recipients = new Set([accountId, ...(handoff.assignee ? [handoff.assignee] : [])])
+      for (const recipient of recipients) {
+        await db.recordNotification({ accountId: recipient, botId: handoff.botId, sessionId: handoff.sessionId,
+          seq: noticeSeq, kind: 'handoff', actionId: handoff.id, occurredAt: handoff.createdAt,
+          resolvedAt: handoff.state !== 'open' ? Date.now() : undefined })
+        wakeNotificationDispatcher(db, recipient)
       }
     }
     /**

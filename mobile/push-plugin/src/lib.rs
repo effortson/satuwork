@@ -1,12 +1,13 @@
 //! 手机壳的远程推送（docs/adr-core-package-mobile.md §2.5 第 4 件）。
 //!
-//! 两条命令，页面经 `window.__SATUWORK_PUSH__` 调（mobile/src-tauri/src/lib.rs 的注入脚本）：
+//! 页面经 `window.__SATUWORK_PUSH__` 调（mobile/src-tauri/src/lib.rs 的注入脚本）：
 //!
 //! - `register`：要通知权限、要设备令牌（iOS 向 APNs，Android 向 FCM）。拿到的令牌由页面交给
 //!   Gateway 的 `PUT /me/push-device`——壳子不碰登录票，登记和注销都在页面那层，和别的 API 请求一样。
 //! - `take_tap`：用户点开的那条通知（botId / kind），取一次就清掉。页面在启动和回到前台时取，
 //!   取到就跳到那颗 Bot 的对话。不用事件推给页面：点通知的那一刻页面可能还没起来，
 //!   「放着等页面来取」两种情况都对。
+//! - `background_status` / `open_background_settings`：Android 后台限制检测和应用设置入口。
 //!
 //! 原生那一半：iOS 在 ios/Sources/SatuPushPlugin.swift，Android 在 android/src/main/java/…/SatuPushPlugin.kt。
 //! 桌面上没有原生那一半，`register` 回 `granted: false`、`take_tap` 回空，页面照常跑。
@@ -51,6 +52,42 @@ pub struct Tap {
     pub bot_id: Option<String>,
     #[serde(default)]
     pub kind: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundStatus {
+    pub supported: bool,
+    pub background_restricted: bool,
+    pub battery_optimization_ignored: bool,
+}
+
+#[tauri::command]
+async fn background_status<R: Runtime>(app: tauri::AppHandle<R>) -> Result<BackgroundStatus, String> {
+    #[cfg(target_os = "android")]
+    {
+        let push = app.state::<Push<R>>();
+        push.0.run_mobile_plugin_async("backgroundStatus", ()).await.map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(BackgroundStatus::default())
+    }
+}
+
+#[tauri::command]
+async fn open_background_settings<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let push = app.state::<Push<R>>();
+        push.0.run_mobile_plugin_async("openBackgroundSettings", ()).await.map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Err("Background settings are only available on Android".into())
+    }
 }
 
 /**
@@ -105,9 +142,25 @@ async fn take_tap<R: Runtime>(app: tauri::AppHandle<R>) -> Result<Tap, String> {
     }
 }
 
+#[tauri::command]
+async fn clear_notifications<R: Runtime>(app: tauri::AppHandle<R>, ids: Vec<String>) -> Result<(), String> {
+    if ids.len() > 1000 || ids.iter().any(|id| id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit())) {
+        return Err("Invalid notification identifiers".into());
+    }
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    {
+        let push = app.state::<Push<R>>();
+        #[derive(Serialize)]
+        struct Args { ids: Vec<String> }
+        push.0.run_mobile_plugin_async("clearNotifications", Args { ids }).await.map_err(|e| e.to_string())
+    }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    { let _ = (app, ids); Ok(()) }
+}
+
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("satu-push")
-        .invoke_handler(tauri::generate_handler![register, take_tap])
+        .invoke_handler(tauri::generate_handler![register, take_tap, clear_notifications, background_status, open_background_settings])
         .setup(|app, api| {
             #[cfg(target_os = "ios")]
             app.manage(Push(api.register_ios_plugin(init_plugin_satu_push)?));

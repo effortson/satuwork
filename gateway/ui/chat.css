@@ -923,6 +923,10 @@
   .sw-model-chip { max-width: 140px; }
 }
 
+/* 手机聊天省去两侧头像，把头像和操作按钮的预留宽度还给消息正文。 */
+html.satu-mobile #chat-thread .sw-msg > .sw-msg-avatar { display: none; }
+html.satu-mobile #chat-thread .sw-msg > .sw-msg-col { max-width: 100%; }
+
 /* ══════════════════════════════════════════════════════════════════════
    气泡里的 Markdown。这一段以下跟「聊天」无关。
    ══════════════════════════════════════════════════════════════════════ */

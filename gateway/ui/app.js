@@ -30,6 +30,7 @@ function endSignedIn() {
   closeConnBots({ restoreFocus: false, force: true })
   // 手机壳：先拿着这张票把设备从推送名单里摘掉，下一行票就清了（shell.js 的 forgetMobilePush）。
   if (typeof forgetMobilePush === 'function') forgetMobilePush()
+  resetDesktopNotifications()
   clearToken()
   // 先掐流再清数据：SSE 还连着的话，下一个人登进来之前就会有上一个人的事件继续往
   // state.chatEvents 里落，然后被画出来。聊天正文、草稿、名册都是上一个账号的东西，
@@ -398,6 +399,9 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (!btn) return
   if (btn.classList.contains('gw-modal-backdrop') && e.target !== btn) return
   const act = btn.getAttribute('data-act')
+  if (act === 'mobile-background-settings') { await openMobileBackgroundSettings(); return }
+  if (act === 'mobile-background-check') { await checkMobileBackground(); return }
+  if (act === 'mobile-background-dismiss') { mobileBackgroundDismissed = true; paintMobileBackground(); return }
   if (await channelAct(act, btn)) return
   if (await knowledgeAct(act, btn)) return
   // 连接器那一屏的动作都在 pages-connectors.js 里。这条 if 链已经六百多行了，
@@ -803,7 +807,11 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'chat-export') {
     const bot = chatBotOf()
     const stamp = new Date().toISOString().slice(0, 10)
-    downloadFile(((bot && bot.name) || 'chat') + '-' + stamp + '.md', chatExportText(), 'text/markdown;charset=utf-8')
+    try {
+      await downloadFile(((bot && bot.name) || 'chat') + '-' + stamp + '.md', chatExportText(), 'text/markdown;charset=utf-8')
+    } catch (err) {
+      flash('err', t('下载失败：') + err.message)
+    }
     state.menu = null
     render()
     return
@@ -3247,6 +3255,7 @@ document.addEventListener(
     // 人动过滚动条之后，贴底才开始看「是不是本来就在底部」。在这之前一律贴底，
     // 否则刚进页面、内容还没铺满时会停在顶上。
     el.setAttribute('data-touched', '1')
+    noteChatScroll(el)
     const jump = document.getElementById('chat-jump')
     if (jump) jump.hidden = nearBottom(el)
     // 翻到顶就自己往前取一页。按钮留着是给「滚不动」的情况兜底（内容还没铺满一屏时

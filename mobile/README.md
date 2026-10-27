@@ -99,6 +99,22 @@ adb logcat | grep "\[satuwork\]"
 .gitignore 挡着）。没有它也编得过，只是不套 google-services 插件，`register` 回「没配 Firebase」，
 页面不登记。本机从 Firebase 控制台下载一份放进去；以后出 Android 正式包的 CI 从 secret 写进来。
 
+Gateway 还需要在本机 `gateway/.env` 配 `GATEWAY_FCM_SERVICE_ACCOUNT`：同一 Firebase 项目的服务账号
+私钥 JSON 全文或整段 base64。配置文件和私钥都不进版本库。重启 Gateway、重编 Android 包后，登录时
+允许通知，手机会把 FCM 令牌登记到 `/me/push-device`。Android 8+ 使用「Bot 消息提醒」频道，后台显示
+通知，点开跳到对应 Bot 的对话；前台由聊天消息流更新，不额外弹通知。
+Bot 的回复完成与待审批事件正常上报推送，不按 SSE 连接数或回复耗时过滤；手机在后台或管家汇总
+名单时流仍可能连接，不能拿它判断用户是否正在阅读。
+
+真机锁屏后通知延迟时，也要检查应用的电池限制。三星 One UI 可在「设置 → 应用程序 → Satuwork →
+电池 / 后台运行」选择「不受限制」；「受限制」或「深度休眠」会限制后台活动、自动运行。
+Android 客户端在登录和回到前台时检查标准后台限制与电池优化状态。需要调整时显示可暂时关闭的提醒，
+「打开应用设置」进入当前应用的系统详情页，再按提示进入电池 / 后台运行选择「不受限制」。
+个人设置页始终保留检测结果、重新检测和设置入口；设置完成返回应用后自动复查。
+不同厂商的自启动、休眠应用策略无法通过标准 API 完整判断，个人设置中的引导也会提醒检查这些选项。
+排查时用 `adb shell cmd appops get sg.dami.satuwork.mobile RUN_ANY_IN_BACKGROUND` 核对：`ignore` 表示
+后台运行被限制。调整应用自己的设置后，再保持熄屏、通过真实聊天验证送达时间和点击跳转。
+
 模拟器里测点通知不需要 FCM 真发：系统在用户点开 FCM 通知时给应用的就是带这几个 extra 的 intent，
 照样发一个即可（应用在后台时走 onNewIntent，强停后再发走冷启动）：
 
@@ -117,6 +133,10 @@ AirDrop，Android 的分享选择器）。http(s) 的下载链接交给系统浏
 壳子的 CSP 因此比桌面壳多一处：`connect-src` 认 `blob:` / `data:`，不然注入脚本读不到 blob。
 
 ## 出包
+
+Android 桌面图标单独重新生成：`pnpm --filter satuwork-mobile icon --android`。
+生成器会同步各密度 PNG 和普通 / 圆形自适应图标；前景每边留出 20%，避免启动器裁掉机器人外框和底座。
+`pnpm --filter satuwork-mobile icon` 则重新生成所有平台的图标。
 
 ```bash
 pnpm --filter satuwork-mobile build:ios
@@ -141,17 +161,19 @@ pnpm --filter satuwork-mobile build:ios
 `serve_ui`、UI_CSP、导航守卫（`allow_navigation` / `open_path_allowed`）是从
 desktop/src-tauri/src/ 的 ui.rs / nav.rs 抄过来的，**两边要一起改**。手机上有意不同的几处：
 
-- 同源的 `target="_blank"`（「打开桌面」）桌面上另开一扇应用窗口，手机只有一扇窗，换成 Gateway 的
+- 同源的 `target="_blank"`（个人设置里的「在浏览器里打开」）桌面上另开一扇应用窗口，手机只有一扇窗，换成 Gateway 的
   源交给 Safari——Gateway 发的是同一份界面，在 Safari 里登录一次就能看（`open_target`）。
-- 没有内嵌桌面那块 iframe 的放行（桌面壳的 `allow_seat_desktop` / `is_seat_desktop`）：手机上不嵌桌面
-  （gateway/ui/chat-desktop.js 的 `deskEmbeddable`），那条命令和那座桥也就不开。
+- 手机端不提供远程桌面预览或「打开桌面」入口，也不挂载 VNC。运行状态和日常任务仍然保留。
+  没有桌面 iframe 的放行（桌面壳的 `allow_seat_desktop` / `is_seat_desktop`），那条命令和那座桥也就不开。
 - `mailto:` / `tel:` / `sms:` 交给系统（`hand_to_system`）：WebView 自己打不开它们，放行等于点了没反应。
 - CSP 的 `connect-src` 多认 `blob:` / `data:`，见上面「下载」。
 
 ## 推送
 
 原生那一半在 [push-plugin/](push-plugin/)（Swift 在 `push-plugin/ios/Sources/SatuPushPlugin.swift`），
-登记到 Gateway 在 gateway/ui/shell.js 的 `syncMobilePush`。设计见 ADR §2.5。
+登记到 Gateway 在 gateway/ui/shell.js 的 `syncMobilePush`。三端共用 Gateway 上的阅读游标：
+任意端实际读过后，尚未发送的提醒取消，未读角标同步；手机回到前台时会清理已经读过的系统通知。
+这不会批准审批，也不会关闭转人工单。调度、离线恢复与系统限制见 [跨端通知](../docs/notifications.md)。
 
 模拟器里测点通知，不需要 APNs 钥匙：
 

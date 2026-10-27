@@ -12,8 +12,10 @@ use tauri::menu::Menu;
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
 mod directories;
+mod downloads;
 mod local_bot;
 mod nav;
+mod notifications;
 mod runtime;
 mod self_update;
 mod server;
@@ -339,6 +341,7 @@ async fn use_gateway_server(app: AppHandle, url: String) -> Result<(), String> {
  * 认的是老服务器。换到新服务器、登录、起了 Bot 之后会重新记上。
  */
 fn forget_old_server(app: &AppHandle) {
+    notifications::reset(app);
     clear_update_source(app);
     let _ = stop_all_local_bots(app);
 }
@@ -425,14 +428,20 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .register_uri_scheme_protocol(UI_SCHEME, |ctx, request| serve_ui(&ctx.app_handle().clone(), &request))
         .manage(Startup::default())
         .manage(LocalBots::default())
         .manage(UpdateSource::default())
         .manage(SeatOrigins::default())
+        .manage(notifications::DesktopNotifications::default())
         .invoke_handler(tauri::generate_handler![
             window::desktop_window_action,
             window::desktop_window_state,
+            downloads::save_download,
+            notifications::desktop_notification_session,
+            notifications::desktop_notify,
+            notifications::desktop_clear_notifications,
             current_server,
             startup_error,
             connect,
@@ -454,6 +463,7 @@ fn main() {
             let handle = app.handle().clone();
             handle.manage(self_update::SelfUpdate::new(handle.package_info().version.to_string()));
             install_menu(&handle)?;
+            notifications::listen_for_taps(&handle)?;
             // 存过地址、且那台机器现在敲得开，才直接进去。敲不开就回设置屏，并且把
             // 敲门的结果原样摆在上面。
             match normalize(&read_server(&handle)).and_then(|url| reachable(&url).map(|()| url)) {

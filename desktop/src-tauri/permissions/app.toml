@@ -35,6 +35,16 @@ commands.allow = [
 ]
 
 [[permission]]
+identifier = "desktop-notification-commands"
+description = "允许包内主窗口绑定当前通知会话、显示固定事件提醒；原生层仅在应用窗口未聚焦时发送。"
+commands.allow = ["desktop_notification_session", "desktop_notify", "desktop_clear_notifications"]
+
+[[permission]]
+identifier = "download-commands"
+description = "允许包内主窗口通过系统另存为窗口保存文件字节；目标路径由用户在窗口中选择。"
+commands.allow = ["save_download"]
+
+[[permission]]
 identifier = "desktop-window-commands"
 description = "允许包内主窗口和设置页控制自身的关闭、最小化、全屏、缩放与拖拽；不能指定其他窗口。"
 commands.allow = ["desktop_window_action", "desktop_window_state"]

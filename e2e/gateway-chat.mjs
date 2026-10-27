@@ -495,8 +495,8 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert((await req(gwBase, 'GET', `/runtime/logs/direct?botId=${encodeURIComponent(botId)}`)).status === 401, '无票该 401')
     })
 
-    await test('人正看着（连着流、这一轮不到半分钟）就不推', async () => {
-      // bot/src/session/watchers.ts：有客户端连着这条会话的流、这一轮又很短，人多半就在屏幕前。
+    await test('短回复且消息流仍连接：照样推送，手机在后台不漏通知', async () => {
+      // 手机切后台和管家汇总名单时 SSE 仍连接，不能据此省掉通知。
       // 假模型一上来就回错，这一轮瞬间收场——正是「短轮次」。
       apns.seen.length = 0
       // 只认「这一句之后」的那个 turn/end：前面几条用例发的消息，那几轮可能还没收完。
@@ -519,10 +519,15 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(r.status === 200, `message ${r.status} ${r.text}`)
       const sse = await watching
       assert(live(sse.events), `流上没等到这一轮的 turn/end：${sse.events.map((e) => e.type).join(',')}`)
-      // reportPush 若是发了，假 APNs 一两百毫秒内就收到；多等一会儿再判「没有」。
-      await sleep(1500)
-      const hit = apns.seen.find((s) => s.payload?.kind === 'turn-end')
-      assert(!hit, `人连着流、这一轮又短，还是推了：${JSON.stringify(hit?.payload)}`)
+      // 两秒缓冲和可靠队列可能让前几轮的通知同时到达；按本轮会话序号精确核对。
+      const messageAt = sse.events.findIndex((e) => e.type === 'user/message' && JSON.stringify(e).includes(said))
+      const end = sse.events.slice(messageAt + 1).find((e) => e.type === 'turn/end')
+      const matches = () => apns.seen.filter((s) => s.payload?.kind === 'turn-end' && s.payload.sessionId === sessionId && Number(s.payload.seq) === end.seq)
+      const deadline = Date.now() + 12000
+      while (Date.now() < deadline && !matches().length) await sleep(100)
+      const hits = matches()
+      assert(hits.length === 1, `短轮次有流时应推送一次，实际 ${hits.length}`)
+      assert(hits[0].payload.botId === botId, '通知没指向这轮对话的 Bot')
     })
 
     await test('Gateway 上那条会话流已经没了：/runtime/sessions/:id/events → 404', async () => {

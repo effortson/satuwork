@@ -116,7 +116,8 @@ serve_ui、注入、导航守卫），`prepare:ui`（仓库根 scripts/copy-ui.m
 | | 桌面壳 | 手机壳 |
 |---|---|---|
 | Gateway 地址 | 正式包锁死 satuwork.com；debug 有设置屏和菜单 | 正式包锁死；debug 读 `mobile/src-tauri/dev-server.txt`（不进版本库），没有设置屏 |
-| 窗口 | 设置屏 + 主窗口，同源 `_blank` 另开一扇 | 一扇；同源 `_blank`（「打开桌面」）换成 Gateway 的源交给 Safari |
+| 窗口 | 设置屏 + 主窗口，同源 `_blank` 另开一扇 | 一扇；同源 `_blank`（「在浏览器里打开」）换成 Gateway 的源交给 Safari |
+| 远程桌面预览、打开入口 | 有 | 没有 |
 | 本地 Bot、运行时下载、自升级、菜单 | 有 | 没有；升级走商店 |
 | 页面标记 | `__SATUWORK_DESKTOP__` | `__SATUWORK_MOBILE__`；state.js 的 `appShell()` 两个都认（票落 localStorage、`/` 是登录屏、不给「下载桌面端」） |
 | 票 | localStorage | localStorage（iOS 的应用容器本身静态加密；换 stronghold 留作后话） |
@@ -171,18 +172,18 @@ Gateway 无状态、不经手对话流。要做推送需要四件事：
   `DELETE /me/push-device/:token`（这套路由器对 DELETE 不读请求体），只删得掉自己名下的。
 - 登记只收登录 JWT、只收 iOS。客户端每次启动和登录都报一次：`updatedAt` 兼作「这次登录的
   时刻」，早于账号 `tokenRevokedAt` 的登记不推——改了口令之后旧手机自动收不到。
-- 席位上报是 `POST /internal/push { kind: turn-end | approval, botId }`，鉴权同审计事件那条
-  （席位票只报自己、机器票只报本机席位）；转人工新单不用另报，`/internal/handoffs` 顺手推给
-  接手人（指派给管理员那种不推）。
+- 席位上报是 `POST /internal/push { kind, botId, sessionId, seq, time, actionId?, resolved? }`，
+  鉴权同审计事件那条（席位票只报自己、机器票只报本机席位）。返回 202 和稳定事件 ID；Gateway
+  先保存元数据，缓冲两秒后核对跨端已读再投递。转人工在 `/internal/handoffs` 一并上报通知序号。
 - **推送不带对话正文**：标题是 Bot 名字（Gateway 从目录查，不采信上报），正文是一句固定的话。
   正文在席位机器上，Gateway 不经手；推送还要过 Apple 的服务器、躺在锁屏上。
 - APNs 用 HTTP/2 + .p8 签的 ES256 token，40 分钟换一次；410 / BadDeviceToken 当场摘掉令牌。
   没配钥匙就不发。e2e 的 push 套件起一个明文 HTTP/2 的假 APNs 验签名、头和 payload。
 
 - bot 那头在 session/gateway.ts 的 `reportPush`：一轮跑完（人自己点中止的不算）和审批卡
-  进入 pending 时报一条。**不进 outbox、不重试**——推送是「现在」的事，三小时后补到的「回复好了」
-  只会骗人回去看一条早就看过的消息。只报主会话；本地 Bot 不报。Gateway 回「没有登记设备」或
-  404（老 Gateway）时两分钟内不再问，没装手机端的人不必每一轮都白打一次函数调用。
+  进入 pending 时可靠排队上报；审批终态用原 pending 序号使旧提醒失效。重试按稳定 ID 去重，
+  超过一小时的事件仍可保留未读，但不再补弹系统通知。只报主会话；本地 Bot 由桌面壳上报。
+- 共享已读、设备领取与重启恢复见 [跨端通知](notifications.md)（迁移 0068～0070）。
 - e2e：push 套件验 Gateway 这半；gateway-chat 套件给它的 Gateway 也接上假 APNs，真 bot 跑完
   一轮后假 APNs 要收到那条 turn-end，且不带正文。
 
@@ -309,7 +310,7 @@ Web 和 mobile 各自只依赖 `@satuwork/core`，不互相依赖。core 不依�
    那一档把安全区让出来（外壳、抽屉、登录屏、弹窗蒙版；浏览器里 env() 都是 0，等于没写）；
    shell.js 的 `startMobileShellFit` 在软键盘弹起时把可视视口高度写进 `--satu-vvh`、外壳跟着缩、
    页面钉回顶上（**只在手机壳里跑**，登录那种普通可滚页面不钉——钉了口令框会藏在键盘底下）；
-   `deskEmbeddable` 在手机壳里一律 false，右栏退回「打开桌面」那颗按钮交给系统浏览器；个人设置
+   手机壳不提供远程桌面预览或「打开桌面」入口，不挂载 VNC；运行状态和日常任务保留。个人设置
    里桌面端那块换成「在浏览器里打开」（同源 `_blank`，壳子换成 Gateway 的源）。
    窄屏抽屉、右栏盖在对话上、表格卡片化这些**本来就有**（≤760px 那一档），没动。
    （Expo 版的第 6 步**未合并即关闭**：#326。）

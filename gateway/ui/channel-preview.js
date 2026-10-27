@@ -294,7 +294,7 @@
         if (!response.ok) throw new Error('HTTP ' + response.status)
         return response.blob()
       })
-      saveBlob(blob, name)
+      await saveBlob(blob, name)
     } catch (error) {
       note('下载失败：' + (error && error.message ? error.message : '未知错误'), true)
     } finally {

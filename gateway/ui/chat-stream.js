@@ -45,6 +45,7 @@ async function startRosterStream(attempt = 0) {
   }
   const ac = new AbortController()
   rosterAbort = ac
+  desktopNoticeRosterReady.clear()
   rosterLiveUrl = url
   const t = token()
   let res
@@ -141,6 +142,7 @@ function stopRosterStream() {
 function noteRosterFrame(msg) {
   if (!msg || typeof msg !== 'object' || !msg.botId) return
   if (msg.type === 'roster/ev') {
+    void notifyDesktopEvent(msg.botId, msg.ev, msg.replay === true || (msg.replay !== false && !desktopNoticeRosterReady.has(msg.botId)), msg.sessionId || '')
     // **只更新摘要，不进事件桶**（见这一段开头）。botStreamOf 顺手把这一行建出来：
     // 没有它 noteBotEvent 会直接 return，而刷新之后每一行本来都还没建。
     botStreamOf(msg.botId)
@@ -148,6 +150,7 @@ function noteRosterFrame(msg) {
     return
   }
   if (msg.type === 'roster/live' && typeof msg.live === 'boolean') {
+    desktopNoticeRosterReady.add(msg.botId)
     /**
      * 席位表的态，压过按事件扫出来的结论——和正文那边 chatLive 治的是同一个病：
      * 席位崩在半路时日志里有 turn/start 没 turn/end，只扫事件的话那颗点永远转下去。
@@ -526,6 +529,7 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
         }
         continue
       }
+      if (owner) void notifyDesktopEvent(owner, ev, !sawDone, sessionId)
       // bot 表过态之后，这个结论就由实时的 turn 事件接着维护。表态之前不碰它——
       // 那会儿来的是重放的历史，正是不能拿来下结论的那一批。
       if (chatLive.has(sessionId) && (ev.type === 'turn/start' || ev.type === 'turn/end')) {

@@ -2,7 +2,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SessionEvent } from '../session/types.ts'
 import { historySlice, publicSessionEvents, visibleEvents } from '../session/replay.ts'
 import { randomUUID } from 'node:crypto'
-import { watchClose, watchOpen } from '../session/watchers.ts'
 
 /** 会话事件流（SSE）：先回放、再跟上实时，连着心跳；每条流开口先报进程身份。 */
 
@@ -66,12 +65,9 @@ export function sse(
          * （和 replay/done、queue/change 一样按 type 分流）。
          */
         let beat: NodeJS.Timeout | undefined
-        // 有人连着这条会话：手机推送据此省掉短轮次的那一条（session/watchers.ts）。cleanup 幂等，只减一次。
-        watchOpen(sessionId)
         cleanup = () => {
           if (closed) return
           closed = true
-          watchClose(sessionId)
           if (beat) clearInterval(beat)
           off()
           offQueue()

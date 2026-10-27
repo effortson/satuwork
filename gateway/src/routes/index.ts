@@ -24,6 +24,7 @@ import { attachChannels } from './channels.ts'
 import { attachWorker } from './worker.ts'
 import { attachCron } from './cron.ts'
 import { attachKnowledge } from './knowledge.ts'
+import { attachNotifications } from './notifications.ts'
 
 /**
  * 把控制面的路由挂上去。
@@ -45,6 +46,7 @@ export function attach(router: Router, db: Db, keys: JwtKeys, channelKey: Buffer
   attachV1(router, db, keys, llm, ctx.meter)
 
   attachAuth(router, ctx)
+  attachNotifications(router, ctx)
   attachPlatform(router, ctx)
   attachPlatformOrgs(router, ctx)
   attachMachines(router, ctx)

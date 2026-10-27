@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-open-background-settings"
+description = "Enables the open_background_settings command without any pre-configured scope."
+commands.allow = ["open_background_settings"]
+
+[[permission]]
+identifier = "deny-open-background-settings"
+description = "Denies the open_background_settings command without any pre-configured scope."
+commands.deny = ["open_background_settings"]

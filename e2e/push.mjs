@@ -20,6 +20,9 @@ import { freePorts } from './ports.mjs'
 import { createCompany } from './org.mjs'
 import { startGateway } from './gateway.mjs'
 import { sleep } from './harness.mjs'
+import { withPg } from './pg.mjs'
+import { notificationClient } from '../gateway/test/helpers/notifications.mjs'
+import { join } from 'node:path'
 
 export const GOOD = 'a'.repeat(64)
 export const DEAD = 'b'.repeat(64)
@@ -28,6 +31,7 @@ const KID = 'KEY1234567'
 
 export function fakeApns(publicKey) {
   const seen = []
+  let failures = 0
   const server = createServer()
   server.on('stream', (stream, headers) => {
     let raw = ''
@@ -49,6 +53,12 @@ export function fakeApns(publicKey) {
         payload = JSON.parse(raw)
       } catch {}
       seen.push({ path, token, headers: { ...headers }, payload, jwtOk, claims })
+      if (failures > 0) {
+        failures--
+        stream.respond({ ':status': 500 })
+        stream.end(JSON.stringify({ reason: 'InternalServerError' }))
+        return
+      }
       if (token === DEAD) {
         stream.respond({ ':status': 410, 'content-type': 'application/json' })
         stream.end(JSON.stringify({ reason: 'Unregistered', timestamp: Date.now() }))
@@ -58,7 +68,7 @@ export function fakeApns(publicKey) {
       stream.end()
     })
   })
-  return { server, seen }
+  return { server, seen, failOnce: () => { failures++ } }
 }
 
 // FCM 令牌区分大小写、带冒号：原样存、原样发（gateway/src/lib/push.ts 的 normalizePushToken）。
@@ -139,10 +149,10 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
   await new Promise((r) => google.server.listen(FCM_PORT, '127.0.0.1', r))
 
   /** 放进 try 里起：起不来时下面的 finally 照样收掉这一套自己开的假服务。 */
-  let gw
+  let gw, gatewayEnv
 
   try {
-    gw = (await startGateway({
+    const launched = await startGateway({
       name: 'push-gw',
       what: 'push gateway',
       home: GW_HOME,
@@ -162,7 +172,9 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
         GATEWAY_FCM_SERVICE_ACCOUNT: google.serviceAccount(fcmKeys.privateKey.export({ type: 'pkcs8', format: 'pem' })),
         GATEWAY_FCM_ENDPOINT: `http://127.0.0.1:${FCM_PORT}`,
       },
-    })).gw
+    })
+    gw = launched.gw
+    gatewayEnv = launched.env
     const reg = await createCompany(req, base, {
       ownerEmail: 'owner@push.test',
       ownerPassword: 'test-owner-push',
@@ -188,7 +200,26 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
     const botId = bot.json.bot.id
 
     const put = (tok, body) => req(base, 'PUT', '/me/push-device', { token: tok, body })
-    const report = (body, tok = seatTok) => req(base, 'POST', '/internal/push', { token: tok, body })
+    let noticeSeq = 0
+    const report = async (body, tok = seatTok) => {
+      const expected = await withPg(schemaOf('e2e_push'), async (c) => Number((await c.query(
+        'select count(*) as n from push_devices p join accounts a on a.id = p."accountId" where p."accountId" = $1 and p."updatedAt" > coalesce(a."tokenRevokedAt", 0)', [reg.account.id])).rows[0].n))
+      const r = await req(base, 'POST', '/internal/push', { token: tok,
+        body: { sessionId: 'push-session', seq: ++noticeSeq, time: Date.now(), ...body } })
+      if (r.status !== 202) return r
+      const deadline = Date.now() + 8000
+      let rows = []
+      while (Date.now() < deadline) {
+        rows = await withPg(schemaOf('e2e_push'), async (c) => (await c.query(
+          'select outcome from notification_deliveries where "eventId" = $1 and "deliveredAt" is not null', [r.json.id])).rows)
+        if (rows.length >= expected) break
+        await sleep(40)
+      }
+      assert(rows.length === expected, `通知队列没完成：${JSON.stringify(rows)} / ${expected}`)
+      r.delivery = { sent: rows.filter((x) => x.outcome === 'sent').length,
+        dropped: rows.filter((x) => x.outcome === 'dropped').length, failed: rows.filter((x) => x.outcome === 'failed').length }
+      return r
+    }
 
     await test('登记：没登录 401、席位票 401、坏令牌 / 不认识的平台 / 坏环境 400', async () => {
       assert((await put('', { token: GOOD, platform: 'ios', environment: 'production' })).status === 401, '没登录')
@@ -208,8 +239,8 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       assert((await put(adminTok, { token: DEAD.toUpperCase(), platform: 'ios', environment: 'sandbox' })).status === 200, '登记 DEAD（大写也收）')
       apns.seen.length = 0
       const r = await report({ kind: 'turn-end', botId })
-      assert(r.status === 200, `push ${r.status} ${r.text}`)
-      assert(r.json.sent === 1 && r.json.dropped === 1 && r.json.failed === 0, `结果 ${r.text}`)
+      assert(r.status === 202 && r.json.queued, `push ${r.status} ${r.text}`)
+      assert(r.delivery.sent === 1 && r.delivery.dropped === 1 && r.delivery.failed === 0, `结果 ${r.text}`)
       assert(apns.seen.length === 2, `假 APNs 收到 ${apns.seen.length} 条`)
       const hit = apns.seen.find((s) => s.token === GOOD)
       assert(hit, '没打到 GOOD')
@@ -226,11 +257,11 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       assert(hit.payload.aps.alert.body === '回复好了', `body ${hit.payload.aps.alert.body}`)
       assert(hit.payload.botId === botId && hit.payload.kind === 'turn-end', `data ${JSON.stringify(hit.payload)}`)
       // 只有这几个键：对话正文不该出现在推送里。
-      assert(Object.keys(hit.payload).sort().join(',') === 'aps,botId,kind', `payload 多了东西：${JSON.stringify(hit.payload)}`)
+      assert(Object.keys(hit.payload).sort().join(',') === 'aps,botId,kind,notificationId,seq,sessionId', `payload 多了东西：${JSON.stringify(hit.payload)}`)
 
       apns.seen.length = 0
       const again = await report({ kind: 'turn-end', botId })
-      assert(again.json.sent === 1 && again.json.dropped === 0 && apns.seen.length === 1, `摘掉之后 ${again.text} / ${apns.seen.length}`)
+      assert(again.delivery.sent === 1 && again.delivery.dropped === 0 && apns.seen.length === 1, `摘掉之后 ${again.text} / ${apns.seen.length}`)
     })
 
     await test('上报：kind 不认识 400、Bot 不存在 404、席位票只能报自己', async () => {
@@ -239,16 +270,15 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       // 席位票带别人的 accountId 也只算自己的：成员没登记设备，这里推到的是 admin 的 GOOD。
       apns.seen.length = 0
       const r = await report({ kind: 'approval', botId, accountId: 'someone-else' })
-      assert(r.status === 200 && r.json.sent === 1 && apns.seen[0]?.token === GOOD, `${r.text}`)
+      assert(r.status === 202 && r.delivery.sent === 1 && apns.seen[0]?.token === GOOD, `${r.text}`)
       assert(apns.seen[0].payload.aps.alert.body === '在等你批准一个操作', '审批文案')
     })
 
     await test('同一台手机换成员登录：令牌改姓，admin 不再收到；删只能删自己的', async () => {
       assert((await put(memberTok, { token: GOOD, platform: 'ios', environment: 'production' })).status === 200, '成员登记')
       const r = await report({ kind: 'turn-end', botId })
-      assert(r.json.sent === 0 && r.json.skipped === '没有登记设备', `admin 还收到：${r.text}`)
-      // bot 认的是 quiet，不是 skipped 的中文原文。
-      assert(r.json.quiet === true, `没有登记设备时该带 quiet：${r.text}`)
+      assert(r.delivery.sent === 0 && r.json.queued === true, `admin 还收到：${r.text}`)
+      assert(r.json.queued === true, '没有手机也要保存共享未读事件')
       const notMine = await req(base, 'DELETE', `/me/push-device/${GOOD}`, { token: adminTok })
       assert(notMine.status === 200 && notMine.json.removed === false, `admin 删得动成员的：${notMine.text}`)
       const mine = await req(base, 'DELETE', `/me/push-device/${GOOD}`, { token: memberTok })
@@ -257,24 +287,24 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
 
     await test('改口令之后旧登记不推，重新登记就恢复', async () => {
       assert((await put(adminTok, { token: GOOD, platform: 'ios', environment: 'production' })).status === 200, '登记')
-      assert((await report({ kind: 'turn-end', botId })).json.sent === 1, '改口令前该推')
+      assert((await report({ kind: 'turn-end', botId })).delivery.sent === 1, '改口令前该推')
       // tokenRevokedAt 和登记时刻都是毫秒；隔开一点，别落在同一毫秒里。
       await sleep(5)
       const pw = await req(base, 'POST', '/me/password', { token: adminTok, body: { current: 'correct-horse', next: 'correct-horse-2' } })
       assert(pw.status === 200, `改口令 ${pw.status} ${pw.text}`)
       adminTok = pw.json.token
       const after = await report({ kind: 'turn-end', botId })
-      assert(after.json.sent === 0, `改口令后还推了：${after.text}`)
+      assert(after.delivery.sent === 0, `改口令后还推了：${after.text}`)
       await sleep(5)
       assert((await put(adminTok, { token: GOOD, platform: 'ios', environment: 'production' })).status === 200, '重新登记')
-      assert((await report({ kind: 'turn-end', botId })).json.sent === 1, '重新登记后该推')
+      assert((await report({ kind: 'turn-end', botId })).delivery.sent === 1, '重新登记后该推')
     })
 
     await test('新转人工单推给接手人', async () => {
       apns.seen.length = 0
       const h = await req(base, 'POST', '/internal/handoffs', {
         token: seatTok,
-        body: { id: 'h-push-1', sessionId: 's-1', botId, state: 'open', reason: '要人看', ask: '帮我确认一下' },
+        body: { id: 'h-push-1', sessionId: 's-1', notificationSeq: 1, botId, state: 'open', reason: '要人看', ask: '帮我确认一下' },
       })
       assert(h.status === 200, `handoff ${h.status} ${h.text}`)
       const deadline = Date.now() + 5000
@@ -294,9 +324,9 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       apns.seen.length = 0
       google.seen.sends.length = 0
       const r = await report({ kind: 'turn-end', botId })
-      assert(r.status === 200, `push ${r.status} ${r.text}`)
+      assert(r.status === 202 && r.json.queued, `push ${r.status} ${r.text}`)
       // admin 还登记着一台 iOS（改口令那条最后重新登记的 GOOD）。
-      assert(r.json.sent === 2 && r.json.dropped === 1 && r.json.failed === 0, `结果 ${r.text}`)
+      assert(r.delivery.sent === 2 && r.delivery.dropped === 1 && r.delivery.failed === 0, `结果 ${r.text}`)
       assert(apns.seen.length === 1, `APNs 收到 ${apns.seen.length} 条`)
       assert(google.seen.tokens.length === 1, `换票 ${google.seen.tokens.length} 次`)
       const t = google.seen.tokens[0]
@@ -309,20 +339,218 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       assert(hit.auth === 'Bearer fcm-access-1', `auth ${hit.auth}`)
       const m = hit.body.message
       assert(m.notification.title === '推送 Bot' && m.notification.body === '回复好了', `notification ${JSON.stringify(m.notification)}`)
-      assert(JSON.stringify(m.data) === JSON.stringify({ kind: 'turn-end', botId }), `data ${JSON.stringify(m.data)}`)
-      assert(m.android.collapse_key === `turn-end:${botId}` && m.android.notification.tag === `turn-end:${botId}`, `android ${JSON.stringify(m.android)}`)
+      assert(m.data.kind === 'turn-end' && m.data.botId === botId && m.data.notificationId && m.data.sessionId === 'push-session', `data ${JSON.stringify(m.data)}`)
+      assert(m.android.collapse_key === `turn-end:${botId}` && m.android.notification.tag === `satu:${m.data.notificationId}`, `android ${JSON.stringify(m.android)}`)
       assert(m.android.ttl === '3600s', `android.ttl ${m.android.ttl}`)
       assert(Object.keys(m).sort().join(',') === 'android,data,notification,token', `message 多了东西：${JSON.stringify(m)}`)
 
       google.seen.sends.length = 0
       const again = await report({ kind: 'turn-end', botId })
-      assert(again.json.sent === 2 && again.json.dropped === 0, `摘掉之后 ${again.text}`)
+      assert(again.delivery.sent === 2 && again.delivery.dropped === 0, `摘掉之后 ${again.text}`)
       assert(google.seen.sends.length === 1, `FCM 第二轮收到 ${google.seen.sends.length} 条`)
       assert(google.seen.tokens.length === 1, `access token 没缓存：换了 ${google.seen.tokens.length} 次`)
 
       const del = await req(base, 'DELETE', `/me/push-device/${encodeURIComponent(FCM_GOOD)}`, { token: adminTok })
       assert(del.json.removed === true, `FCM 令牌按原样删不掉：${del.text}`)
     })
+    const snapshot = () => req(base, 'GET', '/me/notifications', { token: adminTok })
+    const markRead = (sessionId, seq, token = adminTok) => req(base, 'PUT', '/me/notifications/read', { token, body: { botId, sessionId, seq } })
+    const queue = (sessionId, seq, extra = {}) => req(base, 'POST', '/internal/push', { token: seatTok,
+      body: { kind: 'turn-end', botId, sessionId, seq, time: Date.now(), ...extra } })
+    const claim = (id, deviceId = 'web:notification_device_1234', token = adminTok) => req(base, 'POST', `/me/notifications/${id}/claim`, { token, body: { deviceId } })
+    const clearUnread = async () => {
+      const positions = await withPg(schemaOf('e2e_push'), async (c) => (await c.query(
+        'select "sessionId", max(seq) as seq from notification_events where "accountId" = $1 group by "sessionId"', [reg.account.id])).rows)
+      for (const row of positions) assert((await markRead(row.sessionId, Number(row.seq))).status === 200, '清除测试已有未读')
+    }
+    await clearUnread()
+
+    await test('真 HTTP 三端同步：网页读过后，手机不推、桌面不弹，三端角标归零', async () => {
+      const server = { api: async (_account, method, path, body) => {
+        const r = await req(base, method, path, { token: adminTok, body })
+        if (r.status >= 400) throw Object.assign(new Error(r.text), { status: r.status })
+        return r.json
+      } }
+      const web = notificationClient(server, { focused: true })
+      const mobile = notificationClient(server, { platform: 'mobile' })
+      const desktop = notificationClient(server, { platform: 'desktop' })
+      for (const ui of [web, mobile, desktop]) {
+        ui.state.me.account.id = reg.account.id
+        ui.state.runtimeBots = [{ id: botId, name: '推送 Bot' }]
+        await ui.start()
+      }
+      apns.seen.length = 0
+      const r = await queue('three-clients', 10)
+      assert(r.status === 202 && r.json.queued, r.text)
+      await Promise.all([web.poll(), mobile.poll(), desktop.poll()])
+      for (const ui of [web, mobile, desktop]) assert(ui.document.title.startsWith('(1)'), `没同步未读：${ui.document.title}`)
+      web.state.path = '/a/' + botId; web.state.chatBotId = botId; web.state.chatSessionId = 'three-clients'; web.state.chatEvents = [{ type: 'turn/end', seq: 10 }]
+      web.read(); await web.poll()
+      await sleep(2400)
+      await Promise.all([mobile.poll(), desktop.poll()])
+      for (const ui of [web, mobile, desktop]) assert(!ui.document.title.startsWith('('), `未读没有清掉：${ui.document.title}`)
+      assert(apns.seen.length === 0, `已读仍推送：${apns.seen.length}`)
+      assert(desktop.sent.length === 0, '已读仍弹桌面通知')
+      assert(mobile.cleared.flat().includes(r.json.id), '手机没有收到清理已读通知指令')
+      for (const ui of [web, mobile, desktop]) ui.context.resetDesktopNotifications()
+    })
+
+    await test('读取先于通知登记也能抑制推送；旧游标不能倒退，新会话不受影响', async () => {
+      apns.seen.length = 0
+      assert((await markRead('read-before-report', 30)).status === 200, '先报已读')
+      const old = await markRead('read-before-report', 15)
+      assert(old.json.read.lastReadSeq === 30, `游标倒退：${old.text}`)
+      const a = await queue('read-before-report', 20)
+      const b = await queue('new-session', 1)
+      assert((await markRead('new-session', 1)).status === 200, '清新会话')
+      assert(a.status === 202 && b.status === 202, '上报失败')
+      const current = await snapshot()
+      assert(current.json.counts.length === 0, current.text)
+      await sleep(2400)
+      assert(apns.seen.length === 0, '先读后到的通知不该推送')
+      assert((await claim(a.json.id)).json.claimed === false, '已读还能领取')
+    })
+
+    await test('读过审批和转人工只清未读，待处理状态保持；处理终态先到也不会被旧 pending 复活', async () => {
+      const sessionId = 'pending-work'
+      const h = await req(base, 'POST', '/internal/handoffs', { token: seatTok,
+        body: { id: 'h-notification-read', botId, sessionId, notificationSeq: 10, state: 'open', reason: '要人看', ask: '确认' } })
+      assert(h.status === 200, h.text)
+      const a = await queue(sessionId, 11, { kind: 'approval', actionId: 'approval-read' })
+      assert(a.status === 202, a.text)
+      assert((await snapshot()).json.counts[0]?.count === 2, '两项都应未读')
+      assert((await markRead(sessionId, 11)).status === 200, '读过')
+      const state = await withPg(schemaOf('e2e_push'), async (c) => ({
+        handoff: (await c.query('select state from handoffs where id = $1', ['h-notification-read'])).rows[0],
+        pending: (await c.query('select "resolvedAt" from notification_events where id = $1', [a.json.id])).rows[0],
+      }))
+      assert(state.handoff.state === 'open', '读过不该关闭交接单')
+      assert(state.pending.resolvedAt === null, '读过不该批准操作或把它标成已处理')
+      assert((await snapshot()).json.counts.length === 0, '未读没清')
+      const resolved = await queue('out-of-order-approval', 5, { kind: 'approval', actionId: 'approval-order', resolved: true })
+      const pending = await queue('out-of-order-approval', 5, { kind: 'approval', actionId: 'approval-order' })
+      assert(resolved.json.id === pending.json.id, '业务标识不一致')
+      assert((await snapshot()).json.counts.length === 0, '旧 pending 复活了已处理提醒')
+    })
+
+    await test('本地 Bot 也共享通知状态，但不向无法打开本地会话的手机推送', async () => {
+      const made = await req(base, 'POST', '/runtime/bots', { token: adminTok, body: { name: '本地通知助手', runtimeKind: 'local' } })
+      assert(made.status === 201, made.text)
+      const localId = made.json.bot.id
+      const postLocal = (body, token = adminTok) => req(base, 'POST', '/me/notifications/local', { token,
+        body: { botId: localId, sessionId: 'local-notices', kind: 'approval', actionId: 'local-approval', time: Date.now(), ...body } })
+      apns.seen.length = 0
+      const pending = await postLocal({ seq: 5 })
+      assert(pending.status === 200, pending.text)
+      assert((await postLocal({ seq: 5 }, memberTok)).status === 404, '能上报别人的本地 Bot')
+      assert((await postLocal({ seq: 5, botId })).status === 400, '客户端冒充远程席位上报')
+      assert((await snapshot()).json.counts.some((r) => r.botId === localId && r.count === 1), '本地事件没有共享未读')
+      const mobileSnapshot = await req(base, 'GET', '/me/notifications?platform=mobile', { token: adminTok })
+      assert(!mobileSnapshot.json.counts.some((r) => r.botId === localId), '手机显示了无法打开的本地 Bot 未读')
+      await sleep(2300)
+      assert(apns.seen.length === 0, '本地 Bot 不应向手机推送无法打开的会话')
+      assert((await claim(pending.json.id, 'desktop:local_notice_device_1234')).json.claimed, '桌面不能领取本地提醒')
+      const read = await req(base, 'PUT', '/me/notifications/read', { token: adminTok, body: { botId: localId, sessionId: 'local-notices', seq: 5 } })
+      assert(read.status === 200, read.text)
+      // 重连后只见到终态，也能按 actionId 清掉旧卡，且终态先到不会被旧 pending 复活。
+      const terminal = await postLocal({ sessionId: 'local-reconnect', seq: 9, resolved: true })
+      const late = await postLocal({ sessionId: 'local-reconnect', seq: 7 })
+      assert(terminal.status === 200 && late.status === 200, '终态登记失败')
+      assert(!(await snapshot()).json.counts.some((r) => r.botId === localId), '晚到的本地 pending 复活')
+      await withPg(schemaOf('e2e_push'), (c) => c.query('delete from catalog_items where id = $1', [localId]))
+      const remaining = await withPg(schemaOf('e2e_push'), (c) => c.query('select 1 from notification_events where "botId" = $1', [localId]))
+      assert(remaining.rowCount === 0, '删除 Bot 后留下永久未读')
+    })
+
+    await test('并发上报只创建一条；设备并发领取只成功一次，其他账号不能领取', async () => {
+      const replies = await Promise.all(Array.from({ length: 8 }, () => queue('idempotent', 1)))
+      const id = replies[0].json.id
+      assert(replies.every((r) => r.status === 202 && r.json.id === id), '上报没有幂等')
+      assert((await snapshot()).json.counts[0]?.count === 1, '重复累计未读')
+      assert((await claim(id)).json.claimed === false, '缓冲未到就能领取')
+      await sleep(2200)
+      const claims = await Promise.all(Array.from({ length: 8 }, () => claim(id)))
+      assert(claims.filter((r) => r.json.claimed).length === 1, '同一设备重复领取')
+      assert((await claim(id, 'desktop:notification_device_1234')).json.claimed === true, '第二台设备应能领取未读')
+      assert((await claim(id, 'web:other_account_device_1234', memberTok)).json.claimed === false, '跨账号领取')
+      await markRead('idempotent', 1)
+      assert((await claim(id, 'web:another_device_123456')).json.claimed === false, '已读后还可领取')
+      assert((await claim(id, 'push:forged_device_token_12345')).status === 400, '客户端冒充系统推送设备')
+    })
+
+    await test('离线旧消息保留未读，不补发过期推送；未登录和席位票不能修改阅读状态', async () => {
+      apns.seen.length = 0
+      const expired = await queue('expired-notice', 7, { time: Date.now() - 7200_000 })
+      assert(expired.status === 202, expired.text)
+      const state = await snapshot()
+      assert(state.json.counts[0]?.count === 1, '过期推送不该抹掉未读')
+      assert(!state.json.events.some((e) => e.id === expired.json.id), '过期提醒还会弹出')
+      assert((await claim(expired.json.id)).json.claimed === false, '过期仍能领取')
+      for (const token of ['', seatTok]) assert((await markRead('expired-notice', 7, token)).status === 401, '阅读状态必须使用本人登录票')
+      assert((await markRead('expired-notice', -1)).status === 400, '非法序号')
+      await sleep(2200)
+      assert(apns.seen.length === 0, '旧提醒被补推')
+      await markRead('expired-notice', 7)
+    })
+
+    await test('部分设备失败后按设备重试，成功设备不重复；重试前已读则取消', async () => {
+      assert((await put(adminTok, { token: FCM_GOOD, platform: 'android', environment: 'production' })).status === 200, '登记 Android')
+      apns.seen.length = 0; google.seen.sends.length = 0; apns.failOnce()
+      const queued = await queue('partial-retry', 1)
+      const deliveries = () => withPg(schemaOf('e2e_push'), async (c) => (await c.query(
+        'select outcome from notification_deliveries where "eventId" = $1', [queued.json.id])).rows)
+      let rows = [], deadline = Date.now() + 6000
+      while (Date.now() < deadline) {
+        rows = await deliveries()
+        if (rows.some((r) => r.outcome === 'failed') && rows.some((r) => r.outcome === 'sent')) break
+        await sleep(40)
+      }
+      assert(rows.some((r) => r.outcome === 'failed'), '没有记录失败')
+      await withPg(schemaOf('e2e_push'), (c) => c.query(
+        'update notification_deliveries set "leaseUntil" = 0 where "eventId" = $1 and outcome = \'failed\'', [queued.json.id]))
+      deadline = Date.now() + 4000
+      while (Date.now() < deadline && (await deliveries()).filter((r) => r.outcome === 'sent').length !== 2) await sleep(40)
+      assert((await deliveries()).filter((r) => r.outcome === 'sent').length === 2, '租约到期没有补投')
+      assert(apns.seen.length === 2 && google.seen.sends.length === 1, '成功的设备也被重发了')
+      await markRead('partial-retry', 1)
+
+      apns.failOnce()
+      const cancel = await queue('cancel-retry', 1)
+      deadline = Date.now() + 5000
+      while (Date.now() < deadline) {
+        const failed = await withPg(schemaOf('e2e_push'), (c) => c.query(
+          'select 1 from notification_deliveries where "eventId" = $1 and outcome = \'failed\'', [cancel.json.id]))
+        if (failed.rowCount) break
+        await sleep(40)
+      }
+      await markRead('cancel-retry', 1)
+      const before = apns.seen.length
+      await withPg(schemaOf('e2e_push'), (c) => c.query(
+        'update notification_deliveries set "leaseUntil" = 0 where "eventId" = $1', [cancel.json.id]))
+      await sleep(1300)
+      assert(apns.seen.length === before, '已读后仍重试失败的推送')
+      await req(base, 'DELETE', `/me/push-device/${encodeURIComponent(FCM_GOOD)}`, { token: adminTok })
+    })
+
+    await test('Gateway 重启后从数据库恢复调度，已读游标也保留', async () => {
+      apns.seen.length = 0
+      const queued = await queue('restart-notice', 1)
+      assert(queued.status === 202, queued.text)
+      const previous = gw
+      const stopped = new Promise((resolve) => previous.once('exit', resolve))
+      previous.kill('SIGKILL'); await stopped
+      gw = start('push-gw-restarted', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
+        cwd: gwRoot, env: { ...gatewayEnv, GATEWAY_PG_RESET: '0' },
+      })
+      await waitHttp(`${base}/health`, { child: gw, what: 'restarted notification gateway' })
+      const deadline = Date.now() + 6000
+      while (Date.now() < deadline && !apns.seen.some((e) => e.payload.notificationId === queued.json.id)) await sleep(50)
+      assert(apns.seen.filter((e) => e.payload.notificationId === queued.json.id).length === 1, '重启没有恢复或重复投递')
+      const state = await snapshot()
+      assert(state.json.reads.some((r) => r.sessionId === 'read-before-report' && r.lastReadSeq === 30), '重启丢已读')
+      await markRead('restart-notice', 1)
+    })
+
   } finally {
     gw?.kill()
     await new Promise((r) => apns.server.close(r))

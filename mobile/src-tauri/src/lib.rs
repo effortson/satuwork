@@ -108,7 +108,10 @@ const LINK_SCRIPT: &str = r#"
   // （gateway/ui/shell.js 的 syncMobilePush），壳子不碰登录票。
   window.__SATUWORK_PUSH__ = {
     register: function () { return window.__TAURI_INTERNALS__.invoke('plugin:satu-push|register') },
-    takeTap: function () { return window.__TAURI_INTERNALS__.invoke('plugin:satu-push|take_tap') }
+    takeTap: function () { return window.__TAURI_INTERNALS__.invoke('plugin:satu-push|take_tap') },
+    clear: function (ids) { return window.__TAURI_INTERNALS__.invoke('plugin:satu-push|clear_notifications', { ids: ids }) },
+    backgroundStatus: function () { return window.__TAURI_INTERNALS__.invoke('plugin:satu-push|background_status') },
+    openBackgroundSettings: function () { return window.__TAURI_INTERNALS__.invoke('plugin:satu-push|open_background_settings') }
   }
   if (window.__satuLinkPatched) return
   window.__satuLinkPatched = true

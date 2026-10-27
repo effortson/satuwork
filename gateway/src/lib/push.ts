@@ -1,9 +1,8 @@
 /**
  * 手机推送：Gateway 直连 APNs（iOS）和 FCM（Android）（docs/adr-core-package-mobile.md §2.5）。
  *
- * **谁触发**：席位在一轮跑完、审批进入等待时报一条 `POST /internal/push`（routes/internal.ts）；
- * 转人工的新单由 `/internal/handoffs` 那条顺手推给接手人。Gateway 不经手对话流，它知道
- * 「这一轮跑完了」只能靠席位说。
+ * **谁触发**：席位上报事件元数据，lib/notifications.ts 统一延迟调度、核对已读、按设备领取。
+ * 这里仅负责 APNs / FCM 投递；转人工也使用同一队列。事件与已读不含聊天正文。
  *
  * **推什么**：只推「哪颗 Bot、什么事」，**不推对话正文**。正文在席位机器上，Gateway 本来就
  * 不该看到；推送内容还会过 Apple 的服务器、躺在锁屏上。人点开通知，进的是对话页，正文在
@@ -251,12 +250,12 @@ export function liveRegistration(updatedAt: number, revokedAt: number, now: numb
  *
  * 停用的账号一条不发。
  */
-export async function pushToAccount(db: Db, accountId: string, msg: PushMessage, now = Date.now()): Promise<PushResult> {
+export async function pushToAccount(db: Db, accountId: string, msg: PushMessage, now = Date.now(), onlyToken?: string): Promise<PushResult> {
   const result: PushResult = { sent: 0, dropped: 0, failed: 0 }
   const account = await db.account(accountId)
   if (!account || account.status !== 'active') return { ...result, skipped: '账号不可用', quiet: true }
   const revokedAt = Number(account.tokenRevokedAt || 0)
-  const devices = (await db.pushDevicesOf(accountId)).filter((d) => liveRegistration(d.updatedAt, revokedAt, now))
+  const devices = (await db.pushDevicesOf(accountId)).filter((d) => (!onlyToken || d.token === onlyToken) && liveRegistration(d.updatedAt, revokedAt, now))
   const ios = devices.filter((d) => d.platform === 'ios')
   const android = devices.filter((d) => d.platform === 'android')
   if (!ios.length && !android.length) return { ...result, skipped: '没有登记设备', quiet: true }
@@ -412,7 +411,7 @@ async function fcmAccessToken(cfg: FcmConfig, now = Date.now()): Promise<string>
  * 直接显示，点开带着 data 拉起应用（mobile/push-plugin 的 Kotlin 那半认它）；前台到达时应用没注册
  * FirebaseMessagingService，系统不显示——和 iOS 的「前台不弹」一致。
  *
- * collapse_key + notification.tag：同一颗 Bot 同一种事，后到的覆盖先到的，和 APNs 的 collapse id 一样。
+ * collapse_key 合并离线同类事件；notification.tag 使用稳定通知 ID，已读同步时可精确移除。
  */
 async function sendFcm(db: Db, cfg: FcmConfig, devices: DeviceRow[], msg: PushMessage, result: PushResult): Promise<void> {
   let access: string
@@ -434,7 +433,7 @@ async function sendFcm(db: Db, cfg: FcmConfig, devices: DeviceRow[], msg: PushMe
         // FCM 认的是时长字符串（秒，带 s）。
         ttl: `${PUSH_TTL_SECONDS}s`,
         ...(msg.collapseId ? { collapse_key: msg.collapseId.slice(0, 64) } : {}),
-        notification: { sound: 'default', ...(msg.collapseId ? { tag: msg.collapseId.slice(0, 64) } : {}) },
+        notification: { sound: 'default', ...(msg.data.notificationId ? { tag: 'satu:' + msg.data.notificationId } : msg.collapseId ? { tag: msg.collapseId.slice(0, 64) } : {}) },
       },
     }
     let status = 0

@@ -966,6 +966,71 @@ function nearBottom(el) {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_SLACK
 }
 
+// 跟随是用户的滚动意图，不能在键盘缩短视口、图片加载长高之后重新按距离推断。
+// 只保留当前消息区的观察器；整页重绘换节点时拆掉旧的。
+let chatScroll = null
+
+function rememberChatScrollSize(scroll) {
+  scroll.height = scroll.thread.scrollHeight
+  scroll.viewport = scroll.thread.clientHeight
+}
+
+function watchChatScroll(thread) {
+  if (chatScroll && chatScroll.thread === thread) return chatScroll
+  if (chatScroll && chatScroll.observer) chatScroll.observer.disconnect()
+  const scroll = {
+    thread,
+    following: thread.getAttribute('data-touched') !== '1' || nearBottom(thread),
+    rows: new Set(),
+    observer: null,
+  }
+  chatScroll = scroll
+  rememberChatScrollSize(scroll)
+  if (typeof ResizeObserver === 'function') {
+    scroll.observer = new ResizeObserver(() => {
+      if (document.getElementById('chat-thread') !== thread) {
+        scroll.observer.disconnect()
+        return
+      }
+      if (scroll.following) thread.scrollTop = thread.scrollHeight
+      rememberChatScrollSize(scroll)
+      const jump = document.getElementById('chat-jump')
+      if (jump) jump.hidden = nearBottom(thread)
+    })
+    scroll.observer.observe(thread)
+  }
+  return scroll
+}
+
+function noteChatScroll(thread) {
+  const scroll = watchChatScroll(thread)
+  // 布局变化也会产生 scroll；它不代表用户离开了底部。
+  if (scroll.height === thread.scrollHeight && scroll.viewport === thread.clientHeight) {
+    scroll.following = nearBottom(thread)
+  }
+  rememberChatScrollSize(scroll)
+}
+
+function followChatBottom(thread) {
+  if (!thread) return
+  watchChatScroll(thread).following = true
+  thread.scrollTop = thread.scrollHeight
+  rememberChatScrollSize(chatScroll)
+}
+
+function syncChatScroll(thread) {
+  const scroll = watchChatScroll(thread)
+  // Markdown 的图片、公式和过程卡会在 paintChat 返回之后才长高，连同行高一起观察。
+  if (scroll.observer) {
+    const rows = new Set(thread.children)
+    for (const row of scroll.rows) if (!rows.has(row)) scroll.observer.unobserve(row)
+    for (const row of rows) if (!scroll.rows.has(row)) scroll.observer.observe(row)
+    scroll.rows = rows
+  }
+  if (scroll.following) thread.scrollTop = thread.scrollHeight
+  rememberChatScrollSize(scroll)
+}
+
 function paintChat() {
   const thread = document.getElementById('chat-thread')
   /**
@@ -986,7 +1051,11 @@ function paintChat() {
       : undefined
   const folded = mergePending(fold(state.chatEvents, live, currentBotHasChannelLabels()), state.chatSessionId)
   state.chatStatus = folded.status
-  if (!thread) return
+  if (!thread) {
+    if (chatScroll && chatScroll.observer) chatScroll.observer.disconnect()
+    chatScroll = null
+    return
+  }
   // 正文里的文件名要接回哪几个文件，整条会话算一次（见 chatFileCands）。
   chatFileCands = fileCands(knownFiles(folded.blocks))
   // 右栏那一屏也在这儿补一次。**render() 里那一句不够**：席位接上之后走的是
@@ -994,7 +1063,7 @@ function paintChat() {
   // 要等到下一次真的重绘（人点了点什么）才去取。
   ensureWorkspaceTree()
 
-  const stick = thread.getAttribute('data-touched') !== '1' || nearBottom(thread)
+  watchChatScroll(thread)
   syncThread(thread, folded, state.chatSessionId)
   if (window.satuMd) satuMd.enhance(thread)
   if (chatAnchorHeight) {
@@ -1003,8 +1072,10 @@ function paintChat() {
     const grew = thread.scrollHeight - chatAnchorHeight
     chatAnchorHeight = 0
     if (grew > 0) thread.scrollTop += grew
-  } else if (stick) thread.scrollTop = thread.scrollHeight
+  }
   paintChatChrome(folded)
+  syncChatScroll(thread)
+  if (typeof scheduleNotificationRead === 'function') scheduleNotificationRead()
   ensureClockTick()
   // 查找条开着的话，新画出来的消息里命中的词也要上色（chat-find.js；没开就什么都不做）。
   if (state.chatFind && state.chatFind.open) scheduleFindMarks()

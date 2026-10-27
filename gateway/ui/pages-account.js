@@ -714,6 +714,7 @@ function profilePage() {
     .join('')
   return `<div class="gw-page"><div class="gw-page-inner gw-profile">
     ${pageHead(t('个人设置', 'Preferences'), t('管理个人资料、头像、外观与账号安全。', 'Manage your profile, avatar, appearance and account security.'))}
+    <div data-mobile-background="profile">${mobileBackgroundInner(true)}</div>
     ${state.profileError ? `<div class="gw-flash gw-flash-err" role="alert">${esc(state.profileError)}</div>` : ''}
     <section class="satu-panel pf-overview">
       ${accountAvatar({ ...u, avatar: form.avatar }, 72)}

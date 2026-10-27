@@ -367,7 +367,9 @@
   }
 
   function download(name, text, type) {
-    saveBlob(new Blob([text], { type: type || 'text/plain;charset=utf-8' }), name)
+    void saveBlob(new Blob([text], { type: type || 'text/plain;charset=utf-8' }), name).catch((err) => {
+      window.alert(L('下载失败：') + err.message)
+    })
   }
 
   const EXT = { javascript: 'js', typescript: 'ts', python: 'py', bash: 'sh', shell: 'sh', markdown: 'md', yaml: 'yml', text: 'txt' }

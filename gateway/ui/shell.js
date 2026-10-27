@@ -447,6 +447,7 @@ function rosterRowHtml(b, selected, mainBotId = state.mainBotId) {
             <span class="satu-botneed" data-need="${esc(sum.need || '')}" title="${esc(botNeedLabel(sum.need))}" aria-label="${esc(
               botNeedLabel(sum.need),
             )}"${sum.need ? '' : ' hidden'}>${botNeedIcon(sum.need)}</span>
+            <span class="satu-web-unread" data-web-unread="${esc(b.id)}" hidden></span>
             <time class="satu-bottime">${esc(sum.lastAt ? chatClock(sum.lastAt) : '')}</time>
           </span>
           ${/* 没有消息就不留这一行——空着一道灰边比少一行更碍眼。
@@ -977,7 +978,76 @@ function pushBridge() {
   return mobileShell() && b && typeof b.register === 'function' ? b : null
 }
 
+// Android 的标准后台限制与电池优化是两项独立状态；厂商额外的休眠策略仍需用户在设置中检查。
+let mobileBackground = null
+let mobileBackgroundChecking = null
+let mobileBackgroundDismissed = false
+let mobileBackgroundError = ''
+
+function mobileBackgroundNeedsSetup() {
+  return mobileBackground?.supported && (mobileBackground.backgroundRestricted || !mobileBackground.batteryOptimizationIgnored)
+}
+
+function mobileBackgroundInner(profile = false) {
+  if (!mobileShell() || !state.me || state.me.account?.role === 'owner' || !mobileBackground?.supported) return ''
+  const needsSetup = mobileBackgroundNeedsSetup()
+  if (!profile && (!needsSetup || mobileBackgroundDismissed || state.path === '/profile')) return ''
+  const title = mobileBackground.backgroundRestricted
+    ? t('后台运行已受限制', 'Background activity is restricted')
+    : needsSetup
+      ? t('建议开启“不受限制”', 'Allow unrestricted battery usage')
+      : t('系统未报告后台限制', 'No background restrictions reported')
+  const guide = t('打开系统设置，在“电池”或“后台运行”中选择“不受限制”。部分手机称为“允许后台活动”或“不优化”；如有自启动、休眠应用设置，也请允许 Satuwork 运行。', 'In system settings, open Battery or Background activity and choose Unrestricted. Some phones call this Allow background activity or Don’t optimize. Also allow Satuwork in auto-start or sleeping-app settings, if present.')
+  return `<section class="${profile ? 'satu-panel' : 'gw-mobile-background'}" aria-label="${esc(t('后台运行与推送', 'Background activity and push'))}">
+    ${profile ? `<span class="satu-panel-title">${t('后台运行与推送', 'Background activity and push')}</span>` : ''}
+    <div class="gw-mobile-background-copy" role="status"><strong>${title}</strong>
+      <p>${needsSetup ? t('锁屏后通知可能延迟。', 'Notifications may be delayed while the screen is locked.') : t('若仍有通知延迟，请检查手机的自启动和休眠应用设置。', 'If notifications are still delayed, check your phone’s auto-start and sleeping-app settings.')}${profile ? ' ' + guide : needsSetup ? t('请在系统设置的“电池 / 后台运行”中选择“不受限制”。', 'Choose Unrestricted under Battery / Background activity in system settings.') : ''}</p>
+      ${profile ? `<p>${t('允许后台运行可能增加耗电量。返回应用后会自动复查。', 'Allowing background activity may use more battery. The app checks again when you return.')}</p>` : ''}
+      ${mobileBackgroundError ? `<p role="alert">${esc(mobileBackgroundError)}</p>` : ''}
+    </div>
+    <div class="gw-mobile-background-actions"><button type="button" class="btn btn-secondary" data-act="mobile-background-settings">${t('打开应用设置', 'Open app settings')}</button>
+      ${profile ? `<button type="button" class="satu-linkbtn" data-act="mobile-background-check">${t('重新检测', 'Check again')}</button>` : `<button type="button" class="satu-linkbtn" data-act="mobile-background-dismiss">${t('暂不设置', 'Not now')}</button>`}
+    </div>
+  </section>`
+}
+
+function paintMobileBackground() {
+  for (const slot of document.querySelectorAll('[data-mobile-background]')) {
+    slot.innerHTML = mobileBackgroundInner(slot.getAttribute('data-mobile-background') === 'profile')
+  }
+}
+
+async function checkMobileBackground() {
+  const bridge = pushBridge()
+  if (!bridge || typeof bridge.backgroundStatus !== 'function' || !state.me || state.me.account?.role === 'owner') return
+  if (mobileBackgroundChecking) return mobileBackgroundChecking
+  mobileBackgroundChecking = (async () => {
+    try {
+      const status = await bridge.backgroundStatus()
+      if (JSON.stringify(status) !== JSON.stringify(mobileBackground)) mobileBackgroundDismissed = false
+      mobileBackground = status
+      paintMobileBackground()
+    } catch (e) {
+      console.warn('satuwork: 后台运行状态检测失败', e)
+    }
+  })()
+  try { await mobileBackgroundChecking } finally { mobileBackgroundChecking = null }
+}
+
+async function openMobileBackgroundSettings() {
+  const bridge = pushBridge()
+  if (!mobileBackground?.supported || typeof bridge?.openBackgroundSettings !== 'function') return
+  mobileBackgroundError = ''
+  try {
+    await bridge.openBackgroundSettings()
+  } catch {
+    mobileBackgroundError = t('无法打开系统设置。请手动进入：系统设置 → 应用 → Satuwork → 电池 / 后台运行。', 'Could not open settings. Go to System settings → Apps → Satuwork → Battery / Background activity.')
+  }
+  paintMobileBackground()
+}
+
 async function syncMobilePush() {
+  void checkMobileBackground()
   const bridge = pushBridge()
   if (!bridge || !state.me || state.me.account?.role === 'owner') return
   const ticket = token()
@@ -1036,7 +1106,10 @@ async function takeMobilePushTap() {
 
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') void takeMobilePushTap()
+    if (document.visibilityState === 'visible') {
+      void takeMobilePushTap()
+      void checkMobileBackground()
+    }
   })
   // 壳子原生那半记下一次点通知后叫这一声（mobile/push-plugin 的 SatuPushPlugin.swift / .kt）：
   // 回前台那一下和点通知谁先到没有保证，应用开着时从通知中心点进来也不会有回前台。

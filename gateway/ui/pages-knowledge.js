@@ -435,7 +435,7 @@ async function knowledgeDownload(kbId, fileId, name) {
     try { msg = (await r.json()).error || msg } catch {}
     throw new Error(msg)
   }
-  saveBlob(await r.blob(), name || 'file', 60_000)
+  await saveBlob(await r.blob(), name || 'file', 60_000)
 }
 
 // ── 上传 ────────────────────────────────────────────────────────────────

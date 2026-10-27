@@ -860,6 +860,7 @@ async function sendChat() {
   // 等席位把事件送回来才突然冒出来——同一条消息在屏幕上跳两次。
   const pending = { sessionId, text: body, images, mentions, refs, at: Date.now(), afterSeq }
   state.chatPending = (state.chatPending || []).concat(pending)
+  if (state.chatSessionId === sessionId) followChatBottom(document.getElementById('chat-thread'))
   paintChat()
   try {
     const r = await api('POST', '/runtime/sessions/' + encodeURIComponent(sessionId) + '/messages', {

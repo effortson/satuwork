@@ -588,5 +588,5 @@ function chatExportText() {
 }
 
 function downloadFile(name, text, type) {
-  saveBlob(new Blob([text], { type: type || 'text/plain;charset=utf-8' }), name)
+  return saveBlob(new Blob([text], { type: type || 'text/plain;charset=utf-8' }), name)
 }

@@ -929,6 +929,7 @@ function paintChatInPlace(btn, attr) {
   const top = btn.getBoundingClientRect().top
   // 人在这一屏里点了东西，就当摸过滚动条：不然 paintChat 照「从没滚过」贴底。
   thread.setAttribute('data-touched', '1')
+  watchChatScroll(thread).following = false
   paintChat()
   const again = thread.querySelector(sel)
   if (again) thread.scrollTop += again.getBoundingClientRect().top - top

@@ -190,6 +190,8 @@ async function loadMe() {
   // 手机壳里把这台设备的推送令牌登记到这张票名下（shell.js；浏览器和桌面壳里空转）。不等：
   // 第一次会弹系统的通知权限框，登录不该被它挡住。
   if (typeof syncMobilePush === 'function') void syncMobilePush()
+  void syncDesktopNotifications()
+  if (typeof syncNotificationState === 'function') syncNotificationState()
 }
 
 async function loadCatalog() {

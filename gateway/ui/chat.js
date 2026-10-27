@@ -507,6 +507,7 @@ async function loadRuntimeBots() {
     // 管理员刚在「机器」页填完 directUrl 之后的那一次。
     state.rosterStreamUrl = data.rosterStreamUrl || ''
     syncRosterStream()
+    void syncDesktopNotifications()
     reviveDirectChatStream()
     if (window.__SATUWORK_LOCAL_BOT__?.stop) {
       const ids = new Set(state.runtimeBots.map((bot) => bot.id))
@@ -574,6 +575,7 @@ async function startDesktopLocalBot(botId) {
   const bootstrap = await api('POST', `/runtime/bots/${encodeURIComponent(botId)}/local-bootstrap`, {})
   const status = await bridge.start(bootstrap)
   if (status && status.port) registerLocalBot(botId, status.port, bootstrap.accessToken)
+  syncDesktopLocalNotices()
   if (status && status.runtimeUpdateError) {
     state.deployHint = t(
       `本地 Bot 已用旧版本启动；自动升级失败：${status.runtimeUpdateError}`,

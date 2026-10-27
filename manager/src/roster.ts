@@ -177,7 +177,7 @@ export async function rosterStream(
   hub.subs.add(write)
   // 先追平再听：中途接上是常态（每一次刷新都是）。
   try {
-    for (const frame of catchUpFrames(hub.bots)) write(frame)
+    for (const frame of catchUpFrames(hub.bots)) write({ ...frame, replay: true })
   } catch {
     done()
   }
@@ -201,6 +201,7 @@ export async function rosterStream(
 }
 
 async function drain(body: ReadableStream<Uint8Array>, up: Upstream, write: (frame: Frame) => void, closed: () => boolean) {
+  up.replaying = true
   type RosterEvent = { type?: string; seq?: number; time?: number; live?: unknown }
   for await (const ev of sseEvents<RosterEvent>(body.getReader(), closed)) {
     if (closed()) return

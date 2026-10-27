@@ -55,12 +55,21 @@ function copyTextFallback(text) {
 }
 
 /**
- * 把一个 Blob 存成文件：临时挂一个 `<a download>` 点一下就撤。
+ * 把一个 Blob 存成文件。桌面壳用系统保存窗口；浏览器用 `<a download>`。
  *
  * blob: 地址过一会儿再撤销——点下去之后浏览器才开始读它，当场撤掉的话下载会落空。
  * 一般一秒够了；知识库那份文件可能很大、存盘慢，给的是一分钟。
  */
-function saveBlob(blob, name, revokeMs = 1000) {
+async function saveBlob(blob, name, revokeMs = 1000) {
+  const nativeSave = typeof window !== 'undefined' && window.__SATUWORK_SAVE_FILE__
+  if (nativeSave) {
+    try {
+      return await nativeSave(await blob.arrayBuffer(), name || 'file')
+    } catch (err) {
+      // Tauri 命令的错误是字符串，统一转成 Error，调用方才能显示原因。
+      throw err instanceof Error ? err : new Error(String(err))
+    }
+  }
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url

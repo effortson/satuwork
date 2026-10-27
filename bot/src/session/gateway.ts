@@ -3,7 +3,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import { gatewayToken, gatewayUrl, isLocalRuntime, pinnedBotId } from '../env.ts'
 import type { SessionEvent, SessionOrigin } from './types.ts'
 import type { Handoff } from '../policy/handoff.ts'
-import { pushSuppressed, watched } from './watchers.ts'
 
 export const name = 'satu-session-gateway'
 export const inject = ['server', 'sessions', 'catalog', 'storage']
@@ -102,6 +101,7 @@ interface OutboxBase {
 
 type OutboxItem =
   | ({ kind: 'index' } & OutboxBase)
+  | ({ kind: 'notification'; notice: { botId: string; sessionId: string; seq: number; time: number; kind: 'turn-end' | 'approval'; actionId: string; resolved: boolean } } & OutboxBase)
   /**
    * 一次行为边界的表态（policy/decision）。
    *
@@ -253,6 +253,7 @@ export function apply(ctx: Context) {
 
   /** 丢掉一条时日志里要认得出丢的是什么。不打正文——那里面有对话内容。 */
   function outboxLabel(item: OutboxItem): string {
+    if (item.kind === 'notification') return `notification ${item.notice.kind} ${item.sessionId}:${item.notice.seq}`
     if (item.kind === 'guard') return `guard ${item.decision.guard}/${item.decision.outcome} tool=${item.decision.tool} call=${item.decision.callId}`
     if (item.kind === 'handoff') return `handoff ${item.handoff.id} state=${item.handoff.state}`
     return `index ${item.sessionId}`
@@ -266,7 +267,7 @@ export function apply(ctx: Context) {
       for (const row of outbox.list()) {
         // 升级前压在队列里的 usage 项：丢掉，别发。留着只会重复计费，
         // 而且 Gateway 那条 /internal/usage 已经拆掉了，发出去只会 404。
-        if (row.value.kind !== 'index' && row.value.kind !== 'guard' && row.value.kind !== 'handoff') {
+        if (row.value.kind !== 'index' && row.value.kind !== 'guard' && row.value.kind !== 'handoff' && row.value.kind !== 'notification') {
           outbox.delete(row.id)
           continue
         }
@@ -274,7 +275,8 @@ export function apply(ctx: Context) {
         // 连不上的项目会把后面所有项目一起拖住。
         if (row.value.nextTryAt != null && row.value.nextTryAt > now) continue
         try {
-          if (row.value.kind === 'guard') await sendGuard(row.value.decision)
+          if (row.value.kind === 'notification') await postInternal('/internal/push', row.value.notice)
+          else if (row.value.kind === 'guard') await sendGuard(row.value.decision)
           else if (row.value.kind === 'handoff') await sendHandoff(row.value.handoff)
           else await sendIndex(row.value.sessionId)
           outbox.delete(row.id)
@@ -363,7 +365,9 @@ export function apply(ctx: Context) {
   async function sendHandoff(h: Handoff) {
     const who = await cachedMe()
     if (!who) throw new Error('/me 未就绪')
+    const first = (await ctx.sessions.events(h.sessionId)).find((e) => e.type === 'human/handoff' && e.data?.id === h.id && e.data?.state === 'open')
     await postInternal('/internal/handoffs', {
+      notificationSeq: first?.seq,
       companyId: who.companyId,
       accountId: who.accountId,
       id: h.id,
@@ -460,27 +464,7 @@ export function apply(ctx: Context) {
     return side
   }
 
-  /**
-   * 「这颗 Bot 有事要人看」：报给 Gateway，由它推到这个人登记过的手机上（gateway/src/lib/push.ts）。
-   *
-   * 两种事：一轮跑完（turn/end，**人自己点了中止的不算**——他正看着），一张审批卡开始等人点
-   * （tool/approval 的 pending）。转人工不在这儿报：/internal/handoffs 那条已经顺手推了。
-   *
-   * **不进 outbox、不重试**：推送是「现在」的事，三小时后补到的「回复好了」只会骗人回去看一条
-   * 早就看过的消息。发不出去就算了，打一行 debug。
-   *
-   * 只报主会话（旁支是工具调用的内部过程）；本地 Bot 不报（人就坐在那台电脑前，而且它的票不走
-   * 这条路）。Gateway 回 `quiet`（停用了、没登记设备）时**两分钟内不再问**：没装手机端的人每一轮
-   * 都白打一次 Gateway，在 Vercel 上就是一次白花的函数调用。老 Gateway 没有 quiet，认它的中文原文。
-   *
-   * **人正看着的不推**：这一轮不到半分钟、而且有客户端连着这条会话的流，人多半就在屏幕前
-   * （判据和为什么不能只看「连着流」见 session/watchers.ts）。在事件到达的那一刻同步判，
-   * 不等 reportPush 里那几步异步——流可能恰好在这期间断开。
-   */
-  let pushQuietUntil = 0
-  const PUSH_QUIET_MS = 2 * 60_000
-  /** 每条会话当前这一轮从什么时候开始（turn/start 的时刻），turn/end 时摘掉。 */
-  const turnStartedAt = new Map<string, number>()
+  /** 通知元数据持久排队。稳定的会话序号让 Gateway 重试去重，过期只保留未读、不补弹。 */
   const sessionBot = new Map<string, string>()
   async function botOfSession(sessionId: string): Promise<string> {
     const known = sessionBot.get(sessionId)
@@ -490,40 +474,26 @@ export function apply(ctx: Context) {
     sessionBot.set(sessionId, id)
     return id
   }
-  async function reportPush(sessionId: string, kind: 'turn-end' | 'approval') {
-    if (!configured() || Date.now() < pushQuietUntil) return
-    if (isLocalRuntime()) return
-    if (await isSideSession(sessionId)) return
+  async function reportPush(sessionId: string, event: SessionEvent, kind: 'turn-end' | 'approval') {
+    if (!configured() || isLocalRuntime() || await isSideSession(sessionId)) return
     const botId = await botOfSession(sessionId)
-    if (!botId) return
-    const base = gatewayUrl()
-    const r = await fetch(base + '/internal/push', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${gatewayToken()}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ kind, botId }),
-      signal: AbortSignal.timeout(8000),
-    })
-    // 老 Gateway 没有这条路由（404）：也安静下来，别每一轮都问一次。
-    if (r.status === 404) {
-      pushQuietUntil = Date.now() + PUSH_QUIET_MS
-      return
-    }
-    const body = (await r.json().catch(() => ({}))) as { skipped?: string; quiet?: boolean }
-    if (body.quiet === true || body.skipped === '没有登记设备') pushQuietUntil = Date.now() + PUSH_QUIET_MS
+    if (!botId || !event.seq) return
+    const actionId = kind === 'approval' ? String((event.data as { callId?: string })?.callId || '') : ''
+    const resolved = kind === 'approval' && (event.data as { state?: string })?.state !== 'pending'
+    const source = resolved
+      ? (await ctx.sessions.events(sessionId)).find((e) => e.type === 'tool/approval' && e.data?.callId === actionId && e.data?.state === 'pending')
+      : event
+    if (!source?.seq) return
+    enqueue({ kind: 'notification', sessionId, createdAt: Date.now(), attempts: 0,
+      notice: { botId, sessionId, seq: source.seq, time: source.time || Date.now(), kind, actionId, resolved } })
   }
 
   ctx.on('session/event', (sessionId: string, event: SessionEvent) => {
-    const pushKind =
-      event.type === 'turn/end' && (event.data as { reason?: string }).reason !== 'aborted'
-        ? 'turn-end'
-        : event.type === 'tool/approval' && (event.data as { state?: string }).state === 'pending'
-          ? 'approval'
-          : null
-    if (event.type === 'turn/start') turnStartedAt.set(sessionId, event.time)
-    if (pushKind && !pushSuppressed(watched(sessionId), turnStartedAt.get(sessionId), event.time)) {
-      void reportPush(sessionId, pushKind).catch((e: Error) => ctx.logger?.debug?.(`推送上报没发出去：${e.message}`))
+    const pushKind = event.type === 'turn/end' && event.data?.reason !== 'aborted'
+      ? 'turn-end' : event.type === 'tool/approval' && event.data?.callId ? 'approval' : null
+    if (pushKind) {
+      void reportPush(sessionId, event, pushKind).catch((e: Error) => ctx.logger?.warn?.(`通知上报排队失败：${e.message}`))
     }
-    if (event.type === 'turn/end') turnStartedAt.delete(sessionId)
     if (
       event.type === 'session' ||
       event.type === 'user/message' ||
