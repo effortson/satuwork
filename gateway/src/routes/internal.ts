@@ -4,7 +4,7 @@
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { MIN_MANAGER_NODE, desiredManagerRelease, gatewayBaseFor, machineHostOf, managerHostOf, managerPackageUrl, normalizePairingCode, sendReleaseFile } from '../lib/machines.ts'
-import { MIN_MANAGER_PROTOCOL, botBaseOf, managerHealth, normalizeTimezone, publicMachine, queueBotFollow } from '../deploy.ts'
+import { MIN_MANAGER_PROTOCOL, advanceHttps, botBaseOf, httpsReplyOf, httpsReportOf, managerHealth, normalizeTimezone, publicMachine, queueBotFollow } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { callerAccountId, requireBootstrapMachine, requireInternalCaller, requireMachine, type InternalCaller } from '../lib/guards.ts'
@@ -286,6 +286,12 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     // 把这一轮累进它所属的那一分钟。日视图从这张表来——`machines.telemetry` 只有
     // 「现在怎么样」，答不了「今天忙不忙、下午那阵卡是几点」。
     await rollUp(machine, next, telemetry)
+    // 域名 https 推一步（deploy/https.ts）。**出错只记一笔**，理由同下面的跟版：心跳不能被
+    // 附带的事带成 500。推不动就按原样把上一步的期望再带下去，下一轮再推。
+    const ingress = await advanceHttps(db, next, httpsReportOf(body.https)).catch((e: Error) => {
+      console.error(`satuwork-gateway: 机器 ${next.id.slice(0, 8)} 的域名 https 没推下去：${e.message}`)
+      return next
+    })
 
     const desired = await desiredManagerRelease(db, next)
     // Bot 自动跟版：落后的席位排进部署队列，由每一拍去装（见 deploy.ts 的 queueBotFollow）。
@@ -305,6 +311,8 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
       // journal 上限，MB。和时区一条路：这里只是下指令，清不清、什么时候清由管家
       // 决定。null = 没人指定过，管家跟自己的默认走；0 = 明确不要它动 journal。
       logCapMb: next.logCapMb,
+      // 域名 https 的期望（协议 14）。null = 不管，管家什么都不动；老管家不认这一格。
+      https: httpsReplyOf(ingress),
       minNode: MIN_MANAGER_NODE,
       minProtocol: MIN_MANAGER_PROTOCOL,
     })

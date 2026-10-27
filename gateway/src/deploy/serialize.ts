@@ -2,6 +2,7 @@
  * 机器和席位对外的样子：在线判断、给公司 / owner 看的机器卡、席位运行态。
  */
 import { canonicalTimezone, type Machine, type SeatRuntime } from '../db.ts'
+import { publicHttps } from './https.ts'
 import { MIN_MANAGER_PROTOCOL, MIN_DIRECT_DESKTOP_PROTOCOL, MIN_SPLIT_WORKDIR_PROTOCOL, workDirOf, sharedDirOf, botWorkDirOf, portsOf, novncUrlOf, streamUrlOf, uploadUrlOf, machinePaired } from './paths.ts'
 
 /**
@@ -128,6 +129,11 @@ export function ownerMachine(m: Machine) {
      * 在界面上长得一模一样，只有去数管家版本才分得出来。
      */
     directPending: Boolean(m.directUrl) && m.protocol < MIN_DIRECT_DESKTOP_PROTOCOL,
+    /**
+     * 管家自动配域名 https 走到哪一步（deploy/https.ts），以及为什么还不能按（httpsBlocker）。
+     * 和直连地址一样是运维配置，只在 owner 这一侧给。
+     */
+    ...publicHttps(m),
     arch: m.arch,
     telemetry: m.telemetry,
     telemetryAt: m.telemetryAt,

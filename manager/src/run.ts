@@ -114,6 +114,21 @@ export function tailError(r: RunResult, fallback: string): string {
 }
 
 /**
+ * 2 秒后重启这几个 systemd 服务，由一个**分离的**瞬态单元发起。
+ *
+ * 管家的子进程去 `systemctl restart` 会连自己一起被杀（同一个 cgroup），命令根本发不出去，所以
+ * 要跳到瞬态单元里。`--collect`：瞬态单元失败了 systemd 默认把它留在 failed 态，同名的下一次
+ * systemd-run 会以「单元已存在」被拒——从此再也发不出重启。前面的 reset-failed 给老机器兜底（没带
+ * --collect 的旧版本留下的残骸）；单元不存在时它只是报一句，不算错。
+ *
+ * 自升级（upgrade.ts）和改监听（https.ts）都走这一条，单元名各用各的，互不顶掉。
+ */
+export async function scheduleRestart(unit: string, services: string[]): Promise<RunResult> {
+  await run('systemctl', ['reset-failed', `${unit}.service`], { timeout: 10_000 }).catch(() => {})
+  return run('systemd-run', ['--on-active=2s', '--collect', `--unit=${unit}`, 'systemctl', 'restart', ...services], { timeout: 15_000 })
+}
+
+/**
  * 跑一遍，只要 stdout；非零和抛异常都当「什么都没看到」。
  *
  * 「看一眼现场」这类活儿（诊断、回收端口）不该因为少一个工具就整件挂掉——老镜像

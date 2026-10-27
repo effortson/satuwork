@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, 
 import { join } from 'node:path'
 import { installRoot, managerVersion, patchState, readState, releaseRoot, seatAssets } from './config.ts'
 import { fetchVerified, sameOrigin, untarInto } from './releases.ts'
-import { run } from './run.ts'
+import { run, scheduleRestart } from './run.ts'
 import { busy, busySeats } from './seats.ts'
 
 /**
@@ -330,25 +330,10 @@ export async function maybeUpgrade(offer: UpgradeOffer, token: string): Promise<
       }
     })
 
-    // 重启必须由**分离的**单元发起：管家的子进程去 systemctl restart 会连自己一起
-    // 被杀（同一个 cgroup），命令根本发不出去。瞬态单元跳出去。
+    // 重启要从分离的瞬态单元发起，见 run.ts 的 scheduleRestart。
     // 工人和管家同一个包、同一份 current 软链，一起重启。老机器上没有工人单元：systemctl
     // 对不存在的单元只是报一句、别的照常，管家自己的重启不受影响。
-    //
-    // `--collect`：瞬态单元要是失败了，systemd 默认把它留在 failed 态，同名的下一次
-    // systemd-run 会以「单元已存在」被拒——从此每一轮换版都发不出重启。收掉它。
-    // 前面再 reset-failed 一次是给老机器兜底（没带 --collect 的旧版本留下的残骸）；
-    // 单元不存在时它只是报一句，不算错。
-    await run('systemctl', ['reset-failed', 'satuwork-manager-restart.service'], { timeout: 10_000 }).catch(() => {})
-    const r = await run('systemd-run', [
-      '--on-active=2s',
-      '--collect',
-      '--unit=satuwork-manager-restart',
-      'systemctl',
-      'restart',
-      'satuwork-manager.service',
-      'satuwork-worker.service',
-    ], { timeout: 15_000 })
+    const r = await scheduleRestart('satuwork-manager-restart', ['satuwork-manager.service', 'satuwork-worker.service'])
     if (r.code !== 0) {
       /**
        * 重启没发出去，进程还是旧版本在跑。**把机器放回换之前的样子**：current 指回

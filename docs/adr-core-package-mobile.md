@@ -183,7 +183,7 @@ Gateway 无状态、不经手对话流。要做推送需要四件事：
 - bot 那头在 session/gateway.ts 的 `reportPush`：一轮跑完（人自己点中止的不算）和审批卡
   进入 pending 时可靠排队上报；审批终态用原 pending 序号使旧提醒失效。重试按稳定 ID 去重，
   超过一小时的事件仍可保留未读，但不再补弹系统通知。只报主会话；本地 Bot 由桌面壳上报。
-- 共享已读、设备领取与重启恢复见 [跨端通知](notifications.md)（迁移 0068～0070）。
+- 共享已读、设备领取与重启恢复见 [跨端通知](notifications.md)（迁移 0069～0071）。
 - e2e：push 套件验 Gateway 这半；gateway-chat 套件给它的 Gateway 也接上假 APNs，真 bot 跑完
   一轮后假 APNs 要收到那条 turn-end，且不带正文。
 

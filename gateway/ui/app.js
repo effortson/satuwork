@@ -340,6 +340,7 @@ document.getElementById('app').addEventListener('submit', (e) => {
   if (form.getAttribute('data-form') === 'org-profile') return saveOrgProfile(e)
   if (form.getAttribute('data-form') === 'machine') return saveMachine(e)
   if (form.getAttribute('data-form') === 'machine-direct') return saveMachineDirectUrl(e)
+  if (form.getAttribute('data-form') === 'machine-https') return saveMachineHttps(e)
   if (form.getAttribute('data-form') === 'release-desired') return saveDesiredVersion(e)
   if (form.getAttribute('data-form') === 'add-release') return addRelease(e)
   if (form.getAttribute('data-form') === 'machine-capacity') return saveCapacity(e)
@@ -997,6 +998,10 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'machine-refresh') {
     await refreshMachine(btn.getAttribute('data-id'), btn.getAttribute('data-scope') || '')
+    return
+  }
+  if (act === 'machine-https-clear') {
+    await clearMachineHttps(btn)
     return
   }
   if (act === 'user-status') {

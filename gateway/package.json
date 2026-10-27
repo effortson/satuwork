@@ -7,6 +7,7 @@
     "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json",
+    "test:machine-https": "node --import tsx --test test/machine-https.test.ts",
     "migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
     "build:vercel": "node scripts/build-vercel.mjs",
     "vercel-build": "node scripts/vercel-build.mjs",
