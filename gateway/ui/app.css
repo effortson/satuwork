@@ -1621,6 +1621,8 @@ html.satu-window-macos body:has(.gw-shell) .satu-windowbar { width: 248px; }
 html.satu-window-macos .gw-shell:has(.satu-rail) { grid-template-columns: 80px minmax(0, 1fr) !important; }
 html.satu-window-macos body:has(.satu-rail) .satu-windowbar { width: 80px; }
 html.satu-custom-window .gw-head { user-select: none; -webkit-user-select: none; }
+/* #app 是 content-box，min-height 100% 再加标题栏的 padding-top 会把页面撑出一截，Windows 上就是常驻滚动条。 */
+html.satu-custom-window #app { box-sizing: border-box; }
 html.satu-custom-window body:not(:has(.gw-shell)) #app { padding-top: 40px; }
 html.satu-custom-window .gw-login { min-height: calc(100vh - 40px); min-height: calc(100dvh - 40px); }
 html.satu-custom-window body:not(:has(.gw-shell)) .satu-windowbar { background: var(--color-bg); }
