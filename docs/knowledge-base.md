@@ -1,8 +1,12 @@
-# Satuwork：公司知识库（Upstash Vector）
+# Satuwork：公司知识库
 
 一句话：**每家公司可以建若干个知识库，往里传文件，Bot 回答时能查。** 每个知识库自己定
 共享给谁（全部 Bot / 指定几颗 / 不共享），知识库个数由套餐决定，单个知识库的原文件总量
-不超过 200 MB，向量存在 Upstash Vector。
+不超过 200 MB，向量存在本环境 Postgres 的 pgvector 里。
+
+> **2026-10 改动**：最初向量放在 Upstash Vector（索引内置 embedding，配置走环境变量）。现在只留
+> pgvector，向量模型在平台「工具配置 → 知识库」里按区域（中国区 / 国际区）选服务商、填密钥，
+> 不再写死在环境变量里（§3.2）。
 
 这份文档按仓库里其他 PRD 的写法：先说清今天缺什么，再把形状定死，每一处「为什么是这样」
 都写在决定旁边。前置阅读：[docs/web-tools.md](web-tools.md)（工具走 `/runtime/*`、密钥住平台
@@ -40,8 +44,8 @@ Bot 能读的「公司资料」只有三条路，三条都不是给成规模的�
    不共享的库只有管理员看得见，是「还在准备」或「只给管理员自己试」的状态
 6. Bot 多一把 `knowledge_search` 工具，这颗 Bot 有可查的知识库时才进工具表；查到的内容按
    `<kb_content>` 包起来，和网页内容同一套「是数据不是指令」的约定
-7. 向量在 Upstash Vector：**一个索引、每个知识库一个命名空间、用索引内置的 embedding**；
-   Gateway 不碰 embedding 模型，不需要额外的模型密钥
+7. 向量在 pgvector（`knowledge_chunk_vectors`，1024 维）；embedding 由 Gateway 调 OpenAI 兼容的
+   `/embeddings` 算，服务商、模型、密钥在平台页面上配
 8. 检索和入库都往账本落行（`kind = 'kb'`），单价由平台定，默认 0
 
 **先不做：**
@@ -53,8 +57,7 @@ Bot 能读的「公司资料」只有三条路，三条都不是给成规模的�
 - **OCR。** 扫描件 PDF 抽不出文字就按失败报，原因写明白。要 OCR 先得有一台跑得动它的机器
 - **网页 / 在线文档同步（Notion、飞书云文档）。** 那是连接器那一层的事，入口应该长在
   connectors.md 里，不在这儿
-- **混合检索 / 重排。** Upstash 的 hybrid 索引要在建索引时定，第一版用纯向量，命中率不够
-  再换索引（§17 有风险说明）
+- **混合检索 / 重排。** 第一版用纯向量，命中率不够再加关键词或重排（§17 有风险说明）
 - **owner 替公司管理知识库。** owner 只管配额；要替公司传文件，让管理员传
 
 ---
@@ -67,17 +70,16 @@ company ─┬─ knowledge_bases（名字、说明、共享范围、已用字�
          │      └─ knowledge_files（原文件：名字、大小、存哪、入库状态）
          │              └─ knowledge_chunks（切出来的文本段，Postgres 里的那一份）
          │                      ↕ 同一个 id
-         └─ Upstash Vector 命名空间 kb:{kbId}（向量 + 元数据里的那一份文本）
+                                 └─ knowledge_chunk_vectors（向量，主键就是分片 id，跟着分片级联删）
 ```
 
 **文本存两份**，这是有意的：
 
-- **Postgres 的 `knowledge_chunks` 是真相。** 换索引、换 embedding 模型、改切片策略，都从
+- **Postgres 的 `knowledge_chunks` 是真相。** 换 embedding 模型、改切片策略，都从
   这里重灌，不用回头再解析一遍原文件（解析是整条流水线里最慢、最容易因为库升级而变的
   一步）
-- **Upstash 元数据里也带一份文本。** 查询回来直接就是可读的段落，不用再回 Postgres 按
-  id 捞一次——检索在对话热路径上，少一次往返就是少几十毫秒。元数据上限 48 KB，一段
-  文本不到 2 KB，装得下
+- **向量表只放向量和 `textHash`。** 查询时 join 回 `knowledge_chunks` 取文本，`textHash` 对不上的
+  （分片改过、向量还没跟上）不返回
 
 原文件也留着（§5），为了三件事：界面上能下载、失败了能重跑、将来换解析器能重来。
 
@@ -124,7 +126,7 @@ interface KnowledgeFile {
   /** 失败原因，一句人话。其他状态为空串 */
   error: string
   chunkCount: number
-  /** 已经灌进 Upstash 的分片数。入库是可恢复的，从这里接着来（§6.3） */
+  /** 已经写进向量表的分片数。入库是可恢复的，从这里接着来（§6.3） */
   chunkDone: number
   /** 入库租约：哪一拍领走的、什么时候算过期 */
   leaseUntil: number | null
@@ -141,7 +143,7 @@ interface KnowledgeShare {
 }
 
 interface KnowledgeChunk {
-  id: string              // `${fileId}:${no}`，和 Upstash 里的向量 id 一字不差
+  id: string              // `${fileId}:${no}`，也是 knowledge_chunk_vectors 的主键
   fileId: string
   kbId: string
   no: number
@@ -151,26 +153,45 @@ interface KnowledgeChunk {
 }
 ```
 
-`share` 不进 Upstash 的元数据：共享范围是「查哪几个命名空间」这一步决定的（§7.2），
+`share` 不进向量表：共享范围是「查哪几个库」这一步决定的（§7.2），
 向量自己不用知道。改共享范围是改一列，不用动一条向量。
 
 套餐那三张表各加一列 `knowledgeBases`（§4）。`usage_charges.kind` 多一个 `'kb'`（§10）。
 
-### 3.2 Upstash 这一侧
+### 3.2 向量这一侧：pgvector + 页面上配的 embedding
 
-- **一个索引**，由平台在 Upstash 控制台建，`UPSTASH_VECTOR_REST_URL` / `UPSTASH_VECTOR_REST_TOKEN`
-  两个环境变量交给 Gateway。和 Blob 一样：没配就是没开（§12 的 501）
-- 建索引时选**内置 embedding 模型**，推荐 `bge-m3`（多语言；公司资料大多是中文）。
-  模型跟着索引走、建完改不了——换模型 = 建新索引 + 从 `knowledge_chunks` 全量重灌
-- **每个知识库一个命名空间** `kb:{kbId}`。删知识库 = 删命名空间，一条调用，不用按 id 扫。
-  查询也天然按库隔离，不靠元数据过滤来兜公司边界
-- 向量 id = `${fileId}:${no}`。删文件 = 按前缀 `${fileId}:` 删，同样一条调用
-- 元数据：`{ fileId, fileName, kbId, no, page, text }`。不放 companyId——命名空间已经把它
-  钉死了，元数据再放一份只是多一个可能对不上的地方
-- 上传用 `data` 字段（文本），不用 `vector`：embedding 在 Upstash 那边算。每批 ≤ 100 条
+- **向量表是可选的**，普通迁移不碰它（库里可能没有 vector 扩展）。数据库管理员先在 public
+  schema `create extension vector`；平台页面上存好向量模型时 Gateway 自动建表
+  （`initializeKnowledgeVectors`），建不成（多半是运行时账号没有建表权限）就由运维用迁移账号跑
+  `gateway/scripts/init-knowledge-vectors.ts`
+- **向量模型在平台「工具配置 → 知识库」配**（`platformSettings.knowledgeEmbedding` +
+  `platform_credentials` 里的 `kb-embedding:<服务商>`，密钥不回显）。先选**本环境区域**：
+  - 中国区：硅基流动（`BAAI/bge-m3`）、阿里云百炼（`text-embedding-v4`）、智谱（`embedding-3`）
+  - 国际区：OpenAI（`text-embedding-3-small/large`）、SiliconFlow 国际站（`BAAI/bge-m3`）
+  - 两边都能选「自定义（OpenAI 兼容）」：自己填地址、模型、单次条数（1–64）、要不要带 `dimensions`
 
-**为什么不是一家公司一个索引。** Upstash 的索引是按个数收费的资源，开一个要走控制台或
-管理 API，和「管理员点一下新建」这个动作对不上。命名空间是免费的、即建即用、删得干净。
+  区域没有默认值：没选之前下拉不给选，免得国际版第一次打开就看到国内几家。自定义的密钥钉在
+  地址的 origin 上（`kb-embedding:custom:<origin>`），改了主机旧密钥作废、要重填；自定义地址要过
+  web-tools 的 SSRF 闸（内网、回环一律拒，本机测试用 `GATEWAY_KB_EMBEDDING_ALLOW_PRIVATE=1` 放行）
+
+  区域只决定列哪几家，调用时不看它。预设的地址、单次条数（百炼和智谱一次只收 10 条）、要不要
+  带 `dimensions: 1024` 都钉在代码里（`lib/knowledge-embedding.ts` 的 `EMBEDDING_PRESETS`），
+  页面上只能换模型名
+- **维度固定 1024**（表的列宽）。原生不是 1024 维的模型靠 `dimensions` 参数截到 1024
+- **换模型要重建。** 表里记着现有向量的指纹（地址 + 模型 + 维度，`knowledge_vector_config`）。
+  表里有向量时，会改掉指纹的保存（换服务商、换模型、换地址）先回 409 说清后果，带 `confirm: true`
+  才生效——这一下对所有公司生效，不能是下拉框里一次误点。生效后检索暂停（503）、页面提示
+  「需要重建」；点「重建向量」删掉旧向量、所有文件重新排队，按当前单价重新入库。换密钥不算换模型
+- **没就绪时只排队。** 上传看「模型配好、密钥在」；入库节拍和检索还要看表建了、指纹对得上。
+  表没建或等重建期间传的文件停在「排队」，就绪后自动入库，不会被一拍拍撞成「失败」
+- **表是空的就直接换指纹，但不动文件。** 刚建表、从 Upstash 迁过来时，已有文件显示「可用」却
+  没有向量，状态里报 `unindexed`；点「重建向量」才重新入库——那一下向各公司计费，得是人看过
+  提示后点的
+- **老环境变量兜底。** 页面上还没选服务商时，`KB_EMBEDDING_API_KEY` / `KB_EMBEDDING_BASE_URL` /
+  `KB_EMBEDDING_MODEL` 还管用（页面上会提示）；选了之后以页面为准。硅基流动 + bge-m3 和老环境
+  变量的默认值是同一个指纹，从环境变量切到页面不用重建
+- 删库、删文件不看配置：向量跟着分片 `on delete cascade`，密钥过期、模型换了、表还没建都删得掉
+- 按 `kbId` + `companyId` 查，公司边界在 SQL 的 where 里
 
 ---
 
@@ -201,10 +222,10 @@ interface PlanSku {
    第二个在锁后面数到的是对的数
 2. **往下调要先腾位。** 平台把一家公司的 `knowledgeBases` 改到比现有库数少 → 409
    「知识库个数不能少于已有的 n 个」。这是席位那条「席位不能少于已有账号数」的翻版。
-   理由也一样：**超额之后没有任何一处会报错**，库继续用、继续占 Upstash，只是数字对不上
+   理由也一样：**超额之后没有任何一处会报错**，库继续用、继续占向量存储，只是数字对不上
 3. **到期只拦新增。** `plan.expiresAt` 过了：新建知识库、上传文件一律 409「套餐已到期」；
    **检索照常**。资料是公司自己的，到期不是没收它的理由；拦新增是因为那是真的在消耗
-   平台资源（Upstash 存储和请求）
+   平台资源（向量存储和 embedding 调用）
 
 ### 4.3 存量数据
 
@@ -262,7 +283,7 @@ POST /orgs/:id/knowledge/:kbId/files  { name, bytes, mime }  ← 登记 + 预留
 不按 token 算。理由：
 
 - 这是唯一一个用户**上传之前就知道**的数。「还能放多少」要在传之前答得出来
-- Upstash 那侧按请求数和存储收费，和原文件大小只是正相关；真要按 Upstash 的用量限，
+- 向量服务按 token 收费，和原文件大小只是正相关；真要按它的用量限，
   那是另一个数（§10 的计费管它）
 
 附带两个上限，都是为了把列表和入库时间兜住：
@@ -308,7 +329,7 @@ Debian 每 30 秒、Vercel 每分钟，**两边同一份**，和删除终审、�
 
 ```
 没解析过 → 取原文件 → 解析 → 切片 → 写 knowledge_chunks（一个事务）→ chunkCount
-从 chunkDone 起，每 100 片一批 upsert 到 Upstash → 每批成功就推进 chunkDone
+从 chunkDone 起，每 100 片一批算向量写进 pgvector → 每批成功就推进 chunkDone
 预算用完 → 放手，status 还是 processing，下一拍接着来
 全灌完 → status: ready，knowledge_bases.chunkCount 累加
 ```
@@ -321,7 +342,7 @@ Debian 每 30 秒、Vercel 每分钟，**两边同一份**，和删除终审、�
 
 ### 6.3 可恢复，靠两个数
 
-`chunkCount` 说「切出来多少」，`chunkDone` 说「灌进去多少」。Upstash 的 upsert 是幂等的
+`chunkCount` 说「切出来多少」，`chunkDone` 说「灌进去多少」。向量写入是幂等的
 （同 id 覆盖），所以一批灌了一半函数死了，下一拍从 `chunkDone` 重灌那一批，多灌的几条只是
 覆盖自己。**不需要事务，也不需要记「哪几条灌了」。**
 
@@ -346,11 +367,11 @@ Debian 每 30 秒、Vercel 每分钟，**两边同一份**，和删除终审、�
 |---|---|
 | 抽不出文字（扫描件、空文件） | `failed`，「没有可提取的文字；扫描件暂不支持」。文件留着，容量照占，管理员自己删 |
 | 格式损坏、解析抛错 | `failed`，错误信息收成一句人话；原始错误进 `console.warn` |
-| Upstash 报错（限流、网络） | **不标失败**。租约到期下一拍重来；连续 5 拍没推进（`attempts` 一列数，`chunkDone` 一动就清零）才标 `failed`「向量库暂时不可用，稍后点重试」 |
+| 向量服务报错（限流、网络） | **不标失败**。租约到期下一拍重来；连续 5 拍没推进（`attempts` 一列数，`chunkDone` 一动就清零）才标 `failed`「向量库暂时不可用，稍后点重试」 |
 | 原文件取不到（Blob 404） | `failed`，「原文件丢失，请重新上传」 |
 
 `failed` 的文件有一颗「重试」：`POST /orgs/:id/knowledge/:kbId/files/:fileId/retry` 把它改回 `queued`、
-`chunkDone = 0`、清掉已有分片和 Upstash 前缀。
+`chunkDone = 0`、清掉已有分片和向量。
 
 ---
 
@@ -388,8 +409,7 @@ Debian 每 30 秒、Vercel 每分钟，**两边同一份**，和删除终审、�
 不信请求体里单独传的 id。**管理员的试搜不看共享范围**——它查的就是这一个库，`none` 的也查，
 不然「不共享」的库在传完文件之后没有任何办法验证它查不查得到。
 
-一个库一次查询，**不做跨命名空间的一次查**——Upstash 没有这种调用，而且并发查三四个库
-和查一个库的延迟差不多。公司有十几个库时并发数封顶 8。
+查询向量只算一次，然后一个库一次查询——并发查三四个库和查一个库的延迟差不多。公司有十几个库时并发数封顶 8。
 
 `KB_SCORE_MIN` 是个会调的数：太低模型拿到一堆不相干的段落还当真话说，太高查不到东西。
 放在平台设置里（§10 那一块），初始值取 0.35 是 bge-m3 余弦相似度上「有点关系」的大致门槛，
@@ -497,15 +517,15 @@ knowledge: Array<{ id: string; name: string; desc: string; fileCount: number }>
 ## 9. 删除
 
 **知识库**：`DELETE /orgs/:id/knowledge/:kbId` 写 `deletingAt`，立刻回 200；列表里它当场消失、工具描述
-里也没它了。真正的清理在 tick 的同一步里：删 Upstash 命名空间 → 删 Blob / 盘上的原文件
-→ 删三张表的行。任何一步失败下一拍重来；`deleteNamespace` 对不存在的命名空间回成功，
+里也没它了。真正的清理在 tick 的同一步里：删这个库的向量 → 删 Blob / 盘上的原文件
+→ 删三张表的行。任何一步失败下一拍重来；每一步删不存在的东西都回成功，
 所以重来是幂等的。
 
 **为什么不同步删。** 一个 200 MB 的库几百份文件，Blob 一份一个 DELETE，同步删要几十秒，
 Vercel 上响应可能先超时；而管理员要的只是「它从列表上消失」。Bot 删除（`deletingAt` +
 `tickBotDeletions`）就是这个形状。
 
-**文件**：`DELETE /orgs/:id/knowledge/:kbId/files/:fileId` 同步做——一份文件三条调用（Upstash 按前缀删、
+**文件**：`DELETE /orgs/:id/knowledge/:kbId/files/:fileId` 同步做——一份文件三步（删向量、
 Blob 删一个、表里删），几百毫秒。失败回 502 让管理员再点一次，不留半删的状态：
 表里的行**最后删**，前两步失败行还在，重点一次就是重做。
 
@@ -522,18 +542,18 @@ Blob 删一个、表里删），几百毫秒。失败回 502 让管理员再点�
 
 | 什么 | 落一行 | 计量 | 单价来源 |
 |---|---|---|---|
-| 一次检索 | `kind: 'kb'`, `refId: 查询 id` | 查了几个库（= 几次 Upstash 请求） | `platformSettings.knowledge.pricing.query`（厘 / 次） |
-| 一份文件入库完成 | `kind: 'kb'`, `refId: fileId` | 分片数 ÷ 100 向上取整（= 几次 upsert 请求） | `platformSettings.knowledge.pricing.ingest`（厘 / 次） |
+| 一次检索 | `kind: 'kb'`, `refId: 查询 id` | 查了几个库 | `platformSettings.knowledge.pricing.query`（厘 / 次） |
+| 一份文件入库完成 | `kind: 'kb'`, `refId: fileId` | 分片数 ÷ 100 向上取整 | `platformSettings.knowledge.pricing.ingest`（厘 / 次） |
 
-Upstash 自己按请求数收（$0.40 / 10 万次）加存储（$0.25 / GB·月）。存储那一截**第一版不
-计费**：它是按月摊的，账本是按次的，硬塞进去要先造一个「每天结一次存储费」的机制——
+向量服务按 token 收费（每次真实用量另记在 `knowledge_embedding_usage`），向量存在平台自己的库里。
+存储那一截**第一版不计费**：它是按月摊的，账本是按次的，硬塞进去要先造一个「每天结一次存储费」的机制——
 不值得为了一个月几毛钱做。200 MB 原文件对应的向量存储不到 1 GB，先记在心里（§17）。
 
 两个单价**默认 0**，和网页工具一样。0 就是记行不收钱、不熔断——这条是 `Meter.gate` 的既有
 行为（billing.md §6.2），不用改。
 
-界面：平台「工具配置」页加一块「知识库」，和「网页与搜索」并排：两个单价、`KB_SCORE_MIN`、
-一行状态（Upstash 配了没、索引里一共多少向量）。
+界面：平台「工具配置」页加一块「知识库」，和「网页与搜索」并排：向量模型（区域、服务商、模型、
+密钥、自检）、向量库（建表、现有向量数与模型、重建）、两个单价、`KB_SCORE_MIN`。
 
 ---
 
@@ -628,24 +648,29 @@ Uploading / Queued / Indexing / Ready / Failed。
 | POST / PUT | `/platform/orders` | 多 `knowledgeBases` |
 | PUT | `/platform/orgs/:id/plan` | 多 `knowledgeBases`，往下调要先腾位（409） |
 | PUT | `/platform/settings` | 多 `knowledge: { pricing: { queryMils, ingestMils }, scoreMin }` |
-| GET | `/platform/knowledge/status` | 向量库配没配、索引里多少向量，给「工具配置 → 知识库」那一屏 |
+| GET | `/platform/knowledge/status` | 向量库状态（配没配、建表没有、多少向量、要不要重建） |
+| GET / PUT | `/platform/knowledge/embedding` | 向量模型：区域、服务商、模型（自定义还有地址、单次条数、`dimensions`）；回整份视图含预设和状态。会让现有向量失效的改动要带 `confirm: true`，否则 409 |
+| PUT | `/platform/knowledge/embedding/key` | `{ provider, secret }`，存进 `kb-embedding:<provider>`（自定义再钉上已保存地址的 origin），不回显 |
+| POST | `/platform/knowledge/embedding/test` | 自检：打一次当前配置，不记用量 |
+| POST | `/platform/knowledge/init` | 建向量表 |
+| POST | `/platform/knowledge/reindex` | 删旧向量、所有文件重新排队 |
 
-Upstash 没配时，所有写接口和检索回 **501**「平台未配置向量库（UPSTASH_VECTOR_REST_URL）」，
+向量模型没配好（没选服务商或没密钥）时，所有写接口和检索回 **501**「平台未配置知识库向量服务」，
 和 Blob 没配时发布包的那条 501 一个形状。读接口照常——界面要能画出「未开通」。
 
 ---
 
 ## 13. 安全与边界
 
-- **公司边界有三道**：每张表都带 `companyId`、每条查询的 where 都带它；命名空间名字里是
-  `kbId`，而 `kbId` 是先按公司查出来的；席位票解出来的账号决定公司，请求体里的 `kbIds`
+- **公司边界有三道**：每张表都带 `companyId`、每条查询的 where 都带它；向量查询按
+  `kbId` + `companyId` 筛，而 `kbId` 是先按公司查出来的；席位票解出来的账号决定公司，请求体里的 `kbIds`
   只做交集，传别家的 id 当没传
 - **共享范围在 Gateway 判，不在席位判。** 席位拿到的目录里只有它查得到的库，但真正的边界
   是 `/runtime/knowledge/search` 里按 `(companyId, botId)` 再筛一遍——目录是给模型看的
   提示，不是授权
 - **名单只能填本公司的 Bot。** `PUT …/share` 把 `botIds` 逐个对 `companyBots` 核一遍，有一个
   不是就整单 400；不悄悄丢掉不合法的那几个，那会让管理员以为存上了
-- **Upstash 的 token 只在 Gateway。** 席位、浏览器都不碰。同网页搜索那条「密钥住平台」
+- **向量服务的密钥只在 Gateway。** 席位、浏览器都不碰。同网页搜索那条「密钥住平台」
 - **原文件私有。** Blob 用私有库，下载走 Gateway 代理、要登录态；文件名在 `Content-Disposition`
   里要转义
 - **文件名清洗**：去路径分隔符、控制字符，截到 200 字符；原名只用来展示
@@ -663,9 +688,9 @@ Upstash 没配时，所有写接口和检索回 **501**「平台未配置向量�
 
 | 情况 | 表现 |
 |---|---|
-| Upstash 没配 | 写接口 501；列表页画「未开通」；`knowledge_search` 不进工具表 |
-| Upstash 查询超时（3 s） | 工具回「知识库暂时查不了，稍后再试」，`failed: true`；账本落 `status: 'failed'`、0 元 |
-| Upstash 入库报错 | 不标失败，下一拍重来；连续 5 拍没推进才标（§6.5） |
+| 向量模型没配 | 写接口 501；列表页画「未开通」；`knowledge_search` 不进工具表 |
+| 向量服务查询超时 | 工具回「知识库暂时查不了，稍后再试」，`failed: true`；账本落 `status: 'failed'`、0 元 |
+| 向量服务入库报错 | 不标失败，下一拍重来；连续 5 拍没推进才标（§6.5） |
 | Blob 回调没来（网络） | 文件停在 `uploading`；1 小时后 tick 收掉、释放预留；界面上那一行变「上传未完成，请重传」 |
 | 浏览器中途关掉 | 同上 |
 | 函数在入库中途被冻住 | 租约 90 秒后过期，下一拍从 `chunkDone` 接着来 |
@@ -673,7 +698,7 @@ Upstash 没配时，所有写接口和检索回 **501**「平台未配置向量�
 | 配额往下调 | 409，要先删到够数 |
 | 容量放不下 | 登记那步 413，浏览器端提前也会拦 |
 | 扫描件 | `failed`「没有可提取的文字」，容量照占 |
-| 删库时 Upstash 挂了 | 库停在 `deletingAt`，列表里不显示，tick 每拍重试 |
+| 删库时数据库或存储挂了 | 库停在 `deletingAt`，列表里不显示，tick 每拍重试 |
 
 ---
 
@@ -687,7 +712,8 @@ Upstash 没配时，所有写接口和检索回 **501**「平台未配置向量�
 | `db/types.ts` | `KnowledgeBase` / `KnowledgeShare` / `KnowledgeFile` / `KnowledgeChunk`；`ChargeKind` 加 `'kb'`；`PlatformSettings.knowledge` + `parseKnowledge` |
 | `db/rows.ts`、`db.ts` | 三张表的 CRUD；`upsertPlan` / SKU / 订单带新列；`knowledgeForBot(companyId, botId)`、`knowledgeForAccount(companyId, accountId)`（成员列表）；`setKnowledgeShare`；`claimKnowledgeFile`（租约） |
 | `lib/knowledge-store.ts` | 原文件存取：Blob / 盘，照 `releases.ts` 抄 |
-| `lib/knowledge-vector.ts` | Upstash 客户端（`@upstash/vector`）：upsert 批、query、按前缀删、删命名空间。没配时抛 501 |
+| `lib/knowledge-vector.ts`、`lib/knowledge-embedding.ts`、`db/knowledge-vector.ts` | pgvector 读写、embedding 调用、服务商预设、配置解析（页面优先、环境变量兜底） |
+| `routes/platform-knowledge.ts` | 向量模型配置、密钥、自检、建表、重建 |
 | `lib/knowledge-extract.ts` | 五种格式 → `{ text, page }[]` |
 | `lib/knowledge-chunk.ts` | 切片纯函数，`CHUNKER_VERSION` |
 | `lib/knowledge.ts` | `searchKnowledge`、`tickKnowledge`、删除收尾 |
@@ -697,7 +723,7 @@ Upstash 没配时，所有写接口和检索回 **501**「平台未配置向量�
 | `routes/company.ts` | 「公司/席位」的 payload 多知识库配额；删公司级联 |
 | `routines.ts` | `MAINTENANCE_STEPS` 加「知识库入库」；`tickBotDeletions` 顺手删 `knowledge_shares` |
 | `lib/meter.ts` | `kind: 'kb'` 的单价查找 |
-| `package.json` | `@upstash/vector`、`pdfjs-dist`、`mammoth`、`xlsx`、`jszip` |
+| `package.json` | `pdfjs-dist`、`mammoth`、`xlsx`、`jszip` |
 
 **界面**
 
@@ -705,9 +731,9 @@ Upstash 没配时，所有写接口和检索回 **501**「平台未配置向量�
 |---|---|
 | `ui/pages-knowledge.js`（新） | 列表、详情、共享范围与 Bot 勾选表、上传（两条路）、试搜 |
 | `ui/blob-client.js`（产物）、`scripts/build-blob-client.mjs` | `@vercel/blob/client` 的浏览器打包；升级 @vercel/blob 后重跑 |
-| `ui/pages-tools.js` | 「工具配置」多一个「知识库」tab：向量库状态、两个单价、门槛 |
+| `ui/pages-tools.js` | 「工具配置」多一个「知识库」tab：向量模型、向量库、两个单价、门槛 |
 | `src/http.ts` | `SPA_PATHS` / 详情前缀放行 `/knowledge`；`UI_PARTS`、`ROOT_FILES` 挂新文件 |
-| `e2e/knowledge.mjs` | 假 Upstash + 隔离 Gateway：配额、共享可见性、直传入库、检索、席位接口、删除、平台设置 |
+| `e2e/knowledge.mjs` | 假向量服务 + pgvector + 隔离 Gateway（库里没有 vector 扩展就整套跳过）：向量模型配置、换模型重建、配额、共享可见性、直传入库、检索、席位接口、删除、平台设置 |
 | `ui/render.js` | 「更多」菜单和导轨加「知识库」；路由 `/knowledge`、`/knowledge/:id` |
 | `ui/state.js` | `allowedHrefs` 放行；面包屑 |
 | `ui/pages-account.js` | SKU / 订单表单的「知识库个数」；公司侧配额显示 |
@@ -726,8 +752,8 @@ Upstash 没配时，所有写接口和检索回 **501**「平台未配置向量�
 
 **文档与部署**
 
-- `docs/vercel-deploy.md` 环境变量表加 `UPSTASH_VECTOR_REST_URL` / `UPSTASH_VECTOR_REST_TOKEN` / `KB_DIR`
-- `docs/vercel-golive-checklist.md` 加「建索引、选 bge-m3、传一份文件、试搜一次」
+- `docs/vercel-deploy.md` 环境变量表加 `KB_DIR`，说明向量模型在页面上配
+- `docs/vercel-golive-checklist.md` 加「装 vector 扩展、页面上配向量模型、传一份文件、试搜一次」
 - 桌面端跟着 `gateway/ui` 走（memory: 改了 ui 要发桌面端）
 
 ---
@@ -737,13 +763,13 @@ Upstash 没配时，所有写接口和检索回 **501**「平台未配置向量�
 1. 一家公司任何时刻**可见的**知识库数 ≤ `plans.knowledgeBases`（建时数、调时拦）
 2. 任何知识库 `bytesUsed` ≤ 200 MB，且 `bytesUsed` = 它名下所有非失败态文件的 `bytes` 之和
    加上 `uploading` 的预留
-3. Postgres `knowledge_chunks` 与 Upstash 命名空间里的 id 集合：前者 ⊇ 后者；文件 `ready`
+3. `knowledge_chunks` 与 `knowledge_chunk_vectors` 的 id 集合：前者 ⊇ 后者；文件 `ready`
    时两者相等
 4. `knowledge_search` 在这颗 Bot 的工具表里 ⇔ 至少有一个共享给它（`all`，或 `bots` 且名单里有它）、
    它自己没关掉、且有 ready 文件的库
 7. `knowledge_shares` 里的每个 `botId` 都是本公司一颗未删除的 Bot；`share ≠ 'bots'` 的库在
    这张表里没有行（改回 `all` / `none` 时名单清空，不是留着备用）
-5. Upstash 命名空间里不存在任何不属于某个未删除 `kbId` 的向量（删除由 tick 收敛）
+5. 向量表里不存在任何不属于某个未删除 `kbId` 的向量（外键级联保证）
 6. 账本里 `kind = 'kb'` 的行不含查询词
 8. 成员在任何接口上看不到 `none` 的库，也看不到没共享给他任何一颗 Bot 的库
 
@@ -751,16 +777,15 @@ Upstash 没配时，所有写接口和检索回 **501**「平台未配置向量�
 
 ## 17. 明说的取舍与风险
 
-- **embedding 模型钉在索引上。** 选了 bge-m3 就是它；要换得建新索引、全量重灌。
-  第一版接受，因为 `knowledge_chunks` 留着，重灌是机械活
-- **纯向量，没有关键词。** 型号、合同编号这种精确串，向量检索会漏。Upstash 的 hybrid
-  索引能补，但要在建索引时定——如果上线前就决定要它，索引建成 hybrid，代码里只多一个
-  `sparse` 参数。建议：**golive 前建索引时直接选 hybrid**，代价是存储翻倍
+- **换 embedding 模型要全量重灌。** 页面上点一次「重建向量」，因为 `knowledge_chunks` 留着，
+  重灌是机械活；重灌期间检索命中变少
+- **纯向量，没有关键词。** 型号、合同编号这种精确串，向量检索会漏。要补就在 Postgres 里
+  加全文索引做混合检索
 - **200 MB 按原文件算**，一份 1 MB 的 PDF 和一份 1 MB 的 txt 占同样容量，但后者切出来的
-  分片多十倍。Upstash 那头的真实用量由计费管，不由容量管
+  分片多十倍。向量服务那头的真实用量由计费管，不由容量管
 - **Vercel 函数 300 秒。** 一拍 50 秒预算是经验值，大文件要跑几拍。没有「一拍没跑完就
   失败」的情况，只有慢
-- **存储费没计。** 一家公司满配（几个库各 200 MB）在 Upstash 上一个月几美元量级，先由
+- **存储费没计。** 一家公司满配（几个库各 200 MB）的向量占库空间几 GB 以内，先由
   平台吸收；真有公司把它用满再补「按天结存储」
 - **没有 OCR、没有老格式。** 两者都要 LibreOffice / Tesseract 一类原生依赖，Gateway 在
   Vercel 上装不了。真有需求时的路是：入库那一步交给某台平台自己的机器（不是公司席位）
@@ -777,12 +802,16 @@ Upstash 没配时，所有写接口和检索回 **501**「平台未配置向量�
 | | 做什么 | 验收 |
 |---|---|---|
 | **M1 骨架** | 迁移、套餐三张表的新列、平台侧表单、`/knowledge` 列表与新建、共享范围与名单、配额 409 | owner 给某公司配 2 个库，管理员建到第 3 个被拦；一个库设成「指定 Bot」，名单外的员工在列表里看不见它 |
-| **M2 入库** | 存储、两条上传路、解析、切片、Upstash 灌入、状态与进度、试搜、删除 | 传一份 30 MB 的 PDF，Vercel 上几拍之后变「可用」，试搜能命中；删库后 Upstash 命名空间消失 |
+| **M2 入库** | 存储、两条上传路、解析、切片、向量灌入、状态与进度、试搜、删除 | 传一份 30 MB 的 PDF，Vercel 上几拍之后变「可用」，试搜能命中；删库后向量跟着消失 |
 | **M3 Bot** | 按 Bot 下发目录、`knowledge_search`、提示词那一行、账本行 | 对话里问公司制度，名单里的 Bot 先查再答，答里带文件名和页码；名单外的 Bot 工具表里没有这把工具；账本有 `kb` 行 |
 | **M4 打磨** | 平台设置块、计费单价、`KB_SCORE_MIN` 调参、文案、桌面端发版 | golive checklist 那几条打钩 |
 
-M1 和 M2 可以并行：M1 不碰 Upstash，M2 不碰套餐。M3 依赖 M2。
+M1 和 M2 可以并行：M1 不碰向量，M2 不碰套餐。M3 依赖 M2。
 
 **进度（2026-10-07）**：M1、M2、M3 和 M4 里的平台设置块都已在 develop 上落地，e2e 的 `knowledge`
 套件 12 条全过。没验过的两件事：真 Upstash（e2e 用的是假服务）、浏览器直传 Blob（本机没有 Blob，
 走的是自托管的直传那条）；都在 golive checklist 里。桌面端跟着 gateway/ui 走，要发一版。
+
+**进度（2026-10-28）**：Upstash 去掉，只留 pgvector；向量模型改在平台页面上按区域配（§3.2）。
+`knowledge` 套件 18 条在带 vector 扩展的库上全过。真服务商（硅基流动、百炼、智谱、OpenAI）没在
+e2e 里打过，预设的地址和单次条数按各家文档填。

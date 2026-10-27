@@ -218,9 +218,9 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
     } catch (e) {
       throw new HttpError(502, (e as Error).message)
     }
-    // 知识库的 Upstash 命名空间和原文件不在库里：删行之前把它们列出来，回完包再清。
-    // **连正在删的也列上**：那几个 tick 还没来得及收，行一旦跟着公司级联掉，就再没人清它的命名空间了。
-    // 清不干净只是留几个孤儿命名空间，不该挡住删公司。
+    // 知识库的原文件不在库里：删行之前把它们列出来，回完包再清（向量跟着分片级联删掉了）。
+    // **连正在删的也列上**：那几个 tick 还没来得及收，行一旦跟着公司级联掉，就再没人清它的原文件了。
+    // 清不干净只是留几个孤儿文件，不该挡住删公司。
     const knowledge = await db.allKnowledgeBasesOf(company.id)
     const knowledgeFiles = new Map(await Promise.all(knowledge.map(async (k) => [k.id, await db.knowledgeFiles(k.id)] as const)))
     await db.tx(() => db.deleteCompany(company.id))
@@ -228,10 +228,8 @@ export function attachCompany(router: Router, ctx: RouteCtx) {
       afterResponse(
         '清理知识库',
         (async () => {
-          const { deleteKbNamespace, vectorBackend, vectorConfigured } = await import('../lib/knowledge-vector.ts')
           const { removeStored } = await import('../lib/knowledge-store.ts')
           for (const k of knowledge) {
-            if (vectorConfigured() || vectorBackend() === 'pgvector') await deleteKbNamespace(db, k).catch(() => undefined)
             for (const f of knowledgeFiles.get(k.id) ?? []) await removeStored(f).catch(() => undefined)
           }
         })(),

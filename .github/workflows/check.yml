@@ -89,6 +89,8 @@ jobs:
       - name: e2e
         run: node e2e/run.mjs
 
+  # 知识库的向量只存 pgvector。上面那档的 postgres:17-alpine 没有 vector 扩展，knowledge
+  # 套件在那里自己跳过，由这一档用带扩展的镜像整套跑。
   knowledge-pgvector:
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -107,7 +109,6 @@ jobs:
     env:
       E2E_DATABASE_URL: postgres://satuwork:satuwork@127.0.0.1:5432/satuwork
       E2E_ONLY: knowledge
-      E2E_KNOWLEDGE_BACKEND: pgvector
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0

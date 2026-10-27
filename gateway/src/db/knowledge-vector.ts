@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto'
 import { DbCore } from './core.ts'
+
+/** 向量表是可选的，没建时查它会报 undefined_table。读和删都把这当成「什么都没有」。 */
+function missingTable(e: unknown): boolean {
+  return (e as { code?: string })?.code === '42P01'
+}
 import type { KbHit, KbVectorScope } from '../lib/knowledge-vector.ts'
 
 /** Optional storage, initialized explicitly. The normal migrations never require pgvector. */
@@ -26,6 +31,42 @@ export class KnowledgeVectorDb extends DbCore {
       await this.run('insert into knowledge_vector_config (id,profile,model,dimension) values (1,?,?,?) on conflict (id) do nothing', [profile, model, dimension])
       await this.db.assertKnowledgeVectorProfile(profile)
     })
+  }
+
+  /** 表里现有向量属于哪个空间。表还没建回 undefined（不抛：状态页要能画「未初始化」）。 */
+  async knowledgeVectorConfig(): Promise<{ profile: string; model: string; dimension: number } | undefined> {
+    try {
+      const row = await this.one('select profile,model,dimension from knowledge_vector_config where id=1')
+      return row ? { profile: String(row.profile), model: String(row.model), dimension: Number(row.dimension) } : undefined
+    } catch (e) {
+      if (missingTable(e)) return undefined
+      throw e
+    }
+  }
+
+  /**
+   * 表是空的才换指纹：没有旧向量可丢，换模型不必重建。不动任何文件——已经「可用」却没有
+   * 向量的文件（从旧向量库迁来的）要由管理员点「重建」重新入库，那一下要计费，得是人点的。
+   */
+  async adoptKnowledgeVectorProfile(profile: string, model: string, dimension: number): Promise<boolean> {
+    return this.tx(async () => {
+      await this.xactLock('knowledge-vector-schema', 'knowledge-vector-schema:' + this.schema)
+      await this.one('select profile from knowledge_vector_config where id=1 for update')
+      if (await this.one('select 1 from knowledge_chunk_vectors limit 1')) return false
+      return await this.run('update knowledge_vector_config set profile=?,model=?,dimension=? where id=1', [profile, model, dimension]) > 0
+    })
+  }
+
+  /** 「可用」但一个向量都没有的文件：从旧向量库迁来，或者换模型时表是空的。重建会把它们重新灌进来。 */
+  async knowledgeFilesWithoutVectors(): Promise<number> {
+    try {
+      return Number((await this.one(`select count(*) as n from knowledge_files f join knowledge_bases k on k.id=f."kbId"
+        where f.status='ready' and f."chunkCount">0 and k."deletingAt" is null
+          and not exists(select 1 from knowledge_chunks c join knowledge_chunk_vectors v on v."chunkId"=c.id where c."fileId"=f.id)`))?.n || 0)
+    } catch (e) {
+      if (missingTable(e)) return 0
+      throw e
+    }
   }
 
   /** Refuse a new vector space until an operator explicitly rebuilds the existing vectors. */
@@ -66,14 +107,28 @@ export class KnowledgeVectorDb extends DbCore {
     } }))
   }
 
+  /** 表还没建就没东西可删：删库、删文件不能因为向量表没初始化而卡住。不在事务里调（报错会废掉事务）。 */
   async deleteKnowledgeVectors(scope: KbVectorScope, fileId?: string): Promise<void> {
+    try {
+      await this.deleteKnowledgeVectorRows(scope, fileId)
+    } catch (e) {
+      if (!missingTable(e)) throw e
+    }
+  }
+
+  private async deleteKnowledgeVectorRows(scope: KbVectorScope, fileId?: string): Promise<void> {
     await this.run(`delete from knowledge_chunk_vectors v using knowledge_chunks c,knowledge_bases k
       where v."chunkId"=c.id and c."kbId"=k.id and k.id=? and k."companyId"=?${fileId ? ' and c."fileId"=?' : ''}`,
     fileId ? [scope.id, scope.companyId, fileId] : [scope.id, scope.companyId])
   }
 
   async knowledgeVectorCount(): Promise<number> {
-    return Number((await this.one('select count(*) as n from knowledge_chunk_vectors'))?.n || 0)
+    try {
+      return Number((await this.one('select count(*) as n from knowledge_chunk_vectors'))?.n || 0)
+    } catch (e) {
+      if (missingTable(e)) return 0
+      throw e
+    }
   }
 
   async recordKnowledgeEmbeddingUsage(companyId: string, profile: string, operation: 'query' | 'ingest', tokens: number | null, inputs: number): Promise<void> {
@@ -81,7 +136,10 @@ export class KnowledgeVectorDb extends DbCore {
       [companyId, profile, operation, tokens, inputs, Date.now()])
   }
 
-  /** Operator-only rebuilding; old vectors are derived data, source chunks/files stay intact. */
+  /**
+   * 换模型后的重建：旧向量是派生数据，原文件和文本分片都留着，文件重新排队入库。
+   * 平台管理员在「工具配置 → 知识库」点，或运维跑 scripts/reindex-knowledge-vectors.ts。
+   */
   async reindexKnowledgeVectors(profile: string, model: string, dimension: number): Promise<number> {
     return this.tx(async () => {
       await this.xactLock('knowledge-vector-schema', 'knowledge-vector-schema:' + this.schema)
