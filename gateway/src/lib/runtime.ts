@@ -223,12 +223,16 @@ export async function managerTargetFor(
   return { base: machineBase(machine.host), seatId: runtime.seatId, machineToken: machine.token || undefined, machine }
 }
 
-export async function seatTargetForSession(db: Db, account: Account, sessionId: string): Promise<SeatTarget> {
+/**
+ * 连 `botId` 一起还回去：会话是哪颗 Bot 的已经在这里查过了，调用方要按 Bot 判的（发消息时
+ * `@` 的「可用 Bot」校验）直接用，不用为同一行再查一次索引。
+ */
+export async function seatTargetForSession(db: Db, account: Account, sessionId: string): Promise<SeatTarget & { botId: string }> {
   requireSeat(account)
   const idx = await db.sessionIndex(sessionId)
   const botId = (idx?.botId || '').trim()
   if (!botId || idx!.accountId !== account.id) throw new HttpError(503, INSTANCE_DOWN)
-  return await seatTargetFor(db, account, botId)
+  return { ...(await seatTargetFor(db, account, botId)), botId }
 }
 
 export async function seatBearer(db: Db, accountId: string): Promise<string> {

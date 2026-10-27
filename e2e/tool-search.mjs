@@ -529,7 +529,7 @@ export async function runToolSearch({ root, gwRoot, test, req, start, waitHttp, 
       const { loadApp } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      ui.state.path = `/connectors/${connectorOf.gmail}`
+      ui.state.path = `/plugins/${connectorOf.gmail}`
       ui.state.connectorDetail = detail.json
       ui.render()
       const html = ui.html()
@@ -543,7 +543,7 @@ export async function runToolSearch({ root, gwRoot, test, req, start, waitHttp, 
       const { loadApp } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      ui.state.path = `/connectors/${connectorOf.github}`
+      ui.state.path = `/plugins/${connectorOf.github}`
       ui.state.connectorDetail = {
         connector: { id: connectorOf.github, name: 'GitHub', toolkit: 'github', blocked: false },
         install: { id: 'i1', enabledTools: [] },

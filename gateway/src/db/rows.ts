@@ -1,4 +1,4 @@
-import { Account, AuditEvent, BotDeletionRequest, BotFolder, BotRelease, BotTask, BotTaskProgress, BotTaskStatus, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, KNOWLEDGE_FILE_STATUSES, KNOWLEDGE_SHARES, KnowledgeBase, KnowledgeChunk, KnowledgeFile, KnowledgeFileStatus, KnowledgeShare, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, ImageModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatDeployRequest, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseKnowledgeSettings, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
+import { Account, AuditEvent, BotDeletionRequest, BotFolder, BotRelease, BotTask, BotTaskProgress, BotTaskStatus, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorBotScope, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, KNOWLEDGE_FILE_STATUSES, KNOWLEDGE_SHARES, KnowledgeBase, KnowledgeChunk, KnowledgeFile, KnowledgeFileStatus, KnowledgeShare, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, ImageModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatDeployRequest, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseKnowledgeSettings, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
 
 /**
  * `select *` 回来的裸行 → 上面那些类型。
@@ -573,6 +573,17 @@ export function connectorConnectionOf(r: Row): ConnectorConnection {
     connectedAt: numOrNull(r.connectedAt),
     accountName: r.accountName == null ? null : str(r.accountName),
     createdAt: num(r.createdAt),
+    updatedAt: num(r.updatedAt),
+  }
+}
+
+/** 认不出的 mode 当 `bots` + 空名单：脏数据宁可谁都不给，也不变成全部（同迁移 0067 的理由）。 */
+export function connectorBotScopeOf(r: Row): ConnectorBotScope {
+  const mode = str(r.mode)
+  return {
+    connectionId: str(r.connectionId),
+    accountId: str(r.accountId),
+    scope: mode === 'all' ? { mode: 'all' } : { mode: 'bots', botIds: mode === 'bots' ? strListOf(r.botIds) : [] },
     updatedAt: num(r.updatedAt),
   }
 }

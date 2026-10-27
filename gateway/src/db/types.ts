@@ -981,6 +981,19 @@ export interface ConnectorConnection {
   updatedAt: number
 }
 
+/**
+ * 一个人给一把连接设的 Bot 范围（docs/connector-bot-scope.md）。`all` = 他名下所有 Bot，
+ * 以后新建的也算；`bots` = 只给名单里的。库里没有这一行就是 `all`。
+ */
+export type BotScope = { mode: 'all' } | { mode: 'bots'; botIds: string[] }
+
+export interface ConnectorBotScope {
+  connectionId: string
+  accountId: string
+  scope: BotScope
+  updatedAt: number
+}
+
 export type ConnectorCallStatus = 'ok' | 'failed' | 'timeout' | 'denied' | 'error'
 
 export interface ConnectorCall {

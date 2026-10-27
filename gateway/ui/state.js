@@ -365,6 +365,8 @@ const state = {
   pluginCat: '',
   // 「添加账号」弹窗：{ id, name, phase: 'form' | 'waiting', error, busy }，见 pages-plugins.js 的 connAddModal。
   connAdd: null,
+  // 插件详情里哪一个账号的「可用 Bot」展开着（connection id）。一次只开一个。
+  connBotsOpen: null,
   channelBindOpen: false,
   channelBindError: '',
   handoffCount: 0,

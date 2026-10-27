@@ -279,8 +279,8 @@ function pluginSetup(detail, live) {
         live,
         t('连接账号', 'Connect an account'),
         t(
-          'Bot 用你授权的账号去操作它。可以连好几个，比如工作和个人各一个。',
-          'Bots act through the accounts you authorize. You can connect several — say, one for work and one personal.',
+          'Bot 用你授权的账号去操作它。可以连好几个，比如工作和个人各一个；每个账号默认所有 Bot 都能用，也可以只给指定的 Bot。',
+          'Bots act through the accounts you authorize. You can connect several — say, one for work and one personal. Every bot can use an account by default, or you can limit it to specific bots.',
         ),
       )}
       ${
@@ -302,8 +302,8 @@ function pluginSetup(detail, live) {
         false,
         t('选择工具', 'Choose tools'),
         t(
-          '选择 Bot 工作需要的工具。设置对你名下的所有 Bot 生效。',
-          'Choose the tools your bots need. These settings apply to all bots you own.',
+          '选择 Bot 工作需要的工具。设置对能用这些账号的 Bot 生效（每个账号的「可用 Bot」里设）。',
+          'Choose the tools your bots need. These settings apply to every bot that can use these accounts (set under each account’s “Bots”).',
         ),
       )}
       <fieldset class="rs-tool-fieldset" ${c.blocked ? 'disabled' : ''}>${connectorToolsBox(detail)}</fieldset>
