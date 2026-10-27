@@ -9,7 +9,7 @@ import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machine
 import { KIND, bodyOf, deployOptsOf, logLinesOf, refShapes, strField } from '../lib/validate.ts'
 import type { Account, BotFolder, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
-import { blockMapOf, connectionVisibleTo, connectorDefOf, runtimeConnectorServer } from '../lib/connectors.ts'
+import { runtimeConnectorServer, usableConnections } from '../lib/connectors.ts'
 import { TASK_CONTEXT_MAX, TASK_INSTRUCTION_MAX, cancelBotTask, createBotTask, pollBotTask, publicBotTask } from '../lib/bot-tasks.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, botTemplateOf, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
@@ -356,30 +356,20 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * endpoint 指回 Gateway 自己（`/mcp/connectors/:id`），票就用席位这次带来的
      * `sat_`——同一把票，不用再去库里取一次，也不会取错人。
      */
-    const connectorItems = await db.visibleCatalog('connector', companyId)
-    const blocked = blockMapOf(connectorItems)
     /**
      * **按这颗 Bot 筛**（docs/connector-bot-scope.md）：员工把这把账号收窄到别的 Bot 时，
      * 整条不下发——不是下发了再藏。和 `mentionOnly` 不一样：那个要等被点名时立刻能用，
      * 这个连 `@` 都点不到它（发消息时 Gateway 按会话的 Bot 剔掉）。没带 botId 的只拿到
-     * 没收窄的那些，同知识库。
+     * 没收窄的那些，同知识库。「用得上」的其余条件（active、在架、没禁）也在 usableConnections 里。
      */
-    const scopes = await db.botScopesFor(account.id)
-    const conns = (await db.connectionsFor(account.id, companyId)).filter(
-      (c) => c.status === 'active' && connectionVisibleTo(scopes.get(c.id)?.scope, botId || null),
+    const synth = (await usableConnections(db, account.id, companyId, { id: botId || null })).map(({ conn, item }) =>
+      runtimeConnectorServer(conn, item, {
+        origin: originOf(req),
+        token: bearer(req) ?? '',
+        botId,
+        timeoutMs: CONNECTOR_TIMEOUT_MS,
+      }),
     )
-    const synth = conns
-      .map((c) => {
-        const item = connectorItems.find((i) => i.id === c.connectorId && i.scope === 'global')
-        if (!item || blocked.get(item.id)?.blocked) return null
-        return runtimeConnectorServer(c, item, {
-          origin: originOf(req),
-          token: bearer(req) ?? '',
-          botId,
-          timeoutMs: CONNECTOR_TIMEOUT_MS,
-        })
-      })
-      .filter((x): x is NonNullable<typeof x> => x !== null)
     /**
      * **`mentionOnly` 的也下发**，只是带个标记。
      *
@@ -1957,6 +1947,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   router.post('/runtime/sessions/:id/messages', async (req, res) => {
     const account = await requireUser(req, db, keys)
     const target = await seatTargetForSession(db, account, req.params.id)
+    const sessionBot = target.botId
     const body = bodyOf(req)
     // 图片带的是**工作区里的路径**，不是字节——文件早就传上去了（见上面那条 files）。
     // 真正的校验（路径越界、文件在不在、格式模型认不认）在席位那头，那里才有工作区。
@@ -1978,20 +1969,13 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const dropped: string[] = []
     if (wanted.length) {
       const companyId = account.role === 'owner' ? null : account.companyId
-      const items = await db.visibleCatalog('connector', companyId)
-      const blocks = blockMapOf(items)
-      const defs = new Map(items.filter((i) => i.scope === 'global').map((i) => [i.id, connectorDefOf(i)]))
       /**
-       * 会话是哪颗 Bot 的：点名连接和点名 Bot 都要它。连接那一侧按它筛 Bot 范围
-       * （docs/connector-bot-scope.md）——员工把这把账号收窄到别的 Bot 了，在这颗 Bot 的
-       * 对话里点它，和点一把已经断开的一样剔掉。界面的选单已经按 Bot 筛过，这里是兜底。
+       * 按会话的 Bot 取「用得上」的连接（docs/connector-bot-scope.md）——员工把这把账号收窄到
+       * 别的 Bot 了，在这颗 Bot 的对话里点它，和点一把已经断开的一样剔掉。界面的选单已经按
+       * Bot 筛过，这里是兜底。会话是哪颗 Bot 的由 seatTargetForSession 一并给出，不再查一次索引。
        */
-      const sessionBot = ((await db.sessionIndex(req.params.id))?.botId || '').trim()
-      const scopes = await db.botScopesFor(account.id)
       const conns = new Map(
-        (await db.connectionsFor(account.id, companyId))
-          .filter((c) => c.status === 'active' && connectionVisibleTo(scopes.get(c.id)?.scope, sessionBot || null))
-          .map((c) => [c.id, c]),
+        (await usableConnections(db, account.id, companyId, { id: sessionBot || null })).map((x) => [x.conn.id, x]),
       )
       /**
        * @ 一颗 Bot（docs/bot-tasks.md）：只在**主 Bot 的会话**里认，目标得在名单上、不能是自己。
@@ -2013,12 +1997,12 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
           mentions.push({ kind: 'bot', id, label: bot.name })
           continue
         }
-        const conn = kind === 'connector' ? conns.get(id) : undefined
-        const def = conn ? defs.get(conn.connectorId) : undefined
-        if (!conn || !def || !def.enabled || blocks.get(conn.connectorId)?.blocked) {
+        const hit = kind === 'connector' ? conns.get(id) : undefined
+        if (!hit) {
           if (id) dropped.push(id)
           continue
         }
+        const { conn, def } = hit
         // 图标一起存进消息：翻历史时候选里可能已经没有这条连接了（删了、改了），药丸照样画得出图标。
         mentions.push({ kind: 'connector', id, label: `${def.name} (${conn.label})`, ...(def.logo ? { logo: def.logo } : {}) })
       }

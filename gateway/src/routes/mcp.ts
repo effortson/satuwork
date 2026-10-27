@@ -11,7 +11,7 @@ import type { ServerResponse } from 'node:http'
 import { HttpError, json, type Req, type Router } from '../http.ts'
 import type { RouteCtx } from './ctx.ts'
 import { ProviderError, providerFor, type ToolDef } from '../connectors/index.ts'
-import { MAX_TOOLS, annotateToolParams, blockMapOf, connectionVisibleTo, connectorDefOf, matchTools, toolsOf } from '../lib/connectors.ts'
+import { MAX_TOOLS, annotateToolParams, blockMapOf, connectionUsableBy, connectionVisibleTo, connectorDefOf, matchTools, toolsOf } from '../lib/connectors.ts'
 import {
   SEARCH_LIMIT,
   metaToolDefs,
@@ -159,11 +159,16 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
     const account = await requireSeatOnly(req, db)
     const conn = await db.connectorConnection(req.params.connectionId)
     if (!conn) throw new HttpError(404, '没有这个连接')
-    const mine = conn.scope === 'company' ? conn.companyId === account.companyId : conn.accountId === account.id
-    if (!mine) throw new HttpError(404, '没有这个连接')
+    if (!connectionUsableBy(conn, account)) throw new HttpError(404, '没有这个连接')
     if (conn.status !== 'active') throw new HttpError(409, '这个账号还没连上')
 
-    const items = await db.visibleCatalog('connector', account.companyId)
+    // 下面三样互不依赖（安装按连接上的 connectorId 取，和 item.id 是同一个值），一趟并发取齐：
+    // 这道门每次 tools/list、tools/call 都要过。
+    const [items, scope, install] = await Promise.all([
+      db.visibleCatalog('connector', account.companyId),
+      db.botScopeOf(conn.id, account.id),
+      conn.scope === 'user' ? db.connectorInstall(conn.connectorId, account.id) : undefined,
+    ])
     const item = items.find((i) => i.id === conn.connectorId && i.scope === 'global')
     if (!item) throw new HttpError(404, '没有这个连接器')
     const def = connectorDefOf(item)
@@ -173,7 +178,6 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
     // 公司共用那把不挂在某个人的安装上，所以只有个人连接要查安装。
     let enabledTools: string[] = []
     if (conn.scope === 'user') {
-      const install = await db.connectorInstall(item.id, account.id)
       if (!install) throw new HttpError(409, '还没装这个连接器')
       enabledTools = install.enabledTools
     }
@@ -186,7 +190,7 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
      * **拒**：端点地址是 Gateway 下发目录时自己拼的，按 Bot 拉的目录一定带着；没带的只
      * 可能是不按 Bot 拉目录的路径，而那条路本来就只拿到没收窄的连接。
      */
-    const visible = connectionVisibleTo((await db.botScopeOf(conn.id, account.id))?.scope, botId || null)
+    const visible = connectionVisibleTo(scope?.scope, botId || null)
     return {
       account,
       conn,

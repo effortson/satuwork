@@ -80,6 +80,14 @@ export function connectionVisibleTo(scope: BotScope | undefined, botId: string |
 }
 ```
 
+判定之外，「取哪些连接、过哪些条件」也只有一份，同在 `lib/connectors.ts`：
+
+- `usableConnections(db, accountId, companyId, bot)`：active、连接器在架且启用、本公司没禁、对这颗
+  Bot 可见。目录下发、发消息时的 `@` 校验、`@` 选单三处都从它取；`bot` 传 `'any'` 是选单没带
+  botId 的老页面
+- `connectionUsableBy(conn, account)`：这把连接是不是这个人的（自己的，或本公司共用的）。MCP 端点
+  的门和改「可用 Bot」的接口共用，跨人的边界只写一处
+
 ---
 
 ## 3. 在哪几处生效

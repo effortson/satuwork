@@ -14,7 +14,7 @@ import { isUniqueViolation } from '../db.ts'
 import { originOf, requireOrgUser, requireOwnerUser, requireUser } from '../lib/guards.ts'
 import { rangeQuery } from '../lib/usage.ts'
 import { COMPANY_CONNECTION_LABEL, CONNECTION_LABEL_RE, DEFAULT_CONNECTION_LABEL, type Account, type BotScope, type ConnectorConnection, type ConnectorDef, externalUserIdOf } from '../db.ts'
-import { connectionVisibleTo, lookupAccountName, publicBotScope, publicConnection, publicInstall } from '../lib/connectors.ts'
+import { connectionUsableBy, lookupAccountName, publicBotScope, publicConnection, publicInstall, usableConnections } from '../lib/connectors.ts'
 import { publicPlatformCred } from '../lib/org.ts'
 import { botIconOf } from '../lib/catalog.ts'
 
@@ -394,8 +394,7 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
     const install = await db.connectorInstall(item.id, account.id)
     const mine = (await db.connectionsFor(account.id, account.companyId)).filter((c) => c.connectorId === item.id)
     const rows = await refreshPending(mine, def)
-    const scopes = await db.botScopesFor(account.id)
-    const bots = await db.botsFor(account.companyId, account.id)
+    const [scopes, bots] = await Promise.all([db.botScopesFor(account.id), db.botsFor(account.companyId, account.id)])
     const roster = new Set(bots.map((b) => b.id))
     let tools: ToolDef[] = []
     let toolsError = ''
@@ -621,8 +620,8 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
 
   /** 这个人给这把连接设的范围，界面那一格的形状（详情页同一个口径）。 */
   async function botScopeView(account: Account, connectionId: string) {
-    const roster = new Set((await db.botsFor(account.companyId, account.id)).map((b) => b.id))
-    return publicBotScope((await db.botScopeOf(connectionId, account.id))?.scope, roster)
+    const [bots, saved] = await Promise.all([db.botsFor(account.companyId, account.id), db.botScopeOf(connectionId, account.id)])
+    return publicBotScope(saved?.scope, new Set(bots.map((b) => b.id)))
   }
 
   /**
@@ -639,11 +638,7 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
     const account = await requireUser(req, db, keys)
     const { item } = await seatConnector(account, req.params.connectorId)
     const row = await db.connectorConnection((req.params.connectionId || '').trim())
-    const mine =
-      row &&
-      row.connectorId === item.id &&
-      (row.scope === 'company' ? row.companyId === account.companyId : row.accountId === account.id)
-    if (!row || !mine) throw new HttpError(404, '没有这个账号')
+    if (!row || row.connectorId !== item.id || !connectionUsableBy(row, account)) throw new HttpError(404, '没有这个账号')
     const body = bodyOf(req)
     const mode = String(body.mode ?? '')
     let scope: BotScope
@@ -878,29 +873,17 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
      */
     const botId = (req.query.get('botId') || '').trim()
     const companyId = account.role === 'owner' ? null : account.companyId
-    const items = await db.visibleCatalog('connector', companyId)
-    const blocks = blockMapOf(items)
-    const byId = new Map(items.filter((i) => i.scope === 'global').map((i) => [i.id, connectorDefOf(i)]))
-    const scopes = botId ? await db.botScopesFor(account.id) : null
-    const conns = (await db.connectionsFor(account.id, companyId)).filter(
-      (c) => c.status === 'active' && (!scopes || connectionVisibleTo(scopes.get(c.id)?.scope, botId)),
-    )
-    const mentions = conns
-      .map((c) => {
-        const def = byId.get(c.connectorId)
-        if (!def || !def.enabled || blocks.get(c.connectorId)?.blocked) return null
-        return {
-          kind: 'connector' as const,
-          id: c.id,
-          label: c.scope === 'company' ? `${def.name} (${COMPANY_CONNECTION_LABEL})` : `${def.name} (${c.label})`,
-          connectorId: c.connectorId,
-          toolkit: def.toolkit,
-          logo: def.logo,
-          /** 「仅 @ 时可用」的在选单里要看得出来：不点名它就不干活。 */
-          mentionOnly: c.mentionOnly,
-        }
-      })
-      .filter((x): x is NonNullable<typeof x> => x !== null)
+    const mentions = (await usableConnections(db, account.id, companyId, botId ? { id: botId } : 'any'))
+      .map(({ conn: c, def }) => ({
+        kind: 'connector' as const,
+        id: c.id,
+        label: c.scope === 'company' ? `${def.name} (${COMPANY_CONNECTION_LABEL})` : `${def.name} (${c.label})`,
+        connectorId: c.connectorId,
+        toolkit: def.toolkit,
+        logo: def.logo,
+        /** 「仅 @ 时可用」的在选单里要看得出来：不点名它就不干活。 */
+        mentionOnly: c.mentionOnly,
+      }))
       .filter((x) => !q || x.label.toLowerCase().includes(q) || x.toolkit.includes(q))
     /**
      * 名单上别的 Bot 也能 @（docs/bot-tasks.md）：@ 一颗 Bot = 让主 Bot 把这件事派给它。

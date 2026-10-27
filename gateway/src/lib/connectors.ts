@@ -9,7 +9,7 @@ import { accountNameIn, wantsFields, whoamiTools } from '../connectors/identity.
 import type { Db } from '../db.ts'
 import { MCP_PERMS, asDef, trimStr } from './catalog.ts'
 import { strListOf } from '../db/rows.ts'
-import { COMPANY_CONNECTION_LABEL as COMPANY_LABEL, type BotScope, type CatalogItem, type ConnectorBlockDef, type ConnectorConnection, type ConnectorDef, type ConnectorInstall } from '../db.ts'
+import { COMPANY_CONNECTION_LABEL as COMPANY_LABEL, type Account, type BotScope, type CatalogItem, type ConnectorBlockDef, type ConnectorConnection, type ConnectorDef, type ConnectorInstall } from '../db.ts'
 
 /**
  * 一把连接最多下发几个工具。
@@ -388,6 +388,51 @@ export function publicInstall(v: ConnectorInstall) {
 export function connectionVisibleTo(scope: BotScope | undefined, botId: string | null | undefined): boolean {
   if (!scope || scope.mode === 'all') return true
   return !!botId && scope.botIds.includes(botId)
+}
+
+/**
+ * 这把连接是不是这个人的：自己连的，或者本公司共用的那把。
+ *
+ * **跨人的边界只有这一条**（connectors.md 不变量 19）。MCP 端点的门和改「可用 Bot」都用它，
+ * 两处各写一遍的话，哪天公司共用那把多一个限制，两边对「谁的连接」就会说法不一。
+ */
+export function connectionUsableBy(conn: ConnectorConnection, account: Account): boolean {
+  return conn.scope === 'company' ? conn.companyId === account.companyId : conn.accountId === account.id
+}
+
+/**
+ * 这个人现在**用得上**的连接：active、连接器在架且启用、本公司没禁、对这颗 Bot 可见。
+ *
+ * 目录下发、发消息时的 `@` 校验、`@` 选单三处都从这里取——「用得上」只有这一份口径，
+ * 下一个条件加在这里就三处一起生效，不会出现「选单里有、目录里没有」。
+ *
+ * `bot`：`{ id }` 按这颗 Bot 筛（id 为 null = 不知道是哪颗，只给没收窄的）；`'any'` = 不按
+ * Bot 筛（`/mentions` 没带 botId 的老页面——发消息那一跳会再按会话的 Bot 判一次）。
+ */
+export async function usableConnections(
+  db: Db,
+  accountId: string,
+  companyId: string | null,
+  bot: { id: string | null } | 'any',
+): Promise<Array<{ conn: ConnectorConnection; item: CatalogItem; def: ConnectorDef }>> {
+  const [items, conns, scopes] = await Promise.all([
+    db.visibleCatalog('connector', companyId),
+    db.connectionsFor(accountId, companyId),
+    bot === 'any' ? null : db.botScopesFor(accountId),
+  ])
+  const blocked = blockMapOf(items)
+  const byId = new Map(items.filter((i) => i.scope === 'global').map((i) => [i.id, i]))
+  const out: Array<{ conn: ConnectorConnection; item: CatalogItem; def: ConnectorDef }> = []
+  for (const conn of conns) {
+    if (conn.status !== 'active') continue
+    const item = byId.get(conn.connectorId)
+    if (!item || blocked.get(item.id)?.blocked) continue
+    const def = connectorDefOf(item)
+    if (!def.enabled) continue
+    if (bot !== 'any' && !connectionVisibleTo(scopes?.get(conn.id)?.scope, bot.id)) continue
+    out.push({ conn, item, def })
+  }
+  return out
 }
 
 /**
