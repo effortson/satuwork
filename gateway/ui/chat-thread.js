@@ -902,8 +902,31 @@ function mergePending(folded, sessionId) {
   return folded
 }
 
+/** 节点是按哪种外壳画的（rowShell 的两条路）。认回来的节点外壳不对，就不能拿来更新。 */
+function shellKindOf(b) {
+  return b.taskFrom ? 'task' : b.kind
+}
+function nodeShellKind(node) {
+  return node.classList.contains('sw-taskin') ? 'task' : node.getAttribute('data-role')
+}
+
 function syncThread(thread, folded, sessionId) {
   const rows = threadRows(folded, sessionId)
+  /**
+   * **换了会话就整片清掉，不跨会话认节点。**
+   *
+   * key 是 `'m' + seq`，seq 是**这一条**会话日志的行号，两条会话之间必然撞号。切到一个
+   * 流还开着的 Bot 时，ensureChatSession 那条热路径当场 paintChat，而这时候屏幕上还是
+   * 上一个 Bot 的 #chat-thread（整页重绘要等 loadPage 回来）：不清的话，新会话的派活卡
+   * 会认领上一条会话里同号的普通消息节点，往不存在的 `.sw-taskname-tag` 上写字直接抛错。
+   * 带上 Bot：两颗都还没拿到会话时 sessionId 都是空的。
+   */
+  const owner = `${state.chatBotId || ''}:${sessionId || ''}`
+  if (thread.getAttribute('data-owner') !== owner) {
+    thread.setAttribute('data-owner', owner)
+    thread.removeAttribute('data-empty')
+    thread.innerHTML = ''
+  }
   // 空会话就留空。以前这里摆一句「继续这段对话…」——它只在**刚开一条新对话**时出现
   // 一瞬间，而输入框的 placeholder 已经说了该干什么。多一句灰字只是让空屏更吵。
   if (!rows.length) {
@@ -937,7 +960,13 @@ function syncThread(thread, folded, sessionId) {
     const row = rows[i]
     let node = byKey.get(row.key)
     if (node) byKey.delete(row.key)
-    else {
+    // 同一个 key 换了外壳（派活卡 ↔ 普通消息、用户 ↔ 助手）：旧节点里没有新外壳要的那几格，
+    // 拿来 updateRow 会往 null 上写。扔掉重建。
+    if (node && row.kind === 'msg' && nodeShellKind(node) !== shellKindOf(row.block)) {
+      if (node.parentNode === thread) thread.removeChild(node)
+      node = null
+    }
+    if (!node) {
       const box = document.createElement('div')
       box.innerHTML = row.html ? row.html : rowShell(row.block, row.key)
       node = box.firstElementChild
