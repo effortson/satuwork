@@ -376,6 +376,8 @@ const state = {
   handoffOpenId: '',
   /** 单号 → 席位那边的正文。`null` = 拉过但席位没应答；`undefined` = 还没拉。 */
   handoffDetail: {},
+  handoffFeedback: {},
+  handoffLoadError: false,
   /**
    * 席位那边「这几张单还在不在」的一次快照：`{ sessionId, ids, upto }`。
    * 比它早、又不在 ids 里的卡片画成失效（见 chat.js 的 handoffDead）。

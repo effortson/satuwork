@@ -359,7 +359,7 @@ function appView() {
         ${handoffBell()}
         ${asideToggle()}
       </div>
-      <div class="gw-body${state.path === '/profile' || (!isOwner() && /^\/(company|accounts|audit|billing|costs|usage|bots|skills|connectors)(\/|$)/.test(state.path)) ? ' gw-company' : ''}">${pageView()}</div>
+      <div class="gw-body${state.path === '/profile' || (!isOwner() && /^\/(company|accounts|audit|billing|costs|usage|bots|skills|connectors|handoffs)(\/|$)/.test(state.path)) ? ' gw-company' : ''}">${pageView()}</div>
       ${aside}
     </main>
     ${confirmModal()}

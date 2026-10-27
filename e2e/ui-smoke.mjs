@@ -512,7 +512,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(card.includes('sw-handoff-note'), '写结论的框不在——那句话是 Bot 接着做的全部依据')
       // 已经接手了就不该再有「我来接手」。
       assert(!card.includes('chat-handoff-claim'), '已经有人接了还画着「我来接手」')
-      assert(ui.handoffDoneHtml({ state: 'expired' }).includes('没人接手'), '闭合那一行没说清是怎么结束的')
+      assert(ui.handoffDoneHtml({ state: 'expired' }).includes('已过期'), '闭合那一行没说清是怎么结束的')
 
       /**
        * **交还那条消息要画出来。** 它的 source 是 plugin/handoff，而 fold 默认滤掉
@@ -549,6 +549,90 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       )
       assert(ui.state.error.includes('席位没应答'), `失败原因没有留下：${ui.state.error}`)
       assert(ui.html() !== 'before-click', '失败后没有重绘，界面仍表现成按钮点不动')
+    })
+
+    await test('交接卡：结果必填并就地提示，两种交还方式提交正确含义', async () => {
+      const calls = []
+      const ui = loadApp({ appPath, base: gwBase, token: 'handoff-validation', fetchImpl: async (path, init) => {
+        calls.push({ path, body: JSON.parse(init?.body || '{}') })
+        return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } })
+      } })
+      let focused = false
+      const ta = el('textarea', { 'data-handoff': 'h-validation' }, '  ')
+      ta.focus = () => { focused = true }
+      ta.removeAttribute = k => { delete ta._attrs[k] }
+      const attrs = {}
+      const card = { querySelector: () => ta, setAttribute: (k,v) => { attrs[k] = v }, removeAttribute: k => { delete attrs[k] } }
+      const button = el('button', { 'data-act': 'chat-handoff-return', 'data-id': 'h-validation', 'data-disp': 'done' })
+      button.closest = sel => sel === '[data-act]' ? button : sel.startsWith('.sw-handoff') ? card : null
+      await ui.fire('click', button)
+      assert(!calls.length, '空说明不应提交')
+      assert(focused && ta.getAttribute('aria-invalid') === 'true', '必填错误应聚焦并标记输入框')
+      assert(ui.state.handoffFeedback['h-validation'].text.includes('处理结果'), '缺少就地的结果提示')
+      button.setAttribute('data-disp', 'instructions')
+      await ui.fire('click', button)
+      assert(ui.state.handoffFeedback['h-validation'].text.includes('如何继续'), '新指示的校验应说明填写什么')
+      ta.value = '  请先核对订单编号，再继续。  '
+      await ui.fire('click', button)
+      assert(calls[0].body.disposition === 'instructions' && calls[0].body.text === '请先核对订单编号，再继续。', '新指示的含义或正文丢失')
+      assert(!ta.getAttribute('aria-invalid') && !attrs['aria-busy'], '提交后输入框或卡片仍卡在无效/忙碌状态')
+      button.setAttribute('data-disp', 'done')
+      ta.value = '已核验凭证，订单可发货。'
+      await ui.fire('click', button)
+      assert(calls[1].body.disposition === 'done', '已处理不能被当成新指示')
+    })
+
+    await test('交接卡：接手保留草稿，重复点击只提交一次，断线可重试', async () => {
+      let finish
+      let posts = 0
+      let fail = false
+      const ui = loadApp({ appPath, base: gwBase, token: 'handoff-pending', fetchImpl: async () => {
+        posts++
+        if (fail) return new Response(JSON.stringify({ error: '设备离线' }), { status: 503, headers: { 'content-type': 'application/json' } })
+        await new Promise(resolve => { finish = resolve })
+        return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } })
+      } })
+      const ta = el('textarea', { 'data-handoff': 'h-pending' }, '草稿：正在核验凭证')
+      ui.document.querySelectorAll = sel => sel === '.sw-handoff-note' ? [ta] : []
+      const claim = el('button', { 'data-act': 'chat-handoff-claim', 'data-id': 'h-pending' })
+      const first = ui.fire('click', claim)
+      await ui.fire('click', claim)
+      assert(posts === 1, '同一交接单重复提交了请求')
+      finish()
+      await first
+      assert(ta.value.includes('正在核验'), '接手动作清空了未提交的草稿')
+      fail = true
+      await ui.fire('click', claim)
+      assert(posts === 2 && ui.state.handoffFeedback['h-pending'].error, '失败未在交接卡上提示，或忙碌锁未释放')
+      assert(ta.value.includes('正在核验'), '失败后丢了草稿')
+    })
+
+    await test('交接卡：已交还及终态不能再次填结果，正文安全显示', async () => {
+      const ui = await boot()
+      for (const state of ['returned', 'closed', 'expired', 'cancelled']) {
+        const html = ui.handoffHtml({ id: 'h-readonly', state, ask: '核验订单' })
+        assert(!html.includes('<textarea') && !html.includes('data-act="chat-handoff-return"'), `${state} 仍可重复交还`)
+      }
+      const html = ui.handoffHtml({ id: 'h-context', state: 'open', ask: '<img onerror=attack>', reason: '<script>attack</script>', summary: '已查询订单 DEMO-1' })
+      assert(html.includes('&lt;img') && html.includes('&lt;script&gt;') && !html.includes('<script>'), '交接正文没有转义')
+      assert(html.includes('Bot 的处理进展') && html.includes('DEMO-1') && html.includes('<label'), '任务上下文或结果标签缺失')
+      ui.state.handoffOpenId = 'h-readonly'
+      ui.state.handoffDetail = { 'h-readonly': { summary: '已交还' } }
+      assert(!ui.handoffRow({ id: 'h-readonly', botId: 'b', accountId: 'other', state: 'returned' }).includes('<textarea'), '待办详情对已交还的单仍给了输入框')
+    })
+
+    await test('待办刷新失败保留清单、显示重试，恢复后清除提示', async () => {
+      let fail = true
+      const ui = loadApp({ appPath, base: gwBase, token: 'handoff-load', fetchImpl: async () => new Response(JSON.stringify(fail ? { error: 'offline' } : { handoffs: [], count: 0 }), { status: fail ? 503 : 200, headers: { 'content-type': 'application/json' } }) })
+      ui.state.me = { account: { id: 'me', role: 'admin', companyId: 'c1' } }
+      ui.state.handoffs = [{ id: 'h-stale', state: 'open', botId: 'b', accountId: 'me', ask: '核验凭证' }]
+      ui.state.handoffCount = 1
+      await ui.fire('click', el('button', { 'data-act': 'handoff-refresh' }))
+      assert(ui.state.handoffCount === 1 && ui.state.handoffs.length === 1, '更新失败却清空了待办')
+      assert(ui.handoffsAside().includes('当前显示上次获取的内容'), '陈旧数据缺少提示')
+      fail = false
+      await ui.fire('click', el('button', { 'data-act': 'handoff-refresh' }))
+      assert(!ui.state.handoffLoadError && !ui.state.handoffs.length && ui.state.handoffCount === 0, '连接恢复后未同步状态')
     })
 
     await test('交接卡：中间隔了几轮对话，也还是同一张卡', async () => {
@@ -611,7 +695,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const open = ui.handoffRow(row({ accountId: 'someone-else' }))
       assert(open.includes('sw-handoff-note'), '就地处理却没有写结论的框')
       assert(open.includes('data-act="chat-handoff-return"'), '就地处理却交还不了')
-      assert(open.includes('席位没应答'), `正文拉不到时没说清是怎么回事：${open.slice(-400)}`)
+      assert(open.includes('需要 Bot 所在设备在线'), `正文拉不到时没说清是怎么回事：${open.slice(-400)}`)
       // 拉到了就把 Bot 做到哪一步摆出来——接手的人靠它不用从头问一遍。
       ui.state.handoffDetail = { h1: { id: 'h1', summary: '已经查到发票号 A-991' } }
       assert(ui.handoffRow(row({ accountId: 'x' })).includes('A-991'), '拉到了正文却没画出来')

@@ -101,6 +101,8 @@ function endSignedIn() {
   state.handoffStats = null
   state.handoffOpenId = ''
   state.handoffDetail = {}
+  state.handoffFeedback = {}
+  state.handoffLoadError = false
 }
 
 /**
@@ -691,12 +693,20 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'handoff-claim') {
-    await actOnHandoff(btn.getAttribute('data-id'), 'claim')
+    await actOnHandoff(btn.getAttribute('data-id'), 'claim', undefined, btn)
     return
   }
   if (act === 'handoff-cancel') {
     // 待办行和右栏卡片上那颗。撤销不叫醒 Bot，状态顺着 SSE 回来、清单单独刷一次（见 actOnHandoff）。
     await actOnHandoff(btn.getAttribute('data-id'), 'cancel', undefined, btn)
+    return
+  }
+  if (act === 'handoff-refresh') {
+    await loadHandoffs()
+    return
+  }
+  if (act === 'handoff-detail-retry') {
+    await loadHandoffDetail(btn.getAttribute('data-id'))
     return
   }
   if (act === 'handoff-detail') {
