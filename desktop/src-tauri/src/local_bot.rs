@@ -237,7 +237,7 @@ pub(crate) async fn start_local_bot(app: AppHandle, config: LocalBotConfig) -> R
  */
 fn start_local_bot_blocking(app: AppHandle, config: LocalBotConfig) -> Result<LocalBotStatus, String> {
     let bot_id = safe_bot_id(&config.bot_id)?;
-    let configured = read_server(&app).ok_or("还没有配置 Gateway")?;
+    let configured = read_server(&app);
     let expected = normalize(&configured)?;
     let gateway = normalize(&config.gateway_url)?;
     if !same_origin(&expected, &gateway) {

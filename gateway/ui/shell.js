@@ -192,6 +192,7 @@ function loginView() {
       <div style="width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: var(--space-6);">
         ${/* 回首页。**只在网页上有**——桌面壳里 `/` 就是这一屏（见 render.js 的
              anonView），那颗按钮会把人送回原地，是一颗点了没反应的按钮。 */ ''}
+        ${gatewayServerButton()}
         ${
           appShell()
             ? ''
@@ -224,7 +225,79 @@ function loginView() {
         <p style="text-align: center; margin: 0; font-size: 14px; color: color-mix(in srgb, var(--color-text) 60%, transparent);">${t('还没有账号？联系管理员开通。')}</p>
       </div>
     </div>
+    ${gatewayServerModal()}
   </div>`
+}
+
+const SERVER_ICON = ['M4 4h16v6H4z', 'M4 14h16v6H4z', 'M8 7h.01', 'M8 17h.01']
+
+/** 桌面壳注入的「连哪台 Gateway」那组命令（desktop/src-tauri/src/nav.rs 的 LINK_SCRIPT）。浏览器、手机壳里没有。 */
+function gatewayServerBridge() {
+  const bridge = window.__SATUWORK_SERVER__
+  return desktopShell() && bridge && typeof bridge.check === 'function' ? bridge : null
+}
+
+function gatewayHost(raw) {
+  try {
+    return new URL(raw).host
+  } catch {
+    return String(raw || '')
+  }
+}
+
+/**
+ * 登录页右上角那颗「服务器」按钮，标着现在连的是哪台。
+ *
+ * 放在登录页是因为最需要它的时候就在这儿：服务器连不上、或者要换到公司自己部署的那台，
+ * 人还没登录，进不了任何设置页。
+ */
+function gatewayServerButton() {
+  if (!gatewayServerBridge()) return ''
+  const host = gatewayHost(window.__SATUWORK_GATEWAY__)
+  return `<button type="button" class="btn btn-ghost" data-act="gw-server-open"
+      style="position: absolute; top: var(--space-6); right: var(--space-6); padding: 4px 10px; font-size: 13px; color: var(--muted-foreground);"
+      title="${esc(t('配置连接的服务器', 'Configure server'))}" aria-label="${esc(t(`服务器：${host}，点击配置`, `Server: ${host}, click to configure`))}">
+    ${svg(SERVER_ICON, 14)}${esc(host || t('服务器', 'Server'))}
+  </button>`
+}
+
+/**
+ * 「连接的服务器」弹窗：填地址 →「检测」只测不存；「检测并使用」测过了才写盘，壳子随即用新
+ * 地址重建主窗口（这一页会被换掉，不用自己收尾）。检测在壳子里做：敲端口、再要一次
+ * `/health`，回 `{"ok":true}` 才算是 Gateway（desktop/src-tauri/src/server.rs 的 check）。
+ */
+function gatewayServerModal() {
+  const s = state.gwServer
+  if (!s) return ''
+  const busy = s.phase === 'checking' || s.phase === 'switching'
+  const status = s.msg
+    ? `<div class="gw-flash ${s.phase === 'err' ? 'gw-flash-err' : 'gw-flash-ok'}" role="status" style="margin: 0; word-break: break-all;">${esc(s.msg)}</div>`
+    : ''
+  const restore =
+    s.def && s.url.trim().replace(/\/+$/, '') !== s.def.replace(/\/+$/, '')
+      ? `<button type="button" class="btn btn-ghost" style="padding: 4px 8px; font-size: 13px;" data-act="gw-server-default" ${busy ? 'disabled' : ''}>${esc(t(`恢复默认（${gatewayHost(s.def)}）`, `Use default (${gatewayHost(s.def)})`))}</button>`
+      : '<span></span>'
+  return modalBox({
+    close: 'gw-server-close',
+    tag: 'form',
+    attrs: 'id="gw-server-form" class="gw-modal" style="max-width: 480px;" data-stop role="dialog" aria-modal="true" aria-labelledby="gw-server-title"',
+    title: `<span id="gw-server-title">${esc(t('连接的服务器', 'Server'))}</span>`,
+    sub: esc(t('这台电脑上的 Satuwork 连哪台 Gateway。检测通过才会保存并切换。', 'Which Gateway this app connects to. It is saved and used only after the check passes.')),
+    body: `<div class="field">
+        <label for="gw-server-url">${t('服务器地址', 'Server address')}</label>
+        <input class="input satu-input" id="gw-server-url" name="url" type="text" autocomplete="off" spellcheck="false"
+          placeholder="gw.example.com ${esc(t('或', 'or'))} 192.168.1.10:3080" value="${esc(s.url)}" required ${busy ? 'disabled' : ''}>
+        <p style="margin: 6px 0 0; font-size: 12px; color: var(--muted-foreground);">${t('不写协议就按 http:// 算。换了服务器要在那台上重新登录。', 'Without a scheme, http:// is assumed. You will sign in again on the new server.')}</p>
+      </div>
+      ${status}
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;">
+        ${restore}
+        <div style="display: flex; gap: var(--space-2);">
+          <button type="button" class="btn btn-secondary" data-act="gw-server-check" ${busy ? 'disabled' : ''}>${s.phase === 'checking' ? t('检测中…', 'Checking…') : t('检测', 'Check')}</button>
+          <button type="submit" class="btn btn-primary" ${busy ? 'disabled' : ''}>${s.phase === 'switching' ? t('切换中…', 'Switching…') : t('检测并使用', 'Check and use')}</button>
+        </div>
+      </div>`,
+  })
 }
 
 /**

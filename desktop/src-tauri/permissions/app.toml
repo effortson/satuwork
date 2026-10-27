@@ -1,7 +1,12 @@
 [[permission]]
 identifier = "setup-commands"
 description = "允许本地设置页读取、检查并保存 Gateway 地址。"
-commands.allow = ["current_server", "startup_error", "connect", "server_is_locked"]
+commands.allow = ["current_server", "startup_error", "connect"]
+
+[[permission]]
+identifier = "gateway-server-commands"
+description = "允许主窗口（登录页的「服务器」弹窗）读取、检测并切换 Gateway 地址；切换前壳子自己再检测一遍。"
+commands.allow = ["gateway_server_info", "check_gateway_server", "use_gateway_server"]
 
 [[permission]]
 identifier = "local-bot-commands"

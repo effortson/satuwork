@@ -4,11 +4,11 @@ mod distribution;
 
 use std::collections::HashMap;
 use std::process::Child;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::menu::{Menu, MenuItem, Submenu};
+use tauri::menu::Menu;
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
 mod directories;
@@ -21,7 +21,7 @@ mod ui;
 
 use local_bot::{clear_update_source, stop_all_local_bots};
 use nav::{build_window, SeatOrigins};
-use server::{normalize, reachable, read_server, server_locked, write_server};
+use server::{check, normalize, reachable, read_server, write_server, DEFAULT_SERVER};
 use ui::serve_ui;
 
 /**
@@ -45,7 +45,6 @@ use ui::serve_ui;
 
 const SETUP: &str = "setup";
 const MAIN: &str = "main";
-const SWITCH_ITEM: &str = "switch-server";
 
 /**
  * 「请帮我在外面打开这个地址」的暗号。
@@ -174,6 +173,10 @@ impl Drop for BotJob {
     }
 }
 
+/// 正在换服务器：旧窗口都关了、新主窗口还没建起来的那一小段。窗口数归零时 Tauri 会发
+/// ExitRequested，这段时间里要拦住，否则应用直接退出（见 reopen_main）。
+static SWITCHING: AtomicBool = AtomicBool::new(false);
+
 /// 最近一次成功启动用的 Gateway 地址和席位票，给每小时一次的运行时自查用。
 #[derive(Default)]
 struct UpdateSource(Mutex<Option<(Url, String)>>);
@@ -246,15 +249,9 @@ fn open_setup(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/** 设置页据此决定要不要画输入框：锁死时只剩「连不上的原因」和「重试」。 */
-#[tauri::command]
-fn server_is_locked() -> bool {
-    server_locked()
-}
-
 #[tauri::command]
 fn current_server(app: AppHandle) -> String {
-    read_server(&app).unwrap_or_default()
+    read_server(&app)
 }
 
 /** 启动时没能直接进去的原因。取一次就清掉——它说的是「刚才」，不是「现在」。 */
@@ -265,27 +262,25 @@ fn startup_error(app: AppHandle) -> String {
     std::mem::take(&mut *slot)
 }
 
+/** 规整地址，再敲门、要一次 /health。都过了才回规整后的地址。 */
+async fn checked(url: &str) -> Result<Url, String> {
+    let parsed = normalize(url)?;
+    // 每一步都可能等上几秒，放进阻塞线程池：同步命令在主线程上，等的这几秒窗口全冻住。
+    let probe = parsed.clone();
+    tauri::async_runtime::spawn_blocking(move || check(&probe))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(parsed)
+}
+
 /**
  * 连。**连不上就不写盘**——写了的话下次启动会直接奔那个地址去，而那正是「白窗口」
  * 的来源；停在这一屏、把话说清楚，人还在键盘前面，改一个字母就好了。
  */
 #[tauri::command]
 async fn connect(app: AppHandle, url: String) -> Result<(), String> {
-    // 锁死时页面上没有输入框，这里也不认页面传来的地址——「重试」就是重连默认那台。
-    let url = if server_locked() {
-        read_server(&app).ok_or("没有可连的服务器")?
-    } else {
-        url
-    };
-    let parsed = normalize(&url)?;
-    // 敲门每个地址最多等 3 秒，放进阻塞线程池：同步命令在主线程上，等的这几秒窗口全冻住。
-    let probe = parsed.clone();
-    tauri::async_runtime::spawn_blocking(move || reachable(&probe))
-        .await
-        .map_err(|e| e.to_string())??;
-    if !server_locked() {
-        write_server(&app, parsed.as_str())?;
-    }
+    let parsed = checked(&url).await?;
+    write_server(&app, parsed.as_str())?;
     // 在 async 命令里建窗口没问题；同步命令里建，Windows 上会死锁（见 build_window）。
     open_main(&app, parsed).map_err(|e| e.to_string())?;
     if let Some(win) = app.get_webview_window(SETUP) {
@@ -294,51 +289,89 @@ async fn connect(app: AppHandle, url: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewayServerInfo {
+    current: String,
+    default: String,
+}
+
+/** 登录页「服务器」弹窗打开时要的：现在连的哪台，默认是哪台（「恢复默认」用）。 */
+#[tauri::command]
+fn gateway_server_info(app: AppHandle) -> GatewayServerInfo {
+    GatewayServerInfo {
+        current: read_server(&app),
+        default: DEFAULT_SERVER.to_string(),
+    }
+}
+
+/** 弹窗里的「检测」：只测不存，通过了回规整后的地址给页面显示。 */
+#[tauri::command]
+async fn check_gateway_server(url: String) -> Result<String, String> {
+    Ok(checked(&url).await?.as_str().trim_end_matches('/').to_string())
+}
+
 /**
- * 菜单里那一条「切换服务器…」。
+ * 弹窗里的「使用」：再测一遍（页面上测过之后人可能又改了一个字），过了才写盘，然后换掉
+ * 主窗口——Gateway 地址是建窗口时注入进页面的，换地址只能重建。
  *
- * **少了它这个壳会砖。** 地址填对了但那台机器换了地方、或者页面被导航到了一个回不来
- * 的地方，界面上又没有地址栏可以改——人只能去删配置文件，而没人知道那个路径。
+ * 重建放到后台去做、这里先回：要关掉的正是发起这条命令的那扇窗。
+ */
+#[tauri::command]
+async fn use_gateway_server(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = checked(&url).await?;
+    write_server(&app, parsed.as_str())?;
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = reopen_main(&app, parsed).await {
+            eprintln!("换服务器后重建主窗口失败：{e}");
+        }
+    });
+    Ok(())
+}
+
+/**
+ * 换了服务器之后的收尾：老服务器上起的本地 Bot 停掉，运行时自查的地址和票清掉——它们都
+ * 认的是老服务器。换到新服务器、登录、起了 Bot 之后会重新记上。
+ */
+fn forget_old_server(app: &AppHandle) {
+    clear_update_source(app);
+    let _ = stop_all_local_bots(app);
+}
+
+/**
+ * 关掉所有装界面的窗口，用新地址重建主窗口。
  *
- * 从系统默认菜单接着加：macOS 上复制粘贴的快捷键是菜单项给的，自己从空菜单搭一份
- * 就等于把 Cmd+C/Cmd+V 弄没了。
+ * 主窗口的 label 只能是 MAIN（capability 按 label 放行命令），所以得等老的那扇真正销毁、
+ * label 空出来才能建新的；中间窗口数为零，SWITCHING 拦住 Tauri 的自动退出。
+ */
+async fn reopen_main(app: &AppHandle, url: Url) -> Result<(), String> {
+    SWITCHING.store(true, Ordering::SeqCst);
+    let app2 = app.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || forget_old_server(&app2)).await;
+    for (label, win) in app.webview_windows() {
+        if label != SETUP {
+            let _ = win.destroy();
+        }
+    }
+    for _ in 0..100 {
+        if app.get_webview_window(MAIN).is_none() {
+            break;
+        }
+        let _ = tauri::async_runtime::spawn_blocking(|| std::thread::sleep(std::time::Duration::from_millis(30))).await;
+    }
+    let result = open_main(app, url).map_err(|e| e.to_string());
+    SWITCHING.store(false, Ordering::SeqCst);
+    result
+}
+
+/**
+ * 系统默认菜单。macOS 上复制粘贴的快捷键是菜单项给的，不装的话 Cmd+C/Cmd+V 就没了。
+ *
+ * 以前这里还挂着「服务器 → 切换服务器…」，换服务器现在在登录页右上角的「服务器」按钮里
+ * （use_gateway_server），菜单那一条去掉了。
  */
 fn install_menu(app: &AppHandle) -> tauri::Result<()> {
-    let menu = Menu::default(app)?;
-    if server_locked() {
-        app.set_menu(menu)?;
-        return Ok(());
-    }
-    let switch = MenuItem::with_id(app, SWITCH_ITEM, "切换服务器…", true, None::<&str>)?;
-    let submenu = Submenu::with_items(app, "服务器", true, &[&switch])?;
-    menu.append(&submenu)?;
-    app.set_menu(menu)?;
-    app.on_menu_event(|app, event| {
-        if event.id() != SWITCH_ITEM {
-            return;
-        }
-        // 老服务器的地址和票也别留给每小时的运行时自查；换到新服务器、起了 Bot 之后会重新记上。
-        clear_update_source(app);
-        // 建窗口不能在菜单回调里同步做：Windows 上 WebviewWindowBuilder::build() 在同步命令和
-        // 事件回调里会死锁（WebView2 的已知问题，见 Tauri 的 WebviewWindowBuilder 文档），
-        // 要换到别的线程上建。
-        // 先打开设置窗口，再关旧窗口：如果先关旧窗口，主窗口一关所有窗口数为 0，
-        // Tauri 会按默认行为触发退出流程导致应用异常退出。
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Err(e) = open_setup(&app) {
-                eprintln!("打开设置窗口失败：{e}");
-                return;
-            }
-            // 装着界面的窗口全关掉——包括「打开桌面」那种另开的。留着的话它们注入的还是
-            // 老地址，而人正要换一台。
-            for (label, win) in app.webview_windows() {
-                if label != SETUP {
-                    let _ = win.close();
-                }
-            }
-        });
-    });
+    app.set_menu(Menu::default(app)?)?;
     Ok(())
 }
 
@@ -396,7 +429,9 @@ fn main() {
             current_server,
             startup_error,
             connect,
-            server_is_locked,
+            gateway_server_info,
+            check_gateway_server,
+            use_gateway_server,
             local_bot::start_local_bot,
             local_bot::stop_local_bot,
             local_bot::local_bot_status,
@@ -414,23 +449,25 @@ fn main() {
             install_menu(&handle)?;
             // 存过地址、且那台机器现在敲得开，才直接进去。敲不开就回设置屏，并且把
             // 敲门的结果原样摆在上面。
-            match read_server(&handle).and_then(|s| normalize(&s).ok()) {
-                Some(url) => match reachable(&url) {
-                    Ok(()) => open_main(&handle, url)?,
-                    Err(why) => {
-                        *handle.state::<Startup>().0.lock().unwrap() = format!("{why}");
-                        open_setup(&handle)?
-                    }
-                },
-                None => open_setup(&handle)?,
+            match normalize(&read_server(&handle)).and_then(|url| reachable(&url).map(|()| url)) {
+                Ok(url) => open_main(&handle, url)?,
+                Err(why) => {
+                    *handle.state::<Startup>().0.lock().unwrap() = why;
+                    open_setup(&handle)?
+                }
             }
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("Satuwork 桌面壳起不来")
-        .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|app, event| match event {
+            // 换服务器时窗口数会短暂归零（见 reopen_main），那一下不是要退出。
+            tauri::RunEvent::ExitRequested { code: None, api, .. } if SWITCHING.load(Ordering::SeqCst) => {
+                api.prevent_exit();
+            }
+            tauri::RunEvent::Exit => {
                 let _ = stop_all_local_bots(app);
             }
+            _ => {}
         })
 }

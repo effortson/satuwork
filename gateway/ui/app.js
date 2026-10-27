@@ -307,6 +307,10 @@ document.getElementById('app').addEventListener('submit', (e) => {
   const form = e.target
   if (!(form instanceof HTMLFormElement)) return
   if (form.id === 'login-form') return onLogin(e)
+  if (form.id === 'gw-server-form') {
+    e.preventDefault()
+    return checkGatewayServer(true)
+  }
   if (form.id === 'setup-form') return onSetup(e)
   if (form.id === 'pw-form') return submitPassword(e)
   if (form.id === 'invite-form') return submitInvite(e)
@@ -2429,6 +2433,29 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'gw-server-open') {
+    void openGatewayServer()
+    return
+  }
+  if (act === 'gw-server-close') {
+    // 切换中别让人关：命令已经发出去了，窗口马上就要换。
+    if (state.gwServer?.phase === 'switching') return
+    state.gwServer = null
+    render()
+    return
+  }
+  if (act === 'gw-server-check') {
+    void checkGatewayServer(false)
+    return
+  }
+  if (act === 'gw-server-default') {
+    if (!state.gwServer) return
+    state.gwServer.url = state.gwServer.def
+    state.gwServer.phase = 'idle'
+    state.gwServer.msg = ''
+    render()
+    return
+  }
   if (act === 'join-login') {
     // `/login` 而不是 `/`：`/` 现在是首页（见 render.js 的 anonView），而这两颗按钮
     // 上写的是「返回登录」「直接登录」——送到一屏讲产品是什么的页面就是答非所问。
@@ -3116,6 +3143,11 @@ document.getElementById('app').addEventListener('keydown', (e) => {
    而输入框自己的 keydown 只管回车。 */
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return
+  if (state.gwServer && state.gwServer.phase !== 'switching') {
+    state.gwServer = null
+    render()
+    return
+  }
   if (state.chatCtxOpen) {
     state.chatCtxOpen = false
     paintChatCtx()

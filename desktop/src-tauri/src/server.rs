@@ -15,32 +15,24 @@ fn server_file(app: &AppHandle) -> Option<PathBuf> {
         .map(|dir| dir.join("server.txt"))
 }
 
-/** 正式发布包连的 Gateway。 */
-const DEFAULT_SERVER: &str = crate::distribution::GATEWAY;
+/** 默认连的 Gateway（发布包按地区编进来的那台）；没存过地址就连它。 */
+pub(crate) const DEFAULT_SERVER: &str = crate::distribution::GATEWAY;
 
 /**
- * 服务器地址锁死：**正式发布包不让填、不让换**，固定连 DEFAULT_SERVER；只有 debug 构建
- * （`tauri dev`，本地测试）才有「连接到 Gateway」那一屏和菜单里的「切换服务器…」。
- */
-pub(crate) fn server_locked() -> bool {
-    !cfg!(debug_assertions)
-}
-
-/**
- * 这次连哪儿。中国区发布包忽略运行时覆盖，避免跨区；其他构建认 `SATUWORK_SERVER`。再往下：
- * 锁死时是 DEFAULT_SERVER，存在磁盘上的老地址（0.1.2 及之前用户填过的）一律不看；
- * 没锁时是用户存过的，没有就是 None，交给设置屏去问。
+ * 这次连哪儿：`SATUWORK_SERVER` > 用户存过的 > DEFAULT_SERVER。
+ *
+ * 以前正式包锁死只连 DEFAULT_SERVER（fdacc18），现在放开了：登录页的「服务器」弹窗能改，
+ * 改之前要先过 check。中国区包也一样认存过的地址。
  * 拆成纯函数是为了能不起应用就把这条规则钉住。
  */
-fn pick_server(locked: bool, from_env: Option<&str>, saved: Option<&str>) -> Option<String> {
-    let fallback = if locked { Some(DEFAULT_SERVER) } else { saved };
-    let from_env = if locked && crate::distribution::isolated() { None } else { from_env };
-    [from_env, fallback]
+fn pick_server(from_env: Option<&str>, saved: Option<&str>) -> String {
+    [from_env, saved]
         .into_iter()
         .flatten()
         .map(str::trim)
         .find(|s| !s.is_empty())
-        .map(str::to_string)
+        .unwrap_or(DEFAULT_SERVER)
+        .to_string()
 }
 
 /**
@@ -49,10 +41,10 @@ fn pick_server(locked: bool, from_env: Option<&str>, saved: Option<&str>) -> Opt
  * `SATUWORK_SERVER` **只覆盖，不写盘**：它是给开发和排查用的，跑完一次不该改掉用户
  * 存着的那个地址。
  */
-pub(crate) fn read_server(app: &AppHandle) -> Option<String> {
+pub(crate) fn read_server(app: &AppHandle) -> String {
     let from_env = std::env::var("SATUWORK_SERVER").ok();
     let saved = server_file(app).and_then(|path| fs::read_to_string(path).ok());
-    pick_server(server_locked(), from_env.as_deref(), saved.as_deref())
+    pick_server(from_env.as_deref(), saved.as_deref())
 }
 
 pub(crate) fn write_server(app: &AppHandle, url: &str) -> Result<(), String> {
@@ -117,6 +109,37 @@ pub(crate) fn reachable(url: &Url) -> Result<(), String> {
     Err(format!("连不上 {host}:{port}（{last}）"))
 }
 
+/**
+ * 换服务器之前的那一下检测：比 reachable 多走一步，真去要一次 `/health`，回 `{"ok":true}` 才算
+ * 是一台 Gateway。端口通着但那头是别的服务、或者 Gateway 起来了却在 500，reachable 都看不出来；
+ * 这里是人主动要换地址，宁可慢一两秒把这些拦在门外，也别存下一个进去就白屏的地址。
+ *
+ * 阻塞调用，放进 spawn_blocking 里用。
+ */
+pub(crate) fn check(url: &Url) -> Result<(), String> {
+    reachable(url)?;
+    let health = format!("{}/health", url.as_str().trim_end_matches('/'));
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("建 HTTP 客户端失败：{e}"))?;
+    let resp = client
+        .get(&health)
+        .send()
+        .map_err(|e| format!("请求 {health} 失败：{e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("{health} 回了 HTTP {}，这个地址不像是 Satuwork Gateway", status.as_u16()));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .map_err(|_| format!("{health} 回的不是 Gateway 的响应，这个地址不像是 Satuwork Gateway"))?;
+    if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return Err(format!("{health} 没有报告正常（ok 不是 true）"));
+    }
+    Ok(())
+}
+
 pub(crate) fn same_origin(a: &Url, b: &Url) -> bool {
     a.scheme() == b.scheme()
         && a.host_str() == b.host_str()
@@ -127,26 +150,14 @@ pub(crate) fn same_origin(a: &Url, b: &Url) -> bool {
 mod tests {
     use super::pick_server;
 
-    /// 正式包固定连默认地址，存过的老地址不看；本地测试按 环境变量 > 存过的，没有就 None。
+    /// 环境变量 > 存过的 > 默认地址；空白的不算。
     #[test]
-    fn server_locked_ignores_saved_address() {
-        let d = Some(super::DEFAULT_SERVER);
-        assert_eq!(pick_server(true, None, Some("http://old")).as_deref(), d);
-        assert_eq!(pick_server(true, None, None).as_deref(), d);
-        assert_eq!(pick_server(true, Some("  "), None).as_deref(), d);
-        assert_eq!(
-            pick_server(true, Some("http://e"), Some("http://old")).as_deref(),
-            if crate::distribution::isolated() { d } else { Some("http://e") }
-        );
-        assert_eq!(
-            pick_server(false, Some("http://e"), Some("http://s")).as_deref(),
-            Some("http://e")
-        );
-        assert_eq!(
-            pick_server(false, None, Some(" http://s\n")).as_deref(),
-            Some("http://s")
-        );
-        assert_eq!(pick_server(false, None, Some("")), None);
-        assert_eq!(pick_server(false, None, None), None);
+    fn server_falls_back_to_default() {
+        let d = super::DEFAULT_SERVER;
+        assert_eq!(pick_server(Some("http://e"), Some("http://s")), "http://e");
+        assert_eq!(pick_server(Some("  "), Some(" http://s\n")), "http://s");
+        assert_eq!(pick_server(None, Some("http://s")), "http://s");
+        assert_eq!(pick_server(None, Some("")), d);
+        assert_eq!(pick_server(None, None), d);
     }
 }

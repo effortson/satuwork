@@ -94,6 +94,71 @@ async function onSetup(e) {
   }
 }
 
+/** 弹窗开着时把输入框里的字收回 state：整页重画会把没存的输入冲掉。 */
+function syncGatewayServerInput() {
+  const el = document.getElementById('gw-server-url')
+  if (el instanceof HTMLInputElement && state.gwServer) state.gwServer.url = el.value
+}
+
+async function openGatewayServer() {
+  const bridge = gatewayServerBridge()
+  if (!bridge) return
+  // 登录表单里已经填的邮箱别被这一下重画冲掉。
+  const email = document.getElementById('login-email')
+  if (email instanceof HTMLInputElement) state.loginEmail = email.value
+  const s = { url: String(window.__SATUWORK_GATEWAY__ || ''), def: '', phase: 'idle', msg: '' }
+  state.gwServer = s
+  render()
+  try {
+    const info = await bridge.info()
+    if (state.gwServer !== s) return
+    syncGatewayServerInput()
+    s.def = String(info?.default || '')
+  } catch {}
+  if (state.gwServer !== s) return
+  render()
+  const input = document.getElementById('gw-server-url')
+  if (input instanceof HTMLInputElement) {
+    input.focus()
+    input.select()
+  }
+}
+
+/** `use` 为真：检测通过就写盘并切换（壳子重建主窗口，这一页随之消失）；否则只测。 */
+async function checkGatewayServer(use) {
+  const s = state.gwServer
+  const bridge = gatewayServerBridge()
+  if (!s || !bridge || s.phase === 'checking' || s.phase === 'switching') return
+  syncGatewayServerInput()
+  const url = s.url.trim()
+  if (!url) {
+    s.phase = 'err'
+    s.msg = t('请填服务器地址', 'Enter a server address')
+    render()
+    return
+  }
+  s.phase = use ? 'switching' : 'checking'
+  s.msg = ''
+  render()
+  try {
+    if (use) {
+      await bridge.use(url)
+      if (state.gwServer !== s) return
+      s.msg = t('检测通过，正在切换…', 'Check passed, switching…')
+    } else {
+      const ok = await bridge.check(url)
+      if (state.gwServer !== s) return
+      s.phase = 'ok'
+      s.msg = t(`检测通过：${ok} 是一台可用的 Gateway`, `Check passed: ${ok} is a working Gateway`)
+    }
+  } catch (err) {
+    if (state.gwServer !== s) return
+    s.phase = 'err'
+    s.msg = typeof err === 'string' ? err : err?.message || t('检测没通过', 'Check failed')
+  }
+  render()
+}
+
 async function onLogin(e) {
   e.preventDefault()
   const fd = new FormData(e.target)

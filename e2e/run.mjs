@@ -23,6 +23,7 @@ import { runMarkdown } from './markdown.mjs'
 import { runChatFold } from './chat-fold.mjs'
 import { runLlmProbeEffort } from './llm-probe-effort.mjs'
 import { runDesktopUpdate } from './desktop-update.mjs'
+import { runDesktopServer } from './desktop-server.mjs'
 import { runChatModelRefresh } from './chat-model-refresh.mjs'
 import { runAvatarMotion } from './avatar-motion.mjs'
 import { runToolNames } from './tool-names.mjs'
@@ -234,6 +235,7 @@ async function main() {
     await suite('chat-fold', () => runChatFold({ root, test, assert, log }))
     await suite('llm-probe-effort', () => runLlmProbeEffort({ root, test, assert, log }))
     await suite('desktop-update', () => runDesktopUpdate({ root, test, assert, log }))
+    await suite('desktop-server', () => runDesktopServer({ root, test, assert, log }))
     await suite('chat-model-refresh', () => runChatModelRefresh({ root, test, assert, log }))
     await suite('avatar-motion', () => runAvatarMotion({ root, test, assert, log }))
     await suite('tool-names', () => runToolNames({ root, test, assert, log }))

@@ -21,13 +21,15 @@ Bot 的守卫三处都对它开 CORS；管家那张桌面 cookie 在 https 下�
 pnpm --filter satuwork-desktop dev
 ```
 
-**正式发布包固定连 `https://satuwork.com`**：不问地址、菜单里也没有「切换服务器…」，
-磁盘上老版本存过的 server.txt 也不再看；连不上时设置屏只显示原因和「重试」。以下都是
-本地测试（`pnpm dev`，debug 构建）的行为：
+**默认连 `https://satuwork.com`**（发布包按地区编进来的那台），正式包和本地测试一样可以换。
+换服务器走**登录页右上角的「服务器」按钮**（菜单里不再有「切换服务器…」）：弹窗里填地址，
+「检测」只测不存；「检测并使用」由壳子先敲端口、再要一次 `/health`（回 `{"ok":true}` 才算是
+Gateway），通过了才写盘，然后停掉老服务器上的本地 Bot、用新地址重建主窗口，在新服务器上重新
+登录。没通过就留在弹窗里说明原因，不会存下一个打不开的地址。
 
-第一次打开是「连接到 Gateway」那一屏；填过一次就直接进去了。地址存在
-`~/Library/Application Support/sg.dami.satuwork/server.txt`（Windows 在
-`%APPDATA%`，Linux 在 `~/.config`）。要改地址走菜单「服务器 → 切换服务器…」。
+地址存在 `~/Library/Application Support/sg.dami.satuwork/server.txt`（Windows 在
+`%APPDATA%`，Linux 在 `~/.config`）；没存过就连默认那台。启动时存的那台敲不开，回「连接到
+Gateway」那一屏，把原因摆出来，可以当场改地址。
 
 登录票在桌面壳里按 Gateway 来源持久保存：关掉窗口或退出应用后再打开会恢复登录；在
 个人设置里点「退出登录」仍会立即清掉。浏览器版继续使用 `sessionStorage`，关掉标签页

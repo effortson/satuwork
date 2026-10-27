@@ -42,6 +42,12 @@ const LINK_SCRIPT: &str = r#"
     check: function (force) { return window.__TAURI_INTERNALS__.invoke('desktop_update_check', { force: Boolean(force) }) },
     install: function () { return window.__TAURI_INTERNALS__.invoke('desktop_update_install') }
   }
+  // 连哪台 Gateway：登录页右上角那颗「服务器」按钮用。检测通过才写盘，然后壳子用新地址重建主窗口。
+  window.__SATUWORK_SERVER__ = {
+    info: function () { return window.__TAURI_INTERNALS__.invoke('gateway_server_info') },
+    check: function (url) { return window.__TAURI_INTERNALS__.invoke('check_gateway_server', { url: url }) },
+    use: function (url) { return window.__TAURI_INTERNALS__.invoke('use_gateway_server', { url: url }) }
+  }
   // 内嵌桌面挂上之前先报一声地址，导航守卫只放行报过的机器（allow_seat_desktop）。
   window.__SATUWORK_SEAT_DESKTOP__ = {
     allow: function (url) { return window.__TAURI_INTERNALS__.invoke('allow_seat_desktop', { url: url }) }
@@ -78,7 +84,7 @@ const LINK_SCRIPT: &str = r#"
  * 每一次导航都过这里。
  *
  * 要挡的**只有一件事**：把唯一的窗口导航到站外。这个壳没有地址栏也没有后退，页面
- * 一旦跳出去，人就被关在一个回不来的地方了（只剩菜单里那条「切换服务器…」）。
+ * 一旦跳出去，人就被关在一个回不来的地方了。
  *
  * 所以按 scheme 分流：**hand_to_system 那几种之外的一律放行**。第一版是「白名单 + 同源」，
  * 而白名单永远漏得掉——`blob:`（附件预览喂给 iframe 的那个）漏了就是预览白屏，
