@@ -323,8 +323,8 @@ function machineHttpsBlock(m) {
     }
     if (h.error && h.stage !== 'failed') status += `<br>${esc(h.error)}`
   }
-  const clear = h && !switching
-    ? ` <button type="button" class="satu-linkbtn" data-act="machine-https-clear" data-scope="platform" data-machine="${esc(m.id)}">${t('撤掉', 'Clear')}</button>`
+  const clear = h && h.clearable
+    ?` <button type="button" class="satu-linkbtn" data-act="machine-https-clear" data-scope="platform" data-machine="${esc(m.id)}">${t('撤掉', 'Clear')}</button>`
     : ''
   return `<form data-form="machine-https" data-scope="platform" data-machine="${esc(m.id)}" style="display: flex; gap: var(--space-2); align-items: flex-end; flex-wrap: wrap;">
       <div class="field" style="margin: 0; flex: 1; min-width: 220px;">

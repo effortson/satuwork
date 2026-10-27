@@ -321,6 +321,11 @@ export interface MachineHttps {
   machinePhase: string | null
   /** 管家最近一次自报的「是不是只听回环」。 */
   machineLoopback: boolean
+  /**
+   * lockdown 里第一次看到管家报「已只听回环」的时刻。探活的宽限期从这里算，不从 stageAt 算：
+   * 管家可能要等席位部署跑完才重启，那段等待不该吃掉重启之后的宽限。
+   */
+  loopbackAt?: number | null
   startedAt: number
   /** 进入当前这一步的时刻。超时都从这里算。 */
   stageAt: number

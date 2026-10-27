@@ -217,6 +217,21 @@ export class MachinesDb extends DbCore {
     })
   }
 
+  /**
+   * 只在 `https` 还是调用方读到的那一份（nonce 和 stage 都对得上）时才写，返回写上没有。
+   *
+   * 心跳推进域名 https 时要先做十来秒的网络探测（deploy/https.ts）。这期间有人在机器页上按了
+   * 「重新开始」或「撤掉」，updateMachine 那种整格写回会拿探测前读到的旧记录把它盖掉——撤掉的
+   * 流程被复活，管家还会被叫去只听回环。条件写让后来的人按的那一下赢。
+   */
+  async casMachineHttps(id: string, expect: { nonce: string; stage: string }, next: Machine['https']): Promise<boolean> {
+    const n = await this.run(
+      `update machines set https = ? where id = ? and "removedAt" is null and https->>'nonce' = ? and https->>'stage' = ?`,
+      [next == null ? null : JSON.stringify(next), id, expect.nonce, expect.stage],
+    )
+    return n === 1
+  }
+
   async updateMachine(
     id: string,
     patch: Partial<

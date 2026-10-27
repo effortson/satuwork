@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { bootConfig } from './config.ts'
 import { sameToken } from './http.ts'
-import { run } from './run.ts'
+import { run, scheduleRestart } from './run.ts'
 import { busy } from './seats.ts'
 
 /**
@@ -95,6 +95,9 @@ export function httpsReport() {
     phase,
     error: lastError || null,
     loopbackOnly: loopbackNow(),
+    // 这个 phase 是为哪一次下发做的。Gateway 只认和自己手上 nonce 对得上的那一份：重试那一刻
+    // 心跳里报的还是上一次的 error，不带这个就分不出新旧，重试会被旧错当场判死。
+    nonce: triedNonce || null,
   }
 }
 
@@ -111,11 +114,16 @@ export async function maybeHttps(raw: unknown): Promise<void> {
   const want = httpsWantOf(raw)
   if (!want) return
   if (want.nonce) nonce = want.nonce
-  if (want.domain && !working && !(phase === 'ready' && phaseDomain === want.domain)) {
-    // 换了域名或者上一次失败了：重新来一遍。失败的那次不自动重试——同一个错（备案、
-    // 安全组）每 30 秒撞一次只会把 Let's Encrypt 的频率限制撞满。要重试由 Gateway 换一个
-    // nonce 重新下发（界面上再按一次）。
-    if (!(phase === 'error' && phaseDomain === want.domain && (want.nonce ?? '') === triedNonce)) {
+  if (want.domain && !working) {
+    const fresh = (want.nonce ?? '') !== triedNonce
+    if (phase === 'ready' && phaseDomain === want.domain) {
+      // 同一个域名已经配好了，换了 nonce 只是 Gateway 那边重新开了一次：配置还是那份，把 ready
+      // 改记到新 nonce 名下就行，不必重装重验。
+      if (fresh) triedNonce = want.nonce ?? ''
+    } else if (phaseDomain !== want.domain || phase === 'idle' || fresh) {
+      // 换了域名、刚起来、或者上一次失败后 Gateway 换了 nonce 重新下发：重新来一遍。同一个 nonce
+      // 失败了不自动重试——同一个错（备案、安全组）每 30 秒撞一次只会把 Let's Encrypt 的频率
+      // 限制撞满。要重试由界面再按一次（换一个 nonce）。
       working = true
       triedNonce = want.nonce ?? ''
       void configure(want.domain).finally(() => {
@@ -141,9 +149,7 @@ async function configure(domain: string): Promise<void> {
   try {
     log(`https：开始给 ${domain} 配 Caddy`)
     await ensureCaddy()
-    const changed = writeCaddyfile(domain, bootConfig().port)
-    const valid = await run('caddy', ['validate', '--config', CADDYFILE, '--adapter', 'caddyfile'], { timeout: 60_000 })
-    if (valid.code !== 0) throw new Error(`Caddyfile 校验没过：${tail(valid.stderr || valid.stdout)}`)
+    const changed = await writeCaddyfile(domain, bootConfig().port)
     await run('systemctl', ['enable', 'caddy'], { timeout: 30_000 })
     const active = (await run('systemctl', ['is-active', 'caddy'], { timeout: 10_000 })).code === 0
     if (changed || !active) {
@@ -209,8 +215,14 @@ ${domain} {
 `
 }
 
-/** 写 Caddyfile。返回是否真的改了（没改就不必 reload）。 */
-function writeCaddyfile(domain: string, port: number): boolean {
+/**
+ * 写 Caddyfile。返回是否真的改了（没改就不必 reload）。
+ *
+ * **先校验临时文件，过了才换上去。** 反过来的话，一份校验不过的配置（比如 apt 源里的 Caddy 太老、
+ * 不认某个指令）会留在 /etc/caddy 里：这一次报了错，下次机器重启 caddy.service 就起不来，连带
+ * 它原来在服务的东西一起没了。
+ */
+async function writeCaddyfile(domain: string, port: number): Promise<boolean> {
   const want = caddyfileFor(domain, port)
   let cur = ''
   try {
@@ -225,6 +237,11 @@ function writeCaddyfile(domain: string, port: number): boolean {
   mkdirSync('/etc/caddy', { recursive: true })
   const tmp = `${CADDYFILE}.satuwork.tmp`
   writeFileSync(tmp, want)
+  const valid = await run('caddy', ['validate', '--config', tmp, '--adapter', 'caddyfile'], { timeout: 60_000 })
+  if (valid.code !== 0) {
+    rmSync(tmp, { force: true })
+    throw new Error(`Caddyfile 校验没过，原来的配置没动：${tail(valid.stderr || valid.stdout)}`)
+  }
   renameSync(tmp, CADDYFILE)
   return true
 }
@@ -315,18 +332,13 @@ async function converge(want: HttpsWant): Promise<void> {
 
 /**
  * daemon-reload 让 drop-in 生效，再从**分离的**瞬态单元里重启自己（理由同 upgrade.ts：管家的
- * 子进程去 systemctl restart 会连自己一起被杀，命令发不出去）。只重启管家：工人连的是
+ * 子进程去 systemctl restart 会连自己一起被杀，命令发不出去；做法见 run.ts 的 scheduleRestart）。只重启管家：工人连的是
  * 127.0.0.1，监听地址怎么改都碰不到它。
  */
 async function restartSelf(why: string): Promise<void> {
   const reload = await run('systemctl', ['daemon-reload'], { timeout: 30_000 })
   if (reload.code !== 0) throw new Error(`daemon-reload 失败：${tail(reload.stderr || reload.stdout)}`)
-  await run('systemctl', ['reset-failed', 'satuwork-manager-relisten.service'], { timeout: 10_000 }).catch(() => {})
-  const r = await run(
-    'systemd-run',
-    ['--on-active=2s', '--collect', '--unit=satuwork-manager-relisten', 'systemctl', 'restart', 'satuwork-manager.service'],
-    { timeout: 15_000 },
-  )
+  const r = await scheduleRestart('satuwork-manager-relisten', ['satuwork-manager.service'])
   if (r.code !== 0) throw new Error(`systemd-run 发不出重启（${r.code}）：${tail(r.stderr || r.stdout)}`)
   restarting = true
   log(`https：${why}，2 秒后重启管家`)

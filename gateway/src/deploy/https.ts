@@ -25,10 +25,31 @@ import { rehostSeatInstances } from './machines.ts'
 
 /** 管家装 Caddy 加申请证书，本机自检就等 5 分钟；给足余量，超了算失败。 */
 const PROVISION_TIMEOUT_MS = 20 * 60_000
-/** 只听回环之后多久还连不上就撤回。管家重启要几秒，加上一两轮心跳。 */
+/**
+ * 管家报「已只听回环」之后多久还连不上就撤回。从**第一次看到它只听回环**算起（loopbackAt），
+ * 不从进入 lockdown 算：管家可能要等席位部署跑完才重启。
+ */
 const LOCKDOWN_GRACE_MS = 3 * 60_000
+/**
+ * 进了 lockdown 之后管家一直没报「已只听回环」：撤回。比管家等部署的上限（20 分钟，见
+ * manager/src/index.ts 的 SHUTDOWN_DEPLOY_WAIT_MS）宽一截，正常的等待不会被它掐掉。
+ */
+const LOCKDOWN_TIMEOUT_MS = 30 * 60_000
 /** 撤回之后管家一直没报「已重新对外听」：不再等，落到 failed，人去看日志。 */
 const ROLLBACK_TIMEOUT_MS = 10 * 60_000
+/**
+ * 心跳里每一次探测的超时。一轮最多串两次（provision 里先认人再带票），两次加起来要压在管家心跳
+ * 自己的 15 秒超时（manager/src/index.ts 的 gatewayPost）之内，不然这一轮的回包整份丢掉。
+ */
+const PROBE_TIMEOUT_MS = 5000
+
+/** 切换监听的两步。这时候改或撤，两个地址和监听状态就没人收拾了。 */
+const switching = (h: MachineHttps | null) => h?.stage === 'lockdown' || h?.stage === 'rollback'
+/**
+ * 切换卡住了：管家失联、或者降回了老版本，心跳推不动它。这时候不许撤，人就再也出不来——超过
+ * lockdown 的超时还停在原地，就放人手动撤。
+ */
+const stuck = (h: MachineHttps, now = Date.now()) => now - h.stageAt > LOCKDOWN_TIMEOUT_MS
 
 /** 和 manager/src/https.ts 的 domainOf 同一套口径：这个值会被原样写进机器上的 Caddyfile。 */
 export function httpsDomainOf(raw: string): string {
@@ -60,8 +81,12 @@ export function httpsBlocker(m: Machine): string | null {
 export async function startHttps(db: Db, m: Machine, domain: string): Promise<Machine> {
   const blocker = httpsBlocker(m)
   if (blocker) throw new HttpError(409, blocker)
-  if (m.https && (m.https.stage === 'lockdown' || m.https.stage === 'rollback')) {
-    throw new HttpError(409, '正在切换监听，等这一步跑完再改')
+  if (switching(m.https)) throw new HttpError(409, '正在切换监听，等这一步跑完再改')
+  // 同一个域名已经配好了：重来一遍要先放开回环（provision 让管家重新对外听）、再收回来，管家前后
+  // 重启两次，中间 8443 又对公网开着一段——换不来任何东西。管家自己掉回对外听了，下一轮心跳就会
+  // 把它改回去，不用人按。
+  if (m.https?.stage === 'done' && m.https.domain === domain) {
+    throw new HttpError(409, `这台机器已经用 ${domain} 配好了，不用重来`)
   }
   // 已经用别的域名配好了：管家一写新的 Caddyfile，老域名当场就不再服务，而管家地址还是老域名——
   // 新域名要是没走通，这台机器就只剩心跳一条路。让人先把管家地址改回能直连的那个再来。
@@ -86,16 +111,19 @@ export async function startHttps(db: Db, m: Machine, domain: string): Promise<Ma
     error: null,
     machinePhase: null,
     machineLoopback: false,
+    loopbackAt: null,
     startedAt: now,
     stageAt: now,
   }
   return db.updateMachine(m.id, { https })
 }
 
-/** 撤掉这条记录。切换中途不许撤：那时候撤，两个地址和监听状态就没人收拾了。 */
+/**
+ * 撤掉这条记录。切换中途不许撤（两个地址和监听状态就没人收拾了），**除非已经卡住**——见 stuck。
+ */
 export async function clearHttps(db: Db, m: Machine): Promise<Machine> {
-  if (m.https && (m.https.stage === 'lockdown' || m.https.stage === 'rollback')) {
-    throw new HttpError(409, '正在切换监听，等这一步跑完再撤')
+  if (m.https && switching(m.https) && !stuck(m.https)) {
+    throw new HttpError(409, `正在切换监听，等这一步跑完再撤（${LOCKDOWN_TIMEOUT_MS / 60_000} 分钟还卡着就能撤了）`)
   }
   return db.updateMachine(m.id, { https: null })
 }
@@ -122,6 +150,8 @@ export interface HttpsReport {
   phase: string
   error: string | null
   loopbackOnly: boolean
+  /** 这个 phase 是为哪一次下发做的。和记录里的 nonce 对不上的 phase 是上一次的，不认。 */
+  nonce: string | null
 }
 
 /** 心跳里管家自报的那一份。来自网络，按形状收；认不出就当没报。 */
@@ -135,6 +165,7 @@ export function httpsReportOf(raw: unknown): HttpsReport | undefined {
     phase,
     error: typeof r.error === 'string' ? r.error.slice(0, 500) : null,
     loopbackOnly: r.loopbackOnly === true,
+    nonce: typeof r.nonce === 'string' ? r.nonce.slice(0, 128) : null,
   }
 }
 
@@ -146,15 +177,18 @@ export function httpsReportOf(raw: unknown): HttpsReport | undefined {
  */
 export async function advanceHttps(db: Db, m: Machine, report: HttpsReport | undefined): Promise<Machine> {
   const h = m.https
-  if (!h || h.stage === 'done' || h.stage === 'failed') {
+  if (!h) return m
+  if (h.stage === 'done' || h.stage === 'failed') {
     // 终态也把机器自报的那一份记下来，界面上才看得出「done 了但有人把 drop-in 删了」。
-    if (h && report && (report.phase !== h.machinePhase || report.loopbackOnly !== h.machineLoopback)) {
-      return db.updateMachine(m.id, { https: { ...h, machinePhase: report.phase, machineLoopback: report.loopbackOnly } })
+    if (report && (report.phase !== h.machinePhase || report.loopbackOnly !== h.machineLoopback)) {
+      return save(db, m, h, { ...h, machinePhase: report.phase, machineLoopback: report.loopbackOnly })
     }
     return m
   }
   const now = Date.now()
-  const mine = report && report.domain === h.domain ? report : undefined
+  // 只认**这一次**下发的进展：重试那一刻心跳里还是上一次的 error（管家要等这一轮的回包才拿到新
+  // nonce），不比 nonce 的话，重试会被旧错当场判死。
+  const mine = report && report.domain === h.domain && report.nonce === h.nonce ? report : undefined
   let next: MachineHttps = {
     ...h,
     machinePhase: mine?.phase ?? report?.phase ?? h.machinePhase,
@@ -173,7 +207,7 @@ export async function advanceHttps(db: Db, m: Machine, report: HttpsReport | und
         next = { ...next, error: `管家在机器上配好了，但从外面经域名还连不上：${seen}` }
       } else {
         // nonce 对上了，域名后面确实是这台管家，这才敢带票。
-        const probe = await managerHealth(base, { token: m.token })
+        const probe = await managerHealth(base, { token: m.token, timeoutMs: PROBE_TIMEOUT_MS })
         if (!probe.ok) {
           next = { ...next, error: `经域名带票探活没通：${probe.error ?? '无响应'}` }
         } else {
@@ -186,15 +220,23 @@ export async function advanceHttps(db: Db, m: Machine, report: HttpsReport | und
       next = to('failed', `${PROVISION_TIMEOUT_MS / 60_000} 分钟还没走通。${next.error ?? `管家最近报的是 ${next.machinePhase ?? '还没报'}`}`)
     }
   } else if (h.stage === 'lockdown') {
+    const rollback = (why: string) => {
+      hostChange = { host: h.prevHost, directUrl: h.prevDirectUrl }
+      next = to('rollback', why)
+    }
     if (report?.loopbackOnly) {
-      const probe = await managerHealth(`https://${h.domain}`, { token: m.token })
+      const since = h.loopbackAt ?? now
+      next = { ...next, loopbackAt: since }
+      const probe = await managerHealth(`https://${h.domain}`, { token: m.token, timeoutMs: PROBE_TIMEOUT_MS })
       if (probe.ok) next = to('done', null)
-      else if (now - h.stageAt > LOCKDOWN_GRACE_MS) {
-        hostChange = { host: h.prevHost, directUrl: h.prevDirectUrl }
-        next = to('rollback', `只听回环之后经域名连不上（${probe.error ?? '无响应'}），已撤回`)
-      } else next = { ...next, error: `只听回环之后还没探通：${probe.error ?? '无响应'}，再等一轮` }
+      else if (now - since > LOCKDOWN_GRACE_MS) rollback(`只听回环之后经域名连不上（${probe.error ?? '无响应'}），已撤回`)
+      else next = { ...next, error: `只听回环之后还没探通：${probe.error ?? '无响应'}，再等一轮` }
     } else if (report?.error) {
-      next = { ...next, error: report.error }
+      // 管家写 drop-in 或发重启失败了（它只记一句 error，phase 仍是 ready）。这一步不会自己好，
+      // 等下去只会卡死在这里——撤回，两个地址留在能直连的老值上。
+      rollback(`管家没能改成只听回环：${report.error}`)
+    } else if (now - h.stageAt > LOCKDOWN_TIMEOUT_MS) {
+      rollback(`${LOCKDOWN_TIMEOUT_MS / 60_000} 分钟里管家一直没改成只听回环，已撤回`)
     }
   } else if (h.stage === 'rollback') {
     if (report && !report.loopbackOnly) next = to('failed', h.error)
@@ -205,11 +247,14 @@ export async function advanceHttps(db: Db, m: Machine, report: HttpsReport | und
 
   if (!hostChange) {
     if (JSON.stringify(next) === JSON.stringify(h)) return m
-    return db.updateMachine(m.id, { https: next })
+    return save(db, m, h, next)
   }
-  const change = hostChange
+  const change: { host: string | null; directUrl: string | null } = hostChange
+  const final = next
   return db.tx(async () => {
-    const row = await db.updateMachine(m.id, { https: next, ...change })
+    // 先条件写 https：探测那十来秒里有人按了「重新开始」或「撤掉」，这一轮就作废，地址也不动。
+    if (!(await db.casMachineHttps(m.id, { nonce: h.nonce, stage: h.stage }, final))) return (await db.machine(m.id)) ?? m
+    const row = await db.updateMachine(m.id, change)
     // 聊天读的是 instances.host，不跟着 machines.host 走——和机器页上改地址同一个事务里一起换。
     if (change.host) await rehostSeatInstances(db, row.id, change.host)
     // 地址是 Gateway 自己换的，没有哪个人按了按钮——审计里记成没有操作人。待分配的机器没有
@@ -219,11 +264,17 @@ export async function advanceHttps(db: Db, m: Machine, report: HttpsReport | und
         companyId: row.companyId,
         accountId: null,
         action: 'machine.https',
-        detail: { machineId: row.id, domain: h.domain, stage: next.stage, host: change.host, directUrl: change.directUrl },
+        detail: { machineId: row.id, domain: h.domain, stage: final.stage, host: change.host, directUrl: change.directUrl },
       })
     }
     return row
   })
+}
+
+/** 只改 https 一格，条件写（见 db.casMachineHttps）。没写上就回库里现在那一份。 */
+async function save(db: Db, m: Machine, h: MachineHttps, next: MachineHttps): Promise<Machine> {
+  if (await db.casMachineHttps(m.id, { nonce: h.nonce, stage: h.stage }, next)) return { ...m, https: next }
+  return (await db.machine(m.id)) ?? m
 }
 
 /**
@@ -235,7 +286,7 @@ export async function advanceHttps(db: Db, m: Machine, report: HttpsReport | und
 async function ingressSeen(base: string, nonce: string): Promise<true | string> {
   try {
     const res = await fetch(`${base}/ingress-check?nonce=${encodeURIComponent(nonce)}`, {
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       redirect: 'manual',
     })
     if (res.ok) return true
@@ -259,6 +310,8 @@ export function publicHttps(m: Machine) {
           machineLoopback: h.machineLoopback,
           startedAt: h.startedAt,
           stageAt: h.stageAt,
+          // 「撤掉」能不能按。切换中途不行，卡住了可以（见 clearHttps）。
+          clearable: !switching(h) || stuck(h),
         }
       : null,
     httpsBlocker: httpsBlocker(m),

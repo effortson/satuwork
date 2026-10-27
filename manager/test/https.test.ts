@@ -48,7 +48,7 @@ test('dryRun walk-through: configure → nonce check → loopback only → reope
   await maybeHttps({ domain: 'a.example.com', loopbackOnly: false, nonce })
   // configure 在后台跑；dryRun 下是同步落到 ready 的，让出一拍就够。
   await new Promise((r) => setImmediate(r))
-  assert.deepEqual(httpsReport(), { domain: 'a.example.com', phase: 'ready', error: null, loopbackOnly: false })
+  assert.deepEqual(httpsReport(), { domain: 'a.example.com', phase: 'ready', error: null, loopbackOnly: false, nonce })
   assert.equal(ingressCheck(nonce), true)
   assert.equal(ingressCheck('y'.repeat(32)), false)
 
@@ -61,4 +61,26 @@ test('dryRun walk-through: configure → nonce check → loopback only → reope
 
   await maybeHttps({ domain: null, loopbackOnly: false, nonce: null })
   assert.equal(httpsReport().loopbackOnly, false)
+})
+
+test('the report names the nonce its phase belongs to; a new nonce for an already-ready domain is adopted without redoing the work', async () => {
+  const a = 'a'.repeat(32)
+  const b = 'b'.repeat(32)
+  await maybeHttps({ domain: 'c.example.com', loopbackOnly: false, nonce: a })
+  await new Promise((r) => setImmediate(r))
+  assert.equal(httpsReport().phase, 'ready')
+  assert.equal(httpsReport().nonce, a)
+
+  const logs: string[] = []
+  const realLog = console.log
+  console.log = (s: string) => logs.push(s)
+  try {
+    await maybeHttps({ domain: 'c.example.com', loopbackOnly: false, nonce: b })
+    await new Promise((r) => setImmediate(r))
+  } finally {
+    console.log = realLog
+  }
+  assert.equal(httpsReport().nonce, b, 'Gateway now accepts this ready for its new attempt')
+  assert.equal(httpsReport().phase, 'ready')
+  assert.ok(!logs.some((l) => l.includes('当作已配好')), 'no reconfigure for the same domain')
 })
