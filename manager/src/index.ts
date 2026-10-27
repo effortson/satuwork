@@ -23,6 +23,7 @@ import { currentTimezone, maybeSetTimezone, timezoneError } from './timezone.ts'
 import { standDown } from './standdown.ts'
 import { ensureWorkerEnv, relayIntercept } from './relay.ts'
 import { llmRelayIntercept } from './llm-relay.ts'
+import { httpsReport, ingressCheck, maybeHttps } from './https.ts'
 
 /**
  * 机器管家。一台席位机器一个，root systemd 服务。
@@ -345,6 +346,17 @@ router.get('/health', async (req, res) => {
 })
 
 /**
+ * Gateway 从外面经域名敲这一条，确认「这个域名后面就是这台管家」（见 https.ts）。
+ *
+ * **不认机器票，也不该认**：Gateway 敲它的时候还不知道域名指向谁，带票去敲等于把票交给域名
+ * 那头的任何人。证据是 nonce——只有这台管家从心跳回包里拿到过。对不上一律 404，不说为什么。
+ */
+router.get('/ingress-check', async (req, res) => {
+  if (!ingressCheck(req.query.get('nonce') || '')) throw new HttpError(404, 'not found')
+  json(res, 200, { ok: true })
+})
+
+/**
  * 机器负载与日志占用。
  *
  * 心跳里已经带着同一份了——这条路给的是「我现在就想看」：心跳 30 秒一轮，而人盯着
@@ -570,6 +582,8 @@ async function heartbeat(): Promise<void> {
         // 再加一条定时 POST 只是多一个会失败、会重试、会被防火墙拦住的东西。
         metrics: metrics() ?? null,
         logs: logUsage() ?? null,
+        // 域名 https 配到哪一步了、现在是不是只听回环（协议 14，见 https.ts）。
+        https: httpsReport(),
         seats: await seatsWithLiveness(),
       }),
       { timeoutMs: 15_000 },
@@ -588,7 +602,7 @@ async function heartbeat(): Promise<void> {
     }
     // 心跳通了才算「这个版本活过来了」。confirm timer 看的就是这个标记。
     confirmVersion()
-    const reply = (await res.json()) as { timezone?: string | null; removed?: boolean; logCapMb?: number | null }
+    const reply = (await res.json()) as { timezone?: string | null; removed?: boolean; logCapMb?: number | null; https?: unknown }
     // 被移除了：停席位、清配对、停自己。这一支之后不再做别的活儿。
     if (reply.removed) {
       clearInterval(timer)
@@ -601,6 +615,8 @@ async function heartbeat(): Promise<void> {
     // 时区在前：它便宜、不重启进程，而 maybeUpgrade 成功那一支会把自己重启掉，
     // 排在它后面的活儿这一轮就不一定跑得到了。
     await maybeSetTimezone(reply.timezone)
+    // 域名 https 同理排在升级前面：装 Caddy 那段在后台跑，这里只等「要不要改监听」那一下。
+    await maybeHttps(reply.https)
     await maybeUpgrade(reply as Record<string, never>, state.token)
   } catch {
     /* 网络抖动不值得刷屏；下一轮再试。 */

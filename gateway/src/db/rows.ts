@@ -438,6 +438,7 @@ export function machineOf(r: Row): Machine {
     telemetryAt: numOrNull(r.telemetryAt),
     logCapMb: numOrNull(r.logCapMb),
     gatewayOrigin: strOrNull(r.gatewayOrigin),
+    https: r.https == null ? null : (jsonOf(r.https) as Machine['https']),
     removedAt: numOrNull(r.removedAt),
     token: str(r.token || ''),
   }

@@ -225,7 +225,25 @@ x-satuwork-machine / cookie，所以反代过去的聊天流量上它还在—�
 `/etc/satuwork/manager.env` 里显式加一行 `SATUWORK_ALLOW_INSECURE_GATEWAY=1`，每次启动都会吼
 一句警告。线上机器别开它。
 
-## 用 Caddy 给管家配 https
+## 让管家自己配域名 https（协议 14 起）
+
+先走这条：域名的 A 记录指到这台机器、安全组放行 80/443（国内机房的域名先备案），然后在
+Gateway 的机器页「用域名配 https」一栏填域名、按「启用 https」。往后四步由心跳推进，前后几分钟，
+点刷新看走到哪一步：
+
+1. 管家 `apt-get install caddy`，写 `/etc/caddy/Caddyfile`（内容和下面手工那份一样），本机
+   `curl --resolve` 自检证书和反代都通了，报 ready。
+2. Gateway 从外面经域名敲 `/ingress-check?nonce=…`——**不带机器票**，对上心跳回包里给过的
+   nonce 才证明域名后面就是这台管家；再带票探一次活，然后把「管家地址」和「桌面直连地址」都换成
+   `https://<域名>`。
+3. 管家写 `listen-local.conf`（和下面手工那份同名）、重启，只听 127.0.0.1。
+4. Gateway 经域名带票探活，通了就完成；3 分钟还不通就把两个地址放回去，下一轮心跳让管家删掉
+   drop-in 重新对外听——心跳是管家往外打的，入站断了它照样收得到。
+
+机器上有别人手写的 Caddyfile 时管家不覆盖，会报错让你先挪走。实现见 [src/https.ts](src/https.ts)
+和 `gateway/src/deploy/https.ts`。
+
+## 用 Caddy 给管家配 https（手工）
 
 管家自己只说 http。要给「管家地址」和「桌面直连地址」配 https（桌面直连**必须**是 https，
 见 [../docs/gateway-runtime.md](../docs/gateway-runtime.md) §7），在机器上装一个 Caddy，

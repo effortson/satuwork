@@ -45,6 +45,8 @@ export class MachinesDb extends DbCore {
       logCapMb: null as number | null,
       // 管家认的 Gateway 源也等第一次心跳报上来。
       gatewayOrigin: null as string | null,
+      // 域名 https 由人在机器页上按下去才开始。
+      https: null as Machine['https'],
       // 新登记的机器当然在册。墓碑只由 markMachineRemoved 立。
       removedAt: null as number | null,
     }
@@ -237,6 +239,7 @@ export class MachinesDb extends DbCore {
         | 'telemetryAt'
         | 'logCapMb'
         | 'gatewayOrigin'
+        | 'https'
       >
     >,
   ): Promise<Machine> {
@@ -262,9 +265,10 @@ export class MachinesDb extends DbCore {
       telemetryAt: patch.telemetryAt === undefined ? cur.telemetryAt : patch.telemetryAt,
       logCapMb: patch.logCapMb === undefined ? cur.logCapMb : patch.logCapMb,
       gatewayOrigin: patch.gatewayOrigin === undefined ? cur.gatewayOrigin : patch.gatewayOrigin,
+      https: patch.https === undefined ? cur.https : patch.https,
     }
     await this.run(
-      'update machines set host=?, "directUrl"=?, "companyId"=?, "lastHeartbeatAt"=?, "pairedAt"=?, "managerVersion"=?, protocol=?, "lastError"=?, arch=?, "desiredManagerVersion"=?, "maxAccounts"=?, timezone=?, "currentTimezone"=?, telemetry=?, "telemetryAt"=?, "logCapMb"=?, "gatewayOrigin"=? where id=?',
+      'update machines set host=?, "directUrl"=?, "companyId"=?, "lastHeartbeatAt"=?, "pairedAt"=?, "managerVersion"=?, protocol=?, "lastError"=?, arch=?, "desiredManagerVersion"=?, "maxAccounts"=?, timezone=?, "currentTimezone"=?, telemetry=?, "telemetryAt"=?, "logCapMb"=?, "gatewayOrigin"=?, https=? where id=?',
       [
         next.host,
         next.directUrl,
@@ -284,6 +288,7 @@ export class MachinesDb extends DbCore {
         next.telemetryAt,
         next.logCapMb,
         next.gatewayOrigin,
+        next.https == null ? null : JSON.stringify(next.https),
         id,
       ],
     )
