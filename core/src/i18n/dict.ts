@@ -710,7 +710,7 @@ export const dict: Record<string, string> = {
   '进入控制台，管理你的 AI 员工': 'Enter the console and manage your AI staff',
   手机号证件号银行卡等自动跳过: 'Phone numbers, IDs and cards are skipped',
   '手机号、证件号、银行卡等自动跳过': 'Phone numbers, ID numbers and bank cards are skipped automatically',
-  '正在思考…（可以继续输入来打断）': 'Thinking… (keep typing to interrupt)',
+  '正在思考…（现在发的消息会等这一轮结束再发）': 'Thinking… (new messages will be sent after this turn)',
   '只显示名称。密钥不会出现在这里。': 'Names only. Keys never appear here.',
   '包的根目录里没有 SKILL.md': 'No SKILL.md at the root of the package',
   '查看订阅状态、充值余额与历史账单。': 'Subscription status, balance and past invoices.',

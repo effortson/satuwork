@@ -369,13 +369,22 @@ export function apply(ctx: Context, _config: Config = {}) {
      * 插进人正在跑的那一轮，就成了人那一轮的一部分，既拆不出来也停不掉；人在派活跑着时说的话
      * 插进去，就跟着那件活一起被折叠、一起从上下文里消失。两种都排到当前这一轮后面，各开一轮。
      */
-    const queueIt = mentions.length > 0 || isTaskInstruction(source) || ctx.agents.runningTask(req.params.id)
-    if (ctx.agents.quiesced() && queueIt) {
+    const mustQueue = mentions.length > 0 || isTaskInstruction(source) || ctx.agents.runningTask(req.params.id)
+    if (ctx.agents.quiesced() && mustQueue) {
       refuseQuiet(res)
       return
     }
     if (ctx.agents.isRunning(req.params.id)) {
-      if (queueIt) {
+      /**
+       * **人在这一轮跑着的时候接着说的话，排到这一轮后面，不插话。**
+       *
+       * 插进去的话，模型会在半截工具链里读到它、当场改口回应——人只是补一句「你好」，那一轮
+       * 却被带偏了，屏幕上还看不出哪句是在回哪条。排着的会画在输入框顶上，这一轮收口后各开一轮。
+       * 要真打断就按停止。
+       *
+       * 静默期里例外：排了也接不上（drainQueue 停手、进程马上换掉），退回插话，总比回绝强。
+       */
+      if (mustQueue || !ctx.agents.quiesced()) {
         try {
           const row = ctx.agents.enqueue(req.params.id, body.text ?? '', images, mentions, refs, source, modelRole)
           res.json({ queued: true, queueId: row.id, refs: refs.length })

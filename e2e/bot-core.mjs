@@ -263,7 +263,7 @@ export async function runBot({ botRoot, botHome: BOT_HOME, botPort: BOT_PORT, te
       body: { text: '这张图里是什么', images: [{ path: shotPath, mime: 'image/png' }] },
     })
     assert(r.status === 200, `带图发消息 ${r.status} ${r.text}`)
-    assert(r.json.accepted === true || r.json.steered === true, `既没 accepted 也没 steered：${r.text}`)
+    assert(r.json.accepted === true || r.json.steered === true || r.json.queued === true, `既没 accepted、steered 也没 queued：${r.text}`)
 
     await new Promise((x) => setTimeout(x, 800))
     assert(!child._exited, '带图发消息把进程打挂了')
@@ -336,7 +336,7 @@ export async function runBot({ botRoot, botHome: BOT_HOME, botPort: BOT_PORT, te
     // 没配模型是那一轮之后的事，HTTP 这一跳不该因此变成 4xx。以前放到 4xx 的写法
     // 等于「随便回什么都行」，验不出任何东西。
     assert(r.status === 200, `message ${r.status} ${r.text}`)
-    assert(r.json.accepted === true || r.json.steered === true, '既没 accepted 也没 steered')
+    assert(r.json.accepted === true || r.json.steered === true || r.json.queued === true, '既没 accepted、steered 也没 queued')
     await new Promise((x) => setTimeout(x, 800))
     assert(!child._exited, `发消息后进程退出 code=${child._exited?.code} sig=${child._exited?.sig}`)
     const health = await req(base, 'GET', '/api/health')
