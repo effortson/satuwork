@@ -101,6 +101,8 @@ function endSignedIn() {
   state.handoffStats = null
   state.handoffOpenId = ''
   state.handoffDetail = {}
+  state.handoffFeedback = {}
+  state.handoffLoadError = false
 }
 
 /**
@@ -691,12 +693,20 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'handoff-claim') {
-    await actOnHandoff(btn.getAttribute('data-id'), 'claim')
+    await actOnHandoff(btn.getAttribute('data-id'), 'claim', undefined, btn)
     return
   }
   if (act === 'handoff-cancel') {
     // 待办行和右栏卡片上那颗。撤销不叫醒 Bot，状态顺着 SSE 回来、清单单独刷一次（见 actOnHandoff）。
     await actOnHandoff(btn.getAttribute('data-id'), 'cancel', undefined, btn)
+    return
+  }
+  if (act === 'handoff-refresh') {
+    await loadHandoffs()
+    return
+  }
+  if (act === 'handoff-detail-retry') {
+    await loadHandoffDetail(btn.getAttribute('data-id'))
     return
   }
   if (act === 'handoff-detail') {
@@ -2699,6 +2709,12 @@ document.getElementById('app').addEventListener('input', (e) => {
     if (el.getAttribute('data-field') === 'q') paintConnectorPicks()
     return
   }
+  if (el.getAttribute('data-act') === 'kb-query') { state.kbSearchQuery = el.value; return }
+  if (el.getAttribute('data-act') === 'kb-edit-field' && state.kbEdit) { state.kbEdit[el.getAttribute('data-field')] = el.value; return }
+  if (el.getAttribute('data-act') === 'kb-create-field' && state.kbCreate) {
+    state.kbCreate.draft = { name: '', desc: '', share: 'all', ...(state.kbCreate.draft || {}), [el.getAttribute('data-field')]: el.value }
+    return
+  }
   // 插件页的搜索框。同样只重画清单那一块，不整页 render。
   if (el.getAttribute('data-act') === 'plugins-q') {
     state.pluginQ = el.value
@@ -2865,7 +2881,8 @@ document.getElementById('app').addEventListener('change', async (e) => {
   }
   // 知识库：选文件就开传；平台那两格单价和门槛。
   if (el.getAttribute?.('data-act') === 'kb-files') {
-    const files = el.files
+    // FileList can be live: copy it before clearing the picker for selecting the same file again.
+    const files = Array.from(el.files || [])
     el.value = ''
     await knowledgeUpload(files)
     return

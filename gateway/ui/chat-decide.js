@@ -101,32 +101,70 @@ function fillHandoffNotes(root) {
  * 根本不是他的——按会话鉴权的那几条路由在那时会把他挡在外面，而他恰恰是该来处理这件
  * 事的人（见 gateway/src/routes/handoffs.ts）。
  */
-async function actOnHandoff(id, act, body, near) {
-  if (!id) return
-  // 先认点的那张卡（同一张单可能两边各摆一张，见 handoffNote），认不到再按单号找。
-  const box =
-    (near && near.closest ? near.closest('.sw-handoff') : null) ||
-    [...document.querySelectorAll('.sw-handoff')].find((el) => el.getAttribute('data-handoff') === id)
-  if (box) {
-    if (box.getAttribute('data-busy') === '1') return
-    box.setAttribute('data-busy', '1')
+const handoffPending = new Set()
+
+/** Feedback lives in the card, so an aside failure is visible beside its own action. */
+function setHandoffFeedback(id, text, error = false) {
+  state.handoffFeedback = { ...(state.handoffFeedback || {}), [id]: { text, error } }
+  for (const node of document.querySelectorAll('[data-handoff-feedback]')) {
+    if (node.getAttribute('data-handoff-feedback') !== id) continue
+    node.textContent = text
+    node.hidden = false
+    node.setAttribute('role', error ? 'alert' : 'status')
+    node.setAttribute('data-error', error ? '1' : '0')
   }
+}
+
+async function actOnHandoff(id, act, body, near) {
+  if (!id || handoffPending.has(id)) return
+  const box = (near && near.closest ? near.closest('.sw-handoff, [data-handoff-row]') : null) ||
+    [...document.querySelectorAll('.sw-handoff')].find(el => el.getAttribute('data-handoff') === id)
+  const previousFeedback = (state.handoffFeedback || {})[id]
+  handoffPending.add(id)
+  const controls = box && box.querySelectorAll ? [...box.querySelectorAll('button, textarea')] : []
+  const enabled = controls.map(el => ({ el, disabled: el.disabled, readOnly: el.readOnly }))
+  for (const { el } of enabled) {
+    if (el.tagName === 'TEXTAREA') el.readOnly = true
+    else el.disabled = true
+  }
+  if (box) {
+    box.setAttribute('data-busy', '1')
+    box.setAttribute('aria-busy', 'true')
+  }
+  setHandoffFeedback(id, t('正在提交，请稍候…', 'Submitting…'))
   try {
     await api('POST', '/runtime/handoffs/' + encodeURIComponent(id) + '/' + act, body || {})
-    handoffDrafts.delete(id)
-    panelDrafts.delete(id)
-    // 状态变化会顺着 SSE 回来（席位落了一条 human/handoff），卡片跟着重画。
-    // 待办计数是 Gateway 那张表上的，单独刷一次。
-    void loadHandoffs()
+    // Claiming a task must not discard notes already being written.
+    if (act !== 'claim') {
+      handoffDrafts.delete(id)
+      panelDrafts.delete(id)
+      for (const ta of document.querySelectorAll('.sw-handoff-note')) {
+        if (ta.getAttribute('data-handoff') === id) ta.value = ''
+      }
+    }
+    const message = act === 'claim' ? t('已接手。处理完成后，请填写说明并交还 Bot。', 'Claimed. Add an outcome and return it when ready.')
+      : act === 'cancel' ? t('交接已撤销，未通知 Bot 继续。', 'Handoff cancelled. The bot was not asked to continue.')
+      : t('处理说明已交还，等待 Bot 后续反馈。', 'Response returned. Awaiting the bot’s follow-up.')
+    if (previousFeedback && previousFeedback.error && state.error === previousFeedback.text) dismissFlash()
+    setHandoffFeedback(id, message)
+    // SSE updates the chat; refresh the cross-bot inbox as well.
+    await loadHandoffs()
   } catch (err) {
-    if (box) box.removeAttribute('data-busy')
-    // 要重绘，不能只改 state.error：此前不重绘，远程席位离线、本地通道断开、工单已被
-    // 别人接走时，用户看到的都是「按钮完全点不动」，连真实错误都没有。人已经写好的交接
-    // 说明由 render() 自己先存后填（stashHandoffNotes），两边的框各回各的。
-    // 409「已经被别人接走了 / 这张单不在了」不是错误，但必须说出来：点了一下什么都
-    // 没发生才是最糟的。
-    flash('err', (err && err.message) || t('这一下没成', 'That did not go through'))
+    const message = t('提交失败：', 'Could not submit: ') + ((err && err.message) || t('请稍后重试', 'Please retry'))
+    setHandoffFeedback(id, message, true)
+    // Keep the existing page-level notice too; render preserves both note drafts.
+    flash('err', message)
     render()
+  } finally {
+    handoffPending.delete(id)
+    for (const { el, disabled, readOnly } of enabled) {
+      el.disabled = disabled
+      el.readOnly = readOnly
+    }
+    if (box) {
+      box.removeAttribute('data-busy')
+      box.removeAttribute('aria-busy')
+    }
   }
 }
 
@@ -148,11 +186,24 @@ function handoffNote(id, near) {
 
 async function returnHandoff(id, disposition, near) {
   const text = handoffNote(id, near)
+  const card = near && near.closest ? near.closest('.sw-handoff') : null
+  const ta = card ? card.querySelector('.sw-handoff-note') :
+    [...document.querySelectorAll('.sw-handoff-note')].find(el => el.getAttribute('data-handoff') === id)
   if (!text) {
-    // 空的交还等于把「我处理完了」五个字扔给模型——它接着要做什么全靠猜。
-    flash('err', t('写一句你做了什么，Bot 要靠它接着做', 'Say what you did — the bot continues from it'))
+    const message = disposition === 'instructions'
+      ? t('请先填写希望 Bot 如何继续，再提交新指示。', 'Describe how the bot should continue before submitting instructions.')
+      : t('请先填写处理结果，说明已完成的操作和结论。', 'Describe what you completed and the outcome before returning the task.')
+    setHandoffFeedback(id, message, true)
+    if (ta) {
+      ta.setAttribute('aria-invalid', 'true')
+      ta.focus()
+    } else {
+      flash('err', message)
+      render()
+    }
     return
   }
+  if (ta) ta.removeAttribute('aria-invalid')
   await actOnHandoff(id, 'return', { disposition: disposition || 'done', text }, near)
 }
 
@@ -170,12 +221,15 @@ async function loadHandoffs() {
     state.handoffs = Array.isArray(data.handoffs) ? data.handoffs : []
     state.handoffCount = Number(data.count) || 0
     state.handoffStats = data.stats || null
+    state.handoffLoadError = false
     applyHandoffSnapshot(state.handoffs)
     paintHandoffBadge()
     // 待办页正开着就重画：这个数刚变过，而那一页整屏都是它。右栏那一屏只补它自己。
     repaintHandoffs()
   } catch {
-    // 拉不到就保持上一份。**不清零**：一个突然消失的待办数会让人以为事情办完了。
+    // Keep the last list and badge; expose that the refresh failed.
+    state.handoffLoadError = true
+    repaintHandoffs()
   }
 }
 
@@ -187,6 +241,10 @@ async function loadHandoffs() {
  */
 async function loadHandoffDetail(id) {
   if (!id) return
+  if ((state.handoffDetail || {})[id] !== undefined) {
+    state.handoffDetail = { ...(state.handoffDetail || {}), [id]: undefined }
+    repaintHandoffs()
+  }
   try {
     const data = await api('GET', '/runtime/handoffs/' + encodeURIComponent(id))
     state.handoffDetail = { ...(state.handoffDetail || {}), [id]: data.detail ?? null }

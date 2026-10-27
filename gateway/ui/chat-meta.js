@@ -53,7 +53,7 @@ function composerTip(busy) {
   if (!state.chatSessionId) {
     return sessionGaveUp ? t('实例还没接上，这会儿发不出去') : t('实例还在上线，接上之后就能发消息…')
   }
-  return busy ? t('正在思考…（可以继续输入来打断）') : t('Enter 发送，Shift + Enter 换行')
+  return busy ? t('正在思考…（现在发的消息会等这一轮结束再发）') : t('Enter 发送，Shift + Enter 换行')
 }
 
 function paintChatTip(busy) {

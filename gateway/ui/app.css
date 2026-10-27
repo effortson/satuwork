@@ -249,7 +249,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   transition: background 120ms ease, color 120ms ease;
 }
 .satu-botrow:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
-.satu-botrow[aria-current="true"] { background: var(--color-accent-100); color: var(--color-text); box-shadow: inset 3px 0 var(--color-accent); }
+.satu-botrow[aria-current="true"] { background: var(--color-accent-100); color: var(--color-text); }
 .satu-botrow[aria-current="true"]:hover { background: color-mix(in srgb, var(--color-accent-100) 75%, var(--color-accent-200)); }
 .satu-botrow:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .satu-botavatar { flex: none; display: flex; align-items: center; }
@@ -513,7 +513,6 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.satu-botrow[aria-current="true"] .satu-botname { font-weight: 600; }
 /* 「有事等你」的图标。**点之外还要有它**：8px 的状态点在一列名字里太容易滑过去，
    而这一格说的是「你不去点，那一轮就一直停在席位上等着」。
 

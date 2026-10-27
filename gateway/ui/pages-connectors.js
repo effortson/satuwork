@@ -385,9 +385,9 @@ function paintConnBotsSave(panel) {
 function connectionRow(c, connectorId) {
   const status =
     c.status === 'active'
-      ? `<span style="font-size: 13px; color: var(--color-accent-2-800);">${t('已连接')}</span>`
+      ? `<span class="tag mg-status-ok">${t('已连接')}</span>`
       : c.status === 'pending'
-        ? `<span style="font-size: 13px; color: var(--muted-foreground);">${t('未完成')}</span>`
+        ? `<span class="tag tag-warn">${t('待完成授权', 'Authorization pending')}</span>`
         : `<span style="font-size: 13px; color: var(--color-accent-800);">${esc(c.error || t('失败'))}</span>`
   const company = c.scope === 'company'
   /**
@@ -400,7 +400,7 @@ function connectionRow(c, connectorId) {
   const botsBtn = `<button type="button" class="satu-linkbtn" data-act="conn-bots-open" data-id="${esc(c.id)}" aria-expanded="${open}"
       title="${esc(t('哪些 Bot 用得上这个账号', 'Which bots can use this account'))}"
       style="font-size: 12px;${sum.warn ? ' color: var(--color-accent-800);' : ''}">${t('可用 Bot', 'Bots')}：${esc(sum.text)}</button>`
-  return `<div data-conn-row="${esc(c.id)}" style="display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-3) 0; border-bottom: 1px solid var(--border);">
+  return `<div class="rs-connection-row" data-conn-row="${esc(c.id)}" style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0; border-bottom: 1px solid var(--border);">
     <div style="min-width: 0; flex: 1; display: flex; align-items: center; gap: var(--space-2);">
       <span style="font-size: 14px; font-weight: 600; flex: none;">${esc(c.label)}</span>
       ${/* 供应商认出来的账号（邮箱、登录名）。账号名是人自己起的，连了两个 Gmail 时只有
@@ -454,8 +454,8 @@ function connectorToolsBox(detail) {
     )
     .join('')
   // 筛选和全开全关只动 DOM，不 render——见 pages-plugins.js 的 toolBoxes。
-  return `<div>
-    <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-2);">
+  return `<div class="rs-tools-box">
+    <div class="rs-tools-toolbar" style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-2);">
       <span id="conn-tools-count" style="flex: 1; min-width: 120px; font-size: 13px; color: var(--muted-foreground);">${t(`${on} / ${tools.length} 个已开启`)}</span>
       ${
         tools.length > 8
@@ -600,6 +600,8 @@ async function startAddAccount(id, label) {
       if (desktop) window.open(r.redirectUrl, '_blank')
       else tab.location.href = r.redirectUrl
       if (state.connAdd) Object.assign(state.connAdd, { phase: 'waiting', busy: false })
+      // Show the authorization instructions immediately; refreshing account details can take longer.
+      render()
       // 新建的那一行（pending）先画出来：人回来时看得见「未完成」，而不是什么都没有。
       await loadConnectorDetail(id).catch(() => {})
     } else {

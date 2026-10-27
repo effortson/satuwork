@@ -284,7 +284,7 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
         body: { text: `ping ${MARKER}` },
       })
       assert(r.status === 200, `message ${r.status} ${r.text}`)
-      assert(r.json.accepted === true || r.json.steered === true, 'accepted/steered')
+      assert(r.json.accepted === true || r.json.steered === true || r.json.queued === true, 'accepted/steered/queued')
     })
 
     await test('这一轮跑完，席位报 turn-end，Gateway 推到登记的手机上（不带正文）', async () => {

@@ -23,23 +23,15 @@ function pluginHref(id) {
 }
 
 function pluginsPage() {
-  return `<div class="gw-page">
-    <div class="gw-page-inner satu-plugpage">
-      <div class="satu-plughead">
-        <div style="min-width: 0;">
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('插件', 'Plugins')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t(
-            '装上并连好账号之后，你名下的每一个 Bot 都能用——不用为每个 Bot 各连一次。',
-            'Add a plugin and connect your account once — every bot you own can use it.',
-          )}</p>
-        </div>
-        <input class="input satu-plugsearch" type="search" data-act="plugins-q" value="${esc(state.pluginQ || '')}"
-          placeholder="${esc(t('搜索插件', 'Search plugins'))}" aria-label="${esc(t('搜索插件', 'Search plugins'))}">
-      </div>
-      ${flashes()}
-      <div id="plugins-body" class="satu-plugbody">${pluginsBody()}</div>
+  return `<div class="gw-page rs-page"><div class="gw-page-inner satu-plugpage">
+    ${pageHead(t('插件', 'Plugins'), t('连接工作中使用的应用，为你名下的 Bot 添加工具。账号授权与工具设置统一管理。', 'Connect the apps you work with and add tools for your bots. Manage account connections and tools in one place.'))}
+    ${flashes()}
+    <div class="rs-toolbar"><label class="rs-search"><span>${t('查找插件', 'Find a plugin')}</span>
+      <input class="input satu-plugsearch" type="search" data-act="plugins-q" value="${esc(state.pluginQ || '')}" placeholder="${esc(t('搜索名称、用途或分类', 'Search by name, purpose or category'))}" aria-label="${esc(t('搜索插件', 'Search plugins'))}"></label>
+      <p class="mg-help">${t('添加插件后，连接账号即可配置可用工具。', 'Add a plugin, then connect an account and configure its tools.')}</p>
     </div>
-  </div>`
+    <div id="plugins-body" class="satu-plugbody">${pluginsBody()}</div>
+  </div></div>`
 }
 
 /**
@@ -48,13 +40,13 @@ function pluginsPage() {
  */
 function pluginsBody() {
   const all = state.market
-  if (!all) return emptyBox(t('加载中…'))
-  if (!all.length) return emptyBox(t('平台还没上架任何插件。', 'No plugins are available yet.'))
+  if (!all) return resourceEmpty(t('正在加载插件', 'Loading plugins'), t('正在获取可用应用与连接状态。', 'Fetching available apps and connection status.'))
+  if (!all.length) return resourceEmpty(t('暂无可用插件', 'No plugins available'), t('管理员上架应用后，你可以在这里添加并连接账号。', 'Apps will appear here when made available by the platform.'))
   const q = (state.pluginQ || '').trim().toLowerCase()
   const hit = (c) => !q || `${c.name} ${c.toolkit} ${c.description || ''} ${c.category || ''}`.toLowerCase().includes(q)
   const mine = all.filter((c) => c.installed && hit(c))
   const rest = all.filter((c) => !c.installed && hit(c))
-  if (q && !mine.length && !rest.length) return emptyBox(t('没有匹配的插件', 'No plugins match that'))
+  if (q && !mine.length && !rest.length) return resourceEmpty(t('没有匹配的插件', 'No matching plugins'), t('试试其他关键词，或缩短搜索内容。', 'Try a different or shorter search.'))
   return pluginsMine(mine, q) + pluginsMarket(rest, q)
 }
 
@@ -64,7 +56,7 @@ function paintPluginsBody() {
 }
 
 function pluginsSectionHead(title, n) {
-  return `<div class="satu-plughdr"><h2>${esc(title)}</h2><span>${n}</span></div>`
+  return `<div class="satu-plughdr"><h2>${esc(title)}</h2><span class="rs-count">${n}</span></div>`
 }
 
 function pluginsMine(mine, q) {
@@ -73,7 +65,7 @@ function pluginsMine(mine, q) {
     // 搜索时没中就整段不出：一行「还没装」会被读成「你搜的那个没装」。
     if (q) return ''
     return `<section>${head}<div class="satu-plugempty">${t(
-      '还没装插件。在下面挑一个，装上之后连上你的账号，Bot 就能替你操作它。',
+      '从下方选择工作需要的应用，添加后连接账号，即可供 Bot 使用。',
       'No plugins yet. Pick one below, connect your account, and your bots can work with it.',
     )}</div></section>`
   }
@@ -85,22 +77,14 @@ function pluginsMine(mine, q) {
 
 function pluginMineCard(c) {
   const todo = !c.connected && !c.blocked
-  const stat = c.blocked
-    ? `<span class="satu-plugstate">${t('本公司已禁用', 'Disabled by your company')}</span>`
-    : c.connected
-      ? `<span class="satu-plugstate is-on">${t('已连接', 'Connected')}</span>`
-      : `<span class="satu-plugstate is-warn">${t('还没连账号', 'No account connected')}</span>`
-  return `<div class="satu-plugcard${c.blocked ? ' is-blocked' : ''}">
+  const label = c.blocked ? t('公司已禁用', 'Disabled by company') : c.connected ? t('已连接', 'Connected') : t('待连接账号', 'Account needed')
+  return `<div class="satu-plugcard rs-plugin-card${c.blocked ? ' is-blocked' : ''}">
     <button type="button" class="satu-plugmain" data-act="go" data-href="${esc(pluginHref(c.id))}">
-      ${connectorLogo(c)}
-      <span class="satu-plugmeta">
-        <span class="satu-plugname">${esc(c.name)}</span>
-        ${stat}
-      </span>
+      ${connectorLogo(c)}<span class="satu-plugmeta"><span class="satu-plugname">${esc(c.name)}</span><span class="satu-plugdesc">${esc(c.description || c.toolkit)}</span></span>
     </button>
-    <button type="button" class="btn ${todo ? 'btn-secondary' : 'btn-ghost'}" style="flex: none;" data-act="go" data-href="${esc(pluginHref(c.id))}">${
-      todo ? t('去连接', 'Connect') : t('管理')
-    }</button>
+    <div class="rs-plugin-foot"><span class="tag ${c.blocked ? 'tag-neutral' : c.connected ? 'mg-status-ok' : 'tag-warn'}">${label}</span>
+      <button type="button" class="btn ${todo ? 'btn-secondary' : 'btn-ghost'}" data-act="go" data-href="${esc(pluginHref(c.id))}">${todo ? t('连接账号', 'Connect account') : t('管理插件', 'Manage')}</button></div>
+    ${c.blocked && c.blockedReason ? `<p class="rs-card-note">${esc(c.blockedReason)}</p>` : ''}
   </div>`
 }
 
@@ -128,29 +112,20 @@ function pluginsMarket(rest, q) {
         </div>`,
         )
         .join('')
-    : `<div class="satu-plugempty">${t('能装的都已经装上了。', 'You have added everything available.')}</div>`
+    : `<div class="satu-plugempty">${t('已添加全部可用插件，可在上方管理账号连接与工具。', 'You have added everything available.')}</div>`
   // 搜索时市场没中、而已安装那边中了：这一段整个不出，别留一行「都装上了」误导人。
   if (q && !rest.length) return ''
   return `<section>${pluginsSectionHead(t('添加插件', 'Add plugins'), rest.length)}${chips}${body}</section>`
 }
 
 function pluginMarketCard(c) {
-  const desc = c.blocked
-    ? `${t('本公司已禁用', 'Disabled by your company')}${c.blockedReason ? `：${c.blockedReason}` : ''}`
-    : c.description || c.toolkit
-  return `<div class="satu-plugcard${c.blocked ? ' is-blocked' : ''}">
+  return `<div class="satu-plugcard rs-plugin-card${c.blocked ? ' is-blocked' : ''}">
     <button type="button" class="satu-plugmain" data-act="go" data-href="${esc(pluginHref(c.id))}">
-      ${connectorLogo(c)}
-      <span class="satu-plugmeta">
-        <span class="satu-plugname">${esc(c.name)}</span>
-        <span class="satu-plugdesc">${esc(desc)}</span>
-      </span>
+      ${connectorLogo(c)}<span class="satu-plugmeta"><span class="satu-plugname">${esc(c.name)}</span><span class="satu-plugdesc">${esc(c.description || c.toolkit)}</span></span>
     </button>
-    ${
-      c.blocked
-        ? `<span class="tag" style="flex: none;">${t('已禁用')}</span>`
-        : `<button type="button" class="btn btn-secondary" style="flex: none;" data-act="conn-install" data-id="${esc(c.id)}">${t('添加', 'Add')}</button>`
-    }
+    <div class="rs-plugin-foot"><span class="rs-card-category">${esc(c.blocked ? t('公司已禁用', 'Disabled by company') : (connectorGroups([c])[0] || [t('应用', 'App')])[0])}</span>
+      ${c.blocked ? `<span class="tag tag-neutral">${t('已禁用')}</span>` : `<button type="button" class="btn btn-secondary" data-act="conn-install" data-id="${esc(c.id)}">${t('添加插件', 'Add plugin')}</button>`}</div>
+    ${c.blocked && c.blockedReason ? `<p class="rs-card-note">${esc(c.blockedReason)}</p>` : ''}
   </div>`
 }
 
@@ -171,11 +146,13 @@ function pluginDetailPage() {
   const c = detail.connector
   const installed = Boolean(detail.install)
   const live = (detail.connections || []).some((x) => x.status === 'active')
-  const tag = !installed
+  const tag = c.blocked
+    ? `<span class="tag tag-neutral">${t('公司已禁用', 'Disabled by company')}</span>`
+    : !installed
     ? `<span class="tag tag-neutral">${t('未添加', 'Not added')}</span>`
     : live
-      ? `<span class="tag tag-accent-2">${t('已连接', 'Connected')}</span>`
-      : `<span class="tag tag-warn">${t('还没连账号', 'No account connected')}</span>`
+      ? `<span class="tag mg-status-ok">${t('已连接', 'Connected')}</span>`
+      : `<span class="tag tag-warn">${t('待连接账号', 'Account needed')}</span>`
   const action = installed
     ? `<button type="button" class="btn btn-ghost" data-act="conn-uninstall" data-id="${esc(c.id)}">${t('卸载')}</button>`
     : c.blocked
@@ -183,7 +160,7 @@ function pluginDetailPage() {
       : `<button type="button" class="btn btn-primary" data-act="conn-install" data-id="${esc(c.id)}">${t('添加', 'Add')}</button>`
   return `<div class="gw-page">
     <div class="gw-page-inner satu-plugpage">
-      <div class="satu-plugtop">
+      <div class="satu-plugtop rs-detail-head">
         <span class="satu-pluglogo">${connectorLogo(c)}</span>
         <div style="min-width: 0; flex: 1;">
           <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
@@ -247,7 +224,7 @@ function connAddModal(c) {
       <div>
         <h2 style="font-size: 20px; margin: 0 0 4px;">${t(`添加 ${name} 账号`, `Add a ${name} account`)}</h2>
         <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t(
-          '起个名字分清是哪一个，然后去授权。',
+          '为账号设置一个便于区分的名称，然后前往应用完成授权。',
           'Name it so you can tell accounts apart, then authorize.',
         )}</p>
       </div>
@@ -316,7 +293,7 @@ function pluginSetup(detail, live) {
       }
       <div class="satu-plugconns">
         ${conns.map((x) => connectionRow(x, c.id)).join('')}
-        ${addAccountRow(c.id)}
+        ${c.blocked ? '' : addAccountRow(c.id)}
       </div>
     </section>
     <section class="satu-panel">
@@ -325,11 +302,11 @@ function pluginSetup(detail, live) {
         false,
         t('选择工具', 'Choose tools'),
         t(
-          '开着的工具会进每一个能用这些账号的 Bot 的工具表（每个账号的「可用 Bot」里设）。用不上的关掉——装得多了，工具表会把上下文撑满，模型也更容易选错。',
-          'Enabled tools go into every bot that can use these accounts (set under each account’s “Bots”). Turn off what you do not need — a long tool list crowds the context and makes the model pick wrong.',
+          '选择 Bot 工作需要的工具。设置对能用这些账号的 Bot 生效（每个账号的「可用 Bot」里设）。',
+          'Choose the tools your bots need. These settings apply to every bot that can use these accounts (set under each account’s “Bots”).',
         ),
       )}
-      ${connectorToolsBox(detail)}
+      <fieldset class="rs-tool-fieldset" ${c.blocked ? 'disabled' : ''}>${connectorToolsBox(detail)}</fieldset>
     </section>`
 }
 

@@ -431,7 +431,7 @@ await publishRelease({ req, gwBase, token: ownerTok, version: '0.1.0', note: 'e2
         body: { text: 'ping' },
       })
       assert(msg.status === 200, `message ${msg.status} ${msg.text}`)
-      assert(msg.json.accepted === true || msg.json.steered === true, 'accepted')
+      assert(msg.json.accepted === true || msg.json.steered === true || msg.json.queued === true, 'accepted')
 
       const file = join(BOT_HOME, 'sessions', `${sessionId}.jsonl`)
       const jsonlDeadline = Date.now() + 20000

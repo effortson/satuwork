@@ -1434,13 +1434,6 @@ function approvalHtml(a) {
   )
 }
 
-/** 一张交接单现在算哪一态，说给人听。 */
-function handoffLabel(h) {
-  if (h.state === 'claimed') return t('转人工 · 处理中', 'Handoff · in progress')
-  if (h.state === 'returned') return t('转人工 · 已交还', 'Handoff · handed back')
-  return t('转人工 · 等人接手', 'Handoff · waiting for someone')
-}
-
 /**
  * 一张交接卡（见 docs/handoff.md）。
  *
@@ -1451,40 +1444,23 @@ function handoffLabel(h) {
  * 知道自己该干嘛；为什么卡住是接下来才关心的事。
  */
 function handoffHtml(h) {
-  const acts =
-    h.state === 'returned'
-      ? `<div class="sw-handoff-note-done">${esc(t('已经交还，Bot 正在接着做。', 'Handed back — the bot is picking it up.'))}</div>`
-      : `<textarea class="input sw-handoff-note" data-handoff="${esc(h.id)}" rows="2" ` +
-        `placeholder="${esc(t('你做了什么、结论是什么？Bot 要靠它接着做', 'What did you do, and what came of it? The bot continues from this'))}"></textarea>` +
-        `<div class="sw-approval-acts">` +
-        `<button type="button" class="btn btn-primary" data-act="chat-handoff-return" data-id="${esc(h.id)}" data-disp="done">` +
-        `${esc(t('处理完了，交还', 'Done — hand back'))}</button>` +
-        (h.state === 'open'
-          ? `<button type="button" class="btn btn-secondary" data-act="chat-handoff-claim" data-id="${esc(h.id)}">${esc(t('我来接手', 'I will take it'))}</button>`
-          : '') +
-        `<button type="button" class="btn btn-ghost" data-act="chat-handoff-return" data-id="${esc(h.id)}" data-disp="instructions">` +
-        `${esc(t('换个做法', 'Do it differently'))}</button>` +
-        `<button type="button" class="btn btn-ghost" data-act="chat-handoff-cancel" data-id="${esc(h.id)}">${esc(t('不用处理了', 'Never mind'))}</button>` +
-        `</div>`
-  const who = h.claimedBy && h.claimedBy.name
-  return (
-    `<div class="sw-approval sw-handoff" data-state="${esc(h.state)}" data-handoff="${esc(h.id)}">` +
-    `<div class="sw-approval-head">${ICON_HAND}<span>${esc(handoffLabel(h))}</span></div>` +
-    `<div class="sw-handoff-ask">${esc(h.ask || t('接手处理这件事', 'Take this over'))}</div>` +
-    (h.reason ? `<div class="sw-approval-why">${esc(h.reason)}</div>` : '') +
-    (h.summary ? `<pre class="sw-approval-args">${esc(clip(h.summary))}</pre>` : '') +
-    (who ? `<div class="sw-handoff-who">${esc(t('接手人', 'Taken by'))}：${esc(who)}</div>` : '') +
-    (h.repeats ? `<div class="sw-handoff-who">${esc(t('它又撞上了同一件事', 'It hit the same wall again'))} × ${h.repeats}</div>` : '') +
-    acts +
-    `</div>`
-  )
+  return `<div class="sw-approval sw-handoff" data-state="${esc(h.state)}" data-handoff="${esc(h.id)}">
+    <div class="sw-approval-head">${ICON_HAND}<span>${t('需要人工协助', 'Human help needed')}</span>${handoffStateTag(h)}</div>
+    <div class="sw-handoff-ask">${esc(h.ask || t('请查看交接详情', 'Review handoff details'))}</div>
+    ${h.reason ? `<div class="sw-approval-why"><span class="ho-label">${t('转交原因', 'Reason')}</span>${esc(h.reason)}</div>` : ''}
+    ${handoffContext(h)}
+    <div class="sw-handoff-meta">${h.claimedBy && h.claimedBy.name ? `<span>${t('处理人', 'Handler')} · ${esc(h.claimedBy.name)}</span>` : ''}
+      ${h.blocking && h.state !== 'returned' ? `<span>${t('此任务正在等待人工处理', 'This task is waiting for human help')}</span>` : ''}
+      ${h.repeats ? `<span>${t('同一问题再次触发', 'Repeated issue')} × ${esc(String(h.repeats))}</span>` : ''}
+    </div>${handoffForm(h)}
+  </div>`
 }
 
 /** 已经闭合的那几张，收成一行。留着是因为「这件事上次是怎么处理的」要看得见。 */
 function handoffDoneHtml(h) {
   const map = {
     closed: () => t('转人工 · 已完成', 'Handoff · done'),
-    expired: () => t('转人工 · 没人接手，已关闭', 'Handoff · nobody took it'),
+    expired: () => t('转人工 · 已过期，超时未处理', 'Handoff · expired without a response'),
     cancelled: () => t('转人工 · 已撤销', 'Handoff · cancelled'),
   }
   // 席位上已经没有这张单了（重装、换机器、清过库）。**说出来**，别画成「已完成」——

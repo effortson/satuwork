@@ -512,7 +512,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(card.includes('sw-handoff-note'), '写结论的框不在——那句话是 Bot 接着做的全部依据')
       // 已经接手了就不该再有「我来接手」。
       assert(!card.includes('chat-handoff-claim'), '已经有人接了还画着「我来接手」')
-      assert(ui.handoffDoneHtml({ state: 'expired' }).includes('没人接手'), '闭合那一行没说清是怎么结束的')
+      assert(ui.handoffDoneHtml({ state: 'expired' }).includes('已过期'), '闭合那一行没说清是怎么结束的')
 
       /**
        * **交还那条消息要画出来。** 它的 source 是 plugin/handoff，而 fold 默认滤掉
@@ -549,6 +549,90 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       )
       assert(ui.state.error.includes('席位没应答'), `失败原因没有留下：${ui.state.error}`)
       assert(ui.html() !== 'before-click', '失败后没有重绘，界面仍表现成按钮点不动')
+    })
+
+    await test('交接卡：结果必填并就地提示，两种交还方式提交正确含义', async () => {
+      const calls = []
+      const ui = loadApp({ appPath, base: gwBase, token: 'handoff-validation', fetchImpl: async (path, init) => {
+        calls.push({ path, body: JSON.parse(init?.body || '{}') })
+        return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } })
+      } })
+      let focused = false
+      const ta = el('textarea', { 'data-handoff': 'h-validation' }, '  ')
+      ta.focus = () => { focused = true }
+      ta.removeAttribute = k => { delete ta._attrs[k] }
+      const attrs = {}
+      const card = { querySelector: () => ta, setAttribute: (k,v) => { attrs[k] = v }, removeAttribute: k => { delete attrs[k] } }
+      const button = el('button', { 'data-act': 'chat-handoff-return', 'data-id': 'h-validation', 'data-disp': 'done' })
+      button.closest = sel => sel === '[data-act]' ? button : sel.startsWith('.sw-handoff') ? card : null
+      await ui.fire('click', button)
+      assert(!calls.length, '空说明不应提交')
+      assert(focused && ta.getAttribute('aria-invalid') === 'true', '必填错误应聚焦并标记输入框')
+      assert(ui.state.handoffFeedback['h-validation'].text.includes('处理结果'), '缺少就地的结果提示')
+      button.setAttribute('data-disp', 'instructions')
+      await ui.fire('click', button)
+      assert(ui.state.handoffFeedback['h-validation'].text.includes('如何继续'), '新指示的校验应说明填写什么')
+      ta.value = '  请先核对订单编号，再继续。  '
+      await ui.fire('click', button)
+      assert(calls[0].body.disposition === 'instructions' && calls[0].body.text === '请先核对订单编号，再继续。', '新指示的含义或正文丢失')
+      assert(!ta.getAttribute('aria-invalid') && !attrs['aria-busy'], '提交后输入框或卡片仍卡在无效/忙碌状态')
+      button.setAttribute('data-disp', 'done')
+      ta.value = '已核验凭证，订单可发货。'
+      await ui.fire('click', button)
+      assert(calls[1].body.disposition === 'done', '已处理不能被当成新指示')
+    })
+
+    await test('交接卡：接手保留草稿，重复点击只提交一次，断线可重试', async () => {
+      let finish
+      let posts = 0
+      let fail = false
+      const ui = loadApp({ appPath, base: gwBase, token: 'handoff-pending', fetchImpl: async () => {
+        posts++
+        if (fail) return new Response(JSON.stringify({ error: '设备离线' }), { status: 503, headers: { 'content-type': 'application/json' } })
+        await new Promise(resolve => { finish = resolve })
+        return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } })
+      } })
+      const ta = el('textarea', { 'data-handoff': 'h-pending' }, '草稿：正在核验凭证')
+      ui.document.querySelectorAll = sel => sel === '.sw-handoff-note' ? [ta] : []
+      const claim = el('button', { 'data-act': 'chat-handoff-claim', 'data-id': 'h-pending' })
+      const first = ui.fire('click', claim)
+      await ui.fire('click', claim)
+      assert(posts === 1, '同一交接单重复提交了请求')
+      finish()
+      await first
+      assert(ta.value.includes('正在核验'), '接手动作清空了未提交的草稿')
+      fail = true
+      await ui.fire('click', claim)
+      assert(posts === 2 && ui.state.handoffFeedback['h-pending'].error, '失败未在交接卡上提示，或忙碌锁未释放')
+      assert(ta.value.includes('正在核验'), '失败后丢了草稿')
+    })
+
+    await test('交接卡：已交还及终态不能再次填结果，正文安全显示', async () => {
+      const ui = await boot()
+      for (const state of ['returned', 'closed', 'expired', 'cancelled']) {
+        const html = ui.handoffHtml({ id: 'h-readonly', state, ask: '核验订单' })
+        assert(!html.includes('<textarea') && !html.includes('data-act="chat-handoff-return"'), `${state} 仍可重复交还`)
+      }
+      const html = ui.handoffHtml({ id: 'h-context', state: 'open', ask: '<img onerror=attack>', reason: '<script>attack</script>', summary: '已查询订单 DEMO-1' })
+      assert(html.includes('&lt;img') && html.includes('&lt;script&gt;') && !html.includes('<script>'), '交接正文没有转义')
+      assert(html.includes('Bot 的处理进展') && html.includes('DEMO-1') && html.includes('<label'), '任务上下文或结果标签缺失')
+      ui.state.handoffOpenId = 'h-readonly'
+      ui.state.handoffDetail = { 'h-readonly': { summary: '已交还' } }
+      assert(!ui.handoffRow({ id: 'h-readonly', botId: 'b', accountId: 'other', state: 'returned' }).includes('<textarea'), '待办详情对已交还的单仍给了输入框')
+    })
+
+    await test('待办刷新失败保留清单、显示重试，恢复后清除提示', async () => {
+      let fail = true
+      const ui = loadApp({ appPath, base: gwBase, token: 'handoff-load', fetchImpl: async () => new Response(JSON.stringify(fail ? { error: 'offline' } : { handoffs: [], count: 0 }), { status: fail ? 503 : 200, headers: { 'content-type': 'application/json' } }) })
+      ui.state.me = { account: { id: 'me', role: 'admin', companyId: 'c1' } }
+      ui.state.handoffs = [{ id: 'h-stale', state: 'open', botId: 'b', accountId: 'me', ask: '核验凭证' }]
+      ui.state.handoffCount = 1
+      await ui.fire('click', el('button', { 'data-act': 'handoff-refresh' }))
+      assert(ui.state.handoffCount === 1 && ui.state.handoffs.length === 1, '更新失败却清空了待办')
+      assert(ui.handoffsAside().includes('当前显示上次获取的内容'), '陈旧数据缺少提示')
+      fail = false
+      await ui.fire('click', el('button', { 'data-act': 'handoff-refresh' }))
+      assert(!ui.state.handoffLoadError && !ui.state.handoffs.length && ui.state.handoffCount === 0, '连接恢复后未同步状态')
     })
 
     await test('交接卡：中间隔了几轮对话，也还是同一张卡', async () => {
@@ -611,7 +695,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const open = ui.handoffRow(row({ accountId: 'someone-else' }))
       assert(open.includes('sw-handoff-note'), '就地处理却没有写结论的框')
       assert(open.includes('data-act="chat-handoff-return"'), '就地处理却交还不了')
-      assert(open.includes('席位没应答'), `正文拉不到时没说清是怎么回事：${open.slice(-400)}`)
+      assert(open.includes('需要 Bot 所在设备在线'), `正文拉不到时没说清是怎么回事：${open.slice(-400)}`)
       // 拉到了就把 Bot 做到哪一步摆出来——接手的人靠它不用从头问一遍。
       ui.state.handoffDetail = { h1: { id: 'h1', summary: '已经查到发票号 A-991' } }
       assert(ui.handoffRow(row({ accountId: 'x' })).includes('A-991'), '拉到了正文却没画出来')
@@ -3075,6 +3159,101 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(html.includes('等待配对'), '未配对渠道没有显示等待状态')
       assert(html.includes('ABCD-2345'), '页面没有显示一次性配对码')
       assert(html.includes('任何消息都不会进入 AI'), '没有说明配对前消息不会进入模型')
+    })
+
+    await test('渠道：配对码可以复制，配对后只展示账号和对话入口', async () => {
+      const ui = await boot(adminToken)
+      ui.state.path = '/channels'
+      ui.state.channels = [{ id: 'tg-copy', kind: 'telegram', status: 'active', botId: 'bot-tg', paired: false, pairingCode: 'DEMO-2345', externalUsername: 'demo_bot', runtime: { status: 'ready' } }]
+      await ui.fire('click', el('button', { 'data-act': 'channel-copy-code', 'data-id': 'tg-copy' }))
+      assert(ui.copied.includes('DEMO-2345'), '配对码没有进入剪贴板')
+      assert(ui.html().includes('配对码已复制'), '复制后缺少反馈')
+      ui.state.channels[0].paired = true
+      ui.state.channels[0].pairedIdentity = { externalDisplayName: 'Alice' }
+      ui.render()
+      const html = ui.html()
+      assert(!html.includes('DEMO-2345') && !html.includes('data-act="channel-copy-code"'), '已配对时仍然暴露旧配对码')
+      assert(html.includes('Alice') && html.includes('打开 Bot 对话'), '已配对状态没有身份或对话入口')
+    })
+
+    await test('知识库：成员只读，禁用时不能通过上传入口或拖放继续上传', async () => {
+      const ui = await boot(adminToken)
+      const knowledge = { id: 'kb-read', name: '员工手册', desc: '', share: 'all', fileCount: 0, bytesUsed: 0 }
+      ui.state.path = '/knowledge/kb-read'
+      ui.state.kbDetail = { id: 'kb-read', knowledge, files: [], canEdit: false, enabled: true }
+      ui.state.kbTab = 'sharing'
+      ui.render()
+      assert(!ui.html().includes('kb-share-form') && !ui.html().includes('data-act="kb-delete"') && !ui.html().includes('data-act="kb-files"'), '只读成员看到了管理操作')
+      ui.state.kbDetail.canEdit = true
+      ui.state.kbDetail.enabled = false
+      ui.state.kbTab = 'files'
+      ui.render()
+      assert(/data-act="kb-files" disabled/.test(ui.html()), '服务禁用时文件选择仍然可用')
+      const uploads = ui.state.kbUploads
+      await ui.knowledgeUpload([{ name: 'demo.txt', size: 12 }])
+      assert(ui.state.kbUploads === uploads, '禁用时拖放仍然创建了上传任务')
+    })
+
+    await test('知识库：文件轮询只更新文件与容量，编辑和检索草稿不会被重绘', async () => {
+      const ui = loadApp({ appPath, base: gwBase, stubIds: ['kb-files-area', 'kb-summary'] })
+      ui.state.me = { account: { id: 'me', role: 'admin' }, company: { id: 'demo' } }
+      ui.state.path = '/knowledge/kb-focus'
+      ui.state.kbDetail = { id: 'kb-focus', knowledge: { id: 'kb-focus', name: '手册', share: 'all' }, files: [], canEdit: true, enabled: true }
+      ui.state.kbTab = 'search'
+      ui.state.kbEdit = { id: 'kb-focus', name: '手册', desc: '' }
+      await ui.fire('input', el('input', { 'data-act': 'kb-query' }, '年假怎么申请？'))
+      await ui.fire('input', el('input', { 'data-act': 'kb-edit-field', 'data-field': 'name' }, '新的知识库名称'))
+      ui.app.innerHTML = 'focused-form'
+      ui.paintKnowledgeFiles()
+      assert(ui.html() === 'focused-form', '后台更新重绘了正在填写的页面')
+      assert(ui.stubs.get('kb-summary').innerHTML.includes('已用容量'), '容量摘要没有更新')
+      ui.render()
+      assert(ui.html().includes('新的知识库名称') && ui.html().includes('年假怎么申请？'), '重绘时丢失了编辑或检索草稿')
+      await ui.fire('click', el('button', { 'data-act': 'kb-tab', 'data-tab': 'files' }))
+      await ui.fire('click', el('button', { 'data-act': 'kb-tab', 'data-tab': 'search' }))
+      assert(ui.html().includes('年假怎么申请？'), '切换分区丢失检索草稿')
+    })
+
+    await test('知识库：清空选择框前复制文件列表，文件选择确实启动上传', async () => {
+      const calls = []
+      const knowledge = { id: 'kb-upload', name: '手册', share: 'all', bytesUsed: 0 }
+      const ui = loadApp({ appPath, base: gwBase, token: 'kb-picker', fetchImpl: async (path, init) => {
+        calls.push({ path, method: init?.method, body: init?.body })
+        return new Response(JSON.stringify(init?.method === 'POST' ? { error: '测试上传中断' } : { knowledge, files: [], canEdit: true, enabled: true }), { status: init?.method === 'POST' ? 503 : 200, headers: { 'content-type': 'application/json' } })
+      } })
+      ui.state.me = { account: { id: 'me', role: 'admin' }, company: { id: 'demo' } }
+      ui.state.path = '/knowledge/kb-upload'
+      ui.state.kbDetail = { id: 'kb-upload', knowledge, files: [], canEdit: true, enabled: true }
+      const files = [{ name: '上传测试.txt', size: 12, type: 'text/plain' }]
+      const picker = el('input', { 'data-act': 'kb-files' })
+      picker.files = files
+      Object.defineProperty(picker, 'value', { set() { files.length = 0 } })
+      await ui.fire('change', picker)
+      assert(!files.length, '选择框没有清空，不能重新选择同名文件')
+      assert(calls.some(c=>c.method === 'POST' && c.path.endsWith('/knowledge/kb-upload/files') && JSON.parse(c.body).name === '上传测试.txt'), '清空选择框时把文件列表也清掉了，未启动上传')
+      assert(ui.state.kbUploads[0].error === '测试上传中断', '失败上传缺少可见原因')
+    })
+
+    await test('知识库：重载当前库保留分区与问题，旧请求不能覆盖新库', async () => {
+      let finish
+      const ui = loadApp({ appPath, base: gwBase, token: 'kb-race', fetchImpl: async () => {
+        await new Promise(resolve => { finish = resolve })
+        return new Response(JSON.stringify({ knowledge: { id: 'kb-a', name: 'A', share: 'all' }, files: [], canEdit: true }), { headers: { 'content-type': 'application/json' } })
+      } })
+      ui.state.me = { account: { id: 'me', role: 'admin' }, company: { id: 'demo' } }
+      ui.state.path = '/knowledge/kb-a'
+      ui.state.kbDetail = { id: 'kb-a', knowledge: { id: 'kb-a', share: 'all' }, files: [] }
+      ui.state.kbShareDraft = null
+      ui.state.kbTab = 'sharing'
+      ui.state.kbSearchQuery = '尚未提交的问题'
+      const same = ui.loadKnowledgeDetail('kb-a')
+      finish(); await same
+      assert(ui.state.kbTab === 'sharing' && ui.state.kbSearchQuery === '尚未提交的问题', '保存共享后跳回文件，或重载时清了问题')
+      const old = ui.loadKnowledgeDetail('kb-a')
+      ui.state.path = '/knowledge/kb-b'
+      ui.state.kbDetail = { id: 'kb-b', knowledge: { id: 'kb-b', name: 'B' }, files: [] }
+      finish(); await old
+      assert(ui.state.kbDetail.id === 'kb-b', '旧库的晚到响应覆盖了新库')
     })
 
     await test('平台菜单里没有「全局 Bot」，但那一页 owner 仍然进得去', async () => {
