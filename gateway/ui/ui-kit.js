@@ -83,3 +83,8 @@ function accountAvatar(account, size = 30) {
   const avatar = typeof account?.avatar === 'string' && /^data:image\/(jpeg|png);base64,[A-Za-z0-9+/]+=*$/.test(account.avatar) ? account.avatar : ''
   return `<span class="satu-account-avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * .38)}px" aria-hidden="true"><span>${esc(initialOf(account || {}))}</span>${avatar ? `<img src="${esc(avatar)}" alt="" data-onerror="drop">` : ''}</span>`
 }
+
+/** Shared empty states for the resource pages; all copy is escaped at this boundary. */
+function resourceEmpty(title, note, icon, action = '') {
+  return `<div class="rs-empty">${svg(icon || ['M4 4h16v16H4z', 'M8 9h8', 'M8 13h5'], 24)}<strong>${esc(title)}</strong><p>${esc(note)}</p>${action}</div>`
+}

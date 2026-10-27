@@ -1189,7 +1189,7 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/plugins' }))
       await settle()
       html = ui.html()
-      assert(html.includes('还没连账号') && html.includes('去连接'), '装了没连的那一个没标出来')
+      assert(html.includes('待连接账号') && html.includes('连接账号'), '装了没连的那一个没标出来')
       assert(!html.includes(`data-act="conn-install" data-id="${connectorId}"`), '装过的还在给「添加」')
 
       // 装回去的这一笔要还原：下面还有测试在数装机量。
