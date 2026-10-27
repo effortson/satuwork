@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --env-file-if-exists=.env --import tsx bin/satuwork-manager.mjs",
     "start": "node --import tsx bin/satuwork-manager.mjs",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test test/https.test.ts"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

@@ -295,6 +295,42 @@ export interface Group {
   createdAt: number
 }
 
+/**
+ * 管家自动配域名 https 的一次流程（deploy/https.ts 里有每一步的来龙去脉）。
+ *
+ * - `provision`：回包让管家装 Caddy、写配置、本机自检；它报 ready 之后 Gateway 从外面经域名
+ *   敲 `/ingress-check?nonce=`，对上了再带票探一次活，然后把管家地址和桌面直连地址都换成
+ *   `https://<域名>`，进下一步。
+ * - `lockdown`：回包让管家只听 127.0.0.1。它报「已只听回环」后 Gateway 经域名带票探活，
+ *   通了就 `done`；超时不通就 `rollback`。
+ * - `rollback`：两个地址放回 prev*，回包让管家重新对外听。它报「已不只听回环」就落到 `failed`。
+ * - `done` / `failed`：终态。failed 时回包不再带域名，管家不会自己重试；要重试在界面上再按一次
+ *   （换一个 nonce）。
+ */
+export interface MachineHttps {
+  domain: string
+  stage: 'provision' | 'lockdown' | 'rollback' | 'done' | 'failed'
+  /** Gateway 从外面认这台管家用的一次性口令。每次重新开始都换一个。 */
+  nonce: string
+  /** 换地址之前的两个值，撤回时原样放回去。还没换过就是 null。 */
+  prevHost: string | null
+  prevDirectUrl: string | null
+  /** 最近一次卡住的原因（机器报的、或者 Gateway 自己从外面看到的）。 */
+  error: string | null
+  /** 管家最近一次自报的进展：idle / working / ready / error。给界面看。 */
+  machinePhase: string | null
+  /** 管家最近一次自报的「是不是只听回环」。 */
+  machineLoopback: boolean
+  /**
+   * lockdown 里第一次看到管家报「已只听回环」的时刻。探活的宽限期从这里算，不从 stageAt 算：
+   * 管家可能要等席位部署跑完才重启，那段等待不该吃掉重启之后的宽限。
+   */
+  loopbackAt?: number | null
+  startedAt: number
+  /** 进入当前这一步的时刻。超时都从这里算。 */
+  stageAt: number
+}
+
 export interface Machine {
   id: string
   /** 机器管家的基址 `http://<ip>:8443`。**Gateway 打这台机器的唯一入口。** */
@@ -377,6 +413,11 @@ export interface Machine {
    * 空 = 老管家没报过。浏览器直连失败时前端拿它和页面的源比（见迁移 0064）。
    */
   gatewayOrigin: string | null
+  /**
+   * 管家自动配域名 https 走到哪一步了（见迁移 0068、deploy/https.ts）。空 = 没走过这条路，
+   * 心跳回包里不带 `https`，管家什么都不动。
+   */
+  https: MachineHttps | null
   /**
    * 这台机器要追的管家版本。空 = 跟平台的全局期望版本走。
    *

@@ -45,6 +45,8 @@ export class MachinesDb extends DbCore {
       logCapMb: null as number | null,
       // 管家认的 Gateway 源也等第一次心跳报上来。
       gatewayOrigin: null as string | null,
+      // 域名 https 由人在机器页上按下去才开始。
+      https: null as Machine['https'],
       // 新登记的机器当然在册。墓碑只由 markMachineRemoved 立。
       removedAt: null as number | null,
     }
@@ -215,6 +217,21 @@ export class MachinesDb extends DbCore {
     })
   }
 
+  /**
+   * 只在 `https` 还是调用方读到的那一份（nonce 和 stage 都对得上）时才写，返回写上没有。
+   *
+   * 心跳推进域名 https 时要先做十来秒的网络探测（deploy/https.ts）。这期间有人在机器页上按了
+   * 「重新开始」或「撤掉」，updateMachine 那种整格写回会拿探测前读到的旧记录把它盖掉——撤掉的
+   * 流程被复活，管家还会被叫去只听回环。条件写让后来的人按的那一下赢。
+   */
+  async casMachineHttps(id: string, expect: { nonce: string; stage: string }, next: Machine['https']): Promise<boolean> {
+    const n = await this.run(
+      `update machines set https = ? where id = ? and "removedAt" is null and https->>'nonce' = ? and https->>'stage' = ?`,
+      [next == null ? null : JSON.stringify(next), id, expect.nonce, expect.stage],
+    )
+    return n === 1
+  }
+
   async updateMachine(
     id: string,
     patch: Partial<
@@ -237,6 +254,7 @@ export class MachinesDb extends DbCore {
         | 'telemetryAt'
         | 'logCapMb'
         | 'gatewayOrigin'
+        | 'https'
       >
     >,
   ): Promise<Machine> {
@@ -262,9 +280,10 @@ export class MachinesDb extends DbCore {
       telemetryAt: patch.telemetryAt === undefined ? cur.telemetryAt : patch.telemetryAt,
       logCapMb: patch.logCapMb === undefined ? cur.logCapMb : patch.logCapMb,
       gatewayOrigin: patch.gatewayOrigin === undefined ? cur.gatewayOrigin : patch.gatewayOrigin,
+      https: patch.https === undefined ? cur.https : patch.https,
     }
     await this.run(
-      'update machines set host=?, "directUrl"=?, "companyId"=?, "lastHeartbeatAt"=?, "pairedAt"=?, "managerVersion"=?, protocol=?, "lastError"=?, arch=?, "desiredManagerVersion"=?, "maxAccounts"=?, timezone=?, "currentTimezone"=?, telemetry=?, "telemetryAt"=?, "logCapMb"=?, "gatewayOrigin"=? where id=?',
+      'update machines set host=?, "directUrl"=?, "companyId"=?, "lastHeartbeatAt"=?, "pairedAt"=?, "managerVersion"=?, protocol=?, "lastError"=?, arch=?, "desiredManagerVersion"=?, "maxAccounts"=?, timezone=?, "currentTimezone"=?, telemetry=?, "telemetryAt"=?, "logCapMb"=?, "gatewayOrigin"=?, https=? where id=?',
       [
         next.host,
         next.directUrl,
@@ -284,6 +303,7 @@ export class MachinesDb extends DbCore {
         next.telemetryAt,
         next.logCapMb,
         next.gatewayOrigin,
+        next.https == null ? null : JSON.stringify(next.https),
         id,
       ],
     )

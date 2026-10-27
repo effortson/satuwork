@@ -65,6 +65,7 @@ import { SQL as m0064 } from './0064-machine-gateway-origin.ts'
 import { SQL as m0065 } from './0065-connection-account-name.ts'
 import { SQL as m0066 } from './0066-account-avatar.ts'
 import { SQL as m0067 } from './0067-connector-bot-scope.ts'
+import { SQL as m0068 } from './0068-machine-https.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -196,6 +197,7 @@ export const MIGRATIONS: Migration[] = [
   { id: '0065-connection-account-name', name: '连接上的账号是谁（只用于显示）', sql: m0065 },
   { id: '0066-account-avatar', name: '账号头像缩略图', sql: m0066 },
   { id: '0067-connector-bot-scope', name: '插件账号的 Bot 可见范围', sql: m0067 },
+  { id: '0068-machine-https', name: '管家自动配域名 https 的编排状态', sql: m0068 },
 ]
 
 /**

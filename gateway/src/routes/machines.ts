@@ -4,7 +4,7 @@
 import type { RouteCtx } from './ctx.ts'
 import { type Handler, HttpError, json, type Req, type Router } from '../http.ts'
 import { INSTANCE_DOWN, MIN_MANAGER_NODE, PAIRING_TTL, desiredManagerRelease, directUrlOf, gatewayBaseFor, installCommandFor, machineBase, machineCard, machineOfOrg, machineResolver, managerHostOf, retargetManager, normalizePairingCode, randomPairingCode, registerFromBody, sendReleaseFile } from '../lib/machines.ts'
-import { LOGS_FOLLOW_GONE, MACHINE_TOMBSTONE_TTL, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, gatewayPublicUrl, gatewayPublicUrlExplicit, logsDirectPayload, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, queueSeatUpdates, rehostSeatInstances, releaseSeats } from '../deploy.ts'
+import { LOGS_FOLLOW_GONE, MACHINE_TOMBSTONE_TTL, clearHttps, httpsDomainOf, startHttps, MIN_MANAGER_PROTOCOL, type MachineLoad, companyMachineOf, gatewayPublicUrl, gatewayPublicUrlExplicit, logsDirectPayload, machineLink, machineLoadOf, machineLoads, machinePaired, managerHealth, normalizeTimezone, ownerMachine, probeDirectUrl, publicSeatRuntime, queueSeatUpdates, rehostSeatInstances, releaseSeats } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, logLinesOf, strField } from '../lib/validate.ts'
 import { installScript } from '../install.ts'
@@ -118,6 +118,9 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
    * 传空串 = 不再管这台机器的时区（不会把机器改回去，只是不再下发）。
    */
   router.put('/platform/orgs/:id/machines/:machineId/timezone', machineTimezone(orgScope(false)))
+
+  /** 让管家自己给域名配 https。平台侧那条是 `PUT /platform/machines/:id/https`，两条同义。 */
+  router.put('/platform/orgs/:id/machines/:machineId/https', machineHttps(orgScope(false)))
 
   /**
    * 把这台机器（或这家公司的席位）升到某个版本。
@@ -361,6 +364,31 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
     }
   }
 
+  /**
+   * 填域名 = 开始（或重新开始）一次；空串 = 撤掉这条记录（只是不再管，不会把机器改回去）。
+   *
+   * 按下去只是把期望钉在这里，往后四步全挂在心跳上推进（见 deploy/https.ts）：机器装好 Caddy、
+   * 本机自检通过 → Gateway 从外面经域名认人、换掉管家地址和桌面直连地址 → 管家只听回环 → 完成；
+   * 只听回环之后连不上就撤回。界面靠刷新看它走到哪一步。
+   */
+  function machineHttps(scope: MachineScope): Handler {
+    return async (req, res) => {
+      const account = await requireOwnerUser(req, db, keys)
+      const { machine, audit } = await scope(req)
+      const raw = strField(bodyOf(req), 'domain', false) || ''
+      if (!raw.trim()) {
+        const next = await clearHttps(db, machine)
+        await audit(next, account.id, 'machine.https', { machineId: next.id, domain: null })
+        json(res, 200, { machine: ownerMachine(next) })
+        return
+      }
+      const domain = httpsDomainOf(raw)
+      const next = await startHttps(db, machine, domain)
+      await audit(next, account.id, 'machine.https', { machineId: next.id, domain, stage: 'provision' })
+      json(res, 200, { machine: ownerMachine(next) })
+    }
+  }
+
   function machineUpgrade(scope: MachineScope): Handler {
     return async (req, res) => {
       const account = await requireOwnerUser(req, db, keys)
@@ -541,6 +569,12 @@ export function attachMachines(router: Router, ctx: RouteCtx) {
 
   /** 设时区。只是把期望值钉在这里，真正改的是机器上的管家，下一轮心跳才知道成没成。 */
   router.put('/platform/machines/:id/timezone', machineTimezone(platformScope))
+
+  /**
+   * 让管家自己给域名配 https：装 Caddy、申请证书、换地址、最后只听回环（deploy/https.ts）。
+   * 空串 = 撤掉记录。切换监听的那两步里不许改，回 409。
+   */
+  router.put('/platform/machines/:id/https', machineHttps(platformScope))
 
   /**
    * 这台机器一段时间里的负载归档，**按分钟**。日视图吃它。

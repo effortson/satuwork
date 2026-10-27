@@ -770,6 +770,33 @@ async function saveMachineDirectUrl(e) {
   })
 }
 
+/**
+ * 让管家给域名配 https。按下去只是下指令（见 deploy/https.ts），往后由心跳推进，所以提示里
+ * 说清楚「要等几分钟、点刷新看」，不假装已经好了。
+ */
+async function saveMachineHttps(e) {
+  e.preventDefault()
+  const form = e.target
+  const s = machineScope(form)
+  const domain = String(new FormData(form).get('domain') || '').trim()
+  await withBusy(async () => {
+    await api('PUT', `${s.base}/https`, { domain })
+    await s.reload()
+    if (domain) flash('ok', t('已下发。管家会装 Caddy、申请证书，再换地址、只听本机，前后几分钟，点右上角「刷新」看走到哪一步', 'Sent. The manager will install Caddy, get a certificate, switch the addresses and then listen on localhost only. This takes a few minutes; use Refresh to follow along.'))
+    else flash('ok', t('已撤掉，管家不再管这台机器的域名', 'Cleared. The manager no longer manages this domain.'))
+  })
+}
+
+/** 撤掉记录：不会把机器改回去（Caddy 和监听都保持现状），只是不再下发。 */
+async function clearMachineHttps(btn) {
+  const s = machineScope(btn)
+  await withBusy(async () => {
+    await api('PUT', `${s.base}/https`, { domain: '' })
+    await s.reload()
+    flash('ok', t('已撤掉，管家不再管这台机器的域名', 'Cleared. The manager no longer manages this domain.'))
+  })
+}
+
 async function saveMachineCompany(e) {
   e.preventDefault()
   const form = e.target

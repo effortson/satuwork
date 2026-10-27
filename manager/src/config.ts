@@ -73,8 +73,13 @@ import { fileURLToPath } from 'node:url'
  * bot.env 的 `SATUWORK_LEGACY_DIR`）。规格里多一个可选的 `botName`，只用来写那一格的名牌。部署规格的路径**不变**：
  * `workDir` 仍是账号级的 `~/work`，两格都由 deploy-seat.sh 自己推出来，所以新旧 Gateway、新旧
  * 管家怎么搭都铺得出去。Gateway 只拿这个号决定界面上把目录说成哪样（MIN_SPLIT_WORKDIR_PROTOCOL）。
+ *
+ * 14：管家自己给域名配 https（src/https.ts）：心跳回包里的 `https: { domain, loopbackOnly, nonce }`
+ * 让它装 Caddy、写 Caddyfile、本机自检，确认之后改成只听回环；心跳里报 `https` 说做到哪一步了；
+ * 多一条不认票的 `GET /ingress-check?nonce=` 给 Gateway 从外面认人。Gateway 按它决定机器页上
+ * 「启用 https」能不能按（MIN_HTTPS_PROTOCOL）：13 号管家不认这段回包，按了只会一直等下去。
  */
-export const PROTOCOL = 13
+export const PROTOCOL = 14
 
 export interface ManagerState {
   machineId: string

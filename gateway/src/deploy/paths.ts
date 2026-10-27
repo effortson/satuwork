@@ -81,6 +81,12 @@ export const MIN_TASK_WORKER_PROTOCOL = 12
 export const MIN_SPLIT_WORKDIR_PROTOCOL = 13
 
 /**
+ * 管家自己给域名配 https 要求的协议号（manager/src/https.ts）。13 号管家不认心跳回包里的
+ * `https`，按下去只会永远停在「等机器配」，所以机器页上低于它就不让按（deploy/https.ts）。
+ */
+export const MIN_HTTPS_PROTOCOL = 14
+
+/**
  * 日志跟随直连要求的管家协议号。
  *
  * 9 号管家的 `/logs` 和 `/seats/:id/logs` 才认 `Authorization: Bearer` 里那张 Gateway 签的
