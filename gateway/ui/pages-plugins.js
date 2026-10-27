@@ -177,6 +177,7 @@ function pluginDetailPage() {
       ${installed ? pluginSetup(detail, live) : pluginPreview(detail)}
     </div>
     ${connAddModal(c)}
+    ${connBotsModal()}
   </div>`
 }
 

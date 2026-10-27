@@ -2503,6 +2503,132 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(html.slice(0, soul).lastIndexOf('disabled') > html.slice(0, soul).lastIndexOf('<textarea'), '模版正文是可编辑的')
     })
 
+    await test('可用 Bot 弹窗：保存失败可重试，重绘和晚到响应不破坏新草稿或工具勾选', async () => {
+      let finish
+      const calls = []
+      const ui = loadApp({ appPath, base: gwBase, token: 'connection-bots', fetchImpl: async (path, init) => {
+        calls.push({ path, method: init.method, body: JSON.parse(init.body) })
+        return new Promise(resolve=>{ finish = (fail = false)=>resolve(new Response(JSON.stringify(fail ? { error: '请稍后重试' } : { connection: { id: 'account', bots: { mode: 'bots', botIds: calls.at(-1).body.botIds, missing: 0 } } }), { status: fail ? 503 : 200, headers: { 'content-type': 'application/json' } })) })
+      } })
+      ui.state.connectorDetail = { connector: { id: 'gmail' }, connections: [{ id: 'account', bots: { mode: 'all', botIds: [] } }] }
+      const draft = (ids)=>({ id: 'account', connectorId: 'gmail', mode: 'bots', botIds: ids, query: '助手', error: '', busy: false })
+      const panel = (ids)=>{
+        const save = el('button', { 'data-act': 'conn-bots-save', 'data-id': 'account', 'data-connector': 'gmail' })
+        const pick = el('input', { 'data-bot': ids[0] || 'b1' }); pick.checked = !!ids.length
+        const parts = { fieldset: {}, '[data-conn-bots-err]': {}, '[data-act="conn-bots-save"]': save, '[data-act="conn-bots-mode"][value="bots"]': { checked: true } }
+        const box = { setAttribute() {}, getAttribute: ()=> 'account', querySelector: key=>parts[key] || null, querySelectorAll: key=>key === '[data-act="conn-bots-pick"]' ? [pick] : [], contains: ()=>true, parts, save }
+        save.closest = key=>key === '[data-act]' ? save : key === '[data-conn-bots]' ? box : null
+        return box
+      }
+      let live = panel([])
+      ui.document.querySelector = key=>key === '[data-conn-bots]' ? live : null
+      ui.state.connBotsOpen = 'account'; ui.state.connBotsDraft = draft([])
+      ui.app.innerHTML = 'unsaved-tool-checkboxes'
+      await ui.fire('click', live.save)
+      assert(!calls.length, '没有指定任何 Bot 时不能提交')
+      live = panel(['b1'])
+      const saving = ui.fire('click', live.save)
+      for (let i = 0; i < 30 && !finish; i++) await Promise.resolve()
+      await ui.fire('click', live.save)
+      assert(calls.length === 1 && ui.state.connBotsDraft.busy, '保存中不能重复提交')
+      live = panel(['b1']); live.parts.fieldset.disabled = true
+      finish(true); await saving
+      assert(live.parts['[data-conn-bots-err]'].textContent.includes('请稍后重试') && !live.parts.fieldset.disabled && !live.save.disabled, '重绘后保存失败应显示原因并恢复新弹窗的按钮')
+      assert(ui.state.connBotsDraft.botIds[0] === 'b1' && ui.state.connBotsDraft.query === '助手', '失败清除了选择或搜索')
+      const retry = ui.fire('click', live.save)
+      for (let i = 0; i < 30 && calls.length < 2; i++) await Promise.resolve()
+      const newer = draft(['b2'])
+      ui.state.connBotsDraft = newer; live = panel(['b2'])
+      finish(); await retry
+      assert(ui.state.connBotsDraft === newer && newer.botIds[0] === 'b2', '旧请求覆盖或关闭了重新打开的同一账号草稿')
+      const saved = ui.fire('click', live.save)
+      for (let i = 0; i < 30 && calls.length < 3; i++) await Promise.resolve()
+      finish(); await saved
+      assert(ui.state.connBotsOpen === null && ui.state.connectorDetail.connections[0].bots.botIds[0] === 'b2', '成功后应关闭弹窗并更新账号范围')
+      assert(calls.every(c=>c.method === 'PUT' && c.path === '/me/connectors/gmail/connections/account/bots'), '保存不应重拉整页数据')
+      assert(ui.html() === 'unsaved-tool-checkboxes', '弹窗操作重画了整页，工具勾选会丢失')
+    })
+
+    await test('个人 Bot 设置：编辑时更新保存状态，撤销仅恢复配置，记忆保留', async () => {
+      const ui = loadApp({ appPath, base: gwBase, stubIds: ['bot-settings-actions'] })
+      const bot = { id: 'b-edit', scope: 'user', name: '助手', description: '', icon: 'c-bot', enabled: true, extraPrompt: '原说明', knowledgeOff: ['kb-a'] }
+      ui.state.me = { account: { id: 'me', role: 'member' }, company: { id: 'demo' } }
+      ui.state.path = '/bots/b-edit'; ui.state.bot = bot
+      ui.state.botDraft = { ...bot, greeting: '', guards: [], memories: [{ id: 'm1', text: '已存事实' }] }
+      await ui.fire('input', el('input', { 'data-bot': 'name' }, '新的助手名称'))
+      const actions = ui.stubs.get('bot-settings-actions').innerHTML
+      assert(actions.includes('有未保存的更改') && actions.includes('bot-discard'), '输入后保存栏没有更新')
+      assert(!/data-act="bot-save" disabled/.test(actions), '有更改时保存仍禁用')
+      await ui.fire('input', el('input', { 'data-bot': 'name' }, '   '))
+      assert(ui.stubs.get('bot-settings-actions').innerHTML.includes('请填写 Bot 名称后保存'), '空名称没有明确提示')
+      await ui.fire('click', el('button', { 'data-act': 'bot-discard' }))
+      assert(ui.state.botDraft.name === '助手' && ui.state.botDraft.extraPrompt === '原说明', '撤销没有恢复保存的配置')
+      assert(ui.state.botDraft.memories[0].text === '已存事实', '撤销配置不应清除记忆')
+    })
+
+    await test('个人 Bot 设置：保存只发个人字段，成功后保留记忆，失败保留草稿', async () => {
+      let fail = false
+      const calls = []
+      const bot = { id: 'b-save', scope: 'user', name: '助手', description: '', icon: 'c-bot', enabled: true, extraPrompt: '' }
+      const ui = loadApp({ appPath, base: gwBase, token: 'settings-save', fetchImpl: async (path, init) => {
+        const body = JSON.parse(init?.body || '{}')
+        calls.push({ path, method: init?.method, body })
+        const data = init?.method === 'PATCH' ? fail ? { error: '设备暂时无法保存' } : { bot: { ...bot, ...body } } : { bots: [] }
+        return new Response(JSON.stringify(data), { status: fail && init?.method === 'PATCH' ? 503 : 200, headers: { 'content-type': 'application/json' } })
+      } })
+      ui.state.me = { account: { id: 'me', role: 'member' }, company: { id: 'demo' } }
+      ui.state.path = '/bots/b-save'; ui.state.bot = bot
+      ui.state.botDraft = { ...bot, name: '客户助手', greeting: '你好', guards: [], prompt: '公司模版', skills: ['inherited'], memories: [{ id: 'm1', text: '保留这条记忆' }], memoryUsed: 1, memoryMax: 40 }
+      await ui.fire('click', el('button', { 'data-act': 'bot-save' }))
+      const patch = calls.find(c=>c.method === 'PATCH')
+      assert(patch.path === '/runtime/bots/b-save' && patch.body.name === '客户助手', '保存入口或个人字段错误')
+      assert(!('prompt' in patch.body) && !('skills' in patch.body) && !('guards' in patch.body), '个人保存不能覆盖公司模版')
+      assert(ui.state.botDraft.memories[0].text === '保留这条记忆' && ui.state.botDraft.memoryMax === 40, '配置保存清除了已加载记忆')
+      fail = true
+      ui.state.botDraft.name = '尚未保存的名称'
+      await ui.fire('click', el('button', { 'data-act': 'bot-save' }))
+      assert(ui.state.botDraft.name === '尚未保存的名称' && !ui.state.busy, '保存失败后丢失草稿或未恢复按钮')
+      assert(ui.html().includes('设备暂时无法保存'), '保存失败没有在页面中说明原因')
+    })
+
+    await test('个人 Bot 设置：记忆刷新只更新记忆，不覆盖正在编辑的配置', async () => {
+      const calls = []
+      const ui = loadApp({ appPath, base: gwBase, token: 'settings-memory', fetchImpl: async (path, init) => {
+        calls.push({ path, method: init?.method || 'GET' })
+        return new Response(JSON.stringify(init?.method === 'PATCH' ? { ok: true } : { items: [{ id: 'm1', pinned: true, text: '事实', layer: 'bot' }], used: 1, max: 40 }), { headers: { 'content-type': 'application/json' } })
+      } })
+      ui.state.me = { account: { id: 'me', role: 'member' }, company: { id: 'demo' } }
+      ui.state.path = '/bots/b-memory'; ui.state.bot = { id: 'b-memory', scope: 'user', name: '助手' }
+      ui.state.botDraft = { name: '草稿名字', extraPrompt: '尚未保存的工作说明', knowledgeOff: ['kb-a'], guards: [], memories: [{ id: 'm1', pinned: false, text: '事实', layer: 'bot' }] }
+      await ui.fire('click', el('button', { 'data-act': 'bot-mem-pin', 'data-id': 'm1' }))
+      assert(ui.state.botDraft.name === '草稿名字' && ui.state.botDraft.extraPrompt === '尚未保存的工作说明', '记忆操作覆盖了配置草稿')
+      assert(ui.state.botDraft.memories[0].pinned && ui.state.botDraft.memoryMax === 40, '记忆没有按服务端回执刷新')
+      assert(calls.some(c=>c.path === '/runtime/bots/b-memory/memories' && c.method === 'GET') && !calls.some(c=>c.path === '/runtime/bots/b-memory'), '记忆操作仍在重拉整颗 Bot')
+    })
+
+    await test('个人 Bot 设置：保存中不重复提交，晚到响应不覆盖另一颗 Bot', async () => {
+      let finish
+      let calls = 0
+      const first = { id: 'b-first', scope: 'user', name: '原助手', enabled: true }
+      const ui = loadApp({ appPath, base: gwBase, token: 'settings-race', fetchImpl: async () => {
+        calls++
+        await new Promise(resolve=>{ finish = resolve })
+        return new Response(JSON.stringify({ bot: { ...first, name: '保存后的助手' } }), { headers: { 'content-type': 'application/json' } })
+      } })
+      ui.state.me = { account: { id: 'me', role: 'member' }, company: { id: 'demo' } }
+      ui.state.path = '/bots/b-first'; ui.state.bot = first
+      ui.state.botDraft = { ...first, name: '保存后的助手', guards: [] }
+      const saving = ui.fire('click', el('button', { 'data-act': 'bot-save' }))
+      for (let i = 0; i < 30 && !finish; i++) await Promise.resolve()
+      assert(ui.state.busy && /class="bs-settings-fields"[^>]*disabled/.test(ui.html()), '保存中仍可编辑字段')
+      await ui.fire('click', el('button', { 'data-act': 'bot-save' }))
+      assert(calls === 1, '重复点击提交了多个保存请求')
+      ui.state.path = '/bots/b-second'; ui.state.bot = { id: 'b-second', scope: 'user', name: '第二颗 Bot' }
+      ui.state.botDraft = { name: '第二颗 Bot 的草稿', guards: [] }
+      finish(); await saving
+      assert(ui.state.bot.id === 'b-second' && ui.state.botDraft.name === '第二颗 Bot 的草稿', '旧保存回执覆盖了新 Bot 的配置')
+    })
+
     await test('二级页面的头是「上一级 / 这一条」，返回在最前面', async () => {
       const ui = await boot(ownerToken)
       ui.state.path = '/bots/b1'

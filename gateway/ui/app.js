@@ -27,6 +27,7 @@ function sitesOf(text) {
  * 只拆不走：跳到哪一页、要不要留一句话，由调用方各自决定。
  */
 function endSignedIn() {
+  closeConnBots({ restoreFocus: false, force: true })
   // 手机壳：先拿着这张票把设备从推送名单里摘掉，下一行票就清了（shell.js 的 forgetMobilePush）。
   if (typeof forgetMobilePush === 'function') forgetMobilePush()
   clearToken()
@@ -153,7 +154,7 @@ async function runConfirm() {
        * 每个人的系统提示词里插了一句话（docs/memory.md §12 ⑤）。
        */
       await api('POST', `/runtime/memories/${encodeURIComponent(c.id)}/lift`, { to: 'company' })
-      await loadBotDetail(c.bot)
+      await refreshBotMemories(c.bot)
       flash('ok', t('已推给全公司', 'Shared company-wide'))
       render()
       return
@@ -601,13 +602,20 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'bot-mem-refresh') {
+    const bot = routeBot()
+    if (!bot) return
+    try { await refreshBotMemories(bot.id) } catch (err) { flash('err', err.message) }
+    render()
+    return
+  }
   if (act === 'bot-mem-del' || act === 'bot-mem-pin' || act === 'bot-mem-renew') {
     /**
      * Bot 设置那一屏上的记忆增删改。
      *
      * **删不做二次确认**，同对话里那颗按钮：一条记错的记忆每一轮都在影响回答，删它
-     * 要极其容易（docs/memory.md §12 ②）。改完重拉这一颗 Bot 的详情——那是一条轻请求,
-     * 而就地改 state 会让「服务端到底存成了什么」和屏幕上显示的分家。
+     * 要极其容易（docs/memory.md §12 ②）。改完只重拉记忆列表，保留正在编辑的配置；
+     * 以服务端回执为准，避免「服务端到底存成了什么」和屏幕上显示的分家。
      */
     const id = btn.getAttribute('data-id') || ''
     const bot = routeBot()?.id || ''
@@ -619,7 +627,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
      * 重画一次让人看见真实的那一份，比替他猜一个动作强。
      */
     if (!cur && act !== 'bot-mem-del') {
-      await loadBotDetail(bot).catch(() => {})
+      await refreshBotMemories(bot).catch(() => {})
       render()
       return
     }
@@ -633,7 +641,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         await api('PATCH', `/runtime/bots/${encodeURIComponent(bot)}/memories/${encodeURIComponent(id)}`, { renew: true })
         flash('ok', t('已续期', 'Renewed'))
       }
-      await loadBotDetail(bot)
+      await refreshBotMemories(bot)
     } catch (err) {
       flash('err', err.message)
     }
@@ -1499,6 +1507,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'bot-discard') {
+    const bot = routeBot()
+    if (!bot || !isMyBot(bot) || !state.botDraft || state.busy) return
+    state.botDraft = { ...state.botDraft, ...draftFromBot(bot), extraPrompt: bot.extraPrompt || '' }
+    render()
+    return
+  }
   if (act === 'bot-enabled') {
     if (!state.botDraft) return
     state.botDraft = { ...state.botDraft, enabled: !state.botDraft.enabled }
@@ -1592,11 +1607,18 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'bot-save') {
+    if (state.busy) return
     const base = catalogBase()
     const bot = routeBot()
     const a = state.botDraft
     if (!bot || !a) return
-    // 自己建的那种：只发身份那几个字段。人设、边界、能力在公司模版里，服务端也不收。
+    if (!String(a.name || '').trim()) {
+      flash('err', t('请填写 Bot 名称', 'Enter a bot name'))
+      render()
+      document.getElementById('bot-name')?.focus()
+      return
+    }
+    // Own bots can edit identity and preferences; company capabilities remain inherited.
     if (isMyBot(bot)) {
       await withBusy(async () => {
         const data = await api('PATCH', `/runtime/bots/${encodeURIComponent(bot.id)}`, {
@@ -1608,8 +1630,9 @@ document.getElementById('app').addEventListener('click', async (e) => {
           icon: a.icon,
           knowledgeOff: a.knowledgeOff || [],
         })
+        if (routeBot()?.id !== bot.id) return
         state.bot = data.bot
-        state.botDraft = { ...draftFromBot(data.bot), extraPrompt: data.bot.extraPrompt || '' }
+        state.botDraft = { ...draftFromBot(data.bot), extraPrompt: data.bot.extraPrompt || '', memories: a.memories, memoryUsed: a.memoryUsed, memoryMax: a.memoryMax, memoryError: a.memoryError }
         await loadRuntimeBots().catch(() => {})
         flash('ok', '已保存')
       })
@@ -1634,6 +1657,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         desktop: { on: a.desktopOn !== false },
         memory: { on: a.memoryOn, scope: a.scope, kinds: a.kinds, ttl: a.ttl, cap: a.cap, confirm: a.confirmOn, pii: a.piiOn },
       })
+      if (routeBot()?.id !== bot.id) return
       state.bot = data.bot
       // 存完整份按服务端的回执重建：谁被归一化过（越界的注入上限、认不出的选项）当场就看得见。
       // groups / kbs 还没有落点，先留住手上这份，别一保存就空掉。
@@ -2749,6 +2773,7 @@ document.getElementById('app').addEventListener('input', (e) => {
     return
   }
   // 插件详情里的工具筛选：只藏行，不重画——没保存的勾选在 DOM 里。
+  if (el.getAttribute('data-act') === 'conn-bots-q') { filterConnBots(el); return }
   if (el.getAttribute('data-act') === 'conn-tool-q') {
     filterToolRows(el.value)
     return
@@ -2793,6 +2818,7 @@ document.getElementById('app').addEventListener('input', (e) => {
       return
     }
     setEditingDraft({ ...d, [botField]: el.value })
+    paintBotSettingsActions()
     if (botField === 'prompt') {
       const len = document.querySelector('[data-bot-prompt-len]')
       if (len) len.textContent = t(`${el.value.length} 字 · 每轮随上下文注入`, `${el.value.length} chars · injected each turn`)

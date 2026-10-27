@@ -263,6 +263,10 @@ pub(crate) fn build_window(
         );
     WebviewWindowBuilder::new(app, label, WebviewUrl::CustomProtocol(ui))
         .title(title)
+        .decorations(!crate::window::custom_chrome())
+        // Windows shadows add a white DWM border to undecorated windows.
+        .shadow(!cfg!(target_os = "windows"))
+        .initialization_script(crate::window::initialization_script())
         .inner_size(1280.0, 860.0)
         .min_inner_size(960.0, 600.0)
         .initialization_script(&script)

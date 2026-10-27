@@ -1570,3 +1570,64 @@ html.satu-mobile .gw-shell { height: var(--satu-vvh, 100dvh) !important; }
 /* 键盘弹着时 Home 条那一截被键盘盖着，底下的安全区不用再让；不去掉就是键盘上沿一道底色（实测）。 */
 html.satu-kbd .gw-shell { padding-bottom: 0 !important; }
 html.satu-mobile, html.satu-mobile body { overscroll-behavior: none; }
+
+/* Desktop window controls live outside #app so page renders cannot replace them. */
+.satu-windowbar { position: fixed; z-index: 100; top: 0; left: 0; display: flex; align-items: center; width: 100%; height: 40px; padding-left: 10px; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+.satu-window-controls { display: flex; flex: none; }
+.satu-window-control { display: grid; place-items: center; width: 20px; height: 28px; padding: 0; border: 0; margin: 0; border-radius: 5px; background: transparent; cursor: default; color: #49312a; }
+.satu-window-dot { display: block; width: 12px; height: 12px; box-sizing: border-box; border: 1px solid rgb(0 0 0 / 12%); border-radius: 50%; background: var(--window-dot); }
+.satu-window-control[data-window-action='close'] { --window-dot: #ff5f57; }
+.satu-window-control[data-window-action='minimize'] { --window-dot: #febc2e; }
+.satu-window-control[data-window-action='fullscreen'] { --window-dot: #28c840; }
+.satu-window-dot svg { display: block; width: 10px; height: 10px; opacity: 0; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.satu-window-controls:hover .satu-window-dot svg, .satu-window-controls:focus-within .satu-window-dot svg { opacity: .85; }
+.satu-window-control:focus-visible { outline: 2px solid var(--ring, var(--primary)); outline-offset: 1px; }
+.satu-window-control:active .satu-window-dot { filter: brightness(.83); }
+.satu-window-control:disabled .satu-window-dot, .satu-windowbar[data-focused='false']:not(:hover):not(:focus-within) .satu-window-dot { background: #c9c7c2; border-color: rgb(0 0 0 / 9%); }
+.satu-window-control:disabled .satu-window-dot svg { opacity: 0; }
+.satu-window-drag { flex: 1; height: 100%; min-width: 10px; }
+.satu-window-error { position: fixed; z-index: 110; top: 42px; left: 12px; max-width: min(340px, calc(100vw - 24px)); padding: 10px 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--popover, var(--card)); color: var(--foreground, var(--fg)); box-shadow: 0 4px 16px rgb(0 0 0 / 12%); font: 12px/1.7 -apple-system, BlinkMacSystemFont, sans-serif; overflow-wrap: anywhere; }
+.satu-window-error[hidden] { display: none; }
+
+/* Windows uses a caption strip with controls on the right. */
+html.satu-window-windows .satu-windowbar { height: 36px; width: 100%; padding: 0; background: var(--color-surface, var(--bg)); }
+html.satu-window-windows .satu-window-controls { order: 2; height: 100%; }
+html.satu-window-windows .satu-window-drag { order: 1; display: flex; align-items: center; padding-left: 14px; }
+.satu-window-caption { color: var(--muted-foreground, var(--muted)); font: 12px/1 "Segoe UI", sans-serif; }
+html.satu-window-windows .satu-window-control { width: 46px; height: 36px; border-radius: 0; color: var(--foreground, var(--fg)); }
+.satu-window-glyph { display: flex; align-items: center; justify-content: center; width: 12px; height: 12px; }
+.satu-window-glyph svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1; shape-rendering: geometricPrecision; }
+html.satu-window-windows .satu-window-control:hover:not(:disabled) { background: color-mix(in srgb, var(--foreground, var(--fg)) 9%, transparent); }
+html.satu-window-windows .satu-window-control:active:not(:disabled) { background: color-mix(in srgb, var(--foreground, var(--fg)) 15%, transparent); }
+html.satu-window-windows .satu-window-control[data-window-action='close']:hover { background: #c42b1c; color: #fff; }
+html.satu-window-windows .satu-window-control[data-window-action='close']:active { background: #a82316; }
+html.satu-window-windows .satu-window-control:focus-visible { outline-offset: -3px; }
+html.satu-window-windows .satu-window-control:disabled { opacity: .35; }
+html.satu-window-windows .satu-windowbar[data-focused='false']:not(:hover):not(:focus-within) .satu-window-control { color: var(--muted-foreground, var(--muted)); }
+html.satu-window-windows .satu-window-error { left: auto; right: 12px; }
+
+/* The desktop canvas reaches the window edges; there is no second outer frame. */
+html.satu-custom-window .gw-shell { padding: 0 !important; gap: 0 !important; }
+html.satu-custom-window .gw-side { border-radius: 0 !important; border-right: 1px solid var(--border); }
+html.satu-window-macos .gw-side { padding-top: 44px !important; }
+html.satu-custom-window .gw-main { border: 0; border-radius: 0; }
+html.satu-window-macos body:has(.gw-shell) .satu-windowbar { width: 248px; }
+html.satu-window-macos .gw-shell:has(.satu-rail) { grid-template-columns: 80px minmax(0, 1fr) !important; }
+html.satu-window-macos body:has(.satu-rail) .satu-windowbar { width: 80px; }
+html.satu-custom-window .gw-head { user-select: none; -webkit-user-select: none; }
+html.satu-custom-window body:not(:has(.gw-shell)) #app { padding-top: 40px; }
+html.satu-custom-window .gw-login { min-height: calc(100vh - 40px); min-height: calc(100dvh - 40px); }
+html.satu-custom-window body:not(:has(.gw-shell)) .satu-windowbar { background: var(--color-bg); }
+
+@media (max-width: 800px) {
+  html.satu-window-macos body:has(.gw-shell) .satu-windowbar { width: 80px; }
+  html.satu-window-macos .gw-shell:has(.satu-rail) { grid-template-columns: minmax(0, 1fr) !important; }
+  html.satu-window-macos .gw-head { padding-left: 84px; }
+}
+
+/* Reserve caption space for every Windows page, including login and right-side panels. */
+html.satu-window-windows #app { padding-top: 36px; }
+html.satu-window-windows body:not(:has(.gw-shell)) #app { padding-top: 36px; }
+html.satu-window-windows .gw-shell { height: calc(100vh - 36px) !important; height: calc(100dvh - 36px) !important; }
+html.satu-window-windows .gw-login { min-height: calc(100vh - 36px); min-height: calc(100dvh - 36px); }
+html.satu-window-windows body:not(:has(.gw-shell)) .satu-windowbar { background: var(--color-surface, var(--bg)); }

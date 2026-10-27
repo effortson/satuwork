@@ -33,3 +33,8 @@ commands.allow = [
   "desktop_update_check",
   "desktop_update_install",
 ]
+
+[[permission]]
+identifier = "desktop-window-commands"
+description = "允许包内主窗口和设置页控制自身的关闭、最小化、全屏、缩放与拖拽；不能指定其他窗口。"
+commands.allow = ["desktop_window_action", "desktop_window_state"]

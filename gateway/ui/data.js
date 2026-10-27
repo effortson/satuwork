@@ -805,9 +805,10 @@ async function loadBotDetail(botId) {
   state.botDraft = {
     ...draftFromBot(one.bot),
     extraPrompt: one.bot.extraPrompt || '',
-    memories: mems?.items || [],
+    memories: mems ? (mems.items || []) : undefined,
     memoryUsed: mems?.used ?? 0,
     memoryMax: mems?.max ?? 0,
+    memoryError: !mems,
   }
   state.template = tpl?.template || state.template
   state.botOptions = {
@@ -816,6 +817,13 @@ async function loadBotDetail(botId) {
     groups: [],
     kbs: [],
   }
+}
+
+/** Memory actions must not reload the editable configuration and overwrite a draft. */
+async function refreshBotMemories(botId) {
+  const data = await api('GET', `/runtime/bots/${encodeURIComponent(botId)}/memories`)
+  if (routeBot()?.id !== botId || !state.botDraft) return
+  state.botDraft = { ...state.botDraft, memories: data.items || [], memoryUsed: data.used ?? 0, memoryMax: data.max ?? 0, memoryError: false }
 }
 
 /** 审计总结一页几条。一屏放得下、又不至于翻个没完。 */

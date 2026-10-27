@@ -1393,8 +1393,24 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       ui.state.connBotsOpen = 'x2'
       ui.render()
       const open = ui.html()
-      assert(open.includes('data-conn-bots="x2"') && open.includes('指定 Bot') && open.includes('客服'), '展开之后该画两档单选和 Bot 名单')
+      assert(open.includes('data-conn-bots="x2"') && open.includes('指定 Bot') && open.includes('客服'), '弹窗里该画两档单选和 Bot 名单')
       assert(/data-bot="bA" checked/.test(open) && !/data-bot="bB" checked/.test(open), '名单里的该勾上、别的不勾')
+      assert(open.includes('data-conn-bots-root') && open.includes('role="dialog" aria-modal="true"'), '可用 Bot 应在独立设置弹窗里')
+      assert(open.includes('aria-haspopup="dialog"'), '账号行应声明会打开弹窗')
+      assert(open.includes('aria-label="搜索 Bot"') && open.includes('已选 1 个'), '名单应可搜索，并显示已选数量')
+      assert(open.indexOf('data-conn-bots-root') > open.indexOf('GMAIL_FETCH_EMAILS'), '弹窗不应嵌在账号行中挤压工具设置')
+      ui.state.connBotsOpen = 'x3'
+      ui.render()
+      const missing = ui.html()
+      assert(missing.includes('请至少选择一个 Bot 后保存。') && missing.includes('此前选择的 Bot 已被删除'), '空名单和已删除的 Bot 都应解释清楚')
+      assert(/data-act="conn-bots-save"[^>]+disabled/.test(missing), '指定 Bot 为空时不能保存')
+      ui.state.connBotsOpen = 'x2'
+      ui.state.connBotsDraft = { id: 'x2', connectorId, mode: 'bots', botIds: ['bB'], query: '客服', error: '保存失败，请重试', busy: false }
+      ui.render()
+      const draft = ui.html()
+      assert(/data-bot="bB" checked/.test(draft) && !/data-bot="bA" checked/.test(draft), '重绘弹窗应保留未保存的选择')
+      assert(draft.includes('value="客服"') && draft.includes('保存失败，请重试'), '重绘弹窗应保留搜索和失败提示')
+      ui.state.connBotsDraft = null
       ui.state.connBotsOpen = null
       assert(ui.pathAllowed(`/plugins/${connectorId}`), '详情页应该进得去')
     })

@@ -367,8 +367,9 @@ const state = {
   pluginCat: '',
   // 「添加账号」弹窗：{ id, name, phase: 'form' | 'waiting', error, busy }，见 pages-plugins.js 的 connAddModal。
   connAdd: null,
-  // 插件详情里哪一个账号的「可用 Bot」展开着（connection id）。一次只开一个。
+  // 插件账号的「可用 Bot」设置弹窗，一次只打开一个账号。
   connBotsOpen: null,
+  connBotsDraft: null,
   channelBindOpen: false,
   channelBindError: '',
   handoffCount: 0,
@@ -826,6 +827,7 @@ function go(href) {
  * 也跟着带到新页面上。调用前 state.path 要已经是新地址。
  */
 function enterPath() {
+  if (typeof closeConnBots === 'function') closeConnBots({ restoreFocus: false, force: true })
   state.error = ''
   state.notice = ''
   state.addOpen = false

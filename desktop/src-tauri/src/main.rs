@@ -18,6 +18,7 @@ mod runtime;
 mod self_update;
 mod server;
 mod ui;
+mod window;
 
 use local_bot::{clear_update_source, stop_all_local_bots};
 use nav::{build_window, SeatOrigins};
@@ -243,6 +244,10 @@ fn open_setup(app: &AppHandle) -> tauri::Result<()> {
     }
     WebviewWindowBuilder::new(app, SETUP, WebviewUrl::App("index.html".into()))
         .title("连接 Satuwork")
+        .decorations(!crate::window::custom_chrome())
+        // Windows shadows add a white DWM border to undecorated windows.
+        .shadow(!cfg!(target_os = "windows"))
+        .initialization_script(window::initialization_script())
         .inner_size(520.0, 460.0)
         .resizable(false)
         .build()?;
@@ -426,6 +431,8 @@ fn main() {
         .manage(UpdateSource::default())
         .manage(SeatOrigins::default())
         .invoke_handler(tauri::generate_handler![
+            window::desktop_window_action,
+            window::desktop_window_state,
             current_server,
             startup_error,
             connect,

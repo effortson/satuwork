@@ -550,12 +550,12 @@ function storedMemories(a, ro) {
       : `${expired ? `<button type="button" class="sw-skillnote-act" data-act="bot-mem-renew" data-id="${esc(m.id)}">${esc(t('续期', 'renew'))}</button>` : `<button type="button" class="sw-skillnote-act" data-act="bot-mem-pin" data-id="${esc(m.id)}">${esc(m.pinned ? t('取消钉住', 'unpin') : t('钉住', 'pin'))}</button>`}
          ${canLift ? `<button type="button" class="sw-skillnote-act" data-act="bot-mem-lift" data-id="${esc(m.id)}">${esc(t('推给全公司', 'share company-wide'))}</button>` : ''}
          <button type="button" class="sw-skillnote-act" data-act="bot-mem-del" data-id="${esc(m.id)}">${esc(t('删掉', 'delete'))}</button>`
-    return `<div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); padding: 8px 0; border-top: 1px solid var(--border);">
+    return `<div class="bs-memory-row" style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); padding: 8px 0; border-top: 1px solid var(--border);">
       <div style="min-width: 0;">
         <div style="font-size: 13px; ${expired ? 'color: var(--muted-foreground); text-decoration: line-through;' : ''}">${esc(m.text || '')}</div>
         <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">${tags}</div>
       </div>
-      <div style="display: flex; gap: 6px; flex: none;">${acts}</div>
+      <div class="bs-memory-actions" style="display: flex; gap: 6px; flex: none;">${acts}</div>
     </div>`
   }
   const body = live.length
@@ -667,7 +667,7 @@ function botDetailPage() {
  */
 function myMemories(a) {
   // 没拉到就整块不画（同 storedMemories 的口径）：空列表和"还没拉过"不能长得一样。
-  if (!Array.isArray(a.memories)) return ''
+  if (!Array.isArray(a.memories)) return a.memoryError ? `<section class="satu-panel"><h2>${t('记忆暂时无法加载', 'Memories could not be loaded')}</h2><p class="mg-help">${t('配置仍可编辑；重新加载记忆后可查看和管理条目。', 'You can still edit settings. Reload memories to review and manage their entries.')}</p><button type="button" class="btn btn-secondary" data-act="bot-mem-refresh">${t('重新加载记忆', 'Reload memories')}</button></section>` : ''
   const off = a.memoryOn
     ? ''
     : `<p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t(
@@ -677,8 +677,8 @@ function myMemories(a) {
   return `<div class="satu-panel">
     <span class="satu-panel-title">${t('它记下的事实')}</span>
     <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t(
-      '跨对话有效的一句话事实。它自己在对话里记，你在这儿删得掉。记哪几类、留多久由公司模版定。',
-      'Single-sentence facts that carry across conversations. It records them itself; you can delete them here. Which kinds and how long are set by the company template.',
+      '查看并管理跨对话保存的信息。记忆规则由公司模版决定；条目操作单独保存，无需再保存配置。',
+      'Review information saved across conversations. Memory rules come from the company template. Entry changes save separately from settings.',
     )}</p>
     ${off}
     ${storedMemories(a, false)}
@@ -718,77 +718,79 @@ function botVersionLine(bot) {
   </div>`
 }
 
+function personalBotConfig(a) {
+  return { name: a.name || '', description: a.description || '', icon: a.icon || 'bot', enabled: a.enabled !== false,
+    greeting: a.greeting || '', extraPrompt: a.extraPrompt || '', knowledgeOff: [...new Set(a.knowledgeOff || [])].sort() }
+}
+
+function botSettingsDirty(bot, a) {
+  return JSON.stringify(personalBotConfig(bot)) !== JSON.stringify(personalBotConfig(a))
+}
+
+function botSettingsActions(bot, a) {
+  const dirty = botSettingsDirty(bot, a)
+  const valid = !!String(a.name || '').trim()
+  return `<span class="mg-help" role="status">${!valid ? t('请填写 Bot 名称后保存', 'Enter a bot name before saving') : dirty ? t('有未保存的更改', 'Unsaved changes') : t('配置已保存', 'Settings saved')}</span>
+    <div class="bs-save-buttons">${dirty ? `<button type="button" class="btn btn-secondary" data-act="bot-discard" ${state.busy ? 'disabled' : ''}>${t('撤销更改', 'Discard changes')}</button>` : ''}
+    <button type="button" class="btn btn-primary" data-act="bot-save" ${state.busy || !dirty || !valid ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存配置', 'Save settings')}</button></div>`
+}
+
+function paintBotSettingsActions() {
+  const bot = routeBot(), a = state.botDraft
+  const host = document.getElementById('bot-settings-actions')
+  if (host && bot && a && isMyBot(bot)) host.innerHTML = botSettingsActions(bot, a)
+}
+
+function botIdentityPanel(bot, a, ro = false) {
+  const iconPick = avatarKeysFor(isMyBot(bot) ? 'company' : bot.origin).map(key => `<button type="button" class="satu-iconpick" aria-pressed="${a.icon === key}" aria-label="${esc(t(BOT_AVATARS[key]?.label || key))}" title="${esc(t(BOT_AVATARS[key]?.label || key))}" data-act="bot-icon" data-icon="${esc(key)}" ${ro ? 'disabled' : ''}>${botAvatar(key, 34, isMyBot(bot) ? 'company' : bot.origin)}</button>`).join('')
+  return `<section class="satu-panel bs-identity"><div class="mg-sectionhead"><div><h2>${t('基本信息', 'Basic information')}</h2><p>${ro ? t('名称、简介与头像由管理员维护，在此仅供查看。', 'The name, description and avatar are managed by an administrator and shown here for reference.') : t('设置名称、简介与头像，方便在列表中识别这颗 Bot。', 'Set a name, description and avatar to recognize this bot in the list.')}</p></div></div>
+    <div class="mg-form-grid"><label class="field"><span>${t('Bot 名称', 'Bot name')}</span><input class="input" id="bot-name" data-bot="name" value="${esc(a.name || '')}" required ${ro ? 'disabled' : ''} placeholder="${esc(t('例如：客户回访助手', 'e.g. Customer follow-up assistant'))}"></label>
+      <label class="field"><span>${t('简介', 'Description')} <small>${t('选填', 'Optional')}</small></span><input class="input" data-bot="description" value="${esc(a.description || '')}" ${ro ? 'disabled' : ''} placeholder="${esc(t('简要说明这颗 Bot 的用途', 'Briefly describe this bot’s purpose'))}"></label></div>
+    ${ro ? `<div class="bs-avatar-readonly"><span class="bs-avatar-preview">${botAvatarOf({ ...bot, icon: a.icon }, 34)}<span>${t('Bot 头像', 'Bot avatar')}</span></span></div>` : `<details class="bs-avatar-picker"><summary><span class="bs-avatar-preview">${botAvatarOf({ ...bot, icon: a.icon, origin: isMyBot(bot) ? 'company' : bot.origin }, 34)}<span>${t('Bot 头像', 'Bot avatar')}</span></span><span>${t('更换头像', 'Change avatar')}</span></summary><div class="satu-iconrow">${iconPick}</div></details>`}
+    ${botToggle(t('启用 Bot', 'Enable bot'), ro ? t('启用状态由管理员维护，无法在这里修改。', 'The enabled state is managed by an administrator and cannot be changed here.') : t('保存后生效。启用状态与运行设备是否在线分别管理。', 'Takes effect after saving. Enabling a bot is separate from its device being online.'), a.enabled, ro ? '' : 'bot-enabled')}
+  </section>`
+}
+
+function botSettingsInfo(bot, a) {
+  const own = isMyBot(bot)
+  return `<aside class="bs-settings-aside"><section class="satu-panel"><h2>${t('运行与管理', 'Runtime & management')}</h2>
+    <dl class="bs-facts"><div><dt>${t('Bot 类型', 'Bot type')}</dt><dd>${own ? bot.runtimeKind === 'local' ? t('本地 Bot', 'Local bot') : t('远程 Bot', 'Remote bot') : t('全局 Bot', 'Global bot')}</dd></div>
+      <div><dt>${t('模型', 'Model')}</dt><dd>${esc(a.model || '—')}<small>${t('由平台统一指定', 'Managed by the platform')}</small></dd></div>
+      ${own ? `<div><dt>${t('公司模版', 'Company template')}</dt><dd>v${esc(String(bot.templateVersion || state.template?.version || 1))}<small>${t('行为边界与能力由公司管理员维护', 'Guardrails and capabilities are managed by your company admin')}</small></dd></div>` : ''}</dl>
+    ${own ? `<div class="bs-version">${botVersionLine(bot)}</div>` : ''}
+  </section>${!isOwner() ? `<section class="satu-panel"><h2>${t('主 Bot', 'Main bot')}</h2><p class="mg-help">${t('将常用的 Bot 设为主 Bot，方便日常进入和使用。此设置会立即保存。', 'Set your usual bot as the main bot for everyday access. This preference saves immediately.')}</p><div class="bs-main-bot">${mainBotToggle(bot)}</div></section>` : ''}</aside>`
+}
+
+function botDeletePanel(bot) {
+  return `<details class="mg-disclosure bs-danger"><summary>${t('删除 Bot', 'Delete bot')}</summary><div class="mg-disclosure-body"><p class="mg-help">${bot.runtimeKind === 'local'
+    ? t('删除后配置与会话将移除，本地工作目录和审计记录保留。正在使用此 Bot 的任务与渠道将受影响。', 'Deleting removes settings and conversations while keeping the local workspace and audit records. Tasks and channels using this bot will be affected.')
+    : t('删除后配置、会话与运行环境将移除，审计记录保留。正在使用此 Bot 的任务与渠道将受影响。', 'Deleting removes settings, conversations and the runtime environment while keeping audit records. Tasks and channels using this bot will be affected.')}</p>
+    <button type="button" class="btn btn-secondary rs-danger-action" data-act="${bot.legacy ? 'legacy-bot-delete' : 'bot-delete'}" data-id="${esc(bot.id)}" data-name="${esc(bot.name)}">${t('删除这个 Bot', 'Delete this bot')}</button></div></details>`
+}
+
 function myBotPage(bot, a) {
-  const tplVersion = bot.templateVersion || state.template?.version || 1
+  const version = bot.templateVersion || state.template?.version || 1
   const opts = state.botOptions || { skills: [], mcps: [] }
-  const iconPick = avatarKeysFor('company').map((key) => {
-    const on = a.icon === key
-    const label = t(BOT_AVATARS[key]?.label || key)
-    return `<button type="button" class="satu-iconpick" aria-pressed="${String(on)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="bot-icon" data-icon="${esc(key)}">${botAvatar(key, 34, 'company')}</button>`
-  }).join('')
   const base = { ...a, prompt: state.template?.prompt || '', skills: state.template?.skills || [], mcps: state.template?.mcps || [] }
-  return `
-    <div class="gw-page">
-      <div class="gw-page-inner" style="max-width: 820px; gap: var(--space-4);">
-        <div class="satu-panel">
-          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
-            <div style="display: flex; align-items: flex-start; gap: var(--space-3); min-width: 0; flex: 1;">
-              ${botAvatarOf({ ...bot, icon: a.icon, origin: 'company' }, 42)}
-              <div style="min-width: 0; flex: 1; display: flex; flex-direction: column; gap: var(--space-2);">
-                <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
-                  <input class="input" style="max-width: 280px; font-family: var(--font-heading); font-size: 16px; font-weight: 600;" data-bot="name" value="${esc(a.name)}" placeholder="${esc(t('助理名字'))}">
-                  <span class="tag ${a.enabled ? 'tag-accent-2' : 'tag-neutral'}">${a.enabled ? t('已上线') : t('未上线')}</span>
-                  <span class="tag tag-neutral">${bot.runtimeKind === 'local' ? t('本地 Bot', 'Local bot') : t('远程 Bot', 'Remote bot')}</span>
-                  ${mainBotToggle(bot)}
-                </div>
-                <input class="input" data-bot="description" value="${esc(a.description)}" placeholder="${esc(t('简介'))}">
-                <div style="font-size: 12.5px; color: var(--muted-foreground);">${t(`模型 ${esc(a.model || '—')}（平台指定）`, `model ${esc(a.model || '—')} (set by the platform)`)}</div>
-                ${botVersionLine(bot)}
-                <div class="satu-iconrow">${iconPick}</div>
-              </div>
-            </div>
-            <div style="display: flex; align-items: center; gap: var(--space-2); flex: none;">
-              <button type="button" class="satu-switch" aria-pressed="${String(!!a.enabled)}" aria-label="${esc(t('上线'))}" data-act="bot-enabled"><span></span></button>
-            </div>
-          </div>
-        </div>
-
-        <div class="satu-panel">
-          <span class="satu-panel-title">${t('这个 Bot 的补充说明')}</span>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">
-            ${t('写它专门负责什么、有什么习惯。这段接在公司模版的人设<b>后面</b>，不会替掉它——公司改了模版，你这段还在。', 'Say what this one is for and how it should behave. It is appended <b>after</b> the company persona, never replaces it — when the template changes, your note stays.')}
-          </p>
-          <textarea class="input satu-code" rows="6" data-bot="extraPrompt" placeholder="${esc(t('例如：你专门跟进华东区的客户回访，回复里带上客户名和上次联系时间。'))}">${esc(a.extraPrompt || '')}</textarea>
-          <div class="field">
-            <label for="bot-greeting">${t('开场问候')}</label>
-            <input class="input" id="bot-greeting" type="text" data-bot="greeting" value="${esc(a.greeting)}">
-          </div>
-        </div>
-
-        <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-2);">
-          <h2 style="font-size: 16px; margin: 0;">${t('继承自公司模版')}</h2>
-          <span class="tag tag-accent-2">v${esc(String(tplVersion))}</span>
-          <span style="font-size: 12.5px; color: var(--muted-foreground);">${t('由公司管理员统一维护，改了这里所有人的 Bot 一起变。', 'Maintained by your company admin; a change here moves everyone at once.')}</span>
-        </div>
-        <div class="satu-panel">
-          <span class="satu-panel-title" style="text-transform: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; letter-spacing: 0;">soul.md</span>
-          <textarea class="input satu-code" rows="8" disabled>${esc(base.prompt)}</textarea>
-        </div>
-        ${guardsPanel(base, true)}
-        ${capabilityPanel(base, opts, true)}
-        ${myKnowledgePanel(bot, a)}
-        ${myMemories(a)}
-
-        ${flashes()}
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);">
-          <button type="button" class="satu-linkbtn" style="text-align: left;" data-act="bot-delete">${t('删除这个 Bot')}</button>
-          <button type="button" class="btn btn-primary" data-act="bot-save" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存配置')}</button>
-        </div>
-        <p style="margin: 0 0 var(--space-4); font-size: 12px; color: var(--muted-foreground);">${bot.runtimeKind === 'local'
-          ? t('删除会移除这颗 Bot 的配置与会话；这台电脑上的工作目录保留，避免误删你的文件。', 'Deleting removes this bot and its conversations; its local workspace is kept to avoid deleting your files.')
-          : t('删除会连它的席位一起拆掉，机器上那块屏和这个 Bot 的会话都不再保留。', 'Deleting also tears down its seat — that screen and this bot\'s conversations are gone.')}</p>
-      </div>
-    </div>`
+  return `<div class="gw-page bs-settings-page"><div class="gw-page-inner bs-settings-inner">
+    ${pageHead(`<span class="bs-title">${botAvatarOf({ ...bot, icon: a.icon, origin: 'company' }, 40)}<span>${esc(bot.name || a.name)}</span><span class="tag ${a.enabled ? 'mg-status-ok' : 'tag-neutral'}">${a.enabled ? t('已启用', 'Enabled') : t('已停用', 'Disabled')}</span></span>`, t('管理这颗 Bot 的身份与工作偏好，查看知识、记忆和继承配置。', 'Manage this bot’s identity and working preferences, and review its knowledge, memories and inherited settings.'), `<button type="button" class="btn btn-secondary" data-act="go" data-href="/a/${esc(encodeURIComponent(bot.id))}">${t('返回对话', 'Back to chat')}</button>`)}
+    <fieldset class="bs-settings-fields" aria-label="${t('Bot 配置', 'Bot settings')}" ${state.busy ? 'disabled' : ''}><div class="bs-settings-layout"><div class="bs-settings-main">
+      ${botIdentityPanel(bot, a)}
+      <section class="satu-panel"><div class="mg-sectionhead"><div><h2>${t('这个 Bot 的补充说明', 'Instructions for this bot')}</h2><p>${t('说明它专门负责的工作、回复方式与注意事项。这段内容会补充在公司模版之后。', 'Describe its role, reply style and preferences. These instructions are appended to the company template.')}</p></div></div>
+        <label class="field"><span>${t('工作说明', 'Working instructions')}</span><textarea class="input bs-instructions" rows="6" data-bot="extraPrompt" placeholder="${esc(t('例如：负责跟进客户回访；回复时带上客户名和上次联系时间。', 'Example: Follow up with customers; include their name and the date of the previous contact.'))}">${esc(a.extraPrompt || '')}</textarea></label>
+        <p class="mg-help bs-help">${t('公司更新模版时，这颗 Bot 的补充说明会保留。', 'These instructions remain when your company updates the template.')}</p>
+        <label class="field"><span>${t('开场问候', 'Greeting')}</span><input class="input" id="bot-greeting" data-bot="greeting" value="${esc(a.greeting || '')}" placeholder="${esc(t('例如：你好，今天需要我协助什么？', 'e.g. Hello, how can I help today?'))}"></label>
+      </section>
+    </div>${botSettingsInfo(bot, a)}</div>
+    ${myKnowledgePanel(bot, a)}${myMemories(a)}
+    <details class="mg-disclosure bs-template"><summary><span>${t('继承自公司模版', 'Inherited from company template')}</span><span class="tag tag-neutral">v${esc(String(version))}</span><span class="bs-readonly-label">${t('只读', 'Read-only')}</span></summary><div class="bs-inherited">
+      <p class="mg-notice">${t('以下配置由公司管理员统一维护。这里可查看生效内容，个人设置不会覆盖公司的人设、行为边界与能力。', 'These settings are managed by your company admin. Review them here; personal settings do not override the company persona, guardrails or capabilities.')}</p>
+      <section class="satu-panel"><h2>${t('公司人设与工作原则', 'Company persona & principles')}</h2><textarea class="input satu-code" rows="7" aria-label="${t('公司模版人设（只读）', 'Company persona (read-only)')}" disabled>${esc(base.prompt)}</textarea></section>
+      ${guardsPanel(base, true)}${capabilityPanel(base, opts, true)}
+    </div></details>
+    ${botDeletePanel(bot)}</fieldset>
+    <div class="bs-savebar">${flashes()}<div id="bot-settings-actions">${botSettingsActions(bot, a)}</div></div>
+  </div></div>`
 }
 
 /**
@@ -807,7 +809,7 @@ function myKnowledgePanel(bot, a) {
   }).join('')
   return `<div class="satu-panel">
     <span class="satu-panel-title">${t('知识库')}</span>
-    <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('公司共享给这颗 Bot 的资料。关掉的它就不查了，想用时再打开。要加新的库，请公司管理员在「知识库」页共享。', 'Company documents shared with this bot. Switch one off and the bot stops searching it; switch it back on any time. Ask a company admin to share more on the Knowledge page.')}</p>
+    <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('选择这颗 Bot 使用哪些公司资料。更改需保存配置；新增资料请联系管理员在知识库中共享。', 'Choose which shared company documents this bot can use. Save settings to apply changes. Ask an admin to share additional knowledge bases.')}</p>
     ${rows || `<span style="font-size: 12px; color: var(--muted-foreground);">${t('还没有共享给这颗 Bot 的知识库。', 'No knowledge base has been shared with this bot yet.')}</span>`}
   </div>`
 }
@@ -815,82 +817,19 @@ function myKnowledgePanel(bot, a) {
 /** 全局 Bot（owner 编辑 / 公司侧只读），以及改版前留下的公司 Bot。 */
 function fullBotPage(bot, a) {
   const ro = readOnlyItem(bot)
-  const opts = state.botOptions || { skills: [], mcps: [], groups: [], kbs: [] }
-  const iconPick = avatarKeysFor(bot.origin).map((key) => {
-    const on = a.icon === key
-    const label = t(BOT_AVATARS[key]?.label || key)
-    return `<button type="button" class="satu-iconpick" aria-pressed="${String(on)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="bot-icon" data-icon="${esc(key)}" ${ro ? 'disabled' : ''}>${botAvatar(key, 34, bot.origin)}</button>`
-  }).join('')
-  const roNote = bot.legacy
-    ? t('这个 Bot 建于 Bot 模版之前，已经停用。公司的底座现在在「Bot 模版」那一页。', 'This bot predates the company template and is disabled. The company base now lives on the Bot template page.')
-    : t('全局 Bot 由系统管理员维护')
-  return `
-    <div class="gw-page">
-      <div class="gw-page-inner" style="max-width: 820px; gap: var(--space-4);">
-        ${/* 「已保存」画在最下面那排按钮旁边——保存键在页尾，结论也该在那儿。 */ ''}
-        <div class="satu-panel">
-          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
-            <div style="display: flex; align-items: flex-start; gap: var(--space-3); min-width: 0; flex: 1;">
-              ${botAvatarOf({ ...bot, icon: a.icon }, 42)}
-              <div style="min-width: 0; flex: 1; display: flex; flex-direction: column; gap: var(--space-2);">
-                <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
-                  <input class="input" style="max-width: 280px; font-family: var(--font-heading); font-size: 16px; font-weight: 600;" data-bot="name" value="${esc(a.name)}" placeholder="${esc(t('助理名字'))}" ${ro ? 'disabled' : ''}>
-                  <span class="tag ${a.enabled ? 'tag-accent-2' : 'tag-neutral'}">${a.enabled ? t('已上线') : t('未上线')}</span>
-                  ${bot.legacy ? `<span class="tag tag-neutral">${t('已停用')}</span>` : ''}
-                  ${/* 主 Bot 是个人视图，只读的全局 Bot 也能设：它是「我最常用的那颗」，不是在改它。 */ ''}
-                  ${isOwner() ? '' : mainBotToggle(bot)}
-                </div>
-                <input class="input" data-bot="description" value="${esc(a.description)}" placeholder="${esc(t('简介'))}" ${ro ? 'disabled' : ''}>
-                ${/* 模型不给挑：平台在「模型配置」里定的那一个，所有 Bot 都用它。 */ ''}
-                <div style="font-size: 12.5px; color: var(--muted-foreground);">${t(`本月执行 ${esc(bot.usage || '—')}`, `${esc(bot.usage || '—')} this month`)} · ${t(`模型 ${esc(a.model || '—')}（平台指定）`, `model ${esc(a.model || '—')} (set by the platform)`)}</div>
-                <div class="satu-iconrow">${iconPick}</div>
-              </div>
-            </div>
-            <div style="display: flex; align-items: center; gap: var(--space-2); flex: none;">
-              <button type="button" class="satu-switch" aria-pressed="${String(!!a.enabled)}" aria-label="${esc(t('上线'))}" data-act="bot-enabled" ${ro ? 'disabled' : ''}><span></span></button>
-            </div>
-          </div>
-        </div>
-
-        <div class="satu-panel">
-          <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);">
-            <span class="satu-panel-title" style="text-transform: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; letter-spacing: 0;">soul.md</span>
-            <span style="font-size: 12px; color: var(--muted-foreground);" data-bot-prompt-len>${t(`${esc(String(a.prompt.length))} 字 · 每轮随上下文注入`, `${esc(String(a.prompt.length))} chars · injected each turn`)}</span>
-          </div>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('这份文件定义 Agent 的身份、语气与工作原则，每次对话都会随上下文一起注入。')}</p>
-          <textarea class="input satu-code" rows="12" data-bot="prompt" ${ro ? 'disabled' : ''}>${esc(a.prompt)}</textarea>
-          <div class="field">
-            <label for="bot-greeting">${t('开场问候')}</label>
-            <input class="input" id="bot-greeting" type="text" data-bot="greeting" value="${esc(a.greeting)}" ${ro ? 'disabled' : ''}>
-          </div>
-        </div>
-
-        ${guardsPanel(a, ro)}
-        ${capabilityPanel(a, opts, ro)}
-        ${memoryPanel(a, ro)}
-
-        ${ro ? '' : `<div class="satu-panel">
-          <span class="satu-panel-title">${t('可访问范围')}</span>
-          <div class="field">
-            <label>${t('可使用该 Agent 的分组')}</label>
-            ${botPicks('groups', opts.groups, a.groups, t('没有可选项'))}
-          </div>
-          <div class="field">
-            <label>${t('知识库')}</label>
-            ${botPicks('kbs', opts.kbs, a.kbs, t('没有可选项'))}
-          </div>
-        </div>`}
-
-        ${flashes()}
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);">
-          ${ro && !bot.legacy ? '' : `<button type="button" class="satu-linkbtn" style="text-align: left;" data-act="${bot.legacy ? 'legacy-bot-delete' : 'bot-delete'}" data-id="${esc(bot.id)}" data-name="${esc(bot.name)}">${t('删除这个 Bot')}</button>`}
-          <div style="display: flex; gap: var(--space-2);">
-            <button type="button" class="btn btn-primary" data-act="bot-save" ${state.busy || ro ? 'disabled' : ''} ${ro ? 'title="' + esc(roNote) + '"' : ''}>${state.busy ? t('保存中…') : ro ? t('只读') : t('保存配置')}</button>
-          </div>
-        </div>
-        <p style="margin: 0 0 var(--space-4); font-size: 12px; color: var(--muted-foreground);">${ro ? esc(roNote) : t('这一页的设置都会写回目录。行为边界保存即生效（席位一分钟内跟上，拦截发生在工具执行前）。记忆现在还只是存下来：注入还没接到 Bot 上。分组与知识库也还没有落点。', 'Everything here is persisted to the catalog. Guardrails take effect on save — seats pick them up within a minute and enforcement happens before a tool runs. Memory is still stored only: injection is not wired into the bot yet. Groups and knowledge bases have no home yet either.')}</p>
-      </div>
-    </div>`
+  const opts = state.botOptions || { skills: [], mcps: [] }
+  const note = bot.legacy ? t('此 Bot 建于公司模版启用之前，已停用。公司基础配置请在 Bot 模版中维护。', 'This bot predates the company template and has been disabled. Manage company defaults in the Bot template.') : t('全局 Bot 由系统管理员维护', 'Global bots are maintained by the platform administrator')
+  return `<div class="gw-page bs-settings-page"><div class="gw-page-inner bs-settings-inner">
+    ${pageHead(`<span class="bs-title">${botAvatarOf({ ...bot, icon: a.icon }, 40)}<span>${esc(bot.name || a.name)}</span><span class="tag tag-neutral">${ro ? t('只读', 'Read-only') : t('全局 Bot', 'Global bot')}</span></span>`, ro ? esc(note) : t('管理全局 Bot 的身份、工作原则与能力。修改会影响使用此 Bot 的成员。', 'Manage the identity, principles and capabilities of this global bot. Changes affect members who use it.'))}
+    <fieldset class="bs-settings-fields" aria-label="${t('Bot 配置', 'Bot settings')}" ${state.busy ? 'disabled' : ''}><div class="bs-settings-layout"><div class="bs-settings-main">${botIdentityPanel(bot, a, ro)}
+      <section class="satu-panel"><div class="mg-sectionhead"><h2>${t('人设与工作原则', 'Persona & principles')}</h2><span class="mg-help" data-bot-prompt-len>${t(`${(a.prompt || '').length} 字 · 每轮随上下文注入`, `${(a.prompt || '').length} chars · injected each turn`)}</span></div><p class="mg-help">${t('定义这颗 Bot 的职责、语气与工作方式。', 'Define this bot’s role, tone and way of working.')}</p>
+        <textarea class="input satu-code" rows="10" data-bot="prompt" aria-label="${t('人设与工作原则', 'Persona & principles')}" ${ro ? 'disabled' : ''}>${esc(a.prompt || '')}</textarea>
+        <label class="field"><span>${t('开场问候', 'Greeting')}</span><input class="input" id="bot-greeting" data-bot="greeting" value="${esc(a.greeting || '')}" ${ro ? 'disabled' : ''}></label>
+      </section></div>${botSettingsInfo(bot, a)}</div>
+    ${guardsPanel(a, ro)}${capabilityPanel(a, opts, ro)}${memoryPanel(a, ro)}
+    ${!ro || bot.legacy ? botDeletePanel(bot) : ''}</fieldset>
+    <div class="bs-savebar">${flashes()}<div class="bs-full-save"><span class="mg-help">${ro ? esc(note) : t('保存后使用更新后的配置。模型由平台统一指定。', 'Save to use the updated settings. The model is managed by the platform.')}</span><button type="button" class="btn btn-primary" data-act="bot-save" ${state.busy || ro ? 'disabled' : ''}>${state.busy ? t('保存中…') : ro ? t('只读', 'Read-only') : t('保存配置', 'Save settings')}</button></div></div>
+  </div></div>`
 }
 
 /**

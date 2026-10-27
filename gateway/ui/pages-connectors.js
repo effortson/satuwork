@@ -302,56 +302,62 @@ function connBotsSummary(c, bots) {
   return { text: t(`${n} 个 Bot`, `${n} bots`), warn: false }
 }
 
-/**
- * 展开之后那一块：两档单选，选「指定 Bot」时下面是名单。
- *
- * 单选和勾选**只动 DOM、不 render**（见 connectorAct 的 conn-bots-mode / conn-bots-pick）：
- * 没保存的选择只在 DOM 里，整页重画会把它们抹掉。保存时从这一块里读。
- */
+/** Restore an open dialog after an unrelated page render, retaining its draft. */
+function connBotsModal() {
+  const detail = state.connectorDetail
+  const connection = (detail?.connections || []).find(c=>c.id === state.connBotsOpen)
+  return connection ? connBotsPanel(connection, detail.connector.id, detail.bots || []) : ''
+}
+
+function filterConnBots(input) {
+  const panel = input.closest('[data-conn-bots]')
+  if (!panel) return
+  const query = input.value.trim().toLowerCase()
+  if (state.connBotsDraft) state.connBotsDraft.query = input.value
+  let visible = 0
+  for (const row of panel.querySelectorAll('[data-conn-bots-row]')) {
+    const name = row.querySelector('[data-act="conn-bots-pick"]')?.getAttribute('data-bot')
+    const bot = (state.connectorDetail?.bots || []).find(b=>b.id === name)
+    row.hidden = !!query && !(bot?.name || '').toLowerCase().includes(query)
+    if (!row.hidden) visible++
+  }
+  const empty = panel.querySelector('[data-conn-bots-no-match]')
+  if (empty) empty.hidden = !!visible
+}
+
 function connBotsPanel(c, connectorId, bots) {
-  const s = c.bots || { mode: 'all', botIds: [], missing: 0 }
-  const some = s.mode === 'bots'
-  const picked = new Set(s.botIds || [])
+  const saved = c.bots || { mode: 'all', botIds: [] }
+  const draft = state.connBotsDraft?.id === c.id ? state.connBotsDraft : { ...saved, query: '' }
+  const some = draft.mode === 'bots'
+  const picked = new Set(draft.botIds || [])
+  const count = bots.filter(b=>picked.has(b.id)).length
+  const query = (draft.query || '').trim().toLowerCase()
+  const matching = bots.filter(b=>!query || b.name.toLowerCase().includes(query)).length
   const name = `conn-bots-mode-${c.id}`
-  const rows = bots.length
-    ? bots
-        .map(
-          (b) => `<label style="display: flex; align-items: center; gap: var(--space-2); padding: 4px 0; font-size: 13px;">
-          <input type="checkbox" data-act="conn-bots-pick" data-bot="${esc(b.id)}" ${picked.has(b.id) ? 'checked' : ''}>
-          <span style="flex: none; display: inline-flex;">${botAvatar(b.icon, 18, b.origin)}</span>
-          <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(b.name)}</span>
-        </label>`,
-        )
-        .join('')
-    : `<div style="font-size: 13px; color: var(--muted-foreground);">${t('你还没有 Bot。', 'You have no bots yet.')}</div>`
-  return `<div data-conn-bots="${esc(c.id)}" style="flex-basis: 100%; min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius);">
-    <label style="display: flex; align-items: center; gap: var(--space-2); font-size: 13px;">
-      <input type="radio" name="${esc(name)}" value="all" data-act="conn-bots-mode" ${some ? '' : 'checked'}>
-      ${t('所有 Bot（以后新建的也算）', 'All bots (including ones you create later)')}
-    </label>
-    <label style="display: flex; align-items: center; gap: var(--space-2); font-size: 13px;">
-      <input type="radio" name="${esc(name)}" value="bots" data-act="conn-bots-mode" ${some ? 'checked' : ''}>
-      ${t('指定 Bot', 'Only these bots')}
-    </label>
-    <div data-conn-bots-list ${some ? '' : 'hidden'} style="padding-left: var(--space-5); max-height: 240px; overflow: auto;">${rows}</div>
-    ${
-      some && s.missing
-        ? `<div style="font-size: 12px; color: var(--color-accent-800);">${t(
-            `之前选的 Bot 里有 ${s.missing} 个已经删掉了。`,
-            `${s.missing} of the bots picked before have been deleted.`,
-          )}</div>`
-        : ''
-    }
-    <div style="font-size: 12px; color: var(--muted-foreground);">${t(
-      '没勾上的 Bot 看不到这个账号的工具，也不能 @ 它。选「指定 Bot」时，以后新建的 Bot 不会自动加进来。保存后 Bot 一分钟内生效。',
-      'Bots left unchecked cannot see this account’s tools or @ it. With “Only these bots”, bots you create later are not added automatically. Bots pick up the change within a minute.',
-    )}</div>
-    <div data-conn-bots-err hidden style="font-size: 12px; color: var(--color-accent-800);"></div>
-    <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
-      <button type="button" class="btn btn-ghost" data-act="conn-bots-close">${t('取消')}</button>
-      <button type="button" class="btn btn-primary" data-act="conn-bots-save" data-id="${esc(c.id)}" data-connector="${esc(connectorId)}"
-        ${some && !picked.size ? 'disabled' : ''}>${t('保存')}</button>
-    </div>
+  return `<div class="gw-modal-backdrop cb-backdrop" data-conn-bots-root data-act="conn-bots-close">
+    <section class="gw-modal cb-modal" data-conn-bots="${esc(c.id)}" role="dialog" aria-modal="true" aria-labelledby="conn-bots-title" aria-describedby="conn-bots-description" tabindex="-1" aria-busy="${!!draft.busy}">
+      <header class="cb-modal-head"><div><h2 id="conn-bots-title">${t('设置可用 Bot', 'Set available bots')}</h2><p id="conn-bots-description">${t('选择哪些 Bot 可以使用这个账号的工具。', 'Choose which bots can use this account’s tools.')}</p></div>
+        <button type="button" class="btn btn-ghost btn-icon" data-act="conn-bots-close" aria-label="${t('关闭可用 Bot 设置', 'Close available bot settings')}" ${draft.busy ? 'disabled' : ''}>${svg(CLOSE_ICON,16)}</button></header>
+      <div class="cb-modal-body">
+        <div class="cb-account">${connectorLogo(state.connectorDetail?.connector || {})}<div><strong>${esc(c.label || t('账号', 'Account'))}</strong><span>${esc(c.accountName || state.connectorDetail?.connector?.name || '')}</span></div>${c.scope === 'company' ? `<span class="tag tag-neutral">${t('公司共用', 'Company account')}</span>` : ''}</div>
+        <fieldset class="cb-choices" ${draft.busy ? 'disabled' : ''}><legend>${t('可用范围', 'Available to')}</legend>
+          <div class="cb-mode-grid"><label class="cb-mode"><input type="radio" name="${esc(name)}" value="all" data-act="conn-bots-mode" ${some ? '' : 'checked'}><span><strong>${t('所有 Bot', 'All bots')}</strong><small>${t('你的所有 Bot，包含之后新建的 Bot', 'All your bots, including future ones')}</small></span></label>
+            <label class="cb-mode"><input type="radio" name="${esc(name)}" value="bots" data-act="conn-bots-mode" ${some ? 'checked' : ''}><span><strong>${t('指定 Bot', 'Selected bots')}</strong><small>${t('仅允许下方勾选的 Bot 使用', 'Only the bots selected below')}</small></span></label></div>
+          <div class="cb-bot-section" data-conn-bots-list ${some ? '' : 'hidden'}>
+            <div class="cb-list-head"><strong>${t('选择 Bot', 'Select bots')}</strong><span data-conn-bots-count>${t(`已选 ${count} 个`, `${count} selected`)}</span></div>
+            ${bots.length ? `<input class="input cb-search" type="search" data-act="conn-bots-q" value="${esc(draft.query || '')}" aria-label="${t('搜索 Bot', 'Search bots')}" placeholder="${t('按名称搜索 Bot', 'Search bots by name')}">` : ''}
+            <div class="cb-bot-list">${bots.map(b=>`<label class="cb-bot-row" data-conn-bots-row ${query && !b.name.toLowerCase().includes(query) ? 'hidden' : ''}><input type="checkbox" data-act="conn-bots-pick" data-bot="${esc(b.id)}" ${picked.has(b.id) ? 'checked' : ''}>${botAvatar(b.icon,28,b.origin)}<span title="${esc(b.name)}">${esc(b.name)}</span>${b.runtimeKind === 'local' ? `<small>${t('本地', 'Local')}</small>` : ''}</label>`).join('')}
+              <p class="cb-list-empty" data-conn-bots-no-match ${matching ? 'hidden' : ''}>${bots.length ? t('没有匹配的 Bot，请尝试其他名称。', 'No matching bots. Try another name.') : t('暂无可选 Bot。你可以先选择“所有 Bot”，之后创建的 Bot 将自动可用。', 'No bots available yet. Choose “All bots” to include bots you create later.')}</p>
+            </div>
+            <p class="cb-selection-note" data-conn-bots-empty-selection ${some && !count ? '' : 'hidden'}>${t('请至少选择一个 Bot 后保存。', 'Select at least one bot to save.')}</p>
+          </div>
+        </fieldset>
+        ${saved.missing ? `<p class="cb-missing">${t(`有 ${saved.missing} 个此前选择的 Bot 已被删除，请重新确认可用范围。`, `${saved.missing} previously selected bots were deleted. Review the available scope.`)}</p>` : ''}
+        <p class="cb-help">${t('未选中的 Bot 无法使用或 @ 这个账号。选择“指定 Bot”后，新建 Bot 不会自动加入。保存后一分钟内生效。', 'Unselected bots cannot use or @ this account. Future bots are not added to a selected list automatically. Changes take effect within a minute.')}</p>
+      </div>
+      <footer class="cb-modal-footer"><p class="cb-error" data-conn-bots-err role="alert" ${draft.error ? '' : 'hidden'}>${esc(draft.error || '')}</p><div><div class="cb-footer-actions"><button type="button" class="btn btn-secondary" data-act="conn-bots-close" ${draft.busy ? 'disabled' : ''}>${t('取消')}</button>
+        <button type="button" class="btn btn-primary" data-act="conn-bots-save" data-id="${esc(c.id)}" data-connector="${esc(connectorId)}" ${draft.busy || (some && !count) ? 'disabled' : ''}>${draft.busy ? t('保存中…', 'Saving…') : t('保存设置', 'Save settings')}</button></div></div></footer>
+    </section>
   </div>`
 }
 
@@ -361,24 +367,38 @@ function connRowEl(id) {
 }
 
 /**
- * 收起所有展开着的「可用 Bot」，**就地摘节点，不 render**：同一屏「选择工具」里没保存的勾选
+ * 关闭「可用 Bot」弹窗，**就地摘节点，不 render**：同一屏「选择工具」里没保存的勾选
  * 只在 DOM 里（见 pages-plugins.js 的 toolBoxes），整页重画会把它们一起抹掉。
  */
-function closeConnBots() {
+function closeConnBots({ restoreFocus = true, force = false } = {}) {
+  if (state.connBotsDraft?.busy && !force) return false
+  const id = state.connBotsOpen
   state.connBotsOpen = null
-  for (const el of document.querySelectorAll('[data-conn-bots]')) el.remove()
-  for (const b of document.querySelectorAll('[data-act="conn-bots-open"]')) b.setAttribute('aria-expanded', 'false')
+  state.connBotsDraft = null
+  for (const el of document.querySelectorAll('[data-conn-bots-root]')) el.remove()
+  for (const button of document.querySelectorAll('[data-act="conn-bots-open"]')) button.setAttribute('aria-expanded', 'false')
+  if (restoreFocus && id) connRowEl(id)?.querySelector('[data-act="conn-bots-open"]')?.focus()
+  return true
 }
 
-/** 展开着的那一块里，「保存」该不该能按：选了「指定 Bot」却一个没勾时不能。 */
+/** Sync the dialog draft and require a nonempty selected-bot list. */
 function paintConnBotsSave(panel) {
   if (!panel) return
   const some = panel.querySelector('[data-act="conn-bots-mode"][value="bots"]')?.checked === true
   const list = panel.querySelector('[data-conn-bots-list]')
   if (list) list.hidden = !some
-  const n = [...panel.querySelectorAll('[data-act="conn-bots-pick"]')].filter((x) => x.checked).length
+  const checked = [...panel.querySelectorAll('[data-act="conn-bots-pick"]')].filter(x=>x.checked)
+  const draft = state.connBotsDraft
+  if (draft && draft.id === panel.getAttribute('data-conn-bots')) {
+    draft.mode = some ? 'bots' : 'all'
+    draft.botIds = checked.map(x=>x.getAttribute('data-bot'))
+  }
+  const count = panel.querySelector('[data-conn-bots-count]')
+  if (count) count.textContent = t(`已选 ${checked.length} 个`, `${checked.length} selected`)
+  const empty = panel.querySelector('[data-conn-bots-empty-selection]')
+  if (empty) empty.hidden = !some || !!checked.length
   const save = panel.querySelector('[data-act="conn-bots-save"]')
-  if (save) save.disabled = some && n === 0
+  if (save) save.disabled = !!draft?.busy || (some && !checked.length)
 }
 
 /** 一把连接一行：名字、状态、「仅 @ 时可用」、「可用 Bot」、断开。 */
@@ -397,7 +417,7 @@ function connectionRow(c, connectorId) {
   const bots = state.connectorDetail?.bots || []
   const open = state.connBotsOpen === c.id
   const sum = connBotsSummary(c, bots)
-  const botsBtn = `<button type="button" class="satu-linkbtn" data-act="conn-bots-open" data-id="${esc(c.id)}" aria-expanded="${open}"
+  const botsBtn = `<button type="button" class="satu-linkbtn" data-act="conn-bots-open" data-id="${esc(c.id)}" aria-expanded="${open}" aria-haspopup="dialog"
       title="${esc(t('哪些 Bot 用得上这个账号', 'Which bots can use this account'))}"
       style="font-size: 12px;${sum.warn ? ' color: var(--color-accent-800);' : ''}">${t('可用 Bot', 'Bots')}：${esc(sum.text)}</button>`
   return `<div class="rs-connection-row" data-conn-row="${esc(c.id)}" style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0; border-bottom: 1px solid var(--border);">
@@ -420,7 +440,6 @@ function connectionRow(c, connectorId) {
     }
     ${botsBtn}
     ${company ? '' : `<button type="button" class="satu-linkbtn" data-act="conn-disconnect" data-id="${esc(c.id)}" data-connector="${esc(connectorId)}">${t('断开')}</button>`}
-    ${open ? connBotsPanel(c, connectorId, bots) : ''}
   </div>`
 }
 
@@ -780,16 +799,16 @@ async function connectorAct(act, btn) {
   }
   if (act === 'conn-bots-open') {
     const id = btn.getAttribute('data-id')
-    const was = state.connBotsOpen
-    closeConnBots()
-    if (was === id) return true
+    if (state.connBotsDraft?.busy) return true
+    closeConnBots({ restoreFocus: false })
     const detail = state.connectorDetail
-    const c = (detail?.connections || []).find((x) => x.id === id)
-    const row = connRowEl(id)
-    if (!c || !row) return true
+    const c = (detail?.connections || []).find(x=>x.id === id)
+    if (!c) return true
     state.connBotsOpen = id
-    row.insertAdjacentHTML('beforeend', connBotsPanel(c, detail.connector.id, detail.bots || []))
+    state.connBotsDraft = { id, connectorId: detail.connector.id, mode: c.bots?.mode || 'all', botIds: [...(c.bots?.botIds || [])], query: '', error: '', busy: false }
+    document.getElementById('app').insertAdjacentHTML('beforeend', connBotsPanel(c, detail.connector.id, detail.bots || []))
     btn.setAttribute('aria-expanded', 'true')
+    document.querySelector('[data-conn-bots] [data-act="conn-bots-mode"]:checked')?.focus()
     return true
   }
   if (act === 'conn-bots-close') {
@@ -797,43 +816,62 @@ async function connectorAct(act, btn) {
     return true
   }
   if (act === 'conn-bots-mode' || act === 'conn-bots-pick') {
-    // 单选 / 复选的 click 到的时候状态已经翻过来了。只动这一块的 DOM，不 render。
     paintConnBotsSave(btn.closest('[data-conn-bots]'))
     return true
   }
+  if (act === 'conn-bots-q') return true
   if (act === 'conn-bots-save') {
     const id = btn.getAttribute('data-id')
     const connectorId = btn.getAttribute('data-connector')
+    const draft = state.connBotsDraft
+    if (!draft || draft.id !== id || draft.busy) return true
     const panel = btn.closest('[data-conn-bots]')
-    const some = panel?.querySelector('[data-act="conn-bots-mode"][value="bots"]')?.checked === true
-    const botIds = some
-      ? [...panel.querySelectorAll('[data-act="conn-bots-pick"]')].filter((x) => x.checked).map((x) => x.getAttribute('data-bot'))
-      : []
-    if (some && !botIds.length) return true
-    const err = panel?.querySelector('[data-conn-bots-err]')
+    if (!panel) return true
+    paintConnBotsSave(panel)
+    const some = draft.mode === 'bots'
+    if (some && !draft.botIds.length) return true
+    const error = panel.querySelector('[data-conn-bots-err]')
+    const choices = panel.querySelector('fieldset')
+    const closeButtons = [...panel.querySelectorAll('[data-act="conn-bots-close"]')]
+    draft.busy = true
+    draft.error = ''
+    panel.setAttribute('aria-busy', 'true')
+    if (error) error.hidden = true
+    if (choices) choices.disabled = true
+    for (const close of closeButtons) close.disabled = true
     btn.disabled = true
+    btn.textContent = t('保存中…', 'Saving…')
     try {
-      await api(
-        'PUT',
-        `/me/connectors/${encodeURIComponent(connectorId)}/connections/${encodeURIComponent(id)}/bots`,
-        some ? { mode: 'bots', botIds } : { mode: 'all' },
-      )
-      await loadConnectorDetail(connectorId)
+      const data = await api('PUT', `/me/connectors/${encodeURIComponent(connectorId)}/connections/${encodeURIComponent(id)}/bots`, some ? { mode: 'bots', botIds: draft.botIds } : { mode: 'all' })
+      if (state.connBotsDraft !== draft || state.connectorDetail?.connector?.id !== connectorId) return true
+      // The endpoint returns the saved connection. Only update this row, preserving tool selections.
+      state.connectorDetail.connections = state.connectorDetail.connections.map(c=>c.id === id ? { ...c, ...data.connection } : c)
+      closeConnBots({ restoreFocus: false, force: true })
+      const connection = state.connectorDetail.connections.find(c=>c.id === id)
+      const row = connRowEl(id)
+      if (connection && row) row.outerHTML = connectionRow(connection, connectorId)
+      connRowEl(id)?.querySelector('[data-act="conn-bots-open"]')?.focus()
     } catch (e) {
-      // 错就写在这一块里，不 render：重画会把人刚勾的那些按存着的值重置掉，还得重勾一遍。
-      if (err) {
-        err.textContent = errText(e.message)
-        err.hidden = false
+      if (state.connBotsDraft !== draft) return true
+      draft.error = errText(e.message)
+    } finally {
+      draft.busy = false
+      // A roster refresh may replace the dialog while the request is pending.
+      // Touch only this draft's live dialog, never a newly opened one.
+      if (state.connBotsDraft === draft) {
+        const current = document.querySelector('[data-conn-bots]') || panel
+        current.setAttribute('aria-busy', 'false')
+        const liveError = current.querySelector('[data-conn-bots-err]')
+        if (liveError) { liveError.textContent = draft.error; liveError.hidden = !draft.error }
+        const liveChoices = current.querySelector('fieldset')
+        if (liveChoices) liveChoices.disabled = false
+        for (const close of current.querySelectorAll('[data-act="conn-bots-close"]')) close.disabled = false
+        const liveSave = current.querySelector('[data-act="conn-bots-save"]')
+        if (liveSave) liveSave.textContent = t('保存设置', 'Save settings')
+        paintConnBotsSave(current)
+        if (!current.contains(document.activeElement)) liveSave?.focus()
       }
-      btn.disabled = false
-      return true
     }
-    // 只换这一行：按钮上的字就是「存上了」的回执。整页重画会抹掉「选择工具」里没保存的勾选。
-    closeConnBots()
-    const c = (state.connectorDetail?.connections || []).find((x) => x.id === id)
-    const row = connRowEl(id)
-    if (c && row) row.outerHTML = connectionRow(c, connectorId)
-    else render()
     return true
   }
   if (act === 'conn-tool') {
@@ -1012,3 +1050,23 @@ function dollarsToMicros(v) {
   if (!Number.isFinite(n) || n < 0) return null
   return Math.round(n * 1000000)
 }
+
+/** Keep keyboard focus in the available-bot dialog and restore it on close. */
+document.addEventListener('keydown', e => {
+  if (!state.connBotsOpen) return
+  const panel = document.querySelector('[data-conn-bots]')
+  if (!panel) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeConnBots()
+    return
+  }
+  if (e.key !== 'Tab') return
+  const focusable = [...panel.querySelectorAll('button, input, select, textarea, a[href], [tabindex]')].filter(el=>el.tabIndex >= 0 && !el.matches(':disabled') && el.getClientRects().length)
+  if (!focusable.length) { e.preventDefault(); panel.focus(); return }
+  const first = focusable[0], last = focusable[focusable.length - 1]
+  if (!panel.contains(document.activeElement) || (e.shiftKey && document.activeElement === first) || (!e.shiftKey && document.activeElement === last)) {
+    e.preventDefault()
+    ;(e.shiftKey ? last : first).focus()
+  }
+})

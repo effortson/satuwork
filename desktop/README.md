@@ -41,6 +41,19 @@ Gateway」那一屏，把原因摆出来，可以当场改地址。
 SATUWORK_SERVER=http://127.0.0.1:3080 pnpm --filter satuwork-desktop dev
 ```
 
+## 桌面窗口
+
+macOS 主窗口和连接设置窗口不再使用系统标题栏与边框。左上角红绿灯由应用绘制：红色关闭窗口，
+黄色最小化，绿色进入或退出全屏；连接设置窗口尺寸固定，绿色不可用。顶部留白和主界面的标题栏
+可以拖动窗口，双击可缩放。窗口控制独立于页面重绘，登录、切换页面和收起侧栏后仍可用。
+Windows 主窗口和连接设置窗口同样不使用系统标题栏与边框；右上角为应用绘制的最小化、
+最大化／还原和关闭按钮。顶部保留 36px 的拖拽区，双击可最大化或还原，固定尺寸的连接设置
+窗口禁用最大化。移除系统阴影附带的白边后，窗口边缘缩放仍由 Tauri 的原生命中测试处理。
+Linux 继续使用系统窗口控件。
+
+窗口命令只开放给包内主窗口、连接设置页，并且只控制调用命令的那扇窗口，不接受目标窗口参数。
+样式同时存在于 `gateway/ui/app.css` 和设置页的 `shell/window.css`；修改窗口控件样式时需同步。
+
 ## 本地 Bot 直连本机
 
 本地 Bot（建 Bot 时选「本地」的那种）由壳子在这台电脑上起一个 Bot 进程，听 127.0.0.1 的一个
@@ -242,4 +255,4 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
   `desktop-latest` Release——总是对齐到现有 `desktop-v*` 里最新的正式版（纯 `X.Y.Z`，预发布不算）。首页的下载那一段
   （[gateway/ui/pages-landing.js](../gateway/ui/pages-landing.js) 的 `dlBase` / `dlBuilds`）只认
   `desktop-latest`，所以**发新版不用改页面**，打 tag 就完了。Linux 暂未开包。
-- **图标**。网页和应用图标共用原图 [gateway/ui/assets/satuwork-logo.png](../gateway/ui/assets/satuwork-logo.png)。改标志后用 `pnpm --filter satuwork-desktop icon` 和 `pnpm --filter satuwork-mobile icon` 重新生成桌面端、手机端各尺寸；桌面脚本会给 macOS 的 `icon.icns` 单独加透明边距，手机脚本会去掉 iOS 图标的 alpha 通道并同步资源目录。网页直接使用原图，不要用生成的小尺寸图标覆盖它。Android 通知栏使用独立的单色头像 `mobile/push-plugin/android/src/main/res/drawable/ic_satu_notification.xml`，换形象时也需要同步更新。
+- **图标**。网页和应用图标共用原图 [gateway/ui/assets/satuwork-logo.png](../gateway/ui/assets/satuwork-logo.png)。改标志后用 `pnpm --filter satuwork-desktop icon` 和 `pnpm --filter satuwork-mobile icon` 重新生成桌面端、手机端各尺寸；桌面脚本为 macOS 的 `icon.icns` 沿用原图自带的透明留白，不再额外添加边距，以免 Dock 图标偏小，手机脚本会去掉 iOS 图标的 alpha 通道并同步资源目录。网页直接使用原图，不要用生成的小尺寸图标覆盖它。Android 通知栏使用独立的单色头像 `mobile/push-plugin/android/src/main/res/drawable/ic_satu_notification.xml`，换形象时也需要同步更新。
