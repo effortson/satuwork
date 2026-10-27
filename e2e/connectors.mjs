@@ -611,6 +611,11 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       const call = await rpc(B, 'tools/call', { name: 'SEND_EMAIL', arguments: {} }, 2)
       assert(call.json.result?.isError && call.json.result.content[0].text.includes('没有开放给这颗 Bot'), `B 调用该被拦：${call.text}`)
       assert(mock.seen.executed.length === ran, '被拦的调用打到了上游')
+      // 元工具也一样：列表是空的，SW_SEARCH / SW_DESCRIBE 不能把工具和 schema 漏出来。
+      for (const [n, name, args] of [[4, 'SW_SEARCH', { query: 'mail' }], [5, 'SW_DESCRIBE', { tool: 'SEND_EMAIL' }]]) {
+        const meta = await rpc(B, 'tools/call', { name, arguments: args }, n)
+        assert(meta.json.result?.isError && meta.json.result.content[0].text.includes('没有开放给这颗 Bot'), `B 调 ${name} 该被拦：${meta.text}`)
+      }
       const noBot = await req(base, 'POST', path, { token: seatTok, body: { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'SEND_EMAIL', arguments: {} } } })
       assert(noBot.json.result?.isError, `没带 botId 的也该拦：${noBot.text}`)
       const files = await req(base, 'POST', `${path}/files?botId=${B}`, {

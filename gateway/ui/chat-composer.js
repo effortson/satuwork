@@ -1015,7 +1015,7 @@ function closeMentionPick() {
  * 账号收窄到别的 Bot 时，在这颗 Bot 的对话里点不到它。
  */
 function mentionsUrl() {
-  const botId = chatBotIdOf(state.path)
+  const botId = chatBotIdNow()
   return botId ? `/mentions?botId=${encodeURIComponent(botId)}` : '/mentions'
 }
 

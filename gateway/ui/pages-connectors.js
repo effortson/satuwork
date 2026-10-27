@@ -286,7 +286,6 @@ function ownerConnectorsPage() {
 
 // ── 员工：一个连接器的零件（插件页用，见 pages-plugins.js）──────────
 
-/** 一把连接一行：名字、状态、「仅 @ 时可用」、断开。 */
 /**
  * 「可用 Bot」收起时那颗按钮上的字（docs/connector-bot-scope.md）。名单里的 Bot 全被删了时
  * 是红字「没有 Bot 可用」——后端那时谁都不给，不是回到全部，界面要照实说。
@@ -344,15 +343,31 @@ function connBotsPanel(c, connectorId, bots) {
         : ''
     }
     <div style="font-size: 12px; color: var(--muted-foreground);">${t(
-      '没勾上的 Bot 看不到这个账号的工具，也不能 @ 它。选「指定 Bot」时，以后新建的 Bot 不会自动加进来。',
-      'Bots left unchecked cannot see this account’s tools or @ it. With “Only these bots”, bots you create later are not added automatically.',
+      '没勾上的 Bot 看不到这个账号的工具，也不能 @ 它。选「指定 Bot」时，以后新建的 Bot 不会自动加进来。保存后 Bot 一分钟内生效。',
+      'Bots left unchecked cannot see this account’s tools or @ it. With “Only these bots”, bots you create later are not added automatically. Bots pick up the change within a minute.',
     )}</div>
+    <div data-conn-bots-err hidden style="font-size: 12px; color: var(--color-accent-800);"></div>
     <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
       <button type="button" class="btn btn-ghost" data-act="conn-bots-close">${t('取消')}</button>
       <button type="button" class="btn btn-primary" data-act="conn-bots-save" data-id="${esc(c.id)}" data-connector="${esc(connectorId)}"
         ${some && !picked.size ? 'disabled' : ''}>${t('保存')}</button>
     </div>
   </div>`
+}
+
+/** 这把连接那一行的 DOM 节点。不用 CSS.escape：id 是 uuid，但别赌它。 */
+function connRowEl(id) {
+  return [...document.querySelectorAll('[data-conn-row]')].find((el) => el.getAttribute('data-conn-row') === id) || null
+}
+
+/**
+ * 收起所有展开着的「可用 Bot」，**就地摘节点，不 render**：同一屏「选择工具」里没保存的勾选
+ * 只在 DOM 里（见 pages-plugins.js 的 toolBoxes），整页重画会把它们一起抹掉。
+ */
+function closeConnBots() {
+  state.connBotsOpen = null
+  for (const el of document.querySelectorAll('[data-conn-bots]')) el.remove()
+  for (const b of document.querySelectorAll('[data-act="conn-bots-open"]')) b.setAttribute('aria-expanded', 'false')
 }
 
 /** 展开着的那一块里，「保存」该不该能按：选了「指定 Bot」却一个没勾时不能。 */
@@ -366,6 +381,7 @@ function paintConnBotsSave(panel) {
   if (save) save.disabled = some && n === 0
 }
 
+/** 一把连接一行：名字、状态、「仅 @ 时可用」、「可用 Bot」、断开。 */
 function connectionRow(c, connectorId) {
   const status =
     c.status === 'active'
@@ -384,7 +400,7 @@ function connectionRow(c, connectorId) {
   const botsBtn = `<button type="button" class="satu-linkbtn" data-act="conn-bots-open" data-id="${esc(c.id)}" aria-expanded="${open}"
       title="${esc(t('哪些 Bot 用得上这个账号', 'Which bots can use this account'))}"
       style="font-size: 12px;${sum.warn ? ' color: var(--color-accent-800);' : ''}">${t('可用 Bot', 'Bots')}：${esc(sum.text)}</button>`
-  return `<div style="display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-3) 0; border-bottom: 1px solid var(--border);">
+  return `<div data-conn-row="${esc(c.id)}" style="display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-3) 0; border-bottom: 1px solid var(--border);">
     <div style="min-width: 0; flex: 1; display: flex; align-items: center; gap: var(--space-2);">
       <span style="font-size: 14px; font-weight: 600; flex: none;">${esc(c.label)}</span>
       ${/* 供应商认出来的账号（邮箱、登录名）。账号名是人自己起的，连了两个 Gmail 时只有
@@ -762,13 +778,20 @@ async function connectorAct(act, btn) {
   }
   if (act === 'conn-bots-open') {
     const id = btn.getAttribute('data-id')
-    state.connBotsOpen = state.connBotsOpen === id ? null : id
-    render()
+    const was = state.connBotsOpen
+    closeConnBots()
+    if (was === id) return true
+    const detail = state.connectorDetail
+    const c = (detail?.connections || []).find((x) => x.id === id)
+    const row = connRowEl(id)
+    if (!c || !row) return true
+    state.connBotsOpen = id
+    row.insertAdjacentHTML('beforeend', connBotsPanel(c, detail.connector.id, detail.bots || []))
+    btn.setAttribute('aria-expanded', 'true')
     return true
   }
   if (act === 'conn-bots-close') {
-    state.connBotsOpen = null
-    render()
+    closeConnBots()
     return true
   }
   if (act === 'conn-bots-mode' || act === 'conn-bots-pick') {
@@ -785,6 +808,7 @@ async function connectorAct(act, btn) {
       ? [...panel.querySelectorAll('[data-act="conn-bots-pick"]')].filter((x) => x.checked).map((x) => x.getAttribute('data-bot'))
       : []
     if (some && !botIds.length) return true
+    const err = panel?.querySelector('[data-conn-bots-err]')
     btn.disabled = true
     try {
       await api(
@@ -793,13 +817,21 @@ async function connectorAct(act, btn) {
         some ? { mode: 'bots', botIds } : { mode: 'all' },
       )
       await loadConnectorDetail(connectorId)
-      state.connBotsOpen = null
-      // 席位一分钟探一次目录，改完不是立刻生效——照实说。
-      flash('ok', t('已保存，Bot 一分钟内生效', 'Saved — bots pick this up within a minute'))
     } catch (e) {
-      flash('err', e.message)
+      // 错就写在这一块里，不 render：重画会把人刚勾的那些按存着的值重置掉，还得重勾一遍。
+      if (err) {
+        err.textContent = errText(e.message)
+        err.hidden = false
+      }
+      btn.disabled = false
+      return true
     }
-    render()
+    // 只换这一行：按钮上的字就是「存上了」的回执。整页重画会抹掉「选择工具」里没保存的勾选。
+    closeConnBots()
+    const c = (state.connectorDetail?.connections || []).find((x) => x.id === id)
+    const row = connRowEl(id)
+    if (c && row) row.outerHTML = connectionRow(c, connectorId)
+    else render()
     return true
   }
   if (act === 'conn-tool') {

@@ -132,6 +132,9 @@ function runArgsOf(metaArgs: Record<string, unknown>): unknown {
   return rest
 }
 
+/** 「可用 Bot」没勾上这颗时，调用拿到的那句话（docs/connector-bot-scope.md §3.4）。 */
+const NOT_FOR_THIS_BOT = '这个账号没有开放给这颗 Bot。要用的话，去「插件」里这个账号的「可用 Bot」把它加上'
+
 export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
   const { db, meter } = ctx
 
@@ -364,6 +367,12 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
      * `tools/list` 同一档。落进流水表还会把「按工具统计次数」搅浑——`SW_SEARCH` 会
      * 变成这个 toolkit 里调用量最大的「工具」（docs/tool-search.md §7）。只写日志。
      */
+    // 不在「可用 Bot」里：搜和描述也不给——不然列表是空的，SW_SEARCH 却搜得出全部工具和 schema。
+    // 和它们一样不落流水；SW_RUN 和直接调用走下面那道（落一行 denied）。
+    if ((meta === 'search' || meta === 'describe') && !g.visible) {
+      rpcOk(res, id, toolResult(NOT_FOR_THIS_BOT, true))
+      return
+    }
     // 目录暂时不可达：**明说是目录的问题**，并给模型一条还走得通的路。
     if ((meta === 'search' || meta === 'describe') && catalogDown) {
       rpcOk(res, id, toolResult(renderCatalogDown(g.toolkit), true))
@@ -461,7 +470,7 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
     }
     if (!g.visible) {
       await record('denied', true)
-      rpcOk(res, id, toolResult('这个账号没有开放给这颗 Bot。要用的话，去「插件」里这个账号的「可用 Bot」把它加上', true))
+      rpcOk(res, id, toolResult(NOT_FOR_THIS_BOT, true))
       return
     }
     if (allow.size && !allow.has(slug)) {

@@ -216,9 +216,12 @@ function imageModelOf(s: { image?: { provider: string; model: string } }) {
  * 「没变」，收窄了的账号还挂在别的 Bot 上。
  */
 async function connectorStampOf(db: RouteCtx['db'], accountId: string, companyId: string | null) {
-  const installs = await db.connectorInstalls(accountId)
-  const conns = await db.connectionsFor(accountId, companyId)
-  const scopes = [...(await db.botScopesFor(accountId)).values()]
+  const [installs, conns, scopeMap] = await Promise.all([
+    db.connectorInstalls(accountId),
+    db.connectionsFor(accountId, companyId),
+    db.botScopesFor(accountId),
+  ])
+  const scopes = [...scopeMap.values()]
   const updatedAt = [...installs, ...conns, ...scopes].reduce((n, r) => Math.max(n, r.updatedAt), 0)
   return { updatedAt, count: installs.length + conns.length + scopes.length }
 }

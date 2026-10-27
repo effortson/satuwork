@@ -92,8 +92,9 @@ export function connectionVisibleTo(scope: BotScope | undefined, botId: string |
   再合成 MCP 记录。**不可见的整条不下发**，不是下发了再藏——和 `mentionOnly`
   不同：那个要等被点名时立刻能用，这个不会被点名（见 3.3）
 - 没带 `botId` 的调用只拿到 `all` 的那些（和知识库 §8.2 同一个走法）
-- 返回多颗 Bot 的那条老路径（没带 `botId`、`bots` 不止一颗）：`synthIds` 改成按每颗 Bot
-  各算一份再并进各自的 `mcps`，`servers` 里放并集
+- 不按 Bot 拉目录的路径（没带 `botId`，`bots` 是整份名单）**不按每颗 Bot 分算**：端点地址那时也不带
+  `botId`，3.4 那道门会拒，分算出来也调不动。真正的席位（管家部署的和桌面端本地 Bot）都带
+  `SATUWORK_BOT_ID`，一定按 Bot 拉；不带的只剩脚本和开发时手起的进程
 
 ### 3.2 目录指纹
 
