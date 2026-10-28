@@ -450,6 +450,7 @@ function setToken(t) {
 }
 
 function clearToken() {
+  if (typeof clearMobileAiConsent === 'function') clearMobileAiConsent()
   sessionStorage.removeItem(TOKEN_KEY)
   if (!appShell()) return
   try {

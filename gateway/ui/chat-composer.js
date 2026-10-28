@@ -692,6 +692,107 @@ function returnDraft(botId, text, files, mentions, refs = []) {
   paintChatRefs()
 }
 
+const MOBILE_AI_CONSENT_PREFIX = 'satu.mobile.ai-consent.v1:'
+const mobileAiGrants = new Set()
+let mobileAiPromptOpen = false
+let mobileAiPromptCancel = null
+
+function mobileAiSharingInfo() {
+  const accountId = state.me?.account?.id || ''
+  const providers = new Set((state.catalog || []).map((p) => p.provider).filter(Boolean))
+  for (const setting of Object.values(state.settings || {})) {
+    if (setting && typeof setting === 'object' && typeof setting.provider === 'string' && setting.provider) providers.add(setting.provider)
+  }
+  const bot = chatBotOf()
+  if (bot?.provider) providers.add(bot.provider)
+  const recipients = [...providers].sort()
+  return {
+    accountId,
+    recipients,
+    key: MOBILE_AI_CONSENT_PREFIX + JSON.stringify([accountId, window.__SATUWORK_GATEWAY__ || location.origin, recipients]),
+  }
+}
+
+function mobileAiSharingAllowed(info) {
+  if (mobileAiGrants.has(info.key)) return true
+  try { return localStorage.getItem(info.key) === 'allowed' } catch { return false }
+}
+
+function clearMobileAiConsent() {
+  mobileAiPromptCancel?.()
+  mobileAiGrants.clear()
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i)
+      if (key && key.startsWith(MOBILE_AI_CONSENT_PREFIX)) localStorage.removeItem(key)
+    }
+  } catch {}
+}
+
+function requestMobileAiSharing(info) {
+  // A second Send while the permission prompt is open must not queue another copy.
+  if (mobileAiPromptOpen) return Promise.resolve(false)
+  if (!info.accountId || !info.recipients.length) {
+    flash('err', t('还未取得 AI 服务商信息，请稍后再试。', 'AI provider information is not available yet. Please try again shortly.'))
+    return Promise.resolve(false)
+  }
+  mobileAiPromptOpen = true
+  const focus = document.activeElement
+  const host = document.createElement('div')
+  host.innerHTML = modalBox({
+    close: 'mobile-ai-cancel',
+    attrs: 'class="gw-modal" role="dialog" aria-modal="true" aria-labelledby="mobile-ai-title"',
+    title: `<span id="mobile-ai-title">${esc(t('允许向 AI 服务商发送内容？', 'Allow sharing with AI providers?'))}</span>`,
+    sub: esc(t('请先了解请求会发送到哪里。', 'Review where your request will be sent.')),
+    body: `<p>${esc(t('为了完成你的任务，Satuwork 会将你发送的消息、相关对话历史、附件内容和必要的工具结果交给组织配置的 AI 服务商处理。', 'To perform your tasks, Satuwork sends submitted messages, relevant conversation history, attachment contents and necessary tool results to AI providers configured by your organization.'))}</p>
+      <p><strong>${esc(t('组织配置的服务商：', 'Organization-configured providers:'))}</strong> ${esc(info.recipients.join(', '))}</p>
+      <p>${esc(t('服务商的保留与训练政策可能不同。请勿发送你无权共享的个人信息或机密。你可以取消发送；退出登录会撤回本机许可。', 'Provider retention and training practices may differ. Do not send personal or confidential information you are not authorized to share. You can cancel; signing out revokes permission on this device.'))}</p>
+      <p><a href="https://satuwork.com/privacy" target="_blank" rel="noopener noreferrer">${esc(t('隐私政策', 'Privacy Policy'))}</a></p>
+      <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:20px;flex-wrap:wrap">
+        <button type="button" class="btn btn-secondary" data-ai-choice="cancel">${esc(t('暂不发送', 'Not now'))}</button>
+        <button type="button" class="btn btn-primary" data-ai-choice="allow">${esc(t('同意并发送', 'Allow and send'))}</button>
+      </div>`,
+  })
+  document.body.appendChild(host)
+  return new Promise((resolve) => {
+    const finish = (allow) => {
+      const accepted = allow && state.me?.account?.id === info.accountId && mobileAiSharingInfo().key === info.key
+      if (accepted) {
+        mobileAiGrants.add(info.key)
+        try { localStorage.setItem(info.key, 'allowed') } catch {}
+      }
+      document.removeEventListener('keydown', onKey, true)
+      host.remove()
+      mobileAiPromptOpen = false
+      mobileAiPromptCancel = null
+      if (focus?.isConnected) focus.focus()
+      resolve(Boolean(accepted))
+    }
+    const onKey = (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(false) }
+      if (event.key === 'Tab') {
+        const nodes = [...host.querySelectorAll('button,a[href]')]
+        const at = nodes.indexOf(document.activeElement)
+        if ((event.shiftKey && at <= 0) || (!event.shiftKey && at === nodes.length - 1)) {
+          event.preventDefault()
+          nodes[event.shiftKey ? nodes.length - 1 : 0]?.focus()
+        }
+      }
+    }
+    host.addEventListener('click', (event) => {
+      event.stopPropagation()
+      const choice = event.target.closest('[data-ai-choice]')
+      const close = event.target.closest('[data-act="mobile-ai-cancel"]')
+      if (!choice && (!close || close !== event.target && close.classList.contains('gw-modal-backdrop'))) return
+      event.preventDefault()
+      finish(choice?.getAttribute('data-ai-choice') === 'allow')
+    })
+    mobileAiPromptCancel = () => finish(false)
+    document.addEventListener('keydown', onKey, true)
+    host.querySelector('[data-ai-choice="cancel"]')?.focus()
+  })
+}
+
 async function sendChat() {
   const text = (state.chatDraft || '').trim()
   const files = state.chatFiles || []
@@ -785,6 +886,15 @@ async function sendChat() {
     flash('err', t('还没接上席位，这条先挂着——接上就自动发出去'))
     render()
     return
+  }
+  // Keep the draft and files local until permission is given. Cached permission
+  // stays synchronous, so an additional await does not introduce double sends.
+  if (mobileShell()) {
+    const sharing = mobileAiSharingInfo()
+    if (!mobileAiSharingAllowed(sharing)) {
+      if (!await requestMobileAiSharing(sharing)) return
+      if (state.chatSessionId !== sessionId || chatBotIdNow() !== forBot) return
+    }
   }
   // 走到这儿说明会话在手上：之前挂着的那一条（如果有）就是这一条，标记该退场了，
   // 免得这次发完之后 flushHeldSend 又补发一遍。

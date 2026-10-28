@@ -81,6 +81,7 @@ import { runSetup } from './setup.mjs'
 import { runAuthThrottle } from './auth-throttle.mjs'
 import { runPush } from './push.mjs'
 import { runUiSmoke } from './ui-smoke.mjs'
+import { runMobileAiConsent } from './mobile-ai-consent.mjs'
 import { runUiFiles } from './ui-files.mjs'
 import { runCustomProvider } from './custom-provider.mjs'
 import { runStats } from './stats.mjs'
@@ -230,6 +231,7 @@ async function main() {
     await suite('channel-queue', () => runChannelQueue({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('telegram-rich', () => runTelegramRich({ root, test, assert, log }))
     await suite('telegram-channel', () => runTelegramChannel({ root, test, assert, log }))
+    await suite('mobile-ai-consent', () => runMobileAiConsent({ root, test, assert, log }))
     await suite('ui-smoke', () => runUiSmoke({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('ui-files', () => runUiFiles({ root, test, assert, log }))
     await suite('markdown', () => runMarkdown({ root, test, assert, log }))
