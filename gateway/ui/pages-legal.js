@@ -101,8 +101,8 @@ function legalPrivacy() {
     secs: [
       lgSec('pv-scope', t('这份政策管什么', 'What this policy covers'), [
         t(
-          `Satuwork 是由 ${PRIVACY_ENTITY} 提供的企业 AI 同事服务。本声明适用于 Satuwork iOS App、网站及相关托管服务。公司管理员为员工开通账号并管理工作区；也可以选择自行部署服务。`,
-          `Satuwork is an AI coworker service provided by ${PRIVACY_ENTITY}. This notice covers the Satuwork iOS app, website and related hosted services. Organization administrators provision employee accounts and manage workspaces; organizations may also self-host the service.`,
+          `Satuwork 是由 ${PRIVACY_ENTITY} 提供的企业 AI 同事服务。本声明适用于 Satuwork Android 和 iOS App、网站及相关托管服务。公司管理员为员工开通账号并管理工作区；也可以选择自行部署服务。`,
+          `Satuwork is an AI coworker service provided by ${PRIVACY_ENTITY}. This notice covers the Satuwork Android and iOS apps, website and related hosted services. Organization administrators provision employee accounts and manage workspaces; organizations may also self-host the service.`,
         ),
         t(
           '拿这套系统做什么、开通谁、连哪些外部系统，都由你所在的公司决定：在数据保护法的说法里，公司是数据控制者，我们作为软件提供方按公司的指示处理数据。所以关于你那份数据的问题，第一站是公司管理员。',
@@ -144,8 +144,8 @@ function legalPrivacy() {
             'Technical logs: request times, IP addresses, user-agent strings and similar server logs.',
           ),
           t(
-            '通知信息：你允许通知后，保存与账号关联的 APNs 设备推送令牌、设备平台和推送环境，以及通知事件、送达状态和已读状态。令牌用于发送通知，不用于广告或跨 App 跟踪。',
-            'Notifications: if you allow notifications, we store an APNs push token linked to your account, device platform and push environment, together with notification events, delivery status and read state. The token is used for notifications, not advertising or cross-app tracking.',
+            '通知信息：你允许通知后，保存与账号关联的 Android FCM 或 iOS APNs 设备推送令牌、设备平台和推送环境，以及通知事件、送达状态和已读状态。Android Firebase SDK 还会处理安装标识、应用版本和设备技术信息，以提供推送服务。推送标识用于通知，不用于广告或跨 App 跟踪。',
+            'Notifications: if you allow notifications, we store an Android FCM or iOS APNs push token linked to your account, device platform and push environment, together with notification events, delivery status and read state. The Android Firebase SDK also processes installation identifiers, app version and technical device information to provide push messaging. Push identifiers are used for notifications, not advertising or cross-app tracking.',
           ),
           t(
             '手机权限：App 不请求定位、通讯录、相机或麦克风的广泛访问权限。文件只在你主动选取或发送时交给服务；文件内容可能包括文档、照片、音视频或其他你选择的数据。',
@@ -203,8 +203,8 @@ function legalPrivacy() {
             'Infrastructure: your company decides where the Gateway and its database run (own machines or a cloud platform), and the data sits there.',
           ),
           t(
-            '托管服务使用 Vercel 承载网站和 Gateway、Neon 承载业务数据库；配置对象存储时，上传文件或发布包也可由 Vercel Blob 保存。Apple APNs 接收设备令牌及通知载荷来投递 iOS 通知；默认通知使用通用提醒文案而不携带聊天正文。',
-            'Hosted services use Vercel for the website and Gateway and Neon for the business database. When object storage is configured, Vercel Blob may store uploaded files or release packages. Apple APNs receives device tokens and notification payloads to deliver iOS notifications; default alerts use generic text without conversation bodies.',
+            '托管服务使用 Vercel 承载网站和 Gateway、Neon 承载业务数据库；配置对象存储时，上传文件或发布包也可由 Vercel Blob 保存。Google Firebase Cloud Messaging 和 Firebase Installations 处理安装标识、设备推送令牌及必要的应用和设备技术信息来投递 Android 通知；Apple APNs 接收设备令牌及通知载荷来投递 iOS 通知。默认通知使用通用提醒文案而不携带聊天正文。',
+            'Hosted services use Vercel for the website and Gateway and Neon for the business database. When object storage is configured, Vercel Blob may store uploaded files or release packages. Google Firebase Cloud Messaging and Firebase Installations process installation identifiers, device push tokens and necessary app and technical device information to deliver Android notifications. Apple APNs receives device tokens and notification payloads to deliver iOS notifications. Default alerts use generic text without conversation bodies.',
           ),
         ],
         t(
