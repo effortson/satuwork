@@ -442,6 +442,7 @@ export interface MaintenanceStep {
  * 部署对账跟着每一拍都被跳过。
  */
 export const MAINTENANCE_STEPS: MaintenanceStep[] = [
+  { name: '内容举报保留期清理', run: (db) => db.pruneContentReports() },
   { name: '日常任务调度', run: (db) => tickRoutines(db) },
   // 没人来领的试跑跟着每一轮收（见 sweepUnclaimed）。
   { name: '收没人领的试跑', run: (db) => sweepUnclaimed(db) },

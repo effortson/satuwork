@@ -22,10 +22,11 @@ import { SessionsDb } from './db/sessions.ts'
 import { RoutinesDb } from './db/routines.ts'
 import { HandoffsDb } from './db/handoffs.ts'
 import { NotificationsDb } from './db/notifications.ts'
+import { ContentReportsDb } from './db/content-reports.ts'
 
 /**
  * Gateway 自己的库（PostgreSQL）。跟 Bot 的 satuwork.db 不是同一份——
- * 聊天正文永远不该出现在这里。
+ * 不自动存聊天正文；安全举报只保存用户明确选择提交的片段（content_reports）。
  *
  * 驼峰列名一律加引号：PG 不加引号会折成小写，而 `select *` 的结果直接喂给 db/rows.ts 那些
  * mapper。加了引号，写漏的那一刻 PG 就报 column does not exist，不会静默变 undefined。
@@ -52,13 +53,13 @@ import { NotificationsDb } from './db/notifications.ts'
 export class Db extends DbCore {}
 export interface Db
   extends OrgDb, UsageDb, KnowledgeDb, KnowledgeVectorDb, PlansDb, MachinesDb, SeatsDb, CatalogDb,
-    SettingsDb, ChannelsDb, SessionsDb, RoutinesDb, HandoffsDb, NotificationsDb {}
+    SettingsDb, ChannelsDb, SessionsDb, RoutinesDb, HandoffsDb, NotificationsDb, ContentReportsDb {}
 
 /**
  * 把各领域的方法挂到 Db.prototype 上。**撞名直接炸**：两个领域各写了一个同名方法，后挂的
  * 会悄悄盖掉先挂的——宁可启动时就报出来。
  */
-for (const domain of [OrgDb, UsageDb, KnowledgeDb, KnowledgeVectorDb, PlansDb, MachinesDb, SeatsDb, CatalogDb, SettingsDb, ChannelsDb, SessionsDb, RoutinesDb, HandoffsDb, NotificationsDb]) {
+for (const domain of [OrgDb, UsageDb, KnowledgeDb, KnowledgeVectorDb, PlansDb, MachinesDb, SeatsDb, CatalogDb, SettingsDb, ChannelsDb, SessionsDb, RoutinesDb, HandoffsDb, NotificationsDb, ContentReportsDb]) {
   for (const name of Object.getOwnPropertyNames(domain.prototype)) {
     if (name === 'constructor') continue
     if (Object.prototype.hasOwnProperty.call(Db.prototype, name)) {

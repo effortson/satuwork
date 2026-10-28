@@ -1197,6 +1197,8 @@ async function loadPage() {
       await loadOrg()
     } else if (state.path === '/accounts') {
       await loadAccounts()
+    } else if (state.path === '/content-reports') {
+      await loadContentReports()
     } else if (state.path === '/audit') {
       /**
        * 从某条总结的详情页回来：留在原来那一页，人是点开一条看完回来接着往下看的。

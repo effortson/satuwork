@@ -3053,10 +3053,27 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(ok.status === 200, `不带转发头的 models 该 200，实际 ${ok.status} ${ok.text.slice(0, 200)}`)
         })
 
+        await test('企业内容限制：Gateway 与管家在调用供应商前拦截直接的违规生成请求', async () => {
+          const before = upSeen.length
+          for (const [path, body] of [
+            ['/v1/chat/completions', { messages: [{ role: 'user', content: 'Generate pornographic images' }] }],
+            ['/v1/messages', { messages: [{ role: 'user', content: 'Generate pornographic images' }], max_tokens: 16 }],
+            ['/v1/responses', { input: 'Generate pornographic images' }],
+            ['/v1/images/generations', { prompt: 'Generate pornographic images' }],
+          ]) {
+            const result = await req(gwBase, 'POST', path, { token: apiKey, body: { ...body, model: 'test-model' } })
+            assert(result.status === 400, '违规生成请求必须在上游调用前拒绝')
+          }
+          const result = await req(mgrBase, 'POST', '/llm/v1/chat/completions', { token: apiKey, body: { ...chatBody, messages: [{ role: 'user', content: 'Generate pornographic images' }] } })
+          assert(result.status === 400 && upSeen.length === before, '管家拒绝请求时不能调用供应商')
+        })
+
         await test('模型中继：Gateway 那半边——机器票直接领授权，钱只收一次但 token 会补正', async () => {
+          const legacy = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, route: 'chat', model: 'legacy-test' } })
+          assert(legacy.status === 409 && legacy.json.relayable === false, '旧管家必须回落到受保护的 Gateway')
           const grant = await req(gwBase, 'POST', '/worker/llm/grant', {
             token: machineTok,
-            body: { apiKey, route: 'chat', model: `${PROVIDER}/${MODEL}` },
+            body: { apiKey, contentPolicyVersion: 1, route: 'chat', model: `${PROVIDER}/${MODEL}` },
           })
           assert(grant.status === 200, `grant ${grant.status} ${grant.text}`)
           const g = grant.json
@@ -3106,7 +3123,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
            */
           const grant = await req(gwBase, 'POST', '/worker/llm/grant', {
             token: machineTok,
-            body: { apiKey, route: 'chat', model: `${PROVIDER}/${MODEL}` },
+            body: { apiKey, contentPolicyVersion: 1, route: 'chat', model: `${PROVIDER}/${MODEL}` },
           })
           assert(grant.status === 200, `grant ${grant.status} ${grant.text}`)
           const callId = grant.json.callId
@@ -3272,7 +3289,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           // 先确认 Gateway 那头确实是按 409 + relayable:false 说这件事的。
           const grant = await req(gwBase, 'POST', '/worker/llm/grant', {
             token: machineTok,
-            body: { apiKey, route: 'chat', model: `${ANTHRO_PROVIDER}/${ANTHRO_MODEL}` },
+            body: { apiKey, contentPolicyVersion: 1, route: 'chat', model: `${ANTHRO_PROVIDER}/${ANTHRO_MODEL}` },
           })
           assert(grant.status === 409, `Anthropic 协议走 chat 路由该 409，实际 ${grant.status} ${grant.text}`)
           assert(grant.json && grant.json.relayable === false, `409 的正文该写 relayable:false：${grant.text}`)
@@ -3440,16 +3457,16 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
 
         await test('模型中继：机器票那道闸——无票 401、别家 403、坏钥匙 401、未知模型 404、没密钥 402', async () => {
           // 机器票那道闸：无票 401；别家席位的钥匙 403；坏钥匙 401；未知模型 404；没密钥的供应商 402。
-          const noTok = await req(gwBase, 'POST', '/worker/llm/grant', { body: { apiKey, route: 'chat', model: `${PROVIDER}/${MODEL}` } })
+          const noTok = await req(gwBase, 'POST', '/worker/llm/grant', { body: { apiKey, contentPolicyVersion: 1, route: 'chat', model: `${PROVIDER}/${MODEL}` } })
           assert(noTok.status === 401, `无机器票该 401，实际 ${noTok.status}`)
           const badKey = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey: 'sk_sw_nope', route: 'chat', model: `${PROVIDER}/${MODEL}` } })
           assert(badKey.status === 401, `坏钥匙该 401，实际 ${badKey.status} ${badKey.text}`)
           const foreign = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey: strangerKey, route: 'chat', model: `${PROVIDER}/${MODEL}` } })
           assert(foreign.status === 403, `别家席位该 403，实际 ${foreign.status} ${foreign.text}`)
-          const noModel = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, route: 'chat', model: `${PROVIDER}/nope` } })
+          const noModel = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, contentPolicyVersion: 1, route: 'chat', model: `${PROVIDER}/nope` } })
           assert(noModel.status === 404, `未知模型该 404，实际 ${noModel.status} ${noModel.text}`)
           await req(gwBase, 'DELETE', `/platform/credentials/${PROVIDER}`, { token: ownerTok })
-          const noSecret = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, route: 'chat', model: `${PROVIDER}/${MODEL}` } })
+          const noSecret = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, contentPolicyVersion: 1, route: 'chat', model: `${PROVIDER}/${MODEL}` } })
           assert(noSecret.status === 402, `没密钥该 402，实际 ${noSecret.status} ${noSecret.text}`)
           const relayNoSecret = await req(mgrBase, 'POST', '/llm/v1/chat/completions', { token: apiKey, body: chatBody })
           assert(relayNoSecret.status === 402, `管家那头没密钥也该 402 转回来，实际 ${relayNoSecret.status} ${relayNoSecret.text.slice(0, 200)}`)
@@ -3470,7 +3487,7 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
           assert(up.path === '/v1/images/generations', `上游路径 ${up.path}`)
           assert(up.auth === 'Bearer openai-platform-key', `上游收到的是 ${up.auth}`)
           assert(up.body.model === 'gpt-image-2' && !('provider' in up.body), `上游收到的 model/provider 不对：${JSON.stringify(up.body)}`)
-          assert(up.body.prompt === '一只猫' && up.body.stream === true, `请求体被改坏了：${JSON.stringify(up.body)}`)
+          assert(String(up.body.prompt).endsWith('\n\n一只猫') && String(up.body.prompt).includes('[Satuwork enterprise content policy v1]') && up.body.stream === true, `请求体被改坏了：${JSON.stringify(up.body)}`)
           // 结算在响应写完之后才报回 Gateway，给它两拍。
           await new Promise((res) => setTimeout(res, 400))
           const after = await rawUsage(adminTok)
@@ -3512,9 +3529,9 @@ export async function runManager({ root, gwRoot, test, req, start, waitHttp, ass
         })
 
         await test('模型中继：生图和对话各走各的路，走错了是 400 不是退回 /v1', async () => {
-          const chatAsImage = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, route: 'images', model: `${ANTHRO_PROVIDER}/${ANTHRO_MODEL}` } })
+          const chatAsImage = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, contentPolicyVersion: 1, route: 'images', model: `${ANTHRO_PROVIDER}/${ANTHRO_MODEL}` } })
           assert(chatAsImage.status === 400 && /不是生图模型/.test(chatAsImage.text), `对话模型走 images 该 400，实际 ${chatAsImage.status} ${chatAsImage.text}`)
-          const imageAsChat = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, route: 'chat', model: 'openai/gpt-image-2' } })
+          const imageAsChat = await req(gwBase, 'POST', '/worker/llm/grant', { token: machineTok, body: { apiKey, contentPolicyVersion: 1, route: 'chat', model: 'openai/gpt-image-2' } })
           assert(imageAsChat.status === 400 && /生图模型/.test(imageAsChat.text), `生图模型走 chat 该 400，实际 ${imageAsChat.status} ${imageAsChat.text}`)
         })
 

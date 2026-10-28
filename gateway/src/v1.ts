@@ -11,6 +11,12 @@ import { accountFromJwtToken } from './lib/guards.ts'
 import { accountByApiKey, gateOr402, recordLlmCall, withSettle, type RunOutcome } from './lib/llm-billing.ts'
 import { str } from './lib/util.ts'
 import { bodyOf } from './lib/validate.ts'
+import { applyEnterpriseContentPolicy, enterpriseContentViolation } from '../../manager/src/content-policy.ts'
+
+function protectContent(body: Record<string, unknown>, route: string) {
+  if (enterpriseContentViolation(body)) throw new HttpError(400, 'Satuwork 仅用于企业工作，不提供色情或露骨暴力内容。请改为安全的工作请求。')
+  applyEnterpriseContentPolicy(body, route)
+}
 
 /**
  * `Authorization: Bearer` 或 `x-api-key`。后者是 Anthropic SDK 的写法，
@@ -636,6 +642,7 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
   router.post('/v1/chat/completions', async (req, res) => {
     const account = await requireUser(req, db, keys)
     const body = bodyOf(req)
+    protectContent(body, 'chat')
     const modelRaw = str(body.model)
     if (!modelRaw) throw new HttpError(400, 'model 不能为空')
     const hint = str(body.provider) || undefined
@@ -657,6 +664,7 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
   router.post('/v1/responses', async (req, res) => {
     const account = await requireUser(req, db, keys)
     const body = { ...bodyOf(req) }
+    protectContent(body, 'responses')
     const modelRaw = str(body.model)
     if (!modelRaw) throw new HttpError(400, 'model 不能为空')
     const found = await resolveOr404(llm, account.companyId, modelRaw, str(body.provider) || 'openai')
@@ -705,6 +713,7 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
     router.post(path, async (req, res) => {
       const account = await requireUser(req, db, keys)
       const body = { ...bodyOf(req) }
+      protectContent(body, route)
       const modelRaw = str(body.model)
       if (!modelRaw) throw new HttpError(400, 'model 不能为空')
       const found = await resolveOr404(llm, account.companyId, modelRaw, str(body.provider) || undefined)
@@ -728,6 +737,7 @@ export function attachV1(router: Router, db: Db, keys: JwtKeys, llm: Llm, meter:
   router.post('/v1/messages', async (req, res) => {
     const account = await requireUser(req, db, keys)
     const body = { ...bodyOf(req) }
+    protectContent(body, 'messages')
     const modelRaw = str(body.model)
     if (!modelRaw) throw new HttpError(400, 'model 不能为空')
     const found = await resolveOr404(llm, account.companyId, modelRaw, str(body.provider) || 'anthropic')

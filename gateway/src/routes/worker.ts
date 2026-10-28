@@ -513,6 +513,9 @@ function attachLlmRelay(router: Router, { db, llm, meter }: RouteCtx) {
     const account = await accountByApiKey(db, strField(body, 'apiKey'))
     // 只能替本机席位上的账号要授权。smt_ 泄一把，能拿到的密钥也只是这台机器上那几家的。
     if (!(await seatOnMachine(db, machine, account.id))) throw new HttpError(403, '这个账号的席位不在这台机器上')
+    // Older relays already understand this fallback response. Do not hand them provider
+    // credentials until they implement the enterprise content safeguards.
+    if (body.contentPolicyVersion !== 1) throw new HttpError(409, '请通过 Gateway 应用企业内容限制，或更新管家。', { relayable: false })
     const modelRaw = strField(body, 'model')
     const provider = body.provider == null ? '' : strField(body, 'provider', false)
     // 和 /v1 的两条透传路由一样：没给 provider 时按路由的原生厂商猜。

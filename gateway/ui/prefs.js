@@ -155,6 +155,7 @@ const PATHS = {
   '/company': { title: '公司/席位' },
   '/accounts': { title: '员工' },
   '/audit': { title: '审计' },
+  '/content-reports': { title: '内容举报' },
   '/companies': { title: '公司' },
   '/machines': { title: '机器管理' },
   '/releases': { title: '机器配置' },
@@ -461,6 +462,7 @@ const OWNER_NAV_GROUPS = [
     items: [
       { href: '/companies', label: '公司', icon: 'company' },
       { href: '/users', label: '用户', icon: 'accounts' },
+      { href: '/content-reports', label: '内容举报', icon: 'audit' },
     ],
   },
   {

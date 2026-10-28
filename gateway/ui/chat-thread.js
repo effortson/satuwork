@@ -23,6 +23,9 @@ function openMsgMenu(row, x, y) {
   const seq = row.getAttribute('data-seq')
   const md = row.querySelector('.sw-bubble .sw-md')
   const items = []
+  if (seq && row.getAttribute('data-role') === 'assistant') {
+    items.push('<button type="button" class="sw-msgmenu-item" data-act="content-report-open" data-seq="' + esc(seq) + '" data-key="' + esc(row.getAttribute('data-key') || '') + '">' + esc(t('举报内容', 'Report content')) + '</button>')
+  }
   if (seq) items.push(`<button type="button" class="sw-msgmenu-item" data-act="chat-ref-msg" data-seq="${esc(seq)}">${ICON_QUOTE}<span>${esc(t('引用', 'Quote'))}</span></button>`)
   if (md && md.innerText.trim()) {
     items.push(`<button type="button" class="sw-msgmenu-item" data-act="msg-copy" data-key="${esc(row.getAttribute('data-key') || '')}">${svg(['M9 9h10v12H9z', 'M5 15V3h10'], 15)}<span>${esc(t('复制', 'Copy'))}</span></button>`)
@@ -238,6 +241,19 @@ function updateRow(el, b, streaming, since) {
     }
   }
   if (acts) acts.hidden = qseq == null || Boolean(streaming) || Boolean(b.pending)
+  let report = el.querySelector('.sw-content-report')
+  if (b.kind === 'assistant' && qseq != null && !streaming && !b.pending) {
+    if (!report) {
+      report = document.createElement('button')
+      report.type = 'button'
+      report.className = 'sw-content-report'
+      report.setAttribute('data-act', 'content-report-open')
+      el.querySelector('.sw-msg-col')?.appendChild(report)
+    }
+    report.setAttribute('data-seq', String(qseq))
+    report.setAttribute('data-key', el.getAttribute('data-key') || '')
+    report.textContent = t('举报内容', 'Report content')
+  } else if (report) report.remove()
 
   // 混排的点名（inline）就地画在正文里（见 inlineMentionPills），这一排只留老格式的那些。
   const ments = (b.mentions || []).filter((m) => !m.inline)
