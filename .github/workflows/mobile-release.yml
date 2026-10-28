@@ -116,6 +116,7 @@ jobs:
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: './mobile/src-tauri -> target'
+          cache-on-failure: true
 
       # tauri ios build 会按 gen/apple/project.yml 同步 Xcode 工程，要 xcodegen。
       - name: 装 xcodegen
@@ -168,6 +169,9 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           IPHONEOS_DEPLOYMENT_TARGET: '15.0'
         run: pnpm exec tauri ios build --ci --archive-only --export-method app-store-connect --build-number "$GITHUB_RUN_NUMBER"
+
+      - name: 签入 production 推送权限
+        run: python3 mobile/scripts/prepare-ios-signing.py --sign-archive mobile/src-tauri/gen/apple/build/satuwork-mobile_iOS.xcarchive
 
       - name: 导出 App Store IPA
         run: |

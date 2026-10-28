@@ -1,6 +1,7 @@
 """Stage the app's distribution credentials and manual export options on a CI runner."""
 
 import base64
+import hashlib
 import os
 from pathlib import Path
 import plistlib
@@ -28,6 +29,33 @@ if sys.argv[1:] == ["--cleanup"]:
     shutil.rmtree(stage, ignore_errors=True)
     raise SystemExit(0)
 
+if len(sys.argv) == 3 and sys.argv[1] == "--sign-archive":
+    archive = Path(sys.argv[2]).resolve()
+    info_path = archive / "Info.plist"
+    info = plistlib.loads(info_path.read_bytes())
+    app = archive / "Products" / info["ApplicationProperties"]["ApplicationPath"]
+    app_info = plistlib.loads((app / "Info.plist").read_bytes())
+    if app_info.get("CFBundleIdentifier") != BUNDLE:
+        raise SystemExit("Archive does not contain Satuwork")
+    shutil.copyfile(stage / "app.mobileprovision", app / "embedded.mobileprovision")
+    # Tauri's API-key archive path uses a temporary signature without the app's entitlements.
+    # Export preserves requested entitlements; the profile alone does not add APNs permission.
+    subprocess.run([
+        "codesign", "--force", "--sign", (stage / "signing-identity.txt").read_text().strip(),
+        "--keychain", str(stage.parent / "satuwork-ios-signing.keychain-db"),
+        "--entitlements", str(stage / "Production.entitlements.plist"),
+        "--generate-entitlement-der", str(app),
+    ], check=True)
+    subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
+    details = subprocess.run(["codesign", "--display", "--verbose=4", str(app)],
+                             check=True, capture_output=True, text=True).stderr
+    identity = next(line.removeprefix("Authority=") for line in details.splitlines()
+                    if line.startswith("Authority=Apple Distribution:"))
+    info["ApplicationProperties"].update(SigningIdentity=identity, Team=TEAM)
+    info_path.write_bytes(plistlib.dumps(info))
+    print(f"Archive signed with production APNs: {BUNDLE}")
+    raise SystemExit(0)
+
 for name in ("IOS_DISTRIBUTION_P12_BASE64", "IOS_DISTRIBUTION_P12_PASSWORD", "IOS_PROVISIONING_PROFILE_BASE64"):
     if not os.environ.get(name):
         raise SystemExit(f"Missing {name}")
@@ -53,6 +81,13 @@ for directory in profile_dirs:
     directory.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(profile_path, directory / f"{uuid}.mobileprovision")
 (stage / "distribution.p12").write_bytes(base64.b64decode(os.environ["IOS_DISTRIBUTION_P12_BASE64"], validate=True))
+(stage / "signing-identity.txt").write_text(hashlib.sha1(profile["DeveloperCertificates"][0]).hexdigest().upper())
+requested = {key: entitlements[key] for key in (
+    "application-identifier", "com.apple.developer.team-identifier", "aps-environment",
+    "get-task-allow", "beta-reports-active",
+) if key in entitlements}
+requested["keychain-access-groups"] = [f"{TEAM}.{BUNDLE}"]
+(stage / "Production.entitlements.plist").write_bytes(plistlib.dumps(requested))
 with (stage / "ExportOptions.plist").open("wb") as output:
     plistlib.dump({
         "method": "app-store-connect",
