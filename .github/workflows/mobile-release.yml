@@ -145,6 +145,9 @@ jobs:
       - name: 界面拷进包
         run: pnpm --filter satuwork-mobile prepare:ui
 
+      - name: 同步 iOS 品牌图标
+        run: pnpm --filter satuwork-mobile icon:ios
+
       - name: 准备分发签名
         env:
           IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}

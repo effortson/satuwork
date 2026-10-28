@@ -118,6 +118,10 @@ AirDrop，Android 的分享选择器）。http(s) 的下载链接交给系统浏
 
 ## 出包
 
+iOS 图标以 `gateway/ui/assets/satuwork-logo.svg` 为源，执行 `pnpm --filter satuwork-mobile icon:ios`
+同步到 `icons/ios` 和 Xcode 的 `AppIcon.appiconset`；CI 出包前也会执行。iOS 版本将背景铺满方形，
+不预先裁圆角，PNG 保持不透明。仅更新普通 `icons/icon.png` 不会更新 Xcode 内的商店图标。
+
 ```bash
 pnpm --filter satuwork-mobile build:ios
 ```

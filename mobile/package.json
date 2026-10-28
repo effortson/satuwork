@@ -8,7 +8,8 @@
     "dev:android": "tauri android dev --no-dev-server",
     "prepare:ui": "node scripts/prepare-ui.mjs",
     "build:ios": "pnpm prepare:ui && tauri ios build",
-    "icon": "tauri icon ../gateway/ui/assets/satuwork-logo.svg"
+    "icon": "tauri icon ../gateway/ui/assets/satuwork-logo.svg && pnpm icon:ios",
+    "icon:ios": "node scripts/generate-ios-icons.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.2.0"
