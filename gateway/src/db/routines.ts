@@ -480,24 +480,26 @@ export class RoutinesDb extends DbCore {
    * 这个账号的**本地 Bot**（桌面端）到点的任务。dueRoutines 把本地 Bot 排除在外（Gateway 连不到
    * 员工的电脑），它们由桌面端里的 Bot 进程自己来领（routes/worker.ts 的 /runtime/local-routines）。
    */
-  async dueRoutinesForLocalAccount(accountId: string, nowMs: number, limit = 20): Promise<Routine[]> {
+  async dueRoutinesForLocalAccount(accountId: string, nowMs: number, limit = 20, botId?: string): Promise<Routine[]> {
     const rows = await this.many(
       `select r.* from routines r join catalog_items c on c.id = r."botId"
         where r."accountId" = ? and c.definition->>'runtimeKind' = 'local'
           and r.active and r."nextRunAt" is not null and r."nextRunAt" <= ?
+          and (?::text is null or r."botId" = ?)
         order by r."nextRunAt" limit ?`,
-      [accountId, nowMs, Math.max(1, Math.trunc(limit))],
+      [accountId, nowMs, botId ?? null, botId ?? null, Math.max(1, Math.trunc(limit))],
     )
     return rows.map(routineOf)
   }
 
-  async dueRoutineRetriesForLocalAccount(accountId: string, nowMs: number, limit = 20): Promise<Routine[]> {
+  async dueRoutineRetriesForLocalAccount(accountId: string, nowMs: number, limit = 20, botId?: string): Promise<Routine[]> {
     const rows = await this.many(
       `select r.* from routines r join catalog_items c on c.id = r."botId"
         where r."accountId" = ? and c.definition->>'runtimeKind' = 'local'
           and r.active and r."retryAt" is not null and r."retryAt" <= ?
+          and (?::text is null or r."botId" = ?)
         order by r."retryAt" limit ?`,
-      [accountId, nowMs, Math.max(1, Math.trunc(limit))],
+      [accountId, nowMs, botId ?? null, botId ?? null, Math.max(1, Math.trunc(limit))],
     )
     return rows.map(routineOf)
   }

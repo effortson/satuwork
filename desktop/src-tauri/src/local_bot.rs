@@ -78,11 +78,13 @@ fn node_program(app: &AppHandle) -> PathBuf {
     PathBuf::from("node")
 }
 
-fn runtime_status(app: &AppHandle, running: bool, port: Option<u16>, workspace: &Path) -> LocalBotStatus {
+fn runtime_status(app: &AppHandle, running: bool, port: Option<u16>, data: &Path, workspace: &Path) -> LocalBotStatus {
     let home = runtime_home(app).ok();
     LocalBotStatus {
         running,
         port: if running { port } else { None },
+        // bot_paths 会把数据目录建出来，所以看目录在不在没用；看 Bot 进程自己写的库。
+        has_data: data.join("satuwork.db").exists(),
         workspace: workspace.display().to_string(),
         runtime_version: home
             .as_deref()
@@ -260,7 +262,7 @@ fn start_local_bot_blocking(app: AppHandle, config: LocalBotConfig) -> Result<Lo
         if let Some(proc_) = bots.get(&bot_id).filter(|p| alive && p.config.access_token == config.access_token) {
             let port = proc_.port;
             drop(bots);
-            return Ok(runtime_status(&app, true, Some(port), &work));
+            return Ok(runtime_status(&app, true, Some(port), &data, &work));
         }
         // 票换了：Gateway 已经把这个进程手上那把作废了（改口令、被管理员重置之后，本地 Bot
         // 的票跟登录票一起作废），它从此每一次回 Gateway 都是 401、页面也敲不开它。手上的
@@ -366,7 +368,7 @@ fn start_local_bot_blocking(app: AppHandle, config: LocalBotConfig) -> Result<Lo
         *src = Some((gateway.clone(), config.access_token.clone()));
     }
     start_runtime_updater(&app);
-    Ok(runtime_status(&app, true, Some(port), &work))
+    Ok(runtime_status(&app, true, Some(port), &data, &work))
 }
 
 /**
@@ -483,7 +485,7 @@ pub(crate) fn clear_update_source(app: &AppHandle) {
 #[tauri::command]
 pub(crate) fn local_bot_status(app: AppHandle, bot_id: String) -> Result<LocalBotStatus, String> {
     let id = safe_bot_id(&bot_id)?;
-    let (_, work) = bot_paths(&app, &id)?;
+    let (data, work) = bot_paths(&app, &id)?;
     let state = app.state::<LocalBots>();
     let mut bots = state.0.lock().map_err(|_| "本地 Bot 状态锁损坏")?;
     let (running, port) = match bots.get_mut(&id) {
@@ -493,7 +495,7 @@ pub(crate) fn local_bot_status(app: AppHandle, bot_id: String) -> Result<LocalBo
     if !running {
         bots.remove(&id);
     }
-    Ok(runtime_status(&app, running, port, &work))
+    Ok(runtime_status(&app, running, port, &data, &work))
 }
 
 // 这一组只有 Windows 的那条（Job Object 清孙进程），别的平台整组不编。

@@ -14,6 +14,12 @@ export async function runLocalRoutines({ root, test, assert, log }) {
     assert(finish && finish.body.kind === 'completed' && finish.body.sessionId === 's-local', `finish 不对：${JSON.stringify(finish)}`)
   })
 
+  await test('领活带上自己是哪颗（botId）；领到别的 Bot 的不碰', async () => {
+    const due = result.seen.filter((s) => s.path === '/runtime/local-routines/due')
+    assert(due.every((s) => s.query === '?botId=bot-local'), `领活没带 botId：${JSON.stringify(due.map((s) => s.query))}`)
+    assert(!result.seen.some((s) => s.path.includes('/run-other/')), `碰了别的 Bot 的任务：${JSON.stringify(result.seen.filter((s) => s.path.includes('run-other')))}`)
+  })
+
   await test('消息发进自己的会话：带席位票、routine 身份和 utility 角色；先挂流再发消息', async () => {
     const msg = result.own.find((x) => x.path.endsWith('/messages'))
     assert(msg && msg.auth === 'Bearer sat_local_probe', `到自己会话的票不对：${JSON.stringify(msg)}`)

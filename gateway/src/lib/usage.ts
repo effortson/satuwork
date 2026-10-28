@@ -339,7 +339,8 @@ export async function usageDims(
   const bots = scope.companyId
     ? await db.companyBots(scope.companyId)
     : scope.accountId
-      ? await db.botsFor((await db.account(scope.accountId))?.companyId ?? null, scope.accountId)
+      // 账单不按设备收：钱是这个账号花的，别的电脑上的本地 Bot 也得叫得出名字（docs/local-bot-device.md §4.2）。
+      ? await db.botsFor((await db.account(scope.accountId))?.companyId ?? null, scope.accountId, { kind: 'seat' })
       : []
   const botName = new Map(bots.map((b) => [b.id, b.name]))
   const botRows = [...byBotAcc.entries()].sort((a, b) => b[1].micros - a[1].micros || b[1].calls - a[1].calls)

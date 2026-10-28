@@ -196,7 +196,12 @@ function chatDeployPrompt(botId) {
   let body = ''
   let action = ''
   let extra = ''
-  if (bot.runtimeKind === 'local') {
+  if (bot.runtimeKind === 'local' && bot.unclaimed && window.__SATUWORK_DESKTOP__ && !(bot.runtime && bot.runtime.hasData)) {
+    // 没绑设备、这台上也没有它的数据（docs/local-bot-device.md §4.3）：多半是在别的电脑上建的，不自动起，让人自己定。
+    title = t('%s 还没归到哪台电脑', '%s is not tied to a computer yet').replace('%s', name)
+    body = t('本地 Bot 只在一台电脑上运行。它是在别的电脑上建的话，请到那台电脑上打开；要在这台电脑上用，就在这里启动——之后它只出现在这台电脑上。', 'A local bot runs on one computer only. If it was created on another computer, open it there. To use it here, start it on this computer — after that it only shows up here.')
+    action = `<button type="button" class="btn btn-primary" data-act="local-bot-start" data-bot="${esc(botId)}">${t('在这台电脑上启动', 'Start on this computer')}</button>`
+  } else if (bot.runtimeKind === 'local') {
     title = t('%s 正在等待 Desktop', '%s is waiting for Desktop').replace('%s', name)
     body = window.__SATUWORK_DESKTOP__
       ? t('本地运行时正在启动；它会使用这台电脑上独立的默认工作目录。', 'The local runtime is starting with its own workspace on this computer.')

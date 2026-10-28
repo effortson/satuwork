@@ -299,7 +299,7 @@ function corsHeaders(req: IncomingMessage): Record<string, string> | null {
   return {
     'access-control-allow-origin': origin,
     'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'access-control-allow-headers': 'authorization, content-type, accept, x-filename, x-api-key, last-event-id',
+    'access-control-allow-headers': 'authorization, content-type, accept, x-filename, x-api-key, last-event-id, x-satuwork-device, x-satuwork-client',
     'access-control-expose-headers': 'content-type, content-disposition',
     'access-control-max-age': '600',
     vary: 'origin',

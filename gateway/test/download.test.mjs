@@ -8,6 +8,7 @@ const domUtil = source('../ui/dom-util.js')
 const linkScript = source('../../desktop/src-tauri/src/nav.rs').match(/const LINK_SCRIPT: &str = r#"([\s\S]*?)"#;/)[1]
   .replaceAll('__GATEWAY_URL__', '"https://gateway.example"')
   .replaceAll('__OPEN_PATH__', '"/__satuwork_open"')
+  .replaceAll('__DEVICE__', '{"id":"test-device-0000001","name":"Test","platform":"darwin"}')
 
 function nativeDownload(invoke) {
   const context = {

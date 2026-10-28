@@ -527,25 +527,35 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
     })
 
     await test('本地 Bot 好几颗：各带 botId 来领只领到要敲自己的；同时来领一条只有一个拿得到', async () => {
+      // 本地 Bot 只属于建它的那台电脑，也只接同一台电脑上的本地主 Bot 派的活（docs/local-bot-device.md §4.4）。
+      const device = { 'x-satuwork-device': 'e2e-bot-tasks-desk-0001' }
       const local = async (name) => {
-        const r = await req(gwBase, 'POST', '/runtime/bots', { token: adminTok, body: { name, runtimeKind: 'local' } })
+        const r = await req(gwBase, 'POST', '/runtime/bots', { token: adminTok, headers: device, body: { name, runtimeKind: 'local' } })
         assert(r.status === 201, `建本地 Bot ${name} ${r.status} ${r.text}`)
         return r.json.bot.id
       }
       const jia = await local('本地甲')
       const yi = await local('本地乙')
       const bing = await local('本地丙')
+      const remoteMain = mainBot
+      const toLocalFromRemote = await assign({ fromBotId: remoteMain, toBot: '本地丙', instruction: '远程主 Bot 派给本地', sessionId: 's-main' })
+      assert(toLocalFromRemote.status === 404, `远程主 Bot 不该派得动本地 Bot：${toLocalFromRemote.status} ${toLocalFromRemote.text}`)
+      const localMain = await local('本地主')
+      const setLocal = await req(gwBase, 'PUT', '/runtime/main-bot', { token: adminTok, headers: device, body: { botId: localMain } })
+      assert(setLocal.status === 200, `设本地主 Bot ${setLocal.status} ${setLocal.text}`)
+      const listed = (await req(gwBase, 'GET', `/runtime/catalog?botId=${localMain}`, { token: seatTok })).json.assignable || []
+      assert(listed.some((b) => b.id === jia) && listed.some((b) => b.id === finBot), `本地主 Bot 的派活名单该有本机本地 Bot 和远程 Bot：${JSON.stringify(listed)}`)
       const localDue = (botId) =>
         req(gwBase, 'GET', `/runtime/local-tasks/due${botId ? `?botId=${encodeURIComponent(botId)}` : ''}`, { token: seatTok })
 
       // 一次都没来领过的本地 Bot（桌面端没开、或者它没在跑）：当场记成没跑起来，不让主 Bot 干等十分钟。
-      const off = await assign({ fromBotId: mainBot, toBot: '本地丙', instruction: '它不在线', sessionId: 's-main', wait: true })
+      const off = await assign({ fromBotId: localMain, toBot: '本地丙', instruction: '它不在线', sessionId: 's-main', wait: true })
       assert(off.status === 201, `派 ${off.status} ${off.text}`)
       const offTask = (await req(gwBase, 'GET', `/runtime/tasks/${off.json.task.id}`, { token: seatTok })).json.task
       assert(['answered', 'done'].includes(offTask.status) && String(offTask.result || '').includes('不在线'), `不在线的本地 Bot 该当场记成没跑起来：${JSON.stringify(offTask)}`)
       // 来领过一次就算在线：再派就排队等它领。
       await localDue(bing)
-      const on = await assign({ fromBotId: mainBot, toBot: '本地丙', instruction: '它在线了', sessionId: 's-main' })
+      const on = await assign({ fromBotId: localMain, toBot: '本地丙', instruction: '它在线了', sessionId: 's-main' })
       assert(on.status === 201 && on.json.task.status === 'queued', `来领过之后该排队：${on.text}`)
       assert((await localDue(bing)).json.jobs.some((j) => j.taskId === on.json.task.id), '丙该领到')
       await req(gwBase, 'POST', `/runtime/local-tasks/${on.json.task.id}/started`, { token: seatTok, body: { sessionId: 's-local' } })
@@ -553,7 +563,7 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
 
       await localDue(jia)
       await localDue(yi)
-      const toYi = await assign({ fromBotId: mainBot, toBot: '本地乙', instruction: '本地乙的活', sessionId: 's-main' })
+      const toYi = await assign({ fromBotId: localMain, toBot: '本地乙', instruction: '本地乙的活', sessionId: 's-main' })
       assert(toYi.status === 201, `派给本地乙 ${toYi.status} ${toYi.text}`)
       const yiId = toYi.json.task.id
       const wrong = await localDue(jia)
@@ -562,7 +572,7 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       assert(right && right.botId === yi && right.phase === 'run', `乙的进程该领到：${JSON.stringify(right)}`)
 
       // 老桌面端不带 botId、几个进程同一拍来领：一条只交给一个。
-      const toJia = await assign({ fromBotId: mainBot, toBot: '本地甲', instruction: '只能领一次', sessionId: 's-main' })
+      const toJia = await assign({ fromBotId: localMain, toBot: '本地甲', instruction: '只能领一次', sessionId: 's-main' })
       const jiaId = toJia.json.task.id
       const all = await Promise.all([1, 2, 3, 4, 5, 6].map(() => localDue()))
       const hits = all.filter((r) => r.json.jobs.some((j) => j.taskId === jiaId)).length
@@ -573,6 +583,7 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
         const fin = await req(gwBase, 'POST', `/runtime/local-tasks/${id}/finish`, { token: seatTok, body: { kind: 'completed', result: '好了' } })
         assert(fin.status === 200, `回报 ${fin.status} ${fin.text}`)
       }
+      await req(gwBase, 'PUT', '/runtime/main-bot', { token: adminTok, body: { botId: remoteMain } })
     })
   } finally {
     gw.kill('SIGTERM')

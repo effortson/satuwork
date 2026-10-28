@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::menu::Menu;
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
+mod device;
 mod directories;
 mod downloads;
 mod local_bot;
@@ -204,6 +205,9 @@ struct LocalBotStatus {
     runtime_version: Option<String>,
     pending_runtime_version: Option<String>,
     runtime_update_error: Option<String>,
+    /// 这颗 Bot 在这台电脑上真跑过（数据目录里有它的库）。页面据此决定要不要自动认领还没绑设备的
+    /// 老本地 Bot（docs/local-bot-device.md §4.3）：数据在别的电脑上的那些，不该被这台顺手领走。
+    has_data: bool,
 }
 
 #[derive(Deserialize)]

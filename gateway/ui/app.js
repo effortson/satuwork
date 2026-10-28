@@ -1316,7 +1316,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'new-bot') {
     // 公司没配运行机器的话远程 Bot 建了也装不上，在桌面端里就直接默认本地。
-    const localFirst = state.runtimeHasMachine === false && !!window.__SATUWORK_DESKTOP__
+    const localFirst = state.runtimeHasMachine === false && !!window.__SATUWORK_DESKTOP_DEVICE__
     state.newBot = { name: '', description: '', extraPrompt: '', icon: 'c-bot', runtimeKind: localFirst ? 'local' : 'remote' }
     state.newBotError = ''
     render()
@@ -1379,6 +1379,24 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'local-device-clear') {
+    const deviceId = btn.getAttribute('data-device') || ''
+    const name = btn.getAttribute('data-name') || t('那台电脑', 'that computer')
+    const count = btn.getAttribute('data-count') || ''
+    if (!deviceId || state.busy) return
+    if (!confirm(t(`清除「${name}」上的 ${count} 个本地 Bot？它们的记忆、日常任务会一起删掉，那台电脑上的对话和文件不受影响。`, `Remove ${count} local bots on "${name}"? Their memories and routines are deleted too; conversations and files on that computer are not touched.`))) return
+    state.busy = true
+    render()
+    try {
+      await api('DELETE', '/runtime/devices/' + encodeURIComponent(deviceId) + '/local-bots')
+      await loadRuntimeBots().catch(() => {})
+    } catch (err) {
+      state.newBotError = err.message
+    }
+    state.busy = false
+    render()
+    return
+  }
   if (act === 'new-bot-close') {
     state.newBot = null
     state.newBotError = ''
@@ -1411,7 +1429,12 @@ document.getElementById('app').addEventListener('click', async (e) => {
         extraPrompt: f.extraPrompt.trim(),
         icon: f.icon,
         runtimeKind: f.runtimeKind === 'local' ? 'local' : 'remote',
+        ...(f.runtimeKind === 'local' ? { device: desktopDeviceInfo() } : {}),
       })
+      // 本地 Bot 默认进「本地 / Local」分类，那个分类可能是这一次才建出来的：先合进来，别等下一次拉名册。
+      if (data.folder && !(state.botFolders || []).some((x) => x.id === data.folder.id)) {
+        state.botFolders = [...(state.botFolders || []), data.folder]
+      }
       state.newBot = null
       state.busy = false
       /**

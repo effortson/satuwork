@@ -7,12 +7,12 @@ import { HttpError, bearer, json, type Req, type Router } from '../http.ts'
 import { IMAGE_MODELS } from '../image-models.ts'
 import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machines.ts'
 import { KIND, bodyOf, deployOptsOf, logLinesOf, refShapes, strField } from '../lib/validate.ts'
-import type { Account, BotFolder, BotRelease, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
+import type { Account, BotFolder, BotRelease, BotViewer, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
 import { runtimeConnectorServer, usableConnections } from '../lib/connectors.ts'
 import { TASK_CONTEXT_MAX, TASK_INSTRUCTION_MAX, cancelBotTask, createBotTask, pollBotTask, publicBotTask } from '../lib/bot-tasks.ts'
-import { LEGACY_BOT_ICONS, type BotMemory, botContext, botIconOf, botNameOf, botTemplateOf, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
-import { kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser } from '../lib/guards.ts'
+import { LEGACY_BOT_ICONS, type BotMemory, botContext, botVisibleTo, canAssignTo, botIconOf, botNameOf, botTemplateOf, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
+import { deviceIdOf, kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser, viewerOf } from '../lib/guards.ts'
 import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
 import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
@@ -28,7 +28,7 @@ import { BOT_TASK_PAIR_LOCK, SEAT_MEMORY_LOCK, SEAT_SKILL_LOCK, USER_BOT_QUOTA_L
  * 有上限是因为**每个 Bot 都是机器上的一个真实进程**（一个席位一套 systemd 单元、一块
  * 屏、一个端口），不是一行配置。默认 10 够一个人分工用，真不够就调环境变量，不必改码。
  */
-export const MAX_USER_BOTS = Math.max(1, Math.trunc(Number(process.env.GATEWAY_MAX_USER_BOTS) || 10))
+export const MAX_USER_BOTS = Math.max(1, Math.trunc(Number(process.env.GATEWAY_MAX_USER_BOTS) || 20))
 
 /** 一个人最多几个分类；名字最长几个字。侧栏就那么高，再多就不是在分类了。 */
 const BOT_FOLDERS_MAX = 20
@@ -42,7 +42,16 @@ function botFolderNameOf(body: Record<string, unknown>): string {
 }
 
 function publicBotFolder(f: BotFolder) {
-  return { id: f.id, name: f.name, position: f.position }
+  return { id: f.id, name: f.name, position: f.position, kind: f.kind }
+}
+
+/** 桌面端顺带报上来的设备名和平台（`body.device`，壳子注入的 __SATUWORK_DESKTOP_DEVICE__）。只用于展示。 */
+function deviceInfoOf(body: Record<string, unknown>): { name: string; platform: string } {
+  const d = (body.device ?? {}) as Record<string, unknown>
+  return {
+    name: typeof d.name === 'string' ? d.name.trim().slice(0, 120) : '',
+    platform: typeof d.platform === 'string' ? d.platform.trim().slice(0, 40) : '',
+  }
 }
 
 /**
@@ -127,8 +136,10 @@ async function assignableFor(db: RouteCtx['db'], account: Account, botId: string
   if (!botId || account.role === 'owner') return [] as { id: string; name: string; desc: string }[]
   const main = await db.mainBotOf(account.id)
   if (!main || main !== botId) return []
+  const from = bots.find((b) => b.id === botId)
+  // 本地 Bot 只接同一台电脑上的本地主 Bot 派的活（docs/local-bot-device.md §4.4）。
   return bots
-    .filter((b) => b.id !== botId)
+    .filter((b) => b.id !== botId && (from ? canAssignTo(from, b) : runtimeKindOf(b) !== 'local'))
     .map((b) => {
       const def = b.definition as { description?: unknown } | undefined
       return { id: b.id, name: b.name, desc: typeof def?.description === 'string' ? def.description.trim() : '' }
@@ -233,9 +244,10 @@ function knowledgeStamp(list: Array<{ id: string; updatedAt: number; chunkCount:
 }
 
 /** 自己建的那一颗。别人的、公司的、全局的都不是——改和删都走它。 */
-async function ownBotOf(db: RouteCtx['db'], account: Account, id: string, allowDeleting = false) {
+async function ownBotOf(db: RouteCtx['db'], account: Account, id: string, viewer: BotViewer, allowDeleting = false) {
   const item = await db.catalog((id || '').trim())
-  if (!item || item.kind !== 'bot' || item.scope !== 'user' || item.accountId !== account.id) {
+  // 别的电脑上的本地 Bot 和「别人的 Bot」一个口径：没有这个 Bot（docs/local-bot-device.md §4.2）。
+  if (!item || item.kind !== 'bot' || item.scope !== 'user' || item.accountId !== account.id || !botVisibleTo(item, viewer)) {
     throw new HttpError(404, '没有这个 Bot')
   }
   if (item.deletingAt && !allowDeleting) throw new HttpError(409, '这个 Bot 正在完成删除前审计')
@@ -313,7 +325,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * `[hit]` 去算永远是空的——而探针那条路用的是完整名单，两边指纹对不上，席位每分钟白拉一遍
      * 目录、拉回来的名单还是空的，主 Bot 就以为自己不是主 Bot。
      */
-    const roster = await db.botsFor(companyId, account.id)
+    const roster = await db.botsFor(companyId, account.id, viewerOf(req))
     let bots = roster
     if (botId) {
       const hit = bots.find((b) => b.id === botId)
@@ -451,7 +463,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const botId = (req.query.get('botId') || '').trim()
     const tplItem = companyId ? await db.botTemplate(companyId) : undefined
     const version = Number((tplItem?.definition as { version?: unknown } | undefined)?.version) || 1
-    const bots = await db.botsFor(companyId, account.id)
+    const bots = await db.botsFor(companyId, account.id, viewerOf(req))
     const bot = botId ? bots.find((b) => b.id === botId) : undefined
     if (botId && !bot) throw new HttpError(404, '没有这个 Bot')
     /**
@@ -559,7 +571,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   async function seatBotOf(req: Req, account: Account): Promise<string> {
     const botId = (req.query.get('botId') || '').trim()
     if (!botId) throw new HttpError(400, '要带 botId')
-    const bots = await db.botsFor(account.role === 'owner' ? null : account.companyId, account.id)
+    const bots = await db.botsFor(account.role === 'owner' ? null : account.companyId, account.id, viewerOf(req))
     if (!bots.some((b) => b.id === botId)) throw new HttpError(404, '没有这个 Bot')
     return botId
   }
@@ -715,7 +727,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   router.delete('/runtime/bots/:botId/skills/:skillId', async (req, res) => {
     const account = await requireUser(req, db, keys)
     const companyId = account.role === 'owner' ? null : account.companyId
-    const bots = await db.botsFor(companyId, account.id)
+    const bots = await db.botsFor(companyId, account.id, viewerOf(req))
     if (!bots.some((b) => b.id === req.params.botId)) throw new HttpError(404, '没有这个 Bot')
     const item = await db.catalog(req.params.skillId)
     if (
@@ -968,7 +980,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
    */
   async function userBotOf(req: Req, account: Account): Promise<{ botId: string; companyId: string }> {
     const companyId = account.role === 'owner' ? null : account.companyId
-    const bots = await db.botsFor(companyId, account.id)
+    const bots = await db.botsFor(companyId, account.id, viewerOf(req))
     if (!bots.some((b) => b.id === req.params.botId)) throw new HttpError(404, '没有这个 Bot')
     if (!companyId) throw new HttpError(400, '这个账号不属于任何公司')
     return { botId: req.params.botId, companyId }
@@ -1360,7 +1372,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const account = await requireUser(req, db, keys)
     requireSeat(account)
     const opts = deployOptsOf(req)
-    const item = await visibleBotOf(db, account, opts.botId)
+    const item = await visibleBotOf(db, account, opts.botId, viewerOf(req))
     if (runtimeKindOf(item) === 'local') throw new HttpError(409, '本地 Bot 由 Satuwork Desktop 启动，不能部署到远程机器')
     /**
      * **装不挂在这条请求上。** 以前这里一直等到机器上装完：首装要 apt 十几分钟，函数 300 秒
@@ -1401,18 +1413,26 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   router.get('/runtime/bots', async (req, res) => {
     const account = await requireUser(req, db, keys)
     requireSeat(account)
+    const viewer = viewerOf(req)
     // 平台指定的那一对和公司模版，整份名册共用一次——每行各读一遍没有意义。
     const { pinned, tpl } = await botContext(db, account.companyId)
     // 渠道归属与 Bot 定义分表保存。给名册带稳定标记，前端才能只给渠道 Bot 画来源标签，
     // 不能拿固定名称 `telegram bot` 猜：名称能改，也可能有普通 Bot 恰好同名。
-    const [bindings, seatRows, items, machines, folders, folderOf, mainBotId] = await Promise.all([
+    const [bindings, seatRows, items, machines, folders, folderOf, mainBotId, used, elsewhere] = await Promise.all([
       db.channelBindings(account.id),
       db.seatRuntimesOfAccount(account.id),
-      db.botsFor(account.companyId, account.id),
+      db.botsFor(account.companyId, account.id, viewer),
       account.companyId ? db.machinesOfCompany(account.companyId) : [],
       db.botFolders(account.id),
       db.botFolderItems(account.id),
       db.mainBotOf(account.id),
+      db.countUserBots(account.id),
+      viewer.kind === 'device' || viewer.kind === 'none'
+        ? db.localBotsElsewhere(account.id, viewer.kind === 'device' ? viewer.id : null)
+        : [],
+      // 顺手记一笔「这台电脑还在用」（最多一分钟写一回），别的电脑上那一栏的「最后在线」靠它。
+      // 记不成不该让名册失败。
+      viewer.kind === 'device' ? db.touchDesktopDevice(account.id, viewer.id, {}).catch(() => {}) : undefined,
     ])
     const channelByBot = new Map(bindings.map((row) => [row.botId, row.kind]))
     const seats = new Map(seatRows.map((rt) => [rt.botId, rt]))
@@ -1424,6 +1444,11 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
         runtime: await botRuntime(async (id) => seats.get(id), machineOf, item),
         // 这个人把它放在哪个分类里；没放就是 null。分类是他自己的视图，见迁移 0056。
         folderId: folderOf.get(item.id) ?? null,
+        /**
+         * 还没绑设备的老本地 Bot（docs/local-bot-device.md §4.3）。桌面端只在本机真有它的数据时才自动
+         * 起它（起它就会认领它）；数据在别的电脑上的，不能被先升级的这台顺手领走。
+         */
+        ...(runtimeKindOf(item) === 'local' && item.deviceId == null ? { unclaimed: true } : {}),
       })),
     )
     json(res, 200, {
@@ -1431,7 +1456,11 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       folders: folders.map(publicBotFolder),
       // 这个人的主 Bot；没设、或设的那颗已经不在名单上，都是 null（界面不画皇冠）。
       mainBotId: mainBotId && items.some((b) => b.id === mainBotId) ? mainBotId : null,
-      quota: { used: await db.countUserBots(account.id), max: MAX_USER_BOTS },
+      /**
+       * `elsewhere`：别的电脑上的本地 Bot，按设备数（docs/local-bot-device.md §7）。它们在这儿看不到，
+       * 却占着配额；只给设备和个数，不给名字和 id。网页、App 上也给——那些全是「别的电脑」。
+       */
+      quota: { used, max: MAX_USER_BOTS, elsewhere },
       rosterStreamUrl: (await rosterStreamUrlFor(seats, machineOf, bots)) || null,
       /**
        * 公司名下有没有一台配对好的运行机器。没有的话这家公司只能用本地 Bot：界面据此
@@ -1481,7 +1510,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const body = bodyOf(req)
     const raw = body.folderId
     const folderId = raw == null || raw === '' ? null : strField(body, 'folderId')
-    const visible = (await db.botsFor(account.companyId, account.id)).some((b) => b.id === req.params.botId)
+    const visible = (await db.botsFor(account.companyId, account.id, viewerOf(req))).some((b) => b.id === req.params.botId)
     if (!visible) throw new HttpError(404, 'Bot 不存在')
     if (folderId && !(await db.botFolder(account.id, folderId))) throw new HttpError(404, '分类不存在')
     await db.setBotFolder(account.id, req.params.botId, folderId)
@@ -1498,7 +1527,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const body = bodyOf(req)
     const raw = body.botId
     const botId = raw == null || raw === '' ? null : strField(body, 'botId')
-    if (botId && !(await db.botsFor(account.companyId, account.id)).some((b) => b.id === botId)) throw new HttpError(404, 'Bot 不存在')
+    if (botId && !(await db.botsFor(account.companyId, account.id, viewerOf(req))).some((b) => b.id === botId)) throw new HttpError(404, 'Bot 不存在')
     await db.setMainBot(account.id, botId, Date.now())
     json(res, 200, { ok: true, mainBotId: botId })
   })
@@ -1516,12 +1545,14 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const fromBotId = strField(body, 'fromBotId')
     const main = await db.mainBotOf(account.id)
     if (!main || main !== fromBotId) throw new HttpError(403, '只有主 Bot 能派活')
-    const bots = await db.botsFor(account.companyId, account.id)
+    const bots = await db.botsFor(account.companyId, account.id, viewerOf(req))
     const from = bots.find((b) => b.id === fromBotId)
     if (!from) throw new HttpError(404, '没有这个 Bot')
     const want = strField(body, 'toBot').trim()
     const lower = want.toLowerCase()
-    const to = bots.find((b) => b.id === want) || bots.find((b) => b.name.trim().toLowerCase() === lower)
+    // 按派活名单（assignableFor）同一个口径找：别的电脑上的本地 Bot 不在名单上，按名字也别撞上它。
+    const targets = bots.filter((b) => canAssignTo(from, b))
+    const to = targets.find((b) => b.id === want) || targets.find((b) => b.name.trim().toLowerCase() === lower)
     if (!to) throw new HttpError(404, `名单上没有「${want}」这颗 Bot`)
     if (to.id === from.id) throw new HttpError(400, '不能派给自己')
     const instruction = strField(body, 'instruction').trim()
@@ -1615,20 +1646,39 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       runtimeKind: body.runtimeKind === 'local' ? 'local' : 'remote',
     }
     const name = botNameOf(body.name)
+    /**
+     * 本地 Bot 只属于建它的那台电脑（docs/local-bot-device.md）：没带设备头的建不了。网页上
+     * 「本地」那个选项本来就是灰的，这里是兜底；老桌面壳（没带头）建出来会是一颗没有主人的 Bot，也拒。
+     */
+    const deviceId = definition.runtimeKind === 'local' ? deviceIdOf(req) : null
+    if (definition.runtimeKind === 'local' && !deviceId) throw new HttpError(400, '本地 Bot 只能在 Satuwork Desktop 里建（请先把 Desktop 升到最新版）')
     // 数和插放同一个事务、先拿锁（照 channels.ts 绑 Telegram 那条的写法）：不锁的话两个
-    // 并发请求都读到「还差一个」，配额就多出一颗。
-    const item = await db.tx(async () => {
+    // 并发请求都读到「还差一个」，配额就多出一颗。「本地」分类也在这把锁里建，并发两颗只建出一个。
+    const { item, folder } = await db.tx(async () => {
       await db.lockExclusive(USER_BOT_QUOTA_LOCK)
       const used = await db.countUserBots(account.id)
       if (used >= MAX_USER_BOTS) throw new HttpError(409, `最多建 ${MAX_USER_BOTS} 个 Bot`)
-      return db.insertCatalog({
+      const item = await db.insertCatalog({
         kind: 'bot',
         scope: 'user',
         companyId: account.companyId,
         accountId: account.id,
         name,
         definition,
+        deviceId,
       })
+      if (!deviceId) return { item, folder: null }
+      await db.touchDesktopDevice(account.id, deviceId, deviceInfoOf(body))
+      /**
+       * 默认放进「本地 / Local」分类，没有就建一个。按标记找（`kind = 'local'`），改过名的照样往里放；
+       * 删掉了下次再建出来。分类满了就算了——建 Bot 不能因为分类满了而失败。
+       */
+      let folder = await db.localBotFolder(account.id)
+      if (!folder && (await db.countBotFolders(account.id)) < BOT_FOLDERS_MAX) {
+        folder = await db.createBotFolder(account.id, account.locale === 'en' ? 'Local' : '本地', Date.now(), 'local')
+      }
+      if (folder) await db.setBotFolder(account.id, item.id, folder.id)
+      return { item, folder: folder ?? null }
     })
     await db.audit({
       companyId: account.companyId!,
@@ -1680,7 +1730,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     // 500——这一整段之后没有任何一件事值得让「建 Bot」失败。
     const runtime = await oneBotRuntime(db, account, item).catch(() => null)
     json(res, 201, {
-      bot: { ...publicBot(item, pinned, tpl), runtime },
+      bot: { ...publicBot(item, pinned, tpl), runtime, folderId: folder?.id ?? null },
+      folder: folder ? publicBotFolder(folder) : null,
       deploy: runtimeKindOf(item) === 'local'
         ? { started: false, local: true }
         : started.ok ? { started: started.installing } : { started: false, error: started.error },
@@ -1690,7 +1741,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   /** 改自己那一个。同样只认身份字段——底座在模版里，这里传什么都不看。 */
   router.patch('/runtime/bots/:id', async (req, res) => {
     const account = await requireUser(req, db, keys)
-    const item = await ownBotOf(db, account, req.params.id)
+    const item = await ownBotOf(db, account, req.params.id, viewerOf(req))
     const body = bodyOf(req)
     const def = { ...(item.definition as Record<string, unknown>) }
     if (body.description !== undefined) def.description = String(body.description).trim()
@@ -1746,8 +1797,27 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
    */
   router.post('/runtime/bots/:id/local-bootstrap', async (req, res) => {
     const account = await requireUser(req, db, keys)
-    const item = await ownBotOf(db, account, req.params.id)
+    const viewer = viewerOf(req)
+    /**
+     * 先按账号取（不看设备），归属下面自己判：别的电脑上的一律 409「在另一台电脑上」，不管是早就归了
+     * 那台、还是这一拍刚被那台认领走——界面据 409 把它从名册里拿掉、不再试着起它；回成 404 的话
+     * 只会弹一句「没有这个 Bot」，下一次刷新前还会再试。网页、手机本来就起不了本地 Bot，照旧 404。
+     */
+    if (viewer.kind === 'none') throw new HttpError(404, '没有这个 Bot')
+    const item = await ownBotOf(db, account, req.params.id, { kind: 'seat' })
     if (runtimeKindOf(item) !== 'local') throw new HttpError(409, '这不是本地 Bot')
+    /**
+     * 老的本地 Bot 没绑设备：谁先来要票就归谁（docs/local-bot-device.md §4.3）。两台并发来要只有一台
+     * 认领得到。老壳子（没带设备头）不认领。
+     */
+    if (viewer.kind === 'device') {
+      const owner = item.deviceId ?? (await db.claimLocalBot(account.id, item.id, viewer.id))
+      if (owner !== viewer.id) throw new HttpError(409, '这个本地 Bot 在另一台电脑上')
+      await db.touchDesktopDevice(account.id, viewer.id, deviceInfoOf(bodyOf(req)))
+    } else if (item.deviceId != null) {
+      // 老壳子只碰还没绑定的（同 botVisibleTo）：已经归了别的电脑的，它起起来只会去抢那颗的活。
+      throw new HttpError(409, '这个本地 Bot 在另一台电脑上')
+    }
     const secrets = await db.desktopSecrets(account.id, account.tokenRevokedAt ?? 0)
     json(res, 200, {
       botId: item.id,
@@ -1805,23 +1875,53 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   })
 
   /** 删自己那一个：先冻结、跑删除终审，再由后台状态机拆席位并物理删除。 */
-  router.delete('/runtime/bots/:id', async (req, res) => {
-    const account = await requireUser(req, db, keys)
-    const item = await ownBotOf(db, account, req.params.id, true)
+  /** `bindings`：一次删好几颗时由调用方读一遍传进来，别每颗都整表再读一次。 */
+  async function startOwnBotDeletion(account: Account, item: CatalogItem, bindings?: Awaited<ReturnType<typeof db.channelBindings>>) {
     // 删除流程可能是异步的。先停渠道，避免新消息继续落到即将拆掉的席位。
-    const bindings = await db.channelBindings(account.id)
-    await Promise.all(bindings
+    await Promise.all((bindings ?? await db.channelBindings(account.id))
       .filter((binding) => binding.botId === item.id && binding.status !== 'paused')
       .map((binding) => db.updateChannelBinding(binding.id, {
         status: 'paused', lastError: '绑定的 Bot 正在删除',
       })))
-    const deletion = await requestBotDeletion(db, {
+    return requestBotDeletion(db, {
       companyId: account.companyId!, accountId: account.id, botId: item.id, botName: item.name, requestedBy: account.id,
     })
+  }
+
+  router.delete('/runtime/bots/:id', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    const item = await ownBotOf(db, account, req.params.id, viewerOf(req), true)
+    const deletion = await startOwnBotDeletion(account, item)
     const done = deletion.status === 'completed'
     json(res, done ? 200 : 202, done
       ? { deleted: true, id: item.id, seats: 'releasedSeats' in deletion ? deletion.releasedSeats : 0, orphans: deletion.orphans, deletion }
       : { deleting: true, id: item.id, deletion })
+  })
+
+  /**
+   * 清掉别的电脑上的本地 Bot（docs/local-bot-device.md §7）：那台电脑换掉了、丢了、数据目录被清了，
+   * 它名下的本地 Bot 哪儿都看不到，却还占着配额。每一颗走和 DELETE /runtime/bots/:id 相同的删除流程
+   * （含删除前审计）。**不能拿本机的设备 id 调**——本机的在 Bot 设置页一颗颗删，看得见删的是什么。
+   */
+  router.delete('/runtime/devices/:id/local-bots', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    requireSeat(account)
+    const deviceId = (req.params.id || '').trim()
+    if (!deviceId) throw new HttpError(400, '设备不能为空')
+    if (deviceId === deviceIdOf(req)) throw new HttpError(400, '这台电脑上的本地 Bot 请到 Bot 设置页里删')
+    const [onDevice, bindings] = await Promise.all([db.localBotsOnDevice(account.id, deviceId), db.channelBindings(account.id)])
+    const bots = onDevice.filter((b) => !b.deletingAt)
+    // 一颗一颗来：每一颗的删除终审各自拿锁、写审计，并发起来只是互相等，还更难看清是哪一颗没删成。
+    const deletions: Awaited<ReturnType<typeof startOwnBotDeletion>>[] = []
+    for (const item of bots) deletions.push(await startOwnBotDeletion(account, item, bindings))
+    if (!(await db.localBotsOnDevice(account.id, deviceId)).length) await db.deleteDesktopDevice(account.id, deviceId)
+    await db.audit({
+      companyId: account.companyId!,
+      accountId: account.id,
+      action: 'device.local-bots.clear',
+      detail: { deviceId, botIds: bots.map((b) => b.id) },
+    })
+    json(res, 200, { cleared: bots.length, deletions })
   })
 
   router.get('/runtime/bot-deletions/:id', async (req, res) => {
@@ -1836,7 +1936,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
 
   router.get('/runtime/bots/:id/session', async (req, res) => {
     const account = await requireUser(req, db, keys)
-    const bot = await visibleBotOf(db, account, req.params.id)
+    const bot = await visibleBotOf(db, account, req.params.id, viewerOf(req))
     const target = await seatTargetFor(db, account, bot.id)
     const url = `${target.host}/api/bots/${encodeURIComponent(bot.id)}/session`
     const r = await seatFetchJson('GET', url, undefined, await seatBearer(db, account.id), target.machineToken)
@@ -1874,7 +1974,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
 
   router.get('/runtime/bots/:id', async (req, res) => {
     const account = await requireUser(req, db, keys)
-    const bot = await visibleBotOf(db, account, req.params.id)
+    const bot = await visibleBotOf(db, account, req.params.id, viewerOf(req))
     const { pinned, tpl } = await botContext(db, account.companyId)
     json(res, 200, { bot: { ...publicBot(bot, pinned, tpl), runtime: await oneBotRuntime(db, account, bot), knowledge: await botKnowledgeOut(account.companyId, bot) } })
   })
@@ -1983,13 +2083,14 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
        */
       const wantsBot = wanted.some((raw) => String(((raw ?? {}) as Record<string, unknown>).kind ?? '') === 'bot')
       const mainBot = wantsBot ? await db.mainBotOf(account.id) : null
-      const roster = wantsBot && mainBot && mainBot === sessionBot ? await db.botsFor(companyId, account.id) : []
+      const roster = wantsBot && mainBot && mainBot === sessionBot ? await db.botsFor(companyId, account.id, viewerOf(req)) : []
+      const mainItem = roster.find((b) => b.id === sessionBot)
       for (const raw of wanted) {
         const o = (raw ?? {}) as Record<string, unknown>
         const id = String(o.id ?? '').trim()
         const kind = String(o.kind ?? 'connector')
         if (kind === 'bot') {
-          const bot = roster.find((b) => b.id === id && b.id !== sessionBot)
+          const bot = roster.find((b) => b.id === id && b.id !== sessionBot && (!mainItem || canAssignTo(mainItem, b)))
           if (!bot) {
             if (id) dropped.push(id)
             continue

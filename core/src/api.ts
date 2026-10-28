@@ -38,6 +38,17 @@ export interface GatewayClientOptions {
    * startDesktopLocalBot，它会顺手把新票 registerLocalBot 进来）。不给就不重试。
    */
   renewLocalBot?: (botId: string) => Promise<unknown>
+  /**
+   * 这台电脑的设备 id（桌面壳注入的 `__SATUWORK_DESKTOP_DEVICE__.id`）。给了就在打 Gateway 的
+   * 请求上带 `x-satuwork-device`：本地 Bot 只属于建它的那台电脑，Gateway 凭它决定给哪些
+   * （docs/local-bot-device.md）。Web 和移动端不给。
+   */
+  deviceId?: () => string | null | undefined
+  /**
+   * 哪种客户端（`desktop` / `mobile`），打 Gateway 的请求带成 `x-satuwork-client`。手机壳和桌面壳的
+   * 页面源都是 satu://localhost，Gateway 只看源分不出来；没带这个头的桌面源请求才是还没升上来的老桌面端。
+   */
+  client?: () => string | null | undefined
 }
 
 /** 一颗本地 Bot：听在哪个口、用哪把票、那把票是拿哪张登录票要来的。 */
@@ -142,12 +153,34 @@ export function createGatewayClient(opts: GatewayClientOptions) {
   }
 
   /**
+   * 打 Gateway 的请求带上设备头和客户端头。**只给 Gateway 的地址**：席位的 directUrl 也走 swFetch，
+   * 那头的 CORS 不认这两个头，多带一个就是一次过不去的预检。
+   */
+  function withDevice(path: string, init?: RequestInit): RequestInit | undefined {
+    const id = opts.deviceId?.()
+    const client = opts.client?.()
+    if (!id && !client) return init
+    const base = gatewayBase()
+    if (!path.startsWith('/') && !(base && path.startsWith(base + '/'))) return init
+    const raw = init && init.headers
+    const headers: Record<string, string> = {}
+    if (raw && typeof (raw as Headers).forEach === 'function' && !Array.isArray(raw)) {
+      ;(raw as Headers).forEach((v, k) => { headers[k] = v })
+    } else if (Array.isArray(raw)) {
+      for (const [k, v] of raw) headers[k] = v
+    } else Object.assign(headers, raw || {})
+    if (id) headers['x-satuwork-device'] = id
+    if (client) headers['x-satuwork-client'] = client
+    return { ...(init || {}), headers }
+  }
+
+  /**
    * 所有打 Gateway 的 fetch 都从这儿过：本地 Bot 的那几条改道到 127.0.0.1，票换成席位票；
    * 其余原样。init.headers 里的 authorization 会被覆盖——那是登录票，bot 不认。
    */
   function swFetch(path: string, init?: RequestInit): Promise<Response> {
     const route = localRoute(path, init && (init.method as string | undefined))
-    if (!route) return fetch(gatewayAbs(path), init)
+    if (!route) return fetch(gatewayAbs(path), withDevice(path, init))
     const headers: Record<string, string> = { ...((init && (init.headers as Record<string, string>)) || {}) }
     for (const k of Object.keys(headers)) if (k.toLowerCase() === 'authorization') delete headers[k]
     headers.authorization = 'Bearer ' + route.token

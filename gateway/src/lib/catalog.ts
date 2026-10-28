@@ -4,7 +4,7 @@
  * 从 routes.ts 拆出来的——那个文件曾经是 5700 行，前 1900 行全是这类帮手。
  */
 import { HttpError } from '../http.ts'
-import { type CatalogItem, type Db, type Scope } from '../db.ts'
+import { type BotViewer, type CatalogItem, type Db, type Scope } from '../db.ts'
 import { objOf } from './util.ts'
 
 /**
@@ -14,6 +14,28 @@ import { objOf } from './util.ts'
 export function runtimeKindOf(item: CatalogItem): 'local' | 'remote' {
   const def = item.definition as Record<string, unknown> | undefined
   return item.scope === 'user' && def?.runtimeKind === 'local' ? 'local' : 'remote'
+}
+
+/**
+ * 这颗 Bot 从这个视角看不看得到（docs/local-bot-device.md §4）。和 db.botsFor 的 where 是同一条：
+ * 按 id 直接取的接口（ownBotOf 那一类）不经过 botsFor，靠这里补上。
+ */
+export function botVisibleTo(item: CatalogItem, viewer: BotViewer): boolean {
+  if (runtimeKindOf(item) !== 'local') return true
+  if (viewer.kind === 'none') return false
+  if (viewer.kind === 'device') return item.deviceId == null || item.deviceId === viewer.id
+  // 老壳子只看还没绑定的：已经归了别的电脑的，它起起来只是一个空工作区的进程，还会去抢那颗的活。
+  if (viewer.kind === 'legacy-desktop') return item.deviceId == null
+  return true
+}
+
+/**
+ * 主 Bot 能不能把活派给这颗（§4.4）。本地 Bot 只接**同一台电脑上的本地主 Bot** 派的活：
+ * 远程主 Bot 派给它，等于让网页上的一段对话把活塞进某台电脑里。没绑设备的老本地 Bot 两头都不算。
+ */
+export function canAssignTo(from: CatalogItem, to: CatalogItem): boolean {
+  if (runtimeKindOf(to) !== 'local') return true
+  return runtimeKindOf(from) === 'local' && from.deviceId != null && from.deviceId === to.deviceId
 }
 
 export function publicCatalog(item: { id: string; kind: string; scope: string; companyId: string | null; name: string; definition: unknown; createdAt: number; updatedAt: number }) {

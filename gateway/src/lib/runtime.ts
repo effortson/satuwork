@@ -15,7 +15,7 @@ import { INSTANCE_DOWN, machineBase } from './machines.ts'
 import { Readable } from 'node:stream'
 import { companyMachineOf, listSeatRuntime, managerHeaders } from '../deploy.ts'
 import { pipeline } from 'node:stream/promises'
-import { type Account, type Db, type Machine } from '../db.ts'
+import { type Account, type BotViewer, type Db, type Machine } from '../db.ts'
 import { BlockList, isIP } from 'node:net'
 
 /** Node 在双栈 socket 上给的是 ::ffff:1.2.3.4，统一去掉那层壳。 */
@@ -137,11 +137,11 @@ export async function instanceHostFor(account: Account, db: Db, botId: string): 
   return host.replace(/\/$/, '')
 }
 
-export async function visibleBotOf(db: Db, account: Account, botId: string) {
+export async function visibleBotOf(db: Db, account: Account, botId: string, viewer: BotViewer) {
   requireSeat(account)
   const id = (botId || '').trim()
   if (!id) throw new HttpError(400, 'botId 不能为空')
-  const hit = (await db.botsFor(account.companyId, account.id)).find((b) => b.id === id)
+  const hit = (await db.botsFor(account.companyId, account.id, viewer)).find((b) => b.id === id)
   if (!hit) throw new HttpError(404, '没有这个 Bot')
   return hit
 }

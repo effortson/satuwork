@@ -1,6 +1,6 @@
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
-import { requireUser } from '../lib/guards.ts'
+import { requireUser, viewerOf } from '../lib/guards.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import { visibleBotOf } from '../lib/runtime.ts'
 import { runtimeKindOf } from '../lib/catalog.ts'
@@ -27,7 +27,7 @@ export function attachNotifications(router: Router, { db, keys }: RouteCtx) {
     const account = await requireUser(req, db, keys)
     const { botId, sessionId, seq } = notificationPosition(bodyOf(req))
     // 交接单可能来自另一个人的 Bot；只允许读自己收到通知的那条会话。
-    if (!(await db.hasNotificationConversation(account.id, botId, sessionId))) await visibleBotOf(db, account, botId)
+    if (!(await db.hasNotificationConversation(account.id, botId, sessionId))) await visibleBotOf(db, account, botId, viewerOf(req))
     const read = await db.markNotificationRead(account.id, botId, sessionId, seq)
     json(res, 200, { read })
   })
@@ -47,7 +47,7 @@ export function attachNotifications(router: Router, { db, keys }: RouteCtx) {
     const account = await requireUser(req, db, keys)
     const body = bodyOf(req)
     const position = notificationPosition(body)
-    const bot = await visibleBotOf(db, account, position.botId)
+    const bot = await visibleBotOf(db, account, position.botId, viewerOf(req))
     if (runtimeKindOf(bot) !== 'local') throw new HttpError(400, '远程 Bot 由席位上报通知')
     const kind = strField(body, 'kind')
     if (!PUSH_KINDS.has(kind)) throw new HttpError(400, 'kind 不认识')

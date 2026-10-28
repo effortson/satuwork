@@ -641,6 +641,33 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       await req(base, 'DELETE', `/runtime/bots/${B}`, { token: memberTok })
     })
 
+    await test('可用 Bot × 本地 Bot：别的电脑上看不到的那颗不算缺失，在那台上保存范围也不会把它勾掉', async () => {
+      // docs/local-bot-device.md §4.2：本地 Bot 只属于建它的那台电脑。
+      const onA = { 'x-satuwork-device': 'e2e-connectors-desk-aa', 'x-satuwork-client': 'desktop' }
+      const onB = { 'x-satuwork-device': 'e2e-connectors-desk-bb', 'x-satuwork-client': 'desktop' }
+      const local = await req(base, 'POST', '/runtime/bots', { token: memberTok, headers: onA, body: { name: '本机助理', runtimeKind: 'local' } })
+      const remote = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '远程助理' } })
+      assert(local.status === 201 && remote.status === 201, `建 Bot ${local.status} ${remote.status}`)
+      const L = local.json.bot.id
+      const R = remote.json.bot.id
+      const put = (body, headers) => req(base, 'PUT', `/me/connectors/${connectorId}/connections/${firstConnId}/bots`, { token: memberTok, headers, body })
+      const fromA = await put({ mode: 'bots', botIds: [L, R] }, onA)
+      assert(fromA.status === 200, `A 上收窄 ${fromA.status} ${fromA.text}`)
+      assert((await put({ mode: 'bots', botIds: [L] }, onB)).status === 400, 'B 看不到的本地 Bot 不该收得进去')
+      const fromB = await put({ mode: 'bots', botIds: [R] }, onB)
+      assert(fromB.status === 200, `B 上保存 ${fromB.status} ${fromB.text}`)
+      assert(fromB.json.connection.bots.missing === 0 && !fromB.json.connection.bots.botIds.includes(L), `B 看到的范围不对：${JSON.stringify(fromB.json.connection.bots)}`)
+      const seenOnA = (await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok, headers: onA })).json.connections.find((c) => c.id === firstConnId)
+      assert(seenOnA.bots.botIds.includes(L) && seenOnA.bots.botIds.includes(R), `B 上那一次保存把 A 的本地 Bot 勾掉了：${JSON.stringify(seenOnA.bots)}`)
+      // 两台同时保存：后写的那一方也得看得见先写那一方的结果，A 的本地 Bot 不能被冲掉。
+      await Promise.all([put({ mode: 'bots', botIds: [L, R] }, onA), put({ mode: 'bots', botIds: [R] }, onB)])
+      const after = (await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok, headers: onA })).json.connections.find((c) => c.id === firstConnId)
+      assert(after.bots.botIds.includes(L), `并发保存之后 A 的本地 Bot 被冲掉了：${JSON.stringify(after.bots)}`)
+      assert((await put({ mode: 'all' }, onA)).status === 200, '改回所有 Bot')
+      await req(base, 'DELETE', `/runtime/bots/${L}`, { token: memberTok, headers: onA })
+      await req(base, 'DELETE', `/runtime/bots/${R}`, { token: memberTok })
+    })
+
     await test('指纹跟着连接走：装了、连了、改了开关都要变', async () => {
       const before = (await req(base, 'GET', '/runtime/catalog/version', { token: seatTok })).json.stamp
       await req(base, 'PATCH', `/me/connectors/${connectorId}/connections/${firstConnId}`, {

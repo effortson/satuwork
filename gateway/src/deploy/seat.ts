@@ -285,7 +285,7 @@ async function reserveSeat(db: Db, account: Account, opts: DeployOpts): Promise<
   const botId = (opts.botId || '').trim()
   if (!botId) return { ok: false, status: 400, error: 'botId 不能为空', runtime: undefined }
   // 按**主人**取名册：员工自己建的 Bot 只有他自己部署得了，别人拿到 id 也不行。
-  const visible = await db.botsFor(companyId, account.id)
+  const visible = await db.botsFor(companyId, account.id, { kind: 'none' })
   if (!visible.some((b) => b.id === botId)) {
     return { ok: false, status: 404, error: '没有这个 Bot', runtime: undefined }
   }

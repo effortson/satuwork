@@ -1650,9 +1650,29 @@ var SatuCore = (() => {
       else target = "/api/sessions/" + m[1] + rest + q;
       return { url: lb.base + target, token: lb.token, botId };
     }
+    function withDevice(path, init) {
+      const id = opts.deviceId?.();
+      const client = opts.client?.();
+      if (!id && !client) return init;
+      const base = gatewayBase();
+      if (!path.startsWith("/") && !(base && path.startsWith(base + "/"))) return init;
+      const raw = init && init.headers;
+      const headers = {};
+      if (raw && typeof raw.forEach === "function" && !Array.isArray(raw)) {
+        ;
+        raw.forEach((v, k) => {
+          headers[k] = v;
+        });
+      } else if (Array.isArray(raw)) {
+        for (const [k, v] of raw) headers[k] = v;
+      } else Object.assign(headers, raw || {});
+      if (id) headers["x-satuwork-device"] = id;
+      if (client) headers["x-satuwork-client"] = client;
+      return { ...init || {}, headers };
+    }
     function swFetch(path, init) {
       const route = localRoute(path, init && init.method);
-      if (!route) return fetch(gatewayAbs(path), init);
+      if (!route) return fetch(gatewayAbs(path), withDevice(path, init));
       const headers = { ...init && init.headers || {} };
       for (const k of Object.keys(headers)) if (k.toLowerCase() === "authorization") delete headers[k];
       headers.authorization = "Bearer " + route.token;

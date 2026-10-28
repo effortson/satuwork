@@ -14,7 +14,7 @@
 import type { RouteCtx } from './ctx.ts'
 import { bearer, HttpError, json, type Req, type Router } from '../http.ts'
 import { bodyOf, dailyOrUtilityOf, strField } from '../lib/validate.ts'
-import { requireSeatOrUser, requireUser } from '../lib/guards.ts'
+import { requireSeatOrUser, requireUser, viewerOf } from '../lib/guards.ts'
 import { visibleBotOf } from '../lib/runtime.ts'
 import { companyMachineOf } from '../deploy.ts'
 import { canonicalTimezone, parseRoutineTriggers, ROUTINE_MAX_TRIGGERS, RoutineBusyError, type Account, type Db, type Routine, type RoutineRun } from '../db.ts'
@@ -134,13 +134,13 @@ export function attachRoutines(router: Router, ctx: RouteCtx) {
     if (!token?.startsWith('sat_')) return { account, by: 'user' }
     const seatBotId = (pathBotId || req.query.get('botId') || '').trim()
     if (!seatBotId) throw new HttpError(400, '席位操作日常任务时要带 botId')
-    await visibleBotOf(db, account, seatBotId)
+    await visibleBotOf(db, account, seatBotId, viewerOf(req))
     return { account, seatBotId, by: 'bot' }
   }
 
   router.get('/runtime/bots/:id/routines', async (req, res) => {
     const { account } = await caller(req, req.params.id)
-    const bot = await visibleBotOf(db, account, req.params.id)
+    const bot = await visibleBotOf(db, account, req.params.id, viewerOf(req))
     const rows = await db.routinesOf(account.id, bot.id)
     const withRuns = await Promise.all(
       rows.map(async (r) => publicRoutine(r, (await db.routineRuns(r.id, 1))[0])),
@@ -150,7 +150,7 @@ export function attachRoutines(router: Router, ctx: RouteCtx) {
 
   router.post('/runtime/bots/:id/routines', async (req, res) => {
     const { account, by } = await caller(req, req.params.id)
-    const bot = await visibleBotOf(db, account, req.params.id)
+    const bot = await visibleBotOf(db, account, req.params.id, viewerOf(req))
     const body = bodyOf(req)
     const tz = await suggestTz(db, account, strField(body, 'tz', false))
     const triggers = triggersOf(body.triggers, tz) ?? []

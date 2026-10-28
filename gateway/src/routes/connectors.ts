@@ -11,12 +11,13 @@ import { MAX_TOOLS, applyConnectorPatch, blockMapOf, checkRecommended, connector
 import { toolModeOf } from '../lib/tool-search.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import { isUniqueViolation } from '../db.ts'
-import { originOf, requireOrgUser, requireOwnerUser, requireUser } from '../lib/guards.ts'
+import { CONNECTOR_BOT_SCOPE_LOCK } from '../db/locks.ts'
+import { originOf, requireOrgUser, requireOwnerUser, requireUser, viewerOf } from '../lib/guards.ts'
 import { rangeQuery } from '../lib/usage.ts'
-import { COMPANY_CONNECTION_LABEL, CONNECTION_LABEL_RE, DEFAULT_CONNECTION_LABEL, type Account, type BotScope, type ConnectorConnection, type ConnectorDef, externalUserIdOf } from '../db.ts'
+import { COMPANY_CONNECTION_LABEL, CONNECTION_LABEL_RE, DEFAULT_CONNECTION_LABEL, type Account, type BotScope, type BotViewer, type ConnectorConnection, type ConnectorDef, externalUserIdOf } from '../db.ts'
 import { connectionUsableBy, lookupAccountName, publicBotScope, publicConnection, publicInstall, usableConnections } from '../lib/connectors.ts'
 import { publicPlatformCred } from '../lib/org.ts'
-import { botIconOf } from '../lib/catalog.ts'
+import { botIconOf, canAssignTo, runtimeKindOf } from '../lib/catalog.ts'
 
 /** 授权回来之后那一页要说的三种话。见 authDonePage。 */
 type AuthDone = 'ok' | 'pending' | 'failed'
@@ -394,8 +395,13 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
     const install = await db.connectorInstall(item.id, account.id)
     const mine = (await db.connectionsFor(account.id, account.companyId)).filter((c) => c.connectorId === item.id)
     const rows = await refreshPending(mine, def)
-    const [scopes, bots] = await Promise.all([db.botScopesFor(account.id), db.botsFor(account.companyId, account.id)])
+    const [scopes, bots, everyBot] = await Promise.all([
+      db.botScopesFor(account.id),
+      db.botsFor(account.companyId, account.id, viewerOf(req)),
+      db.botsFor(account.companyId, account.id, { kind: 'seat' }),
+    ])
     const roster = new Set(bots.map((b) => b.id))
+    const allBots = new Set(everyBot.map((b) => b.id))
     let tools: ToolDef[] = []
     let toolsError = ''
     try {
@@ -426,7 +432,7 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
     json(res, 200, {
       connector: { ...publicConnector(item), blocked, blockedReason },
       install: install ? publicInstall(install) : null,
-      connections: rows.map((c) => publicConnection(c, publicBotScope(scopes.get(c.id)?.scope, roster))),
+      connections: rows.map((c) => publicConnection(c, publicBotScope(scopes.get(c.id)?.scope, roster, allBots))),
       /**
        * 「可用 Bot」那一格的候选：这个人能用的全部 Bot（和改范围时的校验同一份名单）。
        * 跟着详情一起给，不让界面去借侧栏那份名册——那份在没有席位机器时会藏掉公司的 Bot。
@@ -615,13 +621,17 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
         detail: { connectionId: row.id, mentionOnly: patch.mentionOnly },
       })
     }
-    json(res, 200, { connection: publicConnection(next!, await botScopeView(account, row.id)) })
+    json(res, 200, { connection: publicConnection(next!, await botScopeView(account, row.id, viewerOf(req))) })
   })
 
   /** 这个人给这把连接设的范围，界面那一格的形状（详情页同一个口径）。 */
-  async function botScopeView(account: Account, connectionId: string) {
-    const [bots, saved] = await Promise.all([db.botsFor(account.companyId, account.id), db.botScopeOf(connectionId, account.id)])
-    return publicBotScope(saved?.scope, new Set(bots.map((b) => b.id)))
+  async function botScopeView(account: Account, connectionId: string, viewer: BotViewer) {
+    const [bots, all, saved] = await Promise.all([
+      db.botsFor(account.companyId, account.id, viewer),
+      db.botsFor(account.companyId, account.id, { kind: 'seat' }),
+      db.botScopeOf(connectionId, account.id),
+    ])
+    return publicBotScope(saved?.scope, new Set(bots.map((b) => b.id)), new Set(all.map((b) => b.id)))
   }
 
   /**
@@ -642,20 +652,42 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
     const body = bodyOf(req)
     const mode = String(body.mode ?? '')
     let scope: BotScope
+    // 选「部分 Bot」时：这个账号全部的 Bot、这台看得到的那些（合并时用，见下）。
+    let all: Set<string> | null = null
+    let seen: Set<string> | null = null
     if (mode === 'all') {
       scope = { mode: 'all' }
     } else if (mode === 'bots') {
       if (!Array.isArray(body.botIds)) throw new HttpError(400, '要带 botIds（Bot id 的数组）')
       const wanted = [...new Set(body.botIds.map((x) => String(x ?? '').trim()).filter(Boolean))]
       if (!wanted.length) throw new HttpError(400, '至少选一个 Bot')
-      const roster = new Set((await db.botsFor(account.companyId, account.id)).map((b) => b.id))
+      const [visible, every] = await Promise.all([
+        db.botsFor(account.companyId, account.id, viewerOf(req)),
+        db.botsFor(account.companyId, account.id, { kind: 'seat' }),
+      ])
+      const roster = new Set(visible.map((b) => b.id))
       const unknown = wanted.filter((id) => !roster.has(id))
       if (unknown.length) throw new HttpError(400, `没有这个 Bot：${unknown.join('、')}`)
       scope = { mode: 'bots', botIds: wanted }
+      all = new Set(every.map((b) => b.id))
+      seen = roster
     } else {
       throw new HttpError(400, "mode 只能是 'all' 或 'bots'")
     }
-    const saved = await db.setBotScope(row.id, account.id, scope)
+    /**
+     * 别的电脑上的本地 Bot 这台看不到，界面交上来的名单里自然没有它——原样存下去就等于替那台
+     * 电脑把它勾掉了。原来勾着、这台看不到、但还在的那几颗，照旧留着（docs/local-bot-device.md）。
+     * 读原来的和写回去放在同一把锁里：两台电脑同时保存时，后写的那一方要看得见先写那一方的结果。
+     */
+    const saved = await db.tx(async () => {
+      await db.lockExclusive(CONNECTOR_BOT_SCOPE_LOCK, `${row.id}:${account.id}`)
+      if (scope.mode === 'bots' && all && seen) {
+        const prev = await db.botScopeOf(row.id, account.id)
+        const kept = prev?.scope.mode === 'bots' ? prev.scope.botIds.filter((id) => all!.has(id) && !seen!.has(id)) : []
+        scope = { mode: 'bots', botIds: [...scope.botIds, ...kept] }
+      }
+      return db.setBotScope(row.id, account.id, scope)
+    })
     // 它决定这把账号会被哪颗 Bot 隐式调用，是权限边界，不是显示偏好——同 mentionOnly，要留档。
     await db.audit({
       companyId: account.companyId!,
@@ -663,7 +695,7 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
       action: 'connector.connection.bots',
       detail: { connectionId: row.id, mode: saved.scope.mode, botIds: saved.scope.mode === 'bots' ? saved.scope.botIds : [] },
     })
-    json(res, 200, { connection: publicConnection(row, await botScopeView(account, row.id)) })
+    json(res, 200, { connection: publicConnection(row, await botScopeView(account, row.id, viewerOf(req))) })
   })
 
   router.delete('/me/connectors/:connectorId/connections/:connectionId', async (req, res) => {
@@ -893,9 +925,12 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
      * 发消息那一跳再按会话的 Bot 校验一次（routes/runtime.ts），界面漏了也进不去。
      */
     const mainBotId = account.role === 'owner' ? null : await db.mainBotOf(account.id)
+    const roster = mainBotId ? await db.botsFor(companyId, account.id, viewerOf(req)) : []
+    const mainItem = roster.find((b) => b.id === mainBotId)
     const bots = mainBotId
-      ? (await db.botsFor(companyId, account.id))
-          .filter((b) => b.id !== mainBotId)
+      ? roster
+          // 本地 Bot 只接同一台电脑上的本地主 Bot 派的活（docs/local-bot-device.md §4.4）。
+          .filter((b) => b.id !== mainBotId && (mainItem ? canAssignTo(mainItem, b) : runtimeKindOf(b) !== 'local'))
           .map((b) => {
             const origin = b.scope === 'global' ? 'global' : 'company'
             return { kind: 'bot' as const, id: b.id, label: b.name, icon: botIconOf((b.definition as { icon?: unknown } | undefined)?.icon, origin), origin }
