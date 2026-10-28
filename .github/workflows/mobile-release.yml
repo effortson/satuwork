@@ -16,8 +16,9 @@
 # 旧 SDK 在上传校验那一步就被硬拒。check.yml 里 mobile 那档用 macos-15（Xcode 16.4）只做编译检查，
 # 出不了能上传的包。下面「校验 Xcode」那步把这条钉住。
 #
-# 版本：CFBundleShortVersionString 是 tauri.conf.json 的 version，CFBundleVersion 末尾接上
-# GITHUB_RUN_NUMBER（--build-number）。同一个版本号重传一次，build 号也是新的，TestFlight 不会拒。
+# 版本：CFBundleShortVersionString 是 tauri.conf.json 的 version，CFBundleVersion 使用
+# GITHUB_RUN_NUMBER。通过 bundle.iOS.bundleVersion 设置；--build-number 会追加成四段数字，
+# 不符合 Apple 构建号最多三段的格式。同一个版本号重传一次，build 号也是新的。
 name: mobile-release
 
 on:
@@ -168,7 +169,9 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           IPHONEOS_DEPLOYMENT_TARGET: '15.0'
-        run: pnpm exec tauri ios build --ci --archive-only --export-method app-store-connect --build-number "$GITHUB_RUN_NUMBER"
+        run: |
+          node -e 'process.stdout.write(JSON.stringify({bundle:{iOS:{bundleVersion:process.env.GITHUB_RUN_NUMBER}}}))' > "$RUNNER_TEMP/ios-version.json"
+          pnpm exec tauri ios build --ci --archive-only --export-method app-store-connect --config "$RUNNER_TEMP/ios-version.json"
 
       - name: 签入 production 推送权限
         run: python3 mobile/scripts/prepare-ios-signing.py --sign-archive mobile/src-tauri/gen/apple/build/satuwork-mobile_iOS.xcarchive
@@ -201,9 +204,11 @@ jobs:
           [ -n "$app" ] || { echo "IPA 里没有应用" >&2; exit 1; }
           codesign --display --entitlements - --xml "$app" > "$dir/entitlements.plist"
           bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")
           aps=$(/usr/libexec/PlistBuddy -c 'Print :aps-environment' "$dir/entitlements.plist")
           [ "$bundle" = sg.dami.satuwork.mobile ] || { echo "推送 topic 与 bundle id 不一致：$bundle" >&2; exit 1; }
           [ "$aps" = production ] || { echo "TestFlight 必须签入 production APNs，实际为 $aps" >&2; exit 1; }
+          [ "$build" = "$GITHUB_RUN_NUMBER" ] || { echo "TestFlight 构建号应为 $GITHUB_RUN_NUMBER，实际为 $build" >&2; exit 1; }
           echo "TestFlight APNs 签名通过：$bundle / $aps"
 
       - uses: actions/upload-artifact@v7
