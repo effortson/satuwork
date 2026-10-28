@@ -102,11 +102,13 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 
 /* main：两行（header / 正文）两列（内容 / 右栏）。右栏跨两行，所以能顶到 header
    那一行去——做成 header 下面的兄弟节点就顶不上去。列宽由 appView 内联给出。 */
+.gw-shell { --gw-head-height: 60px; --gw-main-border: 1px; --gw-side-top: var(--space-4); }
 .gw-main { min-width: 0; height: 100%; min-height: 0; box-sizing: border-box; overflow: hidden;
   background: var(--color-neutral-100); border: 1px solid var(--color-divider); border-radius: var(--radius-md);
   display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .gw-head { grid-row: 1; grid-column: 1; display: flex; align-items: center; gap: var(--space-3);
-  padding: var(--space-3) var(--space-6); border-bottom: 1px solid var(--color-divider); }
+  box-sizing: border-box; height: var(--gw-head-height, 60px); min-height: 0;
+  padding: var(--space-2) var(--space-6); border-bottom: 1px solid var(--color-divider); }
 .gw-body { grid-row: 2; grid-column: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 [data-mobile-background="banner"] { flex: none; }
 [data-mobile-background="profile"]:empty { display: none; }
@@ -1458,7 +1460,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
    ══════════════════════════════════════════════════════════════════════ */
 .gw-drawer-mask { display: none; }
 @media (max-width: 760px) {
-  .gw-shell { grid-template-columns: minmax(0, 1fr) !important; gap: 0 !important; padding: 0 !important; }
+  .gw-shell { --gw-head-height: 56px; --gw-main-border: 0px; grid-template-columns: minmax(0, 1fr) !important; gap: 0 !important; padding: 0 !important; }
   .gw-side {
     /* 压在弹窗（.gw-modal-backdrop 是 25）底下：「新建 Bot」「插件」这几个弹窗就是从抽屉里
        点出来的，抽屉压在上面的话弹窗开了也看不见。 */
@@ -1479,6 +1481,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 
   .gw-main { grid-template-columns: minmax(0, 1fr) !important; border: 0; border-radius: 0; }
   .gw-head { gap: var(--space-2); padding: var(--space-2) var(--space-3); }
+  .gw-side .satu-brand { padding-bottom: var(--space-1); }
   .gw-aside { grid-row: 2; grid-column: 1; z-index: 5; border-left: 0; background: var(--color-neutral-100); }
   .gw-aside-grip { display: none; }
   .gw-page { padding: var(--space-4); }
@@ -1613,9 +1616,13 @@ html.satu-window-windows .satu-windowbar[data-focused='false']:not(:hover):not(:
 html.satu-window-windows .satu-window-error { left: auto; right: 12px; }
 
 /* The desktop canvas reaches the window edges; there is no second outer frame. */
-html.satu-custom-window .gw-shell { padding: 0 !important; gap: 0 !important; }
+html.satu-custom-window .gw-shell { --gw-main-border: 0px; padding: 0 !important; gap: 0 !important; }
 html.satu-custom-window .gw-side { border-radius: 0 !important; border-right: 1px solid var(--border); }
-html.satu-window-macos .gw-side { padding-top: 44px !important; }
+/* 品牌区在窗口按钮下方，与所有页面共用同一条顶栏分隔线。 */
+html.satu-window-macos .gw-shell { --gw-side-top: 28px; }
+html.satu-window-macos .gw-side { padding-top: var(--gw-side-top) !important; }
+html.satu-window-macos .satu-brand { padding-bottom: 0; }
+html.satu-window-macos .satu-brand img { max-height: 100%; }
 html.satu-custom-window .gw-main { border: 0; border-radius: 0; }
 html.satu-window-macos body:has(.gw-shell) .satu-windowbar { width: 248px; }
 html.satu-window-macos .gw-shell:has(.satu-rail) { grid-template-columns: 80px minmax(0, 1fr) !important; }

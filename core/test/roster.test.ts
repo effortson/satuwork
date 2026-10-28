@@ -57,3 +57,21 @@ test('refreshSum：从后往前找第一条有正文的，比手上的新才认'
   assert.equal(sum.lastText, 'newer')
   assert.equal(sum.lastAt, 70)
 })
+
+test('实时消息与历史回填共用 Markdown 摘要，先去格式再截断', () => {
+  for (const type of ['user/message', 'assistant/message']) {
+    for (const data of [
+      { text: '## **已完成**\n\n见 [报告](https://example.com/report) 和 `snake_case`' },
+      { message: { content: [{ type: 'text', text: '## **已完成**\n\n见 [报告](https://example.com/report) 和 `snake_case`' }] } },
+    ]) {
+      const ev = { type, time: 100, data }
+      const live = newSum()
+      const history = newSum()
+      applyRosterEvent(live, ev)
+      refreshSum(history, [ev])
+      assert.equal(live.lastText, '已完成 见 报告 和 snake_case')
+      assert.equal(history.lastText, live.lastText)
+      assert.equal(history.lastAt, live.lastAt)
+    }
+  }
+})

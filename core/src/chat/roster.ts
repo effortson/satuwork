@@ -4,6 +4,7 @@
  */
 import type { RosterSum, SessionEvent } from '../protocol/events.ts'
 import { messageText } from './events.ts'
+import { markdownSummary } from '../markdown/summary.ts'
 
 export function newSum(): RosterSum {
   return { state: 'idle', lastAt: 0, lastText: '' }
@@ -91,7 +92,7 @@ export function applyRosterEvent(sum: RosterSum, ev: SessionEvent): boolean {
   } else if (ev.type === 'user/message' || ev.type === 'assistant/message') {
     const text = messageText((ev.data || {}).message) || (ev.data || {}).text || ''
     if (text) {
-      sum.lastText = text.replace(/\s+/g, ' ').trim().slice(0, 120)
+      sum.lastText = markdownSummary(text)
       sum.lastAt = Number(ev.time) || sum.lastAt
     }
   } else if (ev.type === 'assistant/chunk') {
@@ -116,7 +117,7 @@ export function refreshSum(sum: RosterSum, events: SessionEvent[]): boolean {
     if (!text) continue
     const at = Number(ev.time) || 0
     if (at < sum.lastAt) return false
-    sum.lastText = text.replace(/\s+/g, ' ').trim().slice(0, 120)
+    sum.lastText = markdownSummary(text)
     sum.lastAt = at || sum.lastAt
     return true
   }
