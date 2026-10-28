@@ -161,6 +161,23 @@ jobs:
           ls -la "$ipa"
           echo "path=$ipa" >> "$GITHUB_OUTPUT"
 
+      - name: 校验 TestFlight 推送签名
+        env:
+          IPA: ${{ steps.ipa.outputs.path }}
+        run: |
+          set -euo pipefail
+          dir=$(mktemp -d "$RUNNER_TEMP/satuwork-ipa.XXXXXX")
+          trap 'rm -rf "$dir"' EXIT
+          ditto -x -k "$IPA" "$dir"
+          app=$(find "$dir/Payload" -maxdepth 1 -name '*.app' -print -quit)
+          [ -n "$app" ] || { echo "IPA 里没有应用" >&2; exit 1; }
+          codesign --display --entitlements - --xml "$app" > "$dir/entitlements.plist"
+          bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          aps=$(/usr/libexec/PlistBuddy -c 'Print :aps-environment' "$dir/entitlements.plist")
+          [ "$bundle" = sg.dami.satuwork.mobile ] || { echo "推送 topic 与 bundle id 不一致：$bundle" >&2; exit 1; }
+          [ "$aps" = production ] || { echo "TestFlight 必须签入 production APNs，实际为 $aps" >&2; exit 1; }
+          echo "TestFlight APNs 签名通过：$bundle / $aps"
+
       - uses: actions/upload-artifact@v7
         with:
           name: satuwork-ios-${{ github.run_number }}
