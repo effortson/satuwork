@@ -14,7 +14,8 @@
  *
  * 环境变量（缺了哪一家就不发那一家，只记一行日志；功能在没配的环境里等于关着）：
  *
- * - `GATEWAY_APNS_KEY`：App Store Connect 下载的 .p8 全文（PEM）；放不下换行的平台可以整段 base64。
+ * - `GATEWAY_APNS_KEY`：Apple Developer「Certificates, Identifiers & Profiles → Keys」中启用 APNs 的
+ *   .p8 全文（PEM）；不是 App Store Connect API / 公证密钥。放不下换行的平台可以整段 base64。
  * - `GATEWAY_APNS_KEY_ID`、`GATEWAY_APNS_TEAM_ID`：那把钥匙的 Key ID 与开发团队 ID。
  * - `GATEWAY_APNS_TOPIC`：应用的 bundle id，默认 `sg.dami.satuwork.mobile`（mobile/src-tauri/tauri.conf.json）。
  * - `GATEWAY_APNS_ENDPOINT`：只给 e2e 用，把 sandbox / production 两头都指到一个本地假 APNs（h2c）。
