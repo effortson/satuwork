@@ -41,6 +41,11 @@ const LEGAL_LAW_EN = '[Governing law and venue]'
 const LEGAL_CONTACT = 'legal@satuwork.com'
 const LEGAL_DRAFT = true
 
+// Privacy is published separately from the still-draft service terms.
+const PRIVACY_UPDATED = '2026-10-28'
+const PRIVACY_ENTITY = 'ADIX INTELLIGENCE PTE. LTD.'
+const PRIVACY_CONTACT = 'symohpnyprotocol@outlook.com'
+
 /**
  * 一节：`{ id, title, body }`。
  *
@@ -86,6 +91,8 @@ function legalToc(secs) {
 function legalPrivacy() {
   return {
     kind: 'privacy',
+    updated: PRIVACY_UPDATED,
+    draft: false,
     title: t('隐私政策', 'Privacy Policy'),
     lead: t(
       '这套系统会收哪些信息、拿来做什么、谁看得到、留多久。说人话，不绕。',
@@ -94,23 +101,23 @@ function legalPrivacy() {
     secs: [
       lgSec('pv-scope', t('这份政策管什么', 'What this policy covers'), [
         t(
-          'Satuwork 是一套给公司用的 AI 员工系统。账号由你所在公司的管理员开通，数据存放在这家公司的那台 Gateway 上。这份政策说的是这套系统怎么对待信息。',
-          'Satuwork is a system of AI coworkers for companies. Your account is created by an admin at your company, and the data lives on that company’s Gateway. This policy describes how the system handles information.',
+          `Satuwork 是由 ${PRIVACY_ENTITY} 提供的企业 AI 同事服务。本声明适用于 Satuwork iOS App、网站及相关托管服务。公司管理员为员工开通账号并管理工作区；也可以选择自行部署服务。`,
+          `Satuwork is an AI coworker service provided by ${PRIVACY_ENTITY}. This notice covers the Satuwork iOS app, website and related hosted services. Organization administrators provision employee accounts and manage workspaces; organizations may also self-host the service.`,
         ),
         t(
           '拿这套系统做什么、开通谁、连哪些外部系统，都由你所在的公司决定：在数据保护法的说法里，公司是数据控制者，我们作为软件提供方按公司的指示处理数据。所以关于你那份数据的问题，第一站是公司管理员。',
           'Your company decides what the system is used for, who gets an account, and which external systems it connects to. In data-protection terms your company is the controller and we act on its instructions as the software provider. So questions about your own data start with your company admin.',
         ),
         t(
-          '这套软件也可以由公司自己部署在自己的机器上。那种情况下运行它的就是你们公司自己，能碰到数据的也只有你们自己的管理员。',
-          'The software can also be self-hosted on your company’s own machines. In that case your company runs it, and only your own admins can reach the data.',
+          '自行部署时，组织决定基础设施、服务商和访问权限；组织选择的模型、连接器或渠道服务商仍可能接收为完成任务所必需的数据。我们也会为提供托管服务、账号支持、安全及法定义务处理必要的信息。',
+          'For self-hosted deployments, your organization chooses infrastructure, service providers and access permissions. Its selected model, connector and channel providers may still receive data needed to perform tasks. We also process information necessary for hosted service operation, account support, security and legal obligations.',
         ),
       ]),
       lgSec('pv-collect', t('收哪些信息', 'What is collected'), [
         [
           t(
-            '账号信息：邮箱、姓名、所属公司和角色，以及界面语言、主题这类偏好。',
-            'Account details: email, name, company and role, plus preferences such as interface language and theme.',
+            '账号信息：邮箱、姓名、所属组织、账号标识和角色，以及你主动填写的头像、职务、联系电话和界面偏好。密码以哈希形式保存。',
+            'Account information: email, name, organization, account identifiers and role, plus any profile image, job title, phone number and interface preferences you choose to provide. Passwords are stored as hashes.',
           ),
           t(
             '你交代的活：你在对话里写的话、你上传的文件，以及 AI 员工为你做的事。',
@@ -136,16 +143,24 @@ function legalPrivacy() {
             '技术日志：请求时间、IP 地址、浏览器标识这类服务器日志。',
             'Technical logs: request times, IP addresses, user-agent strings and similar server logs.',
           ),
+          t(
+            '通知信息：你允许通知后，保存与账号关联的 APNs 设备推送令牌、设备平台和推送环境，以及通知事件、送达状态和已读状态。令牌用于发送通知，不用于广告或跨 App 跟踪。',
+            'Notifications: if you allow notifications, we store an APNs push token linked to your account, device platform and push environment, together with notification events, delivery status and read state. The token is used for notifications, not advertising or cross-app tracking.',
+          ),
+          t(
+            '手机权限：App 不请求定位、通讯录、相机或麦克风的广泛访问权限。文件只在你主动选取或发送时交给服务；文件内容可能包括文档、照片、音视频或其他你选择的数据。',
+            'Mobile permissions: the app does not request broad access to location, contacts, camera or microphone. Files are provided to the service when you select or send them; they may contain documents, photos, audio, video or other data you choose.',
+          ),
         ],
       ]),
       lgSec('pv-conversations', t('对话正文在哪儿', 'Where conversations live'), [
         t(
-          '原始会话事件不进 Gateway 的数据库，它们留在你们公司那台席位机器上。Gateway 这边只有两样：一份会话索引（哪个 Bot、哪条会话、什么时候），和一份裁剪过的审计派生物。',
-          'Raw conversation events are not stored in the Gateway database; they stay on your company’s seat machine. The Gateway holds two things: a session index (which bot, which session, when), and a trimmed set of audit derivatives.',
+          '原始会话记录和工作区文件主要保存在组织的席位机器上。Gateway 处理登录、转发和任务请求，并保存会话索引、组织配置、记忆、知识库资料、通知和裁剪后的审计数据；因此，对话不进入 Gateway 会话表不等于服务不处理用户内容。',
+          'Raw conversation records and workspace files are primarily stored on organization seat machines. The Gateway handles authentication, routing and task requests, and stores session indexes, organization configuration, memories, knowledge-base material, notifications and trimmed audit data. The absence of a Gateway transcript table does not mean the service does not process user content.',
         ),
         t(
-          '审计派生物里明确不许出现这些：原始完整消息和工具返回、密钥与令牌、文件正文、邮件正文、网页全文，以及被识别出来的证件号、银行卡号、手机号、邮箱等原值。',
-          'Audit derivatives are explicitly not allowed to contain: full raw messages or tool output, keys and tokens, file contents, email bodies, full web pages, or detected ID numbers, card numbers, phone numbers and email addresses in the clear.',
+          '会话审计会裁剪内容并尝试去除识别出的敏感标识。自动识别并不能保证找出所有个人信息，请勿将其视为匿名化保证；经授权的组织管理员可以查看适用的用量及审计信息。',
+          'Conversation audits trim content and attempt to remove detected sensitive identifiers. Automated detection cannot guarantee removal of all personal information and is not an anonymization guarantee. Authorized organization administrators can access applicable usage and audit information.',
         ),
         t(
           '但有一件事要说在明处：对话内容会发给模型供应商——那是这套系统能回答你的前提。见下面「会交给谁」。',
@@ -187,7 +202,19 @@ function legalPrivacy() {
             '基础设施：Gateway 和数据库跑在哪儿由你们公司决定（自建机器或云平台），数据随之落在那儿。',
             'Infrastructure: your company decides where the Gateway and its database run (own machines or a cloud platform), and the data sits there.',
           ),
+          t(
+            '托管服务使用 Vercel 承载网站和 Gateway、Neon 承载业务数据库；配置对象存储时，上传文件或发布包也可由 Vercel Blob 保存。Apple APNs 接收设备令牌及通知载荷来投递 iOS 通知；默认通知使用通用提醒文案而不携带聊天正文。',
+            'Hosted services use Vercel for the website and Gateway and Neon for the business database. When object storage is configured, Vercel Blob may store uploaded files or release packages. Apple APNs receives device tokens and notification payloads to deliver iOS notifications; default alerts use generic text without conversation bodies.',
+          ),
         ],
+        t(
+          '发送给 AI 的数据可能包括当前请求、相关历史对话、你提供的附件内容，以及执行任务所需的工具结果。实际接收方由组织配置的模型服务商决定，不是固定的一家公司；手机端在首次发送前会列出可用服务商并征求同意。不同模型服务商可能有不同的保留和训练政策。请先向管理员了解接收方的适用条款，不同意时可以取消发送。',
+          'Data sent to AI services may include the current request, relevant conversation history, supplied attachment contents and tool results needed for the task. Recipients depend on your organization’s configured model providers rather than one fixed company. Before the first mobile submission, the app lists available providers and asks for permission. Providers may have different retention and training practices. Ask your administrator about the applicable provider terms; you can cancel instead of sending.',
+        ),
+        t(
+          '组织和服务商选择的部署区域可能位于你所在国家或地区之外。跨境处理取决于托管基础设施、模型服务和组织配置；请联系组织管理员或下方邮箱了解适用于你工作区的处理安排。',
+          'Organization and service-provider deployment regions may be outside your country or region. International processing depends on hosting infrastructure, model services and organization settings. Contact your administrator or the address below for arrangements applicable to your workspace.',
+        ),
         t(
           '除此之外不卖、不换、不拿去投广告。法律要求时（法院命令、监管调查）才另说，且在法律允许的范围内会先告诉公司管理员。',
           'Beyond that, nothing is sold, traded or used for advertising. Legal demands (court orders, regulatory investigations) are the exception, and where the law allows it we tell your company admin first.',
@@ -195,7 +222,7 @@ function legalPrivacy() {
       ]),
       lgSec('pv-keep', t('留多久', 'How long it is kept'), [
         [
-          t('账号信息：账号在就一直在，账号删了随之删除。', 'Account details: for as long as the account exists, and deleted with it.'),
+          t('账号信息：在提供账号服务所需期间保留；关闭或删除账号时删除或解除关联可删除的数据，但需要履行法定义务、处理争议或维护安全的记录可能继续保留。', 'Account information is retained as needed to provide the account service. Closing or deleting an account removes or disassociates data that can be deleted, while records required for legal obligations, disputes or security may be retained.'),
           t(
             '审计派生物：默认 180 天，公司可以在平台限定的范围内调整。Bot 删掉之后审计条目仍然保留——那正是审计的意义。',
             'Audit derivatives: 180 days by default, adjustable by your company within platform limits. They survive the deletion of a bot — that is the point of an audit trail.',
@@ -206,12 +233,14 @@ function legalPrivacy() {
             'Workspace files and raw conversation records: on the seat machine, under your company’s own retention policy.',
           ),
           t('服务器日志：短期滚动保留，用于排障和安全。', 'Server logs: kept on a short rolling window for debugging and security.'),
+          t('推送令牌：退出登录时 App 会尝试注销当前令牌；令牌失效时服务会移除它。你也可以在系统设置中关闭通知。关闭系统通知不等于立即删除所有已有服务记录。', 'Push tokens: on sign-out, the app attempts to unregister the current token; invalid tokens are removed by the service. You can disable notifications in system settings. Disabling notifications does not immediately delete all existing service records.'),
+          t('备份和第三方副本：从活动系统删除的数据仍可能暂存于备份中，直到相应的备份轮换；外部服务保留的数据受该服务的适用条款和组织的约定约束。', 'Backups and third-party copies: data removed from active systems may remain in backups until their rotation. Copies retained by external services are governed by their applicable terms and organization agreements.'),
         ],
       ]),
       lgSec('pv-rights', t('你的权利', 'Your rights'), [
         t(
-          '你可以要求查看、更正、导出或删除关于你的信息，也可以随时撤回某个连接器的授权。',
-          'You can ask to see, correct, export or delete information about you, and you can revoke a connector authorization at any time.',
+          '你可以要求查看、更正、导出或删除关于你的信息，撤回连接器授权，或联系下方邮箱提出账号删除请求。App 不提供公开自助注册，组织管理员负责账号开通和关闭。手机端退出登录会清除本机 AI 数据共享许可；再次发送时会重新询问。停止发送或撤回同意不会自动撤回已发送给外部服务的数据。',
+          'You can request access, correction, export or deletion of your information, revoke a connector authorization, or request account deletion at the address below. The app does not offer public self-service registration; organization administrators provision and close accounts. Signing out on mobile clears the device’s AI data-sharing permission, and the app asks again before another submission. Stopping submissions or withdrawing permission does not automatically recall data already sent to external services.',
         ),
         t(
           '路径是先找公司管理员：账号是他开的，数据也在公司名下，绝大多数请求他当场就能处理。他处理不了的，按最后一节联系我们。',
@@ -236,8 +265,8 @@ function legalPrivacy() {
       ]),
       lgSec('pv-local', t('浏览器里存了什么', 'What is stored in your browser'), [
         t(
-          '没有第三方跟踪或广告 cookie，这套界面里一个都没有。',
-          'There are no third-party tracking or advertising cookies anywhere in this interface.',
+          '手机 App 不集成广告或跨 App 跟踪 SDK。网站的 Vercel 部署可能启用 Vercel Web Analytics 和 Speed Insights，用于页面访问统计与性能分析；上报前会去掉查询串、邀请令牌和可识别的路径标识。手机端打包的界面不注入这些网站统计脚本。',
+          'The mobile app does not integrate advertising or cross-app tracking SDKs. Vercel website deployments may enable Vercel Web Analytics and Speed Insights for page metrics and performance analysis; query strings, invitation tokens and identifiable path segments are removed before reporting. These website analytics scripts are not injected into the bundled mobile interface.',
         ),
         [
           t(
@@ -245,6 +274,7 @@ function legalPrivacy() {
             'The sign-in token: in session storage on the web (gone when you close the tab), in persistent storage in the desktop app so reopening the window does not mean signing in again.',
           ),
           t('界面偏好：主题、语言、侧栏宽度这些。', 'Interface preferences: theme, language, sidebar width.'),
+          t('手机端 AI 数据共享许可：只保存在当前设备，按账号、服务器和服务商范围区分，退出登录时清除。', 'Mobile AI data-sharing permission: stored on the current device, scoped to the account, server and providers, and cleared at sign-out.'),
         ],
       ]),
       lgSec('pv-minors', t('未成年人', 'Minors'), [
@@ -261,8 +291,8 @@ function legalPrivacy() {
       ]),
       lgSec('pv-contact', t('联系我们', 'Contact'), [
         t(
-          `隐私相关的问题、请求和事故报告，发到 ${LEGAL_CONTACT}；落款主体是 ${LEGAL_ENTITY}。日常的账号问题仍然先找公司管理员，那条路比这条快。`,
-          `For privacy questions, requests and incident reports, write to ${LEGAL_CONTACT}. The responsible entity is ${LEGAL_ENTITY_EN}. For everyday account matters your company admin is still the faster route.`,
+          `隐私相关的问题、数据或账号删除请求和事故报告，请发到 ${PRIVACY_CONTACT}。运营主体是 ${PRIVACY_ENTITY}。组织管理员也可协助处理与你的工作区相关的请求；我们可能需要核实身份和组织权限。`,
+          `For privacy questions, data or account deletion requests and incident reports, contact ${PRIVACY_CONTACT}. The service operator is ${PRIVACY_ENTITY}. Your organization administrator can also assist with workspace requests. We may need to verify identity and organization authority.`,
         ),
       ]),
     ],
@@ -452,15 +482,17 @@ function legalFoot(kind) {
  */
 function legalView(kind) {
   const doc = kind === 'terms' ? legalTerms() : legalPrivacy()
+  const updated = doc.updated || LEGAL_UPDATED
+  const draft = doc.draft ?? LEGAL_DRAFT
   return `
   <div class="satu-lp satu-lg">
     ${legalTop()}
     <div class="satu-lp-wrap satu-lg-head">
       <h1>${esc(doc.title)}</h1>
       <p class="satu-lg-lead">${esc(doc.lead)}</p>
-      <p class="satu-lg-meta">${esc(t(`最后更新：${LEGAL_UPDATED}`, `Last updated: ${LEGAL_UPDATED}`))}</p>
+      <p class="satu-lg-meta">${esc(t(`最后更新：${updated}`, `Last updated: ${updated}`))}</p>
       ${
-        LEGAL_DRAFT
+        draft
           ? `<p class="satu-lg-note">${esc(
               t(
                 '这份文本还没有经过法务审阅，方括号里的落款主体、管辖地和联系邮箱都是占位的。上线前换掉它们，并把 pages-legal.js 里的 LEGAL_DRAFT 关掉。',
