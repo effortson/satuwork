@@ -320,7 +320,7 @@ document.getElementById('app').addEventListener('submit', (e) => {
   if (form.id === 'setup-form') return onSetup(e)
   if (form.id === 'pw-form') return submitPassword(e)
   if (form.id === 'content-report-form') return submitContentReport(e)
-  if (form.hasAttribute('data-content-review')) return submitContentReview(e)
+  if (form.getAttribute?.('data-content-review')) return submitContentReview(e)
   if (form.id === 'invite-form') return submitInvite(e)
   if (form.id === 'group-form') return submitGroup(e)
   if (form.id === 'edit-member-form') return submitEdit(e)
