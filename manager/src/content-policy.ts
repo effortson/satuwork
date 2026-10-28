@@ -21,33 +21,34 @@ function textOf(value: unknown): string {
 export function enterpriseContentViolation(body: Record<string, unknown>): boolean {
   const messages = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : Array.isArray(body.contents) ? body.contents : []
   const last = [...messages].reverse().find((m: any) => m?.role === 'user') as any
-  const value = textOf(last?.content ?? last?.parts ?? body.prompt ?? (typeof body.input === 'string' ? body.input : ''))
+  const raw = textOf(last?.content ?? last?.parts ?? body.prompt ?? (typeof body.input === 'string' ? body.input : ''))
+  const value = (raw.startsWith(ENTERPRISE_CONTENT_POLICY + '\n\n') ? raw.slice(ENTERPRISE_CONTENT_POLICY.length + 2) : raw)
     .slice(0, 64000).normalize('NFKC').replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '').toLowerCase()
   // Prevent/report/classify requests should reach the model with the policy, rather than a keyword ban.
-  if (/\b(prevent|report|classify|detect|policy|moderation)\b|举报|识别|检测|防止|政策|审核/.test(value)) return false
+  if (/^(?:please\s+)?(?:help me\s+)?(?:prevent|report|classify|detect)\b|^(?:请)?(?:举报|识别|检测|防止)|^(?:制定|起草)[^\n]{0,30}(?:政策|规则)/.test(value)) return false
   return /\b(write|generate|create|draw|produce|show)\b[^\n.!?]{0,100}\b(porn(?:ography|ographic)?|sexually explicit|graphic gore|gory dismemberment|child sexual abuse)\b/.test(value)
     || /(?:生成|创作|写一|画一|制作|展示)[^\n。！？]{0,50}(?:色情|淫秽|露骨性|血腥肢解|露骨暴力|儿童性虐待)/.test(value)
 }
 
 /** Preserve native protocol shape, including Anthropic cache-control and tool history. */
 export function applyEnterpriseContentPolicy(body: Record<string, unknown>, route: string): void {
-  const prepend = (text: unknown) => typeof text === 'string' && text.includes(ENTERPRISE_CONTENT_POLICY)
+  const prepend = (text: unknown) => typeof text === 'string' && (text === ENTERPRISE_CONTENT_POLICY || text.startsWith(ENTERPRISE_CONTENT_POLICY + '\n\n'))
     ? text : ENTERPRISE_CONTENT_POLICY + (typeof text === 'string' && text ? '\n\n' + text : '')
   if (route === 'chat') {
     const messages = Array.isArray(body.messages) ? body.messages : []
-    if (!messages.some((m: any) => m?.role === 'system' && textOf(m.content).includes(ENTERPRISE_CONTENT_POLICY))) {
+    if (!messages.some((m: any) => m?.role === 'system' && m.content === ENTERPRISE_CONTENT_POLICY)) {
       body.messages = [{ role: 'system', content: ENTERPRISE_CONTENT_POLICY }, ...messages]
     }
   } else if (route === 'messages') {
     if (Array.isArray(body.system)) {
-      if (!textOf(body.system).includes(ENTERPRISE_CONTENT_POLICY)) body.system = [{ type: 'text', text: ENTERPRISE_CONTENT_POLICY }, ...body.system]
+      if (!body.system.some((b: any) => b?.type === 'text' && b.text === ENTERPRISE_CONTENT_POLICY)) body.system = [{ type: 'text', text: ENTERPRISE_CONTENT_POLICY }, ...body.system]
     } else body.system = prepend(body.system)
   } else if (route === 'responses') {
     body.instructions = prepend(body.instructions)
   } else if (route === 'images' || route === 'image-edits') {
     if (Array.isArray(body.contents)) {
       const prior = body.systemInstruction as Record<string, unknown> | undefined
-      if (!textOf(prior?.parts).includes(ENTERPRISE_CONTENT_POLICY)) {
+      if (!(Array.isArray(prior?.parts) && prior.parts.some((p: any) => p?.text === ENTERPRISE_CONTENT_POLICY))) {
         body.systemInstruction = { ...prior, parts: [{ text: ENTERPRISE_CONTENT_POLICY }, ...(Array.isArray(prior?.parts) ? prior.parts : [])] }
       }
     } else body.prompt = prepend(body.prompt)
