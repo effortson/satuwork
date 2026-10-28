@@ -391,6 +391,61 @@ async function testLlm(kind, payload) {
  * 整份而不是打补丁，是因为这一屏上的东西彼此有约束（提取后端必须支持提取），
  * 服务端要能一次看全再判——分片提交的话，中间那一刻的组合是不合法的。
  */
+/** 平台「工具配置 → 知识库」的向量模型：带哪个字段改哪个，服务端回整份视图（含状态）。 */
+async function saveKbEmbedding(patch) {
+  await withBusy(async () => {
+    try {
+      state.kbEmbed = await api('PUT', '/platform/knowledge/embedding', patch)
+    } catch (err) {
+      // 会让现有向量失效的改动，服务端先回 409 说清后果；人点了确定才带 confirm 再发一次。
+      // 取消就什么都不改，下拉框随重画回到原来那家。
+      if (err.status !== 409) throw err
+      if (!confirm(err.message)) return
+      state.kbEmbed = await api('PUT', '/platform/knowledge/embedding', { ...patch, confirm: true })
+    }
+    // 换了配置，上一次自检测的是上一份。
+    delete state.tests['kb:embed']
+    if (patch.provider !== undefined) state.kbEmbedPick = ''
+    flash('ok', t('已保存', 'Saved'))
+  })
+}
+
+async function saveKbEmbedKey(provider, secret) {
+  if (!secret) {
+    flash('err', t('密钥不能为空', 'The key cannot be empty'))
+    render()
+    return
+  }
+  await withBusy(async () => {
+    state.kbEmbed = await api('PUT', '/platform/knowledge/embedding/key', { provider, secret })
+    delete state.tests['kb:embed']
+    flash('ok', t('已保存密钥', 'Key saved'))
+  })
+}
+
+/** 自检失败是这一屏的正常结果：红字写在按钮旁边。 */
+async function testKbEmbedding() {
+  state.tests['kb:embed'] = { status: 'busy' }
+  render()
+  try {
+    const data = await api('POST', '/platform/knowledge/embedding/test', {})
+    state.tests['kb:embed'] = data.ok
+      ? { status: 'ok', text: t(`通了 ${data.elapsedMs}ms · ${data.model} · ${data.dimension} 维`, `OK ${data.elapsedMs}ms · ${data.model} · ${data.dimension} dims`) }
+      : { status: 'err', text: data.error || t('不通', 'Failed') }
+  } catch (err) {
+    state.tests['kb:embed'] = { status: 'err', text: err.message }
+  }
+  render()
+}
+
+async function kbVectorAction(kind) {
+  await withBusy(async () => {
+    const data = await api('POST', `/platform/knowledge/${kind}`, {})
+    state.kbEmbed = data
+    flash('ok', kind === 'init' ? t('向量表已初始化', 'Vector tables initialized') : t(`已重新排队 ${data.queued} 个文件，入库会在后台进行`, `Re-queued ${data.queued} files; ingestion continues in the background`))
+  })
+}
+
 /** 平台「工具配置 → 知识库」：两个单价和相似度门槛，走 /platform/settings 的 knowledge 字段。 */
 async function saveKnowledgeSettings(patch) {
   const cur = state.settings?.knowledge || { pricing: { queryMils: 0, ingestMils: 0 }, scoreMin: 0.35 }

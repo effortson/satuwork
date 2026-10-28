@@ -396,8 +396,8 @@ async function loadSettings() {
 }
 
 /** 平台工具配置。只有 owner 拿得到——里面有价目，也有「哪家配了密钥」。 */
-async function loadKnowledgeStatus() {
-  state.kbStatus = await api('GET', '/platform/knowledge/status')
+async function loadKnowledgeEmbedding() {
+  state.kbEmbed = await api('GET', '/platform/knowledge/embedding')
 }
 
 async function loadWebTools() {
@@ -1177,7 +1177,7 @@ async function loadPage() {
     } else if (state.path === '/stats') {
       await reloadStatsPage()
     } else if (state.path === '/tools') {
-      await Promise.all([loadWebTools(), loadSettings().catch(() => {}), loadKnowledgeStatus().catch(() => { state.kbStatus = null })])
+      await Promise.all([loadWebTools(), loadSettings().catch(() => {}), loadKnowledgeEmbedding().catch(() => { state.kbEmbed = null })])
     } else if (state.path === '/connectors') {
       if (isOwner()) {
         // 上架清单、供应商状态、单价一起要：没有密钥时那颗「上架」按钮是灰的。

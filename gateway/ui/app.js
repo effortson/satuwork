@@ -355,6 +355,21 @@ document.getElementById('app').addEventListener('submit', (e) => {
     const secret = String(new FormData(form).get('secret') || '')
     return saveCred(provider, secret, credId)
   }
+  if (form.getAttribute('data-form') === 'kb-embed-key') {
+    e.preventDefault()
+    return saveKbEmbedKey(form.getAttribute('data-provider'), String(new FormData(form).get('secret') || '').trim())
+  }
+  if (form.getAttribute('data-form') === 'kb-embed-custom') {
+    e.preventDefault()
+    const fd = new FormData(form)
+    return saveKbEmbedding({
+      provider: 'custom',
+      baseUrl: String(fd.get('baseUrl') || '').trim(),
+      model: String(fd.get('model') || '').trim(),
+      batchSize: Number(fd.get('batchSize') || 16),
+      dimensions: fd.get('dimensions') === 'on',
+    })
+  }
   if (form.getAttribute('data-form') === 'web-secret') {
     e.preventDefault()
     return saveWebSecret(form.getAttribute('data-provider'), String(new FormData(form).get('secret') || '').trim())
@@ -2195,6 +2210,24 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'kb-region') {
+    const region = btn.getAttribute('data-tab') === 'intl' ? 'intl' : 'cn'
+    if (region !== state.kbEmbed?.embedding?.region) await saveKbEmbedding({ region })
+    return
+  }
+  if (act === 'kb-embed-test') {
+    await testKbEmbedding()
+    return
+  }
+  if (act === 'kb-init') {
+    await kbVectorAction('init')
+    return
+  }
+  if (act === 'kb-reindex') {
+    if (!confirm(t('重建会删掉全部现有向量、把所有文件重新排队入库：完成前检索命中变少，重新入库按当前单价计费。继续？', 'Rebuilding deletes every stored vector and re-queues all files: search returns fewer hits until it finishes, and re-ingestion is billed at the current price. Continue?'))) return
+    await kbVectorAction('reindex')
+    return
+  }
   if (act === 'web-test') {
     await testWebBackend(btn.getAttribute('data-kind') === 'extract' ? 'extract' : 'search')
     return
@@ -2951,6 +2984,22 @@ document.getElementById('app').addEventListener('change', async (e) => {
     const files = Array.from(el.files || [])
     el.value = ''
     await knowledgeUpload(files)
+    return
+  }
+  // 知识库向量模型：选预设当场存；选「自定义」只在本地切过去，填完点保存才提交。
+  if (el.getAttribute?.('data-act') === 'kb-embed-provider') {
+    if (el.value === 'custom') {
+      state.kbEmbedPick = 'custom'
+      delete state.tests['kb:embed']
+      render()
+      return
+    }
+    state.kbEmbedPick = ''
+    await saveKbEmbedding({ provider: el.value })
+    return
+  }
+  if (el.getAttribute?.('data-act') === 'kb-embed-model') {
+    await saveKbEmbedding({ model: el.value.trim() })
     return
   }
   if (el.getAttribute?.('data-act') === 'kb-price') {

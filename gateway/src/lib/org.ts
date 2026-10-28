@@ -9,6 +9,7 @@ import { HttpError } from '../http.ts'
 import { type Account, type AccountStatus, type CatalogItem, type Company, type CompanySettings, type CompanyStatus, type Db, type Group, type ImageModelRole, type ModelRate, type ModelRole, type BillingSettings, PRICE_MULTIPLIER_MAX, PRICE_MULTIPLIER_MIN, REASONING_EFFORTS, type Plan, type PlatformSettings, type Role, type SessionIndex, parseBilling, parseConnectorPricing, parseImageRole, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort } from '../db.ts'
 import { WEB_BACKENDS, WEB_DOCUMENT } from '../db/types.ts'
 import { VENDORS } from '../connectors/index.ts'
+import { isEmbeddingSecret } from './knowledge-embedding.ts'
 
 /** 按 id 取公司，取不到就 404。三十几条路由开头都是这两行。 */
 export async function companyOr404(db: Db, id: string): Promise<Company> {
@@ -198,9 +199,9 @@ export function publicPlatformCred(c: { provider: string; createdAt: number; upd
 }
 
 /**
- * `platform_credentials` 是一张**按名字存密钥的通用表**，三类东西都住在里面：
+ * `platform_credentials` 是一张**按名字存密钥的通用表**，四类东西都住在里面：
  * 模型供应商（openai、anthropic、自定义端点）、连接器供应商（composio）、网页搜索
- * 与提取后端（tavily 那几个）。表可以合，**清单不能合**。
+ * 与提取后端（tavily 那几个）、知识库向量模型（kb-embedding:*）。表可以合，**清单不能合**。
  *
  * 「供应商」那一屏讲的是模型：一行的每一列——多少个模型、测一下通不通、哪个角色在
  * 用它——对连接器和搜索后端全都答不上来。混进去的结果就是那屏上多出一个 0 个模型、
@@ -213,7 +214,8 @@ export function publicPlatformCred(c: { provider: string; createdAt: number; upd
 const NON_MODEL_SECRETS: ReadonlySet<string> = new Set<string>([...VENDORS, ...WEB_BACKENDS, WEB_DOCUMENT])
 
 export function isModelProvider(provider: string): boolean {
-  return !NON_MODEL_SECRETS.has(provider)
+  // 知识库向量模型的密钥（`kb-embedding:<预设>`）同理，它的屏在「工具配置 → 知识库」。
+  return !NON_MODEL_SECRETS.has(provider) && !isEmbeddingSecret(provider)
 }
 
 export function modelProviderCreds<T extends { provider: string }>(creds: T[]): T[] {

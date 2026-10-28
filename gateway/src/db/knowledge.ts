@@ -127,7 +127,7 @@ export class KnowledgeDb extends DbCore {
     return rows.map(knowledgeBaseOf)
   }
 
-  /** 硬删。三张从表 cascade。只有 tick 在 Upstash 和原文件都清掉之后才调。 */
+  /** 硬删。三张从表 cascade。向量跟着分片级联删；只有 tick 在原文件清掉之后才调。 */
   async deleteKnowledgeBase(id: string): Promise<void> {
     await this.run('delete from knowledge_bases where id = ?', [id])
   }

@@ -251,7 +251,7 @@ export interface KnowledgeFile {
   /** 失败原因，一句人话。其他状态为空串。 */
   error: string
   chunkCount: number
-  /** 已经灌进 Upstash 的分片数。入库是可恢复的，从这里接着来。 */
+  /** 已经写进向量表的分片数。入库是可恢复的，从这里接着来。 */
   chunkDone: number
   /** 连续几拍没推进（chunkDone 不变）。到 KB_FAIL_STREAK 就标失败，别无限重来。 */
   attempts: number
@@ -263,7 +263,7 @@ export interface KnowledgeFile {
 }
 
 export interface KnowledgeChunk {
-  /** `${fileId}:${no}`，和 Upstash 里的向量 id 一字不差。 */
+  /** `${fileId}:${no}`，也是 knowledge_chunk_vectors 的主键。 */
   id: string
   fileId: string
   kbId: string
@@ -1232,6 +1232,8 @@ export interface PlatformSettings {
   webTools?: WebToolsSettings
   /** 知识库：检索 / 入库单价与相似度门槛（docs/knowledge-base.md §7.2、§10）。 */
   knowledge?: KnowledgeSettings
+  /** 知识库的向量模型（区域、预设、模型）。密钥不在这里，在 platform_credentials 的 `kb-embedding:<预设>`。 */
+  knowledgeEmbedding?: KnowledgeEmbeddingSettings
   /**
    * 模型单价的**平台覆盖**，键是 `provider/model`。
    *
@@ -1521,6 +1523,7 @@ export function emptyPlatformSettings(): PlatformSettings {
     botVersion: '',
     webTools: emptyWebTools(),
     knowledge: emptyKnowledgeSettings(),
+    knowledgeEmbedding: emptyKnowledgeEmbedding(),
     modelPricing: {},
     defaultModelRate: emptyModelRate(),
     billing: emptyBilling(),
@@ -1528,7 +1531,7 @@ export function emptyPlatformSettings(): PlatformSettings {
 }
 
 /**
- * 知识库的平台设置。两个单价按「厘 / 次」计（一次 = 一次 Upstash 请求），默认 0 = 记行
+ * 知识库的平台设置。两个单价按「厘 / 次」计（一次检索 = 查一个库，一次入库 = 100 片），默认 0 = 记行
  * 不收钱、不熔断（同网页工具）。`scoreMin` 是检索的相似度门槛：低于它的命中丢掉。
  */
 export interface KnowledgeSettings {
@@ -1555,6 +1558,38 @@ export function parseKnowledgeSettings(raw: unknown): KnowledgeSettings {
   return {
     pricing: { queryMils: mils(p.queryMils), ingestMils: mils(p.ingestMils) },
     scoreMin: Number.isFinite(score) && score >= 0 && score <= 1 ? score : KB_SCORE_MIN_DEFAULT,
+  }
+}
+
+/**
+ * 知识库的向量模型。`provider` 是 lib/knowledge-embedding.ts 里的预设 id 或 `custom`，空 = 页面上
+ * 还没配（这时回落到老的 KB_EMBEDDING_* 环境变量）。`region` 只决定页面上列哪几家预设，
+ * 不参与调用；空 = 还没选（不默认中国区：国际版第一次打开不该先看到国内几家）。`baseUrl` / `dimensions` / `batchSize` 只对 `custom` 有意义，预设的以代码里那份为准。
+ */
+export interface KnowledgeEmbeddingSettings {
+  region: 'cn' | 'intl' | ''
+  provider: string
+  model: string
+  baseUrl: string
+  dimensions: boolean
+  batchSize: number
+}
+
+export function emptyKnowledgeEmbedding(): KnowledgeEmbeddingSettings {
+  return { region: '', provider: '', model: '', baseUrl: '', dimensions: false, batchSize: 16 }
+}
+
+export function parseKnowledgeEmbedding(raw: unknown): KnowledgeEmbeddingSettings {
+  const o = (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>
+  const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+  const batch = Math.trunc(Number(o.batchSize))
+  return {
+    region: o.region === 'intl' || o.region === 'cn' ? o.region : '',
+    provider: /^[a-z0-9-]{1,40}$/.test(str(o.provider, 40)) ? str(o.provider, 40) : '',
+    model: str(o.model, 200),
+    baseUrl: str(o.baseUrl, 500).replace(/\/+$/, ''),
+    dimensions: o.dimensions === true,
+    batchSize: Number.isFinite(batch) && batch >= 1 && batch <= 64 ? batch : 16,
   }
 }
 

@@ -7,6 +7,7 @@ import { attachV1 } from '../v1.ts'
 import type { RouteCtx } from './ctx.ts'
 import { attachAuth } from './auth.ts'
 import { attachPlatform } from './platform.ts'
+import { attachPlatformKnowledge } from './platform-knowledge.ts'
 import { attachPlatformOrgs } from './platform-orgs.ts'
 import { attachMachines } from './machines.ts'
 import { attachCompany } from './company.ts'
@@ -48,6 +49,7 @@ export function attach(router: Router, db: Db, keys: JwtKeys, channelKey: Buffer
   attachAuth(router, ctx)
   attachNotifications(router, ctx)
   attachPlatform(router, ctx)
+  attachPlatformKnowledge(router, ctx)
   attachPlatformOrgs(router, ctx)
   attachMachines(router, ctx)
   attachCompany(router, ctx)

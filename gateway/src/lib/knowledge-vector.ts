@@ -1,88 +1,131 @@
-/** Optional vector backends share the existing ingestion/deletion/search contract. */
-import type { Db } from '../db.ts'
+/**
+ * 知识库的向量那一层：pgvector 存、OpenAI 兼容的 `/embeddings` 算（docs/knowledge-base.md §3.2）。
+ *
+ * 向量模型在平台「工具配置 → 知识库」里配（lib/knowledge-embedding.ts），不再读环境变量。
+ * 向量表是可选的，由 `initializeKnowledgeVectors` 显式建：普通迁移从不要求 vector 扩展。
+ */
+import type { Db, PlatformSettings } from '../db.ts'
 import { HttpError } from '../http.ts'
-import { embedTexts, embeddingConfig, embeddingMissing } from './knowledge-embedding.ts'
-import * as upstash from './knowledge-upstash.ts'
-export type { KbHit, KbVectorMeta } from './knowledge-upstash.ts'
-import type { KbHit, KbVectorMeta } from './knowledge-upstash.ts'
+import { type EmbeddingConfig, embedTexts, embeddingProblem, embeddingUsable, loadEmbeddingConfig } from './knowledge-embedding.ts'
+
+export interface KbVectorMeta {
+  fileId: string
+  fileName: string
+  kbId: string
+  no: number
+  page: number | null
+  text: string
+  [key: string]: unknown
+}
+
+export interface KbHit {
+  id: string
+  score: number
+  metadata: KbVectorMeta
+}
 
 export interface KbVectorScope { id: string; companyId: string }
-/** Billing units remain logical groups of 100 chunks, independent of provider request batches. */
-export const KB_UPSERT_BATCH = upstash.KB_UPSERT_BATCH
+
+/** 入库一批推进多少片，也是计费单位（100 片 = 一次入库）。和向量服务单次收几条无关。 */
+export const KB_UPSERT_BATCH = 100
 export const VECTOR_NOT_CONFIGURED = '平台未配置知识库向量服务，请联系系统管理员检查工具配置'
-export const namespaceOf = upstash.namespaceOf
+export const VECTOR_NOT_INITIALIZED = '平台的知识库向量表还没建好，暂时不能检索；新传的文件会排队，建好后入库'
+export const VECTOR_REBUILD_NEEDED = '平台更换了知识库向量模型，重建向量之前暂时不能检索；新传的文件会排队，重建后入库'
 
-export function vectorBackend(): string {
-  return (process.env.KB_VECTOR_BACKEND || 'upstash').trim()
+/**
+ * 能不能真的用：模型配好、密钥在、表建了、表里向量和当前模型是同一个空间。缺一样就给出原因。
+ * 入库节拍和检索看这一个——只看「配了没有」的话，表没建或换了模型时入库会一拍拍撞 503，
+ * 几拍之后把排队的文件全标成失败。
+ */
+export async function vectorReadiness(db: Db, settings?: PlatformSettings): Promise<{ cfg: EmbeddingConfig; reason: string }> {
+  const cfg = await loadEmbeddingConfig(db, settings)
+  if (!embeddingUsable(cfg)) return { cfg, reason: VECTOR_NOT_CONFIGURED }
+  const stored = await db.knowledgeVectorConfig()
+  if (!stored) return { cfg, reason: VECTOR_NOT_INITIALIZED }
+  if (stored.profile !== cfg.profile) return { cfg, reason: VECTOR_REBUILD_NEEDED }
+  return { cfg, reason: '' }
 }
 
-function configuration() {
-  const backend = vectorBackend()
-  if (backend === 'upstash') return { backend, missing: [
-    ...((process.env.UPSTASH_VECTOR_REST_URL || '').trim() ? [] : ['UPSTASH_VECTOR_REST_URL']),
-    ...((process.env.UPSTASH_VECTOR_REST_TOKEN || '').trim() ? [] : ['UPSTASH_VECTOR_REST_TOKEN']),
-  ], error: '' }
-  if (backend === 'pgvector') return { backend, missing: embeddingMissing(), error: embeddingConfig().error }
-  return { backend, missing: [], error: 'KB_VECTOR_BACKEND 只能是 upstash 或 pgvector' }
+/**
+ * 上传和建库只看这个：模型配好、密钥在就收。表没建、等重建期间收下的文件只排队，入库节拍
+ * 看 vectorReadiness 不领它们，就绪后自动灌进去——不会被一拍拍撞成「失败」。
+ */
+export async function vectorConfigured(db: Db): Promise<boolean> {
+  return embeddingUsable(await loadEmbeddingConfig(db))
 }
 
-export function vectorConfigured(): boolean {
-  const cfg = configuration()
-  return !cfg.error && !cfg.missing.length
+/** 检索和入库的入口：没就绪就 503，带上原因。 */
+export async function readyVectors(db: Db, settings?: PlatformSettings): Promise<EmbeddingConfig> {
+  const { cfg, reason } = await vectorReadiness(db, settings)
+  if (reason) throw new HttpError(503, reason)
+  return cfg
 }
 
-async function ready(db: Db): Promise<void> {
-  const cfg = configuration()
-  if (cfg.error || cfg.missing.length) throw new HttpError(503, cfg.error || VECTOR_NOT_CONFIGURED)
-  try { await db.assertKnowledgeVectorProfile(embeddingConfig().profile) } catch (error) {
-    const message = (error as Error).message
-    throw new HttpError(503, /模型或地址已变更/.test(message) ? message : 'pgvector 知识库尚未初始化或数据库不可用，请检查向量表和扩展')
-  }
+/** 一次检索只算一次查询向量，几个库共用。 */
+export interface PreparedQuery { profile: string; vector: number[] }
+
+export async function prepareVectorQuery(db: Db, query: string, companyId: string, settings?: PlatformSettings): Promise<PreparedQuery> {
+  const cfg = await readyVectors(db, settings)
+  const [vector] = await embedTexts(cfg, [query], undefined, (tokens, inputs) => db.recordKnowledgeEmbeddingUsage(companyId, cfg.profile, 'query', tokens, inputs))
+  return { profile: cfg.profile, vector }
 }
 
-export async function prepareVectorQuery(db: Db, query: string, companyId: string): Promise<number[] | undefined> {
-  if (vectorBackend() === 'upstash') return undefined
-  await ready(db)
-  return (await embedTexts([query], undefined, (tokens, inputs) => db.recordKnowledgeEmbeddingUsage(companyId, embeddingConfig().profile, 'query', tokens, inputs)))[0]
-}
-
-export async function upsertChunks(db: Db, kb: KbVectorScope, rows: Array<{ id: string; data: string; metadata: KbVectorMeta }>, deadline?: number): Promise<void> {
+/** `cfg` 由入库那一拍开头的 readyVectors 给，不每批重读；写入时库里按指纹再核一次（模型中途换了就拒）。 */
+export async function upsertChunks(db: Db, cfg: EmbeddingConfig, kb: KbVectorScope, rows: Array<{ id: string; data: string; metadata: KbVectorMeta }>, deadline?: number): Promise<void> {
   if (!rows.length) return
-  if (vectorBackend() === 'upstash') return upstash.upsertChunks(kb.id, rows)
-  await ready(db)
-  const vectors = await embedTexts(rows.map((row) => row.data), deadline, (tokens, inputs) => db.recordKnowledgeEmbeddingUsage(kb.companyId, embeddingConfig().profile, 'ingest', tokens, inputs))
-  await db.upsertKnowledgeVectors(kb, embeddingConfig().profile, rows.map((row, i) => ({ id: row.id, data: row.data, vector: vectors[i] })))
+  const vectors = await embedTexts(cfg, rows.map((row) => row.data), deadline, (tokens, inputs) => db.recordKnowledgeEmbeddingUsage(kb.companyId, cfg.profile, 'ingest', tokens, inputs))
+  await db.upsertKnowledgeVectors(kb, cfg.profile, rows.map((row, i) => ({ id: row.id, data: row.data, vector: vectors[i] })))
 }
 
-export async function queryNamespace(db: Db, kb: KbVectorScope, query: string, topK: number, prepared?: number[]): Promise<KbHit[]> {
-  if (vectorBackend() === 'upstash') return upstash.queryNamespace(kb.id, query, topK)
-  await ready(db)
-  const vector = prepared ?? (await embedTexts([query]))[0]
-  return db.queryKnowledgeVectors(kb, embeddingConfig().profile, vector, topK)
+export async function queryNamespace(db: Db, kb: KbVectorScope, prepared: PreparedQuery, topK: number): Promise<KbHit[]> {
+  return db.queryKnowledgeVectors(kb, prepared.profile, prepared.vector, topK)
 }
 
-// Deletion must still work after an embedding key expires or the configured model changes.
+// 删除不看配置：密钥过期、模型换了、甚至表还没建，都得删得掉。
 export async function deleteFileVectors(db: Db, kb: KbVectorScope, fileId: string): Promise<void> {
-  if (vectorBackend() === 'upstash') return upstash.deleteFileVectors(kb.id, fileId)
-  if (vectorBackend() !== 'pgvector') throw new HttpError(503, configuration().error)
   await db.deleteKnowledgeVectors(kb, fileId)
 }
 
 export async function deleteKbNamespace(db: Db, kb: KbVectorScope): Promise<void> {
-  if (vectorBackend() === 'upstash') return upstash.deleteKbNamespace(kb.id)
-  if (vectorBackend() !== 'pgvector') throw new HttpError(503, configuration().error)
   await db.deleteKnowledgeVectors(kb)
 }
 
-export async function vectorInfo(db: Db): Promise<{ configured: boolean; backend: string; model?: string; vectors?: number; dimension?: number; missing?: string[]; error?: string }> {
-  const cfg = configuration()
-  if (cfg.error || cfg.missing.length) return { configured: false, ...cfg }
-  if (cfg.backend === 'upstash') return { backend: cfg.backend, ...await upstash.vectorInfo() }
-  const embedding = embeddingConfig()
+export interface VectorInfo {
+  configured: boolean
+  source: EmbeddingConfig['source']
+  provider: string
+  model: string
+  dimension: number
+  /** 向量表建了没有。 */
+  initialized: boolean
+  /** 表里现有向量是哪个模型算的；和当前配置不一样就得重建。 */
+  storedModel?: string
+  profileMatches?: boolean
+  vectors?: number
+  /** 「可用」却没有向量的文件数（从旧向量库迁来）。大于 0 时要点重建才查得到。 */
+  unindexed?: number
+  error?: string
+}
+
+/** 「工具配置 → 知识库」那一屏的状态。 */
+export async function vectorInfo(db: Db): Promise<VectorInfo> {
+  const cfg = await loadEmbeddingConfig(db)
+  const out: VectorInfo = {
+    configured: embeddingUsable(cfg), source: cfg.source, provider: cfg.provider, model: cfg.model, dimension: cfg.dimension, initialized: false,
+  }
   try {
-    await ready(db)
-    return { configured: true, backend: cfg.backend, model: embedding.model, dimension: embedding.dimension, vectors: await db.knowledgeVectorCount() }
+    const stored = await db.knowledgeVectorConfig()
+    if (!stored) return { ...out, error: embeddingProblem(cfg) || undefined }
+    out.initialized = true
+    out.storedModel = stored.model
+    out.profileMatches = stored.profile === cfg.profile
+    const [vectors, unindexed] = await Promise.all([db.knowledgeVectorCount(), db.knowledgeFilesWithoutVectors()])
+    out.vectors = vectors
+    out.unindexed = unindexed
+    if (!out.configured) out.error = embeddingProblem(cfg)
+    else if (!out.profileMatches) out.error = `现有向量由 ${stored.model} 生成，和当前模型不同：重建之前检索和入库都暂停`
+    return out
   } catch (e) {
-    return { configured: true, backend: cfg.backend, model: embedding.model, dimension: embedding.dimension, error: (e as Error).message }
+    return { ...out, error: (e as Error).message }
   }
 }

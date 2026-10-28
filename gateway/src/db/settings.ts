@@ -2,7 +2,7 @@
  * 平台密钥、审计、公司与平台设置（含模型角色和自动发现的模型快照）。
  */
 import { randomUUID } from 'node:crypto'
-import { type AuditEvent, type CompanySettings, type Credential, type DiscoverySnapshot, emptyPlatformSettings, emptySettings, emptySnapshot, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseDiscoverySnapshot, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, type PlatformSettings } from './types.ts'
+import { type AuditEvent, type CompanySettings, type Credential, type DiscoverySnapshot, emptyPlatformSettings, emptySettings, emptySnapshot, parseBilling, parseConnectorPricing, parseConversationAuditSettings, parseDiscoverySnapshot, parseKnowledgeEmbedding, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools, type PlatformSettings } from './types.ts'
 import { auditOf, jsonOf, parseDailyAlternates, parseImageRole, parsePlatformPayload, platformCredOf } from './rows.ts'
 import { DbCore } from './core.ts'
 
@@ -137,6 +137,8 @@ export class SettingsDb extends DbCore {
       billing: parseBilling(next.billing),
       // 同上第五次：知识库的单价和门槛。漏了就是「工具配置那一屏能填、回 200、读出来永远是 0」。
       knowledge: parseKnowledgeSettings(next.knowledge),
+      // 同上第六次：知识库的向量模型。
+      knowledgeEmbedding: parseKnowledgeEmbedding(next.knowledgeEmbedding),
     })
     await this.run(
       "insert into platform_settings (id, payload, \"updatedAt\") values ('platform', ?, ?) on conflict (id) do update set payload=excluded.payload, \"updatedAt\"=excluded.\"updatedAt\"",

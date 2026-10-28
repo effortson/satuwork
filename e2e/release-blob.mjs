@@ -156,9 +156,10 @@ export async function runReleaseBlob({ gwRoot, test, req, start, waitHttp, asser
         SATUWORK_DEPLOY_STUB: '1',
         BLOB_READ_WRITE_TOKEN: TOKEN,
         VERCEL_BLOB_API_URL: blobBase,
-        // 知识库那几条路先看「向量库配了没有」。这一套只走到登记和 /done，不真去打它。
-        UPSTASH_VECTOR_REST_URL: 'http://127.0.0.1:9',
-        UPSTASH_VECTOR_REST_TOKEN: 'e2e-unused',
+        // 知识库那几条路先看「向量模型配了没有」。这一套只走到登记和 /done，不真去打它：
+        // 用老环境变量那条兜底路，省得再走一遍平台页面的配置。
+        KB_EMBEDDING_BASE_URL: 'http://127.0.0.1:9/v1',
+        KB_EMBEDDING_API_KEY: 'e2e-unused',
       },
     })).gw
     const reg = await createCompany(req, gwBase, {

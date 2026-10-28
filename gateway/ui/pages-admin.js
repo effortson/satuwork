@@ -1016,7 +1016,7 @@ function chargeQuantity(c, withPrice) {
       ? t(`${units} 条 × ${usageMicros$(p.unit)}`, `${units} units × ${usageMicros$(p.unit)}`)
       : t(`${units} 条`, `${units} units`))
   } else if (c.kind === 'kb') {
-    // 知识库按 Upstash 请求次数计：检索是查了几个库，入库是几批 upsert。
+    // 知识库按操作次数计：检索是查了几个库，入库是几批（100 片一批）。
     const units = Number(q.units || 0)
     lines.push(withPrice
       ? t(`${units} 次 × ${usageMicros$(p.unit)}`, `${units} requests × ${usageMicros$(p.unit)}`)

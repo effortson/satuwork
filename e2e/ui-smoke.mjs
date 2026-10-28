@@ -4692,7 +4692,9 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 发完消息、模型一个 token 一个 token 吐出来的那一段，它必须逐帧画。
       sse.push({ type: 'replay/done' })
       for (let i = 0; i < 100 && ui.state.chatReplaying; i++) await new Promise((r) => setTimeout(r, 5))
-      const before = thread.writes
+      // 数的是 syncThread 跑了几次（每帧读一次 data-owner），见 ui-dom.mjs 的 countingStub。
+      const paints = () => thread.reads['data-owner'] || 0
+      const before = paints()
       const N = 20
       for (let i = 0; i < N; i++) sse.push({ type: 'assistant/chunk', seq: i + 1, data: { text: 'x' } })
       for (let i = 0; i < 200 && ui.state.chatEvents.length < N; i++) {
@@ -4702,7 +4704,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 合并重绘是**延后**的（一帧一次），事件到齐不等于已经画完——这里要多等一拍，
       // 否则测的是「还没来得及画」，不是「合并了」。
       await new Promise((r) => setTimeout(r, 60))
-      const writes = thread.writes - before
+      const writes = paints() - before
       assert(writes > 0, '一次都没重绘，说明根本没画')
       assert(writes <= 3, `${N} 个 token 重绘了 ${writes} 次——没有合并，长会话下是 O(n²)`)
       sse.close()

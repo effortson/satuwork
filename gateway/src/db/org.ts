@@ -150,7 +150,7 @@ export class OrgDb extends DbCore {
     await this.run('delete from settings where "companyId" = ?', [id])
     await this.run('delete from credentials where "companyId" = ?', [id])
     await this.run('delete from catalog_items where "companyId" = ?', [id])
-    // 知识库三张从表都 on delete cascade 挂在 knowledge_bases 上。Upstash 命名空间和
+    // 知识库三张从表都 on delete cascade 挂在 knowledge_bases 上，向量又挂在分片上。
     // 原文件不在库里，由路由那侧在删之前列出来、回完包再清（routes/company.ts）。
     await this.run('delete from knowledge_bases where "companyId" = ?', [id])
     await this.run('update machines set "companyId" = null where "companyId" = ?', [id])
