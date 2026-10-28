@@ -169,8 +169,13 @@ pnpm --filter satuwork-mobile build:ios
 
 本机出的是自己签名的包。发 TestFlight 走 CI：打 `mobile-vX.Y.Z` 的 tag
 （版本要等于 `src-tauri/tauri.conf.json` 的 version），[mobile-release.yml](../.github/workflows/mobile-release.yml)
-在 Xcode 26 的 runner 上用 App Store Connect 密钥自动签名、出 IPA、传 TestFlight。手动触发不填 tag
-就只出 IPA artifact，不上传。前提（Apple 开发者后台，代码之外）写在那份流水线的文件头。
+在 Xcode 26 的 runner 上使用 Apple Distribution 证书和本 App 的 App Store 描述文件签名、出 IPA，
+再用 App Store Connect API 密钥传 TestFlight。手动触发不填 tag 就只出 IPA artifact，不上传。
+证书的加密 P12、口令和描述文件分别存到 GitHub Actions Secrets 的 `IOS_DISTRIBUTION_P12_BASE64`、
+`IOS_DISTRIBUTION_P12_PASSWORD`、`IOS_PROVISIONING_PROFILE_BASE64`；上传仍用现有 `APPLE_API_*`。
+前置检查会拒绝开发描述文件、其他 App 的描述文件和缺少 production APNs 权限的包。
+签名材料只放在 runner 的临时目录和临时 keychain，任务结束后清理。正式推送配置和实收验收见
+[Vercel 部署手册](../docs/vercel-deploy.md#testflight--app-store-的-apns)。
 
 `gen/apple/` 是 `tauri ios init` 生成的 Xcode 工程，**进版本库**：开发团队、ATS、推送能力、出口
 合规声明都改在里面；重新 `tauri ios init` 会把它盖掉，改完要回看一遍 diff。
