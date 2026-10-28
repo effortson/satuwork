@@ -28,6 +28,8 @@ const LINK_SCRIPT: &str = r#"
   // 可以落到持久存储；再告诉它 Gateway 在哪——页面源是 satu://localhost，相对路径打不到 Gateway。
   window.__SATUWORK_DESKTOP__ = true
   window.__SATUWORK_GATEWAY__ = __GATEWAY_URL__
+  // 这台电脑的身份（device.rs）：本地 Bot 只属于建它的那台，请求带上它 Gateway 才知道给哪些。
+  window.__SATUWORK_DESKTOP_DEVICE__ = __DEVICE__
   window.__SATUWORK_DESKTOP_NOTIFICATIONS__ = {
     session: function (accountId) { return window.__TAURI_INTERNALS__.invoke('desktop_notification_session', { accountId: accountId || null }) },
     send: function (notice) { return window.__TAURI_INTERNALS__.invoke('desktop_notify', { notice: notice }) },
@@ -272,6 +274,11 @@ pub(crate) fn build_window(
             "__GATEWAY_URL__",
             &serde_json::to_string(gateway.as_str().trim_end_matches('/'))
                 .expect("字符串总能编成 JSON"),
+        )
+        // 同上，整份编成 JSON（主机名是外来的字符串）。拿不到身份就是 null：页面按老壳子处理。
+        .replace(
+            "__DEVICE__",
+            &serde_json::to_string(&crate::device::device_info(app)).expect("设备信息总能编成 JSON"),
         );
     WebviewWindowBuilder::new(app, label, WebviewUrl::CustomProtocol(ui))
         .title(title)

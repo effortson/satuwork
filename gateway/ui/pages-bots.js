@@ -846,6 +846,8 @@ function newBotModal() {
     return `<button type="button" class="satu-iconpick" aria-pressed="${String(f.icon === key)}" aria-label="${esc(label)}" title="${esc(label)}" data-act="new-bot-icon" data-icon="${esc(key)}">${botAvatar(key, 34, 'company')}</button>`
   }).join('')
   const version = state.template?.version
+  // 本地 Bot 要绑到这台电脑上（docs/local-bot-device.md）：壳子没给设备身份的建不了。
+  const canLocal = Boolean(window.__SATUWORK_DESKTOP__ && window.__SATUWORK_DESKTOP_DEVICE__)
   return `<div class="gw-modal-backdrop" data-act="new-bot-close">
     <div class="gw-modal" data-stop style="max-width: 520px;">
       <div>
@@ -866,13 +868,15 @@ function newBotModal() {
             <strong>${t('远程 Bot', 'Remote bot')}</strong>
             <small style="display:block;margin-top:4px;color:var(--muted-foreground);">${state.runtimeHasMachine === false ? t('公司还没配对运行机器，建了也装不上', 'No company machine is paired yet, so it cannot be installed') : t('运行在公司配置的机器上', 'Runs on the company machine')}</small>
           </label>
-          <label class="satu-card" style="padding:12px;cursor:${window.__SATUWORK_DESKTOP__ ? 'pointer' : 'not-allowed'};opacity:${window.__SATUWORK_DESKTOP__ ? '1' : '.55'};border-color:${f.runtimeKind === 'local' ? 'var(--primary)' : 'var(--border)'};">
-            <input type="radio" name="nb-runtime" data-newbot="runtimeKind" value="local" ${f.runtimeKind === 'local' ? 'checked' : ''} ${window.__SATUWORK_DESKTOP__ ? '' : 'disabled'}>
+          <label class="satu-card" style="padding:12px;cursor:${canLocal ? 'pointer' : 'not-allowed'};opacity:${canLocal ? '1' : '.55'};border-color:${f.runtimeKind === 'local' ? 'var(--primary)' : 'var(--border)'};">
+            <input type="radio" name="nb-runtime" data-newbot="runtimeKind" value="local" ${f.runtimeKind === 'local' ? 'checked' : ''} ${canLocal ? '' : 'disabled'}>
             <strong>${t('本地 Bot', 'Local bot')}</strong>
-            <small style="display:block;margin-top:4px;color:var(--muted-foreground);">${t('运行在这台电脑，使用独立工作目录', 'Runs on this computer with its own workspace')}</small>
+            <small style="display:block;margin-top:4px;color:var(--muted-foreground);">${t('只在这台电脑上运行和显示，使用独立工作目录', 'Runs and shows up only on this computer, with its own workspace')}</small>
           </label>
         </div>
-        ${window.__SATUWORK_DESKTOP__ ? '' : `<small style="color:var(--muted-foreground);">${t('本地 Bot 只能在 Satuwork Desktop 中创建。', 'Local bots can only be created in Satuwork Desktop.')}</small>`}
+        ${canLocal ? '' : `<small style="color:var(--muted-foreground);">${window.__SATUWORK_DESKTOP__
+          ? t('这个版本的 Satuwork Desktop 建不了本地 Bot，请先升级。', 'This version of Satuwork Desktop cannot create local bots. Please update it first.')
+          : t('本地 Bot 只能在 Satuwork Desktop 中创建。', 'Local bots can only be created in Satuwork Desktop.')}</small>`}
       </div>
       <div class="field">
         <label for="nb-desc">${t('简介')}</label>
@@ -886,6 +890,7 @@ function newBotModal() {
         <label for="nb-extra">${t('补充说明')}</label>
         <textarea class="input satu-code" id="nb-extra" rows="4" data-newbot="extraPrompt" placeholder="${esc(t('可留空。写了就接在公司人设后面。'))}">${esc(f.extraPrompt)}</textarea>
       </div>
+      ${botQuotaNote()}
       ${state.newBotError ? `<p style="margin: 0; font-size: 13px; color: var(--color-danger, #d33);">${esc(state.newBotError)}</p>` : ''}
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="new-bot-close">${t('取消')}</button>
@@ -895,6 +900,35 @@ function newBotModal() {
       </div>
     </div>
   </div>`
+}
+
+/**
+ * 配额那一行，外加别的电脑上的本地 Bot（docs/local-bot-device.md §7）：它们在这儿看不到，却占着配额。
+ * 只列设备和个数，不列 Bot 的名字；那台电脑不用了，可以在这里把它上面的本地 Bot 一起清掉。
+ */
+function botQuotaNote() {
+  const q = state.botQuota
+  if (!q || !q.max) return ''
+  const elsewhere = Array.isArray(q.elsewhere) ? q.elsewhere : []
+  const count = elsewhere.reduce((n, d) => n + (Number(d.count) || 0), 0)
+  const head = `<small style="color:var(--muted-foreground);">${t(`已建 ${q.used} / ${q.max} 个 Bot`, `${q.used} of ${q.max} bots used`)}${count
+    ? t(`，其中 ${count} 个是其他电脑上的本地 Bot`, `, ${count} of them local bots on other computers`)
+    : ''}</small>`
+  if (!count) return head
+  const rows = elsewhere.map((d) => `<div class="satu-kv">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(d.name || t('未知电脑', 'Unknown computer'))} · ${t(`${d.count} 个`, `${d.count}`)}</span>
+      <span style="display:flex;align-items:center;gap:var(--space-2);font-size:12px;color:var(--muted-foreground);">
+        ${d.lastSeenAt ? esc(ago(d.lastSeenAt)) : ''}
+        <button type="button" class="satu-linkbtn" data-act="local-device-clear" data-device="${esc(d.deviceId)}" data-name="${esc(d.name || '')}" data-count="${esc(String(d.count))}" ${state.busy ? 'disabled' : ''}>${t('清除', 'Remove')}</button>
+      </span>
+    </div>`).join('')
+  return `<details class="mg-disclosure">
+    <summary>${head}</summary>
+    <div class="mg-disclosure-body">
+      <p class="mg-help">${t('本地 Bot 只在建它的那台电脑上显示。那台电脑不再使用的话，可以把它上面的本地 Bot 清掉，腾出配额。', 'A local bot only shows up on the computer that created it. If you no longer use that computer, remove its local bots to free up quota.')}</p>
+      ${rows}
+    </div>
+  </details>`
 }
 
 function dayISO(ts) {

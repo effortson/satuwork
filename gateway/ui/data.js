@@ -38,6 +38,10 @@ const gatewayClient = SatuCore.createGatewayClient({
     render()
   },
   renewLocalBot: (botId) => startDesktopLocalBot(botId),
+  // 本地 Bot 只属于建它的那台电脑：桌面端的请求带上这台的设备 id（docs/local-bot-device.md）。
+  deviceId: () => (typeof window !== 'undefined' && window.__SATUWORK_DESKTOP_DEVICE__ ? window.__SATUWORK_DESKTOP_DEVICE__.id : null),
+  // 手机壳和桌面壳的页面源是同一个，Gateway 靠这个头分（lib/guards.ts 的 viewerOf）。网页同源，不带。
+  client: () => (typeof window === 'undefined' ? null : window.__SATUWORK_MOBILE__ ? 'mobile' : window.__SATUWORK_DESKTOP__ ? 'desktop' : null),
 })
 const { gatewayBase, gatewayAbs, localBots, localSessions, registerLocalBot, localBotOf, localRoute, swFetch, api } = gatewayClient
 

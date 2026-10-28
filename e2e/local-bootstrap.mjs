@@ -50,10 +50,11 @@ export async function runLocalBootstrap({ gwRoot, test, req, start, waitHttp, as
     const seat = await req(base, 'GET', `/platform/accounts/${accountId}`, { token: reg.ownerToken })
     assert(seat.status === 200 && seat.json.accessToken, `席位凭证 ${seat.status} ${seat.text}`)
 
-    const made = await req(base, 'POST', '/runtime/bots', { token: adminTok, body: { name: '本地助手', runtimeKind: 'local' } })
+    const device = { 'x-satuwork-device': 'e2e-local-bootstrap-01' }
+    const made = await req(base, 'POST', '/runtime/bots', { token: adminTok, headers: device, body: { name: '本地助手', runtimeKind: 'local' } })
     assert(made.status === 201, `建本地 Bot ${made.status} ${made.text}`)
     const botId = made.json.bot.id
-    const bootstrap = (tok) => req(base, 'POST', `/runtime/bots/${botId}/local-bootstrap`, { token: tok, body: {} })
+    const bootstrap = (tok) => req(base, 'POST', `/runtime/bots/${botId}/local-bootstrap`, { token: tok, headers: device, body: {} })
 
     let first
     await test('给出去的是桌面那一套，不是席位那一套；这一套能拉目录、能调模型', async () => {

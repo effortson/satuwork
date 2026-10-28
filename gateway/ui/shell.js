@@ -426,7 +426,16 @@ function rosterGroups(bots, folderList = state.botFolders || [], mainBotId = sta
   // 主 Bot 在它所在的那一组里排最前面：戴着皇冠还排在中间，看着像排错了。别的顺序不动。
   const mainFirst = (list) => list.slice().sort((a, b) => Number(b.id === mainBotId) - Number(a.id === mainBotId))
   const loose = mainFirst(bots.filter((b) => !b.folderId || !known.has(b.folderId)))
-  return { loose, folders: folders.map((f) => ({ ...f, bots: mainFirst(bots.filter((b) => b.folderId === f.id)) })) }
+  /**
+   * 「本地 / Local」分类（`kind: 'local'`）空着就不画：分类是账号级的，本地 Bot 却只在建它的那台电脑上
+   * 看得到（docs/local-bot-device.md §5），网页、App、别的电脑上它总是空的。
+   */
+  return {
+    loose,
+    folders: folders
+      .map((f) => ({ ...f, bots: mainFirst(bots.filter((b) => b.folderId === f.id)) }))
+      .filter((f) => f.kind !== 'local' || f.bots.length),
+  }
 }
 
 /** 名单上的一行。`draggable`：拖到某个分类的标题上就归进去（见下面那组 drag 监听）。 */
@@ -571,8 +580,12 @@ async function moveBotToFolder(botId, folderId) {
  * 或者这颗不在自己名单上（别人的、全局的）就不摆。
  */
 function folderMenuItems(bot) {
-  const folders = (state.botFolders || []).slice().sort((a, b) => a.position - b.position)
-  const mine = (state.runtimeBots || []).find((b) => b.id === bot.id)
+  const roster = state.runtimeBots || []
+  const mine = roster.find((b) => b.id === bot.id)
+  // 和侧栏一个口径（rosterGroups）：空着的「本地」分类不画，这里也不给——除非挪的就是一颗本地 Bot。
+  const folders = (state.botFolders || [])
+    .filter((f) => f.kind !== 'local' || (mine && mine.runtimeKind === 'local') || roster.some((b) => b.folderId === f.id))
+    .sort((a, b) => a.position - b.position)
   if (!folders.length || !mine) return ''
   const known = new Set(folders.map((f) => f.id))
   const cur = mine.folderId && known.has(mine.folderId) ? mine.folderId : ''

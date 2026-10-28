@@ -40,6 +40,9 @@ class Element {
   setAttribute(k, v) {
     this._attrs[k] = String(v)
   }
+  removeAttribute(k) {
+    delete this._attrs[k]
+  }
   /**
    * 量尺寸。**全零**：测里造的元素没有布局，也不该假装有。
    *
@@ -141,7 +144,7 @@ function makeDom(stubIds = [], copied = []) {
       listeners.get(type).push(fn)
     },
   }
-  const stub = { innerHTML: '', value: '', textContent: '', classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, getAttribute: () => null, focus() {}, style: {} }
+  const stub = { innerHTML: '', value: '', textContent: '', classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, getAttribute: () => null, removeAttribute() {}, focus() {}, style: {} }
   const stubs = new Map(stubIds.map((id) => [id, countingStub()]))
   // execCommand('copy') 复制的是「当前选中的那个东西」，所以垫片得真的记住 select()
   // 选中了谁。没有这一点，dom-util.js 里那条兜底复制（非安全上下文下唯一能用的一条，
@@ -282,6 +285,8 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
   const windowOpens = []
   const windowStub = {
     __SATUWORK_DESKTOP__: desktop,
+    // 新壳子都注入这台电脑的设备身份（desktop/src-tauri/src/device.rs）；本地 Bot 靠它绑到这台上。
+    __SATUWORK_DESKTOP_DEVICE__: desktop ? { id: 'ui-smoke-device-0001', name: 'Test Mac', platform: 'darwin' } : undefined,
     __SATUWORK_LOCAL_BOT__: localBotBridge,
     __SATUWORK_DESKTOP_UPDATE__: desktopUpdateBridge,
     __SATUWORK_SERVER__: serverBridge,

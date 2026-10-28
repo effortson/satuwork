@@ -141,7 +141,8 @@ export function apply(ctx: Context) {
   async function tick(): Promise<void> {
     let got: { jobs?: Job[] }
     try {
-      got = (await gw('/due')) as { jobs?: Job[] }
+      // 带上自己是哪颗：同一个账号的几颗本地 Bot（可能在不同电脑上）各领各的，见 routes/worker.ts。
+      got = (await gw(botId ? `/due?botId=${encodeURIComponent(botId)}` : '/due')) as { jobs?: Job[] }
     } catch (e) {
       // 老 Gateway 没这条路（404）就安静地过；断网也别刷屏。
       if (!(e instanceof LostError)) ctx.logger?.warn?.(`local routines: 领不到活：${(e as Error).message}`)
@@ -149,6 +150,14 @@ export function apply(ctx: Context) {
     }
     for (const job of got?.jobs ?? []) {
       if (running.has(job.runId)) continue
+      /**
+       * 领到了别的 Bot 的——老 Gateway 不认 botId——就不碰它：不回报，租约到期放回去，由那颗自己的进程
+       * 再领（同 local-tasks）。往自己的口发别人的会话只会跑错地方。
+       */
+      if (botId && job.botId && job.botId !== botId) {
+        ctx.logger?.warn?.(`local routines: ${job.name} 是别的 Bot（${job.botId}）的，不是本进程，放着等它到期`)
+        continue
+      }
       running.add(job.runId)
       void runJob(job).finally(() => running.delete(job.runId))
     }

@@ -498,6 +498,8 @@ async function loadRuntimeBots() {
      */
     // 还在路上的「移到分类」盖回去：服务端那份这时还是旧的（shell.js 的 applyPendingFolders）。
     state.runtimeBots = applyPendingFolders((data.bots || []).filter((bot) => state.runtimeHasMachine !== false || bot.scope === 'user'))
+    // 配额，含别的电脑上的本地 Bot 占掉的那几个（新建 Bot 弹窗里的 botQuotaNote）。
+    state.botQuota = data.quota || null
     state.botFolders = Array.isArray(data.folders) ? data.folders : []
     state.mainBotId = typeof data.mainBotId === 'string' ? data.mainBotId : ''
     // 本地 Bot 在不在跑、听哪个口，Gateway 不知道（隧道拆了），只有壳子知道。
@@ -555,6 +557,8 @@ async function overlayLocalRuntime(bots) {
         botVersion: (s && s.runtimeVersion) || null,
         pendingVersion: (s && s.pendingRuntimeVersion) || null,
         updateError: (s && s.runtimeUpdateError) || null,
+        // 这颗在这台电脑上真跑过（壳子看数据目录里有没有它的库）。没绑设备的老本地 Bot 只在这时自动起。
+        hasData: Boolean(s && s.hasData),
       }
       const known = localBots.get(bot.id)
       if (running && (!known || !known.token || known.login !== token())) {
@@ -567,12 +571,33 @@ async function overlayLocalRuntime(bots) {
   }
 }
 
+/** 壳子注入的设备名和平台；只用于展示。老壳子没有就是 null。 */
+function desktopDeviceInfo() {
+  const d = window.__SATUWORK_DESKTOP_DEVICE__
+  return d ? { name: d.name || '', platform: d.platform || '' } : null
+}
+
 async function startDesktopLocalBot(botId) {
   const bridge = window.__SATUWORK_LOCAL_BOT__
   if (!window.__SATUWORK_DESKTOP__ || !bridge || typeof bridge.start !== 'function') {
     throw new Error(t('请在 Satuwork Desktop 中启动本地 Bot', 'Open Satuwork Desktop to start this local bot'))
   }
-  const bootstrap = await api('POST', `/runtime/bots/${encodeURIComponent(botId)}/local-bootstrap`, {})
+  let bootstrap
+  try {
+    // 顺带报一下这台电脑叫什么，「其他电脑上的本地 Bot」那一栏要用（docs/local-bot-device.md §7）。
+    bootstrap = await api('POST', `/runtime/bots/${encodeURIComponent(botId)}/local-bootstrap`, { device: desktopDeviceInfo() })
+  } catch (err) {
+    /**
+     * 409 = 这颗本地 Bot 已经归另一台电脑了（老数据被别的电脑先认领，§4.3）。从名册里拿掉、
+     * 不再试着起它：下一次拉名册 Gateway 也不会再给。
+     */
+    if (err && err.status === 409) {
+      state.runtimeBots = (state.runtimeBots || []).filter((bot) => bot.id !== botId)
+      localBotStarts.set(botId, Infinity)
+      render()
+    }
+    throw err
+  }
   const status = await bridge.start(bootstrap)
   if (status && status.port) registerLocalBot(botId, status.port, bootstrap.accessToken)
   syncDesktopLocalNotices()
@@ -590,6 +615,11 @@ async function ensureDesktopLocalBots(bots) {
   const now = Date.now()
   for (const bot of bots || []) {
     if (bot.runtimeKind !== 'local' || (bot.runtime && bot.runtime.status === 'ready')) continue
+    /**
+     * 没绑设备的老本地 Bot：起它就会把它认领到这台（docs/local-bot-device.md §4.3）。只有它的数据在这台上
+     * 才自动起；否则多半是另一台电脑上的那颗，先升级的这台不能把它领走——要用就在它的对话页上手动启动。
+     */
+    if (bot.unclaimed && !(bot.runtime && bot.runtime.hasData)) continue
     if (now - (localBotStarts.get(bot.id) || 0) < 10_000) continue
     localBotStarts.set(bot.id, now)
     void startDesktopLocalBot(bot.id).catch((err) => {

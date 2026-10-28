@@ -210,15 +210,19 @@ export function attachWorker(router: Router, ctx: RouteCtx) {
   // 本地 Bot 跑在员工电脑上，Gateway 连不到它，dueRoutines 把它的任务排除在外；由它自己的进程
   // 来领（bot/src/local-routines）。同一个账号所有本地 Bot 共用一个「机器」名：desktop:<accountId>。
   // 席位票只能领**自己账号**的任务：due 源按 accountId 过滤，续租和回报按 machineId 认。
-  const localOwner = (accountId: string): RoutineOwner => ({
+  //
+  // `botId`：一颗本地 Bot 一个进程，各领各的（同 local-tasks）。不带的话账号下任何一颗都会领走别的
+  // 本地 Bot 的任务——多台电脑之后还会领走另一台上那颗的（docs/local-bot-device.md §6）。老版本不带，照旧全给。
+  const localOwner = (accountId: string, botId?: string): RoutineOwner => ({
     machineId: `desktop:${accountId}`,
-    due: (n, limit) => db.dueRoutinesForLocalAccount(accountId, n, limit),
-    retries: (n, limit) => db.dueRoutineRetriesForLocalAccount(accountId, n, limit),
+    due: (n, limit) => db.dueRoutinesForLocalAccount(accountId, n, limit, botId),
+    retries: (n, limit) => db.dueRoutineRetriesForLocalAccount(accountId, n, limit, botId),
     seatIdOf: async () => 'desktop',
   })
   router.get('/runtime/local-routines/due', async (req, res) => {
     const account = await requireSeatOnly(req, db)
-    json(res, 200, await leaseDue(db, localOwner(account.id)))
+    const botId = (req.query.get('botId') || '').trim() || undefined
+    json(res, 200, await leaseDue(db, localOwner(account.id, botId)))
   })
   router.post('/runtime/local-routines/:runId/started', async (req, res) => {
     const account = await requireSeatOnly(req, db)

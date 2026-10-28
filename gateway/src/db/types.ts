@@ -639,11 +639,31 @@ export interface CatalogItem {
   botId: string | null
   name: string
   definition: unknown
+  /**
+   * 本地 Bot 绑在哪台桌面端上（迁移 0072，docs/local-bot-device.md）。只有本地 Bot 有值；
+   * 老的本地 Bot 是 null，等第一台把它跑起来的桌面端认领。
+   */
+  deviceId: string | null
   /** 删除前终审开始的时刻。非空时不再出现在可聊天名册里。 */
   deletingAt: number | null
   createdAt: number
   updatedAt: number
 }
+
+/**
+ * 这次请求是从哪来的——决定本地 Bot 看不看得到（docs/local-bot-device.md §4）。
+ *
+ * - `device`：带了设备头的桌面端。只看得到绑在这台上的、和还没绑定的本地 Bot。
+ * - `legacy-desktop`：桌面源、没带设备头的老壳子。只看得到还没绑定的本地 Bot（跟今天一样能用），
+ *   已经归了别的电脑的不给；等桌面端都升上来再删。
+ * - `none`：网页、App。一颗本地 Bot 都看不到。
+ * - `seat`：Bot 进程拿席位票来的。本地 Bot 都认（否则它连自己都拉不到）；派活名单另外收窄。
+ */
+export type BotViewer =
+  | { kind: 'device'; id: string }
+  | { kind: 'legacy-desktop' }
+  | { kind: 'none' }
+  | { kind: 'seat' }
 
 export interface Credential {
   id: string
@@ -1723,6 +1743,8 @@ export interface BotFolder {
   id: string
   accountId: string
   name: string
+  /** `'local'` = 建本地 Bot 时自动放进去的「本地 / Local」分类（迁移 0072）。别的都是 null。 */
+  kind: 'local' | null
   position: number
   createdAt: number
   updatedAt: number

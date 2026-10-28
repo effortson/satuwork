@@ -2924,6 +2924,44 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(ui.chatDeployPrompt('local-1').includes('启动后立即退出'), '启动原因没有画在等待卡片上')
     })
 
+    await test('没绑设备的老本地 Bot：本机有它的数据才自动起（起它就认领它）；没有就等人在这台上手动启动', async () => {
+      // docs/local-bot-device.md §4.3：先升级的那台不能把数据在别的电脑上的那颗顺手领走。
+      const starts = []
+      const roster = {
+        hasMachine: true, rosterStreamUrl: null, quota: { used: 2, max: 20, elsewhere: [] }, folders: [],
+        bots: [
+          { id: 'u-here', name: '这台的', scope: 'user', runtimeKind: 'local', unclaimed: true, runtime: null },
+          { id: 'u-away', name: '别处的', scope: 'user', runtimeKind: 'local', unclaimed: true, runtime: null },
+        ],
+      }
+      const ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: 'jwt-a',
+        desktop: true,
+        localBotBridge: {
+          status: async (id) => ({ running: false, port: null, workspace: '/w', hasData: id === 'u-here' }),
+          start: async (cfg) => {
+            starts.push(cfg.botId)
+            return { running: true, port: 41010 }
+          },
+        },
+        fetchImpl: async (path) => {
+          if (path === '/runtime/bots') return new Response(JSON.stringify(roster), { status: 200, headers: { 'content-type': 'application/json' } })
+          const m = path.match(/^\/runtime\/bots\/([^/]+)\/local-bootstrap$/)
+          if (m) return new Response(JSON.stringify({ botId: m[1], gatewayUrl: gwBase, accessToken: 'sat_x', apiKey: 'sk_sw_x' }), { status: 200, headers: { 'content-type': 'application/json' } })
+          return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+        },
+      })
+      ui.state.me = { account: { id: 'me', companyId: 'c1', role: 'member', email: 'm@x' }, company: { id: 'c1' } }
+      ui.state.path = '/a/u-away'
+      await ui.loadRuntimeBots()
+      await new Promise((r) => setTimeout(r, 30))
+      assert(JSON.stringify(starts) === JSON.stringify(['u-here']), `只该自动起本机有数据的那颗：${JSON.stringify(starts)}`)
+      const prompt = ui.chatDeployPrompt('u-away')
+      assert(prompt.includes('在这台电脑上启动') && prompt.includes('data-act="local-bot-start"'), `没数据的那颗该给手动启动：${prompt}`)
+    })
+
     await test('本地 Bot 在跑：登录票没换就不再要票；换过（重新登录、改了口令）就重新要、交给壳子换票', async () => {
       // 本地 Bot 的票跟登录票同生共死（Gateway 迁移 0041）：改口令、被重置之后，进程手上那把
       // 已经作废。页面这时一定换了一张登录票——拿它当信号重新要一次，交给壳子的 start

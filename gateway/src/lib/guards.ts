@@ -5,7 +5,7 @@
  */
 import { HttpError, type Req, bearer } from '../http.ts'
 import { JWT_TTL, KIND } from './validate.ts'
-import { type Account, type AccountStatus, type CatalogKind, type Db, type Machine, type Role } from '../db.ts'
+import { type Account, type AccountStatus, type BotViewer, type CatalogKind, type Db, type Machine, type Role } from '../db.ts'
 import { type JwtKeys, type JwtPayload, randomInviteToken, sha256Hex, signJwt, ticketRevoked, timingSafeToken, verifyJwt } from '../crypto.ts'
 
 export function gateAccount(account: Account | undefined): Account {
@@ -88,6 +88,31 @@ export function headerOf(req: Req, name: string): string | undefined {
   const v = req.headers[name]
   if (Array.isArray(v)) return v[0]
   return typeof v === 'string' ? v : undefined
+}
+
+/** 桌面壳的页面源（同 http.ts 的 CORS_ORIGINS 里那四个固定的）。 */
+const DESKTOP_ORIGINS = new Set(['satu://localhost', 'http://satu.localhost', 'tauri://localhost', 'http://tauri.localhost'])
+const DEVICE_ID = /^[a-zA-Z0-9-]{16,100}$/
+
+/** 桌面端报来的设备 id（`x-satuwork-device`，壳子 app_data_dir 里 device.json 的那个）。格式不对当没带。 */
+export function deviceIdOf(req: Req): string | null {
+  const raw = (headerOf(req, 'x-satuwork-device') || '').trim()
+  return DEVICE_ID.test(raw) ? raw : null
+}
+
+/**
+ * 这次请求的视角：本地 Bot 看不看得到由它决定（docs/local-bot-device.md §4.1）。
+ *
+ * 席位票（`sat_`）是 Bot 进程来的，本地 Bot 都认；登录票看设备头。页面源是 satu:// 那几个、却
+ * 既没带设备头也没带客户端头（`x-satuwork-client`）的，是还没升上来的老桌面端——还没绑定的照旧给，
+ * 免得一升 Gateway 本地 Bot 就全没了。手机壳的页面源和桌面壳是同一个，它带着 `x-satuwork-client: mobile`。
+ */
+export function viewerOf(req: Req): BotViewer {
+  if (bearer(req)?.startsWith('sat_')) return { kind: 'seat' }
+  const id = deviceIdOf(req)
+  if (id) return { kind: 'device', id }
+  if (!headerOf(req, 'x-satuwork-client') && DESKTOP_ORIGINS.has(headerOf(req, 'origin') || '')) return { kind: 'legacy-desktop' }
+  return { kind: 'none' }
 }
 
 /**

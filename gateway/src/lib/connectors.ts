@@ -439,10 +439,14 @@ export async function usableConnections(
  * 界面上那一格「可用 Bot」：范围，加上名单里已经不在他 Bot 名单上的有几颗（被删了）。
  * `roster` 是 `botsFor` 的 id；名单只出交集，删掉的不往外给，只给个数让界面提醒。
  */
-export function publicBotScope(scope: BotScope | undefined, roster: Set<string>) {
+/**
+ * `roster` 是这次请求看得到的那些；`all` 是这个账号全部的（含别的电脑上的本地 Bot，
+ * docs/local-bot-device.md）。看不到但还在的只是不给出去，**不算 missing**——它们没被删。
+ */
+export function publicBotScope(scope: BotScope | undefined, roster: Set<string>, all: Set<string> = roster) {
   if (!scope || scope.mode === 'all') return { mode: 'all' as const, botIds: [] as string[], missing: 0 }
   const botIds = scope.botIds.filter((id) => roster.has(id))
-  return { mode: 'bots' as const, botIds, missing: scope.botIds.length - botIds.length }
+  return { mode: 'bots' as const, botIds, missing: scope.botIds.filter((id) => !all.has(id)).length }
 }
 
 /** 连接的对外形状。`externalId` 和 `externalUserId` 是供应商侧的引用，不带出去。 */

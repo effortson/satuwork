@@ -3,7 +3,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { SWEEP_BATCH } from './sql.ts'
-import type { BotFolder, BotTask, BotTaskPatch, BotTaskProgress, BotTaskStatus, CatalogItem, CatalogKind, Scope } from './types.ts'
+import type { BotFolder, BotTask, BotViewer, BotTaskPatch, BotTaskProgress, BotTaskStatus, CatalogItem, CatalogKind, Scope } from './types.ts'
 import { botFolderOf, botTaskOf, catalogOf, str } from './rows.ts'
 import { DbCore } from './core.ts'
 
@@ -20,6 +20,8 @@ export class CatalogDb extends DbCore {
     botId?: string | null
     name: string
     definition?: unknown
+    /** 只有本地 Bot 用得上：建在哪台桌面端上。见 CatalogItem.deviceId。 */
+    deviceId?: string | null
   }): Promise<CatalogItem> {
     const now = Date.now()
     const row: CatalogItem = {
@@ -31,13 +33,14 @@ export class CatalogDb extends DbCore {
       botId: input.scope === 'user' ? (input.botId ?? null) : null,
       name: input.name,
       definition: input.definition ?? {},
+      deviceId: input.scope === 'user' ? (input.deviceId ?? null) : null,
       deletingAt: null,
       createdAt: now,
       updatedAt: now,
     }
     await this.run(
-      'insert into catalog_items (id, kind, scope, "companyId", "accountId", "botId", name, definition, "createdAt", "updatedAt") values (?,?,?,?,?,?,?,?,?,?)',
-      [row.id, row.kind, row.scope, row.companyId, row.accountId, row.botId, row.name, JSON.stringify(row.definition), row.createdAt, row.updatedAt],
+      'insert into catalog_items (id, kind, scope, "companyId", "accountId", "botId", name, definition, "deviceId", "createdAt", "updatedAt") values (?,?,?,?,?,?,?,?,?,?,?)',
+      [row.id, row.kind, row.scope, row.companyId, row.accountId, row.botId, row.name, JSON.stringify(row.definition), row.deviceId, row.createdAt, row.updatedAt],
     )
     return row
   }
@@ -174,19 +177,33 @@ export class CatalogDb extends DbCore {
    *
    * 别人建的 Bot 一律不在里面——用户 Bot 只有主人看得见，这条线由这里的 where 保证，
    * 而不是靠每个调用点自己过滤。
+   *
+   * **本地 Bot 再按设备收一道**（`viewer`，docs/local-bot-device.md §4）：它只属于建它的那台电脑。
+   * 参数必填，每个调用点都得想清楚自己是哪种视角；规则和 lib/catalog.ts 的 botVisibleTo 是同一条。
    */
-  async botsFor(companyId: string | null, accountId: string): Promise<CatalogItem[]> {
+  async botsFor(companyId: string | null, accountId: string, viewer: BotViewer): Promise<CatalogItem[]> {
     if (!companyId) {
       const rows = await this.many("select * from catalog_items where kind = 'bot' and scope = 'global' and \"deletingAt\" is null order by name")
       return rows.map(catalogOf)
+    }
+    // coalesce 不能省：Telegram 绑定建的、runtimeKind 这个字段出现之前建的用户 Bot 都没有这个键，
+    // `null = 'local'` 是 null，`not null` 还是 null——整行会被当成「不可见」筛掉。
+    const local = `(scope = 'user' and coalesce(definition->>'runtimeKind', '') = 'local')`
+    const params: unknown[] = [companyId, accountId]
+    let device = ''
+    if (viewer.kind === 'none') device = `and not ${local}`
+    else if (viewer.kind === 'legacy-desktop') device = `and (not ${local} or "deviceId" is null)`
+    else if (viewer.kind === 'device') {
+      device = `and (not ${local} or "deviceId" is null or "deviceId" = ?)`
+      params.push(viewer.id)
     }
     const rows = await this.many(
       `select * from catalog_items where kind = 'bot' and "deletingAt" is null and (
          scope = 'global'
          or (scope = 'company' and "companyId" = ?)
          or (scope = 'user' and "accountId" = ?)
-       ) order by scope, name`,
-      [companyId, accountId],
+       ) ${device} order by scope, name`,
+      params,
     )
     return rows.map(catalogOf)
   }
@@ -224,15 +241,92 @@ export class CatalogDb extends DbCore {
     return Number((r as { n?: number } | undefined)?.n ?? 0)
   }
 
-  /** 新分类排在最后：position 取当前最大值加一。 */
-  async createBotFolder(accountId: string, name: string, now: number): Promise<BotFolder> {
+  /** 新分类排在最后：position 取当前最大值加一。`kind` 只有「本地」分类用（迁移 0072）。 */
+  async createBotFolder(accountId: string, name: string, now: number, kind: 'local' | null = null): Promise<BotFolder> {
     const id = randomUUID()
     await this.run(
-      `insert into bot_folders (id, "accountId", name, position, "createdAt", "updatedAt")
-       values (?, ?, ?, (select coalesce(max(position), 0) + 1 from bot_folders where "accountId" = ?), ?, ?)`,
-      [id, accountId, name, accountId, now, now],
+      `insert into bot_folders (id, "accountId", name, kind, position, "createdAt", "updatedAt")
+       values (?, ?, ?, ?, (select coalesce(max(position), 0) + 1 from bot_folders where "accountId" = ?), ?, ?)`,
+      [id, accountId, name, kind, accountId, now, now],
     )
     return (await this.botFolder(accountId, id))!
+  }
+
+  /** 这个人的「本地 / Local」分类（建本地 Bot 时自动放进去的那个）。按标记找，不按名字。 */
+  async localBotFolder(accountId: string): Promise<BotFolder | undefined> {
+    const row = await this.one('select * from bot_folders where "accountId" = ? and kind = \'local\'', [accountId])
+    return row ? botFolderOf(row) : undefined
+  }
+
+  // ── 本地 Bot 归哪台电脑（迁移 0072，docs/local-bot-device.md）。────────────
+
+  /**
+   * 老的本地 Bot 没绑设备：谁先来要票就归谁。带条件的 update，两台并发来要只有一台改得到。
+   * 返回它现在归哪台（可能是刚认领的这台，也可能早就是别的那台）；不是本地 Bot 返回 undefined。
+   */
+  async claimLocalBot(accountId: string, botId: string, deviceId: string): Promise<string | null | undefined> {
+    await this.run(
+      `update catalog_items set "deviceId" = ? where id = ? and "accountId" = ? and "deviceId" is null
+         and scope = 'user' and kind = 'bot' and definition->>'runtimeKind' = 'local'`,
+      [deviceId, botId, accountId],
+    )
+    const row = await this.one('select "deviceId" from catalog_items where id = ? and "accountId" = ?', [botId, accountId])
+    return row ? (row.deviceId == null ? null : String(row.deviceId)) : undefined
+  }
+
+  /**
+   * 登记 / 刷新一台桌面端。名字、平台只用于展示；`lastSeenAt` 最多一分钟写一回——名册每次刷新都会
+   * 路过这里，不该每次都落一笔。设备 id 撞上了别的账号的（换账号登录同一台电脑）就把它改挂过来。
+   */
+  async touchDesktopDevice(accountId: string, id: string, info: { name?: string; platform?: string }, now = Date.now()): Promise<void> {
+    await this.run(
+      `insert into desktop_devices (id, "accountId", name, platform, "createdAt", "lastSeenAt") values (?, ?, ?, ?, ?, ?)
+       on conflict (id) do update set
+         "accountId" = excluded."accountId",
+         name = case when excluded.name <> '' then excluded.name else desktop_devices.name end,
+         platform = case when excluded.platform <> '' then excluded.platform else desktop_devices.platform end,
+         "lastSeenAt" = excluded."lastSeenAt"
+       where desktop_devices."accountId" <> excluded."accountId"
+          or desktop_devices."lastSeenAt" < excluded."lastSeenAt" - 60000
+          or (excluded.name <> '' and desktop_devices.name <> excluded.name)`,
+      [id, accountId, (info.name ?? '').slice(0, 120), (info.platform ?? '').slice(0, 40), now, now],
+    )
+  }
+
+  /**
+   * 别的电脑上的本地 Bot：按设备数一数。只给设备和个数，不给 Bot 的名字和 id（§7）。
+   * 设备行没了（老数据、被清过）也照样数出来，名字留空。
+   */
+  async localBotsElsewhere(accountId: string, deviceId: string | null): Promise<{ deviceId: string; name: string; platform: string; lastSeenAt: number | null; count: number }[]> {
+    const rows = await this.many(
+      `select c."deviceId" as "deviceId", count(*)::int as n, max(d.name) as name, max(d.platform) as platform, max(d."lastSeenAt") as "lastSeenAt"
+         from catalog_items c left join desktop_devices d on d.id = c."deviceId"
+        where c.kind = 'bot' and c.scope = 'user' and c."accountId" = ? and c."deletingAt" is null
+          and c.definition->>'runtimeKind' = 'local' and c."deviceId" is not null and c."deviceId" <> ?
+        group by c."deviceId" order by max(d."lastSeenAt") desc nulls last`,
+      [accountId, deviceId ?? ''],
+    )
+    return rows.map((r) => ({
+      deviceId: String(r.deviceId),
+      name: r.name == null ? '' : String(r.name),
+      platform: r.platform == null ? '' : String(r.platform),
+      lastSeenAt: r.lastSeenAt == null ? null : Number(r.lastSeenAt),
+      count: Number(r.n ?? 0),
+    }))
+  }
+
+  /** 绑在某台电脑上的本地 Bot（清除那台电脑用）。 */
+  async localBotsOnDevice(accountId: string, deviceId: string): Promise<CatalogItem[]> {
+    const rows = await this.many(
+      `select * from catalog_items where kind = 'bot' and scope = 'user' and "accountId" = ? and "deviceId" = ?
+         and definition->>'runtimeKind' = 'local'`,
+      [accountId, deviceId],
+    )
+    return rows.map(catalogOf)
+  }
+
+  async deleteDesktopDevice(accountId: string, id: string): Promise<void> {
+    await this.run('delete from desktop_devices where id = ? and "accountId" = ?', [id, accountId])
   }
 
   async renameBotFolder(accountId: string, id: string, name: string, now: number): Promise<BotFolder | undefined> {

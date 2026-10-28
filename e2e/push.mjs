@@ -434,15 +434,18 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
     })
 
     await test('本地 Bot 也共享通知状态，但不向无法打开本地会话的手机推送', async () => {
-      const made = await req(base, 'POST', '/runtime/bots', { token: adminTok, body: { name: '本地通知助手', runtimeKind: 'local' } })
+      // 本地 Bot 只属于建它的那台电脑：建它、替它上报都得带这台的设备头（docs/local-bot-device.md）。
+      const device = { 'x-satuwork-device': 'e2e-push-local-desk-01' }
+      const made = await req(base, 'POST', '/runtime/bots', { token: adminTok, headers: device, body: { name: '本地通知助手', runtimeKind: 'local' } })
       assert(made.status === 201, made.text)
       const localId = made.json.bot.id
-      const postLocal = (body, token = adminTok) => req(base, 'POST', '/me/notifications/local', { token,
+      const postLocal = (body, token = adminTok, headers = device) => req(base, 'POST', '/me/notifications/local', { token, headers,
         body: { botId: localId, sessionId: 'local-notices', kind: 'approval', actionId: 'local-approval', time: Date.now(), ...body } })
       apns.seen.length = 0
       const pending = await postLocal({ seq: 5 })
       assert(pending.status === 200, pending.text)
       assert((await postLocal({ seq: 5 }, memberTok)).status === 404, '能上报别人的本地 Bot')
+      assert((await postLocal({ seq: 5 }, adminTok, { 'x-satuwork-device': 'e2e-push-other-desk-1' })).status === 404, '别的电脑能替这台的本地 Bot 上报')
       assert((await postLocal({ seq: 5, botId })).status === 400, '客户端冒充远程席位上报')
       assert((await snapshot()).json.counts.some((r) => r.botId === localId && r.count === 1), '本地事件没有共享未读')
       const mobileSnapshot = await req(base, 'GET', '/me/notifications?platform=mobile', { token: adminTok })

@@ -106,6 +106,7 @@ import { runTelegramRich } from './telegram-rich.mjs'
 import { runTelegramChannel } from './telegram-channel.mjs'
 import { runChannelQueue } from './channel-queue.mjs'
 import { runLocalBootstrap } from './local-bootstrap.mjs'
+import { runLocalDevice } from './local-device.mjs'
 import { requirePg } from './pg.mjs'
 import { tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
@@ -285,6 +286,7 @@ async function main() {
     await suite('task-turns', () => runTaskTurns({ root, test, assert, log }))
     await suite('assign', () => runAssign({ root, test, assert, log }))
     await suite('local-bootstrap', () => runLocalBootstrap({ gwRoot, test, req, start, waitHttp, assert, log }))
+    await suite('local-device', () => runLocalDevice({ test, req, assert, log }))
     await suite('release-blob', () => runReleaseBlob({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('browser', () => runBrowser({ root, test, assert, log }))
     await suite('mounted', () => runMounted({ root, test, assert, log }))

@@ -27,6 +27,15 @@ function notificationDeviceId() {
   const key = 'satu.notificationDevice:' + platform
   let id = ''
   try { id = localStorage.getItem(key) || '' } catch {}
+  /**
+   * 桌面端没存过的，用壳子给的设备身份（device.rs）——一台电脑一个身份。**已经存过的照旧用存的那个**：
+   * 投递按（事件, 设备）去重，升级后换个 id，重放窗口里已经弹过的提醒会被当成新设备再弹一遍。
+   */
+  const shellId = window.__SATUWORK_DESKTOP_DEVICE__?.id || ''
+  if (platform === 'desktop' && !/^[a-zA-Z0-9_-]{16,100}$/.test(id) && /^[a-zA-Z0-9_-]{16,100}$/.test(shellId)) {
+    id = shellId
+    try { localStorage.setItem(key, id) } catch {}
+  }
   if (!/^[a-zA-Z0-9_-]{16,100}$/.test(id)) {
     id = globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2))
     try { localStorage.setItem(key, id) } catch {}
