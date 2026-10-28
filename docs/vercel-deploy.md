@@ -66,9 +66,25 @@ Vercel 上就是「实例还没上线」——不是坏，是没人接。
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob 库的读写 token | 发布包不落盘、边收边传到 Blob（私有），下发时带 token 取。Debian 上也可以配，两边的包就在同一个地方。见 gateway/src/releases.ts |
 | 知识库向量模型 | 不用环境变量 | 在平台「工具配置 → 知识库」里选区域、服务商、填密钥。向量存在 Neon 的 pgvector 里：库里先 `create extension vector`（public schema），页面上存好模型会自动建表；从 Upstash 迁来的文件要在页面上点一次「重建向量」。老的 `KB_EMBEDDING_*` 只在页面上还没配时兜底 |
 | `KB_DIR` | 不用配 | 没配 Blob 时知识库原文件落盘的目录，默认 `<data>/knowledge/`。配了 `BLOB_READ_WRITE_TOKEN` 走 Blob，浏览器直传 |
-| `GATEWAY_APNS_KEY` / `GATEWAY_APNS_KEY_ID` / `GATEWAY_APNS_TEAM_ID` | App Store Connect 的 .p8 全文（或整段 base64）、它的 Key ID、团队 ID | 手机推送（gateway/src/lib/push.ts）。三个缺一个就不推，只打一行日志。`GATEWAY_APNS_TOPIC` 默认 `sg.dami.satuwork.mobile`，和手机壳的 bundle id 一致 |
+| `GATEWAY_APNS_KEY` / `GATEWAY_APNS_KEY_ID` / `GATEWAY_APNS_TEAM_ID` | Apple Developer「Certificates, Identifiers & Profiles → Keys」中启用 APNs 的 .p8 全文（或整段 base64）、它的 Key ID、团队 ID；App Store Connect API / 公证密钥不能代替 | 手机推送（gateway/src/lib/push.ts）。三个缺一个就不推，只打一行日志。`GATEWAY_APNS_TOPIC` 默认 `sg.dami.satuwork.mobile`，和手机壳的 bundle id 一致；密钥的环境和 topic 必须覆盖目标设备（开发签名为 sandbox，TestFlight / App Store 为 production） |
 | `GATEWAY_FCM_SERVICE_ACCOUNT` | Firebase「项目设置 → 服务账号」生成的私钥 JSON 全文（或整段 base64） | Android 推送（gateway/src/lib/push.ts，FCM HTTP v1）。没配就不推 Android，只打一行日志 |
 | `GATEWAY_ACCESS_HOST`、`GATEWAY_PLATFORM_TOKEN`、各家模型 key | 同 Debian | 见 docker-compose.yml |
+
+### TestFlight / App Store 的 APNs
+
+在 Apple Developer 的 Keys 中创建 **Production、Topic Specific** 的 APNs 密钥，topic 只选
+`sg.dami.satuwork.mobile`。Sandbox 专用密钥不能用于 TestFlight；App Store Connect 上传密钥也不能代替 APNs 密钥。
+下载的 `.p8` 仅保存到私密目录，并把其全文或 base64 写到 Vercel 项目 **Production** 环境的
+`GATEWAY_APNS_KEY`，同时设置 `GATEWAY_APNS_KEY_ID`、`GATEWAY_APNS_TEAM_ID` 和
+`GATEWAY_APNS_TOPIC=sg.dami.satuwork.mobile`。不要配置测试用的 `GATEWAY_APNS_ENDPOINT`。
+
+环境变量修改后必须重新部署才会进入运行中的函数。仅更新推送配置时，重新部署当前线上 deployment，
+避免把本地未发布的代码一起上线。生产密钥只给正式 Gateway，本机 Gateway 继续使用 sandbox 密钥。
+
+验收用 TestFlight 安装的包登录正式账号并允许通知，确认 `push_devices` 登记了
+`platform=ios, environment=production`。把应用退到后台、锁屏后触发实际 Bot 回复，检查 APNs 接收结果、
+手机实收和点击跳转；再终止应用测一次冷启动。只有 sandbox 真机通过不代表 TestFlight 已通过。
+手机发布流水线会检查导出 IPA 的实际签名，要求 bundle id 与 topic 一致且 `aps-environment=production`。
 
 ### 用 Neon 的 Vercel 集成时那两条串可以不配
 
