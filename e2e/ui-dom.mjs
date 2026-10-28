@@ -89,8 +89,22 @@ function countingStub() {
     scrollHeight: 0,
     value: '',
     classList: { add() {}, remove() {}, toggle() {} },
-    setAttribute() {},
-    getAttribute: () => null,
+    // 属性要真的记住：syncThread 靠 data-owner 判「是不是换了会话」，桩永远答 null 的话
+    // 每一帧都会被当成换会话、整片清空重画。
+    _attrs: {},
+    // 每个属性被读了几次。syncThread 每画一帧正好读一次 data-owner，合并重绘那条测拿它数帧——
+    // 属性记住之后，空会话那一支不再每帧写 innerHTML，「写了几次」数不出帧数了。
+    reads: {},
+    setAttribute(k, v) {
+      this._attrs[k] = String(v)
+    },
+    getAttribute(k) {
+      this.reads[k] = (this.reads[k] || 0) + 1
+      return k in this._attrs ? this._attrs[k] : null
+    },
+    removeAttribute(k) {
+      delete this._attrs[k]
+    },
     focus() {},
     scrollIntoView() {},
     style: {},
