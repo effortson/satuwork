@@ -115,7 +115,7 @@ serve_ui、注入、导航守卫），`prepare:ui`（仓库根 scripts/copy-ui.m
 
 | | 桌面壳 | 手机壳 |
 |---|---|---|
-| Gateway 地址 | 正式包锁死 satuwork.com；debug 有设置屏和菜单 | 正式包锁死；debug 读 `mobile/src-tauri/dev-server.txt`（不进版本库），没有设置屏 |
+| Gateway 地址 | 登录页可检测并切换服务器，保存到配置目录；默认地址由发行地区决定 | 登录页复用同一弹窗，检测通过后保存，重新加载登录页；默认 satuwork.com。未手动选择时 debug 读 `mobile/src-tauri/dev-server.txt` 或编译期 `SATUWORK_SERVER` |
 | 窗口 | 设置屏 + 主窗口，同源 `_blank` 另开一扇 | 一扇；同源 `_blank`（「在浏览器里打开」）换成 Gateway 的源交给 Safari |
 | 远程桌面预览、打开入口 | 有 | 没有 |
 | 本地 Bot、运行时下载、自升级、菜单 | 有 | 没有；升级走商店 |

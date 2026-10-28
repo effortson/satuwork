@@ -2,8 +2,11 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Duration;
 
-use tauri::{AppHandle, Url, WebviewUrl, WebviewWindowBuilder};
+use serde::Serialize;
+use tauri::{AppHandle, Manager, State, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
 /**
@@ -17,8 +20,8 @@ use tauri_plugin_opener::OpenerExt;
  * 凭据走 Authorization 头。
  *
  * 桌面壳（desktop/src-tauri/src/）里的本地 Bot、运行时下载、自升级、菜单、设置屏在
- * 手机上都不存在：手机只有一扇窗、一个 Gateway 地址（正式包锁死 satuwork.com，debug 构建
- * 认编译期的 SATUWORK_SERVER），所以这份文件只剩三件事：发界面、注入、把往外走的导航
+ * 手机上都不存在：手机只有一扇窗，登录页可以检测并切换 Gateway 地址，默认连 satuwork.com。
+ * 这里负责发界面、注入、保存服务器地址、把往外走的导航
  * 交给系统浏览器。serve_ui / 导航守卫那几段是从桌面壳抄过来的，两边要一起改
  * （docs/adr-core-package-mobile.md §5 第 5 步记了这笔账）。
  */
@@ -30,6 +33,9 @@ const OPEN_PATH: &str = "/__satuwork_open";
 const UI_SCHEME: &str = "satu";
 const UI_HOST: &str = "satu.localhost";
 const UI_ORIGIN: &str = "satu://localhost/";
+const BOOTSTRAP_PATH: &str = "/__satuwork_mobile.js";
+
+struct GatewayServer(Mutex<Url>);
 
 /// 正式包连的 Gateway。
 const DEFAULT_SERVER: &str = "https://satuwork.com";
@@ -40,7 +46,7 @@ fn is_ui_origin(url: &Url) -> bool {
 }
 
 /**
- * 这次连哪儿。手机上没有设置屏也没有菜单：正式包锁死 DEFAULT_SERVER；debug 构建先看
+ * 这次连哪儿：用户存过的地址优先；没有时 debug 构建先看
  * 仓库里的 `mobile/src-tauri/dev-server.txt`（不进版本库），再看编译期的 `SATUWORK_SERVER`。
  *
  * - iOS 模拟器的进程就是本机进程，运行时读得到那个文件：改完重开应用就生效，不用重编。
@@ -48,7 +54,10 @@ fn is_ui_origin(url: &Url) -> bool {
  * - Android 模拟器是一台虚拟机，读不到本机文件，靠 build.rs 在构建时把文件内容烤成
  *   `SATUWORK_SERVER`。本机的 127.0.0.1 在 Android 模拟器里要先 `adb reverse`（mobile/README.md）。
  */
-fn pick_server<'a>(debug: bool, from_file: Option<&'a str>, baked: Option<&'a str>) -> &'a str {
+fn pick_server<'a>(debug: bool, saved: Option<&'a str>, from_file: Option<&'a str>, baked: Option<&'a str>) -> &'a str {
+    if let Some(s) = saved.map(str::trim).filter(|s| !s.is_empty()) {
+        return s;
+    }
     if debug {
         if let Some(s) = [from_file, baked].into_iter().flatten().map(str::trim).find(|s| !s.is_empty()) {
             return s;
@@ -57,12 +66,79 @@ fn pick_server<'a>(debug: bool, from_file: Option<&'a str>, baked: Option<&'a st
     DEFAULT_SERVER
 }
 
-fn gateway_url() -> Result<Url, String> {
+fn server_file(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path().app_config_dir().map(|dir| dir.join("server.txt")).map_err(|e| format!("找不到配置目录：{e}"))
+}
+
+fn gateway_url(app: &AppHandle) -> Result<Url, String> {
+    let saved = server_file(app).ok().and_then(|path| fs::read_to_string(path).ok());
     #[cfg(debug_assertions)]
     let from_file = fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dev-server.txt")).ok();
     #[cfg(not(debug_assertions))]
     let from_file: Option<String> = None;
-    normalize(pick_server(cfg!(debug_assertions), from_file.as_deref(), option_env!("SATUWORK_SERVER")))
+    normalize(pick_server(cfg!(debug_assertions), saved.as_deref(), from_file.as_deref(), option_env!("SATUWORK_SERVER")))
+}
+
+#[derive(Serialize)]
+struct GatewayServerInfo {
+    current: String,
+    default: String,
+}
+
+#[tauri::command]
+fn gateway_server_info(server: State<'_, GatewayServer>) -> Result<GatewayServerInfo, String> {
+    Ok(GatewayServerInfo {
+        current: server.0.lock().map_err(|e| e.to_string())?.as_str().trim_end_matches('/').to_string(),
+        default: DEFAULT_SERVER.to_string(),
+    })
+}
+
+/// 和桌面端一样：只有 /health 成功且报告 ok: true 才能保存。阻塞 HTTP 放到工作线程。
+fn check_server(url: &Url) -> Result<(), String> {
+    let health = format!("{}/health", url.as_str().trim_end_matches('/'));
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("建 HTTP 客户端失败：{e}"))?
+        .get(&health)
+        .send()
+        .map_err(|e| format!("请求 {health} 失败：{e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("{health} 回了 HTTP {}，这个地址不像是 Satuwork Gateway", response.status().as_u16()));
+    }
+    let body: serde_json::Value = response.json()
+        .map_err(|_| format!("{health} 回的不是 Gateway 的响应，这个地址不像是 Satuwork Gateway"))?;
+    if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return Err(format!("{health} 没有报告正常（ok 不是 true）"));
+    }
+    Ok(())
+}
+
+async fn checked_server(raw: &str) -> Result<Url, String> {
+    let url = normalize(raw)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        check_server(&url)?;
+        Ok(url)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn check_gateway_server(url: String) -> Result<String, String> {
+    Ok(checked_server(&url).await?.as_str().trim_end_matches('/').to_string())
+}
+
+#[tauri::command]
+async fn use_gateway_server(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = checked_server(&url).await?;
+    let server = app.state::<GatewayServer>();
+    let mut current = server.0.lock().map_err(|e| e.to_string())?;
+    let path = server_file(&app)?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("建配置目录失败：{e}"))?;
+    }
+    fs::write(path, parsed.as_str()).map_err(|e| format!("写配置失败：{e}"))?;
+    *current = parsed;
+    Ok(())
 }
 
 /// 不带协议的按 http 补上；只认 http/https。
@@ -104,6 +180,17 @@ const LINK_SCRIPT: &str = r#"
 (function () {
   window.__SATUWORK_MOBILE__ = true
   window.__SATUWORK_GATEWAY__ = __GATEWAY_URL__
+  window.__SATUWORK_SERVER__ = {
+    info: function () { return window.__TAURI_INTERNALS__.invoke('gateway_server_info') },
+    check: function (url) { return window.__TAURI_INTERNALS__.invoke('check_gateway_server', { url: url }) },
+    use: function (url) {
+      return window.__TAURI_INTERNALS__.invoke('use_gateway_server', { url: url }).then(function () {
+        // 页面源始终相同，旧服务器的登录票不能跟着发到新服务器。
+        clearToken()
+        location.replace('/login')
+      })
+    }
+  }
   // 远程推送（mobile/push-plugin）：要设备令牌、取用户点开的那条通知。登记到 Gateway 由页面做
   // （gateway/ui/shell.js 的 syncMobilePush），壳子不碰登录票。
   window.__SATUWORK_PUSH__ = {
@@ -411,6 +498,20 @@ fn read_ui_file(app: &AppHandle, rel: &str) -> Option<(Vec<u8>, &'static str)> {
     app.asset_resolver().get(format!("/{hit}")).map(|a| (a.bytes().to_vec(), mime_of(&hit)))
 }
 
+/// 每次加载从原生状态取最新地址。手机保留唯一的窗口，切换后重新加载登录页即可；
+/// 不能把地址固定进 initialization_script，否则重载后仍会连回旧服务器。
+fn link_script(gateway: &Url) -> String {
+    LINK_SCRIPT
+        .replace("__OPEN_PATH__", &serde_json::to_string(OPEN_PATH).expect("常量总能编成 JSON"))
+        .replace("__GATEWAY_URL__", &serde_json::to_string(gateway.as_str().trim_end_matches('/')).expect("字符串总能编成 JSON"))
+}
+
+fn bootstrap_html(bytes: &[u8]) -> Vec<u8> {
+    String::from_utf8_lossy(bytes)
+        .replacen("</head>", &format!("<script src=\"{BOOTSTRAP_PATH}\"></script>\n</head>"), 1)
+        .into_bytes()
+}
+
 /// `satu://localhost/…`：从包里发界面。规矩和桌面壳 / Gateway 的 serveUi 一样。
 fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Cow<'static, [u8]>> {
     let not_found = || {
@@ -420,6 +521,15 @@ fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>) -> tauri::
             .body(Cow::Borrowed("包里没有界面文件（gateway/ui）".as_bytes()))
             .unwrap()
     };
+    if request.uri().path() == BOOTSTRAP_PATH {
+        let server = app.state::<GatewayServer>();
+        let gateway = server.0.lock().expect("Gateway 状态锁");
+        return tauri::http::Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-store")
+            .body(Cow::Owned(link_script(&gateway).into_bytes()))
+            .unwrap();
+    }
     let Some(rel) = ui_rel_path(request.uri().path()) else { return not_found() };
     let Some((bytes, mime)) = read_ui_file(app, &rel) else {
         return not_found();
@@ -431,24 +541,19 @@ fn serve_ui(app: &AppHandle, request: &tauri::http::Request<Vec<u8>>) -> tauri::
     if mime.starts_with("text/html") {
         response = response.header("content-security-policy", UI_CSP);
     }
+    let bytes = if mime.starts_with("text/html") { bootstrap_html(&bytes) } else { bytes };
     response.body(Cow::Owned(bytes)).unwrap()
 }
 
-fn build_window(app: &AppHandle, gateway: Url) -> tauri::Result<()> {
+fn build_window(app: &AppHandle) -> tauri::Result<()> {
     let handle = app.clone();
-    let base = gateway.clone();
     let ui = Url::parse(UI_ORIGIN).expect("UI_ORIGIN 是常量");
-    // 占位符替换成 JSON 字符串字面量（带引号）：地址里一个引号就能从字面量里逃出来。
-    let script = LINK_SCRIPT
-        .replace("__OPEN_PATH__", &serde_json::to_string(OPEN_PATH).expect("常量总能编成 JSON"))
-        .replace(
-            "__GATEWAY_URL__",
-            &serde_json::to_string(gateway.as_str().trim_end_matches('/')).expect("字符串总能编成 JSON"),
-        );
     let builder = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::CustomProtocol(ui))
         .title("Satuwork")
-        .initialization_script(&script)
-        .on_navigation(move |url| allow_navigation(&handle, &base, url));
+        .on_navigation(move |url| {
+            let base = handle.state::<GatewayServer>().0.lock().expect("Gateway 状态锁").clone();
+            allow_navigation(&handle, &base, url)
+        });
     #[cfg(debug_assertions)]
     let builder = builder.initialization_script(DEBUG_SCRIPT);
     builder.build()?;
@@ -462,10 +567,11 @@ pub fn run() {
         .plugin(tauri_plugin_satu_push::init())
         .plugin(tauri_plugin_satu_share::init())
         .register_uri_scheme_protocol(UI_SCHEME, |ctx, request| serve_ui(&ctx.app_handle().clone(), &request))
-        .invoke_handler(tauri::generate_handler![debug_log])
+        .invoke_handler(tauri::generate_handler![debug_log, gateway_server_info, check_gateway_server, use_gateway_server])
         .setup(|app| {
-            let gateway = gateway_url().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-            build_window(&app.handle().clone(), gateway)?;
+            let gateway = gateway_url(app.handle()).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            app.manage(GatewayServer(Mutex::new(gateway)));
+            build_window(&app.handle().clone())?;
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -482,11 +588,59 @@ mod tests {
 
     #[test]
     fn release_ignores_dev_server() {
-        assert_eq!(pick_server(false, Some("http://127.0.0.1:3080\n"), Some("http://127.0.0.1:3081")), DEFAULT_SERVER);
-        assert_eq!(pick_server(true, Some(" http://127.0.0.1:3080\n"), Some("http://127.0.0.1:3081")), "http://127.0.0.1:3080");
-        assert_eq!(pick_server(true, Some("  \n"), Some("http://127.0.0.1:3081")), "http://127.0.0.1:3081");
-        assert_eq!(pick_server(true, None, Some("  ")), DEFAULT_SERVER);
-        assert_eq!(pick_server(true, None, None), DEFAULT_SERVER);
+        assert_eq!(pick_server(false, None, Some("http://127.0.0.1:3080\n"), Some("http://127.0.0.1:3081")), DEFAULT_SERVER);
+        assert_eq!(pick_server(true, None, Some(" http://127.0.0.1:3080\n"), Some("http://127.0.0.1:3081")), "http://127.0.0.1:3080");
+        assert_eq!(pick_server(true, None, Some("  \n"), Some("http://127.0.0.1:3081")), "http://127.0.0.1:3081");
+        assert_eq!(pick_server(true, None, None, Some("  ")), DEFAULT_SERVER);
+        assert_eq!(pick_server(true, None, None, None), DEFAULT_SERVER);
+    }
+
+    #[test]
+    fn saved_server_wins_in_release_and_debug() {
+        for debug in [false, true] {
+            assert_eq!(pick_server(debug, Some(" https://gw.corp.example\n"), Some("http://dev"), Some("http://baked")), "https://gw.corp.example");
+            assert_eq!(pick_server(debug, Some("  "), None, None), DEFAULT_SERVER);
+        }
+    }
+
+    #[test]
+    fn bootstrap_uses_the_current_gateway_before_app_scripts() {
+        let html = bootstrap_html(b"<head></head><body><script src=\"/state.js\"></script></body>");
+        let html = String::from_utf8(html).unwrap();
+        assert!(html.find(BOOTSTRAP_PATH).unwrap() < html.find("/state.js").unwrap());
+        let first = link_script(&u("https://old.example"));
+        let next = link_script(&u("https://new.example:3080"));
+        assert!(first.contains("window.__SATUWORK_GATEWAY__ = \"https://old.example\""));
+        assert!(next.contains("window.__SATUWORK_GATEWAY__ = \"https://new.example:3080\""));
+        assert!(!next.contains("old.example"));
+        assert!(next.contains("location.replace('/login')"));
+    }
+
+    #[test]
+    fn health_check_requires_a_successful_gateway_response() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        for (status, body, pass) in [
+            ("200 OK", r#"{"ok":true}"#, true),
+            ("200 OK", r#"{"ok":false}"#, false),
+            ("200 OK", r#"{"ok":"true"}"#, false),
+            ("200 OK", "<html>another service</html>", false),
+            ("503 Service Unavailable", r#"{"ok":true}"#, false),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = u(&format!("http://{}", listener.local_addr().unwrap()));
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut request = [0; 4096];
+                let size = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /health HTTP/1.1"));
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            });
+            assert_eq!(check_server(&url).is_ok(), pass, "{status}: {body}");
+            server.join().unwrap();
+        }
     }
 
     #[test]

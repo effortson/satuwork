@@ -219,7 +219,7 @@ export function uiSource(uiDir) {
  * 见 uiSource。末尾那句 boot() 去掉，由调用方决定什么时候起，否则一 import 就开始打
  * 网络，断言没法安排在它前面。
  */
-export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, persistentStorage, localBotBridge, desktopUpdateBridge, serverBridge, gateway, path = '/', secureContext = true, userAgent = 'satuwork-ui-smoke', maxTouchPoints = 0 }) {
+export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, mobile = false, persistentStorage, localBotBridge, desktopUpdateBridge, serverBridge, gateway, path = '/', secureContext = true, userAgent = 'satuwork-ui-smoke', maxTouchPoints = 0 }) {
   const raw = uiSource(dirname(appPath))
   const src = raw.replace(/\nboot\(\)\s*$/, '\n')
   // 复制过的东西都落这儿，两条路（navigator.clipboard 和 execCommand）都记。
@@ -285,6 +285,7 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
   const windowOpens = []
   const windowStub = {
     __SATUWORK_DESKTOP__: desktop,
+    __SATUWORK_MOBILE__: mobile,
     // 新壳子都注入这台电脑的设备身份（desktop/src-tauri/src/device.rs）；本地 Bot 靠它绑到这台上。
     __SATUWORK_DESKTOP_DEVICE__: desktop ? { id: 'ui-smoke-device-0001', name: 'Test Mac', platform: 'darwin' } : undefined,
     __SATUWORK_LOCAL_BOT__: localBotBridge,

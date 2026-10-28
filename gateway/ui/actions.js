@@ -124,7 +124,7 @@ async function openGatewayServer() {
   }
 }
 
-/** `use` 为真：检测通过就写盘并切换（壳子重建主窗口，这一页随之消失）；否则只测。 */
+/** `use` 为真：检测通过就写盘并切换（壳子重新加载界面）；否则只测。 */
 async function checkGatewayServer(use) {
   const s = state.gwServer
   const bridge = gatewayServerBridge()

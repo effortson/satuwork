@@ -32,7 +32,7 @@ const state = {
   desktopUpdate: null,
   busy: false,
   loginError: '',
-  /** 登录页「服务器」弹窗（只在桌面壳里有）：{ url, def, phase: idle|checking|ok|err|switching, msg }，关着是 null。 */
+  /** 登录页「服务器」弹窗（桌面壳和手机壳）：{ url, def, phase: idle|checking|ok|err|switching, msg }，关着是 null。 */
   gwServer: null,
   loginEmail: '',
   loginPassword: '',

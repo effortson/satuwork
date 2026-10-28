@@ -231,10 +231,10 @@ function loginView() {
 
 const SERVER_ICON = ['M4 4h16v6H4z', 'M4 14h16v6H4z', 'M8 7h.01', 'M8 17h.01']
 
-/** 桌面壳注入的「连哪台 Gateway」那组命令（desktop/src-tauri/src/nav.rs 的 LINK_SCRIPT）。浏览器、手机壳里没有。 */
+/** 桌面壳和手机壳注入的「连哪台 Gateway」那组命令。浏览器里没有。 */
 function gatewayServerBridge() {
   const bridge = window.__SATUWORK_SERVER__
-  return desktopShell() && bridge && typeof bridge.check === 'function' ? bridge : null
+  return appShell() && bridge && typeof bridge.check === 'function' ? bridge : null
 }
 
 function gatewayHost(raw) {
@@ -263,8 +263,7 @@ function gatewayServerButton() {
 
 /**
  * 「连接的服务器」弹窗：填地址 →「检测」只测不存；「检测并使用」测过了才写盘，壳子随即用新
- * 地址重建主窗口（这一页会被换掉，不用自己收尾）。检测在壳子里做：敲端口、再要一次
- * `/health`，回 `{"ok":true}` 才算是 Gateway（desktop/src-tauri/src/server.rs 的 check）。
+ * 地址重新加载界面。检测在壳子里做：请求 `/health`，回 `{"ok":true}` 才算是 Gateway。
  */
 function gatewayServerModal() {
   const s = state.gwServer
@@ -282,7 +281,7 @@ function gatewayServerModal() {
     tag: 'form',
     attrs: 'id="gw-server-form" class="gw-modal" style="max-width: 480px;" data-stop role="dialog" aria-modal="true" aria-labelledby="gw-server-title"',
     title: `<span id="gw-server-title">${esc(t('连接的服务器', 'Server'))}</span>`,
-    sub: esc(t('这台电脑上的 Satuwork 连哪台 Gateway。检测通过才会保存并切换。', 'Which Gateway this app connects to. It is saved and used only after the check passes.')),
+    sub: esc(t('这台设备上的 Satuwork 连哪台 Gateway。检测通过才会保存并切换。', 'Which Gateway this app connects to. It is saved and used only after the check passes.')),
     body: `<div class="field">
         <label for="gw-server-url">${t('服务器地址', 'Server address')}</label>
         <input class="input satu-input" id="gw-server-url" name="url" type="text" autocomplete="off" spellcheck="false"

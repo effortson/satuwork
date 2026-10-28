@@ -7,8 +7,8 @@ Gateway 地址注入给页面（`window.__SATUWORK_GATEWAY__`），页面里所�
 （Android 上是 `http://satu.localhost`），Gateway、席位机器的管家、本地 Bot 的守卫三处的
 CORS 白名单早就认它——那是桌面端铺的路。
 
-桌面壳里的本地 Bot、运行时下载、自升级、菜单、设置屏在手机上都没有。壳子只做三件事：
-发界面、注入、把往外走的导航交给系统浏览器。为什么是 Tauri 而不是 Expo，见
+桌面壳里的本地 Bot、运行时下载、自升级、菜单、设置屏在手机上都没有。壳子负责
+发界面、注入、保存服务器地址、把往外走的导航交给系统浏览器。为什么是 Tauri 而不是 Expo，见
 [docs/adr-core-package-mobile.md](../docs/adr-core-package-mobile.md) §2.3。
 
 ## 跑（iOS 模拟器）
@@ -23,10 +23,15 @@ echo http://127.0.0.1:3080 > mobile/src-tauri/dev-server.txt
 pnpm --filter satuwork-mobile dev:ios "iPhone 17"
 ```
 
-**连哪台 Gateway**：手机上没有设置屏也没有菜单，正式包固定连 `https://satuwork.com`；debug
-构建读 `mobile/src-tauri/dev-server.txt`（不进版本库，本机各写各的），没有这个文件再看编译期
-的 `SATUWORK_SERVER`。模拟器里的进程就是本机进程，`127.0.0.1:3080` 直达本机 Gateway，席位
-机器的 `192.168.64.1` 也通；改了文件重开应用就生效。不用环境变量是实测出来的：`tauri ios dev`
+**连哪台 Gateway**：登录页右上角显示当前服务器，点开后可以填地址、「检测」、
+「检测并使用」或「恢复默认」。只有 `/health` 成功且返回 `{"ok":true}` 才会保存到应用配置目录
+的 `server.txt`，随后在同一个窗口重新加载登录页，清掉旧登录票；重启应用也会记住选过的服务器。
+不写协议按 `http://` 处理，默认是 `https://satuwork.com`。
+
+没存过地址时，debug 构建读 `mobile/src-tauri/dev-server.txt`（不进版本库，本机各写各的），
+没有这个文件再看编译期的 `SATUWORK_SERVER`；正式包忽略这两项，使用默认服务器。
+模拟器里的进程就是本机进程，`127.0.0.1:3080` 直达本机 Gateway，席位
+机器的 `192.168.64.1` 也通；尚未手动选择服务器时，改了文件重开应用就生效。不用环境变量是实测出来的：`tauri ios dev`
 经 Xcode 起 cargo，shell 里的变量传不进去，烤进包里的还是 satuwork.com。
 
 debug 构建不用 `prepare:ui`：壳子直接读仓库里的 `gateway/ui`（模拟器读得到本机文件），改
@@ -53,7 +58,7 @@ xcrun simctl get_app_container booted sg.dami.satuwork.mobile data
 
 明文 http 的 Gateway 要过 iOS 的 ATS：Info.plist 里放了 `NSAllowsLocalNetworking`
 （`gen/apple/satuwork-mobile_iOS/Info.plist`），本机和内网地址都过，公网明文不过——正式包
-连的是 https，不用放 `NSAllowsArbitraryLoads`。
+默认连的是 https，不用放 `NSAllowsArbitraryLoads`。手动切换公网服务器时也应使用 https。
 
 ## 跑（iOS 真机）
 
