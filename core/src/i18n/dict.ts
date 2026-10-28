@@ -17,6 +17,7 @@ export const dict: Record<string, string> = {
   '公司/席位': 'Company & Seats',
   员工: 'Members',
   审计: 'Audit',
+  内容举报: 'Content reports',
   公司: 'Companies',
   'Bot 运行时': 'Bot runtime',
   管家: 'Manager',

@@ -27,6 +27,10 @@ function sitesOf(text) {
  * 只拆不走：跳到哪一页、要不要留一句话，由调用方各自决定。
  */
 function endSignedIn() {
+  contentReportDraft = null
+  state.contentReports = []
+  state.contentReportsMore = false
+  state.contentReviewNotes = {}
   closeConnBots({ restoreFocus: false, force: true })
   // 手机壳：先拿着这张票把设备从推送名单里摘掉，下一行票就清了（shell.js 的 forgetMobilePush）。
   if (typeof forgetMobilePush === 'function') forgetMobilePush()
@@ -315,6 +319,8 @@ document.getElementById('app').addEventListener('submit', (e) => {
   }
   if (form.id === 'setup-form') return onSetup(e)
   if (form.id === 'pw-form') return submitPassword(e)
+  if (form.id === 'content-report-form') return submitContentReport(e)
+  if (form.getAttribute?.('data-content-review')) return submitContentReview(e)
   if (form.id === 'invite-form') return submitInvite(e)
   if (form.id === 'group-form') return submitGroup(e)
   if (form.id === 'edit-member-form') return submitEdit(e)
@@ -514,6 +520,20 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'msg-copy') {
     closeMsgMenu()
     await copyMsgText(btn.getAttribute('data-key') || '')
+    render()
+    return
+  }
+  if (act === 'content-report-open') {
+    openContentReport(btn.getAttribute('data-key') || '', btn.getAttribute('data-seq'))
+    return
+  }
+  if (act === 'content-report-close') {
+    if (!contentReportDraft?.busy) contentReportDraft = null
+    render()
+    return
+  }
+  if (act === 'content-reports-refresh' || act === 'content-reports-more') {
+    try { await loadContentReports(act === 'content-reports-more') } catch (err) { flash('err', err.message) }
     render()
     return
   }

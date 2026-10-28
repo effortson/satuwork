@@ -319,7 +319,7 @@ export async function runImageGen({ root, gwRoot, test, req, start, waitHttp, as
       const up = seen[seen.length - 1]
       assert(seen.length === 1 && up.path === '/v1/images/generations', `上游：${JSON.stringify(seen.map((s) => s.path))}`)
       assert(up.auth === 'Bearer env-openai-key', `上游收到的是 ${up.auth}`)
-      assert(up.body.model === 'gpt-image-2' && !('provider' in up.body) && up.body.prompt === '一只猫', `请求体：${JSON.stringify(up.body)}`)
+      assert(up.body.model === 'gpt-image-2' && !('provider' in up.body) && String(up.body.prompt).endsWith('\n\n一只猫') && String(up.body.prompt).includes('[Satuwork enterprise content policy v1]'), `请求体：${JSON.stringify(up.body)}`)
       // withSettle 在响应收尾之后落账，给它一拍。
       await new Promise((res) => setTimeout(res, 300))
       const q = await client.query(

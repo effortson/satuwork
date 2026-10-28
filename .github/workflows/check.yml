@@ -76,6 +76,13 @@ jobs:
       - name: core 单测
         run: pnpm test:core
 
+      - name: Enterprise content safeguards
+        run: node --test manager/test/content-policy.test.ts
+
+      - name: Content report permissions and persistence
+        working-directory: gateway
+        run: node --import tsx --test test/content-reports.test.ts
+
       - name: 下载与桌面通知回归
         run: node --test gateway/test/*.test.mjs
 

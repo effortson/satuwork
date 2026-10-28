@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { bearer, gatewayPost, isLoopback, json, readRaw } from './http.ts'
 import { mergeUsage, sseUsage, usageFromPayload, type TokenUsage } from './llm-usage.ts'
+import { applyEnterpriseContentPolicy, enterpriseContentViolation } from './content-policy.ts'
 
 /**
  * 管家替本机 Bot 调模型（协议 10）。
@@ -254,6 +255,7 @@ async function relayModels(deps: LlmRelayDeps, apiKey: string, res: ServerRespon
 
 /** grant 请求体。Gateway 那头按这几项决定上游地址、鉴权头和请求体补丁。 */
 interface GrantAsk {
+  contentPolicyVersion: number
   apiKey: string
   route: Route
   model: string
@@ -397,8 +399,16 @@ async function relayCall(
       json(res, 400, { error: 'model 不能为空' })
       return
     }
+    if (enterpriseContentViolation(body)) {
+      json(res, 400, { error: 'Satuwork is for enterprise work. Pornography and graphic violence requests are not supported.' })
+      return
+    }
+    applyEnterpriseContentPolicy(body, route)
+    // The fallback must receive the protected body as well, not the original raw request.
+    raw = Buffer.from(JSON.stringify(body))
     const ask: GrantAsk = {
       apiKey,
+      contentPolicyVersion: 1,
       route,
       model,
       provider: typeof body.provider === 'string' && body.provider.trim() ? body.provider.trim() : undefined,

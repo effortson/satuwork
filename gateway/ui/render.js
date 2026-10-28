@@ -39,6 +39,8 @@ function pageView() {
       return knowledgePage()
     case '/audit':
       return auditPage()
+    case '/content-reports':
+      return contentReportsPage()
     case '/machines':
       return machinesPage()
     case '/releases':
@@ -363,6 +365,7 @@ function appView() {
       ${aside}
     </main>
     ${confirmModal()}
+    ${contentReportModal()}
     ${newBotModal()}
     ${botFolderModal()}
     ${logsModal()}

@@ -70,6 +70,7 @@ import { SQL as m0069 } from './0069-notification-reads.ts'
 import { SQL as m0070 } from './0070-notification-events.ts'
 import { SQL as m0071 } from './0071-notification-deliveries.ts'
 import { SQL as m0072 } from './0072-local-bot-device.ts'
+import { SQL as m0073 } from './0073-content-reports.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -206,6 +207,7 @@ export const MIGRATIONS: Migration[] = [
   { id: '0070-notification-events', name: '统一通知事件和延迟调度', sql: m0070 },
   { id: '0071-notification-deliveries', name: '通知设备投递去重和租约', sql: m0071 },
   { id: '0072-local-bot-device', name: '本地 Bot 绑定到建它的那台桌面端', sql: m0072 },
+  { id: '0073-content-reports', name: '用户主动提交的 AI 内容安全举报', sql: m0073 },
 ]
 
 /**

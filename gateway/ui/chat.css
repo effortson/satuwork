@@ -2343,6 +2343,10 @@ button.sw-ref-card:hover { background: color-mix(in srgb, var(--secondary) 70%, 
   cursor: pointer;
 }
 .sw-msg-act:hover { color: var(--color-text); background: var(--secondary); }
+.sw-content-report { align-self: flex-start; display: inline-flex; width: fit-content; border: 0; background: transparent; color: var(--muted-foreground); font: inherit; font-size: 11px; padding: 5px 0; cursor: pointer; }
+.sw-content-report:focus-visible { outline: 2px solid var(--color-accent-500); outline-offset: 2px; }
+#content-report-form textarea, #content-report-form select { border-radius: 12px; padding: 10px 12px; }
+#content-report-form textarea { resize: vertical; min-height: 72px; }
 .sw-msg-act > span { display: none; }
 @media (hover: none) {
   /* 触屏没有悬停：这排动作不常显，改成长按消息弹菜单（chat-thread.js 的 openMsgMenu）。 */
