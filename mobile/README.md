@@ -55,6 +55,31 @@ xcrun simctl get_app_container booted sg.dami.satuwork.mobile data
 （`gen/apple/satuwork-mobile_iOS/Info.plist`），本机和内网地址都过，公网明文不过——正式包
 连的是 https，不用放 `NSAllowsArbitraryLoads`。
 
+## 跑（iOS 真机）
+
+iPhone 用 USB 连接 Mac 并信任这台电脑，在「设置 → 隐私与安全性 → 开发者模式」开启后按提示重启。
+`xcrun devicectl list devices` 应能列出已配对的真机。Mac 和 iPhone 要在同一局域网；Gateway 地址用
+Mac 的局域网 IP，不能用 `127.0.0.1`，席位机器的 `directUrl` 也必须是 iPhone 能访问的地址。
+
+```bash
+echo 'http://192.168.1.100:3080' > mobile/src-tauri/dev-server.txt # 替换为 Mac 的局域网 IP
+touch mobile/src-tauri/build.rs # 首次创建 dev-server.txt 时，确保重新读取并打进包
+pnpm --filter satuwork-mobile prepare:ui
+pnpm --filter satuwork-mobile dev:ios "<devicectl 列出的 iPhone 名称>"
+```
+
+真机读不到 Mac 上的仓库：界面和 Gateway 地址都要在构建时打进去，修改后需要重新拷界面、编译并安装。
+模拟器那套「改文件后重开应用」不适用于真机。签名描述文件必须包含这台设备的 UDID。
+
+真推送还要在本机 `gateway/.env` 配齐 `GATEWAY_APNS_*`，然后重启 Gateway；密钥来自 Apple Developer
+的「Certificates, Identifiers & Profiles → Keys」，必须启用 APNs，不能使用 App Store Connect API / 公证密钥。
+本机开发签名的设备令牌属于 sandbox，密钥的环境和 topic 要覆盖它。登录时允许通知后，`push_devices` 应出现
+`platform=ios, environment=sandbox` 的登记。密钥和 `.env` 不进版本库。
+
+测试通知要同时更新正在运行的席位 Bot：当前 `/internal/push` 要求 `sessionId` 和稳定的事件 `seq`，
+旧运行时只报 `kind` / `botId` 会被拒绝。验证时检查回复完成后的 `notification_events` 与按设备的
+`notification_deliveries`，再核对手机实收、点通知跳转、前台已读抑制和应用终止后的冷启动。
+
 ## 跑（Android 模拟器）
 
 前置：JDK 17、Android SDK（platform 36、build-tools、platform-tools、emulator、arm64 系统镜像）、
