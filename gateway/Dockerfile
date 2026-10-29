@@ -26,6 +26,8 @@ COPY manager/package.json manager/
 RUN pnpm install --frozen-lockfile
 
 COPY gateway/ gateway/
+# Gateway 与管家中继共用的内容策略，运行时也会直接导入。
+COPY manager/src/content-policy.ts manager/src/
 
 # 数据目录只放 JWT 密钥对和 Bot 发布包，业务数据在 PostgreSQL。
 ENV SATUWORK_GATEWAY_HOME=/var/lib/satuwork-gateway
