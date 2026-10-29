@@ -4,6 +4,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
+source "$root/desktop/scripts/apple-retry.sh"
 arch=${1:?expected aarch64 or x64}
 [[ "$arch" == aarch64 || "$arch" == x64 ]] || exit 64
 product=$(node -p "require('./desktop/src-tauri/tauri.conf.json').productName")
@@ -23,9 +24,9 @@ retry() {
 b="$root/desktop/src-tauri/target/release/bundle"
 app="$b/macos/$product.app"
 codesign --verify --deep --strict "$app"
-if ! retry xcrun stapler validate "$app"; then
-  retry xcrun stapler staple "$app"
-  retry xcrun stapler validate "$app"
+if ! xcrun stapler validate "$app"; then
+  retry_apple xcrun stapler staple "$app"
+  retry_apple xcrun stapler validate "$app"
 fi
 stage=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/satuwork-dmg.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
@@ -42,8 +43,8 @@ notarize() {
 }
 retry notarize
 node -e 'const r=require(process.argv[1]); if(r.status!=="Accepted") throw Error("Apple notarization status: "+r.status); console.log("Apple notarization: Accepted")' "$stage/notary.json"
-retry xcrun stapler staple "$dmg"
-retry xcrun stapler validate "$dmg"
+retry_apple xcrun stapler staple "$dmg"
+retry_apple xcrun stapler validate "$dmg"
 # The archive must contain the app with its ticket. Replacing its bytes also requires a new signature.
 tar -czf "$b/macos/$product.app.tar.gz" -C "$b/macos" "$product.app"
 pnpm --filter satuwork-desktop exec tauri signer sign "$b/macos/$product.app.tar.gz"
