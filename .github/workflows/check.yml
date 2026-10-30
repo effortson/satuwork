@@ -79,9 +79,9 @@ jobs:
       - name: Enterprise content safeguards
         run: node --test manager/test/content-policy.test.ts
 
-      - name: Content report permissions and reply language routing
+      - name: API permissions, reply language and knowledge consistency
         working-directory: gateway
-        run: node --import tsx --test test/content-reports.test.ts test/reply-language.test.ts
+        run: node --import tsx --test test/content-reports.test.ts test/reply-language.test.ts test/knowledge-snapshot.test.ts
 
       - name: 下载与桌面通知回归
         run: node --test gateway/test/*.test.mjs
