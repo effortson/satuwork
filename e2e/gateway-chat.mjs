@@ -287,14 +287,16 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(r.json.accepted === true || r.json.steered === true || r.json.queued === true, 'accepted/steered/queued')
     })
 
-    await test('这一轮跑完，席位报 turn-end，Gateway 推到登记的手机上（不带正文）', async () => {
+    await test('这一轮跑完，席位报 turn-end，手机收到实际结果摘要，不携带用户输入', async () => {
       // 假模型一上来就回错，这一轮以 error 收场——也算「跑完了、该回去看看」。
       const deadline = Date.now() + 15000
       while (Date.now() < deadline && !apns.seen.some((s) => s.payload?.kind === 'turn-end')) await sleep(100)
       const hit = apns.seen.find((s) => s.payload?.kind === 'turn-end')
       assert(hit, `没收到 turn-end 推送：${JSON.stringify(apns.seen.map((s) => s.payload))}`)
       assert(hit.token === PUSH_TOKEN && hit.payload.botId === botId, `推错了：${JSON.stringify(hit)}`)
-      assert(!JSON.stringify(hit.payload).includes(MARKER), '推送里带了对话正文')
+      assert(!JSON.stringify(hit.payload).includes(MARKER), '推送里带了用户原始输入')
+      assert(hit.payload.aps.alert.body && hit.payload.aps.alert.body !== '回复好了', '手机仍是固定完成文案')
+      assert(Array.from(hit.payload.aps.alert.body).length <= 240, '结果摘要超过上限')
     })
 
     await test('斜杠命令那两条经 Gateway 转得到席位，拒绝的原话原样透回', async () => {

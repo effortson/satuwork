@@ -11,6 +11,8 @@
 import { createServer } from 'node:http'
 import { getEventListeners } from 'node:events'
 import { Context, Service } from '@deepseek-ai/cordis'
+import { assignBlock } from './src/agent/prompt-blocks.ts'
+import { assignableOf, assignableFoldersOf } from './src/catalog/assignable.ts'
 
 // 环境变量要在**导入工具模块之前**设好：轮询间隔是模块加载时读的，静态 import 会抢在这几行前面执行。
 process.env.SATUWORK_BOT_ID = 'bot-main'
@@ -81,11 +83,16 @@ class FakeCatalog extends Service {
   constructor(ctx) {
     super(ctx, 'catalog')
     this.assignable = [
-      { id: 'fin', name: '财务', desc: '做报表、对账' },
+      { id: 'fin', name: '财务', desc: '做报表、对账', folderId: 'finance' },
       { id: 'sales', name: '销售', desc: '' },
       { id: 'legal', name: '法务', desc: '' },
-      { id: 'design', name: '设计师', desc: '' },
-      { id: 'ops', name: '运营', desc: '' },
+      { id: 'design', name: '设计师', desc: '产品设计', folderId: 'research' },
+      { id: 'ops', name: '运营', desc: '数据分析', folderId: 'research' },
+    ]
+    this.assignableFolders = [
+      { id: 'research', name: '研发中心' },
+      { id: 'finance', name: '财务中心' },
+      { id: 'empty', name: '待组建中心' },
     ]
   }
   get servers() {
@@ -118,6 +125,18 @@ const out = {}
 
 const def = ctx.tools.schemas().find((t) => t.name === 'assign_task')
 out.schema = { 在表里: Boolean(def), 描述里有名单: Boolean(def && /财务/.test(def.description) && /做报表、对账/.test(def.description)) }
+const crew = assignableOf(ctx.catalog.assignable)
+const folders = assignableFoldersOf(ctx.catalog.assignableFolders)
+const block = assignBlock(crew, folders)
+out.categories = {
+  归属传到席位: crew.find((b) => b.id === 'design')?.folderId === 'research' && folders[0]?.name === '研发中心',
+  提示词列出分类成员与能力: block.includes('分类「研发中心」[id: research]：设计师 [id: design]（产品设计）、运营 [id: ops]（数据分析）'),
+  工具说明列出同一份分组: def.description.includes('分类「研发中心」[id: research]：设计师 [id: design]（产品设计）、运营 [id: ops]（数据分析）'),
+  未分类与空分类: block.includes('未分类：销售') && block.includes('分类「待组建中心」[id: empty]：当前没有可派的 Bot'),
+  按能力选人而非群发: block.includes('选择分类内合适的 Bot') && block.includes('不要默认给每个成员重复派同一件事') && def.description.includes('只有用户要求全体参与时才派给全体'),
+  派给具体成员: block.includes('bot 填成员 id 或名字，不能填分类名'),
+  旧目录兼容: assignableOf([{ id: 'old', name: '旧 Bot', desc: '' }])[0]?.folderId === null && assignableFoldersOf(undefined).length === 0,
+}
 
 // ── 串并混合：mail、crm 并行，bill 等 mail；fin2 和 bill 同一颗财务，自动排在 bill 后面 ──
 {

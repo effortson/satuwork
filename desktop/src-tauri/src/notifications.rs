@@ -49,6 +49,8 @@ pub(crate) struct Notice {
     generation: u64,
     bot_id: String,
     title: String,
+    #[serde(default)]
+    body: String,
     kind: String,
     locale: String,
     #[serde(default)]
@@ -94,6 +96,15 @@ fn body(kind: &str, locale: &str) -> Result<&'static str, String> {
     }
 }
 
+fn notice_body(kind: &str, locale: &str, preview: &str) -> Result<String, String> {
+    let fallback = body(kind, locale)?;
+    Ok(if preview.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        preview.trim().chars().take(240).collect()
+    })
+}
+
 /// 换账号或退出时使旧请求和旧通知点击失效；不保存设备令牌。
 #[tauri::command]
 pub(crate) async fn desktop_notification_session(
@@ -115,7 +126,7 @@ pub(crate) async fn desktop_notification_session(
 
 #[tauri::command]
 pub(crate) async fn desktop_notify(app: AppHandle, notice: Notice) -> Result<bool, String> {
-    let text = body(&notice.kind, &notice.locale)?;
+    let text = notice_body(&notice.kind, &notice.locale, &notice.body)?;
     if notice.bot_id.is_empty() || app.get_webview_window(crate::MAIN).is_none() {
         return Ok(false);
     }
@@ -220,6 +231,23 @@ pub(crate) fn listen_for_taps(app: &AppHandle) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_uses_reply_preview_with_legacy_fallback_and_unicode_limit() {
+        assert_eq!(
+            notice_body("turn-end", "zh", " 已整理好 3 张发票 ").unwrap(),
+            "已整理好 3 张发票"
+        );
+        assert_eq!(notice_body("turn-end", "en", " ").unwrap(), "Replied");
+        assert_eq!(
+            notice_body("turn-end", "zh", &"✅".repeat(300))
+                .unwrap()
+                .chars()
+                .count(),
+            240
+        );
+        assert!(notice_body("unknown", "zh", "摘要").is_err());
+    }
 
     #[test]
     fn only_current_signed_in_background_session_can_notify() {

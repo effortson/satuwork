@@ -7,7 +7,7 @@
  *
  * - 登记只收登录 JWT、只收 iOS 的十六进制令牌；令牌换账号登录就改姓；只能删自己的。
  * - 席位报 turn-end → 推到这个人的每台设备；头（JWT、topic、push-type、collapse-id）和 payload
- *   对；**payload 里没有对话正文**；410 的令牌当场从库里摘掉。
+ *   对；通知正文使用有界的回复摘要；410 的令牌当场从库里摘掉。
  * - 改口令之后，旧登记不再收到推送；重新登记就恢复。
  * - 新转人工单推给接手人。
  */
@@ -256,7 +256,7 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       assert(hit.payload.aps.alert.title === '推送 Bot', `title ${hit.payload.aps.alert.title}`)
       assert(hit.payload.aps.alert.body === '回复好了', `body ${hit.payload.aps.alert.body}`)
       assert(hit.payload.botId === botId && hit.payload.kind === 'turn-end', `data ${JSON.stringify(hit.payload)}`)
-      // 只有这几个键：对话正文不该出现在推送里。
+      // 点击定位字段保持不变，摘要只放在 alert.body 中。
       assert(Object.keys(hit.payload).sort().join(',') === 'aps,botId,kind,notificationId,seq,sessionId', `payload 多了东西：${JSON.stringify(hit.payload)}`)
 
       apns.seen.length = 0
@@ -311,7 +311,7 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       while (Date.now() < deadline && !apns.seen.length) await sleep(50)
       const hit = apns.seen[0]
       assert(hit && hit.payload.kind === 'handoff', `没收到转人工推送：${JSON.stringify(apns.seen)}`)
-      assert(!JSON.stringify(hit.payload).includes('帮我确认一下'), '转人工的推送带上了 ask 原文')
+      assert(hit.payload.aps.alert.body === '帮我确认一下', '转人工通知没有展示具体待办')
     })
 
     await test('Android：FCM 令牌原样登记；一条推送 APNs 和 FCM 各发，换票一次，UNREGISTERED 当场摘掉', async () => {
@@ -349,6 +349,27 @@ export async function runPush({ gwRoot, test, req, start, waitHttp, assert, log 
       assert(again.delivery.sent === 2 && again.delivery.dropped === 0, `摘掉之后 ${again.text}`)
       assert(google.seen.sends.length === 1, `FCM 第二轮收到 ${google.seen.sends.length} 条`)
       assert(google.seen.tokens.length === 1, `access token 没缓存：换了 ${google.seen.tokens.length} 次`)
+
+      apns.seen.length = 0
+      google.seen.sends.length = 0
+      const preview = '## 发票整理完成\n\n已核对 **3 张**发票，合计 RM 1,250。代码：`*原样*`'
+      const expectedPreview = '发票整理完成 已核对 3 张发票，合计 RM 1,250。代码：*原样*'
+      const withPreview = await report({ kind: 'turn-end', botId, preview })
+      assert(withPreview.delivery.sent === 2, '摘要通知没有发到两个平台')
+      assert(apns.seen[0].payload.aps.alert.body === expectedPreview, 'APNs 没有实际回复摘要')
+      assert(google.seen.sends[0].body.message.notification.body === expectedPreview, 'FCM 没有实际回复摘要')
+      const notices = await req(base, 'GET', '/me/notifications', { token: adminTok })
+      assert(notices.json.events.find((e) => e.id === withPreview.json.id)?.preview === expectedPreview, '桌面 / 网页快照没有相同摘要')
+      const retry = await req(base, 'POST', '/internal/push', { token: seatTok,
+        body: { kind: 'turn-end', botId, sessionId: 'push-session', seq: noticeSeq, time: Date.now(), preview: '重试不能换成另一轮的回复' } })
+      assert(retry.json.id === withPreview.json.id, '摘要重试没有去重')
+      const stored = await withPg(schemaOf('e2e_push'), async (c) => (await c.query('select preview from notification_events where id = $1', [retry.json.id])).rows[0])
+      assert(stored.preview === expectedPreview, '同一事件的重试覆盖了原回复')
+
+      const unicode = await report({ kind: 'turn-end', botId, preview: '😀'.repeat(300) })
+      const unicodeBody = apns.seen.at(-1).payload.aps.alert.body
+      assert(unicode.delivery.sent === 2 && Array.from(unicodeBody).length === 240 && unicodeBody.endsWith('…'), 'Unicode 摘要没正确截断')
+      assert(google.seen.sends.at(-1).body.message.notification.body === unicodeBody, '两个平台的 Unicode 摘要不一致')
 
       const del = await req(base, 'DELETE', `/me/push-device/${encodeURIComponent(FCM_GOOD)}`, { token: adminTok })
       assert(del.json.removed === true, `FCM 令牌按原样删不掉：${del.text}`)

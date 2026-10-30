@@ -1,6 +1,6 @@
 /**
  * 桌面通知：远程 Bot 复用名单流；本地 Bot 在各自的 loopback 端口听一条流，保证未打开的
- * Bot 和定时任务也能提醒。只消费主会话，跳过重放，不保存正文、不建立远程推送设备。
+ * Bot 和定时任务也能提醒。只消费主会话，跳过重放，只保留通知短摘要、不建立远程推送设备。
  * 事件只唤醒 Gateway 的统一通知调度；原生层最后核对焦点和登录代次。
  */
 let desktopNoticeAccount = ''
@@ -67,6 +67,7 @@ async function deliverDesktopNotification(event) {
   if (!bridge || !desktopNoticeGeneration || desktopNoticeAccount !== state.me?.account?.id || document.hasFocus?.()) return
   const bot = (state.runtimeBots || []).find((b) => b.id === event.botId)
   await bridge.send({ generation: desktopNoticeGeneration, botId: event.botId, title: bot?.name || 'Satuwork',
+    body: event.preview || '',
     kind: event.kind, locale: localeMode === 'en' ? 'en' : 'zh', notificationId: event.id, sessionId: event.sessionId, seq: event.seq })
 }
 

@@ -132,8 +132,45 @@ export async function runBotTasks({ gwRoot, test, req, start, waitHttp, assert, 
       // 别的 Bot 拿到的永远是空名单：只有主 Bot 有 assign_task。
       const other = await req(gwBase, 'GET', `/runtime/catalog?botId=${finBot}`, { token: seatTok })
       assert((other.json.assignable || []).length === 0, `非主 Bot 也拿到了名单：${JSON.stringify(other.json.assignable)}`)
+      assert((other.json.assignableFolders || []).length === 0, '非主 Bot 不应拿到派活分类')
       const otherProbe = await req(gwBase, 'GET', `/runtime/catalog/version?botId=${finBot}`, { token: seatTok })
       assert(otherProbe.json.stamp === other.json.stamp, '非主 Bot 的指纹也对不上')
+    })
+
+    await test('主 Bot 知道分类和成员归属；分类改名、移动和删除后目录与探针同步更新', async () => {
+      const call = (method, path, body) => req(gwBase, method, path, { token: adminTok, body })
+      const snapshot = async (previous) => {
+        const cat = await req(gwBase, 'GET', `/runtime/catalog?botId=${mainBot}`, { token: seatTok })
+        const probe = await req(gwBase, 'GET', `/runtime/catalog/version?botId=${mainBot}`, { token: seatTok })
+        assert(cat.status === 200 && probe.status === 200, '分类目录和探针应能读取')
+        assert(cat.json.stamp === probe.json.stamp, '分类目录和探针的指纹必须一致')
+        if (previous) assert(cat.json.stamp !== previous.stamp, '分类或成员变化后指纹必须变化')
+        return cat.json
+      }
+      const before = await snapshot()
+      const created = await call('POST', '/runtime/bot-folders', { name: '研发中心' })
+      assert(created.status === 201, `建分类 ${created.status} ${created.text}`)
+      const folderId = created.json.folder.id
+      const empty = await snapshot(before)
+      assert(empty.assignableFolders.some((f) => f.id === folderId && f.name === '研发中心'), '空分类也应该让主 Bot 知道')
+      assert((await call('PUT', `/runtime/bots/${finBot}/folder`, { folderId })).status === 200, '移动成员')
+      const grouped = await snapshot(empty)
+      const member = grouped.assignable.find((b) => b.id === finBot)
+      assert(member.folderId === folderId && member.desc === '做报表、对账', '分类成员必须带着能力说明')
+      const other = await req(gwBase, 'GET', `/runtime/catalog?botId=${finBot}`, { token: seatTok })
+      assert(other.json.assignable.length === 0 && other.json.assignableFolders.length === 0, '有分类后也不能给非主 Bot 派活目录')
+      assert((await call('PATCH', `/runtime/bot-folders/${folderId}`, { name: '产品研发中心' })).status === 200, '改分类名')
+      const renamed = await snapshot(grouped)
+      assert(renamed.assignableFolders.some((f) => f.id === folderId && f.name === '产品研发中心'), '分类新名称应同步')
+      assert((await call('PUT', `/runtime/bots/${finBot}/folder`, { folderId: null })).status === 200, '移出分类')
+      const ungrouped = await snapshot(renamed)
+      assert(ungrouped.assignable.find((b) => b.id === finBot).folderId === null, '移出后应回到未分类')
+      assert((await call('PUT', `/runtime/bots/${finBot}/folder`, { folderId })).status === 200, '放回分类')
+      const restored = await snapshot(ungrouped)
+      assert((await call('DELETE', `/runtime/bot-folders/${folderId}`)).status === 200, '删分类')
+      const deleted = await snapshot(restored)
+      assert(!deleted.assignableFolders.some((f) => f.id === folderId), '已删分类不应残留')
+      assert(deleted.assignable.find((b) => b.id === finBot).folderId === null, '删除分类后成员回到未分类')
     })
 
     let taskId = ''

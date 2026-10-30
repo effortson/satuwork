@@ -52,6 +52,7 @@ export function attachNotifications(router: Router, { db, keys }: RouteCtx) {
     const kind = strField(body, 'kind')
     if (!PUSH_KINDS.has(kind)) throw new HttpError(400, 'kind 不认识')
     const event = await db.recordNotification({ ...position, accountId: account.id, kind: kind as PushKind,
+      preview: body.preview,
       actionId: strField(body, 'actionId', false).slice(0, 200), occurredAt: Math.min(Date.now(), typeof body.time === 'number' ? body.time : Date.now()),
       resolvedAt: body.resolved === true ? Date.now() : undefined })
     wakeNotificationDispatcher(db, account.id)

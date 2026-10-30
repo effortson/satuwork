@@ -154,3 +154,68 @@ test('all app scripts are included in the gateway static-file allowlist', () => 
   const html = source('../../ui/index.html'), http = source('../../src/http.ts')
   for (const [, script] of html.matchAll(/<script[^>]* src="\/([^"]+)"/g)) assert.ok(http.includes(`'${script}'`), script)
 })
+
+test('web cards display the reply preview as escaped text', async () => {
+  const { ui, server } = await ready()
+  server.add({ preview: '已核对 3 张发票，合计 RM 1,250。<img src=x onerror=alert(1)>' }); server.time(4000)
+  await ui.poll()
+  const html = ui.nodes.get('web-notifications').innerHTML
+  assert.match(html, /已核对 3 张发票，合计 RM 1,250/)
+  assert.match(html, /&lt;img/)
+  assert.doesNotMatch(html, /<img/)
+})
+
+test('web plays one chime for newly claimed notifications in a batch, never for polling or history', async () => {
+  const { ui, server } = await ready({ audio: true })
+  ui.gesture()
+  assert.equal(ui.sounds.length, 0, 'unlocking audio is silent')
+  server.add(); server.add({ botId: 'bot-b' }); server.time(4000)
+  await ui.poll()
+  assert.equal(ui.sounds.length, 3, 'a chime has three notes; the batch sounds once')
+  await ui.poll()
+  assert.equal(ui.sounds.length, 3, 'duplicate polling stays silent')
+  server.add({ seq: 11 }); await ui.poll()
+  assert.equal(ui.sounds.length, 6)
+
+  const restored = notificationClient(server, { audio: true })
+  await restored.start(); restored.gesture(); await restored.poll()
+  assert.equal(restored.sounds.length, 0, 'restoring unread history stays silent')
+})
+
+test('web audio waits for a user gesture without queueing old sounds, and autoplay failure does not block cards', async () => {
+  const { ui, server } = await ready({ audio: true })
+  server.add(); server.time(4000); await ui.poll()
+  assert.equal(ui.sounds.length, 0)
+  assert.ok(ui.nodes.has('web-notifications'))
+  ui.gesture(); await ui.poll()
+  assert.equal(ui.sounds.length, 0, 'a late gesture does not replay the old notification')
+  server.add({ seq: 11 }); await ui.poll()
+  assert.equal(ui.sounds.length, 3)
+  ui.context.resetNotificationSync()
+  assert.equal(ui.audioContexts[0].state, 'closed', 'logout closes the old audio context')
+
+  const blocked = await ready({ audio: 'blocked' })
+  blocked.ui.gesture(); blocked.server.add(); blocked.server.time(4000); await blocked.ui.poll()
+  assert.equal(blocked.ui.sounds.length, 0)
+  assert.ok(blocked.ui.nodes.has('web-notifications'))
+})
+
+test('current visible chat, refused claims and native shells never play the web chime', async () => {
+  const { ui, server } = await ready({ audio: true, focused: true })
+  ui.gesture(); ui.state.path = '/a/bot-a'
+  server.add(); server.time(4000); await ui.poll()
+  assert.equal(server.claims.size, 0)
+  assert.equal(ui.sounds.length, 0)
+  ui.state.path = '/profile'
+  const api = ui.context.api
+  ui.context.api = (m, p, b) => p.endsWith('/claim') ? { claimed: false } : api(m, p, b)
+  await ui.poll()
+  assert.equal(ui.sounds.length, 0)
+
+  for (const platform of ['desktop', 'mobile']) {
+    const native = await ready({ platform, audio: true })
+    native.ui.gesture(); native.server.add(); native.server.time(4000); await native.ui.poll()
+    assert.equal(native.ui.audioContexts.length, 0)
+    assert.equal(native.ui.sounds.length, 0)
+  }
+})

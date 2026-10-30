@@ -2,11 +2,10 @@
  * 手机推送：Gateway 直连 APNs（iOS）和 FCM（Android）（docs/adr-core-package-mobile.md §2.5）。
  *
  * **谁触发**：席位上报事件元数据，lib/notifications.ts 统一延迟调度、核对已读、按设备领取。
- * 这里仅负责 APNs / FCM 投递；转人工也使用同一队列。事件与已读不含聊天正文。
+ * 这里仅负责 APNs / FCM 投递；转人工也使用同一队列。
  *
- * **推什么**：只推「哪颗 Bot、什么事」，**不推对话正文**。正文在席位机器上，Gateway 本来就
- * 不该看到；推送内容还会过 Apple 的服务器、躺在锁屏上。人点开通知，进的是对话页，正文在
- * 那儿从席位直连取。
+ * **推什么**：Bot 名字和最多 240 字的回复 / 待处理事项摘要。完整会话仍在席位机器上；
+ * 摘要会交给 Apple / Google 推送服务并可能显示在锁屏上，点击后进入对应对话。
  *
  * **怎么发**：iOS 走 APNs 的 HTTP/2 接口 + token 认证（.p8 钥匙签 ES256 的 JWT）；Android 走 FCM 的
  * HTTP v1 接口，服务账号私钥签 RS256 的 JWT 换 OAuth2 access token。没用第三方推送服务——原定经
@@ -27,6 +26,7 @@ import { connect, constants, type ClientHttp2Session } from 'node:http2'
 import { createPrivateKey, sign, type KeyObject } from 'node:crypto'
 import type { Db } from '../db.ts'
 import { JWT_TTL } from './validate.ts'
+import { notificationExcerpt } from '../../../core/src/chat/notification.ts'
 
 export const PUSH_PLATFORMS: readonly string[] = ['ios', 'android']
 export const PUSH_ENVIRONMENTS: readonly string[] = ['sandbox', 'production']
@@ -78,15 +78,15 @@ const PUSH_TEXT: Record<PushKind, { zh: string; en: string }> = {
 }
 
 /**
- * 一条推送长什么样。标题是 Bot 的名字，正文是一句固定的话——**不带对话内容**（见文件头）。
+ * 标题是 Bot 名字，正文优先使用短摘要；旧席位和无文本回复沿用固定说明。
  * collapse id 按「Bot + 事」：同一颗 Bot 连跑完三轮，锁屏上只留最新那条；审批和回复各留各的。
  */
-export function pushMessage(kind: PushKind, botName: string, botId: string, locale: string): PushMessage {
+export function pushMessage(kind: PushKind, botName: string, botId: string, locale: string, preview = ''): PushMessage {
   const en = locale === 'en'
   const text = PUSH_TEXT[kind]
   return {
     title: botName || 'Satuwork',
-    body: en ? text.en : text.zh,
+    body: notificationExcerpt(preview) || (en ? text.en : text.zh),
     data: { kind, botId },
     collapseId: botId ? `${kind}:${botId}` : undefined,
     threadId: botId || undefined,
@@ -284,7 +284,7 @@ async function sendApns(db: Db, cfg: ApnsConfig, devices: DeviceRow[], msg: Push
   const payload = JSON.stringify({
     ...msg.data,
     aps: {
-      alert: { title: msg.title.slice(0, 120), body: msg.body.slice(0, 240) },
+      alert: { title: msg.title.slice(0, 120), body: Array.from(msg.body).slice(0, 240).join('') },
       sound: 'default',
       ...(msg.threadId ? { 'thread-id': msg.threadId } : {}),
     },
@@ -427,7 +427,7 @@ async function sendFcm(db: Db, cfg: FcmConfig, devices: DeviceRow[], msg: PushMe
   for (const d of devices) {
     const message = {
       token: d.token,
-      notification: { title: msg.title.slice(0, 120), body: msg.body.slice(0, 240) },
+      notification: { title: msg.title.slice(0, 120), body: Array.from(msg.body).slice(0, 240).join('') },
       data: msg.data,
       android: {
         priority: 'HIGH',

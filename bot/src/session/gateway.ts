@@ -4,6 +4,7 @@ import { gatewayToken, gatewayUrl, isLocalRuntime, pinnedBotId } from '../env.ts
 import type { SessionEvent, SessionOrigin } from './types.ts'
 import type { Handoff } from '../policy/handoff.ts'
 import { withoutTaskTurns } from '../agent/task-turns.ts'
+import { lastAssistantText } from '../agent/task-outcome.ts'
 
 export const name = 'satu-session-gateway'
 export const inject = ['server', 'sessions', 'catalog', 'storage']
@@ -102,7 +103,7 @@ interface OutboxBase {
 
 type OutboxItem =
   | ({ kind: 'index' } & OutboxBase)
-  | ({ kind: 'notification'; notice: { botId: string; sessionId: string; seq: number; time: number; kind: 'turn-end' | 'approval'; actionId: string; resolved: boolean } } & OutboxBase)
+  | ({ kind: 'notification'; notice: { botId: string; sessionId: string; seq: number; time: number; kind: 'turn-end' | 'approval'; actionId: string; resolved: boolean; preview?: string } } & OutboxBase)
   /**
    * 一次行为边界的表态（policy/decision）。
    *
@@ -477,10 +478,10 @@ export function apply(ctx: Context) {
   }
   async function reportPush(sessionId: string, event: SessionEvent, kind: 'turn-end' | 'approval') {
     if (!configured() || isLocalRuntime() || await isSideSession(sessionId)) return
+    const events = (await ctx.sessions.events(sessionId)).filter((e) => e.seq <= event.seq)
     // 派活跑在目标 Bot 的主会话里，不能只靠会话 kind 排除。只检查这次收口之前的历史，
     // 避免异步读取时下一轮的指令影响归属；审批仍照常提醒，需要人来处理。
     if (kind === 'turn-end') {
-      const events = (await ctx.sessions.events(sessionId)).filter((e) => e.seq <= event.seq)
       if (!withoutTaskTurns(events).some((e) => e.seq === event.seq)) return
     }
     const botId = await botOfSession(sessionId)
@@ -488,11 +489,22 @@ export function apply(ctx: Context) {
     const actionId = kind === 'approval' ? String((event.data as { callId?: string })?.callId || '') : ''
     const resolved = kind === 'approval' && (event.data as { state?: string })?.state !== 'pending'
     const source = resolved
-      ? (await ctx.sessions.events(sessionId)).find((e) => e.type === 'tool/approval' && e.data?.callId === actionId && e.data?.state === 'pending')
+      ? events.find((e) => e.type === 'tool/approval' && e.data?.callId === actionId && e.data?.state === 'pending')
       : event
     if (!source?.seq) return
+    let text = ''
+    if (kind === 'turn-end') {
+      let start = events.length - 1
+      while (start >= 0 && events[start].type !== 'turn/start') start--
+      // 只带这一轮的最后一条可见回复，不能把上一轮或工具 / 推理正文当成结果。
+      if (start >= 0) text = lastAssistantText(events.slice(start + 1))
+    } else if (source.type === 'tool/approval') {
+      text = [source.data.name, source.data.reason].filter(Boolean).join(' · ')
+    }
+    const chars = Array.from(text.trim())
+    const preview = chars.length > 240 ? chars.slice(0, 239).join('') + '…' : chars.join('')
     enqueue({ kind: 'notification', sessionId, createdAt: Date.now(), attempts: 0,
-      notice: { botId, sessionId, seq: source.seq, time: source.time || Date.now(), kind, actionId, resolved } })
+      notice: { botId, sessionId, seq: source.seq, time: source.time || Date.now(), kind, actionId, resolved, preview } })
   }
 
   ctx.on('session/event', (sessionId: string, event: SessionEvent) => {

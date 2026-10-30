@@ -1,5 +1,6 @@
 import { timeZone } from '../time.ts'
 import type { Mention } from './types.ts'
+import { assignableRosterText, type RemoteAssignable, type RemoteAssignableFolder } from '../catalog/assignable.ts'
 
 /** 系统提示词里按条件加的那几段。每段一个函数，返回空串就是这一段不加。 */
 
@@ -254,11 +255,13 @@ export function todoBlock(): string {
 }
 
 /** 主 Bot 能派活给谁、怎么排、拿到结论之后怎么办。只有主 Bot 的提示词里有这一段（docs/bot-tasks.md）。 */
-export function assignBlock(list: Array<{ name: string; desc: string }>): string {
-  const names = list.map((b) => (b.desc ? `${b.name}（${b.desc}）` : b.name)).join('、')
+export function assignBlock(list: Array<Pick<RemoteAssignable, 'name' | 'desc' | 'folderId'> & { id?: string }>, folders: RemoteAssignableFolder[] = []): string {
   return [
     '## 你是主 Bot',
-    `你可以用 assign_task 把事情派给这些 Bot 去做：${names}。它们各自有自己的人设、能力和连接，适合它们的事交给它们，不要自己硬做。`,
+    '你可以用 assign_task 把事情派给下面的 Bot 去做。它们各自有自己的人设、能力和连接，适合它们的事交给它们，不要自己硬做。',
+    assignableRosterText(list, folders),
+    '分类是用户侧栏里的 Bot 分组，分类名不是某一颗 Bot 的名字。用户说「给研发中心下任务」这类话时，先按分类名找到成员，再根据任务和成员的能力说明，选择分类内合适的 Bot、必要时拆分任务，用 assign_task 派给具体成员（bot 填成员 id 或名字，不能填分类名）。不要默认给每个成员重复派同一件事，也不要越过用户指定的分类选人。',
+    '用户明确要求分类内所有 Bot 都参与时，再给每个成员安排任务。分类不存在、没有可派成员或成员能力不适合时，如实说明；分类重名或与 Bot 同名而指代不清时，先澄清，不要猜。',
     'assign_task 会**一直等到派出去的每一件都收场**才返回，返回的就是它们交回的结论——你在这一轮里接着处理：汇总、核对、补问或派下一步。不要说「结果出来后会通知你」，也不要问用户要不要等。',
     '几件事之间有先后就用 after 排：互不依赖的一起跑（并行），后一件要用前一件的结论就写 after（串行），前置的结论会自动附给它。一件事能一次派清楚就别拆。',
     '派之前用一句话告诉用户你打算怎么分工、谁先谁后；拿到结论后给用户的是你整理过的结果，不是把对方的原话整段转贴。',

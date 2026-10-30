@@ -3,6 +3,7 @@ import { pinnedBotId } from '../env.ts'
 import { gatewayRaw } from '../gateway-api.ts'
 import type { SessionEventMap, TaskProgress } from '../session/types.ts'
 import { clip, human, str } from './common.ts'
+import { assignableRosterText } from '../catalog/assignable.ts'
 
 /**
  * 主 Bot 派活：assign_task（docs/bot-tasks.md）。
@@ -163,10 +164,11 @@ export function apply(ctx: Context) {
     risk: ['external'],
     get description() {
       const list = ctx.catalog?.assignable ?? []
-      const names = list.length ? list.map((b) => (b.desc ? `「${b.name}」（${b.desc}）` : `「${b.name}」`)).join('、') : '（当前没有）'
+      const roster = assignableRosterText(list, ctx.catalog?.assignableFolders ?? [])
       return (
         '把事情派给名单上别的 Bot 去做，**等它们做完、拿到结论**再接着处理（你是主 Bot，只有你能派）。' +
-        `可派的 Bot：${names}。` +
+        `可派的 Bot（按用户的分类列出）：\n${roster}\n` +
+        '用户指定分类时，根据任务和成员能力在该分类内选人、拆分任务，bot 填具体成员 id 或名字，不填分类名；只有用户要求全体参与时才派给全体。' +
         '对方跑在自己的席位上，有自己的人设、能力和连接，看不见这条对话——每件的 instruction 要写得自足：背景、要求、交付形式都写进去。' +
         // 工作区一个 Bot 一个，对方看不见你工作区里的文件；共享区是两边都看得见的那一处。
         // 直接看部署注入的那个变量（workspace 服务读的也是它），不为这一句去 inject workspace：
@@ -190,7 +192,7 @@ export function apply(ctx: Context) {
             type: 'object',
             properties: {
               id: { type: 'string', description: '这一件的短名（如 mail、bill），给 after 引用。不写就按序号。' },
-              bot: { type: 'string', description: '派给谁：名单上的名字。' },
+              bot: { type: 'string', description: '派给谁：名单上具体 Bot 的 id 或名字。用户指定分类时，先按任务和能力选择分类内成员，不能填分类名。' },
               instruction: { type: 'string', description: '交给对方的原话，要自足，最多 4000 字。' },
               after: { type: 'array', items: { type: 'string' }, description: '要等哪几件（写它们的 id）做完再开始。不写就立刻开始。' },
             },

@@ -1667,6 +1667,7 @@ html.satu-window-windows body:not(:has(.gw-shell)) .satu-windowbar { background:
 .satu-web-notice-open { flex: 1; min-width: 0; padding: 16px; text-align: left; }
 .satu-web-notice-open strong { display: block; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .satu-web-notice-open span { display: block; margin-top: 5px; font-size: 12px; color: var(--muted-foreground); }
+.satu-web-notice-open .satu-web-notice-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; color: var(--color-text); font-size: 13px; }
 .satu-web-notice-close { flex: none; padding: 10px 14px; font-size: 20px; color: var(--muted-foreground); }
 .satu-web-notice button { margin: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font-family: inherit; line-height: 1.5; cursor: pointer; }
 .satu-web-notice button:hover { background: var(--muted); }

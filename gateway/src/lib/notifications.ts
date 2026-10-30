@@ -30,7 +30,7 @@ async function dispatchEvent(db: Db, event: NotificationEvent, deadline: number)
   if (!account || account.status !== 'active') return 0
   const bot = await db.catalog(event.botId)
   if (!bot || runtimeKindOf(bot) === 'local') return 0
-  const msg = pushMessage(event.kind, bot.name, event.botId, account.locale)
+  const msg = pushMessage(event.kind, bot.name, event.botId, account.locale, event.preview)
   Object.assign(msg.data, { notificationId: event.id, sessionId: event.sessionId, seq: String(event.seq) })
   let sent = 0
   const devices = (await db.pushDevicesOf(account.id)).filter((d) => d.updatedAt <= event.createdAt && liveRegistration(d.updatedAt, Number(account.tokenRevokedAt || 0), Date.now()))

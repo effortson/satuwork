@@ -74,6 +74,8 @@ var SatuCore = (() => {
     messageText: () => messageText,
     money: () => money,
     newSum: () => newSum,
+    notificationExcerpt: () => notificationExcerpt,
+    notificationPreview: () => notificationPreview,
     parseCommand: () => parseCommand,
     pluginIdOfPath: () => pluginIdOfPath,
     previewKindOf: () => previewKindOf,
@@ -2120,6 +2122,74 @@ var SatuCore = (() => {
     return { blocks, status, statusAt, todos, channelVia: showChannelVia, modelSeq };
   }
 
+  // core/src/markdown/summary.ts
+  function markdownSummary(source, maxLength = 120) {
+    const held = [];
+    const hold = (text2) => `${held.push(text2) - 1}`;
+    let text = source.replace(/\uE000/g, "").replace(/\r\n?/g, "\n");
+    let fence = "";
+    let code = [];
+    const lines = [];
+    for (let line of text.split("\n")) {
+      if (fence) {
+        if (new RegExp("^\\s{0,3}" + fence[0] + "{" + fence.length + ",}\\s*$").test(line)) {
+          lines.push(hold(code.join("\n")));
+          code = [];
+          fence = "";
+        } else code.push(line);
+        continue;
+      }
+      line = line.replace(/^\s{0,3}(?:>\s*)+/, "");
+      if (/^\s{0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,}|=+)\s*$/.test(line)) continue;
+      line = line.replace(/^\s*(?:[-*+]\s+|\d{1,9}[.)]\s+)(?:\[[ xX]\]\s+)?/, "");
+      const open = /^\s{0,3}(`{3,}|~{3,})[^\n]*$/.exec(line);
+      if (open) {
+        fence = open[1];
+        continue;
+      }
+      if (/^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/.test(line)) continue;
+      line = line.replace(/^\s{0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/, "$1");
+      lines.push(line);
+    }
+    if (fence) lines.push(hold(code.join("\n")));
+    text = lines.join("\n");
+    text = text.replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, _ticks, body) => hold(body));
+    text = text.replace(/\\([\\`*{}\[\]()#+\-.!_>|~])/g, (_, char) => hold(char));
+    const refs = /* @__PURE__ */ new Set();
+    text = text.replace(/^\s{0,3}\[([^\]\n]+)\]:\s+\S+[^\n]*$/gm, (_, label) => {
+      refs.add(label.trim().toLowerCase());
+      return "";
+    });
+    text = text.replace(
+      /!?\[([^\]\n]*)\]\[([^\]\n]*)\]/g,
+      (all, label, ref) => refs.has((ref || label).trim().toLowerCase()) ? label : all
+    );
+    text = text.replace(/!?\[([^\]\n]+)\]/g, (all, label) => refs.has(label.trim().toLowerCase()) ? label : all);
+    text = text.replace(/!?\[([^\]]*)\]\(\s*(?:<[^>]*>|(?:[^\s()]|\([^()]*\))*)(?:\s+["'][^"']*["'])?\s*\)/g, "$1");
+    text = text.replace(/<((?:https?:\/\/|mailto:)[^\s<>]+)>/g, (_, url) => hold(url));
+    text = text.replace(/https?:\/\/[^\s<>]+/g, (url) => hold(url));
+    text = text.replace(/\*\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*\*/g, "$1");
+    text = text.replace(/(\*\*|__)(?!\s)([\s\S]+?)(?<!\s)\1/g, "$2");
+    text = text.replace(/~~(?!\s)([\s\S]+?)(?<!\s)~~/g, "$1");
+    text = text.replace(/\*(?!\s)([\s\S]+?)(?<!\s)\*/g, "$1");
+    text = text.replace(/(^|[\s(（【「])_(?!\s)([\s\S]+?)(?<!\s)_(?=$|[\s)）】」,.，。!！?？;；:：])/g, "$1$2");
+    text = text.replace(/^\s*\|(.+)\|\s*$/gm, (_, row) => row.replace(/\|/g, " "));
+    text = text.replace(/\uE000(\d+)\uE000/g, (_, index) => held[Number(index)] || "");
+    return text.replace(/\s+/g, " ").trim().slice(0, maxLength);
+  }
+
+  // core/src/chat/notification.ts
+  function notificationExcerpt(source) {
+    if (typeof source !== "string") return "";
+    const chars = Array.from(source.trim());
+    return chars.length > 240 ? chars.slice(0, 239).join("") + "…" : chars.join("");
+  }
+  function notificationPreview(source) {
+    if (typeof source !== "string") return "";
+    const plain = markdownSummary(source.slice(0, 4e3).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").replace(/<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\/?>/g, ""), 1e3);
+    return notificationExcerpt(plain);
+  }
+
   // core/src/chat/task.ts
   var DETAIL_KEYS = ["url", "urls", "query", "q", "command", "cmd", "path", "file", "paths", "goal", "instruction", "task", "name", "id", "text"];
   function clip(s, n) {
@@ -2240,62 +2310,6 @@ var SatuCore = (() => {
       if (ev.type === "turn/end" && (turn === null || Number(ev.data?.turn) === turn)) break;
     }
     return out;
-  }
-
-  // core/src/markdown/summary.ts
-  function markdownSummary(source) {
-    const held = [];
-    const hold = (text2) => `${held.push(text2) - 1}`;
-    let text = source.replace(/\uE000/g, "").replace(/\r\n?/g, "\n");
-    let fence = "";
-    let code = [];
-    const lines = [];
-    for (let line of text.split("\n")) {
-      if (fence) {
-        if (new RegExp("^\\s{0,3}" + fence[0] + "{" + fence.length + ",}\\s*$").test(line)) {
-          lines.push(hold(code.join("\n")));
-          code = [];
-          fence = "";
-        } else code.push(line);
-        continue;
-      }
-      line = line.replace(/^\s{0,3}(?:>\s*)+/, "");
-      if (/^\s{0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,}|=+)\s*$/.test(line)) continue;
-      line = line.replace(/^\s*(?:[-*+]\s+|\d{1,9}[.)]\s+)(?:\[[ xX]\]\s+)?/, "");
-      const open = /^\s{0,3}(`{3,}|~{3,})[^\n]*$/.exec(line);
-      if (open) {
-        fence = open[1];
-        continue;
-      }
-      if (/^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/.test(line)) continue;
-      line = line.replace(/^\s{0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/, "$1");
-      lines.push(line);
-    }
-    if (fence) lines.push(hold(code.join("\n")));
-    text = lines.join("\n");
-    text = text.replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, _ticks, body) => hold(body));
-    text = text.replace(/\\([\\`*{}\[\]()#+\-.!_>|~])/g, (_, char) => hold(char));
-    const refs = /* @__PURE__ */ new Set();
-    text = text.replace(/^\s{0,3}\[([^\]\n]+)\]:\s+\S+[^\n]*$/gm, (_, label) => {
-      refs.add(label.trim().toLowerCase());
-      return "";
-    });
-    text = text.replace(
-      /!?\[([^\]\n]*)\]\[([^\]\n]*)\]/g,
-      (all, label, ref) => refs.has((ref || label).trim().toLowerCase()) ? label : all
-    );
-    text = text.replace(/!?\[([^\]\n]+)\]/g, (all, label) => refs.has(label.trim().toLowerCase()) ? label : all);
-    text = text.replace(/!?\[([^\]]*)\]\(\s*(?:<[^>]*>|(?:[^\s()]|\([^()]*\))*)(?:\s+["'][^"']*["'])?\s*\)/g, "$1");
-    text = text.replace(/<((?:https?:\/\/|mailto:)[^\s<>]+)>/g, (_, url) => hold(url));
-    text = text.replace(/https?:\/\/[^\s<>]+/g, (url) => hold(url));
-    text = text.replace(/\*\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*\*/g, "$1");
-    text = text.replace(/(\*\*|__)(?!\s)([\s\S]+?)(?<!\s)\1/g, "$2");
-    text = text.replace(/~~(?!\s)([\s\S]+?)(?<!\s)~~/g, "$1");
-    text = text.replace(/\*(?!\s)([\s\S]+?)(?<!\s)\*/g, "$1");
-    text = text.replace(/(^|[\s(（【「])_(?!\s)([\s\S]+?)(?<!\s)_(?=$|[\s)）】」,.，。!！?？;；:：])/g, "$1$2");
-    text = text.replace(/^\s*\|(.+)\|\s*$/gm, (_, row) => row.replace(/\|/g, " "));
-    text = text.replace(/\uE000(\d+)\uE000/g, (_, index) => held[Number(index)] || "");
-    return text.replace(/\s+/g, " ").trim().slice(0, 120);
   }
 
   // core/src/chat/roster.ts
