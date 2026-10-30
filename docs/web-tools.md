@@ -24,7 +24,7 @@ Hermes 分成 `web_search`（搜网页，返回排序结果）和 `web_extract`�
 | Hermes 的做法 | 我们 | 理由 |
 | --- | --- | --- |
 | 两把工具，`web_search` / `web_extract` | 抄，连名字一起 | 模型见过这两个名字，schema 越像它熟悉的约定，调用就越准（和 workspace 那套手同一条理由） |
-| 后端可换（Firecrawl / Tavily / SearXNG / Brave / Exa…八家） | 抄接口，**做了四家**：Tavily、Firecrawl、SearXNG、DuckDuckGo | 四家覆盖了「托管好用」「渲染得动 SPA」「自托管不外泄」「零配置能跑」四种需求，剩下四家只有搜索没有提取，做完只是让配置矩阵变大 |
+| 后端可换（Firecrawl / Tavily / SearXNG / Brave / Exa…八家） | 抄接口，**做了四家**（后来又加了 AnySearch）：Tavily、Firecrawl、SearXNG、DuckDuckGo | 四家覆盖了「托管好用」「渲染得动 SPA」「自托管不外泄」「零配置能跑」四种需求，剩下四家只有搜索没有提取，做完只是让配置矩阵变大 |
 | `search_backend` / `extract_backend` 可分开配 | 抄 | 「自托管 SearXNG 搜索 + 托管服务提取」是真实且省钱的组合 |
 | 长页面按大小分级：直出 / 单次摘要 / 分块摘要 / 拒绝 | 抄，阈值改成我们的（第 6 节） | 这是 `web_extract` 唯一真正难的地方 |
 | 摘要走可单配的辅助模型 | 抄，用平台的 **utility 模型** | 平台设置里已经有 daily / utility 两个角色，摘要正是 utility 的活；见第 7 节 |
@@ -251,8 +251,8 @@ Bot 侧照旧缓存这份目录，摘要时用 `models.utility` 那一对打 Gat
 
 ```jsonc
 "webTools": {
-  "searchBackend": "tavily",          // tavily | searxng | duckduckgo
-  "extractBackend": "tavily",         // tavily | firecrawl（只列支持提取的）
+  "searchBackend": "tavily",          // tavily | searxng | duckduckgo | firecrawl | anysearch
+  "extractBackend": "tavily",         // tavily | firecrawl | anysearch（只列支持提取的）
   "searxngUrl": "http://10.0.0.9:8888",
   "pricing": {                        // 单价，整数「厘」，每次调用
     "tavily":     { "search": 8, "extract": 8 },
@@ -280,7 +280,7 @@ Bot 侧照旧缓存这份目录，摘要时用 `models.utility` 那一对打 Gat
 - `ui/pages-tools.js`：新分片
 - `ui/index.html`：加对应的 `data-app-part`
 - `gateway/src/http.ts`：`SPA_PATHS` 加 `/tools`，`UI_PARTS` 加 `pages-tools.js`
-- `gateway/src/routes.ts`：`GET/PUT /platform/tools/web`（`requireOwner`）
+- `gateway/src/routes/index.ts`：`GET/PUT /platform/tools/web`（`requireOwner`）
 
 ---
 
@@ -301,6 +301,7 @@ export interface WebBackend {
 - **Tavily** — 搜索、提取都有，返回的已经是清好的正文，1000 次/月免费。默认后端。
 - **SearXNG** — 自托管、免费、可自己控速，只有搜索。给「不想把查询词发给第三方」的场景。要在 `settings.yml` 的 `formats` 里开 `json` 才有 API——没开的时候它返回 HTML，这种情况要说成「实例没开 json」，不是「搜不到」，后者会让人去改查询词，改到天亮也没用。它的地址多半在内网，所以是 SSRF 闸的**明示例外**，只对那一个 host 放行，跳转的下一跳照样过闸。
 - **DuckDuckGo** — 无密钥、零配置，只有搜索，兜底用（见第 2 节末尾）。它自带 1 秒一次的本地节流，被 429 就直接返回业务失败，不重试到被封 IP。节流记的是「**下一次允许发车的时刻**」而不是「上一次发车的时刻」：后者挡不住并发——同时进来的几个请求读到同一个旧时间戳，算出同样的等待，睡完在同一刻一起打出去，而突发并发正是 DDG 拿 429 和封 IP 招呼的那种流量。
+- **AnySearch** — 搜索（`/v1/search`）和提取（`/v1/extract`）都有，按查询意图自己挑数据源再融合重排。它允许匿名调用，但我们**一律要密钥**：匿名按出口 IP 限流（Gateway 是全平台共用的出口），而且匿名额度用完时它会在 402 的 `message` 里自动注册账号、把用户名密码和 API key 原样塞回来——所以 402 的正文一律不读不转述。域名限制没有原生参数，走本地滤；时间范围既没参数、结果也不带日期，模型给了 `freshness` 就在发请求之前直接拒，说清楚不支持，不打上游也不收钱。和 Firecrawl 一样会在 200 里用 `code != 0` 报错，要认出来。
 - **Firecrawl** — 搜索（`/v2/search`）和提取（`/v2/scrape`）都有。提取那头是**真渲染的浏览器**，Tavily 拿不到正文的 SPA 页面用它。只用 `markdown` 这一个 format：它的 `summary` 和带 prompt 的 `json` 都是它自己的 LLM，而摘要在我们这儿一律走 utility（理由见第 9 节）。自托管的实例用 `FIRECRAWL_API_URL` 换地址（变量名和上游文档一致），那个 host 是 SSRF 闸的**明示例外**——官方示例就是 `localhost:3002`，不留例外的话这个后端配了也用不了。例外只对显式配过的那一个 host 生效，默认的公网域名照常过闸。它还会在 **HTTP 200 里**用 `success: false` 报错（额度用尽这类），不看这一位就会落成「没有结果」，模型于是一遍遍换搜索词重试。
 
 配了一个只有搜索的后端却调 `web_extract` 时，返回的原话是：`当前提取后端 searxng 只支持搜索。让系统管理员在「工具配置 → 网页与搜索」里换一个支持提取的后端。` ——直说是哪一层没配、该谁去哪儿配。Hermes 的 "search-only backend" 提示是对的，只是没说该找谁。不过这句话理论上不该出现：第 9 节那两个下拉已经不给人配出这种组合的机会，它是防线不是常态。
@@ -360,7 +361,7 @@ bot/src/catalog/index.ts         接住 /runtime/catalog 下发的 models.{daily
 bot/cordis.yml                   两行插件，排在 workspace 之后（web_extract 的 save 要写工作区）
 gateway/src/web-tools.ts         后端适配层 + SSRF 闸 + 文档取字节
 gateway/src/web-service.ts       配置取用、后端派发、缓存、配额、计量计价
-gateway/src/routes.ts            /runtime/web/*、/platform/tools/web*、catalog 加 models、stats 加 web
+gateway/src/routes/index.ts      /runtime/web/*、/platform/tools/web*、catalog 加 models、stats 加 web
 gateway/src/db.ts                web_calls 表、platform_settings.webTools、汇总与计数查询
 gateway/src/http.ts              SPA_PATHS 加 /tools，UI_PARTS 加 pages-tools.js
 gateway/ui/pages-tools.js        「工具配置」屏与「网页与搜索」tab

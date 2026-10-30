@@ -1,11 +1,11 @@
 /**
- * 鉴权守卫、邀请、登录票，以及用量口径。
+ * 鉴权守卫、邀请、登录票。用量口径在 lib/usage.ts。
  *
  * 从 routes.ts 拆出来的——那个文件曾经是 5700 行，前 1900 行全是这类帮手。
  */
 import { HttpError, type Req, bearer } from '../http.ts'
-import { JWT_TTL, KIND, usdMicros } from './validate.ts'
-import { type Account, type AccountStatus, type CatalogKind, type Db, type Machine, type Role } from '../db.ts'
+import { JWT_TTL, KIND } from './validate.ts'
+import { type Account, type AccountStatus, type BotViewer, type CatalogKind, type Db, type Machine, type Role } from '../db.ts'
 import { type JwtKeys, type JwtPayload, randomInviteToken, sha256Hex, signJwt, ticketRevoked, timingSafeToken, verifyJwt } from '../crypto.ts'
 
 export function gateAccount(account: Account | undefined): Account {
@@ -26,10 +26,22 @@ export async function gateCompany(db: Db, account: Account): Promise<Account> {
   return account
 }
 
-export async function accountFromJwt(req: Req, db: Db, keys: JwtKeys): Promise<Account> {
-  const token = bearer(req)
-  if (!token) throw new HttpError(401, '需要登录')
-  if (token.startsWith('sk_sw_') || token.startsWith('sat_')) throw new HttpError(401, '需要登录')
+/**
+ * 账号本身能不能用：停用 / 还没接受邀请 / 公司被停用。控制台、席位票、API Key、/v1 的
+ * 登录 JWT 全走这一句，文案要能直接给调用方看——bot 会把它原样变成一条失败消息。
+ *
+ * 只此一份：「/v1 的规矩」和「控制台的规矩」一旦分成两份，下次改其中一句的人不会知道
+ * 还有另一份。
+ */
+export async function assertUsable(db: Db, account: Account | undefined): Promise<Account> {
+  return await gateCompany(db, gateAccount(account))
+}
+
+/**
+ * 登录 JWT → 账号：验签、账号还在、票没被作废、账号能用。前缀判断（sat_ / sk_sw_ 能不能
+ * 走这条）由调用方各自做，控制台和 /v1 的口径不一样。
+ */
+export async function accountFromJwtToken(db: Db, keys: JwtKeys, token: string): Promise<Account> {
   let payload: JwtPayload
   try {
     payload = verifyJwt(keys, token)
@@ -38,15 +50,19 @@ export async function accountFromJwt(req: Req, db: Db, keys: JwtKeys): Promise<A
   }
   const account = await db.account(payload.accountId)
   if (!account) throw new HttpError(401, '账号不存在')
+  // 新票按毫秒 iatMs 比，老票退回按秒（见 ticketRevoked）。
   if (ticketRevoked(account.tokenRevokedAt, payload)) {
     throw new HttpError(401, '登录已失效，请重新登录')
   }
-  return gateCompany(db, gateAccount(account))
+  return assertUsable(db, account)
 }
 
 /** 控制台写操作：只要登录 JWT。sat_ / sk_sw_ 都不行。 */
 export async function requireUser(req: Req, db: Db, keys: JwtKeys): Promise<Account> {
-  return await accountFromJwt(req, db, keys)
+  const token = bearer(req)
+  if (!token) throw new HttpError(401, '需要登录')
+  if (token.startsWith('sk_sw_') || token.startsWith('sat_')) throw new HttpError(401, '需要登录')
+  return accountFromJwtToken(db, keys, token)
 }
 
 /** Bot 拉目录：登录 JWT 或席位 sat_。sk_sw_ 不行。 */
@@ -54,8 +70,8 @@ export async function requireSeatOrUser(req: Req, db: Db, keys: JwtKeys): Promis
   const token = bearer(req)
   if (!token) throw new HttpError(401, '需要登录')
   if (token.startsWith('sk_sw_')) throw new HttpError(401, '需要登录')
-  if (token.startsWith('sat_')) return gateCompany(db, gateAccount(await db.accountByAccessToken(token)))
-  return await accountFromJwt(req, db, keys)
+  if (token.startsWith('sat_')) return assertUsable(db, await db.accountByAccessToken(token))
+  return await requireUser(req, db, keys)
 }
 
 /**
@@ -65,13 +81,38 @@ export async function requireSeatOrUser(req: Req, db: Db, keys: JwtKeys): Promis
 export async function requireSeatOnly(req: Req, db: Db): Promise<Account> {
   const token = bearer(req)
   if (!token || !token.startsWith('sat_')) throw new HttpError(401, '需要席位凭证')
-  return gateCompany(db, gateAccount(await db.accountByAccessToken(token)))
+  return assertUsable(db, await db.accountByAccessToken(token))
 }
 
 export function headerOf(req: Req, name: string): string | undefined {
   const v = req.headers[name]
   if (Array.isArray(v)) return v[0]
   return typeof v === 'string' ? v : undefined
+}
+
+/** 桌面壳的页面源（同 http.ts 的 CORS_ORIGINS 里那四个固定的）。 */
+const DESKTOP_ORIGINS = new Set(['satu://localhost', 'http://satu.localhost', 'tauri://localhost', 'http://tauri.localhost'])
+const DEVICE_ID = /^[a-zA-Z0-9-]{16,100}$/
+
+/** 桌面端报来的设备 id（`x-satuwork-device`，壳子 app_data_dir 里 device.json 的那个）。格式不对当没带。 */
+export function deviceIdOf(req: Req): string | null {
+  const raw = (headerOf(req, 'x-satuwork-device') || '').trim()
+  return DEVICE_ID.test(raw) ? raw : null
+}
+
+/**
+ * 这次请求的视角：本地 Bot 看不看得到由它决定（docs/local-bot-device.md §4.1）。
+ *
+ * 席位票（`sat_`）是 Bot 进程来的，本地 Bot 都认；登录票看设备头。页面源是 satu:// 那几个、却
+ * 既没带设备头也没带客户端头（`x-satuwork-client`）的，是还没升上来的老桌面端——还没绑定的照旧给，
+ * 免得一升 Gateway 本地 Bot 就全没了。手机壳的页面源和桌面壳是同一个，它带着 `x-satuwork-client: mobile`。
+ */
+export function viewerOf(req: Req): BotViewer {
+  if (bearer(req)?.startsWith('sat_')) return { kind: 'seat' }
+  const id = deviceIdOf(req)
+  if (id) return { kind: 'device', id }
+  if (!headerOf(req, 'x-satuwork-client') && DESKTOP_ORIGINS.has(headerOf(req, 'origin') || '')) return { kind: 'legacy-desktop' }
+  return { kind: 'none' }
 }
 
 /**
@@ -180,243 +221,6 @@ export function requireOwner(account: Account): void {
   if (account.role !== 'owner') throw new HttpError(403, '需要系统管理员')
 }
 
-export function rangeQuery(req: Req): { from?: number; to?: number } {
-  const fromRaw = req.query.get('from')
-  const toRaw = req.query.get('to')
-  const from = fromRaw != null && fromRaw !== '' ? Number(fromRaw) : undefined
-  const to = toRaw != null && toRaw !== '' ? Number(toRaw) : undefined
-  if (fromRaw && fromRaw !== '' && !Number.isFinite(from)) throw new HttpError(400, 'from 必须是 unix 毫秒')
-  if (toRaw && toRaw !== '' && !Number.isFinite(to)) throw new HttpError(400, 'to 必须是 unix 毫秒')
-  return { from, to }
-}
-
-/**
- * 时区偏移（毫秒）。前端传的是 `Date.getTimezoneOffset()` 的**相反数**（东八区 +480 分）。
- * 缺省 0 = UTC 切天：老前端不带这个参数时，日线仍然画得出来，只是边界按 UTC。
- *
- * 公司用量屏和平台统计屏共用：两边的日线都按**看的人所在时区**切天，服务端不知道那是
- * 哪个时区（同 `rangeQuery` 的 from/to 由前端算好是一个道理）。
- */
-export function tzOffsetMs(req: Req): number {
-  const raw = (req.query.get('tz') || '').trim()
-  if (!raw) return 0
-  const n = Number(raw)
-  if (!Number.isFinite(n)) throw new HttpError(400, 'tz 必须是分钟数')
-  // 谁也不在 ±16 小时之外。越界的值当没传，而不是让日线整体飘走。
-  if (Math.abs(n) > 16 * 60) return 0
-  return n * 60000
-}
-
-/**
- * 日线上的一根柱子。`label` 是给人看的日期，怎么写由算它的那一层决定。`value` 是模型调用
- * 次数（柱高），`amount` 是那一天账本上扣的钱（三条计费路都算）。
- */
-export type UsageBar = { label: string; value: number; amount?: string; amountMicros?: number }
-
-const DAY_MS = 86400000
-const HOUR_MS = 3600000
-
-/** 柱子按什么粒度切：按天（默认）还是按小时（「今日」那一屏）。 */
-export type BarStep = 'day' | 'hour'
-
-/** `step=hour` → 按小时切柱子；没传、传别的都按天——老前端不带这个参数，日线照旧。 */
-export function stepQuery(req: Req): BarStep {
-  return (req.query.get('step') || '').trim() === 'hour' ? 'hour' : 'day'
-}
-
-/** 一根柱子盖多长时间（毫秒）。SQL 里切桶和这里铺柱子用同一个数。 */
-export function stepMs(step: BarStep): number {
-  return step === 'hour' ? HOUR_MS : DAY_MS
-}
-
-/** 桶号（按看的人所在时区平移后的天序号，见 `db.llmDailyBy`）→ `MM/DD`。 */
-export function dayLabelOf(bucket: number): string {
-  const d = new Date(bucket * DAY_MS)
-  return `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`
-}
-
-/** 某一时刻落在哪个桶里。平移 `offsetMs` 之后按天切，和 SQL 里那句 `floor((createdAt + ?) / 86400000)` 一致。 */
-export function dayBucketOf(at: number, offsetMs: number): number {
-  return Math.floor((at + offsetMs) / DAY_MS)
-}
-
-/**
- * 把库里按桶聚合出来的两串数（调用次数、扣费）铺成一根根柱子。
- *
- * **没有调用的那天也要画出来**：只画有数的那几天，横轴会被悄悄压缩，「周末没人用」看上去
- * 和「天天都在用」长得一样。窗口两端按 from/to 算；没传的那头退回有数的第一 / 最后一天。
- *
- * **右端不越过今天**：「本月」那种窗口 to 是月底最后一刻，月中看的时候后半个月还没发生，
- * 画成一排 0 会被读成「下半月没人用」。
- *
- * 92 根柱子已经挤不下了；手搓一个三年的 from/to 不该把这一屏拖垮。
- */
-export function dailyBars(
-  buckets: { bucket: number; calls: number }[],
-  spentBuckets: { bucket: number; amountMicros: number }[],
-  range: { from?: number; to?: number },
-  offsetMs: number,
-): UsageBar[] {
-  return barsOf(buckets, spentBuckets, range, offsetMs, DAY_MS, dayLabelOf, 92)
-}
-
-/** 桶号（平移后的小时序号）→ `HH:00`。 */
-export function hourLabelOf(bucket: number): string {
-  return `${String(new Date(bucket * HOUR_MS).getUTCHours()).padStart(2, '0')}:00`
-}
-
-/**
- * 按小时铺柱子，给「今日」那一屏用。规矩和 dailyBars 一样：窗口里没调用的那个小时也画
- * 一根 0 柱；右端不越过**现在这个小时**——下午三点看「今日」，后面九个小时还没发生，
- * 画成一排 0 会被读成「晚上没人用」。最多 48 根（手搓一个跨天的窗口也不该拖垮这一屏）。
- */
-export function hourlyBars(
-  buckets: { bucket: number; calls: number }[],
-  spentBuckets: { bucket: number; amountMicros: number }[],
-  range: { from?: number; to?: number },
-  offsetMs: number,
-): UsageBar[] {
-  return barsOf(buckets, spentBuckets, range, offsetMs, HOUR_MS, hourLabelOf, 48)
-}
-
-/** 按粒度分派：`day` → dailyBars，`hour` → hourlyBars。路由那边拿 stepQuery 的结果直接调。 */
-export function usageBars(
-  step: BarStep,
-  buckets: { bucket: number; calls: number }[],
-  spentBuckets: { bucket: number; amountMicros: number }[],
-  range: { from?: number; to?: number },
-  offsetMs: number,
-): UsageBar[] {
-  return step === 'hour' ? hourlyBars(buckets, spentBuckets, range, offsetMs) : dailyBars(buckets, spentBuckets, range, offsetMs)
-}
-
-function barsOf(
-  buckets: { bucket: number; calls: number }[],
-  spentBuckets: { bucket: number; amountMicros: number }[],
-  range: { from?: number; to?: number },
-  offsetMs: number,
-  sizeMs: number,
-  labelOf: (bucket: number) => string,
-  maxBars: number,
-): UsageBar[] {
-  const bucketOf = (at: number) => Math.floor((at + offsetMs) / sizeMs)
-  const nowBucket = bucketOf(Date.now())
-  const first = range.from != null ? bucketOf(range.from) : buckets[0]?.bucket
-  const rawLast = range.to != null ? bucketOf(range.to) : buckets[buckets.length - 1]?.bucket
-  const last = rawLast != null ? Math.min(rawLast, nowBucket) : undefined
-  const bars: UsageBar[] = []
-  if (first == null || last == null || last < first) return bars
-  const counts = new Map(buckets.map((b) => [b.bucket, b.calls]))
-  const spent = new Map(spentBuckets.map((b) => [b.bucket, b.amountMicros]))
-  const start = Math.max(first, last - (maxBars - 1))
-  for (let b = start; b <= last; b += 1) {
-    const micros = spent.get(b) ?? 0
-    bars.push({ label: labelOf(b), value: counts.get(b) ?? 0, amount: usdMicros(micros), amountMicros: micros })
-  }
-  return bars
-}
-/** 看的人所在时区的「今天」：零点到现在。不跟着界面上选的范围走。 */
-export type UsageToday = {
-  label: string
-  calls: number
-  promptTokens: number
-  completionTokens: number
-  amount: string
-  byKind: { name: string; value: string }[]
-}
-/** 一条量表：名字、右边那行小字、以及 0–100 的占比。 */
-export type UsageMeter = { name: string; value: string; pct: number }
-
-export function usagePayload(
-  usage: { calls: number; promptTokens: number; completionTokens: number; byAccount: { accountId: string; calls: number; promptTokens: number; completionTokens: number; lastAt: number | null }[] },
-  opts: {
-    seats: number
-    members: Account[]
-    includeMembers: boolean
-    /**
-     * 账本上每个人扣了多少微元。**含三条计费路**，不只是模型——「谁烧的钱」这个问题
-     * 按 token 是答不全的：一个人跑一天搜索、一次模型都不调，按 token 看他是零。
-     */
-    spentByAccount?: Map<string, number>
-    /** 这个范围内一共扣了多少微元。顶上那张「费用」卡用它。 */
-    spentMicros?: number
-    /**
-     * 下面那几块维度：日线、按 Bot、按模型、按类型。都由路由那边算好——这里只负责
-     * 把它们摆进同一个信封，不去碰库。给空数组时界面画各自的空态。
-     */
-    dims?: { daily?: UsageBar[]; byAgent?: UsageMeter[]; byModel?: UsageMeter[]; byKind?: UsageMeter[]; today?: UsageToday }
-  },
-) {
-  const spent = opts.spentByAccount ?? new Map<string, number>()
-  const byAccount = new Map(usage.byAccount.map((row) => [row.accountId, row]))
-  /**
-   * 名册上已经没有、但用量记录还在的那些人。
-   *
-   * 删员工时他的 llm_calls 是**留着**的（留档要求），所以公司总数里一直含着这部分，
-   * 而下面「按成员」只列现有成员。不把这一行兜出来，顶部的总数就大于各行相加，差额
-   * 没有出处——看的人只会以为哪里算错了。
-   */
-  const departed = usage.byAccount.filter((row) => !opts.members.some((m) => m.id === row.accountId))
-  const departedRow =
-    departed.length === 0
-      ? null
-      : {
-          id: '',
-          departed: true,
-          count: departed.length,
-          name: '已离职员工',
-          initial: '·',
-          tasks: String(departed.reduce((n, r) => n + r.calls, 0)),
-          tokens: String(departed.reduce((n, r) => n + r.promptTokens + r.completionTokens, 0)),
-          amount: usdMicros(departed.reduce((n, r) => n + (spent.get(r.accountId) ?? 0), 0)),
-          last: '—',
-        }
-  return {
-    stats: [
-      { label: '任务执行', value: String(usage.calls), delta: '—' },
-      { label: '输入 Tokens', value: String(usage.promptTokens), delta: '—' },
-      { label: '输出 Tokens', value: String(usage.completionTokens), delta: '—' },
-      // 以前这里永远是 '—'（「按量扣费还没接」）。现在是真的。
-      { label: '费用', value: usdMicros(opts.spentMicros ?? 0), delta: '—' },
-    ],
-    daily: opts.dims?.daily ?? [],
-    today: opts.dims?.today ?? null,
-    byAgent: opts.dims?.byAgent ?? [],
-    byModel: opts.dims?.byModel ?? [],
-    // 套餐额度这一维**故意还是空的**：当前套餐只约束席位，没有任务次数和 token 额度，
-    // 编一个分母出来会被当成真的在生效。界面上那句话说的就是这件事。
-    quota: [] as unknown[],
-    // 三条计费路各自的次数和钱。模型那条填不上 botId（见 lib/meter.ts），所以「按 Bot」
-    // 覆盖不全；这一维是能覆盖全的那个，两块并排看才知道钱花在哪一类上。
-    byKind: opts.dims?.byKind ?? [],
-    seats: opts.seats,
-    ...(opts.includeMembers
-      ? {
-          byMember: [
-            ...opts.members.map((m) => {
-              const name = m.name || m.email
-              const initial = (name || '·').trim().slice(0, 1).toUpperCase()
-              const row = byAccount.get(m.id)
-              const tokens = row ? row.promptTokens + row.completionTokens : 0
-              return {
-                id: m.id,
-                departed: false,
-                count: 0,
-                name,
-                initial,
-                tasks: String(row?.calls ?? 0),
-                tokens: String(tokens),
-                amount: usdMicros(spent.get(m.id) ?? 0),
-                last: '—',
-              }
-            }),
-            ...(departedRow ? [departedRow] : []),
-          ],
-        }
-      : {}),
-  }
-}
-
 export function requireBootstrapMachine(req: Req) {
   const expected = process.env.GATEWAY_MACHINE_TOKEN ?? ''
   const token = bearer(req)
@@ -470,7 +274,7 @@ export type InternalCaller =
 export async function requireInternalCaller(req: Req, db: Db): Promise<InternalCaller> {
   const token = bearer(req)
   if (token && token.startsWith('sat_')) {
-    const account = await gateCompany(db, gateAccount(await db.accountByAccessToken(token)))
+    const account = await assertUsable(db, await db.accountByAccessToken(token))
     if (!account.companyId) throw new HttpError(403, '没有公司席位')
     return { kind: 'seat', account, companyId: account.companyId }
   }

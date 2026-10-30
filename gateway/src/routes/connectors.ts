@@ -11,10 +11,13 @@ import { MAX_TOOLS, applyConnectorPatch, blockMapOf, checkRecommended, connector
 import { toolModeOf } from '../lib/tool-search.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import { isUniqueViolation } from '../db.ts'
-import { originOf, rangeQuery, requireOrgUser, requireOwnerUser, requireUser } from '../lib/guards.ts'
-import { COMPANY_CONNECTION_LABEL, CONNECTION_LABEL_RE, DEFAULT_CONNECTION_LABEL, type Account, type ConnectorConnection, type ConnectorDef, externalUserIdOf } from '../db.ts'
-import { publicConnection, publicInstall } from '../lib/connectors.ts'
+import { CONNECTOR_BOT_SCOPE_LOCK } from '../db/locks.ts'
+import { originOf, requireOrgUser, requireOwnerUser, requireUser, viewerOf } from '../lib/guards.ts'
+import { rangeQuery } from '../lib/usage.ts'
+import { COMPANY_CONNECTION_LABEL, CONNECTION_LABEL_RE, DEFAULT_CONNECTION_LABEL, type Account, type BotScope, type BotViewer, type ConnectorConnection, type ConnectorDef, externalUserIdOf } from '../db.ts'
+import { connectionUsableBy, lookupAccountName, publicBotScope, publicConnection, publicInstall, usableConnections } from '../lib/connectors.ts'
 import { publicPlatformCred } from '../lib/org.ts'
+import { botIconOf, canAssignTo, runtimeKindOf } from '../lib/catalog.ts'
 
 /** 授权回来之后那一页要说的三种话。见 authDonePage。 */
 type AuthDone = 'ok' | 'pending' | 'failed'
@@ -217,6 +220,10 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
     return { item, def, blocked: block?.blocked === true, blockedReason: block?.reason ?? '', companyId: account.companyId }
   }
 
+  /** 认不出是谁的连接上次问的时刻（见 nameOf）。只在内存里：重启或换实例就重新问一次，不要紧。 */
+  const nameTried = new Map<string, number>()
+  const NAME_RETRY_MS = 6 * 60 * 60 * 1000
+
   /**
    * 刷新还在 `pending` 的那几把。
    *
@@ -225,32 +232,54 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
    * 给供应商刷请求，而撤销授权那条路走的是别的信号。
    */
   async function refreshPending(rows: ConnectorConnection[], def: ConnectorDef): Promise<ConnectorConnection[]> {
-    const out: ConnectorConnection[] = []
-    for (const row of rows) {
-      if (row.status !== 'pending' || !row.externalId) {
-        out.push(row)
-        continue
-      }
+    // 一把一把各问各的，并起来跑：连了三个账号就等三趟串行往返没有道理。
+    return Promise.all(rows.map((row) => refreshOne(row, def)))
+  }
+
+  async function refreshOne(row: ConnectorConnection, def: ConnectorDef): Promise<ConnectorConnection> {
+    let cur = row
+    let fromStatus = ''
+    if (cur.status === 'pending' && cur.externalId) {
       try {
         const provider = await providerFor(db, def.vendor)
-        const st = await provider.status(row.externalId)
-        if (st.status === 'pending') {
-          out.push(row)
-          continue
-        }
-        out.push(
-          (await db.updateConnectorConnection(row.id, {
+        const st = await provider.status(cur.externalId)
+        if (st.status === 'pending') return cur
+        fromStatus = st.accountName ?? ''
+        cur =
+          (await db.updateConnectorConnection(cur.id, {
             status: st.status === 'active' ? 'active' : 'failed',
             lastError: st.error ?? null,
             connectedAt: st.status === 'active' ? Date.now() : null,
-          })) ?? row,
-        )
+            ...(fromStatus ? { accountName: fromStatus } : {}),
+          })) ?? cur
       } catch {
         // 供应商暂时不可达：状态原样留着，下次进页面再问。这一步失败不该让整屏 500。
-        out.push(row)
+        return cur
       }
     }
-    return out
+    return nameOf(cur, def)
+  }
+
+  /**
+   * 补上「连的是谁」（connector_connections."accountName"，迁移 0065）。
+   *
+   * 只补**连上了、还不知道是谁**的那几把；认出来就存下，之后不再问。认不出的不存空串
+   * ——认人的规则会改进，存了就再也轮不到它——而是在这个实例里节流：同一把几个小时内
+   * 不重问，免得每次打开详情页都给供应商打两三趟。
+   */
+  async function nameOf(row: ConnectorConnection, def: ConnectorDef): Promise<ConnectorConnection> {
+    if (row.status !== 'active' || row.accountName || !row.externalId) return row
+    const last = nameTried.get(row.id)
+    if (last && Date.now() - last < NAME_RETRY_MS) return row
+    nameTried.set(row.id, Date.now())
+    try {
+      const name = await lookupAccountName(db, def, row)
+      if (!name) return row
+      nameTried.delete(row.id)
+      return (await db.updateConnectorConnection(row.id, { accountName: name })) ?? row
+    } catch {
+      return row
+    }
   }
 
   /**
@@ -342,7 +371,7 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
      *
      * 授权是在**新开的那一页**里做的（见 `gateway/ui/pages-connectors.js` 的
      * `conn-add-account`），原来那一页原封不动地在旁边等着。这一页的使命到授权完成
-     * 为止，302 回 `/connectors/:id` 只会在旁边多开一个应用副本——人正看着的那一页
+     * 为止，302 回 `/plugins/:id` 只会在旁边多开一个应用副本——人正看着的那一页
      * 还在另一个标签里，两份状态从此各走各的。
      *
      * 关掉之后原来那一页拿回焦点，会自己重取一次账号列表（`authReturn`），新连上的
@@ -351,7 +380,7 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
      * 早先这里跳回去是对的：那时是整页跳走的，不跳回来人就留在供应商的域名上。
      */
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-    res.end(authDonePage(done, row ? `/connectors/${encodeURIComponent(row.connectorId)}` : '/'))
+    res.end(authDonePage(done, row ? `/plugins/${encodeURIComponent(row.connectorId)}` : '/'))
   })
 
   /**
@@ -366,6 +395,13 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
     const install = await db.connectorInstall(item.id, account.id)
     const mine = (await db.connectionsFor(account.id, account.companyId)).filter((c) => c.connectorId === item.id)
     const rows = await refreshPending(mine, def)
+    const [scopes, bots, everyBot] = await Promise.all([
+      db.botScopesFor(account.id),
+      db.botsFor(account.companyId, account.id, viewerOf(req)),
+      db.botsFor(account.companyId, account.id, { kind: 'seat' }),
+    ])
+    const roster = new Set(bots.map((b) => b.id))
+    const allBots = new Set(everyBot.map((b) => b.id))
     let tools: ToolDef[] = []
     let toolsError = ''
     try {
@@ -396,7 +432,15 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
     json(res, 200, {
       connector: { ...publicConnector(item), blocked, blockedReason },
       install: install ? publicInstall(install) : null,
-      connections: rows.map(publicConnection),
+      connections: rows.map((c) => publicConnection(c, publicBotScope(scopes.get(c.id)?.scope, roster, allBots))),
+      /**
+       * 「可用 Bot」那一格的候选：这个人能用的全部 Bot（和改范围时的校验同一份名单）。
+       * 跟着详情一起给，不让界面去借侧栏那份名册——那份在没有席位机器时会藏掉公司的 Bot。
+       */
+      bots: bots.map((b) => {
+        const origin = b.scope === 'global' ? 'global' : 'company'
+        return { id: b.id, name: b.name, icon: botIconOf((b.definition as { icon?: unknown } | undefined)?.icon, origin), origin }
+      }),
       tools,
       toolCap: MAX_TOOLS,
       enabledCount,
@@ -577,7 +621,81 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
         detail: { connectionId: row.id, mentionOnly: patch.mentionOnly },
       })
     }
-    json(res, 200, { connection: publicConnection(next!) })
+    json(res, 200, { connection: publicConnection(next!, await botScopeView(account, row.id, viewerOf(req))) })
+  })
+
+  /** 这个人给这把连接设的范围，界面那一格的形状（详情页同一个口径）。 */
+  async function botScopeView(account: Account, connectionId: string, viewer: BotViewer) {
+    const [bots, all, saved] = await Promise.all([
+      db.botsFor(account.companyId, account.id, viewer),
+      db.botsFor(account.companyId, account.id, { kind: 'seat' }),
+      db.botScopeOf(connectionId, account.id),
+    ])
+    return publicBotScope(saved?.scope, new Set(bots.map((b) => b.id)), new Set(all.map((b) => b.id)))
+  }
+
+  /**
+   * 「可用 Bot」：这把账号哪些 Bot 用得上（docs/connector-bot-scope.md）。
+   *
+   * `{ mode: 'all' }` 或 `{ mode: 'bots', botIds }`。**公司共用那把也能设**——范围是每个人
+   * 对自己 Bot 的选择，存在 (连接, 账号) 上，不动那一行连接，所以不走上面那条只认个人
+   * 连接的 PATCH。
+   *
+   * 名单只收这个人 `botsFor` 里有的、至少一颗：「全都不给」那一档就是断开或「仅 @ 时
+   * 可用」，不另造第三种说法。
+   */
+  router.put('/me/connectors/:connectorId/connections/:connectionId/bots', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    const { item } = await seatConnector(account, req.params.connectorId)
+    const row = await db.connectorConnection((req.params.connectionId || '').trim())
+    if (!row || row.connectorId !== item.id || !connectionUsableBy(row, account)) throw new HttpError(404, '没有这个账号')
+    const body = bodyOf(req)
+    const mode = String(body.mode ?? '')
+    let scope: BotScope
+    // 选「部分 Bot」时：这个账号全部的 Bot、这台看得到的那些（合并时用，见下）。
+    let all: Set<string> | null = null
+    let seen: Set<string> | null = null
+    if (mode === 'all') {
+      scope = { mode: 'all' }
+    } else if (mode === 'bots') {
+      if (!Array.isArray(body.botIds)) throw new HttpError(400, '要带 botIds（Bot id 的数组）')
+      const wanted = [...new Set(body.botIds.map((x) => String(x ?? '').trim()).filter(Boolean))]
+      if (!wanted.length) throw new HttpError(400, '至少选一个 Bot')
+      const [visible, every] = await Promise.all([
+        db.botsFor(account.companyId, account.id, viewerOf(req)),
+        db.botsFor(account.companyId, account.id, { kind: 'seat' }),
+      ])
+      const roster = new Set(visible.map((b) => b.id))
+      const unknown = wanted.filter((id) => !roster.has(id))
+      if (unknown.length) throw new HttpError(400, `没有这个 Bot：${unknown.join('、')}`)
+      scope = { mode: 'bots', botIds: wanted }
+      all = new Set(every.map((b) => b.id))
+      seen = roster
+    } else {
+      throw new HttpError(400, "mode 只能是 'all' 或 'bots'")
+    }
+    /**
+     * 别的电脑上的本地 Bot 这台看不到，界面交上来的名单里自然没有它——原样存下去就等于替那台
+     * 电脑把它勾掉了。原来勾着、这台看不到、但还在的那几颗，照旧留着（docs/local-bot-device.md）。
+     * 读原来的和写回去放在同一把锁里：两台电脑同时保存时，后写的那一方要看得见先写那一方的结果。
+     */
+    const saved = await db.tx(async () => {
+      await db.lockExclusive(CONNECTOR_BOT_SCOPE_LOCK, `${row.id}:${account.id}`)
+      if (scope.mode === 'bots' && all && seen) {
+        const prev = await db.botScopeOf(row.id, account.id)
+        const kept = prev?.scope.mode === 'bots' ? prev.scope.botIds.filter((id) => all!.has(id) && !seen!.has(id)) : []
+        scope = { mode: 'bots', botIds: [...scope.botIds, ...kept] }
+      }
+      return db.setBotScope(row.id, account.id, scope)
+    })
+    // 它决定这把账号会被哪颗 Bot 隐式调用，是权限边界，不是显示偏好——同 mentionOnly，要留档。
+    await db.audit({
+      companyId: account.companyId!,
+      accountId: account.id,
+      action: 'connector.connection.bots',
+      detail: { connectionId: row.id, mode: saved.scope.mode, botIds: saved.scope.mode === 'bots' ? saved.scope.botIds : [] },
+    })
+    json(res, 200, { connection: publicConnection(row, await botScopeView(account, row.id, viewerOf(req))) })
   })
 
   router.delete('/me/connectors/:connectorId/connections/:connectionId', async (req, res) => {
@@ -631,7 +749,7 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
           installs: mine.length,
           installedBy: mine.map((x) => x.accountId),
           connections: conns.filter((c) => c.status === 'active').length,
-          companyConnection: conns.filter((c) => c.scope === 'company').map(publicConnection)[0] ?? null,
+          companyConnection: conns.filter((c) => c.scope === 'company').map((c) => publicConnection(c))[0] ?? null,
         }
       })
     json(res, 200, { connectors })
@@ -780,29 +898,46 @@ export function attachConnectors(router: Router, ctx: RouteCtx) {
   router.get('/mentions', async (req, res) => {
     const account = await requireUser(req, db, keys)
     const q = (req.query.get('q') || '').trim().toLowerCase()
+    /**
+     * 当前对话的 Bot。带了就按 Bot 范围筛（docs/connector-bot-scope.md）：收窄到别的 Bot 的
+     * 账号不出现在这颗 Bot 的选单里。没带（老页面）就不筛——发消息那一跳按会话的 Bot 再判
+     * 一次（routes/runtime.ts），点了也进不去，只是选单里多几条。
+     */
+    const botId = (req.query.get('botId') || '').trim()
     const companyId = account.role === 'owner' ? null : account.companyId
-    const items = await db.visibleCatalog('connector', companyId)
-    const blocks = blockMapOf(items)
-    const byId = new Map(items.filter((i) => i.scope === 'global').map((i) => [i.id, connectorDefOf(i)]))
-    const conns = (await db.connectionsFor(account.id, companyId)).filter((c) => c.status === 'active')
-    const mentions = conns
-      .map((c) => {
-        const def = byId.get(c.connectorId)
-        if (!def || !def.enabled || blocks.get(c.connectorId)?.blocked) return null
-        return {
-          kind: 'connector' as const,
-          id: c.id,
-          label: c.scope === 'company' ? `${def.name} (${COMPANY_CONNECTION_LABEL})` : `${def.name} (${c.label})`,
-          connectorId: c.connectorId,
-          toolkit: def.toolkit,
-          logo: def.logo,
-          /** 「仅 @ 时可用」的在选单里要看得出来：不点名它就不干活。 */
-          mentionOnly: c.mentionOnly,
-        }
-      })
-      .filter((x): x is NonNullable<typeof x> => x !== null)
+    const mentions = (await usableConnections(db, account.id, companyId, botId ? { id: botId } : 'any'))
+      .map(({ conn: c, def }) => ({
+        kind: 'connector' as const,
+        id: c.id,
+        label: c.scope === 'company' ? `${def.name} (${COMPANY_CONNECTION_LABEL})` : `${def.name} (${c.label})`,
+        connectorId: c.connectorId,
+        toolkit: def.toolkit,
+        logo: def.logo,
+        /** 「仅 @ 时可用」的在选单里要看得出来：不点名它就不干活。 */
+        mentionOnly: c.mentionOnly,
+      }))
       .filter((x) => !q || x.label.toLowerCase().includes(q) || x.toolkit.includes(q))
-    json(res, 200, { mentions })
+    /**
+     * 名单上别的 Bot 也能 @（docs/bot-tasks.md）：@ 一颗 Bot = 让主 Bot 把这件事派给它。
+     *
+     * **只有设了主 Bot 的人才给**，而且只在主 Bot 的对话里有意义——别的 Bot 没有 assign_task。
+     * 这条接口不知道人开着哪条对话，所以把 mainBotId 一起给出来，由界面按当前 Bot 决定画不画；
+     * 发消息那一跳再按会话的 Bot 校验一次（routes/runtime.ts），界面漏了也进不去。
+     */
+    const mainBotId = account.role === 'owner' ? null : await db.mainBotOf(account.id)
+    const roster = mainBotId ? await db.botsFor(companyId, account.id, viewerOf(req)) : []
+    const mainItem = roster.find((b) => b.id === mainBotId)
+    const bots = mainBotId
+      ? roster
+          // 本地 Bot 只接同一台电脑上的本地主 Bot 派的活（docs/local-bot-device.md §4.4）。
+          .filter((b) => b.id !== mainBotId && (mainItem ? canAssignTo(mainItem, b) : runtimeKindOf(b) !== 'local'))
+          .map((b) => {
+            const origin = b.scope === 'global' ? 'global' : 'company'
+            return { kind: 'bot' as const, id: b.id, label: b.name, icon: botIconOf((b.definition as { icon?: unknown } | undefined)?.icon, origin), origin }
+          })
+          .filter((b) => !q || b.label.toLowerCase().includes(q))
+      : []
+    json(res, 200, { mentions: [...mentions, ...bots], mainBotId })
   })
 
   // ── 统计（三个范围）───────────────────────────────────────────────

@@ -30,12 +30,19 @@ async function loadKnowledge() {
 }
 
 async function loadKnowledgeDetail(id) {
+  const path = state.path
+  const previousId = state.kbDetail?.id
   const data = await api('GET', kbBase(`/${encodeURIComponent(id)}`))
+  if (state.path !== path || (kbIdOfPath(state.path) && kbIdOfPath(state.path) !== id)) return
   state.kbDetail = { id, knowledge: data.knowledge, files: Array.isArray(data.files) ? data.files : [], canEdit: !!data.canEdit, enabled: data.enabled !== false }
   // 共享范围的编辑态和试搜结果都跟着库走：别拿上一个库的草稿、上一个库的命中画这一个。
   if (!state.kbShareDraft || state.kbShareDraft.id !== id) {
     state.kbShareDraft = { id, share: data.knowledge.share, botIds: [...(data.knowledge.botIds || [])] }
-    state.kbSearch = null
+    if (previousId !== id) {
+      state.kbSearch = null
+      state.kbSearchQuery = null
+      state.kbTab = 'files'
+    }
   }
   scheduleKnowledgePoll()
 }
@@ -51,13 +58,13 @@ function scheduleKnowledgePoll() {
   const d = state.kbDetail
   if (!d || state.path !== `/knowledge/${encodeURIComponent(d.id)}`) return
   const busy = d.files.some((f) => f.status === 'queued' || f.status === 'processing' || f.status === 'uploading')
-  const uploading = (state.kbUploads || []).some((u) => !u.done)
+  const uploading = (state.kbUploads || []).some((u) => (!u.kbId || u.kbId === d.id) && !u.done)
   if (!busy && !uploading) return
   state.kbPollTimer = setTimeout(async () => {
     if (state.path !== `/knowledge/${encodeURIComponent(d.id)}`) return
     try {
       await loadKnowledgeDetail(d.id)
-      render()
+      paintKnowledgeFiles()
     } catch {}
   }, 5000)
 }
@@ -66,34 +73,27 @@ const KB_STATUS = {
   uploading: ['上传中', 'Uploading', 'tag-accent'],
   queued: ['排队中', 'Queued', 'tag-accent'],
   processing: ['入库中', 'Indexing', 'tag-accent'],
-  ready: ['可用', 'Ready', 'tag-accent-2'],
+  ready: ['可检索', 'Searchable', 'mg-status-ok'],
   failed: ['失败', 'Failed', 'tag-warn'],
 }
 
 function kbShareLabel(k) {
   if (k.share === 'all') return t('全部 Bot', 'All bots')
-  if (k.share === 'bots') return t(`${(k.botIds || []).length} 颗 Bot`, `${(k.botIds || []).length} bots`)
+  if (k.share === 'bots') return t(`${(k.botIds || []).length} 个 Bot`, `${(k.botIds || []).length} bots`)
   return t('未共享', 'Not shared')
 }
 
 function kbMeter(k) {
   const max = state.kbConfig?.limits?.bytesMax || 200 * 1024 * 1024
-  const pct = Math.min(100, Math.round(((k.bytesUsed || 0) / max) * 100))
-  return `<div style="display: flex; flex-direction: column; gap: 4px;">
-    <div class="satu-meter"><div class="satu-meterfill" data-alt="${String(pct >= 90)}" style="width: ${pct}%;"></div></div>
-    <span style="font-size: 12px; color: var(--muted-foreground);">${esc(fmtBytes(k.bytesUsed || 0))} / ${esc(fmtBytes(max))}</span>
-  </div>`
+  const pct = Math.max(0, Math.min(100, Math.round(((k.bytesUsed || 0) / max) * 100)))
+  return `<div class="rs-kb-meter"><div class="satu-meter" role="meter" aria-label="${t('知识库容量', 'Knowledge base storage')}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><div class="satu-meterfill" data-alt="${pct >= 90}" style="width:${pct}%"></div></div><span>${esc(fmtBytes(k.bytesUsed || 0))} / ${esc(fmtBytes(max))}</span></div>`
 }
 
 function kbCard(k) {
-  return `<button type="button" class="satu-panel" style="gap: var(--space-3); text-align: left; cursor: pointer;" data-act="go" data-href="/knowledge/${encodeURIComponent(k.id)}">
-    <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
-      <b style="font-size: 15px;">${esc(k.name)}</b>
-      <span class="tag ${k.share === 'none' ? 'tag-neutral' : 'tag-accent-2'}">${kbShareLabel(k)}</span>
-    </div>
-    <p style="margin: 0; font-size: 13px; color: var(--muted-foreground); min-height: 18px;">${esc(k.desc || t('还没有说明。说明会告诉 Bot 这个库里是什么。', 'No description yet. It tells the bot what is inside.'))}</p>
-    ${kbMeter(k)}
-    <div style="font-size: 12px; color: var(--muted-foreground);">${t(`${k.fileCount || 0} 个文件 · ${k.chunkCount || 0} 段`, `${k.fileCount || 0} files · ${k.chunkCount || 0} chunks`)}</div>
+  return `<button type="button" class="satu-panel rs-kb-card" data-act="go" data-href="/knowledge/${encodeURIComponent(k.id)}">
+    <div class="rs-kb-card-top"><span class="rs-resource-icon">${svg(['M4 4h7a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H4z','M20 4h-7a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h7z'], 22)}</span><span class="tag ${k.share === 'none' ? 'tag-neutral' : 'tag-accent-2'}">${kbShareLabel(k)}</span></div>
+    <strong>${esc(k.name)}</strong><p>${esc(k.desc || t('暂无资料说明。', 'No description yet.'))}</p>
+    <div class="rs-kb-card-meta"><span>${t(`${k.fileCount || 0} 个文件`, `${k.fileCount || 0} files`)}</span><span>${t(`${k.chunkCount || 0} 个内容片段`, `${k.chunkCount || 0} text chunks`)}</span></div>${kbMeter(k)}
   </button>`
 }
 
@@ -101,81 +101,63 @@ function kbCreateModal() {
   const m = state.kbCreate
   if (!m) return ''
   const v = m.draft || { name: '', desc: '', share: 'all' }
-  return `<div class="gw-modal-backdrop" data-act="kb-create-close">
-    <form id="kb-create-form" class="gw-modal" style="max-width: 480px;" data-stop>
-      <div>
-        <h2 style="font-size: 20px; margin: 0 0 4px;">${t('新建知识库', 'New knowledge base')}</h2>
-        <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('建好之后往里传文件。单个知识库最多 200 MB。', 'Create it, then upload files. Each knowledge base holds up to 200 MB.')}</p>
-      </div>
-      ${m.error ? `<div class="gw-flash gw-flash-err">${esc(m.error)}</div>` : ''}
+  return modalBox({
+    close: 'kb-create-close',
+    tag: 'form',
+    attrs: 'id="kb-create-form" class="gw-modal rs-kb-create" style="max-width: 520px;" data-stop role="dialog" aria-modal="true" aria-label="'+esc(t('新建知识库', 'New knowledge base'))+'"',
+    x: false,
+    title: t('新建知识库', 'New knowledge base'),
+    sub: t(`按主题整理公司资料。创建后可上传文件，每个知识库最多 ${fmtBytes(state.kbConfig?.limits?.bytesMax || 200 * 1024 * 1024)}。`, `Organize company documents by topic. Upload files after creation; each knowledge base holds up to ${fmtBytes(state.kbConfig?.limits?.bytesMax || 200 * 1024 * 1024)}.`),
+    body: `${m.error ? `<div class="gw-flash gw-flash-err">${esc(m.error)}</div>` : ''}
       <div class="field">
         <label for="kb-name">${t('名称')}</label>
-        <input class="input" id="kb-name" name="name" value="${esc(v.name)}" maxlength="60" required>
+        <input class="input" id="kb-name" name="name" data-act="kb-create-field" data-field="name" value="${esc(v.name)}" maxlength="60" required>
       </div>
       <div class="field">
         <label for="kb-desc">${t('说明')}<span style="color: var(--muted-foreground); font-weight: 400;"> · ${t('选填')}</span></label>
-        <input class="input" id="kb-desc" name="desc" value="${esc(v.desc)}" maxlength="200" placeholder="${esc(t('一句话告诉 Bot 这个库里是什么，例如「员工手册与考勤制度」', 'One line telling the bot what is inside, e.g. "Employee handbook and attendance rules"'))}">
+        <input class="input" id="kb-desc" name="desc" data-act="kb-create-field" data-field="desc" value="${esc(v.desc)}" maxlength="200" placeholder="${esc(t('一句话告诉 Bot 这个库里是什么，例如「员工手册与考勤制度」', 'One line telling the bot what is inside, e.g. "Employee handbook and attendance rules"'))}">
       </div>
       ${kbShareField(v.share, 'kb-create-share')}
       <div style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2);">
         <button type="button" class="btn btn-secondary" data-act="kb-create-close">${t('取消')}</button>
         <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('创建', 'Create')}</button>
-      </div>
-    </form>
-  </div>`
+      </div>`,
+  })
 }
 
 /** 共享范围三选一。名单那张勾选表只在详情页画（新建时先选范围，名单建完再勾）。 */
 function kbShareField(share, name) {
   const opts = [
-    ['all', t('全部 Bot', 'All bots'), t('公司里每颗 Bot 都查得到，包括将来新建的。', 'Every bot in the company, including ones created later.')],
-    ['bots', t('指定 Bot', 'Selected bots'), t('只有名单里的几颗。', 'Only the bots on the list.')],
-    ['none', t('不共享', 'Not shared'), t('谁也查不到。还在准备、或只给管理员自己试搜时用。', 'No bot can search it. For drafts, or for admin-only testing.')],
+    ['all', t('全部 Bot', 'All bots'), t('公司现有及之后新建的 Bot 均可检索。', 'All current and future bots in the company can search.')],
+    ['bots', t('指定 Bot', 'Selected bots'), t('仅允许你选择的 Bot 检索。', 'Only the bots you select can search.')],
+    ['none', t('不共享', 'Not shared'), t('Bot 暂不可检索，管理员仍可测试检索效果。', 'Bots cannot search; admins can still test retrieval.')],
   ]
-  return `<div class="field">
-    <label>${t('共享给', 'Share with')}</label>
-    <div style="display: flex; flex-direction: column; gap: 6px;">
-      ${opts.map(([k, label, note]) => `<label style="display: flex; gap: var(--space-2); align-items: flex-start; font-weight: 400; cursor: pointer;">
-        <input type="radio" name="${esc(name)}" value="${k}" ${share === k ? 'checked' : ''} data-act="kb-share-pick" style="margin-top: 3px;">
-        <span><b style="font-size: 13.5px;">${label}</b><br><span style="font-size: 12px; color: var(--muted-foreground);">${note}</span></span>
-      </label>`).join('')}
-    </div>
-  </div>`
+  return `<fieldset class="rs-share-options"><legend>${t('共享给', 'Share with')}</legend>${opts.map(([key,label,note])=>`<label class="rs-share-option"><input type="radio" name="${esc(name)}" value="${key}" ${share === key ? 'checked' : ''} data-act="kb-share-pick"><span><strong>${label}</strong><small>${note}</small></span></label>`).join('')}${name === 'kb-create-share' ? `<p class="mg-help rs-create-bots-help">${t('创建后，请在“共享与设置”中选择具体 Bot。在选择前，没有 Bot 可以检索此知识库。', 'After creation, select bots under Sharing & settings. No bot can search this knowledge base until then.')}</p>` : ''}</fieldset>`
 }
 
 function knowledgePage() {
-  const k = state.knowledge || { enabled: true, list: [], quota: 0, used: 0 }
+  const k = state.knowledge
   const admin = isAdmin() || isOwner()
+  if (!k) return `<div class="gw-page"><div class="gw-page-inner">${flashes()}${resourceEmpty(t('正在加载知识库', 'Loading knowledge bases'), t('正在获取资料与共享范围。', 'Fetching documents and sharing information.'))}</div></div>`
   const full = k.used >= k.quota
-  return `<div class="gw-page">
-    <div class="gw-page-inner">
-      <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('知识库')}${admin ? ` <span style="font-size: 14px; font-weight: 400; color: var(--muted-foreground);">${esc(k.used)} / ${esc(k.quota)}</span>` : ''}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${admin
-            ? t('把公司资料交给 Bot：传文件进来，Bot 回答时会先在这里查。', 'Give your bots the company documents: upload files here and bots search them before answering.')
-            : t('公司给你的 Bot 准备的资料。Bot 回答时会先在这里查。', 'Documents the company prepared for your bots. Bots search them before answering.')}</p>
-        </div>
-        ${admin ? `<button type="button" class="btn btn-primary" data-act="kb-create-open" ${full || !k.enabled ? 'disabled' : ''} title="${esc(full ? (k.quota ? t('已达套餐上限', 'Plan limit reached') : t('当前套餐不含知识库', 'Your plan has no knowledge bases')) : '')}">${t('新建知识库', 'New knowledge base')}</button>` : ''}
-      </div>
-      ${flashes()}
-      ${!k.enabled ? `<div class="gw-flash">${t('平台还没开通知识库', 'Knowledge bases are not enabled on this platform yet')}${k.reason ? `：${esc(k.reason)}` : t('（没有配置向量库）。', ' (no vector store configured).')}</div>` : ''}
-      ${admin && k.enabled && !k.quota ? `<div class="gw-flash">${t('当前套餐不含知识库。要用的话请联系平台升级套餐。', 'Your current plan has no knowledge bases. Contact the platform to upgrade.')}</div>` : ''}
-      ${k.list.length
-        ? `<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-4);">${k.list.map(kbCard).join('')}</div>`
-        : `<p style="color: var(--muted-foreground);">${admin ? t('还没有知识库。', 'No knowledge bases yet.') : t('还没有共享给你的知识库。', 'No knowledge base has been shared with your bots yet.')}</p>`}
-    </div>
-    ${kbCreateModal()}
-  </div>`
+  return `<div class="gw-page rs-page"><div class="gw-page-inner">
+    ${pageHead(t('知识库', 'Knowledge bases'), admin ? t('按主题整理公司资料，上传文件并设置哪些 Bot 可以检索。', 'Organize company documents, upload files and choose which bots can search them.') : t('查看公司共享给你的 Bot 的资料与文件。', 'View the documents shared with your bots.'), admin ? `<button type="button" class="btn btn-primary" data-act="kb-create-open" ${full || !k.enabled ? 'disabled' : ''}>${t('新建知识库', 'New knowledge base')}</button>` : '')}
+    ${flashes()}
+    ${admin ? managementStats([{label:t('已创建知识库', 'Knowledge bases'),value:k.used,note:t(`套餐上限 ${k.quota} 个`, `Plan limit: ${k.quota}`)}, {label:t('资料文件', 'Document files'),value:k.list.reduce((n,x)=>n+(x.fileCount || 0),0),note:t('当前知识库中的文件总数', 'Files in the listed knowledge bases')}, {label:t('已用容量', 'Storage used'),value:fmtBytes(k.list.reduce((n,x)=>n+(x.bytesUsed || 0),0)),note:t('各知识库独立计算容量上限', 'Storage limits apply to each knowledge base')}]) : ''}
+    ${!k.enabled ? `<p class="mg-notice" role="status">${t('知识库服务暂不可用，请联系管理员。', 'Knowledge base service is unavailable. Contact your administrator.')}${k.reason ? ` ${esc(k.reason)}` : ''}</p>` : admin && full ? `<p class="mg-notice">${k.quota ? t('已达到知识库数量上限。现有资料仍可管理，如需新增请调整套餐。', 'The knowledge base limit has been reached. You can still manage existing documents; adjust your plan to add more.') : t('当前套餐不含知识库，请联系平台调整套餐。', 'Your plan does not include knowledge bases. Contact the platform to adjust it.')}</p>` : ''}
+    <section class="rs-section"><div class="mg-sectionhead"><h2>${admin ? t('公司资料', 'Company documents') : t('共享资料', 'Shared documents')} <span class="rs-count">${k.list.length}</span></h2><span class="mg-help">${t('打开知识库查看文件与检索效果', 'Open a knowledge base to view files and test search')}</span></div>
+      ${k.list.length ? `<div class="rs-kb-grid">${k.list.map(kbCard).join('')}</div>` : resourceEmpty(admin ? t('还没有知识库', 'No knowledge bases yet') : t('暂无共享资料', 'No shared documents'), admin ? t('按主题创建知识库，再上传可供 Bot 检索的公司资料。', 'Create a knowledge base by topic, then upload documents for bots to search.') : t('管理员共享资料给你的 Bot 后，会显示在这里。', 'Documents will appear here when an administrator shares them with your bots.'))}
+    </section>
+  </div>${kbCreateModal()}</div>`
 }
 
 function kbFileRow(f, canEdit) {
   const [zh, en, cls] = KB_STATUS[f.status] || KB_STATUS.failed
-  const pct = f.status === 'processing' && f.chunkCount ? Math.round((f.chunkDone / f.chunkCount) * 100) : null
-  return `<div class="satu-memberrow" style="grid-template-columns: minmax(160px, 2fr) 90px 120px 120px 150px;">
+  const pct = f.status === 'processing' && f.chunkCount ? Math.max(0, Math.min(100, Math.round(((f.chunkDone || 0) / f.chunkCount) * 100))) : null
+  return `<div class="satu-memberrow rs-kb-filerow" style="grid-template-columns: minmax(160px, 2fr) 80px 100px 126px 160px;">
     <div style="min-width: 0;">
       <div style="font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(f.name)}">${esc(f.name)}</div>
-      ${f.status === 'failed' && f.error ? `<div style="font-size: 12px; color: var(--color-warn, #b45309);">${esc(f.error)}</div>` : ''}
+      ${f.status === 'failed' && f.error ? `<div style="font-size: 12px; color: var(--color-warn-800);">${esc(f.error)}</div>` : ''}
       ${f.status === 'ready' ? `<div style="font-size: 12px; color: var(--muted-foreground);">${t(`${f.chunkCount} 段`, `${f.chunkCount} chunks`)}</div>` : ''}
     </div>
     <span style="font-size: 13px; color: var(--muted-foreground);">${esc(fmtBytes(f.bytes))}</span>
@@ -189,16 +171,13 @@ function kbFileRow(f, canEdit) {
   </div>`
 }
 
+function kbVisibleUploads() {
+  return (state.kbUploads || []).filter(u => (!u.kbId || u.kbId === state.kbDetail?.id) && (!u.done || u.error))
+}
+
 function kbUploadRows() {
-  const list = (state.kbUploads || []).filter((u) => !u.done || u.error)
-  if (!list.length) return ''
-  return list.map((u) => `<div class="satu-memberrow" style="grid-template-columns: minmax(160px, 2fr) 90px 1fr;">
-    <div style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(u.name)}</div>
-    <span style="font-size: 13px; color: var(--muted-foreground);">${esc(fmtBytes(u.bytes))}</span>
-    ${u.error
-      ? `<span style="font-size: 12px; color: var(--color-warn, #b45309);">${esc(u.error)}</span>`
-      : `<div class="satu-meter" style="align-self: center;"><div class="satu-meterfill" data-upload="1" style="width: ${u.pct}%;"></div></div>`}
-  </div>`).join('')
+  const list = kbVisibleUploads()
+  return list.length ? `<div class="rs-uploads" aria-label="${t('文件上传进度', 'File uploads')}">${list.map((u,i)=>`<div class="rs-upload-row"><div><strong>${esc(u.name)}</strong><small>${esc(fmtBytes(u.bytes))}</small></div>${u.error ? `<span class="rs-upload-error" role="alert">${esc(u.error)}</span>` : `<div class="rs-upload-progress"><span data-upload-label="${i}">${t('上传中', 'Uploading')} ${u.pct}%</span><div class="satu-meter" role="progressbar" aria-label="${esc(u.name)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${u.pct}"><div class="satu-meterfill" data-upload="${i}" style="width:${u.pct}%"></div></div></div>`}</div>`).join('')}</div>` : ''
 }
 
 function kbSharePanel(k) {
@@ -213,10 +192,10 @@ function kbSharePanel(k) {
   const known = new Set(bots.map((b) => b.id))
   const chosen = new Set(d.botIds)
   const dirty = d.share !== k.share || [...chosen].sort().join() !== [...(k.botIds || [])].sort().join()
-  return `<form id="kb-share-form" class="satu-panel" style="gap: var(--space-3);">
+  return `<form id="kb-share-form" class="satu-panel rs-sharing-panel" style="gap: var(--space-3);">
     <span class="satu-panel-title">${t('共享范围', 'Sharing')}</span>
     ${kbShareField(d.share, 'kb-share')}
-    ${d.share === 'bots' ? `<div style="border: 1px solid var(--border); border-radius: 12px; padding: var(--space-3); max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: var(--space-2);">
+    ${d.share === 'bots' ? `<p class="mg-help">${chosen.size ? t(`已选择 ${chosen.size} 个 Bot。`, `${chosen.size} bots selected.`) : t('尚未选择 Bot，保存后没有 Bot 可以检索此知识库。', 'No bots selected. Saving will leave this knowledge base unavailable to all bots.')}</p><div style="border: 1px solid var(--border); border-radius: 12px; padding: var(--space-3); max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: var(--space-2);">
       ${bots.length ? [...groups.entries()].map(([owner, list]) => `<div>
         <div style="font-size: 12px; color: var(--muted-foreground); margin-bottom: 4px;">${esc(owner)}</div>
         ${list.map((b) => `<label style="display: flex; gap: var(--space-2); align-items: center; font-weight: 400; font-size: 13.5px; cursor: pointer; padding: 2px 0;">
@@ -224,95 +203,77 @@ function kbSharePanel(k) {
           <span>${esc(b.name)}</span>
         </label>`).join('')}
       </div>`).join('') : `<span style="font-size: 13px; color: var(--muted-foreground);">${t('公司里还没有 Bot。', 'No bots in the company yet.')}</span>`}
-      ${[...chosen].filter((id) => !known.has(id)).length ? `<span style="font-size: 12px; color: var(--muted-foreground);">${t('名单里有已经删掉的 Bot，保存时会一并清掉。', 'Some bots on the list were deleted; saving will drop them.')}</span>` : ''}
+      ${[...chosen].filter((id) => !known.has(id)).length ? `<span style="font-size: 12px; color: var(--muted-foreground);">${t('部分已选 Bot 已被删除，保存时会移除这些无效项。', 'Some bots on the list were deleted; saving will drop them.')}</span>` : ''}
     </div>` : ''}
-    <div style="display: flex; justify-content: flex-end;">
+    <div class="rs-sharing-save">
+      <span class="mg-help">${dirty ? t('有未保存的更改', 'Unsaved changes') : t('当前共享范围已保存', 'Sharing settings are saved')}</span>
       <button type="submit" class="btn btn-primary" ${state.busy || !dirty ? 'disabled' : ''}>${state.busy ? t('保存中…') : t('保存共享范围', 'Save sharing')}</button>
     </div>
   </form>`
 }
 
 function kbSearchPanel(k) {
-  const s = state.kbSearch || {}
-  const hits = Array.isArray(s.hits) ? s.hits : null
-  return `<form id="kb-search-form" class="satu-panel" style="gap: var(--space-3);">
-    <span class="satu-panel-title">${t('试搜', 'Try a search')}</span>
-    <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('像 Bot 那样在这个库里按语义搜一次，看看传进来的资料查不查得到。', 'Search this knowledge base the way a bot would, to confirm the uploaded material is findable.')}</p>
-    <div style="display: flex; gap: var(--space-2);">
-      <input class="input" name="query" value="${esc(s.query || '')}" placeholder="${esc(t('例如：年假怎么算', 'e.g. how is annual leave calculated'))}" style="flex: 1;">
-      <button type="submit" class="btn btn-secondary" ${s.busy ? 'disabled' : ''}>${s.busy ? t('搜索中…', 'Searching…') : t('搜索', 'Search')}</button>
-    </div>
-    ${hits ? (hits.length ? `<div style="display: flex; flex-direction: column; gap: var(--space-2);">
-      <span style="font-size: 12px; color: var(--muted-foreground);">${t(`${hits.length} 段，用时 ${((s.elapsedMs || 0) / 1000).toFixed(1)}s`, `${hits.length} chunks in ${((s.elapsedMs || 0) / 1000).toFixed(1)}s`)}</span>
-      ${hits.map((h) => `<div style="border: 1px solid var(--border); border-radius: 12px; padding: var(--space-3); font-size: 13px;">
-        <div style="display: flex; justify-content: space-between; gap: var(--space-2); color: var(--muted-foreground); font-size: 12px; margin-bottom: 4px;">
-          <span>${esc(h.fileName)}${h.page != null ? ` · ${t(`第 ${h.page} 页`, `p.${h.page}`)}` : ''}</span><span>${esc(String(h.score))}</span>
-        </div>
-        <div style="white-space: pre-wrap; word-break: break-word;">${esc(h.text)}</div>
-      </div>`).join('')}
-    </div>` : `<span style="font-size: 13px; color: var(--muted-foreground);">${t('没有和它相关的内容。', 'Nothing related was found.')}</span>`) : ''}
+  const search = state.kbSearch || {}
+  const hits = Array.isArray(search.hits) ? search.hits : null
+  return `<form id="kb-search-form" class="satu-panel rs-kb-search"><div><h2>${t('检索测试', 'Test retrieval')}</h2><p class="mg-help">${t('输入一个实际问题，查看 Bot 能检索到的资料片段。仅已完成入库的文件可参与检索。', 'Ask a real question to see which document passages a bot can retrieve. Only indexed files are searchable.')}</p></div>
+    <div class="field"><label for="kb-query">${t('测试问题', 'Test question')}</label><div class="rs-search-form"><input class="input" id="kb-query" type="search" name="query" data-act="kb-query" value="${esc(state.kbSearchQuery ?? search.query ?? '')}" placeholder="${esc(t('例如：年假如何申请？', 'e.g. How do I request annual leave?'))}" maxlength="2000" required><button type="submit" class="btn btn-primary" ${search.busy ? 'disabled' : ''}>${search.busy ? t('搜索中…', 'Searching…') : t('测试检索', 'Test search')}</button></div></div>
+    ${search.busy ? `<p class="mg-help" role="status">${t('正在查找相关资料…', 'Finding relevant documents…')}</p>` : ''}
+    ${search.error ? `<div class="rs-inline-error" role="alert"><strong>${t('检索未完成', 'Search did not complete')}</strong><p>${esc(search.error)}</p><span>${t('请检查服务状态后重试，输入的问题已保留。', 'Check the service and retry. Your question has been kept.')}</span></div>` : ''}
+    ${hits ? `<p class="mg-help">${t('检索问题：', 'Search question: ')}${esc(search.query || '')}</p>` : ''}
+    ${hits ? hits.length ? `<div class="rs-search-results"><div class="mg-sectionhead"><strong>${t(`找到 ${hits.length} 个相关片段`, `${hits.length} relevant passages`)}</strong><span class="mg-help">${t(`用时 ${((search.elapsedMs || 0)/1000).toFixed(1)} 秒`, `${((search.elapsedMs || 0)/1000).toFixed(1)} seconds`)}</span></div>${hits.map(h=>`<article class="rs-search-hit"><div><strong>${esc(h.fileName)}</strong>${h.page != null ? `<span>${t(`第 ${h.page} 页`, `Page ${h.page}`)}</span>` : ''}<span class="rs-hit-score">${t('相关度', 'Relevance')} ${esc(String(h.score))}</span></div><p>${esc(h.text)}</p></article>`).join('')}</div>` : resourceEmpty(t('未找到相关内容', 'No relevant passages found'), t('试试更具体的问题，并确认相关文件已完成入库。', 'Try a more specific question and check that the relevant files are indexed.')) : ''}
   </form>`
+}
+
+function kbDetailSummary(d) {
+  const k = d.knowledge
+  return `<div class="rs-kb-summary"><div><span>${t('资料文件', 'Files')}</span><strong>${k.fileCount || 0}</strong></div><div><span>${t('已完成入库', 'Indexed')}</span><strong>${d.files.filter(f=>f.status === 'ready').length}</strong></div><div class="rs-kb-summary-storage"><span>${t('已用容量', 'Storage used')}</span>${kbMeter(k)}</div></div>`
+}
+
+function kbFilesArea(d) {
+  const cfg = state.kbConfig || {}
+  const types = (cfg.types || ['pdf','docx','pptx','xlsx','csv','md','txt']).map(x=>'.'+x)
+  return `${d.canEdit ? `<div class="rs-kb-upload" id="kb-dropzone" data-act="kb-dropzone"${!d.enabled ? ' data-disabled="1"' : ''}>
+    <span class="rs-resource-icon">${svg(['M12 16V4','m7 9 5-5 5 5','M4 16v4h16v-4'],22)}</span><div><strong>${t('拖放文件到这里，或选择文件上传', 'Drop files here or select files to upload')}</strong><p>${t(`支持 ${types.join(' / ')}，单个文件最多 ${fmtBytes(cfg.limits?.fileMax || 50*1024*1024)}。扫描件暂不支持。`, `Supports ${types.join(' / ')}; up to ${fmtBytes(cfg.limits?.fileMax || 50*1024*1024)} per file. Scanned documents are not supported.`)}</p></div>
+    <label class="btn btn-secondary rs-file-picker">${t('选择文件', 'Choose files')}<input type="file" multiple accept="${esc(types.join(','))}" aria-label="${t('选择文件', 'Choose files')}" data-act="kb-files" ${!d.enabled ? 'disabled' : ''}></label>
+  </div>` : ''}${kbUploadRows()}
+  <div class="mg-table rs-kb-filetable"><div class="satu-memberhead" style="grid-template-columns:minmax(160px,2fr) 80px 100px 126px 160px"><span>${t('文件', 'File')}</span><span>${t('大小', 'Size')}</span><span>${t('状态')}</span><span>${t('上传时间', 'Uploaded')}</span><span></span></div>${d.files.length ? d.files.map(f=>kbFileRow(f,d.canEdit)).join('') : resourceEmpty(t('还没有文件', 'No files yet'),d.canEdit ? t('上传文件后将自动入库，完成后即可检索。', 'Uploaded files are indexed automatically and become searchable when ready.') : t('管理员上传文件后，会显示在这里。', 'Files appear here once uploaded by an administrator.'))}</div>`
+}
+
+/** Polling and upload progress update only read-only file content; active forms keep focus. */
+function paintKnowledgeFiles() {
+  const d = state.kbDetail
+  if (!d || kbIdOfPath(state.path) !== d.id) return
+  const host = document.getElementById('kb-files-area')
+  if (host) { host.innerHTML = kbFilesArea(d); cardifyTables(host) }
+  const summary = document.getElementById('kb-summary')
+  if (summary) summary.innerHTML = kbDetailSummary(d)
 }
 
 function knowledgeDetailPage() {
   const d = state.kbDetail && state.kbDetail.id === kbIdOfPath(state.path) ? state.kbDetail : null
-  if (!d) {
-    return `<div class="gw-page"><div class="gw-page-inner">${flashes()}<p style="color: var(--muted-foreground);">${t('载入中…')}</p></div></div>`
-  }
+  if (!d) return `<div class="gw-page"><div class="gw-page-inner">${flashes()}${resourceEmpty(t('正在加载知识库', 'Loading knowledge base'), t('正在获取文件与配置信息。', 'Fetching files and settings.'))}</div></div>`
   const k = d.knowledge
-  const canEdit = d.canEdit
-  const cfg = state.kbConfig || {}
-  const types = (cfg.types || ['pdf', 'docx', 'pptx', 'xlsx', 'csv', 'md', 'txt']).map((x) => '.' + x)
-  const edit = state.kbEdit && state.kbEdit.id === k.id ? state.kbEdit : null
-  return `<div class="gw-page">
-    <div class="gw-page-inner">
-      <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
-        <div style="min-width: 0; flex: 1;">
-          ${edit ? `<form id="kb-edit-form" style="display: flex; flex-direction: column; gap: var(--space-2); max-width: 520px;">
-            <input class="input" name="name" value="${esc(edit.name)}" maxlength="60" required>
-            <input class="input" name="desc" value="${esc(edit.desc)}" maxlength="200" placeholder="${esc(t('这句话会告诉 Bot 这个库里是什么', 'This line tells the bot what is inside'))}">
-            <div style="display: flex; gap: var(--space-2);">
-              <button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${t('保存')}</button>
-              <button type="button" class="btn btn-secondary" data-act="kb-edit-cancel">${t('取消')}</button>
-            </div>
-          </form>` : `<h1 style="font-size: 24px; margin: 0 0 4px;">${esc(k.name)} <span class="tag ${k.share === 'none' ? 'tag-neutral' : 'tag-accent-2'}" style="vertical-align: middle;">${kbShareLabel(k)}</span></h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${esc(k.desc || t('还没有说明。', 'No description yet.'))}${canEdit ? ` <button type="button" class="satu-linkbtn" data-act="kb-edit-open">${t('编辑', 'Edit')}</button>` : ''}</p>`}
-        </div>
-        ${canEdit ? `<button type="button" class="btn btn-ghost" data-act="kb-delete" data-id="${esc(k.id)}" data-name="${esc(k.name)}">${t('删除知识库', 'Delete knowledge base')}</button>` : ''}
-      </div>
-      ${flashes()}
-      <div class="satu-panel" style="gap: var(--space-3);">
-        <div style="display: flex; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; align-items: center;">
-          <span class="satu-panel-title" style="margin: 0;">${t('容量', 'Storage')}</span>
-          <span style="font-size: 12px; color: var(--muted-foreground);">${t(`${k.fileCount || 0} 个文件 · ${k.chunkCount || 0} 段`, `${k.fileCount || 0} files · ${k.chunkCount || 0} chunks`)}</span>
-        </div>
-        ${kbMeter(k)}
-      </div>
-      ${canEdit ? `<div class="satu-panel" style="gap: var(--space-3);" id="kb-dropzone" data-act="kb-dropzone">
-        <span class="satu-panel-title">${t('上传文件', 'Upload files')}</span>
-        <div style="border: 1px dashed var(--border); border-radius: 12px; padding: var(--space-5); text-align: center; color: var(--muted-foreground); font-size: 13px;">
-          ${t('把文件拖到这里，或', 'Drop files here, or')} <label class="satu-linkbtn" style="cursor: pointer;">${t('选择文件', 'choose files')}<input type="file" multiple accept="${esc(types.join(','))}" data-act="kb-files" style="display: none;"></label>
-          <div style="margin-top: 6px; font-size: 12px;">${t(`支持 ${types.join(' / ')}；单个文件最多 ${fmtBytes(cfg.limits?.fileMax || 50 * 1024 * 1024)}。扫描件暂不支持。`, `Supports ${types.join(' / ')}; up to ${fmtBytes(cfg.limits?.fileMax || 50 * 1024 * 1024)} per file. Scanned PDFs are not supported yet.`)}</div>
-        </div>
-        ${!d.enabled ? `<div class="gw-flash">${t('平台还没开通知识库，暂时传不了。', 'Knowledge bases are not enabled on this platform yet.')}</div>` : ''}
-      </div>` : ''}
-      <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
-        <div class="satu-memberhead" style="grid-template-columns: minmax(160px, 2fr) 90px 120px 120px 150px;">
-          <span>${t('文件', 'File')}</span><span>${t('大小', 'Size')}</span><span>${t('状态')}</span><span>${t('上传时间', 'Uploaded')}</span><span></span>
-        </div>
-        ${kbUploadRows()}
-        ${d.files.length ? d.files.map((f) => kbFileRow(f, canEdit)).join('') : `<p style="margin: 0; padding: var(--space-4); color: var(--muted-foreground); font-size: 13px;">${t('还没有文件。', 'No files yet.')}</p>`}
-      </div>
-      ${canEdit ? kbSharePanel(k) : ''}
-      ${d.enabled ? kbSearchPanel(k) : ''}
-    </div>
-  </div>`
+  const edit = state.kbEdit?.id === k.id ? state.kbEdit : null
+  const tabs = [{ key:'files',label:t('文件', 'Files') }, ...(d.enabled ? [{key:'search',label:t('检索测试', 'Test retrieval')}] : []), ...(d.canEdit ? [{key:'sharing',label:t('共享与设置', 'Sharing & settings')}] : [])]
+  const tab = tabs.some(x=>x.key === state.kbTab) ? state.kbTab : 'files'
+  return `<div class="gw-page rs-page"><div class="gw-page-inner">
+    ${edit ? `<form id="kb-edit-form" class="satu-panel rs-kb-edit"><h2>${t('编辑基本信息', 'Edit details')}</h2><div class="mg-form-grid"><label class="field"><span>${t('名称', 'Name')}</span><input class="input" name="name" data-act="kb-edit-field" data-field="name" value="${esc(edit.name)}" maxlength="60" required></label><label class="field"><span>${t('说明', 'Description')}</span><input class="input" name="desc" data-act="kb-edit-field" data-field="desc" value="${esc(edit.desc)}" maxlength="200"></label></div><div class="rs-modal-actions"><button type="button" class="btn btn-secondary" data-act="kb-edit-cancel">${t('取消')}</button><button type="submit" class="btn btn-primary" ${state.busy ? 'disabled' : ''}>${t('保存')}</button></div></form>` : pageHead(`${esc(k.name)} <span class="tag ${k.share === 'none' ? 'tag-neutral' : 'tag-accent-2'}">${kbShareLabel(k)}</span>`,esc(k.desc || t('暂无资料说明。', 'No description yet.')),d.canEdit ? `<button type="button" class="btn btn-secondary" data-act="kb-edit-open">${t('编辑信息', 'Edit details')}</button>` : '')}
+    ${flashes()}${!d.enabled ? `<p class="mg-notice" role="status">${t('知识库服务暂不可用，文件上传和检索已暂停。', 'Knowledge base service is unavailable. Uploads and search are paused.')}</p>` : ''}
+    <div id="kb-summary">${kbDetailSummary(d)}</div>
+    <div class="mg-tabs rs-kb-tabs" aria-label="${t('知识库内容', 'Knowledge base sections')}">${tabs.map(x=>`<button type="button" class="btn mg-tab" aria-pressed="${tab === x.key}" data-act="kb-tab" data-tab="${x.key}">${x.label}</button>`).join('')}</div>
+    ${tab === 'files' ? `<div id="kb-files-area" class="rs-section">${kbFilesArea(d)}</div>` : tab === 'search' ? kbSearchPanel(k) : `<div class="rs-section">${kbSharePanel(k)}<section class="rs-danger-zone"><div><h2>${t('删除知识库', 'Delete knowledge base')}</h2><p>${t('将永久删除此知识库及其中全部文件，Bot 将无法再检索这些资料。', 'Permanently deletes this knowledge base and all its files. Bots will no longer be able to retrieve them.')}</p></div><button type="button" class="btn btn-secondary rs-danger-action" data-act="kb-delete" data-id="${esc(k.id)}" data-name="${esc(k.name)}">${t('删除知识库', 'Delete knowledge base')}</button></section></div>`}
+  </div></div>`
 }
 
 // ── 动作 ────────────────────────────────────────────────────────────────
 
 async function knowledgeAct(act, btn) {
   if (!act || !act.startsWith('kb-')) return false
+  if (act === 'kb-tab') {
+    const tab = btn.getAttribute('data-tab')
+    if (['files','search','sharing'].includes(tab)) state.kbTab = tab
+    render(); return true
+  }
   if (act === 'kb-create-open') { state.kbCreate = { error: '', draft: null }; render(); return true }
   if (act === 'kb-create-close') { state.kbCreate = null; render(); return true }
   if (act === 'kb-edit-open') {
@@ -324,6 +285,10 @@ async function knowledgeAct(act, btn) {
   if (act === 'kb-share-pick' || act === 'kb-share-bot') {
     // 单选 / 勾选改的是草稿；保存那颗按钮按草稿和当前值的差异亮灭。新建弹窗里那组单选不在草稿里。
     const form = btn.closest('form')
+    if (form && form.id === 'kb-create-form' && state.kbCreate) {
+      const fd = new FormData(form)
+      state.kbCreate.draft = { name: String(fd.get('name') || ''), desc: String(fd.get('desc') || ''), share: String(fd.get('kb-create-share') || 'all') }
+    }
     if (form && form.id === 'kb-share-form' && state.kbShareDraft) {
       const fd = new FormData(form)
       state.kbShareDraft.share = String(fd.get('kb-share') || state.kbShareDraft.share)
@@ -398,6 +363,7 @@ async function submitKnowledgeCreate(e) {
   e.preventDefault()
   const fd = new FormData(e.target)
   const body = { name: String(fd.get('name') || '').trim(), desc: String(fd.get('desc') || '').trim(), share: String(fd.get('kb-create-share') || 'all'), botIds: [] }
+  state.kbCreate.draft = body
   state.busy = true
   render()
   try {
@@ -418,19 +384,12 @@ async function submitKnowledgeEdit(e) {
   e.preventDefault()
   const d = state.kbDetail
   const fd = new FormData(e.target)
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     await api('PATCH', kbBase(`/${encodeURIComponent(d.id)}`), { name: String(fd.get('name') || '').trim(), desc: String(fd.get('desc') || '').trim() })
     state.kbEdit = null
     await loadKnowledgeDetail(d.id)
     flash('ok', '已保存')
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 async function submitKnowledgeShare(e) {
@@ -439,19 +398,12 @@ async function submitKnowledgeShare(e) {
   const fd = new FormData(e.target)
   const share = String(fd.get('kb-share') || 'all')
   const botIds = fd.getAll('botIds').map(String)
-  state.busy = true
-  render()
-  try {
+  await withBusy(async () => {
     await api('PUT', kbBase(`/${encodeURIComponent(d.id)}/share`), { share, botIds })
     state.kbShareDraft = null
     await loadKnowledgeDetail(d.id)
     flash('ok', t('共享范围已保存', 'Sharing saved'))
-  } catch (err) {
-    flash('err', err.message)
-  } finally {
-    state.busy = false
-    render()
-  }
+  })
 }
 
 async function submitKnowledgeSearch(e) {
@@ -459,13 +411,16 @@ async function submitKnowledgeSearch(e) {
   const d = state.kbDetail
   const query = String(new FormData(e.target).get('query') || '').trim()
   if (!query) return
+  state.kbSearchQuery = query
   state.kbSearch = { query, busy: true, hits: null }
   render()
   try {
     const data = await api('POST', kbBase('/search'), { query, kbIds: [d.id], count: 8 })
+    if (state.kbDetail?.id !== d.id) return
     state.kbSearch = { query, busy: false, hits: data.hits || [], elapsedMs: data.elapsedMs }
   } catch (err) {
-    state.kbSearch = { query, busy: false, hits: null }
+    if (state.kbDetail?.id !== d.id) return
+    state.kbSearch = { query, busy: false, hits: null, error: err.message }
     flash('err', err.message)
   }
   render()
@@ -480,14 +435,7 @@ async function knowledgeDownload(kbId, fileId, name) {
     try { msg = (await r.json()).error || msg } catch {}
     throw new Error(msg)
   }
-  const url = URL.createObjectURL(await r.blob())
-  const a = document.createElement('a')
-  a.href = url
-  a.download = name || 'file'
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  await saveBlob(await r.blob(), name || 'file', 60_000)
 }
 
 // ── 上传 ────────────────────────────────────────────────────────────────
@@ -531,7 +479,7 @@ function putWithProgress(url, file, onProgress) {
 
 async function knowledgeUpload(files) {
   const d = state.kbDetail
-  if (!d || !files || !files.length) return
+  if (!d || !d.canEdit || !d.enabled || !files || !files.length) return
   const cfg = state.kbConfig || {}
   const types = new Set(cfg.types || [])
   const fileMax = cfg.limits?.fileMax || 50 * 1024 * 1024
@@ -541,7 +489,7 @@ async function knowledgeUpload(files) {
   const jobs = []
   for (const file of files) {
     const ext = (file.name.split('.').pop() || '').toLowerCase()
-    const job = { name: file.name, bytes: file.size, pct: 0, done: false, error: '' }
+    const job = { kbId: d.id, name: file.name, bytes: file.size, pct: 0, done: false, error: '' }
     state.kbUploads.push(job)
     // 在浏览器就拦：格式、单文件、容量。拦不住的（并发、别人也在传）由服务端那把锁兜。
     if (types.size && !types.has(ext)) { job.error = t('不支持的格式', 'Unsupported format'); job.done = true; continue }
@@ -550,7 +498,7 @@ async function knowledgeUpload(files) {
     used += file.size
     jobs.push([file, job])
   }
-  render()
+  paintKnowledgeFiles()
   for (const [file, job] of jobs) {
     try {
       const reg = await api('POST', kbBase(`/${encodeURIComponent(d.id)}/files`), { name: file.name, bytes: file.size, mime: file.type || '' })
@@ -576,19 +524,29 @@ async function knowledgeUpload(files) {
       job.done = true
     }
     await loadKnowledgeDetail(d.id).catch(() => {})
-    render()
+    paintKnowledgeFiles()
   }
   // 成功的那些从列表里拿掉（文件表里已经有它们了）；失败的留着给人看原因。
-  state.kbUploads = state.kbUploads.filter((u) => u.error)
-  render()
+  state.kbUploads = state.kbUploads.filter((u) => !u.done || u.error)
+  paintKnowledgeFiles()
 }
 
 /** 进度条只改 DOM，不整页重绘——重绘会把试搜框里敲到一半的字冲掉。 */
 function paintKnowledgeUploads() {
-  const list = (state.kbUploads || []).filter((u) => !u.done || u.error)
-  const rows = document.querySelectorAll('#app .satu-meterfill[data-upload]')
-  if (rows.length !== list.length) { render(); return }
-  rows.forEach((el, i) => { el.style.width = `${list[i].pct}%` })
+  const list = kbVisibleUploads()
+  const host = document.getElementById('kb-files-area')
+  if (!host) return
+  const bars = host.querySelectorAll('.satu-meterfill[data-upload]')
+  if (bars.length !== list.filter(u=>!u.error).length) { paintKnowledgeFiles(); return }
+  for (const el of bars) {
+    const index = Number(el.getAttribute('data-upload'))
+    const item = list[index]
+    if (!item) continue
+    el.style.width = `${item.pct}%`
+    el.parentElement.setAttribute('aria-valuenow', String(item.pct))
+    const label = host.querySelector(`[data-upload-label="${index}"]`)
+    if (label) label.textContent = t(`上传中 ${item.pct}%`, `Uploading ${item.pct}%`)
+  }
 }
 
 document.addEventListener('dragover', (e) => {

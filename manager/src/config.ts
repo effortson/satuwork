@@ -64,8 +64,22 @@ import { fileURLToPath } from 'node:url'
  * 11：部署规格认 `botUrl` + `botSha256`：bot 包直接去外部地址（GitHub Release）取，不带机器票，
  * 按规格里的 sha256 核对（src/releases.ts）；没有这两个字段仍从 Gateway 转发拉。Gateway 不按
  * 这个号分流——字段是可选的，老管家不认就原样忽略，照旧走转发。
+ *
+ * 12：工人多一条循环，领主 Bot 派的活（`/worker/tasks/*`，src/worker/tasks.ts，docs/bot-tasks.md）。
+ * Gateway 按它分流：低于 12 的机器上派活当场记成「管家太旧」，不排队等。
+ *
+ * 13：席位工作区一个 bot 一格（`~/work/bots/<席位>`），同一个员工共用的是 `~/work/shared`，
+ * 老布局堆在 `~/work` 根下的文件**原地不动**，Bot 按老路径读写时落回那里（src/seat/seat-workdir.sh、
+ * bot.env 的 `SATUWORK_LEGACY_DIR`）。规格里多一个可选的 `botName`，只用来写那一格的名牌。部署规格的路径**不变**：
+ * `workDir` 仍是账号级的 `~/work`，两格都由 deploy-seat.sh 自己推出来，所以新旧 Gateway、新旧
+ * 管家怎么搭都铺得出去。Gateway 只拿这个号决定界面上把目录说成哪样（MIN_SPLIT_WORKDIR_PROTOCOL）。
+ *
+ * 14：管家自己给域名配 https（src/https.ts）：心跳回包里的 `https: { domain, loopbackOnly, nonce }`
+ * 让它装 Caddy、写 Caddyfile、本机自检，确认之后改成只听回环；心跳里报 `https` 说做到哪一步了；
+ * 多一条不认票的 `GET /ingress-check?nonce=` 给 Gateway 从外面认人。Gateway 按它决定机器页上
+ * 「启用 https」能不能按（MIN_HTTPS_PROTOCOL）：13 号管家不认这段回包，按了只会一直等下去。
  */
-export const PROTOCOL = 11
+export const PROTOCOL = 14
 
 export interface ManagerState {
   machineId: string

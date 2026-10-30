@@ -108,11 +108,17 @@ private func injectAppDelegate() {
 
 private class CenterDelegate: NSObject, UNUserNotificationCenterDelegate {
   static let shared = CenterDelegate()
+  var dismissed = Set<String>()
 
   func userNotificationCenter(
     _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
+    if let id = notification.request.content.userInfo["notificationId"] as? String,
+      dismissed.contains(id) {
+      completionHandler([])
+      return
+    }
     // .list 是 iOS 14 起才有的。应用本身最低 15，但这个包单独编译时（cargo check、CI）
     // swift-rs 按更低的部署目标编，不判断就编不过。更老的系统上前台到达的通知直接不显示。
     if #available(iOS 14.0, *) {
@@ -143,6 +149,27 @@ private class CenterDelegate: NSObject, UNUserNotificationCenterDelegate {
 
 @objc(SatuPushPlugin)
 class SatuPushPlugin: Plugin {
+  struct ClearArgs: Decodable { let ids: [String] }
+
+  @objc public func clearNotifications(_ invoke: Invoke) {
+    do {
+      let args = try invoke.parseArgs(ClearArgs.self)
+      let ids = Set(args.ids)
+      DispatchQueue.main.async {
+        CenterDelegate.shared.dismissed = ids
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { notifications in
+          let remove = notifications.filter { n in
+            guard let id = n.request.content.userInfo["notificationId"] as? String else { return false }
+            return ids.contains(id)
+          }.map { $0.request.identifier }
+          center.removeDeliveredNotifications(withIdentifiers: remove)
+          invoke.resolve()
+        }
+      }
+    } catch { invoke.reject(error.localizedDescription) }
+  }
+
   @objc public override func load(webview: WKWebView) {
     pageView = webview
   }

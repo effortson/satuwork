@@ -9,10 +9,10 @@ import { createServer } from 'node:http'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer, runProbe } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 const TOOLKITS = {
   items: [
@@ -53,7 +53,7 @@ const TOOLS = {
 }
 
 function mockComposio() {
-  const seen = { keys: new Set(), initiated: [], deleted: [], executed: [], staged: [], puts: [] }
+  const seen = { keys: new Set(), initiated: [], deleted: [], executed: [], staged: [], puts: [], proxied: [] }
   // 授权状态由测试说了算：默认 INITIATED，测试调 seen.activate(id) 之后才 ACTIVE。
   const accounts = new Map()
   let n = 0
@@ -118,6 +118,19 @@ function mockComposio() {
       })
       return
     }
+    // 代理：上游替我们带上令牌去打那条地址。只认验证用的那一条，别的一律 403（真上游
+    // 也不放行跨域）。**不是工具执行**，不进 seen.executed。
+    if (url.pathname === '/tools/execute/proxy' && req.method === 'POST') {
+      let raw = ''
+      req.on('data', (d) => { raw += d })
+      req.on('end', () => {
+        const body = JSON.parse(raw || '{}')
+        seen.proxied.push(body)
+        if (!accounts.has(body.connected_account_id) || !String(body.endpoint).endsWith('/users/me/profile')) return send(200, { status: 403, data: {} })
+        send(200, { status: 200, headers: {}, data: { emailAddress: `${body.connected_account_id}@gmail.test`, messagesTotal: 3 } })
+      })
+      return
+    }
     const ex = /^\/tools\/execute\/(.+)$/.exec(url.pathname)
     if (ex && req.method === 'POST') {
       let raw = ''
@@ -136,7 +149,16 @@ function mockComposio() {
     const m = /^\/connected_accounts\/(.+)$/.exec(url.pathname)
     if (m && req.method === 'GET') {
       const st = accounts.get(m[1])
-      return st ? send(200, { id: m[1], status: st }) : send(404, { error: { message: 'no such account' } })
+      if (!st) return send(404, { error: { message: 'no such account' } })
+      // 连上之后的记录照上游真实的样子：令牌挨着一份**打了码的** id_token（认不出人），
+      // 外加一条验证用的地址。是谁要经代理打那条地址才知道；令牌一个字都不能漏出去。
+      const live = st === 'ACTIVE'
+        ? {
+            state: { authScheme: 'OAUTH2', val: { status: 'ACTIVE', access_token: 'ya29.secret-access', id_token: 'REDACTED' } },
+            test_request_endpoint: 'https://www.googleapis.com/gmail/v1/users/me/profile',
+          }
+        : {}
+      return send(200, { id: m[1], status: st, ...live })
     }
     if (m && req.method === 'DELETE') {
       seen.deleted.push(m[1])
@@ -157,19 +179,16 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# connectors')
 
   const mock = await mockComposio()
-  const gw = start('connectors-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'connectors-gw',
+    what: 'connectors gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_connectors'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_connectors'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
       COMPOSIO_BASE_URL: mock.url,
@@ -179,7 +198,6 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       CONNECTOR_UPLOAD_MAX_BYTES: '4096',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'connectors gateway' })
 
   let owner = ''
   let adminTok = ''
@@ -416,6 +434,15 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       const one = detail.json.connections.find((c) => c.id === firstConnId)
       assert(one.status === 'active', `应该转正了，实际 ${one.status}`)
       assert(one.connectedAt > 0, '没记连接时间')
+      // 账号名是人起的，连的是哪个邮箱要从上游认出来（迁移 0065）；令牌绝不能跟着出来。
+      assert(one.accountName === `${firstExternal}@gmail.test`, `没认出连的是哪个账号：${JSON.stringify(one.accountName)}`)
+      assert(!detail.text.includes('secret-access'), '上游的令牌漏进了详情')
+      const probe = mock.seen.proxied.find((p) => p.connected_account_id === firstExternal)
+      assert(probe?.method === 'GET', `该经代理 GET 记录里那条验证地址：${JSON.stringify(mock.seen.proxied)}`)
+      // 认出来就存下：再进一次详情页不再去问。
+      const n = mock.seen.proxied.length
+      await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok })
+      assert(mock.seen.proxied.length === n, '认出来之后每次进详情页还在重问')
       assert(detail.json.tools.length === 3, `详情该带工具清单，实际 ${detail.json.tools.length}`)
       assert(detail.json.install, '详情该带安装记录')
     })
@@ -499,6 +526,146 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
 
       const filtered = await req(base, 'GET', '/mentions?q=zzz', { token: memberTok })
       assert(filtered.json.mentions.length === 0, '搜索没生效')
+    })
+
+    await test('/mentions：设了主 Bot 之后名单上别的 Bot 也进选单，带 mainBotId', async () => {
+      const before = await req(base, 'GET', '/mentions', { token: memberTok })
+      assert(!before.json.mentions.some((m) => m.kind === 'bot') && !before.json.mainBotId, '没设主 Bot 就不该列 Bot')
+      const a = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '助手' } })
+      const b = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '财务' } })
+      assert(a.status === 201 && b.status === 201, `建 Bot ${a.status} ${b.status}`)
+      const set = await req(base, 'PUT', '/runtime/main-bot', { token: memberTok, body: { botId: a.json.bot.id } })
+      assert(set.status === 200, `设主 Bot ${set.status} ${set.text}`)
+      const r = await req(base, 'GET', '/mentions', { token: memberTok })
+      assert(r.json.mainBotId === a.json.bot.id, `mainBotId 不对：${r.json.mainBotId}`)
+      const fin = r.json.mentions.find((m) => m.kind === 'bot' && m.id === b.json.bot.id)
+      assert(fin && fin.label === '财务' && fin.icon && fin.origin === 'company', `别的 Bot 该在选单里：${JSON.stringify(fin)}`)
+      assert(!r.json.mentions.some((m) => m.kind === 'bot' && m.id === a.json.bot.id), '主 Bot 自己不该在选单里')
+      // 连接器那部分照旧在。
+      assert(r.json.mentions.some((m) => m.id === firstConnId), '加了 Bot 之后连接器不见了')
+      const q = await req(base, 'GET', '/mentions?q=财', { token: memberTok })
+      assert(q.json.mentions.some((m) => m.id === b.json.bot.id) && !q.json.mentions.some((m) => m.id === firstConnId), '搜索对 Bot 没生效')
+      await req(base, 'PUT', '/runtime/main-bot', { token: memberTok, body: { botId: null } })
+    })
+
+    await test('可用 Bot：收窄到指定 Bot 之后，别的 Bot 目录里没有、点不到、调不动；删光了是谁都不给', async () => {
+      // docs/connector-bot-scope.md。default 那把收窄到 A：B 的目录里不该有它。
+      const a = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '私人助理' } })
+      const b = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '客服' } })
+      assert(a.status === 201 && b.status === 201, `建 Bot ${a.status} ${b.status}`)
+      const A = a.json.bot.id
+      const B = b.json.bot.id
+      const bots = (body, token = memberTok) =>
+        req(base, 'PUT', `/me/connectors/${connectorId}/connections/${firstConnId}/bots`, { token, body })
+      const servedTo = async (botId) => {
+        const cat = await req(base, 'GET', `/runtime/catalog${botId ? `?botId=${botId}` : ''}`, { token: seatTok })
+        assert(cat.status === 200, `catalog ${cat.status} ${cat.text}`)
+        const server = cat.json.servers.find((x) => x.id === firstConnId)
+        const onBot = botId ? (cat.json.bots[0].mcps || []).includes(firstConnId) : null
+        return { server, onBot }
+      }
+
+      // 默认：所有 Bot 都有，没按 Bot 拉的也有。
+      const detail0 = await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok })
+      const row0 = detail0.json.connections.find((c) => c.id === firstConnId)
+      assert(row0.bots && row0.bots.mode === 'all', `默认该是所有 Bot：${JSON.stringify(row0.bots)}`)
+      assert(detail0.json.bots.some((x) => x.id === A && x.name === '私人助理'), `详情该带候选 Bot：${JSON.stringify(detail0.json.bots)}`)
+      assert((await servedTo(B)).onBot, '默认 B 就该用得上')
+
+      // 校验：空名单、别人的 Bot、乱写的 mode、别人的连接。
+      assert((await bots({ mode: 'bots', botIds: [] })).status === 400, '空名单该 400')
+      assert((await bots({ mode: 'bots', botIds: ['bot-not-mine'] })).status === 400, '不是自己的 Bot 该 400')
+      assert((await bots({ mode: 'some' })).status === 400, '认不出的 mode 该 400')
+      assert((await bots({ mode: 'all' }, adminTok)).status === 404, '别人的连接该 404')
+
+      const before = (await req(base, 'GET', `/runtime/catalog/version?botId=${B}`, { token: seatTok })).json.stamp
+      const put = await bots({ mode: 'bots', botIds: [A, A] })
+      assert(put.status === 200, `收窄 ${put.status} ${put.text}`)
+      assert(
+        put.json.connection.bots.mode === 'bots' && put.json.connection.bots.botIds.length === 1 && put.json.connection.bots.botIds[0] === A,
+        `重复的要去掉：${JSON.stringify(put.json.connection.bots)}`,
+      )
+      const after = (await req(base, 'GET', `/runtime/catalog/version?botId=${B}`, { token: seatTok })).json.stamp
+      assert(before !== after, '改了范围指纹没变，B 那边永远看不到这次改动')
+
+      // 目录：A 有、B 没有（整条不下发），不按 Bot 拉的也没有。
+      const forA = await servedTo(A)
+      assert(forA.server && forA.onBot, `A 该拿到这把：${JSON.stringify(forA)}`)
+      const forB = await servedTo(B)
+      assert(!forB.server && !forB.onBot, 'B 不在名单上，目录里却还有这把')
+      assert(!(await servedTo('')).server, '没按 Bot 拉目录的，收窄过的一律不给')
+
+      // @ 选单：带 botId 就按它筛；不带（老页面）照旧全列，发消息那一跳再剔。
+      const mB = await req(base, 'GET', `/mentions?botId=${B}`, { token: memberTok })
+      assert(!mB.json.mentions.some((m) => m.id === firstConnId), 'B 的选单里不该有这把')
+      const mA = await req(base, 'GET', `/mentions?botId=${A}`, { token: memberTok })
+      assert(mA.json.mentions.some((m) => m.id === firstConnId), 'A 的选单里该有这把')
+
+      // MCP 端点兜底：席位拿 B 的名义来打，列表是空的，调用是一句话，上游一次都不碰。
+      const path = new URL(forA.server.endpoint).pathname
+      const rpc = (botId, method, params, id = 1) =>
+        req(base, 'POST', `${path}?botId=${botId}`, { token: seatTok, body: { jsonrpc: '2.0', id, method, ...(params ? { params } : {}) } })
+      const list = await rpc(B, 'tools/list')
+      assert(list.json.result && list.json.result.tools.length === 0, `B 列工具该是空表：${list.text}`)
+      const ran = mock.seen.executed.length
+      const call = await rpc(B, 'tools/call', { name: 'SEND_EMAIL', arguments: {} }, 2)
+      assert(call.json.result?.isError && call.json.result.content[0].text.includes('没有开放给这颗 Bot'), `B 调用该被拦：${call.text}`)
+      assert(mock.seen.executed.length === ran, '被拦的调用打到了上游')
+      // 元工具也一样：列表是空的，SW_SEARCH / SW_DESCRIBE 不能把工具和 schema 漏出来。
+      for (const [n, name, args] of [[4, 'SW_SEARCH', { query: 'mail' }], [5, 'SW_DESCRIBE', { tool: 'SEND_EMAIL' }]]) {
+        const meta = await rpc(B, 'tools/call', { name, arguments: args }, n)
+        assert(meta.json.result?.isError && meta.json.result.content[0].text.includes('没有开放给这颗 Bot'), `B 调 ${name} 该被拦：${meta.text}`)
+      }
+      const noBot = await req(base, 'POST', path, { token: seatTok, body: { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'SEND_EMAIL', arguments: {} } } })
+      assert(noBot.json.result?.isError, `没带 botId 的也该拦：${noBot.text}`)
+      const files = await req(base, 'POST', `${path}/files?botId=${B}`, {
+        token: seatTok,
+        body: { tool: 'SEND_EMAIL', name: 'a.txt', mimetype: 'text/plain', md5: 'd41d8cd98f00b204e9800998ecf8427e', size: 1 },
+      })
+      assert(files.status === 403, `B 要附件上传位该 403，实际 ${files.status} ${files.text}`)
+      const okList = await rpc(A, 'tools/list')
+      assert(okList.json.result.tools.length > 0, `A 照常列得出工具：${okList.text}`)
+
+      // 名单里的 Bot 删光了：谁都不给，**不是**回到全部。
+      const del = await req(base, 'DELETE', `/runtime/bots/${A}`, { token: memberTok })
+      assert(del.status === 200 || del.status === 202, `删 Bot ${del.status} ${del.text}`)
+      const detail1 = await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok })
+      const row1 = detail1.json.connections.find((c) => c.id === firstConnId)
+      assert(row1.bots.mode === 'bots' && row1.bots.botIds.length === 0 && row1.bots.missing === 1, `删光之后该是空名单 + missing：${JSON.stringify(row1.bots)}`)
+      assert(!(await servedTo(B)).server, '名单删光之后变回了所有 Bot')
+
+      // 改回所有 Bot：B 又有了。后面的用例验的是默认行为，别让这条的副作用漏下去。
+      const back = await bots({ mode: 'all' })
+      assert(back.status === 200 && back.json.connection.bots.mode === 'all', `改回 ${back.status} ${back.text}`)
+      assert((await servedTo(B)).onBot, '改回所有 Bot 之后 B 还是没有')
+      await req(base, 'DELETE', `/runtime/bots/${B}`, { token: memberTok })
+    })
+
+    await test('可用 Bot × 本地 Bot：别的电脑上看不到的那颗不算缺失，在那台上保存范围也不会把它勾掉', async () => {
+      // docs/local-bot-device.md §4.2：本地 Bot 只属于建它的那台电脑。
+      const onA = { 'x-satuwork-device': 'e2e-connectors-desk-aa', 'x-satuwork-client': 'desktop' }
+      const onB = { 'x-satuwork-device': 'e2e-connectors-desk-bb', 'x-satuwork-client': 'desktop' }
+      const local = await req(base, 'POST', '/runtime/bots', { token: memberTok, headers: onA, body: { name: '本机助理', runtimeKind: 'local' } })
+      const remote = await req(base, 'POST', '/runtime/bots', { token: memberTok, body: { name: '远程助理' } })
+      assert(local.status === 201 && remote.status === 201, `建 Bot ${local.status} ${remote.status}`)
+      const L = local.json.bot.id
+      const R = remote.json.bot.id
+      const put = (body, headers) => req(base, 'PUT', `/me/connectors/${connectorId}/connections/${firstConnId}/bots`, { token: memberTok, headers, body })
+      const fromA = await put({ mode: 'bots', botIds: [L, R] }, onA)
+      assert(fromA.status === 200, `A 上收窄 ${fromA.status} ${fromA.text}`)
+      assert((await put({ mode: 'bots', botIds: [L] }, onB)).status === 400, 'B 看不到的本地 Bot 不该收得进去')
+      const fromB = await put({ mode: 'bots', botIds: [R] }, onB)
+      assert(fromB.status === 200, `B 上保存 ${fromB.status} ${fromB.text}`)
+      assert(fromB.json.connection.bots.missing === 0 && !fromB.json.connection.bots.botIds.includes(L), `B 看到的范围不对：${JSON.stringify(fromB.json.connection.bots)}`)
+      const seenOnA = (await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok, headers: onA })).json.connections.find((c) => c.id === firstConnId)
+      assert(seenOnA.bots.botIds.includes(L) && seenOnA.bots.botIds.includes(R), `B 上那一次保存把 A 的本地 Bot 勾掉了：${JSON.stringify(seenOnA.bots)}`)
+      // 两台同时保存：后写的那一方也得看得见先写那一方的结果，A 的本地 Bot 不能被冲掉。
+      await Promise.all([put({ mode: 'bots', botIds: [L, R] }, onA), put({ mode: 'bots', botIds: [R] }, onB)])
+      const after = (await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok, headers: onA })).json.connections.find((c) => c.id === firstConnId)
+      assert(after.bots.botIds.includes(L), `并发保存之后 A 的本地 Bot 被冲掉了：${JSON.stringify(after.bots)}`)
+      assert((await put({ mode: 'all' }, onA)).status === 200, '改回所有 Bot')
+      await req(base, 'DELETE', `/runtime/bots/${L}`, { token: memberTok, headers: onA })
+      await req(base, 'DELETE', `/runtime/bots/${R}`, { token: memberTok })
     })
 
     await test('指纹跟着连接走：装了、连了、改了开关都要变', async () => {
@@ -1043,12 +1210,12 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(ui.pathAllowed('/connectors'), 'owner 应该进得了 /connectors')
     })
 
-    await test('界面：员工那一屏是市场卡片，禁用的写明原因', async () => {
+    await test('界面：员工的插件页是市场卡片，禁用的写明原因', async () => {
       const { loadApp } = await import('./ui-dom.mjs')
       // 用**员工**的票：管理员那一屏是禁令和账，不是市场（两屏分开是有意的）。
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      ui.state.path = '/connectors'
+      ui.state.path = '/plugins'
       ui.state.market = [
         { id: 'c1', toolkit: 'gmail', name: 'Gmail', description: '收发邮件', category: 'productivity', blocked: false },
         { id: 'c2', toolkit: 'notion', name: 'Notion', description: '知识库', category: 'productivity', blocked: true, blockedReason: '合规未过' },
@@ -1058,7 +1225,7 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(html.includes('Gmail') && html.includes('Notion'), '市场卡片没画出来')
       assert(html.includes('合规未过'), '被禁的没写出原因')
       assert(!html.includes('conn-publish-open'), '员工不该看到「上架」')
-      assert(ui.pathAllowed('/connectors'), '员工应该进得了 /connectors')
+      assert(ui.pathAllowed('/plugins'), '员工应该进得了 /plugins')
     })
 
     await test('界面：取不到 logo 时的兜底缩写不会漏成正文', async () => {
@@ -1071,7 +1238,7 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       const { loadApp } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      ui.state.path = '/connectors'
+      ui.state.path = '/plugins'
       ui.state.market = [{ id: 'c1', toolkit: 'github', name: 'GitHub "Inc"', description: '代码托管', logo: 'https://x/gh.png', blocked: false }]
       ui.render()
       const html = ui.html()
@@ -1108,31 +1275,42 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(bad.length === 0, `这些地方 CSP 会挡掉：\n  ${bad.join('\n  ')}`)
     })
 
-    await test('界面：插件弹窗——按钮在名单底下，点 Add 就装上，装完不跳页', async () => {
+    await test('界面：插件是内置页——「更多」里跳 /plugins，点「添加」装上后落到详情', async () => {
       const { loadApp, el } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      assert(ui.html().includes('data-act="plugins-open"'), '侧栏没有「插件」按钮')
-      assert(!/data-href="\/connectors"/.test(ui.html()), '菜单里还留着「连接器」那一行，和插件按钮重了')
+      // go() 换页之后的取数是在后台跑的（enterPath 不返回那个 promise），点完要等它画完再看。
+      const settle = async () => {
+        await ui.loadPage()
+        ui.render()
+      }
+      assert(ui.html().includes('data-href="/plugins"'), '侧栏没有「插件」入口')
+      assert(!ui.html().includes('plugins-open'), '还留着开弹窗的老动作')
+      assert(!/data-href="\/connectors"/.test(ui.html()), '菜单里还留着「连接器」那一行，和插件入口重了')
 
-      await ui.fire('click', el('button', { 'data-act': 'plugins-open' }))
+      await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/plugins' }))
+      await settle()
+      assert(ui.state.path === '/plugins', `没跳到插件页，现在在 ${ui.state.path}`)
       let html = ui.html()
-      assert(html.includes('gw-plugins'), '弹窗没开')
-      assert(html.includes('Gmail'), '弹窗里没有市场清单')
+      assert(!html.includes('gw-modal'), '插件页不该再是弹窗')
+      assert(html.includes('Gmail'), '插件页里没有市场清单')
       assert(html.includes(`data-act="conn-install" data-id="${connectorId}"`), '没装的应该给「添加」')
 
       await ui.fire('click', el('button', { 'data-act': 'conn-install', 'data-id': connectorId }))
+      await settle()
       html = ui.html()
-      assert(ui.state.path === '/', `装完不该跳页，现在在 ${ui.state.path}`)
-      assert(html.includes('gw-plugins'), '装完弹窗被关掉了')
-      assert(ui.state.plugins.id === connectorId, '装完没落到详情上')
-      assert(html.includes('data-act="conn-add-account"'), '详情里没有「添加账号」——装完就该能连')
+      assert(ui.state.path === `/plugins/${connectorId}`, `装完该落到详情页，现在在 ${ui.state.path}`)
+      assert(ui.location.pathname === `/plugins/${connectorId}`, `地址栏没跟上：${ui.location.pathname}`)
+      assert(html.includes('data-act="conn-add-open"'), '详情里没有「添加账号」——装完就该能连')
       assert(html.includes('GMAIL_SEND_EMAIL'), '详情里没有工具开关')
-      // 弹窗和 /connectors/:id 两份详情分开存，否则关掉弹窗后底下那页画的是别人的账号。
-      assert(ui.state.connectorDetail == null, '弹窗把页面那份详情盖掉了')
+      assert(html.includes('还没连上账号'), '没连账号时该明说 Bot 用不了')
 
-      await ui.fire('click', el('button', { 'data-act': 'plugins-close' }))
-      assert(!ui.html().includes('gw-plugins'), '关不掉')
+      // 退回清单：刚装的那个在「已安装」里，标着还没连账号，按钮直接写「去连接」。
+      await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/plugins' }))
+      await settle()
+      html = ui.html()
+      assert(html.includes('待连接账号') && html.includes('连接账号'), '装了没连的那一个没标出来')
+      assert(!html.includes(`data-act="conn-install" data-id="${connectorId}"`), '装过的还在给「添加」')
 
       // 装回去的这一笔要还原：下面还有测试在数装机量。
       const del = await req(base, 'DELETE', `/me/connectors/${connectorId}/install`, { token: memberTok })
@@ -1143,20 +1321,33 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       const { loadApp, el } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      await ui.fire('click', el('button', { 'data-act': 'plugins-open' }))
+      await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/plugins' }))
+      await ui.loadPage()
       await ui.fire('click', el('button', { 'data-act': 'conn-install', 'data-id': connectorId }))
+      await ui.loadPage()
+      ui.render()
       const before = ui.location.href
 
-      await ui.fire('click', el('button', { 'data-act': 'conn-add-account', 'data-id': connectorId }))
+      // 「添加账号」先开弹窗，账号名在弹窗里填；去授权是那张表单的 submit。
+      await ui.fire('click', el('button', { 'data-act': 'conn-add-open', 'data-id': connectorId }))
+      assert(ui.html().includes('id="conn-add-form"'), '「添加账号」没开出弹窗')
+      assert(ui.windowOpens.length === 0, '还没点「去授权」就开了新页')
+      const form = el('form', { 'data-id': connectorId })
+      form.id = 'conn-add-form'
+      await ui.fire('submit', form)
+      // 授权是在后台那一趟里发起的（submit 不等它），等它落定。
+      for (let i = 0; i < 50 && ui.state.connAdd?.phase !== 'waiting'; i++) await new Promise((r) => setTimeout(r, 20))
       assert(ui.windowOpens.length === 1, `该开一个新标签页，实际开了 ${ui.windowOpens.length} 个`)
       const tab = ui.windowOpens[0]
       assert(tab.location.href.startsWith('https://accounts.example.com/'), `新页没送到授权地址：${tab.location.href}`)
       assert(!tab.closed, '新页被关掉了')
       // 反向标签劫持：授权页拿着 opener 就能把我们这一页换成钓鱼页。
       assert(tab.opener === null, 'opener 没断')
-      // 这一边必须原封不动——弹窗多半盖在对话上，顶掉就等于把草稿和滚动位置一起扔了。
+      // 这一边必须原封不动——顶掉的话，勾到一半的工具和填好的账号名都没了。
       assert(ui.location.href === before, `当前这一页被顶掉了：${ui.location.href}`)
-      assert(ui.html().includes('gw-plugins'), '弹窗被关掉了')
+      assert(ui.state.path === `/plugins/${connectorId}`, `人被带离了详情页：${ui.state.path}`)
+      assert(ui.state.connAdd?.phase === 'waiting', `开出新页之后弹窗该停在「等你授权」：${JSON.stringify(ui.state.connAdd)}`)
+      assert(ui.html().includes('conn-add-done'), '等授权那一屏没有「我已完成授权」')
 
       // 复原：断掉刚发起的那把，再卸载。下面还有测试在数装机量和连接数。
       const detail = await req(base, 'GET', `/me/connectors/${connectorId}`, { token: memberTok })
@@ -1167,54 +1358,45 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(del.status === 200, `复原卸载 ${del.status}`)
     })
 
-    await test('界面：关掉弹窗要把底下那页刷新；晚到的详情不许落盘', async () => {
-      const { loadApp, el } = await import('./ui-dom.mjs')
-      // 只把「取这个连接器的详情」这一条拖慢，其余照打真 Gateway。
-      let hold = 0
-      const fetchImpl = (path, init) => {
-        const go = () => fetch(base + path, init)
-        if (hold && path === `/me/connectors/${connectorId}`) return new Promise((r) => setTimeout(() => r(go()), hold))
-        return go()
-      }
-      const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok, fetchImpl })
-      await ui.boot()
+    await test('界面：老地址折到插件页——员工的 /connectors 和 /connectors/:id，管理员的不动', async () => {
+      // /connectors/:id 是以前发出去的深链，也是 OAuth 授权完那一页上的兜底链接（老版本）。
+      const { loadApp } = await import('./ui-dom.mjs')
+      const member = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
+      await member.boot()
+      member.state.path = `/connectors/${connectorId}`
+      await member.loadPage()
+      assert(member.state.path === `/plugins/${connectorId}`, `详情的老地址没折过去：${member.state.path}`)
+      assert(member.location.pathname === `/plugins/${connectorId}`, `地址栏没跟上：${member.location.pathname}`)
+      assert(member.state.connectorDetail?.connector?.id === connectorId, '折过去之后详情没取')
+      member.state.path = '/connectors'
+      await member.loadPage()
+      assert(member.state.path === '/plugins', `员工的 /connectors 没折到 /plugins：${member.state.path}`)
 
-      // 弹窗盖在这个连接器的详情页上，而页面手上那份是过期的（多一把已经断掉的连接）。
-      // 弹窗里的改动只落在它自己那一份上，关掉时不补一次，那一行就会一直画着。
-      ui.state.path = `/connectors/${connectorId}`
-      ui.state.connectorDetail = {
-        connector: { id: connectorId, name: 'Gmail', toolkit: 'gmail', description: '', blocked: false },
-        install: { id: 'i1', enabledTools: [] },
-        connections: [{ id: 'ghost', label: '已经断掉的', scope: 'user', status: 'active', mentionOnly: false }],
-        tools: [],
-      }
-      await ui.fire('click', el('button', { 'data-act': 'plugins-open' }))
-      await ui.fire('click', el('button', { 'data-act': 'plugins-close' }))
-      assert(!ui.html().includes('已经断掉的'), '关掉弹窗之后，底下那页还画着弹窗里已经改掉的东西')
-
-      // 详情还在飞的时候退回清单：晚到的那一份不许写进来。写了就和 p.id 对不上，
-      // 弹窗永远停在「加载中…」，而且已经没有请求在飞，只能退出去重进。
-      hold = 300
-      await ui.fire('click', el('button', { 'data-act': 'plugins-open' }))
-      const inflight = ui.fire('click', el('button', { 'data-act': 'plugins-detail', 'data-id': connectorId }))
-      await ui.fire('click', el('button', { 'data-act': 'plugins-back' }))
-      await inflight
-      assert(ui.state.pluginDetail == null, '晚到的详情盖进来了')
-      assert(ui.html().includes('gw-plugins') && !ui.html().includes('加载中'), '弹窗停在「加载中…」')
+      // 管理员的 /connectors 是禁令和账那一屏，不是他自己的插件。
+      const admin = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: adminTok })
+      await admin.boot()
+      admin.state.path = '/connectors'
+      await admin.loadPage()
+      assert(admin.state.path === '/connectors', `管理员的 /connectors 被折走了：${admin.state.path}`)
+      assert(admin.pathAllowed('/plugins'), '管理员也有席位，插件页该进得去')
     })
 
-    await test('界面：员工的详情页画得出账号行、工具开关与「仅 @ 时可用」', async () => {
+    await test('界面：员工的详情页画得出账号行、工具开关、「仅 @ 时可用」与「可用 Bot」', async () => {
       const { loadApp } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      ui.state.path = `/connectors/${connectorId}`
+      ui.state.path = `/plugins/${connectorId}`
       ui.state.connectorDetail = {
         connector: { id: connectorId, name: 'Gmail', description: '收发邮件', toolkit: 'gmail', blocked: false },
         install: { id: 'i1', enabledTools: ['GMAIL_SEND_EMAIL'] },
         connections: [
-          { id: 'x1', label: 'default', scope: 'user', status: 'active', mentionOnly: false },
-          { id: 'x2', label: 'personal', scope: 'user', status: 'active', mentionOnly: true },
-          { id: 'x3', label: 'company', scope: 'company', status: 'active', mentionOnly: false },
+          { id: 'x1', label: 'default', scope: 'user', status: 'active', mentionOnly: false, bots: { mode: 'all', botIds: [], missing: 0 } },
+          { id: 'x2', label: 'personal', scope: 'user', status: 'active', mentionOnly: true, bots: { mode: 'bots', botIds: ['bA'], missing: 0 } },
+          { id: 'x3', label: 'company', scope: 'company', status: 'active', mentionOnly: false, bots: { mode: 'bots', botIds: [], missing: 1 } },
+        ],
+        bots: [
+          { id: 'bA', name: '私人助理', icon: '', origin: 'company' },
+          { id: 'bB', name: '客服', icon: '', origin: 'company' },
         ],
         tools: [
           { slug: 'GMAIL_SEND_EMAIL', description: '发一封邮件' },
@@ -1230,7 +1412,34 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       // 公司共用那把不给员工断，也不给他改 mentionOnly。
       const companyRow = html.slice(html.indexOf('company'))
       assert(!companyRow.includes('conn-disconnect" data-id="x3"'), '公司共用那把不该有断开按钮')
-      assert(ui.pathAllowed(`/connectors/${connectorId}`), '详情页应该进得去')
+      // 「可用 Bot」：三把各画一格，公司共用那把也有；名单删光了要红字说出来。
+      assert(html.includes('可用 Bot：所有 Bot'), '默认那把该写「所有 Bot」')
+      assert(html.includes('可用 Bot：私人助理'), '只给一颗的该写出它的名字')
+      assert(html.includes('可用 Bot：没有 Bot 可用'), '名单删光了该写「没有 Bot 可用」')
+      assert(html.includes('data-act="conn-bots-open" data-id="x3"'), '公司共用那把也该能设可用 Bot')
+      ui.state.connBotsOpen = 'x2'
+      ui.render()
+      const open = ui.html()
+      assert(open.includes('data-conn-bots="x2"') && open.includes('指定 Bot') && open.includes('客服'), '弹窗里该画两档单选和 Bot 名单')
+      assert(/data-bot="bA" checked/.test(open) && !/data-bot="bB" checked/.test(open), '名单里的该勾上、别的不勾')
+      assert(open.includes('data-conn-bots-root') && open.includes('role="dialog" aria-modal="true"'), '可用 Bot 应在独立设置弹窗里')
+      assert(open.includes('aria-haspopup="dialog"'), '账号行应声明会打开弹窗')
+      assert(open.includes('aria-label="搜索 Bot"') && open.includes('已选 1 个'), '名单应可搜索，并显示已选数量')
+      assert(open.indexOf('data-conn-bots-root') > open.indexOf('GMAIL_FETCH_EMAILS'), '弹窗不应嵌在账号行中挤压工具设置')
+      ui.state.connBotsOpen = 'x3'
+      ui.render()
+      const missing = ui.html()
+      assert(missing.includes('请至少选择一个 Bot 后保存。') && missing.includes('此前选择的 Bot 已被删除'), '空名单和已删除的 Bot 都应解释清楚')
+      assert(/data-act="conn-bots-save"[^>]+disabled/.test(missing), '指定 Bot 为空时不能保存')
+      ui.state.connBotsOpen = 'x2'
+      ui.state.connBotsDraft = { id: 'x2', connectorId, mode: 'bots', botIds: ['bB'], query: '客服', error: '保存失败，请重试', busy: false }
+      ui.render()
+      const draft = ui.html()
+      assert(/data-bot="bB" checked/.test(draft) && !/data-bot="bA" checked/.test(draft), '重绘弹窗应保留未保存的选择')
+      assert(draft.includes('value="客服"') && draft.includes('保存失败，请重试'), '重绘弹窗应保留搜索和失败提示')
+      ui.state.connBotsDraft = null
+      ui.state.connBotsOpen = null
+      assert(ui.pathAllowed(`/plugins/${connectorId}`), '详情页应该进得去')
     })
 
     await test('界面：admin 那一屏是禁令 + 谁装了什么，不是市场', async () => {
@@ -1296,11 +1505,24 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       })
       await ui.boot()
 
-      ui.state.chatMentions = [{ kind: 'connector', id: 'c1', label: 'Gmail (personal)' }]
+      // 点名以正文为准：正文里留着 `@名字` 的留下，删掉的就是不点了——上面那排不再摆「发不出去的」药丸。
+      const gmail = { kind: 'connector', id: 'c1', label: 'Gmail (personal)' }
+      const slack = { kind: 'connector', id: 'c2', label: 'Slack' }
+      ui.state.chatDraft = '用 @Gmail (personal) 查一下'
+      ui.state.chatMentions = [gmail, slack]
       ui.paintChatMentions()
-      const pills = ui.stubs.get('chat-mentions').innerHTML
-      assert(pills.includes('Gmail (personal)'), `药丸没画出来：${pills}`)
-      assert(pills.includes('chat-mention-drop'), '药丸上没有移除按钮')
+      assert(ui.stubs.get('chat-mentions').hidden === true, '上面那排该收着')
+      assert(JSON.stringify(ui.state.chatMentions.map((m) => m.id)) === '["c1"]', `正文里没有的该拿掉，留着的不能动：${JSON.stringify(ui.state.chatMentions)}`)
+      // 删掉的能再选回来：选单不再把它当「已选」滤掉。
+      ui.state.mentionOptions = [gmail, slack]
+      ui.state.mentionPick = { open: true, q: '', index: 0 }
+      ui.paintMentionPick()
+      const pick = ui.stubs.get('chat-mentionpick').innerHTML
+      assert(pick.includes('Slack') && !pick.includes('Gmail (personal)'), `选单该能再选 Slack、不再给已点的 Gmail：${pick}`)
+      ui.state.chatDraft = '不点了'
+      ui.paintMentionPick()
+      assert(ui.stubs.get('chat-mentionpick').innerHTML.includes('Gmail (personal)'), '正文里删掉 @Gmail 之后选单里该能再选它')
+      ui.state.mentionPick = null
 
       ui.state.chatSessionId = 's1'
       ui.chatQueues.set('s1', [
@@ -1320,7 +1542,7 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       const { loadApp } = await import('./ui-dom.mjs')
       const ui = loadApp({ appPath: join(root, 'gateway/ui/app.js'), base, token: memberTok })
       await ui.boot()
-      ui.state.path = `/connectors/${connectorId}`
+      ui.state.path = `/plugins/${connectorId}`
       ui.state.connectorDetail = {
         connector: { id: connectorId, name: 'Gmail', toolkit: 'gmail', blocked: false },
         install: { id: 'i1', enabledTools: ['A', 'B', 'C'] },

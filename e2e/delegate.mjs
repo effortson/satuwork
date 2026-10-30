@@ -95,6 +95,10 @@ export async function runDelegate({ root, test, assert, log }) {
     assert(r.badTools.整次没发生, '名字认不出，子任务却照样跑了起来')
   })
 
+  // 跑着的时候人得看得见它做到哪了（docs/delegation.md §13）；没做成要说得出为什么。
+  for (const t of each(test, assert, '进度', r.progress || {})) await t()
+  for (const t of each(test, assert, '失败原因', r.failure || {})) await t()
+
   await test('重启后没有永远转着的卡：running 补成 lost', () => {
     assert(r.heal.补成了lost, '上个进程留下的委派还停在 running')
     // lost 是诚实的：那件事做没做成，进程死的时候没人知道。写成 failed 是在编。

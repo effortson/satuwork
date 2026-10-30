@@ -61,7 +61,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          # 席位机器上的下限也是 24（gateway/src/routes.ts 的 MIN_MANAGER_NODE）。
+          # 席位机器上的下限也是 24（gateway/src/lib/machines.ts 的 MIN_MANAGER_NODE）。
           node-version: 24
           cache: pnpm
 
@@ -76,6 +76,19 @@ jobs:
       - name: core 单测
         run: pnpm test:core
 
+      - name: Enterprise content safeguards
+        run: node --test manager/test/content-policy.test.ts
+
+      - name: Content report permissions and persistence
+        working-directory: gateway
+        run: node --import tsx --test test/content-reports.test.ts
+
+      - name: 下载与桌面通知回归
+        run: node --test gateway/test/*.test.mjs
+
+      - name: 桌面发布脚本回归
+        run: node --test desktop/scripts/*.test.mjs
+
       # gateway/ui/core.js 是 core/src 打出来的产物，提交进仓库。改了源码忘了重打，表现是
       # 单测全绿、浏览器里跑的还是旧逻辑——所以这里重打一遍，和提交的那份必须一字不差。
       - name: core.js 没漂
@@ -86,6 +99,8 @@ jobs:
       - name: e2e
         run: node e2e/run.mjs
 
+  # 知识库的向量只存 pgvector。上面那档的 postgres:17-alpine 没有 vector 扩展，knowledge
+  # 套件在那里自己跳过，由这一档用带扩展的镜像整套跑。
   knowledge-pgvector:
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -104,7 +119,6 @@ jobs:
     env:
       E2E_DATABASE_URL: postgres://satuwork:satuwork@127.0.0.1:5432/satuwork
       E2E_ONLY: knowledge
-      E2E_KNOWLEDGE_BACKEND: pgvector
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
@@ -120,7 +134,7 @@ jobs:
   # 桌面壳单独一档：它是 Rust，和上面那档共用不了任何一步，串在一起只会让本来 3 分钟
   # 的 typecheck 等 Rust 编译。
   #
-  # 只 `cargo check`，不打包：要的是「main.rs 改坏了当场知道」，而不是产物——真正的包
+  # 只 `cargo check`，不打包：要的是「壳子的 Rust 改坏了当场知道」，而不是产物——真正的包
   # 三个系统各要一台机器，那是发版流水线的事。顺带这一档也是 Linux 那边唯一的编译
   # 信号（webview 的开发库只有在 Linux 上才装得起来）。
   desktop:
@@ -212,7 +226,7 @@ jobs:
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android24-clang"
           cargo check --locked --target aarch64-linux-android
 
-  # Windows 单独一档，**跑 cargo test 而不只是 check**：main.rs 里有一整段只在 Windows 编译的
+  # Windows 单独一档，**跑 cargo test 而不只是 check**：src/ 里有一整段只在 Windows 编译的
   # 代码（本地 Bot 运行时解包时的 junction / 硬链接降级，见 unpack_links_windows），上面那档
   # 在 Linux 上一行都编译不到。以前它要等发版流水线打 Windows 包才第一次被编译，坏了就是发版
   # 当天才知道；那段的两条 Windows 单测（强制走降级、坏链接不留半个版本目录）也只有这里跑。

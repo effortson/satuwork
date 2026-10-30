@@ -6,6 +6,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { childEnv } from '../workspace/index.ts'
 import { fail, registerTool } from './common.ts'
 import { RUN_TAG, killTree, tagChild } from './terminal.ts'
+import { isLocalRuntime } from '../env.ts'
 
 /**
  * 席位桌面上的两把手：开一个终端窗口（`desktop_terminal`）、开文件管理器
@@ -90,7 +91,7 @@ function launch(
 }
 
 export function apply(ctx: Context) {
-  if ((process.env.SATUWORK_RUNTIME_KIND || '').trim() === 'local') return
+  if (isLocalRuntime()) return
   if (!(process.env.DISPLAY || '').trim()) {
     ctx.logger?.info?.('desktop: 没有 DISPLAY，席位桌面工具不注册')
     return
@@ -160,7 +161,7 @@ export function apply(ctx: Context) {
     },
     async (args: { workdir?: string; command?: string }) => {
       display()
-      const dir = ctx.workspace.resolve(args.workdir)
+      const dir = ctx.workspace.resolve(args.workdir, { dir: true })
       const info = await stat(dir).catch(() => fail(`目录不存在：${show(dir)}`))
       if (!info.isDirectory()) fail(`${show(dir)} 不是目录。`)
       const command = String(args.command || '').trim()
@@ -206,7 +207,7 @@ export function apply(ctx: Context) {
     },
     async (args: { path?: string }) => {
       display()
-      let dir = ctx.workspace.resolve(args.path)
+      let dir = ctx.workspace.resolve(args.path, { dir: true })
       const info = await stat(dir).catch(() => fail(`路径不存在：${show(dir)}`))
       if (!info.isDirectory()) dir = dirname(dir)
       const err = await launch('thunar', [dir], childEnv(), dir)

@@ -32,6 +32,7 @@ import { nextRunAtOf } from './lib/schedule.ts'
 import { MIN_WORKER_PROTOCOL, kickSeatDeployQueue, machineLink, reconcileStuckDeploys } from './deploy.ts'
 import { runtimeKindOf } from './lib/catalog.ts'
 import { sweepHandoffs } from './handoff-sweep.ts'
+import { sweepBotTasks } from './lib/bot-tasks.ts'
 import { sweepAuthThrottle } from './lib/auth-throttle.ts'
 import { refreshDiscovered } from './model-discovery.ts'
 import { pruneDailyAlternates } from './lib/alternates.ts'
@@ -441,10 +442,13 @@ export interface MaintenanceStep {
  * 部署对账跟着每一拍都被跳过。
  */
 export const MAINTENANCE_STEPS: MaintenanceStep[] = [
+  { name: '内容举报保留期清理', run: (db) => db.pruneContentReports() },
   { name: '日常任务调度', run: (db) => tickRoutines(db) },
   // 没人来领的试跑跟着每一轮收（见 sweepUnclaimed）。
   { name: '收没人领的试跑', run: (db) => sweepUnclaimed(db) },
   { name: '收工人租约', run: (db) => sweepLeases(db) },
+  // 主 Bot 派活：领走没回报的放回去再领，排着队没人领的按没做成送回主 Bot（lib/bot-tasks.ts）。
+  { name: '收派活租约', run: (db) => sweepBotTasks(db) },
   // 管家拿了模型调用的授权却没回来结算的，同一个节拍收（见 sweepUnsettledLlmCalls）。
   { name: '收未结算的模型调用', run: (db) => sweepUnsettledLlmCalls(db) },
   /**

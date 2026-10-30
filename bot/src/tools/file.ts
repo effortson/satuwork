@@ -16,8 +16,9 @@ import type { ToolCall, WorkspaceFile } from './index.ts'
  * （见 docs/file-terminal-tools.md），因为模型见过——描述与参数名越接近它熟悉的约定，
  * 调用就越准。跑命令的那把在 tools/terminal.ts。
  *
- * **根目录**：`$SATUWORK_WORK_DIR`——部署时注入的 `/home/{linuxUser}/work`，同一个员工
- * 的所有席位共用的那个共享工作区。没有这个变量（本地跑）时回落 `$SATUWORK_HOME/work`。
+ * **根目录**：`$SATUWORK_WORK_DIR`——部署时注入的 `/home/{linuxUser}/work/bots/{seatId}`，
+ * 一个 Bot 一个；同一个员工的席位共用的是挂在里面的 `shared/`（见 workspace/index.ts）。
+ * 没有这个变量（本地跑）时回落 `$SATUWORK_HOME/work`。
  * **不用 `$SATUWORK_HOME`**：那底下是会话日志和 SQLite，让模型的手伸进自己的记忆里，
  * 一条命令就能把历史抹了。
  *
@@ -251,7 +252,7 @@ export function apply(ctx: Context) {
   // 根目录和越界检查都在 workspace 服务上——上传和预览走的是同一份，
   // 各写一份 resolve 迟早会有一条写松。
   const resolveIn = (path?: string) => ctx.workspace.resolve(path)
-  const show = (path: string) => ctx.workspace.show(path).split(sep).join('/')
+  const show = (path: string) => ctx.workspace.showSlash(path)
   /** 把一串「相对工作区根」的路径收成 refs（见 tools/index.ts 的 `ToolResult.refs`）。 */
   const refsOf = (paths: string[]): WorkspaceFile[] =>
     paths.slice(0, MAX_REF_FILES).map((path) => ({ path, name: path.split('/').pop() || path }))
@@ -528,7 +529,7 @@ export function apply(ctx: Context) {
     }, call: ToolCall): Promise<ToolOut | string> => {
       if (!pattern) fail('缺少 pattern 参数')
       const mode = target === 'files' ? 'files' : 'content'
-      const base = resolveIn(path)
+      const base = ctx.workspace.resolve(path, { dir: true })
       const cap = Math.max(1, Math.min(Math.floor(limit ?? DEFAULT_RESULTS), MAX_RESULTS))
       const skip = Math.max(0, Math.floor(offset ?? 0))
 

@@ -4,7 +4,7 @@
 import type { RouteCtx } from './ctx.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { MIN_MANAGER_NODE, desiredManagerRelease, gatewayBaseFor, machineHostOf, managerHostOf, managerPackageUrl, normalizePairingCode, sendReleaseFile } from '../lib/machines.ts'
-import { MIN_MANAGER_PROTOCOL, botBaseOf, managerHealth, normalizeTimezone, publicMachine, queueBotFollow } from '../deploy.ts'
+import { MIN_MANAGER_PROTOCOL, advanceHttps, botBaseOf, httpsReplyOf, httpsReportOf, managerHealth, normalizeTimezone, publicMachine, queueBotFollow } from '../deploy.ts'
 import { accessUrlFor } from '../lib/catalog.ts'
 import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { callerAccountId, requireBootstrapMachine, requireInternalCaller, requireMachine, type InternalCaller } from '../lib/guards.ts'
@@ -13,12 +13,12 @@ import { METRIC_RETENTION_MS, MINUTE_MS, egressDelta, telemetryOf } from '../lib
 import { HANDOFF_STATES, type Db, type HandoffState, type Machine } from '../db.ts'
 import { resolveAssignee } from '../lib/handoff.ts'
 import { notify } from '../handoff-sweep.ts'
-import { auditResultHash } from '../conversation-audit.ts'
+import { auditResultHash, failConversationAuditBatch, recordUsedAuditModel } from '../conversation-audit.ts'
 import { afterResponse } from '../lib/background.ts'
-import { PUSH_KINDS, pushMessage, pushToAccount, type PushKind } from '../lib/push.ts'
-
-/** `/internal/push` 当场等推送发完的上限，见那条路由。比席位那头的八秒超时短得多。 */
-const PUSH_WAIT_MS = 5_000
+import { PUSH_KINDS, type PushKind } from '../lib/push.ts'
+import { wakeNotificationDispatcher } from '../lib/notifications.ts'
+import { notificationPosition } from './notifications.ts'
+import { companyOr404 } from '../lib/org.ts'
 
 /**
  * 席位报上来的 guard / outcome 只认这两张表里的值。
@@ -84,8 +84,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     const pairing = await db.machinePairing(code)
     // 不存在 / 用过 / 过期一律同一句话：区分了就是在帮人猜码。
     if (!pairing || pairing.usedAt || pairing.expiresAt <= now) throw new HttpError(401, '配对码无效或已过期')
-    const company = await db.company(pairing.companyId)
-    if (!company) throw new HttpError(404, '公司不存在')
+    const company = await companyOr404(db, pairing.companyId)
 
     // 过了反代之后 socket 另一头是 127.0.0.1；sourceIpOf 只在 socket 源地址落在
     // GATEWAY_TRUSTED_PROXIES 名单里时才看 x-forwarded-for（见 lib/runtime.ts）。
@@ -264,6 +263,8 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     // 界面上；不认识的名字宁可当成「没报」，也不要存一个假的实际值进去，那会让
     // 「改上了没有」这个判断永远错。老管家不报，那时保持原样。
     const reportedTz = typeof body.timezone === 'string' ? normalizeTimezone(body.timezone) : undefined
+    // 管家认的 Gateway 源（它只放行这个源的跨源请求，见迁移 0064）。只收规整的 http(s) 源。
+    const gatewayOrigin = originOf(body.gatewayOrigin)
     // 负载与日志占用。**整份按形状收**（见 lib/telemetry.ts）——它来自网络，会原样
     // 存进 jsonb 再画进浏览器。两份都没有（老管家）时 telemetryOf 给 undefined，
     // 那一格就不动：写一份空的进去会把上一轮好好的数据抹掉。
@@ -279,11 +280,18 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
       ...(Number.isInteger(protocol) && protocol >= 0 && protocol <= 2_147_483_647 ? { protocol } : {}),
       ...(arch ? { arch } : {}),
       ...(reportedTz === undefined ? {} : { currentTimezone: reportedTz }),
+      ...(gatewayOrigin ? { gatewayOrigin } : {}),
       lastError: upgradeError,
     })
     // 把这一轮累进它所属的那一分钟。日视图从这张表来——`machines.telemetry` 只有
     // 「现在怎么样」，答不了「今天忙不忙、下午那阵卡是几点」。
     await rollUp(machine, next, telemetry)
+    // 域名 https 推一步（deploy/https.ts）。**出错只记一笔**，理由同下面的跟版：心跳不能被
+    // 附带的事带成 500。推不动就按原样把上一步的期望再带下去，下一轮再推。
+    const ingress = await advanceHttps(db, next, httpsReportOf(body.https)).catch((e: Error) => {
+      console.error(`satuwork-gateway: 机器 ${next.id.slice(0, 8)} 的域名 https 没推下去：${e.message}`)
+      return next
+    })
 
     const desired = await desiredManagerRelease(db, next)
     // Bot 自动跟版：落后的席位排进部署队列，由每一拍去装（见 deploy.ts 的 queueBotFollow）。
@@ -303,6 +311,8 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
       // journal 上限，MB。和时区一条路：这里只是下指令，清不清、什么时候清由管家
       // 决定。null = 没人指定过，管家跟自己的默认走；0 = 明确不要它动 journal。
       logCapMb: next.logCapMb,
+      // 域名 https 的期望（协议 14）。null = 不管，管家什么都不动；老管家不认这一格。
+      https: httpsReplyOf(ingress),
       minNode: MIN_MANAGER_NODE,
       minProtocol: MIN_MANAGER_PROTOCOL,
     })
@@ -427,6 +437,28 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
   })
 
   /**
+   * 席位没跑成一个审计批次（模型拒了、超时、回的不是 JSON……），把原因报回来。Gateway 把它
+   * 转成 retry、按退避排下一次（conversation-audit.ts 的 failConversationAuditBatch）。鉴权和
+   * 结果那条一样：只能报自己账号、自己 Bot 的批次。
+   */
+  router.put('/internal/conversation-audits/:jobId/failure', async (req, res) => {
+    const caller = await requireInternalCaller(req, db)
+    const batch = await db.conversationAuditBatch(req.params.jobId)
+    if (!batch) throw new HttpError(404, '审计批次不存在')
+    if (caller.companyId !== batch.companyId) throw new HttpError(403, '批次不属于这家公司')
+    const body = bodyOf(req)
+    const accountId = callerAccountId(caller, () => strField(body, 'accountId'))
+    if (accountId !== batch.accountId) throw new HttpError(403, '席位票只能上报自己的审计')
+    await requireSeatOnCaller(db, caller, accountId)
+    if (strField(body, 'botId') !== batch.botId || strField(body, 'sessionId') !== batch.sessionId) {
+      throw new HttpError(403, '审计目标与批次不一致')
+    }
+    const error = String(body.error ?? '').trim().slice(0, 400) || '原因不明'
+    const retried = await failConversationAuditBatch(db, batch, error)
+    json(res, 200, { retried })
+  })
+
+  /**
    * 席位完成一个自动审计批次后，把有长度上限的结构化派生物报回来。
    * 原始事件不进这个接口；批次归属、模型与窗口全部以 Gateway 预先创建的那行回答为准。
    */
@@ -526,6 +558,8 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     if ((batch.status === 'succeeded' || batch.status === 'empty') && batch.resultHash !== resultHash) {
       throw new HttpError(409, '这个批次已经提交过不同的结果')
     }
+    // 席位报上它真用的那个模型（新席位才带）：批次上的那几格可能在这期间被换掉了，改回来。
+    await recordUsedAuditModel(db, batch, body.model)
     const account = await db.account(batch.accountId)
     const bot = await db.catalog(batch.botId)
     const settings = (await db.settings(batch.companyId)).conversationAudit
@@ -589,22 +623,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     json(res, 200, { event })
   })
 
-  /**
-   * 席位说「这颗 Bot 有事要人看」：一轮跑完了（turn-end），或者停在一张审批卡上等人点
-   * （approval）。Gateway 给这个账号登记过的手机各推一条（lib/push.ts）。
-   *
-   * **只收「哪颗 Bot、什么事」，不收正文。** 标题是 Bot 的名字（这边从目录里查，不采信
-   * body），正文是一句固定的话。对话内容在席位机器上，Gateway 不经手，推送也不该夹带。
-   *
-   * 鉴权和审计事件那条一样：席位票只能报自己，机器票只能报本机席位。Bot 必须是这家公司
-   * 看得见的——不查的话，一台被拿下的席位能拿任意 botId 让别家 Bot 的名字出现在锁屏上。
-   *
-   * 推送失败不让上报失败：席位那头不该为一条没发出去的通知重试；发没发出去记在返回里。
-   *
-   * **最多等 PUSH_WAIT_MS**：平时 APNs / FCM 一两百毫秒就回，回执带着 sent / dropped（e2e 靠它核对）。
-   * 那两家慢的时候一台设备最坏要等十秒，席位那头八秒就放弃了，Gateway 还在这儿干等。超了就把
-   * 剩下的交给 afterResponse 接着发，先回 202 `{ pending: true }`。
-   */
+  /** 席位上报稳定事件标识，落库后返回；三端共用已读游标和两秒通知缓冲。 */
   router.post('/internal/push', async (req, res) => {
     const caller = await requireInternalCaller(req, db)
     const body = bodyOf(req)
@@ -620,18 +639,13 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     if (!bot || bot.kind !== 'bot' || (bot.companyId && bot.companyId !== caller.companyId)) {
       throw new HttpError(404, '没有这颗 Bot')
     }
-    const sending = pushToAccount(db, accountId, pushMessage(kind as PushKind, bot.name, botId, account.locale))
-    let timer: NodeJS.Timeout | undefined
-    const late = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), PUSH_WAIT_MS)
-    })
-    const result = await Promise.race([sending, late]).finally(() => clearTimeout(timer))
-    if (!result) {
-      afterResponse(`给 ${accountId} 的手机推送`, sending)
-      json(res, 202, { pending: true })
-      return
-    }
-    json(res, 200, result)
+    const position = notificationPosition(body)
+    const actionId = strField(body, 'actionId', false).slice(0, 200)
+    const sourceTime = intField(body, 'time') ?? Date.now()
+    const event = await db.recordNotification({ ...position, accountId, kind: kind as PushKind,
+      actionId, occurredAt: sourceTime, resolvedAt: body.resolved === true ? Date.now() : undefined })
+    wakeNotificationDispatcher(db, accountId)
+    json(res, 202, { queued: true, id: event.id })
   })
 
   /**
@@ -722,18 +736,15 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
      * 让实例撑到它发完。
      */
     if (!known && handoff.state === 'open') afterResponse(`转人工 ${handoff.id} 的新单通知`, notify(db, handoff, 'new'))
-    /**
-     * 同一个时刻给接手人的手机推一条。指派给「管理员」的（assignee 为 null）不推：那是一群人，
-     * 谁都推等于谁都不当回事，留给待办页和公司 webhook。
-     */
-    if (!known && handoff.state === 'open' && handoff.assignee) {
-      const assignee = await db.account(handoff.assignee)
-      const bot = handoff.botId ? await db.catalog(handoff.botId) : undefined
-      if (assignee) {
-        afterResponse(
-          `转人工 ${handoff.id} 的手机推送`,
-          pushToAccount(db, assignee.id, pushMessage('handoff', bot?.name || '', handoff.botId || '', assignee.locale)),
-        )
+    // 转人工通知也进入同一调度队列。阅读只改变通知状态，不改变交接单状态。
+    const noticeSeq = intField(body, 'notificationSeq')
+    if (handoff.botId && noticeSeq && noticeSeq > 0) {
+      const recipients = new Set([accountId, ...(handoff.assignee ? [handoff.assignee] : [])])
+      for (const recipient of recipients) {
+        await db.recordNotification({ accountId: recipient, botId: handoff.botId, sessionId: handoff.sessionId,
+          seq: noticeSeq, kind: 'handoff', actionId: handoff.id, occurredAt: handoff.createdAt,
+          resolvedAt: handoff.state !== 'open' ? Date.now() : undefined })
+        wakeNotificationDispatcher(db, recipient)
       }
     }
     /**
@@ -773,4 +784,15 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
    * 新版 bot 早就不发了（见 bot/src/session/gateway.ts），端点留着只是为了不让
    * 旧席位的本地重试队列卡死。旧版已经清理，这条一并拆掉。
    */
+}
+
+/** 规整的 http(s) 源（`协议://主机[:端口]`），不是就 undefined。来自网络，会原样画进界面。 */
+function originOf(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || raw.length > 300) return undefined
+  try {
+    const u = new URL(raw)
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.origin === raw ? u.origin : undefined
+  } catch {
+    return undefined
+  }
 }

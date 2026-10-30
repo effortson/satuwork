@@ -41,11 +41,6 @@ export function ensureWorkerEnv(localPort: number, dryRun: boolean): void {
   if (!dryRun) void run('chown', ['root:satuwork-worker', path], { timeout: 5000 }).catch(() => {})
 }
 
-/** 测试要拿令牌去扮工人。 */
-export function workerTokenForTest(): string {
-  return workerToken
-}
-
 function tokenOk(req: IncomingMessage): boolean {
   return sameToken(String(req.headers['x-satuwork-worker'] || ''), workerToken)
 }

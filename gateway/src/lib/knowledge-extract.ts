@@ -8,6 +8,7 @@
  * Word / Markdown / 文本整份一条。页码只为了答案里能说「在第几页」。
  */
 import { HttpError } from '../http.ts'
+import { oneLine } from './util.ts'
 
 export interface ExtractedPage {
   page: number | null
@@ -282,10 +283,4 @@ function fromCsv(text: string): ExtractedPage[] {
   }
   const text2 = tableText('表格', rows.filter((r) => r.some((c) => c.trim())))
   return text2 ? [{ page: null, text: text2 }] : []
-}
-
-function oneLine(e: unknown): string {
-  return String((e as Error)?.message ?? e)
-    .replace(/\s+/g, ' ')
-    .slice(0, 200)
 }

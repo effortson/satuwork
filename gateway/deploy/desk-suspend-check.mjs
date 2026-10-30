@@ -52,7 +52,7 @@ const freePort = () =>
     })
   })
 
-// 形状对齐 e2e/run.mjs 的 req：publishRelease 要用 raw + headers。
+// 形状对齐 e2e/harness.mjs 的 req：publishRelease 要用 raw + headers。
 async function req(base, method, path, { token, body, raw, headers: extra } = {}) {
   const headers = { ...(extra || {}) }
   if (token) headers.authorization = `Bearer ${token}`

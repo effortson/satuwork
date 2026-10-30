@@ -9,11 +9,9 @@
  *
  * 所以这里验的不是「能不能关」，是「**手上还挂着一条连接时**能不能关」。
  */
-import { freePort } from './ports.mjs'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
-import { rmSync } from 'node:fs'
 import net from 'node:net'
+import { startGateway } from './gateway.mjs'
 
 /** 进程还在不在。kill(pid, 0) 不发信号，只做存在性检查。 */
 function alive(pid) {
@@ -35,25 +33,17 @@ async function waitGone(pid, ms) {
 }
 
 export async function runShutdown({ gwRoot, test, start, waitHttp, assert, log }) {
-  const GW_HOME = tmpOf('satuwork-e2e-shutdown')
-  const port = await freePort()
-  const base = `http://127.0.0.1:${port}`
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# shutdown')
 
-  const gw = start('shutdown-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw, port } = await startGateway({
+    name: 'shutdown-gw',
+    what: 'shutdown gateway',
+    home: tmpOf('satuwork-e2e-shutdown'),
+    schema: schemaOf('e2e_shutdown'),
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_shutdown'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(port),
       GATEWAY_SEED_OWNER: '0',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'shutdown gateway' })
 
   await test('手上还挂着一条没走完的连接时，SIGTERM 也要真的退出', async () => {
     /**

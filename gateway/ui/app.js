@@ -27,8 +27,14 @@ function sitesOf(text) {
  * 只拆不走：跳到哪一页、要不要留一句话，由调用方各自决定。
  */
 function endSignedIn() {
+  contentReportDraft = null
+  state.contentReports = []
+  state.contentReportsMore = false
+  state.contentReviewNotes = {}
+  closeConnBots({ restoreFocus: false, force: true })
   // 手机壳：先拿着这张票把设备从推送名单里摘掉，下一行票就清了（shell.js 的 forgetMobilePush）。
   if (typeof forgetMobilePush === 'function') forgetMobilePush()
+  resetDesktopNotifications()
   clearToken()
   // 先掐流再清数据：SSE 还连着的话，下一个人登进来之前就会有上一个人的事件继续往
   // state.chatEvents 里落，然后被画出来。聊天正文、草稿、名册都是上一个账号的东西，
@@ -82,6 +88,7 @@ function endSignedIn() {
   state.templateSync = null
   syncTemplatePoll()
   state.me = null
+  cancelProfileAvatarRead()
   state.profileDraft = null
   state.profileSaved = false
   state.profileError = ''
@@ -100,6 +107,8 @@ function endSignedIn() {
   state.handoffStats = null
   state.handoffOpenId = ''
   state.handoffDetail = {}
+  state.handoffFeedback = {}
+  state.handoffLoadError = false
 }
 
 /**
@@ -150,17 +159,9 @@ async function runConfirm() {
        * 每个人的系统提示词里插了一句话（docs/memory.md §12 ⑤）。
        */
       await api('POST', `/runtime/memories/${encodeURIComponent(c.id)}/lift`, { to: 'company' })
-      await loadBotDetail(c.bot)
+      await refreshBotMemories(c.bot)
       flash('ok', t('已推给全公司', 'Shared company-wide'))
       render()
-      return
-    } else if (c.kind === 'redeploy-bot') {
-      render()
-      // force 而不是 update：这个按钮的意思是「把席位重铺一遍」，不是「升到新版本」。
-      // 两者眼下都能穿过 deploy.ts 里那道「已经 ready 就跳过」的门，但借 update 的名义
-      // 是在赌它将来不会变成「只在有新版本时才做」——真那样，重新部署会静悄悄失效，
-      // 而它恰恰是机器上出了问题时唯一的自助手段。
-      await deployMyRuntime(c.id, { force: true })
       return
     } else if (c.kind === 'machine-seat-redeploy') {
       await redeploySeat(c.org, c.account, c.id)
@@ -193,6 +194,13 @@ async function runConfirm() {
       const data = await api('DELETE', `${base}/bots/${encodeURIComponent(c.id)}`)
       flashDeletedBot(data)
       go('/bots')
+      return
+    } else if (c.kind === 'delete-bot-folder') {
+      await api('DELETE', `/runtime/bot-folders/${encodeURIComponent(c.id)}`)
+      state.botFolders = (state.botFolders || []).filter((f) => f.id !== c.id)
+      // 里面的回到没分类，和服务端的级联一致；不重拉名单，免得正在聊的那条流抖一下。
+      for (const b of state.runtimeBots || []) if (b.folderId === c.id) b.folderId = null
+      render()
       return
     } else if (c.kind === 'delete-my-bot') {
       // 席位在服务端一起拆（见 routes/runtime.ts）。名册要重拉：侧栏那一行得当场消失。
@@ -228,7 +236,7 @@ async function runConfirm() {
       render()
       return
     } else if (c.kind === 'ws-del') {
-      // 自己管提示与重取（见 chat.js 的 deleteWorkspaceEntry）：删完只重取上一层，
+      // 自己管提示与重取（见 chat-workspace.js 的 deleteWorkspaceEntry）：删完只重取上一层，
       // 而这里的兜底是整页 render——两者一起做的话，那一屏会先闪一次旧内容。
       await deleteWorkspaceEntry(c.path, c.name)
       return
@@ -305,8 +313,14 @@ document.getElementById('app').addEventListener('submit', (e) => {
   const form = e.target
   if (!(form instanceof HTMLFormElement)) return
   if (form.id === 'login-form') return onLogin(e)
+  if (form.id === 'gw-server-form') {
+    e.preventDefault()
+    return checkGatewayServer(true)
+  }
   if (form.id === 'setup-form') return onSetup(e)
   if (form.id === 'pw-form') return submitPassword(e)
+  if (form.id === 'content-report-form') return submitContentReport(e)
+  if (form.getAttribute?.('data-content-review')) return submitContentReview(e)
   if (form.id === 'invite-form') return submitInvite(e)
   if (form.id === 'group-form') return submitGroup(e)
   if (form.id === 'edit-member-form') return submitEdit(e)
@@ -319,6 +333,7 @@ document.getElementById('app').addEventListener('submit', (e) => {
   if (form.id === 'order-form') return saveOrder(e)
   if (form.id === 'audit-filter-form') return submitAuditFilter(e)
   if (form.id === 'channel-bind-form') return submitChannelBinding(e)
+  if (form.id === 'conn-add-form') return submitConnAdd(e)
   if (form.id === 'kb-create-form') return submitKnowledgeCreate(e)
   if (form.id === 'kb-edit-form') return submitKnowledgeEdit(e)
   if (form.id === 'kb-share-form') return submitKnowledgeShare(e)
@@ -331,6 +346,7 @@ document.getElementById('app').addEventListener('submit', (e) => {
   if (form.getAttribute('data-form') === 'org-profile') return saveOrgProfile(e)
   if (form.getAttribute('data-form') === 'machine') return saveMachine(e)
   if (form.getAttribute('data-form') === 'machine-direct') return saveMachineDirectUrl(e)
+  if (form.getAttribute('data-form') === 'machine-https') return saveMachineHttps(e)
   if (form.getAttribute('data-form') === 'release-desired') return saveDesiredVersion(e)
   if (form.getAttribute('data-form') === 'add-release') return addRelease(e)
   if (form.getAttribute('data-form') === 'machine-capacity') return saveCapacity(e)
@@ -344,6 +360,21 @@ document.getElementById('app').addEventListener('submit', (e) => {
     const credId = form.getAttribute('data-id')
     const secret = String(new FormData(form).get('secret') || '')
     return saveCred(provider, secret, credId)
+  }
+  if (form.getAttribute('data-form') === 'kb-embed-key') {
+    e.preventDefault()
+    return saveKbEmbedKey(form.getAttribute('data-provider'), String(new FormData(form).get('secret') || '').trim())
+  }
+  if (form.getAttribute('data-form') === 'kb-embed-custom') {
+    e.preventDefault()
+    const fd = new FormData(form)
+    return saveKbEmbedding({
+      provider: 'custom',
+      baseUrl: String(fd.get('baseUrl') || '').trim(),
+      model: String(fd.get('model') || '').trim(),
+      batchSize: Number(fd.get('batchSize') || 16),
+      dimensions: fd.get('dimensions') === 'on',
+    })
   }
   if (form.getAttribute('data-form') === 'web-secret') {
     e.preventDefault()
@@ -390,6 +421,9 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (!btn) return
   if (btn.classList.contains('gw-modal-backdrop') && e.target !== btn) return
   const act = btn.getAttribute('data-act')
+  if (act === 'mobile-background-settings') { await openMobileBackgroundSettings(); return }
+  if (act === 'mobile-background-check') { await checkMobileBackground(); return }
+  if (act === 'mobile-background-dismiss') { mobileBackgroundDismissed = true; paintMobileBackground(); return }
   if (await channelAct(act, btn)) return
   if (await knowledgeAct(act, btn)) return
   // 连接器那一屏的动作都在 pages-connectors.js 里。这条 if 链已经六百多行了，
@@ -414,9 +448,12 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
-  if (act === 'landing-film') {
-    // 只换演示那块舞台（见 pages-landing.js 的 lpFilmGo），不走 render()。
-    lpFilmPick(Number(btn.getAttribute('data-i')) || 0)
+  if (act === 'landing-film-replay') {
+    lpFilmGo()
+    return
+  }
+  if (act === 'landing-film-step') {
+    lpFilmSeek(Number(btn.getAttribute('data-step')))
     return
   }
   if (act === 'landing-film-play') {
@@ -436,40 +473,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'landing-sales-dialog') return
-  // ── 下载卡（pages-landing.js 的 dlGrid：首页那一段、应用内那一页）上那排平台切换 ──
+  // ── 下载卡（pages-landing.js 的 dlGrid：公开下载页、应用内下载页）上那排平台切换 ──
   if (act === 'download-os') {
     const os = btn.getAttribute('data-os')
     if (os !== 'windows' && os !== 'mac') return
     // 人点过就听他的，这一帧之后 dlOs() 不再去认系统（见 pages-landing.js 的 dlOs）。
     state.dlOs = os
     paintDownload(os)
-    return
-  }
-  if (act === 'landing-more') {
-    document.getElementById('satu-lp-features')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    return
-  }
-  if (act === 'landing-download') {
-    const sec = document.getElementById('download')
-    if (!sec) return
-    // 地址跟着换成 /#download：这一段能被复制出去，刷新也还落在这儿（见 foldDownload）。
-    history.replaceState({}, '', '/#download')
-    sec.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    // 焦点跟着挪过去（那一段带 tabindex="-1"）。只滚不挪的话，键盘上的人看着页面到了底，
-    // 下一下 Tab 却又回到首屏；读屏的人则什么都没听到。
-    sec.focus({ preventScroll: true })
-    return
-  }
-  if (act === 'sessions-more') {
-    if (state.sessionsLoadingMore || !state.sessionsHasMore) return
-    state.sessionsLoadingMore = true
-    render()
-    loadSessions(true)
-      .catch((err) => flash('err', err.message))
-      .finally(() => {
-        state.sessionsLoadingMore = false
-        render()
-      })
     return
   }
   if (act === 'chat-open') {
@@ -494,16 +504,37 @@ document.getElementById('app').addEventListener('click', async (e) => {
     await takeCommand(btn.getAttribute('data-name'))
     return
   }
-  if (act === 'chat-mention-drop') {
-    const i = Number(btn.getAttribute('data-i'))
-    state.chatMentions = (state.chatMentions || []).filter((_, idx) => idx !== i)
-    paintChatMentions()
-    return
-  }
   // 引用（docs/chat-references.md §7）：气泡上的「引用」、预览里的「引用这个文件」、
   // 输入框上那排的 ×、发出去之后卡上的「跳回去」。
   if (act === 'chat-ref-msg') {
+    closeMsgMenu()
     takeRefMessage(btn.getAttribute('data-seq'))
+    return
+  }
+  if (act === 'msg-select') {
+    // 长按菜单里的「选字」：把这一条放回系统选字（chat-thread.js 的 selectMsgText）。
+    closeMsgMenu()
+    selectMsgText(btn.getAttribute('data-key') || '')
+    return
+  }
+  if (act === 'msg-copy') {
+    closeMsgMenu()
+    await copyMsgText(btn.getAttribute('data-key') || '')
+    render()
+    return
+  }
+  if (act === 'content-report-open') {
+    openContentReport(btn.getAttribute('data-key') || '', btn.getAttribute('data-seq'))
+    return
+  }
+  if (act === 'content-report-close') {
+    if (!contentReportDraft?.busy) contentReportDraft = null
+    render()
+    return
+  }
+  if (act === 'content-reports-refresh' || act === 'content-reports-more') {
+    try { await loadContentReports(act === 'content-reports-more') } catch (err) { flash('err', err.message) }
+    render()
     return
   }
   if (act === 'chat-ref-file') {
@@ -523,8 +554,31 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-deny') {
-    // 拒绝也有范围：`once` 是只拒这一次，`turn` 是这一轮别再试（见 chat.js 的 approvalActs）。
+    // 拒绝也有范围：`once` 是只拒这一次，`turn` 是这一轮别再试（见 chat-bubble.js 的 approvalActs）。
     await decideApproval(btn.getAttribute('data-call'), 'deny', btn.getAttribute('data-scope') || 'once')
+    return
+  }
+  if (act === 'chat-revise') {
+    // 「按意见重写」：带着修改意见拒掉这一版，模型照着改完会再弹一张卡（chat-bubble.js 的 approvalEmailHtml）。
+    const callId = btn.getAttribute('data-call') || ''
+    const box = btn.closest('.sw-approval')
+    const ta = box && box.querySelector('[data-feedback]')
+    const note = ta ? ta.value.trim() : ''
+    if (!note) {
+      // 空着点下去等于一次没有理由的拒绝——那颗按钮旁边就有。提醒一句，光标送回去。
+      flash('err', t('先写下要怎么改', 'Write what to change first'))
+      if (ta) ta.focus()
+      return
+    }
+    await decideApproval(callId, 'deny', 'once', note)
+    return
+  }
+  if (act === 'chat-taskin-toggle') {
+    // 目标 Bot 里那件派来的活：摊开 / 折起它那一轮（chat-bubble.js 的 taskInBlock）。
+    const seq = btn.getAttribute('data-seq') || ''
+    if (taskInOpen.has(seq)) taskInOpen.delete(seq)
+    else taskInOpen.add(seq)
+    paintChatInPlace(btn, 'data-seq')
     return
   }
   if (act === 'chat-task-toggle') {
@@ -533,7 +587,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     state.taskOpen = state.taskOpen || {}
     if (state.taskOpen[id]) delete state.taskOpen[id]
     else state.taskOpen[id] = true
-    render()
+    paintChatInPlace(btn, 'data-id')
     return
   }
   if (act === 'chat-skill-delete') {
@@ -588,13 +642,20 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
+  if (act === 'bot-mem-refresh') {
+    const bot = routeBot()
+    if (!bot) return
+    try { await refreshBotMemories(bot.id) } catch (err) { flash('err', err.message) }
+    render()
+    return
+  }
   if (act === 'bot-mem-del' || act === 'bot-mem-pin' || act === 'bot-mem-renew') {
     /**
      * Bot 设置那一屏上的记忆增删改。
      *
      * **删不做二次确认**，同对话里那颗按钮：一条记错的记忆每一轮都在影响回答，删它
-     * 要极其容易（docs/memory.md §12 ②）。改完重拉这一颗 Bot 的详情——那是一条轻请求,
-     * 而就地改 state 会让「服务端到底存成了什么」和屏幕上显示的分家。
+     * 要极其容易（docs/memory.md §12 ②）。改完只重拉记忆列表，保留正在编辑的配置；
+     * 以服务端回执为准，避免「服务端到底存成了什么」和屏幕上显示的分家。
      */
     const id = btn.getAttribute('data-id') || ''
     const bot = routeBot()?.id || ''
@@ -606,7 +667,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
      * 重画一次让人看见真实的那一份，比替他猜一个动作强。
      */
     if (!cur && act !== 'bot-mem-del') {
-      await loadBotDetail(bot).catch(() => {})
+      await refreshBotMemories(bot).catch(() => {})
       render()
       return
     }
@@ -620,7 +681,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         await api('PATCH', `/runtime/bots/${encodeURIComponent(bot)}/memories/${encodeURIComponent(id)}`, { renew: true })
         flash('ok', t('已续期', 'Renewed'))
       }
-      await loadBotDetail(bot)
+      await refreshBotMemories(bot)
     } catch (err) {
       flash('err', err.message)
     }
@@ -657,7 +718,16 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'chat-task-trace') {
     // 摊开时**不**顺带把过程也拉下来：那是一跳打到席位的请求，而多数时候人只想看结论。
-    await loadTaskTrace(btn.getAttribute('data-child'))
+    await loadTaskTrace(btn.getAttribute('data-key'))
+    return
+  }
+  if (act === 'chat-trace-step') {
+    // 过程里的一步：点开看结果原文，再点收起。
+    const key = btn.getAttribute('data-key') || ''
+    state.traceOpen = state.traceOpen || {}
+    if (state.traceOpen[key]) delete state.traceOpen[key]
+    else state.traceOpen[key] = true
+    paintChatInPlace(btn, 'data-key')
     return
   }
   if (act === 'chat-handoff-claim') {
@@ -675,12 +745,20 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'handoff-claim') {
-    await actOnHandoff(btn.getAttribute('data-id'), 'claim')
+    await actOnHandoff(btn.getAttribute('data-id'), 'claim', undefined, btn)
     return
   }
   if (act === 'handoff-cancel') {
     // 待办行和右栏卡片上那颗。撤销不叫醒 Bot，状态顺着 SSE 回来、清单单独刷一次（见 actOnHandoff）。
     await actOnHandoff(btn.getAttribute('data-id'), 'cancel', undefined, btn)
+    return
+  }
+  if (act === 'handoff-refresh') {
+    await loadHandoffs()
+    return
+  }
+  if (act === 'handoff-detail-retry') {
+    await loadHandoffDetail(btn.getAttribute('data-id'))
     return
   }
   if (act === 'handoff-detail') {
@@ -708,7 +786,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-todo-hide') {
-    // 关掉这一张。清单一变它自己回来（见 chat.js 的 chatTodoHidden）。
+    // 关掉这一张。清单一变它自己回来（见 chat-composer.js 的 chatTodoHidden）。
     hideChatTodos()
     return
   }
@@ -765,14 +843,18 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'chat-export') {
     const bot = chatBotOf()
     const stamp = new Date().toISOString().slice(0, 10)
-    downloadFile(((bot && bot.name) || 'chat') + '-' + stamp + '.md', chatExportText(), 'text/markdown;charset=utf-8')
+    try {
+      await downloadFile(((bot && bot.name) || 'chat') + '-' + stamp + '.md', chatExportText(), 'text/markdown;charset=utf-8')
+    } catch (err) {
+      flash('err', t('下载失败：') + err.message)
+    }
     state.menu = null
     render()
     return
   }
   if (act === 'chat-copy-all') {
     // 走 copyText 而不是直接 navigator.clipboard：内网 http 页面上那个对象整个不存在，
-    // 裸调必失败。copyText 会退到 execCommand 那条路（见 render.js）。
+    // 裸调必失败。copyText 会退到 execCommand 那条路（见 dom-util.js）。
     const ok = await copyText(chatExportText())
     flash(ok ? 'ok' : 'err', ok ? '已复制全文' : '复制失败，浏览器不允许')
     state.menu = null
@@ -839,7 +921,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     asidePref.tab = tab === 'files' || tab === 'handoffs' ? tab : 'env'
     setAsideOpen(true)
     saveAside()
-    // 目录内容不在这儿取：重绘那一趟自己会补（见 chat.js 的 ensureWorkspaceTree）。
+    // 目录内容不在这儿取：重绘那一趟自己会补（见 chat-workspace.js 的 ensureWorkspaceTree）。
     render()
     return
   }
@@ -877,22 +959,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
       kind: 'ws-del',
       path,
       name,
-    }
-    render()
-    return
-  }
-  if (act === 'runtime-redeploy') {
-    const id = btn.getAttribute('data-bot') || ''
-    const bot = (state.runtimeBots || []).find((b) => b.id === id)
-    state.confirm = {
-      title: '重新部署这个 Bot？',
-      body: t(
-        `会把「${(bot && bot.name) || id}」的席位重装一遍并重启。正在进行的对话会断，开着的桌面会掉线；${'\u007e'}/work 里的文件和会话记录不受影响。`,
-        `The seat for "${(bot && bot.name) || id}" is reinstalled and restarted. Ongoing conversations drop and any open desktop disconnects; files in ~/work and session history are unaffected.`,
-      ),
-      label: '重新部署',
-      kind: 'redeploy-bot',
-      id,
     }
     render()
     return
@@ -967,6 +1033,10 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'machine-refresh') {
     await refreshMachine(btn.getAttribute('data-id'), btn.getAttribute('data-scope') || '')
+    return
+  }
+  if (act === 'machine-https-clear') {
+    await clearMachineHttps(btn)
     return
   }
   if (act === 'user-status') {
@@ -1075,14 +1145,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
     void loadOlderChat(state.chatSessionId)
     return
   }
-  if (act === 'logs-open') {
-    const id = btn.getAttribute('data-bot') || ''
-    const bot = (state.runtimeBots || []).find((b) => b.id === id)
-    openLogs(`${(bot && bot.name) || id} · ${t('席位上的 bot 服务，跟着滚')}`, [
-      { key: 'bot', label: t('Bot 运行时'), direct: '/runtime/logs/direct?botId=' + encodeURIComponent(id) },
-    ])
-    return
-  }
   if (act === 'clean-seat') {
     const machineId = btn.getAttribute('data-machine') || ''
     const seatId = btn.getAttribute('data-seat') || ''
@@ -1115,7 +1177,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         ? state.machineDetail
         : (state.machines || []).find((m) => m.machine && m.machine.id === s.machineId)
     // 这里拿的不是日志本身，是「去哪儿领票」：面板先问 Gateway 要一张 5 分钟的票和
-    // 机器地址，再直接打那台机器（见 chat.js 的 startLogStream）。
+    // 机器地址，再直接打那台机器（见 chat-desktop.js 的 startLogStream）。
     const base = `${s.base}/logs/direct`
     // 拆过的席位（status=none）机器上已经没有那个单元了，日志只会是空的，别列进来。
     const seatList = ((card && card.seatList) || []).filter((x) => x.status !== 'none')
@@ -1274,9 +1336,84 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'new-bot') {
     // 公司没配运行机器的话远程 Bot 建了也装不上，在桌面端里就直接默认本地。
-    const localFirst = state.runtimeHasMachine === false && !!window.__SATUWORK_DESKTOP__
+    const localFirst = state.runtimeHasMachine === false && !!window.__SATUWORK_DESKTOP_DEVICE__
     state.newBot = { name: '', description: '', extraPrompt: '', icon: 'c-bot', runtimeKind: localFirst ? 'local' : 'remote' }
     state.newBotError = ''
+    render()
+    return
+  }
+  // ── 名单的分类（shell.js 的 chatRosterNav / botFolderModal）。──────────
+  if (act === 'bot-folder-new') {
+    state.menu = null
+    state.botFolderEdit = { id: '', name: '', error: '' }
+    render()
+    return
+  }
+  if (act === 'bot-folder-rename') {
+    const f = (state.botFolders || []).find((x) => x.id === btn.getAttribute('data-id'))
+    if (!f) return
+    state.menu = null
+    state.botFolderEdit = { id: f.id, name: f.name, error: '' }
+    render()
+    return
+  }
+  if (act === 'bot-folder-move') {
+    // 顶栏菜单里的「移到分类」：拖放之外的入口（触屏、拦了拖放的 WebView）。
+    state.menu = null
+    render()
+    await moveBotToFolder(btn.getAttribute('data-id') || '', btn.getAttribute('data-folder') || '')
+    return
+  }
+  if (act === 'main-bot-set') {
+    await setMainBot(btn.getAttribute('data-id') || '', btn.getAttribute('data-on') === 'true')
+    return
+  }
+  if (act === 'bot-folder-close') {
+    state.botFolderEdit = null
+    render()
+    return
+  }
+  if (act === 'bot-folder-save') {
+    await saveBotFolder()
+    return
+  }
+  if (act === 'bot-folder-toggle') {
+    const id = btn.getAttribute('data-id')
+    if (!id) return
+    state.botFolderOpen = { ...state.botFolderOpen, [id]: state.botFolderOpen[id] === false }
+    saveBotFolderOpen(state.botFolderOpen)
+    render()
+    return
+  }
+  if (act === 'bot-folder-delete') {
+    const f = (state.botFolders || []).find((x) => x.id === btn.getAttribute('data-id'))
+    if (!f) return
+    state.confirm = {
+      title: t('删除这个分类？', 'Delete this folder?'),
+      body: t(`「${f.name}」里的 Bot 不会被删，只是回到没有分类。`, `Bots in “${f.name}” are not deleted; they just go back to the unfiled list.`),
+      label: '删除',
+      kind: 'delete-bot-folder',
+      id: f.id,
+    }
+    state.menu = null
+    render()
+    return
+  }
+  if (act === 'local-device-clear') {
+    const deviceId = btn.getAttribute('data-device') || ''
+    const name = btn.getAttribute('data-name') || t('那台电脑', 'that computer')
+    const count = btn.getAttribute('data-count') || ''
+    if (!deviceId || state.busy) return
+    if (!confirm(t(`清除「${name}」上的 ${count} 个本地 Bot？它们的记忆、日常任务会一起删掉，那台电脑上的对话和文件不受影响。`, `Remove ${count} local bots on "${name}"? Their memories and routines are deleted too; conversations and files on that computer are not touched.`))) return
+    state.busy = true
+    render()
+    try {
+      await api('DELETE', '/runtime/devices/' + encodeURIComponent(deviceId) + '/local-bots')
+      await loadRuntimeBots().catch(() => {})
+    } catch (err) {
+      state.newBotError = err.message
+    }
+    state.busy = false
     render()
     return
   }
@@ -1312,7 +1449,12 @@ document.getElementById('app').addEventListener('click', async (e) => {
         extraPrompt: f.extraPrompt.trim(),
         icon: f.icon,
         runtimeKind: f.runtimeKind === 'local' ? 'local' : 'remote',
+        ...(f.runtimeKind === 'local' ? { device: desktopDeviceInfo() } : {}),
       })
+      // 本地 Bot 默认进「本地 / Local」分类，那个分类可能是这一次才建出来的：先合进来，别等下一次拉名册。
+      if (data.folder && !(state.botFolders || []).some((x) => x.id === data.folder.id)) {
+        state.botFolders = [...(state.botFolders || []), data.folder]
+      }
       state.newBot = null
       state.busy = false
       /**
@@ -1337,7 +1479,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
         }
       }
       await loadRuntimeBots().catch(() => {})
-      // 直接进它的对话页：装好之后那一页会自己变成对话（见 chat.js 的 ensureDeployWatch）。
+      // 直接进它的对话页：装好之后那一页会自己变成对话（见 chat-seat.js 的 ensureDeployWatch）。
       go('/a/' + data.bot.id)
     } catch (err) {
       state.newBotError = err.message
@@ -1400,14 +1542,16 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-folder-pick') {
-    // Bot 申请的那张卡：选中了才替人提交批准；选择框里点取消就什么都不交，卡片留着。
+    // Bot 申请的那张卡：带 data-path 的是「批准」，直接批卡上那个路径；不带的拉起选择框，
+    // 选中了才替人提交批准，选择框里点取消就什么都不交，卡片留着（chat-bubble.js 的 approvalFolderHtml）。
     const callId = btn.getAttribute('data-call') || ''
+    const path = btn.getAttribute('data-path') || ''
     const id = chatBotIdOf(state.path) || state.chatBotId
     const bridge = window.__SATUWORK_LOCAL_BOT__
     if (!callId || !id || !bridge || typeof bridge.approveDirectory !== 'function') return
     let approved = null
     try {
-      approved = await bridge.approveDirectory(id)
+      approved = await bridge.approveDirectory(id, path || undefined)
     } catch (err) {
       flash('err', err instanceof Error ? err.message : String(err || t('没有批准这个文件夹', 'The folder was not approved')))
       render()
@@ -1431,6 +1575,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
     } catch (err) {
       flash('err', err.message)
     }
+    render()
+    return
+  }
+  if (act === 'bot-discard') {
+    const bot = routeBot()
+    if (!bot || !isMyBot(bot) || !state.botDraft || state.busy) return
+    state.botDraft = { ...state.botDraft, ...draftFromBot(bot), extraPrompt: bot.extraPrompt || '' }
     render()
     return
   }
@@ -1527,15 +1678,20 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'bot-save') {
+    if (state.busy) return
     const base = catalogBase()
     const bot = routeBot()
     const a = state.botDraft
     if (!bot || !a) return
-    // 自己建的那种：只发身份那几个字段。人设、边界、能力在公司模版里，服务端也不收。
-    if (isMyBot(bot)) {
-      state.busy = true
+    if (!String(a.name || '').trim()) {
+      flash('err', t('请填写 Bot 名称', 'Enter a bot name'))
       render()
-      try {
+      document.getElementById('bot-name')?.focus()
+      return
+    }
+    // Own bots can edit identity and preferences; company capabilities remain inherited.
+    if (isMyBot(bot)) {
+      await withBusy(async () => {
         const data = await api('PATCH', `/runtime/bots/${encodeURIComponent(bot.id)}`, {
           name: a.name,
           description: a.description,
@@ -1545,22 +1701,16 @@ document.getElementById('app').addEventListener('click', async (e) => {
           icon: a.icon,
           knowledgeOff: a.knowledgeOff || [],
         })
+        if (routeBot()?.id !== bot.id) return
         state.bot = data.bot
-        state.botDraft = { ...draftFromBot(data.bot), extraPrompt: data.bot.extraPrompt || '' }
+        state.botDraft = { ...draftFromBot(data.bot), extraPrompt: data.bot.extraPrompt || '', memories: a.memories, memoryUsed: a.memoryUsed, memoryMax: a.memoryMax, memoryError: a.memoryError }
         await loadRuntimeBots().catch(() => {})
         flash('ok', '已保存')
-      } catch (err) {
-        flash('err', err.message)
-      } finally {
-        state.busy = false
-        render()
-      }
+      })
       return
     }
     if (!base) return
-    state.busy = true
-    render()
-    try {
+    await withBusy(async () => {
       // model / provider 不发：模型由平台指定，这里没得挑。
       const data = await api('PATCH', `${base}/bots/${encodeURIComponent(bot.id)}`, {
         name: a.name,
@@ -1578,17 +1728,13 @@ document.getElementById('app').addEventListener('click', async (e) => {
         desktop: { on: a.desktopOn !== false },
         memory: { on: a.memoryOn, scope: a.scope, kinds: a.kinds, ttl: a.ttl, cap: a.cap, confirm: a.confirmOn, pii: a.piiOn },
       })
+      if (routeBot()?.id !== bot.id) return
       state.bot = data.bot
       // 存完整份按服务端的回执重建：谁被归一化过（越界的注入上限、认不出的选项）当场就看得见。
       // groups / kbs 还没有落点，先留住手上这份，别一保存就空掉。
       state.botDraft = { ...draftFromBot(data.bot), groups: a.groups, kbs: a.kbs, memories: a.memories }
       flash('ok', '已保存')
-    } catch (err) {
-      flash('err', err.message)
-    } finally {
-      state.busy = false
-      render()
-    }
+    })
     return
   }
   if (act === 'bot-delete') {
@@ -1633,6 +1779,7 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'profile-cancel') {
+    cancelProfileAvatarRead()
     state.profileDraft = null
     state.profileSaved = false
     state.profileError = ''
@@ -1641,6 +1788,19 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'profile-save') {
     await saveProfile()
+    return
+  }
+  if (act === 'profile-avatar-pick') {
+    if (!state.busy && !state.profileAvatarBusy) document.getElementById('profile-avatar-input')?.click()
+    return
+  }
+  if (act === 'profile-avatar-remove') {
+    if (state.busy) return
+    cancelProfileAvatarRead()
+    state.profileDraft = { ...profileForm(), avatar: '' }
+    state.profileSaved = false
+    state.profileError = ''
+    render()
     return
   }
   if (act === 'profile-theme') {
@@ -2083,11 +2243,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
-  if (act === 'org-open') {
-    const id = btn.getAttribute('data-id')
-    if (id) go('/companies/' + id)
-    return
-  }
   if (act === 'accounts-tab') {
     state.accountsTab = btn.getAttribute('data-tab') === 'groups' ? 'groups' : 'members'
     render()
@@ -2096,6 +2251,24 @@ document.getElementById('app').addEventListener('click', async (e) => {
   if (act === 'tools-tab') {
     state.toolsTab = btn.getAttribute('data-tab') || 'web'
     render()
+    return
+  }
+  if (act === 'kb-region') {
+    const region = btn.getAttribute('data-tab') === 'intl' ? 'intl' : 'cn'
+    if (region !== state.kbEmbed?.embedding?.region) await saveKbEmbedding({ region })
+    return
+  }
+  if (act === 'kb-embed-test') {
+    await testKbEmbedding()
+    return
+  }
+  if (act === 'kb-init') {
+    await kbVectorAction('init')
+    return
+  }
+  if (act === 'kb-reindex') {
+    if (!confirm(t('重建会删掉全部现有向量、把所有文件重新排队入库：完成前检索命中变少，重新入库按当前单价计费。继续？', 'Rebuilding deletes every stored vector and re-queues all files: search returns fewer hits until it finishes, and re-ingestion is billed at the current price. Continue?'))) return
+    await kbVectorAction('reindex')
     return
   }
   if (act === 'web-test') {
@@ -2114,32 +2287,18 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'audit-enabled') {
     const enabled = state.auditSettings?.settings?.enabled !== true
-    state.busy = true
-    render()
-    try {
+    await withBusy(async () => {
       await saveConversationAuditEnabled(enabled)
       flash('ok', enabled ? '已开启自动审计' : '已关闭自动审计')
-    } catch (err) {
-      flash('err', err.message)
-    } finally {
-      state.busy = false
-      render()
-    }
+    })
     return
   }
   if (act === 'audit-model-role') {
     const role = btn.getAttribute('data-role') === 'utility' ? 'utility' : 'daily'
-    state.busy = true
-    render()
-    try {
+    await withBusy(async () => {
       await saveConversationAuditRole(role)
       flash('ok', role === 'utility' ? '后续审计将使用 UTILITY 模型' : '后续审计将使用任务模型')
-    } catch (err) {
-      flash('err', err.message)
-    } finally {
-      state.busy = false
-      render()
-    }
+    })
     return
   }
   if (act === 'billing-tab') {
@@ -2384,6 +2543,29 @@ document.getElementById('app').addEventListener('click', async (e) => {
     const ok = await copyText(state.secret?.url || '')
     state.inviteCopied = ok
     if (!ok) flash('err', '复制失败，请手动选中上面的链接复制。')
+    render()
+    return
+  }
+  if (act === 'gw-server-open') {
+    void openGatewayServer()
+    return
+  }
+  if (act === 'gw-server-close') {
+    // 切换中别让人关：命令已经发出去了，窗口马上就要换。
+    if (state.gwServer?.phase === 'switching') return
+    state.gwServer = null
+    render()
+    return
+  }
+  if (act === 'gw-server-check') {
+    void checkGatewayServer(false)
+    return
+  }
+  if (act === 'gw-server-default') {
+    if (!state.gwServer) return
+    state.gwServer.url = state.gwServer.def
+    state.gwServer.phase = 'idle'
+    state.gwServer.msg = ''
     render()
     return
   }
@@ -2632,6 +2814,12 @@ document.getElementById('app').addEventListener('click', async (e) => {
 
 document.getElementById('app').addEventListener('keydown', (e) => {
   const el = e.target
+  // 分类名那一格：回车就保存，和点「创建」一样。
+  if (el instanceof HTMLInputElement && el.id === 'bf-name' && e.key === 'Enter') {
+    e.preventDefault()
+    void saveBotFolder()
+    return
+  }
   if (!(el instanceof HTMLInputElement) || el.id !== 'sk-tag-draft') return
   if (e.key === 'Enter') {
     e.preventDefault()
@@ -2661,10 +2849,22 @@ document.getElementById('app').addEventListener('input', (e) => {
     if (el.getAttribute('data-field') === 'q') paintConnectorPicks()
     return
   }
-  // 插件弹窗的搜索框。同样只重画清单那一块，不整页 render。
-  if (el.getAttribute('data-act') === 'plugins-field' && state.plugins) {
-    state.plugins.q = el.value
-    paintPluginList()
+  if (el.getAttribute('data-act') === 'kb-query') { state.kbSearchQuery = el.value; return }
+  if (el.getAttribute('data-act') === 'kb-edit-field' && state.kbEdit) { state.kbEdit[el.getAttribute('data-field')] = el.value; return }
+  if (el.getAttribute('data-act') === 'kb-create-field' && state.kbCreate) {
+    state.kbCreate.draft = { name: '', desc: '', share: 'all', ...(state.kbCreate.draft || {}), [el.getAttribute('data-field')]: el.value }
+    return
+  }
+  // 插件页的搜索框。同样只重画清单那一块，不整页 render。
+  if (el.getAttribute('data-act') === 'plugins-q') {
+    state.pluginQ = el.value
+    paintPluginsBody()
+    return
+  }
+  // 插件详情里的工具筛选：只藏行，不重画——没保存的勾选在 DOM 里。
+  if (el.getAttribute('data-act') === 'conn-bots-q') { filterConnBots(el); return }
+  if (el.getAttribute('data-act') === 'conn-tool-q') {
+    filterToolRows(el.value)
     return
   }
   if (el.getAttribute('data-act') === 'prov-field' && state.providerDraft) {
@@ -2682,6 +2882,11 @@ document.getElementById('app').addEventListener('input', (e) => {
   }
   if (el.getAttribute('data-act') === 'charge-field' && state.chargeEdit) {
     state.chargeEdit[el.getAttribute('data-field')] = el.value
+    return
+  }
+  const bf = el.getAttribute('data-folderedit')
+  if (bf && state.botFolderEdit) {
+    state.botFolderEdit = { ...state.botFolderEdit, [bf]: el.value }
     return
   }
   const nb = el.getAttribute('data-newbot')
@@ -2702,6 +2907,7 @@ document.getElementById('app').addEventListener('input', (e) => {
       return
     }
     setEditingDraft({ ...d, [botField]: el.value })
+    paintBotSettingsActions()
     if (botField === 'prompt') {
       const len = document.querySelector('[data-bot-prompt-len]')
       if (len) len.textContent = t(`${el.value.length} 字 · 每轮随上下文注入`, `${el.value.length} chars · injected each turn`)
@@ -2711,8 +2917,7 @@ document.getElementById('app').addEventListener('input', (e) => {
   if (!(el instanceof HTMLInputElement)) return
   const field = el.getAttribute('data-profile')
   if (field === 'name' || field === 'title' || field === 'phone') {
-    const u = state.me?.account || {}
-    const cur = state.profileDraft ?? { name: u.name || '', title: u.title || '', phone: u.phone || '' }
+    const cur = profileForm()
     state.profileDraft = { ...cur, [field]: el.value }
     state.profileSaved = false
     paintProfileActions()
@@ -2726,6 +2931,12 @@ document.getElementById('app').addEventListener('input', (e) => {
 
 document.getElementById('app').addEventListener('change', async (e) => {
   const el = e.target
+  if (el instanceof HTMLInputElement && el.id === 'profile-avatar-input') {
+    const file = el.files?.[0]
+    el.value = ''
+    if (file) await takeProfileAvatar(file)
+    return
+  }
   /**
    * 日常任务的名字、指令与用哪个模型。**收在 change 而不是 input 上**：保存都要 render()
    * （列表里那一行、下一次的时间都跟着变），而 render 会把输入框换掉——边打边存
@@ -2812,9 +3023,26 @@ document.getElementById('app').addEventListener('change', async (e) => {
   }
   // 知识库：选文件就开传；平台那两格单价和门槛。
   if (el.getAttribute?.('data-act') === 'kb-files') {
-    const files = el.files
+    // FileList can be live: copy it before clearing the picker for selecting the same file again.
+    const files = Array.from(el.files || [])
     el.value = ''
     await knowledgeUpload(files)
+    return
+  }
+  // 知识库向量模型：选预设当场存；选「自定义」只在本地切过去，填完点保存才提交。
+  if (el.getAttribute?.('data-act') === 'kb-embed-provider') {
+    if (el.value === 'custom') {
+      state.kbEmbedPick = 'custom'
+      delete state.tests['kb:embed']
+      render()
+      return
+    }
+    state.kbEmbedPick = ''
+    await saveKbEmbedding({ provider: el.value })
+    return
+  }
+  if (el.getAttribute?.('data-act') === 'kb-embed-model') {
+    await saveKbEmbedding({ model: el.value.trim() })
     return
   }
   if (el.getAttribute?.('data-act') === 'kb-price') {
@@ -2943,6 +3171,8 @@ document.getElementById('app').addEventListener('input', (e) => {
   const el = e.target
   if (!(el instanceof HTMLTextAreaElement) || el.id !== 'chat-input') return
   state.chatDraft = el.value
+  // 正文里删掉了 `@名字` 就是不点了（见 syncChatMentions）：不然选单里再也选不到它。
+  syncChatMentions()
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 200) + 'px'
   // 光标前面刚打出来的那截 `@xxx` 决定选单开不开。**不 render**：整页重绘会把输入框
@@ -2955,6 +3185,8 @@ document.getElementById('app').addEventListener('input', (e) => {
   const cmd = commandQueryAt(el)
   if (cmd) openCmdPick(cmd.q)
   else if (state.cmdPick) closeCmdPick()
+  // 打成了一条命令，发送键就该是「发送」（哪怕 Bot 在跑），见 paintSendFace。
+  paintSendFace()
 })
 
 /**
@@ -3022,14 +3254,8 @@ document.getElementById('app').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229 && items.length) {
       const hit = items[state.cmdPick.index || 0]
       /**
-       * **标灰的那条不接，也不吞回车**——让它穿到下面的 sendChat 去。
-       *
-       * 那儿会 parseCommand 认出这条命令、再撞上 `idleOnly && state.chatStatus`，
-       * 弹一句「这一轮还在跑，等它跑完再试」。选单右边那行小字容易被忽略，那句 flash
-       * 才是人真正会看到的解释。
-       *
-       * 原来这里是先 preventDefault 再判 disabled：命令不跑、消息不发、一句提示也没有,
-       * 人按下回车，屏幕上什么都不会变。
+       * 选单里的项现在都能执行（跑着的时候 runChatCommand 会先停下这一轮）。disabled 这一道判断
+       * 留着当保险：真有标灰的，回车穿到下面的 sendChat，由它给一句解释，而不是吞掉回车什么都不发生。
        */
       if (hit && !hit.disabled) {
         e.preventDefault()
@@ -3048,6 +3274,11 @@ document.getElementById('app').addEventListener('keydown', (e) => {
    而输入框自己的 keydown 只管回车。 */
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return
+  if (state.gwServer && state.gwServer.phase !== 'switching') {
+    state.gwServer = null
+    render()
+    return
+  }
   if (state.chatCtxOpen) {
     state.chatCtxOpen = false
     paintChatCtx()
@@ -3121,6 +3352,7 @@ document.addEventListener(
     // 人动过滚动条之后，贴底才开始看「是不是本来就在底部」。在这之前一律贴底，
     // 否则刚进页面、内容还没铺满时会停在顶上。
     el.setAttribute('data-touched', '1')
+    noteChatScroll(el)
     const jump = document.getElementById('chat-jump')
     if (jump) jump.hidden = nearBottom(el)
     // 翻到顶就自己往前取一页。按钮留着是给「滚不动」的情况兜底（内容还没铺满一屏时
@@ -3181,26 +3413,13 @@ window.addEventListener('popstate', () => {
   enterPath()
 })
 
-/**
- * 「下载桌面端」落在哪儿，要等知道登没登录才定得下来，所以 boot 在每次画之前都过一遍：
- *
- * - **没登录**：首页上那一段（pages-landing.js 的 lpDownload）。地址折成 `/#download`，
- *   第一次画完滚过去（见 render.js 的 `state.lpJump`）。
- * - **登录了**：应用内那一页 `/download`（downloadPage）。首页只给没登录的人看，折过去
- *   的话落在一张总览上，找不到下载在哪儿。
- * - **桌面壳**：两样都不给，回 `/`——人已经在桌面端里了。
- *
- * 进来的地址有两种：老的 `/download`（早被管理员发出去过）和 `/#download`（登录那三屏
- * 底下那条链接、首页上点过之后的地址）。反复调也没关系：已经在该在的地方就什么都不做。
- */
+/** 兼容旧的 /#download 链接；桌面壳仍回到应用首页。 */
 function foldDownload() {
   const asked = state.path === '/download' || (state.path === '/' && location.hash === '#download')
   if (!asked) return
-  const shell = appShell()
-  const to = state.me && !shell ? '/download' : shell ? '/' : '/#download'
+  const to = appShell() ? '/' : '/download'
   if (location.pathname + location.hash !== to) history.replaceState({}, '', to)
-  state.path = to === '/download' ? '/download' : '/'
-  state.lpJump = to === '/#download' ? 'download' : ''
+  state.path = to
 }
 
 async function boot() {

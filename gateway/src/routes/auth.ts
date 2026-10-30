@@ -10,14 +10,8 @@ import { headerOf, inviteeOf, issue, noteLogin, requireSeatOrUser, requireUser }
 import { type Account } from '../db.ts'
 import { enterThrottle, throttleKeys } from '../lib/auth-throttle.ts'
 import { PUSH_ENVIRONMENTS, PUSH_PLATFORMS, normalizePushToken, validPushToken } from '../lib/push.ts'
-
-/**
- * 建系统管理员那把事务级锁的号。
- *
- * 一个随手取的常数，唯一的要求是**别和以后新加的那几处撞上**——两件不相干的事排在
- * 一条队上，是最难查的那种慢（见 db.lockExclusive）。
- */
-const SETUP_LOCK = 20260831
+import { SETUP_LOCK } from '../db/locks.ts'
+import { accountAvatarOf } from '../lib/account-avatar.ts'
 
 export function attachAuth(router: Router, ctx: RouteCtx) {
   const { db, keys } = ctx
@@ -254,6 +248,7 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
       name?: string
       title?: string
       phone?: string
+      avatar?: string
       theme?: Account['theme']
       locale?: Account['locale']
     } = {}
@@ -263,6 +258,7 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
     }
     if (typeof body.title === 'string') patch.title = body.title.trim()
     if (typeof body.phone === 'string') patch.phone = body.phone.trim()
+    if (Object.hasOwn(body, 'avatar')) patch.avatar = accountAvatarOf(body.avatar)
     if (body.theme != null && body.theme !== '') {
       const theme = strField(body, 'theme')
       if (theme !== 'light' && theme !== 'dark' && theme !== 'system') {

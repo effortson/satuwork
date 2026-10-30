@@ -12,11 +12,11 @@ import { newPairingCode, pairingCodeHash } from '../channels/pairing.ts'
 import { TelegramError, telegramGetMe, telegramSetMyCommands } from '../channels/telegram.ts'
 import { ensureTelegramInbound, telegramWebhookSecretOk } from '../channels/inbound.ts'
 import { processTelegramUpdate } from '../channels.ts'
-import { USER_BOT_QUOTA_LOCK } from './runtime.ts'
+import { USER_BOT_QUOTA_LOCK } from '../db/locks.ts'
+import { MAX_USER_BOTS } from './runtime.ts'
 import { uiCdnMeta, uiCdnSources } from '../ui-cdn.ts'
 
-const MAX_USER_BOTS = Math.max(1, Math.trunc(Number(process.env.GATEWAY_MAX_USER_BOTS) || 10))
-// 绑渠道顺手建的那颗 Bot 和 POST /runtime/bots 数的是同一个配额，锁也得是同一把（键定义在那边）。
+// 绑渠道顺手建的那颗 Bot 和 POST /runtime/bots 数的是同一个配额，锁也得是同一把（号在 db/locks.ts）。
 const CHANNEL_BIND_LOCK = USER_BOT_QUOTA_LOCK
 
 interface StoredSecret { token: string; pairingCode: string }
@@ -42,7 +42,7 @@ function htmlAttr(value: string): string {
  * 渠道预览页认得的几种文件。
  *
  * `doc`（Word / Excel / PPT）和 `image` 是后补的：Office 预览当初只接在对话页那套预览上
- * （chat.js 的 openPreview），这一页漏了，Bot 在 Telegram 里发出来的 pptx / docx 点开只有
+ * （chat-preview.js 的 openPreview），这一页漏了，Bot 在 Telegram 里发出来的 pptx / docx 点开只有
  * 一句「暂不支持在线预览」。扩展名和对话页的 PREVIEW_DOC_EXT 保持一致。
  */
 const CHANNEL_DOC_EXT = /\.(?:docx|xlsx|xlsm|pptx|doc|xls|ppt|rtf|odt|ods|odp)$/i
@@ -88,7 +88,7 @@ ${uiCdnMeta()}</head><body class="sw-channel-preview-page" data-kind="${safeKind
   </div>
   <div class="sw-preview-body" id="preview-body" data-flow="center"><p class="sw-preview-note"><span class="sw-preview-spin" aria-hidden="true"></span>正在取文件…</p></div>
 </main>
-<script src="/markdown.js"></script><script src="/channel-preview.js"></script>
+<script src="/core.js"></script><script src="/dom-util.js"></script><script src="/markdown.js"></script><script src="/channel-preview.js"></script>
 </body></html>`
 }
 

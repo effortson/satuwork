@@ -15,7 +15,7 @@ import { INSTANCE_DOWN, machineBase } from './machines.ts'
 import { Readable } from 'node:stream'
 import { companyMachineOf, listSeatRuntime, managerHeaders } from '../deploy.ts'
 import { pipeline } from 'node:stream/promises'
-import { type Account, type Db, type Machine } from '../db.ts'
+import { type Account, type BotViewer, type Db, type Machine } from '../db.ts'
 import { BlockList, isIP } from 'node:net'
 
 /** Node 在双栈 socket 上给的是 ::ffff:1.2.3.4，统一去掉那层壳。 */
@@ -137,11 +137,11 @@ export async function instanceHostFor(account: Account, db: Db, botId: string): 
   return host.replace(/\/$/, '')
 }
 
-export async function visibleBotOf(db: Db, account: Account, botId: string) {
+export async function visibleBotOf(db: Db, account: Account, botId: string, viewer: BotViewer) {
   requireSeat(account)
   const id = (botId || '').trim()
   if (!id) throw new HttpError(400, 'botId 不能为空')
-  const hit = (await db.botsFor(account.companyId, account.id)).find((b) => b.id === id)
+  const hit = (await db.botsFor(account.companyId, account.id, viewer)).find((b) => b.id === id)
   if (!hit) throw new HttpError(404, '没有这个 Bot')
   return hit
 }
@@ -223,12 +223,16 @@ export async function managerTargetFor(
   return { base: machineBase(machine.host), seatId: runtime.seatId, machineToken: machine.token || undefined, machine }
 }
 
-export async function seatTargetForSession(db: Db, account: Account, sessionId: string): Promise<SeatTarget> {
+/**
+ * 连 `botId` 一起还回去：会话是哪颗 Bot 的已经在这里查过了，调用方要按 Bot 判的（发消息时
+ * `@` 的「可用 Bot」校验）直接用，不用为同一行再查一次索引。
+ */
+export async function seatTargetForSession(db: Db, account: Account, sessionId: string): Promise<SeatTarget & { botId: string }> {
   requireSeat(account)
   const idx = await db.sessionIndex(sessionId)
   const botId = (idx?.botId || '').trim()
   if (!botId || idx!.accountId !== account.id) throw new HttpError(503, INSTANCE_DOWN)
-  return await seatTargetFor(db, account, botId)
+  return { ...(await seatTargetFor(db, account, botId)), botId }
 }
 
 export async function seatBearer(db: Db, accountId: string): Promise<string> {
@@ -238,19 +242,54 @@ export async function seatBearer(db: Db, accountId: string): Promise<string> {
   return secrets?.accessToken ?? ''
 }
 
-/**
- * 两层鉴权，两个头。
- *
- * `authorization` 是给 **bot** 的席位票（`sat_`），管家原样透传不看；
- * `x-satuwork-machine` 是给 **管家** 的机器票（`smt_`），管家验完就摘掉。
- * 分开是为了让 bot 那边一行都不用改。
- *
- * 真正拼头的是 deploy.ts 的 `managerHeaders`——它还会捎上「Gateway 现在在哪」，
- * 而那一句必须每条发往管家的调用都带着才有意义（见那边的长注释）。这里保留这个名字，
- * 是因为它有十几个调用点，而它们要的正是「发给管家的那套头」。
+/*
+ * 两层鉴权，两个头：`authorization` 是给 **bot** 的席位票（`sat_`），管家原样透传不看；
+ * `x-satuwork-machine` 是给 **管家** 的机器票（`smt_`），管家验完就摘掉。分开是为了让
+ * bot 那边一行都不用改。机器那个头一律由 deploy.ts 的 `managerHeaders` 拼——它还会捎上
+ * 「Gateway 现在在哪」，那一句必须每条发往管家的调用都带着才有意义（见那边的长注释）。
  */
-export function machineHeader(machineToken?: string): Record<string, string> {
-  return managerHeaders(machineToken)
+
+/**
+ * 打席位/管家的一条 JSON 接口：两层票、超时、正文认不出 JSON 时兜一句。
+ *
+ * proxyJson 拿到就原样转出去；要先看一眼正文再决定回什么的（会话那条要登记会话索引、
+ * 把 404 折成 503）直接用这个，不再自己抄一遍 fetch + 解析。
+ */
+export async function seatFetchJson(
+  method: string,
+  url: string,
+  body: unknown,
+  token: string | undefined,
+  machineToken: string | undefined,
+  timeoutMs = 15000,
+): Promise<{ status: number; ok: boolean; parsed: unknown }> {
+  // authorization 上只能是席位票。bot 不认机器票了，回落到 smt_ 只会换回 401，
+  // 而且会让人以为「票带了但没生效」，比空着更难查。
+  const bearerTok = token || ''
+  let r: Response
+  try {
+    r = await fetch(url, {
+      method,
+      headers: {
+        authorization: bearerTok ? `Bearer ${bearerTok}` : '',
+        accept: 'application/json',
+        ...managerHeaders(machineToken),
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch {
+    throw new HttpError(503, INSTANCE_DOWN)
+  }
+  const text = await r.text()
+  let parsed: unknown
+  try {
+    parsed = text ? JSON.parse(text) : null
+  } catch {
+    parsed = { error: text.slice(0, 200) || INSTANCE_DOWN }
+  }
+  return { status: r.status, ok: r.ok, parsed }
 }
 
 export async function proxyJson(
@@ -279,38 +318,13 @@ export async function proxyJson(
   /** 转出去之前改一下正文（摘掉不该到浏览器的字段）。只在正文是 JSON 时调用。 */
   scrub?: (parsed: unknown) => unknown,
 ) {
-  // authorization 上只能是席位票。bot 不认机器票了，回落到 smt_ 只会换回 401，
-  // 而且会让人以为「票带了但没生效」，比空着更难查。
-  const bearerTok = token || ''
-  let r: Response
-  try {
-    r = await fetch(url, {
-      method,
-      headers: {
-        authorization: bearerTok ? `Bearer ${bearerTok}` : '',
-        accept: 'application/json',
-        ...machineHeader(machineToken),
-        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-  } catch {
-    throw new HttpError(503, INSTANCE_DOWN)
-  }
-  const text = await r.text()
-  let parsed: unknown
-  try {
-    parsed = text ? JSON.parse(text) : null
-  } catch {
-    parsed = { error: text.slice(0, 200) || INSTANCE_DOWN }
-  }
-  if (scrub) parsed = scrub(parsed)
+  const { status, parsed: raw } = await seatFetchJson(method, url, body, token, machineToken, timeoutMs)
+  const parsed = scrub ? scrub(raw) : raw
   if (extra && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    json(res, r.status, { ...(parsed as Record<string, unknown>), ...extra })
+    json(res, status, { ...(parsed as Record<string, unknown>), ...extra })
     return
   }
-  json(res, r.status, parsed)
+  json(res, status, parsed)
 }
 
 /**
@@ -359,7 +373,7 @@ export async function proxyDownload(
     r = await fetch(url, {
       headers: {
         authorization: token ? `Bearer ${token}` : '',
-        ...machineHeader(machineToken),
+        ...managerHeaders(machineToken),
       },
       signal: ac.signal,
     })

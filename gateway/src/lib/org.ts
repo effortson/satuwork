@@ -9,6 +9,21 @@ import { HttpError } from '../http.ts'
 import { type Account, type AccountStatus, type CatalogItem, type Company, type CompanySettings, type CompanyStatus, type Db, type Group, type ImageModelRole, type ModelRate, type ModelRole, type BillingSettings, PRICE_MULTIPLIER_MAX, PRICE_MULTIPLIER_MIN, REASONING_EFFORTS, type Plan, type PlatformSettings, type Role, type SessionIndex, parseBilling, parseConnectorPricing, parseImageRole, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort } from '../db.ts'
 import { WEB_BACKENDS, WEB_DOCUMENT } from '../db/types.ts'
 import { VENDORS } from '../connectors/index.ts'
+import { isEmbeddingSecret } from './knowledge-embedding.ts'
+
+/** 按 id 取公司，取不到就 404。三十几条路由开头都是这两行。 */
+export async function companyOr404(db: Db, id: string): Promise<Company> {
+  const company = await db.company(id)
+  if (!company) throw new HttpError(404, '公司不存在')
+  return company
+}
+
+/** 按 id 取账号，不是这家公司的也当不存在——别让人拿别家账号 id 探出「有这个人」。 */
+export async function accountInOrg(db: Db, orgId: string, id: string, msg = '账号不存在'): Promise<Account & { companyId: string }> {
+  const row = await db.account(id)
+  if (!row || row.companyId !== orgId) throw new HttpError(404, msg)
+  return row as Account & { companyId: string }
+}
 
 export function emailOf(raw: string): string {
   const email = raw.trim().toLowerCase()
@@ -184,17 +199,9 @@ export function publicPlatformCred(c: { provider: string; createdAt: number; upd
 }
 
 /**
- * 公司那一屏看到的一把密钥。`scope` 说这把是谁的：`company` 是这家自己配的（能改能删），
- * `platform` 是平台兜底的那把（只能看，改要去找平台管理员）。密钥本身永不回显。
- */
-export function publicCredential(c: { provider: string; updatedAt: number }, scope: 'company' | 'platform') {
-  return { provider: c.provider, configured: true as const, scope, updatedAt: c.updatedAt }
-}
-
-/**
- * `platform_credentials` 是一张**按名字存密钥的通用表**，三类东西都住在里面：
+ * `platform_credentials` 是一张**按名字存密钥的通用表**，四类东西都住在里面：
  * 模型供应商（openai、anthropic、自定义端点）、连接器供应商（composio）、网页搜索
- * 与提取后端（tavily 那几个）。表可以合，**清单不能合**。
+ * 与提取后端（tavily 那几个）、知识库向量模型（kb-embedding:*）。表可以合，**清单不能合**。
  *
  * 「供应商」那一屏讲的是模型：一行的每一列——多少个模型、测一下通不通、哪个角色在
  * 用它——对连接器和搜索后端全都答不上来。混进去的结果就是那屏上多出一个 0 个模型、
@@ -207,7 +214,8 @@ export function publicCredential(c: { provider: string; updatedAt: number }, sco
 const NON_MODEL_SECRETS: ReadonlySet<string> = new Set<string>([...VENDORS, ...WEB_BACKENDS, WEB_DOCUMENT])
 
 export function isModelProvider(provider: string): boolean {
-  return !NON_MODEL_SECRETS.has(provider)
+  // 知识库向量模型的密钥（`kb-embedding:<预设>`）同理，它的屏在「工具配置 → 知识库」。
+  return !NON_MODEL_SECRETS.has(provider) && !isEmbeddingSecret(provider)
 }
 
 export function modelProviderCreds<T extends { provider: string }>(creds: T[]): T[] {
@@ -415,6 +423,7 @@ export function publicAccount(a: Account) {
     name: a.name,
     title: a.title,
     phone: a.phone,
+    avatar: a.avatar,
     theme: a.theme,
     locale: a.locale,
     role: a.role,
@@ -480,12 +489,17 @@ export function publicCompany(c: Company) {
   }
 }
 
-/**
- * 一行会话索引对外的样子。
- *
- * `names` 是可选的预取表：列表接口一次性把本公司的账号和 Bot 拉齐再传进来，省掉每行
- * 两次查库——一页 200 行就是 400 次往返。单条详情接口不传，照旧现查。
- */
+/** `时刻:id` 那种翻页游标：冒号前是毫秒，冒号后是第二把钥匙，缺一样就 400。 */
+function pairCursorOf(raw: string | null): { at: number; key: string } | undefined {
+  const text = (raw || '').trim()
+  if (!text) return undefined
+  const i = text.indexOf(':')
+  const at = Number(text.slice(0, i))
+  const key = i < 0 ? '' : text.slice(i + 1)
+  if (i < 0 || !Number.isFinite(at) || !key) throw new HttpError(400, 'cursor 不合法')
+  return { at, key }
+}
+
 /**
  * 会话列表的翻页游标：`updatedAt:sessionId`。
  *
@@ -493,13 +507,8 @@ export function publicCompany(c: Company) {
  * 的话，同一毫秒上报的两条会话在翻页边界上要么漏要么重。
  */
 export function sessionCursorOf(raw: string | null): { updatedAt: number; sessionId: string } | undefined {
-  const text = (raw || '').trim()
-  if (!text) return undefined
-  const i = text.indexOf(':')
-  const updatedAt = Number(text.slice(0, i))
-  const sessionId = i < 0 ? '' : text.slice(i + 1)
-  if (i < 0 || !Number.isFinite(updatedAt) || !sessionId) throw new HttpError(400, 'cursor 不合法')
-  return { updatedAt, sessionId }
+  const c = pairCursorOf(raw)
+  return c && { updatedAt: c.at, sessionId: c.key }
 }
 
 /**
@@ -509,15 +518,16 @@ export function sessionCursorOf(raw: string | null): { updatedAt: number; sessio
  * 只比时间的话翻页边界上要么漏要么重。
  */
 export function chargeCursorOf(raw: string | null): { createdAt: number; id: string } | undefined {
-  const text = (raw || '').trim()
-  if (!text) return undefined
-  const i = text.indexOf(':')
-  const createdAt = Number(text.slice(0, i))
-  const id = i < 0 ? '' : text.slice(i + 1)
-  if (i < 0 || !Number.isFinite(createdAt) || !id) throw new HttpError(400, 'cursor 不合法')
-  return { createdAt, id }
+  const c = pairCursorOf(raw)
+  return c && { createdAt: c.at, id: c.key }
 }
 
+/**
+ * 一行会话索引对外的样子。
+ *
+ * `names` 是可选的预取表：列表接口一次性把本公司的账号和 Bot 拉齐再传进来，省掉每行
+ * 两次查库——一页 200 行就是 400 次往返。单条详情接口不传，照旧现查。
+ */
 export async function publicSessionIndex(
   db: Db,
   row: SessionIndex,

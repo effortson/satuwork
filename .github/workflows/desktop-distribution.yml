@@ -197,32 +197,25 @@ jobs:
         if: matrix.os == 'macos'
         run: |
           set -euo pipefail
-          retry_validate() {
-            local attempt
-            for attempt in 1 2 3; do
-              if "$@"; then return 0; fi
-              [ "$attempt" -eq 3 ] || sleep 15
-            done
-            return 1
-          }
+          source desktop/scripts/apple-retry.sh
           v=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
           b=desktop/src-tauri/target/release/bundle
           app="$b/macos/${PRODUCT_NAME}.app"
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv "$app" 2>&1 | grep -E 'Authority=Developer ID Application|TeamIdentifier|flags='
           # 先存下来再 grep：`| grep -q` 提前退出会让前面的管道吃 SIGPIPE，pipefail 下整步误判失败。
-          gk=$(retry_validate spctl -a -t exec -vv "$app" 2>&1); echo "$gk"
+          gk=$(retry_apple spctl -a -t exec -vv "$app" 2>&1); echo "$gk"
           grep -q 'Notarized Developer ID' <<<"$gk" || { echo ".app 没过 Gatekeeper 的公证检查" >&2; exit 1; }
-          retry_validate xcrun stapler validate "$app"
+          retry_apple xcrun stapler validate "$app"
 
           # 升级包里的那份才是装过的人拿到的，单独解开看一遍。
           t=$(mktemp -d)
           tar -xzf "$b/macos/${PRODUCT_NAME}.app.tar.gz" -C "$t"
-          gk=$(retry_validate spctl -a -t exec -vv "$t/${PRODUCT_NAME}.app" 2>&1); echo "$gk"
+          gk=$(retry_apple spctl -a -t exec -vv "$t/${PRODUCT_NAME}.app" 2>&1); echo "$gk"
           grep -q 'Notarized Developer ID' <<<"$gk" || { echo "升级包里的 .app 没过公证检查" >&2; exit 1; }
 
           dmg="$b/dmg/${PRODUCT_NAME}_${v}_${{ matrix.tauri_arch }}.dmg"
-          retry_validate xcrun stapler validate "$dmg"
+          retry_apple xcrun stapler validate "$dmg"
 
           # 包里的 Node：看它是谁签的、带没带 JIT 权限，再真跑一段会触发 JIT 的循环。
           n="$app/Contents/Resources/runtime/node/bin/node"

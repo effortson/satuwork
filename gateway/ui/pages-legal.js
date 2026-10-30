@@ -277,6 +277,11 @@ function legalPrivacy() {
           t('手机端 AI 数据共享许可：只保存在当前设备，按账号、服务器和服务商范围区分，退出登录时清除。', 'Mobile AI data-sharing permission: stored on the current device, scoped to the account, server and providers, and cleared at sign-out.'),
         ],
       ]),
+      lgSec('pv-content', t('内容规则与安全举报', 'Content rules and safety reports'), [
+        t('Satuwork 仅用于合法的企业工作。禁止色情、儿童性剥削、露骨或猎奇暴力、仇恨骚扰，以及协助暴力、自残、诈骗或其他严重违法行为。允许非露骨的合法工作、教育、医疗、法律及防御性安全讨论。', 'Satuwork is for legitimate enterprise work. Pornography, child sexual exploitation, graphic or gratuitous violence, hateful harassment, and assistance with violence, self-harm, fraud or other serious wrongdoing are prohibited. Legitimate non-graphic work, educational, medical, legal and defensive-security discussion is allowed.'),
+        t('可在 AI 回复旁点击“举报内容”，或长按回复选择举报。在提交前可修改或删除所选片段。确认提交后，该服务器的服务运营方会收到账号、Bot、会话与消息标识、问题类别及你主动提交的片段和说明；不会自动附带其他聊天或文件。授权的平台管理员可查看并记录处置，帮助改进过滤与审核。举报保留 180 天后由维护任务删除；账号删除也会移除关联举报。', 'Select Report content beside an AI reply, or from its long-press menu. Edit or remove the selected excerpt before submitting. With your confirmation, this server’s service operator receives your account, bot, conversation and message identifiers, issue category, and the excerpt and details you choose to send. Other messages and files are not attached automatically. Authorized platform administrators review reports and record actions to improve safeguards. Maintenance removes reports after 180 days; account deletion also removes associated reports.'),
+        t('服务使用请求拦截、模型服务指令及服务商自身的安全措施限制不当生成。这些措施不能保证识别所有违规内容；请举报漏检，组织仅应配置符合上述规则的模型与工具。', 'The service uses request checks, model instructions and provider safeguards to restrict inappropriate generation. These measures cannot guarantee detection of every violation; report missed content, and configure only models and tools compatible with these rules.'),
+      ]),
       lgSec('pv-minors', t('未成年人', 'Minors'), [
         t(
           '这套系统面向企业内部使用，不面向 16 岁以下的个人。发现误开的账号会删掉。',

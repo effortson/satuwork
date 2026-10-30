@@ -9,11 +9,11 @@
  * 探针要 tsx 才 import 得了 .ts。
  */
 import { Context } from '@deepseek-ai/cordis'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tempDir } from './e2e-lib.mjs'
 
-const home = mkdtempSync(join(tmpdir(), 'satuwork-handoff-'))
+const home = tempDir('satuwork-handoff-')
 process.env.SATUWORK_HOME = home
 
 const { StorageService } = await import('./src/storage/index.ts')

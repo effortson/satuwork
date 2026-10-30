@@ -52,6 +52,8 @@ const TOOLS = [
   'web_search', 'web_extract',
   'history_read', 'history_search',
   'todo', 'delegate_task',
+  // 注册是无条件的；不是主 Bot、或者没有可派的 Bot 时只是不进工具表（agent 的 toolSchemasFor）。
+  'assign_task',
   'skill_view', 'skills_list', 'skill_manage',
   'memory_write', 'memory_list',
   'routine_list', 'routine_manage',

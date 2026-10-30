@@ -5,9 +5,8 @@
  * 「请求体拼得对不对、答复拆得对不对、图落没落盘、失败那一条怎么说」。授权、计费、上游
  * 地址在 e2e/manager.mjs 和 e2e/image-gen.mjs 里验。
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { WorkspaceService } from './src/workspace/index.ts'
@@ -16,6 +15,7 @@ import * as imageTools from './src/tools/image.ts'
 import { geminiMaskParts, imageDims, imageFileName, imageFromResponse, imageRequest, inputPathsOf, maskProblem, maskRegion, prepareMask } from './src/tools/image.ts'
 import { decodeAlpha, encodeGray, jpegOrientation, unorient } from './src/tools/png.ts'
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
+import { tempDir } from './e2e-lib.mjs'
 
 const out = {}
 /** 一张 1x1 的 PNG，现场编码：探针里不放二进制样本。 */
@@ -79,7 +79,7 @@ delete process.env.GATEWAY_LLM_URL
 const OPENAI = { provider: 'openai', model: 'gpt-image-2', api: 'openai-images' }
 const GEMINI = { provider: 'google', model: 'gemini-3.1-flash-image', api: 'gemini-images' }
 
-const root = mkdtempSync(join(tmpdir(), 'satu-image-'))
+const root = tempDir('satu-image-')
 // 工作区里几张原图：用户发来的那种（uploads/）、一张 GIF（不认）、一张太大的。
 mkdirSync(join(root, 'uploads', 's1'), { recursive: true })
 writeFileSync(join(root, 'uploads', 's1', 'cat.png'), Buffer.from(PIXEL, 'base64'))
@@ -164,7 +164,6 @@ writeFileSync(join(root, 'uploads', 's1', 'mask-big.png'), pngHead(2, 2, 6))
 writeFileSync(join(root, 'uploads', 's1', 'mask-rgb.png'), pngHead(1, 1, 2))
 // 头是对的（90×60、RGBA），但没有像素数据：OpenAI 那条放行（上游自己判），Gemini 那条读不出来。
 writeFileSync(join(root, 'uploads', 's1', 'mask-head90.png'), pngHead(90, 60, 6))
-process.on('exit', () => { try { rmSync(root, { recursive: true, force: true }) } catch {} })
 const ctx = new Context()
 ctx.plugin(WorkspaceService, { root })
 ctx.plugin(ToolService)

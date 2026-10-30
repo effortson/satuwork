@@ -6,10 +6,10 @@
  * 一封已经发出去的邮件面前差得很远。
  */
 import { Context } from '@deepseek-ai/cordis'
-import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ToolService } from './src/tools/index.ts'
+import { tempDir } from './e2e-lib.mjs'
 
 // **必须在 import policy 之前设。** 确认的等待时长是模块加载那一刻读的环境变量，
 // 静态 import 会被提升到文件最前面，那时候这一行还没跑，测超时就要真等五分钟。
@@ -168,6 +168,8 @@ const tool = (name, risk, delegation = {}) => {
 tool('read_local', ['read'])
 tool('write_local', ['write'])
 tool('web_search', ['external', 'read'])
+// risk 照抄 tools/assign.ts。
+tool('assign_task', ['external'])
 tool('terminal', ['write', 'destructive', 'external'])
 // 席位桌面那两把，risk 照抄 tools/desktop.ts。desktop_terminal 带命令时要和 terminal 一个待遇。
 // 委派标注也照抄（`exclusive: 'desktop'`），同浏览器那几把：不照抄的话「没租到就调不了」测的是另一把工具。
@@ -189,10 +191,7 @@ tool('browser_type', ['external', 'write'])
 tool('browser_press', ['external', 'write'])
 tool('browser_dialog', ['external', 'write'])
 
-const storeDir = mkdtempSync(join(tmpdir(), 'satuwork-guards-'))
-// 退出时收掉临时目录（和 e2e-memory / e2e-skills 那几个探针同一个写法）：探针是顶层 await 的
-// 脚本，没有一个能包 finally 的函数体；exit 钩子在 process.exit、正常结束和未捕获异常三条路上都会跑。
-process.on('exit', () => { try { rmSync(storeDir, { recursive: true, force: true }) } catch {} })
+const storeDir = tempDir('satuwork-guards-')
 ctx.plugin(StorageService, { path: join(storeDir, 'probe.db') })
 await new Promise((r) => setTimeout(r, 50))
 ctx.plugin(handoff)
@@ -225,6 +224,7 @@ out.onGuards = {
   只读放行: (await call('s1', 'read_local')).failed !== true,
   本地写放行: (await call('s1', 'write_local')).failed !== true,
   网页搜索放行: (await call('s1', 'web_search')).failed !== true,
+  主Bot派活放行: (await call('s1', 'assign_task', { bot: '财务', instruction: '做月报' })).failed !== true,
   已授权的MCP放行: (await call('s1', 'mcp_a_send_mail')).failed !== true,
   没授权的MCP被拦: (await call('s1', 'mcp_b_send_mail')).failed === true,
   不认识的工具被拦: (await call('s1', 'mystery')).failed === true,
@@ -618,6 +618,26 @@ out.record = {
     ),
     // 卡片上那句话说的是剥壳之后那把工具，不是 sw_run。
     理由说的是真工具: pending.data.reason.includes('GMAIL_SEND_EMAIL'),
+  }
+
+  // 退回修改：带着意见拒掉这一版。模型拿到的是「照这个改了再来」，不是「别再试」。
+  const ranBefore = got.mcp_a_sw_run
+  const before2 = pendingOf('s6').length
+  const again = call('s6', 'mcp_a_sw_run', mail)
+  await untilPending('s6', before2 + 1, { until: again })
+  const p2 = pendingOf('s6').at(-1)
+  // 点的是带范围的那颗也一样：意见要它重来，这一轮不能把这把工具挡掉。
+  ctx.policy.approvals.decide('s6', p2.data.callId, 'deny', 'turn', undefined, '  语气正式一点，结尾署名  ')
+  const r2 = await again
+  const t2 = sessions.appended.filter((e) => e.type === 'tool/approval' && e.data.callId === p2.data.callId).at(-1)
+  out.feedback = {
+    这一版没发出去: r2.failed === true && got.mcp_a_sw_run === ranBefore,
+    意见原样交给了模型: r2.text.includes('语气正式一点，结尾署名') && r2.text.includes('再调用同一个工具'),
+    终态事件记了意见: t2?.data.state === 'denied' && t2?.data.feedback === '语气正式一点，结尾署名',
+    带意见的拒绝不挡这一轮: !ctx.policy.approvals.blockedIn('s6').includes('GMAIL_SEND_EMAIL'),
+    留痕的理由写了意见: sessions.appended.some(
+      (e) => e.type === 'tool/policy' && e.data.outcome === 'denied' && e.data.reason.includes('退回修改：语气正式一点'),
+    ),
   }
 }
 

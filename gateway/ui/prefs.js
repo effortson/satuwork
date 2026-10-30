@@ -155,6 +155,7 @@ const PATHS = {
   '/company': { title: '公司/席位' },
   '/accounts': { title: '员工' },
   '/audit': { title: '审计' },
+  '/content-reports': { title: '内容举报' },
   '/companies': { title: '公司' },
   '/machines': { title: '机器管理' },
   '/releases': { title: '机器配置' },
@@ -169,9 +170,11 @@ const PATHS = {
   '/profile': { title: '个人设置' },
   '/bots': { title: 'Bot 模版', ownerTitle: '全局 Bot' },
   '/skills': { title: 'Skill 与 MCP', ownerTitle: '全局 Skill 与 MCP' },
+  '/connectors': { title: '连接器' },
   '/chat': { title: '对话' },
   '/handoffs': { title: '转人工待办' },
   '/channels': { title: '渠道' },
+  '/plugins': { title: '插件' },
   '/knowledge': { title: '知识库' },
 }
 
@@ -211,9 +214,9 @@ const ICONS = {
 }
 
 /**
- * Bot 头像。两个层级各八个，两套不重合。
+ * Bot 头像。公司十个、全局八个，两套不重合。
  *
- * 公司 Bot 是有表情和配饰的小角色；全局 Bot 仍用六边牌 + 内环表示平台能力。
+ * 公司 Bot 沿用新版 Logo 的浅色方脸和粗边框，用表情与配饰区分岗位；全局 Bot 仍用六边牌 + 内环表示平台能力。
  * 键沿用旧值，已经选过头像的 Bot 会直接看到新版插画。
  *
  * 每个头像是一整张图（底板填色 + 上面的线条），不是一枚线框图标；所以外面不用再
@@ -224,79 +227,74 @@ const BOT_AVATAR_TILE = '<path d="M20 1.8 35.8 10.9v18.2L20 38.2 4.2 29.1V10.9z"
 /** 全局那套多一圈内环，进一步跟公司那套拉开。 */
 const BOT_AVATAR_RING = '<path d="M20 6.6 31.1 13v12.8L20 32.2 8.9 25.8V13z" fill="none" stroke-width="1.4" opacity="0.45"/>'
 
-// 公司头像是完整的小插画。轮廓和五官都画在 40px 画布上，缩到列表里的 30px 也能辨认。
+// 公司头像沿用 Logo 的浅色方脸、粗边框和小下巴；共用轮廓，角色用配色和少量配饰区分。
+// 40px 画布上边框宽 5.5px，24px 时仍有约 3px；不靠渐变和碎小细节表达身份。
+const COMPANY_AVATAR_EYES = '<circle cx="14.2" cy="21.5" r="1.8"/><circle cx="25.8" cy="21.5" r="1.8"/>'
+const COMPANY_AVATAR_SMILE = '<path d="M17 26q3 2.5 6 0" fill="none" stroke="#3B3438" stroke-width="1.8" stroke-linecap="round"/>'
+
+function companyAvatarArt(frame, { behind = '', eyes = COMPANY_AVATAR_EYES, face = '', accessory = '' } = {}) {
+  return `<g class="satu-bot-body">${behind}
+    <rect x="13" y="31" width="14" height="7" rx="3.5" fill="${frame}"/>
+    <rect x="2.5" y="2.5" width="35" height="32" rx="9" fill="${frame}"/>
+    <rect x="8" y="8" width="24" height="21" rx="5.5" fill="#FFF9F2"/>
+    <rect class="satu-bot-chin" x="15.5" y="34" width="9" height="1.8" rx="0.9" fill="#FFF9F2"/>
+    <g class="satu-bot-face-detail">${face}</g><g class="satu-bot-eyes" fill="#3B3438">${eyes}</g>${COMPANY_AVATAR_SMILE}<g class="satu-bot-accessory">${accessory}</g></g>`
+}
+
 const COMPANY_AVATAR_ART = {
-  'c-bot': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#FFE8D9"/>
-    <path d="M11 33c1-5 5-7 9-7s8 2 9 7v5H11z" fill="#F28A70"/>
-    <path d="M20 10V7" stroke="#714A48" stroke-width="2" stroke-linecap="round"/>
-    <circle cx="20" cy="6" r="2.3" fill="#F7B650"/>
-    <rect x="8" y="13" width="24" height="17" rx="8" fill="#FFF9F1" stroke="#714A48" stroke-width="1.5"/>
-    <circle cx="7.5" cy="21" r="2" fill="#F7B650"/><circle cx="32.5" cy="21" r="2" fill="#F7B650"/>
-    <circle cx="15" cy="21" r="1.5" fill="#493C44"/><circle cx="25" cy="21" r="1.5" fill="#493C44"/>
-    <circle cx="11.5" cy="25" r="2" fill="#FFB5AB"/><circle cx="28.5" cy="25" r="2" fill="#FFB5AB"/>
-    <path d="M17 25c1.6 2 4.4 2 6 0" fill="none" stroke="#714A48" stroke-width="1.5" stroke-linecap="round"/>`,
-  'c-chat': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#DDF3F5"/>
-    <path d="M10 37c0-6 4-9 10-9s10 3 10 9" fill="#76B8C7"/>
-    <circle cx="20" cy="20" r="11" fill="#FFF8EE"/>
-    <path d="M9 21v-3a11 11 0 0 1 22 0v3" fill="none" stroke="#428BA5" stroke-width="3" stroke-linecap="round"/>
-    <rect x="7" y="19" width="4" height="8" rx="2" fill="#428BA5"/><rect x="29" y="19" width="4" height="8" rx="2" fill="#428BA5"/>
-    <circle cx="16" cy="21" r="1.5" fill="#3F4A55"/><circle cx="24" cy="21" r="1.5" fill="#3F4A55"/>
-    <path d="M17 26c2 1.5 4 1.5 6 0M30 27c0 3-3 4-6 4" fill="none" stroke="#428BA5" stroke-width="1.6" stroke-linecap="round"/>
-    <circle cx="23.5" cy="31" r="1.5" fill="#428BA5"/>`,
-  'c-chart': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#FFF1CE"/>
-    <path d="M10 38c0-6 4-9 10-9s10 3 10 9" fill="#E8B65C"/>
-    <circle cx="11" cy="14" r="4" fill="#C47E49"/><circle cx="29" cy="14" r="4" fill="#C47E49"/>
-    <rect x="9" y="11" width="22" height="20" rx="10" fill="#F8D9A8"/>
-    <circle cx="16" cy="21" r="4" fill="#FFFDF5" stroke="#66514B" stroke-width="1.5"/>
-    <circle cx="24" cy="21" r="4" fill="#FFFDF5" stroke="#66514B" stroke-width="1.5"/>
-    <path d="M20 20h0" stroke="#66514B" stroke-width="1.5"/>
-    <circle cx="16" cy="21" r="1.2" fill="#443C3C"/><circle cx="24" cy="21" r="1.2" fill="#443C3C"/>
-    <path d="M18 27q2 2 4 0" fill="none" stroke="#66514B" stroke-width="1.4" stroke-linecap="round"/>
-    <path d="M17 34v3m3-5v5m3-2v2" stroke="#FFF7E4" stroke-width="1.4" stroke-linecap="round"/>`,
-  'c-pen': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#EFE6FA"/>
-    <path d="M9 38c0-6 5-9 11-9s11 3 11 9" fill="#A991CF"/>
-    <path d="M10 16c0-7 4-11 10-11s10 4 10 11" fill="#684E86"/>
-    <circle cx="20" cy="21" r="11" fill="#FFE9D3"/>
-    <path d="M9 17c1-8 6-11 12-11 4 0 8 3 10 9-5-2-7-4-8-6-2 4-7 7-14 8" fill="#684E86"/>
-    <path d="M15 22h2m6 0h2" stroke="#4D3E50" stroke-width="2" stroke-linecap="round"/>
-    <path d="M18 27q2 2 4 0" fill="none" stroke="#9B5B66" stroke-width="1.5" stroke-linecap="round"/>
-    <path d="M27 35l6-9 2 2-6 9-3 1z" fill="#F5B85A" stroke="#684E86" stroke-width="1"/>`,
-  'c-deal': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#FFE5DC"/>
-    <path d="M10 38c0-6 4-9 10-9s10 3 10 9" fill="#E97D69"/>
-    <path d="M9 20 10 9l7 5m14 6L30 9l-7 5" fill="#D56A52" stroke="#985244" stroke-width="1.2" stroke-linejoin="round"/>
-    <path d="M10 17c2-6 6-8 10-8s8 2 10 8l1 7c-2 5-6 8-11 8s-9-3-11-8z" fill="#F6A477"/>
-    <path d="M12 23c1-3 4-4 8-2 4-2 7-1 8 2-1 5-4 8-8 8s-7-3-8-8" fill="#FFF6E9"/>
-    <path d="M14 21h3m6 0h3" stroke="#5B4341" stroke-width="1.6" stroke-linecap="round"/>
-    <path d="M18 25h4l-2 2z" fill="#6B4B48"/>
-    <circle cx="15" cy="26" r="1.5" fill="#F7B4A9"/><circle cx="25" cy="26" r="1.5" fill="#F7B4A9"/>`,
-  'c-code': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#DEF4E8"/>
-    <path d="M9 38c0-6 5-9 11-9s11 3 11 9" fill="#75BCA4"/>
-    <path d="M9 16c0-6 5-9 11-9s11 3 11 9v7c0 6-5 10-11 10S9 29 9 23z" fill="#E6BC91"/>
-    <path d="M8 17c0-7 5-11 12-11s12 4 12 11c-4-1-7-3-9-6-3 4-8 6-15 6" fill="#3C655F"/>
-    <rect x="11" y="19" width="8" height="6" rx="2.5" fill="#FFFDF4" stroke="#3C655F" stroke-width="1.4"/>
-    <rect x="21" y="19" width="8" height="6" rx="2.5" fill="#FFFDF4" stroke="#3C655F" stroke-width="1.4"/>
-    <path d="M19 21h2" stroke="#3C655F" stroke-width="1.4"/>
-    <circle cx="15" cy="22" r="1.1" fill="#344640"/><circle cx="25" cy="22" r="1.1" fill="#344640"/>
-    <path d="M18 28q2 1.5 4 0" fill="none" stroke="#76594B" stroke-width="1.4" stroke-linecap="round"/>
-    <path d="m16 34-2 2 2 2m8-4 2 2-2 2" fill="none" stroke="#F5FFF9" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>`,
-  'c-flow': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#E5ECFF"/>
-    <path d="M10 38c0-6 4-9 10-9s10 3 10 9" fill="#899EDD"/>
-    <circle cx="8" cy="22" r="3" fill="#8198D6"/><circle cx="32" cy="22" r="3" fill="#8198D6"/>
-    <rect x="9" y="11" width="22" height="21" rx="8" fill="#F8F7FF" stroke="#6279BA" stroke-width="1.5"/>
-    <path d="M14 10V7m12 3V7" stroke="#6279BA" stroke-width="1.7" stroke-linecap="round"/>
-    <circle cx="14" cy="6" r="2" fill="#F2B96E"/><circle cx="26" cy="6" r="2" fill="#F2B96E"/>
-    <rect x="13" y="19" width="5" height="5" rx="2.5" fill="#6279BA"/>
-    <rect x="22" y="19" width="5" height="5" rx="2.5" fill="#6279BA"/>
-    <path d="M17 27q3 2 6 0" fill="none" stroke="#6279BA" stroke-width="1.4" stroke-linecap="round"/>
-    <circle cx="20" cy="35" r="2" fill="#F2B96E"/>`,
-  'c-book': `<rect x="2" y="2" width="36" height="36" rx="12" fill="#FCECD9"/>
-    <path d="M9 38c0-6 4-9 11-9s11 3 11 9" fill="#B08C77"/>
-    <path d="M9 17 7 8l9 4m15 5 2-9-9 4" fill="#8E6D61"/>
-    <path d="M9 19c0-7 5-11 11-11s11 4 11 11v4c0 6-5 10-11 10S9 29 9 23z" fill="#CFAB8B"/>
-    <path d="M11 20c0-4 3-6 7-5l2 3 2-3c4-1 7 1 7 5-1 6-4 10-9 10s-8-4-9-10" fill="#FFF5E8"/>
-    <circle cx="16" cy="21" r="2" fill="#4E4544"/><circle cx="24" cy="21" r="2" fill="#4E4544"/>
-    <path d="m18 25 2 2 2-2z" fill="#E7A063"/>
-    <path d="M14 34c3-1 5 0 6 2 1-2 3-3 6-2v4c-3-1-5 0-6 1-1-1-3-2-6-1z" fill="#FFF9ED" stroke="#8E6D61" stroke-width="1"/>`,
+  // 助理：品牌原色和最干净的微笑，作为默认头像。
+  'c-bot': companyAvatarArt('#D77B5E'),
+  // 客服：青色耳机和麦克风，外侧耳罩在小尺寸下也能辨认。
+  'c-chat': companyAvatarArt('#548E96', {
+    behind: '<path d="M4 20v-4a16 13 0 0 1 32 0v4" fill="none" stroke="#315B67" stroke-width="2.4"/>',
+    accessory: `<rect x="0.8" y="16" width="4.5" height="10" rx="2.2" fill="#315B67"/>
+      <rect x="34.7" y="16" width="4.5" height="10" rx="2.2" fill="#315B67"/>
+      <path d="M36 25q0 6-9 6" fill="none" stroke="#315B67" stroke-width="1.8" stroke-linecap="round"/>
+      <rect x="24" y="29.5" width="5" height="3" rx="1.5" fill="#315B67"/>`,
+  }),
+  // 分析：琥珀色边框，额头上的三格柱形图。
+  'c-chart': companyAvatarArt('#C69A49', {
+    face: '<g fill="#A47731"><rect x="13" y="13" width="3" height="3" rx="0.8"/><rect x="18.5" y="10.5" width="3" height="5.5" rx="0.8"/><rect x="24" y="9" width="3" height="7" rx="0.8"/></g>',
+  }),
+  // 文案：紫色铅笔斜插在外框上，笔尖不遮五官。
+  'c-pen': companyAvatarArt('#9581B7', {
+    accessory: `<path d="m28 13 5.5-8a1.7 1.7 0 0 1 2.8 1.9L30.8 15l-3.2 1z" fill="#F0BD68" stroke="#625176" stroke-width="1.1" stroke-linejoin="round"/>
+      <path d="m32 7 2.8 1.9" stroke="#FFF9F2" stroke-width="1.5"/>
+      <path d="m27.6 16 1-3 2.2 2z" fill="#625176"/>`,
+  }),
+  // 销售：珊瑚色、笑眼和一颗醒目的闪光。
+  'c-deal': companyAvatarArt('#D67A68', {
+    eyes: '<path d="M12.2 22q2-3 4 0m7.6 0q2-3 4 0" fill="none" stroke="#3B3438" stroke-width="1.9" stroke-linecap="round"/>',
+    accessory: '<path d="m30.5 5 1.7 4.3 4.3 1.7-4.3 1.7-1.7 4.3-1.7-4.3-4.3-1.7 4.3-1.7z" fill="#F2BD60" stroke="#FFF9F2" stroke-width="1.2" stroke-linejoin="round"/>',
+  }),
+  // 研发：松绿色和代码括号眼，不再叠小字或微型标签。
+  'c-code': companyAvatarArt('#608F7E', {
+    eyes: '<path d="m16 18.5-3 3 3 3m8-6 3 3-3 3" fill="none" stroke="#3B3438" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    accessory: '<rect x="14" y="3.5" width="12" height="2" rx="1" fill="#DBEDE2"/>',
+  }),
+  // 调度：蓝色路由节点，保留清楚的点眼微笑。
+  'c-flow': companyAvatarArt('#738BC0', {
+    face: `<path d="M14 14h12m-6 0v-3" fill="none" stroke="#526BA1" stroke-width="1.5"/>
+      <g fill="#526BA1"><circle cx="14" cy="14" r="1.8"/><circle cx="26" cy="14" r="1.8"/><circle cx="20" cy="10.5" r="1.8"/></g>`,
+    accessory: '<circle cx="4.5" cy="17" r="2.5" fill="#526BA1"/><circle cx="35.5" cy="17" r="2.5" fill="#526BA1"/>',
+  }),
+  // 知识：暖棕色，展开的书沿着下巴摆放，不挡脸。
+  'c-book': companyAvatarArt('#AB8970', {
+    accessory: `<path d="M9.5 30q5-2 10.5 1 5.5-3 10.5-1v7q-5-2-10.5 1-5.5-3-10.5-1z" fill="#FFF9F2" stroke="#785F50" stroke-width="1.4" stroke-linejoin="round"/>
+      <path d="M20 31v6" stroke="#785F50" stroke-width="1.3" stroke-linecap="round"/>
+      <path class="satu-bot-page" opacity="0" d="M20 31q-5-4-10.5-2v7q5-1 10.5 2z" fill="#EBD7BD" stroke="#785F50" stroke-width="1"/>`,
+  }),
+  // 设计：玫瑰色贝雷帽和三颗大色点，避免小尺寸调色盘糊成一团。
+  'c-design': companyAvatarArt('#C18098', {
+    accessory: `<path d="M5 10c1-6 8-9 16-8 7 0 12 3 13 7-8-1-17-1-29 1z" fill="#A45D7C"/>
+      <path d="m20 2 1-1" stroke="#A45D7C" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="14" cy="13" r="1.7" fill="#D77B5E"/><circle cx="20" cy="13" r="1.7" fill="#C69A49"/><circle cx="26" cy="13" r="1.7" fill="#548E96"/>`,
+  }),
+  // 财务：橄榄绿、圆眼镜和额头的金币，和分析的柱形图区分。
+  'c-finance': companyAvatarArt('#8B9B62', {
+    face: '<circle cx="20" cy="12" r="3.1" fill="#E8B95B"/><path d="M20 10.3v3.4" stroke="#8A6A2F" stroke-width="1.1" stroke-linecap="round"/>',
+    accessory: '<g fill="none" stroke="#526044" stroke-width="1.4"><circle cx="14.2" cy="21.5" r="3.8"/><circle cx="25.8" cy="21.5" r="3.8"/><path d="M18 21.5h4"/></g>',
+  }),
 }
 
 const BOT_AVATARS = {
@@ -309,6 +307,8 @@ const BOT_AVATARS = {
   'c-code': { family: 'company', label: '研发' },
   'c-flow': { family: 'company', label: '调度' },
   'c-book': { family: 'company', label: '知识' },
+  'c-design': { family: 'company', label: '设计' },
+  'c-finance': { family: 'company', label: '财务' },
 
   // ── 全局：平台级能力。──────────────────────────────────────────
   'g-core': { family: 'global', label: '核心', glyph: ['M20 15.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z', 'M20 11v3', 'M20 26v3', 'M14.3 14.3l2.1 2.1', 'M23.6 23.6l2.1 2.1', 'M25.7 14.3l-2.1 2.1', 'M16.4 23.6l-2.1 2.1'] },
@@ -321,7 +321,7 @@ const BOT_AVATARS = {
   'g-vault': { family: 'global', label: '归档', glyph: ['M12.5 13h15v14h-15z', 'M12.5 18.5h15', 'M18 15.7h4', 'M18 23h4'] },
 }
 
-const COMPANY_AVATAR_KEYS = ['c-bot', 'c-chat', 'c-chart', 'c-pen', 'c-deal', 'c-code', 'c-flow', 'c-book']
+const COMPANY_AVATAR_KEYS = ['c-bot', 'c-chat', 'c-chart', 'c-pen', 'c-deal', 'c-code', 'c-flow', 'c-book', 'c-design', 'c-finance']
 const GLOBAL_AVATAR_KEYS = ['g-core', 'g-relay', 'g-shield', 'g-globe', 'g-spark', 'g-beacon', 'g-grid', 'g-vault']
 
 /** 改版前存的那六个键，画之前先落到新的一套上。 */
@@ -335,14 +335,15 @@ function avatarKeysFor(origin) {
  * 画一个头像。origin 决定层级（拿不准就按 key 前缀猜），key 决定画哪一个。
  * 公司头像用固定的插画配色；全局头像沿用主题色。
  */
-function botAvatar(key, size = 34, origin) {
+function botAvatar(key, size = 34, origin, running = false) {
   const k = LEGACY_AVATARS[key] || key
   const a = BOT_AVATARS[k]
   const fam = a ? a.family : origin === 'global' || String(k).startsWith('g-') ? 'global' : 'company'
   const def = a || BOT_AVATARS[fam === 'global' ? 'g-core' : 'c-bot']
   if (fam === 'company') {
     const art = COMPANY_AVATAR_ART[a?.family === 'company' ? k : 'c-bot']
-    return `<svg width="${size}" height="${size}" viewBox="0 0 40 40" role="img" aria-label="${esc(t(def.label))}" style="flex: none; display: block;">${art}</svg>`
+    const avatar = a?.family === 'company' ? k : 'c-bot'
+    return `<svg class="satu-bot-art" data-avatar="${avatar}"${running ? ' data-running="true"' : ''} width="${size}" height="${size}" viewBox="0 0 40 40" role="img" aria-label="${esc(t(def.label))}" style="flex: none; display: block;">${art}</svg>`
   }
   const bg = 'var(--color-accent-2-200)'
   const fg = 'var(--color-accent-2-800)'
@@ -353,6 +354,29 @@ function botAvatar(key, size = 34, origin) {
     ${tile}${ring}
     <g fill="none" stroke="${fg}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${glyph}</g>
   </svg>`
+}
+
+/**
+ * 一颗 Bot 的头像，**主 Bot 戴皇冠**：右下角一枚金色小徽章，压在头像上。
+ *
+ * 皇冠是「这个人的主 Bot」这件事唯一的视觉表达，所以凡是画 Bot 头像的地方（名单、对话
+ * 顶栏、设置页）都该走这里，而不是直接 botAvatar——否则同一颗 Bot 在这儿戴、在那儿不戴。
+ * 头像选择器那种「挑一个图」的场合不算，它画的不是某颗 Bot。
+ */
+const CROWN_PATH = 'M3 8l4.5 4L12 5l4.5 7L21 8l-2 10H5z'
+function botAvatarOf(bot, size = 34, running = false, mainBotId = state.mainBotId) {
+  const art = botAvatar(bot && bot.icon, size, bot && bot.origin, running)
+  if (!bot || !bot.id || bot.id !== mainBotId) return art
+  const badge = Math.max(12, Math.round(size * 0.42))
+  return `<span class="satu-avatarwrap" data-main="true" style="width: ${size}px; height: ${size}px;">${art}<span class="satu-crown" style="width: ${badge}px; height: ${badge}px;" title="${esc(t('主 Bot', 'Main bot'))}" aria-label="${esc(t('主 Bot', 'Main bot'))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${CROWN_PATH}"/></svg></span></span>`
+}
+
+/** 只在启停时写属性，不替换 SVG；流式消息每帧刷新也不会让动画从头播放。 */
+function setBotAvatarRunning(host, running) {
+  const art = host && host.querySelector('.satu-bot-art')
+  if (!art || (art.getAttribute('data-running') === 'true') === Boolean(running)) return
+  if (running) art.setAttribute('data-running', 'true')
+  else art.removeAttribute('data-running')
 }
 
 const MEMORY_SCOPES = ['仅本人', '所属分组', '全公司']
@@ -380,6 +404,18 @@ const CHEVRON_SMALL_DOWN = ['M6 9l6 6 6-6']
 
 /** 重新取一次。工作区那一屏用它——文件是 Bot 在背后写的，界面自己不知道什么时候变。 */
 const REFRESH = ['M21 12a9 9 0 1 1-2.64-6.36', 'M21 4v5h-5']
+
+/** 关闭：弹窗右上角、提示条上那个 ×。 */
+const CLOSE_ICON = ['M18 6 6 18', 'M6 6l12 12']
+
+/** 竖着的三个点：「更多操作」那颗菜单按钮。 */
+const KEBAB_ICON = ['M12 6h.01', 'M12 12h.01', 'M12 18h.01']
+
+/** 新建。 */
+const PLUS_ICON = ['M12 5v14', 'M5 12h14']
+
+/** 往右的箭头：主按钮上「进去 / 下一步」那一支（首页的主 CTA 也是它）。 */
+const ARROW_RIGHT = ['M5 12h14', 'm12 5 7 7-7 7']
 
 /** 工作区文件那一屏的开关。一个文件夹——它说的就是「这里面是这台席位上的文件」。 */
 const FOLDER = [
@@ -426,6 +462,7 @@ const OWNER_NAV_GROUPS = [
     items: [
       { href: '/companies', label: '公司', icon: 'company' },
       { href: '/users', label: '用户', icon: 'accounts' },
+      { href: '/content-reports', label: '内容举报', icon: 'audit' },
     ],
   },
   {
@@ -489,12 +526,12 @@ const ADMIN_NAV = [
 /**
  * 员工侧栏又空了。
  *
- * 连接器曾经是这里唯一一行，现在它的入口是名单底下那颗「插件」按钮（render.js 的
- * appView + pluginsModal）——装插件是为了把话说完，入口就该挨着 Bot，而不是在一条
- * 菜单里。同一件事留两个并排的入口，只会让人问「这两个有什么不一样」。
+ * 连接器曾经是这里唯一一行，现在它是名单底下那颗「更多」里的「插件」（/plugins，
+ * pages-plugins.js）——装插件是为了让 Bot 用上，入口就该挨着 Bot，而不是在一条菜单里。
+ * 同一件事留两个并排的入口，只会让人问「这两个有什么不一样」。
  *
- * **页面没有撤**：`/connectors` 和 `/connectors/:id` 还在，OAuth 回调就落在那儿
- * （`gateway/src/routes/connectors.ts` 的 302），所以 allowedHrefs() 里单独放行。
+ * 员工的老地址 `/connectors`、`/connectors/:id`（以前发出去的深链、OAuth 授权完那一页
+ * 上的兜底链接）由 data.js 的 pluginAlias 折到 `/plugins` 上，allowedHrefs() 放行的是后者。
  */
 const MEMBER_NAV = []
 

@@ -1,9 +1,9 @@
 /**
- * 连接器：owner 的上架屏 + 公司里所有人的市场。
+ * 连接器：owner 的上架屏、admin 的禁用屏，以及员工插件页（pages-plugins.js）用的零件和动作。
  *
  * 三样东西分得很清（docs/connectors.md §4）：**上架**（owner 决定市场里有什么）、
- * **安装**（员工自己装）、**连接**（员工授权自己的账号）。这一屏现在只做第一样和
- * 市场的只读视图。
+ * **安装**（员工自己装）、**连接**（员工授权自己的账号）。上架在这里；安装和连接的
+ * 画面在 /plugins，按钮的动作（conn-install、conn-add-open、startAddAccount……）仍在本文件底部。
  *
  * 动作全部走本文件底部的 connectorAct()，不往 app.js 那条 if 链上堆——那条链已经
  * 六百多行了。
@@ -210,15 +210,14 @@ function connectorEditModal() {
 }
 
 /**
- * 「添加账号」那一行。owner 详情页和员工侧栏各用一次，逐字相同。
+ * 「添加账号」那一行：只有一颗按钮，账号名在弹窗里填（pages-plugins.js 的 connAddModal）。
  *
- * 单独收起来是因为它其实是一份**契约**：`data-input="conn-label"` 和
- * `data-act="conn-add-account"` 要和 app.js 的事件委托对上，改名字得两头一起改。
+ * 以前是一格输入框挨着按钮摆在账号列表底下：不填也能点，填了也看不出它会进工具名，
+ * 而授权要开新标签页这件事要到点下去才知道。挪进弹窗之后这三件事能一次说清。
  */
 function addAccountRow(id) {
-  return `<div style="padding: var(--space-3) 0; display: flex; align-items: center; gap: var(--space-2);">
-      <input class="input" style="max-width: 200px;" data-input="conn-label" placeholder="${esc(t('账号名，如 personal'))}">
-      <button type="button" class="btn btn-secondary" data-act="conn-add-account" data-id="${esc(id)}">${t('添加账号')}</button>
+  return `<div style="padding: var(--space-3) 0;">
+      <button type="button" class="btn btn-secondary" data-act="conn-add-open" data-id="${esc(id)}">${svg(PLUS_ICON, 14)} ${t('添加账号')}</button>
     </div>`
 }
 
@@ -276,7 +275,7 @@ function ownerConnectorsPage() {
           ${connectorVendorCard()}
           ${connectorPricingCard()}
           <div class="gw-credlist" style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
-            ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${ready ? t('还没上架任何连接器。点右上角从 Composio 的清单里选一个。') : t('先配好 Composio 密钥，才能拉到可上架的清单。')}</div>`}
+            ${rows || emptyBox(ready ? t('还没上架任何连接器。点右上角从 Composio 的清单里选一个。') : t('先配好 Composio 密钥，才能拉到可上架的清单。'))}
           </div>
         </div>
       </div>
@@ -285,41 +284,148 @@ function ownerConnectorsPage() {
     </div>`
 }
 
-// ── 公司里的所有人：市场 ─────────────────────────────────────────────
+// ── 员工：一个连接器的零件（插件页用，见 pages-plugins.js）──────────
 
-function marketCard(c) {
-  const blocked = c.blocked
-  const installed = c.installed
-  const action = blocked
-    ? `<span class="tag" style="flex: none;">${t('已禁用')}</span>`
-    : installed
-      ? `<button type="button" class="btn btn-ghost" style="flex: none;" data-act="go" data-href="/connectors/${esc(c.id)}">${t('管理')}</button>`
-      : `<button type="button" class="btn btn-secondary" style="flex: none;" data-act="conn-install" data-id="${esc(c.id)}">${t('安装')}</button>`
-  return `<div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover); padding: var(--space-4); display: flex; gap: var(--space-3); align-items: flex-start; ${blocked ? 'opacity: 0.55;' : ''}">
-    ${connectorLogo(c)}
-    <div style="min-width: 0; flex: 1;">
-      <div style="font-size: 14px; font-weight: 600;">${esc(c.name)}${installed ? ` <span class="tag tag-accent">${t('已安装')}</span>` : ''}</div>
-      <div style="font-size: 12px; color: var(--muted-foreground); margin-top: 2px;">${esc(c.description || c.toolkit)}</div>
-      ${blocked ? `<div style="font-size: 12px; color: var(--muted-foreground); margin-top: var(--space-2);">${t('本公司已禁用')}${c.blockedReason ? `：${esc(c.blockedReason)}` : ''}</div>` : ''}
-    </div>
-    ${action}
+/**
+ * 「可用 Bot」收起时那颗按钮上的字（docs/connector-bot-scope.md）。名单里的 Bot 全被删了时
+ * 是红字「没有 Bot 可用」——后端那时谁都不给，不是回到全部，界面要照实说。
+ */
+function connBotsSummary(c, bots) {
+  const s = c.bots
+  if (!s || s.mode !== 'bots') return { text: t('所有 Bot', 'All bots'), warn: false }
+  const n = s.botIds.length
+  if (!n) return { text: t('没有 Bot 可用', 'No bots'), warn: true }
+  if (n === 1) {
+    const b = bots.find((x) => x.id === s.botIds[0])
+    return { text: b ? b.name : t('1 个 Bot', '1 bot'), warn: false }
+  }
+  return { text: t(`${n} 个 Bot`, `${n} bots`), warn: false }
+}
+
+/** Restore an open dialog after an unrelated page render, retaining its draft. */
+function connBotsModal() {
+  const detail = state.connectorDetail
+  const connection = (detail?.connections || []).find(c=>c.id === state.connBotsOpen)
+  return connection ? connBotsPanel(connection, detail.connector.id, detail.bots || []) : ''
+}
+
+function filterConnBots(input) {
+  const panel = input.closest('[data-conn-bots]')
+  if (!panel) return
+  const query = input.value.trim().toLowerCase()
+  if (state.connBotsDraft) state.connBotsDraft.query = input.value
+  let visible = 0
+  for (const row of panel.querySelectorAll('[data-conn-bots-row]')) {
+    const name = row.querySelector('[data-act="conn-bots-pick"]')?.getAttribute('data-bot')
+    const bot = (state.connectorDetail?.bots || []).find(b=>b.id === name)
+    row.hidden = !!query && !(bot?.name || '').toLowerCase().includes(query)
+    if (!row.hidden) visible++
+  }
+  const empty = panel.querySelector('[data-conn-bots-no-match]')
+  if (empty) empty.hidden = !!visible
+}
+
+function connBotsPanel(c, connectorId, bots) {
+  const saved = c.bots || { mode: 'all', botIds: [] }
+  const draft = state.connBotsDraft?.id === c.id ? state.connBotsDraft : { ...saved, query: '' }
+  const some = draft.mode === 'bots'
+  const picked = new Set(draft.botIds || [])
+  const count = bots.filter(b=>picked.has(b.id)).length
+  const query = (draft.query || '').trim().toLowerCase()
+  const matching = bots.filter(b=>!query || b.name.toLowerCase().includes(query)).length
+  const name = `conn-bots-mode-${c.id}`
+  return `<div class="gw-modal-backdrop cb-backdrop" data-conn-bots-root data-act="conn-bots-close">
+    <section class="gw-modal cb-modal" data-conn-bots="${esc(c.id)}" role="dialog" aria-modal="true" aria-labelledby="conn-bots-title" aria-describedby="conn-bots-description" tabindex="-1" aria-busy="${!!draft.busy}">
+      <header class="cb-modal-head"><div><h2 id="conn-bots-title">${t('设置可用 Bot', 'Set available bots')}</h2><p id="conn-bots-description">${t('选择哪些 Bot 可以使用这个账号的工具。', 'Choose which bots can use this account’s tools.')}</p></div>
+        <button type="button" class="btn btn-ghost btn-icon" data-act="conn-bots-close" aria-label="${t('关闭可用 Bot 设置', 'Close available bot settings')}" ${draft.busy ? 'disabled' : ''}>${svg(CLOSE_ICON,16)}</button></header>
+      <div class="cb-modal-body">
+        <div class="cb-account">${connectorLogo(state.connectorDetail?.connector || {})}<div><strong>${esc(c.label || t('账号', 'Account'))}</strong><span>${esc(c.accountName || state.connectorDetail?.connector?.name || '')}</span></div>${c.scope === 'company' ? `<span class="tag tag-neutral">${t('公司共用', 'Company account')}</span>` : ''}</div>
+        <fieldset class="cb-choices" ${draft.busy ? 'disabled' : ''}><legend>${t('可用范围', 'Available to')}</legend>
+          <div class="cb-mode-grid"><label class="cb-mode"><input type="radio" name="${esc(name)}" value="all" data-act="conn-bots-mode" ${some ? '' : 'checked'}><span><strong>${t('所有 Bot', 'All bots')}</strong><small>${t('你的所有 Bot，包含之后新建的 Bot', 'All your bots, including future ones')}</small></span></label>
+            <label class="cb-mode"><input type="radio" name="${esc(name)}" value="bots" data-act="conn-bots-mode" ${some ? 'checked' : ''}><span><strong>${t('指定 Bot', 'Selected bots')}</strong><small>${t('仅允许下方勾选的 Bot 使用', 'Only the bots selected below')}</small></span></label></div>
+          <div class="cb-bot-section" data-conn-bots-list ${some ? '' : 'hidden'}>
+            <div class="cb-list-head"><strong>${t('选择 Bot', 'Select bots')}</strong><span data-conn-bots-count>${t(`已选 ${count} 个`, `${count} selected`)}</span></div>
+            ${bots.length ? `<input class="input cb-search" type="search" data-act="conn-bots-q" value="${esc(draft.query || '')}" aria-label="${t('搜索 Bot', 'Search bots')}" placeholder="${t('按名称搜索 Bot', 'Search bots by name')}">` : ''}
+            <div class="cb-bot-list">${bots.map(b=>`<label class="cb-bot-row" data-conn-bots-row ${query && !b.name.toLowerCase().includes(query) ? 'hidden' : ''}><input type="checkbox" data-act="conn-bots-pick" data-bot="${esc(b.id)}" ${picked.has(b.id) ? 'checked' : ''}>${botAvatar(b.icon,28,b.origin)}<span title="${esc(b.name)}">${esc(b.name)}</span>${b.runtimeKind === 'local' ? `<small>${t('本地', 'Local')}</small>` : ''}</label>`).join('')}
+              <p class="cb-list-empty" data-conn-bots-no-match ${matching ? 'hidden' : ''}>${bots.length ? t('没有匹配的 Bot，请尝试其他名称。', 'No matching bots. Try another name.') : t('暂无可选 Bot。你可以先选择“所有 Bot”，之后创建的 Bot 将自动可用。', 'No bots available yet. Choose “All bots” to include bots you create later.')}</p>
+            </div>
+            <p class="cb-selection-note" data-conn-bots-empty-selection ${some && !count ? '' : 'hidden'}>${t('请至少选择一个 Bot 后保存。', 'Select at least one bot to save.')}</p>
+          </div>
+        </fieldset>
+        ${saved.missing ? `<p class="cb-missing">${t(`有 ${saved.missing} 个此前选择的 Bot 已被删除，请重新确认可用范围。`, `${saved.missing} previously selected bots were deleted. Review the available scope.`)}</p>` : ''}
+        <p class="cb-help">${t('未选中的 Bot 无法使用或 @ 这个账号。选择“指定 Bot”后，新建 Bot 不会自动加入。保存后一分钟内生效。', 'Unselected bots cannot use or @ this account. Future bots are not added to a selected list automatically. Changes take effect within a minute.')}</p>
+      </div>
+      <footer class="cb-modal-footer"><p class="cb-error" data-conn-bots-err role="alert" ${draft.error ? '' : 'hidden'}>${esc(draft.error || '')}</p><div><div class="cb-footer-actions"><button type="button" class="btn btn-secondary" data-act="conn-bots-close" ${draft.busy ? 'disabled' : ''}>${t('取消')}</button>
+        <button type="button" class="btn btn-primary" data-act="conn-bots-save" data-id="${esc(c.id)}" data-connector="${esc(connectorId)}" ${draft.busy || (some && !count) ? 'disabled' : ''}>${draft.busy ? t('保存中…', 'Saving…') : t('保存设置', 'Save settings')}</button></div></div></footer>
+    </section>
   </div>`
 }
 
-// ── 员工：一个连接器的详情 ───────────────────────────────────────────
+/** 这把连接那一行的 DOM 节点。不用 CSS.escape：id 是 uuid，但别赌它。 */
+function connRowEl(id) {
+  return [...document.querySelectorAll('[data-conn-row]')].find((el) => el.getAttribute('data-conn-row') === id) || null
+}
 
-/** 一把连接一行：名字、状态、「仅 @ 时可用」、断开。 */
+/**
+ * 关闭「可用 Bot」弹窗，**就地摘节点，不 render**：同一屏「选择工具」里没保存的勾选
+ * 只在 DOM 里（见 pages-plugins.js 的 toolBoxes），整页重画会把它们一起抹掉。
+ */
+function closeConnBots({ restoreFocus = true, force = false } = {}) {
+  if (state.connBotsDraft?.busy && !force) return false
+  const id = state.connBotsOpen
+  state.connBotsOpen = null
+  state.connBotsDraft = null
+  for (const el of document.querySelectorAll('[data-conn-bots-root]')) el.remove()
+  for (const button of document.querySelectorAll('[data-act="conn-bots-open"]')) button.setAttribute('aria-expanded', 'false')
+  if (restoreFocus && id) connRowEl(id)?.querySelector('[data-act="conn-bots-open"]')?.focus()
+  return true
+}
+
+/** Sync the dialog draft and require a nonempty selected-bot list. */
+function paintConnBotsSave(panel) {
+  if (!panel) return
+  const some = panel.querySelector('[data-act="conn-bots-mode"][value="bots"]')?.checked === true
+  const list = panel.querySelector('[data-conn-bots-list]')
+  if (list) list.hidden = !some
+  const checked = [...panel.querySelectorAll('[data-act="conn-bots-pick"]')].filter(x=>x.checked)
+  const draft = state.connBotsDraft
+  if (draft && draft.id === panel.getAttribute('data-conn-bots')) {
+    draft.mode = some ? 'bots' : 'all'
+    draft.botIds = checked.map(x=>x.getAttribute('data-bot'))
+  }
+  const count = panel.querySelector('[data-conn-bots-count]')
+  if (count) count.textContent = t(`已选 ${checked.length} 个`, `${checked.length} selected`)
+  const empty = panel.querySelector('[data-conn-bots-empty-selection]')
+  if (empty) empty.hidden = !some || !!checked.length
+  const save = panel.querySelector('[data-act="conn-bots-save"]')
+  if (save) save.disabled = !!draft?.busy || (some && !checked.length)
+}
+
+/** 一把连接一行：名字、状态、「仅 @ 时可用」、「可用 Bot」、断开。 */
 function connectionRow(c, connectorId) {
   const status =
     c.status === 'active'
-      ? `<span style="font-size: 13px; color: var(--color-accent-2-800);">${t('已连接')}</span>`
+      ? `<span class="tag mg-status-ok">${t('已连接')}</span>`
       : c.status === 'pending'
-        ? `<span style="font-size: 13px; color: var(--muted-foreground);">${t('未完成')}</span>`
+        ? `<span class="tag tag-warn">${t('待完成授权', 'Authorization pending')}</span>`
         : `<span style="font-size: 13px; color: var(--color-accent-800);">${esc(c.error || t('失败'))}</span>`
   const company = c.scope === 'company'
-  return `<div style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0; border-bottom: 1px solid var(--border);">
+  /**
+   * 「可用 Bot」：这把账号哪些 Bot 用得上。公司共用那把也有这一格——别的按钮它都没有，
+   * 但范围是每个人给自己的 Bot 设的，和那一行连接本身无关。
+   */
+  const bots = state.connectorDetail?.bots || []
+  const open = state.connBotsOpen === c.id
+  const sum = connBotsSummary(c, bots)
+  const botsBtn = `<button type="button" class="satu-linkbtn" data-act="conn-bots-open" data-id="${esc(c.id)}" aria-expanded="${open}" aria-haspopup="dialog"
+      title="${esc(t('哪些 Bot 用得上这个账号', 'Which bots can use this account'))}"
+      style="font-size: 12px;${sum.warn ? ' color: var(--color-accent-800);' : ''}">${t('可用 Bot', 'Bots')}：${esc(sum.text)}</button>`
+  return `<div class="rs-connection-row" data-conn-row="${esc(c.id)}" style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0; border-bottom: 1px solid var(--border);">
     <div style="min-width: 0; flex: 1; display: flex; align-items: center; gap: var(--space-2);">
-      <span style="font-size: 14px;">${esc(c.label)}</span>
+      <span style="font-size: 14px; font-weight: 600; flex: none;">${esc(c.label)}</span>
+      ${/* 供应商认出来的账号（邮箱、登录名）。账号名是人自己起的，连了两个 Gmail 时只有
+            这一格分得清哪个是哪个。认不出就不画，不写「未知」。 */ ''}
+      ${c.accountName ? `<span class="satu-connwho" title="${esc(c.accountName)}">${esc(c.accountName)}</span>` : ''}
       ${company ? `<span class="tag">${t('公司共用')}</span>` : ''}
     </div>
     ${status}
@@ -332,6 +438,7 @@ function connectionRow(c, connectorId) {
         ${t('仅 @ 时可用')}
       </label>`
     }
+    ${botsBtn}
     ${company ? '' : `<button type="button" class="satu-linkbtn" data-act="conn-disconnect" data-id="${esc(c.id)}" data-connector="${esc(connectorId)}">${t('断开')}</button>`}
   </div>`
 }
@@ -356,7 +463,7 @@ function connectorToolsBox(detail) {
   const cap = Number(detail.toolCap) || 0
   const rows = tools
     .map(
-      (tool) => `<label style="display: flex; align-items: flex-start; gap: var(--space-2); padding: 6px 0; font-size: 13px;">
+      (tool) => `<label data-tool-row style="display: flex; align-items: flex-start; gap: var(--space-2); padding: 6px 0; font-size: 13px;">
       <input type="checkbox" data-act="conn-tool" data-tool="${esc(tool.slug)}" ${all || enabled.has(tool.slug) ? 'checked' : ''}>
       <span style="min-width: 0;">
         <span style="font-family: var(--font-mono, monospace); font-size: 12px;">${esc(tool.slug)}</span>
@@ -365,16 +472,22 @@ function connectorToolsBox(detail) {
     </label>`,
     )
     .join('')
-  return `<div>
-    <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2);">
-      <span style="font-size: 13px; color: var(--muted-foreground);">${t(`${on} / ${tools.length} 个已开启`)}</span>
+  // 筛选和全开全关只动 DOM，不 render——见 pages-plugins.js 的 toolBoxes。
+  return `<div class="rs-tools-box">
+    <div class="rs-tools-toolbar" style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-2);">
+      <span id="conn-tools-count" style="flex: 1; min-width: 120px; font-size: 13px; color: var(--muted-foreground);">${t(`${on} / ${tools.length} 个已开启`)}</span>
+      ${
+        tools.length > 8
+          ? `<input class="input" type="search" style="width: 200px; max-width: 100%;" data-act="conn-tool-q"
+              placeholder="${esc(t('筛选工具', 'Filter tools'))}" aria-label="${esc(t('筛选工具', 'Filter tools'))}">`
+          : ''
+      }
+      <button type="button" class="btn btn-ghost" data-act="conn-tools-all" data-on="1" title="${esc(t('只动筛出来的那些', 'Only the filtered ones'))}">${t('全开', 'All on')}</button>
+      <button type="button" class="btn btn-ghost" data-act="conn-tools-all" data-on="0" title="${esc(t('只动筛出来的那些', 'Only the filtered ones'))}">${t('全关', 'All off')}</button>
       <button type="button" class="btn btn-primary" data-act="conn-tools-save" data-connector="${esc(detail.connector.id)}">${t('保存')}</button>
     </div>
-    <p style="margin: 0 0 var(--space-2); font-size: 12px; color: var(--muted-foreground);">
-      ${t('开着的工具会进你每一个 Bot 的工具表。用不上的关掉——装得多了，工具表会把上下文撑满，模型也更容易选错。')}
-    </p>
     ${toolModeNote(detail, on, cap)}
-    <div style="max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-3);">${rows}</div>
+    <div style="max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-1) var(--space-3);">${rows}</div>
   </div>`
 }
 
@@ -411,319 +524,41 @@ function toolModeNote(detail, on, cap) {
   )}</div>`
 }
 
-function connectorDetailPage() {
-  const detail = state.connectorDetail
-  if (!detail || !detail.connector) {
-    return `<div class="gw-page"><div class="gw-page-inner">${flashes()}<p style="font-size: 13px; color: var(--muted-foreground);">${t('加载中…')}</p></div></div>`
-  }
-  const c = detail.connector
-  const conns = detail.connections || []
-  const installed = Boolean(detail.install)
-  return `
-    <div class="gw-page">
-      <div class="gw-page-inner">
-        <div style="display: flex; align-items: flex-start; gap: var(--space-3);">
-          ${connectorLogo(c)}
-          <div style="min-width: 0; flex: 1;">
-            <h1 style="font-size: 20px; margin: 0;">${esc(c.name)}</h1>
-            <p style="margin: 2px 0 0; font-size: 13px; color: var(--muted-foreground);">${esc(c.description || c.toolkit)}</p>
-          </div>
-          ${
-            installed
-              ? `<button type="button" class="btn btn-ghost" data-act="conn-uninstall" data-id="${esc(c.id)}">${t('卸载')}</button>`
-              : `<button type="button" class="btn btn-secondary" data-act="conn-install" data-id="${esc(c.id)}">${t('安装')}</button>`
-          }
-        </div>
-        ${flashes()}
-        ${c.blocked ? `<div class="gw-flash gw-flash-err" style="margin-top: var(--space-3);">${t('本公司已禁用这个连接器')}${c.blockedReason ? `：${esc(c.blockedReason)}` : ''}</div>` : ''}
-        ${
-          installed
-            ? `<section style="margin-top: var(--space-6);">
-                <h2 style="font-size: 13px; font-weight: 600; color: var(--muted-foreground); margin: 0 0 var(--space-2);">${t('账号')}</h2>
-                <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover); padding: 0 var(--space-4);">
-                  ${conns.map((x) => connectionRow(x, c.id)).join('') || ''}
-                  ${addAccountRow(c.id)}
-                </div>
-                <p style="margin: var(--space-2) 0 0; font-size: 12px; color: var(--muted-foreground);">
-                  ${t('账号名会出现在工具名里（如 gmail_personal），模型靠它判断该用哪一个。')}
-                </p>
-              </section>
-              <section style="margin-top: var(--space-6);">
-                <h2 style="font-size: 13px; font-weight: 600; color: var(--muted-foreground); margin: 0 0 var(--space-2);">${t('工具')}</h2>
-                ${connectorToolsBox(detail)}
-              </section>`
-            : `<p style="margin-top: var(--space-6); font-size: 13px; color: var(--muted-foreground);">${t('先安装，再连接你的账号。')}</p>`
-        }
-      </div>
-    </div>`
-}
-
-function marketPage() {
-  const groups = connectorGroups(state.market || [])
-  const body = groups
-    .map(
-      ([name, list]) => `<section style="margin-top: var(--space-6);">
-      <h2 style="font-size: 13px; font-weight: 600; color: var(--muted-foreground); margin: 0 0 var(--space-2);">${esc(name)}</h2>
-      <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-3);">
-        ${list.map(marketCard).join('')}
-      </div>
-    </section>`,
-    )
-    .join('')
-  return `
-    <div class="gw-page">
-      <div class="gw-page-inner">
-        <h1 style="font-size: 24px; margin: 0 0 4px;">${t('连接器')}</h1>
-        <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('装上之后，你名下的每一个 Bot 都能用——不用为每个 Bot 各连一次。')}</p>
-        ${flashes()}
-        ${body || `<div style="margin-top: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('平台还没上架任何连接器。')}</div>`}
-      </div>
-    </div>`
-}
-
 // ── 公司管理员：禁用、谁装了什么、花了多少 ───────────────────────────
 
 function adminConnectorsPage() {
   const list = state.orgConnectors || []
   const stats = state.connectorStats
-  const rows = list
-    .map(
-      (c) =>
-        connectorRow(
-          c,
-          `${esc(c.toolkit)}${c.blocked && c.blockedReason ? ` · ${esc(c.blockedReason)}` : ''}`,
-          `<span style="font-size: 13px; color: var(--muted-foreground);">${t(`${c.installs} 人装了`)}</span>
-      <span style="font-size: 13px; color: var(--muted-foreground);">${t(`${c.connections} 个已连接`)}</span>
-      <div style="display: flex; gap: var(--space-2);">
-        ${
-          c.blocked
-            ? `<button type="button" class="btn btn-ghost" data-act="conn-unblock" data-id="${esc(c.id)}">${t('解禁')}</button>`
-            : `<button type="button" class="satu-linkbtn" data-act="conn-block" data-id="${esc(c.id)}">${t('禁用')}</button>`
-        }
-      </div>`,
-        ),
-    )
-    .join('')
-  const usage = stats
-    ? `<div style="display: flex; gap: var(--space-4); flex-wrap: wrap;">
-        ${[
-          [t('调用次数'), String(stats.total.calls)],
-          [t('费用'), `$${(stats.total.amount ?? 0).toFixed(4)}`],
-        ]
-          .map(
-            ([k, v]) => `<div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover); padding: var(--space-3) var(--space-4); min-width: 140px;">
-            <div style="font-size: 12px; color: var(--muted-foreground);">${esc(k)}</div>
-            <div style="font-size: 20px; font-weight: 600;">${esc(v)}</div>
-          </div>`,
-          )
-          .join('')}
-      </div>`
-    : ''
-  const who = (stats?.installs || [])
-    .map(
-      (x) => `<div style="display: flex; gap: var(--space-3); padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--border);">
-      <span style="flex: 1; min-width: 0;">${esc(x.accountName)}</span>
-      <span style="color: var(--muted-foreground);">${esc(x.name || x.connector)}</span>
-    </div>`,
-    )
-    .join('')
-  return `
-    <div class="gw-page">
-      <div class="gw-page-inner">
-        <h1 style="font-size: 24px; margin: 0 0 4px;">${t('连接器')}</h1>
-        <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('员工自己安装、自己授权。这里管的是「本公司哪几个不许用」，以及谁在用、花了多少。')}</p>
-        ${flashes()}
-        <div style="margin-top: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4);">
-          ${usage}
-          <div class="gw-credlist" style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
-            ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('平台还没上架任何连接器。')}</div>`}
-          </div>
-          ${
-            who
-              ? `<section>
-                  <h2 style="font-size: 13px; font-weight: 600; color: var(--muted-foreground); margin: 0 0 var(--space-2);">${t('谁装了什么')}</h2>
-                  <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover); padding: 0 var(--space-4);">${who}</div>
-                </section>`
-              : ''
-          }
-        </div>
-      </div>
-    </div>`
+  const blocked = list.filter((c) => c.blocked).length
+  const rows = list.map((c) => connectorRow(c,
+    `${esc(c.toolkit)}${c.blocked && c.blockedReason ? ` · ${esc(c.blockedReason)}` : ''}`,
+    `<span class="mg-connector-usage">${t(`${c.installs} 人安装`, `${c.installs} installed`)}</span>
+    <span class="tag ${c.blocked ? 'tag-neutral' : 'mg-status-ok'}">${c.blocked ? t('已禁用', 'Blocked') : t(`${c.connections} 个连接`, `${c.connections} connections`)}</span>
+    <div class="satu-rowactions"><button type="button" class="btn btn-ghost" data-act="${c.blocked ? 'conn-unblock' : 'conn-block'}" data-id="${esc(c.id)}">${c.blocked ? t('解禁') : t('禁用')}</button></div>`
+  )).join('')
+  const who = (stats?.installs || []).map((x) => `<div class="mg-install-row"><span>${esc(x.accountName)}</span><span class="mg-help">${esc(x.name || x.connector)}</span></div>`).join('')
+  return `<div class="gw-page"><div class="gw-page-inner">
+    ${pageHead(t('连接器'), t('管理公司可用的外部服务，查看员工连接情况与调用费用。', 'Manage external services available to your company and review connections and usage costs.'))}
+    ${flashes()}
+    ${managementStats([
+      { label: t('可用连接器', 'Available connectors'), value: list.length - blocked, note: t(`${blocked} 个已禁用`, `${blocked} blocked`) },
+      { label: t('已连接账号', 'Connected accounts'), value: list.reduce((sum, c) => sum + (Number(c.connections) || 0), 0), note: t('由员工自行授权', 'Authorized individually by members') },
+      { label: t('调用次数'), value: stats ? stats.total.calls : '—' },
+      { label: t('调用费用', 'Usage cost'), value: stats ? `$${(stats.total.amount ?? 0).toFixed(4)}` : '—' },
+    ])}
+    <div class="mg-sectionhead"><h2>${t('服务访问', 'Service access')}</h2><span class="mg-help">${t('禁用后，公司成员将无法使用该连接器。', 'Blocked connectors are unavailable to company members.')}</span></div>
+    <div class="mg-table mg-connector-table"><div class="satu-provhead"><span>${t('连接器')}</span><span>${t('安装情况', 'Installed')}</span><span>${t('状态')}</span><span></span></div>${rows || emptyBox(t('平台还没上架任何连接器。'))}</div>
+    <section class="satu-panel"><div class="mg-sectionhead"><div><h2>${t('员工安装记录', 'Member installations')}</h2><p>${t('员工自行安装并授权，这里展示公司内的使用情况。', 'Members install and authorize their accounts individually.')}</p></div></div>${who || emptyBox(t('还没有员工安装连接器。', 'No member installations yet.'))}</section>
+  </div></div>`
 }
 
 function connectorsPage() {
   if (isOwner()) return ownerConnectorsPage()
   // 管理员管的是禁令和账，不是自己的账号；他要装连接器走的是同一个市场，但那是员工身份
   // 的事，两屏分开——混在一起的话「本公司谁装了什么」会被自己的安装卡片挤到底下。
-  return isAdmin() ? adminConnectorsPage() : marketPage()
-}
-
-// ── 插件弹窗：对话那一侧的入口 ───────────────────────────────────────
-
-/**
- * 「插件」= 员工视角的连接器。同一批东西，两个入口。
- *
- * **为什么是弹窗而不是又一个页面**：装插件是**为了把话说完**才做的事——「让它读一下
- * 我的邮件」说到一半才发现 Gmail 还没装。跳走一整页，回来时草稿、滚动位置、刚选好的
- * 那颗 Bot 全没了。弹窗盖在对话上面，关掉就回到原处。
- *
- * 市场那两个页面没有撤：OAuth 回调落在 `/connectors/:id`（`connectors.ts` 那个 302），
- * 深链和刷新也还得有人接。撤掉的只是员工侧栏里那一行——同一件事两个并排的入口，
- * 只会让人问「这两个有什么不一样」。
- */
-function pluginsModal() {
-  const p = state.plugins
-  if (!p) return ''
-  return `<div class="gw-modal-backdrop" data-act="plugins-close">
-    <div class="gw-modal gw-plugins" data-stop role="dialog" aria-modal="true" style="max-width: 720px; max-height: 88vh; overflow: hidden;">
-      ${p.id ? pluginDetailBody() : pluginMarketBody()}
-    </div>
-  </div>`
-}
-
-function pluginsHead(title, back) {
-  return `<div style="display: flex; align-items: center; gap: var(--space-2);">
-    ${back ? `<button type="button" class="btn btn-ghost btn-icon" style="flex: none;" data-act="plugins-back" aria-label="${esc(t('返回'))}">${svg(BACK_ARROW, 17)}</button>` : ''}
-    <h2 style="flex: 1; min-width: 0; margin: 0; font-size: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(title)}</h2>
-    <button type="button" class="btn btn-ghost btn-icon" style="flex: none;" data-act="plugins-close" aria-label="${esc(t('关闭'))}">${svg(['M18 6 6 18', 'M6 6l12 12'], 16)}</button>
-  </div>`
-}
-
-function pluginMarketBody() {
-  const p = state.plugins
-  return `${pluginsHead(t('插件', 'Plugins'), false)}
-    <div style="display: flex; align-items: center; gap: var(--space-2);">
-      <div style="display: flex; gap: 4px; flex: none;">
-        ${[
-          ['market', t('市场', 'Marketplace')],
-          ['mine', t('已安装', 'Yours')],
-        ]
-          .map(
-            ([key, label]) =>
-              `<button type="button" class="btn ${p.tab === key ? 'btn-secondary' : 'btn-ghost'}" data-act="plugins-tab" data-tab="${key}">${esc(label)}</button>`,
-          )
-          .join('')}
-      </div>
-      <input class="input" style="flex: 1; min-width: 0;" placeholder="${esc(t('搜索插件', 'Search plugins'))}"
-        value="${esc(p.q || '')}" data-act="plugins-field">
-    </div>
-    ${p.error ? `<div class="gw-flash gw-flash-err">${esc(p.error)}</div>` : ''}
-    ${/* 「已保存」「已断开」这些走的是共用的 flash()，而它画在页面正文里——弹窗盖着
-          正文，不在这儿再画一遍等于没画。 */ ''}
-    ${flashes()}
-    <div id="plugins-list" style="min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: var(--space-4);">
-      ${pluginListRows()}
-    </div>`
-}
-
-/**
- * 清单那一块**单独一个函数**：搜索框边打边过滤时只重画这里。整页 render() 会把输入框
- * 换掉，正在打字的人立刻丢焦点——上架弹窗那边（connectorPickRows）栽过同一个坑。
- */
-function pluginListRows() {
-  const p = state.plugins
-  if (!p) return ''
-  if (p.loading) return `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('加载中…')}</div>`
-  const q = (p.q || '').trim().toLowerCase()
-  const list = (state.market || []).filter((c) => {
-    if (p.tab === 'mine' && !c.installed) return false
-    if (!q) return true
-    return `${c.name} ${c.toolkit} ${c.description || ''}`.toLowerCase().includes(q)
-  })
-  if (!list.length) {
-    const empty = q
-      ? t('没有匹配的插件', 'No plugins match that')
-      : p.tab === 'mine'
-        ? t('还没装任何插件。到「市场」里挑一个。', 'Nothing installed yet — pick one from the marketplace.')
-        : t('平台还没上架任何连接器。')
-    return `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${esc(empty)}</div>`
-  }
-  return connectorGroups(list)
-    .map(
-      ([name, rows]) => `<section>
-      <p style="margin: 0 0 var(--space-2); font-size: 12px; font-weight: 600; color: var(--muted-foreground);">${esc(name)}</p>
-      <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--space-2);">
-        ${rows.map(pluginRow).join('')}
-      </div>
-    </section>`,
-    )
-    .join('')
-}
-
-function pluginRow(c) {
-  // 被公司禁掉的既不给装也不给点进去：点进去只有一句「已禁用」，白跑一趟。
-  const action = c.blocked
-    ? `<span class="tag" style="flex: none;">${t('已禁用')}</span>`
-    : c.installed
-      ? `<button type="button" class="btn btn-ghost" style="flex: none;" data-act="plugins-detail" data-id="${esc(c.id)}">${t('管理')}</button>`
-      : `<button type="button" class="btn btn-secondary" style="flex: none;" data-act="conn-install" data-id="${esc(c.id)}">${t('添加', 'Add')}</button>`
-  return `<div style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); ${c.blocked ? 'opacity: 0.55;' : ''}">
-    ${connectorLogo(c)}
-    <div style="min-width: 0; flex: 1;">
-      <div style="font-size: 14px; font-weight: 600;">${esc(c.name)}${c.installed ? ` <span class="tag tag-accent">${t('已安装')}</span>` : ''}</div>
-      <div style="font-size: 12px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-        ${esc(c.blocked && c.blockedReason ? `${t('本公司已禁用')}：${c.blockedReason}` : c.description || c.toolkit)}
-      </div>
-    </div>
-    ${action}
-  </div>`
-}
-
-/**
- * 装完之后的那一屏：连账号、挑工具。和详情页是同一套零件（connectionRow /
- * connectorToolsBox），只是外面换了个壳——两份画法迟早会漂。
- */
-function pluginDetailBody() {
-  const p = state.plugins
-  const detail = state.pluginDetail
-  if (!detail || detail.connector?.id !== p.id) {
-    return `${pluginsHead(t('插件', 'Plugins'), true)}
-      ${p.error ? `<div class="gw-flash gw-flash-err">${esc(p.error)}</div>` : ''}
-      <p style="font-size: 13px; color: var(--muted-foreground);">${t('加载中…')}</p>`
-  }
-  const c = detail.connector
-  const conns = detail.connections || []
-  return `${pluginsHead(c.name, true)}
-    <div style="display: flex; align-items: center; gap: var(--space-3);">
-      ${connectorLogo(c)}
-      <div style="min-width: 0; flex: 1; font-size: 13px; color: var(--muted-foreground);">${esc(c.description || c.toolkit)}</div>
-      <button type="button" class="btn btn-ghost" style="flex: none;" data-act="conn-uninstall" data-id="${esc(c.id)}">${t('卸载')}</button>
-    </div>
-    ${p.error ? `<div class="gw-flash gw-flash-err">${esc(p.error)}</div>` : ''}
-    ${flashes()}
-    ${c.blocked ? `<div class="gw-flash gw-flash-err">${t('本公司已禁用这个连接器')}${c.blockedReason ? `：${esc(c.blockedReason)}` : ''}</div>` : ''}
-    <div style="min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: var(--space-6);">
-      <section>
-        <h3 style="font-size: 13px; font-weight: 600; color: var(--muted-foreground); margin: 0 0 var(--space-2);">${t('账号')}</h3>
-        <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 0 var(--space-4);">
-          ${conns.map((x) => connectionRow(x, c.id)).join('')}
-          ${addAccountRow(c.id)}
-        </div>
-        <p style="margin: var(--space-2) 0 0; font-size: 12px; color: var(--muted-foreground);">
-          ${t('点「添加账号」会新开一页去授权，这一边不动；授权完关掉那页就行。账号名会出现在工具名里（如 gmail_personal），模型靠它判断该用哪一个。', 'Adding an account opens authorization in a new tab and leaves this one alone — close that tab when you are done. The label shows up in the tool name (gmail_personal), which is how the model tells accounts apart.')}
-        </p>
-      </section>
-      <section>
-        <h3 style="font-size: 13px; font-weight: 600; color: var(--muted-foreground); margin: 0 0 var(--space-2);">${t('工具')}</h3>
-        ${connectorToolsBox(detail)}
-      </section>
-    </div>`
-}
-
-/**
- * 连接器控件的查询根。
- *
- * 弹窗和 `/connectors/:id` 那一页有**同名**的输入框和勾选框（`conn-label`、
- * `conn-tool`），而弹窗能盖在那一页上面。不分根的话 querySelector 先中的是底下那页，
- * 于是在弹窗里填的账号名发不出去、勾的工具存的是别人那一份。
- */
-function connRoot() {
-  return (state.plugins && document.querySelector('.gw-plugins')) || document
-}
-
-function paintPluginList() {
-  const box = document.getElementById('plugins-list')
-  if (box) box.innerHTML = pluginListRows()
+  // 员工那一份市场搬去了 /plugins（data.js 的 loadPage 会把他从 /connectors 折过去），
+  // 这里兜底照画插件页，别让一次没折过去的渲染变成白屏。
+  return isAdmin() ? adminConnectorsPage() : pluginsPage()
 }
 
 /**
@@ -739,95 +574,88 @@ window.addEventListener('focus', () => {
   const id = authReturn
   if (!id) return
   authReturn = ''
-  const inPop = state.plugins && state.plugins.id === id
-  const inPage = connectorIdOfPath(state.path) === id
-  if (!inPop && !inPage) return
-  ;(inPop ? loadPluginDetail(id) : loadConnectorDetail(id)).then(render, () => {})
+  if (pluginIdOfPath(state.path) !== id) return
+  // 那个「等你授权」的弹窗到这儿就完成使命了：新账号（或者一行「未完成」）就在底下。
+  if (state.connAdd?.phase === 'waiting') state.connAdd = null
+  loadConnectorDetail(id).then(render, () => {})
 })
 
-/** 弹窗里翻到某个插件的详情。装完之后也走这条——装和管理落到同一屏。 */
-async function openPluginDetail(id, opts) {
-  if (!id || !state.plugins) return
-  Object.assign(state.plugins, { id, error: '' })
-  state.pluginDetail = null
+/**
+ * 发起授权：向后端要 OAuth 地址，在新标签页里打开。
+ *
+ * 弹窗那张表单的 submit 走这里（app.js 的 submit 分流 → submitConnAdd）。
+ *
+ * **标签页要在这一下手势里就开出来。** 地址得先向后端要（那一趟才生成 OAuth 链接），
+ * 而 `await` 之后浏览器已经不认这是用户点出来的动作了，`window.open` 会被拦掉——
+ * 所以先开一个空页占住手势，拿到地址再把它送过去。调用方不能在这之前 await 任何东西。
+ *
+ * 不用 `noopener` 这个 feature：带上它 `window.open` 直接返回 null，就没有句柄可以
+ * 送地址了。改成拿到句柄后手动断开 `opener`，防的是同一件事（反向标签劫持）。
+ *
+ * **桌面端不开空页。** 壳把 `window.open` 换成了「地址交给系统浏览器、返回 null」
+ * （desktop/src-tauri/src/nav.rs 的 LINK_SCRIPT），没有句柄可拿，也没有手势要占：
+ * 拿到地址再 `window.open` 一次，照样进「等你授权」。以前这里落进整页跳转那条兜底，
+ * 跳转被壳拦下送进浏览器、窗口原地不动，按钮就一直停在「打开中…」。
+ */
+async function startAddAccount(id, label) {
+  const desktop = Boolean(window.__SATUWORK_DESKTOP__)
+  let tab = null
+  if (!desktop) {
+    try {
+      tab = window.open('', '_blank')
+      if (tab) tab.opener = null
+    } catch {
+      tab = null
+    }
+  }
+  if (state.connAdd) Object.assign(state.connAdd, { error: '', busy: true })
   render()
   try {
-    // 市场那一份要重取：刚装完，「添加」得变成「管理」，「已安装」那一栏也得有它。
-    await Promise.all([loadPluginDetail(id), opts?.reloadMarket ? loadMarket() : null])
+    const r = await api('POST', `/me/connectors/${encodeURIComponent(id)}/connections`, label ? { label } : {})
+    // 被拦截器挡下来（tab 是 null）就还是整页跳走：把人卡在原地、什么都不发生，
+    // 比换一页更糟——那时他只会以为按钮坏了。
+    if (desktop || (tab && !tab.closed)) {
+      authReturn = id
+      if (desktop) window.open(r.redirectUrl, '_blank')
+      else tab.location.href = r.redirectUrl
+      if (state.connAdd) Object.assign(state.connAdd, { phase: 'waiting', busy: false })
+      // Show the authorization instructions immediately; refreshing account details can take longer.
+      render()
+      // 新建的那一行（pending）先画出来：人回来时看得见「未完成」，而不是什么都没有。
+      await loadConnectorDetail(id).catch(() => {})
+    } else {
+      location.href = r.redirectUrl
+      return
+    }
   } catch (e) {
-    if (state.plugins) state.plugins.error = e.message
+    // 开都没开成，那页空白着没有意义。
+    if (tab && !tab.closed) tab.close()
+    if (state.connAdd) Object.assign(state.connAdd, { error: e.message, busy: false })
+    else flash('err', e.message)
   }
   render()
 }
 
-/**
- * 详情重取。弹窗和页面各存各的（见 loadPluginDetail），改完账号要刷的是**当前这一份**——
- * 认错了的话，弹窗里断开一把连接，画面上那一行还在。
- */
-function refreshConnectorDetail(id) {
-  return state.plugins ? loadPluginDetail(id) : loadConnectorDetail(id)
+function submitConnAdd(e) {
+  e.preventDefault()
+  const id = e.target.getAttribute('data-id') || state.connAdd?.id || ''
+  if (!id || state.connAdd?.busy) return
+  void startAddAccount(id, valueOf('conn-label', '').toLowerCase())
 }
 
 // ── 动作 ─────────────────────────────────────────────────────────────
 
 /** 返回 true 表示这一下已经处理掉了，app.js 那条链不用再往下走。 */
 async function connectorAct(act, btn) {
-  if (act === 'plugins-open') {
-    // 侧栏那颗「更多」是从菜单里点进来的，菜单得跟着收（理由同 app.js 的 `go`）。
-    state.menu = null
-    state.plugins = { q: '', tab: 'market', id: '', loading: true, error: '' }
-    state.pluginDetail = null
-    // 上一屏留下的那条 flash 别跟进弹窗——它说的是别处的事。
-    state.error = ''
-    state.notice = ''
-    // 先画一个空壳再去取：市场那一条要打一次网络，不先画的话点了半天没反应。
-    render()
-    try {
-      await loadMarket()
-    } catch (e) {
-      if (state.plugins) state.plugins.error = e.message
-    }
-    if (state.plugins) state.plugins.loading = false
-    render()
+  // 插件页的搜索框和分组：只重画正文那一块（见 pages-plugins.js 的 pluginsBody）。
+  if (act === 'plugins-q' || act === 'conn-tool-q') return true
+  if (act === 'plugins-cat') {
+    state.pluginCat = btn.getAttribute('data-cat') || ''
+    paintPluginsBody()
     return true
   }
-  if (act === 'plugins-close') {
-    // 底下停的是哪个连接器的详情页。空串 = 停在别处（对话、市场），没什么要补的。
-    const behind = connectorIdOfPath(state.path)
-    state.plugins = null
-    state.pluginDetail = null
-    // 弹窗里那条「已保存」也不该留到底下那页去。
-    state.error = ''
-    state.notice = ''
-    // 先关，别让人等一次网络往返。
-    render()
-    // 弹窗里刚做的改动（断开、卸载、改工具）只落在弹窗那一份上。底下正好是同一个
-    // 连接器的详情页时不补这一次，关掉之后那页还列着已经断掉的账号——点它会打到一个
-    // 不存在的连接上。取不到就维持原样：这一屏本来就是它自己加载的，没必要为一次
-    // 后台刷新弹一句错。
-    if (behind) {
-      try {
-        await loadConnectorDetail(behind)
-        render()
-      } catch {}
-    }
-    return true
-  }
-  if (act === 'plugins-back') {
-    if (state.plugins) Object.assign(state.plugins, { id: '', error: '' })
-    state.pluginDetail = null
-    render()
-    return true
-  }
-  if (act === 'plugins-tab') {
-    if (state.plugins) state.plugins.tab = btn.getAttribute('data-tab')
-    render()
-    return true
-  }
-  if (act === 'plugins-field') return true
-  if (act === 'plugins-detail') {
-    if (!state.plugins) return true
-    await openPluginDetail(btn.getAttribute('data-id'))
+  if (act === 'conn-tools-all') {
+    setVisibleTools(btn.getAttribute('data-on') === '1')
     return true
   }
   if (act === 'conn-price-save') {
@@ -892,17 +720,17 @@ async function connectorAct(act, btn) {
     try {
       await api('POST', `/me/connectors/${encodeURIComponent(id)}/install`)
       // 装完直接进详情：装了还没连的话它什么也干不了，下一步就在那一屏。
-      // 弹窗里装的就留在弹窗里——跳走一整页，对话那边的草稿和滚动位置都没了。
-      if (state.plugins) await openPluginDetail(id, { reloadMarket: true })
-      else go(`/connectors/${encodeURIComponent(id)}`)
-    } catch (e) {
-      if (state.plugins) {
-        state.plugins.error = e.message
+      const to = pluginHref(id)
+      if (state.path === to) {
+        // 从「没装」的详情页上点的：人已经在这一屏了，原地刷新就好。
+        await loadConnectorDetail(id)
         render()
       } else {
-        flash('err', e.message)
-        render()
+        go(to)
       }
+    } catch (e) {
+      flash('err', e.message)
+      render()
     }
     return true
   }
@@ -911,59 +739,34 @@ async function connectorAct(act, btn) {
     if (!confirm(t('卸载会把你在它下面连的所有账号一起断掉。继续？'))) return true
     try {
       await api('DELETE', `/me/connectors/${encodeURIComponent(id)}/install`)
-      if (state.plugins) {
-        Object.assign(state.plugins, { id: '', error: '' })
-        state.pluginDetail = null
-        await loadMarket()
-        render()
-      } else go('/connectors')
+      go('/plugins')
+      flash('ok', t('已卸载', 'Removed'))
     } catch (e) {
-      if (state.plugins) state.plugins.error = e.message
-      else flash('err', e.message)
+      flash('err', e.message)
       render()
     }
     return true
   }
-  if (act === 'conn-add-account') {
+  if (act === 'conn-add-open') {
     const id = btn.getAttribute('data-id')
-    const label = valueOf('conn-label', '')
-    /**
-     * 授权开**新标签页**，不把这一页顶掉。
-     *
-     * 整页跳走的代价在插件弹窗上尤其重：回来时对话的草稿、滚动位置、刚选好的那颗 Bot
-     * 全没了，而人只是想加一个邮箱。开新页之后这一边原封不动，授权完关掉那页就行。
-     *
-     * **标签页要在点击这一下里就开出来。** 地址得先向后端要（那一趟才生成 OAuth 链接），
-     * 而 `await` 之后浏览器已经不认这是用户点出来的动作了，`window.open` 会被拦掉——
-     * 所以先开一个空页占住手势，拿到地址再把它送过去。
-     *
-     * 不用 `noopener` 这个 feature：带上它 `window.open` 直接返回 null，就没有句柄可以
-     * 送地址了。改成拿到句柄后手动断开 `opener`，防的是同一件事（反向标签劫持）。
-     */
-    let tab = null
-    try {
-      tab = window.open('', '_blank')
-      if (tab) tab.opener = null
-    } catch {
-      tab = null
-    }
-    try {
-      const r = await api('POST', `/me/connectors/${encodeURIComponent(id)}/connections`, label ? { label } : {})
-      // 被拦截器挡下来（tab 是 null）就还是整页跳走：把人卡在原地、什么都不发生，
-      // 比换一页更糟——那时他只会以为按钮坏了。
-      if (tab && !tab.closed) {
-        authReturn = id
-        tab.location.href = r.redirectUrl
-      } else {
-        location.href = r.redirectUrl
-      }
-    } catch (e) {
-      // 开都没开成，那页空白着没有意义。
-      if (tab && !tab.closed) tab.close()
-      if (state.plugins) state.plugins.error = e.message
-      else flash('err', e.message)
-      render()
-    }
+    const c = state.connectorDetail?.connector
+    state.connAdd = { id, name: c && c.id === id ? c.name : '', phase: 'form', error: '' }
+    render()
+    document.getElementById('conn-label')?.focus()
+    return true
+  }
+  if (act === 'conn-add-close') {
+    state.connAdd = null
+    render()
+    return true
+  }
+  if (act === 'conn-add-done') {
+    // 「我已完成授权」：不等回到这一页的 focus（同一个窗口里切标签页不一定触发）。
+    const id = state.connAdd?.id || ''
+    authReturn = ''
+    state.connAdd = null
+    if (id) await loadConnectorDetail(id).catch(() => {})
+    render()
     return true
   }
   if (act === 'conn-disconnect') {
@@ -972,7 +775,7 @@ async function connectorAct(act, btn) {
     if (!confirm(t('断开这个账号？'))) return true
     try {
       await api('DELETE', `/me/connectors/${encodeURIComponent(connectorId)}/connections/${encodeURIComponent(id)}`)
-      await refreshConnectorDetail(connectorId)
+      await loadConnectorDetail(connectorId)
       flash('ok', t('已断开'))
     } catch (e) {
       flash('err', e.message)
@@ -987,24 +790,105 @@ async function connectorAct(act, btn) {
     const on = btn.checked === true
     try {
       await api('PATCH', `/me/connectors/${encodeURIComponent(connectorId)}/connections/${encodeURIComponent(id)}`, { mentionOnly: on })
-      await refreshConnectorDetail(connectorId)
+      await loadConnectorDetail(connectorId)
     } catch (e) {
       flash('err', e.message)
     }
     render()
     return true
   }
-  if (act === 'conn-tool') return true
+  if (act === 'conn-bots-open') {
+    const id = btn.getAttribute('data-id')
+    if (state.connBotsDraft?.busy) return true
+    closeConnBots({ restoreFocus: false })
+    const detail = state.connectorDetail
+    const c = (detail?.connections || []).find(x=>x.id === id)
+    if (!c) return true
+    state.connBotsOpen = id
+    state.connBotsDraft = { id, connectorId: detail.connector.id, mode: c.bots?.mode || 'all', botIds: [...(c.bots?.botIds || [])], query: '', error: '', busy: false }
+    document.getElementById('app').insertAdjacentHTML('beforeend', connBotsPanel(c, detail.connector.id, detail.bots || []))
+    btn.setAttribute('aria-expanded', 'true')
+    document.querySelector('[data-conn-bots] [data-act="conn-bots-mode"]:checked')?.focus()
+    return true
+  }
+  if (act === 'conn-bots-close') {
+    closeConnBots()
+    return true
+  }
+  if (act === 'conn-bots-mode' || act === 'conn-bots-pick') {
+    paintConnBotsSave(btn.closest('[data-conn-bots]'))
+    return true
+  }
+  if (act === 'conn-bots-q') return true
+  if (act === 'conn-bots-save') {
+    const id = btn.getAttribute('data-id')
+    const connectorId = btn.getAttribute('data-connector')
+    const draft = state.connBotsDraft
+    if (!draft || draft.id !== id || draft.busy) return true
+    const panel = btn.closest('[data-conn-bots]')
+    if (!panel) return true
+    paintConnBotsSave(panel)
+    const some = draft.mode === 'bots'
+    if (some && !draft.botIds.length) return true
+    const error = panel.querySelector('[data-conn-bots-err]')
+    const choices = panel.querySelector('fieldset')
+    const closeButtons = [...panel.querySelectorAll('[data-act="conn-bots-close"]')]
+    draft.busy = true
+    draft.error = ''
+    panel.setAttribute('aria-busy', 'true')
+    if (error) error.hidden = true
+    if (choices) choices.disabled = true
+    for (const close of closeButtons) close.disabled = true
+    btn.disabled = true
+    btn.textContent = t('保存中…', 'Saving…')
+    try {
+      const data = await api('PUT', `/me/connectors/${encodeURIComponent(connectorId)}/connections/${encodeURIComponent(id)}/bots`, some ? { mode: 'bots', botIds: draft.botIds } : { mode: 'all' })
+      if (state.connBotsDraft !== draft || state.connectorDetail?.connector?.id !== connectorId) return true
+      // The endpoint returns the saved connection. Only update this row, preserving tool selections.
+      state.connectorDetail.connections = state.connectorDetail.connections.map(c=>c.id === id ? { ...c, ...data.connection } : c)
+      closeConnBots({ restoreFocus: false, force: true })
+      const connection = state.connectorDetail.connections.find(c=>c.id === id)
+      const row = connRowEl(id)
+      if (connection && row) row.outerHTML = connectionRow(connection, connectorId)
+      connRowEl(id)?.querySelector('[data-act="conn-bots-open"]')?.focus()
+    } catch (e) {
+      if (state.connBotsDraft !== draft) return true
+      draft.error = errText(e.message)
+    } finally {
+      draft.busy = false
+      // A roster refresh may replace the dialog while the request is pending.
+      // Touch only this draft's live dialog, never a newly opened one.
+      if (state.connBotsDraft === draft) {
+        const current = document.querySelector('[data-conn-bots]') || panel
+        current.setAttribute('aria-busy', 'false')
+        const liveError = current.querySelector('[data-conn-bots-err]')
+        if (liveError) { liveError.textContent = draft.error; liveError.hidden = !draft.error }
+        const liveChoices = current.querySelector('fieldset')
+        if (liveChoices) liveChoices.disabled = false
+        for (const close of current.querySelectorAll('[data-act="conn-bots-close"]')) close.disabled = false
+        const liveSave = current.querySelector('[data-act="conn-bots-save"]')
+        if (liveSave) liveSave.textContent = t('保存设置', 'Save settings')
+        paintConnBotsSave(current)
+        if (!current.contains(document.activeElement)) liveSave?.focus()
+      }
+    }
+    return true
+  }
+  if (act === 'conn-tool') {
+    // 复选框的 click 到的时候状态已经翻过来了，数一下就是新的。
+    paintToolCount()
+    return true
+  }
   if (act === 'conn-tools-save') {
     const connectorId = btn.getAttribute('data-connector')
-    const boxes = [...connRoot().querySelectorAll('[data-act="conn-tool"]')]
+    const boxes = toolBoxes()
     const all = boxes.length && boxes.every((b) => b.checked)
     // 全勾上 = 空数组（后端口径：空 = 全开）。存一份「当前全部工具」的快照，
     // 供应商下次加了新工具就永远进不来了——那不是用户勾的意思。
     const enabledTools = all ? [] : boxes.filter((b) => b.checked).map((b) => b.getAttribute('data-tool'))
     try {
       await api('PUT', `/me/connectors/${encodeURIComponent(connectorId)}/tools`, { enabledTools })
-      await refreshConnectorDetail(connectorId)
+      await loadConnectorDetail(connectorId)
       flash('ok', t('已保存'))
     } catch (e) {
       flash('err', e.message)
@@ -1145,9 +1029,9 @@ async function connectorAct(act, btn) {
   return false
 }
 
-/** 弹窗里的输入框现读现取——它们不受控，render() 一来就会被换掉。 */
+/** 输入框现读现取——它们不受控，render() 一来就会被换掉。 */
 function valueOf(name, fallback) {
-  const el = connRoot().querySelector(`[data-input="${name}"]`)
+  const el = document.querySelector(`[data-input="${name}"]`)
   return el ? String(el.value || '').trim() : fallback
 }
 
@@ -1166,3 +1050,23 @@ function dollarsToMicros(v) {
   if (!Number.isFinite(n) || n < 0) return null
   return Math.round(n * 1000000)
 }
+
+/** Keep keyboard focus in the available-bot dialog and restore it on close. */
+document.addEventListener('keydown', e => {
+  if (!state.connBotsOpen) return
+  const panel = document.querySelector('[data-conn-bots]')
+  if (!panel) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeConnBots()
+    return
+  }
+  if (e.key !== 'Tab') return
+  const focusable = [...panel.querySelectorAll('button, input, select, textarea, a[href], [tabindex]')].filter(el=>el.tabIndex >= 0 && !el.matches(':disabled') && el.getClientRects().length)
+  if (!focusable.length) { e.preventDefault(); panel.focus(); return }
+  const first = focusable[0], last = focusable[focusable.length - 1]
+  if (!panel.contains(document.activeElement) || (e.shiftKey && document.activeElement === first) || (!e.shiftKey && document.activeElement === last)) {
+    e.preventDefault()
+    ;(e.shiftKey ? last : first).focus()
+  }
+})

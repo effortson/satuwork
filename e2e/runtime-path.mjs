@@ -6,11 +6,12 @@ import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { createCompany } from './org.mjs'
 import { startMockMcp } from './mock-mcp.mjs'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { publishRelease } from './release.mjs'
 import { pairMachine } from './pair.mjs'
 import { freePorts } from './ports.mjs'
+import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 /**
  * **一律用桩模型。** 以前这里会去读本机 live 库（一个写死的 sqlite 路径）把真实的
@@ -19,10 +20,6 @@ import { freePorts } from './ports.mjs'
  * 也不该碰任何 live 数据。
  */
 const STUB_LLM = true
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 export async function runRuntimePath({ root, gwRoot, botRoot, test, req, start, waitHttp, assert, log }) {
   const GW_HOME = tmpOf('satuwork-e2e-runtime-gw')
@@ -34,18 +31,15 @@ export async function runRuntimePath({ root, gwRoot, botRoot, test, req, start, 
   const botBase = `http://127.0.0.1:${BOT_PORT}`
 
   log('\n# runtime-path')
-  rmSync(GW_HOME, { recursive: true, force: true })
   rmSync(BOT_HOME, { recursive: true, force: true })
 
-  const gw = start('runtime-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'runtime-gw',
+    what: 'runtime gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_runtime'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_runtime'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_MACHINE_TOKEN: MACHINE_TOK,
       GATEWAY_PLATFORM_TOKEN: PLATFORM_TOK,
       GATEWAY_ACCESS_HOST: 'satuwork.com',
@@ -55,8 +49,6 @@ export async function runRuntimePath({ root, gwRoot, botRoot, test, req, start, 
       SATUWORK_DEPLOY_STUB: '1',
     },
   })
-  // 带上 child：起不来时有用的是它的输出，不是三十秒后那句「等不到」。
-  await waitHttp(gwBase + '/health', { child: gw, what: 'runtime gateway' })
 
   let mock
   let botChild
@@ -439,7 +431,7 @@ await publishRelease({ req, gwBase, token: ownerTok, version: '0.1.0', note: 'e2
         body: { text: 'ping' },
       })
       assert(msg.status === 200, `message ${msg.status} ${msg.text}`)
-      assert(msg.json.accepted === true || msg.json.steered === true, 'accepted')
+      assert(msg.json.accepted === true || msg.json.steered === true || msg.json.queued === true, 'accepted')
 
       const file = join(BOT_HOME, 'sessions', `${sessionId}.jsonl`)
       const jsonlDeadline = Date.now() + 20000

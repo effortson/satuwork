@@ -1,0 +1,117 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { createServer } from 'node:http'
+import { setTimeout as delay } from 'node:timers/promises'
+import { tsImport } from 'tsx/esm/api'
+const { apply } = await tsImport('../../bot/src/session/gateway.ts', import.meta.url)
+
+async function until(predicate) {
+  for (let i = 0; i < 200; i++) {
+    if (predicate()) return
+    await delay(10)
+  }
+  assert.fail('notification reporting did not settle')
+}
+
+function seat(rows, events) {
+  const handlers = new Map(), cleanups = []
+  apply({
+    server: { get() {} }, catalog: {}, logger: { warn() {}, error() {} },
+    storage: { collection: () => ({ put: (id, value) => rows.set(id, value), delete: (id) => rows.delete(id),
+      list: () => [...rows].map(([id, value]) => ({ id, value })) }) },
+    sessions: { events: async (id) => events.get(id) || [] },
+    on: (name, handler) => handlers.set(name, handler), effect: (fn) => cleanups.push(fn()),
+  })
+  return { emit: (id, event) => { events.get(id).push(event); handlers.get('session/event')(id, event) },
+    stop: () => cleanups.forEach((fn) => fn()) }
+}
+
+const root = (kind = 'main') => ({ type: 'session', seq: 1, time: 1000, data: { kind, botId: 'bot-a', createdAt: 1000 } })
+
+test('seat notification protocol and durable outbox', async (t) => {
+  const old = { ...process.env }, pushes = []
+  let fail = false
+  const server = createServer(async (req, res) => {
+    let raw = ''
+    for await (const chunk of req) raw += chunk
+    if (req.url === '/internal/push') {
+      pushes.push(JSON.parse(raw))
+      res.writeHead(fail ? 503 : 202, { 'content-type': 'application/json' })
+      res.end('{}')
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ account: { id: 'account-a' }, company: { id: 'company-a' } }))
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  process.env.GATEWAY_URL = `http://127.0.0.1:${server.address().port}`
+  process.env.GATEWAY_TOKEN = 'sat_test'
+  delete process.env.SATUWORK_BOT_ID
+  delete process.env.SATUWORK_RUNTIME_KIND
+  try {
+    await t.test('reports stable conversation sequence without dialogue content', async () => {
+      const rows = new Map(), events = new Map([['s-main', [root()]]]), ctx = seat(rows, events)
+      const before = pushes.length
+      try {
+        ctx.emit('s-main', { type: 'turn/end', seq: 9, time: 2000, data: { reason: 'completed', secret: 'never upload dialogue' } })
+        await until(() => pushes.length > before)
+        const p = pushes.at(-1)
+        assert.deepEqual(p, { botId: 'bot-a', sessionId: 's-main', seq: 9, time: 2000, kind: 'turn-end', actionId: '', resolved: false })
+        await until(() => ![...rows.values()].some((r) => r.kind === 'notification'))
+      } finally { ctx.stop() }
+    })
+
+    await t.test('approval resolution uses the original pending sequence', async () => {
+      const rows = new Map(), events = new Map([['s-approval', [root(), { type: 'tool/approval', seq: 3, time: 1500, data: { callId: 'c1', state: 'pending' } }]]])
+      const ctx = seat(rows, events), before = pushes.length
+      try {
+        ctx.emit('s-approval', { type: 'tool/approval', seq: 6, time: 1800, data: { callId: 'c1', state: 'approved' } })
+        await until(() => pushes.length > before)
+        assert.equal(pushes.at(-1).seq, 3)
+        assert.equal(pushes.at(-1).actionId, 'c1')
+        assert.equal(pushes.at(-1).resolved, true)
+      } finally { ctx.stop() }
+    })
+
+    await t.test('failed metadata stays durable and is retried unchanged after seat restart', async () => {
+      const rows = new Map(), events = new Map([['s-retry', [root()]]])
+      let ctx = seat(rows, events)
+      const before = pushes.length
+      try {
+        fail = true
+        ctx.emit('s-retry', { type: 'turn/end', seq: 10, time: 2000, data: { reason: 'completed' } })
+        await until(() => [...rows.values()].some((r) => r.kind === 'notification' && r.attempts === 1))
+        const first = pushes.at(-1)
+        ctx.stop()
+        for (const row of rows.values()) row.nextTryAt = 0
+        fail = false
+        ctx = seat(rows, events)
+        ctx.emit('s-retry', { type: 'tool/approval', seq: 11, time: 2100, data: { callId: 'c2', state: 'pending' } })
+        await until(() => pushes.length >= before + 3)
+        const retried = pushes.slice(before).filter((p) => p.seq === 10)
+        assert.equal(retried.length, 2)
+        assert.deepEqual(retried[0], first)
+        assert.deepEqual(retried[1], first)
+      } finally { fail = false; ctx.stop() }
+    })
+
+    await t.test('aborted turns and delegated sessions never create remote alerts', async () => {
+      const rows = new Map(), events = new Map([['s-main', [root()]], ['s-side', [root('task')]]])
+      const ctx = seat(rows, events), before = pushes.length
+      try {
+        ctx.emit('s-main', { type: 'turn/end', seq: 2, time: 2000, data: { reason: 'aborted' } })
+        ctx.emit('s-side', { type: 'turn/end', seq: 2, time: 2000, data: { reason: 'completed' } })
+        await delay(30)
+        assert.equal(pushes.length, before)
+        assert.equal([...rows.values()].some((r) => r.kind === 'notification'), false)
+      } finally { ctx.stop() }
+    })
+  } finally {
+    for (const key of ['GATEWAY_URL', 'GATEWAY_TOKEN', 'SATUWORK_BOT_ID', 'SATUWORK_RUNTIME_KIND']) {
+      if (old[key] === undefined) delete process.env[key]
+      else process.env[key] = old[key]
+    }
+    server.closeAllConnections()
+    await new Promise((r) => server.close(r))
+  }
+})

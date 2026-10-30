@@ -32,6 +32,7 @@
 
 import { LOCAL, TOKEN, headers, gw, seatJson, LostError, seatEventsUrl } from './relay-client.ts'
 import { type ChannelJob, runChannelJob } from './channels.ts'
+import { type TaskJob, runTaskJob } from './tasks.ts'
 
 /** 多久去领一次。和 Gateway 调度器原来的节拍一样，粗一点没关系——任务是分钟级的。 */
 const TICK_MS = Math.max(1000, Math.trunc(Number(process.env.SATUWORK_WORKER_TICK_MS ?? 30_000)))
@@ -222,14 +223,37 @@ async function channelTick(): Promise<void> {
   }
 }
 
-console.log(`satuwork-worker: 起了，每 ${TICK_MS / 1000}s 向 ${LOCAL} 领一次日常任务、每 ${CHANNEL_TICK_MS / 1000}s 领一次渠道消息`)
+/** 主 Bot 派活（docs/bot-tasks.md）。和渠道消息一个节拍：主 Bot 那头的人在等结论。 */
+const taskRunning = new Set<string>()
+
+async function taskTick(): Promise<void> {
+  let got: { jobs?: TaskJob[] }
+  try {
+    got = (await gw('/tasks/due')) as { jobs?: TaskJob[] }
+  } catch (e) {
+    // 老 Gateway 没这条路（404 → LostError）：安静地过。
+    if (!(e instanceof LostError)) console.error(`satuwork-worker: 领不到派活：${(e as Error).message}`)
+    return
+  }
+  for (const job of got?.jobs ?? []) {
+    const key = `${job.taskId}:${job.phase}`
+    if (taskRunning.has(key)) continue
+    taskRunning.add(key)
+    void runTaskJob(job).finally(() => taskRunning.delete(key))
+  }
+}
+
+console.log(`satuwork-worker: 起了，每 ${TICK_MS / 1000}s 向 ${LOCAL} 领一次日常任务、每 ${CHANNEL_TICK_MS / 1000}s 领一次渠道消息和派活`)
 void tick()
 void channelTick()
+void taskTick()
 const timer = setInterval(() => void tick(), TICK_MS)
 const channelTimer = setInterval(() => void channelTick(), CHANNEL_TICK_MS)
+const taskTimer = setInterval(() => void taskTick(), CHANNEL_TICK_MS)
 const shutdown = () => {
   clearInterval(timer)
   clearInterval(channelTimer)
+  clearInterval(taskTimer)
   // 手上的活不等：租约会到期，Gateway 记成「机器没回报」并排补跑，比让 systemd 等 20 分钟强。
   process.exit(0)
 }

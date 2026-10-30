@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "gateway-server"
+description = "登录页读取服务器地址、检测 Gateway 并在检测通过后保存切换。"
+commands.allow = ["gateway_server_info", "check_gateway_server", "use_gateway_server"]

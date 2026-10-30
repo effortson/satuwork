@@ -7,13 +7,15 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { Account, CatalogItem, Db, KnowledgeBase, KnowledgeFile } from '../db.ts'
-import { KB_FAIL_STREAK_DEFAULT, parseKnowledgeSettings } from '../db.ts'
+import { KB_FAIL_STREAK_DEFAULT, KB_FILE_NAME_MAX, parseKnowledgeSettings } from '../db.ts'
 import { HttpError } from '../http.ts'
 import { chunkPages } from './knowledge-chunk.ts'
 import { ExtractError, extOf, extractText } from './knowledge-extract.ts'
 import { readStored, removeStored } from './knowledge-store.ts'
-import { KB_UPSERT_BATCH, type KbHit, deleteFileVectors, deleteKbNamespace, prepareVectorQuery, queryNamespace, upsertChunks, vectorBackend, vectorConfigured } from './knowledge-vector.ts'
+import { KB_UPSERT_BATCH, type KbHit, type PreparedQuery, deleteFileVectors, deleteKbNamespace, prepareVectorQuery, queryNamespace, upsertChunks, vectorReadiness } from './knowledge-vector.ts'
+import type { EmbeddingConfig } from './knowledge-embedding.ts'
 import type { Meter } from './meter.ts'
+import { oneLine } from './util.ts'
 
 /** 入库租约。过了还没推进就当上一拍死了，下一拍重领。 */
 export const KB_LEASE_MS = 90_000
@@ -27,10 +29,6 @@ export const KB_SEARCH_COUNT_DEFAULT = 6
 export const KB_SEARCH_COUNT_MAX = 12
 /** 回给模型的整段封顶。超了从分数最低的那条开始砍——不是截尾，截尾会把一段话砍成半句。 */
 export const KB_RESULT_MAX = 12_000
-
-export function knowledgeEnabled(): boolean {
-  return vectorConfigured()
-}
 
 /**
  * 这颗 Bot 自己关掉的库（docs/knowledge-base.md §8.4）。存在 Bot 定义的 `knowledgeOff` 里：
@@ -48,7 +46,7 @@ export async function knowledgeUsableByBot(db: Db, companyId: string, bot: Catal
 }
 
 /** 展示用的文件名：去路径分隔符和控制字符，截到 200 字符。 */
-export function cleanFileName(raw: string, max = 200): string {
+export function cleanFileName(raw: string, max = KB_FILE_NAME_MAX): string {
   const name = String(raw ?? '')
     .replace(/[\\/]+/g, '_')
     .replace(/[\u0000-\u001F\u007F]/g, '')
@@ -135,23 +133,24 @@ export async function searchKnowledge(
     )
     throw new HttpError(402, gate.reason)
   }
-  const settings = parseKnowledgeSettings((await db.platformSettings()).knowledge)
+  const platform = await db.platformSettings()
+  const settings = parseKnowledgeSettings(platform.knowledge)
   const byId = new Map(kbs.map((k) => [k.id, k]))
   const results: Array<{ kbId: string; hit: KbHit }> = []
-  let prepared: number[] | undefined
+  let prepared: PreparedQuery
   try {
-    prepared = await prepareVectorQuery(db, query, kbs[0].companyId)
+    prepared = await prepareVectorQuery(db, query, kbs[0].companyId, platform)
   } catch (error) {
     await meter.charge({ kind: 'kb', account, botId: input.botId ?? null, status: 'failed', kbOp: 'query', units: 0, refId: randomUUID() })
     throw error
   }
   let failed = 0
-  // 一个库一次查询，并发封顶；pgvector 复用前面生成的同一个查询向量。
+  // 一个库一次查询，并发封顶；几个库复用前面生成的同一个查询向量。
   for (let i = 0; i < kbs.length; i += KB_QUERY_CONCURRENCY) {
     await Promise.all(
       kbs.slice(i, i + KB_QUERY_CONCURRENCY).map(async (kb) => {
         try {
-          for (const hit of await queryNamespace(db, kb, query, count, prepared)) results.push({ kbId: kb.id, hit })
+          for (const hit of await queryNamespace(db, kb, prepared, count)) results.push({ kbId: kb.id, hit })
         } catch (e) {
           failed++
           console.warn(`satuwork-gateway: 知识库 ${kb.id} 查询失败：${(e as Error).message}`)
@@ -209,8 +208,10 @@ export async function tickKnowledge(db: Db, meter: Meter, now = Date.now()): Pro
     console.warn(`satuwork-gateway: 删知识库没做成：${e.message}`)
     return 0
   })
-  if (!vectorConfigured()) return did
-  did += await ingestOne(db, meter, now).catch((e: Error) => {
+  // 没就绪（没配、表没建、换了模型等重建）就不领文件：领了也只会撞 503，几拍后被标失败。
+  const vector = await vectorReadiness(db).catch(() => undefined)
+  if (!vector || vector.reason) return did
+  did += await ingestOne(db, meter, now, vector.cfg).catch((e: Error) => {
     console.warn(`satuwork-gateway: 知识库入库没做成：${e.message}`)
     return 0
   })
@@ -242,7 +243,7 @@ async function sweepDeletingKnowledge(db: Db): Promise<number> {
  * `deleteNamespace` 对不存在的命名空间回成功，所以重来是幂等的。
  */
 export async function cleanupKnowledgeBase(db: Db, kb: KnowledgeBase): Promise<void> {
-  if (vectorConfigured() || vectorBackend() === 'pgvector') await deleteKbNamespace(db, kb)
+  await deleteKbNamespace(db, kb)
   for (const f of await db.knowledgeFiles(kb.id)) {
     await removeStored(f)
   }
@@ -255,7 +256,7 @@ export async function cleanupKnowledgeBase(db: Db, kb: KnowledgeBase): Promise<v
  */
 export async function deleteKnowledgeFileNow(db: Db, file: KnowledgeFile): Promise<void> {
   if (file.chunkDone > 0 || file.status === 'ready') {
-    if (vectorConfigured() || vectorBackend() === 'pgvector') await deleteFileVectors(db, { id: file.kbId, companyId: file.companyId }, file.id)
+    await deleteFileVectors(db, { id: file.kbId, companyId: file.companyId }, file.id)
   }
   await removeStored(file)
   await db.deleteKnowledgeFile(file.id)
@@ -264,14 +265,14 @@ export async function deleteKnowledgeFileNow(db: Db, file: KnowledgeFile): Promi
 
 /** 失败重跑：改回排队、清掉已有分片和向量，从头来。 */
 export async function retryKnowledgeFile(db: Db, file: KnowledgeFile): Promise<KnowledgeFile> {
-  if ((vectorConfigured() || vectorBackend() === 'pgvector') && file.chunkDone > 0) await deleteFileVectors(db, { id: file.kbId, companyId: file.companyId }, file.id)
+  if (file.chunkDone > 0) await deleteFileVectors(db, { id: file.kbId, companyId: file.companyId }, file.id)
   await db.deleteKnowledgeChunks(file.id)
   const next = await db.updateKnowledgeFile(file.id, { status: 'queued', error: '', chunkCount: 0, chunkDone: 0, attempts: 0, leaseUntil: null })
   await db.refreshKnowledgeCounters(file.kbId)
   return next ?? file
 }
 
-async function ingestOne(db: Db, meter: Meter, now: number): Promise<number> {
+async function ingestOne(db: Db, meter: Meter, now: number, cfg: EmbeddingConfig): Promise<number> {
   const file = await db.claimKnowledgeFile(now, KB_LEASE_MS)
   if (!file) return 0
   const deadline = now + KB_TICK_BUDGET_MS
@@ -299,7 +300,7 @@ async function ingestOne(db: Db, meter: Meter, now: number): Promise<number> {
       const batch = await db.knowledgeChunks(cur.id, done, KB_UPSERT_BATCH)
       if (!batch.length) break
       await upsertChunks(
-        db, kb,
+        db, cfg, kb,
         batch.map((c) => ({
           id: c.id,
           data: c.text,
@@ -327,7 +328,7 @@ async function ingestOne(db: Db, meter: Meter, now: number): Promise<number> {
         })
       }
     } else if (done === startDone) {
-      // 这一拍一片都没灌进去（多半是 Upstash 报错）：记一笔，连着几拍没推进才标失败。
+      // 这一拍一片都没灌进去（多半是向量服务报错）：记一笔，连着几拍没推进才标失败。
       const attempts = cur.attempts + 1
       const streak = KB_FAIL_STREAK_DEFAULT
       if (attempts >= streak) {
@@ -346,7 +347,7 @@ async function ingestOne(db: Db, meter: Meter, now: number): Promise<number> {
       await db.refreshKnowledgeCounters(file.kbId)
       return 1
     }
-    // 别的错（网络、Upstash）：不标失败，租约到期下一拍重来；连着几拍没推进再标（上面那支）。
+    // 别的错（网络、向量服务）：不标失败，租约到期下一拍重来；连着几拍没推进再标（上面那支）。
     const attempts = file.attempts + 1
     if (attempts >= KB_FAIL_STREAK_DEFAULT) {
       await db.updateKnowledgeFile(file.id, { status: 'failed', error: `入库失败：${oneLine(e)}`, attempts, leaseUntil: null })
@@ -357,10 +358,4 @@ async function ingestOne(db: Db, meter: Meter, now: number): Promise<number> {
     console.warn(`satuwork-gateway: 知识库文件 ${file.id} 入库出错（第 ${attempts} 次）：${oneLine(e)}`)
     return 1
   }
-}
-
-function oneLine(e: unknown): string {
-  return String((e as Error)?.message ?? e)
-    .replace(/\s+/g, ' ')
-    .slice(0, 200)
 }

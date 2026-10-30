@@ -311,6 +311,11 @@ export async function runGuards({ root, test, assert, log }) {
     assert(e.理由说的是真工具, `卡片上那句话还在说壳的名字：${e.理由说的是真工具}`)
   })
 
+  await test('退回修改：意见交给模型让它重写，这一版不发、这一轮不挡', () => {
+    const bad = all(r.feedback || { 没跑到: false })
+    assert(!bad.length, `这几条不对：${bad.join('、')}`)
+  })
+
   await test('浏览器：没开这项能力就调不通，白名单外的站点拦下', () => {
     // 「本机自建的说得清为什么」那条：那种 Bot 压根没有公司模版，回一句「模版里没有开」
     // 等于让人去一个不存在的地方找开关——而它只在本地开发时出现，正是最需要话说清楚的场合。

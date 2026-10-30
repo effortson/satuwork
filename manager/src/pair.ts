@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { hostname } from 'node:os'
 import { gatewayUrlProblem, managerVersion, PROTOCOL, readState, writeState, type BootConfig, type ManagerState } from './config.ts'
+import { fetchJwks } from './ticket.ts'
 
 /**
  * 配对：拿一次性配对码换这台机器的长期 `smt_`。
@@ -111,8 +112,8 @@ async function pairWithCode(boot: BootConfig): Promise<PairResult> {
   }
   // 桌面 ticket 要用它验签。现在抓一次，省得第一个员工点开桌面时才发现拿不到。
   try {
-    const jr = await fetch(`${boot.gatewayUrl}/.well-known/jwks.json`, { signal: AbortSignal.timeout(8000) })
-    if (jr.ok) state.jwks = (await jr.json()) as { keys: Record<string, unknown>[] }
+    const jwks = await fetchJwks(boot.gatewayUrl)
+    if (jwks) state.jwks = jwks
   } catch {}
   // **落盘放在最后一步。** 前面任何一处失败，manager.json 都还是原来那份——一张打错
   // 的码不该把一台好好的机器变成孤儿。

@@ -7,7 +7,7 @@
  * 落单的）在按公司列的那条路上**永远列不出来**，而它们恰恰最需要被人看见。
  *
  * 灯、时区、版本这些的口径跟公司侧完全一致（`machineHead` / `LINK_TEXT` / `sinceMs`
- * 都是直接借 pages-audit.js 那份），不重造一套——同一台机器在两个页面上说两种话，
+ * 都是直接借 pages-companies.js 那份），不重造一套——同一台机器在两个页面上说两种话，
  * 比少一个页面糟得多。
  */
 
@@ -49,7 +49,7 @@ function machineLinkCell(m) {
  * 没报过的给「—」，**不给 0%**：一台失联机器的 0% 和一台空闲机器的 0% 看着一样，
  * 而结论完全相反。
  *
- * **调用方在 pages-audit.js**（公司详情页机器卡片里的 machineLoadRow）。机器列表页
+ * **调用方在 pages-companies.js**（公司详情页机器卡片里的 machineLoadRow）。机器列表页
  * 曾经也用它，那一列在 e116054 里被砍掉了，函数跟着删——但那次漏看了这个调用方，于是
  * 只要那台机器报过负载，公司详情页就整页抛 ReferenceError、一个字都画不出来。删一个
  * 渲染函数之前先全仓搜一遍名字：这一层没有类型检查兜着。
@@ -130,10 +130,7 @@ function machinesPage() {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('机器管理')}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${t('连到这台 Gateway 上的所有运行机器，包括还没派给公司的那些。点进去看详情、改配置、下指令。')}</p>
-        </div>
+        ${pageHead(t('机器管理'), t('连到这台 Gateway 上的所有运行机器，包括还没派给公司的那些。点进去看详情、改配置、下指令。'))}
         ${flashes()}
         <div class="satu-panel" style="flex-direction: row; flex-wrap: wrap; gap: var(--space-6); align-items: baseline;">
           ${machineStat(t('在线'), `${totals.online} / ${totals.machines}`, t('台'))}
@@ -146,7 +143,7 @@ function machinesPage() {
           <div class="satu-memberhead" data-tt-title="1" style="grid-template-columns: ${cols};">
             <span>${t('状态')}</span><span>${t('机器')}</span><span>${t('归属公司')}</span><span>${t('账号位')}</span><span>${t('已部署 Bot')}</span><span>${t('版本')}</span><span>${t('最近心跳')}</span>
           </div>
-          ${body || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${all.length ? t('这一档下没有机器') : t('还没有机器配对进来。到某家公司的详情页生成配对码，在那台 Debian 上跑一条命令即可。')}</div>`}
+          ${body || emptyBox(all.length ? t('这一档下没有机器') : t('还没有机器配对进来。到某家公司的详情页生成配对码，在那台 Debian 上跑一条命令即可。'))}
           ${listPager('machines', view, '台')}
         </div>
         <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('机器是在公司名下配对进来的：新增一台请到公司详情页生成配对码。这里管的是已经进来的那些。')}</p>
@@ -277,6 +274,7 @@ function machineInfoPanel(card) {
       <button type="submit" class="btn" ${state.busy ? 'disabled' : ''}>${t('保存')}</button>
     </form>
     <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('填上之后，桌面的画面由浏览器直接连这台机器取，不再经过 Gateway——那是整条链上最贵的一股流量。要求：公网可达、必须 https（http 会被浏览器当混合内容静默拦掉；只有 Gateway 自己跑在 http 上时才收 http 地址），最好和 Gateway 同一个主域。留空 = 照旧从 Gateway 反代；桌面打不开时先清掉这一格让它退回去。')}${m.directPending ? `<br><b>${t('地址填了，但这台机器的管家版本还不够新，桌面仍在走 Gateway 反代——等它自升级上来会自动切过去。')}</b>` : ''}</p>
+    ${machineHttpsBlock(m)}
     <form data-form="machine-company" data-machine="${esc(m.id)}" style="display: flex; gap: var(--space-2); align-items: flex-end; flex-wrap: wrap;">
       <div class="field" style="margin: 0; flex: 1; min-width: 220px;">
         <label for="md-company">${t('归属公司')}</label>
@@ -290,6 +288,56 @@ function machineInfoPanel(card) {
         : t('留空 = 收回，变成一台待分配的机器。新东家一台都没有时，它会成为那家的默认机器。')
     }</p>
   </div>`
+}
+
+/**
+ * 让管家自己给域名配 https（gateway/src/deploy/https.ts）。
+ *
+ * 按下去只是下了指令，往后每一步都由心跳推进（30 秒一轮），所以这里**只说现在走到哪一步**，
+ * 不画进度条：装 Caddy 加申请证书要几分钟，看进度靠右上角的「刷新」。
+ */
+function machineHttpsBlock(m) {
+  const h = m.https
+  const switching = h && (h.stage === 'lockdown' || h.stage === 'rollback')
+  const disabled = state.busy || Boolean(m.httpsBlocker) || switching
+  let status = ''
+  if (m.httpsBlocker) status = esc(t(m.httpsBlocker))
+  else if (h) {
+    const url = `https://${h.domain}`
+    if (h.stage === 'provision') {
+      status =
+        h.machinePhase === 'working'
+          ? t('管家正在装 Caddy、申请证书，一般几分钟。', 'The manager is installing Caddy and getting a certificate. This usually takes a few minutes.')
+          : h.machinePhase === 'ready'
+            ? t('机器上已经配好，正在从外面经域名验证。', 'Configured on the machine; verifying from outside through the domain.')
+            : t('已下发，等管家下一轮心跳接手。', 'Sent. Waiting for the manager to pick it up on its next heartbeat.')
+    } else if (h.stage === 'lockdown') {
+      status = esc(t(`两个地址已换成 ${url}，正在让管家只听本机。`, `Both addresses now point to ${url}; switching the manager to listen on localhost only.`))
+    } else if (h.stage === 'rollback') {
+      status = t('只听本机之后连不上，正在撤回到原来的地址。', 'Unreachable after switching to localhost only; rolling back to the previous addresses.')
+    } else if (h.stage === 'done') {
+      status = `<b>${esc(t(`已完成：两个地址都是 ${url}，管家只听本机。安全组里的 8443 可以关掉了。`, `Done: both addresses are ${url} and the manager listens on localhost only. You can close port 8443 in the security group.`))}</b>`
+      if (!h.machineLoopback) status += ` ${esc(t('（管家现在又对外听了，下一轮心跳会改回去）', '(the manager is listening publicly again; the next heartbeat will fix it)'))}`
+    } else if (h.stage === 'failed') {
+      status = `<b>${esc(t('没配上：', 'Failed: '))}</b>${esc(h.error || '')}`
+    }
+    if (h.error && h.stage !== 'failed') status += `<br>${esc(h.error)}`
+  }
+  const clear = h && h.clearable
+    ?` <button type="button" class="satu-linkbtn" data-act="machine-https-clear" data-scope="platform" data-machine="${esc(m.id)}">${t('撤掉', 'Clear')}</button>`
+    : ''
+  return `<form data-form="machine-https" data-scope="platform" data-machine="${esc(m.id)}" style="display: flex; gap: var(--space-2); align-items: flex-end; flex-wrap: wrap;">
+      <div class="field" style="margin: 0; flex: 1; min-width: 220px;">
+        <label for="md-https">${t('用域名配 https（由管家自动完成）', 'Set up https for a domain (done by the manager)')}</label>
+        <input class="input" id="md-https" name="domain" value="${esc((h && h.domain) || '')}" placeholder="m001.example.com" autocomplete="off" spellcheck="false">
+      </div>
+      <button type="submit" class="btn" ${disabled ? 'disabled' : ''}>${h && h.stage !== 'failed' && h.stage !== 'done' ? t('重新开始', 'Restart') : t('启用 https', 'Enable https')}</button>
+    </form>
+    <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t(
+      '填一个已经解析到这台机器公网 IP 的域名。管家会装 Caddy、申请证书，从外面验证通过后把上面两个地址都换成这个域名，最后只听本机；只听本机后连不上会自动撤回。要求：安全组放行 80 和 443，国内机房的域名要先备案。',
+      'Enter a domain that already resolves to this machine. The manager installs Caddy and gets a certificate; once verified from outside, both addresses above switch to the domain and the manager listens on localhost only, rolling back automatically if that breaks access. Ports 80 and 443 must be open.',
+    )}${status ? `<br>${status}` : ''}${clear}</p>
+    `
 }
 
 // ── 负载与日志占用 ────────────────────────────────────────────────────
@@ -837,7 +885,7 @@ function machineVersionPanel(card) {
       ${managerPinForm(card)}
     </span></div>
     <div class="satu-kv"><span>${t('Bot 运行时')}</span><span style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">${botText}${card.botOutdated ? ` · ${t('目标版本')} ${esc(card.botDesired || card.botLatest || state.botLatest || '')}` : ''}${botBtn}</span></div>
-    ${/* 装的是哪个包、跑的是哪一版公司模版，两件事各自会落后。渲染函数在 pages-audit.js，
+    ${/* 装的是哪个包、跑的是哪一版公司模版，两件事各自会落后。渲染函数在 pages-companies.js，
          那一页的机器卡片画的是同一行——同一台机器不该在两个页面上说两种话。 */ ''}
     ${botTemplateRow(card)}
     ${seatGatewayRow(card)}
@@ -952,7 +1000,7 @@ function machineSeatsPanel(card) {
       <div class="satu-memberhead" style="grid-template-columns: ${cols};">
         <span>${t('成员 / 实例 ID')}</span><span>Bot</span><span>${t('状态')}</span><span>${t('槽位')}</span><span>${t('版本 / 错误')}</span><span>${t('模版')}</span><span></span>
       </div>
-      ${rows || `<div style="padding: var(--space-6); text-align: center; font-size: 13px; color: var(--muted-foreground);">${t('这台机器上还没有部署 Bot')}</div>`}
+      ${rows || emptyBox(t('这台机器上还没有部署 Bot'))}
     </div>
   </div>`
 }

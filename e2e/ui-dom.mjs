@@ -40,6 +40,9 @@ class Element {
   setAttribute(k, v) {
     this._attrs[k] = String(v)
   }
+  removeAttribute(k) {
+    delete this._attrs[k]
+  }
   /**
    * 量尺寸。**全零**：测里造的元素没有布局，也不该假装有。
    *
@@ -89,8 +92,22 @@ function countingStub() {
     scrollHeight: 0,
     value: '',
     classList: { add() {}, remove() {}, toggle() {} },
-    setAttribute() {},
-    getAttribute: () => null,
+    // 属性要真的记住：syncThread 靠 data-owner 判「是不是换了会话」，桩永远答 null 的话
+    // 每一帧都会被当成换会话、整片清空重画。
+    _attrs: {},
+    // 每个属性被读了几次。syncThread 每画一帧正好读一次 data-owner，合并重绘那条测拿它数帧——
+    // 属性记住之后，空会话那一支不再每帧写 innerHTML，「写了几次」数不出帧数了。
+    reads: {},
+    setAttribute(k, v) {
+      this._attrs[k] = String(v)
+    },
+    getAttribute(k) {
+      this.reads[k] = (this.reads[k] || 0) + 1
+      return k in this._attrs ? this._attrs[k] : null
+    },
+    removeAttribute(k) {
+      delete this._attrs[k]
+    },
     focus() {},
     scrollIntoView() {},
     style: {},
@@ -106,6 +123,7 @@ function countingStub() {
 function makeDom(stubIds = [], copied = []) {
   // app.js 给 'input' 挂了不止一个处理器，Map 存单个会把先挂的那个吞掉。
   const listeners = new Map()
+  const docListeners = new Map()
   // 内容区那个滚动容器。app.js 重绘时会读它、再把位置贴回去。
   const page = { scrollTop: 0 }
   const app = {
@@ -126,10 +144,10 @@ function makeDom(stubIds = [], copied = []) {
       listeners.get(type).push(fn)
     },
   }
-  const stub = { innerHTML: '', value: '', textContent: '', classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, getAttribute: () => null, focus() {}, style: {} }
+  const stub = { innerHTML: '', value: '', textContent: '', classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, getAttribute: () => null, removeAttribute() {}, focus() {}, style: {} }
   const stubs = new Map(stubIds.map((id) => [id, countingStub()]))
   // execCommand('copy') 复制的是「当前选中的那个东西」，所以垫片得真的记住 select()
-  // 选中了谁。没有这一点，render.js 里那条兜底复制（非安全上下文下唯一能用的一条，
+  // 选中了谁。没有这一点，dom-util.js 里那条兜底复制（非安全上下文下唯一能用的一条，
   // 而内网 http 部署就是那个常态）在测里根本跑不起来，只能假装它还在。
   let selected = null
   const body = {
@@ -164,9 +182,13 @@ function makeDom(stubIds = [], copied = []) {
       copied.push(String(selected.value ?? ''))
       return true
     },
-    addEventListener() {},
+    // document 上挂的监听（拖放、长按那几个）记下来，测里用 fireDoc 喂假事件。
+    addEventListener: (type, fn) => {
+      if (!docListeners.has(type)) docListeners.set(type, [])
+      docListeners.get(type).push(fn)
+    },
   }
-  return { document, app, page, listeners, stubs, body }
+  return { document, app, page, listeners, docListeners, stubs, body }
 }
 
 /**
@@ -182,11 +204,12 @@ export function uiSource(uiDir) {
   if (!parts.length) throw new Error(`在 ${uiDir}/index.html 里找不到 data-app-part 脚本`)
   /**
    * core.js 排在最前面：它不是分片（不带 data-app-part，是 core/src 打出来的产物），但
-   * state.js / i18n.js 里的转接（`const esc = SatuCore.esc` 这类）一跑就要它在。线上它也是
+   * prefs.js / state.js 里的转接（`const esc = SatuCore.esc` 这类）一跑就要它在。线上它也是
    * index.html 里第一个普通脚本。它是 `var SatuCore = (() => …)()`，塞进同一个函数体里照样
-   * 是个局部变量，后面的分片都看得见。
+   * 是个局部变量，后面的分片都看得见。dom-util.js 同理：也不是分片（渠道预览页也装它），
+   * 分片里的复制、存文件直接调它。markdown.js 不装——垫片里的对话一直是不走 Markdown 的那条路。
    */
-  return ['core.js', ...parts].map((f) => readFileSync(join(uiDir, f), 'utf8')).join('\n')
+  return ['core.js', 'dom-util.js', ...parts].map((f) => readFileSync(join(uiDir, f), 'utf8')).join('\n')
 }
 
 /**
@@ -196,12 +219,12 @@ export function uiSource(uiDir) {
  * 见 uiSource。末尾那句 boot() 去掉，由调用方决定什么时候起，否则一 import 就开始打
  * 网络，断言没法安排在它前面。
  */
-export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, persistentStorage, localBotBridge, desktopUpdateBridge, path = '/', secureContext = true, userAgent = 'satuwork-ui-smoke', maxTouchPoints = 0 }) {
+export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = false, mobile = false, persistentStorage, localBotBridge, desktopUpdateBridge, serverBridge, gateway, path = '/', secureContext = true, userAgent = 'satuwork-ui-smoke', maxTouchPoints = 0 }) {
   const raw = uiSource(dirname(appPath))
   const src = raw.replace(/\nboot\(\)\s*$/, '\n')
   // 复制过的东西都落这儿，两条路（navigator.clipboard 和 execCommand）都记。
   const copied = []
-  const { document, app, page, listeners, stubs, body } = makeDom(stubIds, copied)
+  const { document, app, page, listeners, docListeners, stubs, body } = makeDom(stubIds, copied)
   const sessionStorage = makeStorage()
   // desktop 重开窗口时 sessionStorage 是一份新的，localStorage 仍是同一份。测试把上一
   // 次的 persistentStorage 递回来，才能真的覆盖「关掉再打开」而不只是同页 reload。
@@ -210,7 +233,7 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
 
   // 进来时地址栏上是什么。`/` 和 `/login` 在没登录时画的是两屏（见 render.js 的
   // anonView），所以这一条得能由测试指定。
-  // `#` 片段要拆出来：`/#download` 是首页上那一段，pathname 是 `/`、hash 才是 `#download`。
+  // `#` 片段要拆出来：旧的 `/#download` 需要兼容，pathname 是 `/`、hash 才是 `#download`。
   const location = { pathname: '/', search: '', hash: '', href: '' }
   const go = (url) => {
     const u = new URL(String(url), base + location.pathname)
@@ -249,7 +272,7 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
     'HTMLSelectElement',
     'HTMLTextAreaElement',
     'HTMLFormElement',
-    `${src}\n;return { boot, render, state, api, loadPage, enterPath, auditTranscript, messageText, setToken, clearToken, token, onSetup, testLlm, saveSettings, savePriceMultiplier, saveCustomProvider, saveCustomModel, loadCustomProviders, runConfirm, statsWindow, chargesWindow, usageRangeMs, dailyBarChart, monthPicker, monthLabel, usagePage, loadStats, loadCharges, loadConversationAudits, catalogBase, pathAllowed, machineHead, readOnlyItem, startChatStream, stopChatStream, paintChat, ensureChatSession, sendChat, fold, threadRows, paintRowTime, refreshRoutine, refreshRoutineList, routineShot, loadOlderChat, hydrateChat, pushBotEvent, botStreamOf, resetBotStream, trimBotStreams, BOT_BUCKET_MAX, startRosterStream, stopRosterStream, noteRosterFrame, openBotStreams, BOT_STREAM_MAX, chatPages, CHAT_TAIL_TURNS, STREAM_TAIL_TURNS, CHAT_RETRY_MAX, sweepSilentStreams, STREAM_SILENT_MS, streamPulse, loadWebTools, saveWebTools, saveWebPrice, testWebBackend, mentionQueryAt, paintChatMentions, paintChatQueue, paintMentionPick, takeMention, chatQueues, idleTimers, flushHeldSend, clearHeldSend, seatRestarted, retryChatSession, SESSION_RETRY_MAX, approvalState, approvalChipHtml, loadLocalDirs, localDirsHtml, decideApproval, toolFoldHtml, TOOLFOLD_ROWS, approvalPop, approvalDead, approvalHtml, toolPopBody, handoffHtml, handoffDoneHtml, handoffsPage, handoffsAside, paintAsideHandoffs, handoffBell, asideToggle, pageAside, applyHandoffSnapshot, settleDot, handoffDead, handoffRow, stepShots, stepMoreHtml, MAX_STEP_SHOTS, outputFiles, outputImages, MAX_OUT_IMAGES, knownFiles, fileCands, fileHits, readFiles, workspacePanel, maybeLivePreview, openPreview, previewBody, previewPanel, shownPreview, asidePref, asideColumns, syncPreview, leavePreview, setPreviewMode, onOfficeViewMessage, liveLamp, composerTip, stopTipText, abortChat, seatLink, seatLinkOf, linkDown, machineDownBanner, myBotPage, botVersionLine, storedMemories, seatStage, chatDeployPrompt, installProgressBody, ensureDeployWatch, pollDeployProgress, uploadTargetOf, uploadChatFile, overlayLocalRuntime, loadRuntimeBots, localRoute, startHandoffPoll, startSeatWatch, endSignedIn, loginView, syncChatModel, paintChatModel, chatModelSnap, CHAT_MODEL_TTL_MS, desktopUpdateSlot, desktopUpdateInner, checkDesktopUpdate, installDesktopUpdate, chatFind, chatFindHtml, findToggleHtml, mergeFindHits, markTerms, onChatFindInput, runChatFind, findStep, gotoFindHit, openChatFind, closeChatFind, jumpToMessage, chatHeadInline, chatPage, liveHandles: () => ({ rosterAbort, handoffTimer, seatWatchTimer }) }`,
+    `${src}\n;return { loadKnowledgeDetail, paintKnowledgeFiles, knowledgeUpload, botAvatar, setBotAvatarRunning, botIsWorking, paintRoster, paintChatChrome, boot, render, state, api, loadPage, enterPath, auditTranscript, messageText, setToken, clearToken, token, onSetup, testLlm, saveSettings, savePriceMultiplier, saveCustomProvider, saveCustomModel, loadCustomProviders, runConfirm, statsWindow, chargesWindow, usageRangeMs, dailyBarChart, monthPicker, monthLabel, usagePage, loadStats, loadCharges, loadConversationAudits, catalogBase, pathAllowed, machineHead, readOnlyItem, startChatStream, stopChatStream, paintChat, ensureChatSession, sendChat, fold, threadRows, paintRowTime, refreshRoutine, refreshRoutineList, routineShot, loadOlderChat, hydrateChat, pushBotEvent, botStreamOf, resetBotStream, trimBotStreams, BOT_BUCKET_MAX, startRosterStream, stopRosterStream, noteRosterFrame, openBotStreams, BOT_STREAM_MAX, chatPages, CHAT_TAIL_TURNS, STREAM_TAIL_TURNS, CHAT_RETRY_MAX, sweepSilentStreams, STREAM_SILENT_MS, streamPulse, loadWebTools, saveWebTools, saveWebPrice, testWebBackend, mentionQueryAt, paintChatMentions, paintChatQueue, paintMentionPick, takeMention, chatQueues, idleTimers, flushHeldSend, clearHeldSend, seatRestarted, retryChatSession, SESSION_RETRY_MAX, approvalState, approvalChipHtml, loadLocalDirs, localDirsHtml, decideApproval, toolFoldHtml, TOOLFOLD_ROWS, approvalPop, approvalDead, approvalHtml, toolPopBody, handoffHtml, handoffDoneHtml, handoffsPage, handoffsAside, paintAsideHandoffs, handoffBell, asideToggle, pageAside, applyHandoffSnapshot, settleDot, handoffDead, handoffRow, stepShots, stepMoreHtml, MAX_STEP_SHOTS, outputFiles, outputImages, MAX_OUT_IMAGES, knownFiles, fileCands, fileHits, readFiles, workspacePanel, maybeLivePreview, openPreview, previewBody, previewPanel, shownPreview, asidePref, asideColumns, syncPreview, leavePreview, setPreviewMode, onOfficeViewMessage, liveLamp, composerTip, stopTipText, abortChat, seatLink, seatLinkOf, linkDown, machineDownBanner, myBotPage, botVersionLine, storedMemories, seatStage, chatDeployPrompt, installProgressBody, ensureDeployWatch, pollDeployProgress, uploadTargetOf, uploadChatFile, overlayLocalRuntime, loadRuntimeBots, localRoute, startHandoffPoll, startSeatWatch, endSignedIn, loginView, syncChatModel, paintChatModel, chatModelSnap, CHAT_MODEL_TTL_MS, desktopUpdateSlot, desktopUpdateInner, checkDesktopUpdate, installDesktopUpdate, gatewayServerButton, gatewayServerModal, openGatewayServer, checkGatewayServer, chatFind, chatFindHtml, findToggleHtml, mergeFindHits, markTerms, onChatFindInput, runChatFind, findStep, gotoFindHit, openChatFind, closeChatFind, jumpToMessage, chatHeadInline, chatPage, chatRosterNav, rosterGroups, moveBotToFolder, runChatCommand, loadTaskTrace, taskTraceSrc, liveHandles: () => ({ rosterAbort, handoffTimer, seatWatchTimer }) }`,
   )
 
   /**
@@ -262,8 +285,13 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
   const windowOpens = []
   const windowStub = {
     __SATUWORK_DESKTOP__: desktop,
+    __SATUWORK_MOBILE__: mobile,
+    // 新壳子都注入这台电脑的设备身份（desktop/src-tauri/src/device.rs）；本地 Bot 靠它绑到这台上。
+    __SATUWORK_DESKTOP_DEVICE__: desktop ? { id: 'ui-smoke-device-0001', name: 'Test Mac', platform: 'darwin' } : undefined,
     __SATUWORK_LOCAL_BOT__: localBotBridge,
     __SATUWORK_DESKTOP_UPDATE__: desktopUpdateBridge,
+    __SATUWORK_SERVER__: serverBridge,
+    __SATUWORK_GATEWAY__: gateway,
     addEventListener() {},
     satuUnzip: null,
     location,
@@ -313,7 +341,12 @@ export function loadApp({ appPath, base, token, fetchImpl, stubIds, desktop = fa
     }
   }
 
-  return { ...api, app, page, listeners, stubs, fire, sessionStorage, localStorage, location, windowOpens, copied, body, document, html: () => app.innerHTML }
+  /** 喂 document 上的监听。event 原样交过去（带 dataTransfer、target 那些由测试给）。 */
+  const fireDoc = (type, event) => {
+    for (const fn of docListeners.get(type) || []) fn({ type, preventDefault() {}, stopPropagation() {}, ...event })
+  }
+
+  return { ...api, app, page, listeners, fireDoc, stubs, fire, sessionStorage, localStorage, location, windowOpens, copied, body, document, html: () => app.innerHTML }
 }
 
 /**

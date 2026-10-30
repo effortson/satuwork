@@ -457,7 +457,26 @@ export class SessionService extends Service {
     if (this.openTurns.has(state.id)) return
     const turn = Number((state.events[lastStart].data as { turn?: unknown }).turn) || 0
     this.ctx.logger?.warn?.(`sessions: ${state.id} 第 ${turn} 轮没有收口（上个进程没能写完），补一条 turn/end`)
-    // 直接 write，不走 append：这里是 load 里面，append 的队列正等着这次 load。
+    /**
+     * 这一轮里还挂着的确认一起作废，写在 turn/end 前面（它们本来就属于这一轮）。
+     *
+     * 等人拍板的那次调用只活在上个进程的内存里（policy/approvals.ts 的 waiting），进程没了
+     * 它就没了，可日志里那条 pending 永远等不到终态：卡片一直亮着「批准」，点下去席位回
+     * 409「这条确认已经结束了」；右栏「等你拍板」那一条也永远灭不掉。
+     */
+    const settled = new Set<string>()
+    for (let i = state.events.length - 1; i > lastStart; i--) {
+      const ev = state.events[i]
+      if (ev.type !== 'tool/approval') continue
+      const data = ev.data as SessionEventMap['tool/approval']
+      if (data.state !== 'pending') settled.add(data.callId)
+      else if (!settled.has(data.callId)) {
+        settled.add(data.callId)
+        // 直接 write，不走 append：这里是 load 里面，append 的队列正等着这次 load。
+        const { expiresAt: _, ...rest } = data
+        await this.write(state, 'tool/approval', { ...rest, state: 'aborted' })
+      }
+    }
     await this.write(state, 'turn/end', { turn, reason: 'error' })
   }
 }

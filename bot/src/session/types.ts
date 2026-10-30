@@ -53,7 +53,11 @@ export type ContentBlock =
    * `kind` 现在只用 `connector`，形状按三类定死（选单里还有 Bot 和 Routine）：三类各造
    * 一个块，历史会话里就会长出三种彼此不兼容的提及。
    */
-  | { type: 'mention'; kind: 'connector' | 'bot' | 'routine'; id: string; label: string }
+  /**
+   * `inline`：这一块就落在正文里它被打出来的位置上（「打开 @Gmail 邮件，让 @客户经理 处理」），
+   * 前后是 text 块。缺省（老日志、找不到位置的）是一排点名摆在最前、正文里没有它。
+   */
+  | { type: 'mention'; kind: 'connector' | 'bot' | 'routine'; id: string; label: string; inline?: boolean; logo?: string }
   /**
    * 用户指着说话的一个东西（v6 起，见 docs/chat-references.md）：一条消息，或一个工作区文件。
    *
@@ -97,6 +101,21 @@ export interface Message {
  * 运行时上下文快照都用自己的 `kind` 挂载各自的结构化载荷，
  * 「引用回溯」直接从载荷渲染。
  */
+/**
+ * 派出去的活跑着的时候报上来的进度（委派的 `agent/task`、派活的 `bot/assign` 共用）。
+ *
+ * 三样都是从那一轮自己的事件里**数出来的**，不是估的——没列清单就没有 `todo`。口径和界面那份
+ * （core/src/chat/task.ts）、机器上工人那份（manager/src/worker/tasks.ts）一致，见 agent/progress.ts。
+ */
+export interface TaskProgress {
+  /** 有工具调用的那几步。 */
+  steps: number
+  /** 当前（或最近一次）调的工具和它的关键参数一句话。 */
+  tool?: { name: string; detail?: string }
+  /** 它自己列的清单：做完几条 / 一共几条 / 正在做的那条原话。 */
+  todo?: { done: number; total: number; now?: string }
+}
+
 export type MessageSource =
   | { kind: 'user' }
   | { kind: 'plugin'; plugin: string; form?: string; [extra: string]: unknown }
@@ -367,6 +386,8 @@ export interface SessionEventMap {
     }
     /** 人在卡片上改过哪几格（标签）。终态事件里的 arguments / form 已经是改后的那份。 */
     edited?: string[]
+    /** 「退回修改」时人写下的意见。只出现在 denied 的终态事件上。 */
+    feedback?: string
     /**
      * 批准的范围：只这一次，还是**这一轮里**同一把工具都放行。
      *
@@ -520,6 +541,33 @@ export interface SessionEventMap {
    * SESSION_FORMAT_VERSION。退化方向：老席位读到它当没看见，那次委派在界面上只剩一次
    * 普通的工具调用——**少一张卡，不丢正文**（结论在 tool/result 里）。
    */
+  /**
+   * 主 Bot 派出去的一件活（docs/bot-tasks.md §5.3）。同一个 `id` 会来多条（waiting → running →
+   * 终态），界面按 id 认、取最后一条，并在这里把主 Bot 的气泡断开：派活前一个气泡，任务卡排在中间，
+   * 拿到结论之后说的话另起一个气泡。不进模型——结论在 assign_task 的 tool/result 里。
+   */
+  'bot/assign': {
+    id: string
+    callId: string
+    index: number
+    total: number
+    /** Gateway 那一条。没发出去的（跳过、校验失败）没有。 */
+    taskId?: string
+    bot: { id: string; name: string }
+    /** 主 Bot 写的原话（不含附上的前置结论）。 */
+    instruction: string
+    after?: string[]
+    state: 'waiting' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled' | 'detached'
+    /** done：对方那一轮最后一条回复；别的态：原因。 */
+    result?: string
+    /** 对方那一轮跑在它的哪条会话上（Gateway 的 runSessionId）。界面「看过程」去那里取。 */
+    runSessionId?: string
+    /** running 时领活的一方经续租报上来的进度。老管家不报，就没有。 */
+    progress?: TaskProgress
+    startedAt?: number
+    endedAt?: number
+    at: number
+  }
   'agent/task': {
     /** 这一条委派。同一个 id 会来多条，取最后一条。 */
     id: string
@@ -540,6 +588,16 @@ export interface SessionEventMap {
     state: 'running' | 'done' | 'capped' | 'timeout' | 'failed' | 'aborted' | 'lost'
     /** 结论。`done` 是全文；别的态放它停下来之前最后说的那段。 */
     summary?: string
+    /**
+     * 为什么没做成（模型调用报的错、没跑起来的原因）。**和 summary 分开记**：它停下之前多半说过
+     * 一句「我再核对一下」，那句会占住 summary，原因要是只拼在 summary 里，有话可说的那一次
+     * 原因就丢了——卡片上只剩「失败」两个字，主代理也不知道该重派还是换做法。
+     */
+    error?: string
+    /** 跑着的时候的进度，每一步之后更新一次（同一个 id 再来一条 running）。 */
+    progress?: TaskProgress
+    /** 开跑的时刻。`at` 每条都会变，读秒要从这个算。 */
+    startedAt?: number
     /** 它产出的文件，路径相对工作区根。界面照 tool/result 那套渲染。 */
     files?: { path: string; name: string }[]
     steps?: number

@@ -10,12 +10,11 @@
  */
 import { createServer } from 'node:http'
 import { rmSync } from 'node:fs'
-import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 /** 按 7 字节一刀切，几乎必然把 3 字节的汉字切断。 */
 function sseChunks(frames) {
@@ -142,19 +141,16 @@ export async function runLlmUsage({ gwRoot, test, req, start, waitHttp, assert, 
   const GW_PORT = await freePort()
   const gwBase = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# llm-usage')
 
   const upstream = await startFakeUpstream()
-  const gw = start('usage-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'usage-gw',
+    what: 'usage gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_usage'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_usage'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_MACHINE_TOKEN: 'e2e-machine-usage',
       GATEWAY_PLATFORM_TOKEN: 'e2e-platform-usage',
       GATEWAY_SEED_OWNER: '1',
@@ -166,7 +162,6 @@ export async function runLlmUsage({ gwRoot, test, req, start, waitHttp, assert, 
       OPENAI_API_KEY: 'fake-openai-key',
     },
   })
-  await waitHttp(`${gwBase}/health`, { child: gw, what: 'usage gateway' })
 
   try {
     const reg = await createCompany(req, gwBase, {

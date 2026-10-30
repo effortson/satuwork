@@ -428,6 +428,13 @@ export class PolicyService extends Service {
      */
     if (name === 'generate_image') return { ok: true }
     /**
+     * 主 Bot 派活：**放行**，理由同上（docs/bot-tasks.md §3）。它只往 Gateway 自己的控制面
+     * 记一条（`/runtime/tasks`），不碰任何业务系统；真去干活的是对方那颗 Bot，它每一次调用
+     * 照样过它自己这条外发闸。拦在这儿等于开着「禁止访问未授权的外部系统」的公司一次都派不了活，
+     * 而拒绝话术还会把人引去模版里加授权——那儿根本没有它（delegate_task 踩过同一个坑）。
+     */
+    if (name === 'assign_task') return { ok: true }
+    /**
      * 浏览器：**这里放行，真正的判在 checkBrowser 里**。
      *
      * 它有一半（能力开关、硬黑名单）不受这条开关控制，所以整块挪到钩子里更前面的位置
@@ -787,8 +794,8 @@ export function apply(ctx: Context) {
             const why = op === 'add' ? '它要记下一条跨对话的事实' : '它要改掉一条已经记下的事实'
             ctx.policy.markAsked(call.callId)
             const why2 = provenance(ctx, call, why)
-            const { verdict, viaBlock } = await askAndRecord(ctx, call, bot, 'memory', why2)
-            if (verdict !== 'approved') return blockedByUser(verdict, why, viaBlock)
+            const { verdict, viaBlock, feedback } = await askAndRecord(ctx, call, bot, 'memory', why2)
+            if (verdict !== 'approved') return blockedByUser(verdict, why, viaBlock, feedback)
           }
         }
 
@@ -804,8 +811,8 @@ export function apply(ctx: Context) {
              * 这周的活收个尾」，中间隔着一次他没看见的委派。
              */
             const why2 = provenance(ctx, call, why)
-            const { verdict, viaBlock } = await askAndRecord(ctx, call, bot, 'high-risk', why2)
-            if (verdict !== 'approved') return blockedByUser(verdict, why, viaBlock)
+            const { verdict, viaBlock, feedback } = await askAndRecord(ctx, call, bot, 'high-risk', why2)
+            if (verdict !== 'approved') return blockedByUser(verdict, why, viaBlock, feedback)
           }
         }
 
@@ -876,7 +883,7 @@ function outboundOf(call: ToolCall, risk: readonly string[]): boolean {
  * 表单在**席位这边**算：剥元工具的壳、认字段、定哪几格能改，全在 forms.ts。
  */
 async function askAndRecord(ctx: Context, call: ToolCall, bot: BotRecord | undefined, guard: GuardId, why: string) {
-  const { verdict, viaGrant, viaBlock, edited } = await ctx.policy.approvals.ask(call, why, formOf(call))
+  const { verdict, viaGrant, viaBlock, edited, feedback } = await ctx.policy.approvals.ask(call, why, formOf(call))
   await ctx.policy.record({
     sessionId: call.sessionId,
     botId: bot?.id ?? '',
@@ -893,10 +900,12 @@ async function askAndRecord(ctx: Context, call: ToolCall, bot: BotRecord | undef
         ? `${why}（这一轮此前已拒绝同一把工具，没有再问）`
         : edited?.length
           ? `${why}（批准时改过：${edited.join('、')}）`
-          : why,
+          : feedback
+            ? `${why}（退回修改：${feedback}）`
+            : why,
     at: Date.now(),
   })
-  return { verdict, viaBlock }
+  return { verdict, viaBlock, feedback }
 }
 
 /**
@@ -919,7 +928,7 @@ function provenance(ctx: Context, call: ToolCall, why: string): string {
  * 后者它该在对话里把这件事重新提一遍——合成一句「操作被拒绝」，第二种情况下用户回来
  * 看到的是一条毫无线索的失败。
  */
-function blockedByUser(verdict: Verdict, why: string, viaBlock?: boolean): ToolResult {
+function blockedByUser(verdict: Verdict, why: string, viaBlock?: boolean, feedback?: string): ToolResult {
   /**
    * 人这一轮说过「别再试了」。
    *
@@ -931,6 +940,22 @@ function blockedByUser(verdict: Verdict, why: string, viaBlock?: boolean): ToolR
       text:
         `用户这一轮已经拒绝过这把工具（${why}），并且说了这一轮别再试。` +
         `换一条不需要它的路子；实在绕不开就把话说清楚交给他，等他下一句话再说。`,
+      failed: true,
+    }
+  }
+  /**
+   * 「退回修改」：人看了这一版，没批，写下了要怎么改。
+   *
+   * 这和单纯的拒绝方向正好相反：那边要它别再用同一个办法，这边要它**用同一把工具再来
+   * 一次**，只是内容按意见改。不说清楚的话，模型会把它当成拒绝，转头去问「你顾虑什么」，
+   * 而人刚刚已经写明白了。也别让它先回头确认一遍——新的那次调用自己会再弹一张卡。
+   */
+  if (feedback) {
+    return {
+      text:
+        `用户没有批准这一版（${why}），退回来要你修改。修改意见：\n${feedback}\n\n` +
+        `按这条意见改好内容，再调用同一个工具重新提交——会再弹一张确认卡给他看，不用先在对话里问他。` +
+        `意见里没提到的部分保持原样。`,
       failed: true,
     }
   }

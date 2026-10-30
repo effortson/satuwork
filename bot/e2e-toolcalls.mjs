@@ -15,17 +15,23 @@
  * 由 e2e/toolcalls.mjs 另起一个进程跑。
  */
 import { createServer } from 'node:http'
-import { streamViaGateway } from './src/llm/gateway.ts'
+import { BAD_TOOL_ARGS, streamViaGateway } from './src/llm/gateway.ts'
 import { toAgentMessages } from './src/agent/index.ts'
 import { stubModel } from './src/llm/stream.ts'
 
 /** 一段 SSE。每个元素是一个 choices[0].delta。 */
 let frames = []
+/** 设了就原样吐这段（Anthropic 那种带 event: 行的流），不吐 frames。 */
+let rawSse = ''
 
 const server = createServer((req, res) => {
   req.resume()
   req.on('end', () => {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+    if (rawSse) {
+      res.end(rawSse)
+      return
+    }
     for (const f of frames) res.write(`data: ${JSON.stringify(f)}\n\n`)
     res.write('data: [DONE]\n\n')
     res.end()
@@ -39,8 +45,8 @@ process.env.GATEWAY_API_KEY = 'probe'
 const delta = (d, finish) => ({ choices: [{ delta: d, ...(finish ? { finish_reason: finish } : {}) }] })
 
 /** 跑一条流，把最终那条消息里的工具调用和正文带回来。 */
-async function drain() {
-  const stream = await streamViaGateway(stubModel('deepseek', 'probe'), { messages: [], systemPrompt: '' })
+async function drain(model = stubModel('deepseek', 'probe')) {
+  const stream = await streamViaGateway(model, { messages: [], systemPrompt: '' })
   let final = null
   const starts = []
   for await (const ev of stream) {
@@ -86,6 +92,39 @@ frames = [
   delta({}, 'tool_calls'),
 ]
 out.plain = await drain()
+
+/**
+ * ⑥ 参数收口时解析不了：以前悄悄变成 `{}`，`todo` 把它当「读清单」，模型一轮里连调几十次原地打转。
+ * 整段被重发一遍（`{…}{…}`）救得回来；真坏了（截断）就把原文带下去，工具层明说参数坏了。
+ */
+frames = [
+  delta({ role: 'assistant' }),
+  delta({ tool_calls: [{ index: 0, id: 'call_f', type: 'function', function: { name: 'todo', arguments: '{"todos":[{"task":"写页面"}]}' } }] }),
+  delta({ tool_calls: [{ index: 0, function: { arguments: '{"todos":[{"task":"写页面"}]}' } }] }),
+  delta({ tool_calls: [{ index: 1, id: 'call_g', type: 'function', function: { name: 'todo', arguments: '{"todos":[{"task":"写一半' } }] }),
+  delta({}, 'tool_calls'),
+]
+out.badArgs = await drain()
+out.badKey = BAD_TOOL_ARGS
+
+/**
+ * ⑦ 流在工具参数中途断了、没有收口帧（中间那一跳吞了读错误、照常结束响应）：截断的那把同样把原文带下去，
+ * 不许停在增量解析失败留下的 `{}` 上；参数本来就完整的那把照常定下来。
+ */
+frames = [
+  delta({ role: 'assistant' }),
+  delta({ tool_calls: [{ index: 0, id: 'call_h', type: 'function', function: { name: 'now', arguments: '{}' } }] }),
+  delta({ tool_calls: [{ index: 1, id: 'call_i', type: 'function', function: { name: 'todo', arguments: '{"todos":[{"task":"写一' } }] }),
+]
+out.eofArgs = await drain()
+// Anthropic 那条路：content_block_stop、message_stop 都没来就 EOF。
+const aev = (type, data) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`
+rawSse =
+  aev('message_start', { message: { id: 'm', type: 'message', role: 'assistant', model: 'probe', content: [], usage: { input_tokens: 9, output_tokens: 1 } } }) +
+  aev('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 'toolu_x', name: 'todo', input: {} } }) +
+  aev('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: '{"todos":[{"task":"写一' } })
+out.eofArgsAnthropic = await drain(stubModel('anthropic', 'claude-probe'))
+rawSse = ''
 
 /**
  * ④ 已经写下的日志里那些空壳：重建历史时连它的结果一起丢掉。

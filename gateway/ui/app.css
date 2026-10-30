@@ -35,7 +35,9 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 .satu-provrow[aria-selected="true"] { background: var(--color-accent-100); }
 .satu-provrow[aria-selected="true"]:hover { background: var(--color-accent-100); }
 
-.gw-roles { position: sticky; top: 0; z-index: 3; display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); padding: var(--space-2) 0 var(--space-4); background: var(--color-neutral-100); }
+/* 两块角色面板并排。以前是吸顶的：页面只有它们和下面那张模型表时还好，后来备选、生图、改价、
+   自动发现一块块加进来，吸顶的那两块占掉小半屏，剩下的全挤在底下一条缝里翻。现在跟着页面一起滚。 */
+.gw-roles { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
 .satu-modelhead, .satu-modelrow { grid-template-columns: 2fr 1fr 1.1fr 0.9fr 1.1fr 1.1fr 168px; }
 .gw-caps { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .satu-modelrow .satu-rowactions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
@@ -100,12 +102,20 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 
 /* main：两行（header / 正文）两列（内容 / 右栏）。右栏跨两行，所以能顶到 header
    那一行去——做成 header 下面的兄弟节点就顶不上去。列宽由 appView 内联给出。 */
+.gw-shell { --gw-head-height: 60px; --gw-main-border: 1px; --gw-side-top: var(--space-4); }
 .gw-main { min-width: 0; height: 100%; min-height: 0; box-sizing: border-box; overflow: hidden;
   background: var(--color-neutral-100); border: 1px solid var(--color-divider); border-radius: var(--radius-md);
   display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .gw-head { grid-row: 1; grid-column: 1; display: flex; align-items: center; gap: var(--space-3);
-  padding: var(--space-3) var(--space-6); border-bottom: 1px solid var(--color-divider); }
+  box-sizing: border-box; height: var(--gw-head-height, 60px); min-height: 0;
+  padding: var(--space-2) var(--space-6); border-bottom: 1px solid var(--color-divider); }
 .gw-body { grid-row: 2; grid-column: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+[data-mobile-background="banner"] { flex: none; }
+[data-mobile-background="profile"]:empty { display: none; }
+.gw-mobile-background { padding: 10px var(--space-4); background: var(--color-accent-100); color: var(--color-accent-800); border-bottom: 1px solid var(--color-divider); font-size: 12px; line-height: 1.5; }
+.gw-mobile-background-copy { min-width: 0; }
+.gw-mobile-background-copy p { margin: 4px 0 0; font-size: 12px; line-height: 1.5; }
+.gw-mobile-background-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-top: 8px; }
 .gw-aside { grid-row: 1 / span 2; grid-column: 2; position: relative; min-width: 0; overflow: hidden;
   border-left: 1px solid var(--color-divider); display: flex; flex-direction: column; }
 /* 右栏没有自己的 header：开关在对话 header 上，所以这里不会有一条和左边对不齐的
@@ -243,13 +253,108 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   cursor: pointer;
   font-family: var(--font-body);
   text-align: left;
-  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  color: var(--color-text);
+  transition: background 120ms ease, color 120ms ease;
 }
 .satu-botrow:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
-.satu-botrow[aria-current="true"] { background: var(--color-accent); color: var(--color-bg); }
-.satu-botrow[aria-current="true"]:hover { background: var(--color-accent-600); }
+.satu-botrow[aria-current="true"] { background: var(--color-accent-100); color: var(--color-text); }
+.satu-botrow[aria-current="true"]:hover { background: color-mix(in srgb, var(--color-accent-100) 75%, var(--color-accent-200)); }
 .satu-botrow:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .satu-botavatar { flex: none; display: flex; align-items: center; }
+/* 十个岗位的运行动作。只动 SVG 内部的局部，外框和布局占位稳定；皇冠也不会跟着晃。
+   data-running 由名单实时摘要 / 当前流式回复启停，头像选择器与历史回复始终静止。 */
+.satu-bot-art .satu-bot-body,
+.satu-bot-art .satu-bot-eyes,
+.satu-bot-art .satu-bot-face-detail,
+.satu-bot-art .satu-bot-accessory,
+.satu-bot-art .satu-bot-page { transform-box: view-box; }
+.satu-bot-art .satu-bot-page { opacity: 0; }
+.satu-bot-art[data-running="true"] .satu-bot-chin { fill: #3B3438; }
+/* 助理：视线左右巡视，间歇眨眼。 */
+.satu-bot-art[data-avatar="c-bot"][data-running="true"] .satu-bot-eyes {
+  transform-origin: 20px 21.5px;
+  animation: satu-bot-look 3s ease-in-out infinite;
+}
+/* 客服：耳机轻轻收放，像在专注接听。 */
+.satu-bot-art[data-avatar="c-chat"][data-running="true"] .satu-bot-accessory {
+  transform-origin: 20px 22px;
+  animation: satu-bot-listen 1.6s ease-in-out infinite;
+}
+/* 分析：三根柱形图错开起伏。 */
+.satu-bot-art[data-avatar="c-chart"][data-running="true"] .satu-bot-face-detail rect {
+  transform-box: fill-box; transform-origin: center bottom;
+  animation: satu-bot-chart 1.6s ease-in-out infinite;
+}
+.satu-bot-art[data-avatar="c-chart"] .satu-bot-face-detail rect:nth-child(2) { animation-delay: -0.5s; }
+.satu-bot-art[data-avatar="c-chart"] .satu-bot-face-detail rect:nth-child(3) { animation-delay: -1s; }
+/* 文案：笔尖以很小的幅度来回书写。 */
+.satu-bot-art[data-avatar="c-pen"][data-running="true"] .satu-bot-accessory {
+  transform-origin: 28px 15px;
+  animation: satu-bot-write 1.4s ease-in-out infinite;
+}
+/* 销售：星光温和地转亮。 */
+.satu-bot-art[data-avatar="c-deal"][data-running="true"] .satu-bot-accessory {
+  transform-origin: 30.5px 11px;
+  animation: satu-bot-spark 2s ease-in-out infinite;
+}
+/* 研发：括号眼逐段扫描，上方终端条同步明暗。 */
+.satu-bot-art[data-avatar="c-code"][data-running="true"] .satu-bot-eyes {
+  animation: satu-bot-scan 1.8s ease-in-out infinite;
+}
+.satu-bot-art[data-avatar="c-code"][data-running="true"] .satu-bot-accessory {
+  animation: satu-bot-terminal 1.8s ease-in-out infinite;
+}
+/* 调度：信号按节点依次传递。 */
+.satu-bot-art[data-avatar="c-flow"][data-running="true"] .satu-bot-face-detail circle {
+  transform-box: fill-box; transform-origin: center;
+  animation: satu-bot-route 1.8s ease-in-out infinite;
+}
+.satu-bot-art[data-avatar="c-flow"] .satu-bot-face-detail circle:nth-child(2) { animation-delay: -0.6s; }
+.satu-bot-art[data-avatar="c-flow"] .satu-bot-face-detail circle:nth-child(3) { animation-delay: -1.2s; }
+/* 知识：书页沿书脊左右翻动，不遮五官。 */
+.satu-bot-art[data-avatar="c-book"][data-running="true"] .satu-bot-page {
+  opacity: 1; transform-origin: 20px 34px;
+  animation: satu-bot-read 2.2s ease-in-out infinite;
+}
+/* 设计：三颗色点按节拍交替点亮。 */
+.satu-bot-art[data-avatar="c-design"][data-running="true"] .satu-bot-accessory circle {
+  transform-box: fill-box; transform-origin: center;
+  animation: satu-bot-colors 1.8s ease-in-out infinite;
+}
+.satu-bot-art[data-avatar="c-design"] .satu-bot-accessory circle:nth-of-type(2) { animation-delay: -0.6s; }
+.satu-bot-art[data-avatar="c-design"] .satu-bot-accessory circle:nth-of-type(3) { animation-delay: -1.2s; }
+/* 财务：金币翻转，眼镜保持稳固。 */
+.satu-bot-art[data-avatar="c-finance"][data-running="true"] .satu-bot-face-detail {
+  transform-origin: 20px 12px;
+  animation: satu-bot-coin 2.4s ease-in-out infinite;
+}
+@keyframes satu-bot-look {
+  0%, 100% { transform: translateX(0) scaleY(1); }
+  20%, 38% { transform: translateX(-1.2px) scaleY(1); }
+  58%, 76% { transform: translateX(1.2px) scaleY(1); }
+  86%, 94% { transform: translateX(0) scaleY(1); }
+  90% { transform: translateX(0) scaleY(0.12); }
+}
+@keyframes satu-bot-listen { 0%, 100% { transform: scaleX(1); } 50% { transform: scaleX(0.94) translateY(-0.5px); } }
+@keyframes satu-bot-chart { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(0.35); } }
+@keyframes satu-bot-write { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-12deg); } 50% { transform: rotate(5deg); } 75% { transform: rotate(-8deg); } }
+@keyframes satu-bot-spark { 0%, 100% { transform: scale(0.82) rotate(-8deg); opacity: 0.65; } 50% { transform: scale(1.08) rotate(12deg); opacity: 1; } }
+@keyframes satu-bot-scan { 0%, 100% { transform: translateX(-1px); } 35%, 65% { transform: translateX(1px); } }
+@keyframes satu-bot-terminal { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes satu-bot-route { 0%, 65%, 100% { opacity: 0.45; transform: scale(0.8); } 25% { opacity: 1; transform: scale(1.2); } }
+@keyframes satu-bot-read { 0%, 15% { transform: scaleX(1); } 45%, 60% { transform: scaleX(-1); } 90%, 100% { transform: scaleX(1); } }
+@keyframes satu-bot-colors { 0%, 65%, 100% { opacity: 0.6; transform: scale(0.85); } 25% { opacity: 1; transform: scale(1.3); } }
+@keyframes satu-bot-coin { 0%, 15%, 85%, 100% { transform: scaleX(1); } 50% { transform: scaleX(0.12); } }
+@media (prefers-reduced-motion: reduce) {
+  .satu-bot-art[data-running="true"] * { animation: none !important; }
+  .satu-bot-art .satu-bot-page { opacity: 0 !important; }
+}
+/* 主 Bot 的皇冠（prefs.js 的 botAvatarOf）：金色小圆徽章压在头像右下角，描一圈底色和头像分开。
+   皇冠本身是实心的，12px 下也看得出是顶冠；大小跟着头像走（约 0.42 倍）。 */
+.satu-avatarwrap { position: relative; display: inline-flex; flex: none; }
+.satu-crown { position: absolute; right: -3px; bottom: -3px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #F5B85A; color: #6B4A12; box-shadow: 0 0 0 1.5px var(--color-surface); pointer-events: none; }
+.satu-crown svg { width: 72%; height: 72%; fill: currentColor; }
+.satu-botrow[aria-current="true"] .satu-crown { box-shadow: 0 0 0 1.5px var(--color-accent-100); }
 /* min-width: 0 是省略号能生效的前提——不写的话 flex 子项按内容宽度算，长名字会把
    时间挤出侧栏。 */
 .satu-botmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -273,16 +378,10 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   white-space: nowrap;
 }
 .satu-localtag[data-compact] { padding: 1px 5px; font-size: 9.5px; }
-.satu-botrow[aria-current="true"] .satu-localtag {
-  border-color: color-mix(in srgb, var(--color-bg) 58%, transparent);
-  background: color-mix(in srgb, var(--color-bg) 18%, transparent);
-  color: var(--color-bg);
-}
 
 /* ── 状态点 ────────────────────────────────────────────────────────
    三态靠**形状**分，不只靠颜色：空闲是空心圈、执行中是实心并闪、待人工是实心琥珀。
-   只用颜色的话，色觉障碍的人看到的是三个一模一样的点；而且侧栏选中行会整条染成
-   品牌色，压在上面的纯色差别更难分。 */
+   只用颜色的话，色觉障碍的人看到的是三个一模一样的点。 */
 .satu-botdot {
   flex: none;
   width: 8px;
@@ -422,7 +521,6 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.satu-botrow[aria-current="true"] .satu-botname { font-weight: 600; }
 /* 「有事等你」的图标。**点之外还要有它**：8px 的状态点在一列名字里太容易滑过去，
    而这一格说的是「你不去点，那一轮就一直停在席位上等着」。
 
@@ -434,8 +532,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
    的），所以 500 底 + 100 图形是唯一一组两个主题下都够对比的搭配——写死白色的话，
    深色主题里就是浅琥珀底压白图形。 */
 .satu-botneed {
-  /* 底色和图形色走两个变量：选中的那一行要整组换掉（见下面那条），而光晕的颜色
-     跟着底色走——写死 warn-500 的话，翻过来的那一行会甩出一圈琥珀光晕。 */
+  /* 图形和光晕共用状态色；浅色选中背景下也保留同一套警示语义。 */
   --need-ink: var(--color-warn-500);
   --need-glyph: var(--color-warn-100);
   flex: none;
@@ -449,17 +546,6 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   background: var(--need-ink);
   color: var(--need-glyph);
   animation: satu-need-pulse 1.5s ease-in-out infinite;
-}
-/**
- * **选中的那一行要翻过来。**
- *
- * 那一行整条染成品牌赭红（`[aria-current]`），琥珀压在上面几乎看不见——而人正看着的
- * 那颗 Bot 恰恰最可能是在等他的那一颗。翻成浅底 + 琥珀图形，两种底色下都立得住。
- * 这就是那颗状态点的注释里说的「压在品牌色上的纯色差别更难分」，同一个坑。
- */
-.satu-botrow[aria-current="true"] .satu-botneed {
-  --need-ink: var(--color-bg);
-  --need-glyph: var(--color-warn-500);
 }
 .satu-botneed[hidden] { display: none; }
 .satu-botneed svg { display: block; width: 10px; height: 10px; }
@@ -480,18 +566,51 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 }
 /* 侧栏收起来只剩头像，这个图标跟着收——挤在图标旁边只会让头像看着歪（同 botdot）。 */
 .satu-rail .satu-botneed { display: none; }
-.satu-bottime { flex: none; font-size: 11px; opacity: 0.6; font-variant-numeric: tabular-nums; }
+.satu-bottime { flex: none; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 /* 摘要只给一行。多行会让每一行的高度随内容跳，整份名单看着就散了。 */
 .satu-botsnip {
   font-size: 12px;
-  opacity: 0.62;
+  color: var(--muted-foreground);
+  line-height: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .satu-botsnip[hidden] { display: none; }
-/* 收起侧栏时只剩头像，名字、时间、摘要一起收掉。 */
+/* ── 名单的分类（shell.js 的 chatRosterNav）─────────────────────────────
+   分类标题是一行小字加个三角，和侧栏下面那组导航的分组标题一个样（.satu-group）。
+   整条标题都是放入区：拖着 Bot 悬在上面就描一圈品牌色。 */
+.satu-botfolder { display: flex; flex-direction: column; gap: 2px; }
+.satu-botfolder-head { position: relative; display: flex; align-items: center; gap: 2px; margin-top: 6px; border-radius: var(--radius-sm); }
+.satu-botfolder-loose + .satu-botfolder .satu-botfolder-head { margin-top: 4px; }
+.satu-botfolder-toggle { flex: 1; min-width: 0; justify-content: flex-start; gap: 6px; padding: 6px var(--space-2) 6px var(--space-3); border-radius: var(--radius-sm); }
+.satu-botfolder-head .satu-botfolder-toggle { color: var(--muted-foreground); font-weight: 500; }
+.satu-botfolder-head .satu-botfolder-toggle:hover { color: var(--color-text); }
+.satu-botfolder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.satu-botfolder-count { flex: none; font-variant-numeric: tabular-nums; opacity: 0.7; }
+/* 那颗「…」平时淡着，鼠标到这一行才亮；菜单开着时也亮，不然看不出是哪个分类的菜单。 */
+.satu-botfolder-more { flex: none; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-right: 4px; padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: color-mix(in srgb, var(--color-text) 45%, transparent); cursor: pointer; opacity: 0; }
+.satu-botfolder-head:hover .satu-botfolder-more, .satu-botfolder-more:focus-visible, .satu-botfolder-more[aria-expanded="true"] { opacity: 1; }
+/* 触屏没有悬停：那颗「…」常亮，不然要重命名、删除分类只能盲点一块透明的地方。 */
+@media (hover: none) { .satu-botfolder-more { opacity: 1; } }
+/* 收着的分类：行照画（窄栏要用），宽栏里藏起来。 */
+.satu-botfolder[data-open="false"] > .satu-botrow { display: none; }
+.satu-botfolder-need { flex: none; }
+.satu-botfolder-more:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
+.satu-botfolder-head .satu-menu { right: 4px; }
+/* 拖动中：被拖的那行淡掉；悬停的放入区描一圈；没分类那块空着时画出一道虚线框，好有地方放回去。 */
+.satu-botrow[data-dragging="true"] { opacity: 0.4; }
+[data-drop-folder][data-dragover="true"] { box-shadow: inset 0 0 0 2px var(--color-accent); background: var(--color-accent-100); }
+.satu-botfolder-empty { display: none; margin: 2px 0; padding: 10px var(--space-3); border: 1px dashed var(--border); border-radius: var(--radius-sm); font-size: 12px; text-align: center; color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+.satu-botlist[data-dragging="true"] .satu-botfolder-empty { display: block; }
+.satu-botlist[data-dragging="true"] .satu-botfolder-loose { min-height: 12px; }
+/* 收起侧栏时只剩头像，名字、时间、摘要一起收掉。分类标题也收掉——62px 宽放不下一个名字。 */
 .satu-rail .satu-botrow { justify-content: center; padding: 8px 0; }
+.satu-rail .satu-botfolder-head { display: none; }
+/* 窄栏没有分类标题：收着的分类里的 Bot 照样摊开（不然整个看不见、也没处展开），分类之间画一道细线隔开。 */
+.satu-rail .satu-botfolder[data-open="false"] > .satu-botrow { display: flex; }
+.satu-rail .satu-botfolder + .satu-botfolder { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
+.satu-rail .satu-botfolder-empty { padding: 8px 0; font-size: 0; }
 .satu-rail .satu-botmain { display: none; }
 .gw-chat-main > .gw-flash { margin: var(--space-3) var(--space-6) 0; }
 
@@ -750,7 +869,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-shotdot[data-state="review"] { background: var(--color-warn-500); }
 
 /* ── 首屏下面那段演示 ──────────────────────────────────────────────────
-   两个 AI 员工轮流干一件活（pages-landing.js 的 lpFilmView）。背后一层 three.js 点阵，
+   单 Bot 执行和多 Bot 分工协作（pages-landing.js 的 lpFilmView）。背后一层 three.js 点阵，
    只铺在上半截、往下淡掉——播放器压在它淡掉的那一截上面，像是从里面浮出来的。 */
 .satu-lp-film {
   position: relative;
@@ -773,7 +892,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-filmhead { margin-bottom: clamp(24px, 3vw, 36px); }
 /* 标题两句各占一行（见 lpFilmView），不受 .satu-lp-sechead 那个 30ch 的宽度限制。 */
 .satu-lp-sechead.satu-lp-filmhead { max-width: none; }
-.satu-lp-filmhead h2 span { display: block; }
+.satu-lp-filmhead :is(h1, h2) span { display: block; }
 
 /* 两位的标签 + 播放键。每张标签底下一条进度，正在播的那位走着。 */
 .satu-lp-filmtabs {
@@ -842,181 +961,28 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 }
 .satu-lp-filmview[data-narrow] { aspect-ratio: 640 / 480; }
 
-/* ── 舞台（960×480 的设计稿；窄屏 640×480，只剩屏幕） ── */
-.satu-lpf-stage {
-  position: absolute;
-  top: 0;
-  left: 0;
-  display: grid;
-  grid-template-columns: 320px 640px;
-  width: 960px;
-  height: 480px;
-  transform-origin: 0 0;
-  font-family: var(--font-body);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.satu-lpf-stage[data-narrow] { grid-template-columns: 640px; width: 640px; }
-.satu-lpf-stage[data-narrow] .satu-lpf-chat { display: none; }
-
-/* 出场 / 退场。默认是「会淡进淡出、占着位置」；对话、工具痕迹和终端那几行是往下长的，
-   没到那一步就不占地方。 */
-.satu-lpf-stage [data-at], .satu-lpf-stage [data-off] { transition: opacity 360ms ease, transform 360ms ease, visibility 360ms; }
-.satu-lpf-stage [data-at]:not([data-on]), .satu-lpf-stage [data-off]:not([data-on]) { opacity: 0; visibility: hidden; transform: translateY(6px) scale(0.98); }
-.satu-lpf-stage .satu-lpf-msg:not([data-on]),
-.satu-lpf-stage .satu-lpf-chip:not([data-on]),
-.satu-lpf-stage .satu-lpf-termbody > :not([data-on]) { display: none; }
-.satu-lpf-stage .satu-lpf-file[data-off]:not([data-on]) { transform: translateY(-14px) scale(0.6); }
-
-/* 左边：Satuwork 的对话。用的是界面自己的令牌，深浅主题跟着走。 */
-.satu-lpf-chat { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--lp-line); background: var(--color-surface); }
-.satu-lpf-chathead { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--lp-line); }
-.satu-lpf-chathead b { font-size: 13px; font-weight: 500; }
-.satu-lpf-face { display: flex; }
-.satu-lpf-badge { margin-left: auto; padding: 2px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 500; letter-spacing: 0.04em; background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
-.satu-lpf-badge[data-kind='local'] { background: var(--color-ok-100); color: var(--color-ok-800); }
-.satu-lpf-thread { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; gap: 10px; padding: 14px; }
-.satu-lpf-msg { display: flex; }
-.satu-lpf-msg[data-role='user'] { justify-content: flex-end; }
-.satu-lpf-bubble { max-width: 86%; padding: 8px 11px; border-radius: 12px; font-size: 12px; line-height: 1.6; }
-.satu-lpf-msg[data-role='user'] .satu-lpf-bubble { background: var(--primary); color: var(--primary-foreground); border-bottom-right-radius: 4px; }
-.satu-lpf-msg[data-role='assistant'] .satu-lpf-bubble { background: var(--card); color: var(--card-foreground); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
-.satu-lpf-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
-.satu-lpf-chip { display: inline-flex; align-items: center; gap: 3px; padding: 1px 8px; border-radius: 999px; background: var(--secondary); color: var(--secondary-foreground); font-size: 10.5px; white-space: nowrap; }
-.satu-lpf-compose { display: flex; align-items: center; justify-content: space-between; margin: 0 14px 14px; padding: 0 5px 0 14px; height: 38px; border: 1px solid var(--input-border, var(--border)); border-radius: 999px; color: var(--muted-foreground); font-size: 12px; }
-.satu-lpf-compose i { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); }
-.satu-lpf-compose svg { width: 14px; height: 14px; }
-
-/* 右边：那台电脑的屏幕。**颜色写死**——这是一张「屏幕截图」，不是这个站的界面，
-   不跟着主题翻。 */
-.satu-lpf-screen { position: relative; width: 640px; height: 480px; overflow: hidden; color: #1f1d1a; }
-.satu-lpf-os { position: absolute; inset: 0; }
-.satu-lpf-os[data-os='remote'] { background: radial-gradient(120% 90% at 20% 10%, #3a4f66 0%, #243140 55%, #1a222c 100%); }
-.satu-lpf-os[data-os='local'] { background: radial-gradient(120% 100% at 80% 0%, #f6dcc3 0%, #e0a882 50%, #b8704e 100%); }
-.satu-lpf-osbar { display: flex; align-items: center; gap: 10px; height: 26px; padding: 0 12px; font-size: 11px; color: #f5f2ec; background: rgba(12, 14, 18, 0.55); }
-.satu-lpf-os[data-os='local'] .satu-lpf-osbar { color: #2b2320; background: rgba(255, 255, 255, 0.55); }
-.satu-lpf-osbar b { font-weight: 600; }
-.satu-lpf-osbar span { opacity: 0.75; }
-.satu-lpf-osdot { width: 8px; height: 8px; border-radius: 999px; background: #e95420; opacity: 1 !important; }
-.satu-lpf-apple { width: 10px; height: 12px; border-radius: 5px 5px 4px 4px; background: #2b2320; opacity: 1 !important; }
-.satu-lpf-osconn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
-.satu-lpf-osconn::before { content: ''; width: 6px; height: 6px; border-radius: 999px; background: #3ecf8e; }
-
-.satu-lpf-win { position: absolute; display: flex; flex-direction: column; border-radius: 8px; background: #fbfaf8; box-shadow: 0 18px 40px -12px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.08); overflow: hidden; }
-.satu-lpf-winbar { display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; flex: none; background: #efece7; border-bottom: 1px solid #e0dcd5; font-size: 11px; color: #6b655c; }
-.satu-lpf-winbar > i { width: 9px; height: 9px; border-radius: 999px; background: #d9d4cc; }
-.satu-lpf-winbar > i:first-child { background: #ec6a5e; }
-.satu-lpf-winbar > i:nth-child(2) { background: #f4bf4f; }
-.satu-lpf-winbar > i:nth-child(3) { background: #61c554; }
-.satu-lpf-winbar > span { margin-left: 8px; }
-
-/* 远程：浏览器。 */
-.satu-lpf-url { flex: 1; height: 18px; margin-left: 10px !important; padding: 0 10px; border-radius: 999px; background: #fff; border: 1px solid #e0dcd5; display: flex; align-items: center; font-size: 10.5px; color: #3a352f; overflow: hidden; white-space: nowrap; }
-/* 地址一个字一个字打出来：宽度按字数走 steps。 */
-.satu-lpf-type { display: inline-block; overflow: hidden; white-space: nowrap; vertical-align: bottom; }
-.satu-lpf-type[data-on] { animation: satu-lpf-type 1.1s steps(28, end) both; transform: none !important; }
-@keyframes satu-lpf-type { from { max-width: 0; } to { max-width: 220px; } }
-.satu-lpf-page { position: relative; flex: 1; padding: 14px 16px; }
-.satu-lpf-skel { position: absolute; inset: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
-.satu-lpf-skel i { height: 12px; border-radius: 4px; background: #ece8e1; }
-.satu-lpf-skel i:first-child { width: 40%; height: 16px; }
-.satu-lpf-pagehead { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 13px; font-weight: 600; }
-.satu-lpf-pagehead span { font-weight: 400; color: #8a8378; }
-.satu-lpf-table { border: 1px solid #e6e2db; border-radius: 6px; overflow: hidden; }
-.satu-lpf-row { display: grid; grid-template-columns: 22px 56px 1fr 90px; align-items: center; height: 30px; padding: 0 10px; font-size: 11px; border-top: 1px solid #efebe5; font-variant-numeric: tabular-nums; }
-.satu-lpf-row:first-child { border-top: 0; }
-.satu-lpf-row span:last-child { text-align: right; }
-.satu-lpf-more { display: block; line-height: 30px; color: #8a8378; }
-.satu-lpf-check { width: 11px; height: 11px; border: 1.5px solid #b9b2a7; border-radius: 3px; }
-/* 第 3 步全选：勾都打上。 */
-.satu-lpf-os[data-os='remote'] .satu-lpf-browser .satu-lpf-page > [data-on] .satu-lpf-check { transition: background 200ms ease 900ms, border-color 200ms ease 900ms; background: #c2410c; border-color: #c2410c; }
-.satu-lpf-btn { position: absolute; right: 16px; bottom: 14px; padding: 6px 14px; border-radius: 6px; background: #c2410c; color: #fff; font-size: 11px; font-weight: 500; }
-.satu-lpf-toast { position: absolute; right: 12px; top: 40px; display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 8px; background: #26231f; color: #f5f2ec; font-size: 11px; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25); }
-
-/* 远程：文件管理器。 */
-.satu-lpf-list { padding: 6px 0; }
-.satu-lpf-li { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 14px; font-size: 11px; }
-.satu-lpf-li span { margin-left: auto; color: #8a8378; }
-.satu-lpf-li em { width: 26px; padding: 1px 0; border-radius: 3px; text-align: center; font-style: normal; font-size: 8.5px; font-weight: 700; color: #fff; background: #d64541; }
-.satu-lpf-li em[data-ext='xlsx'] { background: #1f8f4e; }
-.satu-lpf-dim { color: #8a8378; }
-.satu-lpf-new { margin: 2px 6px; border-radius: 6px; background: #fff3c4; font-weight: 600; }
-
-/* 本地：访达。 */
-.satu-lpf-folders { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 12px 14px 6px; min-height: 76px; border-bottom: 1px solid #eee9e2; }
-.satu-lpf-folder { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.satu-lpf-folder i { position: relative; width: 44px; height: 34px; border-radius: 4px; background: linear-gradient(#78b7f0, #4b95dc); }
-.satu-lpf-folder i::before { content: ''; position: absolute; left: 0; top: -5px; width: 18px; height: 8px; border-radius: 3px 3px 0 0; background: #5aa2e2; }
-.satu-lpf-folder em { font-style: normal; font-size: 10.5px; white-space: nowrap; }
-.satu-lpf-folder small { position: absolute; top: -6px; right: 14px; min-width: 18px; padding: 0 5px; border-radius: 999px; background: #c2410c; color: #fff; font-size: 9.5px; font-weight: 600; text-align: center; line-height: 16px; }
-.satu-lpf-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px 4px; padding: 12px 10px; }
-.satu-lpf-file { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
-.satu-lpf-file i { position: relative; width: 30px; height: 38px; border-radius: 3px; background: #fff; box-shadow: 0 0 0 1px #ddd6cc, 0 2px 4px rgba(0, 0, 0, 0.08); }
-.satu-lpf-file i::after { content: ''; position: absolute; top: 0; right: 0; border-style: solid; border-width: 0 9px 9px 0; border-color: #efe9e0 #f7f3ee; }
-.satu-lpf-file b { position: absolute; left: -4px; bottom: 6px; padding: 0 3px; border-radius: 2px; font-size: 7.5px; font-weight: 700; color: #fff; background: #8a8378; }
-.satu-lpf-file[data-ext='pdf'] b { background: #d64541; }
-.satu-lpf-file[data-ext='png'] b { background: #3b82c4; }
-.satu-lpf-file[data-ext='docx'] b { background: #2f5fb3; }
-.satu-lpf-file[data-ext='xlsx'] b { background: #1f8f4e; }
-.satu-lpf-file[data-ext='zip'] b { background: #9a7b3f; }
-.satu-lpf-file em { max-width: 100%; font-style: normal; font-size: 9.5px; color: #4a453e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* 本地：终端。 */
-.satu-lpf-term { background: #1c1b19; }
-.satu-lpf-term .satu-lpf-winbar { background: #2a2825; border-color: #37342f; color: #b9b2a7; }
-.satu-lpf-termbody { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: #e7e3da; white-space: nowrap; overflow: hidden; }
-.satu-lpf-termbody b { color: #e8845c; font-weight: 400; }
-.satu-lpf-out { color: #9fd49a; }
-.satu-lpf-note { position: absolute; top: 36px; right: 12px; display: flex; flex-direction: column; gap: 2px; width: 210px; padding: 10px 12px; border-radius: 12px; background: rgba(250, 248, 245, 0.92); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2); font-size: 11px; }
-.satu-lpf-note b { font-size: 11px; }
-.satu-lpf-localtag { position: absolute; left: 20px; bottom: 16px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px; background: rgba(28, 27, 25, 0.78); color: #f5f2ec; font-size: 10.5px; }
-
-/* 光标：走到下一步的位置要 0.7 秒；点一下是一圈扩开的涟漪。 */
-.satu-lpf-cursor { position: absolute; top: 0; left: 0; z-index: 5; width: 18px; height: 18px; transition: transform 700ms cubic-bezier(0.45, 0, 0.2, 1); filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.3)); }
-.satu-lpf-cursor::after { content: ''; position: absolute; left: -9px; top: -9px; width: 20px; height: 20px; border-radius: 999px; border: 2px solid #c2410c; opacity: 0; }
-.satu-lpf-cursor[data-click]::after { animation: satu-lpf-click 520ms ease-out; }
-@keyframes satu-lpf-click { from { opacity: 0.9; transform: scale(0.4); } to { opacity: 0; transform: scale(1.8); } }
-
-/* 字幕：只在窄屏（对话那一栏收起时）露出来，一次一句。 */
-.satu-lpf-caps { display: none; }
-.satu-lpf-stage[data-narrow] .satu-lpf-caps { position: absolute; left: 0; right: 0; bottom: 0; z-index: 6; display: block; height: 96px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.72)); }
-.satu-lpf-caps span { position: absolute; left: 24px; right: 24px; bottom: 20px; color: #fff; font-size: 24px; line-height: 1.35; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5); }
-
-@media (prefers-reduced-motion: reduce) {
-  .satu-lpf-stage *, .satu-lpf-stage *::after { transition: none !important; animation: none !important; }
-}
-
-@media (max-width: 760px) {
-  /* 两张标签叠起来，播放键缩到右上角。 */
-  .satu-lp-filmtabs { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .satu-lp-filmplay { display: none; }
-  .satu-lp-filmtext span { display: none; }
-  .satu-lp-filmtab { padding: 10px 12px 12px; }
-}
-
-/* ── 能力带 ────────────────────────────────────────────────────────────
-   四样单开一张卡不值当（说一句就完），可整个不提又缺一块。排成一条被竖线切成四
-   格的窄带，人扫过去知道「还有这些」就够了。 */
-.satu-lp-spec {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0;
-  padding-left: 0;
-  padding-right: 0;
-  border-top: 1px solid var(--lp-line);
-}
-.satu-lp-specitem {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  padding: 20px clamp(12px, 1.6vw, 22px);
-  font-size: 12.5px;
-  letter-spacing: 0.02em;
-  color: var(--secondary-foreground);
-}
-.satu-lp-specitem + .satu-lp-specitem { border-left: 1px solid var(--lp-line); }
-.satu-lp-chipicon { display: inline-flex; flex: none; color: var(--color-accent-600); }
+/* 真实工作台在无脚本的隔离文档内加载原样式，首页仅控制播放和等比缩放。 */
+.satu-ui-demo { position: absolute; inset: 0; border-radius: 12px; overflow: hidden; box-shadow: 0 18px 60px -24px rgba(45,38,25,0.22); }
+.lp-product-frame { position: absolute; left: 0; top: 0; width: 1440px; height: 720px; border: 0; display: block; transform-origin: 0 0; pointer-events: none; }
+.lp-product-cursor { position: absolute; z-index: 5; pointer-events: none; transition: left 500ms cubic-bezier(0.4,0,0.2,1), top 500ms cubic-bezier(0.4,0,0.2,1); filter: drop-shadow(0 2px 2px rgba(0,0,0,0.14)); }
+.lp-product-cursor > i { position: absolute; left: -8px; top: -8px; width: 22px; height: 22px; border-radius: 50%; background: rgba(197,119,79,0.2); opacity: 0; }
+.lp-product-cursor[data-click] > i { animation: lp-product-click 600ms ease-out both; }
+@keyframes lp-product-click { from { opacity: 1; transform: scale(0.2); } to { opacity: 0; transform: scale(1.8); } }
+.lp-demo-toolbar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; max-width: 1120px; margin: 0 auto 8px; }
+.lp-demo-toolbar > span { font-size: 10px; color: var(--muted-foreground); }
+.lp-demo-toolbar > div { display: flex; align-items: center; gap: 6px; }
+.lp-demo-replay { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--color-text); cursor: pointer; }
+.lp-demo-replay:hover { background: var(--secondary); }
+.lp-demo-replay:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.satu-bot-progress { flex: none; display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 8px 0 2px; }
+.satu-bot-caption { font-size: 11px; color: var(--secondary-foreground); }
+.satu-bot-phases { display: flex; gap: 18px; }
+.satu-bot-phases > button { display: inline-flex; align-items: center; gap: 6px; padding: 3px; border: 0; border-radius: 3px; background: transparent; font: inherit; font-size: 9px; color: #a29e94; cursor: pointer; transition: color 250ms ease; }
+.satu-bot-phases i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+.satu-bot-phases > [data-state='active'] { color: var(--primary); }
+.satu-bot-phases > [data-state='done'] { color: #6b806b; }
+.satu-bot-phases > button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .lp-product-cursor { transition: none; } .lp-product-cursor > i { animation: none !important; } }
 
 /* ── 分节 ──────────────────────────────────────────────────────────────
    节头**居中**（和 orderful 一样）：一句眉题、一行大标题、一句说明。大标题同样是
@@ -1024,7 +990,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lp-sec { padding-top: clamp(56px, 6vw, 88px); padding-bottom: clamp(56px, 6vw, 88px); border-top: 1px solid var(--lp-line); }
 .satu-lp-sechead { max-width: 30ch; margin: 0 auto clamp(36px, 4vw, 56px); text-align: center; }
 .satu-lp-sechead .satu-lp-kicker { margin-bottom: var(--space-4); }
-.satu-lp-sechead h2 { margin: 0 0 var(--space-3); font-size: clamp(27px, 3.4vw, 42px); font-weight: 300; line-height: 1.12; letter-spacing: -0.025em; word-break: keep-all; }
+.satu-lp-sechead :is(h1, h2) { margin: 0 0 var(--space-3); font-size: clamp(27px, 3.4vw, 42px); font-weight: 300; line-height: 1.12; letter-spacing: -0.025em; word-break: keep-all; }
 .satu-lp-sechead p { margin: 0; font-size: 15px; line-height: 1.7; color: var(--lp-dim); }
 
 /* 四张能力卡排成一行，**只靠竖线隔开**：不描框、不投影、不收圆角。原来是四张带
@@ -1170,10 +1136,6 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 
 @media (max-width: 900px) {
   .satu-lp-heroleft { padding: 32px clamp(20px, 4vw, 32px); }
-  /* 能力带收成 2×2：四格排一行到这儿每格只剩五六个字宽。 */
-  .satu-lp-spec { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .satu-lp-specitem:nth-child(odd) { border-left: 0; }
-  .satu-lp-specitem:nth-child(n + 3) { border-top: 1px solid var(--lp-line); }
   /* 三步竖着排。 */
   .satu-lp-steps { grid-template-columns: 1fr; }
   .satu-lp-step + .satu-lp-step { border-left: 0; border-top: 1px solid var(--lp-dark-line); }
@@ -1197,10 +1159,126 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
      900 到 560 之间不收：那一档「登录」已经让出了位置，四个字放得下。 */
   .satu-lp-sales { padding: 8px; border-radius: 999px; }
   .satu-lp-sales span { display: none; }
-  /* 能力带竖着排：两格一行到 375 宽时「Skill 与 MCP 分两层」也要折行。 */
-  .satu-lp-spec { grid-template-columns: 1fr; }
-  .satu-lp-specitem { border-left: 0; }
-  .satu-lp-specitem + .satu-lp-specitem { border-top: 1px solid var(--lp-line); }
+}
+
+/* 首页采用白底和留白分区。限定在 .satu-lp 内，避免改变共用组件的其他页面；
+   放在响应式规则之后，窄屏也不恢复分隔线。演示内部的窗口与控件保留原样。 */
+.satu-lp {
+  color-scheme: light;
+  --color-bg: #ffffff;
+  --color-surface: #ffffff;
+  --color-text: #3d3929;
+  --popover: #ffffff;
+  --card: #ffffff;
+  --card-foreground: #141413;
+  --primary: #c96442;
+  --primary-foreground: #ffffff;
+  --secondary: #f5f4ef;
+  --secondary-foreground: #535146;
+  --muted: #ede9de;
+  --muted-foreground: #6e6d68;
+  --lp-tint: #ffffff;
+}
+.satu-lp :is(
+  .satu-lp-rail, .satu-lp-top, .satu-lp-topin, .satu-lp-lang,
+  .satu-lp-film, .satu-lp-filmtab, .satu-lp-filmplay, .satu-lp-filmview,
+  .satu-lp-sec,
+  .satu-lp-cards, .satu-lp-card, .satu-lp-cardshot,
+  .satu-lp-steps, .satu-lp-step, .satu-lp-foot,
+  .satu-dl-card, .satu-dl-tabs, .satu-dl-note + .satu-dl-note,
+  .btn-secondary
+) {
+  border: 0;
+  box-shadow: none;
+}
+.satu-lp .satu-lp-tick, .satu-lp .satu-lp-kicker::before { display: none; }
+.satu-lp .satu-lp-top { background: #ffffff; }
+.satu-lp .satu-lp-filmtab { transition: background 160ms ease; }
+.satu-lp .satu-lp-filmtab:hover,
+.satu-lp .satu-lp-filmtab[aria-pressed='true'] { background: var(--secondary); }
+.satu-lp .satu-lp-bandin { background: #ffffff; }
+.satu-lp .satu-lp-band,
+.satu-lp .satu-lp-step h3 { color: var(--color-text); }
+.satu-lp .satu-lp-band .satu-lp-kicker,
+.satu-lp .satu-lp-stepnum { color: var(--color-accent-600); }
+.satu-lp .satu-lp-band .satu-lp-sechead p,
+.satu-lp .satu-lp-tail span { color: var(--muted-foreground); }
+.satu-lp-compact { display: flex; flex-direction: column; }
+.satu-lp-compact > main { flex: 1; }
+/* 首屏介绍移除后，窄屏也需要保留顶栏的登录入口。 */
+.satu-lp-compact .satu-lp-topsign { display: inline-flex; }
+.satu-lp-topdownload { flex: none; white-space: nowrap; }
+@media (max-width: 560px) {
+  .satu-lp-compact .satu-lp-topin { gap: 4px; }
+  .satu-lp-compact .satu-lp-topin .satu-lp-brand > span { display: none; }
+  .satu-lp-compact .satu-lp-topact { gap: 4px; }
+  .satu-lp-compact .satu-lp-ghlink { display: none; }
+  .satu-lp-compact .satu-lp-lang button { padding: 4px 7px; }
+  .satu-lp-compact .satu-lp-topdownload { padding: 8px 6px; font-size: 12px; }
+  .satu-lp-compact .satu-lp-topsign { padding: 8px 12px; }
+}
+
+/* 首页一屏展示：演示按剩余空间等比缩放，导航和页脚均占据自己的行。 */
+.satu-lp.satu-lp-home {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.satu-lp-home .satu-lp-topin { height: 56px; }
+.satu-lp-home > main { display: flex; flex-direction: column; min-height: 0; }
+.satu-lp-home .satu-lp-film {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: clamp(8px, 2vh, 20px);
+  padding-bottom: 8px;
+}
+.satu-lp-home .satu-lp-filmhead { flex: none; margin: 0 auto 12px; }
+.satu-lp-home .satu-lp-filmhead .satu-lp-kicker { margin-bottom: 4px; font-size: 10px; }
+.satu-lp-home .satu-lp-filmhead h1 { margin: 0; font-size: clamp(24px, 3.6vh, 36px); }
+.satu-lp-home .satu-lp-filmhead h1 span { display: inline; }
+.satu-lp-home .satu-bot-intro { margin-top: 8px; font-size: 12px; }
+.satu-lp-home .satu-lp-filmplay { display: inline-flex; width: 32px; height: 32px; }
+
+.satu-lp-home .satu-lp-filmframe {
+  flex: 1;
+  min-height: 0;
+  container-type: size;
+  display: grid;
+  place-items: center;
+}
+.satu-lp-home .satu-lp-filmview { width: min(100cqw, 200cqh); max-width: 1120px; aspect-ratio: 1440 / 720; margin: 0; background: transparent; border-radius: 12px; overflow: visible; }
+.satu-lp-home .satu-lp-filmview[data-narrow] { width: min(100cqw, 67.241379cqh); aspect-ratio: 390 / 580; }
+.satu-lp-home .satu-lp-footin { gap: 6px; padding-top: 8px; padding-bottom: 8px; font-size: 10px; }
+.satu-lp-home .satu-lp-footin .satu-lp-brand { gap: 6px; font-size: 12px; }
+.satu-lp-home .satu-lg-links { gap: 12px; }
+@media (max-width: 700px) {
+  .satu-lp-home .satu-lp-filmhead { margin-bottom: 10px; }
+  .satu-lp-home .satu-lp-filmhead h1 { max-width: 24ch; font-size: clamp(22px, 4vw, 28px); }
+  .satu-lp-home .satu-lp-filmhead h1 span { display: block; }
+}
+@media (max-width: 560px) {
+  .satu-bot-caption { max-width: 100%; font-size: 10px; text-align: center; line-height: 1.5; }
+  .satu-bot-phases { gap: 8px; }
+  .satu-bot-phases > button { gap: 4px; font-size: 8px; }
+  .satu-lp-home .satu-lp-filmhead h1 { font-size: 22px; }
+  .satu-lp-home .satu-bot-intro { font-size: 10px; }
+  .satu-lp-home .satu-lp-footin .satu-lp-brand > span { display: none; }
+}
+@media (max-height: 650px) {
+  .satu-lp-home .satu-lp-topin { height: 48px; }
+  .satu-lp-home .satu-lp-filmhead { margin-bottom: 8px; }
+  .satu-lp-home .satu-lp-filmhead .satu-lp-kicker,
+  .satu-lp-home .satu-bot-intro { display: none; }
+  .satu-bot-progress { gap: 4px; padding-top: 4px; }
+}
+@media (max-height: 450px) {
+  .satu-lp-home .satu-lp-film { padding-top: 4px; padding-bottom: 4px; }
+  .satu-lp-home .satu-lp-filmhead h1 { font-size: 20px; }
+  .satu-lp-home .satu-lp-filmtabs { margin-bottom: 4px; }
 }
 
 /* ── 隐私政策与服务条款（/privacy、/terms，见 ui/pages-legal.js）─────────
@@ -1266,17 +1344,9 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-lg-links button:focus-visible,
 .satu-lg-links a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
 
-/* ── 下载桌面端：首页那一段（lpDownload）和应用内那一页（downloadPage），见 ui/pages-landing.js ──
-   外框（栏线、上下留白、居中的标题块）借首页 .satu-lp-sec 那一套，这里只管里面：
-   左边一张卡装当前平台的包，右边一列说明。
-   scroll-margin 让出顶栏那一条：首屏那行小字、页脚和老的 /download 地址都是滚到这儿的，
-   不让的话标题正好被吸顶的顶栏盖住。 */
-.satu-lp-dl { scroll-margin-top: 64px; }
+/* ── 下载桌面端：公开页 downloadView 和应用内 downloadPage 共用下载卡与说明。 ── */
 /* 标题块比别的段宽：底下那句说明有三行长，塞进 30ch 会折成一根细柱子。 */
 .satu-lp-dlhead { max-width: 62ch; }
-/* 那一段带 tabindex="-1"，点首屏小字 / 页脚跳过来时焦点落在它身上（见 app.js 的
-   landing-download）。整段描一圈框没有意义，里面的按钮自己有焦点环。 */
-.satu-lp-dl:focus { outline: none; }
 /* 「总是最新版 · 历次版本」那行是 .satu-lg-meta（法律页那一行）本身，这里只补链接的样子。
    它是 <div> 不是 <p>，`.satu-lp-sechead p` 够不着它（见 pages-landing.js 的 dlMeta）。 */
 .satu-dl-meta a { color: var(--color-accent-700); text-decoration: underline; text-underline-offset: 3px; }
@@ -1390,7 +1460,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
    ══════════════════════════════════════════════════════════════════════ */
 .gw-drawer-mask { display: none; }
 @media (max-width: 760px) {
-  .gw-shell { grid-template-columns: minmax(0, 1fr) !important; gap: 0 !important; padding: 0 !important; }
+  .gw-shell { --gw-head-height: 56px; --gw-main-border: 0px; grid-template-columns: minmax(0, 1fr) !important; gap: 0 !important; padding: 0 !important; }
   .gw-side {
     /* 压在弹窗（.gw-modal-backdrop 是 25）底下：「新建 Bot」「插件」这几个弹窗就是从抽屉里
        点出来的，抽屉压在上面的话弹窗开了也看不见。 */
@@ -1411,6 +1481,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 
   .gw-main { grid-template-columns: minmax(0, 1fr) !important; border: 0; border-radius: 0; }
   .gw-head { gap: var(--space-2); padding: var(--space-2) var(--space-3); }
+  .gw-side .satu-brand { padding-bottom: var(--space-1); }
   .gw-aside { grid-row: 2; grid-column: 1; z-index: 5; border-left: 0; background: var(--color-neutral-100); }
   .gw-aside-grip { display: none; }
   .gw-page { padding: var(--space-4); }
@@ -1508,3 +1579,91 @@ html.satu-mobile .gw-shell { height: var(--satu-vvh, 100dvh) !important; }
 /* 键盘弹着时 Home 条那一截被键盘盖着，底下的安全区不用再让；不去掉就是键盘上沿一道底色（实测）。 */
 html.satu-kbd .gw-shell { padding-bottom: 0 !important; }
 html.satu-mobile, html.satu-mobile body { overscroll-behavior: none; }
+
+/* Desktop window controls live outside #app so page renders cannot replace them. */
+.satu-windowbar { position: fixed; z-index: 100; top: 0; left: 0; display: flex; align-items: center; width: 100%; height: 40px; padding-left: 10px; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+.satu-window-controls { display: flex; flex: none; }
+.satu-window-control { display: grid; place-items: center; width: 20px; height: 28px; padding: 0; border: 0; margin: 0; border-radius: 5px; background: transparent; cursor: default; color: #49312a; }
+.satu-window-dot { display: block; width: 12px; height: 12px; box-sizing: border-box; border: 1px solid rgb(0 0 0 / 12%); border-radius: 50%; background: var(--window-dot); }
+.satu-window-control[data-window-action='close'] { --window-dot: #ff5f57; }
+.satu-window-control[data-window-action='minimize'] { --window-dot: #febc2e; }
+.satu-window-control[data-window-action='fullscreen'] { --window-dot: #28c840; }
+.satu-window-dot svg { display: block; width: 10px; height: 10px; opacity: 0; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.satu-window-controls:hover .satu-window-dot svg, .satu-window-controls:focus-within .satu-window-dot svg { opacity: .85; }
+.satu-window-control:focus-visible { outline: 2px solid var(--ring, var(--primary)); outline-offset: 1px; }
+.satu-window-control:active .satu-window-dot { filter: brightness(.83); }
+.satu-window-control:disabled .satu-window-dot, .satu-windowbar[data-focused='false']:not(:hover):not(:focus-within) .satu-window-dot { background: #c9c7c2; border-color: rgb(0 0 0 / 9%); }
+.satu-window-control:disabled .satu-window-dot svg { opacity: 0; }
+.satu-window-drag { flex: 1; height: 100%; min-width: 10px; }
+.satu-window-error { position: fixed; z-index: 110; top: 42px; left: 12px; max-width: min(340px, calc(100vw - 24px)); padding: 10px 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--popover, var(--card)); color: var(--foreground, var(--fg)); box-shadow: 0 4px 16px rgb(0 0 0 / 12%); font: 12px/1.7 -apple-system, BlinkMacSystemFont, sans-serif; overflow-wrap: anywhere; }
+.satu-window-error[hidden] { display: none; }
+
+/* Windows uses a caption strip with controls on the right. */
+html.satu-window-windows .satu-windowbar { height: 36px; width: 100%; padding: 0; background: var(--color-surface, var(--bg)); }
+html.satu-window-windows .satu-window-controls { order: 2; height: 100%; }
+html.satu-window-windows .satu-window-drag { order: 1; display: flex; align-items: center; padding-left: 14px; }
+.satu-window-caption { color: var(--muted-foreground, var(--muted)); font: 12px/1 "Segoe UI", sans-serif; }
+html.satu-window-windows .satu-window-control { width: 46px; height: 36px; border-radius: 0; color: var(--foreground, var(--fg)); }
+.satu-window-glyph { display: flex; align-items: center; justify-content: center; width: 12px; height: 12px; }
+.satu-window-glyph svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1; shape-rendering: geometricPrecision; }
+html.satu-window-windows .satu-window-control:hover:not(:disabled) { background: color-mix(in srgb, var(--foreground, var(--fg)) 9%, transparent); }
+html.satu-window-windows .satu-window-control:active:not(:disabled) { background: color-mix(in srgb, var(--foreground, var(--fg)) 15%, transparent); }
+html.satu-window-windows .satu-window-control[data-window-action='close']:hover { background: #c42b1c; color: #fff; }
+html.satu-window-windows .satu-window-control[data-window-action='close']:active { background: #a82316; }
+html.satu-window-windows .satu-window-control:focus-visible { outline-offset: -3px; }
+html.satu-window-windows .satu-window-control:disabled { opacity: .35; }
+html.satu-window-windows .satu-windowbar[data-focused='false']:not(:hover):not(:focus-within) .satu-window-control { color: var(--muted-foreground, var(--muted)); }
+html.satu-window-windows .satu-window-error { left: auto; right: 12px; }
+
+/* The desktop canvas reaches the window edges; there is no second outer frame. */
+html.satu-custom-window .gw-shell { --gw-main-border: 0px; padding: 0 !important; gap: 0 !important; }
+html.satu-custom-window .gw-side { border-radius: 0 !important; border-right: 1px solid var(--border); }
+/* 品牌区在窗口按钮下方，与所有页面共用同一条顶栏分隔线。 */
+html.satu-window-macos .gw-shell { --gw-side-top: 28px; }
+html.satu-window-macos .gw-side { padding-top: var(--gw-side-top) !important; }
+html.satu-window-macos .satu-brand { padding-bottom: 0; }
+html.satu-window-macos .satu-brand img { max-height: 100%; }
+html.satu-custom-window .gw-main { border: 0; border-radius: 0; }
+html.satu-window-macos body:has(.gw-shell) .satu-windowbar { width: 248px; }
+html.satu-window-macos .gw-shell:has(.satu-rail) { grid-template-columns: 80px minmax(0, 1fr) !important; }
+html.satu-window-macos body:has(.satu-rail) .satu-windowbar { width: 80px; }
+html.satu-custom-window .gw-head { user-select: none; -webkit-user-select: none; }
+/* #app 是 content-box，min-height 100% 再加标题栏的 padding-top 会把页面撑出一截，Windows 上就是常驻滚动条。 */
+html.satu-custom-window #app { box-sizing: border-box; }
+html.satu-custom-window body:not(:has(.gw-shell)) #app { padding-top: 40px; }
+html.satu-custom-window .gw-login { min-height: calc(100vh - 40px); min-height: calc(100dvh - 40px); }
+html.satu-custom-window body:not(:has(.gw-shell)) .satu-windowbar { background: var(--color-bg); }
+
+@media (max-width: 800px) {
+  html.satu-window-macos body:has(.gw-shell) .satu-windowbar { width: 80px; }
+  html.satu-window-macos .gw-shell:has(.satu-rail) { grid-template-columns: minmax(0, 1fr) !important; }
+  html.satu-window-macos .gw-head { padding-left: 84px; }
+}
+
+/* Reserve caption space for every Windows page, including login and right-side panels. */
+html.satu-window-windows #app { padding-top: 36px; }
+html.satu-window-windows body:not(:has(.gw-shell)) #app { padding-top: 36px; }
+html.satu-window-windows .gw-shell { height: calc(100vh - 36px) !important; height: calc(100dvh - 36px) !important; }
+html.satu-window-windows .gw-login { min-height: calc(100vh - 36px); min-height: calc(100dvh - 36px); }
+html.satu-window-windows body:not(:has(.gw-shell)) .satu-windowbar { background: var(--color-surface, var(--bg)); }
+.satu-web-unread {
+  flex: none; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box;
+  border-radius: 9px; background: #dc3545; color: #fff; font-size: 10px;
+  line-height: 18px; text-align: center; font-weight: 600;
+}
+#web-notifications {
+  position: fixed; right: max(24px, env(safe-area-inset-right));
+  bottom: max(24px, env(safe-area-inset-bottom)); z-index: 180;
+  width: min(360px, calc(100vw - 32px)); display: grid; gap: 10px;
+}
+.satu-web-notice {
+  display: flex; align-items: flex-start; border: 1px solid var(--border);
+  border-radius: 12px; background: var(--color-surface); color: var(--color-text);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 14%); overflow: hidden;
+}
+.satu-web-notice-open { flex: 1; min-width: 0; padding: 16px; text-align: left; }
+.satu-web-notice-open strong { display: block; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.satu-web-notice-open span { display: block; margin-top: 5px; font-size: 12px; color: var(--muted-foreground); }
+.satu-web-notice-close { flex: none; padding: 10px 14px; font-size: 20px; color: var(--muted-foreground); }
+.satu-web-notice button { margin: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font-family: inherit; line-height: 1.5; cursor: pointer; }
+.satu-web-notice button:hover { background: var(--muted); }

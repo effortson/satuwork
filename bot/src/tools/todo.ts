@@ -91,6 +91,27 @@ export async function clearSettledTodos(ctx: Context, sessionId: string, callId:
 }
 
 /**
+ * 主 Bot 派来的活收口时，把清单放回它开跑之前的样子（docs/bot-tasks.md §7）。
+ *
+ * 清单是整条会话一份，派活那一轮列的步骤会留在这里：活被停了，输入框上面还挂着「正在执行 0/4」，
+ * 而提示词又叫模型「拿不准做到哪儿了就读一次 todo」——上下文里去掉了那一轮，它照样从清单里把
+ * 作废的活读回来接着做。派活那一轮的清单只属于那一轮。没变过就不动。
+ */
+export async function restoreTodos(ctx: Context, sessionId: string, before: TodoItem[], callId: string): Promise<boolean> {
+  const col = ctx.storage.collection<TodoItem[]>(COLLECTION)
+  const now = col.get(sessionId) ?? []
+  if (JSON.stringify(now) === JSON.stringify(before)) return false
+  if (before.length) col.put(sessionId, before)
+  else col.delete(sessionId)
+  try {
+    await ctx.sessions.append(sessionId, 'todo/list', { callId, items: before })
+  } catch (e) {
+    ctx.logger?.warn?.(`todo: 派活收口放回清单之后，快照事件没写进去 ${(e as Error).message}`)
+  }
+  return true
+}
+
+/**
  * 状态别名。
  *
  * 通常的口径是「模型写错了参数就告诉它，让它改」（见 tools/common.ts），但这几个
@@ -281,9 +302,26 @@ export function apply(ctx: Context) {
       const col = ctx.storage.collection<TodoItem[]>(COLLECTION)
       const current = col.get(call.sessionId) ?? []
 
+      /**
+       * **只有真的什么都没带才是「读」。** 带了别的键却没有 todos（字段名写错了、参数没解析出来），
+       * 照「读」处理的话它拿到一句「清单是空的，带 todos 再调一次」，再调一次还是一样——一轮里
+       * 原地连调几十次。明说没认出 todos，它才知道是参数的事。
+       */
       if (args.todos === undefined) {
+        const keys = Object.keys(args ?? {}).filter((k) => k !== 'merge')
+        if (keys.length) {
+          fail(`没认出 todos 参数（收到的是：${keys.join('、')}）。写清单要用 todos 数组；只想读当前清单就什么参数都不带。`)
+        }
         if (!current.length) return '清单是空的。要列一张就带 todos 数组再调一次；一两步能做完的活不用列。'
         return render(current)
+      }
+      // 有的模型把数组写成了一段 JSON 字符串。意思没有歧义，照数组认。
+      if (typeof args.todos === 'string') {
+        try {
+          args = { ...args, todos: JSON.parse(args.todos) }
+        } catch {
+          fail('todos 要是一个数组，这次给的是一段解析不了的字符串。')
+        }
       }
       if (!Array.isArray(args.todos)) {
         fail('todos 要是一个数组。只想看当前清单的话，不要带任何参数调用。')

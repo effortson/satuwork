@@ -3,7 +3,7 @@
  *
  * 两个形态共用同一个右栏：**列表**挂在那块屏下面，**详情**把整栏换掉（见 render.js
  * 的 pageAside）。换掉的时候那块屏并没有卸载，只是被藏起来——桌面是一条 VNC 连接，
- * 卸一次就断一次（见 chat.js 的 syncDesktop）。
+ * 卸一次就断一次（见 chat-desktop.js 的 syncDesktop）。
  *
  * 数据全在 Gateway：/runtime/bots/:id/routines 那一组。到点真正去跑的是 Gateway 的
  * 调度器，不是这个页面——浏览器关着的时候它照样得跑，这也是整个功能的意义所在。

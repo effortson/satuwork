@@ -3,5 +3,5 @@
   "identifier": "setup",
   "description": "只给打进包里的「连服务器」设置页，允许它读取和保存 Gateway 地址。",
   "windows": ["setup"],
-  "permissions": ["core:default", "setup-commands"]
+  "permissions": ["core:default", "desktop-window-commands", "setup-commands"]
 }

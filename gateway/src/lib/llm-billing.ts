@@ -10,24 +10,12 @@ import type { Account, ChargeStatus, Db } from '../db.ts'
 import { HttpError } from '../http.ts'
 import type { CatalogModel } from '../llm.ts'
 import type { Billable, Meter } from './meter.ts'
-import { gateAccount, gateCompany } from './guards.ts'
+import { assertUsable } from './guards.ts'
 import type { TokenUsage } from './llm-usage.ts'
 import { imageEstimateTokens, imageModelDef, isImageModel, isImageModelKey } from '../image-models.ts'
 
 /** settle 只用得着这三样。管家结算时目录里可能已经没有这个模型了，那时只有这三样。 */
 type Billed = Pick<CatalogModel, 'provider' | 'id' | 'cost'>
-
-/**
- * 账号本身能不能用：停用 / 还没接受邀请 / 公司被停用。API Key 和登录 JWT 两条路共用，
- * 文案要能直接给调用方看——bot 会把它原样变成一条失败消息。
- *
- * **就是控制台那两道闸**（guards.ts 的 gateAccount + gateCompany），所以直接叫它们，不
- * 再抄一份：这里原先是逐字重写的同一套状态码和同一句中文，而「/v1 的规矩」和「控制台的
- * 规矩」一旦分成两份，下次改其中一句的人不会知道还有另一份。
- */
-export async function assertUsable(db: Db, account: Account | undefined): Promise<Account> {
-  return await gateCompany(db, gateAccount(account))
-}
 
 /**
  * 席位 API Key（`sk_sw_`）→ 账号。不是这个前缀一律 401：`sat_` 是席位运行时票，登录 JWT

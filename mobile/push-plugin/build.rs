@@ -1,4 +1,4 @@
-const COMMANDS: &[&str] = &["register", "take_tap"];
+const COMMANDS: &[&str] = &["register", "take_tap", "clear_notifications", "background_status", "open_background_settings"];
 
 fn main() {
     // tauri-plugin 的构建脚本只盯 permissions/ 和拷进来的 Tauri API，不盯我们自己的原生代码：

@@ -11,9 +11,9 @@
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadApp } from './ui-dom.mjs'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
+import { startGateway } from './gateway.mjs'
 
 export async function runMemory({ root, gwRoot, test, req, start, waitHttp, assert, log }) {
   const GW_HOME = tmpOf('satuwork-e2e-memory')
@@ -21,24 +21,20 @@ export async function runMemory({ root, gwRoot, test, req, start, waitHttp, asse
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# memory')
 
-  const gw = start('memory-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'memory-gw',
+    what: 'memory gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_memory'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_memory'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
       GATEWAY_PLATFORM_TOKEN: 'e2e-platform-memory',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'memory gateway' })
 
   let owner = ''
   let adminTok = ''

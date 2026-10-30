@@ -53,7 +53,7 @@ export interface TurnContextGuardOptions {
   /** 这一轮的消息从 messages 的第几条开始。在这之前的助手消息上的 usage 是旧的（可能在压缩之前），不认。 */
   base: number
   /**
-   * 进这一轮之前，上一条上下文边界之后 provider 回报过的输入高水位（observedPromptHighWater）。
+   * 进这一轮之前，上一条上下文边界之后 provider 最近一次回报的输入（observedPromptTokens）。
    *
    * 这一轮第一次调用时还没有本轮的实测，只能靠估——而表格 XML、数字串比估算的 3.6 字符
    * 一 token 密得多，一份实际 100 万的上下文可能只估出 70 万，护栏根本不动手。上一轮

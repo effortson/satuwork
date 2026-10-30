@@ -203,4 +203,11 @@ export async function runWorkspaceFiles({ root, test, assert, log }) {
     assert(r.open.字节读得回来 === '89504e47', `字节对不上：${r.open.字节读得回来}`)
     assert(r.openEscape, '预览能读工作区外面的文件')
   })
+
+  await test('一个 Bot 一格：共享区进得去，老文件原地读写不分叉，目录只在读时兜，bots/ 和 shared/ 不能借道', () => {
+    // 老路径只兜读的话，模型按历史里的路径读完再写回去，就在自己格子里新长出一份，老的那份原样不动。
+    assert(r.split, `没有 split 结果：${JSON.stringify(Object.keys(r))}`)
+    const bad = Object.entries(r.split).filter(([, v]) => v !== true).map(([k]) => k)
+    assert(!bad.length, `这几条不对：${bad.join('、')}`)
+  })
 }

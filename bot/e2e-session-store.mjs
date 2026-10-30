@@ -150,7 +150,29 @@ const danglingTurn = () => inTmp('satuwork-sess-c-', async (root) => {
   ]
   writeFileSync(join(root, `${done}.jsonl`), doneLines.map((l) => JSON.stringify(l)).join('\n') + '\n')
 
+  // 3c. 断电时一张确认卡还在等人点：pending 要补成 aborted，已经有终态的那张不动
+  const ask = 's-ask'
+  const approval = (seq, callId, state) => ({
+    seq, time: seq, type: 'tool/approval',
+    data: { callId, name: 'request_folder_access', arguments: '{}', reason: 'r', state, ...(state === 'pending' ? { expiresAt: 99 } : {}) },
+  })
+  writeFileSync(
+    join(root, `${ask}.jsonl`),
+    [
+      { seq: 1, time: 1, type: 'session', data: { version: 2, id: ask, createdAt: 1, title: '等批', botId: 'default', origin: 'local' } },
+      { seq: 2, time: 2, type: 'turn/start', data: { turn: 3 } },
+      approval(3, 'c-done', 'pending'),
+      approval(4, 'c-done', 'approved'),
+      approval(5, 'c-wait', 'pending'),
+    ]
+      .map((l) => JSON.stringify(l))
+      .join('\n') + '\n',
+  )
+
   const sessions = await freshService(root)
+  const askEvents = await sessions.events(ask)
+  const askTail = askEvents.slice(5).map((e) => `${e.type}:${e.data.callId || e.data.reason}:${e.data.state || ''}`)
+  const askAgain = await (await freshService(root)).events(ask)
   const cutEvents = await sessions.events(cut)
   const doneEvents = await sessions.events(done)
   const last = cutEvents[cutEvents.length - 1]
@@ -169,6 +191,10 @@ const danglingTurn = () => inTmp('satuwork-sess-c-', async (root) => {
     // 再读一次不该再补一条
     stableOnReload: cutAgain.filter((e) => e.type === 'turn/end').length,
     untouchedDone: doneEvents.length,
+    // 只补还在等的那张，补在 turn/end 前面；重读不再补
+    approvalTail: askTail.join(' '),
+    approvalAbortedHasNoDeadline: askEvents[5]?.data && !('expiresAt' in askEvents[5].data),
+    approvalStableOnReload: askAgain.length === askEvents.length,
   }
 })
 

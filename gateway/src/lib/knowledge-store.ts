@@ -18,12 +18,9 @@ import { del, head, put } from '@vercel/blob'
 import type { KnowledgeFile } from '../db.ts'
 import { gatewayHome } from '../home.ts'
 import { HttpError } from '../http.ts'
+import { blobToken, isOurBlobUrl } from './blob.ts'
 
 export type StoreMode = 'blob' | 'disk'
-
-function blobToken(): string {
-  return (process.env.BLOB_READ_WRITE_TOKEN || '').trim()
-}
 
 /** Blob 配了就是 blob；否则本地盘。函数环境没有可写盘，那时 disk 模式的写会 501。 */
 export function storeMode(): StoreMode {
@@ -38,6 +35,7 @@ export function blobPathOf(file: Pick<KnowledgeFile, 'companyId' | 'kbId' | 'id'
   return `kb/${file.companyId}/${file.kbId}/${file.id}`
 }
 
+/** `storage` 是一个地址（Blob）还是盘上的相对路径。只看形状；是不是我们的库另由 isOurBlobUrl 认。 */
 function isBlobUrl(storage: string): boolean {
   return /^https?:\/\//.test(storage)
 }
@@ -145,6 +143,9 @@ export async function saveStream(
  */
 export async function verifyBlobUpload(file: Pick<KnowledgeFile, 'companyId' | 'kbId' | 'id'>, url: string): Promise<{ size: number; contentType: string }> {
   if (storeMode() !== 'blob') throw new HttpError(400, '当前不是对象存储模式')
+  // 这个地址是浏览器报上来的，过了这里就进库，之后取原文件要带着 token 去打它。head() 只把它
+  // 当查询参数交给 Blob API、自己不去访问，挡不住别家主机名——所以先按 origin 认准。
+  if (!isOurBlobUrl(url)) throw new HttpError(400, '这个地址不是给这份文件签的')
   let meta: { size: number; pathname: string; contentType: string }
   try {
     meta = await head(url, { token: blobToken() })
@@ -160,6 +161,8 @@ export async function verifyBlobUpload(file: Pick<KnowledgeFile, 'companyId' | '
 }
 
 async function fetchBlob(url: string): Promise<Response> {
+  // 库里已有的行也再认一遍：token 能读写整个库（所有公司的原文件和发布包），不能寄错地方。
+  if (!isOurBlobUrl(url)) throw new HttpError(502, '原文件地址不在本站对象存储里，请重新上传')
   const r = await fetch(url, {
     headers: { authorization: `Bearer ${blobToken()}` },
     signal: AbortSignal.timeout(300_000),

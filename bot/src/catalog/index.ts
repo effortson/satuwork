@@ -1,5 +1,5 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
 import { browserOf, desktopOf, guardsOf, type BotRecord } from '../registry/index.ts'
 import { mcpToolName, mcpToolRisk, McpHttpClient, type JsonRpcTool } from './mcp.ts'
 
@@ -99,6 +99,30 @@ export interface RemoteKnowledge {
   name: string
   desc: string
   fileCount: number
+}
+
+/**
+ * 这颗 Bot 能派活给谁（docs/bot-tasks.md §5）。**只有主 Bot 的目录里有**：Gateway 只给这个账号的
+ * 主 Bot 下发名单，别的 Bot 这一格永远是空的——assign_task 进不进工具表就看它空不空。
+ */
+export interface RemoteAssignable {
+  id: string
+  name: string
+  desc: string
+}
+
+function assignableOf(raw: unknown): RemoteAssignable[] {
+  if (!Array.isArray(raw)) return []
+  const out: RemoteAssignable[] = []
+  for (const x of raw) {
+    if (!x || typeof x !== 'object') continue
+    const o = x as Record<string, unknown>
+    const id = typeof o.id === 'string' ? o.id : ''
+    const name = typeof o.name === 'string' ? o.name.trim() : ''
+    if (!id || !name) continue
+    out.push({ id, name, desc: typeof o.desc === 'string' ? o.desc.trim() : '' })
+  }
+  return out
 }
 
 function knowledgeOf(raw: unknown): RemoteKnowledge[] {
@@ -358,6 +382,8 @@ export class CatalogService extends Service {
 
   /** 这颗 Bot 查得到的知识库。空 = 没有，`knowledge_search` 不进工具表（agent 的 toolSchemasFor）。 */
   knowledge: RemoteKnowledge[] = []
+  /** 这颗 Bot（主 Bot）能派活给谁。空 = 不是主 Bot，`assign_task` 不进工具表（agent 的 toolSchemasFor）。 */
+  assignable: RemoteAssignable[] = []
   /** 上一次拉到的公司模版版本号。给 /api/runtime/status 看，也用来打日志。 */
   templateVersion = 0
   /** 上一次探针给的指纹。变了才重拉整份目录。 */
@@ -463,6 +489,7 @@ export class CatalogService extends Service {
         enabled: r.value.enabled,
       })),
       knowledge: this.knowledge.map((k) => ({ id: k.id, name: k.name, files: k.fileCount })),
+      assignable: this.assignable.map((b) => ({ id: b.id, name: b.name })),
       servers: this.servers.map((s) => ({
         id: s.id,
         name: s.name,
@@ -493,7 +520,7 @@ export class CatalogService extends Service {
 
   /** SATUWORK_BOT_ID 对应的那一颗已经钉进名册。 */
   get pinSucceeded(): boolean {
-    const id = (process.env.SATUWORK_BOT_ID || '').trim()
+    const id = pinnedBotId()
     if (!id) return false
     return Boolean(this.pulledAt && this.ctx.roster.get(id))
   }
@@ -522,10 +549,11 @@ export class CatalogService extends Service {
       models?: { daily?: ModelRole; utility?: ModelRole; dailyAlternates?: ModelRole[]; image?: unknown }
       memories?: Partial<CachedMemory>[]
       knowledge?: unknown
+      assignable?: unknown
     }
     // **发车时刻要在 fetch 之前取**：豁免的判据就是「这份响应比那次写入更旧」。
     const startedAt = Date.now()
-    const pinId = (process.env.SATUWORK_BOT_ID || '').trim()
+    const pinId = pinnedBotId()
     const catalogUrl = pinId
       ? `${base}/runtime/catalog?botId=${encodeURIComponent(pinId)}`
       : base + '/runtime/catalog'
@@ -562,6 +590,8 @@ export class CatalogService extends Service {
     }
     // 老 Gateway 不带 = 空 = 没有知识库工具。
     this.knowledge = knowledgeOf(body.knowledge)
+    // 老 Gateway 不带 = 空 = 不是主 Bot，没有派活那把工具。
+    this.assignable = assignableOf(body.assignable)
     this.syncSkills(Array.isArray(body.skills) ? body.skills : [], { since: startedAt })
     /** 没有 id 的那些当场丢掉：缓存是按 id 认的，一条没有 id 的记录进去就再也删不掉。 */
     const memories = (Array.isArray(body.memories) ? body.memories : []).filter(
@@ -675,7 +705,7 @@ export class CatalogService extends Service {
    * 两者在界面上不是一回事。
    */
   private probeUrl(): string {
-    const pinId = (process.env.SATUWORK_BOT_ID || '').trim()
+    const pinId = pinnedBotId()
     const q = new URLSearchParams()
     if (pinId) q.set('botId', pinId)
     if (this.templateVersion > 0) q.set('have', String(this.templateVersion))
@@ -859,7 +889,7 @@ export class CatalogService extends Service {
   }
 
   private pinBots(items: RemoteBot[]): boolean {
-    const only = (process.env.SATUWORK_BOT_ID || '').trim()
+    const only = pinnedBotId()
     if (!only) {
       // GATEWAY_URL 已设才会走到这里。没有钉 id 就不钉整份目录，也不种 default。
       this.lastError = '未设 SATUWORK_BOT_ID，不钉目录'
@@ -1122,7 +1152,7 @@ export function apply(ctx: Context) {
     })
 
     ctx.server.post('/api/bots/pin', async (req, res) => {
-      if ((process.env.SATUWORK_BOT_ID || '').trim()) {
+      if (pinnedBotId()) {
         res.status = 410
         res.json({ error: 'Bot 配置在 Gateway' })
         return

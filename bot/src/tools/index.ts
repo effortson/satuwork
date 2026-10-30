@@ -361,8 +361,9 @@ export class ToolService extends Service {
       try {
         args = call.arguments.trim() ? JSON.parse(call.arguments) : {}
       } catch (e) {
-        // 参数不是合法 JSON 是模型的问题，告诉它，让它重试——不算管道故障。
-        return { text: `参数不是合法 JSON：${(e as Error).message}` }
+        // 参数不是合法 JSON 是模型的问题，告诉它，让它重试——不算管道故障。原文带一截，它才看得出错在哪。
+        const head = call.arguments.length > 300 ? `${call.arguments.slice(0, 300)}…` : call.arguments
+        return { text: `参数不是合法 JSON：${(e as Error).message}。收到的是：${head}\n请重新调用，参数给一个合法的 JSON 对象。` }
       }
       /**
        * 重绑（见 ToolDelegation.rebind）。**做在这里，不做在工具里。**

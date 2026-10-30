@@ -13,6 +13,8 @@ export interface SeatSpec {
   workDir: string
   seatDir: string
   botId: string
+  /** Bot 的名字，只用来写工作区那一格的名牌（seat-workdir.sh）。老 Gateway 不带。 */
+  botName?: string
   botVersion: string
   /**
    * bot 包的直连地址和它的 sha256（协议 11）。成对出现或都不出现；没有就从 Gateway 拉。
@@ -575,6 +577,7 @@ async function doDeploy(spec: SeatSpec, token: string): Promise<SeatRecord> {
       // 它），而 bot 进程和它的子进程都在席位那个普通 Linux 用户名下。bot 上报 /internal/* 用席位票
       // （GATEWAY_TOKEN）就够了。`token` 在这个函数里只用于向 Gateway 拉发布包。
       SATUWORK_BOT_ID: spec.botId,
+      BOT_NAME: spec.botName ?? '',
     },
   })
   if (r.code !== 0) return fail(tailError(r, `deploy script exited ${r.code}`))

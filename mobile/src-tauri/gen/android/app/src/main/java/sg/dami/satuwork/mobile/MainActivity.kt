@@ -1,12 +1,20 @@
 package sg.dami.satuwork.mobile
 
 import android.os.Bundle
+import android.content.Intent
 import android.view.View
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
 class MainActivity : TauriActivity() {
+  override fun onNewIntent(intent: Intent) {
+    // 后台进程被回收后，系统可能先按旧任务重建 Activity，再投递通知 intent。
+    // 此时推送插件还没加载，必须保存新 intent，供插件 load() 读取 botId / kind。
+    setIntent(intent)
+    super.onNewIntent(intent)
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
