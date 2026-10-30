@@ -1053,7 +1053,7 @@ function taskInRowShell(b, key) {
     `<div class="sw-taskname"><span class="sw-taskname-bot">${esc((bot && bot.name) || b.taskFrom.name)}</span><span class="sw-taskname-tag"></span></div>` +
     `<div class="sw-bubble" data-role="assistant"><div class="sw-md"></div><div class="sw-chips" hidden></div>` +
     `<button type="button" class="sw-taskin-toggle" data-act="chat-taskin-toggle" data-seq="${esc(b.openKey || '')}" hidden></button></div>` +
-    `<time class="sw-time" hidden></time>${msgActsHtml(b)}</div></div>`
+    `<div class="sw-msg-meta"><time class="sw-time" hidden></time></div>${msgActsHtml(b)}</div></div>`
   )
 }
 
@@ -1493,7 +1493,7 @@ function rowShell(b, key) {
   //
   // 内容留空，交给 updateRow：助手那条**还在输出时是读秒**、输出完了才换成时刻，
   // 而 rowShell 只在节点新建时跑一次，盯不住这个变化。
-  const time = '<time class="sw-time" hidden></time>'
+  const time = '<div class="sw-msg-meta"><time class="sw-time" hidden></time></div>'
   /**
    * 悬停才出现的那排动作，第一版只有「引用」（见 docs/chat-references.md §7.2）。
    *

@@ -260,7 +260,9 @@
 
 /* 时间戳。两侧一样，都在气泡**外面**——压进气泡里的话，同一条消息里就有了两种
    字号两种颜色，而时间只是旁注。列的对齐方向（sw-msg-col）自然把它推到各自那一边。 */
-.sw-time { font-size: 11.5px; line-height: 16px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.sw-msg-meta { display: flex; align-items: baseline; gap: 8px; }
+.sw-time, .sw-content-report { font-size: 11.5px; line-height: 16px; color: var(--muted-foreground); }
+.sw-time { font-variant-numeric: tabular-nums; }
 
 /* 工具痕迹 / 引用来源。靠间距和药丸本身的底色跟正文分开，不画分割线——
    气泡本来就是一个视觉容器，里面再切一刀是双重分组。 */
@@ -2343,7 +2345,7 @@ button.sw-ref-card:hover { background: color-mix(in srgb, var(--secondary) 70%, 
   cursor: pointer;
 }
 .sw-msg-act:hover { color: var(--color-text); background: var(--secondary); }
-.sw-content-report { align-self: flex-start; display: inline-flex; width: fit-content; border: 0; background: transparent; color: var(--muted-foreground); font: inherit; font-size: 11px; padding: 5px 0; cursor: pointer; }
+.sw-content-report { border: 0; background: transparent; font-family: inherit; padding: 0; cursor: pointer; }
 .sw-content-report:focus-visible { outline: 2px solid var(--color-accent-500); outline-offset: 2px; }
 #content-report-form textarea, #content-report-form select { border-radius: 12px; padding: 10px 12px; }
 #content-report-form textarea { resize: vertical; min-height: 72px; }

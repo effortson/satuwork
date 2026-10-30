@@ -248,7 +248,7 @@ function updateRow(el, b, streaming, since) {
       report.type = 'button'
       report.className = 'sw-content-report'
       report.setAttribute('data-act', 'content-report-open')
-      el.querySelector('.sw-msg-col')?.appendChild(report)
+      el.querySelector('.sw-msg-meta')?.appendChild(report)
     }
     report.setAttribute('data-seq', String(qseq))
     report.setAttribute('data-key', el.getAttribute('data-key') || '')
