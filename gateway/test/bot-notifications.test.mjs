@@ -106,6 +106,54 @@ test('seat notification protocol and durable outbox', async (t) => {
         assert.equal([...rows.values()].some((r) => r.kind === 'notification'), false)
       } finally { ctx.stop() }
     })
+
+    await t.test('assigned turns in the main session stay silent; approvals and later user turns still notify', async () => {
+      const task = { kind: 'plugin', plugin: 'task', phase: 'instruction', form: 'task-1' }
+      const rows = new Map(), events = new Map([['s-assigned', [root()]]])
+      const ctx = seat(rows, events), before = pushes.length
+      let seq = 1
+      const emit = (type, data) => ctx.emit('s-assigned', { type, seq: ++seq, time: 1000 + seq, data })
+      try {
+        for (const [index, reason] of ['completed', 'error', 'capped'].entries()) {
+          emit('user/message', { source: task })
+          emit('turn/start', { turn: index + 1 })
+          if (!index) {
+            emit('tool/approval', { callId: 'assigned-approval', state: 'pending' })
+            await until(() => pushes.length > before)
+            assert.equal(pushes.at(-1).kind, 'approval')
+          }
+          emit('turn/end', { turn: index + 1, reason })
+        }
+        await delay(30)
+        assert.equal(pushes.length, before + 1)
+
+        emit('user/message', { source: { kind: 'user' } })
+        emit('turn/start', { turn: 4 })
+        emit('turn/end', { turn: 4, reason: 'completed' })
+        const userEndSeq = seq
+        // 通知异步读历史时，下一件派活可能已经开跑，不能据最新来源误判上一轮。
+        emit('user/message', { source: task })
+        emit('turn/start', { turn: 5 })
+        await until(() => pushes.length === before + 2)
+        assert.equal(pushes.at(-1).seq, userEndSeq)
+      } finally { ctx.stop() }
+    })
+
+    await t.test('task results at the main bot and legacy task steering still notify', async () => {
+      const rows = new Map(), events = new Map([['s-result', [root()]]])
+      const ctx = seat(rows, events), before = pushes.length
+      try {
+        for (const event of [
+          { type: 'user/message', seq: 2, data: { source: { kind: 'plugin', plugin: 'task', phase: 'result' } } },
+          { type: 'turn/start', seq: 3, data: { turn: 1 } },
+          { type: 'user/message', seq: 4, data: { source: { kind: 'plugin', plugin: 'task', phase: 'instruction' } } },
+          { type: 'assistant/message', seq: 5, data: { turn: 1 } },
+          { type: 'turn/end', seq: 6, data: { turn: 1, reason: 'completed' } },
+        ]) ctx.emit('s-result', { time: 2000, ...event })
+        await until(() => pushes.length > before)
+        assert.equal(pushes.at(-1).seq, 6)
+      } finally { ctx.stop() }
+    })
   } finally {
     for (const key of ['GATEWAY_URL', 'GATEWAY_TOKEN', 'SATUWORK_BOT_ID', 'SATUWORK_RUNTIME_KIND']) {
       if (old[key] === undefined) delete process.env[key]

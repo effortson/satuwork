@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { gatewayToken, gatewayUrl, isLocalRuntime, pinnedBotId } from '../env.ts'
 import type { SessionEvent, SessionOrigin } from './types.ts'
 import type { Handoff } from '../policy/handoff.ts'
+import { withoutTaskTurns } from '../agent/task-turns.ts'
 
 export const name = 'satu-session-gateway'
 export const inject = ['server', 'sessions', 'catalog', 'storage']
@@ -476,6 +477,12 @@ export function apply(ctx: Context) {
   }
   async function reportPush(sessionId: string, event: SessionEvent, kind: 'turn-end' | 'approval') {
     if (!configured() || isLocalRuntime() || await isSideSession(sessionId)) return
+    // 派活跑在目标 Bot 的主会话里，不能只靠会话 kind 排除。只检查这次收口之前的历史，
+    // 避免异步读取时下一轮的指令影响归属；审批仍照常提醒，需要人来处理。
+    if (kind === 'turn-end') {
+      const events = (await ctx.sessions.events(sessionId)).filter((e) => e.seq <= event.seq)
+      if (!withoutTaskTurns(events).some((e) => e.seq === event.seq)) return
+    }
     const botId = await botOfSession(sessionId)
     if (!botId || !event.seq) return
     const actionId = kind === 'approval' ? String((event.data as { callId?: string })?.callId || '') : ''

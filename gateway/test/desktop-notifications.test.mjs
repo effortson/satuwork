@@ -81,6 +81,61 @@ test('local bot events persist while offline and resolved approvals never become
   assert.equal(restored.document.title, 'Satuwork Gateway')
 })
 
+test('local assigned task completion stays silent across replay and duplicate streams, preserving approvals and user replies', async () => {
+  const server = noticeServer(), ui = notificationClient(server, { platform: 'desktop' })
+  await ui.start(); ui.state.runtimeBots[0].runtimeKind = 'local'
+  const task = { kind: 'plugin', plugin: 'task', phase: 'instruction', form: 'task-1' }
+  const emit = (type, seq, data, replay = false, botId = 'bot-a') => ui.context.observeNotificationEvent(botId,
+    { type, seq, time: 1100 + seq, data }, replay, 'session-a')
+  // 连上时派活已在跑：指令和开轮从重放里恢复；聊天流和后台流会重复交同一条事件。
+  await emit('user/message', 2, { source: task }, true)
+  await emit('turn/start', 3, { turn: 1 }, true)
+  await emit('user/message', 2, { source: task })
+  await emit('turn/start', 3, { turn: 1 })
+  await emit('tool/approval', 4, { callId: 'task-approval', state: 'pending' })
+  await emit('human/handoff', 5, { id: 'task-handoff', state: 'open' })
+  await emit('turn/end', 6, { turn: 1, reason: 'completed' })
+  await emit('turn/end', 6, { turn: 1, reason: 'completed' })
+  await ui.poll()
+  assert.deepEqual(server.events.map((e) => e.kind), ['approval', 'handoff'])
+
+  // 其他 Bot 和同一 Bot 后面的人类对话都照常提醒。
+  ui.state.runtimeBots[1].runtimeKind = 'local'
+  await emit('turn/end', 1, { turn: 1, reason: 'completed' }, false, 'bot-b')
+  await emit('user/message', 7, { source: { kind: 'user' } })
+  await emit('turn/start', 8, { turn: 2 })
+  await emit('turn/end', 9, { turn: 2, reason: 'completed' })
+  await emit('turn/end', 6, { turn: 1, reason: 'completed' })
+  await ui.poll()
+  assert.deepEqual(server.events.filter((e) => e.kind === 'turn-end').map((e) => [e.botId, e.seq]), [['bot-b', 1], ['bot-a', 9]])
+})
+
+test('local task errors stay silent, while result delivery and legacy steering still notify', async () => {
+  const server = noticeServer(), ui = notificationClient(server, { platform: 'desktop' })
+  await ui.start(); ui.state.runtimeBots[0].runtimeKind = 'local'
+  let seq = 1
+  const emit = (type, data) => ui.context.observeNotificationEvent('bot-a',
+    { type, seq: ++seq, time: 1100 + seq, data }, false, 'session-a')
+  const task = { kind: 'plugin', plugin: 'task', phase: 'instruction' }
+  // 上一轮只剩 turn/start 的老日志不能把后续派活误判为插话。
+  await emit('turn/start', { turn: 1 })
+  for (const [index, reason] of ['error', 'capped', 'aborted'].entries()) {
+    await emit('user/message', { source: task })
+    await emit('turn/start', { turn: index + 2 })
+    await emit('turn/end', { turn: index + 2, reason })
+  }
+  await ui.poll()
+  assert.equal(server.events.length, 0)
+  await emit('user/message', { source: { ...task, phase: 'result' } })
+  await emit('turn/start', { turn: 5 })
+  await emit('user/message', { source: task })
+  await emit('assistant/message', { turn: 5 })
+  await emit('turn/end', { turn: 5, reason: 'completed' })
+  await ui.poll()
+  assert.equal(server.events.length, 1)
+  assert.equal(server.events[0].kind, 'turn-end')
+})
+
 test('roster stream preserves session identity and replay flags across upstream reconnects', () => {
   const up = { botId: 'bot-a', sessionId: 's-a', after: 0, lastTick: 0, attempt: 0, replaying: true }
   assert.equal(rosterFrame(turn(), up).replay, true)

@@ -1453,7 +1453,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
     await test('有管理员 + 没有票 + /login → 画登录页', async () => {
       const ui = await boot(undefined, { path: '/login' })
       const html = ui.html()
-      assert(html.includes('登录 Satuwork'), '没画登录页')
+      assert(html.includes('satu-login-heading') && html.includes('<h1>Satuwork</h1>'), '登录页缺少品牌标题')
       assert(html.includes('id="login-form"'), '登录表单不在')
       assert(!html.includes('satu-lp-hero'), '登录页上混进了首页')
     })

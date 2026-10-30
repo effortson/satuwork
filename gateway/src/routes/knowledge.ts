@@ -193,8 +193,15 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
     const account = await requireOrgUser(req, db, keys, req.params.id)
     const kb = await visibleOne(account, req.params.id, req.params.kbId)
     const files = await db.knowledgeFiles(kb.id)
+    // 入库、重试或删文件可能发生在两次查询之间；汇总和明细必须来自同一份文件快照。
+    const snapshot = {
+      ...kb,
+      bytesUsed: files.reduce((sum, file) => sum + file.bytes, 0),
+      fileCount: files.length,
+      chunkCount: files.reduce((sum, file) => sum + (file.status === 'ready' ? file.chunkCount : 0), 0),
+    }
     json(res, 200, {
-      knowledge: publicKnowledgeBase(kb, isAdmin(account) ? await db.knowledgeShares(kb.id) : []),
+      knowledge: publicKnowledgeBase(snapshot, isAdmin(account) ? await db.knowledgeShares(kb.id) : []),
       files: files.map(publicKnowledgeFile),
       ...await availability(),
       canEdit: isAdmin(account),

@@ -1,6 +1,6 @@
 {
   "name": "satuwork-desktop",
-  "version": "0.1.16",
+  "version": "0.1.18",
   "private": true,
   "scripts": {
     "dev": "tauri dev",

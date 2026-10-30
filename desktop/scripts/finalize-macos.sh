@@ -1,6 +1,6 @@
 #!/bin/bash
 # Tauri may finish notarization without attaching a ticket after a CloudKit outage.
-# Finalize every regional installer from a ticketed app, then re-sign its updater archive.
+# Finalize each installer from a ticketed app, then re-sign its updater archive.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
@@ -9,7 +9,7 @@ arch=${1:?expected aarch64 or x64}
 [[ "$arch" == aarch64 || "$arch" == x64 ]] || exit 64
 product=$(node -p "require('./desktop/src-tauri/tauri.conf.json').productName")
 version=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
-[[ "$product" == Satuwork-CN || "$product" == Satuwork-CN-Beta ]] || exit 64
+[[ "$product" == Satuwork || "$product" == Satuwork-CN || "$product" == Satuwork-CN-Beta ]] || exit 64
 for name in SATUWORK_CODESIGN_IDENTITY SATUWORK_CODESIGN_KEYCHAIN APPLE_API_KEY_PATH APPLE_API_KEY APPLE_API_ISSUER TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
   [ -n "${!name:-}" ] || { echo "Missing protected signing setting: $name" >&2; exit 1; }
 done

@@ -49,14 +49,14 @@ test('successful checks keep captured output clean and require no retry', () => 
   assert.equal(r.stderr, '')
 })
 
-function finalize(mode) {
+function finalize(mode, product = 'Satuwork-CN-Beta') {
   const root = mkdtempSync(join(tmpdir(), 'satuwork-apple-'))
   const dir = join(root, 'desktop/scripts'), bin = join(root, 'bin'), state = join(root, 'state')
   const bundle = join(root, 'desktop/src-tauri/target/release/bundle')
-  const app = join(bundle, 'macos/Satuwork-CN-Beta.app')
+  const app = join(bundle, `macos/${product}.app`)
   for (const p of [dir, bin, state, app]) mkdirSync(p, { recursive: true })
   for (const file of ['apple-retry.sh', 'finalize-macos.sh']) copyFileSync(join(scripts, file), join(dir, file))
-  writeFileSync(join(root, 'desktop/src-tauri/tauri.conf.json'), JSON.stringify({ productName: 'Satuwork-CN-Beta', version: '0.1.16-beta.4' }))
+  writeFileSync(join(root, 'desktop/src-tauri/tauri.conf.json'), JSON.stringify({ productName: product, version: '0.1.16-beta.4' }))
   const executable = (name, source) => writeFileSync(join(bin, name), '#!/bin/bash\nset -euo pipefail\n' + source, { mode: 0o755 })
   executable('sleep', 'echo "sleep $1" >> "$MOCK_STATE/events"\n')
   executable('codesign', ':\n')
@@ -117,6 +117,17 @@ test('finalizer cannot package or sign an updater when Apple validation keeps fa
     assert(!f.events.includes('submitted'))
     assert(!f.events.includes('signed'))
     assert(!existsSync(join(f.bundle, 'macos/Satuwork-CN-Beta.app.tar.gz')))
+  } finally { rmSync(f.root, { recursive: true, force: true }) }
+})
+
+test('international installer recovers ticket checks and includes the ticket in its signed updater', () => {
+  const f = finalize('recover', 'Satuwork')
+  try {
+    assert.equal(f.result.status, 0, f.result.stderr)
+    const archive = spawnSync('tar', ['-tzf', join(f.bundle, 'macos/Satuwork.app.tar.gz')], { encoding: 'utf8' })
+    assert.equal(archive.status, 0, archive.stderr)
+    assert.match(archive.stdout, /Satuwork\.app\/ticket/)
+    assert.match(f.events, /validate-dmg 5\nsigned\n$/)
   } finally { rmSync(f.root, { recursive: true, force: true }) }
 })
 
