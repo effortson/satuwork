@@ -2,6 +2,8 @@ import { Service, type Context } from '@deepseek-ai/cordis'
 import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
 import { browserOf, desktopOf, guardsOf, type BotRecord } from '../registry/index.ts'
 import { mcpToolName, mcpToolRisk, McpHttpClient, type JsonRpcTool } from './mcp.ts'
+import { assignableOf, assignableFoldersOf, type RemoteAssignable, type RemoteAssignableFolder } from './assignable.ts'
+export type { RemoteAssignable } from './assignable.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -99,30 +101,6 @@ export interface RemoteKnowledge {
   name: string
   desc: string
   fileCount: number
-}
-
-/**
- * 这颗 Bot 能派活给谁（docs/bot-tasks.md §5）。**只有主 Bot 的目录里有**：Gateway 只给这个账号的
- * 主 Bot 下发名单，别的 Bot 这一格永远是空的——assign_task 进不进工具表就看它空不空。
- */
-export interface RemoteAssignable {
-  id: string
-  name: string
-  desc: string
-}
-
-function assignableOf(raw: unknown): RemoteAssignable[] {
-  if (!Array.isArray(raw)) return []
-  const out: RemoteAssignable[] = []
-  for (const x of raw) {
-    if (!x || typeof x !== 'object') continue
-    const o = x as Record<string, unknown>
-    const id = typeof o.id === 'string' ? o.id : ''
-    const name = typeof o.name === 'string' ? o.name.trim() : ''
-    if (!id || !name) continue
-    out.push({ id, name, desc: typeof o.desc === 'string' ? o.desc.trim() : '' })
-  }
-  return out
 }
 
 function knowledgeOf(raw: unknown): RemoteKnowledge[] {
@@ -384,6 +362,8 @@ export class CatalogService extends Service {
   knowledge: RemoteKnowledge[] = []
   /** 这颗 Bot（主 Bot）能派活给谁。空 = 不是主 Bot，`assign_task` 不进工具表（agent 的 toolSchemasFor）。 */
   assignable: RemoteAssignable[] = []
+  /** 当前账号的分类，包含暂时没有可派成员的分类；老 Gateway 不带时为空。 */
+  assignableFolders: RemoteAssignableFolder[] = []
   /** 上一次拉到的公司模版版本号。给 /api/runtime/status 看，也用来打日志。 */
   templateVersion = 0
   /** 上一次探针给的指纹。变了才重拉整份目录。 */
@@ -550,6 +530,7 @@ export class CatalogService extends Service {
       memories?: Partial<CachedMemory>[]
       knowledge?: unknown
       assignable?: unknown
+      assignableFolders?: unknown
     }
     // **发车时刻要在 fetch 之前取**：豁免的判据就是「这份响应比那次写入更旧」。
     const startedAt = Date.now()
@@ -592,6 +573,7 @@ export class CatalogService extends Service {
     this.knowledge = knowledgeOf(body.knowledge)
     // 老 Gateway 不带 = 空 = 不是主 Bot，没有派活那把工具。
     this.assignable = assignableOf(body.assignable)
+    this.assignableFolders = assignableFoldersOf(body.assignableFolders)
     this.syncSkills(Array.isArray(body.skills) ? body.skills : [], { since: startedAt })
     /** 没有 id 的那些当场丢掉：缓存是按 id 认的，一条没有 id 的记录进去就再也删不掉。 */
     const memories = (Array.isArray(body.memories) ? body.memories : []).filter(

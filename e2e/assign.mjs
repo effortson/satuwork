@@ -10,6 +10,10 @@ export async function runAssign({ root, test, assert, log }) {
     assert(r.schema.描述里有名单, '描述里没有名单')
   })
 
+  await test('主 Bot 按分类识别成员、根据能力选人拆分任务，工具和提示词都显示分组', async () => {
+    for (const [key, value] of Object.entries(r.categories)) assert(value === true, `分类派活：${key} 不成立`)
+  })
+
   await test('同步 + 串并混合：并行的一起派，after 的等前置并附上前置结论，同一颗 Bot 自动排队', async () => {
     const d = r.dag
     assert(d.带席位票和wait, '派活要带席位票、自己的 botId、会话和 wait')

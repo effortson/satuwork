@@ -132,23 +132,27 @@ const CONNECTOR_TIMEOUT_MS = 60_000
  * 这颗 Bot 能派活给谁（docs/bot-tasks.md §5）。只有这个账号的主 Bot 有名单：名单上的别的 Bot
  * 不是主 Bot，自然没有 assign_task，派活天然只有一层。没带 botId 的（脚本）也没有。
  */
-async function assignableFor(db: RouteCtx['db'], account: Account, botId: string, bots: CatalogItem[]) {
-  if (!botId || account.role === 'owner') return [] as { id: string; name: string; desc: string }[]
+async function assignmentRosterFor(db: RouteCtx['db'], account: Account, botId: string, bots: CatalogItem[]) {
+  const empty = { bots: [] as { id: string; name: string; desc: string; folderId: string | null }[], folders: [] as { id: string; name: string }[] }
+  if (!botId || account.role === 'owner') return empty
   const main = await db.mainBotOf(account.id)
-  if (!main || main !== botId) return []
+  if (!main || main !== botId) return empty
+  // 分类是当前账号自己的视图，和侧栏用同一份归属；不读其他人的分类。
+  const [folders, folderOf] = await Promise.all([db.botFolders(account.id), db.botFolderItems(account.id)])
   const from = bots.find((b) => b.id === botId)
   // 本地 Bot 只接同一台电脑上的本地主 Bot 派的活（docs/local-bot-device.md §4.4）。
-  return bots
+  const assignable = bots
     .filter((b) => b.id !== botId && (from ? canAssignTo(from, b) : runtimeKindOf(b) !== 'local'))
     .map((b) => {
       const def = b.definition as { description?: unknown } | undefined
-      return { id: b.id, name: b.name, desc: typeof def?.description === 'string' ? def.description.trim() : '' }
+      return { id: b.id, name: b.name, desc: typeof def?.description === 'string' ? def.description.trim() : '', folderId: folderOf.get(b.id) ?? null }
     })
+  return { bots: assignable, folders: folders.map((f) => ({ id: f.id, name: f.name })) }
 }
 
-/** 派活名单压进指纹：空名单一个字都不加，老席位的指纹和以前一模一样。 */
-function assignStamp(list: { id: string; name: string }[]): string {
-  return list.length ? `|assign:${list.map((b) => `${b.id}:${b.name}`).join(',')}` : ''
+/** 派活名单压进指纹：没有 Bot 和分类时一个字都不加；能力说明、分类名和成员归属都参与同步。 */
+function assignStamp(list: { id: string; name: string; desc: string; folderId: string | null }[], folders: { id: string; name: string }[]): string {
+  return list.length || folders.length ? `|assign:${JSON.stringify({ bots: list, folders })}` : ''
 }
 
 function catalogStamp(
@@ -321,7 +325,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const companyId = account.role === 'owner' ? null : account.companyId
     const botId = (req.query.get('botId') || '').trim()
     /**
-     * 完整名单留一份：派活名单（assignableFor）要的是「这颗之外的别的 Bot」，拿收窄之后的
+     * 完整名单留一份：派活名单（assignmentRosterFor）要的是「这颗之外的别的 Bot」，拿收窄之后的
      * `[hit]` 去算永远是空的——而探针那条路用的是完整名单，两边指纹对不上，席位每分钟白拉一遍
      * 目录、拉回来的名单还是空的，主 Bot 就以为自己不是主 Bot。
      */
@@ -395,9 +399,9 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const settings = await db.platformSettings()
     /**
      * 主 Bot 派活（docs/bot-tasks.md §5）：**只有这个账号的主 Bot** 的目录里有可派的名单，
-     * 席位凭它决定 assign_task 进不进工具表。名单变了（新建、删掉、改名、换主 Bot）指纹跟着变。
+     * 席位凭它决定 assign_task 进不进工具表。名单或分类变了（成员能力、分类改名、移动成员、换主 Bot）指纹跟着变。
      */
-    const assignable = await assignableFor(db, account, botId, roster)
+    const { bots: assignable, folders: assignableFolders } = await assignmentRosterFor(db, account, botId, roster)
 
     json(res, 200, {
       // 实例照着这个数字判断「底座换了没有」。和下面那条探针给的是同一个值。
@@ -423,7 +427,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
         [...skills, ...servers],
         await connectorStampOf(db, account.id, companyId),
         modelStamp(settings),
-        memoryStamp(memories) + knowledgeStamp(knowledge) + assignStamp(assignable),
+        memoryStamp(memories) + knowledgeStamp(knowledge) + assignStamp(assignable, assignableFolders),
       ),
       /**
        * 连接器绑账号、不绑 Bot：合成出来的那几条挂到**每一颗** Bot 的 `mcps` 上。
@@ -448,6 +452,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       knowledge: knowledge.map((k) => ({ id: k.id, name: k.name, desc: k.desc, fileCount: k.fileCount })),
       // 主 Bot 能派活给谁。不是主 Bot 时一律空数组——席位按空不空决定那把工具进不进表。
       assignable,
+      assignableFolders,
     })
   })
 
@@ -505,7 +510,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     /** 知识库同理：建了库、传完第一份文件、改了共享范围，席位下一次探针就把工具表换掉。 */
     const knowledge = companyId ? (await knowledgeUsableByBot(db, companyId, bot)).filter((k) => k.chunkCount > 0) : []
     /** 派活名单同理：换了主 Bot、名单上多了一颗，席位下一次探针就把 assign_task 加进 / 拿出工具表。 */
-    const assignable = await assignableFor(db, account, botId, bots)
+    const { bots: assignable, folders: assignableFolders } = await assignmentRosterFor(db, account, botId, bots)
     json(res, 200, {
       templateVersion: version,
       stamp: catalogStamp(
@@ -514,7 +519,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
         tools,
         await connectorStampOf(db, account.id, companyId),
         modelStamp(await db.platformSettings()),
-        memoryStamp(memories) + knowledgeStamp(knowledge) + assignStamp(assignable),
+        memoryStamp(memories) + knowledgeStamp(knowledge) + assignStamp(assignable, assignableFolders),
       ),
     })
   })
@@ -1550,7 +1555,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     if (!from) throw new HttpError(404, '没有这个 Bot')
     const want = strField(body, 'toBot').trim()
     const lower = want.toLowerCase()
-    // 按派活名单（assignableFor）同一个口径找：别的电脑上的本地 Bot 不在名单上，按名字也别撞上它。
+    // 按派活名单（assignmentRosterFor）同一个口径找：别的电脑上的本地 Bot 不在名单上，按名字也别撞上它。
     const targets = bots.filter((b) => canAssignTo(from, b))
     const to = targets.find((b) => b.id === want) || targets.find((b) => b.name.trim().toLowerCase() === lower)
     if (!to) throw new HttpError(404, `名单上没有「${want}」这颗 Bot`)

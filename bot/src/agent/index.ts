@@ -2092,7 +2092,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * ——名单是 Gateway 只给主 Bot 下发的，别的 Bot 这里永远是空串。
      */
     const crew = this.ctx.tools.has('assign_task') ? (this.ctx.catalog?.assignable ?? []) : []
-    const assign = crew.length ? `\n\n${assignBlock(crew)}` : ''
+    const assign = crew.length ? `\n\n${assignBlock(crew, this.ctx.catalog?.assignableFolders ?? [])}` : ''
     const base = `${bot?.prompt?.trim() || this.system}\n\n${replyLanguageBlock(locale)}\n\n${runtimeBlock()}\n\n${schedulingBlock()}${web}${escalate}${cite}${outFiles}${todo}${knowledge}${assign}`
     const { resident, index } = this.skillsOf(bot)
     const parts = [
