@@ -4,6 +4,9 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 
 .satu-authside { position: relative; padding: var(--space-8); display: flex; flex-direction: column; align-items: center; justify-content: space-between; background: var(--color-surface); overflow: hidden; }
 .gw-login { min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; background: var(--color-bg); font-family: var(--font-body); color: var(--color-text); }
+.satu-login-heading { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-2); }
+.satu-login-heading h1 { margin: 0; font-size: clamp(24px, 7.5vw, 30px); }
+.satu-login-logo { display: block; flex: none; width: 48px; height: 48px; object-fit: contain; }
 .gw-flash { margin: 0; padding: 10px var(--space-3); border-radius: var(--radius-sm); font-size: 13px; line-height: 1.6; }
 .gw-flash-err { color: var(--color-accent-800); background: var(--color-accent-100); }
 .gw-flash-ok { color: var(--color-accent-2-800); background: var(--color-accent-2-100); }

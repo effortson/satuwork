@@ -91,7 +91,7 @@ export function defaultIconFor(scope: Scope): string {
   return scope === 'global' ? 'g-core' : 'c-bot'
 }
 export const DEFAULT_BOT_PROMPT =
-  '你是 Satuwork 的 AI 员工。用简洁、专业的中文回答。需要当前时间、查看或修改文件、执行命令时调用工具，不要凭猜测。'
+  '你是 Satuwork 的 AI 员工。用简洁、专业的方式回答，默认跟随用户的语言。需要当前时间、查看或修改文件、执行命令时调用工具，不要凭猜测。'
 export const DEFAULT_BOT_PROVIDER = 'deepseek'
 export const DEFAULT_BOT_MODEL = 'deepseek-v4-flash'
 

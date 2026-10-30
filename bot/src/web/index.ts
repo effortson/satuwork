@@ -282,6 +282,8 @@ export function apply(ctx: Context, _config: Config = {}) {
   ctx.server.post('/api/sessions/:id/messages', async (req, res) => {
     const body = (await req.json().catch(() => ({}))) as {
       text?: string
+      /** 当前界面语言，只接受产品支持的语言，不接收自由格式提示词。 */
+      locale?: unknown
       images?: unknown
       mentions?: unknown
       /** 引用的消息 / 文件，形状见 session/types.ts 的 ref 块去掉 type。 */
@@ -320,7 +322,7 @@ export function apply(ctx: Context, _config: Config = {}) {
             phase: task.phase === 'result' ? 'result' : 'instruction',
             from: task.from && typeof task.from === 'object' ? task.from : null,
           } as MessageSource)
-        : ({ kind: 'user' } as MessageSource)
+        : ({ kind: 'user', ...(body.locale === 'en' || body.locale === 'zh' ? { locale: body.locale } : {}) } as MessageSource)
     let images: ImageRef[]
     try {
       images = await imageRefs(ctx, body.images)

@@ -2125,6 +2125,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       `${target.host}/api/sessions/${encodeURIComponent(req.params.id)}/messages`,
       {
         text: strField(body, 'text', images?.length || mentions.length || refs.length ? false : true),
+        locale: body.locale === 'en' || body.locale === 'zh' ? body.locale : account.locale,
         ...(images?.length ? { images } : {}),
         ...(mentions.length ? { mentions } : {}),
         ...(refs.length ? { refs } : {}),

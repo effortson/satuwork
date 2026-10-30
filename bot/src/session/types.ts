@@ -117,7 +117,7 @@ export interface TaskProgress {
 }
 
 export type MessageSource =
-  | { kind: 'user' }
+  | { kind: 'user'; locale?: 'zh' | 'en' }
   | { kind: 'plugin'; plugin: string; form?: string; [extra: string]: unknown }
 
 export interface Usage {

@@ -205,6 +205,11 @@ export function createGatewayClient(opts: GatewayClientOptions) {
   }
 
   async function api(method: string, path: string, body?: unknown, localRetried = false): Promise<any> {
+    // 每条聊天消息带上当前界面语言；本地 Bot 直连也经过这里，不依赖 Gateway 才能生效。
+    if (method.toUpperCase() === 'POST' && /^\/runtime\/sessions\/[^/?]+\/messages\/?(?:\?|$)/.test(path)
+      && body && typeof body === 'object' && !Array.isArray(body)) {
+      body = { ...body, locale: locale() }
+    }
     const headers: Record<string, string> = { accept: 'application/json' }
     const tok = tokens.get()
     if (tok) headers.authorization = 'Bearer ' + tok

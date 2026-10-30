@@ -51,6 +51,7 @@ import { runRoutineModel } from './routine-model.mjs'
 import { runModelChoice } from './model-choice.mjs'
 import { runRoutineTools } from './routine-tools.mjs'
 import { runHistoryTime } from './history-time.mjs'
+import { runReplyLanguage } from './reply-language.mjs'
 import { runCompact } from './compact.mjs'
 import { runReferences } from './references.mjs'
 import { runGatewayUrl } from './gateway-url.mjs'
@@ -266,6 +267,7 @@ async function main() {
     await suite('model-choice', () => runModelChoice({ root, test, assert, log }))
     await suite('routine-tools', () => runRoutineTools({ root, test, assert, log }))
     await suite('history-time', () => runHistoryTime({ root, test, assert, log }))
+    await suite('reply-language', () => runReplyLanguage({ root, test, assert, log }))
     await suite('compact', () => runCompact({ root, test, assert, log }))
     await suite('references', () => runReferences({ root, test, assert, log }))
     await suite('gateway-url', () => runGatewayUrl({ root, test, assert, log }))

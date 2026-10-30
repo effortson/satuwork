@@ -1689,6 +1689,9 @@ var SatuCore = (() => {
       return p;
     }
     async function api(method, path, body, localRetried = false) {
+      if (method.toUpperCase() === "POST" && /^\/runtime\/sessions\/[^/?]+\/messages\/?(?:\?|$)/.test(path) && body && typeof body === "object" && !Array.isArray(body)) {
+        body = { ...body, locale: locale() };
+      }
       const headers = { accept: "application/json" };
       const tok = tokens.get();
       if (tok) headers.authorization = "Bearer " + tok;

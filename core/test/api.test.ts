@@ -44,6 +44,28 @@ function client(handler: Parameters<typeof fakeFetch>[0], extra: Partial<Paramet
   return { gw, calls: ff.calls, tokens, unauthorized }
 }
 
+test('chat requests carry the current UI language through Gateway and local bot routes', async () => {
+  let locale: 'en' | 'zh' = 'en'
+  const { gw, calls } = client(() => ({ status: 200, body: { accepted: true } }), { locale: () => locale })
+  const body = { text: 'hello', images: [{ path: 'uploads/photo.png', mime: 'image/png' }] }
+  await gw.api('POST', '/runtime/sessions/remote/messages', body)
+  assert.equal(JSON.parse(calls.at(-1)!.init!.body as string).locale, 'en')
+  assert.equal('locale' in body, false, 'the caller’s message must not be mutated')
+
+  gw.registerLocalBot('local', 3082, 'sat_local')
+  gw.localSessions.set('local-session', 'local')
+  locale = 'zh'
+  await gw.api('POST', '/runtime/sessions/local-session/messages', body)
+  assert.equal(calls.at(-1)!.url, 'http://127.0.0.1:3082/api/sessions/local-session/messages')
+  assert.deepEqual(JSON.parse(calls.at(-1)!.init!.body as string), { ...body, locale: 'zh' })
+  locale = 'en'
+  await gw.api('POST', '/runtime/sessions/local-session/messages', { text: 'hello again' })
+  assert.equal(JSON.parse(calls.at(-1)!.init!.body as string).locale, 'en')
+
+  await gw.api('POST', '/me', { name: 'Example' })
+  assert.deepEqual(JSON.parse(calls.at(-1)!.init!.body as string), { name: 'Example' })
+})
+
 test('gatewayAbs：相对路径接上 baseUrl（函数或字符串，去尾斜杠），绝对地址原样', () => {
   const a = createGatewayClient({ fetch: async () => ({}) as Response, baseUrl: () => 'https://gw.example/', tokens: memTokens(), locale: () => 'zh', onUnauthorized() {} })
   assert.equal(a.gatewayAbs('/me'), 'https://gw.example/me')

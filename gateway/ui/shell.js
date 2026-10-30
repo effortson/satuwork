@@ -199,7 +199,10 @@ function loginView() {
             : `<button type="button" class="btn btn-ghost" style="align-self: flex-start; padding: 4px 10px; margin: 0 0 calc(var(--space-4) * -1); font-size: 13px;" data-act="go" data-href="/">${svg(BACK_ARROW, 14)}${t('返回首页', 'Back to home')}</button>`
         }
         <div>
-          <h1 style="font-size: 30px; margin: 0 0 var(--space-2);">${t('登录 Satuwork')}</h1>
+          <div class="satu-login-heading">
+            <img class="satu-login-logo" src="/assets/satuwork-logo.png" alt="" width="48" height="48">
+            <h1>Satuwork</h1>
+          </div>
           <p style="margin: 0; color: color-mix(in srgb, var(--color-text) 60%, transparent); font-size: 14px;">${t('进入控制台，管理你的 AI 员工')}</p>
         </div>
         ${state.loginError ? `<div class="gw-flash gw-flash-err">${esc(state.loginError)}</div>` : ''}

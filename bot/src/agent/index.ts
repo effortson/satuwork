@@ -14,6 +14,7 @@ import type { WorkspaceFile } from '../tools/index.ts'
 import { turnContextGuard } from './context-guard.ts'
 import { ProgressTracker } from './progress.ts'
 import { isTaskInstruction } from './task-turns.ts'
+import { replyLanguageBlock, replyLocaleOf } from './reply-language.ts'
 import { readTodos, restoreTodos } from '../tools/todo.ts'
 import { BAD_TOOL_ARGS } from '../llm/gateway.ts'
 import { browserOf, desktopOf, memoryOf, type BotRecord } from '../registry/index.ts'
@@ -247,7 +248,7 @@ export class AgentService extends Service {
   get system() {
     return this.setting(
       'system',
-      this.config.system ?? '你是 Satuwork 的 AI 员工，用简洁、专业的中文回答。',
+      this.config.system ?? '你是 Satuwork 的 AI 员工，用简洁、专业的方式回答。',
     )
   }
   /** 设置库里塞进来的可能是字符串或负数，取到手先夹一遍——0 或负数会让每一轮开局即收口。 */
@@ -929,7 +930,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       images,
       mentions,
       ...(refs.length ? { refs } : {}),
-      ...(source && source.kind !== 'user' ? { source } : {}),
+      ...(source && (source.kind !== 'user' || source.locale) ? { source } : {}),
       ...(modelRole ? { modelRole } : {}),
       createdAt: Date.now(),
     }
@@ -1381,7 +1382,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     let toolSchemas: { name: string; description: string; parameters?: unknown }[]
     try {
       const bot = this.botOf(history)
-      system = this.composeSystem(bot)
+      system = this.composeSystem(bot, replyLocaleOf(source, history))
       // 人在对话框里给这条会话换过日常模型的话，「Bot 自己那一对」就是换过之后的那个。
       const home = await this.homeModelOf(sessionId, history, true)
       provider = home.provider
@@ -2005,6 +2006,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
    */
   private composeSystem(
     bot: { prompt?: string; skills?: string[]; escalate?: string; memory?: unknown } | undefined,
+    locale?: 'zh' | 'en',
   ): { text: string; base: string; skills: string; memory: string } {
     // 网页那一段只在 web_extract 真的挂上时才加：没有这把工具的进程里，那三行
     // 是在教模型防一种它遇不到的东西，纯占上下文。
@@ -2091,7 +2093,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      */
     const crew = this.ctx.tools.has('assign_task') ? (this.ctx.catalog?.assignable ?? []) : []
     const assign = crew.length ? `\n\n${assignBlock(crew)}` : ''
-    const base = `${bot?.prompt?.trim() || this.system}\n\n${runtimeBlock()}\n\n${schedulingBlock()}${web}${escalate}${cite}${outFiles}${todo}${knowledge}${assign}`
+    const base = `${bot?.prompt?.trim() || this.system}\n\n${replyLanguageBlock(locale)}\n\n${runtimeBlock()}\n\n${schedulingBlock()}${web}${escalate}${cite}${outFiles}${todo}${knowledge}${assign}`
     const { resident, index } = this.skillsOf(bot)
     const parts = [
       ...resident.map((s) => `## Skill: ${s.displayName}\n${s.body}`),
