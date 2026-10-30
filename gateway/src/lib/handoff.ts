@@ -8,7 +8,7 @@
  */
 import type { Account, Db, Handoff } from '../db.ts'
 import { botTemplateOf } from './catalog.ts'
-import { machineHeader } from './runtime.ts'
+import { managerHeaders } from '../deploy.ts'
 
 /**
  * 这张单该谁处理。
@@ -78,7 +78,7 @@ export async function callSeat(
       headers: {
         authorization: `Bearer ${seat.bearer}`,
         'content-type': 'application/json',
-        ...machineHeader(seat.machineToken),
+        ...managerHeaders(seat.machineToken),
       },
       body: JSON.stringify(body ?? {}),
       signal: AbortSignal.timeout(timeoutMs),
@@ -111,7 +111,7 @@ export async function seatHandoffs(db: Db, h: Handoff, timeoutMs = 10_000): Prom
   const url = `${seat.host}/api/sessions/${encodeURIComponent(h.sessionId)}/handoffs`
   try {
     const r = await fetch(url, {
-      headers: { authorization: `Bearer ${seat.bearer}`, ...machineHeader(seat.machineToken) },
+      headers: { authorization: `Bearer ${seat.bearer}`, ...managerHeaders(seat.machineToken) },
       signal: AbortSignal.timeout(timeoutMs),
     })
     if (!r.ok) return []

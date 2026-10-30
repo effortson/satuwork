@@ -25,15 +25,23 @@ var SatuCore = (() => {
     CHAT_ALIVE_MS: () => CHAT_ALIVE_MS,
     CHAT_IDLE_RETRY_MS: () => CHAT_IDLE_RETRY_MS,
     CHAT_RETRY_MAX: () => CHAT_RETRY_MAX,
+    PREVIEW_DOC_EXT: () => PREVIEW_DOC_EXT,
+    PREVIEW_TEXT_EXT: () => PREVIEW_TEXT_EXT,
+    PREVIEW_WEB_KIND: () => PREVIEW_WEB_KIND,
     ROSTER_BACKOFF: () => ROSTER_BACKOFF,
     SATU_TZ: () => SATU_TZ,
     UPLOAD_LEADS: () => UPLOAD_LEADS,
+    agoText: () => agoText,
     aliveLongEnough: () => aliveLongEnough,
     applyRosterEvent: () => applyRosterEvent,
+    assignSlice: () => assignSlice,
     auditItemIdOfPath: () => auditItemIdOfPath,
     botIdOfPath: () => botIdOfPath,
+    callDetail: () => callDetail,
     chatRetryDelay: () => chatRetryDelay,
     classifyStreamStatus: () => classifyStreamStatus,
+    cmdMatches: () => cmdMatches,
+    commandQueryAt: () => commandQueryAt,
     companyIdOfPath: () => companyIdOfPath,
     connectorIdOfPath: () => connectorIdOfPath,
     createGatewayClient: () => createGatewayClient,
@@ -44,13 +52,20 @@ var SatuCore = (() => {
     dict: () => dict,
     errText: () => errText,
     esc: () => esc,
+    extOf: () => extOf,
+    fileCands: () => fileCands,
+    fileEdgeOk: () => fileEdgeOk,
+    fileHits: () => fileHits,
+    fmtFileSize: () => fmtFileSize,
     fmtTime: () => fmtTime,
     fmtTokens: () => fmtTokens,
     fold: () => fold,
     insertEvent: () => insertEvent,
     isShot: () => isShot,
+    knownFiles: () => knownFiles,
     machineIdOfPath: () => machineIdOfPath,
     maxSeqOf: () => maxSeqOf,
+    mentionQueryAt: () => mentionQueryAt,
     mergeChatPage: () => mergeChatPage,
     mergePending: () => mergePending,
     messageImages: () => messageImages,
@@ -59,14 +74,18 @@ var SatuCore = (() => {
     messageText: () => messageText,
     money: () => money,
     newSum: () => newSum,
+    parseCommand: () => parseCommand,
+    pluginIdOfPath: () => pluginIdOfPath,
+    previewKindOf: () => previewKindOf,
+    progressOf: () => progressOf,
     refreshSum: () => refreshSum,
+    resultLine: () => resultLine,
     rosterRetryDelay: () => rosterRetryDelay,
-    runEventStream: () => runEventStream,
-    sessionIdOfPath: () => sessionIdOfPath,
     settleDot: () => settleDot,
     splitUploads: () => splitUploads,
     sseEvents: () => sseEvents,
     t: () => t,
+    traceRows: () => traceRows,
     tzDayKey: () => tzDayKey,
     tzDayStart: () => tzDayStart,
     tzOffsetMs: () => tzOffsetMs,
@@ -83,6 +102,7 @@ var SatuCore = (() => {
     "公司/席位": "Company & Seats",
     员工: "Members",
     审计: "Audit",
+    内容举报: "Content reports",
     公司: "Companies",
     "Bot 运行时": "Bot runtime",
     管家: "Manager",
@@ -365,7 +385,7 @@ var SatuCore = (() => {
     员工环境: "Member environments",
     运行机器: "Runtime machine",
     运行环境: "Runtime",
-    // 右栏的另一屏：席位工作区里的文件树（见 chat.js 的 workspacePanel）。
+    // 右栏的另一屏：席位工作区里的文件树（见 chat-workspace.js 的 workspacePanel）。
     工作区文件: "Workspace files",
     收起右栏: "Collapse panel",
     列不出来: "Could not list it",
@@ -494,6 +514,7 @@ var SatuCore = (() => {
     "Bot 详情": "Bot detail",
     "VNC 密码": "VNC password",
     共享目录: "Shared folder",
+    "Bot 工作目录": "Bot workspace",
     配对码: "Pairing code",
     下载地址: "Download URL",
     升级: "Upgrade",
@@ -745,7 +766,7 @@ var SatuCore = (() => {
     "进入控制台，管理你的 AI 员工": "Enter the console and manage your AI staff",
     手机号证件号银行卡等自动跳过: "Phone numbers, IDs and cards are skipped",
     "手机号、证件号、银行卡等自动跳过": "Phone numbers, ID numbers and bank cards are skipped automatically",
-    "正在思考…（可以继续输入来打断）": "Thinking… (keep typing to interrupt)",
+    "正在思考…（现在发的消息会等这一轮结束再发）": "Thinking… (new messages will be sent after this turn)",
     "只显示名称。密钥不会出现在这里。": "Names only. Keys never appear here.",
     "包的根目录里没有 SKILL.md": "No SKILL.md at the root of the package",
     "查看订阅状态、充值余额与历史账单。": "Subscription status, balance and past invoices.",
@@ -1038,11 +1059,11 @@ var SatuCore = (() => {
     "实例还在上线，接上之后就能发消息…": "The instance is still starting — you can send once it connects…",
     "实例还在上线，这条还发不出去；等它接上再发": "The instance is still starting, so this message cannot be sent yet — try again once it connects",
     // 按下发送时还没拿到会话：那一下同时把「重新拿会话」和「重连那条流」都叫醒了，
-    // 所以话是「正在接回来」，不是让人干等（见 chat.js 的 sendChat）。
+    // 所以话是「正在接回来」，不是让人干等（见 chat-composer.js 的 sendChat）。
     "还没接上席位，这条先挂着——接上就自动发出去": "Not connected to the seat yet — this message is held and will be sent automatically once the connection is back",
     "实例还没接上，这会儿发不出去": "The instance is not connected — messages cannot be sent right now",
     "实例还没接上，等一会儿再试，或者重新部署一次": "Still cannot reach the instance — try again in a moment, or redeploy",
-    // 退避认输之后那一句。旁边跟着一颗「重新连接」按钮（见 chat.js 的
+    // 退避认输之后那一句。旁边跟着一颗「重新连接」按钮（见 chat-page.js 的
     // runtimeDownBanner），所以话里不再叫人去刷新整页——刷新会把草稿和附件一起丢掉。
     // 席位换版那几秒回绝新消息时，bot 原样送回来的那一句（见 bot/src/agent/index.ts 的
     // QUIET_MESSAGE）。服务端只发中文，这里翻一次，英文界面才不会突然冒出一句中文。
@@ -1537,6 +1558,24 @@ var SatuCore = (() => {
     if (!n) return "—";
     return n >= 1e6 ? `${Math.floor(n / 1e6)}M` : `${Math.round(n / 1e3)}K`;
   }
+  function fmtFileSize(n, fallback = "") {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return fallback;
+    if (x < 1024) return x + " B";
+    if (x < 1024 * 1024) return (x / 1024).toFixed(1) + " KB";
+    return (x / 1024 / 1024).toFixed(1) + " MB";
+  }
+  function agoText(locale, ms, seconds = false) {
+    if (seconds) {
+      const sec = Math.floor(ms / 1e3);
+      if (sec < 60) return t(locale, `${sec} 秒前`, `${sec}s ago`);
+    }
+    const m = Math.floor(ms / 6e4);
+    if (m < 1) return t(locale, "刚刚", "just now");
+    if (m < 60) return t(locale, `${m} 分钟前`, `${m} min ago`);
+    if (m < 60 * 24) return t(locale, `${Math.floor(m / 60)} 小时前`, `${Math.floor(m / 60)} h ago`);
+    return t(locale, `${Math.floor(m / 1440)} 天前`, `${Math.floor(m / 1440)} d ago`);
+  }
 
   // core/src/paths.ts
   function segAfter(p, prefix) {
@@ -1545,6 +1584,9 @@ var SatuCore = (() => {
   }
   function connectorIdOfPath(p) {
     return segAfter(p, "/connectors/");
+  }
+  function pluginIdOfPath(p) {
+    return segAfter(p, "/plugins/");
   }
   function botIdOfPath(p) {
     return segAfter(p, "/bots/");
@@ -1557,10 +1599,6 @@ var SatuCore = (() => {
   }
   function userIdOfPath(p) {
     return segAfter(p, "/users/");
-  }
-  function sessionIdOfPath(p) {
-    if (typeof p === "string" && p.startsWith("/audit/summary/")) return "";
-    return segAfter(p, "/audit/");
   }
   function auditItemIdOfPath(p) {
     return segAfter(p, "/audit/summary/");
@@ -1613,9 +1651,29 @@ var SatuCore = (() => {
       else target = "/api/sessions/" + m[1] + rest + q;
       return { url: lb.base + target, token: lb.token, botId };
     }
+    function withDevice(path, init) {
+      const id = opts.deviceId?.();
+      const client = opts.client?.();
+      if (!id && !client) return init;
+      const base = gatewayBase();
+      if (!path.startsWith("/") && !(base && path.startsWith(base + "/"))) return init;
+      const raw = init && init.headers;
+      const headers = {};
+      if (raw && typeof raw.forEach === "function" && !Array.isArray(raw)) {
+        ;
+        raw.forEach((v, k) => {
+          headers[k] = v;
+        });
+      } else if (Array.isArray(raw)) {
+        for (const [k, v] of raw) headers[k] = v;
+      } else Object.assign(headers, raw || {});
+      if (id) headers["x-satuwork-device"] = id;
+      if (client) headers["x-satuwork-client"] = client;
+      return { ...init || {}, headers };
+    }
     function swFetch(path, init) {
       const route = localRoute(path, init && init.method);
-      if (!route) return fetch(gatewayAbs(path), init);
+      if (!route) return fetch(gatewayAbs(path), withDevice(path, init));
       const headers = { ...init && init.headers || {} };
       for (const k of Object.keys(headers)) if (k.toLowerCase() === "authorization") delete headers[k];
       headers.authorization = "Bearer " + route.token;
@@ -1683,12 +1741,12 @@ var SatuCore = (() => {
     const content = msg.content;
     if (typeof content === "string") return content;
     if (!Array.isArray(content)) return "";
-    return content.map((b) => b && (b.type === "text" || b.type === "reasoning") ? b.text || "" : "").join("");
+    return content.map((b) => b && (b.type === "text" || b.type === "reasoning") ? b.text || "" : b && b.type === "mention" && b.inline && b.label ? `@${b.label}` : "").join("");
   }
   function messageMentions(msg) {
     const content = msg && msg.content;
     if (!Array.isArray(content)) return [];
-    return content.filter((b) => b && b.type === "mention" && b.label).map((b) => ({ kind: b.kind || "connector", id: b.id || "", label: String(b.label) }));
+    return content.filter((b) => b && b.type === "mention" && b.label).map((b) => ({ kind: b.kind || "connector", id: b.id || "", label: String(b.label), ...b.inline ? { inline: true } : {}, ...b.logo ? { logo: String(b.logo) } : {} }));
   }
   function messageRefs(msg) {
     const content = msg && msg.content;
@@ -1784,20 +1842,29 @@ var SatuCore = (() => {
     let todos = null;
     const handoffSeen = /* @__PURE__ */ new Map();
     const handoffOf = (id) => id ? handoffSeen.get(id) : void 0;
+    let openTurn = false;
+    let assigned = null;
+    const taskSeen = /* @__PURE__ */ new Map();
+    let lastSeq;
     for (const ev of events || []) {
+      const prevSeq = lastSeq;
+      lastSeq = ev.seq;
       const type = ev.type;
       const data = ev.data || {};
       const at = Number(ev.time) || 0;
       if (type === "user/message") {
         const src = data.source || {};
-        const via = src.kind === "plugin" && src.plugin === "channel" ? src.channel === "telegram" ? "telegram" : String(src.channel || "channel") : src.kind === "plugin" && (src.plugin === "kanban" || src.plugin === "routine" || src.plugin === "handoff") ? src.plugin : !src.kind || src.kind === "user" ? showChannelVia ? "web" : "" : "";
+        const via = src.kind === "plugin" && src.plugin === "channel" ? src.channel === "telegram" ? "telegram" : String(src.channel || "channel") : src.kind === "plugin" && (src.plugin === "kanban" || src.plugin === "routine" || src.plugin === "handoff") ? src.plugin : src.kind === "plugin" && src.plugin === "task" ? src.phase === "result" ? "task-result" : "task" : !src.kind || src.kind === "user" ? showChannelVia ? "web" : "" : "";
         if (src.kind && src.kind !== "user" && !via) continue;
         turnVia = via;
         assistant = null;
         tools = [];
         const raw = messageText(data.message) || data.text || "";
         const up = splitUploads(raw);
+        const task = via === "task" ? { id: String(src.form || ""), from: src.from && typeof src.from === "object" ? src.from : null, state: openTurn ? "steered" : "queued" } : void 0;
+        if (!openTurn) assigned = task || null;
         blocks.push({
+          ...task ? { assigned: task } : {},
           kind: "user",
           text: up.text,
           // 附件列表拆出来单独画成药丸；正文只留人真正打的那句话。
@@ -1859,7 +1926,8 @@ var SatuCore = (() => {
         assistant.endTime = at;
       } else if (type === "tool/result") {
         if (phantoms.has(data.callId)) continue;
-        const hit = tools.find((x) => x.callId && x.callId === data.callId && x.result == null) || tools.find((x) => x.result == null) || tools[tools.length - 1];
+        const byCall = data.callId ? toolByCall.get(data.callId) : void 0;
+        const hit = (byCall && byCall.result == null ? byCall : void 0) || tools.find((x) => x.callId && x.callId === data.callId && x.result == null) || tools.find((x) => x.result == null) || tools[tools.length - 1];
         if (hit) {
           hit.result = data.text || "";
           hit.failed = Boolean(data.failed);
@@ -1871,6 +1939,20 @@ var SatuCore = (() => {
       } else if (type === "tool/shot") {
         const hit = toolByCall.get(data.callId);
         if (hit && isShot(data.shot)) hit.shot = data.shot;
+      } else if (type === "bot/assign") {
+        const prev = taskSeen.get(data.id);
+        if (prev) {
+          Object.assign(prev, data);
+          continue;
+        }
+        if (!assistant) {
+          assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
+          blocks.push(assistant);
+        }
+        const task = { ...data, time: at, seq: ev.seq };
+        taskSeen.set(data.id, task);
+        (assistant.assigns || (assistant.assigns = [])).push(task);
+        assistant.endTime = at;
       } else if (type === "agent/task") {
         if (!assistant) {
           assistant = { kind: "assistant", text: "", tools, via: turnVia, time: at, seq: ev.seq };
@@ -1914,6 +1996,7 @@ var SatuCore = (() => {
           if (typeof data.arguments === "string") cur.args = data.arguments;
           if (data.form && Array.isArray(data.form.fields)) cur.form = data.form;
           if (Array.isArray(data.edited)) cur.edited = data.edited;
+          if (typeof data.feedback === "string") cur.feedback = data.feedback;
         } else {
           list.push({
             callId: data.callId,
@@ -1923,6 +2006,8 @@ var SatuCore = (() => {
             // 这次用哪张卡、卡上哪几格。**席位算好的**，界面照着画（见 policy/forms.ts）。
             form: data.form && Array.isArray(data.form.fields) ? data.form : null,
             edited: Array.isArray(data.edited) ? data.edited : null,
+            // 「退回修改」时人写的意见（终态事件才有）。药丸和悬浮窗靠它说「退回修改」而不是「已拒绝」。
+            feedback: typeof data.feedback === "string" ? data.feedback : "",
             state: data.state || "pending",
             expiresAt: Number(data.expiresAt) || 0,
             // 这条 pending 落在日志的第几行。核对现况时拿它跟快照的水位比——
@@ -1969,6 +2054,7 @@ var SatuCore = (() => {
           todos = null;
           toolByCall.clear();
           handoffSeen.clear();
+          taskSeen.clear();
         }
         blocks.push({
           kind: "mark",
@@ -2000,8 +2086,25 @@ var SatuCore = (() => {
       } else if (type === "turn/start") {
         status = "running";
         statusAt = at;
+        const last = blocks[blocks.length - 1];
+        if (!assigned && last && last.kind === "user" && last.assigned && last.assigned.state === "steered" && prevSeq !== void 0 && last.seq === prevSeq) {
+          last.assigned.state = "queued";
+          assigned = last.assigned;
+        }
+        openTurn = true;
+        if (assigned && assigned.turn == null) {
+          assigned.turn = Number(data.turn);
+          assigned.state = "running";
+        }
       } else if (type === "turn/end") {
         status = "";
+        openTurn = false;
+        if (assigned && assigned.turn === Number(data.turn)) {
+          const reason = data.reason;
+          assigned.state = String((typeof reason === "string" ? reason : reason && reason.kind) || "completed");
+          assigned.endedAt = at;
+          assigned = null;
+        }
         statusAt = 0;
         if (assistant) assistant.endTime = at;
       }
@@ -2012,6 +2115,184 @@ var SatuCore = (() => {
       statusAt = tail && (tail.endTime || tail.time) || 0;
     }
     return { blocks, status, statusAt, todos, channelVia: showChannelVia, modelSeq };
+  }
+
+  // core/src/chat/task.ts
+  var DETAIL_KEYS = ["url", "urls", "query", "q", "command", "cmd", "path", "file", "paths", "goal", "instruction", "task", "name", "id", "text"];
+  function clip(s, n) {
+    const one = s.replace(/\s+/g, " ").trim();
+    return one.length <= n ? one : one.slice(0, n - 1) + "…";
+  }
+  function callDetail(args) {
+    let o = args;
+    if (typeof args === "string") {
+      try {
+        o = args ? JSON.parse(args) : {};
+      } catch {
+        return clip(args, 120);
+      }
+    }
+    if (!o || typeof o !== "object") return "";
+    const rec = o;
+    for (const k of DETAIL_KEYS) {
+      const v = rec[k];
+      if (typeof v === "string" && v.trim()) return clip(v, 120);
+      if (Array.isArray(v) && v.length) {
+        const first = v.find((x) => typeof x === "string" && x.trim());
+        if (typeof first === "string") return clip(first + (v.length > 1 ? ` 等 ${v.length} 个` : ""), 120);
+      }
+    }
+    if (Array.isArray(rec.todos)) return `${rec.todos.length} 条`;
+    const raw = JSON.stringify(rec);
+    return raw === "{}" ? "" : clip(raw, 120);
+  }
+  function resultLine(text) {
+    for (const raw of String(text || "").split("\n")) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (/^──.*──$/.test(line)) continue;
+      if (line.startsWith("<")) continue;
+      return clip(line, 160);
+    }
+    return "";
+  }
+  function todoOf(items) {
+    if (!Array.isArray(items)) return void 0;
+    const live = items.filter((i) => i && i.status !== "cancelled");
+    if (!live.length) return void 0;
+    const now = live.find((i) => i.status === "in_progress");
+    return {
+      done: live.filter((i) => i.status === "completed").length,
+      total: live.length,
+      ...now && now.task ? { now: clip(String(now.task), 120) } : {}
+    };
+  }
+  function traceRows(events) {
+    const rows = [];
+    const byCall = /* @__PURE__ */ new Map();
+    const blocked = /* @__PURE__ */ new Set();
+    for (const ev of events || []) {
+      const d = ev.data || {};
+      if (ev.type === "tool/policy" && d.callId && (d.outcome === "blocked" || d.outcome === "denied" || d.outcome === "timeout")) {
+        blocked.add(d.callId);
+        const hit = byCall.get(d.callId);
+        if (hit && hit.status === "error") hit.status = "blocked";
+      }
+    }
+    for (const ev of events || []) {
+      const d = ev.data || {};
+      if (ev.type === "assistant/message") {
+        const content = d.message && d.message.content;
+        const text = Array.isArray(content) ? content.map((b) => b && b.type === "text" ? b.text || "" : "").join("") : typeof content === "string" ? content : "";
+        if (text.trim()) rows.push({ kind: "say", text: text.trim() });
+      } else if (ev.type === "tool/call") {
+        const row = {
+          kind: "tool",
+          callId: String(d.callId || ""),
+          name: String(d.name || ""),
+          detail: callDetail(d.arguments),
+          status: "running",
+          out: "",
+          full: ""
+        };
+        rows.push(row);
+        if (row.callId) byCall.set(row.callId, row);
+      } else if (ev.type === "tool/result") {
+        const hit = d.callId ? byCall.get(d.callId) : void 0;
+        if (!hit) continue;
+        hit.full = String(d.text || "");
+        hit.out = resultLine(hit.full);
+        hit.status = d.failed ? blocked.has(hit.callId) ? "blocked" : "error" : "ok";
+      }
+    }
+    return rows;
+  }
+  function progressOf(events) {
+    const steps = /* @__PURE__ */ new Set();
+    let tool;
+    let todo;
+    for (const ev of events || []) {
+      const d = ev.data || {};
+      if (ev.type === "tool/call") {
+        steps.add(`${d.turn ?? ""}:${d.step ?? ""}`);
+        tool = { name: String(d.name || ""), detail: callDetail(d.arguments) };
+      } else if (ev.type === "todo/list") {
+        todo = todoOf(d.items);
+      }
+    }
+    return { steps: steps.size, ...tool ? { tool } : {}, ...todo ? { todo } : {} };
+  }
+  function assignSlice(events, taskId) {
+    const list = events || [];
+    const at = list.findIndex(
+      (ev) => ev.type === "user/message" && ev.data?.source?.plugin === "task" && ev.data?.source?.form === taskId && ev.data?.source?.phase !== "result"
+    );
+    if (at < 0) return [];
+    const out = [];
+    let turn = null;
+    for (let i = at + 1; i < list.length; i++) {
+      const ev = list[i];
+      if (ev.type === "turn/start" && turn === null) turn = Number(ev.data?.turn);
+      out.push(ev);
+      if (ev.type === "turn/end" && (turn === null || Number(ev.data?.turn) === turn)) break;
+    }
+    return out;
+  }
+
+  // core/src/markdown/summary.ts
+  function markdownSummary(source) {
+    const held = [];
+    const hold = (text2) => `${held.push(text2) - 1}`;
+    let text = source.replace(/\uE000/g, "").replace(/\r\n?/g, "\n");
+    let fence = "";
+    let code = [];
+    const lines = [];
+    for (let line of text.split("\n")) {
+      if (fence) {
+        if (new RegExp("^\\s{0,3}" + fence[0] + "{" + fence.length + ",}\\s*$").test(line)) {
+          lines.push(hold(code.join("\n")));
+          code = [];
+          fence = "";
+        } else code.push(line);
+        continue;
+      }
+      line = line.replace(/^\s{0,3}(?:>\s*)+/, "");
+      if (/^\s{0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,}|=+)\s*$/.test(line)) continue;
+      line = line.replace(/^\s*(?:[-*+]\s+|\d{1,9}[.)]\s+)(?:\[[ xX]\]\s+)?/, "");
+      const open = /^\s{0,3}(`{3,}|~{3,})[^\n]*$/.exec(line);
+      if (open) {
+        fence = open[1];
+        continue;
+      }
+      if (/^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/.test(line)) continue;
+      line = line.replace(/^\s{0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/, "$1");
+      lines.push(line);
+    }
+    if (fence) lines.push(hold(code.join("\n")));
+    text = lines.join("\n");
+    text = text.replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, _ticks, body) => hold(body));
+    text = text.replace(/\\([\\`*{}\[\]()#+\-.!_>|~])/g, (_, char) => hold(char));
+    const refs = /* @__PURE__ */ new Set();
+    text = text.replace(/^\s{0,3}\[([^\]\n]+)\]:\s+\S+[^\n]*$/gm, (_, label) => {
+      refs.add(label.trim().toLowerCase());
+      return "";
+    });
+    text = text.replace(
+      /!?\[([^\]\n]*)\]\[([^\]\n]*)\]/g,
+      (all, label, ref) => refs.has((ref || label).trim().toLowerCase()) ? label : all
+    );
+    text = text.replace(/!?\[([^\]\n]+)\]/g, (all, label) => refs.has(label.trim().toLowerCase()) ? label : all);
+    text = text.replace(/!?\[([^\]]*)\]\(\s*(?:<[^>]*>|(?:[^\s()]|\([^()]*\))*)(?:\s+["'][^"']*["'])?\s*\)/g, "$1");
+    text = text.replace(/<((?:https?:\/\/|mailto:)[^\s<>]+)>/g, (_, url) => hold(url));
+    text = text.replace(/https?:\/\/[^\s<>]+/g, (url) => hold(url));
+    text = text.replace(/\*\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*\*/g, "$1");
+    text = text.replace(/(\*\*|__)(?!\s)([\s\S]+?)(?<!\s)\1/g, "$2");
+    text = text.replace(/~~(?!\s)([\s\S]+?)(?<!\s)~~/g, "$1");
+    text = text.replace(/\*(?!\s)([\s\S]+?)(?<!\s)\*/g, "$1");
+    text = text.replace(/(^|[\s(（【「])_(?!\s)([\s\S]+?)(?<!\s)_(?=$|[\s)）】」,.，。!！?？;；:：])/g, "$1$2");
+    text = text.replace(/^\s*\|(.+)\|\s*$/gm, (_, row) => row.replace(/\|/g, " "));
+    text = text.replace(/\uE000(\d+)\uE000/g, (_, index) => held[Number(index)] || "");
+    return text.replace(/\s+/g, " ").trim().slice(0, 120);
   }
 
   // core/src/chat/roster.ts
@@ -2058,7 +2339,7 @@ var SatuCore = (() => {
     } else if (ev.type === "user/message" || ev.type === "assistant/message") {
       const text = messageText((ev.data || {}).message) || (ev.data || {}).text || "";
       if (text) {
-        sum.lastText = text.replace(/\s+/g, " ").trim().slice(0, 120);
+        sum.lastText = markdownSummary(text);
         sum.lastAt = Number(ev.time) || sum.lastAt;
       }
     } else if (ev.type === "assistant/chunk") {
@@ -2074,7 +2355,7 @@ var SatuCore = (() => {
       if (!text) continue;
       const at = Number(ev.time) || 0;
       if (at < sum.lastAt) return false;
-      sum.lastText = text.replace(/\s+/g, " ").trim().slice(0, 120);
+      sum.lastText = markdownSummary(text);
       sum.lastAt = at || sum.lastAt;
       return true;
     }
@@ -2129,19 +2410,22 @@ var SatuCore = (() => {
   }
 
   // core/src/chat/sse.ts
-  async function* sseEvents(reader, stop = () => false) {
+  async function* sseEvents(reader, stop = () => false, hooks = {}) {
     const decoder = new TextDecoder();
     let buf = "";
     while (!stop()) {
       const { done, value } = await reader.read();
       if (done) return;
-      buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      if (hooks.onChunk && hooks.onChunk() === false) return;
+      buf = (buf + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+      let sawData = false;
       let idx;
       while ((idx = buf.indexOf("\n\n")) >= 0) {
         const frame = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
         for (const line of frame.split("\n")) {
           if (!line.startsWith("data: ")) continue;
+          sawData = true;
           let ev;
           try {
             ev = JSON.parse(line.slice(6));
@@ -2151,7 +2435,149 @@ var SatuCore = (() => {
           yield ev;
         }
       }
+      if (hooks.onBatch) hooks.onBatch(sawData);
     }
+  }
+
+  // core/src/chat/files.ts
+  function knownFiles(blocks) {
+    const map = /* @__PURE__ */ new Map();
+    const add = (f) => {
+      if (!f || !f.path || map.has(f.path)) return;
+      map.set(f.path, { path: f.path, name: f.name || f.path.split("/").pop() || f.path });
+    };
+    for (const b of blocks || []) {
+      for (const f of b.files || []) add(f);
+      for (const r of b.refs || []) if (r && r.kind === "file") add(r);
+      for (const x of b.tools || []) {
+        for (const f of x.files || []) add(f);
+        for (const f of x.refs || []) add(f);
+      }
+    }
+    return map;
+  }
+  var FILE_EXT_RE = /\.[A-Za-z0-9]{1,8}$/;
+  function fileCands(known) {
+    const byBase = /* @__PURE__ */ new Map();
+    for (const f of known.values()) {
+      const base = f.path.split("/").pop() || f.path;
+      byBase.set(base, byBase.has(base) ? null : f);
+    }
+    const out = [];
+    for (const f of known.values()) if (f.path.includes("/")) out.push({ needle: f.path, file: f });
+    for (const [base, f] of byBase) if (f && FILE_EXT_RE.test(base)) out.push({ needle: base, file: f });
+    return out.sort((a, b) => b.needle.length - a.needle.length);
+  }
+  function fileHits(text, cands) {
+    const src = String(text == null ? "" : text);
+    if (!src || !cands || !cands.length) return [];
+    const hits = [];
+    for (const c of cands) {
+      let from = 0;
+      for (; ; ) {
+        const at = src.indexOf(c.needle, from);
+        if (at < 0) break;
+        const end = at + c.needle.length;
+        from = end;
+        if (!fileEdgeOk(src, at, end)) continue;
+        if (hits.some((h) => at < h.end && h.start < end)) continue;
+        hits.push({ start: at, end, file: c.file });
+      }
+    }
+    return hits.sort((a, b) => a.start - b.start);
+  }
+  function fileEdgeOk(src, start, end) {
+    const before = start > 0 ? src[start - 1] : "";
+    const after = end < src.length ? src[end] : "";
+    if (before && /[\w./\\-]/.test(before)) return false;
+    if (after && /[\w/\\-]/.test(after)) return false;
+    if (after === "." && /[A-Za-z0-9]/.test(src[end + 1] || "")) return false;
+    return true;
+  }
+
+  // core/src/chat/commands.ts
+  function mentionQueryAt(value, pos) {
+    const before = value.slice(0, pos);
+    const at = before.lastIndexOf("@");
+    if (at < 0) return null;
+    const prev = at > 0 ? before[at - 1] : " ";
+    if (!/[\s(（]/.test(prev)) return null;
+    const word = before.slice(at + 1);
+    if (/[\s\n]/.test(word)) return null;
+    return { at, q: word };
+  }
+  function commandQueryAt(value, pos) {
+    const before = value.slice(0, pos);
+    if (!/^\/[a-zA-Z-]*$/.test(before)) return null;
+    return { q: before.slice(1).toLowerCase() };
+  }
+  function cmdMatches(q, commands) {
+    return commands.filter((c) => !q || c.name.startsWith(q));
+  }
+  function parseCommand(text, commands) {
+    const raw = String(text || "").trim();
+    const first = raw.split(/\s+/)[0];
+    if (!/^\/[a-zA-Z-]+$/.test(first)) return null;
+    const hit = commands.find((c) => c.name === first.slice(1).toLowerCase());
+    if (!hit) return { unknown: first };
+    if (raw !== first) return { cmd: hit, extra: true, arg: raw.slice(first.length).trim() };
+    return { cmd: hit };
+  }
+
+  // core/src/chat/preview.ts
+  var PREVIEW_TEXT_EXT = /* @__PURE__ */ new Set([
+    "txt",
+    "log",
+    "csv",
+    "tsv",
+    "json",
+    "yml",
+    "yaml",
+    "xml",
+    "ini",
+    "toml",
+    "conf",
+    "js",
+    "mjs",
+    "cjs",
+    "ts",
+    "tsx",
+    "jsx",
+    "css",
+    "scss",
+    "sh",
+    "bash",
+    "zsh",
+    "py",
+    "rb",
+    "go",
+    "rs",
+    "java",
+    "c",
+    "h",
+    "cpp",
+    "sql",
+    "env",
+    "gitignore",
+    "diff",
+    "patch"
+  ]);
+  var PREVIEW_DOC_EXT = /* @__PURE__ */ new Set(["docx", "xlsx", "xlsm", "pptx", "doc", "xls", "ppt", "rtf", "odt", "ods", "odp"]);
+  var PREVIEW_WEB_KIND = { docx: "docx", xlsx: "xlsx", xlsm: "xlsx", pptx: "pptx" };
+  function extOf(name) {
+    const base = String(name || "").split("/").pop() || "";
+    const i = base.lastIndexOf(".");
+    return i > 0 ? base.slice(i + 1).toLowerCase() : "";
+  }
+  function previewKindOf(name, type) {
+    const ext = extOf(name);
+    if (String(type || "").startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svg"].includes(ext)) return "image";
+    if (ext === "pdf") return "pdf";
+    if (ext === "md" || ext === "markdown") return "markdown";
+    if (ext === "html" || ext === "htm") return "html";
+    if (PREVIEW_TEXT_EXT.has(ext)) return "text";
+    if (PREVIEW_DOC_EXT.has(ext)) return "doc";
+    return "";
   }
 
   // core/src/chat/backoff.ts
@@ -2174,94 +2600,10 @@ var SatuCore = (() => {
     return "warming";
   }
 
-  // core/src/chat/stream.ts
-  function defaultSleep(ms, signal) {
-    return new Promise((resolve) => {
-      if (signal.aborted) return resolve();
-      const t2 = setTimeout(() => {
-        signal.removeEventListener("abort", onAbort);
-        resolve();
-      }, ms);
-      const onAbort = () => {
-        clearTimeout(t2);
-        resolve();
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-  function runEventStream(opts) {
-    const ac = new AbortController();
-    const now = opts.now || (() => Date.now());
-    const sleep = opts.sleep || defaultSleep;
-    const status = (s) => {
-      if (!ac.signal.aborted || s.kind === "closed") opts.onStatus?.(s);
-    };
-    async function loop() {
-      let attempt = 0;
-      while (!ac.signal.aborted) {
-        const tok = opts.token();
-        let res;
-        try {
-          res = await opts.fetch(opts.url(opts.cursor()), {
-            headers: { accept: "text/event-stream", ...tok ? { authorization: "Bearer " + tok } : {} },
-            signal: ac.signal
-          });
-        } catch {
-          if (ac.signal.aborted) break;
-          attempt = await backoff(attempt);
-          continue;
-        }
-        const verdict = classifyStreamStatus(res.status, Boolean(res.body));
-        if (verdict === "dead") {
-          const message = await res.text().catch(() => "") || "实例还没上线";
-          status({ kind: "dead", status: res.status, message });
-          return;
-        }
-        if (verdict === "warming") {
-          attempt = await backoff(attempt);
-          continue;
-        }
-        status({ kind: "open" });
-        const openedAt = now();
-        try {
-          for await (const ev of sseEvents(res.body.getReader(), () => ac.signal.aborted)) {
-            if (ac.signal.aborted) break;
-            opts.onEvent(ev);
-          }
-        } catch {
-        }
-        if (ac.signal.aborted) break;
-        attempt = await backoff(aliveLongEnough(openedAt, now()) ? 0 : attempt);
-      }
-      status({ kind: "closed" });
-    }
-    async function backoff(attempt) {
-      if (attempt >= CHAT_RETRY_MAX) {
-        status({ kind: "idle", attempt });
-        await sleep(CHAT_IDLE_RETRY_MS, ac.signal);
-        return attempt;
-      }
-      status({ kind: "warming", attempt });
-      await sleep(chatRetryDelay(attempt), ac.signal);
-      return attempt + 1;
-    }
-    const done = loop().catch(() => void 0);
-    return {
-      close() {
-        if (!ac.signal.aborted) ac.abort();
-      },
-      done
-    };
-  }
-
   // core/src/markdown/render.ts
   function createMarkdown(opts = {}) {
     function L(zh) {
       return opts.t ? opts.t(zh) : zh;
-    }
-    const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-    function esc2(s) {
-      return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESCAPES[c]);
     }
     const MARK = "";
     const RE_HOLE = /\uE000(\d+)\uE000/g;
@@ -2389,10 +2731,10 @@ var SatuCore = (() => {
     const RE_BARE_URL = /(^|[\s(（【「])(https?:\/\/[^\s<>()（）【】「」]+[^\s<>()（）【】「」.,;:!?，。；：！？])/g;
     function mathNode(tex, display) {
       const tag = display ? "div" : "span";
-      return "<" + tag + ' class="sw-math' + (display ? " sw-math-block" : "") + '" data-md="math" data-display="' + (display ? "1" : "0") + '" data-tex="' + esc2(tex) + '">' + // 兜底文字里**不带 $ 记号**。KaTeX 是异步拉的，带记号的话每个公式在渲染完成前都
+      return "<" + tag + ' class="sw-math' + (display ? " sw-math-block" : "") + '" data-md="math" data-display="' + (display ? "1" : "0") + '" data-tex="' + esc(tex) + '">' + // 兜底文字里**不带 $ 记号**。KaTeX 是异步拉的，带记号的话每个公式在渲染完成前都
       // 会先闪一下 `$$…$$`；不带的话看到的就是一行 TeX，CSS 已经把它标成等宽淡色，
       // 一眼就知道是「还没排版的公式」而不是正文写坏了。
-      esc2(tex) + "</" + tag + ">";
+      esc(tex) + "</" + tag + ">";
     }
     function inline(src, ctx) {
       const store = ctx.store;
@@ -2400,7 +2742,7 @@ var SatuCore = (() => {
       let s = String(src == null ? "" : src);
       s = s.replace(
         RE_INLINE_CODE,
-        (m, ticks, body) => hold(store, '<code data-md="inline-code">' + esc2(body.replace(/^ ([\s\S]*) $/, "$1")) + "</code>")
+        (m, ticks, body) => hold(store, '<code data-md="inline-code">' + esc(body.replace(/^ ([\s\S]*) $/, "$1")) + "</code>")
       );
       s = s.replace(RE_TEX_PAREN, (m, tex) => hold(store, mathNode(tex, false)));
       s = s.replace(RE_TEX_BRACKET, (m, tex) => hold(store, mathNode(tex, true)));
@@ -2410,7 +2752,7 @@ var SatuCore = (() => {
       });
       s = s.replace(RE_IMG, (m, alt, url, title) => {
         const href = safeUrl(url, "img");
-        if (!href) return hold(store, esc2(alt));
+        if (!href) return hold(store, esc(alt));
         if (/^https?:\/\//i.test(href) && !loadedImages.has(href)) {
           let host = "";
           try {
@@ -2419,34 +2761,34 @@ var SatuCore = (() => {
           }
           return hold(
             store,
-            '<button type="button" class="sw-md-remote-img" data-md="remote-image" data-md-act="load-image" data-src="' + esc2(href) + '" data-alt="' + esc2(alt) + '" title="' + esc2(href) + '">' + esc2(L("点击加载图片")) + (host ? "（" + esc2(host) + "）" : "") + (alt ? "：" + esc2(alt) : "") + "</button>"
+            '<button type="button" class="sw-md-remote-img" data-md="remote-image" data-md-act="load-image" data-src="' + esc(href) + '" data-alt="' + esc(alt) + '" title="' + esc(href) + '">' + esc(L("点击加载图片")) + (host ? "（" + esc(host) + "）" : "") + (alt ? "：" + esc(alt) : "") + "</button>"
           );
         }
         return hold(
           store,
-          '<img data-md="image" src="' + esc2(href) + '" alt="' + esc2(alt) + '"' + (title ? ' title="' + esc2(title) + '"' : "") + ' loading="lazy">'
+          '<img data-md="image" src="' + esc(href) + '" alt="' + esc(alt) + '"' + (title ? ' title="' + esc(title) + '"' : "") + ' loading="lazy">'
         );
       });
       s = s.replace(RE_LINK, (m, text, url, title) => {
         const href = safeUrl(url, "a");
-        const label = depth > 3 ? esc2(text) : inline(text, { store, depth: depth + 1 });
+        const label = depth > 3 ? esc(text) : inline(text, { store, depth: depth + 1 });
         if (!href) return hold(store, label);
         return hold(
           store,
-          '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow"' + (title ? ' title="' + esc2(title) + '"' : "") + ">" + label + "</a>"
+          '<a data-md="link" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow"' + (title ? ' title="' + esc(title) + '"' : "") + ">" + label + "</a>"
         );
       });
       s = s.replace(RE_AUTOLINK, (m, url) => {
         const href = safeUrl(url, "a");
         if (!href) return m;
-        return hold(store, '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc2(url) + "</a>");
+        return hold(store, '<a data-md="link" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc(url) + "</a>");
       });
       s = s.replace(RE_BARE_URL, (m, pre, url) => {
         const href = safeUrl(url, "a");
         if (!href) return m;
-        return pre + hold(store, '<a data-md="link" href="' + esc2(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc2(url) + "</a>");
+        return pre + hold(store, '<a data-md="link" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc(url) + "</a>");
       });
-      s = esc2(s);
+      s = esc(s);
       s = s.replace(/\*\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*\*/g, '<strong data-md="strong"><em>$1</em></strong>');
       s = s.replace(/(\*\*|__)(?!\s)([\s\S]+?)(?<!\s)\1/g, '<strong data-md="strong">$2</strong>');
       s = s.replace(/~~(?!\s)([\s\S]+?)(?<!\s)~~/g, '<del data-md="strike">$1</del>');
@@ -2480,17 +2822,17 @@ var SatuCore = (() => {
       return n;
     }
     function toolBtn(act, label) {
-      return '<button type="button" class="sw-tool" data-md-act="' + act + '" title="' + esc2(label) + '">' + esc2(label) + "</button>";
+      return '<button type="button" class="sw-tool" data-md-act="' + act + '" title="' + esc(label) + '">' + esc(label) + "</button>";
     }
     function codeFigure(lang, code, ctx) {
       const label = String(lang || "").trim().toLowerCase().split(/\s+/)[0];
       if (label === "mermaid") return mermaidFigure(code);
       if (label === "math" || label === "latex" || label === "tex") return mathNode(code.trim(), true);
       const shown = label || "text";
-      return '<figure class="sw-code" data-md="code-block" data-lang="' + esc2(shown) + '"><figcaption class="sw-code-head"><span class="sw-code-lang">' + esc2(shown) + '</span><span class="sw-code-tools">' + toolBtn("copy", L("复制")) + toolBtn("download", L("下载")) + '</span></figcaption><pre class="sw-code-body"><code class="language-' + esc2(shown) + '">' + esc2(code.replace(/\n$/, "")) + "</code></pre></figure>";
+      return '<figure class="sw-code" data-md="code-block" data-lang="' + esc(shown) + '"><figcaption class="sw-code-head"><span class="sw-code-lang">' + esc(shown) + '</span><span class="sw-code-tools">' + toolBtn("copy", L("复制")) + toolBtn("download", L("下载")) + '</span></figcaption><pre class="sw-code-body"><code class="language-' + esc(shown) + '">' + esc(code.replace(/\n$/, "")) + "</code></pre></figure>";
     }
     function mermaidFigure(code) {
-      return '<figure class="sw-mermaid" data-md="mermaid" data-view="diagram"><figcaption class="sw-code-head"><span class="sw-code-lang">mermaid</span><span class="sw-code-tools">' + toolBtn("mermaid-view", L("源码")) + toolBtn("copy", L("复制")) + toolBtn("mermaid-svg", L("下载")) + '</span></figcaption><div class="sw-mermaid-canvas" data-state="pending"><span class="sw-mermaid-wait">' + esc2(L("正在画图…")) + '</span></div><pre class="sw-mermaid-src"><code class="language-mermaid">' + esc2(code.replace(/\n$/, "")) + "</code></pre></figure>";
+      return '<figure class="sw-mermaid" data-md="mermaid" data-view="diagram"><figcaption class="sw-code-head"><span class="sw-code-lang">mermaid</span><span class="sw-code-tools">' + toolBtn("mermaid-view", L("源码")) + toolBtn("copy", L("复制")) + toolBtn("mermaid-svg", L("下载")) + '</span></figcaption><div class="sw-mermaid-canvas" data-state="pending"><span class="sw-mermaid-wait">' + esc(L("正在画图…")) + '</span></div><pre class="sw-mermaid-src"><code class="language-mermaid">' + esc(code.replace(/\n$/, "")) + "</code></pre></figure>";
     }
     function splitRow(line) {
       const trimmed = line.trim().replace(/^\|/, "").replace(/\|[ \t]*$/, "");
@@ -2703,7 +3045,7 @@ var SatuCore = (() => {
       const ctx = { store: [], depth: 0 };
       return blocks(text.replace(/\r\n?/g, "\n").split("\n"), ctx);
     }
-    return { render, splitBlocks, healStream, esc: esc2, safeUrl, loadedImages };
+    return { render, splitBlocks, healStream, esc, safeUrl, loadedImages };
   }
   return __toCommonJS(index_exports);
 })();

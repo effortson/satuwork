@@ -1,7 +1,7 @@
 # satuwork-desktop
 
 桌面壳。**界面打在包里**——`gateway/ui` 那批分片原样拷进包（`pnpm prepare:ui`），由壳子用自己的
-`satu://` 协议发出来（main.rs 的 `serve_ui`，找不到的路径回 index.html，单页路由刷新也不丢）。
+`satu://` 协议发出来（src-tauri/src/ui.rs 的 `serve_ui`，找不到的路径回 index.html，单页路由刷新也不丢）。
 壳子记住「连哪台 Gateway」，注入 `window.__SATUWORK_GATEWAY__`，页面里所有打 Gateway 的请求在
 `ui/data.js` 的 `swFetch` 那一层接上这个前缀。
 
@@ -21,13 +21,15 @@ Bot 的守卫三处都对它开 CORS；管家那张桌面 cookie 在 https 下�
 pnpm --filter satuwork-desktop dev
 ```
 
-**正式发布包固定连 `https://satuwork.com`**：不问地址、菜单里也没有「切换服务器…」，
-磁盘上老版本存过的 server.txt 也不再看；连不上时设置屏只显示原因和「重试」。以下都是
-本地测试（`pnpm dev`，debug 构建）的行为：
+**默认连 `https://satuwork.com`**（发布包按地区编进来的那台），正式包和本地测试一样可以换。
+换服务器走**登录页右上角的「服务器」按钮**（菜单里不再有「切换服务器…」）：弹窗里填地址，
+「检测」只测不存；「检测并使用」由壳子先敲端口、再要一次 `/health`（回 `{"ok":true}` 才算是
+Gateway），通过了才写盘，然后停掉老服务器上的本地 Bot、用新地址重建主窗口，在新服务器上重新
+登录。没通过就留在弹窗里说明原因，不会存下一个打不开的地址。
 
-第一次打开是「连接到 Gateway」那一屏；填过一次就直接进去了。地址存在
-`~/Library/Application Support/sg.dami.satuwork/server.txt`（Windows 在
-`%APPDATA%`，Linux 在 `~/.config`）。要改地址走菜单「服务器 → 切换服务器…」。
+地址存在 `~/Library/Application Support/sg.dami.satuwork/server.txt`（Windows 在
+`%APPDATA%`，Linux 在 `~/.config`）；没存过就连默认那台。启动时存的那台敲不开，回「连接到
+Gateway」那一屏，把原因摆出来，可以当场改地址。
 
 登录票在桌面壳里按 Gateway 来源持久保存：关掉窗口或退出应用后再打开会恢复登录；在
 个人设置里点「退出登录」仍会立即清掉。浏览器版继续使用 `sessionStorage`，关掉标签页
@@ -38,6 +40,41 @@ pnpm --filter satuwork-desktop dev
 ```bash
 SATUWORK_SERVER=http://127.0.0.1:3080 pnpm --filter satuwork-desktop dev
 ```
+
+## 消息通知
+
+桌面端仅在程序运行、已登录且应用窗口没有焦点时显示系统通知，最小化或切到其他应用都算。
+回复完成、操作等待审批、出现转人工事项时提醒；主动停止的一轮不提醒。窗口有焦点时只更新
+界面，退出程序后不接收，不登记 APNs / FCM 设备，也不运行后台通知服务。
+
+通知附带系统提示音：macOS 使用 Ping，Windows 使用默认通知音，Linux 使用通知声音主题的
+message-new-instant。声音随系统通知一起播放，遵循系统音量、勿扰和 Satuwork 的通知声音开关。
+
+远程 Bot 由席位可靠上报通知元数据，本地 Bot 各自在 loopback 端口监听主会话并经桌面端
+上报，包括没有打开过对话页的 Bot。Gateway 保存共享已读游标，通知缓冲两秒后核对未读；
+桌面端领取成功才发送系统通知。任意端已读后，其他端停止后续提醒并同步未读角标。启动和
+重连的历史重放不提醒，同一事件对同一设备只提醒一次。通知只含 Bot
+名字和固定事件说明，不含对话正文。点击通知会恢复窗口并打开对应 Bot；退出登录或切换
+服务器后，旧通知的点击失效。系统关闭了 Satuwork 通知或开启勿扰模式时，显示由系统决定。
+
+同步协议、离线补偿和部署顺序见 [跨端通知](../docs/notifications.md)。
+
+使用 Tauri notification 2.7（桌面通知点击支持），Rust 编译器最低为 1.90。Windows 的正式通知
+身份和图标需安装应用后验证，开发态与正式安装不同。macOS / Windows 无法由此插件移除已进入
+通知中心的旧通知，但退出登录后点击它们不会打开前一个账号的对话。
+
+## 桌面窗口
+
+macOS 主窗口和连接设置窗口不再使用系统标题栏与边框。左上角红绿灯由应用绘制：红色关闭窗口，
+黄色最小化，绿色进入或退出全屏；连接设置窗口尺寸固定，绿色不可用。顶部留白和主界面的标题栏
+可以拖动窗口，双击可缩放。窗口控制独立于页面重绘，登录、切换页面和收起侧栏后仍可用。
+Windows 主窗口和连接设置窗口同样不使用系统标题栏与边框；右上角为应用绘制的最小化、
+最大化／还原和关闭按钮。顶部保留 36px 的拖拽区，双击可最大化或还原，固定尺寸的连接设置
+窗口禁用最大化。移除系统阴影附带的白边后，窗口边缘缩放仍由 Tauri 的原生命中测试处理。
+Linux 继续使用系统窗口控件。
+
+窗口命令只开放给包内主窗口、连接设置页，并且只控制调用命令的那扇窗口，不接受目标窗口参数。
+样式同时存在于 `gateway/ui/app.css` 和设置页的 `shell/window.css`；修改窗口控件样式时需同步。
 
 ## 本地 Bot 直连本机
 
@@ -208,7 +245,7 @@ SATUWORK_SERVER=http://127.0.0.1:4321 pnpm --filter satuwork-desktop dev
 | 302 + SameSite=Lax cookie（**同源**） | 旧架构里 Gateway 同域反代的桌面入口 | 过 |
 | 302 + SameSite=Lax cookie（**跨站**） | 曾经的桌面入口 | **不过，而且不可能过**：WKWebView 拦掉一切第三方 cookie，`SameSite=None; Secure` 也没用。桌面因此改成**票写进路径**（`/seats/:id/vnc/t/<票>/…`，管家 0.1.24 起），不再依赖 cookie |
 | `blob:` 预览 iframe | 附件预览 | 过 |
-| `<a download>` | 附件下载 | 过，静默落到 ~/Downloads，不弹框 |
+| `<a download>` | 早期 HTTP 页面下载探针 | 当时可用；包内 `satu://` 页面的 `blob:` 下载可能静默失效。附件、知识库、对话导出和代码下载现通过原生 IPC 打开系统「另存为」窗口，取消不写盘，保存失败显示原因 |
 | `target="_blank"`（同源） | 「打开桌面」按钮 | 过（另开一扇应用窗口） |
 | `window.open()`（同源） | 同上 | 过 |
 | 站外链接 | markdown 里贴的网址 | 过（交给系统浏览器，窗口没被带走） |
@@ -240,4 +277,4 @@ Linux 那一列是三列里最可能出问题的。真要发 Linux 包，先跑�
   `desktop-latest` Release——总是对齐到现有 `desktop-v*` 里最新的正式版（纯 `X.Y.Z`，预发布不算）。首页的下载那一段
   （[gateway/ui/pages-landing.js](../gateway/ui/pages-landing.js) 的 `dlBase` / `dlBuilds`）只认
   `desktop-latest`，所以**发新版不用改页面**，打 tag 就完了。Linux 暂未开包。
-- **图标**。源文件是 [gateway/ui/assets/satuwork-logo.svg](../gateway/ui/assets/satuwork-logo.svg)。改标志后用 `pnpm --filter satuwork-desktop icon` 重新生成桌面端各尺寸；脚本会给 macOS 的 `icon.icns` 单独加透明边距，使 Dock 图标和其他 app 看起来一样大。网页用的 `gateway/ui/assets/satuwork-logo.png` 不加边距，需要时从 `desktop/src-tauri/icons/128x128@2x.png` 复制。
+- **图标**。网页和应用图标共用原图 [gateway/ui/assets/satuwork-logo.png](../gateway/ui/assets/satuwork-logo.png)。改标志后用 `pnpm --filter satuwork-desktop icon` 和 `pnpm --filter satuwork-mobile icon` 重新生成桌面端、手机端各尺寸；桌面脚本为 macOS 的 `icon.icns` 沿用原图自带的透明留白，不再额外添加边距，以免 Dock 图标偏小，手机脚本会去掉 iOS 图标的 alpha 通道并同步资源目录。网页直接使用原图，不要用生成的小尺寸图标覆盖它。Android 通知栏使用独立的单色头像 `mobile/push-plugin/android/src/main/res/drawable/ic_satu_notification.xml`，换形象时也需要同步更新。

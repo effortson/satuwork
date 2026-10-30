@@ -1,5 +1,6 @@
 # 镜像构建上下文是仓库根目录（compose 里 context: .），而 gateway/Dockerfile 真正 COPY 的
-# 只有：根目录三份清单、三个 package.json（gateway/bot/manager）和整个 gateway/。
+# 只有：根目录三份清单、三个 package.json（gateway/bot/manager）、整个 gateway/
+# 和 Gateway 与管家共用的 manager/src/content-policy.ts。
 # 别的全挡掉：node_modules 几百兆一进上下文，每次 build 先传它几分钟；.env 里是平台
 # token 和数据库连接串，进了镜像层就等于发出去了。
 .git
@@ -27,8 +28,11 @@ docs
 searxng
 .github
 
-# bot 和 manager 只要 package.json（让 pnpm workspace 和 lockfile 对得上）
+# bot 只要 package.json；manager 还提供 Gateway 共用的内容策略。
 bot/*
 !bot/package.json
 manager/*
 !manager/package.json
+!manager/src/
+manager/src/*
+!manager/src/content-policy.ts

@@ -10,7 +10,7 @@ import {
   watchState,
   type ManagerState,
 } from './config.ts'
-import { HttpError, json, listen, Router, sameToken, type Req } from './http.ts'
+import { gatewayPost, HttpError, json, listen, Router, sameToken, type Req } from './http.ts'
 import { attachUpgrade, proxyIntercept } from './proxy.ts'
 import { bootChallenge, pairIfNeeded } from './pair.ts'
 import { diagnose } from './diag.ts'
@@ -23,6 +23,7 @@ import { currentTimezone, maybeSetTimezone, timezoneError } from './timezone.ts'
 import { standDown } from './standdown.ts'
 import { ensureWorkerEnv, relayIntercept } from './relay.ts'
 import { llmRelayIntercept } from './llm-relay.ts'
+import { httpsReport, ingressCheck, maybeHttps } from './https.ts'
 
 /**
  * 机器管家。一台席位机器一个，root systemd 服务。
@@ -267,6 +268,9 @@ function specOf(rawSeatId: string, body: unknown): SeatSpec {
     workDir,
     seatDir,
     botId: shaped(line(b, 'botId', 64), BOT_ID_RE, 'botId'),
+    // 只进那一格的名牌（seat-workdir.sh），不进任何路径和单元字段，所以不校形状、只截长度。
+    // 老 Gateway 不带。
+    ...(typeof b.botName === 'string' && b.botName.trim() ? { botName: b.botName.trim().slice(0, 100) } : {}),
     botVersion: shaped(line(b, 'botVersion', 64), VERSION_RE, 'botVersion'),
     ...directPackageOf(b),
     vncPassword: line(b, 'vncPassword', 256),
@@ -339,6 +343,17 @@ router.get('/health', async (req, res) => {
     logs: logUsage() ?? null,
     seats: await seatsWithLiveness(),
   })
+})
+
+/**
+ * Gateway 从外面经域名敲这一条，确认「这个域名后面就是这台管家」（见 https.ts）。
+ *
+ * **不认机器票，也不该认**：Gateway 敲它的时候还不知道域名指向谁，带票去敲等于把票交给域名
+ * 那头的任何人。证据是 nonce——只有这台管家从心跳回包里拿到过。对不上一律 404，不说为什么。
+ */
+router.get('/ingress-check', async (req, res) => {
+  if (!ingressCheck(req.query.get('nonce') || '')) throw new HttpError(404, 'not found')
+  json(res, 200, { ok: true })
 })
 
 /**
@@ -545,10 +560,10 @@ async function heartbeat(): Promise<void> {
     return
   }
   try {
-    const res = await fetch(`${state.gatewayUrl}/internal/machines/${encodeURIComponent(state.machineId)}/heartbeat`, {
-      method: 'POST',
-      headers: { authorization: 'Bearer ' + state.token, 'content-type': 'application/json' },
-      body: JSON.stringify({
+    const res = await gatewayPost(
+      `${state.gatewayUrl}/internal/machines/${encodeURIComponent(state.machineId)}/heartbeat`,
+      state.token,
+      JSON.stringify({
         managerVersion: managerVersion(),
         protocol: PROTOCOL,
         node: process.versions.node,
@@ -557,6 +572,9 @@ async function heartbeat(): Promise<void> {
         // 自报**实际**时区。Gateway 拿它和期望时区比，界面上才分得出「已经改上了」
         // 和「指令下了、还没改上」。
         timezone: currentTimezone() || null,
+        // 自己认的 Gateway 源：只放行它的跨源请求（proxy.ts 的 corsFor）。浏览器直连失败时，
+        // 界面拿它和页面的源比，不一致就直说该换哪个地址。
+        gatewayOrigin: originOrNull(state.gatewayUrl),
         // 升级和改时区都可能失败，而 Gateway 只有一格 lastError。升级失败更要命
         // （机器版本会卡住），所以它优先；两者都好的时候这里是 null。
         upgradeError: upgradeError() || timezoneError() || null,
@@ -564,10 +582,12 @@ async function heartbeat(): Promise<void> {
         // 再加一条定时 POST 只是多一个会失败、会重试、会被防火墙拦住的东西。
         metrics: metrics() ?? null,
         logs: logUsage() ?? null,
+        // 域名 https 配到哪一步了、现在是不是只听回环（协议 14，见 https.ts）。
+        https: httpsReport(),
         seats: await seatsWithLiveness(),
       }),
-      signal: AbortSignal.timeout(15_000),
-    })
+      { timeoutMs: 15_000 },
+    )
     if (!res.ok) {
       // 401/403 = Gateway 不认这把票了。别的状态码（5xx、502）是它自己的毛病，
       // 不该算在这个账上，否则一次 Gateway 重启就会把整队机器推进「失联」。
@@ -582,7 +602,7 @@ async function heartbeat(): Promise<void> {
     }
     // 心跳通了才算「这个版本活过来了」。confirm timer 看的就是这个标记。
     confirmVersion()
-    const reply = (await res.json()) as { timezone?: string | null; removed?: boolean; logCapMb?: number | null }
+    const reply = (await res.json()) as { timezone?: string | null; removed?: boolean; logCapMb?: number | null; https?: unknown }
     // 被移除了：停席位、清配对、停自己。这一支之后不再做别的活儿。
     if (reply.removed) {
       clearInterval(timer)
@@ -595,6 +615,8 @@ async function heartbeat(): Promise<void> {
     // 时区在前：它便宜、不重启进程，而 maybeUpgrade 成功那一支会把自己重启掉，
     // 排在它后面的活儿这一轮就不一定跑得到了。
     await maybeSetTimezone(reply.timezone)
+    // 域名 https 同理排在升级前面：装 Caddy 那段在后台跑，这里只等「要不要改监听」那一下。
+    await maybeHttps(reply.https)
     await maybeUpgrade(reply as Record<string, never>, state.token)
   } catch {
     /* 网络抖动不值得刷屏；下一轮再试。 */
@@ -656,3 +678,12 @@ function shutdown() {
 }
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
+
+/** 地址的源（`协议://主机[:端口]`）；解析不了就 null。 */
+function originOrNull(url: string): string | null {
+  try {
+    return new URL(url).origin
+  } catch {
+    return null
+  }
+}

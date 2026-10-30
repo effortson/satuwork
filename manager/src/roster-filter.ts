@@ -1,18 +1,14 @@
 /**
- * **这是 gateway/src/lib/roster-filter.ts 的逐字副本。** 管家包 import 不到 gateway 的
- * 源（那个包没有 exports，见 manager/src/http.ts 文件头），而名单流下沉到这台机器之后，
- * 过滤规则在两边都要跑。规则本身是纯的、不 import 任何东西，抄一份的代价只是「会漂」——
- * e2e/roster-stream.mjs 里有一条用例按字节比对两份文件，漂了当场就红。改规则请改 gateway
- * 那一份，然后把这一份整个覆盖掉。
- */
-/**
  * 名单通道的过滤规则：一条席位事件 → 要不要往浏览器转、转成什么。
+ *
+ * 原先 Gateway 也有一份（gateway/src/lib/roster-filter.ts），名单流整条下沉到管家之后那份
+ * 拆掉了（d4ad661），规则只剩这里这一份。
  *
  * **单独一个文件、不 import 任何东西**，为的是能被 e2e 直接 import 跑（node 的
  * strip-only 模式带不动 db.ts 那种带参数属性的 TS）。规则本身也确实是纯的——它是这条
  * 通道的全部要点，值得能一条条钉住（见 e2e/roster-stream.mjs）。
  *
- * 通道为什么存在、边界在哪儿，见同目录的 roster-stream.ts 开头。
+ * 通道为什么存在、边界在哪儿，见同目录的 roster.ts 开头。
  */
 
 /**
@@ -45,13 +41,15 @@ export interface Upstream {
   after: number
   lastTick: number
   attempt: number
+  /** 每次上游重连先重放，replay/done 之后才是新事件。 */
+  replaying?: boolean
 }
 
 /** 一条上游事件 → 要不要往浏览器转，转成什么。顺带把游标和节流状态推进。 */
 export function rosterFrame(
   ev: { type?: string; seq?: number; time?: number; live?: unknown },
   up: Upstream,
-): { type: string; botId: string; ev?: unknown; live?: boolean } | null {
+): Frame | null {
   // 游标按**过滤前**的 seq 走：滤掉的那些也算「见过了」，否则每次重连都要把它们再拉
   // 一遍，而它们恰恰是最多的那一批（chunk）。
   if (typeof ev.seq === 'number' && ev.seq > up.after) up.after = ev.seq
@@ -62,6 +60,7 @@ export function rosterFrame(
    * （和 chat.js 里 chatLive 治的是同一个病）。
    */
   if (ev.type === 'replay/done') {
+    up.replaying = false
     return typeof ev.live === 'boolean' ? { type: 'roster/live', botId: up.botId, live: ev.live } : null
   }
   if (ev.type === 'assistant/chunk') {
@@ -70,13 +69,13 @@ export function rosterFrame(
     const at = Number(ev.time) || 0
     if (!at || at - up.lastTick < TICK_MS) return null
     up.lastTick = at
-    return { type: 'roster/ev', botId: up.botId, ev: { type: 'assistant/chunk', time: at } }
+    return { type: 'roster/ev', botId: up.botId, sessionId: up.sessionId, ev: { type: 'assistant/chunk', time: at } }
   }
   if (!ev.type || !ROSTER_TYPES.has(ev.type)) return null
-  return { type: 'roster/ev', botId: up.botId, ev }
+  return { type: 'roster/ev', botId: up.botId, sessionId: up.sessionId, replay: up.replaying !== false, ev }
 }
 
-export type Frame = { type: string; botId: string; ev?: unknown; live?: boolean }
+export type Frame = { type: string; botId: string; sessionId?: string; replay?: boolean; ev?: unknown; live?: boolean }
 
 /**
  * 一个 Bot 的「追平集」：**新接上的页面要先看到的那几帧**。

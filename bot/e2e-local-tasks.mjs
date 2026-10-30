@@ -1,0 +1,227 @@
+/**
+ * 本地 Bot 自己领主 Bot 派的活（src/local-tasks）。假 Gateway 先发一条 run 活、再发一条 deliver 活，
+ * 自己这颗进程的 server 上摆几条假路由扮「自己的会话」：要看的是——run 那一步只认自己那一轮、把那一轮
+ * 的 assistant/message 正文带回 finish；deliver 那一步把结论发进会话（带 task 身份）就报 delivered。
+ */
+import { createServer } from 'node:http'
+
+process.env.SATUWORK_RUNTIME_KIND = 'local'
+process.env.SATUWORK_BOT_ID = 'bot-local'
+process.env.GATEWAY_TOKEN = 'sat_local_probe'
+process.env.SATUWORK_LOCAL_TASK_TICK_MS = '800'
+process.env.SATUWORK_TASK_QUEUE_GONE_MS = '800'
+
+const seen = []
+let handed = 0
+const gateway = createServer((req, res) => {
+  let raw = ''
+  req.on('data', (d) => (raw += d))
+  req.on('end', () => {
+    const url = new URL(req.url, 'http://probe')
+    const body = raw ? JSON.parse(raw) : undefined
+    seen.push({ method: req.method, path: url.pathname, query: url.search, auth: req.headers.authorization, body })
+    const send = (code, value) => {
+      res.writeHead(code, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(value))
+    }
+    if (req.method === 'GET' && url.pathname === '/runtime/local-tasks/due') {
+      handed++
+      if (handed === 1) {
+        return send(200, {
+          jobs: [
+            { taskId: 'tk-1', phase: 'run', botId: 'bot-local', accountId: 'acc', seatId: 'desktop', instruction: '【主 Bot「助手」派来的任务】\n做月报', task: { id: 'tk-1', phase: 'instruction', from: { id: 'bot-main', name: '助手' } }, leaseMs: 60000, timeoutMs: 120000 },
+            // 老 Gateway 不认 botId，把别的本地 Bot 的活也交过来了：不该碰它，更不该报失败。
+            { taskId: 'tk-other', phase: 'run', botId: 'bot-other', accountId: 'acc', seatId: 'desktop', instruction: '【主 Bot「助手」派来的任务】\n别人的活', task: { id: 'tk-other', phase: 'instruction', from: { id: 'bot-main', name: '助手' } }, leaseMs: 60000, timeoutMs: 120000 },
+          ],
+          leaseMs: 60000,
+        })
+      }
+      // run 那一步回报完才给 deliver 那一步（真 Gateway 也是这个顺序）。
+      if (seen.some((s) => s.path === '/runtime/local-tasks/tk-1/finish') && !seen.some((s) => s.path === '/runtime/local-tasks/tk-2/started')) {
+        return send(200, {
+          jobs: [{ taskId: 'tk-2', phase: 'deliver', botId: 'bot-local', accountId: 'acc', seatId: 'desktop', instruction: '【任务结果】@财务 做完了（任务：做月报）\n合计 20 万', task: { id: 'tk-2', phase: 'result', from: { id: 'fin', name: '财务' } }, leaseMs: 60000, timeoutMs: 120000 }],
+          leaseMs: 60000,
+        })
+      }
+      // 前两件收场之后发第三件：它跑到一半，主 Bot 那边按了停止。
+      if (seen.some((s) => s.path === '/runtime/local-tasks/tk-2/finish') && !seen.some((s) => s.path === '/runtime/local-tasks/tk-3/started')) {
+        return send(200, {
+          jobs: [{ taskId: 'tk-3', phase: 'run', botId: 'bot-local', accountId: 'acc', seatId: 'desktop', instruction: '【主 Bot「助手」派来的任务】\n做一件很久的事', task: { id: 'tk-3', phase: 'instruction', from: { id: 'bot-main', name: '助手' } }, leaseMs: 60000, timeoutMs: 120000, cancelPollMs: 200 }],
+          leaseMs: 60000,
+        })
+      }
+      // 第四件：对方正忙，指令排进了它的队列；还没轮到就被停了（docs/bot-tasks.md §7）。
+      if (seen.some((s) => s.path === '/runtime/local-tasks/tk-3/finish') && !seen.some((s) => s.path === '/runtime/local-tasks/tk-4/started')) {
+        return send(200, {
+          jobs: [{ taskId: 'tk-4', phase: 'run', botId: 'bot-local', accountId: 'acc', seatId: 'desktop', instruction: '【主 Bot「助手」派来的任务】\n排着的那件', task: { id: 'tk-4', phase: 'instruction', from: { id: 'bot-main', name: '助手' } }, leaseMs: 60000, timeoutMs: 120000, cancelPollMs: 200 }],
+          leaseMs: 60000,
+        })
+      }
+      // 第五件：拿到会话 id 之后、指令发出去之前就被停了——这时对方跑着的是人自己那一轮，不能砍。
+      if (seen.some((s) => s.path === '/runtime/local-tasks/tk-4/finish') && !seen.some((s) => s.path === '/runtime/local-tasks/tk-5/started')) {
+        return send(200, {
+          jobs: [{ taskId: 'tk-5', phase: 'run', botId: 'bot-local', accountId: 'acc', seatId: 'desktop', instruction: '【主 Bot「助手」派来的任务】\n还没发就停', task: { id: 'tk-5', phase: 'instruction', from: { id: 'bot-main', name: '助手' } }, leaseMs: 60000, timeoutMs: 120000, cancelPollMs: 200 }],
+          leaseMs: 60000,
+        })
+      }
+      // 第六件：排在对方队列里被停，第一次撤队列席位没应（500）：下一拍再撤，不去砍当前那一轮。
+      if (seen.some((s) => s.path === '/runtime/local-tasks/tk-5/finish') && !seen.some((s) => s.path === '/runtime/local-tasks/tk-6/started')) {
+        return send(200, {
+          jobs: [{ taskId: 'tk-6', phase: 'run', botId: 'bot-local', accountId: 'acc', seatId: 'desktop', instruction: '【主 Bot「助手」派来的任务】\n排着、撤一次没撤掉', task: { id: 'tk-6', phase: 'instruction', from: { id: 'bot-main', name: '助手' } }, leaseMs: 60000, timeoutMs: 120000, cancelPollMs: 200 }],
+          leaseMs: 60000,
+        })
+      }
+      // 第七件：排着队，没人按停止，人在对方那边直接把它撤了（席位推一帧没有它的队列快照）。
+      if (seen.some((s) => s.path === '/runtime/local-tasks/tk-6/finish') && !seen.some((s) => s.path === '/runtime/local-tasks/tk-7/started')) {
+        return send(200, {
+          jobs: [{ taskId: 'tk-7', phase: 'run', botId: 'bot-local', accountId: 'acc', seatId: 'desktop', instruction: '【主 Bot「助手」派来的任务】\n排着、被人撤了', task: { id: 'tk-7', phase: 'instruction', from: { id: 'bot-main', name: '助手' } }, leaseMs: 60000, timeoutMs: 120000, cancelPollMs: 200 }],
+          leaseMs: 60000,
+        })
+      }
+      return send(200, { jobs: [], leaseMs: 60000 })
+    }
+    if (req.method === 'POST' && url.pathname === '/runtime/local-tasks/tk-7/renew') return send(200, { leaseMs: 60000 })
+    if (req.method === 'POST' && /^\/runtime\/local-tasks\/tk-7\/(started|finish)$/.test(url.pathname)) return send(200, url.pathname.endsWith('started') ? { blocked: null } : { ok: true })
+    // 第五件：started 慢吞吞，这期间续租已经说停了。
+    if (req.method === 'POST' && url.pathname === '/runtime/local-tasks/tk-5/started') return void setTimeout(() => send(200, { blocked: null }), 1200)
+    if (req.method === 'POST' && url.pathname === '/runtime/local-tasks/tk-5/renew') return send(200, { leaseMs: 60000, cancelled: true })
+    if (req.method === 'POST' && url.pathname === '/runtime/local-tasks/tk-5/finish') return send(200, { ok: true })
+    if (req.method === 'POST' && url.pathname === '/runtime/local-tasks/tk-6/renew') {
+      const n = seen.filter((s) => s.path === '/runtime/local-tasks/tk-6/renew').length
+      return send(200, { leaseMs: 60000, cancelled: n >= 2 })
+    }
+    if (req.method === 'POST' && /^\/runtime\/local-tasks\/tk-6\/(started|finish)$/.test(url.pathname)) return send(200, url.pathname.endsWith('started') ? { blocked: null } : { ok: true })
+    if (req.method === 'POST' && url.pathname === '/runtime/local-tasks/tk-4/renew') {
+      const n = seen.filter((s) => s.path === '/runtime/local-tasks/tk-4/renew').length
+      return send(200, { leaseMs: 60000, cancelled: n >= 2 })
+    }
+    if (req.method === 'POST' && /^\/runtime\/local-tasks\/tk-4\/(started|finish)$/.test(url.pathname)) return send(200, url.pathname.endsWith('started') ? { blocked: null } : { ok: true })
+    if (req.method === 'POST' && url.pathname === '/runtime/local-tasks/tk-3/renew') {
+      // 开跑后第二次续租起说「停了」。
+      const n = seen.filter((s) => s.path === '/runtime/local-tasks/tk-3/renew').length
+      return send(200, { leaseMs: 60000, cancelled: n >= 2 })
+    }
+    if (req.method === 'POST' && /^\/runtime\/local-tasks\/tk-3\/(started|finish)$/.test(url.pathname)) return send(200, url.pathname.endsWith('started') ? { blocked: null } : { ok: true })
+    if (req.method === 'POST' && /^\/runtime\/local-tasks\/tk-[12]\/started$/.test(url.pathname)) return send(200, { blocked: null })
+    if (req.method === 'POST' && /^\/runtime\/local-tasks\/tk-[12]\/renew$/.test(url.pathname)) return send(200, { leaseMs: 60000 })
+    if (req.method === 'POST' && /^\/runtime\/local-tasks\/tk-[12]\/finish$/.test(url.pathname)) return send(200, { ok: true })
+    send(404, { error: 'no route' })
+  })
+})
+await new Promise((r) => gateway.listen(0, '127.0.0.1', r))
+process.env.GATEWAY_URL = `http://127.0.0.1:${gateway.address().port}`
+
+const { Context } = await import('@deepseek-ai/cordis')
+const ctx = new Context()
+const port = 30000 + Math.floor(Math.random() * 20000)
+process.env.SATUWORK_BOT_PORT = String(port)
+await ctx.plugin(await import('./src/server/index.ts'), { host: '127.0.0.1', port })
+for (let i = 0; i < 100 && !ctx.server; i++) await new Promise((r) => setTimeout(r, 20))
+
+const own = []
+const streams = []
+ctx.server.get('/api/bots/:id/session', async (req) => {
+  own.push({ path: req.path, auth: req.headers.get('authorization') })
+  return Response.json({ sessionId: 's-local' })
+})
+ctx.server.get('/api/sessions/:id/history', async (req) => {
+  own.push({ path: req.path })
+  return Response.json({ events: [{ seq: 3 }] })
+})
+ctx.server.get('/api/sessions/:id/events', async (req) => {
+  own.push({ path: req.path })
+  const encoder = new TextEncoder()
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(': hi\n\n'))
+        streams.push(controller)
+      },
+    }),
+    { headers: { 'content-type': 'text/event-stream' } },
+  )
+})
+// 中止：第三件被停时工人来调它。收到就让那一轮以 aborted 收口。
+ctx.server.post('/api/sessions/:id/abort', async (req) => {
+  own.push({ path: req.path, auth: req.headers.get('authorization') })
+  const enc = new TextEncoder()
+  for (const c of streams) {
+    try {
+      c.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'turn/end', seq: 99, data: { turn: 20, reason: 'aborted' } })}\n\n`))
+    } catch {}
+  }
+  return Response.json({ aborted: true })
+})
+// 撤掉排着的那条：第四件被停时工人来调它。
+ctx.server.delete('/api/sessions/:id/queue/:qid', async (req) => {
+  own.push({ path: req.path, method: 'DELETE' })
+  // 第六件：第一次撤，席位一时没应。
+  if (req.path.endsWith('/q-6') && own.filter((x) => x.method === 'DELETE' && x.path.endsWith('/q-6')).length === 1) {
+    return Response.json({ error: '忙' }, { status: 500 })
+  }
+  return Response.json({ cancelled: true })
+})
+ctx.server.post('/api/sessions/:id/messages', async (req) => {
+  const body = await req.json()
+  own.push({ path: req.path, auth: req.headers.get('authorization'), body })
+  // 第四件：对方正跑着人那一轮，派活不插话、排进队列。
+  if (body.task?.id === 'tk-4') return Response.json({ queued: true, queueId: 'q-4' })
+  if (body.task?.id === 'tk-6') return Response.json({ queued: true, queueId: 'q-6' })
+  if (body.task?.id === 'tk-7') {
+    setTimeout(() => {
+      const enc = new TextEncoder()
+      for (const c of streams) {
+        try {
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'queue/change', queued: [] })}\n\n`))
+        } catch {}
+      }
+    }, 300)
+    return Response.json({ queued: true, queueId: 'q-7' })
+  }
+  // 第三件：开一轮、说一句，就一直跑着不收口——等着被停。
+  if (body.task?.id === 'tk-3') {
+    setTimeout(() => {
+      const enc = new TextEncoder()
+      const line = (type, seq, data) => enc.encode(`data: ${JSON.stringify({ type, seq, data })}\n\n`)
+      for (const c of streams) {
+        try {
+          c.enqueue(line('user/message', 30, { message: { content: body.text } }))
+          c.enqueue(line('turn/start', 31, { turn: 20 }))
+          c.enqueue(line('assistant/message', 32, { turn: 20, message: { content: [{ type: 'text', text: '我开始做了，要很久。' }] } }))
+          // 自己那一轮里调了一次工具、列了一张清单：续租时要报上去。
+          c.enqueue(line('tool/call', 33, { turn: 20, step: 1, callId: 'k1', name: 'web_search', arguments: JSON.stringify({ query: 'eth etf' }) }))
+          c.enqueue(line('todo/list', 34, { callId: 'k2', items: [{ id: '1', task: '查数据', status: 'in_progress' }, { id: '2', task: '写结论', status: 'pending' }] }))
+        } catch {}
+      }
+    }, 30)
+    return Response.json({ accepted: true })
+  }
+  if (body.task?.phase === 'instruction') {
+    setTimeout(() => {
+      const enc = new TextEncoder()
+      const line = (type, seq, data) => enc.encode(`data: ${JSON.stringify({ type, seq, data })}\n\n`)
+      for (const c of streams) {
+        // 先来一轮别人的（连带它的回复），再来我们自己的：轮号和正文都要认对。
+        c.enqueue(line('user/message', 4, { message: { content: '别人的话' } }))
+        c.enqueue(line('turn/start', 5, { turn: 7 }))
+        c.enqueue(line('assistant/message', 6, { turn: 7, message: { content: [{ type: 'text', text: '别人的回复' }] } }))
+        c.enqueue(line('turn/end', 7, { turn: 7, reason: 'completed' }))
+        c.enqueue(line('user/message', 8, { message: { content: body.text } }))
+        c.enqueue(line('turn/start', 9, { turn: 8 }))
+        c.enqueue(line('assistant/message', 10, { turn: 8, message: { content: [{ type: 'text', text: '我先查一下。' }] } }))
+        c.enqueue(line('assistant/message', 11, { turn: 8, message: { content: [{ type: 'text', text: '月报做好了：合计 20 万。' }] } }))
+        c.enqueue(line('turn/end', 12, { turn: 8, reason: { kind: 'completed' } }))
+      }
+    }, 30)
+  }
+  return Response.json({ accepted: true })
+})
+
+await ctx.plugin(await import('./src/local-tasks/index.ts'))
+
+const deadline = Date.now() + 30000
+while (Date.now() < deadline && !seen.some((s) => s.path === '/runtime/local-tasks/tk-7/finish')) await new Promise((r) => setTimeout(r, 50))
+for (const c of streams) try { c.close() } catch {}
+gateway.close()
+console.log('__RESULT__' + JSON.stringify({ seen, own }))
+process.exit(0)

@@ -1,5 +1,6 @@
 import { Service, type Context as Ctx } from '@deepseek-ai/cordis'
-import { gatewayApiKey, llmBaseUrl, setApiLookup, streamViaGateway, stubModel } from './gateway.ts'
+import { gatewayApiKey, llmBaseUrl } from '../env.ts'
+import { setApiLookup, streamViaGateway, stubModel } from './gateway.ts'
 import { AssistantMessageEventStream, emptyAssistant } from './stream.ts'
 
 declare module '@deepseek-ai/cordis' {

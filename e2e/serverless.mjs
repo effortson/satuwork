@@ -11,7 +11,7 @@ import { generateKeyPairSync, randomBytes, createHash } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { PG_URL } from './pg.mjs'
+import { PG_URL, pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePorts } from './ports.mjs'
 
@@ -42,10 +42,7 @@ export async function runServerless({ root, gwRoot, test, req, start, waitHttp, 
 
   await test('迁移 CLI 单独跑得完：从空 schema 建到最新', async () => {
     // 先清掉上一轮的 schema（迁移 CLI 自己不清库——它是给生产 build 用的）。
-    const { createRequire } = await import('node:module')
-    const pg = createRequire(new URL('../gateway/package.json', import.meta.url))('pg')
-    const c = new pg.Client({ connectionString: PG_URL })
-    await c.connect()
+    const c = await pgClient()
     await c.query(`drop schema if exists "${schema}" cascade`)
     await c.query(`create schema "${schema}"`)
     await c.end()

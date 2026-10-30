@@ -1,9 +1,8 @@
-import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { installRoot, managerVersion, patchState, readState, releaseRoot, seatAssets } from './config.ts'
-import { sameOrigin } from './releases.ts'
-import { run } from './run.ts'
+import { fetchVerified, sameOrigin, untarInto } from './releases.ts'
+import { run, scheduleRestart } from './run.ts'
 import { busy, busySeats } from './seats.ts'
 
 /**
@@ -248,31 +247,21 @@ export async function maybeUpgrade(offer: UpgradeOffer, token: string): Promise<
 
     // 机器票只交给 Gateway 自己：包地址是心跳回包里给的，origin 和配对的 gatewayUrl
     // 对不上就裸拉——票是这台机器的身份，不能因为一行回包就寄到别处去。
-    const res = await fetch(offer.url, {
+    const bytes = await fetchVerified({
+      url: offer.url,
       headers: sameOrigin(offer.url, state?.gatewayUrl) ? { authorization: 'Bearer ' + token } : {},
-      signal: AbortSignal.timeout(300_000),
+      failed: (res) => `downloading the manager package failed: ${res.status}`,
+      // **没有校验和就不装。** 这个包解开之后是以 root 跑的，而自检只证明它起得来、
+      // 证明不了它是我们发的那一个。Gateway 侧 sha256 是入库时自己算的（见
+      // gateway/src/releases.ts），一条正常的升级要约必然带着它——空的意味着这一跳上
+      // 有人把它拿掉了，或者上游根本不是我们以为的那个。
+      want: () => offer.sha256 || '',
+      noChecksum: 'the manager package came without a checksum, refusing to install',
+      mismatch: () => 'manager package checksum mismatch',
     })
-    if (!res.ok) throw new Error(`downloading the manager package failed: ${res.status}`)
-    const bytes = Buffer.from(await res.arrayBuffer())
-    // **没有校验和就不装。** 这个包解开之后是以 root 跑的，而自检只证明它起得来、
-    // 证明不了它是我们发的那一个。Gateway 侧 sha256 是入库时自己算的（见
-    // gateway/src/releases.ts），一条正常的升级要约必然带着它——空的意味着这一跳上
-    // 有人把它拿掉了，或者上游根本不是我们以为的那个。
-    if (!offer.sha256) throw new Error('the manager package came without a checksum, refusing to install')
-    const got = createHash('sha256').update(bytes).digest('hex')
-    if (got !== offer.sha256) throw new Error('manager package checksum mismatch')
 
-    rmSync(dir, { recursive: true, force: true })
-    mkdirSync(dir, { recursive: true })
-    const tgz = join(root, `.${want}.tgz`)
-    writeFileSync(tgz, bytes)
-    try {
-      // --no-same-owner：解出来一律归 root。见 releases.ts 的 unpackRelease 那条注释。
-      const untar = await run('tar', ['--no-same-owner', '-xzf', tgz, '-C', dir], { timeout: 300_000 })
-      if (untar.code !== 0) throw new Error('cannot untar the manager package')
-    } finally {
-      rmSync(tgz, { force: true })
-    }
+    // --no-same-owner 在 untarInto 里：解出来一律归 root，理由见那条注释。
+    await untarInto(bytes, dir, join(root, `.${want}.tgz`), () => 'cannot untar the manager package')
 
     const entry = join(dir, 'bin', 'satuwork-manager.mjs')
     if (!existsSync(entry)) throw new Error('manager package has no bin/satuwork-manager.mjs')
@@ -341,25 +330,10 @@ export async function maybeUpgrade(offer: UpgradeOffer, token: string): Promise<
       }
     })
 
-    // 重启必须由**分离的**单元发起：管家的子进程去 systemctl restart 会连自己一起
-    // 被杀（同一个 cgroup），命令根本发不出去。瞬态单元跳出去。
+    // 重启要从分离的瞬态单元发起，见 run.ts 的 scheduleRestart。
     // 工人和管家同一个包、同一份 current 软链，一起重启。老机器上没有工人单元：systemctl
     // 对不存在的单元只是报一句、别的照常，管家自己的重启不受影响。
-    //
-    // `--collect`：瞬态单元要是失败了，systemd 默认把它留在 failed 态，同名的下一次
-    // systemd-run 会以「单元已存在」被拒——从此每一轮换版都发不出重启。收掉它。
-    // 前面再 reset-failed 一次是给老机器兜底（没带 --collect 的旧版本留下的残骸）；
-    // 单元不存在时它只是报一句，不算错。
-    await run('systemctl', ['reset-failed', 'satuwork-manager-restart.service'], { timeout: 10_000 }).catch(() => {})
-    const r = await run('systemd-run', [
-      '--on-active=2s',
-      '--collect',
-      '--unit=satuwork-manager-restart',
-      'systemctl',
-      'restart',
-      'satuwork-manager.service',
-      'satuwork-worker.service',
-    ], { timeout: 15_000 })
+    const r = await scheduleRestart('satuwork-manager-restart', ['satuwork-manager.service', 'satuwork-worker.service'])
     if (r.code !== 0) {
       /**
        * 重启没发出去，进程还是旧版本在跑。**把机器放回换之前的样子**：current 指回

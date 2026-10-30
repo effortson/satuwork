@@ -54,7 +54,6 @@ function loadChat(root) {
     // chat.js 从别的分片拿的那几个：只留这两组函数真正会走到的。
     state: { chatEvents: [], chatSessionId: 's1', chatPending: [], catalog: [], runtimeBots: [], me: {} },
     t: (s) => s,
-    esc: (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]),
     svg: () => '',
     api: async () => ({}),
     flash() {},
@@ -62,15 +61,19 @@ function loadChat(root) {
     initialOf: () => 'X',
     chatBotIdOf: () => 'b',
     fmtTime: (n) => new Date(n).toISOString(),
-    // 分割线按 SATU_TZ 切天，state.js 里的实现；这里照抄一份。
-    SATU_TZ: 'Asia/Kuching',
-    tzDayKey: (n) =>
-      new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuching', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(n)),
     document: {
       getElementById: (id) => (id === 'chat-todock' ? todock : null),
-      addEventListener() {},
+      // 记下 document 上挂的监听（长按菜单那几个），测里直接喂假事件。
+      addEventListener(type, fn) {
+        ;(ctx.docListeners[type] = ctx.docListeners[type] || []).push(fn)
+      },
       createElement: () => noNode,
+      querySelectorAll: () => [],
     },
+    docListeners: {},
+    // 长按那几个监听用 instanceof Element 判 target；测里的假元素继承它。
+    Element: class Element {},
+    matchMedia: () => ({ matches: true }),
     // 顶层挂的那几个监听（resize、keydown）：收下就扔。
     addEventListener() {},
     removeEventListener() {},
@@ -81,7 +84,16 @@ function loadChat(root) {
   // fold 那一组现在住在 core（经 core.js 的 SatuCore 转接回来），所以先把 core.js 装进同一个
   // 上下文——线上它也是 index.html 里第一个脚本。
   runInContext(readFileSync(join(root, 'gateway/ui/core.js'), 'utf8'), ctx, { filename: 'core.js' })
-  runInContext(readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8'), ctx, { filename: 'chat.js' })
+  // 转义和按 SATU_TZ 切天（分割线用）就是 state.js 转接的那几个，直接拿 core 的，不另抄一份。
+  ctx.esc = ctx.SatuCore.esc
+  ctx.SATU_TZ = ctx.SatuCore.SATU_TZ
+  ctx.tzDayKey = ctx.SatuCore.tzDayKey
+  runInContext(readFileSync(join(root, 'gateway/ui/ui-kit.js'), 'utf8'), ctx, { filename: 'ui-kit.js' })
+  // chat.js 拆成了一串 chat-*.js，按 index.html 里的顺序一个脚本一段地装（和浏览器一样，顶层的
+  // 函数声明照旧挂在上下文上）。chat-find.js 是另一件事（对话内查找），这里用不着。
+  const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
+  const shards = [...html.matchAll(/<script src="\/(chat(?:-[a-z]+)?\.js)"[^>]*\bdata-app-part\b/g)].map((m) => m[1]).filter((f) => f !== 'chat-find.js')
+  for (const f of shards) runInContext(readFileSync(join(root, 'gateway/ui', f), 'utf8'), ctx, { filename: f })
   return ctx
 }
 
@@ -104,7 +116,8 @@ function twoTurns() {
 }
 
 export async function runChatFold({ root, test, assert, log }) {
-  const { fold, threadRows, parseCommand, commandQueryAt, ctxDivText, state } = loadChat(root)
+  const chatCtx = loadChat(root)
+  const { fold, threadRows, rowShell, parseCommand, commandQueryAt, ctxDivText, state } = chatCtx
   log('\n# chat-fold')
 
   await test('压缩事件落在轮次中间：工具结果照样认得回它的药丸', async () => {
@@ -222,6 +235,255 @@ export async function runChatFold({ root, test, assert, log }) {
     const blocks = fold(events).blocks.filter((b) => b.kind === 'user' || b.kind === 'assistant')
     assert(blocks.map((b) => b.text).join('|') === 'Web 问题|Web 回答|Telegram 问题|Telegram 回答', `混合顺序不对：${blocks.map((b) => b.text)}`)
     assert(blocks.map((b) => b.via).join(',') === 'web,web,telegram,telegram', `来源继承不对：${blocks.map((b) => b.via)}`)
+  })
+
+  await test('主 Bot 派活：目标那边是「派来的任务」，主这边是「任务结果」，两档角标', async () => {
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'fin', createdAt: T }),
+      ev(2, 'user/message', {
+        message: um('【主 Bot「助手」派来的任务】\n做月报'),
+        source: { kind: 'plugin', plugin: 'task', form: 't1', phase: 'instruction', from: { id: 'main', name: '助手' } },
+      }),
+      ev(3, 'turn/start', { turn: 1 }),
+      ev(4, 'assistant/message', { turn: 1, message: am('月报做好了'), usage }),
+      ev(5, 'turn/end', { turn: 1, reason: 'completed' }),
+      ev(6, 'user/message', {
+        message: um('【任务结果】@财务 做完了（任务：做月报）\n月报做好了'),
+        source: { kind: 'plugin', plugin: 'task', form: 't1', phase: 'result', from: { id: 'fin', name: '财务' } },
+      }),
+      ev(7, 'turn/start', { turn: 2 }),
+      ev(8, 'assistant/message', { turn: 2, message: am('收到，我来汇总'), usage }),
+      ev(9, 'turn/end', { turn: 2, reason: 'completed' }),
+    ]
+    const blocks = fold(events).blocks.filter((b) => b.kind === 'user' || b.kind === 'assistant')
+    assert(blocks.length === 4, `派来的任务和结果都该画出来：${blocks.length}`)
+    assert(blocks.map((b) => b.via).join(',') === 'task,task,task-result,task-result', `角标不对：${blocks.map((b) => b.via)}`)
+  })
+
+  await test('直连管家失败：页面地址和管家认的 Gateway 地址不一致时直说该换哪个，一致或桌面端照旧', async () => {
+    const say = (origin, protocol, gatewayOrigin) => {
+      chatCtx.location = { origin, protocol }
+      return chatCtx.directFailText(gatewayOrigin)
+    }
+    const off = say('http://localhost:3080', 'http:', 'http://192.168.64.1:3080')
+    assert(off.includes('http://192.168.64.1:3080') && off.includes('http://localhost:3080'), `不一致时该点出两个地址：${off}`)
+    assert(say('http://192.168.64.1:3080', 'http:', 'http://192.168.64.1:3080') === '连不上机器管家', '一致时照旧')
+    assert(say('satu://localhost', 'satu:', 'http://192.168.64.1:3080') === '连不上机器管家', '桌面端的源管家另外认，不算不一致')
+    assert(say('http://localhost:3080', 'http:', undefined) === '连不上机器管家', '没给 Gateway 源（老 Gateway / 没配公开地址）照旧')
+    delete chatCtx.location
+  })
+
+  await test('目标那边派来的任务：画成主 Bot 发来的消息（左侧、主 Bot 名字），正文去掉标题和末尾交代', async () => {
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'fin', createdAt: T }),
+      ev(2, 'user/message', {
+        message: um('【主 Bot「助手」派来的任务】\n做月报\n\n（做完把结果直接写在回复里，回复会原样交回主 Bot；需要人拍板的事写进结论，不要在这儿等。）'),
+        source: { kind: 'plugin', plugin: 'task', form: 't1', phase: 'instruction', from: { id: 'main', name: '助手' } },
+      }),
+    ]
+    const row = threadRows(fold(events), 's1').find((r) => r.kind === 'msg')
+    assert(row && row.block.taskFrom && row.block.taskFrom.id === 'main' && row.block.taskFrom.name === '助手', `主 Bot 身份没带出来：${JSON.stringify(row && row.block.taskFrom)}`)
+    assert(row.block.text === '做月报', `正文没剥干净：${JSON.stringify(row.block.text)}`)
+    const html = rowShell(row.block, row.key)
+    assert(html.includes('sw-taskin') && html.includes('data-role="assistant"') && html.includes('>助手<'), `外壳不对：${html}`)
+  })
+
+  await test('目标那边派来的活：它那一轮默认折进卡里，状态跟着 turn/end 走，点开才露出过程', async () => {
+    const task = { kind: 'plugin', plugin: 'task', form: 't1', phase: 'instruction', from: { id: 'main', name: '助手' } }
+    const tc = (callId) => ({ callId, name: 'web_search', arguments: '{}' })
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'ds', createdAt: T }),
+      ev(2, 'user/message', { message: um('【主 Bot「助手」派来的任务】\n搜 6 轮'), source: task }),
+      ev(3, 'turn/start', { turn: 1 }),
+      ev(4, 'tool/call', { turn: 1, step: 1, ...tc('c1') }),
+      ev(5, 'tool/result', { turn: 1, step: 1, callId: 'c1', text: 'ok' }),
+      ev(6, 'assistant/message', { turn: 1, step: 1, message: am('第 1 轮搜完'), usage }),
+      ev(7, 'turn/end', { turn: 1, reason: 'aborted' }),
+      ev(8, 'user/message', { message: um('你好'), source: { kind: 'user' } }),
+      ev(9, 'turn/start', { turn: 2 }),
+      ev(10, 'assistant/message', { turn: 2, step: 1, message: am('你好！'), usage }),
+      ev(11, 'turn/end', { turn: 2, reason: 'completed' }),
+    ]
+    const folded = fold(events)
+    const card = folded.blocks.find((b) => b.kind === 'user' && b.assigned)
+    assert(card && card.assigned.state === 'aborted' && card.assigned.turn === 1, `收场状态没记上：${JSON.stringify(card && card.assigned)}`)
+    const shut = threadRows(folded, 's1').filter((r) => r.kind === 'msg').map((r) => r.block.text)
+    assert(JSON.stringify(shut) === JSON.stringify(['搜 6 轮', '你好', '你好！']), `折着时那一轮的回复不该画出来：${JSON.stringify(shut)}`)
+    const head = threadRows(folded, 's1').find((r) => r.kind === 'msg').block
+    assert(head.foldable && !head.open && head.calls === 1, `卡片该能开合、数出 1 次工具调用：${JSON.stringify({ foldable: head.foldable, open: head.open, calls: head.calls })}`)
+    assert(head.openKey === 's1:2', `开合的键该带上会话：${head.openKey}`)
+    runInContext(`taskInOpen.add('s1:2')`, chatCtx)
+    const open = threadRows(folded, 's1').filter((r) => r.kind === 'msg').map((r) => r.block.text)
+    // 另一颗 Bot 的会话里同一个 seq 的那件不跟着开：每条会话的 seq 都从 1 起。
+    const other = threadRows(folded, 's2').filter((r) => r.kind === 'msg').map((r) => r.block.text)
+    runInContext(`taskInOpen.clear()`, chatCtx)
+    assert(JSON.stringify(open) === JSON.stringify(['搜 6 轮', '第 1 轮搜完', '你好', '你好！']), `点开之后该露出那一轮：${JSON.stringify(open)}`)
+    assert(JSON.stringify(other) === JSON.stringify(['搜 6 轮', '你好', '你好！']), `别的会话同一个 seq 不该跟着开：${JSON.stringify(other)}`)
+  })
+
+  await test('重放还没收尾时 live 还没到：在跑的派来的活不误报「没收口」', async () => {
+    const st = (replaying, live) => {
+      state.chatReplaying = replaying
+      const out = runInContext(`taskInState(${JSON.stringify({ assigned: { state: 'running' }, live })})`, chatCtx)
+      state.chatReplaying = false
+      return out
+    }
+    assert(st(true, false) === 'running', `重放中不该说没收口：${st(true, false)}`)
+    assert(st(false, false) === 'lost', '重放完了还没在跑，才是没收口')
+    assert(st(false, true) === 'running', '在跑就是在跑')
+  })
+
+  await test('派来的活正跑着、卡片折着：不补「正在回答」的空气泡，卡片自己说在跑', async () => {
+    const task = { kind: 'plugin', plugin: 'task', form: 't2', phase: 'instruction', from: { id: 'main', name: '助手' } }
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'ds', createdAt: T }),
+      ev(2, 'user/message', { message: um('【主 Bot「助手」派来的任务】\n做月报'), source: task }),
+      ev(3, 'turn/start', { turn: 1 }),
+    ]
+    const folded = fold(events)
+    const rows = threadRows(folded, 's1')
+    assert(!rows.some((r) => r.key === 'm-live'), `折着的派活不该再补占位：${JSON.stringify(rows.map((r) => r.key))}`)
+    const head = rows.find((r) => r.kind === 'msg').block
+    assert(head.assigned.state === 'running' && head.live, `该是正在跑：${JSON.stringify(head.assigned)} live=${head.live}`)
+  })
+
+  await test('派来的活那一轮在等人批：确认卡不许折进卡里，批完再折回去', async () => {
+    const task = { kind: 'plugin', plugin: 'task', form: 't3', phase: 'instruction', from: { id: 'main', name: '助手' } }
+    const base = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'ds', createdAt: T }),
+      ev(2, 'user/message', { message: um('【主 Bot「助手」派来的任务】\n给客户发封邮件'), source: task }),
+      ev(3, 'turn/start', { turn: 1 }),
+      ev(4, 'tool/call', { turn: 1, step: 1, callId: 'm1', name: 'send_email', arguments: '{}' }),
+      ev(5, 'tool/approval', { turn: 1, callId: 'm1', name: 'send_email', arguments: '{}', state: 'pending', reason: '外发邮件' }),
+    ]
+    const rows = threadRows(fold(base), 's1').filter((r) => r.kind === 'msg')
+    const head = rows[0].block
+    assert(head.waits === 1 && head.open, `有没批的确认时该强制摊开：${JSON.stringify({ waits: head.waits, open: head.open })}`)
+    const card = rows.find((r) => r.block.kind === 'assistant')
+    assert(card && (card.block.approvals || []).some((a) => a.callId === 'm1' && a.state === 'pending'), `确认卡所在的那一块该画出来：${JSON.stringify(rows.map((r) => r.block.kind))}`)
+    const done = threadRows(fold([...base, ev(6, 'tool/approval', { turn: 1, callId: 'm1', state: 'approved' })]), 's1').filter((r) => r.kind === 'msg')
+    assert(!done[0].block.open && !done[0].block.waits && done.length === 1, `批完该照常折回去：${JSON.stringify(done.map((r) => r.block.kind))}`)
+  })
+
+  await test('手机长按：链接、代码、输入框、确认卡、正在选字的那一条交给系统长按；普通正文归我们的菜单', async () => {
+    const Base = chatCtx.Element
+    const row = new (class extends Base {
+      constructor() {
+        super()
+        this.attrs = {}
+      }
+      hasAttribute(k) {
+        return k in this.attrs
+      }
+      closest(sel) {
+        return sel.includes('.sw-msg') ? this : null
+      }
+    })()
+    /** 假元素：自己是 tag 这种东西，往上是 row。closest 只认「选择器列表里有没有它这个 tag」。 */
+    const node = (tag) =>
+      new (class extends Base {
+        closest(sel) {
+          if (sel.includes('#chat-thread .sw-msg')) return row
+          if (sel === '#sw-msgmenu') return null
+          return sel.split(',').map((x) => x.trim()).includes(tag) ? this : null
+        }
+      })()
+    const menu = (target) => {
+      let prevented = false
+      for (const fn of chatCtx.docListeners.contextmenu || []) fn({ target, preventDefault: () => (prevented = true) })
+      return prevented
+    }
+    assert(menu(node('span')) === true, '普通正文的系统长按菜单该关掉（长按归我们的菜单）')
+    for (const tag of ['a', 'img', 'code', 'pre', 'textarea', 'input', '.sw-approvals']) assert(menu(node(tag)) === false, `${tag} 的系统长按菜单不该被关掉`)
+    row.attrs['data-selecting'] = '1'
+    assert(menu(node('span')) === false, '点了「选字」的那一条，系统长按要放回来')
+    delete row.attrs['data-selecting']
+    // 按在链接上：不起我们的长按计时。
+    const press = (target) => {
+      for (const fn of chatCtx.docListeners.pointerdown || []) fn({ target, pointerType: 'touch', clientX: 1, clientY: 1 })
+      const armed = runInContext('pressTimer !== null', chatCtx)
+      runInContext('clearTimeout(pressTimer); pressTimer = null', chatCtx)
+      return armed
+    }
+    assert(press(node('span')) === true, '普通正文该起长按计时')
+    assert(press(node('a')) === false, '按在链接上不该起我们的长按')
+  })
+
+  await test('派活卡的结论包一层 .sw-mdblock：里面的 @某某 才认得出、画得成药丸', async () => {
+    const html = runInContext(`taskDetailHtml({ body: '交给 @财务 处理', state: 'done', files: [] }, 'ok')`, chatCtx)
+    assert(/class="sw-task-summary sw-md"><div class="sw-mdblock">/.test(html), `结论没包 .sw-mdblock：${html}`)
+  })
+
+  await test('混排的点名：正文里留着 @名字，点名带 inline（就地画药丸，不另起一排）', async () => {
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'b', createdAt: T }),
+      ev(2, 'user/message', {
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: '打开 ' },
+            { type: 'mention', kind: 'connector', id: 'c1', label: 'Gmail (personal)', inline: true, logo: 'https://logos.composio.dev/api/gmail' },
+            { type: 'text', text: ' 邮件，让 ' },
+            { type: 'mention', kind: 'bot', id: 'b2', label: '客户经理', inline: true },
+            { type: 'text', text: ' 处理' },
+          ],
+        },
+        source: { kind: 'user' },
+      }),
+    ]
+    const u = fold(events).blocks.find((b) => b.kind === 'user')
+    assert(u.text === '打开 @Gmail (personal) 邮件，让 @客户经理 处理', `正文不对：${u.text}`)
+    assert(u.mentions.length === 2 && u.mentions.every((m) => m.inline), `点名要带 inline：${JSON.stringify(u.mentions)}`)
+    assert(u.mentions[0].logo === 'https://logos.composio.dev/api/gmail', '存在消息里的图标没带出来')
+  })
+
+  await test('主 Bot 派活：任务卡挂在派活那一轮的气泡里，和委派卡一样不断开气泡', async () => {
+    const assign = (seq, state, extra = {}) =>
+      ev(seq, 'bot/assign', { id: 'c9:mail', callId: 'c9', index: 0, total: 1, bot: { id: 'b-crm', name: '客户经理' }, instruction: '扫邮箱', state, at: T + seq, ...extra })
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'main', createdAt: T }),
+      ev(2, 'user/message', { message: um('让 @客户经理 扫一下邮箱'), source: { kind: 'user' } }),
+      ev(3, 'turn/start', { turn: 1 }),
+      ev(4, 'assistant/message', { turn: 1, step: 1, message: am('好，派给客户经理。'), usage }),
+      ev(5, 'tool/call', { callId: 'c9', name: 'assign_task', arguments: '{}' }),
+      assign(6, 'waiting'),
+      assign(7, 'running', { taskId: 't1', startedAt: T + 7 }),
+      assign(8, 'done', { taskId: 't1', result: '有 1 封要处理', endedAt: T + 8 }),
+      ev(9, 'tool/result', { callId: 'c9', text: '派出去的 1 件收场了' }),
+      ev(10, 'assistant/message', { turn: 1, step: 2, message: am('客户经理交回来了：有 1 封要处理。'), usage }),
+      ev(11, 'turn/end', { turn: 1, reason: 'completed' }),
+    ]
+    const blocks = fold(events).blocks
+    const kinds = blocks.map((b) => b.kind).join(',')
+    assert(kinds === 'user,assistant', `块的顺序不对：${kinds}`)
+    const a = blocks[1]
+    assert(a.text === '客户经理交回来了：有 1 封要处理。', `正文取这一轮最后一条：${a.text}`)
+    assert(a.assigns && a.assigns.length === 1, `任务卡没挂到气泡上：${JSON.stringify(a.assigns)}`)
+    const task = a.assigns[0]
+    assert(task.state === 'done' && task.result === '有 1 封要处理' && task.bot.name === '客户经理', `任务卡取最后一条：${JSON.stringify(task)}`)
+    const chip = a.tools.find((x) => x.callId === 'c9')
+    assert(chip && chip.result === '派出去的 1 件收场了', 'assign_task 的结果没安回它自己那颗药丸')
+  })
+
+  await test('主 Bot 派活被停：不留空气泡，停止落在同一个气泡的任务卡上', async () => {
+    const assign = (seq, state, extra = {}) =>
+      ev(seq, 'bot/assign', { id: 'c9:mail', callId: 'c9', index: 0, total: 1, bot: { id: 'b-crm', name: '客户经理' }, instruction: '扫邮箱', state, at: T + seq, ...extra })
+    const events = [
+      ev(1, 'session', { version: 5, id: 's1', botId: 'main', createdAt: T }),
+      ev(2, 'user/message', { message: um('让 @客户经理 扫一下邮箱'), source: { kind: 'user' } }),
+      ev(3, 'turn/start', { turn: 1 }),
+      ev(4, 'tool/call', { callId: 'c9', name: 'assign_task', arguments: '{}' }),
+      assign(5, 'running', { taskId: 't1', startedAt: T + 5 }),
+      assign(6, 'cancelled', { taskId: 't1', result: '主 Bot 这边停止了。', endedAt: T + 6 }),
+      ev(7, 'tool/result', { callId: 'c9', text: '已停止', failed: true }),
+      ev(8, 'assistant/message', { turn: 1, step: 2, message: am(''), usage }),
+      ev(9, 'turn/end', { turn: 1, reason: 'aborted' }),
+    ]
+    const blocks = fold(events).blocks
+    assert(blocks.map((b) => b.kind).join(',') === 'user,assistant', `块的顺序不对：${blocks.map((b) => b.kind)}`)
+    assert(blocks[1].assigns[0].state === 'cancelled' && blocks[1].tools.length === 1, `停止没落在同一块上：${JSON.stringify(blocks[1])}`)
+    const rows = threadRows(fold(events), 's1')
+    assert(rows.filter((r) => r.kind === 'msg').length === 2, `不该多出空气泡：${rows.map((r) => r.key)}`)
   })
 
   await test('普通 Bot 的 Web 对话不显示 channel 标签', async () => {

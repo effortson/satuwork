@@ -8,8 +8,6 @@
  *   3. 点名不是过滤：别的工具一个都没少，被点的排最前；
  *   4. 上一轮还在跑时，带 `@` 的消息**排队**而不是插话，跑完自动接上，也能取消。
  */
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import * as storagePlugin from './src/storage/index.ts'
@@ -21,12 +19,10 @@ import * as agentPlugin from './src/agent/index.ts'
 import { AssistantMessageEventStream, emptyAssistant } from './src/llm/stream.ts'
 import { viaMentionOf } from './src/catalog/index.ts'
 import { SESSION_FORMAT_VERSION } from './src/session/types.ts'
+import { tempDir } from './e2e-lib.mjs'
 
-const home = mkdtempSync(join(tmpdir(), 'satu-mention-'))
-const work = mkdtempSync(join(tmpdir(), 'satu-mention-work-'))
-// 退出时收掉临时目录（和 e2e-memory / e2e-skills 那几个探针同一个写法）：探针是顶层 await 的
-// 脚本，没有一个能包 finally 的函数体；exit 钩子在 process.exit、正常结束和未捕获异常三条路上都会跑。
-process.on('exit', () => { try { rmSync(home, { recursive: true, force: true }) } catch {} try { rmSync(work, { recursive: true, force: true }) } catch {} })
+const home = tempDir('satu-mention-')
+const work = tempDir('satu-mention-work-')
 
 /**
  * 假目录：两台「服务器」，personal 那台是「仅 @ 时可用」。
@@ -157,6 +153,30 @@ await ctx.agents
     没把那句话写进正文: !blocks.some((c) => c.type === 'text' && c.text.includes('[本轮指定')),
     版本号: root.data.version,
     当前版本: SESSION_FORMAT_VERSION,
+  }
+}
+
+// ── 3b. 混排：`@名字` 落在正文里，按位置切成 text / mention 交错的块 ──────────
+captured = null
+await ctx.agents
+  .send(sessionId, '打开 @Gmail (personal) 邮件，让 @客户经理 处理', [], [
+    { kind: 'bot', id: 'bot-crm', label: '客户经理' },
+    { kind: 'connector', id: 'conn-personal', label: 'Gmail (personal)', logo: 'https://logos.composio.dev/api/gmail' },
+  ])
+  .catch(() => {})
+{
+  const events = await ctx.sessions.events(sessionId)
+  const users = events.filter((e) => e.type === 'user/message')
+  const blocks = users[users.length - 1].data.message.content
+  const shape = blocks.map((c) => (c.type === 'mention' ? `@${c.label}${c.inline ? '' : '(!inline)'}` : c.type === 'text' ? c.text : c.type)).join('|')
+  const sent = lastUser()
+  out.inline = {
+    shape,
+    按位置切块: shape === '打开 |@Gmail (personal)| 邮件，让 |@客户经理| 处理',
+    进模型还是原句: sent.some((c) => c.type === 'text' && c.text.includes('打开 @Gmail (personal) 邮件，让 @客户经理 处理')),
+    没有本轮指定那一行: !sent.some((c) => c.type === 'text' && c.text.includes('[本轮指定：Gmail (personal)]')),
+    点名的连接照样进工具表: toolNames()[0] === 'mcp_gmail_person_send_email',
+    图标存进了点名块: blocks.some((c) => c.type === 'mention' && c.id === 'conn-personal' && c.logo === 'https://logos.composio.dev/api/gmail'),
   }
 }
 
@@ -468,6 +488,60 @@ await ctx.agents
 
 hold = null
 
+// ── todo 的参数：没认出 todos 要明说，不能当成「读」（否则模型一轮里原地连调几十次）──
+{
+  // 这个探针前面几段要的是「工具表里有什么」，todo 放到这里才装，别搅了它们。
+  ctx.plugin(await import('./src/tools/todo.ts'))
+  for (let i = 0; i < 50 && !ctx.tools.has('todo'); i++) await new Promise((r) => setTimeout(r, 20))
+  const sid = await ctx.sessions.create({ title: 'todo 参数', botId: 'default' })
+  const call = (args, raw) => ctx.tools.execute({ callId: 'c-' + Math.random(), name: 'todo', sessionId: sid, arguments: raw ?? JSON.stringify(args) })
+  const wrongKey = await call({ tasks: [{ task: '写页面' }] })
+  const asString = await call({ todos: JSON.stringify([{ task: '写页面', status: 'in_progress' }]) })
+  const broken = await call(null, '{"todos":[{"task":"写一半')
+  out.todoArgs = {
+    写错字段名会明说: wrongKey.text.includes('没认出 todos'),
+    写错之后清单没被动: (ctx.storage.collection('todos').get(sid) ?? []).length === 1,
+    数组写成字符串也认: !asString.failed && asString.text.includes('写页面'),
+    坏掉的参数会明说: broken.text.includes('参数不是合法 JSON') && broken.text.includes('写一半'),
+  }
+}
+
+// ── 派活排队（docs/bot-tasks.md §7）：排着时身份跟着走，跑起来算「派活在跑」 ─────
+{
+  const sid = await ctx.sessions.create({ title: '派活', botId: 'default' })
+  const TASK = { kind: 'plugin', plugin: 'task', form: 'tk-q', phase: 'instruction', from: { id: 'main', name: '助手' } }
+  let release
+  hold = new Promise((r) => (release = r))
+  captured = null
+  const running = ctx.agents.send(sid, '人这一轮').catch(() => {})
+  // 等到模型真被调到（收口已经挂在这个 hold 上），再换下一道闸。
+  for (let i = 0; i < 100 && !captured; i++) await new Promise((r) => setTimeout(r, 20))
+  const humanTurnIsTask = ctx.agents.runningTask(sid)
+  ctx.agents.enqueue(sid, '【主 Bot「助手」派来的任务】\n做月报', [], [], [], TASK)
+  // 派活那一轮也卡住，好看它跑着时算不算「派活在跑」。第一轮的收口已经挂在旧的 hold 上了。
+  let release2
+  hold = new Promise((r) => (release2 = r))
+  release()
+  // 不等 running：排着的那条是在上一轮的收尾里接上的，send 要等它也跑完才回来。
+  for (let i = 0; i < 100 && !ctx.agents.runningTask(sid); i++) await new Promise((r) => setTimeout(r, 20))
+  const taskRunning = ctx.agents.runningTask(sid)
+  // 派活那一轮里列了一张清单（模型调 todo 落的就是这一份）：收口之后不该留在会话上。
+  ctx.storage.collection('todos').put(sid, [{ id: '1', task: '编写 calculator.html', status: 'in_progress' }])
+  release2()
+  await running
+  for (let i = 0; i < 100 && ctx.agents.isRunning(sid); i++) await new Promise((r) => setTimeout(r, 20))
+  const taskMsg = (await ctx.sessions.events(sid)).find((e) => e.type === 'user/message' && e.data.source?.plugin === 'task')
+  out.taskQueue = {
+    人那一轮不算派活: !humanTurnIsTask,
+    派活那一轮算派活在跑: taskRunning,
+    排队时身份跟着走: taskMsg?.data?.source?.form === 'tk-q' && taskMsg?.data?.source?.from?.name === '助手',
+    收口之后不再算: !ctx.agents.runningTask(sid),
+    派活列的清单收口就清掉: (ctx.storage.collection('todos').get(sid) ?? []).length === 0,
+    清单的空快照写进了会话: (await ctx.sessions.events(sid)).some((e) => e.type === 'todo/list' && e.data.items.length === 0),
+  }
+  hold = null
+}
+
 /**
  * 开机排空：上一条命留下的队列，等目录拉下来就接着跑。**放在最后**：后台那次开机排空一直在
  * 等 pulledAt，这里一设，它会把当时所有排着的消息都跑掉，放前面会搅了别的段。
@@ -478,9 +552,13 @@ hold = null
   // 这里挂一个占位的，不然 Node 会以「顶层 await 永远等不到」直接退出。
   const keepAlive = setInterval(() => {}, 1_000)
   ctx.agents.enqueue(sid, '换版重启之前排进来的', [], [])
+  // 排着的派活：等它结论的那一方跟着上一条命断了，开机不再跑（docs/bot-tasks.md §7）。
+  const sidTask = 's-boot-task'
+  ctx.agents.enqueue(sidTask, '【主 Bot「助手」派来的任务】\n上一条命排着的', [], [], [], { kind: 'plugin', plugin: 'task', form: 'tk-b', phase: 'instruction' })
   // 目录还没拉下来：等满就放弃，一条都不动——这时开跑会以「没有模型」失败，消息白丢。
   const notYet = await ctx.agents.drainAtBoot({ waitMs: 100, pollMs: 20 })
   const keptWhileNotReady = ctx.agents.queued(sid).length === 1
+  const taskDropped = ctx.agents.queued(sidTask).length === 0
   ctx.catalog.pulledAt = Date.now()
   const ran = await ctx.agents.drainAtBoot({ waitMs: 100, pollMs: 20 })
   await new Promise((r) => setTimeout(r, 50))
@@ -490,6 +568,7 @@ hold = null
   out.bootDrain = {
     目录没好时一条不动: notYet === 0 && keptWhileNotReady,
     目录好了就接着跑: ran >= 1 && drained,
+    排着的派活开机就丢掉: taskDropped,
   }
 }
 

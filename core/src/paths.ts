@@ -13,6 +13,11 @@ export function connectorIdOfPath(p: unknown): string {
   return segAfter(p, '/connectors/')
 }
 
+/** 员工那一侧的插件详情（`/plugins/:id`）。id 和 `/connectors/:id` 是同一个连接器 id。 */
+export function pluginIdOfPath(p: unknown): string {
+  return segAfter(p, '/plugins/')
+}
+
 export function botIdOfPath(p: unknown): string {
   return segAfter(p, '/bots/')
 }
@@ -27,12 +32,6 @@ export function machineIdOfPath(p: unknown): string {
 
 export function userIdOfPath(p: unknown): string {
   return segAfter(p, '/users/')
-}
-
-/** `/audit/:sessionId`；`/audit/summary/:id` 是另一页（auditItemIdOfPath），这里回空。 */
-export function sessionIdOfPath(p: unknown): string {
-  if (typeof p === 'string' && p.startsWith('/audit/summary/')) return ''
-  return segAfter(p, '/audit/')
 }
 
 export function auditItemIdOfPath(p: unknown): string {

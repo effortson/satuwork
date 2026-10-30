@@ -5,32 +5,28 @@
  * companyCatalog（公司作用域），全局项在公司侧根本不出现。
  */
 import { rmSync } from 'node:fs'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
+import { startGateway } from './gateway.mjs'
 
 export async function runGlobalCatalog({ gwRoot, test, req, start, waitHttp, assert, log }) {
   const GW_HOME = tmpOf('satuwork-e2e-global')
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# global-catalog')
 
-  const gw = start('global-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'global-gw',
+    what: 'global gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_global'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_global'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'global gateway' })
 
   let owner = ''
   let adminA = ''
@@ -167,12 +163,13 @@ export async function runGlobalCatalog({ gwRoot, test, req, start, waitHttp, ass
       assert(no.json.bot.icon === 'c-flow', `跨层级改成功了：${no.json.bot.icon}`)
     })
 
-    await test('两套头像各八个，由 options 下发', async () => {
+    await test('全局一套八个、公司一套十个，由 options 下发', async () => {
       const g = await req(base, 'GET', '/platform/bots/options', { token: owner })
       assert(g.json.icons?.length === 8, `全局 ${g.json.icons?.length} 个`)
       assert(g.json.icons.every((k) => k.startsWith('g-')), `全局那套混了别的：${g.json.icons}`)
       const c = await req(base, 'GET', `/orgs/${orgA}/bots/options`, { token: adminA })
-      assert(c.json.icons?.length === 8, `公司 ${c.json.icons?.length} 个`)
+      // 公司那套后来补了「设计」「财务」两个（6db31e2）。
+      assert(c.json.icons?.length === 10, `公司 ${c.json.icons?.length} 个`)
       assert(c.json.icons.every((k) => k.startsWith('c-')), `公司那套混了别的：${c.json.icons}`)
       // 两套不能有交集，否则「凭头像分辨层级」就不成立了。
       const overlap = g.json.icons.filter((k) => c.json.icons.includes(k))

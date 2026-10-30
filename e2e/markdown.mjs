@@ -157,13 +157,13 @@ export async function runMarkdown({ root, test, assert, log }) {
     assert(blocks.length === 3, `应切成 3 块，实际 ${blocks.length}：${JSON.stringify(blocks)}`)
   })
 
-  // ── CDN 白名单：加载器、Gateway 的 CSP、桌面端的 CSP 三处一致 ───────────
+  // ── CDN 白名单：加载器、Gateway 的 CSP、桌面端和手机端的 CSP 都一致 ───────
   /**
    * CSP 只放行 gateway/src/ui-cdn.ts 里那几个「包@版本/」目录（放行整个 jsdelivr 等于放行
    * 任何人发的脚本）。markdown.js 的 LIBS 多一条路径、或者版本号只改了一边，浏览器就把它
    * 挡掉，而表现是静默退回纯文本——DOM 垫片里不管 CSP，只能按源码核。
    */
-  await test('CDN：LIBS、ui-cdn.ts、桌面 UI_CSP 的包和版本一致', async () => {
+  await test('CDN：LIBS、ui-cdn.ts、桌面 / 手机 UI_CSP 的包和版本一致', async () => {
     const tsSrc = readFileSync(join(root, 'gateway/src/ui-cdn.ts'), 'utf8')
     const list = tsSrc.match(/UI_CDN_PACKAGES = \[([^\]]*)\]/)
     assert(list, 'ui-cdn.ts 里找不到 UI_CDN_PACKAGES')
@@ -192,12 +192,19 @@ export async function runMarkdown({ root, test, assert, log }) {
       assert(paths.some((p) => p.startsWith(`/${pkg}/`)), `UI_CDN_PACKAGES 里的 ${pkg} 没人用了，从 CSP 里删掉`)
     }
 
-    const rs = readFileSync(join(root, 'desktop/src-tauri/src/main.rs'), 'utf8')
-    const mac = rs.match(/macro_rules! ui_cdn \{\s*\(\) => \{\s*"([^"]*)"/)
-    assert(mac, 'main.rs 里找不到 ui_cdn! 宏')
+    // 桌面壳和手机壳各有一份 ui_cdn! / UI_CSP（两个 crate，共用不了），两份都钉住。
     const want = pkgs.map((pkg) => `https://cdn.jsdelivr.net/npm/${pkg}/`).join(' ')
-    assert(mac[1] === want, `桌面 UI_CSP 的 CDN 路径和 ui-cdn.ts 对不上：\n  main.rs：${mac[1]}\n  应为：   ${want}`)
-    const csp = rs.slice(rs.indexOf('const UI_CSP'), rs.indexOf(');', rs.indexOf('const UI_CSP')))
-    assert(!/cdn\.jsdelivr\.net[;" ]/.test(csp), '桌面 UI_CSP 又放行了整个 cdn.jsdelivr.net')
+    for (const [label, file] of [
+      ['桌面', 'desktop/src-tauri/src/ui.rs'],
+      ['手机', 'mobile/src-tauri/src/lib.rs'],
+    ]) {
+      const rs = readFileSync(join(root, file), 'utf8')
+      const mac = rs.match(/macro_rules! ui_cdn \{\s*\(\) => \{\s*"([^"]*)"/)
+      assert(mac, `${file} 里找不到 ui_cdn! 宏`)
+      assert(mac[1] === want, `${label} UI_CSP 的 CDN 路径和 ui-cdn.ts 对不上：\n  ${file}：${mac[1]}\n  应为：   ${want}`)
+      assert(rs.includes('const UI_CSP'), `${file} 里找不到 UI_CSP`)
+      const csp = rs.slice(rs.indexOf('const UI_CSP'), rs.indexOf(');', rs.indexOf('const UI_CSP')))
+      assert(!/cdn\.jsdelivr\.net[;" ]/.test(csp), `${label} UI_CSP 又放行了整个 cdn.jsdelivr.net`)
+    }
   })
 }

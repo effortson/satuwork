@@ -6,12 +6,13 @@
  * Gateway 慢得多——把后端适配放进跑得慢的那一半，等于每换一家后端都要重新出包、
  * 重新部署所有席位。
  *
- * 四家：
+ * 五家：
  * - **tavily**：搜索 + 提取都有，返回的已经是清好的正文。默认后端。
  * - **duckduckgo**：无密钥、零配置，只有搜索。兜底用——它是抓公开页面拿结果，没有
  *   商务约定，限流和封 IP 都可能发生，所以自带节流、被 429 直接认输不重试。
  * - **searxng**：自托管，只有搜索，地址由管理员填（SSRF 闸的明示例外）。
  * - **firecrawl**：搜索 + 提取都有，提取那头是真渲染的浏览器，SPA 页面它拿得到。
+ * - **anysearch**：搜索 + 提取都有，按查询意图自己挑数据源。
  *
  * 搜索和提取**各配各的**（`searchBackend` / `extractBackend`）：自托管 SearXNG 搜索
  * 配 Firecrawl 提取是很实在的组合——查询词不出自己的网，正文又要浏览器才渲染得出来。
@@ -876,6 +877,118 @@ function firecrawlQuery(q: SearchQuery): string {
   return [q.query, sites ? `(${sites})` : '', not].filter(Boolean).join(' ')
 }
 
+// ── AnySearch ────────────────────────────────────────────────────────────
+
+/**
+ * 托管服务，搜索（`/v1/search`）和提取（`/v1/extract`）都有。搜索那头按查询意图自己
+ * 挑数据源，再融合重排。
+ *
+ * **密钥必填，虽然它允许匿名。** 匿名调用按出口 IP 限流——Gateway 是所有公司共用的
+ * 那一个出口，一家跑飞就是全平台一起被限。更要紧的是匿名额度用完时，它会在 402 的
+ * `message` 里**自动注册一个账号，把用户名、密码和 API key 原样塞回来**。那段话一旦
+ * 进了 WebToolError 的 message，就会跟着日志和 web_calls 的错误原因到处躺。带着密钥
+ * 打就不会有这一出（文档原话：无效的密钥不会退回匿名）；即使如此，402 的正文也一律
+ * 不读、不转述。
+ *
+ * 它和 Firecrawl 一样会在 **200 里**用 `code != 0` 报错，见 anysearchData。
+ *
+ * 不支持的约束：域名限制没有原生参数，交给 web-service 在本地滤并报「滤过」；时间
+ * 范围既没有参数、结果里也不带日期，本地没法滤——直接拒并说清楚，悄悄忽略比不支持
+ * 更糟。在发请求之前拒，这一次不打上游、也不收钱。
+ *
+ * 结果和提取都只取 `content` / `snippet` 的原文，`tag` / `zone` / `params` 那些
+ * 「按子领域路由」的参数不传：模型不知道它们，它自己判意图就够了。
+ */
+const ANYSEARCH_BASE = 'https://api.anysearch.com'
+
+/** 它的 max_results 只认 1–10。我们这边上限也是 10，夹一下只是不让两边的上限悄悄脱钩。 */
+const ANYSEARCH_MAX_RESULTS = 10
+
+async function anysearchCall(path: string, body: unknown, secret: string, timeoutMs: number): Promise<any> {
+  const res = await safeFetch(`${ANYSEARCH_BASE}${path}`, {
+    method: 'POST',
+    // 提取接口是严格 JSON：content-type 只能是不带 charset 的 application/json，
+    // 请求体里多一个字段都 400。
+    headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    timeoutMs,
+  })
+  if (res.status === 402) {
+    // 正文可能带着自动生成的账号密码（见上面），一个字都不留。
+    await res.body?.cancel().catch(() => {})
+    throw new WebToolError('anysearch HTTP 402', statusHint(402, 'AnySearch'))
+  }
+  const text = await readText(res)
+  let data: any
+  try {
+    data = JSON.parse(text)
+  } catch {
+    if (!res.ok) throw new WebToolError(`anysearch HTTP ${res.status} ${text.slice(0, 200)}`, statusHint(res.status, 'AnySearch'))
+    throw new WebToolError('anysearch bad json', 'AnySearch 返回的不是 JSON，可能配置不对。')
+  }
+  const why = String(data?.message ?? '').slice(0, 160)
+  if (res.status === 422) {
+    throw new WebToolError(`anysearch 422 ${why}`, `抓不到这一页的正文${why ? `：${why}` : ''}`)
+  }
+  if (!res.ok) {
+    const base = statusHint(res.status, 'AnySearch')
+    // 400 的 message 是「URL is invalid.」这类，对模型有用；401/429 那几种 statusHint 已经说全了。
+    throw new WebToolError(`anysearch HTTP ${res.status} ${why}`, res.status === 400 && why ? `${base}${why}` : base)
+  }
+  return anysearchData(data)
+}
+
+/** 200 里的 `code != 0` 也是失败——当成空结果，模型就会一遍遍换搜索词重试。 */
+export function anysearchData(data: any): any {
+  if (data?.code !== 0) {
+    const why = String(data?.message ?? '').slice(0, 160)
+    throw new WebToolError(`anysearch code=${data?.code} ${why}`, `AnySearch 拒绝了这次请求${why ? `：${why}` : ''}。`)
+  }
+  return data?.data
+}
+
+export function anysearchHits(data: any, count: number): SearchHit[] {
+  const rows = Array.isArray(data?.results) ? data.results : []
+  return rows
+    .slice(0, count)
+    .map((r: any) => ({
+      title: String(r?.title ?? '').trim(),
+      url: String(r?.url ?? '').trim(),
+      // snippet 是一两句摘要，content 是清过的整段正文。搜索结果只要前者，没有才退到
+      // 后者的开头——整段正文塞进结果列表，十条就能把上下文吃掉一大块。
+      snippet: String(r?.snippet ?? '').trim() || String(r?.content ?? '').trim().slice(0, 300),
+    }))
+    .filter((h: SearchHit) => h.url)
+}
+
+const anysearch: WebBackend = {
+  id: 'anysearch',
+  async search(q, cfg) {
+    if (!cfg.secret) throw new WebToolError('anysearch no key', '还没有配置 AnySearch 的密钥，让系统管理员去配。')
+    if (q.freshness) {
+      throw new WebToolError(
+        'anysearch no freshness',
+        '当前搜索后端 AnySearch 不支持按时间过滤。去掉 freshness 再搜，需要的话把年份或月份写进查询词里。',
+      )
+    }
+    const count = Math.min(q.count, ANYSEARCH_MAX_RESULTS)
+    const data = await anysearchCall('/v1/search', { query: q.query, max_results: count }, cfg.secret, SEARCH_TIMEOUT_MS)
+    return anysearchHits(data, count)
+  },
+  async extract(url, cfg) {
+    if (!cfg.secret) throw new WebToolError('anysearch no key', '还没有配置 AnySearch 的密钥，让系统管理员去配。')
+    const data = await anysearchCall('/v1/extract', { url }, cfg.secret, EXTRACT_TIMEOUT_MS)
+    const markdown = String(data?.content ?? '')
+    if (!markdown.trim()) throw new WebToolError('anysearch extract empty', '抓不到这一页的正文。')
+    return {
+      url,
+      title: String(data?.title ?? '').trim(),
+      markdown,
+      contentType: 'text/markdown',
+    }
+  },
+}
+
 // ── 注册表 ────────────────────────────────────────────────────────────────
 
 /**
@@ -936,6 +1049,7 @@ const BACKENDS: Record<string, WebBackend> = {
   firecrawl: stubbedBackends ? stubFirecrawl : firecrawl,
   duckduckgo,
   searxng,
+  anysearch,
 }
 
 export function backendOf(id: string): WebBackend | undefined {
@@ -944,7 +1058,7 @@ export function backendOf(id: string): WebBackend | undefined {
 
 /** 这个后端要不要密钥。SearXNG 要的是地址，DuckDuckGo 什么都不要。 */
 export function needsSecret(id: string): boolean {
-  return id === 'tavily' || id === 'firecrawl'
+  return id === 'tavily' || id === 'firecrawl' || id === 'anysearch'
 }
 
 export function canSearch(id: string): boolean {

@@ -3,6 +3,13 @@
  *
  * 都是纯函数，不发请求、不碰 DOM——发请求的在 data.js，画东西的在 pages-*.js。
  */
+/**
+ * 侧栏分类开合在本机存的键。**必须在 `state` 之前声明**：`state` 初始化时就调 readBotFolderOpen，
+ * 放在后面的话它还在暂时性死区里，读的那一下抛 ReferenceError、被 catch 吞成 `{}`——收起的分类
+ * 刷新后全部展开，下一次点开合又拿 `{}` 把存着的盖掉。
+ */
+const BOT_FOLDER_OPEN_KEY = 'satuwork.botFolderOpen'
+
 const state = {
   me: null,
   path: '/',
@@ -25,6 +32,8 @@ const state = {
   desktopUpdate: null,
   busy: false,
   loginError: '',
+  /** 登录页「服务器」弹窗（桌面壳和手机壳）：{ url, def, phase: idle|checking|ok|err|switching, msg }，关着是 null。 */
+  gwServer: null,
   loginEmail: '',
   loginPassword: '',
   needsSetup: false,
@@ -46,11 +55,6 @@ const state = {
   selectedProvider: '',
   accounts: [],
   seats: { total: 0, used: 0 },
-  events: [],
-  sessions: [],
-  sessionDetail: null,
-  sessionEvents: null,
-  sessionPullError: '',
   auditItems: [],
   /**
    * 审计总结的翻页：游标栈，最后一个是当前页的起点（null = 第一页）。和计费明细同一种做法，
@@ -67,9 +71,6 @@ const state = {
   auditItemDetail: null,
   auditCoverage: [],
   auditSettings: null,
-  sessionAccountId: '',
-  sessionFrom: '',
-  sessionTo: '',
   org: null,
   plan: null,
   orgs: [],
@@ -149,6 +150,7 @@ const state = {
   profileDraft: null,
   profileSaved: false,
   profileError: '',
+  profileAvatarBusy: false,
   pwOpen: false,
   pwForm: { current: '', next: '', confirm: '' },
   pwError: '',
@@ -196,6 +198,14 @@ const state = {
   /** 用量屏「月」胶囊选的是哪个月（YYYY-MM）。null = 当月。 */
   usageMonth: null,
   runtimeBots: [],
+  /** 名单的分类（/runtime/bots 的 folders）；每颗 Bot 的归属在 bot.folderId 上。每个人自己的视图。 */
+  botFolders: [],
+  /** 正在新建 / 重命名的分类：{ id, name, error }。null = 弹窗没开。 */
+  botFolderEdit: null,
+  /** 哪些分类收着。只是这台机器上的习惯，存 localStorage；没写的一律当展开。 */
+  botFolderOpen: readBotFolderOpen(),
+  /** 这个人的主 Bot 的 id（/runtime/bots 的 mainBotId）；空串 = 没设。头像上戴皇冠的就是它。 */
+  mainBotId: '',
   /**
    * 公司名下有没有配对好的运行机器（GET /runtime/bots 的 hasMachine）。`null` = 还没拉到，
    * 那时一律按「有」对待——拿不准的时候不藏东西、不改默认。
@@ -269,7 +279,7 @@ const state = {
   deploying: false,
   /**
    * 运行日志面板。null 表示没开着；开着时是
-   * `{ title, active, sources: [{ key, label, url }] }`——见 chat.js 的 openLogs。
+   * `{ title, active, sources: [{ key, label, url }] }`——见 chat-desktop.js 的 openLogs。
    */
   logsOpen: null,
   logLines: [],
@@ -280,7 +290,7 @@ const state = {
    * `{ botId, status, phase, elapsedMs, since, lastError, stale, step: {…} | null }`。
    *
    * **带着 botId**：这一份是轮询回来的，人在两次回执之间换了 Bot 是常事，不认名字就会
-   * 把上一个 Bot 的进度画在这一页上（见 chat.js 的 deployProgressNow）。
+   * 把上一个 Bot 的进度画在这一页上（见 chat-seat.js 的 deployProgressNow）。
    *
    * `since` 是**本地**锚点（`Date.now() - elapsedMs`，收到那一刻算一次）。服务端给的是
    * 年龄不是时刻——两台钟差几分钟是常事，而读秒正是个时间问题（见 pollDeployProgress）。
@@ -289,10 +299,6 @@ const state = {
   releases: [],
   latestRelease: null,
   updatingRuntime: false,
-  sessionsHasMore: false,
-  sessionsLimit: 0,
-  sessionsCursor: '',
-  sessionsLoadingMore: false,
   chatBotId: '',
   chatSessionId: '',
   chatEvents: [],
@@ -317,13 +323,13 @@ const state = {
   /** 这一条还没发出去的消息引用了什么（docs/chat-references.md）。 */
   chatRefs: [],
   /** botId → 没发出去的草稿。切走再切回来，打了一半的话还在。 */
-  /** 已经发出去、还没从流里回来的那几条。见 chat.js 的 mergePending。 */
+  /** 已经发出去、还没从流里回来的那几条。见 chat-thread.js 的 mergePending。 */
   chatPending: [],
   chatDrafts: {},
   /** 正在重放历史。期间只收不画，见 startChatStream。 */
   chatReplaying: false,
   /**
-   * 右栏那棵工作区文件树（见 chat.js 的 workspacePanel）。
+   * 右栏那棵工作区文件树（见 chat-workspace.js 的 workspacePanel）。
    * `wsDirs` 是「路径 → 这一层的内容」，`wsOpen` 是「哪几层展开着」。根目录的 key 是空串。
    *
    * `wsSession` 记着**这棵树是给哪条会话取的**。空串也是一个值——「那会儿还没接上
@@ -356,6 +362,14 @@ const state = {
   handoffs: [],
   /** 外部消息渠道。第一版一个账号至多一条 Telegram 绑定。 */
   channels: [],
+  // 插件页的搜索词和分组筛选（pages-plugins.js）。跨页留着：点进详情再退回来，筛到的还在。
+  pluginQ: '',
+  pluginCat: '',
+  // 「添加账号」弹窗：{ id, name, phase: 'form' | 'waiting', error, busy }，见 pages-plugins.js 的 connAddModal。
+  connAdd: null,
+  // 插件账号的「可用 Bot」设置弹窗，一次只打开一个账号。
+  connBotsOpen: null,
+  connBotsDraft: null,
   channelBindOpen: false,
   channelBindError: '',
   handoffCount: 0,
@@ -367,6 +381,8 @@ const state = {
   handoffOpenId: '',
   /** 单号 → 席位那边的正文。`null` = 拉过但席位没应答；`undefined` = 还没拉。 */
   handoffDetail: {},
+  handoffFeedback: {},
+  handoffLoadError: false,
   /**
    * 席位那边「这几张单还在不在」的一次快照：`{ sessionId, ids, upto }`。
    * 比它早、又不在 ids 里的卡片画成失效（见 chat.js 的 handoffDead）。
@@ -434,6 +450,7 @@ function setToken(t) {
 }
 
 function clearToken() {
+  if (typeof clearMobileAiConsent === 'function') clearMobileAiConsent()
   sessionStorage.removeItem(TOKEN_KEY)
   if (!appShell()) return
   try {
@@ -457,7 +474,6 @@ function emptyBox(msg) {
    ══════════════════════════════════════════════════════════════════ */
 const esc = SatuCore.esc
 const SATU_TZ = SatuCore.SATU_TZ
-const tzOffsetMs = SatuCore.tzOffsetMs
 const tzDayStart = SatuCore.tzDayStart
 const tzDayKey = SatuCore.tzDayKey
 const fmtTime = SatuCore.fmtTime
@@ -469,11 +485,11 @@ function usd(mils) {
 }
 const tokens = SatuCore.fmtTokens
 const connectorIdOfPath = SatuCore.connectorIdOfPath
+const pluginIdOfPath = SatuCore.pluginIdOfPath
 const botIdOfPath = SatuCore.botIdOfPath
 const companyIdOfPath = SatuCore.companyIdOfPath
 const machineIdOfPath = SatuCore.machineIdOfPath
 const userIdOfPath = SatuCore.userIdOfPath
-const sessionIdOfPath = SatuCore.sessionIdOfPath
 const auditItemIdOfPath = SatuCore.auditItemIdOfPath
 
 function capTags(m) {
@@ -581,9 +597,9 @@ function allowedHrefs() {
   // 不是功能。少了这一行，owner 直接输 /bots 会被 pathAllowed 踢回首页，全局 Bot
   // 目录就此没人改得动了——而他是唯一改得动的人。
   if (isOwner()) set.add('/bots')
-  // 员工菜单里没有连接器了（入口是名单底下那颗「插件」，见 MEMBER_NAV），但那两个页面
-  // 必须还进得去：OAuth 授权完，供应商把浏览器送回 /connectors/:id，落地就在这儿。
-  if (!isOwner()) set.add('/connectors')
+  // 插件（员工自己的连接器）：入口在名单底下那颗「更多」里，不在侧栏菜单里（见 MEMBER_NAV）。
+  // 员工以前的 /connectors 和 /connectors/:id 由 data.js 的 pluginAlias 折到这儿。
+  if (!isOwner()) set.add('/plugins')
   // 转人工待办的入口在**顶栏**那颗按钮上，不在侧栏菜单里（员工那份菜单是空的，
   // 见 MEMBER_NAV）。所以这里单独放行，否则点那颗按钮会被 pathAllowed 踢回首页。
   if (!isOwner()) set.add('/handoffs')
@@ -630,8 +646,8 @@ function pathAllowed(p) {
   // /bots/:id 跟 /profile 一样不在侧栏，但管理员能进。
   // 员工进不了 /bots（那是管理员的模版页），但进得了自己那个 Bot 的详情页。
   if (p.startsWith('/bots/') && (allowedHrefs().has('/bots') || !isOwner())) return true
-  // 连接器详情不在侧栏，但装了连接器的人都要进得去。
-  if (p.startsWith('/connectors/') && allowedHrefs().has('/connectors')) return true
+  // 插件详情不在侧栏，但装了插件的人都要进得去。
+  if (p.startsWith('/plugins/') && allowedHrefs().has('/plugins')) return true
   if (p.startsWith('/knowledge/') && allowedHrefs().has('/knowledge')) return true
   if (p.startsWith('/companies/') && allowedHrefs().has('/companies')) return true
   if (p.startsWith('/users/') && allowedHrefs().has('/users')) return true
@@ -696,10 +712,10 @@ function crumbsOf(path) {
     if ((!isOwner() && !isAdmin()) || ownBotPath(path)) return { href: '/', parent: t('对话'), current: bot?.name || t('Bot 详情') }
     return { href: '/bots', parent: isOwner() ? t('全局 Bot') : t('Bot 模版'), current: bot?.name || t('Bot 详情') }
   }
-  if (path.startsWith('/connectors/') && path !== '/connectors') {
+  if (path.startsWith('/plugins/')) {
     const d = state.connectorDetail?.connector
-    const one = d && d.id === connectorIdOfPath(path) ? d : null
-    return { href: '/connectors', parent: t('连接器'), current: one?.name || t('连接器详情') }
+    const one = d && d.id === pluginIdOfPath(path) ? d : null
+    return { href: '/plugins', parent: t('插件', 'Plugins'), current: one?.name || t('插件详情', 'Plugin') }
   }
   if (path.startsWith('/knowledge/')) {
     const d = state.kbDetail && state.kbDetail.id === kbIdOfPath(path) ? state.kbDetail : null
@@ -745,7 +761,7 @@ function billTable(title, heads, rows, emptyMsg) {
   const cells = heads.map((h) => `<span>${esc(h)}</span>`).join('')
   return `<div style="display: flex; flex-direction: column; gap: var(--space-3);">
       <h2 style="font-size: 18px; margin: 0;">${esc(title)}</h2>
-      <div style="border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--popover);">
+      <div class="mg-table">
         <div class="satu-billhead">${cells}</div>
         ${rows || emptyBox(emptyMsg)}
       </div>
@@ -784,6 +800,8 @@ function pathOf() {
   if (p === '/users' || p.startsWith('/users/')) return p
   if (p === '/audit' || p.startsWith('/audit/summary/')) return p
   if (p === '/chat' || p.startsWith('/a/')) return p
+  // /connectors/:id 原样留着，等 loadPage 知道了角色再折到 /plugins/:id（见 data.js 的 pluginAlias）。
+  if (p.startsWith('/plugins/') || p.startsWith('/connectors/')) return p
   if (p === '/costs') return '/billing'
   return PATHS[p] ? p : '/'
 }
@@ -810,6 +828,7 @@ function go(href) {
  * 也跟着带到新页面上。调用前 state.path 要已经是新地址。
  */
 function enterPath() {
+  if (typeof closeConnBots === 'function') closeConnBots({ restoreFocus: false, force: true })
   state.error = ''
   state.notice = ''
   state.addOpen = false
@@ -831,4 +850,21 @@ function enterPath() {
   load.then(() => {
     if (seq === navSeq) render()
   })
+}
+
+/** 侧栏分类的开合，记在本机：和 navGroupOpen 不同，分类是人自己建的，收起来的那几个刷新后该还收着。 */
+function readBotFolderOpen() {
+  try {
+    const v = JSON.parse(localStorage.getItem(BOT_FOLDER_OPEN_KEY) || '{}')
+    return v && typeof v === 'object' ? v : {}
+  } catch {
+    return {}
+  }
+}
+function saveBotFolderOpen(v) {
+  try {
+    localStorage.setItem(BOT_FOLDER_OPEN_KEY, JSON.stringify(v))
+  } catch {
+    // 隐私窗口、禁了存储：记不住就记不住，开合照样能用。
+  }
 }

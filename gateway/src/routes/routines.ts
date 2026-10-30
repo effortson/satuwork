@@ -13,11 +13,11 @@
  */
 import type { RouteCtx } from './ctx.ts'
 import { bearer, HttpError, json, type Req, type Router } from '../http.ts'
-import { bodyOf, strField } from '../lib/validate.ts'
-import { requireSeatOrUser, requireUser } from '../lib/guards.ts'
+import { bodyOf, dailyOrUtilityOf, strField } from '../lib/validate.ts'
+import { requireSeatOrUser, requireUser, viewerOf } from '../lib/guards.ts'
 import { visibleBotOf } from '../lib/runtime.ts'
 import { companyMachineOf } from '../deploy.ts'
-import { canonicalTimezone, parseRoutineTriggers, ROUTINE_MAX_TRIGGERS, RoutineBusyError, type Account, type Db, type Routine, type RoutineModelRole, type RoutineRun } from '../db.ts'
+import { canonicalTimezone, parseRoutineTriggers, ROUTINE_MAX_TRIGGERS, RoutineBusyError, type Account, type Db, type Routine, type RoutineRun } from '../db.ts'
 import { nextRunAtOf } from '../lib/schedule.ts'
 import { ROUTINE_RETRY_MAX, RoutineUnrunnableError, requestManualRun } from '../routines.ts'
 
@@ -119,20 +119,6 @@ function triggersOf(raw: unknown, tz: string) {
   return parsed
 }
 
-/**
- * 用哪个模型跑。**只认 `daily` 和 `utility`，别的一律 400。**
- *
- * 库里那份 `parseRoutineModelRole` 认不出来就当 daily——读库那一路没人接得住异常，
- * 一条脏数据不该让整个列表打不开。而人刚在界面上选的那一下不能这么办：把一个拼错的
- * 值静静地存成 daily，接口回 200、界面上写着「Utility」，跑起来却是另一个。
- */
-function modelRoleOf(raw: unknown): RoutineModelRole | undefined {
-  if (raw === undefined) return undefined
-  const v = String(raw ?? '')
-  if (v !== 'daily' && v !== 'utility') throw new HttpError(400, 'modelRole 只能是 daily 或 utility')
-  return v
-}
-
 export function attachRoutines(router: Router, ctx: RouteCtx) {
   const { db, keys } = ctx
 
@@ -148,13 +134,13 @@ export function attachRoutines(router: Router, ctx: RouteCtx) {
     if (!token?.startsWith('sat_')) return { account, by: 'user' }
     const seatBotId = (pathBotId || req.query.get('botId') || '').trim()
     if (!seatBotId) throw new HttpError(400, '席位操作日常任务时要带 botId')
-    await visibleBotOf(db, account, seatBotId)
+    await visibleBotOf(db, account, seatBotId, viewerOf(req))
     return { account, seatBotId, by: 'bot' }
   }
 
   router.get('/runtime/bots/:id/routines', async (req, res) => {
     const { account } = await caller(req, req.params.id)
-    const bot = await visibleBotOf(db, account, req.params.id)
+    const bot = await visibleBotOf(db, account, req.params.id, viewerOf(req))
     const rows = await db.routinesOf(account.id, bot.id)
     const withRuns = await Promise.all(
       rows.map(async (r) => publicRoutine(r, (await db.routineRuns(r.id, 1))[0])),
@@ -164,7 +150,7 @@ export function attachRoutines(router: Router, ctx: RouteCtx) {
 
   router.post('/runtime/bots/:id/routines', async (req, res) => {
     const { account, by } = await caller(req, req.params.id)
-    const bot = await visibleBotOf(db, account, req.params.id)
+    const bot = await visibleBotOf(db, account, req.params.id, viewerOf(req))
     const body = bodyOf(req)
     const tz = await suggestTz(db, account, strField(body, 'tz', false))
     const triggers = triggersOf(body.triggers, tz) ?? []
@@ -175,7 +161,7 @@ export function attachRoutines(router: Router, ctx: RouteCtx) {
       name: strField(body, 'name', false).slice(0, MAX_NAME),
       instruction: strField(body, 'instruction', false).slice(0, MAX_INSTRUCTION),
       triggers,
-      modelRole: modelRoleOf(body.modelRole),
+      modelRole: dailyOrUtilityOf(body.modelRole),
       nextRunAt: nextRunAtOf({ active: true, triggers }),
     })
     await db.audit({
@@ -210,7 +196,7 @@ export function attachRoutines(router: Router, ctx: RouteCtx) {
     if (body.name !== undefined) patch.name = strField(body, 'name', false).slice(0, MAX_NAME)
     if (body.instruction !== undefined) patch.instruction = strField(body, 'instruction', false).slice(0, MAX_INSTRUCTION)
     if (body.active !== undefined) patch.active = body.active === true
-    const modelRole = modelRoleOf(body.modelRole)
+    const modelRole = dailyOrUtilityOf(body.modelRole)
     if (modelRole !== undefined) patch.modelRole = modelRole
     const triggers = triggersOf(body.triggers, tz)
     if (triggers !== undefined) patch.triggers = triggers

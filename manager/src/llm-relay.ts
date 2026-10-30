@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { bearer, isLoopback, json, readRaw } from './http.ts'
+import { bearer, gatewayPost, isLoopback, json, readRaw } from './http.ts'
 import { mergeUsage, sseUsage, usageFromPayload, type TokenUsage } from './llm-usage.ts'
+import { applyEnterpriseContentPolicy, enterpriseContentViolation } from './content-policy.ts'
 
 /**
  * 管家替本机 Bot 调模型（协议 10）。
@@ -254,6 +255,7 @@ async function relayModels(deps: LlmRelayDeps, apiKey: string, res: ServerRespon
 
 /** grant 请求体。Gateway 那头按这几项决定上游地址、鉴权头和请求体补丁。 */
 interface GrantAsk {
+  contentPolicyVersion: number
   apiKey: string
   route: Route
   model: string
@@ -305,15 +307,9 @@ async function askGrant(
 ): Promise<{ grant: Grant } | { fallback: true } | { relayed: true }> {
   let r: Response
   try {
-    r = await fetch(`${deps.gatewayUrl()}/worker/llm/grant`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${deps.machineToken()}`,
-        'content-type': 'application/json',
-        accept: 'application/json',
-      },
-      body: JSON.stringify(ask),
-      signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
+    r = await gatewayPost(`${deps.gatewayUrl()}/worker/llm/grant`, deps.machineToken(), JSON.stringify(ask), {
+      timeoutMs: GATEWAY_TIMEOUT_MS,
+      accept: true,
     })
   } catch (e) {
     json(res, 503, { error: 'Gateway 够不着: ' + errMsg(e) })
@@ -403,8 +399,16 @@ async function relayCall(
       json(res, 400, { error: 'model 不能为空' })
       return
     }
+    if (enterpriseContentViolation(body)) {
+      json(res, 400, { error: 'Satuwork is for enterprise work. Pornography and graphic violence requests are not supported.' })
+      return
+    }
+    applyEnterpriseContentPolicy(body, route)
+    // The fallback must receive the protected body as well, not the original raw request.
+    raw = Buffer.from(JSON.stringify(body))
     const ask: GrantAsk = {
       apiKey,
+      contentPolicyVersion: 1,
       route,
       model,
       provider: typeof body.provider === 'string' && body.provider.trim() ? body.provider.trim() : undefined,
@@ -664,16 +668,7 @@ async function settle(
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt) await new Promise((r) => setTimeout(r, SETTLE_RETRY_MS))
     try {
-      const r = await fetch(target, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${deps.machineToken()}`,
-          'content-type': 'application/json',
-          accept: 'application/json',
-        },
-        body: payload,
-        signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
-      })
+      const r = await gatewayPost(target, deps.machineToken(), payload, { timeoutMs: GATEWAY_TIMEOUT_MS, accept: true })
       if (r.ok) return
       const text = await r.text().catch(() => '')
       lastErr = `HTTP ${r.status} ${text.slice(0, 200)}`

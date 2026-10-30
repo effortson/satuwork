@@ -3,7 +3,7 @@
   通知栏小图标（FCM 的 default_notification_icon，见 ../../AndroidManifest.xml）。
 
   Android 5 起状态栏小图标只取 alpha 通道、按系统色涂：直接用彩色的启动图标就是一块白方块。
-  这是 gateway/ui/assets/satuwork-logo.svg 那颗机器人头的剪影——头、耳朵、天线，眼睛挖空。
+  与 gateway/ui/assets/satuwork-logo.png 的极简屏幕头像一致：圆角方框、点眼、微笑和下巴。
   改了 logo 要回来重画一遍。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -14,16 +14,14 @@
     <path
         android:fillColor="#FFFFFFFF"
         android:fillType="evenOdd"
-        android:pathData="M207,155H305A105,105 0 0 1 410,260V288A105,105 0 0 1 305,393H207A105,105 0 0 1 102,288V260A105,105 0 0 1 207,155ZM177,260A27,35 0 1 0 231,260A27,35 0 1 0 177,260ZM281,260A27,35 0 1 0 335,260A27,35 0 1 0 281,260Z" />
+        android:pathData="M144,48H368Q456,48 456,136V360Q456,448 368,448H336V456Q336,480 312,480H200Q176,480 176,456V448H144Q56,448 56,360V136Q56,48 144,48ZM176,128Q136,128 136,168V328Q136,368 176,368H336Q376,368 376,328V168Q376,128 336,128Z" />
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M107,236H108A29,29 0 0 1 137,265V291A29,29 0 0 1 108,320H107A29,29 0 0 1 78,291V265A29,29 0 0 1 107,236ZM404,236H405A29,29 0 0 1 434,265V291A29,29 0 0 1 405,320H404A29,29 0 0 1 375,291V265A29,29 0 0 1 404,236Z" />
+        android:pathData="M160,256A20,20 0 1 0 200,256A20,20 0 1 0 160,256ZM312,256A20,20 0 1 0 352,256A20,20 0 1 0 312,256Z" />
     <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M189,106A24,24 0 1 0 237,106A24,24 0 1 0 189,106Z" />
-    <path
+        android:fillColor="#00000000"
         android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="22"
+        android:strokeWidth="24"
         android:strokeLineCap="round"
-        android:pathData="M251,172C251,148 243,132 227,118" />
+        android:pathData="M224,312Q256,336 288,312" />
 </vector>

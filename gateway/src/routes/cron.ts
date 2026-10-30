@@ -3,6 +3,7 @@ import { HttpError, bearer, json, type Router } from '../http.ts'
 import { maintenanceTick } from '../routines.ts'
 import { tickChannelDeliveries } from '../channels.ts'
 import { timingSafeToken } from '../crypto.ts'
+import { dispatchNotifications } from '../lib/notifications.ts'
 
 /**
  * 分钟级的那一拍，给没有常驻进程的环境用：Vercel Cron 每分钟打一次 `GET /cron/tick`，
@@ -35,6 +36,11 @@ export function attachCron(router: Router, { db, keys, channelKey }: RouteCtx) {
       failed.push('渠道投递')
       return 0
     })
-    json(res, 200, { ok: true, ms: Date.now() - startedAt, channels, failed })
+    const notifications = await dispatchNotifications(db).catch((e: Error) => {
+      console.error(`satuwork-gateway: 通知扫描失败：${e.message}`)
+      failed.push('通知')
+      return 0
+    })
+    json(res, 200, { ok: true, ms: Date.now() - startedAt, channels, notifications, failed })
   })
 }

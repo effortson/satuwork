@@ -1,30 +1,79 @@
 import { AssistantMessageEventStream, EMPTY_USAGE, emptyAssistant, stubModel } from './stream.ts'
+import { gatewayApiKey, llmBaseUrl } from '../env.ts'
 
-export function gatewayUrl(): string {
-  return (process.env.GATEWAY_URL || '').replace(/\/$/, '')
+
+/**
+ * 解析不了的工具参数原文挂在这个键上（见 settleArgs）。工具层认它，原样把原文交给 tools.execute，
+ * 由那里回模型一句「参数不是合法 JSON」。
+ */
+export const BAD_TOOL_ARGS = '__satuworkBadArguments'
+
+/**
+ * 原文里第一个完整的 JSON 对象。流里常见的两种毛病都是「前面是对的、后面多了东西」：整段参数
+ * 被重发了一遍（`{…}{…}`），或者对象后面跟了几个多余的字符。字符串里的括号不算。
+ */
+function firstJsonObject(raw: string): unknown {
+  const start = raw.indexOf('{')
+  if (start < 0) return undefined
+  let depth = 0
+  let inStr = false
+  let esc = false
+  for (let i = start; i < raw.length; i++) {
+    const c = raw[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (c === '\\') esc = true
+      else if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') inStr = true
+    else if (c === '{') depth++
+    else if (c === '}' && --depth === 0) {
+      try {
+        return JSON.parse(raw.slice(start, i + 1))
+      } catch {
+        return undefined
+      }
+    }
+  }
+  return undefined
 }
 
 /**
- * 模型调用（所有 `/v1/*`：目录、补全）打哪里。
+ * 一次工具调用收口时把参数定下来。
  *
- * 管家部署出来的席位会多拿一个 `GATEWAY_LLM_URL`（形如 `http://127.0.0.1:8443/llm`）：
- * 模型调用由**同机的管家转发**，provider 密钥只在管家进程里，从不进 bot 进程；而
- * Gateway 搬上 Vercel 之后也不再替席位流式转发模型输出——函数有时长上限，一条
- * 几分钟的流撑不住。所以 `/v1/*` 走这里，其余（会话上传、/internal、日常任务）
- * 照旧走 `GATEWAY_URL`。鉴权头不变，还是 `Bearer GATEWAY_API_KEY`，管家原样带过去。
- *
- * 没设就退回 `GATEWAY_URL`：本地桌面 bot 和老席位一个字都不用改。
+ * 流里每来一段都试着解析一次，解析不了就先记成 `{}`——没收完的 JSON 本来就解析不了，这没问题。
+ * 可**收口时还解析不了**，以前也就停在 `{}` 上：工具拿到一份空参数，当成「没带参数」照常执行。
+ * `todo` 不带参数是「读清单」，于是模型每次想写都变成读、读到空清单、再写一次——一轮里连调
+ * 几十次 todo 原地打转。收口时认真解析一次；救不回来就把原文带下去，让工具层明说参数坏了。
  */
-export function llmBaseUrl(): string {
-  return (process.env.GATEWAY_LLM_URL || process.env.GATEWAY_URL || '').replace(/\/$/, '')
+function settleArgs(block: any): void {
+  const raw = typeof block?._raw === 'string' ? block._raw.trim() : ''
+  if (!raw) return
+  try {
+    block.arguments = JSON.parse(raw)
+    return
+  } catch {}
+  const first = firstJsonObject(raw)
+  block.arguments = first && typeof first === 'object' ? first : { [BAD_TOOL_ARGS]: raw }
 }
 
-export function gatewayToken(): string {
-  return (process.env.GATEWAY_TOKEN || '').trim()
-}
-
-export function gatewayApiKey(): string {
-  return (process.env.GATEWAY_API_KEY || '').trim()
+/**
+ * 流读到头却没等到收口帧（finish_reason / response.completed / content_block_stop）：那几把还没定参数的
+ * 工具在这儿定下来，再交出 done。
+ *
+ * 不定的话参数就停在「增量解析失败」留下的 `{}` 上——中间那一跳吞了读错误、照常结束响应，这边看到的是
+ * 一个干净的 EOF，pi 只看 content 里有没有 toolCall，照样拿空参数去执行（`todo` 当成读清单）。
+ * 收口时救不回来的照 settleArgs 的规矩把原文带下去，工具层明说参数坏了。
+ */
+function settleDangling(stream: AssistantMessageEventStream, partial: any): void {
+  for (let i = 0; i < partial.content.length; i++) {
+    const block = partial.content[i]
+    if (block?.type !== 'toolCall' || !('_raw' in block)) continue
+    settleArgs(block)
+    delete block._raw
+    stream.push({ type: 'toolcall_end', contentIndex: i, toolCall: block, partial })
+  }
 }
 
 /** Messages 协议的版本头。/v1/messages 这条路上每一次请求都要带。 */
@@ -406,6 +455,23 @@ export interface CompletionResult {
   ok: boolean
   status: number
   text: string
+  /**
+   * 没成的时候，对方为什么拒（Gateway 的 `error`，比如「没有 opencode-go 的密钥」）。只有状态码的话，
+   * 402 是没配密钥还是余额不够、得去翻 Gateway 的日志才知道。
+   */
+  error?: string
+}
+
+/** 一页错误响应里那句话：Gateway / 上游都是 `{ error: string | { message } }`，认不出就截原文。 */
+async function errorOf(r: Response): Promise<string> {
+  const raw = await r.text().catch(() => '')
+  try {
+    const j = JSON.parse(raw) as { error?: unknown; message?: unknown }
+    const e = j?.error
+    const msg = typeof e === 'string' ? e : e && typeof e === 'object' ? (e as { message?: unknown }).message : j?.message
+    if (typeof msg === 'string' && msg.trim()) return msg.trim().slice(0, 300)
+  } catch {}
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 300)
 }
 
 /**
@@ -481,7 +547,7 @@ export async function completeOnce(spec: {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(spec.timeoutMs),
   })
-  if (!r.ok) return { ok: false, status: r.status, text: '' }
+  if (!r.ok) return { ok: false, status: r.status, text: '', error: await errorOf(r) }
   const data = (await r.json()) as any
   // 正文在哪三家不一样：chat 在 choices[0].message.content，messages 在顶层 content[]，
   // responses 在 output[] 里 type 为 message 的那几条的 content[]（推理条目也在 output 里，跳过）。
@@ -661,6 +727,7 @@ async function consumeOpenAI(
       }
       for (let i = 0; i < partial.content.length; i++) {
         if (partial.content[i].type === 'toolCall') {
+          settleArgs(partial.content[i])
           delete partial.content[i]._raw
           stream.push({ type: 'toolcall_end', contentIndex: i, toolCall: partial.content[i], partial })
         }
@@ -681,6 +748,7 @@ async function consumeOpenAI(
     fail(stream, model, 'empty stream')
     return
   }
+  settleDangling(stream, partial)
   stream.push({ type: 'done', reason: 'stop', message: partial })
 }
 
@@ -778,6 +846,7 @@ async function consumeResponses(
       for (let i = 0; i < partial.content.length; i++) {
         const block = partial.content[i]
         if (block.type !== 'toolCall' || !('_raw' in block)) continue
+        settleArgs(block)
         delete block._raw
         stream.push({ type: 'toolcall_end', contentIndex: i, toolCall: block, partial })
       }
@@ -825,6 +894,7 @@ async function consumeResponses(
         if (item.call_id) block.id = item.call_id
         if (item.name) block.name = item.name
         if (typeof item.arguments === 'string') setArgs(block, item.arguments)
+        settleArgs(block)
         delete block._raw
         stream.push({ type: 'toolcall_end', contentIndex: idx, toolCall: block, partial })
       }
@@ -838,6 +908,7 @@ async function consumeResponses(
     fail(stream, model, 'empty stream')
     return
   }
+  settleDangling(stream, partial)
   stream.push({ type: 'done', reason: 'stop', message: partial })
 }
 
@@ -954,6 +1025,7 @@ async function consumeAnthropic(
       if (block?.type === 'text') stream.push({ type: 'text_end', contentIndex: index, content: block.text, partial })
       else if (block?.type === 'thinking') stream.push({ type: 'thinking_end', contentIndex: index, content: block.thinking, partial })
       else if (block?.type === 'toolCall') {
+        settleArgs(block)
         delete block._raw
         stream.push({ type: 'toolcall_end', contentIndex: index, toolCall: block, partial })
       }
@@ -978,7 +1050,10 @@ async function consumeAnthropic(
     }
   }
   if (!started) fail(stream, model, 'empty stream')
-  else stream.push({ type: 'done', reason: 'stop', message: partial })
+  else {
+    settleDangling(stream, partial)
+    stream.push({ type: 'done', reason: 'stop', message: partial })
+  }
 }
 
 /**
@@ -999,6 +1074,24 @@ async function consumeAnthropic(
  * 个量级之内。要调就改 SATUWORK_LLM_IDLE_MS。
  */
 const LLM_IDLE_MS = Math.max(1_000, Number(process.env.SATUWORK_LLM_IDLE_MS) || 120_000)
+
+/**
+ * 一次模型调用**还没收到任何内容就失败**、而且失败像是一时的（网络断了一下、限流、上游 5xx），
+ * 退避之后原样再发一次，最多 LLM_RETRIES 次。
+ *
+ * 线上见过的：派给编程大师的活，它写完文件、准备回话的那一次调用撞上「fetch failed」（Gateway
+ * 去上游那一跳断了一下），整轮以 error 收口，活就算没做成——而隔一秒再发一次就好了。
+ *
+ * **只重发「一个事件都还没交出去」的那种。** 开始吐字或调工具之后再断，前面那截已经交给 pi 了，
+ * 重发会把同一段话、同一把工具再来一遍；那种照旧报错，由这一轮的收口去说。
+ */
+const LLM_RETRIES = Math.max(0, Math.trunc(Number(process.env.SATUWORK_LLM_RETRIES ?? 2)))
+const LLM_RETRY_MS = Math.max(0, Number(process.env.SATUWORK_LLM_RETRY_MS ?? 1_000))
+/** HTTP 层直接回错误页时，按状态码认「一时的」。 */
+const RETRY_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 529])
+/** 流里的错误帧没有状态码，按措辞认。Gateway 打上游失败、管家中继断开、供应商过载，都在这里。 */
+const TRANSIENT =
+  /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|UND_ERR|socket hang up|other side closed|terminated|connection error|network error|overloaded|rate.?limit|too many requests|bad gateway|service unavailable|gateway timeout|upstream unreachable|temporarily unavailable/i
 
 export async function streamViaGateway(model: any, context: any, options?: GatewayStreamOptions) {
   const stream = new AssistantMessageEventStream()
@@ -1050,16 +1143,16 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
       : prefix + (e as Error).message
   kick()
   const signal = options?.signal ? AbortSignal.any([options.signal, idle.signal]) : idle.signal
-  const run = async () => {
+  const run = async (sink: AssistantMessageEventStream): Promise<number> => {
     const base = llmBaseUrl()
     if (!base) {
-      fail(stream, model, '未配置 GATEWAY_LLM_URL / GATEWAY_URL')
-      return
+      fail(sink, model, '未配置 GATEWAY_LLM_URL / GATEWAY_URL')
+      return 0
     }
     const apiKey = gatewayApiKey()
     if (!apiKey) {
-      fail(stream, model, '未配置 GATEWAY_API_KEY')
-      return
+      fail(sink, model, '未配置 GATEWAY_API_KEY')
+      return 0
     }
     // 选路、请求体、版本头、收流的解析器，四处必须是同一个判断，改一处就得跟着改四处。
     const path = apiFor(model)
@@ -1083,8 +1176,8 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
         signal,
       })
     } catch (e) {
-      fail(stream, model, reasonOf(e, 'Gateway 不可达：'))
-      return
+      fail(sink, model, reasonOf(e, 'Gateway 不可达：'))
+      return 0
     }
     const ctype = res.headers.get('content-type') || ''
     if (!res.ok && !ctype.includes('text/event-stream')) {
@@ -1094,15 +1187,67 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
         const j = JSON.parse(text)
         msg = j.error?.message || j.error || text
       } catch {}
-      fail(stream, model, typeof msg === 'string' ? msg : JSON.stringify(msg))
-      return
+      fail(sink, model, typeof msg === 'string' ? msg : JSON.stringify(msg))
+      return res.status
     }
-    if (path === '/v1/messages') await consumeAnthropic(res, stream, model, kick)
-    else if (path === '/v1/responses') await consumeResponses(res, stream, model, kick)
-    else await consumeOpenAI(res, stream, model, kick)
+    if (path === '/v1/messages') await consumeAnthropic(res, sink, model, kick)
+    else if (path === '/v1/responses') await consumeResponses(res, sink, model, kick)
+    else await consumeOpenAI(res, sink, model, kick)
     console.log(`[INFO] llm: ${model?.provider}/${model?.id} 收流结束（${bytes} 字节，${Date.now() - at}ms）`)
+    return 0
   }
-  void run()
+  /**
+   * 每一次尝试的事件先过这一道：**头一条就是错误**的扣下来，由下面决定重发还是交出去；
+   * 见过一条正经事件就整条放行，之后的错误也照常交出去（见 LLM_RETRIES 那段）。
+   */
+  const attempt = async (): Promise<{ held: any; status: number }> => {
+    let held: any = null
+    let open = false
+    const sink = {
+      push(ev: any) {
+        if (!open && ev?.type === 'error') {
+          held = ev
+          return
+        }
+        open = true
+        stream.push(ev)
+      },
+    } as unknown as AssistantMessageEventStream
+    let status = 0
+    try {
+      status = await run(sink)
+    } catch (e) {
+      if (open) throw e
+      held = { type: 'error', reason: 'error', error: emptyAssistant(model, reasonOf(e)) }
+    }
+    return { held: open ? null : held, status }
+  }
+  const pause = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, ms)
+      signal.addEventListener('abort', () => (clearTimeout(t), resolve()), { once: true })
+    })
+  const loop = async () => {
+    for (let n = 0; ; n++) {
+      kick()
+      const { held, status } = await attempt()
+      if (!held) return
+      const why = String(held.error?.errorMessage || '')
+      const transient = status ? RETRY_STATUS.has(status) : TRANSIENT.test(why)
+      if (!transient || n >= LLM_RETRIES || closed || signal.aborted) {
+        stream.push(held)
+        return
+      }
+      const wait = LLM_RETRY_MS * 2 ** n
+      console.error(`[WARN] llm: ${model?.provider}/${model?.id} 还没出内容就失败（${status || why.slice(0, 120)}），${wait}ms 后第 ${n + 1} 次重发`)
+      await pause(wait)
+      if (closed || signal.aborted) {
+        stream.push(held)
+        return
+      }
+    }
+  }
+  void loop()
     .catch((e) => fail(stream, model, reasonOf(e)))
     .finally(() => {
       clearTimeout(timer)

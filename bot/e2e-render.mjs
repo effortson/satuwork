@@ -7,13 +7,12 @@
  *
  * SATUWORK_HOME 要在 import 之前设好；超时每次调用时读，真 soffice 那段前再调大。
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import JSZip from 'jszip'
+import { tempDir } from './e2e-lib.mjs'
 
-const dir = mkdtempSync(join(tmpdir(), 'satu-render-'))
-process.on('exit', () => { try { rmSync(dir, { recursive: true, force: true }) } catch {} })
+const dir = tempDir('satu-render-')
 const home = join(dir, 'home')
 const log = join(dir, 'fake-log')
 mkdirSync(log)

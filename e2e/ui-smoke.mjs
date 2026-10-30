@@ -13,12 +13,12 @@
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { createCompany } from './org.mjs'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { el, fakeSse } from './ui-dom.mjs'
 import { catchUpFrames, newCatchUp, remember } from '../manager/src/roster-filter.ts'
 import { readdirSync, readFileSync } from 'node:fs'
 import { freePort } from './ports.mjs'
+import { startGateway } from './gateway.mjs'
 
 const APP = 'gateway/ui/app.js'
 
@@ -28,23 +28,19 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
   const gwBase = `http://127.0.0.1:${GW_PORT}`
   const appPath = join(root, APP)
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# ui-smoke')
 
-  const gw = start('ui-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'ui-gw',
+    what: 'ui gateway',
+    home: GW_HOME,
+    schema: schemaOf('e2e_ui'),
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: schemaOf('e2e_ui'),
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
     },
   })
-  await waitHttp(`${gwBase}/health`, { child: gw, what: 'ui gateway' })
 
   const { loadApp } = await import('./ui-dom.mjs')
   const boot = async (token, opts) => {
@@ -86,7 +82,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
       const parts = [...html.matchAll(/<script src="\/([^"]+)"[^>]*\bdata-app-part\b/g)].map((m) => m[1])
       assert(parts.length > 1, `index.html 里没找到 data-app-part 脚本`)
-      // **每个 <script src>**，不只是分片：core.js（core/src 打出来的）、i18n.js、markdown.js、
+      // **每个 <script src>**，不只是分片：core.js（core/src 打出来的）、markdown.js、
       // unzip.js 都不带 data-app-part，漏进 ROOT_FILES 的后果一样是整页白屏。
       const scripts = [...html.matchAll(/<script[^>]*\ssrc="\/([^"]+)"/g)].map((m) => m[1])
       assert(scripts.includes('core.js'), `index.html 里没有 core.js：${scripts.join(', ')}`)
@@ -516,7 +512,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(card.includes('sw-handoff-note'), '写结论的框不在——那句话是 Bot 接着做的全部依据')
       // 已经接手了就不该再有「我来接手」。
       assert(!card.includes('chat-handoff-claim'), '已经有人接了还画着「我来接手」')
-      assert(ui.handoffDoneHtml({ state: 'expired' }).includes('没人接手'), '闭合那一行没说清是怎么结束的')
+      assert(ui.handoffDoneHtml({ state: 'expired' }).includes('已过期'), '闭合那一行没说清是怎么结束的')
 
       /**
        * **交还那条消息要画出来。** 它的 source 是 plugin/handoff，而 fold 默认滤掉
@@ -553,6 +549,90 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       )
       assert(ui.state.error.includes('席位没应答'), `失败原因没有留下：${ui.state.error}`)
       assert(ui.html() !== 'before-click', '失败后没有重绘，界面仍表现成按钮点不动')
+    })
+
+    await test('交接卡：结果必填并就地提示，两种交还方式提交正确含义', async () => {
+      const calls = []
+      const ui = loadApp({ appPath, base: gwBase, token: 'handoff-validation', fetchImpl: async (path, init) => {
+        calls.push({ path, body: JSON.parse(init?.body || '{}') })
+        return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } })
+      } })
+      let focused = false
+      const ta = el('textarea', { 'data-handoff': 'h-validation' }, '  ')
+      ta.focus = () => { focused = true }
+      ta.removeAttribute = k => { delete ta._attrs[k] }
+      const attrs = {}
+      const card = { querySelector: () => ta, setAttribute: (k,v) => { attrs[k] = v }, removeAttribute: k => { delete attrs[k] } }
+      const button = el('button', { 'data-act': 'chat-handoff-return', 'data-id': 'h-validation', 'data-disp': 'done' })
+      button.closest = sel => sel === '[data-act]' ? button : sel.startsWith('.sw-handoff') ? card : null
+      await ui.fire('click', button)
+      assert(!calls.length, '空说明不应提交')
+      assert(focused && ta.getAttribute('aria-invalid') === 'true', '必填错误应聚焦并标记输入框')
+      assert(ui.state.handoffFeedback['h-validation'].text.includes('处理结果'), '缺少就地的结果提示')
+      button.setAttribute('data-disp', 'instructions')
+      await ui.fire('click', button)
+      assert(ui.state.handoffFeedback['h-validation'].text.includes('如何继续'), '新指示的校验应说明填写什么')
+      ta.value = '  请先核对订单编号，再继续。  '
+      await ui.fire('click', button)
+      assert(calls[0].body.disposition === 'instructions' && calls[0].body.text === '请先核对订单编号，再继续。', '新指示的含义或正文丢失')
+      assert(!ta.getAttribute('aria-invalid') && !attrs['aria-busy'], '提交后输入框或卡片仍卡在无效/忙碌状态')
+      button.setAttribute('data-disp', 'done')
+      ta.value = '已核验凭证，订单可发货。'
+      await ui.fire('click', button)
+      assert(calls[1].body.disposition === 'done', '已处理不能被当成新指示')
+    })
+
+    await test('交接卡：接手保留草稿，重复点击只提交一次，断线可重试', async () => {
+      let finish
+      let posts = 0
+      let fail = false
+      const ui = loadApp({ appPath, base: gwBase, token: 'handoff-pending', fetchImpl: async () => {
+        posts++
+        if (fail) return new Response(JSON.stringify({ error: '设备离线' }), { status: 503, headers: { 'content-type': 'application/json' } })
+        await new Promise(resolve => { finish = resolve })
+        return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } })
+      } })
+      const ta = el('textarea', { 'data-handoff': 'h-pending' }, '草稿：正在核验凭证')
+      ui.document.querySelectorAll = sel => sel === '.sw-handoff-note' ? [ta] : []
+      const claim = el('button', { 'data-act': 'chat-handoff-claim', 'data-id': 'h-pending' })
+      const first = ui.fire('click', claim)
+      await ui.fire('click', claim)
+      assert(posts === 1, '同一交接单重复提交了请求')
+      finish()
+      await first
+      assert(ta.value.includes('正在核验'), '接手动作清空了未提交的草稿')
+      fail = true
+      await ui.fire('click', claim)
+      assert(posts === 2 && ui.state.handoffFeedback['h-pending'].error, '失败未在交接卡上提示，或忙碌锁未释放')
+      assert(ta.value.includes('正在核验'), '失败后丢了草稿')
+    })
+
+    await test('交接卡：已交还及终态不能再次填结果，正文安全显示', async () => {
+      const ui = await boot()
+      for (const state of ['returned', 'closed', 'expired', 'cancelled']) {
+        const html = ui.handoffHtml({ id: 'h-readonly', state, ask: '核验订单' })
+        assert(!html.includes('<textarea') && !html.includes('data-act="chat-handoff-return"'), `${state} 仍可重复交还`)
+      }
+      const html = ui.handoffHtml({ id: 'h-context', state: 'open', ask: '<img onerror=attack>', reason: '<script>attack</script>', summary: '已查询订单 DEMO-1' })
+      assert(html.includes('&lt;img') && html.includes('&lt;script&gt;') && !html.includes('<script>'), '交接正文没有转义')
+      assert(html.includes('Bot 的处理进展') && html.includes('DEMO-1') && html.includes('<label'), '任务上下文或结果标签缺失')
+      ui.state.handoffOpenId = 'h-readonly'
+      ui.state.handoffDetail = { 'h-readonly': { summary: '已交还' } }
+      assert(!ui.handoffRow({ id: 'h-readonly', botId: 'b', accountId: 'other', state: 'returned' }).includes('<textarea'), '待办详情对已交还的单仍给了输入框')
+    })
+
+    await test('待办刷新失败保留清单、显示重试，恢复后清除提示', async () => {
+      let fail = true
+      const ui = loadApp({ appPath, base: gwBase, token: 'handoff-load', fetchImpl: async () => new Response(JSON.stringify(fail ? { error: 'offline' } : { handoffs: [], count: 0 }), { status: fail ? 503 : 200, headers: { 'content-type': 'application/json' } }) })
+      ui.state.me = { account: { id: 'me', role: 'admin', companyId: 'c1' } }
+      ui.state.handoffs = [{ id: 'h-stale', state: 'open', botId: 'b', accountId: 'me', ask: '核验凭证' }]
+      ui.state.handoffCount = 1
+      await ui.fire('click', el('button', { 'data-act': 'handoff-refresh' }))
+      assert(ui.state.handoffCount === 1 && ui.state.handoffs.length === 1, '更新失败却清空了待办')
+      assert(ui.handoffsAside().includes('当前显示上次获取的内容'), '陈旧数据缺少提示')
+      fail = false
+      await ui.fire('click', el('button', { 'data-act': 'handoff-refresh' }))
+      assert(!ui.state.handoffLoadError && !ui.state.handoffs.length && ui.state.handoffCount === 0, '连接恢复后未同步状态')
     })
 
     await test('交接卡：中间隔了几轮对话，也还是同一张卡', async () => {
@@ -615,7 +695,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const open = ui.handoffRow(row({ accountId: 'someone-else' }))
       assert(open.includes('sw-handoff-note'), '就地处理却没有写结论的框')
       assert(open.includes('data-act="chat-handoff-return"'), '就地处理却交还不了')
-      assert(open.includes('席位没应答'), `正文拉不到时没说清是怎么回事：${open.slice(-400)}`)
+      assert(open.includes('需要 Bot 所在设备在线'), `正文拉不到时没说清是怎么回事：${open.slice(-400)}`)
       // 拉到了就把 Bot 做到哪一步摆出来——接手的人靠它不用从头问一遍。
       ui.state.handoffDetail = { h1: { id: 'h1', summary: '已经查到发票号 A-991' } }
       assert(ui.handoffRow(row({ accountId: 'x' })).includes('A-991'), '拉到了正文却没画出来')
@@ -689,11 +769,10 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!ui.handoffDead(card), '没拿到现况就把一件真在等人的事画成了失效')
     })
 
-    await test('发信的确认走定制卡：能读、能改，别的参数也露着', async () => {
+    await test('发信的确认走定制卡：只读，要改就写修改意见退回去', async () => {
       /**
-       * 通用卡把整份 JSON 摊出来，而人在批一封信时要看的是「发给谁、写了什么」。更要紧
-       * 的是**得能改**：模型起草的正文十有八九要动一两句，只能批准/拒绝的话，人就得
-       * 拒掉再去跟它解释，而它下一稿仍然是它写的。
+       * 通用卡把整份 JSON 摊出来，而人在批一封信时要看的是「发给谁、写了什么」。
+       * 要改不在卡上直接改：写下修改意见退回去，模型照着重写一版再来一张卡。
        */
       const ui = await boot()
       const form = {
@@ -703,7 +782,9 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
           { key: 'args.recipient_email', label: '收件人', value: 'a@b.c' },
           { key: 'args.subject', label: '主题', value: '二季度报表', editable: true },
           { key: 'args.body', label: '正文', value: '你好，附件是报表。', editable: true, multiline: true },
+          { key: 'args.cc', label: '抄送', value: 'cc@b.c' },
           { key: 'args.is_html', label: 'is_html', value: 'false' },
+          { key: 'args.user_id', label: 'user_id', value: 'me' },
         ],
       }
       const card = ui.approvalHtml({
@@ -716,13 +797,13 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       })
       assert(card.includes('sw-approval-mail'), '发信没走定制卡')
       assert(card.includes('收件人') && card.includes('a@b.c'), '收件人没摆出来')
-      // 只读的那几格照样露着：藏起来的话，人以为自己看到了这封信的全部。
-      assert(card.includes('is_html'), '别的参数被藏起来了')
-      // 收件人不能改：那是「在这儿写封信」，不是「审一眼要发出去的东西」。
-      assert(!card.includes('data-edit="args.recipient_email"'), '收件人被做成可改的了')
-      assert(card.includes('data-edit="args.subject"'), '主题不让改')
-      assert(card.includes('<textarea') && card.includes('data-edit="args.body"'), '正文没做成可编辑的多行框')
-      assert(card.includes('你好，附件是报表。'), '正文没填进去')
+      // is_html / user_id 对「发给谁、写了什么」没有信息量，不摆；别的只读参数照样露着。
+      assert(!card.includes('is_html') && !card.includes('user_id'), 'is_html / user_id 还摆在卡上')
+      assert(card.includes('cc@b.c'), '别的只读参数被藏起来了')
+      // 内容一格都不能改：要改就写修改意见退回去，让它自己重写。
+      assert(!card.includes('data-edit='), '卡上还有可直接改的格子')
+      assert(card.includes('二季度报表') && card.includes('你好，附件是报表。'), '主题或正文没摆出来')
+      assert(card.includes('data-feedback') && card.includes('data-act="chat-revise" data-call="call_mail"'), '没有修改意见框和「按意见重写」')
       assert(card.includes('批准并发送'), `发信那张卡的按钮该说清楚它要干什么：${card.slice(-400)}`)
       /**
        * 第二颗按钮的范围是**一轮**，不是一条会话。
@@ -752,8 +833,12 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const pop = ui.toolPopBody(ui.approvalPop({ callId: 'call_mail', name: 'x', args: '{}', state: 'approved', form, edited: ['正文'] }))
       assert(pop.includes('批准时改过') && pop.includes('正文'), '悬浮窗没说这次改过哪几格')
       assert(pop.includes('你好，附件是报表。'), '悬浮窗里看不到最终发出去的内容')
+      // 退回修改也是 denied，但药丸和悬浮窗要说得出「退回修改」和那句意见。
+      const back = { callId: 'call_mail', name: 'x', args: '{}', state: 'denied', form, feedback: '语气正式一点' }
+      assert(ui.approvalChipHtml(back, 0).includes('退回修改'), '退回修改的药丸还写着已拒绝')
+      assert(ui.toolPopBody(ui.approvalPop(back)).includes('语气正式一点'), '悬浮窗里看不到修改意见')
 
-      // HTML 邮件默认看渲染后的效果，不把一屏标签原样糊到批准人脸上；源码仍能展开改。
+      // HTML 邮件看渲染后的效果，不把一屏标签原样糊到批准人脸上。
       const htmlForm = {
         ...form,
         fields: form.fields.map((field) => field.key === 'args.body'
@@ -764,14 +849,226 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         callId: 'call_html_mail', name: 'mcp_gmail_default_sw_run', args: '{}', reason: 'send', state: 'pending', form: htmlForm,
       })
       assert(htmlCard.includes('class="sw-mail-preview"'), 'HTML 正文没有显示预览')
-      assert(htmlCard.includes('sandbox=""') && htmlCard.includes('referrerpolicy="no-referrer"'), 'HTML 预览没有隔离')
+      // sandbox 里可以有 allow-same-origin（外面要量它的高度），但**绝不能有 allow-scripts**：
+      // 两样一起给，里面的脚本就摸得到批准页。
+      const sandbox = (htmlCard.match(/sandbox="([^"]*)"/) || [])[1]
+      assert(sandbox !== undefined && !/allow-scripts|allow-top-navigation|allow-forms|allow-popups/.test(sandbox) && htmlCard.includes('referrerpolicy="no-referrer"'), 'HTML 预览没有隔离')
       assert(htmlCard.includes('Content-Security-Policy') && htmlCard.includes('default-src'), 'HTML 预览没有阻断远程资源')
-      assert(htmlCard.includes('<details class="sw-mail-source">'), 'HTML 源码没有保留可编辑入口')
-      assert(htmlCard.includes('data-edit="args.body"'), 'HTML 源码编辑框没有沿用批准参数')
       assert(!htmlCard.includes('<script>parent.postMessage'), '邮件 HTML 被直接注入了批准页')
-      assert(htmlCard.includes('&lt;script&gt;parent.postMessage'), '邮件源码转义后丢了')
-      // is_html=false 的普通邮件仍是直接编辑正文，不能也被误画成 iframe。
+      assert(htmlCard.includes('&lt;script&gt;parent.postMessage'), '邮件 HTML 转义后丢了')
+      // is_html=false 的普通邮件按纯文本排，不能也被误画成 iframe。
       assert(!card.includes('sw-mail-preview'), '纯文本邮件被误判成 HTML')
+    })
+
+    await test('名单按分类分组：没分类的在前面不带标题，分类里的跟在标题后面', async () => {
+      const ui = await boot()
+      ui.state.me = { account: { id: 'u1', companyId: 'c1', role: 'member', email: 'u@x' }, company: { id: 'c1' } }
+      ui.state.path = '/a/b1'
+      ui.state.chatBotId = 'b1'
+      ui.state.botFolders = [{ id: 'f2', name: '报表', position: 2 }, { id: 'f1', name: '客户', position: 1 }]
+      ui.state.botFolderOpen = {}
+      ui.state.runtimeBots = [
+        { id: 'b1', name: '小满', folderId: null },
+        { id: 'b2', name: '小满二号', folderId: 'f1' },
+        { id: 'b3', name: '小满三号', folderId: 'gone' },
+      ]
+      const html = ui.chatRosterNav()
+      const at = (needle) => html.indexOf(needle)
+      assert(at('客户') > 0 && at('报表') > 0, '分类标题没画出来')
+      assert(at('客户') < at('报表'), '分类没按 position 排')
+      // 没分类的（以及归属指向一个已经不存在的分类的）排在所有分类前面。
+      assert(at('data-bot-row="b1"') < at('客户') && at('data-bot-row="b3"') < at('客户'), '没分类的 Bot 没排在前面')
+      assert(at('data-bot-row="b2"') > at('客户') && at('data-bot-row="b2"') < at('报表'), '分类里的 Bot 没跟在它的标题后面')
+      assert(html.includes('draggable="true"'), '名单的行不能拖')
+      assert(html.includes('data-drop-folder="f1"') && html.includes('data-drop-folder=""'), '放入区没画')
+      // 收起来的分类：标题还在（还能往里放），行照画、由 CSS 按 data-open 藏——侧栏收成窄栏时没有标题可点，
+      // 不画的话那几颗在窄栏里整个看不见。
+      ui.state.botFolderOpen = { f1: false }
+      const folded = ui.chatRosterNav()
+      assert(/data-folder="f1" data-open="false"/.test(folded) && folded.includes('data-bot-row="b2"') && folded.includes('data-drop-folder="f1"'), '收起的分类没收住，或者行没画')
+      // 收着的分类里有 Bot 在等确认：标题上挂「有事等你」。
+      assert(/satu-botfolder-need"[^>]*hidden/.test(folded), '没人等时标题上不该挂')
+      ui.botStreamOf('b2').sum = { state: 'idle', lastAt: 0, lastText: '', need: 'approval' }
+      const waiting = ui.chatRosterNav()
+      assert(/satu-botfolder-need" data-need="approval"/.test(waiting) && !/satu-botfolder-need" data-need="approval"[^>]*hidden/.test(waiting), `收着的分类里有人在等，标题上该挂出来：${waiting.match(/satu-botfolder-need[^>]*>/)?.[0]}`)
+      ui.botStreamOf('b2').sum = { state: 'idle', lastAt: 0, lastText: '' }
+      // 一个分类都没有：和从前一模一样，没有任何标题和空放入提示。
+      ui.state.botFolders = []
+      const plain = ui.chatRosterNav()
+      assert(!plain.includes('satu-botfolder-head') && !plain.includes('satu-botfolder-empty'), '没分类时多画了东西')
+    })
+
+    await test('跑着时执行 /clear：等它停的时候切去了别的 Bot，命令不执行、不动那颗 Bot 的输入框', async () => {
+      const ui = await boot(undefined, { fetchImpl: async () => ({ ok: true, status: 200, text: async () => '{}' }) })
+      ui.state.chatSessionId = 's-a'
+      ui.state.chatStatus = 'running'
+      let ran = false
+      const job = ui.runChatCommand({ name: 'clear', idleOnly: true, run: async () => ((ran = true), { cleared: true, throughSeq: 1 }) })
+      // 停止那一下还在路上，人就切到了 B（runChatCommand 第一个 await 之后）：B 是空闲的，草稿里有自己的话。
+      ui.state.chatSessionId = 's-b'
+      ui.state.chatStatus = ''
+      ui.state.chatDraft = 'B 的草稿'
+      await job
+      assert(!ran, '切走了还对旧会话执行了命令')
+      assert(ui.state.chatDraft === 'B 的草稿', `B 的输入框被动了：${JSON.stringify(ui.state.chatDraft)}`)
+    })
+
+    await test('看过程：委派那条按登记时的会话取；派活那条在对方会话里往前翻到那件活为止', async () => {
+      const calls = []
+      const page = (events, firstSeq, hasMore) => ({ ok: true, status: 200, text: async () => JSON.stringify({ events, firstSeq, hasMore }) })
+      const ev = (seq, type, data) => ({ seq, type, time: seq, data })
+      const ui = await boot(undefined, {
+        fetchImpl: async (path) => {
+          calls.push(path)
+          if (path.includes('/tasks/child-1/history')) return page([], null, false)
+          if (path.includes('/sessions/s-target/history')) {
+            if (!path.includes('before=')) return page([ev(100, 'turn/start', { turn: 30 }), ev(101, 'turn/end', { turn: 30 })], 100, true)
+            return page(
+              [
+                ev(5, 'user/message', { message: { content: '派来的' }, source: { kind: 'plugin', plugin: 'task', form: 'tk-1', phase: 'instruction' } }),
+                ev(6, 'turn/start', { turn: 2 }),
+                ev(7, 'tool/call', { turn: 2, step: 1, callId: 'k1', name: 'web_search', arguments: '{}' }),
+                ev(8, 'tool/result', { turn: 2, step: 1, callId: 'k1', text: 'ok' }),
+                ev(9, 'turn/end', { turn: 2, reason: 'completed' }),
+              ],
+              5,
+              true,
+            )
+          }
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.taskTraceSrc['c:child-1'] = { key: 'c:child-1', child: 'child-1', session: 's-old' }
+      ui.state.chatSessionId = 's-new'
+      await ui.loadTaskTrace('c:child-1')
+      assert(calls.some((p) => p.includes('/runtime/sessions/s-old/tasks/child-1/history')), `该按登记时的会话取：${JSON.stringify(calls)}`)
+      ui.taskTraceSrc['a:tk-1'] = { key: 'a:tk-1', session: 's-target', taskId: 'tk-1' }
+      await ui.loadTaskTrace('a:tk-1')
+      assert(calls.some((p) => p.includes('/sessions/s-target/history') && p.includes('before=100')), `该往前翻一页：${JSON.stringify(calls)}`)
+      const tr = ui.state.taskTrace['a:tk-1']
+      assert(tr && tr.rows && tr.rows.length >= 1, `翻到之后该有过程：${JSON.stringify(tr)}`)
+    })
+
+    await test('拖动中整页重画、dragend 没收到：之后从桌面拖文件丢到分类上，不会悄悄把上一次那颗挪过去', async () => {
+      const puts = []
+      const ui = await boot(undefined, {
+        fetchImpl: async (path, init) => {
+          if (init?.method === 'PUT') puts.push(path)
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.state.botFolders = [{ id: 'f1', name: '客户', position: 1 }]
+      ui.state.runtimeBots = [{ id: 'b1', name: '小满', folderId: null }]
+      const row = el('div', { 'data-bot-row': 'b1' })
+      row.closest = (sel) => (sel === '[data-bot-row]' ? row : null)
+      const zone = el('div', { 'data-drop-folder': 'f1' })
+      zone.closest = (sel) => (sel === '[data-drop-folder]' ? zone : null)
+      const carry = new Map()
+      ui.fireDoc('dragstart', { target: row, dataTransfer: { setData: (k, v) => carry.set(k, v), types: ['text/plain'] } })
+      // 整页重画了，dragend 没到 document。接着拖进来的是一个文件。
+      ui.fireDoc('drop', { target: zone, dataTransfer: { types: ['Files'], getData: () => '' } })
+      await new Promise((r) => setTimeout(r, 20))
+      assert(ui.state.runtimeBots[0].folderId === null && !puts.length, `拖文件不该挪 Bot：${JSON.stringify(ui.state.runtimeBots[0])} ${JSON.stringify(puts)}`)
+      // 正常的一次拖放照样能用。
+      ui.fireDoc('dragstart', { target: row, dataTransfer: { setData: (k, v) => carry.set(k, v), types: ['text/plain'] } })
+      ui.fireDoc('drop', { target: zone, dataTransfer: { types: ['text/plain'], getData: (k) => carry.get(k) || '' } })
+      await new Promise((r) => setTimeout(r, 20))
+      assert(ui.state.runtimeBots[0].folderId === 'f1' && puts.length === 1, `正常拖放该挪进去：${JSON.stringify(ui.state.runtimeBots[0])}`)
+    })
+
+    await test('连着挪两次、前一次失败：不把后一次退掉；挪的途中名单重拉回来也不盖掉刚放进去的', async () => {
+      let failFirst
+      const gate = new Promise((r) => (failFirst = r))
+      let n = 0
+      const ui = await boot(undefined, {
+        fetchImpl: async (path, init) => {
+          if (init?.method === 'PUT') {
+            n++
+            if (n === 1) {
+              await gate
+              return { ok: false, status: 500, text: async () => JSON.stringify({ error: '一时失败' }) }
+            }
+            return { ok: true, status: 200, text: async () => '{}' }
+          }
+          if (path === '/runtime/bots') return { ok: true, status: 200, text: async () => JSON.stringify({ bots: [{ id: 'b1', name: '小满', scope: 'user', folderId: null }], folders: [{ id: 'f1', name: '客户', position: 1 }, { id: 'f2', name: '报表', position: 2 }] }) }
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.state.botFolders = [{ id: 'f1', name: '客户', position: 1 }, { id: 'f2', name: '报表', position: 2 }]
+      ui.state.runtimeBots = [{ id: 'b1', name: '小满', scope: 'user', folderId: null }]
+      // 第一笔（放进 f1）还在路上，名单重拉回来了：服务端那份还是没分类，不能把本地的盖掉。
+      const first = ui.moveBotToFolder('b1', 'f1')
+      await new Promise((r) => setTimeout(r, 10))
+      await ui.loadRuntimeBots()
+      assert(ui.state.runtimeBots[0].folderId === 'f1', `重拉回来的旧名单盖掉了还在路上的那一笔：${JSON.stringify(ui.state.runtimeBots[0])}`)
+      // 接着又挪到 f2（成了）；之后第一笔才失败回来：不能把 f2 退回去。
+      await ui.moveBotToFolder('b1', 'f2')
+      failFirst()
+      await first
+      assert(ui.state.runtimeBots[0].folderId === 'f2', `前一次失败的回滚把后一次退掉了：${JSON.stringify(ui.state.runtimeBots[0])}`)
+    })
+
+    await test('收起的分类刷新后还收着：开合状态从本机读得回来（state 初始化时键已经声明）', async () => {
+      const kept = new Map([['satuwork.botFolderOpen', JSON.stringify({ f1: false })]])
+      const storage = {
+        getItem: (k) => (kept.has(k) ? kept.get(k) : null),
+        setItem: (k, v) => kept.set(k, String(v)),
+        removeItem: (k) => kept.delete(k),
+        clear: () => kept.clear(),
+      }
+      const ui = await boot(undefined, { persistentStorage: storage })
+      assert(ui.state.botFolderOpen.f1 === false, `刷新后收起的分类又展开了：${JSON.stringify(ui.state.botFolderOpen)}`)
+      // 点开另一个分类：存回去的是在原来那份上改的，不是拿空对象盖掉。
+      await ui.fire('click', el('button', { 'data-act': 'bot-folder-toggle', 'data-id': 'f2' }))
+      const saved = JSON.parse(kept.get('satuwork.botFolderOpen') || '{}')
+      assert(saved.f1 === false && saved.f2 === false, `存回去的把原来的盖掉了：${JSON.stringify(saved)}`)
+    })
+
+    await test('不靠拖放也能把 Bot 放进分类：对话顶栏「…」里有「移到分类」，点了就存', async () => {
+      const puts = []
+      const ui = await boot(undefined, {
+        fetchImpl: async (path, init) => {
+          if (init?.method === 'PUT') puts.push({ path, body: JSON.parse(init.body || '{}') })
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      ui.state.me = { account: { id: 'u1', companyId: 'c1', role: 'member', email: 'u@x' }, company: { id: 'c1' } }
+      ui.state.path = '/a/b1'
+      ui.state.chatBotId = 'b1'
+      ui.state.botFolders = [{ id: 'f1', name: '客户', position: 1 }]
+      ui.state.runtimeBots = [{ id: 'b1', name: '小满', folderId: null }]
+      ui.state.menu = 'chat'
+      const head = ui.chatHeadInline()
+      assert(head.includes('移到分类') && head.includes('data-act="bot-folder-move"') && head.includes('data-folder="f1"'), `菜单里没有「移到分类」：${head}`)
+      assert(/data-folder=""[^>]*aria-checked="true"/.test(head), '没分类时「不分类」该打勾')
+      await ui.fire('click', el('button', { 'data-act': 'bot-folder-move', 'data-id': 'b1', 'data-folder': 'f1' }))
+      assert(ui.state.runtimeBots[0].folderId === 'f1', `没放进分类：${JSON.stringify(ui.state.runtimeBots[0])}`)
+      assert(puts.some((p) => p.path === '/runtime/bots/b1/folder' && p.body.folderId === 'f1'), `没存到服务端：${JSON.stringify(puts)}`)
+      assert(ui.state.menu === null, '点完菜单该收起来')
+      // 一个分类都没建：不摆这一段。
+      ui.state.botFolders = []
+      ui.state.menu = 'chat'
+      assert(!ui.chatHeadInline().includes('移到分类'), '没有分类时不该摆「移到分类」')
+    })
+
+    await test('主 Bot 戴皇冠，并且在它那一组里排最前面', async () => {
+      const ui = await boot()
+      ui.state.me = { account: { id: 'u1', companyId: 'c1', role: 'member', email: 'u@x' }, company: { id: 'c1' } }
+      ui.state.path = '/a/b1'
+      ui.state.chatBotId = 'b1'
+      ui.state.botFolders = []
+      ui.state.runtimeBots = [
+        { id: 'b1', name: '小满', folderId: null },
+        { id: 'b2', name: '小满二号', folderId: null },
+      ]
+      ui.state.mainBotId = ''
+      assert(!ui.chatRosterNav().includes('satu-crown'), '没设主 Bot 却有皇冠')
+      ui.state.mainBotId = 'b2'
+      const html = ui.chatRosterNav()
+      assert((html.match(/satu-crown/g) || []).length === 1, '皇冠要有且只有一枚')
+      assert(html.indexOf('data-bot-row="b2"') < html.indexOf('data-bot-row="b1"'), '主 Bot 没排到最前面')
+      const crownAt = html.indexOf('satu-crown')
+      assert(crownAt > html.indexOf('data-bot-row="b2"') && crownAt < html.indexOf('data-bot-row="b1"'), '皇冠戴错了头')
     })
 
     await test('消息里的 @ 点名要留在气泡上，别发完就没', async () => {
@@ -801,7 +1098,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert((b.mentions || []).length === 1, `点名没跟着消息留下来：${JSON.stringify(b.mentions)}`)
       assert(b.mentions[0].label === 'Gmail (default)', `药丸上的名字不对：${b.mentions[0].label}`)
       // 气泡那一层是真 DOM（垫片里画不出来），这里只钉住它确实画了这排药丸。
-      const src = readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8')
+      const src = readFileSync(join(root, 'gateway/ui/chat-thread.js'), 'utf8')
       assert(src.includes('sw-mentions-in'), '气泡里没有画点名药丸的那一排')
     })
 
@@ -809,8 +1106,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 这一条只验源码。滚动收浮层挂在 window 的**捕获阶段**，垫片里 window 是个空壳，
       // 事件根本发不出去——但错法就藏在那一行里：不看事件源头，滚浮层自己的结果区
       // （`.sw-toolpop pre`，最高 220px）也照收，手一动窗口就没了，长输出永远看不完。
-      const src = readFileSync(join(root, 'gateway/ui/chat.js'), 'utf8')
-      // chat.js 里不止一个捕获阶段的 scroll 监听，认收浮层的那一个。
+      const src = readFileSync(join(root, 'gateway/ui/chat-toolpop.js'), 'utf8')
+      // 捕获阶段的 scroll 监听不止一个（长按菜单、内嵌桌面也挂了），认收浮层的那一个。
       const handler = [...src.matchAll(/addEventListener\(\s*'scroll',([\s\S]*?),\s*true,?\s*\)/g)]
         .map((m) => m[1])
         .find((h) => h.includes('hideToolPop'))
@@ -1117,7 +1414,10 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // `/login`。这条守的是「首页别退回成登录表单」——那正是这次改动之前的样子。
       const ui = await boot()
       const html = ui.html()
-      assert(html.includes('satu-lp-hero'), '没画首页')
+      assert(html.includes('id="satu-lp-film"'), '没画首页演示')
+      for (const removed of ['给公司用的 AI 员工', 'satu-lp-hero', 'satu-lp-features', 'satu-lp-band', 'id="download"']) {
+        assert(!html.includes(removed), `首页仍有已移除区块：${removed}`)
+      }
       assert(!html.includes('id="login-form"'), '首页上画出了登录表单')
       assert(!html.includes('创建系统管理员'), '不该再出初始化页')
       // 顶栏那颗 GitHub。它是**真链接**而不是 data-act 按钮（中键、右键复制地址要能用），
@@ -1126,6 +1426,28 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(gh, '顶栏上没有 GitHub 那颗')
       assert(gh[0].includes('href="https://github.com/effortson/satuwork"'), 'GitHub 指错了地方：' + gh[0])
       assert(gh[0].includes('rel="noopener noreferrer"'), '开新标签页没带 noopener：' + gh[0])
+    })
+
+    await test('首页只演示多 Bot，并复用真实产品组件与样式', async () => {
+      const ui = await boot()
+      const html = ui.html()
+      assert(html.includes('satu-ui-demo" data-mode="team"'), '没有展示多 Bot 工作台')
+      assert(!html.includes('单 Bot 执行') && !html.includes('data-i="0"'), '首页仍能切到单 Bot')
+      for (const component of ['satu-botrow', 'sw-task-card', 'sw-toolfold', 'sw-composer-box', 'sw-ws-file', 'sw-preview-side']) {
+        assert(html.includes(component), `没有复用真实 UI 组件：${component}`)
+      }
+      assert(html.includes('sandbox="allow-same-origin"'), '演示未限制脚本执行')
+      assert(html.includes('satu-crown'), '演示没有标识主 Bot')
+      assert(html.includes('satu-botfolder-name') && html.includes('研究分析') && html.includes('内容交付'), '演示缺少真实分类')
+      assert(html.includes('data-folder=&quot;lp-research&quot;') && html.includes('data-folder=&quot;lp-content&quot;'), '演示 Bot 没有按分类分组')
+      await ui.fire('click', el('button', { 'data-act': 'landing-film-step', 'data-step': '7' }))
+      await ui.fire('click', el('button', { 'data-act': 'landing-locale', 'data-locale': 'en' }))
+      assert(ui.html().includes('data-step="7"'), '切换语言后丢了演示进度')
+      assert(ui.html().includes('market-brief.md'), '英文演示缺少生成的文档')
+      await ui.fire('click', el('button', { 'data-act': 'landing-film-replay' }))
+      ui.render()
+      assert(ui.html().includes('satu-ui-demo" data-mode="team" data-step="0"'), '重播没有从多 Bot 输入任务开始')
+      assert(!ui.html().includes('data-mode="solo"'), '重播进入了单 Bot')
     })
 
     await test('有管理员 + 没有票 + /login → 画登录页', async () => {
@@ -1257,18 +1579,18 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       consent(join.html(), '加入 Satuwork')
     })
 
-    await test('首页下载那一段：Windows 的浏览器进来摆 Windows 的包，Mac 的摆 Mac 的', async () => {
+    await test('独立下载页：Windows 的浏览器进来摆 Windows 的包，Mac 的摆 Mac 的', async () => {
       /**
-       * 这一段（gateway/ui/pages-landing.js 的 lpDownload）唯一的自动动作就是认系统，而它退化的
+       * 下载页（gateway/ui/pages-landing.js 的 downloadView）唯一的自动动作就是认系统，而它退化的
        * 方式最安静：页面照样完整、按钮照样能点，只是 Mac 上摆着一个 .exe——人下下来
        * 双击，什么都不会发生，也不会有人回来报这个 bug。
        */
-      const win = await boot(undefined, { path: '/', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36' })
+      const win = await boot(undefined, { path: '/download', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36' })
       const winHtml = win.html()
       assert(winHtml.includes('-setup.exe'), 'Windows 上没摆出 .exe：' + winHtml.slice(0, 200))
       assert(!winHtml.includes('.dmg'), 'Windows 上摆出了 .dmg')
 
-      const mac = await boot(undefined, { path: '/', userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15' })
+      const mac = await boot(undefined, { path: '/download', userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15' })
       const macHtml = mac.html()
       // Intel Mac 的 UA 里也带着 `Mac OS X`，Apple 芯片的机器一样报这一串——两档都该
       // 摆出来，让人自己认（浏览器里认不出芯片，见 dlBuilds 上那段）。
@@ -1277,7 +1599,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!macHtml.includes('-setup.exe'), 'Mac 上摆出了 .exe')
     })
 
-    await test('首页下载那一段：iPhone、iPad 不认成 Mac——那上面没有桌面端可装', async () => {
+    await test('独立下载页：iPhone、iPad 不认成 Mac——那上面没有桌面端可装', async () => {
       // iPhone / iPad 的 UA 里都写着「like Mac OS X」；只看字样的话它们全被认成 Mac，页面还说
       // 「看起来你正用的就是这个系统」，把一个装不上的 .dmg 摆到人面前。
       const phones = [
@@ -1286,21 +1608,21 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Mobile Safari/537.36',
       ]
       for (const userAgent of phones) {
-        const html = (await boot(undefined, { path: '/', userAgent })).html()
+        const html = (await boot(undefined, { path: '/download', userAgent })).html()
         assert(!html.includes('看起来你正用的就是这个系统'), `移动设备被认成了桌面系统：${userAgent}`)
         assert(html.includes('没认出你的系统'), `移动设备上该照实说没认出来：${userAgent}`)
       }
       // iPadOS 默认的桌面版网页模式：UA 和 Mac 一字不差，只有触点数露馅（Mac 没有触摸屏）。
       const desktopMode = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15'
-      const ipad = (await boot(undefined, { path: '/', userAgent: desktopMode, maxTouchPoints: 5 })).html()
+      const ipad = (await boot(undefined, { path: '/download', userAgent: desktopMode, maxTouchPoints: 5 })).html()
       assert(!ipad.includes('看起来你正用的就是这个系统'), '桌面版网页模式的 iPad 被认成了 Mac')
-      const mac = (await boot(undefined, { path: '/', userAgent: desktopMode })).html()
+      const mac = (await boot(undefined, { path: '/download', userAgent: desktopMode })).html()
       assert(mac.includes('看起来你正用的就是这个系统'), '真 Mac（没有触点）反而不认了')
     })
 
-    await test('首页下载那一段：认不出系统也要有东西可下，而且能自己切', async () => {
+    await test('独立下载页：认不出系统也要有东西可下，而且能自己切', async () => {
       // 垫片默认那个 UA（satuwork-ui-smoke）两边都不像，走的正是「没认出来」那条路。
-      const ui = await boot(undefined, { path: '/' })
+      const ui = await boot(undefined, { path: '/download' })
       assert(ui.html().includes('-setup.exe'), '认不出系统时一个包都没摆出来')
       assert(ui.html().includes('没认出你的系统'), '没说明是没认出来，人会以为这就是他的系统')
 
@@ -1326,7 +1648,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const workflow = readFileSync(join(root, '.github/workflows/desktop-release.yml'), 'utf8')
       const hrefs = []
       for (const os of ['windows', 'mac']) {
-        const ui = await boot(undefined, { path: '/' })
+        const ui = await boot(undefined, { path: '/download' })
         await ui.fire('click', el('button', { 'data-act': 'download-os', 'data-os': os }))
         hrefs.push(...[...ui.html().matchAll(/<a[^>]*href="([^"]+)"[^>]*\bdownload\b/g)].map((m) => m[1]))
       }
@@ -1338,23 +1660,27 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         assert(!/\d+\.\d+\.\d+/.test(file), '文件名里带着版本号，发了新版就 404：' + file)
         assert(workflow.includes(`latest/${file}`), `发版 CI 没往 desktop-latest 传 ${file}`)
       }
-      const html = (await boot(undefined, { path: '/' })).html()
+      const html = (await boot(undefined, { path: '/download' })).html()
       // **是 `<a download>` 不是 data-act 按钮**：右键「链接存储为」、复制地址这些要能用，
       // 而这一段恰恰有人要把地址复制给别人。
       assert(!html.includes('data-act="download-get"'), '下载做成了按钮，右键复制地址就没了')
     })
 
-    await test('老的 /download 地址折到首页下载那一段', async () => {
-      // 那一页已经并进首页（pages-landing.js 的 lpDownload），可这条地址早被管理员发出去过。
-      // 折回来的样子：地址换成 /#download，画的是首页，第一次画完滚到那一段（render.js）。
-      const ui = await boot(undefined, { path: '/download' })
-      const html = ui.html()
-      assert(ui.state.path === '/', '老地址没折回首页：' + ui.state.path)
-      assert(ui.location.pathname !== '/download', '地址栏还停在 /download')
-      assert(html.includes('id="download"'), '折回首页了，却没有下载那一段：' + html.slice(0, 160))
-      assert(html.includes('satu-lp-hero'), '画的不是首页')
-      assert(!ui.state.lpJump, '跳转那一下画完了还挂着，登出再回首页会被莫名拽到页底')
-      assert(ui.location.hash === '#download', '老地址折回首页了，却没带上 #download：' + ui.location.hash)
+    await test('未登录：/download 和旧的 /#download 都打开独立下载页', async () => {
+      for (const path of ['/download', '/#download']) {
+        const ui = await boot(undefined, { path })
+        const html = ui.html()
+        assert(ui.state.path === '/download', `${path} 没进入下载页：${ui.state.path}`)
+        assert(ui.location.pathname === '/download' && !ui.location.hash, `${path} 地址没有规范到 /download`)
+        assert(html.includes('<h1>下载 Satuwork 桌面端</h1>'), '下载页标题不在')
+        assert(html.includes('id="dl-grid"'), '下载卡不在')
+        assert(!html.includes('id="satu-lp-film"'), '下载页混进了首页演示')
+        assert(!html.includes('id="login-form"'), '下载页被登录表单挡住')
+      }
+      const fresh = await boot(undefined, { path: '/download' })
+      fresh.state.needsSetup = true
+      fresh.render()
+      assert(fresh.html().includes('id="dl-grid"'), '未初始化的 Gateway 也应该能打开公开下载页')
     })
 
     await test('登录了的人：老的 /download 和 /#download 都进应用内那一页', async () => {
@@ -1383,50 +1709,42 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(!profile.includes('data-href="/download"'), '桌面壳的个人设置里还挂着下载桌面端')
     })
 
-    await test('首页上点「下载桌面端」：地址换成 /#download', async () => {
-      const ui = await boot(undefined, { path: '/', stubIds: ['download'] })
-      await ui.fire('click', el('button', { 'data-act': 'landing-download' }))
-      assert(ui.location.pathname === '/' && ui.location.hash === '#download', '地址没跟着换：' + ui.location.pathname + ui.location.hash)
+    await test('首页下载入口打开 /download，页面切换后能返回首页', async () => {
+      const ui = await boot(undefined, { path: '/' })
+      await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/download' }))
+      assert(ui.location.pathname === '/download' && !ui.location.hash, '地址没换成 /download')
+      assert(ui.html().includes('id="dl-grid"'), '点下载后没有画出下载页')
+      await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/' }))
+      assert(ui.html().includes('id="satu-lp-film"'), '没回到首页演示')
+      assert(!ui.html().includes('id="dl-grid"'), '回首页后还留着下载内容')
     })
 
-    await test('首页下载那一段切成英文：正文跟着换', async () => {
-      const ui = await boot(undefined, { path: '/' })
+    await test('独立下载页切成英文：正文跟着换', async () => {
+      const ui = await boot(undefined, { path: '/download' })
       await ui.fire('click', el('button', { 'data-act': 'landing-locale', 'data-locale': 'en' }))
       const html = ui.html()
       assert(html.includes('Download Satuwork for desktop'), '标题没换成英文')
       assert(!html.includes('下载 Satuwork 桌面端'), '中英混在了一起')
     })
 
-    await test('下载那一段接在「怎么开始」后面，首页和登录页都找得到它', async () => {
+    await test('首页和登录页都能进入独立下载页', async () => {
       const home = (await boot()).html()
-      const band = home.indexOf('satu-lp-band')
-      const dl = home.indexOf('id="download"')
-      assert(band > 0 && dl > band, '下载那一段没接在「怎么开始」后面')
-      assert(dl < home.indexOf('satu-lp-foot'), '下载那一段跑到页脚后面去了')
-      /**
-       * **首屏上也要有一条路**：那一段在页面最底下，首屏一个字都不提的话没人知道有这东西。
-       * 首屏 CTA 底下那行小字和页脚各一条，都是滚到那一段，不再跳去别的页。
-       */
-      assert(home.includes('satu-lp-finelink" data-act="landing-download"'), '首屏那行小字里没指到下载那一段')
-      assert((home.match(/data-act="landing-download"/g) || []).length >= 2, '页脚上没有指到下载那一段')
-      assert(!home.includes('data-href="/download"'), '首页上还有指向老下载页的站内跳转')
-      // 登录那三屏上是**真链接、开新标签页**（见 shell.js 的 authAside）：底下那个表单
-      // 填了一半，站内跳过去再回来，口令那两格是空的。
+      assert(home.includes('data-href="/download"'), '首页没有下载页入口')
+      assert(!home.includes('id="dl-grid"'), '下载内容仍在首页')
       const login = (await boot(undefined, { path: '/login' })).html()
-      const a = login.match(/<a[^>]*href="\/#download"[^>]*>/)
+      const a = login.match(/<a[^>]*href="\/download"[^>]*>/)
       assert(a, '登录页上没有下载桌面端')
-      assert(a[0].includes('target="_blank"'), '下载桌面端不是开新标签页，会把填了一半的表单冲掉：' + a[0])
-      assert(a[0].includes('rel="noopener noreferrer"'), '下载桌面端开新标签页没带 noopener：' + a[0])
-      // 桌面壳里不给：人已经在桌面端里了，而且壳里的 `/` 就是登录，没有首页可指。
+      assert(a[0].includes('target="_blank"'), '下载入口没有开新标签页')
+      assert(a[0].includes('rel="noopener noreferrer"'), '下载入口没有 noopener')
       const shell = (await boot(undefined, { path: '/login', desktop: true })).html()
-      assert(!shell.includes('#download'), '桌面壳的登录页上还挂着下载桌面端')
+      assert(!shell.includes('href="/download"'), '桌面壳登录页上还挂着下载入口')
     })
 
-    await test('gateway/ui 下每个脚本都解析得过，包括 i18n.js', async () => {
+    await test('gateway/ui 下每个脚本都解析得过，包括不带 data-app-part 的那几个', async () => {
       /**
-       * 这套冒烟只把界面分片装进来跑，**不装 i18n.js**，而前端读翻译又是
-       * `window.SATU_I18N || {}` 兜着的——于是那份文件语法错了，这里一条都不会红，浏览器里
-       * 英文界面却整片退回中文。就这么漏过：两个带全角逗号的键没加引号。
+       * 这套冒烟只把界面分片装进来跑，**不装 markdown.js 这类分片之外的脚本**——那些文件
+       * 语法错了，这里一条都不会红，浏览器里却是整片坏掉。以前的 i18n.js 就这么漏过：两个
+       * 带全角逗号的键没加引号。
        *
        * 只解析不执行（`node --check`），所以不需要 window。用它而不是 vm.Script：分片里有
        * ES 模块（unzip.js），按普通脚本解析会在 export 上报错；node --check 按 gateway 的
@@ -1435,7 +1753,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const { spawnSync } = await import('node:child_process')
       const dir = join(root, 'gateway/ui')
       const files = readdirSync(dir).filter((f) => f.endsWith('.js'))
-      assert(files.includes('i18n.js'), `没找到 i18n.js：${files.join(', ')}`)
+      assert(files.includes('markdown.js'), `没找到 markdown.js：${files.join(', ')}`)
       const bad = []
       for (const f of files) {
         const out = spawnSync(process.execPath, ['--check', join(dir, f)], { encoding: 'utf8' })
@@ -1446,8 +1764,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
 
     await test('这三个地址刷新和法律页那个分片都由 Gateway 交得出来', async () => {
       // 分片漏进 http.ts 的 UI_PARTS 是条安静的路：本地开 index.html 一切正常，
-      // 线上那个文件 404，两页连同整串脚本一起死在浏览器里。/download 已经不是一页了，
-      // 但地址还得交得出 index.html——发出去的老链接靠它折回首页。
+      // 线上分片 404 会让整串脚本失败；公开页面直接刷新也必须拿到 index.html。
       for (const path of ['/privacy', '/terms', '/download']) {
         const page = await req(gwBase, 'GET', path, { headers: { accept: 'text/html' } })
         assert(page.status === 200, `刷新 ${path} → ${page.status}`)
@@ -1458,6 +1775,18 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         assert(part.status === 200, `${file} → ${part.status}`)
         assert(String(part.headers.get('content-type')).includes('javascript'), `${file} 的 content-type 是 ${part.headers.get('content-type')}`)
       }
+    })
+
+    await test('http.ts 的 UI_PARTS 和 index.html 那串分片一模一样，连顺序', async () => {
+      // 上面那条只验「每个都取得到」。两份名单各写各的，漏了、多了、顺序抄错都没人报——
+      // 加分片时两处要一起改，这一条替人对一遍。
+      const html = readFileSync(join(root, 'gateway/ui/index.html'), 'utf8')
+      const parts = [...html.matchAll(/<script src="\/([^"]+)"[^>]*\bdata-app-part\b/g)].map((m) => m[1])
+      const ts = readFileSync(join(root, 'gateway/src/http.ts'), 'utf8')
+      const m = ts.match(/const UI_PARTS = \[([^\]]*)\]/)
+      assert(m, 'http.ts 里找不到 UI_PARTS')
+      const listed = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+      assert(JSON.stringify(listed) === JSON.stringify(parts), `两份对不上：\n  index.html：${parts.join(', ')}\n  UI_PARTS：  ${listed.join(', ')}`)
     })
 
     await test('首页上点「登录」进得了登录页', async () => {
@@ -2174,6 +2503,132 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(html.slice(0, soul).lastIndexOf('disabled') > html.slice(0, soul).lastIndexOf('<textarea'), '模版正文是可编辑的')
     })
 
+    await test('可用 Bot 弹窗：保存失败可重试，重绘和晚到响应不破坏新草稿或工具勾选', async () => {
+      let finish
+      const calls = []
+      const ui = loadApp({ appPath, base: gwBase, token: 'connection-bots', fetchImpl: async (path, init) => {
+        calls.push({ path, method: init.method, body: JSON.parse(init.body) })
+        return new Promise(resolve=>{ finish = (fail = false)=>resolve(new Response(JSON.stringify(fail ? { error: '请稍后重试' } : { connection: { id: 'account', bots: { mode: 'bots', botIds: calls.at(-1).body.botIds, missing: 0 } } }), { status: fail ? 503 : 200, headers: { 'content-type': 'application/json' } })) })
+      } })
+      ui.state.connectorDetail = { connector: { id: 'gmail' }, connections: [{ id: 'account', bots: { mode: 'all', botIds: [] } }] }
+      const draft = (ids)=>({ id: 'account', connectorId: 'gmail', mode: 'bots', botIds: ids, query: '助手', error: '', busy: false })
+      const panel = (ids)=>{
+        const save = el('button', { 'data-act': 'conn-bots-save', 'data-id': 'account', 'data-connector': 'gmail' })
+        const pick = el('input', { 'data-bot': ids[0] || 'b1' }); pick.checked = !!ids.length
+        const parts = { fieldset: {}, '[data-conn-bots-err]': {}, '[data-act="conn-bots-save"]': save, '[data-act="conn-bots-mode"][value="bots"]': { checked: true } }
+        const box = { setAttribute() {}, getAttribute: ()=> 'account', querySelector: key=>parts[key] || null, querySelectorAll: key=>key === '[data-act="conn-bots-pick"]' ? [pick] : [], contains: ()=>true, parts, save }
+        save.closest = key=>key === '[data-act]' ? save : key === '[data-conn-bots]' ? box : null
+        return box
+      }
+      let live = panel([])
+      ui.document.querySelector = key=>key === '[data-conn-bots]' ? live : null
+      ui.state.connBotsOpen = 'account'; ui.state.connBotsDraft = draft([])
+      ui.app.innerHTML = 'unsaved-tool-checkboxes'
+      await ui.fire('click', live.save)
+      assert(!calls.length, '没有指定任何 Bot 时不能提交')
+      live = panel(['b1'])
+      const saving = ui.fire('click', live.save)
+      for (let i = 0; i < 30 && !finish; i++) await Promise.resolve()
+      await ui.fire('click', live.save)
+      assert(calls.length === 1 && ui.state.connBotsDraft.busy, '保存中不能重复提交')
+      live = panel(['b1']); live.parts.fieldset.disabled = true
+      finish(true); await saving
+      assert(live.parts['[data-conn-bots-err]'].textContent.includes('请稍后重试') && !live.parts.fieldset.disabled && !live.save.disabled, '重绘后保存失败应显示原因并恢复新弹窗的按钮')
+      assert(ui.state.connBotsDraft.botIds[0] === 'b1' && ui.state.connBotsDraft.query === '助手', '失败清除了选择或搜索')
+      const retry = ui.fire('click', live.save)
+      for (let i = 0; i < 30 && calls.length < 2; i++) await Promise.resolve()
+      const newer = draft(['b2'])
+      ui.state.connBotsDraft = newer; live = panel(['b2'])
+      finish(); await retry
+      assert(ui.state.connBotsDraft === newer && newer.botIds[0] === 'b2', '旧请求覆盖或关闭了重新打开的同一账号草稿')
+      const saved = ui.fire('click', live.save)
+      for (let i = 0; i < 30 && calls.length < 3; i++) await Promise.resolve()
+      finish(); await saved
+      assert(ui.state.connBotsOpen === null && ui.state.connectorDetail.connections[0].bots.botIds[0] === 'b2', '成功后应关闭弹窗并更新账号范围')
+      assert(calls.every(c=>c.method === 'PUT' && c.path === '/me/connectors/gmail/connections/account/bots'), '保存不应重拉整页数据')
+      assert(ui.html() === 'unsaved-tool-checkboxes', '弹窗操作重画了整页，工具勾选会丢失')
+    })
+
+    await test('个人 Bot 设置：编辑时更新保存状态，撤销仅恢复配置，记忆保留', async () => {
+      const ui = loadApp({ appPath, base: gwBase, stubIds: ['bot-settings-actions'] })
+      const bot = { id: 'b-edit', scope: 'user', name: '助手', description: '', icon: 'c-bot', enabled: true, extraPrompt: '原说明', knowledgeOff: ['kb-a'] }
+      ui.state.me = { account: { id: 'me', role: 'member' }, company: { id: 'demo' } }
+      ui.state.path = '/bots/b-edit'; ui.state.bot = bot
+      ui.state.botDraft = { ...bot, greeting: '', guards: [], memories: [{ id: 'm1', text: '已存事实' }] }
+      await ui.fire('input', el('input', { 'data-bot': 'name' }, '新的助手名称'))
+      const actions = ui.stubs.get('bot-settings-actions').innerHTML
+      assert(actions.includes('有未保存的更改') && actions.includes('bot-discard'), '输入后保存栏没有更新')
+      assert(!/data-act="bot-save" disabled/.test(actions), '有更改时保存仍禁用')
+      await ui.fire('input', el('input', { 'data-bot': 'name' }, '   '))
+      assert(ui.stubs.get('bot-settings-actions').innerHTML.includes('请填写 Bot 名称后保存'), '空名称没有明确提示')
+      await ui.fire('click', el('button', { 'data-act': 'bot-discard' }))
+      assert(ui.state.botDraft.name === '助手' && ui.state.botDraft.extraPrompt === '原说明', '撤销没有恢复保存的配置')
+      assert(ui.state.botDraft.memories[0].text === '已存事实', '撤销配置不应清除记忆')
+    })
+
+    await test('个人 Bot 设置：保存只发个人字段，成功后保留记忆，失败保留草稿', async () => {
+      let fail = false
+      const calls = []
+      const bot = { id: 'b-save', scope: 'user', name: '助手', description: '', icon: 'c-bot', enabled: true, extraPrompt: '' }
+      const ui = loadApp({ appPath, base: gwBase, token: 'settings-save', fetchImpl: async (path, init) => {
+        const body = JSON.parse(init?.body || '{}')
+        calls.push({ path, method: init?.method, body })
+        const data = init?.method === 'PATCH' ? fail ? { error: '设备暂时无法保存' } : { bot: { ...bot, ...body } } : { bots: [] }
+        return new Response(JSON.stringify(data), { status: fail && init?.method === 'PATCH' ? 503 : 200, headers: { 'content-type': 'application/json' } })
+      } })
+      ui.state.me = { account: { id: 'me', role: 'member' }, company: { id: 'demo' } }
+      ui.state.path = '/bots/b-save'; ui.state.bot = bot
+      ui.state.botDraft = { ...bot, name: '客户助手', greeting: '你好', guards: [], prompt: '公司模版', skills: ['inherited'], memories: [{ id: 'm1', text: '保留这条记忆' }], memoryUsed: 1, memoryMax: 40 }
+      await ui.fire('click', el('button', { 'data-act': 'bot-save' }))
+      const patch = calls.find(c=>c.method === 'PATCH')
+      assert(patch.path === '/runtime/bots/b-save' && patch.body.name === '客户助手', '保存入口或个人字段错误')
+      assert(!('prompt' in patch.body) && !('skills' in patch.body) && !('guards' in patch.body), '个人保存不能覆盖公司模版')
+      assert(ui.state.botDraft.memories[0].text === '保留这条记忆' && ui.state.botDraft.memoryMax === 40, '配置保存清除了已加载记忆')
+      fail = true
+      ui.state.botDraft.name = '尚未保存的名称'
+      await ui.fire('click', el('button', { 'data-act': 'bot-save' }))
+      assert(ui.state.botDraft.name === '尚未保存的名称' && !ui.state.busy, '保存失败后丢失草稿或未恢复按钮')
+      assert(ui.html().includes('设备暂时无法保存'), '保存失败没有在页面中说明原因')
+    })
+
+    await test('个人 Bot 设置：记忆刷新只更新记忆，不覆盖正在编辑的配置', async () => {
+      const calls = []
+      const ui = loadApp({ appPath, base: gwBase, token: 'settings-memory', fetchImpl: async (path, init) => {
+        calls.push({ path, method: init?.method || 'GET' })
+        return new Response(JSON.stringify(init?.method === 'PATCH' ? { ok: true } : { items: [{ id: 'm1', pinned: true, text: '事实', layer: 'bot' }], used: 1, max: 40 }), { headers: { 'content-type': 'application/json' } })
+      } })
+      ui.state.me = { account: { id: 'me', role: 'member' }, company: { id: 'demo' } }
+      ui.state.path = '/bots/b-memory'; ui.state.bot = { id: 'b-memory', scope: 'user', name: '助手' }
+      ui.state.botDraft = { name: '草稿名字', extraPrompt: '尚未保存的工作说明', knowledgeOff: ['kb-a'], guards: [], memories: [{ id: 'm1', pinned: false, text: '事实', layer: 'bot' }] }
+      await ui.fire('click', el('button', { 'data-act': 'bot-mem-pin', 'data-id': 'm1' }))
+      assert(ui.state.botDraft.name === '草稿名字' && ui.state.botDraft.extraPrompt === '尚未保存的工作说明', '记忆操作覆盖了配置草稿')
+      assert(ui.state.botDraft.memories[0].pinned && ui.state.botDraft.memoryMax === 40, '记忆没有按服务端回执刷新')
+      assert(calls.some(c=>c.path === '/runtime/bots/b-memory/memories' && c.method === 'GET') && !calls.some(c=>c.path === '/runtime/bots/b-memory'), '记忆操作仍在重拉整颗 Bot')
+    })
+
+    await test('个人 Bot 设置：保存中不重复提交，晚到响应不覆盖另一颗 Bot', async () => {
+      let finish
+      let calls = 0
+      const first = { id: 'b-first', scope: 'user', name: '原助手', enabled: true }
+      const ui = loadApp({ appPath, base: gwBase, token: 'settings-race', fetchImpl: async () => {
+        calls++
+        await new Promise(resolve=>{ finish = resolve })
+        return new Response(JSON.stringify({ bot: { ...first, name: '保存后的助手' } }), { headers: { 'content-type': 'application/json' } })
+      } })
+      ui.state.me = { account: { id: 'me', role: 'member' }, company: { id: 'demo' } }
+      ui.state.path = '/bots/b-first'; ui.state.bot = first
+      ui.state.botDraft = { ...first, name: '保存后的助手', guards: [] }
+      const saving = ui.fire('click', el('button', { 'data-act': 'bot-save' }))
+      for (let i = 0; i < 30 && !finish; i++) await Promise.resolve()
+      assert(ui.state.busy && /class="bs-settings-fields"[^>]*disabled/.test(ui.html()), '保存中仍可编辑字段')
+      await ui.fire('click', el('button', { 'data-act': 'bot-save' }))
+      assert(calls === 1, '重复点击提交了多个保存请求')
+      ui.state.path = '/bots/b-second'; ui.state.bot = { id: 'b-second', scope: 'user', name: '第二颗 Bot' }
+      ui.state.botDraft = { name: '第二颗 Bot 的草稿', guards: [] }
+      finish(); await saving
+      assert(ui.state.bot.id === 'b-second' && ui.state.botDraft.name === '第二颗 Bot 的草稿', '旧保存回执覆盖了新 Bot 的配置')
+    })
+
     await test('二级页面的头是「上一级 / 这一条」，返回在最前面', async () => {
       const ui = await boot(ownerToken)
       ui.state.path = '/bots/b1'
@@ -2197,7 +2652,59 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(ui.html().includes('Bot 详情'), '没退回泛称')
     })
 
-    await test('账单页两张余额卡并排：赠送的在前，账户合计在后', async () => {
+    await test('头像预览草稿可取消、移除与保存，侧栏使用持久化头像', async () => {
+      const ui = await boot(ownerToken)
+      ui.state.path = '/profile'
+      const avatar = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII='
+      ui.state.me.account.avatar = avatar
+      ui.render()
+      assert(ui.html().includes('data-act="profile-avatar-pick"') && ui.html().includes('id="profile-avatar-input"'), '头像上传入口丢失')
+      assert((ui.html().match(/data:image\/png;base64,/g) || []).length >= 2, '侧栏与预览没有同时使用头像')
+      await ui.fire('click', el('button', { 'data-act': 'profile-avatar-remove' }))
+      assert(ui.state.profileDraft.avatar === '' && ui.state.me.account.avatar === avatar, '移除头像应先保留为草稿')
+      await ui.fire('click', el('button', { 'data-act': 'profile-cancel' }))
+      assert(ui.state.profileDraft === null && ui.state.me.account.avatar === avatar, '取消后没有恢复持久化头像')
+      await ui.fire('click', el('button', { 'data-act': 'profile-avatar-remove' }))
+      await ui.fire('click', el('button', { 'data-act': 'profile-save' }))
+      assert(ui.state.me.account.avatar === '' && ui.state.profileSaved, '头像移除没有保存到服务器')
+      assert(!ui.html().includes('data-act="profile-notify"'), '仍然展示没有生效渠道的通知开关')
+    })
+
+    await test('公司资料分区后仍保留全部提交字段，额度摘要在表单外', async () => {
+      const ui = await boot(ownerToken)
+      ui.state.me = { account: { id: 'a', role: 'admin' }, company: { id: 'c' } }
+      ui.state.path = '/company'
+      ui.render()
+      const html = ui.html()
+      const form = html.slice(html.indexOf('<form id="company-form"'), html.indexOf('</form>', html.indexOf('<form id="company-form"')))
+      for (const name of ['name', 'slug', 'accessUrl', 'website', 'address', 'contactName', 'contactEmail', 'handoffWebhook']) {
+        assert(form.includes(`name="${name}"`), `资料字段 ${name} 丢失`)
+      }
+      assert(form.includes('name="contactPhoneCode"') && form.includes('name="contactPhone"'), '电话区号或号码字段丢失')
+      assert(html.indexOf('mg-stats') < html.indexOf('company-form'), '额度摘要仍然混在编辑表单里')
+      assert(form.includes('type="submit"'), '保存按钮没有提交表单')
+    })
+
+    await test('审计设置默认折叠，筛选字段和自动审计操作仍可用', async () => {
+      const ui = await boot(ownerToken)
+      ui.state.path = '/audit'
+      ui.render()
+      const html = ui.html()
+      assert(html.includes('<details class="mg-disclosure">'), '审计设置未默认折叠')
+      assert(html.includes('data-act="audit-enabled"') && html.includes('data-act="audit-model-role"'), '审计设置操作丢失')
+      for (const name of ['accountId', 'botId', 'from', 'to']) assert(html.includes(`name="${name}"`), `审计筛选 ${name} 丢失`)
+      assert(html.includes('id="audit-filter-form"'), '审计筛选表单丢失')
+    })
+
+    await test('用量图标题对应实际指标：有金额画费用，没有金额画执行次数', async () => {
+      const ui = await boot(ownerToken)
+      ui.state.usage = { daily: [{ label: '10/26', value: 12, amount: '$0.50', amountMicros: 500000 }] }
+      assert(ui.usagePage().includes('每日费用趋势'), '费用柱图仍标成任务执行量')
+      ui.state.usage = { daily: [{ label: '10/26', value: 12 }] }
+      assert(ui.usagePage().includes('每日任务执行量'), '旧接口只有次数时标题不匹配')
+    })
+
+    await test('账单先显示账户余额，并保留赠送金额、扣费和到期信息', async () => {
       const ui = await boot(ownerToken)
       ui.state.path = '/billing'
       ui.state.billing = {
@@ -2213,18 +2720,17 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       }
       ui.render()
       const html = ui.html()
-      const bonus = html.indexOf('套餐赠送余额')
-      const account = html.indexOf('账户余额')
+      const bonus = html.indexOf('mg-bonus-balance')
+      const account = html.indexOf('mg-account-balance')
       assert(bonus > -1 && account > -1, '两张卡没都画出来')
-      assert(bonus < account, '赠送那张跑到账户余额后面去了')
+      assert(account < bonus, '账户可用余额没有优先显示')
       assert(html.includes('$310.00') && html.includes('$160.00') && html.includes('$150.00'), '剩余额没都画出来')
       assert(html.includes('本期已扣 $40.00'), '已扣没画出来')
       // 发放额也要在，但只能是小字——只报发放额的话那个数永远不动。
       assert(html.includes('$200.00'), '本期发放没画出来')
       assert(html.includes('2026-09-01 到期'), '到期日没画出来')
       assert(!html.includes('额度已用完'), '还有钱却报了熔断')
-      // 并排靠 auto-fit 网格，窄了自己叠成一列；写死两列会在窄屏上挤成一团。
-      assert(html.includes('repeat(auto-fit, minmax(280px, 1fr))'), '不是自适应两列')
+      assert(!html.includes('data-act="billing-autorenew"'), '仍然提供未接入续费服务的开关')
     })
 
     await test('没有生效中的套餐：赠送那张写清楚，不显示一个空的到期日', async () => {
@@ -2418,6 +2924,44 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(ui.chatDeployPrompt('local-1').includes('启动后立即退出'), '启动原因没有画在等待卡片上')
     })
 
+    await test('没绑设备的老本地 Bot：本机有它的数据才自动起（起它就认领它）；没有就等人在这台上手动启动', async () => {
+      // docs/local-bot-device.md §4.3：先升级的那台不能把数据在别的电脑上的那颗顺手领走。
+      const starts = []
+      const roster = {
+        hasMachine: true, rosterStreamUrl: null, quota: { used: 2, max: 20, elsewhere: [] }, folders: [],
+        bots: [
+          { id: 'u-here', name: '这台的', scope: 'user', runtimeKind: 'local', unclaimed: true, runtime: null },
+          { id: 'u-away', name: '别处的', scope: 'user', runtimeKind: 'local', unclaimed: true, runtime: null },
+        ],
+      }
+      const ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: 'jwt-a',
+        desktop: true,
+        localBotBridge: {
+          status: async (id) => ({ running: false, port: null, workspace: '/w', hasData: id === 'u-here' }),
+          start: async (cfg) => {
+            starts.push(cfg.botId)
+            return { running: true, port: 41010 }
+          },
+        },
+        fetchImpl: async (path) => {
+          if (path === '/runtime/bots') return new Response(JSON.stringify(roster), { status: 200, headers: { 'content-type': 'application/json' } })
+          const m = path.match(/^\/runtime\/bots\/([^/]+)\/local-bootstrap$/)
+          if (m) return new Response(JSON.stringify({ botId: m[1], gatewayUrl: gwBase, accessToken: 'sat_x', apiKey: 'sk_sw_x' }), { status: 200, headers: { 'content-type': 'application/json' } })
+          return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+        },
+      })
+      ui.state.me = { account: { id: 'me', companyId: 'c1', role: 'member', email: 'm@x' }, company: { id: 'c1' } }
+      ui.state.path = '/a/u-away'
+      await ui.loadRuntimeBots()
+      await new Promise((r) => setTimeout(r, 30))
+      assert(JSON.stringify(starts) === JSON.stringify(['u-here']), `只该自动起本机有数据的那颗：${JSON.stringify(starts)}`)
+      const prompt = ui.chatDeployPrompt('u-away')
+      assert(prompt.includes('在这台电脑上启动') && prompt.includes('data-act="local-bot-start"'), `没数据的那颗该给手动启动：${prompt}`)
+    })
+
     await test('本地 Bot 在跑：登录票没换就不再要票；换过（重新登录、改了口令）就重新要、交给壳子换票', async () => {
       // 本地 Bot 的票跟登录票同生共死（Gateway 迁移 0041）：改口令、被重置之后，进程手上那把
       // 已经作废。页面这时一定换了一张登录票——拿它当信号重新要一次，交给壳子的 start
@@ -2499,7 +3043,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(/\.sw-toolfold-list \{[^}]*overflow-y: auto/.test(css), '超过 5 行该在框里滚')
     })
 
-    await test('本地 Bot 的文件夹：右栏列出已批准的、能撤销；Bot 申请时卡片拉起选择框，选中才批准', async () => {
+    await test('本地 Bot 的文件夹：右栏列出已批准的、能撤销；Bot 申请时「批准」直批卡上路径，另选才拉选择框', async () => {
       const folderApproval = {
         callId: 'call-folder', name: 'request_folder_access', reason: '整理发票', args: '{}', state: 'pending',
         form: { kind: 'folder', tool: 'request_folder_access', fields: [
@@ -2507,23 +3051,24 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
           { key: 'suggested', label: '建议的文件夹', value: '~/Downloads' },
         ] },
       }
-      // 普通浏览器：拉不起选择框，照实说，只留拒绝
+      // 普通浏览器：建不了入口，照实说，只留拒绝
       const web = loadApp({ appPath, base: gwBase, token: 'jwt' })
       let html = web.approvalHtml(folderApproval)
       assert(html.includes('Bot 想访问一个文件夹') && html.includes('整理下载目录里的发票') && html.includes('~/Downloads'), `文件夹卡没画对：${html}`)
       assert(!html.includes('chat-folder-pick') && html.includes('桌面端'), '浏览器里不该有「选择文件夹」，要说去桌面端')
-      assert(!html.includes('data-scope="turn"'), '文件夹卡不该有「这一轮都批准」——那等于跳过选文件夹')
+      assert(!html.includes('data-scope="turn"'), '文件夹卡不该有「这一轮都批准」——每个文件夹都该是人看过的那一个')
 
-      // 桌面端：选择框 → 选中才替人提交批准；取消什么都不交
+      // 桌面端：「批准」直接批卡上那个路径；「换一个文件夹…」拉选择框，选中才提交，取消什么都不交
       const posted = []
       let pick = { path: '/Users/me/Downloads', mount: 'External/Downloads' }
       let dirs = []
       const revoked = []
+      const asked = []
       const desk = loadApp({
         appPath, base: gwBase, token: 'jwt', desktop: true,
         localBotBridge: {
           status: async () => ({ running: true, port: 41009, workspace: '/w' }),
-          approveDirectory: async () => { if (pick) dirs = [pick]; return pick },
+          approveDirectory: async (_id, path) => { asked.push(path); if (pick) dirs = [pick]; return pick },
           directories: async () => dirs,
           revokeDirectory: async (_id, path) => { revoked.push(path); dirs = dirs.filter((d) => d.path !== path); return true },
         },
@@ -2533,17 +3078,34 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         },
       })
       html = desk.approvalHtml(folderApproval)
-      assert(html.includes('data-act="chat-folder-pick"') && html.includes('选择文件夹'), '桌面端该有「选择文件夹…」')
+      assert(html.includes('data-path="~/Downloads"') && html.includes('>批准<'), `桌面端该有直批卡上路径的「批准」：${html}`)
+      assert(html.includes('换一个文件夹') && !html.includes('以你选的为准'), '桌面端该能换一个文件夹')
+      // 没说要哪个：只有选择框那一条路
+      const blank = desk.approvalHtml({ ...folderApproval, form: { ...folderApproval.form, fields: folderApproval.form.fields.slice(0, 1) } })
+      assert(blank.includes('选择文件夹') && !blank.includes('data-path='), '没给路径时该只有「选择文件夹…」')
       desk.state.path = '/a/l-1'
       desk.state.chatBotId = 'l-1'
       desk.state.chatSessionId = 's-local'
       pick = null
       await desk.fire('click', el('button', { 'data-act': 'chat-folder-pick', 'data-call': 'call-folder' }))
+      assert(asked[0] === undefined, `「换一个文件夹…」不该带路径：${asked[0]}`)
       assert(!posted.some((p) => p.path.includes('/approvals/')), '选择框里点了取消，不该提交任何决定')
       pick = { path: '/Users/me/Downloads', mount: 'External/Downloads' }
-      await desk.fire('click', el('button', { 'data-act': 'chat-folder-pick', 'data-call': 'call-folder' }))
+      await desk.fire('click', el('button', { 'data-act': 'chat-folder-pick', 'data-call': 'call-folder', 'data-path': '~/Downloads' }))
+      assert(asked[1] === '~/Downloads', `「批准」没把卡上的路径交给壳子：${asked[1]}`)
       const decided = posted.find((p) => p.path.includes('/approvals/call-folder'))
-      assert(decided && decided.body.decision === 'approve' && decided.body.scope === 'once', `选中之后该提交一次「批准这一次」：${JSON.stringify(posted)}`)
+      assert(decided && decided.body.decision === 'approve' && decided.body.scope === 'once', `批准之后该提交一次「批准这一次」：${JSON.stringify(posted)}`)
+
+      // 席位回 409（重启过、那条 pending 没等到终态）：卡片当场收成已失效，不再亮着让人接着点
+      const gone = loadApp({
+        appPath, base: gwBase, token: 'jwt',
+        fetchImpl: async () => new Response(JSON.stringify({ error: '这条确认已经结束了' }), { status: 409, headers: { 'content-type': 'application/json' } }),
+      })
+      gone.state.chatSessionId = 's-local'
+      const stale = { ...folderApproval, callId: 'call-stale', seq: 3 }
+      assert(!gone.approvalDead(stale), '还没点之前不该判失效')
+      await gone.decideApproval('call-stale', 'approve', 'once')
+      assert(gone.approvalDead(stale), '席位说这条结束了，卡片还当它在等')
 
       // 右栏列表：默认收起，只露一行「已批准访问的文件夹 · 1」，不挤下面的日常任务；点开才列
       html = desk.localDirsHtml('l-1')
@@ -2721,7 +3283,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 浮层，所以那一档摊成两行，靠 CSS 分辨，见 app.css 的 .satu-newbot-rail）。
       // 少了这个类名，它们就又是名单底下两行一样宽的虚线框——正是这次要去掉的东西。
       const railBtns = html.match(/<button[^>]*satu-newbot-rail[^>]*>/g) || []
-      assert(railBtns.some((b) => b.includes('data-act="plugins-open"')), '「插件」没收进「更多」，仍然单独占一行')
+      assert(railBtns.some((b) => b.includes('data-href="/plugins"')), '「插件」没收进「更多」，仍然单独占一行')
       assert(railBtns.some((b) => b.includes('data-href="/channels"')), '「渠道」没收进「更多」，仍然单独占一行')
 
       await ui.fire('click', el('button', { 'data-act': 'menu-toggle', 'data-id': 'botmore' }))
@@ -2729,7 +3291,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const menuAt = html.indexOf('class="satu-menu"')
       assert(menuAt >= 0, '点了「更多」菜单没出来')
       const menu = html.slice(menuAt, html.indexOf('</div>', menuAt))
-      assert(menu.includes('data-act="plugins-open"'), '菜单里没有「插件」')
+      assert(menu.includes('data-href="/plugins"'), '菜单里没有「插件」')
       assert(menu.includes('data-href="/channels"'), '菜单里没有「渠道」')
 
       await ui.fire('click', el('button', { 'data-act': 'go', 'data-href': '/channels' }))
@@ -2761,6 +3323,101 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(html.includes('等待配对'), '未配对渠道没有显示等待状态')
       assert(html.includes('ABCD-2345'), '页面没有显示一次性配对码')
       assert(html.includes('任何消息都不会进入 AI'), '没有说明配对前消息不会进入模型')
+    })
+
+    await test('渠道：配对码可以复制，配对后只展示账号和对话入口', async () => {
+      const ui = await boot(adminToken)
+      ui.state.path = '/channels'
+      ui.state.channels = [{ id: 'tg-copy', kind: 'telegram', status: 'active', botId: 'bot-tg', paired: false, pairingCode: 'DEMO-2345', externalUsername: 'demo_bot', runtime: { status: 'ready' } }]
+      await ui.fire('click', el('button', { 'data-act': 'channel-copy-code', 'data-id': 'tg-copy' }))
+      assert(ui.copied.includes('DEMO-2345'), '配对码没有进入剪贴板')
+      assert(ui.html().includes('配对码已复制'), '复制后缺少反馈')
+      ui.state.channels[0].paired = true
+      ui.state.channels[0].pairedIdentity = { externalDisplayName: 'Alice' }
+      ui.render()
+      const html = ui.html()
+      assert(!html.includes('DEMO-2345') && !html.includes('data-act="channel-copy-code"'), '已配对时仍然暴露旧配对码')
+      assert(html.includes('Alice') && html.includes('打开 Bot 对话'), '已配对状态没有身份或对话入口')
+    })
+
+    await test('知识库：成员只读，禁用时不能通过上传入口或拖放继续上传', async () => {
+      const ui = await boot(adminToken)
+      const knowledge = { id: 'kb-read', name: '员工手册', desc: '', share: 'all', fileCount: 0, bytesUsed: 0 }
+      ui.state.path = '/knowledge/kb-read'
+      ui.state.kbDetail = { id: 'kb-read', knowledge, files: [], canEdit: false, enabled: true }
+      ui.state.kbTab = 'sharing'
+      ui.render()
+      assert(!ui.html().includes('kb-share-form') && !ui.html().includes('data-act="kb-delete"') && !ui.html().includes('data-act="kb-files"'), '只读成员看到了管理操作')
+      ui.state.kbDetail.canEdit = true
+      ui.state.kbDetail.enabled = false
+      ui.state.kbTab = 'files'
+      ui.render()
+      assert(/data-act="kb-files" disabled/.test(ui.html()), '服务禁用时文件选择仍然可用')
+      const uploads = ui.state.kbUploads
+      await ui.knowledgeUpload([{ name: 'demo.txt', size: 12 }])
+      assert(ui.state.kbUploads === uploads, '禁用时拖放仍然创建了上传任务')
+    })
+
+    await test('知识库：文件轮询只更新文件与容量，编辑和检索草稿不会被重绘', async () => {
+      const ui = loadApp({ appPath, base: gwBase, stubIds: ['kb-files-area', 'kb-summary'] })
+      ui.state.me = { account: { id: 'me', role: 'admin' }, company: { id: 'demo' } }
+      ui.state.path = '/knowledge/kb-focus'
+      ui.state.kbDetail = { id: 'kb-focus', knowledge: { id: 'kb-focus', name: '手册', share: 'all' }, files: [], canEdit: true, enabled: true }
+      ui.state.kbTab = 'search'
+      ui.state.kbEdit = { id: 'kb-focus', name: '手册', desc: '' }
+      await ui.fire('input', el('input', { 'data-act': 'kb-query' }, '年假怎么申请？'))
+      await ui.fire('input', el('input', { 'data-act': 'kb-edit-field', 'data-field': 'name' }, '新的知识库名称'))
+      ui.app.innerHTML = 'focused-form'
+      ui.paintKnowledgeFiles()
+      assert(ui.html() === 'focused-form', '后台更新重绘了正在填写的页面')
+      assert(ui.stubs.get('kb-summary').innerHTML.includes('已用容量'), '容量摘要没有更新')
+      ui.render()
+      assert(ui.html().includes('新的知识库名称') && ui.html().includes('年假怎么申请？'), '重绘时丢失了编辑或检索草稿')
+      await ui.fire('click', el('button', { 'data-act': 'kb-tab', 'data-tab': 'files' }))
+      await ui.fire('click', el('button', { 'data-act': 'kb-tab', 'data-tab': 'search' }))
+      assert(ui.html().includes('年假怎么申请？'), '切换分区丢失检索草稿')
+    })
+
+    await test('知识库：清空选择框前复制文件列表，文件选择确实启动上传', async () => {
+      const calls = []
+      const knowledge = { id: 'kb-upload', name: '手册', share: 'all', bytesUsed: 0 }
+      const ui = loadApp({ appPath, base: gwBase, token: 'kb-picker', fetchImpl: async (path, init) => {
+        calls.push({ path, method: init?.method, body: init?.body })
+        return new Response(JSON.stringify(init?.method === 'POST' ? { error: '测试上传中断' } : { knowledge, files: [], canEdit: true, enabled: true }), { status: init?.method === 'POST' ? 503 : 200, headers: { 'content-type': 'application/json' } })
+      } })
+      ui.state.me = { account: { id: 'me', role: 'admin' }, company: { id: 'demo' } }
+      ui.state.path = '/knowledge/kb-upload'
+      ui.state.kbDetail = { id: 'kb-upload', knowledge, files: [], canEdit: true, enabled: true }
+      const files = [{ name: '上传测试.txt', size: 12, type: 'text/plain' }]
+      const picker = el('input', { 'data-act': 'kb-files' })
+      picker.files = files
+      Object.defineProperty(picker, 'value', { set() { files.length = 0 } })
+      await ui.fire('change', picker)
+      assert(!files.length, '选择框没有清空，不能重新选择同名文件')
+      assert(calls.some(c=>c.method === 'POST' && c.path.endsWith('/knowledge/kb-upload/files') && JSON.parse(c.body).name === '上传测试.txt'), '清空选择框时把文件列表也清掉了，未启动上传')
+      assert(ui.state.kbUploads[0].error === '测试上传中断', '失败上传缺少可见原因')
+    })
+
+    await test('知识库：重载当前库保留分区与问题，旧请求不能覆盖新库', async () => {
+      let finish
+      const ui = loadApp({ appPath, base: gwBase, token: 'kb-race', fetchImpl: async () => {
+        await new Promise(resolve => { finish = resolve })
+        return new Response(JSON.stringify({ knowledge: { id: 'kb-a', name: 'A', share: 'all' }, files: [], canEdit: true }), { headers: { 'content-type': 'application/json' } })
+      } })
+      ui.state.me = { account: { id: 'me', role: 'admin' }, company: { id: 'demo' } }
+      ui.state.path = '/knowledge/kb-a'
+      ui.state.kbDetail = { id: 'kb-a', knowledge: { id: 'kb-a', share: 'all' }, files: [] }
+      ui.state.kbShareDraft = null
+      ui.state.kbTab = 'sharing'
+      ui.state.kbSearchQuery = '尚未提交的问题'
+      const same = ui.loadKnowledgeDetail('kb-a')
+      finish(); await same
+      assert(ui.state.kbTab === 'sharing' && ui.state.kbSearchQuery === '尚未提交的问题', '保存共享后跳回文件，或重载时清了问题')
+      const old = ui.loadKnowledgeDetail('kb-a')
+      ui.state.path = '/knowledge/kb-b'
+      ui.state.kbDetail = { id: 'kb-b', knowledge: { id: 'kb-b', name: 'B' }, files: [] }
+      finish(); await old
+      assert(ui.state.kbDetail.id === 'kb-b', '旧库的晚到响应覆盖了新库')
     })
 
     await test('平台菜单里没有「全局 Bot」，但那一页 owner 仍然进得去', async () => {
@@ -3854,7 +4511,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
        * 在：半死的流 ac 还在，谁都以为它好着，没有任何东西会去碰它。这正是「回答其实
        * 出了、界面上看不见、刷新才好」修了几轮都没除根的那一种：每一轮修的都是「断了
        * 之后接不回来」，而这一种压根没有断。判据只能是字节本身：bot 每 15 秒一条
-       * `: ping`，三个心跳没等到就当死的拆掉重连（见 chat.js 的 sweepSilentStreams）。
+       * `: ping`，三个心跳没等到就当死的拆掉重连（见 chat-stream.js 的 sweepSilentStreams）。
        */
       const streams = []
       const ui = loadApp({
@@ -4073,7 +4730,9 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 发完消息、模型一个 token 一个 token 吐出来的那一段，它必须逐帧画。
       sse.push({ type: 'replay/done' })
       for (let i = 0; i < 100 && ui.state.chatReplaying; i++) await new Promise((r) => setTimeout(r, 5))
-      const before = thread.writes
+      // 数的是 syncThread 跑了几次（每帧读一次 data-owner），见 ui-dom.mjs 的 countingStub。
+      const paints = () => thread.reads['data-owner'] || 0
+      const before = paints()
       const N = 20
       for (let i = 0; i < N; i++) sse.push({ type: 'assistant/chunk', seq: i + 1, data: { text: 'x' } })
       for (let i = 0; i < 200 && ui.state.chatEvents.length < N; i++) {
@@ -4083,12 +4742,81 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       // 合并重绘是**延后**的（一帧一次），事件到齐不等于已经画完——这里要多等一拍，
       // 否则测的是「还没来得及画」，不是「合并了」。
       await new Promise((r) => setTimeout(r, 60))
-      const writes = thread.writes - before
+      const writes = paints() - before
       assert(writes > 0, '一次都没重绘，说明根本没画')
       assert(writes <= 3, `${N} 个 token 重绘了 ${writes} 次——没有合并，长会话下是 O(n²)`)
       sse.close()
       await run
       ui.stopChatStream()
+    })
+
+    await test('同一块里的几帧：流半路被换掉，后面的帧不再进事件', async () => {
+      /**
+       * 分帧走 core 的 sseEvents（异步生成器），同一块里的几帧是一个微任务交一个。中间
+       * 排着的回调换了 Bot（stopChatStream）之后，这一块剩下的帧不能再落进来——只在块头
+       * 问一次「还是不是当前那条」的话，它们照样进事件数组，画出来就是两个 Bot 串在一起。
+       *
+       * 换流的时机不靠数微任务（生成器里多一个 await 就错位，测试会悄悄变成只测块头）：
+       * 第一帧**真的进了事件数组**的那一刻当场 stopChatStream，再看同一块里的第二帧。
+       */
+      const enc = new TextEncoder()
+      const frame = (seq) => `data: ${JSON.stringify({ type: 'assistant/chunk', seq, data: { text: 'x' } })}\n\n`
+      let ui
+      let served = false
+      const response = {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        body: {
+          getReader: () => ({
+            read: () => {
+              if (served) return Promise.resolve({ done: true, value: undefined })
+              served = true
+              return Promise.resolve({ done: false, value: enc.encode(frame(1) + frame(2)) })
+            },
+          }),
+        },
+      }
+      ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: adminToken,
+        fetchImpl: async (path, init) => (path.includes('/events') ? response : fetch(gwBase + path, init)),
+      })
+      await ui.boot()
+      // 盯住事件数组的每一次 push（数组会被整个换掉，所以挂在 state 的 setter 上，换进来的也包一层）。
+      const landed = []
+      let stopped = false
+      const watch = (arr) => {
+        const push = arr.push.bind(arr)
+        arr.push = (...items) => {
+          const n = push(...items)
+          for (const ev of items) {
+            if (ev?.type !== 'assistant/chunk') continue
+            landed.push({ seq: ev.seq, afterStop: stopped })
+            if (!stopped) {
+              stopped = true
+              ui.stopChatStream()
+            }
+          }
+          return n
+        }
+        return arr
+      }
+      let events = watch(ui.state.chatEvents || [])
+      Object.defineProperty(ui.state, 'chatEvents', {
+        configurable: true,
+        enumerable: true,
+        get: () => events,
+        set: (v) => {
+          events = Array.isArray(v) ? watch(v) : v
+        },
+      })
+      ui.state.chatSessionId = 's-mid'
+      await ui.startChatStream('s-mid')
+      assert(landed.some((x) => x.seq === 1 && !x.afterStop), `第一帧都没进来，测不到「半路换流」：${JSON.stringify(landed)}`)
+      const late = landed.filter((x) => x.afterStop).map((x) => x.seq)
+      assert(!late.length, `换流之后这一块剩下的帧还是进来了：seq ${late.join(', ')}`)
     })
 
     await test('重放历史时不闪「正在处理」，但也不留一片空白', async () => {
@@ -5222,7 +5950,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
     })
 
     /**
-     * 附件那几秒里的草稿归属（chat.js 的 chatUploads / returnDraft）。
+     * 附件那几秒里的草稿归属（chat-composer.js 的 chatUploads / returnDraft）。
      *
      * 两个 Bot 各有各的会话和直连上传地址；A 的上传被一道闸卡住，什么时候放行由测试说了算。
      */
@@ -5314,7 +6042,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       })
       try {
         const mention = { kind: 'connector', id: 'm-race', label: '邮箱' }
-        ui.state.chatDraft = 'A 的那句'
+        // 点名混排在正文里（选中候选会把 `@名字` 插进光标处），只带正文里还留着的那些。
+        ui.state.chatDraft = 'A 的那句 @邮箱'
         ui.state.chatFiles = [{ name: 'a.txt', size: 3, file: {} }]
         ui.state.chatMentions = [mention]
         const job = ui.sendChat()
@@ -5333,7 +6062,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         assert(ui.state.chatDraft === '' && !ui.state.chatFiles.length, `A 的东西塞进了 B 的输入框：${JSON.stringify([ui.state.chatDraft, ui.state.chatFiles])}`)
 
         await ui.ensureChatSession('bot-ra')
-        assert(ui.state.chatDraft === 'A 的那句\n又补的一句', `A 的正文没还回来：${JSON.stringify(ui.state.chatDraft)}`)
+        assert(ui.state.chatDraft === 'A 的那句 @邮箱\n又补的一句', `A 的正文没还回来：${JSON.stringify(ui.state.chatDraft)}`)
         assert(ui.state.chatFiles.length === 1 && ui.state.chatFiles[0].name === 'a.txt', `A 的附件没还回来：${JSON.stringify(ui.state.chatFiles)}`)
         assert(ui.state.chatMentions.some((m) => m.id === 'm-race'), `A 的 @ 没还回来：${JSON.stringify(ui.state.chatMentions)}`)
       } finally {

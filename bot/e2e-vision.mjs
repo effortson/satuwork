@@ -5,15 +5,13 @@
  * v1）。任何一处漏了，图都会安静地消失：不报错、不告警，模型只是看不见它，然后一本
  * 正经地答一个跟图无关的答案。所以三处各钉一遍。
  */
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { toAnthropic, toOpenAI } from './src/llm/gateway.ts'
 import { userContent as gatewayUserContent } from '../gateway/src/v1.ts'
 import { WorkspaceService } from './src/workspace/index.ts'
 import { toAgentMessages } from './src/agent/index.ts'
 import { SESSION_FORMAT_VERSION } from './src/session/types.ts'
+import { tempDir } from './e2e-lib.mjs'
 
 const out = {}
 const PNG = Buffer.from(
@@ -107,9 +105,7 @@ const B64 = PNG.toString('base64')
 
 // ── 4. 日志里存路径，不存 base64 ──────────────────────────────────────
 {
-  const root = mkdtempSync(join(tmpdir(), 'satu-vis-'))
-  // 退出时收掉临时目录（和 e2e-memory 那几个探针同一个写法）。
-  process.on('exit', () => { try { rmSync(root, { recursive: true, force: true }) } catch {} })
+  const root = tempDir('satu-vis-')
   const ctx = new Context()
   ctx.plugin(WorkspaceService, { root })
   await new Promise((r) => setTimeout(r, 50))
@@ -134,8 +130,7 @@ const B64 = PNG.toString('base64')
 
 // ── 5. 历史里的图：只有最近几张真的带字节 ─────────────────────────────
 {
-  const root = mkdtempSync(join(tmpdir(), 'satu-win-'))
-  process.on('exit', () => { try { rmSync(root, { recursive: true, force: true }) } catch {} })
+  const root = tempDir('satu-win-')
   const ctx = new Context()
   ctx.plugin(WorkspaceService, { root })
   await new Promise((r) => setTimeout(r, 50))

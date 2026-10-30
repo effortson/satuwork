@@ -73,8 +73,8 @@ export type Billable =
       refId?: string | null
     }
   /**
-   * 知识库（docs/knowledge-base.md §10）：一次检索 = 查了几个库（几次 Upstash 请求），
-   * 一份文件入库 = 几次 upsert 请求。单价按「厘 / 次」在平台设置里填，默认 0。
+   * 知识库（docs/knowledge-base.md §10）：一次检索 = 查了几个库，
+   * 一份文件入库 = 几批（100 片一批）。单价按「厘 / 次」在平台设置里填，默认 0。
    */
   | {
       kind: 'kb'

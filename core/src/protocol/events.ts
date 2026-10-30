@@ -22,6 +22,8 @@ export interface MessageBlock {
   kind?: string
   id?: string
   label?: string
+  inline?: boolean
+  logo?: string
   name?: string
   seq?: number
   role?: string
@@ -39,6 +41,10 @@ export interface Mention {
   kind: string
   id: string
   label: string
+  /** 落在正文里它被打出来的位置上（会话里的 mention 块带 inline）。界面就地画成药丸，不另起一排。 */
+  inline?: boolean
+  /** 连接器的图标地址，点名时存进消息的。候选里查不到这条连接时照样画得出图标。 */
+  logo?: string
 }
 
 export type Ref =
@@ -68,6 +74,23 @@ export interface UserBlock {
   time: number
   seq?: number
   pending?: boolean
+  /** 主 Bot 派来的指令（目标 Bot 这边）。界面把它和它开的那一轮折成一张卡，见 AssignedTurn。 */
+  assigned?: AssignedTurn
+}
+
+/**
+ * 目标 Bot 会话里，主 Bot 派来的一件活占的那一轮（docs/bot-tasks.md §7）。
+ *
+ * 状态从这一轮自己的 turn/start、turn/end 来：没开轮是 queued（只在指令落下、轮次还没起来的
+ * 那一瞬），跑着是 running，收口时是 turn/end 的 reason（completed / aborted / error …）。
+ * 老席位会把指令插进人正在跑的那一轮，那种没有自己的轮次，`turn` 为空，状态停在 steered。
+ */
+export interface AssignedTurn {
+  id: string
+  from: { id: string; name: string } | null
+  turn?: number
+  state: string
+  endedAt?: number
 }
 
 export interface AssistantBlock {
@@ -80,6 +103,8 @@ export interface AssistantBlock {
   msgSeq?: number
   endTime?: number
   tasks?: any[]
+  /** 这一轮派出去的活（bot/assign），和委派卡一样挂在气泡里。 */
+  assigns?: AssignTask[]
   skillNotes?: any[]
   memNotes?: any[]
   approvals?: any[]
@@ -92,6 +117,31 @@ export interface MarkBlock {
   time: number
   seq?: number
   [k: string]: any
+}
+
+/**
+ * 主 Bot 派出去的一件活（会话里的 `bot/assign`，docs/bot-tasks.md §4）。挂在派活那一轮的助手块上
+ * （`assigns`），和委派卡画在同一处、同一套样子。同一个 id 来多条，取最后一条。
+ */
+export interface AssignTask {
+  id: string
+  callId: string
+  index: number
+  total: number
+  taskId?: string
+  bot: { id: string; name: string }
+  instruction: string
+  after?: string[]
+  state: 'waiting' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled' | 'detached'
+  result?: string
+  /** 对方那一轮跑在它的哪条会话上。「看过程」去那里取（core/src/chat/task.ts 的 assignSlice）。 */
+  runSessionId?: string
+  /** 跑着时领活的一方报上来的进度。 */
+  progress?: import('../chat/task.ts').TaskProgress
+  startedAt?: number
+  endedAt?: number
+  time: number
+  seq: number
 }
 
 export type Block = UserBlock | AssistantBlock | MarkBlock

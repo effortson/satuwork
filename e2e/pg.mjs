@@ -9,15 +9,48 @@
  *
  *   docker compose up -d postgres
  */
+import { createRequire } from 'node:module'
+
 export const PG_URL =
   process.env.E2E_DATABASE_URL || 'postgres://satuwork:satuwork@127.0.0.1:5434/satuwork'
 
+/** pg 装在 gateway 包里，仓库根目录解析不到，从那边的 package.json 起解。 */
+function loadPg() {
+  return createRequire(new URL('../gateway/package.json', import.meta.url))('pg')
+}
+
+/**
+ * 连上库，给了 schema 就把 search_path 指过去。**用完自己 end**——要一路用到套件结束的
+ * 那种连接走这个；一次性的查询走下面的 withPg。
+ */
+export async function pgClient(schema) {
+  const pg = loadPg()
+  const client = new pg.Client({ connectionString: PG_URL })
+  // 连上之后、交出去之前出的错（schema 名不对、库不在）由这里关：调用方还没拿到 client，
+  // 它的 finally 关不了这一条，连接就一直挂到进程退出。
+  try {
+    await client.connect()
+    if (schema) await client.query(`set search_path to ${schema}`)
+  } catch (e) {
+    await client.end().catch(() => {})
+    throw e
+  }
+  return client
+}
+
+/** 连一次、跑 fn、关掉。关的时候出的错不盖住 fn 自己的。 */
+export async function withPg(schema, fn) {
+  const client = await pgClient(schema)
+  try {
+    return await fn(client)
+  } finally {
+    await client.end().catch(() => {})
+  }
+}
+
 /** 起 Gateway 前先探一下，省得每个子用例各报一次「连不上」。 */
 export async function requirePg() {
-  // pg 装在 gateway 包里，仓库根目录解析不到，从那边的 package.json 起解。
-  const { createRequire } = await import('node:module')
-  const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-  const pg = require('pg')
+  const pg = loadPg()
   const client = new pg.Client({ connectionString: PG_URL, connectionTimeoutMillis: 4000 })
   try {
     await client.connect()

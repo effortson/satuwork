@@ -15,7 +15,7 @@ import {
   contextBoundary,
   clampTranscript,
   contentDigest,
-  observedPromptHighWater,
+  observedPromptTokens,
   compactionWindow,
   runSummary,
 } from './src/agent/index.ts'
@@ -350,7 +350,7 @@ out.rows = {
       tokensAfter: 100,
     }),
   ]
-  const highWaterAfterCompact = observedPromptHighWater(compacted)
+  const highWaterAfterCompact = observedPromptTokens(compacted)
   compacted.push(
     ev('assistant/message', T0 + 4, {
       turn: 2,
@@ -359,7 +359,49 @@ out.rows = {
       usage: { inputTokens: 100, outputTokens: 1, cacheReadTokens: 2_000, reasoningTokens: 0 },
     }),
   )
-  const highWaterNext = observedPromptHighWater(compacted)
+  const highWaterNext = observedPromptTokens(compacted)
+  /**
+   * 边界之后上下文**变小**了（重放规则变了：超大工具结果瘦身、派活那几轮不进上下文），而边界一条没加。
+   * 线上编程大师那条：8 月一次报了 67 万，之后每次五六万，取最大值的话 67 万永远在，护栏每轮都喊超窗。
+   * 要的是最近那一次；出错补的那条用量为 0，不算。
+   */
+  const shrunk = [
+    ...old,
+    ev('turn/end', T0 + 2, { turn: 1, reason: 'completed' }),
+    ev('assistant/message', T0 + 5, {
+      turn: 2,
+      step: 1,
+      message: { id: 'c', role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+      usage: { inputTokens: 1_000, outputTokens: 1, cacheReadTokens: 54_000, reasoningTokens: 0 },
+    }),
+    ev('assistant/message', T0 + 6, {
+      turn: 3,
+      step: 0,
+      message: { id: 'd', role: 'assistant', content: [{ type: 'text', text: '出错了：x' }] },
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 },
+    }),
+  ]
+  const latestAfterShrink = observedPromptTokens(shrunk)
+  /**
+   * 最近那一轮逼近了窗口、轮内护栏省掉了早先的工具结果：省之后那几步量到的偏小（只改送出去的那份，
+   * 下一轮重建时原文全部回来）。要的是那一轮里省之前的那一步，不是它的最后一步；更早的轮照旧不算。
+   */
+  const guarded = [
+    ...shrunk,
+    ev('assistant/message', T0 + 7, {
+      turn: 4,
+      step: 1,
+      message: { id: 'e', role: 'assistant', content: [{ type: 'text', text: '读了一大块' }] },
+      usage: { inputTokens: 10_000, outputTokens: 1, cacheReadTokens: 890_000, reasoningTokens: 0 },
+    }),
+    ev('assistant/message', T0 + 8, {
+      turn: 4,
+      step: 2,
+      message: { id: 'f', role: 'assistant', content: [{ type: 'text', text: '省过之后' }] },
+      usage: { inputTokens: 5_000, outputTokens: 1, cacheReadTokens: 645_000, reasoningTokens: 0 },
+    }),
+  ]
+  const lastTurnPeak = observedPromptTokens(guarded)
   out.resultBudget = {
     rawChars: raw.length,
     modelChars: budgeted.text.length,
@@ -368,12 +410,14 @@ out.rows = {
     payloadRemoved: !budgeted.text.includes('"payload":'),
     underHardLimit: budgeted.text.length <= MODEL_TOOL_RESULT_MAX_CHARS,
     oldLogSlimmed: replayText.length === budgeted.text.length,
-    promptHighWater: observedPromptHighWater(old),
+    promptHighWater: observedPromptTokens(old),
     publicHistoryChars: publicTool?.data?.text?.length ?? -1,
     publicHistorySlimmed:
       (publicTool?.data?.text?.length ?? Infinity) <= MODEL_TOOL_RESULT_MAX_CHARS && old[1].data.text === raw,
     highWaterAfterCompact,
     highWaterNext,
+    latestAfterShrink,
+    lastTurnPeak,
   }
 }
 

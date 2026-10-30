@@ -38,6 +38,15 @@ export async function runMentions({ root, test, assert, log }) {
     assert(r.mentioned.正文还在, '点名把正文挤掉了')
   })
 
+  await test('混排：@名字 落在原位，切成 text / mention 交错的块，进模型仍是原句', () => {
+    assert(r.inline, '探针没跑到混排那一段')
+    assert(r.inline.按位置切块, `块的顺序不对：${r.inline.shape}`)
+    assert(r.inline.进模型还是原句, '模型看到的不是原句——指代关系丢了')
+    assert(r.inline.没有本轮指定那一行, '混排的点名还被当成老格式单独成行')
+    assert(r.inline.点名的连接照样进工具表, '混排之后点名不再顶工具表')
+    assert(r.inline.图标存进了点名块, '连接器图标没存进点名块——候选里查不到时药丸就只剩一个 @')
+  })
+
   await test('落盘是结构，不是那句话', () => {
     assert(r.jsonl['有 mention 块'], 'JSONL 里没有 mention 块')
     assert(r.jsonl['块里带 label'], 'mention 块没带 label，界面翻历史时药丸就是空的')
@@ -77,6 +86,11 @@ export async function runMentions({ root, test, assert, log }) {
     assert(r.queue.队列清空了, '上一轮收口之后队列没接上')
     assert(r.queue.排队那条真的跑了, '排队的消息最后没跑')
     assert(r.queue.排队那条带着点名, '排队的那条跑起来时，它带的 @ 丢了')
+    // 派活（docs/bot-tasks.md §7）：指令排队时身份要跟着，否则跑起来就成了「人说的话」，
+    // 界面不折、上下文也认不出它；派活那一轮跑着时人说的话要排队，靠的是 runningTask。
+    assert(r.taskQueue && Object.values(r.taskQueue).every((v) => v === true), `派活排队不对：${JSON.stringify(r.taskQueue)}`)
+    // todo 参数没认出来要明说（不能当「读」），数组写成字符串照认，坏掉的 JSON 带着原文回给模型。
+    assert(r.todoArgs && Object.values(r.todoArgs).every((v) => v === true), `todo 参数处理不对：${JSON.stringify(r.todoArgs)}`)
   })
 
   await test('出队之后、agent 建出来之前，这条会话仍然算在跑', () => {

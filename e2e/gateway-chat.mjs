@@ -4,10 +4,9 @@
  * `/api/sessions/:id/events`，拿席位票进门——验的是 bot 那头吐的帧，不是中间那一跳。
  * 独立 home / 端口，不碰 live 3080，不碰 run.mjs 那套 /tmp/satuwork-e2e-gw。
  */
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
 import { publishRelease } from './release.mjs'
@@ -16,10 +15,8 @@ import { freePorts } from './ports.mjs'
 import { closeServer } from './probe.mjs'
 import { generateKeyPairSync } from 'node:crypto'
 import { GOOD as PUSH_TOKEN, fakeApns } from './push.mjs'
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
+import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 async function readSse(url, { token, timeout = 8000, until } = {}) {
   const ac = new AbortController()
@@ -88,7 +85,6 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
   const botBase = `http://127.0.0.1:${BOT_PORT}`
   const MARKER = 'CHAT-BODY-MUST-NOT-LAND-ON-GATEWAY-7F3A'
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   rmSync(BOT_HOME, { recursive: true, force: true })
 
   let gw
@@ -96,15 +92,13 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
   log('\n# gateway-chat')
 
   try {
-    gw = start('chat-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-      cwd: gwRoot,
+    gw = (await startGateway({
+      name: 'chat-gw',
+      what: 'chat gateway',
+      home: GW_HOME,
+      schema: schemaOf('e2e_chat'),
+      port: GW_PORT,
       env: {
-        SATUWORK_GATEWAY_HOME: GW_HOME,
-        GATEWAY_DATABASE_URL: PG_URL,
-        GATEWAY_PG_SCHEMA: schemaOf('e2e_chat'),
-        GATEWAY_PG_RESET: '1',
-        GATEWAY_HOST: '127.0.0.1',
-        GATEWAY_PORT: String(GW_PORT),
         GATEWAY_MACHINE_TOKEN: MACHINE_TOK,
         GATEWAY_PLATFORM_TOKEN: PLATFORM_TOK,
         GATEWAY_ACCESS_HOST: 'satuwork.com',
@@ -117,9 +111,7 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
         GATEWAY_APNS_TEAM_ID: 'TEAM123456',
         GATEWAY_APNS_ENDPOINT: `http://127.0.0.1:${APNS_PORT}`,
       },
-    })
-    // 带上 child：起不来时有用的是它的输出，不是三十秒后那句「等不到」。
-    await waitHttp(gwBase + '/health', { child: gw, what: 'chat gateway' })
+    })).gw
 
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@chat.test',
@@ -292,7 +284,7 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
         body: { text: `ping ${MARKER}` },
       })
       assert(r.status === 200, `message ${r.status} ${r.text}`)
-      assert(r.json.accepted === true || r.json.steered === true, 'accepted/steered')
+      assert(r.json.accepted === true || r.json.steered === true || r.json.queued === true, 'accepted/steered/queued')
     })
 
     await test('这一轮跑完，席位报 turn-end，Gateway 推到登记的手机上（不带正文）', async () => {
@@ -364,6 +356,24 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(r.json.accepted === true || r.json.steered === true || r.json.queued === true, `这条消息本身该照发：${r.text}`)
       // 剔干净了就等于没点名，所以走的是 steering / 新一轮，不是排队。
       assert(r.json.queued !== true, '点名全被剔掉了还排队，那用户就白等一轮')
+      // @ 一颗 Bot（docs/bot-tasks.md）：只在主 Bot 的会话里认，目标得在名单上、不能是自己。
+      const other = await req(gwBase, 'POST', '/runtime/bots', { token: adminTok, body: { name: '财务' } })
+      assert(other.status === 201, `建 Bot ${other.status} ${other.text}`)
+      const at = (botId) => req(gwBase, 'POST', `/runtime/sessions/${sessionId}/messages`, {
+        token: adminTok,
+        body: { text: `mention ${MARKER}`, mentions: [{ kind: 'bot', id: botId, label: '财务' }] },
+      })
+      const notMain = await at(other.json.bot.id)
+      assert(notMain.status === 200 && (notMain.json.droppedMentions || []).includes(other.json.bot.id), `没设主 Bot 时 @Bot 该剔掉：${notMain.text}`)
+      const main = await req(gwBase, 'PUT', '/runtime/main-bot', { token: adminTok, body: { botId: catalogBotId } })
+      assert(main.status === 200, `设主 Bot ${main.status} ${main.text}`)
+      const ok = await at(other.json.bot.id)
+      assert(ok.status === 200 && !(ok.json.droppedMentions || []).includes(other.json.bot.id), `主 Bot 会话里 @ 别的 Bot 该放行：${ok.text}`)
+      const self = await at(catalogBotId)
+      assert((self.json.droppedMentions || []).includes(catalogBotId), `@ 自己该剔掉：${self.text}`)
+      const fake = await at('bot-not-mine')
+      assert((fake.json.droppedMentions || []).includes('bot-not-mine'), `编的 Bot id 该剔掉：${fake.text}`)
+      await req(gwBase, 'PUT', '/runtime/main-bot', { token: adminTok, body: { botId: null } })
     })
 
     await test('引用：Gateway 只认形状——截到 10 条、不认识的 kind 丢掉，席位回 refs 条数', async () => {
@@ -445,7 +455,7 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
     })
 
     await test('经 Gateway 列工作区：右栏那棵树看得见刚传上去的文件', async () => {
-      // 这一跳是右栏文件树的全部数据来源（见 chat.js 的 workspacePanel）。它和上面
+      // 这一跳是右栏文件树的全部数据来源（见 chat-workspace.js 的 workspacePanel）。它和上面
       // 那条预览必须给出**同一个 path**，否则树上点开就是 404。
       const dir = gwPath.split('/').slice(0, -1).join('/')
       const r = await req(gwBase, 'GET', `/runtime/sessions/${sessionId}/workspace?path=${encodeURIComponent(dir)}`, {
@@ -485,8 +495,8 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert((await req(gwBase, 'GET', `/runtime/logs/direct?botId=${encodeURIComponent(botId)}`)).status === 401, '无票该 401')
     })
 
-    await test('人正看着（连着流、这一轮不到半分钟）就不推', async () => {
-      // bot/src/session/watchers.ts：有客户端连着这条会话的流、这一轮又很短，人多半就在屏幕前。
+    await test('短回复且消息流仍连接：照样推送，手机在后台不漏通知', async () => {
+      // 手机切后台和管家汇总名单时 SSE 仍连接，不能据此省掉通知。
       // 假模型一上来就回错，这一轮瞬间收场——正是「短轮次」。
       apns.seen.length = 0
       // 只认「这一句之后」的那个 turn/end：前面几条用例发的消息，那几轮可能还没收完。
@@ -509,10 +519,15 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(r.status === 200, `message ${r.status} ${r.text}`)
       const sse = await watching
       assert(live(sse.events), `流上没等到这一轮的 turn/end：${sse.events.map((e) => e.type).join(',')}`)
-      // reportPush 若是发了，假 APNs 一两百毫秒内就收到；多等一会儿再判「没有」。
-      await sleep(1500)
-      const hit = apns.seen.find((s) => s.payload?.kind === 'turn-end')
-      assert(!hit, `人连着流、这一轮又短，还是推了：${JSON.stringify(hit?.payload)}`)
+      // 两秒缓冲和可靠队列可能让前几轮的通知同时到达；按本轮会话序号精确核对。
+      const messageAt = sse.events.findIndex((e) => e.type === 'user/message' && JSON.stringify(e).includes(said))
+      const end = sse.events.slice(messageAt + 1).find((e) => e.type === 'turn/end')
+      const matches = () => apns.seen.filter((s) => s.payload?.kind === 'turn-end' && s.payload.sessionId === sessionId && Number(s.payload.seq) === end.seq)
+      const deadline = Date.now() + 12000
+      while (Date.now() < deadline && !matches().length) await sleep(100)
+      const hits = matches()
+      assert(hits.length === 1, `短轮次有流时应推送一次，实际 ${hits.length}`)
+      assert(hits[0].payload.botId === botId, '通知没指向这轮对话的 Bot')
     })
 
     await test('Gateway 上那条会话流已经没了：/runtime/sessions/:id/events → 404', async () => {

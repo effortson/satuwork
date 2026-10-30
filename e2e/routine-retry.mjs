@@ -21,14 +21,15 @@
  */
 import { createServer } from 'node:http'
 import { rmSync } from 'node:fs'
-import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
+import { withPg } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { createCompany } from './org.mjs'
 import { publishRelease } from './release.mjs'
 import { pairMachine } from './pair.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
+import { sleep } from './harness.mjs'
 
 /** 这一套自己的 schema。写死名字会被别的 worktree 的 e2e 清掉（见 pg.mjs 的 schemaOf）。 */
 const SCHEMA = schemaOf('e2e_routine_retry')
@@ -37,10 +38,6 @@ const SCHEMA = schemaOf('e2e_routine_retry')
 const RETRY_MS = [400, 500, 600]
 /** 一共补几次。就是上面那个表的长度——界面上「共 N 次」里的 N。 */
 const RETRY_MAX = RETRY_MS.length
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 function listen(server) {
   return new Promise((resolve) => {
@@ -65,48 +62,30 @@ export async function runRoutineRetry({ gwRoot, test, req, start, waitHttp, asse
   const GW_HOME = tmpOf('satuwork-e2e-routine-retry')
   const GW_PORT = await freePort()
   const gwBase = `http://127.0.0.1:${GW_PORT}`
-  rmSync(GW_HOME, { recursive: true, force: true })
 
   const seat = seatSpy()
   const seatUrl = await listen(seat.server)
 
-  const gw = start('routine-retry-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
-    env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
-      GATEWAY_ACCESS_HOST: 'satuwork.com',
-      GATEWAY_SEED_OWNER: '1',
-      GATEWAY_OWNER_EMAIL: 'owner@retry.test',
-      GATEWAY_OWNER_PASSWORD: 'test-owner-retry',
-      SATUWORK_DEPLOY_STUB: '1',
-      GATEWAY_ROUTINE_TICK_MS: '1000',
-      GATEWAY_ROUTINE_RETRY_MS: RETRY_MS.join(','),
-    },
-  })
-
-  /** 直接改库：把这条任务的「下一次」拨到刚刚过去，好让下一个 tick 当场抢到它。 */
-  const withPg = async (fn) => {
-    const { createRequire } = await import('node:module')
-    const require = createRequire(new URL('../gateway/package.json', import.meta.url))
-    const pg = require('pg')
-    const client = new pg.Client({ connectionString: PG_URL })
-    await client.connect()
-    try {
-      await client.query(`set search_path to ${SCHEMA}`)
-      return await fn(client)
-    } finally {
-      await client.end().catch(() => {})
-    }
-  }
+  /** 放进 try 里起：起不来时下面的 finally 照样收掉这一套自己开的假服务。 */
+  let gw
 
   try {
-    await waitHttp(gwBase + '/health', { child: gw, what: 'routine-retry gateway' })
-
+    gw = (await startGateway({
+      name: 'routine-retry-gw',
+      what: 'routine-retry gateway',
+      home: GW_HOME,
+      schema: SCHEMA,
+      port: GW_PORT,
+      env: {
+        GATEWAY_ACCESS_HOST: 'satuwork.com',
+        GATEWAY_SEED_OWNER: '1',
+        GATEWAY_OWNER_EMAIL: 'owner@retry.test',
+        GATEWAY_OWNER_PASSWORD: 'test-owner-retry',
+        SATUWORK_DEPLOY_STUB: '1',
+        GATEWAY_ROUTINE_TICK_MS: '1000',
+        GATEWAY_ROUTINE_RETRY_MS: RETRY_MS.join(','),
+      },
+    })).gw
     const reg = await createCompany(req, gwBase, {
       ownerEmail: 'owner@retry.test',
       ownerPassword: 'test-owner-retry',
@@ -168,7 +147,7 @@ export async function runRoutineRetry({ gwRoot, test, req, start, waitHttp, asse
     }
     /** 把「下一次」拨到刚刚过去，等下一个 tick 把它抢走。 */
     const makeDue = async () => {
-      await withPg((c) => c.query('update routines set "nextRunAt" = $1 where id = $2', [Date.now() - 1000, routineId]))
+      await withPg(SCHEMA, (c) => c.query('update routines set "nextRunAt" = $1 where id = $2', [Date.now() - 1000, routineId]))
     }
     const runsOf = (d, trigger) => (d.runs || []).filter((x) => x.trigger === trigger)
 
@@ -326,7 +305,7 @@ export async function runRoutineRetry({ gwRoot, test, req, start, waitHttp, asse
      * tick 一次、占着 PG 连接、日志混进后面每一个套件的输出里——而它的数据目录已经在
      * 下面这一行里被删掉了。
      */
-    gw.kill()
+    gw?.kill()
     await closeServer(seat.server, '席位替身')
     try {
       rmSync(GW_HOME, { recursive: true, force: true })

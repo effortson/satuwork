@@ -295,6 +295,42 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the background_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-background-status",
+          "markdownDescription": "Enables the background_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the background_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-background-status",
+          "markdownDescription": "Denies the background_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the clear_notifications command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-notifications",
+          "markdownDescription": "Enables the clear_notifications command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_notifications command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-notifications",
+          "markdownDescription": "Denies the clear_notifications command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_background_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-background-settings",
+          "markdownDescription": "Enables the open_background_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_background_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-background-settings",
+          "markdownDescription": "Denies the open_background_settings command without any pre-configured scope."
+        },
+        {
           "description": "Enables the register command without any pre-configured scope.",
           "type": "string",
           "const": "allow-register",
@@ -319,10 +355,10 @@
           "markdownDescription": "Denies the take_tap command without any pre-configured scope."
         },
         {
-          "description": "手机壳主窗口里那份界面能要推送令牌、取用户点开的那条通知。\n#### This default permission set includes:\n\n- `allow-register`\n- `allow-take-tap`",
+          "description": "手机壳主窗口能登记推送、取通知点击、检测后台限制并打开应用设置。\n#### This default permission set includes:\n\n- `allow-register`\n- `allow-take-tap`\n- `allow-clear-notifications`\n- `allow-background-status`\n- `allow-open-background-settings`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "手机壳主窗口里那份界面能要推送令牌、取用户点开的那条通知。\n#### This default permission set includes:\n\n- `allow-register`\n- `allow-take-tap`"
+          "markdownDescription": "手机壳主窗口能登记推送、取通知点击、检测后台限制并打开应用设置。\n#### This default permission set includes:\n\n- `allow-register`\n- `allow-take-tap`\n- `allow-clear-notifications`\n- `allow-background-status`\n- `allow-open-background-settings`"
         }
       ]
     }

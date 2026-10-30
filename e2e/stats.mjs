@@ -12,10 +12,10 @@
  * $0 混进金额——那会让报表少算钱还看不出来。
  */
 import { rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { PG_URL } from './pg.mjs'
+import { pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
+import { startGateway } from './gateway.mjs'
 
 const SCHEMA = schemaOf('e2e_stats')
 
@@ -24,29 +24,21 @@ export async function runStats({ gwRoot, test, req, start, waitHttp, assert, log
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# stats')
 
-  const gw = start('stats-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'stats-gw',
+    what: 'stats gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'stats gateway' })
 
-  const require = createRequire(`${gwRoot}/package.json`)
-  const pg = require('pg')
-  const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
-  await client.query(`set search_path to ${SCHEMA}`)
+  const client = await pgClient(SCHEMA)
 
   const now = Date.now()
   const d = new Date()
@@ -138,7 +130,7 @@ export async function runStats({ gwRoot, test, req, start, waitHttp, assert, log
 
     await test('日线：窗口里每天一根，按看的人所在时区切，右端不越过今天', async () => {
       /**
-       * 和公司用量屏那条日线同一套（lib/guards.ts 的 dailyBars）：value 是模型调用次数，
+       * 和公司用量屏那条日线同一套（lib/usage.ts 的 dailyBars）：value 是模型调用次数，
        * amount 是那天三条路合计扣的钱（界面柱高按钱画，次数进悬停）。tz 传的是 getTimezoneOffset 的相反数，和前端一样——
        * 这样「今天」那根才和上面 startOfToday 的切法对得上。
        */

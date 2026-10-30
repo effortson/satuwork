@@ -4,52 +4,15 @@
  * 样本全是**现场造的**，不放 checked-in 的二进制：二进制样本没人看得懂，改一个字段
  * 就得整个重新生成，而且 review 时只能看见「一坨变了」。
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import JSZip from 'jszip'
 import ExcelJS from 'exceljs'
 import { docKindOf, extractDocument } from './src/workspace/extract.ts'
+import { buildPdf, tempDir } from './e2e-lib.mjs'
 
-const dir = mkdtempSync(join(tmpdir(), 'satu-doc-'))
-// 退出时收掉临时目录（和 e2e-memory / e2e-skills 那几个探针同一个写法）：探针是顶层 await 的
-// 脚本，没有一个能包 finally 的函数体；exit 钩子在 process.exit、正常结束和未捕获异常三条路上都会跑。
-process.on('exit', () => { try { rmSync(dir, { recursive: true, force: true }) } catch {} })
+const dir = tempDir('satu-doc-')
 const out = {}
-
-// ── 造一个最小的、带真文字层的 PDF ───────────────────────────────────
-function buildPdf(pages) {
-  const objs = []
-  const streams = pages.map((t) => `BT /F1 14 Tf 40 700 Td (${t}) Tj ET`)
-  const n = pages.length
-  const pageIds = pages.map((_, i) => 3 + i)
-  const contentIds = pages.map((_, i) => 3 + n + i)
-  const fontId = 3 + 2 * n
-  objs[1] = `<</Type/Catalog/Pages 2 0 R>>`
-  objs[2] = `<</Type/Pages/Kids[${pageIds.map((id) => `${id} 0 R`).join(' ')}]/Count ${n}>>`
-  pageIds.forEach((id, i) => {
-    objs[id] = `<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents ${contentIds[i]} 0 R/Resources<</Font<</F1 ${fontId} 0 R>>>>>>`
-  })
-  contentIds.forEach((id, i) => {
-    objs[id] = `<</Length ${streams[i].length}>>\nstream\n${streams[i]}\nendstream`
-  })
-  objs[fontId] = `<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>`
-  let s = '%PDF-1.4\n'
-  const offsets = []
-  for (let i = 1; i < objs.length; i++) {
-    if (!objs[i]) continue
-    offsets[i] = s.length
-    s += `${i} 0 obj\n${objs[i]}\nendobj\n`
-  }
-  const xrefAt = s.length
-  const count = objs.length
-  s += `xref\n0 ${count}\n0000000000 65535 f \n`
-  for (let i = 1; i < count; i++) {
-    s += objs[i] ? `${String(offsets[i]).padStart(10, '0')} 00000 n \n` : `0000000000 65535 f \n`
-  }
-  s += `trailer\n<</Size ${count}/Root 1 0 R>>\nstartxref\n${xrefAt}\n%%EOF\n`
-  return Buffer.from(s, 'latin1')
-}
 
 /** 一份只有正文、没有文字层的 PDF——模拟扫描件。 */
 function buildBlankPdf() {

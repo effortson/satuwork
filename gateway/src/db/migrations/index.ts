@@ -53,6 +53,24 @@ import { SQL as m0052 } from './0052-usage-charge-kb.ts'
 import { SQL as m0053 } from './0053-usage-charge-estimated.ts'
 import { SQL as m0054 } from './0054-usage-charge-adjust.ts'
 import { SQL as m0055 } from './0055-push-devices.ts'
+import { SQL as m0056 } from './0056-bot-folders.ts'
+import { SQL as m0057 } from './0057-main-bot.ts'
+import { SQL as m0058 } from './0058-bot-tasks.ts'
+import { SQL as m0059 } from './0059-bot-task-wait.ts'
+import { SQL as m0060 } from './0060-bot-task-progress.ts'
+import { SQL as m0061 } from './0061-bot-task-context.ts'
+import { SQL as m0062 } from './0062-bot-task-ready.ts'
+import { SQL as m0063 } from './0063-local-bot-polls.ts'
+import { SQL as m0064 } from './0064-machine-gateway-origin.ts'
+import { SQL as m0065 } from './0065-connection-account-name.ts'
+import { SQL as m0066 } from './0066-account-avatar.ts'
+import { SQL as m0067 } from './0067-connector-bot-scope.ts'
+import { SQL as m0068 } from './0068-machine-https.ts'
+import { SQL as m0069 } from './0069-notification-reads.ts'
+import { SQL as m0070 } from './0070-notification-events.ts'
+import { SQL as m0071 } from './0071-notification-deliveries.ts'
+import { SQL as m0072 } from './0072-local-bot-device.ts'
+import { SQL as m0073 } from './0073-content-reports.ts'
 
 export interface Migration {
   /** 四位编号加短横线名字，例如 `0002-seat-labels`。排序就是执行顺序。 */
@@ -172,6 +190,24 @@ export const MIGRATIONS: Migration[] = [
   { id: '0053-usage-charge-estimated', name: '账本行标记用量是估的', sql: m0053 },
   { id: '0054-usage-charge-adjust', name: '账本行人工调整留痕', sql: m0054 },
   { id: '0055-push-devices', name: '手机推送的设备登记（APNs 设备令牌）', sql: m0055 },
+  { id: '0056-bot-folders', name: '侧栏 Bot 名单的个人分类', sql: m0056 },
+  { id: '0057-main-bot', name: '每个人的主 Bot', sql: m0057 },
+  { id: '0058-bot-tasks', name: '主 Bot 派活给别的 Bot', sql: m0058 },
+  { id: '0059-bot-task-wait', name: '主 Bot 派活改成同步等待（等待租约、停止）', sql: m0059 },
+  { id: '0060-bot-task-progress', name: '派活跑着时的进度', sql: m0060 },
+  { id: '0061-bot-task-context', name: '派活附带的前置结论', sql: m0061 },
+  { id: '0062-bot-task-ready', name: '派活这一步最近一次放出来等人领的时刻', sql: m0062 },
+  { id: '0063-local-bot-polls', name: '本地 Bot 最近一次来领派活的时刻', sql: m0063 },
+  { id: '0064-machine-gateway-origin', name: '管家认的 Gateway 源（心跳自报）', sql: m0064 },
+  { id: '0065-connection-account-name', name: '连接上的账号是谁（只用于显示）', sql: m0065 },
+  { id: '0066-account-avatar', name: '账号头像缩略图', sql: m0066 },
+  { id: '0067-connector-bot-scope', name: '插件账号的 Bot 可见范围', sql: m0067 },
+  { id: '0068-machine-https', name: '管家自动配域名 https 的编排状态', sql: m0068 },
+  { id: '0069-notification-reads', name: '三端共享的会话已读游标', sql: m0069 },
+  { id: '0070-notification-events', name: '统一通知事件和延迟调度', sql: m0070 },
+  { id: '0071-notification-deliveries', name: '通知设备投递去重和租约', sql: m0071 },
+  { id: '0072-local-bot-device', name: '本地 Bot 绑定到建它的那台桌面端', sql: m0072 },
+  { id: '0073-content-reports', name: '用户主动提交的 AI 内容安全举报', sql: m0073 },
 ]
 
 /**

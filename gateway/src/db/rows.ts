@@ -1,4 +1,4 @@
-import { Account, AuditEvent, BotDeletionRequest, BotRelease, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorCall, ConnectorCallStatus, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, KNOWLEDGE_FILE_STATUSES, KNOWLEDGE_SHARES, KnowledgeBase, KnowledgeChunk, KnowledgeFile, KnowledgeFileStatus, KnowledgeShare, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, ImageModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatDeployRequest, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseConversationAuditSettings, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseKnowledgeSettings, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
+import { Account, AuditEvent, BotDeletionRequest, BotFolder, BotRelease, BotTask, BotTaskProgress, BotTaskStatus, CatalogItem, CatalogKind, ChannelBinding, ChannelEvent, ChannelIdentity, Company, ConnectionScope, ConnectionStatus, ConnectorBotScope, ConnectorConnection, ConnectorInstall, ConversationAuditBatch, ConversationAuditItem, Credential, DEFAULT_MAX_ACCOUNTS, Group, Instance, Invite, Invoice, KNOWLEDGE_FILE_STATUSES, KNOWLEDGE_SHARES, KnowledgeBase, KnowledgeChunk, KnowledgeFile, KnowledgeFileStatus, KnowledgeShare, LlmCall, Locale, Machine, MachineMetricMinute, MachinePairing, Memory, ModelRole, ImageModelRole, DAILY_ALTERNATES_MAX, OrderKind, PLAN_PERIODS, PayStatus, Plan, PlanOrder, PlanPeriod, PlanSku, PlatformSettings, Role, Scope, SeatDeployPhase, SeatDeployRequest, SeatRuntime, SeatRuntimeStatus, Handoff, HandoffState, Routine, RoutineRun, RoutineRunStatus, RoutineRunTrigger, SessionIndex, Theme, Topup, ChargeKind, ChargeStatus, UsageCharge, emptyPlatformSettings, modelKey, parseBilling, parseRoutineModelRole, parseRoutineTriggers, parseConnectorPricing, parseKnowledgeEmbedding, parseKnowledgeSettings, parseMemoryKind, parseMemoryLayer, parseMemoryPii, parseModelPricing, parseModelRate, parsePriceMultiplier, parseReasoningEffort, parseWebTools } from './types.ts'
 
 /**
  * `select *` 回来的裸行 → 上面那些类型。
@@ -72,6 +72,7 @@ export function accountOf(r: Row): Account {
     name: str(r.name || email.split('@')[0] || email),
     title: str(r.title || ''),
     phone: str(r.phone || ''),
+    avatar: str(r.avatar || ''),
     theme: themeOf(r.theme),
     locale: localeOf(r.locale),
     passwordHash: str(r.passwordHash),
@@ -235,6 +236,8 @@ export function parsePlatformPayload(raw: unknown): PlatformSettings {
     webTools: parseWebTools(o.webTools),
     // 老库里没有这个字段，读出来是两个单价 0 + 默认门槛。
     knowledge: parseKnowledgeSettings(o.knowledge),
+    // 老库里没有这个字段，读出来是「还没配」，回落到环境变量。
+    knowledgeEmbedding: parseKnowledgeEmbedding(o.knowledgeEmbedding),
     modelPricing: parseModelPricing(o.modelPricing),
     // 老库里没有这个字段，读出来是四项全 0 = 没设兜底，行为和从前一模一样。
     defaultModelRate: parseModelRate(o.defaultModelRate),
@@ -436,6 +439,8 @@ export function machineOf(r: Row): Machine {
     telemetry: r.telemetry == null ? null : (jsonOf(r.telemetry) as Machine['telemetry']),
     telemetryAt: numOrNull(r.telemetryAt),
     logCapMb: numOrNull(r.logCapMb),
+    gatewayOrigin: strOrNull(r.gatewayOrigin),
+    https: r.https == null ? null : (jsonOf(r.https) as Machine['https']),
     removedAt: numOrNull(r.removedAt),
     token: str(r.token || ''),
   }
@@ -569,29 +574,20 @@ export function connectorConnectionOf(r: Row): ConnectorConnection {
     mentionOnly: r.mentionOnly === true,
     lastError: strOrNull(r.lastError),
     connectedAt: numOrNull(r.connectedAt),
+    accountName: r.accountName == null ? null : str(r.accountName),
     createdAt: num(r.createdAt),
     updatedAt: num(r.updatedAt),
   }
 }
 
-export function connectorCallOf(r: Row): ConnectorCall {
+/** 认不出的 mode 当 `bots` + 空名单：脏数据宁可谁都不给，也不变成全部（同迁移 0067 的理由）。 */
+export function connectorBotScopeOf(r: Row): ConnectorBotScope {
+  const mode = str(r.mode)
   return {
-    id: str(r.id),
-    companyId: strOrNull(r.companyId),
+    connectionId: str(r.connectionId),
     accountId: str(r.accountId),
-    connectionId: strOrNull(r.connectionId),
-    botId: strOrNull(r.botId),
-    sessionId: strOrNull(r.sessionId),
-    vendor: str(r.vendor),
-    connector: str(r.connector),
-    label: str(r.label || ''),
-    tool: str(r.tool),
-    status: str(r.status) as ConnectorCallStatus,
-    amountMicros: num(r.amountMicros),
-    bonusMicros: num(r.bonusMicros),
-    latencyMs: num(r.latencyMs),
-    viaMention: r.viaMention === true,
-    createdAt: num(r.createdAt),
+    scope: mode === 'all' ? { mode: 'all' } : { mode: 'bots', botIds: mode === 'bots' ? strListOf(r.botIds) : [] },
+    updatedAt: num(r.updatedAt),
   }
 }
 
@@ -632,6 +628,59 @@ export function usageChargeOf(r: Row): UsageCharge {
   }
 }
 
+export function botFolderOf(r: Row): BotFolder {
+  return {
+    id: str(r.id),
+    accountId: str(r.accountId),
+    name: str(r.name),
+    kind: r.kind === 'local' ? 'local' : null,
+    position: num(r.position),
+    createdAt: num(r.createdAt),
+    updatedAt: num(r.updatedAt),
+  }
+}
+
+export function botTaskOf(r: Row): BotTask {
+  return {
+    id: str(r.id),
+    accountId: str(r.accountId),
+    companyId: str(r.companyId),
+    fromBotId: str(r.fromBotId),
+    toBotId: str(r.toBotId),
+    fromSessionId: strOrNull(r.fromSessionId),
+    callId: strOrNull(r.callId),
+    instruction: str(r.instruction),
+    context: strOrNull(r.context),
+    readyAt: numOrNull(r.readyAt),
+    status: str(r.status) as BotTaskStatus,
+    owner: strOrNull(r.owner),
+    leaseUntil: numOrNull(r.leaseUntil),
+    attempts: num(r.attempts),
+    runSessionId: strOrNull(r.runSessionId),
+    runKind: strOrNull(r.runKind),
+    result: strOrNull(r.result),
+    error: strOrNull(r.error),
+    createdAt: num(r.createdAt),
+    startedAt: numOrNull(r.startedAt),
+    endedAt: numOrNull(r.endedAt),
+    deliveredAt: numOrNull(r.deliveredAt),
+    waiterUntil: numOrNull(r.waiterUntil),
+    cancelledAt: numOrNull(r.cancelledAt),
+    progress: progressOf(r.progress),
+  }
+}
+
+/** bot_tasks.progress 那段 JSON。坏了就当没有：它只是给界面看的一句话。 */
+function progressOf(v: unknown): BotTaskProgress | null {
+  if (typeof v !== 'string' || !v) return null
+  try {
+    const o = JSON.parse(v)
+    return o && typeof o === 'object' && typeof o.steps === 'number' ? (o as BotTaskProgress) : null
+  } catch {
+    return null
+  }
+}
+
 export function catalogOf(r: Row): CatalogItem {
   return {
     id: str(r.id),
@@ -642,6 +691,7 @@ export function catalogOf(r: Row): CatalogItem {
     botId: strOrNull(r.botId),
     name: str(r.name),
     definition: jsonOf(r.definition),
+    deviceId: strOrNull(r.deviceId),
     deletingAt: numOrNull(r.deletingAt),
     createdAt: num(r.createdAt),
     updatedAt: num(r.updatedAt),
@@ -706,10 +756,11 @@ export function botDeletionRequestOf(r: Row): BotDeletionRequest {
     requestedAt: num(r.requestedAt), auditCompletedAt: numOrNull(r.auditCompletedAt), deletedAt: numOrNull(r.deletedAt),
   }
 }
-export function credOf(r: Row): Credential {
+/** 平台密钥那张表没有 id 也不属于哪家公司；对外仍装成 Credential，id 用 `platform:<供应商>`。 */
+export function platformCredOf(r: Row): Credential {
   return {
-    id: str(r.id),
-    companyId: str(r.companyId),
+    id: `platform:${str(r.provider)}`,
+    companyId: '',
     provider: str(r.provider),
     secret: str(r.secret),
     createdAt: num(r.createdAt),

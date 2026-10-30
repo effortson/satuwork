@@ -7,8 +7,7 @@
  * 加一页按解包结果里给的「四处」一步步做。这一层坏了的表现是 Office 说「文件已损坏」，而
  * 那时候已经没人知道是哪一步，所以每一步都钉。
  */
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import JSZip from 'jszip'
@@ -22,16 +21,13 @@ import * as officeTools from './src/tools/office.ts'
 import * as terminalTools from './src/tools/terminal.ts'
 import { extractDocument } from './src/workspace/extract.ts'
 import { checkPackage, checkXml, condenseXml, prettyXml } from './src/workspace/ooxml.ts'
+import { tempDir } from './e2e-lib.mjs'
 
 // 解包总量上限调小：要造一个「声明很小、实际很大」的炸弹，几百 MB 太慢。office.ts 每次解包时读它。
 process.env.SATUWORK_OFFICE_MAX_UNPACKED = String(16 * 1024 * 1024)
-const home = mkdtempSync(join(tmpdir(), 'satu-office-home-'))
+const home = tempDir('satu-office-home-')
 process.env.SATUWORK_HOME = home
-const root = mkdtempSync(join(tmpdir(), 'satu-office-'))
-process.on('exit', () => {
-  try { rmSync(home, { recursive: true, force: true }) } catch {}
-  try { rmSync(root, { recursive: true, force: true }) } catch {}
-})
+const root = tempDir('satu-office-')
 
 const ctx = new Context()
 ctx.provide('logger', { warn() {}, info() {}, error() {} })

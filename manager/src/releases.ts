@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { gatewayUrlProblem, managerVersion, releaseRoot } from './config.ts'
-import { run } from './run.ts'
+import { run, type RunResult } from './run.ts'
 
 /**
  * 发布包缓存。
@@ -93,38 +93,29 @@ async function fetchRelease(
   }
   // 机器票只交给 Gateway 自己：直连地址和配对的 Gateway 不同源就裸取（同 upgrade.ts）。
   // 票是这台机器的 root 控制面凭据，不能因为规格里一行地址就寄到 GitHub 去。
-  const res = await fetch(url, {
+  const bytes = await fetchVerified({
+    url,
     headers: {
       ...(!direct || sameOrigin(direct, opts.gatewayUrl) ? { authorization: 'Bearer ' + opts.token } : {}),
       'user-agent': `satuwork-manager/${managerVersion()}`,
     },
-    signal: AbortSignal.timeout(300_000),
+    failed: async (res) => `downloading release ${version} failed: ${res.status} ${(await res.text()).slice(0, 200)}`,
+    // 对不上就是传输坏了、或者那个地址上换了东西——解开只会得到更难查的症状。
+    // 直连时校验值是部署规格里的那一份（登记时 Gateway 自己拉一遍算的，经带机器票的通道
+    // 发下来），**不看**外部主机回的任何头。走 Gateway 时在响应头里；**头缺了也不装**：那一行
+    // 是入库时服务端自己算的，一次正常的下发不可能没有它。
+    want: (res) => (direct ? String(opts.sha256) : String(res.headers.get('x-bot-sha256') || '').trim()),
+    noChecksum: `release ${version} came without a checksum, refusing to unpack`,
+    mismatch: (got, want) => `release ${version} checksum mismatch: ${got.slice(0, 12)} != ${want.slice(0, 12)}`,
   })
-  if (!res.ok) throw new Error(`downloading release ${version} failed: ${res.status} ${(await res.text()).slice(0, 200)}`)
-  const bytes = Buffer.from(await res.arrayBuffer())
 
-  // 对不上就是传输坏了、或者那个地址上换了东西——解开只会得到更难查的症状。
-  // 直连时校验值是部署规格里的那一份（登记时 Gateway 自己拉一遍算的，经带机器票的通道
-  // 发下来），**不看**外部主机回的任何头。走 Gateway 时在响应头里；**头缺了也不装**：那一行
-  // 是入库时服务端自己算的，一次正常的下发不可能没有它。
-  const want = direct ? String(opts.sha256) : String(res.headers.get('x-bot-sha256') || '').trim()
-  if (!want) throw new Error(`release ${version} came without a checksum, refusing to unpack`)
-  const got = createHash('sha256').update(bytes).digest('hex')
-  if (got !== want) throw new Error(`release ${version} checksum mismatch: ${got.slice(0, 12)} != ${want.slice(0, 12)}`)
-
-  rmSync(dir, { recursive: true, force: true })
-  mkdirSync(dir, { recursive: true })
-  const tgz = join(releaseRoot(), `.${version}.tgz`)
-  writeFileSync(tgz, bytes)
   try {
-    /**
-     * **`--no-same-owner` 不能省。** GNU tar 以 root 解包时默认保留包里的属主，而包是在
-     * CI 上打的，属主是 runner 的 uid 1001——Debian 云镜像的默认账号占 1000，第一个席位
-     * 账号正好就是 1001。不加这一条，这个席位的 bot 就能改全机共享的这份代码（deploy-seat.sh
-     * 会把它 cp -a 给别的员工的席位），管家那一份更是以 root 跑。
-     */
-    const r = await run('tar', ['--no-same-owner', '-xzf', tgz, '-C', dir], { timeout: 300_000 })
-    if (r.code !== 0) throw new Error(`untarring ${version} failed: ${(r.stderr || r.stdout).slice(-300)}`)
+    await untarInto(
+      bytes,
+      dir,
+      join(releaseRoot(), `.${version}.tgz`),
+      (r) => `untarring ${version} failed: ${(r.stderr || r.stdout).slice(-300)}`,
+    )
     if (!existsSync(join(dir, 'bin', 'satuwork.mjs'))) {
       throw new Error(`release ${version} has no bin/satuwork.mjs`)
     }
@@ -132,8 +123,6 @@ async function fetchRelease(
   } catch (e) {
     rmSync(dir, { recursive: true, force: true })
     throw e
-  } finally {
-    rmSync(tgz, { force: true })
   }
   return dir
 }
@@ -145,5 +134,51 @@ export function sameOrigin(url: string, gatewayUrl: string | undefined): boolean
     return new URL(url).origin === new URL(gatewayUrl).origin
   } catch {
     return false
+  }
+}
+
+/**
+ * 拉一个包、按 sha256 核对，返回字节。bot 发布包（上面）和管家自升级（upgrade.ts）共用；
+ * 报错的措辞各自给——两边的日志和 lastError 一直是各说各的。
+ *
+ * `want` 在下载之后才取：走 Gateway 那一路校验值在响应头里。取到空的就不装。
+ */
+export async function fetchVerified(o: {
+  url: string
+  headers: Record<string, string>
+  failed: (res: Response) => string | Promise<string>
+  want: (res: Response) => string
+  noChecksum: string
+  mismatch: (got: string, want: string) => string
+}): Promise<Buffer> {
+  const res = await fetch(o.url, { headers: o.headers, signal: AbortSignal.timeout(300_000) })
+  if (!res.ok) throw new Error(await o.failed(res))
+  const bytes = Buffer.from(await res.arrayBuffer())
+  const want = o.want(res)
+  if (!want) throw new Error(o.noChecksum)
+  const got = createHash('sha256').update(bytes).digest('hex')
+  if (got !== want) throw new Error(o.mismatch(got, want))
+  return bytes
+}
+
+/**
+ * 把包解进 `dir`（先清空）。临时包落在 `tgz`，解完不论成败都删。解失败抛 `failed(r)`；
+ * 半个目录留着，由调用方决定删不删。
+ */
+export async function untarInto(bytes: Buffer, dir: string, tgz: string, failed: (r: RunResult) => string): Promise<void> {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(tgz, bytes)
+  try {
+    /**
+     * **`--no-same-owner` 不能省。** GNU tar 以 root 解包时默认保留包里的属主，而包是在
+     * CI 上打的，属主是 runner 的 uid 1001——Debian 云镜像的默认账号占 1000，第一个席位
+     * 账号正好就是 1001。不加这一条，这个席位的 bot 就能改全机共享的这份代码（deploy-seat.sh
+     * 会把它 cp -a 给别的员工的席位），管家那一份更是以 root 跑。
+     */
+    const r = await run('tar', ['--no-same-owner', '-xzf', tgz, '-C', dir], { timeout: 300_000 })
+    if (r.code !== 0) throw new Error(failed(r))
+  } finally {
+    rmSync(tgz, { force: true })
   }
 }

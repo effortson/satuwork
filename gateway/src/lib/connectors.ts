@@ -5,10 +5,11 @@
  */
 import { HttpError } from '../http.ts'
 import { DEFAULT_VENDOR, isVendor, providerFor, type ToolDef } from '../connectors/index.ts'
+import { accountNameIn, wantsFields, whoamiTools } from '../connectors/identity.ts'
 import type { Db } from '../db.ts'
 import { MCP_PERMS, asDef, trimStr } from './catalog.ts'
 import { strListOf } from '../db/rows.ts'
-import { COMPANY_CONNECTION_LABEL as COMPANY_LABEL, type CatalogItem, type ConnectorBlockDef, type ConnectorConnection, type ConnectorDef, type ConnectorInstall } from '../db.ts'
+import { COMPANY_CONNECTION_LABEL as COMPANY_LABEL, type Account, type BotScope, type CatalogItem, type ConnectorBlockDef, type ConnectorConnection, type ConnectorDef, type ConnectorInstall } from '../db.ts'
 
 /**
  * 一把连接最多下发几个工具。
@@ -41,6 +42,49 @@ export async function toolsOf(db: Db, vendor: string, toolkit: string): Promise<
   return tools
 }
 
+/**
+ * 这一把连接连的是谁。三步，前一步说得出就不往下走：
+ *
+ * 1. 供应商自己问（provider.identify：连接记录、记录里那条验证用的地址）
+ * 2. 这个 toolkit 自己那把「我是谁」工具（connectors/identity.ts 的 whoamiTools）
+ *
+ * **不是用户的工具调用**：不落流水、不计费，和拉工具清单同一档——它只为界面上多写一个
+ * 邮箱。每一步的超时都压得很短：慢的话宁可这次不显示，详情页不能为它卡住。
+ *
+ * 返回空串 = 这次没认出来。**不记成「问过了」**：认人的规则会改进，存一个空串就把
+ * 以后的改进都挡在门外。调用方按时间节流（routes/connectors.ts 的 nameTried）。
+ */
+export async function lookupAccountName(db: Db, def: ConnectorDef, row: ConnectorConnection): Promise<string> {
+  if (!row.externalId) return ''
+  const provider = await providerFor(db, def.vendor)
+  if (provider.identify) {
+    try {
+      const own = await provider.identify(row.externalId)
+      if (own) return own
+    } catch {
+      // 代理那一步不通不要紧，下面还有工具那条路。
+    }
+  }
+  for (const tool of whoamiTools(await toolsOf(db, def.vendor, def.toolkit))) {
+    const tries: Record<string, unknown>[] = wantsFields(tool) ? [{}, { fields: '*' }] : [{}]
+    for (const args of tries) {
+      try {
+        const r = await provider.execute({
+          tool: tool.slug,
+          externalUserId: row.externalUserId,
+          externalId: row.externalId,
+          args,
+          signal: AbortSignal.timeout(6000),
+        })
+        const name = r.ok ? accountNameIn(JSON.parse(r.text)) : ''
+        if (name) return name
+      } catch {
+        // 这一把不行就试下一把。
+      }
+    }
+  }
+  return ''
+}
 
 /**
  * 席位侧那把上传工具的名字。写在 schema 的说明里，模型照着它去找。
@@ -332,8 +376,81 @@ export function publicInstall(v: ConnectorInstall) {
   }
 }
 
+/**
+ * 这把连接对这颗 Bot 可不可见（docs/connector-bot-scope.md）。
+ *
+ * **口径只有这一份**：目录下发、`@` 选单、发消息时的 mentions 校验、MCP 端点那道门都调它。
+ * 四处各写一遍，迟早出现「目录里没有、却调得通」或者「选单里有、发出去被剔掉」。
+ *
+ * 没设过（undefined）= `all`。没有 botId（脚本、不按 Bot 拉目录的老路径）时只认 `all`：
+ * 那时不知道是谁在用，收窄过的一律不给。
+ */
+export function connectionVisibleTo(scope: BotScope | undefined, botId: string | null | undefined): boolean {
+  if (!scope || scope.mode === 'all') return true
+  return !!botId && scope.botIds.includes(botId)
+}
+
+/**
+ * 这把连接是不是这个人的：自己连的，或者本公司共用的那把。
+ *
+ * **跨人的边界只有这一条**（connectors.md 不变量 19）。MCP 端点的门和改「可用 Bot」都用它，
+ * 两处各写一遍的话，哪天公司共用那把多一个限制，两边对「谁的连接」就会说法不一。
+ */
+export function connectionUsableBy(conn: ConnectorConnection, account: Account): boolean {
+  return conn.scope === 'company' ? conn.companyId === account.companyId : conn.accountId === account.id
+}
+
+/**
+ * 这个人现在**用得上**的连接：active、连接器在架且启用、本公司没禁、对这颗 Bot 可见。
+ *
+ * 目录下发、发消息时的 `@` 校验、`@` 选单三处都从这里取——「用得上」只有这一份口径，
+ * 下一个条件加在这里就三处一起生效，不会出现「选单里有、目录里没有」。
+ *
+ * `bot`：`{ id }` 按这颗 Bot 筛（id 为 null = 不知道是哪颗，只给没收窄的）；`'any'` = 不按
+ * Bot 筛（`/mentions` 没带 botId 的老页面——发消息那一跳会再按会话的 Bot 判一次）。
+ */
+export async function usableConnections(
+  db: Db,
+  accountId: string,
+  companyId: string | null,
+  bot: { id: string | null } | 'any',
+): Promise<Array<{ conn: ConnectorConnection; item: CatalogItem; def: ConnectorDef }>> {
+  const [items, conns, scopes] = await Promise.all([
+    db.visibleCatalog('connector', companyId),
+    db.connectionsFor(accountId, companyId),
+    bot === 'any' ? null : db.botScopesFor(accountId),
+  ])
+  const blocked = blockMapOf(items)
+  const byId = new Map(items.filter((i) => i.scope === 'global').map((i) => [i.id, i]))
+  const out: Array<{ conn: ConnectorConnection; item: CatalogItem; def: ConnectorDef }> = []
+  for (const conn of conns) {
+    if (conn.status !== 'active') continue
+    const item = byId.get(conn.connectorId)
+    if (!item || blocked.get(item.id)?.blocked) continue
+    const def = connectorDefOf(item)
+    if (!def.enabled) continue
+    if (bot !== 'any' && !connectionVisibleTo(scopes?.get(conn.id)?.scope, bot.id)) continue
+    out.push({ conn, item, def })
+  }
+  return out
+}
+
+/**
+ * 界面上那一格「可用 Bot」：范围，加上名单里已经不在他 Bot 名单上的有几颗（被删了）。
+ * `roster` 是 `botsFor` 的 id；名单只出交集，删掉的不往外给，只给个数让界面提醒。
+ */
+/**
+ * `roster` 是这次请求看得到的那些；`all` 是这个账号全部的（含别的电脑上的本地 Bot，
+ * docs/local-bot-device.md）。看不到但还在的只是不给出去，**不算 missing**——它们没被删。
+ */
+export function publicBotScope(scope: BotScope | undefined, roster: Set<string>, all: Set<string> = roster) {
+  if (!scope || scope.mode === 'all') return { mode: 'all' as const, botIds: [] as string[], missing: 0 }
+  const botIds = scope.botIds.filter((id) => roster.has(id))
+  return { mode: 'bots' as const, botIds, missing: scope.botIds.filter((id) => !all.has(id)).length }
+}
+
 /** 连接的对外形状。`externalId` 和 `externalUserId` 是供应商侧的引用，不带出去。 */
-export function publicConnection(v: ConnectorConnection) {
+export function publicConnection(v: ConnectorConnection, bots?: ReturnType<typeof publicBotScope>) {
   return {
     id: v.id,
     connectorId: v.connectorId,
@@ -344,6 +461,9 @@ export function publicConnection(v: ConnectorConnection) {
     mentionOnly: v.mentionOnly,
     error: v.lastError,
     connectedAt: v.connectedAt,
+    accountName: v.accountName || '',
+    // 只有员工自己那几条路给（详情、改范围）；admin 那一屏看的是公司那把本身，不是谁的范围。
+    ...(bots ? { bots } : {}),
     createdAt: v.createdAt,
     updatedAt: v.updatedAt,
   }

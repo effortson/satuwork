@@ -7,15 +7,15 @@
  *
  * 假 Gateway 还兼作**计数器**：短页面到底有没有多花一次模型调用，只能这么数。
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { WorkspaceService } from './src/workspace/index.ts'
 import { ToolService } from './src/tools/index.ts'
 import { WebSearchService, fileNameFor, sanitize } from './src/web-search/index.ts'
 import * as webTools from './src/tools/web.ts'
+import { buildPdf, tempDir } from './e2e-lib.mjs'
 
 const out = {}
 const LONG = 'x'.repeat(50_000)
@@ -23,34 +23,7 @@ const LONG = 'x'.repeat(50_000)
 const VERY_LONG = 'z'.repeat(600_000)
 const HUGE = 'y'.repeat(1_600_000)
 
-/**
- * 一份最小的、带真文字层的 PDF。**现场造，不放 checked-in 的二进制**——
- * 二进制样本没人看得懂，review 时只能看见「一坨变了」。
- */
-function buildPdf(text) {
-  const stream = `BT /F1 14 Tf 40 700 Td (${text}) Tj ET`
-  const objs = [
-    null,
-    '<</Type/Catalog/Pages 2 0 R>>',
-    '<</Type/Pages/Kids[3 0 R]/Count 1>>',
-    '<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>',
-    `<</Length ${stream.length}>>\nstream\n${stream}\nendstream`,
-    '<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>',
-  ]
-  let body = '%PDF-1.4\n'
-  const offsets = []
-  for (let i = 1; i < objs.length; i++) {
-    offsets[i] = body.length
-    body += `${i} 0 obj\n${objs[i]}\nendobj\n`
-  }
-  const xrefAt = body.length
-  body += `xref\n0 ${objs.length}\n0000000000 65535 f \n`
-  for (let i = 1; i < objs.length; i++) body += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`
-  body += `trailer\n<</Size ${objs.length}/Root 1 0 R>>\nstartxref\n${xrefAt}\n%%EOF\n`
-  return Buffer.from(body, 'latin1')
-}
-
-const PDF = buildPdf('SATU-PDF-BODY-LINE')
+const PDF = buildPdf(['SATU-PDF-BODY-LINE'])
 /** 头像 PDF、内容是坏的：写盘会成功，unpdf 解析会抛。 */
 const BROKEN_PDF = Buffer.from('%PDF-1.4\n坏掉的内容，没有 xref 也没有 trailer\n')
 
@@ -161,10 +134,7 @@ class FakeRoster extends Service {
   }
 }
 
-const root = mkdtempSync(join(tmpdir(), 'satu-web-'))
-// 退出时收掉临时目录（和 e2e-memory / e2e-skills 那几个探针同一个写法）：探针是顶层 await 的
-// 脚本，没有一个能包 finally 的函数体；exit 钩子在 process.exit、正常结束和未捕获异常三条路上都会跑。
-process.on('exit', () => { try { rmSync(root, { recursive: true, force: true }) } catch {} })
+const root = tempDir('satu-web-')
 const ctx = new Context()
 ctx.plugin(WorkspaceService, { root })
 ctx.plugin(ToolService)

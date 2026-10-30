@@ -39,7 +39,17 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
   /** 单号 → 已经画在某一块上的那张交接卡。跨块认，见下面 human/handoff。 */
   const handoffSeen = new Map<string, any>()
   const handoffOf = (id: string) => (id ? handoffSeen.get(id) : undefined)
+  /** 有没有轮次开着。派来的指令落下时没开着，紧接着的 turn/start 才是它自己的那一轮。 */
+  let openTurn = false
+  /** 正在等自己那一轮起来、或者那一轮正跑着的派活指令（目标 Bot 这边，docs/bot-tasks.md §7）。 */
+  let assigned: any = null
+  /** 派活卡：id → 已经挂在某个助手块上的那一件。同一个 id 来多条（等 → 跑 → 收场），取最后一条。 */
+  const taskSeen = new Map<string, any>()
+  /** 上一条事件的 seq（见 turn/start 那一支：认「指令紧挨着开了自己的一轮」）。 */
+  let lastSeq: number | undefined
   for (const ev of events || []) {
+    const prevSeq = lastSeq
+    lastSeq = ev.seq
     const type = ev.type
     const data: any = ev.data || {}
     // 事件自带 time（bot 那边 append 时打的）。界面上要按天分隔、每条标时刻，
@@ -56,18 +66,25 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
        */
       const src = data.source || {}
       // Telegram / Web 在同一主会话里按 via 分辨；看板、日常任务和交还继续用原来的代理标签。
+      // 主 Bot 派活（docs/bot-tasks.md §4）：目标那边是「派来的任务」，主这边是「任务结果」，两档角标。
       const via = src.kind === 'plugin' && src.plugin === 'channel'
         ? (src.channel === 'telegram' ? 'telegram' : String(src.channel || 'channel'))
         : src.kind === 'plugin' && (src.plugin === 'kanban' || src.plugin === 'routine' || src.plugin === 'handoff')
           ? src.plugin
-          : (!src.kind || src.kind === 'user') ? (showChannelVia ? 'web' : '') : ''
+          : src.kind === 'plugin' && src.plugin === 'task'
+            ? (src.phase === 'result' ? 'task-result' : 'task')
+            : (!src.kind || src.kind === 'user') ? (showChannelVia ? 'web' : '') : ''
       if (src.kind && src.kind !== 'user' && !via) continue
       turnVia = via
       assistant = null
       tools = []
       const raw = messageText(data.message) || data.text || ''
       const up = splitUploads(raw)
+      // 派来的指令：记下它，等它开的那一轮把状态填上。插进别人那一轮的（老席位）没有自己的轮次。
+      const task = via === 'task' ? { id: String(src.form || ''), from: src.from && typeof src.from === 'object' ? src.from : null, state: openTurn ? 'steered' : 'queued' } : undefined
+      if (!openTurn) assigned = task || null
       blocks.push({
+        ...(task ? { assigned: task } : {}),
         kind: 'user',
         text: up.text,
         // 附件列表拆出来单独画成药丸；正文只留人真正打的那句话。
@@ -147,7 +164,13 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
       assistant.endTime = at
     } else if (type === 'tool/result') {
       if (phantoms.has(data.callId)) continue
+      /**
+       * **先按 callId 跨块认。** 中间要是隔了一条边界或别的块，结果到的时候 `tools` 未必还是那次
+       * 调用所在的那一份——只在 `tools` 里找，就会把它的结果安到别的药丸上。
+       */
+      const byCall = data.callId ? toolByCall.get(data.callId) : undefined
       const hit =
+        (byCall && byCall.result == null ? byCall : undefined) ||
         tools.find((x) => x.callId && x.callId === data.callId && x.result == null) ||
         tools.find((x) => x.result == null) ||
         tools[tools.length - 1]
@@ -174,6 +197,29 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
        */
       const hit = toolByCall.get(data.callId)
       if (hit && isShot(data.shot)) hit.shot = data.shot
+    } else if (type === 'bot/assign') {
+      /**
+       * 主 Bot 派出去的一件活（docs/bot-tasks.md §4）。**挂在派活那一轮的助手块上**，和委派卡一样：
+       * 对方那一轮就是这一轮里的一段执行，人要看的是「主 Bot 这一轮派了谁、做到哪、交回了什么」。
+       *
+       * 以前另起一块、把主 Bot 的气泡断开，画成「那颗 Bot 发的一条消息」。主 Bot 被停掉时那一轮
+       * 收口落在断开后的空块上，屏幕上就剩一张孤零零的「已停止」卡加一个空气泡，前后对不上。
+       *
+       * 同一个 id 来多条（等 → 跑 → 收场），跨块按 id 认回第一次挂上的那一条就地改。
+       */
+      const prev = taskSeen.get(data.id)
+      if (prev) {
+        Object.assign(prev, data)
+        continue
+      }
+      if (!assistant) {
+        assistant = { kind: 'assistant', text: '', tools, via: turnVia, time: at, seq: ev.seq }
+        blocks.push(assistant)
+      }
+      const task = { ...data, time: at, seq: ev.seq }
+      taskSeen.set(data.id, task)
+      ;(assistant.assigns || (assistant.assigns = [])).push(task)
+      assistant.endTime = at
     } else if (type === 'agent/task') {
       /**
        * 一次委派（见 docs/delegation.md）。**挂在助手那一块上**，理由和确认卡一字不差：
@@ -250,6 +296,7 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
         if (typeof data.arguments === 'string') cur.args = data.arguments
         if (data.form && Array.isArray(data.form.fields)) cur.form = data.form
         if (Array.isArray(data.edited)) cur.edited = data.edited
+        if (typeof data.feedback === 'string') cur.feedback = data.feedback
       } else {
         list.push({
           callId: data.callId,
@@ -259,6 +306,8 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
           // 这次用哪张卡、卡上哪几格。**席位算好的**，界面照着画（见 policy/forms.ts）。
           form: data.form && Array.isArray(data.form.fields) ? data.form : null,
           edited: Array.isArray(data.edited) ? data.edited : null,
+          // 「退回修改」时人写的意见（终态事件才有）。药丸和悬浮窗靠它说「退回修改」而不是「已拒绝」。
+          feedback: typeof data.feedback === 'string' ? data.feedback : '',
           state: data.state || 'pending',
           expiresAt: Number(data.expiresAt) || 0,
           // 这条 pending 落在日志的第几行。核对现况时拿它跟快照的水位比——
@@ -349,6 +398,7 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
         todos = null
         toolByCall.clear()
         handoffSeen.clear()
+        taskSeen.clear()
       }
       blocks.push({
         kind: 'mark',
@@ -392,8 +442,31 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
     } else if (type === 'turn/start') {
       status = 'running'
       statusAt = at
+      /**
+       * 上一轮只有 turn/start、没有 turn/end（进程死在半路的老日志）：openTurn 一直是真，之后派来的
+       * 指令全被当成插话（steered）——不折、状态不再更新。可插话不会紧跟着一个 turn/start：它是插在
+       * 人那一轮中间，后面跟的是那一轮的助手、工具事件。紧挨着的下一条就是 turn/start，说明这条指令
+       * 开了自己的一轮，是派来的活，不是插话。席位的 withoutTaskTurns 用的是同一条认法。
+       */
+      const last: any = blocks[blocks.length - 1]
+      if (!assigned && last && last.kind === 'user' && last.assigned && last.assigned.state === 'steered' && prevSeq !== undefined && last.seq === prevSeq) {
+        last.assigned.state = 'queued'
+        assigned = last.assigned
+      }
+      openTurn = true
+      if (assigned && assigned.turn == null) {
+        assigned.turn = Number(data.turn)
+        assigned.state = 'running'
+      }
     } else if (type === 'turn/end') {
       status = ''
+      openTurn = false
+      if (assigned && assigned.turn === Number(data.turn)) {
+        const reason = data.reason
+        assigned.state = String((typeof reason === 'string' ? reason : reason && reason.kind) || 'completed')
+        assigned.endedAt = at
+        assigned = null
+      }
       /**
        * **起点也要跟着清掉。**
        *

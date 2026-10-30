@@ -11,12 +11,11 @@
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { join } from 'node:path'
-import { PG_URL } from './pg.mjs'
+import { PG_URL, pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { closeServer } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 const SCHEMA = schemaOf('e2e_billing')
 const MODEL = 'anthropic/claude-haiku-4-5'
@@ -44,13 +43,20 @@ function startFakeAnthropic() {
   /**
    * noUsage：替身一个 usage 都不报——模拟流在 usage 那一帧之前断掉的那种答复。
    * fail：回一页 500 错误——模拟上游压根没接（429 / 503 那一类），一分钱没花。
+   * errorFrame：先回 200 的事件流、开头一帧就是 overloaded 的 error——Anthropic 过载时真会这样，
+   *   也是一分钱没花；席位认出「还没出内容」会退避重发。
    */
-  const flags = { noUsage: false, fail: false }
+  const flags = { noUsage: false, fail: false, errorFrame: false }
   const server = createServer(async (req, res) => {
     for await (const _ of req) void _
     if (flags.fail) {
       res.writeHead(500, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }))
+      return
+    }
+    if (flags.errorFrame) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } })}\n\n`)
       return
     }
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -75,32 +81,24 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# billing')
 
   const upstream = await startFakeAnthropic()
-  const gw = start('billing-gw', ['--import', 'tsx', join(gwRoot, 'src/index.ts')], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'billing-gw',
+    what: 'billing gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_SEED_OWNER: '0',
       ANTHROPIC_BASE_URL: upstream.url,
       ANTHROPIC_API_KEY: 'fake-anthropic-key',
       E2E_STUB_WEB: '1',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'billing gateway' })
 
-  const require = createRequire(`${gwRoot}/package.json`)
-  const pg = require('pg')
-  const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
-  await client.query(`set search_path to ${SCHEMA}`)
+  const client = await pgClient(SCHEMA)
 
   /** 账本行，最近的在前。计价断言全看它——`llm_calls` 那边只有 token。 */
   const charges = async (companyId) =>
@@ -972,6 +970,29 @@ export async function runBilling({ gwRoot, test, req, start, waitHttp, assert, l
       await settled(orgA, before + 1)
       const row = (await charges(orgA))[0]
       assert(row.amount === 0 && row.unpriced === true && row.estimated === false, `没打到上游的调用不该估：${JSON.stringify(row)}`)
+    })
+
+    await test('上游回 200 但开头一帧就是报错（过载）：不算开了流、不估，席位重发几次也不叠出幽灵账', async () => {
+      const before = (await charges(orgA)).length
+      upstream.flags.errorFrame = true
+      try {
+        for (let i = 0; i < 3; i++) {
+          await req(base, 'POST', '/v1/messages', {
+            token: tokenA,
+            body: { model: MODEL, max_tokens: 64, stream: true, messages: [{ role: 'user', content: BIG }] },
+          })
+        }
+        // 走 pi-ai 转译那条路（/v1/chat/completions 流式）：pi-ai 不发 start、直接推一帧 error。
+        await req(base, 'POST', '/v1/chat/completions', {
+          token: tokenA,
+          body: { model: MODEL, max_tokens: 64, stream: true, messages: [{ role: 'user', content: BIG }] },
+        })
+      } finally {
+        upstream.flags.errorFrame = false
+      }
+      await settled(orgA, before + 4)
+      const rows = (await charges(orgA)).slice(0, 4)
+      assert(rows.length === 4 && rows.every((r) => r.amount === 0 && r.estimated === false), `报错帧不该估出钱来：${JSON.stringify(rows.map((r) => ({ amount: r.amount, estimated: r.estimated, status: r.status })))}`)
     })
 
     /**

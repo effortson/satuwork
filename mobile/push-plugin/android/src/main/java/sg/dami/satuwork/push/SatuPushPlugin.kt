@@ -2,11 +2,18 @@ package sg.dami.satuwork.push
 
 import android.Manifest
 import android.app.Activity
+import android.app.ActivityManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import android.webkit.WebView
 import app.tauri.PermissionState
 import app.tauri.annotation.Command
+import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.Permission
 import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
@@ -16,10 +23,14 @@ import app.tauri.plugin.Plugin
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
 
+@InvokeArg
+class ClearNotificationArgs { var ids: Array<String> = emptyArray() }
+
 /*
  * 手机壳的远程推送，Android 那半（iOS 那半在 ../../../../../../../ios/Sources/SatuPushPlugin.swift）。
  *
- * 和 iOS 同两条命令：register（要通知权限、要 FCM 令牌）、takeTap（用户点开的那条，取一次就清）。
+ * register（通知权限和 FCM 令牌）、takeTap（通知点击，取一次就清），以及 Android 的
+ * backgroundStatus / openBackgroundSettings（后台限制检测与设置入口）。
  *
  * - **Firebase 没配就不推**：google-services.json 不进版本库（仓库是公开的），没有那个文件时 app 不
  *   套 google-services 插件，FirebaseApp 没初始化，这里回 granted: false 和原因，页面不登记。
@@ -41,6 +52,14 @@ class SatuPushPlugin(private val activity: Activity) : Plugin(activity) {
 
     override fun load(webView: WebView) {
         page = webView
+        if (Build.VERSION.SDK_INT >= 26) {
+            val channel = NotificationChannel(
+                activity.getString(R.string.satu_notification_channel_id),
+                activity.getString(R.string.satu_notification_channel_name),
+                NotificationManager.IMPORTANCE_HIGH,
+            )
+            activity.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
         takeIntent(activity.intent)
     }
 
@@ -110,9 +129,45 @@ class SatuPushPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun backgroundStatus(invoke: Invoke) {
+        val power = activity.getSystemService(PowerManager::class.java)
+        val manager = activity.getSystemService(ActivityManager::class.java)
+        val out = JSObject()
+        out.put("supported", true)
+        out.put("backgroundRestricted", Build.VERSION.SDK_INT >= 28 && manager.isBackgroundRestricted)
+        out.put("batteryOptimizationIgnored", power.isIgnoringBatteryOptimizations(activity.packageName))
+        invoke.resolve(out)
+    }
+
+    /** 通用的应用详情入口；电池页名称与路径由各手机厂商决定。 */
+    @Command
+    fun openBackgroundSettings(invoke: Invoke) {
+        activity.runOnUiThread {
+            try {
+                activity.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:${activity.packageName}")))
+                invoke.resolve()
+            } catch (error: Exception) {
+                invoke.reject("Unable to open application settings: ${error.message}")
+            }
+        }
+    }
+
+    @Command
     fun takeTap(invoke: Invoke) {
         val tap = pendingTap ?: JSObject()
         pendingTap = null
         invoke.resolve(tap)
+    }
+
+    @Command
+    fun clearNotifications(invoke: Invoke) {
+        val ids = invoke.parseArgs(ClearNotificationArgs::class.java).ids.toSet()
+        val manager = activity.getSystemService(NotificationManager::class.java)
+        for (notice in manager.activeNotifications) {
+            val tag = notice.tag ?: continue
+            if (tag.startsWith("satu:") && ids.contains(tag.removePrefix("satu:"))) manager.cancel(tag, notice.id)
+        }
+        invoke.resolve()
     }
 }

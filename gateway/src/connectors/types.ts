@@ -51,6 +51,11 @@ export type ConnectionState = 'pending' | 'active' | 'failed'
 export interface StatusResult {
   status: ConnectionState
   error?: string
+  /**
+   * 供应商在连接记录里就说得出的账号（OAuth 的 id_token 里的邮箱、店铺域名之类）。只用于
+   * 显示。说不出就不带——上层会再试一次「我是谁」那类工具（lib/connectors.ts 的 lookupAccountName）。
+   */
+  accountName?: string
 }
 
 export interface ExecuteInput {
@@ -148,6 +153,14 @@ export interface ConnectorProvider {
    * 供应商抛 ProviderError。
    */
   prepareUpload(input: PrepareUploadInput): Promise<UploadTicket>
+
+  /**
+   * 这一把连接连的是谁（邮箱、登录名），只用于显示。供应商自己有办法问的就在这里问
+   * （Composio：连接记录里的 `test_request_endpoint` 经代理打一次）。说不出就回空串；
+   * 上层还会再试 toolkit 自己的「我是谁」工具（lib/connectors.ts 的 lookupAccountName）。
+   * **不是一次工具调用**：不落流水、不计费。
+   */
+  identify?(externalId: string): Promise<string>
 }
 
 /** 供应商侧的错误。上层据此决定回 402 / 502，而不是把栈丢给调用方。 */

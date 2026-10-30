@@ -30,7 +30,7 @@ function markNode(text, alt) {
 /**
  * 图片 / iframe 加载完或加载失败之后做什么。**内联 `onload=` / `onerror=` 的替代。**
  *
- * 原来那几处写成内联属性，理由写在 chat.js 的 DONE 上，而且那个理由是对的：整页是
+ * 原来那几处写成内联属性，理由写在 chat-preview.js 的 DONE 上，而且那个理由是对的：整页是
  * innerHTML 换掉的，挂在节点上的监听器每次重绘都会连同节点一起没，圈就永远转下去。
  *
  * 但内联事件处理器要求 CSP 的 `script-src` 带上 `'unsafe-inline'`，而那等于把整条 CSP
@@ -103,12 +103,12 @@ function authAside(
       <div style="position: relative; width: 100%; max-width: 440px; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent);">
         <span>© 2026 Satuwork</span>
         <span class="satu-lg-links">
-          ${/* 下载桌面端：指首页上那一段（pages-landing.js 的 lpDownload）。这三屏上最该
+          ${/* 下载桌面端：指独立下载页（pages-landing.js 的 downloadView）。这三屏上最该
                 有它：人是拿着一条被发过来的地址打开的，而管理员多半只说了「登录这个」
                 ——桌面端要不要装、去哪儿装，除了这儿没别处说得着。和那两条一样开新标签页，
                 理由见上面那段。**桌面壳里不给**：人已经在桌面端里了，而且壳里的 `/` 就是
                 这一屏，没有首页可指（见 render.js 的 anonView）。 */ ''}
-          ${appShell() ? '' : `<a href="/#download" target="_blank" rel="noopener noreferrer">${t('下载桌面端', 'Desktop app')}</a>`}
+          ${appShell() ? '' : `<a href="/download" target="_blank" rel="noopener noreferrer">${t('下载桌面端', 'Desktop app')}</a>`}
           <a href="/privacy" target="_blank" rel="noopener noreferrer">${t('隐私政策', 'Privacy Policy')}</a>
           <a href="/terms" target="_blank" rel="noopener noreferrer">${t('服务条款', 'Terms of Service')}</a>
         </span>
@@ -174,7 +174,7 @@ function setupView() {
           </div>
           <button type="submit" class="btn btn-primary btn-block" ${state.busy ? 'disabled' : ''}>
             ${state.busy ? t('创建中…') : t('创建并进入')}
-            ${state.busy ? '' : svg(['M5 12h14', 'm12 5 7 7-7 7'], 14)}
+            ${state.busy ? '' : svg(ARROW_RIGHT, 14)}
           </button>
           ${authConsent(t('创建并进入'), 'Create and continue')}
         </form>
@@ -192,6 +192,7 @@ function loginView() {
       <div style="width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: var(--space-6);">
         ${/* 回首页。**只在网页上有**——桌面壳里 `/` 就是这一屏（见 render.js 的
              anonView），那颗按钮会把人送回原地，是一颗点了没反应的按钮。 */ ''}
+        ${gatewayServerButton()}
         ${
           appShell()
             ? ''
@@ -218,13 +219,84 @@ function loginView() {
           </div>
           <button type="submit" class="btn btn-primary btn-block" ${state.busy ? 'disabled' : ''}>
             ${state.busy ? t('登录中…') : t('登录')}
-            ${state.busy ? '' : svg(['M5 12h14', 'm12 5 7 7-7 7'], 14)}
+            ${state.busy ? '' : svg(ARROW_RIGHT, 14)}
           </button>
         </form>
         <p style="text-align: center; margin: 0; font-size: 14px; color: color-mix(in srgb, var(--color-text) 60%, transparent);">${t('还没有账号？联系管理员开通。')}</p>
       </div>
     </div>
+    ${gatewayServerModal()}
   </div>`
+}
+
+const SERVER_ICON = ['M4 4h16v6H4z', 'M4 14h16v6H4z', 'M8 7h.01', 'M8 17h.01']
+
+/** 桌面壳和手机壳注入的「连哪台 Gateway」那组命令。浏览器里没有。 */
+function gatewayServerBridge() {
+  const bridge = window.__SATUWORK_SERVER__
+  return appShell() && bridge && typeof bridge.check === 'function' ? bridge : null
+}
+
+function gatewayHost(raw) {
+  try {
+    return new URL(raw).host
+  } catch {
+    return String(raw || '')
+  }
+}
+
+/**
+ * 登录页右上角那颗「服务器」按钮，标着现在连的是哪台。
+ *
+ * 放在登录页是因为最需要它的时候就在这儿：服务器连不上、或者要换到公司自己部署的那台，
+ * 人还没登录，进不了任何设置页。
+ */
+function gatewayServerButton() {
+  if (!gatewayServerBridge()) return ''
+  const host = gatewayHost(window.__SATUWORK_GATEWAY__)
+  return `<button type="button" class="btn btn-ghost" data-act="gw-server-open"
+      style="position: absolute; top: var(--space-6); right: var(--space-6); padding: 4px 10px; font-size: 13px; color: var(--muted-foreground);"
+      title="${esc(t('配置连接的服务器', 'Configure server'))}" aria-label="${esc(t(`服务器：${host}，点击配置`, `Server: ${host}, click to configure`))}">
+    ${svg(SERVER_ICON, 14)}${esc(host || t('服务器', 'Server'))}
+  </button>`
+}
+
+/**
+ * 「连接的服务器」弹窗：填地址 →「检测」只测不存；「检测并使用」测过了才写盘，壳子随即用新
+ * 地址重新加载界面。检测在壳子里做：请求 `/health`，回 `{"ok":true}` 才算是 Gateway。
+ */
+function gatewayServerModal() {
+  const s = state.gwServer
+  if (!s) return ''
+  const busy = s.phase === 'checking' || s.phase === 'switching'
+  const status = s.msg
+    ? `<div class="gw-flash ${s.phase === 'err' ? 'gw-flash-err' : 'gw-flash-ok'}" role="status" style="margin: 0; word-break: break-all;">${esc(s.msg)}</div>`
+    : ''
+  const restore =
+    s.def && s.url.trim().replace(/\/+$/, '') !== s.def.replace(/\/+$/, '')
+      ? `<button type="button" class="btn btn-ghost" style="padding: 4px 8px; font-size: 13px;" data-act="gw-server-default" ${busy ? 'disabled' : ''}>${esc(t(`恢复默认（${gatewayHost(s.def)}）`, `Use default (${gatewayHost(s.def)})`))}</button>`
+      : '<span></span>'
+  return modalBox({
+    close: 'gw-server-close',
+    tag: 'form',
+    attrs: 'id="gw-server-form" class="gw-modal" style="max-width: 480px;" data-stop role="dialog" aria-modal="true" aria-labelledby="gw-server-title"',
+    title: `<span id="gw-server-title">${esc(t('连接的服务器', 'Server'))}</span>`,
+    sub: esc(t('这台设备上的 Satuwork 连哪台 Gateway。检测通过才会保存并切换。', 'Which Gateway this app connects to. It is saved and used only after the check passes.')),
+    body: `<div class="field">
+        <label for="gw-server-url">${t('服务器地址', 'Server address')}</label>
+        <input class="input satu-input" id="gw-server-url" name="url" type="text" autocomplete="off" spellcheck="false"
+          placeholder="gw.example.com ${esc(t('或', 'or'))} 192.168.1.10:3080" value="${esc(s.url)}" required ${busy ? 'disabled' : ''}>
+        <p style="margin: 6px 0 0; font-size: 12px; color: var(--muted-foreground);">${t('不写协议就按 http:// 算。换了服务器要在那台上重新登录。', 'Without a scheme, http:// is assumed. You will sign in again on the new server.')}</p>
+      </div>
+      ${status}
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;">
+        ${restore}
+        <div style="display: flex; gap: var(--space-2);">
+          <button type="button" class="btn btn-secondary" data-act="gw-server-check" ${busy ? 'disabled' : ''}>${s.phase === 'checking' ? t('检测中…', 'Checking…') : t('检测', 'Check')}</button>
+          <button type="submit" class="btn btn-primary" ${busy ? 'disabled' : ''}>${s.phase === 'switching' ? t('切换中…', 'Switching…') : t('检测并使用', 'Check and use')}</button>
+        </div>
+      </div>`,
+  })
 }
 
 /**
@@ -277,8 +349,10 @@ function installingOf(bot) {
   return Boolean(bot && bot.runtime && bot.runtime.status === 'deploying')
 }
 
-function chatRosterNav() {
-  const bots = state.runtimeBots || []
+function chatRosterNav(options = {}) {
+  const bots = options.bots ?? state.runtimeBots ?? []
+  const mainBotId = options.mainBotId ?? state.mainBotId
+  const folderOpen = options.folderOpen ?? state.botFolderOpen
   if (!bots.length) return ''
   /**
    * **只有真的在对话页上，名单里才有「选中的那一行」。**
@@ -290,14 +364,86 @@ function chatRosterNav() {
    * 用 onChatPage() 而不是自己再判一次路径：顶栏换不换成会话身份行、右栏开不开，用
    * 的都是它，三处共用一个判断才不会各自漂移。
    */
-  const selected = onChatPage() ? chatBotIdOf(state.path) || state.chatBotId : ''
-  return bots
-    .map((b) => {
-      const sum = (botStreams.get(b.id) || {}).sum || { state: 'idle', lastAt: 0, lastText: '' }
-      return `<button type="button" class="satu-botrow" data-act="chat-open" data-id="${esc(b.id)}" data-bot-row="${esc(b.id)}" aria-current="${b.id === selected}">
+  const selected = options.selected ?? (onChatPage() ? chatBotIdOf(state.path) || state.chatBotId : '')
+  const { loose, folders } = rosterGroups(bots, options.folders ?? state.botFolders ?? [], mainBotId)
+  /**
+   * 没分类的排最前面、不带标题——「默认没有分类」：一个人一个分类都没建时，名单和
+   * 以前一模一样。它同时是一块放回区：从分类里拖出来的 Bot 丢到这儿就回到没分类；
+   * 这一块空着的时候只在拖动中才画出来（CSS 按 .satu-botlist[data-dragging] 开）。
+   */
+  const looseHtml =
+    `<div class="satu-botfolder satu-botfolder-loose" data-drop-folder="">` +
+    loose.map((b) => rosterRowHtml(b, selected, mainBotId)).join('') +
+    (folders.length && !loose.length
+      ? `<div class="satu-botfolder-empty">${esc(t('拖到这里取消分类', 'Drop here to remove from its folder'))}</div>`
+      : '') +
+    `</div>`
+  const folderHtml = folders
+    .map((f) => {
+      const open = folderOpen[f.id] !== false
+      const menuId = 'folder:' + f.id
+      return `<div class="satu-botfolder" data-folder="${esc(f.id)}" data-open="${String(open)}">
+        ${/* 标题整条都是放入区：拖着一颗 Bot 悬在上面就亮，松手就进这个分类（收着的也能放）。 */ ''}
+        <div class="satu-botfolder-head" data-drop-folder="${esc(f.id)}">
+          <button type="button" class="satu-group satu-group-toggle satu-botfolder-toggle" data-act="bot-folder-toggle" data-id="${esc(f.id)}" aria-expanded="${String(open)}">
+            <span class="satu-groupchev" aria-hidden="true">${svg(open ? CHEVRON_SMALL_DOWN : CHEVRON_SMALL_RIGHT, 12)}</span>
+            <span class="satu-botfolder-name">${esc(f.name)}</span>
+            ${/* 收着的分类里有 Bot 在等人：标题上挂同一枚「有事等你」，不然只能靠顶栏那个计数发现（paintRoster 跟着改）。 */ ''}
+            <span class="satu-botneed satu-botfolder-need" data-need="${esc(open ? '' : folderNeed(f.bots))}" title="${esc(botNeedLabel(open ? '' : folderNeed(f.bots)))}"${open || !folderNeed(f.bots) ? ' hidden' : ''}>${open ? '' : botNeedIcon(folderNeed(f.bots))}</span>
+            <span class="satu-botfolder-count">${f.bots.length}</span>
+          </button>
+          <button type="button" class="satu-botfolder-more" data-menu-toggle data-act="menu-toggle" data-id="${esc(menuId)}"
+            aria-haspopup="true" aria-expanded="${String(state.menu === menuId)}"
+            aria-label="${esc(t('分类操作', 'Folder actions'))}" title="${esc(t('分类操作', 'Folder actions'))}">${svg(KEBAB_ICON, 14)}</button>
+          ${
+            state.menu === menuId
+              ? `<div class="satu-menu" data-flip="${String(Boolean(state.menuFlip))}">
+              <button type="button" class="satu-menuitem" data-act="bot-folder-rename" data-id="${esc(f.id)}">${t('重命名', 'Rename')}</button>
+              <button type="button" class="satu-menuitem" data-danger="true" data-act="bot-folder-delete" data-id="${esc(f.id)}">${t('删除分类', 'Delete folder')}</button>
+            </div>`
+              : ''
+          }
+        </div>
+        ${/* 收着的也把行画出来，由 CSS 藏（.satu-botfolder[data-open=false]）：侧栏收成窄栏时没有分类标题可点，
+              不画的话那几颗 Bot 在窄栏里整个看不见、也没地方展开。窄栏那一档照常摊开。 */ ''}
+        ${f.bots.map((b) => rosterRowHtml(b, selected, mainBotId)).join('')}
+      </div>`
+    })
+    .join('')
+  return looseHtml + folderHtml
+}
+
+/**
+ * 名单按分类分组：没分类的一组，再按分类的先后各一组。
+ *
+ * 归属指向一个已经不存在的分类（刚在另一个标签页里删掉）时当没分类——名单上不能
+ * 凭空少一颗 Bot。
+ */
+function rosterGroups(bots, folderList = state.botFolders || [], mainBotId = state.mainBotId) {
+  const folders = folderList.slice().sort((a, b) => a.position - b.position)
+  const known = new Set(folders.map((f) => f.id))
+  // 主 Bot 在它所在的那一组里排最前面：戴着皇冠还排在中间，看着像排错了。别的顺序不动。
+  const mainFirst = (list) => list.slice().sort((a, b) => Number(b.id === mainBotId) - Number(a.id === mainBotId))
+  const loose = mainFirst(bots.filter((b) => !b.folderId || !known.has(b.folderId)))
+  /**
+   * 「本地 / Local」分类（`kind: 'local'`）空着就不画：分类是账号级的，本地 Bot 却只在建它的那台电脑上
+   * 看得到（docs/local-bot-device.md §5），网页、App、别的电脑上它总是空的。
+   */
+  return {
+    loose,
+    folders: folders
+      .map((f) => ({ ...f, bots: mainFirst(bots.filter((b) => b.folderId === f.id)) }))
+      .filter((f) => f.kind !== 'local' || f.bots.length),
+  }
+}
+
+/** 名单上的一行。`draggable`：拖到某个分类的标题上就归进去（见下面那组 drag 监听）。 */
+function rosterRowHtml(b, selected, mainBotId = state.mainBotId) {
+  const sum = (botStreams.get(b.id) || {}).sum || SatuCore.newSum()
+  return `<button type="button" class="satu-botrow" draggable="true" data-act="chat-open" data-id="${esc(b.id)}" data-bot-row="${esc(b.id)}" aria-current="${b.id === selected}">
         ${/* 头像占满两行：名字和摘要并排在它右边，整行才像一条会话，而不是一个
              带小图标的菜单项。34 是 botAvatar 的默认尺寸，也正好等于两行的高度。 */ ''}
-        <span class="satu-botavatar">${botAvatar(b.icon, 34, b.origin)}</span>
+        <span class="satu-botavatar">${botAvatarOf(b, 34, botIsWorking(b), mainBotId)}</span>
         <span class="satu-botmain">
           <span class="satu-botline">
             ${/* 状态点在名字**前面**：一列对齐的点，扫一眼就知道哪几个在动，
@@ -309,6 +455,7 @@ function chatRosterNav() {
             <span class="satu-botneed" data-need="${esc(sum.need || '')}" title="${esc(botNeedLabel(sum.need))}" aria-label="${esc(
               botNeedLabel(sum.need),
             )}"${sum.need ? '' : ' hidden'}>${botNeedIcon(sum.need)}</span>
+            <span class="satu-web-unread" data-web-unread="${esc(b.id)}" hidden></span>
             <time class="satu-bottime">${esc(sum.lastAt ? chatClock(sum.lastAt) : '')}</time>
           </span>
           ${/* 没有消息就不留这一行——空着一道灰边比少一行更碍眼。
@@ -317,9 +464,250 @@ function chatRosterNav() {
           <span class="satu-botsnip"${installingOf(b) || sum.lastText ? '' : ' hidden'}>${esc(installingOf(b) ? t('正在安装…', 'Installing…') : sum.lastText)}</span>
         </span>
       </button>`
-    })
-    .join('')
 }
+
+/**
+ * 新建 / 重命名分类的弹窗。只有一格名字——分类就是一个名字加一群 Bot，没有别的。
+ */
+function botFolderModal() {
+  const f = state.botFolderEdit
+  if (!f) return ''
+  return modalBox({
+    close: 'bot-folder-close',
+    attrs: 'class="gw-modal" data-stop style="max-width: 400px;"',
+    x: false,
+    title: f.id ? t('重命名分类', 'Rename folder') : t('新建分类', 'New folder'),
+    sub: t('分类只是你自己名单上的分法，把 Bot 拖到分类名上就归进去。', 'Folders only organize your own list; drag a bot onto a folder name to file it.'),
+    body: `<div class="field">
+        <label for="bf-name">${t('名字')}</label>
+        <input class="input" id="bf-name" data-folderedit="name" value="${esc(f.name)}" maxlength="24" placeholder="${esc(t('例如：客户跟进', 'e.g. Customers'))}" autofocus>
+      </div>
+      ${f.error ? `<p style="margin: 0; font-size: 13px; color: var(--color-danger, #d33);">${esc(f.error)}</p>` : ''}
+      <div style="display: flex; justify-content: flex-end; gap: var(--space-2);">
+        <button type="button" class="btn btn-secondary" data-act="bot-folder-close">${t('取消')}</button>
+        <button type="button" class="btn btn-primary" data-act="bot-folder-save" ${state.busy ? 'disabled' : ''}>${f.id ? t('保存') : t('创建', 'Create')}</button>
+      </div>`,
+  })
+}
+
+async function saveBotFolder() {
+  const f = state.botFolderEdit
+  if (!f || state.busy) return
+  const name = String(f.name || '').trim()
+  if (!name) {
+    f.error = t('分类要有名字', 'Give the folder a name')
+    render()
+    return
+  }
+  state.busy = true
+  f.error = ''
+  render()
+  try {
+    if (f.id) {
+      const data = await api('PATCH', `/runtime/bot-folders/${encodeURIComponent(f.id)}`, { name })
+      state.botFolders = (state.botFolders || []).map((x) => (x.id === f.id ? data.folder : x))
+    } else {
+      const data = await api('POST', '/runtime/bot-folders', { name })
+      state.botFolders = [...(state.botFolders || []), data.folder]
+    }
+    state.botFolderEdit = null
+  } catch (err) {
+    f.error = err.message
+  } finally {
+    state.busy = false
+    render()
+  }
+}
+
+/**
+ * 把一颗 Bot 放进某个分类（folderId 为空就是拿出来）。
+ *
+ * 先改本地再发请求：松手那一下名单就该变，等接口回来再动会让人以为没拖上。失败了
+ * 退回去并说一声。
+ */
+/**
+ * 还在路上的「移到分类」：botId → { folderId, seq }。
+ *
+ * 两件事要它：名单这时候刚好重拉回来（loadRuntimeBots），服务端那份还是旧的，不能把刚放进去的盖掉
+ * （见 applyPendingFolders）；连着拖两次、前一次失败，回滚只能退本次自己那一步，不能把后一次也退掉。
+ */
+const pendingFolderMoves = new Map()
+let folderMoveSeq = 0
+
+/** 重拉回来的名单上，把还在路上的那几笔盖回去。 */
+function applyPendingFolders(bots) {
+  for (const b of bots || []) {
+    const p = pendingFolderMoves.get(b.id)
+    if (p) b.folderId = p.folderId
+  }
+  return bots
+}
+
+async function moveBotToFolder(botId, folderId) {
+  const bot = (state.runtimeBots || []).find((b) => b.id === botId)
+  if (!bot) return
+  const next = folderId || null
+  const prev = bot.folderId || null
+  if (prev === next) return
+  const seq = ++folderMoveSeq
+  pendingFolderMoves.set(botId, { folderId: next, seq })
+  bot.folderId = next
+  // 放进一个收着的分类里，顺手展开它：不然松手之后那颗 Bot 就「不见了」。
+  if (next && state.botFolderOpen[next] === false) {
+    state.botFolderOpen = { ...state.botFolderOpen, [next]: true }
+    saveBotFolderOpen(state.botFolderOpen)
+  }
+  render()
+  try {
+    await api('PUT', `/runtime/bots/${encodeURIComponent(botId)}/folder`, { folderId: next })
+  } catch (err) {
+    // 这一步之后又挪过一次：后一次才是人要的，别退。没再挪过，就退回这一步之前那一格。
+    if (pendingFolderMoves.get(botId)?.seq === seq) {
+      const cur = (state.runtimeBots || []).find((b) => b.id === botId)
+      if (cur) cur.folderId = prev
+    }
+    flash('err', err.message)
+    render()
+  } finally {
+    if (pendingFolderMoves.get(botId)?.seq === seq) pendingFolderMoves.delete(botId)
+  }
+}
+
+/**
+ * 对话顶栏菜单里的「移到分类」。拖放之外的入口：触屏（手机浏览器起不了 HTML5 拖放）、拦了拖放的
+ * WebView、Firefox 里拖不动的 `<button draggable>`，都只能从这儿把 Bot 放进分类。一个分类都没建、
+ * 或者这颗不在自己名单上（别人的、全局的）就不摆。
+ */
+function folderMenuItems(bot) {
+  const roster = state.runtimeBots || []
+  const mine = roster.find((b) => b.id === bot.id)
+  // 和侧栏一个口径（rosterGroups）：空着的「本地」分类不画，这里也不给——除非挪的就是一颗本地 Bot。
+  const folders = (state.botFolders || [])
+    .filter((f) => f.kind !== 'local' || (mine && mine.runtimeKind === 'local') || roster.some((b) => b.folderId === f.id))
+    .sort((a, b) => a.position - b.position)
+  if (!folders.length || !mine) return ''
+  const known = new Set(folders.map((f) => f.id))
+  const cur = mine.folderId && known.has(mine.folderId) ? mine.folderId : ''
+  const item = (folderId, label) =>
+    `<button type="button" class="satu-menuitem satu-menuitem-check" data-act="bot-folder-move" data-id="${esc(bot.id)}" data-folder="${esc(folderId)}" aria-checked="${String(cur === folderId)}" role="menuitemradio">${esc(label)}</button>`
+  return (
+    `<div class="satu-menulabel">${t('移到分类', 'Move to folder')}</div>` +
+    folders.map((f) => item(f.id, f.name)).join('') +
+    item('', t('不分类', 'No folder')) +
+    `<div class="satu-menusep" role="separator"></div>`
+  )
+}
+
+/**
+ * 对话顶栏菜单里那一条：没设的说「设为主 Bot」，已经是的说「取消主 Bot」。
+ * 一人只有一颗，所以在另一颗上点「设为」就是换过去，不用先取消。
+ */
+function mainBotMenuItem(bot) {
+  const on = bot.id === state.mainBotId
+  return `<button type="button" class="satu-menuitem" data-act="main-bot-set" data-id="${esc(bot.id)}" data-on="${String(!on)}">${on ? t('取消主 Bot', 'Unset main bot') : t('设为主 Bot', 'Set as main bot')}</button>`
+}
+
+/** Bot 设置页头部那一枚：是主 Bot 就一枚标签加「取消」，不是就一颗「设为主 Bot」。 */
+function mainBotToggle(bot) {
+  const on = bot.id === state.mainBotId
+  return on
+    ? `<span class="tag tag-accent">${t('主 Bot', 'Main bot')}</span><button type="button" class="satu-linkbtn" data-act="main-bot-set" data-id="${esc(bot.id)}" data-on="false">${t('取消', 'Unset')}</button>`
+    : `<button type="button" class="satu-linkbtn" data-act="main-bot-set" data-id="${esc(bot.id)}" data-on="true">${t('设为主 Bot', 'Set as main bot')}</button>`
+}
+
+/** 先改本地再发请求，失败退回去并说一声——和拖进分类一个做法。 */
+async function setMainBot(botId, on) {
+  const prev = state.mainBotId
+  const next = on ? botId : ''
+  if (prev === next) return
+  state.mainBotId = next
+  state.menu = null
+  render()
+  try {
+    await api('PUT', '/runtime/main-bot', { botId: next || null })
+  } catch (err) {
+    state.mainBotId = prev
+    flash('err', err.message)
+    render()
+  }
+}
+
+/**
+ * 名单上的拖动。原生 HTML5 拖放：行上 `draggable`，放入区是 `[data-drop-folder]`
+ * （每个分类的标题，和最上面那块没分类区）。
+ *
+ * 拖动过程中**只改属性不重画**：render() 会把正在拖的那个节点换掉，拖动当场中断。
+ * 真正改数据的只有 drop 那一下（moveBotToFolder）。
+ */
+let rosterDragId = ''
+function rosterDragClear() {
+  rosterDragId = ''
+  for (const el of document.querySelectorAll('[data-drop-folder][data-dragover]')) el.removeAttribute('data-dragover')
+  for (const el of document.querySelectorAll('.satu-botlist[data-dragging], .satu-botrow[data-dragging]')) el.removeAttribute('data-dragging')
+}
+document.addEventListener('dragstart', (e) => {
+  const row = e.target instanceof Element ? e.target.closest('[data-bot-row]') : null
+  // 拖的不是名单上的一行：上一次没收干净的 id（拖到一半整页重画，dragend 发在脱离了文档的旧节点上，
+  // 冒不到 document）在这儿清掉。
+  if (!row) {
+    rosterDragId = ''
+    return
+  }
+  rosterDragId = row.getAttribute('data-bot-row') || ''
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', rosterDragId)
+  }
+  row.setAttribute('data-dragging', 'true')
+  const list = row.closest('.satu-botlist')
+  if (list) list.setAttribute('data-dragging', 'true')
+})
+document.addEventListener('dragend', () => rosterDragClear())
+document.addEventListener('dragover', (e) => {
+  if (!rosterDragLive(e)) return
+  const zone = e.target instanceof Element ? e.target.closest('[data-drop-folder]') : null
+  if (!zone) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  for (const el of document.querySelectorAll('[data-drop-folder][data-dragover]')) if (el !== zone) el.removeAttribute('data-dragover')
+  zone.setAttribute('data-dragover', 'true')
+})
+document.addEventListener('dragleave', (e) => {
+  if (!rosterDragId) return
+  const zone = e.target instanceof Element ? e.target.closest('[data-drop-folder]') : null
+  // 从标题挪到它自己的子节点上也会发 dragleave，真离开才灭。
+  if (zone && !(e.relatedTarget instanceof Node && zone.contains(e.relatedTarget))) zone.removeAttribute('data-dragover')
+})
+/**
+ * 这一下拖的是不是名单上那一行。rosterDragId 可能是过期的：拖到一半整页重画，dragend 冒不到 document，
+ * 它就一直留着——之后从桌面拖一个文件丢到分类标题上，会悄悄把上一次那颗挪过去。拖的东西里带着那颗的
+ * id 才算（dragstart 时塞进 text/plain 的）；拖进来的文件没有它。
+ */
+function rosterDragLive(e) {
+  if (!rosterDragId) return false
+  const dt = e.dataTransfer
+  if (dt && dt.types && !Array.from(dt.types).includes('text/plain')) {
+    rosterDragClear()
+    return false
+  }
+  return true
+}
+document.addEventListener('drop', (e) => {
+  if (!rosterDragLive(e)) return
+  const zone = e.target instanceof Element ? e.target.closest('[data-drop-folder]') : null
+  if (!zone) return
+  e.preventDefault()
+  // drop 时才读得到内容：和记着的那颗对不上（过期的 id）就不挪。
+  const carried = e.dataTransfer ? e.dataTransfer.getData('text/plain') : rosterDragId
+  if (carried !== rosterDragId) {
+    rosterDragClear()
+    return
+  }
+  const botId = rosterDragId
+  const folderId = zone.getAttribute('data-drop-folder') || ''
+  rosterDragClear()
+  void moveBotToFolder(botId, folderId)
+})
 
 let rosterPaintQueued = false
 
@@ -361,17 +749,37 @@ function botNeedIcon(need) {
   return ''
 }
 
+/** 一组 Bot 里有没有在等人的：有就回最要紧的那一种（确认先于交接），给收着的分类标题挂。 */
+function folderNeed(bots) {
+  const needs = bots.map((b) => ((botStreams.get(b.id) || {}).sum || {}).need).filter(Boolean)
+  return needs.includes('approval') ? 'approval' : needs[0] || ''
+}
+
 /** 就地更新名单的状态点/时间/摘要。不重绘整页——那会把正在打字的输入框一起换掉。 */
 function paintRoster() {
+  // 收着的分类标题上那枚「有事等你」：跟着里面几颗 Bot 的状态走。
+  for (const box of document.querySelectorAll('.satu-botfolder[data-folder]')) {
+    const el = box.querySelector('.satu-botfolder-need')
+    if (!el) continue
+    const fid = box.getAttribute('data-folder')
+    const need = box.getAttribute('data-open') === 'false' ? folderNeed((state.runtimeBots || []).filter((b) => b.folderId === fid)) : ''
+    if (el.getAttribute('data-need') === need) continue
+    el.setAttribute('data-need', need)
+    el.innerHTML = botNeedIcon(need)
+    el.hidden = !need
+    el.title = botNeedLabel(need)
+  }
   for (const row of document.querySelectorAll('[data-bot-row]')) {
     const id = row.getAttribute('data-bot-row')
+    const bot = (state.runtimeBots || []).find((b) => b.id === id)
+    setBotAvatarRunning(row.querySelector('.satu-botavatar'), botIsWorking(bot))
     /**
      * 正在装的那一颗，这一行由名单自己写死（「正在安装…」），**这里不许覆盖**。
      *
      * 席位还没起来，它那条流开不起来，摘要永远是空的——照常走下去就是把那句话擦掉，
      * 于是名单上它和一颗没消息的旧 Bot 一模一样，而它此刻恰恰是最需要说明的那一个。
      */
-    if (installingOf((state.runtimeBots || []).find((b) => b.id === id))) continue
+    if (installingOf(bot)) continue
     const sum = (botStreams.get(id) || {}).sum
     if (!sum) continue
     const dot = row.querySelector('.satu-botdot')
@@ -415,7 +823,7 @@ function paintRoster() {
 function flashRow(kind, text) {
   return `<div class="gw-flash gw-flash-${kind}" data-flash>
     <span class="gw-flash-text">${esc(text)}</span>
-    <button type="button" class="gw-flash-x" data-act="flash-close" aria-label="${esc(t('关闭'))}">${svg(['M18 6 6 18', 'M6 6l12 12'], 14)}</button>
+    <button type="button" class="gw-flash-x" data-act="flash-close" aria-label="${esc(t('关闭'))}">${svg(CLOSE_ICON, 14)}</button>
   </div>`
 }
 
@@ -482,10 +890,7 @@ function placeholderPage(title, body) {
   return `
     <div class="gw-page">
       <div class="gw-page-inner">
-        <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${esc(title)}</h1>
-          <p style="margin: 0; font-size: 14px; color: var(--muted-foreground);">${esc(body)}</p>
-        </div>
+        ${pageHead(esc(title), esc(body))}
         ${flashes()}
       </div>
     </div>`
@@ -585,7 +990,76 @@ function pushBridge() {
   return mobileShell() && b && typeof b.register === 'function' ? b : null
 }
 
+// Android 的标准后台限制与电池优化是两项独立状态；厂商额外的休眠策略仍需用户在设置中检查。
+let mobileBackground = null
+let mobileBackgroundChecking = null
+let mobileBackgroundDismissed = false
+let mobileBackgroundError = ''
+
+function mobileBackgroundNeedsSetup() {
+  return mobileBackground?.supported && (mobileBackground.backgroundRestricted || !mobileBackground.batteryOptimizationIgnored)
+}
+
+function mobileBackgroundInner(profile = false) {
+  if (!mobileShell() || !state.me || state.me.account?.role === 'owner' || !mobileBackground?.supported) return ''
+  const needsSetup = mobileBackgroundNeedsSetup()
+  if (!profile && (!needsSetup || mobileBackgroundDismissed || state.path === '/profile')) return ''
+  const title = mobileBackground.backgroundRestricted
+    ? t('后台运行已受限制', 'Background activity is restricted')
+    : needsSetup
+      ? t('建议开启“不受限制”', 'Allow unrestricted battery usage')
+      : t('系统未报告后台限制', 'No background restrictions reported')
+  const guide = t('打开系统设置，在“电池”或“后台运行”中选择“不受限制”。部分手机称为“允许后台活动”或“不优化”；如有自启动、休眠应用设置，也请允许 Satuwork 运行。', 'In system settings, open Battery or Background activity and choose Unrestricted. Some phones call this Allow background activity or Don’t optimize. Also allow Satuwork in auto-start or sleeping-app settings, if present.')
+  return `<section class="${profile ? 'satu-panel' : 'gw-mobile-background'}" aria-label="${esc(t('后台运行与推送', 'Background activity and push'))}">
+    ${profile ? `<span class="satu-panel-title">${t('后台运行与推送', 'Background activity and push')}</span>` : ''}
+    <div class="gw-mobile-background-copy" role="status"><strong>${title}</strong>
+      <p>${needsSetup ? t('锁屏后通知可能延迟。', 'Notifications may be delayed while the screen is locked.') : t('若仍有通知延迟，请检查手机的自启动和休眠应用设置。', 'If notifications are still delayed, check your phone’s auto-start and sleeping-app settings.')}${profile ? ' ' + guide : needsSetup ? t('请在系统设置的“电池 / 后台运行”中选择“不受限制”。', 'Choose Unrestricted under Battery / Background activity in system settings.') : ''}</p>
+      ${profile ? `<p>${t('允许后台运行可能增加耗电量。返回应用后会自动复查。', 'Allowing background activity may use more battery. The app checks again when you return.')}</p>` : ''}
+      ${mobileBackgroundError ? `<p role="alert">${esc(mobileBackgroundError)}</p>` : ''}
+    </div>
+    <div class="gw-mobile-background-actions"><button type="button" class="btn btn-secondary" data-act="mobile-background-settings">${t('打开应用设置', 'Open app settings')}</button>
+      ${profile ? `<button type="button" class="satu-linkbtn" data-act="mobile-background-check">${t('重新检测', 'Check again')}</button>` : `<button type="button" class="satu-linkbtn" data-act="mobile-background-dismiss">${t('暂不设置', 'Not now')}</button>`}
+    </div>
+  </section>`
+}
+
+function paintMobileBackground() {
+  for (const slot of document.querySelectorAll('[data-mobile-background]')) {
+    slot.innerHTML = mobileBackgroundInner(slot.getAttribute('data-mobile-background') === 'profile')
+  }
+}
+
+async function checkMobileBackground() {
+  const bridge = pushBridge()
+  if (!bridge || typeof bridge.backgroundStatus !== 'function' || !state.me || state.me.account?.role === 'owner') return
+  if (mobileBackgroundChecking) return mobileBackgroundChecking
+  mobileBackgroundChecking = (async () => {
+    try {
+      const status = await bridge.backgroundStatus()
+      if (JSON.stringify(status) !== JSON.stringify(mobileBackground)) mobileBackgroundDismissed = false
+      mobileBackground = status
+      paintMobileBackground()
+    } catch (e) {
+      console.warn('satuwork: 后台运行状态检测失败', e)
+    }
+  })()
+  try { await mobileBackgroundChecking } finally { mobileBackgroundChecking = null }
+}
+
+async function openMobileBackgroundSettings() {
+  const bridge = pushBridge()
+  if (!mobileBackground?.supported || typeof bridge?.openBackgroundSettings !== 'function') return
+  mobileBackgroundError = ''
+  try {
+    await bridge.openBackgroundSettings()
+  } catch {
+    mobileBackgroundError = t('无法打开系统设置。请手动进入：系统设置 → 应用 → Satuwork → 电池 / 后台运行。', 'Could not open settings. Go to System settings → Apps → Satuwork → Battery / Background activity.')
+  }
+  paintMobileBackground()
+}
+
 async function syncMobilePush() {
+  void checkMobileBackground()
   const bridge = pushBridge()
   if (!bridge || !state.me || state.me.account?.role === 'owner') return
   const ticket = token()
@@ -644,7 +1118,10 @@ async function takeMobilePushTap() {
 
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') void takeMobilePushTap()
+    if (document.visibilityState === 'visible') {
+      void takeMobilePushTap()
+      void checkMobileBackground()
+    }
   })
   // 壳子原生那半记下一次点通知后叫这一声（mobile/push-plugin 的 SatuPushPlugin.swift / .kt）：
   // 回前台那一下和点通知谁先到没有保证，应用开着时从通知中心点进来也不会有回前台。

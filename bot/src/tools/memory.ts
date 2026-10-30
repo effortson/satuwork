@@ -1,9 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { cachedMemories, type CachedMemory } from '../catalog/index.ts'
-import { gatewayToken, gatewayUrl } from '../llm/gateway.ts'
+import { pinnedBotId } from '../env.ts'
 import { memoryOf } from '../registry/index.ts'
 import { scanPii } from '../policy/pii.ts'
-import { fail, registerTool } from './common.ts'
+import { fail, registerTool, runtimeGateway } from './common.ts'
 
 /**
  * 长期记忆：`memory_write` / `memory_list`（见 docs/memory.md）。
@@ -34,48 +34,14 @@ const TEXT_MAX = Math.max(50, Math.trunc(Number(process.env.SATUWORK_MEMORY_TEXT
 /** `memory_list` 一次最多列几条。记忆总量本来就有硬顶，这道闸只防它把上下文冲掉。 */
 const LIST_MAX = 100
 
-function botId(): string {
-  return (process.env.SATUWORK_BOT_ID || '').trim()
-}
-
 /**
  * 打 Gateway 的 runtime 面。
  *
  * 连不上是**管道故障**（模型改什么都没用），4xx 里那句话是**业务失败**——它是 Gateway
  * 判出来的、能照着改的东西（写满了、类别没开、改不动别人的），原话直接给模型看。
- * 两者混成一种，模型要么白重试、要么把一次可修复的拒绝当成系统坏了。（同 tools/skill.ts）
+ * 两者混成一种，模型要么白重试、要么把一次可修复的拒绝当成系统坏了。（口径在 common.ts 的 runtimeGateway）
  */
-async function callGateway<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const base = gatewayUrl()
-  const token = gatewayToken()
-  if (!base || !token) fail('这台机器没有配 Gateway，记忆这条路走不通。')
-  let r: Response
-  try {
-    r = await fetch(base + path, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(30_000),
-    })
-  } catch (e) {
-    throw new Error(`连不上 Gateway：${(e as Error).message}`)
-  }
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    let hint = ''
-    try {
-      hint = String((JSON.parse(text) as { error?: unknown })?.error ?? '')
-    } catch {
-      hint = ''
-    }
-    if (r.status >= 400 && r.status < 500) fail(hint || `Gateway 拒绝了这次操作（HTTP ${r.status}）`)
-    throw new Error(`Gateway 返回 HTTP ${r.status}${text ? ` ${text.slice(0, 200)}` : ''}`)
-  }
-  return (await r.json()) as T
-}
+const callGateway = runtimeGateway('这台机器没有配 Gateway，记忆这条路走不通。')
 
 /** 这条记忆是模型自己写得动的那两层吗。上面两层读得到、改不动。 */
 export function ownLayer(m: CachedMemory): boolean {
@@ -135,7 +101,7 @@ export function apply(ctx: Context) {
   ) => registerTool(ctx, def, execute)
 
   /** 这颗席位钉的那颗 Bot 的记忆策略。取不到就按出厂默认（memoryOf 的口径）。 */
-  const policy = () => memoryOf(ctx.roster.get(botId()))
+  const policy = () => memoryOf(ctx.roster.get(pinnedBotId()))
 
   /**
    * 会话里那张卡（`memory/saved`）。
@@ -265,9 +231,9 @@ export function apply(ctx: Context) {
       { op, text, match, kind, layer }: { op?: string; text?: string; match?: string; kind?: string; layer?: string },
       call,
     ) => {
-      if (!botId()) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），写不了记忆。')
+      if (!pinnedBotId()) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），写不了记忆。')
       const mem = policy()
-      const q = `?botId=${encodeURIComponent(botId())}`
+      const q = `?botId=${encodeURIComponent(pinnedBotId())}`
       const all = cachedMemories(ctx)
 
       /** replace / remove 都要先认出是哪一条。**匹配到多条不许猜**，摆出来让它自己挑。 */
@@ -316,7 +282,7 @@ export function apply(ctx: Context) {
          * 那条原则要防的事（docs/memory.md §6）。
          */
         if (looksProcedural(raw)) {
-          const bot = ctx.roster.get(botId())
+          const bot = ctx.roster.get(pinnedBotId())
           const canSkill = bot?.selfSkills !== false && ctx.tools.has('skill_manage')
           if (!mem.kinds.includes('流程')) {
             fail('这个 Bot 不记流程。记忆放的是一句话说得完的事实，把结论挑一句出来再记。')

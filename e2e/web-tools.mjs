@@ -10,11 +10,11 @@
  * 3. **密钥不回显**，配置接口只报「配没配」。
  */
 import { rmSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { PG_URL } from './pg.mjs'
+import { pgClient } from './pg.mjs'
 import { schemaOf, tmpOf } from './isolate.mjs'
 import { freePort } from './ports.mjs'
 import { runProbe as sharedProbe } from './probe.mjs'
+import { startGateway } from './gateway.mjs'
 
 /** SSRF 闸跑在 gateway/e2e-web-guard.mjs 里——那几个函数是纯的，起一整套服务没必要。 */
 const runGuardProbe = (gwRoot) => sharedProbe(gwRoot, 'e2e-web-guard.mjs')
@@ -26,30 +26,22 @@ export async function runWebTools({ gwRoot, test, req, start, waitHttp, assert, 
   const GW_PORT = await freePort()
   const base = `http://127.0.0.1:${GW_PORT}`
 
-  rmSync(GW_HOME, { recursive: true, force: true })
   log('\n# web-tools')
 
-  const gw = start('webtools-gw', ['--import', 'tsx', `${gwRoot}/src/index.ts`], {
-    cwd: gwRoot,
+  const { gw } = await startGateway({
+    name: 'webtools-gw',
+    what: 'web-tools gateway',
+    home: GW_HOME,
+    schema: SCHEMA,
+    port: GW_PORT,
     env: {
-      SATUWORK_GATEWAY_HOME: GW_HOME,
-      GATEWAY_DATABASE_URL: PG_URL,
-      GATEWAY_PG_SCHEMA: SCHEMA,
-      GATEWAY_PG_RESET: '1',
-      GATEWAY_HOST: '127.0.0.1',
-      GATEWAY_PORT: String(GW_PORT),
       GATEWAY_ACCESS_HOST: 'satuwork.com',
       GATEWAY_SEED_OWNER: '0',
       E2E_STUB_WEB: '1',
     },
   })
-  await waitHttp(`${base}/health`, { child: gw, what: 'web-tools gateway' })
 
-  const require = createRequire(`${gwRoot}/package.json`)
-  const pg = require('pg')
-  const client = new pg.Client({ connectionString: PG_URL })
-  await client.connect()
-  await client.query(`set search_path to ${SCHEMA}`)
+  const client = await pgClient(SCHEMA)
 
   /**
    * 一次网页调用 = 一行 web_calls（事实）+ 一行 usage_charges（钱），按 refId 串。
@@ -157,10 +149,11 @@ export async function runWebTools({ gwRoot, test, req, start, waitHttp, assert, 
       const tav = saved.json.backends.find((b) => b.id === 'tavily')
       assert(tav.configured === true, 'tavily 应当显示已配置')
       assert(!JSON.stringify(saved.json).includes('tvly-e2e-never-leak'), '配置接口把密钥回显了')
-      // 四家后端都要列出来，各自的能力如实报——界面那两个下拉是照这个画的。
+      // 五家后端都要列出来，各自的能力如实报——界面那两个下拉是照这个画的。
       const by = Object.fromEntries(saved.json.backends.map((b) => [b.id, b]))
       assert(by.tavily.search && by.tavily.extract, 'tavily 该是搜索+提取')
       assert(by.firecrawl.search && by.firecrawl.extract, 'firecrawl 该是搜索+提取')
+      assert(by.anysearch.search && by.anysearch.extract && by.anysearch.needsSecret, 'anysearch 该是搜索+提取、要密钥')
       assert(by.searxng.search && !by.searxng.extract, 'searxng 只有搜索')
       assert(by.duckduckgo.search && !by.duckduckgo.extract, 'duckduckgo 只有搜索')
       assert(Object.values(by).every((b) => b.implemented), '有后端还没接入')
@@ -489,9 +482,9 @@ export async function runWebTools({ gwRoot, test, req, start, waitHttp, assert, 
       assert(r.json.totals.amountMicros === 0, '网页那几笔混进了模型合计')
     })
 
-    await test('闸与限流：SSRF、跳转不带凭据、文档边读边数、压缩响应卡住会超时、DDG 排队、Firecrawl 自托管', async () => {
+    await test('闸与限流：SSRF、跳转不带凭据、文档边读边数、压缩响应卡住会超时、DDG 排队、Firecrawl 自托管、AnySearch 解析', async () => {
       const g = await runGuardProbe(gwRoot)
-      for (const group of ['scheme', 'private', 'specialRanges', 'publicOk', 'redirect', 'redirectCreds', 'docLimit', 'stalledBody', 'ddgThrottle', 'firecrawl']) {
+      for (const group of ['scheme', 'private', 'specialRanges', 'publicOk', 'redirect', 'redirectCreds', 'docLimit', 'stalledBody', 'ddgThrottle', 'firecrawl', 'anysearch']) {
         for (const [k, v] of Object.entries(g[group])) assert(v === true, `${group}.${k} 不成立`)
       }
     })

@@ -18,11 +18,7 @@ import { KB_FILE_TYPES, requireSupported } from '../lib/knowledge-extract.ts'
 import { STORE_NOT_WRITABLE, blobPathOf, openStored, saveStream, storeMode, storeWritable, verifyBlobUpload } from '../lib/knowledge-store.ts'
 import { VECTOR_NOT_CONFIGURED, vectorConfigured } from '../lib/knowledge-vector.ts'
 import { cleanFileName, deleteKnowledgeFileNow, publicKnowledgeBase, publicKnowledgeFile, retryKnowledgeFile, searchKnowledge, tickKnowledge } from '../lib/knowledge.ts'
-
-/** 配额那把锁（同 USER_BOT_QUOTA_LOCK 那套 advisory lock）：按公司排队数库。 */
-export const KB_QUOTA_LOCK = 0x4b4251
-/** 容量那把锁：按库排队扣字节。 */
-export const KB_BYTES_LOCK = 0x4b4242
+import { KB_BYTES_LOCK, KB_QUOTA_LOCK } from '../db/locks.ts'
 
 export function attachKnowledge(router: Router, ctx: RouteCtx) {
   const { db, keys, meter } = ctx
@@ -40,8 +36,8 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
   }
 
   /** 没配向量库，写接口一律 501：界面上那句「平台未开通知识库」就是从这儿来的。 */
-  function requireVector(): void {
-    if (!vectorConfigured()) throw new HttpError(501, VECTOR_NOT_CONFIGURED)
+  async function requireVector(): Promise<void> {
+    if (!await vectorConfigured(db)) throw new HttpError(501, VECTOR_NOT_CONFIGURED)
   }
 
   /** 原文件没地方放（Vercel 上没配 Blob）同样是「没开通」：建库和登记文件都拦在门口。 */
@@ -49,12 +45,10 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
     if (!storeWritable()) throw new HttpError(501, STORE_NOT_WRITABLE)
   }
 
-  function enabled(): boolean {
-    return vectorConfigured() && storeWritable()
-  }
-
-  function disabledReason(): string {
-    return !vectorConfigured() ? VECTOR_NOT_CONFIGURED : !storeWritable() ? STORE_NOT_WRITABLE : ''
+  /** 「开没开通」和「为什么没开」一次算出来：向量配置要现读库。 */
+  async function availability(): Promise<{ enabled: boolean; reason: string }> {
+    const reason = !await vectorConfigured(db) ? VECTOR_NOT_CONFIGURED : !storeWritable() ? STORE_NOT_WRITABLE : ''
+    return { enabled: !reason, reason }
   }
 
   function isAdmin(account: Account): boolean {
@@ -109,8 +103,7 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
   router.get('/orgs/:id/knowledge/config', async (req, res) => {
     await requireOrgUser(req, db, keys, req.params.id)
     json(res, 200, {
-      enabled: enabled(),
-      reason: disabledReason(),
+      ...await availability(),
       upload: storeMode() === 'blob' ? 'blob-client' : 'direct',
       limits: { bytesMax: KB_BYTES_MAX, fileMax: KB_FILE_MAX, filesMax: KB_FILES_MAX, nameMax: KB_NAME_MAX, descMax: KB_DESC_MAX },
       types: Object.keys(KB_FILE_TYPES),
@@ -141,7 +134,7 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
   /** 试搜。管理员不看共享范围；成员只能查看得见的库。 */
   router.post('/orgs/:id/knowledge/search', async (req, res) => {
     const account = await requireOrgUser(req, db, keys, req.params.id)
-    requireVector()
+    await requireVector()
     const body = bodyOf(req)
     const all = await visibleKnowledge(account, req.params.id)
     const ids = Array.isArray(body.kbIds) ? new Set(body.kbIds.map(String)) : null
@@ -154,8 +147,7 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
     const list = await visibleKnowledge(account, req.params.id)
     const shares = isAdmin(account) ? await db.knowledgeSharesOfMany(list.map((k) => k.id)) : new Map<string, string[]>()
     json(res, 200, {
-      enabled: enabled(),
-      reason: disabledReason(),
+      ...await availability(),
       knowledge: list.map((k) => publicKnowledgeBase(k, shares.get(k.id) ?? [])),
       ...(await quotaOf(req.params.id)),
     })
@@ -163,7 +155,7 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
 
   router.post('/orgs/:id/knowledge', async (req, res) => {
     const account = await requireOrgUser(req, db, keys, req.params.id, true)
-    requireVector()
+    await requireVector()
     requireStore()
     await requireNotExpired(req.params.id)
     const body = bodyOf(req)
@@ -204,8 +196,7 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
     json(res, 200, {
       knowledge: publicKnowledgeBase(kb, isAdmin(account) ? await db.knowledgeShares(kb.id) : []),
       files: files.map(publicKnowledgeFile),
-      enabled: enabled(),
-      reason: disabledReason(),
+      ...await availability(),
       canEdit: isAdmin(account),
     })
   })
@@ -257,7 +248,7 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
    */
   router.post('/orgs/:id/knowledge/:kbId/files', async (req, res) => {
     const { account, kb } = await adminKb(req, req.params.id)
-    requireVector()
+    await requireVector()
     requireStore()
     await requireNotExpired(req.params.id)
     const body = bodyOf(req)
@@ -383,7 +374,7 @@ export function attachKnowledge(router: Router, ctx: RouteCtx) {
 
   router.post('/orgs/:id/knowledge/:kbId/files/:fileId/retry', async (req, res) => {
     const { account, kb } = await adminKb(req, req.params.id)
-    requireVector()
+    await requireVector()
     const file = await fileOf(kb, req.params.fileId)
     if (file.status !== 'failed') throw new HttpError(409, '只有失败的文件能重试')
     if (!file.storage) throw new HttpError(409, '原文件丢失，请删掉重新上传')

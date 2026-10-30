@@ -2,17 +2,18 @@
  * 平台设置、上游密钥、用量统计、自定义供应商、连通性探测。owner-only。
  */
 import type { RouteCtx } from './ctx.ts'
-import { vectorInfo } from '../lib/knowledge-vector.ts'
+import { isEmbeddingSecret } from '../lib/knowledge-embedding.ts'
 import { CUSTOM_APIS, type CustomProviderDef, DefError, parseProviderDef } from '../providers.ts'
 import { HttpError, json, type Router } from '../http.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
-import { billingOf, dailyAlternatesOf, defaultModelRateOf, enabledModelsOf, imageRoleOf, modelPricingOf, modelProviderCreds, modelRoleOf, priceMultiplierOf, publicPlatformCred, publicSettings } from '../lib/org.ts'
+import { billingOf, companyOr404, dailyAlternatesOf, defaultModelRateOf, enabledModelsOf, imageRoleOf, modelPricingOf, modelProviderCreds, modelRoleOf, priceMultiplierOf, publicPlatformCred, publicSettings } from '../lib/org.ts'
 import { IMAGE_TIERS, imageEstimateTokens, imageModelDef } from '../image-models.ts'
 import { refreshDiscovered, REFRESH_MS } from '../model-discovery.ts'
 import { isVendor } from '../connectors/index.ts'
 import { pruneDailyAlternates } from '../lib/alternates.ts'
-import { rangeQuery, requireOwnerUser, stepMs, stepQuery, tzOffsetMs, usageBars } from '../lib/guards.ts'
-import { DAILY_ALTERNATES_MAX, WEB_BACKENDS, WEB_DOCUMENT, type PlatformSettings, modelKey, emptyWebTools, parseBilling, parseConnectorPricing, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseWebTools } from '../db.ts'
+import { requireOwnerUser } from '../lib/guards.ts'
+import { rangeQuery, stepMs, stepQuery, tzOffsetMs, usageBars } from '../lib/usage.ts'
+import { DAILY_ALTERNATES_MAX, WEB_BACKENDS, WEB_DOCUMENT, type PlatformSettings, modelKey, emptyKnowledgeEmbedding, emptyWebTools, parseBilling, parseConnectorPricing, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseWebTools } from '../db.ts'
 import { WebToolError, canExtract, canSearch, needsSecret } from '../web-tools.ts'
 import { parseBotVersion } from '../releases.ts'
 import { testBackend } from '../web-service.ts'
@@ -112,6 +113,8 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
       webTools: cur.webTools ?? emptyWebTools(),
       // 知识库的单价和门槛（docs/knowledge-base.md §10）。写端和 parsePlatformPayload 成对。
       knowledge: 'knowledge' in body ? parseKnowledgeSettings(body.knowledge) : parseKnowledgeSettings(cur.knowledge),
+      // 向量模型有自己的接口（/platform/knowledge/embedding），这里原样带着，理由同 webTools。
+      knowledgeEmbedding: cur.knowledgeEmbedding ?? emptyKnowledgeEmbedding(),
       modelPricing: 'modelPricing' in body ? modelPricingOf(body.modelPricing, parseModelPricing(cur.modelPricing)) : parseModelPricing(cur.modelPricing),
       // 兜底单价：查不到价的模型按它收，而不是按 0 收（docs/billing.md §7）。
       defaultModelRate: 'defaultModelRate' in body
@@ -190,14 +193,9 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
    */
   function modelSecretOr400(provider: string): string {
     if (isVendor(provider)) throw new HttpError(400, `${provider} 是连接器供应商，密钥请到「连接器」页保存`)
+    if (isEmbeddingSecret(provider)) throw new HttpError(400, '知识库向量模型的密钥请到「工具配置 → 知识库」保存')
     return provider
   }
-
-  /** 「工具配置 → 知识库」那一屏的状态行：配没配、索引里多少向量。 */
-  router.get('/platform/knowledge/status', async (req, res) => {
-    await requireOwnerUser(req, db, keys)
-    json(res, 200, await vectorInfo(db))
-  })
 
   router.get('/platform/credentials', async (req, res) => {
     await requireOwnerUser(req, db, keys)
@@ -393,7 +391,7 @@ export function attachPlatform(router: Router, ctx: RouteCtx) {
     await requireOwnerUser(req, db, keys)
     const range = rangeQuery(req)
     const companyId = (req.query.get('companyId') || '').trim()
-    if (companyId && !(await db.company(companyId))) throw new HttpError(404, '公司不存在')
+    if (companyId) await companyOr404(db, companyId)
 
     /**
      * 日线按**看的人所在时区**切天，偏移由前端用 `tz`（分钟）传上来——和 from/to 由前端

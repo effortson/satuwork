@@ -1,6 +1,7 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
-import { completeOnce, gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../llm/gateway.ts'
+import { gatewayApiKey, gatewayToken, gatewayUrl, llmBaseUrl } from '../env.ts'
+import { completeOnce } from '../llm/gateway.ts'
 import type { SessionEvent } from '../session/types.ts'
 
 export const name = 'satu-conversation-audit'
@@ -42,6 +43,8 @@ interface AuditResult {
   /** 回报这批条目是用哪种语言写的，Gateway 记在每一条上。 */
   locale: 'zh' | 'en'
   items: unknown[]
+  /** 这一批真用的模型。Gateway 那边的批次可能在这期间换成了新模型（重试前会换），据此改回来。 */
+  model?: { modelRole: string; provider: string; model: string; reasoningEffort: string }
 }
 
 interface StoredResult { job: AuditJob; result: AuditResult }
@@ -214,9 +217,34 @@ export class ConversationAuditService extends Service {
     if (this.running.has(job.id)) return 'running'
     this.running.add(job.id)
     void this.run(job)
-      .catch((e) => this.ctx.logger?.warn?.(`conversation-audit: ${job.id} ${e instanceof Error ? e.message : String(e)}`))
+      .catch(async (e) => {
+        const message = e instanceof Error ? e.message : String(e)
+        this.ctx.logger?.warn?.(`conversation-audit: ${job.id} ${message}`)
+        /**
+         * **失败要报回去。** 以前只打这一行日志：Gateway 那边批次一直是 processing，续租时把同一个
+         * 任务再发过来，这里一看没在跑就重跑、再失败——每 5 分钟一次，永远进不了退避，也换不到新模型。
+         * 报回去之后 Gateway 把它转成重试、按退避排下一次。报不上（老 Gateway 没这条路、网络抖）
+         * 就只留日志，和以前一样。
+         */
+        await this.reportFailure(job, message).catch((err) =>
+          this.ctx.logger?.warn?.(`conversation-audit: ${job.id} 失败没报上：${(err as Error).message}`),
+        )
+      })
       .finally(() => this.running.delete(job.id))
     return 'accepted'
+  }
+
+  private async reportFailure(job: AuditJob, error: string): Promise<void> {
+    const base = gatewayUrl()
+    const token = gatewayToken()
+    if (!base || !token) return
+    const r = await fetch(`${base}/internal/conversation-audits/${encodeURIComponent(job.id)}/failure`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ botId: job.botId, sessionId: job.sessionId, error: error.slice(0, 400) }),
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!r.ok) throw new Error(`Gateway 返回 HTTP ${r.status}`)
   }
 
   private async run(job: AuditJob): Promise<void> {
@@ -256,6 +284,7 @@ export class ConversationAuditService extends Service {
       sourceHash,
       locale: job.locale,
       items,
+      model: { modelRole: job.modelRole, provider: job.provider, model: job.model, reasoningEffort: job.reasoningEffort },
     }
     this.results().put(job.id, { job, result })
     if (job.kind === 'pre_delete') this.ctx.agents.quiesce(job.quiesceMs)
@@ -304,7 +333,8 @@ export class ConversationAuditService extends Service {
       headers: { 'x-satuwork-purpose': 'conversation_audit' },
       timeoutMs: MODEL_TIMEOUT_MS,
     })
-    if (!r.ok) throw new Error(`审计模型返回 HTTP ${r.status}`)
+    // 带上模型和原因：402 是「没有这家的密钥」还是「余额不够」，日志和 Gateway 那边都要看得出来。
+    if (!r.ok) throw new Error(`审计模型 ${job.provider}/${job.model} 返回 HTTP ${r.status}${r.error ? `：${r.error}` : ''}`)
     if (!r.text.trim()) throw new Error('审计模型没有返回内容')
     return r.text
   }

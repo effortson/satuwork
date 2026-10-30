@@ -3,9 +3,10 @@ import { Db, SchemaBusyError, databaseUrl } from './db.ts'
 import { hashPassword, loadChannelKey, loadKeys } from './crypto.ts'
 import { Router, listen } from './http.ts'
 import { gatewayHome } from './home.ts'
-import { attach } from './routes.ts'
+import { attach } from './routes/index.ts'
 import { startRoutineScheduler } from './routines.ts'
 import { startChannelDispatcher } from './channels.ts'
+import { startNotificationDispatcher } from './lib/notifications.ts'
 
 /**
  * Satuwork Gateway。控制面：公司、账号、套餐、席位、目录、JWT。
@@ -123,6 +124,7 @@ const server = listen(router)
  */
 const stopRoutines = startRoutineScheduler(db)
 const stopChannels = startChannelDispatcher(db, channelKey, keys)
+const stopNotifications = startNotificationDispatcher(db)
 
 let closing = false
 /**
@@ -146,6 +148,7 @@ function shutdown() {
   closing = true
   stopRoutines()
   stopChannels()
+  stopNotifications()
   server.close(() => {
     void db.close()
   })

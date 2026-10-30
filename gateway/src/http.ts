@@ -174,13 +174,12 @@ const MIME: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
 }
 
-// `/download`：没登录时折到首页那一段（`/#download`），登录了是应用内那一页——两样都在
-// ui/pages-landing.js，怎么折见 ui/app.js 的 foldDownload。地址早被发出去过，得一直交得出。
-const SPA_PATHS = new Set(['/', '/login', '/privacy', '/terms', '/download', '/index.html', '/ui', '/ui/', '/models', '/providers', '/company', '/accounts', '/audit', '/companies', '/users', '/plans', '/orders', '/stats', '/tools', '/costs', '/billing', '/usage', '/catalog', '/profile', '/bots', '/skills', '/chat', '/releases', '/machines', '/connectors', '/handoffs', '/channels', '/knowledge'])
+// `/download`：公开下载页，登录后使用应用内下载页；两种视图都在 ui/pages-landing.js。
+const SPA_PATHS = new Set(['/', '/login', '/privacy', '/terms', '/download', '/index.html', '/ui', '/ui/', '/models', '/providers', '/company', '/accounts', '/audit', '/content-reports', '/companies', '/users', '/plans', '/orders', '/stats', '/tools', '/costs', '/billing', '/usage', '/catalog', '/profile', '/bots', '/skills', '/chat', '/releases', '/machines', '/connectors', '/plugins', '/handoffs', '/channels', '/knowledge'])
 // 前端脚本拆成了一串（见 gateway/ui/index.html 里那组 data-app-part），
 // 加一个新的分片就要在这里也加一行，否则线上直接 404，而本地跑 index.html 是好的。
-const UI_PARTS = ['prefs.js', 'state.js', 'data.js', 'shell.js', 'pages-landing.js', 'pages-legal.js', 'pages-admin.js', 'pages-audit.js', 'pages-machines.js', 'pages-account.js', 'pages-bots.js', 'pages-tools.js', 'pages-connectors.js', 'pages-routines.js', 'pages-handoffs.js', 'pages-channels.js', 'pages-knowledge.js', 'chat.js', 'chat-find.js', 'render.js', 'app.js']
-const ROOT_FILES = new Set(['theme.css', 'shell.css', 'app.css', 'chat.css', ...UI_PARTS, 'core.js', 'i18n.js', 'markdown.js', 'channel-preview.js', 'index.html', 'unzip.js', 'analytics.js', 'blob-client.js'])
+const UI_PARTS = ['prefs.js', 'state.js', 'ui-kit.js', 'data.js', 'shell.js', 'pages-landing.js', 'pages-legal.js', 'pages-admin.js', 'pages-audit.js', 'pages-releases.js', 'pages-companies.js', 'pages-machines.js', 'pages-account.js', 'pages-bots.js', 'pages-tools.js', 'pages-connectors.js', 'pages-plugins.js', 'pages-routines.js', 'pages-handoffs.js', 'pages-channels.js', 'pages-knowledge.js', 'chat.js', 'notification-sync.js', 'web-notifications.js', 'desktop-notifications.js', 'chat-stream.js', 'chat-bubble.js', 'chat-thread.js', 'content-reports.js', 'chat-meta.js', 'chat-seat.js', 'chat-workspace.js', 'chat-desktop.js', 'chat-preview.js', 'chat-page.js', 'chat-composer.js', 'chat-decide.js', 'chat-toolpop.js', 'chat-find.js', 'render.js', 'actions.js', 'app.js']
+const ROOT_FILES = new Set(['theme.css', 'shell.css', 'app.css', 'chat.css', ...UI_PARTS, 'core.js', 'dom-util.js', 'markdown.js', 'channel-preview.js', 'index.html', 'unzip.js', 'analytics.js', 'blob-client.js'])
 
 /**
  * Vercel Web Analytics 与 Speed Insights：**只在 Vercel 上开**（平台注入 `VERCEL=1`）。
@@ -197,7 +196,7 @@ const VERCEL_ANALYTICS = process.env.VERCEL === '1'
 /**
  * 按需加载的那三个库（KaTeX / highlight.js / Mermaid）从哪儿来、CSP 放到哪一层，见
  * `ui-cdn.ts`。`GATEWAY_UI_CDN` 换了镜像时，同一个地址经 `<meta name="satu-cdn">` 交给
- * markdown.js（UI_CDN_META），两边读的是同一个值，不会一边换了一边没换。
+ * 前端（dom-util.js 的 uiCdn，UI_CDN_META），两边读的是同一个值，不会一边换了一边没换。
  */
 const UI_CDN_SRC = uiCdnSources()
 const UI_CDN_META = uiCdnMeta()
@@ -249,9 +248,9 @@ const DIRECT_SRC = gatewayPageIsHttp() ? 'https: http:' : 'https:'
  *   而内联样式换不出脚本执行。
  * - `img-src https: http:`：模型写得出任意图片地址，markdown 的 safeUrl 明确放行了
  *   `https?://`。收紧等于把「贴一张图」这件事废掉。
- * - `frame-src blob:`：文件预览把字节做成 blob 再喂给 iframe（chat.js 的 previewBody）。
+ * - `frame-src blob:`：文件预览把字节做成 blob 再喂给 iframe（chat-preview.js 的 previewBody）。
  * - `connect-src https:` 与 `frame-src https:`：席位机器配了 `directUrl` 之后，对话那条 SSE
- *   （chat.js 的 directStreamBase）和桌面那块 iframe（novncUrlOf）都直接打机器的域名，
+ *   （chat-stream.js 的 directStreamBase）和桌面那块 iframe（novncUrlOf）都直接打机器的域名，
  *   不再经 Gateway。机器地址按公司各不相同、随时会加，写不进一条静态的头；而直连的
  *   前提本来就是 https（见 docs/gateway-runtime.md §7），所以放的是整个 https:。**只有
  *   Gateway 自己跑在 http 上时才另外加 http:**（见 DIRECT_SRC）：那时页面本身就是 http，
@@ -300,7 +299,7 @@ function corsHeaders(req: IncomingMessage): Record<string, string> | null {
   return {
     'access-control-allow-origin': origin,
     'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'access-control-allow-headers': 'authorization, content-type, accept, x-filename, x-api-key, last-event-id',
+    'access-control-allow-headers': 'authorization, content-type, accept, x-filename, x-api-key, last-event-id, x-satuwork-device, x-satuwork-client',
     'access-control-expose-headers': 'content-type, content-disposition',
     'access-control-max-age': '600',
     vary: 'origin',
@@ -310,7 +309,7 @@ function corsHeaders(req: IncomingMessage): Record<string, string> | null {
 /** GET / 与各管理屏、GET /ui/*、/theme.css、/assets/* 从 gateway/ui 出。路径不得逃出该目录。 */
 function serveUi(pathname: string, res: ServerResponse): boolean {
   let rel: string | null = ''
-  if (SPA_PATHS.has(pathname) || pathname.startsWith('/join/') || pathname.startsWith('/bots/') || pathname.startsWith('/connectors/') || pathname.startsWith('/knowledge/') || pathname.startsWith('/companies/') || pathname.startsWith('/users/') || pathname.startsWith('/machines/') || pathname.startsWith('/audit') || pathname.startsWith('/a/')) rel = 'index.html'
+  if (SPA_PATHS.has(pathname) || pathname.startsWith('/join/') || pathname.startsWith('/bots/') || pathname.startsWith('/connectors/') || pathname.startsWith('/plugins/') || pathname.startsWith('/knowledge/') || pathname.startsWith('/companies/') || pathname.startsWith('/users/') || pathname.startsWith('/machines/') || pathname.startsWith('/audit') || pathname.startsWith('/a/')) rel = 'index.html'
   // 解不开的百分号不是路径，是坏请求：返回 null 让它落到 404，别抛进 handle 的 catch
   // 变成一句 500（同 match 里那道 decodeSegment）。
   else if (pathname.startsWith('/ui/')) rel = decodeSegment(pathname.slice('/ui/'.length))
