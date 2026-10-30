@@ -49,14 +49,14 @@ test('seat notification protocol and durable outbox', async (t) => {
   delete process.env.SATUWORK_BOT_ID
   delete process.env.SATUWORK_RUNTIME_KIND
   try {
-    await t.test('reports stable conversation sequence without dialogue content', async () => {
+    await t.test('reports stable conversation sequence without unrelated event fields', async () => {
       const rows = new Map(), events = new Map([['s-main', [root()]]]), ctx = seat(rows, events)
       const before = pushes.length
       try {
         ctx.emit('s-main', { type: 'turn/end', seq: 9, time: 2000, data: { reason: 'completed', secret: 'never upload dialogue' } })
         await until(() => pushes.length > before)
         const p = pushes.at(-1)
-        assert.deepEqual(p, { botId: 'bot-a', sessionId: 's-main', seq: 9, time: 2000, kind: 'turn-end', actionId: '', resolved: false })
+        assert.deepEqual(p, { botId: 'bot-a', sessionId: 's-main', seq: 9, time: 2000, kind: 'turn-end', actionId: '', resolved: false, preview: '' })
         await until(() => ![...rows.values()].some((r) => r.kind === 'notification'))
       } finally { ctx.stop() }
     })
@@ -70,6 +70,46 @@ test('seat notification protocol and durable outbox', async (t) => {
         assert.equal(pushes.at(-1).seq, 3)
         assert.equal(pushes.at(-1).actionId, 'c1')
         assert.equal(pushes.at(-1).resolved, true)
+      } finally { ctx.stop() }
+    })
+
+    await t.test('preview comes only from the final visible reply in the completed turn and stays bounded', async () => {
+      const reply = '已核对三张发票，合计 RM 1,250。' + '✅'.repeat(300)
+      const rows = new Map(), events = new Map([['s-preview', [root(),
+        { type: 'assistant/message', seq: 2, data: { message: { content: [{ type: 'text', text: '上一轮的旧结论' }] } } },
+        { type: 'turn/start', seq: 3, data: { turn: 2 } },
+        { type: 'assistant/message', seq: 4, data: { message: { content: [{ type: 'text', text: '我先查一下' }] } } },
+        { type: 'tool/result', seq: 5, data: { text: '工具私密输出' } },
+        { type: 'assistant/message', seq: 6, data: { message: { content: [{ type: 'reasoning', text: '内部推理' }, { type: 'text', text: reply }] } } },
+      ]]])
+      const ctx = seat(rows, events), before = pushes.length
+      try {
+        ctx.emit('s-preview', { type: 'turn/end', seq: 7, time: 2000, data: { turn: 2, reason: 'completed' } })
+        ctx.emit('s-preview', { type: 'user/message', seq: 8, data: { source: { kind: 'user' } } })
+        ctx.emit('s-preview', { type: 'turn/start', seq: 9, data: { turn: 3 } })
+        ctx.emit('s-preview', { type: 'assistant/message', seq: 10, data: { message: { content: [{ type: 'text', text: '下一轮的回答' }] } } })
+        await until(() => pushes.length > before)
+        assert.equal(pushes.at(-1).preview, Array.from(reply).slice(0, 239).join('') + '…')
+        assert.equal(Array.from(pushes.at(-1).preview).length, 240)
+        assert.doesNotMatch(JSON.stringify(pushes.at(-1)), /内部推理|工具私密输出|上一轮|下一轮|我先查一下/)
+      } finally { ctx.stop() }
+    })
+
+    await t.test('an empty turn does not reuse the previous reply; approval previews omit tool arguments', async () => {
+      const rows = new Map(), events = new Map([['s-empty', [root(),
+        { type: 'assistant/message', seq: 2, data: { message: { content: [{ type: 'text', text: '旧回复' }] } } },
+        { type: 'turn/start', seq: 3, data: { turn: 2 } },
+      ]]])
+      const ctx = seat(rows, events), before = pushes.length
+      try {
+        ctx.emit('s-empty', { type: 'turn/end', seq: 4, time: 2000, data: { turn: 2, reason: 'completed' } })
+        await until(() => pushes.length > before)
+        assert.equal(pushes.at(-1).preview, '')
+        ctx.emit('s-empty', { type: 'tool/approval', seq: 5, time: 2100,
+          data: { callId: 'c1', name: 'send_email', reason: '需要确认发送账单邮件', arguments: '私密邮件全文', state: 'pending' } })
+        await until(() => pushes.length === before + 2)
+        assert.equal(pushes.at(-1).preview, 'send_email · 需要确认发送账单邮件')
+        assert.equal(JSON.stringify(pushes.at(-1)).includes('私密邮件全文'), false)
       } finally { ctx.stop() }
     })
 
@@ -147,7 +187,7 @@ test('seat notification protocol and durable outbox', async (t) => {
           { type: 'user/message', seq: 2, data: { source: { kind: 'plugin', plugin: 'task', phase: 'result' } } },
           { type: 'turn/start', seq: 3, data: { turn: 1 } },
           { type: 'user/message', seq: 4, data: { source: { kind: 'plugin', plugin: 'task', phase: 'instruction' } } },
-          { type: 'assistant/message', seq: 5, data: { turn: 1 } },
+          { type: 'assistant/message', seq: 5, data: { turn: 1, message: { content: [] } } },
           { type: 'turn/end', seq: 6, data: { turn: 1, reason: 'completed' } },
         ]) ctx.emit('s-result', { time: 2000, ...event })
         await until(() => pushes.length > before)

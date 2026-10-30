@@ -127,6 +127,7 @@ async function pollNotifications(epoch = notificationEpoch) {
   if (notificationRun) return notificationRun
   const work = (async () => {
     try {
+      let webSoundPlayed = false
       // 先提交离线期间读过的位置，再取快照；避免恢复联网时旧通知抢先弹出来。
       for (const [key, row] of notificationPendingReads) {
         let result
@@ -203,8 +204,9 @@ async function pollNotifications(epoch = notificationEpoch) {
         if (!claimed || !notificationUnread(event)) continue
         if (desktopNoticeBridge()) await deliverDesktopNotification(event)
         else if (webNoticesEnabled()) {
-          webNoticeCards = [{ id: event.id, botId: event.botId, kind: event.kind }, ...webNoticeCards.filter((r) => r.botId !== event.botId)].slice(0, 3)
+          webNoticeCards = [{ id: event.id, botId: event.botId, kind: event.kind, preview: event.preview || '' }, ...webNoticeCards.filter((r) => r.botId !== event.botId)].slice(0, 3)
           paintWebNotifications()
+          if (!webSoundPlayed) { playWebNotificationSound(); webSoundPlayed = true }
         }
       }
     } catch (e) {
@@ -264,14 +266,15 @@ function markVisibleNotificationsRead() {
 }
 
 /** 本地 Bot 的派活也在主会话中。重放时重建归属，重复流按 seq 去重，老席位的插话仍算人的那一轮。 */
-function notificationIsTaskTurn(botId, sessionId, ev) {
+function notificationTurnEvent(botId, sessionId, ev) {
   const key = notificationKey(botId, sessionId)
   let row = notificationTaskTurns.get(key)
   if (!row) {
-    row = { seq: 0, open: null, pending: false, task: false, justTask: false, taskEndSeq: 0 }
+    row = { seq: 0, open: null, pending: false, task: false, justTask: false, taskEndSeq: 0, preview: '', endSeq: 0, endPreview: '' }
     notificationTaskTurns.set(key, row)
   }
-  if (ev.seq <= row.seq) return ev.type === 'turn/end' && ev.seq === row.taskEndSeq
+  if (ev.seq <= row.seq) return { task: ev.type === 'turn/end' && ev.seq === row.taskEndSeq,
+    preview: ev.type === 'turn/end' && ev.seq === row.endSeq ? row.endPreview : '' }
   row.seq = ev.seq
   const afterTask = row.justTask
   row.justTask = false
@@ -284,35 +287,47 @@ function notificationIsTaskTurn(botId, sessionId, ev) {
     row.open = Number(d.turn)
     row.task = row.pending || afterTask
     row.pending = false
+    row.preview = ''
+  } else if (ev.type === 'assistant/message') {
+    const content = d.message?.content
+    const text = typeof content === 'string' ? content : Array.isArray(content)
+      ? content.filter((block) => block?.type === 'text').map((block) => block.text || '').join('') : ''
+    if (text.trim()) row.preview = SatuCore.notificationExcerpt(text)
   } else if (ev.type === 'turn/end') {
     const task = row.task
+    row.endSeq = ev.seq
+    row.endPreview = row.preview
     if (task) row.taskEndSeq = ev.seq
     if (Number(d.turn) === row.open) { row.open = null; row.task = false }
-    return task
+    return { task, preview: row.endPreview }
   }
-  return false
+  return { task: false, preview: '' }
 }
 
 /** 原始流只唤醒同步；本地 Bot 另外登记元数据，远程 Bot 由席位可靠上报。 */
 async function observeNotificationEvent(botId, ev, replay, sessionId) {
   if (!notificationAccount || !sessionId || !ev?.seq) return
-  const taskTurn = notificationIsTaskTurn(botId, sessionId, ev)
+  const turn = notificationTurnEvent(botId, sessionId, ev)
   let kind, actionId = '', resolved = false
   const d = ev.data || {}
-  if (ev.type === 'turn/end' && d.reason !== 'aborted' && !taskTurn) kind = 'turn-end'
+  let preview = turn.preview
+  if (ev.type === 'turn/end' && d.reason !== 'aborted' && !turn.task) kind = 'turn-end'
   else if (ev.type === 'tool/approval' && d.callId) { kind = 'approval'; actionId = d.callId; resolved = d.state !== 'pending' }
   else if (ev.type === 'human/handoff' && d.id) { kind = 'handoff'; actionId = d.id; resolved = d.state !== 'open' }
   else return
+  if (kind === 'approval') preview = SatuCore.notificationExcerpt([d.name, d.reason].filter(Boolean).join(' · '))
+  else if (kind === 'handoff') preview = SatuCore.notificationExcerpt(d.ask || d.reason || '')
   const bot = (state.runtimeBots || []).find((b) => b.id === botId)
   const key = JSON.stringify([botId, sessionId, kind, actionId || ev.seq])
-  if (actionId && !resolved && !notificationLocalEvents.has(key)) notificationLocalEvents.set(key, { seq: ev.seq, time: ev.time })
+  if (actionId && !resolved && !notificationLocalEvents.has(key)) notificationLocalEvents.set(key, { seq: ev.seq, time: ev.time, preview })
   while (notificationLocalEvents.size > 2048) notificationLocalEvents.delete(notificationLocalEvents.keys().next().value)
   if (bot?.runtimeKind === 'local' && desktopNoticeBridge() && !replay) {
     const source = kind === 'turn-end' ? ev : notificationLocalEvents.get(key) || (resolved ? ev : null)
     if (source) {
       const noticeKey = JSON.stringify([botId, sessionId, source.seq, kind])
       const previous = notificationPendingEvents.get(noticeKey)
-      notificationPendingEvents.set(noticeKey, { botId, sessionId, seq: source.seq, time: source.time, kind, actionId, resolved: resolved || previous?.resolved || false })
+      notificationPendingEvents.set(noticeKey, { botId, sessionId, seq: source.seq, time: source.time, kind, actionId,
+        preview: source.preview || preview || previous?.preview || '', resolved: resolved || previous?.resolved || false })
       saveLocalNotifications()
     }
   }

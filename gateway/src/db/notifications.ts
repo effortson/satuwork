@@ -3,6 +3,7 @@ import { DbCore } from './core.ts'
 import type { Row } from './rows.ts'
 import type { PushKind } from '../lib/push.ts'
 import { JWT_TTL } from '../lib/validate.ts'
+import { notificationPreview } from '../../../core/src/chat/notification.ts'
 
 export interface NotificationEvent {
   id: string
@@ -12,6 +13,7 @@ export interface NotificationEvent {
   seq: number
   kind: PushKind
   actionId: string
+  preview: string
   createdAt: number
   dueAt: number
   expiresAt: number
@@ -24,7 +26,7 @@ export interface NotificationRead {
 }
 function eventRow(r: Row): NotificationEvent {
   return { id: String(r.id), accountId: String(r.accountId), botId: String(r.botId), sessionId: String(r.sessionId),
-    seq: Number(r.seq), kind: r.kind as PushKind, actionId: String(r.actionId), createdAt: Number(r.createdAt),
+    seq: Number(r.seq), kind: r.kind as PushKind, actionId: String(r.actionId), preview: String(r.preview || ''), createdAt: Number(r.createdAt),
     dueAt: Number(r.dueAt), expiresAt: Number(r.expiresAt) }
 }
 function readRow(r: Row): NotificationRead {
@@ -51,7 +53,7 @@ export class NotificationsDb extends DbCore {
 
   async recordNotification(input: {
     accountId: string; botId: string; sessionId: string; seq: number; kind: PushKind
-    actionId: string; occurredAt: number; resolvedAt?: number
+    actionId: string; occurredAt: number; resolvedAt?: number; preview?: unknown
   }, graceMs = 2000): Promise<NotificationEvent> {
     const id = createHash('sha256').update(JSON.stringify([input.accountId, input.botId, input.sessionId, input.seq, input.kind])).digest('hex')
     // 缓冲与设备登记比较使用 Gateway 时钟；原事件时间只限制旧提醒的补发寿命。
@@ -73,11 +75,12 @@ export class NotificationsDb extends DbCore {
         }
       }
       const r = await this.one(`insert into notification_events
-        (id, "accountId", "botId", "sessionId", seq, kind, "actionId", "createdAt", "dueAt", "expiresAt", "resolvedAt")
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (id) do update set
+        (id, "accountId", "botId", "sessionId", seq, kind, "actionId", "createdAt", "dueAt", "expiresAt", "resolvedAt", preview)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (id) do update set
+        preview = case when notification_events.preview = '' then excluded.preview else notification_events.preview end,
         "resolvedAt" = coalesce(notification_events."resolvedAt", excluded."resolvedAt") returning *`,
       [id, input.accountId, input.botId, input.sessionId, input.seq, input.kind, input.actionId, now,
-        now + graceMs, Math.min(now, input.occurredAt) + 3600_000, resolvedAt])
+        now + graceMs, Math.min(now, input.occurredAt) + 3600_000, resolvedAt, notificationPreview(input.preview)])
       return eventRow(r!)
     })
   }

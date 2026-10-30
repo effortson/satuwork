@@ -23,7 +23,7 @@
  * 「最后更新」那个日期。**改了正文就要动它**——这一行是外面唯一看得出「这份文本
  * 变过」的东西，法务问卷第一个问的也是它。
  */
-const LEGAL_UPDATED = '2026-09-14'
+const LEGAL_UPDATED = '2026-10-30'
 
 /**
  * 落款主体、争议管辖、联系邮箱。**现在这三样是占位的，上线前必须换掉。**
@@ -144,8 +144,8 @@ function legalPrivacy() {
             'Technical logs: request times, IP addresses, user-agent strings and similar server logs.',
           ),
           t(
-            '通知信息：你允许通知后，保存与账号关联的 Android FCM 或 iOS APNs 设备推送令牌、设备平台和推送环境，以及通知事件、送达状态和已读状态。Android Firebase SDK 还会处理安装标识、应用版本和设备技术信息，以提供推送服务。推送标识用于通知，不用于广告或跨 App 跟踪。',
-            'Notifications: if you allow notifications, we store an Android FCM or iOS APNs push token linked to your account, device platform and push environment, together with notification events, delivery status and read state. The Android Firebase SDK also processes installation identifiers, app version and technical device information to provide push messaging. Push identifiers are used for notifications, not advertising or cross-app tracking.',
+            '通知信息：你允许通知后，保存与账号关联的 Android FCM 或 iOS APNs 设备推送令牌、设备平台和推送环境，以及通知事件、最多 240 字的回复或待处理事项摘要、送达状态和已读状态。Android Firebase SDK 还会处理安装标识、应用版本和设备技术信息，以提供推送服务。推送标识用于通知，不用于广告或跨 App 跟踪。',
+            'Notifications: if you allow notifications, we store an Android FCM or iOS APNs push token linked to your account, device platform and push environment, together with notification events, reply or action previews of up to 240 characters, delivery status and read state. The Android Firebase SDK also processes installation identifiers, app version and technical device information to provide push messaging. Push identifiers are used for notifications, not advertising or cross-app tracking.',
           ),
           t(
             '手机权限：App 不请求定位、通讯录、相机或麦克风的广泛访问权限。文件只在你主动选取或发送时交给服务；文件内容可能包括文档、照片、音视频或其他你选择的数据。',
@@ -203,8 +203,8 @@ function legalPrivacy() {
             'Infrastructure: your company decides where the Gateway and its database run (own machines or a cloud platform), and the data sits there.',
           ),
           t(
-            '托管服务使用 Vercel 承载网站和 Gateway、Neon 承载业务数据库；配置对象存储时，上传文件或发布包也可由 Vercel Blob 保存。Google Firebase Cloud Messaging 和 Firebase Installations 处理安装标识、设备推送令牌及必要的应用和设备技术信息来投递 Android 通知；Apple APNs 接收设备令牌及通知载荷来投递 iOS 通知。默认通知使用通用提醒文案而不携带聊天正文。',
-            'Hosted services use Vercel for the website and Gateway and Neon for the business database. When object storage is configured, Vercel Blob may store uploaded files or release packages. Google Firebase Cloud Messaging and Firebase Installations process installation identifiers, device push tokens and necessary app and technical device information to deliver Android notifications. Apple APNs receives device tokens and notification payloads to deliver iOS notifications. Default alerts use generic text without conversation bodies.',
+            '托管服务使用 Vercel 承载网站和 Gateway、Neon 承载业务数据库；配置对象存储时，上传文件或发布包也可由 Vercel Blob 保存。Google Firebase Cloud Messaging 和 Firebase Installations 处理安装标识、设备推送令牌及必要的应用和设备技术信息来投递 Android 通知；Apple APNs 接收设备令牌及通知载荷来投递 iOS 通知。通知会携带最多 240 字的回复或待处理事项摘要，并可能显示在锁屏上；完整会话不会作为推送载荷发送。可在系统通知设置中控制锁屏预览或关闭通知。',
+            'Hosted services use Vercel for the website and Gateway and Neon for the business database. When object storage is configured, Vercel Blob may store uploaded files or release packages. Google Firebase Cloud Messaging and Firebase Installations process installation identifiers, device push tokens and necessary app and technical device information to deliver Android notifications. Apple APNs receives device tokens and notification payloads to deliver iOS notifications. Alerts include reply or action previews of up to 240 characters and may appear on the lock screen; full conversations are not sent as push payloads. System notification settings can control lock-screen previews or disable notifications.',
           ),
         ],
         t(

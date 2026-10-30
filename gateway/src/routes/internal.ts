@@ -643,6 +643,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
     const actionId = strField(body, 'actionId', false).slice(0, 200)
     const sourceTime = intField(body, 'time') ?? Date.now()
     const event = await db.recordNotification({ ...position, accountId, kind: kind as PushKind,
+      preview: body.preview,
       actionId, occurredAt: sourceTime, resolvedAt: body.resolved === true ? Date.now() : undefined })
     wakeNotificationDispatcher(db, accountId)
     json(res, 202, { queued: true, id: event.id })
@@ -743,6 +744,7 @@ export function attachInternal(router: Router, ctx: RouteCtx) {
       for (const recipient of recipients) {
         await db.recordNotification({ accountId: recipient, botId: handoff.botId, sessionId: handoff.sessionId,
           seq: noticeSeq, kind: 'handoff', actionId: handoff.id, occurredAt: handoff.createdAt,
+          preview: handoff.ask || handoff.reason,
           resolvedAt: handoff.state !== 'open' ? Date.now() : undefined })
         wakeNotificationDispatcher(db, recipient)
       }

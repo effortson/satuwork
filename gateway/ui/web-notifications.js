@@ -3,6 +3,40 @@ let webNoticeAccount = ''
 const webNoticeUnread = new Map()
 let webNoticeCards = []
 const webNoticeTitle = document.title || 'Satuwork Gateway'
+let webNoticeAudio = null
+
+/** 浏览器要求用户手势解锁音频。只解锁，不补播之前因自动播放限制而静音的通知。 */
+function unlockWebNotificationSound() {
+  if (!webNoticesEnabled()) return
+  try {
+    const Audio = window.AudioContext || window.webkitAudioContext
+    if (!Audio) return
+    if (!webNoticeAudio || webNoticeAudio.state === 'closed') webNoticeAudio = new Audio()
+    if (webNoticeAudio.state === 'suspended') void webNoticeAudio.resume().catch(() => {})
+  } catch { /* 不支持音频或浏览器禁播时，通知卡片照常显示。 */ }
+}
+
+/** 一批新领取的通知响一次；历史、已读、重复领取和正在阅读的会话都不会走到这里。 */
+function playWebNotificationSound() {
+  if (!webNoticesEnabled() || webNoticeAudio?.state !== 'running') return false
+  try {
+    const audio = webNoticeAudio
+    // 较低音区的 C–E–G 短铃声，轻起音、自然衰减，避免尖锐的高音提示。
+    for (const [frequency, offset] of [[523.25, 0], [659.25, 0.10], [783.99, 0.20]]) {
+      const oscillator = audio.createOscillator(), gain = audio.createGain()
+      const at = audio.currentTime + offset
+      oscillator.type = 'triangle'
+      oscillator.frequency.setValueAtTime(frequency, at)
+      gain.gain.setValueAtTime(0.0001, at)
+      gain.gain.exponentialRampToValueAtTime(0.075, at + 0.012)
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.26)
+      oscillator.connect(gain); gain.connect(audio.destination)
+      oscillator.onended = () => { oscillator.disconnect(); gain.disconnect() }
+      oscillator.start(at); oscillator.stop(at + 0.28)
+    }
+    return true
+  } catch { return false }
+}
 
 function webNoticesEnabled() {
   return !appShell() && !!state.me?.account?.id && state.me.account.role !== 'owner'
@@ -16,6 +50,8 @@ function webNoticeFocusedBot() {
 }
 
 function resetWebNotifications() {
+  try { if (webNoticeAudio) void webNoticeAudio.close().catch(() => {}) } catch {}
+  webNoticeAudio = null
   webNoticeAccount = ''
   webNoticeUnread.clear()
   webNoticeCards = []
@@ -69,15 +105,19 @@ function paintWebNotifications() {
       } else go('/a/' + encodeURIComponent(id))
     })
   }
-  host.innerHTML = webNoticeCards.map(({ botId, kind }) => {
+  host.innerHTML = webNoticeCards.map(({ botId, kind, preview }) => {
     const bot = (state.runtimeBots || []).find((b) => b.id === botId)
     const count = webNoticeUnread.get(botId) || 0
     return `<div class="satu-web-notice">
       <button type="button" class="satu-web-notice-open" data-web-notice="${esc(botId)}">
         <strong>${esc(bot?.name || 'Satuwork')}</strong>
         <span>${esc(webNoticeLabel(kind))} · ${esc(webNoticeUnreadLabel(count))}</span>
+        ${preview ? `<span class="satu-web-notice-preview">${esc(preview)}</span>` : ''}
       </button>
       <button type="button" class="satu-web-notice-close" data-web-notice="${esc(botId)}" data-dismiss aria-label="${esc(t('关闭', 'Dismiss'))}">×</button>
     </div>`
   }).join('')
 }
+
+document.addEventListener('pointerdown', unlockWebNotificationSound, { capture: true, passive: true })
+document.addEventListener('keydown', unlockWebNotificationSound, { capture: true })

@@ -172,11 +172,11 @@ Gateway 无状态、不经手对话流。要做推送需要四件事：
   `DELETE /me/push-device/:token`（这套路由器对 DELETE 不读请求体），只删得掉自己名下的。
 - 登记只收登录 JWT、只收 iOS。客户端每次启动和登录都报一次：`updatedAt` 兼作「这次登录的
   时刻」，早于账号 `tokenRevokedAt` 的登记不推——改了口令之后旧手机自动收不到。
-- 席位上报是 `POST /internal/push { kind, botId, sessionId, seq, time, actionId?, resolved? }`，
+- 席位上报是 `POST /internal/push { kind, botId, sessionId, seq, time, actionId?, resolved?, preview? }`，
   鉴权同审计事件那条（席位票只报自己、机器票只报本机席位）。返回 202 和稳定事件 ID；Gateway
   先保存元数据，缓冲两秒后核对跨端已读再投递。转人工在 `/internal/handoffs` 一并上报通知序号。
-- **推送不带对话正文**：标题是 Bot 名字（Gateway 从目录查，不采信上报），正文是一句固定的话。
-  正文在席位机器上，Gateway 不经手；推送还要过 Apple 的服务器、躺在锁屏上。
+- 标题是 Bot 名字（Gateway 从目录查，不采信上报），正文是最多 240 字的回复 / 待办摘要。
+  完整会话仍在席位上；摘要经 Gateway 保存和调度后交给 APNs / FCM，可能显示在锁屏上。
 - APNs 用 HTTP/2 + .p8 签的 ES256 token，40 分钟换一次；410 / BadDeviceToken 当场摘掉令牌。
   没配钥匙就不发。e2e 的 push 套件起一个明文 HTTP/2 的假 APNs 验签名、头和 payload。
 
@@ -185,7 +185,7 @@ Gateway 无状态、不经手对话流。要做推送需要四件事：
   超过一小时的事件仍可保留未读，但不再补弹系统通知。只报主会话；本地 Bot 由桌面壳上报。
 - 共享已读、设备领取与重启恢复见 [跨端通知](notifications.md)（迁移 0069～0071）。
 - e2e：push 套件验 Gateway 这半；gateway-chat 套件给它的 Gateway 也接上假 APNs，真 bot 跑完
-  一轮后假 APNs 要收到那条 turn-end，且不带正文。
+  一轮后假 APNs 要收到那条 turn-end，正文为这一轮最后回复的短摘要。
 
 第 4 件也已落地（手机壳，另一个 PR）——
 

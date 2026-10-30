@@ -1,5 +1,5 @@
 /** 单行会话摘要：先去 Markdown 排版，再截断；不生成 HTML，也不加载图片。 */
-export function markdownSummary(source: string): string {
+export function markdownSummary(source: string, maxLength = 120): string {
   const held: string[] = []
   const hold = (text: string) => `\uE000${held.push(text) - 1}\uE000`
   // 占位符仅用于保护代码和转义的字面量，不能和正文里的字符相撞。
@@ -58,5 +58,5 @@ export function markdownSummary(source: string): string {
   // 表格单元格保持间隔；代码里的竖线仍由占位保护。
   text = text.replace(/^\s*\|(.+)\|\s*$/gm, (_, row: string) => row.replace(/\|/g, ' '))
   text = text.replace(/\uE000(\d+)\uE000/g, (_, index: string) => held[Number(index)] || '')
-  return text.replace(/\s+/g, ' ').trim().slice(0, 120)
+  return text.replace(/\s+/g, ' ').trim().slice(0, maxLength)
 }

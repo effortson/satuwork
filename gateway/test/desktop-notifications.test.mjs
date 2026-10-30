@@ -18,6 +18,37 @@ test('raw events cannot bypass server scheduling to display desktop notification
   assert.equal(JSON.stringify(ui.sent).includes('私密正文'), false)
 })
 
+test('desktop bridge receives the actual reply preview', async () => {
+  const server = noticeServer(), ui = notificationClient(server, { platform: 'desktop' })
+  await ui.start()
+  server.add({ preview: '已核对三张发票，合计 RM 1,250。' }); server.time(4000); await ui.poll()
+  assert.equal(ui.sent[0].body, '已核对三张发票，合计 RM 1,250。')
+})
+
+test('local reply previews survive offline restart without uploading tools, reasoning or a previous turn', async () => {
+  const server = noticeServer(), ui = notificationClient(server, { platform: 'desktop' })
+  await ui.start(); ui.state.runtimeBots[0].runtimeKind = 'local'; server.offline(true)
+  const emit = (type, seq, data, replay = false) => ui.context.observeNotificationEvent('bot-a',
+    { type, seq, time: 1100 + seq, data }, replay, 'session-a')
+  await emit('turn/start', 1, { turn: 1 }, true)
+  await emit('assistant/message', 2, { message: { content: [{ type: 'text', text: '旧回复' }] } }, true)
+  await emit('turn/end', 3, { turn: 1, reason: 'completed' }, true)
+  await emit('turn/start', 4, { turn: 2 })
+  await emit('assistant/message', 5, { message: { content: [{ type: 'text', text: '我先查一下' }] } })
+  await emit('tool/result', 6, { text: '私密工具输出' })
+  await emit('assistant/message', 7, { message: { content: [
+    { type: 'reasoning', text: '内部推理' }, { type: 'text', text: '## 已完成\n核对 **3 张**发票，合计 RM 1,250。' },
+  ] } })
+  await emit('turn/end', 8, { turn: 2, reason: 'completed' })
+  await emit('turn/end', 8, { turn: 2, reason: 'completed' })
+  await ui.poll(); ui.context.resetNotificationSync(); server.offline(false)
+  const restored = notificationClient(server, { platform: 'desktop', storage: ui.storage })
+  await restored.start()
+  assert.equal(server.events.length, 1)
+  assert.equal(server.events[0].preview, '已完成 核对 3 张发票，合计 RM 1,250。')
+  assert.doesNotMatch(JSON.stringify(server.events), /旧回复|我先查一下|私密工具输出|内部推理/)
+})
+
 test('foreground desktop remains silent; unread notifications remain available when focus changes', async () => {
   const server = noticeServer(), ui = notificationClient(server, { platform: 'desktop', focused: true })
   await ui.start(); server.add(); server.time(4000); await ui.poll()

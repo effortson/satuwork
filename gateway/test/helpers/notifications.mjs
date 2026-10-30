@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
+import { notificationPreview } from '../../../core/src/chat/notification.ts'
 
 export const source = (path) => readFileSync(new URL(path, import.meta.url), 'utf8')
 export const plain = (value) => JSON.parse(JSON.stringify(value))
@@ -14,7 +15,7 @@ export function noticeServer() {
     time: (n) => { clock = n }, offline: (n) => { offline = n },
     add: (event = {}) => {
       const e = { id: `event-${events.length + 1}`, accountId: 'account-a', botId: 'bot-a', sessionId: 'session-a',
-        seq: 10, kind: 'turn-end', createdAt: 1100, dueAt: 3100, expiresAt: 3601100, ...event }
+        seq: 10, kind: 'turn-end', preview: '', createdAt: 1100, dueAt: 3100, expiresAt: 3601100, ...event }
       events.push(e)
       return e
     },
@@ -36,7 +37,7 @@ export function noticeServer() {
       if (path.endsWith('/local')) {
         const existing = events.find((e) => e.accountId === account && e.botId === body.botId && e.sessionId === body.sessionId && e.seq === body.seq && e.kind === body.kind)
         if (existing) existing.resolved ||= body.resolved
-        else this.add({ ...body, accountId: account, resolved: body.resolved, createdAt: clock })
+        else this.add({ ...body, preview: notificationPreview(body.preview), accountId: account, resolved: body.resolved, createdAt: clock })
         return { id: existing?.id || events.at(-1).id }
       }
       const mine = events.filter((e) => unread(account, e))
@@ -49,9 +50,10 @@ export function noticeServer() {
   }
 }
 
-export function notificationClient(server, { platform = 'web', focused = false, hidden = false, storage = new Map() } = {}) {
+export function notificationClient(server, { platform = 'web', focused = false, hidden = false, storage = new Map(), audio = false } = {}) {
   const nodes = new Map(), windowEvents = {}, documentEvents = {}, sent = [], cleared = [], navigated = [], timers = new Map()
   let focus = focused, bottom = true, hasContent = true, timer = 0
+  const sounds = [], audioContexts = []
   const badge = (id) => ({ hidden: true, getAttribute: () => id, setAttribute() {} })
   const badges = [badge('bot-a'), badge('bot-b')]
   const row = { getAttribute: () => '5', getBoundingClientRect: () => ({ top: 0, bottom: 200 }) }
@@ -85,11 +87,21 @@ export function notificationClient(server, { platform = 'web', focused = false, 
   }
   if (platform === 'desktop') context.window.__SATUWORK_DESKTOP_NOTIFICATIONS__ = bridge
   if (platform === 'mobile') context.window.__SATUWORK_MOBILE__ = true
+  if (audio) context.window.AudioContext = class {
+    state = 'suspended'; currentTime = 0; destination = {}
+    constructor() { audioContexts.push(this) }
+    async resume() { if (audio === 'blocked') throw new Error('autoplay blocked'); this.state = 'running' }
+    async close() { this.state = 'closed' }
+    createOscillator() { return { frequency: { setValueAtTime() {} }, connect() {}, disconnect() {},
+      start: (at) => sounds.push(at), stop() {} } }
+    createGain() { return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {}, disconnect() {} } }
+  }
   runInNewContext(source('../../ui/core.js') + '\n' + source('../../ui/notification-sync.js') + '\n' + source('../../ui/web-notifications.js') + '\n' + source('../../ui/desktop-notifications.js') + `
     globalThis.inspectNotices = () => ({ unread: [...webNoticeUnread], cards: webNoticeCards, pending: [...notificationPendingReads.values()] });
   `, context)
   return {
-    context, state, document, nodes, badges, sent, cleared, navigated, storage, timers,
+    context, state, document, nodes, badges, sent, cleared, navigated, storage, timers, sounds, audioContexts,
+    gesture: () => documentEvents.pointerdown?.(),
     start: async () => { await context.syncDesktopNotifications(); context.syncNotificationState(); await context.pollNotifications() },
     poll: () => context.pollNotifications(),
     focus: (v) => { focus = v; if (v) windowEvents.focus?.() },
