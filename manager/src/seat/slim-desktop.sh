@@ -333,19 +333,36 @@ mkdir -p "$WORK_DIR" 2>/dev/null || true
 # 有自己一套引号和 %f/%u 转义规则，写复杂了 plank 可能整条 dockitem 都不认——而
 # 「dock 上少一格」是**没有任何报错**的，只能靠眼睛发现。wrapper 里是普通 shell，
 # 规则少得多；Chrome 那格从来就是这么做的，已经验证可用。
+# 图标名不能写死。utilities-terminal / system-file-manager 是老 Adwaita 里的彩色图标，
+# Debian 13 的 adwaita-icon-theme（48）把它们删了，hicolor 里也没有——plank 找不到就画一张
+# 空白窗口，dock 上两格认不出是什么，而且没有任何报错。Xfce 自己的图标（org.xfce.terminal
+# 等）装在 hicolor 里，系统那份 .desktop 的 Icon= 指的就是它。所以老名字还在（Debian 12）
+# 就照旧用，不在了改用系统 .desktop 里写的那个。
+icon_exists() {
+  [ -n "$(find /usr/share/icons /usr/share/pixmaps -name "$1.*" -print -quit 2>/dev/null)" ]
+}
+pick_icon() {
+  local legacy="$1" desktop="$2" sys
+  if icon_exists "$legacy"; then echo "$legacy"; return; fi
+  sys=$(sed -n 's/^Icon=//p' "/usr/share/applications/$desktop" 2>/dev/null | head -1)
+  echo "${sys:-$legacy}"
+}
+FILES_ICON=$(pick_icon system-file-manager thunar.desktop)
+TERM_ICON=$(pick_icon utilities-terminal xfce4-terminal.desktop)
+
 FILES_WRAP="$SEAT_DIR/bin/seat-files"
 printf '#!/bin/bash\nexec thunar "%s" "$@"\n' "$WORK_DIR" > "$FILES_WRAP"
 chmod +x "$FILES_WRAP"
 FILES_D="$XDG_DATA_HOME/applications/seat-files.desktop"
-printf '[Desktop Entry]\nType=Application\nName=Files\nExec=%s\nIcon=system-file-manager\nTerminal=false\n' \
-  "$FILES_WRAP" > "$FILES_D"
+printf '[Desktop Entry]\nType=Application\nName=Files\nExec=%s\nIcon=%s\nTerminal=false\n' \
+  "$FILES_WRAP" "$FILES_ICON" > "$FILES_D"
 
 TERM_WRAP="$SEAT_DIR/bin/seat-terminal"
 printf '#!/bin/bash\nexec xfce4-terminal --working-directory="%s" "$@"\n' "$WORK_DIR" > "$TERM_WRAP"
 chmod +x "$TERM_WRAP"
 TERM_D="$XDG_DATA_HOME/applications/seat-terminal.desktop"
-printf '[Desktop Entry]\nType=Application\nName=Terminal\nExec=%s\nIcon=utilities-terminal\nTerminal=false\n' \
-  "$TERM_WRAP" > "$TERM_D"
+printf '[Desktop Entry]\nType=Application\nName=Terminal\nExec=%s\nIcon=%s\nTerminal=false\n' \
+  "$TERM_WRAP" "$TERM_ICON" > "$TERM_D"
 
 # plank 按 .dockitem 的**文件名排序**摆放，所以名字定了顺序：chrome → files → terminal。
 LAUNCH="$XDG_CONFIG_HOME/plank/dock1/launchers"
