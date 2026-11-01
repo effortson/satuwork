@@ -81,7 +81,10 @@ jobs:
 
       - name: API permissions, reply language and knowledge consistency
         working-directory: gateway
-        run: node --import tsx --test test/content-reports.test.ts test/reply-language.test.ts test/knowledge-snapshot.test.ts
+        # 一个一个跑。这几份各建自己的 schema、各跑一遍迁移，但用的是同一个库：0002 里按
+        # pg_get_constraintdef 找约束那段会扫到**别的 schema** 正在 drop 的约束，偶发
+        # 「could not open relation with OID」。迁移已经上线改不得，测试别并发就碰不上。
+        run: node --import tsx --test --test-concurrency=1 test/content-reports.test.ts test/reply-language.test.ts test/knowledge-snapshot.test.ts
 
       - name: 下载与桌面通知回归
         run: node --test gateway/test/*.test.mjs
@@ -155,7 +158,7 @@ jobs:
           # 按 SHA 引用时它没法从 ref 名（@stable）推出工具链，得写明。
           toolchain: stable
 
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: './desktop/src-tauri -> target'
 
@@ -179,7 +182,7 @@ jobs:
           toolchain: stable
           targets: aarch64-apple-ios-sim
 
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: './mobile/src-tauri -> target'
 
@@ -211,7 +214,7 @@ jobs:
           toolchain: stable
           targets: aarch64-linux-android
 
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: './mobile/src-tauri -> target'
           key: android
@@ -241,7 +244,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: './desktop/src-tauri -> target'
 
