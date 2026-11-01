@@ -81,7 +81,10 @@ jobs:
 
       - name: API permissions, reply language and knowledge consistency
         working-directory: gateway
-        run: node --import tsx --test test/content-reports.test.ts test/reply-language.test.ts test/knowledge-snapshot.test.ts
+        # 一个一个跑。这几份各建自己的 schema、各跑一遍迁移，但用的是同一个库：0002 里按
+        # pg_get_constraintdef 找约束那段会扫到**别的 schema** 正在 drop 的约束，偶发
+        # 「could not open relation with OID」。迁移已经上线改不得，测试别并发就碰不上。
+        run: node --import tsx --test --test-concurrency=1 test/content-reports.test.ts test/reply-language.test.ts test/knowledge-snapshot.test.ts
 
       - name: 下载与桌面通知回归
         run: node --test gateway/test/*.test.mjs
