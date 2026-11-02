@@ -29,7 +29,8 @@ const { Context } = await import('@deepseek-ai/cordis')
 const { cachedMemories, cachedMemoryOf } = await import('./src/catalog/index.ts')
 const { memoryOf, DEFAULT_MEMORY } = await import('./src/registry/index.ts')
 const { looksProcedural, matchMemories } = await import('./src/tools/memory.ts')
-const { memoryBlockOf, memoryLayersOf, memoryWriteSchemaFor, pickMemories } = await import('./src/agent/index.ts')
+const { memoryBlockOf, memoryLayersOf, memoryWriteSchemaFor, pickMemories, recallBlockOf, recallMemories } = await import('./src/agent/index.ts')
+const { withRecall } = await import('./src/agent/history.ts')
 const { formOf } = await import('./src/policy/forms.ts')
 const { StorageService } = await import('./src/storage/index.ts')
 const { ToolService } = await import('./src/tools/index.ts')
@@ -105,6 +106,45 @@ out.procedural = {
     self: [...memoryLayersOf('仅本人')].sort(),
     group: [...memoryLayersOf('所属分组')].sort(),
     company: [...memoryLayersOf('全公司')].sort(),
+  }
+
+  /**
+   * 补捞：被注入上限挤在外面、字面上和这句话沾边的那几条。
+   * cap=1 时摆进去的是「钉住的 g + 最新的 a」，b / c 在外面。
+   */
+  {
+    const P = { ...POLICY, scope: '全公司', cap: 1 }
+    const pool = [
+      ...list,
+      mem('Uclub 的发票抄送 enxi.liu@uclubgroup.com.sg', { id: 'u', layer: 'self', updatedAt: 10 }),
+      mem('季度报表在 work/reports 底下', { id: 'r', layer: 'bot', updatedAt: 20 }),
+    ]
+    const ids = (q, max) => recallMemories(P, pool, q, max, NOW).map((m) => m.id)
+    out.recall = {
+      // 一个英文词（公司名）就够两分。
+      english: ids('给 Uclub 回封邮件'),
+      // 中文两字片段要凑满两个：「季度」「报表」。
+      chinese: ids('把季度报表发我'),
+      // 只撞上一个片段不够。
+      weak: ids('报表呢'),
+      // 功能词不算：「我们这个」凑不出分。
+      stop: ids('我们这个怎么弄'),
+      // 摆进系统提示词的那条（a：本人层最新）不再补捞。
+      shown: ids('本人层最新那条'),
+      // 过期的、类别没勾的，照样不捞。
+      expired: ids('过期了的那条'),
+      max: ids('Uclub 季度报表', 1),
+      off: ids('给 Uclub 回封邮件', 0),
+      memOff: recallMemories({ ...P, on: false }, pool, '给 Uclub 回封邮件', 5, NOW).length,
+    }
+    const items = [{ kind: '事实', text: 'Uclub 的发票抄送 enxi.liu@uclubgroup.com.sg' }]
+    out.recallBlock = recallBlockOf(items)
+    out.recallEmpty = recallBlockOf([])
+    out.withRecall = {
+      str: withRecall('[时间]\n给 Uclub 回封邮件', items),
+      arr: withRecall([{ type: 'text', text: '[时间]' }, { type: 'text', text: '看图' }], items),
+      none: withRecall('原样', undefined),
+    }
   }
 
   out.block = memoryBlockOf({ ...POLICY, scope: '全公司' }, list, NOW)

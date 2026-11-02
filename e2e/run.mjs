@@ -46,6 +46,7 @@ import { runDocRender } from './doc-render.mjs'
 import { runWebBot } from './web-bot.mjs'
 import { runVision } from './vision.mjs'
 import { runTurnImages } from './turn-images.mjs'
+import { runTurnRecall } from './turn-recall.mjs'
 import { runMentions } from './mentions.mjs'
 import { runRoutineModel } from './routine-model.mjs'
 import { runModelChoice } from './model-choice.mjs'
@@ -262,6 +263,7 @@ async function main() {
     await suite('web-bot', () => runWebBot({ root, test, assert, log }))
     await suite('vision', () => runVision({ root, test, assert, log }))
     await suite('turn-images', () => runTurnImages({ root, test, assert, log }))
+    await suite('turn-recall', () => runTurnRecall({ root, test, assert, log }))
     await suite('mentions', () => runMentions({ root, test, assert, log }))
     await suite('routine-model', () => runRoutineModel({ root, test, assert, log }))
     await suite('model-choice', () => runModelChoice({ root, test, assert, log }))

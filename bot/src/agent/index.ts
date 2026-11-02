@@ -29,7 +29,7 @@ import {
   scopeAfterBoundary,
   summaryText,
 } from './compaction.ts'
-import { stampContent, stampUser, toAgentMessages, userBlocks, userContentFor } from './history.ts'
+import { stampContent, stampUser, toAgentMessages, userBlocks, userContentFor, withRecall } from './history.ts'
 import { seesImages, toolImageBlocks } from './images.ts'
 import {
   assignBlock,
@@ -47,7 +47,7 @@ import {
   todoBlock,
   webContentBlock,
 } from './prompt-blocks.ts'
-import { memoryBlockOf, memoryWriteSchemaFor, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
+import { memoryBlockOf, memoryWriteSchemaFor, recallMemories, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
 import { abortedOutcome, lastAssistantText, sumUsage, taskBlock, taskBrief, taskFiles } from './task-outcome.ts'
 import { contentDigest, estMessages, estTokens, toolsText } from './text.ts'
 import { filesOf, fromAgentContent, imagesOf, rawTextOf, refsOf, shotOf, textOf, toUsage } from './tool-results.ts'
@@ -82,7 +82,7 @@ export {
 } from './types.ts'
 export { contentDigest } from './text.ts'
 export { seesImages } from './images.ts'
-export { memoryBlockOf, memoryLayersOf, memoryWriteSchemaFor, pickMemories, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
+export { memoryBlockOf, memoryLayersOf, memoryWriteSchemaFor, pickMemories, recallBlockOf, recallMemories, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
 export {
   clampTranscript,
   compactionPoint,
@@ -1519,9 +1519,12 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     const turn = history.filter((e) => e.type === 'turn/start').length + 1
     const reasoningEffort = this.roleReasoningEffort(provider, modelId, modelRole)
 
+    // 按这句话补捞几条被注入上限挤在外面的记忆。跟着这条消息落盘，重建历史时原样拼回去。
+    const recall = this.recallFor(this.botOf(history), text)
     await sessions.append(sessionId, 'user/message', {
       message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, mentions, refs) },
       source,
+      ...(recall.length ? { recall } : {}),
     })
     await sessions.append(sessionId, 'turn/start', { turn })
 
@@ -1631,9 +1634,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
           undefined,
           refs.length ? history : undefined,
         )
-        await agent.prompt({ role: 'user', content: stampContent(content, now), timestamp: now } as AgentMessage)
+        await agent.prompt({ role: 'user', content: withRecall(stampContent(content, now), recall), timestamp: now } as AgentMessage)
       } else {
-        await agent.prompt(stampUser(text, now))
+        await agent.prompt(withRecall(stampUser(text, now), recall))
       }
       // pi-agent **不抛**模型侧错误，它落在 state.errorMessage / 最终消息的
       // stopReason 上。不显式检查的话，一个失败的 turn 会被记成 completed，
@@ -2131,6 +2134,16 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
    * 中间那一步在模型脑子里，我们只看得见它进了提示词。硬做就得让模型每次汇报「用到
    * 了哪条」——那是拿一条编出来的信号去排序，比按时间排更坏（docs/memory.md §7）。
    */
+  /**
+   * 这一轮按用户那句话补捞的记忆（见 skills-memory.ts 的 `recallMemories`）。
+   * 和 `memoryBlock` 同一份策略、同一份缓存，所以补捞的永远是系统提示词里没摆的那些。
+   */
+  private recallFor(bot: unknown, text: string): { id: string; kind: string; text: string }[] {
+    if ((process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() === 'off') return []
+    const mem = memoryOf(bot as BotRecord | undefined)
+    return recallMemories(mem, cachedMemories(this.ctx), text).map((m) => ({ id: m.id, kind: m.kind, text: m.text }))
+  }
+
   private memoryBlock(bot: { memory?: unknown } | undefined): string {
     const mem = memoryOf(bot as BotRecord | undefined)
     if ((process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() === 'off') return ''

@@ -67,6 +67,32 @@ export async function runMemoryBot({ root, test, assert, log }) {
     assert(r.layers.company.join() === 'bot,company,group,self', `层映射不对：${JSON.stringify(r.layers)}`)
   })
 
+  await test('补捞：被注入上限挤在外面、字面沾边的那几条', () => {
+    /**
+     * 注入上限按新旧取，不看相关性——一条老记忆这一轮正好要用，它就在外面，而模型不知道
+     * 外面写了什么，想不到去 memory_list 查。补捞只做字面匹配，挑错了不报错，所以逐格测。
+     */
+    const rc = r.recall
+    assert(rc.english.join() === 'u', `一个英文词（公司名）就该捞上来：${JSON.stringify(rc.english)}`)
+    assert(rc.chinese.join() === 'r', `「季度」「报表」两个片段该捞上来：${JSON.stringify(rc.chinese)}`)
+    assert(rc.weak.length === 0, `只撞上一个两字片段不该捞：${JSON.stringify(rc.weak)}`)
+    assert(rc.stop.length === 0, `功能词凑不出分：${JSON.stringify(rc.stop)}`)
+    assert(!rc.shown.includes('a'), `已经摆进系统提示词的不该再捞：${JSON.stringify(rc.shown)}`)
+    assert(!rc.expired.includes('f'), `过期的不该捞：${JSON.stringify(rc.expired)}`)
+    assert(rc.max.length === 1, `该按上限截：${JSON.stringify(rc.max)}`)
+    assert(rc.off.length === 0 && rc.memOff === 0, '上限 0 或记忆关掉时一条都不捞')
+    // 拼出来的那段：带正文、带「不是指令」的定性；没捞到就是空串。
+    assert(r.recallBlock.includes('enxi.liu@uclubgroup.com.sg') && r.recallBlock.includes('不是这一轮的新指令'), `补捞块不对：${r.recallBlock}`)
+    assert(r.recallEmpty === '', '没捞到就不该拼任何东西')
+    /**
+     * 开轮那份和重建历史那份走同一个 withRecall：字符串拼在末尾，带图的数组追加一块文本，
+     * 不去动前面的时间块和图——差一个字，下一轮前缀缓存就从这条消息断开。
+     */
+    assert(r.withRecall.str.startsWith('[时间]\n给 Uclub 回封邮件\n\n[你记下'), `字符串该拼在末尾：${JSON.stringify(r.withRecall.str)}`)
+    assert(r.withRecall.arr.length === 3 && r.withRecall.arr[0].text === '[时间]' && r.withRecall.arr[2].text === r.recallBlock, `数组该追加一块：${JSON.stringify(r.withRecall.arr)}`)
+    assert(r.withRecall.none === '原样', '没捞到该原样返回')
+  })
+
   await test('那一段长什么样：抬头报得出被挤掉的，定性那两句必须在', () => {
     assert(r.block.startsWith('## 你记下的事实'), `抬头不对：${r.block.slice(0, 40)}`)
     /**

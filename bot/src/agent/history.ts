@@ -5,6 +5,7 @@ import { budgetToolText } from '../tools/result-budget.ts'
 import { withoutTaskTurns } from './task-turns.ts'
 import { humanTime } from '../time.ts'
 import { contextBoundary, summaryText } from './compaction.ts'
+import { recallBlockOf } from './skills-memory.ts'
 import { loadImage, MAX_LIVE_IMAGES, MAX_LIVE_TOOL_IMAGES, replayToolImages, seesImages, stale } from './images.ts'
 import { refFallback, refHead, safeParse, textFrom } from './text.ts'
 import { piUsage } from './tool-results.ts'
@@ -196,9 +197,12 @@ export async function toAgentMessages(
         order: userOrder(e.seq),
         message: {
           role: 'user',
-          content: stampContent(
-            await userContentFor(e.data.message, ctx, (i) => liveImages.has(`${e.seq}:${i}`), allEvents),
-            e.time,
+          content: withRecall(
+            stampContent(
+              await userContentFor(e.data.message, ctx, (i) => liveImages.has(`${e.seq}:${i}`), allEvents),
+              e.time,
+            ),
+            e.data.recall,
           ),
           timestamp: e.time,
         } as AgentMessage,
@@ -502,6 +506,19 @@ export async function userContentFor(
  */
 export function stampUser(text: string, at: number): string {
   return `[${humanTime(at)}]\n${text}`
+}
+
+/**
+ * 把这一轮补捞的记忆拼到用户消息末尾（见 SessionEventMap['user/message'].recall）。
+ *
+ * **开轮那一份和重建历史那一份必须走这同一个函数**：两边拼出来差一个换行，下一轮
+ * 前缀缓存就从这条消息断开。没捞到就原样返回。
+ */
+export function withRecall(content: any, recall: { kind: string; text: string }[] | undefined): any {
+  const block = recallBlockOf(recall ?? [])
+  if (!block) return content
+  if (Array.isArray(content)) return [...content, { type: 'text', text: block }]
+  return `${content}\n\n${block}`
 }
 
 /**
