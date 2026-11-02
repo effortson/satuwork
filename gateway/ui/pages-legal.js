@@ -23,26 +23,21 @@
  * 「最后更新」那个日期。**改了正文就要动它**——这一行是外面唯一看得出「这份文本
  * 变过」的东西，法务问卷第一个问的也是它。
  */
-const LEGAL_UPDATED = '2026-10-30'
+const LEGAL_UPDATED = '2026-11-02'
 
 /**
- * 落款主体、争议管辖、联系邮箱。**现在这三样是占位的，上线前必须换掉。**
- *
- * 和首页那个占位号码一个道理（见 pages-landing.js 的 LP_SALES_PLACEHOLDER）：编一个
- * 看着像真的公司名和管辖地，比留着空更坏——它会被人照着抄进合同里。所以留明确的
- * 方括号占位，再由 LEGAL_DRAFT 在页面上挂一条「还没过法务」的横条。
- *
- * 换完三个常量，把 LEGAL_DRAFT 关掉，横条跟着消失。
+ * 运营主体、争议管辖和公开联系邮箱，与正式上架资料保持一致。
+ * 变更这些信息时同步检查隐私政策和应用内打包的版本。
  */
-const LEGAL_ENTITY = '[公司主体名称]'
-const LEGAL_ENTITY_EN = '[Legal entity name]'
-const LEGAL_LAW = '[适用法律与管辖地]'
-const LEGAL_LAW_EN = '[Governing law and venue]'
-const LEGAL_CONTACT = 'legal@satuwork.com'
-const LEGAL_DRAFT = true
+const LEGAL_ENTITY = 'ADIX INTELLIGENCE PTE. LTD.'
+const LEGAL_ENTITY_EN = 'ADIX INTELLIGENCE PTE. LTD.'
+const LEGAL_LAW = '新加坡'
+const LEGAL_LAW_EN = 'Singapore'
+const LEGAL_CONTACT = 'symohpnyprotocol@outlook.com'
+const LEGAL_DRAFT = false
 
-// Privacy is published separately from the still-draft service terms.
-const PRIVACY_UPDATED = '2026-10-28'
+// Privacy keeps its own publication date for independently updated notices.
+const PRIVACY_UPDATED = '2026-11-02'
 const PRIVACY_ENTITY = 'ADIX INTELLIGENCE PTE. LTD.'
 const PRIVACY_CONTACT = 'symohpnyprotocol@outlook.com'
 
@@ -284,8 +279,8 @@ function legalPrivacy() {
       ]),
       lgSec('pv-minors', t('未成年人', 'Minors'), [
         t(
-          '这套系统面向企业内部使用，不面向 16 岁以下的个人。发现误开的账号会删掉。',
-          'The system is meant for use inside companies and is not directed at anyone under 16. Accounts created for them in error will be deleted.',
+          '这套系统面向 18 岁及以上的企业用户，不面向未成年人。发现误开的未成年人账号会删掉。',
+          'The system is intended for enterprise users aged 18 and over, not minors. Accounts created for minors in error will be deleted.',
         ),
       ]),
       lgSec('pv-changes', t('这份政策会变', 'This policy changes'), [
@@ -315,6 +310,10 @@ function legalTerms() {
     ),
     secs: [
       lgSec('tm-accept', t('同意这些条款', 'Accepting these terms'), [
+        t(
+          `Satuwork 由 ${LEGAL_ENTITY} 提供，面向 18 岁及以上的企业用户。`,
+          `Satuwork is provided by ${LEGAL_ENTITY_EN} for enterprise users aged 18 and over.`,
+        ),
         t(
           '登录并使用这套系统，就表示你同意这份条款。不同意的话，别用它——这没有别的转圜。',
           'Signing in and using the system means you accept these terms. If you do not accept them, do not use it — there is no middle path here.',
