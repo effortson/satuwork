@@ -19,3 +19,9 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Rust calls this method through JNI. Keep it even when a restored Cargo cache
+# skips generation of proguard-tauri.pro in a new checkout/worktree.
+-keep class sg.dami.satuwork.mobile.TauriActivity {
+    public app.tauri.plugin.PluginManager getPluginManager();
+}
