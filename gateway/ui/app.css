@@ -1357,6 +1357,9 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-dl-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: var(--space-8); align-items: start; }
 
 .satu-dl-card { border: 1px solid var(--color-divider); border-radius: var(--radius-lg); padding: var(--space-6); background: var(--color-bg); }
+.satu-dl-android { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-6); align-items: center; margin-bottom: var(--space-8); }
+.satu-dl-android h2 { margin: 0 0 var(--space-2); font-size: 24px; }
+.satu-dl-android p { margin: var(--space-2) 0 0; color: var(--muted-foreground); line-height: 1.6; }
 
 /* 平台切换：两颗挨在一起的分段按钮。打扮照首页顶栏那对语言键（.satu-lp-lang）来，
    它们是同一种东西——一组互斥的小开关。 */
@@ -1414,6 +1417,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
      手机上照样得看得见（人常常是用手机扫码打开首页、再转给自己的电脑）。 */
   .satu-dl-grid { grid-template-columns: 1fr; gap: var(--space-6); }
   .satu-dl-card { padding: var(--space-4); }
+  .satu-dl-android { grid-template-columns: 1fr; }
 }
 
 /* 「点击『…』即表示你同意…」那句（shell.js 的 authConsent）：注册和接受邀请两屏的

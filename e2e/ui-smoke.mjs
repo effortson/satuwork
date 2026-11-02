@@ -1650,7 +1650,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       for (const os of ['windows', 'mac']) {
         const ui = await boot(undefined, { path: '/download' })
         await ui.fire('click', el('button', { 'data-act': 'download-os', 'data-os': os }))
-        hrefs.push(...[...ui.html().matchAll(/<a[^>]*href="([^"]+)"[^>]*\bdownload\b/g)].map((m) => m[1]))
+        hrefs.push(...[...ui.html().matchAll(/<a[^>]*href="([^"]+)"[^>]*\bdownload\b/g)].map((m) => m[1]).filter((href) => href.includes('/desktop-latest/')))
       }
       assert(hrefs.length === 3, '该是三档包（Windows 一档、Mac 两档）：' + hrefs.join(' '))
       for (const href of hrefs) {
@@ -1661,6 +1661,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         assert(workflow.includes(`latest/${file}`), `发版 CI 没往 desktop-latest 传 ${file}`)
       }
       const html = (await boot(undefined, { path: '/download' })).html()
+      assert(html.includes('https://github.com/effortson/satuwork/releases/download/android-latest/Satuwork.apk'), 'Android APK 下载地址缺失')
       // **是 `<a download>` 不是 data-act 按钮**：右键「链接存储为」、复制地址这些要能用，
       // 而这一段恰恰有人要把地址复制给别人。
       assert(!html.includes('data-act="download-get"'), '下载做成了按钮，右键复制地址就没了')
@@ -1672,7 +1673,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
         const html = ui.html()
         assert(ui.state.path === '/download', `${path} 没进入下载页：${ui.state.path}`)
         assert(ui.location.pathname === '/download' && !ui.location.hash, `${path} 地址没有规范到 /download`)
-        assert(html.includes('<h1>下载 Satuwork 桌面端</h1>'), '下载页标题不在')
+        assert(html.includes('<h1>下载 Satuwork</h1>'), '下载页标题不在')
         assert(html.includes('id="dl-grid"'), '下载卡不在')
         assert(!html.includes('id="satu-lp-film"'), '下载页混进了首页演示')
         assert(!html.includes('id="login-form"'), '下载页被登录表单挡住')
@@ -1723,8 +1724,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       const ui = await boot(undefined, { path: '/download' })
       await ui.fire('click', el('button', { 'data-act': 'landing-locale', 'data-locale': 'en' }))
       const html = ui.html()
-      assert(html.includes('Download Satuwork for desktop'), '标题没换成英文')
-      assert(!html.includes('下载 Satuwork 桌面端'), '中英混在了一起')
+      assert(html.includes('Download Satuwork'), '标题没换成英文')
+      assert(!html.includes('下载 Satuwork'), '中英混在了一起')
     })
 
     await test('首页和登录页都能进入独立下载页', async () => {

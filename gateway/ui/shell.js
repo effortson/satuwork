@@ -108,7 +108,7 @@ function authAside(
                 ——桌面端要不要装、去哪儿装，除了这儿没别处说得着。和那两条一样开新标签页，
                 理由见上面那段。**桌面壳里不给**：人已经在桌面端里了，而且壳里的 `/` 就是
                 这一屏，没有首页可指（见 render.js 的 anonView）。 */ ''}
-          ${appShell() ? '' : `<a href="/download" target="_blank" rel="noopener noreferrer">${t('下载桌面端', 'Desktop app')}</a>`}
+          ${appShell() ? '' : `<a href="/download" target="_blank" rel="noopener noreferrer">${t('下载应用', 'Get the app')}</a>`}
           <a href="/privacy" target="_blank" rel="noopener noreferrer">${t('隐私政策', 'Privacy Policy')}</a>
           <a href="/terms" target="_blank" rel="noopener noreferrer">${t('服务条款', 'Terms of Service')}</a>
         </span>

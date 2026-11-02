@@ -962,14 +962,34 @@ function dlGrid(cur) {
   </div>`
 }
 
+/** 与 Play 使用相同应用签名的 Android 通用安装包，固定下载地址随发布更新。 */
+function dlAndroid() {
+  return `<section class="satu-dl-card satu-dl-android" aria-label="Android">
+    <div>
+      <h2>Android</h2>
+      <p>${t('在手机上与 AI 同事对话、查看任务并接收通知。', 'Chat with your AI coworkers, follow tasks and receive notifications on your phone.')}</p>
+      <p class="satu-dl-fine">0.1.0 · Android 7.0+ · ${t('通用 APK', 'Universal APK')}</p>
+    </div>
+    <a class="btn btn-primary satu-dl-get" href="${esc(LP_REPO)}/releases/download/android-latest/Satuwork.apk" download>
+      ${svg(DL_ICON_DOWN, 16)}
+      <span class="satu-dl-getin"><b>${t('下载 Android APK', 'Download Android APK')}</b><em>${t('下载后打开 APK 安装', 'Open the downloaded APK to install')}</em></span>
+    </a>
+  </section>`
+}
+
 /** 公开下载页，与首页共用导航和页脚；无需登录即可直接打开 /download。 */
 function downloadView() {
   return `<div class="satu-lp satu-lp-compact">
     ${lpHeader()}
     <main class="satu-lp-wrap satu-lp-sec satu-lp-dl" id="download">
       <div class="satu-lp-sechead satu-lp-dlhead">
-        <span class="satu-lp-kicker">${t('桌面端', 'Desktop app')}</span>
-        <h1>${t('下载 Satuwork 桌面端', 'Download Satuwork for desktop')}</h1>
+        <span class="satu-lp-kicker">${t('应用下载', 'Get the app')}</span>
+        <h1>${t('下载 Satuwork', 'Download Satuwork')}</h1>
+        <p>${t('选择 Android 手机或 Windows、macOS 桌面应用，用现有账号登录。', 'Choose the Android, Windows or macOS app and sign in with your existing account.')}</p>
+      </div>
+      ${dlAndroid()}
+      <div class="satu-lp-sechead satu-lp-dlhead">
+        <h2>${t('桌面端', 'Desktop app')}</h2>
         <p>${dlLead(false)}</p>
         ${dlMeta()}
       </div>
@@ -990,7 +1010,11 @@ function downloadPage() {
     <div class="gw-page">
       <div class="gw-page-inner">
         <div>
-          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('下载 Satuwork 桌面端', 'Download Satuwork for desktop')}</h1>
+          <h1 style="font-size: 24px; margin: 0 0 4px;">${t('下载 Satuwork', 'Download Satuwork')}</h1>
+        </div>
+        ${dlAndroid()}
+        <div>
+          <h2>${t('桌面端', 'Desktop app')}</h2>
           <p style="margin: 0; font-size: 14px; line-height: 1.7; color: var(--muted-foreground);">${dlLead(true)}</p>
           ${dlMeta()}
         </div>
@@ -1043,7 +1067,7 @@ function lpHeader() {
             aria-label="${esc(t('联系销售', 'Contact sales'))}" title="${esc(t('联系销售', 'Contact sales'))}">
             ${svg(LP_ICONS.sales, 15)}<span>${t('联系销售', 'Contact sales')}</span>
           </button>
-          <button type="button" class="btn btn-secondary satu-lp-topdownload" data-act="go" data-href="/download">${t('下载桌面端', 'Desktop app')}</button>
+          <button type="button" class="btn btn-secondary satu-lp-topdownload" data-act="go" data-href="/download">${t('下载应用', 'Get the app')}</button>
           <button type="button" class="btn btn-primary satu-lp-topsign" data-act="go" data-href="/login">${t('登录', 'Sign in')}</button>
         </div>
       </div>
