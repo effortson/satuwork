@@ -993,11 +993,14 @@ async function sendChat() {
      *
      * 席位那边紧接着会经 SSE 推一次 `queue/change`，这里先自己填一行是为了「点了发送
      * 立刻有反应」——那一跳来回几百毫秒，中间屏幕上什么都没有的话，人会再按一次。
+     * 但那一跳也常常比这个响应先到：快照里见过这个 id 就不再补（见 chatQueueSeen）。
      */
     if (r && r.queued) {
       state.chatPending = (state.chatPending || []).filter((p) => p !== pending)
-      const rows = chatQueues.get(sessionId) || []
-      chatQueues.set(sessionId, rows.concat({ id: r.queueId, text: body, mentions, refs, createdAt: Date.now() }))
+      if (!chatQueueSeen.has(r.queueId)) {
+        const rows = chatQueues.get(sessionId) || []
+        chatQueues.set(sessionId, rows.concat({ id: r.queueId, text: body, mentions, refs, createdAt: Date.now() }))
+      }
       paintChat()
       paintChatQueue()
     }

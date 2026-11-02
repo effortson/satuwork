@@ -480,6 +480,7 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
        */
       if (ev.type === 'queue/change') {
         chatQueues.set(sessionId, Array.isArray(ev.queued) ? ev.queued : [])
+        for (const r of chatQueues.get(sessionId)) if (r && r.id) chatQueueSeen.add(r.id)
         if (isActive()) paintChatQueue()
         continue
       }
@@ -488,6 +489,7 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
         // 刷新页面之后 dock 要能原样回来：队列在席位那边，这里只是接住它。
         if (Array.isArray(ev.queued)) {
           chatQueues.set(sessionId, ev.queued)
+          for (const r of ev.queued) if (r && r.id) chatQueueSeen.add(r.id)
           if (isActive()) paintChatQueue()
         }
         // bot 明说历史放完了。它不是会话事件，不进事件桶。
