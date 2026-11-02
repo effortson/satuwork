@@ -373,6 +373,15 @@ function noteChatPage(sessionId, next) {
  */
 const chatQueues = new Map()
 
+/**
+ * 席位推过来的快照里出现过的排队 id。
+ *
+ * 席位收下排队消息时**先**发 `queue/change`、后回 POST 的响应，SSE 常常比响应先到——
+ * 那时 dock 里已经有这一条，响应回来再补一行就成了两行。补之前看一眼这里：快照里见过
+ * 的就不补（还在队里的已经画着；已经被取走开跑的也别再画回去）。
+ */
+const chatQueueSeen = new Set()
+
 /** 历史一页几轮。人来是看最近说了什么的，更早的等他往上翻。 */
 const CHAT_TAIL_TURNS = 20
 
