@@ -111,16 +111,18 @@ export async function runMobileAiConsent({ root, test, assert, log }) {
     f.choose(true)
     assert(!await pending, '旧弹窗授权了新账号')
   })
-  await test('隐私声明两种语言均有真实主体、删除联系、推送与第三方说明，服务条款保持草稿', async () => {
+  await test('隐私声明与正式服务条款两种语言均有真实主体、联系信息和成人用户范围', async () => {
     for (const english of [false, true]) {
       const context = { t: (zh, en) => english ? en : zh, esc: String, localeMode: english ? 'en' : 'zh' }
       const source = readFileSync(join(root, 'gateway/ui/pages-legal.js'), 'utf8')
       const render = runInNewContext(source + '\nlegalView', context)
       const html = render('privacy')
-      for (const value of ['ADIX INTELLIGENCE PTE. LTD.', 'symohpnyprotocol@outlook.com', 'APNs', 'Vercel', 'Neon', '2026-10-28']) assert(html.includes(value), '缺少 ' + value)
+      for (const value of ['ADIX INTELLIGENCE PTE. LTD.', 'symohpnyprotocol@outlook.com', 'APNs', 'Vercel', 'Neon', '2026-11-02']) assert(html.includes(value), '缺少 ' + value)
       assert(!html.includes('[Legal entity name]') && !html.includes('[公司主体名称]'), '隐私页还含占位主体')
+      assert(html.includes(english ? 'aged 18 and over' : '18 岁及以上'), '隐私页的目标年龄与上架声明不一致')
       const terms = render('terms')
-      assert(terms.includes(english ? 'placeholders' : '占位'), '发布隐私页误改了服务条款状态')
+      for (const value of ['ADIX INTELLIGENCE PTE. LTD.', 'symohpnyprotocol@outlook.com', '2026-11-02', english ? 'Singapore' : '新加坡', english ? 'aged 18 and over' : '18 岁及以上']) assert(terms.includes(value), '服务条款缺少 ' + value)
+      assert(!terms.includes(english ? 'placeholders' : '占位'), '正式服务条款仍显示草稿提示')
     }
   })
 }
