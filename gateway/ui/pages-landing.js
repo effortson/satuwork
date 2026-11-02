@@ -968,7 +968,7 @@ function dlAndroid() {
     <div>
       <h2>Android</h2>
       <p>${t('在手机上与 AI 同事对话、查看任务并接收通知。', 'Chat with your AI coworkers, follow tasks and receive notifications on your phone.')}</p>
-      <p class="satu-dl-fine">0.1.0 (1007) · Android 7.0+ · ${t('通用 APK', 'Universal APK')}</p>
+      <p class="satu-dl-fine">0.1.0 · Android 7.0+ · ${t('通用 APK', 'Universal APK')}</p>
     </div>
     <a class="btn btn-primary satu-dl-get" href="${esc(LP_REPO)}/releases/download/android-latest/Satuwork.apk" download>
       ${svg(DL_ICON_DOWN, 16)}
