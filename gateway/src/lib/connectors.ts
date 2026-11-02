@@ -134,7 +134,47 @@ export function annotateFileParams(schema: Record<string, unknown>): Record<stri
 
 const FILE_HINT =
   `【文件参数】先调用 ${UPLOAD_TOOL_NAME} 把工作区里的文件上传，再把它返回的 ` +
-  `{ name, mimetype, s3key } 原样填在这里。不要自己编 s3key，也不要填本地路径或网址。`
+  `{ name, mimetype, s3key } 原样填在这里。不要自己编 s3key，也不要填本地路径或网址。` +
+  `不带附件就整个参数都不要填，不要填空的 { name: "", mimetype: "", s3key: "" }。`
+
+/**
+ * 剔掉模型填的空附件。
+ *
+ * 文件参数里那三格在供应商的 schema 上是必填的，模型不发附件时常常照形状填一个
+ * `{ name: "", mimetype: "", s3key: "" }` 交上来——Composio 直接拒掉整次调用（「s3key
+ * 是空的」），邮件就发不出去，而人什么都没做错。线上真发生过：用户叫它去掉附件重发，
+ * 它下一次还是带着这个空壳。说明里已经写了别这么填（FILE_HINT），这里是兜底。
+ *
+ * **只认三格全空的**。有名字没 s3key 的是另一种错（以为有附件但没上传），剔掉就成了
+ * 悄悄不带附件发出去，那得让上游报错、让模型知道。数组里的空壳逐个剔，剔空了整格不传。
+ * 只看顶层，和 annotateFileParams 一样不追更深的嵌套。
+ */
+export function dropEmptyFileArgs(args: unknown): unknown {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return args
+  let changed = false
+  const next: Record<string, unknown> = {}
+  for (const [key, val] of Object.entries(args)) {
+    if (isEmptyFileHandle(val)) {
+      changed = true
+      continue
+    }
+    if (Array.isArray(val) && val.some(isEmptyFileHandle)) {
+      changed = true
+      const kept = val.filter((v) => !isEmptyFileHandle(v))
+      if (kept.length) next[key] = kept
+      continue
+    }
+    next[key] = val
+  }
+  return changed ? next : args
+}
+
+function isEmptyFileHandle(v: unknown): boolean {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+  const o = v as Record<string, unknown>
+  if (!('s3key' in o)) return false
+  return Object.values(o).every((x) => x == null || (typeof x === 'string' && !x.trim()))
+}
 
 function hintFileParam(raw: unknown): unknown {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw

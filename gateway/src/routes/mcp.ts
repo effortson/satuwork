@@ -11,7 +11,7 @@ import type { ServerResponse } from 'node:http'
 import { HttpError, json, type Req, type Router } from '../http.ts'
 import type { RouteCtx } from './ctx.ts'
 import { ProviderError, providerFor, type ToolDef } from '../connectors/index.ts'
-import { MAX_TOOLS, annotateToolParams, blockMapOf, connectionUsableBy, connectionVisibleTo, connectorDefOf, matchTools, toolsOf } from '../lib/connectors.ts'
+import { MAX_TOOLS, annotateToolParams, blockMapOf, dropEmptyFileArgs, connectionUsableBy, connectionVisibleTo, connectorDefOf, matchTools, toolsOf } from '../lib/connectors.ts'
 import {
   SEARCH_LIMIT,
   metaToolDefs,
@@ -534,7 +534,7 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
         tool: slug,
         externalUserId: g.conn.externalUserId,
         externalId: g.conn.externalId,
-        args: callArgs,
+        args: dropEmptyFileArgs(callArgs),
         signal: timer,
       })
       /**
