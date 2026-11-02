@@ -736,7 +736,7 @@ function crumbsOf(path) {
     return { href: '/users', parent: t('用户'), current: one?.name || one?.email || t('账号详情') }
   }
   // 入口在个人设置里，上一级就回那儿。
-  if (path === '/download') return { href: '/profile', parent: t('个人设置'), current: t('下载桌面端') }
+  if (path === '/download') return { href: '/profile', parent: t('个人设置'), current: t('下载应用') }
   if (path.startsWith('/audit/summary/')) {
     const item = state.auditItemDetail?.item
     const id = auditItemIdOfPath(path)

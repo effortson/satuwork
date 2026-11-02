@@ -39,6 +39,7 @@ export const dict: Record<string, string> = {
   用量统计: 'Usage',
   公司目录: 'Company Catalog',
   个人设置: 'Settings',
+  下载应用: 'Get the app',
   'Bot 配置': 'Bot Config',
   'Skill 与 MCP': 'Skills & MCP',
   对话: 'Chat',
