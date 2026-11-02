@@ -780,12 +780,12 @@ function profilePage() {
         </div>`
                 : ''
             : `<div class="satu-panel">
-          <span class="satu-panel-title">${t('桌面端', 'Desktop app')}</span>
+          <span class="satu-panel-title">${t('客户端', 'Apps')}</span>
           <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap;">
             <p style="margin: 0; font-size: 13px; color: var(--muted-foreground); flex: 1; min-width: 220px;">
-              ${t('装上之后能在这台电脑上直接跑「本地」那种 AI 员工。Windows 和 macOS 都有。', 'Run “local” coworkers right on this machine. Available for Windows and macOS.')}
+              ${t('Android 手机上对话、看任务、收通知；Windows 和 macOS 桌面端还能在这台电脑上直接跑「本地」那种 AI 员工。', 'Chat, follow tasks and get notifications on Android. The Windows and macOS apps can also run “local” coworkers right on this machine.')}
             </p>
-            <button type="button" class="btn btn-secondary" style="flex: none;" data-act="go" data-href="/download">${t('下载桌面端', 'Get the desktop app')}</button>
+            <button type="button" class="btn btn-secondary" style="flex: none;" data-act="go" data-href="/download">${t('下载应用', 'Get the app')}</button>
           </div>
         </div>`
         }
