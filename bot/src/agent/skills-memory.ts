@@ -64,9 +64,10 @@ export function skillSplit(picked: CachedSkill[]): SkillSplit {
 }
 
 /**
- * 模版上那三个 pill → **这颗 Bot 真正读得到的层**。
+ * 模版上那四个 pill → **这颗 Bot 真正读得到的层**。
  *
- * 「仅本人」= 下面两层，「所属分组」= 再加分组，「全公司」= 四层全读。认不出的字符串
+ * 「仅 Bot」= 只有 bot 层，「仅本人」= 再加 self（这个人所有 Bot 共用的那层），
+ * 「所属分组」= 再加分组，「全公司」= 四层全读。认不出的字符串
  * 按最窄的算——一个拼错的配置不该表现成「全公司的记忆突然出现在某个人的提示词里」。
  *
  * **Gateway 那边有一份同样的映射**（gateway/src/lib/memory.ts 的 `memoryScopeLayers`），
@@ -75,7 +76,8 @@ export function skillSplit(picked: CachedSkill[]): SkillSplit {
  * 而那条它永远看不见。
  */
 export function memoryLayersOf(scope: string): Set<string> {
-  const layers = new Set(['bot', 'self'])
+  const layers = new Set(['bot'])
+  if (scope === '仅本人' || scope === '所属分组' || scope === '全公司') layers.add('self')
   if (scope === '所属分组' || scope === '全公司') layers.add('group')
   if (scope === '全公司') layers.add('company')
   return layers

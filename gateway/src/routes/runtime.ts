@@ -770,9 +770,26 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   async function memoryCtx(account: Account, companyId: string, botId: string) {
     const { tpl } = await botContext(db, companyId)
     const all = await db.memoriesFor(companyId, account.id, botId)
-    /** 只有下面两层算用量：上面两层是管理员写的，不占这颗 Bot 的额度。 */
-    const mine = all.filter((m) => m.layer === 'bot' || m.layer === 'self')
-    return { mem: tpl.memory, all, mine, max: memoryStoreMax(tpl.memory) }
+    return { mem: tpl.memory, all, mine: ownMemories(all, tpl.memory), max: memoryStoreMax(tpl.memory) }
+  }
+
+  /**
+   * 算这颗 Bot 用量的那几条：**它自己那两层里、记忆范围读得到的**。
+   *
+   * 上面两层是管理员写的，不占额度。范围是「仅 Bot」时 self 那层也不算——它一条都进不了
+   * 这颗 Bot 的提示词，拿它占额度的话，模型会被告知「记忆满了」，摆给它整合的却是它看不见、
+   * 也改不动的那几条。
+   */
+  function ownMemories(all: Memory[], mem: BotMemory): Memory[] {
+    const visible = memoryScopeLayers(mem.scope)
+    return all.filter((m) => (m.layer === 'bot' || m.layer === 'self') && visible.has(m.layer))
+  }
+
+  /** 范围是「仅 Bot」时 self 那层没人读：写进去等于没记，还让模型以为记住了。 */
+  function layerReadable(layer: 'bot' | 'self', mem: BotMemory): void {
+    if (!memoryScopeLayers(mem.scope).has(layer)) {
+      throw new HttpError(403, `这个 Bot 的记忆范围是「${mem.scope}」，读不到「所有 Bot 共用」那一层。记在这颗 Bot 自己这层（layer 用 bot）。`)
+    }
   }
 
   /** 回给席位的那一份：归一化之后的整条记录 + 用量。缓存里落的必须是它。 */
@@ -839,6 +856,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       if (!mem.on) throw new HttpError(403, '这个 Bot 的长期记忆是关着的。')
 
       const layer = seatLayerOf(body.layer)
+      layerReadable(layer, mem)
       const text = seatTextOf(body)
       const kind = seatKindOf(body, mem)
 
@@ -897,7 +915,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
    * 上面两层读得到、改不动——碰了要说清是为什么，不是回一句「没有这条」：模型看得见
    * 它就在眼前，一句「不存在」只会让它换个说法再试一次。
    */
-  async function ownSeatMemory(id: string, account: Account, botId: string): Promise<Memory> {
+  async function ownSeatMemory(id: string, account: Account, botId: string, mem: BotMemory): Promise<Memory> {
     const m = await db.memory(id)
     if (!m) throw new HttpError(404, '没有这条记忆')
     if (m.layer === 'group' || m.layer === 'company') {
@@ -906,6 +924,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     if (m.accountId !== account.id || (m.layer === 'bot' && m.botId !== botId)) {
       throw new HttpError(404, '没有这条记忆')
     }
+    // 范围读不到的那层（「仅 Bot」时的 self）：模型看不见它，也就不该改得动它。
+    if (!memoryScopeLayers(mem.scope).has(m.layer)) throw new HttpError(404, '没有这条记忆')
     return m
   }
 
@@ -916,7 +936,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const botId = await seatBotOf(req, account)
     const { mem, mine, max } = await memoryCtx(account, companyId, botId)
     if (!mem.on) throw new HttpError(403, '这个 Bot 的长期记忆是关着的。')
-    const cur = await ownSeatMemory(req.params.memoryId, account, botId)
+    const cur = await ownSeatMemory(req.params.memoryId, account, botId, mem)
     const body = bodyOf(req)
     const text = body.text !== undefined ? seatTextOf(body) : cur.text
     const kind = body.kind !== undefined ? seatKindOf(body, mem) : cur.kind
@@ -960,7 +980,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const companyId = account.role === 'owner' ? null : account.companyId
     if (!companyId) throw new HttpError(400, '这个账号不属于任何公司，写不了记忆')
     const botId = await seatBotOf(req, account)
-    const cur = await ownSeatMemory(req.params.memoryId, account, botId)
+    const { tpl } = await botContext(db, companyId)
+    const cur = await ownSeatMemory(req.params.memoryId, account, botId, tpl.memory)
     await db.deleteMemory(cur.id)
     await db.audit({
       companyId,
@@ -998,7 +1019,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const { tpl } = await botContext(db, companyId)
     json(res, 200, {
       items: all.map(publicMemory),
-      used: all.filter((m) => m.layer === 'bot' || m.layer === 'self').length,
+      used: ownMemories(all, tpl.memory).length,
       max: memoryStoreMax(tpl.memory),
     })
   })
@@ -1014,6 +1035,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     if (!kind) throw new HttpError(400, '类别只能是「偏好」「事实」「联系人」之一')
     const layer = seatLayerOf(body.layer)
     const { tpl } = await botContext(db, companyId)
+    layerReadable(layer, tpl.memory)
     const row = await db.insertMemory({
       layer,
       companyId,

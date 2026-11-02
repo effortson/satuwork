@@ -48,9 +48,10 @@ export async function runMemoryBot({ root, test, assert, log }) {
     // 「所属分组」读得到分组那一层，读不到全公司；「全公司」四层全读。
     assert(r.pick.scoped.includes('c') && !r.pick.scoped.includes('d'), `所属分组不该带上全公司：${JSON.stringify(r.pick.scoped)}`)
     assert(r.pick.self.join() === 'g,a,b', `仅本人只该有下面两层：${JSON.stringify(r.pick.self)}`)
+    assert(r.pick.botOnly.join() === 'g,b', `仅 Bot 只该有 bot 层：${JSON.stringify(r.pick.botOnly)}`)
     assert(r.pick.all.includes('d'), `全公司该读得到公司层：${JSON.stringify(r.pick.all)}`)
     // 认不出的 scope 按**最窄**算：一个拼错的配置不该把全公司的记忆放进某个人的提示词。
-    assert(r.pick.typo.join() === 'g,a,b', `认不出的 scope 该按最窄算：${JSON.stringify(r.pick.typo)}`)
+    assert(r.pick.typo.join() === 'g,b', `认不出的 scope 该按最窄算：${JSON.stringify(r.pick.typo)}`)
     // 类别没勾的、过期的，都不进。
     assert(!r.pick.all.includes('e'), `类别没勾的不该进：${JSON.stringify(r.pick.all)}`)
     assert(!r.pick.all.includes('f'), `过期的不该进：${JSON.stringify(r.pick.all)}`)
@@ -61,6 +62,7 @@ export async function runMemoryBot({ root, test, assert, log }) {
     assert(r.pick.capped.join() === 'g,a', `钉住的该不占额度且排最前：${JSON.stringify(r.pick.capped)}`)
     assert(r.pick.total === 5, `total 是筛完还剩多少，不是摆出来几条：${r.pick.total}`)
     assert(r.pick.off === 0, '开关关掉就一条都不该挑')
+    assert(r.layers.botOnly.join() === 'bot', `层映射不对：${JSON.stringify(r.layers)}`)
     assert(r.layers.self.join() === 'bot,self', `层映射不对：${JSON.stringify(r.layers)}`)
     assert(r.layers.company.join() === 'bot,company,group,self', `层映射不对：${JSON.stringify(r.layers)}`)
   })

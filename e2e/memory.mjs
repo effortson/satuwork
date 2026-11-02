@@ -341,6 +341,40 @@ export async function runMemory({ root, gwRoot, test, req, start, waitHttp, asse
       })
     })
 
+    await test('「仅 Bot」：self 那层写不进、改不动、不算用量', async () => {
+      const selfOne = await req(base, 'POST', `/runtime/memories${q()}`, {
+        token: seatTok,
+        body: { text: '他周五在家办公', kind: '事实', layer: 'self' },
+      })
+      assert(selfOne.status === 201, `self ${selfOne.status} ${selfOne.text}`)
+      const before = await req(base, 'GET', `/runtime/bots/${botId}/memories`, { token: memberTok })
+      await req(base, 'PUT', `/orgs/${orgId}/bot-template`, {
+        token: adminTok,
+        body: { memory: { on: true, scope: '仅 Bot', kinds: ['偏好', '事实'], ttl: '30 天', cap: 5, confirm: false, pii: true } },
+      })
+      try {
+        // 范围读不到 self：写进去等于没记，还让模型以为记住了。
+        const write = await seatWrite({ text: '他习惯用深色模式', kind: '偏好', layer: 'self' })
+        assert(write.status === 403 && write.text.includes('仅 Bot'), `该拒并说清范围：${write.status} ${write.text}`)
+        // 模型看不见的那条，也改不动。
+        const patch = await req(base, 'PATCH', `/runtime/memories/${selfOne.json.memory.id}${q()}`, { token: seatTok, body: { text: '改一下' } })
+        assert(patch.status === 404, `看不见的那条该改不动：${patch.status} ${patch.text}`)
+        // self 那层不占这颗 Bot 的额度。
+        const after = await req(base, 'GET', `/runtime/bots/${botId}/memories`, { token: memberTok })
+        assert(after.json.used === before.json.used - 1, `self 不该算用量：${before.json.used} → ${after.json.used}`)
+        // bot 层照常记。
+        const ok = await seatWrite({ text: '他习惯用深色模式', kind: '偏好' })
+        assert(ok.status === 201, `bot 层该记得下：${ok.status} ${ok.text}`)
+        await req(base, 'DELETE', `/runtime/memories/${ok.json.memory.id}${q()}`, { token: seatTok })
+      } finally {
+        await req(base, 'PUT', `/orgs/${orgId}/bot-template`, {
+          token: adminTok,
+          body: { memory: { on: true, scope: '全公司', kinds: ['偏好', '事实'], ttl: '30 天', cap: 5, confirm: false, pii: true } },
+        })
+        await req(base, 'DELETE', `/runtime/memories/${selfOne.json.memory.id}${q()}`, { token: seatTok })
+      }
+    })
+
     await test('删一颗 Bot：bot 层跟着走，self 层留下', async () => {
       /**
        * **删除确认框那句话原来是错的**：`self` 层是这个人所有 Bot 共用的一份——删掉

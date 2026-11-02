@@ -111,9 +111,9 @@ export function memoryKindAllowed(mem: BotMemory, kind: MemoryKind): boolean {
 /**
  * 模版上「记忆范围」那三个 pill → **这颗 Bot 真正读得到的层**。
  *
- * 那三个 pill 是**读的上限**：「仅本人」= 下面两层，「所属分组」= 再加分组，
- * 「全公司」= 四层全读。认不出的字符串按最窄的算——一个拼错的配置不该表现成
- * 「全公司的记忆突然出现在某个人的提示词里」。
+ * 那四个 pill 是**读的上限**：「仅 Bot」= 只有 bot 层，「仅本人」= 再加 self（这个人
+ * 所有 Bot 共用的那层），「所属分组」= 再加分组，「全公司」= 四层全读。认不出的字符串
+ * 按最窄的算——一个拼错的配置不该表现成「全公司的记忆突然出现在某个人的提示词里」。
  *
  * **席位那边有一份同样的映射**（bot/src/agent/index.ts 的 `memoryBlock`），因为两个包
  * 各自打包、中间没有共享类型——同 `BotMemory` / `BotBrowser` 那两个形状。改一边就要改
@@ -121,7 +121,8 @@ export function memoryKindAllowed(mem: BotMemory, kind: MemoryKind): boolean {
  * 「这条进不进提示词」。对不上的表现是模型被告知「已经记过了」，而那条它永远看不见。
  */
 export function memoryScopeLayers(scope: string): Set<string> {
-  const layers = new Set(['bot', 'self'])
+  const layers = new Set(['bot'])
+  if (scope === '仅本人' || scope === '所属分组' || scope === '全公司') layers.add('self')
   if (scope === '所属分组' || scope === '全公司') layers.add('group')
   if (scope === '全公司') layers.add('company')
   return layers

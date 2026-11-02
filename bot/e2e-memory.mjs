@@ -87,6 +87,8 @@ out.procedural = {
     // 「所属分组」= 下面两层 + 分组，**不含全公司**。
     scoped: pickMemories(POLICY, list, NOW).picked.map((m) => m.id),
     self: pickMemories({ ...POLICY, scope: '仅本人' }, list, NOW).picked.map((m) => m.id),
+    // 「仅 Bot」只读 bot 层：这个人所有 Bot 共用的 self 那层也不进。
+    botOnly: pickMemories({ ...POLICY, scope: '仅 Bot' }, list, NOW).picked.map((m) => m.id),
     // **cap 要放宽**：卡在 3 的话「全公司」那条正好被挤掉，这一格就和「所属分组」
     // 长得一模一样——那样这条断言根本分不出两种 scope。
     all: pickMemories({ ...POLICY, scope: '全公司', cap: 9 }, list, NOW).picked.map((m) => m.id),
@@ -99,6 +101,7 @@ out.procedural = {
     off: pickMemories({ ...POLICY, on: false }, list, NOW).picked.length,
   }
   out.layers = {
+    botOnly: [...memoryLayersOf('仅 Bot')].sort(),
     self: [...memoryLayersOf('仅本人')].sort(),
     group: [...memoryLayersOf('所属分组')].sort(),
     company: [...memoryLayersOf('全公司')].sort(),

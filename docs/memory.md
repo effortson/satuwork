@@ -189,7 +189,11 @@ accountId / botId）照抄，`references … on delete cascade` 照 `routines` �
 | `group` | 分组里所有人的 Bot | 只有管理员，在界面上 | `(groupId)` |
 | `company` | 全公司 | 只有管理员，在界面上 | `(companyId)` |
 
-模版 `scope` 选「仅本人」= 读 `bot` + `self`；「所属分组」= 再加 `group`；「全公司」= 四层全读。
+模版 `scope` 选「仅 Bot」= 只读 `bot`；「仅本人」= 读 `bot` + `self`；「所属分组」= 再加 `group`；「全公司」= 四层全读。
+
+「仅 Bot」时 `self` 那层没人读，所以 Gateway 那边连写也拒（模型写进去等于没记，还以为记住了）、
+模型改不动已有的 `self` 条目、它们也不算这颗 Bot 的用量；席位上 `memory_list` 不列它们。
+已有的 `self` 条目不删，界面上标「不会用到」，范围放宽回来就照常生效。
 
 **模型只写得了下面两层，这是一条权限边界，不是省事。** 一个员工的 Bot 要是能往 `company`
 层写一条，它就等于往全公司每个人的系统提示词里插了一句话——而那句话的来源可能是它
