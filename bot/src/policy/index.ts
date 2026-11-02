@@ -4,6 +4,7 @@ import { agentsOf, type ToolCall, type ToolResult } from '../tools/index.ts'
 import { ApprovalGate, type Verdict } from './approvals.ts'
 import { formOf, unwrapCall } from './forms.ts'
 import { type ActionContext, blockedHost, hostOf, siteAllowed, submitAction } from './browser.ts'
+import { memoryLayersOf } from '../agent/skills-memory.ts'
 import { scanPii } from './pii.ts'
 import { SHELL_TOOLS, destructiveCommand, networkCommand } from './shell.ts'
 
@@ -765,6 +766,20 @@ export function apply(ctx: Context) {
           const mem = memoryOf(bot)
           const args = unwrapCall(call).args
           const op = String(args.op ?? '')
+          /**
+           * **「仅 Bot」读不到 self 那层，写它要排在确认前面拒掉**——理由同下面敏感信息那一道。
+           * 工具表上已经不摆 `layer` 了（memoryWriteSchemaFor），这里拦的是照着历史里的写法
+           * 报过来的那种；Gateway 那边还有同样一道。
+           */
+          if (op === 'add' && String(args.layer ?? '').trim() === 'self' && !memoryLayersOf(mem.scope).has('self')) {
+            return await ctx.policy.deny(
+              call,
+              bot,
+              'memory',
+              `这个 Bot 的记忆范围是「${mem.scope}」，读不到「所有 Bot 共用」那一层`,
+              '不带 layer（或用 bot）记在这颗 Bot 自己这层。',
+            )
+          }
           /**
            * **敏感信息这一道要排在确认前面。**
            *

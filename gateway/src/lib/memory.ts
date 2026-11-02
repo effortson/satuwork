@@ -129,6 +129,19 @@ export function memoryScopeLayers(scope: string): Set<string> {
 }
 
 /**
+ * 下发给席位的那一份：去掉**「仅 Bot」读不到的 self 那层**。
+ *
+ * 上面两层照旧下发——它们改不动，但要列得出来（`memory_list` 靠它，docs/memory.md §4）。
+ * self 不一样：「仅 Bot」时它不进任何一颗 Bot 的提示词、模型也改不动它，留在缓存里只会
+ * 让它看见了却碰不得；而不认「仅 Bot」的老席位会按老口径把它注入提示词。在源头滤掉，
+ * 席位那边就不必每条读路径各判一次。
+ */
+export function memoriesForSeat<T extends { layer: string }>(all: T[], mem: { scope: string }): T[] {
+  if (memoryScopeLayers(mem.scope).has('self')) return all
+  return all.filter((m) => m.layer !== 'self')
+}
+
+/**
  * 下发/回给界面的那一份。
  *
  * `accountId` **不出去**：席位只认得自己那一个账号，界面上要的是「谁写的」而那个

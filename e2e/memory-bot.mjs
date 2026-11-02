@@ -163,6 +163,19 @@ export async function runMemoryBot({ root, test, assert, log }) {
     assert(r.phoneUnderConfirmMs < 1500, `不该先去等一次确认（用了 ${r.phoneUnderConfirmMs}ms）`)
   })
 
+  await test('「仅 Bot」：写 self 在确认前就拒，工具表上也不摆 layer', () => {
+    // 同 PII 那条：一次注定被拒的写入，不该先把人叫来点一次批准。
+    assert(r.selfUnderBotOnly.includes('仅 Bot'), `该说清是记忆范围挡的：${r.selfUnderBotOnly}`)
+    assert(r.selfUnderBotOnlyMs < 1500, `不该先去等一次确认（用了 ${r.selfUnderBotOnlyMs}ms）`)
+    assert(r.selfUnderBotOnlyPosted === 0, '被挡下的不该再打到 Gateway')
+    // 给不了的东西不在参数表上出现，出现了模型就会试。
+    assert(r.schema.realHasLayer, '注册的那份该带 layer')
+    assert(!r.schema.botOnlyHasLayer, '「仅 Bot」时参数表里不该有 layer')
+    assert(!r.schema.botOnlyMentionsSelf, '「仅 Bot」时描述里不该再说能写 self——措辞改了、替换落空也会在这儿红')
+    assert(r.schema.selfScopeSame, '读得到 self 的范围该原样返回')
+    assert(r.schema.otherToolSame, '别的工具不该被动')
+  })
+
   await test('PII 开关关掉时照样扫、照样上报，只是不拒', () => {
     // 拒绝在 policy 那道闸上；这边扫出来的那一份是**报给 Gateway 存档**的，只存不判
     // （同 skill_manage，docs/skills.md §9）。

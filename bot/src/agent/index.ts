@@ -47,7 +47,7 @@ import {
   todoBlock,
   webContentBlock,
 } from './prompt-blocks.ts'
-import { memoryBlockOf, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
+import { memoryBlockOf, memoryWriteSchemaFor, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
 import { abortedOutcome, lastAssistantText, sumUsage, taskBlock, taskBrief, taskFiles } from './task-outcome.ts'
 import { contentDigest, estMessages, estTokens, toolsText } from './text.ts'
 import { filesOf, fromAgentContent, imagesOf, rawTextOf, refsOf, shotOf, textOf, toUsage } from './tool-results.ts'
@@ -82,7 +82,7 @@ export {
 } from './types.ts'
 export { contentDigest } from './text.ts'
 export { seesImages } from './images.ts'
-export { memoryBlockOf, memoryLayersOf, pickMemories, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
+export { memoryBlockOf, memoryLayersOf, memoryWriteSchemaFor, pickMemories, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
 export {
   clampTranscript,
   compactionPoint,
@@ -2478,8 +2478,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * `off` 那一档是退路（同 `SATUWORK_SKILL_TOOLS`）：这套东西出问题时退回没有它的
      * 样子，而退路不能在同一次改动里一起删掉。
      */
-    const memoryOff =
-      (process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() === 'off' || !memoryOf(bot as BotRecord | undefined).on
+    const memory = memoryOf(bot as BotRecord | undefined)
+    const memoryOff = (process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() === 'off' || !memory.on
     /**
      * 平台没挑生图模型时，generate_image 不进表。同上面几层，**只是遮掩**：模型照着历史里
      * 的名字报过来，工具自己会回一句「平台还没有开通生图」。
@@ -2502,18 +2502,21 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 同样只是遮掩：直接报名字照样调得到，工具自己会拒。
      */
     const uploadOn = [...mcpNames].some((n) => Boolean(catalog.connectorToolOf?.(n)))
-    const picked = all.filter(
-      (t) =>
-        (!t.name.startsWith('mcp_') || mcpNames.has(t.name)) &&
-        (imageOn || t.name !== 'generate_image') &&
-        (knowledgeOn || t.name !== 'knowledge_search') &&
-        (assignOn || t.name !== 'assign_task') &&
-        (uploadOn || t.name !== 'connector_upload_file') &&
-        (browserOn || !t.name.startsWith('browser_')) &&
-        (desktopOn || !t.name.startsWith('desktop_')) &&
-        (!memoryOff || !t.name.startsWith('memory_')) &&
-        skillTool(t.name),
-    )
+    const picked = all
+      .filter(
+        (t) =>
+          (!t.name.startsWith('mcp_') || mcpNames.has(t.name)) &&
+          (imageOn || t.name !== 'generate_image') &&
+          (knowledgeOn || t.name !== 'knowledge_search') &&
+          (assignOn || t.name !== 'assign_task') &&
+          (uploadOn || t.name !== 'connector_upload_file') &&
+          (browserOn || !t.name.startsWith('browser_')) &&
+          (desktopOn || !t.name.startsWith('desktop_')) &&
+          (!memoryOff || !t.name.startsWith('memory_')) &&
+          skillTool(t.name),
+      )
+      // 「仅 Bot」时 memory_write 的参数表里不摆 self（见 memoryWriteSchemaFor）。
+      .map((t) => memoryWriteSchemaFor(t, memory.scope))
     // @ 了一颗 Bot = 要派活：assign_task 也顶到最前（docs/bot-tasks.md）。不是主 Bot 时没这把工具，顶也顶不出来。
     const botNamed = assignOn && mentions.some((m) => m.kind === 'bot')
     if (!mentioned.length && !botNamed) return picked

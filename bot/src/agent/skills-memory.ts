@@ -83,6 +83,30 @@ export function memoryLayersOf(scope: string): Set<string> {
   return layers
 }
 
+/** memory_write 描述里讲层的那一句。改了要同步改 tools/memory.ts 里的原文，探针会对着它断言。 */
+const MEMORY_LAYERS_LINE = '你只能写自己这两层（bot / self）；'
+
+/**
+ * 「仅 Bot」时的 memory_write：参数表里**没有 `layer`**，描述也只说这一层。
+ *
+ * 给不了的东西不要在参数表上出现，出现了模型就会试（docs/memory.md §4）：留着 self，
+ * 它每碰上一句称呼、习惯就先往 self 写一次、被拒、再改写 bot。拒绝那一道照旧在
+ * policy 和 Gateway 上——这一层只是遮掩。不是「仅 Bot」时原样返回，不复制。
+ */
+export function memoryWriteSchemaFor<T extends { name: string; description: string; parameters?: unknown }>(
+  schema: T,
+  scope: string,
+): T {
+  if (schema.name !== 'memory_write' || memoryLayersOf(scope).has('self')) return schema
+  const params = (schema.parameters ?? {}) as { properties?: Record<string, unknown> }
+  const { layer: _drop, ...properties } = params.properties ?? {}
+  return {
+    ...schema,
+    description: schema.description.replace(MEMORY_LAYERS_LINE, '记忆范围是「仅 Bot」，你只能写这颗 Bot 自己这一层；'),
+    parameters: { ...params, properties },
+  }
+}
+
 /**
  * 这一轮摆哪几条记忆。**纯函数**：同一份输入必然得到同一份输出（`now` 也是传进来的）,
  * 探针直接测它——挑错了不会报任何错，模型只是"忘了点什么"。

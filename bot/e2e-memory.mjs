@@ -29,7 +29,7 @@ const { Context } = await import('@deepseek-ai/cordis')
 const { cachedMemories, cachedMemoryOf } = await import('./src/catalog/index.ts')
 const { memoryOf, DEFAULT_MEMORY } = await import('./src/registry/index.ts')
 const { looksProcedural, matchMemories } = await import('./src/tools/memory.ts')
-const { memoryBlockOf, memoryLayersOf, pickMemories } = await import('./src/agent/index.ts')
+const { memoryBlockOf, memoryLayersOf, memoryWriteSchemaFor, pickMemories } = await import('./src/agent/index.ts')
 const { formOf } = await import('./src/policy/forms.ts')
 const { StorageService } = await import('./src/storage/index.ts')
 const { ToolService } = await import('./src/tools/index.ts')
@@ -317,7 +317,32 @@ out.removeCards = cards.map((c) => ({ type: c.type, action: c.data.action, text:
   out.phoneUnderConfirm = (await call('memory_write', { op: 'add', text: '他的号码是 13800138000', kind: '联系人' })).text
   out.phoneUnderConfirmMs = Date.now() - t0
 }
-policy = { ...policy, confirm: false }
+/** **「仅 Bot」下写 self 也要排在确认前面拒掉**，同上面那条、同样靠时间判。 */
+policy = { ...policy, scope: '仅 Bot' }
+{
+  const before = seen.posted.length
+  const t0 = Date.now()
+  out.selfUnderBotOnly = (await call('memory_write', { op: 'add', text: '他习惯用深色模式', kind: '偏好', layer: 'self' })).text
+  out.selfUnderBotOnlyMs = Date.now() - t0
+  out.selfUnderBotOnlyPosted = seen.posted.length - before
+}
+policy = { ...policy, scope: DEFAULT_MEMORY.scope, confirm: false }
+
+/**
+ * 「仅 Bot」时 memory_write 的参数表里不摆 `layer`，描述也不再说能写 self。
+ * 拿**真注册的那份** schema 去裁：描述里那一句要是改了措辞、替换落空，这里就红。
+ */
+{
+  const real = ctx.tools.schemas().find((t) => t.name === 'memory_write')
+  const botOnly = memoryWriteSchemaFor(real, '仅 Bot')
+  out.schema = {
+    botOnlyHasLayer: 'layer' in (botOnly.parameters.properties || {}),
+    botOnlyMentionsSelf: botOnly.description.includes('bot / self'),
+    realHasLayer: 'layer' in (real.parameters.properties || {}),
+    selfScopeSame: memoryWriteSchemaFor(real, '仅本人') === real,
+    otherToolSame: memoryWriteSchemaFor({ name: 'memory_list', description: 'x' }, '仅 Bot').description === 'x',
+  }
+}
 
 // 确认卡：正文和类别可改，层不可改。
 out.form = formOf({

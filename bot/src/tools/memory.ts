@@ -1,5 +1,4 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { memoryLayersOf } from '../agent/skills-memory.ts'
 import { cachedMemories, type CachedMemory } from '../catalog/index.ts'
 import { pinnedBotId } from '../env.ts'
 import { memoryOf } from '../registry/index.ts'
@@ -105,17 +104,6 @@ export function apply(ctx: Context) {
   const policy = () => memoryOf(ctx.roster.get(pinnedBotId()))
 
   /**
-   * 缓存里去掉**「仅 Bot」读不到的 self 那层**。那几条不进提示词——列给模型看、或者拿来
-   * 匹配 replace / remove 的话，它会去改一条自己根本看不见的记忆，Gateway 那边也会拒。
-   *
-   * 上面两层照旧留着：它们改不动，但要列得出来、碰了要说清是管理员设的（docs/memory.md §4）。
-   */
-  const readable = () => {
-    const selfOk = memoryLayersOf(policy().scope).has('self')
-    return cachedMemories(ctx).filter((m) => selfOk || m.layer !== 'self')
-  }
-
-  /**
    * 会话里那张卡（`memory/saved`）。
    *
    * 员工唯一一次**在事情发生的当下**看见 Bot 记了什么的机会——记忆每一轮都在影响它的
@@ -175,7 +163,7 @@ export function apply(ctx: Context) {
       const now = Date.now()
       const q = (query ?? '').trim().toLowerCase()
       const k = (kind ?? '').trim()
-      const all = readable()
+      const all = cachedMemories(ctx)
         .filter((m) => (!k || m.kind === k) && (!q || m.text.toLowerCase().includes(q)))
         .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt)
       if (!all.length) {
@@ -233,9 +221,7 @@ export function apply(ctx: Context) {
           layer: {
             type: 'string',
             enum: ['bot', 'self'],
-            description:
-              'bot = 只有这颗 Bot 用得上（默认）；self = 这个人所有的 Bot 都用得上（称呼、习惯这种）。' +
-              '记忆范围是「仅 Bot」时只能用 bot。',
+            description: 'bot = 只有这颗 Bot 用得上（默认）；self = 这个人所有的 Bot 都用得上（称呼、习惯这种）。',
           },
         },
         required: ['op'],
@@ -248,7 +234,7 @@ export function apply(ctx: Context) {
       if (!pinnedBotId()) fail('这台席位没钉 Bot（缺 SATUWORK_BOT_ID），写不了记忆。')
       const mem = policy()
       const q = `?botId=${encodeURIComponent(pinnedBotId())}`
-      const all = readable()
+      const all = cachedMemories(ctx)
 
       /** replace / remove 都要先认出是哪一条。**匹配到多条不许猜**，摆出来让它自己挑。 */
       const pick = (): CachedMemory => {
@@ -326,10 +312,6 @@ export function apply(ctx: Context) {
       }
 
       if (op === 'add') {
-        // 范围读不到 self 时先劝一句，省一次往返；说了算的是 Gateway 那道同样的判断。
-        if ((layer ?? 'bot').trim() === 'self' && !memoryLayersOf(mem.scope).has('self')) {
-          fail(`这个 Bot 的记忆范围是「${mem.scope}」，读不到「所有 Bot 共用」那一层。不带 layer（或用 bot）记在这颗 Bot 自己这层。`)
-        }
         const body = bodyOf()
         const out = await callGateway<{ memory: CachedMemory; used: number; max: number }>('POST', `/runtime/memories${q}`, {
           text: body,

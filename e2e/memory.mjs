@@ -362,6 +362,15 @@ export async function runMemory({ root, gwRoot, test, req, start, waitHttp, asse
         // self 那层不占这颗 Bot 的额度。
         const after = await req(base, 'GET', `/runtime/bots/${botId}/memories`, { token: memberTok })
         assert(after.json.used === before.json.used - 1, `self 不该算用量：${before.json.used} → ${after.json.used}`)
+        // 源头就不下发：老席位不认「仅 Bot」，留在目录里会按老口径注入。
+        const listed = (await catalog()).memories.map((m) => m.text)
+        assert(!listed.includes('他周五在家办公'), `「仅 Bot」时目录里不该有 self：${JSON.stringify(listed)}`)
+        // 人这一侧写 self：拒绝语给人看，不是给模型的「layer 用 bot」。
+        const human = await req(base, 'POST', `/runtime/bots/${botId}/memories`, {
+          token: memberTok,
+          body: { text: '他习惯用深色模式', kind: '偏好', layer: 'self' },
+        })
+        assert(human.status === 403 && !human.text.includes('layer'), `人这侧该拒且说人话：${human.status} ${human.text}`)
         // bot 层照常记。
         const ok = await seatWrite({ text: '他习惯用深色模式', kind: '偏好' })
         assert(ok.status === 201, `bot 层该记得下：${ok.status} ${ok.text}`)
@@ -372,6 +381,39 @@ export async function runMemory({ root, gwRoot, test, req, start, waitHttp, asse
           body: { memory: { on: true, scope: '全公司', kinds: ['偏好', '事实'], ttl: '30 天', cap: 5, confirm: false, pii: true } },
         })
         await req(base, 'DELETE', `/runtime/memories/${selfOne.json.memory.id}${q()}`, { token: seatTok })
+      }
+    })
+
+    await test('「仅 Bot」：钉住的 self 不占这颗 Bot 的钉位', async () => {
+      const made = []
+      const add = async (text, layer) => {
+        const r = await req(base, 'POST', `/runtime/bots/${botId}/memories`, { token: memberTok, body: { text, kind: '事实', layer } })
+        assert(r.status === 201, `建 ${r.status} ${r.text}`)
+        made.push(r.json.memory.id)
+        return r.json.memory.id
+      }
+      const pin = (id) => req(base, 'PATCH', `/runtime/bots/${botId}/memories/${id}`, { token: memberTok, body: { pinned: true } })
+      try {
+        // 先在读得到 self 的范围下把钉位用满（默认上限 10）。
+        for (let i = 0; i < 10; i++) {
+          const r = await pin(await add(`共用钉住 ${i}`, 'self'))
+          assert(r.status === 200, `钉 ${r.status} ${r.text}`)
+        }
+        const mine = await add('这颗 Bot 自己的那条', 'bot')
+        assert((await pin(mine)).status === 409, '读得到 self 时钉位该已经满了')
+        await req(base, 'PUT', `/orgs/${orgId}/bot-template`, {
+          token: adminTok,
+          body: { memory: { on: true, scope: '仅 Bot', kinds: ['偏好', '事实'], ttl: '30 天', cap: 5, confirm: false, pii: true } },
+        })
+        // 收窄之后那十条一条都进不了提示词，不该还挡着这颗 Bot 自己钉一条。
+        const r = await pin(mine)
+        assert(r.status === 200, `「仅 Bot」下该钉得上：${r.status} ${r.text}`)
+      } finally {
+        await req(base, 'PUT', `/orgs/${orgId}/bot-template`, {
+          token: adminTok,
+          body: { memory: { on: true, scope: '全公司', kinds: ['偏好', '事实'], ttl: '30 天', cap: 5, confirm: false, pii: true } },
+        })
+        for (const id of made) await req(base, 'DELETE', `/runtime/bots/${botId}/memories/${id}`, { token: memberTok })
       }
     })
 

@@ -192,7 +192,9 @@ accountId / botId）照抄，`references … on delete cascade` 照 `routines` �
 模版 `scope` 选「仅 Bot」= 只读 `bot`；「仅本人」= 读 `bot` + `self`；「所属分组」= 再加 `group`；「全公司」= 四层全读。
 
 「仅 Bot」时 `self` 那层没人读，所以 Gateway 那边连写也拒（模型写进去等于没记，还以为记住了）、
-模型改不动已有的 `self` 条目、它们也不算这颗 Bot 的用量；席位上 `memory_list` 不列它们。
+模型改不动已有的 `self` 条目、它们也不算这颗 Bot 的用量和钉位；`/runtime/catalog` 干脆不下发它们
+（不认「仅 Bot」的老席位因此也注入不了）。拒写那一道在 policy 里排在确认前面，工具表上的
+`memory_write` 也不摆 `layer`（`memoryWriteSchemaFor`）。
 已有的 `self` 条目不删，界面上标「不会用到」，范围放宽回来就照常生效。
 
 **模型只写得了下面两层，这是一条权限边界，不是省事。** 一个员工的 Bot 要是能往 `company`
