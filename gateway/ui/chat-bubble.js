@@ -1420,8 +1420,62 @@ function approvalFolderHtml(a) {
   )
 }
 
+/** 记忆的三类。卡上改类别时只给这三个；模版没勾的那一类由 Gateway 拒，话术在那边。 */
+const MEMORY_EDIT_KINDS = ['偏好', '事实', '联系人']
+
+/**
+ * Bot 想记下（或改掉）一条跨对话的事实（席位那边的 memory_write）。
+ *
+ * **正文和类别当场能改。** 模型多半记对了七成，人真正想做的是把那句话改准，而不是拒掉再
+ * 回头跟它解释一遍（docs/memory.md §6）。可改的只有席位表单里标了 `editable` 的那几格，
+ * 批准时连同改动一起交回去；席位以它自己重算的表单为准，这边送什么 key 都不作数。
+ *
+ * 改过之后「这一轮都批准」只放行这一次（席位 approvals.ts 的 decide）：人改的是这一条，
+ * 不该顺带默许后面几条没看过的。
+ */
+function approvalMemoryHtml(a) {
+  const fields = (a.form && a.form.fields) || []
+  const draft = (f) => {
+    const v = approvalDrafts.get(draftKey(a.callId, f.key))
+    return v === undefined ? f.value || '' : v
+  }
+  const rows = fields
+    .map((f) => {
+      const id = `sw-mem-${esc(a.callId)}-${esc(f.key)}`
+      if (f.editable && f.key === 'kind') {
+        const cur = draft(f)
+        const opts = [...new Set([cur, ...MEMORY_EDIT_KINDS])].filter(Boolean)
+        return (
+          `<div class="sw-mail-row"><label class="sw-mail-k" for="${id}">${esc(f.label)}</label>` +
+          `<select class="input" id="${id}" data-edit="${esc(f.key)}" data-call="${esc(a.callId)}" style="width: auto;">` +
+          opts.map((k) => `<option value="${esc(k)}" ${k === cur ? 'selected' : ''}>${esc(t(k))}</option>`).join('') +
+          `</select></div>`
+        )
+      }
+      if (f.editable) {
+        return (
+          `<div class="sw-mail-body"><label class="sw-mail-k" for="${id}">${esc(f.label)}</label>` +
+          `<textarea class="input sw-mail-note" id="${id}" rows="2" data-edit="${esc(f.key)}" data-call="${esc(a.callId)}">${esc(draft(f))}</textarea></div>`
+        )
+      }
+      return f.value
+        ? `<div class="sw-mail-row"><span class="sw-mail-k">${esc(f.label)}</span><span class="sw-mail-v">${esc(f.value)}</span></div>`
+        : ''
+    })
+    .join('')
+  return (
+    `<div class="sw-approval sw-approval-mail" data-state="pending" data-call="${esc(a.callId)}">` +
+    `<div class="sw-approval-head">${ICON_SHIELD}<span>${esc(t('它想记下一条事实', 'The bot wants to remember a fact'))}</span></div>` +
+    `<div class="sw-approval-why">${esc(t('不对的地方直接改，再批准；记下的是改过之后的这一句。', 'Fix anything that is off, then approve — what gets saved is your edited version.'))}</div>` +
+    `<div class="sw-mail">${rows}</div>` +
+    approvalActs(a, t('批准并记下', 'Approve and save')) +
+    `</div>`
+  )
+}
+
 function approvalHtml(a) {
   if (a.form && a.form.kind === 'folder') return approvalFolderHtml(a)
+  if (a.form && a.form.kind === 'memory' && (a.form.fields || []).length) return approvalMemoryHtml(a)
   if (a.form && a.form.kind === 'email' && (a.form.fields || []).length) return approvalEmailHtml(a)
   const args = prettyArgs(a.args)
   return (

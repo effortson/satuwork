@@ -550,7 +550,11 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-approve') {
-    await decideApproval(btn.getAttribute('data-call'), 'approve', btn.getAttribute('data-scope') || 'once')
+    // 卡上改过的那几格（目前只有记忆卡有，见 chat-bubble.js 的 approvalMemoryHtml）一起交回去。
+    const box = btn.closest('.sw-approval')
+    const edits = {}
+    for (const el of box ? box.querySelectorAll('[data-edit]') : []) edits[el.getAttribute('data-edit')] = el.value
+    await decideApproval(btn.getAttribute('data-call'), 'approve', btn.getAttribute('data-scope') || 'once', undefined, edits)
     return
   }
   if (act === 'chat-deny') {

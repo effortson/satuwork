@@ -30,6 +30,7 @@ import {
   summaryText,
 } from './compaction.ts'
 import { stampContent, stampUser, toAgentMessages, userBlocks, userContentFor, withRecall } from './history.ts'
+import { failureStreak } from './repeat-guard.ts'
 import { seesImages, toolImageBlocks } from './images.ts'
 import {
   assignBlock,
@@ -584,6 +585,7 @@ export class AgentService extends Service {
     let steps = 0
     let toolCalls = 0
     let capped = false
+    const streak = failureStreak()
     let state: TaskOutcome['state'] = 'done'
     let failure = ''
     /**
@@ -624,6 +626,11 @@ export class AgentService extends Service {
           if (!toolResults.length) return false
           steps += 1
           toolCalls += toolResults.length
+          // 原地打转（同一个失败连着撞，见 repeat-guard.ts）按撞顶收口：交回去的结论里照样说清停在哪。
+          if (streak.see(toolResults)) {
+            capped = true
+            return true
+          }
           if (steps < spec.maxSteps) return false
           capped = true
           return true
@@ -1589,6 +1596,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     let steps = 0
     let toolCalls = 0
     let capped = false
+    /** 同一个失败连着撞到了头（repeat-guard.ts）。和撞步数顶分开记：给人的那句话不一样。 */
+    let looped = false
+    const streak = failureStreak()
 
     const agent = new Agent({
       initialState: {
@@ -1617,6 +1627,11 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         if (!toolResults.length) return false
         steps += 1
         toolCalls += toolResults.length
+        // 同一个失败连着撞（见 repeat-guard.ts）：不等步数硬顶，当场停。
+        if (streak.see(toolResults)) {
+          looped = true
+          return true
+        }
         if (steps < maxSteps) return false
         capped = true
         return true
@@ -1680,7 +1695,31 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       }
       // 撞顶要在对话里**看得见**。只写日志的话，用户看到的是它干着干着突然不说话了，
       // 跟卡住分不出来；而它其实停得好好的，接着说一句就能继续。
-      if (capped && !failure) {
+      if (looped && !failure) {
+        /**
+         * 原地打转：同一个调用连着撞同一句报错。**要看得见**，而且要说清撞的是什么——
+         * 「停下了」一句话，人不知道该改哪儿；把那句报错摆出来，多半一眼就看出缺了什么。
+         */
+        reason = 'capped'
+        await sessions.append(sessionId, 'assistant/message', {
+          turn,
+          step: 0,
+          message: {
+            id: randomUUID(),
+            role: 'assistant',
+            content: [
+              {
+                type: 'text',
+                text:
+                  `我连着 ${streak.count} 次调用 ${streak.tool} 都失败在同一处（「${streak.error}」），再试也是一样，先停下，免得原地打转。\n\n` +
+                  `告诉我该怎么调整；或者换个说法让我重新来。`,
+              },
+            ],
+          },
+          usage: EMPTY_USAGE,
+        })
+        this.ctx.logger?.warn?.(`agents: 会话 ${sessionId} 第 ${turn} 轮原地打转（${streak.tool} 连着失败 ${streak.count} 次），已收口`)
+      } else if (capped && !failure) {
         reason = 'capped'
         await sessions.append(sessionId, 'assistant/message', {
           turn,
@@ -1991,8 +2030,10 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         return {
           content: [{ type: 'text' as const, text: result.text }, ...pictures],
           details:
-            result.files?.length || result.refs?.length || result.shot || result.rawText || result.images?.length
+            result.files?.length || result.refs?.length || result.shot || result.rawText || result.images?.length || result.refused
               ? {
+                  // 业务层被拒：只给原地打转那道判断看（repeat-guard.ts），不进 content。
+                  ...(result.refused ? { refused: true } : {}),
                   ...(result.files?.length ? { files: result.files } : {}),
                   ...(result.refs?.length ? { refs: result.refs } : {}),
                   ...(result.shot ? { shot: result.shot } : {}),

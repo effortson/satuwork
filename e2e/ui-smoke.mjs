@@ -826,6 +826,44 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       })
       assert(!generic.includes('sw-approval-mail') && generic.includes('sw-approval-args'), '认不出的 kind 没退回通用卡')
 
+      /**
+       * 记忆那张：**正文和类别当场能改**（docs/memory.md §6）。模型多半记对了七成，人要的是把
+       * 那句话改准，不是拒掉再回头解释一遍。以前它落进通用卡，只摆一段 JSON，改不了。
+       */
+      const memForm = {
+        kind: 'memory',
+        tool: 'memory_write',
+        fields: [
+          { key: 'op', label: '操作', value: '记一条' },
+          { key: 'text', label: '记什么', value: '周会改到周二下午', editable: true, multiline: true },
+          { key: 'kind', label: '类别', value: '事实', editable: true },
+          { key: 'layer', label: '范围', value: '只有这颗 Bot' },
+        ],
+      }
+      const mem = ui.approvalHtml({ callId: 'call_mem', name: 'memory_write', args: '{}', reason: '它要记下一条跨对话的事实', state: 'pending', form: memForm })
+      assert(!mem.includes('sw-approval-args'), '记忆卡还在摆原始 JSON')
+      assert(/<textarea[^>]*data-edit="text"[^>]*>周会改到周二下午<\/textarea>/.test(mem), `正文该是一格能改的输入框：${mem}`)
+      assert(/<select[^>]*data-edit="kind"/.test(mem) && /<option value="事实" selected>/.test(mem) && mem.includes('value="联系人"'), `类别该能选：${mem}`)
+      assert(mem.includes('只有这颗 Bot') && !mem.includes('data-edit="layer"'), '范围要摆出来，但不能改（那是权限边界）')
+      assert(mem.includes('批准并记下') && mem.includes('data-act="chat-approve" data-call="call_mem"'), '按钮不对')
+
+      // 批准时连同改动一起交回去；拒绝时不带（拒掉的那一版改了也白改）。
+      const sent = []
+      const memApp = loadApp({
+        appPath, base: gwBase, token: 'jwt',
+        fetchImpl: async (path, init) => {
+          sent.push({ path, body: init && init.body ? JSON.parse(init.body) : null })
+          return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+        },
+      })
+      memApp.state.chatSessionId = 's-mem'
+      await memApp.decideApproval('call_mem', 'approve', 'once', undefined, { text: '周会改到周三上午', kind: '事实' })
+      await memApp.decideApproval('call_mem2', 'deny', 'once', undefined, { text: '不该带上' })
+      const ok = sent.find((x) => x.path.includes('/approvals/call_mem') && !x.path.includes('call_mem2'))
+      const no = sent.find((x) => x.path.includes('/approvals/call_mem2'))
+      assert(ok && ok.body.edits && ok.body.edits.text === '周会改到周三上午', `批准没带上改动：${JSON.stringify(sent)}`)
+      assert(no && !no.body.edits, `拒绝不该带改动：${JSON.stringify(no)}`)
+
       // 收起来那颗药丸上写真工具名，改过还要标一笔。
       const chip = ui.approvalChipHtml({ callId: 'call_mail', name: 'mcp_gmail_default_sw_run', state: 'approved', form, edited: ['正文'] }, 0)
       assert(chip.includes('GMAIL_SEND_EMAIL'), `药丸上还是壳的名字：${chip}`)

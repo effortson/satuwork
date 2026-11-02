@@ -10,8 +10,10 @@
  *
  * `feedback` 只跟着拒绝走：「退回修改」就是一次带意见的拒绝，席位把意见原样交给模型，
  * 让它照着改完再提交一次（见 bot/src/policy/index.ts 的 blockedByUser）。
+ *
+ * `edits` 只跟着批准走：卡上改过的那几格（记忆卡的正文、类别），席位以它自己算的表单为准。
  */
-async function decideApproval(callId, decision, scope, feedback) {
+async function decideApproval(callId, decision, scope, feedback, edits) {
   const sessionId = state.chatSessionId
   if (!sessionId || !callId) return
   const box = [...document.querySelectorAll('.sw-approval')].find((el) => el.getAttribute('data-call') === callId)
@@ -24,7 +26,13 @@ async function decideApproval(callId, decision, scope, feedback) {
     await api(
       'POST',
       '/runtime/sessions/' + encodeURIComponent(sessionId) + '/approvals/' + encodeURIComponent(callId),
-      { decision, scope: scope || 'once', ...(note ? { feedback: note } : {}) },
+      {
+        decision,
+        scope: scope || 'once',
+        ...(note ? { feedback: note } : {}),
+        // 只在批准时带：拒掉的那一版改了也白改。哪几格真能改由席位那边判（policy/forms.ts 的 applyEdits）。
+        ...(decision === 'approve' && edits && Object.keys(edits).length ? { edits } : {}),
+      },
     )
     // 这一条已经落定，草稿留着只会在下一次同名 callId 上冒出来（不会发生，但也没用了）。
     for (const key of [...approvalDrafts.keys()]) {
