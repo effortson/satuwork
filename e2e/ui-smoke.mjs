@@ -846,6 +846,12 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(/<select[^>]*data-edit="kind"/.test(mem) && /<option value="事实" selected>/.test(mem) && mem.includes('value="联系人"'), `类别该能选：${mem}`)
       assert(mem.includes('只有这颗 Bot') && !mem.includes('data-edit="layer"'), '范围要摆出来，但不能改（那是权限边界）')
       assert(mem.includes('批准并记下') && mem.includes('data-act="chat-approve" data-call="call_mem"'), '按钮不对')
+      assert(mem.includes('它想记下一条事实'), '新记一条的标题不对')
+      const memReplace = ui.approvalHtml({
+        callId: 'call_mem_r', name: 'memory_write', args: '{}', reason: 'x', state: 'pending',
+        form: { ...memForm, fields: [{ key: 'op', label: '操作', value: '改一条' }, ...memForm.fields.slice(1)] },
+      })
+      assert(memReplace.includes('它想改掉一条记下的事实'), '改一条时标题该说是改')
 
       // 批准时连同改动一起交回去；拒绝时不带（拒掉的那一版改了也白改）。
       const sent = []

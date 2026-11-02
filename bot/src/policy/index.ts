@@ -633,6 +633,8 @@ export function apply(ctx: Context) {
         // 压根没注册的工具交给 run() 去答「未知工具」——在这里拦，模型收到的是一句
         // 「边界挡下了」，而它其实只是名字打错了。
         if (!ctx.tools.has(call.name)) return next()
+        /** 人在确认卡上改过的那几格（记忆确认、高风险确认都可能改），执行完要告诉模型。 */
+        const humanEdits: string[] = []
 
         /**
          * 子代理的两道**强制**（见 docs/delegation.md §6.1、§7.1）。
@@ -809,8 +811,9 @@ export function apply(ctx: Context) {
             const why = op === 'add' ? '它要记下一条跨对话的事实' : '它要改掉一条已经记下的事实'
             ctx.policy.markAsked(call.callId)
             const why2 = provenance(ctx, call, why)
-            const { verdict, viaBlock, feedback } = await askAndRecord(ctx, call, bot, 'memory', why2)
+            const { verdict, viaBlock, feedback, edited } = await askAndRecord(ctx, call, bot, 'memory', why2)
             if (verdict !== 'approved') return blockedByUser(verdict, why, viaBlock, feedback)
+            humanEdits.push(...(edited ?? []))
           }
         }
 
@@ -826,11 +829,13 @@ export function apply(ctx: Context) {
              * 这周的活收个尾」，中间隔着一次他没看见的委派。
              */
             const why2 = provenance(ctx, call, why)
-            const { verdict, viaBlock, feedback } = await askAndRecord(ctx, call, bot, 'high-risk', why2)
+            const { verdict, viaBlock, feedback, edited } = await askAndRecord(ctx, call, bot, 'high-risk', why2)
             if (verdict !== 'approved') return blockedByUser(verdict, why, viaBlock, feedback)
+            humanEdits.push(...(edited ?? []))
           }
         }
 
+        if (humanEdits.length) return withHumanEdits(await next(), humanEdits)
         return next()
       },
       true,
@@ -920,7 +925,23 @@ async function askAndRecord(ctx: Context, call: ToolCall, bot: BotRecord | undef
             : why,
     at: Date.now(),
   })
-  return { verdict, viaBlock, feedback }
+  return { verdict, viaBlock, feedback, edited }
+}
+
+/**
+ * 人在确认卡上亲手改过参数时，**要让模型知道**。
+ *
+ * 不说的话，它看到执行出来的是另一个版本（「最后一个周五」），跟用户原话（「周四」）对不上，
+ * 就当成自己出了错，当场再调一次改回去——本地实测就是这样，最后还跟用户说「已记住周四」。
+ * 人改的那一版恰恰是最该算数的。只补在成功的结果后面：失败了说这句没有意义。
+ */
+function withHumanEdits(out: ToolResult, edited: string[]): ToolResult {
+  if (out.failed) return out
+  const fields = [...new Set(edited)].join('、')
+  return {
+    ...out,
+    text: `${out.text}\n\n（用户在确认时亲手改过「${fields}」，执行的是改过之后的版本——以它为准，别再改回去；跟用户确认时照这个版本说。）`,
+  }
 }
 
 /**

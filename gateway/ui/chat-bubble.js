@@ -1435,6 +1435,11 @@ const MEMORY_EDIT_KINDS = ['偏好', '事实', '联系人']
  */
 function approvalMemoryHtml(a) {
   const fields = (a.form && a.form.fields) || []
+  // 「改一条」时标题要说是改：人以为是新记一条，就不会去看「改/删哪一条」那一格。
+  const op = (fields.find((f) => f.key === 'op') || {}).value || ''
+  const head = op === '改一条'
+    ? t('它想改掉一条记下的事实', 'The bot wants to change a saved fact')
+    : t('它想记下一条事实', 'The bot wants to remember a fact')
   const draft = (f) => {
     const v = approvalDrafts.get(draftKey(a.callId, f.key))
     return v === undefined ? f.value || '' : v
@@ -1465,7 +1470,7 @@ function approvalMemoryHtml(a) {
     .join('')
   return (
     `<div class="sw-approval sw-approval-mail" data-state="pending" data-call="${esc(a.callId)}">` +
-    `<div class="sw-approval-head">${ICON_SHIELD}<span>${esc(t('它想记下一条事实', 'The bot wants to remember a fact'))}</span></div>` +
+    `<div class="sw-approval-head">${ICON_SHIELD}<span>${esc(head)}</span></div>` +
     `<div class="sw-approval-why">${esc(t('不对的地方直接改，再批准；记下的是改过之后的这一句。', 'Fix anything that is off, then approve — what gets saved is your edited version.'))}</div>` +
     `<div class="sw-mail">${rows}</div>` +
     approvalActs(a, t('批准并记下', 'Approve and save')) +
