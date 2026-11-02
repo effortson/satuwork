@@ -90,12 +90,13 @@ export function registerTool(
         const out = await execute((args ?? {}) as any, call)
         return typeof out === 'string' ? { text: out } : out
       } catch (e) {
-        if (e instanceof WorkspaceError) return { text: e.message }
-        if (e instanceof ToolFailure) return { text: e.message }
+        // 业务失败照常当文本返回，只多标一位 refused（见 ToolResult.refused）。
+        if (e instanceof WorkspaceError) return { text: e.message, refused: true }
+        if (e instanceof ToolFailure) return { text: e.message, refused: true }
         const err = e as NodeJS.ErrnoException
-        if (err?.code === 'ENOENT') return { text: `文件或目录不存在：${err.path ?? ''}` }
-        if (err?.code === 'EACCES') return { text: `没有权限：${err.path ?? ''}` }
-        if (err?.code === 'EISDIR') return { text: `这是一个目录，不是文件：${err.path ?? ''}` }
+        if (err?.code === 'ENOENT') return { text: `文件或目录不存在：${err.path ?? ''}`, refused: true }
+        if (err?.code === 'EACCES') return { text: `没有权限：${err.path ?? ''}`, refused: true }
+        if (err?.code === 'EISDIR') return { text: `这是一个目录，不是文件：${err.path ?? ''}`, refused: true }
         throw e
       }
     },

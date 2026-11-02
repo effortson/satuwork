@@ -219,6 +219,23 @@ out.listEmpty = (await call('skills_list', { query: '发工资' })).text
 out.create = (await call('skill_manage', { action: 'create', name: '对账小抄', body: '每月对账怎么做\n- 拉流水' })).text
 out.createSent = seen.created[seen.created.length - 1]
 out.card = cards.map((c) => ({ type: c.type, action: c.data.action, name: c.data.name }))
+/**
+ * 没给 name：从正文取一个名字，不拒。拒绝语对弱一点的模型没用——本地实测它照旧不带
+ * name 原样重试了 50 多次。取的是什么要在回话里照实说。
+ */
+out.createNoName = (await call('skill_manage', { action: 'create', body: '## 什么时候用\n做月报时。\n## 步骤\n1. 导出流水', tags: ['月报', '流程'] })).text
+out.createNoNameSent = seen.created[seen.created.length - 1]
+{
+  const { skillNameFrom } = await import('./src/tools/skill.ts')
+  const generic = '## 什么时候用\n赵工要求做月报时，按此流程执行。\n## 步骤\n1. 导出流水'
+  out.names = {
+    heading: skillNameFrom('# 月度对账\n1. 拉流水'),
+    tags: skillNameFrom(generic, ['月报', '财务', '流程']),
+    firstLine: skillNameFrom(generic, ['流程']),
+    listItem: skillNameFrom('1. 先拉流水，再对账'),
+    empty: skillNameFrom('   '),
+  }
+}
 out.clash = (await call('skill_manage', { action: 'create', name: '退款审核', body: '我自己的一套' })).text
 out.updateCompany = (await call('skill_manage', { action: 'update', skill: '退款审核', body: '改一下' })).text
 out.removeCompany = (await call('skill_manage', { action: 'remove', skill: '退款审核' })).text

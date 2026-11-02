@@ -53,6 +53,36 @@ interface RemoteFile {
 /** 打 Gateway 的 runtime 面。业务失败和管道故障怎么分见 common.ts 的 runtimeGateway。 */
 const callGateway = runtimeGateway('这台机器没有配 Gateway，Skill 的这条路走不通。')
 
+/** 正文里那几种通用小标题——拿它们当 Skill 名字，十条都叫「步骤」。 */
+const GENERIC_HEADINGS = new Set(
+  ['什么时候用', '何时使用', '适用场景', '使用场景', '步骤', '操作步骤', '流程', '注意事项', '说明', '背景', '前提', '用法', '检查清单', '输出', 'when to use', 'steps', 'notes', 'usage'],
+)
+/** 同理，标签里这几个说明不了是什么活。 */
+const GENERIC_TAGS = new Set(['流程', '技能', '方法', 'skill', 'sop', 'workflow'])
+
+/**
+ * 模型没给 name 时，从正文里取一个：先找不是通用小标题的那个标题，再用标签，最后用正文
+ * 第一句的开头。取不出来就是空串，由调用方照旧拒。纯函数，探针直接测。
+ */
+export function skillNameFrom(body: string, tags: unknown[] = []): string {
+  const clean = (s: string) => s.replace(/[*_`#>\[\]]/g, '').replace(/\s+/g, ' ').trim()
+  for (const line of body.split('\n')) {
+    const m = /^#{1,3}\s+(.+)$/.exec(line.trim())
+    if (!m) continue
+    const h = clean(m[1])
+    if (h && !GENERIC_HEADINGS.has(h.toLowerCase())) return h.slice(0, 24)
+  }
+  const named = tags.map((t) => clean(String(t ?? ''))).filter((t) => t && !GENERIC_TAGS.has(t.toLowerCase()))
+  if (named.length) return named.slice(0, 2).join('、').slice(0, 24)
+  for (const line of body.split('\n')) {
+    if (/^\s*#/.test(line)) continue
+    const t = clean(line.replace(/^\s*(?:[-*]|\d+[.、)])\s*/, ''))
+    if (!t) continue
+    return t.split(/[，。,.;；：:！!？?]/)[0].trim().slice(0, 24)
+  }
+  return ''
+}
+
 export function apply(ctx: Context) {
   // 换版之后缓存里可能是上一版写下的行（缺 displayName / description 这些键），
   // 所以读缓存一律过 catalog 那份归一化，别在这儿直接摸字段。
@@ -422,10 +452,18 @@ export function apply(ctx: Context) {
       const q = `?botId=${encodeURIComponent(pinnedBotId())}`
 
       if (action === 'create') {
-        const nm = (newName ?? '').trim()
         const text = (body ?? '').trim()
-        if (!nm) fail('缺少 name：这条 Skill 叫什么？')
         if (!text) fail('缺少 body：把做法写下来，光有名字没用。')
+        /**
+         * **没给 name 就从正文里取一个，不拒。**
+         *
+         * 拒绝语「缺少 name」对弱一点的模型没用：它会照旧不带 name 原样再调，一轮里撞几十次
+         * （本地实测 GLM Flash 撞了 50 多次）。名字只是个标签，取得不好下次 update 改名就是；
+         * 而一套刚摸索出来的做法要是因为没起名而没记下，就真丢了。取的是什么，回话里照实说。
+         */
+        const given = (newName ?? '').trim()
+        const nm = given || skillNameFrom(text, Array.isArray(tags) ? tags : [])
+        if (!nm) fail('缺少 name：这条 Skill 叫什么？create 要带 name 参数（比如「月报流程」），和 body 一起传。')
         const out = await callGateway<{ skill: Record<string, unknown>; used: number; max: number }>('POST', `/runtime/skills${q}`, {
           name: nm,
           body: text,
@@ -445,6 +483,7 @@ export function apply(ctx: Context) {
          */
         return (
           `已保存：「${shown}」（你自己记下的第 ${out.used} 条，上限 ${out.max}）。\n` +
+          (given ? '' : `你没给 name，名字是按正文取的；不合适就用 update 带上 skill:「${shown}」和新的 name 改掉。\n`) +
           '它从**下一轮**开始出现在你的 Skill 索引里，这一轮里你手上就是刚写的那份正文。\n' +
           '记得跟用户说一句你把这套做法记下来了。'
         )

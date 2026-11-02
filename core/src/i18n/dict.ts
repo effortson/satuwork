@@ -165,6 +165,7 @@ export const dict: Record<string, string> = {
   管理员: 'Admin',
   加入于: 'Joined',
   仅本人: 'Self only',
+  '仅 Bot': 'This bot only',
   联系人: 'Contact',
   全公司: 'Whole company',
   生效中: 'Active',

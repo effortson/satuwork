@@ -516,15 +516,23 @@ function storedMemories(a, ro) {
   const dead = (m) => !m.pinned && m.expiresAt != null && m.expiresAt <= now
   const live = items.filter((m) => !dead(m))
   const gone = items.filter(dead)
-  const used = a.memoryUsed ?? live.filter((m) => m.layer === 'bot' || m.layer === 'self').length
+  // 「仅 Bot」时 self 那层没人读：既不进提示词、也不算用量（Gateway 的 ownMemories 同一口径）。
+  const selfUnread = a.scope === '仅 Bot'
+  const used = a.memoryUsed ?? live.filter((m) => m.layer === 'bot' || (m.layer === 'self' && !selfUnread)).length
   const max = a.memoryMax || 0
   const count = max ? `${used} / ${max}` : `${used}`
   const row = (m, expired) => {
     const mine = m.layer === 'bot' || m.layer === 'self'
     const tags = [
       `<span class="tag tag-neutral" style="font-size: 11px;">${esc(t(m.kind))}</span>`,
+      m.layer === 'bot'
+        ? `<span class="tag tag-neutral" style="font-size: 11px;">${esc(t('仅这颗 Bot', 'this bot only'))}</span>`
+        : '',
       m.layer === 'self'
         ? `<span class="tag tag-neutral" style="font-size: 11px;">${esc(t('所有 Bot', 'all bots'))}</span>`
+        : '',
+      m.layer === 'self' && selfUnread
+        ? `<span class="tag tag-neutral" style="font-size: 11px;">${esc(t('记忆范围是「仅 Bot」，不会用到', 'unused: memory scope is "This bot only"'))}</span>`
         : '',
       m.layer === 'group' || m.layer === 'company'
         ? `<span class="tag tag-neutral" style="font-size: 11px;">${esc(t(m.layer === 'group' ? '分组' : '全公司', m.layer === 'group' ? 'group' : 'company'))}</span>`
@@ -590,6 +598,7 @@ function memoryPanel(a, ro) {
         <div class="field">
           <label>${t('记忆范围')}</label>
           <div style="display: flex; flex-wrap: wrap; gap: var(--space-2);">${scopePills}</div>
+          <span style="font-size: 12px; color: var(--muted-foreground);">${t('「仅 Bot」只读这颗 Bot 自己记的；「仅本人」再加上这个人所有 Bot 共用的（称呼、习惯这种）；「所属分组」「全公司」再加上管理员给分组或全公司设的。', '"This bot only" reads what this bot saved itself; "Self only" adds what is shared across all of this person\'s bots (names, habits); "Own groups" and "Whole company" add what admins set for the group or the company.')}</span>
         </div>
         <div class="field">
           <label>${t('记录哪些内容')}</label>

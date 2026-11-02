@@ -120,6 +120,18 @@ export async function runSkillsBot({ root, test, assert, log }) {
     assert(Array.isArray(r.createSent.pii), `写入要带 PII 扫描结果：${JSON.stringify(r.createSent)}`)
   })
 
+  await test('没给 name：从正文取名，不拒', () => {
+    // 拒了的话，弱一点的模型会照旧不带 name 原样重试，一轮撞几十次（本地实测 50 多次）。
+    assert(r.createNoNameSent && r.createNoNameSent.name === '月报', `该按标签取名「月报」：${JSON.stringify(r.createNoNameSent)}`)
+    assert(r.createNoName.includes('已保存') && r.createNoName.includes('按正文取的'), `要照实说名字是取的：${r.createNoName}`)
+    const n = r.names
+    assert(n.heading === '月度对账', `有像样的标题就用标题：${n.heading}`)
+    assert(n.tags === '月报、财务', `通用小标题跳过、用标签（去掉「流程」）：${n.tags}`)
+    assert(n.firstLine === '赵工要求做月报时', `没有可用标签就用正文第一句：${n.firstLine}`)
+    assert(n.listItem === '先拉流水', `列表项去掉序号：${n.listItem}`)
+    assert(n.empty === '', `正文空就取不出：${JSON.stringify(n.empty)}`)
+  })
+
   await test('换版之后：上一版写下的缓存行不许把提示词和工具搞崩', () => {
     /**
      * 上一版的行没有 displayName / description / mode 这几个键，而首次目录同步之前

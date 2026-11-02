@@ -315,7 +315,19 @@ export interface SessionEventMap {
     sections?: { system: number; skills: number; builtinTools: number; mcpTools: number; memory?: number }
   }
 
-  'user/message': { message: Message; source: MessageSource }
+  'user/message': {
+    message: Message
+    source: MessageSource
+    /**
+     * 这一轮按这句话**补捞**进来的记忆（被注入上限挤在系统提示词外、字面上沾边的那几条，
+     * 见 agent/skills-memory.ts 的 `recallMemories`）。
+     *
+     * 存的是**当时那份正文**，不是 id：重建历史时原样拼回这条消息末尾，前缀才一个字都不变。
+     * 按 id 现查的话，记忆一改，下一轮这条老消息就跟着变，前缀缓存从这里断开。
+     * 不进界面——那是给模型的。缺这个字段（老日志、没捞到）就是没有。
+     */
+    recall?: { id: string; kind: string; text: string }[]
+  }
   'assistant/chunk': { turn: number; step: number; chunk: StreamChunk }
   'assistant/message': { turn: number; step: number; message: Message; usage: Usage }
 

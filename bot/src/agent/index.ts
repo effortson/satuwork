@@ -18,7 +18,7 @@ import { replyLanguageBlock, replyLocaleOf } from './reply-language.ts'
 import { readTodos, restoreTodos } from '../tools/todo.ts'
 import { BAD_TOOL_ARGS } from '../llm/gateway.ts'
 import { browserOf, desktopOf, memoryOf, type BotRecord } from '../registry/index.ts'
-import { cachedMemories, cachedSkill, cachedSkills, type CachedSkill, type ReasoningEffort } from '../catalog/index.ts'
+import { cachedMemories, cachedSkill, cachedSkills, type CachedMemory, type CachedSkill, type ReasoningEffort } from '../catalog/index.ts'
 import {
   clampTranscript,
   compactionPoint,
@@ -29,7 +29,8 @@ import {
   scopeAfterBoundary,
   summaryText,
 } from './compaction.ts'
-import { stampContent, stampUser, toAgentMessages, userBlocks, userContentFor } from './history.ts'
+import { stampContent, stampUser, toAgentMessages, userBlocks, userContentFor, withRecall } from './history.ts'
+import { failureStreak } from './repeat-guard.ts'
 import { seesImages, toolImageBlocks } from './images.ts'
 import {
   assignBlock,
@@ -47,7 +48,7 @@ import {
   todoBlock,
   webContentBlock,
 } from './prompt-blocks.ts'
-import { memoryBlockOf, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
+import { memoryBlockFrom, memoryWriteSchemaFor, pickMemories, recallMemories, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
 import { abortedOutcome, lastAssistantText, sumUsage, taskBlock, taskBrief, taskFiles } from './task-outcome.ts'
 import { contentDigest, estMessages, estTokens, toolsText } from './text.ts'
 import { filesOf, fromAgentContent, imagesOf, rawTextOf, refsOf, shotOf, textOf, toUsage } from './tool-results.ts'
@@ -82,7 +83,7 @@ export {
 } from './types.ts'
 export { contentDigest } from './text.ts'
 export { seesImages } from './images.ts'
-export { memoryBlockOf, memoryLayersOf, pickMemories, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
+export { memoryBlockOf, memoryLayersOf, memoryWriteSchemaFor, pickMemories, recallBlockOf, recallMemories, recallStillValid, SKILL_TOOLS, skillSplit, type SkillSplit, skillTools } from './skills-memory.ts'
 export {
   clampTranscript,
   compactionPoint,
@@ -176,9 +177,18 @@ export const QUIET_MESSAGE = '席位正在换新版本，这几秒不接新消�
  * 状态归它、durable 记录归我们，单向流动不会漂移。它的会话后端
  * （`pi-session-backend-sqlite-node`）刻意不用——那会把日志格式交出去。
  */
+/** 一轮开头取的那份记忆缓存。系统提示词那一段和补捞都从它挑，两边才对得上。 */
+type MemorySnapshot = { all: CachedMemory[]; now: number }
+
 export class AgentService extends Service {
   /** 正在跑的 agent。steering 要够得着它，所以不能只是个局部变量。 */
   private live = new Map<string, Agent>()
+  /**
+   * 正在跑的那一轮的记忆状态：策略、开轮快照、**已经在模型眼前的那些**（系统提示词里
+   * 摆着的 + 这一轮补捞过的）。开轮那句和中途插的话都按它补捞，所以不会重复补，也不会
+   * 补上一条系统提示词里已经有的。记忆关着时没有这一项。随 `live` 一起收口。
+   */
+  private turnMemory = new Map<string, { mem: ReturnType<typeof memoryOf>; snap: MemorySnapshot; exclude: Set<string> }>()
   /**
    * 工具结果交出去之后才拍完的截图（ToolResult.pendingShot）：会话 → callId → 那张图。
    *
@@ -575,6 +585,7 @@ export class AgentService extends Service {
     let steps = 0
     let toolCalls = 0
     let capped = false
+    const streak = failureStreak()
     let state: TaskOutcome['state'] = 'done'
     let failure = ''
     /**
@@ -615,6 +626,11 @@ export class AgentService extends Service {
           if (!toolResults.length) return false
           steps += 1
           toolCalls += toolResults.length
+          // 原地打转（同一个失败连着撞，见 repeat-guard.ts）按撞顶收口：交回去的结论里照样说清停在哪。
+          if (streak.see(toolResults)) {
+            capped = true
+            return true
+          }
           if (steps < spec.maxSteps) return false
           capped = true
           return true
@@ -1066,7 +1082,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     const agent = this.live.get(sessionId)
     if (!agent) return false
     const at = Date.now()
-    agent.steer({ role: 'user', content: stampContent(content, at), timestamp: at } as AgentMessage)
+    // 插的话也补捞（同开轮那句），跳过这一轮已经摆在眼前的；同样跟着这条消息落盘。
+    const recall = this.recallFor(sessionId, text)
+    agent.steer({ role: 'user', content: withRecall(stampContent(content, at), recall), timestamp: at } as AgentMessage)
     /**
      * **插话也要落一条 `user/message`。**
      *
@@ -1082,6 +1100,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     await this.ctx.sessions.append(sessionId, 'user/message', {
       message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, [], refs) },
       source,
+      ...(recall.length ? { recall } : {}),
     })
     return true
   }
@@ -1364,7 +1383,13 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       return true
     }
     if (await stoppedBeforeTurn()) return
-    let system: { text: string; base: string; skills: string; memory: string }
+    /**
+     * 这一轮的记忆**只取一次**。系统提示词那一段在下面 composeSystem 里挑，补捞要到落盘前
+     * 才算，中间隔着点名重拉目录、每分钟那次同步——各读各的缓存，就会补上一条提示词里
+     * 已经有的、或者两边都漏掉一条。
+     */
+    const memSnap: MemorySnapshot = { all: cachedMemories(this.ctx), now: Date.now() }
+    let system: { text: string; base: string; skills: string; memory: string; memoryShown: Set<string> }
     let provider: string
     let modelId: string
     let model: ReturnType<typeof llm.modelOf>
@@ -1382,7 +1407,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     let toolSchemas: { name: string; description: string; parameters?: unknown }[]
     try {
       const bot = this.botOf(history)
-      system = this.composeSystem(bot, replyLocaleOf(source, history))
+      system = this.composeSystem(bot, replyLocaleOf(source, history), memSnap)
       // 人在对话框里给这条会话换过日常模型的话，「Bot 自己那一对」就是换过之后的那个。
       const home = await this.homeModelOf(sessionId, history, true)
       provider = home.provider
@@ -1519,9 +1544,17 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     const turn = history.filter((e) => e.type === 'turn/start').length + 1
     const reasoningEffort = this.roleReasoningEffort(provider, modelId, modelRole)
 
+    // 按这句话补捞几条被注入上限挤在外面的记忆。跟着这条消息落盘，重建历史时原样拼回去。
+    this.turnMemory.delete(sessionId)
+    if ((process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() !== 'off') {
+      const mem = memoryOf(this.botOf(history) as BotRecord | undefined)
+      if (mem.on) this.turnMemory.set(sessionId, { mem, snap: memSnap, exclude: new Set(system.memoryShown) })
+    }
+    const recall = this.recallFor(sessionId, text)
     await sessions.append(sessionId, 'user/message', {
       message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, mentions, refs) },
       source,
+      ...(recall.length ? { recall } : {}),
     })
     await sessions.append(sessionId, 'turn/start', { turn })
 
@@ -1563,6 +1596,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     let steps = 0
     let toolCalls = 0
     let capped = false
+    /** 同一个失败连着撞到了头（repeat-guard.ts）。和撞步数顶分开记：给人的那句话不一样。 */
+    let looped = false
+    const streak = failureStreak()
 
     const agent = new Agent({
       initialState: {
@@ -1591,6 +1627,11 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         if (!toolResults.length) return false
         steps += 1
         toolCalls += toolResults.length
+        // 同一个失败连着撞（见 repeat-guard.ts）：不等步数硬顶，当场停。
+        if (streak.see(toolResults)) {
+          looped = true
+          return true
+        }
         if (steps < maxSteps) return false
         capped = true
         return true
@@ -1631,9 +1672,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
           undefined,
           refs.length ? history : undefined,
         )
-        await agent.prompt({ role: 'user', content: stampContent(content, now), timestamp: now } as AgentMessage)
+        await agent.prompt({ role: 'user', content: withRecall(stampContent(content, now), recall), timestamp: now } as AgentMessage)
       } else {
-        await agent.prompt(stampUser(text, now))
+        await agent.prompt(withRecall(stampUser(text, now), recall))
       }
       // pi-agent **不抛**模型侧错误，它落在 state.errorMessage / 最终消息的
       // stopReason 上。不显式检查的话，一个失败的 turn 会被记成 completed，
@@ -1654,7 +1695,31 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       }
       // 撞顶要在对话里**看得见**。只写日志的话，用户看到的是它干着干着突然不说话了，
       // 跟卡住分不出来；而它其实停得好好的，接着说一句就能继续。
-      if (capped && !failure) {
+      if (looped && !failure) {
+        /**
+         * 原地打转：同一个调用连着撞同一句报错。**要看得见**，而且要说清撞的是什么——
+         * 「停下了」一句话，人不知道该改哪儿；把那句报错摆出来，多半一眼就看出缺了什么。
+         */
+        reason = 'capped'
+        await sessions.append(sessionId, 'assistant/message', {
+          turn,
+          step: 0,
+          message: {
+            id: randomUUID(),
+            role: 'assistant',
+            content: [
+              {
+                type: 'text',
+                text:
+                  `我连着 ${streak.count} 次调用 ${streak.tool} 都失败在同一处（「${streak.error}」），再试也是一样，先停下，免得原地打转。\n\n` +
+                  `告诉我该怎么调整；或者换个说法让我重新来。`,
+              },
+            ],
+          },
+          usage: EMPTY_USAGE,
+        })
+        this.ctx.logger?.warn?.(`agents: 会话 ${sessionId} 第 ${turn} 轮原地打转（${streak.tool} 连着失败 ${streak.count} 次），已收口`)
+      } else if (capped && !failure) {
         reason = 'capped'
         await sessions.append(sessionId, 'assistant/message', {
           turn,
@@ -1706,6 +1771,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     } finally {
       off()
       this.live.delete(sessionId)
+      this.turnMemory.delete(sessionId)
       if (this.aborting.delete(sessionId)) reason = 'aborted'
       await this.settleShots(sessionId)
       await sessions.append(sessionId, 'turn/end', { turn, reason })
@@ -1964,8 +2030,10 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         return {
           content: [{ type: 'text' as const, text: result.text }, ...pictures],
           details:
-            result.files?.length || result.refs?.length || result.shot || result.rawText || result.images?.length
+            result.files?.length || result.refs?.length || result.shot || result.rawText || result.images?.length || result.refused
               ? {
+                  // 业务层被拒：只给原地打转那道判断看（repeat-guard.ts），不进 content。
+                  ...(result.refused ? { refused: true } : {}),
                   ...(result.files?.length ? { files: result.files } : {}),
                   ...(result.refs?.length ? { refs: result.refs } : {}),
                   ...(result.shot ? { shot: result.shot } : {}),
@@ -2007,7 +2075,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
   private composeSystem(
     bot: { prompt?: string; skills?: string[]; escalate?: string; memory?: unknown } | undefined,
     locale?: 'zh' | 'en',
-  ): { text: string; base: string; skills: string; memory: string } {
+    memSnap: MemorySnapshot = { all: cachedMemories(this.ctx), now: Date.now() },
+  ): { text: string; base: string; skills: string; memory: string; memoryShown: Set<string> } {
     // 网页那一段只在 web_extract 真的挂上时才加：没有这把工具的进程里，那三行
     // 是在教模型防一种它遇不到的东西，纯占上下文。
     /**
@@ -2108,7 +2177,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * ——而上面那些几天不动，记忆一天动几次。插在 Skill 前面，等于每记一条就把整段
      * Skill 正文的缓存作废一次。
      */
-    const memory = this.memoryBlock(bot)
+    const { text: memory, shown: memoryShown } = this.memoryBlock(bot, memSnap)
     /**
      * 本地 Bot 上用户批准过的文件夹。**和记忆一样排在最末尾**：批准 / 撤销随时会发生，
      * 插在前面等于每批一次就把整段 Skill 的前缀缓存作废一次。
@@ -2117,7 +2186,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     // 共享区那段一颗 Bot 一辈子不变，排在最前面，不跟着记忆、批准文件夹一起作废缓存。
     const shared = sharedFolderBlock(Boolean(this.ctx.workspace?.shared), Boolean(this.ctx.workspace?.legacy))
     const tail = [shared, skills, memory, folders].filter(Boolean).join('\n\n')
-    return { text: tail ? `${base}\n\n${tail}` : base, base, skills, memory }
+    return { text: tail ? `${base}\n\n${tail}` : base, base, skills, memory, memoryShown }
   }
 
   /**
@@ -2131,10 +2200,25 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
    * 中间那一步在模型脑子里，我们只看得见它进了提示词。硬做就得让模型每次汇报「用到
    * 了哪条」——那是拿一条编出来的信号去排序，比按时间排更坏（docs/memory.md §7）。
    */
-  private memoryBlock(bot: { memory?: unknown } | undefined): string {
+  /**
+   * 这一轮按用户那句话补捞的记忆（见 skills-memory.ts 的 `recallMemories`）。
+   * 和 `memoryBlock` 同一份策略、同一份缓存，所以补捞的永远是系统提示词里没摆的那些。
+   */
+  private recallFor(sessionId: string, text: string): { id: string; kind: string; text: string }[] {
+    const state = this.turnMemory.get(sessionId)
+    if (!state) return []
+    const hits = recallMemories(state.mem, state.snap.all, text, { now: state.snap.now, exclude: state.exclude })
+    // 这一轮里补过的不再补：中途插的话再撞上同一条，模型手上早就有了。
+    for (const m of hits) state.exclude.add(m.id)
+    return hits.map((m) => ({ id: m.id, kind: m.kind, text: m.text }))
+  }
+
+  /** 拼系统提示词里那段记忆，并报出**摆进去了哪几条**（补捞要据此跳过它们）。 */
+  private memoryBlock(bot: { memory?: unknown } | undefined, snap: MemorySnapshot): { text: string; shown: Set<string> } {
     const mem = memoryOf(bot as BotRecord | undefined)
-    if ((process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() === 'off') return ''
-    return memoryBlockOf(mem, cachedMemories(this.ctx))
+    if ((process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() === 'off') return { text: '', shown: new Set() }
+    const pick = pickMemories(mem, snap.all, snap.now)
+    return { text: memoryBlockFrom(pick), shown: new Set(pick.picked.map((m) => m.id)) }
   }
 
   /**
@@ -2478,8 +2562,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * `off` 那一档是退路（同 `SATUWORK_SKILL_TOOLS`）：这套东西出问题时退回没有它的
      * 样子，而退路不能在同一次改动里一起删掉。
      */
-    const memoryOff =
-      (process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() === 'off' || !memoryOf(bot as BotRecord | undefined).on
+    const memory = memoryOf(bot as BotRecord | undefined)
+    const memoryOff = (process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() === 'off' || !memory.on
     /**
      * 平台没挑生图模型时，generate_image 不进表。同上面几层，**只是遮掩**：模型照着历史里
      * 的名字报过来，工具自己会回一句「平台还没有开通生图」。
@@ -2502,18 +2586,21 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 同样只是遮掩：直接报名字照样调得到，工具自己会拒。
      */
     const uploadOn = [...mcpNames].some((n) => Boolean(catalog.connectorToolOf?.(n)))
-    const picked = all.filter(
-      (t) =>
-        (!t.name.startsWith('mcp_') || mcpNames.has(t.name)) &&
-        (imageOn || t.name !== 'generate_image') &&
-        (knowledgeOn || t.name !== 'knowledge_search') &&
-        (assignOn || t.name !== 'assign_task') &&
-        (uploadOn || t.name !== 'connector_upload_file') &&
-        (browserOn || !t.name.startsWith('browser_')) &&
-        (desktopOn || !t.name.startsWith('desktop_')) &&
-        (!memoryOff || !t.name.startsWith('memory_')) &&
-        skillTool(t.name),
-    )
+    const picked = all
+      .filter(
+        (t) =>
+          (!t.name.startsWith('mcp_') || mcpNames.has(t.name)) &&
+          (imageOn || t.name !== 'generate_image') &&
+          (knowledgeOn || t.name !== 'knowledge_search') &&
+          (assignOn || t.name !== 'assign_task') &&
+          (uploadOn || t.name !== 'connector_upload_file') &&
+          (browserOn || !t.name.startsWith('browser_')) &&
+          (desktopOn || !t.name.startsWith('desktop_')) &&
+          (!memoryOff || !t.name.startsWith('memory_')) &&
+          skillTool(t.name),
+      )
+      // 「仅 Bot」时 memory_write 的参数表里不摆 self（见 memoryWriteSchemaFor）。
+      .map((t) => memoryWriteSchemaFor(t, memory.scope))
     // @ 了一颗 Bot = 要派活：assign_task 也顶到最前（docs/bot-tasks.md）。不是主 Bot 时没这把工具，顶也顶不出来。
     const botNamed = assignOn && mentions.some((m) => m.kind === 'bot')
     if (!mentioned.length && !botNamed) return picked

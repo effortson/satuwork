@@ -196,8 +196,10 @@ function refreshToolPop() {
  */
 document.addEventListener('input', (e) => {
   const el = e.target instanceof Element ? e.target : null
-  if (!el || !el.hasAttribute('data-feedback')) return
-  approvalDrafts.set(draftKey(el.getAttribute('data-call') || '', FEEDBACK_KEY), el.value)
+  if (!el) return
+  if (el.hasAttribute('data-feedback')) approvalDrafts.set(draftKey(el.getAttribute('data-call') || '', FEEDBACK_KEY), el.value)
+  // 记忆卡上改过的正文 / 类别（chat-bubble.js 的 approvalMemoryHtml），同样要熬过重画。
+  else if (el.hasAttribute('data-edit')) approvalDrafts.set(draftKey(el.getAttribute('data-call') || '', el.getAttribute('data-edit') || ''), el.value)
 })
 
 document.addEventListener('mouseover', (e) => {

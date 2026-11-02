@@ -13,7 +13,7 @@ import { runtimeConnectorServer, usableConnections } from '../lib/connectors.ts'
 import { TASK_CONTEXT_MAX, TASK_INSTRUCTION_MAX, cancelBotTask, createBotTask, pollBotTask, publicBotTask } from '../lib/bot-tasks.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botVisibleTo, canAssignTo, botIconOf, botNameOf, botTemplateOf, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { deviceIdOf, kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser, viewerOf } from '../lib/guards.ts'
-import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
+import { MEMORY_PIN_MAX, MEMORY_TEXT_MAX, memoryExpiresAt, memoryKey, memoryKindAllowed, memoryKindOf, memoryScopeLayers, memoriesForSeat, memoryStamp, memoryStoreMax, memoryText, publicMemory } from '../lib/memory.ts'
 import { WebToolError } from '../web-tools.ts'
 import { runExtract, runSearch } from '../web-service.ts'
 import { knowledgeOffOf, knowledgeUsableByBot, publicKnowledgeBase, searchKnowledge } from '../lib/knowledge.ts'
@@ -351,11 +351,12 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
      * **这颗 Bot 读得到的全部记忆**，四层一次取齐（`memoriesFor` 的 where 里带着层和
      * 归属，别人的一条都进不来）。
      *
-     * 这里**不按模版的「记忆范围」裁**：那三个 pill 决定装配提示词时读哪几层，是席位
+     * 这里**基本不按模版的「记忆范围」裁**：那几个 pill 决定装配提示词时读哪几层，是席位
      * 的事。下发的是「看得见的全部」——`memory_list` 也要靠它，一条 company 层的记忆
      * 正在影响这颗 Bot，藏起来的话「它怎么知道这件事的」就没有出处（docs/memory.md §4）。
+     * 唯一的例外是「仅 Bot」时的 self 那层，见 `memoriesForSeat`。
      */
-    const memories = companyId ? await db.memoriesFor(companyId, account.id, botId || null) : []
+    const memories = companyId ? memoriesForSeat(await db.memoriesFor(companyId, account.id, botId || null), tpl.memory) : []
     /**
      * 知识库**按这颗 Bot 下发**：`all` 的，加上 `bots` 且名单里有它的；再筛掉还没有可用
      * 文件的。没带 botId 的调用只拿到 `all` 那些。目录是给模型看的提示，真正的边界在
@@ -505,8 +506,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       ...(await db.skillsFor(companyId, account.id, botId || null)),
       ...serversForBots(await db.visibleCatalog('mcp', companyId), bot ? [bot] : bots, tpl),
     ]
-    /** 记忆同理，而且它连 `catalog_items` 都不在——不算进去就永远同步不下来。 */
-    const memories = companyId ? await db.memoriesFor(companyId, account.id, botId || null) : []
+    /** 记忆同理，而且它连 `catalog_items` 都不在——不算进去就永远同步不下来。口径同 `/runtime/catalog`。 */
+    const memories = companyId ? memoriesForSeat(await db.memoriesFor(companyId, account.id, botId || null), tpl.memory) : []
     /** 知识库同理：建了库、传完第一份文件、改了共享范围，席位下一次探针就把工具表换掉。 */
     const knowledge = companyId ? (await knowledgeUsableByBot(db, companyId, bot)).filter((k) => k.chunkCount > 0) : []
     /** 派活名单同理：换了主 Bot、名单上多了一颗，席位下一次探针就把 assign_task 加进 / 拿出工具表。 */
@@ -770,9 +771,27 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
   async function memoryCtx(account: Account, companyId: string, botId: string) {
     const { tpl } = await botContext(db, companyId)
     const all = await db.memoriesFor(companyId, account.id, botId)
-    /** 只有下面两层算用量：上面两层是管理员写的，不占这颗 Bot 的额度。 */
-    const mine = all.filter((m) => m.layer === 'bot' || m.layer === 'self')
-    return { mem: tpl.memory, all, mine, max: memoryStoreMax(tpl.memory) }
+    return { mem: tpl.memory, all, mine: ownMemories(all, tpl.memory), max: memoryStoreMax(tpl.memory) }
+  }
+
+  /**
+   * 算这颗 Bot 用量的那几条：**它自己那两层里、记忆范围读得到的**。
+   *
+   * 上面两层是管理员写的，不占额度。范围是「仅 Bot」时 self 那层也不算——它一条都进不了
+   * 这颗 Bot 的提示词，拿它占额度的话，模型会被告知「记忆满了」，摆给它整合的却是它看不见、
+   * 也改不动的那几条。
+   */
+  function ownMemories(all: Memory[], mem: BotMemory): Memory[] {
+    const visible = memoryScopeLayers(mem.scope)
+    return all.filter((m) => (m.layer === 'bot' || m.layer === 'self') && visible.has(m.layer))
+  }
+
+  /**
+   * 范围是「仅 Bot」时 self 那层没人读：写进去等于没记，还让模型以为记住了。
+   * `why` 是拒绝语：席位那条给模型看（说清下一步怎么调），人那条给人看。
+   */
+  function layerReadable(layer: 'bot' | 'self', mem: BotMemory, why: string): void {
+    if (!memoryScopeLayers(mem.scope).has(layer)) throw new HttpError(403, why)
   }
 
   /** 回给席位的那一份：归一化之后的整条记录 + 用量。缓存里落的必须是它。 */
@@ -839,6 +858,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       if (!mem.on) throw new HttpError(403, '这个 Bot 的长期记忆是关着的。')
 
       const layer = seatLayerOf(body.layer)
+      layerReadable(layer, mem, `这个 Bot 的记忆范围是「${mem.scope}」，读不到「所有 Bot 共用」那一层。不带 layer（或用 bot）记在这颗 Bot 自己这层。`)
       const text = seatTextOf(body)
       const kind = seatKindOf(body, mem)
 
@@ -897,7 +917,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
    * 上面两层读得到、改不动——碰了要说清是为什么，不是回一句「没有这条」：模型看得见
    * 它就在眼前，一句「不存在」只会让它换个说法再试一次。
    */
-  async function ownSeatMemory(id: string, account: Account, botId: string): Promise<Memory> {
+  async function ownSeatMemory(id: string, account: Account, botId: string, mem: BotMemory): Promise<Memory> {
     const m = await db.memory(id)
     if (!m) throw new HttpError(404, '没有这条记忆')
     if (m.layer === 'group' || m.layer === 'company') {
@@ -906,6 +926,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     if (m.accountId !== account.id || (m.layer === 'bot' && m.botId !== botId)) {
       throw new HttpError(404, '没有这条记忆')
     }
+    // 范围读不到的那层（「仅 Bot」时的 self）：模型看不见它，也就不该改得动它。
+    if (!memoryScopeLayers(mem.scope).has(m.layer)) throw new HttpError(404, '没有这条记忆')
     return m
   }
 
@@ -916,7 +938,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const botId = await seatBotOf(req, account)
     const { mem, mine, max } = await memoryCtx(account, companyId, botId)
     if (!mem.on) throw new HttpError(403, '这个 Bot 的长期记忆是关着的。')
-    const cur = await ownSeatMemory(req.params.memoryId, account, botId)
+    const cur = await ownSeatMemory(req.params.memoryId, account, botId, mem)
     const body = bodyOf(req)
     const text = body.text !== undefined ? seatTextOf(body) : cur.text
     const kind = body.kind !== undefined ? seatKindOf(body, mem) : cur.kind
@@ -960,7 +982,8 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const companyId = account.role === 'owner' ? null : account.companyId
     if (!companyId) throw new HttpError(400, '这个账号不属于任何公司，写不了记忆')
     const botId = await seatBotOf(req, account)
-    const cur = await ownSeatMemory(req.params.memoryId, account, botId)
+    const { mem, mine, max } = await memoryCtx(account, companyId, botId)
+    const cur = await ownSeatMemory(req.params.memoryId, account, botId, mem)
     await db.deleteMemory(cur.id)
     await db.audit({
       companyId,
@@ -968,8 +991,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
       action: 'memory.delete',
       detail: { id: cur.id, layer: cur.layer, kind: cur.kind, botId, by: 'bot' },
     })
-    const { mine, max } = await memoryCtx(account, companyId, botId)
-    json(res, 200, { deleted: true, id: cur.id, text: cur.text, used: mine.length, max })
+    json(res, 200, { deleted: true, id: cur.id, text: cur.text, used: mine.length - 1, max })
   })
 
   /**
@@ -998,7 +1020,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     const { tpl } = await botContext(db, companyId)
     json(res, 200, {
       items: all.map(publicMemory),
-      used: all.filter((m) => m.layer === 'bot' || m.layer === 'self').length,
+      used: ownMemories(all, tpl.memory).length,
       max: memoryStoreMax(tpl.memory),
     })
   })
@@ -1014,6 +1036,7 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
     if (!kind) throw new HttpError(400, '类别只能是「偏好」「事实」「联系人」之一')
     const layer = seatLayerOf(body.layer)
     const { tpl } = await botContext(db, companyId)
+    layerReadable(layer, tpl.memory, `公司模版的记忆范围是「${tpl.memory.scope}」，「所有 Bot」那一层不会被任何 Bot 用到。改记成这颗 Bot 自己的，或者请管理员放宽记忆范围。`)
     const row = await db.insertMemory({
       layer,
       companyId,
@@ -1071,9 +1094,9 @@ export function attachRuntime(router: Router, ctx: RouteCtx) {
        * 否则那根「注入上限」滑杆就是摆设。判据只在这一侧，同别的上限。
        */
       if (body.pinned === true && !cur.pinned) {
-        const pinnedNow = (await db.memoriesFor(companyId, account.id, botId)).filter(
-          (m) => m.pinned && (m.layer === 'bot' || m.layer === 'self'),
-        ).length
+        const { tpl } = await botContext(db, companyId)
+        // 同用量的口径：「仅 Bot」时钉住的 self 那几条不进提示词，不该占这颗 Bot 的钉位。
+        const pinnedNow = ownMemories(await db.memoriesFor(companyId, account.id, botId), tpl.memory).filter((m) => m.pinned).length
         if (pinnedNow >= MEMORY_PIN_MAX) {
           throw new HttpError(409, `最多只能钉住 ${MEMORY_PIN_MAX} 条（钉住的每一轮都在，不受注入上限约束）。先取消钉住几条。`)
         }

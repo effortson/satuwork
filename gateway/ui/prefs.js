@@ -379,7 +379,7 @@ function setBotAvatarRunning(host, running) {
   else art.removeAttribute('data-running')
 }
 
-const MEMORY_SCOPES = ['仅本人', '所属分组', '全公司']
+const MEMORY_SCOPES = ['仅 Bot', '仅本人', '所属分组', '全公司']
 const MEMORY_KINDS = ['偏好', '事实', '流程', '联系人']
 const MEMORY_TTLS = ['30 天', '90 天', '180 天', '永久保留']
 const DEFAULT_BOT_GUARDS = [

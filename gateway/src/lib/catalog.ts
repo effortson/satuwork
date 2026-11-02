@@ -257,7 +257,7 @@ export function botBrowserOf(v: unknown, base: BotBrowser = DEFAULT_BOT_BROWSER)
  * 记忆设置。scope / kinds / ttl 存的就是这几个中文原串——它们同时是界面上的选项值，
  * 前端只翻显示的那一份（见 app.js 里 MEMORY_* 那几个常量），两边对的是同一套键。
  */
-export const MEMORY_SCOPES = ['仅本人', '所属分组', '全公司']
+export const MEMORY_SCOPES = ['仅 Bot', '仅本人', '所属分组', '全公司']
 export const MEMORY_KINDS = ['偏好', '事实', '流程', '联系人']
 export const MEMORY_TTLS = ['30 天', '90 天', '180 天', '永久保留']
 

@@ -4,6 +4,7 @@ import { agentsOf, type ToolCall, type ToolResult } from '../tools/index.ts'
 import { ApprovalGate, type Verdict } from './approvals.ts'
 import { formOf, unwrapCall } from './forms.ts'
 import { type ActionContext, blockedHost, hostOf, siteAllowed, submitAction } from './browser.ts'
+import { memoryLayersOf } from '../agent/skills-memory.ts'
 import { scanPii } from './pii.ts'
 import { SHELL_TOOLS, destructiveCommand, networkCommand } from './shell.ts'
 
@@ -632,6 +633,8 @@ export function apply(ctx: Context) {
         // 压根没注册的工具交给 run() 去答「未知工具」——在这里拦，模型收到的是一句
         // 「边界挡下了」，而它其实只是名字打错了。
         if (!ctx.tools.has(call.name)) return next()
+        /** 人在确认卡上改过的那几格（记忆确认、高风险确认都可能改），执行完要告诉模型。 */
+        const humanEdits: string[] = []
 
         /**
          * 子代理的两道**强制**（见 docs/delegation.md §6.1、§7.1）。
@@ -766,6 +769,20 @@ export function apply(ctx: Context) {
           const args = unwrapCall(call).args
           const op = String(args.op ?? '')
           /**
+           * **「仅 Bot」读不到 self 那层，写它要排在确认前面拒掉**——理由同下面敏感信息那一道。
+           * 工具表上已经不摆 `layer` 了（memoryWriteSchemaFor），这里拦的是照着历史里的写法
+           * 报过来的那种；Gateway 那边还有同样一道。
+           */
+          if (op === 'add' && String(args.layer ?? '').trim() === 'self' && !memoryLayersOf(mem.scope).has('self')) {
+            return await ctx.policy.deny(
+              call,
+              bot,
+              'memory',
+              `这个 Bot 的记忆范围是「${mem.scope}」，读不到「所有 Bot 共用」那一层`,
+              '不带 layer（或用 bot）记在这颗 Bot 自己这层。',
+            )
+          }
+          /**
            * **敏感信息这一道要排在确认前面。**
            *
            * 理由和上面 `guards.pii` 那一段一字不差：一次注定要被拦的调用，不该先把人
@@ -794,8 +811,9 @@ export function apply(ctx: Context) {
             const why = op === 'add' ? '它要记下一条跨对话的事实' : '它要改掉一条已经记下的事实'
             ctx.policy.markAsked(call.callId)
             const why2 = provenance(ctx, call, why)
-            const { verdict, viaBlock, feedback } = await askAndRecord(ctx, call, bot, 'memory', why2)
+            const { verdict, viaBlock, feedback, edited } = await askAndRecord(ctx, call, bot, 'memory', why2)
             if (verdict !== 'approved') return blockedByUser(verdict, why, viaBlock, feedback)
+            humanEdits.push(...(edited ?? []))
           }
         }
 
@@ -811,11 +829,13 @@ export function apply(ctx: Context) {
              * 这周的活收个尾」，中间隔着一次他没看见的委派。
              */
             const why2 = provenance(ctx, call, why)
-            const { verdict, viaBlock, feedback } = await askAndRecord(ctx, call, bot, 'high-risk', why2)
+            const { verdict, viaBlock, feedback, edited } = await askAndRecord(ctx, call, bot, 'high-risk', why2)
             if (verdict !== 'approved') return blockedByUser(verdict, why, viaBlock, feedback)
+            humanEdits.push(...(edited ?? []))
           }
         }
 
+        if (humanEdits.length) return withHumanEdits(await next(), humanEdits)
         return next()
       },
       true,
@@ -905,7 +925,28 @@ async function askAndRecord(ctx: Context, call: ToolCall, bot: BotRecord | undef
             : why,
     at: Date.now(),
   })
-  return { verdict, viaBlock, feedback }
+  return { verdict, viaBlock, feedback, edited }
+}
+
+/**
+ * 人在确认卡上亲手改过参数时，**要让模型知道**。
+ *
+ * 不说的话，它看到执行出来的是另一个版本（「最后一个周五」），跟用户原话（「周四」）对不上，
+ * 就当成自己出了错，当场再调一次改回去——本地实测就是这样，最后还跟用户说「已记住周四」。
+ * 人改的那一版恰恰是最该算数的。只补在成功的结果上：失败了说这句没有意义。
+ *
+ * **摆在最前面，不摆在末尾。** 本地实测摆在末尾时，模型不再改回去了，可回给用户的话还是
+ * 照着原话说——末尾那句被它略过了。
+ */
+function withHumanEdits(out: ToolResult, edited: string[]): ToolResult {
+  if (out.failed) return out
+  const fields = [...new Set(edited)].join('、')
+  return {
+    ...out,
+    text:
+      `【注意】用户在确认卡上亲手改了「${fields}」，实际执行的是改过之后的版本（见下面的结果），不是你提交的那一版。` +
+      `跟用户说的时候照实际执行的版本说，别再改回去。\n\n${out.text}`,
+  }
 }
 
 /**

@@ -29,7 +29,8 @@ const { Context } = await import('@deepseek-ai/cordis')
 const { cachedMemories, cachedMemoryOf } = await import('./src/catalog/index.ts')
 const { memoryOf, DEFAULT_MEMORY } = await import('./src/registry/index.ts')
 const { looksProcedural, matchMemories } = await import('./src/tools/memory.ts')
-const { memoryBlockOf, memoryLayersOf, pickMemories } = await import('./src/agent/index.ts')
+const { memoryBlockOf, memoryLayersOf, memoryWriteSchemaFor, pickMemories, recallBlockOf, recallMemories, recallStillValid } = await import('./src/agent/index.ts')
+const { withRecall } = await import('./src/agent/history.ts')
 const { formOf } = await import('./src/policy/forms.ts')
 const { StorageService } = await import('./src/storage/index.ts')
 const { ToolService } = await import('./src/tools/index.ts')
@@ -87,6 +88,8 @@ out.procedural = {
     // 「所属分组」= 下面两层 + 分组，**不含全公司**。
     scoped: pickMemories(POLICY, list, NOW).picked.map((m) => m.id),
     self: pickMemories({ ...POLICY, scope: '仅本人' }, list, NOW).picked.map((m) => m.id),
+    // 「仅 Bot」只读 bot 层：这个人所有 Bot 共用的 self 那层也不进。
+    botOnly: pickMemories({ ...POLICY, scope: '仅 Bot' }, list, NOW).picked.map((m) => m.id),
     // **cap 要放宽**：卡在 3 的话「全公司」那条正好被挤掉，这一格就和「所属分组」
     // 长得一模一样——那样这条断言根本分不出两种 scope。
     all: pickMemories({ ...POLICY, scope: '全公司', cap: 9 }, list, NOW).picked.map((m) => m.id),
@@ -99,9 +102,86 @@ out.procedural = {
     off: pickMemories({ ...POLICY, on: false }, list, NOW).picked.length,
   }
   out.layers = {
+    botOnly: [...memoryLayersOf('仅 Bot')].sort(),
     self: [...memoryLayersOf('仅本人')].sort(),
     group: [...memoryLayersOf('所属分组')].sort(),
     company: [...memoryLayersOf('全公司')].sort(),
+  }
+
+  /**
+   * 补捞：被注入上限挤在外面、字面上和这句话沾边的那几条。
+   * cap=1 时摆进去的是「钉住的 g + 最新的 a」，b / c 在外面。
+   */
+  {
+    const P = { ...POLICY, scope: '全公司', cap: 1 }
+    const pool = [
+      ...list,
+      mem('Uclub 的发票抄送 enxi.liu@uclubgroup.com.sg', { id: 'u', layer: 'self', updatedAt: 10 }),
+      mem('季度报表在 work/reports 底下', { id: 'r', layer: 'bot', updatedAt: 20 }),
+    ]
+    const ids = (q, max) => recallMemories(P, pool, q, { max, now: NOW }).map((m) => m.id)
+    /**
+     * 一段**真长**的话：片段是去重之后数的，同一句话重复几遍凑不出长度。这一段切出来
+     * 远超 120 个不同的片段，和底下两条记忆都没有关系。
+     */
+    const LONG =
+      '这周客户那边陆续反馈了不少问题，主要集中在登录偶尔失败、订单列表加载很慢、导出的文件打开乱码这三件事上。' +
+      '产品经理希望我们先给出排查思路，再评估修复所需的人手和时间，周五之前同步给销售团队，方便他们回复客户。' +
+      '测试同事建议把预发环境的配置和线上对齐一遍，顺便把监控告警的阈值调低，免得问题出现了半天才有人发现。' +
+      '运维那边提醒下个月机房要迁移，期间可能有短暂的网络抖动，最好提前通知重要客户并准备好回滚预案。'
+    out.recall = {
+      // 一个英文词（公司名）就够两分。
+      english: ids('给 Uclub 回封邮件'),
+      // 中文两字片段要凑满两个：「季度」「报表」。
+      chinese: ids('把季度报表发我'),
+      // 只撞上一个片段不够。
+      weak: ids('报表呢'),
+      // 功能词不算：「我们这个」凑不出分。
+      stop: ids('我们这个怎么弄'),
+      // 摆进系统提示词的那条（a：本人层最新）不再补捞。
+      shown: ids('本人层最新那条'),
+      // 过期的、类别没勾的，照样不捞。
+      expired: ids('过期了的那条'),
+      max: ids('Uclub 季度报表', 1),
+      off: ids('给 Uclub 回封邮件', 0),
+      memOff: recallMemories({ ...P, on: false }, pool, '给 Uclub 回封邮件', { max: 5, now: NOW }).length,
+      // 英文按整词比，不按子串：「app」不该撞上「happy」。
+      substring: recallMemories(P, [...pool, mem('他最近很 happy，换了新的 apple 手机', { id: 'h', updatedAt: 5 })], 'app 打不开', { now: NOW }).map((m) => m.id),
+      // 英文常见词不算分。
+      enStop: ids('please send the report for you and your team'),
+      // 长消息：一大段不相干的话，零零星星撞上几个片段，不该凑满两分就捞。
+      longNoise: ids(
+        LONG + '另外报表底下那几行数据也要再核对。',
+      ),
+      // 长消息里真提到了这条的要点（「季度报表」+ work/reports），照样捞。
+      longHit: ids(LONG + '季度报表放在 work/reports 那个目录。'),
+      // exclude 由调用方给时照它跳过（开轮那份快照挑好的「已经摆在眼前的」）。
+      excluded: recallMemories(P, pool, '给 Uclub 回封邮件', { now: NOW, exclude: new Set(['u']) }).map((m) => m.id),
+    }
+    /** 日志里那份补捞，重建时还作不作数。 */
+    const logged = [
+      { id: 'u', kind: '事实', text: 'Uclub 的发票抄送 enxi.liu@uclubgroup.com.sg' },
+      { id: 'r', kind: '事实', text: '季度报表在 work/reports 底下' },
+    ]
+    out.stillValid = {
+      same: recallStillValid(P, pool, logged, NOW).map((m) => m.id),
+      // 人删掉了 u。
+      deleted: recallStillValid(P, pool.filter((m) => m.id !== 'u'), logged, NOW).map((m) => m.id),
+      // 正文被改过了。
+      edited: recallStillValid(P, pool.map((m) => (m.id === 'r' ? { ...m, text: '季度报表挪到 work/q 底下' } : m)), logged, NOW).map((m) => m.id),
+      // 长期记忆关掉了。
+      off: recallStillValid({ ...P, on: false }, pool, logged, NOW).length,
+      // 范围收窄到「仅 Bot」，self 层的 u 读不到了。
+      narrowed: recallStillValid({ ...P, scope: '仅 Bot' }, pool, logged, NOW).map((m) => m.id),
+    }
+    const items = [{ kind: '事实', text: 'Uclub 的发票抄送 enxi.liu@uclubgroup.com.sg' }]
+    out.recallBlock = recallBlockOf(items)
+    out.recallEmpty = recallBlockOf([])
+    out.withRecall = {
+      str: withRecall('[时间]\n给 Uclub 回封邮件', items),
+      arr: withRecall([{ type: 'text', text: '[时间]' }, { type: 'text', text: '看图' }], items),
+      none: withRecall('原样', undefined),
+    }
   }
 
   out.block = memoryBlockOf({ ...POLICY, scope: '全公司' }, list, NOW)
@@ -314,7 +394,32 @@ out.removeCards = cards.map((c) => ({ type: c.type, action: c.data.action, text:
   out.phoneUnderConfirm = (await call('memory_write', { op: 'add', text: '他的号码是 13800138000', kind: '联系人' })).text
   out.phoneUnderConfirmMs = Date.now() - t0
 }
-policy = { ...policy, confirm: false }
+/** **「仅 Bot」下写 self 也要排在确认前面拒掉**，同上面那条、同样靠时间判。 */
+policy = { ...policy, scope: '仅 Bot' }
+{
+  const before = seen.posted.length
+  const t0 = Date.now()
+  out.selfUnderBotOnly = (await call('memory_write', { op: 'add', text: '他习惯用深色模式', kind: '偏好', layer: 'self' })).text
+  out.selfUnderBotOnlyMs = Date.now() - t0
+  out.selfUnderBotOnlyPosted = seen.posted.length - before
+}
+policy = { ...policy, scope: DEFAULT_MEMORY.scope, confirm: false }
+
+/**
+ * 「仅 Bot」时 memory_write 的参数表里不摆 `layer`，描述也不再说能写 self。
+ * 拿**真注册的那份** schema 去裁：描述里那一句要是改了措辞、替换落空，这里就红。
+ */
+{
+  const real = ctx.tools.schemas().find((t) => t.name === 'memory_write')
+  const botOnly = memoryWriteSchemaFor(real, '仅 Bot')
+  out.schema = {
+    botOnlyHasLayer: 'layer' in (botOnly.parameters.properties || {}),
+    botOnlyMentionsSelf: botOnly.description.includes('bot / self'),
+    realHasLayer: 'layer' in (real.parameters.properties || {}),
+    selfScopeSame: memoryWriteSchemaFor(real, '仅本人') === real,
+    otherToolSame: memoryWriteSchemaFor({ name: 'memory_list', description: 'x' }, '仅 Bot').description === 'x',
+  }
+}
 
 // 确认卡：正文和类别可改，层不可改。
 out.form = formOf({

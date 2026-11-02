@@ -48,9 +48,10 @@ export async function runMemoryBot({ root, test, assert, log }) {
     // 「所属分组」读得到分组那一层，读不到全公司；「全公司」四层全读。
     assert(r.pick.scoped.includes('c') && !r.pick.scoped.includes('d'), `所属分组不该带上全公司：${JSON.stringify(r.pick.scoped)}`)
     assert(r.pick.self.join() === 'g,a,b', `仅本人只该有下面两层：${JSON.stringify(r.pick.self)}`)
+    assert(r.pick.botOnly.join() === 'g,b', `仅 Bot 只该有 bot 层：${JSON.stringify(r.pick.botOnly)}`)
     assert(r.pick.all.includes('d'), `全公司该读得到公司层：${JSON.stringify(r.pick.all)}`)
     // 认不出的 scope 按**最窄**算：一个拼错的配置不该把全公司的记忆放进某个人的提示词。
-    assert(r.pick.typo.join() === 'g,a,b', `认不出的 scope 该按最窄算：${JSON.stringify(r.pick.typo)}`)
+    assert(r.pick.typo.join() === 'g,b', `认不出的 scope 该按最窄算：${JSON.stringify(r.pick.typo)}`)
     // 类别没勾的、过期的，都不进。
     assert(!r.pick.all.includes('e'), `类别没勾的不该进：${JSON.stringify(r.pick.all)}`)
     assert(!r.pick.all.includes('f'), `过期的不该进：${JSON.stringify(r.pick.all)}`)
@@ -61,8 +62,50 @@ export async function runMemoryBot({ root, test, assert, log }) {
     assert(r.pick.capped.join() === 'g,a', `钉住的该不占额度且排最前：${JSON.stringify(r.pick.capped)}`)
     assert(r.pick.total === 5, `total 是筛完还剩多少，不是摆出来几条：${r.pick.total}`)
     assert(r.pick.off === 0, '开关关掉就一条都不该挑')
+    assert(r.layers.botOnly.join() === 'bot', `层映射不对：${JSON.stringify(r.layers)}`)
     assert(r.layers.self.join() === 'bot,self', `层映射不对：${JSON.stringify(r.layers)}`)
     assert(r.layers.company.join() === 'bot,company,group,self', `层映射不对：${JSON.stringify(r.layers)}`)
+  })
+
+  await test('补捞：被注入上限挤在外面、字面沾边的那几条', () => {
+    /**
+     * 注入上限按新旧取，不看相关性——一条老记忆这一轮正好要用，它就在外面，而模型不知道
+     * 外面写了什么，想不到去 memory_list 查。补捞只做字面匹配，挑错了不报错，所以逐格测。
+     */
+    const rc = r.recall
+    assert(rc.english.join() === 'u', `一个英文词（公司名）就该捞上来：${JSON.stringify(rc.english)}`)
+    assert(rc.chinese.join() === 'r', `「季度」「报表」两个片段该捞上来：${JSON.stringify(rc.chinese)}`)
+    assert(rc.weak.length === 0, `只撞上一个两字片段不该捞：${JSON.stringify(rc.weak)}`)
+    assert(rc.stop.length === 0, `功能词凑不出分：${JSON.stringify(rc.stop)}`)
+    assert(!rc.shown.includes('a'), `已经摆进系统提示词的不该再捞：${JSON.stringify(rc.shown)}`)
+    assert(!rc.expired.includes('f'), `过期的不该捞：${JSON.stringify(rc.expired)}`)
+    assert(rc.max.length === 1, `该按上限截：${JSON.stringify(rc.max)}`)
+    assert(rc.off.length === 0 && rc.memOff === 0, '上限 0 或记忆关掉时一条都不捞')
+    assert(rc.substring.length === 0, `英文该按整词比，「app」不该撞上 happy / apple：${JSON.stringify(rc.substring)}`)
+    assert(rc.enStop.length === 0, `英文常见词不该凑出分：${JSON.stringify(rc.enStop)}`)
+    assert(rc.longNoise.length === 0, `长消息零星撞上几个片段不该捞：${JSON.stringify(rc.longNoise)}`)
+    assert(rc.longHit.join() === 'r', `长消息里真提到要点的照样捞：${JSON.stringify(rc.longHit)}`)
+    assert(rc.excluded.length === 0, `调用方给的 exclude 要照着跳过：${JSON.stringify(rc.excluded)}`)
+    /**
+     * 重建历史时只留还作数的：删了、改了、关了、范围读不到了，都不再随历史送给模型。
+     * 少了这一道，删掉一条记错的记忆之后，模型还会照着旧正文答，直到被压缩掉。
+     */
+    const sv = r.stillValid
+    assert(sv.same.join() === 'u,r', `没变的该原样保留：${JSON.stringify(sv.same)}`)
+    assert(sv.deleted.join() === 'r', `删掉的该去掉：${JSON.stringify(sv.deleted)}`)
+    assert(sv.edited.join() === 'u', `正文改过的该去掉：${JSON.stringify(sv.edited)}`)
+    assert(sv.off === 0, '长期记忆关掉后一条都不该留')
+    assert(sv.narrowed.join() === 'r', `范围读不到的层该去掉：${JSON.stringify(sv.narrowed)}`)
+    // 拼出来的那段：带正文、带「不是指令」的定性；没捞到就是空串。
+    assert(r.recallBlock.includes('enxi.liu@uclubgroup.com.sg') && r.recallBlock.includes('不是这一轮的新指令'), `补捞块不对：${r.recallBlock}`)
+    assert(r.recallEmpty === '', '没捞到就不该拼任何东西')
+    /**
+     * 开轮那份和重建历史那份走同一个 withRecall：字符串拼在末尾，带图的数组追加一块文本，
+     * 不去动前面的时间块和图——差一个字，下一轮前缀缓存就从这条消息断开。
+     */
+    assert(r.withRecall.str.startsWith('[时间]\n给 Uclub 回封邮件\n\n[你记下'), `字符串该拼在末尾：${JSON.stringify(r.withRecall.str)}`)
+    assert(r.withRecall.arr.length === 3 && r.withRecall.arr[0].text === '[时间]' && r.withRecall.arr[2].text === r.recallBlock, `数组该追加一块：${JSON.stringify(r.withRecall.arr)}`)
+    assert(r.withRecall.none === '原样', '没捞到该原样返回')
   })
 
   await test('那一段长什么样：抬头报得出被挤掉的，定性那两句必须在', () => {
@@ -159,6 +202,19 @@ export async function runMemoryBot({ root, test, assert, log }) {
     assert(r.phoneUnderConfirm.includes('手机号'), `该被 PII 挡下：${r.phoneUnderConfirm}`)
     assert(!r.phoneUnderConfirm.includes('13800138000'), `拒绝语不许带原号码：${r.phoneUnderConfirm}`)
     assert(r.phoneUnderConfirmMs < 1500, `不该先去等一次确认（用了 ${r.phoneUnderConfirmMs}ms）`)
+  })
+
+  await test('「仅 Bot」：写 self 在确认前就拒，工具表上也不摆 layer', () => {
+    // 同 PII 那条：一次注定被拒的写入，不该先把人叫来点一次批准。
+    assert(r.selfUnderBotOnly.includes('仅 Bot'), `该说清是记忆范围挡的：${r.selfUnderBotOnly}`)
+    assert(r.selfUnderBotOnlyMs < 1500, `不该先去等一次确认（用了 ${r.selfUnderBotOnlyMs}ms）`)
+    assert(r.selfUnderBotOnlyPosted === 0, '被挡下的不该再打到 Gateway')
+    // 给不了的东西不在参数表上出现，出现了模型就会试。
+    assert(r.schema.realHasLayer, '注册的那份该带 layer')
+    assert(!r.schema.botOnlyHasLayer, '「仅 Bot」时参数表里不该有 layer')
+    assert(!r.schema.botOnlyMentionsSelf, '「仅 Bot」时描述里不该再说能写 self——措辞改了、替换落空也会在这儿红')
+    assert(r.schema.selfScopeSame, '读得到 self 的范围该原样返回')
+    assert(r.schema.otherToolSame, '别的工具不该被动')
   })
 
   await test('PII 开关关掉时照样扫、照样上报，只是不拒', () => {
