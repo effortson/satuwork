@@ -29,7 +29,7 @@ const { Context } = await import('@deepseek-ai/cordis')
 const { cachedMemories, cachedMemoryOf } = await import('./src/catalog/index.ts')
 const { memoryOf, DEFAULT_MEMORY } = await import('./src/registry/index.ts')
 const { looksProcedural, matchMemories } = await import('./src/tools/memory.ts')
-const { memoryBlockOf, memoryLayersOf, memoryWriteSchemaFor, pickMemories, recallBlockOf, recallMemories } = await import('./src/agent/index.ts')
+const { memoryBlockOf, memoryLayersOf, memoryWriteSchemaFor, pickMemories, recallBlockOf, recallMemories, recallStillValid } = await import('./src/agent/index.ts')
 const { withRecall } = await import('./src/agent/history.ts')
 const { formOf } = await import('./src/policy/forms.ts')
 const { StorageService } = await import('./src/storage/index.ts')
@@ -119,7 +119,16 @@ out.procedural = {
       mem('Uclub 的发票抄送 enxi.liu@uclubgroup.com.sg', { id: 'u', layer: 'self', updatedAt: 10 }),
       mem('季度报表在 work/reports 底下', { id: 'r', layer: 'bot', updatedAt: 20 }),
     ]
-    const ids = (q, max) => recallMemories(P, pool, q, max, NOW).map((m) => m.id)
+    const ids = (q, max) => recallMemories(P, pool, q, { max, now: NOW }).map((m) => m.id)
+    /**
+     * 一段**真长**的话：片段是去重之后数的，同一句话重复几遍凑不出长度。这一段切出来
+     * 远超 120 个不同的片段，和底下两条记忆都没有关系。
+     */
+    const LONG =
+      '这周客户那边陆续反馈了不少问题，主要集中在登录偶尔失败、订单列表加载很慢、导出的文件打开乱码这三件事上。' +
+      '产品经理希望我们先给出排查思路，再评估修复所需的人手和时间，周五之前同步给销售团队，方便他们回复客户。' +
+      '测试同事建议把预发环境的配置和线上对齐一遍，顺便把监控告警的阈值调低，免得问题出现了半天才有人发现。' +
+      '运维那边提醒下个月机房要迁移，期间可能有短暂的网络抖动，最好提前通知重要客户并准备好回滚预案。'
     out.recall = {
       // 一个英文词（公司名）就够两分。
       english: ids('给 Uclub 回封邮件'),
@@ -135,7 +144,35 @@ out.procedural = {
       expired: ids('过期了的那条'),
       max: ids('Uclub 季度报表', 1),
       off: ids('给 Uclub 回封邮件', 0),
-      memOff: recallMemories({ ...P, on: false }, pool, '给 Uclub 回封邮件', 5, NOW).length,
+      memOff: recallMemories({ ...P, on: false }, pool, '给 Uclub 回封邮件', { max: 5, now: NOW }).length,
+      // 英文按整词比，不按子串：「app」不该撞上「happy」。
+      substring: recallMemories(P, [...pool, mem('他最近很 happy，换了新的 apple 手机', { id: 'h', updatedAt: 5 })], 'app 打不开', { now: NOW }).map((m) => m.id),
+      // 英文常见词不算分。
+      enStop: ids('please send the report for you and your team'),
+      // 长消息：一大段不相干的话，零零星星撞上几个片段，不该凑满两分就捞。
+      longNoise: ids(
+        LONG + '另外报表底下那几行数据也要再核对。',
+      ),
+      // 长消息里真提到了这条的要点（「季度报表」+ work/reports），照样捞。
+      longHit: ids(LONG + '季度报表放在 work/reports 那个目录。'),
+      // exclude 由调用方给时照它跳过（开轮那份快照挑好的「已经摆在眼前的」）。
+      excluded: recallMemories(P, pool, '给 Uclub 回封邮件', { now: NOW, exclude: new Set(['u']) }).map((m) => m.id),
+    }
+    /** 日志里那份补捞，重建时还作不作数。 */
+    const logged = [
+      { id: 'u', kind: '事实', text: 'Uclub 的发票抄送 enxi.liu@uclubgroup.com.sg' },
+      { id: 'r', kind: '事实', text: '季度报表在 work/reports 底下' },
+    ]
+    out.stillValid = {
+      same: recallStillValid(P, pool, logged, NOW).map((m) => m.id),
+      // 人删掉了 u。
+      deleted: recallStillValid(P, pool.filter((m) => m.id !== 'u'), logged, NOW).map((m) => m.id),
+      // 正文被改过了。
+      edited: recallStillValid(P, pool.map((m) => (m.id === 'r' ? { ...m, text: '季度报表挪到 work/q 底下' } : m)), logged, NOW).map((m) => m.id),
+      // 长期记忆关掉了。
+      off: recallStillValid({ ...P, on: false }, pool, logged, NOW).length,
+      // 范围收窄到「仅 Bot」，self 层的 u 读不到了。
+      narrowed: recallStillValid({ ...P, scope: '仅 Bot' }, pool, logged, NOW).map((m) => m.id),
     }
     const items = [{ kind: '事实', text: 'Uclub 的发票抄送 enxi.liu@uclubgroup.com.sg' }]
     out.recallBlock = recallBlockOf(items)

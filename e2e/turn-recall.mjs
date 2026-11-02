@@ -26,4 +26,16 @@ export async function runTurnRecall({ root, test, assert, log }) {
     assert(!r.next.user.includes('enxi.liu'), '沾不上边的一句不该补捞')
     assert(r.logged[0]?.[0]?.id === 'old' && r.logged[1] === null, `日志里的 recall 不对：${JSON.stringify(r.logged)}`)
   })
+
+  await test('人删掉那条记忆之后，旧消息上的补捞跟着去掉', () => {
+    // 不去掉的话，删掉一条记错的记忆，模型还会照着旧正文答，直到被压缩掉。
+    assert(r.afterDelete.includes('给 Uclub 回封邮件'), `那条旧消息该还在：${r.afterDelete}`)
+    assert(!r.afterDelete.includes('enxi.liu'), `删掉的记忆不该再随历史送进去：${r.afterDelete}`)
+  })
+
+  await test('跑到一半插进来的话也补捞，并落进日志', () => {
+    assert(r.steer.steered, '插话没够着正在跑的那一轮')
+    assert(r.steer.logged[0] === null, `开轮那句沾不上边，不该补：${JSON.stringify(r.steer.logged)}`)
+    assert(r.steer.logged[1]?.join() === 'old', `插的那句该补上 Uclub 那条：${JSON.stringify(r.steer.logged)}`)
+  })
 }

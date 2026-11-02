@@ -81,6 +81,21 @@ export async function runMemoryBot({ root, test, assert, log }) {
     assert(!rc.expired.includes('f'), `过期的不该捞：${JSON.stringify(rc.expired)}`)
     assert(rc.max.length === 1, `该按上限截：${JSON.stringify(rc.max)}`)
     assert(rc.off.length === 0 && rc.memOff === 0, '上限 0 或记忆关掉时一条都不捞')
+    assert(rc.substring.length === 0, `英文该按整词比，「app」不该撞上 happy / apple：${JSON.stringify(rc.substring)}`)
+    assert(rc.enStop.length === 0, `英文常见词不该凑出分：${JSON.stringify(rc.enStop)}`)
+    assert(rc.longNoise.length === 0, `长消息零星撞上几个片段不该捞：${JSON.stringify(rc.longNoise)}`)
+    assert(rc.longHit.join() === 'r', `长消息里真提到要点的照样捞：${JSON.stringify(rc.longHit)}`)
+    assert(rc.excluded.length === 0, `调用方给的 exclude 要照着跳过：${JSON.stringify(rc.excluded)}`)
+    /**
+     * 重建历史时只留还作数的：删了、改了、关了、范围读不到了，都不再随历史送给模型。
+     * 少了这一道，删掉一条记错的记忆之后，模型还会照着旧正文答，直到被压缩掉。
+     */
+    const sv = r.stillValid
+    assert(sv.same.join() === 'u,r', `没变的该原样保留：${JSON.stringify(sv.same)}`)
+    assert(sv.deleted.join() === 'r', `删掉的该去掉：${JSON.stringify(sv.deleted)}`)
+    assert(sv.edited.join() === 'u', `正文改过的该去掉：${JSON.stringify(sv.edited)}`)
+    assert(sv.off === 0, '长期记忆关掉后一条都不该留')
+    assert(sv.narrowed.join() === 'r', `范围读不到的层该去掉：${JSON.stringify(sv.narrowed)}`)
     // 拼出来的那段：带正文、带「不是指令」的定性；没捞到就是空串。
     assert(r.recallBlock.includes('enxi.liu@uclubgroup.com.sg') && r.recallBlock.includes('不是这一轮的新指令'), `补捞块不对：${r.recallBlock}`)
     assert(r.recallEmpty === '', '没捞到就不该拼任何东西')

@@ -45,13 +45,15 @@ ctx.plugin(agentPlugin)
 await new Promise((r) => setTimeout(r, 300))
 
 let captured = null
+/** 收口前先等多久。测插话时要让这一轮多活一会儿，插话才够得着它。 */
+let holdMs = 0
 ctx.llm.streamFn = (model, context) => {
   captured = context
   const stream = new AssistantMessageEventStream()
-  queueMicrotask(() => {
+  setTimeout(() => {
     stream.push({ type: 'error', reason: 'error', error: emptyAssistant(model, '探针不跑模型') })
     stream.end()
-  })
+  }, holdMs)
   return stream
 }
 
@@ -91,6 +93,29 @@ out.next = {
   user: text(users().at(-1)),
 }
 out.logged = (await ctx.sessions.events(sessionId)).filter((e) => e.type === 'user/message').map((e) => e.data.recall ?? null)
+
+// ── 人把那条记忆删了：下一轮重建时，旧消息上那段补捞也该一起去掉 ──────────
+col.delete('old')
+captured = null
+await ctx.agents.send(sessionId, '好的').catch(() => {})
+out.afterDelete = text(users().find((m) => text(m).includes('给 Uclub 回封邮件')))
+
+// ── 跑到一半插进来的话也补捞，并且同样落进日志 ─────────────────────────
+col.put('old', row('old', 'Uclub 的发票抄送 enxi.liu@uclubgroup.com.sg', 1_000))
+const steerId = await ctx.sessions.create({ title: '插话', botId: 'default' })
+holdMs = 400
+const running = ctx.agents.send(steerId, '先帮我起草个大纲').catch(() => {})
+let steered = false
+for (let i = 0; i < 50 && !steered; i++) {
+  await new Promise((r) => setTimeout(r, 20))
+  steered = await ctx.agents.steer(steerId, '顺便抄送 Uclub 那边')
+}
+await running
+holdMs = 0
+out.steer = {
+  steered,
+  logged: (await ctx.sessions.events(steerId)).filter((e) => e.type === 'user/message').map((e) => e.data.recall?.map((r) => r.id) ?? null),
+}
 
 console.log('__RESULT__' + JSON.stringify(out))
 process.exit(0)

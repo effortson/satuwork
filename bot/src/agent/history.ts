@@ -5,7 +5,9 @@ import { budgetToolText } from '../tools/result-budget.ts'
 import { withoutTaskTurns } from './task-turns.ts'
 import { humanTime } from '../time.ts'
 import { contextBoundary, summaryText } from './compaction.ts'
-import { recallBlockOf } from './skills-memory.ts'
+import { cachedMemories } from '../catalog/index.ts'
+import { memoryOf } from '../registry/index.ts'
+import { recallBlockOf, recallStillValid } from './skills-memory.ts'
 import { loadImage, MAX_LIVE_IMAGES, MAX_LIVE_TOOL_IMAGES, replayToolImages, seesImages, stale } from './images.ts'
 import { refFallback, refHead, safeParse, textFrom } from './text.ts'
 import { piUsage } from './tool-results.ts'
@@ -38,6 +40,7 @@ export async function toAgentMessages(
   // 这段时间的新对话」再压一次，所以后一条必然覆盖前一条；而 /new 打下的重置点更是
   // 明说了前面的不要了。压缩点还要换成一条摘要消息（见文件末尾那一段），重置点不换。
   const boundary = contextBoundary(events)
+  const keepRecall = recallKeeper(events, ctx)
   // 边界之前的事件不逐条回传，但**引用要能指到它们**：被压缩掉的那条回复，全文正是
   // 从这份全量里读出来的（见 refTextOf）。所以切之前留一份。
   const allEvents = events
@@ -202,7 +205,7 @@ export async function toAgentMessages(
               await userContentFor(e.data.message, ctx, (i) => liveImages.has(`${e.seq}:${i}`), allEvents),
               e.time,
             ),
-            e.data.recall,
+            keepRecall(e.data.recall),
           ),
           timestamp: e.time,
         } as AgentMessage,
@@ -506,6 +509,39 @@ export async function userContentFor(
  */
 export function stampUser(text: string, at: number): string {
   return `[${humanTime(at)}]\n${text}`
+}
+
+/**
+ * 日志里的补捞，重建时**只留还作数的**（见 skills-memory.ts 的 `recallStillValid`）：
+ * 人删掉的、改过的、长期记忆被关掉的，不再随历史送给模型。
+ *
+ * 策略按这条会话的 Bot 读（同 agent 的 botOf），缓存读这一刻的。没有 ctx 的调用（纯函数
+ * 探针）原样保留。
+ */
+function recallKeeper(
+  events: Awaited<ReturnType<Context['sessions']['events']>>,
+  ctx?: Context,
+): (items: { id: string; kind: string; text: string }[] | undefined) => { id: string; kind: string; text: string }[] {
+  if (!ctx) return (items) => items ?? []
+  if ((process.env.SATUWORK_MEMORY_TOOLS || 'auto').trim() === 'off') return () => []
+  let ready: { mem: ReturnType<typeof memoryOf> | null; all: ReturnType<typeof cachedMemories>; now: number } | null = null
+  return (items) => {
+    if (!items?.length) return []
+    // 用到才读：绝大多数消息没有补捞，不为它们碰一次存储。
+    if (!ready) {
+      const root = events.find((e) => e.type === 'session')
+      const data = root?.data as { botId?: string; agentId?: string } | undefined
+      const botId = data?.botId ?? data?.agentId
+      const bot = botId ? ctx.storage.collection<{ memory?: unknown }>('bots').get(botId) : undefined
+      ready = { mem: bot ? memoryOf(bot as Parameters<typeof memoryOf>[0]) : null, all: cachedMemories(ctx), now: Date.now() }
+    }
+    // 认不出 Bot（切掉了根事件的那段，比如压缩时的 older）：不按策略判，只认「还在、没改过」。
+    if (!ready.mem) {
+      const byId = new Map(ready.all.map((m) => [m.id, m.text]))
+      return items.filter((r) => byId.get(r.id) === r.text)
+    }
+    return recallStillValid(ready.mem, ready.all, items, ready.now)
+  }
 }
 
 /**
