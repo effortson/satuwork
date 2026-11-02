@@ -610,7 +610,7 @@ out.record = {
      * 模型要知道是人改的。不说的话，它看到执行出来的跟自己起草的不一样，就当成自己出了错，
      * 当场再调一次改回去（本地实测记忆确认就是这样，最后还跟用户报了改之前那一版）。
      */
-    模型知道人改过: String(editedResult?.text ?? '').includes('用户在确认时亲手改过「正文」') && String(editedResult?.text ?? '').includes('别再改回去'),
+    模型知道人改过: String(editedResult?.text ?? '').startsWith('【注意】用户在确认卡上亲手改了「正文」') && String(editedResult?.text ?? '').includes('别再改回去'),
     只读的收件人没被改: sent.recipient_email === 'a@b.c',
     表单外的键一概不收: !('../etc/passwd' in sent) && !('../etc/passwd' in (got.mcp_a_sw_run ?? {})),
     别的参数原样留着: sent.subject === '二季度报表' && sent.is_html === false,

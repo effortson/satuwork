@@ -933,14 +933,19 @@ async function askAndRecord(ctx: Context, call: ToolCall, bot: BotRecord | undef
  *
  * 不说的话，它看到执行出来的是另一个版本（「最后一个周五」），跟用户原话（「周四」）对不上，
  * 就当成自己出了错，当场再调一次改回去——本地实测就是这样，最后还跟用户说「已记住周四」。
- * 人改的那一版恰恰是最该算数的。只补在成功的结果后面：失败了说这句没有意义。
+ * 人改的那一版恰恰是最该算数的。只补在成功的结果上：失败了说这句没有意义。
+ *
+ * **摆在最前面，不摆在末尾。** 本地实测摆在末尾时，模型不再改回去了，可回给用户的话还是
+ * 照着原话说——末尾那句被它略过了。
  */
 function withHumanEdits(out: ToolResult, edited: string[]): ToolResult {
   if (out.failed) return out
   const fields = [...new Set(edited)].join('、')
   return {
     ...out,
-    text: `${out.text}\n\n（用户在确认时亲手改过「${fields}」，执行的是改过之后的版本——以它为准，别再改回去；跟用户确认时照这个版本说。）`,
+    text:
+      `【注意】用户在确认卡上亲手改了「${fields}」，实际执行的是改过之后的版本（见下面的结果），不是你提交的那一版。` +
+      `跟用户说的时候照实际执行的版本说，别再改回去。\n\n${out.text}`,
   }
 }
 
