@@ -117,6 +117,70 @@ test('todo/list 不进消息流，后一条盖前一条', () => {
   assert.deepEqual(f.todos, { items: [1, 2], seq: 2 })
 })
 
+const todo = (seq: number, status = 'in_progress', task = '写页面') => ev(seq, 'todo/list', { items: [{ id: '1', task, status }] })
+const plansOf = (f: ReturnType<typeof fold>) => f.blocks.flatMap(b => b.kind === 'assistant' && b.todoPlan ? [b.todoPlan] : [])
+
+test('任务清单只在对应轮次的助手回复中更新一张卡，完成后留在历史', () => {
+  const f = fold([ev(1, 'turn/start', { turn: 1 }), todo(2), todo(3, 'completed'),
+    ev(4, 'assistant/message', { turn: 1, message: am('完成了') }), ev(5, 'turn/end', { turn: 1, reason: 'completed' })])
+  const plans = plansOf(f)
+  assert.equal(plans.length, 1)
+  assert.equal(plans[0].seq, 2)
+  assert.equal(plans[0].state, 'done')
+  assert.equal(plans[0].items[0].status, 'completed')
+  assert.equal((f.blocks[0] as any).text, '完成了')
+})
+
+test('中止、错误和截断历史按真实运行状态结束，下一轮不能复活旧卡片', () => {
+  for (const reason of ['aborted', 'error', 'capped', 'completed']) {
+    const f = fold([ev(1, 'turn/start', { turn: 1 }), todo(2), ev(3, 'turn/end', { turn: 1, reason }),
+      ev(4, 'user/message', { message: um('在吗') }), ev(5, 'turn/start', { turn: 2 }),
+      ev(6, 'assistant/message', { message: am('在的'), turn: 2 })])
+    assert.equal(plansOf(f).length, 1)
+    assert.equal(plansOf(f)[0].state, reason === 'aborted' ? 'stopped' : reason === 'error' ? 'error' : 'ended')
+  }
+  const events = [ev(1, 'turn/start', { turn: 1 }), todo(2)]
+  assert.equal(plansOf(fold(events, false))[0].state, 'ended')
+  assert.equal(plansOf(fold(events, true))[0].state, 'running')
+  assert.equal(plansOf(fold([...events, ev(3, 'turn/start', { turn: 2 })]))[0].state, 'ended')
+})
+
+test('继续旧任务时新轮次有自己的卡，快照只补最后一轮读回的清单', () => {
+  const events = [ev(1, 'turn/start', { turn: 1 }), todo(2), ev(3, 'turn/end', { turn: 1, reason: 'aborted' }),
+    ev(4, 'user/message', { message: um('继续') }), ev(5, 'turn/start', { turn: 2 }),
+    ev(6, 'tool/call', { turn: 2, callId: 'read', name: 'todo', arguments: '{}' })]
+  const f = fold(events, true, false, { items: [{ id: '1', task: '恢复快照', status: 'pending' }], upto: 5 })
+  const plans = plansOf(f)
+  assert.equal(plans.length, 2)
+  assert.equal(plans[0].items[0].task, '写页面')
+  assert.equal(plans[0].state, 'stopped')
+  assert.equal(plans[1].items[0].task, '恢复快照')
+  assert.equal(plans[1].state, 'running')
+  const latest = fold([...events, todo(7, 'in_progress', '事件更新')], true, false,
+    { items: [{ id: '1', task: '旧快照', status: 'pending' }], upto: 5 })
+  assert.equal(plansOf(latest)[1].items[0].task, '事件更新')
+})
+
+test('普通聊天不带快照清单，写入前不拿旧清单占位，收口后恢复外层清单不改历史卡', () => {
+  const snapshot = { items: [{ id: '1', task: '外层清单', status: 'in_progress' }], upto: 10 }
+  const start = [ev(1, 'turn/start', { turn: 1 })]
+  assert.equal(plansOf(fold(start, true, false, snapshot)).length, 0)
+  assert.equal(plansOf(fold([...start, ev(2, 'tool/call', { name: 'todo', arguments: '{"todos":[]}' })], true, false, snapshot)).length, 0)
+  const f = fold([...start, todo(2, 'completed', '派活子任务'), ev(3, 'turn/end', { turn: 1, reason: 'completed' }),
+    todo(4, 'in_progress', '外层清单')], false, false, snapshot)
+  assert.equal(plansOf(f).length, 1)
+  assert.equal(plansOf(f)[0].items[0].task, '派活子任务')
+  assert.equal(plansOf(f)[0].state, 'done')
+})
+
+test('同一轮被插话隔开仍只更新原卡，清空会话后不保留旧卡', () => {
+  const events = [ev(1, 'turn/start', { turn: 1 }), todo(2),
+    ev(3, 'user/message', { message: um('补充一下') }), todo(4, 'completed')]
+  assert.equal(plansOf(fold(events)).length, 1)
+  assert.equal(plansOf(fold(events))[0].items[0].status, 'completed')
+  assert.equal(plansOf(fold([...events, ev(5, 'session/reset', { clear: true })])).length, 0)
+})
+
 test('上一轮没收口（只有 turn/start）之后派来的指令紧挨着开了自己的一轮：是派来的活，不是插话', () => {
   const task = { kind: 'plugin', plugin: 'task', form: 't9', phase: 'instruction', from: { id: 'main', name: '助手' } }
   const f = fold([

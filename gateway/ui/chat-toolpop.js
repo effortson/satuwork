@@ -1,8 +1,8 @@
-/** 工具痕迹的悬浮窗。原先在 chat.js 里，拆出来只是搬家（顺序见 index.html）。 */
+/** 工具调用详情的格式化，以及已结束确认的悬浮详情。 */
 /* ── 工具痕迹的悬浮窗 ────────────────────────────────────────────────────
  *
- * 药丸上只有「工具名 · 状态」，而人真正想知道的是**它拿什么参数跑的、跑出了什么**。
- * 失败的那几颗尤其——以前想知道为什么失败，只能去「导出 Markdown」里翻整段 JSON。
+ * 普通工具调用直接在回复里点击展开，参数 / 结果共用 toolPopBody 的格式化。
+ * 已结束的确认仍使用悬浮详情，保留当时批准或退回的内容。
  *
  * 浮层挂在 body 上，不放进气泡里：气泡有自己的圆角和 overflow，浮层长在里面会被裁掉
  * 一角；而且最后一条消息贴着输入框时，往上弹还是往下弹得按视口算，气泡内的坐标系
@@ -179,7 +179,16 @@ function hideToolPop(delay) {
  */
 function refreshToolPop() {
   if (!toolPop || toolPop.hidden) return
-  if (toolPopAnchor && document.contains(toolPopAnchor)) return
+  if (toolPopAnchor && document.contains(toolPopAnchor)) {
+    const html = toolPopBody(toolPopAnchor.__tool)
+    if (toolPop.innerHTML !== html) {
+      const top = toolPop.scrollTop
+      toolPop.innerHTML = html
+      toolPop.scrollTop = top
+      placeToolPop(toolPopAnchor)
+    }
+    return
+  }
   const list = toolPopHost ? toolPopHost.querySelectorAll('.sw-toolchip') : []
   const next = toolPopIndex >= 0 ? list[toolPopIndex] : null
   if (!next || !next.__tool) return hideToolPop(0)

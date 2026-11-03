@@ -253,7 +253,7 @@ function appView() {
     : 'grid-template-columns: minmax(0, 1fr);'
   return `
   <div class="gw-shell" data-drawer="${narrow && state.drawer ? 'open' : 'closed'}" style="height: 100vh; height: 100dvh; overflow: hidden; display: grid; grid-template-columns: ${rail ? '62px' : '248px'} 1fr; gap: var(--space-4); padding: var(--space-4); background: var(--color-bg); font-family: var(--font-body); color: var(--color-text); box-sizing: border-box;">
-    <aside class="gw-side${rail ? ' satu-rail' : ''}" ${narrow && !state.drawer ? 'inert' : ''} style="height: 100%; min-height: 0; overflow: hidden; box-sizing: border-box; display: flex; flex-direction: column; background: var(--color-surface); border-radius: var(--radius-md); padding: var(--space-4) var(--space-2) var(--space-2);">
+    <aside class="gw-side${rail ? ' satu-rail' : ''}" ${narrow && !state.drawer ? 'inert' : ''} style="height: 100%; min-height: 0; overflow: hidden; box-sizing: border-box; display: flex; flex-direction: column; border-radius: var(--radius-md); padding: var(--space-4) var(--space-2) var(--space-2);">
       <button type="button" class="satu-brand" data-act="go" data-href="/" style="display: flex; align-items: center; gap: var(--space-2); background: transparent; cursor: pointer; color: inherit;">
         <img src="/assets/satuwork-logo.png" alt="Satuwork" style="width: 32px; height: 32px; min-width: 32px; flex: none; object-fit: contain; border-radius: var(--radius-sm);">
         <span class="satu-brandtext" style="font-family: var(--font-heading); font-size: 19px;">Satuwork</span>

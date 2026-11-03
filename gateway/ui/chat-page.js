@@ -64,7 +64,7 @@ function chatHeadInline() {
           <button type="button" class="satu-menuitem" data-act="chat-export">${t('导出 Markdown')}</button>
         </div>`
       : ''
-  return `<div class="sw-convo-avatar" id="chat-avatar" data-bot="${bot ? '1' : '0'}" aria-hidden="true">${bot ? botAvatarOf(bot, 34, botIsWorking(bot)) : ICON_BOT}</div>
+  return `<div class="sw-convo-avatar" id="chat-avatar" data-bot="${bot ? '1' : '0'}" aria-hidden="true">${bot ? botAvatarOf(bot, 34) : ICON_BOT}</div>
     <div class="sw-convo-id">
       <div class="sw-convo-title">
         <span class="sw-convo-name">${esc(name)}</span>
@@ -126,11 +126,6 @@ function chatPage() {
           <button type="button" class="sw-jump" id="chat-jump" data-act="chat-jump" hidden>${ICON_DOWN}${t('回到底部')}</button>
         </div>
         <div class="sw-composer">
-          ${/* 待办 dock（见 docs/todo-tool.md）。摆在输入框**外面的顶上**，和排队那一行
-                同一个位置逻辑：它说的是「这件事现在做到哪儿了」，是发下一句之前顺带
-                知道的东西，不是消息流里的一条内容。默认折叠成一行——展开的清单会把
-                输入框顶掉半屏，而人多半只想知道「还剩几条」。 */ ''}
-          <div class="sw-todock" id="chat-todock" hidden></div>
           <div class="sw-queue" id="chat-queue" hidden></div>
           <form id="chat-form" class="sw-composer-box">
             <div class="sw-pickbox" id="chat-cmdpick" hidden></div>

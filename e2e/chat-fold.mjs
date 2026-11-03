@@ -562,65 +562,146 @@ export async function runChatFold({ root, test, assert, log }) {
     assert(q('/etc/hosts') === null, '路径不该弹选单')
   })
 
-  /**
-   * 待办 dock 的可见性（见 docs/todo-tool.md §5）。
-   *
-   * 钉的是「全部收口了的那张表，重新加载之后不再摆出来」——而它必须只拦那一下：盯着
-   * 看的时候最后一条打勾，那一帧还得画出「已完成」，否则人看不见事情收口了。这两句话
-   * 在真浏览器里要靠刷新页面才试得出来，而**分辨它们的唯一办法就是分两次 loadChat**。
-   */
-  const dockOf = () => {
-    const c = loadChat(root)
-    c.state.chatSessionId = 's1'
-    return c
-  }
-  const listEv = (seq, statuses) =>
-    ev(seq, 'todo/list', { callId: 'c1', items: statuses.map((st, i) => ({ id: String(i + 1), task: '事' + (i + 1), status: st })) })
+  // 清单属于对应轮次，历史卡片和当前输入区互不干扰。
+  const listEv = (seq, statuses) => ev(seq, 'todo/list', {
+    callId: 'c1', items: statuses.map((status, i) => ({ id: String(i + 1), task: '事' + (i + 1), status })),
+  })
+  const plansOf = folded => folded.blocks.filter(b => b.todoPlan).map(b => b.todoPlan)
 
-  await test('实时事件乱序：新建任务不会被后到的小 seq 丢掉', async () => {
-    const c = dockOf()
+  await test('乱序事件归位后，同轮清单只有一张卡，并留在自己的助手回复里', async () => {
+    const c = loadChat(root)
     const row = c.botStreamOf('b')
-    c.state.chatEvents = row.events
-    // 并发落盘时，后拿号的流式事件可能先广播；todo/list 随后才到。
-    assert(c.pushBotEvent('b', ev(12, 'assistant/chunk', { turn: 1, step: 1, chunk: '继续' })), '首条事件没进桶')
-    assert(c.pushBotEvent('b', listEv(11, ['in_progress', 'pending'])), '后到的 todo/list 被当成重复丢了')
-    assert(row.events.map((x) => x.seq).join(',') === '11,12', `事件桶没按 seq 归位：${row.events.map((x) => x.seq)}`)
-    c.paintChatTodos(c.fold(row.events))
-    assert(!c.todock.hidden && c.todock.innerHTML.includes('事2'), '新建的任务清单没有显示在聊天中')
+    c.pushBotEvent('b', ev(10, 'turn/start', { turn: 1 }))
+    c.pushBotEvent('b', ev(12, 'assistant/chunk', { turn: 1, chunk: { type: 'text-delta', text: '继续' } }))
+    c.pushBotEvent('b', listEv(11, ['in_progress', 'pending']))
+    const folded = c.fold(row.events)
+    const rows = c.threadRows(folded, 's1').filter(r => r.kind === 'msg')
+    assert(rows.filter(r => r.block.todoPlan).length === 1, '清单没有归到唯一的回复上')
+    assert(rows.find(r => r.block.todoPlan).block.text === '继续', '清单和本轮回复分离了')
     assert(!c.pushBotEvent('b', listEv(11, ['pending'])), '同 seq 重放没有去重')
   })
 
-  await test('重新加载：全部收口的清单不再占输入框上面那行', async () => {
-    const c = dockOf()
-    c.paintChatTodos(c.fold([listEv(4, ['completed', 'completed'])]))
-    assert(c.todock.hidden, 'dock 还摆着——它能说的只有一句「昨天那件事做完了」')
-    // cancelled 也是收口：做不成、不用做了的标它，不该拿这个把 dock 留在屏幕上。
-    const c2 = dockOf()
-    c2.paintChatTodos(c2.fold([listEv(4, ['completed', 'cancelled'])]))
-    assert(c2.todock.hidden, '全是 completed / cancelled 的表也该收起来')
+  await test('停止后的旧清单保留历史，下一句问候不会冒充正在执行', async () => {
+    const c = loadChat(root)
+    const folded = c.fold([
+      ev(1, 'turn/start', { turn: 1 }), listEv(2, ['in_progress', 'pending']),
+      ev(3, 'turn/end', { turn: 1, reason: 'aborted' }),
+      ev(4, 'user/message', { message: um('在吗'), source: { kind: 'user' } }),
+      ev(5, 'turn/start', { turn: 2 }), ev(6, 'assistant/message', { message: am('在的'), turn: 2 }),
+    ])
+    const plans = plansOf(folded)
+    assert(plans.length === 1 && plans[0].state === 'stopped', '旧卡片丢失或被下一轮改成运行中')
+    assert(c.todoPlanHeader(plans[0]).includes('已停止'), '历史清单没有说明任务已停止')
+    assert(!c.todoPlanHeader(plans[0]).includes('正在执行'), '终态卡片仍然显示正在执行')
+    assert(!c.todoPlanItems(plans[0]).includes('data-s="in_progress"'), '停止后仍高亮进行中条目')
+    assert(plans[0].items[0].status === 'in_progress', '展示层擅自修改了任务条目')
   })
 
-  await test('重新加载：还有没做完的照常摆出来', async () => {
-    const c = dockOf()
-    c.paintChatTodos(c.fold([listEv(4, ['completed', 'pending'])]))
-    assert(!c.todock.hidden && c.todock.innerHTML.includes('事2'), '还剩一条没做，dock 却收起来了')
+  await test('清单内容转义，已结束和出错使用真实轮次状态', async () => {
+    const c = loadChat(root)
+    for (const reason of ['completed', 'error', 'capped']) {
+      const plan = plansOf(c.fold([ev(1, 'turn/start', { turn: 1 }),
+        ev(2, 'todo/list', { items: [{ id: '1', task: '<img src=x onerror=alert(1)>', status: 'in_progress' }] }),
+        ev(3, 'turn/end', { turn: 1, reason }),
+      ]))[0]
+      assert(plan.state === (reason === 'error' ? 'error' : 'ended'), '没有按轮次结论收口')
+      assert(!c.todoPlanItems(plan).includes('<img'), '清单任务文字没有转义')
+    }
   })
 
-  await test('盯着看：最后一条打勾那一帧仍然画出「已完成」', async () => {
-    const c = dockOf()
-    c.paintChatTodos(c.fold([listEv(4, ['completed', 'in_progress'])]))
-    assert(!c.todock.hidden, '还在跑的时候 dock 就不见了')
-    c.paintChatTodos(c.fold([listEv(4, ['completed', 'in_progress']), listEv(5, ['completed', 'completed'])]))
-    assert(!c.todock.hidden, '最后一条打勾把 dock 抹掉了——人看不见事情收口了')
-    assert(c.todock.innerHTML.includes('已完成'), `徽标没换成「已完成」：${c.todock.innerHTML}`)
+  await test('流式更新保留同一张 details、展开状态和滚动位置，内容未变不重建', async () => {
+    const c = loadChat(root)
+    let card
+    const host = { querySelector: selector => selector === ':scope > .sw-todoplan' ? card || null : null,
+      insertBefore: node => { card = node } }
+    c.document.createElement = () => {
+      const attrs = new Map()
+      const summary = { innerHTML: '' }
+      const list = { scrollTop: 0, _html: '', writes: 0, set innerHTML(v) { this._html = v; this.writes++ } }
+      return { open: false, innerHTML: '', summary, list,
+        getAttribute: name => attrs.get(name), setAttribute: (name, value) => attrs.set(name, value),
+        querySelector: selector => selector === 'summary' ? summary : list,
+        remove: () => { card = null },
+      }
+    }
+    const first = { state: 'running', items: [{ id: '1', task: '事1', status: 'in_progress' }] }
+    c.updateTodoPlan(host, first)
+    const original = card
+    card.open = true
+    card.list.scrollTop = 80
+    const writes = card.list.writes
+    c.updateTodoPlan(host, first)
+    assert(card.list.writes === writes, '相同清单重复重建了列表')
+    c.updateTodoPlan(host, { ...first, state: 'stopped' })
+    assert(card === original && card.open && card.list.scrollTop === 80, '状态更新重置了展开或滚动位置')
+    assert(card.summary.innerHTML.includes('已停止'), '原卡片没有更新为已停止')
+    c.updateTodoPlan(host, { state: 'running', items: [] })
+    assert(card === null, '清空清单后仍留下空任务卡')
   })
 
-  await test('收起来之后清单一变，它自己回来', async () => {
-    const c = dockOf()
-    c.paintChatTodos(c.fold([listEv(4, ['completed', 'completed'])]))
-    assert(c.todock.hidden, '第一步就没收起来，后面这一条判不出东西')
-    // 模型接着又列了一张新表：指纹变了，和 × 关掉那一张之后的行为必须一模一样。
-    c.paintChatTodos(c.fold([listEv(4, ['completed', 'completed']), listEv(9, ['in_progress', 'pending'])]))
-    assert(!c.todock.hidden && c.todock.innerHTML.includes('事2'), '新列的一张表没能把 dock 带回来')
+  await test('工具调用点击展开参数和结果，标题展示任务概要', async () => {
+    const c = loadChat(root)
+    const todo = { callId: 'todo-1', name: 'todo', args: JSON.stringify({ todos: [
+      { task: '创建页面', status: 'completed' }, { task: '检查交互', status: 'in_progress' },
+    ] }), result: '进度已更新' }
+    const read = { callId: 'read-1', name: 'read_file', args: '{"path":"src/app.ts"}', result: '文件内容' }
+    const terminal = { callId: 'cmd-1', name: 'terminal', args: '{"command":"pnpm   test"}', result: null }
+    const html = c.toolFoldHtml([todo, read, terminal], [])
+    assert((html.match(/<details class="sw-tool-call"/g) || []).length === 3, '调用不是可点击展开的原生详情')
+    assert(!/<details[^>]*\sopen/.test(html), '工具详情应默认折叠')
+    for (const text of ['更新任务清单 · 检查交互', '读取文件 · src/app.ts', '执行命令 · pnpm test', '进度已更新', '文件内容']) {
+      assert(html.includes(text), `工具概要或详情缺失：${text}`)
+    }
+    assert(!html.includes('sw-toolchip'), '普通工具仍然使用依赖悬停的药丸')
   })
+
+  await test('工具标题和详情都转义，坏参数与超长输出不破坏展示', async () => {
+    const c = loadChat(root)
+    const bad = { name: 'read_file', args: '{"path":"<img src=x onerror=alert(1)>"}', result: '<script>alert(1)</script>', failed: true }
+    const html = c.chipHtml(bad, 0)
+    assert(!html.includes('<img') && !html.includes('<script>'), '工具参数或结果未转义')
+    assert(html.includes('data-state="error"') && html.includes('失败'), '失败调用没有标明状态')
+    assert(c.toolCommandOf({ name: 'custom', args: '{broken' }) === 'custom', '坏参数没有退回工具名')
+    assert(c.chipHtml({ name: 'terminal', args: '{}', result: 'x'.repeat(5000) }, 0).includes('完整内容见'), '输出截断没有说明')
+    assert(c.toolCommandOf({ name: 'todo', args: '{}' }) === '查看任务清单', '读清单概要不对')
+  })
+
+  await test('工具调用实时更新保留父子折叠节点、焦点目标和滚动位置', async () => {
+    const c = loadChat(root)
+    const make = () => {
+      const attrs = new Map()
+      const node = { className: '', children: [], parentNode: null, open: false, scrollTop: 0, innerHTML: '',
+        get firstChild() { return this.children[0] || null },
+        get nextSibling() { const a = this.parentNode?.children || []; return a[a.indexOf(this) + 1] || null },
+        getAttribute: name => attrs.get(name), setAttribute: (name, value) => attrs.set(name, String(value)),
+        insertBefore(child, before) { child.remove(); const i = before ? this.children.indexOf(before) : -1; this.children.splice(i < 0 ? this.children.length : i, 0, child); child.parentNode = this },
+        remove() { if (this.parentNode) { const a = this.parentNode.children; a.splice(a.indexOf(this), 1); this.parentNode = null } },
+        querySelector(selector) {
+          if (selector === ':scope > .sw-toolfold') return this.children.find(n => n.className === 'sw-toolfold') || null
+          if (selector.includes('summary')) return this.head ||= make()
+          if (selector === '.sw-toolfold-list') return this.list ||= make()
+          if (selector === '.sw-tool-call-body') return this.body ||= make()
+          return null
+        },
+      }
+      return node
+    }
+    c.document.createElement = make
+    const host = make()
+    const run = { callId: 'cmd', name: 'terminal', args: '{"command":"pnpm test"}', result: null }
+    c.updateToolFold(host, [run], [])
+    const fold = host.children[0]
+    const detail = fold.list.children[0]
+    const head = detail.head
+    fold.open = true
+    detail.open = true
+    detail.body.scrollTop = 60
+    fold.list.scrollTop = 30
+    c.updateToolFold(host, [{ ...run, result: 'tests passed' }, { callId: 'read', name: 'read_file', args: '{"path":"a.md"}', result: 'ok' }], [])
+    assert(host.children[0] === fold && fold.list.children[0] === detail && detail.head === head, '调用结束或追加工具重建了展开节点')
+    assert(fold.open && detail.open && detail.body.scrollTop === 60 && fold.list.scrollTop === 30, '展开状态或滚动位置丢失')
+    assert(detail.body.innerHTML.includes('tests passed'), '展开中的结果没有实时更新')
+    assert(detail.getAttribute('data-state') === 'done', '调用状态没有变成完成')
+  })
+
 }

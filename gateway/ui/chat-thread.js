@@ -7,7 +7,7 @@
    的输入框照旧能选字、能编辑。 */
 
 /** 长按菜单不接管的那些：交给系统的长按（复制链接、存图、选字、编辑）。 */
-const PRESS_NATIVE = 'a, img, pre, code, input, textarea, select, [contenteditable="true"], .sw-approvals, .sw-handoffs'
+const PRESS_NATIVE = 'a, img, pre, code, input, textarea, select, [contenteditable="true"], .sw-approvals, .sw-handoffs, .sw-todoplan, .sw-tool-call, .sw-toolfold-head'
 
 const LONGPRESS_MS = 480
 let pressTimer = null
@@ -153,28 +153,14 @@ function updateRow(el, b, streaming, since) {
       }
     }
   }
-  /**
-   * 头像会不会动。**这一行是「它还在干活」在屏幕上唯一常驻的信号。**
-   *
-   * 三点省略号只在**还没吐字**的那一段有（一开口就地变成正文），气泡下面的读秒是一行
-   * 小灰字。可一轮真正花时间的活（读十几个网页、跑几条命令）恰恰是**已经写了几段字、
-   * 后面还在接着跑**的那种——那时候屏幕上除了那个每秒 +1 的数字，没有任何东西在动，
-   * 人分不出「它还在跑」和「它答完了就这样」。头像按角色播放运行动作，停下后回到静态。
-   *
-   * 属性变了才写：updateRow 每帧都跑，无条件 setAttribute 会让 CSS 动画从头开始，
-   * 呼吸变成一顿一顿的抽搐。
-   */
-  const bot = chatBotOf()
-  const working = Boolean(streaming) && b.kind === 'assistant' && (!bot || botIsWorking(bot, true))
-  if (working !== (el.getAttribute('data-live') === '1')) {
-    if (working) el.setAttribute('data-live', '1')
-    else el.removeAttribute('data-live')
-  }
-  setBotAvatarRunning(el.querySelector(':scope > .sw-msg-avatar'), working)
+  // 正文头像保持静止；即使复用到此前运行中的消息节点，也清掉旧的闪烁 / 3D 状态。
+  el.removeAttribute('data-live')
+  setBotAvatarRunning(el.querySelector(':scope > .sw-msg-avatar'), false)
 
   const bubble = el.querySelector('.sw-bubble')
   const md = bubble.querySelector('.sw-md')
   const chips = bubble.querySelector('.sw-chips')
+  if (b.kind === 'assistant') updateTodoPlan(bubble, b.todoPlan)
 
   // 用户发的图：缩略图排在正文上面，点开走预览。没有这一段，人发完图只看得见
   // 自己那句话，图像是发进了黑洞。
@@ -369,48 +355,23 @@ function updateRow(el, b, streaming, since) {
   const reads = wasRead.filter((f) => !outPaths.has(f.path) && !linked.has(f.path))
   const shownReads = reads.slice(0, MAX_READ_CHIPS)
   const moreReads = reads.length - shownReads.length
-  const sig =
-    tools.map((x) => x.name + (x.result == null ? '·' : x.failed ? '!' : '=')).join('|') +
-    '#' +
-    shownOuts.map((f) => f.path).join('|') +
-    '+' +
-    moreOuts +
-    '#' +
-    shownReads.map((f) => f.path).join('|') +
-    '+' +
-    moreReads +
-    '#' +
-    settled.map((a) => a.callId + ':' + approvalState(a)).join('|')
-  if (chips.getAttribute('data-sig') !== sig) {
-    chips.setAttribute('data-sig', sig)
-    // 重画会把折叠框换掉：人点开了就保持开着——「调用中 → 完成」那一下正是他在看的时候。
-    const wasOpen = Boolean(chips.querySelector('.sw-toolfold')?.open)
-    chips.innerHTML =
-      (tools.length || settled.length ? toolFoldHtml(tools, settled) : '') +
-      shownOuts.map(fileChipHtml).join('') +
-      (moreOuts > 0 ? outMoreHtml(moreOuts) : '') +
-      shownReads.map(readChipHtml).join('') +
-      (moreReads > 0 ? readMoreHtml(moreReads) : '')
-    const fold = chips.querySelector('.sw-toolfold')
-    if (fold && wasOpen) fold.open = true
-    chips.hidden = !tools.length && !rest.length && !shownReads.length && !settled.length
-    /**
-     * 工具对象直接挂到节点上，悬浮窗按需取。
-     *
-     * **选择器要把确认那几颗排除掉**：它们也叫 sw-toolchip（为的是复用悬浮窗那一整套
-     * 触发、定位、重接），混进来的话下标就错位了，鼠标停在一颗工具药丸上会弹出另一次
-     * 调用的参数。产出文件那几颗是 sw-filechip，本来就不在这个选择器里。
-     */
-    const nodes = chips.querySelectorAll('.sw-toolchip:not(.sw-approvalchip)')
-    for (let i = 0; i < nodes.length; i++) nodes[i].__tool = tools[i]
-    // data-i 是「在这个容器的 .sw-toolchip 列表里排第几」，所以确认那几颗接在工具后面
-    // 数（见 approvalChipHtml 的调用处）——refreshToolPop 靠它把浮层接回新节点。
-    const apNodes = chips.querySelectorAll('.sw-approvalchip')
-    for (let i = 0; i < apNodes.length; i++) apNodes[i].__tool = approvalPop(settled[i])
-    // 这一批节点刚被换掉。开着的悬浮窗要么跟着换到新节点上，要么关掉——
-    // 「调用中 → 完成」正好是人盯着它看的那一刻，不该在那时候闪没。
-    refreshToolPop()
+  // 文件药丸单独更新，工具节点由 callId 对齐；结果到达时不再重建整个 chips 容器。
+  const sig = shownOuts.map(f => f.path).join('|') + '+' + moreOuts + '#' +
+    shownReads.map(f => f.path).join('|') + '+' + moreReads
+  let filesBox = chips.querySelector(':scope > .sw-tool-files')
+  if (!filesBox) {
+    filesBox = document.createElement('span')
+    filesBox.className = 'sw-tool-files'
+    chips.appendChild(filesBox)
   }
+  if (filesBox.getAttribute('data-sig') !== sig) {
+    filesBox.setAttribute('data-sig', sig)
+    filesBox.innerHTML = shownOuts.map(fileChipHtml).join('') +
+      (moreOuts > 0 ? outMoreHtml(moreOuts) : '') + shownReads.map(readChipHtml).join('') +
+      (moreReads > 0 ? readMoreHtml(moreReads) : '')
+  }
+  updateToolFold(chips, tools, settled)
+  chips.hidden = !tools.length && !rest.length && !shownReads.length && !settled.length
 
   /**
    * 高风险确认卡。摆在工具药丸**底下**——它说的就是那颗还在转的药丸在等什么。
@@ -1094,7 +1055,7 @@ function paintChat() {
     : state.chatReplaying
       ? false
       : undefined
-  const folded = mergePending(fold(state.chatEvents, live, currentBotHasChannelLabels()), state.chatSessionId)
+  const folded = mergePending(fold(state.chatEvents, live, currentBotHasChannelLabels(), chatTodoSnap.get(state.chatSessionId)), state.chatSessionId)
   state.chatStatus = folded.status
   if (!thread) {
     if (chatScroll && chatScroll.observer) chatScroll.observer.disconnect()

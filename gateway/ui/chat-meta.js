@@ -98,7 +98,8 @@ function tickStop() {
 /** 抬头的在线灯、输入区的提示和中止按钮——都不重绘整页，就地改。 */
 function paintChatChrome(folded) {
   const busy = Boolean(folded.status)
-  setBotAvatarRunning(document.getElementById('chat-avatar'), botIsWorking(chatBotOf(), busy))
+  // 运行状态由文字和在线灯表达；头像动效只出现在侧边栏。
+  setBotAvatarRunning(document.getElementById('chat-avatar'), false)
   // 真停下来了（turn/end 到了，status 空了）就把「正在停止」那一格收掉。**只认这一
   // 条会话**：切到别的 Bot 时那边本来就不忙，不该顺手把这边还没停完的状态抹掉。
   if (!busy && state.chatStopping && state.chatStopping === state.chatSessionId) clearStopping()
@@ -111,7 +112,6 @@ function paintChatChrome(folded) {
   }
   const meta = document.getElementById('chat-meta')
   if (meta) meta.textContent = chatMetaText(folded)
-  paintChatTodos(folded)
   paintChatTip(busy)
   paintSendFace(busy)
   /**

@@ -30,7 +30,7 @@ export type { CommandLike, ParsedCommand } from './chat/commands.ts'
 export { PREVIEW_TEXT_EXT, PREVIEW_DOC_EXT, PREVIEW_WEB_KIND, extOf, previewKindOf } from './chat/preview.ts'
 export type { PreviewKind } from './chat/preview.ts'
 export { CHAT_RETRY_MAX, CHAT_ALIVE_MS, CHAT_IDLE_RETRY_MS, ROSTER_BACKOFF, chatRetryDelay, rosterRetryDelay, aliveLongEnough, classifyStreamStatus } from './chat/backoff.ts'
-export type { SessionEvent, Message, MessageBlock, Mention, Ref, ToolCall, Block, UserBlock, AssistantBlock, MarkBlock, Folded, RosterSum, PendingMessage, ChatPage } from './protocol/events.ts'
+export type { SessionEvent, Message, MessageBlock, Mention, Ref, ToolCall, Block, UserBlock, AssistantBlock, TodoPlan, MarkBlock, Folded, RosterSum, PendingMessage, ChatPage } from './protocol/events.ts'
 
 // ── Markdown（文本 → HTML 字符串；DOM 那一半留在 gateway/ui/markdown.js） ──
 export { createMarkdown } from './markdown/render.ts'

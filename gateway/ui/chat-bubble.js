@@ -71,12 +71,6 @@ function chatBotOf() {
 }
 
 /**
- * 一条工具痕迹。
- *
- * 只露名字和状态，**不展开结果**：工具结果动辄几千字（一次文件读、一次搜索），摊在
- * 对话里会把真正的回答挤到屏幕外。要看细节去右栏的运行环境。
- */
-/**
  * 这条消息里 Bot 落地的文件，按路径去重。
  *
  * 同一个文件被 edit 三次只该出现一次——人关心的是「产出了什么」，不是「被碰了几下」。
@@ -252,84 +246,145 @@ function fileChipHtml(f) {
   )
 }
 
-/**
- * 一条工具痕迹。
- *
- * **不再挂 title**：原生 tooltip 要等一秒才出、只能显示一行纯文本，而且会和下面那个
- * 悬浮窗同时冒出来。详情改由 sw-toolpop 给——参数和结果都在里面，那两样才是「它刚才
- * 到底干了什么」的答案，尤其是失败的那几颗，以前只能去导出的记录里翻。
- *
- * 详情**不塞进 data-***：一次 bash 的参数加输出动辄几 KB，进属性要转义、要整份重复
- * 写进 DOM，而 chips 每次状态变化都重画一遍。改成 updateRow 把工具对象直接挂在节点上。
- */
+/** 工具调用的短概要，只使用明确的参数，不从输出猜测任务。 */
+function toolCommandOf(x) {
+  let args = {}
+  try {
+    const parsed = typeof x.args === 'string' ? JSON.parse(x.args) : x.args
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) args = parsed
+  } catch {}
+  const text = value => typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : ''
+  const detail = text(args.command || args.cmd || args.path || args.file_path || args.query || args.pattern || args.url || args.task || args.description)
+  let action = String(x.name || '')
+  let subject = detail
+  if (x.name === 'todo') {
+    let rows = args.todos
+    if (typeof rows === 'string') { try { rows = JSON.parse(rows) } catch {} }
+    if (Array.isArray(rows)) {
+      action = args.merge ? t('更新任务进度', 'Update task progress') : t('更新任务清单', 'Update task list')
+      const now = rows.find(i => i?.status === 'in_progress' || i?.status === 'doing')
+      subject = text(now?.task || now?.content) || t(`${rows.length} 项`, `${rows.length} items`)
+    } else action = t('查看任务清单', 'Read task list')
+  } else if (x.name === 'terminal' || x.name === 'bash') action = t('执行命令', 'Run command')
+  else if (x.name === 'read_file' || x.name === 'read') action = t('读取文件', 'Read file')
+  else if (x.name === 'write_file' || x.name === 'write') action = t('写入文件', 'Write file')
+  else if (x.name === 'patch' || x.name === 'edit' || x.name === 'apply_patch') action = t('修改文件', 'Edit file')
+  else if (x.name === 'search_files') action = args.target === 'files' ? t('查找文件', 'Find files') : t('搜索文件内容', 'Search file content')
+  else if (x.name === 'web_search') action = t('搜索网页', 'Search the web')
+  else if (x.name === 'web_extract') action = t('读取网页', 'Read webpage')
+  const summary = subject ? `${action} · ${subject}` : action
+  return summary.length > 120 ? summary.slice(0, 120) + '…' : summary
+}
+
+function toolCallHead(x) {
+  const label = x.result == null ? t('调用中') : x.failed ? t('失败') : t('完成')
+  const title = toolCommandOf(x)
+  return `${ICON_TOOL}<span class="sw-tool-call-title" title="${esc(title)}">${esc(title)}</span>` +
+    `<span class="sw-tool-call-state">${esc(label)}</span>`
+}
+
+/** 每条调用原生点击展开；详情沿用同一份参数 / 结果格式化与截断规则。 */
 function chipHtml(x, i) {
   const state_ = x.result == null ? 'running' : x.failed ? 'error' : 'done'
-  const label = x.result == null ? t('调用中') : x.failed ? t('失败') : t('完成')
-  return `<span class="sw-chip sw-toolchip" data-state="${state_}" data-i="${i}" tabindex="0">${ICON_TOOL}<span>${esc(x.name)} · ${esc(label)}</span></span>`
+  return `<details class="sw-tool-call" data-state="${state_}" data-tool-key="${esc((x.callId ? 'tool:id:' + x.callId : 'tool:index:' + i))}">` +
+    `<summary class="sw-tool-call-head">${toolCallHead(x)}</summary>` +
+    `<div class="sw-tool-call-body">${toolPopBody(x)}</div></details>`
 }
 
-/**
- * 工具折叠框摊开时最多几行，多了就在框里滚（高度见 chat.css 的 .sw-toolfold-list）。
- * 改这个数要连那边的 max-height 一起改——两边写的是同一件事。
- */
 const TOOLFOLD_ROWS = 5
 
-/**
- * 一次调用在标题里怎么称呼：工具名，带命令的（terminal 这种）再接上那条命令。
- *
- * 「正在执行什么」里人要的是**那条命令**，不是 `terminal` 这个名字——一轮里十几次都叫
- * terminal，只看名字分不出是在装依赖还是在删文件。args 是模型给的 JSON 串，解不开就
- * 只报名字，不猜。
- */
-function toolCommandOf(x) {
-  let cmd = ''
-  try {
-    const o = typeof x.args === 'string' ? JSON.parse(x.args) : x.args
-    if (o && typeof o === 'object') cmd = String(o.command || o.cmd || '').trim()
-  } catch {}
-  cmd = cmd.replace(/\s+/g, ' ')
-  if (cmd.length > 80) cmd = cmd.slice(0, 80) + '…'
-  return cmd ? `${x.name} · ${cmd}` : String(x.name || '')
-}
-
-/**
- * 工具痕迹收进一个折叠框：**默认收着，标题上说正在执行什么。**
- *
- * 一轮十几次调用摊成一排药丸，会把正文下面那几颗真正要点的东西（产出的文件、读过的
- * 文件）挤到好几行之后；可「它现在在干什么」又是人盯着看的那一句，不能跟着一起藏。
- * 所以标题就是那一句：有还在跑的就写「正在执行 <最后一个在跑的>」，都跑完了写一共
- * 几次、失败几次、最后一次是什么。展开之后是原来那些药丸，一行一颗，悬浮详情照旧；
- * 超过 TOOLFOLD_ROWS 行在框里滚，不把气泡撑长。
- *
- * 已有结论的确认药丸也收在里面：它们和工具痕迹是同一类东西（这一轮路上发生过什么），
- * 还等着人点的那几张确认卡不进来，照旧摊在下面。
- */
-function toolFoldHtml(tools, settled) {
-  const running = [...tools].reverse().find((x) => x.result == null)
-  const failed = tools.filter((x) => x.result != null && x.failed).length
-  const n = tools.length + settled.length
-  let state_ = 'done'
+function toolFoldMeta(tools, settled) {
+  const running = [...tools].reverse().find(x => x.result == null)
+  const failed = tools.filter(x => x.result != null && x.failed).length
+  let state_ = running ? 'running' : failed ? 'error' : 'done'
   let title
-  if (running) {
-    state_ = 'running'
-    title = t('正在执行', 'Running') + ' ' + toolCommandOf(running)
-  } else {
-    if (failed) state_ = 'error'
-    const last = tools[tools.length - 1]
+  if (running) title = t('正在执行', 'Running') + ' ' + toolCommandOf(running)
+  else {
     title = t(`${tools.length} 次工具调用`, `${tools.length} tool calls`)
     if (failed) title += ' · ' + t(`${failed} 次失败`, `${failed} failed`)
-    if (last) title += ' · ' + t('最后一次', 'last') + ' ' + toolCommandOf(last)
-    if (!tools.length) title = t(`${settled.length} 次确认`, `${settled.length} approvals`)
+    if (tools.length) title += ' · ' + toolCommandOf(tools[tools.length - 1])
+    else title = t(`${settled.length} 次确认`, `${settled.length} approvals`)
   }
-  return (
-    `<details class="sw-toolfold" data-state="${state_}">` +
-    `<summary class="sw-toolfold-head" title="${esc(title)}">${ICON_TOOL}<span class="sw-toolfold-title">${esc(title)}</span>` +
-    `<span class="sw-toolfold-n">${n}</span></summary>` +
-    `<div class="sw-toolfold-list" data-rows="${TOOLFOLD_ROWS}">` +
-    tools.map(chipHtml).join('') +
-    settled.map((a, i) => approvalChipHtml(a, tools.length + i)).join('') +
-    `</div></details>`
-  )
+  return { state: state_, title, count: tools.length + settled.length }
+}
+
+function toolFoldHead(view) {
+  return `${ICON_TOOL}<span class="sw-toolfold-title" title="${esc(view.title)}">${esc(view.title)}</span>` +
+    `<span class="sw-toolfold-n">${view.count}</span>`
+}
+
+/** 静态渲染与实时更新共用相同的标题和详情。 */
+function toolFoldHtml(tools, settled) {
+  const view = toolFoldMeta(tools, settled)
+  return `<details class="sw-toolfold" data-state="${view.state}"><summary class="sw-toolfold-head">${toolFoldHead(view)}</summary>` +
+    `<div class="sw-toolfold-list" data-rows="${TOOLFOLD_ROWS}">${tools.map(chipHtml).join('')}` +
+    settled.map((a, i) => approvalChipHtml(a, i)).join('') + '</div></details>'
+}
+
+/** 按 callId 更新原节点，流式结果、追加调用和文件产出都不重置展开状态与焦点。 */
+function updateToolFold(host, tools, settled) {
+  let box = host.querySelector(':scope > .sw-toolfold')
+  if (!tools.length && !settled.length) { if (box) box.remove(); return }
+  if (!box) {
+    box = document.createElement('details')
+    box.className = 'sw-toolfold'
+    box.innerHTML = `<summary class="sw-toolfold-head"></summary><div class="sw-toolfold-list" data-rows="${TOOLFOLD_ROWS}"></div>`
+    host.insertBefore(box, host.firstChild)
+  }
+  const view = toolFoldMeta(tools, settled)
+  box.setAttribute('data-state', view.state)
+  const headSig = view.title + ':' + view.count
+  if (box.getAttribute('data-head-sig') !== headSig) {
+    box.querySelector(':scope > summary').innerHTML = toolFoldHead(view)
+    box.setAttribute('data-head-sig', headSig)
+  }
+  const list = box.querySelector('.sw-toolfold-list')
+  const byKey = new Map([...list.children].map(node => [node.getAttribute('data-tool-key'), node]))
+  let prev = null
+  const entries = tools.map((tool, i) => ({ key: (tool.callId ? 'tool:id:' + tool.callId : 'tool:index:' + i), tool, i }))
+    .concat(settled.map((approval, i) => ({ key: (approval.callId ? 'approval:id:' + approval.callId : 'approval:index:' + i), approval, i })))
+  for (const entry of entries) {
+    let node = byKey.get(entry.key)
+    byKey.delete(entry.key)
+    if (entry.tool) {
+      const x = entry.tool
+      if (!node) {
+        node = document.createElement('details')
+        node.className = 'sw-tool-call'
+        node.innerHTML = '<summary class="sw-tool-call-head"></summary><div class="sw-tool-call-body"></div>'
+      }
+      const fields = [x.name, x.args, x.result, x.failed]
+      if (!node.__fields || fields.some((value, i) => value !== node.__fields[i])) {
+        node.setAttribute('data-state', x.result == null ? 'running' : x.failed ? 'error' : 'done')
+        node.querySelector('summary').innerHTML = toolCallHead(x)
+        const body = node.querySelector('.sw-tool-call-body')
+        const top = body.scrollTop
+        body.innerHTML = toolPopBody(x)
+        body.scrollTop = top
+        node.__fields = fields
+      }
+    } else {
+      const a = entry.approval
+      const html = approvalChipHtml(a, entry.i)
+      if (!node) node = document.createElement('span')
+      if (node.__html !== html) {
+        const holder = document.createElement('div')
+        holder.innerHTML = html
+        const fresh = holder.firstElementChild
+        node.className = fresh.className
+        node.innerHTML = fresh.innerHTML
+        for (const attr of fresh.attributes) node.setAttribute(attr.name, attr.value)
+        node.__html = html
+      }
+      node.__tool = approvalPop(a)
+    }
+    node.setAttribute('data-tool-key', entry.key)
+    const want = prev ? prev.nextSibling : list.firstChild
+    if (node !== want) list.insertBefore(node, want)
+    prev = node
+  }
+  for (const node of byKey.values()) node.remove()
+  refreshToolPop()
 }
 
 /**

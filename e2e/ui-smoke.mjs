@@ -3068,22 +3068,22 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       let html = ui.toolFoldHtml([ok, run], [])
       assert(html.startsWith('<details class="sw-toolfold"') && !/<details[^>]*\sopen/.test(html), '该是默认收着的 <details>')
       assert(html.includes('data-state="running"'), '有还在跑的调用时整框该标 running')
-      assert(html.includes('正在执行 terminal · pnpm install --frozen-lockfile'), `标题该是正在执行的那条命令：${html.slice(0, 400)}`)
-      assert((html.match(/sw-toolchip/g) || []).length === 2, '展开后该是原来那两颗药丸')
+      assert(html.includes('正在执行 执行命令 · pnpm install --frozen-lockfile'), `标题该是正在执行的那条命令：${html.slice(0, 400)}`)
+      assert((html.match(/<details class="sw-tool-call"/g) || []).length === 2, '每次调用都应可以点击展开')
 
       html = ui.toolFoldHtml([ok, bad, ok], [])
       assert(html.includes('data-state="error"'), '跑完有失败时整框该标 error')
-      assert(html.includes('3 次工具调用') && html.includes('1 次失败') && html.includes('最后一次 mcp_google_d_default_create_folder_7ca6'), `跑完的标题不对：${html.slice(0, 400)}`)
+      assert(html.includes('3 次工具调用') && html.includes('1 次失败') && html.includes('mcp_google_d_default_create_folder_7ca6'), `跑完的标题不对：${html.slice(0, 400)}`)
 
-      // 已有结论的确认也收在框里，接在工具后面数（data-i，悬浮窗靠它接回节点）
+      // 确认仍使用悬浮详情，下标只计算确认药丸；工具调用已有独立的点击详情。
       const settled = [{ callId: 'c1', tool: 'mcp_x', state: 'approved', args: '{}' }]
       html = ui.toolFoldHtml([ok], settled)
-      assert(html.includes('sw-approvalchip') && html.includes('data-i="1"'), '确认药丸该收进框里、下标接在工具后面')
+      assert(html.includes('sw-approvalchip') && html.includes('data-i="0"'), '确认药丸下标应从自身列表起算')
 
       // 「最多 5 行」写在两处：JS 的 TOOLFOLD_ROWS 和 CSS 的 max-height。钉住它们说的是同一个数。
       assert(ui.TOOLFOLD_ROWS === 5 && html.includes('data-rows="5"'), 'TOOLFOLD_ROWS 该是 5')
       const css = readFileSync(join(root, 'gateway/ui/chat.css'), 'utf8')
-      const m = /\.sw-toolfold-list \{[^}]*max-height: calc\((\d+) \* 24px \+ (\d+) \* 4px/.exec(css)
+      const m = /\.sw-toolfold-list \{[^}]*max-height: calc\((\d+) \* 28px \+ (\d+) \* 4px/.exec(css)
       assert(m && Number(m[1]) === 5 && Number(m[2]) === 4, `chat.css 的 max-height 和 TOOLFOLD_ROWS 对不上：${m && m[0]}`)
       assert(/\.sw-toolfold-list \{[^}]*overflow-y: auto/.test(css), '超过 5 行该在框里滚')
     })
@@ -3235,7 +3235,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(ui.state.runtimeBots.some((b) => b.id === made.json.bot.id), '刚建的 Bot 不在名单里')
       const html = ui.html()
       assert(html.includes('satu-botrow'), '名单取回来了却没画进侧栏')
-      assert(html.includes('satu-botdot'), '状态点没画')
+      assert(!html.includes('satu-botdot'), '名单不应显示名称前的状态圆点')
     })
 
     await test('对话内查找：顶栏有入口、消息流上有查找条，命中按消息合并、新的在前', async () => {

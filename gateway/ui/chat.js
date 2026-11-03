@@ -415,8 +415,8 @@ function splitUploads(text) {
  * 空壳工具、压缩落在轮中间、/clear……每一条都有线上事故在后面）。改它去那边，改完重打 core.js，
  * e2e 的 chat-fold.mjs 和 ui-smoke 仍经这里喂它。
  */
-function fold(events, live, channelBot = false) {
-  return SatuCore.fold(events, live, channelBot)
+function fold(events, live, channelBot = false, todoSnapshot) {
+  return SatuCore.fold(events, live, channelBot, todoSnapshot)
 }
 
 /** 只有绑定了 Telegram 渠道的 Bot 才显示 Web / Telegram 来源角标。 */
@@ -797,29 +797,13 @@ function handoffDead(h) {
   return Boolean(h.seq && h.seq <= snap.upto && !snap.ids.has(h.id))
 }
 
-/**
- * sessionId → 这条会话待办清单的一张快照（`{ items, upto }`）。
- *
- * **按会话存，不是一个槽。** 单槽的话，A → B → A 这么切一圈，槽里留的是 B 那一份，
- * 而 `chatTodoItems` 认不出会话就只好退回「只看事件」——那时 dock 会在一张真有未完成
- * 清单的会话上**静静地空掉**，正好是这一跳本来要解决的那件事（确认卡和交接单也是
- * 单槽，但它们认不出时退化成「当它还活着」，方向是安全的；这里的退化方向不是）。
- */
+/** 按会话保存最新清单快照；只补当前轮次明确读回的任务卡，不改更早的历史。 */
 const chatTodoSnap = new Map()
 
 /**
- * 拉一次这条会话现在的待办清单。
- *
- * **事件不够。** dock 平时靠 `todo/list` 事件跟着动，可流上只垫最近一轮
- * （STREAM_TAIL_TURNS）——一张三天前列出来、还没做完的表根本不在里面，而那正是最该
- * 被看见的一张：人今天早上打开这一页，第一件想知道的事就是「昨天那摊活做到哪儿了」。
- *
- * **拿到过就不再拉**，也不轮询：这条会话只有一个人在看，而看着的时候每一次改动都有
- * 事件跟过来（不像交接单，那是跨 Bot、跨机器、别人也能改的东西）。反过来，**没拿到
- * 就还会再试**——这条闸让「席位当时没上线」不至于变成「这一页从此没有 dock」：
- * `hydrateChat` 拉过一次就再也不进（`row.hydrated`），全靠切回来这一下补。
- *
- * 水位（`upto`）取在发请求之前，和事件谁新按 seq 比（理由见 approvalDead）。
+ * 当前轮次可能只读回旧清单，流垫的最近一轮未必带着原始 todo/list。
+ * 快照为这张卡补数据；可见历史仍以各轮自己的事件为准。
+ * 成功后按 sessionId 缓存；失败不占缓存，切回来时重试。水位按日志 seq 比，不按时间。
  */
 async function syncTodos(botId, sessionId) {
   if (!sessionId || chatTodoSnap.has(sessionId)) return
@@ -830,7 +814,7 @@ async function syncTodos(botId, sessionId) {
     if (state.chatSessionId === sessionId) paintChat()
   } catch {
     // 席位没上线、或者老版本没有这条路由。**不写进表**：留着空位，下次切回来会再试一次。
-    // dock 这一轮退回只认事件那一份，也就是加这一跳之前的行为。
+    // 任务卡暂时只使用这段历史里已有的清单事件。
   }
 }
 

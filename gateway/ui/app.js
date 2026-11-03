@@ -784,16 +784,6 @@ document.getElementById('app').addEventListener('click', async (e) => {
     render()
     return
   }
-  if (act === 'chat-todo-toggle') {
-    // 展开 / 折起待办 dock。就地改，不 render()——重绘整页会把输入框里的草稿冲掉。
-    toggleChatTodos()
-    return
-  }
-  if (act === 'chat-todo-hide') {
-    // 关掉这一张。清单一变它自己回来（见 chat-composer.js 的 chatTodoHidden）。
-    hideChatTodos()
-    return
-  }
   if (act === 'chat-queue-cancel') {
     await cancelQueued(btn.getAttribute('data-id'))
     return

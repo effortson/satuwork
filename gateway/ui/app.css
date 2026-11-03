@@ -106,6 +106,7 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 /* main：两行（header / 正文）两列（内容 / 右栏）。右栏跨两行，所以能顶到 header
    那一行去——做成 header 下面的兄弟节点就顶不上去。列宽由 appView 内联给出。 */
 .gw-shell { --gw-head-height: 60px; --gw-main-border: 1px; --gw-side-top: var(--space-4); }
+.gw-side { --color-surface: var(--color-neutral-100); background: var(--color-surface); }
 .gw-main { min-width: 0; height: 100%; min-height: 0; box-sizing: border-box; overflow: hidden;
   background: var(--color-neutral-100); border: 1px solid var(--color-divider); border-radius: var(--radius-md);
   display: grid; grid-template-rows: auto minmax(0, 1fr); }
@@ -260,12 +261,30 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
   transition: background 120ms ease, color 120ms ease;
 }
 .satu-botrow:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
-.satu-botrow[aria-current="true"] { background: var(--color-accent-100); color: var(--color-text); }
-.satu-botrow[aria-current="true"]:hover { background: color-mix(in srgb, var(--color-accent-100) 75%, var(--color-accent-200)); }
+.satu-botrow[aria-current="true"] { --satu-bot-selected-bg: color-mix(in srgb, var(--color-text) 4%, var(--color-surface)); background: var(--satu-bot-selected-bg); color: var(--color-text); }
+.satu-botrow[aria-current="true"]:hover { --satu-bot-selected-bg: color-mix(in srgb, var(--color-text) 6%, var(--color-surface)); }
 .satu-botrow:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .satu-botavatar { flex: none; display: flex; align-items: center; }
-/* 十个岗位的运行动作。只动 SVG 内部的局部，外框和布局占位稳定；皇冠也不会跟着晃。
-   data-running 由名单实时摘要 / 当前流式回复启停，头像选择器与历史回复始终静止。 */
+/* 正面静态图标 + 思考时的三维转动。HTML 深度层形成侧壁，SVG 保留岗位表情和配饰动作。
+   皇冠在 scene 外面，尺寸占位固定；data-running 仍由真实运行状态控制。 */
+.satu-bot-scene { position: relative; display: inline-block; flex: none; vertical-align: middle; perspective: calc(var(--bot-size) * 5); }
+.satu-bot-volume { position: relative; display: block; width: 100%; height: 100%; transform-style: preserve-3d; transform-origin: 50% 52%; transition: transform 240ms ease; }
+.satu-bot-shell-depth { position: absolute; inset: 0; transform-style: preserve-3d; pointer-events: none; }
+.satu-bot-volume > .satu-bot-art { position: relative; transform: translateZ(0); backface-visibility: hidden; }
+.satu-bot-depth, .satu-bot-light { position: absolute; pointer-events: none; opacity: 0; visibility: hidden; }
+.satu-bot-depth { left: 6.25%; top: 6.25%; width: 87.5%; height: 77.5%; border-radius: 25.7% / 29%; transform: translateZ(calc(var(--bot-size) * var(--bot-layer) * -0.018)); background: linear-gradient(130deg, color-mix(in srgb, var(--bot-shell) 88%, white), var(--bot-shell) 35%, color-mix(in srgb, var(--bot-shell) 62%, black)); }
+.satu-bot-depth::after { content: ''; position: absolute; left: 30%; bottom: -11%; width: 40%; height: 23%; border-radius: 40%; background: inherit; }
+.satu-bot-light { left: 6.25%; top: 6.25%; width: 87.5%; height: 77.5%; border-radius: 25.7% / 29%; transform: translateZ(0.3px); background: linear-gradient(110deg, #ffffff40, transparent 38%, #33202018); }
+.satu-bot-scene:has(.satu-bot-art[data-running="true"]) .satu-bot-volume { animation: satu-bot-think-3d 4.8s ease-in-out infinite; }
+.satu-bot-scene:has(.satu-bot-art[data-running="true"]) .satu-bot-depth { opacity: 1; visibility: visible; }
+.satu-bot-scene:has(.satu-bot-art[data-running="true"]) .satu-bot-light { visibility: visible; animation: satu-bot-think-light 4.8s ease-in-out infinite; }
+@keyframes satu-bot-think-3d {
+  0%, 100% { transform: rotateX(0) rotateY(0) rotateZ(0) translateY(0); }
+  22% { transform: rotateX(8deg) rotateY(-25deg) rotateZ(-1deg) translateY(calc(var(--bot-size) * -0.025)); }
+  52% { transform: rotateX(-6deg) rotateY(25deg) rotateZ(1deg) translateY(calc(var(--bot-size) * -0.015)); }
+  78% { transform: rotateX(5deg) rotateY(10deg) rotateZ(-0.5deg) translateY(calc(var(--bot-size) * -0.025)); }
+}
+@keyframes satu-bot-think-light { 0%, 100% { opacity: 0; } 22% { opacity: 0.65; } 52% { opacity: 0.2; } 78% { opacity: 0.45; } }
 .satu-bot-art .satu-bot-body,
 .satu-bot-art .satu-bot-eyes,
 .satu-bot-art .satu-bot-face-detail,
@@ -349,6 +368,8 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 @keyframes satu-bot-colors { 0%, 65%, 100% { opacity: 0.6; transform: scale(0.85); } 25% { opacity: 1; transform: scale(1.3); } }
 @keyframes satu-bot-coin { 0%, 15%, 85%, 100% { transform: scaleX(1); } 50% { transform: scaleX(0.12); } }
 @media (prefers-reduced-motion: reduce) {
+  .satu-bot-scene .satu-bot-volume, .satu-bot-scene .satu-bot-light { animation: none !important; transition: none; }
+  .satu-bot-scene .satu-bot-depth, .satu-bot-scene .satu-bot-light { opacity: 0 !important; visibility: hidden !important; }
   .satu-bot-art[data-running="true"] * { animation: none !important; }
   .satu-bot-art .satu-bot-page { opacity: 0 !important; }
 }
@@ -357,7 +378,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 .satu-avatarwrap { position: relative; display: inline-flex; flex: none; }
 .satu-crown { position: absolute; right: -3px; bottom: -3px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #F5B85A; color: #6B4A12; box-shadow: 0 0 0 1.5px var(--color-surface); pointer-events: none; }
 .satu-crown svg { width: 72%; height: 72%; fill: currentColor; }
-.satu-botrow[aria-current="true"] .satu-crown { box-shadow: 0 0 0 1.5px var(--color-accent-100); }
+.satu-botrow[aria-current="true"] .satu-crown { box-shadow: 0 0 0 1.5px var(--satu-bot-selected-bg); }
 /* min-width: 0 是省略号能生效的前提——不写的话 flex 子项按内容宽度算，长名字会把
    时间挤出侧栏。 */
 .satu-botmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -382,39 +403,10 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 }
 .satu-localtag[data-compact] { padding: 1px 5px; font-size: 9.5px; }
 
-/* ── 状态点 ────────────────────────────────────────────────────────
-   三态靠**形状**分，不只靠颜色：空闲是空心圈、执行中是实心并闪、待人工是实心琥珀。
-   只用颜色的话，色觉障碍的人看到的是三个一模一样的点。 */
-.satu-botdot {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  border: 1.5px solid currentColor;
-  opacity: 0.4;
-  align-self: center;
-  transition: opacity 120ms ease, background 120ms ease;
-}
-.satu-botdot[data-state="busy"] {
-  background: currentColor;
-  opacity: 1;
-  animation: satu-blink 1.15s ease-in-out infinite;
-}
-.satu-botdot[data-state="review"] {
-  background: var(--color-warn-500);
-  border-color: var(--color-warn-500);
-  opacity: 1;
-  animation: none;
-}
 @keyframes satu-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.22; } }
-@media (prefers-reduced-motion: reduce) {
-  .satu-botdot[data-state="busy"] { animation: none; }
-}
-/* 收起侧栏时整行只剩头像，点跟着收掉——它挤在图标旁边只会让图标看着歪。 */
-.satu-rail .satu-botdot { display: none; }
 
 /* ── 机器通联指示灯 ──────────────────────────────────────────────────
-   和上面的 botdot 同一条规矩：**四态靠形状分，不只靠颜色**。在线是实心、迟了是实心
+   **四态靠形状分，不只靠颜色**。在线是实心、迟了是实心
    带闪、失联是空心粗环、没配对是空心虚线。色觉障碍的人只看颜色会看到四个一样的点，
    而这盏灯的全部意义就是「一眼扫过去哪台不对」。
 
@@ -567,7 +559,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
 @media (prefers-reduced-motion: reduce) {
   .satu-botneed { animation: none; }
 }
-/* 侧栏收起来只剩头像，这个图标跟着收——挤在图标旁边只会让头像看着歪（同 botdot）。 */
+/* 侧栏收起来只剩头像，这个图标跟着收——挤在图标旁边只会让头像看着歪。 */
 .satu-rail .satu-botneed { display: none; }
 .satu-bottime { flex: none; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 /* 摘要只给一行。多行会让每一行的高度随内容跳，整份名单看着就散了。 */
@@ -1473,6 +1465,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
        点出来的，抽屉压在上面的话弹窗开了也看不见。 */
     position: fixed; top: 0; bottom: 0; left: 0; z-index: 24;
     width: min(300px, 86vw); height: auto !important;
+    background: var(--color-surface);
     border-radius: 0 var(--radius-md) var(--radius-md) 0 !important;
     box-shadow: var(--shadow-lg);
     transform: translateX(-105%);

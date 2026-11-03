@@ -41,7 +41,7 @@ function paintChatQueue() {
 }
 
 /**
- * 待办 dock 的四种状态标记。
+ * 任务清单的四种状态标记。
  *
  * 画成图形而不是 ☐☑ 这类字符：那几个字符在不同系统上的字号、基线、甚至有没有字体
  * 都不一样（Windows 上常常退化成一个方框），而这一行的四个标记必须对得整整齐齐。
@@ -64,7 +64,7 @@ const TODO_MARK = {
  */
 const todoMark = (status) => (Object.hasOwn(TODO_MARK, status) ? TODO_MARK[status] : TODO_MARK.pending)
 
-/** dock 抬头那个清单图标。 */
+/** 任务卡的清单图标。 */
 const ICON_LIST =
   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 6 2 2 3-3"/><path d="m3 15 2 2 3-3"/><path d="M12 7h9"/><path d="M12 16h9"/></svg>'
 
@@ -72,181 +72,62 @@ const ICON_LIST =
 const ICON_CHEV =
   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>'
 
-/**
- * dock 展开着还是折着，按会话记。**默认折着**：展开的清单会把输入框顶掉半屏，而人
- * 多半只想知道「还剩几条」。
- *
- * 只活在这一次页面加载里，不落 prefs：它是「我现在想不想看细节」，不是一项设置。
- */
-const chatTodoOpen = new Map()
+/** 同轮任务卡的内容签名；正文流式变化不重建清单和折叠控件。 */
+const todoSign = items => JSON.stringify(items.map(i => [i.id, i.status, i.task]))
 
-/**
- * 人手关掉的那张表，记的是**关掉时它长什么样**（sessionId → 指纹）。
- *
- * 不记「关掉了」这个布尔：那样一关就是永久的，而清单还在往前走——下一条做完了、
- * 新加了两条，人再也看不到。记指纹的话，**表一变它自己就回来**，而没变的时候不来烦人。
- */
-const chatTodoHidden = new Map()
-
-/**
- * 已经给它算过「要不要一上来就收起来」的会话（见 paintChatTodos 里那一段）。
- *
- * 只活在这一次页面加载里——「重新加载对话」正是这条规则要认的那一刻，落 prefs 就把
- * 它变成了一项永久设置。
- */
-const chatTodoSeen = new Set()
-
-const todoSign = (items) => items.map((i) => `${i.id}:${i.status}:${i.task}`).join('|')
-
-/**
- * dock 该照着哪一份画。
- *
- * 两个数据源：折出来的最后一条 `todo/list` 事件，和打开这一页时拉的那次快照
- * （syncTodos）。谁新按**日志行号**比，不按时间比——那是两台机器各自的钟
- * （理由见 approvalDead）。快照没有 seq，它带的是取快照那一刻的水位。
- */
-function chatTodoItems(folded) {
-  const ev = folded && folded.todos
-  const snap = chatTodoSnap.get(state.chatSessionId) || null
-  if (ev && (!snap || Number(ev.seq) > Number(snap.upto))) return ev.items || []
-  if (snap) return snap.items || []
-  return []
+function todoPlanHeader(plan) {
+  const items = plan.items || []
+  const done = items.filter(i => i.status === 'completed').length
+  const settled = items.every(i => i.status === 'completed' || i.status === 'cancelled')
+  const running = plan.state === 'running' && !settled
+  const label = running ? t('正在执行', 'Running')
+    : plan.state === 'stopped' ? t('已停止', 'Stopped')
+    : plan.state === 'error' ? t('执行出错', 'Failed')
+    : settled ? t('已完成', 'Done') : t('已结束', 'Ended')
+  const now = running ? items.find(i => i.status === 'in_progress') || items.find(i => i.status === 'pending') : null
+  return `<span class="sw-todoplan-icon">${ICON_LIST}</span><span class="sw-todoplan-title">${esc(t('任务清单', 'Task list'))}</span>` +
+    `<span class="sw-todoplan-badge" data-s="${running ? 'run' : 'idle'}">${esc(label)}</span>` +
+    (now ? `<span class="sw-todoplan-now">${esc(now.task || '')}</span>` : '') +
+    `<span class="sw-todoplan-count">${done}/${items.length}</span><span class="sw-todoplan-chev">${ICON_CHEV}</span>`
 }
 
-/**
- * 待办 dock：输入框顶上那块可折叠的清单（见 docs/todo-tool.md）。
- *
- * **为什么值得单占一块地方。** 清单本来只以工具结果的形式躺在消息流里，而那正是它
- * 最没用的地方：一次十步的活会把它往上顶出屏幕，人想知道「还剩几条」得往回翻。它是
- * 一份**当前状态**，状态该待在一个固定的位置上。
- *
- * 折叠态一行说完三件事：在做什么、做了几条、还剩几条。展开才铺开细节。
- */
-function paintChatTodos(folded) {
-  const box = document.getElementById('chat-todock')
-  if (!box) return
-  const items = chatTodoItems(folded)
-  const sid = state.chatSessionId
-  // 空表不占位置。清单被清掉、或者这条会话压根没用过 todo，都走这一支。
-  if (!items.length) return clearTodock(box)
-  const sign = todoSign(items)
-  const done = items.filter((i) => i.status === 'completed').length
-  const running = items.find((i) => i.status === 'in_progress')
-  const open = items.filter((i) => i.status === 'pending')
-  // 抬头那句话：正在做哪一条 > 下一条该做什么 > 已经收口了。
-  const now = running || open[0] || null
-  const allDone = !running && !open.length
-  /**
-   * **收口了的那张表，重新加载之后不再摆出来。**
-   *
-   * 这块 dock 回答的是「这摊活做到哪儿了」。全部收口之后它已经答完了：再打开这一页
-   * 时，它顶掉的是输入框上面那行位置，而它能说的只有一句「昨天那件事做完了」——那句话
-   * 人上一次关掉页面之前就知道了。
-   *
-   * **只拦「第一次拿到」这一下**，所以盯着看的时候不受影响：最后一条打勾会让指纹变，
-   * 那一帧照样画出「已完成」，人看得见事情收口了。之后清单再变（模型新列一张、或者
-   * 某条被重新打开），指纹又变，它自己就回来——和 × 关掉那一张是同一套机制，这里只是
-   * 替人先按了一下。
-   *
-   * 记「这条会话认过了」而不是直接看指纹在不在表里：一张空表也走不到这儿（上面那道
-   * 闸），而 `chatTodoHidden` 里没有条目和「有条目但指纹不一样」是两件事。
-   */
-  if (!chatTodoSeen.has(sid)) {
-    chatTodoSeen.add(sid)
-    if (allDone) chatTodoHidden.set(sid, sign)
+function todoPlanItems(plan) {
+  return plan.items.map(i => {
+    // 保留真实条目状态；停下来的卡片不再把旧 in_progress 画成进行中的箭头。
+    const status = i.status === 'in_progress' && plan.state !== 'running' ? 'pending' : i.status || 'pending'
+    return `<li class="sw-todoplan-item" data-s="${esc(status)}"><span class="sw-todoplan-mark">${todoMark(status)}</span>` +
+      `<span class="sw-todoplan-task">${esc(i.task || '')}</span></li>`
+  }).join('')
+}
+
+/** 原生 details 默认折叠；只更新内容，不替换节点，因此流式期间保留展开状态、焦点和滚动位置。 */
+function updateTodoPlan(host, plan) {
+  let card = host.querySelector(':scope > .sw-todoplan')
+  if (!plan?.items?.length) {
+    if (card) card.remove()
+    return
   }
-  if (chatTodoHidden.get(sid) === sign) return clearTodock(box)
-  const badge = running
-    ? t('正在执行', 'Running')
-    : allDone
-      ? t('已完成', 'Done')
-      : t('待办', 'To do')
-  const opened = chatTodoOpen.get(sid) === true
-  box.hidden = false
-  /**
-   * **清单没变就不重建 DOM。**
-   *
-   * 这个函数挂在 paintChatChrome 上，而那一个在流式期间是**每一帧**都跑的
-   * （schedulePaintChat 走 rAF）。无条件写 innerHTML 的话，展开着的那张清单每帧被拆掉
-   * 重建：它自己有滚动区（.sw-todock-list 的 max-height），于是 scrollTop 每帧归零——
-   * 一张十几条的表在跑活的时候根本滚不动，而那正是人最想看它的时候；键盘焦点和选中的
-   * 文字也一起没。同一件事在交接卡那块是用 hSig 挡住的（见 paintChatBlocks），
-   * 这里照抄。
-   *
-   * 展开态**不进这个指纹**：它由下面几行属性写就地生效，不碰 DOM 结构，所以折起再
-   * 展开时滚动位置和焦点都还在。
-   */
-  if (box.getAttribute('data-sig') !== sign) {
-    box.setAttribute('data-sig', sign)
-    box.innerHTML = todockHtml(items, { done, now, running, allDone, badge, opened })
+  if (!card) {
+    card = document.createElement('details')
+    card.className = 'sw-todoplan'
+    card.innerHTML = '<summary class="sw-todoplan-head"></summary><ol class="sw-todoplan-list"></ol>'
+    host.insertBefore(card, host.querySelector('.sw-md'))
   }
-  // 展开 / 折起：改属性，不重建。每次都写一遍是幂等的，也顺手把重建之后的那一帧对齐。
-  applyTodockOpen(box, opened)
-}
-
-/** 把「展开着还是折着」写到 DOM 上。**只改属性**，不碰结构——理由见上面那段。 */
-function applyTodockOpen(box, opened) {
-  box.setAttribute('data-open', opened ? '1' : '0')
-  const head = box.querySelector('.sw-todock-head')
-  if (head) head.setAttribute('aria-expanded', opened ? 'true' : 'false')
-  const list = box.querySelector('.sw-todock-list')
-  if (list) list.hidden = !opened
-}
-
-/** 收起来：连指纹一起清掉，否则下次要显示时会以为「没变」而不重建。 */
-function clearTodock(box) {
-  box.hidden = true
-  box.removeAttribute('data-sig')
-  box.innerHTML = ''
-}
-
-function todockHtml(items, { done, now, running, allDone, badge, opened }) {
-  return (
-    `<div class="sw-todock-bar">` +
-    `<button type="button" class="sw-todock-head" data-act="chat-todo-toggle" aria-expanded="${opened ? 'true' : 'false'}">` +
-    `<span class="sw-todock-icon">${ICON_LIST}</span>` +
-    `<span class="sw-todock-title">${esc(t('任务', 'Tasks'))}</span>` +
-    `<span class="sw-todock-badge" data-s="${running ? 'run' : allDone ? 'done' : 'idle'}">${esc(badge)}</span>` +
-    (now ? `<span class="sw-todock-now">${esc(now.task || '')}</span>` : '') +
-    `<span class="sw-spacer"></span>` +
-    `<span class="sw-todock-count">${done}/${items.length} ${esc(t('已完成', 'done'))}</span>` +
-    `<span class="sw-todock-chev">${ICON_CHEV}</span>` +
-    `</button>` +
-    `<button type="button" class="sw-todock-x" data-act="chat-todo-hide" ` +
-    `aria-label="${esc(t('收起任务清单', 'Dismiss task list'))}" title="${esc(t('收起任务清单', 'Dismiss task list'))}">${ICON_X}</button>` +
-    `</div>` +
-    `<ol class="sw-todock-list"${opened ? '' : ' hidden'}>` +
-    items
-      .map(
-        (i) =>
-          `<li class="sw-todock-item" data-s="${esc(i.status || 'pending')}">` +
-          `<span class="sw-todock-mark">${todoMark(i.status)}</span>` +
-          `<span class="sw-todock-task">${esc(i.task || '')}</span>` +
-          `</li>`,
-      )
-      .join('') +
-    `</ol>`
-  )
-}
-
-/**
- * 展开 / 折起。**只写三个属性**：不重绘整页（会冲掉输入框里没发出去的字），也不重折
- * 一遍历史、不重建清单的 DOM（那会把刚滚到的位置甩回顶上）。
- */
-function toggleChatTodos() {
-  const sid = state.chatSessionId
-  const opened = chatTodoOpen.get(sid) !== true
-  chatTodoOpen.set(sid, opened)
-  const box = document.getElementById('chat-todock')
-  if (box) applyTodockOpen(box, opened)
-}
-
-/** 关掉这一张。**只关这一张**：表一变它自己回来（见 chatTodoHidden）。 */
-function hideChatTodos() {
-  const sid = state.chatSessionId
-  const folded = fold(state.chatEvents, chatLive.get(sid), currentBotHasChannelLabels())
-  chatTodoHidden.set(sid, todoSign(chatTodoItems(folded)))
-  paintChatTodos(folded)
+  card.setAttribute('data-state', plan.state)
+  const sign = todoSign(plan.items)
+  const headSig = plan.state + ':' + sign
+  if (card.getAttribute('data-head-sig') !== headSig) {
+    card.querySelector('summary').innerHTML = todoPlanHeader(plan)
+    card.setAttribute('data-head-sig', headSig)
+  }
+  const listSig = (plan.state === 'running') + ':' + sign
+  if (card.getAttribute('data-list-sig') !== listSig) {
+    const list = card.querySelector('ol')
+    const top = list.scrollTop
+    list.innerHTML = todoPlanItems(plan)
+    list.scrollTop = top
+    card.setAttribute('data-list-sig', listSig)
+  }
 }
 
 /**
