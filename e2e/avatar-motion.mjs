@@ -50,6 +50,23 @@ export async function runAvatarMotion({ root, test, assert, log }) {
     assert(art.getAttribute('data-running') === null && art.writes === writes + 1, '没原地停下')
   })
 
+  await test('三维深度只在首次执行时建立，停止再开始复用，正面 SVG 始终保留', async () => {
+    const ui = open()
+    const art = avatarNode()
+    const depth = { firstChild: null, writes: 0, set innerHTML(value) { this.writes++; this.firstChild = { value } } }
+    art.parentElement = { querySelector: () => depth }
+    const host = { querySelector: () => art }
+    ui.setBotAvatarRunning(host, true)
+    assert(depth.writes === 1 && depth.firstChild.value.includes('satu-bot-depth'), '执行时没有建立三维侧壁')
+    for (let i = 0; i < 20; i++) ui.setBotAvatarRunning(host, true)
+    ui.setBotAvatarRunning(host, false)
+    ui.setBotAvatarRunning(host, true)
+    assert(depth.writes === 1 && host.querySelector() === art, '启停重建了侧壁或正面 SVG')
+    const idle = ui.botAvatar('c-bot', 34)
+    assert(idle.includes('satu-bot-scene') && !idle.includes('--bot-layer:'), '静态历史头像提前建立了三维层')
+    assert(!idle.includes('data-running') && !idle.includes('undefined'), '静态头像未保持正面空闲状态')
+  })
+
   await test('待人工、失联、安装中和本机未就绪时，忙碌帧也不触发运行动画', async () => {
     const ui = open()
     const bot = ui.state.runtimeBots[0]
@@ -74,12 +91,18 @@ export async function runAvatarMotion({ root, test, assert, log }) {
     assert(ui.botIsWorking(bot), '本机就绪且在执行时应恢复动画')
   })
 
-  await test('对话顶栏跟随当前轮次启停，失联时不保留忙碌假象', async () => {
+  await test('只有侧边栏播放动效，顶部头像在执行和结束时都保持正面静止', async () => {
     const ui = open()
     const art = avatarNode()
     ui.stubs.get('chat-avatar').querySelector = () => art
+    ui.noteRosterFrame({ type: 'roster/live', botId: 'b1', live: true })
+    assert(ui.chatRosterNav().includes('data-running="true"'), '侧栏没有播放运行动效')
+    assert(!ui.chatHeadInline().includes('data-running'), '顶部初次渲染就播放动效')
     ui.paintChatChrome({ status: 'working', blocks: [] })
-    assert(art.getAttribute('data-running') === 'true', '对话开始时头像没动')
+    assert(art.getAttribute('data-running') === null, '对话执行时顶部头像不应动')
+    art.setAttribute('data-running', 'true')
+    ui.paintChatChrome({ status: 'working', blocks: [] })
+    assert(art.getAttribute('data-running') === null, '顶部旧节点残留的动画没有清掉')
     ui.paintChatChrome({ status: '', blocks: [] })
     assert(art.getAttribute('data-running') === null, '对话结束后头像还在动')
     ui.state.runtimeBots[0].runtime.machineLink = 'offline'

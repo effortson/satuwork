@@ -224,7 +224,6 @@ function lpFilmApply(animate = true) {
     for (const bot of lpDemoBots()) {
       const row = root.querySelector(`[data-bot-row="${bot.id}"]`)
       const state = lpDemoTaskState(bot.key,step)
-      row?.querySelector('.satu-botdot')?.setAttribute('data-state',state === 'running' ? 'busy' : 'idle')
       const snip=row?.querySelector('.satu-botsnip')
       if(snip) { snip.hidden=step<3; snip.textContent=state==='done'?t('任务已完成','Task complete'):state==='running'?t('正在处理任务…','Working on the task…'):t('等待前置任务','Waiting for earlier tasks') }
       setBotAvatarRunning(row,state==='running')
@@ -234,9 +233,9 @@ function lpFilmApply(animate = true) {
     const liveText=root.querySelector('[data-demo-live]')
     if(liveText)liveText.textContent=step>0&&step<9?t('正在处理','Working'):t('在线','Online')
     const message=root.querySelector('.lp-product-assistant')
-    message?.setAttribute('data-live',step<9?'1':'0')
-    setBotAvatarRunning(message?.querySelector('.sw-msg-avatar'),step<9)
-    setBotAvatarRunning(root.querySelector('.sw-convo-avatar'),step>0&&step<9)
+    message?.removeAttribute('data-live')
+    setBotAvatarRunning(message?.querySelector('.sw-msg-avatar'),false)
+    setBotAvatarRunning(root.querySelector('.sw-convo-avatar'),false)
     const stamp=root.querySelector('[data-demo-time]')
     if(stamp)stamp.textContent=step===9?'09:42':t('正在处理','Working')
     const browser=root.querySelector('[data-demo-browser]')

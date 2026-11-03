@@ -190,39 +190,15 @@
   color: var(--secondary-foreground);
   transition: background 0.25s ease, color 0.25s ease;
 }
-/* 这一条还在写：头像自己呼吸（data-live 由 chat-thread.js 的 updateRow 挂上）。
-   为什么值得单独做一个动效：三点省略号只在还没吐字的那一段有，一开口就没了；而一轮
-   真花时间的活恰恰是「已经写了几段、后面还在跑」的那种——那时候屏幕上除了读秒那个数字
-   没有任何东西在动，人分不出它是在跑还是已经答完了。
-
-   两层叠着，都很轻：底色换成品牌赭红那一档（和顶栏在线灯的 busy 态同一个色系，扫一眼
-   就是同一个意思），外面一圈光晕一涨一消。**不做旋转、不做弹跳**——它在屏幕左边一直
-   待着，幅度大一点就变成一个不停晃的东西，读正文时挡视线。 */
-.sw-msg[data-live='1'] .sw-msg-avatar {
-  background: var(--color-accent-100);
-  color: var(--color-accent-700);
-  animation: sw-avatar-live 1.9s ease-in-out infinite;
-}
-/* 图标本身跟着淡一下，跟外圈错开半拍——两层同相位的话看着就是一整块在闪。 */
-.sw-msg[data-live='1'] .sw-msg-avatar svg {
-  animation: sw-pulse 1.9s ease-in-out infinite;
-  animation-delay: 0.35s;
-}
-/* 岗位头像的局部运行动作由 app.css 控制，这里保留轻微外圈，但禁用整个 SVG 的闪烁。
-   内部的眼睛、配饰、书页各自运动，不把整张脸一起淡掉。 */
+/* 消息区头像始终静止；三维思考与岗位动作只在侧边栏播放。 */
 .sw-msg-avatar[data-bot='1'] { background: transparent; }
 .sw-msg-avatar[data-bot='1'] svg { width: 36px; height: 36px; }
-.sw-msg[data-live='1'] .sw-msg-avatar[data-bot='1'] { background: transparent; }
-.sw-msg[data-live='1'] .sw-msg-avatar[data-bot='1'] svg { animation: none; }
-@keyframes sw-avatar-live {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent-500) 34%, transparent); }
-  60% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-accent-500) 0%, transparent); }
-}
-/* 关了动效的人也要看得出状态：动画去掉，但那一档底色留着——它本身就说明「在跑」。 */
-@media (prefers-reduced-motion: reduce) {
-  .sw-msg[data-live='1'] .sw-msg-avatar,
-  .sw-msg[data-live='1'] .sw-msg-avatar svg { animation: none; }
-}
+.sw-msg-avatar[data-bot='1'] > .satu-bot-scene { width: 100% !important; height: 100% !important; }
+.sw-convo-avatar .satu-bot-volume, .sw-msg-avatar .satu-bot-volume { animation: none !important; transform: none !important; transition: none !important; }
+.sw-convo-avatar .satu-bot-depth, .sw-msg-avatar .satu-bot-depth,
+.sw-convo-avatar .satu-bot-light, .sw-msg-avatar .satu-bot-light { visibility: hidden !important; opacity: 0 !important; animation: none !important; }
+.sw-convo-avatar .satu-bot-art *, .sw-msg-avatar .satu-bot-art * { animation: none !important; }
+.sw-convo-avatar .satu-bot-page, .sw-msg-avatar .satu-bot-page { opacity: 0 !important; }
 /* 共用 920px 内容轴；为头像和悬停操作留位，长回复、任务和表格可以展开。 */
 .sw-msg-col { min-width: 0; max-width: calc(100% - 84px); display: flex; flex-direction: column; gap: 4px; }
 .sw-msg[data-role='user'] .sw-msg-col { max-width: 72%; align-items: flex-end; }

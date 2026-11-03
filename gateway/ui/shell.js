@@ -449,9 +449,6 @@ function rosterRowHtml(b, selected, mainBotId = state.mainBotId) {
         <span class="satu-botavatar">${botAvatarOf(b, 34, botIsWorking(b), mainBotId)}</span>
         <span class="satu-botmain">
           <span class="satu-botline">
-            ${/* 状态点在名字**前面**：一列对齐的点，扫一眼就知道哪几个在动，
-                 不用把视线甩到行尾去找。 */ ''}
-            <span class="satu-botdot" data-state="${sum.state}" title="${esc(botStateLabel(sum.state))}" aria-label="${esc(botStateLabel(sum.state))}"></span>
             <span class="satu-botname">${esc(b.name || b.id)}${b.runtimeKind === 'local' ? ` <span class="satu-localtag" data-compact>${t('本地', 'Local')}</span>` : ''}</span>
             ${/* 「有事等你」的图标。一颗 8px 的点在一列名字里太容易滑过去，而这一格说的
                  是「你不点它就一直停在那儿」——确认那一路是真的有一轮停在席位上等着。 */ ''}
@@ -726,18 +723,10 @@ function scheduleRosterPaint() {
   else setTimeout(run, 16)
 }
 
-function botStateLabel(state) {
-  if (state === 'busy') return t('正在执行')
-  if (state === 'review') return t('待人工处理')
-  return t('空闲')
-}
-
 /**
  * 名单上那个「有事等你」的图标，说给人听。
  *
- * **和那颗点分开说**：点答的是「这一颗现在什么状态」，这个图标答的是「你得去点一下」
- * ——而这两件事人要做的动作完全不同，混成一个琥珀点的话，人还得点进去才知道是要拍板
- * 还是要接手。
+ * 运行动效由头像承担；这个图标专门提示「你得去点一下」，区分拍板和接手。
  */
 function botNeedLabel(need) {
   if (need === 'approval') return t('在等你拍板', 'Waiting for your approval')
@@ -785,12 +774,6 @@ function paintRoster() {
     if (installingOf(bot)) continue
     const sum = (botStreams.get(id) || {}).sum
     if (!sum) continue
-    const dot = row.querySelector('.satu-botdot')
-    if (dot && dot.getAttribute('data-state') !== sum.state) {
-      dot.setAttribute('data-state', sum.state)
-      dot.title = botStateLabel(sum.state)
-      dot.setAttribute('aria-label', botStateLabel(sum.state))
-    }
     const need = row.querySelector('.satu-botneed')
     if (need && need.getAttribute('data-need') !== (sum.need || '')) {
       const label = botNeedLabel(sum.need)

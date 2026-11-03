@@ -270,6 +270,14 @@ function companyAvatarArt(frame, { behind = '', eyes = COMPANY_AVATAR_EYES, face
     <g class="satu-bot-accessory" filter="url(#${id}-detail)">${shaded(accessory)}</g></g>`
 }
 
+// 深度层和正面 SVG 共用岗位配色；只有思考时露出侧壁，静止时保持原来的正面轮廓。
+const COMPANY_AVATAR_FRAME = {
+  'c-bot': '#D77B5E', 'c-chat': '#548E96', 'c-chart': '#C69A49', 'c-pen': '#9581B7',
+  'c-deal': '#D67A68', 'c-code': '#608F7E', 'c-flow': '#738BC0', 'c-book': '#AB8970',
+  'c-design': '#C18098', 'c-finance': '#8B9B62',
+}
+const COMPANY_AVATAR_DEPTH = Array.from({ length: 12 }, (_, i) => `<span class="satu-bot-depth" style="--bot-layer: ${i + 1};" aria-hidden="true"></span>`).join('')
+
 const COMPANY_AVATAR_ART = {
   // 助理：品牌原色和最干净的微笑，作为默认头像。
   'c-bot': companyAvatarArt('#D77B5E'),
@@ -374,7 +382,9 @@ function botAvatar(key, size = 34, origin, running = false) {
     const art = COMPANY_AVATAR_ART[a?.family === 'company' ? k : 'c-bot']
       .replaceAll('__AVATAR_PAINT__', `satu-avatar-${++botAvatarPaintId}`)
     const avatar = a?.family === 'company' ? k : 'c-bot'
-    return `<svg class="satu-bot-art" data-avatar="${avatar}"${running ? ' data-running="true"' : ''} width="${size}" height="${size}" viewBox="0 0 40 40" role="img" aria-label="${esc(t(def.label))}" style="flex: none; display: block;">${art}</svg>`
+    return `<span class="satu-bot-scene" style="--bot-size: ${size}px; --bot-shell: ${COMPANY_AVATAR_FRAME[avatar]}; width: ${size}px; height: ${size}px;"><span class="satu-bot-volume"><span class="satu-bot-shell-depth" aria-hidden="true">${running ? COMPANY_AVATAR_DEPTH : ''}</span>` +
+      `<svg class="satu-bot-art" data-avatar="${avatar}"${running ? ' data-running="true"' : ''} width="${size}" height="${size}" viewBox="0 0 40 40" role="img" aria-label="${esc(t(def.label))}" style="flex: none; display: block;">${art}</svg>` +
+      '<span class="satu-bot-light" aria-hidden="true"></span></span></span>'
   }
   const fg = 'var(--color-accent-2-800)'
   const id = `satu-avatar-${++botAvatarPaintId}`
@@ -410,7 +420,12 @@ function botAvatarOf(bot, size = 34, running = false, mainBotId = state.mainBotI
 function setBotAvatarRunning(host, running) {
   const art = host && host.querySelector('.satu-bot-art')
   if (!art || (art.getAttribute('data-running') === 'true') === Boolean(running)) return
-  if (running) art.setAttribute('data-running', 'true')
+  if (running) {
+    // 历史头像不生成深度层；首次真正执行时才补，之后启停复用，SVG 和已有岗位动画不重建。
+    const depth = art.parentElement && art.parentElement.querySelector(':scope > .satu-bot-shell-depth')
+    if (depth && !depth.firstChild) depth.innerHTML = COMPANY_AVATAR_DEPTH
+    art.setAttribute('data-running', 'true')
+  }
   else art.removeAttribute('data-running')
 }
 
