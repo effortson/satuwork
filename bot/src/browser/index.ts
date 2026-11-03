@@ -1,5 +1,6 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { existsSync, mkdirSync } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
@@ -8,7 +9,7 @@ import { join } from 'node:path'
 import { findExecutable } from '../executable.ts'
 import { satuworkHome } from '../home.ts'
 import { childEnv } from '../workspace/index.ts'
-import { blockedHost, hostOf, privateAddress, siteAllowed, type ActionContext } from '../policy/browser.ts'
+import { blockedHost, hostOf, privateAddress, siteAllowed, siteOf, type ActionContext } from '../policy/browser.ts'
 import type { ToolCall, WorkspaceFile } from '../tools/index.ts'
 import { Cdp, CdpError } from './cdp.ts'
 import { callExpr } from './page.ts'
@@ -136,6 +137,11 @@ interface Snapshot {
   title: string
   body: string
   truncated: boolean
+  /**
+   * 这张快照的指纹（含 full、地址、标题、正文）。工具层拿它判「模型手上那张是不是这张」，
+   * 见 tools.ts 的 browser_snapshot。页面里那段脚本不给，服务读回来之后补上。
+   */
+  fp?: string
 }
 
 /**
@@ -233,6 +239,13 @@ export class BrowserService extends Service {
    */
   private scope: { sites: string[]; allowlist: boolean } | null = null
   /**
+   * 这段对话批准打开过哪些站（策略给的判断函数，按注册域问）。没有就是不管——高风险确认关着。
+   *
+   * 「第一次打开要问」在策略那边只看得见 navigate 参数里的地址；点外链、302、新标签页落到的
+   * 那一站，只有这边读回页面时才知道。
+   */
+  private approvedSite: ((site: string) => boolean) | null = null
+  /**
    * Bot 自己开出来的标签页。**员工自己开的那些不在里面。**
    *
    * browser_tabs 只列这些。列全部的话，那把工具就成了「把员工开着的网银和私人邮箱
@@ -267,7 +280,7 @@ export class BrowserService extends Service {
    */
   private opened = 0
   /** 上一次快照给出的 ref → 名字。**策略要同步问「点的是什么」，所以缓存在这边。** */
-  private labels = new Map<string, { name: string; role: string }>()
+  private labels = new Map<string, { name: string; role: string; secret?: boolean }>()
   /** 已经发到第几号 ref。跳转之后接着往下发，见 page.ts 里 snapshot 的说明。 */
   private refBase = 0
   private url = ''
@@ -346,10 +359,17 @@ export class BrowserService extends Service {
       /* 参数不是 JSON：那次调用本来就会失败 */
     }
     const hit = ref ? this.labels.get(ref) : undefined
+    /**
+     * 不给 ref 的 type 打进的是当前焦点，查不到是哪个框。这一页上只要有密码框，就按「可能
+     * 在填密码」算：「点用户名、按 Tab、直接打字」正是这么填密码的，不认的话登录确认一句话
+     * 就绕过去了。没有密码框的页面（网页表格）不受影响。
+     */
+    const secret = ref ? hit?.secret : call.name === 'browser_type' && [...this.labels.values()].some((l) => l.secret)
     return {
       ...(hit?.name ? { label: hit.name } : {}),
       ...(hit?.role ? { role: hit.role } : {}),
-      ...(this.dialog ? { dialog: this.dialog.kind } : {}),
+      ...(secret ? { secret: true } : {}),
+      ...(this.dialog ? { dialog: this.dialog.kind, dialogText: this.dialog.message } : {}),
       ...(this.url ? { url: this.url } : {}),
     }
   }
@@ -359,8 +379,28 @@ export class BrowserService extends Service {
    *
    * 单向：服务只读不写，判据仍然只有 policy/browser.ts 那一份。
    */
-  setScope(sites: readonly string[], allowlist: boolean): void {
+  setScope(sites: readonly string[], allowlist: boolean, opened: ((site: string) => boolean) | null = null): void {
     this.scope = { sites: [...sites], allowlist }
+    this.approvedSite = opened
+  }
+
+  /**
+   * 这一页落在一个这段对话还没批准打开过的站上：返回一句给模型看的话，否则 null。
+   *
+   * **不并进 guardUrl。** guardUrl 还管请求拦截那一道（顶层文档直接 failRequest），在那儿拦
+   * 的话页面变成一张错误页，模型读到的是「导航没有成功」，不知道该去请人批准。这里只在
+   * 读内容之前拦，话里说清出路：用 navigate 再开一次，那一次会弹卡。
+   */
+  private notOpened(url: string): string | null {
+    if (!this.approvedSite) return null
+    const host = hostOf(url)
+    if (!host) return null
+    const site = siteOf(host)
+    if (this.approvedSite(site)) return null
+    return (
+      `这段对话还没有批准打开 ${site}（多半是点了外链、被跳转、或切到了新标签页）。` +
+      `要继续的话用 browser_navigate 打开这个地址——会先请用户确认`
+    )
   }
 
   /**
@@ -609,7 +649,7 @@ export class BrowserService extends Service {
      * 整页读了回来。attach 之后它再发的请求会被 `Network.responseReceived` 那道按 IP
      * 判的闸接住，但**首屏那一份不会**，所以这儿补一次 DNS 解析。
      */
-    const bad = this.guardUrl(this.url) ?? (this.trustPrivate ? null : await resolvesPrivate(this.url))
+    const bad = this.guardUrl(this.url) ?? this.notOpened(this.url) ?? (this.trustPrivate ? null : await resolvesPrivate(this.url))
     if (bad) {
       await cdp.send('Target.detachFromTarget', { sessionId: this.sessionId }, { signal }).catch(() => {})
       this.forgetTarget()
@@ -1002,7 +1042,7 @@ export class BrowserService extends Service {
       this.labels.clear()
       throw new PageError(unusable)
     }
-    const bad = this.guardUrl(snap.url)
+    const bad = this.guardUrl(snap.url) ?? this.notOpened(snap.url)
     if (bad) {
       // 这张 ref 表描述的是**上一页**。留着它，策略下一次问「@e5 是什么按钮」时，
       // 答的是另一页上那个同号元素的名字。
@@ -1010,13 +1050,16 @@ export class BrowserService extends Service {
       throw new ScopeError(`这一页是 ${snap.url}，${bad}。内容没有取回来。`)
     }
     this.url = snap.url
-    // ref → 名字。**策略靠这张表判「点的是不是提交」**，所以它必须和模型看到的那份
+    // full 也进指纹：默认那张和带正文的那张列的东西不一样，不能拿一张顶另一张。
+    snap.fp = createHash('sha1').update(`${full ? 1 : 0}\n${snap.url}\n${snap.title}\n${snap.body}`).digest('hex')
+    // ref → 名字。**策略靠这张表判「这一下是不是在登录」**，所以它必须和模型看到的那份
     // 快照是同一次的产物；从别处现取会出现「卡片上写的按钮和它要点的不是一个」。
+    // 密码框的 password 标记紧跟在 ref 后面（page.ts 里放在最前），链接行尾的地址不会撞上。
     this.labels.clear()
     for (const line of snap.body.split('\n')) {
-      const m = /^- (\S+) "([^"]*)" \[@e(\d+)\]/.exec(line)
+      const m = /^- (\S+) "([^"]*)" \[@e(\d+)\]( password\b)?/.exec(line)
       if (!m) continue
-      this.labels.set(`@e${m[3]}`, { role: m[1], name: m[2] })
+      this.labels.set(`@e${m[3]}`, { role: m[1], name: m[2], ...(m[4] ? { secret: true } : {}) })
       this.refBase = Math.max(this.refBase, Number(m[3]))
     }
     return snap
@@ -1070,7 +1113,7 @@ export class BrowserService extends Service {
     const unusable = this.unusable(String(got.url ?? ''))
     if (unusable) throw new PageError(unusable)
     if (got.url) {
-      const bad = this.guardUrl(got.url)
+      const bad = this.guardUrl(got.url) ?? this.notOpened(got.url)
       if (bad) throw new ScopeError(`这一页是 ${got.url}，${bad}。内容没有取回来。`)
     }
     return got
@@ -1378,7 +1421,7 @@ async function settle(signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) throw new CdpError('已中止')
 }
 
-export { MAX_WAIT_MS, REF_ERRORS, type Located, type Snapshot }
+export { MAX_WAIT_MS, REF_ERRORS, settle, type Located, type Snapshot }
 
 export const name = 'satu-browser'
 

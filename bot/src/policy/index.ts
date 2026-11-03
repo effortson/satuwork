@@ -3,7 +3,7 @@ import { browserOf, desktopOf, guardsOf, memoryOf, type BotRecord } from '../reg
 import { agentsOf, type ToolCall, type ToolResult } from '../tools/index.ts'
 import { ApprovalGate, type Verdict } from './approvals.ts'
 import { formOf, unwrapCall } from './forms.ts'
-import { type ActionContext, blockedHost, hostOf, siteAllowed, submitAction } from './browser.ts'
+import { type ActionContext, batchBrowserAsk, blockedHost, hostOf, browserAsk, siteAllowed, siteOf } from './browser.ts'
 import { memoryLayersOf } from '../agent/skills-memory.ts'
 import { scanPii } from './pii.ts'
 import { SHELL_TOOLS, destructiveCommand, networkCommand } from './shell.ts'
@@ -101,6 +101,8 @@ export class PolicyService extends Service {
        * 就是在说一件它们做不到的事。
        */
       if (event.type === 'turn/end') this.approvals.clearTurn(sessionId)
+      // /new：新的一段对话，批准过的站重新问（见 openedSites 上的说明）。
+      if (event.type === 'session/reset') this.openedSites.delete(sessionId)
     })
   }
 
@@ -135,10 +137,12 @@ export class PolicyService extends Service {
     /**
      * 浏览器也单独看。`browser_click` 正好是 `external + write`，照下面那条判的结果是
      * **每一次点击都弹一张卡片**——和 terminal 那条是同一个道理，同一个后果。
+     *
+     * 浏览器这边只问三件事：这条对话**第一次打开**某个站、**登录**和**付款**（后两件在
+     * policy/browser.ts 的 browserAsk）。改写数据和别的点击、填写、回车一律不问，事后由
+     * noteWrites 留痕。
      */
-    if (call.name.startsWith('browser_')) {
-      return submitAction(call.name, call.arguments, this.actionContext(call))
-    }
+    if (call.name.startsWith('browser_')) return this.browserApproval(call)?.why ?? null
     const tool = unwrapCall(call).tool
     if (risk.includes('destructive')) return `${tool} 可能不可逆地删除或覆盖数据`
     if (risk.includes('external') && risk.includes('write')) return `${tool} 会往外部系统写入或发送内容`
@@ -221,14 +225,14 @@ export class PolicyService extends Service {
    *
    * 走 `reflect.get` 而不是 inject，和 `mentioned()` / `serverOf()` 同一条理由：浏览器
    * 服务要在工具执行的路径上被调到，静态依赖绕回去两边都起不来。取不到就当没有上下文
-   * ——那时 submitAction 判不出提交（返回 null），而 checkBrowser 会因为拿不到域名而拒。
+   * ——那时 browserAsk 判不出登录和付款（返回 null），而 checkBrowser 会因为拿不到域名而拒。
    * **两个方向都是安全的那一边**：不知道点的是什么就别弹卡（那次调用本来也会因为 ref
    * 过期失败），不知道在哪个站点就别放行。
    */
   private browserSvc():
     | {
         actionContext?: (call: ToolCall) => ActionContext | undefined
-        setScope?: (sites: readonly string[], allowlist: boolean) => void
+        setScope?: (sites: readonly string[], allowlist: boolean, opened?: ((site: string) => boolean) | null) => void
         takeWrites?: () => { method: string; url: string }[]
       }
     | undefined {
@@ -256,6 +260,81 @@ export class PolicyService extends Service {
   private asked = new Set<string>()
 
   /**
+   * 每条对话已经批准打开过的站点（按注册域，见 siteOf）。浏览器这边「第一次打开」才问，
+   * 靠的就是这张表。
+   *
+   * 按**主会话**记：子任务的卡片本来就开在主会话上（approvals.ts 的 ask），人在主会话
+   * 批过的站，子任务再去不该再问一遍。只在内存里——进程重启后再问一次，安全的那一边。
+   */
+  private openedSites = new Map<string, Map<string, number>>()
+
+  /**
+   * 批准过的站闲置多久就重新问。
+   *
+   * **「这条对话」不能照会话 id 算**：一个 Bot 一辈子只有一条会话（registry 的
+   * ensureSession），照它记就是「这颗 Bot 自进程启动以来批过的站从此不再问」，可能一连几周。
+   * 所以两道收口：`/new`（`session/reset`）清掉；隔了这么久没再去过的，也当成另一段对话。
+   */
+  static readonly OPENED_IDLE_MS = 4 * 60 * 60 * 1000
+
+  private rootOf(sessionId: string): string {
+    return agentsOf(this.ctx)?.rootOf?.(sessionId) ?? sessionId
+  }
+
+  /** 这条对话眼下还算「打开过」这个站吗。算的话顺手续上闲置计时——还在用的站不该到点就问。 */
+  private siteOpened(root: string, site: string): boolean {
+    const sites = this.openedSites.get(root)
+    const at = sites?.get(site)
+    if (!sites || at === undefined) return false
+    if (Date.now() - at > PolicyService.OPENED_IDLE_MS) {
+      sites.delete(site)
+      return false
+    }
+    sites.set(site, Date.now())
+    return true
+  }
+
+  /**
+   * 浏览器这次调用要不要问人：卡片上那句话，和「这一轮都批准」记在哪把钥匙上。
+   *
+   * 钥匙按**卡片的类**给，不按工具名：同一把 `browser_click` 可能在登录、也可能在付款，按
+   * 工具名记的话，人在登录卡上点的「这一轮都批准」会把这一轮后面的付款一起放行。打开站点
+   * 按站记，批了这个站不等于批了下一个。
+   */
+  browserApproval(call: ToolCall): { why: string; grant: string } | null {
+    if (call.name === 'browser_navigate') {
+      const host = hostOf(urlArgOf(call.arguments))
+      // 网址不合法：那次调用本来就会失败，不必先把人叫来。
+      if (!host) return null
+      const site = siteOf(host)
+      if (this.siteOpened(this.rootOf(call.sessionId), site)) return null
+      return {
+        why: `这条对话第一次打开 ${site}（${host}）。批准之后这段对话里再去 ${site} 不再问（/new 或闲置 4 小时后会重新问）`,
+        grant: `browser:open:${site}`,
+      }
+    }
+    const ask =
+      call.name === 'browser_batch'
+        ? batchBrowserAsk(call.arguments, (step) =>
+            this.actionContext({ ...call, name: `browser_${String(step.action ?? '')}`, arguments: JSON.stringify(step) }),
+          )
+        : browserAsk(call.name, call.arguments, this.actionContext(call))
+    return ask ? { why: ask.why, grant: `browser:${ask.kinds.join('+')}` } : null
+  }
+
+  /** 人批准了一次浏览器调用之后：navigate 的那个站记下来，这段对话里之后不再问。 */
+  noteApproved(call: ToolCall): void {
+    if (call.name !== 'browser_navigate') return
+    const host = hostOf(urlArgOf(call.arguments))
+    if (!host) return
+    const root = this.rootOf(call.sessionId)
+    if (this.openedSites.size > 1000) this.openedSites.clear()
+    const sites = this.openedSites.get(root) ?? new Map<string, number>()
+    sites.set(siteOf(host), Date.now())
+    this.openedSites.set(root, sites)
+  }
+
+  /**
    * 浏览器工具的准入。**分两半，一半不受任何开关控制。**
    *
    *  1. 能力开关（模版里的 `browser.on`）与硬黑名单（回环、内网、非 http）——谁都关不掉。
@@ -263,12 +342,14 @@ export class PolicyService extends Service {
    *  2. 公司站点白名单——那才是「禁止访问未授权的外部系统」这条开关管的事，管理员关掉
    *     它就等于说「可以去名单外的地方」。
    *
-   * `allowlist` 传的就是第 2 条要不要生效。
+   * `allowlist` 传的就是第 2 条要不要生效。`askOpen`：高风险确认开着——那时「这条对话还没
+   * 批准打开过的站」读不得（见下面 setScope 那一句）。
    */
   checkBrowser(
     bot: BotRecord | undefined,
     call: ToolCall,
     allowlist: boolean,
+    askOpen = false,
   ): { ok: true } | { ok: false; guard: GuardId; reason: string } {
     // 查不到 Bot 就拒。和 mcp_ 那条同一个理由：最该保守的几种情况不能一路放行。
     if (!bot) return { ok: false, guard: 'browser', reason: '认不出这条会话属于哪个 Bot，不能确认浏览器是否被授权' }
@@ -315,7 +396,14 @@ export class PolicyService extends Service {
      * 点一下开出新标签页、页内脚本自己跳走。判过之后读回来的那一页，可能已经不是判的
      * 时候那一页了——服务那边拿着同一份名单，在读内容之前再判一次。
      */
-    this.browserSvc()?.setScope?.(browser.sites, allowlist)
+    /**
+     * 「第一次打开要问」只拦得住 navigate 参数里写的那个站；点一个外链、302、点开新标签页，
+     * 落脚的都可能是另一个从没批过的站。那一页长什么样只有服务知道，所以把「这段对话批过
+     * 哪些站」也推下去：落在没批过的站上，内容不读回来，让模型照那句话用 navigate 再开一次
+     * ——那一次会弹卡。
+     */
+    const root = this.rootOf(call.sessionId)
+    this.browserSvc()?.setScope?.(browser.sites, allowlist, askOpen ? (site) => this.siteOpened(root, site) : null)
 
     if (!allowlist) return { ok: true }
     if (siteAllowed(host!, browser.sites)) return { ok: true }
@@ -707,7 +795,7 @@ export function apply(ctx: Context) {
         }
 
         if (call.name.startsWith('browser_')) {
-          const v = ctx.policy.checkBrowser(bot, call, guards['no-external'] === true)
+          const v = ctx.policy.checkBrowser(bot, call, guards['no-external'] === true, guards['high-risk'] === true)
           if (!v.ok) {
             return await ctx.policy.deny(
               call,
@@ -829,8 +917,11 @@ export function apply(ctx: Context) {
              * 这周的活收个尾」，中间隔着一次他没看见的委派。
              */
             const why2 = provenance(ctx, call, why)
-            const { verdict, viaBlock, feedback, edited } = await askAndRecord(ctx, call, bot, 'high-risk', why2)
+            // 浏览器的放行钥匙按卡片的类给（见 browserApproval），别的工具照旧按工具名。
+            const grant = call.name.startsWith('browser_') ? ctx.policy.browserApproval(call)?.grant : undefined
+            const { verdict, viaBlock, feedback, edited } = await askAndRecord(ctx, call, bot, 'high-risk', why2, grant)
             if (verdict !== 'approved') return blockedByUser(verdict, why, viaBlock, feedback)
+            ctx.policy.noteApproved(call)
             humanEdits.push(...(edited ?? []))
           }
         }
@@ -902,8 +993,8 @@ function outboundOf(call: ToolCall, risk: readonly string[]): boolean {
  *
  * 表单在**席位这边**算：剥元工具的壳、认字段、定哪几格能改，全在 forms.ts。
  */
-async function askAndRecord(ctx: Context, call: ToolCall, bot: BotRecord | undefined, guard: GuardId, why: string) {
-  const { verdict, viaGrant, viaBlock, edited, feedback } = await ctx.policy.approvals.ask(call, why, formOf(call))
+async function askAndRecord(ctx: Context, call: ToolCall, bot: BotRecord | undefined, guard: GuardId, why: string, grant?: string) {
+  const { verdict, viaGrant, viaBlock, edited, feedback } = await ctx.policy.approvals.ask(call, why, formOf(call), grant)
   await ctx.policy.record({
     sessionId: call.sessionId,
     botId: bot?.id ?? '',
@@ -915,7 +1006,7 @@ async function askAndRecord(ctx: Context, call: ToolCall, bot: BotRecord | undef
     // 人看到的是一次凭空出现的发信确认——而那正是最该问出处的一种。
     // terminal 的放行只认同一条命令（approvals.ts 的 grantKey），留档的话要跟着说准。
     reason: viaGrant
-      ? `${why}（这一轮此前已批准${SHELL_TOOLS.has(call.name) ? '同一条命令' : '同一把工具'}）`
+      ? `${why}（这一轮此前已批准${SHELL_TOOLS.has(call.name) ? '同一条命令' : grant ? '同一类操作' : '同一把工具'}）`
       : viaBlock
         ? `${why}（这一轮此前已拒绝同一把工具，没有再问）`
         : edited?.length

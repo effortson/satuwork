@@ -57,6 +57,8 @@ if (!bin) {
 const HOST = 'e2e.satuwork.test'
 /** 名单外的那个域名。策略里 sites 只写了 satuwork.test，所以它不在。 */
 const OFFSITE = 'other.example.test'
+/** 名单里的另一个站（注册域不同）。用来验「点外链落到一个这段对话没批过的站」。 */
+const SECOND = 'app.satuwork-two.test'
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>测试页</title></head><body>
 <main>
   <h1>订单</h1>
@@ -108,6 +110,27 @@ const HANG_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>一�
 </head><body><main><h1>一直在加载</h1></main></body></html>`
 
 const server = createServer((req, res) => {
+  // 一张大到回执会被结果预算截断的页面：几百个名字很长的按钮。
+  if (req.url === '/big') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    const btns = Array.from({ length: 380 }, (_, i) => `<button>第${i}个按钮${'很长的名字'.repeat(30)}</button>`).join('')
+    res.end(`<!doctype html><html><head><meta charset="utf-8"><title>大页面</title></head><body><main>${btns}</main></body></html>`)
+    return
+  }
+  // 登录页：一个密码框和一个「登录」按钮。浏览器这边现在只有登录还要人拍板。
+  if (req.url === '/login') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(
+      '<!doctype html><html><head><meta charset="utf-8"><title>登录</title></head><body><main>' +
+        '<label for="u">账号</label><input id="u">' +
+        '<label for="p">口令</label><input id="p" type="password">' +
+        '<label for="pin">PIN</label><input id="pin" type="password" role="searchbox" value="1234">' +
+        '<a href="http://' + SECOND + '/">去另一个站</a>' +
+        '<button onclick="document.getElementById(\'o\').textContent=\'进来了\'">登录</button><div id="o"></div>' +
+        '</main></body></html>',
+    )
+    return
+  }
   // 下载：一个带下载链接的页面，和一个 attachment 响应。
   if (req.url === '/dl-page') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
@@ -195,7 +218,7 @@ const chrome = spawn(
     `--user-data-dir=${profile}`,
     `--remote-debugging-port=${cdpPort}`,
     '--remote-debugging-address=127.0.0.1',
-    `--host-resolver-rules=MAP ${HOST} 127.0.0.1:${httpPort},MAP ${OFFSITE} 127.0.0.1:${httpPort}`,
+    `--host-resolver-rules=MAP ${HOST} 127.0.0.1:${httpPort},MAP ${OFFSITE} 127.0.0.1:${httpPort},MAP ${SECOND} 127.0.0.1:${httpPort}`,
     'about:blank',
   ],
   // stderr 留着：起不来的时候它是唯一的线索。以前是 ignore，于是 CI 上只有一句「没起来」。
@@ -269,7 +292,7 @@ const bots = {
     name: '真跑一遍的 Bot',
     origin: 'company',
     mcps: [],
-    browser: { on: true, sites: ['satuwork.test'] },
+    browser: { on: true, sites: ['satuwork.test', 'satuwork-two.test'] },
     guards: { 'high-risk': true, pii: false, 'no-external': true },
   },
 }
@@ -277,7 +300,8 @@ const ctx = new Context()
 ctx.provide('logger', { warn() {}, info() {}, error() {} })
 ctx.provide('sessions', {
   async events(sessionId) {
-    if (sessionId !== 's1') throw new Error('没有这条会话')
+    // s-other：同一颗 Bot 的另一条会话（子任务那种），用来验「各会话各记各的」。
+    if (sessionId !== 's1' && sessionId !== 's-other') throw new Error('没有这条会话')
     return [{ seq: 1, time: Date.now(), type: 'session', data: { botId: 'b1' } }]
   },
   async append(sessionId, type, data) {
@@ -311,16 +335,26 @@ const svc = ctx.browser
  */
 const asked = []
 const approver = setInterval(() => {
-  for (const p of ctx.policy.approvals.list('s1')) {
+  for (const p of [...ctx.policy.approvals.list('s1'), ...ctx.policy.approvals.list('s-other')]) {
     asked.push({ tool: p.name, reason: p.reason })
-    ctx.policy.approvals.decide('s1', p.callId, 'approve', 'once')
+    ctx.policy.approvals.decide(p.sessionId, p.callId, 'approve', 'once')
   }
 }, 30)
 approver.unref?.()
 
 let seq = 0
-const run = (name, args = {}) =>
-  ctx.tools.execute({ callId: `c${++seq}`, name, arguments: JSON.stringify(args), sessionId: 's1' })
+const rawRun = (name, args = {}, sessionId = 's1') =>
+  ctx.tools.execute({ callId: `c${++seq}`, name, arguments: JSON.stringify(args), sessionId })
+/** 页面没变时 browser_snapshot 只回一句「和上一张一样」。 */
+const sameAsLast = (r) => r?.text?.startsWith('页面和你上一次拿到的那张快照一模一样')
+/**
+ * 下面的用例大多是「动一下，再拍一张取 ref」。页面没变时那张只回一句短话，照工具说明里
+ * 写的再调一次就给全文——这里替它们做了，省掉的那一次本身由 out.dedupe 那一段单独测。
+ */
+const run = async (name, args = {}) => {
+  const r = await rawRun(name, args)
+  return name === 'browser_snapshot' && sameAsLast(r) ? rawRun(name, args) : r
+}
 /**
  * 这一步的截图。**工具结果里没有它**——结果先交给模型，截图在后台等页面画出来再拍
  * （ToolResult.pendingShot）。要看它就得等这个 Promise，和 agent 补 `tool/shot` 那条路一样。
@@ -639,9 +673,11 @@ try {
    * 中间任何一环断了，表现都是「该弹的卡不弹」——一次不可逆的点击悄悄过去。
    */
   out.approval = {
-    点提交弹了卡: asked.some((a) => a.tool === 'browser_click' && a.reason.includes('提交订单')),
-    // 「慢一点」「开新标签页」这些不该弹——否则就是每次点击都要人点头，绕回它要避开的事。
-    点别的没弹卡: !asked.some((a) => a.reason.includes('慢一点') || a.reason.includes('开新标签页')),
+    // 浏览器这边只问「这条对话第一次打开某个站」和登录。到这里为止只开过 satuwork.test 这一个站。
+    第一次打开弹了卡: asked.filter((a) => a.tool === 'browser_navigate').length === 1,
+    卡上说了是哪个站: asked.some((a) => a.tool === 'browser_navigate' && a.reason.includes('satuwork.test')),
+    // 点提交、点删除（confirm 框也点了确定）都不再弹——中间的操作一律不问。
+    中间的操作没弹卡: !asked.some((a) => a.tool !== 'browser_navigate'),
   }
 
   const tabs = await run('browser_tabs')
@@ -718,6 +754,178 @@ try {
     // navigate 走得通，而且走完这个标记就清了。
     还能导航出去: wayOut.failed !== true && wayOut.text.includes('提交订单'),
     出去之后标记清了: !svc.blockedNow(),
+  }
+
+  /**
+   * browser_batch：一串动作一次做完，只在最后拍一张快照。
+   *
+   * 要钉的是它和单把工具**一样老实**：审批按真实快照里的按钮名逐步判、整批只弹一张卡；
+   * 哪一步没做成就停在哪一步，前面做了的照实说、后面的真没做；对话框弹出来就停；
+   * 写错一步的话整批一步都不动。
+   */
+  {
+    await run('browser_navigate', { url: `http://${HOST}/` })
+    const s = await run('browser_snapshot')
+    const q = refOf(s.text, '关键词')
+    const submit = refOf(s.text, '提交订单')
+    const askBtn = refOf(s.text, '删除')
+    const selLine = s.text.split('\n').find((l) => l.includes('combobox'))
+    const sel = (selLine && /\[(@e\d+)\]/.exec(selLine)?.[1]) || ''
+    const before = asked.length
+    const batch = await run('browser_batch', {
+      steps: [
+        { action: 'type', ref: q, text: '橡皮' },
+        { action: 'select', ref: sel, values: ['甲'] },
+        { action: 'click', ref: submit },
+        { action: 'wait', text: '已提交:橡皮' },
+      ],
+    })
+    const cards = asked.slice(before)
+    out.batch = {
+      整批做完了: batch.failed !== true && batch.text.includes('做了 4 步'),
+      表单真的提交了: batch.text.includes('已经出现「已提交:橡皮」'),
+      // 批里点了「提交订单」：中间的操作不问，一张卡都不弹。
+      没有登录就不弹卡: cards.length === 0,
+      回执带着快照: batch.text.includes('<page_content url='),
+    }
+
+    // 不给 ref 的 type 打进当前焦点，不清空：表格单元格靠的就是这一条。
+    const focused = await run('browser_batch', {
+      steps: [
+        { action: 'type', ref: q, text: '笔' },
+        { action: 'type', text: '袋' },
+      ],
+    })
+    out.batch.不给ref打进当前焦点 = focused.failed !== true && focused.text.includes('value="笔袋"')
+
+    // 中途 ref 失效：停在那一步。
+    const stale = await run('browser_batch', {
+      steps: [
+        { action: 'type', ref: q, text: '尺子' },
+        { action: 'click', ref: '@e99999' },
+        { action: 'type', ref: q, text: '不该填进去' },
+      ],
+    })
+    out.batch.中途失效停在那一步 =
+      stale.failed === true && stale.text.includes('做了 1 步') && stale.text.includes('第 2 步没做成') && stale.text.includes('后面 1 步没做')
+    out.batch.后面那步真没做 = stale.text.includes('value="尺子"') && !stale.text.includes('不该填进去')
+
+    // 写错一步：整批一步都不动。
+    const bad = await run('browser_batch', {
+      steps: [
+        { action: 'type', ref: q, text: '先填的' },
+        { action: 'navigate', url: `http://${HOST}/second` },
+      ],
+    })
+    const afterBad = await run('browser_snapshot')
+    out.batch.写错一步整批不动 = bad.failed === true && bad.text.includes('一步都还没做') && !afterBad.text.includes('先填的')
+
+    // 对话框弹出来就停，后面的不做。
+    const dlg = await run('browser_batch', {
+      steps: [
+        { action: 'click', ref: askBtn },
+        { action: 'type', ref: q, text: '对话框后面' },
+      ],
+    })
+    out.batch.对话框弹出就停 = dlg.text.includes('对话框') && dlg.text.includes('第 2 步起都没做')
+    await run('browser_dialog', { action: 'dismiss' })
+    out.batch.对话框后面那步真没做 = !(await run('browser_snapshot')).text.includes('对话框后面')
+  }
+
+  /**
+   * 登录：浏览器这边现在唯一还要人拍板的页面动作。
+   *
+   * 认的是**真快照**给密码框打的 password 标记（它的名字叫「口令」，词表认不出来），以及按钮上
+   * 印的「登录」。顺带钉一条：密码框的值不进快照——那是员工的密码，读进模型就进了会话日志。
+   */
+  {
+    const page = await run('browser_navigate', { url: `http://${HOST}/login` })
+    const before = asked.length
+    const login = await run('browser_batch', {
+      steps: [
+        { action: 'type', ref: refOf(page.text, '账号'), text: 'demo' },
+        { action: 'type', ref: refOf(page.text, '口令'), text: 'hunter2-secret' },
+        { action: 'click', ref: refOf(page.text, '登录') },
+      ],
+    })
+    const cards = asked.slice(before)
+    out.login = {
+      同站再开没弹卡: !cards.some((a) => a.tool === 'browser_navigate'),
+      登录弹了一张卡: cards.length === 1 && cards[0].tool === 'browser_batch',
+      卡上写了填密码和点登录: Boolean(cards[0]?.reason.includes('第 2 步') && cards[0].reason.includes('第 3 步') && !cards[0].reason.includes('第 1 步')),
+      密码框打了标记: /口令" \[@e\d+\] password/.test(login.text),
+      密码没进快照: !login.text.includes('hunter2-secret'),
+      别的框照样带值: login.text.includes('value="demo"'),
+      // 组件库常给密码框写显式 role：判密码框看的是 type，不是 role。
+      写了role的密码框也打标记: /PIN" \[@e\d+\] password/.test(login.text),
+      写了role的密码框值也不进快照: !login.text.includes('1234'),
+    }
+
+    // 「点用户名、按 Tab、直接打字」：不给 ref 的那一下打进的是密码框，照样要问。
+    const s2 = await run('browser_snapshot')
+    const before2 = asked.length
+    const tabbed = await run('browser_batch', {
+      steps: [
+        { action: 'click', ref: refOf(s2.text, '账号') },
+        { action: 'press', key: 'Tab' },
+        { action: 'type', text: 'tabbed-secret' },
+      ],
+    })
+    const cards2 = asked.slice(before2)
+    out.login.按Tab再打字也要问 = tabbed.failed !== true && cards2.length === 1 && cards2[0].reason.includes('当前焦点')
+
+    /**
+     * 点外链落到一个这段对话没批过的站：内容不读回来，话里说清用 navigate 再开一次——
+     * 那一次会弹卡。「第一次打开要问」只拦 navigate 参数的话，点一下链接就绕过去了。
+     */
+    const s3 = await run('browser_snapshot')
+    const hop = await run('browser_click', { ref: refOf(s3.text, '去另一个站') })
+    const before3 = asked.length
+    const reopen = await run('browser_navigate', { url: `http://${SECOND}/` })
+    const cards3 = asked.slice(before3)
+    out.login.点外链落到没批过的站不读内容 =
+      hop.failed === true && hop.text.includes('satuwork-two.test') && hop.text.includes('browser_navigate') && !hop.text.includes('提交订单')
+    out.login.再用navigate打开会弹卡 =
+      reopen.failed !== true && cards3.length === 1 && cards3[0].tool === 'browser_navigate' && cards3[0].reason.includes('satuwork-two.test')
+  }
+
+  /**
+   * 页面没变时 browser_snapshot 不再交一份全文。
+   *
+   * 线上常见 `click → snapshot`：click 的回执里已经带着点完之后的那张，紧接着这张一字不差。
+   * 要钉的是它**不会把模型困住**：只连着省一次（手上那张被轮内护栏省成占位时，再调一次就有
+   * 全文）；按会话分开记（子任务没见过主会话那张）；full 和默认那张不互相顶替；页面真变了就给全文。
+   */
+  {
+    const nav = await rawRun('browser_navigate', { url: `http://${HOST}/` })
+    const again = await rawRun('browser_snapshot')
+    const third = await rawRun('browser_snapshot')
+    // s-other 这段对话也算批过这个站（不然它连读都读不了），但它从没拿到过任何一张快照。
+    ctx.policy.noteApproved({ callId: 'x', name: 'browser_navigate', arguments: JSON.stringify({ url: `http://${HOST}/` }), sessionId: 's-other' })
+    const other = await rawRun('browser_snapshot', {}, 's-other')
+    const full = await rawRun('browser_snapshot', { full: true })
+    const s = third.text
+    const typed = await rawRun('browser_type', { ref: refOf(s, '关键词'), text: '变了' })
+    // 不经工具改一下页面（相当于员工自己在那块屏上敲了字）：比的是真拍回来的内容，
+    // 不是「上一步有没有调过会动页面的工具」。
+    await svc.focus(refOf(s, '关键词'))
+    await svc.typeText('人改的')
+    const late = await rawRun('browser_snapshot')
+    // 回执被结果预算截断过：模型手上那张是残的，不能再说「和你手上那张一样」。
+    const big = await rawRun('browser_navigate', { url: `http://${HOST}/big` })
+    const bigAgain = await rawRun('browser_snapshot')
+    out.dedupe = {
+      // ToolService 交回来的已经是按预算截过的那份：正好顶到上限，就说明原文超了。
+      大页面的回执确实超了上限: big.text.length >= 48_000,
+      回执被截断过就照样给全文: !sameAsLast(bigAgain) && bigAgain.text.includes('<page_content'),
+      动作之后紧接着拍只回一句: nav.failed !== true && sameAsLast(again) && !again.text.includes('<page_content'),
+      短话里说了再调一次就有全文: again.text.includes('再调一次'),
+      只连着省一次: !sameAsLast(third) && third.text.includes('提交订单'),
+      别的会话照样拿全文: !sameAsLast(other) && other.text.includes('提交订单'),
+      full那张不被默认那张顶替: !sameAsLast(full) && full.text.includes('这是一段正文'),
+      填过之后照样有回执: typed.failed !== true && typed.text.includes('value="变了"'),
+      页面自己变了就给全文: !sameAsLast(late) && late.text.includes('value="人改的"'),
+    }
   }
 
   /**

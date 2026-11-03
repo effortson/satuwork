@@ -12,6 +12,13 @@ export interface PendingApproval {
   reason: string
   /** 这次要用哪张卡、卡上有哪几格（见 forms.ts）。界面照着它画。 */
   form: ApprovalForm
+  /**
+   * 「这一轮都批准」记在哪把钥匙上。调用方给了就用它，没给就按 grantKey 从工具名算。
+   *
+   * 浏览器要自己给：同一把 `browser_click` 可能是在登录、也可能是在付款，按工具名记的话，
+   * 人在登录卡上点的「这一轮都批准」会把这一轮后面的付款一起放行。
+   */
+  grant?: string
   createdAt: number
   expiresAt: number
 }
@@ -32,8 +39,8 @@ function blockKey(call: { name: string; arguments: string }): string {
  * 眼下只有 `terminal`：它弹卡的理由是「这条命令」会毁东西（policy/shell.ts 的
  * destructiveCommand），同一把工具的下一条命令毁的可能是完全不同的东西。MCP 工具的风险
  * 是按工具标的（发信那把每次都是发信），按工具名放行正是那颗按钮的本意。浏览器那几把
- * 虽然也按参数判，但它们的卡片本来就指望「这一轮都批准」来消化（见 browser.ts 的
- * submitAction），不收进来。
+ * 也按参数判，但它们的钥匙由策略按「这张卡是哪一类」直接给（ask 的 `grant` 参数，见
+ * policy/index.ts 的 browserApproval），不走这里。
  */
 const ARGUMENT_RISK = SHELL_TOOLS
 
@@ -168,7 +175,7 @@ export class ApprovalGate {
    * 三条出路都要走到：人点了、这一轮被中止（停止按钮）、等到超时。少任何一条，
    * 那次调用就会挂着不动——而它挂着的时候，整条会话都在等它。
    */
-  async ask(call: ToolCall, reason: string, form: ApprovalForm): Promise<Decision> {
+  async ask(call: ToolCall, reason: string, form: ApprovalForm, grant?: string): Promise<Decision> {
     /**
      * 子代理的调用，**卡片开在主会话上**（见 docs/delegation.md §6.2）。
      *
@@ -203,7 +210,7 @@ export class ApprovalGate {
     if (blocked?.has(blockKey(call))) return { verdict: 'denied', scope: 'turn', viaBlock: true }
 
     const granted = this.grants.get(sessionId)
-    if (granted?.has(grantKey(call))) return { verdict: 'approved', scope: 'turn', viaGrant: true }
+    if (granted?.has(grant ?? grantKey(call))) return { verdict: 'approved', scope: 'turn', viaGrant: true }
 
     const key = `${sessionId}:${call.callId}`
     const now = Date.now()
@@ -214,6 +221,7 @@ export class ApprovalGate {
       arguments: call.arguments,
       reason,
       form,
+      ...(grant ? { grant } : {}),
       createdAt: now,
       expiresAt: now + TIMEOUT_MS,
     }
@@ -329,7 +337,7 @@ export class ApprovalGate {
     // 记的是剥壳后的内层工具名（terminal 连命令一起，见 grantKey），和查的那一侧用同一把钥匙。
     if (decision === 'approve' && scope === 'turn') {
       const set = this.grants.get(sessionId) ?? new Set<string>()
-      set.add(grantKey(hit.rec))
+      set.add(hit.rec.grant ?? grantKey(hit.rec))
       this.grants.set(sessionId, set)
     }
     // 「这一轮别再试了」：拒绝也能带范围，落进拦停名单，这一轮同一把工具直接挡。

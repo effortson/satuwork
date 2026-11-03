@@ -175,7 +175,16 @@ export const BOOTSTRAP = `
         continue
       }
       const bits = []
-      if (el.value !== undefined && el.value !== '' && role === 'textbox') bits.push('value="' + String(el.value).slice(0, 80) + '"')
+      /**
+       * 密码框：打一个 password 标记（**放在最前**，策略靠它认「这是在登录」），值不列——
+       * 列出来就是把员工的密码读进模型、写进会话日志。
+       *
+       * 看的是 input 的 type，**不看 role**：role 先取元素上显式写的那个（组件库常给密码框
+       * 写 role=searchbox 之类），按 role 判的话这种密码框既不打标记、也认不出是在登录。
+       */
+      const secret = el.tagName === 'INPUT' && String(el.type || '').toLowerCase() === 'password'
+      if (secret) bits.push('password')
+      else if (el.value !== undefined && el.value !== '' && role === 'textbox') bits.push('value="' + String(el.value).slice(0, 80) + '"')
       if (el.checked) bits.push('checked')
       if (el.disabled) bits.push('disabled')
       if (role === 'combobox') {

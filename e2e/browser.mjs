@@ -78,6 +78,39 @@ export async function runBrowser({ root, test, assert, log }) {
     assert(r.read.带ref也读得动, 'browser_read 带 ref 时挂了')
   })
 
+  await test('一批动作一次做完：审批逐步判、出错停在那一步、写错一步整批不动', () => {
+    /**
+     * browser_batch 省的是调用次数，不能省掉单把工具的任何一条老实：卡片上那句话来自
+     * 真实快照里的按钮名，ref 失效、对话框弹出都要当场停，前面做了几步照实说。
+     * 停下来之后「后面的真没做」也要读回页面验——回执说没做、页面上却填进去了，那比报错更坏。
+     */
+    const bad = all(r.batch || {})
+    assert(r.batch, '探针没跑到 batch 那一段')
+    assert(!bad.length, `这几条不对：${bad.join('、')}`)
+  })
+
+  await test('登录要人拍板，密码不进快照', () => {
+    /**
+     * 浏览器这边中间的操作一律不问，剩下的只有「第一次打开」和登录。登录认的是真快照给
+     * 密码框打的标记——测试页上那个框叫「口令」，光靠词表认不出来，这条才验得到那条链路。
+     * 密码框的值不进快照：读进模型就进了会话日志，那是员工的密码。
+     */
+    const bad = all(r.login || {})
+    assert(r.login, '探针没跑到 login 那一段')
+    assert(!bad.length, `这几条不对：${bad.join('、')}`)
+  })
+
+  await test('页面没变时快照只回一句，但不会把模型困住', () => {
+    /**
+     * 省的是「动作回执里已经有、紧接着又拍一张」那一份全文。代价是一种新的卡死：模型手上
+     * 那张被轮内护栏省成了占位，而它每次拍都只拿到「同上」。所以只连着省一次、按会话分开记，
+     * 比的是真拍回来的内容而不是「上一步动没动页面」。
+     */
+    const bad = all(r.dedupe || {})
+    assert(r.dedupe, '探针没跑到 dedupe 那一段')
+    assert(!bad.length, `这几条不对：${bad.join('、')}`)
+  })
+
   await test('读正文 / 等待 / 滚动', () => {
     for (const [name, group] of [['read', r.read], ['wait', r.wait], ['scroll', r.scroll]]) {
       const bad = all(group)

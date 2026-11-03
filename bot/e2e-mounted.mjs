@@ -66,7 +66,7 @@ const TOOLS = [
   'escalate_to_human',
   'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press',
   'browser_dialog', 'browser_back', 'browser_scroll', 'browser_read', 'browser_wait_for',
-  'browser_select', 'browser_tabs',
+  'browser_select', 'browser_tabs', 'browser_batch',
 ]
 
 const cleanup = () => {

@@ -272,6 +272,10 @@ function toolCommandOf(x) {
   else if (x.name === 'search_files') action = args.target === 'files' ? t('查找文件', 'Find files') : t('搜索文件内容', 'Search file content')
   else if (x.name === 'web_search') action = t('搜索网页', 'Search the web')
   else if (x.name === 'web_extract') action = t('读取网页', 'Read webpage')
+  else if (x.name === 'browser_batch') {
+    action = t('连续网页操作', 'Browser steps')
+    if (Array.isArray(args.steps)) subject = t(`${args.steps.length} 步`, `${args.steps.length} steps`)
+  }
   const summary = subject ? `${action} · ${subject}` : action
   return summary.length > 120 ? summary.slice(0, 120) + '…' : summary
 }
