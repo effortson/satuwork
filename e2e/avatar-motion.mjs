@@ -93,7 +93,25 @@ export async function runAvatarMotion({ root, test, assert, log }) {
       assert(!ui.botAvatar(key).includes('data-running'), `${key} 默认不该动`)
       assert(ui.botAvatar(key, 24, 'company', true).includes(`data-avatar="${key}" data-running="true"`), `${key} 无法启用动画`)
     }
-    assert(ui.botAvatar('code') === ui.botAvatar('c-code'), '旧头像键不兼容')
+    const normalizePaint = html => html.replace(/satu-avatar-\d+/g, 'satu-avatar')
+    assert(normalizePaint(ui.botAvatar('code')) === normalizePaint(ui.botAvatar('c-code')), '旧头像键不兼容')
     assert(!ui.botAvatar('g-core').includes('satu-bot-art'), '全局头像被误换成公司头像')
+  })
+
+  await test('同页重复头像的材质独立，隐藏或重绘一颗不影响其他头像', async () => {
+    const ui = open()
+    const seen = new Set()
+    for (const key of ['c-bot', 'c-bot', 'c-chat', 'c-code', 'c-book', 'c-finance', 'g-core', 'g-core', 'g-shield']) {
+      const html = ui.botAvatar(key)
+      const ids = new Set(Array.from(html.matchAll(/\bid="([^"]+)"/g), m => m[1]))
+      assert(ids.size > 0, `${key} 缺少立体材质`)
+      for (const id of ids) {
+        assert(!seen.has(id), `头像间重复的材质 ID：${id}`)
+        seen.add(id)
+      }
+      for (const [, ref] of html.matchAll(/url\(#([^)]+)\)/g)) {
+        assert(ids.has(ref), `${key} 的材质引用越过了自己的 SVG：${ref}`)
+      }
+    }
   })
 }

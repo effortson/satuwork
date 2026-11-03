@@ -106,6 +106,7 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font-fa
 /* main：两行（header / 正文）两列（内容 / 右栏）。右栏跨两行，所以能顶到 header
    那一行去——做成 header 下面的兄弟节点就顶不上去。列宽由 appView 内联给出。 */
 .gw-shell { --gw-head-height: 60px; --gw-main-border: 1px; --gw-side-top: var(--space-4); }
+.gw-side { --color-surface: var(--color-neutral-100); background: var(--color-surface); }
 .gw-main { min-width: 0; height: 100%; min-height: 0; box-sizing: border-box; overflow: hidden;
   background: var(--color-neutral-100); border: 1px solid var(--color-divider); border-radius: var(--radius-md);
   display: grid; grid-template-rows: auto minmax(0, 1fr); }
@@ -1473,6 +1474,7 @@ aside:not(:has(.satu-botlist)) .satu-navfoot { flex: 0 1 auto; min-height: 0; ov
        点出来的，抽屉压在上面的话弹窗开了也看不见。 */
     position: fixed; top: 0; bottom: 0; left: 0; z-index: 24;
     width: min(300px, 86vw); height: auto !important;
+    background: var(--color-surface);
     border-radius: 0 var(--radius-md) var(--radius-md) 0 !important;
     box-shadow: var(--shadow-lg);
     transform: translateX(-105%);

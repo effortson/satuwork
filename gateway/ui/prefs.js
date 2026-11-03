@@ -216,7 +216,7 @@ const ICONS = {
 /**
  * Bot 头像。公司十个、全局八个，两套不重合。
  *
- * 公司 Bot 沿用新版 Logo 的浅色方脸和粗边框，用表情与配饰区分岗位；全局 Bot 仍用六边牌 + 内环表示平台能力。
+ * 公司 Bot 用立体方脸和岗位配饰；全局 Bot 用带厚度的六边牌 + 内环表示平台能力。
  * 键沿用旧值，已经选过头像的 Bot 会直接看到新版插画。
  *
  * 每个头像是一整张图（底板填色 + 上面的线条），不是一枚线框图标；所以外面不用再
@@ -228,17 +228,46 @@ const BOT_AVATAR_TILE = '<path d="M20 1.8 35.8 10.9v18.2L20 38.2 4.2 29.1V10.9z"
 const BOT_AVATAR_RING = '<path d="M20 6.6 31.1 13v12.8L20 32.2 8.9 25.8V13z" fill="none" stroke-width="1.4" opacity="0.45"/>'
 
 // 公司头像沿用 Logo 的浅色方脸、粗边框和小下巴；共用轮廓，角色用配色和少量配饰区分。
-// 40px 画布上边框宽 5.5px，24px 时仍有约 3px；不靠渐变和碎小细节表达身份。
+// 轮廓与岗位配饰保留；渐变、边缘高光和接触阴影给外壳与面板增加厚度。
 const COMPANY_AVATAR_EYES = '<circle cx="14.2" cy="21.5" r="1.8"/><circle cx="25.8" cy="21.5" r="1.8"/>'
 const COMPANY_AVATAR_SMILE = '<path d="M17 26q3 2.5 6 0" fill="none" stroke="#3B3438" stroke-width="1.8" stroke-linecap="round"/>'
 
 function companyAvatarArt(frame, { behind = '', eyes = COMPANY_AVATAR_EYES, face = '', accessory = '' } = {}) {
-  return `<g class="satu-bot-body">${behind}
-    <rect x="13" y="31" width="14" height="7" rx="3.5" fill="${frame}"/>
-    <rect x="2.5" y="2.5" width="35" height="32" rx="9" fill="${frame}"/>
-    <rect x="8" y="8" width="24" height="21" rx="5.5" fill="#FFF9F2"/>
-    <rect class="satu-bot-chin" x="15.5" y="34" width="9" height="1.8" rx="0.9" fill="#FFF9F2"/>
-    <g class="satu-bot-face-detail">${face}</g><g class="satu-bot-eyes" fill="#3B3438">${eyes}</g>${COMPANY_AVATAR_SMILE}<g class="satu-bot-accessory">${accessory}</g></g>`
+  // 模板在渲染时分配独立 ID，同一页面上的头像不会引用另一颗（可能隐藏）的渐变。
+  const id = '__AVATAR_PAINT__'
+  const mix = (color, target, amount) => '#' + [1, 3, 5].map(i => Math.round(
+    parseInt(color.slice(i, i + 2), 16) * (1 - amount) + target * amount,
+  ).toString(16).padStart(2, '0')).join('')
+  const colors = [...new Set([frame, '#FFF9F2', '#3B3438',
+    ...Array.from((face + eyes + accessory).matchAll(/fill="(#[\da-f]{6})"/gi), m => m[1]),
+  ])]
+  const paint = color => `url(#${id}-p${colors.indexOf(color)})`
+  const shaded = art => art.replace(/fill="(#[\da-f]{6})"/gi, (_, color) => `fill="${paint(color)}"`)
+  const gradients = colors.map((color, i) => `<linearGradient id="${id}-p${i}" x1="0" y1="0" x2="0.8" y2="1">
+    <stop stop-color="${mix(color, 255, 0.42)}"/><stop offset="0.38" stop-color="${mix(color, 255, 0.08)}"/>
+    <stop offset="0.76" stop-color="${color}"/><stop offset="1" stop-color="${mix(color, 0, 0.24)}"/>
+  </linearGradient>`).join('')
+  return `<defs>${gradients}
+    <radialGradient id="${id}-gloss" cx="0.2" cy="0.05" r="0.9"><stop stop-color="#fff" stop-opacity="0.4"/><stop offset="0.65" stop-color="#fff" stop-opacity="0"/></radialGradient>
+    <filter id="${id}-shadow" x="-25%" y="-25%" width="150%" height="160%" color-interpolation-filters="sRGB"><feDropShadow dx="0" dy="0.65" stdDeviation="0.45" flood-color="#30251f" flood-opacity="0.28"/></filter>
+    <filter id="${id}-detail" x="-30%" y="-40%" width="160%" height="190%" color-interpolation-filters="sRGB"><feDropShadow dx="0.1" dy="0.35" stdDeviation="0.22" flood-color="#30251f" flood-opacity="0.28"/></filter>
+  </defs><g class="satu-bot-body">${behind}
+    <g filter="url(#${id}-shadow)">
+      <rect x="13" y="31" width="14" height="7" rx="3.5" fill="${paint(frame)}"/>
+      <rect x="2.5" y="3.8" width="35" height="31" rx="9" fill="${mix(frame, 0, 0.25)}"/>
+      <rect x="2.5" y="2.5" width="35" height="31" rx="9" fill="${paint(frame)}"/>
+      <rect x="2.5" y="2.5" width="35" height="31" rx="9" fill="url(#${id}-gloss)"/>
+      <path d="M4.1 15V12a8 8 0 0 1 8-8h15" fill="none" stroke="#fff" stroke-opacity="0.4" stroke-width="0.7" stroke-linecap="round"/>
+      <rect x="7.6" y="7.5" width="24.8" height="22.5" rx="6.5" fill="${mix(frame, 0, 0.4)}"/>
+      <rect x="8" y="8" width="24" height="21.3" rx="6" fill="${paint('#FFF9F2')}"/>
+      <path d="M8.7 20v-5.4a6 6 0 0 1 6-6h10.6" fill="none" stroke="#fff" stroke-opacity="0.72" stroke-width="0.65" stroke-linecap="round"/>
+      <rect x="15.2" y="33.7" width="9.6" height="2.6" rx="1.3" fill="${mix(frame, 0, 0.3)}"/>
+      <rect class="satu-bot-chin" x="15.5" y="33.8" width="9" height="1.8" rx="0.9" fill="${paint('#FFF9F2')}"/>
+    </g>
+    <g class="satu-bot-face-detail" filter="url(#${id}-detail)">${shaded(face)}</g>
+    <g class="satu-bot-eyes" fill="${paint('#3B3438')}" filter="url(#${id}-detail)">${shaded(eyes)}</g>
+    <g filter="url(#${id}-detail)">${COMPANY_AVATAR_SMILE}</g>
+    <g class="satu-bot-accessory" filter="url(#${id}-detail)">${shaded(accessory)}</g></g>`
 }
 
 const COMPANY_AVATAR_ART = {
@@ -335,6 +364,7 @@ function avatarKeysFor(origin) {
  * 画一个头像。origin 决定层级（拿不准就按 key 前缀猜），key 决定画哪一个。
  * 公司头像用固定的插画配色；全局头像沿用主题色。
  */
+let botAvatarPaintId = 0
 function botAvatar(key, size = 34, origin, running = false) {
   const k = LEGACY_AVATARS[key] || key
   const a = BOT_AVATARS[k]
@@ -342,16 +372,21 @@ function botAvatar(key, size = 34, origin, running = false) {
   const def = a || BOT_AVATARS[fam === 'global' ? 'g-core' : 'c-bot']
   if (fam === 'company') {
     const art = COMPANY_AVATAR_ART[a?.family === 'company' ? k : 'c-bot']
+      .replaceAll('__AVATAR_PAINT__', `satu-avatar-${++botAvatarPaintId}`)
     const avatar = a?.family === 'company' ? k : 'c-bot'
     return `<svg class="satu-bot-art" data-avatar="${avatar}"${running ? ' data-running="true"' : ''} width="${size}" height="${size}" viewBox="0 0 40 40" role="img" aria-label="${esc(t(def.label))}" style="flex: none; display: block;">${art}</svg>`
   }
-  const bg = 'var(--color-accent-2-200)'
   const fg = 'var(--color-accent-2-800)'
-  const tile = BOT_AVATAR_TILE.replace('/>', ` fill="${bg}"/>`)
+  const id = `satu-avatar-${++botAvatarPaintId}`
+  const tile = BOT_AVATAR_TILE.replace('/>', ` fill="url(#${id}-tile)"/>`)
   const ring = BOT_AVATAR_RING.replace('stroke-width', `stroke="${fg}" stroke-width`)
   const glyph = def.glyph.map((d) => `<path d="${esc(d)}"/>`).join('')
   return `<svg width="${size}" height="${size}" viewBox="0 0 40 40" role="img" aria-label="${esc(t(def.label))}" style="flex: none; display: block;">
-    ${tile}${ring}
+    <defs><linearGradient id="${id}-tile" x1="0" y1="0" x2="0.85" y2="1">
+      <stop stop-color="var(--color-accent-2-100)"/><stop offset="0.45" stop-color="var(--color-accent-2-200)"/><stop offset="1" stop-color="var(--color-accent-2-400)"/>
+    </linearGradient></defs>
+    <path d="M20 3.3 35.8 12.4v16.7L20 39 4.2 29.1V12.4z" fill="var(--color-accent-2-600)"/>
+    ${tile}<path d="m5 11.4 15-8.6 15 8.6" fill="none" stroke="#fff" stroke-opacity="0.65" stroke-width="0.8" stroke-linejoin="round"/>${ring}
     <g fill="none" stroke="${fg}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${glyph}</g>
   </svg>`
 }
