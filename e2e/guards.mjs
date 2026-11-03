@@ -373,16 +373,32 @@ export async function runGuards({ root, test, assert, log }) {
     assert(!bad.length, `这几条不对：${bad.join('、')}`)
   })
 
-  await test('浏览器：认不出来的元素要问，不是放行', () => {
+  await test('浏览器：只问第一次打开、登录和付款，改写数据等中间操作一律不问', () => {
     /**
-     * 先写的是「没名字就放行」，那是个真洞：企业后台里的删除按钮常常只有一个垃圾桶
-     * 图标，既没有文字也没有 aria-label，快照里就是 `- button "" [@e12]`。照那条规则，
-     * 一次不可逆的删除**一张卡片都不会弹**，而 tool/policy 里也不会留下任何东西。
+     * 早先按「像提交」的词表弹卡，一张报价表改下来几十张卡片，人学会的是闭眼点批准。
+     * 现在只问三件事：用谁的身份进门（点登录、往密码框里填）、付钱（点支付、付款确认框点
+     * 确定），和这条对话第一次去哪个站（按注册域，同站的子域不再问）。保存、删除、回车、
+     * 别的确认框都不再问，事后由 noteWrites 留痕。
      */
     const a = r.browserApproval
-    assert(a.没名字的按钮要问, '只有图标的按钮被放行了')
-    assert(a.没名字也没角色的要问, '连角色都认不出来的元素被放行了')
-    assert(a.没名字的链接不问, '没文字的链接也弹卡，那是噪音')
+    assert(a.第一次打开要问 && a.同一站再开不问 && a.同一站的别的子域不问, '「第一次打开」那条不对')
+    assert(a.点登录要问 && a.往密码框填要问, '登录没问')
+    assert(a.点支付要问 && a.付款确认框点确定要问 && a.Display不算付款, '付款那条不对')
+    assert(a.点保存不问 && a.点提交不问 && a.点删除不问 && a.回车不问 && a.确认框点确定不问, '中间的操作还在弹卡')
+  })
+
+  await test('浏览器：「这一轮都批准」按卡片的类记，批过的站跟着对话收口', () => {
+    /**
+     * 按工具名记放行的话，人在登录卡上点的「这一轮都批准」会把这一轮后面的付款一起放行；
+     * 批了 A 站也不等于批了 B 站。批过的站照会话 id 记的话等于永久——一个 Bot 一辈子只有
+     * 一条会话——所以 /new 清掉、闲置太久的重新问。判「同一个站」时，共享托管后缀下面每个
+     * 子域各算各的（alice.github.io 和 bob.github.io 毫无关系）。
+     */
+    for (const [name, group] of [['grant', r.browserGrant], ['opened', r.browserOpened], ['siteOf', r.siteOf]]) {
+      const bad = all(group || {})
+      assert(group, `探针没跑到 ${name} 那一段`)
+      assert(!bad.length, `${name} 这几条不对：${bad.join('、')}`)
+    }
   })
 
   await test('浏览器：放行时把允许的站点推给服务，事后补记漏掉的写', () => {
@@ -391,8 +407,8 @@ export async function runGuards({ root, test, assert, log }) {
      *
      *  1. 策略只判「动手之前停在哪一页」，而一次调用当中页面还会跳（302、点开新标签页、
      *     页内脚本自己走）。名单推下去，服务在读回内容之前用同一套判据再判一次。
-     *  2. 提交判据是启发式，一定会漏。漏掉的那次至少要在会话日志里留得下一条 noted——
-     *     没有它，「事后查得到」这句话只是文档上的一句话。
+     *  2. 中间的操作不再弹卡，发出去的写只能靠事后留痕。没问过人的那次要在会话日志里
+     *     留得下一条 noted——没有它，「事后查得到」这句话只是文档上的一句话。
      */
     const push = all(r.scopePush)
     assert(!push.length, `作用域下推这几条不对：${push.join('、')}`)
@@ -429,13 +445,13 @@ export async function runGuards({ root, test, assert, log }) {
     assert(!bad.length, `这几条不对：${bad.join('、')}`)
   })
 
-  await test('浏览器：像提交的才弹卡片，点一下看看的不弹', () => {
+  await test('浏览器审批的每一条（含 browser_batch 逐步判）', () => {
     /**
      * `browser_click` 正好是 `external + write`，照通用规则判就是每一次点击都弹一张
      * 卡片——那不是收紧边界，那是让人学会闭眼点批准（terminal 那条分支写过同一件事）。
      *
-     * 反过来也要钉住：「先 type 再 press Enter」和 `submit: true` 是同一件事，
-     * 放过其中一个，模型换个写法就绕过去了——而它换写法不需要任何恶意。
+     * 批量那把也要钉住逐步判：只判第一步的话，「先填用户名、再填密码、再点登录」就从缝里
+     * 过去了。
      */
     const bad = all(r.browserApproval)
     assert(!bad.length, `这几条不对：${bad.join('、')}`)

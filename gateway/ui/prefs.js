@@ -433,7 +433,7 @@ const MEMORY_SCOPES = ['仅 Bot', '仅本人', '所属分组', '全公司']
 const MEMORY_KINDS = ['偏好', '事实', '流程', '联系人']
 const MEMORY_TTLS = ['30 天', '90 天', '180 天', '永久保留']
 const DEFAULT_BOT_GUARDS = [
-  { id: 'high-risk', title: '高风险操作需确认', desc: '对外发送、改写数据或付款前先征求同意', on: true },
+  { id: 'high-risk', title: '高风险操作需确认', desc: '对外发送、改写数据或付款前先征求同意；浏览器里只在首次打开某个站、登录和付款时确认', on: true },
   { id: 'pii', title: '拦截个人敏感信息', desc: '手机号、证件号、银行卡等不写入记忆、不外发', on: true },
   { id: 'no-external', title: '禁止访问未授权的外部系统', desc: '只允许调用已勾选的 MCP 与连接器', on: true },
 ]
