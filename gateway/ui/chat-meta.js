@@ -111,7 +111,6 @@ function paintChatChrome(folded) {
   }
   const meta = document.getElementById('chat-meta')
   if (meta) meta.textContent = chatMetaText(folded)
-  paintChatTodos(folded)
   paintChatTip(busy)
   paintSendFace(busy)
   /**

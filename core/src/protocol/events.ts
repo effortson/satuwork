@@ -109,6 +109,14 @@ export interface AssistantBlock {
   memNotes?: any[]
   approvals?: any[]
   handoffs?: any[]
+  /** 本轮的任务清单；同轮更新同一张卡，终态保留在历史回复里。 */
+  todoPlan?: TodoPlan
+}
+
+export interface TodoPlan {
+  items: any[]
+  seq?: number
+  state: 'running' | 'done' | 'ended' | 'stopped' | 'error'
 }
 
 export interface MarkBlock {
