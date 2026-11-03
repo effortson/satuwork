@@ -1832,7 +1832,7 @@ var SatuCore = (() => {
   }
 
   // core/src/chat/fold.ts
-  function fold(events, live, channelBot = false) {
+  function fold(events, live, channelBot = false, todoSnapshot) {
     const blocks = [];
     const showChannelVia = channelBot || (events || []).some((ev) => {
       const source = ev?.type === "user/message" ? ev?.data?.source : null;
@@ -1850,6 +1850,29 @@ var SatuCore = (() => {
     const handoffSeen = /* @__PURE__ */ new Map();
     const handoffOf = (id) => id ? handoffSeen.get(id) : void 0;
     let openTurn = false;
+    let planOwner = null;
+    let planWritten = false;
+    let planUseSeq = 0;
+    let turnStartSeq = 0;
+    const finishPlan = (reason) => {
+      if (!planOwner?.todoPlan || planOwner.todoPlan.state !== "running") return;
+      const plan = planOwner.todoPlan;
+      plan.state = reason === "aborted" ? "stopped" : reason === "error" ? "error" : plan.items.length && plan.items.every((i) => i.status === "completed" || i.status === "cancelled") ? "done" : "ended";
+    };
+    const usePlan = (ev, items, written = false) => {
+      if (!openTurn) return;
+      if (!planOwner) {
+        if (!assistant || Number(assistant.seq) < turnStartSeq) {
+          tools = [];
+          assistant = { kind: "assistant", text: "", tools, via: turnVia, time: Number(ev.time) || 0, seq: ev.seq };
+          blocks.push(assistant);
+        }
+        planOwner = assistant;
+        planOwner.todoPlan = { items, seq: ev.seq, state: "running" };
+      } else if (written) planOwner.todoPlan.items = items;
+      planWritten || (planWritten = written);
+      planUseSeq = Number(ev.seq) || 0;
+    };
     let assigned = null;
     const taskSeen = /* @__PURE__ */ new Map();
     let lastSeq;
@@ -1919,6 +1942,15 @@ var SatuCore = (() => {
         if (!String(data.name || "").trim()) {
           phantoms.add(data.callId);
           continue;
+        }
+        if (data.name === "todo") {
+          try {
+            const args = JSON.parse(data.arguments || "{}");
+            if (args && typeof args === "object" && !Array.isArray(args) && Object.keys(args).every((k) => k === "merge")) {
+              usePlan(ev, todos?.items || []);
+            }
+          } catch {
+          }
         }
         const call = {
           callId: data.callId,
@@ -2059,6 +2091,8 @@ var SatuCore = (() => {
           assistant = null;
           tools = [];
           todos = null;
+          planOwner = null;
+          planWritten = false;
           toolByCall.clear();
           handoffSeen.clear();
           taskSeen.clear();
@@ -2090,7 +2124,13 @@ var SatuCore = (() => {
         });
       } else if (type === "todo/list") {
         todos = { items: Array.isArray(data.items) ? data.items : [], seq: ev.seq };
+        usePlan(ev, todos.items, true);
       } else if (type === "turn/start") {
+        finishPlan("ended");
+        planOwner = null;
+        planWritten = false;
+        planUseSeq = 0;
+        turnStartSeq = Number(ev.seq) || 0;
         status = "running";
         statusAt = at;
         const last = blocks[blocks.length - 1];
@@ -2104,11 +2144,13 @@ var SatuCore = (() => {
           assigned.state = "running";
         }
       } else if (type === "turn/end") {
+        const reason = data.reason;
+        finishPlan(String((typeof reason === "string" ? reason : reason?.kind) || "completed"));
         status = "";
         openTurn = false;
         if (assigned && assigned.turn === Number(data.turn)) {
-          const reason = data.reason;
-          assigned.state = String((typeof reason === "string" ? reason : reason && reason.kind) || "completed");
+          const reason2 = data.reason;
+          assigned.state = String((typeof reason2 === "string" ? reason2 : reason2 && reason2.kind) || "completed");
           assigned.endedAt = at;
           assigned = null;
         }
@@ -2117,6 +2159,10 @@ var SatuCore = (() => {
       }
     }
     if (typeof live === "boolean") status = live ? "running" : "";
+    if (planOwner && !planWritten && todoSnapshot && Number(todos?.seq || 0) <= planUseSeq && Number(todos?.seq || 0) <= Number(todoSnapshot.upto)) {
+      planOwner.todoPlan.items = Array.isArray(todoSnapshot.items) ? todoSnapshot.items : [];
+    }
+    if (!status) finishPlan("ended");
     if (status && !statusAt) {
       const tail = blocks[blocks.length - 1];
       statusAt = tail && (tail.endTime || tail.time) || 0;

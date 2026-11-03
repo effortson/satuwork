@@ -298,7 +298,7 @@
 }
 
 /* 工具痕迹的折叠框（chat-bubble.js 的 toolFoldHtml）。整行占满，产出 / 读过的文件药丸接在它下面。
-   默认收着：标题一句话说正在执行什么，展开是原来那些药丸，一行一颗。 */
+   默认收着：标题一句话说正在执行什么，展开后每条调用均可继续点击查看参数和结果。 */
 .sw-toolfold {
   flex: 1 1 100%;
   min-width: 0;
@@ -347,18 +347,32 @@
 @media (prefers-reduced-motion: reduce) {
   .sw-toolfold[data-state='running'] .sw-toolfold-head svg { animation: none; }
 }
-/* 最多摊开 5 行（TOOLFOLD_ROWS），多了在框里滚。一行 24px、行距 4px：5 × 24 + 4 × 4 = 136，
-   再加上下内边距。药丸高度钉死，max-height 才对得上「正好 5 行」。 */
+/* 默认最多 5 条概要；打开某次调用时增大阅读区域，工具正文单独滚动。 */
 .sw-toolfold-list {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
   padding: 2px 8px 8px;
-  max-height: calc(5 * 24px + 4 * 4px + 10px);
+  max-height: calc(5 * 28px + 4 * 4px + 10px);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+.sw-tool-files { display: contents; }
+.sw-tool-call { width: 100%; box-sizing: border-box; flex: none; min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--background); overflow: hidden; }
+.sw-tool-call-head { display: flex; align-items: center; gap: 7px; box-sizing: border-box; min-height: 28px; padding: 4px 8px; cursor: pointer; list-style: none; font-size: 11.5px; line-height: 18px; }
+.sw-tool-call-head::-webkit-details-marker { display: none; }
+.sw-tool-call-head > svg { flex: none; width: 12px; height: 12px; }
+.sw-tool-call-head::after { content: ''; flex: none; width: 5px; height: 5px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); opacity: 0.6; }
+.sw-tool-call[open] > .sw-tool-call-head::after { transform: rotate(45deg); }
+.sw-tool-call-head:hover { background: var(--muted); }
+.sw-tool-call-head:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: 7px; }
+.sw-tool-call-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sw-tool-call-state { flex: none; color: var(--muted-foreground); font-size: 10.5px; }
+.sw-tool-call[data-state='error'] .sw-tool-call-state { color: var(--color-accent-700); }
+.sw-tool-call-body { padding: 10px; border-top: 1px solid var(--border); max-height: 320px; overflow: auto; overscroll-behavior: contain; color: var(--foreground); font-size: 12px; line-height: 1.5; }
+.sw-tool-call-body pre { margin: 0; padding: 8px; border-radius: 6px; background: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: 11.5px/1.5 ui-monospace, monospace; }
+.sw-toolfold-list:has(> .sw-tool-call[open]) { max-height: min(60vh, 640px); }
 .sw-toolfold-list .sw-chip {
   height: 24px;
   box-sizing: border-box;
@@ -1643,115 +1657,31 @@ html.satu-mobile #chat-thread .sw-msg > .sw-msg-col { max-width: 100%; }
 
 /* 排队 dock。**一条一行、纯文字、不展开附件**——它是「等会儿要说的话」的提醒，
    不是消息气泡的预演。把气泡那一套搬上来，输入框会被顶掉半屏。 */
-/* ── 待办 dock：输入框外面的顶上那块可折叠清单（见 docs/todo-tool.md）────────────
-   和 .sw-queue 同一个位置逻辑（都在输入框盒子外面），但**长得像一张卡**而不是一行小字：
-   排队那几条是「等会儿要说的话」，扫一眼就过；这一块是这件事此刻的进度，人会停下来看。
-   所以给它白底、边框和一点浮起来的阴影，让它从输入区里分出来。 */
-.sw-todock {
-  margin-bottom: 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--popover);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--foreground) 6%, transparent);
-  overflow: hidden;
-}
-.sw-todock[hidden] { display: none; }
-.sw-todock-bar { display: flex; align-items: stretch; }
-/* 抬头整条都可点：折叠态下这一行就是「展开」这个动作的按钮，只让那个小箭头可点的话，
-   命中区域只有 13 px 见方。× 单独在外面——它是另一件事，不能被误点成展开。 */
-.sw-todock-head {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 4px 8px 10px;
-  border: 0;
-  background: transparent;
-  font-family: inherit;
-  font-size: 12.5px;
-  color: var(--foreground);
-  text-align: left;
-  cursor: pointer;
-}
-.sw-todock-head:hover { background: var(--muted); }
-.sw-todock-head .sw-spacer { flex: 1; }
-.sw-todock-icon { flex: none; display: inline-flex; color: var(--muted-foreground); }
-.sw-todock-title { flex: none; font-weight: 600; }
-.sw-todock-badge {
-  flex: none;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  line-height: 1.6;
-  background: var(--muted);
-  color: var(--muted-foreground);
-}
-/* 正在执行的那一档用强调色：这块 dock 存在的理由就是「现在做到哪儿了」，
-   而「有一条正在跑」和「都停着」是人一眼要分出来的两件事。 */
-.sw-todock-badge[data-s='run'] {
-  background: var(--color-accent-100);
-  color: var(--color-accent-700, var(--foreground));
-}
-/* 折叠时抬头带一句「在做什么」；展开之后那句话就在下面的清单里，再写一遍是重复。 */
-.sw-todock-now {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted-foreground);
-}
-.sw-todock[data-open='1'] .sw-todock-now { display: none; }
-.sw-todock-count {
-  flex: none;
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted-foreground);
-}
-.sw-todock-chev { flex: none; display: inline-flex; color: var(--muted-foreground); transition: transform 140ms ease; }
-.sw-todock[data-open='1'] .sw-todock-chev { transform: rotate(180deg); }
-.sw-todock-x {
-  flex: none;
-  width: 30px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 0;
-  border-left: 1px solid var(--border);
-  background: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-}
-.sw-todock-x:hover { background: var(--muted); color: var(--foreground); }
-.sw-todock-list {
-  margin: 0;
-  padding: 2px 10px 8px;
-  border-top: 1px solid var(--border);
-  list-style: none;
-  /* 清单可以很长（上限 50 条）。给它自己一个滚动区，别把输入框顶出屏幕。 */
-  max-height: 34vh;
-  overflow-y: auto;
-}
-.sw-todock-list[hidden] { display: none; }
-.sw-todock-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 4px 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--foreground);
-}
-.sw-todock-mark { flex: none; display: inline-flex; padding-top: 2px; color: var(--muted-foreground); }
-.sw-todock-task { min-width: 0; word-break: break-word; }
-.sw-todock-item[data-s='in_progress'] .sw-todock-mark { color: var(--color-accent-500, var(--foreground)); }
-.sw-todock-item[data-s='in_progress'] .sw-todock-task { font-weight: 600; }
-/* 做完和取消的都退到背景里去：它们已经不需要人再看一眼了，占着位置只是为了让人知道
-   这件事走到了哪一步。取消的额外划一道——「不做了」和「做完了」不能长得一样。 */
-.sw-todock-item[data-s='completed'] .sw-todock-task,
-.sw-todock-item[data-s='cancelled'] .sw-todock-task { color: var(--muted-foreground); }
-.sw-todock-item[data-s='cancelled'] .sw-todock-task { text-decoration: line-through; }
+/* 任务清单跟随对应轮次留在回复里；默认折叠，不占输入区。 */
+.sw-todoplan { margin: 0 0 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--popover); overflow: hidden; min-width: 0; }
+.sw-todoplan-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; list-style: none; font-size: 12.5px; color: var(--foreground); }
+.sw-todoplan-head::-webkit-details-marker { display: none; }
+.sw-todoplan-head:hover { background: var(--muted); }
+.sw-todoplan-head:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: 11px; }
+.sw-todoplan-icon, .sw-todoplan-chev { display: inline-flex; flex: none; color: var(--muted-foreground); }
+.sw-todoplan-title { flex: none; font-weight: 600; }
+.sw-todoplan-badge { flex: none; padding: 1px 7px; border-radius: 999px; font-size: 11px; line-height: 1.6; background: var(--muted); color: var(--muted-foreground); }
+.sw-todoplan-badge[data-s='run'] { background: var(--color-accent-100); color: var(--color-accent-700); }
+.sw-todoplan-now { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
+.sw-todoplan[open] .sw-todoplan-now { display: none; }
+.sw-todoplan-count { flex: none; margin-left: auto; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--muted-foreground); }
+.sw-todoplan-chev { transform: rotate(180deg); transition: transform 140ms ease; }
+.sw-todoplan[open] .sw-todoplan-chev { transform: none; }
+.sw-todoplan-list { margin: 0; padding: 6px 12px 10px; border-top: 1px solid var(--border); list-style: none; max-height: 34vh; overflow-y: auto; }
+.sw-todoplan-item { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; font-size: 12.5px; line-height: 1.5; color: var(--foreground); }
+.sw-todoplan-mark { flex: none; display: inline-flex; padding-top: 2px; color: var(--muted-foreground); }
+.sw-todoplan-task { min-width: 0; word-break: break-word; }
+.sw-todoplan-item[data-s='in_progress'] .sw-todoplan-mark { color: var(--color-accent-500); }
+.sw-todoplan-item[data-s='in_progress'] .sw-todoplan-task { font-weight: 600; }
+.sw-todoplan-item[data-s='completed'] .sw-todoplan-task, .sw-todoplan-item[data-s='cancelled'] .sw-todoplan-task { color: var(--muted-foreground); }
+.sw-todoplan-item[data-s='cancelled'] .sw-todoplan-task { text-decoration: line-through; }
+@media (max-width: 520px) { .sw-todoplan-head { flex-wrap: wrap; gap: 6px; } .sw-todoplan-now { flex-basis: 100%; order: 1; } }
+@media (prefers-reduced-motion: reduce) { .sw-todoplan-chev { transition: none; } }
 
 .sw-queue {
   display: flex;

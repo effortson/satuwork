@@ -1,12 +1,13 @@
 /**
- * 把一串会话事件折成气泡。**一字不改地**从 gateway/ui/chat.js 搬来：这是整套界面里最容易
+ * 把一串会话事件折成气泡。从 gateway/ui/chat.js 拆出：这是整套界面里最容易
  * 搬坏的一段（Telegram 来源、空壳工具、压缩落在轮中间、/clear……每一条都有线上事故在
- * 后面），所以只加类型、不动逻辑。e2e 的 chat-fold.mjs 和 ui-smoke 继续经 Web 那层喂它。
+ * 后面）。e2e 的 chat-fold.mjs 和 ui-smoke 继续经 Web 那层覆盖重放与增量渲染。
  */
 import type { Block, Folded, SessionEvent } from '../protocol/events.ts'
 import { isShot, messageImages, messageMentions, messageRefs, messageText, splitUploads } from './events.ts'
 
-export function fold(events: SessionEvent[] | null | undefined, live?: boolean | null, channelBot = false): Folded {
+export function fold(events: SessionEvent[] | null | undefined, live?: boolean | null, channelBot = false,
+  todoSnapshot?: { items: any[]; upto: number } | null): Folded {
   const blocks: Block[] = []
   // 名册标记负责首条 Telegram 消息之前的 Web 轮次；历史里的渠道来源兼容旧响应。
   const showChannelVia = channelBot || (events || []).some((ev) => {
@@ -41,6 +42,31 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
   const handoffOf = (id: string) => (id ? handoffSeen.get(id) : undefined)
   /** 有没有轮次开着。派来的指令落下时没开着，紧接着的 turn/start 才是它自己的那一轮。 */
   let openTurn = false
+  // 清单归属于使用它的轮次，不跟随最后一条回复或下一轮消息漂移。
+  let planOwner: any = null
+  let planWritten = false
+  let planUseSeq = 0
+  let turnStartSeq = 0
+  const finishPlan = (reason: string) => {
+    if (!planOwner?.todoPlan || planOwner.todoPlan.state !== 'running') return
+    const plan = planOwner.todoPlan
+    plan.state = reason === 'aborted' ? 'stopped' : reason === 'error' ? 'error'
+      : plan.items.length && plan.items.every((i: any) => i.status === 'completed' || i.status === 'cancelled') ? 'done' : 'ended'
+  }
+  const usePlan = (ev: SessionEvent, items: any[], written = false) => {
+    if (!openTurn) return
+    if (!planOwner) {
+      if (!assistant || Number(assistant.seq) < turnStartSeq) {
+        tools = []
+        assistant = { kind: 'assistant', text: '', tools, via: turnVia, time: Number(ev.time) || 0, seq: ev.seq }
+        blocks.push(assistant)
+      }
+      planOwner = assistant
+      planOwner.todoPlan = { items, seq: ev.seq, state: 'running' }
+    } else if (written) planOwner.todoPlan.items = items
+    planWritten ||= written
+    planUseSeq = Number(ev.seq) || 0
+  }
   /** 正在等自己那一轮起来、或者那一轮正跑着的派活指令（目标 Bot 这边，docs/bot-tasks.md §7）。 */
   let assigned: any = null
   /** 派活卡：id → 已经挂在某个助手块上的那一件。同一个 id 来多条（等 → 跑 → 收场），取最后一条。 */
@@ -148,6 +174,15 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
       if (!String(data.name || '').trim()) {
         phantoms.add(data.callId)
         continue
+      }
+      if (data.name === 'todo') {
+        // 读回清单表示本轮明确继续旧任务；写入等 todo/list 的实际结果，不展示尚未执行的参数。
+        try {
+          const args = JSON.parse(data.arguments || '{}')
+          if (args && typeof args === 'object' && !Array.isArray(args) && Object.keys(args).every(k => k === 'merge')) {
+            usePlan(ev, todos?.items || [])
+          }
+        } catch { /* 参数未解析成功，不把旧清单挂到本轮。 */ }
       }
       // arguments 要留着：工具药丸的悬浮窗全靠它回答「这次到底拿什么跑的」。存的是
       // bot 那边 JSON.stringify 过的原串，展示时再 parse 一次做缩进（见 toolPopBody）。
@@ -396,6 +431,8 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
         assistant = null
         tools = []
         todos = null
+        planOwner = null
+        planWritten = false
         toolByCall.clear()
         handoffSeen.clear()
         taskSeen.clear()
@@ -432,14 +469,19 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
       })
     } else if (type === 'todo/list') {
       /**
-       * 待办清单的一张全量快照。**不画进消息流**——它是一份状态，不是一句话；每改一次
-       * 就在对话里推一条的话，一次十步的活会把人真正在读的内容挤没。折出来给 dock 用。
+       * 全量快照。保存最新一份供后续轮次读回；本轮只更新一张任务卡，不逐次追加消息。
        *
-       * 后一条盖前一条，seq 一起带上：dock 还有第二个数据源（打开这一页时拉的那次快照），
+       * 后一条盖前一条，seq 一起带上：任务卡还有第二个数据源（打开这一页时拉的那次快照），
        * 两边谁新按**日志行号**比，不按时间比（理由见 approvalDead）。
        */
       todos = { items: Array.isArray(data.items) ? data.items : [], seq: ev.seq }
+      usePlan(ev, todos.items, true)
     } else if (type === 'turn/start') {
+      finishPlan('ended')
+      planOwner = null
+      planWritten = false
+      planUseSeq = 0
+      turnStartSeq = Number(ev.seq) || 0
       status = 'running'
       statusAt = at
       /**
@@ -459,6 +501,8 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
         assigned.state = 'running'
       }
     } else if (type === 'turn/end') {
+      const reason = data.reason
+      finishPlan(String((typeof reason === 'string' ? reason : reason?.kind) || 'completed'))
       status = ''
       openTurn = false
       if (assigned && assigned.turn === Number(data.turn)) {
@@ -484,6 +528,13 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
   }
   // bot 说过话就听它的：这份历史可能是截断的，而扫描对截断毫无抵抗力（见 chatLive）。
   if (typeof live === 'boolean') status = live ? 'running' : ''
+  // 快照只补最后一轮明确读回、却缺少清单事件的任务卡；不能倒灌到更早的历史轮次。
+  // 派活收口后恢复外层清单的 todo/list 也不属于这一轮。
+  if (planOwner && !planWritten && todoSnapshot && Number(todos?.seq || 0) <= planUseSeq
+    && Number(todos?.seq || 0) <= Number(todoSnapshot.upto)) {
+    planOwner.todoPlan.items = Array.isArray(todoSnapshot.items) ? todoSnapshot.items : []
+  }
+  if (!status) finishPlan('ended')
   /**
    * 席位说「在跑」，可这段历史里根本没有那条 turn/start（截断了，或者只垫了一轮）。
    * 退到手上最后一条事件的时间：秒表会少数一截，但**它至少在走**——而 0 会让这一行
