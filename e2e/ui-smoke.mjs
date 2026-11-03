@@ -3235,7 +3235,7 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(ui.state.runtimeBots.some((b) => b.id === made.json.bot.id), '刚建的 Bot 不在名单里')
       const html = ui.html()
       assert(html.includes('satu-botrow'), '名单取回来了却没画进侧栏')
-      assert(html.includes('satu-botdot'), '状态点没画')
+      assert(!html.includes('satu-botdot'), '名单不应显示名称前的状态圆点')
     })
 
     await test('对话内查找：顶栏有入口、消息流上有查找条，命中按消息合并、新的在前', async () => {
