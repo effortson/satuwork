@@ -568,7 +568,8 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       await ui.fire('click', button)
       assert(!calls.length, '空说明不应提交')
       assert(focused && ta.getAttribute('aria-invalid') === 'true', '必填错误应聚焦并标记输入框')
-      assert(ui.state.handoffFeedback['h-validation'].text.includes('处理结果'), '缺少就地的结果提示')
+      // 卡片底部那颗是「继续」（done）：提示要说清先写什么、再点哪颗。
+      assert(ui.state.handoffFeedback['h-validation'].text.includes('继续'), '缺少就地的结果提示')
       button.setAttribute('data-disp', 'instructions')
       await ui.fire('click', button)
       assert(ui.state.handoffFeedback['h-validation'].text.includes('如何继续'), '新指示的校验应说明填写什么')
