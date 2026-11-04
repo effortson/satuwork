@@ -1,8 +1,8 @@
 /**
  * 语音输入（lib/speech.ts）。
  *
- * - `POST /runtime/sessions/:id/voice`：手机端的语音消息。请求体就是 WAV（postRaw），收下就回 202，
- *   放进席位工作区、转写、发给 Bot 都在回完包之后（lib/voice-message.ts）。
+ * - `POST /runtime/sessions/:id/voice`：手机端的语音消息。请求体就是 WAV（postRaw），转写好就把文字回给
+ *   手机；放进席位工作区、发给 Bot 在回完包之后（lib/voice-message.ts）。
  * - `POST /me/transcribe`：只转写、当场回 `{ text, seconds }`，不发消息。
  *   两条都按音频秒数计费（meter 的 `speech`），先过余额闸；没成的也落一行（金额 0），同知识库检索。
  * - `/platform/speech*`：平台「工具配置 → 语音」。服务商、模型、单价进平台设置的 `speech`，密钥进
@@ -14,7 +14,7 @@ import { type Account, type Db, type PlatformSettings, type SpeechSettings, pars
 import { HttpError, json, type Req, type Router } from '../http.ts'
 import { afterResponse } from '../lib/background.ts'
 import { seatTargetForSession } from '../lib/runtime.ts'
-import { deliverVoice, voiceFileName } from '../lib/voice-message.ts'
+import { startVoice, voiceFileName } from '../lib/voice-message.ts'
 import { requireOwnerUser, requireUser } from '../lib/guards.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import {
@@ -124,9 +124,11 @@ export function attachSpeech(router: Router, ctx: RouteCtx) {
   })
 
   /**
-   * 手机端的语音消息（lib/voice-message.ts）：录音收下、过了那几道门就回 202，手机当场把这条语音画进对话、
-   * 放手；放进席位工作区、转写、发给 Bot 都在回完包之后做。回给手机的 `name` 是录音在工作区里的文件名，
-   * 手机拿它认回自己那条（席位把消息经对话流送回来时）。
+   * 手机端的语音消息（lib/voice-message.ts）：先处理语音、文字一出来就回给手机、再交给 Bot。
+   *
+   * 过了那几道门就同时开始放录音和转写；**转写好了就回**——`text` 是转出来的字（没转成是空串，`heard`
+   * 为 false），手机当场补到语音条下面；`name` 是录音在工作区里的文件名，手机拿它认回自己那条。放好录音、
+   * 发给 Bot 在回完包之后做（投递那一串在等转写之前就挂上，手机中途断开也照样送到）。
    */
   router.postRaw('/runtime/sessions/:id/voice', async (req, res) => {
     const account = await requireUser(req, db, keys)
@@ -134,8 +136,10 @@ export function attachSpeech(router: Router, ctx: RouteCtx) {
     const target = await seatTargetForSession(db, account, req.params.id)
     const { cfg, wav, seconds } = await acceptClip(req, account)
     const name = voiceFileName()
-    afterResponse('语音消息', deliverVoice({ db, meter, account, target, sessionId: req.params.id, wav, seconds, name, cfg }))
-    json(res, 202, { accepted: true, name, seconds: billedSeconds(seconds) })
+    const { heard, delivered } = startVoice({ db, meter, account, target, sessionId: req.params.id, wav, seconds, name, cfg })
+    afterResponse('语音消息', delivered)
+    const text = await heard
+    json(res, 200, { accepted: true, name, seconds: billedSeconds(seconds), text, heard: Boolean(text) })
   })
 
   router.get('/platform/speech', async (req, res) => {

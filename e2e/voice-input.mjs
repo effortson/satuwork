@@ -37,7 +37,7 @@ function load(root, { mobile = true, speech = { enabled: true, maxSeconds: 60, p
 const wavOf = (ctx, seconds) => new ctx.Blob([new ArrayBuffer(44 + Math.round(seconds * 16000) * 2)], { type: 'audio/wav' })
 
 /** 停下之后那一串要的桩：录音句柄、AI 共享许可、交给 Gateway 的那一跳、对话那几样。 */
-function wire(ctx, { seconds = 3.2, reply = { accepted: true, name: 'voice-20261104-120000-abc123.wav' }, consent = true } = {}) {
+function wire(ctx, { seconds = 3.2, reply = { accepted: true, name: 'voice-20261104-120000-abc123.wav', text: '帮我订明天下午三点的会议室', heard: true }, consent = true } = {}) {
   const calls = { posted: [], flashes: [], asked: 0, timers: [] }
   Object.assign(ctx, {
     flash: (kind, msg) => calls.flashes.push([kind, msg]),
@@ -103,7 +103,7 @@ export async function runVoiceInput({ root, test, assert, log }) {
     assert(loud.readInt16LE(44) === 32767 && loud.readInt16LE(46) === -32768, '截幅不对')
   })
 
-  await test('点发送键停下：当场画上本地这条、输入框立刻空出来，WAV 一次交给 Gateway，收下了记住文件名', async () => {
+  await test('点发送键停下：当场画上本地这条、输入框立刻空出来，WAV 交给 Gateway，转好的字当场补上、记住文件名', async () => {
     const v = load(root)
     const calls = wire(v)
     v.state.chatDraft = '顺手打的字'
@@ -114,6 +114,7 @@ export async function runVoiceInput({ root, test, assert, log }) {
     assert(pending.length === 1 && pending[0].sessionId === 's1' && pending[0].afterSeq === 7, `本地这条 ${JSON.stringify(pending)}`)
     assert(pending[0].voice.seconds === 3.2 && pending[0].voice.path.startsWith('local:') && pending[0].text === '', '本地这条该是语音条、还没有转写')
     assert(pending[0].voiceName === 'voice-20261104-120000-abc123.wav', '收下之后该记住文件名，回执按它认领')
+    assert(pending[0].voiceText === '帮我订明天下午三点的会议室', '转好的字该当场补上，不等 Bot')
     assert(v.voiceUrls.get('name:voice-20261104-120000-abc123.wav') === 'blob:local', '认领之后该接着用本地副本放')
     assert(v.state.chatDraft === '顺手打的字', '输入框里的字不该被动')
     assert(calls.flashes.length === 0, `不该报错：${JSON.stringify(calls.flashes)}`)
@@ -125,6 +126,11 @@ export async function runVoiceInput({ root, test, assert, log }) {
   })
 
   await test('Gateway 不收（没余额、没开通）：本地这条撤掉、说清原因；太短、切了对话、没点 AI 许可都不交', async () => {
+    const deaf = load(root)
+    wire(deaf, { reply: { accepted: true, name: 'voice-x.wav', text: '', heard: false } })
+    await deaf.finishVoice()
+    assert(deaf.state.chatPending.length === 1 && deaf.state.chatPending[0].voiceText.includes('没能自动转成文字'), '没转成文字也照发，气泡上说一声')
+
     const poor = load(root)
     const c1 = wire(poor, { reply: new Error('这家公司的额度用完了，请联系管理员充值。') })
     await poor.finishVoice()

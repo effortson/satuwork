@@ -1,13 +1,16 @@
 /**
  * 手机端的语音消息（gateway/ui/chat-voice.js）在服务端那一半。
  *
- * 手机录完只做一件事：把 WAV 交给 `POST /runtime/sessions/:id/voice`，拿到「收下了」就放手——它那边当场
- * 把这条语音画进对话，输入框立刻能接着用。剩下的在这里、回完包之后做（afterResponse）：
+ * 顺序是**先处理语音、文字一出来就给人看、再交给 Bot**。手机停下的那一刻就把这条语音画进对话、输入框
+ * 立刻能接着用，WAV 交给 `POST /runtime/sessions/:id/voice` 之后：
  *
- *   1. 录音放进这条会话所在席位的工作区（`uploads/<会话>/voice-….wav`），和转写**同时**进行；
- *   2. 转写走平台配的识别模型（lib/speech.ts），按秒计费；
- *   3. 两样都好了，按 core 的 composeVoice 拼成正文，作为这个人的一条消息发给席位——和手打的走同一个口子，
- *      Bot 忙着就排队。席位为语音一行不用改。
+ *   1. 录音放进这条会话所在席位的工作区（`uploads/<会话>/voice-….wav`），和转写**同时**开始；
+ *   2. 转写走平台配的识别模型（lib/speech.ts），按秒计费——**转好就把文字回给手机**，语音条下面当场补上，
+ *      不等 Bot、也不等对话流；
+ *   3. 回完包之后（afterResponse）等录音放好，按 core 的 composeVoice 拼成正文，作为这个人的一条消息发给
+ *      席位——和手打的走同一个口子，Bot 忙着就排队。席位为语音一行不用改。
+ *
+ * 投递那一串在等转写之前就挂上 afterResponse：手机在转写那几秒里切走了、连接断了，消息照样送到。
  *
  * **转写失败也照发**，正文里写明没能转成文字：录音已经在对话里了，Bot 至少知道「人发了一段语音、我没听到
  * 内容」，会请人重说或打字；悄悄丢掉一条人已经看见发出去了的消息更糟。
@@ -72,9 +75,12 @@ async function uploadToSeat(base: string, bearer: string, machineToken: string |
   return parsed.path
 }
 
-/** 回完包之后的那一串。抛出去的由 afterResponse 记日志。 */
-export async function deliverVoice(o: VoiceDelivery): Promise<void> {
-  const bearer = await seatBearer(o.db, o.account.id)
+/**
+ * 开工：放录音和转写一起跑。回两个 promise——`heard` 是转出来的字（失败是空串，不抛），路由等它回给手机；
+ * `delivered` 是整串（放好录音、拼正文、发给席位），交给 afterResponse。
+ */
+export function startVoice(o: VoiceDelivery): { heard: Promise<string>; delivered: Promise<void> } {
+  const bearer = seatBearer(o.db, o.account.id)
   const base = `${o.target.host}/api/sessions/${encodeURIComponent(o.sessionId)}`
   const heard = transcribe(o.cfg, o.wav).then(
     async (text) => {
@@ -87,10 +93,13 @@ export async function deliverVoice(o: VoiceDelivery): Promise<void> {
       return ''
     },
   )
-  const [path, text] = await Promise.all([uploadToSeat(base, bearer, o.target.machineToken, o.name, o.wav), heard])
-  const locale = o.account.locale === 'en' ? 'en' : 'zh'
-  const body = composeVoice(locale, { path, seconds: o.seconds }, text || VOICE_UNHEARD[locale])
-  // 发消息那一跳等久一点：Bot 正忙时席位要先把它排进队列再回话。
-  const r = await seatFetchJson('POST', `${base}/messages`, { text: body, locale }, bearer, o.target.machineToken, 30_000)
-  if (!r.ok) throw new Error(`席位没收下这条语音（HTTP ${r.status}）`)
+  const uploaded = bearer.then((tok) => uploadToSeat(base, tok, o.target.machineToken, o.name, o.wav))
+  const delivered = Promise.all([uploaded, heard, bearer]).then(async ([path, text, tok]) => {
+    const locale = o.account.locale === 'en' ? 'en' : 'zh'
+    const body = composeVoice(locale, { path, seconds: o.seconds }, text || VOICE_UNHEARD[locale])
+    // 发消息那一跳等久一点：Bot 正忙时席位要先把它排进队列再回话。
+    const r = await seatFetchJson('POST', `${base}/messages`, { text: body, locale }, tok, o.target.machineToken, 30_000)
+    if (!r.ok) throw new Error(`席位没收下这条语音（HTTP ${r.status}）`)
+  })
+  return { heard, delivered }
 }

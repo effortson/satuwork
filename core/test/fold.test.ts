@@ -239,4 +239,8 @@ test('本地语音回执：拿到文件名之前谁都不认，拿到之后按�
   const f2 = fold(events)
   assert.equal(mergePending(f2, [{ ...local, voiceName: 'voice-20261104-120000-abc123.wav' }]).length, 0, '文件名对上该认领')
   assert.equal(mergePending(fold(events), [{ ...local, voiceName: 'voice-other.wav' }]).length, 1, '别的文件名不该认领')
+  // 转写先回来了（Gateway 转完就回，不等 Bot）：没认领之前也该把字补在语音条下面。
+  const f3 = fold(events)
+  mergePending(f3, [{ ...local, voiceName: 'voice-other.wav', voiceText: '你好呀' }])
+  assert.equal((f3.blocks.filter((b: any) => b.kind === 'user').at(-1) as any).text, '你好呀')
 })

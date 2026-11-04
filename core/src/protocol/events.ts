@@ -188,6 +188,8 @@ export interface PendingMessage {
    */
   voice?: { path: string; seconds: number }
   voiceName?: string
+  /** 服务端转好的字（Gateway 转完就回给手机，不等 Bot）：回执认领之前先补到语音条下面。 */
+  voiceText?: string
   images?: any[]
   mentions?: Mention[]
   refs?: Ref[]

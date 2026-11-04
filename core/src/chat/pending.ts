@@ -33,8 +33,8 @@ export function mergePending(folded: Folded, mine: PendingMessage[]): PendingMes
   for (const p of left) {
     // 回执还没回来的那几秒也要长成最终的样子，否则附件会先以一行路径文本出现、
     // 再突然变成药丸——同一条消息在屏幕上跳两次。
-    // 本地语音还没有正文（转写在服务端），只画语音条。
-    const vc = p.voice ? { text: '', voice: p.voice } : splitVoice(p.text)
+    // 本地语音：转写回来之前只画语音条，回来了就把字补在下面（Bot 那条回执可能还要等一会儿）。
+    const vc = p.voice ? { text: p.voiceText || '', voice: p.voice } : splitVoice(p.text)
     const up = vc ? { text: vc.text, files: [] } : splitUploads(p.text)
     folded.blocks.push({
       kind: 'user',

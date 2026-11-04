@@ -534,7 +534,7 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       assert(hits[0].payload.botId === botId, '通知没指向这轮对话的 Bot')
     })
 
-    await test('语音消息：Gateway 收下就回 202，后台放进席位工作区、转写、发给 Bot；转写失败也照发', async () => {
+    await test('语音消息：先转写、文字当场回给手机，再在后台放进席位工作区、发给 Bot；转写失败也照发', async () => {
       const asr = { fail: false }
       const asrServer = createServer((r, res) => {
         r.resume()
@@ -561,9 +561,11 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
         wav.write('fmt ', 12, 'ascii'); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22)
         wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34)
         wav.write('data', 36, 'ascii'); wav.writeUInt32LE(96000, 40)
-        const send = async () => {
+        const send = async (heard) => {
           const r = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/voice`, { token: adminTok, raw: wav, headers: { 'content-type': 'audio/wav' } })
-          assert(r.status === 202 && r.json.accepted === true && /^voice-\d{8}-\d{6}-[0-9a-f]{6}\.wav$/.test(r.json.name) && r.json.seconds === 3, `voice ${r.status} ${r.text}`)
+          assert(r.status === 200 && r.json.accepted === true && /^voice-\d{8}-\d{6}-[0-9a-f]{6}\.wav$/.test(r.json.name) && r.json.seconds === 3, `voice ${r.status} ${r.text}`)
+          // 文字随响应回来，不等 Bot：手机拿它当场补到语音条下面。
+          assert(r.json.heard === heard && r.json.text === (heard ? '帮我看看今天的日程' : ''), `转写结果 ${r.text}`)
           return r.json.name
         }
         // 席位把这条消息经对话流送回来：按文件名认（手机那边认领本地气泡也是这么认的）。
@@ -574,7 +576,7 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
           assert(ev, `席位没收到这条语音：${sse.events.map((e) => e.type).join(',')}`)
           return (ev.data.message.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('')
         }
-        const name = await send()
+        const name = await send(true)
         const text = await arrived(name)
         assert(text.startsWith('我发了一条语音（3 秒），录音在工作区里：\n- `uploads/') && text.includes(name), `正文头 ${text}`)
         assert(text.endsWith('转写（自动识别，可能有错字）：\n帮我看看今天的日程'), `转写 ${text}`)
@@ -585,7 +587,7 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
         assert(got.status === 200 && bytes.equals(wav), `录音 ${got.status} ${bytes.length}`)
         // 转写挂了也照发：人已经看见这条发出去了，Bot 得知道有这么一条、只是没听到内容。
         asr.fail = true
-        const failed = await arrived(await send())
+        const failed = await arrived(await send(false))
         assert(failed.endsWith('转写（自动识别，可能有错字）：\n（这段语音没能自动转成文字）'), `转写失败的正文 ${failed}`)
         // 录音只在内存里过一下，不落 Gateway 的盘。
         assert(!treeHas(GW_HOME, 'RIFF'), 'Gateway 落了一份录音')

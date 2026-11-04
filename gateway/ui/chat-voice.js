@@ -3,11 +3,12 @@
  * 输入框换成一条「正在录音」的计时条（左边能扔掉这段），再点一下发送键就停下、发出去。对话里这条消息是
  * 一个能点着听的语音条，下面附着自动转写的文字。
  *
- * **录完就放手，剩下的在服务端做。** 停下的那一刻这条语音就画进对话（本地副本，当场能听），输入框立刻
- * 能接着打字、接着录；手机只把 WAV 交给 Gateway 的 `POST /runtime/sessions/:id/voice`，收下了就算发出去。
- * 放进席位工作区、转写（平台在「工具配置 → 语音」配的模型，按秒计费）、发给 Bot 都在 Gateway 回完包之后做
- * （gateway/src/lib/voice-message.ts）。席位把这条消息经对话流送回来时，按录音文件名认领本地这条，转写
- * 补到语音条下面。手机也不用直连席位机器。
+ * **先处理语音、文字一出来就给人看、再交给 Bot；手机不卡着。** 停下的那一刻这条语音就画进对话（本地
+ * 副本，当场能听），输入框立刻能接着打字、接着录；手机只把 WAV 交给 Gateway 的
+ * `POST /runtime/sessions/:id/voice`。Gateway 转好（平台在「工具配置 → 语音」配的模型，按秒计费）就把
+ * 文字回过来，当场补到语音条下面；放进席位工作区、发给 Bot 在它回完包之后做
+ * （gateway/src/lib/voice-message.ts）。席位把这条消息经对话流送回来时按录音文件名认领本地这条。
+ * 手机也不用直连席位机器。
  *
  * 只在手机壳里有（`mobileShell()`），而且平台开了语音（`/me` 的 `speech.enabled`）。浏览器和桌面壳里
  * 发送键不变——但别人发来的语音条照样能听。
@@ -292,8 +293,8 @@ async function finishVoice() {
 }
 
 /**
- * 本地这条先画上，WAV 交给 Gateway。收下了（202）就记下录音在工作区里的文件名，等对话流把那条消息送回来
- * 时按它认领（core 的 mergePending）；没收下（没开通、没余额、录音不对）就撤掉本地这条、说清原因。
+ * 本地这条先画上，WAV 交给 Gateway。转好的字一回来就补到语音条下面，同时记下录音在工作区里的文件名，等对话流
+ * 把那条消息送回来时按它认领（core 的 mergePending）；没收下（没开通、没余额、录音不对）就撤掉本地这条、说清原因。
  */
 async function sendVoice(sessionId, wav) {
   const seconds = (wav.size - 44) / 2 / VOICE_RATE
@@ -318,8 +319,10 @@ async function sendVoice(sessionId, wav) {
   try {
     const r = await api('POST', '/runtime/sessions/' + encodeURIComponent(sessionId) + '/voice', wav)
     pending.voiceName = String(r?.name || '')
+    // 没转成文字也照发（Bot 会请人重说）：气泡上说一声，别空着。
+    pending.voiceText = r?.heard ? String(r.text || '') : t('（这段语音没能自动转成文字）', '(This voice message could not be transcribed automatically.)')
     voiceUrls.set('name:' + pending.voiceName, url)
-    // 回执可能比这个响应先到（Gateway 回完包就开始发）：配上名字之后重画一遍，让它当场认领。
+    // 字补上；回执也可能比这个响应先到（Gateway 回完包就开始发），配上名字之后重画一遍，让它当场认领。
     paintChat()
   } catch (err) {
     drop(t('语音没发出去：', 'Voice message not sent: ') + (err?.message || err))

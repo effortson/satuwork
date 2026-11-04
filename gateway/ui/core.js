@@ -2474,7 +2474,7 @@ ${transcript.trim()}`;
     }
     if (!left.length) return left;
     for (const p of left) {
-      const vc = p.voice ? { text: "", voice: p.voice } : splitVoice(p.text);
+      const vc = p.voice ? { text: p.voiceText || "", voice: p.voice } : splitVoice(p.text);
       const up = vc ? { text: vc.text, files: [] } : splitUploads(p.text);
       folded.blocks.push({
         kind: "user",
