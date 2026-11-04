@@ -169,6 +169,14 @@ export function apply(ctx: Context) {
   let fetchingMe: Promise<Me | null> | null = null
   const outbox = ctx.storage.collection<OutboxItem>(OUTBOX)
   let flushing = false
+  /**
+   * flush 跑着的时候又有人叫了一次（多半是 enqueue 进来一条新的）。
+   *
+   * 正在跑的那一轮遍历的是开头那一刻的 `list()`，看不见这条新的；只靠 `flushing` 挡回去
+   * 的话，它要等下一次 5 秒定时器才发得出去。turn/end 恰好是这个形状：先进一条 index、
+   * index 还在等 /me 时通知才进来——推送平白晚了几秒。
+   */
+  let flushAgain = false
 
   async function loadMe(): Promise<Me | null> {
     const base = gatewayUrl()
@@ -262,8 +270,13 @@ export function apply(ctx: Context) {
   }
 
   async function flushOutbox() {
-    if (flushing || !configured()) return
+    if (!configured()) return
+    if (flushing) {
+      flushAgain = true
+      return
+    }
     flushing = true
+    flushAgain = false
     try {
       const now = Date.now()
       for (const row of outbox.list()) {
@@ -313,6 +326,8 @@ export function apply(ctx: Context) {
       }
     } finally {
       flushing = false
+      // 跑的时候又进来了新的：接着再跑一轮，别等定时器。退避中的项会被跳过，转不起空圈。
+      if (flushAgain) void flushOutbox()
     }
   }
 

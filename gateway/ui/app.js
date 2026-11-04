@@ -365,6 +365,15 @@ document.getElementById('app').addEventListener('submit', (e) => {
     e.preventDefault()
     return saveKbEmbedKey(form.getAttribute('data-provider'), String(new FormData(form).get('secret') || '').trim())
   }
+  if (form.getAttribute('data-form') === 'speech-key') {
+    e.preventDefault()
+    return saveSpeechKey(form.getAttribute('data-provider'), String(new FormData(form).get('secret') || '').trim())
+  }
+  if (form.getAttribute('data-form') === 'speech-custom') {
+    e.preventDefault()
+    const fd = new FormData(form)
+    return saveSpeech({ provider: 'custom', baseUrl: String(fd.get('baseUrl') || '').trim(), model: String(fd.get('model') || '').trim() })
+  }
   if (form.getAttribute('data-form') === 'kb-embed-custom') {
     e.preventDefault()
     const fd = new FormData(form)
@@ -489,6 +498,10 @@ document.getElementById('app').addEventListener('click', async (e) => {
   }
   if (act === 'chat-abort') {
     await abortChat()
+    return
+  }
+  if (act === 'chat-voice') {
+    await toggleVoice()
     return
   }
   if (act === 'chat-attach') {
@@ -2260,6 +2273,15 @@ document.getElementById('app').addEventListener('click', async (e) => {
     if (region !== state.kbEmbed?.embedding?.region) await saveKbEmbedding({ region })
     return
   }
+  if (act === 'speech-region') {
+    const region = btn.getAttribute('data-tab') === 'intl' ? 'intl' : 'cn'
+    if (region !== state.speechCfg?.speech?.region) await saveSpeech({ region })
+    return
+  }
+  if (act === 'speech-test') {
+    await testSpeech()
+    return
+  }
   if (act === 'kb-embed-test') {
     await testKbEmbedding()
     return
@@ -3041,6 +3063,28 @@ document.getElementById('app').addEventListener('change', async (e) => {
     }
     state.kbEmbedPick = ''
     await saveKbEmbedding({ provider: el.value })
+    return
+  }
+  // 语音识别：同向量模型那一套，选预设当场存，「自定义」填完点保存。
+  if (el.getAttribute?.('data-act') === 'speech-provider') {
+    if (el.value === 'custom') {
+      state.speechPick = 'custom'
+      delete state.tests['speech']
+      render()
+      return
+    }
+    state.speechPick = ''
+    await saveSpeech({ provider: el.value })
+    return
+  }
+  if (el.getAttribute?.('data-act') === 'speech-model') {
+    await saveSpeech({ model: el.value.trim() })
+    return
+  }
+  if (el.getAttribute?.('data-act') === 'speech-price') {
+    // 页面上填美元，存微元：$0.0045 这种价按厘存会被四舍五入。
+    const n = Math.round(Number(el.value) * 1e6)
+    await saveSpeech({ pricing: { minuteMicros: Number.isFinite(n) && n >= 0 ? n : 0 } })
     return
   }
   if (el.getAttribute?.('data-act') === 'kb-embed-model') {

@@ -1256,6 +1256,8 @@ export interface PlatformSettings {
   knowledge?: KnowledgeSettings
   /** 知识库的向量模型（区域、预设、模型）。密钥不在这里，在 platform_credentials 的 `kb-embedding:<预设>`。 */
   knowledgeEmbedding?: KnowledgeEmbeddingSettings
+  /** 语音输入的识别模型与单价（lib/speech.ts）。密钥不在这里，在 platform_credentials 的 `speech:<预设>`。 */
+  speech?: SpeechSettings
   /**
    * 模型单价的**平台覆盖**，键是 `provider/model`。
    *
@@ -1397,7 +1399,7 @@ export function parseBilling(raw: unknown): BillingSettings {
 }
 
 /** 一次计费调用是哪一类。第四类出现时加在这里，账本表的 check 也要跟着改。 */
-export type ChargeKind = 'llm' | 'connector' | 'web' | 'kb'
+export type ChargeKind = 'llm' | 'connector' | 'web' | 'kb' | 'speech'
 
 /** 和 ConnectorCallStatus 同一套值，故意的：三条路的结局分类必须能横着比。 */
 export type ChargeStatus = ConnectorCallStatus
@@ -1546,6 +1548,7 @@ export function emptyPlatformSettings(): PlatformSettings {
     webTools: emptyWebTools(),
     knowledge: emptyKnowledgeSettings(),
     knowledgeEmbedding: emptyKnowledgeEmbedding(),
+    speech: emptySpeech(),
     modelPricing: {},
     defaultModelRate: emptyModelRate(),
     billing: emptyBilling(),
@@ -1612,6 +1615,39 @@ export function parseKnowledgeEmbedding(raw: unknown): KnowledgeEmbeddingSetting
     baseUrl: str(o.baseUrl, 500).replace(/\/+$/, ''),
     dimensions: o.dimensions === true,
     batchSize: Number.isFinite(batch) && batch >= 1 && batch <= 64 ? batch : 16,
+  }
+}
+
+/**
+ * 语音输入（手机端对话框的麦克风）。`provider` 是 lib/speech.ts 里的预设 id 或 `custom`，空 = 没配，
+ * 界面上不画麦克风。`region` 同向量模型：只决定页面上列哪几家。`baseUrl` 只对 `custom` 有意义。
+ * 单价按「微元 / 分钟音频」计，按秒折算（`minuteMicros` × 秒 / 60），默认 0 = 记行不收钱、不熔断。
+ * 用微元不用厘：识别服务的价是 $0.0045 / 分钟这种量级，按厘存会四舍五入成 $0.005，每分钟多收一成。
+ */
+export interface SpeechSettings {
+  region: 'cn' | 'intl' | ''
+  provider: string
+  model: string
+  baseUrl: string
+  pricing: { minuteMicros: number }
+}
+
+export function emptySpeech(): SpeechSettings {
+  return { region: '', provider: '', model: '', baseUrl: '', pricing: { minuteMicros: 0 } }
+}
+
+export function parseSpeech(raw: unknown): SpeechSettings {
+  const o = (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>
+  const p = (o.pricing && typeof o.pricing === 'object' ? o.pricing : {}) as Record<string, unknown>
+  const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+  // 早先按厘存过（minuteMils）：没有 minuteMicros 时换算过来。
+  const micros = Math.round(Number(p.minuteMicros ?? (p.minuteMils == null ? 0 : Number(p.minuteMils) * 1000)))
+  return {
+    region: o.region === 'intl' || o.region === 'cn' ? o.region : '',
+    provider: /^[a-z0-9-]{1,40}$/.test(str(o.provider, 40)) ? str(o.provider, 40) : '',
+    model: str(o.model, 200),
+    baseUrl: str(o.baseUrl, 500).replace(/\/+$/, ''),
+    pricing: { minuteMicros: Number.isFinite(micros) && micros >= 0 ? micros : 0 },
   }
 }
 

@@ -213,13 +213,16 @@ export function createGatewayClient(opts: GatewayClientOptions) {
     const headers: Record<string, string> = { accept: 'application/json' }
     const tok = tokens.get()
     if (tok) headers.authorization = 'Bearer ' + tok
-    if (body !== undefined) headers['content-type'] = 'application/json'
+    // Blob 原样发、类型取它自己的（语音输入的 WAV，gateway/ui/chat-voice.js）；别的一律当 JSON。
+    const raw = typeof Blob !== 'undefined' && body instanceof Blob
+    if (raw) headers['content-type'] = (body as Blob).type || 'application/octet-stream'
+    else if (body !== undefined) headers['content-type'] = 'application/json'
     // 改道到本机的那几条（见 swFetch）：它们的 401 是**本地 Bot** 说的，跟登录票无关。
     const local = localRoute(path, method)
     const res = await swFetch(path, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: raw ? (body as Blob) : body !== undefined ? JSON.stringify(body) : undefined,
     })
     const text = await res.text()
     let json: any = null

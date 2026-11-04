@@ -30,12 +30,14 @@ const root = (kind = 'main') => ({ type: 'session', seq: 1, time: 1000, data: { 
 
 test('seat notification protocol and durable outbox', async (t) => {
   const old = { ...process.env }, pushes = []
-  let fail = false
+  let fail = false, slow = false
   const server = createServer(async (req, res) => {
     let raw = ''
     for await (const chunk of req) raw += chunk
     if (req.url === '/internal/push') {
       pushes.push(JSON.parse(raw))
+      // Hold the response after recording: the seat is still mid-flush while the test already sees the push.
+      if (slow) await delay(100)
       res.writeHead(fail ? 503 : 202, { 'content-type': 'application/json' })
       res.end('{}')
       return
@@ -111,6 +113,19 @@ test('seat notification protocol and durable outbox', async (t) => {
         assert.equal(pushes.at(-1).preview, 'send_email · 需要确认发送账单邮件')
         assert.equal(JSON.stringify(pushes.at(-1)).includes('私密邮件全文'), false)
       } finally { ctx.stop() }
+    })
+
+    await t.test('a notice queued while the previous send is in flight goes out without waiting for the timer', async () => {
+      const rows = new Map(), events = new Map([['s-busy', [root()]]])
+      const ctx = seat(rows, events), before = pushes.length
+      slow = true
+      try {
+        ctx.emit('s-busy', { type: 'turn/end', seq: 2, time: 2000, data: { reason: 'completed' } })
+        await until(() => pushes.length > before)
+        ctx.emit('s-busy', { type: 'tool/approval', seq: 3, time: 2100, data: { callId: 'c9', state: 'pending' } })
+        await until(() => pushes.length === before + 2)
+        assert.equal(pushes.at(-1).actionId, 'c9')
+      } finally { slow = false; ctx.stop() }
     })
 
     await t.test('failed metadata stays durable and is retried unchanged after seat restart', async () => {

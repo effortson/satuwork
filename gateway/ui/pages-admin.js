@@ -808,6 +808,7 @@ function chargeTable(scope, forOrg) {
     { key: 'connector', label: t('连接器', 'Connector') },
     { key: 'web', label: t('网页', 'Web') },
     { key: 'kb', label: t('知识库', 'Knowledge') },
+    { key: 'speech', label: t('语音', 'Voice') },
   ]
     .map(
       (k) =>
@@ -883,6 +884,7 @@ function kindLabel(kind) {
   if (kind === 'connector') return t('连接器', 'Connector')
   if (kind === 'web') return t('网页', 'Web')
   if (kind === 'kb') return t('知识库')
+  if (kind === 'speech') return t('语音', 'Voice')
   return kind
 }
 
@@ -1021,6 +1023,12 @@ function chargeQuantity(c, withPrice) {
     lines.push(withPrice
       ? t(`${units} 次 × ${usageMicros$(p.unit)}`, `${units} requests × ${usageMicros$(p.unit)}`)
       : t(`${units} 次`, `${units} requests`))
+  } else if (c.kind === 'speech') {
+    // 语音按音频秒数计，单价是每分钟多少。
+    const units = Number(q.units || 0)
+    lines.push(withPrice
+      ? t(`${units} 秒 × ${usageMicros$(p.unit)}/分钟`, `${units}s × ${usageMicros$(p.unit)}/min`)
+      : t(`${units} 秒`, `${units}s`))
   } else {
     lines.push(withPrice
       ? t(`1 次 × ${usageMicros$(p.unit)}`, `1 call × ${usageMicros$(p.unit)}`)
@@ -1119,6 +1127,7 @@ function statsPage() {
       [t('网页', 'web'), spend.web],
       [t('连接器', 'connector'), spend.connector],
       [t('知识库', 'knowledge'), spend.kb || { calls: 0, amountMicros: 0, costMicros: 0 }],
+      [t('语音', 'voice'), spend.speech || { calls: 0, amountMicros: 0, costMicros: 0 }],
     ].filter(([, m]) => pick(m) > 0)
     // 每一截自己不许断行：卡只有 150px 宽，不管的话会在「网页」和它的金额之间折，
     // 折出来的下一行以一个孤零零的 $0.050 开头，看着像另一个数。

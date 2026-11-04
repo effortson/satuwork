@@ -145,6 +145,8 @@ function chatPage() {
               <button type="button" class="sw-iconbtn" data-act="chat-attach"
                 aria-label="${esc(t('添加附件'))}" title="${esc(t('添加附件'))}">${ICON_CLIP}</button>
               <input type="file" id="chat-file" multiple hidden>
+              ${/* 语音输入：只有手机壳、且平台配好了识别模型才画（chat-voice.js）。 */ ''}
+              ${chatVoiceButtonHtml()}
               ${/* 日常模型选择器。平台只配了一个日常模型、或者席位太旧不认这条路时整块
                     隐藏；内容由 paintChatModel 就地填，和上下文占比那颗药丸一个做法。 */ ''}
               <span class="sw-model" id="chat-model" hidden>
