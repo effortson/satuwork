@@ -531,6 +531,45 @@ Gateway 跑在 Vercel 函数里，请求体有 4.5 MB 的硬顶：一份 11.5 MB
 暂存是**短期**的（供应商文档明说）：上传要紧挨着调用做，不能提前很久、也不能跨轮复用。
 工具回话里写了这一句。
 
+### 反方向：连接器交回来的文件
+
+供应商的工具产出文件时（Drive 下载 / 导出成 CSV、PDF 那一类），结果里给的也不是字节，是一个
+指向它自己存储的**临时地址**（Composio 叫 `FileDownloadable`）：
+
+```jsonc
+{ "downloaded_file_content": { "name": "Syrius SEA Lead Development", "mimetype": "text/csv", "s3url": "https://…预签名…" } }
+```
+
+这个地址模型自己拿不到：终端的 curl 在「禁止访问未授权的外部系统」开着时被拦（那条边界本来就
+该拦它），`web_extract` 和浏览器读不了附件下载。线上真发生过：模型试了五种办法，最后转人工，
+请管理员「放开工作区的外网权限」——为了读一张表开整个终端的外网，口子开错了地方。
+
+所以由**交回地址的那一次调用**顺手取回来（`bot/src/tools/connector.ts` 的 `tools/post-execute`
+钩子，只认目录说得出连接的 `mcp_*`，公司自配的 MCP 不碰）：
+
+1. 结果是 JSON 才看；`s3url` + `mimetype` 两格都在的对象才算文件，只有一格的不替它下
+2. 席位**自己**去取（字节不经 Gateway，理由同上传），几份并行、每份各自计时，落进工作区
+   `downloads/`，重名不覆盖；名字没扩展名的按 MIME 补一个（Drive 导出的表格就没有），工作区里
+   认文件、office 工具挑格式都看它
+3. **原文一个字都不动**：在 JSON 最前面插两个键——`_satuwork_notice`（给模型的话：存在哪、
+   临时地址只在要把链接给人时用）和 `_satuwork_files`（每份的 `saved_to` 或 `download_error`：
+   过期 403、超时、超限、跳转太多）；顶层是数组的包一层 `result`。结果仍是合法 JSON，超了预算
+   还能按结构瘦身（`_satuwork_notice` 是 result-budget 本来就用的约定）；不经 parse / stringify，
+   大整数 ID 不会被改掉；临时地址留在原处，用户要的就是链接时还给得出
+4. 取到的文件进 `files`，界面在消息底下摆出来；每次取回记一笔策略审计（`no-external` / `noted`，
+   写明从哪个主机取了几份、多大）——开着「禁止访问未授权的外部系统」时，这是席位自己发出去的请求
+
+闸：只认 https；主机名的判据和浏览器那道是同一份（`blockedHost`：内网 IP 字面量、`localhost`、
+内网后缀、不带点的主机名），再解析一次，落在内网段的不取（DNS 重绑定挡不住，挡的是「本来就指向
+内网」的名字）；跳转最多跟三次、每一跳重新过这两道闸。单份上限和上传同一个数
+（`SATUWORK_CONNECTOR_UPLOAD_MAX_BYTES`，默认 25 MB），边读边数；一次结果最多自动存五份，列文件夹
+那种一次回几十个的，全下下来是在替模型做它没要的事。取不回来**不把调用变成失败**：工具已经跑完了。
+探针 `bot/e2e-connector-upload.mjs` §6；它用的 `SATUWORK_CONNECTOR_DOWNLOAD_ALLOW_LOCAL=1` 只放回环的 http。
+
+**还没做的**：哪些格子算文件现在按形状认。Composio 的工具输出 schema 上标着 `file_downloadable`，
+更稳的是由 Gateway 照 schema 标出来（和 `annotateFileParams` 认 `file_uploadable` 对称）；要先对一次
+真实的输出 schema。
+
 ### 两百多个工具装不下
 
 绑账号不绑 Bot，工具数就随**安装数**线性涨，而不是随「这颗 Bot 需要什么」。算术很直白：

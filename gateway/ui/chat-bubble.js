@@ -272,6 +272,10 @@ function toolCommandOf(x) {
   else if (x.name === 'search_files') action = args.target === 'files' ? t('查找文件', 'Find files') : t('搜索文件内容', 'Search file content')
   else if (x.name === 'web_search') action = t('搜索网页', 'Search the web')
   else if (x.name === 'web_extract') action = t('读取网页', 'Read webpage')
+  else if (x.name === 'browser_batch') {
+    action = t('连续网页操作', 'Browser steps')
+    if (Array.isArray(args.steps)) subject = t(`${args.steps.length} 步`, `${args.steps.length} steps`)
+  }
   const summary = subject ? `${action} · ${subject}` : action
   return summary.length > 120 ? summary.slice(0, 120) + '…' : summary
 }
@@ -1550,6 +1554,30 @@ function approvalHtml(a) {
 }
 
 /**
+ * 交接卡的抬头：**说清楚这件事归谁**，不写「需要人工协助」。
+ *
+ * 模版不填 escalateTo 就指派给 Bot 的主人，也就是正在看这张卡的人。只写「人工」的话，
+ * 他读到的是「去找客服」，于是就去找平台的人了——而这一步多半他自己点一下就能继续。
+ *
+ * 指派在 Gateway 那张表里（席位不知道），从待办清单里按单号认；认不到（清单还没拉到、
+ * 平台账号）就按「你」写：会话页本来只有这颗 Bot 的主人看得到。
+ */
+function handoffHead(h) {
+  const me = (state.me && state.me.account) || {}
+  if (h.claimedBy && h.claimedBy.accountId && h.claimedBy.accountId !== me.id) {
+    return t('已由 ', 'Taken by ') + (h.claimedBy.name || t('同事', 'a teammate')) + t(' 接手处理', '')
+  }
+  const picks = (h.options || []).length > 0
+  const also = picks ? t('，你也可以直接选下一步', '; you can still pick a next step') : ''
+  const row = (state.handoffs || []).find((x) => x.id === h.id)
+  if (row && row.assignee && row.assignee !== me.id) {
+    return t('已转给 ', 'Handed to ') + (row.assigneeName || t('同事', 'a teammate')) + t(' 处理', '') + also
+  }
+  if (row && !row.assignee && me.role !== 'admin') return t('已转给公司管理员处理', 'Handed to your company admins') + also
+  return picks ? t('需要你选一下下一步', 'Pick a next step') : t('需要你来处理这一步', 'This step needs you')
+}
+
+/**
  * 一张交接卡（见 docs/handoff.md）。
  *
  * **只画还没闭合的那些。** 已经关掉的收成一行灰字（handoffDoneHtml）——一件已经办完
@@ -1560,12 +1588,12 @@ function approvalHtml(a) {
  */
 function handoffHtml(h) {
   return `<div class="sw-approval sw-handoff" data-state="${esc(h.state)}" data-handoff="${esc(h.id)}">
-    <div class="sw-approval-head">${ICON_HAND}<span>${t('需要人工协助', 'Human help needed')}</span>${handoffStateTag(h)}</div>
+    <div class="sw-approval-head">${ICON_HAND}<span>${esc(handoffHead(h))}</span>${handoffStateTag(h)}</div>
     <div class="sw-handoff-ask">${esc(h.ask || t('请查看交接详情', 'Review handoff details'))}</div>
     ${h.reason ? `<div class="sw-approval-why"><span class="ho-label">${t('转交原因', 'Reason')}</span>${esc(h.reason)}</div>` : ''}
     ${handoffContext(h)}
     <div class="sw-handoff-meta">${h.claimedBy && h.claimedBy.name ? `<span>${t('处理人', 'Handler')} · ${esc(h.claimedBy.name)}</span>` : ''}
-      ${h.blocking && h.state !== 'returned' ? `<span>${t('此任务正在等待人工处理', 'This task is waiting for human help')}</span>` : ''}
+      ${h.blocking && h.state !== 'returned' ? `<span>${t('Bot 停在这一步，交还之后接着做', 'The bot is paused here and continues once this is returned')}</span>` : ''}
       ${h.repeats ? `<span>${t('同一问题再次触发', 'Repeated issue')} × ${esc(String(h.repeats))}</span>` : ''}
     </div>${handoffForm(h)}
   </div>`

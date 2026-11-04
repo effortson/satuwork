@@ -152,6 +152,7 @@ async function actOnHandoff(id, act, body, near) {
     }
     const message = act === 'claim' ? t('已接手。处理完成后，请填写说明并交还 Bot。', 'Claimed. Add an outcome and return it when ready.')
       : act === 'cancel' ? t('交接已撤销，未通知 Bot 继续。', 'Handoff cancelled. The bot was not asked to continue.')
+      : body && body.disposition === 'choice' ? t('已按你选的这一步交还，Bot 正在接着做。', 'Returned with your choice. The bot is continuing.')
       : t('处理说明已交还，等待 Bot 后续反馈。', 'Response returned. Awaiting the bot’s follow-up.')
     if (previousFeedback && previousFeedback.error && state.error === previousFeedback.text) dismissFlash()
     setHandoffFeedback(id, message)
@@ -200,7 +201,7 @@ async function returnHandoff(id, disposition, near) {
   if (!text) {
     const message = disposition === 'instructions'
       ? t('请先填写希望 Bot 如何继续，再提交新指示。', 'Describe how the bot should continue before submitting instructions.')
-      : t('请先填写处理结果，说明已完成的操作和结论。', 'Describe what you completed and the outcome before returning the task.')
+      : t('先写一句你做了什么，或希望 Bot 怎么做，再点「继续」。', 'Describe what you did or how the bot should continue, then press Continue.')
     setHandoffFeedback(id, message, true)
     if (ta) {
       ta.setAttribute('aria-invalid', 'true')

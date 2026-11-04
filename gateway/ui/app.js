@@ -739,9 +739,17 @@ document.getElementById('app').addEventListener('click', async (e) => {
     return
   }
   if (act === 'chat-handoff-return') {
-    // `done` 是「照你说的做完了」，`instructions` 是「我换了个做法，你按这个来」。
-    // 两句话对模型的意思完全不同（见 policy/handoff.ts 的 returnMessage）。
+    // 卡片上只剩一颗「继续」（`done`）：人写的那段话可能是「做完了」也可能是「换个做法」，
+    // 由 returnMessage 那段话让模型自己分。`instructions` 还留给 Telegram 那颗「换个做法」。
     await returnHandoff(btn.getAttribute('data-id'), btn.getAttribute('data-disp') || 'done', btn)
+    return
+  }
+  if (act === 'chat-handoff-pick') {
+    // 点的是 Bot 给的第几条下一步。正文由席位按序号从单子上取（见 bot/src/web/index.ts）；
+    // 原文也一起带上，是给还不认 `option` 的旧 Gateway 的——它只转 text，席位按原文认。
+    const option = Number(btn.getAttribute('data-option'))
+    const text = btn.getAttribute('data-text') || ''
+    await actOnHandoff(btn.getAttribute('data-id'), 'return', { disposition: 'choice', option, text }, btn)
     return
   }
   if (act === 'chat-handoff-cancel') {

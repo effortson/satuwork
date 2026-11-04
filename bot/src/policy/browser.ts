@@ -242,27 +242,15 @@ export interface ActionContext {
   label?: string
   /** 目标元素的角色（button / link / textbox…）。 */
   role?: string
+  /** 目标元素是一个密码框（`<input type=password>`）。 */
+  secret?: boolean
   /** 这次 browser_dialog 面对的是哪种原生对话框。 */
   dialog?: 'alert' | 'confirm' | 'prompt' | 'beforeunload'
+  /** 那个对话框上写的话。「确认支付 ¥388？」这种要靠它认。 */
+  dialogText?: string
   /** 当前页面地址。没有 url 参数的那几把工具靠它判域名。 */
   url?: string
 }
-
-/**
- * 按钮上印着这些字，就当它是一次提交。
- *
- * 覆盖界面上那句「对外发送、改写数据或付款前先征求同意」说的三件事：发送、改写、付钱。
- */
-/**
- * 这几种角色没名字时不弹卡。
- *
- * 一个没文字的链接、菜单项、复选框，点下去最多是换一页或者改个勾选状态；而一个没文字的
- * **按钮**很可能就是那个只有垃圾桶图标的删除键。角色本身认不出来的更要问——见 submitAction。
- */
-const SAFE_UNNAMED_ROLES = new Set(['link', 'menuitem', 'tab', 'option', 'checkbox', 'radio', 'switch'])
-
-const SUBMIT_WORDS =
-  /(提交|发送|发出|保存|确认|确定|删除|移除|清空|支付|付款|下单|购买|结算|转账|申请|批准|同意|发布|上传|注销|退订|归档|submit|send|save|confirm|delete|remove|pay|checkout|order|buy|purchase|publish|post|upload|apply|approve|transfer|archive)/i
 
 function argsOf(raw: string): Record<string, unknown> {
   try {
@@ -273,69 +261,131 @@ function argsOf(raw: string): Record<string, unknown> {
   }
 }
 
-/** 回车这几种写法都算。 */
-const ENTER = /^(enter|numpadenter|return)$/i
+/** 按钮上印着这些字，就当它是在登录。 */
+const LOGIN_WORDS = /(登录|登入|登陆|sign\s*in|log\s*in|signin|login)/i
+/** 「退出登录」里也有「登录」两个字，但它不是在用谁的身份进门。 */
+const LOGOUT_WORDS = /(退出|注销|登出|sign\s*out|log\s*out|signout|logout)/i
+/** 输入框的名字像密码框（有些页面的密码框不是 type=password，而是自己画的）。 */
+const SECRET_WORDS = /(密码|口令|password|passcode|passwd)/i
+/**
+ * 按钮上（或确认框里）印着这些字，就当它是在付钱。
+ *
+ * 英文要按词边界认：裸写 `pay` 的话 `Display`、`buy` 的话 `Buyer` 都会撞上。宁可多问几张
+ * （「支付宝」那种链接也会弹），也不能让一次真付款从缝里过去。
+ */
+const PAY_WORDS =
+  /(支付|付款|付钱|结算|结账|下单|购买|转账|充值|打款|\bpay(ment)?\b|\bpay\s*now\b|\bcheck\s*out\b|\bcheckout\b|\bpurchase\b|\bbuy\b|\bplace\s+order\b|\btransfer\b)/i
 
 /**
- * 这次浏览器动作要不要人拍板；要的话返回**为什么**（那句话会印在卡片上）。
- *
- * **不能照 `external + write` 直接判。** `browser_click` 正好是这个组合，照着判的结果
- * 是每一次点击都弹一张卡片——那不是收紧边界，那是让人学会闭眼点批准（needsApproval
- * 里给 terminal 单开一条分支时写过同一件事）。
- *
- * 所以只认「看起来像提交」的那几种。**这是启发式，一定会漏**——一个写着「下一步」的
- * 按钮就漏了。漏掉的那次靠事后审计兜（策略在动作完成后记一条非幂等请求），不是靠把
- * 这份词表越堆越长：堆到最后就是每次点击都弹卡，绕回它一开始要避开的那件事。
+ * 共享托管的后缀：这些域名下面**每一个子域都是不同的主人**（alice.github.io 和 bob.github.io
+ * 毫无关系）。按「最后两段」算的话，批准一个就放行了全部。
  */
-export function submitAction(tool: string, rawArgs: string, cx: ActionContext | undefined): string | null {
+const SHARED_SUFFIXES = [
+  'github.io', 'gitlab.io', 'vercel.app', 'netlify.app', 'pages.dev', 'workers.dev', 'web.app',
+  'firebaseapp.com', 'appspot.com', 'herokuapp.com', 'azurewebsites.net', 'cloudfront.net',
+  's3.amazonaws.com', 'blogspot.com', 'onrender.com', 'fly.dev', 'glitch.me', 'ngrok.io',
+  'ngrok-free.app', 'trycloudflare.com', 'myshopify.com', 'wordpress.com', 'notion.site',
+]
+/** 国家顶级域下面常见的二级：`co.uk`、`com.cn` 这种，注册域要再往前取一段。 */
+const SECOND_LEVELS = new Set(['co', 'com', 'net', 'org', 'gov', 'edu', 'ac', 'or', 'ne', 'go', 'gob', 'mil'])
+
+/**
+ * 站点：判「这条对话第一次打开它」时按什么算同一个。
+ *
+ * 按**注册域**（`drive.google.com` 和 `docs.google.com` 是同一站），不按完整主机名——
+ * 否则在 Drive 里点开一张表格就换到 docs 子域，又弹一次卡。没有公共后缀表，拿两份短名单
+ * 近似：共享托管后缀（取后缀再加一段）、国家顶级域下的常见二级（`co.uk` / `com.cn`）。IP 原样。
+ */
+export function siteOf(host: string): string {
+  if (/^[\d.]+$/.test(host) || host.includes(':')) return host
+  const parts = host.split('.').filter(Boolean)
+  const shared = SHARED_SUFFIXES.find((suffix) => host.endsWith(`.${suffix}`))
+  if (shared) return parts.slice(-(shared.split('.').length + 1)).join('.')
+  if (parts.length <= 2) return parts.join('.')
+  const [second, last] = parts.slice(-2)
+  const take = last.length === 2 && SECOND_LEVELS.has(second) ? 3 : 2
+  return parts.slice(-take).join('.')
+}
+
+/** 一张浏览器卡片是哪一类。「这一轮都批准」按类记，登录批过不等于付款也批过。 */
+export type AskKind = 'login' | 'pay'
+
+export interface Ask {
+  /** 印在卡片上的那句话。 */
+  why: string
+  kinds: AskKind[]
+}
+
+/**
+ * 这次浏览器动作要不要人拍板；要的话返回**为什么**（那句话会印在卡片上）和它是哪一类。
+ *
+ * **只问登录和付款。** 页面上别的点击、填写、回车、对话框一律不问——改写数据也不问。早先
+ * 按「像提交」的词表弹卡，一次报价表改下来几十张卡片，人学会的是闭眼点批准，那张卡片什么
+ * 也没守住。浏览器这边人要拍板的只有三件事：**用谁的身份进门**、**付钱**（这里），和
+ * **这条对话第一次去哪个站**（policy/index.ts 的 browserApproval，它要记账，不在这个纯函数里）。
+ *
+ * 没问过的那些写，事后照样留痕：策略在动作完成后看它发没发非幂等请求，发了就记一条
+ * （noteWrites）。
+ *
+ * 登录认三种：点一个印着「登录 / Sign in」的按钮；往密码框里填东西（快照给密码框打了
+ * `password` 标记，名字像密码的也算——有些页面的密码框是自己画的）；在一张**有密码框的
+ * 页面**上不给 ref 往当前焦点里打字——「点用户名、按 Tab、直接打字」就是这么填密码的，
+ * 不认这条的话登录确认一句话就绕过去了（`cx.secret` 那时由服务按「这一页有没有密码框」给）。
+ *
+ * 付款认两种：点一个印着「支付 / 下单 / Pay / Checkout」的元素；在一个写着这些字的确认框上
+ * 点确定（「确认支付 ¥388？」）。**这是启发式，会漏**——一个只写「确定」的付款按钮就漏了，
+ * 填完直接回车提交的付款表单也漏了。漏掉的那次落在 noteWrites 的留痕里。
+ */
+export function browserAsk(tool: string, rawArgs: string, cx: ActionContext | undefined): Ask | null {
   const args = argsOf(rawArgs)
   const label = String(cx?.label ?? '').trim()
   const named = label ? `「${label}」` : ''
-
   if (tool === 'browser_type') {
-    // submit=true 就是「填完直接回车」，和点提交按钮是同一件事。
-    if (args.submit === true) return `在${named || '这个输入框'}里填完直接提交`
-    return null
-  }
-  if (tool === 'browser_press') {
-    /**
-     * 回车要确认，尽管它常常只是搜索框里的一次搜索。
-     *
-     * 放过它的话，`browser_type(submit:true)` 要确认而「先 type 再 press Enter」不要——
-     * 同一件事换个写法就绕过去了，而模型换写法不需要任何恶意，它本来就在试各种写法。
-     * 多出来的那几张卡片由「这一轮都批准」消化。
-     */
-    if (ENTER.test(String(args.key ?? ''))) return '在页面上按回车提交'
-    return null
-  }
-  if (tool === 'browser_dialog') {
-    // alert 只有一个「知道了」，点掉它什么也没发生。confirm / beforeunload 不一样：
-    // 那一下「确定」正是不可逆的那一下。
-    if (args.action !== 'accept') return null
-    if (cx?.dialog === 'confirm' || cx?.dialog === 'beforeunload') return '接受页面弹出的确认框'
+    if (!String(args.ref ?? '').trim()) {
+      if (cx?.secret) return { why: '在有密码框的页面上往当前焦点里打字（可能是在填密码）', kinds: ['login'] }
+      return null
+    }
+    if (cx?.secret || SECRET_WORDS.test(label)) return { why: `往密码框${named}里填内容（这是在登录）`, kinds: ['login'] }
     return null
   }
   if (tool === 'browser_click') {
-    /**
-     * **认不出来就问。**
-     *
-     * 先写的是「没名字就放行」，那是个真洞：企业后台里的删除按钮常常只有一个垃圾桶
-     * 图标，既没有文字也没有 aria-label，快照里就是 `- button "" [@e12]`。照那条规则，
-     * 一次不可逆的删除**一张卡片都不会弹**。
-     *
-     * 所以反过来：叫不出名字的按钮要问一句「它会做什么」。链接和菜单项几乎总有文字，
-     * 真正落到这条上的就是图标按钮那一小撮，多出来的卡片由「这一轮都批准」消化。
-     */
-    if (!label) {
-      const role = String(cx?.role ?? '')
-      // 有名字才算数的那几种角色：它们没名字时点下去也不会提交什么（多半就是个空链接）。
-      // 反过来，**角色都认不出来**（ref 不在上一次快照里）时不能当成安全——那正是最
-      // 看不清的一种情况。
-      if (role && SAFE_UNNAMED_ROLES.has(role)) return null
-      return '点一个看不出会做什么的元素（它在快照里没有名字）'
-    }
-    if (!SUBMIT_WORDS.test(label)) return null
-    return `点${named}`
+    if (!label) return null
+    if (PAY_WORDS.test(label)) return { why: `点${named}付款`, kinds: ['pay'] }
+    if (LOGIN_WORDS.test(label) && !LOGOUT_WORDS.test(label)) return { why: `点${named}登录`, kinds: ['login'] }
+    return null
+  }
+  if (tool === 'browser_dialog') {
+    if (args.action !== 'accept') return null
+    const text = String(cx?.dialogText ?? '').trim()
+    if (text && PAY_WORDS.test(text)) return { why: `在确认框「${text.slice(0, 60)}」上点确定（这是在付款）`, kinds: ['pay'] }
+    return null
   }
   return null
+}
+
+/**
+ * browser_batch 要不要人拍板：**逐步照单步的判据判**，有一步要问就整批问一次。
+ *
+ * 只判第一步的话，「先填用户名、再填密码、再点登录」「先填数量、再点支付」就从缝里过去了。
+ * 每一步的 ref 认的是**动手之前**那张快照里的名字（批里不拍快照，模型手上也只有那一张），
+ * 所以 `cxOf` 照单步那样从缓存里取就对。卡片上把要问的那几步都列出来，人看得清批的是什么。
+ */
+export function batchBrowserAsk(
+  rawArgs: string,
+  cxOf: (step: Record<string, unknown>) => ActionContext | undefined,
+): Ask | null {
+  const steps = argsOf(rawArgs).steps
+  if (!Array.isArray(steps)) return null
+  const hits: string[] = []
+  const kinds = new Set<AskKind>()
+  steps.forEach((raw, i) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+    const step = raw as Record<string, unknown>
+    const ask = browserAsk(`browser_${String(step.action ?? '')}`, JSON.stringify(step), cxOf(step))
+    if (!ask) return
+    hits.push(`第 ${i + 1} 步${ask.why}`)
+    for (const k of ask.kinds) kinds.add(k)
+  })
+  if (!hits.length) return null
+  return { why: `这一批 ${steps.length} 步操作里有要确认的：${hits.join('；')}`, kinds: [...kinds].sort() }
 }

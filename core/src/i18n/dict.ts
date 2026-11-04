@@ -722,7 +722,8 @@ export const dict: Record<string, string> = {
   '本机启动的进程，按 stdio 通信': 'A local process, speaking over stdio',
   '单包不超过 5 MB、200 个文件': 'Up to 5 MB and 200 files per package',
   对外发送改写数据或付款前先征求同意: 'Ask before sending, rewriting data or paying',
-  '对外发送、改写数据或付款前先征求同意': 'Ask first before sending externally, rewriting data or paying',
+  '对外发送、改写数据或付款前先征求同意；浏览器里只在首次打开某个站、登录和付款时确认':
+    'Ask first before sending externally, rewriting data or paying; in the browser, only when first opening a site, signing in or paying',
   '复制失败，请手动选中上面的链接复制。': 'Copy failed — select the link above and copy it manually.',
   '改价目表不会动已经开出去的公司席位。': 'Editing the price list leaves existing company seats untouched.',
   '关闭则仅保存，不对 Agent 开放': 'When off it is saved but not exposed to the agent',

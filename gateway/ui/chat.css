@@ -2387,6 +2387,9 @@ button.sw-ref-card:hover { background: color-mix(in srgb, var(--secondary) 70%, 
 .sw-handoff-meta { display: flex; flex-wrap: wrap; gap: 5px 16px; margin-top: 10px; color: var(--muted-foreground); font-size: 11.5px; }
 .sw-handoff-meta:empty { display: none; }
 .ho-response { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+/* Bot's suggested next steps: one full-width button each, above the free-text fallback. */
+.ho-options { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.sw-handoff .ho-option { justify-content: flex-start; text-align: left; white-space: normal; min-height: 36px; padding: 8px 12px; border-radius: 8px; font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
 .sw-handoff .sw-handoff-note { display: block; margin: 7px 0 0; padding: 10px 12px; min-height: 82px; border: 1px solid var(--input-border); border-radius: 8px; background: var(--background); color: var(--foreground); line-height: 1.7; font-size: 12.5px; font-weight: 400; }
 .sw-handoff-note[aria-invalid='true'] { border-color: var(--color-accent-700); }
 .ho-help { margin: 6px 0 0; font-size: 11.5px; color: var(--muted-foreground); line-height: 1.75; }

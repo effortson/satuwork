@@ -369,6 +369,9 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
         if (data.claimedBy) seen.claimedBy = data.claimedBy
         if (data.result) seen.result = data.result
         if (data.repeats) seen.repeats = data.repeats
+        // 同一件事再撞一次时席位会换上新的下一步（见 policy/handoff.ts 的 open），按最后一条来。
+        // 折叠的窗口也可能不从开单那一条开始，后面几条带着就补上。
+        if (Array.isArray(data.options)) seen.options = data.options.map(String)
         // **不动任何一块的 endTime**：这条事件属于开单那一块，而它早就收口了；
         // 拿它去推当前块的时间，气泡下面那行会跳到几小时之后。
         continue
@@ -385,6 +388,8 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
         reason: data.reason || '',
         ask: data.ask || '',
         summary: data.summary || '',
+        // Bot 给的下一步（最多三条），卡片上画成按钮。
+        options: Array.isArray(data.options) ? data.options.map(String) : [],
         blocking: data.blocking !== false,
         claimedBy: data.claimedBy || null,
         result: data.result || null,

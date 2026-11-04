@@ -186,10 +186,19 @@ function approvalKeyboard(approvalKey: string) {
   }
 }
 
-function handoffKeyboard(handoffId: string) {
-  const data = (action: 'c' | 'd' | 'i' | 'x') => `swh:${handoffId}:${action}`
+/**
+ * 转人工卡的按钮。Bot 给了下一步的话，每条一行排在最上面（正文里有编号对应的全文——
+ * 按钮上的字会被 Telegram 截断，选项又常常是一整句）。回调只带序号，64 字节放得下。
+ */
+function handoffKeyboard(handoffId: string, options: string[] = []) {
+  const data = (action: 'c' | 'd' | 'i' | 'x' | `o${number}`) => `swh:${handoffId}:${action}`
   return {
     inline_keyboard: [
+      // 按码点截：按 UTF-16 截会把 emoji 劈成半个，Telegram 拒收整张卡。
+      ...options.slice(0, 3).map((o, i) => [{
+        text: `${i + 1}. ${Array.from(o).slice(0, 60).join('')}`,
+        callback_data: data(`o${i}`),
+      }]),
       [
         { text: '✅ 处理完了', callback_data: data('d') },
         { text: '🙋 我来接手', callback_data: data('c') },
@@ -239,8 +248,14 @@ export async function telegramSendApproval(token: string, chatId: string, markdo
 }
 
 /** 发一张可直接处理的转人工卡；按钮数据只放 UUID，低于 Telegram 的 64-byte 上限。 */
-export async function telegramSendHandoff(token: string, chatId: string, markdown: string, handoffId: string): Promise<number> {
-  const reply_markup = handoffKeyboard(handoffId)
+export async function telegramSendHandoff(
+  token: string,
+  chatId: string,
+  markdown: string,
+  handoffId: string,
+  options: string[] = [],
+): Promise<number> {
+  const reply_markup = handoffKeyboard(handoffId, options)
   const richParts = telegramRichTextParts(markdown)
   let messageId = NaN
   for (let i = 0; i < richParts.length; i += 1) {

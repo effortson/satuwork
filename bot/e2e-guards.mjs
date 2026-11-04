@@ -95,10 +95,11 @@ const browserSvc = {
     if (call.name === 'browser_navigate') return { url: page.url }
     // __norole 用来演「快照里查不到这个 ref」：连角色都认不出来。
     if (args.__norole) return undefined
-    return { url: page.url, label: args.__label, role: args.__role || 'button', dialog: args.__dialog }
+    return { url: page.url, label: args.__label, role: args.__role || 'button', dialog: args.__dialog, dialogText: args.__dialogText, secret: args.__secret }
   },
-  setScope(sites, allowlist) {
+  setScope(sites, allowlist, opened) {
     this.scope = { sites: [...sites], allowlist }
+    this.opened = opened
   },
   takeWrites() {
     const out = this.writes
@@ -190,6 +191,7 @@ tool('browser_click', ['external', 'write'], { exclusive: 'browser' })
 tool('browser_type', ['external', 'write'])
 tool('browser_press', ['external', 'write'])
 tool('browser_dialog', ['external', 'write'])
+tool('browser_batch', ['external', 'write'], { exclusive: 'browser' })
 
 const storeDir = tempDir('satuwork-guards-')
 ctx.plugin(StorageService, { path: join(storeDir, 'probe.db') })
@@ -531,8 +533,10 @@ out.approvals = approvals
   )
   const tool = await call('s8', 'escalate_to_human', { reason: '这需要财务确认', summary: '已经查到发票号' })
   out.escalate = {
-    前两次只是拦: !texts[0].includes('需要人来处理') && !texts[1].includes('需要人来处理'),
-    第三次改口转人工: texts[2].includes('需要人来处理'),
+    前两次只是拦: !texts[0].includes('escalate_to_human') && !texts[1].includes('escalate_to_human'),
+    第三次改口转人工: texts[2].includes('escalate_to_human') && texts[2].includes('options'),
+    // 这句会被模型原样转给用户；「等人接手」读起来就是「去找客服」。
+    第三次不说等人接手: !texts[2].includes('等人接手'),
     自动升级留了记录: escalated.length === 1,
     有转人工的工具: ctx.tools.has('escalate_to_human'),
     转人工本身不被拦: tool.failed !== true,
@@ -734,49 +738,133 @@ out.record = {
   out.browserRead.名单内的页面可以快照 = (await call('s8b', 'browser_snapshot')).failed !== true
 }
 
-// ── 9.6 浏览器的提交判据：像提交的才弹卡 ───────────────────────────────
+// ── 9.6 浏览器的审批：只问登录和「这条对话第一次打开某个站」 ──────────────
 //
-// `browser_click` 正好是 external + write，照通用规则判就是**每一次点击都弹一张卡片**
-// ——那不是收紧边界，那是让人学会闭眼点批准。
+// 早先按「像提交」的词表弹卡（提交、删除、回车、确认框、没名字的按钮），一张报价表改下来
+// 几十张卡片，人学会的是闭眼点批准。现在中间的操作一律不问，没问过的写由 noteWrites 留痕
+// （见 9.7）。这里钉两件事：该问的那两种还在问；不该问的真的不再问。
 {
-  const asked = async (name, args) => {
-    const before = pendingOf('s11').length
-    const running = call('s11', name, args)
+  const asked = async (name, args, sessionId = 's11') => {
+    const before = pendingOf(sessionId).length
+    const running = call(sessionId, name, args)
     // 要问的会停在 pre-execute 里等卡片；不该问的那次自己就跑完了——两种都不用等满。
-    await untilPending('s11', before + 1, { until: running })
-    const now = pendingOf('s11').length
+    await untilPending(sessionId, before + 1, { until: running })
+    const now = pendingOf(sessionId).length
     if (now > before) {
-      ctx.policy.approvals.decide('s11', pendingOf('s11')[now - 1].data.callId, 'approve', 'once')
+      ctx.policy.approvals.decide(sessionId, pendingOf(sessionId)[now - 1].data.callId, 'approve', 'once')
       await running
       return true
     }
     await running
     return false
   }
+  const lastReason = (name) =>
+    sessions.appended.filter((e) => e.type === 'tool/approval' && e.sessionId === 's11' && e.data.name === name).at(-1)
+      ?.data?.reason ?? ''
   out.browserApproval = {
-    点提交要问: (await asked('browser_click', { ref: '@e1', __label: '提交订单' })) === true,
-    点删除要问: (await asked('browser_click', { ref: '@e2', __label: 'Delete file' })) === true,
-    点返回不问: (await asked('browser_click', { ref: '@e3', __label: '返回列表' })) === false,
-    /**
-     * **没名字的按钮要问。**
-     *
-     * 企业后台里的删除按钮常常只有一个垃圾桶图标，既没有文字也没有 aria-label。
-     * 「认不出来就放行」的话，一次不可逆的删除一张卡片都不会弹。
-     */
-    没名字的按钮要问: (await asked('browser_click', { ref: '@e4' })) === true,
-    // 角色都认不出来（ref 不在上一次快照里）：先被 checkBrowser 拦下，连卡片都不用弹。
+    第一次打开要问: (await asked('browser_navigate', { url: 'https://app.example.com/a' })) === true,
+    同一站再开不问: (await asked('browser_navigate', { url: 'https://app.example.com/b' })) === false,
+    // 按注册域算：Drive 里点开表格会换到 docs 子域，那不该又弹一张。
+    同一站的别的子域不问: (await asked('browser_navigate', { url: 'https://docs.example.com/c' })) === false,
+  }
+  out.browserApproval.卡片上说了是哪个站 = lastReason('browser_navigate').includes('example.com')
+  Object.assign(out.browserApproval, {
+    点登录要问: (await asked('browser_click', { ref: '@e1', __label: '登录' })) === true,
+    点SignIn要问: (await asked('browser_click', { ref: '@e1', __label: 'Sign in' })) === true,
+    点退出登录不问: (await asked('browser_click', { ref: '@e1', __label: '退出登录' })) === false,
+    往密码框填要问: (await asked('browser_type', { ref: '@e5', text: 'x', __secret: true })) === true,
+    名字像密码的框也要问: (await asked('browser_type', { ref: '@e5', text: 'x', __label: '密码' })) === true,
+    // 付款要问：按钮上、确认框里写着付钱的字。英文按词边界认，Display 不能撞上 pay。
+    点支付要问: (await asked('browser_click', { ref: '@e1', __label: '立即支付' })) === true,
+    点下单要问: (await asked('browser_click', { ref: '@e1', __label: '提交并下单' })) === true,
+    点PayNow要问: (await asked('browser_click', { ref: '@e1', __label: 'Pay now' })) === true,
+    点Checkout要问: (await asked('browser_click', { ref: '@e1', __label: 'Checkout' })) === true,
+    Display不算付款: (await asked('browser_click', { ref: '@e1', __label: 'Display settings' })) === false,
+    付款确认框点确定要问: (await asked('browser_dialog', { action: 'accept', __dialog: 'confirm', __dialogText: '确认支付 ¥388？' })) === true,
+    付款确认框点取消不问: (await asked('browser_dialog', { action: 'dismiss', __dialog: 'confirm', __dialogText: '确认支付 ¥388？' })) === false,
+    // 下面这些早先都要问，现在一律不问——改写数据也不问。
+    点保存不问: (await asked('browser_click', { ref: '@e1', __label: '保存' })) === false,
+    点提交不问: (await asked('browser_click', { ref: '@e1', __label: '提交订单' })) === false,
+    点删除不问: (await asked('browser_click', { ref: '@e2', __label: 'Delete file' })) === false,
+    没名字的按钮不问: (await asked('browser_click', { ref: '@e4' })) === false,
+    填完直接提交不问: (await asked('browser_type', { ref: '@e5', text: 'x', submit: true })) === false,
+    回车不问: (await asked('browser_press', { key: 'Enter' })) === false,
+    确认框点确定不问: (await asked('browser_dialog', { action: 'accept', __dialog: 'confirm' })) === false,
+    // 角色都认不出来（ref 不在上一次快照里）：照样先被 checkBrowser 拦下。
     快照里查不到的元素直接被拦: (await call('s11', 'browser_click', { ref: '@e99', __norole: true })).failed === true,
-    // 认得出在哪一页、但那个 ref 没有名字也没有角色：这是最看不清的一种，要问。
-    没名字也没角色的要问: (await asked('browser_click', { ref: '@e4c', __role: '' })) === true,
-    没名字的链接不问: (await asked('browser_click', { ref: '@e4b', __role: 'link' })) === false,
-    填完直接提交要问: (await asked('browser_type', { ref: '@e5', text: 'x', submit: true })) === true,
-    只填不提交不问: (await asked('browser_type', { ref: '@e5', text: 'x' })) === false,
-    // 「先 type 再 press Enter」和 submit:true 是同一件事，放过它等于留个换写法就绕过的口子。
-    回车要问: (await asked('browser_press', { key: 'Enter' })) === true,
-    Tab不问: (await asked('browser_press', { key: 'Tab' })) === false,
-    确认框点确定要问: (await asked('browser_dialog', { action: 'accept', __dialog: 'confirm' })) === true,
-    alert点掉不问: (await asked('browser_dialog', { action: 'accept', __dialog: 'alert' })) === false,
-    关掉对话框不问: (await asked('browser_dialog', { action: 'dismiss', __dialog: 'confirm' })) === false,
+  })
+  /**
+   * **browser_batch 逐步照单步的判据判。** 只判第一步的话，「先填用户名、再填密码、再点
+   * 登录」就从缝里过去了。卡片上写清是第几步——人批的是那一步，不是「一批操作」。
+   */
+  out.browserApproval.批里没有登录不问 =
+    (await asked('browser_batch', {
+      steps: [{ action: 'type', ref: '@e5', text: 'x' }, { action: 'click', ref: '@e1', __label: '提交订单' }, { action: 'press', key: 'Enter' }],
+    })) === false
+  out.browserApproval.批里有一步登录就问 =
+    (await asked('browser_batch', {
+      steps: [{ action: 'type', ref: '@e5', text: 'x' }, { action: 'type', ref: '@e6', text: 'y', __secret: true }, { action: 'click', ref: '@e1', __label: '登录' }],
+    })) === true
+  const reason = lastReason('browser_batch')
+  out.browserApproval.卡片上写清第几步 = reason.includes('第 2 步') && reason.includes('第 3 步') && !reason.includes('第 1 步')
+  out.browserApproval.批里有一步付款就问 =
+    (await asked('browser_batch', { steps: [{ action: 'type', ref: '@e5', text: '2' }, { action: 'click', ref: '@e1', __label: '去支付' }] })) === true
+  // 有密码框的页面上不给 ref 打字（「点用户名、按 Tab、直接打字」）：服务把 secret 给成 true。
+  out.browserApproval.批里不给ref往密码页打字要问 =
+    (await asked('browser_batch', { steps: [{ action: 'press', key: 'Tab' }, { action: 'type', text: 'pw', __secret: true }] })) === true
+  out.browserApproval.批里不给ref往普通页打字不问 =
+    (await asked('browser_batch', { steps: [{ action: 'type', text: '388' }, { action: 'press', key: 'Enter' }] })) === false
+
+  /**
+   * **「这一轮都批准」按卡片的类记，不按工具名。** 同一把 browser_click 可能在登录、也可能在
+   * 付款：人在登录卡上点的「这一轮都批准」不能把这一轮后面的付款一起放行。
+   */
+  const askedTurn = async (name, args, sessionId = 's11') => {
+    const before = pendingOf(sessionId).length
+    const running = call(sessionId, name, args)
+    await untilPending(sessionId, before + 1, { until: running })
+    const now = pendingOf(sessionId).length
+    if (now > before) ctx.policy.approvals.decide(sessionId, pendingOf(sessionId)[now - 1].data.callId, 'approve', 'turn')
+    await running
+    return now > before
+  }
+  ctx.emit('session/event', 's11', { seq: 0, time: Date.now(), type: 'turn/start', data: {} })
+  out.browserGrant = {
+    登录卡弹了: (await askedTurn('browser_click', { ref: '@e1', __label: '登录' })) === true,
+    同一轮再登录不问: (await asked('browser_click', { ref: '@e1', __label: 'Sign in' })) === false,
+    // 换一种写法的登录（往密码框里填）也是登录，同一类。
+    同一轮填密码也不问: (await asked('browser_type', { ref: '@e5', text: 'x', __secret: true })) === false,
+    同一轮付款照样问: (await asked('browser_click', { ref: '@e1', __label: '立即支付' })) === true,
+  }
+  ctx.emit('session/event', 's11', { seq: 0, time: Date.now(), type: 'turn/start', data: {} })
+  out.browserGrant.批准打开A站时点了这一轮 = (await askedTurn('browser_navigate', { url: 'https://a.example.org/' })) === true
+  out.browserGrant.同一轮去B站照样问 = (await asked('browser_navigate', { url: 'https://b.example.net/' })) === true
+  ctx.emit('session/event', 's11', { seq: 0, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: 'completed' } })
+
+  /**
+   * **「第一次打开」跟着对话收口，不跟着会话 id。** 一个 Bot 一辈子只有一条会话，照会话 id
+   * 记的话，批过的站从此不再问。/new 清掉；闲置太久的也当成另一段对话。
+   */
+  out.browserOpened = { 开过的站不再问: (await asked('browser_navigate', { url: 'https://app.example.com/x' })) === false }
+  ctx.emit('session/event', 's11', { seq: 0, time: Date.now(), type: 'session/reset', data: {} })
+  out.browserOpened.新对话之后重新问 = (await asked('browser_navigate', { url: 'https://app.example.com/x' })) === true
+  const Policy = ctx.policy.constructor
+  const idle = Policy.OPENED_IDLE_MS
+  Policy.OPENED_IDLE_MS = -1
+  out.browserOpened.闲置太久重新问 = (await asked('browser_navigate', { url: 'https://app.example.com/y' })) === true
+  Policy.OPENED_IDLE_MS = idle
+  // 「这段对话批过哪些站」要推给服务：点外链、302 落到的站只有服务那边看得见。
+  browserSvc.opened = null
+  await call('s11', 'browser_snapshot')
+  out.browserOpened.推给服务的判断能用 =
+    typeof browserSvc.opened === 'function' && browserSvc.opened('example.com') === true && browserSvc.opened('elsewhere.org') === false
+
+  const { siteOf } = await import('./src/policy/browser.ts')
+  out.siteOf = {
+    同一注册域: siteOf('docs.google.com') === 'google.com' && siteOf('drive.google.com') === 'google.com',
+    国家二级域: siteOf('www.bbc.co.uk') === 'bbc.co.uk' && siteOf('mail.qq.com.cn') === 'qq.com.cn',
+    短二级名不误判: siteOf('app.hr.de') === 'hr.de',
+    共享托管各算各的: siteOf('alice.github.io') === 'alice.github.io' && siteOf('x.alice.github.io') === 'alice.github.io' && siteOf('bob.vercel.app') !== siteOf('eve.vercel.app'),
   }
 }
 
@@ -815,7 +903,8 @@ out.record = {
   browserSvc.writes = [{ method: 'POST', url: 'https://example.com/pay' }]
   {
     const cardsBefore = pendingOf('s11').length
-    const running = call('s11', 'browser_click', { ref: '@e1', __label: '提交订单' })
+    // 浏览器这边现在只有登录还问，就拿它演「问过人的那一次」。
+    const running = call('s11', 'browser_click', { ref: '@e1', __label: '登录' })
     await untilPending('s11', cardsBefore + 1, { until: running })
     const pend = pendingOf('s11')
     ctx.policy.approvals.decide('s11', pend[pend.length - 1].data.callId, 'approve', 'once')

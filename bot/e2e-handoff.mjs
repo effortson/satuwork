@@ -156,6 +156,38 @@ out.expire = {
   out.expire.提醒别重做一遍 = msg.includes('不要把可能已经做过的事再做一遍')
 }
 
+// ── 6b. 下一步选项：开单带上、事件里有、点了按 choice 交还 ─────────────
+//
+// 一张只写着「需要人工协助」的卡，用户读到的是「去找客服」。选项是他不用找人的出路，
+// 而 choice 那段话不能是「换了个做法」——那条路是 Bot 自己提的。
+{
+  const options = ['我已经在插件页连好了 Gmail，继续发送', '改成存草稿，我自己发', '先跳过附件，把其余的做完']
+  const picked = await ctx.handoffs.open({ ...base, sessionId: 's2c', callId: 'c9c', options })
+  const ev = appended.find((e) => e.type === 'human/handoff' && e.data.id === picked.handoff.id)
+  // 同一件事再撞一次、给了新的下一步：并进同一张单，但按钮要换成新的（卡片从日志折出来，得落一条）。
+  const fresh = [...options.slice(0, 2), '换成用公司邮箱发']
+  const evBefore = appended.filter((e) => e.type === 'human/handoff' && e.data.id === picked.handoff.id).length
+  const again = await ctx.handoffs.open({ ...base, sessionId: 's2c', callId: 'c9d', options: fresh })
+  const evAfter = appended.filter((e) => e.type === 'human/handoff' && e.data.id === picked.handoff.id)
+  const same = await ctx.handoffs.open({ ...base, sessionId: 's2c', callId: 'c9e', options: fresh })
+  const evSame = appended.filter((e) => e.type === 'human/handoff' && e.data.id === picked.handoff.id).length
+  const back = await ctx.handoffs.finish(picked.handoff.id, 'choice', options[1], { accountId: 'u1', name: '张三' })
+  const msg = back.handoff ? returnMessage(back.handoff, 'choice', options[1], { accountId: 'u1', name: '张三' }) : ''
+  out.options = {
+    单子上带着: picked.handoff.options?.length === 3,
+    事件里带着: ev?.data.options?.[2] === options[2],
+    重撞并进同一张: again.deduped === true && again.handoff.id === picked.handoff.id,
+    重撞换上新选项: again.handoff.options?.[2] === '换成用公司邮箱发',
+    新选项落了事件: evAfter.length === evBefore + 1 && evAfter.at(-1).data.options?.[2] === '换成用公司邮箱发',
+    选项没变不再落: same.deduped === true && evSame === evAfter.length,
+    选了进已交还: back.result === 'ok' && back.handoff.state === 'returned',
+    记下选的是哪条: back.handoff?.result?.disposition === 'choice' && back.handoff.result.text === options[1],
+    话里有选中的那条: msg.includes('改成存草稿'),
+    说的是按这条继续: msg.includes('按这一条继续') && !msg.includes('不要再用原来那个'),
+    没给选项的不带这一格: !('options' in first.handoff),
+  }
+}
+
 // ── 7. 活过重启：单子在磁盘上，不在内存里 ─────────────────────────────
 //
 // 这一条是它和高风险确认最大的差别（那一个是纯内存的，丢了的方向是多问一次）。

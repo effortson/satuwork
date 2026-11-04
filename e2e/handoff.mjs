@@ -171,6 +171,12 @@ export async function runHandoff({ root, gwRoot, test, req, start, waitHttp, ass
     assert(!bad.length, `这几条不对：${bad.join('、')}`)
   })
 
+  await test('Bot 给的下一步跟着单子走，点了按那一条交还', () => {
+    // 一张只写着「需要人工协助」的卡，用户读到的是「去找客服」；选项是他不用找人的出路。
+    const bad = all(p.options || {}).concat(p.options ? [] : ['探针没给 options 这一段'])
+    assert(!bad.length, `这几条不对：${bad.join('、')}`)
+  })
+
   await test('单子活过席位重启', () => {
     // 这是它和高风险确认最大的差别：那一个是纯内存的，丢了的方向是多问一次；
     // 这一个丢了，就是一件没人做、也没人知道没人做的事。
@@ -385,6 +391,22 @@ export async function runHandoff({ root, gwRoot, test, req, start, waitHttp, ass
       const row = (list.json.handoffs || []).find((h) => h.id === hid)
       assert(row && row.state === 'claimed', `状态没跟上：${row && row.state}`)
       assert(row.claimedName, 'claimedName 空——待办页上「谁在处理」会是空的')
+    })
+
+    await test('点了 Bot 给的下一步：序号转到席位，正文不由 Gateway 编', async () => {
+      // 正文由席位从单子上取（bot/src/web/index.ts）。Gateway 要是把序号丢了，人点了按钮
+      // 席位只会回一句「这一条不在 Bot 给的下一步里」。
+      const before = seat.calls.length
+      const r = await req(gwBase, 'POST', `/runtime/handoffs/${hid}/return`, {
+        token: aliceTok,
+        body: { disposition: 'choice', option: 1 },
+      })
+      assert(r.status === 200, `交还 ${r.status} ${r.text}`)
+      const sent = seat.calls.slice(before).find((c) => c.act === 'return')
+      assert(sent, '席位没收到交还')
+      assert(sent.body.disposition === 'choice' && sent.body.option === 1, `序号没带过去：${JSON.stringify(sent.body)}`)
+      // 下面那条按顺序找第一条 return，这一条不能挡在它前面。
+      seat.calls.splice(seat.calls.indexOf(sent), 1)
     })
 
     await test('交还：话真的发到了席位上', async () => {

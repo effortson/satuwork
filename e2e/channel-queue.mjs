@@ -204,7 +204,8 @@ export async function runChannelQueue({ gwRoot, test, req, start, waitHttp, asse
     const partsTo = (chat) =>
       telegram.seen.sent.filter((s) => String(s.chat_id) === chat).map((s) => {
         const t = textOf(s)
-        return t.startsWith('甲：') ? '甲' : t.startsWith('乙：') ? '乙' : t.startsWith('丙：') ? '丙' : t.includes('转人工') ? '卡' : '?'
+        // 交接卡认「需要你做」那一行：标题不再写「转人工」（见 channels.ts 的 handoffMarkdown）。
+        return t.startsWith('甲：') ? '甲' : t.startsWith('乙：') ? '乙' : t.startsWith('丙：') ? '丙' : t.includes('需要你做') ? '卡' : '?'
       })
     const deliveredParts = async (id) =>
       (await withPg(SCHEMA, (c) => c.query('select "deliveredParts" from channel_events where id = $1', [id]))).rows[0]?.deliveredParts

@@ -580,10 +580,48 @@ export function apply(ctx: Context, _config: Config = {}) {
    * 再做一遍。
    */
   ctx.server.post('/api/sessions/:id/handoffs/:hid/return', async (req, res) => {
-    const body = (await req.json().catch(() => ({}))) as { disposition?: unknown; text?: unknown; actor?: unknown }
+    const body = (await req.json().catch(() => ({}))) as {
+      disposition?: unknown
+      text?: unknown
+      option?: unknown
+      actor?: unknown
+    }
     const disposition: Disposition =
-      body.disposition === 'instructions' ? 'instructions' : body.disposition === 'closed' ? 'closed' : 'done'
-    const text = String(body.text ?? '').trim()
+      body.disposition === 'instructions' || body.disposition === 'choice' || body.disposition === 'closed'
+        ? body.disposition
+        : 'done'
+    /**
+     * `choice` 按**第几条**收，正文由这边从单子上取：对模型来说「人选了你提的第二条」和
+     * 「人写了一段新指示」是两句话（见 returnMessage），收一段随手写的字冒充选项的话，它会
+     * 照着一条它从没提过的路说「好，按你选的这条」。按序号收也让 Telegram 那颗只带得下
+     * 单号的按钮（callback_data 64 字节）能直接用。
+     */
+    const cur = ctx.handoffs.get(req.params.hid)
+    // 单子已经收掉了，先说「不在了」：不然下面那句「这一条不在选项里，请刷新重选」会让人
+    // 对着一张早就关掉的单反复重选。和 finish() 返回 gone 时是同一句话。
+    if (!cur) {
+      res.status = 409
+      res.json({ error: '这张交接单已经不在了' })
+      return
+    }
+    /**
+     * 序号优先；没有序号时认**和某一条一字不差**的正文。后一条是给换版那段时间的：界面跟
+     * 桌面端安装包走、Gateway 单独部署，旧 Gateway 不认 `option`、会把它丢掉，只转
+     * `disposition` 和 `text`。只认一字不差的，随手写的字照样冒充不了选项。
+     */
+    const said = String(body.text ?? '').trim()
+    const picked =
+      disposition !== 'choice'
+        ? undefined
+        : typeof body.option === 'number'
+          ? cur.options?.[body.option]
+          : cur.options?.find((o) => o === said)
+    if (disposition === 'choice' && !picked) {
+      res.status = 400
+      res.json({ error: '这一条不在 Bot 给的下一步里，请刷新后重新选，或者写一段说明交还' })
+      return
+    }
+    const text = picked ?? said
     if (!text && disposition !== 'closed') {
       // 空的交还等于把「我处理完了」四个字扔给模型——它接着要做什么全靠猜。
       res.status = 400

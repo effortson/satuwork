@@ -300,6 +300,8 @@ export interface ChannelHandoff {
   reason: string
   ask: string
   summary?: string
+  /** Bot 给的下一步，Telegram 卡上画成按钮（见 policy/index.ts 的 options）。 */
+  options?: string[]
   blocking: boolean
   repeats: number
   createdAt: number
@@ -359,12 +361,15 @@ export function channelHandoffs(events: SessionEvent[], eventId: string): Channe
       latest.set(id, null)
       continue
     }
+    // 选项只在开单那一条上带；后面的 claimed 不重复，沿用前一条的。
+    const options = Array.isArray(data.options) ? data.options.map(String) : latest.get(id)?.options
     latest.set(id, {
       id,
       state: data.state,
       reason: String(data.reason ?? '').trim(),
       ask: String(data.ask ?? '').trim(),
       ...(data.summary ? { summary: String(data.summary).trim() } : {}),
+      ...(options?.length ? { options } : {}),
       blocking: data.blocking !== false,
       repeats: Math.max(0, Number(data.repeats) || 0),
       createdAt: Number(data.at) || Number(event.time) || Date.now(),
