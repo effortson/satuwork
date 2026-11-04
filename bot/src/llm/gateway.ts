@@ -81,6 +81,17 @@ function settleArgs(block: any): void {
  */
 const UNFINISHED_EMPTY = '模型流还没收口就结束了，一个字都没收到（上游可能掐断了连接）'
 
+/**
+ * 「收流结束」那行日志里带一句**怎么收口的、收到几块内容**。
+ *
+ * 这次排查最费时间的一步就是分不清「没收口」和「收口了但是空的」：两种情形字节数都一样、
+ * 回合都是 completed，只能靠管家那边 usage 是不是 0 去猜。写进日志之后一眼就能看出来。
+ */
+function closeNote(how: string, partial: any): string {
+  const blocks = Array.isArray(partial?.content) ? partial.content.length : 0
+  return `${how}，${blocks} 块内容`
+}
+
 function settleDangling(stream: AssistantMessageEventStream, partial: any): void {
   for (let i = 0; i < partial.content.length; i++) {
     const block = partial.content[i]
@@ -637,7 +648,7 @@ async function consumeOpenAI(
   stream: AssistantMessageEventStream,
   model: any,
   kick: (bytes?: number) => void = () => {},
-) {
+): Promise<string> {
   let partial: any = emptyAssistant(model)
   let started = false
   let textIndex = -1
@@ -681,7 +692,7 @@ async function consumeOpenAI(
     }
     if (chunk.error) {
       fail(stream, model, chunk.error.message || JSON.stringify(chunk.error))
-      return
+      return closeNote('错误帧', partial)
     }
     /**
      * 用量帧可能**排在收口之后**。
@@ -757,18 +768,19 @@ async function consumeOpenAI(
   }
   if (finished) {
     stream.push({ type: 'done', reason: finished.reason, message: finished.message })
-    return
+    return closeNote(`finish_reason→${finished.reason}`, partial)
   }
   if (!started) {
     fail(stream, model, 'empty stream')
-    return
+    return closeNote('空流', partial)
   }
   if (!partial.content.length) {
     fail(stream, model, UNFINISHED_EMPTY)
-    return
+    return closeNote('无收口帧且无内容', partial)
   }
   settleDangling(stream, partial)
   stream.push({ type: 'done', reason: 'stop', message: partial })
+  return closeNote('无收口帧', partial)
 }
 
 /** Responses 的 usage → pi 的四项。口径同 chat：`input_tokens` 含缓存命中，要减掉。 */
@@ -800,7 +812,7 @@ async function consumeResponses(
   stream: AssistantMessageEventStream,
   model: any,
   kick: (bytes?: number) => void = () => {},
-) {
+): Promise<string> {
   let partial: any = emptyAssistant(model)
   let started = false
   const slots = new Map<number, number>()
@@ -842,6 +854,8 @@ async function consumeResponses(
   }
   // 同 consumeOpenAI：收口了先不推 done，等流真的读完，免得收口之后的错误帧被吞掉。
   let finished: { reason: string } | null = null
+  /** 收口帧长什么样，只为日志。 */
+  let closedBy = ''
   for await (const ev of readSse(res, kick)) {
     if (!ev.data || ev.data === '[DONE]') continue
     let chunk: any
@@ -853,14 +867,17 @@ async function consumeResponses(
     const type = chunk.type || ev.event
     if (type === 'error' || (chunk.error && !chunk.response)) {
       fail(stream, model, chunk.error?.message || chunk.message || JSON.stringify(chunk.error ?? chunk))
-      return
+      return closeNote('错误帧', partial)
     }
     if (type === 'response.failed') {
       fail(stream, model, chunk.response?.error?.message || 'response failed')
-      return
+      return closeNote('response.failed', partial)
     }
     if (type === 'response.completed' || type === 'response.incomplete') {
       if (chunk.response?.usage) partial.usage = responsesUsage(chunk.response.usage)
+      closedBy = `${type}${chunk.response?.status ? `:${chunk.response.status}` : ''}` +
+        `${chunk.response?.incomplete_details?.reason ? `:${chunk.response.incomplete_details.reason}` : ''}` +
+        `${chunk.response?.usage ? '' : ':无usage'}`
       if (finished) continue
       for (let i = 0; i < partial.content.length; i++) {
         const block = partial.content[i]
@@ -921,18 +938,19 @@ async function consumeResponses(
   }
   if (finished) {
     stream.push({ type: 'done', reason: finished.reason, message: partial })
-    return
+    return closeNote(closedBy || finished.reason, partial)
   }
   if (!started) {
     fail(stream, model, 'empty stream')
-    return
+    return closeNote('空流', partial)
   }
   if (!partial.content.length) {
     fail(stream, model, UNFINISHED_EMPTY)
-    return
+    return closeNote('无收口帧且无内容', partial)
   }
   settleDangling(stream, partial)
   stream.push({ type: 'done', reason: 'stop', message: partial })
+  return closeNote('无收口帧', partial)
 }
 
 /**
@@ -956,7 +974,7 @@ async function consumeAnthropic(
   stream: AssistantMessageEventStream,
   model: any,
   kick: (bytes?: number) => void = () => {},
-) {
+): Promise<string> {
   let partial: any = emptyAssistant(model)
   let started = false
   const start = () => {
@@ -1065,19 +1083,24 @@ async function consumeAnthropic(
     if (type === 'message_stop') {
       const reason = partial.stopReason === 'toolUse' ? 'toolUse' : partial.stopReason === 'length' ? 'length' : 'stop'
       stream.push({ type: 'done', reason, message: partial })
-      return
+      return closeNote(`message_stop→${reason}`, partial)
     }
     if (type === 'error' || chunk.error) {
       fail(stream, model, chunk.error?.message || chunk.message || 'anthropic error')
-      return
+      return closeNote('错误帧', partial)
     }
   }
-  if (!started) fail(stream, model, 'empty stream')
-  else if (!partial.content.length) fail(stream, model, UNFINISHED_EMPTY)
-  else {
-    settleDangling(stream, partial)
-    stream.push({ type: 'done', reason: 'stop', message: partial })
+  if (!started) {
+    fail(stream, model, 'empty stream')
+    return closeNote('空流', partial)
   }
+  if (!partial.content.length) {
+    fail(stream, model, UNFINISHED_EMPTY)
+    return closeNote('无收口帧且无内容', partial)
+  }
+  settleDangling(stream, partial)
+  stream.push({ type: 'done', reason: 'stop', message: partial })
+  return closeNote('无收口帧', partial)
 }
 
 /**
@@ -1214,10 +1237,13 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
       fail(sink, model, typeof msg === 'string' ? msg : JSON.stringify(msg))
       return res.status
     }
-    if (path === '/v1/messages') await consumeAnthropic(res, sink, model, kick)
-    else if (path === '/v1/responses') await consumeResponses(res, sink, model, kick)
-    else await consumeOpenAI(res, sink, model, kick)
-    console.log(`[INFO] llm: ${model?.provider}/${model?.id} 收流结束（${bytes} 字节，${Date.now() - at}ms）`)
+    const close =
+      path === '/v1/messages'
+        ? await consumeAnthropic(res, sink, model, kick)
+        : path === '/v1/responses'
+          ? await consumeResponses(res, sink, model, kick)
+          : await consumeOpenAI(res, sink, model, kick)
+    console.log(`[INFO] llm: ${model?.provider}/${model?.id} 收流结束（${bytes} 字节，${Date.now() - at}ms，${close}）`)
     return 0
   }
   /**
