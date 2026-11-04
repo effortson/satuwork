@@ -3337,7 +3337,7 @@ dependencies = [
 
 [[package]]
 name = "satuwork-desktop"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "flate2",
  "junction",
