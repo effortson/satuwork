@@ -180,6 +180,26 @@ function updateRow(el, b, streaming, since) {
   }
 
   /**
+   * 语音消息（chat-voice.js）：语音条画在正文上面，正文那一段就是它的转写。签名是录音路径，同一条
+   * 不重画——重画会把正在放的那条的进度条清零。
+   */
+  const voice = b.voice || null
+  let vbox = bubble.querySelector('.sw-voicebox')
+  const vSig = voice ? voice.path : ''
+  if (voice && !vbox) {
+    vbox = document.createElement('div')
+    vbox.className = 'sw-voicebox'
+    bubble.insertBefore(vbox, md)
+  }
+  if (vbox && vbox.getAttribute('data-sig') !== vSig) {
+    vbox.setAttribute('data-sig', vSig)
+    vbox.innerHTML = voice ? voiceNoteHtml(voice) : ''
+    vbox.hidden = !voice
+    paintVoiceNotes()
+  }
+  bubble.classList.toggle('sw-bubble-voice', Boolean(voice))
+
+  /**
    * 这条消息 `@` 了谁。画在正文**上面**，和输入框里那排是同一种药丸——发出去前后
    * 长得一样，人才认得出这就是刚才点的那个。
    *

@@ -97,6 +97,49 @@ export function splitUploads(text: unknown): { text: string; files: { path: stri
   return { text: lines.slice(i).join('\n').trim(), files }
 }
 
+/**
+ * 语音消息（gateway/ui/chat-voice.js）。和附件同一个思路：正文是我们自己拼的、格式定死，这里认回来，
+ * 气泡上画成能点着听的语音条，正文只留转写。
+ *
+ *     我发了一条语音（12 秒），录音在工作区里：
+ *     - `uploads/<会话>/voice-….wav`
+ *
+ *     转写（自动识别，可能有错字）：
+ *     帮我订明天下午三点的会议室
+ *
+ * 模型读到的就是这一段：知道这是一句话的转写、可能有错字，原始录音在哪儿。席位不用为语音改一行。
+ */
+const VOICE_FORMS = {
+  zh: { head: (s: number) => `我发了一条语音（${s} 秒），录音在工作区里：`, body: '转写（自动识别，可能有错字）：' },
+  en: { head: (s: number) => `I sent a voice message (${s}s). The recording is in the workspace at:`, body: 'Transcript (automatic, may contain errors):' },
+}
+const VOICE_HEADS = [/^我发了一条语音（(\d+) 秒），录音在工作区里：$/, /^I sent a voice message \((\d+)s\)\. The recording is in the workspace at:$/]
+const VOICE_BODIES = [VOICE_FORMS.zh.body, VOICE_FORMS.en.body]
+
+export interface VoiceNote {
+  path: string
+  seconds: number
+}
+
+export function composeVoice(locale: 'zh' | 'en', voice: VoiceNote, transcript: string): string {
+  const f = VOICE_FORMS[locale === 'en' ? 'en' : 'zh']
+  return `${f.head(Math.max(1, Math.round(voice.seconds)))}\n- \`${voice.path}\`\n\n${f.body}\n${transcript.trim()}`
+}
+
+/** 认不出就回 null（普通消息）。判据和 splitUploads 一样紧：首行整句、路径行、转写抬头三样都得对上。 */
+export function splitVoice(text: unknown): { text: string; voice: VoiceNote } | null {
+  const lines = String(text == null ? '' : text).split('\n')
+  let seconds = 0
+  for (const re of VOICE_HEADS) {
+    const m = re.exec(lines[0] || '')
+    if (m) seconds = Number(m[1])
+  }
+  if (!seconds) return null
+  const path = /^- `(uploads\/[^`]+)`$/.exec(lines[1] || '')
+  if (!path || lines[2] !== '' || !VOICE_BODIES.includes(lines[3] || '')) return null
+  return { text: lines.slice(4).join('\n').trim(), voice: { path: path[1], seconds } }
+}
+
 /** 一张像样的截图记录：至少有个路径。老日志、坏数据一律当没有。 */
 export function isShot(x: any): boolean {
   return Boolean(x && typeof x.path === 'string' && x.path)

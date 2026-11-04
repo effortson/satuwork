@@ -481,7 +481,12 @@ async function startChatStream(sessionId, attempt = 0, botId = '') {
       if (ev.type === 'queue/change') {
         chatQueues.set(sessionId, Array.isArray(ev.queued) ? ev.queued : [])
         for (const r of chatQueues.get(sessionId)) if (r && r.id) chatQueueSeen.add(r.id)
-        if (isActive()) paintChatQueue()
+        // 进了队列的语音由排队那一行接手，本地那条气泡撤掉（chat-voice.js）。
+        const voiceMoved = typeof dropQueuedVoice === 'function' && dropQueuedVoice(sessionId)
+        if (isActive()) {
+          paintChatQueue()
+          if (voiceMoved) paintChat()
+        }
         continue
       }
       if (ev.type === 'replay/done') {
