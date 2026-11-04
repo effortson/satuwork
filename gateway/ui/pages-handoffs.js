@@ -184,26 +184,39 @@ function handoffContext(h) {
     : `<p>${t('Bot 暂未提供处理进展，请结合任务与转交原因判断。', 'No progress notes were provided. Review the task and handoff reason.')}</p>`}</div>`
 }
 
+/**
+ * Bot 给的下一步（见 bot/src/policy/index.ts 的 `options`）。点一条就按它交还，Bot 接着做。
+ *
+ * **排在写说明那一格前面。** 人看到一张单不知道该干什么，就会去找平台的人；这几条就是
+ * 「不用找人」的出路，写说明是选项都不合适时的退路。按钮只带序号，正文由席位从单子上取。
+ */
+function handoffOptions(h) {
+  const opts = Array.isArray(h.options) ? h.options : []
+  if (!opts.length) return ''
+  return `<div class="ho-options" role="group" aria-label="${esc(t('建议的下一步', 'Suggested next steps'))}">
+    <span class="ho-label">${t('选一个下一步，Bot 会接着做', 'Pick a next step and the bot will continue')}</span>
+    ${opts.map((o, i) => `<button type="button" class="btn btn-secondary ho-option" data-act="chat-handoff-pick" data-id="${esc(h.id)}" data-option="${i}" data-text="${esc(o)}">${esc(o)}</button>`).join('')}
+  </div>`
+}
+
 /** Both chat and inbox use the same labelled field and disposition controls. */
 function handoffForm(h) {
   if (h.state === 'returned') return `<div class="sw-handoff-note-done">${h.result && h.result.text ? `<span class="ho-label">${t('已提交的处理说明', 'Submitted response')}</span><p>${esc(h.result.text)}</p>` : ''}${t('处理说明已交还，等待 Bot 后续反馈。', 'Your response has been returned. Awaiting the bot’s follow-up.')}</div>
     ${(state.handoffFeedback || {})[h.id]?.error ? handoffFeedbackHtml(h.id) : ''}
     <div class="sw-approval-acts"><button type="button" class="btn btn-ghost ho-cancel" title="${t('撤销后不会通知 Bot 继续', 'Cancel without asking the bot to continue')}" data-act="chat-handoff-cancel" data-id="${esc(h.id)}">${t('撤销交接', 'Cancel handoff')}</button></div>`
   if (h.state !== 'open' && h.state !== 'claimed') return handoffFeedbackHtml(h.id)
-  return `<div class="ho-response">
-    <label class="ho-label">${t('处理结果 / 后续指示', 'Outcome / next steps')}
+  const picks = handoffOptions(h)
+  return `<div class="ho-response">${picks}
+    <label class="ho-label">${picks ? t('都不合适？写下你做了什么，或希望 Bot 怎么做', 'None fits? Describe what you did or how the bot should continue') : t('处理结果 / 后续指示', 'Outcome / next steps')}
       <textarea class="input sw-handoff-note" data-handoff="${esc(h.id)}" rows="3" aria-required="true"
         placeholder="${esc(t('例如：已核对金额并完成付款，凭证号 PAY-1027。请继续整理报销记录。', 'Example: Payment confirmed, receipt PAY-1027. Continue preparing the expense record.'))}"></textarea>
     </label>
-    <p class="ho-help">${t('说明你已完成的操作，或希望 Bot 下一步怎么做。交还后，Bot 会收到这段说明。', 'Describe what you completed or what the bot should do next. Returning the task sends this note to the bot.')}</p>
     ${handoffFeedbackHtml(h.id)}
     <div class="sw-approval-acts">
-      <button type="button" class="btn btn-primary" data-act="chat-handoff-return" data-id="${esc(h.id)}" data-disp="done">${t('已处理，交还 Bot', 'Done · return to bot')}</button>
-      <button type="button" class="btn btn-secondary" data-act="chat-handoff-return" data-id="${esc(h.id)}" data-disp="instructions">${t('按新指示继续', 'Continue with instructions')}</button>
-      ${h.state === 'open' ? `<button type="button" class="btn btn-ghost" data-act="chat-handoff-claim" data-id="${esc(h.id)}">${t('接手处理', 'Claim task')}</button>` : ''}
-      <button type="button" class="btn btn-ghost ho-cancel" title="${t('撤销后不会通知 Bot 继续', 'Cancel without asking the bot to continue')}" data-act="chat-handoff-cancel" data-id="${esc(h.id)}">${t('撤销交接', 'Cancel handoff')}</button>
+      <button type="button" class="btn ${picks ? 'btn-secondary' : 'btn-primary'}" data-act="chat-handoff-return" data-id="${esc(h.id)}" data-disp="done">${t('继续', 'Continue')}</button>
+      <button type="button" class="btn btn-ghost ho-cancel" title="${t('关掉这张单，Bot 不会继续', 'Close this handoff; the bot will not continue')}" data-act="chat-handoff-cancel" data-id="${esc(h.id)}">${t('取消', 'Cancel')}</button>
     </div>
-    <p class="ho-help ho-action-help">${t('“已处理”表示人工已完成任务；“按新指示继续”让 Bot 按你的说明执行。撤销交接不会通知 Bot 继续。', '“Done” records work you completed; “Continue with instructions” asks the bot to follow your note. Cancelling does not ask the bot to continue.')}</p>
+    <p class="ho-help ho-action-help">${t('「继续」把上面这段话交给 Bot 接着做；「取消」关掉这张单，Bot 不会继续。', '“Continue” sends your note to the bot so it carries on; “Cancel” closes this handoff and the bot will not continue.')}</p>
   </div>`
 }
 
@@ -219,7 +232,7 @@ function handoffPanel(h, { inCard = false } = {}) {
     <div class="sw-approval-head">${svg(ICON_HANDOFF, 18)}<span>${t('交接详情', 'Handoff details')}</span>${handoffStateTag(h)}</div>
     ${inCard && !(d && d.ask && d.ask !== h.ask) ? '' : `<div class="sw-handoff-ask">${esc((d && d.ask) || h.ask || t('请查看交接详情', 'Review handoff details'))}</div>`}
     ${(!inCard || (d && d.reason && d.reason !== h.reason)) && ((d && d.reason) || h.reason) ? `<div class="sw-approval-why"><span class="ho-label">${t('转交原因', 'Reason')}</span>${esc((d && d.reason) || h.reason)}</div>` : ''}
-    ${body}${handoffForm({ ...h, result: (d && d.result) || h.result })}
+    ${body}${handoffForm({ ...h, options: (d && d.options) || h.options, result: (d && d.result) || h.result })}
   </div></div>`
 }
 

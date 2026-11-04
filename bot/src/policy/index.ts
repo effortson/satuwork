@@ -571,8 +571,9 @@ export class PolicyService extends Service {
       tail = inTask
         ? `\n\n这一轮已经被挡下 ${hits} 次了。别再换写法重试——你是子代理，问不了人：` +
           `现在停下来，把卡在哪儿、已经排除了什么写进结论交回去，由主代理去处理。`
-        : `\n\n这一轮已经被挡下 ${hits} 次了。别再换写法重试——这件事需要人来处理：` +
-          `调用 escalate_to_human 说明卡在哪儿，然后停下来等人接手。`
+        : // 不说「等人接手」：模型会把这句原样转给用户，而用户读到它就去找平台的人了。
+          `\n\n这一轮已经被挡下 ${hits} 次了。别再换写法重试——调用 escalate_to_human 说明卡在哪儿，` +
+          `在 options 里给用户三条能接着走的下一步（他去哪儿补上这一步、换一条已经授权的路、先跳过），然后停下来。`
       await this.record({
         sessionId: call.sessionId,
         botId: bot?.id ?? '',
@@ -603,6 +604,32 @@ export class PolicyService extends Service {
     }
     this.ctx.emit('policy/decision', decision)
   }
+}
+
+/** 转人工时给用户的下一步最多几条。三条：多了就是让人读一张菜单，少了常常没有一条合适。 */
+const OPTIONS_MAX = 3
+
+/**
+ * 一条下一步最多几个字。一条选项是一颗按钮上的字，也是交还时原样喂回给模型的那句话，
+ * 写成一段话的选项人不会去读。工具说明里把这个数告诉模型——截掉半句再喂回去，它收到的
+ * 就是半条指示。
+ */
+const OPTION_CHARS = 60
+
+/**
+ * 模型给的下一步，收成能画成按钮的样子：去空、去重、截长、最多三条。
+ *
+ * 按**码点**截，不按 UTF-16 截：一个 emoji 被劈成半个，Telegram 会拒收整张卡。
+ */
+function optionsOf(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const out: string[] = []
+  for (const x of raw) {
+    const s = Array.from(String(x ?? '').trim()).slice(0, OPTION_CHARS).join('')
+    if (s && !out.includes(s)) out.push(s)
+    if (out.length >= OPTIONS_MAX) break
+  }
+  return out
 }
 
 export const name = 'satu-policy'
@@ -647,6 +674,7 @@ export function apply(ctx: Context) {
       description:
         '把这件事转给人处理。满足公司规定的转人工条件、或者你连着被行为边界挡下、没法在权限内推进时调用它。' +
         '调用之后就停下来，在回复里把情况和已经做到哪一步说清楚，不要再想办法绕过去。' +
+        '一定要给 options：用户点其中一条你就会接着做，这是他不用去找别人的出路。' +
         '人处理完会把结果交回来，你到时候接着做。',
       parameters: {
         type: 'object',
@@ -658,18 +686,33 @@ export function apply(ctx: Context) {
            */
           ask: { type: 'string', description: '要人做什么，一句祈使句。接手的人打开就看这一行。' },
           summary: { type: 'string', description: '已经做到哪一步、卡在什么地方。接手的人要靠它继续。' },
+          /**
+           * **必填。** 一张只写着「需要人工协助」的卡，用户读到的是「去找客服」——
+           * 而绝大多数单子的出路就是他自己点一下：补一步、换条路、先跳过。
+           */
+          options: {
+            type: 'array',
+            items: { type: 'string', maxLength: OPTION_CHARS },
+            maxItems: OPTIONS_MAX,
+            description:
+              `给用户的下一步，${OPTIONS_MAX} 条。每条是用户点一下、你就能接着做的一句话（${OPTION_CHARS} 字以内，超出的会被截掉），用用户的口吻写，` +
+              '例如「我已经在插件页连好了 Gmail，继续发送」「改成存草稿，我自己发」「先跳过附件，把其余的做完」。' +
+              '至少一条是用户自己就能补上的那一步（写清楚去哪儿补），至少一条是绕开这道卡的替代做法。' +
+              '不要写「联系管理员」「联系客服」这种点了你也没法接着做的选项。',
+          },
           blocking: {
             type: 'boolean',
             description: '人不处理这件事是不是就停在这儿。默认 true；只是想让人知道一声就填 false。',
           },
         },
-        required: ['reason', 'ask'],
+        required: ['reason', 'ask', 'options'],
       },
       execute: async (args, call) => {
-        const a = (args ?? {}) as { reason?: unknown; ask?: unknown; summary?: unknown; blocking?: unknown }
+        const a = (args ?? {}) as { reason?: unknown; ask?: unknown; summary?: unknown; options?: unknown; blocking?: unknown }
         const reason = String(a.reason ?? '').trim() || '没有说明原因'
         const ask = String(a.ask ?? '').trim() || '接手处理这件事'
         const summary = String(a.summary ?? '').trim()
+        const options = optionsOf(a.options)
         const bot = await ctx.policy.botOf(call.sessionId)
         // 留档那一条照旧写：审计那一屏在用它，两条回答的是不同的问题。
         await ctx.policy.record({
@@ -689,6 +732,7 @@ export function apply(ctx: Context) {
           reason,
           ask,
           ...(summary ? { summary } : {}),
+          ...(options.length ? { options } : {}),
           blocking: a.blocking !== false,
         })
         /**
@@ -696,14 +740,23 @@ export function apply(ctx: Context) {
          *
          * 它接下来那句总结是人在对话里唯一会读到的东西；只回一句「已记录」的话，
          * 它写出来的也只能是「已记录」——而人想知道的是"这件事交给谁了、我要等什么"。
+         *
+         * **也要管住它别说「等待人工」「请联系客服」。** 用户读到这两句，第一反应是去找
+         * 平台的人，而这一步多半他自己点一下卡片上的选项就能继续。
          */
         const who = handoff.claimedBy ? `已经由 ${handoff.claimedBy.name} 接手` : '还没有人接手'
+        const shown = handoff.options?.length
+          ? '卡片上已经摆好了你给的几个下一步，用户点一条你就会接着做。在回复里请他从卡片上选一条，' +
+            '或者直接写一段说明交还；不用把选项再列一遍。'
+          : '告诉用户在下面那张卡片上写一句他做了什么、或者希望你怎么继续，交还之后你就接着做。'
         return {
           text:
             (deduped
               ? `这件事之前已经交出去了（单号 ${handoff.id.slice(0, 8)}，${who}），这次并进同一张单，没有重复打扰人。`
-              : `已经开出一张交接单（单号 ${handoff.id.slice(0, 8)}），${who}。人处理完会把结果交回来。`) +
-            '现在停下来：在回复里把原因、已经做完的部分和卡住的地方说清楚，让接手的人不用从头问一遍。' +
+              : `已经开出一张交接单（单号 ${handoff.id.slice(0, 8)}），${who}。`) +
+            '现在停下来：在回复里用一两句话说清楚卡在哪儿、已经做完了什么。' +
+            shown +
+            '不要说「等待人工处理」「请联系管理员 / 客服」——用户读到会以为要去找平台的人。' +
             '不要再尝试绕过刚才那道边界，也不要反复调这把工具。',
         }
       },

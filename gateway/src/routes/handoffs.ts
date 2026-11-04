@@ -145,6 +145,8 @@ export function attachHandoffs(router: Router, ctx: RouteCtx) {
     const r = await callSeat(db, h, 'return', {
       disposition,
       text: strField(body, 'text', false),
+      // 点的是 Bot 给的第几条下一步（`choice`）。正文由席位从单子上取，这里只认序号。
+      ...(Number.isInteger(body.option) ? { option: body.option } : {}),
       actor: { accountId: account.id, name: account.name || account.email },
     })
     if (r.status === 200) await syncFromSeat(db, h, r.json.handoff as SeatHandoff)
