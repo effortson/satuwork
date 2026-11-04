@@ -1,12 +1,17 @@
 import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
+import { lookup } from 'node:dns/promises'
 import { basename, extname } from 'node:path'
+import { Readable } from 'node:stream'
 import type { Context } from '@deepseek-ai/cordis'
+import { blockedHost, hostOf, privateAddress } from '../policy/browser.ts'
 import { humanSize } from '../workspace/index.ts'
 import { fail, registerTool } from './common.ts'
+import type { ToolCall, ToolResult, WorkspaceFile } from './index.ts'
 
 /**
- * 连接器附件：`connector_upload_file`。
+ * 连接器附件：`connector_upload_file`，以及反方向的「连接器交回来的文件落进工作区」
+ * （见下面 downloadablesOf 那一段）。
  *
  * 连接器那头的工具（Composio 的 `GMAIL_SEND_EMAIL`）**不收字节，也不收路径**：附件那一格
  * 要的是一个指向供应商自己存储的句柄 `{ name, mimetype, s3key }`。工作区里的文件只在这台
@@ -36,6 +41,13 @@ const MAX_BYTES = Math.max(1024, Math.trunc(Number(process.env.SATUWORK_CONNECTO
 const TICKET_TIMEOUT_MS = 60_000
 /** 把字节推到对象存储。25 MB 走慢一点的出口也得给够。 */
 const PUT_TIMEOUT_MS = 10 * 60_000
+
+/** 从连接器的存储取回一份文件。和上传同一档：25 MB 走慢一点的出口也得给够。 */
+const DOWNLOAD_TIMEOUT_MS = 5 * 60_000
+/** 一次结果里最多自动存几份。列文件夹那种工具一次能回几十个，全下下来是在替模型做它没要的事。 */
+const DOWNLOAD_MAX_FILES = 5
+/** 跟几次跳转。预签名地址本来不跳，跳了也只认几步，每一步都重新过一遍 downloadBlocked。 */
+const DOWNLOAD_MAX_REDIRECTS = 3
 
 /** 三个元工具（docs/tool-search.md §5）：真正的工具名在参数里，这把工具要另问一句。 */
 const META_TOOLS = new Set(['SW_SEARCH', 'SW_DESCRIBE', 'SW_RUN'])
@@ -100,6 +112,299 @@ export function uploadUrlOf(endpoint: string): string {
   return u.toString()
 }
 
+/**
+ * ── 反方向：连接器**交回来**的文件 ──────────────────────────────────────────
+ *
+ * 供应商的工具产出文件时（`GOOGLEDRIVE_DOWNLOAD_FILE`、导出成 CSV / PDF 那一类），结果里
+ * 给的不是字节，是一个指向它自己存储的临时地址——Composio 叫 `FileDownloadable`：
+ *
+ *   { "name": "报价", "mimetype": "text/csv", "s3url": "https://…预签名…" }
+ *
+ * 这个地址模型自己是拿不到的：终端的 curl 在「禁止访问未授权的外部系统」开着的时候会被
+ * 拦（那条边界本来就该拦它），`web_extract` 和浏览器读不了附件下载。线上真发生过：模型
+ * 试了五种办法，最后转人工，请管理员「放开工作区的外网权限」——为了读一张表开整个终端的
+ * 外网，口子开错了地方。
+ *
+ * 所以由**交回地址的那一次调用**顺手取回来：字节落进工作区 `downloads/`，结果最前面
+ * 说一声存在了哪儿。它已经过了那把连接器工具自己的门（授权、外发判据），取回的是那次调用
+ * 自己的产出，和上传那一段直接 PUT 预签名地址是同一个道理。字节同样**不经 Gateway**：
+ * Vercel 函数的 4.5 MB 请求体硬顶在上传那边已经踩过一次。
+ */
+
+/** Composio 的 `FileDownloadable`：认 `s3url` + `mimetype` 两格都在的对象，只有一格的不算——别的数据里碰巧有个 s3url 字段的，不替它下。 */
+interface Downloadable {
+  name?: unknown
+  mimetype: string
+  s3url: string
+  [k: string]: unknown
+}
+
+/** 在一份结果里找出所有可下载的文件对象。找到一个就不再往它里面钻；层数有底，结果再怪也不会走不完。 */
+export function downloadablesOf(data: unknown, out: Downloadable[] = [], depth = 0): Downloadable[] {
+  if (depth > 12 || !data || typeof data !== 'object') return out
+  if (Array.isArray(data)) {
+    for (const item of data) downloadablesOf(item, out, depth + 1)
+    return out
+  }
+  const o = data as Record<string, unknown>
+  if (typeof o.s3url === 'string' && o.s3url && typeof o.mimetype === 'string') {
+    out.push(o as Downloadable)
+    return out
+  }
+  for (const v of Object.values(o)) downloadablesOf(v, out, depth + 1)
+  return out
+}
+
+/** MIME → 扩展名，取 MIME 表里的第一个（`.jpg` 先于 `.jpeg`、`.html` 先于 `.htm`）。 */
+function extOf(mimetype: string): string | undefined {
+  const bare = mimetype.split(';')[0].trim().toLowerCase()
+  return Object.entries(MIME).find(([, m]) => m === bare)?.[0]
+}
+
+/**
+ * 落盘用的文件名。供应商给的 `name` 常常不带扩展名（Drive 导出的表格就叫「Syrius SEA Lead
+ * Development」），而工作区里认文件、预览、office 工具挑格式都看扩展名，所以按 MIME 补一个。
+ * 清洗和重名不覆盖在 workspace.saveBytes 里。
+ */
+export function downloadNameOf(name: unknown, mimetype: string, url: string): string {
+  let base = typeof name === 'string' ? basename(name.trim()) : ''
+  if (!base) {
+    try {
+      base = basename(decodeURIComponent(new URL(url).pathname))
+    } catch {
+      base = ''
+    }
+  }
+  base ||= 'file'
+  if (!MIME[extname(base).toLowerCase()]) {
+    const ext = extOf(mimetype)
+    if (ext) base += ext
+  }
+  return base
+}
+
+/**
+ * 这条地址能不能由席位去取。挡的是「结果里有个地址就去取」变成一条打内网的路：只认
+ * https，主机名的判据和浏览器那道是同一份（`blockedHost`：IP 字面量的内网段、`localhost`、
+ * 内网后缀、不带点的主机名）。解析到哪儿另由 resolvesPrivate 判。
+ *
+ * `SATUWORK_CONNECTOR_DOWNLOAD_ALLOW_LOCAL=1` 只给探针用：假存储起在 127.0.0.1 上。**只放
+ * 回环的 http**，别的地址照常判——这个变量误带到席位上，也开不出一条打内网的路。
+ */
+export function downloadBlocked(raw: string): string | undefined {
+  let u: URL
+  try {
+    u = new URL(raw)
+  } catch {
+    return '地址不合法'
+  }
+  if (testLoopback(u)) return undefined
+  if (u.protocol !== 'https:') return '只取 https 地址'
+  return blockedHost(hostOf(raw)) ?? undefined
+}
+
+function testLoopback(u: URL): boolean {
+  if (process.env.SATUWORK_CONNECTOR_DOWNLOAD_ALLOW_LOCAL !== '1' || u.protocol !== 'http:') return false
+  return ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)
+}
+
+/**
+ * 主机名解析出来落在内网吗。字面量那道挡不住「一个正常的域名指向 10.x / 169.254.169.254」。
+ * 解析失败返回 undefined：取的时候自然会失败，这里不替它编一个原因。
+ *
+ * 判完到真正连上之间还有一次解析，DNS 重绑定挡不住——这一道挡的是「本来就指向内网」的名字。
+ */
+export async function resolvesPrivate(
+  raw: string,
+  resolve: (host: string) => Promise<{ address: string }[]> = (host) => lookup(host, { all: true }),
+): Promise<string | undefined> {
+  let u: URL
+  try {
+    u = new URL(raw)
+  } catch {
+    return undefined
+  }
+  if (testLoopback(u)) return undefined
+  const host = hostOf(raw)
+  if (!host) return undefined
+  let found: { address: string }[]
+  try {
+    found = await resolve(host)
+  } catch {
+    return undefined
+  }
+  for (const one of found) {
+    if (privateAddress(one.address)) return `它解析到了内网地址 ${one.address}`
+  }
+  return undefined
+}
+
+/** 边读边数，超过上限就地中断。跳转手动跟，每一跳都重新过 downloadBlocked 和 resolvesPrivate。 */
+async function fetchCapped(url: string, signal: AbortSignal): Promise<Buffer> {
+  let at = url
+  for (let hop = 0; ; hop++) {
+    const blocked = downloadBlocked(at) ?? (await resolvesPrivate(at))
+    if (blocked) throw new Error(blocked)
+    const r = await fetch(at, { redirect: 'manual', signal })
+    const location = r.headers.get('location')
+    if (r.status >= 300 && r.status < 400 && location) {
+      await r.body?.cancel().catch(() => {})
+      if (hop >= DOWNLOAD_MAX_REDIRECTS) throw new Error('跳转太多次')
+      at = new URL(location, at).toString()
+      continue
+    }
+    if (!r.ok) {
+      await r.body?.cancel().catch(() => {})
+      // 预签名地址过期是 403：再调一次那把工具就有新地址。
+      throw new Error(r.status === 403 ? '地址已经过期（HTTP 403）' : `HTTP ${r.status}`)
+    }
+    const declared = Number(r.headers.get('content-length'))
+    if (declared > MAX_BYTES) {
+      await r.body?.cancel().catch(() => {})
+      throw new Error(`有 ${humanSize(declared)}，超过上限 ${humanSize(MAX_BYTES)}`)
+    }
+    const chunks: Buffer[] = []
+    let size = 0
+    if (r.body) {
+      for await (const chunk of Readable.fromWeb(r.body as any)) {
+        size += (chunk as Buffer).length
+        if (size > MAX_BYTES) throw new Error(`超过上限 ${humanSize(MAX_BYTES)}`)
+        chunks.push(chunk as Buffer)
+      }
+    }
+    return Buffer.concat(chunks)
+  }
+}
+
+/**
+ * 取 policy 服务，**不经 inject**（理由同 tools/index.ts 的 agentsOf：policy 那边 inject 了
+ * tools，静态依赖绕回来两边都起不来）。没有就不记——审计缺一条不能让下载失败。
+ */
+function policyOf(ctx: Context):
+  | {
+      botOf?: (sessionId: string) => Promise<{ id?: string } | undefined>
+      record?: (d: Record<string, unknown>) => Promise<void>
+    }
+  | undefined {
+  try {
+    return (ctx as unknown as { reflect?: { get?: (name: string) => unknown } }).reflect?.get?.('policy') as never
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 把一次连接器调用的结果里能下的文件取回来，结果里说一声「已经在工作区里」。
+ *
+ * **原文一个字都不动**：说明和落盘清单拼成两个键（`_satuwork_notice` / `_satuwork_files`，
+ * 和 result-budget 用的是同一个约定）插在 JSON 最前面，顶层是数组的包一层 `result`。
+ * 这样结果仍是合法 JSON——超了预算还能按结构瘦身，说明在最前面不会被截掉；也不经过一次
+ * parse / stringify，大整数 ID 不会被改掉；临时地址留在原处，用户要的就是链接时还给得出。
+ *
+ * 几份**并行**取，每份各自计时；落盘按顺序来，重名不覆盖靠的是一份一份地挑名字。
+ */
+async function landDownloads(
+  ctx: Context,
+  call: ToolCall,
+  result: ToolResult,
+): Promise<ToolResult> {
+  if (result.failed || !result.text.includes('s3url')) return result
+  let data: unknown
+  try {
+    data = JSON.parse(result.text)
+  } catch {
+    return result
+  }
+  const found = downloadablesOf(data)
+  if (!found.length) return result
+
+  const taken = found.slice(0, DOWNLOAD_MAX_FILES)
+  const got = await Promise.all(
+    taken.map(async (f) => {
+      const timer = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
+      try {
+        return { bytes: await fetchCapped(f.s3url, AbortSignal.any([timer, ...(call.signal ? [call.signal] : [])])) }
+      } catch (e) {
+        return { error: timer.aborted && !call.signal?.aborted ? '超时' : (e as Error).message }
+      }
+    }),
+  )
+
+  const saved: WorkspaceFile[] = []
+  const listing: Record<string, unknown>[] = []
+  const savedLines: string[] = []
+  const missedLines: string[] = []
+  let bytesIn = 0
+  for (const [i, f] of found.entries()) {
+    const fileName = downloadNameOf(f.name, f.mimetype, f.s3url)
+    const one = got[i]
+    let error = one ? one.error : `一次最多自动存 ${DOWNLOAD_MAX_FILES} 份，这份没存`
+    if (one?.bytes) {
+      try {
+        const file = await ctx.workspace.saveBytes('downloads', fileName, one.bytes)
+        bytesIn += file.size
+        saved.push({ path: file.path, name: file.name })
+        listing.push({ name: fileName, saved_to: file.path, size: file.size })
+        savedLines.push(`- ${file.path}（${humanSize(file.size)}，${f.mimetype}）`)
+        continue
+      } catch (e) {
+        error = (e as Error).message
+      }
+    }
+    listing.push({ name: fileName, download_error: error })
+    missedLines.push(`- ${fileName}：${error}`)
+  }
+
+  const head: string[] = []
+  if (savedLines.length) {
+    head.push(
+      '这次调用交回来的文件已经存进工作区，直接读这几份（read_file；表格和文档也可以用 office 工具）。' +
+        '结果里的临时地址只在要把下载链接给人时用，不要再拿去下载：',
+      ...savedLines,
+    )
+  }
+  if (missedLines.length) {
+    head.push(
+      '这几份没能自动存下来（地址还留在结果里，但终端和浏览器多半取不到它）：',
+      ...missedLines,
+      '地址过期或超时就重新调用一次这把工具；太大的换个导出格式或者只取一部分。',
+    )
+  }
+
+  // 审计：开着「禁止访问未授权的外部系统」时，这是席位自己发出去的请求，管理员要看得到。
+  const hosts = [...new Set(taken.map((f) => hostOf(f.s3url) ?? '?'))].join('、')
+  try {
+    const policy = policyOf(ctx)
+    if (policy?.record) {
+      const bot = await policy.botOf?.(call.sessionId)
+      await policy.record({
+        sessionId: call.sessionId,
+        botId: bot?.id ?? '',
+        callId: call.callId,
+        tool: call.name,
+        guard: 'no-external',
+        outcome: 'noted',
+        reason:
+          `席位从 ${hosts} 取回连接器交回的文件：存下 ${saved.length} 份（${humanSize(bytesIn)}）进 downloads/` +
+          (missedLines.length ? `，${missedLines.length} 份没存` : ''),
+        at: Date.now(),
+      })
+    }
+  } catch (e) {
+    ctx.logger?.warn?.(`connector: 下载审计没记上 ${(e as Error).message}`)
+  }
+
+  const extra =
+    `"_satuwork_notice":${JSON.stringify(head.join('\n'))},` + `"_satuwork_files":${JSON.stringify(listing)}`
+  const raw = result.text.trim()
+  const text = raw.startsWith('{') ? `{${extra},${raw.slice(1)}` : `{${extra},"result":${raw}}`
+  return {
+    ...result,
+    text,
+    files: saved.length ? [...(result.files ?? []), ...saved] : result.files,
+  }
+}
+
 /** Gateway 回来的那张票。 */
 interface Ticket {
   file?: { name?: unknown; mimetype?: unknown; s3key?: unknown }
@@ -113,6 +418,27 @@ interface Args {
 }
 
 export function apply(ctx: Context) {
+  /**
+   * 连接器交回来的文件（见 landDownloads）。挂 post-execute：要看的是结果，而且得在
+   * ToolService 按预算瘦身**之前**——瘦身之后那段 JSON 可能已经被截断，解析不出来。
+   * 只认目录说得出连接的那几把（`connectorToolOf`）：公司自配的 MCP 不是 Composio 的格式。
+   * 出了任何意外都原样交回结果：那次调用已经跑完了，取不回文件不能把它变成失败。
+   */
+  ctx.on(
+    'tools/post-execute',
+    async (call: ToolCall, _result: ToolResult, next: () => Promise<ToolResult>) => {
+      const out = await next()
+      if (!call.name.startsWith('mcp_')) return out
+      try {
+        if (!ctx.catalog.connectorToolOf(call.name)) return out
+        return await landDownloads(ctx, call, out)
+      } catch (e) {
+        ctx.logger?.warn?.(`connector: 取回连接器文件失败 ${(e as Error).message}`)
+        return out
+      }
+    },
+  )
+
   registerTool(
     ctx,
     {

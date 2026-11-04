@@ -838,7 +838,7 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(mock.seen.staged.length === stagedBefore + 1, `被拒的也打到上游了：${mock.seen.staged.length - stagedBefore - 1} 次`)
     })
 
-    await test('附件：席位那把 connector_upload_file 先要位子、再自己 PUT 字节', async () => {
+    await test('附件：席位那把 connector_upload_file 先要位子、再自己 PUT 字节；连接器交回来的文件落进工作区', async () => {
       const r = await runProbe(root, 'bot/e2e-connector-upload.mjs')
       assert(r.mime.pdf === 'application/pdf' && r.mime.unknown === 'application/octet-stream', `MIME：${JSON.stringify(r.mime)}`)
       assert(r.url.path === '/mcp/connectors/c1/files' && r.url.botId === 'b1', `地址：${JSON.stringify(r.url)}`)
@@ -866,6 +866,25 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       assert(r.gateway.四xx原话.includes('没有开启') && r.gateway.四xx不置failed, `4xx 原话：${JSON.stringify(r.gateway)}`)
       assert(r.gateway.五xx是管道故障, `5xx：${JSON.stringify(r.gateway)}`)
       assert(r.gateway.存储拒收是业务失败 && r.gateway.存储拒收的话.includes('拒收'), `存储拒收：${JSON.stringify(r.gateway)}`)
+
+      // 反方向：连接器交回来的 { name, mimetype, s3url } 由席位取回、落进 downloads/
+      const p = r.downloadPure
+      assert(p.找得到嵌套的 && p.数组里的都找 && p.只有s3url不算, `找文件对象：${JSON.stringify(p)}`)
+      assert(p.补扩展名 === 'Syrius SEA Lead Development.csv' && p.已有扩展名不补 === '报价.pdf', `文件名：${JSON.stringify(p)}`)
+      assert(p.没名字用地址 === '手册.pdf' && p.去掉路径 === 'passwd.txt', `文件名：${JSON.stringify(p)}`)
+      assert(p.https域名放行 && p.http不取 && p.IP不取 && p.IPv6不取 && p.localhost不取 && p.内网后缀不取 && p.单段主机不取, `地址闸：${JSON.stringify(p)}`)
+      assert(String(p.解析到内网不取).includes('169.254.169.254') && p.解析到公网放行 && p.解析失败不编原因, `解析闸：${JSON.stringify(p)}`)
+      assert(r.downloadFlag.回环放行 && r.downloadFlag.内网http照拦 && r.downloadFlag.内网https照拦, `测试口子：${JSON.stringify(r.downloadFlag)}`)
+      const dlBad = Object.entries(r.download).filter(([, v]) => v === false).map(([k]) => k)
+      assert(!dlBad.length, `取回这几条不对：${dlBad.join('、')}\n${JSON.stringify(r.download)}`)
+      assert(r.download.存的位置 === 'downloads/Syrius SEA Lead Development.csv', `存的位置：${r.download.存的位置}`)
+      const m = r.downloadMixed
+      assert(m.数组包了一层 && m.重名另起 === 'downloads/Syrius SEA Lead Development-1.csv' && m.跟了跳转 === 'downloads/hop.csv', `重名 / 跳转：${JSON.stringify(m)}`)
+      assert(m.过期.includes('过期') && m.过期留着地址 && m.跳转太多.includes('跳转') && m.超限.includes('超过上限'), `取不到的原因：${JSON.stringify(m)}`)
+      assert(m.第六份没取 && m.第六份的话 && m.两段话都有 && m.产出两份 && m.不算失败, `份数上限 / 话：${JSON.stringify(m)}`)
+      const sk = r.downloadSkip
+      assert(sk.都没取 && sk.公司MCP原样 && sk.散文原样 && sk.目录查不了不算失败, `不该碰的：${JSON.stringify(sk)}`)
+      assert(r.downloadLocal.没取 && r.downloadLocal.原因 === '只取 https 地址', `本机地址：${JSON.stringify(r.downloadLocal)}`)
     })
 
     await test('不带 toolkit 前缀的 slug 也调得动（按真清单还原，不靠猜前缀）', async () => {
