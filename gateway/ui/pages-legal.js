@@ -143,8 +143,8 @@ function legalPrivacy() {
             'Notifications: if you allow notifications, we store an Android FCM or iOS APNs push token linked to your account, device platform and push environment, together with notification events, reply or action previews of up to 240 characters, delivery status and read state. The Android Firebase SDK also processes installation identifiers, app version and technical device information to provide push messaging. Push identifiers are used for notifications, not advertising or cross-app tracking.',
           ),
           t(
-            '手机权限：App 不请求定位、通讯录、相机或麦克风的广泛访问权限。文件只在你主动选取或发送时交给服务；文件内容可能包括文档、照片、音视频或其他你选择的数据。',
-            'Mobile permissions: the app does not request broad access to location, contacts, camera or microphone. Files are provided to the service when you select or send them; they may contain documents, photos, audio, video or other data you choose.',
+            '手机权限：App 不请求定位、通讯录或相机的广泛访问权限。只有你主动使用语音消息时，App 才请求麦克风权限并录音；录音时可以取消并丢弃。发送后，录音会经 Gateway 交给组织配置的语音识别服务转写，录音和转写作为消息保存在组织的席位工作区和会话中，遵循组织的保留策略。首次使用前会说明接收服务商并征求同意。其他文件只在你主动选取或发送时交给服务；文件内容可能包括文档、照片、音视频或其他你选择的数据。',
+            'Mobile permissions: the app does not request broad access to location, contacts or camera. It requests microphone permission and records only when you choose to use voice messages; you can cancel and discard a recording. Once sent, recordings pass through the Gateway to the speech recognition service configured by your organization. Recordings and transcripts are stored as messages in your organization’s seat workspace and conversation, under its retention policy. Before first use, the app identifies the recipient provider and asks for consent. Other files are provided to the service when you select or send them; they may contain documents, photos, audio, video or other data you choose.',
           ),
         ],
       ]),
