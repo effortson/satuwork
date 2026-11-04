@@ -205,7 +205,7 @@ function shortServer(full: string): string {
 }
 
 /** FNV-1a，取 4 位十六进制。**要的是确定性**：同样的输入每次同样的名字，重启也一样。 */
-function hashOf(s: string): string {
+export function hashOf(s: string): string {
   let h = 0x811c9dc5
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i)

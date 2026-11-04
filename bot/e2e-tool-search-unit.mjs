@@ -87,12 +87,26 @@ const out = {}
     noColon: lookupToolId(index, 'FIND_FILE') === undefined,
     groupLabel: find?.groupLabel,
   }
-  // 两把连接压出同一个连接名：后来的补 _2，不许静默丢。
-  const clash = buildToolIndex([
-    { id: 'a', name: 'Gmail (a b)', connector: 'gmail', tools: [{ name: 'mcp_x1', remote: 'SEND_EMAIL' }] },
-    { id: 'b', name: 'Gmail (a_b)', connector: 'gmail', tools: [{ name: 'mcp_x2', remote: 'SEND_EMAIL' }] },
+  // 两把连接压出同一个连接名：先来的留原名，后来的补哈希；新加一把排在前面的，老的 id 不许挪。
+  const old = { id: 'b', name: 'Gmail (a_b)', connector: 'gmail', createdAt: 1, tools: [{ name: 'mcp_x2', remote: 'SEND_EMAIL' }] }
+  const newer = { id: 'a', name: 'Gmail (a b)', connector: 'gmail', createdAt: 2, tools: [{ name: 'mcp_x1', remote: 'SEND_EMAIL' }] }
+  const before = buildToolIndex([old])
+  const after = buildToolIndex([old, newer])
+  out.ids.clash = {
+    before: before.entries[0].id,
+    oldAfter: after.byName.get('mcp_x2')?.id,
+    newAfter: after.byName.get('mcp_x1')?.id,
+    unique: new Set(after.entries.map((e) => e.id)).size === 2,
+  }
+  // 同一把连接里两个远端名压出同一个 slug：后来的改用远端原名，并记进 clashes，不许静默遮掉。
+  const dup = buildToolIndex([
+    { id: 'd', name: 'Google Drive (x)', connector: 'googledrive', tools: [{ name: 'mcp_d1', remote: 'FIND_FILE' }, { name: 'mcp_d2', remote: 'GOOGLEDRIVE_FIND_FILE' }] },
   ])
-  out.ids.clash = clash.entries.map((e) => e.id).sort()
+  out.ids.dup = {
+    ids: dup.entries.map((e) => e.id).sort(),
+    clashes: dup.clashes,
+    bothReachable: lookupToolId(dup, dup.byName.get('mcp_d2').id)?.name === 'mcp_d2' && lookupToolId(dup, 'google_drive_x:FIND_FILE')?.name === 'mcp_d1',
+  }
   // toolkit 前缀去掉：公司 MCP 列出来带前缀时也认得出来。
   const prefixed = buildToolIndex([{ id: 'p', name: 'Notion (work)', connector: 'notion', tools: [{ name: 'mcp_p', remote: 'NOTION_CREATE_PAGE' }] }])
   out.ids.prefixStripped = prefixed.entries[0].id
@@ -141,6 +155,11 @@ const out = {}
     at31: planTools(few(31), { serverIds: ['s'], config: cfg() }).tier,
     offAt300: planTools(few(300), { serverIds: ['s'], config: cfg({ mode: 'off' }) }).tier,
     onAt3: planTools(few(3), { serverIds: ['s'], config: cfg({ mode: 'on' }) }).tier,
+    // on 档但全是推荐集、一把都没延迟：桥接工具搜不到东西，退回第 0 档。
+    onAllRecommended: planTools(
+      buildToolIndex([{ id: 'r', name: 'Gmail (r)', connector: 'gmail', recommendedTools: ['GMAIL_SEND_EMAIL'], tools: [{ name: 'mcp_r', remote: 'SEND_EMAIL' }] }]),
+      { serverIds: ['r'], config: cfg({ mode: 'on' }) },
+    ).tier,
     directMax5: planTools(few(6), { serverIds: ['s'], config: cfg({ directMax: 5 }) }).tier,
     tier0DirectAll: planTools(few(30), { serverIds: ['s'], config: cfg() }).direct.size,
     // 不在这颗 Bot 名单里的服务器不算。
@@ -171,6 +190,25 @@ const out = {}
     // 最稀有的那个词必须命中：pull request 在这批里一个都没有，不许随便凑。
     rare: top('pull request'),
     nonsense: top('zzzz qqqq'),
+    // 虚词在小池子里也可能是「最稀有」的那个词：不许它把 LIST_FILES 挡掉。
+    stopword: searchTools(
+      buildSearchIndex(
+        buildToolIndex([
+          {
+            id: 's',
+            name: 'Box (s)',
+            connector: 'box',
+            tools: [
+              { name: 'mcp_s1', remote: 'LIST_FILES', description: 'List files in a folder.' },
+              { name: 'mcp_s2', remote: 'ARCHIVE_ITEM', description: 'Archive the item.' },
+              { name: 'mcp_s3', remote: 'LIST_USERS', description: 'List users of a workspace.' },
+            ],
+          },
+        ]).entries,
+      ),
+      'list the files',
+      3,
+    ).map((h) => h.entries[0].slug),
     // 合并：四个 Drive 的 FIND_FILE 是一个结果，「也在」列另外三个。
     mergedConns: searchTools(search, 'find file', 1)[0]?.entries.map((e) => e.conn),
     rendered: renderHit(searchTools(search, 'find file', 1)[0]?.entries ?? []),

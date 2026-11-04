@@ -52,6 +52,9 @@ const CONNS = [
   { id: 'sl', name: 'Google Slides (syrius)', connector: 'googleslides', tools: kit([], 'SLIDE_OP', 10, 'Presentation') },
   { id: 'g1', name: 'Gmail (work)', connector: 'gmail', tools: GMAIL },
   { id: 'g2', name: 'Gmail (personal)', connector: 'gmail', tools: GMAIL },
+  // 公司自配的 MCP：直连第三方，不该收到 client.toolSearch 那个协议外的参数。不在这颗 Bot 的名单里，
+  // 所以不进档位那几个数。
+  { id: 'co', name: '内部工单', tools: kit([], 'TICKET_OP', 3, 'Ticket') },
 ]
 const seen = { lists: [], calls: [] }
 
@@ -112,7 +115,7 @@ const gw = createServer((req, res) => {
           id: BOT,
           name: '工具搜索',
           origin: 'company',
-          mcps: CONNS.map((c) => c.id),
+          mcps: CONNS.filter((c) => c.connector).map((c) => c.id),
           // 只开「高风险需确认」：要看的就是经 tool_call 弹出来的那张卡。
           guards: { 'high-risk': true, pii: false, 'no-external': true },
           memory: { on: false, scope: 'bot', kinds: [], ttl: 'forever', cap: 0, confirm: false, pii: false },
@@ -128,7 +131,7 @@ const gw = createServer((req, res) => {
         perm: '只读',
         enabled: true,
         token: 'tok',
-        connector: c.connector,
+        ...(c.connector ? { connector: c.connector } : {}),
       })),
       models: { daily: { provider: 'probe', model: 'probe-model' } },
     })
@@ -157,6 +160,7 @@ const handoffPlugin = await import('./src/policy/handoff.ts')
 const policyPlugin = await import('./src/policy/index.ts')
 const connectorPlugin = await import('./src/tools/connector.ts')
 const toolSearchPlugin = await import('./src/tools/tool-search.ts')
+const delegatePlugin = await import('./src/tools/delegate.ts')
 const { AssistantMessageEventStream, emptyAssistant } = await import('./src/llm/stream.ts')
 
 /** registry 要挂几条路由；这里不起 HTTP，给一个什么都接、什么都不干的替身。 */
@@ -191,12 +195,14 @@ ctx.plugin(handoffPlugin)
 ctx.plugin(policyPlugin)
 ctx.plugin(connectorPlugin)
 ctx.plugin(toolSearchPlugin)
+ctx.plugin(delegatePlugin)
 await new Promise((r) => setTimeout(r, 400))
 
 const out = {}
 const pulled = await ctx.catalog.pull()
 out.pull = { ok: pulled, error: ctx.catalog.lastError, servers: ctx.catalog.servers.filter((s) => s.connected).length }
-out.declared = seen.lists.length > 0 && seen.lists.every((l) => l.params?.client?.toolSearch === 1)
+out.declared = seen.lists.filter((l) => l.conn !== 'co').every((l) => l.params?.client?.toolSearch === 1)
+out.companyNotDeclared = seen.lists.some((l) => l.conn === 'co') && seen.lists.filter((l) => l.conn === 'co').every((l) => l.params === null)
 out.tierLog = logs.find((l) => l.includes('工具搜索：第')) ?? null
 out.status = ctx.catalog.status().toolSearch
 
@@ -212,8 +218,11 @@ const lastResult = (context) => {
   return last ? (last.content ?? []).map((c) => c.text ?? '').join('') : ''
 }
 let lastContext = null
+/** 每次请求的工具表。子任务那一轮要看它自己的那一份。 */
+const toolsSeen = []
 ctx.llm.streamFn = (model, context) => {
   lastContext = context
+  toolsSeen.push((context.tools ?? []).map((t) => t.name))
   if (!firstTools) {
     firstTools = (context.tools ?? []).map((t) => t.name)
     firstSearchDesc = (context.tools ?? []).find((t) => t.name === 'tool_search')?.description ?? ''
@@ -315,6 +324,50 @@ step = 0
 firstTools = null
 await ctx.agents.send(sessionId, '谢谢')
 out.secondTurn = (await ctx.sessions.events(sessionId)).filter((e) => e.type === 'turn/end').map((e) => e.data.reason)
+
+// ── 委派：tools 里写 id，子任务只够得着那一把（§10）────────────────────
+{
+  const fetchBefore = seen.calls.filter((c) => c.name === 'FETCH_EMAILS').length
+  const findBefore = seen.calls.filter((c) => c.name === 'FIND_FILE').length
+  script = [
+    {
+      tool: 'delegate_task',
+      args: {
+        tasks: [
+          {
+            goal: '查一下最新邮件',
+            context: '用工作邮箱拉最近的邮件，交回标题列表。',
+            tools: ['gmail_work:FETCH_EMAILS'],
+            model_reason: '跟主代理同一个模型',
+            model_role: 'daily',
+          },
+        ],
+      },
+    },
+    // 下面三步是子任务的：先试一把没给它的，再调给了的那把。
+    { tool: 'tool_call', args: { id: 'google_drive_personal:FIND_FILE', arguments: { query: 'x' } } },
+    { tool: 'tool_call', args: { id: 'gmail_work:FETCH_EMAILS', arguments: {} } },
+    { text: '子任务完成' },
+    { text: '好的' },
+  ]
+  step = 0
+  toolsSeen.length = 0
+  await ctx.agents.send(sessionId, '派个子任务看看邮件')
+  const evs = await ctx.sessions.events(sessionId)
+  const task = evs.filter((e) => e.type === 'agent/task').at(-1)?.data
+  const childCalls = task?.child ? (await ctx.sessions.events(task.child)).filter((e) => e.type === 'tool/call').map((e) => e.data) : []
+  const childTools = toolsSeen[1] ?? []
+  out.delegate = {
+    state: task?.state ?? null,
+    error: task?.state === 'done' ? '' : JSON.stringify(task ?? evs.filter((e) => e.type === 'tool/result').at(-1)?.data ?? null).slice(0, 400),
+    childHasBridges: ['tool_search', 'tool_call'].every((n) => childTools.includes(n)),
+    fetched: seen.calls.filter((c) => c.name === 'FETCH_EMAILS').length - fetchBefore,
+    findBlocked: seen.calls.filter((c) => c.name === 'FIND_FILE').length === findBefore,
+    // 拒掉的那次没碰过 FIND_FILE：日志里该是壳名，不是真名。
+    refusedLoggedAsShell: childCalls.some((c) => c.name === 'tool_call' && c.arguments.includes('google_drive_personal:FIND_FILE')),
+    fetchLoggedReal: childCalls.some((c) => c.name === 'mcp_gmail_work_fetch_emails' && c.via?.name === 'tool_call'),
+  }
+}
 
 // ── 点名：工具表一个字节都不动，那几把的签名补在这条用户消息里（§8）──────────
 const toolsJson = (c) => JSON.stringify((c?.tools ?? []).map((t) => [t.name, t.description, t.parameters]))

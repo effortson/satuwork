@@ -7,6 +7,7 @@
  * id 是 `<连接>:<工具 slug>`。被延迟的工具不进供应商的工具表，所以不受 64 字符、只许
  * `[a-zA-Z0-9_-]` 那些限制——不需要 `mcpToolName` 那种截断加哈希。执行时照旧用注册名。
  */
+import { hashOf } from './mcp.ts'
 
 export interface IndexedTool {
   /** `google_drive_syrius:FIND_FILE`。模型看到的、`tool_call` 收的就是它。 */
@@ -41,6 +42,8 @@ export interface IndexServer {
   mentionOnly?: boolean
   /** 上架记录里的推荐集，Composio 的全名（`GMAIL_SEND_EMAIL`）或短名都认。 */
   recommendedTools?: string[]
+  /** 这台席位第一次见到它的时刻。连接名撞了时，先来的那把留着原名（见 buildToolIndex）。 */
+  createdAt?: number
   tools: { name: string; remote: string; description?: string; parameters?: Record<string, unknown> }[]
 }
 
@@ -48,6 +51,8 @@ export interface ToolIndex {
   entries: IndexedTool[]
   byId: Map<string, IndexedTool>
   byName: Map<string, IndexedTool>
+  /** 撞了 id、被改了名的那几把（「原 id → 新 id」）。目录同步时打一行 warn，别让它静默。 */
+  clashes: string[]
 }
 
 export type ToolSearchMode = 'auto' | 'on' | 'off'
@@ -107,28 +112,57 @@ function slugOf(remote: string, toolkit: string | undefined): string {
 }
 
 /**
+ * 两把连接压出同一个连接名时（「Gmail (a b)」和「Gmail (a_b)」）怎么分。
+ *
+ * **先来的那把留着原名**，后来的补一截按服务器 id 算的哈希。不按排序位置补 `_2`：那样新加一把
+ * 名字排在前面的连接，老连接的 id 就整体挪一位——历史里、落了盘的点名段落里、模型记着的 id
+ * 都会悄悄指到另一个账号上去。
+ */
+function connNames(servers: IndexServer[]): Map<string, string> {
+  const byBase = new Map<string, IndexServer[]>()
+  for (const s of servers) {
+    const base = connOf(s.name)
+    byBase.set(base, [...(byBase.get(base) ?? []), s])
+  }
+  const out = new Map<string, string>()
+  for (const [base, list] of byBase) {
+    list.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || cmp(a.id, b.id))
+    list.forEach((s, i) => out.set(s.id, i ? `${base}_${hashOf(s.id)}` : base))
+  }
+  return out
+}
+
+/**
  * 建表。**顺序确定**：同一份目录建出来的 id、分组、排序一个字节都不差（§13 第 1 条）。
  *
- * 两把连接压出同一个连接名时（「Gmail (a b)」和「Gmail (a_b)」），后来的按服务器 id 排序
- * 补 `_2`、`_3`。撞名不能静默丢——那就是「某个工具时有时无」。
+ * 撞名不能静默丢——那就是「某个工具时有时无」。连接名撞了见 connNames；同一把连接里两个远端名
+ * 压出同一个 slug（`FIND_FILE` 和带前缀的 `GOOGLEDRIVE_FIND_FILE`），后来的那个改用远端原名，
+ * 再撞就补序号，并记进 `clashes`。
  */
 export function buildToolIndex(servers: IndexServer[]): ToolIndex {
   const sorted = [...servers].sort((a, b) => (a.name === b.name ? cmp(a.id, b.id) : cmp(a.name, b.name)))
-  const usedConn = new Map<string, number>()
+  const conns = connNames(sorted)
   const entries: IndexedTool[] = []
+  const used = new Set<string>()
+  const clashes: string[] = []
   for (const s of sorted) {
-    const base = connOf(s.name)
-    const seen = usedConn.get(base) ?? 0
-    usedConn.set(base, seen + 1)
-    const conn = seen ? `${base}_${seen + 1}` : base
+    const conn = conns.get(s.id)!
     const toolkit = s.connector || undefined
     const rec = new Set(
       (s.recommendedTools ?? []).map((r) => String(r).trim().toUpperCase()).filter(Boolean).map((r) => slugOf(r, toolkit).toUpperCase()),
     )
     for (const t of s.tools) {
       const slug = slugOf(t.remote, toolkit)
+      let id = `${conn}:${slug}`
+      if (used.has(id)) {
+        const wanted = id
+        id = `${conn}:${t.remote}`
+        for (let n = 2; used.has(id); n++) id = `${conn}:${slug}_${n}`
+        clashes.push(`${wanted} → ${id}`)
+      }
+      used.add(id)
       entries.push({
-        id: `${conn}:${slug}`,
+        id,
         name: t.name,
         serverId: s.id,
         conn,
@@ -147,10 +181,10 @@ export function buildToolIndex(servers: IndexServer[]): ToolIndex {
   const byId = new Map<string, IndexedTool>()
   const byName = new Map<string, IndexedTool>()
   for (const e of entries) {
-    if (!byId.has(e.id)) byId.set(e.id, e)
+    byId.set(e.id, e)
     byName.set(e.name, e)
   }
-  return { entries, byId, byName }
+  return { entries, byId, byName, clashes }
 }
 
 function cmp(a: string, b: string): number {
@@ -269,6 +303,8 @@ export function planTools(index: ToolIndex, input: PlanInput): ToolPlan {
     }
   }
   const deferred = usable.filter((e) => !e.mentionOnly && !direct.has(e.name))
+  // 一把都没延迟（`on` 档、全是推荐集）：三把桥接工具搜不到任何东西，摆着只是噪音。退回第 0 档。
+  if (!deferred.length) return { tier: 0, direct: all, deferred: [], listing: '', listingTokens: 0, groups: [], serverIds }
   const groups = groupsOf(deferred)
   const budget = listingBudget(input.config, input.window)
   const { tier, text } = renderListing(groups, budget)

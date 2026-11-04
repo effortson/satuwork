@@ -1053,8 +1053,13 @@ export class CatalogService extends Service {
       const client = new McpHttpClient(s.endpoint, token, s.timeoutMs)
       try {
         await client.initialize()
-        // 工具搜索开着就跟 Gateway 说一声：照全量回，别再降成 SW_*（docs/tool-search-bot.md §9）。
-        ready.push({ s, client, listed: await client.listTools({ toolSearch: toolSearchConfig().mode !== 'off' }) })
+        /**
+         * 工具搜索开着就跟 Gateway 说一声：照全量回，别再降成 SW_*（docs/tool-search-bot.md §9）。
+         * **只对连接器那几条说**：它们的 endpoint 是 Gateway 自己；公司自配的 MCP 直连第三方，
+         * 本来就不降级，塞一个协议外的参数给它们，校验严的服务器会整台拒掉。
+         */
+        const declare = toolSearchConfig().mode !== 'off' && !!s.connector
+        ready.push({ s, client, listed: await client.listTools({ toolSearch: declare }) })
       } catch (e) {
         failed = true
         this.ctx.logger?.warn?.(`catalog: MCP ${s.name} 失败 ${(e as Error).message}`)
@@ -1099,6 +1104,7 @@ export class CatalogService extends Service {
         ...(s.connector ? { connector: s.connector } : {}),
         ...(s.mentionOnly ? { mentionOnly: true } : {}),
         ...(s.recommendedTools?.length ? { recommendedTools: s.recommendedTools } : {}),
+        createdAt: s.createdAt,
         tools,
       })
       this.clients.set(s.id, client)
@@ -1122,6 +1128,9 @@ export class CatalogService extends Service {
    * 那一行才看出来的；这一行要让下一次不用翻请求头就看得出工具表有多大。
    */
   private logToolPlan() {
+    if (this.index.clashes.length) {
+      this.ctx.logger?.warn?.(`工具搜索：有 ${this.index.clashes.length} 把工具撞了 id，改了名：${this.index.clashes.join('；')}`)
+    }
     try {
       const plan = this.toolPlan(this.pinnedServerIds())
       const conns = new Set(plan.deferred.map((e) => e.conn)).size

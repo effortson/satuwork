@@ -53,7 +53,7 @@ import { abortedOutcome, lastAssistantText, sumUsage, taskBlock, taskBrief, task
 import { contentDigest, estMessages, estTokens, toolsText } from './text.ts'
 import { filesOf, fromAgentContent, imagesOf, rawTextOf, refsOf, shotOf, textOf, toUsage } from './tool-results.ts'
 import { currentToolIndex, signatureOf, shortDescription, type IndexedTool, type ToolIndex, type ToolPlan } from '../catalog/tool-index.ts'
-import { BRIDGE_TOOLS, SEARCH_BASE, TOOL_CALL, TOOL_SEARCH, type ToolView } from '../tools/tool-search.ts'
+import { BRIDGE_TOOLS, callable, SEARCH_BASE, TOOL_CALL, TOOL_SEARCH, type ToolView } from '../tools/tool-search.ts'
 import { unwrapCall } from '../policy/forms.ts'
 import {
   CommandError,
@@ -615,9 +615,8 @@ export class AgentService extends Service {
     let turnStarted = false
     try {
       const system = this.taskSystem(bot, spec)
-      const window = this.windowOf(provider, modelId)
-      const toolSchemas = this.taskTools(bot, parentSessionId, spec, window)
-      const taskPlan = this.toolPlanFor(bot, [...this.mentionedIn(parentSessionId)].map((id) => ({ kind: 'connector' as const, id, label: id })), window)
+      const taskPlan = this.toolPlanFor(bot, this.parentMentions(parentSessionId), this.windowOf(provider, modelId))
+      const toolSchemas = this.taskTools(bot, parentSessionId, spec, taskPlan)
       if (taskPlan) {
         // 子任务只碰得到父任务给的那几把（§10）：tools 里点了 mcp_* 就按它收窄。
         const named = spec.tools?.filter((n) => n.startsWith('mcp_'))
@@ -852,14 +851,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     bot: ReturnType<AgentService['botOf']>,
     parentSessionId: string,
     spec: TaskSpec,
-    window?: number,
+    plan?: ToolPlan,
   ) {
-    const mentions: Mention[] = [...this.mentionedIn(parentSessionId)].map((id) => ({
-      kind: 'connector' as const,
-      id,
-      label: id,
-    }))
-    return this.toolSchemasFor(bot, mentions, window).filter((t) => {
+    return this.toolSchemasFor(bot, this.parentMentions(parentSessionId), plan).filter((t) => {
       const d = this.ctx.tools.delegationOf(t.name)
       if (d.mode === 'root-only') return false
       if (d.exclusive && !spec.leases.includes(d.exclusive)) return false
@@ -871,6 +865,11 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       if (spec.tools && !spec.tools.includes(t.name)) return false
       return true
     })
+  }
+
+  /** 子任务继承的点名：父会话这一轮点了哪几把连接（见 mentionedIn）。 */
+  private parentMentions(parentSessionId: string): Mention[] {
+    return [...this.mentionedIn(parentSessionId)].map((id) => ({ kind: 'connector' as const, id, label: id }))
   }
 
   /**
@@ -1463,7 +1462,8 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       }
       model = llm.modelOf(provider, modelId)
       window = this.windowOf(provider, modelId)
-      toolSchemas = this.toolSchemasFor(bot, mentions, window)
+      toolPlan = this.toolPlanFor(bot, mentions, window)
+      toolSchemas = this.toolSchemasFor(bot, mentions, toolPlan)
       /**
        * 点名了、工具却不在表里：**先重拉一次目录再说**。
        *
@@ -1480,10 +1480,11 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         } catch (e) {
           this.ctx.logger?.warn?.(`agents: 为点名重拉目录失败 ${(e as Error).message}`)
         }
-        toolSchemas = this.toolSchemasFor(this.botOf(history), mentions, window)
+        // 重拉过目录：档位跟着换，工具表和 tool_call 认的范围用同一份。
+        toolPlan = this.toolPlanFor(this.botOf(history), mentions, window)
+        toolSchemas = this.toolSchemasFor(this.botOf(history), mentions, toolPlan)
       }
-      // 工具搜索的范围：tool_search / tool_call 这一轮按它认（重拉过目录也是在这之后才定）。
-      toolPlan = this.toolPlanFor(this.botOf(history), mentions, window)
+      // 工具搜索的范围：tool_search / tool_call 这一轮按它认，和上面出表的是同一份。
       if (toolPlan) {
         const mentioned = new Set(mentions.filter((m) => m.kind === 'connector').map((m) => m.id))
         this.turnTools.set(sessionId, { plan: toolPlan, mentioned })
@@ -2589,12 +2590,25 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     return catalog.toolPlan([...ids, ...mentioned], window)
   }
 
+  /** 经 tool_call 的这次调用真的会落到 `name` 这把工具上吗（同 tool_call 自己的判据）。 */
+  private reachedVia(sessionId: string, name: string): boolean {
+    if (!name.startsWith('mcp_')) return false
+    const index = this.catalogIndex()
+    const entry = index.byName.get(name)
+    const view = this.toolViewOf(sessionId)
+    return !!entry && !!view && callable(index, view, entry)
+  }
+
   /** 工具搜索那张表。假目录没有就用进程内那一份（空的）。 */
   private catalogIndex(): ToolIndex {
     return (this.ctx.catalog as unknown as { toolIndex?: ToolIndex }).toolIndex ?? currentToolIndex()
   }
 
-  private toolSchemasFor(bot: (BotRecord | { mcps?: string[] }) | undefined, mentions: Mention[] = [], window?: number) {
+  /**
+   * `plan` 由调用方用 toolPlanFor 算好传进来：出表和 tool_call 认的范围必须是同一份，
+   * 各算各的迟早会对不上（输入改了一处没改另一处）。
+   */
+  private toolSchemasFor(bot: (BotRecord | { mcps?: string[] }) | undefined, mentions: Mention[] = [], plan?: ToolPlan) {
     const all = this.ctx.tools.schemas()
     const catalog = this.ctx.catalog
     const mentioned = mentions.filter((m) => m.kind === 'connector').map((m) => m.id)
@@ -2605,7 +2619,6 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 直出，其余收进三把桥接工具，`tool_search` 的描述里带清单。**点名不动工具表**（§8）：
      * 那几把的签名补在这一轮的用户消息里（mentionToolsBlock）。
      */
-    const plan = this.toolPlanFor(bot, mentions, window)
     const searchOn = !!plan && plan.tier > 0
     const mcpNames = searchOn ? plan.direct : new Set(catalog.toolNamesFor([...ids, ...mentioned], mentioned))
     /** 够得着的连接器工具：直出的加上延迟的。上传附件那把看的是它，不只是表里那几把。 */
@@ -2881,10 +2894,11 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
           /**
            * 经 `tool_call` 调的记**真名**（docs/tool-search-bot.md §7）：界面上的工具卡、审计、
            * 流水都认它，和直接调那把工具一模一样。模型当时发的那一次留在 via 里，重建历史用。
-           * 认不出 id（写错了）就照原样记壳——那次调用本来也跑不起来。
+           * 认不出 id（写错了）、或者这一轮够不着它（tool_call 会当场拒掉）就照原样记壳——
+           * 那次调用没碰过那把工具，记成真名等于在审计里说它调了一把没授权的工具。
            */
           const un = event.toolName === TOOL_CALL ? unwrapCall({ name: event.toolName, arguments: sent }) : undefined
-          const real = un && un.tool !== TOOL_CALL && un.tool.startsWith('mcp_') ? un : undefined
+          const real = un && this.reachedVia(sessionId, un.tool) ? un : undefined
           await sessions.append(sessionId, 'tool/call', {
             turn,
             step,

@@ -188,15 +188,22 @@ interface Concept {
   /** 意图扩出来的不参与「最稀有的词必须命中」那条（§6），它们是同义词，不是用户的原话。 */
   intent: boolean
   /**
-   * 纯数字：多半是数据（「找 7-11 方案」里的 7、11），不是在说要哪把工具。只按很低的权重
-   * 计分，不参与「最稀有」和「命中一半」那两条——不然一个碰巧带着 11 的工具会把
-   * FIND_FILE 挤掉。
+   * 弱词：纯数字（「找 7-11 方案」里的 7、11，多半是数据）和英文虚词（the、to、in……）。
+   * 它们不是在说要哪把工具，只按很低的权重计分，不参与「最稀有」和「命中一半」那两条——
+   * 不然一个碰巧带着 11 或 the 的工具会把 FIND_FILE、LIST_FILES 挤掉。
    */
-  data: boolean
+  weak: boolean
 }
 
-/** 数据词的分数打几折。 */
-const DATA_WEIGHT = 0.25
+/** 弱词的分数打几折。 */
+const WEAK_WEIGHT = 0.25
+
+/** 英文虚词。小池子里它们完全可能是「最稀有」的那个词。过一遍 stem，和切出来的词同一个形状。 */
+const STOPWORDS = new Set(
+  'a an the to of in on at for from by with and or into onto my me i it its this that these those is are be all any some please'
+    .split(' ')
+    .map((w) => stem(w)),
+)
 
 export function conceptsOf(query: string): Concept[] {
   const q = String(query ?? '').toLowerCase()
@@ -210,13 +217,13 @@ export function conceptsOf(query: string): Concept[] {
     const key = alts.join(' ')
     if (seen.has(key)) continue
     seen.add(key)
-    out.push({ alts, intent: true, data: false })
+    out.push({ alts, intent: true, weak: false })
   }
   // 原话里剩下的词：英文词照常；中文按二元（公司自己挂的 MCP 常有中文描述）。意图认过的那几个字不再切。
   for (const t of tokenize(rest)) {
     if (seen.has(t)) continue
     seen.add(t)
-    out.push({ alts: [t], intent: false, data: /^\d+$/.test(t) })
+    out.push({ alts: [t], intent: false, weak: /^\d+$/.test(t) || STOPWORDS.has(t) })
   }
   return out
 }
@@ -297,9 +304,9 @@ export function searchTools(index: SearchIndex, query: string, limit = DEFAULT_L
   }
   const concepts = conceptsOf(raw).filter((c) => c.alts.some((t) => index.df.has(t)))
   const dfOf = (c: Concept) => index.docs.filter((d) => c.alts.some((t) => d.tf.has(t))).length
-  const plain = concepts.filter((c) => !c.intent && !c.data)
+  const plain = concepts.filter((c) => !c.intent && !c.weak)
   const rarest = plain.length ? plain.reduce((a, b) => (dfOf(b) < dfOf(a) ? b : a)) : undefined
-  const words = concepts.filter((c) => !c.data).length
+  const words = concepts.filter((c) => !c.weak).length
   const scored: Hit[] = []
   for (const d of index.docs) {
     if (exact.includes(d)) continue
@@ -314,8 +321,8 @@ export function searchTools(index: SearchIndex, query: string, limit = DEFAULT_L
         if (s > best) best = s
       }
       if (best > 0) {
-        if (!c.data) matched++
-        score += c.data ? best * DATA_WEIGHT : best
+        if (!c.weak) matched++
+        score += c.weak ? best * WEAK_WEIGHT : best
       }
     }
     if (!matched) continue

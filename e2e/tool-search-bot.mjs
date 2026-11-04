@@ -25,7 +25,15 @@ export async function runToolSearchBot({ root, test, assert, log }) {
     assert(u.ids.connName === 'google_drive_personal', `连接名不对：${u.ids.connName}`)
     assert(u.ids.resolves && u.ids.caseInsensitive && u.ids.fullRemote, `id 解析不对：${JSON.stringify(u.ids)}`)
     assert(u.ids.unknown && u.ids.noColon, '认不出的 id 不该瞎配')
-    assert(JSON.stringify(u.ids.clash) === JSON.stringify(['gmail_a_b:SEND_EMAIL', 'gmail_a_b_2:SEND_EMAIL']), `撞名没补序号：${JSON.stringify(u.ids.clash)}`)
+    const c = u.ids.clash
+    assert(c.before === 'gmail_a_b:SEND_EMAIL' && c.oldAfter === c.before, `新加一把连接，老连接的 id 挪了：${JSON.stringify(c)}`)
+    assert(/^gmail_a_b_[0-9a-f]{4}:SEND_EMAIL$/.test(c.newAfter) && c.unique, `撞名没补哈希：${JSON.stringify(c)}`)
+    assert(
+      JSON.stringify(u.ids.dup.ids) === JSON.stringify(['google_drive_x:FIND_FILE', 'google_drive_x:GOOGLEDRIVE_FIND_FILE']) &&
+        u.ids.dup.clashes.length === 1 &&
+        u.ids.dup.bothReachable,
+      `同一把连接里撞 slug 被静默遮掉了：${JSON.stringify(u.ids.dup)}`,
+    )
     assert(u.ids.prefixStripped === 'notion_work:CREATE_PAGE', `toolkit 前缀没去掉：${u.ids.prefixStripped}`)
   })
 
@@ -42,6 +50,7 @@ export async function runToolSearchBot({ root, test, assert, log }) {
     assert(u.boundary.at31 >= 1, `31 把该切到搜索：${JSON.stringify(u.boundary)}`)
     assert(u.boundary.offAt300 === 0, 'off 该一律全量')
     assert(u.boundary.onAt3 >= 1, 'on 该跳过第 0 档')
+    assert(u.boundary.onAllRecommended === 0, 'on 档一把都没延迟时还摆着三把搜不到东西的桥接工具')
     assert(u.boundary.directMax5 >= 1, 'DIRECT_MAX 没生效')
     assert(u.boundary.notAllowed === 0, '不在这颗 Bot 名单里的服务器被算进来了')
     assert(u.incident.tier >= 1 && u.incident.direct === 0 && u.incident.deferred === 324, `事故那份配置：${JSON.stringify(u.incident)}`)
@@ -66,6 +75,7 @@ export async function runToolSearchBot({ root, test, assert, log }) {
     assert(s.zhSheet[0] === 'Google Sheets', `「表格」：${s.zhSheet}`)
     assert(s.exactSlug[0] === 'SHARE_FILE' && s.exactId[0] === 'REPLY_TO_THREAD', '精确的 slug / id 没命中')
     assert(s.rare.length === 0 && s.nonsense.length === 0, `不相干的查询凑出了结果：${JSON.stringify([s.rare, s.nonsense])}`)
+    assert(s.stopword[0] === 'LIST_FILES' && !s.stopword.includes('ARCHIVE_ITEM'), `虚词当成了最稀有的词：${JSON.stringify(s.stopword)}`)
     assert(s.mergedConns.length === 4, `四个 Drive 的 FIND_FILE 该合成一条：${JSON.stringify(s.mergedConns)}`)
     assert(s.rendered.startsWith('google_drive_diana:FIND_FILE(query*: string, folder_id?: string, page_size?: integer)'), `签名不对：${s.rendered}`)
     assert(s.rendered.includes('也在：google_drive_personal、google_drive_syrius、google_drive_team'), `没写「也在」：${s.rendered}`)
@@ -88,8 +98,9 @@ export async function runToolSearchBot({ root, test, assert, log }) {
   })
 
   await test('目录同步：声明了 client.toolSearch，写了一行档位日志，status 里看得到', () => {
-    assert(b.pull.servers === 9, `九把连接没都连上：${JSON.stringify(b.pull)}`)
+    assert(b.pull.servers === 10, `九把连接加一台公司 MCP 没都连上：${JSON.stringify(b.pull)}`)
     assert(b.declared, 'tools/list 没带 client.toolSearch——Gateway 还会降成 SW_*')
+    assert(b.companyNotDeclared, '公司自配的 MCP 也收到了 client.toolSearch——校验严的第三方服务器会整台拒掉')
     assert(/^工具搜索：第 [123] 档，延迟 325 把（9 个连接、5 组），直出 0 把，清单约 \d+ token$/.test(b.tierLog ?? ''), `档位日志：${b.tierLog}`)
     assert(b.status && b.status.tier >= 1 && b.status.deferred === 325 && b.status.groups.length === 5, `status：${JSON.stringify(b.status)}`)
   })
@@ -131,6 +142,16 @@ export async function runToolSearchBot({ root, test, assert, log }) {
   await test('tool_search 每次记一条，零命中的捞得出来', () => {
     assert(b.searchLogged, '搜索没记日志')
     assert(b.zeroHitLogged, '零命中的查询没记日志——意图表靠它补')
+  })
+
+  await test('委派：tools 里写 id，子任务拿到桥接工具、只够得着那一把；拒掉的调用记壳名', () => {
+    const d = b.delegate
+    assert(d && d.state === 'done', `委派没跑完：${JSON.stringify(d)}`)
+    assert(d.childHasBridges, '子任务的表里没有桥接工具，够不着被延迟的那把')
+    assert(d.fetched === 1, `给了的那把没调成：${JSON.stringify(d)}`)
+    assert(d.findBlocked, '没给子任务的那把被它调到了上游')
+    assert(d.refusedLoggedAsShell, '拒掉的那次被记成了真名——审计里像是调了一把没授权的工具')
+    assert(d.fetchLoggedReal, '真跑了的那次没记真名')
   })
 
   await test('@ 点名：工具表一个字节不动，签名补在这条用户消息里，重建历史原样拼回', () => {
