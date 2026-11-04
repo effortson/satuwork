@@ -124,9 +124,15 @@ export function channelHandoffs(raw: unknown): ChannelHandoffPrompt[] {
     const reason = String(row.reason ?? '').trim()
     const ask = String(row.ask ?? '').trim()
     if (!id || !state || !reason || !ask) continue
+    /**
+     * **不过滤、不重排**：按钮回调只带序号，席位按它自己那份数组取正文。这里滤掉一条，
+     * 后面的序号就全错一位——人点的是第二条，Bot 接着做的是第三条。席位那边已经收拾过了。
+     */
+    const options = Array.isArray(row.options) ? row.options.slice(0, 3).map((o) => String(o ?? '')) : []
     out.set(id, {
       id, state, reason, ask,
       ...(String(row.summary ?? '').trim() ? { summary: String(row.summary).trim() } : {}),
+      ...(options.length ? { options } : {}),
       blocking: row.blocking !== false,
       repeats: Math.max(0, Number(row.repeats) || 0),
       createdAt: Number(row.createdAt) || Date.now(),
@@ -310,16 +316,23 @@ export function approvalMarkdown(approval: ChannelApprovalSnapshot): string {
 }
 
 export function handoffMarkdown(handoff: ChannelHandoffPrompt): string {
+  // 不写「转人工 · 等人接手」：收到这张卡的就是这颗 Bot 的主人，读成「等客服」他就去找平台的人了。
   const sections = [
-    '## 转人工 · 等人接手',
+    handoff.options?.length ? '## 需要你选一下下一步' : '## 这一步需要你来处理',
     '',
     `**需要你做**：${compactMarkdown(handoff.ask, 800)}`,
     '',
     `**原因**：${compactMarkdown(handoff.reason, 800)}`,
   ]
   if (handoff.summary) sections.push('', `**当前进展**：${compactMarkdown(handoff.summary, 1400)}`)
+  if (handoff.options?.length) {
+    sections.push('', '**可以这样继续**（点下面对应的按钮，Bot 就接着做）：')
+    handoff.options.forEach((o, i) => sections.push(`${i + 1}. ${compactMarkdown(o, 200)}`))
+  }
   if (handoff.repeats > 0) sections.push('', `_这件事又遇到了 ${handoff.repeats} 次。_`)
-  sections.push('', '处理完成或想换一种做法时，点按钮后直接回复 Telegram 的输入提示。')
+  sections.push('', handoff.options?.length
+    ? '都不合适的话，点「处理完了」或「换个做法」后直接回复 Telegram 的输入提示。'
+    : '处理完成或想换一种做法时，点按钮后直接回复 Telegram 的输入提示。')
   return sections.join('\n')
 }
 
@@ -485,7 +498,7 @@ export async function deliverClaimedEvent(
         telegramSendArtifactPreview(secret.token, chatId, card))
       : []),
     ...handoffs.map((handoff) => () =>
-      telegramSendHandoff(secret.token, chatId, handoffMarkdown(handoff), handoff.id)),
+      telegramSendHandoff(secret.token, chatId, handoffMarkdown(handoff), handoff.id, handoff.options)),
   ]
   /**
    * 每发一条之前把租约撑满 30 秒。一条出站最多 20 秒，所以不管一共几段、Telegram 多慢，租约
@@ -639,7 +652,7 @@ function rawUpdateId(raw: unknown): number | null {
 }
 
 const APPROVAL_CALLBACK = /^swa:([A-Za-z0-9_-]{22}):(a1|at|d1|dt)$/
-const HANDOFF_CALLBACK = /^swh:([0-9a-f-]{36}):(c|d|i|x)$/i
+const HANDOFF_CALLBACK = /^swh:([0-9a-f-]{36}):(c|d|i|x|o[0-2])$/i
 const HANDOFF_REPLY = /\[satuwork-handoff:([0-9a-f-]{36}):(done|instructions):(\d+)\]/i
 
 interface SeatHandoffSnapshot {
@@ -700,6 +713,28 @@ async function processTelegramHandoffCallback(
     return true
   }
   const action = parsed[2]
+  if (action.startsWith('o')) {
+    // 点的是 Bot 给的第几条下一步：只传序号，正文由席位从单子上取，交还后 Bot 直接接着做。
+    const actor = { accountId: account.id, name: account.name || account.email }
+    const result = await callSeat(db, handoff, 'return', { disposition: 'choice', option: Number(action.slice(1)), actor })
+    if (result.status !== 200) {
+      await answer(String(result.json.error || '处理失败，请重试。'), true)
+      return true
+    }
+    await syncChannelHandoff(db, handoff, result.json.handoff as SeatHandoffSnapshot | undefined)
+    await answer('已按你选的这一步交还，Bot 正在接着做。')
+    await telegramClearApprovalButtons(secret.token, callback.chatId, callback.messageId).catch(() => undefined)
+    // 浮层两秒就没了，按钮也清掉了：和另外两条交还路一样在对话里留一句，看得出选的是哪条。
+    const picked = (result.json.handoff as { result?: { text?: unknown } } | undefined)?.result?.text
+    await telegramSendText(
+      secret.token,
+      callback.chatId,
+      typeof picked === 'string' && picked
+        ? `已按你选的这一步交还给 Bot，它会从这里继续：${picked}`
+        : '已按你选的这一步交还给 Bot，它会从这里继续。',
+    ).catch(() => undefined)
+    return true
+  }
   if (action === 'd' || action === 'i') {
     try {
       await telegramSendHandoffReplyPrompt(

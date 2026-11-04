@@ -442,13 +442,15 @@ export interface SessionEventMap {
     ask: string
     /** 已经做到哪一步、卡在什么地方。接手的人靠它不用从头问一遍。 */
     summary?: string
+    /** Bot 建议的下一步，最多三条。卡片上画成按钮，点了按 `choice` 交还。 */
+    options?: string[]
     /** 人不处理，这件事是不是就停在这儿。定时任务据此决定跳不跳过。 */
     blocking: boolean
     /** 谁接的。`open` 态没有。 */
     claimedBy?: { accountId: string; name: string }
     /** 人交还时给的结论。 */
     result?: {
-      disposition: 'done' | 'instructions' | 'closed'
+      disposition: 'done' | 'instructions' | 'choice' | 'closed'
       text: string
       by?: { accountId: string; name: string }
     }

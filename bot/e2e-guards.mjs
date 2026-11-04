@@ -533,8 +533,10 @@ out.approvals = approvals
   )
   const tool = await call('s8', 'escalate_to_human', { reason: '这需要财务确认', summary: '已经查到发票号' })
   out.escalate = {
-    前两次只是拦: !texts[0].includes('需要人来处理') && !texts[1].includes('需要人来处理'),
-    第三次改口转人工: texts[2].includes('需要人来处理'),
+    前两次只是拦: !texts[0].includes('escalate_to_human') && !texts[1].includes('escalate_to_human'),
+    第三次改口转人工: texts[2].includes('escalate_to_human') && texts[2].includes('options'),
+    // 这句会被模型原样转给用户；「等人接手」读起来就是「去找客服」。
+    第三次不说等人接手: !texts[2].includes('等人接手'),
     自动升级留了记录: escalated.length === 1,
     有转人工的工具: ctx.tools.has('escalate_to_human'),
     转人工本身不被拦: tool.failed !== true,

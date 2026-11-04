@@ -2062,6 +2062,7 @@ var SatuCore = (() => {
           if (data.claimedBy) seen.claimedBy = data.claimedBy;
           if (data.result) seen.result = data.result;
           if (data.repeats) seen.repeats = data.repeats;
+          if (Array.isArray(data.options)) seen.options = data.options.map(String);
           continue;
         }
         if (!assistant) {
@@ -2076,6 +2077,8 @@ var SatuCore = (() => {
           reason: data.reason || "",
           ask: data.ask || "",
           summary: data.summary || "",
+          // Bot 给的下一步（最多三条），卡片上画成按钮。
+          options: Array.isArray(data.options) ? data.options.map(String) : [],
           blocking: data.blocking !== false,
           claimedBy: data.claimedBy || null,
           result: data.result || null,

@@ -888,6 +888,8 @@ export interface ChannelHandoffPrompt {
   reason: string
   ask: string
   summary?: string
+  /** Bot 给的下一步（最多三条），卡上一条一颗按钮，回调只带序号。 */
+  options?: string[]
   blocking: boolean
   repeats: number
   createdAt: number
