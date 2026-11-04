@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { blankOutcome, type TaskOutcome, type TaskSpec, type TurnModelRole } from '../agent/index.ts'
 import { fail, human, registerTool, str } from './common.ts'
+import { resolveToolId } from '../catalog/tool-index.ts'
 
 /**
  * 委派：把一件事整个交给一个新开的、干净的自己。
@@ -153,7 +154,7 @@ export function apply(ctx: Context) {
                 tools: {
                   type: 'array',
                   items: { type: 'string' },
-                  description: '只准它用这几把工具（工具名）。可选，不给就继承你现在这张表。浏览器、席位桌面这两组一批里各只有一条拿得到，想给谁就在谁这里点名。',
+                  description: '只准它用这几把工具（工具名；外部工具写 tool_search 结果里的 id）。可选，不给就继承你现在这张表。浏览器、席位桌面这两组一批里各只有一条拿得到，想给谁就在谁这里点名。',
                 },
                 model_reason: {
                   type: 'string',
@@ -229,8 +230,16 @@ export function apply(ctx: Context) {
          * 判据是「这台席位上有没有这把工具」，不是「子代理拿不拿得到」：root-only 和没租到
          * 的独占资源由 taskTools 去筛，那是另一件事，混在一起会让错误话术指错方向。
          */
+        /**
+         * 工具搜索开着时，连接器工具在模型眼里是 id（`gmail_work:SEND_EMAIL`），不是注册名——
+         * 换成注册名再往下走，子任务的收窄（agent 的 toolViewOf）认的是注册名
+         * （docs/tool-search-bot.md §10）。
+         */
         const picked = Array.isArray(raw.tools)
-          ? (raw.tools as unknown[]).map((t) => String(t).trim()).filter(Boolean)
+          ? (raw.tools as unknown[])
+              .map((t) => String(t).trim())
+              .filter(Boolean)
+              .map((t) => (t.includes(':') ? (resolveToolId(t) ?? t) : t))
           : undefined
         const unknown = picked?.filter((n) => !ctx.tools.has(n)) ?? []
         if (unknown.length) {

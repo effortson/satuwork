@@ -52,6 +52,9 @@ import { memoryBlockFrom, memoryWriteSchemaFor, pickMemories, recallMemories, SK
 import { abortedOutcome, lastAssistantText, sumUsage, taskBlock, taskBrief, taskFiles } from './task-outcome.ts'
 import { contentDigest, estMessages, estTokens, toolsText } from './text.ts'
 import { filesOf, fromAgentContent, imagesOf, rawTextOf, refsOf, shotOf, textOf, toUsage } from './tool-results.ts'
+import { currentToolIndex, signatureOf, shortDescription, type IndexedTool, type ToolIndex, type ToolPlan } from '../catalog/tool-index.ts'
+import { BRIDGE_TOOLS, callable, SEARCH_BASE, TOOL_CALL, TOOL_SEARCH, type ToolView } from '../tools/tool-search.ts'
+import { unwrapCall } from '../policy/forms.ts'
 import {
   CommandError,
   type CompactOutcome,
@@ -404,6 +407,20 @@ export class AgentService extends Service {
    */
   private turnMentions = new Map<string, Set<string>>()
 
+  /**
+   * 这一轮工具搜索的范围（docs/tool-search-bot.md §7、§10）：档位、点名、子任务的收窄。
+   * 开轮时定下、轮末清掉，生命周期同 turnMentions。`tool_search` / `tool_call` 经 reflect 来问。
+   */
+  private turnTools = new Map<string, ToolView>()
+
+  /** 见 turnTools。子会话自己没有就顺着往上问一层（同 mentionedIn）。 */
+  toolViewOf(sessionId: string): ToolView | undefined {
+    const own = this.turnTools.get(sessionId)
+    if (own) return own
+    const root = this.parents.get(sessionId)
+    return root ? this.turnTools.get(root) : undefined
+  }
+
   mentionedIn(sessionId: string): Set<string> {
     const own = this.turnMentions.get(sessionId)
     if (own) return own
@@ -598,7 +615,17 @@ export class AgentService extends Service {
     let turnStarted = false
     try {
       const system = this.taskSystem(bot, spec)
-      const toolSchemas = this.taskTools(bot, parentSessionId, spec)
+      const taskPlan = this.toolPlanFor(bot, this.parentMentions(parentSessionId), this.windowOf(provider, modelId))
+      const toolSchemas = this.taskTools(bot, parentSessionId, spec, taskPlan)
+      if (taskPlan) {
+        // 子任务只碰得到父任务给的那几把（§10）：tools 里点了 mcp_* 就按它收窄。
+        const named = spec.tools?.filter((n) => n.startsWith('mcp_'))
+        this.turnTools.set(child, {
+          plan: taskPlan,
+          mentioned: this.mentionedIn(parentSessionId),
+          ...(named?.length ? { only: new Set(named) } : {}),
+        })
+      }
       const brief = taskBrief(spec)
 
       await sessions.append(child, 'user/message', {
@@ -638,7 +665,7 @@ export class AgentService extends Service {
       } as any)
 
       this.live.set(child, agent)
-      const off = agent.subscribe(this.projector(child, 1, this.turnMeta(provider, modelId, system, this.forModel(toolSchemas, model), reasoningEffort)))
+      const off = agent.subscribe(this.projector(child, 1, this.turnMeta(provider, modelId, system, this.forModel(toolSchemas, model), reasoningEffort, this.turnTools.get(child)?.plan)))
 
       /**
        * 墙钟。Hermes 那边明确不设，我们必须设——他们的委派在后台，我们的主轮真的
@@ -692,6 +719,7 @@ export class AgentService extends Service {
       this.live.delete(child)
       if (turnStarted) await sessions.append(child, 'turn/end', { turn: 1, reason: 'error' })
     }
+    this.turnTools.delete(child)
 
     /**
      * 移交排在写终态**之前**：结论里要报出移交了什么，不报的话主代理不知道自己刚接手
@@ -823,19 +851,25 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     bot: ReturnType<AgentService['botOf']>,
     parentSessionId: string,
     spec: TaskSpec,
+    plan?: ToolPlan,
   ) {
-    const mentions: Mention[] = [...this.mentionedIn(parentSessionId)].map((id) => ({
-      kind: 'connector' as const,
-      id,
-      label: id,
-    }))
-    return this.toolSchemasFor(bot, mentions).filter((t) => {
+    return this.toolSchemasFor(bot, this.parentMentions(parentSessionId), plan).filter((t) => {
       const d = this.ctx.tools.delegationOf(t.name)
       if (d.mode === 'root-only') return false
       if (d.exclusive && !spec.leases.includes(d.exclusive)) return false
+      /**
+       * 点了被延迟的 `mcp_*`（它们不在表里）就把桥接三把一起给：子任务得靠它们够到那几把，
+       * 范围由 toolViewOf 的 `only` 收住（docs/tool-search-bot.md §10）。
+       */
+      if (spec.tools && (BRIDGE_TOOLS as readonly string[]).includes(t.name) && spec.tools.some((n) => n.startsWith('mcp_'))) return true
       if (spec.tools && !spec.tools.includes(t.name)) return false
       return true
     })
+  }
+
+  /** 子任务继承的点名：父会话这一轮点了哪几把连接（见 mentionedIn）。 */
+  private parentMentions(parentSessionId: string): Mention[] {
+    return [...this.mentionedIn(parentSessionId)].map((id) => ({ kind: 'connector' as const, id, label: id }))
   }
 
   /**
@@ -1047,6 +1081,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       this.starting.delete(sessionId)
       if (this.startingAbort.get(sessionId) === stop) this.startingAbort.delete(sessionId)
       this.turnMentions.delete(sessionId)
+      this.turnTools.delete(sessionId)
     }
   }
 
@@ -1405,6 +1440,10 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     /** 这一轮真的钉上了吗。装不下的时候要拿它退回去（见下面那道「装不装得下」）。 */
     let pinned: { provider: string; model: string } | null = null
     let toolSchemas: { name: string; description: string; parameters?: unknown }[]
+    let window: number | undefined
+    let toolPlan: ToolPlan | undefined
+    /** 工具搜索开着时，点名的连接能直接调的那几把（§8）。跟着这条消息落盘。 */
+    let mentionTools = ''
     try {
       const bot = this.botOf(history)
       system = this.composeSystem(bot, replyLocaleOf(source, history), memSnap)
@@ -1422,7 +1461,9 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         await llm.ensureKnown([pinned])
       }
       model = llm.modelOf(provider, modelId)
-      toolSchemas = this.toolSchemasFor(bot, mentions)
+      window = this.windowOf(provider, modelId)
+      toolPlan = this.toolPlanFor(bot, mentions, window)
+      toolSchemas = this.toolSchemasFor(bot, mentions, toolPlan)
       /**
        * 点名了、工具却不在表里：**先重拉一次目录再说**。
        *
@@ -1439,7 +1480,15 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         } catch (e) {
           this.ctx.logger?.warn?.(`agents: 为点名重拉目录失败 ${(e as Error).message}`)
         }
-        toolSchemas = this.toolSchemasFor(this.botOf(history), mentions)
+        // 重拉过目录：档位跟着换，工具表和 tool_call 认的范围用同一份。
+        toolPlan = this.toolPlanFor(this.botOf(history), mentions, window)
+        toolSchemas = this.toolSchemasFor(this.botOf(history), mentions, toolPlan)
+      }
+      // 工具搜索的范围：tool_search / tool_call 这一轮按它认，和上面出表的是同一份。
+      if (toolPlan) {
+        const mentioned = new Set(mentions.filter((m) => m.kind === 'connector').map((m) => m.id))
+        this.turnTools.set(sessionId, { plan: toolPlan, mentioned })
+        if (toolPlan.tier > 0) mentionTools = mentionToolsBlock(this.catalogIndex(), mentions)
       }
       const gaps = this.mentionGaps(mentions)
       if (gaps.length) {
@@ -1555,6 +1604,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       message: { id: randomUUID(), role: 'user', content: userBlocks(text, images, mentions, refs) },
       source,
       ...(recall.length ? { recall } : {}),
+      ...(mentionTools ? { mentionTools } : {}),
     })
     await sessions.append(sessionId, 'turn/start', { turn })
 
@@ -1642,7 +1692,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     // 进了 live 就不再归开轮那个开关管。留着的话，收尾那几个 await 期间按停止会掐到它、
     // 往 aborting 里留一笔，下一轮收口时被错认成「被喊停了」。
     this.startingAbort.delete(sessionId)
-    const off = agent.subscribe(this.projector(sessionId, turn, this.turnMeta(provider, modelId, system, this.forModel(toolSchemas, model), reasoningEffort)))
+    const off = agent.subscribe(this.projector(sessionId, turn, this.turnMeta(provider, modelId, system, this.forModel(toolSchemas, model), reasoningEffort, toolPlan)))
 
     let reason: 'completed' | 'error' | 'aborted' | 'capped' = 'completed'
     const startedAt = Date.now()
@@ -1672,7 +1722,7 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
           undefined,
           refs.length ? history : undefined,
         )
-        await agent.prompt({ role: 'user', content: withRecall(stampContent(content, now), recall), timestamp: now } as AgentMessage)
+        await agent.prompt({ role: 'user', content: withRecall(stampContent(content, now), recall, mentionTools), timestamp: now } as AgentMessage)
       } else {
         await agent.prompt(withRecall(stampUser(text, now), recall))
       }
@@ -2518,13 +2568,61 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     return mentions.filter((m) => m.kind === 'connector' && !catalog.toolNamesFor([m.id], [m.id]).length)
   }
 
-  private toolSchemasFor(bot: (BotRecord | { mcps?: string[] }) | undefined, mentions: Mention[] = []) {
+  /**
+   * 这颗 Bot 这一轮的工具搜索档位（docs/tool-search-bot.md §3）。目录那边记着算过的那一份，
+   * 同一份输入回同一个对象。目录没有这项能力（探针里的假目录）时回 undefined，一切照旧。
+   *
+   * 点名的连接也算进去：mentionOnly 的那几把平时不在 n 里，被点名那一轮在——第 0 档的 Bot
+   * 点名一把两百个工具的连接，这一轮就该切到搜索，而不是把两百把全塞进表。
+   */
+  private toolPlanFor(
+    bot: (BotRecord | { mcps?: string[] }) | undefined,
+    mentions: Mention[] = [],
+    window?: number,
+  ): ToolPlan | undefined {
+    const catalog = this.ctx.catalog as unknown as {
+      servers: { id: string }[]
+      toolPlan?: (ids: string[], window?: number) => ToolPlan
+    }
+    if (typeof catalog.toolPlan !== 'function') return undefined
+    const mentioned = mentions.filter((m) => m.kind === 'connector').map((m) => m.id)
+    const ids = bot?.mcps === undefined ? catalog.servers.map((s) => s.id) : bot.mcps
+    return catalog.toolPlan([...ids, ...mentioned], window)
+  }
+
+  /** 经 tool_call 的这次调用真的会落到 `name` 这把工具上吗（同 tool_call 自己的判据）。 */
+  private reachedVia(sessionId: string, name: string): boolean {
+    if (!name.startsWith('mcp_')) return false
+    const index = this.catalogIndex()
+    const entry = index.byName.get(name)
+    const view = this.toolViewOf(sessionId)
+    return !!entry && !!view && callable(index, view, entry)
+  }
+
+  /** 工具搜索那张表。假目录没有就用进程内那一份（空的）。 */
+  private catalogIndex(): ToolIndex {
+    return (this.ctx.catalog as unknown as { toolIndex?: ToolIndex }).toolIndex ?? currentToolIndex()
+  }
+
+  /**
+   * `plan` 由调用方用 toolPlanFor 算好传进来：出表和 tool_call 认的范围必须是同一份，
+   * 各算各的迟早会对不上（输入改了一处没改另一处）。
+   */
+  private toolSchemasFor(bot: (BotRecord | { mcps?: string[] }) | undefined, mentions: Mention[] = [], plan?: ToolPlan) {
     const all = this.ctx.tools.schemas()
     const catalog = this.ctx.catalog
     const mentioned = mentions.filter((m) => m.kind === 'connector').map((m) => m.id)
     const assigned = bot?.mcps
     const ids = assigned === undefined ? catalog.servers.map((s) => s.id) : assigned
-    const mcpNames = new Set(catalog.toolNamesFor([...ids, ...mentioned], mentioned))
+    /**
+     * 工具搜索（docs/tool-search-bot.md）。第 0 档就是今天的样子；别的档连接器工具只剩推荐集
+     * 直出，其余收进三把桥接工具，`tool_search` 的描述里带清单。**点名不动工具表**（§8）：
+     * 那几把的签名补在这一轮的用户消息里（mentionToolsBlock）。
+     */
+    const searchOn = !!plan && plan.tier > 0
+    const mcpNames = searchOn ? plan.direct : new Set(catalog.toolNamesFor([...ids, ...mentioned], mentioned))
+    /** 够得着的连接器工具：直出的加上延迟的。上传附件那把看的是它，不只是表里那几把。 */
+    const reachable = searchOn ? [...mcpNames, ...plan.deferred.map((e) => e.name)] : [...mcpNames]
     /**
      * 模版里没开浏览器，那几把工具就不进工具表。
      *
@@ -2585,11 +2683,12 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
      * 服务；单独摆着，模型会拿它去给公司自配的 MCP 传文件，然后收一句「不是连接器的工具」。
      * 同样只是遮掩：直接报名字照样调得到，工具自己会拒。
      */
-    const uploadOn = [...mcpNames].some((n) => Boolean(catalog.connectorToolOf?.(n)))
+    const uploadOn = reachable.some((n) => Boolean(catalog.connectorToolOf?.(n)))
     const picked = all
       .filter(
         (t) =>
           (!t.name.startsWith('mcp_') || mcpNames.has(t.name)) &&
+          (searchOn || !(BRIDGE_TOOLS as readonly string[]).includes(t.name)) &&
           (imageOn || t.name !== 'generate_image') &&
           (knowledgeOn || t.name !== 'knowledge_search') &&
           (assignOn || t.name !== 'assign_task') &&
@@ -2601,11 +2700,14 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       )
       // 「仅 Bot」时 memory_write 的参数表里不摆 self（见 memoryWriteSchemaFor）。
       .map((t) => memoryWriteSchemaFor(t, memory.scope))
+      // 清单接在 tool_search 的描述后面（§4）。连接器的描述是第三方写的，不进系统提示词。
+      .map((t) => (searchOn && t.name === TOOL_SEARCH ? { ...t, description: `${SEARCH_BASE}\n\n已连接、可搜的工具：\n${plan.listing}` } : t))
     // @ 了一颗 Bot = 要派活：assign_task 也顶到最前（docs/bot-tasks.md）。不是主 Bot 时没这把工具，顶也顶不出来。
     const botNamed = assignOn && mentions.some((m) => m.kind === 'bot')
-    if (!mentioned.length && !botNamed) return picked
+    // 工具搜索开着时点名不改工具表的顺序：表一变，后面的缓存全废（§8）。
+    if ((!mentioned.length || searchOn) && !botNamed) return picked
     // 顶到最前。工具表越长，模型越容易在前几个里选——点名了却排在第 40 位，等于没点。
-    const front = new Set(catalog.toolNamesFor(mentioned, mentioned))
+    const front = new Set(searchOn ? [] : catalog.toolNamesFor(mentioned, mentioned))
     if (botNamed) front.add('assign_task')
     return [...picked.filter((t) => front.has(t.name)), ...picked.filter((t) => !front.has(t.name))]
   }
@@ -2628,8 +2730,11 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
     system: { text: string; base: string; skills: string; memory: string },
     toolSchemas: { name: string; description: string }[],
     reasoningEffort: ReasoningEffort,
+    plan?: ToolPlan,
   ) {
-    const isMcp = (t: { name: string }) => t.name.startsWith('mcp_')
+    // 桥接三把算在连接器那一格：tool_search 的描述里那段清单就是连接器的开销。
+    const isMcp = (t: { name: string }) => t.name.startsWith('mcp_') || (BRIDGE_TOOLS as readonly string[]).includes(t.name)
+    const searchOn = !!plan && plan.tier > 0
     return {
       provider,
       model: modelId,
@@ -2645,6 +2750,10 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
         memory: estTokens(system.memory),
         builtinTools: estTokens(toolsText(toolSchemas.filter((t) => !isMcp(t)))),
         mcpTools: estTokens(toolsText(toolSchemas.filter(isMcp))),
+        // 工具搜索那三个数（docs/tool-search-bot.md §12）。这次排查就是靠 toolCount 才看出来的。
+        deferredTools: searchOn ? plan.deferred.length : 0,
+        directMcpTools: toolSchemas.filter((t) => t.name.startsWith('mcp_')).length,
+        toolSearchTier: plan?.tier ?? 0,
       },
     }
   }
@@ -2705,7 +2814,16 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       tools: { name: string; description: string }[]
       contextWindow?: number
       reasoningEffort: ReasoningEffort
-      sections?: { system: number; skills: number; builtinTools: number; mcpTools: number; memory?: number }
+      sections?: {
+        system: number
+        skills: number
+        builtinTools: number
+        mcpTools: number
+        memory?: number
+        deferredTools?: number
+        directMcpTools?: number
+        toolSearchTier?: number
+      }
     },
   ) {
     const { sessions } = this.ctx
@@ -2771,15 +2889,26 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
           break
         }
 
-        case 'tool_execution_start':
+        case 'tool_execution_start': {
+          const sent = JSON.stringify(event.args ?? {})
+          /**
+           * 经 `tool_call` 调的记**真名**（docs/tool-search-bot.md §7）：界面上的工具卡、审计、
+           * 流水都认它，和直接调那把工具一模一样。模型当时发的那一次留在 via 里，重建历史用。
+           * 认不出 id（写错了）、或者这一轮够不着它（tool_call 会当场拒掉）就照原样记壳——
+           * 那次调用没碰过那把工具，记成真名等于在审计里说它调了一把没授权的工具。
+           */
+          const un = event.toolName === TOOL_CALL ? unwrapCall({ name: event.toolName, arguments: sent }) : undefined
+          const real = un && this.reachedVia(sessionId, un.tool) ? un : undefined
           await sessions.append(sessionId, 'tool/call', {
             turn,
             step,
             callId: event.toolCallId,
-            name: event.toolName,
-            arguments: JSON.stringify(event.args ?? {}),
+            name: real ? real.tool : event.toolName,
+            arguments: real ? JSON.stringify(real.args) : sent,
+            ...(real ? { via: { name: event.toolName, arguments: sent } } : {}),
           })
           break
+        }
 
         case 'tool_execution_end':
           const modelText = textOf(event.result)
@@ -2801,6 +2930,38 @@ ${tail}` : base, base, skills: composed.skills, memory: composed.memory }
       }
     }
   }
+}
+
+/** 点名那一段最多列几把；多了只列推荐集（§8）。 */
+const MENTION_TOOLS_MAX = 20
+
+/**
+ * 工具搜索开着时，点名的连接能直接调的那几把（docs/tool-search-bot.md §8）：
+ *
+ * ```
+ * [本轮指定连接器：Google Drive (syrius)（google_drive_syrius）。可直接 tool_call 的工具：
+ *   google_drive_syrius:FIND_FILE(q*: string, …) — Search files by name
+ *   …]
+ * ```
+ *
+ * 和 `[本轮指定：…]` 是同一个意思、同一个位置（用户消息末尾），只是带上了签名。点名的连接
+ * 一把工具都没有时不写——那种情况系统提示词里另有一段（mentionGapBlock）。
+ */
+export function mentionToolsBlock(index: ToolIndex, mentions: Mention[]): string {
+  const blocks: string[] = []
+  for (const m of mentions) {
+    if (m.kind !== 'connector') continue
+    const own = index.entries.filter((e) => e.serverId === m.id)
+    if (!own.length) continue
+    const many = own.length > MENTION_TOOLS_MAX
+    const shown: IndexedTool[] = many ? own.filter((e) => e.recommended).slice(0, MENTION_TOOLS_MAX) : own
+    const lines = shown.map((e) => `  ${e.id}${signatureOf(e.parameters)}${e.description ? ` — ${shortDescription(e.description)}` : ''}`)
+    const rest = many ? `  其余 ${own.length - shown.length} 把用 tool_search 搜（这一轮搜得到）。` : ''
+    blocks.push(
+      [`[本轮指定连接器：${m.label}（${own[0]!.conn}）。可直接 tool_call 的工具：`, ...lines, ...(rest ? [rest] : [])].join('\n') + ']',
+    )
+  }
+  return blocks.join('\n')
 }
 
 export const name = 'satu-agent'

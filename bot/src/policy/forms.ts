@@ -1,3 +1,5 @@
+import { resolveToolId } from '../catalog/tool-index.ts'
+
 /**
  * 确认卡上的一格。
  *
@@ -34,6 +36,12 @@ export interface ApprovalForm {
 /** 元工具的壳。见 gateway/src/lib/tool-search.ts：`{ tool: 'SLUG', args: {…} }`。 */
 const RUN_WRAPPER = /_sw_run$/
 
+/**
+ * Bot 侧工具搜索的壳（docs/tool-search-bot.md §7）：`tool_call({ id, arguments })`。
+ * id 换成注册名靠目录那张表（catalog/tool-index.ts），认不出就用 id 本身——总比壳名好认。
+ */
+const TOOL_CALL = 'tool_call'
+
 export interface Unwrapped {
   /** 真正要跑的那把工具。没套壳时就是工具名本身。 */
   tool: string
@@ -60,6 +68,19 @@ export function unwrapCall(call: { name: string; arguments: string }): Unwrapped
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) raw = parsed as Record<string, unknown>
   } catch {
     // 参数不是合法 JSON：那次调用本来就会在 run() 里失败，这里当没有参数处理。
+  }
+  if (call.name === TOOL_CALL) {
+    const id = String(raw.id ?? '').trim()
+    let nested = raw.arguments
+    if (typeof nested === 'string') {
+      try {
+        nested = JSON.parse(nested)
+      } catch {
+        nested = undefined
+      }
+    }
+    const args = nested && typeof nested === 'object' && !Array.isArray(nested) ? (nested as Record<string, unknown>) : {}
+    return { tool: (id && resolveToolId(id)) || id || call.name, args, prefix: 'arguments', raw }
   }
   if (!RUN_WRAPPER.test(call.name)) return { tool: call.name, args: raw, prefix: '', raw }
   const inner = String(raw.tool ?? '').trim()
