@@ -34,6 +34,17 @@ let voiceRec = null
 /** 'idle' | 'rec' | 'busy'（停了，正在传录音、转文字、发出去）。发送键和计时条跟着它。 */
 let voiceState = 'idle'
 /**
+ * 停下之后传录音那一跳的开关：垃圾桶和超时都靠它掐断。只在「传、转」那段有，开始走 sendChat 就收回——
+ * 消息已经在发了，再掐只会留下一条说不清发没发出去的东西。
+ */
+let voiceAbort = null
+/**
+ * 传录音最多等多久。一分钟的 16 kHz WAV 不到 2 MB，正常网络几秒就完；连不上席位机器时 fetch 自己
+ * 要挂好几分钟才报错，界面就一直停在「正在发送语音…」（真机实测：本地席位在 Mac 的虚拟网段，手机连不到）。
+ */
+const VOICE_UPLOAD_MS = 60_000
+
+/**
  * 正在开麦（等系统权限框、等 getUserMedia）。这几百毫秒里发送键还是麦克风的面孔，不挡的话再点一下会
  * 开出第二路，第一路的麦克风永远关不掉。
  */
@@ -84,8 +95,9 @@ function paintVoice() {
   if (time && voiceState === 'rec' && voiceRec) time.textContent = voiceClock(voiceRec.seconds())
   const hint = document.getElementById('chat-voicebar-hint')
   if (hint) hint.textContent = voiceState === 'busy' ? t('正在发送语音…', 'Sending voice message…') : t('正在录音，点发送键发出去', 'Recording — tap send when done')
+  // 发送那一两秒里垃圾桶也在：传不上去的时候人得有个办法停下来，不能只能干等。
   const cancel = document.getElementById('chat-voice-cancel')
-  if (cancel) cancel.hidden = voiceState !== 'rec'
+  if (cancel) cancel.hidden = voiceState === 'idle' || (voiceState === 'busy' && !voiceAbort)
   if (typeof paintSendFace === 'function') paintSendFace()
 }
 
@@ -278,7 +290,26 @@ async function finishVoice() {
     if (!sessionId || chatBotIdNow() !== rec.botId) throw new Error(t('录音时切到了别的对话，这段没有发出。', 'You switched conversations while recording, so this was not sent.'))
     const seconds = (wav.size - 44) / 2 / VOICE_RATE
     const file = new File([wav], voiceFileName(), { type: 'audio/wav' })
-    const [up, text] = await Promise.all([uploadChatFile(sessionId, file), transcribeVoice(wav)])
+    const abort = new AbortController()
+    voiceAbort = abort
+    paintVoice()
+    const timer = setTimeout(() => abort.abort(new Error('timeout')), VOICE_UPLOAD_MS)
+    /**
+     * 掐断（垃圾桶或超时）当场生效：不管上传和转写走到哪一步都不再等，转写那一跳让它自己跑完、结果不用。
+     * 上传那一跳由 signal 真的断掉，不在后台接着传。
+     */
+    const dropped = new Promise((_, reject) => abort.signal.addEventListener('abort', () => reject(new Error(
+      abort.signal.reason?.message === 'timeout'
+        ? t('录音传不上去：连不上 Bot 所在的机器', 'Could not upload the recording: the bot’s machine is unreachable')
+        : 'cancelled'))))
+    const upload = uploadChatFile(sessionId, file, abort.signal)
+    let up, text
+    try {
+      ;[up, text] = await Promise.race([Promise.all([upload, transcribeVoice(wav)]), dropped])
+    } finally {
+      clearTimeout(timer)
+      voiceAbort = null
+    }
     if (!text) throw new Error(t('没听清你说的话，这段没有发出。再说一次试试。', 'Could not make out what you said, so this was not sent. Try again.'))
     if (!up || !up.path) throw new Error(t('录音没传上去', 'The recording was not uploaded'))
     // 刚录的这段直接拿本地副本放，不用再从席位取一遍。
@@ -286,7 +317,8 @@ async function finishVoice() {
     if (state.chatSessionId !== sessionId) throw new Error(t('录音时切到了别的对话，这段没有发出。', 'You switched conversations while recording, so this was not sent.'))
     await sendVoiceBody(SatuCore.composeVoice(localeMode === 'en' ? 'en' : 'zh', { path: up.path, seconds }, text))
   } catch (err) {
-    flash('err', t('语音没发出去：', 'Voice message not sent: ') + (err?.message || err))
+    // 人自己点了垃圾桶：不算出错，什么也不说。
+    if (err?.message !== 'cancelled') flash('err', t('语音没发出去：', 'Voice message not sent: ') + (err?.message || err))
   } finally {
     voiceState = 'idle'
     render()
@@ -332,8 +364,12 @@ function voiceTick() {
   else paintVoice()
 }
 
-/** 垃圾桶、离开页面、切后台：扔掉正在录的那段，什么都不发。 */
+/** 垃圾桶、离开页面、切后台：扔掉正在录的那段，什么都不发。正在传的那段就掐断上传。 */
 function cancelVoice() {
+  if (voiceState === 'busy') {
+    voiceAbort?.abort()
+    return
+  }
   if (voiceRec) voiceRec.cancel()
   voiceRec = null
   if (voiceState === 'rec') voiceState = 'idle'

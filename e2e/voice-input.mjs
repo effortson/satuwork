@@ -21,7 +21,8 @@ function load(root, { mobile = true, speech = { enabled: true, maxSeconds: 60, p
     Blob: class { constructor(parts, opts) { this.parts = parts; this.type = opts?.type; this.size = parts.reduce((n, p) => n + (p.byteLength ?? p.size ?? 0), 0) } },
     File: class { constructor(parts, name, opts) { this.parts = parts; this.name = name; this.type = opts?.type } },
     URL: { createObjectURL: () => 'blob:local' },
-    ArrayBuffer, DataView, Float32Array, Math, String, JSON, Number, Promise, Date,
+    ArrayBuffer, DataView, Float32Array, Math, String, JSON, Number, Promise, Date, AbortController, Error,
+    setTimeout, clearTimeout,
   }
   // 拼正文用的是 core 的 composeVoice：把打包好的 core.js 装进同一个上下文。
   runInNewContext(readFileSync(join(root, 'gateway/ui/core.js'), 'utf8'), ctx)
@@ -122,6 +123,32 @@ export async function runVoiceInput({ root, test, assert, log }) {
     await moved.finishVoice()
     assert(c3.sent.length === 0 && c3.uploads.length === 0 && c3.flashes.some(([, m]) => m.includes('切到了别的对话')), '切了对话不该发')
     assert(moved.voiceStateNow() === 'idle', '失败后该回到空闲')
+  })
+
+  await test('传录音连不上：到点掐断说清原因，不会一直停在「正在发送」；发送中点垃圾桶当场停下、不发也不报错', async () => {
+    const hang = (signal) => new Promise((_, reject) => signal?.addEventListener('abort', () => reject(signal.reason)))
+    // 超时：把计时器拨成立刻到点。
+    const slow = load(root)
+    const c1 = wire(slow)
+    slow.uploadChatFile = async (sessionId, file, signal) => hang(signal)
+    slow.setTimeout = (fn) => { queueMicrotask(fn); return 0 }
+    await slow.finishVoice()
+    assert(c1.sent.length === 0 && c1.flashes.some(([k, m]) => k === 'err' && m.includes('连不上 Bot 所在的机器')), `超时该说清：${JSON.stringify(c1.flashes)}`)
+    assert(slow.voiceStateNow() === 'idle', '超时后该回到空闲')
+
+    // 扔掉：上传挂着，人点了垃圾桶。
+    const stuck = load(root)
+    const c2 = wire(stuck)
+    let aborted = false
+    stuck.uploadChatFile = async (sessionId, file, signal) => { signal.addEventListener('abort', () => { aborted = true }); return hang(signal) }
+    const pending = stuck.finishVoice()
+    await new Promise((r) => setTimeout(r, 0))
+    assert(stuck.voiceStateNow() === 'busy', '该在发送中')
+    stuck.cancelVoice()
+    await pending
+    assert(aborted, '上传该被真的掐断')
+    assert(c2.sent.length === 0 && c2.flashes.length === 0, `点了垃圾桶不该发、也不该报错：${JSON.stringify(c2.flashes)}`)
+    assert(stuck.voiceStateNow() === 'idle', '扔掉后该回到空闲')
   })
 
   await test('录音许可和发消息许可分开存，都在退出登录会清的前缀下', async () => {

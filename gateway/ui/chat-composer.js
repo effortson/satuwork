@@ -437,11 +437,13 @@ function uploadTargetOf(sessionId) {
   return { url: base + path, local: false }
 }
 
-async function uploadChatFile(sessionId, file) {
+/** `signal`：调用方要能掐断（语音消息给它挂了超时和「扔掉」，见 chat-voice.js 的 finishVoice）。 */
+async function uploadChatFile(sessionId, file, signal) {
   const target = uploadTargetOf(sessionId)
   if (!target) throw new Error(t(NO_UPLOAD_URL_MSG))
   const init = {
     method: 'POST',
+    ...(signal ? { signal } : {}),
     headers: authHeaders({
       accept: 'application/json',
       'content-type': 'application/octet-stream',
