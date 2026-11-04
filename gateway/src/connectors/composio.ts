@@ -15,6 +15,9 @@ import { accountNameIn, accountNameOfConnection } from './identity.ts'
 const DEFAULT_BASE = 'https://backend.composio.dev/api/v3'
 /** 列目录这类只读请求的超时。慢过这个数，界面上等着也没意义。 */
 const LIST_TIMEOUT_MS = 20_000
+/** 列表接口单页允许的最大条数。 */
+const LIST_PAGE_SIZE = 1000
+const MAX_LIST_PAGES = 20
 
 type Json = Record<string, unknown>
 
@@ -99,9 +102,27 @@ export class ComposioProvider implements ConnectorProvider {
     }
   }
 
+  /**
+   * 列表接口是分页的，必须跟着 `next_cursor` 翻到底。只取第一页的话，目录一过页长后面的
+   * 就整段看不见——toolkit 有一千七百多个，`googleslides` 就是这么在上架弹框里消失的。
+   * 单页上限是 1000；页数封顶只防对方游标出毛病时死循环。
+   */
+  private async listAll(path: string): Promise<Json[]> {
+    const out: Json[] = []
+    let cursor = ''
+    for (let page = 0; page < MAX_LIST_PAGES; page++) {
+      const sep = path.includes('?') ? '&' : '?'
+      const body = await this.call('GET', `${path}${sep}limit=${LIST_PAGE_SIZE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
+      out.push(...listOf(body))
+      const next = str(objOf(body).next_cursor)
+      if (!next || next === cursor) break
+      cursor = next
+    }
+    return out
+  }
+
   async listToolkits(): Promise<Toolkit[]> {
-    const body = await this.call('GET', '/toolkits?limit=500')
-    return listOf(body)
+    return (await this.listAll('/toolkits'))
       .map((t) => {
         const meta = objOf(t.meta)
         const categories = Array.isArray(meta.categories)
@@ -124,8 +145,7 @@ export class ComposioProvider implements ConnectorProvider {
   }
 
   async listTools(toolkit: string): Promise<ToolDef[]> {
-    const body = await this.call('GET', `/tools?toolkit_slug=${encodeURIComponent(toolkit)}&limit=500`)
-    return listOf(body)
+    return (await this.listAll(`/tools?toolkit_slug=${encodeURIComponent(toolkit)}`))
       .map((t) => ({
         slug: str(t.slug || t.name),
         name: str(t.name || t.slug),
