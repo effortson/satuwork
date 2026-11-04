@@ -61,6 +61,8 @@ const TOOLS = [
   'generate_image',
   // 同上：工具表里没有连接器工具时不进表，注册照样有。
   'connector_upload_file',
+  // 工具搜索的三把桥接工具（docs/tool-search-bot.md）。同上：只在连接器工具多、切到搜索那几档才进表。
+  'tool_search', 'tool_describe', 'tool_call',
   // 同上：这颗 Bot 没有可查的知识库时不进表，注册照样有。
   'knowledge_search',
   'escalate_to_human',
@@ -169,6 +171,9 @@ const seams = {
   'browser.takeWrites': typeof browserSvc?.takeWrites === 'function',
   'catalog.serverOf': typeof catalogSvc?.serverOf === 'function',
   'agents.mentionedIn': typeof agentsSvc?.mentionedIn === 'function',
+  // tool_search / tool_call 经 reflect 问这一轮的范围（tools/tool-search.ts 的 viewOf）。
+  'agents.toolViewOf': typeof agentsSvc?.toolViewOf === 'function',
+  'catalog.toolPlan': typeof catalogSvc?.toolPlan === 'function',
 }
 
 const names = toolNames()
