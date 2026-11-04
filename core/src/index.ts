@@ -14,7 +14,7 @@ export { createGatewayClient } from './api.ts'
 export type { TokenStore, FetchLike, GatewayClientOptions, GatewayClient, LocalBot, LocalRoute, ApiError } from './api.ts'
 
 // ── 对话事件层 ──
-export { messageText, messageImages, messageMentions, messageRefs, UPLOAD_LEADS, splitUploads, isShot, maxSeqOf, insertEvent, cursorOf } from './chat/events.ts'
+export { messageText, messageImages, messageMentions, messageRefs, UPLOAD_LEADS, splitUploads, composeVoice, splitVoice, type VoiceNote, isShot, maxSeqOf, insertEvent, cursorOf } from './chat/events.ts'
 export { fold } from './chat/fold.ts'
 export { notificationExcerpt, notificationPreview } from './chat/notification.ts'
 export { traceRows, progressOf, assignSlice, callDetail, resultLine } from './chat/task.ts'

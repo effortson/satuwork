@@ -147,6 +147,7 @@ function syncChatMentions() {
  */
 function paintChatMentions() {
   syncChatMentions()
+  paintSendFace()
   const box = document.getElementById('chat-mentions')
   if (!box) return
   box.hidden = true
@@ -207,6 +208,7 @@ function refCardHtml(r, x) {
 
 /** 输入框上方那排引用卡。 */
 function paintChatRefs() {
+  paintSendFace()
   const box = document.getElementById('chat-refs')
   if (!box) return
   const picked = state.chatRefs || []
@@ -341,6 +343,8 @@ function paintMentionPick() {
 const chatUploads = new Map()
 
 function paintChatFiles() {
+  // 挂没挂附件决定发送键是麦克风还是发送（sendAsVoice）。
+  paintSendFace()
   const box = document.getElementById('chat-files')
   if (!box) return
   const flying = chatUploads.get(chatBotIdNow()) || []
@@ -942,20 +946,35 @@ function paintSendFace(busy = Boolean(state.chatStatus)) {
   const stopping = stopElapsed() !== null
   const parsed = parseCommand(state.chatDraft || '')
   const asStop = busy && !(parsed && !parsed.unknown)
-  const face = stopping ? 'stopping' : asStop ? 'stop' : 'send'
+  /**
+   * 手机上的语音消息（chat-voice.js）再添三副：输入框空着时是麦克风（点了开录）、录音中是「发出去」、
+   * 停下之后传录音转文字那一两秒是转圈。录音中的那两副排在停止前面——Bot 正跑着也能录一段，
+   * 停下来那一下要的是把这段发出去，不是停掉 Bot。麦克风排在停止后面：空着输入框按下去，停止更要紧。
+   */
+  // 只装了这一个分片的单测环境里没有 chat-voice.js。
+  const voice = typeof voiceStateNow === 'function' ? voiceStateNow() : 'idle'
+  const face = voice === 'rec' ? 'voice-send' : voice === 'busy' ? 'voice-busy' : stopping ? 'stopping' : asStop ? 'stop' : typeof sendAsVoice === 'function' && sendAsVoice() ? 'voice' : 'send'
   if (send.getAttribute('data-state') === face) return
   // 停止态改成 type=button 并挂上 chat-abort：留着 submit 的话，点它会走发送。
   // 回车不受影响——那条路径仍是提交表单，也就是「边跑边补一句」，本来就该照发。
   send.setAttribute('data-state', face)
-  send.type = asStop || stopping ? 'button' : 'submit'
-  send.innerHTML = asStop || stopping ? ICON_STOP : ICON_SEND
-  const label = stopping ? t('正在停止…', 'Stopping…') : asStop ? t('停止') : t('发送')
+  const isVoice = face === 'voice' || face === 'voice-send' || face === 'voice-busy'
+  send.type = asStop || stopping || isVoice ? 'button' : 'submit'
+  send.innerHTML = face === 'voice' ? ICON_MIC : asStop && !isVoice || stopping ? ICON_STOP : ICON_SEND
+  const label = {
+    'voice-send': t('发送语音', 'Send voice message'),
+    'voice-busy': t('正在发送语音…', 'Sending voice message…'),
+    stopping: t('正在停止…', 'Stopping…'),
+    stop: t('停止'),
+    voice: t('录一段语音', 'Record a voice message'),
+  }[face] || t('发送')
   send.setAttribute('aria-label', label)
   send.title = label
   // 正在停的时候禁掉：第二下什么也做不成（席位已经收到了），但按得下去就会让人
   // 以为第一下没算数。转圈画在按钮外沿，见 chat.css 的 [data-state='stopping']。
-  send.disabled = stopping
-  if (asStop) send.setAttribute('data-act', 'chat-abort')
+  send.disabled = stopping || face === 'voice-busy'
+  if (isVoice) send.setAttribute('data-act', 'chat-voice')
+  else if (asStop) send.setAttribute('data-act', 'chat-abort')
   else send.removeAttribute('data-act')
 }
 

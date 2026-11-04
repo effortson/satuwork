@@ -4,7 +4,7 @@
  * 后面）。e2e 的 chat-fold.mjs 和 ui-smoke 继续经 Web 那层覆盖重放与增量渲染。
  */
 import type { Block, Folded, SessionEvent } from '../protocol/events.ts'
-import { isShot, messageImages, messageMentions, messageRefs, messageText, splitUploads } from './events.ts'
+import { isShot, messageImages, messageMentions, messageRefs, messageText, splitUploads, splitVoice } from './events.ts'
 
 export function fold(events: SessionEvent[] | null | undefined, live?: boolean | null, channelBot = false,
   todoSnapshot?: { items: any[]; upto: number } | null): Folded {
@@ -105,7 +105,9 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
       assistant = null
       tools = []
       const raw = messageText(data.message) || data.text || ''
-      const up = splitUploads(raw)
+      // 语音消息（splitVoice）：正文只留转写，录音单独画成语音条；不是语音再按附件拆。
+      const vc = splitVoice(raw)
+      const up = vc ? { text: vc.text, files: [] } : splitUploads(raw)
       // 派来的指令：记下它，等它开的那一轮把状态填上。插进别人那一轮的（老席位）没有自己的轮次。
       const task = via === 'task' ? { id: String(src.form || ''), from: src.from && typeof src.from === 'object' ? src.from : null, state: openTurn ? 'steered' : 'queued' } : undefined
       if (!openTurn) assigned = task || null
@@ -115,6 +117,7 @@ export function fold(events: SessionEvent[] | null | undefined, live?: boolean |
         text: up.text,
         // 附件列表拆出来单独画成药丸；正文只留人真正打的那句话。
         files: up.files,
+        ...(vc ? { voice: vc.voice } : {}),
         // **点名要跟着消息留下来。** 它是这条消息的一部分（决定了这一轮的工具表），
         // 不是输入框上一个发完就没的装饰。丢掉的话翻上去看昨天那条，「@ 了谁」就消失了，
         // 而那正是「它为什么去读了我的邮箱」的唯一答案。

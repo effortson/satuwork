@@ -14,7 +14,7 @@
  * **这条会话的**那几条，就地改 folded，返回还没收到回执的那几条，由宿主写回去。
  */
 import type { Folded, PendingMessage, UserBlock } from '../protocol/events.ts'
-import { splitUploads } from './events.ts'
+import { splitUploads, splitVoice } from './events.ts'
 
 export function mergePending(folded: Folded, mine: PendingMessage[]): PendingMessage[] {
   if (!mine.length) return []
@@ -30,11 +30,13 @@ export function mergePending(folded: Folded, mine: PendingMessage[]): PendingMes
   for (const p of left) {
     // 回执还没回来的那几秒也要长成最终的样子，否则附件会先以一行路径文本出现、
     // 再突然变成药丸——同一条消息在屏幕上跳两次。
-    const up = splitUploads(p.text)
+    const vc = splitVoice(p.text)
+    const up = vc ? { text: vc.text, files: [] } : splitUploads(p.text)
     folded.blocks.push({
       kind: 'user',
       text: up.text,
       files: up.files,
+      ...(vc ? { voice: vc.voice } : {}),
       raw: p.text,
       images: p.images || [],
       mentions: p.mentions || [],

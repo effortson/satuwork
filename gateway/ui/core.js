@@ -43,6 +43,7 @@ var SatuCore = (() => {
     cmdMatches: () => cmdMatches,
     commandQueryAt: () => commandQueryAt,
     companyIdOfPath: () => companyIdOfPath,
+    composeVoice: () => composeVoice,
     connectorIdOfPath: () => connectorIdOfPath,
     createGatewayClient: () => createGatewayClient,
     createMarkdown: () => createMarkdown,
@@ -85,6 +86,7 @@ var SatuCore = (() => {
     rosterRetryDelay: () => rosterRetryDelay,
     settleDot: () => settleDot,
     splitUploads: () => splitUploads,
+    splitVoice: () => splitVoice,
     sseEvents: () => sseEvents,
     t: () => t,
     traceRows: () => traceRows,
@@ -1793,6 +1795,32 @@ var SatuCore = (() => {
     if (!files.length) return { text: src, files: [] };
     return { text: lines.slice(i).join("\n").trim(), files };
   }
+  var VOICE_FORMS = {
+    zh: { head: (s) => `我发了一条语音（${s} 秒），录音在工作区里：`, body: "转写（自动识别，可能有错字）：" },
+    en: { head: (s) => `I sent a voice message (${s}s). The recording is in the workspace at:`, body: "Transcript (automatic, may contain errors):" }
+  };
+  var VOICE_HEADS = [/^我发了一条语音（(\d+) 秒），录音在工作区里：$/, /^I sent a voice message \((\d+)s\)\. The recording is in the workspace at:$/];
+  var VOICE_BODIES = [VOICE_FORMS.zh.body, VOICE_FORMS.en.body];
+  function composeVoice(locale, voice, transcript) {
+    const f = VOICE_FORMS[locale === "en" ? "en" : "zh"];
+    return `${f.head(Math.max(1, Math.round(voice.seconds)))}
+- \`${voice.path}\`
+
+${f.body}
+${transcript.trim()}`;
+  }
+  function splitVoice(text) {
+    const lines = String(text == null ? "" : text).split("\n");
+    let seconds = 0;
+    for (const re of VOICE_HEADS) {
+      const m = re.exec(lines[0] || "");
+      if (m) seconds = Number(m[1]);
+    }
+    if (!seconds) return null;
+    const path = /^- `(uploads\/[^`]+)`$/.exec(lines[1] || "");
+    if (!path || lines[2] !== "" || !VOICE_BODIES.includes(lines[3] || "")) return null;
+    return { text: lines.slice(4).join("\n").trim(), voice: { path: path[1], seconds } };
+  }
   function isShot(x) {
     return Boolean(x && typeof x.path === "string" && x.path);
   }
@@ -1892,7 +1920,8 @@ var SatuCore = (() => {
         assistant = null;
         tools = [];
         const raw = messageText(data.message) || data.text || "";
-        const up = splitUploads(raw);
+        const vc = splitVoice(raw);
+        const up = vc ? { text: vc.text, files: [] } : splitUploads(raw);
         const task = via === "task" ? { id: String(src.form || ""), from: src.from && typeof src.from === "object" ? src.from : null, state: openTurn ? "steered" : "queued" } : void 0;
         if (!openTurn) assigned = task || null;
         blocks.push({
@@ -1901,6 +1930,7 @@ var SatuCore = (() => {
           text: up.text,
           // 附件列表拆出来单独画成药丸；正文只留人真正打的那句话。
           files: up.files,
+          ...vc ? { voice: vc.voice } : {},
           // **点名要跟着消息留下来。** 它是这条消息的一部分（决定了这一轮的工具表），
           // 不是输入框上一个发完就没的装饰。丢掉的话翻上去看昨天那条，「@ 了谁」就消失了，
           // 而那正是「它为什么去读了我的邮箱」的唯一答案。
@@ -2444,11 +2474,13 @@ var SatuCore = (() => {
     }
     if (!left.length) return left;
     for (const p of left) {
-      const up = splitUploads(p.text);
+      const vc = splitVoice(p.text);
+      const up = vc ? { text: vc.text, files: [] } : splitUploads(p.text);
       folded.blocks.push({
         kind: "user",
         text: up.text,
         files: up.files,
+        ...vc ? { voice: vc.voice } : {},
         raw: p.text,
         images: p.images || [],
         mentions: p.mentions || [],

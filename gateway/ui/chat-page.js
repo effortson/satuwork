@@ -127,7 +127,7 @@ function chatPage() {
         </div>
         <div class="sw-composer">
           <div class="sw-queue" id="chat-queue" hidden></div>
-          <form id="chat-form" class="sw-composer-box">
+          <form id="chat-form" class="sw-composer-box" data-voice="${voiceStateNow()}">
             <div class="sw-pickbox" id="chat-cmdpick" hidden></div>
             <div class="sw-pickbox" id="chat-mentionpick" hidden></div>
             ${/* 引用条：这一条还没发出去的消息指着谁（一条回复、一个文件）。摆在 @ 那排上面，
@@ -137,6 +137,8 @@ function chatPage() {
             <div class="sw-files" id="chat-files" hidden></div>
             <textarea id="chat-input" class="satu-prompt satu-grow" rows="1"
               placeholder="${esc(t('输入消息'))}">${esc(state.chatDraft || '')}</textarea>
+            ${/* 录语音时顶替输入框的那条计时条（chat-voice.js）。发送键那时是「发出去」。 */ ''}
+            ${chatVoiceBarHtml()}
             <div class="sw-composer-row">
               ${/* 席位的消息接口目前只收 text，没有二进制通道。所以附件走「随消息一起
                     贴成正文」这条路：选中的文本文件在发送时以围栏代码块拼进去，模型看到
@@ -145,8 +147,6 @@ function chatPage() {
               <button type="button" class="sw-iconbtn" data-act="chat-attach"
                 aria-label="${esc(t('添加附件'))}" title="${esc(t('添加附件'))}">${ICON_CLIP}</button>
               <input type="file" id="chat-file" multiple hidden>
-              ${/* 语音输入：只有手机壳、且平台配好了识别模型才画（chat-voice.js）。 */ ''}
-              ${chatVoiceButtonHtml()}
               ${/* 日常模型选择器。平台只配了一个日常模型、或者席位太旧不认这条路时整块
                     隐藏；内容由 paintChatModel 就地填，和上下文占比那颗药丸一个做法。 */ ''}
               <span class="sw-model" id="chat-model" hidden>

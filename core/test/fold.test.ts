@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fold } from '../src/chat/fold.ts'
+import { composeVoice, splitVoice } from '../src/chat/events.ts'
 
 const T = Date.parse('2026-08-24T02:00:00Z')
 const ev = (seq: number, type: string, data: any) => ({ seq, time: T + seq * 1000, type, data })
@@ -207,4 +208,20 @@ test('真插话（指令后面跟的是人那一轮的助手事件）照旧是 s
   ])
   const card: any = f.blocks.find((b: any) => b.kind === 'user' && b.assigned)
   assert.equal(card.assigned.state, 'steered')
+})
+
+test('语音消息：拼出来的正文认得回来，折叠后正文只留转写、录音单独一项', () => {
+  for (const lang of ['zh', 'en'] as const) {
+    const body = composeVoice(lang, { path: 'uploads/s1/voice-1.wav', seconds: 11.6 }, '  帮我订会议室\n下午三点  ')
+    assert.deepEqual(splitVoice(body), { text: '帮我订会议室\n下午三点', voice: { path: 'uploads/s1/voice-1.wav', seconds: 12 } })
+    const f = fold([ev(1, 'session', { version: 5, id: 's1', botId: 'b', createdAt: T }), ev(2, 'user/message', { message: um(body), source: { kind: 'user' } })])
+    const user = f.blocks.find((b: any) => b.kind === 'user') as any
+    assert.equal(user.text, '帮我订会议室\n下午三点')
+    assert.deepEqual(user.voice, { path: 'uploads/s1/voice-1.wav', seconds: 12 })
+    assert.equal(user.raw, body, '回执靠 raw 认，得是完整正文')
+  }
+  // 不是我们拼的就不认：首行像、后面不对的一律当普通消息。
+  assert.equal(splitVoice('我发了一条语音（3 秒），录音在工作区里：\n随便写的'), null)
+  assert.equal(splitVoice('我发了一条语音（3 秒），录音在工作区里：\n- `/etc/passwd`\n\n转写（自动识别，可能有错字）：\nx'), null)
+  assert.equal(splitVoice('你好'), null)
 })

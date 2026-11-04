@@ -504,6 +504,14 @@ document.getElementById('app').addEventListener('click', async (e) => {
     await toggleVoice()
     return
   }
+  if (act === 'chat-voice-cancel') {
+    cancelVoice()
+    return
+  }
+  if (act === 'chat-voice-play') {
+    await toggleVoiceNote(btn.getAttribute('data-path') || '')
+    return
+  }
   if (act === 'chat-attach') {
     const picker = document.getElementById('chat-file')
     if (picker) picker.click()
