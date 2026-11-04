@@ -19,5 +19,16 @@ fn main() {
             }
         }
     }
+    // 真机联调的地址改道（lib.rs 的 dev_hosts_script）：同一个道理，Android 读不到本机文件，构建时烤进去。
+    // 一行一条 `原主机=新主机`，烤成逗号连起来的一串（rustc-env 里放不了换行）。
+    if std::path::Path::new("dev-hosts.txt").exists() {
+        println!("cargo:rerun-if-changed=dev-hosts.txt");
+        if let Ok(s) = std::fs::read_to_string("dev-hosts.txt") {
+            let joined: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+            if !joined.is_empty() {
+                println!("cargo:rustc-env=SATUWORK_DEV_HOSTS={}", joined.join(","));
+            }
+        }
+    }
     tauri_build::build()
 }

@@ -110,6 +110,21 @@ pnpm --filter satuwork-mobile dev:android satuwork-36
   是它自己，要先 `adb reverse` 把端口转回本机。
 - **界面**：同理读不到仓库里的 `gateway/ui`，debug 构建也走包里那份——先 `pnpm prepare:ui`，
   改了界面要重拷、重编。
+- **真机收不到 Bot 回复**：对话流、附件、预览、桌面都直连席位机器（`machines.directUrl`）。本地这个地址是
+  Mac 网桥上的 `192.168.64.1:8443`，Mac 自己到得了、插 USB 的手机到不了（那是 Mac 上虚机的网段），于是
+  手机发得出消息、收不到回复。这个地址别为手机改成局域网 IP（会随 DHCP 变，本机这边会坏）；在手机这头改道：
+
+  ```bash
+  echo '192.168.64.1=127.0.0.1' > mobile/src-tauri/dev-hosts.txt
+  ```
+
+  ```bash
+  adb reverse tcp:8443 tcp:8443
+  ```
+
+  debug 构建把这个文件烤进去（同 dev-server.txt，头一回新建要 `touch mobile/src-tauri/build.rs`），页面打
+  `192.168.64.1` 的请求换成 `127.0.0.1`，经 USB 回到 Mac 的 8443（`pnpm dev` 顺带起的 desk-proxy 在那儿
+  转给虚机）。一行一条 `原主机=新主机`；正式包里没有这段（lib.rs 的 `dev_hosts_script`）。
 - debug 构建把导航和页面报错打进 logcat（标签 `RustStdoutStderr`，前缀 `[satuwork]`）：
 
 ```bash
