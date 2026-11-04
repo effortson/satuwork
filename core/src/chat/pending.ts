@@ -21,8 +21,11 @@ export function mergePending(folded: Folded, mine: PendingMessage[]): PendingMes
   const fresh = folded.blocks.filter((b): b is UserBlock => b.kind === 'user' && b.seq != null)
   const left: PendingMessage[] = []
   for (const p of mine) {
-    // 比的是 raw（拼好的完整正文），不是显示用的 text——后者已经把附件那段拆走了。
-    const hit = fresh.findIndex((b) => (b.seq as number) > p.afterSeq && (b.raw != null ? b.raw : b.text) === p.text)
+    // 比的是 raw（拼好的完整正文），不是显示用的 text——后者已经把附件那段拆走了。语音按录音文件名认：
+    // 它的正文是服务端拼的（转写在那边），本地手上只有文件名；还没拿到文件名的那几百毫秒谁都不认。
+    const hit = fresh.findIndex((b) => (b.seq as number) > p.afterSeq && (p.voice
+      ? Boolean(p.voiceName) && b.voice?.path.split('/').pop() === p.voiceName
+      : (b.raw != null ? b.raw : b.text) === p.text))
     if (hit >= 0) fresh.splice(hit, 1)
     else left.push(p)
   }
@@ -30,7 +33,8 @@ export function mergePending(folded: Folded, mine: PendingMessage[]): PendingMes
   for (const p of left) {
     // 回执还没回来的那几秒也要长成最终的样子，否则附件会先以一行路径文本出现、
     // 再突然变成药丸——同一条消息在屏幕上跳两次。
-    const vc = splitVoice(p.text)
+    // 本地语音还没有正文（转写在服务端），只画语音条。
+    const vc = p.voice ? { text: '', voice: p.voice } : splitVoice(p.text)
     const up = vc ? { text: vc.text, files: [] } : splitUploads(p.text)
     folded.blocks.push({
       kind: 'user',

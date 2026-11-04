@@ -66,6 +66,8 @@ export interface UserBlock {
   kind: 'user'
   text: string
   files: { path: string; name: string }[]
+  /** 语音消息（core 的 splitVoice）：录音在工作区里的路径和时长。正文 text 是它的转写。 */
+  voice?: { path: string; seconds: number }
   mentions: Mention[]
   refs: Ref[]
   via: string
@@ -180,6 +182,12 @@ export interface RosterSum {
 export interface PendingMessage {
   sessionId: string
   text: string
+  /**
+   * 语音消息（gateway/ui/chat-voice.js）：本地先画的语音条（路径是本地副本的键），和录音交给 Gateway
+   * 之后它报回来的工作区文件名。正文要等服务端转写完才有，所以这种回执按文件名认领，不按正文。
+   */
+  voice?: { path: string; seconds: number }
+  voiceName?: string
   images?: any[]
   mentions?: Mention[]
   refs?: Ref[]

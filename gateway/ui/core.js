@@ -2468,13 +2468,13 @@ ${transcript.trim()}`;
     const fresh = folded.blocks.filter((b) => b.kind === "user" && b.seq != null);
     const left = [];
     for (const p of mine) {
-      const hit = fresh.findIndex((b) => b.seq > p.afterSeq && (b.raw != null ? b.raw : b.text) === p.text);
+      const hit = fresh.findIndex((b) => b.seq > p.afterSeq && (p.voice ? Boolean(p.voiceName) && b.voice?.path.split("/").pop() === p.voiceName : (b.raw != null ? b.raw : b.text) === p.text));
       if (hit >= 0) fresh.splice(hit, 1);
       else left.push(p);
     }
     if (!left.length) return left;
     for (const p of left) {
-      const vc = splitVoice(p.text);
+      const vc = p.voice ? { text: "", voice: p.voice } : splitVoice(p.text);
       const up = vc ? { text: vc.text, files: [] } : splitUploads(p.text);
       folded.blocks.push({
         kind: "user",

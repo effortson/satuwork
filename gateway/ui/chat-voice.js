@@ -1,13 +1,13 @@
 /**
  * 手机端的语音消息，和 WhatsApp 那种发语音一个用法：输入框空着的时候，发送键变成麦克风；点一下开始录，
- * 输入框换成一条「正在录音」的计时条（左边能扔掉这段），再点一下发送键就停下、直接发出去。对话里这条
- * 消息是一个能点着听的语音条，下面附着自动转写的文字。
+ * 输入框换成一条「正在录音」的计时条（左边能扔掉这段），再点一下发送键就停下、发出去。对话里这条消息是
+ * 一个能点着听的语音条，下面附着自动转写的文字。
  *
- * **发出去的是什么。** 录音先传进这条会话的工作区（和附件同一条路，chat-composer.js 的 uploadChatFile），
- * 同时交给 Gateway 的 `POST /me/transcribe` 转成文字（平台在「工具配置 → 语音」配的模型，按秒计费）；
- * 两样都到了才拼成一条消息（core 的 composeVoice）走正常的发送（sendChat）——模型读到的是转写和录音的
- * 位置，气泡按 splitVoice 认回来画成语音条。席位不用为语音改一行。转写失败就不发：模型听不见录音，
- * 一条没有文字的语音对它是空消息。
+ * **录完就放手，剩下的在服务端做。** 停下的那一刻这条语音就画进对话（本地副本，当场能听），输入框立刻
+ * 能接着打字、接着录；手机只把 WAV 交给 Gateway 的 `POST /runtime/sessions/:id/voice`，收下了就算发出去。
+ * 放进席位工作区、转写（平台在「工具配置 → 语音」配的模型，按秒计费）、发给 Bot 都在 Gateway 回完包之后做
+ * （gateway/src/lib/voice-message.ts）。席位把这条消息经对话流送回来时，按录音文件名认领本地这条，转写
+ * 补到语音条下面。手机也不用直连席位机器。
  *
  * 只在手机壳里有（`mobileShell()`），而且平台开了语音（`/me` 的 `speech.enabled`）。浏览器和桌面壳里
  * 发送键不变——但别人发来的语音条照样能听。
@@ -31,18 +31,13 @@ const VOICE_RATE = 16000
 
 /** 正在录的那一段。同一时刻只有一段。 */
 let voiceRec = null
-/** 'idle' | 'rec' | 'busy'（停了，正在传录音、转文字、发出去）。发送键和计时条跟着它。 */
+/** 'idle' | 'rec'。发送键和计时条跟着它。停下就回到 'idle'——发出去的事不占着输入框。 */
 let voiceState = 'idle'
 /**
- * 停下之后传录音那一跳的开关：垃圾桶和超时都靠它掐断。只在「传、转」那段有，开始走 sendChat 就收回——
- * 消息已经在发了，再掐只会留下一条说不清发没发出去的东西。
+ * 交给 Gateway 之后多久还没在对话流里见到它，就当它没送到：本地那条撤掉、说一声。正常是几秒（放进工作区
+ * 和转写并行，再发给席位）；Bot 忙着时它会先进队列，那时本地这条由排队那一行接手（dropQueuedVoice）。
  */
-let voiceAbort = null
-/**
- * 传录音最多等多久。一分钟的 16 kHz WAV 不到 2 MB，正常网络几秒就完；连不上席位机器时 fetch 自己
- * 要挂好几分钟才报错，界面就一直停在「正在发送语音…」（真机实测：本地席位在 Mac 的虚拟网段，手机连不到）。
- */
-const VOICE_UPLOAD_MS = 60_000
+const VOICE_DELIVER_MS = 120_000
 
 /**
  * 正在开麦（等系统权限框、等 getUserMedia）。这几百毫秒里发送键还是麦克风的面孔，不挡的话再点一下会
@@ -94,10 +89,7 @@ function paintVoice() {
   const time = document.getElementById('chat-voicebar-time')
   if (time && voiceState === 'rec' && voiceRec) time.textContent = voiceClock(voiceRec.seconds())
   const hint = document.getElementById('chat-voicebar-hint')
-  if (hint) hint.textContent = voiceState === 'busy' ? t('正在发送语音…', 'Sending voice message…') : t('正在录音，点发送键发出去', 'Recording — tap send when done')
-  // 发送那一两秒里垃圾桶也在：传不上去的时候人得有个办法停下来，不能只能干等。
-  const cancel = document.getElementById('chat-voice-cancel')
-  if (cancel) cancel.hidden = voiceState === 'idle' || (voiceState === 'busy' && !voiceAbort)
+  if (hint) hint.textContent = t('正在录音，点发送键发出去', 'Recording — tap send when done')
   if (typeof paintSendFace === 'function') paintSendFace()
 }
 
@@ -125,7 +117,7 @@ const VOICE_SHARING_COPY = {
 
 /** 发送键在麦克风 / 录音中两副面孔下被点了。 */
 async function toggleVoice() {
-  if (voiceState === 'busy' || voiceStarting) return
+  if (voiceStarting) return
   if (voiceState === 'rec') return finishVoice()
   voiceStarting = true
   try {
@@ -270,89 +262,84 @@ function voiceFileName(at = new Date()) {
 }
 
 /**
- * 停下、传、转、发。传录音和转文字互不依赖，一起跑；两样都成了才发——转写没出来的语音对模型是一条空消息。
- * 录到最长时长时由录音那头自己调进来。
+ * 停下、当场画上、交给 Gateway。录到最长时长时由录音那头自己调进来。
+ *
+ * 停下的那一刻就回到空闲：发送键变回麦克风、输入框回来——下一句话不用等这一句送达。
  */
 async function finishVoice() {
   const rec = voiceRec
   if (!rec || voiceState !== 'rec') return
   voiceRec = null
-  voiceState = 'busy'
+  voiceState = 'idle'
+  const wav = rec.stop()
   paintVoice()
-  try {
-    const wav = rec.stop()
-    // 太短的多半是误触：不传、不收钱，说一句就行。
-    if (wav.size < 44 + VOICE_RATE * 2 * 0.5) {
-      flash('err', t('说话时间太短了，没有发出。', 'Too short — not sent.'))
-      return
-    }
-    const sessionId = state.chatSessionId
-    if (!sessionId || chatBotIdNow() !== rec.botId) throw new Error(t('录音时切到了别的对话，这段没有发出。', 'You switched conversations while recording, so this was not sent.'))
-    const seconds = (wav.size - 44) / 2 / VOICE_RATE
-    const file = new File([wav], voiceFileName(), { type: 'audio/wav' })
-    const abort = new AbortController()
-    voiceAbort = abort
-    paintVoice()
-    const timer = setTimeout(() => abort.abort(new Error('timeout')), VOICE_UPLOAD_MS)
-    /**
-     * 掐断（垃圾桶或超时）当场生效：不管上传和转写走到哪一步都不再等，转写那一跳让它自己跑完、结果不用。
-     * 上传那一跳由 signal 真的断掉，不在后台接着传。
-     */
-    const dropped = new Promise((_, reject) => abort.signal.addEventListener('abort', () => reject(new Error(
-      abort.signal.reason?.message === 'timeout'
-        ? t('录音传不上去：连不上 Bot 所在的机器', 'Could not upload the recording: the bot’s machine is unreachable')
-        : 'cancelled'))))
-    const upload = uploadChatFile(sessionId, file, abort.signal)
-    let up, text
-    try {
-      ;[up, text] = await Promise.race([Promise.all([upload, transcribeVoice(wav)]), dropped])
-    } finally {
-      clearTimeout(timer)
-      voiceAbort = null
-    }
-    if (!text) throw new Error(t('没听清你说的话，这段没有发出。再说一次试试。', 'Could not make out what you said, so this was not sent. Try again.'))
-    if (!up || !up.path) throw new Error(t('录音没传上去', 'The recording was not uploaded'))
-    // 刚录的这段直接拿本地副本放，不用再从席位取一遍。
-    voiceUrls.set(up.path, URL.createObjectURL(wav))
-    if (state.chatSessionId !== sessionId) throw new Error(t('录音时切到了别的对话，这段没有发出。', 'You switched conversations while recording, so this was not sent.'))
-    await sendVoiceBody(SatuCore.composeVoice(localeMode === 'en' ? 'en' : 'zh', { path: up.path, seconds }, text))
-  } catch (err) {
-    // 人自己点了垃圾桶：不算出错，什么也不说。
-    if (err?.message !== 'cancelled') flash('err', t('语音没发出去：', 'Voice message not sent: ') + (err?.message || err))
-  } finally {
-    voiceState = 'idle'
+  // 太短的多半是误触：不传、不收钱，说一句就行。
+  if (wav.size < 44 + VOICE_RATE * 2 * 0.5) {
+    flash('err', t('说话时间太短了，没有发出。', 'Too short — not sent.'))
     render()
+    return
+  }
+  const sessionId = state.chatSessionId
+  if (!sessionId || chatBotIdNow() !== rec.botId) {
+    flash('err', t('录音时切到了别的对话，这段没有发出。', 'You switched conversations while recording, so this was not sent.'))
+    render()
+    return
+  }
+  // 转写出来的字会交给模型：和打字发消息同一道 AI 共享许可（sendChat 里那道），没点过同意不发。
+  const sharing = mobileAiSharingInfo()
+  if (!mobileAiSharingAllowed(sharing) && !await requestMobileAiSharing(sharing)) return
+  await sendVoice(sessionId, wav)
+}
+
+/**
+ * 本地这条先画上，WAV 交给 Gateway。收下了（202）就记下录音在工作区里的文件名，等对话流把那条消息送回来
+ * 时按它认领（core 的 mergePending）；没收下（没开通、没余额、录音不对）就撤掉本地这条、说清原因。
+ */
+async function sendVoice(sessionId, wav) {
+  const seconds = (wav.size - 44) / 2 / VOICE_RATE
+  // 本地副本的键：认领之前语音条就拿它放；认领之后按文件名接到真路径上（voiceUrlOf）。
+  const local = 'local:' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+  const url = URL.createObjectURL(wav)
+  voiceUrls.set(local, url)
+  const afterSeq = (state.chatEvents || []).reduce((m, ev) => (ev.seq > m ? ev.seq : m), -1)
+  const pending = { sessionId, text: '', voice: { path: local, seconds }, voiceName: '', images: [], mentions: [], refs: [], at: Date.now(), afterSeq }
+  state.chatPending = (state.chatPending || []).concat(pending)
+  // 回执要从对话流回来：流断着就当场接上，和 sendChat 一样（见那边 reviveChatStream 的注释）。
+  reviveChatStream(sessionId, state.chatBotId)
+  if (state.chatSessionId === sessionId) followChatBottom(document.getElementById('chat-thread'))
+  paintChat()
+  const drop = (msg) => {
+    if (!(state.chatPending || []).includes(pending)) return
+    state.chatPending = state.chatPending.filter((p) => p !== pending)
+    if (msg) flash('err', msg)
+    render()
+  }
+  setTimeout(() => drop(t('这条语音没送到 Bot，请稍后再录一次。', 'This voice message did not reach the bot. Please record it again.')), VOICE_DELIVER_MS)
+  try {
+    const r = await api('POST', '/runtime/sessions/' + encodeURIComponent(sessionId) + '/voice', wav)
+    pending.voiceName = String(r?.name || '')
+    voiceUrls.set('name:' + pending.voiceName, url)
+    // 回执可能比这个响应先到（Gateway 回完包就开始发）：配上名字之后重画一遍，让它当场认领。
+    paintChat()
+  } catch (err) {
+    drop(t('语音没发出去：', 'Voice message not sent: ') + (err?.message || err))
   }
 }
 
 /**
- * 走正常的发送：排队、回执、断线挂起、AI 共享许可都是同一套（sendChat）。sendChat 读的是输入框那份草稿，
- * 所以先把语音正文放进去、发完再把录音那几秒里人顺手打的字、挂的附件还回去——那些不该搭语音的车走：
- * 附件会在正文前面拼一段「我上传了文件」，语音就认不出来了。
+ * Bot 正忙时这条语音进了队列：输入框上面那排队的一行接手，本地这条气泡撤掉（不然同一条话一行一个气泡
+ * 摆两遍）。chat-stream.js 收到 `queue/change` 时调。
  */
-async function sendVoiceBody(body) {
-  const keep = { draft: state.chatDraft || '', files: state.chatFiles || [], mentions: state.chatMentions || [], refs: state.chatRefs || [] }
-  state.chatDraft = body
-  state.chatFiles = []
-  state.chatMentions = []
-  state.chatRefs = []
-  try {
-    await sendChat()
-  } finally {
-    // sendChat 失败时会把正文还回输入框（returnDraft）：那就留着它，人再按一次发送就行。
-    if (!String(state.chatDraft || '').trim()) state.chatDraft = keep.draft
-    if (!(state.chatFiles || []).length) state.chatFiles = keep.files
-    if (!(state.chatMentions || []).length) state.chatMentions = keep.mentions
-    if (!(state.chatRefs || []).length) state.chatRefs = keep.refs
-    const input = document.getElementById('chat-input')
-    if (input && input.value !== state.chatDraft) input.value = state.chatDraft
+function dropQueuedVoice(sessionId) {
+  const queued = new Set()
+  for (const row of chatQueues.get(sessionId) || []) {
+    const vc = SatuCore.splitVoice(row && row.text)
+    if (vc) queued.add(vc.voice.path.split('/').pop())
   }
-}
-
-/** api() 收 Blob 时原样发（core/src/api.ts）：登录过期、报错翻译都和别的请求同一条路。 */
-async function transcribeVoice(wav) {
-  const data = await api('POST', '/me/transcribe', wav)
-  return String(data?.text || '').trim()
+  if (!queued.size) return false
+  const before = (state.chatPending || []).length
+  state.chatPending = (state.chatPending || []).filter((p) => !(p.sessionId === sessionId && p.voiceName && queued.has(p.voiceName)))
+  return state.chatPending.length !== before
 }
 
 /**
@@ -364,12 +351,8 @@ function voiceTick() {
   else paintVoice()
 }
 
-/** 垃圾桶、离开页面、切后台：扔掉正在录的那段，什么都不发。正在传的那段就掐断上传。 */
+/** 垃圾桶、离开页面、切后台：扔掉正在录的那段，什么都不发。 */
 function cancelVoice() {
-  if (voiceState === 'busy') {
-    voiceAbort?.abort()
-    return
-  }
   if (voiceRec) voiceRec.cancel()
   voiceRec = null
   if (voiceState === 'rec') voiceState = 'idle'
@@ -401,7 +384,8 @@ function voiceNoteHtml(v) {
 }
 
 async function voiceUrlOf(path) {
-  const hit = voiceUrls.get(path)
+  // 自己刚发的那条：认领之后路径换成了工作区里的，本地副本按文件名接上，不用再从席位取一遍。
+  const hit = voiceUrls.get(path) || voiceUrls.get('name:' + path.split('/').pop())
   if (hit) return hit
   const sessionId = state.chatSessionId
   if (!sessionId) throw new Error(t('没有打开的对话', 'No open conversation'))

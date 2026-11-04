@@ -101,6 +101,8 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       env: {
         GATEWAY_MACHINE_TOKEN: MACHINE_TOK,
         GATEWAY_PLATFORM_TOKEN: PLATFORM_TOK,
+        // 语音消息那条用一台本机的假识别服务：放行内网地址（生产上页面填的地址要过 SSRF 闸）。
+        GATEWAY_SPEECH_ALLOW_PRIVATE: '1',
         GATEWAY_ACCESS_HOST: 'satuwork.com',
         GATEWAY_SEED_OWNER: '1',
         GATEWAY_OWNER_EMAIL: 'owner@chat.test',
@@ -530,6 +532,69 @@ export async function runGatewayChat({ gwRoot, botRoot, test, req, start, waitHt
       const hits = matches()
       assert(hits.length === 1, `短轮次有流时应推送一次，实际 ${hits.length}`)
       assert(hits[0].payload.botId === botId, '通知没指向这轮对话的 Bot')
+    })
+
+    await test('语音消息：Gateway 收下就回 202，后台放进席位工作区、转写、发给 Bot；转写失败也照发', async () => {
+      const asr = { fail: false }
+      const asrServer = createServer((r, res) => {
+        r.resume()
+        r.on('end', () => {
+          if (asr.fail) {
+            res.writeHead(500, { 'content-type': 'application/json' })
+            res.end('{"error":"down"}')
+            return
+          }
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ text: '帮我看看今天的日程' }))
+        })
+      })
+      await new Promise((r) => asrServer.listen(0, '127.0.0.1', r))
+      try {
+        const asrUrl = `http://127.0.0.1:${asrServer.address().port}/v1`
+        const cfg = await req(gwBase, 'PUT', '/platform/speech', { token: ownerTok, body: { region: 'intl', provider: 'custom', baseUrl: asrUrl, model: 'e2e-asr' } })
+        assert(cfg.status === 200, `speech ${cfg.status} ${cfg.text}`)
+        const key = await req(gwBase, 'PUT', '/platform/speech/key', { token: ownerTok, body: { provider: 'custom', secret: 'e2e-asr' } })
+        assert(key.json.ready === true, `speech key ${key.text}`)
+        // 3 秒 16 kHz 单声道 16 位：手机那边 encodeWav 出来的就是这个形状。
+        const wav = Buffer.alloc(44 + 96000)
+        wav.write('RIFF', 0, 'ascii'); wav.writeUInt32LE(36 + 96000, 4); wav.write('WAVE', 8, 'ascii')
+        wav.write('fmt ', 12, 'ascii'); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22)
+        wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34)
+        wav.write('data', 36, 'ascii'); wav.writeUInt32LE(96000, 40)
+        const send = async () => {
+          const r = await req(gwBase, 'POST', `/runtime/sessions/${sessionId}/voice`, { token: adminTok, raw: wav, headers: { 'content-type': 'audio/wav' } })
+          assert(r.status === 202 && r.json.accepted === true && /^voice-\d{8}-\d{6}-[0-9a-f]{6}\.wav$/.test(r.json.name) && r.json.seconds === 3, `voice ${r.status} ${r.text}`)
+          return r.json.name
+        }
+        // 席位把这条消息经对话流送回来：按文件名认（手机那边认领本地气泡也是这么认的）。
+        const arrived = async (name) => {
+          const said = (e) => e.type === 'user/message' && JSON.stringify(e).includes(name)
+          const sse = await readSse(`${botBase}/api/sessions/${encodeURIComponent(sessionId)}/events`, { token: seatAccess, timeout: 15000, until: (evs) => evs.some(said) })
+          const ev = sse.events.find(said)
+          assert(ev, `席位没收到这条语音：${sse.events.map((e) => e.type).join(',')}`)
+          return (ev.data.message.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('')
+        }
+        const name = await send()
+        const text = await arrived(name)
+        assert(text.startsWith('我发了一条语音（3 秒），录音在工作区里：\n- `uploads/') && text.includes(name), `正文头 ${text}`)
+        assert(text.endsWith('转写（自动识别，可能有错字）：\n帮我看看今天的日程'), `转写 ${text}`)
+        // 录音真的在席位工作区里，经 Gateway 取得到、字节一个不差。
+        const path = /`(uploads\/[^`]+)`/.exec(text)[1]
+        const got = await fetch(`${gwBase}/runtime/sessions/${sessionId}/files?path=${encodeURIComponent(path)}`, { headers: { authorization: 'Bearer ' + adminTok } })
+        const bytes = Buffer.from(await got.arrayBuffer())
+        assert(got.status === 200 && bytes.equals(wav), `录音 ${got.status} ${bytes.length}`)
+        // 转写挂了也照发：人已经看见这条发出去了，Bot 得知道有这么一条、只是没听到内容。
+        asr.fail = true
+        const failed = await arrived(await send())
+        assert(failed.endsWith('转写（自动识别，可能有错字）：\n（这段语音没能自动转成文字）'), `转写失败的正文 ${failed}`)
+        // 录音只在内存里过一下，不落 Gateway 的盘。
+        assert(!treeHas(GW_HOME, 'RIFF'), 'Gateway 落了一份录音')
+        // 别人的会话：一个字节都不收。
+        const stranger = await req(gwBase, 'POST', `/runtime/sessions/not-a-session/voice`, { token: adminTok, raw: wav, headers: { 'content-type': 'audio/wav' } })
+        assert(stranger.status === 503 || stranger.status === 404 || stranger.status === 403, `别的会话该拒：${stranger.status}`)
+      } finally {
+        await closeServer(asrServer, 'mock asr')
+      }
     })
 
     await test('Gateway 上那条会话流已经没了：/runtime/sessions/:id/events → 404', async () => {

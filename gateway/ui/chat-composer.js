@@ -28,7 +28,11 @@ function paintChatQueue() {
         const src = r.source || {}
         const task = src.kind === 'plugin' && src.plugin === 'task' && src.phase !== 'result'
         const body = task ? String(r.text || '').replace(TASK_IN_HEAD, '').replace(TASK_IN_TAIL, '') : r.text || ''
-        const line = body.replace(/\s+/g, ' ').trim() || t('（只有附件）')
+        // 排着的语音（chat-voice.js）：别把拼好的那段正文原样摆出来，写成「语音 0:12 · 转写」。
+        const vc = SatuCore.splitVoice(body)
+        const line = vc
+          ? t('语音', 'Voice') + ' ' + voiceClock(vc.voice.seconds) + (vc.text ? ' · ' + vc.text.replace(/\s+/g, ' ') : '')
+          : body.replace(/\s+/g, ' ').trim() || t('（只有附件）')
         const who = task ? t(`${(src.from && src.from.name) || '主 Bot'} 派来的任务：`, `Assigned by ${(src.from && src.from.name) || 'the main bot'}: `) : ''
         return `<div class="sw-queue-row">
           <span class="sw-queue-dot" aria-hidden="true"></span>
@@ -437,13 +441,11 @@ function uploadTargetOf(sessionId) {
   return { url: base + path, local: false }
 }
 
-/** `signal`：调用方要能掐断（语音消息给它挂了超时和「扔掉」，见 chat-voice.js 的 finishVoice）。 */
-async function uploadChatFile(sessionId, file, signal) {
+async function uploadChatFile(sessionId, file) {
   const target = uploadTargetOf(sessionId)
   if (!target) throw new Error(t(NO_UPLOAD_URL_MSG))
   const init = {
     method: 'POST',
-    ...(signal ? { signal } : {}),
     headers: authHeaders({
       accept: 'application/json',
       'content-type': 'application/octet-stream',
@@ -949,23 +951,22 @@ function paintSendFace(busy = Boolean(state.chatStatus)) {
   const parsed = parseCommand(state.chatDraft || '')
   const asStop = busy && !(parsed && !parsed.unknown)
   /**
-   * 手机上的语音消息（chat-voice.js）再添三副：输入框空着时是麦克风（点了开录）、录音中是「发出去」、
-   * 停下之后传录音转文字那一两秒是转圈。录音中的那两副排在停止前面——Bot 正跑着也能录一段，
-   * 停下来那一下要的是把这段发出去，不是停掉 Bot。麦克风排在停止后面：空着输入框按下去，停止更要紧。
+   * 手机上的语音消息（chat-voice.js）再添两副：输入框空着时是麦克风（点了开录）、录音中是「发出去」。
+   * 录音中那副排在停止前面——Bot 正跑着也能录一段，停下来那一下要的是把这段发出去，不是停掉 Bot。
+   * 麦克风排在停止后面：空着输入框按下去，停止更要紧。停下就发，没有「发送中」这一副：发出去的事在服务端。
    */
   // 只装了这一个分片的单测环境里没有 chat-voice.js。
   const voice = typeof voiceStateNow === 'function' ? voiceStateNow() : 'idle'
-  const face = voice === 'rec' ? 'voice-send' : voice === 'busy' ? 'voice-busy' : stopping ? 'stopping' : asStop ? 'stop' : typeof sendAsVoice === 'function' && sendAsVoice() ? 'voice' : 'send'
+  const face = voice === 'rec' ? 'voice-send' : stopping ? 'stopping' : asStop ? 'stop' : typeof sendAsVoice === 'function' && sendAsVoice() ? 'voice' : 'send'
   if (send.getAttribute('data-state') === face) return
   // 停止态改成 type=button 并挂上 chat-abort：留着 submit 的话，点它会走发送。
   // 回车不受影响——那条路径仍是提交表单，也就是「边跑边补一句」，本来就该照发。
   send.setAttribute('data-state', face)
-  const isVoice = face === 'voice' || face === 'voice-send' || face === 'voice-busy'
+  const isVoice = face === 'voice' || face === 'voice-send'
   send.type = asStop || stopping || isVoice ? 'button' : 'submit'
   send.innerHTML = face === 'voice' ? ICON_MIC : asStop && !isVoice || stopping ? ICON_STOP : ICON_SEND
   const label = {
     'voice-send': t('发送语音', 'Send voice message'),
-    'voice-busy': t('正在发送语音…', 'Sending voice message…'),
     stopping: t('正在停止…', 'Stopping…'),
     stop: t('停止'),
     voice: t('录一段语音', 'Record a voice message'),
@@ -974,7 +975,7 @@ function paintSendFace(busy = Boolean(state.chatStatus)) {
   send.title = label
   // 正在停的时候禁掉：第二下什么也做不成（席位已经收到了），但按得下去就会让人
   // 以为第一下没算数。转圈画在按钮外沿，见 chat.css 的 [data-state='stopping']。
-  send.disabled = stopping || face === 'voice-busy'
+  send.disabled = stopping
   if (isVoice) send.setAttribute('data-act', 'chat-voice')
   else if (asStop) send.setAttribute('data-act', 'chat-abort')
   else send.removeAttribute('data-act')

@@ -1,19 +1,24 @@
 /**
  * 语音输入（lib/speech.ts）。
  *
- * - `POST /me/transcribe`：手机端对话框的麦克风。请求体就是 WAV 本身（postRaw），回 `{ text, seconds }`。
- *   按音频秒数计费（meter 的 `speech`），先过余额闸；没成的也落一行（金额 0），同知识库检索。
+ * - `POST /runtime/sessions/:id/voice`：手机端的语音消息。请求体就是 WAV（postRaw），收下就回 202，
+ *   放进席位工作区、转写、发给 Bot 都在回完包之后（lib/voice-message.ts）。
+ * - `POST /me/transcribe`：只转写、当场回 `{ text, seconds }`，不发消息。
+ *   两条都按音频秒数计费（meter 的 `speech`），先过余额闸；没成的也落一行（金额 0），同知识库检索。
  * - `/platform/speech*`：平台「工具配置 → 语音」。服务商、模型、单价进平台设置的 `speech`，密钥进
  *   platform_credentials（存进去不回显）。owner-only。
  */
 import { randomUUID } from 'node:crypto'
 import type { RouteCtx } from './ctx.ts'
-import { type Db, type PlatformSettings, type SpeechSettings, parseSpeech } from '../db.ts'
+import { type Account, type Db, type PlatformSettings, type SpeechSettings, parseSpeech } from '../db.ts'
 import { HttpError, json, type Req, type Router } from '../http.ts'
+import { afterResponse } from '../lib/background.ts'
+import { seatTargetForSession } from '../lib/runtime.ts'
+import { deliverVoice, voiceFileName } from '../lib/voice-message.ts'
 import { requireOwnerUser, requireUser } from '../lib/guards.ts'
 import { bodyOf, strField } from '../lib/validate.ts'
 import {
-  SPEECH_CUSTOM, SPEECH_MAX_SECONDS, SPEECH_PRESETS, billedSeconds, isSpeechSecret, knownSpeechProvider, loadSpeechConfig,
+  type SpeechConfig, SPEECH_CUSTOM, SPEECH_MAX_SECONDS, SPEECH_PRESETS, billedSeconds, isSpeechSecret, knownSpeechProvider, loadSpeechConfig,
   canonicalWav, pcmWav, resolveSpeech, speechProblem, speechSecretName, speechUsable, transcribe,
 } from '../lib/speech.ts'
 import { WebToolError, guardUrl } from '../web-tools.ts'
@@ -80,11 +85,13 @@ async function customUrlOr400(next: SpeechSettings): Promise<void> {
 export function attachSpeech(router: Router, ctx: RouteCtx) {
   const { db, keys, meter } = ctx
 
-  router.postRaw('/me/transcribe', async (req, res) => {
-    const account = await requireUser(req, db, keys)
+  /**
+   * 收一段录音之前的那几道门：开没开通、是不是认得的 WAV、长短、余额。两条路（转写、语音消息）一样。
+   * 转给上游的是重新封过的那一份：计费的时长和识别的音频是同一段（canonicalWav）。
+   */
+  async function acceptClip(req: Req, account: Account): Promise<{ cfg: SpeechConfig; wav: Buffer; seconds: number }> {
     const cfg = await loadSpeechConfig(db)
     if (!speechUsable(cfg)) throw new HttpError(503, '语音输入还没开通，请联系平台管理员')
-    // 转给上游的是重新封过的那一份：计费的时长和识别的音频是同一段（canonicalWav）。
     const { wav, seconds } = canonicalWav(await readWav(req))
     if (seconds < MIN_SECONDS) throw new HttpError(400, '说话时间太短了')
     // 页面按 /me 报的 maxSeconds 自动停，多出来的一点是录音收尾的缓冲。
@@ -97,6 +104,12 @@ export function attachSpeech(router: Router, ctx: RouteCtx) {
       )
       throw new HttpError(402, gate.reason)
     }
+    return { cfg, wav, seconds }
+  }
+
+  router.postRaw('/me/transcribe', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    const { cfg, wav, seconds } = await acceptClip(req, account)
     let text: string
     try {
       text = await transcribe(cfg, wav)
@@ -108,6 +121,21 @@ export function attachSpeech(router: Router, ctx: RouteCtx) {
     const units = billedSeconds(seconds)
     await meter.charge({ kind: 'speech', account, status: 'ok', model: cfg.model, units, refId: randomUUID() })
     json(res, 200, { text, seconds: units })
+  })
+
+  /**
+   * 手机端的语音消息（lib/voice-message.ts）：录音收下、过了那几道门就回 202，手机当场把这条语音画进对话、
+   * 放手；放进席位工作区、转写、发给 Bot 都在回完包之后做。回给手机的 `name` 是录音在工作区里的文件名，
+   * 手机拿它认回自己那条（席位把消息经对话流送回来时）。
+   */
+  router.postRaw('/runtime/sessions/:id/voice', async (req, res) => {
+    const account = await requireUser(req, db, keys)
+    // 先认会话再收录音：不是这个人的会话，一个字节都不必读。
+    const target = await seatTargetForSession(db, account, req.params.id)
+    const { cfg, wav, seconds } = await acceptClip(req, account)
+    const name = voiceFileName()
+    afterResponse('语音消息', deliverVoice({ db, meter, account, target, sessionId: req.params.id, wav, seconds, name, cfg }))
+    json(res, 202, { accepted: true, name, seconds: billedSeconds(seconds) })
   })
 
   router.get('/platform/speech', async (req, res) => {

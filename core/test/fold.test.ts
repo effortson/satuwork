@@ -225,3 +225,18 @@ test('语音消息：拼出来的正文认得回来，折叠后正文只留转�
   assert.equal(splitVoice('我发了一条语音（3 秒），录音在工作区里：\n- `/etc/passwd`\n\n转写（自动识别，可能有错字）：\nx'), null)
   assert.equal(splitVoice('你好'), null)
 })
+
+test('本地语音回执：拿到文件名之前谁都不认，拿到之后按文件名认领服务端拼的那条', async () => {
+  const { mergePending } = await import('../src/chat/pending.ts')
+  const body = composeVoice('zh', { path: 'uploads/s1/voice-20261104-120000-abc123.wav', seconds: 4 }, '你好')
+  const events = [ev(1, 'session', { version: 5, id: 's1', botId: 'b', createdAt: T }), ev(2, 'user/message', { message: um(body), source: { kind: 'user' } })]
+  const local = { sessionId: 's1', text: '', voice: { path: 'local:x', seconds: 4 }, voiceName: '', at: T, afterSeq: 1 }
+  const f1 = fold(events)
+  assert.equal(mergePending(f1, [local]).length, 1, '还没文件名，不该被认领')
+  const shown = f1.blocks.filter((b: any) => b.kind === 'user')
+  assert.deepEqual((shown.at(-1) as any).voice, { path: 'local:x', seconds: 4 }, '没认领的本地语音该画成语音条')
+  assert.equal((shown.at(-1) as any).text, '', '本地语音还没有转写')
+  const f2 = fold(events)
+  assert.equal(mergePending(f2, [{ ...local, voiceName: 'voice-20261104-120000-abc123.wav' }]).length, 0, '文件名对上该认领')
+  assert.equal(mergePending(fold(events), [{ ...local, voiceName: 'voice-other.wav' }]).length, 1, '别的文件名不该认领')
+})
