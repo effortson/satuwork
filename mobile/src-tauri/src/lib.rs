@@ -279,6 +279,86 @@ const DEBUG_SCRIPT: &str = r#"
 })()
 "#;
 
+/**
+ * 真机联调（只在 debug 构建里）：把页面要打的某几台主机改道到别处。
+ *
+ * 本地开发时席位机器的直连地址（`machines.directUrl`）是 Mac 网桥上的 `192.168.64.1:8443`——Mac 自己的
+ * 浏览器、桌面壳、iOS 模拟器都到得了，**插着 USB 的手机到不了**：那是 Mac 上虚机用的网段。对话流（Bot 的
+ * 回复）、附件、预览、桌面都直连这个地址，于是手机上发得出消息、收不到回复。这个地址不能为了手机改成
+ * 局域网 IP（Mac 的局域网 IP 随 DHCP 变，改过两次都把本机这边弄坏了）。
+ *
+ * 所以在手机这一头改道：`mobile/src-tauri/dev-hosts.txt` 里写 `192.168.64.1=127.0.0.1`，再
+ * `adb reverse tcp:8443 tcp:8443`，手机打 `127.0.0.1:8443` 就经 USB 回到 Mac 的 8443（`pnpm dev` 顺带起的
+ * desk-proxy 在那儿转给虚机）。页面里的 fetch / EventSource / WebSocket / XHR、iframe / img / audio 的地址
+ * 在发出去之前换掉主机，端口和路径不动。文件不进版本库，各人各写；正式包里根本没有这段。
+ */
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+fn dev_hosts_script(raw: &str) -> Option<String> {
+    let pairs: Vec<(String, String)> = raw
+        .split([',', '\n'])
+        .filter_map(|line| {
+            let (from, to) = line.trim().split_once('=')?;
+            let (from, to) = (from.trim(), to.trim());
+            let ok = |h: &str| !h.is_empty() && h.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'));
+            (ok(from) && ok(to)).then(|| (from.to_string(), to.to_string()))
+        })
+        .collect();
+    if pairs.is_empty() {
+        return None;
+    }
+    let map = serde_json::to_string(&pairs).ok()?;
+    Some(DEV_HOSTS_SCRIPT.replace("__DEV_HOSTS__", &map))
+}
+
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+const DEV_HOSTS_SCRIPT: &str = r#"
+(function () {
+  var pairs = __DEV_HOSTS__
+  function fix(u) {
+    if (typeof u !== 'string') return u
+    for (var i = 0; i < pairs.length; i++) {
+      var from = '//' + pairs[i][0], to = '//' + pairs[i][1]
+      var at = u.indexOf(from)
+      if (at >= 0 && at <= 6) {
+        var next = u.charAt(at + from.length)
+        if (next === '' || next === ':' || next === '/' || next === '?' || next === '#') return u.slice(0, at) + to + u.slice(at + from.length)
+      }
+    }
+    return u
+  }
+  var f = window.fetch
+  window.fetch = function (input, init) {
+    if (typeof input === 'string' || input instanceof URL) return f.call(this, fix(String(input)), init)
+    if (input && input.url && fix(input.url) !== input.url) return f.call(this, new Request(fix(input.url), input), init)
+    return f.call(this, input, init)
+  }
+  function wrap(Name) {
+    var C = window[Name]
+    if (!C) return
+    var W = function (u, o) { return o === undefined ? new C(fix(String(u))) : new C(fix(String(u)), o) }
+    W.prototype = C.prototype
+    for (var k in C) try { W[k] = C[k] } catch (e) {}
+    window[Name] = W
+  }
+  wrap('EventSource')
+  wrap('WebSocket')
+  var open = XMLHttpRequest.prototype.open
+  XMLHttpRequest.prototype.open = function (m, u) { arguments[1] = fix(String(u)); return open.apply(this, arguments) }
+  function patch(el) {
+    if (el && el.getAttribute && /^(IFRAME|IMG|AUDIO|VIDEO|SOURCE)$/.test(el.tagName)) {
+      var s = el.getAttribute('src')
+      if (s && fix(s) !== s) el.setAttribute('src', fix(s))
+    }
+  }
+  new MutationObserver(function (list) {
+    list.forEach(function (m) {
+      if (m.type === 'attributes') patch(m.target)
+      else m.addedNodes.forEach(function (n) { patch(n); if (n.querySelectorAll) n.querySelectorAll('iframe,img,audio,video,source').forEach(patch) })
+    })
+  }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['src'] })
+})()
+"#;
+
 #[tauri::command]
 fn debug_log(line: String) {
     #[cfg(debug_assertions)]
@@ -556,6 +636,12 @@ fn build_window(app: &AppHandle) -> tauri::Result<()> {
         });
     #[cfg(debug_assertions)]
     let builder = builder.initialization_script(DEBUG_SCRIPT);
+    // 真机联调的地址改道（dev_hosts_script）。只在 debug 构建、而且烤进了 dev-hosts.txt 时才有。
+    #[cfg(debug_assertions)]
+    let builder = match option_env!("SATUWORK_DEV_HOSTS").and_then(dev_hosts_script) {
+        Some(script) => builder.initialization_script(&script),
+        None => builder,
+    };
     builder.build()?;
     Ok(())
 }
@@ -584,6 +670,19 @@ mod tests {
 
     fn u(s: &str) -> Url {
         Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn dev_hosts_only_takes_well_formed_pairs() {
+        assert_eq!(dev_hosts_script(""), None);
+        assert_eq!(dev_hosts_script("# 注释\n乱写"), None);
+        // 主机里混了引号、空格这类东西的一律不认：它要被原样拼进注入页面的脚本里。
+        assert_eq!(dev_hosts_script("a'b=127.0.0.1"), None);
+        let one = dev_hosts_script("192.168.64.1=127.0.0.1").expect("该认");
+        assert!(one.contains(r#"[["192.168.64.1","127.0.0.1"]]"#), "{one}");
+        assert!(!one.contains("__DEV_HOSTS__"));
+        let two = dev_hosts_script(" 192.168.64.1 = 127.0.0.1 ,10.0.0.5:8443=localhost:9443").expect("该认");
+        assert!(two.contains(r#"[["192.168.64.1","127.0.0.1"],["10.0.0.5:8443","localhost:9443"]]"#), "{two}");
     }
 
     #[test]

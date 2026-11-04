@@ -54,3 +54,4 @@ mobile/src-tauri/ui/*
 !mobile/src-tauri/ui/README.txt
 # debug 构建连哪台 Gateway（lib.rs 的 gateway_url），本机各写各的
 mobile/src-tauri/dev-server.txt
+mobile/src-tauri/dev-hosts.txt
