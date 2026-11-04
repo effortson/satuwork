@@ -113,6 +113,10 @@
 # workspace 后面**——它 inject 这两样。工具表里有连接器工具时才进表（agent 的 toolSchemasFor）。
 - name: './src/tools/connector.ts'
 
+# 工具搜索：tool_search / tool_describe / tool_call（docs/tool-search-bot.md）。连接器和 MCP 的工具
+# 多了之后不进工具表，换成这三把；进不进表由档位决定（agent 的 toolSchemasFor）。inject catalog。
+- name: './src/tools/tool-search.ts'
+
 # 本地 Bot（桌面端）自己领、自己跑日常任务。没设 SATUWORK_RUNTIME_KIND=local 时完全不启用。
 - name: './src/local-routines/index.ts'
 # 本地 Bot（桌面端）自己领主 Bot 派的活（两步：跑目标那一轮、把结论送回主 Bot）。同上，只在本地启用。

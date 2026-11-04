@@ -7,6 +7,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { blockedHost, hostOf, privateAddress } from '../policy/browser.ts'
 import { humanSize } from '../workspace/index.ts'
 import { fail, registerTool } from './common.ts'
+import { resolveToolId } from '../catalog/tool-index.ts'
 import type { ToolCall, ToolResult, WorkspaceFile } from './index.ts'
 
 /**
@@ -48,6 +49,11 @@ const DOWNLOAD_TIMEOUT_MS = 5 * 60_000
 const DOWNLOAD_MAX_FILES = 5
 /** 跟几次跳转。预签名地址本来不跳，跳了也只认几步，每一步都重新过一遍 downloadBlocked。 */
 const DOWNLOAD_MAX_REDIRECTS = 3
+
+/** 工具 id（`连接:工具`）换成注册名；本来就是注册名、或者认不出的原样返回。 */
+export function toolRefOf(ref: string): string {
+  return ref.includes(':') ? (resolveToolId(ref) ?? ref) : ref
+}
 
 /** 三个元工具（docs/tool-search.md §5）：真正的工具名在参数里，这把工具要另问一句。 */
 const META_TOOLS = new Set(['SW_SEARCH', 'SW_DESCRIBE', 'SW_RUN'])
@@ -453,7 +459,7 @@ export function apply(ctx: Context) {
           tool: {
             type: 'string',
             description:
-              '接下来要调用的那把连接器工具的名字，例如 mcp_gmail_default_send_email。' +
+              '接下来要调用的那把连接器工具的名字，例如 mcp_gmail_default_send_email；经 tool_call 调的就填它的 id（gmail_default:SEND_EMAIL）。' +
               '它是 SW_RUN 那种元工具时，再用 target 说明真正要调的工具。',
           },
           path: { type: 'string', description: '工作区里的文件路径，相对工作区根目录' },
@@ -476,7 +482,8 @@ export function apply(ctx: Context) {
       delegation: {},
     },
     async (args: Args, call) => {
-      const toolName = String(args.tool ?? '').trim()
+      // 工具搜索开着时模型手上是 id（`gmail_work:SEND_EMAIL`），不是注册名（docs/tool-search-bot.md §4）。
+      const toolName = toolRefOf(String(args.tool ?? '').trim())
       const path = String(args.path ?? '').trim()
       if (!toolName) fail('要说明这份文件是给哪把连接器工具用的（tool）。')
       if (!path) fail('要说明传哪份文件（path）。')

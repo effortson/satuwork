@@ -248,6 +248,19 @@ export async function runToolSearch({ root, gwRoot, test, req, start, waitHttp, 
       assert(!search.description.includes('GITHUB_OP_100'), '第 2 档不该嵌清单')
     })
 
+    await test('席位声明了 client.toolSearch：照全量回，不降级、不截断（docs/tool-search-bot.md §9）', async () => {
+      // 席位自己做工具搜索，再收到 SW_* 就是两层套娃。200 个一个不少、名字照旧去 toolkit 前缀。
+      const list = await rpc('github', 'tools/list', { client: { toolSearch: 1 } })
+      const names = list.json.result.tools.map((x) => x.name)
+      assert(names.length === 200, `该全量回 200 个，实际 ${names.length}`)
+      assert(!names.some((n) => n.startsWith('SW_')), `不该再降成元工具：${names.slice(0, 5)}`)
+      assert(names.includes('CREATE_PULL_REQUEST'), `toolkit 前缀该去掉：${names.slice(40, 45)}`)
+      assert(list.json.result.truncated === undefined, `全量回不该带 truncated：${list.text.slice(0, 200)}`)
+      // 老席位不带声明：行为不变，照旧三个元工具。
+      const old = await rpc('github', 'tools/list')
+      assert(old.json.result.tools.length === 3, `老席位该照旧降级，实际 ${old.json.result.tools.length}`)
+    })
+
     await test('第 1 档：清单塞得下就嵌进 SW_SEARCH 的说明里', async () => {
       const list = await rpc('jira', 'tools/list')
       const tools = list.json.result.tools
@@ -399,6 +412,14 @@ export async function runToolSearch({ root, gwRoot, test, req, start, waitHttp, 
       assert(
         JSON.stringify(kept.json.connector.recommendedTools) === JSON.stringify(['GITHUB_OP_001', 'GITHUB_OP_002']),
         `被挡下的那次改动了存量：${kept.text}`,
+      )
+
+      // 推荐集跟着席位目录下发：席位开着工具搜索时这几把照旧直出（docs/tool-search-bot.md §5）。
+      const cat = await req(base, 'GET', '/runtime/catalog', { token: seatTok })
+      const gh = cat.json.servers.find((x) => x.connector === 'github')
+      assert(
+        JSON.stringify(gh?.recommendedTools) === JSON.stringify(['GITHUB_OP_001', 'GITHUB_OP_002']),
+        `席位目录里没有推荐集：${JSON.stringify(gh?.recommendedTools)}`,
       )
 
       await req(base, 'PATCH', `/platform/connectors/${connectorOf.github}`, { token: owner, body: { recommendedTools: [] } })

@@ -66,6 +66,32 @@ function settleArgs(block: any): void {
  * 一个干净的 EOF，pi 只看 content 里有没有 toolCall，照样拿空参数去执行（`todo` 当成读清单）。
  * 收口时救不回来的照 settleArgs 的规矩把原文带下去，工具层明说参数坏了。
  */
+/**
+ * 流开了头（created / in_progress 之类的开场帧）、却**没有收口帧，也一块内容都没有**。
+ *
+ * 线上真发生过：工具表三百多把时，OpenAI 的 /v1/responses 回 200、回显完请求之后直接把流
+ * 关了，没有 response.completed / incomplete / failed，也没有 error 帧——管家那边
+ * `ok upstream=200 prompt=0 completion=0`。原来这儿照 settleDangling 那条路交出一个
+ * `done`：pi 收到一条空消息、errorMessage 没人置，runTurn 按 completed 收口，空消息又不入
+ * 日志，用户看到的就是「发了几句话，它一声不吭」。
+ *
+ * 所以：**空的、没收口的流是失败，不是回答。** 措辞要落在 TRANSIENT 里——它和「上游掐断」
+ * 是同一类事，值得重发一次；重发不成，错误照常写进对话，至少看得见。有内容但没收口的
+ * 照旧走 settleDangling：那是半截回答，比报错有用。
+ */
+const UNFINISHED_EMPTY = '模型流还没收口就结束了，一个字都没收到（上游可能掐断了连接）'
+
+/**
+ * 「收流结束」那行日志里带一句**怎么收口的、收到几块内容**。
+ *
+ * 这次排查最费时间的一步就是分不清「没收口」和「收口了但是空的」：两种情形字节数都一样、
+ * 回合都是 completed，只能靠管家那边 usage 是不是 0 去猜。写进日志之后一眼就能看出来。
+ */
+function closeNote(how: string, partial: any): string {
+  const blocks = Array.isArray(partial?.content) ? partial.content.length : 0
+  return `${how}，${blocks} 块内容`
+}
+
 function settleDangling(stream: AssistantMessageEventStream, partial: any): void {
   for (let i = 0; i < partial.content.length; i++) {
     const block = partial.content[i]
@@ -622,7 +648,7 @@ async function consumeOpenAI(
   stream: AssistantMessageEventStream,
   model: any,
   kick: (bytes?: number) => void = () => {},
-) {
+): Promise<string> {
   let partial: any = emptyAssistant(model)
   let started = false
   let textIndex = -1
@@ -666,7 +692,7 @@ async function consumeOpenAI(
     }
     if (chunk.error) {
       fail(stream, model, chunk.error.message || JSON.stringify(chunk.error))
-      return
+      return closeNote('错误帧', partial)
     }
     /**
      * 用量帧可能**排在收口之后**。
@@ -742,14 +768,19 @@ async function consumeOpenAI(
   }
   if (finished) {
     stream.push({ type: 'done', reason: finished.reason, message: finished.message })
-    return
+    return closeNote(`finish_reason→${finished.reason}`, partial)
   }
   if (!started) {
     fail(stream, model, 'empty stream')
-    return
+    return closeNote('空流', partial)
+  }
+  if (!partial.content.length) {
+    fail(stream, model, UNFINISHED_EMPTY)
+    return closeNote('无收口帧且无内容', partial)
   }
   settleDangling(stream, partial)
   stream.push({ type: 'done', reason: 'stop', message: partial })
+  return closeNote('无收口帧', partial)
 }
 
 /** Responses 的 usage → pi 的四项。口径同 chat：`input_tokens` 含缓存命中，要减掉。 */
@@ -781,7 +812,7 @@ async function consumeResponses(
   stream: AssistantMessageEventStream,
   model: any,
   kick: (bytes?: number) => void = () => {},
-) {
+): Promise<string> {
   let partial: any = emptyAssistant(model)
   let started = false
   const slots = new Map<number, number>()
@@ -823,6 +854,8 @@ async function consumeResponses(
   }
   // 同 consumeOpenAI：收口了先不推 done，等流真的读完，免得收口之后的错误帧被吞掉。
   let finished: { reason: string } | null = null
+  /** 收口帧长什么样，只为日志。 */
+  let closedBy = ''
   for await (const ev of readSse(res, kick)) {
     if (!ev.data || ev.data === '[DONE]') continue
     let chunk: any
@@ -834,14 +867,17 @@ async function consumeResponses(
     const type = chunk.type || ev.event
     if (type === 'error' || (chunk.error && !chunk.response)) {
       fail(stream, model, chunk.error?.message || chunk.message || JSON.stringify(chunk.error ?? chunk))
-      return
+      return closeNote('错误帧', partial)
     }
     if (type === 'response.failed') {
       fail(stream, model, chunk.response?.error?.message || 'response failed')
-      return
+      return closeNote('response.failed', partial)
     }
     if (type === 'response.completed' || type === 'response.incomplete') {
       if (chunk.response?.usage) partial.usage = responsesUsage(chunk.response.usage)
+      closedBy = `${type}${chunk.response?.status ? `:${chunk.response.status}` : ''}` +
+        `${chunk.response?.incomplete_details?.reason ? `:${chunk.response.incomplete_details.reason}` : ''}` +
+        `${chunk.response?.usage ? '' : ':无usage'}`
       if (finished) continue
       for (let i = 0; i < partial.content.length; i++) {
         const block = partial.content[i]
@@ -902,14 +938,19 @@ async function consumeResponses(
   }
   if (finished) {
     stream.push({ type: 'done', reason: finished.reason, message: partial })
-    return
+    return closeNote(closedBy || finished.reason, partial)
   }
   if (!started) {
     fail(stream, model, 'empty stream')
-    return
+    return closeNote('空流', partial)
+  }
+  if (!partial.content.length) {
+    fail(stream, model, UNFINISHED_EMPTY)
+    return closeNote('无收口帧且无内容', partial)
   }
   settleDangling(stream, partial)
   stream.push({ type: 'done', reason: 'stop', message: partial })
+  return closeNote('无收口帧', partial)
 }
 
 /**
@@ -933,7 +974,7 @@ async function consumeAnthropic(
   stream: AssistantMessageEventStream,
   model: any,
   kick: (bytes?: number) => void = () => {},
-) {
+): Promise<string> {
   let partial: any = emptyAssistant(model)
   let started = false
   const start = () => {
@@ -1042,18 +1083,24 @@ async function consumeAnthropic(
     if (type === 'message_stop') {
       const reason = partial.stopReason === 'toolUse' ? 'toolUse' : partial.stopReason === 'length' ? 'length' : 'stop'
       stream.push({ type: 'done', reason, message: partial })
-      return
+      return closeNote(`message_stop→${reason}`, partial)
     }
     if (type === 'error' || chunk.error) {
       fail(stream, model, chunk.error?.message || chunk.message || 'anthropic error')
-      return
+      return closeNote('错误帧', partial)
     }
   }
-  if (!started) fail(stream, model, 'empty stream')
-  else {
-    settleDangling(stream, partial)
-    stream.push({ type: 'done', reason: 'stop', message: partial })
+  if (!started) {
+    fail(stream, model, 'empty stream')
+    return closeNote('空流', partial)
   }
+  if (!partial.content.length) {
+    fail(stream, model, UNFINISHED_EMPTY)
+    return closeNote('无收口帧且无内容', partial)
+  }
+  settleDangling(stream, partial)
+  stream.push({ type: 'done', reason: 'stop', message: partial })
+  return closeNote('无收口帧', partial)
 }
 
 /**
@@ -1091,7 +1138,7 @@ const LLM_RETRY_MS = Math.max(0, Number(process.env.SATUWORK_LLM_RETRY_MS ?? 1_0
 const RETRY_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 529])
 /** 流里的错误帧没有状态码，按措辞认。Gateway 打上游失败、管家中继断开、供应商过载，都在这里。 */
 const TRANSIENT =
-  /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|UND_ERR|socket hang up|other side closed|terminated|connection error|network error|overloaded|rate.?limit|too many requests|bad gateway|service unavailable|gateway timeout|upstream unreachable|temporarily unavailable/i
+  /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|UND_ERR|socket hang up|other side closed|terminated|connection error|network error|overloaded|rate.?limit|too many requests|bad gateway|service unavailable|gateway timeout|upstream unreachable|temporarily unavailable|还没收口就结束了/i
 
 export async function streamViaGateway(model: any, context: any, options?: GatewayStreamOptions) {
   const stream = new AssistantMessageEventStream()
@@ -1190,10 +1237,13 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
       fail(sink, model, typeof msg === 'string' ? msg : JSON.stringify(msg))
       return res.status
     }
-    if (path === '/v1/messages') await consumeAnthropic(res, sink, model, kick)
-    else if (path === '/v1/responses') await consumeResponses(res, sink, model, kick)
-    else await consumeOpenAI(res, sink, model, kick)
-    console.log(`[INFO] llm: ${model?.provider}/${model?.id} 收流结束（${bytes} 字节，${Date.now() - at}ms）`)
+    const close =
+      path === '/v1/messages'
+        ? await consumeAnthropic(res, sink, model, kick)
+        : path === '/v1/responses'
+          ? await consumeResponses(res, sink, model, kick)
+          : await consumeOpenAI(res, sink, model, kick)
+    console.log(`[INFO] llm: ${model?.provider}/${model?.id} 收流结束（${bytes} 字节，${Date.now() - at}ms，${close}）`)
     return 0
   }
   /**
@@ -1203,13 +1253,27 @@ export async function streamViaGateway(model: any, context: any, options?: Gatew
   const attempt = async (): Promise<{ held: any; status: number }> => {
     let held: any = null
     let open = false
+    /**
+     * `start` 也先扣着。它只说明「响应头到了」，不是内容：UNFINISHED_EMPTY 那种流就是
+     * 开场帧之后直接断掉，要是 start 一到就算放行，那条错误就只能原样交出去、重发不了。
+     * 见到第一条正经事件再把扣着的 start 一并推出去；重发时上一次的 start 直接丢掉。
+     */
+    let pendingStart: any = null
     const sink = {
       push(ev: any) {
         if (!open && ev?.type === 'error') {
           held = ev
           return
         }
+        if (!open && ev?.type === 'start') {
+          pendingStart = ev
+          return
+        }
         open = true
+        if (pendingStart) {
+          stream.push(pendingStart)
+          pendingStart = null
+        }
         stream.push(ev)
       },
     } as unknown as AssistantMessageEventStream

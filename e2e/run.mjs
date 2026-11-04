@@ -95,6 +95,7 @@ import { runMigrate } from './migrate.mjs'
 import { runGlobalCatalog } from './global-catalog.mjs'
 import { runConnectors } from './connectors.mjs'
 import { runToolSearch } from './tool-search.mjs'
+import { runToolSearchBot } from './tool-search-bot.mjs'
 import { runSkills } from './skills.mjs'
 import { runSkillsBot } from './skills-bot.mjs'
 import { runMemoryBot } from './memory-bot.mjs'
@@ -271,6 +272,7 @@ async function main() {
     await suite('turn-recall', () => runTurnRecall({ root, test, assert, log }))
     await suite('turn-loop', () => runTurnLoop({ root, test, assert, log }))
     await suite('mentions', () => runMentions({ root, test, assert, log }))
+    await suite('tool-search-bot', () => runToolSearchBot({ root, test, assert, log }))
     await suite('routine-model', () => runRoutineModel({ root, test, assert, log }))
     await suite('model-choice', () => runModelChoice({ root, test, assert, log }))
     await suite('routine-tools', () => runRoutineTools({ root, test, assert, log }))

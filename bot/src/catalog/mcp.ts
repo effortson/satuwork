@@ -107,8 +107,14 @@ export class McpHttpClient {
     }
   }
 
-  async listTools(): Promise<JsonRpcTool[]> {
-    const result = (await this.rpc('tools/list')) as { tools?: JsonRpcTool[] } | undefined
+  /**
+   * `toolSearch`：席位自己会做工具搜索（docs/tool-search-bot.md §9）。带上之后 Gateway 照全量回，
+   * 不降成 `SW_*`、也不截断；不认这个参数的服务器照旧回它的清单。
+   */
+  async listTools(opts: { toolSearch?: boolean } = {}): Promise<JsonRpcTool[]> {
+    const result = (await this.rpc('tools/list', opts.toolSearch ? { client: { toolSearch: 1 } } : undefined)) as
+      | { tools?: JsonRpcTool[] }
+      | undefined
     return Array.isArray(result?.tools) ? result!.tools! : []
   }
 
@@ -199,7 +205,7 @@ function shortServer(full: string): string {
 }
 
 /** FNV-1a，取 4 位十六进制。**要的是确定性**：同样的输入每次同样的名字，重启也一样。 */
-function hashOf(s: string): string {
+export function hashOf(s: string): string {
   let h = 0x811c9dc5
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i)

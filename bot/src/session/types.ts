@@ -327,6 +327,14 @@ export interface SessionEventMap {
      * 不进界面——那是给模型的。缺这个字段（老日志、没捞到）就是没有。
      */
     recall?: { id: string; kind: string; text: string }[]
+    /**
+     * 工具搜索开着时，这一轮点名的连接能直接调的那几把（docs/tool-search-bot.md §8）：
+     * `[本轮指定连接器：…]` 那一段。工具表不动，改在这条消息末尾补一段。
+     *
+     * 存**当时那段话**，理由同 `recall`：按目录现算的话，连接一增一减，老消息就跟着变，
+     * 前缀缓存从这里断开。不进界面。
+     */
+    mentionTools?: string
   }
   'assistant/chunk': { turn: number; step: number; chunk: StreamChunk }
   'assistant/message': { turn: number; step: number; message: Message; usage: Usage }
@@ -637,7 +645,19 @@ export interface SessionEventMap {
     at: number
   }
 
-  'tool/call': { turn: number; step: number; callId: string; name: string; arguments: string }
+  'tool/call': {
+    turn: number
+    step: number
+    callId: string
+    /** 真正跑的那把工具。经 `tool_call` 调的，这里是剥了壳的注册名（docs/tool-search-bot.md §7）。 */
+    name: string
+    arguments: string
+    /**
+     * 模型实际发出的那一次调用：经 `tool_call` 这类桥接工具调时才有。重建历史要照它还原
+     * （模型的工具表里没有真名那把），界面和审计看上面的真名。
+     */
+    via?: { name: string; arguments: string }
+  }
   /**
    * 一次工具调用之后**才拍完**的那张页面截图（ToolResult.pendingShot），按 callId 认回
    * 那次调用。

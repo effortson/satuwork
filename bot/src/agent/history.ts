@@ -112,8 +112,10 @@ export async function toAgentMessages(
     const calls = step.calls.filter((c) => String(c.name || '').trim())
     if (!calls.length) continue
     assistantSeq.set(key, step.seq)
-    for (const c of calls) toolNames.set(c.callId, c.name)
-    synthesized.set(step.seq, { key, time: step.time, calls })
+    // 经 `tool_call` 调的，补出来的要是模型当时发的那一次（via），不是剥了壳的真名：模型的工具表里没有那把。
+    const asSent = calls.map((c) => (c.via ? { ...c, name: c.via.name, arguments: c.via.arguments } : c))
+    for (const c of asSent) toolNames.set(c.callId, c.name)
+    synthesized.set(step.seq, { key, time: step.time, calls: asSent })
   }
 
   /**
@@ -206,6 +208,7 @@ export async function toAgentMessages(
               e.time,
             ),
             keepRecall(e.data.recall),
+            e.data.mentionTools,
           ),
           timestamp: e.time,
         } as AgentMessage,
@@ -550,11 +553,13 @@ function recallKeeper(
  * **开轮那一份和重建历史那一份必须走这同一个函数**：两边拼出来差一个换行，下一轮
  * 前缀缓存就从这条消息断开。没捞到就原样返回。
  */
-export function withRecall(content: any, recall: { kind: string; text: string }[] | undefined): any {
+export function withRecall(content: any, recall: { kind: string; text: string }[] | undefined, mentionTools?: string): any {
   const block = recallBlockOf(recall ?? [])
-  if (!block) return content
-  if (Array.isArray(content)) return [...content, { type: 'text', text: block }]
-  return `${content}\n\n${block}`
+  // 点名那一段（docs/tool-search-bot.md §8）排在补捞后面。同样跟着消息落盘、原样拼回。
+  const tail = [block, mentionTools ?? ''].filter(Boolean).join('\n\n')
+  if (!tail) return content
+  if (Array.isArray(content)) return [...content, { type: 'text', text: tail }]
+  return `${content}\n\n${tail}`
 }
 
 /**

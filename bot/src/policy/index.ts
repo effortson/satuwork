@@ -3,6 +3,7 @@ import { browserOf, desktopOf, guardsOf, memoryOf, type BotRecord } from '../reg
 import { agentsOf, type ToolCall, type ToolResult } from '../tools/index.ts'
 import { ApprovalGate, type Verdict } from './approvals.ts'
 import { formOf, unwrapCall } from './forms.ts'
+import { resolveToolId } from '../catalog/tool-index.ts'
 import { type ActionContext, batchBrowserAsk, blockedHost, hostOf, browserAsk, siteAllowed, siteOf } from './browser.ts'
 import { memoryLayersOf } from '../agent/skills-memory.ts'
 import { scanPii } from './pii.ts'
@@ -492,6 +493,8 @@ export class PolicyService extends Service {
       try {
         const parsed = JSON.parse(call.arguments || '{}') as { tool?: unknown }
         target = typeof parsed?.tool === 'string' ? parsed.tool.trim() : ''
+        // 工具搜索开着时这里填的是 id（docs/tool-search-bot.md §4），按注册名判。
+        if (target.includes(':')) target = resolveToolId(target) ?? target
       } catch {
         target = ''
       }
