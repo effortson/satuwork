@@ -5,6 +5,8 @@
          Tauri 的 RustWebChromeClient 转成这两项运行时权限。只在人点了麦克风那一刻才弹框。 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Voice messages are optional; keep other features available on devices without a microphone. -->
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
         android:icon="@mipmap/ic_launcher"
