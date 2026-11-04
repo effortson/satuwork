@@ -3,6 +3,16 @@ import { gatewayToken, gatewayUrl, pinnedBotId } from '../env.ts'
 import { browserOf, desktopOf, guardsOf, type BotRecord } from '../registry/index.ts'
 import { mcpToolName, mcpToolRisk, McpHttpClient, type JsonRpcTool } from './mcp.ts'
 import { assignableOf, assignableFoldersOf, type RemoteAssignable, type RemoteAssignableFolder } from './assignable.ts'
+import {
+  buildToolIndex,
+  listingBudget,
+  planTools,
+  publishToolIndex,
+  toolSearchConfig,
+  type IndexServer,
+  type ToolIndex,
+  type ToolPlan,
+} from './tool-index.ts'
 export type { RemoteAssignable } from './assignable.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -166,6 +176,8 @@ interface RemoteServer {
   mentionOnly?: boolean
   /** 有值表示这是账号连接器合成的服务器；Web 的 @ 选单也只展示这一类。 */
   connector?: string
+  /** 上架记录里的推荐集：工具搜索开着时这几把照旧直出（docs/tool-search-bot.md §5）。老 Gateway 不发。 */
+  recommendedTools?: string[]
 }
 
 export interface CachedSkill {
@@ -305,6 +317,7 @@ interface CachedServer {
   timeoutMs?: number
   mentionOnly?: boolean
   connector?: string
+  recommendedTools?: string[]
   createdAt: number
   updatedAt: number
 }
@@ -377,6 +390,13 @@ export class CatalogService extends Service {
   /** 「仅 @ 时可用」的服务器 id。连上了，但平时不进工具表。 */
   private mentionOnly = new Set<string>()
   private clients = new Map<string, McpHttpClient>()
+  /**
+   * 工具搜索那张表（docs/tool-search-bot.md §4）。每次 connectMcp 换一份，**之间不变**——
+   * 工具表和清单逐字节不变就靠它（§13 第 1 条）。
+   */
+  private index: ToolIndex = buildToolIndex([])
+  /** 算过的档位。键是「哪几台服务器 + 清单预算」，同步一次清一次。 */
+  private plans = new Map<string, ToolPlan>()
 
   constructor(ctx: Context) {
     super(ctx, 'catalog')
@@ -414,6 +434,29 @@ export class CatalogService extends Service {
    */
   serverOf(toolName: string): string | undefined {
     return this.toolServer.get(toolName)
+  }
+
+  /** 工具搜索那张表。只读：要换只有 connectMcp 换。 */
+  get toolIndex(): ToolIndex {
+    return this.index
+  }
+
+  /**
+   * 这几台服务器上的工具该怎么出（docs/tool-search-bot.md §3）。
+   *
+   * **记住算过的那一份**，到下次目录同步为止：同样的输入回同一个对象，清单一个字节都不会变。
+   * `window` 是这一轮模型的上下文窗口，进的是清单预算（窗口 × 5%）。
+   */
+  toolPlan(serverIds: string[], window?: number): ToolPlan {
+    const config = toolSearchConfig()
+    const ids = [...new Set(serverIds)].sort()
+    const key = `${config.mode}|${config.directMax}|${listingBudget(config, window)}|${ids.join(',')}`
+    let plan = this.plans.get(key)
+    if (!plan) {
+      plan = planTools(this.index, { serverIds: ids, config, window })
+      this.plans.set(key, plan)
+    }
+    return plan
   }
 
   /**
@@ -480,6 +523,27 @@ export class CatalogService extends Service {
         ...(s.connector ? { connector: s.connector } : {}),
         ...(s.error ? { error: s.error } : {}),
       })),
+      // 当前档位和各组工具数（docs/tool-search-bot.md §12）。按钉住那颗 Bot 的授权名单算。
+      toolSearch: this.pinnedPlanSummary(),
+    }
+  }
+
+  /** 钉住那颗 Bot 能用的服务器。没钉、或者名单没下发时退回全部连上的。 */
+  private pinnedServerIds(): string[] {
+    const id = pinnedBotId()
+    const mcps = id ? this.ctx.roster.get(id)?.mcps : undefined
+    return mcps ?? this.servers.filter((s) => s.connected).map((s) => s.id)
+  }
+
+  private pinnedPlanSummary() {
+    const plan = this.toolPlan(this.pinnedServerIds())
+    return {
+      mode: toolSearchConfig().mode,
+      tier: plan.tier,
+      deferred: plan.deferred.length,
+      direct: plan.direct.size,
+      listingTokens: plan.listingTokens,
+      groups: plan.groups.map((g) => ({ label: g.label, connections: g.conns.length, tools: g.tools })),
     }
   }
 
@@ -862,6 +926,9 @@ export class CatalogService extends Service {
         ...(Number.isFinite(Number(s.timeoutMs)) && Number(s.timeoutMs) > 0 ? { timeoutMs: Math.trunc(Number(s.timeoutMs)) } : {}),
         ...(s.mentionOnly === true ? { mentionOnly: true } : {}),
         ...(typeof s.connector === 'string' && s.connector ? { connector: s.connector } : {}),
+        ...(Array.isArray(s.recommendedTools) && s.recommendedTools.length
+          ? { recommendedTools: s.recommendedTools.map(String).filter(Boolean) }
+          : {}),
         createdAt: prev?.createdAt ?? now,
         updatedAt: now,
       })
@@ -986,7 +1053,8 @@ export class CatalogService extends Service {
       const client = new McpHttpClient(s.endpoint, token, s.timeoutMs)
       try {
         await client.initialize()
-        ready.push({ s, client, listed: await client.listTools() })
+        // 工具搜索开着就跟 Gateway 说一声：照全量回，别再降成 SW_*（docs/tool-search-bot.md §9）。
+        ready.push({ s, client, listed: await client.listTools({ toolSearch: toolSearchConfig().mode !== 'off' }) })
       } catch (e) {
         failed = true
         this.ctx.logger?.warn?.(`catalog: MCP ${s.name} 失败 ${(e as Error).message}`)
@@ -1004,8 +1072,10 @@ export class CatalogService extends Service {
     }
     // ── 从这里往下不再 await：旧工具摘掉、新工具装上，中间没有空窗。──
     this.dropMcpTools()
+    const indexed: IndexServer[] = []
     for (const { s, client, listed } of ready) {
       const names: string[] = []
+      const tools: IndexServer['tools'] = []
       for (const tool of listed) {
         const name = mcpToolName(s.name, tool.name)
         if (this.ctx.tools.has(name)) {
@@ -1016,7 +1086,21 @@ export class CatalogService extends Service {
         }
         this.registerMcpTool(s.id, name, tool, client)
         names.push(name)
+        tools.push({
+          name,
+          remote: tool.name,
+          description: tool.description || tool.name,
+          parameters: tool.inputSchema && typeof tool.inputSchema === 'object' ? tool.inputSchema : undefined,
+        })
       }
+      indexed.push({
+        id: s.id,
+        name: s.name,
+        ...(s.connector ? { connector: s.connector } : {}),
+        ...(s.mentionOnly ? { mentionOnly: true } : {}),
+        ...(s.recommendedTools?.length ? { recommendedTools: s.recommendedTools } : {}),
+        tools,
+      })
       this.clients.set(s.id, client)
       if (s.mentionOnly) this.mentionOnly.add(s.id)
       statuses.push({
@@ -1027,6 +1111,32 @@ export class CatalogService extends Service {
     }
     this.servers = statuses
     this.mcpRetryAt = failed ? Date.now() + CatalogService.MCP_RETRY_MS : 0
+    this.index = buildToolIndex(indexed)
+    this.plans.clear()
+    publishToolIndex(this.index)
+    this.logToolPlan()
+  }
+
+  /**
+   * 目录同步之后一行日志（docs/tool-search-bot.md §12）。这次排查就是靠 `toolCount: 364`
+   * 那一行才看出来的；这一行要让下一次不用翻请求头就看得出工具表有多大。
+   */
+  private logToolPlan() {
+    try {
+      const plan = this.toolPlan(this.pinnedServerIds())
+      const conns = new Set(plan.deferred.map((e) => e.conn)).size
+      const mode = toolSearchConfig().mode
+      if (plan.tier === 0) {
+        this.ctx.logger?.info?.(`工具搜索：第 0 档（${mode}），连接器 / MCP 工具 ${plan.direct.size} 把全部直出`)
+        return
+      }
+      this.ctx.logger?.info?.(
+        `工具搜索：第 ${plan.tier} 档，延迟 ${plan.deferred.length} 把（${conns} 个连接、${plan.groups.length} 组），` +
+          `直出 ${plan.direct.size} 把，清单约 ${plan.listingTokens} token`,
+      )
+    } catch (e) {
+      this.ctx.logger?.warn?.(`工具搜索：算档失败 ${(e as Error).message}`)
+    }
   }
 
   private registerMcpTool(serverId: string, name: string, tool: JsonRpcTool, client: McpHttpClient) {

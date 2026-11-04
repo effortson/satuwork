@@ -58,6 +58,18 @@ export function shortToolName(toolkit: string, slug: string): string {
   return slug.toUpperCase().startsWith(prefix) ? slug.slice(prefix.length) : slug
 }
 
+/** 直出的一把工具。全量回（席位自己做工具搜索）和老路的直出共用这一份形状。 */
+function directToolDef(toolkit: string) {
+  return (tl: ToolDef) => ({
+    name: shortToolName(toolkit, tl.slug),
+    description: tl.description || tl.name,
+    // 文件参数的说明里要写明「先上传」、多收件人要写明用 extra_recipients（见 annotateToolParams）。形状原样。
+    inputSchema: annotateToolParams(
+      tl.inputSchema && Object.keys(tl.inputSchema).length ? tl.inputSchema : { type: 'object', properties: {} },
+    ),
+  })
+}
+
 /**
  * 席位传回来的名字 → 真实 slug。
  *
@@ -267,6 +279,18 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
       }
 
       /**
+       * 席位自己做工具搜索（docs/tool-search-bot.md §9）：**照全量回**，不降级、不截断。
+       *
+       * 它会把这些工具延迟、合并、建索引，再收到 `SW_*` 就是两层套娃——模型得先
+       * `tool_search` 搜到 `SW_SEARCH`，再搜一遍。老席位不带这个声明，走下面那条老路。
+       */
+      const listParams = (body.params ?? {}) as { client?: { toolSearch?: unknown } }
+      if (listParams.client && typeof listParams.client === 'object' && Number(listParams.client.toolSearch) >= 1) {
+        rpcOk(res, id, { tools: picked.map(directToolDef(g.toolkit)) })
+        return
+      }
+
+      /**
        * 装不下就**降级**，不截断（docs/tool-search.md §4）。
        *
        * 降级和截断的区别是全部：截断之后那 436 个工具**够不着**，降级之后一个都不少，
@@ -289,14 +313,7 @@ export function attachConnectorMcp(router: Router, ctx: RouteCtx) {
         )
       }
       rpcOk(res, id, {
-        tools: kept.map((tl) => ({
-          name: shortToolName(g.toolkit, tl.slug),
-          description: tl.description || tl.name,
-          // 文件参数的说明里要写明「先上传」、多收件人要写明用 extra_recipients（见 annotateToolParams）。形状原样。
-          inputSchema: annotateToolParams(
-            tl.inputSchema && Object.keys(tl.inputSchema).length ? tl.inputSchema : { type: 'object', properties: {} },
-          ),
-        })),
+        tools: kept.map(directToolDef(g.toolkit)),
         // 席位不认这个字段，但它得出现在响应里：截断必须说出来。
         ...(dropped > 0 ? { truncated: dropped } : {}),
       })

@@ -544,5 +544,7 @@ export function runtimeConnectorServer(
     mentionOnly: conn.mentionOnly,
     /** 席位不需要它，但界面和排错要：这条是连接器合成出来的，不是公司配的 MCP。 */
     connector: def.toolkit,
+    /** 推荐集：席位开着工具搜索时，这几把照旧直出（docs/tool-search-bot.md §5）。老席位不认这一格。 */
+    recommendedTools: def.recommendedTools,
   }
 }

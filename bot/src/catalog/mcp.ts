@@ -107,8 +107,14 @@ export class McpHttpClient {
     }
   }
 
-  async listTools(): Promise<JsonRpcTool[]> {
-    const result = (await this.rpc('tools/list')) as { tools?: JsonRpcTool[] } | undefined
+  /**
+   * `toolSearch`：席位自己会做工具搜索（docs/tool-search-bot.md §9）。带上之后 Gateway 照全量回，
+   * 不降成 `SW_*`、也不截断；不认这个参数的服务器照旧回它的清单。
+   */
+  async listTools(opts: { toolSearch?: boolean } = {}): Promise<JsonRpcTool[]> {
+    const result = (await this.rpc('tools/list', opts.toolSearch ? { client: { toolSearch: 1 } } : undefined)) as
+      | { tools?: JsonRpcTool[] }
+      | undefined
     return Array.isArray(result?.tools) ? result!.tools! : []
   }
 
