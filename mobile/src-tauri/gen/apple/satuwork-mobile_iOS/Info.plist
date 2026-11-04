@@ -23,6 +23,9 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<!-- 对话框的语音输入（gateway/ui/chat-voice.js）：页面里 getUserMedia 录音，第一次点麦克风时系统弹框用这句话。 -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Satuwork 用麦克风把你说的话转成文字，填进对话输入框。Satuwork uses the microphone to turn your speech into text in the chat box.</string>
 	<!-- 出口合规：只用系统自带的 HTTPS（豁免类加密），不自带加密算法。声明了 TestFlight 上传后就不用每次答一遍。 -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>

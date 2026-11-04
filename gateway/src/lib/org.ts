@@ -10,6 +10,7 @@ import { type Account, type AccountStatus, type CatalogItem, type Company, type 
 import { WEB_BACKENDS, WEB_DOCUMENT } from '../db/types.ts'
 import { VENDORS } from '../connectors/index.ts'
 import { isEmbeddingSecret } from './knowledge-embedding.ts'
+import { isSpeechSecret } from './speech.ts'
 
 /** 按 id 取公司，取不到就 404。三十几条路由开头都是这两行。 */
 export async function companyOr404(db: Db, id: string): Promise<Company> {
@@ -214,8 +215,9 @@ export function publicPlatformCred(c: { provider: string; createdAt: number; upd
 const NON_MODEL_SECRETS: ReadonlySet<string> = new Set<string>([...VENDORS, ...WEB_BACKENDS, WEB_DOCUMENT])
 
 export function isModelProvider(provider: string): boolean {
-  // 知识库向量模型的密钥（`kb-embedding:<预设>`）同理，它的屏在「工具配置 → 知识库」。
-  return !NON_MODEL_SECRETS.has(provider) && !isEmbeddingSecret(provider)
+  // 知识库向量模型的密钥（`kb-embedding:<预设>`）同理，它的屏在「工具配置 → 知识库」；
+  // 语音识别的（`speech:<预设>`）在「工具配置 → 语音」。
+  return !NON_MODEL_SECRETS.has(provider) && !isEmbeddingSecret(provider) && !isSpeechSecret(provider)
 }
 
 export function modelProviderCreds<T extends { provider: string }>(creds: T[]): T[] {

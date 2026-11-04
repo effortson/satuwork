@@ -404,6 +404,10 @@ async function loadKnowledgeEmbedding() {
   state.kbEmbed = await api('GET', '/platform/knowledge/embedding')
 }
 
+async function loadSpeechSettings() {
+  state.speechCfg = await api('GET', '/platform/speech')
+}
+
 async function loadWebTools() {
   if (!isOwner()) return
   state.webTools = await api('GET', '/platform/tools/web')
@@ -1181,7 +1185,7 @@ async function loadPage() {
     } else if (state.path === '/stats') {
       await reloadStatsPage()
     } else if (state.path === '/tools') {
-      await Promise.all([loadWebTools(), loadSettings().catch(() => {}), loadKnowledgeEmbedding().catch(() => { state.kbEmbed = null })])
+      await Promise.all([loadWebTools(), loadSettings().catch(() => {}), loadKnowledgeEmbedding().catch(() => { state.kbEmbed = null }), loadSpeechSettings().catch(() => { state.speechCfg = null })])
     } else if (state.path === '/connectors') {
       if (isOwner()) {
         // 上架清单、供应商状态、单价一起要：没有密钥时那颗「上架」按钮是灰的。

@@ -1699,12 +1699,14 @@ var SatuCore = (() => {
       const headers = { accept: "application/json" };
       const tok = tokens.get();
       if (tok) headers.authorization = "Bearer " + tok;
-      if (body !== void 0) headers["content-type"] = "application/json";
+      const raw = typeof Blob !== "undefined" && body instanceof Blob;
+      if (raw) headers["content-type"] = body.type || "application/octet-stream";
+      else if (body !== void 0) headers["content-type"] = "application/json";
       const local = localRoute(path, method);
       const res = await swFetch(path, {
         method,
         headers,
-        body: body !== void 0 ? JSON.stringify(body) : void 0
+        body: raw ? body : body !== void 0 ? JSON.stringify(body) : void 0
       });
       const text = await res.text();
       let json = null;

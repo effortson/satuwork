@@ -446,6 +446,43 @@ async function kbVectorAction(kind) {
   })
 }
 
+/** 平台「工具配置 → 语音」：带哪个字段改哪个，服务端回整份视图。 */
+async function saveSpeech(patch) {
+  await withBusy(async () => {
+    state.speechCfg = await api('PUT', '/platform/speech', patch)
+    delete state.tests['speech']
+    if (patch.provider !== undefined) state.speechPick = ''
+    flash('ok', t('已保存', 'Saved'))
+  })
+}
+
+async function saveSpeechKey(provider, secret) {
+  if (!secret) {
+    flash('err', t('密钥不能为空', 'The key cannot be empty'))
+    render()
+    return
+  }
+  await withBusy(async () => {
+    state.speechCfg = await api('PUT', '/platform/speech/key', { provider, secret })
+    delete state.tests['speech']
+    flash('ok', t('已保存密钥', 'Key saved'))
+  })
+}
+
+async function testSpeech() {
+  state.tests['speech'] = { status: 'busy' }
+  render()
+  try {
+    const data = await api('POST', '/platform/speech/test', {})
+    state.tests['speech'] = data.ok
+      ? { status: 'ok', text: t(`通了 ${data.elapsedMs}ms · ${data.model}`, `OK ${data.elapsedMs}ms · ${data.model}`) }
+      : { status: 'err', text: data.error || t('不通', 'Failed') }
+  } catch (err) {
+    state.tests['speech'] = { status: 'err', text: err.message }
+  }
+  render()
+}
+
 /** 平台「工具配置 → 知识库」：两个单价和相似度门槛，走 /platform/settings 的 knowledge 字段。 */
 async function saveKnowledgeSettings(patch) {
   const cur = state.settings?.knowledge || { pricing: { queryMils: 0, ingestMils: 0 }, scoreMin: 0.35 }
