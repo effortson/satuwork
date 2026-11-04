@@ -57,6 +57,7 @@ test('计费秒数：不足一秒按一秒', () => {
 test('配置：预设用代码里的地址，自定义要 HTTPS，没配就不可用', () => {
   const none = resolveSpeech(emptySpeech(), 'k', {})
   assert.match(none.error, /还没有配置/)
+  assert.equal(resolveSpeech({ ...emptySpeech(), region: 'intl', provider: 'openai' }, 'k', {}).model, 'gpt-transcribe', 'OpenAI 默认该是没弃用的那个')
   const zhipu = resolveSpeech({ ...emptySpeech(), region: 'cn', provider: 'zhipu' }, 'k', {})
   assert.equal(zhipu.error, '')
   assert.equal(zhipu.base, SPEECH_PRESETS.find((p) => p.id === 'zhipu')!.baseUrl)
@@ -71,15 +72,18 @@ test('配置：预设用代码里的地址，自定义要 HTTPS，没配就不�
 })
 
 test('设置解析：负价和乱填都收成 0', () => {
-  assert.equal(parseSpeech({ pricing: { minuteMils: -3 } }).pricing.minuteMils, 0)
-  assert.equal(parseSpeech({ pricing: { minuteMils: 'x' } }).pricing.minuteMils, 0)
-  assert.equal(parseSpeech({ pricing: { minuteMils: 6.4 } }).pricing.minuteMils, 6)
+  assert.equal(parseSpeech({ pricing: { minuteMicros: -3 } }).pricing.minuteMicros, 0)
+  assert.equal(parseSpeech({ pricing: { minuteMicros: 'x' } }).pricing.minuteMicros, 0)
+  assert.equal(parseSpeech({ pricing: { minuteMicros: 4500.4 } }).pricing.minuteMicros, 4500)
+  // 早先按厘存的老数据照常换算：6 厘 = 6000 微元。
+  assert.equal(parseSpeech({ pricing: { minuteMils: 6 } }).pricing.minuteMicros, 6000)
+  assert.equal(parseSpeech({ pricing: { minuteMicros: 4500, minuteMils: 6 } }).pricing.minuteMicros, 4500)
   assert.equal(parseSpeech({ region: 'mars', provider: 'Bad Id!' }).provider, '')
   assert.equal(parseSpeech({ region: 'mars' }).region, '')
 })
 
 test('报价：厘 / 分钟按秒折算，乘平台倍率', async () => {
-  const settings = { ...emptyPlatformSettings(), priceMultiplier: 1.5, speech: { ...emptySpeech(), pricing: { minuteMils: 6 } } as SpeechSettings }
+  const settings = { ...emptyPlatformSettings(), priceMultiplier: 1.5, speech: { ...emptySpeech(), pricing: { minuteMicros: 6000 } } as SpeechSettings }
   const meter = new Meter({ platformSettings: async () => settings } as never)
   const account = { id: 'a', companyId: 'c' } as never
   // 6 厘/分钟 = 6000 微元/分钟；30 秒 × 1.5 倍 = 4500 微元。
@@ -89,6 +93,9 @@ test('报价：厘 / 分钟按秒折算，乘平台倍率', async () => {
   assert.equal(q.multiplier, 1.5)
   const zero = await meter.quote({ kind: 'speech', account, status: 'failed', model: 'm', units: 0 })
   assert.equal(zero.amountMicros, 0)
+  // 不到一厘的价也收得准：$0.0045 / 分钟 × 60 秒 × 1.5 倍 = 6750 微元（按厘存会变成 7500）。
+  const fine = new Meter({ platformSettings: async () => ({ ...settings, speech: { ...emptySpeech(), pricing: { minuteMicros: 4500 } } }) } as never)
+  assert.equal((await fine.quote({ kind: 'speech', account, status: 'ok', model: 'gpt-transcribe', units: 60 })).amountMicros, 6750)
   // 重算用行上存的倍率和计量。
   const re = await meter.requote({ kind: 'speech', subject: 'speech:m', status: 'ok', quantity: { units: 60 }, multiplier: 2 } as never, undefined, settings)
   assert.equal(re?.amountMicros, 12_000)

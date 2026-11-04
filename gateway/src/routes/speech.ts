@@ -121,8 +121,8 @@ export function attachSpeech(router: Router, ctx: RouteCtx) {
     const body = bodyOf(req)
     if ('region' in body && !['cn', 'intl'].includes(String(body.region))) throw new HttpError(400, '区域只能是 cn 或 intl')
     if ('pricing' in body) {
-      const n = Number((body.pricing as Record<string, unknown> | null)?.minuteMils)
-      if (!Number.isFinite(n) || n < 0 || n > 1_000_000) throw new HttpError(400, '单价要是 0 到 1000000 之间的数（厘 / 分钟）')
+      const n = Number((body.pricing as Record<string, unknown> | null)?.minuteMicros)
+      if (!Number.isInteger(n) || n < 0 || n > 1_000_000_000) throw new HttpError(400, '单价要是 0 到 1000000000 之间的整数（微元 / 分钟）')
     }
     const settings = await db.platformSettings()
     const cur = parseSpeech(settings.speech)

@@ -451,7 +451,7 @@ function knowledgeToolsPanel() {
 // （带哪个字段改哪个，单价也在里面），密钥走 /platform/speech/key（不回显）。区域同知识库，只决定列哪几家。
 
 function speechView() {
-  return state.speechCfg || { speech: { region: '', provider: '', model: '', baseUrl: '', pricing: { minuteMils: 0 } }, presets: [], keys: {}, ready: false, problem: '' }
+  return state.speechCfg || { speech: { region: '', provider: '', model: '', baseUrl: '', pricing: { minuteMicros: 0 } }, presets: [], keys: {}, ready: false, problem: '' }
 }
 
 function speechPickedProvider() {
@@ -546,6 +546,13 @@ function speechTestMark() {
   return `<span style="font-size: 12px; color: ${color};">${esc(res.text)}</span>`
 }
 
+/** 微元 → 美元，至少三位小数、最多六位，末尾的 0 去掉（$0.0045 显示成 0.0045，$0.003 显示成 0.003）。 */
+function usdPerMinute(micros) {
+  const s = (micros / 1e6).toFixed(6).replace(/0+$/, '')
+  const [i, d = ''] = s.split('.')
+  return `${i}.${d.padEnd(3, '0')}`
+}
+
 function speechToolsPanel() {
   const v = speechView()
   const region = v.speech.region || ''
@@ -555,7 +562,7 @@ function speechToolsPanel() {
     : v.ready
       ? `<span class="tag tag-accent-2">${t('已开通', 'Enabled')}</span>`
       : `<span class="tag">${t('未开通', 'Off')}</span>`
-  const minuteMils = v.speech.pricing?.minuteMils || 0
+  const minuteMicros = v.speech.pricing?.minuteMicros || 0
   return `
     <div style="display: flex; flex-direction: column; gap: var(--space-5);">
       <div class="satu-panel" style="gap: var(--space-4);">
@@ -588,11 +595,11 @@ function speechToolsPanel() {
       <div class="satu-panel" style="gap: var(--space-3);">
         <div>
           <h2 style="font-size: 16px; margin: 0 0 4px;">${t('单价', 'Pricing')}</h2>
-          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('按音频时长计，按秒折算、不足一秒算一秒。时长由 Gateway 从音频本身算出，不信客户端。0 = 不收钱、不熔断。倍率沿用模型配置里的那一个。', 'Billed by audio length, prorated per second (rounded up). The Gateway measures the length from the audio itself. 0 = free and never cut off. The multiplier from model settings applies.')}</p>
+          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('填识别服务每分钟的成本价（按 token 计价的服务填官网给的「每分钟约多少」），倍率沿用模型配置里的那一个，加价不用算进来。按音频时长计，按秒折算、不足一秒算一秒；时长由 Gateway 从音频本身算出，不信客户端。0 = 不收钱、不熔断。', 'Enter the provider’s cost per minute (for token-priced services, use their published per-minute estimate); the multiplier from model settings is applied on top. Billed by audio length, prorated per second (rounded up); the Gateway measures the length from the audio itself. 0 = free and never cut off.')}</p>
         </div>
         <div class="satu-toggleRow">
           <div style="min-width: 0;"><div style="font-size: 13.5px; font-weight: 600;">${t('每分钟（美元）', 'Per minute (USD)')}</div></div>
-          <input class="input" style="width: 140px; flex: none;" type="number" min="0" step="0.001" value="${esc((minuteMils / 1000).toFixed(3))}" data-act="speech-price">
+          <input class="input" style="width: 140px; flex: none;" type="number" min="0" step="0.000001" value="${esc(usdPerMinute(minuteMicros))}" data-act="speech-price">
         </div>
       </div>
     </div>`

@@ -87,7 +87,7 @@ export type Billable =
       refId?: string | null
     }
   /**
-   * 语音输入（lib/speech.ts）：`units` 是音频秒数（由 WAV 字节数算，不信客户端），单价按「厘 / 分钟」
+   * 语音输入（lib/speech.ts）：`units` 是音频秒数（由 WAV 字节数算，不信客户端），单价按「微元 / 分钟」
    * 在「工具配置 → 语音」填，默认 0。`model` 只进 subject 留档，单价不分模型。
    */
   | {
@@ -499,7 +499,7 @@ function chargeable(s: PlatformSettings, subject: GateSubject): boolean {
   }
   if (subject.kind === 'connector') return connectorMicros(s.connectorPricing, subject.toolkit) > 0
   if (subject.kind === 'kb') return kbUnitMils(s, subject.kbOp) > 0
-  if (subject.kind === 'speech') return parseSpeech(s.speech).pricing.minuteMils > 0
+  if (subject.kind === 'speech') return parseSpeech(s.speech).pricing.minuteMicros > 0
   const web = s.webTools ?? emptyWebTools()
   // 任意一档要钱，这一次就可能要钱，闸就得判。
   return subject.backends.some((b) => (web.pricing?.[b]?.[subject.webKind] ?? 0) > 0)
@@ -511,14 +511,14 @@ function kbUnitMils(s: PlatformSettings, op: KbOp): number {
 }
 
 /**
- * 语音：厘 / 分钟 → 微元 / 秒，乘平台倍率（识别是采购来转售的，同网页工具和知识库）。
+ * 语音：微元 / 分钟按秒折算，乘平台倍率（识别是采购来转售的，同网页工具和知识库）。
  * `unitPrice.unit` 记的是每分钟多少微元，账本上一眼看得出单价口径。
  */
 function speechQuote(s: PlatformSettings, seconds: number, multiplier: number): Quote {
-  const minuteMils = parseSpeech(s.speech).pricing.minuteMils
+  const minuteMicros = parseSpeech(s.speech).pricing.minuteMicros
   return {
-    amountMicros: minuteMils && seconds > 0 ? Math.max(0, Math.round((minuteMils * 1000 * seconds * multiplier) / 60)) : 0,
-    unitPrice: { unit: Math.round(minuteMils * 1000) },
+    amountMicros: minuteMicros && seconds > 0 ? Math.max(0, Math.round((minuteMicros * seconds * multiplier) / 60)) : 0,
+    unitPrice: { unit: minuteMicros },
     multiplier,
     unpriced: false,
   }

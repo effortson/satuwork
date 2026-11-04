@@ -87,16 +87,16 @@ export async function runSpeech({ test, req, assert, log }) {
       assert(bad.status === 400, `明文公网地址该 400：${bad.status} ${bad.text}`)
       const wrongRegion = await req(base, 'PUT', '/platform/speech', { token: owner, body: { region: 'intl', provider: 'zhipu' } })
       assert(wrongRegion.status === 400, `国际区选智谱该 400：${wrongRegion.status}`)
-      const badPrice = await req(base, 'PUT', '/platform/speech', { token: owner, body: { pricing: { minuteMils: -1 } } })
+      const badPrice = await req(base, 'PUT', '/platform/speech', { token: owner, body: { pricing: { minuteMicros: -1 } } })
       assert(badPrice.status === 400, `负价该 400：${badPrice.status}`)
       const notOwner = await req(base, 'PUT', '/platform/speech', { token: admin, body: { region: 'intl' } })
       assert(notOwner.status === 403 || notOwner.status === 401, `公司管理员不该能改：${notOwner.status}`)
       const keyFirst = await req(base, 'PUT', '/platform/speech/key', { token: owner, body: { provider: 'custom', secret: 'x' } })
       assert(keyFirst.status === 400, `地址没存先填密钥该 400：${keyFirst.status}`)
 
-      // 6 厘 / 分钟：3 秒 = 0.3 厘 = 300 微元。
-      const saved = await req(base, 'PUT', '/platform/speech', { token: owner, body: { region: 'intl', provider: 'custom', baseUrl: asr.url, model: 'e2e-asr', pricing: { minuteMils: 6 } } })
-      assert(saved.status === 200 && saved.json.speech.provider === 'custom' && saved.json.speech.pricing.minuteMils === 6, `保存 ${saved.status} ${saved.text}`)
+      // $0.006 / 分钟（6000 微元）：3 秒 = 300 微元。
+      const saved = await req(base, 'PUT', '/platform/speech', { token: owner, body: { region: 'intl', provider: 'custom', baseUrl: asr.url, model: 'e2e-asr', pricing: { minuteMicros: 6000 } } })
+      assert(saved.status === 200 && saved.json.speech.provider === 'custom' && saved.json.speech.pricing.minuteMicros === 6000, `保存 ${saved.status} ${saved.text}`)
       assert(saved.json.ready === false, `还没密钥不该就绪：${saved.text}`)
       const key = await req(base, 'PUT', '/platform/speech/key', { token: owner, body: { provider: 'custom', secret: 'e2e-asr-secret' } })
       assert(key.status === 200 && key.json.keys.custom && key.json.ready === true, `密钥 ${key.status} ${key.text}`)
@@ -119,7 +119,7 @@ export async function runSpeech({ test, req, assert, log }) {
       const kb = await req(base, 'PUT', '/platform/settings', { token: owner, body: { knowledge: { pricing: { queryMils: 1, ingestMils: 1 }, scoreMin: 0.4 } } })
       assert(kb.status === 200, `settings ${kb.status} ${kb.text}`)
       const back = await req(base, 'GET', '/platform/speech', { token: owner })
-      assert(back.json.speech.provider === 'custom' && back.json.speech.pricing.minuteMils === 6 && back.json.ready === true, `语音配置被抹了：${back.text}`)
+      assert(back.json.speech.provider === 'custom' && back.json.speech.pricing.minuteMicros === 6000 && back.json.ready === true, `语音配置被抹了：${back.text}`)
     })
 
     await test('余额为零：402，不打上游，落一行 denied', async () => {

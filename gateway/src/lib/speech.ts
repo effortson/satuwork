@@ -33,7 +33,9 @@ export const SPEECH_MAX_SECONDS = 60
 export const SPEECH_PRESETS: readonly SpeechPreset[] = [
   { id: 'siliconflow', region: 'cn', label: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/SenseVoiceSmall', models: ['FunAudioLLM/SenseVoiceSmall', 'TeleAI/TeleSpeechASR'], maxSeconds: SPEECH_MAX_SECONDS },
   { id: 'zhipu', region: 'cn', label: '智谱', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-asr-2512', models: ['glm-asr-2512'], maxSeconds: 30 },
-  { id: 'openai', region: 'intl', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', models: ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'whisper-1'], maxSeconds: SPEECH_MAX_SECONDS },
+  // gpt-4o-mini-transcribe / gpt-4o-transcribe / whisper-1 已被 OpenAI 弃用（2026-08-26 公布，2027-02-26 停用），
+  // 默认换成接替它们的 gpt-transcribe（按分钟计价）；老的三个留在候选里，停用前还能选。
+  { id: 'openai', region: 'intl', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-transcribe', models: ['gpt-transcribe', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'whisper-1'], maxSeconds: SPEECH_MAX_SECONDS },
   { id: 'groq', region: 'intl', label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo', models: ['whisper-large-v3-turbo', 'whisper-large-v3'], maxSeconds: SPEECH_MAX_SECONDS },
   { id: 'siliconflow-intl', region: 'intl', label: 'SiliconFlow（国际站）', baseUrl: 'https://api.siliconflow.com/v1', model: 'FunAudioLLM/SenseVoiceSmall', models: ['FunAudioLLM/SenseVoiceSmall', 'TeleAI/TeleSpeechASR'], maxSeconds: SPEECH_MAX_SECONDS },
 ]

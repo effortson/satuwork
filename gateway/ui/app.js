@@ -3082,8 +3082,9 @@ document.getElementById('app').addEventListener('change', async (e) => {
     return
   }
   if (el.getAttribute?.('data-act') === 'speech-price') {
-    const n = Math.round(Number(el.value) * 1000)
-    await saveSpeech({ pricing: { minuteMils: Number.isFinite(n) && n >= 0 ? n : 0 } })
+    // 页面上填美元，存微元：$0.0045 这种价按厘存会被四舍五入。
+    const n = Math.round(Number(el.value) * 1e6)
+    await saveSpeech({ pricing: { minuteMicros: Number.isFinite(n) && n >= 0 ? n : 0 } })
     return
   }
   if (el.getAttribute?.('data-act') === 'kb-embed-model') {
