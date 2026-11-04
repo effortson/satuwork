@@ -12,6 +12,8 @@ const TOOL_TABS = [
   { key: 'web', label: '网页与搜索' },
   // 知识库：向量模型、向量库状态、单价、相似度门槛（docs/knowledge-base.md §3.2、§10）。
   { key: 'kb', label: '知识库' },
+  // 语音：手机端对话框的麦克风用哪个识别模型、每分钟收多少（gateway/src/lib/speech.ts）。
+  { key: 'speech', label: '语音' },
 ]
 
 const WEB_BACKEND_NAMES = {
@@ -206,6 +208,7 @@ function toolsPage() {
         <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">${tabs}</div>
         ${tab === 'web' ? webToolsPanel() : ''}
         ${tab === 'kb' ? knowledgeToolsPanel() : ''}
+        ${tab === 'speech' ? speechToolsPanel() : ''}
       </div>
     </div>`
 }
@@ -437,6 +440,159 @@ function knowledgeToolsPanel() {
             <div style="min-width: 0;"><div style="font-size: 13.5px; font-weight: 600;">${t('最低分', 'Minimum score')}</div></div>
             <input class="input" style="width: 140px; flex: none;" type="number" min="0" max="1" step="0.01" value="${esc(String(k.scoreMin ?? 0.35))}" data-act="kb-score">
           </div>
+        </div>
+      </div>
+    </div>`
+}
+
+// ── 语音 ────────────────────────────────────────────────────────────────
+//
+// 手机端对话框的麦克风：录音 → Gateway → 这里配的识别模型 → 文字填回输入框。配置走 /platform/speech
+// （带哪个字段改哪个，单价也在里面），密钥走 /platform/speech/key（不回显）。区域同知识库，只决定列哪几家。
+
+function speechView() {
+  return state.speechCfg || { speech: { region: '', provider: '', model: '', baseUrl: '', pricing: { minuteMils: 0 } }, presets: [], keys: {}, ready: false, problem: '' }
+}
+
+function speechPickedProvider() {
+  return state.speechPick || speechView().speech.provider || ''
+}
+
+function speechPreset(id) {
+  return speechView().presets.find((p) => p.id === id)
+}
+
+function speechProviderLabel(id) {
+  if (id === 'custom') return t('自定义（OpenAI 兼容）', 'Custom (OpenAI-compatible)')
+  const p = speechPreset(id)
+  return p ? t(p.label, p.label) : id
+}
+
+function speechProviderOptions(region, picked) {
+  const presets = speechView().presets
+  const stray = presets.find((p) => p.id === picked && p.region !== region)
+  const opt = (id, label) => `<option value="${esc(id)}" ${picked === id ? 'selected' : ''}>${esc(label)}</option>`
+  if (!region) return `<option value="" selected>${t('先选本环境区域', 'Pick the deployment region first')}</option>`
+  return [
+    `<option value="" ${picked ? '' : 'selected'}>${t('未配置', 'Not configured')}</option>`,
+    ...presets.filter((p) => p.region === region).map((p) => opt(p.id, t(p.label, p.label))),
+    stray ? opt(stray.id, `${t(stray.label, stray.label)}（${t('其他区域', 'other region')}）`) : '',
+    opt('custom', speechProviderLabel('custom')),
+  ].join('')
+}
+
+function speechProviderFields(picked) {
+  const v = speechView().speech
+  if (!picked) return ''
+  if (picked === 'custom') {
+    const saved = v.provider === 'custom' ? v : { baseUrl: '', model: '' }
+    return `
+      <form data-form="speech-custom" style="display: flex; flex-direction: column; gap: var(--space-3);">
+        <div class="field">
+          <label for="speech-base">${t('接口地址', 'Base URL')}</label>
+          <input class="input" id="speech-base" name="baseUrl" type="url" placeholder="https://api.example.com/v1" value="${esc(saved.baseUrl)}">
+        </div>
+        <div class="field">
+          <label for="speech-model-custom">${t('模型', 'Model')}</label>
+          <input class="input" id="speech-model-custom" name="model" placeholder="whisper-1" value="${esc(saved.model)}">
+        </div>
+        <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('要支持 POST {地址}/audio/transcriptions（multipart 传 file + model，回 {"text": …}），并收 16 位单声道 WAV。', 'Must support POST {base}/audio/transcriptions (multipart file + model, returns {"text": …}) and accept 16-bit mono WAV.')}</p>
+        <div style="display: flex; justify-content: flex-end;">
+          <button type="submit" class="btn btn-secondary" ${state.busy ? 'disabled' : ''}>${t('保存', 'Save')}</button>
+        </div>
+      </form>`
+  }
+  const p = speechPreset(picked)
+  if (!p) return ''
+  const model = v.provider === picked && v.model ? v.model : p.model
+  return `
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
+      <div class="field">
+        <label for="speech-model">${t('模型', 'Model')}</label>
+        <input class="input" id="speech-model" list="speech-models" value="${esc(model)}" data-act="speech-model">
+        <datalist id="speech-models">${p.models.map((m) => `<option value="${esc(m)}"></option>`).join('')}</datalist>
+      </div>
+      <div class="field">
+        <label>${t('接口地址', 'Base URL')}</label>
+        <div style="font-size: 13px; color: var(--muted-foreground); padding: 8px 0; word-break: break-all;">${esc(p.baseUrl)}</div>
+      </div>
+    </div>
+    <p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t(`一段最长 ${p.maxSeconds} 秒，到点自动停。`, `Up to ${p.maxSeconds}s per clip; recording stops automatically.`)}</p>`
+}
+
+function speechKeyForm(picked) {
+  if (!picked) return ''
+  const v = speechView().speech
+  if (picked === 'custom' && (v.provider !== 'custom' || !v.baseUrl)) {
+    return `<p style="margin: 0; font-size: 12px; color: var(--muted-foreground);">${t('先保存接口地址，再填密钥。密钥只用于这个地址的主机，改了主机要重新填。', 'Save the base URL first, then add the key. The key is only sent to that host; changing the host requires re-entering it.')}</p>`
+  }
+  const key = speechView().keys[picked]
+  const mark = key ? `<span class="tag tag-accent-2">${t('已配置密钥', 'Key saved')}</span>` : `<span class="tag">${t('还没有密钥', 'No key yet')}</span>`
+  return `
+    <form data-form="speech-key" data-provider="${esc(picked)}" style="display: flex; gap: var(--space-2); align-items: flex-end;">
+      <div class="field" style="flex: 1;">
+        <label for="speech-key">${t(`${speechProviderLabel(picked)} API 密钥`, `${speechProviderLabel(picked)} API key`)} ${mark}</label>
+        <input class="input" id="speech-key" name="secret" type="password" autocomplete="off" placeholder="${esc(t('粘贴密钥，保存后不再回显', 'Paste the key; it is never shown again'))}">
+      </div>
+      <button type="submit" class="btn btn-secondary" ${state.busy ? 'disabled' : ''}>${t('保存密钥', 'Save key')}</button>
+    </form>`
+}
+
+function speechTestMark() {
+  const res = state.tests['speech']
+  if (!res) return ''
+  if (res.status === 'busy') return `<span style="font-size: 12px; color: var(--muted-foreground);">${t('自检中…', 'Testing…')}</span>`
+  const color = res.status === 'ok' ? 'var(--color-accent-2-800)' : 'var(--color-accent-800)'
+  return `<span style="font-size: 12px; color: ${color};">${esc(res.text)}</span>`
+}
+
+function speechToolsPanel() {
+  const v = speechView()
+  const region = v.speech.region || ''
+  const picked = speechPickedProvider()
+  const tag = !state.speechCfg
+    ? `<span class="tag">${t('读取中', 'Loading')}</span>`
+    : v.ready
+      ? `<span class="tag tag-accent-2">${t('已开通', 'Enabled')}</span>`
+      : `<span class="tag">${t('未开通', 'Off')}</span>`
+  const minuteMils = v.speech.pricing?.minuteMils || 0
+  return `
+    <div style="display: flex; flex-direction: column; gap: var(--space-5);">
+      <div class="satu-panel" style="gap: var(--space-4);">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;">
+          <div style="min-width: 0;">
+            <h2 style="font-size: 16px; margin: 0 0 4px;">${t('语音识别模型', 'Speech recognition model')}</h2>
+            <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('手机端对话框的麦克风：录下的话交给这个模型转成文字，填回输入框，人看过再发。配好密钥后手机端才出现麦克风。', 'The microphone in the mobile chat box: recordings go to this model and the text lands in the input box for review before sending. The microphone only appears on mobile once a key is saved.')}</p>
+            ${!v.ready && v.problem && state.speechCfg ? `<p style="margin: 4px 0 0; font-size: 12px; color: var(--muted-foreground);">${esc(v.problem)}</p>` : ''}
+          </div>
+          ${tag}
+        </div>
+        <div class="satu-toggleRow" style="border-top: 0; padding-top: 0;">
+          <div style="min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 600;">${t('本环境区域', 'Deployment region')}</div>
+            <div style="font-size: 12px; color: var(--muted-foreground);">${t('只决定下面列哪几家：中国区不列连不上的海外服务，国际区不把录音绕到国内。', 'Only filters the list below: China lists services reachable from China; International keeps recordings outside China.')}</div>
+          </div>
+          <div style="display: flex; gap: var(--space-2); flex: none;">${tabPills(KB_REGIONS, region, 'speech-region')}</div>
+        </div>
+        <div class="field">
+          <label for="speech-provider">${t('服务商', 'Provider')}</label>
+          <select class="input" id="speech-provider" data-act="speech-provider" ${region ? '' : 'disabled'}>${speechProviderOptions(region, picked)}</select>
+        </div>
+        ${speechProviderFields(picked)}
+        ${speechKeyForm(picked)}
+        <div style="display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
+          <button type="button" class="btn btn-ghost" data-act="speech-test" ${v.ready ? '' : 'disabled'}>${t('自检', 'Test')}</button>
+          ${speechTestMark()}
+        </div>
+      </div>
+      <div class="satu-panel" style="gap: var(--space-3);">
+        <div>
+          <h2 style="font-size: 16px; margin: 0 0 4px;">${t('单价', 'Pricing')}</h2>
+          <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('按音频时长计，按秒折算、不足一秒算一秒。时长由 Gateway 从音频本身算出，不信客户端。0 = 不收钱、不熔断。倍率沿用模型配置里的那一个。', 'Billed by audio length, prorated per second (rounded up). The Gateway measures the length from the audio itself. 0 = free and never cut off. The multiplier from model settings applies.')}</p>
+        </div>
+        <div class="satu-toggleRow">
+          <div style="min-width: 0;"><div style="font-size: 13.5px; font-weight: 600;">${t('每分钟（美元）', 'Per minute (USD)')}</div></div>
+          <input class="input" style="width: 140px; flex: none;" type="number" min="0" step="0.001" value="${esc((minuteMils / 1000).toFixed(3))}" data-act="speech-price">
         </div>
       </div>
     </div>`

@@ -21,7 +21,7 @@
  * 见 docs/billing.md。
  */
 import type { Account, ChargeStatus, Db, ModelRate, PlatformSettings, UsageCharge, WebCallKind } from '../db.ts'
-import { emptyWebTools, parseBilling, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier } from '../db.ts'
+import { emptyWebTools, parseBilling, parseKnowledgeSettings, parseModelPricing, parseModelRate, parsePriceMultiplier, parseSpeech } from '../db.ts'
 import { balanceOf } from './billing.ts'
 import { type LlmTokens, connectorMicros, llmMicros, rateOf, rateSnapshot, webMicros } from './pricing.ts'
 import { type ImageBaseline, imageBaseline } from './image-estimate.ts'
@@ -86,6 +86,20 @@ export type Billable =
       units: number
       refId?: string | null
     }
+  /**
+   * 语音输入（lib/speech.ts）：`units` 是音频秒数（由 WAV 字节数算，不信客户端），单价按「厘 / 分钟」
+   * 在「工具配置 → 语音」填，默认 0。`model` 只进 subject 留档，单价不分模型。
+   */
+  | {
+      kind: 'speech'
+      account: Account
+      botId?: string | null
+      sessionId?: string | null
+      status: ChargeStatus
+      model: string
+      units: number
+      refId?: string | null
+    }
 
 export type KbOp = 'query' | 'ingest'
 
@@ -137,6 +151,7 @@ export type GateSubject =
    */
   | { kind: 'web'; backends: string[]; webKind: WebCallKind }
   | { kind: 'kb'; kbOp: KbOp }
+  | { kind: 'speech' }
 
 /**
  * 余额不足时给出去的那句话。**一句人话，不是错误码文案**——它会被原样交给模型
@@ -298,6 +313,10 @@ export class Meter {
       return { amountMicros: unit, unitPrice: { unit }, multiplier: 1, unpriced: false }
     }
     const units = q.units ?? 0
+    if (row.kind === 'speech') {
+      if (head !== 'speech') return undefined
+      return speechQuote(s, units, multiplier)
+    }
     if (row.kind === 'kb') {
       if (tail !== 'query' && tail !== 'ingest') return undefined
       const unitMils = kbUnitMils(s, tail)
@@ -354,6 +373,7 @@ export class Meter {
         unpriced: false,
       }
     }
+    if (b.kind === 'speech') return speechQuote(s, b.units, multiplier)
     const web = s.webTools ?? emptyWebTools()
     const unitMils = web.pricing?.[b.backend]?.[b.webKind] ?? 0
     return {
@@ -479,6 +499,7 @@ function chargeable(s: PlatformSettings, subject: GateSubject): boolean {
   }
   if (subject.kind === 'connector') return connectorMicros(s.connectorPricing, subject.toolkit) > 0
   if (subject.kind === 'kb') return kbUnitMils(s, subject.kbOp) > 0
+  if (subject.kind === 'speech') return parseSpeech(s.speech).pricing.minuteMils > 0
   const web = s.webTools ?? emptyWebTools()
   // 任意一档要钱，这一次就可能要钱，闸就得判。
   return subject.backends.some((b) => (web.pricing?.[b]?.[subject.webKind] ?? 0) > 0)
@@ -489,11 +510,26 @@ function kbUnitMils(s: PlatformSettings, op: KbOp): number {
   return op === 'query' ? k.pricing.queryMils : k.pricing.ingestMils
 }
 
+/**
+ * 语音：厘 / 分钟 → 微元 / 秒，乘平台倍率（识别是采购来转售的，同网页工具和知识库）。
+ * `unitPrice.unit` 记的是每分钟多少微元，账本上一眼看得出单价口径。
+ */
+function speechQuote(s: PlatformSettings, seconds: number, multiplier: number): Quote {
+  const minuteMils = parseSpeech(s.speech).pricing.minuteMils
+  return {
+    amountMicros: minuteMils && seconds > 0 ? Math.max(0, Math.round((minuteMils * 1000 * seconds * multiplier) / 60)) : 0,
+    unitPrice: { unit: Math.round(minuteMils * 1000) },
+    multiplier,
+    unpriced: false,
+  }
+}
+
 /** 收费对象的字面量。存下来不存外键：连接器下架、模型删了，上个月的账还得看得懂。 */
 export function subjectOf(b: Billable): string {
   if (b.kind === 'llm') return `${b.provider}/${b.model}`
   if (b.kind === 'connector') return `${b.toolkit}:${b.tool}`
   if (b.kind === 'kb') return `kb:${b.kbOp}`
+  if (b.kind === 'speech') return `speech:${b.model}`
   return `${b.backend}:${b.webKind}`
 }
 
@@ -506,7 +542,7 @@ function quantityOf(b: Billable): Record<string, number> {
       cacheWriteTokens: b.tokens.cacheWriteTokens,
     }
   }
-  if (b.kind === 'web' || b.kind === 'kb') return { units: b.units }
+  if (b.kind === 'web' || b.kind === 'kb' || b.kind === 'speech') return { units: b.units }
   // 连接器恒为一次调用，没有可计量的维度。空对象比写一个恒等于 1 的字段诚实。
   return {}
 }

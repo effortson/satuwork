@@ -27,6 +27,7 @@ import { attachCron } from './cron.ts'
 import { attachKnowledge } from './knowledge.ts'
 import { attachNotifications } from './notifications.ts'
 import { attachContentReports } from './content-reports.ts'
+import { attachSpeech } from './speech.ts'
 
 /**
  * 把控制面的路由挂上去。
@@ -50,6 +51,7 @@ export function attach(router: Router, db: Db, keys: JwtKeys, channelKey: Buffer
   attachAuth(router, ctx)
   attachNotifications(router, ctx)
   attachContentReports(router, ctx)
+  attachSpeech(router, ctx)
   attachPlatform(router, ctx)
   attachPlatformKnowledge(router, ctx)
   attachPlatformOrgs(router, ctx)

@@ -73,6 +73,10 @@ jobs:
       - name: Embedding 接口单测
         run: pnpm --filter satuwork-gateway test:knowledge-embedding
 
+      - name: 语音输入（WAV 时长、计费、转写）
+        working-directory: gateway
+        run: node --import tsx --test test/speech.test.ts
+
       - name: core 单测
         run: pnpm test:core
 

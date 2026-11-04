@@ -164,3 +164,15 @@ test('api：本地 Bot 重试后还是 401 → 抛本地那句，仍不登出', 
   assert.equal(c.unauthorized.length, 0)
   assert.equal(c.calls.length, 2)
 })
+
+test('Blob 请求体原样发、类型取它自己的；401 照样走登出（语音输入的 WAV）', async () => {
+  const { gw, calls, unauthorized } = client((url) => (url.endsWith('/me/transcribe') && calls.length > 1 ? { status: 401, body: { error: '需要登录' } } : { status: 200, body: { text: '你好' } }))
+  const wav = new Blob([new Uint8Array([82, 73, 70, 70])], { type: 'audio/wav' })
+  assert.deepEqual(await gw.api('POST', '/me/transcribe', wav), { text: '你好' })
+  const init = calls.at(-1)!.init!
+  assert.equal(init.body, wav, 'Blob 不该被 JSON.stringify')
+  assert.equal((init.headers as Record<string, string>)['content-type'], 'audio/wav')
+  assert.equal((init.headers as Record<string, string>).authorization, 'Bearer jwt-1')
+  await assert.rejects(gw.api('POST', '/me/transcribe', wav))
+  assert.equal(unauthorized.length, 1, '登录票不认了要交给 onUnauthorized')
+})

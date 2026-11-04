@@ -16,7 +16,7 @@ import { bodyOf, intField, strField } from '../lib/validate.ts'
 import { chargeCursorOf, companyOr404 } from '../lib/org.ts'
 import { CHARGE_PAGE_DEFAULT, CHARGE_PAGE_MAX, type Account, type ChargeKind, type ChargeStatus, type Company, type UsageCharge } from '../db.ts'
 
-const KINDS: ChargeKind[] = ['llm', 'connector', 'web', 'kb']
+const KINDS: ChargeKind[] = ['llm', 'connector', 'web', 'kb', 'speech']
 const STATUSES: ChargeStatus[] = ['ok', 'failed', 'timeout', 'denied', 'error']
 
 function kindOf(raw: string | null): ChargeKind | undefined {

@@ -610,7 +610,11 @@ function clearMobileAiConsent() {
   } catch {}
 }
 
-function requestMobileAiSharing(info) {
+/**
+ * `copy` 换掉弹框里的话（语音输入用它：chat-voice.js 的 VOICE_SHARING_COPY）；每项是 [中文, English]，
+ * `copy.info` 是重算许可范围的那个函数（点同意那一刻范围变了就不算数）。不传就是发消息那一版。
+ */
+function requestMobileAiSharing(info, copy) {
   // A second Send while the permission prompt is open must not queue another copy.
   if (mobileAiPromptOpen) return Promise.resolve(false)
   if (!info.accountId || !info.recipients.length) {
@@ -618,26 +622,27 @@ function requestMobileAiSharing(info) {
     return Promise.resolve(false)
   }
   mobileAiPromptOpen = true
+  const say = (key, zh, en) => (copy && copy[key] ? t(copy[key][0], copy[key][1]) : t(zh, en))
   const focus = document.activeElement
   const host = document.createElement('div')
   host.innerHTML = modalBox({
     close: 'mobile-ai-cancel',
     attrs: 'class="gw-modal" role="dialog" aria-modal="true" aria-labelledby="mobile-ai-title"',
-    title: `<span id="mobile-ai-title">${esc(t('允许向 AI 服务商发送内容？', 'Allow sharing with AI providers?'))}</span>`,
-    sub: esc(t('请先了解请求会发送到哪里。', 'Review where your request will be sent.')),
-    body: `<p>${esc(t('为了完成你的任务，Satuwork 会将你发送的消息、相关对话历史、附件内容和必要的工具结果交给组织配置的 AI 服务商处理。', 'To perform your tasks, Satuwork sends submitted messages, relevant conversation history, attachment contents and necessary tool results to AI providers configured by your organization.'))}</p>
-      <p><strong>${esc(t('组织配置的服务商：', 'Organization-configured providers:'))}</strong> ${esc(info.recipients.join(', '))}</p>
-      <p>${esc(t('服务商的保留与训练政策可能不同。请勿发送你无权共享的个人信息或机密。你可以取消发送；退出登录会撤回本机许可。', 'Provider retention and training practices may differ. Do not send personal or confidential information you are not authorized to share. You can cancel; signing out revokes permission on this device.'))}</p>
+    title: `<span id="mobile-ai-title">${esc(say('title', '允许向 AI 服务商发送内容？', 'Allow sharing with AI providers?'))}</span>`,
+    sub: esc(say('sub', '请先了解请求会发送到哪里。', 'Review where your request will be sent.')),
+    body: `<p>${esc(say('body', '为了完成你的任务，Satuwork 会将你发送的消息、相关对话历史、附件内容和必要的工具结果交给组织配置的 AI 服务商处理。', 'To perform your tasks, Satuwork sends submitted messages, relevant conversation history, attachment contents and necessary tool results to AI providers configured by your organization.'))}</p>
+      <p><strong>${esc(say('recipients', '组织配置的服务商：', 'Organization-configured providers:'))}</strong> ${esc(info.recipients.join(', '))}</p>
+      <p>${esc(say('note', '服务商的保留与训练政策可能不同。请勿发送你无权共享的个人信息或机密。你可以取消发送；退出登录会撤回本机许可。', 'Provider retention and training practices may differ. Do not send personal or confidential information you are not authorized to share. You can cancel; signing out revokes permission on this device.'))}</p>
       <p><a href="https://satuwork.com/privacy" target="_blank" rel="noopener noreferrer">${esc(t('隐私政策', 'Privacy Policy'))}</a></p>
       <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:20px;flex-wrap:wrap">
-        <button type="button" class="btn btn-secondary" data-ai-choice="cancel">${esc(t('暂不发送', 'Not now'))}</button>
-        <button type="button" class="btn btn-primary" data-ai-choice="allow">${esc(t('同意并发送', 'Allow and send'))}</button>
+        <button type="button" class="btn btn-secondary" data-ai-choice="cancel">${esc(say('cancel', '暂不发送', 'Not now'))}</button>
+        <button type="button" class="btn btn-primary" data-ai-choice="allow">${esc(say('allow', '同意并发送', 'Allow and send'))}</button>
       </div>`,
   })
   document.body.appendChild(host)
   return new Promise((resolve) => {
     const finish = (allow) => {
-      const accepted = allow && state.me?.account?.id === info.accountId && mobileAiSharingInfo().key === info.key
+      const accepted = allow && state.me?.account?.id === info.accountId && (copy?.info || mobileAiSharingInfo)().key === info.key
       if (accepted) {
         mobileAiGrants.add(info.key)
         try { localStorage.setItem(info.key, 'allowed') } catch {}

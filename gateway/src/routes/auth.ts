@@ -2,7 +2,7 @@
  * 健康检查、JWKS、登录注册、邀请、以及「我」这一组。
  */
 import type { RouteCtx } from './ctx.ts'
-import { HttpError, json, type Router } from '../http.ts'
+import { HttpError, bearer, json, type Router } from '../http.ts'
 import { LOGIN_DUMMY_HASH, bodyOf, strField } from '../lib/validate.ts'
 import { MIN_PASSWORD, hashPassword, jwks, needsRehash, verifyPassword } from '../crypto.ts'
 import { emailOf, orgSettings, orgSummary, publicAccount, publicCompany, publicPlan, publicSettings } from '../lib/org.ts'
@@ -12,6 +12,7 @@ import { enterThrottle, throttleKeys } from '../lib/auth-throttle.ts'
 import { PUSH_ENVIRONMENTS, PUSH_PLATFORMS, normalizePushToken, validPushToken } from '../lib/push.ts'
 import { SETUP_LOCK } from '../db/locks.ts'
 import { accountAvatarOf } from '../lib/account-avatar.ts'
+import { SPEECH_OFF, speechFeature } from './speech.ts'
 
 export function attachAuth(router: Router, ctx: RouteCtx) {
   const { db, keys } = ctx
@@ -221,6 +222,8 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
         plan: null,
         // 平台那几屏（单价、倍率、连接器计费、期望管家版本）就靠这一份画。
         settings: publicSettings(stored),
+        // 手机端对话框画不画麦克风（routes/speech.ts）。
+        speech: await speechFeature(db, stored),
         orgs: await Promise.all((await db.companies()).map((c) => orgSummary(db, c, kbCounts))),
       })
       return
@@ -234,6 +237,8 @@ export function attachAuth(router: Router, ctx: RouteCtx) {
       plan: await publicPlan(db, plan, await db.accountCount(company.id)),
       // 公司管理员、员工、席位都走这一支：**定价不下发**。见 orgSettings 的注释。
       settings: orgSettings(stored),
+      // 席位（sat_）也走这一支，它用不上麦克风，省一次查密钥。
+      speech: bearer(req)?.startsWith('sat_') ? SPEECH_OFF : await speechFeature(db, stored),
     })
   })
 

@@ -106,6 +106,8 @@ import { runManager } from './manager.mjs'
 import { runManagerConfirm } from './manager-confirm.mjs'
 import { runChannels } from './channels.mjs'
 import { runKnowledge } from './knowledge.mjs'
+import { runSpeech } from './speech.mjs'
+import { runVoiceInput } from './voice-input.mjs'
 import { runTelegramRich } from './telegram-rich.mjs'
 import { runTelegramChannel } from './telegram-channel.mjs'
 import { runChannelQueue } from './channel-queue.mjs'
@@ -230,11 +232,13 @@ async function main() {
     await suite('manager-confirm', () => runManagerConfirm({ root, test, assert, log }))
     await suite('channels', () => runChannels({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('knowledge', () => runKnowledge({ gwRoot, test, req, start, waitHttp, assert, log }))
+    await suite('speech', () => runSpeech({ test, req, assert, log }))
     await suite('channel-webhook', () => runChannelWebhook({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('channel-queue', () => runChannelQueue({ gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('telegram-rich', () => runTelegramRich({ root, test, assert, log }))
     await suite('telegram-channel', () => runTelegramChannel({ root, test, assert, log }))
     await suite('mobile-ai-consent', () => runMobileAiConsent({ root, test, assert, log }))
+    await suite('voice-input', () => runVoiceInput({ root, test, assert, log }))
     await suite('ui-smoke', () => runUiSmoke({ root, gwRoot, test, req, start, waitHttp, assert, log }))
     await suite('ui-files', () => runUiFiles({ root, test, assert, log }))
     await suite('markdown', () => runMarkdown({ root, test, assert, log }))
