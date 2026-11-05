@@ -357,6 +357,16 @@ async function saveAlternates(list) {
   await saveSettings({ dailyAlternates: list.map((r) => ({ provider: r.provider, model: r.model, reasoningEffort: r.reasoningEffort || 'off' })) })
 }
 
+/** 把第 from 个备选挪到第 to 格。拖动、↑、↓ 都走这一个；越界或没挪就什么也不发。 */
+async function moveAlternate(from, to) {
+  const list = dailyAlternates().slice()
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from === to) return
+  if (from < 0 || to < 0 || from >= list.length || to >= list.length) return
+  const [one] = list.splice(from, 1)
+  list.splice(to, 0, one)
+  await saveAlternates(list)
+}
+
 async function testLlm(kind, payload) {
   const key = kind === 'role'
     ? `role:${payload.role}`

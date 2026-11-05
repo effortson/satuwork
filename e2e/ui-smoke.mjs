@@ -346,6 +346,57 @@ export async function runUiSmoke({ root, gwRoot, test, req, start, waitHttp, ass
       assert(ui.html().includes('value="openrouter/qwen/qwen3"'), '换到别家之后，那家的模型没列出来')
     })
 
+    await test('日常模型备选：能上下挪、能拖，存回去的就是对话框里的顺序', async () => {
+      /**
+       * 顺序就是对话框选择器里的顺序（默认排第一，备选按这份往后排），由整份 PUT 说了算。
+       * 早先只有一个「↑」，排到最后那一个想往下挪只能把它上面的挨个往上提。
+       */
+      const puts = []
+      const ui = loadApp({
+        appPath,
+        base: gwBase,
+        token: 'ui-smoke-token',
+        fetchImpl: async (url, init) => {
+          if (init && init.method === 'PUT') {
+            const body = JSON.parse(init.body)
+            puts.push(body)
+            return { ok: true, status: 200, text: async () => JSON.stringify({ ...ui.state.settings, ...body }) }
+          }
+          return { ok: true, status: 200, text: async () => '{}' }
+        },
+      })
+      const alt = (model) => ({ provider: 'openai', model, reasoningEffort: 'off' })
+      ui.state.me = { account: { id: 'o', role: 'owner', name: 'O' }, settings: {} }
+      ui.state.path = '/models'
+      ui.state.catalog = [{ provider: 'openai', name: 'OpenAI', models: ['a', 'b', 'c', 'd'].map((id) => ({ id, name: id.toUpperCase() })) }]
+      ui.state.creds = [{ provider: 'openai', configured: true }]
+      ui.state.settings = { daily: { provider: 'openai', model: 'a' }, utility: { provider: '', model: '' }, dailyAlternates: [alt('b'), alt('c'), alt('d')], enabledModels: [] }
+      ui.render()
+      const page = ui.html()
+      assert((page.match(/data-alt-grip="/g) || []).length === 3, '每一行都该有拖动把手')
+      assert(/data-act="alt-up" data-index="0" disabled/.test(page), '第一行的 ↑ 该是灰的')
+      assert(/data-act="alt-down" data-index="2" disabled/.test(page), '最后一行的 ↓ 该是灰的')
+      assert(/data-act="alt-down" data-index="0" (?!disabled)/.test(page), '第一行的 ↓ 该能点')
+
+      const order = () => puts.at(-1).dailyAlternates.map((r) => r.model).join('')
+      await ui.fire('click', el('button', { 'data-act': 'alt-down', 'data-index': '0' }))
+      assert(puts.length === 1 && order() === 'cbd', `↓ 之后存回去的顺序不对：${puts.length ? order() : '没发'}`)
+      await ui.fire('click', el('button', { 'data-act': 'alt-up', 'data-index': '2' }))
+      assert(order() === 'cdb', `↑ 之后存回去的顺序不对：${order()}`)
+      // 拖动走的也是这一个：把最后一个拖到最前面。
+      await ui.moveAlternate(2, 0)
+      assert(order() === 'bcd', `拖到最前之后的顺序不对：${order()}`)
+      // 越界、没挪都不该发请求。
+      const n = puts.length
+      await ui.fire('click', el('button', { 'data-act': 'alt-down', 'data-index': '2' }))
+      await ui.moveAlternate(1, 1)
+      assert(puts.length === n, '越界或原地不动也发了保存')
+      // 推理强度跟着那一项走，不跟着格子走。
+      ui.state.settings.dailyAlternates = [alt('b'), { ...alt('c'), reasoningEffort: 'high' }, alt('d')]
+      await ui.moveAlternate(1, 2)
+      assert(JSON.stringify(puts.at(-1).dailyAlternates[2]) === JSON.stringify({ provider: 'openai', model: 'c', reasoningEffort: 'high' }), '挪动之后推理强度没跟着那一项走')
+    })
+
     await test('日常任务跑着的时候，轮询没变化就一下都不重画', async () => {
       /**
        * 这一栏挂在**对话页**上，而它的轮询只在「有一轮正在跑」时才转——也就是说，

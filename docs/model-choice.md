@@ -19,6 +19,10 @@
   某个模型、收窄 `enabledModels`。这些地方改完都过一遍 `lib/alternates.ts` 的
   `pruneDailyAlternates`，上不了架的备选当场拿掉（响应和审计里带 `droppedAlternates`）。
   只被备选用着的供应商，删的时候同样要 `force=1` 确认一次（`clearedRoles` 里记 `日常备选`）。
+- **顺序就是名单的顺序**：对话框选择器、渠道 `/model` 列的序号，都是默认排第一、备选按
+  `dailyAlternates` 数组往后排（席位 `dailyChoices`）。管理页按住行首把手拖动，或者点 ↑ ↓，
+  都是整份换个顺序 PUT 回去（`moveAlternate`）。拖动用 pointer 事件自己做，不用 HTML5 拖放——
+  桌面端 WebView 和手机浏览器上那条路走不通。`modelStamp` 按顺序拼，只调顺序席位也会重拉。
 - **界面只在真改了备选时才发 `dailyAlternates`**：服务端对收到的每个备选都重新过一遍规矩，
   每次存角色都捎上的话，名单里只要有一个后来下架了的，改日常 / utility 就全都 400。
 - **下发**：`GET /runtime/catalog` 的 `models.dailyAlternates`，并且进 `modelStamp`——
