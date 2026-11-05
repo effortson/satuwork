@@ -35,6 +35,37 @@ export const BOOTSTRAP = `
 
   const CLICKABLE = 'a[href],button,input,select,textarea,summary,[contenteditable=""],[contenteditable="true"],[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="tab"],[role="menuitem"],[role="switch"],[role="option"],[tabindex]:not([tabindex="-1"])'
 
+  /** full=true 时额外列出来的正文结构。只出文字，不发 ref。 */
+  const TEXTY = 'h1,h2,h3,h4,p,li,td,th'
+
+  /**
+   * 不在 CLICKABLE 里、但**明摆着能点**的东西也要列。
+   *
+   * 线上撞上的：一个 Vben 后台的侧栏菜单，「SC Device Management」是一个
+   * div.vben-menu-submenu-title——没有 role、没有 tabindex，只挂了 Vue 的 @click。
+   * 只认语义的话整个侧栏一个 ref 都没有，模型找不到能点的，就去按键盘、去拼路由，
+   * 最后只能请人帮它点。Vue / React 写的后台里，菜单、卡片、图标按钮大多是这个样子。
+   *
+   * 认两样：
+   * - 写着要被点的：onclick 属性、aria-haspopup、aria-expanded（折叠菜单、下拉触发器）。
+   * - 鼠标放上去是一只手（cursor: pointer）。**只认最外那一层**——cursor 会继承，
+   *   可点区域里每一层子元素都是 pointer，全列的话一个菜单项会占三四个 ref。
+   *
+   * 包着复选框的 label 不列：点它等于点里面那个框，而那个框已经在快照里了。
+   */
+  const HINTED = '[onclick],[aria-haspopup]:not([aria-haspopup="false"]),[aria-expanded]'
+  const pointer = (el) => {
+    try { return getComputedStyle(el).cursor === 'pointer' } catch (e) { return false }
+  }
+  S.pointy = (el) => {
+    if (el === document.body || el === document.documentElement) return false
+    if (el.tagName === 'LABEL' && el.control) return false
+    if (el.matches(HINTED)) return true
+    if (!pointer(el)) return false
+    const up = el.parentElement
+    return !up || !pointer(up)
+  }
+
   const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()
 
   /** 可访问名。aria → 关联 label → 自身文字 → 占位符，第一个非空的算数。 */
@@ -85,7 +116,17 @@ export const BOOTSTRAP = `
       if (t === 'submit' || t === 'button' || t === 'reset') return 'button'
       return 'textbox'
     }
+    if (el.isContentEditable) return 'textbox'
     return tag
+  }
+
+  /**
+   * 可交互元素的角色。没有语义的那些（div、li、span……）一律叫 clickable——
+   * 写成「- div "SC Device Management"」，模型看不出这一行是能点的。
+   */
+  S.actRole = (el) => {
+    const role = S.role(el)
+    return role === el.tagName.toLowerCase() ? 'clickable' : role
   }
 
   S.visible = (el) => {
@@ -161,15 +202,23 @@ export const BOOTSTRAP = `
       S.ids.set(el, id)
       return id
     }
-    const nodes = full
-      ? document.querySelectorAll(CLICKABLE + ',h1,h2,h3,h4,p,li,td,th')
-      : document.querySelectorAll(CLICKABLE)
-    for (const el of nodes) {
+    /**
+     * 按文档顺序走一遍全部元素，而不是只取 CLICKABLE：「看起来能点」的那些（见 S.pointy）
+     * 没有选择器能一次挑出来，要逐个看样式。
+     *
+     * 只靠样式认出来的、又没有名字的不列。光秃秃一行「- clickable ""」模型不知道它是什么，
+     * 而这种行在装饰性的包裹层上会有一大堆，把 MAX_NODES 吃掉。
+     */
+    for (const el of document.querySelectorAll('body *')) {
+      const native = el.matches(CLICKABLE)
+      const loose = !native && S.pointy(el)
+      if (!native && !loose && !(full && el.matches(TEXTY))) continue
       if (!S.visible(el)) continue
-      const role = S.role(el)
       const name = S.name(el)
-      const interactive = el.matches(CLICKABLE)
+      const interactive = native || (loose && Boolean(name))
+      const role = interactive ? S.actRole(el) : S.role(el)
       if (!interactive) {
+        if (!el.matches(TEXTY)) continue
         if (!name) continue
         if (!push('  ' + role + ' "' + name.slice(0, 200) + '"')) break
         continue
@@ -231,7 +280,7 @@ export const BOOTSTRAP = `
       x: rect.left + rect.width / 2,
       y: rect.top + rect.height / 2,
       name: S.name(hit.el),
-      role: S.role(hit.el),
+      role: S.actRole(hit.el),
     }
   }
 
@@ -248,7 +297,7 @@ export const BOOTSTRAP = `
     } else if (el.isContentEditable) {
       el.textContent = ''
     }
-    return { name: S.name(el), role: S.role(el) }
+    return { name: S.name(el), role: S.actRole(el) }
   }
 
   S.selectOptions = (ref, values) => {

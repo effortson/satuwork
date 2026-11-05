@@ -109,7 +109,29 @@ const HANG_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>一�
 <script src="/hang.js?1" async></script><script src="/hang.js?2" async></script><script src="/hang.js?3" async></script>
 </head><body><main><h1>一直在加载</h1></main></body></html>`
 
+/**
+ * 照线上那个 Vben 后台的侧栏抄的：菜单标题是一个**什么语义都没有**的 div，只挂了
+ * addEventListener 的点击、样式上是 cursor:pointer；子项是同样的 li。点开标题才出现子项。
+ * 里面那层 span 继承了 pointer，不该再占一个 ref；没名字的那块可点区域也不该列。
+ */
+const MENU_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>侧栏菜单</title></head><body>
+<ul id="menu" style="list-style:none">
+  <li><div id="mtitle" style="cursor:pointer"><span>设备管理</span></div>
+    <ul id="msub" style="display:none"><li id="mitem" style="cursor:pointer">设备列表</li></ul></li>
+</ul>
+<div id="blank" style="cursor:pointer;width:40px;height:40px"></div>
+<div id="mout"></div>
+<script>
+document.getElementById('mtitle').addEventListener('click', function () { document.getElementById('msub').style.display = 'block' })
+document.getElementById('mitem').addEventListener('click', function () { document.getElementById('mout').textContent = '进了设备列表' })
+</script></body></html>`
+
 const server = createServer((req, res) => {
+  if (req.url === '/menu') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(MENU_PAGE)
+    return
+  }
   // 一张大到回执会被结果预算截断的页面：几百个名字很长的按钮。
   if (req.url === '/big') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
@@ -934,6 +956,27 @@ try {
    * 下载目录只能整颗浏览器一起设，下载事件也是谁的都发。员工在另一个标签页下的东西不能
    * 出现在 Bot 的产出里；同名文件 Chrome 会存成 `report (1).txt`，卡片不能指回第一份。
    */
+  /**
+   * 没有语义、只挂了点击事件的菜单也要点得动。线上真卡过：整个侧栏一个 ref 都没有，
+   * Bot 只能请人帮它点。
+   */
+  const menu = await run('browser_navigate', { url: `http://${HOST}/menu` })
+  const titleRef = refOf(menu.text, '设备管理')
+  const titleLines = menu.text.split('\n').filter((l) => l.includes('"设备管理"'))
+  const opened = titleRef ? await run('browser_click', { ref: titleRef }) : { text: '', failed: true }
+  const itemRef = refOf(opened.text, '设备列表')
+  const entered = itemRef ? await run('browser_click', { ref: itemRef }) : { failed: true }
+  const menuRead = await run('browser_read')
+  out.loose = {
+    菜单标题有ref: Boolean(titleRef),
+    标的是clickable: titleLines.length === 1 && titleLines[0].startsWith('- clickable '),
+    里层span没重复占ref: titleLines.length === 1,
+    点开之后子项有ref: Boolean(itemRef),
+    点子项真的进去了: entered.failed !== true && menuRead.text.includes('进了设备列表'),
+    没名字的可点块不列: !/- clickable ""/.test(menu.text),
+    detail: { menu: menu.text.slice(0, 600) },
+  }
+
   // 已经有一份同名的员工文件：网页上下的 report.txt 不能把它盖掉。
   writeFileSync(join(workRoot, 'report.txt'), '员工自己的那份')
   const dlPage = await run('browser_navigate', { url: `http://${HOST}/dl-page` })

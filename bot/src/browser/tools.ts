@@ -307,6 +307,7 @@ export function apply(ctx: Context) {
     risk: ['read'],
     description:
       '拍一张当前页面的文本快照：列出可交互的元素，每个带一个 ref（如 @e5），browser_click / browser_type 就用这个 ref 指人。' +
+      '角色是 clickable 的那些是没有语义、但页面上能点的东西（后台的侧栏菜单、卡片多半是这种），照样用 browser_click 点。' +
       'full=false（默认）只列可交互元素；full=true 连标题、段落、表格文字一起列，页面会长很多。' +
       '列的是页面上**所有已渲染**的元素，不只是当前看得见的那一屏——点的时候会自动滚过去，不用先滚再点。' +
       '同一个元素的 ref 不会变；页面跳转或者那个元素被换掉之后，旧 ref 会明确报错，不会悄悄指到别的东西上。' +

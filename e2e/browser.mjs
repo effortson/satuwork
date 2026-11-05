@@ -268,6 +268,17 @@ export async function runBrowser({ root, test, assert, log }) {
     assert(!bad.length, `这几条不对：${bad.join('、')}`)
   })
 
+  await test('没有语义、只挂了点击事件的菜单也列得出、点得动', () => {
+    /**
+     * Vue / React 后台的侧栏多半是 div + @click，没有 role 也没有 tabindex。只认语义的话
+     * 整个侧栏一个 ref 都没有——线上真卡过，Bot 最后只能请人帮它点。
+     */
+    assert(r.loose, `没有 loose 结果${r.crashed ? '：' + r.crashed : ''}`)
+    const { detail, ...checks } = r.loose
+    const bad = all(checks)
+    assert(!bad.length, `这几条不对：${bad.join('、')}；${JSON.stringify(detail)}`)
+  })
+
   await test('下载：不覆盖工作区里的同名文件，只报 Bot 自己的', () => {
     assert(r.downloads, `没有 downloads 结果${r.crashed ? '：' + r.crashed : ''}`)
     const { detail, ...checks } = r.downloads
