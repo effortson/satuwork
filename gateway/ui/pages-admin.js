@@ -385,15 +385,19 @@ function alternatesPanel() {
       const effortOptions = reasoningOptions(picked, r.reasoningEffort)
       const key = `${r.provider}/${r.model}`
       const test = state.tests['alt:' + key]
-      return `<div class="satu-toggleRow">
-        <div style="min-width: 0;">
-          <div style="font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere;">${esc(picked?.name || r.model)}</div>
-          <div style="font-size: 12px; color: var(--muted-foreground); overflow-wrap: anywhere;">${esc(key)}${test ? ` · <span style="color: ${test.status === 'err' ? 'var(--destructive)' : 'inherit'};">${esc(test.text)}</span>` : ''}</div>
+      return `<div class="satu-toggleRow" data-alt-row="${i}">
+        <div style="min-width: 0; display: flex; align-items: center; gap: var(--space-2);">
+          ${list.length > 1 ? `<span class="sw-alt-grip" data-alt-grip="${i}" title="${esc(t('拖动排序', 'Drag to reorder'))}" aria-hidden="true">⋮⋮</span>` : ''}
+          <div style="min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere;">${esc(picked?.name || r.model)}</div>
+            <div style="font-size: 12px; color: var(--muted-foreground); overflow-wrap: anywhere;">${esc(key)}${test ? ` · <span style="color: ${test.status === 'err' ? 'var(--destructive)' : 'inherit'};">${esc(test.text)}</span>` : ''}</div>
+          </div>
         </div>
         <div style="display: flex; align-items: center; gap: var(--space-2); flex: none; flex-wrap: wrap; justify-content: flex-end;">
           <select class="input" style="width: 120px; flex: none;" title="${esc(t('推理强度', 'Reasoning effort'))}" data-act="alt-reasoning" data-index="${i}" ${picked?.reasoning ? '' : 'disabled'}>${effortOptions}</select>
           <button type="button" class="satu-linkbtn" data-act="alt-test" data-provider="${esc(r.provider)}" data-model="${esc(r.model)}" ${test?.status === 'busy' ? 'disabled' : ''}>${t('测试')}</button>
-          <button type="button" class="satu-linkbtn" data-act="alt-up" data-index="${i}" ${i === 0 ? 'disabled' : ''} aria-label="${esc(t('上移'))}">↑</button>
+          <button type="button" class="satu-linkbtn" data-act="alt-up" data-index="${i}" ${i === 0 ? 'disabled' : ''} title="${esc(t('上移'))}" aria-label="${esc(t('上移'))}">↑</button>
+          <button type="button" class="satu-linkbtn" data-act="alt-down" data-index="${i}" ${i === list.length - 1 ? 'disabled' : ''} title="${esc(t('下移', 'Move down'))}" aria-label="${esc(t('下移', 'Move down'))}">↓</button>
           <button type="button" class="satu-linkbtn" data-act="alt-default" data-index="${i}">${t('设为默认')}</button>
           <button type="button" class="satu-linkbtn" data-act="alt-remove" data-index="${i}">${t('移除')}</button>
         </div>
@@ -423,7 +427,7 @@ function alternatesPanel() {
   return `
     <div class="satu-panel">
       <span class="satu-panel-title">${t('日常模型备选')}</span>
-      <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('成员可以在对话框里把自己和某个 Bot 的对话换成这些模型，也可以在渠道里发 /model 切换。一个都不配时只用默认的日常模型。', 'Members can switch their conversation with a bot to any of these, from the chat box or with /model in a channel. With none configured, the default daily model is used.')}</p>
+      <p style="margin: 0; font-size: 13px; color: var(--muted-foreground);">${t('成员可以在对话框里把自己和某个 Bot 的对话换成这些模型，也可以在渠道里发 /model 切换。对话框里按这里的顺序排在默认模型后面，拖动左边的把手或点 ↑ ↓ 调整。一个都不配时只用默认的日常模型。', 'Members can switch their conversation with a bot to any of these, from the chat box or with /model in a channel. They are listed after the default in this order; drag the handle or use ↑ ↓ to reorder. With none configured, the default daily model is used.')}</p>
       ${rows || `<div class="satu-toggleRow"><span style="font-size: 13px; color: var(--muted-foreground);">${t('还没有备选。')}</span></div>`}
       <div class="satu-toggleRow">
         <div style="min-width: 0; font-size: 12px; color: var(--muted-foreground);">${t('可以选任意供应商的模型；只列出已启用、且不是默认的。', 'Any provider works; only enabled models other than the default are listed.')}</div>
@@ -431,6 +435,82 @@ function alternatesPanel() {
       </div>
     </div>`
 }
+
+/**
+ * 备选的拖动排序。
+ *
+ * **用 pointer 事件自己做，不用 HTML5 拖放**：桌面端的 WebView 拦了拖放、手机浏览器起不来
+ * （侧栏分类那边吃过这个亏，见 shell.js 的 folderMenuItems）。按住行首那个把手上下拖，
+ * 落点画成一条线；松手那一下才存（moveAlternate），拖的过程中只改属性不重画——render()
+ * 会把正在拖的节点换掉，拖动当场中断。
+ *
+ * 落点在松手时按**当下**页面上的那几行重算：拖到一半整页重画过的话，按下时记的那几个
+ * 节点已经脱离文档了，量出来全是 0。
+ */
+let altDrag = null
+const altRows = () => Array.from(document.querySelectorAll('[data-alt-row]'))
+
+/** 指针在 y 处松手，插到第几格前面（0…行数）。 */
+function altDropSlot(y) {
+  const rows = altRows()
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i].getBoundingClientRect()
+    if (y < r.top + r.height / 2) return i
+  }
+  return rows.length
+}
+
+function altDragPaint(slot) {
+  const rows = altRows()
+  rows.forEach((row, i) => {
+    if (slot === i) row.setAttribute('data-drop', 'before')
+    else if (slot === rows.length && i === rows.length - 1) row.setAttribute('data-drop', 'after')
+    else row.removeAttribute('data-drop')
+  })
+}
+
+function altDragClear() {
+  altDrag = null
+  for (const row of altRows()) {
+    row.removeAttribute('data-drop')
+    row.removeAttribute('data-dragging')
+  }
+}
+
+document.addEventListener('pointerdown', (e) => {
+  const grip = e.target instanceof Element ? e.target.closest('[data-alt-grip]') : null
+  if (!grip || e.button !== 0) return
+  // 不拦的话按住把手一拖就成了选中文字（触屏上是滚动页面）。
+  e.preventDefault()
+  altDrag = { from: Number(grip.getAttribute('data-alt-grip')), slot: null, pointer: e.pointerId }
+  const row = grip.closest('[data-alt-row]')
+  if (row) row.setAttribute('data-dragging', 'true')
+  try {
+    grip.setPointerCapture(e.pointerId)
+  } catch {
+    /* 拿不到捕获也照样拖：move / up 冒泡到 document 上 */
+  }
+})
+document.addEventListener('pointermove', (e) => {
+  if (!altDrag || e.pointerId !== altDrag.pointer) return
+  altDrag.slot = altDropSlot(e.clientY)
+  altDragPaint(altDrag.slot)
+})
+document.addEventListener('pointerup', (e) => {
+  if (!altDrag || e.pointerId !== altDrag.pointer) return
+  const { from } = altDrag
+  const slot = altDropSlot(e.clientY)
+  const moved = altDrag.slot !== null
+  altDragClear()
+  // 按下就松（没挪过）不算拖：不然点一下把手也会发一次保存。
+  if (!moved) return
+  // 插到自己后面那些格，拿掉自己之后要往前退一格。
+  const to = slot > from ? slot - 1 : slot
+  if (to !== from) void moveAlternate(from, to)
+})
+document.addEventListener('pointercancel', (e) => {
+  if (altDrag && e.pointerId === altDrag.pointer) altDragClear()
+})
 
 /**
  * 生图模型。Bot 的 generate_image 用它；不选就是没开，席位上那把工具不进工具表。

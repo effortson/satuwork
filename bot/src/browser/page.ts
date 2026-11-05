@@ -30,12 +30,100 @@ const MAX_URL = 2000
 export const BOOTSTRAP = `
 (() => {
   if (window.__satu) return
-  const S = { refs: new Map(), ids: new WeakMap(), version: 0, seq: 0 }
+  /** loose：只靠「看起来能点」认出来、列过一次的元素。见 S.pointy 里「悬停」那一条。 */
+  const S = { refs: new Map(), ids: new WeakMap(), loose: new WeakSet(), version: 0, seq: 0 }
   window.__satu = S
 
-  const CLICKABLE = 'a[href],button,input,select,textarea,summary,[contenteditable=""],[contenteditable="true"],[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="tab"],[role="menuitem"],[role="switch"],[role="option"],[tabindex]:not([tabindex="-1"])'
+  const CLICKABLE = 'a[href],button,input,select,textarea,summary,[contenteditable=""],[contenteditable="true"],[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="tab"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="treeitem"],[role="switch"],[role="option"],[tabindex]:not([tabindex="-1"])'
+
+  /** full=true 时额外列出来的正文结构。只出文字，不发 ref。 */
+  const TEXTY = 'h1,h2,h3,h4,p,li,td,th'
+
+  /**
+   * 写着「这里有弹出 / 能展开」的。**只当旁证**：还得是 pointer 才算——aria-expanded 常被
+   * 错挂在展开之后的那块正文上，那块点了什么也不会发生。
+   */
+  const ARIA_HINT = '[aria-haspopup]:not([aria-haspopup="false"]),[aria-expanded]'
+
+  /**
+   * 元素**自己身上**挂着点击处理。
+   *
+   * - onclick：属性写的，或者脚本 el.onclick = … 赋的。
+   * - Vue 3 把 @click 存在元素的 _vei 上（vue event invokers）。Vben 就是 Vue 3。
+   * - React 把 props 挂在 __reactProps$xxxx 上。React 的监听器委托在根节点，元素本身
+   *   一个都没有，只能这么认。
+   *
+   * addEventListener 挂的认不出来：页面里没有办法列一个元素的监听器。那种只能靠 cursor。
+   */
+  const ownClick = (el) => {
+    if (typeof el.onclick === 'function') return true
+    const vei = el._vei
+    if (vei && (vei.onClick || vei.onMousedown || vei.onMouseup)) return true
+    for (const k of Object.keys(el)) {
+      if (k.startsWith('__reactProps$')) {
+        const p = el[k]
+        return Boolean(p && (p.onClick || p.onMouseDown || p.onMouseUp))
+      }
+    }
+    return false
+  }
+
+  /**
+   * 一次快照里每个元素的 cursor 只读一次。遍历时顺手填（见 snapshot），判「父元素是不是
+   * pointer」时直接查表——不然每个元素都要被读两遍：自己一遍，当别人的父元素又一遍。
+   */
+  let cursors = new Map()
+  const pointer = (el) => {
+    if (!el) return false
+    if (cursors.has(el)) return cursors.get(el)
+    let on = false
+    try { on = getComputedStyle(el).cursor === 'pointer' } catch (e) { /* 拿不到样式就当不是 */ }
+    cursors.set(el, on)
+    return on
+  }
+
+  /**
+   * 不在 CLICKABLE 里、但**明摆着能点**的东西也要列。
+   *
+   * 线上撞上的：一个 Vben 后台的侧栏菜单，「SC Device Management」是一个
+   * div.vben-menu-submenu-title——没有 role、没有 tabindex，只挂了 Vue 的 @click。
+   * 只认语义的话整个侧栏一个 ref 都没有，模型找不到能点的，就去按键盘、去拼路由，
+   * 最后只能请人帮它点。Vue / React 写的后台里，菜单、卡片、图标按钮大多是这个样子。
+   *
+   * 按这个顺序认：
+   * - **列过一次的照列。** cursor 是计算样式，「:hover 才是一只手」的规则也算在里面，而鼠标
+   *   就停在 Bot 上一次点的地方——不粘住的话，列出来的东西跟着鼠标位置一会儿有一会儿没有。
+   * - **包着复选框的 label**：里面那个框看得见就不列（点 label 等于点它，它已经在快照里了）；
+   *   看不见就列 label——组件库的复选框都是这样，真的 input 藏起来（opacity 0 / 宽 0），
+   *   人点的是外面那层。
+   * - **自己挂着点击处理的**（见 ownClick）：嵌在别的可点区域里也列。表格行里的「编辑」、
+   *   卡片上的关闭按钮靠的就是这一条。
+   * - **鼠标放上去是一只手**（cursor: pointer）。只认最外那一层——cursor 会继承，可点区域里
+   *   每一层子元素都是 pointer，全列的话一个菜单项会占三四个 ref。再配上 aria-haspopup /
+   *   aria-expanded 的，嵌在里面也列（下拉触发器常是这样）。
+   *
+   * 同名的嵌套（外层 div 和里面的 button 是同一个东西）在 snapshot 里再去重。
+   */
+  S.pointy = (el) => {
+    if (S.loose.has(el)) return true
+    if (el.tagName === 'LABEL' && el.control) return !S.visible(el.control)
+    if (ownClick(el)) return true
+    if (!pointer(el)) return false
+    if (el.matches(ARIA_HINT)) return true
+    return !pointer(el.parentElement)
+  }
 
   const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()
+
+  /**
+   * 写进快照那一行的名字：**不能带双引号，也不能带换行。**
+   *
+   * 席位那边按「- 角色 "名字" [@e5]」把这一行拆回来，记下 ref → 名字，策略拿名字认「这一下
+   * 是不是在付款 / 登录」。名字里有一个双引号，这一行就拆不出来——那个 ref 没有名字，策略
+   * 当它是一次普通点击，「"VIP" 年卡 立即购买」不弹卡就点下去了。换行更糟：aria-label 里
+   * 塞一个换行，页面就能伪造出一整行快照。双引号换成单引号，认字的词表不受影响。
+   */
+  const clean = (s) => String(s || '').replace(/\\s+/g, ' ').replace(/"/g, "'").trim()
 
   /** 可访问名。aria → 关联 label → 自身文字 → 占位符，第一个非空的算数。 */
   S.name = (el) => {
@@ -85,7 +173,25 @@ export const BOOTSTRAP = `
       if (t === 'submit' || t === 'button' || t === 'reset') return 'button'
       return 'textbox'
     }
+    // 只认编辑区的那一层。isContentEditable 对里面每一个后代都是真，不加这条的话，
+    // full 快照里编辑器的每一段、每个标题都成了 textbox。
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return 'textbox'
     return tag
+  }
+
+  /** 本身就说明「能操作」的角色。别的一律写成 clickable，见 actRole。 */
+  const ACT_ROLES = new Set(['button', 'link', 'checkbox', 'radio', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+    'treeitem', 'switch', 'option', 'combobox', 'textbox', 'searchbox', 'slider', 'spinbutton', 'gridcell', 'row',
+    'columnheader', 'listbox'])
+
+  /**
+   * 可交互元素的角色。没有语义的那些（div、li、span……）和显式写了一个不说明能操作的角色
+   * 的（role="none" / "presentation" / "listitem"）一律叫 clickable——写成
+   * 「- div "SC Device Management"」或「- none "设备列表"」，模型看不出这一行是能点的。
+   */
+  S.actRole = (el) => {
+    const role = S.role(el)
+    return ACT_ROLES.has(role) ? role : 'clickable'
   }
 
   S.visible = (el) => {
@@ -120,8 +226,7 @@ export const BOOTSTRAP = `
     S.version += 1
     // 一条会话可以很长。攒到这个数就整体丢掉重来——丢掉的后果只是旧 ref 报「不认识」，
     // 而不丢的后果是这张表跟着页面一直涨。
-    if (S.refs.size > 5000) { S.refs = new Map(); S.ids = new WeakMap() }
-    const lines = []
+    if (S.refs.size > 5000) { S.refs = new Map(); S.ids = new WeakMap(); S.loose = new WeakSet() }
     /**
      * 这一页上的链接：**地址要带出去**。
      *
@@ -148,11 +253,6 @@ export const BOOTSTRAP = `
       return href
     }
     let cut = false
-    const push = (line) => {
-      if (lines.length >= ${MAX_NODES}) { cut = true; return false }
-      lines.push(line)
-      return true
-    }
     const ref = (el) => {
       const known = S.ids.get(el)
       if (known) return known
@@ -161,19 +261,69 @@ export const BOOTSTRAP = `
       S.ids.set(el, id)
       return id
     }
-    const nodes = full
-      ? document.querySelectorAll(CLICKABLE + ',h1,h2,h3,h4,p,li,td,th')
-      : document.querySelectorAll(CLICKABLE)
-    for (const el of nodes) {
+    /**
+     * 按文档顺序走一遍全部元素，而不是只取 CLICKABLE：「看起来能点」的那些（见 S.pointy）
+     * 没有选择器能一次挑出来，要逐个看样式。
+     *
+     * 每一张动作回执都要走这一遍，所以省着走：
+     * - 用 TreeWalker，碰到 display:none 整棵子树跳过（收起来的子菜单、没切到的标签页）。
+     * - 读 display 的那一次顺手把 cursor 记进表（见 pointer），每个元素的样式只读一次。
+     * - 原生可点的一次 querySelectorAll 挑出来放进 Set，不对每个元素跑那串长选择器。
+     */
+    cursors = new Map()
+    const natives = new Set(document.querySelectorAll(CLICKABLE))
+    const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT, {
+      acceptNode: (el) => {
+        let cs = null
+        try { cs = getComputedStyle(el) } catch (e) { return NodeFilter.FILTER_ACCEPT }
+        if (cs.display === 'none') return NodeFilter.FILTER_REJECT
+        cursors.set(el, cs.cursor === 'pointer')
+        return NodeFilter.FILTER_ACCEPT
+      },
+    })
+    /** 这次列出来的元素 → 名字。判「和外面那层是同一个东西」用。 */
+    const shown = new Map()
+    /**
+     * 只靠「看起来能点」认出来的，和外面已经列了的那层、或者里面那个原生控件同名，就是同一个
+     * 东西的两层皮（Vue 组件常在 li 和里面的 div 上各挂一个 @click；下拉触发器外面包一层带
+     * aria-expanded 的 div）。只列一个。
+     */
+    const dup = (el, name) => {
+      let up = el.parentElement
+      for (let i = 0; up && i < 8; i += 1, up = up.parentElement) {
+        if (!shown.has(up)) continue
+        if (shown.get(up) === name) return true
+        break
+      }
+      const inner = el.querySelector(CLICKABLE)
+      return Boolean(inner && S.visible(inner) && clean(S.name(inner)) === name)
+    }
+    /**
+     * 先攒着，最后再按 MAX_NODES 裁。**裁的时候先让「看起来能点」的让位**：一张列表页上几百
+     * 行 cursor:pointer 的行排在前面，按文档顺序一刀切的话，列表后面的分页、导出按钮全被挤掉。
+     * 攒到上限的四倍就不往下走了，免得在一个几万个节点的页面上空转。
+     */
+    const rows = []
+    const CAP = ${MAX_NODES} * 4
+    for (let el = walker.nextNode(); el; el = walker.nextNode()) {
+      if (rows.length >= CAP) { cut = true; break }
+      const native = natives.has(el)
+      const loose = !native && S.pointy(el)
+      const texty = full && el.matches(TEXTY)
+      if (!native && !loose && !texty) continue
       if (!S.visible(el)) continue
-      const role = S.role(el)
-      const name = S.name(el)
-      const interactive = el.matches(CLICKABLE)
+      const name = clean(S.name(el))
+      // 只靠样式认出来的、又没有名字的不列。光秃秃一行「- clickable ""」模型不知道它是什么，
+      // 而这种行在装饰性的包裹层上会有一大堆。
+      const interactive = native || (loose && Boolean(name) && !dup(el, name))
       if (!interactive) {
-        if (!name) continue
-        if (!push('  ' + role + ' "' + name.slice(0, 200) + '"')) break
+        if (!texty || !name) continue
+        rows.push({ line: '  ' + S.role(el) + ' "' + name.slice(0, 200) + '"', loose: false })
         continue
       }
+      const role = S.actRole(el)
+      shown.set(el, name)
+      if (loose) S.loose.add(el)
       const bits = []
       /**
        * 密码框：打一个 password 标记（**放在最前**，策略靠它认「这是在登录」），值不列——
@@ -184,11 +334,13 @@ export const BOOTSTRAP = `
        */
       const secret = el.tagName === 'INPUT' && String(el.type || '').toLowerCase() === 'password'
       if (secret) bits.push('password')
-      else if (el.value !== undefined && el.value !== '' && role === 'textbox') bits.push('value="' + String(el.value).slice(0, 80) + '"')
-      if (el.checked) bits.push('checked')
-      if (el.disabled) bits.push('disabled')
+      else if (el.value !== undefined && el.value !== '' && role === 'textbox') bits.push('value="' + clean(el.value).slice(0, 80) + '"')
+      // 包着藏起来的复选框的 label：勾没勾上看里面那个框。
+      const box = el.tagName === 'LABEL' && el.control ? el.control : el
+      if (box.checked) bits.push('checked')
+      if (box.disabled) bits.push('disabled')
       if (role === 'combobox') {
-        const opts = [...(el.options || [])].slice(0, 12).map((o) => o.value || o.text)
+        const opts = [...(el.options || [])].slice(0, 12).map((o) => clean(o.value || o.text))
         if (opts.length) bits.push('options=[' + opts.join(', ') + ']')
       }
       /**
@@ -196,13 +348,20 @@ export const BOOTSTRAP = `
        * 只会让这份快照更长，而它已经是进上下文的大头。
        */
       const href = role === 'link' ? hrefOf(el) : ''
-      if (!push('- ' + role + ' "' + name + '" [' + ref(el) + ']' + (bits.length ? ' ' + bits.join(' ') : '') + (href ? ' ' + href : ''))) break
+      rows.push({ line: '- ' + role + ' "' + name + '" [' + ref(el) + ']' + (bits.length ? ' ' + bits.join(' ') : '') + (href ? ' ' + href : ''), loose })
+    }
+    cursors = new Map()
+    let kept = rows
+    if (rows.length > ${MAX_NODES}) {
+      cut = true
+      let room = ${MAX_NODES} - rows.filter((r) => !r.loose).length
+      kept = rows.filter((r) => !r.loose || room-- > 0).slice(0, ${MAX_NODES})
     }
     return {
       version: S.version,
       url: location.href,
       title: document.title,
-      body: lines.join('\\n'),
+      body: kept.map((r) => r.line).join('\\n'),
       truncated: cut,
     }
   }
@@ -231,7 +390,7 @@ export const BOOTSTRAP = `
       x: rect.left + rect.width / 2,
       y: rect.top + rect.height / 2,
       name: S.name(hit.el),
-      role: S.role(hit.el),
+      role: S.actRole(hit.el),
     }
   }
 
@@ -248,7 +407,7 @@ export const BOOTSTRAP = `
     } else if (el.isContentEditable) {
       el.textContent = ''
     }
-    return { name: S.name(el), role: S.role(el) }
+    return { name: S.name(el), role: S.actRole(el) }
   }
 
   S.selectOptions = (ref, values) => {

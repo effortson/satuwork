@@ -702,6 +702,30 @@ export async function runConnectors({ root, gwRoot, test, req, start, waitHttp, 
       const me = await req(base, 'GET', '/me', { token: memberTok })
       assert((me.json.settings?.dailyAlternates || []).length === 1, `员工读不到备选：${JSON.stringify(me.json.settings)}`)
 
+      /**
+       * **只调顺序也是一次改动。** 对话框里备选按这份名单的顺序排，管理页拖一下就是整份
+       * 换个顺序 PUT 回来——指纹不跟着变的话，席位不重拉，人在对话框里看到的还是老顺序。
+       * 和默认重复的会被服务端剔掉，所以先多给几个、按存下来的那份来调。
+       */
+      const several = ids.slice(0, 3).map((id) => {
+        const [p, ...m] = id.split('/')
+        return { provider: p, model: m.join('/'), reasoningEffort: 'off' }
+      })
+      const kept = (await req(base, 'PUT', '/platform/settings', { token: owner, body: { dailyAlternates: several } })).json.dailyAlternates || []
+      if (kept.length >= 2) {
+        const forward = (await req(base, 'GET', '/runtime/catalog/version', { token: seatTok })).json.stamp
+        const flipped = kept.slice().reverse()
+        const put2 = await req(base, 'PUT', '/platform/settings', { token: owner, body: { dailyAlternates: flipped } })
+        assert(put2.status === 200, `调顺序 ${put2.status} ${put2.text}`)
+        const backward = (await req(base, 'GET', '/runtime/catalog/version', { token: seatTok })).json.stamp
+        assert(forward !== backward, `只调了顺序指纹没变，席位会一直按老顺序给对话框：${forward}`)
+        const order = ((await req(base, 'GET', '/runtime/catalog', { token: seatTok })).json.models?.dailyAlternates || []).map((r) => `${r.provider}/${r.model}`)
+        const want = flipped.map((r) => `${r.provider}/${r.model}`)
+        assert(JSON.stringify(order) === JSON.stringify(want), `席位拿到的顺序不对：${JSON.stringify(order)}，该是 ${JSON.stringify(want)}`)
+      } else {
+        log(`  （目录里能当备选的只存下了 ${kept.length} 个，「只调顺序」那一段没跑）`)
+      }
+
       await req(base, 'PUT', '/platform/settings', { token: owner, body: { dailyAlternates: [] } })
       const cleared = (await req(base, 'GET', '/runtime/catalog/version', { token: seatTok })).json.stamp
       assert(cleared === before, `清空之后指纹该回到原样（没有备选时和老格式一致）：${before} → ${cleared}`)

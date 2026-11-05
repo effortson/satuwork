@@ -332,6 +332,12 @@ textarea.satu-code { background: var(--popover); color: var(--color-text); borde
 .satu-themeswatch[data-mode="system"] .satu-themebar { background: linear-gradient(90deg, #ebe8df 50%, #26241f 50%); }
 .satu-themeswatch[data-mode="system"] .satu-themebody { background: linear-gradient(90deg, #faf9f5 50%, #171613 50%); }
 .satu-toggleRow { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-3) 0; border-top: 1px solid var(--border); }
+/* 日常模型备选的拖动排序（pages-admin.js 的 altDrag）。touch-action 不关的话，触屏上按住把手一拖是在滚页面。 */
+.sw-alt-grip { flex: none; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; color: var(--muted-foreground); font-size: 14px; line-height: 1; letter-spacing: -2px; padding: 4px 4px 4px 0; }
+.sw-alt-grip:hover { color: var(--foreground); }
+[data-alt-row][data-dragging] { opacity: 0.5; }
+[data-alt-row][data-drop="before"] { box-shadow: inset 0 2px 0 var(--color-accent); }
+[data-alt-row][data-drop="after"] { box-shadow: inset 0 -2px 0 var(--color-accent); }
 .satu-panel { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .satu-panel-title { font-size: 11.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted-foreground); }
 .satu-kv { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); font-size: 13.5px; }

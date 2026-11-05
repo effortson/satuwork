@@ -1941,13 +1941,17 @@ document.getElementById('app').addEventListener('click', async (e) => {
     if (!isAlternate(provider, model)) await saveAlternates([...dailyAlternates(), { provider, model, reasoningEffort: 'off' }])
     return
   }
-  if (act === 'alt-remove' || act === 'alt-up' || act === 'alt-default') {
+  if (act === 'alt-up' || act === 'alt-down') {
+    const i = Number(btn.getAttribute('data-index'))
+    await moveAlternate(i, act === 'alt-up' ? i - 1 : i + 1)
+    return
+  }
+  if (act === 'alt-remove' || act === 'alt-default') {
     const i = Number(btn.getAttribute('data-index'))
     const list = dailyAlternates().slice()
     const one = list[i]
     if (!one) return
     if (act === 'alt-remove') list.splice(i, 1)
-    else if (act === 'alt-up' && i > 0) [list[i - 1], list[i]] = [list[i], list[i - 1]]
     else if (act === 'alt-default') {
       // 对调，不是只改默认：原来的默认顶到这一格上，备选名单里的人照样还能选回它。
       const cur = state.settings?.daily || {}
