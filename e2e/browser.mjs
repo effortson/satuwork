@@ -272,6 +272,10 @@ export async function runBrowser({ root, test, assert, log }) {
     /**
      * Vue / React 后台的侧栏多半是 div + @click，没有 role 也没有 tabindex。只认语义的话
      * 整个侧栏一个 ref 都没有——线上真卡过，Bot 最后只能请人帮它点。
+     *
+     * 同一组里还钉着认「看起来能点」带出来的几个坑：名字里的双引号让策略认不出「购买」、
+     * 藏起 input 的复选框、行里的「编辑」、外壳和按钮重复、编辑器段落变 textbox、
+     * 悬停让列出来的东西忽有忽无、几百行列表把后面的按钮挤出上限。
      */
     assert(r.loose, `没有 loose 结果${r.crashed ? '：' + r.crashed : ''}`)
     const { detail, ...checks } = r.loose

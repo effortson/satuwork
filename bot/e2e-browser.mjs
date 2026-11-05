@@ -120,16 +120,42 @@ const MENU_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>侧�
     <ul id="msub" style="display:none"><li id="mitem" style="cursor:pointer">设备列表</li></ul></li>
 </ul>
 <div id="blank" style="cursor:pointer;width:40px;height:40px"></div>
+<div id="buy" style="cursor:pointer">"VIP" 年卡 立即购买</div>
+<label id="agree" style="cursor:pointer;position:relative"><input type="checkbox" id="agreeBox" style="opacity:0;position:absolute"><span>同意条款</span></label>
+<div id="row" style="cursor:pointer">ER22 蓝牙 <span id="edit">编辑行</span> <span id="vue">查看行</span></div>
+<div id="drop" aria-expanded="false" style="cursor:pointer"><button>更多操作</button></div>
+<div aria-expanded="true">展开之后的正文</div>
+<div contenteditable="true"><p>编辑器第一段</p></div>
+<ul><li role="none" style="cursor:pointer">角色为空的项</li></ul>
+<div id="sticky" style="cursor:pointer">粘住的项</div>
 <div id="mout"></div>
 <script>
+const out = (t) => { document.getElementById('mout').textContent = t }
 document.getElementById('mtitle').addEventListener('click', function () { document.getElementById('msub').style.display = 'block' })
-document.getElementById('mitem').addEventListener('click', function () { document.getElementById('mout').textContent = '进了设备列表' })
+document.getElementById('mitem').addEventListener('click', function () { out('进了设备列表') })
+document.getElementById('agreeBox').addEventListener('change', function (e) { out(e.target.checked ? '已同意' : '未同意') })
+// 嵌在可点的行里、自己挂着点击处理：一个是 onclick 属性赋值，一个仿 Vue 3 的 _vei。
+document.getElementById('edit').onclick = function (e) { e.stopPropagation(); out('点了编辑行'); document.getElementById('sticky').style.cursor = 'auto' }
+const vue = document.getElementById('vue')
+const onVue = function (e) { e.stopPropagation(); out('点了查看行') }
+vue._vei = { onClick: onVue }
+vue.addEventListener('click', onVue)
 </script></body></html>`
+
+/** 一张几百行、每行都是 cursor:pointer 的列表页，分页按钮排在最后。 */
+const ROWS_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>长列表</title></head><body>
+${Array.from({ length: 450 }, (_, i) => `<div style="cursor:pointer">第${i + 1}行</div>`).join('')}
+<button>下一页</button></body></html>`
 
 const server = createServer((req, res) => {
   if (req.url === '/menu') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(MENU_PAGE)
+    return
+  }
+  if (req.url === '/rows') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(ROWS_PAGE)
     return
   }
   // 一张大到回执会被结果预算截断的页面：几百个名字很长的按钮。
@@ -974,8 +1000,44 @@ try {
     点开之后子项有ref: Boolean(itemRef),
     点子项真的进去了: entered.failed !== true && menuRead.text.includes('进了设备列表'),
     没名字的可点块不列: !/- clickable ""/.test(menu.text),
-    detail: { menu: menu.text.slice(0, 600) },
   }
+
+  const lineOf = (text, needle) => text.split('\n').filter((l) => l.includes(needle))
+  // 名字里的双引号不能让那一行拆不出来——拆不出来，策略就不知道这是「购买」。
+  const buyRef = (/\[(@e\d+)\]/.exec(lineOf(menu.text, '年卡')[0] || '') || [])[1]
+  const buyCx = buyRef ? svc.actionContext({ callId: 'cx', name: 'browser_click', arguments: JSON.stringify({ ref: buyRef }) }) : {}
+  out.loose.名字带引号策略照样认得出购买 = Boolean(buyRef) && /购买/.test(buyCx.label || '')
+
+  // 藏起来 input 的复选框：列的是 label，点它真的勾上。
+  const agreeRef = refOf(menu.text, '同意条款')
+  const agreed = agreeRef ? await run('browser_click', { ref: agreeRef }) : { text: '' }
+  out.loose.藏起来的复选框点得到 = Boolean(agreeRef) && (await run('browser_read')).text.includes('已同意')
+  out.loose.勾上之后标了checked = lineOf(agreed.text, '同意条款').some((l) => / checked\b/.test(l))
+
+  // 可点的行里自己挂着处理的子项：两种挂法都要认得出、点得动。
+  const editRef = refOf(menu.text, '编辑行')
+  const vueRef = refOf(menu.text, '查看行')
+  out.loose.行里的onclick子项有ref = Boolean(editRef)
+  out.loose.行里的Vue子项有ref = Boolean(vueRef)
+  const edited = editRef ? await run('browser_click', { ref: editRef }) : { text: '' }
+  out.loose.点子项落在子项上 = (await run('browser_read')).text.includes('点了编辑行')
+
+  // 外面包一层带 aria-expanded 的 div、里面是原生按钮：只列一个。
+  out.loose.下拉外壳不重复 = lineOf(menu.text, '"更多操作"').length === 1
+  out.loose.没有pointer的aria正文不列 = !menu.text.includes('展开之后的正文')
+  out.loose.role为none也标clickable = lineOf(menu.text, '角色为空的项').some((l) => l.startsWith('- clickable '))
+
+  // 列过一次的不因为 cursor 变了就消失（悬停规则、鼠标停在哪儿都会让 cursor 变）。
+  out.loose.列过的不跟着cursor消失 = lineOf(menu.text, '粘住的项').length === 1 && lineOf(edited.text, '粘住的项').length === 1
+
+  // 编辑器里的段落在 full 快照里还是段落，不是 textbox。
+  const fullMenu = await run('browser_snapshot', { full: true })
+  out.loose.编辑器里的段落不是textbox = lineOf(fullMenu.text, '编辑器第一段').some((l) => l.startsWith('  p '))
+
+  // 几百行 pointer 排在前面：裁的时候它们让位，最后那个原生按钮还在。
+  const rowsPage = await run('browser_navigate', { url: `http://${HOST}/rows` })
+  out.loose.长列表后面的按钮没被挤掉 = rowsPage.text.includes('"下一页"')
+  out.loose.detail = { menu: menu.text.slice(0, 1500), edited: edited.text.slice(0, 400), buyCx }
 
   // 已经有一份同名的员工文件：网页上下的 report.txt 不能把它盖掉。
   writeFileSync(join(workRoot, 'report.txt'), '员工自己的那份')
