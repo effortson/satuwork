@@ -96,6 +96,18 @@ export async function lookupAccountName(db: Db, def: ConnectorDef, row: Connecto
 export const UPLOAD_TOOL_NAME = 'connector_upload_file'
 
 /**
+ * 连接器工具清单「形状」的版本号，压进席位目录的指纹（routes/runtime.ts 的 catalogStamp）。
+ *
+ * 席位只在指纹变了（或者进程重启）时才重新 `tools/list`。Gateway 改了**怎么拉、怎么注解**
+ * 工具清单——换 Composio 版本、改 annotateToolParams——安装和连接一个字节都不变，指纹也就
+ * 不变：线上部署完，席位手里还是老 schema。2026-11-07 踩过：清单换成最新版之后，Bot 照旧
+ * 读着老版 GMAIL_SEND_EMAIL，说一封邮件只能带一个附件。
+ *
+ * **改了清单的拉法或注解就 +1。** 每加一次，所有席位在下一轮探针（一分钟内）各重拉一次目录。
+ */
+export const CONNECTOR_TOOLS_REV = 1
+
+/**
  * 这一格参数是不是「要先暂存的文件」。
  *
  * Composio 把它标成 `file_uploadable: true`，形状是 `{ name, mimetype, s3key }`。两种

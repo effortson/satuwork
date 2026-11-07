@@ -9,7 +9,7 @@ import { INSTANCE_DOWN, desktopTicketFor, machineResolver } from '../lib/machine
 import { KIND, bodyOf, deployOptsOf, logLinesOf, refShapes, strField } from '../lib/validate.ts'
 import type { Account, BotFolder, BotRelease, BotViewer, CatalogItem, Memory, MemoryKind, SeatRuntime } from '../db.ts'
 import { LOGS_FOLLOW_GONE, deploySeatBriefly, listSeatRuntime, logsDirectPayload, machinePaired, publicSeatRuntime, reconcileDeploy, seatStepOf, startSeatDeploy, rosterUrlOf } from '../deploy.ts'
-import { runtimeConnectorServer, usableConnections } from '../lib/connectors.ts'
+import { CONNECTOR_TOOLS_REV, runtimeConnectorServer, usableConnections } from '../lib/connectors.ts'
 import { TASK_CONTEXT_MAX, TASK_INSTRUCTION_MAX, cancelBotTask, createBotTask, pollBotTask, publicBotTask } from '../lib/bot-tasks.ts'
 import { LEGACY_BOT_ICONS, type BotMemory, botContext, botVisibleTo, canAssignTo, botIconOf, botNameOf, botTemplateOf, defaultBotTemplate, extraPromptOf, iconSetFor, publicBot, publicCatalog, publicSkill, runtimeKindOf, runtimeServer, serversForBots, skillDisplayNames, skillFiles, tagsOf, trimStr } from '../lib/catalog.ts'
 import { deviceIdOf, kindOf, originOf, requirePlatformToken, requireSeatOnly, requireUser, viewerOf } from '../lib/guards.ts'
@@ -187,7 +187,7 @@ function catalogStamp(
   memories = '0:0',
 ): string {
   const toolsAt = tools.reduce((n, i) => Math.max(n, i.updatedAt), 0)
-  return `${version}:${bot?.updatedAt ?? 0}:${toolsAt}:${tools.length}:${conn.updatedAt}:${conn.count}:${models}:${memories}`
+  return `${version}:${bot?.updatedAt ?? 0}:${toolsAt}:${tools.length}:${conn.updatedAt}:${conn.count}:${models}:${memories}|ct:${CONNECTOR_TOOLS_REV}`
 }
 
 type StampRole = { provider: string; model: string; reasoningEffort?: string }
