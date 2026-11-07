@@ -45,3 +45,21 @@ test('stops when the cursor does not advance', async () => {
   await new ComposioProvider('k', 'https://x.test/api/v3').listToolkits()
   assert.equal(seen.length, 2)
 })
+
+/**
+ * v3 不带版本给的是最早那一版：老版 GMAIL_SEND_EMAIL 的 attachment 只收一个文件，
+ * Bot 就跟人说一封邮件只能带一个附件。清单和执行要同一个版本。
+ */
+test('listTools and execute both ask for the latest toolkit version', async () => {
+  const seen: { url: string; body: unknown }[] = []
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input))
+    seen.push({ url: url.pathname + url.search, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    return new Response(JSON.stringify(url.pathname.includes('/execute/') ? { successful: true, data: {} } : { items: [] }), { status: 200 })
+  }) as typeof fetch
+  const p = new ComposioProvider('k', 'https://x.test/api/v3')
+  await p.listTools('gmail')
+  await p.execute({ tool: 'GMAIL_SEND_EMAIL', externalUserId: 'u', externalId: 'c', args: {} } as never)
+  assert.match(seen[0].url, /toolkit_versions=latest/)
+  assert.equal((seen[1].body as { version?: string }).version, 'latest')
+})

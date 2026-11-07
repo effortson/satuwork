@@ -415,7 +415,15 @@ function typeOf(schema: Record<string, unknown> | undefined): string {
   }
   if (typeof t === 'string') return t
   if (Array.isArray(schema.enum)) return 'enum'
-  if (schema.anyOf || schema.oneOf) return 'any'
+  /**
+   * 二选一写出每一支：`attachment?: object|object[]`。写成 `any` 的话，「一个或一组」这件事
+   * 在签名上就看不出来，模型照名字（单数的 attachment）猜成只能带一个。
+   */
+  const union = (schema.anyOf ?? schema.oneOf) as unknown
+  if (Array.isArray(union)) {
+    const kinds = [...new Set(union.map((b) => typeOf(b as Record<string, unknown>)).filter((k) => k !== 'null'))]
+    return kinds.length && !kinds.includes('any') ? kinds.join('|') : 'any'
+  }
   if (schema.properties) return 'object'
   return 'any'
 }
