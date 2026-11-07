@@ -116,8 +116,10 @@ export function isFileParam(schema: unknown): boolean {
  * 从哪来的，于是把工作区路径、或者一个 URL 填进去，上游去取就是 404，而模型把这一步
  * 解释成「附件接口坏了」。线上真发生过一次。
  *
- * 数组里的文件（`attachments: [{...}]`）也补，补在 `items` 上。再往深的嵌套不追：
- * 供应商的文件参数都在顶层或一层数组里，为了一个不存在的形状写递归只会把 schema 搅乱。
+ * 数组里的文件（`attachments: [{...}]`）也补，补在 `items` 上。「一个或一组」的写法
+ * （Composio 新版 Gmail 的 `attachment: anyOf [文件, 文件[]]`）也补，补在外层，每一支
+ * 不重复写。再往深的嵌套不追：供应商的文件参数都在顶层、一层数组或这种二选一里，为了一个
+ * 不存在的形状写递归只会把 schema 搅乱。
  */
 export function annotateFileParams(schema: Record<string, unknown>): Record<string, unknown> {
   const props = schema.properties
@@ -135,6 +137,7 @@ export function annotateFileParams(schema: Record<string, unknown>): Record<stri
 const FILE_HINT =
   `【文件参数】先调用 ${UPLOAD_TOOL_NAME} 把工作区里的文件上传，再把它返回的 ` +
   `{ name, mimetype, s3key } 原样填在这里。不要自己编 s3key，也不要填本地路径或网址。` +
+  `要带几份文件而这一格收数组的，就每份各上传一次，把这几个句柄放进一个数组。` +
   `不带附件就整个参数都不要填，不要填空的 { name: "", mimetype: "", s3key: "" }。`
 
 /**
@@ -188,7 +191,20 @@ function hintFileParam(raw: unknown): unknown {
     const desc = typeof o.description === 'string' && o.description.trim() ? `${o.description.trim()}\n` : ''
     return { ...o, description: `${desc}${FILE_HINT}`, items: hintFileParam(inner) }
   }
+  for (const key of ['anyOf', 'oneOf'] as const) {
+    const branches = o[key]
+    if (!Array.isArray(branches) || !branches.some(isFileBranch)) continue
+    const desc = typeof o.description === 'string' && o.description.trim() ? `${o.description.trim()}\n` : ''
+    return { ...o, description: `${desc}${FILE_HINT}` }
+  }
   return raw
+}
+
+/** 二选一里的一支是不是文件：文件本身，或者文件的数组。 */
+function isFileBranch(b: unknown): boolean {
+  if (isFileParam(b)) return true
+  const o = b as Record<string, unknown> | null
+  return Boolean(o && typeof o === 'object' && !Array.isArray(o) && o.type === 'array' && isFileParam(o.items))
 }
 
 /**

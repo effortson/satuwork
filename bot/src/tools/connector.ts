@@ -452,6 +452,7 @@ export function apply(ctx: Context) {
       description:
         '把工作区里的一份文件上传给某个连接器工具当附件（例如发邮件时的 attachment）。' +
         '连接器的工具不收本地路径：先用它上传，再把返回的 { name, mimetype, s3key } 原样填进那个工具的文件参数。' +
+        '一次传一份；要带几份就调几次，那个文件参数收数组的话把这几个句柄一起放进数组（例如 Gmail 的 attachment 收一个或一组）。' +
         '暂存只在几分钟内有效，上传完马上调用那个工具。',
       parameters: {
         type: 'object',
@@ -598,7 +599,7 @@ export function apply(ctx: Context) {
       return {
         text:
           `已上传 ${shown}（${humanSize(st.size)}，${handle.mimetype}），给 ${remoteTool} 用。` +
-          `把下面这段原样填进它的文件参数（通常叫 attachment）：\n${JSON.stringify(handle)}\n` +
+          `把下面这段原样填进它的文件参数（通常叫 attachment；要带几份的，每份上传后把句柄放进同一个数组）：\n${JSON.stringify(handle)}\n` +
           `暂存只在几分钟内有效，现在就调用那把工具；之后要再发一次得重新上传。`,
         refs: [{ path: shown, name: filename }],
       }

@@ -19,6 +19,18 @@ const LIST_TIMEOUT_MS = 20_000
 const LIST_PAGE_SIZE = 1000
 const MAX_LIST_PAGES = 20
 
+/**
+ * 工具的版本。**列清单和执行要用同一个**。
+ *
+ * v3 接口不带版本时给的是最早那一版（`00000000_00`），不是最新的。线上踩过：老版
+ * `GMAIL_SEND_EMAIL` 的 `attachment` 只收一个文件，最新版收「一个或一组」——Bot 照老
+ * schema 读，就跟人说「一封邮件只能带一个附件」。清单要了最新版而执行不带的话，模型按新
+ * 形状填的参数会被老版拒掉，所以两处一起带。
+ *
+ * 留一个环境变量当退路：最新版哪天把某个工具改坏了，可以钉回一个具体版本号。
+ */
+const TOOLKIT_VERSION = (process.env.COMPOSIO_TOOLKIT_VERSION || 'latest').trim() || 'latest'
+
 type Json = Record<string, unknown>
 
 /** 列表接口的外壳在不同版本里叫过 `items` 和 `data`，两个都认。 */
@@ -145,7 +157,7 @@ export class ComposioProvider implements ConnectorProvider {
   }
 
   async listTools(toolkit: string): Promise<ToolDef[]> {
-    return (await this.listAll(`/tools?toolkit_slug=${encodeURIComponent(toolkit)}`))
+    return (await this.listAll(`/tools?toolkit_slug=${encodeURIComponent(toolkit)}&toolkit_versions=${encodeURIComponent(TOOLKIT_VERSION)}`))
       .map((t) => ({
         slug: str(t.slug || t.name),
         name: str(t.name || t.slug),
@@ -252,6 +264,7 @@ export class ComposioProvider implements ConnectorProvider {
           user_id: input.externalUserId,
           connected_account_id: input.externalId,
           arguments: input.args ?? {},
+          version: TOOLKIT_VERSION,
         },
         signal: input.signal,
       }),
