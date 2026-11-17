@@ -2705,6 +2705,10 @@ document.getElementById('app').addEventListener('click', async (e) => {
     }
     return
   }
+  if (act === 'mcp-test') {
+    testMcpServer(btn.getAttribute('data-id'))
+    return
+  }
   if (act === 'mcp-edit') {
     const item = (state.mcpServers || []).find((x) => x.id === btn.getAttribute('data-id'))
     if (!item) return

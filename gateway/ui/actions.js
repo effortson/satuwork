@@ -1782,16 +1782,39 @@ async function submitServer(e) {
   render()
   try {
     const item = state.skillDialog && state.skillDialog.item
-    if (item) await api('PATCH', `${base}/mcp-servers/${encodeURIComponent(item.id)}`, payload)
-    else await api('POST', `${base}/mcp-servers`, payload)
+    const saved = item
+      ? await api('PATCH', `${base}/mcp-servers/${encodeURIComponent(item.id)}`, payload)
+      : await api('POST', `${base}/mcp-servers`, payload)
     closeSkillDialog()
     await loadSkills()
+    // 存完就握一次手：填错 key、写错地址当场看得见，不用等到 Bot 说它没有这个工具。
+    if (saved && saved.server && saved.server.enabled !== false) testMcpServer(saved.server.id)
   } catch (err) {
     state.skillError = err.message
   } finally {
     state.busy = false
     render()
   }
+}
+
+/**
+ * 让 Gateway 照席位的走法连一次这台 MCP，结果挂在它那一行上（见 mcpProbeLine）。
+ *
+ * 不 await 在保存那条路上：握手最长要等几秒，弹窗不该为它多转一会儿。
+ */
+async function testMcpServer(serverId) {
+  const base = catalogBase()
+  if (!base || !serverId) return
+  state.mcpProbe = { ...(state.mcpProbe || {}), [serverId]: { status: 'testing' } }
+  render()
+  let result
+  try {
+    result = (await api('POST', `${base}/mcp-servers/${encodeURIComponent(serverId)}/test`, {})).result
+  } catch (err) {
+    result = { status: 'failed', error: err.message }
+  }
+  state.mcpProbe = { ...(state.mcpProbe || {}), [serverId]: result || { status: 'failed', error: '' } }
+  render()
 }
 
 async function createSkillTag(raw) {
