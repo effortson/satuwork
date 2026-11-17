@@ -1005,6 +1005,27 @@ function emptyServerForm(item) {
   }
 }
 
+/**
+ * 一台 MCP 的握手结果，挂在地址下面那一行。
+ *
+ * 结果只在这一屏的内存里（state.mcpProbe），刷新就没了：它是「刚才试的那一次」，不是
+ * 一个要长期对齐的状态。失败时把对端的原话照着写出来——「HTTP 401 …」比「连接失败」有用得多。
+ */
+function mcpProbeLine(s) {
+  if (readOnlyItem(s)) return ''
+  const p = (state.mcpProbe || {})[s.id]
+  const again = `<button type="button" class="satu-linkbtn" style="font-size: 12px;" data-act="mcp-test" data-id="${esc(s.id)}">${p ? t('再试一次', 'Test again') : t('测试连接', 'Test connection')}</button>`
+  const row = (color, text, tail) =>
+    `<span style="font-size: 12px; color: ${color}; display: flex; gap: var(--space-2); align-items: baseline; min-width: 0;"><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(text)}">${esc(text)}</span>${tail}</span>`
+  if (!p) return row('var(--muted-foreground)', '', again)
+  if (p.status === 'testing') return row('var(--muted-foreground)', t('正在握手…', 'Connecting…'), '')
+  if (p.status === 'ok') {
+    return row('var(--color-ok-500)', t(`已连上，${p.tools} 个工具`, `Connected · ${p.tools} tools`), again)
+  }
+  if (p.status === 'skipped') return row('var(--muted-foreground)', errText(p.reason), again)
+  return row('var(--color-accent-800)', `${t('握手失败', 'Handshake failed')}：${p.error}`, again)
+}
+
 function syncSkillForm() {
   const f = state.skillForm
   if (!f) return
@@ -1289,8 +1310,8 @@ function serverDialogView() {
     ? `<button type="button" class="satu-linkbtn" style="margin-right: auto; color: var(--color-accent-800);" data-act="mcp-delete">${t('移除这台服务器')}</button>`
     : ''
   const tokenHint = f.hasToken
-    ? t('已存了一把。留空表示不动它，填了就换成新的。')
-    : t('存在本机库里，不会再从服务端发回浏览器。')
+    ? t('已存了一把。留空表示不动它，填了就换成新的。只填密钥本身，不用带 Bearer。', 'A token is stored. Leave blank to keep it, or enter a new one. Paste the key only — no "Bearer" prefix.')
+    : t('只填密钥本身，不用带 Bearer。存下后不会再从服务端发回浏览器。', 'Paste the key only — no "Bearer" prefix. Once saved it is never sent back to the browser.')
   return modalBox({
     close: 'skill-close',
     tag: 'form',
@@ -1309,7 +1330,7 @@ function serverDialogView() {
       </div>
       <div class="field">
         <label for="tl-token">${t('鉴权 Token（可选）')}</label>
-        <input class="input" id="tl-token" type="password" value="${esc(f.token)}" placeholder="${f.hasToken ? '••••••••' : 'Bearer …'}">
+        <input class="input" id="tl-token" type="password" value="${esc(f.token)}" placeholder="${f.hasToken ? '••••••••' : 'sk-…'}">
         <span style="font-size: 12px; color: var(--muted-foreground);">${esc(tokenHint)}</span>
       </div>
       <div class="field">
@@ -1412,6 +1433,7 @@ function skillsPage() {
           <div style="min-width: 0; display: flex; flex-direction: column; gap: 2px;">
             <span style="font-weight: 600; font-size: 14px;">${esc(s.name)}${readOnlyItem(s) ? ` <span class="tag tag-accent-2" style="font-size: 11px;">${t('全局')}</span>` : ''}</span>
             <span style="font-size: 12px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(s.endpoint)}</span>
+            ${mcpProbeLine(s)}
           </div>
           <span style="font-size: 13px;">${esc(s.kind)}</span>
           <span class="tag ${permTag(s.perm)}">${esc(s.perm)}</span>

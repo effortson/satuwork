@@ -170,6 +170,8 @@ const state = {
   newBotError: '',
   skills: [],
   mcpServers: [],
+  /** 握手试连的结果，serverId → { status, … }。只在内存里，见 pages-bots.js 的 mcpProbeLine。 */
+  mcpProbe: {},
   skillTags: [],
   skillsTab: 'Skill',
   skillDialog: null,

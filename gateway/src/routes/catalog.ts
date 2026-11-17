@@ -9,6 +9,7 @@ import { kindOf, requireOrgUser, requireOwner, requireOwnerUser, requireUser } f
 import { type Account, type CatalogItem, type CatalogKind } from '../db.ts'
 import { requestBotDeletion } from '../conversation-audit.ts'
 import { companyOr404 } from '../lib/org.ts'
+import { bareToken, probeMcp } from '../lib/mcp-probe.ts'
 
 export function attachCatalog(router: Router, ctx: RouteCtx) {
   const { db, keys, llm } = ctx
@@ -127,7 +128,8 @@ export function attachCatalog(router: Router, ctx: RouteCtx) {
     const endpoint = trimStr(b.endpoint)
     if (!endpoint) throw new HttpError(400, kind === 'stdio' ? '要有启动命令' : '要有服务器地址')
     const now = Date.now()
-    const token = trimStr(b.token)
+    // 只存密钥本身：席位发请求时自己加 `Bearer `，连前缀存下来就成了 `Bearer Bearer …`。
+    const token = bareToken(b.token)
     const definition: Record<string, unknown> = {
       kind,
       endpoint,
@@ -154,7 +156,7 @@ export function attachCatalog(router: Router, ctx: RouteCtx) {
     if (typeof b.enabled === 'boolean') def.enabled = b.enabled
     // token 三种意思：没带这个字段=不动，带了空串=清掉，带了内容=换新的。
     if (typeof b.token === 'string') {
-      const token = trimStr(b.token)
+      const token = bareToken(b.token)
       if (token) def.token = token
       else delete def.token
     }
@@ -562,6 +564,26 @@ export function attachCatalog(router: Router, ctx: RouteCtx) {
       const next = await db.updateCatalog(item.id, { name: b.name !== undefined ? namedOf(b.name) : undefined, definition: def })
       await auditCatalog(owner, account.id, 'catalog.update', { kind: 'mcp', id: item.id })
       json(res, 200, { server: publicServer(next) })
+    })
+
+    /**
+     * 握手试连：Gateway 照席位的走法连一次，把结果（工具数 / 对端的原话）回给界面。
+     *
+     * 席位连不上一台 MCP 只会在自己的日志里写一行，管理界面上什么都看不出来——填错 key、
+     * 写错地址都要等到「Bot 说它没有这个工具」才发现。保存之后界面自动来试一次。
+     * 只读、不落审计；带着存下的 token 往外打，所以只给能改这台服务器的人（s.write + ownedItem）。
+     */
+    router.post(`${s.base}/mcp-servers/:serverId/test`, async (req, res) => {
+      const { owner } = await s.write(req)
+      const item = await ownedItem(owner, req.params.serverId, 'mcp', '没有这个 MCP 服务器')
+      const def = asDef(item.definition)
+      json(res, 200, {
+        result: await probeMcp({
+          kind: trimStr(def.kind) || 'SSE',
+          endpoint: trimStr(def.endpoint),
+          token: typeof def.token === 'string' ? def.token : '',
+        }),
+      })
     })
 
     router.delete(`${s.base}/mcp-servers/:serverId`, async (req, res) => {

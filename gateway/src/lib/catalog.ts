@@ -6,6 +6,7 @@
 import { HttpError } from '../http.ts'
 import { type BotViewer, type CatalogItem, type Db, type Scope } from '../db.ts'
 import { objOf } from './util.ts'
+import { bareToken } from './mcp-probe.ts'
 
 /**
  * 这颗 Bot 跑在哪：`local` = 桌面端里跑在员工电脑上（Gateway 连不到它），其余都是机器上的席位。
@@ -931,7 +932,8 @@ export function publicServer(item: CatalogItem) {
 /** 给实例用：带 token 和真实 env。管理面的 publicServer 永远不带。 */
 export function runtimeServer(item: CatalogItem) {
   const def = asDef(item.definition)
-  const token = typeof def.token === 'string' ? def.token.trim() : ''
+  // 存量里可能有连 `Bearer ` 一起存下的（保存时的归一是后来才有的），下发前再剥一次。
+  const token = bareToken(def.token)
   const env = def.env && typeof def.env === 'object' && !Array.isArray(def.env) ? (def.env as Record<string, string>) : {}
   return { ...publicServer(item), token, env, hasEnv: Object.keys(env).length > 0 }
 }
