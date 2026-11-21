@@ -29,7 +29,7 @@ jobs:
             arch: arm64
             tauri_arch: aarch64
             bundle: app
-            runner: macos-14
+            runner: macos-15
           - os: macos
             arch: x64
             tauri_arch: x64

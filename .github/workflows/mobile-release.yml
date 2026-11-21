@@ -209,7 +209,13 @@ jobs:
           [ "$bundle" = sg.dami.satuwork.mobile ] || { echo "推送 topic 与 bundle id 不一致：$bundle" >&2; exit 1; }
           [ "$aps" = production ] || { echo "TestFlight 必须签入 production APNs，实际为 $aps" >&2; exit 1; }
           [ "$build" = "$GITHUB_RUN_NUMBER" ] || { echo "TestFlight 构建号应为 $GITHUB_RUN_NUMBER，实际为 $build" >&2; exit 1; }
-          echo "TestFlight APNs 签名通过：$bundle / $aps"
+          # 隐私权限说明缺一条，页面一碰对应硬件系统就杀进程（App Review 曾因缺相机说明闪退被拒）。
+          # 只改 Info.plist 会被 xcodegen 冲掉，要写进 gen/apple/project.yml。
+          for k in NSCameraUsageDescription NSMicrophoneUsageDescription NSPhotoLibraryUsageDescription; do
+            v=$(/usr/libexec/PlistBuddy -c "Print :$k" "$app/Info.plist" 2>/dev/null || true)
+            [ -n "$v" ] || { echo "包里的 Info.plist 缺 $k——加到 gen/apple/project.yml 的 info.properties" >&2; exit 1; }
+          done
+          echo "TestFlight APNs 签名通过：$bundle / $aps；隐私权限说明齐全"
 
       - uses: actions/upload-artifact@v7
         with:
