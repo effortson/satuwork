@@ -215,7 +215,7 @@ jobs:
             v=$(/usr/libexec/PlistBuddy -c "Print :$k" "$app/Info.plist" 2>/dev/null || true)
             [ -n "$v" ] || { echo "包里的 Info.plist 缺 $k——加到 gen/apple/project.yml 的 info.properties" >&2; exit 1; }
           done
-          echo "TestFlight APNs 签名通过：$bundle / $aps；隐私权限说明齐全"
+          echo "TestFlight APNs 签名通过：${bundle} / ${aps}；隐私权限说明齐全"
 
       - uses: actions/upload-artifact@v7
         with:
