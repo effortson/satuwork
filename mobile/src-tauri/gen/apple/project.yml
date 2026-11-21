@@ -43,6 +43,14 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         ITSAppUsesNonExemptEncryption: false
+        # 隐私权限说明：页面一碰相机/麦克风/相册，系统就查这几条，缺了直接杀进程（TCC SIGABRT）。
+        # 这里才是真源——tauri ios build 会跑 xcodegen 按本文件整份重写 Info.plist，只改 Info.plist 会被冲掉。
+        # 相机：头像、对话附件的 <input type=file> 在 iOS 上带「拍照」项（App Review 2026-11 因此闪退被拒）。
+        NSCameraUsageDescription: "Satuwork 用相机拍照，作为头像或对话附件上传。Satuwork uses the camera to take photos for your avatar or chat attachments."
+        # 麦克风：对话框语音输入（gateway/ui/chat-voice.js 的 getUserMedia），以及附件「录像」带声音。
+        NSMicrophoneUsageDescription: "Satuwork 用麦克风把你说的话转成文字，填进对话输入框。Satuwork uses the microphone to turn your speech into text in the chat box."
+        # 相册：附件选图走系统选择器一般不用授权，留着防个别系统版本走老路径时闪退。
+        NSPhotoLibraryUsageDescription: "Satuwork 从相册选图片，作为头像或对话附件上传。Satuwork lets you pick photos from your library for your avatar or chat attachments."
         LSRequiresIPhoneOS: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]

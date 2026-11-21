@@ -26,6 +26,11 @@
 	<!-- 对话框的语音输入（gateway/ui/chat-voice.js）：页面里 getUserMedia 录音，第一次点麦克风时系统弹框用这句话。 -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Satuwork 用麦克风把你说的话转成文字，填进对话输入框。Satuwork uses the microphone to turn your speech into text in the chat box.</string>
+	<!-- 下面两条和上面这条的真源都在 ../project.yml：CI 跑 xcodegen 会按它整份重写本文件。 -->
+	<key>NSCameraUsageDescription</key>
+	<string>Satuwork 用相机拍照，作为头像或对话附件上传。Satuwork uses the camera to take photos for your avatar or chat attachments.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Satuwork 从相册选图片，作为头像或对话附件上传。Satuwork lets you pick photos from your library for your avatar or chat attachments.</string>
 	<!-- 出口合规：只用系统自带的 HTTPS（豁免类加密），不自带加密算法。声明了 TestFlight 上传后就不用每次答一遍。 -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
